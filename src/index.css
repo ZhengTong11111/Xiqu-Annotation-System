@@ -122,6 +122,12 @@ select {
   width: 130px;
 }
 
+.timeline-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .workspace-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.75fr) 360px;
@@ -147,7 +153,14 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 14px 16px 0;
+}
+
+.timeline-header-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .panel-header h2 {
@@ -282,6 +295,18 @@ select {
 
 .timeline-panel {
   padding-bottom: 14px;
+}
+
+.timeline-zoom-control {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.timeline-zoom-control span,
+.timeline-zoom-control strong {
+  white-space: nowrap;
 }
 
 .timeline-scroll {

@@ -18,6 +18,7 @@ type TimelineProps = {
   zoom: number;
   duration: number;
   focusRange: { start: number; end: number } | null;
+  onZoomChange: (zoom: number) => void;
   onSeek: (time: number) => void;
   onSelectItem: (item: SelectedItem) => void;
   onCharacterChange: (id: string, changes: Partial<CharacterAnnotation>) => void;
@@ -51,6 +52,13 @@ type DragState =
 const TRACK_HEIGHT = 72;
 const TRACK_LABEL_WIDTH = 150;
 const SNAP_SECONDS = 0.05;
+const ZOOM_SETTLE_MS = 160;
+
+type ZoomGestureState = {
+  startZoom: number;
+  anchorTime: number;
+  viewportOffset: number;
+};
 
 export function Timeline({
   subtitleLines,
@@ -62,6 +70,7 @@ export function Timeline({
   zoom,
   duration,
   focusRange,
+  onZoomChange,
   onSeek,
   onSelectItem,
   onCharacterChange,
@@ -69,6 +78,9 @@ export function Timeline({
   onCreateAction,
 }: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const zoomAnchorRef = useRef<{ time: number; viewportOffset: number } | null>(null);
+  const zoomGestureRef = useRef<ZoomGestureState | null>(null);
+  const suppressAutoscrollUntilRef = useRef(0);
   const [dragState, setDragState] = useState<DragState>(null);
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
 
@@ -83,15 +95,77 @@ export function Timeline({
   }, [subtitleLines, characterAnnotations, actionAnnotations, currentTime]);
 
   useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) {
+      return;
+    }
+
+    const handleGestureStart = (event: Event) => {
+      const gestureEvent = event as Event & { clientX?: number };
+      const bounds = container.getBoundingClientRect();
+      const viewportOffset =
+        gestureEvent.clientX !== undefined
+          ? gestureEvent.clientX - bounds.left
+          : container.clientWidth / 2;
+      zoomGestureRef.current = {
+        startZoom: zoom,
+        anchorTime: getCanvasTimeFromViewportOffset(container, viewportOffset, zoom),
+        viewportOffset,
+      };
+      event.preventDefault();
+    };
+
+    const handleGestureChange = (event: Event) => {
+      const gestureEvent = event as Event & { scale?: number };
+      if (!zoomGestureRef.current || gestureEvent.scale === undefined) {
+        return;
+      }
+      event.preventDefault();
+      const nextZoom = clampZoom(zoomGestureRef.current.startZoom * gestureEvent.scale);
+      queueZoom(nextZoom, zoomGestureRef.current.anchorTime, zoomGestureRef.current.viewportOffset);
+    };
+
+    const handleGestureEnd = () => {
+      zoomGestureRef.current = null;
+    };
+
+    container.addEventListener("gesturestart", handleGestureStart, { passive: false });
+    container.addEventListener("gesturechange", handleGestureChange, { passive: false });
+    container.addEventListener("gestureend", handleGestureEnd);
+    return () => {
+      container.removeEventListener("gesturestart", handleGestureStart);
+      container.removeEventListener("gesturechange", handleGestureChange);
+      container.removeEventListener("gestureend", handleGestureEnd);
+    };
+  }, [zoom]);
+
+  useEffect(() => {
+    if (!scrollRef.current || !zoomAnchorRef.current) {
+      return;
+    }
+    const container = scrollRef.current;
+    const { time, viewportOffset } = zoomAnchorRef.current;
+    const maxScrollLeft = Math.max(timelineWidth - container.clientWidth, 0);
+    container.scrollLeft = Math.max(
+      0,
+      Math.min(getCanvasX(time, zoom) - viewportOffset, maxScrollLeft),
+    );
+    zoomAnchorRef.current = null;
+  }, [zoom, timelineWidth]);
+
+  useEffect(() => {
     if (!focusRange || !scrollRef.current) {
       return;
     }
     const left = Math.max(0, getCanvasX(focusRange.start, zoom) - 120);
     scrollRef.current.scrollTo({ left, behavior: "smooth" });
-  }, [focusRange, zoom]);
+  }, [focusRange]);
 
   useEffect(() => {
     if (!scrollRef.current) {
+      return;
+    }
+    if (Date.now() < suppressAutoscrollUntilRef.current) {
       return;
     }
     const container = scrollRef.current;
@@ -174,10 +248,48 @@ export function Timeline({
   return (
     <section className="panel timeline-panel">
       <div className="panel-header">
-        <h2>多轨时间轴</h2>
-        <span>点击空白跳转，拖拽片段创建或调整边界</span>
+        <div className="timeline-header-copy">
+          <h2>多轨时间轴</h2>
+          <span>点击空白跳转，拖拽片段创建或调整边界</span>
+        </div>
+        <div className="timeline-zoom-controls">
+          <button type="button" onClick={() => queueZoom(clampZoom(zoom - 20), currentTime)}>
+            -
+          </button>
+          <label className="zoom-control timeline-zoom-control">
+            <span>缩放</span>
+            <input
+              type="range"
+              min={40}
+              max={240}
+              step={10}
+              value={zoom}
+              onChange={(event) => queueZoom(Number(event.target.value), currentTime)}
+            />
+            <strong>{Math.round(zoom)}px/s</strong>
+          </label>
+          <button type="button" onClick={() => queueZoom(clampZoom(zoom + 20), currentTime)}>
+            +
+          </button>
+        </div>
       </div>
-      <div className="timeline-scroll" ref={scrollRef}>
+      <div
+        className="timeline-scroll"
+        ref={scrollRef}
+        onWheel={(event) => {
+          const isPinchZoom = event.ctrlKey && !event.metaKey;
+          const isModifierZoom = event.altKey && !event.metaKey && !event.ctrlKey;
+          if (!isPinchZoom && !isModifierZoom) {
+            return;
+          }
+          event.preventDefault();
+          queueZoom(
+            clampZoom(zoom * Math.exp(-event.deltaY * 0.0025)),
+            getCanvasTime(event.currentTarget, event.clientX, zoom),
+            event.clientX - event.currentTarget.getBoundingClientRect().left,
+          );
+        }}
+      >
         <div className="timeline-canvas" style={{ width: timelineWidth }}>
           <div className="timeline-ruler">
             {ticks.map((tick) => (
@@ -328,6 +440,26 @@ export function Timeline({
       </div>
     );
   }
+
+  function queueZoom(nextZoom: number, anchorTime?: number, viewportOffset?: number) {
+    const container = scrollRef.current;
+    if (!container) {
+      onZoomChange(clampZoom(nextZoom));
+      return;
+    }
+    const safeZoom = clampZoom(nextZoom);
+    const resolvedAnchorTime = anchorTime ?? currentTime;
+    const resolvedViewportOffset =
+      viewportOffset ?? getViewportOffsetForTime(container, resolvedAnchorTime, zoom);
+    zoomAnchorRef.current = {
+      time: resolvedAnchorTime,
+      viewportOffset: resolvedViewportOffset,
+    };
+    suppressAutoscrollUntilRef.current = Date.now() + ZOOM_SETTLE_MS;
+    if (safeZoom !== zoom) {
+      onZoomChange(safeZoom);
+    }
+  }
 }
 
 function resolveEdge(event: React.PointerEvent<HTMLDivElement>) {
@@ -396,6 +528,22 @@ function getCanvasX(time: number, zoom: number) {
   return TRACK_LABEL_WIDTH + time * zoom;
 }
 
+function getCanvasTime(container: HTMLElement, clientX: number, zoom: number) {
+  const bounds = container.getBoundingClientRect();
+  const offsetX = clientX - bounds.left + container.scrollLeft;
+  return Math.max(0, offsetX - TRACK_LABEL_WIDTH) / zoom;
+}
+
+function getCanvasTimeFromViewportOffset(container: HTMLElement, viewportOffset: number, zoom: number) {
+  const offsetX = viewportOffset + container.scrollLeft;
+  return Math.max(0, offsetX - TRACK_LABEL_WIDTH) / zoom;
+}
+
+function getViewportOffsetForTime(container: HTMLElement, time: number, zoom: number) {
+  const canvasX = getCanvasX(time, zoom);
+  return Math.max(0, Math.min(container.clientWidth, canvasX - container.scrollLeft));
+}
+
 function getLaneX(container: HTMLElement, clientX: number) {
   const bounds = container.getBoundingClientRect();
   return Math.max(0, clientX - bounds.left + container.scrollLeft);
@@ -403,4 +551,8 @@ function getLaneX(container: HTMLElement, clientX: number) {
 
 function getLaneTime(container: HTMLElement, clientX: number, zoom: number) {
   return getLaneX(container, clientX) / zoom;
+}
+
+function clampZoom(zoom: number) {
+  return Math.max(40, Math.min(240, zoom));
 }

@@ -3,13 +3,11 @@ import type { ChangeEvent } from "react";
 type ToolbarProps = {
   isPlaying: boolean;
   playbackRate: number;
-  zoom: number;
   canUndo: boolean;
   canRedo: boolean;
   onTogglePlay: () => void;
   onStep: (delta: number) => void;
   onPlaybackRateChange: (rate: number) => void;
-  onZoomChange: (zoom: number) => void;
   onVideoFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onSrtFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onExportTrack: (kind: "character" | "singing" | "hand" | "body" | "project") => void;
@@ -23,13 +21,11 @@ const playbackRates = [0.5, 0.75, 1, 1.25, 1.5];
 export function Toolbar({
   isPlaying,
   playbackRate,
-  zoom,
   canUndo,
   canRedo,
   onTogglePlay,
   onStep,
   onPlaybackRateChange,
-  onZoomChange,
   onVideoFileChange,
   onSrtFileChange,
   onExportTrack,
@@ -74,18 +70,6 @@ export function Toolbar({
       </div>
 
       <div className="toolbar-group">
-        <label className="zoom-control">
-          缩放
-          <input
-            type="range"
-            min={40}
-            max={240}
-            step={10}
-            value={zoom}
-            onChange={(event) => onZoomChange(Number(event.target.value))}
-          />
-          <span>{zoom}px/s</span>
-        </label>
         <button onClick={() => onAddAction("hand-action")}>新增手部动作</button>
         <button onClick={() => onAddAction("body-action")}>新增肢体动作</button>
         <button onClick={onUndo} disabled={!canUndo}>

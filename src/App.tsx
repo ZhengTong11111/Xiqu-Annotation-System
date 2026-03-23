@@ -116,6 +116,30 @@ function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [currentTime, selectedItem, undoStack, redoStack]);
 
+  useEffect(() => {
+    const preventPageZoom = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+      }
+    };
+
+    const preventGestureZoom = (event: Event) => {
+      event.preventDefault();
+    };
+
+    window.addEventListener("wheel", preventPageZoom, { passive: false, capture: true });
+    document.addEventListener("gesturestart", preventGestureZoom, { passive: false });
+    document.addEventListener("gesturechange", preventGestureZoom, { passive: false });
+    document.addEventListener("gestureend", preventGestureZoom, { passive: false });
+
+    return () => {
+      window.removeEventListener("wheel", preventPageZoom, { capture: true });
+      document.removeEventListener("gesturestart", preventGestureZoom);
+      document.removeEventListener("gesturechange", preventGestureZoom);
+      document.removeEventListener("gestureend", preventGestureZoom);
+    };
+  }, []);
+
   const activeCharacters = useMemo(() => {
     if (!selectedLineId) {
       return [];
@@ -307,13 +331,11 @@ function App() {
       <Toolbar
         isPlaying={isPlaying}
         playbackRate={playbackRate}
-        zoom={zoom}
         canUndo={undoStack.length > 0}
         canRedo={redoStack.length > 0}
         onTogglePlay={togglePlay}
         onStep={(delta) => seekTo(currentTime + delta)}
         onPlaybackRateChange={setPlaybackRate}
-        onZoomChange={setZoom}
         onVideoFileChange={(event) => {
           const file = event.target.files?.[0];
           if (file) {
@@ -354,6 +376,7 @@ function App() {
             zoom={zoom}
             duration={duration}
             focusRange={focusRange}
+            onZoomChange={setZoom}
             onSeek={seekTo}
             onSelectItem={setSelectedItem}
             onCharacterChange={(id, changes) => updateCharacter(id, changes, false)}
