@@ -49,6 +49,7 @@ type DragState =
   | null;
 
 const TRACK_HEIGHT = 72;
+const TRACK_LABEL_WIDTH = 150;
 const SNAP_SECONDS = 0.05;
 
 export function Timeline({
@@ -69,7 +70,7 @@ export function Timeline({
 }: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [dragState, setDragState] = useState<DragState>(null);
-  const timelineWidth = Math.max(duration * zoom, 1200);
+  const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
 
   const snapPoints = useMemo(() => {
     return [
@@ -85,7 +86,7 @@ export function Timeline({
     if (!focusRange || !scrollRef.current) {
       return;
     }
-    const left = Math.max(0, focusRange.start * zoom - 120);
+    const left = Math.max(0, getCanvasX(focusRange.start, zoom) - 120);
     scrollRef.current.scrollTo({ left, behavior: "smooth" });
   }, [focusRange, zoom]);
 
@@ -94,7 +95,7 @@ export function Timeline({
       return;
     }
     const container = scrollRef.current;
-    const playheadX = currentTime * zoom;
+    const playheadX = getCanvasX(currentTime, zoom);
     const visibleStart = container.scrollLeft;
     const visibleEnd = visibleStart + container.clientWidth;
     if (playheadX < visibleStart || playheadX > visibleEnd - 60) {
@@ -183,7 +184,7 @@ export function Timeline({
               <div
                 key={tick}
                 className="tick"
-                style={{ left: tick * zoom }}
+                style={{ left: getCanvasX(tick, zoom) }}
                 onClick={() => onSeek(tick)}
               >
                 <span>{tick.toFixed(tick % 1 === 0 ? 0 : 1)}s</span>
@@ -200,7 +201,7 @@ export function Timeline({
                   selectedItem?.type === "line" && selectedItem.id === line.id ? "selected" : "",
                 ].join(" ")}
                 style={{
-                  left: line.startTime * zoom,
+                  left: getCanvasX(line.startTime, zoom),
                   width: Math.max((line.endTime - line.startTime) * zoom, 4),
                 }}
                 onClick={() => {
@@ -218,12 +219,10 @@ export function Timeline({
               className="timeline-track"
               style={{ height: TRACK_HEIGHT }}
               onDoubleClick={(event) => {
-                if (track.type !== "action" || !scrollRef.current) {
+                if (track.type !== "action") {
                   return;
                 }
-                const bounds = scrollRef.current.getBoundingClientRect();
-                const x = event.clientX - bounds.left + scrollRef.current.scrollLeft;
-                const startTime = snapTime(x / zoom, snapPoints);
+                const startTime = snapTime(getLaneTime(event.currentTarget, event.clientX, zoom), snapPoints);
                 onCreateAction(track.id, startTime, Math.min(startTime + 0.8, duration));
               }}
               onPointerDown={(event) => {
@@ -242,12 +241,7 @@ export function Timeline({
               <div
                 className="track-lane"
                 onClick={(event) => {
-                  if (!scrollRef.current) {
-                    return;
-                  }
-                  const bounds = scrollRef.current.getBoundingClientRect();
-                  const x = event.clientX - bounds.left + scrollRef.current.scrollLeft;
-                  onSeek(x / zoom);
+                  onSeek(getLaneTime(event.currentTarget, event.clientX, zoom));
                 }}
               >
                 {track.type === "character"
@@ -265,7 +259,7 @@ export function Timeline({
             </div>
           ))}
 
-          <div className="playhead" style={{ left: currentTime * zoom }} />
+          <div className="playhead" style={{ left: getCanvasX(currentTime, zoom) }} />
         </div>
       </div>
     </section>
@@ -384,13 +378,29 @@ function getDraftStyle(
   container: HTMLDivElement,
   zoom: number,
 ) {
-  const bounds = container.getBoundingClientRect();
-  const leftPx =
-    Math.min(dragState.originX, dragState.currentX) - bounds.left + container.scrollLeft;
-  const rightPx =
-    Math.max(dragState.originX, dragState.currentX) - bounds.left + container.scrollLeft;
+  const leftPx = Math.min(
+    getLaneX(container, dragState.originX) * zoom,
+    getLaneX(container, dragState.currentX) * zoom,
+  );
+  const rightPx = Math.max(
+    getLaneX(container, dragState.originX) * zoom,
+    getLaneX(container, dragState.currentX) * zoom,
+  );
   return {
     left: leftPx,
-    width: Math.max((rightPx - leftPx) / zoom * zoom, 6),
+    width: Math.max(rightPx - leftPx, 6),
   };
+}
+
+function getCanvasX(time: number, zoom: number) {
+  return TRACK_LABEL_WIDTH + time * zoom;
+}
+
+function getLaneX(container: HTMLElement, clientX: number) {
+  const bounds = container.getBoundingClientRect();
+  return Math.max(0, clientX - bounds.left + container.scrollLeft);
+}
+
+function getLaneTime(container: HTMLElement, clientX: number, zoom: number) {
+  return getLaneX(container, clientX) / zoom;
 }
