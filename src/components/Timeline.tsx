@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ActionAnnotation,
   CharacterAnnotation,
@@ -52,10 +52,21 @@ type DragState =
 const TRACK_HEIGHT = 72;
 const TRACK_LABEL_WIDTH = 150;
 const SNAP_SECONDS = 0.05;
-const ZOOM_SETTLE_MS = 160;
+const ZOOM_SETTLE_MS = 220;
 
 type ZoomGestureState = {
   startZoom: number;
+  anchorTime: number;
+  viewportOffset: number;
+};
+
+type PendingZoomState = {
+  nextZoom: number;
+  anchorTime: number;
+  viewportOffset: number;
+};
+
+type SliderZoomState = {
   anchorTime: number;
   viewportOffset: number;
 };
@@ -80,9 +91,31 @@ export function Timeline({
   const scrollRef = useRef<HTMLDivElement>(null);
   const zoomAnchorRef = useRef<{ time: number; viewportOffset: number } | null>(null);
   const zoomGestureRef = useRef<ZoomGestureState | null>(null);
-  const suppressAutoscrollUntilRef = useRef(0);
+  const zoomRef = useRef(zoom);
+  const currentTimeRef = useRef(currentTime);
+  const zoomInteractionUntilRef = useRef(0);
+  const pendingZoomRef = useRef<PendingZoomState | null>(null);
+  const sliderZoomRef = useRef<SliderZoomState | null>(null);
+  const zoomFrameRef = useRef<number | null>(null);
   const [dragState, setDragState] = useState<DragState>(null);
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
+  const sliderZoom = Math.round(zoom / 10) * 10;
+
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  useEffect(() => {
+    currentTimeRef.current = currentTime;
+  }, [currentTime]);
+
+  useEffect(() => {
+    return () => {
+      if (zoomFrameRef.current !== null) {
+        cancelAnimationFrame(zoomFrameRef.current);
+      }
+    };
+  }, []);
 
   const snapPoints = useMemo(() => {
     return [
@@ -108,8 +141,8 @@ export function Timeline({
           ? gestureEvent.clientX - bounds.left
           : container.clientWidth / 2;
       zoomGestureRef.current = {
-        startZoom: zoom,
-        anchorTime: getCanvasTimeFromViewportOffset(container, viewportOffset, zoom),
+        startZoom: zoomRef.current,
+        anchorTime: getCanvasTimeFromViewportOffset(container, viewportOffset, zoomRef.current),
         viewportOffset,
       };
       event.preventDefault();
@@ -139,7 +172,7 @@ export function Timeline({
     };
   }, [zoom]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!scrollRef.current || !zoomAnchorRef.current) {
       return;
     }
@@ -165,7 +198,7 @@ export function Timeline({
     if (!scrollRef.current) {
       return;
     }
-    if (Date.now() < suppressAutoscrollUntilRef.current) {
+    if (Date.now() < zoomInteractionUntilRef.current) {
       return;
     }
     const container = scrollRef.current;
@@ -253,7 +286,7 @@ export function Timeline({
           <span>点击空白跳转，拖拽片段创建或调整边界</span>
         </div>
         <div className="timeline-zoom-controls">
-          <button type="button" onClick={() => queueZoom(clampZoom(zoom - 20), currentTime)}>
+          <button type="button" onClick={() => handleZoomStep(-20)}>
             -
           </button>
           <label className="zoom-control timeline-zoom-control">
@@ -263,12 +296,16 @@ export function Timeline({
               min={40}
               max={240}
               step={10}
-              value={zoom}
-              onChange={(event) => queueZoom(Number(event.target.value), currentTime)}
+              value={sliderZoom}
+              onPointerDown={startSliderZoom}
+              onPointerUp={finishSliderZoom}
+              onPointerCancel={finishSliderZoom}
+              onBlur={finishSliderZoom}
+              onChange={(event) => handleZoomSliderChange(Number(event.target.value))}
             />
             <strong>{Math.round(zoom)}px/s</strong>
           </label>
-          <button type="button" onClick={() => queueZoom(clampZoom(zoom + 20), currentTime)}>
+          <button type="button" onClick={() => handleZoomStep(20)}>
             +
           </button>
         </div>
@@ -283,11 +320,7 @@ export function Timeline({
             return;
           }
           event.preventDefault();
-          queueZoom(
-            clampZoom(zoom * Math.exp(-event.deltaY * 0.0025)),
-            getCanvasTime(event.currentTarget, event.clientX, zoom),
-            event.clientX - event.currentTarget.getBoundingClientRect().left,
-          );
+          handleZoomAroundPointer(event);
         }}
       >
         <div className="timeline-canvas" style={{ width: timelineWidth }}>
@@ -444,21 +477,82 @@ export function Timeline({
   function queueZoom(nextZoom: number, anchorTime?: number, viewportOffset?: number) {
     const container = scrollRef.current;
     if (!container) {
-      onZoomChange(clampZoom(nextZoom));
+      const safeZoom = clampZoom(nextZoom);
+      zoomRef.current = safeZoom;
+      onZoomChange(safeZoom);
       return;
     }
     const safeZoom = clampZoom(nextZoom);
-    const resolvedAnchorTime = anchorTime ?? currentTime;
+    const resolvedAnchorTime = anchorTime ?? currentTimeRef.current;
     const resolvedViewportOffset =
-      viewportOffset ?? getViewportOffsetForTime(container, resolvedAnchorTime, zoom);
-    zoomAnchorRef.current = {
-      time: resolvedAnchorTime,
+      viewportOffset ?? getViewportOffsetForTime(container, resolvedAnchorTime, zoomRef.current);
+    pendingZoomRef.current = {
+      nextZoom: safeZoom,
+      anchorTime: resolvedAnchorTime,
       viewportOffset: resolvedViewportOffset,
     };
-    suppressAutoscrollUntilRef.current = Date.now() + ZOOM_SETTLE_MS;
-    if (safeZoom !== zoom) {
-      onZoomChange(safeZoom);
+    zoomInteractionUntilRef.current = Date.now() + ZOOM_SETTLE_MS;
+    if (zoomFrameRef.current !== null) {
+      return;
     }
+    zoomFrameRef.current = requestAnimationFrame(() => {
+      zoomFrameRef.current = null;
+      const pendingZoom = pendingZoomRef.current;
+      if (!pendingZoom) {
+        return;
+      }
+      pendingZoomRef.current = null;
+      zoomAnchorRef.current = {
+        time: pendingZoom.anchorTime,
+        viewportOffset: pendingZoom.viewportOffset,
+      };
+      if (pendingZoom.nextZoom !== zoomRef.current) {
+        zoomRef.current = pendingZoom.nextZoom;
+        onZoomChange(pendingZoom.nextZoom);
+      }
+      zoomInteractionUntilRef.current = Date.now() + ZOOM_SETTLE_MS;
+    });
+  }
+
+  function handleZoomStep(delta: number) {
+    const nextZoom = clampZoom(Math.round((zoomRef.current + delta) / 10) * 10);
+    queueZoom(nextZoom, currentTimeRef.current);
+  }
+
+  function handleZoomSliderChange(nextZoom: number) {
+    const snappedZoom = clampZoom(Math.round(nextZoom / 10) * 10);
+    const lockedAnchor = sliderZoomRef.current;
+    queueZoom(
+      snappedZoom,
+      lockedAnchor?.anchorTime ?? currentTimeRef.current,
+      lockedAnchor?.viewportOffset,
+    );
+  }
+
+  function handleZoomAroundPointer(event: React.WheelEvent<HTMLDivElement>) {
+    zoomInteractionUntilRef.current = Date.now() + ZOOM_SETTLE_MS;
+    queueZoom(
+      clampZoom(zoomRef.current * Math.exp(-event.deltaY * 0.0025)),
+      getCanvasTime(event.currentTarget, event.clientX, zoomRef.current),
+      event.clientX - event.currentTarget.getBoundingClientRect().left,
+    );
+  }
+
+  function startSliderZoom() {
+    const container = scrollRef.current;
+    if (!container) {
+      return;
+    }
+    sliderZoomRef.current = {
+      anchorTime: currentTimeRef.current,
+      viewportOffset: getViewportOffsetForTime(container, currentTimeRef.current, zoomRef.current),
+    };
+    zoomInteractionUntilRef.current = Number.POSITIVE_INFINITY;
+  }
+
+  function finishSliderZoom() {
+    sliderZoomRef.current = null;
+    zoomInteractionUntilRef.current = Date.now() + ZOOM_SETTLE_MS;
   }
 }
 
