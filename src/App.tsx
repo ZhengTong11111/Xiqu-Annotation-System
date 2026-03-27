@@ -75,16 +75,19 @@ function App() {
     y: number;
   } | null>(null);
   const [zoom, setZoom] = useState(20);
+  const [lineSelectionShouldFocus, setLineSelectionShouldFocus] = useState(true);
   const [trackSnapEnabled, setTrackSnapEnabled] = useState<Record<string, boolean>>(
     () => Object.fromEntries(trackDefinitions.map((track) => [track.id, true])),
   );
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const projectRef = useRef(project);
   const transientProjectRef = useRef<ProjectData | null>(null);
   const undoStackRef = useRef(undoStack);
   const redoStackRef = useRef(redoStack);
+  const savedProjectSnapshotRef = useRef(serializeProject(project));
   const waveformRequestIdRef = useRef(0);
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
   const blockContextMenuRef = useRef<HTMLDivElement>(null);
@@ -102,9 +105,32 @@ function App() {
     redoStackRef.current = redoStack;
   }, [redoStack]);
 
+  useEffect(() => {
+    setHasUnsavedChanges(serializeProject(project) !== savedProjectSnapshotRef.current);
+  }, [project]);
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) {
+      return;
+    }
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
   function applyProjectState(nextProject: ProjectData) {
     projectRef.current = nextProject;
     setProject(nextProject);
+  }
+
+  function markProjectAsSaved(projectToSave = projectRef.current) {
+    savedProjectSnapshotRef.current = serializeProject(projectToSave);
+    setHasUnsavedChanges(false);
   }
 
   function applyUndoStackState(nextUndoStack: HistoryEntry[]) {
@@ -137,7 +163,7 @@ function App() {
       : null;
 
   const focusRange = useMemo(() => {
-    if (selectedItem?.type !== "line") {
+    if (selectedItem?.type !== "line" || !lineSelectionShouldFocus) {
       return null;
     }
     const focusedLineId = selectedItem.id;
@@ -1006,6 +1032,7 @@ function App() {
         "project_data.json",
         "application/json",
       );
+      markProjectAsSaved(projectRef.current);
       return;
     }
 
@@ -1099,16 +1126,26 @@ function App() {
             onSeek={seekTo}
             onPreviewFrame={setPreviewTime}
             onSelectItem={(item) => {
+              if (item?.type === "line") {
+                setLineSelectionShouldFocus(true);
+              }
               if (item?.type === "character") {
                 preferredCharacterEditLocationRef.current = "timeline";
               }
               applySelection(item);
             }}
             onSelectTimelineItems={(items, primaryItem) => {
+              if (primaryItem?.type === "line") {
+                setLineSelectionShouldFocus(true);
+              }
               if (primaryItem?.type === "character") {
                 preferredCharacterEditLocationRef.current = "timeline";
               }
               applySelection(primaryItem, items);
+            }}
+            onSelectLineOverlay={(lineId) => {
+              setLineSelectionShouldFocus(false);
+              applySelection({ type: "line", id: lineId });
             }}
             editingCharacterId={editingCharacterId}
             editingCharacterLocation={editingCharacterLocation}
@@ -1146,6 +1183,7 @@ function App() {
             currentTime={currentTime}
             selectedLineId={selectedLineId}
             onSelectLine={(lineId) => {
+              setLineSelectionShouldFocus(true);
               applySelection({ type: "line", id: lineId });
               const line = project.subtitleLines.find((item) => item.id === lineId);
               if (line) {
@@ -1345,6 +1383,10 @@ function downloadBlob(content: string, fileName: string, type: string) {
   link.download = fileName;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function serializeProject(project: ProjectData) {
+  return JSON.stringify(project);
 }
 
 function requiresUndoConfirmation(action: HistoryAction) {

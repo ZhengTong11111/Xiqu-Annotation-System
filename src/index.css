@@ -761,6 +761,22 @@ select {
   pointer-events: none;
 }
 
+.timeline-preview-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background:
+    repeating-linear-gradient(
+      180deg,
+      rgba(15, 108, 189, 0.95) 0 8px,
+      rgba(15, 108, 189, 0.15) 8px 14px
+    );
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.45), 0 0 10px rgba(15, 108, 189, 0.18);
+  z-index: 4;
+  pointer-events: none;
+}
+
 @media (max-width: 1440px) {
   body {
     min-width: 1100px;

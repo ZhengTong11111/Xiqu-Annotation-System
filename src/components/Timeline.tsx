@@ -35,6 +35,7 @@ type TimelineProps = {
   onSeek: (time: number) => void;
   onPreviewFrame: (time: number | null) => void;
   onSelectItem: (item: SelectedItem) => void;
+  onSelectLineOverlay: (lineId: string) => void;
   onSelectTimelineItems: (items: TimelineSelectionItem[], primaryItem: SelectedItem) => void;
   onEditCharacterText: (id: string) => void;
   onEditingCharacterValueChange: (value: string) => void;
@@ -109,7 +110,7 @@ type DragState =
 
 const TRACK_HEIGHT = 72;
 const TRACK_LABEL_WIDTH = 150;
-const SNAP_SECONDS = 0.05;
+const SNAP_DISTANCE_PX = 4;
 const ZOOM_SETTLE_MS = 220;
 const ZOOM_MIN = 5;
 const ZOOM_MAX = 100;
@@ -126,6 +127,8 @@ const WAVEFORM_MAX_WIDTH = 1800;
 const WAVEFORM_MAX_BUCKETS = 960;
 const WAVEFORM_MAX_SAMPLES_PER_BUCKET = 192;
 const CLICK_SUPPRESS_MS = 120;
+const FOCUS_SCROLL_DURATION_MS = 260;
+const SNAP_RELEASE_DISTANCE_PX = 10;
 
 type ZoomGestureState = {
   startZoom: number;
@@ -177,6 +180,11 @@ type ActiveSnapIndicator = {
   edge: "left" | "right";
 } | null;
 
+type DragSnapLock = {
+  point: number;
+  edge: "left" | "right";
+} | null;
+
 type EdgeHit = "left" | "right" | "center" | "linked-left" | "linked-right";
 
 export function Timeline({
@@ -202,6 +210,7 @@ export function Timeline({
   onSeek,
   onPreviewFrame,
   onSelectItem,
+  onSelectLineOverlay,
   onSelectTimelineItems,
   onEditCharacterText,
   onEditingCharacterValueChange,
@@ -240,12 +249,16 @@ export function Timeline({
   const rulerScrubPointerIdRef = useRef<number | null>(null);
   const pendingRulerSeekTimeRef = useRef<number | null>(null);
   const rulerSeekFrameRef = useRef<number | null>(null);
+  const focusScrollFrameRef = useRef<number | null>(null);
+  const focusScrollUntilRef = useRef(0);
+  const dragSnapLockRef = useRef<DragSnapLock>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const suppressLineClickIdRef = useRef<string | null>(null);
   const suppressCanvasClickUntilRef = useRef(0);
   const [dragState, setDragState] = useState<DragState>(null);
   const [hoveredBlock, setHoveredBlock] = useState<HoveredBlockState>(null);
   const [activeSnapIndicator, setActiveSnapIndicator] = useState<ActiveSnapIndicator>(null);
+  const [previewGuideTime, setPreviewGuideTime] = useState<number | null>(null);
   const [viewportState, setViewportState] = useState({ scrollLeft: 0, width: 0 });
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
   const sliderZoom = Math.round(zoom / ZOOM_STEP) * ZOOM_STEP;
@@ -319,6 +332,9 @@ export function Timeline({
       }
       if (rulerSeekFrameRef.current !== null) {
         cancelAnimationFrame(rulerSeekFrameRef.current);
+      }
+      if (focusScrollFrameRef.current !== null) {
+        cancelAnimationFrame(focusScrollFrameRef.current);
       }
       if (scrollFrameRef.current !== null) {
         cancelAnimationFrame(scrollFrameRef.current);
@@ -409,31 +425,37 @@ export function Timeline({
     originalStart: number;
     originalEnd: number;
     deltaSeconds: number;
+    pointerStepPx?: number;
     kind: Exclude<NonNullable<DragState>, { kind: "create-track-item" | "select-box" }>["kind"];
     zoomLevel: number;
     trackId: string;
     excludedItems?: TimelineSelectionItem[];
     shouldSnap: boolean;
+    snapLock?: DragSnapLock;
   }) {
     const {
       originalStart,
       originalEnd,
       deltaSeconds,
+      pointerStepPx = 0,
       kind,
       zoomLevel,
       trackId,
       excludedItems = [],
       shouldSnap,
+      snapLock,
     } = params;
     const snapPoints = shouldSnap ? getTrackSnapPoints(trackId, excludedItems) : [];
     return computeNextRange(
       originalStart,
       originalEnd,
       deltaSeconds,
+      pointerStepPx,
       kind,
       snapPoints,
       zoomLevel,
       shouldSnap,
+      snapLock,
     );
   }
 
@@ -464,6 +486,8 @@ export function Timeline({
     trackId: string | null,
     zoomLevel: number,
     shouldSnap: boolean,
+    pointerStepPx = 0,
+    snapLock?: DragSnapLock,
   ) {
     const originalStart = Math.min(...items.map((item) => item.startTime));
     const originalEnd = Math.max(...items.map((item) => item.endTime));
@@ -472,20 +496,24 @@ export function Timeline({
           originalStart,
           originalEnd,
           deltaSeconds,
+          pointerStepPx,
           kind: "move-selection",
           zoomLevel,
           trackId,
           excludedItems: items.map((item) => ({ type: item.type, id: item.id })),
           shouldSnap,
+          snapLock,
         })
       : computeNextRange(
           originalStart,
           originalEnd,
           deltaSeconds,
+          pointerStepPx,
           "move-selection",
           [],
           zoomLevel,
           false,
+          snapLock,
         );
     const appliedDelta = nextRange.startTime - originalStart;
     return {
@@ -564,15 +592,47 @@ export function Timeline({
     if (dragStateRef.current) {
       return;
     }
-    const left = Math.max(0, getCanvasX(focusRange.start, zoom) - 120);
-    scrollRef.current.scrollTo({ left, behavior: "smooth" });
-  }, [focusRange]);
+    const container = scrollRef.current;
+    const maxScrollLeft = Math.max(timelineWidth - container.clientWidth, 0);
+    const targetLeft = Math.max(0, Math.min(getCanvasX(focusRange.start, zoom) - 120, maxScrollLeft));
+    const startLeft = container.scrollLeft;
+    const delta = targetLeft - startLeft;
+
+    if (Math.abs(delta) < 1) {
+      return;
+    }
+
+    if (focusScrollFrameRef.current !== null) {
+      cancelAnimationFrame(focusScrollFrameRef.current);
+      focusScrollFrameRef.current = null;
+    }
+
+    focusScrollUntilRef.current = Date.now() + FOCUS_SCROLL_DURATION_MS + 40;
+    const animationStart = performance.now();
+
+    const animateScroll = (now: number) => {
+      const elapsed = now - animationStart;
+      const progress = Math.min(elapsed / FOCUS_SCROLL_DURATION_MS, 1);
+      const easedProgress = 1 - Math.pow(1 - progress, 3);
+      container.scrollLeft = startLeft + delta * easedProgress;
+
+      if (progress < 1) {
+        focusScrollFrameRef.current = requestAnimationFrame(animateScroll);
+        return;
+      }
+
+      container.scrollLeft = targetLeft;
+      focusScrollFrameRef.current = null;
+    };
+
+    focusScrollFrameRef.current = requestAnimationFrame(animateScroll);
+  }, [focusRange, timelineWidth, zoom]);
 
   useEffect(() => {
     if (!scrollRef.current) {
       return;
     }
-    if (Date.now() < zoomInteractionUntilRef.current) {
+    if (Date.now() < Math.max(zoomInteractionUntilRef.current, focusScrollUntilRef.current)) {
       return;
     }
     const container = scrollRef.current;
@@ -594,7 +654,9 @@ export function Timeline({
       if (!activeDragState || !scrollRef.current) {
         return;
       }
+      const previousPointerClientX = lastPointerClientXRef.current || event.clientX;
       lastPointerClientXRef.current = event.clientX;
+      const pointerStepPx = Math.abs(event.clientX - previousPointerClientX);
       const deltaPixels =
         "originX" in activeDragState
           ? event.clientX - activeDragState.originX
@@ -620,12 +682,15 @@ export function Timeline({
             ? getTrackSnapPoints(activeDragState.trackId)
             : [],
           trackSnapEnabled[activeDragState.trackId],
+          pointerStepPx,
+          dragSnapLockRef.current,
         );
         setActiveSnapIndicator(
           dragPreview.snappedTo
             ? { trackId: activeDragState.trackId, ...dragPreview.snappedTo }
             : null,
         );
+        dragSnapLockRef.current = toDragSnapLock(dragPreview.snappedTo);
         queuePreviewFrame(dragPreview.previewTime);
         setDragState((prev) =>
           prev && prev.kind === "create-track-item"
@@ -659,10 +724,13 @@ export function Timeline({
             { type: activeDragState.rightItem.type, id: activeDragState.rightItem.id },
           ]),
           true,
+          pointerStepPx,
+          dragSnapLockRef.current,
         );
         setActiveSnapIndicator(
           next.snappedTo ? { trackId: activeDragState.trackId, ...next.snappedTo } : null,
         );
+        dragSnapLockRef.current = toDragSnapLock(next.snappedTo);
         scheduleDragUpdate({
           target: "selection",
           items: [next.leftItem, next.rightItem],
@@ -680,12 +748,15 @@ export function Timeline({
           selectionTrackId,
           zoom,
           true,
+          pointerStepPx,
+          dragSnapLockRef.current,
         );
         setActiveSnapIndicator(
           trackRange.snappedTo && selectionTrackId
             ? { trackId: selectionTrackId, ...trackRange.snappedTo }
             : null,
         );
+        dragSnapLockRef.current = toDragSnapLock(trackRange.snappedTo);
         scheduleDragUpdate({
           target: "selection",
           items: trackRange.items,
@@ -694,15 +765,18 @@ export function Timeline({
       }
 
       if (isLineDrag(activeDragState)) {
+        dragSnapLockRef.current = null;
         setActiveSnapIndicator(null);
         const next = computeNextRange(
           activeDragState.originalStart,
           activeDragState.originalEnd,
           deltaSeconds,
+          0,
           activeDragState.kind,
           liveSnapPoints,
           zoom,
           false,
+          null,
         );
         scheduleDragUpdate({
           target: "line",
@@ -718,15 +792,18 @@ export function Timeline({
           originalStart: activeDragState.originalStart,
           originalEnd: activeDragState.originalEnd,
           deltaSeconds,
+          pointerStepPx,
           kind: activeDragState.kind,
           zoomLevel: zoom,
           trackId,
           excludedItems: [{ type: "character", id: activeDragState.id }],
           shouldSnap: true,
+          snapLock: dragSnapLockRef.current,
         });
         setActiveSnapIndicator(
           next.snappedTo ? { trackId, ...next.snappedTo } : null,
         );
+        dragSnapLockRef.current = toDragSnapLock(next.snappedTo);
         scheduleDragUpdate({
           target: "character",
           id: activeDragState.id,
@@ -746,24 +823,29 @@ export function Timeline({
             originalStart: activeDragState.originalStart,
             originalEnd: activeDragState.originalEnd,
             deltaSeconds,
+            pointerStepPx,
             kind: activeDragState.kind,
             zoomLevel: zoom,
             trackId,
             excludedItems: [{ type: "action", id: activeDragState.id }],
             shouldSnap: true,
+            snapLock: dragSnapLockRef.current,
           })
         : computeNextRange(
           activeDragState.originalStart,
           activeDragState.originalEnd,
           deltaSeconds,
+          pointerStepPx,
           activeDragState.kind,
           liveSnapPoints,
           zoom,
           false,
+          null,
         );
       setActiveSnapIndicator(
         next.snappedTo && trackId ? { trackId, ...next.snappedTo } : null,
       );
+      dragSnapLockRef.current = toDragSnapLock(next.snappedTo);
       scheduleDragUpdate({
         target: "action",
         id: activeDragState.id,
@@ -777,6 +859,7 @@ export function Timeline({
 
     const handlePointerUp = () => {
       const activeDragState = dragStateRef.current;
+      dragSnapLockRef.current = null;
       clearPreviewFrame();
       setActiveSnapIndicator(null);
       flushPendingDragUpdate();
@@ -796,11 +879,11 @@ export function Timeline({
         const left = Math.max(0, Math.min(activeDragState.originX, activeDragState.currentX) - activeDragState.laneLeft);
         const right = Math.max(0, Math.max(activeDragState.originX, activeDragState.currentX) - activeDragState.laneLeft);
         const createSnapPoints = getTrackSnapPoints(activeDragState.trackId);
-        const startTime = trackSnapEnabled[activeDragState.trackId] ? snapTime(left / zoom, createSnapPoints) : left / zoom;
+        const startTime = trackSnapEnabled[activeDragState.trackId] ? snapTime(left / zoom, createSnapPoints, zoom) : left / zoom;
         const minDuration = Math.max(0.04, MIN_BLOCK_WIDTH_PX / Math.max(zoom, 1));
         const rawEndTime = right / zoom;
         const snappedEndTime = trackSnapEnabled[activeDragState.trackId]
-          ? snapTime(rawEndTime, createSnapPoints)
+          ? snapTime(rawEndTime, createSnapPoints, zoom)
           : rawEndTime;
         const endTime = Math.max(startTime + minDuration, snappedEndTime);
         if (endTime - startTime >= minDuration) {
@@ -838,6 +921,7 @@ export function Timeline({
             { type: activeDragState.rightItem.type, id: activeDragState.rightItem.id },
           ]),
           true,
+          0,
         );
         onBatchMoveCommit([next.leftItem, next.rightItem]);
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
@@ -846,6 +930,7 @@ export function Timeline({
           activeDragState.originalStart,
           activeDragState.originalEnd,
           (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+          0,
           activeDragState.kind,
           liveSnapPoints,
           zoom,
@@ -859,6 +944,7 @@ export function Timeline({
           originalStart: activeDragState.originalStart,
           originalEnd: activeDragState.originalEnd,
           deltaSeconds: (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+          pointerStepPx: 0,
           kind: activeDragState.kind,
           zoomLevel: zoom,
           trackId: "character-track",
@@ -877,6 +963,7 @@ export function Timeline({
               originalStart: activeDragState.originalStart,
               originalEnd: activeDragState.originalEnd,
               deltaSeconds: (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+              pointerStepPx: 0,
               kind: activeDragState.kind,
               zoomLevel: zoom,
               trackId: actionAnnotation.trackId,
@@ -887,6 +974,7 @@ export function Timeline({
               activeDragState.originalStart,
               activeDragState.originalEnd,
               (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+              0,
               activeDragState.kind,
               liveSnapPoints,
               zoom,
@@ -1042,8 +1130,7 @@ export function Timeline({
                     suppressLineClickIdRef.current = null;
                     return;
                   }
-                  onSelectItem({ type: "line", id: line.id });
-                  onSeek(line.startTime);
+                  onSelectLineOverlay(line.id);
                 }}
                 title={line.text}
               />
@@ -1138,7 +1225,7 @@ export function Timeline({
                   const target = event.target as HTMLElement | null;
                   const laneTime = getLaneTime(event.currentTarget, event.clientX, zoom);
                   if (!target?.closest(".timeline-block") && event.detail === 2) {
-                    const startTime = snapTime(laneTime, snapPoints);
+                    const startTime = snapTime(laneTime, snapPoints, zoom);
                     if (track.type === "character") {
                       onCreateCharacterAtTime(startTime);
                       return;
@@ -1178,6 +1265,13 @@ export function Timeline({
             <div
               className={`timeline-snap-guide ${activeSnapIndicator.edge}`}
               style={{ left: getCanvasX(activeSnapIndicator.time, zoom) }}
+            />
+          ) : null}
+
+          {previewGuideTime !== null ? (
+            <div
+              className="timeline-preview-guide"
+              style={{ left: getCanvasX(previewGuideTime, zoom) }}
             />
           ) : null}
 
@@ -1234,6 +1328,7 @@ export function Timeline({
             actionAnnotations,
             selectedItem,
             trackSnapEnabled,
+            zoom,
           );
           const hoverTarget = preferredHit ?? {
             id: annotation.id,
@@ -1248,6 +1343,7 @@ export function Timeline({
                   characterAnnotations,
                   actionAnnotations,
                   trackSnapEnabled,
+                  zoom,
                 ),
           };
           setHoveredBlock((prev) =>
@@ -1278,6 +1374,7 @@ export function Timeline({
             actionAnnotations,
             selectedItem,
             trackSnapEnabled,
+            zoom,
           );
           const targetId = preferredHit?.id ?? annotation.id;
           const targetType = preferredHit?.type ?? type;
@@ -1293,6 +1390,7 @@ export function Timeline({
                   characterAnnotations,
                   actionAnnotations,
                   trackSnapEnabled,
+                  zoom,
                 );
           const liveProject = getProjectSnapshot();
           const targetAnnotation = findAnnotationById(
@@ -1349,6 +1447,7 @@ export function Timeline({
                 targetEdge === "linked-left" ? "left" : "right",
                 liveProject.characterAnnotations,
                 liveProject.actionAnnotations,
+                zoom,
               )
             : null;
           if (linkedPair) {
@@ -1677,6 +1776,7 @@ export function Timeline({
       return;
     }
     pendingPreviewTimeRef.current = normalizedTime;
+    setPreviewGuideTime(normalizedTime);
     if (previewFrameRef.current !== null) {
       return;
     }
@@ -1693,6 +1793,7 @@ export function Timeline({
         return;
       }
       previewTimeRef.current = nextPreviewTime;
+      setPreviewGuideTime(nextPreviewTime);
       onPreviewFrame(nextPreviewTime);
     });
   }
@@ -1705,8 +1806,10 @@ export function Timeline({
     }
     if (previewTimeRef.current !== null) {
       previewTimeRef.current = null;
+      setPreviewGuideTime(null);
       onPreviewFrame(null);
     }
+    setPreviewGuideTime(null);
   }
 
   function updatePreviewFrame(
@@ -1794,6 +1897,7 @@ function resolveEdgeForElement(
   characterAnnotations: CharacterAnnotation[],
   actionAnnotations: ActionAnnotation[],
   trackSnapEnabled: Record<string, boolean>,
+  zoom: number,
 ): EdgeHit {
   const rect = element.getBoundingClientRect();
   const offset = clientX - rect.left;
@@ -1809,6 +1913,7 @@ function resolveEdgeForElement(
       characterAnnotations,
       actionAnnotations,
       trackSnapEnabled,
+      zoom,
     );
     if (linkedPair && offset <= linkedEdgeHitSlop) {
       return "linked-left";
@@ -1823,6 +1928,7 @@ function resolveEdgeForElement(
       characterAnnotations,
       actionAnnotations,
       trackSnapEnabled,
+      zoom,
     );
     if (linkedPair && rightOffset <= linkedEdgeHitSlop) {
       return "linked-right";
@@ -1841,6 +1947,7 @@ function resolvePreferredBlockHit(
   actionAnnotations: ActionAnnotation[],
   selectedItem: SelectedItem,
   trackSnapEnabled: Record<string, boolean>,
+  zoom: number,
 ): HoveredBlockState {
   if (typeof document === "undefined") {
     return { id: fallbackId, type: fallbackType, edge: "center" };
@@ -1866,6 +1973,7 @@ function resolvePreferredBlockHit(
         characterAnnotations,
         actionAnnotations,
         trackSnapEnabled,
+        zoom,
       );
       const rect = element.getBoundingClientRect();
       const physicalEdge = getPhysicalEdge(edge);
@@ -1907,12 +2015,13 @@ function hasLinkedPairForEdge(
   characterAnnotations: CharacterAnnotation[],
   actionAnnotations: ActionAnnotation[],
   trackSnapEnabled: Record<string, boolean>,
+  zoom: number,
 ) {
   const trackId = type === "character" ? "character-track" : (annotation as ActionAnnotation).trackId;
   if (!trackSnapEnabled[trackId]) {
     return null;
   }
-  return findLinkedPair(annotation, type, edge, characterAnnotations, actionAnnotations);
+  return findLinkedPair(annotation, type, edge, characterAnnotations, actionAnnotations, zoom);
 }
 
 function findAnnotationById(
@@ -1932,6 +2041,7 @@ function findLinkedPair(
   edge: "left" | "right",
   characterAnnotations: CharacterAnnotation[],
   actionAnnotations: ActionAnnotation[],
+  zoom: number,
 ) {
   const items = type === "character"
     ? sortCharactersByTimeLocal(characterAnnotations)
@@ -1944,7 +2054,10 @@ function findLinkedPair(
   }
   if (edge === "right") {
     const rightNeighbor = items[index + 1];
-    if (!rightNeighbor || Math.abs(annotation.endTime - rightNeighbor.startTime) > SNAP_SECONDS) {
+    if (
+      !rightNeighbor ||
+      Math.abs(annotation.endTime - rightNeighbor.startTime) > getSnapToleranceSeconds(zoom)
+    ) {
       return null;
     }
     return {
@@ -1953,7 +2066,10 @@ function findLinkedPair(
     };
   }
   const leftNeighbor = items[index - 1];
-  if (!leftNeighbor || Math.abs(leftNeighbor.endTime - annotation.startTime) > SNAP_SECONDS) {
+  if (
+    !leftNeighbor ||
+    Math.abs(leftNeighbor.endTime - annotation.startTime) > getSnapToleranceSeconds(zoom)
+  ) {
     return null;
   }
   return {
@@ -1968,6 +2084,8 @@ function computeLinkedResizeRange(
   zoom: number,
   snapPoints: number[],
   shouldSnap: boolean,
+  pointerStepPx = 0,
+  snapLock: DragSnapLock = null,
 ) {
   const minDuration = Math.max(0.04, MIN_BLOCK_WIDTH_PX / Math.max(zoom, 1));
   const rawBoundary = dragState.boundaryTime + deltaSeconds;
@@ -1975,7 +2093,7 @@ function computeLinkedResizeRange(
   const maxBoundary = dragState.rightItem.endTime - minDuration;
   const clampedBoundary = Math.max(minBoundary, Math.min(maxBoundary, rawBoundary));
   const snapPoint = shouldSnap
-    ? findNearestSnapPoint(clampedBoundary, snapPoints)
+    ? getEdgeSnapCandidate(clampedBoundary, "right", snapPoints, zoom, pointerStepPx, snapLock)
     : null;
   const snappedBoundary = snapPoint
     ? Math.max(minBoundary, Math.min(maxBoundary, snapPoint.point))
@@ -2022,18 +2140,27 @@ function sortActionsByTimeLocal(actions: ActionAnnotation[]) {
   );
 }
 
-function snapTime(time: number, snapPoints: number[]) {
-  return findNearestSnapPoint(time, snapPoints)?.point ?? time;
+function snapTime(
+  time: number,
+  snapPoints: number[],
+  zoom: number,
+  pointerStepPx = 0,
+  snapLock: DragSnapLock = null,
+  edge: "left" | "right" = "left",
+) {
+  return getEdgeSnapCandidate(time, edge, snapPoints, zoom, pointerStepPx, snapLock)?.point ?? time;
 }
 
 function computeNextRange(
   originalStart: number,
   originalEnd: number,
   deltaSeconds: number,
+  pointerStepPx: number,
   kind: DragState extends infer T ? T extends { kind: infer K } ? K : never : never,
   snapPoints: number[],
   zoom: number,
   shouldSnap = true,
+  snapLock: DragSnapLock = null,
 ) {
   const minDuration = Math.max(0.04, MIN_BLOCK_WIDTH_PX / Math.max(zoom, 1));
   if (String(kind).startsWith("move")) {
@@ -2043,35 +2170,38 @@ function computeNextRange(
     if (!shouldSnap) {
       return { startTime: rawStart, endTime: rawEnd, snappedTo: null };
     }
-    const leftSnap = findNearestSnapPoint(rawStart, snapPoints);
-    const rightSnap = findNearestSnapPoint(rawEnd, snapPoints);
-    const bestSnap = chooseBetterSnap(leftSnap, rightSnap);
-    if (!bestSnap) {
+    const leftSnap = getEdgeSnapCandidate(rawStart, "left", snapPoints, zoom, pointerStepPx, snapLock);
+    const rightSnap = getEdgeSnapCandidate(rawEnd, "right", snapPoints, zoom, pointerStepPx, snapLock);
+    const snapCandidates = getOrderedSnapCandidates(leftSnap, rightSnap);
+    if (snapCandidates.length === 0) {
       return { startTime: rawStart, endTime: rawEnd, snappedTo: null };
     }
-    if (bestSnap.edge === "left") {
+    for (const snapCandidate of snapCandidates) {
+      if (snapCandidate.edge === "left") {
+        return {
+          startTime: snapCandidate.point,
+          endTime: snapCandidate.point + duration,
+          snappedTo: { time: snapCandidate.point, edge: "left" as const },
+        };
+      }
+      if (snapCandidate.point - duration < 0) {
+        continue;
+      }
       return {
-        startTime: bestSnap.point,
-        endTime: bestSnap.point + duration,
-        snappedTo: { time: bestSnap.point, edge: "left" as const },
+        startTime: snapCandidate.point - duration,
+        endTime: snapCandidate.point,
+        snappedTo: { time: snapCandidate.point, edge: "right" as const },
       };
     }
-    if (bestSnap.point - duration < 0) {
-      return { startTime: rawStart, endTime: rawEnd, snappedTo: null };
-    }
-    return {
-      startTime: bestSnap.point - duration,
-      endTime: bestSnap.point,
-      snappedTo: { time: bestSnap.point, edge: "right" as const },
-    };
+    return { startTime: rawStart, endTime: rawEnd, snappedTo: null };
   }
   if (String(kind).includes("resize-left")) {
     const { startTime, endTime } = clampRange(
-      shouldSnap ? snapTime(Math.max(0, originalStart + deltaSeconds), snapPoints) : Math.max(0, originalStart + deltaSeconds),
+      shouldSnap ? snapTime(Math.max(0, originalStart + deltaSeconds), snapPoints, zoom, pointerStepPx, snapLock, "left") : Math.max(0, originalStart + deltaSeconds),
       originalEnd,
       minDuration,
     );
-    const snappedTo = shouldSnap ? findNearestSnapPoint(startTime, snapPoints) : null;
+    const snappedTo = shouldSnap ? getEdgeSnapCandidate(startTime, "left", snapPoints, zoom, pointerStepPx, snapLock) : null;
     return {
       startTime,
       endTime,
@@ -2081,11 +2211,11 @@ function computeNextRange(
   const { startTime, endTime } = clampRange(
     originalStart,
     shouldSnap
-      ? snapTime(Math.max(originalStart + minDuration, originalEnd + deltaSeconds), snapPoints)
+      ? snapTime(Math.max(originalStart + minDuration, originalEnd + deltaSeconds), snapPoints, zoom, pointerStepPx, snapLock, "right")
       : Math.max(originalStart + minDuration, originalEnd + deltaSeconds),
     minDuration,
   );
-  const snappedTo = shouldSnap ? findNearestSnapPoint(endTime, snapPoints) : null;
+  const snappedTo = shouldSnap ? getEdgeSnapCandidate(endTime, "right", snapPoints, zoom, pointerStepPx, snapLock) : null;
   return {
     startTime,
     endTime,
@@ -2093,11 +2223,12 @@ function computeNextRange(
   };
 }
 
-function findNearestSnapPoint(time: number, snapPoints: number[]) {
+function findNearestSnapPoint(time: number, snapPoints: number[], zoom: number, pointerStepPx: number) {
   let best: { point: number; distance: number } | null = null;
+  const snapToleranceSeconds = getSnapToleranceSeconds(zoom, pointerStepPx);
   for (const point of snapPoints) {
     const distance = Math.abs(point - time);
-    if (distance > SNAP_SECONDS) {
+    if (distance > snapToleranceSeconds) {
       continue;
     }
     if (!best || distance < best.distance) {
@@ -2107,22 +2238,76 @@ function findNearestSnapPoint(time: number, snapPoints: number[]) {
   return best;
 }
 
-function chooseBetterSnap(
-  leftSnap: { point: number; distance: number } | null,
-  rightSnap: { point: number; distance: number } | null,
+function getSnapToleranceSeconds(zoom: number, pointerStepPx = 0) {
+  return getEffectiveSnapDistancePx(pointerStepPx) / Math.max(zoom, 1);
+}
+
+function getSnapReleaseToleranceSeconds(zoom: number, pointerStepPx = 0) {
+  return Math.max(SNAP_RELEASE_DISTANCE_PX, getEffectiveSnapDistancePx(pointerStepPx)) / Math.max(zoom, 1);
+}
+
+function getEffectiveSnapDistancePx(pointerStepPx: number) {
+  return Math.max(SNAP_DISTANCE_PX, Math.min(pointerStepPx, SNAP_RELEASE_DISTANCE_PX));
+}
+
+function toDragSnapLock(
+  snappedTo: { time: number; edge: "left" | "right" } | null,
+): DragSnapLock {
+  return snappedTo ? { point: snappedTo.time, edge: snappedTo.edge } : null;
+}
+
+function getEdgeSnapCandidate<T extends "left" | "right">(
+  time: number,
+  edge: T,
+  snapPoints: number[],
+  zoom: number,
+  pointerStepPx: number,
+  snapLock: DragSnapLock,
+) {
+  if (
+    snapLock &&
+    snapLock.edge === edge &&
+    Math.abs(time - snapLock.point) <= getSnapReleaseToleranceSeconds(zoom, pointerStepPx)
+  ) {
+    return {
+      point: snapLock.point,
+      distance: Math.abs(time - snapLock.point),
+      edge,
+      locked: true as const,
+    };
+  }
+
+  const nearestSnap = findNearestSnapPoint(time, snapPoints, zoom, pointerStepPx);
+  if (!nearestSnap) {
+    return null;
+  }
+
+  return {
+    ...nearestSnap,
+    edge,
+    locked: false as const,
+  };
+}
+
+function getOrderedSnapCandidates(
+  leftSnap: { point: number; distance: number; edge: "left"; locked: boolean } | null,
+  rightSnap: { point: number; distance: number; edge: "right"; locked: boolean } | null,
 ) {
   if (leftSnap && rightSnap) {
+    if (leftSnap.locked !== rightSnap.locked) {
+      return leftSnap.locked ? [leftSnap, rightSnap] : [rightSnap, leftSnap];
+    }
     return leftSnap.distance <= rightSnap.distance
-      ? { ...leftSnap, edge: "left" as const }
-      : { ...rightSnap, edge: "right" as const };
+      ? [leftSnap, rightSnap]
+      : [rightSnap, leftSnap];
   }
   if (leftSnap) {
-    return { ...leftSnap, edge: "left" as const };
+    return [leftSnap];
   }
   if (rightSnap) {
-    return { ...rightSnap, edge: "right" as const };
+    return [rightSnap];
   }
-  return null;
+  return [];
 }
 
 function isCharacterDrag(
@@ -2174,16 +2359,23 @@ function getCreateTrackPreview(
   zoom: number,
   snapPoints: number[],
   shouldSnap: boolean,
+  pointerStepPx = 0,
+  snapLock: DragSnapLock = null,
 ) {
   const previewRawTime = Math.max(0, (dragState.currentX - dragState.laneLeft) / zoom);
-  const snappedPoint = shouldSnap ? findNearestSnapPoint(previewRawTime, snapPoints) : null;
+  const activeEdge: "left" | "right" = previewRawTime <= Math.max(0, (dragState.originX - dragState.laneLeft) / zoom)
+    ? "left"
+    : "right";
+  const snappedPoint = shouldSnap
+    ? getEdgeSnapCandidate(previewRawTime, activeEdge, snapPoints, zoom, pointerStepPx, snapLock)
+    : null;
   const previewTime = snappedPoint?.point ?? previewRawTime;
   return {
     previewTime,
     snappedTo: snappedPoint
       ? {
           time: snappedPoint.point,
-          edge: previewTime <= Math.max(0, (dragState.originX - dragState.laneLeft) / zoom) ? "left" as const : "right" as const,
+          edge: activeEdge,
         }
       : null,
   };
