@@ -409,6 +409,9 @@ select {
 }
 
 .track-label {
+  position: sticky;
+  left: 0;
+  z-index: 5;
   display: flex;
   align-items: center;
   padding: 0 14px;
@@ -416,6 +419,7 @@ select {
   background: rgba(248, 250, 253, 0.9);
   font-size: 13px;
   color: #203047;
+  box-shadow: 1px 0 0 rgba(31, 41, 55, 0.08);
 }
 
 .track-label-copy {
@@ -432,6 +436,20 @@ select {
 .track-label-copy span {
   color: var(--ink-soft);
   font-size: 11px;
+}
+
+.track-snap-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.track-snap-toggle input {
+  margin: 0;
 }
 
 .track-lane {
@@ -538,8 +556,15 @@ select {
   box-shadow: inset 0 0 0 1px rgba(15, 108, 189, 0.24), 0 0 0 2px rgba(15, 108, 189, 0.1);
 }
 
+.timeline-block.hover-linked-left,
+.timeline-block.hover-linked-right {
+  box-shadow: inset 0 0 0 1px rgba(8, 145, 178, 0.32), 0 0 0 2px rgba(14, 165, 233, 0.14);
+}
+
 .timeline-block.hover-resize-left::before,
-.timeline-block.hover-resize-right::after {
+.timeline-block.hover-resize-right::after,
+.timeline-block.hover-linked-left::before,
+.timeline-block.hover-linked-right::after {
   content: "";
   position: absolute;
   top: 4px;
@@ -558,6 +583,22 @@ select {
   right: 3px;
 }
 
+.timeline-block.hover-linked-left::before,
+.timeline-block.hover-linked-right::after {
+  width: 8px;
+  background: linear-gradient(180deg, rgba(6, 182, 212, 0.95), rgba(14, 165, 233, 0.82));
+}
+
+.timeline-block.hover-linked-left::before {
+  left: 0;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.82), -3px 0 0 rgba(6, 182, 212, 0.4);
+}
+
+.timeline-block.hover-linked-right::after {
+  right: 0;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.82), 3px 0 0 rgba(6, 182, 212, 0.4);
+}
+
 .timeline-block.draft {
   opacity: 0.7;
   pointer-events: none;
@@ -570,6 +611,30 @@ select {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
   pointer-events: none;
   z-index: 4;
+}
+
+.timeline-snap-guide {
+  position: absolute;
+  top: 36px;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, rgba(14, 165, 233, 0.92), rgba(59, 130, 246, 0.78));
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.82), 0 0 12px rgba(14, 165, 233, 0.28);
+  pointer-events: none;
+  z-index: 6;
+}
+
+.timeline-snap-guide.left::before,
+.timeline-snap-guide.right::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.95);
+  transform: translate(-50%, 0);
 }
 
 .timeline-block-input {
@@ -617,7 +682,11 @@ select {
 .timeline-block.hover-resize-left,
 .timeline-block.hover-resize-left .resize-handle.left,
 .timeline-block.hover-resize-right,
-.timeline-block.hover-resize-right .resize-handle.right {
+.timeline-block.hover-resize-right .resize-handle.right,
+.timeline-block.hover-linked-left,
+.timeline-block.hover-linked-left .resize-handle.left,
+.timeline-block.hover-linked-right,
+.timeline-block.hover-linked-right .resize-handle.right {
   cursor: ew-resize;
 }
 

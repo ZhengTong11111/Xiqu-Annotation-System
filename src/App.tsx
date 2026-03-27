@@ -66,6 +66,9 @@ function App() {
     y: number;
   } | null>(null);
   const [zoom, setZoom] = useState(100);
+  const [trackSnapEnabled, setTrackSnapEnabled] = useState<Record<string, boolean>>(
+    () => Object.fromEntries(trackDefinitions.map((track) => [track.id, true])),
+  );
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -987,11 +990,18 @@ function App() {
             currentTime={currentTime}
             selectedItem={selectedItem}
             selectedTimelineItems={selectedTimelineItems}
+            trackSnapEnabled={trackSnapEnabled}
             zoom={zoom}
             duration={duration}
             focusRange={focusRange}
             getProjectSnapshot={() => projectRef.current}
             onZoomChange={setZoom}
+            onToggleTrackSnap={(trackId) => {
+              setTrackSnapEnabled((current) => ({
+                ...current,
+                [trackId]: !current[trackId],
+              }));
+            }}
             onSeek={seekTo}
             onPreviewFrame={setPreviewTime}
             onSelectItem={(item) => {
