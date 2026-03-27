@@ -11,6 +11,7 @@ import type {
   CharacterAnnotation,
   ProjectData,
   SelectedItem,
+  SubtitleLine,
   WaveformData,
 } from "./types";
 import {
@@ -32,6 +33,13 @@ type HistoryEntry = {
   action: HistoryAction;
 };
 
+type CharacterEditLocation = "timeline" | "split-panel";
+type CharacterLineAction = "set-line-start" | "set-line-end" | "merge-prev-line" | "merge-next-line";
+
+const CHARACTER_CREATE_ATTACH_WINDOW = 1;
+const DEFAULT_CHARACTER_DURATION = 0.35;
+const DEFAULT_ACTION_DURATION = 0.8;
+
 function App() {
   const [project, setProject] = useState<ProjectData>(mockProject);
   const [currentTime, setCurrentTime] = useState(12.4);
@@ -45,6 +53,9 @@ function App() {
   const [previewTime, setPreviewTime] = useState<number | null>(null);
   const [waveformData, setWaveformData] = useState<WaveformData | null>(null);
   const [isWaveformLoading, setIsWaveformLoading] = useState(false);
+  const [editingCharacterId, setEditingCharacterId] = useState<string | null>(null);
+  const [editingCharacterLocation, setEditingCharacterLocation] = useState<CharacterEditLocation | null>(null);
+  const [editingCharacterValue, setEditingCharacterValue] = useState("");
   const [zoom, setZoom] = useState(100);
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
@@ -54,6 +65,7 @@ function App() {
   const undoStackRef = useRef(undoStack);
   const redoStackRef = useRef(redoStack);
   const waveformRequestIdRef = useRef(0);
+  const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
 
   useEffect(() => {
     projectRef.current = project;
@@ -179,6 +191,10 @@ function App() {
         event.preventDefault();
         seekTo(currentTime + (event.shiftKey ? 1 : 0.04));
       }
+      if (event.key === "Enter" && selectedItem?.type === "character" && !editingCharacterId) {
+        event.preventDefault();
+        startCharacterTextEdit(selectedItem.id, preferredCharacterEditLocationRef.current);
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) {
@@ -200,7 +216,7 @@ function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentTime, previewTime, selectedItem, undoStack, redoStack, project]);
+  }, [currentTime, editingCharacterId, previewTime, selectedItem, undoStack, redoStack, project]);
 
   useEffect(() => {
     const preventPageZoom = (event: WheelEvent) => {
@@ -230,8 +246,20 @@ function App() {
     if (!selectedLineId) {
       return [];
     }
-    return project.characterAnnotations.filter((item) => item.lineId === selectedLineId);
+    return sortCharactersByTime(project.characterAnnotations.filter((item) => item.lineId === selectedLineId));
   }, [project.characterAnnotations, selectedLineId]);
+
+  useEffect(() => {
+    if (!editingCharacterId) {
+      return;
+    }
+    const editingCharacter = project.characterAnnotations.find((item) => item.id === editingCharacterId);
+    if (!editingCharacter || (selectedLineId && editingCharacter.lineId !== selectedLineId)) {
+      setEditingCharacterId(null);
+      setEditingCharacterLocation(null);
+      setEditingCharacterValue("");
+    }
+  }, [editingCharacterId, project.characterAnnotations, selectedLineId]);
 
   function projectsEqual(left: ProjectData, right: ProjectData) {
     return JSON.stringify(left) === JSON.stringify(right);
@@ -289,17 +317,115 @@ function App() {
 
   function updateCharacter(id: string, changes: Partial<CharacterAnnotation>, recordHistory = true) {
     const currentProject = projectRef.current;
+    const currentCharacter = currentProject.characterAnnotations.find((item) => item.id === id);
     const nextProject = {
       ...currentProject,
       characterAnnotations: currentProject.characterAnnotations.map((item) =>
         item.id === id ? { ...item, ...changes } : item,
       ),
     };
+    const synchronizedProject =
+      currentCharacter && (
+        changes.char !== undefined ||
+        changes.startTime !== undefined ||
+        changes.endTime !== undefined
+      )
+        ? syncSubtitleLine(nextProject, currentCharacter.lineId)
+        : nextProject;
     if (recordHistory) {
-      commitProject(nextProject);
+      commitProject(synchronizedProject);
     } else {
-      applyProjectWithoutHistory(nextProject);
+      applyProjectWithoutHistory(synchronizedProject);
     }
+  }
+
+  function updateLinePosition(
+    id: string,
+    changes: Pick<SubtitleLine, "startTime" | "endTime">,
+    recordHistory = true,
+  ) {
+    const currentProject = projectRef.current;
+    const currentLine = currentProject.subtitleLines.find((line) => line.id === id);
+    if (!currentLine) {
+      return;
+    }
+    const deltaSeconds = changes.startTime - currentLine.startTime;
+    const hasCharacters = currentProject.characterAnnotations.some((item) => item.lineId === id);
+
+    const shiftedProject = {
+      ...currentProject,
+      subtitleLines: currentProject.subtitleLines.map((line) =>
+        line.id === id
+          ? { ...line, startTime: changes.startTime, endTime: changes.endTime }
+          : line,
+      ),
+      characterAnnotations: hasCharacters
+        ? currentProject.characterAnnotations.map((item) =>
+            item.lineId === id
+              ? {
+                  ...item,
+                  startTime: item.startTime + deltaSeconds,
+                  endTime: item.endTime + deltaSeconds,
+                }
+              : item,
+          )
+        : currentProject.characterAnnotations,
+    };
+
+    const synchronizedProject = hasCharacters
+      ? syncSubtitleLine(shiftedProject, id)
+      : shiftedProject;
+
+    if (recordHistory) {
+      commitProject(synchronizedProject);
+    } else {
+      applyProjectWithoutHistory(synchronizedProject);
+    }
+  }
+
+  function startCharacterTextEdit(id: string, location: CharacterEditLocation) {
+    const currentCharacter = projectRef.current.characterAnnotations.find((item) => item.id === id);
+    if (!currentCharacter) {
+      return;
+    }
+    preferredCharacterEditLocationRef.current = location;
+    setSelectedItem({ type: "character", id });
+    setEditingCharacterId(id);
+    setEditingCharacterLocation(location);
+    setEditingCharacterValue(currentCharacter.char);
+  }
+
+  function cancelCharacterTextEdit() {
+    setEditingCharacterId(null);
+    setEditingCharacterLocation(null);
+    setEditingCharacterValue("");
+  }
+
+  function commitCharacterTextEdit(id: string) {
+    const currentCharacter = projectRef.current.characterAnnotations.find((item) => item.id === id);
+    if (!currentCharacter) {
+      cancelCharacterTextEdit();
+      return;
+    }
+    const normalizedChar = editingCharacterValue.trim();
+    if (!normalizedChar) {
+      window.alert("字内容不能为空。");
+      return;
+    }
+    if (normalizedChar === currentCharacter.char) {
+      cancelCharacterTextEdit();
+      return;
+    }
+    if (!isSingleHanCharacter(normalizedChar)) {
+      const confirmed = window.confirm(
+        `当前输入为“${normalizedChar}”。通常这里建议使用单个汉字。是否仍然继续修改？`,
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+    updateCharacter(id, { char: normalizedChar });
+    cancelCharacterTextEdit();
   }
 
   function updateAction(id: string, changes: Partial<ActionAnnotation>, recordHistory = true) {
@@ -317,16 +443,195 @@ function App() {
     }
   }
 
+  function createCharacterAtTime(time: number) {
+    const currentProject = projectRef.current;
+    const normalizedTime = Math.max(0, time);
+    const target = findCharacterCreationTarget(currentProject.subtitleLines, normalizedTime);
+    const characterId = `char-${crypto.randomUUID()}`;
+    const char = "新";
+    let nextProject: ProjectData;
+
+    if (target) {
+      const range = getCharacterCreationRange(target.line, target.position, normalizedTime);
+      nextProject = syncSubtitleLine({
+        ...currentProject,
+        characterAnnotations: [
+          ...currentProject.characterAnnotations,
+          {
+            id: characterId,
+            lineId: target.line.id,
+            char,
+            startTime: range.startTime,
+            endTime: range.endTime,
+            singingStyle: "普通唱",
+          },
+        ],
+      }, target.line.id);
+    } else {
+      const lineId = `line-${crypto.randomUUID()}`;
+      const startTime = Math.max(0, normalizedTime - DEFAULT_CHARACTER_DURATION / 2);
+      const endTime = startTime + DEFAULT_CHARACTER_DURATION;
+      nextProject = {
+        ...currentProject,
+        subtitleLines: sortSubtitleLines([
+          ...currentProject.subtitleLines,
+          {
+            id: lineId,
+            text: char,
+            startTime,
+            endTime,
+          },
+        ]),
+        characterAnnotations: [
+          ...currentProject.characterAnnotations,
+          {
+            id: characterId,
+            lineId,
+            char,
+            startTime,
+            endTime,
+            singingStyle: "普通唱",
+          },
+        ],
+      };
+    }
+
+    commitProject(nextProject);
+    preferredCharacterEditLocationRef.current = "timeline";
+    setSelectedItem({ type: "character", id: characterId });
+    setEditingCharacterId(characterId);
+    setEditingCharacterLocation("timeline");
+    setEditingCharacterValue(char);
+  }
+
+  function createActionAtTime(trackId: string, startTime: number) {
+    const currentProject = projectRef.current;
+    const safeStartTime = Math.max(0, startTime);
+    commitProject({
+      ...currentProject,
+      actionAnnotations: [
+        ...currentProject.actionAnnotations,
+        {
+          id: `${trackId}-${crypto.randomUUID()}`,
+          trackId,
+          label: trackId === "hand-action" ? "抬手" : "转身",
+          startTime: safeStartTime,
+          endTime: safeStartTime + DEFAULT_ACTION_DURATION,
+        },
+      ],
+    });
+  }
+
+  function applyCharacterLineAction(id: string, action: CharacterLineAction) {
+    const currentProject = projectRef.current;
+    const currentCharacter = currentProject.characterAnnotations.find((item) => item.id === id);
+    if (!currentCharacter) {
+      return;
+    }
+
+    const sortedLines = sortSubtitleLines(currentProject.subtitleLines);
+    const currentLineIndex = sortedLines.findIndex((line) => line.id === currentCharacter.lineId);
+    const lineCharacters = sortCharactersByTime(
+      currentProject.characterAnnotations.filter((item) => item.lineId === currentCharacter.lineId),
+    );
+    const characterIndex = lineCharacters.findIndex((item) => item.id === id);
+
+    if (currentLineIndex === -1 || characterIndex === -1) {
+      return;
+    }
+
+    if (action === "merge-prev-line" || action === "merge-next-line") {
+      const adjacentLine = action === "merge-prev-line"
+        ? sortedLines[currentLineIndex - 1]
+        : sortedLines[currentLineIndex + 1];
+      if (!adjacentLine) {
+        return;
+      }
+      const mergedProject = syncSubtitleLines(
+        {
+          ...currentProject,
+          characterAnnotations: currentProject.characterAnnotations.map((item) =>
+            item.id === id ? { ...item, lineId: adjacentLine.id } : item,
+          ),
+        },
+        [currentCharacter.lineId, adjacentLine.id],
+      );
+      commitProject(mergedProject);
+      return;
+    }
+
+    if (action === "set-line-start") {
+      if (characterIndex === 0) {
+        return;
+      }
+      const movedCharacters = new Set(lineCharacters.slice(0, characterIndex).map((item) => item.id));
+      const newLineId = `line-${crypto.randomUUID()}`;
+      const splitProject = syncSubtitleLines(
+        {
+          ...currentProject,
+          subtitleLines: [
+            ...currentProject.subtitleLines,
+            {
+              id: newLineId,
+              text: "",
+              startTime: lineCharacters[0].startTime,
+              endTime: lineCharacters[characterIndex - 1].endTime,
+            },
+          ],
+          characterAnnotations: currentProject.characterAnnotations.map((item) =>
+            movedCharacters.has(item.id) ? { ...item, lineId: newLineId } : item,
+          ),
+        },
+        [newLineId, currentCharacter.lineId],
+      );
+      commitProject(splitProject);
+      return;
+    }
+
+    if (characterIndex === lineCharacters.length - 1) {
+      return;
+    }
+    const movedCharacters = new Set(lineCharacters.slice(characterIndex + 1).map((item) => item.id));
+    const newLineId = `line-${crypto.randomUUID()}`;
+    const splitProject = syncSubtitleLines(
+      {
+        ...currentProject,
+        subtitleLines: [
+          ...currentProject.subtitleLines,
+          {
+            id: newLineId,
+            text: "",
+            startTime: lineCharacters[characterIndex + 1].startTime,
+            endTime: lineCharacters[lineCharacters.length - 1].endTime,
+          },
+        ],
+        characterAnnotations: currentProject.characterAnnotations.map((item) =>
+          movedCharacters.has(item.id) ? { ...item, lineId: newLineId } : item,
+        ),
+      },
+      [newLineId, currentCharacter.lineId],
+    );
+    commitProject(splitProject);
+  }
+
   function deleteSelected() {
     const currentProject = projectRef.current;
     if (!selectedItem) {
       return;
     }
     if (selectedItem.type === "character") {
-      commitProject({
+      const currentCharacter = currentProject.characterAnnotations.find((item) => item.id === selectedItem.id);
+      if (!currentCharacter) {
+        return;
+      }
+      const nextProject = syncSubtitleLine({
         ...currentProject,
         characterAnnotations: currentProject.characterAnnotations.filter((item) => item.id !== selectedItem.id),
-      });
+      }, currentCharacter.lineId);
+      commitProject(nextProject);
+      if (editingCharacterId === selectedItem.id) {
+        cancelCharacterTextEdit();
+      }
       setSelectedItem(null);
     }
     if (selectedItem.type === "action") {
@@ -341,7 +646,7 @@ function App() {
   function addAction(trackId: "hand-action" | "body-action") {
     const currentProject = projectRef.current;
     const startTime = currentTime;
-    const endTime = Math.min(duration, startTime + 0.8);
+    const endTime = Math.min(duration, startTime + DEFAULT_ACTION_DURATION);
     commitProject({
       ...currentProject,
       actionAnnotations: [
@@ -517,7 +822,24 @@ function App() {
             onZoomChange={setZoom}
             onSeek={seekTo}
             onPreviewFrame={setPreviewTime}
-            onSelectItem={setSelectedItem}
+            onSelectItem={(item) => {
+              if (item?.type === "character") {
+                preferredCharacterEditLocationRef.current = "timeline";
+              }
+              setSelectedItem(item);
+            }}
+            editingCharacterId={editingCharacterId}
+            editingCharacterLocation={editingCharacterLocation}
+            editingCharacterValue={editingCharacterValue}
+            onEditingCharacterValueChange={setEditingCharacterValue}
+            onCommitCharacterTextEdit={commitCharacterTextEdit}
+            onCancelCharacterTextEdit={cancelCharacterTextEdit}
+            onEditCharacterText={(id) => startCharacterTextEdit(id, "timeline")}
+            onCreateCharacterAtTime={createCharacterAtTime}
+            onCreateActionAtTime={createActionAtTime}
+            onCharacterLineAction={applyCharacterLineAction}
+            onLineChange={(id, changes) => updateLinePosition(id, changes, false)}
+            onLineCommit={(id, changes) => updateLinePosition(id, changes, true)}
             onCharacterChange={(id, changes) => updateCharacter(id, changes, false)}
             onCharacterCommit={(id, changes) => updateCharacter(id, changes, true)}
             onActionChange={(id, changes) => updateAction(id, changes, false)}
@@ -546,20 +868,55 @@ function App() {
               <span>{activeCharacters.length} 字</span>
             </div>
             <div className="character-grid">
-              {activeCharacters.map((item) => (
-                <button
-                  key={item.id}
-                  className={[
-                    "character-chip",
-                    selectedItem?.type === "character" && selectedItem.id === item.id ? "selected" : "",
-                    currentTime >= item.startTime && currentTime <= item.endTime ? "active" : "",
-                  ].join(" ")}
-                  onClick={() => setSelectedItem({ type: "character", id: item.id })}
-                >
-                  <span>{item.char}</span>
-                  <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
-                </button>
-              ))}
+              {activeCharacters.map((item) => {
+                const isEditing = editingCharacterId === item.id && editingCharacterLocation === "split-panel";
+                const className = [
+                  "character-chip",
+                  selectedItem?.type === "character" && selectedItem.id === item.id ? "selected" : "",
+                  currentTime >= item.startTime && currentTime <= item.endTime ? "active" : "",
+                  isEditing ? "editing" : "",
+                ].join(" ");
+
+                if (isEditing) {
+                  return (
+                    <div key={item.id} className={className}>
+                      <input
+                        className="character-chip-input"
+                        value={editingCharacterValue}
+                        autoFocus
+                        onChange={(event) => setEditingCharacterValue(event.target.value)}
+                        onBlur={() => commitCharacterTextEdit(item.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            commitCharacterTextEdit(item.id);
+                          }
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            cancelCharacterTextEdit();
+                          }
+                        }}
+                      />
+                      <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
+                    </div>
+                  );
+                }
+
+                return (
+                  <button
+                    key={item.id}
+                    className={className}
+                    onClick={() => {
+                      preferredCharacterEditLocationRef.current = "split-panel";
+                      setSelectedItem({ type: "character", id: item.id });
+                    }}
+                    onDoubleClick={() => startCharacterTextEdit(item.id, "split-panel")}
+                  >
+                    <span>{item.char}</span>
+                    <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
+                  </button>
+                );
+              })}
             </div>
           </section>
 
@@ -601,6 +958,101 @@ function getUndoConfirmationMessage(action: HistoryAction) {
     return "确定要撤销导入句级字幕吗？当前导入的字幕与逐字结果将回退到上一步状态。";
   }
   return "确定要执行撤销吗？";
+}
+
+function isSingleHanCharacter(value: string) {
+  return /^[\p{Script=Han}]$/u.test(value);
+}
+
+function sortCharactersByTime(characters: CharacterAnnotation[]) {
+  return [...characters].sort((left, right) =>
+    left.startTime - right.startTime ||
+    left.endTime - right.endTime ||
+    left.id.localeCompare(right.id),
+  );
+}
+
+function sortSubtitleLines(lines: SubtitleLine[]) {
+  return [...lines].sort((left, right) =>
+    left.startTime - right.startTime ||
+    left.endTime - right.endTime ||
+    left.id.localeCompare(right.id),
+  );
+}
+
+function syncSubtitleLine(project: ProjectData, lineId: string) {
+  const lineCharacters = sortCharactersByTime(
+    project.characterAnnotations.filter((item) => item.lineId === lineId),
+  );
+  const existingLine = project.subtitleLines.find((line) => line.id === lineId);
+
+  if (lineCharacters.length === 0) {
+    return {
+      ...project,
+      subtitleLines: project.subtitleLines.filter((line) => line.id !== lineId),
+    };
+  }
+
+  const nextLine: SubtitleLine = {
+    id: lineId,
+    text: lineCharacters.map((item) => item.char).join(""),
+    startTime: lineCharacters[0].startTime,
+    endTime: lineCharacters[lineCharacters.length - 1].endTime,
+  };
+
+  const nextLines = existingLine
+    ? project.subtitleLines.map((line) => (line.id === lineId ? nextLine : line))
+    : [...project.subtitleLines, nextLine];
+
+  return {
+    ...project,
+    subtitleLines: sortSubtitleLines(nextLines),
+  };
+}
+
+function syncSubtitleLines(project: ProjectData, lineIds: string[]) {
+  return Array.from(new Set(lineIds)).reduce(
+    (nextProject, lineId) => syncSubtitleLine(nextProject, lineId),
+    project,
+  );
+}
+
+function findCharacterCreationTarget(lines: SubtitleLine[], time: number) {
+  const candidates = lines.flatMap((line) => {
+    const results: Array<{ line: SubtitleLine; position: "start" | "end"; distance: number }> = [];
+    const distanceFromEnd = time - line.endTime;
+    if (distanceFromEnd >= 0 && distanceFromEnd <= CHARACTER_CREATE_ATTACH_WINDOW) {
+      results.push({ line, position: "end", distance: distanceFromEnd });
+    }
+    const distanceFromStart = line.startTime - time;
+    if (distanceFromStart >= 0 && distanceFromStart <= CHARACTER_CREATE_ATTACH_WINDOW) {
+      results.push({ line, position: "start", distance: distanceFromStart });
+    }
+    return results;
+  });
+
+  candidates.sort((left, right) => left.distance - right.distance);
+  return candidates[0] ?? null;
+}
+
+function getCharacterCreationRange(
+  line: SubtitleLine,
+  position: "start" | "end",
+  time: number,
+) {
+  if (position === "end") {
+    const startTime = Math.max(line.endTime, time - DEFAULT_CHARACTER_DURATION / 2);
+    return {
+      startTime,
+      endTime: startTime + DEFAULT_CHARACTER_DURATION,
+    };
+  }
+
+  const endTime = Math.min(line.startTime, time + DEFAULT_CHARACTER_DURATION / 2);
+  return {
+    startTime: Math.max(0, endTime - DEFAULT_CHARACTER_DURATION),
+    endTime,
+  };
 }
 
 async function buildWaveformData(videoUrl: string): Promise<WaveformData | null> {
