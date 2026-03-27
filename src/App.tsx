@@ -39,7 +39,8 @@ type CharacterEditLocation = "timeline" | "split-panel";
 type CharacterLineAction = "set-line-start" | "set-line-end" | "merge-prev-line" | "merge-next-line";
 
 const CHARACTER_CREATE_ATTACH_WINDOW = 1;
-const DEFAULT_CHARACTER_DURATION = 0.35;
+const DEFAULT_CHARACTER_DURATION = 1.05;
+const MIN_CHARACTER_DURATION = 0.04;
 const DEFAULT_ACTION_DURATION = 0.8;
 
 function App() {
@@ -228,8 +229,16 @@ function App() {
         event.preventDefault();
         redo();
       }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        selectAllTimelineItems();
+      }
       if (event.key === "Delete" || event.key === "Backspace") {
-        if (selectedItem?.type === "character" || selectedItem?.type === "action") {
+        if (
+          selectedTimelineItems.length > 0 ||
+          selectedItem?.type === "character" ||
+          selectedItem?.type === "action"
+        ) {
           event.preventDefault();
           deleteSelected();
         }
@@ -237,7 +246,7 @@ function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentTime, editingCharacterId, previewTime, selectedItem, undoStack, redoStack, project]);
+  }, [currentTime, editingCharacterId, previewTime, selectedItem, selectedTimelineItems, undoStack, redoStack, project]);
 
   useEffect(() => {
     const preventPageZoom = (event: WheelEvent) => {
@@ -548,16 +557,17 @@ function App() {
     }
   }
 
-  function createCharacterAtTime(time: number) {
+  function createCharacterAtTime(time: number, explicitEndTime?: number) {
     const currentProject = projectRef.current;
     const normalizedTime = Math.max(0, time);
+    const requestedRange = normalizeCharacterCreationRequest(normalizedTime, explicitEndTime);
     const target = findCharacterCreationTarget(currentProject.subtitleLines, normalizedTime);
     const characterId = `char-${crypto.randomUUID()}`;
     const char = "新";
     let nextProject: ProjectData;
 
     if (target) {
-      const range = getCharacterCreationRange(target.line, target.position, normalizedTime);
+      const range = getCharacterCreationRange(target.line, target.position, requestedRange);
       nextProject = syncSubtitleLine({
         ...currentProject,
         characterAnnotations: [
@@ -574,8 +584,8 @@ function App() {
       }, target.line.id);
     } else {
       const lineId = `line-${crypto.randomUUID()}`;
-      const startTime = Math.max(0, normalizedTime);
-      const endTime = startTime + DEFAULT_CHARACTER_DURATION;
+      const startTime = requestedRange.startTime;
+      const endTime = requestedRange.endTime;
       nextProject = {
         ...currentProject,
         subtitleLines: sortSubtitleLines([
@@ -721,6 +731,53 @@ function App() {
 
   function deleteSelected() {
     const currentProject = projectRef.current;
+    const timelineSelection = selectedTimelineItems.length > 0
+      ? selectedTimelineItems
+      : selectedItem?.type === "character" || selectedItem?.type === "action"
+        ? [{ type: selectedItem.type, id: selectedItem.id }]
+        : [];
+
+    if (timelineSelection.length > 0) {
+      if (timelineSelection.length > 10) {
+        const confirmed = window.confirm(`当前将删除 ${timelineSelection.length} 个已选中的字块/动作块。是否继续？`);
+        if (!confirmed) {
+          return;
+        }
+      }
+
+      const characterIds = new Set(
+        timelineSelection
+          .filter((item): item is TimelineSelectionItem & { type: "character" } => item.type === "character")
+          .map((item) => item.id),
+      );
+      const actionIds = new Set(
+        timelineSelection
+          .filter((item): item is TimelineSelectionItem & { type: "action" } => item.type === "action")
+          .map((item) => item.id),
+      );
+      const affectedLineIds = new Set(
+        currentProject.characterAnnotations
+          .filter((item) => characterIds.has(item.id))
+          .map((item) => item.lineId),
+      );
+
+      const nextProject = syncSubtitleLines(
+        {
+          ...currentProject,
+          characterAnnotations: currentProject.characterAnnotations.filter((item) => !characterIds.has(item.id)),
+          actionAnnotations: currentProject.actionAnnotations.filter((item) => !actionIds.has(item.id)),
+        },
+        Array.from(affectedLineIds),
+      );
+
+      if (editingCharacterId && characterIds.has(editingCharacterId)) {
+        cancelCharacterTextEdit();
+      }
+      commitProject(nextProject);
+      applySelection(null);
+      return;
+    }
+
     if (!selectedItem) {
       return;
     }
@@ -746,6 +803,15 @@ function App() {
       });
       applySelection(null);
     }
+  }
+
+  function selectAllTimelineItems() {
+    const currentProject = projectRef.current;
+    const items: TimelineSelectionItem[] = [
+      ...currentProject.characterAnnotations.map((item) => ({ type: "character" as const, id: item.id })),
+      ...currentProject.actionAnnotations.map((item) => ({ type: "action" as const, id: item.id })),
+    ];
+    applySelection(items[0] ?? null, items);
   }
 
   function addAction(trackId: "hand-action" | "body-action") {
@@ -1210,21 +1276,33 @@ function findCharacterCreationTarget(lines: SubtitleLine[], time: number) {
 function getCharacterCreationRange(
   line: SubtitleLine,
   position: "start" | "end",
-  time: number,
+  requestedRange: { startTime: number; endTime: number },
 ) {
   if (position === "end") {
-    const startTime = Math.max(line.endTime, time);
+    const startTime = Math.max(line.endTime, requestedRange.startTime);
+    const endTime = Math.max(startTime + MIN_CHARACTER_DURATION, requestedRange.endTime);
     return {
       startTime,
-      endTime: startTime + DEFAULT_CHARACTER_DURATION,
+      endTime,
     };
   }
 
-  const startTime = Math.max(0, time);
-  const endTime = Math.min(line.startTime, startTime + DEFAULT_CHARACTER_DURATION);
+  const endTime = Math.min(line.startTime, requestedRange.endTime);
+  const startTime = Math.max(0, Math.min(requestedRange.startTime, endTime - MIN_CHARACTER_DURATION));
   return {
     startTime,
     endTime,
+  };
+}
+
+function normalizeCharacterCreationRequest(startTime: number, explicitEndTime?: number) {
+  const normalizedStart = Math.max(0, startTime);
+  const normalizedEnd = explicitEndTime === undefined
+    ? normalizedStart + DEFAULT_CHARACTER_DURATION
+    : Math.max(normalizedStart + MIN_CHARACTER_DURATION, explicitEndTime);
+  return {
+    startTime: normalizedStart,
+    endTime: normalizedEnd,
   };
 }
 
