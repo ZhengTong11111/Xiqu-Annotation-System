@@ -44,8 +44,24 @@ export type ProjectData = {
   actionAnnotations: ActionAnnotation[];
 };
 
+export type WaveformData = {
+  samples: Float32Array;
+  sampleRate: number;
+  duration: number;
+};
+
 export type SelectedItem =
   | { type: "line"; id: string }
   | { type: "character"; id: string }
   | { type: "action"; id: string }
   | null;
+
+export type TimelineSelectionItem = {
+  type: "character" | "action";
+  id: string;
+};
+
+export type TimelineBatchMoveItem = TimelineSelectionItem & {
+  startTime: number;
+  endTime: number;
+};
