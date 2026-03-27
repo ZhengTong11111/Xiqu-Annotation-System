@@ -43,6 +43,13 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
     }, [currentTime]);
 
     useEffect(() => {
+      if (!videoRef.current) {
+        return;
+      }
+      videoRef.current.volume = 0.5;
+    }, []);
+
+    useEffect(() => {
       return () => {
         if (animationFrameRef.current !== null) {
           cancelAnimationFrame(animationFrameRef.current);

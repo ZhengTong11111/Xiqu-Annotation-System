@@ -613,8 +613,20 @@ export function Timeline({
           ? (event.clientX - activeDragState.originX) / zoom
           : 0;
       if (activeDragState.kind === "create-track-item") {
-        clearPreviewFrame();
-        setActiveSnapIndicator(null);
+        const dragPreview = getCreateTrackPreview(
+          activeDragState,
+          zoom,
+          trackSnapEnabled[activeDragState.trackId]
+            ? getTrackSnapPoints(activeDragState.trackId)
+            : [],
+          trackSnapEnabled[activeDragState.trackId],
+        );
+        setActiveSnapIndicator(
+          dragPreview.snappedTo
+            ? { trackId: activeDragState.trackId, ...dragPreview.snappedTo }
+            : null,
+        );
+        queuePreviewFrame(dragPreview.previewTime);
         setDragState((prev) =>
           prev && prev.kind === "create-track-item"
             ? { ...prev, currentX: event.clientX }
@@ -2154,6 +2166,26 @@ function getDraftStyle(
   return {
     left: leftPx,
     width: Math.max(rightPx - leftPx, 6),
+  };
+}
+
+function getCreateTrackPreview(
+  dragState: Extract<NonNullable<DragState>, { kind: "create-track-item" }>,
+  zoom: number,
+  snapPoints: number[],
+  shouldSnap: boolean,
+) {
+  const previewRawTime = Math.max(0, (dragState.currentX - dragState.laneLeft) / zoom);
+  const snappedPoint = shouldSnap ? findNearestSnapPoint(previewRawTime, snapPoints) : null;
+  const previewTime = snappedPoint?.point ?? previewRawTime;
+  return {
+    previewTime,
+    snappedTo: snappedPoint
+      ? {
+          time: snappedPoint.point,
+          edge: previewTime <= Math.max(0, (dragState.originX - dragState.laneLeft) / zoom) ? "left" as const : "right" as const,
+        }
+      : null,
   };
 }
 
