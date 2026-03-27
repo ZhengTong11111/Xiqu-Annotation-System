@@ -178,12 +178,18 @@ select {
   padding-bottom: 14px;
 }
 
-.video-element {
-  width: calc(100% - 28px);
+.video-surface {
   margin: 14px;
   border-radius: 16px;
+  overflow: hidden;
   background: #09111f;
+}
+
+.video-element {
+  display: block;
+  width: 100%;
   max-height: 420px;
+  background: #09111f;
 }
 
 .video-meta {
@@ -360,6 +366,9 @@ select {
   border-bottom: 1px solid var(--border);
   background: rgba(249, 251, 255, 0.96);
   z-index: 6;
+  cursor: ew-resize;
+  user-select: none;
+  touch-action: none;
 }
 
 .tick {
@@ -376,6 +385,7 @@ select {
   left: 4px;
   font-size: 11px;
   color: var(--ink-soft);
+  pointer-events: none;
 }
 
 .line-focus-layer {

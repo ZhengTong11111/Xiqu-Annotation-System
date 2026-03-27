@@ -74,7 +74,7 @@ function App() {
     x: number;
     y: number;
   } | null>(null);
-  const [zoom, setZoom] = useState(100);
+  const [zoom, setZoom] = useState(20);
   const [trackSnapEnabled, setTrackSnapEnabled] = useState<Record<string, boolean>>(
     () => Object.fromEntries(trackDefinitions.map((track) => [track.id, true])),
   );

@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 
 const PREVIEW_SEEK_EPSILON = 1 / 90;
 
@@ -34,6 +34,7 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
     const resumeAfterPreviewRef = useRef(false);
     const previewSeekFrameRef = useRef<number | null>(null);
     const pendingPreviewTimeRef = useRef<number | null>(null);
+    const [showNativeControls, setShowNativeControls] = useState(false);
 
     useImperativeHandle(ref, () => videoRef.current as HTMLVideoElement, []);
 
@@ -137,47 +138,59 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
           <h2>视频播放器</h2>
           <span>{previewTime === null ? (isPlaying ? "播放中" : "已暂停") : "边界预览中"}</span>
         </div>
-        <video
-          ref={videoRef}
-          className="video-element"
-          controls
-          src={videoUrl}
-          preload="metadata"
-          onLoadedMetadata={(event) => onLoadedMetadata(event.currentTarget.duration)}
-          onTimeUpdate={(event) => {
-            if (!isPreviewingRef.current) {
-              onTimeUpdate(event.currentTarget.currentTime);
+        <div
+          className="video-surface"
+          onPointerEnter={() => setShowNativeControls(true)}
+          onPointerLeave={() => setShowNativeControls(false)}
+          onFocus={() => setShowNativeControls(true)}
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setShowNativeControls(false);
             }
           }}
-          onPlay={() => {
-            onPlayStateChange(true);
-            startFrameSync();
-          }}
-          onPause={() => {
-            onPlayStateChange(false);
-            stopFrameSync();
-          }}
-          onSeeking={(event) => {
-            if (!isPreviewingRef.current) {
+        >
+          <video
+            ref={videoRef}
+            className="video-element"
+            controls={showNativeControls}
+            src={videoUrl}
+            preload="metadata"
+            onLoadedMetadata={(event) => onLoadedMetadata(event.currentTarget.duration)}
+            onTimeUpdate={(event) => {
+              if (!isPreviewingRef.current) {
+                onTimeUpdate(event.currentTarget.currentTime);
+              }
+            }}
+            onPlay={() => {
+              onPlayStateChange(true);
+              startFrameSync();
+            }}
+            onPause={() => {
+              onPlayStateChange(false);
+              stopFrameSync();
+            }}
+            onSeeking={(event) => {
+              if (!isPreviewingRef.current) {
+                onTimeUpdate(event.currentTarget.currentTime);
+              }
+            }}
+            onSeeked={(event) => {
+              if (!isPreviewingRef.current) {
+                onTimeUpdate(event.currentTarget.currentTime);
+              }
+            }}
+            onEnded={(event) => {
+              onPlayStateChange(false);
+              stopFrameSync();
               onTimeUpdate(event.currentTarget.currentTime);
-            }
-          }}
-          onSeeked={(event) => {
-            if (!isPreviewingRef.current) {
-              onTimeUpdate(event.currentTarget.currentTime);
-            }
-          }}
-          onEnded={(event) => {
-            onPlayStateChange(false);
-            stopFrameSync();
-            onTimeUpdate(event.currentTarget.currentTime);
-          }}
-          onRateChange={(event) => {
-            if (!isPreviewingRef.current) {
-              onTimeUpdate(event.currentTarget.currentTime);
-            }
-          }}
-        />
+            }}
+            onRateChange={(event) => {
+              if (!isPreviewingRef.current) {
+                onTimeUpdate(event.currentTarget.currentTime);
+              }
+            }}
+          />
+        </div>
         <div className="video-meta">
           <span>当前时间 {currentTime.toFixed(3)}s</span>
           <span>{previewTime === null ? "预览帧 -" : `预览帧 ${previewTime.toFixed(3)}s`}</span>

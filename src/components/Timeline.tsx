@@ -111,6 +111,9 @@ const TRACK_HEIGHT = 72;
 const TRACK_LABEL_WIDTH = 150;
 const SNAP_SECONDS = 0.05;
 const ZOOM_SETTLE_MS = 220;
+const ZOOM_MIN = 5;
+const ZOOM_MAX = 100;
+const ZOOM_STEP = 5;
 const DRAG_ACTIVATION_PX = 4;
 const EDGE_HIT_SLOP_PX = 8;
 const SELECTED_EDGE_HIT_SLOP_PX = 17;
@@ -120,6 +123,8 @@ const PREVIEW_UPDATE_EPSILON = 1 / 60;
 const MIN_BLOCK_WIDTH_PX = 44;
 const WAVEFORM_VIEW_HEIGHT = 56;
 const WAVEFORM_MAX_WIDTH = 1800;
+const WAVEFORM_MAX_BUCKETS = 960;
+const WAVEFORM_MAX_SAMPLES_PER_BUCKET = 192;
 const CLICK_SUPPRESS_MS = 120;
 
 type ZoomGestureState = {
@@ -232,6 +237,9 @@ export function Timeline({
   const pendingPreviewTimeRef = useRef<number | null>(null);
   const previewTimeRef = useRef<number | null>(null);
   const previewFrameRef = useRef<number | null>(null);
+  const rulerScrubPointerIdRef = useRef<number | null>(null);
+  const pendingRulerSeekTimeRef = useRef<number | null>(null);
+  const rulerSeekFrameRef = useRef<number | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const suppressLineClickIdRef = useRef<string | null>(null);
   const suppressCanvasClickUntilRef = useRef(0);
@@ -240,7 +248,7 @@ export function Timeline({
   const [activeSnapIndicator, setActiveSnapIndicator] = useState<ActiveSnapIndicator>(null);
   const [viewportState, setViewportState] = useState({ scrollLeft: 0, width: 0 });
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
-  const sliderZoom = Math.round(zoom / 10) * 10;
+  const sliderZoom = Math.round(zoom / ZOOM_STEP) * ZOOM_STEP;
   const waveformDetail = useMemo(() => {
     if (!waveformData || waveformData.samples.length === 0) {
       return null;
@@ -308,6 +316,9 @@ export function Timeline({
       }
       if (previewFrameRef.current !== null) {
         cancelAnimationFrame(previewFrameRef.current);
+      }
+      if (rulerSeekFrameRef.current !== null) {
+        cancelAnimationFrame(rulerSeekFrameRef.current);
       }
       if (scrollFrameRef.current !== null) {
         cancelAnimationFrame(scrollFrameRef.current);
@@ -887,7 +898,7 @@ export function Timeline({
   }, [dragState, zoom, snapPoints, characterAnnotations, actionAnnotations, selectedTimelineItems, onLineChange, onLineCommit, onCharacterChange, onCharacterCommit, onActionChange, onActionCommit, onBatchMoveChange, onBatchMoveCommit, onCreateAction, onCreateCharacterAtTime, onPreviewFrame, onSelectTimelineItems]);
 
   const ticks = useMemo(() => {
-    const step = zoom >= 160 ? 0.5 : zoom >= 100 ? 1 : 2;
+    const step = zoom >= 70 ? 0.5 : zoom >= 35 ? 1 : zoom >= 15 ? 2 : 5;
     return Array.from({ length: Math.ceil(duration / step) + 1 }, (_, index) => index * step);
   }, [duration, zoom]);
 
@@ -899,16 +910,16 @@ export function Timeline({
           <span>点击空白跳转，双击创建，Command/Ctrl + 拖拽可新建字块或动作片段</span>
         </div>
         <div className="timeline-zoom-controls">
-          <button type="button" onClick={() => handleZoomStep(-20)}>
+          <button type="button" onClick={() => handleZoomStep(-ZOOM_STEP)}>
             -
           </button>
           <label className="zoom-control timeline-zoom-control">
             <span>缩放</span>
             <input
               type="range"
-              min={40}
-              max={240}
-              step={10}
+              min={ZOOM_MIN}
+              max={ZOOM_MAX}
+              step={ZOOM_STEP}
               value={sliderZoom}
               onPointerDown={startSliderZoom}
               onPointerUp={finishSliderZoom}
@@ -918,7 +929,7 @@ export function Timeline({
             />
             <strong>{Math.round(zoom)}px/s</strong>
           </label>
-          <button type="button" onClick={() => handleZoomStep(20)}>
+          <button type="button" onClick={() => handleZoomStep(ZOOM_STEP)}>
             +
           </button>
         </div>
@@ -937,13 +948,51 @@ export function Timeline({
         }}
       >
         <div className="timeline-canvas" style={{ width: timelineWidth }}>
-          <div className="timeline-ruler">
+          <div
+            className="timeline-ruler"
+            onPointerDown={(event) => {
+              if (event.button !== 0) {
+                return;
+              }
+              event.preventDefault();
+              rulerScrubPointerIdRef.current = event.pointerId;
+              event.currentTarget.setPointerCapture(event.pointerId);
+              queueRulerSeek(getRulerScrubTime(event.clientX));
+            }}
+            onPointerMove={(event) => {
+              if (rulerScrubPointerIdRef.current !== event.pointerId) {
+                return;
+              }
+              event.preventDefault();
+              queueRulerSeek(getRulerScrubTime(event.clientX));
+            }}
+            onPointerUp={(event) => {
+              if (rulerScrubPointerIdRef.current !== event.pointerId) {
+                return;
+              }
+              event.preventDefault();
+              rulerScrubPointerIdRef.current = null;
+              event.currentTarget.releasePointerCapture(event.pointerId);
+              flushPendingRulerSeek();
+            }}
+            onPointerCancel={(event) => {
+              if (rulerScrubPointerIdRef.current !== event.pointerId) {
+                return;
+              }
+              rulerScrubPointerIdRef.current = null;
+              event.currentTarget.releasePointerCapture(event.pointerId);
+              pendingRulerSeekTimeRef.current = null;
+              if (rulerSeekFrameRef.current !== null) {
+                cancelAnimationFrame(rulerSeekFrameRef.current);
+                rulerSeekFrameRef.current = null;
+              }
+            }}
+          >
             {ticks.map((tick) => (
               <div
                 key={tick}
                 className="tick"
                 style={{ left: getCanvasX(tick, zoom) }}
-                onClick={() => onSeek(tick)}
               >
                 <span>{formatTimelineTickLabel(tick)}</span>
               </div>
@@ -1439,12 +1488,12 @@ export function Timeline({
   }
 
   function handleZoomStep(delta: number) {
-    const nextZoom = clampZoom(Math.round((zoomRef.current + delta) / 10) * 10);
+    const nextZoom = clampZoom(Math.round((zoomRef.current + delta) / ZOOM_STEP) * ZOOM_STEP);
     queueZoom(nextZoom, currentTimeRef.current);
   }
 
   function handleZoomSliderChange(nextZoom: number) {
-    const snappedZoom = clampZoom(Math.round(nextZoom / 10) * 10);
+    const snappedZoom = clampZoom(Math.round(nextZoom / ZOOM_STEP) * ZOOM_STEP);
     const lockedAnchor = sliderZoomRef.current;
     queueZoom(
       snappedZoom,
@@ -1661,6 +1710,39 @@ export function Timeline({
       return;
     }
     clearPreviewFrame();
+  }
+
+  function getRulerScrubTime(clientX: number) {
+    const container = scrollRef.current;
+    if (!container) {
+      return currentTimeRef.current;
+    }
+    const bounds = container.getBoundingClientRect();
+    return getCanvasTimeFromViewportOffset(
+      container,
+      Math.max(0, Math.min(clientX - bounds.left, container.clientWidth)),
+      zoomRef.current,
+    );
+  }
+
+  function flushPendingRulerSeek() {
+    if (pendingRulerSeekTimeRef.current === null) {
+      return;
+    }
+    const nextTime = pendingRulerSeekTimeRef.current;
+    pendingRulerSeekTimeRef.current = null;
+    onSeek(nextTime);
+  }
+
+  function queueRulerSeek(time: number) {
+    pendingRulerSeekTimeRef.current = time;
+    if (rulerSeekFrameRef.current !== null) {
+      return;
+    }
+    rulerSeekFrameRef.current = requestAnimationFrame(() => {
+      rulerSeekFrameRef.current = null;
+      flushPendingRulerSeek();
+    });
   }
 }
 
@@ -2146,7 +2228,7 @@ function getLaneTime(container: HTMLElement, clientX: number, zoom: number) {
 }
 
 function clampZoom(zoom: number) {
-  return Math.max(40, Math.min(240, zoom));
+  return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
 }
 
 function formatTimelineTickLabel(seconds: number) {
@@ -2180,7 +2262,7 @@ function buildWaveformEnvelope(
     Math.max(sampleStart + 1, Math.ceil(endTime * waveformData.sampleRate)),
   );
   const visibleLength = Math.max(sampleEnd - sampleStart, 1);
-  const bucketCount = Math.max(64, viewWidth);
+  const bucketCount = Math.max(64, Math.min(WAVEFORM_MAX_BUCKETS, Math.ceil(viewWidth)));
   const centerY = viewHeight / 2;
   const maxAmplitudeHeight = Math.max(8, centerY - 5);
   const topPoints: string[] = [];
@@ -2192,7 +2274,9 @@ function buildWaveformEnvelope(
     let peak = 0;
     let rmsSum = 0;
     const safeRangeEnd = Math.max(rangeStart + 1, rangeEnd);
-    for (let cursor = rangeStart; cursor < safeRangeEnd; cursor += 1) {
+    const rangeLength = Math.max(safeRangeEnd - rangeStart, 1);
+    const sampleStep = Math.max(1, Math.ceil(rangeLength / WAVEFORM_MAX_SAMPLES_PER_BUCKET));
+    for (let cursor = rangeStart; cursor < safeRangeEnd; cursor += sampleStep) {
       const value = waveformData.samples[cursor] ?? 0;
       const absValue = Math.abs(value);
       if (absValue > peak) {
@@ -2200,7 +2284,7 @@ function buildWaveformEnvelope(
       }
       rmsSum += value * value;
     }
-    const sampleCount = safeRangeEnd - rangeStart;
+    const sampleCount = Math.max(1, Math.ceil(rangeLength / sampleStep));
     const rms = Math.sqrt(rmsSum / sampleCount);
     const amplitude = Math.min(1, peak * 0.72 + rms * 0.9);
     const x = bucketCount === 1 ? 0 : (bucketIndex / (bucketCount - 1)) * viewWidth;
