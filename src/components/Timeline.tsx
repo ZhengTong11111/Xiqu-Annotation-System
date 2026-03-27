@@ -6,6 +6,7 @@ import type {
   SelectedItem,
   SubtitleLine,
   TrackDefinition,
+  WaveformData,
 } from "../types";
 import { clampRange } from "../utils/project";
 
@@ -14,6 +15,8 @@ type TimelineProps = {
   characterAnnotations: CharacterAnnotation[];
   actionAnnotations: ActionAnnotation[];
   trackDefinitions: TrackDefinition[];
+  waveformData: WaveformData | null;
+  isWaveformLoading: boolean;
   currentTime: number;
   selectedItem: SelectedItem;
   zoom: number;
@@ -22,6 +25,7 @@ type TimelineProps = {
   getProjectSnapshot: () => ProjectData;
   onZoomChange: (zoom: number) => void;
   onSeek: (time: number) => void;
+  onPreviewFrame: (time: number | null) => void;
   onSelectItem: (item: SelectedItem) => void;
   onCharacterChange: (id: string, changes: Partial<CharacterAnnotation>) => void;
   onCharacterCommit: (id: string, changes: Partial<CharacterAnnotation>) => void;
@@ -60,6 +64,9 @@ const ZOOM_SETTLE_MS = 220;
 const DRAG_ACTIVATION_PX = 4;
 const EDGE_HIT_SLOP_PX = 16;
 const SELECTED_EDGE_HIT_SLOP_PX = 36;
+const PREVIEW_UPDATE_EPSILON = 1 / 60;
+const WAVEFORM_VIEW_HEIGHT = 56;
+const WAVEFORM_MAX_WIDTH = 1800;
 
 type ZoomGestureState = {
   startZoom: number;
@@ -103,6 +110,8 @@ export function Timeline({
   characterAnnotations,
   actionAnnotations,
   trackDefinitions,
+  waveformData,
+  isWaveformLoading,
   currentTime,
   selectedItem,
   zoom,
@@ -111,6 +120,7 @@ export function Timeline({
   getProjectSnapshot,
   onZoomChange,
   onSeek,
+  onPreviewFrame,
   onSelectItem,
   onCharacterChange,
   onCharacterCommit,
@@ -131,10 +141,47 @@ export function Timeline({
   const lastPointerClientXRef = useRef(0);
   const pendingDragUpdateRef = useRef<PendingDragUpdate | null>(null);
   const dragFrameRef = useRef<number | null>(null);
+  const pendingPreviewTimeRef = useRef<number | null>(null);
+  const previewTimeRef = useRef<number | null>(null);
+  const previewFrameRef = useRef<number | null>(null);
+  const scrollFrameRef = useRef<number | null>(null);
   const [dragState, setDragState] = useState<DragState>(null);
   const [hoveredBlock, setHoveredBlock] = useState<HoveredBlockState>(null);
+  const [viewportState, setViewportState] = useState({ scrollLeft: 0, width: 0 });
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
   const sliderZoom = Math.round(zoom / 10) * 10;
+  const waveformDetail = useMemo(() => {
+    if (!waveformData || waveformData.samples.length === 0) {
+      return null;
+    }
+
+    const laneViewportStart = Math.max(0, viewportState.scrollLeft - TRACK_LABEL_WIDTH);
+    const laneViewportWidth = Math.max(
+      240,
+      viewportState.width - Math.max(TRACK_LABEL_WIDTH - viewportState.scrollLeft, 0),
+    );
+    const visibleStartTime = Math.max(0, laneViewportStart / zoom);
+    const visibleEndTime = Math.min(duration, (laneViewportStart + laneViewportWidth) / zoom);
+    const visibleDuration = Math.max(visibleEndTime - visibleStartTime, 0.001);
+    const renderWidth = Math.max(
+      240,
+      Math.min(Math.ceil(visibleDuration * zoom), Math.min(WAVEFORM_MAX_WIDTH, Math.ceil(laneViewportWidth))),
+    );
+
+    const points = buildWaveformEnvelope(
+      waveformData,
+      visibleStartTime,
+      visibleEndTime,
+      renderWidth,
+      WAVEFORM_VIEW_HEIGHT,
+    );
+
+    return {
+      ...points,
+      left: visibleStartTime * zoom,
+      width: Math.max(visibleDuration * zoom, 1),
+    };
+  }, [duration, viewportState, waveformData, zoom]);
 
   useEffect(() => {
     zoomRef.current = zoom;
@@ -155,6 +202,47 @@ export function Timeline({
       }
       if (dragFrameRef.current !== null) {
         cancelAnimationFrame(dragFrameRef.current);
+      }
+      if (previewFrameRef.current !== null) {
+        cancelAnimationFrame(previewFrameRef.current);
+      }
+      if (scrollFrameRef.current !== null) {
+        cancelAnimationFrame(scrollFrameRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) {
+      return;
+    }
+
+    const updateViewport = () => {
+      scrollFrameRef.current = null;
+      setViewportState({
+        scrollLeft: container.scrollLeft,
+        width: container.clientWidth,
+      });
+    };
+
+    const scheduleViewportUpdate = () => {
+      if (scrollFrameRef.current !== null) {
+        return;
+      }
+      scrollFrameRef.current = requestAnimationFrame(updateViewport);
+    };
+
+    updateViewport();
+    container.addEventListener("scroll", scheduleViewportUpdate, { passive: true });
+    window.addEventListener("resize", scheduleViewportUpdate);
+
+    return () => {
+      container.removeEventListener("scroll", scheduleViewportUpdate);
+      window.removeEventListener("resize", scheduleViewportUpdate);
+      if (scrollFrameRef.current !== null) {
+        cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
       }
     };
   }, []);
@@ -281,6 +369,7 @@ export function Timeline({
       }
       const deltaSeconds = (event.clientX - activeDragState.originX) / zoom;
       if (activeDragState.kind === "create-action") {
+        clearPreviewFrame();
         setDragState((prev) =>
           prev && prev.kind === "create-action"
             ? { ...prev, currentX: event.clientX }
@@ -303,6 +392,7 @@ export function Timeline({
           id: activeDragState.id,
           changes: next,
         });
+        updatePreviewFrame(activeDragState.kind, next);
         return;
       }
 
@@ -319,10 +409,12 @@ export function Timeline({
         id: activeDragState.id,
         changes: next,
       });
+      updatePreviewFrame(activeDragState.kind, next);
     };
 
     const handlePointerUp = () => {
       const activeDragState = dragStateRef.current;
+      clearPreviewFrame();
       flushPendingDragUpdate();
       if (!activeDragState) {
         setDragState(null);
@@ -375,7 +467,7 @@ export function Timeline({
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [dragState, zoom, snapPoints, characterAnnotations, actionAnnotations, onCharacterChange, onCharacterCommit, onActionChange, onActionCommit, onCreateAction]);
+  }, [dragState, zoom, snapPoints, characterAnnotations, actionAnnotations, onCharacterChange, onCharacterCommit, onActionChange, onActionCommit, onCreateAction, onPreviewFrame]);
 
   const ticks = useMemo(() => {
     const step = zoom >= 160 ? 0.5 : zoom >= 100 ? 1 : 2;
@@ -460,6 +552,40 @@ export function Timeline({
                 title={line.text}
               />
             ))}
+          </div>
+
+          <div className="timeline-track waveform-track" style={{ height: TRACK_HEIGHT }}>
+            <div className="track-label waveform-label">
+              <div className="track-label-copy">
+                <strong>音频波形</strong>
+                <span>{isWaveformLoading ? "提取中..." : waveformData ? "窗口精细波形" : "暂无波形"}</span>
+              </div>
+            </div>
+            <div
+              className="track-lane waveform-lane"
+              onClick={(event) => {
+                onSeek(getLaneTime(event.currentTarget, event.clientX, zoom));
+              }}
+            >
+              {waveformDetail ? (
+                <svg
+                  className="waveform-detail-svg"
+                  viewBox={`0 0 ${waveformDetail.viewWidth} ${WAVEFORM_VIEW_HEIGHT}`}
+                  preserveAspectRatio="none"
+                  style={{
+                    left: waveformDetail.left,
+                    width: waveformDetail.width,
+                  }}
+                >
+                  <path className="waveform-area" d={waveformDetail.areaPath} />
+                  <path className="waveform-center-line" d={waveformDetail.centerLinePath} />
+                </svg>
+              ) : (
+                <div className="waveform-empty">
+                  {isWaveformLoading ? "正在从视频中提取音频波形..." : "当前视频暂无可显示的音频波形"}
+                </div>
+              )}
+            </div>
           </div>
 
           {trackDefinitions.map((track) => (
@@ -737,6 +863,65 @@ export function Timeline({
     }
     onActionChange(pendingDragUpdate.id, pendingDragUpdate.changes);
   }
+
+  function queuePreviewFrame(time: number | null) {
+    const normalizedTime = time === null ? null : Math.max(0, time);
+    const currentPreviewTime = previewTimeRef.current;
+    if (
+      normalizedTime === currentPreviewTime ||
+      (normalizedTime !== null &&
+        currentPreviewTime !== null &&
+        Math.abs(normalizedTime - currentPreviewTime) < PREVIEW_UPDATE_EPSILON)
+    ) {
+      return;
+    }
+    pendingPreviewTimeRef.current = normalizedTime;
+    if (previewFrameRef.current !== null) {
+      return;
+    }
+    previewFrameRef.current = requestAnimationFrame(() => {
+      previewFrameRef.current = null;
+      const nextPreviewTime = pendingPreviewTimeRef.current;
+      pendingPreviewTimeRef.current = null;
+      if (
+        nextPreviewTime === previewTimeRef.current ||
+        (nextPreviewTime !== null &&
+          previewTimeRef.current !== null &&
+          Math.abs(nextPreviewTime - previewTimeRef.current) < PREVIEW_UPDATE_EPSILON)
+      ) {
+        return;
+      }
+      previewTimeRef.current = nextPreviewTime;
+      onPreviewFrame(nextPreviewTime);
+    });
+  }
+
+  function clearPreviewFrame() {
+    pendingPreviewTimeRef.current = null;
+    if (previewFrameRef.current !== null) {
+      cancelAnimationFrame(previewFrameRef.current);
+      previewFrameRef.current = null;
+    }
+    if (previewTimeRef.current !== null) {
+      previewTimeRef.current = null;
+      onPreviewFrame(null);
+    }
+  }
+
+  function updatePreviewFrame(
+    kind: Exclude<NonNullable<DragState>, { kind: "create-action" }>["kind"],
+    range: { startTime: number; endTime: number },
+  ) {
+    if (String(kind).includes("resize-left")) {
+      queuePreviewFrame(range.startTime);
+      return;
+    }
+    if (String(kind).includes("resize-right")) {
+      queuePreviewFrame(range.endTime);
+      return;
+    }
+    clearPreviewFrame();
+  }
 }
 
 function resolveEdge(event: React.PointerEvent<HTMLDivElement>) {
@@ -922,4 +1107,62 @@ function getLaneTime(container: HTMLElement, clientX: number, zoom: number) {
 
 function clampZoom(zoom: number) {
   return Math.max(40, Math.min(240, zoom));
+}
+
+function buildWaveformEnvelope(
+  waveformData: WaveformData,
+  startTime: number,
+  endTime: number,
+  viewWidth: number,
+  viewHeight: number,
+) {
+  const sampleStart = Math.max(0, Math.floor(startTime * waveformData.sampleRate));
+  const sampleEnd = Math.min(
+    waveformData.samples.length,
+    Math.max(sampleStart + 1, Math.ceil(endTime * waveformData.sampleRate)),
+  );
+  const visibleLength = Math.max(sampleEnd - sampleStart, 1);
+  const bucketCount = Math.max(64, viewWidth);
+  const centerY = viewHeight / 2;
+  const maxAmplitudeHeight = Math.max(8, centerY - 5);
+  const topPoints: string[] = [];
+  const bottomPoints: string[] = [];
+
+  for (let bucketIndex = 0; bucketIndex < bucketCount; bucketIndex += 1) {
+    const rangeStart = sampleStart + Math.floor((bucketIndex / bucketCount) * visibleLength);
+    const rangeEnd = sampleStart + Math.floor(((bucketIndex + 1) / bucketCount) * visibleLength);
+    let peak = 0;
+    let rmsSum = 0;
+    const safeRangeEnd = Math.max(rangeStart + 1, rangeEnd);
+    for (let cursor = rangeStart; cursor < safeRangeEnd; cursor += 1) {
+      const value = waveformData.samples[cursor] ?? 0;
+      const absValue = Math.abs(value);
+      if (absValue > peak) {
+        peak = absValue;
+      }
+      rmsSum += value * value;
+    }
+    const sampleCount = safeRangeEnd - rangeStart;
+    const rms = Math.sqrt(rmsSum / sampleCount);
+    const amplitude = Math.min(1, peak * 0.72 + rms * 0.9);
+    const x = bucketCount === 1 ? 0 : (bucketIndex / (bucketCount - 1)) * viewWidth;
+    const halfHeight = Math.max(1, amplitude * maxAmplitudeHeight);
+    topPoints.push(`${x.toFixed(2)} ${(centerY - halfHeight).toFixed(2)}`);
+    bottomPoints.push(`${x.toFixed(2)} ${(centerY + halfHeight).toFixed(2)}`);
+  }
+
+  const areaPath = [
+    `M ${topPoints[0]}`,
+    ...topPoints.slice(1).map((point) => `L ${point}`),
+    ...bottomPoints.slice().reverse().map((point) => `L ${point}`),
+    "Z",
+  ].join(" ");
+
+  const centerLinePath = `M 0 ${centerY.toFixed(2)} L ${viewWidth.toFixed(2)} ${centerY.toFixed(2)}`;
+
+  return {
+    areaPath,
+    centerLinePath,
+    viewWidth,
+  };
 }

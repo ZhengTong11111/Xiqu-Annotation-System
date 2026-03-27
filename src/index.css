@@ -382,12 +382,78 @@ select {
   color: #203047;
 }
 
+.track-label-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.track-label-copy strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.track-label-copy span {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
 .track-lane {
   position: relative;
   min-height: 72px;
   background-image:
     linear-gradient(90deg, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
   background-size: 20px 100%;
+}
+
+.waveform-track {
+  background: linear-gradient(180deg, rgba(244, 248, 255, 0.95), rgba(239, 244, 251, 0.9));
+}
+
+.waveform-label {
+  background: linear-gradient(180deg, rgba(245, 249, 255, 0.96), rgba(237, 243, 251, 0.92));
+}
+
+.waveform-lane {
+  overflow: hidden;
+  min-height: 72px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.3), rgba(230, 238, 248, 0.35)),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
+  background-size: auto, 20px 100%;
+}
+
+.waveform-detail-svg {
+  position: absolute;
+  top: 8px;
+  height: 56px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.waveform-area {
+  fill: rgba(15, 108, 189, 0.2);
+  stroke: rgba(15, 108, 189, 0.88);
+  stroke-width: 1.1;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.waveform-center-line {
+  fill: none;
+  stroke: rgba(15, 23, 42, 0.1);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.waveform-empty {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 16px;
+  color: var(--ink-soft);
+  font-size: 12px;
 }
 
 .timeline-block {

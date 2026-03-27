@@ -44,6 +44,12 @@ export type ProjectData = {
   actionAnnotations: ActionAnnotation[];
 };
 
+export type WaveformData = {
+  samples: Float32Array;
+  sampleRate: number;
+  duration: number;
+};
+
 export type SelectedItem =
   | { type: "line"; id: string }
   | { type: "character"; id: string }

@@ -11,6 +11,7 @@ import type {
   CharacterAnnotation,
   ProjectData,
   SelectedItem,
+  WaveformData,
 } from "./types";
 import {
   buildProjectFromLines,
@@ -24,6 +25,13 @@ import {
   parseSrt,
 } from "./utils/srt";
 
+type HistoryAction = "edit" | "import-video" | "import-srt";
+
+type HistoryEntry = {
+  project: ProjectData;
+  action: HistoryAction;
+};
+
 function App() {
   const [project, setProject] = useState<ProjectData>(mockProject);
   const [currentTime, setCurrentTime] = useState(12.4);
@@ -34,14 +42,18 @@ function App() {
   });
   const [playbackRate, setPlaybackRate] = useState(1);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [previewTime, setPreviewTime] = useState<number | null>(null);
+  const [waveformData, setWaveformData] = useState<WaveformData | null>(null);
+  const [isWaveformLoading, setIsWaveformLoading] = useState(false);
   const [zoom, setZoom] = useState(100);
-  const [undoStack, setUndoStack] = useState<ProjectData[]>([]);
-  const [redoStack, setRedoStack] = useState<ProjectData[]>([]);
+  const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
+  const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
   const projectRef = useRef(project);
   const transientProjectRef = useRef<ProjectData | null>(null);
   const undoStackRef = useRef(undoStack);
   const redoStackRef = useRef(redoStack);
+  const waveformRequestIdRef = useRef(0);
 
   useEffect(() => {
     projectRef.current = project;
@@ -60,12 +72,12 @@ function App() {
     setProject(nextProject);
   }
 
-  function applyUndoStackState(nextUndoStack: ProjectData[]) {
+  function applyUndoStackState(nextUndoStack: HistoryEntry[]) {
     undoStackRef.current = nextUndoStack;
     setUndoStack(nextUndoStack);
   }
 
-  function applyRedoStackState(nextRedoStack: ProjectData[]) {
+  function applyRedoStackState(nextRedoStack: HistoryEntry[]) {
     redoStackRef.current = nextRedoStack;
     setRedoStack(nextRedoStack);
   }
@@ -111,6 +123,45 @@ function App() {
   }, [playbackRate]);
 
   useEffect(() => {
+    const videoUrl = project.videoUrl;
+    const requestId = waveformRequestIdRef.current + 1;
+    waveformRequestIdRef.current = requestId;
+
+    if (!videoUrl) {
+      setWaveformData(null);
+      setIsWaveformLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsWaveformLoading(true);
+
+    void buildWaveformData(videoUrl)
+      .then((nextWaveformData) => {
+        if (cancelled || waveformRequestIdRef.current !== requestId) {
+          return;
+        }
+        setWaveformData(nextWaveformData);
+      })
+      .catch(() => {
+        if (cancelled || waveformRequestIdRef.current !== requestId) {
+          return;
+        }
+        setWaveformData(null);
+      })
+      .finally(() => {
+        if (cancelled || waveformRequestIdRef.current !== requestId) {
+          return;
+        }
+        setIsWaveformLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [project.videoUrl]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if ((event.target as HTMLElement | null)?.tagName === "INPUT" ||
           (event.target as HTMLElement | null)?.tagName === "SELECT") {
@@ -149,7 +200,7 @@ function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentTime, selectedItem, undoStack, redoStack, project]);
+  }, [currentTime, previewTime, selectedItem, undoStack, redoStack, project]);
 
   useEffect(() => {
     const preventPageZoom = (event: WheelEvent) => {
@@ -186,13 +237,17 @@ function App() {
     return JSON.stringify(left) === JSON.stringify(right);
   }
 
-  function commitProject(nextProject: ProjectData, baseProject = transientProjectRef.current ?? projectRef.current) {
+  function commitProject(
+    nextProject: ProjectData,
+    baseProject = transientProjectRef.current ?? projectRef.current,
+    action: HistoryAction = "edit",
+  ) {
     if (projectsEqual(baseProject, nextProject)) {
       transientProjectRef.current = null;
       applyProjectState(nextProject);
       return;
     }
-    applyUndoStackState([...undoStackRef.current.slice(-49), baseProject]);
+    applyUndoStackState([...undoStackRef.current.slice(-49), { project: baseProject, action }]);
     applyRedoStackState([]);
     transientProjectRef.current = null;
     applyProjectState(nextProject);
@@ -210,6 +265,7 @@ function App() {
 
   function seekTo(time: number) {
     const safeTime = Math.max(0, Math.min(time, duration));
+    setPreviewTime(null);
     setCurrentTime(safeTime);
     if (videoRef.current) {
       videoRef.current.currentTime = safeTime;
@@ -219,6 +275,10 @@ function App() {
   function togglePlay() {
     if (!videoRef.current) {
       return;
+    }
+    if (previewTime !== null) {
+      videoRef.current.currentTime = currentTime;
+      setPreviewTime(null);
     }
     if (videoRef.current.paused) {
       void videoRef.current.play();
@@ -324,31 +384,37 @@ function App() {
       return;
     }
     const currentUndoStack = undoStackRef.current;
-    const previous = currentUndoStack[currentUndoStack.length - 1];
-    if (!previous) {
+    const previousEntry = currentUndoStack[currentUndoStack.length - 1];
+    if (!previousEntry) {
       return;
     }
-    applyRedoStackState([...redoStackRef.current, projectRef.current]);
+    if (requiresUndoConfirmation(previousEntry.action)) {
+      const confirmed = window.confirm(getUndoConfirmationMessage(previousEntry.action));
+      if (!confirmed) {
+        return;
+      }
+    }
+    applyRedoStackState([...redoStackRef.current, { project: projectRef.current, action: previousEntry.action }]);
     applyUndoStackState(currentUndoStack.slice(0, -1));
-    applyProjectState(previous);
+    applyProjectState(previousEntry.project);
   }
 
   function redo() {
     const currentRedoStack = redoStackRef.current;
-    const next = currentRedoStack[currentRedoStack.length - 1];
-    if (!next) {
+    const nextEntry = currentRedoStack[currentRedoStack.length - 1];
+    if (!nextEntry) {
       return;
     }
-    applyUndoStackState([...undoStackRef.current, projectRef.current]);
+    applyUndoStackState([...undoStackRef.current, { project: projectRef.current, action: nextEntry.action }]);
     applyRedoStackState(currentRedoStack.slice(0, -1));
-    applyProjectState(next);
+    applyProjectState(nextEntry.project);
   }
 
   async function importSrtFile(file: File) {
     const text = await file.text();
     const lines = parseSrt(text);
     const nextProject = buildProjectFromLines(lines, projectRef.current.videoUrl);
-    commitProject(nextProject);
+    commitProject(nextProject, undefined, "import-srt");
     setSelectedItem(lines[0] ? { type: "line", id: lines[0].id } : null);
     if (lines[0]) {
       seekTo(lines[0].startTime);
@@ -357,7 +423,7 @@ function App() {
 
   async function handleVideoImport(file: File) {
     const url = URL.createObjectURL(file);
-    commitProject({ ...projectRef.current, videoUrl: url });
+    commitProject({ ...projectRef.current, videoUrl: url }, undefined, "import-video");
   }
 
   function handleExport(kind: "character" | "singing" | "hand" | "body" | "project") {
@@ -429,6 +495,7 @@ function App() {
             videoUrl={project.videoUrl}
             playbackRate={playbackRate}
             currentTime={currentTime}
+            previewTime={previewTime}
             isPlaying={isPlaying}
             onLoadedMetadata={(nextDuration) => setDuration(Math.max(nextDuration, getProjectDuration(project)))}
             onTimeUpdate={setCurrentTime}
@@ -439,6 +506,8 @@ function App() {
             characterAnnotations={project.characterAnnotations}
             actionAnnotations={project.actionAnnotations}
             trackDefinitions={trackDefinitions}
+            waveformData={waveformData}
+            isWaveformLoading={isWaveformLoading}
             currentTime={currentTime}
             selectedItem={selectedItem}
             zoom={zoom}
@@ -447,6 +516,7 @@ function App() {
             getProjectSnapshot={() => projectRef.current}
             onZoomChange={setZoom}
             onSeek={seekTo}
+            onPreviewFrame={setPreviewTime}
             onSelectItem={setSelectedItem}
             onCharacterChange={(id, changes) => updateCharacter(id, changes, false)}
             onCharacterCommit={(id, changes) => updateCharacter(id, changes, true)}
@@ -517,6 +587,60 @@ function downloadBlob(content: string, fileName: string, type: string) {
   link.download = fileName;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function requiresUndoConfirmation(action: HistoryAction) {
+  return action === "import-video" || action === "import-srt";
+}
+
+function getUndoConfirmationMessage(action: HistoryAction) {
+  if (action === "import-video") {
+    return "确定要撤销导入视频吗？当前视频将从项目中移除。";
+  }
+  if (action === "import-srt") {
+    return "确定要撤销导入句级字幕吗？当前导入的字幕与逐字结果将回退到上一步状态。";
+  }
+  return "确定要执行撤销吗？";
+}
+
+async function buildWaveformData(videoUrl: string): Promise<WaveformData | null> {
+  const AudioContextCtor = window.AudioContext || (window as typeof window & {
+    webkitAudioContext?: typeof AudioContext;
+  }).webkitAudioContext;
+
+  if (!AudioContextCtor) {
+    return null;
+  }
+
+  const response = await fetch(videoUrl);
+  const buffer = await response.arrayBuffer();
+  const audioContext = new AudioContextCtor();
+
+  try {
+    const audioBuffer = await audioContext.decodeAudioData(buffer.slice(0));
+    const mixedChannel = mixAudioBufferChannels(audioBuffer);
+    return {
+      samples: mixedChannel,
+      sampleRate: audioBuffer.sampleRate,
+      duration: audioBuffer.duration,
+    };
+  } finally {
+    void audioContext.close();
+  }
+}
+
+function mixAudioBufferChannels(audioBuffer: AudioBuffer) {
+  const length = audioBuffer.length;
+  const mixed = new Float32Array(length);
+
+  for (let channelIndex = 0; channelIndex < audioBuffer.numberOfChannels; channelIndex += 1) {
+    const channelData = audioBuffer.getChannelData(channelIndex);
+    for (let sampleIndex = 0; sampleIndex < length; sampleIndex += 1) {
+      mixed[sampleIndex] += channelData[sampleIndex] / audioBuffer.numberOfChannels;
+    }
+  }
+
+  return mixed;
 }
 
 export default App;
