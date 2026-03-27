@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ActionAnnotation,
   CharacterAnnotation,
+  ProjectData,
   SelectedItem,
   SubtitleLine,
   TrackDefinition,
@@ -18,11 +19,14 @@ type TimelineProps = {
   zoom: number;
   duration: number;
   focusRange: { start: number; end: number } | null;
+  getProjectSnapshot: () => ProjectData;
   onZoomChange: (zoom: number) => void;
   onSeek: (time: number) => void;
   onSelectItem: (item: SelectedItem) => void;
   onCharacterChange: (id: string, changes: Partial<CharacterAnnotation>) => void;
+  onCharacterCommit: (id: string, changes: Partial<CharacterAnnotation>) => void;
   onActionChange: (id: string, changes: Partial<ActionAnnotation>) => void;
+  onActionCommit: (id: string, changes: Partial<ActionAnnotation>) => void;
   onCreateAction: (trackId: string, startTime: number, endTime: number) => void;
 };
 
@@ -53,6 +57,9 @@ const TRACK_HEIGHT = 72;
 const TRACK_LABEL_WIDTH = 150;
 const SNAP_SECONDS = 0.05;
 const ZOOM_SETTLE_MS = 220;
+const DRAG_ACTIVATION_PX = 4;
+const EDGE_HIT_SLOP_PX = 16;
+const SELECTED_EDGE_HIT_SLOP_PX = 36;
 
 type ZoomGestureState = {
   startZoom: number;
@@ -71,6 +78,26 @@ type SliderZoomState = {
   viewportOffset: number;
 };
 
+type PendingDragUpdate =
+  | {
+      target: "character";
+      id: string;
+      changes: Partial<CharacterAnnotation>;
+    }
+  | {
+      target: "action";
+      id: string;
+      changes: Partial<ActionAnnotation>;
+    };
+
+type HoveredBlockState = {
+  id: string;
+  type: "character" | "action";
+  edge: "left" | "right" | "center";
+} | null;
+
+type EdgeHit = "left" | "right" | "center";
+
 export function Timeline({
   subtitleLines,
   characterAnnotations,
@@ -81,11 +108,14 @@ export function Timeline({
   zoom,
   duration,
   focusRange,
+  getProjectSnapshot,
   onZoomChange,
   onSeek,
   onSelectItem,
   onCharacterChange,
+  onCharacterCommit,
   onActionChange,
+  onActionCommit,
   onCreateAction,
 }: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -97,7 +127,12 @@ export function Timeline({
   const pendingZoomRef = useRef<PendingZoomState | null>(null);
   const sliderZoomRef = useRef<SliderZoomState | null>(null);
   const zoomFrameRef = useRef<number | null>(null);
+  const dragStateRef = useRef<DragState>(null);
+  const lastPointerClientXRef = useRef(0);
+  const pendingDragUpdateRef = useRef<PendingDragUpdate | null>(null);
+  const dragFrameRef = useRef<number | null>(null);
   const [dragState, setDragState] = useState<DragState>(null);
+  const [hoveredBlock, setHoveredBlock] = useState<HoveredBlockState>(null);
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
   const sliderZoom = Math.round(zoom / 10) * 10;
 
@@ -110,9 +145,16 @@ export function Timeline({
   }, [currentTime]);
 
   useEffect(() => {
+    dragStateRef.current = dragState;
+  }, [dragState]);
+
+  useEffect(() => {
     return () => {
       if (zoomFrameRef.current !== null) {
         cancelAnimationFrame(zoomFrameRef.current);
+      }
+      if (dragFrameRef.current !== null) {
+        cancelAnimationFrame(dragFrameRef.current);
       }
     };
   }, []);
@@ -126,6 +168,17 @@ export function Timeline({
       currentTime,
     ];
   }, [subtitleLines, characterAnnotations, actionAnnotations, currentTime]);
+
+  function getLiveSnapPoints() {
+    const liveProject = getProjectSnapshot();
+    return [
+      0,
+      ...liveProject.subtitleLines.flatMap((line) => [line.startTime, line.endTime]),
+      ...liveProject.characterAnnotations.flatMap((item) => [item.startTime, item.endTime]),
+      ...liveProject.actionAnnotations.flatMap((item) => [item.startTime, item.endTime]),
+      currentTimeRef.current,
+    ];
+  }
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -216,11 +269,18 @@ export function Timeline({
     }
 
     const handlePointerMove = (event: PointerEvent) => {
-      if (!scrollRef.current) {
+      const activeDragState = dragStateRef.current;
+      if (!activeDragState || !scrollRef.current) {
         return;
       }
-      const deltaSeconds = (event.clientX - dragState.originX) / zoom;
-      if (dragState.kind === "create-action") {
+      lastPointerClientXRef.current = event.clientX;
+      const deltaPixels = event.clientX - activeDragState.originX;
+      const liveSnapPoints = getLiveSnapPoints();
+      if (activeDragState.kind !== "create-action" && Math.abs(deltaPixels) < DRAG_ACTIVATION_PX) {
+        return;
+      }
+      const deltaSeconds = (event.clientX - activeDragState.originX) / zoom;
+      if (activeDragState.kind === "create-action") {
         setDragState((prev) =>
           prev && prev.kind === "create-action"
             ? { ...prev, currentX: event.clientX }
@@ -229,38 +289,82 @@ export function Timeline({
         return;
       }
 
-      if (dragState.kind.includes("character")) {
+      if (isCharacterDrag(activeDragState)) {
         const next = computeNextRange(
-          dragState.originalStart,
-          dragState.originalEnd,
+          activeDragState.originalStart,
+          activeDragState.originalEnd,
           deltaSeconds,
-          dragState.kind,
-          snapPoints,
+          activeDragState.kind,
+          liveSnapPoints,
+          false,
         );
-        onCharacterChange(dragState.id, next);
+        scheduleDragUpdate({
+          target: "character",
+          id: activeDragState.id,
+          changes: next,
+        });
         return;
       }
 
       const next = computeNextRange(
-        dragState.originalStart,
-        dragState.originalEnd,
+        activeDragState.originalStart,
+        activeDragState.originalEnd,
         deltaSeconds,
-        dragState.kind,
-        snapPoints,
+        activeDragState.kind,
+        liveSnapPoints,
+        false,
       );
-      onActionChange(dragState.id, next);
+      scheduleDragUpdate({
+        target: "action",
+        id: activeDragState.id,
+        changes: next,
+      });
     };
 
     const handlePointerUp = () => {
-      if (dragState.kind === "create-action" && scrollRef.current) {
+      const activeDragState = dragStateRef.current;
+      flushPendingDragUpdate();
+      if (!activeDragState) {
+        setDragState(null);
+        return;
+      }
+      if (
+        activeDragState.kind !== "create-action" &&
+        Math.abs(lastPointerClientXRef.current - activeDragState.originX) < DRAG_ACTIVATION_PX
+      ) {
+        setDragState(null);
+        return;
+      }
+      const liveSnapPoints = getLiveSnapPoints();
+      if (activeDragState.kind === "create-action" && scrollRef.current) {
         const bounds = scrollRef.current.getBoundingClientRect();
-        const left = Math.min(dragState.originX, dragState.currentX) - bounds.left + scrollRef.current.scrollLeft;
-        const right = Math.max(dragState.originX, dragState.currentX) - bounds.left + scrollRef.current.scrollLeft;
-        const startTime = snapTime(left / zoom, snapPoints);
-        const endTime = snapTime(right / zoom, snapPoints);
+        const left = Math.min(activeDragState.originX, activeDragState.currentX) - bounds.left + scrollRef.current.scrollLeft;
+        const right = Math.max(activeDragState.originX, activeDragState.currentX) - bounds.left + scrollRef.current.scrollLeft;
+        const startTime = snapTime(left / zoom, liveSnapPoints);
+        const endTime = snapTime(right / zoom, liveSnapPoints);
         if (endTime - startTime >= 0.04) {
-          onCreateAction(dragState.trackId, startTime, endTime);
+          onCreateAction(activeDragState.trackId, startTime, endTime);
         }
+      } else if (isCharacterDrag(activeDragState)) {
+        const next = computeNextRange(
+          activeDragState.originalStart,
+          activeDragState.originalEnd,
+          (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+          activeDragState.kind,
+          liveSnapPoints,
+          true,
+        );
+        onCharacterCommit(activeDragState.id, next);
+      } else if (isActionDrag(activeDragState)) {
+        const next = computeNextRange(
+          activeDragState.originalStart,
+          activeDragState.originalEnd,
+          (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+          activeDragState.kind,
+          liveSnapPoints,
+          true,
+        );
+        onActionCommit(activeDragState.id, next);
       }
       setDragState(null);
     };
@@ -271,7 +375,7 @@ export function Timeline({
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [dragState, zoom, snapPoints, onCharacterChange, onActionChange, onCreateAction]);
+  }, [dragState, zoom, snapPoints, characterAnnotations, actionAnnotations, onCharacterChange, onCharacterCommit, onActionChange, onActionCommit, onCreateAction]);
 
   const ticks = useMemo(() => {
     const step = zoom >= 160 ? 0.5 : zoom >= 100 ? 1 : 2;
@@ -374,6 +478,7 @@ export function Timeline({
                 if (track.type !== "action" || event.target !== event.currentTarget || !scrollRef.current) {
                   return;
                 }
+                lastPointerClientXRef.current = event.clientX;
                 setDragState({
                   kind: "create-action",
                   trackId: track.id,
@@ -419,32 +524,85 @@ export function Timeline({
     const left = annotation.startTime * zoom;
     const width = Math.max((annotation.endTime - annotation.startTime) * zoom, 8);
     const label = "char" in annotation ? annotation.char : annotation.label;
+    const zIndex = isSelected ? 4 : isActive ? 3 : 1;
+    const hoveredEdge = hoveredBlock?.id === annotation.id && hoveredBlock.type === type
+      ? hoveredBlock.edge
+      : null;
 
     return (
       <div
         key={annotation.id}
+        data-block-id={annotation.id}
+        data-block-type={type}
         className={[
           "timeline-block",
           type,
           isSelected ? "selected" : "",
           isActive ? "active" : "",
+          hoveredEdge === "center" ? "hover-move" : "",
+          hoveredEdge === "left" ? "hover-resize-left" : "",
+          hoveredEdge === "right" ? "hover-resize-right" : "",
         ].join(" ")}
-        style={{ left, width }}
+        style={{ left, width, zIndex }}
+        onPointerMove={(event) => {
+          const preferredHit = resolvePreferredBlockHit(
+            event.clientX,
+            event.clientY,
+            annotation.id,
+            type,
+            characterAnnotations,
+            actionAnnotations,
+            selectedItem,
+          );
+          const hoverTarget = preferredHit ?? { id: annotation.id, type, edge: resolveEdge(event) };
+          setHoveredBlock((prev) =>
+            prev?.id === hoverTarget.id && prev.type === hoverTarget.type && prev.edge === hoverTarget.edge
+              ? prev
+              : hoverTarget,
+          );
+        }}
+        onPointerLeave={() => {
+          setHoveredBlock((prev) =>
+            prev?.id === annotation.id && prev.type === type ? null : prev,
+          );
+        }}
         onPointerDown={(event) => {
           event.stopPropagation();
+          const preferredHit = resolvePreferredBlockHit(
+            event.clientX,
+            event.clientY,
+            annotation.id,
+            type,
+            characterAnnotations,
+            actionAnnotations,
+            selectedItem,
+          );
+          const targetId = preferredHit?.id ?? annotation.id;
+          const targetType = preferredHit?.type ?? type;
+          const targetEdge = preferredHit?.edge ?? resolveEdge(event);
+          const liveProject = getProjectSnapshot();
+          const targetAnnotation = findAnnotationById(
+            targetId,
+            targetType,
+            liveProject.characterAnnotations,
+            liveProject.actionAnnotations,
+          );
+          if (!targetAnnotation) {
+            return;
+          }
+          lastPointerClientXRef.current = event.clientX;
           const base = {
-            id: annotation.id,
+            id: targetAnnotation.id,
             originX: event.clientX,
-            originalStart: annotation.startTime,
-            originalEnd: annotation.endTime,
+            originalStart: targetAnnotation.startTime,
+            originalEnd: targetAnnotation.endTime,
           };
-          const edge = resolveEdge(event);
-          if (type === "character") {
+          if (targetType === "character") {
             setDragState({
               kind:
-                edge === "left"
+                targetEdge === "left"
                   ? "resize-left-character"
-                  : edge === "right"
+                  : targetEdge === "right"
                     ? "resize-right-character"
                     : "move-character",
               ...base,
@@ -452,15 +610,16 @@ export function Timeline({
           } else {
             setDragState({
               kind:
-                edge === "left"
+                targetEdge === "left"
                   ? "resize-left-action"
-                  : edge === "right"
+                  : targetEdge === "right"
                     ? "resize-right-action"
                     : "move-action",
               ...base,
             });
           }
-          onSelectItem({ type, id: annotation.id });
+          setHoveredBlock({ id: targetAnnotation.id, type: targetType, edge: targetEdge });
+          onSelectItem({ type: targetType, id: targetAnnotation.id });
         }}
         onClick={(event) => {
           event.stopPropagation();
@@ -554,18 +713,112 @@ export function Timeline({
     sliderZoomRef.current = null;
     zoomInteractionUntilRef.current = Date.now() + ZOOM_SETTLE_MS;
   }
+
+  function scheduleDragUpdate(update: PendingDragUpdate) {
+    pendingDragUpdateRef.current = update;
+    if (dragFrameRef.current !== null) {
+      return;
+    }
+    dragFrameRef.current = requestAnimationFrame(() => {
+      dragFrameRef.current = null;
+      flushPendingDragUpdate();
+    });
+  }
+
+  function flushPendingDragUpdate() {
+    const pendingDragUpdate = pendingDragUpdateRef.current;
+    if (!pendingDragUpdate) {
+      return;
+    }
+    pendingDragUpdateRef.current = null;
+    if (pendingDragUpdate.target === "character") {
+      onCharacterChange(pendingDragUpdate.id, pendingDragUpdate.changes);
+      return;
+    }
+    onActionChange(pendingDragUpdate.id, pendingDragUpdate.changes);
+  }
 }
 
 function resolveEdge(event: React.PointerEvent<HTMLDivElement>) {
-  const rect = event.currentTarget.getBoundingClientRect();
-  const offset = event.clientX - rect.left;
-  if (offset < 8) {
+  return resolveEdgeForElement(event.currentTarget, event.clientX);
+}
+
+function resolveEdgeForElement(element: HTMLElement, clientX: number): EdgeHit {
+  const rect = element.getBoundingClientRect();
+  const offset = clientX - rect.left;
+  const threshold = element.classList.contains("selected")
+    ? SELECTED_EDGE_HIT_SLOP_PX
+    : EDGE_HIT_SLOP_PX;
+  if (offset < threshold) {
     return "left";
   }
-  if (rect.width - offset < 8) {
+  if (rect.width - offset < threshold) {
     return "right";
   }
   return "center";
+}
+
+function resolvePreferredBlockHit(
+  clientX: number,
+  clientY: number,
+  fallbackId: string,
+  fallbackType: "character" | "action",
+  characterAnnotations: CharacterAnnotation[],
+  actionAnnotations: ActionAnnotation[],
+  selectedItem: SelectedItem,
+): HoveredBlockState {
+  if (typeof document === "undefined") {
+    return { id: fallbackId, type: fallbackType, edge: "center" };
+  }
+  const elements = document.elementsFromPoint(clientX, clientY);
+  const candidates = elements
+    .filter((element): element is HTMLElement => element instanceof HTMLElement && element.classList.contains("timeline-block"))
+    .map((element, stackIndex) => {
+      const id = element.dataset.blockId;
+      const type = element.dataset.blockType as "character" | "action" | undefined;
+      if (!id || !type) {
+        return null;
+      }
+      const edge = resolveEdgeForElement(element, clientX);
+      const annotation = findAnnotationById(id, type, characterAnnotations, actionAnnotations);
+      if (!annotation) {
+        return null;
+      }
+      const distanceToEdge = Math.min(
+        Math.abs(clientX - element.getBoundingClientRect().left),
+        Math.abs(element.getBoundingClientRect().right - clientX),
+      );
+      const isSelected = selectedItem?.type === type && selectedItem.id === id;
+      const edgePriority = edge === "center" ? 0 : 1000 - distanceToEdge;
+      const selectedPriority = isSelected ? 200 : 0;
+      const stackPriority = Math.max(0, 50 - stackIndex);
+      return {
+        id,
+        type,
+        edge,
+        score: edgePriority + selectedPriority + stackPriority,
+      };
+    })
+    .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
+
+  if (candidates.length === 0) {
+    return { id: fallbackId, type: fallbackType, edge: "center" };
+  }
+
+  candidates.sort((left, right) => right.score - left.score);
+  const best = candidates[0];
+  return { id: best.id, type: best.type, edge: best.edge };
+}
+
+function findAnnotationById(
+  id: string,
+  type: "character" | "action",
+  characterAnnotations: CharacterAnnotation[],
+  actionAnnotations: ActionAnnotation[],
+) {
+  return type === "character"
+    ? characterAnnotations.find((annotation) => annotation.id === id)
+    : actionAnnotations.find((annotation) => annotation.id === id);
 }
 
 function snapTime(time: number, snapPoints: number[]) {
@@ -579,24 +832,44 @@ function computeNextRange(
   deltaSeconds: number,
   kind: DragState extends infer T ? T extends { kind: infer K } ? K : never : never,
   snapPoints: number[],
+  shouldSnap = true,
 ) {
+  const maybeSnap = (time: number) => (shouldSnap ? snapTime(time, snapPoints) : time);
   if (String(kind).startsWith("move")) {
     const duration = originalEnd - originalStart;
-    const startTime = snapTime(Math.max(0, originalStart + deltaSeconds), snapPoints);
+    const startTime = maybeSnap(Math.max(0, originalStart + deltaSeconds));
     return { startTime, endTime: startTime + duration };
   }
   if (String(kind).includes("resize-left")) {
     const { startTime, endTime } = clampRange(
-      snapTime(Math.max(0, originalStart + deltaSeconds), snapPoints),
+      maybeSnap(Math.max(0, originalStart + deltaSeconds)),
       originalEnd,
     );
     return { startTime, endTime };
   }
   const { startTime, endTime } = clampRange(
     originalStart,
-    snapTime(Math.max(originalStart + 0.04, originalEnd + deltaSeconds), snapPoints),
+    maybeSnap(Math.max(originalStart + 0.04, originalEnd + deltaSeconds)),
   );
   return { startTime, endTime };
+}
+
+function isCharacterDrag(
+  dragState: Exclude<DragState, null>,
+): dragState is Extract<
+  NonNullable<DragState>,
+  { kind: "move-character" | "resize-left-character" | "resize-right-character" }
+> {
+  return dragState.kind.includes("character");
+}
+
+function isActionDrag(
+  dragState: Exclude<DragState, null>,
+): dragState is Extract<
+  NonNullable<DragState>,
+  { kind: "move-action" | "resize-left-action" | "resize-right-action" }
+> {
+  return dragState.kind.includes("action") && dragState.kind !== "create-action";
 }
 
 function getDraftStyle(

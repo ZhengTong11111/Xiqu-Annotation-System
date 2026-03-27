@@ -38,6 +38,37 @@ function App() {
   const [undoStack, setUndoStack] = useState<ProjectData[]>([]);
   const [redoStack, setRedoStack] = useState<ProjectData[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const projectRef = useRef(project);
+  const transientProjectRef = useRef<ProjectData | null>(null);
+  const undoStackRef = useRef(undoStack);
+  const redoStackRef = useRef(redoStack);
+
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
+
+  useEffect(() => {
+    undoStackRef.current = undoStack;
+  }, [undoStack]);
+
+  useEffect(() => {
+    redoStackRef.current = redoStack;
+  }, [redoStack]);
+
+  function applyProjectState(nextProject: ProjectData) {
+    projectRef.current = nextProject;
+    setProject(nextProject);
+  }
+
+  function applyUndoStackState(nextUndoStack: ProjectData[]) {
+    undoStackRef.current = nextUndoStack;
+    setUndoStack(nextUndoStack);
+  }
+
+  function applyRedoStackState(nextRedoStack: ProjectData[]) {
+    redoStackRef.current = nextRedoStack;
+    setRedoStack(nextRedoStack);
+  }
 
   const selectedLineId = selectedItem?.type === "line"
     ? selectedItem.id
@@ -46,10 +77,14 @@ function App() {
       : null;
 
   const focusRange = useMemo(() => {
-    if (!selectedLineId) {
+    if (selectedItem?.type !== "line") {
       return null;
     }
-    const line = project.subtitleLines.find((item) => item.id === selectedLineId);
+    const focusedLineId = selectedItem.id;
+    if (!focusedLineId) {
+      return null;
+    }
+    const line = project.subtitleLines.find((item) => item.id === focusedLineId);
     if (!line) {
       return null;
     }
@@ -57,7 +92,7 @@ function App() {
       start: Math.max(0, line.startTime - 1.5),
       end: line.endTime + 1.5,
     };
-  }, [project.subtitleLines, selectedLineId]);
+  }, [project.subtitleLines, selectedItem]);
 
   useEffect(() => {
     setDuration(
@@ -114,7 +149,7 @@ function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentTime, selectedItem, undoStack, redoStack]);
+  }, [currentTime, selectedItem, undoStack, redoStack, project]);
 
   useEffect(() => {
     const preventPageZoom = (event: WheelEvent) => {
@@ -147,14 +182,30 @@ function App() {
     return project.characterAnnotations.filter((item) => item.lineId === selectedLineId);
   }, [project.characterAnnotations, selectedLineId]);
 
-  function commitProject(nextProject: ProjectData) {
-    setUndoStack((prev) => [...prev.slice(-49), project]);
-    setRedoStack([]);
-    setProject(nextProject);
+  function projectsEqual(left: ProjectData, right: ProjectData) {
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
+
+  function commitProject(nextProject: ProjectData, baseProject = transientProjectRef.current ?? projectRef.current) {
+    if (projectsEqual(baseProject, nextProject)) {
+      transientProjectRef.current = null;
+      applyProjectState(nextProject);
+      return;
+    }
+    applyUndoStackState([...undoStackRef.current.slice(-49), baseProject]);
+    applyRedoStackState([]);
+    transientProjectRef.current = null;
+    applyProjectState(nextProject);
   }
 
   function applyProjectWithoutHistory(nextProject: ProjectData) {
-    setProject(nextProject);
+    if (projectsEqual(projectRef.current, nextProject)) {
+      return;
+    }
+    if (!transientProjectRef.current) {
+      transientProjectRef.current = projectRef.current;
+    }
+    applyProjectState(nextProject);
   }
 
   function seekTo(time: number) {
@@ -177,9 +228,10 @@ function App() {
   }
 
   function updateCharacter(id: string, changes: Partial<CharacterAnnotation>, recordHistory = true) {
+    const currentProject = projectRef.current;
     const nextProject = {
-      ...project,
-      characterAnnotations: project.characterAnnotations.map((item) =>
+      ...currentProject,
+      characterAnnotations: currentProject.characterAnnotations.map((item) =>
         item.id === id ? { ...item, ...changes } : item,
       ),
     };
@@ -191,9 +243,10 @@ function App() {
   }
 
   function updateAction(id: string, changes: Partial<ActionAnnotation>, recordHistory = true) {
+    const currentProject = projectRef.current;
     const nextProject = {
-      ...project,
-      actionAnnotations: project.actionAnnotations.map((item) =>
+      ...currentProject,
+      actionAnnotations: currentProject.actionAnnotations.map((item) =>
         item.id === id ? { ...item, ...changes } : item,
       ),
     };
@@ -205,32 +258,34 @@ function App() {
   }
 
   function deleteSelected() {
+    const currentProject = projectRef.current;
     if (!selectedItem) {
       return;
     }
     if (selectedItem.type === "character") {
       commitProject({
-        ...project,
-        characterAnnotations: project.characterAnnotations.filter((item) => item.id !== selectedItem.id),
+        ...currentProject,
+        characterAnnotations: currentProject.characterAnnotations.filter((item) => item.id !== selectedItem.id),
       });
       setSelectedItem(null);
     }
     if (selectedItem.type === "action") {
       commitProject({
-        ...project,
-        actionAnnotations: project.actionAnnotations.filter((item) => item.id !== selectedItem.id),
+        ...currentProject,
+        actionAnnotations: currentProject.actionAnnotations.filter((item) => item.id !== selectedItem.id),
       });
       setSelectedItem(null);
     }
   }
 
   function addAction(trackId: "hand-action" | "body-action") {
+    const currentProject = projectRef.current;
     const startTime = currentTime;
     const endTime = Math.min(duration, startTime + 0.8);
     commitProject({
-      ...project,
+      ...currentProject,
       actionAnnotations: [
-        ...project.actionAnnotations,
+        ...currentProject.actionAnnotations,
         {
           id: `${trackId}-${crypto.randomUUID()}`,
           trackId,
@@ -243,10 +298,11 @@ function App() {
   }
 
   function createAction(trackId: string, startTime: number, endTime: number) {
+    const currentProject = projectRef.current;
     commitProject({
-      ...project,
+      ...currentProject,
       actionAnnotations: [
-        ...project.actionAnnotations,
+        ...currentProject.actionAnnotations,
         {
           id: `${trackId}-${crypto.randomUUID()}`,
           trackId,
@@ -259,29 +315,39 @@ function App() {
   }
 
   function undo() {
-    const previous = undoStack[undoStack.length - 1];
+    if (transientProjectRef.current) {
+      const transientProject = transientProjectRef.current;
+      transientProjectRef.current = null;
+      if (!projectsEqual(projectRef.current, transientProject)) {
+        applyProjectState(transientProject);
+      }
+      return;
+    }
+    const currentUndoStack = undoStackRef.current;
+    const previous = currentUndoStack[currentUndoStack.length - 1];
     if (!previous) {
       return;
     }
-    setRedoStack((prev) => [...prev, project]);
-    setUndoStack((prev) => prev.slice(0, -1));
-    setProject(previous);
+    applyRedoStackState([...redoStackRef.current, projectRef.current]);
+    applyUndoStackState(currentUndoStack.slice(0, -1));
+    applyProjectState(previous);
   }
 
   function redo() {
-    const next = redoStack[redoStack.length - 1];
+    const currentRedoStack = redoStackRef.current;
+    const next = currentRedoStack[currentRedoStack.length - 1];
     if (!next) {
       return;
     }
-    setUndoStack((prev) => [...prev, project]);
-    setRedoStack((prev) => prev.slice(0, -1));
-    setProject(next);
+    applyUndoStackState([...undoStackRef.current, projectRef.current]);
+    applyRedoStackState(currentRedoStack.slice(0, -1));
+    applyProjectState(next);
   }
 
   async function importSrtFile(file: File) {
     const text = await file.text();
     const lines = parseSrt(text);
-    const nextProject = buildProjectFromLines(lines, project.videoUrl);
+    const nextProject = buildProjectFromLines(lines, projectRef.current.videoUrl);
     commitProject(nextProject);
     setSelectedItem(lines[0] ? { type: "line", id: lines[0].id } : null);
     if (lines[0]) {
@@ -291,7 +357,7 @@ function App() {
 
   async function handleVideoImport(file: File) {
     const url = URL.createObjectURL(file);
-    commitProject({ ...project, videoUrl: url });
+    commitProject({ ...projectRef.current, videoUrl: url });
   }
 
   function handleExport(kind: "character" | "singing" | "hand" | "body" | "project") {
@@ -341,12 +407,14 @@ function App() {
           if (file) {
             void handleVideoImport(file);
           }
+          event.target.value = "";
         }}
         onSrtFileChange={(event) => {
           const file = event.target.files?.[0];
           if (file) {
             void importSrtFile(file);
           }
+          event.target.value = "";
         }}
         onExportTrack={handleExport}
         onUndo={undo}
@@ -376,11 +444,14 @@ function App() {
             zoom={zoom}
             duration={duration}
             focusRange={focusRange}
+            getProjectSnapshot={() => projectRef.current}
             onZoomChange={setZoom}
             onSeek={seekTo}
             onSelectItem={setSelectedItem}
             onCharacterChange={(id, changes) => updateCharacter(id, changes, false)}
+            onCharacterCommit={(id, changes) => updateCharacter(id, changes, true)}
             onActionChange={(id, changes) => updateAction(id, changes, false)}
+            onActionCommit={(id, changes) => updateAction(id, changes, true)}
             onCreateAction={createAction}
           />
         </div>
