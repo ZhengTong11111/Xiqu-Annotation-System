@@ -697,6 +697,9 @@ select {
   flex-direction: column;
   gap: 4px;
   min-width: 164px;
+  max-width: min(240px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: auto;
   padding: 8px;
   border: 1px solid rgba(15, 23, 42, 0.12);
   border-radius: 14px;
@@ -715,6 +718,26 @@ select {
 .character-context-menu button:hover {
   background: rgba(15, 108, 189, 0.08);
   border-color: rgba(15, 108, 189, 0.12);
+}
+
+.character-context-menu-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: rgba(15, 23, 42, 0.08);
+}
+
+.character-context-menu-label {
+  padding: 4px 8px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.character-context-menu button.menu-option-active {
+  background: rgba(15, 108, 189, 0.12);
+  border-color: rgba(15, 108, 189, 0.16);
+  color: #0f3d68;
+  font-weight: 600;
 }
 
 .playhead {

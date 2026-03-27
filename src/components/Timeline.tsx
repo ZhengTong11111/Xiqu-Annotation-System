@@ -43,6 +43,7 @@ type TimelineProps = {
   onCreateCharacterAtTime: (time: number, endTime?: number) => void;
   onCreateActionAtTime: (trackId: string, startTime: number) => void;
   onOpenCharacterContextMenu: (id: string, x: number, y: number) => void;
+  onOpenActionContextMenu: (id: string, x: number, y: number) => void;
   onLineChange: (id: string, changes: Pick<SubtitleLine, "startTime" | "endTime">) => void;
   onLineCommit: (id: string, changes: Pick<SubtitleLine, "startTime" | "endTime">) => void;
   onCharacterChange: (id: string, changes: Partial<CharacterAnnotation>) => void;
@@ -204,6 +205,7 @@ export function Timeline({
   onCreateCharacterAtTime,
   onCreateActionAtTime,
   onOpenCharacterContextMenu,
+  onOpenActionContextMenu,
   onLineChange,
   onLineCommit,
   onCharacterChange,
@@ -1356,13 +1358,14 @@ export function Timeline({
           }
         }}
         onContextMenu={(event) => {
-          if (type !== "character") {
-            return;
-          }
           event.preventDefault();
           event.stopPropagation();
-          onSelectItem({ type: "character", id: annotation.id });
-          onOpenCharacterContextMenu(annotation.id, event.clientX, event.clientY);
+          onSelectItem({ type, id: annotation.id });
+          if (type === "character") {
+            onOpenCharacterContextMenu(annotation.id, event.clientX, event.clientY);
+            return;
+          }
+          onOpenActionContextMenu(annotation.id, event.clientX, event.clientY);
         }}
       >
         <div className="resize-handle left" />

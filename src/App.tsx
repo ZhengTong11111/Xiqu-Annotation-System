@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "./index.css";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { SubtitleList } from "./components/SubtitleList";
@@ -19,6 +19,7 @@ import type {
 import {
   buildProjectFromLines,
   getProjectDuration,
+  singingStyleOptions,
   trackDefinitions,
 } from "./utils/project";
 import {
@@ -36,12 +37,19 @@ type HistoryEntry = {
 };
 
 type CharacterEditLocation = "timeline" | "split-panel";
-type CharacterLineAction = "set-line-start" | "set-line-end" | "merge-prev-line" | "merge-next-line";
+type CharacterLineAction =
+  | "split-block"
+  | "set-line-start"
+  | "set-line-end"
+  | "merge-prev-line"
+  | "merge-next-line";
 
 const CHARACTER_CREATE_ATTACH_WINDOW = 1;
 const DEFAULT_CHARACTER_DURATION = 1.05;
 const MIN_CHARACTER_DURATION = 0.04;
 const DEFAULT_ACTION_DURATION = 0.8;
+const CONTEXT_MENU_GAP = 10;
+const CONTEXT_MENU_VIEWPORT_MARGIN = 12;
 
 function App() {
   const [project, setProject] = useState<ProjectData>(mockProject);
@@ -60,7 +68,8 @@ function App() {
   const [editingCharacterId, setEditingCharacterId] = useState<string | null>(null);
   const [editingCharacterLocation, setEditingCharacterLocation] = useState<CharacterEditLocation | null>(null);
   const [editingCharacterValue, setEditingCharacterValue] = useState("");
-  const [characterContextMenu, setCharacterContextMenu] = useState<{
+  const [blockContextMenu, setBlockContextMenu] = useState<{
+    type: "character" | "action";
     id: string;
     x: number;
     y: number;
@@ -78,6 +87,8 @@ function App() {
   const redoStackRef = useRef(redoStack);
   const waveformRequestIdRef = useRef(0);
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
+  const blockContextMenuRef = useRef<HTMLDivElement>(null);
+  const [blockContextMenuPosition, setBlockContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
 
   useEffect(() => {
     projectRef.current = project;
@@ -281,6 +292,51 @@ function App() {
     }
     return sortCharactersByTime(project.characterAnnotations.filter((item) => item.lineId === selectedLineId));
   }, [project.characterAnnotations, selectedLineId]);
+  const contextMenuCharacter = blockContextMenu?.type === "character"
+    ? project.characterAnnotations.find((item) => item.id === blockContextMenu.id) ?? null
+    : null;
+  const contextMenuAction = blockContextMenu?.type === "action"
+    ? project.actionAnnotations.find((item) => item.id === blockContextMenu.id) ?? null
+    : null;
+  const contextMenuSplitCharacters = contextMenuCharacter
+    ? getSplittableCharacters(contextMenuCharacter.char)
+    : [];
+  const contextMenuActionTrack = contextMenuAction
+    ? trackDefinitions.find((track) => track.id === contextMenuAction.trackId) ?? null
+    : null;
+
+  useLayoutEffect(() => {
+    if (!blockContextMenu || !blockContextMenuRef.current) {
+      setBlockContextMenuPosition(null);
+      return;
+    }
+
+    const menu = blockContextMenuRef.current;
+    const { innerWidth, innerHeight } = window;
+    const menuRect = menu.getBoundingClientRect();
+    let left = blockContextMenu.x + CONTEXT_MENU_GAP;
+    let top = blockContextMenu.y + CONTEXT_MENU_GAP;
+
+    if (left + menuRect.width > innerWidth - CONTEXT_MENU_VIEWPORT_MARGIN) {
+      left = blockContextMenu.x - menuRect.width - CONTEXT_MENU_GAP;
+    }
+    if (top + menuRect.height > innerHeight - CONTEXT_MENU_VIEWPORT_MARGIN) {
+      top = blockContextMenu.y - menuRect.height - CONTEXT_MENU_GAP;
+    }
+
+    left = Math.max(
+      CONTEXT_MENU_VIEWPORT_MARGIN,
+      Math.min(left, innerWidth - menuRect.width - CONTEXT_MENU_VIEWPORT_MARGIN),
+    );
+    top = Math.max(
+      CONTEXT_MENU_VIEWPORT_MARGIN,
+      Math.min(top, innerHeight - menuRect.height - CONTEXT_MENU_VIEWPORT_MARGIN),
+    );
+
+    setBlockContextMenuPosition((current) =>
+      current?.left === left && current?.top === top ? current : { left, top },
+    );
+  }, [blockContextMenu, contextMenuSplitCharacters.length, contextMenuActionTrack, project.characterAnnotations, project.actionAnnotations]);
 
   useEffect(() => {
     if (!editingCharacterId) {
@@ -295,17 +351,17 @@ function App() {
   }, [editingCharacterId, project.characterAnnotations, selectedLineId]);
 
   useEffect(() => {
-    if (!characterContextMenu) {
+    if (!blockContextMenu) {
       return;
     }
 
     const handleClose = () => {
-      setCharacterContextMenu(null);
+      setBlockContextMenu(null);
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setCharacterContextMenu(null);
+        setBlockContextMenu(null);
       }
     };
 
@@ -320,7 +376,7 @@ function App() {
       window.removeEventListener("resize", handleClose);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [characterContextMenu]);
+  }, [blockContextMenu]);
 
   function projectsEqual(left: ProjectData, right: ProjectData) {
     return JSON.stringify(left) === JSON.stringify(right);
@@ -504,6 +560,14 @@ function App() {
     }
   }
 
+  function applyCharacterSingingStyle(id: string, singingStyle: CharacterAnnotation["singingStyle"]) {
+    updateCharacter(id, { singingStyle });
+  }
+
+  function applyActionLabel(id: string, label: string) {
+    updateAction(id, { label });
+  }
+
   function updateTimelineSelectionBatch(items: TimelineBatchMoveItem[], recordHistory = true) {
     if (items.length === 0) {
       return;
@@ -655,6 +719,36 @@ function App() {
     const characterIndex = lineCharacters.findIndex((item) => item.id === id);
 
     if (currentLineIndex === -1 || characterIndex === -1) {
+      return;
+    }
+
+    if (action === "split-block") {
+      const splitCharacters = getSplittableCharacters(currentCharacter.char);
+      if (splitCharacters.length <= 1) {
+        return;
+      }
+      const sliceDuration = (currentCharacter.endTime - currentCharacter.startTime) / splitCharacters.length;
+      const splitAnnotations = splitCharacters.map((char, index) => ({
+        ...currentCharacter,
+        id: index === 0 ? currentCharacter.id : `char-${crypto.randomUUID()}`,
+        char,
+        startTime: currentCharacter.startTime + sliceDuration * index,
+        endTime: index === splitCharacters.length - 1
+          ? currentCharacter.endTime
+          : currentCharacter.startTime + sliceDuration * (index + 1),
+      }));
+      const splitProject = syncSubtitleLine(
+        {
+          ...currentProject,
+          characterAnnotations: [
+            ...currentProject.characterAnnotations.filter((item) => item.id !== currentCharacter.id),
+            ...splitAnnotations,
+          ],
+        },
+        currentCharacter.lineId,
+      );
+      commitProject(splitProject);
+      applySelection({ type: "character", id: splitAnnotations[0].id });
       return;
     }
 
@@ -1028,7 +1122,11 @@ function App() {
             onOpenCharacterContextMenu={(id, x, y) => {
               preferredCharacterEditLocationRef.current = "timeline";
               applySelection({ type: "character", id });
-              setCharacterContextMenu({ id, x, y });
+              setBlockContextMenu({ type: "character", id, x, y });
+            }}
+            onOpenActionContextMenu={(id, x, y) => {
+              applySelection({ type: "action", id });
+              setBlockContextMenu({ type: "action", id, x, y });
             }}
             onLineChange={(id, changes) => updateLinePosition(id, changes, false)}
             onLineCommit={(id, changes) => updateLinePosition(id, changes, true)}
@@ -1109,7 +1207,8 @@ function App() {
                       event.preventDefault();
                       preferredCharacterEditLocationRef.current = "split-panel";
                       applySelection({ type: "character", id: item.id });
-                      setCharacterContextMenu({
+                      setBlockContextMenu({
+                        type: "character",
                         id: item.id,
                         x: event.clientX,
                         y: event.clientY,
@@ -1136,48 +1235,102 @@ function App() {
           />
         </div>
       </main>
-      {characterContextMenu ? (
+      {blockContextMenu ? (
         <div
+          ref={blockContextMenuRef}
           className="character-context-menu"
-          style={{ left: characterContextMenu.x, top: characterContextMenu.y }}
+          style={{
+            left: blockContextMenuPosition?.left ?? blockContextMenu.x + CONTEXT_MENU_GAP,
+            top: blockContextMenuPosition?.top ?? blockContextMenu.y + CONTEXT_MENU_GAP,
+          }}
           onPointerDown={(event) => event.stopPropagation()}
         >
-          <button
-            type="button"
-            onClick={() => {
-              applyCharacterLineAction(characterContextMenu.id, "set-line-start");
-              setCharacterContextMenu(null);
-            }}
-          >
-            设为本句首字
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              applyCharacterLineAction(characterContextMenu.id, "set-line-end");
-              setCharacterContextMenu(null);
-            }}
-          >
-            设为本句末字
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              applyCharacterLineAction(characterContextMenu.id, "merge-prev-line");
-              setCharacterContextMenu(null);
-            }}
-          >
-            并入前一句
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              applyCharacterLineAction(characterContextMenu.id, "merge-next-line");
-              setCharacterContextMenu(null);
-            }}
-          >
-            并入后一句
-          </button>
+          {contextMenuCharacter ? (
+            <>
+              {contextMenuSplitCharacters.length > 1 ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    applyCharacterLineAction(contextMenuCharacter.id, "split-block");
+                    setBlockContextMenu(null);
+                  }}
+                >
+                  拆分
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => {
+                  applyCharacterLineAction(contextMenuCharacter.id, "set-line-start");
+                  setBlockContextMenu(null);
+                }}
+              >
+                设为本句首字
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  applyCharacterLineAction(contextMenuCharacter.id, "set-line-end");
+                  setBlockContextMenu(null);
+                }}
+              >
+                设为本句末字
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  applyCharacterLineAction(contextMenuCharacter.id, "merge-prev-line");
+                  setBlockContextMenu(null);
+                }}
+              >
+                并入前一句
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  applyCharacterLineAction(contextMenuCharacter.id, "merge-next-line");
+                  setBlockContextMenu(null);
+                }}
+              >
+                并入后一句
+              </button>
+              <div className="character-context-menu-divider" />
+              <div className="character-context-menu-label">唱腔类型</div>
+              {singingStyleOptions.map((style) => (
+                <button
+                  key={style}
+                  type="button"
+                  className={contextMenuCharacter.singingStyle === style ? "menu-option-active" : ""}
+                  onClick={() => {
+                    applyCharacterSingingStyle(contextMenuCharacter.id, style);
+                    setBlockContextMenu(null);
+                  }}
+                >
+                  {contextMenuCharacter.singingStyle === style ? `✓ ${style}` : style}
+                </button>
+              ))}
+            </>
+          ) : null}
+          {contextMenuAction ? (
+            <>
+              <div className="character-context-menu-label">
+                {contextMenuActionTrack?.name ?? "动作标签"}
+              </div>
+              {(contextMenuActionTrack?.labels ?? ["其他"]).map((label) => (
+                <button
+                  key={label}
+                  type="button"
+                  className={contextMenuAction.label === label ? "menu-option-active" : ""}
+                  onClick={() => {
+                    applyActionLabel(contextMenuAction.id, label);
+                    setBlockContextMenu(null);
+                  }}
+                >
+                  {contextMenuAction.label === label ? `✓ ${label}` : label}
+                </button>
+              ))}
+            </>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -1210,6 +1363,10 @@ function getUndoConfirmationMessage(action: HistoryAction) {
 
 function isSingleHanCharacter(value: string) {
   return /^[\p{Script=Han}]$/u.test(value);
+}
+
+function getSplittableCharacters(value: string) {
+  return Array.from(value);
 }
 
 function sortCharactersByTime(characters: CharacterAnnotation[]) {
