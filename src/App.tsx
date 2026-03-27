@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "./index.css";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { SubtitleList } from "./components/SubtitleList";
@@ -11,11 +11,15 @@ import type {
   CharacterAnnotation,
   ProjectData,
   SelectedItem,
+  SubtitleLine,
+  TimelineBatchMoveItem,
+  TimelineSelectionItem,
   WaveformData,
 } from "./types";
 import {
   buildProjectFromLines,
   getProjectDuration,
+  singingStyleOptions,
   trackDefinitions,
 } from "./utils/project";
 import {
@@ -32,6 +36,21 @@ type HistoryEntry = {
   action: HistoryAction;
 };
 
+type CharacterEditLocation = "timeline" | "split-panel";
+type CharacterLineAction =
+  | "split-block"
+  | "set-line-start"
+  | "set-line-end"
+  | "merge-prev-line"
+  | "merge-next-line";
+
+const CHARACTER_CREATE_ATTACH_WINDOW = 1;
+const DEFAULT_CHARACTER_DURATION = 1.05;
+const MIN_CHARACTER_DURATION = 0.04;
+const DEFAULT_ACTION_DURATION = 0.8;
+const CONTEXT_MENU_GAP = 10;
+const CONTEXT_MENU_VIEWPORT_MARGIN = 12;
+
 function App() {
   const [project, setProject] = useState<ProjectData>(mockProject);
   const [currentTime, setCurrentTime] = useState(12.4);
@@ -40,12 +59,25 @@ function App() {
     type: "line",
     id: "line-1",
   });
+  const [selectedTimelineItems, setSelectedTimelineItems] = useState<TimelineSelectionItem[]>([]);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [previewTime, setPreviewTime] = useState<number | null>(null);
   const [waveformData, setWaveformData] = useState<WaveformData | null>(null);
   const [isWaveformLoading, setIsWaveformLoading] = useState(false);
+  const [editingCharacterId, setEditingCharacterId] = useState<string | null>(null);
+  const [editingCharacterLocation, setEditingCharacterLocation] = useState<CharacterEditLocation | null>(null);
+  const [editingCharacterValue, setEditingCharacterValue] = useState("");
+  const [blockContextMenu, setBlockContextMenu] = useState<{
+    type: "character" | "action";
+    id: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const [zoom, setZoom] = useState(100);
+  const [trackSnapEnabled, setTrackSnapEnabled] = useState<Record<string, boolean>>(
+    () => Object.fromEntries(trackDefinitions.map((track) => [track.id, true])),
+  );
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -54,6 +86,9 @@ function App() {
   const undoStackRef = useRef(undoStack);
   const redoStackRef = useRef(redoStack);
   const waveformRequestIdRef = useRef(0);
+  const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
+  const blockContextMenuRef = useRef<HTMLDivElement>(null);
+  const [blockContextMenuPosition, setBlockContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
 
   useEffect(() => {
     projectRef.current = project;
@@ -80,6 +115,19 @@ function App() {
   function applyRedoStackState(nextRedoStack: HistoryEntry[]) {
     redoStackRef.current = nextRedoStack;
     setRedoStack(nextRedoStack);
+  }
+
+  function applySelection(nextSelectedItem: SelectedItem, timelineItems?: TimelineSelectionItem[]) {
+    setSelectedItem(nextSelectedItem);
+    if (timelineItems !== undefined) {
+      setSelectedTimelineItems(timelineItems);
+      return;
+    }
+    if (nextSelectedItem?.type === "character" || nextSelectedItem?.type === "action") {
+      setSelectedTimelineItems([{ type: nextSelectedItem.type, id: nextSelectedItem.id }]);
+      return;
+    }
+    setSelectedTimelineItems([]);
   }
 
   const selectedLineId = selectedItem?.type === "line"
@@ -179,6 +227,10 @@ function App() {
         event.preventDefault();
         seekTo(currentTime + (event.shiftKey ? 1 : 0.04));
       }
+      if (event.key === "Enter" && selectedItem?.type === "character" && !editingCharacterId) {
+        event.preventDefault();
+        startCharacterTextEdit(selectedItem.id, preferredCharacterEditLocationRef.current);
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) {
@@ -191,8 +243,16 @@ function App() {
         event.preventDefault();
         redo();
       }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        selectAllTimelineItems();
+      }
       if (event.key === "Delete" || event.key === "Backspace") {
-        if (selectedItem?.type === "character" || selectedItem?.type === "action") {
+        if (
+          selectedTimelineItems.length > 0 ||
+          selectedItem?.type === "character" ||
+          selectedItem?.type === "action"
+        ) {
           event.preventDefault();
           deleteSelected();
         }
@@ -200,7 +260,7 @@ function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentTime, previewTime, selectedItem, undoStack, redoStack, project]);
+  }, [currentTime, editingCharacterId, previewTime, selectedItem, selectedTimelineItems, undoStack, redoStack, project]);
 
   useEffect(() => {
     const preventPageZoom = (event: WheelEvent) => {
@@ -230,8 +290,93 @@ function App() {
     if (!selectedLineId) {
       return [];
     }
-    return project.characterAnnotations.filter((item) => item.lineId === selectedLineId);
+    return sortCharactersByTime(project.characterAnnotations.filter((item) => item.lineId === selectedLineId));
   }, [project.characterAnnotations, selectedLineId]);
+  const contextMenuCharacter = blockContextMenu?.type === "character"
+    ? project.characterAnnotations.find((item) => item.id === blockContextMenu.id) ?? null
+    : null;
+  const contextMenuAction = blockContextMenu?.type === "action"
+    ? project.actionAnnotations.find((item) => item.id === blockContextMenu.id) ?? null
+    : null;
+  const contextMenuSplitCharacters = contextMenuCharacter
+    ? getSplittableCharacters(contextMenuCharacter.char)
+    : [];
+  const contextMenuActionTrack = contextMenuAction
+    ? trackDefinitions.find((track) => track.id === contextMenuAction.trackId) ?? null
+    : null;
+
+  useLayoutEffect(() => {
+    if (!blockContextMenu || !blockContextMenuRef.current) {
+      setBlockContextMenuPosition(null);
+      return;
+    }
+
+    const menu = blockContextMenuRef.current;
+    const { innerWidth, innerHeight } = window;
+    const menuRect = menu.getBoundingClientRect();
+    let left = blockContextMenu.x + CONTEXT_MENU_GAP;
+    let top = blockContextMenu.y + CONTEXT_MENU_GAP;
+
+    if (left + menuRect.width > innerWidth - CONTEXT_MENU_VIEWPORT_MARGIN) {
+      left = blockContextMenu.x - menuRect.width - CONTEXT_MENU_GAP;
+    }
+    if (top + menuRect.height > innerHeight - CONTEXT_MENU_VIEWPORT_MARGIN) {
+      top = blockContextMenu.y - menuRect.height - CONTEXT_MENU_GAP;
+    }
+
+    left = Math.max(
+      CONTEXT_MENU_VIEWPORT_MARGIN,
+      Math.min(left, innerWidth - menuRect.width - CONTEXT_MENU_VIEWPORT_MARGIN),
+    );
+    top = Math.max(
+      CONTEXT_MENU_VIEWPORT_MARGIN,
+      Math.min(top, innerHeight - menuRect.height - CONTEXT_MENU_VIEWPORT_MARGIN),
+    );
+
+    setBlockContextMenuPosition((current) =>
+      current?.left === left && current?.top === top ? current : { left, top },
+    );
+  }, [blockContextMenu, contextMenuSplitCharacters.length, contextMenuActionTrack, project.characterAnnotations, project.actionAnnotations]);
+
+  useEffect(() => {
+    if (!editingCharacterId) {
+      return;
+    }
+    const editingCharacter = project.characterAnnotations.find((item) => item.id === editingCharacterId);
+    if (!editingCharacter || (selectedLineId && editingCharacter.lineId !== selectedLineId)) {
+      setEditingCharacterId(null);
+      setEditingCharacterLocation(null);
+      setEditingCharacterValue("");
+    }
+  }, [editingCharacterId, project.characterAnnotations, selectedLineId]);
+
+  useEffect(() => {
+    if (!blockContextMenu) {
+      return;
+    }
+
+    const handleClose = () => {
+      setBlockContextMenu(null);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setBlockContextMenu(null);
+      }
+    };
+
+    window.addEventListener("pointerdown", handleClose);
+    window.addEventListener("scroll", handleClose, true);
+    window.addEventListener("resize", handleClose);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handleClose);
+      window.removeEventListener("scroll", handleClose, true);
+      window.removeEventListener("resize", handleClose);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [blockContextMenu]);
 
   function projectsEqual(left: ProjectData, right: ProjectData) {
     return JSON.stringify(left) === JSON.stringify(right);
@@ -289,17 +434,115 @@ function App() {
 
   function updateCharacter(id: string, changes: Partial<CharacterAnnotation>, recordHistory = true) {
     const currentProject = projectRef.current;
+    const currentCharacter = currentProject.characterAnnotations.find((item) => item.id === id);
     const nextProject = {
       ...currentProject,
       characterAnnotations: currentProject.characterAnnotations.map((item) =>
         item.id === id ? { ...item, ...changes } : item,
       ),
     };
+    const synchronizedProject =
+      currentCharacter && (
+        changes.char !== undefined ||
+        changes.startTime !== undefined ||
+        changes.endTime !== undefined
+      )
+        ? syncSubtitleLine(nextProject, currentCharacter.lineId)
+        : nextProject;
     if (recordHistory) {
-      commitProject(nextProject);
+      commitProject(synchronizedProject);
     } else {
-      applyProjectWithoutHistory(nextProject);
+      applyProjectWithoutHistory(synchronizedProject);
     }
+  }
+
+  function updateLinePosition(
+    id: string,
+    changes: Pick<SubtitleLine, "startTime" | "endTime">,
+    recordHistory = true,
+  ) {
+    const currentProject = projectRef.current;
+    const currentLine = currentProject.subtitleLines.find((line) => line.id === id);
+    if (!currentLine) {
+      return;
+    }
+    const deltaSeconds = changes.startTime - currentLine.startTime;
+    const hasCharacters = currentProject.characterAnnotations.some((item) => item.lineId === id);
+
+    const shiftedProject = {
+      ...currentProject,
+      subtitleLines: currentProject.subtitleLines.map((line) =>
+        line.id === id
+          ? { ...line, startTime: changes.startTime, endTime: changes.endTime }
+          : line,
+      ),
+      characterAnnotations: hasCharacters
+        ? currentProject.characterAnnotations.map((item) =>
+            item.lineId === id
+              ? {
+                  ...item,
+                  startTime: item.startTime + deltaSeconds,
+                  endTime: item.endTime + deltaSeconds,
+                }
+              : item,
+          )
+        : currentProject.characterAnnotations,
+    };
+
+    const synchronizedProject = hasCharacters
+      ? syncSubtitleLine(shiftedProject, id)
+      : shiftedProject;
+
+    if (recordHistory) {
+      commitProject(synchronizedProject);
+    } else {
+      applyProjectWithoutHistory(synchronizedProject);
+    }
+  }
+
+  function startCharacterTextEdit(id: string, location: CharacterEditLocation) {
+    const currentCharacter = projectRef.current.characterAnnotations.find((item) => item.id === id);
+    if (!currentCharacter) {
+      return;
+    }
+    preferredCharacterEditLocationRef.current = location;
+    applySelection({ type: "character", id });
+    setEditingCharacterId(id);
+    setEditingCharacterLocation(location);
+    setEditingCharacterValue(currentCharacter.char);
+  }
+
+  function cancelCharacterTextEdit() {
+    setEditingCharacterId(null);
+    setEditingCharacterLocation(null);
+    setEditingCharacterValue("");
+  }
+
+  function commitCharacterTextEdit(id: string) {
+    const currentCharacter = projectRef.current.characterAnnotations.find((item) => item.id === id);
+    if (!currentCharacter) {
+      cancelCharacterTextEdit();
+      return;
+    }
+    const normalizedChar = editingCharacterValue.trim();
+    if (!normalizedChar) {
+      window.alert("字内容不能为空。");
+      return;
+    }
+    if (normalizedChar === currentCharacter.char) {
+      cancelCharacterTextEdit();
+      return;
+    }
+    if (!isSingleHanCharacter(normalizedChar)) {
+      const confirmed = window.confirm(
+        `当前输入为“${normalizedChar}”。通常这里建议使用单个汉字。是否仍然继续修改？`,
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+    updateCharacter(id, { char: normalizedChar });
+    cancelCharacterTextEdit();
   }
 
   function updateAction(id: string, changes: Partial<ActionAnnotation>, recordHistory = true) {
@@ -317,31 +560,361 @@ function App() {
     }
   }
 
+  function applyCharacterSingingStyle(id: string, singingStyle: CharacterAnnotation["singingStyle"]) {
+    updateCharacter(id, { singingStyle });
+  }
+
+  function applyActionLabel(id: string, label: string) {
+    updateAction(id, { label });
+  }
+
+  function updateTimelineSelectionBatch(items: TimelineBatchMoveItem[], recordHistory = true) {
+    if (items.length === 0) {
+      return;
+    }
+
+    const currentProject = projectRef.current;
+    const characterUpdates = new Map(
+      items
+        .filter((item): item is TimelineBatchMoveItem & { type: "character" } => item.type === "character")
+        .map((item) => [item.id, item]),
+    );
+    const actionUpdates = new Map(
+      items
+        .filter((item): item is TimelineBatchMoveItem & { type: "action" } => item.type === "action")
+        .map((item) => [item.id, item]),
+    );
+    const affectedLineIds = new Set<string>();
+
+    const nextProject = {
+      ...currentProject,
+      characterAnnotations: currentProject.characterAnnotations.map((item) => {
+        const update = characterUpdates.get(item.id);
+        if (!update) {
+          return item;
+        }
+        affectedLineIds.add(item.lineId);
+        return {
+          ...item,
+          startTime: update.startTime,
+          endTime: update.endTime,
+        };
+      }),
+      actionAnnotations: currentProject.actionAnnotations.map((item) => {
+        const update = actionUpdates.get(item.id);
+        if (!update) {
+          return item;
+        }
+        return {
+          ...item,
+          startTime: update.startTime,
+          endTime: update.endTime,
+        };
+      }),
+    };
+
+    const synchronizedProject = affectedLineIds.size > 0
+      ? syncSubtitleLines(nextProject, Array.from(affectedLineIds))
+      : nextProject;
+
+    if (recordHistory) {
+      commitProject(synchronizedProject);
+    } else {
+      applyProjectWithoutHistory(synchronizedProject);
+    }
+  }
+
+  function createCharacterAtTime(time: number, explicitEndTime?: number) {
+    const currentProject = projectRef.current;
+    const normalizedTime = Math.max(0, time);
+    const requestedRange = normalizeCharacterCreationRequest(normalizedTime, explicitEndTime);
+    const target = findCharacterCreationTarget(currentProject.subtitleLines, normalizedTime);
+    const characterId = `char-${crypto.randomUUID()}`;
+    const char = "新";
+    let nextProject: ProjectData;
+
+    if (target) {
+      const range = getCharacterCreationRange(target.line, target.position, requestedRange);
+      nextProject = syncSubtitleLine({
+        ...currentProject,
+        characterAnnotations: [
+          ...currentProject.characterAnnotations,
+          {
+            id: characterId,
+            lineId: target.line.id,
+            char,
+            startTime: range.startTime,
+            endTime: range.endTime,
+            singingStyle: "普通唱",
+          },
+        ],
+      }, target.line.id);
+    } else {
+      const lineId = `line-${crypto.randomUUID()}`;
+      const startTime = requestedRange.startTime;
+      const endTime = requestedRange.endTime;
+      nextProject = {
+        ...currentProject,
+        subtitleLines: sortSubtitleLines([
+          ...currentProject.subtitleLines,
+          {
+            id: lineId,
+            text: char,
+            startTime,
+            endTime,
+          },
+        ]),
+        characterAnnotations: [
+          ...currentProject.characterAnnotations,
+          {
+            id: characterId,
+            lineId,
+            char,
+            startTime,
+            endTime,
+            singingStyle: "普通唱",
+          },
+        ],
+      };
+    }
+
+    commitProject(nextProject);
+    preferredCharacterEditLocationRef.current = "timeline";
+    applySelection({ type: "character", id: characterId });
+    setEditingCharacterId(characterId);
+    setEditingCharacterLocation("timeline");
+    setEditingCharacterValue(char);
+  }
+
+  function createActionAtTime(trackId: string, startTime: number) {
+    const currentProject = projectRef.current;
+    const safeStartTime = Math.max(0, startTime);
+    commitProject({
+      ...currentProject,
+      actionAnnotations: [
+        ...currentProject.actionAnnotations,
+        {
+          id: `${trackId}-${crypto.randomUUID()}`,
+          trackId,
+          label: trackId === "hand-action" ? "抬手" : "转身",
+          startTime: safeStartTime,
+          endTime: safeStartTime + DEFAULT_ACTION_DURATION,
+        },
+      ],
+    });
+  }
+
+  function applyCharacterLineAction(id: string, action: CharacterLineAction) {
+    const currentProject = projectRef.current;
+    const currentCharacter = currentProject.characterAnnotations.find((item) => item.id === id);
+    if (!currentCharacter) {
+      return;
+    }
+
+    const sortedLines = sortSubtitleLines(currentProject.subtitleLines);
+    const currentLineIndex = sortedLines.findIndex((line) => line.id === currentCharacter.lineId);
+    const lineCharacters = sortCharactersByTime(
+      currentProject.characterAnnotations.filter((item) => item.lineId === currentCharacter.lineId),
+    );
+    const characterIndex = lineCharacters.findIndex((item) => item.id === id);
+
+    if (currentLineIndex === -1 || characterIndex === -1) {
+      return;
+    }
+
+    if (action === "split-block") {
+      const splitCharacters = getSplittableCharacters(currentCharacter.char);
+      if (splitCharacters.length <= 1) {
+        return;
+      }
+      const sliceDuration = (currentCharacter.endTime - currentCharacter.startTime) / splitCharacters.length;
+      const splitAnnotations = splitCharacters.map((char, index) => ({
+        ...currentCharacter,
+        id: index === 0 ? currentCharacter.id : `char-${crypto.randomUUID()}`,
+        char,
+        startTime: currentCharacter.startTime + sliceDuration * index,
+        endTime: index === splitCharacters.length - 1
+          ? currentCharacter.endTime
+          : currentCharacter.startTime + sliceDuration * (index + 1),
+      }));
+      const splitProject = syncSubtitleLine(
+        {
+          ...currentProject,
+          characterAnnotations: [
+            ...currentProject.characterAnnotations.filter((item) => item.id !== currentCharacter.id),
+            ...splitAnnotations,
+          ],
+        },
+        currentCharacter.lineId,
+      );
+      commitProject(splitProject);
+      applySelection({ type: "character", id: splitAnnotations[0].id });
+      return;
+    }
+
+    if (action === "merge-prev-line" || action === "merge-next-line") {
+      const adjacentLine = action === "merge-prev-line"
+        ? sortedLines[currentLineIndex - 1]
+        : sortedLines[currentLineIndex + 1];
+      if (!adjacentLine) {
+        return;
+      }
+      const mergedProject = syncSubtitleLines(
+        {
+          ...currentProject,
+          characterAnnotations: currentProject.characterAnnotations.map((item) =>
+            item.id === id ? { ...item, lineId: adjacentLine.id } : item,
+          ),
+        },
+        [currentCharacter.lineId, adjacentLine.id],
+      );
+      commitProject(mergedProject);
+      return;
+    }
+
+    if (action === "set-line-start") {
+      if (characterIndex === 0) {
+        return;
+      }
+      const movedCharacters = new Set(lineCharacters.slice(0, characterIndex).map((item) => item.id));
+      const newLineId = `line-${crypto.randomUUID()}`;
+      const splitProject = syncSubtitleLines(
+        {
+          ...currentProject,
+          subtitleLines: [
+            ...currentProject.subtitleLines,
+            {
+              id: newLineId,
+              text: "",
+              startTime: lineCharacters[0].startTime,
+              endTime: lineCharacters[characterIndex - 1].endTime,
+            },
+          ],
+          characterAnnotations: currentProject.characterAnnotations.map((item) =>
+            movedCharacters.has(item.id) ? { ...item, lineId: newLineId } : item,
+          ),
+        },
+        [newLineId, currentCharacter.lineId],
+      );
+      commitProject(splitProject);
+      return;
+    }
+
+    if (characterIndex === lineCharacters.length - 1) {
+      return;
+    }
+    const movedCharacters = new Set(lineCharacters.slice(characterIndex + 1).map((item) => item.id));
+    const newLineId = `line-${crypto.randomUUID()}`;
+    const splitProject = syncSubtitleLines(
+      {
+        ...currentProject,
+        subtitleLines: [
+          ...currentProject.subtitleLines,
+          {
+            id: newLineId,
+            text: "",
+            startTime: lineCharacters[characterIndex + 1].startTime,
+            endTime: lineCharacters[lineCharacters.length - 1].endTime,
+          },
+        ],
+        characterAnnotations: currentProject.characterAnnotations.map((item) =>
+          movedCharacters.has(item.id) ? { ...item, lineId: newLineId } : item,
+        ),
+      },
+      [newLineId, currentCharacter.lineId],
+    );
+    commitProject(splitProject);
+  }
+
   function deleteSelected() {
     const currentProject = projectRef.current;
+    const timelineSelection = selectedTimelineItems.length > 0
+      ? selectedTimelineItems
+      : selectedItem?.type === "character" || selectedItem?.type === "action"
+        ? [{ type: selectedItem.type, id: selectedItem.id }]
+        : [];
+
+    if (timelineSelection.length > 0) {
+      if (timelineSelection.length > 10) {
+        const confirmed = window.confirm(`当前将删除 ${timelineSelection.length} 个已选中的字块/动作块。是否继续？`);
+        if (!confirmed) {
+          return;
+        }
+      }
+
+      const characterIds = new Set(
+        timelineSelection
+          .filter((item): item is TimelineSelectionItem & { type: "character" } => item.type === "character")
+          .map((item) => item.id),
+      );
+      const actionIds = new Set(
+        timelineSelection
+          .filter((item): item is TimelineSelectionItem & { type: "action" } => item.type === "action")
+          .map((item) => item.id),
+      );
+      const affectedLineIds = new Set(
+        currentProject.characterAnnotations
+          .filter((item) => characterIds.has(item.id))
+          .map((item) => item.lineId),
+      );
+
+      const nextProject = syncSubtitleLines(
+        {
+          ...currentProject,
+          characterAnnotations: currentProject.characterAnnotations.filter((item) => !characterIds.has(item.id)),
+          actionAnnotations: currentProject.actionAnnotations.filter((item) => !actionIds.has(item.id)),
+        },
+        Array.from(affectedLineIds),
+      );
+
+      if (editingCharacterId && characterIds.has(editingCharacterId)) {
+        cancelCharacterTextEdit();
+      }
+      commitProject(nextProject);
+      applySelection(null);
+      return;
+    }
+
     if (!selectedItem) {
       return;
     }
     if (selectedItem.type === "character") {
-      commitProject({
+      const currentCharacter = currentProject.characterAnnotations.find((item) => item.id === selectedItem.id);
+      if (!currentCharacter) {
+        return;
+      }
+      const nextProject = syncSubtitleLine({
         ...currentProject,
         characterAnnotations: currentProject.characterAnnotations.filter((item) => item.id !== selectedItem.id),
-      });
-      setSelectedItem(null);
+      }, currentCharacter.lineId);
+      commitProject(nextProject);
+      if (editingCharacterId === selectedItem.id) {
+        cancelCharacterTextEdit();
+      }
+      applySelection(null);
     }
     if (selectedItem.type === "action") {
       commitProject({
         ...currentProject,
         actionAnnotations: currentProject.actionAnnotations.filter((item) => item.id !== selectedItem.id),
       });
-      setSelectedItem(null);
+      applySelection(null);
     }
+  }
+
+  function selectAllTimelineItems() {
+    const currentProject = projectRef.current;
+    const items: TimelineSelectionItem[] = [
+      ...currentProject.characterAnnotations.map((item) => ({ type: "character" as const, id: item.id })),
+      ...currentProject.actionAnnotations.map((item) => ({ type: "action" as const, id: item.id })),
+    ];
+    applySelection(items[0] ?? null, items);
   }
 
   function addAction(trackId: "hand-action" | "body-action") {
     const currentProject = projectRef.current;
     const startTime = currentTime;
-    const endTime = Math.min(duration, startTime + 0.8);
+    const endTime = Math.min(duration, startTime + DEFAULT_ACTION_DURATION);
     commitProject({
       ...currentProject,
       actionAnnotations: [
@@ -415,7 +988,7 @@ function App() {
     const lines = parseSrt(text);
     const nextProject = buildProjectFromLines(lines, projectRef.current.videoUrl);
     commitProject(nextProject, undefined, "import-srt");
-    setSelectedItem(lines[0] ? { type: "line", id: lines[0].id } : null);
+    applySelection(lines[0] ? { type: "line", id: lines[0].id } : null);
     if (lines[0]) {
       seekTo(lines[0].startTime);
     }
@@ -510,18 +1083,59 @@ function App() {
             isWaveformLoading={isWaveformLoading}
             currentTime={currentTime}
             selectedItem={selectedItem}
+            selectedTimelineItems={selectedTimelineItems}
+            trackSnapEnabled={trackSnapEnabled}
             zoom={zoom}
             duration={duration}
             focusRange={focusRange}
             getProjectSnapshot={() => projectRef.current}
             onZoomChange={setZoom}
+            onToggleTrackSnap={(trackId) => {
+              setTrackSnapEnabled((current) => ({
+                ...current,
+                [trackId]: !current[trackId],
+              }));
+            }}
             onSeek={seekTo}
             onPreviewFrame={setPreviewTime}
-            onSelectItem={setSelectedItem}
+            onSelectItem={(item) => {
+              if (item?.type === "character") {
+                preferredCharacterEditLocationRef.current = "timeline";
+              }
+              applySelection(item);
+            }}
+            onSelectTimelineItems={(items, primaryItem) => {
+              if (primaryItem?.type === "character") {
+                preferredCharacterEditLocationRef.current = "timeline";
+              }
+              applySelection(primaryItem, items);
+            }}
+            editingCharacterId={editingCharacterId}
+            editingCharacterLocation={editingCharacterLocation}
+            editingCharacterValue={editingCharacterValue}
+            onEditingCharacterValueChange={setEditingCharacterValue}
+            onCommitCharacterTextEdit={commitCharacterTextEdit}
+            onCancelCharacterTextEdit={cancelCharacterTextEdit}
+            onEditCharacterText={(id) => startCharacterTextEdit(id, "timeline")}
+            onCreateCharacterAtTime={createCharacterAtTime}
+            onCreateActionAtTime={createActionAtTime}
+            onOpenCharacterContextMenu={(id, x, y) => {
+              preferredCharacterEditLocationRef.current = "timeline";
+              applySelection({ type: "character", id });
+              setBlockContextMenu({ type: "character", id, x, y });
+            }}
+            onOpenActionContextMenu={(id, x, y) => {
+              applySelection({ type: "action", id });
+              setBlockContextMenu({ type: "action", id, x, y });
+            }}
+            onLineChange={(id, changes) => updateLinePosition(id, changes, false)}
+            onLineCommit={(id, changes) => updateLinePosition(id, changes, true)}
             onCharacterChange={(id, changes) => updateCharacter(id, changes, false)}
             onCharacterCommit={(id, changes) => updateCharacter(id, changes, true)}
             onActionChange={(id, changes) => updateAction(id, changes, false)}
             onActionCommit={(id, changes) => updateAction(id, changes, true)}
+            onBatchMoveChange={(items) => updateTimelineSelectionBatch(items, false)}
+            onBatchMoveCommit={(items) => updateTimelineSelectionBatch(items, true)}
             onCreateAction={createAction}
           />
         </div>
@@ -532,7 +1146,7 @@ function App() {
             currentTime={currentTime}
             selectedLineId={selectedLineId}
             onSelectLine={(lineId) => {
-              setSelectedItem({ type: "line", id: lineId });
+              applySelection({ type: "line", id: lineId });
               const line = project.subtitleLines.find((item) => item.id === lineId);
               if (line) {
                 seekTo(line.startTime);
@@ -546,20 +1160,66 @@ function App() {
               <span>{activeCharacters.length} 字</span>
             </div>
             <div className="character-grid">
-              {activeCharacters.map((item) => (
-                <button
-                  key={item.id}
-                  className={[
-                    "character-chip",
-                    selectedItem?.type === "character" && selectedItem.id === item.id ? "selected" : "",
-                    currentTime >= item.startTime && currentTime <= item.endTime ? "active" : "",
-                  ].join(" ")}
-                  onClick={() => setSelectedItem({ type: "character", id: item.id })}
-                >
-                  <span>{item.char}</span>
-                  <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
-                </button>
-              ))}
+              {activeCharacters.map((item) => {
+                const isEditing = editingCharacterId === item.id && editingCharacterLocation === "split-panel";
+                const className = [
+                  "character-chip",
+                  selectedItem?.type === "character" && selectedItem.id === item.id ? "selected" : "",
+                  currentTime >= item.startTime && currentTime <= item.endTime ? "active" : "",
+                  isEditing ? "editing" : "",
+                ].join(" ");
+
+                if (isEditing) {
+                  return (
+                    <div key={item.id} className={className}>
+                      <input
+                        className="character-chip-input"
+                        value={editingCharacterValue}
+                        autoFocus
+                        onChange={(event) => setEditingCharacterValue(event.target.value)}
+                        onBlur={() => commitCharacterTextEdit(item.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            commitCharacterTextEdit(item.id);
+                          }
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            cancelCharacterTextEdit();
+                          }
+                        }}
+                      />
+                      <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
+                    </div>
+                  );
+                }
+
+                return (
+                  <button
+                    key={item.id}
+                    className={className}
+                    onClick={() => {
+                      preferredCharacterEditLocationRef.current = "split-panel";
+                      applySelection({ type: "character", id: item.id });
+                    }}
+                    onDoubleClick={() => startCharacterTextEdit(item.id, "split-panel")}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      preferredCharacterEditLocationRef.current = "split-panel";
+                      applySelection({ type: "character", id: item.id });
+                      setBlockContextMenu({
+                        type: "character",
+                        id: item.id,
+                        x: event.clientX,
+                        y: event.clientY,
+                      });
+                    }}
+                  >
+                    <span>{item.char}</span>
+                    <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
+                  </button>
+                );
+              })}
             </div>
           </section>
 
@@ -575,6 +1235,104 @@ function App() {
           />
         </div>
       </main>
+      {blockContextMenu ? (
+        <div
+          ref={blockContextMenuRef}
+          className="character-context-menu"
+          style={{
+            left: blockContextMenuPosition?.left ?? blockContextMenu.x + CONTEXT_MENU_GAP,
+            top: blockContextMenuPosition?.top ?? blockContextMenu.y + CONTEXT_MENU_GAP,
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {contextMenuCharacter ? (
+            <>
+              {contextMenuSplitCharacters.length > 1 ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    applyCharacterLineAction(contextMenuCharacter.id, "split-block");
+                    setBlockContextMenu(null);
+                  }}
+                >
+                  拆分
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => {
+                  applyCharacterLineAction(contextMenuCharacter.id, "set-line-start");
+                  setBlockContextMenu(null);
+                }}
+              >
+                设为本句首字
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  applyCharacterLineAction(contextMenuCharacter.id, "set-line-end");
+                  setBlockContextMenu(null);
+                }}
+              >
+                设为本句末字
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  applyCharacterLineAction(contextMenuCharacter.id, "merge-prev-line");
+                  setBlockContextMenu(null);
+                }}
+              >
+                并入前一句
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  applyCharacterLineAction(contextMenuCharacter.id, "merge-next-line");
+                  setBlockContextMenu(null);
+                }}
+              >
+                并入后一句
+              </button>
+              <div className="character-context-menu-divider" />
+              <div className="character-context-menu-label">唱腔类型</div>
+              {singingStyleOptions.map((style) => (
+                <button
+                  key={style}
+                  type="button"
+                  className={contextMenuCharacter.singingStyle === style ? "menu-option-active" : ""}
+                  onClick={() => {
+                    applyCharacterSingingStyle(contextMenuCharacter.id, style);
+                    setBlockContextMenu(null);
+                  }}
+                >
+                  {contextMenuCharacter.singingStyle === style ? `✓ ${style}` : style}
+                </button>
+              ))}
+            </>
+          ) : null}
+          {contextMenuAction ? (
+            <>
+              <div className="character-context-menu-label">
+                {contextMenuActionTrack?.name ?? "动作标签"}
+              </div>
+              {(contextMenuActionTrack?.labels ?? ["其他"]).map((label) => (
+                <button
+                  key={label}
+                  type="button"
+                  className={contextMenuAction.label === label ? "menu-option-active" : ""}
+                  onClick={() => {
+                    applyActionLabel(contextMenuAction.id, label);
+                    setBlockContextMenu(null);
+                  }}
+                >
+                  {contextMenuAction.label === label ? `✓ ${label}` : label}
+                </button>
+              ))}
+            </>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -601,6 +1359,118 @@ function getUndoConfirmationMessage(action: HistoryAction) {
     return "确定要撤销导入句级字幕吗？当前导入的字幕与逐字结果将回退到上一步状态。";
   }
   return "确定要执行撤销吗？";
+}
+
+function isSingleHanCharacter(value: string) {
+  return /^[\p{Script=Han}]$/u.test(value);
+}
+
+function getSplittableCharacters(value: string) {
+  return Array.from(value);
+}
+
+function sortCharactersByTime(characters: CharacterAnnotation[]) {
+  return [...characters].sort((left, right) =>
+    left.startTime - right.startTime ||
+    left.endTime - right.endTime ||
+    left.id.localeCompare(right.id),
+  );
+}
+
+function sortSubtitleLines(lines: SubtitleLine[]) {
+  return [...lines].sort((left, right) =>
+    left.startTime - right.startTime ||
+    left.endTime - right.endTime ||
+    left.id.localeCompare(right.id),
+  );
+}
+
+function syncSubtitleLine(project: ProjectData, lineId: string) {
+  const lineCharacters = sortCharactersByTime(
+    project.characterAnnotations.filter((item) => item.lineId === lineId),
+  );
+  const existingLine = project.subtitleLines.find((line) => line.id === lineId);
+
+  if (lineCharacters.length === 0) {
+    return {
+      ...project,
+      subtitleLines: project.subtitleLines.filter((line) => line.id !== lineId),
+    };
+  }
+
+  const nextLine: SubtitleLine = {
+    id: lineId,
+    text: lineCharacters.map((item) => item.char).join(""),
+    startTime: lineCharacters[0].startTime,
+    endTime: lineCharacters[lineCharacters.length - 1].endTime,
+  };
+
+  const nextLines = existingLine
+    ? project.subtitleLines.map((line) => (line.id === lineId ? nextLine : line))
+    : [...project.subtitleLines, nextLine];
+
+  return {
+    ...project,
+    subtitleLines: sortSubtitleLines(nextLines),
+  };
+}
+
+function syncSubtitleLines(project: ProjectData, lineIds: string[]) {
+  return Array.from(new Set(lineIds)).reduce(
+    (nextProject, lineId) => syncSubtitleLine(nextProject, lineId),
+    project,
+  );
+}
+
+function findCharacterCreationTarget(lines: SubtitleLine[], time: number) {
+  const candidates = lines.flatMap((line) => {
+    const results: Array<{ line: SubtitleLine; position: "start" | "end"; distance: number }> = [];
+    const distanceFromEnd = time - line.endTime;
+    if (distanceFromEnd >= 0 && distanceFromEnd <= CHARACTER_CREATE_ATTACH_WINDOW) {
+      results.push({ line, position: "end", distance: distanceFromEnd });
+    }
+    const distanceFromStart = line.startTime - time;
+    if (distanceFromStart >= 0 && distanceFromStart <= CHARACTER_CREATE_ATTACH_WINDOW) {
+      results.push({ line, position: "start", distance: distanceFromStart });
+    }
+    return results;
+  });
+
+  candidates.sort((left, right) => left.distance - right.distance);
+  return candidates[0] ?? null;
+}
+
+function getCharacterCreationRange(
+  line: SubtitleLine,
+  position: "start" | "end",
+  requestedRange: { startTime: number; endTime: number },
+) {
+  if (position === "end") {
+    const startTime = Math.max(line.endTime, requestedRange.startTime);
+    const endTime = Math.max(startTime + MIN_CHARACTER_DURATION, requestedRange.endTime);
+    return {
+      startTime,
+      endTime,
+    };
+  }
+
+  const endTime = Math.min(line.startTime, requestedRange.endTime);
+  const startTime = Math.max(0, Math.min(requestedRange.startTime, endTime - MIN_CHARACTER_DURATION));
+  return {
+    startTime,
+    endTime,
+  };
+}
+
+function normalizeCharacterCreationRequest(startTime: number, explicitEndTime?: number) {
+  const normalizedStart = Math.max(0, startTime);
+  const normalizedEnd = explicitEndTime === undefined
+    ? normalizedStart + DEFAULT_CHARACTER_DURATION
+    : Math.max(normalizedStart + MIN_CHARACTER_DURATION, explicitEndTime);
+  return {
+    startTime: normalizedStart,
+    endTime: normalizedEnd,
+  };
 }
 
 async function buildWaveformData(videoUrl: string): Promise<WaveformData | null> {
