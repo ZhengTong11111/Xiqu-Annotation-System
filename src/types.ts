@@ -55,3 +55,13 @@ export type SelectedItem =
   | { type: "character"; id: string }
   | { type: "action"; id: string }
   | null;
+
+export type TimelineSelectionItem = {
+  type: "character" | "action";
+  id: string;
+};
+
+export type TimelineBatchMoveItem = TimelineSelectionItem & {
+  startTime: number;
+  endTime: number;
+};

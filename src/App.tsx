@@ -12,6 +12,8 @@ import type {
   ProjectData,
   SelectedItem,
   SubtitleLine,
+  TimelineBatchMoveItem,
+  TimelineSelectionItem,
   WaveformData,
 } from "./types";
 import {
@@ -48,6 +50,7 @@ function App() {
     type: "line",
     id: "line-1",
   });
+  const [selectedTimelineItems, setSelectedTimelineItems] = useState<TimelineSelectionItem[]>([]);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [previewTime, setPreviewTime] = useState<number | null>(null);
@@ -97,6 +100,19 @@ function App() {
   function applyRedoStackState(nextRedoStack: HistoryEntry[]) {
     redoStackRef.current = nextRedoStack;
     setRedoStack(nextRedoStack);
+  }
+
+  function applySelection(nextSelectedItem: SelectedItem, timelineItems?: TimelineSelectionItem[]) {
+    setSelectedItem(nextSelectedItem);
+    if (timelineItems !== undefined) {
+      setSelectedTimelineItems(timelineItems);
+      return;
+    }
+    if (nextSelectedItem?.type === "character" || nextSelectedItem?.type === "action") {
+      setSelectedTimelineItems([{ type: nextSelectedItem.type, id: nextSelectedItem.id }]);
+      return;
+    }
+    setSelectedTimelineItems([]);
   }
 
   const selectedLineId = selectedItem?.type === "line"
@@ -422,7 +438,7 @@ function App() {
       return;
     }
     preferredCharacterEditLocationRef.current = location;
-    setSelectedItem({ type: "character", id });
+    applySelection({ type: "character", id });
     setEditingCharacterId(id);
     setEditingCharacterLocation(location);
     setEditingCharacterValue(currentCharacter.char);
@@ -473,6 +489,62 @@ function App() {
       commitProject(nextProject);
     } else {
       applyProjectWithoutHistory(nextProject);
+    }
+  }
+
+  function updateTimelineSelectionBatch(items: TimelineBatchMoveItem[], recordHistory = true) {
+    if (items.length === 0) {
+      return;
+    }
+
+    const currentProject = projectRef.current;
+    const characterUpdates = new Map(
+      items
+        .filter((item): item is TimelineBatchMoveItem & { type: "character" } => item.type === "character")
+        .map((item) => [item.id, item]),
+    );
+    const actionUpdates = new Map(
+      items
+        .filter((item): item is TimelineBatchMoveItem & { type: "action" } => item.type === "action")
+        .map((item) => [item.id, item]),
+    );
+    const affectedLineIds = new Set<string>();
+
+    const nextProject = {
+      ...currentProject,
+      characterAnnotations: currentProject.characterAnnotations.map((item) => {
+        const update = characterUpdates.get(item.id);
+        if (!update) {
+          return item;
+        }
+        affectedLineIds.add(item.lineId);
+        return {
+          ...item,
+          startTime: update.startTime,
+          endTime: update.endTime,
+        };
+      }),
+      actionAnnotations: currentProject.actionAnnotations.map((item) => {
+        const update = actionUpdates.get(item.id);
+        if (!update) {
+          return item;
+        }
+        return {
+          ...item,
+          startTime: update.startTime,
+          endTime: update.endTime,
+        };
+      }),
+    };
+
+    const synchronizedProject = affectedLineIds.size > 0
+      ? syncSubtitleLines(nextProject, Array.from(affectedLineIds))
+      : nextProject;
+
+    if (recordHistory) {
+      commitProject(synchronizedProject);
+    } else {
+      applyProjectWithoutHistory(synchronizedProject);
     }
   }
 
@@ -531,7 +603,7 @@ function App() {
 
     commitProject(nextProject);
     preferredCharacterEditLocationRef.current = "timeline";
-    setSelectedItem({ type: "character", id: characterId });
+    applySelection({ type: "character", id: characterId });
     setEditingCharacterId(characterId);
     setEditingCharacterLocation("timeline");
     setEditingCharacterValue(char);
@@ -665,14 +737,14 @@ function App() {
       if (editingCharacterId === selectedItem.id) {
         cancelCharacterTextEdit();
       }
-      setSelectedItem(null);
+      applySelection(null);
     }
     if (selectedItem.type === "action") {
       commitProject({
         ...currentProject,
         actionAnnotations: currentProject.actionAnnotations.filter((item) => item.id !== selectedItem.id),
       });
-      setSelectedItem(null);
+      applySelection(null);
     }
   }
 
@@ -753,7 +825,7 @@ function App() {
     const lines = parseSrt(text);
     const nextProject = buildProjectFromLines(lines, projectRef.current.videoUrl);
     commitProject(nextProject, undefined, "import-srt");
-    setSelectedItem(lines[0] ? { type: "line", id: lines[0].id } : null);
+    applySelection(lines[0] ? { type: "line", id: lines[0].id } : null);
     if (lines[0]) {
       seekTo(lines[0].startTime);
     }
@@ -848,6 +920,7 @@ function App() {
             isWaveformLoading={isWaveformLoading}
             currentTime={currentTime}
             selectedItem={selectedItem}
+            selectedTimelineItems={selectedTimelineItems}
             zoom={zoom}
             duration={duration}
             focusRange={focusRange}
@@ -859,7 +932,13 @@ function App() {
               if (item?.type === "character") {
                 preferredCharacterEditLocationRef.current = "timeline";
               }
-              setSelectedItem(item);
+              applySelection(item);
+            }}
+            onSelectTimelineItems={(items, primaryItem) => {
+              if (primaryItem?.type === "character") {
+                preferredCharacterEditLocationRef.current = "timeline";
+              }
+              applySelection(primaryItem, items);
             }}
             editingCharacterId={editingCharacterId}
             editingCharacterLocation={editingCharacterLocation}
@@ -872,7 +951,7 @@ function App() {
             onCreateActionAtTime={createActionAtTime}
             onOpenCharacterContextMenu={(id, x, y) => {
               preferredCharacterEditLocationRef.current = "timeline";
-              setSelectedItem({ type: "character", id });
+              applySelection({ type: "character", id });
               setCharacterContextMenu({ id, x, y });
             }}
             onLineChange={(id, changes) => updateLinePosition(id, changes, false)}
@@ -881,6 +960,8 @@ function App() {
             onCharacterCommit={(id, changes) => updateCharacter(id, changes, true)}
             onActionChange={(id, changes) => updateAction(id, changes, false)}
             onActionCommit={(id, changes) => updateAction(id, changes, true)}
+            onBatchMoveChange={(items) => updateTimelineSelectionBatch(items, false)}
+            onBatchMoveCommit={(items) => updateTimelineSelectionBatch(items, true)}
             onCreateAction={createAction}
           />
         </div>
@@ -891,7 +972,7 @@ function App() {
             currentTime={currentTime}
             selectedLineId={selectedLineId}
             onSelectLine={(lineId) => {
-              setSelectedItem({ type: "line", id: lineId });
+              applySelection({ type: "line", id: lineId });
               const line = project.subtitleLines.find((item) => item.id === lineId);
               if (line) {
                 seekTo(line.startTime);
@@ -945,13 +1026,13 @@ function App() {
                     className={className}
                     onClick={() => {
                       preferredCharacterEditLocationRef.current = "split-panel";
-                      setSelectedItem({ type: "character", id: item.id });
+                      applySelection({ type: "character", id: item.id });
                     }}
                     onDoubleClick={() => startCharacterTextEdit(item.id, "split-panel")}
                     onContextMenu={(event) => {
                       event.preventDefault();
                       preferredCharacterEditLocationRef.current = "split-panel";
-                      setSelectedItem({ type: "character", id: item.id });
+                      applySelection({ type: "character", id: item.id });
                       setCharacterContextMenu({
                         id: item.id,
                         x: event.clientX,

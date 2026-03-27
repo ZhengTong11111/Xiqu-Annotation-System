@@ -5,6 +5,8 @@ import type {
   ProjectData,
   SelectedItem,
   SubtitleLine,
+  TimelineBatchMoveItem,
+  TimelineSelectionItem,
   TrackDefinition,
   WaveformData,
 } from "../types";
@@ -19,6 +21,7 @@ type TimelineProps = {
   isWaveformLoading: boolean;
   currentTime: number;
   selectedItem: SelectedItem;
+  selectedTimelineItems: TimelineSelectionItem[];
   zoom: number;
   duration: number;
   focusRange: { start: number; end: number } | null;
@@ -30,6 +33,7 @@ type TimelineProps = {
   onSeek: (time: number) => void;
   onPreviewFrame: (time: number | null) => void;
   onSelectItem: (item: SelectedItem) => void;
+  onSelectTimelineItems: (items: TimelineSelectionItem[], primaryItem: SelectedItem) => void;
   onEditCharacterText: (id: string) => void;
   onEditingCharacterValueChange: (value: string) => void;
   onCommitCharacterTextEdit: (id: string) => void;
@@ -43,6 +47,8 @@ type TimelineProps = {
   onCharacterCommit: (id: string, changes: Partial<CharacterAnnotation>) => void;
   onActionChange: (id: string, changes: Partial<ActionAnnotation>) => void;
   onActionCommit: (id: string, changes: Partial<ActionAnnotation>) => void;
+  onBatchMoveChange: (items: TimelineBatchMoveItem[]) => void;
+  onBatchMoveCommit: (items: TimelineBatchMoveItem[]) => void;
   onCreateAction: (trackId: string, startTime: number, endTime: number) => void;
 };
 
@@ -69,11 +75,23 @@ type DragState =
       originalEnd: number;
     }
   | {
+      kind: "move-selection";
+      originX: number;
+      items: TimelineBatchMoveItem[];
+    }
+  | {
       kind: "create-action";
       trackId: string;
       originX: number;
       currentX: number;
       laneLeft: number;
+    }
+  | {
+      kind: "select-box";
+      originX: number;
+      originY: number;
+      currentX: number;
+      currentY: number;
     }
   | null;
 
@@ -88,6 +106,7 @@ const PREVIEW_UPDATE_EPSILON = 1 / 60;
 const MIN_BLOCK_WIDTH_PX = 44;
 const WAVEFORM_VIEW_HEIGHT = 56;
 const WAVEFORM_MAX_WIDTH = 1800;
+const CLICK_SUPPRESS_MS = 120;
 
 type ZoomGestureState = {
   startZoom: number;
@@ -121,6 +140,10 @@ type PendingDragUpdate =
       target: "action";
       id: string;
       changes: Partial<ActionAnnotation>;
+    }
+  | {
+      target: "selection";
+      items: TimelineBatchMoveItem[];
     };
 
 type HoveredBlockState = {
@@ -140,6 +163,7 @@ export function Timeline({
   isWaveformLoading,
   currentTime,
   selectedItem,
+  selectedTimelineItems,
   zoom,
   duration,
   focusRange,
@@ -151,6 +175,7 @@ export function Timeline({
   onSeek,
   onPreviewFrame,
   onSelectItem,
+  onSelectTimelineItems,
   onEditCharacterText,
   onEditingCharacterValueChange,
   onCommitCharacterTextEdit,
@@ -164,6 +189,8 @@ export function Timeline({
   onCharacterCommit,
   onActionChange,
   onActionCommit,
+  onBatchMoveChange,
+  onBatchMoveCommit,
   onCreateAction,
 }: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -184,6 +211,7 @@ export function Timeline({
   const previewFrameRef = useRef<number | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const suppressLineClickIdRef = useRef<string | null>(null);
+  const suppressCanvasClickUntilRef = useRef(0);
   const [dragState, setDragState] = useState<DragState>(null);
   const [hoveredBlock, setHoveredBlock] = useState<HoveredBlockState>(null);
   const [viewportState, setViewportState] = useState({ scrollLeft: 0, width: 0 });
@@ -221,6 +249,18 @@ export function Timeline({
       width: Math.max(visibleDuration * zoom, 1),
     };
   }, [duration, viewportState, waveformData, zoom]);
+  const selectedTimelineKeySet = useMemo(
+    () => new Set(selectedTimelineItems.map((item) => getTimelineSelectionKey(item.type, item.id))),
+    [selectedTimelineItems],
+  );
+  const marqueePreviewItems = useMemo(
+    () => (dragState?.kind === "select-box" ? getItemsInSelectionRect(dragState) : []),
+    [dragState, characterAnnotations, actionAnnotations, viewportState],
+  );
+  const marqueePreviewKeySet = useMemo(
+    () => new Set(marqueePreviewItems.map((item) => getTimelineSelectionKey(item.type, item.id))),
+    [marqueePreviewItems],
+  );
 
   useEffect(() => {
     zoomRef.current = zoom;
@@ -404,12 +444,22 @@ export function Timeline({
         return;
       }
       lastPointerClientXRef.current = event.clientX;
-      const deltaPixels = event.clientX - activeDragState.originX;
+      const deltaPixels =
+        "originX" in activeDragState
+          ? event.clientX - activeDragState.originX
+          : 0;
       const liveSnapPoints = getLiveSnapPoints();
-      if (activeDragState.kind !== "create-action" && Math.abs(deltaPixels) < DRAG_ACTIVATION_PX) {
+      if (
+        activeDragState.kind !== "create-action" &&
+        activeDragState.kind !== "select-box" &&
+        Math.abs(deltaPixels) < DRAG_ACTIVATION_PX
+      ) {
         return;
       }
-      const deltaSeconds = (event.clientX - activeDragState.originX) / zoom;
+      const deltaSeconds =
+        "originX" in activeDragState
+          ? (event.clientX - activeDragState.originX) / zoom
+          : 0;
       if (activeDragState.kind === "create-action") {
         clearPreviewFrame();
         setDragState((prev) =>
@@ -417,6 +467,33 @@ export function Timeline({
             ? { ...prev, currentX: event.clientX }
             : prev,
         );
+        return;
+      }
+
+      if (activeDragState.kind === "select-box") {
+        setDragState((prev) =>
+          prev && prev.kind === "select-box"
+            ? {
+                ...prev,
+                currentX: event.clientX,
+                currentY: event.clientY,
+              }
+            : prev,
+        );
+        return;
+      }
+
+      if (activeDragState.kind === "move-selection") {
+        const minStartTime = Math.min(...activeDragState.items.map((item) => item.startTime));
+        const clampedDelta = Math.max(deltaSeconds, -minStartTime);
+        scheduleDragUpdate({
+          target: "selection",
+          items: activeDragState.items.map((item) => ({
+            ...item,
+            startTime: item.startTime + clampedDelta,
+            endTime: item.endTime + clampedDelta,
+          })),
+        });
         return;
       }
 
@@ -483,6 +560,7 @@ export function Timeline({
         return;
       }
       if (
+        "originX" in activeDragState &&
         Math.abs(lastPointerClientXRef.current - activeDragState.originX) < DRAG_ACTIVATION_PX
       ) {
         setDragState(null);
@@ -498,6 +576,24 @@ export function Timeline({
         if (endTime - startTime >= minDuration) {
           onCreateAction(activeDragState.trackId, startTime, endTime);
         }
+      } else if (activeDragState.kind === "select-box") {
+        suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
+        const selectedItems = getItemsInSelectionRect(activeDragState);
+        onSelectTimelineItems(selectedItems, selectedItems[0] ?? null);
+      } else if (activeDragState.kind === "move-selection") {
+        const minStartTime = Math.min(...activeDragState.items.map((item) => item.startTime));
+        const clampedDelta = Math.max(
+          (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+          -minStartTime,
+        );
+        onBatchMoveCommit(
+          activeDragState.items.map((item) => ({
+            ...item,
+            startTime: item.startTime + clampedDelta,
+            endTime: item.endTime + clampedDelta,
+          })),
+        );
+        suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (isLineDrag(activeDragState)) {
         const next = computeNextRange(
           activeDragState.originalStart,
@@ -509,6 +605,7 @@ export function Timeline({
           true,
         );
         suppressLineClickIdRef.current = activeDragState.id;
+        suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
         onLineCommit(activeDragState.id, next);
       } else if (isCharacterDrag(activeDragState)) {
         const next = computeNextRange(
@@ -520,6 +617,7 @@ export function Timeline({
           zoom,
           true,
         );
+        suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
         onCharacterCommit(activeDragState.id, next);
       } else if (isActionDrag(activeDragState)) {
         const next = computeNextRange(
@@ -531,6 +629,7 @@ export function Timeline({
           zoom,
           true,
         );
+        suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
         onActionCommit(activeDragState.id, next);
       }
       setDragState(null);
@@ -542,7 +641,7 @@ export function Timeline({
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [dragState, zoom, snapPoints, characterAnnotations, actionAnnotations, onLineChange, onLineCommit, onCharacterChange, onCharacterCommit, onActionChange, onActionCommit, onCreateAction, onPreviewFrame]);
+  }, [dragState, zoom, snapPoints, characterAnnotations, actionAnnotations, selectedTimelineItems, onLineChange, onLineCommit, onCharacterChange, onCharacterCommit, onActionChange, onActionCommit, onBatchMoveChange, onBatchMoveCommit, onCreateAction, onPreviewFrame, onSelectTimelineItems]);
 
   const ticks = useMemo(() => {
     const step = zoom >= 160 ? 0.5 : zoom >= 100 ? 1 : 2;
@@ -692,24 +791,33 @@ export function Timeline({
                 className="track-lane"
                 onPointerDown={(event) => {
                   const target = event.target as HTMLElement | null;
-                  if (
-                    event.button !== 0 ||
-                    track.type !== "action" ||
-                    (!event.metaKey && !event.ctrlKey) ||
-                    target?.closest(".timeline-block")
-                  ) {
+                  if (event.button !== 0 || target?.closest(".timeline-block")) {
+                    return;
+                  }
+                  if (track.type === "action" && (event.metaKey || event.ctrlKey)) {
+                    lastPointerClientXRef.current = event.clientX;
+                    setDragState({
+                      kind: "create-action",
+                      trackId: track.id,
+                      originX: event.clientX,
+                      currentX: event.clientX,
+                      laneLeft: event.currentTarget.getBoundingClientRect().left,
+                    });
                     return;
                   }
                   lastPointerClientXRef.current = event.clientX;
                   setDragState({
-                    kind: "create-action",
-                    trackId: track.id,
+                    kind: "select-box",
                     originX: event.clientX,
+                    originY: event.clientY,
                     currentX: event.clientX,
-                    laneLeft: event.currentTarget.getBoundingClientRect().left,
+                    currentY: event.clientY,
                   });
                 }}
                 onClick={(event) => {
+                  if (performance.now() < suppressCanvasClickUntilRef.current) {
+                    return;
+                  }
                   const target = event.target as HTMLElement | null;
                   const laneTime = getLaneTime(event.currentTarget, event.clientX, zoom);
                   if (!target?.closest(".timeline-block") && event.detail === 2) {
@@ -720,6 +828,9 @@ export function Timeline({
                     }
                     onCreateActionAtTime(track.id, startTime);
                     return;
+                  }
+                  if (!target?.closest(".timeline-block") && selectedTimelineItems.length > 1) {
+                    onSelectTimelineItems([], null);
                   }
                   onSeek(laneTime);
                 }}
@@ -739,6 +850,13 @@ export function Timeline({
             </div>
           ))}
 
+          {dragState?.kind === "select-box" && scrollRef.current ? (
+            <div
+              className="timeline-selection-box"
+              style={getSelectionBoxStyle(dragState, scrollRef.current)}
+            />
+          ) : null}
+
           <div className="playhead" style={{ left: getCanvasX(currentTime, zoom) }} />
         </div>
       </div>
@@ -749,7 +867,9 @@ export function Timeline({
     annotation: CharacterAnnotation | ActionAnnotation,
     type: "character" | "action",
   ) {
-    const isSelected = selectedItem?.type === type && selectedItem.id === annotation.id;
+    const selectionKey = getTimelineSelectionKey(type, annotation.id);
+    const isSelected =
+      selectedTimelineKeySet.has(selectionKey) || marqueePreviewKeySet.has(selectionKey);
     const isActive = currentTime >= annotation.startTime && currentTime <= annotation.endTime;
     const isEditing = type === "character" &&
       editingCharacterId === annotation.id &&
@@ -804,6 +924,9 @@ export function Timeline({
             return;
           }
           event.stopPropagation();
+          if (event.metaKey || event.ctrlKey) {
+            return;
+          }
           const preferredHit = resolvePreferredBlockHit(
             event.clientX,
             event.clientY,
@@ -830,6 +953,38 @@ export function Timeline({
             return;
           }
           lastPointerClientXRef.current = event.clientX;
+          const selectionKey = getTimelineSelectionKey(targetType, targetAnnotation.id);
+          const shouldMoveSelection =
+            targetEdge === "center" &&
+            selectedTimelineItems.length > 1 &&
+            selectedTimelineKeySet.has(selectionKey);
+          if (shouldMoveSelection) {
+            const selectionItems = selectedTimelineItems
+              .map((item) => {
+                const liveSelectionAnnotation = findAnnotationById(
+                  item.id,
+                  item.type,
+                  liveProject.characterAnnotations,
+                  liveProject.actionAnnotations,
+                );
+                if (!liveSelectionAnnotation) {
+                  return null;
+                }
+                return {
+                  type: item.type,
+                  id: item.id,
+                  startTime: liveSelectionAnnotation.startTime,
+                  endTime: liveSelectionAnnotation.endTime,
+                };
+              })
+              .filter((item): item is TimelineBatchMoveItem => item !== null);
+            setDragState({
+              kind: "move-selection",
+              originX: event.clientX,
+              items: selectionItems,
+            });
+            return;
+          }
           const base = {
             id: targetAnnotation.id,
             originX: event.clientX,
@@ -862,6 +1017,20 @@ export function Timeline({
         }}
         onClick={(event) => {
           event.stopPropagation();
+          if (performance.now() < suppressCanvasClickUntilRef.current) {
+            return;
+          }
+          if (event.metaKey || event.ctrlKey) {
+            const nextItems = toggleTimelineSelectionItem({ type, id: annotation.id });
+            const primaryItem = nextItems.length > 0
+              ? {
+                  type: nextItems[nextItems.length - 1].type,
+                  id: nextItems[nextItems.length - 1].id,
+                } as SelectedItem
+              : null;
+            onSelectTimelineItems(nextItems, primaryItem);
+            return;
+          }
           onSelectItem({ type, id: annotation.id });
         }}
         onDoubleClick={(event) => {
@@ -1052,7 +1221,68 @@ export function Timeline({
       onCharacterChange(pendingDragUpdate.id, pendingDragUpdate.changes);
       return;
     }
+    if (pendingDragUpdate.target === "selection") {
+      onBatchMoveChange(pendingDragUpdate.items);
+      return;
+    }
     onActionChange(pendingDragUpdate.id, pendingDragUpdate.changes);
+  }
+
+  function toggleTimelineSelectionItem(item: TimelineSelectionItem) {
+    const itemKey = getTimelineSelectionKey(item.type, item.id);
+    if (selectedTimelineKeySet.has(itemKey)) {
+      return selectedTimelineItems.filter((selectedItem) =>
+        getTimelineSelectionKey(selectedItem.type, selectedItem.id) !== itemKey
+      );
+    }
+    return [...selectedTimelineItems, item];
+  }
+
+  function getItemsInSelectionRect(
+    selectionDragState: Extract<NonNullable<DragState>, { kind: "select-box" }>,
+  ) {
+    const selectionRect = getClientSelectionRect(selectionDragState);
+    if (!selectionRect) {
+      return [];
+    }
+
+    const candidates = Array.from(
+      document.querySelectorAll<HTMLElement>(".timeline-block[data-block-id][data-block-type]"),
+    );
+
+    return candidates
+      .flatMap((element) => {
+        const id = element.dataset.blockId;
+        const type = element.dataset.blockType;
+        if (!id || (type !== "character" && type !== "action")) {
+          return [];
+        }
+        const bounds = element.getBoundingClientRect();
+        if (!rectsIntersect(selectionRect, bounds)) {
+          return [];
+        }
+        return [{ id, type }] as TimelineSelectionItem[];
+      })
+      .sort((left, right) => {
+        const leftAnnotation = findAnnotationById(
+          left.id,
+          left.type,
+          characterAnnotations,
+          actionAnnotations,
+        );
+        const rightAnnotation = findAnnotationById(
+          right.id,
+          right.type,
+          characterAnnotations,
+          actionAnnotations,
+        );
+        if (!leftAnnotation || !rightAnnotation) {
+          return left.id.localeCompare(right.id);
+        }
+        return leftAnnotation.startTime - rightAnnotation.startTime ||
+          leftAnnotation.endTime - rightAnnotation.endTime ||
+          left.id.localeCompare(right.id);
+      });
   }
 
   function queuePreviewFrame(time: number | null) {
@@ -1276,6 +1506,48 @@ function getDraftStyle(
     left: leftPx,
     width: Math.max(rightPx - leftPx, 6),
   };
+}
+
+function getSelectionBoxStyle(
+  dragState: Extract<NonNullable<DragState>, { kind: "select-box" }>,
+  container: HTMLDivElement,
+) {
+  const bounds = container.getBoundingClientRect();
+  const left = Math.min(dragState.originX, dragState.currentX) - bounds.left + container.scrollLeft;
+  const top = Math.min(dragState.originY, dragState.currentY) - bounds.top;
+  return {
+    left: Math.max(0, left),
+    top: Math.max(0, top),
+    width: Math.abs(dragState.currentX - dragState.originX),
+    height: Math.abs(dragState.currentY - dragState.originY),
+  };
+}
+
+function getClientSelectionRect(
+  dragState: Extract<NonNullable<DragState>, { kind: "select-box" }>,
+) {
+  return {
+    left: Math.min(dragState.originX, dragState.currentX),
+    right: Math.max(dragState.originX, dragState.currentX),
+    top: Math.min(dragState.originY, dragState.currentY),
+    bottom: Math.max(dragState.originY, dragState.currentY),
+  };
+}
+
+function rectsIntersect(
+  leftRect: { left: number; right: number; top: number; bottom: number },
+  rightRect: { left: number; right: number; top: number; bottom: number },
+) {
+  return (
+    leftRect.left <= rightRect.right &&
+    leftRect.right >= rightRect.left &&
+    leftRect.top <= rightRect.bottom &&
+    leftRect.bottom >= rightRect.top
+  );
+}
+
+function getTimelineSelectionKey(type: "character" | "action", id: string) {
+  return `${type}:${id}`;
 }
 
 function getCanvasX(time: number, zoom: number) {
