@@ -554,7 +554,7 @@ export function Timeline({
       <div className="panel-header">
         <div className="timeline-header-copy">
           <h2>多轨时间轴</h2>
-          <span>点击空白跳转，拖拽片段创建或调整边界</span>
+          <span>点击空白跳转，双击创建，Command/Ctrl + 拖拽可新建动作片段</span>
         </div>
         <div className="timeline-zoom-controls">
           <button type="button" onClick={() => handleZoomStep(-20)}>
@@ -695,6 +695,7 @@ export function Timeline({
                   if (
                     event.button !== 0 ||
                     track.type !== "action" ||
+                    (!event.metaKey && !event.ctrlKey) ||
                     target?.closest(".timeline-block")
                   ) {
                     return;
