@@ -56,6 +56,11 @@ function App() {
   const [editingCharacterId, setEditingCharacterId] = useState<string | null>(null);
   const [editingCharacterLocation, setEditingCharacterLocation] = useState<CharacterEditLocation | null>(null);
   const [editingCharacterValue, setEditingCharacterValue] = useState("");
+  const [characterContextMenu, setCharacterContextMenu] = useState<{
+    id: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const [zoom, setZoom] = useState(100);
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
@@ -260,6 +265,34 @@ function App() {
       setEditingCharacterValue("");
     }
   }, [editingCharacterId, project.characterAnnotations, selectedLineId]);
+
+  useEffect(() => {
+    if (!characterContextMenu) {
+      return;
+    }
+
+    const handleClose = () => {
+      setCharacterContextMenu(null);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setCharacterContextMenu(null);
+      }
+    };
+
+    window.addEventListener("pointerdown", handleClose);
+    window.addEventListener("scroll", handleClose, true);
+    window.addEventListener("resize", handleClose);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handleClose);
+      window.removeEventListener("scroll", handleClose, true);
+      window.removeEventListener("resize", handleClose);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [characterContextMenu]);
 
   function projectsEqual(left: ProjectData, right: ProjectData) {
     return JSON.stringify(left) === JSON.stringify(right);
@@ -469,7 +502,7 @@ function App() {
       }, target.line.id);
     } else {
       const lineId = `line-${crypto.randomUUID()}`;
-      const startTime = Math.max(0, normalizedTime - DEFAULT_CHARACTER_DURATION / 2);
+      const startTime = Math.max(0, normalizedTime);
       const endTime = startTime + DEFAULT_CHARACTER_DURATION;
       nextProject = {
         ...currentProject,
@@ -837,7 +870,11 @@ function App() {
             onEditCharacterText={(id) => startCharacterTextEdit(id, "timeline")}
             onCreateCharacterAtTime={createCharacterAtTime}
             onCreateActionAtTime={createActionAtTime}
-            onCharacterLineAction={applyCharacterLineAction}
+            onOpenCharacterContextMenu={(id, x, y) => {
+              preferredCharacterEditLocationRef.current = "timeline";
+              setSelectedItem({ type: "character", id });
+              setCharacterContextMenu({ id, x, y });
+            }}
             onLineChange={(id, changes) => updateLinePosition(id, changes, false)}
             onLineCommit={(id, changes) => updateLinePosition(id, changes, true)}
             onCharacterChange={(id, changes) => updateCharacter(id, changes, false)}
@@ -911,6 +948,16 @@ function App() {
                       setSelectedItem({ type: "character", id: item.id });
                     }}
                     onDoubleClick={() => startCharacterTextEdit(item.id, "split-panel")}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      preferredCharacterEditLocationRef.current = "split-panel";
+                      setSelectedItem({ type: "character", id: item.id });
+                      setCharacterContextMenu({
+                        id: item.id,
+                        x: event.clientX,
+                        y: event.clientY,
+                      });
+                    }}
                   >
                     <span>{item.char}</span>
                     <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
@@ -932,6 +979,50 @@ function App() {
           />
         </div>
       </main>
+      {characterContextMenu ? (
+        <div
+          className="character-context-menu"
+          style={{ left: characterContextMenu.x, top: characterContextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              applyCharacterLineAction(characterContextMenu.id, "set-line-start");
+              setCharacterContextMenu(null);
+            }}
+          >
+            设为本句首字
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              applyCharacterLineAction(characterContextMenu.id, "set-line-end");
+              setCharacterContextMenu(null);
+            }}
+          >
+            设为本句末字
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              applyCharacterLineAction(characterContextMenu.id, "merge-prev-line");
+              setCharacterContextMenu(null);
+            }}
+          >
+            并入前一句
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              applyCharacterLineAction(characterContextMenu.id, "merge-next-line");
+              setCharacterContextMenu(null);
+            }}
+          >
+            并入后一句
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1041,16 +1132,17 @@ function getCharacterCreationRange(
   time: number,
 ) {
   if (position === "end") {
-    const startTime = Math.max(line.endTime, time - DEFAULT_CHARACTER_DURATION / 2);
+    const startTime = Math.max(line.endTime, time);
     return {
       startTime,
       endTime: startTime + DEFAULT_CHARACTER_DURATION,
     };
   }
 
-  const endTime = Math.min(line.startTime, time + DEFAULT_CHARACTER_DURATION / 2);
+  const startTime = Math.max(0, time);
+  const endTime = Math.min(line.startTime, startTime + DEFAULT_CHARACTER_DURATION);
   return {
-    startTime: Math.max(0, endTime - DEFAULT_CHARACTER_DURATION),
+    startTime,
     endTime,
   };
 }

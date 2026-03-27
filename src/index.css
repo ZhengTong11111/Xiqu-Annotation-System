@@ -631,6 +631,7 @@ select {
   background: linear-gradient(180deg, #ef4444, #f97316);
   box-shadow: 0 0 0 1px rgba(255,255,255,0.5);
   z-index: 5;
+  pointer-events: none;
 }
 
 @media (max-width: 1440px) {

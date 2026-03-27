@@ -36,10 +36,7 @@ type TimelineProps = {
   onCancelCharacterTextEdit: () => void;
   onCreateCharacterAtTime: (time: number) => void;
   onCreateActionAtTime: (trackId: string, startTime: number) => void;
-  onCharacterLineAction: (
-    id: string,
-    action: "set-line-start" | "set-line-end" | "merge-prev-line" | "merge-next-line",
-  ) => void;
+  onOpenCharacterContextMenu: (id: string, x: number, y: number) => void;
   onLineChange: (id: string, changes: Pick<SubtitleLine, "startTime" | "endTime">) => void;
   onLineCommit: (id: string, changes: Pick<SubtitleLine, "startTime" | "endTime">) => void;
   onCharacterChange: (id: string, changes: Partial<CharacterAnnotation>) => void;
@@ -76,6 +73,7 @@ type DragState =
       trackId: string;
       originX: number;
       currentX: number;
+      laneLeft: number;
     }
   | null;
 
@@ -131,12 +129,6 @@ type HoveredBlockState = {
   edge: "left" | "right" | "center";
 } | null;
 
-type CharacterContextMenuState = {
-  id: string;
-  x: number;
-  y: number;
-} | null;
-
 type EdgeHit = "left" | "right" | "center";
 
 export function Timeline({
@@ -165,7 +157,7 @@ export function Timeline({
   onCancelCharacterTextEdit,
   onCreateCharacterAtTime,
   onCreateActionAtTime,
-  onCharacterLineAction,
+  onOpenCharacterContextMenu,
   onLineChange,
   onLineCommit,
   onCharacterChange,
@@ -194,7 +186,6 @@ export function Timeline({
   const suppressLineClickIdRef = useRef<string | null>(null);
   const [dragState, setDragState] = useState<DragState>(null);
   const [hoveredBlock, setHoveredBlock] = useState<HoveredBlockState>(null);
-  const [characterContextMenu, setCharacterContextMenu] = useState<CharacterContextMenuState>(null);
   const [viewportState, setViewportState] = useState({ scrollLeft: 0, width: 0 });
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
   const sliderZoom = Math.round(zoom / 10) * 10;
@@ -242,34 +233,6 @@ export function Timeline({
   useEffect(() => {
     dragStateRef.current = dragState;
   }, [dragState]);
-
-  useEffect(() => {
-    if (!characterContextMenu) {
-      return;
-    }
-
-    const handleClose = () => {
-      setCharacterContextMenu(null);
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setCharacterContextMenu(null);
-      }
-    };
-
-    window.addEventListener("pointerdown", handleClose);
-    window.addEventListener("scroll", handleClose, true);
-    window.addEventListener("resize", handleClose);
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      window.removeEventListener("pointerdown", handleClose);
-      window.removeEventListener("scroll", handleClose, true);
-      window.removeEventListener("resize", handleClose);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [characterContextMenu]);
 
   useEffect(() => {
     return () => {
@@ -520,7 +483,6 @@ export function Timeline({
         return;
       }
       if (
-        activeDragState.kind !== "create-action" &&
         Math.abs(lastPointerClientXRef.current - activeDragState.originX) < DRAG_ACTIVATION_PX
       ) {
         setDragState(null);
@@ -528,9 +490,8 @@ export function Timeline({
       }
       const liveSnapPoints = getLiveSnapPoints();
       if (activeDragState.kind === "create-action" && scrollRef.current) {
-        const bounds = scrollRef.current.getBoundingClientRect();
-        const left = Math.min(activeDragState.originX, activeDragState.currentX) - bounds.left + scrollRef.current.scrollLeft;
-        const right = Math.max(activeDragState.originX, activeDragState.currentX) - bounds.left + scrollRef.current.scrollLeft;
+        const left = Math.max(0, Math.min(activeDragState.originX, activeDragState.currentX) - activeDragState.laneLeft);
+        const right = Math.max(0, Math.max(activeDragState.originX, activeDragState.currentX) - activeDragState.laneLeft);
         const startTime = snapTime(left / zoom, liveSnapPoints);
         const minDuration = Math.max(0.04, MIN_BLOCK_WIDTH_PX / Math.max(zoom, 1));
         const endTime = Math.max(startTime + minDuration, snapTime(right / zoom, liveSnapPoints));
@@ -660,6 +621,9 @@ export function Timeline({
                   width: Math.max((line.endTime - line.startTime) * zoom, 4),
                 }}
                 onPointerDown={(event) => {
+                  if (event.button !== 0) {
+                    return;
+                  }
                   event.stopPropagation();
                   lastPointerClientXRef.current = event.clientX;
                   setDragState({
@@ -722,35 +686,41 @@ export function Timeline({
               key={track.id}
               className="timeline-track"
               style={{ height: TRACK_HEIGHT }}
-              onPointerDown={(event) => {
-                if (track.type !== "action" || event.target !== event.currentTarget || !scrollRef.current) {
-                  return;
-                }
-                lastPointerClientXRef.current = event.clientX;
-                setDragState({
-                  kind: "create-action",
-                  trackId: track.id,
-                  originX: event.clientX,
-                  currentX: event.clientX,
-                });
-              }}
             >
               <div className="track-label">{track.name}</div>
               <div
                 className="track-lane"
-                onDoubleClick={(event) => {
-                  if (event.target !== event.currentTarget) {
+                onPointerDown={(event) => {
+                  const target = event.target as HTMLElement | null;
+                  if (
+                    event.button !== 0 ||
+                    track.type !== "action" ||
+                    target?.closest(".timeline-block")
+                  ) {
                     return;
                   }
-                  const startTime = snapTime(getLaneTime(event.currentTarget, event.clientX, zoom), snapPoints);
-                  if (track.type === "character") {
-                    onCreateCharacterAtTime(startTime);
-                    return;
-                  }
-                  onCreateActionAtTime(track.id, startTime);
+                  lastPointerClientXRef.current = event.clientX;
+                  setDragState({
+                    kind: "create-action",
+                    trackId: track.id,
+                    originX: event.clientX,
+                    currentX: event.clientX,
+                    laneLeft: event.currentTarget.getBoundingClientRect().left,
+                  });
                 }}
                 onClick={(event) => {
-                  onSeek(getLaneTime(event.currentTarget, event.clientX, zoom));
+                  const target = event.target as HTMLElement | null;
+                  const laneTime = getLaneTime(event.currentTarget, event.clientX, zoom);
+                  if (!target?.closest(".timeline-block") && event.detail === 2) {
+                    const startTime = snapTime(laneTime, snapPoints);
+                    if (track.type === "character") {
+                      onCreateCharacterAtTime(startTime);
+                      return;
+                    }
+                    onCreateActionAtTime(track.id, startTime);
+                    return;
+                  }
+                  onSeek(laneTime);
                 }}
               >
                 {track.type === "character"
@@ -761,7 +731,7 @@ export function Timeline({
                 {dragState?.kind === "create-action" && dragState.trackId === track.id && scrollRef.current ? (
                   <div
                     className="timeline-block draft action"
-                    style={getDraftStyle(dragState, scrollRef.current, zoom)}
+                    style={getDraftStyle(dragState)}
                   />
                 ) : null}
               </div>
@@ -771,50 +741,6 @@ export function Timeline({
           <div className="playhead" style={{ left: getCanvasX(currentTime, zoom) }} />
         </div>
       </div>
-      {characterContextMenu ? (
-        <div
-          className="character-context-menu"
-          style={{ left: characterContextMenu.x, top: characterContextMenu.y }}
-          onPointerDown={(event) => event.stopPropagation()}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              onCharacterLineAction(characterContextMenu.id, "set-line-start");
-              setCharacterContextMenu(null);
-            }}
-          >
-            设为本句首字
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              onCharacterLineAction(characterContextMenu.id, "set-line-end");
-              setCharacterContextMenu(null);
-            }}
-          >
-            设为本句末字
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              onCharacterLineAction(characterContextMenu.id, "merge-prev-line");
-              setCharacterContextMenu(null);
-            }}
-          >
-            并入前一句
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              onCharacterLineAction(characterContextMenu.id, "merge-next-line");
-              setCharacterContextMenu(null);
-            }}
-          >
-            并入后一句
-          </button>
-        </div>
-      ) : null}
     </section>
   );
 
@@ -873,6 +799,9 @@ export function Timeline({
           );
         }}
         onPointerDown={(event) => {
+          if (event.button !== 0) {
+            return;
+          }
           event.stopPropagation();
           const preferredHit = resolvePreferredBlockHit(
             event.clientX,
@@ -947,11 +876,7 @@ export function Timeline({
           event.preventDefault();
           event.stopPropagation();
           onSelectItem({ type: "character", id: annotation.id });
-          setCharacterContextMenu({
-            id: annotation.id,
-            x: event.clientX,
-            y: event.clientY,
-          });
+          onOpenCharacterContextMenu(annotation.id, event.clientX, event.clientY);
         }}
       >
         <div className="resize-handle left" />
@@ -1039,12 +964,48 @@ export function Timeline({
     );
   }
 
+  function getEffectiveZoomViewportState(container: HTMLDivElement) {
+    const pendingZoom = pendingZoomRef.current;
+    if (!pendingZoom) {
+      const scheduledAnchor = zoomAnchorRef.current;
+      if (scheduledAnchor) {
+        const nextTimelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoomRef.current, 1200);
+        const maxScrollLeft = Math.max(nextTimelineWidth - container.clientWidth, 0);
+        return {
+          zoom: zoomRef.current,
+          scrollLeft: Math.max(
+            0,
+            Math.min(getCanvasX(scheduledAnchor.time, zoomRef.current) - scheduledAnchor.viewportOffset, maxScrollLeft),
+          ),
+        };
+      }
+      return {
+        zoom: zoomRef.current,
+        scrollLeft: container.scrollLeft,
+      };
+    }
+
+    const nextTimelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * pendingZoom.nextZoom, 1200);
+    const maxScrollLeft = Math.max(nextTimelineWidth - container.clientWidth, 0);
+
+    return {
+      zoom: pendingZoom.nextZoom,
+      scrollLeft: Math.max(
+        0,
+        Math.min(getCanvasX(pendingZoom.anchorTime, pendingZoom.nextZoom) - pendingZoom.viewportOffset, maxScrollLeft),
+      ),
+    };
+  }
+
   function handleZoomAroundPointer(event: React.WheelEvent<HTMLDivElement>) {
+    const container = event.currentTarget;
+    const pointerOffset = event.clientX - container.getBoundingClientRect().left;
+    const { zoom: effectiveZoom, scrollLeft: effectiveScrollLeft } = getEffectiveZoomViewportState(container);
     zoomInteractionUntilRef.current = Date.now() + ZOOM_SETTLE_MS;
     queueZoom(
-      clampZoom(zoomRef.current * Math.exp(-event.deltaY * 0.0025)),
-      getCanvasTime(event.currentTarget, event.clientX, zoomRef.current),
-      event.clientX - event.currentTarget.getBoundingClientRect().left,
+      clampZoom(effectiveZoom * Math.exp(-event.deltaY * 0.0025)),
+      getCanvasTimeFromViewportOffset(container, pointerOffset, effectiveZoom, effectiveScrollLeft),
+      pointerOffset,
     );
   }
 
@@ -1301,16 +1262,14 @@ function isActionDrag(
 
 function getDraftStyle(
   dragState: Extract<NonNullable<DragState>, { kind: "create-action" }>,
-  container: HTMLDivElement,
-  zoom: number,
 ) {
   const leftPx = Math.min(
-    getLaneX(container, dragState.originX) * zoom,
-    getLaneX(container, dragState.currentX) * zoom,
+    Math.max(0, dragState.originX - dragState.laneLeft),
+    Math.max(0, dragState.currentX - dragState.laneLeft),
   );
   const rightPx = Math.max(
-    getLaneX(container, dragState.originX) * zoom,
-    getLaneX(container, dragState.currentX) * zoom,
+    Math.max(0, dragState.originX - dragState.laneLeft),
+    Math.max(0, dragState.currentX - dragState.laneLeft),
   );
   return {
     left: leftPx,
@@ -1322,14 +1281,13 @@ function getCanvasX(time: number, zoom: number) {
   return TRACK_LABEL_WIDTH + time * zoom;
 }
 
-function getCanvasTime(container: HTMLElement, clientX: number, zoom: number) {
-  const bounds = container.getBoundingClientRect();
-  const offsetX = clientX - bounds.left + container.scrollLeft;
-  return Math.max(0, offsetX - TRACK_LABEL_WIDTH) / zoom;
-}
-
-function getCanvasTimeFromViewportOffset(container: HTMLElement, viewportOffset: number, zoom: number) {
-  const offsetX = viewportOffset + container.scrollLeft;
+function getCanvasTimeFromViewportOffset(
+  container: HTMLElement,
+  viewportOffset: number,
+  zoom: number,
+  scrollLeft = container.scrollLeft,
+) {
+  const offsetX = viewportOffset + scrollLeft;
   return Math.max(0, offsetX - TRACK_LABEL_WIDTH) / zoom;
 }
 
