@@ -25,7 +25,8 @@ type TimelineProps = {
   trackSnapEnabled: Record<string, boolean>;
   zoom: number;
   duration: number;
-  focusRange: { start: number; end: number } | null;
+  focusRange: { start: number; end: number; requestId: number } | null;
+  onFocusRangeHandled: () => void;
   getProjectSnapshot: () => ProjectData;
   editingCharacterId: string | null;
   editingCharacterLocation: "timeline" | "split-panel" | null;
@@ -201,6 +202,7 @@ export function Timeline({
   zoom,
   duration,
   focusRange,
+  onFocusRangeHandled,
   getProjectSnapshot,
   editingCharacterId,
   editingCharacterLocation,
@@ -597,6 +599,7 @@ export function Timeline({
     const targetLeft = Math.max(0, Math.min(getCanvasX(focusRange.start, zoom) - 120, maxScrollLeft));
     const startLeft = container.scrollLeft;
     const delta = targetLeft - startLeft;
+    onFocusRangeHandled();
 
     if (Math.abs(delta) < 1) {
       return;
@@ -626,7 +629,7 @@ export function Timeline({
     };
 
     focusScrollFrameRef.current = requestAnimationFrame(animateScroll);
-  }, [focusRange, timelineWidth, zoom]);
+  }, [focusRange, onFocusRangeHandled, timelineWidth, zoom]);
 
   useEffect(() => {
     if (!scrollRef.current) {

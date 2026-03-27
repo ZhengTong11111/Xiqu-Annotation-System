@@ -44,6 +44,11 @@ type CharacterLineAction =
   | "merge-prev-line"
   | "merge-next-line";
 
+type LineFocusRequest = {
+  lineId: string;
+  requestId: number;
+};
+
 const CHARACTER_CREATE_ATTACH_WINDOW = 1;
 const DEFAULT_CHARACTER_DURATION = 1.05;
 const MIN_CHARACTER_DURATION = 0.04;
@@ -75,7 +80,7 @@ function App() {
     y: number;
   } | null>(null);
   const [zoom, setZoom] = useState(20);
-  const [lineSelectionShouldFocus, setLineSelectionShouldFocus] = useState(true);
+  const [lineFocusRequest, setLineFocusRequest] = useState<LineFocusRequest | null>(null);
   const [trackSnapEnabled, setTrackSnapEnabled] = useState<Record<string, boolean>>(
     () => Object.fromEntries(trackDefinitions.map((track) => [track.id, true])),
   );
@@ -163,22 +168,19 @@ function App() {
       : null;
 
   const focusRange = useMemo(() => {
-    if (selectedItem?.type !== "line" || !lineSelectionShouldFocus) {
+    if (!lineFocusRequest) {
       return null;
     }
-    const focusedLineId = selectedItem.id;
-    if (!focusedLineId) {
-      return null;
-    }
-    const line = project.subtitleLines.find((item) => item.id === focusedLineId);
+    const line = project.subtitleLines.find((item) => item.id === lineFocusRequest.lineId);
     if (!line) {
       return null;
     }
     return {
+      requestId: lineFocusRequest.requestId,
       start: Math.max(0, line.startTime - 1.5),
       end: line.endTime + 1.5,
     };
-  }, [project.subtitleLines, selectedItem]);
+  }, [lineFocusRequest, project.subtitleLines]);
 
   useEffect(() => {
     setDuration(
@@ -1115,6 +1117,7 @@ function App() {
             zoom={zoom}
             duration={duration}
             focusRange={focusRange}
+            onFocusRangeHandled={() => setLineFocusRequest(null)}
             getProjectSnapshot={() => projectRef.current}
             onZoomChange={setZoom}
             onToggleTrackSnap={(trackId) => {
@@ -1126,25 +1129,21 @@ function App() {
             onSeek={seekTo}
             onPreviewFrame={setPreviewTime}
             onSelectItem={(item) => {
-              if (item?.type === "line") {
-                setLineSelectionShouldFocus(true);
-              }
+              setLineFocusRequest(null);
               if (item?.type === "character") {
                 preferredCharacterEditLocationRef.current = "timeline";
               }
               applySelection(item);
             }}
             onSelectTimelineItems={(items, primaryItem) => {
-              if (primaryItem?.type === "line") {
-                setLineSelectionShouldFocus(true);
-              }
+              setLineFocusRequest(null);
               if (primaryItem?.type === "character") {
                 preferredCharacterEditLocationRef.current = "timeline";
               }
               applySelection(primaryItem, items);
             }}
             onSelectLineOverlay={(lineId) => {
-              setLineSelectionShouldFocus(false);
+              setLineFocusRequest(null);
               applySelection({ type: "line", id: lineId });
             }}
             editingCharacterId={editingCharacterId}
@@ -1183,7 +1182,7 @@ function App() {
             currentTime={currentTime}
             selectedLineId={selectedLineId}
             onSelectLine={(lineId) => {
-              setLineSelectionShouldFocus(true);
+              setLineFocusRequest({ lineId, requestId: Date.now() });
               applySelection({ type: "line", id: lineId });
               const line = project.subtitleLines.find((item) => item.id === lineId);
               if (line) {
