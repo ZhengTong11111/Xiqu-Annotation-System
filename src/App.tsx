@@ -18,6 +18,7 @@ import type {
 } from "./types";
 import {
   buildProjectFromLines,
+  getDefaultActionLabel,
   getProjectDuration,
   singingStyleOptions,
   trackDefinitions,
@@ -724,7 +725,7 @@ function App() {
         {
           id: `${trackId}-${crypto.randomUUID()}`,
           trackId,
-          label: trackId === "hand-action" ? "抬手" : "转身",
+          label: getDefaultActionLabel(trackId),
           startTime: safeStartTime,
           endTime: safeStartTime + DEFAULT_ACTION_DURATION,
         },
@@ -939,7 +940,7 @@ function App() {
     applySelection(items[0] ?? null, items);
   }
 
-  function addAction(trackId: "hand-action" | "body-action") {
+  function addAction(trackId: "breath-action" | "hand-action" | "body-action") {
     const currentProject = projectRef.current;
     const startTime = currentTime;
     const endTime = Math.min(duration, startTime + DEFAULT_ACTION_DURATION);
@@ -950,7 +951,7 @@ function App() {
         {
           id: `${trackId}-${crypto.randomUUID()}`,
           trackId,
-          label: trackId === "hand-action" ? "抬手" : "转身",
+          label: getDefaultActionLabel(trackId),
           startTime,
           endTime,
         },
@@ -967,7 +968,7 @@ function App() {
         {
           id: `${trackId}-${crypto.randomUUID()}`,
           trackId,
-          label: trackId === "hand-action" ? "抬手" : "转身",
+          label: getDefaultActionLabel(trackId),
           startTime,
           endTime,
         },
@@ -1027,7 +1028,7 @@ function App() {
     commitProject({ ...projectRef.current, videoUrl: url }, undefined, "import-video");
   }
 
-  function handleExport(kind: "character" | "singing" | "hand" | "body" | "project") {
+  function handleExport(kind: "character" | "singing" | "breath" | "hand" | "body" | "project") {
     if (kind === "project") {
       downloadBlob(
         JSON.stringify(project, null, 2),
@@ -1046,6 +1047,10 @@ function App() {
       singing: {
         name: "singing_style_track.srt",
         content: exportSingingStyleTrackToSrt(project.characterAnnotations),
+      },
+      breath: {
+        name: "breath_track.srt",
+        content: exportActionTrackToSrt(project.actionAnnotations, "breath-action"),
       },
       hand: {
         name: "hand_action_track.srt",

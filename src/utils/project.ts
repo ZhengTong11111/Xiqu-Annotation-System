@@ -22,6 +22,12 @@ export const trackDefinitions: TrackDefinition[] = [
     type: "character",
   },
   {
+    id: "breath-action",
+    name: "呼吸轨",
+    type: "action",
+    labels: ["换气", "急吸", "缓呼", "停连", "其他"],
+  },
+  {
     id: "hand-action",
     name: "手部动作轨",
     type: "action",
@@ -64,6 +70,11 @@ export function buildProjectFromLines(
     characterAnnotations: subtitleLines.flatMap(splitLineIntoCharacters),
     actionAnnotations: [],
   };
+}
+
+export function getDefaultActionLabel(trackId: string): string {
+  const track = trackDefinitions.find((item) => item.id === trackId);
+  return track?.labels?.[0] ?? "其他";
 }
 
 export function getProjectDuration(project: ProjectData): number {

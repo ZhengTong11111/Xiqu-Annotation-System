@@ -10,10 +10,10 @@ type ToolbarProps = {
   onPlaybackRateChange: (rate: number) => void;
   onVideoFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onSrtFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
-  onExportTrack: (kind: "character" | "singing" | "hand" | "body" | "project") => void;
+  onExportTrack: (kind: "character" | "singing" | "breath" | "hand" | "body" | "project") => void;
   onUndo: () => void;
   onRedo: () => void;
-  onAddAction: (trackId: "hand-action" | "body-action") => void;
+  onAddAction: (trackId: "breath-action" | "hand-action" | "body-action") => void;
 };
 
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5];
@@ -46,6 +46,7 @@ export function Toolbar({
         </label>
         <button onClick={() => onExportTrack("character")}>导出逐字 SRT</button>
         <button onClick={() => onExportTrack("singing")}>导出唱腔 SRT</button>
+        <button onClick={() => onExportTrack("breath")}>导出呼吸轨</button>
         <button onClick={() => onExportTrack("hand")}>导出手部动作</button>
         <button onClick={() => onExportTrack("body")}>导出肢体动作</button>
         <button onClick={() => onExportTrack("project")}>导出项目 JSON</button>
@@ -70,6 +71,7 @@ export function Toolbar({
       </div>
 
       <div className="toolbar-group">
+        <button onClick={() => onAddAction("breath-action")}>新增呼吸标注</button>
         <button onClick={() => onAddAction("hand-action")}>新增手部动作</button>
         <button onClick={() => onAddAction("body-action")}>新增肢体动作</button>
         <button onClick={onUndo} disabled={!canUndo}>

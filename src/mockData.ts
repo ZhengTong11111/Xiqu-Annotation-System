@@ -26,6 +26,13 @@ const baseMockLines: SubtitleLine[] = [
 
 const baseMockActions: ActionAnnotation[] = [
   {
+    id: "breath-1",
+    trackId: "breath-action",
+    label: "换气",
+    startTime: 12.9,
+    endTime: 13.15,
+  },
+  {
     id: "hand-1",
     trackId: "hand-action",
     label: "抬手",
