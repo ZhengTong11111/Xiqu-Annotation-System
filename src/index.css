@@ -128,6 +128,20 @@ select {
   gap: 8px;
 }
 
+.timeline-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.timeline-track-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .workspace-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.75fr) 360px;
@@ -432,6 +446,20 @@ select {
   box-shadow: 1px 0 0 rgba(31, 41, 55, 0.08);
 }
 
+.track-label-custom {
+  cursor: pointer;
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+.track-label-custom:hover {
+  background: rgba(230, 240, 250, 0.96);
+}
+
+.track-label-custom.selected {
+  background: rgba(15, 108, 189, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(15, 108, 189, 0.18), 1px 0 0 rgba(31, 41, 55, 0.08);
+}
+
 .track-label-copy {
   display: flex;
   flex-direction: column;
@@ -546,6 +574,18 @@ select {
   background: linear-gradient(180deg, rgba(220, 107, 47, 0.18), rgba(220, 107, 47, 0.1));
   border-color: rgba(220, 107, 47, 0.24);
   color: #8b4317;
+}
+
+.timeline-block.custom-text {
+  background: linear-gradient(180deg, rgba(8, 145, 178, 0.2), rgba(8, 145, 178, 0.11));
+  border-color: rgba(8, 145, 178, 0.28);
+  color: #0f5b6c;
+}
+
+.timeline-block.custom-action {
+  background: linear-gradient(180deg, rgba(180, 122, 28, 0.2), rgba(180, 122, 28, 0.1));
+  border-color: rgba(180, 122, 28, 0.28);
+  color: #7a4d0b;
 }
 
 .timeline-block.selected {
@@ -748,6 +788,23 @@ select {
   border-color: rgba(15, 108, 189, 0.16);
   color: #0f3d68;
   font-weight: 600;
+}
+
+.track-option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.track-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.track-option-row button {
+  white-space: nowrap;
 }
 
 .playhead {

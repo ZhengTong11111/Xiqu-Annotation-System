@@ -6,6 +6,8 @@ export type SingingStyle =
   | "念白式"
   | "其他";
 
+export type CustomTrackType = "text" | "action";
+
 export type SubtitleLine = {
   id: string;
   text: string;
@@ -30,11 +32,55 @@ export type ActionAnnotation = {
   endTime: number;
 };
 
+export type CustomTextTrackBlock = {
+  id: string;
+  startTime: number;
+  endTime: number;
+  text: string;
+  type: string;
+};
+
+export type CustomActionTrackBlock = {
+  id: string;
+  startTime: number;
+  endTime: number;
+  type: string;
+};
+
+export type CustomTextTrack = {
+  id: string;
+  name: string;
+  trackType: "text";
+  typeOptions: string[];
+  blocks: CustomTextTrackBlock[];
+};
+
+export type CustomActionTrack = {
+  id: string;
+  name: string;
+  trackType: "action";
+  typeOptions: string[];
+  blocks: CustomActionTrackBlock[];
+};
+
+export type CustomTrack = CustomTextTrack | CustomActionTrack;
+
+export type ResolvedCustomTrackBlock = {
+  id: string;
+  trackId: string;
+  trackType: CustomTrackType;
+  startTime: number;
+  endTime: number;
+  type: string;
+  text?: string;
+};
+
 export type TrackDefinition = {
   id: string;
   name: string;
-  type: "character" | "action";
-  labels?: string[];
+  type: "character" | "action" | "custom-text" | "custom-action";
+  options?: string[];
+  isCustom?: boolean;
 };
 
 export type ProjectData = {
@@ -42,6 +88,7 @@ export type ProjectData = {
   subtitleLines: SubtitleLine[];
   characterAnnotations: CharacterAnnotation[];
   actionAnnotations: ActionAnnotation[];
+  customTracks: CustomTrack[];
 };
 
 export type WaveformData = {
@@ -54,12 +101,24 @@ export type SelectedItem =
   | { type: "line"; id: string }
   | { type: "character"; id: string }
   | { type: "action"; id: string }
+  | { type: "custom-track"; id: string }
+  | { type: "custom-block"; id: string; trackId: string }
   | null;
 
-export type TimelineSelectionItem = {
-  type: "character" | "action";
-  id: string;
-};
+export type TimelineSelectionItem =
+  | {
+      type: "character";
+      id: string;
+    }
+  | {
+      type: "action";
+      id: string;
+    }
+  | {
+      type: "custom-block";
+      id: string;
+      trackId: string;
+    };
 
 export type TimelineBatchMoveItem = TimelineSelectionItem & {
   startTime: number;

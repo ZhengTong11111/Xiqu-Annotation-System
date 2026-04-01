@@ -9,7 +9,10 @@ import { mockProject } from "./mockData";
 import type {
   ActionAnnotation,
   CharacterAnnotation,
+  CustomTrack,
+  CustomTrackType,
   ProjectData,
+  ResolvedCustomTrackBlock,
   SelectedItem,
   SubtitleLine,
   TimelineBatchMoveItem,
@@ -18,9 +21,14 @@ import type {
 } from "./types";
 import {
   buildProjectFromLines,
+  buildTimelineTrackDefinitions,
+  flattenCustomTrackBlocks,
+  getDefaultCustomTrackName,
+  getDefaultCustomTrackTypeOptions,
+  getDefaultFixedActionLabel,
   getProjectDuration,
+  getNextCustomTrackTypeOptionName,
   singingStyleOptions,
-  trackDefinitions,
 } from "./utils/project";
 import {
   exportActionTrackToSrt,
@@ -53,6 +61,7 @@ const CHARACTER_CREATE_ATTACH_WINDOW = 1;
 const DEFAULT_CHARACTER_DURATION = 1.05;
 const MIN_CHARACTER_DURATION = 0.04;
 const DEFAULT_ACTION_DURATION = 0.8;
+const DEFAULT_CUSTOM_TEXT = "新标注";
 const CONTEXT_MENU_GAP = 10;
 const CONTEXT_MENU_VIEWPORT_MARGIN = 12;
 
@@ -73,16 +82,22 @@ function App() {
   const [editingCharacterId, setEditingCharacterId] = useState<string | null>(null);
   const [editingCharacterLocation, setEditingCharacterLocation] = useState<CharacterEditLocation | null>(null);
   const [editingCharacterValue, setEditingCharacterValue] = useState("");
-  const [blockContextMenu, setBlockContextMenu] = useState<{
-    type: "character" | "action";
+  const [editingCustomTextBlock, setEditingCustomTextBlock] = useState<{
+    trackId: string;
     id: string;
+  } | null>(null);
+  const [editingCustomTextValue, setEditingCustomTextValue] = useState("");
+  const [blockContextMenu, setBlockContextMenu] = useState<{
+    type: "character" | "action" | "custom-block";
+    id: string;
+    trackId?: string;
     x: number;
     y: number;
   } | null>(null);
   const [zoom, setZoom] = useState(20);
   const [lineFocusRequest, setLineFocusRequest] = useState<LineFocusRequest | null>(null);
   const [trackSnapEnabled, setTrackSnapEnabled] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(trackDefinitions.map((track) => [track.id, true])),
+    () => Object.fromEntries(buildTimelineTrackDefinitions(mockProject.customTracks).map((track) => [track.id, true])),
   );
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
@@ -97,6 +112,14 @@ function App() {
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
   const blockContextMenuRef = useRef<HTMLDivElement>(null);
   const [blockContextMenuPosition, setBlockContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
+  const timelineTrackDefinitions = useMemo(
+    () => buildTimelineTrackDefinitions(project.customTracks),
+    [project.customTracks],
+  );
+  const customBlocks = useMemo(
+    () => flattenCustomTrackBlocks(project.customTracks),
+    [project.customTracks],
+  );
 
   useEffect(() => {
     projectRef.current = project;
@@ -113,6 +136,19 @@ function App() {
   useEffect(() => {
     setHasUnsavedChanges(serializeProject(project) !== savedProjectSnapshotRef.current);
   }, [project]);
+
+  useEffect(() => {
+    setTrackSnapEnabled((current) => {
+      const next = Object.fromEntries(
+        timelineTrackDefinitions.map((track) => [track.id, current[track.id] ?? true]),
+      );
+      const currentKeys = Object.keys(current);
+      const nextKeys = Object.keys(next);
+      const changed = currentKeys.length !== nextKeys.length ||
+        nextKeys.some((key) => current[key] !== next[key]);
+      return changed ? next : current;
+    });
+  }, [timelineTrackDefinitions]);
 
   useEffect(() => {
     if (!hasUnsavedChanges) {
@@ -156,6 +192,12 @@ function App() {
     }
     if (nextSelectedItem?.type === "character" || nextSelectedItem?.type === "action") {
       setSelectedTimelineItems([{ type: nextSelectedItem.type, id: nextSelectedItem.id }]);
+      return;
+    }
+    if (nextSelectedItem?.type === "custom-block") {
+      setSelectedTimelineItems([
+        { type: "custom-block", id: nextSelectedItem.id, trackId: nextSelectedItem.trackId },
+      ]);
       return;
     }
     setSelectedTimelineItems([]);
@@ -255,9 +297,19 @@ function App() {
         event.preventDefault();
         seekTo(currentTime + (event.shiftKey ? 1 : 0.04));
       }
-      if (event.key === "Enter" && selectedItem?.type === "character" && !editingCharacterId) {
-        event.preventDefault();
-        startCharacterTextEdit(selectedItem.id, preferredCharacterEditLocationRef.current);
+      if (event.key === "Enter") {
+        if (selectedItem?.type === "character" && !editingCharacterId) {
+          event.preventDefault();
+          startCharacterTextEdit(selectedItem.id, preferredCharacterEditLocationRef.current);
+        }
+        if (
+          selectedItem?.type === "custom-block" &&
+          !editingCustomTextBlock &&
+          findCustomBlock(projectRef.current.customTracks, selectedItem.trackId, selectedItem.id)?.trackType === "text"
+        ) {
+          event.preventDefault();
+          startCustomTextEdit(selectedItem.trackId, selectedItem.id);
+        }
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
@@ -279,7 +331,8 @@ function App() {
         if (
           selectedTimelineItems.length > 0 ||
           selectedItem?.type === "character" ||
-          selectedItem?.type === "action"
+          selectedItem?.type === "action" ||
+          selectedItem?.type === "custom-block"
         ) {
           event.preventDefault();
           deleteSelected();
@@ -288,7 +341,17 @@ function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentTime, editingCharacterId, previewTime, selectedItem, selectedTimelineItems, undoStack, redoStack, project]);
+  }, [
+    currentTime,
+    editingCharacterId,
+    editingCustomTextBlock,
+    previewTime,
+    selectedItem,
+    selectedTimelineItems,
+    undoStack,
+    redoStack,
+    project,
+  ]);
 
   useEffect(() => {
     const preventPageZoom = (event: WheelEvent) => {
@@ -326,11 +389,19 @@ function App() {
   const contextMenuAction = blockContextMenu?.type === "action"
     ? project.actionAnnotations.find((item) => item.id === blockContextMenu.id) ?? null
     : null;
+  const contextMenuCustomBlock = blockContextMenu?.type === "custom-block"
+    ? customBlocks.find((item) =>
+        item.id === blockContextMenu.id && item.trackId === blockContextMenu.trackId,
+      ) ?? null
+    : null;
   const contextMenuSplitCharacters = contextMenuCharacter
     ? getSplittableCharacters(contextMenuCharacter.char)
     : [];
   const contextMenuActionTrack = contextMenuAction
-    ? trackDefinitions.find((track) => track.id === contextMenuAction.trackId) ?? null
+    ? timelineTrackDefinitions.find((track) => track.id === contextMenuAction.trackId) ?? null
+    : null;
+  const contextMenuCustomTrack = contextMenuCustomBlock
+    ? project.customTracks.find((track) => track.id === contextMenuCustomBlock.trackId) ?? null
     : null;
 
   useLayoutEffect(() => {
@@ -377,6 +448,22 @@ function App() {
       setEditingCharacterValue("");
     }
   }, [editingCharacterId, project.characterAnnotations, selectedLineId]);
+
+  useEffect(() => {
+    if (!editingCustomTextBlock) {
+      return;
+    }
+    const editingBlock = findCustomBlock(project.customTracks, editingCustomTextBlock.trackId, editingCustomTextBlock.id);
+    if (
+      !editingBlock ||
+      editingBlock.trackType !== "text" ||
+      selectedItem?.type !== "custom-block" ||
+      selectedItem.id !== editingCustomTextBlock.id ||
+      selectedItem.trackId !== editingCustomTextBlock.trackId
+    ) {
+      cancelCustomTextEdit();
+    }
+  }, [editingCustomTextBlock, project.customTracks, selectedItem]);
 
   useEffect(() => {
     if (!blockContextMenu) {
@@ -573,6 +660,82 @@ function App() {
     cancelCharacterTextEdit();
   }
 
+  function updateCustomTrack(
+    trackId: string,
+    updater: (track: CustomTrack) => CustomTrack,
+    recordHistory = true,
+  ) {
+    const currentProject = projectRef.current;
+    const nextProject = {
+      ...currentProject,
+      customTracks: currentProject.customTracks.map((track) =>
+        track.id === trackId ? updater(track) : track,
+      ) as CustomTrack[],
+    };
+    if (recordHistory) {
+      commitProject(nextProject);
+    } else {
+      applyProjectWithoutHistory(nextProject);
+    }
+  }
+
+  function updateCustomBlock(
+    trackId: string,
+    blockId: string,
+    changes: {
+      startTime?: number;
+      endTime?: number;
+      text?: string;
+      type?: string;
+    },
+    recordHistory = true,
+  ) {
+    updateCustomTrack(
+      trackId,
+      (track) => ({
+        ...track,
+        blocks: track.blocks.map((block) =>
+          block.id === blockId ? { ...block, ...changes } : block,
+        ) as CustomTrack["blocks"],
+      }) as CustomTrack,
+      recordHistory,
+    );
+  }
+
+  function startCustomTextEdit(trackId: string, blockId: string) {
+    const currentBlock = findCustomBlock(projectRef.current.customTracks, trackId, blockId);
+    if (!currentBlock || currentBlock.trackType !== "text") {
+      return;
+    }
+    applySelection({ type: "custom-block", trackId, id: blockId });
+    setEditingCustomTextBlock({ trackId, id: blockId });
+    setEditingCustomTextValue(currentBlock.text ?? "");
+  }
+
+  function cancelCustomTextEdit() {
+    setEditingCustomTextBlock(null);
+    setEditingCustomTextValue("");
+  }
+
+  function commitCustomTextEdit(trackId: string, blockId: string) {
+    const currentBlock = findCustomBlock(projectRef.current.customTracks, trackId, blockId);
+    if (!currentBlock || currentBlock.trackType !== "text") {
+      cancelCustomTextEdit();
+      return;
+    }
+    const normalizedText = editingCustomTextValue.trim();
+    if (!normalizedText) {
+      window.alert("文字 block 的内容不能为空。");
+      return;
+    }
+    if (normalizedText === currentBlock.text) {
+      cancelCustomTextEdit();
+      return;
+    }
+    updateCustomBlock(trackId, blockId, { text: normalizedText });
+    cancelCustomTextEdit();
+  }
+
   function updateAction(id: string, changes: Partial<ActionAnnotation>, recordHistory = true) {
     const currentProject = projectRef.current;
     const nextProject = {
@@ -596,6 +759,10 @@ function App() {
     updateAction(id, { label });
   }
 
+  function applyCustomBlockType(trackId: string, blockId: string, type: string) {
+    updateCustomBlock(trackId, blockId, { type });
+  }
+
   function updateTimelineSelectionBatch(items: TimelineBatchMoveItem[], recordHistory = true) {
     if (items.length === 0) {
       return;
@@ -611,6 +778,14 @@ function App() {
       items
         .filter((item): item is TimelineBatchMoveItem & { type: "action" } => item.type === "action")
         .map((item) => [item.id, item]),
+    );
+    const customBlockUpdates = new Map(
+      items
+        .filter(
+          (item): item is TimelineBatchMoveItem & { type: "custom-block"; trackId: string } =>
+            item.type === "custom-block",
+        )
+        .map((item) => [`${item.trackId}:${item.id}`, item]),
     );
     const affectedLineIds = new Set<string>();
 
@@ -639,6 +814,20 @@ function App() {
           endTime: update.endTime,
         };
       }),
+      customTracks: currentProject.customTracks.map((track) => ({
+        ...track,
+        blocks: track.blocks.map((block) => {
+          const update = customBlockUpdates.get(`${track.id}:${block.id}`);
+          if (!update) {
+            return block;
+          }
+          return {
+            ...block,
+            startTime: update.startTime,
+            endTime: update.endTime,
+          };
+        }) as CustomTrack["blocks"],
+      })) as CustomTrack[],
     };
 
     const synchronizedProject = affectedLineIds.size > 0
@@ -724,12 +913,86 @@ function App() {
         {
           id: `${trackId}-${crypto.randomUUID()}`,
           trackId,
-          label: trackId === "hand-action" ? "抬手" : "转身",
+          label: getDefaultFixedActionLabel(trackId),
           startTime: safeStartTime,
           endTime: safeStartTime + DEFAULT_ACTION_DURATION,
         },
       ],
     });
+  }
+
+  function addCustomTrack(trackType: CustomTrackType) {
+    const currentProject = projectRef.current;
+    const nextTrack: CustomTrack = trackType === "text"
+      ? {
+          id: `custom-track-${crypto.randomUUID()}`,
+          name: getDefaultCustomTrackName(currentProject.customTracks, trackType),
+          trackType,
+          typeOptions: getDefaultCustomTrackTypeOptions(),
+          blocks: [],
+        }
+      : {
+          id: `custom-track-${crypto.randomUUID()}`,
+          name: getDefaultCustomTrackName(currentProject.customTracks, trackType),
+          trackType,
+          typeOptions: getDefaultCustomTrackTypeOptions(),
+          blocks: [],
+        };
+
+    commitProject({
+      ...currentProject,
+      customTracks: [...currentProject.customTracks, nextTrack] as CustomTrack[],
+    });
+    applySelection({ type: "custom-track", id: nextTrack.id });
+  }
+
+  function createCustomBlock(
+    trackId: string,
+    startTime: number,
+    explicitEndTime?: number,
+  ) {
+    const currentProject = projectRef.current;
+    const targetTrack = currentProject.customTracks.find((track) => track.id === trackId);
+    if (!targetTrack) {
+      return;
+    }
+    const safeStartTime = Math.max(0, startTime);
+    const endTime = explicitEndTime === undefined
+      ? safeStartTime + DEFAULT_ACTION_DURATION
+      : Math.max(safeStartTime + MIN_CHARACTER_DURATION, explicitEndTime);
+    const defaultType = targetTrack.typeOptions[0] ?? "类型 1";
+    const nextBlock = targetTrack.trackType === "text"
+      ? {
+          id: `custom-block-${crypto.randomUUID()}`,
+          startTime: safeStartTime,
+          endTime,
+          text: DEFAULT_CUSTOM_TEXT,
+          type: defaultType,
+        }
+      : {
+          id: `custom-block-${crypto.randomUUID()}`,
+          startTime: safeStartTime,
+          endTime,
+          type: defaultType,
+        };
+
+    commitProject({
+      ...currentProject,
+      customTracks: currentProject.customTracks.map((track) =>
+        track.id === trackId
+          ? {
+              ...track,
+              blocks: [...track.blocks, nextBlock] as CustomTrack["blocks"],
+            }
+          : track,
+      ) as CustomTrack[],
+    });
+
+    applySelection({ type: "custom-block", trackId, id: nextBlock.id });
+    if (targetTrack.trackType === "text") {
+      setEditingCustomTextBlock({ trackId, id: nextBlock.id });
+      setEditingCustomTextValue(DEFAULT_CUSTOM_TEXT);
+    }
   }
 
   function applyCharacterLineAction(id: string, action: CharacterLineAction) {
@@ -860,6 +1123,8 @@ function App() {
       ? selectedTimelineItems
       : selectedItem?.type === "character" || selectedItem?.type === "action"
         ? [{ type: selectedItem.type, id: selectedItem.id }]
+        : selectedItem?.type === "custom-block"
+          ? [{ type: "custom-block", id: selectedItem.id, trackId: selectedItem.trackId }]
         : [];
 
     if (timelineSelection.length > 0) {
@@ -880,6 +1145,14 @@ function App() {
           .filter((item): item is TimelineSelectionItem & { type: "action" } => item.type === "action")
           .map((item) => item.id),
       );
+      const customBlockKeys = new Set(
+        timelineSelection
+          .filter(
+            (item): item is TimelineSelectionItem & { type: "custom-block"; trackId: string } =>
+              item.type === "custom-block",
+          )
+          .map((item) => `${item.trackId}:${item.id}`),
+      );
       const affectedLineIds = new Set(
         currentProject.characterAnnotations
           .filter((item) => characterIds.has(item.id))
@@ -891,12 +1164,22 @@ function App() {
           ...currentProject,
           characterAnnotations: currentProject.characterAnnotations.filter((item) => !characterIds.has(item.id)),
           actionAnnotations: currentProject.actionAnnotations.filter((item) => !actionIds.has(item.id)),
+          customTracks: currentProject.customTracks.map((track) => ({
+            ...track,
+            blocks: track.blocks.filter((block) => !customBlockKeys.has(`${track.id}:${block.id}`)) as CustomTrack["blocks"],
+          })) as CustomTrack[],
         },
         Array.from(affectedLineIds),
       );
 
       if (editingCharacterId && characterIds.has(editingCharacterId)) {
         cancelCharacterTextEdit();
+      }
+      if (
+        editingCustomTextBlock &&
+        customBlockKeys.has(`${editingCustomTextBlock.trackId}:${editingCustomTextBlock.id}`)
+      ) {
+        cancelCustomTextEdit();
       }
       commitProject(nextProject);
       applySelection(null);
@@ -928,6 +1211,26 @@ function App() {
       });
       applySelection(null);
     }
+    if (selectedItem.type === "custom-block") {
+      commitProject({
+        ...currentProject,
+        customTracks: currentProject.customTracks.map((track) =>
+          track.id === selectedItem.trackId
+            ? {
+                ...track,
+                blocks: track.blocks.filter((block) => block.id !== selectedItem.id) as CustomTrack["blocks"],
+              }
+            : track,
+        ) as CustomTrack[],
+      });
+      if (
+        editingCustomTextBlock?.trackId === selectedItem.trackId &&
+        editingCustomTextBlock.id === selectedItem.id
+      ) {
+        cancelCustomTextEdit();
+      }
+      applySelection(null);
+    }
   }
 
   function selectAllTimelineItems() {
@@ -935,6 +1238,11 @@ function App() {
     const items: TimelineSelectionItem[] = [
       ...currentProject.characterAnnotations.map((item) => ({ type: "character" as const, id: item.id })),
       ...currentProject.actionAnnotations.map((item) => ({ type: "action" as const, id: item.id })),
+      ...flattenCustomTrackBlocks(currentProject.customTracks).map((item) => ({
+        type: "custom-block" as const,
+        id: item.id,
+        trackId: item.trackId,
+      })),
     ];
     applySelection(items[0] ?? null, items);
   }
@@ -950,7 +1258,7 @@ function App() {
         {
           id: `${trackId}-${crypto.randomUUID()}`,
           trackId,
-          label: trackId === "hand-action" ? "抬手" : "转身",
+          label: getDefaultFixedActionLabel(trackId),
           startTime,
           endTime,
         },
@@ -967,12 +1275,81 @@ function App() {
         {
           id: `${trackId}-${crypto.randomUUID()}`,
           trackId,
-          label: trackId === "hand-action" ? "抬手" : "转身",
+          label: getDefaultFixedActionLabel(trackId),
           startTime,
           endTime,
         },
       ],
     });
+  }
+
+  function renameCustomTrack(trackId: string, name: string) {
+    const normalizedName = name.trimStart();
+    updateCustomTrack(trackId, (track) => ({
+      ...track,
+      name: normalizedName.length > 0 ? normalizedName : track.name,
+    }) as CustomTrack);
+  }
+
+  function updateCustomTrackTypeOption(trackId: string, index: number, value: string) {
+    const normalizedValue = value.trimStart();
+    updateCustomTrack(trackId, (track) => {
+      const previousValue = track.typeOptions[index];
+      const nextValue = normalizedValue.length > 0 ? normalizedValue : previousValue;
+      const nextTypeOptions = track.typeOptions.map((option, optionIndex) =>
+        optionIndex === index ? nextValue : option,
+      );
+      return {
+        ...track,
+        typeOptions: nextTypeOptions,
+        blocks: track.blocks.map((block) =>
+          block.type === previousValue ? { ...block, type: nextValue } : block,
+        ) as CustomTrack["blocks"],
+      } as CustomTrack;
+    });
+  }
+
+  function addCustomTrackTypeOption(trackId: string) {
+    updateCustomTrack(trackId, (track) => ({
+      ...track,
+      typeOptions: [...track.typeOptions, getNextCustomTrackTypeOptionName(track.typeOptions)],
+    }) as CustomTrack);
+  }
+
+  function removeCustomTrackTypeOption(trackId: string, index: number) {
+    updateCustomTrack(trackId, (track) => {
+      if (track.typeOptions.length <= 1) {
+        return track;
+      }
+      const removedValue = track.typeOptions[index];
+      const nextTypeOptions = track.typeOptions.filter((_, optionIndex) => optionIndex !== index);
+      const fallbackType = nextTypeOptions[0] ?? "类型 1";
+      return {
+        ...track,
+        typeOptions: nextTypeOptions,
+        blocks: track.blocks.map((block) =>
+          block.type === removedValue ? { ...block, type: fallbackType } : block,
+        ) as CustomTrack["blocks"],
+      } as CustomTrack;
+    });
+  }
+
+  function deleteCustomTrack(trackId: string) {
+    const currentProject = projectRef.current;
+    const nextProject = {
+      ...currentProject,
+      customTracks: currentProject.customTracks.filter((track) => track.id !== trackId) as CustomTrack[],
+    };
+    if (editingCustomTextBlock?.trackId === trackId) {
+      cancelCustomTextEdit();
+    }
+    commitProject(nextProject);
+    if (
+      (selectedItem?.type === "custom-track" && selectedItem.id === trackId) ||
+      (selectedItem?.type === "custom-block" && selectedItem.trackId === trackId)
+    ) {
+      applySelection(null);
+    }
   }
 
   function undo() {
@@ -1107,7 +1484,8 @@ function App() {
             subtitleLines={project.subtitleLines}
             characterAnnotations={project.characterAnnotations}
             actionAnnotations={project.actionAnnotations}
-            trackDefinitions={trackDefinitions}
+            customTracks={project.customTracks}
+            trackDefinitions={timelineTrackDefinitions}
             waveformData={waveformData}
             isWaveformLoading={isWaveformLoading}
             currentTime={currentTime}
@@ -1149,12 +1527,24 @@ function App() {
             editingCharacterId={editingCharacterId}
             editingCharacterLocation={editingCharacterLocation}
             editingCharacterValue={editingCharacterValue}
+            editingCustomTextBlock={editingCustomTextBlock}
+            editingCustomTextValue={editingCustomTextValue}
             onEditingCharacterValueChange={setEditingCharacterValue}
+            onEditingCustomTextValueChange={setEditingCustomTextValue}
             onCommitCharacterTextEdit={commitCharacterTextEdit}
+            onCommitCustomTextEdit={commitCustomTextEdit}
             onCancelCharacterTextEdit={cancelCharacterTextEdit}
+            onCancelCustomTextEdit={cancelCustomTextEdit}
             onEditCharacterText={(id) => startCharacterTextEdit(id, "timeline")}
+            onEditCustomTextBlock={startCustomTextEdit}
             onCreateCharacterAtTime={createCharacterAtTime}
             onCreateActionAtTime={createActionAtTime}
+            onCreateCustomBlock={createCustomBlock}
+            onAddCustomTrack={addCustomTrack}
+            onSelectCustomTrack={(trackId) => {
+              setLineFocusRequest(null);
+              applySelection({ type: "custom-track", id: trackId });
+            }}
             onOpenCharacterContextMenu={(id, x, y) => {
               preferredCharacterEditLocationRef.current = "timeline";
               applySelection({ type: "character", id });
@@ -1164,12 +1554,18 @@ function App() {
               applySelection({ type: "action", id });
               setBlockContextMenu({ type: "action", id, x, y });
             }}
+            onOpenCustomBlockContextMenu={(trackId, id, x, y) => {
+              applySelection({ type: "custom-block", trackId, id });
+              setBlockContextMenu({ type: "custom-block", trackId, id, x, y });
+            }}
             onLineChange={(id, changes) => updateLinePosition(id, changes, false)}
             onLineCommit={(id, changes) => updateLinePosition(id, changes, true)}
             onCharacterChange={(id, changes) => updateCharacter(id, changes, false)}
             onCharacterCommit={(id, changes) => updateCharacter(id, changes, true)}
             onActionChange={(id, changes) => updateAction(id, changes, false)}
             onActionCommit={(id, changes) => updateAction(id, changes, true)}
+            onCustomBlockChange={(trackId, id, changes) => updateCustomBlock(trackId, id, changes, false)}
+            onCustomBlockCommit={(trackId, id, changes) => updateCustomBlock(trackId, id, changes, true)}
             onBatchMoveChange={(items) => updateTimelineSelectionBatch(items, false)}
             onBatchMoveCommit={(items) => updateTimelineSelectionBatch(items, true)}
             onCreateAction={createAction}
@@ -1265,9 +1661,16 @@ function App() {
             subtitleLines={project.subtitleLines}
             characterAnnotations={project.characterAnnotations}
             actionAnnotations={project.actionAnnotations}
-            trackDefinitions={trackDefinitions}
+            customTracks={project.customTracks}
+            trackDefinitions={timelineTrackDefinitions}
             onCharacterUpdate={updateCharacter}
             onActionUpdate={updateAction}
+            onCustomTrackRename={renameCustomTrack}
+            onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
+            onAddCustomTrackTypeOption={addCustomTrackTypeOption}
+            onRemoveCustomTrackTypeOption={removeCustomTrackTypeOption}
+            onDeleteCustomTrack={deleteCustomTrack}
+            onCustomBlockUpdate={updateCustomBlock}
             onDeleteSelected={deleteSelected}
           />
         </div>
@@ -1353,7 +1756,7 @@ function App() {
               <div className="character-context-menu-label">
                 {contextMenuActionTrack?.name ?? "动作标签"}
               </div>
-              {(contextMenuActionTrack?.labels ?? ["其他"]).map((label) => (
+              {(contextMenuActionTrack?.options ?? ["其他"]).map((label) => (
                 <button
                   key={label}
                   type="button"
@@ -1368,10 +1771,57 @@ function App() {
               ))}
             </>
           ) : null}
+          {contextMenuCustomBlock && contextMenuCustomTrack ? (
+            <>
+              <div className="character-context-menu-label">
+                {contextMenuCustomTrack.name}
+              </div>
+              {contextMenuCustomTrack.typeOptions.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={contextMenuCustomBlock.type === option ? "menu-option-active" : ""}
+                  onClick={() => {
+                    applyCustomBlockType(contextMenuCustomTrack.id, contextMenuCustomBlock.id, option);
+                    setBlockContextMenu(null);
+                  }}
+                >
+                  {contextMenuCustomBlock.type === option ? `✓ ${option}` : option}
+                </button>
+              ))}
+            </>
+          ) : null}
         </div>
       ) : null}
     </div>
   );
+}
+
+function findCustomBlock(
+  customTracks: CustomTrack[],
+  trackId: string,
+  blockId: string,
+): ResolvedCustomTrackBlock | null {
+  const track = customTracks.find((item) => item.id === trackId);
+  const block = track?.blocks.find((item) => item.id === blockId);
+  if (!track || !block) {
+    return null;
+  }
+  return {
+    id: block.id,
+    trackId: track.id,
+    trackType: track.trackType,
+    startTime: block.startTime,
+    endTime: block.endTime,
+    type: block.type,
+    text: track.trackType === "text"
+      ? getOptionalBlockText(block as unknown as { text?: string })
+      : undefined,
+  };
+}
+
+function getOptionalBlockText(block: { text?: string }) {
+  return typeof block.text === "string" ? block.text : undefined;
 }
 
 function downloadBlob(content: string, fileName: string, type: string) {

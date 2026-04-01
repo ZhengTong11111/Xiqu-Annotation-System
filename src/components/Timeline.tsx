@@ -2,7 +2,9 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ActionAnnotation,
   CharacterAnnotation,
+  CustomTrack,
   ProjectData,
+  ResolvedCustomTrackBlock,
   SelectedItem,
   SubtitleLine,
   TimelineBatchMoveItem,
@@ -16,6 +18,7 @@ type TimelineProps = {
   subtitleLines: SubtitleLine[];
   characterAnnotations: CharacterAnnotation[];
   actionAnnotations: ActionAnnotation[];
+  customTracks: CustomTrack[];
   trackDefinitions: TrackDefinition[];
   waveformData: WaveformData | null;
   isWaveformLoading: boolean;
@@ -31,27 +34,47 @@ type TimelineProps = {
   editingCharacterId: string | null;
   editingCharacterLocation: "timeline" | "split-panel" | null;
   editingCharacterValue: string;
+  editingCustomTextBlock: { trackId: string; id: string } | null;
+  editingCustomTextValue: string;
   onZoomChange: (zoom: number) => void;
   onToggleTrackSnap: (trackId: string) => void;
   onSeek: (time: number) => void;
   onPreviewFrame: (time: number | null) => void;
   onSelectItem: (item: SelectedItem) => void;
+  onSelectCustomTrack: (trackId: string) => void;
   onSelectLineOverlay: (lineId: string) => void;
   onSelectTimelineItems: (items: TimelineSelectionItem[], primaryItem: SelectedItem) => void;
   onEditCharacterText: (id: string) => void;
+  onEditCustomTextBlock: (trackId: string, id: string) => void;
   onEditingCharacterValueChange: (value: string) => void;
+  onEditingCustomTextValueChange: (value: string) => void;
   onCommitCharacterTextEdit: (id: string) => void;
+  onCommitCustomTextEdit: (trackId: string, id: string) => void;
   onCancelCharacterTextEdit: () => void;
+  onCancelCustomTextEdit: () => void;
   onCreateCharacterAtTime: (time: number, endTime?: number) => void;
   onCreateActionAtTime: (trackId: string, startTime: number) => void;
+  onCreateCustomBlock: (trackId: string, startTime: number, endTime?: number) => void;
+  onAddCustomTrack: (trackType: "text" | "action") => void;
   onOpenCharacterContextMenu: (id: string, x: number, y: number) => void;
   onOpenActionContextMenu: (id: string, x: number, y: number) => void;
+  onOpenCustomBlockContextMenu: (trackId: string, id: string, x: number, y: number) => void;
   onLineChange: (id: string, changes: Pick<SubtitleLine, "startTime" | "endTime">) => void;
   onLineCommit: (id: string, changes: Pick<SubtitleLine, "startTime" | "endTime">) => void;
   onCharacterChange: (id: string, changes: Partial<CharacterAnnotation>) => void;
   onCharacterCommit: (id: string, changes: Partial<CharacterAnnotation>) => void;
   onActionChange: (id: string, changes: Partial<ActionAnnotation>) => void;
   onActionCommit: (id: string, changes: Partial<ActionAnnotation>) => void;
+  onCustomBlockChange: (
+    trackId: string,
+    id: string,
+    changes: { startTime?: number; endTime?: number; text?: string; type?: string },
+  ) => void;
+  onCustomBlockCommit: (
+    trackId: string,
+    id: string,
+    changes: { startTime?: number; endTime?: number; text?: string; type?: string },
+  ) => void;
   onBatchMoveChange: (items: TimelineBatchMoveItem[]) => void;
   onBatchMoveCommit: (items: TimelineBatchMoveItem[]) => void;
   onCreateAction: (trackId: string, startTime: number, endTime: number) => void;
@@ -95,7 +118,7 @@ type DragState =
   | {
       kind: "create-track-item";
       trackId: string;
-      trackType: "character" | "action";
+      trackType: "character" | "action" | "custom-text" | "custom-action";
       originX: number;
       currentX: number;
       laneLeft: number;
@@ -165,15 +188,29 @@ type PendingDragUpdate =
       changes: Partial<ActionAnnotation>;
     }
   | {
+      target: "custom-block";
+      trackId: string;
+      id: string;
+      changes: { startTime?: number; endTime?: number; text?: string; type?: string };
+    }
+  | {
       target: "selection";
       items: TimelineBatchMoveItem[];
     };
 
-type HoveredBlockState = {
-  id: string;
-  type: "character" | "action";
-  edge: EdgeHit;
-} | null;
+type HoveredBlockState =
+  | {
+      id: string;
+      type: "character" | "action";
+      edge: EdgeHit;
+    }
+  | {
+      id: string;
+      type: "custom-block";
+      trackId: string;
+      edge: EdgeHit;
+    }
+  | null;
 
 type ActiveSnapIndicator = {
   trackId: string;
@@ -192,6 +229,7 @@ export function Timeline({
   subtitleLines,
   characterAnnotations,
   actionAnnotations,
+  customTracks,
   trackDefinitions,
   waveformData,
   isWaveformLoading,
@@ -207,27 +245,39 @@ export function Timeline({
   editingCharacterId,
   editingCharacterLocation,
   editingCharacterValue,
+  editingCustomTextBlock,
+  editingCustomTextValue,
   onZoomChange,
   onToggleTrackSnap,
   onSeek,
   onPreviewFrame,
   onSelectItem,
+  onSelectCustomTrack,
   onSelectLineOverlay,
   onSelectTimelineItems,
   onEditCharacterText,
+  onEditCustomTextBlock,
   onEditingCharacterValueChange,
+  onEditingCustomTextValueChange,
   onCommitCharacterTextEdit,
+  onCommitCustomTextEdit,
   onCancelCharacterTextEdit,
+  onCancelCustomTextEdit,
   onCreateCharacterAtTime,
   onCreateActionAtTime,
+  onCreateCustomBlock,
+  onAddCustomTrack,
   onOpenCharacterContextMenu,
   onOpenActionContextMenu,
+  onOpenCustomBlockContextMenu,
   onLineChange,
   onLineCommit,
   onCharacterChange,
   onCharacterCommit,
   onActionChange,
   onActionCommit,
+  onCustomBlockChange,
+  onCustomBlockCommit,
   onBatchMoveChange,
   onBatchMoveCommit,
   onCreateAction,
@@ -264,6 +314,10 @@ export function Timeline({
   const [viewportState, setViewportState] = useState({ scrollLeft: 0, width: 0 });
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
   const sliderZoom = Math.round(zoom / ZOOM_STEP) * ZOOM_STEP;
+  const customBlocks = useMemo(
+    () => flattenCustomBlocks(customTracks),
+    [customTracks],
+  );
   const waveformDetail = useMemo(() => {
     if (!waveformData || waveformData.samples.length === 0) {
       return null;
@@ -297,15 +351,15 @@ export function Timeline({
     };
   }, [duration, viewportState, waveformData, zoom]);
   const selectedTimelineKeySet = useMemo(
-    () => new Set(selectedTimelineItems.map((item) => getTimelineSelectionKey(item.type, item.id))),
+    () => new Set(selectedTimelineItems.map((item) => getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" ? item.trackId : undefined))),
     [selectedTimelineItems],
   );
   const marqueePreviewItems = useMemo(
     () => (dragState?.kind === "select-box" ? getItemsInSelectionRect(dragState) : []),
-    [dragState, characterAnnotations, actionAnnotations, viewportState],
+    [dragState, characterAnnotations, actionAnnotations, customBlocks, viewportState],
   );
   const marqueePreviewKeySet = useMemo(
-    () => new Set(marqueePreviewItems.map((item) => getTimelineSelectionKey(item.type, item.id))),
+    () => new Set(marqueePreviewItems.map((item) => getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" ? item.trackId : undefined))),
     [marqueePreviewItems],
   );
 
@@ -385,17 +439,20 @@ export function Timeline({
       ...subtitleLines.flatMap((line) => [line.startTime, line.endTime]),
       ...characterAnnotations.flatMap((item) => [item.startTime, item.endTime]),
       ...actionAnnotations.flatMap((item) => [item.startTime, item.endTime]),
+      ...customBlocks.flatMap((item) => [item.startTime, item.endTime]),
       currentTime,
     ];
-  }, [subtitleLines, characterAnnotations, actionAnnotations, currentTime]);
+  }, [subtitleLines, characterAnnotations, actionAnnotations, customBlocks, currentTime]);
 
   function getLiveSnapPoints() {
     const liveProject = getProjectSnapshot();
+    const liveCustomBlocks = flattenCustomBlocks(liveProject.customTracks);
     return [
       0,
       ...liveProject.subtitleLines.flatMap((line) => [line.startTime, line.endTime]),
       ...liveProject.characterAnnotations.flatMap((item) => [item.startTime, item.endTime]),
       ...liveProject.actionAnnotations.flatMap((item) => [item.startTime, item.endTime]),
+      ...liveCustomBlocks.flatMap((item) => [item.startTime, item.endTime]),
       currentTimeRef.current,
     ];
   }
@@ -407,11 +464,23 @@ export function Timeline({
     if (!trackSnapEnabled[trackId]) {
       return [];
     }
-    const excludedKeySet = new Set(excludedItems.map((item) => getTimelineSelectionKey(item.type, item.id)));
+    const excludedKeySet = new Set(
+      excludedItems.map((item) =>
+        getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" ? item.trackId : undefined),
+      ),
+    );
     const liveProject = getProjectSnapshot();
     if (trackId === "character-track") {
       return liveProject.characterAnnotations.flatMap((item) =>
         excludedKeySet.has(getTimelineSelectionKey("character", item.id))
+          ? []
+          : [item.startTime, item.endTime],
+      );
+    }
+    const customTrack = liveProject.customTracks.find((track) => track.id === trackId);
+    if (customTrack) {
+      return customTrack.blocks.flatMap((item) =>
+        excludedKeySet.has(getTimelineSelectionKey("custom-block", item.id, trackId))
           ? []
           : [item.startTime, item.endTime],
       );
@@ -465,16 +534,12 @@ export function Timeline({
     if (items.length === 0) {
       return null;
     }
-    const resolvedFirstTrackId = items[0].type === "character"
-      ? "character-track"
-      : actionAnnotations.find((item) => item.id === items[0].id)?.trackId ?? null;
+    const resolvedFirstTrackId = getTrackIdForSelectionItem(items[0], actionAnnotations, customBlocks);
     if (!resolvedFirstTrackId) {
       return null;
     }
     for (const item of items.slice(1)) {
-      const trackId = item.type === "character"
-        ? "character-track"
-        : actionAnnotations.find((actionItem) => actionItem.id === item.id)?.trackId ?? null;
+      const trackId = getTrackIdForSelectionItem(item, actionAnnotations, customBlocks);
       if (trackId !== resolvedFirstTrackId) {
         return null;
       }
@@ -502,7 +567,11 @@ export function Timeline({
           kind: "move-selection",
           zoomLevel,
           trackId,
-          excludedItems: items.map((item) => ({ type: item.type, id: item.id })),
+          excludedItems: items.map((item) =>
+            item.type === "custom-block"
+              ? { type: "custom-block", id: item.id, trackId: item.trackId }
+              : { type: item.type, id: item.id },
+          ),
           shouldSnap,
           snapLock,
         })
@@ -723,8 +792,8 @@ export function Timeline({
           deltaSeconds,
           zoom,
           getTrackSnapPoints(activeDragState.trackId, [
-            { type: activeDragState.leftItem.type, id: activeDragState.leftItem.id },
-            { type: activeDragState.rightItem.type, id: activeDragState.rightItem.id },
+            toTimelineSelectionItem(activeDragState.leftItem),
+            toTimelineSelectionItem(activeDragState.rightItem),
           ]),
           true,
           pointerStepPx,
@@ -820,7 +889,8 @@ export function Timeline({
       }
 
       const actionAnnotation = actionAnnotations.find((item) => item.id === activeDragState.id);
-      const trackId = actionAnnotation?.trackId ?? null;
+      const customBlock = customBlocks.find((item) => item.id === activeDragState.id);
+      const trackId = actionAnnotation?.trackId ?? customBlock?.trackId ?? null;
       const next = trackId
         ? computeRangeWithTrackSnap({
             originalStart: activeDragState.originalStart,
@@ -830,7 +900,11 @@ export function Timeline({
             kind: activeDragState.kind,
             zoomLevel: zoom,
             trackId,
-            excludedItems: [{ type: "action", id: activeDragState.id }],
+            excludedItems: [
+              customBlock
+                ? { type: "custom-block", id: activeDragState.id, trackId: customBlock.trackId }
+                : { type: "action", id: activeDragState.id },
+            ],
             shouldSnap: true,
             snapLock: dragSnapLockRef.current,
           })
@@ -849,14 +923,26 @@ export function Timeline({
         next.snappedTo && trackId ? { trackId, ...next.snappedTo } : null,
       );
       dragSnapLockRef.current = toDragSnapLock(next.snappedTo);
-      scheduleDragUpdate({
-        target: "action",
-        id: activeDragState.id,
-        changes: {
-          startTime: next.startTime,
-          endTime: next.endTime,
-        },
-      });
+      scheduleDragUpdate(
+        customBlock
+          ? {
+              target: "custom-block",
+              trackId: customBlock.trackId,
+              id: activeDragState.id,
+              changes: {
+                startTime: next.startTime,
+                endTime: next.endTime,
+              },
+            }
+          : {
+              target: "action",
+              id: activeDragState.id,
+              changes: {
+                startTime: next.startTime,
+                endTime: next.endTime,
+              },
+            },
+      );
       updatePreviewFrame(activeDragState.kind, next);
     };
 
@@ -892,6 +978,11 @@ export function Timeline({
         if (endTime - startTime >= minDuration) {
           if (activeDragState.trackType === "character") {
             onCreateCharacterAtTime(startTime, endTime);
+          } else if (
+            activeDragState.trackType === "custom-text" ||
+            activeDragState.trackType === "custom-action"
+          ) {
+            onCreateCustomBlock(activeDragState.trackId, startTime, endTime);
           } else {
             onCreateAction(activeDragState.trackId, startTime, endTime);
           }
@@ -920,8 +1011,8 @@ export function Timeline({
           (lastPointerClientXRef.current - activeDragState.originX) / zoom,
           zoom,
           getTrackSnapPoints(activeDragState.trackId, [
-            { type: activeDragState.leftItem.type, id: activeDragState.leftItem.id },
-            { type: activeDragState.rightItem.type, id: activeDragState.rightItem.id },
+            toTimelineSelectionItem(activeDragState.leftItem),
+            toTimelineSelectionItem(activeDragState.rightItem),
           ]),
           true,
           0,
@@ -961,7 +1052,8 @@ export function Timeline({
         });
       } else if (isActionDrag(activeDragState)) {
         const actionAnnotation = actionAnnotations.find((item) => item.id === activeDragState.id);
-        const next = actionAnnotation
+        const customBlock = customBlocks.find((item) => item.id === activeDragState.id);
+        const next = actionAnnotation || customBlock
           ? computeRangeWithTrackSnap({
               originalStart: activeDragState.originalStart,
               originalEnd: activeDragState.originalEnd,
@@ -969,8 +1061,12 @@ export function Timeline({
               pointerStepPx: 0,
               kind: activeDragState.kind,
               zoomLevel: zoom,
-              trackId: actionAnnotation.trackId,
-              excludedItems: [{ type: "action", id: activeDragState.id }],
+              trackId: actionAnnotation?.trackId ?? customBlock?.trackId ?? "",
+              excludedItems: [
+                customBlock
+                  ? { type: "custom-block", id: activeDragState.id, trackId: customBlock.trackId }
+                  : { type: "action", id: activeDragState.id },
+              ],
               shouldSnap: true,
             })
           : computeNextRange(
@@ -984,10 +1080,17 @@ export function Timeline({
               true,
             );
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
-        onActionCommit(activeDragState.id, {
-          startTime: next.startTime,
-          endTime: next.endTime,
-        });
+        if (customBlock) {
+          onCustomBlockCommit(customBlock.trackId, activeDragState.id, {
+            startTime: next.startTime,
+            endTime: next.endTime,
+          });
+        } else {
+          onActionCommit(activeDragState.id, {
+            startTime: next.startTime,
+            endTime: next.endTime,
+          });
+        }
       }
       setDragState(null);
     };
@@ -998,7 +1101,30 @@ export function Timeline({
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [dragState, zoom, snapPoints, characterAnnotations, actionAnnotations, selectedTimelineItems, onLineChange, onLineCommit, onCharacterChange, onCharacterCommit, onActionChange, onActionCommit, onBatchMoveChange, onBatchMoveCommit, onCreateAction, onCreateCharacterAtTime, onPreviewFrame, onSelectTimelineItems]);
+  }, [
+    dragState,
+    zoom,
+    snapPoints,
+    characterAnnotations,
+    actionAnnotations,
+    customBlocks,
+    selectedTimelineItems,
+    onLineChange,
+    onLineCommit,
+    onCharacterChange,
+    onCharacterCommit,
+    onActionChange,
+    onActionCommit,
+    onCustomBlockChange,
+    onCustomBlockCommit,
+    onBatchMoveChange,
+    onBatchMoveCommit,
+    onCreateAction,
+    onCreateCharacterAtTime,
+    onCreateCustomBlock,
+    onPreviewFrame,
+    onSelectTimelineItems,
+  ]);
 
   const ticks = useMemo(() => {
     const step = zoom >= 70 ? 0.5 : zoom >= 35 ? 1 : zoom >= 15 ? 2 : 5;
@@ -1010,9 +1136,18 @@ export function Timeline({
       <div className="panel-header">
         <div className="timeline-header-copy">
           <h2>多轨时间轴</h2>
-          <span>点击空白跳转，双击创建，Command/Ctrl + 拖拽可新建字块或动作片段</span>
+          <span>点击空白跳转，双击创建，Command/Ctrl + 拖拽可新建 block，自定义轨可在右侧属性面板配置</span>
         </div>
-        <div className="timeline-zoom-controls">
+        <div className="timeline-header-actions">
+          <div className="timeline-track-actions">
+            <button type="button" onClick={() => onAddCustomTrack("text")}>
+              新增文字轨
+            </button>
+            <button type="button" onClick={() => onAddCustomTrack("action")}>
+              新增动作轨
+            </button>
+          </div>
+          <div className="timeline-zoom-controls">
           <button type="button" onClick={() => handleZoomStep(-ZOOM_STEP)}>
             -
           </button>
@@ -1035,6 +1170,7 @@ export function Timeline({
           <button type="button" onClick={() => handleZoomStep(ZOOM_STEP)}>
             +
           </button>
+          </div>
         </div>
       </div>
       <div
@@ -1180,9 +1316,23 @@ export function Timeline({
               className="timeline-track"
               style={{ height: TRACK_HEIGHT }}
             >
-              <div className="track-label">
+              <div
+                className={[
+                  "track-label",
+                  track.isCustom ? "track-label-custom" : "",
+                  selectedItem?.type === "custom-track" && selectedItem.id === track.id ? "selected" : "",
+                ].join(" ")}
+                onClick={() => {
+                  if (track.isCustom) {
+                    onSelectCustomTrack(track.id);
+                  }
+                }}
+              >
                 <div className="track-label-copy">
                   <strong>{track.name}</strong>
+                  {track.isCustom ? (
+                    <span>{track.type === "custom-text" ? "文字类自定义轨" : "动作类自定义轨"}</span>
+                  ) : null}
                   <label className="track-snap-toggle" onClick={(event) => event.stopPropagation()}>
                     <input
                       type="checkbox"
@@ -1233,6 +1383,10 @@ export function Timeline({
                       onCreateCharacterAtTime(startTime);
                       return;
                     }
+                    if (track.type === "custom-text" || track.type === "custom-action") {
+                      onCreateCustomBlock(track.id, startTime);
+                      return;
+                    }
                     onCreateActionAtTime(track.id, startTime);
                     return;
                   }
@@ -1244,12 +1398,20 @@ export function Timeline({
               >
                 {track.type === "character"
                   ? characterAnnotations.map((annotation) => renderBlock(annotation, "character"))
-                  : actionAnnotations
-                      .filter((annotation) => annotation.trackId === track.id)
-                      .map((annotation) => renderBlock(annotation, "action"))}
+                  : track.type === "action"
+                    ? actionAnnotations
+                        .filter((annotation) => annotation.trackId === track.id)
+                        .map((annotation) => renderBlock(annotation, "action"))
+                    : customBlocks
+                        .filter((annotation) => annotation.trackId === track.id)
+                        .map((annotation) => renderBlock(annotation, "custom-block"))}
                 {dragState?.kind === "create-track-item" && dragState.trackId === track.id && scrollRef.current ? (
                   <div
-                    className={`timeline-block draft ${dragState.trackType === "character" ? "character" : "action"}`}
+                    className={`timeline-block draft ${
+                      dragState.trackType === "character" || dragState.trackType === "custom-text"
+                        ? "character"
+                        : "action"
+                    }`}
                     style={getDraftStyle(dragState)}
                   />
                 ) : null}
@@ -1285,10 +1447,27 @@ export function Timeline({
   );
 
   function renderBlock(
-    annotation: CharacterAnnotation | ActionAnnotation,
-    type: "character" | "action",
+    annotation: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock,
+    type: "character" | "action" | "custom-block",
   ) {
-    const selectionKey = getTimelineSelectionKey(type, annotation.id);
+    const characterAnnotation = type === "character" ? annotation as CharacterAnnotation : null;
+    const actionAnnotation = type === "action" ? annotation as ActionAnnotation : null;
+    const customAnnotation = type === "custom-block" ? annotation as ResolvedCustomTrackBlock : null;
+    const currentSelectionItem = customAnnotation
+      ? { type: "custom-block" as const, id: annotation.id, trackId: customAnnotation.trackId }
+      : characterAnnotation
+        ? { type: "character" as const, id: annotation.id }
+        : { type: "action" as const, id: annotation.id };
+    const currentSelectedItem = customAnnotation
+      ? { type: "custom-block" as const, id: annotation.id, trackId: customAnnotation.trackId }
+      : characterAnnotation
+        ? { type: "character" as const, id: annotation.id }
+        : { type: "action" as const, id: annotation.id };
+    const selectionKey = getTimelineSelectionKey(
+      type,
+      annotation.id,
+      customAnnotation?.trackId,
+    );
     const isSelected =
       selectedTimelineKeySet.has(selectionKey) || marqueePreviewKeySet.has(selectionKey);
     const isPartOfMultiSelection = selectedTimelineKeySet.has(selectionKey) && selectedTimelineItems.length > 1;
@@ -1296,11 +1475,22 @@ export function Timeline({
     const isEditing = type === "character" &&
       editingCharacterId === annotation.id &&
       editingCharacterLocation === "timeline";
+    const isEditingCustomText = customAnnotation?.trackType === "text" &&
+      editingCustomTextBlock?.id === annotation.id &&
+      editingCustomTextBlock.trackId === customAnnotation.trackId;
     const left = annotation.startTime * zoom;
     const width = Math.max((annotation.endTime - annotation.startTime) * zoom, 8);
-    const label = "char" in annotation ? annotation.char : annotation.label;
+    const label = characterAnnotation
+      ? characterAnnotation.char
+      : customAnnotation
+        ? customAnnotation.trackType === "text"
+          ? customAnnotation.text ?? ""
+          : customAnnotation.type
+        : actionAnnotation?.label ?? "";
     const zIndex = isSelected ? 4 : isActive ? 3 : 1;
-    const hoveredEdge = hoveredBlock?.id === annotation.id && hoveredBlock.type === type
+    const hoveredEdge = hoveredBlock?.id === annotation.id &&
+      hoveredBlock.type === type &&
+      (!customAnnotation || (hoveredBlock.type === "custom-block" && hoveredBlock.trackId === customAnnotation.trackId))
       ? hoveredBlock.edge
       : null;
 
@@ -1309,9 +1499,13 @@ export function Timeline({
         key={annotation.id}
         data-block-id={annotation.id}
         data-block-type={type}
+        data-block-track-id={customAnnotation?.trackId}
         className={[
           "timeline-block",
-          type,
+          type === "character" || customAnnotation?.trackType === "text"
+            ? "character"
+            : "action",
+          customAnnotation ? `custom-${customAnnotation.trackType}` : "",
           isSelected ? "selected" : "",
           isActive ? "active" : "",
           hoveredEdge === "center" ? "hover-move" : "",
@@ -1329,14 +1523,16 @@ export function Timeline({
             type,
             characterAnnotations,
             actionAnnotations,
+            customBlocks,
             selectedItem,
             trackSnapEnabled,
             zoom,
+            customAnnotation?.trackId,
           );
-          const hoverTarget = preferredHit ?? {
-            id: annotation.id,
+          const hoverTarget = (preferredHit ?? buildHoveredBlockState(
+            annotation.id,
             type,
-            edge: isPartOfMultiSelection
+            isPartOfMultiSelection
               ? "center"
               : resolveEdgeForElement(
                   event.currentTarget,
@@ -1345,19 +1541,28 @@ export function Timeline({
                   type,
                   characterAnnotations,
                   actionAnnotations,
+                  customBlocks,
                   trackSnapEnabled,
                   zoom,
                 ),
-          };
+            customAnnotation?.trackId,
+          )) as Exclude<HoveredBlockState, null>;
           setHoveredBlock((prev) =>
-            prev?.id === hoverTarget.id && prev.type === hoverTarget.type && prev.edge === hoverTarget.edge
+            prev?.id === hoverTarget.id &&
+            prev.type === hoverTarget.type &&
+            getHoveredBlockTrackId(prev) === getHoveredBlockTrackId(hoverTarget) &&
+            prev.edge === hoverTarget.edge
               ? prev
               : hoverTarget,
           );
         }}
         onPointerLeave={() => {
           setHoveredBlock((prev) =>
-            prev?.id === annotation.id && prev.type === type ? null : prev,
+            prev?.id === annotation.id &&
+            prev.type === type &&
+            (!customAnnotation || (prev.type === "custom-block" && prev.trackId === customAnnotation.trackId))
+              ? null
+              : prev,
           );
         }}
         onPointerDown={(event) => {
@@ -1375,13 +1580,20 @@ export function Timeline({
             type,
             characterAnnotations,
             actionAnnotations,
+            customBlocks,
             selectedItem,
             trackSnapEnabled,
             zoom,
+            customAnnotation?.trackId,
           );
           const targetId = preferredHit?.id ?? annotation.id;
           const targetType = preferredHit?.type ?? type;
-          const targetSelectionKey = getTimelineSelectionKey(targetType, targetId);
+          const targetTrackId = preferredHit?.type === "custom-block"
+            ? preferredHit.trackId
+            : customAnnotation
+              ? customAnnotation.trackId
+              : undefined;
+          const targetSelectionKey = getTimelineSelectionKey(targetType, targetId, targetTrackId);
           const targetEdge =
             selectedTimelineItems.length > 1 && selectedTimelineKeySet.has(targetSelectionKey)
               ? "center"
@@ -1392,6 +1604,7 @@ export function Timeline({
                   type,
                   characterAnnotations,
                   actionAnnotations,
+                  customBlocks,
                   trackSnapEnabled,
                   zoom,
                 );
@@ -1401,11 +1614,13 @@ export function Timeline({
             targetType,
             liveProject.characterAnnotations,
             liveProject.actionAnnotations,
+            flattenCustomBlocks(liveProject.customTracks),
+            targetTrackId,
           );
           if (!targetAnnotation) {
             return;
           }
-          if (isEditing) {
+          if (isEditing || isEditingCustomText) {
             return;
           }
           lastPointerClientXRef.current = event.clientX;
@@ -1421,6 +1636,8 @@ export function Timeline({
                   item.type,
                   liveProject.characterAnnotations,
                   liveProject.actionAnnotations,
+                  flattenCustomBlocks(liveProject.customTracks),
+                  item.type === "custom-block" ? item.trackId : undefined,
                 );
                 if (!liveSelectionAnnotation) {
                   return null;
@@ -1428,6 +1645,7 @@ export function Timeline({
                 return {
                   type: item.type,
                   id: item.id,
+                  ...(item.type === "custom-block" ? { trackId: item.trackId } : {}),
                   startTime: liveSelectionAnnotation.startTime,
                   endTime: liveSelectionAnnotation.endTime,
                 };
@@ -1440,9 +1658,7 @@ export function Timeline({
             });
             return;
           }
-          const trackId = targetType === "character"
-            ? "character-track"
-            : (targetAnnotation as ActionAnnotation).trackId;
+          const trackId = getTrackIdForAnnotation(targetAnnotation, targetType);
           const linkedPair = isLinkedEdgeHit(targetEdge) && trackSnapEnabled[trackId]
             ? findLinkedPair(
                 targetAnnotation,
@@ -1450,6 +1666,7 @@ export function Timeline({
                 targetEdge === "linked-left" ? "left" : "right",
                 liveProject.characterAnnotations,
                 liveProject.actionAnnotations,
+                flattenCustomBlocks(liveProject.customTracks),
                 zoom,
               )
             : null;
@@ -1462,8 +1679,12 @@ export function Timeline({
               leftItem: linkedPair.leftItem,
               rightItem: linkedPair.rightItem,
             });
-            setHoveredBlock({ id: targetAnnotation.id, type: targetType, edge: targetEdge });
-            onSelectItem({ type: targetType, id: targetAnnotation.id });
+            setHoveredBlock(buildHoveredBlockState(targetAnnotation.id, targetType, targetEdge, trackId));
+            onSelectItem(
+              targetType === "custom-block"
+                ? { type: "custom-block", trackId, id: targetAnnotation.id }
+                : { type: targetType, id: targetAnnotation.id },
+            );
             return;
           }
           const base = {
@@ -1493,8 +1714,12 @@ export function Timeline({
               ...base,
             });
           }
-          setHoveredBlock({ id: targetAnnotation.id, type: targetType, edge: targetEdge });
-          onSelectItem({ type: targetType, id: targetAnnotation.id });
+          setHoveredBlock(buildHoveredBlockState(targetAnnotation.id, targetType, targetEdge, trackId));
+          onSelectItem(
+            targetType === "custom-block"
+              ? { type: "custom-block", trackId, id: targetAnnotation.id }
+              : { type: targetType, id: targetAnnotation.id },
+          );
         }}
         onClick={(event) => {
           event.stopPropagation();
@@ -1502,30 +1727,44 @@ export function Timeline({
             return;
           }
           if (event.metaKey || event.ctrlKey) {
-            const nextItems = toggleTimelineSelectionItem({ type, id: annotation.id });
-            const primaryItem = nextItems.length > 0
-              ? {
-                  type: nextItems[nextItems.length - 1].type,
-                  id: nextItems[nextItems.length - 1].id,
-                } as SelectedItem
+            const nextItems = toggleTimelineSelectionItem(currentSelectionItem);
+            const lastItem = nextItems[nextItems.length - 1];
+            const primaryItem = lastItem
+              ? lastItem.type === "custom-block"
+                ? {
+                    type: "custom-block",
+                    id: lastItem.id,
+                    trackId: lastItem.trackId,
+                  } as SelectedItem
+                : {
+                    type: lastItem.type,
+                    id: lastItem.id,
+                  } as SelectedItem
               : null;
             onSelectTimelineItems(nextItems, primaryItem);
             return;
           }
-          onSelectItem({ type, id: annotation.id });
+          onSelectItem(currentSelectedItem);
         }}
         onDoubleClick={(event) => {
           event.stopPropagation();
           if (type === "character") {
             onEditCharacterText(annotation.id);
           }
+          if (customAnnotation?.trackType === "text") {
+            onEditCustomTextBlock(customAnnotation.trackId, annotation.id);
+          }
         }}
         onContextMenu={(event) => {
           event.preventDefault();
           event.stopPropagation();
-          onSelectItem({ type, id: annotation.id });
+          onSelectItem(currentSelectedItem);
           if (type === "character") {
             onOpenCharacterContextMenu(annotation.id, event.clientX, event.clientY);
+            return;
+          }
+          if (customAnnotation) {
+            onOpenCustomBlockContextMenu(customAnnotation.trackId, annotation.id, event.clientX, event.clientY);
             return;
           }
           onOpenActionContextMenu(annotation.id, event.clientX, event.clientY);
@@ -1550,6 +1789,27 @@ export function Timeline({
               if (event.key === "Escape") {
                 event.preventDefault();
                 onCancelCharacterTextEdit();
+              }
+            }}
+          />
+        ) : isEditingCustomText ? (
+          <input
+            className="timeline-block-input"
+            value={editingCustomTextValue}
+            autoFocus
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onChange={(event) => onEditingCustomTextValueChange(event.target.value)}
+            onBlur={() => onCommitCustomTextEdit(customAnnotation?.trackId ?? "", annotation.id)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                onCommitCustomTextEdit(customAnnotation?.trackId ?? "", annotation.id);
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onCancelCustomTextEdit();
               }
             }}
           />
@@ -1707,14 +1967,26 @@ export function Timeline({
       onBatchMoveChange(pendingDragUpdate.items);
       return;
     }
+    if (pendingDragUpdate.target === "custom-block") {
+      onCustomBlockChange(pendingDragUpdate.trackId, pendingDragUpdate.id, pendingDragUpdate.changes);
+      return;
+    }
     onActionChange(pendingDragUpdate.id, pendingDragUpdate.changes);
   }
 
   function toggleTimelineSelectionItem(item: TimelineSelectionItem) {
-    const itemKey = getTimelineSelectionKey(item.type, item.id);
+    const itemKey = getTimelineSelectionKey(
+      item.type,
+      item.id,
+      item.type === "custom-block" ? item.trackId : undefined,
+    );
     if (selectedTimelineKeySet.has(itemKey)) {
       return selectedTimelineItems.filter((selectedItem) =>
-        getTimelineSelectionKey(selectedItem.type, selectedItem.id) !== itemKey
+        getTimelineSelectionKey(
+          selectedItem.type,
+          selectedItem.id,
+          selectedItem.type === "custom-block" ? selectedItem.trackId : undefined,
+        ) !== itemKey
       );
     }
     return [...selectedTimelineItems, item];
@@ -1736,14 +2008,19 @@ export function Timeline({
       .flatMap((element) => {
         const id = element.dataset.blockId;
         const type = element.dataset.blockType;
-        if (!id || (type !== "character" && type !== "action")) {
+        const trackId = element.dataset.blockTrackId;
+        if (!id || (type !== "character" && type !== "action" && type !== "custom-block")) {
           return [];
         }
         const bounds = element.getBoundingClientRect();
         if (!rectsIntersect(selectionRect, bounds)) {
           return [];
         }
-        return [{ id, type }] as TimelineSelectionItem[];
+        return [
+          type === "custom-block"
+            ? { id, type, trackId: trackId ?? "" }
+            : { id, type },
+        ] as TimelineSelectionItem[];
       })
       .sort((left, right) => {
         const leftAnnotation = findAnnotationById(
@@ -1751,12 +2028,16 @@ export function Timeline({
           left.type,
           characterAnnotations,
           actionAnnotations,
+          customBlocks,
+          left.type === "custom-block" ? left.trackId : undefined,
         );
         const rightAnnotation = findAnnotationById(
           right.id,
           right.type,
           characterAnnotations,
           actionAnnotations,
+          customBlocks,
+          right.type === "custom-block" ? right.trackId : undefined,
         );
         if (!leftAnnotation || !rightAnnotation) {
           return left.id.localeCompare(right.id);
@@ -1895,10 +2176,11 @@ function isLinkedEdgeHit(edge: EdgeHit) {
 function resolveEdgeForElement(
   element: HTMLElement,
   clientX: number,
-  annotation: CharacterAnnotation | ActionAnnotation,
-  type: "character" | "action",
+  annotation: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock,
+  type: "character" | "action" | "custom-block",
   characterAnnotations: CharacterAnnotation[],
   actionAnnotations: ActionAnnotation[],
+  customBlocks: ResolvedCustomTrackBlock[],
   trackSnapEnabled: Record<string, boolean>,
   zoom: number,
 ): EdgeHit {
@@ -1915,6 +2197,7 @@ function resolveEdgeForElement(
       "left",
       characterAnnotations,
       actionAnnotations,
+      customBlocks,
       trackSnapEnabled,
       zoom,
     );
@@ -1930,6 +2213,7 @@ function resolveEdgeForElement(
       "right",
       characterAnnotations,
       actionAnnotations,
+      customBlocks,
       trackSnapEnabled,
       zoom,
     );
@@ -1945,26 +2229,38 @@ function resolvePreferredBlockHit(
   clientX: number,
   clientY: number,
   fallbackId: string,
-  fallbackType: "character" | "action",
+  fallbackType: "character" | "action" | "custom-block",
   characterAnnotations: CharacterAnnotation[],
   actionAnnotations: ActionAnnotation[],
+  customBlocks: ResolvedCustomTrackBlock[],
   selectedItem: SelectedItem,
   trackSnapEnabled: Record<string, boolean>,
   zoom: number,
+  fallbackTrackId?: string,
 ): HoveredBlockState {
   if (typeof document === "undefined") {
-    return { id: fallbackId, type: fallbackType, edge: "center" };
+    return fallbackType === "custom-block"
+      ? { id: fallbackId, type: fallbackType, trackId: fallbackTrackId ?? "", edge: "center" }
+      : { id: fallbackId, type: fallbackType, edge: "center" };
   }
   const elements = document.elementsFromPoint(clientX, clientY);
   const candidates = elements
     .filter((element): element is HTMLElement => element instanceof HTMLElement && element.classList.contains("timeline-block"))
     .map((element, stackIndex) => {
       const id = element.dataset.blockId;
-      const type = element.dataset.blockType as "character" | "action" | undefined;
+      const type = element.dataset.blockType as "character" | "action" | "custom-block" | undefined;
+      const trackId = element.dataset.blockTrackId;
       if (!id || !type) {
         return null;
       }
-      const annotation = findAnnotationById(id, type, characterAnnotations, actionAnnotations);
+      const annotation = findAnnotationById(
+        id,
+        type,
+        characterAnnotations,
+        actionAnnotations,
+        customBlocks,
+        type === "custom-block" ? trackId : undefined,
+      );
       if (!annotation) {
         return null;
       }
@@ -1975,6 +2271,7 @@ function resolvePreferredBlockHit(
         type,
         characterAnnotations,
         actionAnnotations,
+        customBlocks,
         trackSnapEnabled,
         zoom,
       );
@@ -1985,7 +2282,11 @@ function resolvePreferredBlockHit(
         : physicalEdge === "right"
           ? Math.abs(rect.right - clientX)
           : Math.min(Math.abs(clientX - rect.left), Math.abs(rect.right - clientX));
-      const isSelected = selectedItem?.type === type && selectedItem.id === id;
+      const isSelected = type === "custom-block"
+        ? selectedItem?.type === "custom-block" &&
+          selectedItem.id === id &&
+          selectedItem.trackId === trackId
+        : selectedItem?.type === type && selectedItem.id === id;
       const edgePriority = edge === "center"
         ? 0
         : isLinkedEdgeHit(edge)
@@ -1996,6 +2297,7 @@ function resolvePreferredBlockHit(
       return {
         id,
         type,
+        ...(type === "custom-block" ? { trackId: trackId ?? "" } : {}),
         edge,
         score: edgePriority + selectedPriority + stackPriority,
       };
@@ -2003,51 +2305,70 @@ function resolvePreferredBlockHit(
     .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
 
   if (candidates.length === 0) {
-    return { id: fallbackId, type: fallbackType, edge: "center" };
+    return buildHoveredBlockState(fallbackId, fallbackType, "center", fallbackTrackId);
   }
 
   candidates.sort((left, right) => right.score - left.score);
   const best = candidates[0];
-  return { id: best.id, type: best.type, edge: best.edge };
+  return buildHoveredBlockState(
+    best.id,
+    best.type,
+    best.edge,
+    "trackId" in best ? best.trackId : undefined,
+  );
 }
 
 function hasLinkedPairForEdge(
-  annotation: CharacterAnnotation | ActionAnnotation,
-  type: "character" | "action",
+  annotation: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock,
+  type: "character" | "action" | "custom-block",
   edge: "left" | "right",
   characterAnnotations: CharacterAnnotation[],
   actionAnnotations: ActionAnnotation[],
+  customBlocks: ResolvedCustomTrackBlock[],
   trackSnapEnabled: Record<string, boolean>,
   zoom: number,
 ) {
-  const trackId = type === "character" ? "character-track" : (annotation as ActionAnnotation).trackId;
+  const trackId = getTrackIdForAnnotation(annotation, type);
   if (!trackSnapEnabled[trackId]) {
     return null;
   }
-  return findLinkedPair(annotation, type, edge, characterAnnotations, actionAnnotations, zoom);
+  return findLinkedPair(annotation, type, edge, characterAnnotations, actionAnnotations, customBlocks, zoom);
 }
 
 function findAnnotationById(
   id: string,
-  type: "character" | "action",
+  type: "character" | "action" | "custom-block",
   characterAnnotations: CharacterAnnotation[],
   actionAnnotations: ActionAnnotation[],
+  customBlocks: ResolvedCustomTrackBlock[],
+  trackId?: string,
 ) {
-  return type === "character"
-    ? characterAnnotations.find((annotation) => annotation.id === id)
-    : actionAnnotations.find((annotation) => annotation.id === id);
+  if (type === "character") {
+    return characterAnnotations.find((annotation) => annotation.id === id);
+  }
+  if (type === "action") {
+    return actionAnnotations.find((annotation) => annotation.id === id);
+  }
+  return customBlocks.find((annotation) =>
+    annotation.id === id && (trackId === undefined || annotation.trackId === trackId),
+  );
 }
 
 function findLinkedPair(
-  annotation: CharacterAnnotation | ActionAnnotation,
-  type: "character" | "action",
+  annotation: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock,
+  type: "character" | "action" | "custom-block",
   edge: "left" | "right",
   characterAnnotations: CharacterAnnotation[],
   actionAnnotations: ActionAnnotation[],
+  customBlocks: ResolvedCustomTrackBlock[],
   zoom: number,
 ) {
   const items = type === "character"
     ? sortCharactersByTimeLocal(characterAnnotations)
+    : type === "custom-block"
+      ? sortCustomBlocksByTimeLocal(
+          customBlocks.filter((item) => item.trackId === (annotation as ResolvedCustomTrackBlock).trackId),
+        )
     : sortActionsByTimeLocal(
         actionAnnotations.filter((item) => item.trackId === (annotation as ActionAnnotation).trackId),
       );
@@ -2116,15 +2437,31 @@ function computeLinkedResizeRange(
 }
 
 function toBatchMoveItem(
-  annotation: CharacterAnnotation | ActionAnnotation,
-  type: "character" | "action",
+  annotation: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock,
+  type: "character" | "action" | "custom-block",
 ): TimelineBatchMoveItem {
-  return {
-    type,
-    id: annotation.id,
-    startTime: annotation.startTime,
-    endTime: annotation.endTime,
-  };
+  return type === "custom-block"
+    ? {
+        type,
+        id: annotation.id,
+        trackId: (annotation as ResolvedCustomTrackBlock).trackId,
+        startTime: annotation.startTime,
+        endTime: annotation.endTime,
+      }
+    : {
+        type,
+        id: annotation.id,
+        startTime: annotation.startTime,
+        endTime: annotation.endTime,
+      };
+}
+
+function toTimelineSelectionItem(
+  item: TimelineSelectionItem | TimelineBatchMoveItem,
+): TimelineSelectionItem {
+  return item.type === "custom-block"
+    ? { type: "custom-block", id: item.id, trackId: item.trackId }
+    : { type: item.type, id: item.id };
 }
 
 function sortCharactersByTimeLocal(characters: CharacterAnnotation[]) {
@@ -2137,6 +2474,14 @@ function sortCharactersByTimeLocal(characters: CharacterAnnotation[]) {
 
 function sortActionsByTimeLocal(actions: ActionAnnotation[]) {
   return [...actions].sort((left, right) =>
+    left.startTime - right.startTime ||
+    left.endTime - right.endTime ||
+    left.id.localeCompare(right.id),
+  );
+}
+
+function sortCustomBlocksByTimeLocal(blocks: ResolvedCustomTrackBlock[]) {
+  return [...blocks].sort((left, right) =>
     left.startTime - right.startTime ||
     left.endTime - right.endTime ||
     left.id.localeCompare(right.id),
@@ -2422,8 +2767,70 @@ function rectsIntersect(
   );
 }
 
-function getTimelineSelectionKey(type: "character" | "action", id: string) {
-  return `${type}:${id}`;
+function getHoveredBlockTrackId(block: HoveredBlockState) {
+  return block?.type === "custom-block" ? block.trackId : undefined;
+}
+
+function buildHoveredBlockState(
+  id: string,
+  type: "character" | "action" | "custom-block",
+  edge: EdgeHit,
+  trackId?: string,
+): HoveredBlockState {
+  return type === "custom-block"
+    ? { id, type, trackId: trackId ?? "", edge }
+    : { id, type, edge };
+}
+
+function flattenCustomBlocks(customTracks: CustomTrack[]): ResolvedCustomTrackBlock[] {
+  return customTracks.flatMap((track) =>
+    track.blocks.map((block) => ({
+      id: block.id,
+      trackId: track.id,
+      trackType: track.trackType,
+      startTime: block.startTime,
+      endTime: block.endTime,
+      type: block.type,
+      text: "text" in block ? block.text : undefined,
+    })),
+  );
+}
+
+function getTrackIdForAnnotation(
+  annotation: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock,
+  type: "character" | "action" | "custom-block",
+) {
+  if (type === "character") {
+    return "character-track";
+  }
+  if (type === "custom-block") {
+    return (annotation as ResolvedCustomTrackBlock).trackId;
+  }
+  return (annotation as ActionAnnotation).trackId;
+}
+
+function getTrackIdForSelectionItem(
+  item: TimelineSelectionItem | TimelineBatchMoveItem,
+  actionAnnotations: ActionAnnotation[],
+  customBlocks: ResolvedCustomTrackBlock[],
+) {
+  if (item.type === "character") {
+    return "character-track";
+  }
+  if (item.type === "custom-block") {
+    return item.trackId;
+  }
+  return actionAnnotations.find((actionItem) => actionItem.id === item.id)?.trackId ??
+    customBlocks.find((block) => block.id === item.id)?.trackId ??
+    null;
+}
+
+function getTimelineSelectionKey(
+  type: "character" | "action" | "custom-block",
+  id: string,
+  trackId?: string,
+) {
+  return type === "custom-block" ? `${type}:${trackId ?? ""}:${id}` : `${type}:${id}`;
 }
 
 function getCanvasX(time: number, zoom: number) {
