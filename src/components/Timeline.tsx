@@ -42,6 +42,8 @@ type TimelineProps = {
   onPreviewFrame: (time: number | null) => void;
   onSelectItem: (item: SelectedItem) => void;
   onSelectCustomTrack: (trackId: string) => void;
+  onMoveCustomTrack: (trackId: string, direction: "up" | "down") => void;
+  onReorderCustomTrack: (trackId: string, insertionIndex: number) => void;
   onSelectLineOverlay: (lineId: string) => void;
   onSelectTimelineItems: (items: TimelineSelectionItem[], primaryItem: SelectedItem) => void;
   onEditCharacterText: (id: string) => void;
@@ -133,8 +135,9 @@ type DragState =
   | null;
 
 const TRACK_HEIGHT = 72;
-const TRACK_LABEL_WIDTH = 150;
+const TRACK_LABEL_WIDTH = 180;
 const SNAP_DISTANCE_PX = 4;
+const REORDER_ACTIVATION_PX = 6;
 const ZOOM_SETTLE_MS = 220;
 const ZOOM_MIN = 5;
 const ZOOM_MAX = 100;
@@ -253,6 +256,8 @@ export function Timeline({
   onPreviewFrame,
   onSelectItem,
   onSelectCustomTrack,
+  onMoveCustomTrack,
+  onReorderCustomTrack,
   onSelectLineOverlay,
   onSelectTimelineItems,
   onEditCharacterText,
@@ -307,17 +312,51 @@ export function Timeline({
   const scrollFrameRef = useRef<number | null>(null);
   const suppressLineClickIdRef = useRef<string | null>(null);
   const suppressCanvasClickUntilRef = useRef(0);
+  const draggedCustomTrackIdRef = useRef<string | null>(null);
+  const trackRowRefs = useRef(new Map<string, HTMLDivElement>());
+  const previousTrackRowPositionsRef = useRef(new Map<string, number>());
+  const previousCustomTrackIdsRef = useRef<string[]>([]);
   const [dragState, setDragState] = useState<DragState>(null);
   const [hoveredBlock, setHoveredBlock] = useState<HoveredBlockState>(null);
   const [activeSnapIndicator, setActiveSnapIndicator] = useState<ActiveSnapIndicator>(null);
   const [previewGuideTime, setPreviewGuideTime] = useState<number | null>(null);
   const [viewportState, setViewportState] = useState({ scrollLeft: 0, width: 0 });
+  const [draggedCustomTrackId, setDraggedCustomTrackId] = useState<string | null>(null);
+  const [trackDropInsertionIndex, setTrackDropInsertionIndex] = useState<number | null>(null);
+  const [recentlyMovedTrackId, setRecentlyMovedTrackId] = useState<string | null>(null);
+  const [trackReorderDrag, setTrackReorderDrag] = useState<{
+    trackId: string;
+    startY: number;
+    currentY: number;
+  } | null>(null);
+  const moveTrackHighlightTimerRef = useRef<number | null>(null);
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
   const sliderZoom = Math.round(zoom / ZOOM_STEP) * ZOOM_STEP;
   const customBlocks = useMemo(
     () => flattenCustomBlocks(customTracks),
     [customTracks],
   );
+  const customTrackOrderMap = useMemo(
+    () => new Map(customTracks.map((track, index) => [track.id, index])),
+    [customTracks],
+  );
+  const customTrackIds = useMemo(
+    () => customTracks.map((track) => track.id),
+    [customTracks],
+  );
+  const remainingCustomTrackIds = useMemo(
+    () => customTrackIds.filter((trackId) => trackId !== draggedCustomTrackId),
+    [customTrackIds, draggedCustomTrackId],
+  );
+  const customTrackDropBeforeId = trackDropInsertionIndex !== null &&
+    trackDropInsertionIndex < remainingCustomTrackIds.length
+    ? remainingCustomTrackIds[trackDropInsertionIndex]
+    : null;
+  const customTrackDropAfterId = trackDropInsertionIndex !== null &&
+    trackDropInsertionIndex === remainingCustomTrackIds.length &&
+    remainingCustomTrackIds.length > 0
+    ? remainingCustomTrackIds[remainingCustomTrackIds.length - 1]
+    : null;
   const waveformDetail = useMemo(() => {
     if (!waveformData || waveformData.samples.length === 0) {
       return null;
@@ -377,6 +416,9 @@ export function Timeline({
 
   useEffect(() => {
     return () => {
+      if (moveTrackHighlightTimerRef.current !== null) {
+        window.clearTimeout(moveTrackHighlightTimerRef.current);
+      }
       if (zoomFrameRef.current !== null) {
         cancelAnimationFrame(zoomFrameRef.current);
       }
@@ -397,6 +439,106 @@ export function Timeline({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!trackReorderDrag) {
+      return;
+    }
+
+    const getDropInsertionIndex = (clientY: number) => {
+      const remainingTrackIds = customTrackIds.filter((trackId) => trackId !== trackReorderDrag.trackId);
+      if (remainingTrackIds.length === 0) {
+        return null;
+      }
+      for (let index = 0; index < remainingTrackIds.length; index += 1) {
+        const trackId = remainingTrackIds[index];
+        const element = trackRowRefs.current.get(trackId);
+        if (!element) {
+          continue;
+        }
+        const rect = element.getBoundingClientRect();
+        const centerY = rect.top + rect.height / 2;
+        if (clientY < centerY) {
+          return index;
+        }
+      }
+      return remainingTrackIds.length;
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const nextCurrentY = event.clientY;
+      const isActive = Math.abs(nextCurrentY - trackReorderDrag.startY) >= REORDER_ACTIVATION_PX;
+      setTrackReorderDrag((current) =>
+        current
+          ? {
+              ...current,
+              currentY: nextCurrentY,
+            }
+          : current,
+      );
+      setTrackDropInsertionIndex(isActive ? getDropInsertionIndex(nextCurrentY) : null);
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      const isActive = Math.abs(event.clientY - trackReorderDrag.startY) >= REORDER_ACTIVATION_PX;
+      const insertionIndex = isActive ? getDropInsertionIndex(event.clientY) : null;
+      const originalIndex = customTrackIds.indexOf(trackReorderDrag.trackId);
+      if (insertionIndex !== null && insertionIndex !== originalIndex) {
+        onReorderCustomTrack(trackReorderDrag.trackId, insertionIndex);
+        flashMovedTrack(trackReorderDrag.trackId);
+      }
+      draggedCustomTrackIdRef.current = null;
+      setDraggedCustomTrackId(null);
+      setTrackDropInsertionIndex(null);
+      setTrackReorderDrag(null);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [customTrackIds, onReorderCustomTrack, trackReorderDrag]);
+
+  useLayoutEffect(() => {
+    const currentTrackIds = customTracks.map((track) => track.id);
+    const previousTrackIds = previousCustomTrackIdsRef.current;
+    const hasSameTrackSet = previousTrackIds.length === currentTrackIds.length &&
+      previousTrackIds.every((id) => currentTrackIds.includes(id)) &&
+      currentTrackIds.every((id) => previousTrackIds.includes(id));
+    const orderChanged = hasSameTrackSet &&
+      previousTrackIds.some((id, index) => currentTrackIds[index] !== id);
+    const nextPositions = new Map<string, number>();
+    for (const track of customTracks) {
+      const element = trackRowRefs.current.get(track.id);
+      if (!element) {
+        continue;
+      }
+      const top = element.offsetTop;
+      nextPositions.set(track.id, top);
+      const previousTop = previousTrackRowPositionsRef.current.get(track.id);
+      if (previousTop === undefined) {
+        continue;
+      }
+      const delta = previousTop - top;
+      if (!orderChanged || Math.abs(delta) < 1) {
+        continue;
+      }
+      element.animate(
+        [
+          { transform: `translateY(${delta}px)` },
+          { transform: "translateY(0)" },
+        ],
+        {
+          duration: 220,
+          easing: "cubic-bezier(0.2, 0, 0, 1)",
+        },
+      );
+    }
+    previousTrackRowPositionsRef.current = nextPositions;
+    previousCustomTrackIdsRef.current = currentTrackIds;
+  }, [customTracks]);
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -545,6 +687,17 @@ export function Timeline({
       }
     }
     return resolvedFirstTrackId;
+  }
+
+  function flashMovedTrack(trackId: string) {
+    setRecentlyMovedTrackId(trackId);
+    if (moveTrackHighlightTimerRef.current !== null) {
+      window.clearTimeout(moveTrackHighlightTimerRef.current);
+    }
+    moveTrackHighlightTimerRef.current = window.setTimeout(() => {
+      setRecentlyMovedTrackId((current) => (current === trackId ? null : current));
+      moveTrackHighlightTimerRef.current = null;
+    }, 360);
   }
 
   function computeSelectionMoveRange(
@@ -1313,15 +1466,42 @@ export function Timeline({
           {trackDefinitions.map((track) => (
             <div
               key={track.id}
-              className="timeline-track"
+              className={[
+                "timeline-track",
+                track.isCustom && customTrackDropBeforeId === track.id ? "drop-target-before" : "",
+                track.isCustom && customTrackDropAfterId === track.id ? "drop-target-after" : "",
+                draggedCustomTrackId === track.id ? "drag-source" : "",
+              ].join(" ")}
               style={{ height: TRACK_HEIGHT }}
+              ref={(node) => {
+                if (!track.isCustom) {
+                  return;
+                }
+                if (node) {
+                  trackRowRefs.current.set(track.id, node);
+                } else {
+                  trackRowRefs.current.delete(track.id);
+                }
+              }}
             >
               <div
                 className={[
                   "track-label",
                   track.isCustom ? "track-label-custom" : "",
                   selectedItem?.type === "custom-track" && selectedItem.id === track.id ? "selected" : "",
+                  draggedCustomTrackId === track.id ? "dragging" : "",
+                  recentlyMovedTrackId === track.id ? "recently-moved" : "",
                 ].join(" ")}
+                style={
+                  draggedCustomTrackId === track.id &&
+                    trackReorderDrag &&
+                    Math.abs(trackReorderDrag.currentY - trackReorderDrag.startY) >= REORDER_ACTIVATION_PX
+                    ? {
+                        transform: `translateY(${trackReorderDrag.currentY - trackReorderDrag.startY}px)`,
+                        zIndex: 8,
+                      }
+                    : undefined
+                }
                 onClick={() => {
                   if (track.isCustom) {
                     onSelectCustomTrack(track.id);
@@ -1329,18 +1509,80 @@ export function Timeline({
                 }}
               >
                 <div className="track-label-copy">
-                  <strong>{track.name}</strong>
-                  {track.isCustom ? (
-                    <span>{track.type === "custom-text" ? "文字类自定义轨" : "动作类自定义轨"}</span>
-                  ) : null}
+                  <div
+                    className={[
+                      "track-label-main",
+                      track.isCustom ? "track-label-drag-surface" : "",
+                    ].join(" ")}
+                    onPointerDown={(event) => {
+                      if (!track.isCustom) {
+                        return;
+                      }
+                      event.stopPropagation();
+                      event.preventDefault();
+                      draggedCustomTrackIdRef.current = track.id;
+                      setDraggedCustomTrackId(track.id);
+                      setTrackReorderDrag({
+                        trackId: track.id,
+                        startY: event.clientY,
+                        currentY: event.clientY,
+                      });
+                      setTrackDropInsertionIndex(null);
+                    }}
+                  >
+                    <strong>{track.name}</strong>
+                    {track.isCustom ? (
+                      <span>{track.type === "custom-text" ? "文字类自定义轨" : "动作类自定义轨"}</span>
+                    ) : null}
+                  </div>
+                  <div className="track-label-footer">
                   <label className="track-snap-toggle" onClick={(event) => event.stopPropagation()}>
                     <input
                       type="checkbox"
+                      draggable={false}
                       checked={Boolean(trackSnapEnabled[track.id])}
                       onChange={() => onToggleTrackSnap(track.id)}
                     />
                     <span>吸附</span>
                   </label>
+                    {track.isCustom ? (
+                      <div
+                        className="track-label-tools"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <div
+                          className="track-label-tool-button track-label-drag-handle"
+                          title="拖动调整轨道顺序"
+                        >
+                          ⋮⋮
+                        </div>
+                        <button
+                          type="button"
+                          className="track-label-tool-button"
+                          onClick={() => {
+                            onMoveCustomTrack(track.id, "up");
+                            flashMovedTrack(track.id);
+                          }}
+                          disabled={(customTrackOrderMap.get(track.id) ?? 0) <= 0}
+                          title="上移轨道"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="track-label-tool-button"
+                          onClick={() => {
+                            onMoveCustomTrack(track.id, "down");
+                            flashMovedTrack(track.id);
+                          }}
+                          disabled={(customTrackOrderMap.get(track.id) ?? 0) >= customTracks.length - 1}
+                          title="下移轨道"
+                        >
+                          ↓
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
               <div

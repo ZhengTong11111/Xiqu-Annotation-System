@@ -1291,6 +1291,44 @@ function App() {
     }) as CustomTrack);
   }
 
+  function moveCustomTrack(trackId: string, direction: "up" | "down") {
+    const currentProject = projectRef.current;
+    const currentIndex = currentProject.customTracks.findIndex((track) => track.id === trackId);
+    if (currentIndex === -1) {
+      return;
+    }
+    const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= currentProject.customTracks.length) {
+      return;
+    }
+    const nextTracks = [...currentProject.customTracks];
+    const [movedTrack] = nextTracks.splice(currentIndex, 1);
+    nextTracks.splice(targetIndex, 0, movedTrack);
+    commitProject({
+      ...currentProject,
+      customTracks: nextTracks as CustomTrack[],
+    });
+  }
+
+  function reorderCustomTrack(trackId: string, insertionIndex: number) {
+    const currentProject = projectRef.current;
+    const currentIndex = currentProject.customTracks.findIndex((track) => track.id === trackId);
+    if (currentIndex === -1) {
+      return;
+    }
+    const nextTracks = [...currentProject.customTracks];
+    const [movedTrack] = nextTracks.splice(currentIndex, 1);
+    const normalizedInsertionIndex = Math.max(0, Math.min(insertionIndex, nextTracks.length));
+    if (normalizedInsertionIndex === currentIndex) {
+      return;
+    }
+    nextTracks.splice(normalizedInsertionIndex, 0, movedTrack);
+    commitProject({
+      ...currentProject,
+      customTracks: nextTracks as CustomTrack[],
+    });
+  }
+
   function updateCustomTrackTypeOption(trackId: string, index: number, value: string) {
     const normalizedValue = value.trimStart();
     updateCustomTrack(trackId, (track) => {
@@ -1314,6 +1352,46 @@ function App() {
       ...track,
       typeOptions: [...track.typeOptions, getNextCustomTrackTypeOptionName(track.typeOptions)],
     }) as CustomTrack);
+  }
+
+  function moveCustomTrackTypeOption(trackId: string, index: number, direction: "up" | "down") {
+    updateCustomTrack(trackId, (track) => {
+      const targetIndex = direction === "up" ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= track.typeOptions.length) {
+        return track;
+      }
+      const nextTypeOptions = [...track.typeOptions];
+      const [movedOption] = nextTypeOptions.splice(index, 1);
+      nextTypeOptions.splice(targetIndex, 0, movedOption);
+      return {
+        ...track,
+        typeOptions: nextTypeOptions,
+      } as CustomTrack;
+    });
+  }
+
+  function reorderCustomTrackTypeOption(trackId: string, fromIndex: number, insertionIndex: number) {
+    updateCustomTrack(trackId, (track) => {
+      if (
+        fromIndex < 0 ||
+        fromIndex >= track.typeOptions.length ||
+        insertionIndex < 0 ||
+        insertionIndex > track.typeOptions.length - 1
+      ) {
+        return track;
+      }
+      const nextTypeOptions = [...track.typeOptions];
+      const [movedOption] = nextTypeOptions.splice(fromIndex, 1);
+      const normalizedInsertionIndex = Math.max(0, Math.min(insertionIndex, nextTypeOptions.length));
+      if (normalizedInsertionIndex === fromIndex) {
+        return track;
+      }
+      nextTypeOptions.splice(normalizedInsertionIndex, 0, movedOption);
+      return {
+        ...track,
+        typeOptions: nextTypeOptions,
+      } as CustomTrack;
+    });
   }
 
   function removeCustomTrackTypeOption(trackId: string, index: number) {
@@ -1545,6 +1623,8 @@ function App() {
               setLineFocusRequest(null);
               applySelection({ type: "custom-track", id: trackId });
             }}
+            onMoveCustomTrack={moveCustomTrack}
+            onReorderCustomTrack={reorderCustomTrack}
             onOpenCharacterContextMenu={(id, x, y) => {
               preferredCharacterEditLocationRef.current = "timeline";
               applySelection({ type: "character", id });
@@ -1668,6 +1748,8 @@ function App() {
             onCustomTrackRename={renameCustomTrack}
             onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
             onAddCustomTrackTypeOption={addCustomTrackTypeOption}
+            onMoveCustomTrackTypeOption={moveCustomTrackTypeOption}
+            onReorderCustomTrackTypeOption={reorderCustomTrackTypeOption}
             onRemoveCustomTrackTypeOption={removeCustomTrackTypeOption}
             onDeleteCustomTrack={deleteCustomTrack}
             onCustomBlockUpdate={updateCustomBlock}
