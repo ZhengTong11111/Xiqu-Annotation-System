@@ -122,24 +122,72 @@ select {
   width: 130px;
 }
 
+.timeline-panel-header {
+  align-items: stretch;
+  gap: 10px;
+  padding-bottom: 12px;
+}
+
 .timeline-zoom-controls {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid rgba(198, 210, 225, 0.92);
+  border-radius: 16px;
+  background: rgba(247, 250, 254, 0.96);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
 }
 
 .timeline-header-actions {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .timeline-track-actions {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+}
+
+.timeline-track-actions button {
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.timeline-zoom-controls > button {
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 11px;
+}
+
+.timeline-zoom-control {
+  gap: 10px;
+  min-width: 0;
+  padding: 0 6px;
+}
+
+.timeline-zoom-control input {
+  width: 100px;
+}
+
+.timeline-zoom-control span {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.timeline-zoom-control strong {
+  min-width: 60px;
+  font-size: 13px;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .workspace-grid {
@@ -175,6 +223,18 @@ select {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.timeline-header-copy span {
+  max-width: 780px;
+  line-height: 1.45;
+}
+
+@media (max-width: 1200px) {
+  .timeline-header-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
 }
 
 .panel-header h2 {

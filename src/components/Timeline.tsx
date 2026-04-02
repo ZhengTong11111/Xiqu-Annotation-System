@@ -1133,7 +1133,7 @@ export function Timeline({
 
   return (
     <section className="panel timeline-panel">
-      <div className="panel-header">
+      <div className="panel-header timeline-panel-header">
         <div className="timeline-header-copy">
           <h2>多轨时间轴</h2>
           <span>点击空白跳转，双击创建，Command/Ctrl + 拖拽可新建 block，自定义轨可在右侧属性面板配置</span>
@@ -1141,35 +1141,35 @@ export function Timeline({
         <div className="timeline-header-actions">
           <div className="timeline-track-actions">
             <button type="button" onClick={() => onAddCustomTrack("text")}>
-              新增文字轨
+              + 文字轨
             </button>
             <button type="button" onClick={() => onAddCustomTrack("action")}>
-              新增动作轨
+              + 动作轨
             </button>
           </div>
           <div className="timeline-zoom-controls">
-          <button type="button" onClick={() => handleZoomStep(-ZOOM_STEP)}>
-            -
-          </button>
-          <label className="zoom-control timeline-zoom-control">
-            <span>缩放</span>
-            <input
-              type="range"
-              min={ZOOM_MIN}
-              max={ZOOM_MAX}
-              step={ZOOM_STEP}
-              value={sliderZoom}
-              onPointerDown={startSliderZoom}
-              onPointerUp={finishSliderZoom}
-              onPointerCancel={finishSliderZoom}
-              onBlur={finishSliderZoom}
-              onChange={(event) => handleZoomSliderChange(Number(event.target.value))}
-            />
-            <strong>{Math.round(zoom)}px/s</strong>
-          </label>
-          <button type="button" onClick={() => handleZoomStep(ZOOM_STEP)}>
-            +
-          </button>
+            <button type="button" onClick={() => handleZoomStep(-ZOOM_STEP)}>
+              -
+            </button>
+            <label className="zoom-control timeline-zoom-control">
+              <span>缩放</span>
+              <input
+                type="range"
+                min={ZOOM_MIN}
+                max={ZOOM_MAX}
+                step={ZOOM_STEP}
+                value={sliderZoom}
+                onPointerDown={startSliderZoom}
+                onPointerUp={finishSliderZoom}
+                onPointerCancel={finishSliderZoom}
+                onBlur={finishSliderZoom}
+                onChange={(event) => handleZoomSliderChange(Number(event.target.value))}
+              />
+              <strong>{Math.round(zoom)}px/s</strong>
+            </label>
+            <button type="button" onClick={() => handleZoomStep(ZOOM_STEP)}>
+              +
+            </button>
           </div>
         </div>
       </div>
