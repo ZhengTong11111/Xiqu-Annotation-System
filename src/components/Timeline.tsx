@@ -143,6 +143,9 @@ type DragState =
 
 const TRACK_HEIGHT = 72;
 const TRACK_LABEL_WIDTH = 180;
+const DEFAULT_WAVEFORM_TRACK_HEIGHT = TRACK_HEIGHT;
+const MIN_WAVEFORM_TRACK_HEIGHT = 56;
+const MAX_WAVEFORM_TRACK_HEIGHT = 240;
 const SNAP_DISTANCE_PX = 4;
 const REORDER_ACTIVATION_PX = 6;
 const ZOOM_SETTLE_MS = 220;
@@ -156,7 +159,8 @@ const LINKED_EDGE_HIT_RATIO = 0.55;
 const MIN_LINKED_EDGE_HIT_SLOP_PX = 4;
 const PREVIEW_UPDATE_EPSILON = 1 / 60;
 const MIN_BLOCK_WIDTH_PX = 44;
-const WAVEFORM_VIEW_HEIGHT = 56;
+const MIN_WAVEFORM_VIEW_HEIGHT = 32;
+const WAVEFORM_TRACK_VERTICAL_PADDING = 8;
 const WAVEFORM_MAX_WIDTH = 1800;
 const WAVEFORM_MAX_BUCKETS = 960;
 const WAVEFORM_MAX_SAMPLES_PER_BUCKET = 192;
@@ -332,6 +336,11 @@ export function Timeline({
   const [hoveredBlock, setHoveredBlock] = useState<HoveredBlockState>(null);
   const [activeSnapIndicator, setActiveSnapIndicator] = useState<ActiveSnapIndicator>(null);
   const [previewGuideTime, setPreviewGuideTime] = useState<number | null>(null);
+  const [waveformTrackHeight, setWaveformTrackHeight] = useState(DEFAULT_WAVEFORM_TRACK_HEIGHT);
+  const [waveformResizeDrag, setWaveformResizeDrag] = useState<{
+    startY: number;
+    startHeight: number;
+  } | null>(null);
   const [viewportState, setViewportState] = useState({ scrollLeft: 0, width: 0 });
   const [draggedTrackId, setDraggedTrackId] = useState<string | null>(null);
   const [trackDropInsertionIndex, setTrackDropInsertionIndex] = useState<number | null>(null);
@@ -343,6 +352,10 @@ export function Timeline({
   } | null>(null);
   const moveTrackHighlightTimerRef = useRef<number | null>(null);
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
+  const waveformViewHeight = Math.max(
+    MIN_WAVEFORM_VIEW_HEIGHT,
+    waveformTrackHeight - WAVEFORM_TRACK_VERTICAL_PADDING * 2,
+  );
   const sliderZoom = Math.round(zoom / ZOOM_STEP) * ZOOM_STEP;
   const customBlocks = useMemo(
     () => flattenCustomBlocks(customTracks),
@@ -396,7 +409,7 @@ export function Timeline({
       visibleStartTime,
       visibleEndTime,
       renderWidth,
-      WAVEFORM_VIEW_HEIGHT,
+      waveformViewHeight,
     );
 
     return {
@@ -404,7 +417,7 @@ export function Timeline({
       left: visibleStartTime * zoom,
       width: Math.max(visibleDuration * zoom, 1),
     };
-  }, [duration, viewportState, waveformData, zoom]);
+  }, [duration, viewportState, waveformData, waveformViewHeight, zoom]);
   const selectedTimelineKeySet = useMemo(
     () => new Set(selectedTimelineItems.map((item) => getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" ? item.trackId : undefined))),
     [selectedTimelineItems],
@@ -455,6 +468,34 @@ export function Timeline({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!waveformResizeDrag) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const deltaY = event.clientY - waveformResizeDrag.startY;
+      setWaveformTrackHeight(
+        clampValue(
+          waveformResizeDrag.startHeight + deltaY,
+          MIN_WAVEFORM_TRACK_HEIGHT,
+          MAX_WAVEFORM_TRACK_HEIGHT,
+        ),
+      );
+    };
+
+    const handlePointerUp = () => {
+      setWaveformResizeDrag(null);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [waveformResizeDrag]);
 
   useEffect(() => {
     if (!trackReorderDrag) {
@@ -526,7 +567,7 @@ export function Timeline({
     const orderChanged = hasSameTrackSet &&
       previousTrackIds.some((id, index) => currentTrackIds[index] !== id);
     const nextPositions = new Map<string, number>();
-    for (const track of customTracks) {
+    for (const track of activeTrackDefinitions) {
       const element = trackRowRefs.current.get(track.id);
       if (!element) {
         continue;
@@ -554,7 +595,7 @@ export function Timeline({
     }
     previousTrackRowPositionsRef.current = nextPositions;
     previousTrackIdsRef.current = currentTrackIds;
-  }, [activeTrackIds]);
+  }, [activeTrackDefinitions, activeTrackIds]);
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -1454,15 +1495,42 @@ export function Timeline({
             ))}
           </div>
 
-          <div className="timeline-track waveform-track" style={{ height: TRACK_HEIGHT }}>
-            <div className="track-label waveform-label">
+          <div className="timeline-track waveform-track" style={{ height: waveformTrackHeight }}>
+            <div className="track-label waveform-label" style={{ minHeight: waveformTrackHeight }}>
               <div className="track-label-copy">
                 <strong>音频波形</strong>
                 <span>{isWaveformLoading ? "提取中..." : waveformData ? "窗口精细波形" : "暂无波形"}</span>
               </div>
+              <div
+                className={[
+                  "waveform-track-resize-handle",
+                  waveformResizeDrag ? "active" : "",
+                ].join(" ")}
+                onPointerDown={(event) => {
+                  if (event.button !== 0) {
+                    return;
+                  }
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setWaveformResizeDrag({
+                    startY: event.clientY,
+                    startHeight: waveformTrackHeight,
+                  });
+                }}
+                onDoubleClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setWaveformResizeDrag(null);
+                  setWaveformTrackHeight(DEFAULT_WAVEFORM_TRACK_HEIGHT);
+                }}
+                title="拖动调整波形轨高度，双击恢复默认高度"
+              >
+                <span className="waveform-track-resize-grip" />
+              </div>
             </div>
             <div
               className="track-lane waveform-lane"
+              style={{ minHeight: waveformTrackHeight }}
               onClick={(event) => {
                 onSeek(getLaneTime(event.currentTarget, event.clientX, zoom));
               }}
@@ -1470,11 +1538,13 @@ export function Timeline({
               {waveformDetail ? (
                 <svg
                   className="waveform-detail-svg"
-                  viewBox={`0 0 ${waveformDetail.viewWidth} ${WAVEFORM_VIEW_HEIGHT}`}
+                  viewBox={`0 0 ${waveformDetail.viewWidth} ${waveformViewHeight}`}
                   preserveAspectRatio="none"
                   style={{
                     left: waveformDetail.left,
                     width: waveformDetail.width,
+                    top: (waveformTrackHeight - waveformViewHeight) / 2,
+                    height: waveformViewHeight,
                   }}
                 >
                   <path className="waveform-area" d={waveformDetail.areaPath} />
@@ -3182,6 +3252,10 @@ function getLaneTime(container: HTMLElement, clientX: number, zoom: number) {
 
 function clampZoom(zoom: number) {
   return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
+}
+
+function clampValue(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function formatTimelineTickLabel(seconds: number) {

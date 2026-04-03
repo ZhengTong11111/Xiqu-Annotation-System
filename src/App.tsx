@@ -70,7 +70,7 @@ const DEFAULT_ACTION_DURATION = 0.8;
 const DEFAULT_CUSTOM_TEXT = "新标注";
 const CONTEXT_MENU_GAP = 10;
 const CONTEXT_MENU_VIEWPORT_MARGIN = 12;
-const PROJECT_FILE_VERSION = 1;
+const PROJECT_FILE_VERSION = 2;
 const comparableProjectSignatureCache = new WeakMap<ProjectData, string>();
 const trackSnapSignatureCache = new WeakMap<Record<string, boolean>, string>();
 
@@ -111,7 +111,9 @@ function App() {
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const videoFileInputRef = useRef<HTMLInputElement>(null);
   const projectRef = useRef(project);
   const savedProjectRef = useRef(project);
   const transientProjectRef = useRef<ProjectData | null>(null);
@@ -1806,6 +1808,8 @@ function App() {
         url: playbackUrl,
         name: file.name,
         source: "embedded",
+        filePath: null,
+        requiresManualImport: false,
       },
     }, undefined, "import-video");
   }
@@ -1822,6 +1826,7 @@ function App() {
       const parsed = JSON.parse(text) as SavedProjectFile | ProjectData;
       const normalized = normalizeImportedProjectFile(parsed);
       const hydratedProject = normalized.project;
+      const shouldManuallyImportVideo = shouldPromptForManualVideoImport(hydratedProject.video);
       const normalizedTrackSnapEnabled = getNormalizedTrackSnapEnabled(
         hydratedProject,
         normalized.uiState?.trackSnapEnabled,
@@ -1843,6 +1848,11 @@ function App() {
         ),
       );
       markProjectAsSaved(hydratedProject, normalizedTrackSnapEnabled);
+      if (shouldManuallyImportVideo) {
+        setManualVideoRelinkPrompt(hydratedProject.video);
+      } else {
+        setManualVideoRelinkPrompt(null);
+      }
     } catch {
       window.alert("导入项目失败。请选择由本工具导出的项目 JSON，或检查文件内容是否完整。");
     }
@@ -1857,9 +1867,10 @@ function App() {
     }
 
     const projectToSave = projectRef.current;
+    const persistableProject = getPersistableProjectData(projectToSave);
     const savePayload: SavedProjectFile = {
       version: PROJECT_FILE_VERSION,
-      project: projectToSave,
+      project: persistableProject,
       uiState: {
         zoom,
         currentTime,
@@ -1909,9 +1920,11 @@ function App() {
         onTogglePlay={togglePlay}
         onStep={(delta) => seekTo(currentTime + delta)}
         onPlaybackRateChange={setPlaybackRate}
+        videoFileInputRef={videoFileInputRef}
         onVideoFileChange={(event) => {
           const file = event.target.files?.[0];
           if (file) {
+            setManualVideoRelinkPrompt(null);
             void handleVideoImport(file);
           }
           event.target.value = "";
@@ -2301,6 +2314,33 @@ function App() {
           ) : null}
         </div>
       ) : null}
+      {manualVideoRelinkPrompt ? (
+        <div className="app-modal-backdrop" onClick={() => setManualVideoRelinkPrompt(null)}>
+          <div className="app-modal" onClick={(event) => event.stopPropagation()}>
+            <h2>需要重新导入视频</h2>
+            {getManualVideoImportMessageLines(manualVideoRelinkPrompt).map((line) => (
+              <p key={line}>{line}</p>
+            ))}
+            <div className="app-modal-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  videoFileInputRef.current?.click();
+                }}
+              >
+                选择视频文件
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setManualVideoRelinkPrompt(null)}
+              >
+                稍后再说
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2359,6 +2399,8 @@ function getComparableProjectSnapshot(project: ProjectData) {
     video: {
       source: serializableProject.video.source,
       name: serializableProject.video.name,
+      filePath: serializableProject.video.filePath ?? null,
+      requiresManualImport: Boolean(serializableProject.video.requiresManualImport),
       token: getComparableVideoToken(serializableProject.video),
     },
   };
@@ -2366,15 +2408,17 @@ function getComparableProjectSnapshot(project: ProjectData) {
 
 function getComparableVideoToken(video: ProjectData["video"]) {
   const url = video.url ?? "";
+  const filePath = video.filePath ?? "";
+  const importMode = video.requiresManualImport ? "manual" : "direct";
   if (!url) {
-    return "";
+    return `${video.source}|${video.name ?? ""}|${importMode}|${filePath}`;
   }
   if (video.source === "embedded") {
     const head = url.slice(0, 48);
     const tail = url.slice(-48);
-    return `${video.source}|${video.name ?? ""}|${url.length}|${head}|${tail}`;
+    return `${video.source}|${video.name ?? ""}|${importMode}|${filePath}|${url.length}|${head}|${tail}`;
   }
-  return `${video.source}|${video.name ?? ""}|${url}`;
+  return `${video.source}|${video.name ?? ""}|${importMode}|${filePath}|${url}`;
 }
 
 function trackSnapStatesEqual(
@@ -2587,18 +2631,103 @@ function normalizeProjectVideo(
   value: Partial<ProjectData> & { videoUrl?: string; videoName?: string | null },
 ) {
   if (value.video && typeof value.video.url === "string") {
+    const normalizedFilePath = normalizeProjectVideoFilePath(value.video.filePath);
+    const normalizedUrl = normalizeProjectVideoUrl(value.video.url);
     return {
-      url: value.video.url,
+      url: normalizedUrl,
       name: value.video.name ?? null,
       source: value.video.source === "embedded" ? "embedded" : "url",
+      filePath: normalizedFilePath,
+      requiresManualImport:
+        typeof value.video.requiresManualImport === "boolean"
+          ? value.video.requiresManualImport
+          : shouldFlagVideoForManualImport(
+              value.video.source === "embedded" ? "embedded" : "url",
+              normalizedUrl,
+              normalizedFilePath,
+            ),
     } satisfies ProjectData["video"];
   }
   const legacyUrl = typeof value.videoUrl === "string" ? value.videoUrl : "";
+  const normalizedLegacyFilePath = normalizeProjectVideoFilePath(undefined);
   return {
-    url: legacyUrl,
+    url: normalizeProjectVideoUrl(legacyUrl),
     name: value.videoName ?? null,
     source: legacyUrl.startsWith("data:") ? "embedded" : "url",
+    filePath: normalizedLegacyFilePath,
+    requiresManualImport: shouldFlagVideoForManualImport(
+      legacyUrl.startsWith("data:") ? "embedded" : "url",
+      normalizeProjectVideoUrl(legacyUrl),
+      normalizedLegacyFilePath,
+    ),
   } satisfies ProjectData["video"];
+}
+
+function getPersistableProjectData(project: ProjectData): ProjectData {
+  return {
+    ...project,
+    video: getPersistableProjectVideo(project.video),
+  };
+}
+
+function getPersistableProjectVideo(video: ProjectData["video"]): ProjectData["video"] {
+  const filePath = normalizeProjectVideoFilePath(video.filePath);
+  if (video.source === "embedded") {
+    return {
+      url: "",
+      name: video.name ?? null,
+      source: "embedded",
+      filePath,
+      requiresManualImport: true,
+    };
+  }
+  return {
+    url: video.url,
+    name: video.name ?? null,
+    source: "url",
+    filePath,
+    requiresManualImport: false,
+  };
+}
+
+function normalizeProjectVideoFilePath(filePath: unknown) {
+  return typeof filePath === "string" && filePath.trim() ? filePath.trim() : null;
+}
+
+function normalizeProjectVideoUrl(url: string) {
+  if (url.startsWith("blob:")) {
+    return "";
+  }
+  return url;
+}
+
+function shouldFlagVideoForManualImport(
+  source: ProjectData["video"]["source"],
+  url: string,
+  filePath: string | null,
+) {
+  if (source === "embedded") {
+    return !url || !url.startsWith("data:");
+  }
+  return url.startsWith("file:") || (!url && Boolean(filePath));
+}
+
+function shouldPromptForManualVideoImport(video: ProjectData["video"]) {
+  return Boolean(video.requiresManualImport);
+}
+
+function getManualVideoImportMessageLines(video: ProjectData["video"]) {
+  const lines = [
+    "该项目关联的是本地视频，当前浏览器无法自动恢复磁盘文件。",
+    "请手动重新导入视频以继续编辑。",
+  ];
+  if (video.name) {
+    lines.push(`原视频文件名：${video.name}`);
+  }
+  if (video.filePath) {
+    lines.push(`项目中已保留磁盘路径字段：${video.filePath}`);
+  }
+  return lines;
 }
 
 function normalizeBuiltinTracks(value: ProjectData["builtinTracks"] | undefined) {

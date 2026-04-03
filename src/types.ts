@@ -91,6 +91,8 @@ export type ProjectVideo = {
   url: string;
   name: string | null;
   source: "url" | "embedded";
+  filePath?: string | null;
+  requiresManualImport?: boolean;
 };
 
 export type ProjectData = {
@@ -104,7 +106,7 @@ export type ProjectData = {
 };
 
 export type SavedProjectFile = {
-  version: 1;
+  version: 1 | 2;
   project: ProjectData;
   uiState?: {
     zoom?: number;

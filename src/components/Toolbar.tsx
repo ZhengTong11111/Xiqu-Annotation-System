@@ -1,4 +1,4 @@
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, RefObject } from "react";
 import type { BuiltinTrackId } from "../types";
 
 type ToolbarProps = {
@@ -10,6 +10,7 @@ type ToolbarProps = {
   onTogglePlay: () => void;
   onStep: (delta: number) => void;
   onPlaybackRateChange: (rate: number) => void;
+  videoFileInputRef?: RefObject<HTMLInputElement>;
   onVideoFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onSrtFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onProjectFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
@@ -31,6 +32,7 @@ export function Toolbar({
   onTogglePlay,
   onStep,
   onPlaybackRateChange,
+  videoFileInputRef,
   onVideoFileChange,
   onSrtFileChange,
   onProjectFileChange,
@@ -48,7 +50,7 @@ export function Toolbar({
       <div className="toolbar-group">
         <label className="file-button">
           导入视频
-          <input type="file" accept="video/*" onChange={onVideoFileChange} />
+          <input ref={videoFileInputRef} type="file" accept="video/*" onChange={onVideoFileChange} />
         </label>
         <label className="file-button">
           导入句级 SRT
