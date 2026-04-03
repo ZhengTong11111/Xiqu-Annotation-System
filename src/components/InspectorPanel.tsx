@@ -1,13 +1,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ActionAnnotation,
+  BuiltinTrack,
+  BuiltinTrackId,
   CharacterAnnotation,
   CustomTrack,
   SelectedItem,
   SubtitleLine,
   TrackDefinition,
 } from "../types";
-import { singingStyleOptions } from "../utils/project";
 
 const REORDER_ACTIVATION_PX = 6;
 
@@ -16,10 +17,18 @@ type InspectorPanelProps = {
   subtitleLines: SubtitleLine[];
   characterAnnotations: CharacterAnnotation[];
   actionAnnotations: ActionAnnotation[];
+  builtinTracks: BuiltinTrack[];
   customTracks: CustomTrack[];
   trackDefinitions: TrackDefinition[];
   onCharacterUpdate: (id: string, changes: Partial<CharacterAnnotation>) => void;
   onActionUpdate: (id: string, changes: Partial<ActionAnnotation>) => void;
+  onBuiltinTrackRename: (trackId: BuiltinTrackId, name: string) => void;
+  onBuiltinTrackTypeOptionChange: (trackId: BuiltinTrackId, index: number, value: string) => void;
+  onAddBuiltinTrackTypeOption: (trackId: BuiltinTrackId) => void;
+  onMoveBuiltinTrackTypeOption: (trackId: BuiltinTrackId, index: number, direction: "up" | "down") => void;
+  onReorderBuiltinTrackTypeOption: (trackId: BuiltinTrackId, fromIndex: number, toIndex: number) => void;
+  onRemoveBuiltinTrackTypeOption: (trackId: BuiltinTrackId, index: number) => void;
+  onDeleteBuiltinTrack: (trackId: BuiltinTrackId) => void;
   onCustomTrackRename: (trackId: string, name: string) => void;
   onCustomTrackTypeOptionChange: (trackId: string, index: number, value: string) => void;
   onAddCustomTrackTypeOption: (trackId: string) => void;
@@ -45,10 +54,18 @@ export function InspectorPanel({
   subtitleLines,
   characterAnnotations,
   actionAnnotations,
+  builtinTracks,
   customTracks,
   trackDefinitions,
   onCharacterUpdate,
   onActionUpdate,
+  onBuiltinTrackRename,
+  onBuiltinTrackTypeOptionChange,
+  onAddBuiltinTrackTypeOption,
+  onMoveBuiltinTrackTypeOption,
+  onReorderBuiltinTrackTypeOption,
+  onRemoveBuiltinTrackTypeOption,
+  onDeleteBuiltinTrack,
   onCustomTrackRename,
   onCustomTrackTypeOptionChange,
   onAddCustomTrackTypeOption,
@@ -59,6 +76,10 @@ export function InspectorPanel({
   onCustomBlockUpdate,
   onDeleteSelected,
 }: InspectorPanelProps) {
+  const [trackNameDraft, setTrackNameDraft] = useState("");
+  const [typeOptionDrafts, setTypeOptionDrafts] = useState<string[]>([]);
+  const [isTrackNameComposing, setIsTrackNameComposing] = useState(false);
+  const [composingOptionIndexes, setComposingOptionIndexes] = useState<Record<number, boolean>>({});
   const [draggedOptionIndex, setDraggedOptionIndex] = useState<number | null>(null);
   const [optionDropInsertionIndex, setOptionDropInsertionIndex] = useState<number | null>(null);
   const [recentlyMovedOptionIndex, setRecentlyMovedOptionIndex] = useState<number | null>(null);
@@ -72,12 +93,18 @@ export function InspectorPanel({
   const optionRowRefs = useRef(new Map<string, HTMLDivElement>());
   const previousOptionRowPositionsRef = useRef(new Map<string, number>());
   const previousTypeOptionKeysRef = useRef<string[]>([]);
+  const selectedBuiltinTrack = selectedItem?.type === "builtin-track"
+    ? builtinTracks.find((item) => item.id === selectedItem.id) ?? null
+    : null;
   const selectedCustomTrack = selectedItem?.type === "custom-track"
     ? customTracks.find((item) => item.id === selectedItem.id) ?? null
     : null;
+  const selectedEditableTrack = selectedBuiltinTrack ?? selectedCustomTrack;
   const typeOptionKeys = useMemo(
-    () => buildTypeOptionKeys(selectedCustomTrack?.typeOptions ?? []),
-    [selectedCustomTrack?.typeOptions],
+    () => buildTypeOptionKeys(
+      selectedBuiltinTrack?.options ?? selectedCustomTrack?.typeOptions ?? [],
+    ),
+    [selectedBuiltinTrack?.options, selectedCustomTrack?.typeOptions],
   );
   const remainingTypeOptionKeys = useMemo(
     () => typeOptionKeys.filter((_, index) => index !== draggedOptionIndex),
@@ -92,6 +119,15 @@ export function InspectorPanel({
     remainingTypeOptionKeys.length > 0
     ? remainingTypeOptionKeys[remainingTypeOptionKeys.length - 1]
     : null;
+
+  useEffect(() => {
+    setTrackNameDraft(selectedEditableTrack?.name ?? "");
+  }, [selectedEditableTrack?.id, selectedEditableTrack?.name]);
+
+  useEffect(() => {
+    setTypeOptionDrafts(trackOptionsFromTrack(selectedEditableTrack));
+    setComposingOptionIndexes({});
+  }, [selectedEditableTrack?.id, selectedBuiltinTrack?.options, selectedCustomTrack?.typeOptions]);
 
   useEffect(() => {
     return () => {
@@ -118,10 +154,42 @@ export function InspectorPanel({
     setOptionDropInsertionIndex(null);
     setRecentlyMovedOptionIndex(null);
     setOptionReorderDrag(null);
+    setIsTrackNameComposing(false);
+    setComposingOptionIndexes({});
   }, [selectedItem]);
 
+  function commitTrackName(nextName: string) {
+    if (!selectedEditableTrack || nextName === selectedEditableTrack.name) {
+      return;
+    }
+    if (selectedBuiltinTrack) {
+      onBuiltinTrackRename(selectedBuiltinTrack.id, nextName);
+      return;
+    }
+    if (selectedCustomTrack) {
+      onCustomTrackRename(selectedCustomTrack.id, nextName);
+    }
+  }
+
+  function commitTrackTypeOption(index: number, nextValue: string) {
+    if (!selectedEditableTrack) {
+      return;
+    }
+    const currentOptions = trackOptionsFromTrack(selectedEditableTrack);
+    if (currentOptions[index] === nextValue) {
+      return;
+    }
+    if (selectedBuiltinTrack) {
+      onBuiltinTrackTypeOptionChange(selectedBuiltinTrack.id, index, nextValue);
+      return;
+    }
+    if (selectedCustomTrack) {
+      onCustomTrackTypeOptionChange(selectedCustomTrack.id, index, nextValue);
+    }
+  }
+
   useLayoutEffect(() => {
-    if (!selectedCustomTrack) {
+    if (!selectedEditableTrack) {
       previousOptionRowPositionsRef.current = new Map();
       previousTypeOptionKeysRef.current = [];
       return;
@@ -161,10 +229,10 @@ export function InspectorPanel({
     });
     previousOptionRowPositionsRef.current = nextPositions;
     previousTypeOptionKeysRef.current = typeOptionKeys;
-  }, [selectedCustomTrack, typeOptionKeys]);
+  }, [selectedEditableTrack, typeOptionKeys]);
 
   useEffect(() => {
-    if (!optionReorderDrag || !selectedCustomTrack) {
+    if (!optionReorderDrag || !selectedEditableTrack) {
       return;
     }
 
@@ -205,8 +273,13 @@ export function InspectorPanel({
       const isActive = Math.abs(event.clientY - optionReorderDrag.startY) >= REORDER_ACTIVATION_PX;
       const insertionIndex = isActive ? getDropInsertionIndex(event.clientY) : null;
       if (insertionIndex !== null && insertionIndex !== optionReorderDrag.index) {
-        onReorderCustomTrackTypeOption(selectedCustomTrack.id, optionReorderDrag.index, insertionIndex);
-        flashMovedOption(Math.min(insertionIndex, selectedCustomTrack.typeOptions.length - 1));
+        if (selectedBuiltinTrack) {
+          onReorderBuiltinTrackTypeOption(selectedBuiltinTrack.id, optionReorderDrag.index, insertionIndex);
+          flashMovedOption(Math.min(insertionIndex, (selectedBuiltinTrack.options?.length ?? 1) - 1));
+        } else if (selectedCustomTrack) {
+          onReorderCustomTrackTypeOption(selectedCustomTrack.id, optionReorderDrag.index, insertionIndex);
+          flashMovedOption(Math.min(insertionIndex, selectedCustomTrack.typeOptions.length - 1));
+        }
       }
       draggedOptionIndexRef.current = null;
       setDraggedOptionIndex(null);
@@ -222,8 +295,11 @@ export function InspectorPanel({
     };
   }, [
     onReorderCustomTrackTypeOption,
+    onReorderBuiltinTrackTypeOption,
     optionReorderDrag,
     remainingTypeOptionKeys,
+    selectedBuiltinTrack,
+    selectedEditableTrack,
     selectedCustomTrack,
   ]);
 
@@ -264,34 +340,69 @@ export function InspectorPanel({
     );
   }
 
-  if (selectedItem.type === "custom-track") {
-    const track = selectedCustomTrack;
+  if (selectedItem.type === "custom-track" || selectedItem.type === "builtin-track") {
+    const track = selectedEditableTrack;
     if (!track) {
       return null;
     }
+    const trackOptions = "typeOptions" in track ? track.typeOptions : (track.options ?? []);
+    const isBuiltinTrack = selectedItem.type === "builtin-track";
     return (
       <section className="panel inspector-panel">
         <div className="panel-header">
           <h2>轨道设置</h2>
-          <button onClick={() => onDeleteCustomTrack(track.id)}>删除轨道</button>
+          <button onClick={() => {
+            if (isBuiltinTrack) {
+              onDeleteBuiltinTrack(track.id as BuiltinTrackId);
+            } else {
+              onDeleteCustomTrack(track.id);
+            }
+          }}>删除轨道</button>
         </div>
         <div className="inspector-field">
           <label>轨道名称</label>
           <input
-            value={track.name}
-            onChange={(event) => onCustomTrackRename(track.id, event.target.value)}
+            value={trackNameDraft}
+            onChange={(event) => {
+              setTrackNameDraft(event.target.value);
+            }}
+            onCompositionStart={() => setIsTrackNameComposing(true)}
+            onCompositionEnd={(event) => {
+              setIsTrackNameComposing(false);
+              setTrackNameDraft(event.currentTarget.value);
+            }}
+            onBlur={() => commitTrackName(trackNameDraft)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                const isComposing = isTrackNameComposing ||
+                  (event.nativeEvent as KeyboardEvent & { isComposing?: boolean }).isComposing === true;
+                if (isComposing) {
+                  return;
+                }
+                event.preventDefault();
+                commitTrackName(trackNameDraft);
+                event.currentTarget.blur();
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setTrackNameDraft(track.name);
+                event.currentTarget.blur();
+              }
+            }}
           />
         </div>
         <div className="inspector-field">
           <label>轨道类型</label>
           <div className="inspector-value">
-            {track.trackType === "text" ? "文字类轨道" : "动作类轨道"}
+            {"trackType" in track
+              ? track.trackType === "text" ? "文字类轨道" : "动作类轨道"
+              : track.type === "character" ? "文字类轨道" : "动作类轨道"}
           </div>
         </div>
         <div className="inspector-field">
           <label>类型列表</label>
           <div className="track-option-list">
-            {track.typeOptions.map((option, index) => (
+            {trackOptions.map((option, index) => (
               <div
                 key={typeOptionKeys[index] ?? `${track.id}-${index}-${option}`}
                 className={[
@@ -325,10 +436,51 @@ export function InspectorPanel({
                 }}
               >
                 <input
-                  value={option}
-                  onChange={(event) =>
-                    onCustomTrackTypeOptionChange(track.id, index, event.target.value)
-                  }
+                  value={typeOptionDrafts[index] ?? option}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    setTypeOptionDrafts((current) => {
+                      const next = [...current];
+                      next[index] = nextValue;
+                      return next;
+                    });
+                  }}
+                  onCompositionStart={() => {
+                    setComposingOptionIndexes((current) => ({ ...current, [index]: true }));
+                  }}
+                  onCompositionEnd={(event) => {
+                    const nextValue = event.currentTarget.value;
+                    setComposingOptionIndexes((current) => ({ ...current, [index]: false }));
+                    setTypeOptionDrafts((current) => {
+                      const next = [...current];
+                      next[index] = nextValue;
+                      return next;
+                    });
+                  }}
+                  onBlur={() => {
+                    commitTrackTypeOption(index, typeOptionDrafts[index] ?? option);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      const isComposing = composingOptionIndexes[index] ||
+                        (event.nativeEvent as KeyboardEvent & { isComposing?: boolean }).isComposing === true;
+                      if (isComposing) {
+                        return;
+                      }
+                      event.preventDefault();
+                      commitTrackTypeOption(index, typeOptionDrafts[index] ?? option);
+                      event.currentTarget.blur();
+                    }
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      setTypeOptionDrafts((current) => {
+                        const next = [...current];
+                        next[index] = option;
+                        return next;
+                      });
+                      event.currentTarget.blur();
+                    }
+                  }}
                 />
                 <div className="track-option-actions">
                   <div
@@ -352,7 +504,11 @@ export function InspectorPanel({
                   <button
                     type="button"
                     onClick={() => {
-                      onMoveCustomTrackTypeOption(track.id, index, "up");
+                      if (isBuiltinTrack) {
+                        onMoveBuiltinTrackTypeOption(track.id as BuiltinTrackId, index, "up");
+                      } else {
+                        onMoveCustomTrackTypeOption(track.id, index, "up");
+                      }
                       flashMovedOption(Math.max(0, index - 1));
                     }}
                     disabled={index === 0}
@@ -363,25 +519,41 @@ export function InspectorPanel({
                   <button
                     type="button"
                     onClick={() => {
-                      onMoveCustomTrackTypeOption(track.id, index, "down");
-                      flashMovedOption(Math.min(track.typeOptions.length - 1, index + 1));
+                      if (isBuiltinTrack) {
+                        onMoveBuiltinTrackTypeOption(track.id as BuiltinTrackId, index, "down");
+                      } else {
+                        onMoveCustomTrackTypeOption(track.id, index, "down");
+                      }
+                      flashMovedOption(Math.min(trackOptions.length - 1, index + 1));
                     }}
-                    disabled={index === track.typeOptions.length - 1}
+                    disabled={index === trackOptions.length - 1}
                     title="下移类型"
                   >
                     ↓
                   </button>
                   <button
                     type="button"
-                    onClick={() => onRemoveCustomTrackTypeOption(track.id, index)}
-                    disabled={track.typeOptions.length <= 1}
+                    onClick={() => {
+                      if (isBuiltinTrack) {
+                        onRemoveBuiltinTrackTypeOption(track.id as BuiltinTrackId, index);
+                      } else {
+                        onRemoveCustomTrackTypeOption(track.id, index);
+                      }
+                    }}
+                    disabled={trackOptions.length <= 1}
                   >
                     删除
                   </button>
                 </div>
               </div>
             ))}
-            <button type="button" onClick={() => onAddCustomTrackTypeOption(track.id)}>
+            <button type="button" onClick={() => {
+              if (isBuiltinTrack) {
+                onAddBuiltinTrackTypeOption(track.id as BuiltinTrackId);
+              } else {
+                onAddCustomTrackTypeOption(track.id);
+              }
+            }}>
               新增类型
             </button>
           </div>
@@ -437,7 +609,7 @@ export function InspectorPanel({
               })
             }
           >
-            {singingStyleOptions.map((style) => (
+            {(trackDefinitions.find((track) => track.id === "character-track")?.options ?? [item.singingStyle]).map((style) => (
               <option key={style} value={style}>
                 {style}
               </option>
@@ -577,4 +749,11 @@ function buildTypeOptionKeys(typeOptions: string[]) {
     counts.set(option, nextCount);
     return `${option}__${nextCount}`;
   });
+}
+
+function trackOptionsFromTrack(track: BuiltinTrack | CustomTrack | null) {
+  if (!track) {
+    return [];
+  }
+  return "typeOptions" in track ? track.typeOptions : (track.options ?? []);
 }

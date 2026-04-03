@@ -1,12 +1,8 @@
-export type SingingStyle =
-  | "普通唱"
-  | "拖腔"
-  | "顿音"
-  | "装饰音"
-  | "念白式"
-  | "其他";
+export type SingingStyle = string;
 
+export type BuiltinTrackId = "character-track" | "hand-action" | "body-action";
 export type CustomTrackType = "text" | "action";
+export type BuiltinTrackType = "character" | "action";
 
 export type SubtitleLine = {
   id: string;
@@ -75,20 +71,47 @@ export type ResolvedCustomTrackBlock = {
   text?: string;
 };
 
+export type BuiltinTrack = {
+  id: BuiltinTrackId;
+  name: string;
+  type: BuiltinTrackType;
+  options?: string[];
+};
+
 export type TrackDefinition = {
   id: string;
   name: string;
   type: "character" | "action" | "custom-text" | "custom-action";
   options?: string[];
   isCustom?: boolean;
+  isBuiltin?: boolean;
+};
+
+export type ProjectVideo = {
+  url: string;
+  name: string | null;
+  source: "url" | "embedded";
 };
 
 export type ProjectData = {
-  videoUrl: string;
+  video: ProjectVideo;
   subtitleLines: SubtitleLine[];
   characterAnnotations: CharacterAnnotation[];
   actionAnnotations: ActionAnnotation[];
+  builtinTracks: BuiltinTrack[];
   customTracks: CustomTrack[];
+  activeTrackOrder: string[];
+};
+
+export type SavedProjectFile = {
+  version: 1;
+  project: ProjectData;
+  uiState?: {
+    zoom?: number;
+    currentTime?: number;
+    playbackRate?: number;
+    trackSnapEnabled?: Record<string, boolean>;
+  };
 };
 
 export type WaveformData = {
@@ -101,6 +124,7 @@ export type SelectedItem =
   | { type: "line"; id: string }
   | { type: "character"; id: string }
   | { type: "action"; id: string }
+  | { type: "builtin-track"; id: BuiltinTrackId }
   | { type: "custom-track"; id: string }
   | { type: "custom-block"; id: string; trackId: string }
   | null;

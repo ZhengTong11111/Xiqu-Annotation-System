@@ -1,4 +1,6 @@
 import type {
+  BuiltinTrack,
+  BuiltinTrackId,
   CharacterAnnotation,
   CustomTrack,
   CustomTrackType,
@@ -18,11 +20,12 @@ export const singingStyleOptions: SingingStyle[] = [
   "其他",
 ];
 
-export const trackDefinitions: TrackDefinition[] = [
+export const defaultBuiltinTracks: BuiltinTrack[] = [
   {
     id: "character-track",
     name: "逐字文字轨",
     type: "character",
+    options: [...singingStyleOptions],
   },
   {
     id: "hand-action",
@@ -38,17 +41,58 @@ export const trackDefinitions: TrackDefinition[] = [
   },
 ];
 
-export function buildTimelineTrackDefinitions(customTracks: CustomTrack[]): TrackDefinition[] {
-  return [
-    ...trackDefinitions,
-    ...customTracks.map((track) => ({
-      id: track.id,
-      name: track.name,
-      type: (track.trackType === "text" ? "custom-text" : "custom-action") as TrackDefinition["type"],
-      options: track.typeOptions,
-      isCustom: true,
-    })),
+export function getDefaultBuiltinTracks(): BuiltinTrack[] {
+  return defaultBuiltinTracks.map((track) => ({
+    ...track,
+    options: track.options ? [...track.options] : undefined,
+  }));
+}
+
+export function getBuiltinTrackDefinition(trackId: BuiltinTrackId): BuiltinTrack {
+  const track = defaultBuiltinTracks.find((item) => item.id === trackId);
+  if (!track) {
+    throw new Error(`Unknown builtin track: ${trackId}`);
+  }
+  return {
+    ...track,
+    options: track.options ? [...track.options] : undefined,
+  };
+}
+
+export function buildTimelineTrackDefinitions(
+  builtinTracks: BuiltinTrack[],
+  customTracks: CustomTrack[],
+  activeTrackOrder: string[],
+): TrackDefinition[] {
+  const trackEntries: Array<[string, TrackDefinition]> = [
+    ...builtinTracks.map((track) => [
+      track.id,
+      {
+        ...track,
+        isBuiltin: true,
+      } satisfies TrackDefinition,
+    ] as [string, TrackDefinition]),
+    ...customTracks.map((track) => [
+      track.id,
+      {
+        id: track.id,
+        name: track.name,
+        type: (track.trackType === "text" ? "custom-text" : "custom-action") as TrackDefinition["type"],
+        options: track.typeOptions,
+        isCustom: true,
+      } satisfies TrackDefinition,
+    ] as [string, TrackDefinition]),
   ];
+  const trackMap = new Map<string, TrackDefinition>(trackEntries);
+
+  const orderedIds = activeTrackOrder.length > 0
+    ? activeTrackOrder.filter((trackId) => trackMap.has(trackId))
+    : [...builtinTracks.map((track) => track.id), ...customTracks.map((track) => track.id)];
+
+  return orderedIds.flatMap((trackId) => {
+    const track = trackMap.get(trackId);
+    return track ? [track] : [];
+  });
 }
 
 export function flattenCustomTrackBlocks(customTracks: CustomTrack[]): ResolvedCustomTrackBlock[] {
@@ -66,8 +110,15 @@ export function flattenCustomTrackBlocks(customTracks: CustomTrack[]): ResolvedC
 }
 
 export function getDefaultFixedActionLabel(trackId: string): string {
-  const track = trackDefinitions.find((item) => item.id === trackId);
+  const track = defaultBuiltinTracks.find((item) => item.id === trackId);
   return track?.options?.[0] ?? "其他";
+}
+
+export function getBuiltinTrackOptions(
+  builtinTracks: BuiltinTrack[],
+  trackId: BuiltinTrackId,
+) {
+  return builtinTracks.find((track) => track.id === trackId)?.options ?? [];
 }
 
 export function getDefaultCustomTrackName(
@@ -108,14 +159,16 @@ export function splitLineIntoCharacters(line: SubtitleLine): CharacterAnnotation
 
 export function buildProjectFromLines(
   subtitleLines: SubtitleLine[],
-  videoUrl: string,
+  video: ProjectData["video"],
 ): ProjectData {
   return {
-    videoUrl,
+    video,
     subtitleLines,
     characterAnnotations: subtitleLines.flatMap(splitLineIntoCharacters),
     actionAnnotations: [],
+    builtinTracks: getDefaultBuiltinTracks(),
     customTracks: [],
+    activeTrackOrder: getDefaultBuiltinTracks().map((track) => track.id),
   };
 }
 
@@ -129,6 +182,11 @@ export function getProjectDuration(project: ProjectData): number {
     ...customBlockEndTimes,
   );
   return Math.max(lineDuration, 30);
+}
+
+export function getMissingBuiltinTracks(activeBuiltinTracks: BuiltinTrack[]) {
+  const activeIds = new Set(activeBuiltinTracks.map((track) => track.id));
+  return defaultBuiltinTracks.filter((track) => !activeIds.has(track.id));
 }
 
 export function clampRange(

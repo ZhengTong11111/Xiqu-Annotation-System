@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ActionAnnotation,
+  BuiltinTrack,
+  BuiltinTrackId,
   CharacterAnnotation,
   CustomTrack,
   ProjectData,
@@ -20,6 +22,7 @@ type TimelineProps = {
   actionAnnotations: ActionAnnotation[];
   customTracks: CustomTrack[];
   trackDefinitions: TrackDefinition[];
+  missingBuiltinTracks: BuiltinTrack[];
   waveformData: WaveformData | null;
   isWaveformLoading: boolean;
   currentTime: number;
@@ -41,9 +44,12 @@ type TimelineProps = {
   onSeek: (time: number) => void;
   onPreviewFrame: (time: number | null) => void;
   onSelectItem: (item: SelectedItem) => void;
-  onSelectCustomTrack: (trackId: string) => void;
-  onMoveCustomTrack: (trackId: string, direction: "up" | "down") => void;
-  onReorderCustomTrack: (trackId: string, insertionIndex: number) => void;
+  onSelectBuiltinTrack: (trackId: BuiltinTrackId) => void;
+  onSelectTrack: (trackId: string) => void;
+  onMoveTrack: (trackId: string, direction: "up" | "down") => void;
+  onReorderTrack: (trackId: string, insertionIndex: number) => void;
+  onDeleteBuiltinTrack: (trackId: BuiltinTrackId) => void;
+  onDeleteCustomTrack: (trackId: string) => void;
   onSelectLineOverlay: (lineId: string) => void;
   onSelectTimelineItems: (items: TimelineSelectionItem[], primaryItem: SelectedItem) => void;
   onEditCharacterText: (id: string) => void;
@@ -57,6 +63,7 @@ type TimelineProps = {
   onCreateCharacterAtTime: (time: number, endTime?: number) => void;
   onCreateActionAtTime: (trackId: string, startTime: number) => void;
   onCreateCustomBlock: (trackId: string, startTime: number, endTime?: number) => void;
+  onAddBuiltinTrack: (trackId: BuiltinTrackId) => void;
   onAddCustomTrack: (trackType: "text" | "action") => void;
   onOpenCharacterContextMenu: (id: string, x: number, y: number) => void;
   onOpenActionContextMenu: (id: string, x: number, y: number) => void;
@@ -234,6 +241,7 @@ export function Timeline({
   actionAnnotations,
   customTracks,
   trackDefinitions,
+  missingBuiltinTracks,
   waveformData,
   isWaveformLoading,
   currentTime,
@@ -255,9 +263,12 @@ export function Timeline({
   onSeek,
   onPreviewFrame,
   onSelectItem,
-  onSelectCustomTrack,
-  onMoveCustomTrack,
-  onReorderCustomTrack,
+  onSelectBuiltinTrack,
+  onSelectTrack,
+  onMoveTrack,
+  onReorderTrack,
+  onDeleteBuiltinTrack,
+  onDeleteCustomTrack,
   onSelectLineOverlay,
   onSelectTimelineItems,
   onEditCharacterText,
@@ -271,6 +282,7 @@ export function Timeline({
   onCreateCharacterAtTime,
   onCreateActionAtTime,
   onCreateCustomBlock,
+  onAddBuiltinTrack,
   onAddCustomTrack,
   onOpenCharacterContextMenu,
   onOpenActionContextMenu,
@@ -312,16 +324,16 @@ export function Timeline({
   const scrollFrameRef = useRef<number | null>(null);
   const suppressLineClickIdRef = useRef<string | null>(null);
   const suppressCanvasClickUntilRef = useRef(0);
-  const draggedCustomTrackIdRef = useRef<string | null>(null);
+  const draggedTrackIdRef = useRef<string | null>(null);
   const trackRowRefs = useRef(new Map<string, HTMLDivElement>());
   const previousTrackRowPositionsRef = useRef(new Map<string, number>());
-  const previousCustomTrackIdsRef = useRef<string[]>([]);
+  const previousTrackIdsRef = useRef<string[]>([]);
   const [dragState, setDragState] = useState<DragState>(null);
   const [hoveredBlock, setHoveredBlock] = useState<HoveredBlockState>(null);
   const [activeSnapIndicator, setActiveSnapIndicator] = useState<ActiveSnapIndicator>(null);
   const [previewGuideTime, setPreviewGuideTime] = useState<number | null>(null);
   const [viewportState, setViewportState] = useState({ scrollLeft: 0, width: 0 });
-  const [draggedCustomTrackId, setDraggedCustomTrackId] = useState<string | null>(null);
+  const [draggedTrackId, setDraggedTrackId] = useState<string | null>(null);
   const [trackDropInsertionIndex, setTrackDropInsertionIndex] = useState<number | null>(null);
   const [recentlyMovedTrackId, setRecentlyMovedTrackId] = useState<string | null>(null);
   const [trackReorderDrag, setTrackReorderDrag] = useState<{
@@ -336,26 +348,30 @@ export function Timeline({
     () => flattenCustomBlocks(customTracks),
     [customTracks],
   );
-  const customTrackOrderMap = useMemo(
-    () => new Map(customTracks.map((track, index) => [track.id, index])),
-    [customTracks],
+  const activeTrackDefinitions = useMemo(
+    () => trackDefinitions.filter((track) => track.isCustom || track.isBuiltin),
+    [trackDefinitions],
   );
-  const customTrackIds = useMemo(
-    () => customTracks.map((track) => track.id),
-    [customTracks],
+  const activeTrackOrderMap = useMemo(
+    () => new Map(activeTrackDefinitions.map((track, index) => [track.id, index])),
+    [activeTrackDefinitions],
   );
-  const remainingCustomTrackIds = useMemo(
-    () => customTrackIds.filter((trackId) => trackId !== draggedCustomTrackId),
-    [customTrackIds, draggedCustomTrackId],
+  const activeTrackIds = useMemo(
+    () => activeTrackDefinitions.map((track) => track.id),
+    [activeTrackDefinitions],
+  );
+  const remainingActiveTrackIds = useMemo(
+    () => activeTrackIds.filter((trackId) => trackId !== draggedTrackId),
+    [activeTrackIds, draggedTrackId],
   );
   const customTrackDropBeforeId = trackDropInsertionIndex !== null &&
-    trackDropInsertionIndex < remainingCustomTrackIds.length
-    ? remainingCustomTrackIds[trackDropInsertionIndex]
+    trackDropInsertionIndex < remainingActiveTrackIds.length
+    ? remainingActiveTrackIds[trackDropInsertionIndex]
     : null;
   const customTrackDropAfterId = trackDropInsertionIndex !== null &&
-    trackDropInsertionIndex === remainingCustomTrackIds.length &&
-    remainingCustomTrackIds.length > 0
-    ? remainingCustomTrackIds[remainingCustomTrackIds.length - 1]
+    trackDropInsertionIndex === remainingActiveTrackIds.length &&
+    remainingActiveTrackIds.length > 0
+    ? remainingActiveTrackIds[remainingActiveTrackIds.length - 1]
     : null;
   const waveformDetail = useMemo(() => {
     if (!waveformData || waveformData.samples.length === 0) {
@@ -446,7 +462,7 @@ export function Timeline({
     }
 
     const getDropInsertionIndex = (clientY: number) => {
-      const remainingTrackIds = customTrackIds.filter((trackId) => trackId !== trackReorderDrag.trackId);
+      const remainingTrackIds = activeTrackIds.filter((trackId) => trackId !== trackReorderDrag.trackId);
       if (remainingTrackIds.length === 0) {
         return null;
       }
@@ -482,13 +498,13 @@ export function Timeline({
     const handlePointerUp = (event: PointerEvent) => {
       const isActive = Math.abs(event.clientY - trackReorderDrag.startY) >= REORDER_ACTIVATION_PX;
       const insertionIndex = isActive ? getDropInsertionIndex(event.clientY) : null;
-      const originalIndex = customTrackIds.indexOf(trackReorderDrag.trackId);
+      const originalIndex = activeTrackIds.indexOf(trackReorderDrag.trackId);
       if (insertionIndex !== null && insertionIndex !== originalIndex) {
-        onReorderCustomTrack(trackReorderDrag.trackId, insertionIndex);
+        onReorderTrack(trackReorderDrag.trackId, insertionIndex);
         flashMovedTrack(trackReorderDrag.trackId);
       }
-      draggedCustomTrackIdRef.current = null;
-      setDraggedCustomTrackId(null);
+      draggedTrackIdRef.current = null;
+      setDraggedTrackId(null);
       setTrackDropInsertionIndex(null);
       setTrackReorderDrag(null);
     };
@@ -499,11 +515,11 @@ export function Timeline({
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [customTrackIds, onReorderCustomTrack, trackReorderDrag]);
+  }, [activeTrackIds, onReorderTrack, trackReorderDrag]);
 
   useLayoutEffect(() => {
-    const currentTrackIds = customTracks.map((track) => track.id);
-    const previousTrackIds = previousCustomTrackIdsRef.current;
+    const currentTrackIds = activeTrackIds;
+    const previousTrackIds = previousTrackIdsRef.current;
     const hasSameTrackSet = previousTrackIds.length === currentTrackIds.length &&
       previousTrackIds.every((id) => currentTrackIds.includes(id)) &&
       currentTrackIds.every((id) => previousTrackIds.includes(id));
@@ -537,8 +553,8 @@ export function Timeline({
       );
     }
     previousTrackRowPositionsRef.current = nextPositions;
-    previousCustomTrackIdsRef.current = currentTrackIds;
-  }, [customTracks]);
+    previousTrackIdsRef.current = currentTrackIds;
+  }, [activeTrackIds]);
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -1293,6 +1309,15 @@ export function Timeline({
         </div>
         <div className="timeline-header-actions">
           <div className="timeline-track-actions">
+            {missingBuiltinTracks.map((track) => (
+              <button key={track.id} type="button" onClick={() => onAddBuiltinTrack(track.id)}>
+                {track.id === "character-track"
+                  ? "+ 逐字轨"
+                  : track.id === "hand-action"
+                    ? "+ 手部轨"
+                    : "+ 肢体轨"}
+              </button>
+            ))}
             <button type="button" onClick={() => onAddCustomTrack("text")}>
               + 文字轨
             </button>
@@ -1468,13 +1493,13 @@ export function Timeline({
               key={track.id}
               className={[
                 "timeline-track",
-                track.isCustom && customTrackDropBeforeId === track.id ? "drop-target-before" : "",
-                track.isCustom && customTrackDropAfterId === track.id ? "drop-target-after" : "",
-                draggedCustomTrackId === track.id ? "drag-source" : "",
+                (track.isCustom || track.isBuiltin) && customTrackDropBeforeId === track.id ? "drop-target-before" : "",
+                (track.isCustom || track.isBuiltin) && customTrackDropAfterId === track.id ? "drop-target-after" : "",
+                draggedTrackId === track.id ? "drag-source" : "",
               ].join(" ")}
               style={{ height: TRACK_HEIGHT }}
               ref={(node) => {
-                if (!track.isCustom) {
+                if (!track.isCustom && !track.isBuiltin) {
                   return;
                 }
                 if (node) {
@@ -1487,13 +1512,13 @@ export function Timeline({
               <div
                 className={[
                   "track-label",
-                  track.isCustom ? "track-label-custom" : "",
-                  selectedItem?.type === "custom-track" && selectedItem.id === track.id ? "selected" : "",
-                  draggedCustomTrackId === track.id ? "dragging" : "",
+                  track.isCustom || track.isBuiltin ? "track-label-custom" : "",
+                  ((selectedItem?.type === "custom-track" || selectedItem?.type === "builtin-track") && selectedItem.id === track.id) ? "selected" : "",
+                  draggedTrackId === track.id ? "dragging" : "",
                   recentlyMovedTrackId === track.id ? "recently-moved" : "",
                 ].join(" ")}
                 style={
-                  draggedCustomTrackId === track.id &&
+                  draggedTrackId === track.id &&
                     trackReorderDrag &&
                     Math.abs(trackReorderDrag.currentY - trackReorderDrag.startY) >= REORDER_ACTIVATION_PX
                     ? {
@@ -1503,8 +1528,10 @@ export function Timeline({
                     : undefined
                 }
                 onClick={() => {
-                  if (track.isCustom) {
-                    onSelectCustomTrack(track.id);
+                  if (track.isBuiltin) {
+                    onSelectBuiltinTrack(track.id as BuiltinTrackId);
+                  } else if (track.isCustom) {
+                    onSelectTrack(track.id);
                   }
                 }}
               >
@@ -1512,16 +1539,16 @@ export function Timeline({
                   <div
                     className={[
                       "track-label-main",
-                      track.isCustom ? "track-label-drag-surface" : "",
+                      track.isCustom || track.isBuiltin ? "track-label-drag-surface" : "",
                     ].join(" ")}
                     onPointerDown={(event) => {
-                      if (!track.isCustom) {
+                      if (!track.isCustom && !track.isBuiltin) {
                         return;
                       }
                       event.stopPropagation();
                       event.preventDefault();
-                      draggedCustomTrackIdRef.current = track.id;
-                      setDraggedCustomTrackId(track.id);
+                      draggedTrackIdRef.current = track.id;
+                      setDraggedTrackId(track.id);
                       setTrackReorderDrag({
                         trackId: track.id,
                         startY: event.clientY,
@@ -1533,6 +1560,8 @@ export function Timeline({
                     <strong>{track.name}</strong>
                     {track.isCustom ? (
                       <span>{track.type === "custom-text" ? "文字类自定义轨" : "动作类自定义轨"}</span>
+                    ) : track.isBuiltin ? (
+                      <span>{track.type === "character" ? "文字类内建轨" : "动作类内建轨"}</span>
                     ) : null}
                   </div>
                   <div className="track-label-footer">
@@ -1545,41 +1574,89 @@ export function Timeline({
                     />
                     <span>吸附</span>
                   </label>
-                    {track.isCustom ? (
+                    {track.isCustom || track.isBuiltin ? (
                       <div
                         className="track-label-tools"
                         onClick={(event) => event.stopPropagation()}
                       >
-                        <div
-                          className="track-label-tool-button track-label-drag-handle"
-                          title="拖动调整轨道顺序"
-                        >
-                          ⋮⋮
-                        </div>
-                        <button
-                          type="button"
-                          className="track-label-tool-button"
-                          onClick={() => {
-                            onMoveCustomTrack(track.id, "up");
-                            flashMovedTrack(track.id);
-                          }}
-                          disabled={(customTrackOrderMap.get(track.id) ?? 0) <= 0}
-                          title="上移轨道"
-                        >
-                          ↑
-                        </button>
-                        <button
-                          type="button"
-                          className="track-label-tool-button"
-                          onClick={() => {
-                            onMoveCustomTrack(track.id, "down");
-                            flashMovedTrack(track.id);
-                          }}
-                          disabled={(customTrackOrderMap.get(track.id) ?? 0) >= customTracks.length - 1}
-                          title="下移轨道"
-                        >
-                          ↓
-                        </button>
+                        {track.isCustom ? (
+                          <>
+                            <div
+                              className="track-label-tool-button track-label-drag-handle"
+                              title="拖动调整轨道顺序"
+                            >
+                              ⋮⋮
+                            </div>
+                            <button
+                              type="button"
+                              className="track-label-tool-button"
+                              onClick={() => {
+                                onMoveTrack(track.id, "up");
+                                flashMovedTrack(track.id);
+                              }}
+                              disabled={(activeTrackOrderMap.get(track.id) ?? 0) <= 0}
+                              title="上移轨道"
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              className="track-label-tool-button"
+                              onClick={() => {
+                                onMoveTrack(track.id, "down");
+                                flashMovedTrack(track.id);
+                              }}
+                              disabled={(activeTrackOrderMap.get(track.id) ?? 0) >= activeTrackDefinitions.length - 1}
+                              title="下移轨道"
+                            >
+                              ↓
+                            </button>
+                            <button
+                              type="button"
+                              className="track-label-tool-button track-label-delete-button"
+                              onClick={() => onDeleteCustomTrack(track.id)}
+                              title="删除轨道"
+                            >
+                              删
+                            </button>
+                          </>
+                        ) : null}
+                        {track.isBuiltin ? (
+                          <>
+                            <button
+                              type="button"
+                              className="track-label-tool-button"
+                              onClick={() => {
+                                onMoveTrack(track.id, "up");
+                                flashMovedTrack(track.id);
+                              }}
+                              disabled={(activeTrackOrderMap.get(track.id) ?? 0) <= 0}
+                              title="上移轨道"
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              className="track-label-tool-button"
+                              onClick={() => {
+                                onMoveTrack(track.id, "down");
+                                flashMovedTrack(track.id);
+                              }}
+                              disabled={(activeTrackOrderMap.get(track.id) ?? 0) >= activeTrackDefinitions.length - 1}
+                              title="下移轨道"
+                            >
+                              ↓
+                            </button>
+                            <button
+                              type="button"
+                              className="track-label-tool-button track-label-delete-button"
+                              onClick={() => onDeleteBuiltinTrack(track.id as BuiltinTrackId)}
+                              title="删除轨道"
+                            >
+                              删
+                            </button>
+                          </>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>

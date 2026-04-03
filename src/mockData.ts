@@ -69,7 +69,11 @@ const mockActions = baseMockActions.map((action) => ({
 export const mockProject: ProjectData = {
   ...buildProjectFromLines(
     mockLines,
-    "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4",
+    {
+      url: "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4",
+      name: "flower.mp4",
+      source: "url",
+    },
   ),
   actionAnnotations: mockActions,
 };

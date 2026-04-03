@@ -8,11 +8,14 @@ import { VideoPlayer } from "./components/VideoPlayer";
 import { mockProject } from "./mockData";
 import type {
   ActionAnnotation,
+  BuiltinTrack,
+  BuiltinTrackId,
   CharacterAnnotation,
   CustomTrack,
   CustomTrackType,
   ProjectData,
   ResolvedCustomTrackBlock,
+  SavedProjectFile,
   SelectedItem,
   SubtitleLine,
   TimelineBatchMoveItem,
@@ -23,12 +26,15 @@ import {
   buildProjectFromLines,
   buildTimelineTrackDefinitions,
   flattenCustomTrackBlocks,
+  getBuiltinTrackDefinition,
+  getDefaultBuiltinTracks,
+  getBuiltinTrackOptions,
   getDefaultCustomTrackName,
   getDefaultCustomTrackTypeOptions,
   getDefaultFixedActionLabel,
+  getMissingBuiltinTracks,
   getProjectDuration,
   getNextCustomTrackTypeOptionName,
-  singingStyleOptions,
 } from "./utils/project";
 import {
   exportActionTrackToSrt,
@@ -37,7 +43,7 @@ import {
   parseSrt,
 } from "./utils/srt";
 
-type HistoryAction = "edit" | "import-video" | "import-srt";
+type HistoryAction = "edit" | "import-video" | "import-srt" | "import-project";
 
 type HistoryEntry = {
   project: ProjectData;
@@ -64,6 +70,9 @@ const DEFAULT_ACTION_DURATION = 0.8;
 const DEFAULT_CUSTOM_TEXT = "新标注";
 const CONTEXT_MENU_GAP = 10;
 const CONTEXT_MENU_VIEWPORT_MARGIN = 12;
+const PROJECT_FILE_VERSION = 1;
+const comparableProjectSignatureCache = new WeakMap<ProjectData, string>();
+const trackSnapSignatureCache = new WeakMap<Record<string, boolean>, string>();
 
 function App() {
   const [project, setProject] = useState<ProjectData>(mockProject);
@@ -97,28 +106,38 @@ function App() {
   const [zoom, setZoom] = useState(20);
   const [lineFocusRequest, setLineFocusRequest] = useState<LineFocusRequest | null>(null);
   const [trackSnapEnabled, setTrackSnapEnabled] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(buildTimelineTrackDefinitions(mockProject.customTracks).map((track) => [track.id, true])),
+    () => getDefaultTrackSnapEnabled(mockProject),
   );
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const projectRef = useRef(project);
+  const savedProjectRef = useRef(project);
   const transientProjectRef = useRef<ProjectData | null>(null);
+  const trackSnapEnabledRef = useRef(trackSnapEnabled);
+  const savedTrackSnapEnabledRef = useRef(trackSnapEnabled);
   const undoStackRef = useRef(undoStack);
   const redoStackRef = useRef(redoStack);
-  const savedProjectSnapshotRef = useRef(serializeProject(project));
   const waveformRequestIdRef = useRef(0);
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
   const blockContextMenuRef = useRef<HTMLDivElement>(null);
   const [blockContextMenuPosition, setBlockContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const timelineTrackDefinitions = useMemo(
-    () => buildTimelineTrackDefinitions(project.customTracks),
-    [project.customTracks],
+    () => buildTimelineTrackDefinitions(project.builtinTracks, project.customTracks, project.activeTrackOrder),
+    [project.activeTrackOrder, project.builtinTracks, project.customTracks],
   );
   const customBlocks = useMemo(
     () => flattenCustomTrackBlocks(project.customTracks),
     [project.customTracks],
+  );
+  const missingBuiltinTracks = useMemo(
+    () => getMissingBuiltinTracks(project.builtinTracks),
+    [project.builtinTracks],
+  );
+  const activeBuiltinTrackIds = useMemo(
+    () => new Set(project.builtinTracks.map((track) => track.id)),
+    [project.builtinTracks],
   );
 
   useEffect(() => {
@@ -134,20 +153,21 @@ function App() {
   }, [redoStack]);
 
   useEffect(() => {
-    setHasUnsavedChanges(serializeProject(project) !== savedProjectSnapshotRef.current);
-  }, [project]);
-
-  useEffect(() => {
-    setTrackSnapEnabled((current) => {
+    const currentTrackSnapState = trackSnapEnabledRef.current;
+    const nextTrackSnapState = (() => {
       const next = Object.fromEntries(
-        timelineTrackDefinitions.map((track) => [track.id, current[track.id] ?? true]),
+        timelineTrackDefinitions.map((track) => [track.id, currentTrackSnapState[track.id] ?? true]),
       );
-      const currentKeys = Object.keys(current);
+      const currentKeys = Object.keys(currentTrackSnapState);
       const nextKeys = Object.keys(next);
       const changed = currentKeys.length !== nextKeys.length ||
-        nextKeys.some((key) => current[key] !== next[key]);
-      return changed ? next : current;
-    });
+        nextKeys.some((key) => currentTrackSnapState[key] !== next[key]);
+      return changed ? next : currentTrackSnapState;
+    })();
+
+    if (nextTrackSnapState !== currentTrackSnapState) {
+      applyTrackSnapEnabledState(nextTrackSnapState);
+    }
   }, [timelineTrackDefinitions]);
 
   useEffect(() => {
@@ -164,13 +184,34 @@ function App() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [hasUnsavedChanges]);
 
+  function syncHasUnsavedChanges(
+    nextProject = projectRef.current,
+    nextTrackSnapState = trackSnapEnabledRef.current,
+  ) {
+    setHasUnsavedChanges(
+      !projectsEqual(savedProjectRef.current, nextProject) ||
+      !trackSnapStatesEqual(savedTrackSnapEnabledRef.current, nextTrackSnapState),
+    );
+  }
+
   function applyProjectState(nextProject: ProjectData) {
     projectRef.current = nextProject;
     setProject(nextProject);
+    syncHasUnsavedChanges(nextProject, trackSnapEnabledRef.current);
   }
 
-  function markProjectAsSaved(projectToSave = projectRef.current) {
-    savedProjectSnapshotRef.current = serializeProject(projectToSave);
+  function applyTrackSnapEnabledState(nextTrackSnapState: Record<string, boolean>) {
+    trackSnapEnabledRef.current = nextTrackSnapState;
+    setTrackSnapEnabled(nextTrackSnapState);
+    syncHasUnsavedChanges(projectRef.current, nextTrackSnapState);
+  }
+
+  function markProjectAsSaved(
+    projectToSave = projectRef.current,
+    trackSnapState = trackSnapEnabledRef.current,
+  ) {
+    savedProjectRef.current = projectToSave;
+    savedTrackSnapEnabledRef.current = trackSnapState;
     setHasUnsavedChanges(false);
   }
 
@@ -241,7 +282,7 @@ function App() {
   }, [playbackRate]);
 
   useEffect(() => {
-    const videoUrl = project.videoUrl;
+    const videoUrl = project.video.url;
     const requestId = waveformRequestIdRef.current + 1;
     waveformRequestIdRef.current = requestId;
 
@@ -277,10 +318,15 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [project.videoUrl]);
+  }, [project.video.url]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void saveProjectFile();
+        return;
+      }
       if ((event.target as HTMLElement | null)?.tagName === "INPUT" ||
           (event.target as HTMLElement | null)?.tagName === "SELECT") {
         return;
@@ -351,6 +397,7 @@ function App() {
     undoStack,
     redoStack,
     project,
+    trackSnapEnabled,
   ]);
 
   useEffect(() => {
@@ -397,6 +444,7 @@ function App() {
   const contextMenuSplitCharacters = contextMenuCharacter
     ? getSplittableCharacters(contextMenuCharacter.char)
     : [];
+  const contextMenuCharacterTrack = timelineTrackDefinitions.find((track) => track.id === "character-track") ?? null;
   const contextMenuActionTrack = contextMenuAction
     ? timelineTrackDefinitions.find((track) => track.id === contextMenuAction.trackId) ?? null
     : null;
@@ -494,7 +542,7 @@ function App() {
   }, [blockContextMenu]);
 
   function projectsEqual(left: ProjectData, right: ProjectData) {
-    return JSON.stringify(left) === JSON.stringify(right);
+    return serializeComparableProject(left) === serializeComparableProject(right);
   }
 
   function commitProject(
@@ -679,6 +727,63 @@ function App() {
     }
   }
 
+  function updateBuiltinTrack(
+    trackId: BuiltinTrackId,
+    updater: (track: BuiltinTrack) => BuiltinTrack,
+    recordHistory = true,
+  ) {
+    const currentProject = projectRef.current;
+    const nextProject = {
+      ...currentProject,
+      builtinTracks: currentProject.builtinTracks.map((track) =>
+        track.id === trackId ? updater(track) : track,
+      ),
+    };
+    if (recordHistory) {
+      commitProject(nextProject);
+    } else {
+      applyProjectWithoutHistory(nextProject);
+    }
+  }
+
+  function moveTrack(trackId: string, direction: "up" | "down") {
+    const currentProject = projectRef.current;
+    const currentIndex = currentProject.activeTrackOrder.findIndex((id) => id === trackId);
+    if (currentIndex === -1) {
+      return;
+    }
+    const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= currentProject.activeTrackOrder.length) {
+      return;
+    }
+    const nextOrder = [...currentProject.activeTrackOrder];
+    const [movedId] = nextOrder.splice(currentIndex, 1);
+    nextOrder.splice(targetIndex, 0, movedId);
+    commitProject({
+      ...currentProject,
+      activeTrackOrder: nextOrder,
+    });
+  }
+
+  function reorderTrack(trackId: string, insertionIndex: number) {
+    const currentProject = projectRef.current;
+    const currentIndex = currentProject.activeTrackOrder.findIndex((id) => id === trackId);
+    if (currentIndex === -1) {
+      return;
+    }
+    const nextOrder = [...currentProject.activeTrackOrder];
+    const [movedId] = nextOrder.splice(currentIndex, 1);
+    const normalizedInsertionIndex = Math.max(0, Math.min(insertionIndex, nextOrder.length));
+    if (normalizedInsertionIndex === currentIndex) {
+      return;
+    }
+    nextOrder.splice(normalizedInsertionIndex, 0, movedId);
+    commitProject({
+      ...currentProject,
+      activeTrackOrder: nextOrder,
+    });
+  }
+
   function updateCustomBlock(
     trackId: string,
     blockId: string,
@@ -763,6 +868,12 @@ function App() {
     updateCustomBlock(trackId, blockId, { type });
   }
 
+  function getBuiltinTrackDefaultOption(trackId: BuiltinTrackId) {
+    const currentProject = projectRef.current;
+    const options = getBuiltinTrackOptions(currentProject.builtinTracks, trackId);
+    return options[0] ?? getDefaultFixedActionLabel(trackId);
+  }
+
   function updateTimelineSelectionBatch(items: TimelineBatchMoveItem[], recordHistory = true) {
     if (items.length === 0) {
       return;
@@ -843,6 +954,9 @@ function App() {
 
   function createCharacterAtTime(time: number, explicitEndTime?: number) {
     const currentProject = projectRef.current;
+    if (!currentProject.builtinTracks.some((track) => track.id === "character-track")) {
+      return;
+    }
     const normalizedTime = Math.max(0, time);
     const requestedRange = normalizeCharacterCreationRequest(normalizedTime, explicitEndTime);
     const target = findCharacterCreationTarget(currentProject.subtitleLines, normalizedTime);
@@ -905,6 +1019,9 @@ function App() {
 
   function createActionAtTime(trackId: string, startTime: number) {
     const currentProject = projectRef.current;
+    if (!currentProject.builtinTracks.some((track) => track.id === trackId)) {
+      return;
+    }
     const safeStartTime = Math.max(0, startTime);
     commitProject({
       ...currentProject,
@@ -913,12 +1030,90 @@ function App() {
         {
           id: `${trackId}-${crypto.randomUUID()}`,
           trackId,
-          label: getDefaultFixedActionLabel(trackId),
+          label: getBuiltinTrackDefaultOption(trackId as BuiltinTrackId),
           startTime: safeStartTime,
           endTime: safeStartTime + DEFAULT_ACTION_DURATION,
         },
       ],
     });
+  }
+
+  function addBuiltinTrack(trackId: BuiltinTrackId) {
+    const currentProject = projectRef.current;
+    if (currentProject.builtinTracks.some((track) => track.id === trackId)) {
+      return;
+    }
+    commitProject({
+      ...currentProject,
+      builtinTracks: [...currentProject.builtinTracks, getBuiltinTrackDefinition(trackId)],
+      activeTrackOrder: [...currentProject.activeTrackOrder, trackId],
+    });
+  }
+
+  function deleteBuiltinTrack(trackId: BuiltinTrackId) {
+    const currentProject = projectRef.current;
+    const targetTrack = currentProject.builtinTracks.find((track) => track.id === trackId);
+    if (!targetTrack) {
+      return;
+    }
+    const affectedCharacterCount = trackId === "character-track"
+      ? currentProject.characterAnnotations.length
+      : 0;
+    const affectedActionCount = trackId === "character-track"
+      ? 0
+      : currentProject.actionAnnotations.filter((item) => item.trackId === trackId).length;
+    const affectedCount = affectedCharacterCount + affectedActionCount;
+    const confirmed = window.confirm(
+      `确定要删除轨道“${targetTrack.name}”吗？` +
+        `\n删除轨道会同时删除轨道上的全部标注` +
+        (affectedCount > 0 ? `（当前共 ${affectedCount} 条）` : "") +
+        `。`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    const nextProject = trackId === "character-track"
+      ? {
+          ...currentProject,
+          builtinTracks: currentProject.builtinTracks.filter((track) => track.id !== trackId),
+          activeTrackOrder: currentProject.activeTrackOrder.filter((id) => id !== trackId),
+          characterAnnotations: [],
+        }
+      : {
+          ...currentProject,
+          builtinTracks: currentProject.builtinTracks.filter((track) => track.id !== trackId),
+          activeTrackOrder: currentProject.activeTrackOrder.filter((id) => id !== trackId),
+          actionAnnotations: currentProject.actionAnnotations.filter((item) => item.trackId !== trackId),
+        };
+
+    if (trackId === "character-track") {
+      cancelCharacterTextEdit();
+      if (selectedItem?.type === "character" || (selectedItem?.type === "builtin-track" && selectedItem.id === trackId)) {
+        applySelection(null);
+      } else {
+        setSelectedTimelineItems((current) => current.filter((item) => item.type !== "character"));
+      }
+    } else {
+      if (selectedItem?.type === "builtin-track" && selectedItem.id === trackId) {
+        applySelection(null);
+      } else if (selectedItem?.type === "action" && selectedItem.id) {
+        const selectedAction = currentProject.actionAnnotations.find((item) => item.id === selectedItem.id);
+        if (selectedAction?.trackId === trackId) {
+          applySelection(null);
+        } else {
+          setSelectedTimelineItems((current) =>
+            current.filter((item) => item.type !== "action" || currentProject.actionAnnotations.find((action) => action.id === item.id)?.trackId !== trackId),
+          );
+        }
+      } else {
+        setSelectedTimelineItems((current) =>
+          current.filter((item) => item.type !== "action" || currentProject.actionAnnotations.find((action) => action.id === item.id)?.trackId !== trackId),
+        );
+      }
+    }
+
+    commitProject(nextProject);
   }
 
   function addCustomTrack(trackType: CustomTrackType) {
@@ -942,6 +1137,7 @@ function App() {
     commitProject({
       ...currentProject,
       customTracks: [...currentProject.customTracks, nextTrack] as CustomTrack[],
+      activeTrackOrder: [...currentProject.activeTrackOrder, nextTrack.id],
     });
     applySelection({ type: "custom-track", id: nextTrack.id });
   }
@@ -1231,6 +1427,12 @@ function App() {
       }
       applySelection(null);
     }
+    if (selectedItem.type === "builtin-track") {
+      deleteBuiltinTrack(selectedItem.id);
+    }
+    if (selectedItem.type === "custom-track") {
+      deleteCustomTrack(selectedItem.id);
+    }
   }
 
   function selectAllTimelineItems() {
@@ -1249,6 +1451,9 @@ function App() {
 
   function addAction(trackId: "hand-action" | "body-action") {
     const currentProject = projectRef.current;
+    if (!currentProject.builtinTracks.some((track) => track.id === trackId)) {
+      return;
+    }
     const startTime = currentTime;
     const endTime = Math.min(duration, startTime + DEFAULT_ACTION_DURATION);
     commitProject({
@@ -1258,7 +1463,7 @@ function App() {
         {
           id: `${trackId}-${crypto.randomUUID()}`,
           trackId,
-          label: getDefaultFixedActionLabel(trackId),
+          label: getBuiltinTrackDefaultOption(trackId),
           startTime,
           endTime,
         },
@@ -1268,6 +1473,9 @@ function App() {
 
   function createAction(trackId: string, startTime: number, endTime: number) {
     const currentProject = projectRef.current;
+    if (!currentProject.builtinTracks.some((track) => track.id === trackId)) {
+      return;
+    }
     commitProject({
       ...currentProject,
       actionAnnotations: [
@@ -1275,7 +1483,7 @@ function App() {
         {
           id: `${trackId}-${crypto.randomUUID()}`,
           trackId,
-          label: getDefaultFixedActionLabel(trackId),
+          label: getBuiltinTrackDefaultOption(trackId as BuiltinTrackId),
           startTime,
           endTime,
         },
@@ -1291,42 +1499,28 @@ function App() {
     }) as CustomTrack);
   }
 
+  function renameBuiltinTrack(trackId: BuiltinTrackId, name: string) {
+    const normalizedName = name.trimStart();
+    updateBuiltinTrack(trackId, (track) => ({
+      ...track,
+      name: normalizedName.length > 0 ? normalizedName : track.name,
+    }));
+  }
+
   function moveCustomTrack(trackId: string, direction: "up" | "down") {
-    const currentProject = projectRef.current;
-    const currentIndex = currentProject.customTracks.findIndex((track) => track.id === trackId);
-    if (currentIndex === -1) {
-      return;
-    }
-    const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
-    if (targetIndex < 0 || targetIndex >= currentProject.customTracks.length) {
-      return;
-    }
-    const nextTracks = [...currentProject.customTracks];
-    const [movedTrack] = nextTracks.splice(currentIndex, 1);
-    nextTracks.splice(targetIndex, 0, movedTrack);
-    commitProject({
-      ...currentProject,
-      customTracks: nextTracks as CustomTrack[],
-    });
+    moveTrack(trackId, direction);
+  }
+
+  function moveBuiltinTrack(trackId: BuiltinTrackId, direction: "up" | "down") {
+    moveTrack(trackId, direction);
   }
 
   function reorderCustomTrack(trackId: string, insertionIndex: number) {
-    const currentProject = projectRef.current;
-    const currentIndex = currentProject.customTracks.findIndex((track) => track.id === trackId);
-    if (currentIndex === -1) {
-      return;
-    }
-    const nextTracks = [...currentProject.customTracks];
-    const [movedTrack] = nextTracks.splice(currentIndex, 1);
-    const normalizedInsertionIndex = Math.max(0, Math.min(insertionIndex, nextTracks.length));
-    if (normalizedInsertionIndex === currentIndex) {
-      return;
-    }
-    nextTracks.splice(normalizedInsertionIndex, 0, movedTrack);
-    commitProject({
-      ...currentProject,
-      customTracks: nextTracks as CustomTrack[],
-    });
+    reorderTrack(trackId, insertionIndex);
+  }
+
+  function reorderBuiltinTrack(trackId: BuiltinTrackId, insertionIndex: number) {
+    reorderTrack(trackId, insertionIndex);
   }
 
   function updateCustomTrackTypeOption(trackId: string, index: number, value: string) {
@@ -1347,11 +1541,49 @@ function App() {
     });
   }
 
+  function updateBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number, value: string) {
+    const normalizedValue = value.trimStart();
+    const currentProject = projectRef.current;
+    const targetTrack = currentProject.builtinTracks.find((track) => track.id === trackId);
+    if (!targetTrack?.options || index < 0 || index >= targetTrack.options.length) {
+      return;
+    }
+    const previousValue = targetTrack.options[index];
+    const nextValue = normalizedValue.length > 0 ? normalizedValue : previousValue;
+    const nextOptions = targetTrack.options.map((option, optionIndex) =>
+      optionIndex === index ? nextValue : option,
+    );
+    const nextProject: ProjectData = {
+      ...currentProject,
+      builtinTracks: currentProject.builtinTracks.map((track) =>
+        track.id === trackId ? { ...track, options: nextOptions } : track,
+      ),
+      characterAnnotations: trackId === "character-track"
+        ? currentProject.characterAnnotations.map((item) =>
+            item.singingStyle === previousValue ? { ...item, singingStyle: nextValue } : item
+          )
+        : currentProject.characterAnnotations,
+      actionAnnotations: trackId !== "character-track"
+        ? currentProject.actionAnnotations.map((item) =>
+            item.trackId === trackId && item.label === previousValue ? { ...item, label: nextValue } : item
+          )
+        : currentProject.actionAnnotations,
+    };
+    commitProject(nextProject);
+  }
+
   function addCustomTrackTypeOption(trackId: string) {
     updateCustomTrack(trackId, (track) => ({
       ...track,
       typeOptions: [...track.typeOptions, getNextCustomTrackTypeOptionName(track.typeOptions)],
     }) as CustomTrack);
+  }
+
+  function addBuiltinTrackTypeOption(trackId: BuiltinTrackId) {
+    updateBuiltinTrack(trackId, (track) => ({
+      ...track,
+      options: [...(track.options ?? []), getNextCustomTrackTypeOptionName(track.options ?? [])],
+    }));
   }
 
   function moveCustomTrackTypeOption(trackId: string, index: number, direction: "up" | "down") {
@@ -1367,6 +1599,22 @@ function App() {
         ...track,
         typeOptions: nextTypeOptions,
       } as CustomTrack;
+    });
+  }
+
+  function moveBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number, direction: "up" | "down") {
+    updateBuiltinTrack(trackId, (track) => {
+      const options = [...(track.options ?? [])];
+      const targetIndex = direction === "up" ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= options.length) {
+        return track;
+      }
+      const [movedOption] = options.splice(index, 1);
+      options.splice(targetIndex, 0, movedOption);
+      return {
+        ...track,
+        options,
+      };
     });
   }
 
@@ -1394,6 +1642,30 @@ function App() {
     });
   }
 
+  function reorderBuiltinTrackTypeOption(trackId: BuiltinTrackId, fromIndex: number, insertionIndex: number) {
+    updateBuiltinTrack(trackId, (track) => {
+      const options = [...(track.options ?? [])];
+      if (
+        fromIndex < 0 ||
+        fromIndex >= options.length ||
+        insertionIndex < 0 ||
+        insertionIndex > options.length - 1
+      ) {
+        return track;
+      }
+      const [movedOption] = options.splice(fromIndex, 1);
+      const normalizedInsertionIndex = Math.max(0, Math.min(insertionIndex, options.length));
+      if (normalizedInsertionIndex === fromIndex) {
+        return track;
+      }
+      options.splice(normalizedInsertionIndex, 0, movedOption);
+      return {
+        ...track,
+        options,
+      };
+    });
+  }
+
   function removeCustomTrackTypeOption(trackId: string, index: number) {
     updateCustomTrack(trackId, (track) => {
       if (track.typeOptions.length <= 1) {
@@ -1412,11 +1684,54 @@ function App() {
     });
   }
 
+  function removeBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number) {
+    const currentProject = projectRef.current;
+    const targetTrack = currentProject.builtinTracks.find((track) => track.id === trackId);
+    const options = targetTrack?.options ?? [];
+    if (options.length <= 1 || index < 0 || index >= options.length) {
+      return;
+    }
+    const removedValue = options[index];
+    const nextOptions = options.filter((_, optionIndex) => optionIndex !== index);
+    const fallbackOption = nextOptions[0] ?? "类型 1";
+    commitProject({
+      ...currentProject,
+      builtinTracks: currentProject.builtinTracks.map((track) =>
+        track.id === trackId ? { ...track, options: nextOptions } : track,
+      ),
+      characterAnnotations: trackId === "character-track"
+        ? currentProject.characterAnnotations.map((item) =>
+            item.singingStyle === removedValue ? { ...item, singingStyle: fallbackOption } : item
+          )
+        : currentProject.characterAnnotations,
+      actionAnnotations: trackId !== "character-track"
+        ? currentProject.actionAnnotations.map((item) =>
+            item.trackId === trackId && item.label === removedValue ? { ...item, label: fallbackOption } : item
+          )
+        : currentProject.actionAnnotations,
+    });
+  }
+
   function deleteCustomTrack(trackId: string) {
     const currentProject = projectRef.current;
+    const track = currentProject.customTracks.find((item) => item.id === trackId);
+    if (!track) {
+      return;
+    }
+    const blockCount = track.blocks.length;
+    const confirmed = window.confirm(
+      `确定要删除轨道“${track.name}”吗？` +
+        `\n删除轨道会同时删除轨道上的全部标注` +
+        (blockCount > 0 ? `（当前共 ${blockCount} 条）` : "") +
+        `，此操作会进入撤销历史。`,
+    );
+    if (!confirmed) {
+      return;
+    }
     const nextProject = {
       ...currentProject,
-      customTracks: currentProject.customTracks.filter((track) => track.id !== trackId) as CustomTrack[],
+      activeTrackOrder: currentProject.activeTrackOrder.filter((id) => id !== trackId),
+      customTracks: currentProject.customTracks.filter((item) => item.id !== trackId) as CustomTrack[],
     };
     if (editingCustomTextBlock?.trackId === trackId) {
       cancelCustomTextEdit();
@@ -1469,7 +1784,7 @@ function App() {
   async function importSrtFile(file: File) {
     const text = await file.text();
     const lines = parseSrt(text);
-    const nextProject = buildProjectFromLines(lines, projectRef.current.videoUrl);
+    const nextProject = buildProjectFromLines(lines, projectRef.current.video);
     commitProject(nextProject, undefined, "import-srt");
     applySelection(lines[0] ? { type: "line", id: lines[0].id } : null);
     if (lines[0]) {
@@ -1478,21 +1793,89 @@ function App() {
   }
 
   async function handleVideoImport(file: File) {
-    const url = URL.createObjectURL(file);
-    commitProject({ ...projectRef.current, videoUrl: url }, undefined, "import-video");
+    const playbackUrl = URL.createObjectURL(file);
+    if (videoRef.current) {
+      videoRef.current.pause();
+    }
+    setPreviewTime(null);
+    setIsPlaying(false);
+    setCurrentTime(0);
+    commitProject({
+      ...projectRef.current,
+      video: {
+        url: playbackUrl,
+        name: file.name,
+        source: "embedded",
+      },
+    }, undefined, "import-video");
   }
 
-  function handleExport(kind: "character" | "singing" | "hand" | "body" | "project") {
-    if (kind === "project") {
-      downloadBlob(
-        JSON.stringify(project, null, 2),
-        "project_data.json",
-        "application/json",
+  async function importProjectFile(file: File) {
+    try {
+      if (hasUnsavedChanges) {
+        const confirmed = window.confirm("当前项目还有未保存修改。确定要导入新项目并覆盖当前内容吗？");
+        if (!confirmed) {
+          return;
+        }
+      }
+      const text = await file.text();
+      const parsed = JSON.parse(text) as SavedProjectFile | ProjectData;
+      const normalized = normalizeImportedProjectFile(parsed);
+      const hydratedProject = normalized.project;
+      const normalizedTrackSnapEnabled = getNormalizedTrackSnapEnabled(
+        hydratedProject,
+        normalized.uiState?.trackSnapEnabled,
       );
-      markProjectAsSaved(projectRef.current);
-      return;
+      commitProject(hydratedProject, undefined, "import-project");
+      applyTrackSnapEnabledState(normalizedTrackSnapEnabled);
+      setZoom(normalized.uiState?.zoom ?? 20);
+      setPlaybackRate(normalized.uiState?.playbackRate ?? 1);
+      setPreviewTime(null);
+      setLineFocusRequest(null);
+      setBlockContextMenu(null);
+      cancelCharacterTextEdit();
+      cancelCustomTextEdit();
+      applySelection(hydratedProject.subtitleLines[0] ? { type: "line", id: hydratedProject.subtitleLines[0].id } : null);
+      seekTo(
+        clampTime(
+          normalized.uiState?.currentTime ?? hydratedProject.subtitleLines[0]?.startTime ?? 0,
+          getProjectDuration(hydratedProject),
+        ),
+      );
+      markProjectAsSaved(hydratedProject, normalizedTrackSnapEnabled);
+    } catch {
+      window.alert("导入项目失败。请选择由本工具导出的项目 JSON，或检查文件内容是否完整。");
+    }
+  }
+
+  async function saveProjectFile() {
+    if (editingCharacterId) {
+      commitCharacterTextEdit(editingCharacterId);
+    }
+    if (editingCustomTextBlock) {
+      commitCustomTextEdit(editingCustomTextBlock.trackId, editingCustomTextBlock.id);
     }
 
+    const projectToSave = projectRef.current;
+    const savePayload: SavedProjectFile = {
+      version: PROJECT_FILE_VERSION,
+      project: projectToSave,
+      uiState: {
+        zoom,
+        currentTime,
+        playbackRate,
+        trackSnapEnabled: trackSnapEnabledRef.current,
+      },
+    };
+    downloadBlob(
+      JSON.stringify(savePayload, null, 2),
+      getProjectFileName(projectToSave),
+      "application/json",
+    );
+    markProjectAsSaved(projectToSave, trackSnapEnabledRef.current);
+  }
+
+  function handleExport(kind: "character" | "singing" | "hand" | "body") {
     const fileMap = {
       character: {
         name: "character_track.srt",
@@ -1522,6 +1905,7 @@ function App() {
         playbackRate={playbackRate}
         canUndo={undoStack.length > 0}
         canRedo={redoStack.length > 0}
+        activeBuiltinTrackIds={Array.from(activeBuiltinTrackIds)}
         onTogglePlay={togglePlay}
         onStep={(delta) => seekTo(currentTime + delta)}
         onPlaybackRateChange={setPlaybackRate}
@@ -1539,6 +1923,16 @@ function App() {
           }
           event.target.value = "";
         }}
+        onProjectFileChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) {
+            void importProjectFile(file);
+          }
+          event.target.value = "";
+        }}
+        onSaveProject={() => {
+          void saveProjectFile();
+        }}
         onExportTrack={handleExport}
         onUndo={undo}
         onRedo={redo}
@@ -1549,7 +1943,7 @@ function App() {
         <div className="main-column">
           <VideoPlayer
             ref={videoRef}
-            videoUrl={project.videoUrl}
+            videoUrl={project.video.url}
             playbackRate={playbackRate}
             currentTime={currentTime}
             previewTime={previewTime}
@@ -1564,6 +1958,7 @@ function App() {
             actionAnnotations={project.actionAnnotations}
             customTracks={project.customTracks}
             trackDefinitions={timelineTrackDefinitions}
+            missingBuiltinTracks={missingBuiltinTracks}
             waveformData={waveformData}
             isWaveformLoading={isWaveformLoading}
             currentTime={currentTime}
@@ -1577,10 +1972,10 @@ function App() {
             getProjectSnapshot={() => projectRef.current}
             onZoomChange={setZoom}
             onToggleTrackSnap={(trackId) => {
-              setTrackSnapEnabled((current) => ({
-                ...current,
-                [trackId]: !current[trackId],
-              }));
+              applyTrackSnapEnabledState({
+                ...trackSnapEnabledRef.current,
+                [trackId]: !trackSnapEnabledRef.current[trackId],
+              });
             }}
             onSeek={seekTo}
             onPreviewFrame={setPreviewTime}
@@ -1619,12 +2014,35 @@ function App() {
             onCreateActionAtTime={createActionAtTime}
             onCreateCustomBlock={createCustomBlock}
             onAddCustomTrack={addCustomTrack}
-            onSelectCustomTrack={(trackId) => {
+            onSelectBuiltinTrack={(trackId) => {
               setLineFocusRequest(null);
-              applySelection({ type: "custom-track", id: trackId });
+              applySelection({ type: "builtin-track", id: trackId });
             }}
-            onMoveCustomTrack={moveCustomTrack}
-            onReorderCustomTrack={reorderCustomTrack}
+            onAddBuiltinTrack={addBuiltinTrack}
+            onSelectTrack={(trackId) => {
+              setLineFocusRequest(null);
+              applySelection(
+                activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
+                  ? { type: "builtin-track", id: trackId as BuiltinTrackId }
+                  : { type: "custom-track", id: trackId },
+              );
+            }}
+            onMoveTrack={(trackId, direction) => {
+              if (activeBuiltinTrackIds.has(trackId as BuiltinTrackId)) {
+                moveBuiltinTrack(trackId as BuiltinTrackId, direction);
+              } else {
+                moveCustomTrack(trackId, direction);
+              }
+            }}
+            onReorderTrack={(trackId, insertionIndex) => {
+              if (activeBuiltinTrackIds.has(trackId as BuiltinTrackId)) {
+                reorderBuiltinTrack(trackId as BuiltinTrackId, insertionIndex);
+              } else {
+                reorderCustomTrack(trackId, insertionIndex);
+              }
+            }}
+            onDeleteBuiltinTrack={deleteBuiltinTrack}
+            onDeleteCustomTrack={deleteCustomTrack}
             onOpenCharacterContextMenu={(id, x, y) => {
               preferredCharacterEditLocationRef.current = "timeline";
               applySelection({ type: "character", id });
@@ -1741,10 +2159,18 @@ function App() {
             subtitleLines={project.subtitleLines}
             characterAnnotations={project.characterAnnotations}
             actionAnnotations={project.actionAnnotations}
+            builtinTracks={project.builtinTracks}
             customTracks={project.customTracks}
             trackDefinitions={timelineTrackDefinitions}
             onCharacterUpdate={updateCharacter}
             onActionUpdate={updateAction}
+            onBuiltinTrackRename={renameBuiltinTrack}
+            onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
+            onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
+            onMoveBuiltinTrackTypeOption={moveBuiltinTrackTypeOption}
+            onReorderBuiltinTrackTypeOption={reorderBuiltinTrackTypeOption}
+            onRemoveBuiltinTrackTypeOption={removeBuiltinTrackTypeOption}
+            onDeleteBuiltinTrack={deleteBuiltinTrack}
             onCustomTrackRename={renameCustomTrack}
             onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
             onAddCustomTrackTypeOption={addCustomTrackTypeOption}
@@ -1818,7 +2244,7 @@ function App() {
               </button>
               <div className="character-context-menu-divider" />
               <div className="character-context-menu-label">唱腔类型</div>
-              {singingStyleOptions.map((style) => (
+              {(contextMenuCharacterTrack?.options ?? [contextMenuCharacter.singingStyle]).map((style) => (
                 <button
                   key={style}
                   type="button"
@@ -1916,12 +2342,64 @@ function downloadBlob(content: string, fileName: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
-function serializeProject(project: ProjectData) {
-  return JSON.stringify(project);
+function serializeComparableProject(project: ProjectData) {
+  const cached = comparableProjectSignatureCache.get(project);
+  if (cached) {
+    return cached;
+  }
+  const signature = JSON.stringify(getComparableProjectSnapshot(project));
+  comparableProjectSignatureCache.set(project, signature);
+  return signature;
+}
+
+function getComparableProjectSnapshot(project: ProjectData) {
+  const serializableProject = project;
+  return {
+    ...serializableProject,
+    video: {
+      source: serializableProject.video.source,
+      name: serializableProject.video.name,
+      token: getComparableVideoToken(serializableProject.video),
+    },
+  };
+}
+
+function getComparableVideoToken(video: ProjectData["video"]) {
+  const url = video.url ?? "";
+  if (!url) {
+    return "";
+  }
+  if (video.source === "embedded") {
+    const head = url.slice(0, 48);
+    const tail = url.slice(-48);
+    return `${video.source}|${video.name ?? ""}|${url.length}|${head}|${tail}`;
+  }
+  return `${video.source}|${video.name ?? ""}|${url}`;
+}
+
+function trackSnapStatesEqual(
+  left: Record<string, boolean>,
+  right: Record<string, boolean>,
+) {
+  return getTrackSnapStateSignature(left) === getTrackSnapStateSignature(right);
+}
+
+function getTrackSnapStateSignature(trackSnapState: Record<string, boolean>) {
+  const cached = trackSnapSignatureCache.get(trackSnapState);
+  if (cached) {
+    return cached;
+  }
+  const signature = JSON.stringify(
+    Object.keys(trackSnapState)
+      .sort()
+      .map((key) => [key, trackSnapState[key]]),
+  );
+  trackSnapSignatureCache.set(trackSnapState, signature);
+  return signature;
 }
 
 function requiresUndoConfirmation(action: HistoryAction) {
-  return action === "import-video" || action === "import-srt";
+  return action === "import-video" || action === "import-srt" || action === "import-project";
 }
 
 function getUndoConfirmationMessage(action: HistoryAction) {
@@ -1930,6 +2408,9 @@ function getUndoConfirmationMessage(action: HistoryAction) {
   }
   if (action === "import-srt") {
     return "确定要撤销导入句级字幕吗？当前导入的字幕与逐字结果将回退到上一步状态。";
+  }
+  if (action === "import-project") {
+    return "确定要撤销导入项目吗？当前导入的轨道、标注和项目设置将回退到上一步状态。";
   }
   return "确定要执行撤销吗？";
 }
@@ -2044,6 +2525,130 @@ function normalizeCharacterCreationRequest(startTime: number, explicitEndTime?: 
     startTime: normalizedStart,
     endTime: normalizedEnd,
   };
+}
+
+function getDefaultTrackSnapEnabled(project: ProjectData) {
+  return Object.fromEntries(
+    buildTimelineTrackDefinitions(project.builtinTracks, project.customTracks, project.activeTrackOrder).map((track) => [track.id, true]),
+  );
+}
+
+function getNormalizedTrackSnapEnabled(
+  project: ProjectData,
+  trackSnapEnabled?: Record<string, boolean>,
+) {
+  const nextDefinitions = buildTimelineTrackDefinitions(project.builtinTracks, project.customTracks, project.activeTrackOrder);
+  return Object.fromEntries(
+    nextDefinitions.map((track) => [track.id, trackSnapEnabled?.[track.id] ?? true]),
+  );
+}
+
+function clampTime(time: number, maxDuration: number) {
+  return Math.max(0, Math.min(time, maxDuration));
+}
+
+function getProjectFileName(project: ProjectData) {
+  const baseName = (project.video.name ?? "xiqu_annotation_project").replace(/\.[^.]+$/, "");
+  return `${baseName || "xiqu_annotation_project"}.annotation.json`;
+}
+
+function normalizeImportedProjectFile(value: SavedProjectFile | ProjectData) {
+  if ("project" in value && value.project) {
+    return {
+      version: PROJECT_FILE_VERSION,
+      project: normalizeProjectData(value.project),
+      uiState: value.uiState,
+    } satisfies SavedProjectFile;
+  }
+  return {
+    version: PROJECT_FILE_VERSION,
+    project: normalizeProjectData(value as ProjectData),
+  } satisfies SavedProjectFile;
+}
+
+function normalizeProjectData(value: ProjectData | (Partial<ProjectData> & { videoUrl?: string; videoName?: string | null })) {
+  const builtinTracks = normalizeBuiltinTracks(value.builtinTracks);
+  return {
+    video: normalizeProjectVideo(value),
+    subtitleLines: Array.isArray(value.subtitleLines) ? value.subtitleLines : [],
+    characterAnnotations: Array.isArray(value.characterAnnotations) ? value.characterAnnotations : [],
+    actionAnnotations: Array.isArray(value.actionAnnotations) ? value.actionAnnotations : [],
+    builtinTracks,
+    customTracks: Array.isArray(value.customTracks) ? value.customTracks : [],
+    activeTrackOrder: normalizeActiveTrackOrder(
+      value.activeTrackOrder,
+      builtinTracks,
+      Array.isArray(value.customTracks) ? value.customTracks : [],
+    ),
+  } satisfies ProjectData;
+}
+
+function normalizeProjectVideo(
+  value: Partial<ProjectData> & { videoUrl?: string; videoName?: string | null },
+) {
+  if (value.video && typeof value.video.url === "string") {
+    return {
+      url: value.video.url,
+      name: value.video.name ?? null,
+      source: value.video.source === "embedded" ? "embedded" : "url",
+    } satisfies ProjectData["video"];
+  }
+  const legacyUrl = typeof value.videoUrl === "string" ? value.videoUrl : "";
+  return {
+    url: legacyUrl,
+    name: value.videoName ?? null,
+    source: legacyUrl.startsWith("data:") ? "embedded" : "url",
+  } satisfies ProjectData["video"];
+}
+
+function normalizeBuiltinTracks(value: ProjectData["builtinTracks"] | undefined) {
+  if (!Array.isArray(value) || value.length === 0) {
+    return getDefaultBuiltinTracks();
+  }
+  const seenIds = new Set<string>();
+  const tracks = value.flatMap((track) => {
+    if (!track || seenIds.has(track.id)) {
+      return [];
+    }
+    if (track.id !== "character-track" && track.id !== "hand-action" && track.id !== "body-action") {
+      return [];
+    }
+    seenIds.add(track.id);
+    const defaultTrack = getBuiltinTrackDefinition(track.id);
+    return [{
+      ...defaultTrack,
+      name: typeof track.name === "string" && track.name.trim() ? track.name : defaultTrack.name,
+      options: Array.isArray(track.options) && track.options.length > 0
+        ? track.options
+        : defaultTrack.options,
+    }];
+  });
+  return tracks.length > 0 ? tracks : getDefaultBuiltinTracks();
+}
+
+function normalizeActiveTrackOrder(
+  value: ProjectData["activeTrackOrder"] | undefined,
+  builtinTracks: ProjectData["builtinTracks"],
+  customTracks: ProjectData["customTracks"],
+) {
+  const availableIds = new Set([
+    ...builtinTracks.map((track) => track.id),
+    ...customTracks.map((track) => track.id),
+  ]);
+  const nextOrder = Array.isArray(value)
+    ? value.filter((trackId) => availableIds.has(trackId))
+    : [];
+  for (const track of builtinTracks) {
+    if (!nextOrder.includes(track.id)) {
+      nextOrder.push(track.id);
+    }
+  }
+  for (const track of customTracks) {
+    if (!nextOrder.includes(track.id)) {
+      nextOrder.push(track.id);
+    }
+  }
+  return nextOrder;
 }
 
 async function buildWaveformData(videoUrl: string): Promise<WaveformData | null> {

@@ -582,7 +582,7 @@ select {
   flex-shrink: 0;
 }
 
-.track-label-custom:hover .track-label-tools,
+.track-label:hover .track-label-tools,
 .track-label-custom.selected .track-label-tools {
   opacity: 1;
   transform: translateX(0);
@@ -600,6 +600,16 @@ select {
   font-size: 12px;
   line-height: 1;
   user-select: none;
+}
+
+.track-label-delete-button {
+  min-width: 28px;
+  color: #a23535;
+}
+
+.track-label-delete-button:hover {
+  background: rgba(194, 65, 65, 0.1);
+  border-color: rgba(194, 65, 65, 0.18);
 }
 
 .track-label-drag-handle {

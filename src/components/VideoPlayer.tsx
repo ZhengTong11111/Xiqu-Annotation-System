@@ -36,11 +36,32 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
     const pendingPreviewTimeRef = useRef<number | null>(null);
     const [showNativeControls, setShowNativeControls] = useState(false);
 
-    useImperativeHandle(ref, () => videoRef.current as HTMLVideoElement, []);
+    useImperativeHandle(ref, () => videoRef.current as HTMLVideoElement);
 
     useEffect(() => {
       currentTimeRef.current = currentTime;
     }, [currentTime]);
+
+    useEffect(() => {
+      const video = videoRef.current;
+      if (!video || previewTime !== null || isPreviewingRef.current) {
+        return;
+      }
+      if (video.readyState < 1) {
+        return;
+      }
+      if (Math.abs(video.currentTime - currentTime) < 0.05) {
+        return;
+      }
+      if (!video.paused && !video.ended) {
+        return;
+      }
+      try {
+        video.currentTime = currentTime;
+      } catch {
+        // Ignore transient media seek errors until metadata is stable.
+      }
+    }, [currentTime, previewTime, videoUrl]);
 
     useEffect(() => {
       if (!videoRef.current) {
@@ -48,6 +69,22 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
       }
       videoRef.current.volume = 0.5;
     }, []);
+
+    useEffect(() => {
+      const video = videoRef.current;
+      if (!video) {
+        return;
+      }
+
+      stopFrameSync();
+      if (previewSeekFrameRef.current !== null) {
+        cancelAnimationFrame(previewSeekFrameRef.current);
+        previewSeekFrameRef.current = null;
+      }
+      pendingPreviewTimeRef.current = null;
+      isPreviewingRef.current = false;
+      resumeAfterPreviewRef.current = false;
+    }, [videoUrl]);
 
     useEffect(() => {
       return () => {
@@ -162,7 +199,19 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
             controls={showNativeControls}
             src={videoUrl}
             preload="metadata"
-            onLoadedMetadata={(event) => onLoadedMetadata(event.currentTarget.duration)}
+            onLoadedMetadata={(event) => {
+              const video = event.currentTarget;
+              const safeTime = Math.max(0, Math.min(currentTimeRef.current, Number.isFinite(video.duration) ? video.duration : currentTimeRef.current));
+              if (Math.abs(video.currentTime - safeTime) > 0.001) {
+                try {
+                  video.currentTime = safeTime;
+                } catch {
+                  // Ignore seek failures before the browser fully settles the media element.
+                }
+              }
+              onLoadedMetadata(video.duration);
+              onTimeUpdate(safeTime);
+            }}
             onTimeUpdate={(event) => {
               if (!isPreviewingRef.current) {
                 onTimeUpdate(event.currentTarget.currentTime);
