@@ -2036,7 +2036,58 @@ select {
 }
 
 @media (max-width: 1440px) {
-  body {
-    min-width: 1000px;
+  .app-shell-body {
+    padding: 6px;
+  }
+
+  .top-menu-bar {
+    gap: 10px;
+    padding: 0 8px;
+  }
+
+  .top-menu-status {
+    display: none;
+  }
+
+  .workspace-sidebar {
+    padding-left: 1px;
+  }
+
+  .panel-header {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .subtitle-list,
+  .character-grid,
+  .inspector-panel {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+}
+
+@media (max-width: 1200px) {
+  .top-menu-brand-copy span {
+    display: none;
+  }
+
+  .subtitle-item {
+    min-height: 54px;
+    padding: 7px 8px;
+  }
+
+  .character-grid {
+    grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+    gap: 5px;
+  }
+
+  .character-chip {
+    min-height: 48px;
+    padding: 5px 6px;
+  }
+
+  .inspector-panel {
+    padding-right: 6px;
+    padding-left: 6px;
   }
 }

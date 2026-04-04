@@ -43,6 +43,35 @@ export function ResizableSplitLayout({
   const initialSizeRef = useRef(clampRatio(initialPrimarySize));
   const [primarySize, setPrimarySize] = useState(() => clampRatio(initialPrimarySize));
   const [isDragging, setIsDragging] = useState(false);
+  const [containerSize, setContainerSize] = useState(0);
+
+  const { minPrimarySize: effectiveMinPrimarySize, minSecondarySize: effectiveMinSecondarySize } =
+    getEffectiveMinSizes(containerSize, minPrimarySize, minSecondarySize);
+
+  useEffect(() => {
+    if (!containerRef.current) {
+      return;
+    }
+
+    const updateContainerSize = () => {
+      if (!containerRef.current) {
+        return;
+      }
+      const rect = containerRef.current.getBoundingClientRect();
+      setContainerSize(orientation === "horizontal" ? rect.width : rect.height);
+    };
+
+    updateContainerSize();
+
+    const observer = new ResizeObserver(() => {
+      updateContainerSize();
+    });
+    observer.observe(containerRef.current);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [orientation]);
 
   useEffect(() => {
     if (!storageKey) {
@@ -67,6 +96,18 @@ export function ResizableSplitLayout({
   }, [primarySize, storageKey]);
 
   useEffect(() => {
+    if (containerSize <= 0) {
+      return;
+    }
+    const { minRatio, maxRatio } = getRatioBounds(
+      containerSize,
+      effectiveMinPrimarySize,
+      effectiveMinSecondarySize,
+    );
+    setPrimarySize((current) => clampRatio(current, minRatio, maxRatio));
+  }, [containerSize, effectiveMinPrimarySize, effectiveMinSecondarySize]);
+
+  useEffect(() => {
     if (!isDragging) {
       return;
     }
@@ -83,8 +124,11 @@ export function ResizableSplitLayout({
       const pointerOffset = orientation === "horizontal"
         ? event.clientX - rect.left
         : event.clientY - rect.top;
-      const minRatio = minPrimarySize / containerSize;
-      const maxRatio = 1 - minSecondarySize / containerSize;
+      const { minRatio, maxRatio } = getRatioBounds(
+        containerSize,
+        effectiveMinPrimarySize,
+        effectiveMinSecondarySize,
+      );
       setPrimarySize(clampRatio(pointerOffset / containerSize, minRatio, maxRatio));
     };
 
@@ -104,14 +148,19 @@ export function ResizableSplitLayout({
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [isDragging, minPrimarySize, minSecondarySize, orientation]);
+  }, [
+    effectiveMinPrimarySize,
+    effectiveMinSecondarySize,
+    isDragging,
+    orientation,
+  ]);
 
   const primaryStyle = getPaneStyle({
     orientation,
     role: "primary",
     primarySize,
-    minPrimarySize,
-    minSecondarySize,
+    minPrimarySize: effectiveMinPrimarySize,
+    minSecondarySize: effectiveMinSecondarySize,
     collapsedPrimary,
     collapsedSecondary,
     collapsedSize,
@@ -120,8 +169,8 @@ export function ResizableSplitLayout({
     orientation,
     role: "secondary",
     primarySize,
-    minPrimarySize,
-    minSecondarySize,
+    minPrimarySize: effectiveMinPrimarySize,
+    minSecondarySize: effectiveMinSecondarySize,
     collapsedPrimary,
     collapsedSecondary,
     collapsedSize,
@@ -189,6 +238,36 @@ export function ResizableSplitLayout({
 
 function clampRatio(value: number, min = 0.15, max = 0.85) {
   return Math.min(max, Math.max(min, value));
+}
+
+function getEffectiveMinSizes(containerSize: number, minPrimarySize: number, minSecondarySize: number) {
+  if (containerSize <= 0) {
+    return { minPrimarySize, minSecondarySize };
+  }
+
+  const totalMinSize = minPrimarySize + minSecondarySize;
+  if (totalMinSize <= containerSize) {
+    return { minPrimarySize, minSecondarySize };
+  }
+
+  const scale = containerSize / totalMinSize;
+  return {
+    minPrimarySize: Math.max(120, Math.floor(minPrimarySize * scale)),
+    minSecondarySize: Math.max(120, Math.floor(minSecondarySize * scale)),
+  };
+}
+
+function getRatioBounds(containerSize: number, minPrimarySize: number, minSecondarySize: number) {
+  if (containerSize <= 0) {
+    return { minRatio: 0.15, maxRatio: 0.85 };
+  }
+  const minRatio = minPrimarySize / containerSize;
+  const maxRatio = 1 - minSecondarySize / containerSize;
+  if (minRatio > maxRatio) {
+    const midpoint = (minRatio + maxRatio) / 2;
+    return { minRatio: midpoint, maxRatio: midpoint };
+  }
+  return { minRatio, maxRatio };
 }
 
 function getPaneStyle({
