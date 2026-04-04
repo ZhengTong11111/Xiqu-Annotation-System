@@ -171,6 +171,12 @@ export type TimelineSelectionItem =
       id: string;
     }
   | {
+      type: "attached-point";
+      id: string;
+      trackId: string;
+      parentTrackId: string;
+    }
+  | {
       type: "custom-block";
       id: string;
       trackId: string;

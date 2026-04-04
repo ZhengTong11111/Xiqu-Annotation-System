@@ -46,6 +46,7 @@ type TimelineProps = {
   onSeek: (time: number) => void;
   onPreviewFrame: (time: number | null) => void;
   onSelectItem: (item: SelectedItem) => void;
+  onCloseContextMenu: () => void;
   onSelectBuiltinTrack: (trackId: BuiltinTrackId) => void;
   onSelectTrack: (trackId: string) => void;
   onSelectAttachedPointTrack: (trackId: string, parentTrackId: string) => void;
@@ -70,9 +71,11 @@ type TimelineProps = {
   onCreateAttachedPoint: (trackId: string, time: number) => void;
   onAddBuiltinTrack: (trackId: BuiltinTrackId) => void;
   onAddCustomTrack: (trackType: "text" | "action") => void;
-  onOpenCharacterContextMenu: (id: string, x: number, y: number) => void;
-  onOpenActionContextMenu: (id: string, x: number, y: number) => void;
-  onOpenCustomBlockContextMenu: (trackId: string, id: string, x: number, y: number) => void;
+  onUpdatePasteTarget: (trackId: string, time: number) => void;
+  onOpenCharacterContextMenu: (id: string, time: number, x: number, y: number) => void;
+  onOpenActionContextMenu: (id: string, time: number, x: number, y: number) => void;
+  onOpenCustomBlockContextMenu: (trackId: string, id: string, time: number, x: number, y: number) => void;
+  onOpenLaneContextMenu: (trackId: string, time: number, x: number, y: number) => void;
   onLineChange: (id: string, changes: Pick<SubtitleLine, "startTime" | "endTime">) => void;
   onLineCommit: (id: string, changes: Pick<SubtitleLine, "startTime" | "endTime">) => void;
   onCharacterChange: (id: string, changes: Partial<CharacterAnnotation>) => void;
@@ -302,6 +305,7 @@ export function Timeline({
   onSeek,
   onPreviewFrame,
   onSelectItem,
+  onCloseContextMenu,
   onSelectBuiltinTrack,
   onSelectTrack,
   onSelectAttachedPointTrack,
@@ -326,9 +330,11 @@ export function Timeline({
   onCreateAttachedPoint,
   onAddBuiltinTrack,
   onAddCustomTrack,
+  onUpdatePasteTarget,
   onOpenCharacterContextMenu,
   onOpenActionContextMenu,
   onOpenCustomBlockContextMenu,
+  onOpenLaneContextMenu,
   onLineChange,
   onLineCommit,
   onCharacterChange,
@@ -497,7 +503,7 @@ export function Timeline({
     return waveformData.keypoints.filter((time) => time >= visibleStartTime && time <= visibleEndTime);
   }, [duration, viewportState.scrollLeft, viewportState.width, waveformData, zoom]);
   const selectedTimelineKeySet = useMemo(
-    () => new Set(selectedTimelineItems.map((item) => getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" ? item.trackId : undefined))),
+    () => new Set(selectedTimelineItems.map((item) => getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" || item.type === "attached-point" ? item.trackId : undefined))),
     [selectedTimelineItems],
   );
   const marqueePreviewItems = useMemo(
@@ -505,7 +511,7 @@ export function Timeline({
     [dragState, characterAnnotations, actionAnnotations, customBlocks, viewportState],
   );
   const marqueePreviewKeySet = useMemo(
-    () => new Set(marqueePreviewItems.map((item) => getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" ? item.trackId : undefined))),
+    () => new Set(marqueePreviewItems.map((item) => getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" || item.type === "attached-point" ? item.trackId : undefined))),
     [marqueePreviewItems],
   );
   const playheadViewportOffset = useMemo(
@@ -910,6 +916,8 @@ export function Timeline({
           excludedItems: items.map((item) =>
             item.type === "custom-block"
               ? { type: "custom-block", id: item.id, trackId: item.trackId }
+              : item.type === "attached-point"
+                ? { type: "attached-point", id: item.id, trackId: item.trackId, parentTrackId: item.parentTrackId }
               : { type: item.type, id: item.id },
           ),
           shouldSnap,
@@ -1988,10 +1996,11 @@ export function Timeline({
                     if (event.button !== 0 || target?.closest(".timeline-block, .timeline-point-marker")) {
                       return;
                     }
-                    if (track.type === "attached-point") {
-                      return;
-                    }
+                    onCloseContextMenu();
                     if (event.metaKey || event.ctrlKey) {
+                      if (track.type === "attached-point") {
+                        return;
+                      }
                       lastPointerClientXRef.current = event.clientX;
                       setDragState({
                         kind: "create-track-item",
@@ -2013,11 +2022,13 @@ export function Timeline({
                     });
                   }}
                   onClick={(event) => {
+                    onCloseContextMenu();
                     if (performance.now() < suppressCanvasClickUntilRef.current) {
                       return;
                     }
                     const target = event.target as HTMLElement | null;
                     const laneTime = getLaneTime(event.currentTarget, event.clientX, zoom);
+                    onUpdatePasteTarget(track.id, laneTime);
                     const creationSnapPoints = trackSnapEnabled[track.id]
                       ? [...snapPoints, ...getTrackSnapPoints(track.id)]
                       : [];
@@ -2045,6 +2056,17 @@ export function Timeline({
                       onSelectTimelineItems([], null);
                     }
                     onSeek(laneTime);
+                  }}
+                  onContextMenu={(event) => {
+                    const target = event.target as HTMLElement | null;
+                    if (target?.closest(".timeline-block, .timeline-point-marker")) {
+                      return;
+                    }
+                    event.preventDefault();
+                    onCloseContextMenu();
+                    const laneTime = getLaneTime(event.currentTarget, event.clientX, zoom);
+                    onUpdatePasteTarget(track.id, laneTime);
+                    onOpenLaneContextMenu(track.id, laneTime, event.clientX, event.clientY);
                   }}
                 >
                   {track.type === "character"
@@ -2233,6 +2255,7 @@ export function Timeline({
           if (event.button !== 0) {
             return;
           }
+          onCloseContextMenu();
           event.stopPropagation();
           if (event.metaKey || event.ctrlKey) {
             return;
@@ -2302,6 +2325,20 @@ export function Timeline({
           if (shouldMoveSelection) {
             const selectionItems = selectedTimelineItems
               .map((item) => {
+                if (item.type === "attached-point") {
+                  const livePointTrack = findResolvedAttachedPointTrack(liveProject, item.trackId);
+                  const livePoint = livePointTrack?.points.find((candidate) => candidate.id === item.id);
+                  return livePoint
+                    ? {
+                        type: "attached-point" as const,
+                        id: item.id,
+                        trackId: item.trackId,
+                        parentTrackId: item.parentTrackId,
+                        startTime: livePoint.time,
+                        endTime: livePoint.time,
+                      }
+                    : null;
+                }
                 const liveSelectionAnnotation = findAnnotationById(
                   item.id,
                   item.type,
@@ -2394,9 +2431,15 @@ export function Timeline({
         }}
         onClick={(event) => {
           event.stopPropagation();
+          onCloseContextMenu();
           if (performance.now() < suppressCanvasClickUntilRef.current) {
             return;
           }
+          onUpdatePasteTarget(
+            customAnnotation?.trackId ??
+              (type === "character" ? "character-track" : (annotation as ActionAnnotation).trackId),
+            annotation.startTime,
+          );
           if (event.metaKey || event.ctrlKey) {
             const nextItems = toggleTimelineSelectionItem(currentSelectionItem);
             const lastItem = nextItems[nextItems.length - 1];
@@ -2407,6 +2450,13 @@ export function Timeline({
                     id: lastItem.id,
                     trackId: lastItem.trackId,
                   } as SelectedItem
+                : lastItem.type === "attached-point"
+                  ? {
+                      type: "attached-point",
+                      id: lastItem.id,
+                      trackId: lastItem.trackId,
+                      parentTrackId: lastItem.parentTrackId,
+                    } as SelectedItem
                 : {
                     type: lastItem.type,
                     id: lastItem.id,
@@ -2419,6 +2469,7 @@ export function Timeline({
         }}
         onDoubleClick={(event) => {
           event.stopPropagation();
+          onCloseContextMenu();
           if (type === "character") {
             onEditCharacterText(annotation.id);
           }
@@ -2429,16 +2480,34 @@ export function Timeline({
         onContextMenu={(event) => {
           event.preventDefault();
           event.stopPropagation();
-          onSelectItem(currentSelectedItem);
+          onCloseContextMenu();
+          const relativeX = Math.max(
+            0,
+            Math.min(event.clientX - event.currentTarget.getBoundingClientRect().left, event.currentTarget.getBoundingClientRect().width),
+          );
+          const contextTime =
+            annotation.startTime +
+            ((annotation.endTime - annotation.startTime) * relativeX) /
+              Math.max(event.currentTarget.getBoundingClientRect().width, 1);
+          onUpdatePasteTarget(
+            customAnnotation?.trackId ??
+              (type === "character" ? "character-track" : (annotation as ActionAnnotation).trackId),
+            contextTime,
+          );
+          const preserveSelection =
+            selectedTimelineItems.length > 1 && selectedTimelineKeySet.has(selectionKey);
+          if (!preserveSelection) {
+            onSelectItem(currentSelectedItem);
+          }
           if (type === "character") {
-            onOpenCharacterContextMenu(annotation.id, event.clientX, event.clientY);
+            onOpenCharacterContextMenu(annotation.id, contextTime, event.clientX, event.clientY);
             return;
           }
           if (customAnnotation) {
-            onOpenCustomBlockContextMenu(customAnnotation.trackId, annotation.id, event.clientX, event.clientY);
+            onOpenCustomBlockContextMenu(customAnnotation.trackId, annotation.id, contextTime, event.clientX, event.clientY);
             return;
           }
-          onOpenActionContextMenu(annotation.id, event.clientX, event.clientY);
+          onOpenActionContextMenu(annotation.id, contextTime, event.clientX, event.clientY);
         }}
       >
         <div className="resize-handle left" />
@@ -2493,10 +2562,15 @@ export function Timeline({
   }
 
   function renderAttachedPoint(point: AttachedPointAnnotation, pointTrack: ResolvedAttachedPointTrack) {
-    const isSelected =
-      selectedItem?.type === "attached-point" &&
-      selectedItem.id === point.id &&
-      selectedItem.trackId === pointTrack.id;
+    const selectionItem: TimelineSelectionItem = {
+      type: "attached-point",
+      id: point.id,
+      trackId: pointTrack.id,
+      parentTrackId: pointTrack.parentTrackId,
+    };
+    const selectionKey = getTimelineSelectionKey(selectionItem.type, selectionItem.id, selectionItem.trackId);
+    const isSelected = selectedTimelineKeySet.has(selectionKey) || marqueePreviewKeySet.has(selectionKey);
+    const isPartOfMultiSelection = selectedTimelineKeySet.has(selectionKey) && selectedTimelineItems.length > 1;
     const isActive = Math.abs(currentTime - point.time) <= 0.05;
     const zIndex = isSelected ? 8 : isActive ? 6 : 4;
 
@@ -2507,15 +2581,71 @@ export function Timeline({
         className={[
           "timeline-point-marker",
           isSelected ? "selected" : "",
+          isPartOfMultiSelection ? "multi-selected" : "",
           isActive ? "active" : "",
         ].join(" ")}
         style={{ left: point.time * zoom, zIndex }}
+        data-point-id={point.id}
+        data-point-track-id={pointTrack.id}
+        data-point-parent-track-id={pointTrack.parentTrackId}
         onPointerDown={(event) => {
           if (event.button !== 0) {
             return;
           }
           event.stopPropagation();
+          onCloseContextMenu();
+          if (event.metaKey || event.ctrlKey) {
+            return;
+          }
           lastPointerClientXRef.current = event.clientX;
+          const liveProject = getProjectSnapshot();
+          const shouldMoveSelection =
+            selectedTimelineItems.length > 1 &&
+            selectedTimelineKeySet.has(selectionKey);
+          if (shouldMoveSelection) {
+            const selectionItems = selectedTimelineItems
+              .map((item) => {
+                if (item.type === "attached-point") {
+                  const livePointTrack = findResolvedAttachedPointTrack(liveProject, item.trackId);
+                  const livePoint = livePointTrack?.points.find((candidate) => candidate.id === item.id);
+                  return livePoint
+                    ? {
+                        type: "attached-point" as const,
+                        id: item.id,
+                        trackId: item.trackId,
+                        parentTrackId: item.parentTrackId,
+                        startTime: livePoint.time,
+                        endTime: livePoint.time,
+                      }
+                    : null;
+                }
+                const liveSelectionAnnotation = findAnnotationById(
+                  item.id,
+                  item.type,
+                  liveProject.characterAnnotations,
+                  liveProject.actionAnnotations,
+                  flattenCustomBlocks(liveProject.customTracks),
+                  item.type === "custom-block" ? item.trackId : undefined,
+                );
+                if (!liveSelectionAnnotation) {
+                  return null;
+                }
+                return {
+                  type: item.type,
+                  id: item.id,
+                  ...(item.type === "custom-block" ? { trackId: item.trackId } : {}),
+                  startTime: liveSelectionAnnotation.startTime,
+                  endTime: liveSelectionAnnotation.endTime,
+                };
+              })
+              .filter((item): item is TimelineBatchMoveItem => item !== null);
+            setDragState({
+              kind: "move-selection",
+              originX: event.clientX,
+              items: selectionItems,
+            });
+            return;
+          }
           setDragState({
             kind: "move-point",
             id: point.id,
@@ -2533,9 +2663,40 @@ export function Timeline({
         }}
         onClick={(event) => {
           event.stopPropagation();
+          onCloseContextMenu();
           if (performance.now() < suppressCanvasClickUntilRef.current) {
             return;
           }
+          if (event.metaKey || event.ctrlKey) {
+            const nextItems = toggleTimelineSelectionItem(selectionItem);
+            const lastItem = nextItems[nextItems.length - 1];
+            const primaryItem = lastItem
+              ? lastItem.type === "custom-block"
+                ? { type: "custom-block", id: lastItem.id, trackId: lastItem.trackId } as SelectedItem
+                : lastItem.type === "attached-point"
+                  ? {
+                      type: "attached-point",
+                      id: lastItem.id,
+                      trackId: lastItem.trackId,
+                      parentTrackId: lastItem.parentTrackId,
+                    } as SelectedItem
+                  : { type: lastItem.type, id: lastItem.id } as SelectedItem
+              : null;
+            onSelectTimelineItems(nextItems, primaryItem);
+            return;
+          }
+          onSelectItem({
+            type: "attached-point",
+            id: point.id,
+            trackId: pointTrack.id,
+            parentTrackId: pointTrack.parentTrackId,
+          });
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onCloseContextMenu();
+          onUpdatePasteTarget(pointTrack.id, point.time);
           onSelectItem({
             type: "attached-point",
             id: point.id,
@@ -2713,14 +2874,14 @@ export function Timeline({
     const itemKey = getTimelineSelectionKey(
       item.type,
       item.id,
-      item.type === "custom-block" ? item.trackId : undefined,
+      item.type === "custom-block" || item.type === "attached-point" ? item.trackId : undefined,
     );
     if (selectedTimelineKeySet.has(itemKey)) {
       return selectedTimelineItems.filter((selectedItem) =>
         getTimelineSelectionKey(
           selectedItem.type,
           selectedItem.id,
-          selectedItem.type === "custom-block" ? selectedItem.trackId : undefined,
+          selectedItem.type === "custom-block" || selectedItem.type === "attached-point" ? selectedItem.trackId : undefined,
         ) !== itemKey
       );
     }
@@ -2736,19 +2897,33 @@ export function Timeline({
     }
 
     const candidates = Array.from(
-      document.querySelectorAll<HTMLElement>(".timeline-block[data-block-id][data-block-type]"),
+      document.querySelectorAll<HTMLElement>(".timeline-block[data-block-id][data-block-type], .timeline-point-marker[data-point-id][data-point-track-id]"),
     );
 
     return candidates
       .flatMap((element) => {
+        const bounds = element.getBoundingClientRect();
+        if (!rectsIntersect(selectionRect, bounds)) {
+          return [];
+        }
+        if (element.classList.contains("timeline-point-marker")) {
+          const id = element.dataset.pointId;
+          const trackId = element.dataset.pointTrackId;
+          const parentTrackId = element.dataset.pointParentTrackId;
+          if (!id || !trackId || !parentTrackId) {
+            return [];
+          }
+          return [{
+            id,
+            type: "attached-point" as const,
+            trackId,
+            parentTrackId,
+          }];
+        }
         const id = element.dataset.blockId;
         const type = element.dataset.blockType;
         const trackId = element.dataset.blockTrackId;
         if (!id || (type !== "character" && type !== "action" && type !== "custom-block")) {
-          return [];
-        }
-        const bounds = element.getBoundingClientRect();
-        if (!rectsIntersect(selectionRect, bounds)) {
           return [];
         }
         return [
@@ -2758,28 +2933,27 @@ export function Timeline({
         ] as TimelineSelectionItem[];
       })
       .sort((left, right) => {
-        const leftAnnotation = findAnnotationById(
-          left.id,
-          left.type,
-          characterAnnotations,
-          actionAnnotations,
-          customBlocks,
-          left.type === "custom-block" ? left.trackId : undefined,
-        );
-        const rightAnnotation = findAnnotationById(
-          right.id,
-          right.type,
-          characterAnnotations,
-          actionAnnotations,
-          customBlocks,
-          right.type === "custom-block" ? right.trackId : undefined,
-        );
-        if (!leftAnnotation || !rightAnnotation) {
-          return left.id.localeCompare(right.id);
-        }
-        return leftAnnotation.startTime - rightAnnotation.startTime ||
-          leftAnnotation.endTime - rightAnnotation.endTime ||
-          left.id.localeCompare(right.id);
+        const leftStartTime = left.type === "attached-point"
+          ? attachedPointTrackMap.get(left.trackId)?.points.find((point) => point.id === left.id)?.time ?? 0
+          : findAnnotationById(
+              left.id,
+              left.type,
+              characterAnnotations,
+              actionAnnotations,
+              customBlocks,
+              left.type === "custom-block" ? left.trackId : undefined,
+            )?.startTime ?? 0;
+        const rightStartTime = right.type === "attached-point"
+          ? attachedPointTrackMap.get(right.trackId)?.points.find((point) => point.id === right.id)?.time ?? 0
+          : findAnnotationById(
+              right.id,
+              right.type,
+              characterAnnotations,
+              actionAnnotations,
+              customBlocks,
+              right.type === "custom-block" ? right.trackId : undefined,
+            )?.startTime ?? 0;
+        return leftStartTime - rightStartTime || left.id.localeCompare(right.id);
       });
   }
 
@@ -3212,6 +3386,8 @@ function toTimelineSelectionItem(
 ): TimelineSelectionItem {
   return item.type === "custom-block"
     ? { type: "custom-block", id: item.id, trackId: item.trackId }
+    : item.type === "attached-point"
+      ? { type: "attached-point", id: item.id, trackId: item.trackId, parentTrackId: item.parentTrackId }
     : { type: item.type, id: item.id };
 }
 
@@ -3682,6 +3858,9 @@ function getTrackIdForSelectionItem(
   if (item.type === "character") {
     return "character-track";
   }
+  if (item.type === "attached-point") {
+    return item.trackId;
+  }
   if (item.type === "custom-block") {
     return item.trackId;
   }
@@ -3691,11 +3870,13 @@ function getTrackIdForSelectionItem(
 }
 
 function getTimelineSelectionKey(
-  type: "character" | "action" | "custom-block",
+  type: "character" | "action" | "custom-block" | "attached-point",
   id: string,
   trackId?: string,
 ) {
-  return type === "custom-block" ? `${type}:${trackId ?? ""}:${id}` : `${type}:${id}`;
+  return type === "custom-block" || type === "attached-point"
+    ? `${type}:${trackId ?? ""}:${id}`
+    : `${type}:${id}`;
 }
 
 function getCanvasX(time: number, zoom: number) {

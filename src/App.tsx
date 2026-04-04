@@ -84,6 +84,132 @@ type PointTrackLocation =
       pointTrack: AttachedPointTrack;
     };
 
+type TimelineClipboardItem =
+  | {
+      type: "character";
+      sourceTrackId: "character-track";
+      sourceLineId: string;
+      char: string;
+      singingStyle: string;
+      startOffset: number;
+      endOffset: number;
+    }
+  | {
+      type: "action";
+      sourceTrackId: string;
+      label: string;
+      startOffset: number;
+      endOffset: number;
+    }
+  | {
+      type: "custom-block";
+      sourceTrackId: string;
+      trackType: CustomTrackType;
+      blockType: string;
+      text?: string;
+      startOffset: number;
+      endOffset: number;
+    }
+  | {
+      type: "attached-point";
+      sourceTrackId: string;
+      parentTrackId: string;
+      label: string;
+      timeOffset: number;
+    };
+
+type TimelineClipboard = {
+  items: TimelineClipboardItem[];
+  baseTime: number;
+  primaryTrackId: string | null;
+  sourceTrackIds: string[];
+};
+
+type TimelinePasteTarget = {
+  trackId: string;
+  time: number;
+};
+
+type PasteConflictResolution = "cancel" | "overwrite" | "replace" | "keep-original";
+
+type PreparedPasteItem =
+  | {
+      type: "character";
+      targetTrackId: "character-track";
+      startTime: number;
+      endTime: number;
+      char: string;
+      singingStyle: string;
+      sourceLineId: string;
+    }
+  | {
+      type: "action";
+      targetTrackId: string;
+      startTime: number;
+      endTime: number;
+      label: string;
+    }
+  | {
+      type: "custom-block";
+      targetTrackId: string;
+      trackType: CustomTrackType;
+      startTime: number;
+      endTime: number;
+      blockType: string;
+      text?: string;
+    }
+  | {
+      type: "attached-point";
+      targetTrackId: string;
+      parentTrackId: string;
+      time: number;
+      label: string;
+    };
+
+type PasteConflict = {
+  item: PreparedPasteItem;
+  existingKeys: string[];
+  trackName: string;
+};
+
+type PendingPasteState = {
+  preparedItems: PreparedPasteItem[];
+  conflicts: PasteConflict[];
+};
+
+type TimelineContextMenu =
+  | {
+      type: "character";
+      id: string;
+      x: number;
+      y: number;
+      trackId: "character-track";
+      time: number;
+    }
+  | {
+      type: "action";
+      id: string;
+      x: number;
+      y: number;
+      trackId: string;
+      time: number;
+    }
+  | {
+      type: "custom-block";
+      id: string;
+      trackId: string;
+      x: number;
+      y: number;
+      time: number;
+    }
+  | {
+      type: "lane";
+      trackId: string;
+      x: number;
+      y: number;
+      time: number;
+    };
+
 const CHARACTER_CREATE_ATTACH_WINDOW = 1;
 const DEFAULT_CHARACTER_DURATION = 1.05;
 const MIN_CHARACTER_DURATION = 0.04;
@@ -120,13 +246,9 @@ function App() {
     id: string;
   } | null>(null);
   const [editingCustomTextValue, setEditingCustomTextValue] = useState("");
-  const [blockContextMenu, setBlockContextMenu] = useState<{
-    type: "character" | "action" | "custom-block";
-    id: string;
-    trackId?: string;
-    x: number;
-    y: number;
-  } | null>(null);
+  const [blockContextMenu, setBlockContextMenu] = useState<TimelineContextMenu | null>(null);
+  const [timelineClipboard, setTimelineClipboard] = useState<TimelineClipboard | null>(null);
+  const [pendingPasteState, setPendingPasteState] = useState<PendingPasteState | null>(null);
   const [zoom, setZoom] = useState(20);
   const [lineFocusRequest, setLineFocusRequest] = useState<LineFocusRequest | null>(null);
   const [trackSnapEnabled, setTrackSnapEnabled] = useState<Record<string, boolean>>(
@@ -136,6 +258,7 @@ function App() {
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
+  const [currentProjectFileName, setCurrentProjectFileName] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoFileInputRef = useRef<HTMLInputElement>(null);
   const srtFileInputRef = useRef<HTMLInputElement>(null);
@@ -151,6 +274,7 @@ function App() {
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
   const blockContextMenuRef = useRef<HTMLDivElement>(null);
   const [blockContextMenuPosition, setBlockContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
+  const timelinePasteTargetRef = useRef<TimelinePasteTarget | null>(null);
   const timelineTrackDefinitions = useMemo(
     () => buildTimelineTrackDefinitions(project.builtinTracks, project.customTracks, project.activeTrackOrder),
     [project.activeTrackOrder, project.builtinTracks, project.customTracks],
@@ -269,7 +393,29 @@ function App() {
       ]);
       return;
     }
+    if (nextSelectedItem?.type === "attached-point") {
+      setSelectedTimelineItems([
+        {
+          type: "attached-point",
+          id: nextSelectedItem.id,
+          trackId: nextSelectedItem.trackId,
+          parentTrackId: nextSelectedItem.parentTrackId,
+        },
+      ]);
+      return;
+    }
     setSelectedTimelineItems([]);
+  }
+
+  function updateTimelinePasteTarget(trackId: string, time: number) {
+    timelinePasteTargetRef.current = {
+      trackId,
+      time: Math.max(0, time),
+    };
+  }
+
+  function closeTimelineContextMenu() {
+    setBlockContextMenu(null);
   }
 
   const selectedLineId = selectedItem?.type === "line"
@@ -401,6 +547,19 @@ function App() {
         event.preventDefault();
         selectAllTimelineItems();
       }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
+        event.preventDefault();
+        copyTimelineSelection();
+        closeTimelineContextMenu();
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "x") {
+        event.preventDefault();
+        cutTimelineSelection();
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") {
+        event.preventDefault();
+        pasteTimelineClipboard();
+      }
       if (event.key === "Delete" || event.key === "Backspace") {
         if (
           selectedTimelineItems.length > 0 ||
@@ -422,6 +581,7 @@ function App() {
     previewTime,
     selectedItem,
     selectedTimelineItems,
+    timelineClipboard,
     undoStack,
     redoStack,
     project,
@@ -479,6 +639,7 @@ function App() {
   const contextMenuCustomTrack = contextMenuCustomBlock
     ? project.customTracks.find((track) => track.id === contextMenuCustomBlock.trackId) ?? null
     : null;
+  const canPasteTimelineClipboard = Boolean(timelineClipboard?.items.length);
 
   useLayoutEffect(() => {
     if (!blockContextMenu || !blockContextMenuRef.current) {
@@ -1038,6 +1199,317 @@ function App() {
     updateCustomBlock(trackId, blockId, { type });
   }
 
+  function getCopyableTimelineSelection(currentProject: ProjectData) {
+    const explicitSelection: TimelineSelectionItem[] = selectedTimelineItems.length > 0
+      ? selectedTimelineItems
+      : selectedItem?.type === "character" || selectedItem?.type === "action"
+        ? [{ type: selectedItem.type, id: selectedItem.id }]
+        : selectedItem?.type === "attached-point"
+          ? [{
+              type: "attached-point",
+              id: selectedItem.id,
+              trackId: selectedItem.trackId,
+              parentTrackId: selectedItem.parentTrackId,
+            }]
+        : selectedItem?.type === "custom-block"
+          ? [{ type: "custom-block", id: selectedItem.id, trackId: selectedItem.trackId }]
+          : [];
+
+    return explicitSelection
+      .map((item) => resolveTimelineSelectionItem(currentProject, item))
+      .filter((item): item is NonNullable<typeof item> => Boolean(item))
+      .sort((left, right) =>
+        left.startTime - right.startTime ||
+        left.endTime - right.endTime ||
+        left.trackId.localeCompare(right.trackId) ||
+        left.id.localeCompare(right.id),
+      );
+  }
+
+  function copyTimelineSelection() {
+    const selection = getCopyableTimelineSelection(projectRef.current);
+    if (selection.length === 0) {
+      return false;
+    }
+
+    const baseTime = Math.min(...selection.map((item) => item.startTime));
+    const clipboardItems: TimelineClipboardItem[] = selection.map((item) => {
+      if (item.type === "character") {
+        return {
+          type: "character",
+          sourceTrackId: "character-track",
+          sourceLineId: item.lineId,
+          char: item.char,
+          singingStyle: item.singingStyle,
+          startOffset: item.startTime - baseTime,
+          endOffset: item.endTime - baseTime,
+        };
+      }
+      if (item.type === "action") {
+        return {
+          type: "action",
+          sourceTrackId: item.trackId,
+          label: item.label,
+          startOffset: item.startTime - baseTime,
+          endOffset: item.endTime - baseTime,
+        };
+      }
+      if (item.type === "attached-point") {
+        return {
+          type: "attached-point",
+          sourceTrackId: item.trackId,
+          parentTrackId: item.parentTrackId,
+          label: item.label,
+          timeOffset: item.startTime - baseTime,
+        };
+      }
+      return {
+        type: "custom-block",
+        sourceTrackId: item.trackId,
+        trackType: item.trackType,
+        blockType: item.typeValue,
+        text: item.text,
+        startOffset: item.startTime - baseTime,
+        endOffset: item.endTime - baseTime,
+      };
+    });
+
+    setTimelineClipboard({
+      items: clipboardItems,
+      baseTime,
+      primaryTrackId: selection[0]?.trackId ?? null,
+      sourceTrackIds: Array.from(new Set(selection.map((item) => item.trackId))),
+    });
+    return true;
+  }
+
+  function cutTimelineSelection() {
+    if (!copyTimelineSelection()) {
+      return;
+    }
+    deleteSelected();
+    closeTimelineContextMenu();
+  }
+
+  function pasteTimelineClipboard() {
+    const clipboard = timelineClipboard;
+    if (!clipboard || clipboard.items.length === 0) {
+      return;
+    }
+
+    const currentProject = projectRef.current;
+    const pasteTarget = resolveTimelinePasteTarget(
+      currentProject,
+      clipboard,
+      timelinePasteTargetRef.current,
+      currentTime,
+    );
+    if (!pasteTarget) {
+      window.alert("当前没有可用的粘贴目标。请先在时间轴上点击或右键目标轨道位置。");
+      return;
+    }
+
+    const preparedItems = buildPreparedPasteItems(currentProject, clipboard, pasteTarget);
+    if (preparedItems.length === 0) {
+      window.alert("当前剪贴板内容无法粘贴到该轨道。请检查目标轨道类型是否兼容。");
+      return;
+    }
+
+    const conflicts = detectPasteConflicts(currentProject, preparedItems);
+    if (conflicts.length > 0) {
+      setPendingPasteState({ preparedItems, conflicts });
+      closeTimelineContextMenu();
+      return;
+    }
+
+    applyPreparedPaste(preparedItems, "overwrite");
+    closeTimelineContextMenu();
+  }
+
+  function applyPendingPasteResolution(resolution: PasteConflictResolution) {
+    const pendingPaste = pendingPasteState;
+    setPendingPasteState(null);
+    if (!pendingPaste || resolution === "cancel") {
+      return;
+    }
+    applyPreparedPaste(pendingPaste.preparedItems, resolution);
+  }
+
+  function applyPreparedPaste(
+    preparedItems: PreparedPasteItem[],
+    resolution: Exclude<PasteConflictResolution, "cancel">,
+  ) {
+    const currentProject = projectRef.current;
+    const conflicts = detectPasteConflicts(currentProject, preparedItems);
+    const conflictingKeys = new Set(conflicts.flatMap((conflict) => conflict.existingKeys));
+    const safeItems = resolution === "keep-original"
+      ? preparedItems.filter((item) => !findConflictingKeysForPreparedItem(currentProject, item).length)
+      : preparedItems;
+
+    if (safeItems.length === 0) {
+      return;
+    }
+
+    const sourceLineIds = Array.from(
+      new Set(
+        safeItems.flatMap((item) => (item.type === "character" ? [item.sourceLineId] : [])),
+      ),
+    );
+    const newLineIdMap = new Map(
+      sourceLineIds.map((sourceLineId) => [sourceLineId, `line-${crypto.randomUUID()}`]),
+    );
+
+    const insertedCharacters = safeItems.flatMap((item) =>
+      item.type === "character"
+        ? [{
+            id: `char-${crypto.randomUUID()}`,
+            lineId: newLineIdMap.get(item.sourceLineId) ?? `line-${crypto.randomUUID()}`,
+            char: item.char,
+            startTime: item.startTime,
+            endTime: item.endTime,
+            singingStyle: item.singingStyle,
+          }]
+        : [],
+    );
+    const insertedActions = safeItems.flatMap((item) =>
+      item.type === "action"
+        ? [{
+            id: `${item.targetTrackId}-${crypto.randomUUID()}`,
+            trackId: item.targetTrackId,
+            label: item.label,
+            startTime: item.startTime,
+            endTime: item.endTime,
+          }]
+        : [],
+    );
+    const insertedPointsByTrack = new Map<string, AttachedPointAnnotation[]>();
+    for (const item of safeItems) {
+      if (item.type !== "attached-point") {
+        continue;
+      }
+      const points = insertedPointsByTrack.get(item.targetTrackId) ?? [];
+      points.push({
+        id: `point-${crypto.randomUUID()}`,
+        time: item.time,
+        label: item.label,
+      });
+      insertedPointsByTrack.set(item.targetTrackId, points);
+    }
+    const insertedCustomBlocksByTrack = new Map<string, Array<CustomTrack["blocks"][number]>>();
+    for (const item of safeItems) {
+      if (item.type !== "custom-block") {
+        continue;
+      }
+      const blocks: Array<CustomTrack["blocks"][number]> = insertedCustomBlocksByTrack.get(item.targetTrackId) ?? [];
+      blocks.push(
+        item.trackType === "text"
+          ? {
+              id: `custom-block-${crypto.randomUUID()}`,
+              startTime: item.startTime,
+              endTime: item.endTime,
+              text: item.text ?? DEFAULT_CUSTOM_TEXT,
+              type: item.blockType,
+            }
+          : {
+              id: `custom-block-${crypto.randomUUID()}`,
+              startTime: item.startTime,
+              endTime: item.endTime,
+              type: item.blockType,
+            },
+      );
+      insertedCustomBlocksByTrack.set(item.targetTrackId, blocks);
+    }
+
+    const nextCharacterAnnotations = currentProject.characterAnnotations
+      .filter((item) => !(resolution === "replace" && conflictingKeys.has(`character:${item.id}`)))
+      .concat(insertedCharacters);
+
+    const nextActionAnnotations = currentProject.actionAnnotations
+      .filter((item) => !(resolution === "replace" && conflictingKeys.has(`action:${item.id}`)))
+      .concat(insertedActions);
+
+    const nextCustomTracks = currentProject.customTracks.map((track) => ({
+      ...track,
+      attachedPointTracks: (track.attachedPointTracks ?? []).map((pointTrack) =>
+        ({
+          ...pointTrack,
+          points: [
+            ...pointTrack.points.filter((point) => !(resolution === "replace" && conflictingKeys.has(`attached-point:${pointTrack.id}:${point.id}`))),
+            ...(insertedPointsByTrack.get(pointTrack.id) ?? []),
+          ].sort((left, right) => left.time - right.time),
+        })
+      ),
+      blocks: [
+        ...(resolution === "replace"
+          ? track.blocks.filter((block) => !conflictingKeys.has(`custom-block:${track.id}:${block.id}`))
+          : track.blocks),
+        ...(insertedCustomBlocksByTrack.get(track.id) ?? []),
+      ] as CustomTrack["blocks"],
+    })) as CustomTrack[];
+    const nextBuiltinTracks = currentProject.builtinTracks.map((track) => ({
+      ...track,
+      attachedPointTracks: (track.attachedPointTracks ?? []).map((pointTrack) => ({
+        ...pointTrack,
+        points: [
+          ...pointTrack.points.filter((point) => !(resolution === "replace" && conflictingKeys.has(`attached-point:${pointTrack.id}:${point.id}`))),
+          ...(insertedPointsByTrack.get(pointTrack.id) ?? []),
+        ].sort((left, right) => left.time - right.time),
+      })),
+    }));
+
+    const affectedLineIds = new Set<string>([
+      ...currentProject.characterAnnotations
+        .filter((item) => resolution === "replace" && conflictingKeys.has(`character:${item.id}`))
+        .map((item) => item.lineId),
+      ...Array.from(newLineIdMap.values()),
+    ]);
+
+    const nextProject = syncSubtitleLines(
+      {
+        ...currentProject,
+        characterAnnotations: nextCharacterAnnotations,
+        actionAnnotations: nextActionAnnotations,
+        builtinTracks: nextBuiltinTracks,
+        customTracks: nextCustomTracks,
+      },
+      Array.from(affectedLineIds),
+    );
+
+    const nextSelectedItems: TimelineSelectionItem[] = [
+      ...insertedCharacters.map((annotation) => ({ type: "character" as const, id: annotation.id })),
+      ...insertedActions.map((annotation) => ({ type: "action" as const, id: annotation.id })),
+      ...Array.from(insertedPointsByTrack.entries()).flatMap(([trackId, points]) =>
+        points.map((point) => ({
+          type: "attached-point" as const,
+          id: point.id,
+          trackId,
+          parentTrackId: findPointTrackLocation(nextProject, trackId)?.parentTrack.id ?? "",
+        })),
+      ),
+      ...Array.from(insertedCustomBlocksByTrack.entries()).flatMap(([trackId, blocks]) =>
+        blocks.map((block) => ({ type: "custom-block" as const, id: block.id, trackId })),
+      ),
+    ];
+
+    commitProject(nextProject);
+    if (nextSelectedItems.length > 0) {
+      const primaryItem = nextSelectedItems[0];
+      applySelection(
+        primaryItem.type === "custom-block"
+          ? { type: "custom-block", id: primaryItem.id, trackId: primaryItem.trackId }
+          : primaryItem.type === "attached-point"
+            ? {
+                type: "attached-point",
+                id: primaryItem.id,
+                trackId: primaryItem.trackId,
+                parentTrackId: primaryItem.parentTrackId,
+              }
+          : { type: primaryItem.type, id: primaryItem.id },
+        nextSelectedItems,
+      );
+    }
+  }
+
   function getBuiltinTrackDefaultOption(trackId: BuiltinTrackId) {
     const currentProject = projectRef.current;
     const options = getBuiltinTrackOptions(currentProject.builtinTracks, trackId);
@@ -1059,6 +1531,14 @@ function App() {
       items
         .filter((item): item is TimelineBatchMoveItem & { type: "action" } => item.type === "action")
         .map((item) => [item.id, item]),
+    );
+    const attachedPointUpdates = new Map(
+      items
+        .filter(
+          (item): item is TimelineBatchMoveItem & { type: "attached-point"; trackId: string } =>
+            item.type === "attached-point",
+        )
+        .map((item) => [`${item.trackId}:${item.id}`, item]),
     );
     const customBlockUpdates = new Map(
       items
@@ -1095,8 +1575,37 @@ function App() {
           endTime: update.endTime,
         };
       }),
+      builtinTracks: currentProject.builtinTracks.map((track) => ({
+        ...track,
+        attachedPointTracks: (track.attachedPointTracks ?? []).map((pointTrack) => ({
+          ...pointTrack,
+          points: pointTrack.points.map((point) => {
+            const update = attachedPointUpdates.get(`${pointTrack.id}:${point.id}`);
+            if (!update) {
+              return point;
+            }
+            return {
+              ...point,
+              time: update.startTime,
+            };
+          }),
+        })),
+      })),
       customTracks: currentProject.customTracks.map((track) => ({
         ...track,
+        attachedPointTracks: (track.attachedPointTracks ?? []).map((pointTrack) => ({
+          ...pointTrack,
+          points: pointTrack.points.map((point) => {
+            const update = attachedPointUpdates.get(`${pointTrack.id}:${point.id}`);
+            if (!update) {
+              return point;
+            }
+            return {
+              ...point,
+              time: update.startTime,
+            };
+          }),
+        })),
         blocks: track.blocks.map((block) => {
           const update = customBlockUpdates.get(`${track.id}:${block.id}`);
           if (!update) {
@@ -1530,13 +2039,20 @@ function App() {
       ? selectedTimelineItems
       : selectedItem?.type === "character" || selectedItem?.type === "action"
         ? [{ type: selectedItem.type, id: selectedItem.id }]
+        : selectedItem?.type === "attached-point"
+          ? [{
+              type: "attached-point",
+              id: selectedItem.id,
+              trackId: selectedItem.trackId,
+              parentTrackId: selectedItem.parentTrackId,
+            }]
         : selectedItem?.type === "custom-block"
           ? [{ type: "custom-block", id: selectedItem.id, trackId: selectedItem.trackId }]
         : [];
 
     if (timelineSelection.length > 0) {
       if (timelineSelection.length > 10) {
-        const confirmed = window.confirm(`当前将删除 ${timelineSelection.length} 个已选中的字块/动作块。是否继续？`);
+        const confirmed = window.confirm(`当前将删除 ${timelineSelection.length} 个已选中的时间轴项目。是否继续？`);
         if (!confirmed) {
           return;
         }
@@ -1560,6 +2076,14 @@ function App() {
           )
           .map((item) => `${item.trackId}:${item.id}`),
       );
+      const attachedPointKeys = new Set(
+        timelineSelection
+          .filter(
+            (item): item is TimelineSelectionItem & { type: "attached-point"; trackId: string } =>
+              item.type === "attached-point",
+          )
+          .map((item) => `${item.trackId}:${item.id}`),
+      );
       const affectedLineIds = new Set(
         currentProject.characterAnnotations
           .filter((item) => characterIds.has(item.id))
@@ -1571,8 +2095,19 @@ function App() {
           ...currentProject,
           characterAnnotations: currentProject.characterAnnotations.filter((item) => !characterIds.has(item.id)),
           actionAnnotations: currentProject.actionAnnotations.filter((item) => !actionIds.has(item.id)),
+          builtinTracks: currentProject.builtinTracks.map((track) => ({
+            ...track,
+            attachedPointTracks: (track.attachedPointTracks ?? []).map((pointTrack) => ({
+              ...pointTrack,
+              points: pointTrack.points.filter((point) => !attachedPointKeys.has(`${pointTrack.id}:${point.id}`)),
+            })),
+          })),
           customTracks: currentProject.customTracks.map((track) => ({
             ...track,
+            attachedPointTracks: (track.attachedPointTracks ?? []).map((pointTrack) => ({
+              ...pointTrack,
+              points: pointTrack.points.filter((point) => !attachedPointKeys.has(`${pointTrack.id}:${point.id}`)),
+            })),
             blocks: track.blocks.filter((block) => !customBlockKeys.has(`${track.id}:${block.id}`)) as CustomTrack["blocks"],
           })) as CustomTrack[],
         },
@@ -1665,6 +2200,26 @@ function App() {
     const items: TimelineSelectionItem[] = [
       ...currentProject.characterAnnotations.map((item) => ({ type: "character" as const, id: item.id })),
       ...currentProject.actionAnnotations.map((item) => ({ type: "action" as const, id: item.id })),
+      ...currentProject.builtinTracks.flatMap((track) =>
+        (track.attachedPointTracks ?? []).flatMap((pointTrack) =>
+          pointTrack.points.map((point) => ({
+            type: "attached-point" as const,
+            id: point.id,
+            trackId: pointTrack.id,
+            parentTrackId: track.id,
+          })),
+        ),
+      ),
+      ...currentProject.customTracks.flatMap((track) =>
+        (track.attachedPointTracks ?? []).flatMap((pointTrack) =>
+          pointTrack.points.map((point) => ({
+            type: "attached-point" as const,
+            id: point.id,
+            trackId: pointTrack.id,
+            parentTrackId: track.id,
+          })),
+        ),
+      ),
       ...flattenCustomTrackBlocks(currentProject.customTracks).map((item) => ({
         type: "custom-block" as const,
         id: item.id,
@@ -2241,6 +2796,7 @@ function App() {
         ),
       );
       markProjectAsSaved(hydratedProject, normalizedTrackSnapEnabled);
+      setCurrentProjectFileName(getNormalizedProjectFileName(file.name));
       if (shouldManuallyImportVideo) {
         setManualVideoRelinkPrompt(hydratedProject.video);
       } else {
@@ -2273,7 +2829,7 @@ function App() {
     };
     downloadBlob(
       JSON.stringify(savePayload, null, 2),
-      getProjectFileName(projectToSave),
+      getProjectFileName(projectToSave, currentProjectFileName),
       "application/json",
     );
     markProjectAsSaved(projectToSave, trackSnapEnabledRef.current);
@@ -2412,6 +2968,7 @@ function App() {
                     }
                     applySelection(item);
                   }}
+                  onCloseContextMenu={closeTimelineContextMenu}
                   onSelectTimelineItems={(items, primaryItem) => {
                     setLineFocusRequest(null);
                     if (primaryItem?.type === "character") {
@@ -2440,6 +2997,7 @@ function App() {
                   onCreateActionAtTime={createActionAtTime}
                   onCreateCustomBlock={createCustomBlock}
                   onAddCustomTrack={addCustomTrack}
+                  onUpdatePasteTarget={updateTimelinePasteTarget}
                   onSelectBuiltinTrack={(trackId) => {
                     setLineFocusRequest(null);
                     applySelection({ type: "builtin-track", id: trackId });
@@ -2474,18 +3032,44 @@ function App() {
                   onToggleAttachedPointTracks={toggleAttachedPointTracks}
                   onDeleteBuiltinTrack={deleteBuiltinTrack}
                   onDeleteCustomTrack={deleteCustomTrack}
-                  onOpenCharacterContextMenu={(id, x, y) => {
+                  onOpenCharacterContextMenu={(id, time, x, y) => {
                     preferredCharacterEditLocationRef.current = "timeline";
-                    applySelection({ type: "character", id });
-                    setBlockContextMenu({ type: "character", id, x, y });
+                    updateTimelinePasteTarget("character-track", time);
+                    setBlockContextMenu({
+                      type: "character",
+                      id,
+                      trackId: "character-track",
+                      time,
+                      x,
+                      y,
+                    });
                   }}
-                  onOpenActionContextMenu={(id, x, y) => {
-                    applySelection({ type: "action", id });
-                    setBlockContextMenu({ type: "action", id, x, y });
+                  onOpenActionContextMenu={(id, time, x, y) => {
+                    const action = projectRef.current.actionAnnotations.find((item) => item.id === id);
+                    updateTimelinePasteTarget(action?.trackId ?? "", time);
+                    setBlockContextMenu({
+                      type: "action",
+                      id,
+                      trackId: action?.trackId ?? "",
+                      time,
+                      x,
+                      y,
+                    });
                   }}
-                  onOpenCustomBlockContextMenu={(trackId, id, x, y) => {
-                    applySelection({ type: "custom-block", trackId, id });
-                    setBlockContextMenu({ type: "custom-block", trackId, id, x, y });
+                  onOpenCustomBlockContextMenu={(trackId, id, time, x, y) => {
+                    updateTimelinePasteTarget(trackId, time);
+                    setBlockContextMenu({
+                      type: "custom-block",
+                      trackId,
+                      id,
+                      time,
+                      x,
+                      y,
+                    });
+                  }}
+                  onOpenLaneContextMenu={(trackId, time, x, y) => {
+                    updateTimelinePasteTarget(trackId, time);
+                    setBlockContextMenu({ type: "lane", trackId, time, x, y });
                   }}
                   onLineChange={(id, changes) => updateLinePosition(id, changes, false)}
                   onLineCommit={(id, changes) => updateLinePosition(id, changes, true)}
@@ -2532,126 +3116,141 @@ function App() {
               />
             )}
             secondary={(
-              <div className="sidebar-stack">
-                <section className="panel split-panel">
-                  <div className="panel-header">
-                    <h2>当前句逐字拆分</h2>
-                    <span>{activeCharacters.length} 字</span>
-                  </div>
-                  <div className="character-grid">
-                    {activeCharacters.map((item) => {
-                      const isEditing = editingCharacterId === item.id && editingCharacterLocation === "split-panel";
-                      const className = [
-                        "character-chip",
-                        selectedItem?.type === "character" && selectedItem.id === item.id ? "selected" : "",
-                        currentTime >= item.startTime && currentTime <= item.endTime ? "active" : "",
-                        isEditing ? "editing" : "",
-                      ].join(" ");
+              <ResizableSplitLayout
+                orientation="vertical"
+                initialPrimarySize={0.4}
+                minPrimarySize={150}
+                minSecondarySize={220}
+                storageKey="layout:sidebar-detail"
+                className="sidebar-stack"
+                primaryClassName="workspace-pane sidebar-pane"
+                secondaryClassName="workspace-pane sidebar-pane"
+                primary={(
+                  <section className="panel split-panel">
+                    <div className="panel-header">
+                      <h2>当前句逐字拆分</h2>
+                      <span>{activeCharacters.length} 字</span>
+                    </div>
+                    <div className="character-grid">
+                      {activeCharacters.map((item) => {
+                        const isEditing = editingCharacterId === item.id && editingCharacterLocation === "split-panel";
+                        const className = [
+                          "character-chip",
+                          selectedItem?.type === "character" && selectedItem.id === item.id ? "selected" : "",
+                          currentTime >= item.startTime && currentTime <= item.endTime ? "active" : "",
+                          isEditing ? "editing" : "",
+                        ].join(" ");
 
-                      if (isEditing) {
+                        if (isEditing) {
+                          return (
+                            <div key={item.id} className={className}>
+                              <input
+                                className="character-chip-input"
+                                value={editingCharacterValue}
+                                autoFocus
+                                onChange={(event) => setEditingCharacterValue(event.target.value)}
+                                onBlur={() => commitCharacterTextEdit(item.id)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") {
+                                    event.preventDefault();
+                                    commitCharacterTextEdit(item.id);
+                                  }
+                                  if (event.key === "Escape") {
+                                    event.preventDefault();
+                                    cancelCharacterTextEdit();
+                                  }
+                                }}
+                              />
+                              <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
+                            </div>
+                          );
+                        }
+
                         return (
-                          <div key={item.id} className={className}>
-                            <input
-                              className="character-chip-input"
-                              value={editingCharacterValue}
-                              autoFocus
-                              onChange={(event) => setEditingCharacterValue(event.target.value)}
-                              onBlur={() => commitCharacterTextEdit(item.id)}
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter") {
-                                  event.preventDefault();
-                                  commitCharacterTextEdit(item.id);
-                                }
-                                if (event.key === "Escape") {
-                                  event.preventDefault();
-                                  cancelCharacterTextEdit();
-                                }
-                              }}
-                            />
+                          <button
+                            key={item.id}
+                            className={className}
+                            onClick={() => {
+                              preferredCharacterEditLocationRef.current = "split-panel";
+                              applySelection({ type: "character", id: item.id });
+                            }}
+                            onDoubleClick={() => startCharacterTextEdit(item.id, "split-panel")}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              preferredCharacterEditLocationRef.current = "split-panel";
+                              applySelection({ type: "character", id: item.id });
+                              setBlockContextMenu({
+                                type: "character",
+                                id: item.id,
+                                trackId: "character-track",
+                                time: item.startTime,
+                                x: event.clientX,
+                                y: event.clientY,
+                              });
+                              updateTimelinePasteTarget("character-track", item.startTime);
+                            }}
+                          >
+                            <span>{item.char}</span>
                             <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
-                          </div>
+                          </button>
                         );
-                      }
-
-                      return (
-                        <button
-                          key={item.id}
-                          className={className}
-                          onClick={() => {
-                            preferredCharacterEditLocationRef.current = "split-panel";
-                            applySelection({ type: "character", id: item.id });
-                          }}
-                          onDoubleClick={() => startCharacterTextEdit(item.id, "split-panel")}
-                          onContextMenu={(event) => {
-                            event.preventDefault();
-                            preferredCharacterEditLocationRef.current = "split-panel";
-                            applySelection({ type: "character", id: item.id });
-                            setBlockContextMenu({
-                              type: "character",
-                              id: item.id,
-                              x: event.clientX,
-                              y: event.clientY,
-                            });
-                          }}
-                        >
-                          <span>{item.char}</span>
-                          <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </section>
-                <InspectorPanel
-                  selectedItem={selectedItem}
-                  subtitleLines={project.subtitleLines}
-                  characterAnnotations={project.characterAnnotations}
-                  actionAnnotations={project.actionAnnotations}
-                  builtinTracks={project.builtinTracks}
-                  customTracks={project.customTracks}
-                  trackDefinitions={timelineTrackDefinitions}
-                  trackSnapEnabled={trackSnapEnabled}
-                  onCharacterUpdate={updateCharacter}
-                  onActionUpdate={updateAction}
-                  onAttachedPointUpdate={commitAttachedPoint}
-                  onTrackWaveformSnapChange={updateTrackWaveformSnap}
-                  onAttachedPointTrackParentSnapChange={updateAttachedPointTrackParentSnap}
-                  onSelectParentTrack={(trackId) =>
-                    applySelection(
-                      activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
-                        ? { type: "builtin-track", id: trackId as BuiltinTrackId }
-                        : { type: "custom-track", id: trackId },
-                    )
-                  }
-                  onBuiltinTrackRename={renameBuiltinTrack}
-                  onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
-                  onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
-                  onMoveBuiltinTrackTypeOption={moveBuiltinTrackTypeOption}
-                  onReorderBuiltinTrackTypeOption={reorderBuiltinTrackTypeOption}
-                  onRemoveBuiltinTrackTypeOption={removeBuiltinTrackTypeOption}
-                  onDeleteBuiltinTrack={deleteBuiltinTrack}
-                  onAddAttachedPointTrack={addAttachedPointTrack}
-                  onToggleAttachedPointTracks={toggleAttachedPointTracks}
-                  onSelectAttachedPointTrack={(trackId, parentTrackId) =>
-                    applySelection({ type: "attached-point-track", id: trackId, parentTrackId })
-                  }
-                  onAttachedPointTrackRename={renameAttachedPointTrack}
-                  onAttachedPointTrackTypeOptionChange={updateAttachedPointTrackTypeOption}
-                  onAddAttachedPointTrackTypeOption={addAttachedPointTrackTypeOption}
-                  onMoveAttachedPointTrackTypeOption={moveAttachedPointTrackTypeOption}
-                  onReorderAttachedPointTrackTypeOption={reorderAttachedPointTrackTypeOption}
-                  onRemoveAttachedPointTrackTypeOption={removeAttachedPointTrackTypeOption}
-                  onDeleteAttachedPointTrack={deleteAttachedPointTrack}
-                  onCustomTrackRename={renameCustomTrack}
-                  onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
-                  onAddCustomTrackTypeOption={addCustomTrackTypeOption}
-                  onMoveCustomTrackTypeOption={moveCustomTrackTypeOption}
-                  onReorderCustomTrackTypeOption={reorderCustomTrackTypeOption}
-                  onRemoveCustomTrackTypeOption={removeCustomTrackTypeOption}
-                  onDeleteCustomTrack={deleteCustomTrack}
-                  onCustomBlockUpdate={updateCustomBlock}
-                  onDeleteSelected={deleteSelected}
-                />
-              </div>
+                      })}
+                    </div>
+                  </section>
+                )}
+                secondary={(
+                  <InspectorPanel
+                    selectedItem={selectedItem}
+                    subtitleLines={project.subtitleLines}
+                    characterAnnotations={project.characterAnnotations}
+                    actionAnnotations={project.actionAnnotations}
+                    builtinTracks={project.builtinTracks}
+                    customTracks={project.customTracks}
+                    trackDefinitions={timelineTrackDefinitions}
+                    trackSnapEnabled={trackSnapEnabled}
+                    onCharacterUpdate={updateCharacter}
+                    onActionUpdate={updateAction}
+                    onAttachedPointUpdate={commitAttachedPoint}
+                    onTrackWaveformSnapChange={updateTrackWaveformSnap}
+                    onAttachedPointTrackParentSnapChange={updateAttachedPointTrackParentSnap}
+                    onSelectParentTrack={(trackId) =>
+                      applySelection(
+                        activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
+                          ? { type: "builtin-track", id: trackId as BuiltinTrackId }
+                          : { type: "custom-track", id: trackId },
+                      )
+                    }
+                    onBuiltinTrackRename={renameBuiltinTrack}
+                    onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
+                    onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
+                    onMoveBuiltinTrackTypeOption={moveBuiltinTrackTypeOption}
+                    onReorderBuiltinTrackTypeOption={reorderBuiltinTrackTypeOption}
+                    onRemoveBuiltinTrackTypeOption={removeBuiltinTrackTypeOption}
+                    onDeleteBuiltinTrack={deleteBuiltinTrack}
+                    onAddAttachedPointTrack={addAttachedPointTrack}
+                    onToggleAttachedPointTracks={toggleAttachedPointTracks}
+                    onSelectAttachedPointTrack={(trackId, parentTrackId) =>
+                      applySelection({ type: "attached-point-track", id: trackId, parentTrackId })
+                    }
+                    onAttachedPointTrackRename={renameAttachedPointTrack}
+                    onAttachedPointTrackTypeOptionChange={updateAttachedPointTrackTypeOption}
+                    onAddAttachedPointTrackTypeOption={addAttachedPointTrackTypeOption}
+                    onMoveAttachedPointTrackTypeOption={moveAttachedPointTrackTypeOption}
+                    onReorderAttachedPointTrackTypeOption={reorderAttachedPointTrackTypeOption}
+                    onRemoveAttachedPointTrackTypeOption={removeAttachedPointTrackTypeOption}
+                    onDeleteAttachedPointTrack={deleteAttachedPointTrack}
+                    onCustomTrackRename={renameCustomTrack}
+                    onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
+                    onAddCustomTrackTypeOption={addCustomTrackTypeOption}
+                    onMoveCustomTrackTypeOption={moveCustomTrackTypeOption}
+                    onReorderCustomTrackTypeOption={reorderCustomTrackTypeOption}
+                    onRemoveCustomTrackTypeOption={removeCustomTrackTypeOption}
+                    onDeleteCustomTrack={deleteCustomTrack}
+                    onCustomBlockUpdate={updateCustomBlock}
+                    onDeleteSelected={deleteSelected}
+                  />
+                )}
+              />
             )}
           />
         )}
@@ -2666,8 +3265,49 @@ function App() {
           }}
           onPointerDown={(event) => event.stopPropagation()}
         >
+          {blockContextMenu.type === "lane" ? (
+            <>
+              <div className="character-context-menu-label">时间轴</div>
+              <button
+                type="button"
+                onClick={() => {
+                  pasteTimelineClipboard();
+                }}
+                disabled={!canPasteTimelineClipboard}
+              >
+                粘贴
+              </button>
+            </>
+          ) : null}
           {contextMenuCharacter ? (
             <>
+              <button
+                type="button"
+                onClick={() => {
+                  copyTimelineSelection();
+                  setBlockContextMenu(null);
+                }}
+              >
+                复制
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  cutTimelineSelection();
+                }}
+              >
+                剪切
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  pasteTimelineClipboard();
+                }}
+                disabled={!canPasteTimelineClipboard}
+              >
+                粘贴
+              </button>
+              <div className="character-context-menu-divider" />
               {contextMenuSplitCharacters.length > 1 ? (
                 <button
                   type="button"
@@ -2734,6 +3374,33 @@ function App() {
           ) : null}
           {contextMenuAction ? (
             <>
+              <button
+                type="button"
+                onClick={() => {
+                  copyTimelineSelection();
+                  setBlockContextMenu(null);
+                }}
+              >
+                复制
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  cutTimelineSelection();
+                }}
+              >
+                剪切
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  pasteTimelineClipboard();
+                }}
+                disabled={!canPasteTimelineClipboard}
+              >
+                粘贴
+              </button>
+              <div className="character-context-menu-divider" />
               <div className="character-context-menu-label">
                 {contextMenuActionTrack?.name ?? "动作标签"}
               </div>
@@ -2754,6 +3421,33 @@ function App() {
           ) : null}
           {contextMenuCustomBlock && contextMenuCustomTrack ? (
             <>
+              <button
+                type="button"
+                onClick={() => {
+                  copyTimelineSelection();
+                  setBlockContextMenu(null);
+                }}
+              >
+                复制
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  cutTimelineSelection();
+                }}
+              >
+                剪切
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  pasteTimelineClipboard();
+                }}
+                disabled={!canPasteTimelineClipboard}
+              >
+                粘贴
+              </button>
+              <div className="character-context-menu-divider" />
               <div className="character-context-menu-label">
                 {contextMenuCustomTrack.name}
               </div>
@@ -2772,6 +3466,32 @@ function App() {
               ))}
             </>
           ) : null}
+        </div>
+      ) : null}
+      {pendingPasteState ? (
+        <div className="app-modal-backdrop" onClick={() => applyPendingPasteResolution("cancel")}>
+          <div className="app-modal" onClick={(event) => event.stopPropagation()}>
+            <h2>检测到粘贴冲突</h2>
+            <p>目标时间范围内已有现有块。请选择这次粘贴的处理方式。</p>
+            <p>
+              当前共有 {pendingPasteState.conflicts.length} 个冲突块，涉及{" "}
+              {new Set(pendingPasteState.conflicts.map((conflict) => conflict.trackName)).size} 条轨道。
+            </p>
+            <div className="app-modal-actions">
+              <button type="button" className="secondary" onClick={() => applyPendingPasteResolution("cancel")}>
+                取消
+              </button>
+              <button type="button" onClick={() => applyPendingPasteResolution("overwrite")}>
+                覆盖
+              </button>
+              <button type="button" onClick={() => applyPendingPasteResolution("replace")}>
+                替换
+              </button>
+              <button type="button" onClick={() => applyPendingPasteResolution("keep-original")}>
+                保留原块
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
       {manualVideoRelinkPrompt ? (
@@ -2803,6 +3523,300 @@ function App() {
       ) : null}
     </AppShell>
   );
+}
+
+type ResolvedClipboardSelectionItem =
+  | {
+      type: "character";
+      id: string;
+      trackId: "character-track";
+      lineId: string;
+      char: string;
+      singingStyle: string;
+      startTime: number;
+      endTime: number;
+    }
+  | {
+      type: "action";
+      id: string;
+      trackId: string;
+      label: string;
+      startTime: number;
+      endTime: number;
+    }
+  | {
+      type: "custom-block";
+      id: string;
+      trackId: string;
+      trackType: CustomTrackType;
+      typeValue: string;
+      text?: string;
+      startTime: number;
+      endTime: number;
+    }
+  | {
+      type: "attached-point";
+      id: string;
+      trackId: string;
+      parentTrackId: string;
+      label: string;
+      startTime: number;
+      endTime: number;
+    };
+
+function locatePointTrack(
+  project: ProjectData,
+  pointTrackId: string,
+) {
+  for (const track of project.builtinTracks) {
+    const pointTrack = (track.attachedPointTracks ?? []).find((item) => item.id === pointTrackId);
+    if (pointTrack) {
+      return {
+        parentTrack: track,
+        pointTrack,
+      };
+    }
+  }
+  for (const track of project.customTracks) {
+    const pointTrack = (track.attachedPointTracks ?? []).find((item) => item.id === pointTrackId);
+    if (pointTrack) {
+      return {
+        parentTrack: track,
+        pointTrack,
+      };
+    }
+  }
+  return null;
+}
+
+function resolveTimelineSelectionItem(
+  project: ProjectData,
+  item: TimelineSelectionItem,
+): ResolvedClipboardSelectionItem | null {
+  if (item.type === "character") {
+    const annotation = project.characterAnnotations.find((candidate) => candidate.id === item.id);
+    return annotation
+      ? {
+          type: "character",
+          id: annotation.id,
+          trackId: "character-track",
+          lineId: annotation.lineId,
+          char: annotation.char,
+          singingStyle: annotation.singingStyle,
+          startTime: annotation.startTime,
+          endTime: annotation.endTime,
+        }
+      : null;
+  }
+  if (item.type === "action") {
+    const annotation = project.actionAnnotations.find((candidate) => candidate.id === item.id);
+    return annotation
+      ? {
+          type: "action",
+          id: annotation.id,
+          trackId: annotation.trackId,
+          label: annotation.label,
+          startTime: annotation.startTime,
+          endTime: annotation.endTime,
+        }
+      : null;
+  }
+  if (item.type === "attached-point") {
+    const location = locatePointTrack(project, item.trackId);
+    const point = location?.pointTrack.points.find((candidate) => candidate.id === item.id);
+    return point && location
+      ? {
+          type: "attached-point",
+          id: point.id,
+          trackId: item.trackId,
+          parentTrackId: item.parentTrackId,
+          label: point.label,
+          startTime: point.time,
+          endTime: point.time,
+        }
+      : null;
+  }
+  const block = findCustomBlock(project.customTracks, item.trackId, item.id);
+  return block
+    ? {
+        type: "custom-block",
+        id: block.id,
+        trackId: block.trackId,
+        trackType: block.trackType,
+        typeValue: block.type,
+        text: block.text,
+        startTime: block.startTime,
+        endTime: block.endTime,
+      }
+    : null;
+}
+
+function resolveTimelinePasteTarget(
+  project: ProjectData,
+  clipboard: TimelineClipboard,
+  explicitTarget: TimelinePasteTarget | null,
+  fallbackTime: number,
+) {
+  if (explicitTarget) {
+    return explicitTarget;
+  }
+  const fallbackTrackId = clipboard.primaryTrackId ?? clipboard.sourceTrackIds[0] ?? null;
+  if (!fallbackTrackId) {
+    return null;
+  }
+  return {
+    trackId: resolveExistingPasteTrackId(project, fallbackTrackId) ?? fallbackTrackId,
+    time: fallbackTime,
+  };
+}
+
+function resolveExistingPasteTrackId(project: ProjectData, trackId: string) {
+  if (trackId === "character-track") {
+    return project.builtinTracks.some((track) => track.id === trackId) ? trackId : null;
+  }
+  if (project.builtinTracks.some((track) => track.id === trackId)) {
+    return trackId;
+  }
+  if (project.customTracks.some((track) => track.id === trackId)) {
+    return trackId;
+  }
+  return null;
+}
+
+function isCompatiblePasteTrack(
+  project: ProjectData,
+  item: TimelineClipboardItem,
+  targetTrackId: string,
+) {
+  if (item.type === "character") {
+    return targetTrackId === "character-track" &&
+      project.builtinTracks.some((track) => track.id === "character-track");
+  }
+  if (item.type === "action") {
+    return project.builtinTracks.some((track) => track.id === targetTrackId && track.type === "action");
+  }
+  if (item.type === "attached-point") {
+    return Boolean(locatePointTrack(project, targetTrackId));
+  }
+  const targetTrack = project.customTracks.find((track) => track.id === targetTrackId);
+  return Boolean(targetTrack && targetTrack.trackType === item.trackType);
+}
+
+function buildPreparedPasteItems(
+  project: ProjectData,
+  clipboard: TimelineClipboard,
+  target: TimelinePasteTarget,
+): PreparedPasteItem[] {
+  const remapAllToTargetTrack =
+    clipboard.sourceTrackIds.length === 1 &&
+    clipboard.items.every((item) => isCompatiblePasteTrack(project, item, target.trackId));
+
+  return clipboard.items.reduce<PreparedPasteItem[]>((items, item) => {
+    const targetTrackId = remapAllToTargetTrack ? target.trackId : item.sourceTrackId;
+    if (!isCompatiblePasteTrack(project, item, targetTrackId)) {
+      return items;
+    }
+    if (item.type === "attached-point") {
+      const pointTrackLocation = locatePointTrack(project, targetTrackId);
+      items.push({
+        type: "attached-point" as const,
+        targetTrackId,
+        parentTrackId: pointTrackLocation?.parentTrack.id ?? item.parentTrackId,
+        time: Math.max(0, target.time + item.timeOffset),
+        label: item.label,
+      });
+      return items;
+    }
+    const startTime = Math.max(0, target.time + item.startOffset);
+    const duration = Math.max(MIN_CHARACTER_DURATION, item.endOffset - item.startOffset);
+    const endTime = startTime + duration;
+    if (item.type === "character") {
+      items.push({
+        type: "character" as const,
+        targetTrackId: "character-track" as const,
+        startTime,
+        endTime,
+        char: item.char,
+        singingStyle: item.singingStyle,
+        sourceLineId: item.sourceLineId,
+      });
+      return items;
+    }
+    if (item.type === "action") {
+      items.push({
+        type: "action" as const,
+        targetTrackId,
+        startTime,
+        endTime,
+        label: item.label,
+      });
+      return items;
+    }
+    items.push({
+      type: "custom-block" as const,
+      targetTrackId,
+      trackType: item.trackType,
+      startTime,
+      endTime,
+      blockType: item.blockType,
+      text: item.text,
+    });
+    return items;
+  }, []);
+}
+
+function detectPasteConflicts(project: ProjectData, preparedItems: PreparedPasteItem[]) {
+  return preparedItems
+    .map((item) => {
+      const existingKeys = findConflictingKeysForPreparedItem(project, item);
+      if (existingKeys.length === 0) {
+        return null;
+      }
+      return {
+        item,
+        existingKeys,
+        trackName: getTrackDisplayName(project, item.targetTrackId),
+      };
+    })
+    .filter((item): item is PasteConflict => Boolean(item));
+}
+
+function findConflictingKeysForPreparedItem(project: ProjectData, item: PreparedPasteItem) {
+  if (item.type === "character") {
+    return project.characterAnnotations
+      .filter((annotation) => rangesOverlap(annotation.startTime, annotation.endTime, item.startTime, item.endTime))
+      .map((annotation) => `character:${annotation.id}`);
+  }
+  if (item.type === "action") {
+    return project.actionAnnotations
+      .filter((annotation) =>
+        annotation.trackId === item.targetTrackId &&
+        rangesOverlap(annotation.startTime, annotation.endTime, item.startTime, item.endTime),
+      )
+      .map((annotation) => `action:${annotation.id}`);
+  }
+  if (item.type === "attached-point") {
+    return [];
+  }
+  const targetTrack = project.customTracks.find((track) => track.id === item.targetTrackId);
+  return (targetTrack?.blocks ?? [])
+    .filter((block) => rangesOverlap(block.startTime, block.endTime, item.startTime, item.endTime))
+    .map((block) => `custom-block:${targetTrack?.id}:${block.id}`);
+}
+
+function getTrackDisplayName(project: ProjectData, trackId: string) {
+  return project.builtinTracks.find((track) => track.id === trackId)?.name ??
+    project.customTracks.find((track) => track.id === trackId)?.name ??
+    trackId;
+}
+
+function rangesOverlap(
+  leftStart: number,
+  leftEnd: number,
+  rightStart: number,
+  rightEnd: number,
+) {
+  return leftStart < rightEnd && rightStart < leftEnd;
 }
 
 function findCustomBlock(
@@ -3051,9 +4065,17 @@ function clampTime(time: number, maxDuration: number) {
   return Math.max(0, Math.min(time, maxDuration));
 }
 
-function getProjectFileName(project: ProjectData) {
+function getProjectFileName(project: ProjectData, importedProjectFileName?: string | null) {
+  if (importedProjectFileName) {
+    return getNormalizedProjectFileName(importedProjectFileName);
+  }
   const baseName = (project.video.name ?? "xiqu_annotation_project").replace(/\.[^.]+$/, "");
   return `${baseName || "xiqu_annotation_project"}.annotation.json`;
+}
+
+function getNormalizedProjectFileName(fileName: string) {
+  const normalized = fileName.trim();
+  return normalized || "xiqu_annotation_project.annotation.json";
 }
 
 function normalizeImportedProjectFile(value: SavedProjectFile | ProjectData) {
