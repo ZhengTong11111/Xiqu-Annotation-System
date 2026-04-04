@@ -402,6 +402,7 @@ export function Timeline({
   const trackBlockHeight = Math.round(clampValue(trackHeight - 22, 24, 54));
   const trackBlockTop = Math.round(Math.max(5, (trackHeight - trackBlockHeight) / 2));
   const compactTrackLabels = trackHeight <= 52;
+  const compactAttachedPointMeta = trackHeight <= 64;
   const waveformViewHeight = Math.max(
     MIN_WAVEFORM_VIEW_HEIGHT,
     waveformTrackHeight - WAVEFORM_TRACK_VERTICAL_PADDING * 2,
@@ -518,6 +519,13 @@ export function Timeline({
     () => Math.max(0, Math.min(viewportState.width, getCanvasX(currentTime, zoom) - viewportState.scrollLeft)),
     [currentTime, viewportState, zoom],
   );
+
+  function startWaveformResize(clientY: number) {
+    setWaveformResizeDrag({
+      startY: clientY,
+      startHeight: waveformTrackHeight,
+    });
+  }
   const timelineCanvasStyle = useMemo(
     () =>
       ({
@@ -1720,10 +1728,7 @@ export function Timeline({
                     }
                     event.preventDefault();
                     event.stopPropagation();
-                    setWaveformResizeDrag({
-                      startY: event.clientY,
-                      startHeight: waveformTrackHeight,
-                    });
+                    startWaveformResize(event.clientY);
                   }}
                   onDoubleClick={(event) => {
                     event.preventDefault();
@@ -1770,6 +1775,29 @@ export function Timeline({
                     {isWaveformLoading ? "正在从视频中提取音频波形..." : "当前视频暂无可显示的音频波形"}
                   </div>
                 )}
+              </div>
+              <div
+                className={[
+                  "waveform-track-bottom-resize-handle",
+                  waveformResizeDrag ? "active" : "",
+                ].join(" ")}
+                onPointerDown={(event) => {
+                  if (event.button !== 0) {
+                    return;
+                  }
+                  event.preventDefault();
+                  event.stopPropagation();
+                  startWaveformResize(event.clientY);
+                }}
+                onDoubleClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setWaveformResizeDrag(null);
+                  setWaveformTrackHeight(DEFAULT_WAVEFORM_TRACK_HEIGHT);
+                }}
+                title="拖动调整波形轨高度，双击恢复默认高度"
+              >
+                <span className="waveform-track-resize-grip" />
               </div>
             </div>
           </div>
@@ -1873,7 +1901,7 @@ export function Timeline({
                       {!compactTrackLabels && track.isBuiltin ? (
                         <span>{track.type === "character" ? "文字类内建轨" : "动作类内建轨"}</span>
                       ) : null}
-                      {!compactTrackLabels && track.isAttachedPointTrack ? (
+                      {!compactAttachedPointMeta && track.isAttachedPointTrack ? (
                         <span>{track.parentTrackName ? `附属于 ${track.parentTrackName}` : "附属打点轨"}</span>
                       ) : null}
                     </div>

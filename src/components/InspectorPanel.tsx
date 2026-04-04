@@ -14,6 +14,8 @@ import type {
 const REORDER_ACTIVATION_PX = 6;
 
 type InspectorPanelProps = {
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
   selectedItem: SelectedItem;
   subtitleLines: SubtitleLine[];
   characterAnnotations: CharacterAnnotation[];
@@ -66,6 +68,8 @@ type InspectorPanelProps = {
 };
 
 export function InspectorPanel({
+  collapsed = false,
+  onToggleCollapse,
   selectedItem,
   subtitleLines,
   characterAnnotations,
@@ -153,6 +157,28 @@ export function InspectorPanel({
     remainingTypeOptionKeys.length > 0
     ? remainingTypeOptionKeys[remainingTypeOptionKeys.length - 1]
     : null;
+  const collapseButton = onToggleCollapse ? (
+    <button
+      type="button"
+      className="panel-collapse-button"
+      title={collapsed ? "展开面板" : "最小化面板"}
+      aria-label={collapsed ? "展开面板" : "最小化面板"}
+      onClick={onToggleCollapse}
+    >
+      {collapsed ? "▸" : "—"}
+    </button>
+  ) : null;
+
+  if (collapsed) {
+    return (
+      <section className="panel inspector-panel is-collapsed">
+        <div className="panel-header">
+          <h2>属性 / 轨道设置</h2>
+          {collapseButton ? <div className="panel-header-actions">{collapseButton}</div> : null}
+        </div>
+      </section>
+    );
+  }
 
   useEffect(() => {
     setTrackNameDraft(selectedEditableTrack?.name ?? "");
@@ -355,6 +381,7 @@ export function InspectorPanel({
       <section className="panel inspector-panel">
         <div className="panel-header">
           <h2>属性面板</h2>
+          {collapseButton ? <div className="panel-header-actions">{collapseButton}</div> : null}
         </div>
         <p className="empty-state">选择一句字幕、一个 block、或一条自定义轨道后可在这里编辑属性。</p>
       </section>
@@ -370,6 +397,7 @@ export function InspectorPanel({
       <section className="panel inspector-panel">
         <div className="panel-header">
           <h2>句子属性</h2>
+          {collapseButton ? <div className="panel-header-actions">{collapseButton}</div> : null}
         </div>
         <div className="inspector-field">
           <label>文本</label>
@@ -423,24 +451,27 @@ export function InspectorPanel({
               <span>{selectedAttachedPointTrack.parentTrack.name}</span>
             ) : null}
           </div>
-          {isAttachedPointTrack && selectedAttachedPointTrack ? (
-            <button
-              type="button"
-              className="panel-header-secondary"
-              onClick={() => onSelectParentTrack(selectedAttachedPointTrack.parentTrack.id)}
-            >
-              返回父轨道
-            </button>
-          ) : null}
-          <button onClick={() => {
-            if (isBuiltinTrack) {
-              onDeleteBuiltinTrack(track.id as BuiltinTrackId);
-            } else if (isAttachedPointTrack) {
-              onDeleteAttachedPointTrack(track.id);
-            } else {
-              onDeleteCustomTrack(track.id);
-            }
-          }}>删除轨道</button>
+          <div className="panel-header-actions">
+            {isAttachedPointTrack && selectedAttachedPointTrack ? (
+              <button
+                type="button"
+                className="panel-header-secondary"
+                onClick={() => onSelectParentTrack(selectedAttachedPointTrack.parentTrack.id)}
+              >
+                返回父轨道
+              </button>
+            ) : null}
+            {collapseButton}
+            <button onClick={() => {
+              if (isBuiltinTrack) {
+                onDeleteBuiltinTrack(track.id as BuiltinTrackId);
+              } else if (isAttachedPointTrack) {
+                onDeleteAttachedPointTrack(track.id);
+              } else {
+                onDeleteCustomTrack(track.id);
+              }
+            }}>删除轨道</button>
+          </div>
         </div>
         <div className="inspector-field">
           <label>轨道名称</label>
@@ -735,7 +766,10 @@ export function InspectorPanel({
       <section className="panel inspector-panel">
         <div className="panel-header">
           <h2>逐字属性</h2>
-          <button onClick={onDeleteSelected}>删除</button>
+          <div className="panel-header-actions">
+            {collapseButton}
+            <button onClick={onDeleteSelected}>删除</button>
+          </div>
         </div>
         <div className="inspector-field">
           <label>字</label>
@@ -799,7 +833,10 @@ export function InspectorPanel({
       <section className="panel inspector-panel">
         <div className="panel-header">
           <h2>打点属性</h2>
-          <button onClick={onDeleteSelected}>删除</button>
+          <div className="panel-header-actions">
+            {collapseButton}
+            <button onClick={onDeleteSelected}>删除</button>
+          </div>
         </div>
         <div className="inspector-field">
           <label>附属轨</label>
@@ -849,7 +886,10 @@ export function InspectorPanel({
       <section className="panel inspector-panel">
         <div className="panel-header">
           <h2>{track.trackType === "text" ? "文字 block" : "动作 block"}</h2>
-          <button onClick={onDeleteSelected}>删除</button>
+          <div className="panel-header-actions">
+            {collapseButton}
+            <button onClick={onDeleteSelected}>删除</button>
+          </div>
         </div>
         <div className="inspector-field">
           <label>轨道</label>
@@ -916,7 +956,10 @@ export function InspectorPanel({
     <section className="panel inspector-panel">
       <div className="panel-header">
         <h2>动作属性</h2>
-        <button onClick={onDeleteSelected}>删除</button>
+        <div className="panel-header-actions">
+          {collapseButton}
+          <button onClick={onDeleteSelected}>删除</button>
+        </div>
       </div>
       <div className="inspector-field">
         <label>轨道</label>

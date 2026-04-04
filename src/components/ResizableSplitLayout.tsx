@@ -12,6 +12,9 @@ type ResizableSplitLayoutProps = {
   className?: string;
   primaryClassName?: string;
   secondaryClassName?: string;
+  collapsedPrimary?: boolean;
+  collapsedSecondary?: boolean;
+  collapsedSize?: number;
 };
 
 type DragState = {
@@ -31,6 +34,9 @@ export function ResizableSplitLayout({
   className,
   primaryClassName,
   secondaryClassName,
+  collapsedPrimary = false,
+  collapsedSecondary = false,
+  collapsedSize = 44,
 }: ResizableSplitLayoutProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const dragStateRef = useRef<DragState | null>(null);
@@ -100,12 +106,27 @@ export function ResizableSplitLayout({
     };
   }, [isDragging, minPrimarySize, minSecondarySize, orientation]);
 
-  const primaryStyle = orientation === "horizontal"
-    ? { flexBasis: `${primarySize * 100}%`, minWidth: `${minPrimarySize}px` }
-    : { flexBasis: `${primarySize * 100}%`, minHeight: `${minPrimarySize}px` };
-  const secondaryStyle = orientation === "horizontal"
-    ? { minWidth: `${minSecondarySize}px` }
-    : { minHeight: `${minSecondarySize}px` };
+  const primaryStyle = getPaneStyle({
+    orientation,
+    role: "primary",
+    primarySize,
+    minPrimarySize,
+    minSecondarySize,
+    collapsedPrimary,
+    collapsedSecondary,
+    collapsedSize,
+  });
+  const secondaryStyle = getPaneStyle({
+    orientation,
+    role: "secondary",
+    primarySize,
+    minPrimarySize,
+    minSecondarySize,
+    collapsedPrimary,
+    collapsedSecondary,
+    collapsedSize,
+  });
+  const showDivider = !collapsedPrimary && !collapsedSecondary;
 
   function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     dragStateRef.current = { pointerId: event.pointerId };
@@ -125,26 +146,39 @@ export function ResizableSplitLayout({
         "resizable-split-layout",
         `split-${orientation}`,
         className ?? "",
+        collapsedPrimary || collapsedSecondary ? "has-collapsed-pane" : "",
         isDragging ? "is-dragging" : "",
       ].join(" ")}
     >
       <div
-        className={["split-pane", "split-pane-primary", primaryClassName ?? ""].join(" ")}
+        className={[
+          "split-pane",
+          "split-pane-primary",
+          primaryClassName ?? "",
+          collapsedPrimary ? "is-collapsed-pane" : "",
+        ].join(" ")}
         style={primaryStyle}
       >
         {primary}
       </div>
+      {showDivider ? (
+        <div
+          role="separator"
+          aria-orientation={orientation}
+          className="split-divider"
+          onPointerDown={handlePointerDown}
+          onDoubleClick={handleReset}
+        >
+          <div className="split-divider-grip" />
+        </div>
+      ) : null}
       <div
-        role="separator"
-        aria-orientation={orientation}
-        className="split-divider"
-        onPointerDown={handlePointerDown}
-        onDoubleClick={handleReset}
-      >
-        <div className="split-divider-grip" />
-      </div>
-      <div
-        className={["split-pane", "split-pane-secondary", secondaryClassName ?? ""].join(" ")}
+        className={[
+          "split-pane",
+          "split-pane-secondary",
+          secondaryClassName ?? "",
+          collapsedSecondary ? "is-collapsed-pane" : "",
+        ].join(" ")}
         style={secondaryStyle}
       >
         {secondary}
@@ -155,4 +189,67 @@ export function ResizableSplitLayout({
 
 function clampRatio(value: number, min = 0.15, max = 0.85) {
   return Math.min(max, Math.max(min, value));
+}
+
+function getPaneStyle({
+  orientation,
+  role,
+  primarySize,
+  minPrimarySize,
+  minSecondarySize,
+  collapsedPrimary,
+  collapsedSecondary,
+  collapsedSize,
+}: {
+  orientation: "horizontal" | "vertical";
+  role: "primary" | "secondary";
+  primarySize: number;
+  minPrimarySize: number;
+  minSecondarySize: number;
+  collapsedPrimary: boolean;
+  collapsedSecondary: boolean;
+  collapsedSize: number;
+}) {
+  const collapsedKey = orientation === "horizontal" ? "minWidth" : "minHeight";
+  const collapsedMaxKey = orientation === "horizontal" ? "maxWidth" : "maxHeight";
+
+  if (role === "primary" && collapsedPrimary) {
+    return {
+      flex: "0 0 auto",
+      flexBasis: `${collapsedSize}px`,
+      [collapsedKey]: `${collapsedSize}px`,
+      [collapsedMaxKey]: `${collapsedSize}px`,
+    };
+  }
+
+  if (role === "secondary" && collapsedSecondary) {
+    return {
+      flex: "0 0 auto",
+      flexBasis: `${collapsedSize}px`,
+      [collapsedKey]: `${collapsedSize}px`,
+      [collapsedMaxKey]: `${collapsedSize}px`,
+    };
+  }
+
+  if (role === "primary" && collapsedSecondary) {
+    return orientation === "horizontal"
+      ? { flex: "1 1 0%", minWidth: "0" }
+      : { flex: "1 1 0%", minHeight: "0" };
+  }
+
+  if (role === "secondary" && collapsedPrimary) {
+    return orientation === "horizontal"
+      ? { flex: "1 1 0%", minWidth: "0" }
+      : { flex: "1 1 0%", minHeight: "0" };
+  }
+
+  if (role === "primary") {
+    return orientation === "horizontal"
+      ? { flexBasis: `${primarySize * 100}%`, minWidth: `${minPrimarySize}px` }
+      : { flexBasis: `${primarySize * 100}%`, minHeight: `${minPrimarySize}px` };
+  }
+
+  return orientation === "horizontal"
+    ? { minWidth: `${minSecondarySize}px` }
+    : { minHeight: `${minSecondarySize}px` };
 }

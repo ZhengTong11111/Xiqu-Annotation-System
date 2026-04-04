@@ -424,6 +424,10 @@ select {
   border-radius: 8px;
 }
 
+.resizable-split-layout.has-collapsed-pane {
+  gap: 6px;
+}
+
 .split-horizontal {
   flex-direction: row;
 }
@@ -435,6 +439,10 @@ select {
 .split-pane {
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
+}
+
+.split-pane.is-collapsed-pane {
   overflow: hidden;
 }
 
@@ -562,6 +570,29 @@ select {
   font-size: 11px;
 }
 
+.panel-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.panel-collapse-button {
+  min-width: 22px;
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+
 .panel-header-copy {
   display: flex;
   flex-direction: column;
@@ -618,6 +649,21 @@ select {
   min-height: 0;
   height: 100%;
   padding-bottom: 8px;
+}
+
+.subtitle-panel.is-collapsed,
+.inspector-panel.is-collapsed,
+.split-panel.is-collapsed {
+  padding-bottom: 0;
+}
+
+.subtitle-panel.is-collapsed .panel-header,
+.inspector-panel.is-collapsed .panel-header,
+.split-panel.is-collapsed .panel-header {
+  min-height: 40px;
+  height: 100%;
+  padding: 0 8px;
+  align-items: center;
 }
 
 .subtitle-panel .panel-header,
@@ -1370,6 +1416,19 @@ select {
   z-index: 9;
 }
 
+.waveform-track-bottom-resize-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -8px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+  z-index: 6;
+}
+
 .waveform-track-resize-grip {
   width: 34px;
   height: 4px;
@@ -1388,8 +1447,16 @@ select {
   transform: translateY(0);
 }
 
+.waveform-track:hover .waveform-track-bottom-resize-handle .waveform-track-resize-grip,
+.waveform-track-bottom-resize-handle.active .waveform-track-resize-grip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .waveform-track-resize-handle:hover .waveform-track-resize-grip,
-.waveform-track-resize-handle.active .waveform-track-resize-grip {
+.waveform-track-resize-handle.active .waveform-track-resize-grip,
+.waveform-track-bottom-resize-handle:hover .waveform-track-resize-grip,
+.waveform-track-bottom-resize-handle.active .waveform-track-resize-grip {
   background: rgba(15, 108, 189, 0.32);
   border-color: rgba(15, 108, 189, 0.36);
 }

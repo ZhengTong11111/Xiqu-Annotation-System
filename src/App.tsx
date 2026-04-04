@@ -254,6 +254,8 @@ function App() {
   const [trackSnapEnabled, setTrackSnapEnabled] = useState<Record<string, boolean>>(
     () => getDefaultTrackSnapEnabled(mockProject),
   );
+  const [isSubtitlePanelCollapsed, setIsSubtitlePanelCollapsed] = useState(false);
+  const [isSplitPanelCollapsed, setIsSplitPanelCollapsed] = useState(false);
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
@@ -618,6 +620,15 @@ function App() {
     }
     return sortCharactersByTime(project.characterAnnotations.filter((item) => item.lineId === selectedLineId));
   }, [project.characterAnnotations, selectedLineId]);
+
+  function toggleSubtitlePanelCollapsed() {
+    setIsSubtitlePanelCollapsed((current) => !current);
+  }
+
+  function toggleSplitPanelCollapsed() {
+    setIsSplitPanelCollapsed((current) => !current);
+  }
+
   const contextMenuCharacter = blockContextMenu?.type === "character"
     ? project.characterAnnotations.find((item) => item.id === blockContextMenu.id) ?? null
     : null;
@@ -3100,11 +3111,15 @@ function App() {
             className="sidebar-shell"
             primaryClassName="workspace-pane sidebar-pane"
             secondaryClassName="workspace-pane sidebar-pane"
+            collapsedPrimary={isSubtitlePanelCollapsed}
+            collapsedSize={42}
             primary={(
               <SubtitleList
                 subtitleLines={project.subtitleLines}
                 currentTime={currentTime}
                 selectedLineId={selectedLineId}
+                collapsed={isSubtitlePanelCollapsed}
+                onToggleCollapse={toggleSubtitlePanelCollapsed}
                 onSelectLine={(lineId) => {
                   setLineFocusRequest({ lineId, requestId: Date.now() });
                   applySelection({ type: "line", id: lineId });
@@ -3125,13 +3140,27 @@ function App() {
                 className="sidebar-stack"
                 primaryClassName="workspace-pane sidebar-pane"
                 secondaryClassName="workspace-pane sidebar-pane"
+                collapsedPrimary={isSplitPanelCollapsed}
+                collapsedSize={42}
                 primary={(
-                  <section className="panel split-panel">
+                  <section className={["panel", "split-panel", isSplitPanelCollapsed ? "is-collapsed" : ""].join(" ")}>
                     <div className="panel-header">
                       <h2>当前句逐字拆分</h2>
-                      <span>{activeCharacters.length} 字</span>
+                      <div className="panel-header-actions">
+                        {!isSplitPanelCollapsed ? <span>{activeCharacters.length} 字</span> : null}
+                        <button
+                          type="button"
+                          className="panel-collapse-button"
+                          title={isSplitPanelCollapsed ? "展开面板" : "最小化面板"}
+                          aria-label={isSplitPanelCollapsed ? "展开面板" : "最小化面板"}
+                          onClick={toggleSplitPanelCollapsed}
+                        >
+                          {isSplitPanelCollapsed ? "▸" : "—"}
+                        </button>
+                      </div>
                     </div>
-                    <div className="character-grid">
+                    {!isSplitPanelCollapsed ? (
+                      <div className="character-grid">
                       {activeCharacters.map((item) => {
                         const isEditing = editingCharacterId === item.id && editingCharacterLocation === "split-panel";
                         const className = [
@@ -3195,7 +3224,8 @@ function App() {
                           </button>
                         );
                       })}
-                    </div>
+                      </div>
+                    ) : null}
                   </section>
                 )}
                 secondary={(
