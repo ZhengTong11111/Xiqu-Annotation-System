@@ -15,6 +15,8 @@ export type AttachedPointTrack = {
   name: string;
   typeOptions: string[];
   points: AttachedPointAnnotation[];
+  snapToWaveformKeypoints?: boolean;
+  snapToParentBoundaries?: boolean;
 };
 
 export type SubtitleLine = {
@@ -64,6 +66,7 @@ export type CustomTextTrack = {
   blocks: CustomTextTrackBlock[];
   attachedPointTracks: AttachedPointTrack[];
   attachedPointTracksExpanded?: boolean;
+  snapToWaveformKeypoints?: boolean;
 };
 
 export type CustomActionTrack = {
@@ -74,6 +77,7 @@ export type CustomActionTrack = {
   blocks: CustomActionTrackBlock[];
   attachedPointTracks: AttachedPointTrack[];
   attachedPointTracksExpanded?: boolean;
+  snapToWaveformKeypoints?: boolean;
 };
 
 export type CustomTrack = CustomTextTrack | CustomActionTrack;
@@ -95,6 +99,7 @@ export type BuiltinTrack = {
   options?: string[];
   attachedPointTracks: AttachedPointTrack[];
   attachedPointTracksExpanded?: boolean;
+  snapToWaveformKeypoints?: boolean;
 };
 
 export type TrackDefinition = {
@@ -142,6 +147,7 @@ export type WaveformData = {
   samples: Float32Array;
   sampleRate: number;
   duration: number;
+  keypoints: number[];
 };
 
 export type SelectedItem =

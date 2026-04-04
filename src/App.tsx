@@ -94,6 +94,9 @@ const CONTEXT_MENU_VIEWPORT_MARGIN = 12;
 const PROJECT_FILE_VERSION = 2;
 const comparableProjectSignatureCache = new WeakMap<ProjectData, string>();
 const trackSnapSignatureCache = new WeakMap<Record<string, boolean>, string>();
+const WAVEFORM_KEYPOINT_MIN_SPACING_SECONDS = 0.06;
+const WAVEFORM_KEYPOINT_MAX_COUNT = 1600;
+const WAVEFORM_KEYPOINT_FRAME_DURATION_SECONDS = 0.012;
 
 function App() {
   const [project, setProject] = useState<ProjectData>(mockProject);
@@ -877,6 +880,8 @@ function App() {
       name: getDefaultAttachedPointTrackName(parentTrack?.attachedPointTracks ?? []),
       typeOptions: getDefaultAttachedPointTypeOptions(),
       points: [],
+      snapToWaveformKeypoints: false,
+      snapToParentBoundaries: true,
     };
     if (builtinParent) {
       updateBuiltinTrack(parentTrackId as BuiltinTrackId, (track) => ({
@@ -1311,10 +1316,11 @@ function App() {
           name: getDefaultCustomTrackName(currentProject.customTracks, trackType),
           trackType,
           typeOptions: getDefaultCustomTrackTypeOptions(),
-          blocks: [],
-          attachedPointTracks: [],
-          attachedPointTracksExpanded: false,
-        };
+        blocks: [],
+        attachedPointTracks: [],
+        attachedPointTracksExpanded: false,
+        snapToWaveformKeypoints: false,
+      };
 
     commitProject({
       ...currentProject,
@@ -1731,6 +1737,38 @@ function App() {
     updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
       ...pointTrack,
       name: normalizedName.length > 0 ? normalizedName : pointTrack.name,
+    }));
+  }
+
+  function updateTrackWaveformSnap(trackId: string, enabled: boolean) {
+    const builtinTrack = projectRef.current.builtinTracks.find((track) => track.id === trackId);
+    if (builtinTrack) {
+      updateBuiltinTrack(trackId as BuiltinTrackId, (track) => ({
+        ...track,
+        snapToWaveformKeypoints: enabled,
+      }));
+      return;
+    }
+
+    const customTrack = projectRef.current.customTracks.find((track) => track.id === trackId);
+    if (customTrack) {
+      updateCustomTrack(trackId, (track) => ({
+        ...track,
+        snapToWaveformKeypoints: enabled,
+      }) as CustomTrack);
+      return;
+    }
+
+    updateAttachedPointTrack(trackId, (pointTrack) => ({
+      ...pointTrack,
+      snapToWaveformKeypoints: enabled,
+    }));
+  }
+
+  function updateAttachedPointTrackParentSnap(pointTrackId: string, enabled: boolean) {
+    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
+      ...pointTrack,
+      snapToParentBoundaries: enabled,
     }));
   }
 
@@ -2571,9 +2609,19 @@ function App() {
                   builtinTracks={project.builtinTracks}
                   customTracks={project.customTracks}
                   trackDefinitions={timelineTrackDefinitions}
+                  trackSnapEnabled={trackSnapEnabled}
                   onCharacterUpdate={updateCharacter}
                   onActionUpdate={updateAction}
                   onAttachedPointUpdate={commitAttachedPoint}
+                  onTrackWaveformSnapChange={updateTrackWaveformSnap}
+                  onAttachedPointTrackParentSnapChange={updateAttachedPointTrackParentSnap}
+                  onSelectParentTrack={(trackId) =>
+                    applySelection(
+                      activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
+                        ? { type: "builtin-track", id: trackId as BuiltinTrackId }
+                        : { type: "custom-track", id: trackId },
+                    )
+                  }
                   onBuiltinTrackRename={renameBuiltinTrack}
                   onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
                   onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
@@ -3165,6 +3213,7 @@ function normalizeBuiltinTracks(value: ProjectData["builtinTracks"] | undefined)
         : defaultTrack.options,
       attachedPointTracks: normalizeAttachedPointTracks(track.attachedPointTracks),
       attachedPointTracksExpanded: Boolean(track.attachedPointTracksExpanded),
+      snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints),
     }];
   });
   return tracks.length > 0 ? tracks : getDefaultBuiltinTracks();
@@ -3187,6 +3236,7 @@ function normalizeCustomTracks(value: ProjectData["customTracks"] | undefined) {
       blocks: Array.isArray(track.blocks) ? track.blocks : [],
       attachedPointTracks: normalizeAttachedPointTracks(track.attachedPointTracks),
       attachedPointTracksExpanded: Boolean(track.attachedPointTracksExpanded),
+      snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints),
     }] as CustomTrack[];
   });
 }
@@ -3205,6 +3255,11 @@ function normalizeAttachedPointTracks(value: AttachedPointTrack[] | undefined) {
       typeOptions: Array.isArray(track.typeOptions) && track.typeOptions.length > 0
         ? track.typeOptions
         : getDefaultAttachedPointTypeOptions(),
+      snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints),
+      snapToParentBoundaries:
+        typeof track.snapToParentBoundaries === "boolean"
+          ? track.snapToParentBoundaries
+          : true,
       points: Array.isArray(track.points)
         ? track.points
             .filter((point) => point && typeof point.id === "string")
@@ -3265,6 +3320,7 @@ async function buildWaveformData(videoUrl: string): Promise<WaveformData | null>
       samples: mixedChannel,
       sampleRate: audioBuffer.sampleRate,
       duration: audioBuffer.duration,
+      keypoints: detectWaveformKeypoints(mixedChannel, audioBuffer.sampleRate, audioBuffer.duration),
     };
   } finally {
     void audioContext.close();
@@ -3283,6 +3339,87 @@ function mixAudioBufferChannels(audioBuffer: AudioBuffer) {
   }
 
   return mixed;
+}
+
+function detectWaveformKeypoints(
+  samples: Float32Array,
+  sampleRate: number,
+  duration: number,
+) {
+  if (samples.length === 0 || sampleRate <= 0 || duration <= 0) {
+    return [];
+  }
+
+  const frameSize = Math.max(64, Math.round(sampleRate * WAVEFORM_KEYPOINT_FRAME_DURATION_SECONDS));
+  const hopSize = Math.max(32, Math.round(frameSize / 2));
+  const envelopeLength = Math.max(1, Math.ceil(samples.length / hopSize));
+  const envelope = new Float32Array(envelopeLength);
+
+  for (let frameIndex = 0; frameIndex < envelopeLength; frameIndex += 1) {
+    const start = frameIndex * hopSize;
+    const end = Math.min(samples.length, start + frameSize);
+    let rmsSum = 0;
+    let peak = 0;
+    for (let sampleIndex = start; sampleIndex < end; sampleIndex += 1) {
+      const value = samples[sampleIndex] ?? 0;
+      const absValue = Math.abs(value);
+      peak = Math.max(peak, absValue);
+      rmsSum += value * value;
+    }
+    const count = Math.max(1, end - start);
+    const rms = Math.sqrt(rmsSum / count);
+    envelope[frameIndex] = peak * 0.55 + rms * 0.85;
+  }
+
+  const smoothed = new Float32Array(envelopeLength);
+  for (let index = 0; index < envelopeLength; index += 1) {
+    const previous = envelope[Math.max(0, index - 1)] ?? envelope[index] ?? 0;
+    const current = envelope[index] ?? 0;
+    const next = envelope[Math.min(envelopeLength - 1, index + 1)] ?? current;
+    smoothed[index] = previous * 0.25 + current * 0.5 + next * 0.25;
+  }
+
+  let averageLevel = 0;
+  const positiveDiffs: number[] = [];
+  for (let index = 0; index < smoothed.length; index += 1) {
+    averageLevel += smoothed[index] ?? 0;
+    if (index === 0) {
+      continue;
+    }
+    const diff = (smoothed[index] ?? 0) - (smoothed[index - 1] ?? 0);
+    if (diff > 0) {
+      positiveDiffs.push(diff);
+    }
+  }
+  averageLevel /= Math.max(smoothed.length, 1);
+  const averagePositiveDiff = positiveDiffs.length > 0
+    ? positiveDiffs.reduce((sum, value) => sum + value, 0) / positiveDiffs.length
+    : 0;
+  const onsetThreshold = Math.max(averagePositiveDiff * 1.8, averageLevel * 0.18, 0.01);
+  const levelThreshold = Math.max(averageLevel * 0.6, 0.025);
+  const keypoints: number[] = [];
+
+  for (let index = 1; index < smoothed.length - 1; index += 1) {
+    const current = smoothed[index] ?? 0;
+    const previous = smoothed[index - 1] ?? 0;
+    const next = smoothed[index + 1] ?? 0;
+    const diff = current - previous;
+    if (current < levelThreshold || diff < onsetThreshold || current < next) {
+      continue;
+    }
+
+    const time = Math.min(duration, (index * hopSize) / sampleRate);
+    const previousTime = keypoints[keypoints.length - 1];
+    if (previousTime !== undefined && time - previousTime < WAVEFORM_KEYPOINT_MIN_SPACING_SECONDS) {
+      continue;
+    }
+    keypoints.push(time);
+    if (keypoints.length >= WAVEFORM_KEYPOINT_MAX_COUNT) {
+      break;
+    }
+  }
+
+  return keypoints;
 }
 
 export default App;

@@ -21,9 +21,13 @@ type InspectorPanelProps = {
   builtinTracks: BuiltinTrack[];
   customTracks: CustomTrack[];
   trackDefinitions: TrackDefinition[];
+  trackSnapEnabled: Record<string, boolean>;
   onCharacterUpdate: (id: string, changes: Partial<CharacterAnnotation>) => void;
   onActionUpdate: (id: string, changes: Partial<ActionAnnotation>) => void;
   onAttachedPointUpdate: (trackId: string, pointId: string, changes: { time?: number; label?: string }) => void;
+  onTrackWaveformSnapChange: (trackId: string, enabled: boolean) => void;
+  onAttachedPointTrackParentSnapChange: (trackId: string, enabled: boolean) => void;
+  onSelectParentTrack: (trackId: string) => void;
   onBuiltinTrackRename: (trackId: BuiltinTrackId, name: string) => void;
   onBuiltinTrackTypeOptionChange: (trackId: BuiltinTrackId, index: number, value: string) => void;
   onAddBuiltinTrackTypeOption: (trackId: BuiltinTrackId) => void;
@@ -69,9 +73,13 @@ export function InspectorPanel({
   builtinTracks,
   customTracks,
   trackDefinitions,
+  trackSnapEnabled,
   onCharacterUpdate,
   onActionUpdate,
   onAttachedPointUpdate,
+  onTrackWaveformSnapChange,
+  onAttachedPointTrackParentSnapChange,
+  onSelectParentTrack,
   onBuiltinTrackRename,
   onBuiltinTrackTypeOptionChange,
   onAddBuiltinTrackTypeOption,
@@ -396,6 +404,11 @@ export function InspectorPanel({
       !isAttachedPointTrack && "attachedPointTracksExpanded" in track
         ? Boolean(track.attachedPointTracksExpanded)
         : false;
+    const trackSnapOn = Boolean(trackSnapEnabled[track.id]);
+    const waveformSnapOn = Boolean(track.snapToWaveformKeypoints);
+    const parentBoundarySnapOn = isAttachedPointTrack && selectedAttachedPointTrack
+      ? Boolean(selectedAttachedPointTrack.track.snapToParentBoundaries)
+      : false;
     const trackTypeLabel = isAttachedPointTrack
       ? "附属打点轨"
       : "trackType" in track
@@ -404,7 +417,21 @@ export function InspectorPanel({
     return (
       <section className="panel inspector-panel">
         <div className="panel-header">
-          <h2>轨道设置</h2>
+          <div className="panel-header-copy">
+            <h2>{isAttachedPointTrack ? "附属打点轨设置" : "轨道设置"}</h2>
+            {isAttachedPointTrack && selectedAttachedPointTrack ? (
+              <span>{selectedAttachedPointTrack.parentTrack.name}</span>
+            ) : null}
+          </div>
+          {isAttachedPointTrack && selectedAttachedPointTrack ? (
+            <button
+              type="button"
+              className="panel-header-secondary"
+              onClick={() => onSelectParentTrack(selectedAttachedPointTrack.parentTrack.id)}
+            >
+              返回父轨道
+            </button>
+          ) : null}
           <button onClick={() => {
             if (isBuiltinTrack) {
               onDeleteBuiltinTrack(track.id as BuiltinTrackId);
@@ -451,6 +478,44 @@ export function InspectorPanel({
           <label>轨道类型</label>
           <div className="inspector-value">{trackTypeLabel}</div>
         </div>
+        <div className="inspector-field">
+          <label>音频关键点吸附</label>
+          <div className={`inspector-toggle-row ${trackSnapOn ? "" : "disabled"}`.trim()}>
+            <div className="inspector-toggle-copy">
+              <strong>吸附到音频关键点</strong>
+              <span>{trackSnapOn ? "拖动、缩放和创建时会参考波形关键点" : "请先在轨道头开启吸附"}</span>
+            </div>
+            <label className="inspector-switch">
+              <input
+                type="checkbox"
+                checked={waveformSnapOn}
+                disabled={!trackSnapOn}
+                onChange={(event) => onTrackWaveformSnapChange(track.id, event.target.checked)}
+              />
+              <span className="inspector-switch-slider" />
+            </label>
+          </div>
+        </div>
+        {isAttachedPointTrack ? (
+          <div className="inspector-field">
+            <label>父轨道边界吸附</label>
+            <div className={`inspector-toggle-row ${trackSnapOn ? "" : "disabled"}`.trim()}>
+              <div className="inspector-toggle-copy">
+                <strong>吸附到父轨道标注边界</strong>
+                <span>{trackSnapOn ? "会参考父轨道标记块的开始与结束位置" : "请先在轨道头开启吸附"}</span>
+              </div>
+              <label className="inspector-switch">
+                <input
+                  type="checkbox"
+                  checked={parentBoundarySnapOn}
+                  disabled={!trackSnapOn}
+                  onChange={(event) => onAttachedPointTrackParentSnapChange(track.id, event.target.checked)}
+                />
+                <span className="inspector-switch-slider" />
+              </label>
+            </div>
+          </div>
+        ) : null}
         {isAttachedPointTrack && selectedAttachedPointTrack ? (
           <div className="inspector-field">
             <label>父轨道</label>

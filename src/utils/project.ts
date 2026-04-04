@@ -29,6 +29,7 @@ export const defaultBuiltinTracks: BuiltinTrack[] = [
     options: [...singingStyleOptions],
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
+    snapToWaveformKeypoints: false,
   },
   {
     id: "hand-action",
@@ -37,6 +38,7 @@ export const defaultBuiltinTracks: BuiltinTrack[] = [
     options: ["抬手", "落手", "指向", "翻腕", "水袖动作", "其他"],
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
+    snapToWaveformKeypoints: false,
   },
   {
     id: "body-action",
@@ -45,6 +47,7 @@ export const defaultBuiltinTracks: BuiltinTrack[] = [
     options: ["转身", "移步", "屈伸", "亮相", "前倾", "后仰", "其他"],
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
+    snapToWaveformKeypoints: false,
   },
 ];
 
@@ -54,6 +57,7 @@ export function getDefaultBuiltinTracks(): BuiltinTrack[] {
     options: track.options ? [...track.options] : undefined,
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
+    snapToWaveformKeypoints: false,
   }));
 }
 
@@ -67,6 +71,7 @@ export function getBuiltinTrackDefinition(trackId: BuiltinTrackId): BuiltinTrack
     options: track.options ? [...track.options] : undefined,
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
+    snapToWaveformKeypoints: false,
   };
 }
 

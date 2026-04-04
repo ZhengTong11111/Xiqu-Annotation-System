@@ -165,6 +165,7 @@ const DEFAULT_WAVEFORM_TRACK_HEIGHT = DEFAULT_TRACK_HEIGHT;
 const MIN_WAVEFORM_TRACK_HEIGHT = 44;
 const MAX_WAVEFORM_TRACK_HEIGHT = 240;
 const SNAP_DISTANCE_PX = 4;
+const SNAP_VISUAL_MATCH_PX = 1;
 const REORDER_ACTIVATION_PX = 6;
 const ZOOM_SETTLE_MS = 220;
 const ZOOM_MIN = 5;
@@ -184,7 +185,7 @@ const WAVEFORM_MAX_BUCKETS = 960;
 const WAVEFORM_MAX_SAMPLES_PER_BUCKET = 192;
 const CLICK_SUPPRESS_MS = 120;
 const FOCUS_SCROLL_DURATION_MS = 260;
-const SNAP_RELEASE_DISTANCE_PX = 10;
+const SNAP_RELEASE_DISTANCE_PX = 16;
 
 type ZoomGestureState = {
   startZoom: number;
@@ -482,6 +483,19 @@ export function Timeline({
       width: Math.max(visibleDuration * zoom, 1),
     };
   }, [duration, viewportState, waveformData, waveformViewHeight, zoom]);
+  const visibleWaveformKeypoints = useMemo(() => {
+    if (!waveformData?.keypoints?.length) {
+      return [];
+    }
+    const laneViewportStart = Math.max(0, viewportState.scrollLeft - TRACK_LABEL_WIDTH);
+    const laneViewportWidth = Math.max(
+      240,
+      viewportState.width - Math.max(TRACK_LABEL_WIDTH - viewportState.scrollLeft, 0),
+    );
+    const visibleStartTime = Math.max(0, laneViewportStart / zoom);
+    const visibleEndTime = Math.min(duration, (laneViewportStart + laneViewportWidth) / zoom);
+    return waveformData.keypoints.filter((time) => time >= visibleStartTime && time <= visibleEndTime);
+  }, [duration, viewportState.scrollLeft, viewportState.width, waveformData, zoom]);
   const selectedTimelineKeySet = useMemo(
     () => new Set(selectedTimelineItems.map((item) => getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" ? item.trackId : undefined))),
     [selectedTimelineItems],
@@ -752,26 +766,48 @@ export function Timeline({
       ),
     );
     const liveProject = getProjectSnapshot();
+    const waveformKeypoints = shouldTrackSnapToWaveformKeypoints(liveProject, trackId, waveformData)
+      ? waveformData?.keypoints ?? []
+      : [];
     if (trackId === "character-track") {
-      return liveProject.characterAnnotations.flatMap((item) =>
-        excludedKeySet.has(getTimelineSelectionKey("character", item.id))
-          ? []
-          : [item.startTime, item.endTime],
-      );
+      return [
+        ...liveProject.characterAnnotations.flatMap((item) =>
+          excludedKeySet.has(getTimelineSelectionKey("character", item.id))
+            ? []
+            : [item.startTime, item.endTime],
+        ),
+        ...waveformKeypoints,
+      ];
+    }
+    const attachedPointTrack = findResolvedAttachedPointTrack(liveProject, trackId);
+    if (attachedPointTrack) {
+      const parentTrackSnapPoints = attachedPointTrack.snapToParentBoundaries
+        ? getParentTrackBoundarySnapPoints(liveProject, trackId)
+        : [];
+      return [
+        ...parentTrackSnapPoints,
+        ...waveformKeypoints,
+      ];
     }
     const customTrack = liveProject.customTracks.find((track) => track.id === trackId);
     if (customTrack) {
-      return customTrack.blocks.flatMap((item) =>
-        excludedKeySet.has(getTimelineSelectionKey("custom-block", item.id, trackId))
-          ? []
-          : [item.startTime, item.endTime],
-      );
+      return [
+        ...customTrack.blocks.flatMap((item) =>
+          excludedKeySet.has(getTimelineSelectionKey("custom-block", item.id, trackId))
+            ? []
+            : [item.startTime, item.endTime],
+        ),
+        ...waveformKeypoints,
+      ];
     }
-    return liveProject.actionAnnotations.flatMap((item) =>
-      item.trackId === trackId && !excludedKeySet.has(getTimelineSelectionKey("action", item.id))
-        ? [item.startTime, item.endTime]
-        : [],
-    );
+    return [
+      ...liveProject.actionAnnotations.flatMap((item) =>
+        item.trackId === trackId && !excludedKeySet.has(getTimelineSelectionKey("action", item.id))
+          ? [item.startTime, item.endTime]
+          : [],
+      ),
+      ...waveformKeypoints,
+    ];
   }
 
   function computeRangeWithTrackSnap(params: {
@@ -1141,12 +1177,34 @@ export function Timeline({
       }
 
       if (activeDragState.kind === "move-point") {
+        const pointSnapPoints = trackSnapEnabled[activeDragState.trackId]
+          ? getTrackSnapPoints(activeDragState.trackId)
+          : [];
+        const rawTime = Math.max(0, activeDragState.originalTime + deltaSeconds);
+        const resolvedTime = trackSnapEnabled[activeDragState.trackId]
+          ? resolveSnappedEdgeTime(
+              rawTime,
+              "left",
+              pointSnapPoints,
+              zoom,
+              pointerStepPx,
+              dragSnapLockRef.current,
+            )
+          : { time: rawTime, snappedTo: null };
+        setActiveSnapIndicator(
+          resolvedTime.snappedTo
+            ? { trackId: activeDragState.trackId, ...resolvedTime.snappedTo }
+            : null,
+        );
+        dragSnapLockRef.current = toDragSnapLock(
+          resolvedTime.snappedTo,
+        );
         scheduleDragUpdate({
           target: "attached-point",
           trackId: activeDragState.trackId,
           pointId: activeDragState.id,
           changes: {
-            time: Math.max(0, activeDragState.originalTime + deltaSeconds),
+            time: resolvedTime.time,
           },
         });
         return;
@@ -1264,6 +1322,7 @@ export function Timeline({
 
     const handlePointerUp = () => {
       const activeDragState = dragStateRef.current;
+      const finalSnapLock = dragSnapLockRef.current;
       dragSnapLockRef.current = null;
       clearPreviewFrame();
       setActiveSnapIndicator(null);
@@ -1322,8 +1381,25 @@ export function Timeline({
         );
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (activeDragState.kind === "move-point") {
+        const finalPointSnapPoints = trackSnapEnabled[activeDragState.trackId]
+          ? getTrackSnapPoints(activeDragState.trackId)
+          : [];
+        const rawTime = Math.max(
+          0,
+          activeDragState.originalTime + (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+        );
+        const finalTime = trackSnapEnabled[activeDragState.trackId]
+          ? resolveSnappedEdgeTime(
+              rawTime,
+              "left",
+              finalPointSnapPoints,
+              zoom,
+              0,
+              finalSnapLock,
+            ).time
+          : rawTime;
         onAttachedPointCommit(activeDragState.trackId, activeDragState.id, {
-          time: Math.max(0, activeDragState.originalTime + (lastPointerClientXRef.current - activeDragState.originX) / zoom),
+          time: finalTime,
         });
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (activeDragState.kind === "resize-linked") {
@@ -1659,6 +1735,13 @@ export function Timeline({
                   onSeek(getLaneTime(event.currentTarget, event.clientX, zoom));
                 }}
               >
+                {visibleWaveformKeypoints.map((time) => (
+                  <div
+                    key={`waveform-keypoint-${time}`}
+                    className="waveform-keypoint-guide"
+                    style={{ left: time * zoom }}
+                  />
+                ))}
                 {waveformDetail ? (
                   <svg
                     className="waveform-detail-svg"
@@ -1935,12 +2018,18 @@ export function Timeline({
                     }
                     const target = event.target as HTMLElement | null;
                     const laneTime = getLaneTime(event.currentTarget, event.clientX, zoom);
+                    const creationSnapPoints = trackSnapEnabled[track.id]
+                      ? [...snapPoints, ...getTrackSnapPoints(track.id)]
+                      : [];
+                    const snappedLaneTime = trackSnapEnabled[track.id]
+                      ? snapTime(laneTime, creationSnapPoints, zoom)
+                      : laneTime;
                     if (!target?.closest(".timeline-block, .timeline-point-marker") && event.detail === 2) {
                       if (track.type === "attached-point") {
-                        onCreateAttachedPoint(track.id, snapTime(laneTime, snapPoints, zoom));
+                        onCreateAttachedPoint(track.id, snappedLaneTime);
                         return;
                       }
-                      const startTime = snapTime(laneTime, snapPoints, zoom);
+                      const startTime = snappedLaneTime;
                       if (track.type === "character") {
                         onCreateCharacterAtTime(startTime);
                         return;
@@ -2161,10 +2250,17 @@ export function Timeline({
             zoom,
             customAnnotation?.trackId,
           );
-          const targetId = preferredHit?.id ?? annotation.id;
-          const targetType = preferredHit?.type ?? type;
-          const targetTrackId = preferredHit?.type === "custom-block"
-            ? preferredHit.trackId
+          const displayedHoverHit =
+            hoveredBlock?.id === annotation.id &&
+            hoveredBlock.type === type &&
+            (!customAnnotation || (hoveredBlock.type === "custom-block" && hoveredBlock.trackId === customAnnotation.trackId))
+              ? hoveredBlock
+              : null;
+          const interactionHit = displayedHoverHit ?? preferredHit;
+          const targetId = interactionHit?.id ?? annotation.id;
+          const targetType = interactionHit?.type ?? type;
+          const targetTrackId = interactionHit?.type === "custom-block"
+            ? interactionHit.trackId
             : customAnnotation
               ? customAnnotation.trackId
               : undefined;
@@ -2172,7 +2268,7 @@ export function Timeline({
           const targetEdge =
             selectedTimelineItems.length > 1 && selectedTimelineKeySet.has(targetSelectionKey)
               ? "center"
-              : preferredHit?.edge ?? resolveEdgeForElement(
+              : interactionHit?.edge ?? resolveEdgeForElement(
                   event.currentTarget,
                   event.clientX,
                   annotation,
@@ -3055,12 +3151,20 @@ function computeLinkedResizeRange(
   const minBoundary = dragState.leftItem.startTime + minDuration;
   const maxBoundary = dragState.rightItem.endTime - minDuration;
   const clampedBoundary = Math.max(minBoundary, Math.min(maxBoundary, rawBoundary));
-  const snapPoint = shouldSnap
-    ? getEdgeSnapCandidate(clampedBoundary, "right", snapPoints, zoom, pointerStepPx, snapLock)
-    : null;
-  const snappedBoundary = snapPoint
-    ? Math.max(minBoundary, Math.min(maxBoundary, snapPoint.point))
-    : clampedBoundary;
+  const resolvedBoundary = shouldSnap
+    ? resolveSnappedEdgeTime(
+        clampedBoundary,
+        "right",
+        snapPoints,
+        zoom,
+        pointerStepPx,
+        snapLock,
+      )
+    : { time: clampedBoundary, snappedTo: null };
+  const snappedBoundary = Math.max(
+    minBoundary,
+    Math.min(maxBoundary, resolvedBoundary.time),
+  );
   return {
     leftItem: {
       ...dragState.leftItem,
@@ -3071,7 +3175,15 @@ function computeLinkedResizeRange(
       startTime: snappedBoundary,
     },
     boundaryTime: snappedBoundary,
-    snappedTo: snapPoint ? { time: snappedBoundary, edge: "right" as const } : null,
+    snappedTo:
+      resolvedBoundary.snappedTo &&
+      isWithinSnapVisualTolerance(
+        snappedBoundary,
+        resolvedBoundary.snappedTo.time,
+        zoom,
+      )
+        ? resolvedBoundary.snappedTo
+        : null,
   };
 }
 
@@ -3138,6 +3250,30 @@ function snapTime(
   return getEdgeSnapCandidate(time, edge, snapPoints, zoom, pointerStepPx, snapLock)?.point ?? time;
 }
 
+function resolveSnappedEdgeTime(
+  time: number,
+  edge: "left" | "right",
+  snapPoints: number[],
+  zoom: number,
+  pointerStepPx = 0,
+  snapLock: DragSnapLock = null,
+) {
+  const candidate = getEdgeSnapCandidate(
+    time,
+    edge,
+    snapPoints,
+    zoom,
+    pointerStepPx,
+    snapLock,
+  );
+  return {
+    time: candidate?.point ?? time,
+    snappedTo: candidate
+      ? { time: candidate.point, edge }
+      : null,
+  };
+}
+
 function computeNextRange(
   originalStart: number,
   originalEnd: number,
@@ -3183,31 +3319,55 @@ function computeNextRange(
     return { startTime: rawStart, endTime: rawEnd, snappedTo: null };
   }
   if (String(kind).includes("resize-left")) {
+    const rawStart = Math.max(0, originalStart + deltaSeconds);
+    const snappedStart = shouldSnap
+      ? resolveSnappedEdgeTime(rawStart, "left", snapPoints, zoom, pointerStepPx, snapLock)
+      : { time: rawStart, snappedTo: null };
     const { startTime, endTime } = clampRange(
-      shouldSnap ? snapTime(Math.max(0, originalStart + deltaSeconds), snapPoints, zoom, pointerStepPx, snapLock, "left") : Math.max(0, originalStart + deltaSeconds),
+      snappedStart.time,
       originalEnd,
       minDuration,
     );
-    const snappedTo = shouldSnap ? getEdgeSnapCandidate(startTime, "left", snapPoints, zoom, pointerStepPx, snapLock) : null;
     return {
       startTime,
       endTime,
-      snappedTo: snappedTo ? { time: snappedTo.point, edge: "left" as const } : null,
+      snappedTo:
+        snappedStart.snappedTo &&
+        isWithinSnapVisualTolerance(
+          startTime,
+          snappedStart.snappedTo.time,
+          zoom,
+        )
+          ? snappedStart.snappedTo
+          : null,
     };
   }
+  const rawEnd = Math.max(originalStart + minDuration, originalEnd + deltaSeconds);
+  const snappedEnd = shouldSnap
+    ? resolveSnappedEdgeTime(rawEnd, "right", snapPoints, zoom, pointerStepPx, snapLock)
+    : { time: rawEnd, snappedTo: null };
   const { startTime, endTime } = clampRange(
     originalStart,
-    shouldSnap
-      ? snapTime(Math.max(originalStart + minDuration, originalEnd + deltaSeconds), snapPoints, zoom, pointerStepPx, snapLock, "right")
-      : Math.max(originalStart + minDuration, originalEnd + deltaSeconds),
+    snappedEnd.time,
     minDuration,
   );
-  const snappedTo = shouldSnap ? getEdgeSnapCandidate(endTime, "right", snapPoints, zoom, pointerStepPx, snapLock) : null;
   return {
     startTime,
     endTime,
-    snappedTo: snappedTo ? { time: snappedTo.point, edge: "right" as const } : null,
+    snappedTo:
+      snappedEnd.snappedTo &&
+      isWithinSnapVisualTolerance(
+        endTime,
+        snappedEnd.snappedTo.time,
+        zoom,
+      )
+        ? snappedEnd.snappedTo
+        : null,
   };
+}
+
+function isWithinSnapVisualTolerance(leftTime: number, rightTime: number, zoom: number) {
+  return Math.abs(leftTime - rightTime) * Math.max(zoom, 1) <= SNAP_VISUAL_MATCH_PX;
 }
 
 function findNearestSnapPoint(time: number, snapPoints: number[], zoom: number, pointerStepPx: number) {
@@ -3449,6 +3609,56 @@ function flattenAttachedPointTracks(
       points: pointTrack.points,
     })),
   );
+}
+
+function findResolvedAttachedPointTrack(project: ProjectData, trackId: string) {
+  for (const track of [...project.builtinTracks, ...project.customTracks]) {
+    const attachedPointTrack = (track.attachedPointTracks ?? []).find((item) => item.id === trackId);
+    if (attachedPointTrack) {
+      return attachedPointTrack;
+    }
+  }
+  return null;
+}
+
+function getParentTrackBoundarySnapPoints(project: ProjectData, attachedPointTrackId: string) {
+  for (const builtinTrack of project.builtinTracks) {
+    if ((builtinTrack.attachedPointTracks ?? []).some((item) => item.id === attachedPointTrackId)) {
+      if (builtinTrack.id === "character-track") {
+        return project.characterAnnotations.flatMap((item) => [item.startTime, item.endTime]);
+      }
+      return project.actionAnnotations
+        .filter((item) => item.trackId === builtinTrack.id)
+        .flatMap((item) => [item.startTime, item.endTime]);
+    }
+  }
+
+  for (const customTrack of project.customTracks) {
+    if ((customTrack.attachedPointTracks ?? []).some((item) => item.id === attachedPointTrackId)) {
+      return customTrack.blocks.flatMap((item) => [item.startTime, item.endTime]);
+    }
+  }
+
+  return [];
+}
+
+function shouldTrackSnapToWaveformKeypoints(
+  project: ProjectData,
+  trackId: string,
+  waveformData: WaveformData | null,
+) {
+  if (!waveformData?.keypoints?.length) {
+    return false;
+  }
+  const builtinTrack = project.builtinTracks.find((track) => track.id === trackId);
+  if (builtinTrack) {
+    return Boolean(builtinTrack.snapToWaveformKeypoints);
+  }
+  const customTrack = project.customTracks.find((track) => track.id === trackId);
+  if (customTrack) {
+    return Boolean(customTrack.snapToWaveformKeypoints);
+  }
+  return Boolean(findResolvedAttachedPointTrack(project, trackId)?.snapToWaveformKeypoints);
 }
 
 function getTrackIdForAnnotation(
