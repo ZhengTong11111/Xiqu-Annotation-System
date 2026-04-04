@@ -358,6 +358,7 @@ export function Timeline({
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
   const trackBlockHeight = Math.round(clampValue(trackHeight - 22, 24, 54));
   const trackBlockTop = Math.round(Math.max(5, (trackHeight - trackBlockHeight) / 2));
+  const compactTrackLabels = trackHeight <= 52;
   const waveformViewHeight = Math.max(
     MIN_WAVEFORM_VIEW_HEIGHT,
     waveformTrackHeight - WAVEFORM_TRACK_VERTICAL_PADDING * 2,
@@ -777,6 +778,17 @@ export function Timeline({
       setRecentlyMovedTrackId((current) => (current === trackId ? null : current));
       moveTrackHighlightTimerRef.current = null;
     }, 360);
+  }
+
+  function startTrackReorder(trackId: string, clientY: number) {
+    draggedTrackIdRef.current = trackId;
+    setDraggedTrackId(trackId);
+    setTrackReorderDrag({
+      trackId,
+      startY: clientY,
+      currentY: clientY,
+    });
+    setTrackDropInsertionIndex(null);
   }
 
   function computeSelectionMoveRange(
@@ -1620,6 +1632,7 @@ export function Timeline({
                   className={[
                     "track-label",
                     track.isCustom || track.isBuiltin ? "track-label-custom" : "",
+                    compactTrackLabels ? "compact" : "",
                     ((selectedItem?.type === "custom-track" || selectedItem?.type === "builtin-track") && selectedItem.id === track.id) ? "selected" : "",
                     draggedTrackId === track.id ? "dragging" : "",
                     recentlyMovedTrackId === track.id ? "recently-moved" : "",
@@ -1641,6 +1654,21 @@ export function Timeline({
                       onSelectTrack(track.id);
                     }
                   }}
+                  onPointerDown={(event) => {
+                    if (!track.isCustom && !track.isBuiltin) {
+                      return;
+                    }
+                    if (event.button !== 0) {
+                      return;
+                    }
+                    const target = event.target as HTMLElement | null;
+                    if (target?.closest(".track-snap-toggle, .track-label-tools, button, input")) {
+                      return;
+                    }
+                    event.stopPropagation();
+                    event.preventDefault();
+                    startTrackReorder(track.id, event.clientY);
+                  }}
                 >
                   <div className="track-label-copy">
                     <div
@@ -1652,22 +1680,20 @@ export function Timeline({
                         if (!track.isCustom && !track.isBuiltin) {
                           return;
                         }
+                        const target = event.target as HTMLElement | null;
+                        if (target?.closest(".track-snap-toggle, .track-label-tools, button, input")) {
+                          return;
+                        }
                         event.stopPropagation();
                         event.preventDefault();
-                        draggedTrackIdRef.current = track.id;
-                        setDraggedTrackId(track.id);
-                        setTrackReorderDrag({
-                          trackId: track.id,
-                          startY: event.clientY,
-                          currentY: event.clientY,
-                        });
-                        setTrackDropInsertionIndex(null);
+                        startTrackReorder(track.id, event.clientY);
                       }}
                     >
                       <strong>{track.name}</strong>
-                      {track.isCustom ? (
+                      {!compactTrackLabels && track.isCustom ? (
                         <span>{track.type === "custom-text" ? "文字类自定义轨" : "动作类自定义轨"}</span>
-                      ) : track.isBuiltin ? (
+                      ) : null}
+                      {!compactTrackLabels && track.isBuiltin ? (
                         <span>{track.type === "character" ? "文字类内建轨" : "动作类内建轨"}</span>
                       ) : null}
                     </div>

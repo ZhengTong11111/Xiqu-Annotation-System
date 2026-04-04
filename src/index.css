@@ -1009,11 +1009,25 @@ select {
   padding-bottom: 18px;
 }
 
+.track-label.compact {
+  padding-top: 4px;
+  padding-bottom: 3px;
+}
+
+.track-label.compact .track-label-copy {
+  gap: 1px;
+  padding-bottom: 16px;
+}
+
 .track-label-main {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+}
+
+.track-label.compact .track-label-main {
+  gap: 0;
 }
 
 .track-label-main strong,
@@ -1028,9 +1042,18 @@ select {
   line-height: 1.2;
 }
 
+.track-label.compact .track-label-main strong {
+  line-height: 1.05;
+  font-size: 11px;
+}
+
 .track-label-main span {
   line-height: 1.15;
   white-space: nowrap;
+}
+
+.track-label.compact .track-label-main span {
+  display: none;
 }
 
 .track-label-drag-surface {
@@ -1057,6 +1080,12 @@ select {
   min-height: 18px;
 }
 
+.track-label.compact .track-label-footer {
+  bottom: 1px;
+  gap: 3px;
+  min-height: 14px;
+}
+
 .track-label-copy strong {
   font-size: 12px;
   font-weight: 600;
@@ -1080,6 +1109,16 @@ select {
   line-height: 1;
   align-self: center;
   overflow: hidden;
+  justify-self: start;
+  width: fit-content;
+  max-width: max-content;
+}
+
+.track-label.compact .track-snap-toggle {
+  gap: 2px;
+  font-size: 9px;
+  align-self: end;
+  justify-self: start;
 }
 
 .track-snap-toggle input {
@@ -1087,6 +1126,21 @@ select {
   width: 11px;
   height: 11px;
   flex: 0 0 auto;
+}
+
+.track-label.compact .track-snap-toggle input {
+  width: 10px;
+  height: 10px;
+}
+
+.track-label.compact .track-label-tools {
+  gap: 1px;
+}
+
+.track-label.compact .track-label-tool-button {
+  min-width: 20px;
+  height: 20px;
+  font-size: 10px;
 }
 
 .track-lane {
