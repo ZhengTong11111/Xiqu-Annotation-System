@@ -9,7 +9,6 @@ import { SubtitleList } from "./components/SubtitleList";
 import { Timeline } from "./components/Timeline";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { TopMenuBar } from "./components/TopMenuBar";
-import { Toolbar } from "./components/Toolbar";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { mockProject } from "./mockData";
 import type {
@@ -120,6 +119,8 @@ function App() {
   const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoFileInputRef = useRef<HTMLInputElement>(null);
+  const srtFileInputRef = useRef<HTMLInputElement>(null);
+  const projectFileInputRef = useRef<HTMLInputElement>(null);
   const projectRef = useRef(project);
   const savedProjectRef = useRef(project);
   const transientProjectRef = useRef<ProjectData | null>(null);
@@ -1917,18 +1918,19 @@ function App() {
 
   return (
     <AppShell
-      menuBar={<TopMenuBar />}
-      toolbar={(
-        <Toolbar
+      menuBar={(
+        <TopMenuBar
           isPlaying={isPlaying}
           playbackRate={playbackRate}
           canUndo={undoStack.length > 0}
           canRedo={redoStack.length > 0}
           activeBuiltinTrackIds={Array.from(activeBuiltinTrackIds)}
+          videoFileInputRef={videoFileInputRef}
+          srtFileInputRef={srtFileInputRef}
+          projectFileInputRef={projectFileInputRef}
           onTogglePlay={togglePlay}
           onStep={(delta) => seekTo(currentTime + delta)}
           onPlaybackRateChange={setPlaybackRate}
-          videoFileInputRef={videoFileInputRef}
           onVideoFileChange={(event) => {
             const file = event.target.files?.[0];
             if (file) {

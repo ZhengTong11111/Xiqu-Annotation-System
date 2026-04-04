@@ -105,7 +105,7 @@ select {
 
 .app-shell-chrome {
   display: grid;
-  grid-template-rows: auto auto;
+  grid-template-rows: auto;
   border-bottom: 1px solid rgba(15, 23, 42, 0.18);
   background: linear-gradient(180deg, var(--chrome-dark) 0%, var(--chrome-dark-2) 100%);
   box-shadow: 0 10px 20px rgba(15, 23, 42, 0.12);
@@ -174,6 +174,10 @@ select {
   min-width: 0;
 }
 
+.top-menu-item {
+  position: relative;
+}
+
 .top-menu-button {
   border: 1px solid transparent;
   background: transparent;
@@ -188,6 +192,77 @@ select {
 .top-menu-button:hover {
   border-color: rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.08);
+}
+
+.top-menu-button.active {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.top-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 178px;
+  padding: 6px;
+  border: 1px solid rgba(15, 23, 42, 0.22);
+  border-radius: 8px;
+  background: rgba(244, 247, 251, 0.98);
+  box-shadow: 0 16px 28px rgba(15, 23, 42, 0.2);
+  color: #182230;
+  backdrop-filter: blur(12px);
+}
+
+.top-menu-dropdown-item {
+  justify-content: flex-start;
+  min-height: 26px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 5px;
+  color: inherit;
+  box-shadow: none;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.top-menu-dropdown-item:hover {
+  border-color: rgba(15, 108, 189, 0.1);
+  background: rgba(15, 108, 189, 0.08);
+}
+
+.top-menu-dropdown-item.active-option {
+  background: rgba(15, 108, 189, 0.12);
+  color: #0f4473;
+  font-weight: 600;
+}
+
+.top-menu-dropdown-item:disabled {
+  opacity: 0.42;
+  background: transparent;
+}
+
+.top-menu-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: rgba(15, 23, 42, 0.08);
+}
+
+.top-menu-label,
+.top-menu-note {
+  padding: 2px 8px 4px;
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.top-menu-label {
+  padding-top: 4px;
+  font-weight: 600;
 }
 
 .toolbar {
