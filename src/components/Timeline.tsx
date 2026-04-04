@@ -1,6 +1,7 @@
 import { type CSSProperties, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ActionAnnotation,
+  AttachedPointAnnotation,
   BuiltinTrack,
   BuiltinTrackId,
   CharacterAnnotation,
@@ -18,6 +19,7 @@ import { clampRange } from "../utils/project";
 
 type TimelineProps = {
   subtitleLines: SubtitleLine[];
+  builtinTracks: BuiltinTrack[];
   characterAnnotations: CharacterAnnotation[];
   actionAnnotations: ActionAnnotation[];
   customTracks: CustomTrack[];
@@ -46,8 +48,10 @@ type TimelineProps = {
   onSelectItem: (item: SelectedItem) => void;
   onSelectBuiltinTrack: (trackId: BuiltinTrackId) => void;
   onSelectTrack: (trackId: string) => void;
+  onSelectAttachedPointTrack: (trackId: string, parentTrackId: string) => void;
   onMoveTrack: (trackId: string, direction: "up" | "down") => void;
   onReorderTrack: (trackId: string, insertionIndex: number) => void;
+  onToggleAttachedPointTracks: (parentTrackId: string) => void;
   onDeleteBuiltinTrack: (trackId: BuiltinTrackId) => void;
   onDeleteCustomTrack: (trackId: string) => void;
   onSelectLineOverlay: (lineId: string) => void;
@@ -63,6 +67,7 @@ type TimelineProps = {
   onCreateCharacterAtTime: (time: number, endTime?: number) => void;
   onCreateActionAtTime: (trackId: string, startTime: number) => void;
   onCreateCustomBlock: (trackId: string, startTime: number, endTime?: number) => void;
+  onCreateAttachedPoint: (trackId: string, time: number) => void;
   onAddBuiltinTrack: (trackId: BuiltinTrackId) => void;
   onAddCustomTrack: (trackType: "text" | "action") => void;
   onOpenCharacterContextMenu: (id: string, x: number, y: number) => void;
@@ -74,6 +79,8 @@ type TimelineProps = {
   onCharacterCommit: (id: string, changes: Partial<CharacterAnnotation>) => void;
   onActionChange: (id: string, changes: Partial<ActionAnnotation>) => void;
   onActionCommit: (id: string, changes: Partial<ActionAnnotation>) => void;
+  onAttachedPointChange: (trackId: string, pointId: string, changes: Partial<AttachedPointAnnotation>) => void;
+  onAttachedPointCommit: (trackId: string, pointId: string, changes: Partial<AttachedPointAnnotation>) => void;
   onCustomBlockChange: (
     trackId: string,
     id: string,
@@ -110,6 +117,14 @@ type DragState =
       originX: number;
       originalStart: number;
       originalEnd: number;
+    }
+  | {
+      kind: "move-point";
+      id: string;
+      trackId: string;
+      parentTrackId: string;
+      originX: number;
+      originalTime: number;
     }
   | {
       kind: "move-selection";
@@ -205,6 +220,12 @@ type PendingDragUpdate =
       changes: Partial<ActionAnnotation>;
     }
   | {
+      target: "attached-point";
+      trackId: string;
+      pointId: string;
+      changes: Partial<AttachedPointAnnotation>;
+    }
+  | {
       target: "custom-block";
       trackId: string;
       id: string;
@@ -242,8 +263,18 @@ type DragSnapLock = {
 
 type EdgeHit = "left" | "right" | "center" | "linked-left" | "linked-right";
 
+type ResolvedAttachedPointTrack = {
+  id: string;
+  name: string;
+  parentTrackId: string;
+  parentTrackName: string;
+  typeOptions: string[];
+  points: AttachedPointAnnotation[];
+};
+
 export function Timeline({
   subtitleLines,
+  builtinTracks,
   characterAnnotations,
   actionAnnotations,
   customTracks,
@@ -272,8 +303,10 @@ export function Timeline({
   onSelectItem,
   onSelectBuiltinTrack,
   onSelectTrack,
+  onSelectAttachedPointTrack,
   onMoveTrack,
   onReorderTrack,
+  onToggleAttachedPointTracks,
   onDeleteBuiltinTrack,
   onDeleteCustomTrack,
   onSelectLineOverlay,
@@ -289,6 +322,7 @@ export function Timeline({
   onCreateCharacterAtTime,
   onCreateActionAtTime,
   onCreateCustomBlock,
+  onCreateAttachedPoint,
   onAddBuiltinTrack,
   onAddCustomTrack,
   onOpenCharacterContextMenu,
@@ -300,6 +334,8 @@ export function Timeline({
   onCharacterCommit,
   onActionChange,
   onActionCommit,
+  onAttachedPointChange,
+  onAttachedPointCommit,
   onCustomBlockChange,
   onCustomBlockCommit,
   onBatchMoveChange,
@@ -367,6 +403,27 @@ export function Timeline({
   const customBlocks = useMemo(
     () => flattenCustomBlocks(customTracks),
     [customTracks],
+  );
+  const attachedPointTracks = useMemo(
+    () => flattenAttachedPointTracks(builtinTracks, customTracks),
+    [builtinTracks, customTracks],
+  );
+  const attachedPointTrackMap = useMemo(
+    () => new Map(attachedPointTracks.map((track) => [track.id, track])),
+    [attachedPointTracks],
+  );
+  const parentTrackMap = useMemo(
+    () =>
+      new Map(
+        [...builtinTracks, ...customTracks].map((track) => [
+          track.id,
+          {
+            attachedPointTrackCount: track.attachedPointTracks?.length ?? 0,
+            attachedPointTracksExpanded: Boolean(track.attachedPointTracksExpanded),
+          },
+        ]),
+      ),
+    [builtinTracks, customTracks],
   );
   const activeTrackDefinitions = useMemo(
     () => trackDefinitions.filter((track) => track.isCustom || track.isBuiltin),
@@ -662,19 +719,22 @@ export function Timeline({
       ...characterAnnotations.flatMap((item) => [item.startTime, item.endTime]),
       ...actionAnnotations.flatMap((item) => [item.startTime, item.endTime]),
       ...customBlocks.flatMap((item) => [item.startTime, item.endTime]),
+      ...attachedPointTracks.flatMap((track) => track.points.map((point) => point.time)),
       currentTime,
     ];
-  }, [subtitleLines, characterAnnotations, actionAnnotations, customBlocks, currentTime]);
+  }, [subtitleLines, characterAnnotations, actionAnnotations, customBlocks, attachedPointTracks, currentTime]);
 
   function getLiveSnapPoints() {
     const liveProject = getProjectSnapshot();
     const liveCustomBlocks = flattenCustomBlocks(liveProject.customTracks);
+    const liveAttachedPointTracks = flattenAttachedPointTracks(liveProject.builtinTracks, liveProject.customTracks);
     return [
       0,
       ...liveProject.subtitleLines.flatMap((line) => [line.startTime, line.endTime]),
       ...liveProject.characterAnnotations.flatMap((item) => [item.startTime, item.endTime]),
       ...liveProject.actionAnnotations.flatMap((item) => [item.startTime, item.endTime]),
       ...liveCustomBlocks.flatMap((item) => [item.startTime, item.endTime]),
+      ...liveAttachedPointTracks.flatMap((track) => track.points.map((point) => point.time)),
       currentTimeRef.current,
     ];
   }
@@ -1080,6 +1140,18 @@ export function Timeline({
         return;
       }
 
+      if (activeDragState.kind === "move-point") {
+        scheduleDragUpdate({
+          target: "attached-point",
+          trackId: activeDragState.trackId,
+          pointId: activeDragState.id,
+          changes: {
+            time: Math.max(0, activeDragState.originalTime + deltaSeconds),
+          },
+        });
+        return;
+      }
+
       if (isLineDrag(activeDragState)) {
         dragSnapLockRef.current = null;
         setActiveSnapIndicator(null);
@@ -1248,6 +1320,11 @@ export function Timeline({
         onBatchMoveCommit(
           next.items,
         );
+        suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
+      } else if (activeDragState.kind === "move-point") {
+        onAttachedPointCommit(activeDragState.trackId, activeDragState.id, {
+          time: Math.max(0, activeDragState.originalTime + (lastPointerClientXRef.current - activeDragState.originX) / zoom),
+        });
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (activeDragState.kind === "resize-linked") {
         const next = computeLinkedResizeRange(
@@ -1607,16 +1684,20 @@ export function Timeline({
           </div>
 
           <div className="timeline-track-list">
-            {trackDefinitions.map((track) => (
+            {trackDefinitions.map((track) => {
+              const parentTrackMeta = parentTrackMap.get(track.id);
+              const pointTrack = track.type === "attached-point" ? attachedPointTrackMap.get(track.id) : null;
+              return (
               <div
                 key={track.id}
                 className={[
                   "timeline-track",
+                  track.type === "attached-point" ? "timeline-track-attached-point" : "",
                   (track.isCustom || track.isBuiltin) && customTrackDropBeforeId === track.id ? "drop-target-before" : "",
                   (track.isCustom || track.isBuiltin) && customTrackDropAfterId === track.id ? "drop-target-after" : "",
                   draggedTrackId === track.id ? "drag-source" : "",
                 ].join(" ")}
-                style={{ height: trackHeight }}
+                style={{ height: track.type === "attached-point" ? Math.max(36, trackHeight - 14) : trackHeight }}
                 ref={(node) => {
                   if (!track.isCustom && !track.isBuiltin) {
                     return;
@@ -1633,7 +1714,10 @@ export function Timeline({
                     "track-label",
                     track.isCustom || track.isBuiltin ? "track-label-custom" : "",
                     compactTrackLabels ? "compact" : "",
-                    ((selectedItem?.type === "custom-track" || selectedItem?.type === "builtin-track") && selectedItem.id === track.id) ? "selected" : "",
+                    (
+                      ((selectedItem?.type === "custom-track" || selectedItem?.type === "builtin-track") && selectedItem.id === track.id) ||
+                      (selectedItem?.type === "attached-point-track" && selectedItem.id === track.id)
+                    ) ? "selected" : "",
                     draggedTrackId === track.id ? "dragging" : "",
                     recentlyMovedTrackId === track.id ? "recently-moved" : "",
                   ].join(" ")}
@@ -1652,6 +1736,8 @@ export function Timeline({
                       onSelectBuiltinTrack(track.id as BuiltinTrackId);
                     } else if (track.isCustom) {
                       onSelectTrack(track.id);
+                    } else if (track.isAttachedPointTrack && track.parentTrackId) {
+                      onSelectAttachedPointTrack(track.id, track.parentTrackId);
                     }
                   }}
                   onPointerDown={(event) => {
@@ -1696,8 +1782,12 @@ export function Timeline({
                       {!compactTrackLabels && track.isBuiltin ? (
                         <span>{track.type === "character" ? "文字类内建轨" : "动作类内建轨"}</span>
                       ) : null}
+                      {!compactTrackLabels && track.isAttachedPointTrack ? (
+                        <span>{track.parentTrackName ? `附属于 ${track.parentTrackName}` : "附属打点轨"}</span>
+                      ) : null}
                     </div>
                     <div className="track-label-footer">
+                    {!track.isAttachedPointTrack ? (
                     <label className="track-snap-toggle" onClick={(event) => event.stopPropagation()}>
                       <input
                         type="checkbox"
@@ -1707,11 +1797,24 @@ export function Timeline({
                       />
                       <span>吸附</span>
                     </label>
+                    ) : (
+                      <span className="track-attached-point-caption">附属打点轨</span>
+                    )}
                       {track.isCustom || track.isBuiltin ? (
                         <div
                           className="track-label-tools"
                           onClick={(event) => event.stopPropagation()}
                         >
+                          {(parentTrackMeta?.attachedPointTrackCount ?? 0) > 0 ? (
+                            <button
+                              type="button"
+                              className="track-label-tool-button"
+                              onClick={() => onToggleAttachedPointTracks(track.id)}
+                              title={parentTrackMeta?.attachedPointTracksExpanded ? "隐藏附属打点轨" : "展开附属打点轨"}
+                            >
+                              {parentTrackMeta?.attachedPointTracksExpanded ? "点−" : `点${parentTrackMeta?.attachedPointTrackCount ?? ""}`}
+                            </button>
+                          ) : null}
                           {track.isCustom ? (
                             <>
                               <div
@@ -1799,7 +1902,10 @@ export function Timeline({
                   className="track-lane"
                   onPointerDown={(event) => {
                     const target = event.target as HTMLElement | null;
-                    if (event.button !== 0 || target?.closest(".timeline-block")) {
+                    if (event.button !== 0 || target?.closest(".timeline-block, .timeline-point-marker")) {
+                      return;
+                    }
+                    if (track.type === "attached-point") {
                       return;
                     }
                     if (event.metaKey || event.ctrlKey) {
@@ -1829,7 +1935,11 @@ export function Timeline({
                     }
                     const target = event.target as HTMLElement | null;
                     const laneTime = getLaneTime(event.currentTarget, event.clientX, zoom);
-                    if (!target?.closest(".timeline-block") && event.detail === 2) {
+                    if (!target?.closest(".timeline-block, .timeline-point-marker") && event.detail === 2) {
+                      if (track.type === "attached-point") {
+                        onCreateAttachedPoint(track.id, snapTime(laneTime, snapPoints, zoom));
+                        return;
+                      }
                       const startTime = snapTime(laneTime, snapPoints, zoom);
                       if (track.type === "character") {
                         onCreateCharacterAtTime(startTime);
@@ -1842,7 +1952,7 @@ export function Timeline({
                       onCreateActionAtTime(track.id, startTime);
                       return;
                     }
-                    if (!target?.closest(".timeline-block") && selectedTimelineItems.length > 1) {
+                    if (!target?.closest(".timeline-block, .timeline-point-marker") && selectedTimelineItems.length > 1) {
                       onSelectTimelineItems([], null);
                     }
                     onSeek(laneTime);
@@ -1854,6 +1964,10 @@ export function Timeline({
                       ? actionAnnotations
                           .filter((annotation) => annotation.trackId === track.id)
                           .map((annotation) => renderBlock(annotation, "action"))
+                      : track.type === "attached-point"
+                        ? pointTrack
+                          ? pointTrack.points.map((point) => renderAttachedPoint(point, pointTrack))
+                          : []
                       : customBlocks
                           .filter((annotation) => annotation.trackId === track.id)
                           .map((annotation) => renderBlock(annotation, "custom-block"))}
@@ -1869,7 +1983,8 @@ export function Timeline({
                   ) : null}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {dragState?.kind === "select-box" && scrollRef.current ? (
@@ -2281,6 +2396,66 @@ export function Timeline({
     );
   }
 
+  function renderAttachedPoint(point: AttachedPointAnnotation, pointTrack: ResolvedAttachedPointTrack) {
+    const isSelected =
+      selectedItem?.type === "attached-point" &&
+      selectedItem.id === point.id &&
+      selectedItem.trackId === pointTrack.id;
+    const isActive = Math.abs(currentTime - point.time) <= 0.05;
+    const zIndex = isSelected ? 8 : isActive ? 6 : 4;
+
+    return (
+      <button
+        key={point.id}
+        type="button"
+        className={[
+          "timeline-point-marker",
+          isSelected ? "selected" : "",
+          isActive ? "active" : "",
+        ].join(" ")}
+        style={{ left: point.time * zoom, zIndex }}
+        onPointerDown={(event) => {
+          if (event.button !== 0) {
+            return;
+          }
+          event.stopPropagation();
+          lastPointerClientXRef.current = event.clientX;
+          setDragState({
+            kind: "move-point",
+            id: point.id,
+            trackId: pointTrack.id,
+            parentTrackId: pointTrack.parentTrackId,
+            originX: event.clientX,
+            originalTime: point.time,
+          });
+          onSelectItem({
+            type: "attached-point",
+            id: point.id,
+            trackId: pointTrack.id,
+            parentTrackId: pointTrack.parentTrackId,
+          });
+        }}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (performance.now() < suppressCanvasClickUntilRef.current) {
+            return;
+          }
+          onSelectItem({
+            type: "attached-point",
+            id: point.id,
+            trackId: pointTrack.id,
+            parentTrackId: pointTrack.parentTrackId,
+          });
+        }}
+        title={`${pointTrack.name} · ${point.label}`}
+      >
+        <span className="timeline-point-stem" />
+        <span className="timeline-point-dot" />
+        <span className="timeline-point-chip">{point.label}</span>
+      </button>
+    );
+  }
+
   function queueZoom(nextZoom: number, anchorTime?: number, viewportOffset?: number) {
     const container = scrollRef.current;
     if (!container) {
@@ -2421,6 +2596,10 @@ export function Timeline({
     }
     if (pendingDragUpdate.target === "character") {
       onCharacterChange(pendingDragUpdate.id, pendingDragUpdate.changes);
+      return;
+    }
+    if (pendingDragUpdate.target === "attached-point") {
+      onAttachedPointChange(pendingDragUpdate.trackId, pendingDragUpdate.pointId, pendingDragUpdate.changes);
       return;
     }
     if (pendingDragUpdate.target === "selection") {
@@ -3252,6 +3431,22 @@ function flattenCustomBlocks(customTracks: CustomTrack[]): ResolvedCustomTrackBl
       endTime: block.endTime,
       type: block.type,
       text: "text" in block ? block.text : undefined,
+    })),
+  );
+}
+
+function flattenAttachedPointTracks(
+  builtinTracks: BuiltinTrack[],
+  customTracks: CustomTrack[],
+): ResolvedAttachedPointTrack[] {
+  return [...builtinTracks, ...customTracks].flatMap((track) =>
+    (track.attachedPointTracks ?? []).map((pointTrack) => ({
+      id: pointTrack.id,
+      name: pointTrack.name,
+      parentTrackId: track.id,
+      parentTrackName: track.name,
+      typeOptions: pointTrack.typeOptions,
+      points: pointTrack.points,
     })),
   );
 }

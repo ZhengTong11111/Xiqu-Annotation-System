@@ -1,4 +1,5 @@
 import type {
+  AttachedPointTrack,
   BuiltinTrack,
   BuiltinTrackId,
   CharacterAnnotation,
@@ -26,18 +27,24 @@ export const defaultBuiltinTracks: BuiltinTrack[] = [
     name: "逐字文字轨",
     type: "character",
     options: [...singingStyleOptions],
+    attachedPointTracks: [],
+    attachedPointTracksExpanded: false,
   },
   {
     id: "hand-action",
     name: "手部动作轨",
     type: "action",
     options: ["抬手", "落手", "指向", "翻腕", "水袖动作", "其他"],
+    attachedPointTracks: [],
+    attachedPointTracksExpanded: false,
   },
   {
     id: "body-action",
     name: "肢体动作轨",
     type: "action",
     options: ["转身", "移步", "屈伸", "亮相", "前倾", "后仰", "其他"],
+    attachedPointTracks: [],
+    attachedPointTracksExpanded: false,
   },
 ];
 
@@ -45,6 +52,8 @@ export function getDefaultBuiltinTracks(): BuiltinTrack[] {
   return defaultBuiltinTracks.map((track) => ({
     ...track,
     options: track.options ? [...track.options] : undefined,
+    attachedPointTracks: [],
+    attachedPointTracksExpanded: false,
   }));
 }
 
@@ -56,6 +65,8 @@ export function getBuiltinTrackDefinition(trackId: BuiltinTrackId): BuiltinTrack
   return {
     ...track,
     options: track.options ? [...track.options] : undefined,
+    attachedPointTracks: [],
+    attachedPointTracksExpanded: false,
   };
 }
 
@@ -91,7 +102,23 @@ export function buildTimelineTrackDefinitions(
 
   return orderedIds.flatMap((trackId) => {
     const track = trackMap.get(trackId);
-    return track ? [track] : [];
+    if (!track) {
+      return [];
+    }
+    const parentTrack = builtinTracks.find((item) => item.id === trackId) ??
+      customTracks.find((item) => item.id === trackId);
+    const attachedPointTrackDefinitions = parentTrack?.attachedPointTracksExpanded
+      ? (parentTrack.attachedPointTracks ?? []).map((pointTrack) => ({
+          id: pointTrack.id,
+          name: pointTrack.name,
+          type: "attached-point" as const,
+          options: pointTrack.typeOptions,
+          isAttachedPointTrack: true,
+          parentTrackId: parentTrack.id,
+          parentTrackName: parentTrack.name,
+        }))
+      : [];
+    return [track, ...attachedPointTrackDefinitions];
   });
 }
 
@@ -134,6 +161,14 @@ export function getDefaultCustomTrackTypeOptions(): string[] {
   return ["类型 1"];
 }
 
+export function getDefaultAttachedPointTrackName(attachedPointTracks: AttachedPointTrack[]): string {
+  return `打点轨 ${attachedPointTracks.length + 1}`;
+}
+
+export function getDefaultAttachedPointTypeOptions(): string[] {
+  return ["标记 1"];
+}
+
 export function getNextCustomTrackTypeOptionName(typeOptions: string[]): string {
   return `类型 ${typeOptions.length + 1}`;
 }
@@ -174,12 +209,21 @@ export function buildProjectFromLines(
 
 export function getProjectDuration(project: ProjectData): number {
   const customBlockEndTimes = flattenCustomTrackBlocks(project.customTracks).map((block) => block.endTime);
+  const attachedPointTimes = [
+    ...project.builtinTracks.flatMap((track) =>
+      (track.attachedPointTracks ?? []).flatMap((pointTrack) => pointTrack.points.map((point) => point.time)),
+    ),
+    ...project.customTracks.flatMap((track) =>
+      (track.attachedPointTracks ?? []).flatMap((pointTrack) => pointTrack.points.map((point) => point.time)),
+    ),
+  ];
   const lineDuration = Math.max(
     0,
     ...project.subtitleLines.map((line) => line.endTime),
     ...project.characterAnnotations.map((char) => char.endTime),
     ...project.actionAnnotations.map((action) => action.endTime),
     ...customBlockEndTimes,
+    ...attachedPointTimes,
   );
   return Math.max(lineDuration, 30);
 }

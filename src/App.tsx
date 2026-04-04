@@ -13,6 +13,8 @@ import { VideoPlayer } from "./components/VideoPlayer";
 import { mockProject } from "./mockData";
 import type {
   ActionAnnotation,
+  AttachedPointAnnotation,
+  AttachedPointTrack,
   BuiltinTrack,
   BuiltinTrackId,
   CharacterAnnotation,
@@ -34,6 +36,8 @@ import {
   getBuiltinTrackDefinition,
   getDefaultBuiltinTracks,
   getBuiltinTrackOptions,
+  getDefaultAttachedPointTrackName,
+  getDefaultAttachedPointTypeOptions,
   getDefaultCustomTrackName,
   getDefaultCustomTrackTypeOptions,
   getDefaultFixedActionLabel,
@@ -67,6 +71,18 @@ type LineFocusRequest = {
   lineId: string;
   requestId: number;
 };
+
+type PointTrackLocation =
+  | {
+      parentType: "builtin";
+      parentTrack: BuiltinTrack;
+      pointTrack: AttachedPointTrack;
+    }
+  | {
+      parentType: "custom";
+      parentTrack: CustomTrack;
+      pointTrack: AttachedPointTrack;
+    };
 
 const CHARACTER_CREATE_ATTACH_WINDOW = 1;
 const DEFAULT_CHARACTER_DURATION = 1.05;
@@ -755,6 +771,146 @@ function App() {
     }
   }
 
+  function findPointTrackLocation(projectToSearch: ProjectData, pointTrackId: string): PointTrackLocation | null {
+    for (const track of projectToSearch.builtinTracks) {
+      const pointTrack = (track.attachedPointTracks ?? []).find((item) => item.id === pointTrackId);
+      if (pointTrack) {
+        return {
+          parentType: "builtin",
+          parentTrack: track,
+          pointTrack,
+        };
+      }
+    }
+    for (const track of projectToSearch.customTracks) {
+      const pointTrack = (track.attachedPointTracks ?? []).find((item) => item.id === pointTrackId);
+      if (pointTrack) {
+        return {
+          parentType: "custom",
+          parentTrack: track,
+          pointTrack,
+        };
+      }
+    }
+    return null;
+  }
+
+  function updateAttachedPointTrack(
+    pointTrackId: string,
+    updater: (pointTrack: AttachedPointTrack) => AttachedPointTrack,
+    recordHistory = true,
+  ) {
+    const currentProject = projectRef.current;
+    const location = findPointTrackLocation(currentProject, pointTrackId);
+    if (!location) {
+      return;
+    }
+    const updateTrackList = (attachedPointTracks: AttachedPointTrack[]) =>
+      attachedPointTracks.map((pointTrack) =>
+        pointTrack.id === pointTrackId ? updater(pointTrack) : pointTrack,
+      );
+    if (location.parentType === "builtin") {
+      updateBuiltinTrack(
+        location.parentTrack.id,
+        (track) => ({
+          ...track,
+          attachedPointTracks: updateTrackList(track.attachedPointTracks ?? []),
+        }),
+        recordHistory,
+      );
+      return;
+    }
+    updateCustomTrack(
+      location.parentTrack.id,
+      (track) => ({
+        ...track,
+        attachedPointTracks: updateTrackList(track.attachedPointTracks ?? []),
+      }) as CustomTrack,
+      recordHistory,
+    );
+  }
+
+  function updateAttachedPoint(
+    pointTrackId: string,
+    pointId: string,
+    changes: Partial<AttachedPointAnnotation>,
+    recordHistory = true,
+  ) {
+    updateAttachedPointTrack(
+      pointTrackId,
+      (pointTrack) => ({
+        ...pointTrack,
+        points: pointTrack.points.map((point) =>
+          point.id === pointId ? { ...point, ...changes } : point,
+        ),
+      }),
+      recordHistory,
+    );
+  }
+
+  function changeAttachedPoint(
+    pointTrackId: string,
+    pointId: string,
+    changes: Partial<AttachedPointAnnotation>,
+  ) {
+    updateAttachedPoint(pointTrackId, pointId, changes, false);
+  }
+
+  function commitAttachedPoint(
+    pointTrackId: string,
+    pointId: string,
+    changes: Partial<AttachedPointAnnotation>,
+  ) {
+    updateAttachedPoint(pointTrackId, pointId, changes, true);
+  }
+
+  function addAttachedPointTrack(parentTrackId: string) {
+    const currentProject = projectRef.current;
+    const builtinParent = currentProject.builtinTracks.find((track) => track.id === parentTrackId);
+    const customParent = currentProject.customTracks.find((track) => track.id === parentTrackId);
+    if (!builtinParent && !customParent) {
+      return;
+    }
+    const parentTrack = builtinParent ?? customParent;
+    const nextPointTrack: AttachedPointTrack = {
+      id: `point-track-${crypto.randomUUID()}`,
+      name: getDefaultAttachedPointTrackName(parentTrack?.attachedPointTracks ?? []),
+      typeOptions: getDefaultAttachedPointTypeOptions(),
+      points: [],
+    };
+    if (builtinParent) {
+      updateBuiltinTrack(parentTrackId as BuiltinTrackId, (track) => ({
+        ...track,
+        attachedPointTracksExpanded: true,
+        attachedPointTracks: [...(track.attachedPointTracks ?? []), nextPointTrack],
+      }));
+    } else if (customParent) {
+      updateCustomTrack(parentTrackId, (track) => ({
+        ...track,
+        attachedPointTracksExpanded: true,
+        attachedPointTracks: [...(track.attachedPointTracks ?? []), nextPointTrack],
+      }) as CustomTrack);
+    }
+    applySelection({ type: "attached-point-track", id: nextPointTrack.id, parentTrackId });
+  }
+
+  function toggleAttachedPointTracks(parentTrackId: string) {
+    const currentProject = projectRef.current;
+    if (currentProject.builtinTracks.some((track) => track.id === parentTrackId)) {
+      updateBuiltinTrack(parentTrackId as BuiltinTrackId, (track) => ({
+        ...track,
+        attachedPointTracksExpanded: !track.attachedPointTracksExpanded,
+      }));
+      return;
+    }
+    if (currentProject.customTracks.some((track) => track.id === parentTrackId)) {
+      updateCustomTrack(parentTrackId, (track) => ({
+        ...track,
+        attachedPointTracksExpanded: !track.attachedPointTracksExpanded,
+      }) as CustomTrack);
+    }
+  }
+
   function moveTrack(trackId: string, direction: "up" | "down") {
     const currentProject = projectRef.current;
     const currentIndex = currentProject.activeTrackOrder.findIndex((id) => id === trackId);
@@ -1071,7 +1227,11 @@ function App() {
     const affectedActionCount = trackId === "character-track"
       ? 0
       : currentProject.actionAnnotations.filter((item) => item.trackId === trackId).length;
-    const affectedCount = affectedCharacterCount + affectedActionCount;
+    const affectedPointCount = (targetTrack.attachedPointTracks ?? []).reduce(
+      (sum, pointTrack) => sum + pointTrack.points.length,
+      0,
+    );
+    const affectedCount = affectedCharacterCount + affectedActionCount + affectedPointCount;
     const confirmed = window.confirm(
       `确定要删除轨道“${targetTrack.name}”吗？` +
         `\n删除轨道会同时删除轨道上的全部标注` +
@@ -1098,13 +1258,22 @@ function App() {
 
     if (trackId === "character-track") {
       cancelCharacterTextEdit();
-      if (selectedItem?.type === "character" || (selectedItem?.type === "builtin-track" && selectedItem.id === trackId)) {
+      if (
+        selectedItem?.type === "character" ||
+        (selectedItem?.type === "builtin-track" && selectedItem.id === trackId) ||
+        (selectedItem?.type === "attached-point-track" && selectedItem.parentTrackId === trackId) ||
+        (selectedItem?.type === "attached-point" && selectedItem.parentTrackId === trackId)
+      ) {
         applySelection(null);
       } else {
         setSelectedTimelineItems((current) => current.filter((item) => item.type !== "character"));
       }
     } else {
-      if (selectedItem?.type === "builtin-track" && selectedItem.id === trackId) {
+      if (
+        (selectedItem?.type === "builtin-track" && selectedItem.id === trackId) ||
+        (selectedItem?.type === "attached-point-track" && selectedItem.parentTrackId === trackId) ||
+        (selectedItem?.type === "attached-point" && selectedItem.parentTrackId === trackId)
+      ) {
         applySelection(null);
       } else if (selectedItem?.type === "action" && selectedItem.id) {
         const selectedAction = currentProject.actionAnnotations.find((item) => item.id === selectedItem.id);
@@ -1134,6 +1303,8 @@ function App() {
           trackType,
           typeOptions: getDefaultCustomTrackTypeOptions(),
           blocks: [],
+          attachedPointTracks: [],
+          attachedPointTracksExpanded: false,
         }
       : {
           id: `custom-track-${crypto.randomUUID()}`,
@@ -1141,6 +1312,8 @@ function App() {
           trackType,
           typeOptions: getDefaultCustomTrackTypeOptions(),
           blocks: [],
+          attachedPointTracks: [],
+          attachedPointTracksExpanded: false,
         };
 
     commitProject({
@@ -1149,6 +1322,29 @@ function App() {
       activeTrackOrder: [...currentProject.activeTrackOrder, nextTrack.id],
     });
     applySelection({ type: "custom-track", id: nextTrack.id });
+  }
+
+  function createAttachedPoint(pointTrackId: string, time: number) {
+    const currentProject = projectRef.current;
+    const location = findPointTrackLocation(currentProject, pointTrackId);
+    if (!location) {
+      return;
+    }
+    const nextPoint: AttachedPointAnnotation = {
+      id: `point-${crypto.randomUUID()}`,
+      time: Math.max(0, time),
+      label: location.pointTrack.typeOptions[0] ?? "标记 1",
+    };
+    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
+      ...pointTrack,
+      points: [...pointTrack.points, nextPoint].sort((left, right) => left.time - right.time),
+    }));
+    applySelection({
+      type: "attached-point",
+      id: nextPoint.id,
+      trackId: pointTrackId,
+      parentTrackId: location.parentTrack.id,
+    });
   }
 
   function createCustomBlock(
@@ -1436,6 +1632,20 @@ function App() {
       }
       applySelection(null);
     }
+    if (selectedItem.type === "attached-point") {
+      const location = findPointTrackLocation(currentProject, selectedItem.trackId);
+      if (!location) {
+        return;
+      }
+      updateAttachedPointTrack(selectedItem.trackId, (pointTrack) => ({
+        ...pointTrack,
+        points: pointTrack.points.filter((point) => point.id !== selectedItem.id),
+      }));
+      applySelection(null);
+    }
+    if (selectedItem.type === "attached-point-track") {
+      deleteAttachedPointTrack(selectedItem.id);
+    }
     if (selectedItem.type === "builtin-track") {
       deleteBuiltinTrack(selectedItem.id);
     }
@@ -1516,6 +1726,14 @@ function App() {
     }));
   }
 
+  function renameAttachedPointTrack(pointTrackId: string, name: string) {
+    const normalizedName = name.trimStart();
+    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
+      ...pointTrack,
+      name: normalizedName.length > 0 ? normalizedName : pointTrack.name,
+    }));
+  }
+
   function moveCustomTrack(trackId: string, direction: "up" | "down") {
     moveTrack(trackId, direction);
   }
@@ -1581,6 +1799,29 @@ function App() {
     commitProject(nextProject);
   }
 
+  function updateAttachedPointTrackTypeOption(pointTrackId: string, index: number, value: string) {
+    const currentProject = projectRef.current;
+    const location = findPointTrackLocation(currentProject, pointTrackId);
+    if (!location || index < 0 || index >= location.pointTrack.typeOptions.length) {
+      return;
+    }
+    const previousValue = location.pointTrack.typeOptions[index];
+    const normalizedValue = value.trimStart();
+    const nextValue = normalizedValue.length > 0 ? normalizedValue : previousValue;
+    updateAttachedPointTrack(pointTrackId, (pointTrack) => {
+      const nextTypeOptions = pointTrack.typeOptions.map((option, optionIndex) =>
+        optionIndex === index ? nextValue : option,
+      );
+      return {
+        ...pointTrack,
+        typeOptions: nextTypeOptions,
+        points: pointTrack.points.map((point) =>
+          point.label === previousValue ? { ...point, label: nextValue } : point,
+        ),
+      };
+    });
+  }
+
   function addCustomTrackTypeOption(trackId: string) {
     updateCustomTrack(trackId, (track) => ({
       ...track,
@@ -1592,6 +1833,13 @@ function App() {
     updateBuiltinTrack(trackId, (track) => ({
       ...track,
       options: [...(track.options ?? []), getNextCustomTrackTypeOptionName(track.options ?? [])],
+    }));
+  }
+
+  function addAttachedPointTrackTypeOption(pointTrackId: string) {
+    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
+      ...pointTrack,
+      typeOptions: [...pointTrack.typeOptions, getNextCustomTrackTypeOptionName(pointTrack.typeOptions)],
     }));
   }
 
@@ -1623,6 +1871,22 @@ function App() {
       return {
         ...track,
         options,
+      };
+    });
+  }
+
+  function moveAttachedPointTrackTypeOption(pointTrackId: string, index: number, direction: "up" | "down") {
+    updateAttachedPointTrack(pointTrackId, (pointTrack) => {
+      const targetIndex = direction === "up" ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= pointTrack.typeOptions.length) {
+        return pointTrack;
+      }
+      const nextTypeOptions = [...pointTrack.typeOptions];
+      const [movedOption] = nextTypeOptions.splice(index, 1);
+      nextTypeOptions.splice(targetIndex, 0, movedOption);
+      return {
+        ...pointTrack,
+        typeOptions: nextTypeOptions,
       };
     });
   }
@@ -1675,6 +1939,30 @@ function App() {
     });
   }
 
+  function reorderAttachedPointTrackTypeOption(pointTrackId: string, fromIndex: number, insertionIndex: number) {
+    updateAttachedPointTrack(pointTrackId, (pointTrack) => {
+      if (
+        fromIndex < 0 ||
+        fromIndex >= pointTrack.typeOptions.length ||
+        insertionIndex < 0 ||
+        insertionIndex > pointTrack.typeOptions.length - 1
+      ) {
+        return pointTrack;
+      }
+      const nextTypeOptions = [...pointTrack.typeOptions];
+      const [movedOption] = nextTypeOptions.splice(fromIndex, 1);
+      const normalizedInsertionIndex = Math.max(0, Math.min(insertionIndex, nextTypeOptions.length));
+      if (normalizedInsertionIndex === fromIndex) {
+        return pointTrack;
+      }
+      nextTypeOptions.splice(normalizedInsertionIndex, 0, movedOption);
+      return {
+        ...pointTrack,
+        typeOptions: nextTypeOptions,
+      };
+    });
+  }
+
   function removeCustomTrackTypeOption(trackId: string, index: number) {
     updateCustomTrack(trackId, (track) => {
       if (track.typeOptions.length <= 1) {
@@ -1721,6 +2009,28 @@ function App() {
     });
   }
 
+  function removeAttachedPointTrackTypeOption(pointTrackId: string, index: number) {
+    const currentProject = projectRef.current;
+    const location = findPointTrackLocation(currentProject, pointTrackId);
+    if (!location) {
+      return;
+    }
+    const options = location.pointTrack.typeOptions;
+    if (options.length <= 1 || index < 0 || index >= options.length) {
+      return;
+    }
+    const removedValue = options[index];
+    const nextTypeOptions = options.filter((_, optionIndex) => optionIndex !== index);
+    const fallbackOption = nextTypeOptions[0] ?? "标记 1";
+    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
+      ...pointTrack,
+      typeOptions: nextTypeOptions,
+      points: pointTrack.points.map((point) =>
+        point.label === removedValue ? { ...point, label: fallbackOption } : point,
+      ),
+    }));
+  }
+
   function deleteCustomTrack(trackId: string) {
     const currentProject = projectRef.current;
     const track = currentProject.customTracks.find((item) => item.id === trackId);
@@ -1728,10 +2038,11 @@ function App() {
       return;
     }
     const blockCount = track.blocks.length;
+    const pointCount = (track.attachedPointTracks ?? []).reduce((sum, pointTrack) => sum + pointTrack.points.length, 0);
     const confirmed = window.confirm(
       `确定要删除轨道“${track.name}”吗？` +
         `\n删除轨道会同时删除轨道上的全部标注` +
-        (blockCount > 0 ? `（当前共 ${blockCount} 条）` : "") +
+        (blockCount + pointCount > 0 ? `（当前共 ${blockCount + pointCount} 条）` : "") +
         `，此操作会进入撤销历史。`,
     );
     if (!confirmed) {
@@ -1748,7 +2059,44 @@ function App() {
     commitProject(nextProject);
     if (
       (selectedItem?.type === "custom-track" && selectedItem.id === trackId) ||
-      (selectedItem?.type === "custom-block" && selectedItem.trackId === trackId)
+      (selectedItem?.type === "custom-block" && selectedItem.trackId === trackId) ||
+      (selectedItem?.type === "attached-point-track" && selectedItem.parentTrackId === trackId) ||
+      (selectedItem?.type === "attached-point" && selectedItem.parentTrackId === trackId)
+    ) {
+      applySelection(null);
+    }
+  }
+
+  function deleteAttachedPointTrack(pointTrackId: string) {
+    const currentProject = projectRef.current;
+    const location = findPointTrackLocation(currentProject, pointTrackId);
+    if (!location) {
+      return;
+    }
+    const pointCount = location.pointTrack.points.length;
+    const confirmed = window.confirm(
+      `确定要删除附属打点轨“${location.pointTrack.name}”吗？` +
+        `\n删除后会同时删除轨道上的全部打点` +
+        (pointCount > 0 ? `（当前共 ${pointCount} 个）` : "") +
+        `。`,
+    );
+    if (!confirmed) {
+      return;
+    }
+    if (location.parentType === "builtin") {
+      updateBuiltinTrack(location.parentTrack.id, (track) => ({
+        ...track,
+        attachedPointTracks: (track.attachedPointTracks ?? []).filter((pointTrack) => pointTrack.id !== pointTrackId),
+      }));
+    } else {
+      updateCustomTrack(location.parentTrack.id, (track) => ({
+        ...track,
+        attachedPointTracks: (track.attachedPointTracks ?? []).filter((pointTrack) => pointTrack.id !== pointTrackId),
+      }) as CustomTrack);
+    }
+    if (
+      (selectedItem?.type === "attached-point-track" && selectedItem.id === pointTrackId) ||
+      (selectedItem?.type === "attached-point" && selectedItem.trackId === pointTrackId)
     ) {
       applySelection(null);
     }
@@ -1993,6 +2341,7 @@ function App() {
               <TimelinePanel>
                 <Timeline
                   subtitleLines={project.subtitleLines}
+                  builtinTracks={project.builtinTracks}
                   characterAnnotations={project.characterAnnotations}
                   actionAnnotations={project.actionAnnotations}
                   customTracks={project.customTracks}
@@ -2066,6 +2415,10 @@ function App() {
                         : { type: "custom-track", id: trackId },
                     );
                   }}
+                  onSelectAttachedPointTrack={(trackId, parentTrackId) => {
+                    setLineFocusRequest(null);
+                    applySelection({ type: "attached-point-track", id: trackId, parentTrackId });
+                  }}
                   onMoveTrack={(trackId, direction) => {
                     if (activeBuiltinTrackIds.has(trackId as BuiltinTrackId)) {
                       moveBuiltinTrack(trackId as BuiltinTrackId, direction);
@@ -2080,6 +2433,7 @@ function App() {
                       reorderCustomTrack(trackId, insertionIndex);
                     }
                   }}
+                  onToggleAttachedPointTracks={toggleAttachedPointTracks}
                   onDeleteBuiltinTrack={deleteBuiltinTrack}
                   onDeleteCustomTrack={deleteCustomTrack}
                   onOpenCharacterContextMenu={(id, x, y) => {
@@ -2101,11 +2455,14 @@ function App() {
                   onCharacterCommit={(id, changes) => updateCharacter(id, changes, true)}
                   onActionChange={(id, changes) => updateAction(id, changes, false)}
                   onActionCommit={(id, changes) => updateAction(id, changes, true)}
+                  onAttachedPointChange={changeAttachedPoint}
+                  onAttachedPointCommit={commitAttachedPoint}
                   onCustomBlockChange={(trackId, id, changes) => updateCustomBlock(trackId, id, changes, false)}
                   onCustomBlockCommit={(trackId, id, changes) => updateCustomBlock(trackId, id, changes, true)}
                   onBatchMoveChange={(items) => updateTimelineSelectionBatch(items, false)}
                   onBatchMoveCommit={(items) => updateTimelineSelectionBatch(items, true)}
                   onCreateAction={createAction}
+                  onCreateAttachedPoint={createAttachedPoint}
                 />
               </TimelinePanel>
             )}
@@ -2216,6 +2573,7 @@ function App() {
                   trackDefinitions={timelineTrackDefinitions}
                   onCharacterUpdate={updateCharacter}
                   onActionUpdate={updateAction}
+                  onAttachedPointUpdate={commitAttachedPoint}
                   onBuiltinTrackRename={renameBuiltinTrack}
                   onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
                   onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
@@ -2223,6 +2581,18 @@ function App() {
                   onReorderBuiltinTrackTypeOption={reorderBuiltinTrackTypeOption}
                   onRemoveBuiltinTrackTypeOption={removeBuiltinTrackTypeOption}
                   onDeleteBuiltinTrack={deleteBuiltinTrack}
+                  onAddAttachedPointTrack={addAttachedPointTrack}
+                  onToggleAttachedPointTracks={toggleAttachedPointTracks}
+                  onSelectAttachedPointTrack={(trackId, parentTrackId) =>
+                    applySelection({ type: "attached-point-track", id: trackId, parentTrackId })
+                  }
+                  onAttachedPointTrackRename={renameAttachedPointTrack}
+                  onAttachedPointTrackTypeOptionChange={updateAttachedPointTrackTypeOption}
+                  onAddAttachedPointTrackTypeOption={addAttachedPointTrackTypeOption}
+                  onMoveAttachedPointTrackTypeOption={moveAttachedPointTrackTypeOption}
+                  onReorderAttachedPointTrackTypeOption={reorderAttachedPointTrackTypeOption}
+                  onRemoveAttachedPointTrackTypeOption={removeAttachedPointTrackTypeOption}
+                  onDeleteAttachedPointTrack={deleteAttachedPointTrack}
                   onCustomTrackRename={renameCustomTrack}
                   onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
                   onAddCustomTrackTypeOption={addCustomTrackTypeOption}
@@ -2654,17 +3024,18 @@ function normalizeImportedProjectFile(value: SavedProjectFile | ProjectData) {
 
 function normalizeProjectData(value: ProjectData | (Partial<ProjectData> & { videoUrl?: string; videoName?: string | null })) {
   const builtinTracks = normalizeBuiltinTracks(value.builtinTracks);
+  const customTracks = normalizeCustomTracks(value.customTracks);
   return {
     video: normalizeProjectVideo(value),
     subtitleLines: Array.isArray(value.subtitleLines) ? value.subtitleLines : [],
     characterAnnotations: Array.isArray(value.characterAnnotations) ? value.characterAnnotations : [],
     actionAnnotations: Array.isArray(value.actionAnnotations) ? value.actionAnnotations : [],
     builtinTracks,
-    customTracks: Array.isArray(value.customTracks) ? value.customTracks : [],
+    customTracks,
     activeTrackOrder: normalizeActiveTrackOrder(
       value.activeTrackOrder,
       builtinTracks,
-      Array.isArray(value.customTracks) ? value.customTracks : [],
+      customTracks,
     ),
   } satisfies ProjectData;
 }
@@ -2792,9 +3163,61 @@ function normalizeBuiltinTracks(value: ProjectData["builtinTracks"] | undefined)
       options: Array.isArray(track.options) && track.options.length > 0
         ? track.options
         : defaultTrack.options,
+      attachedPointTracks: normalizeAttachedPointTracks(track.attachedPointTracks),
+      attachedPointTracksExpanded: Boolean(track.attachedPointTracksExpanded),
     }];
   });
   return tracks.length > 0 ? tracks : getDefaultBuiltinTracks();
+}
+
+function normalizeCustomTracks(value: ProjectData["customTracks"] | undefined) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((track) => {
+    if (!track || typeof track.id !== "string" || (track.trackType !== "text" && track.trackType !== "action")) {
+      return [];
+    }
+    return [{
+      ...track,
+      name: typeof track.name === "string" && track.name.trim() ? track.name : "自定义轨道",
+      typeOptions: Array.isArray(track.typeOptions) && track.typeOptions.length > 0
+        ? track.typeOptions
+        : getDefaultCustomTrackTypeOptions(),
+      blocks: Array.isArray(track.blocks) ? track.blocks : [],
+      attachedPointTracks: normalizeAttachedPointTracks(track.attachedPointTracks),
+      attachedPointTracksExpanded: Boolean(track.attachedPointTracksExpanded),
+    }] as CustomTrack[];
+  });
+}
+
+function normalizeAttachedPointTracks(value: AttachedPointTrack[] | undefined) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((track) => {
+    if (!track || typeof track.id !== "string") {
+      return [];
+    }
+    return [{
+      id: track.id,
+      name: typeof track.name === "string" && track.name.trim() ? track.name : "打点轨",
+      typeOptions: Array.isArray(track.typeOptions) && track.typeOptions.length > 0
+        ? track.typeOptions
+        : getDefaultAttachedPointTypeOptions(),
+      points: Array.isArray(track.points)
+        ? track.points
+            .filter((point) => point && typeof point.id === "string")
+            .map((point) => ({
+              id: point.id,
+              time: typeof point.time === "number" ? point.time : 0,
+              label: typeof point.label === "string" && point.label.trim()
+                ? point.label
+                : (Array.isArray(track.typeOptions) && track.typeOptions[0]) || "标记 1",
+            }))
+        : [],
+    }] satisfies AttachedPointTrack[];
+  });
 }
 
 function normalizeActiveTrackOrder(

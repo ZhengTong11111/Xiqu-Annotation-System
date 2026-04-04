@@ -1133,6 +1133,17 @@ select {
   height: 10px;
 }
 
+.track-attached-point-caption {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .track-label.compact .track-label-tools {
   gap: 1px;
 }
@@ -1150,6 +1161,29 @@ select {
   background-image:
     linear-gradient(90deg, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
   background-size: 20px 100%;
+}
+
+.timeline-track-attached-point .track-label {
+  background: linear-gradient(180deg, rgba(245, 250, 255, 0.98), rgba(236, 244, 252, 0.95));
+}
+
+.timeline-track-attached-point .track-lane {
+  min-height: 36px;
+  overflow: visible;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(245, 249, 255, 0.72)),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
+  background-size: auto, 20px 100%;
+}
+
+.timeline-track-attached-point .track-lane::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 1px dashed rgba(15, 108, 189, 0.18);
+  pointer-events: none;
 }
 
 .waveform-track {
@@ -1346,6 +1380,94 @@ select {
   pointer-events: none;
 }
 
+.timeline-point-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 18px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: grab;
+  z-index: 4;
+}
+
+.timeline-point-marker:active {
+  cursor: grabbing;
+}
+
+.timeline-point-marker:hover {
+  z-index: 7;
+}
+
+.timeline-point-stem {
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  transform: translateX(-50%);
+  width: 2px;
+  height: 14px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(37, 99, 235, 0.9), rgba(15, 108, 189, 0.78));
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.78);
+}
+
+.timeline-point-dot {
+  position: absolute;
+  left: 50%;
+  top: 16px;
+  transform: translate(-50%, -50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.98), rgba(37, 99, 235, 0.9));
+  border: 1px solid rgba(24, 65, 140, 0.28);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.84);
+}
+
+.timeline-point-chip {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  max-width: 92px;
+  padding: 1px 6px;
+  margin-bottom: 4px;
+  border-radius: 999px;
+  background: rgba(244, 248, 255, 0.96);
+  border: 1px solid rgba(37, 99, 235, 0.16);
+  color: #2450a6;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08);
+  pointer-events: none;
+}
+
+.timeline-point-marker.selected .timeline-point-dot {
+  background: linear-gradient(180deg, rgba(14, 165, 233, 1), rgba(37, 99, 235, 0.96));
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.86), 0 0 0 4px rgba(14, 165, 233, 0.18);
+}
+
+.timeline-point-marker.selected .timeline-point-chip {
+  border-color: rgba(14, 165, 233, 0.24);
+  background: rgba(240, 249, 255, 0.98);
+}
+
+.timeline-point-marker.active .timeline-point-dot {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.86), 0 0 0 4px rgba(59, 130, 246, 0.16);
+}
+
+.timeline-point-marker:hover .timeline-point-chip {
+  transform: translateY(-1px);
+}
+
 .timeline-selection-box {
   position: absolute;
   border: 1px solid rgba(15, 108, 189, 0.55);
@@ -1491,6 +1613,48 @@ select {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.attached-point-track-list {
+  gap: 8px;
+}
+
+.attached-point-track-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.attached-point-track-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.attached-point-track-summary strong,
+.attached-point-track-summary span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attached-point-track-summary strong {
+  font-size: 12px;
+}
+
+.attached-point-track-summary span {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.attached-point-track-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.attached-point-track-actions button {
+  min-height: 24px;
 }
 
 .track-option-row {

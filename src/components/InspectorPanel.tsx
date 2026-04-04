@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ActionAnnotation,
+  AttachedPointTrack,
   BuiltinTrack,
   BuiltinTrackId,
   CharacterAnnotation,
@@ -22,6 +23,7 @@ type InspectorPanelProps = {
   trackDefinitions: TrackDefinition[];
   onCharacterUpdate: (id: string, changes: Partial<CharacterAnnotation>) => void;
   onActionUpdate: (id: string, changes: Partial<ActionAnnotation>) => void;
+  onAttachedPointUpdate: (trackId: string, pointId: string, changes: { time?: number; label?: string }) => void;
   onBuiltinTrackRename: (trackId: BuiltinTrackId, name: string) => void;
   onBuiltinTrackTypeOptionChange: (trackId: BuiltinTrackId, index: number, value: string) => void;
   onAddBuiltinTrackTypeOption: (trackId: BuiltinTrackId) => void;
@@ -29,6 +31,16 @@ type InspectorPanelProps = {
   onReorderBuiltinTrackTypeOption: (trackId: BuiltinTrackId, fromIndex: number, toIndex: number) => void;
   onRemoveBuiltinTrackTypeOption: (trackId: BuiltinTrackId, index: number) => void;
   onDeleteBuiltinTrack: (trackId: BuiltinTrackId) => void;
+  onAddAttachedPointTrack: (parentTrackId: string) => void;
+  onToggleAttachedPointTracks: (parentTrackId: string) => void;
+  onSelectAttachedPointTrack: (trackId: string, parentTrackId: string) => void;
+  onAttachedPointTrackRename: (trackId: string, name: string) => void;
+  onAttachedPointTrackTypeOptionChange: (trackId: string, index: number, value: string) => void;
+  onAddAttachedPointTrackTypeOption: (trackId: string) => void;
+  onMoveAttachedPointTrackTypeOption: (trackId: string, index: number, direction: "up" | "down") => void;
+  onReorderAttachedPointTrackTypeOption: (trackId: string, fromIndex: number, toIndex: number) => void;
+  onRemoveAttachedPointTrackTypeOption: (trackId: string, index: number) => void;
+  onDeleteAttachedPointTrack: (trackId: string) => void;
   onCustomTrackRename: (trackId: string, name: string) => void;
   onCustomTrackTypeOptionChange: (trackId: string, index: number, value: string) => void;
   onAddCustomTrackTypeOption: (trackId: string) => void;
@@ -59,6 +71,7 @@ export function InspectorPanel({
   trackDefinitions,
   onCharacterUpdate,
   onActionUpdate,
+  onAttachedPointUpdate,
   onBuiltinTrackRename,
   onBuiltinTrackTypeOptionChange,
   onAddBuiltinTrackTypeOption,
@@ -66,6 +79,16 @@ export function InspectorPanel({
   onReorderBuiltinTrackTypeOption,
   onRemoveBuiltinTrackTypeOption,
   onDeleteBuiltinTrack,
+  onAddAttachedPointTrack,
+  onToggleAttachedPointTracks,
+  onSelectAttachedPointTrack,
+  onAttachedPointTrackRename,
+  onAttachedPointTrackTypeOptionChange,
+  onAddAttachedPointTrackTypeOption,
+  onMoveAttachedPointTrackTypeOption,
+  onReorderAttachedPointTrackTypeOption,
+  onRemoveAttachedPointTrackTypeOption,
+  onDeleteAttachedPointTrack,
   onCustomTrackRename,
   onCustomTrackTypeOptionChange,
   onAddCustomTrackTypeOption,
@@ -99,12 +122,15 @@ export function InspectorPanel({
   const selectedCustomTrack = selectedItem?.type === "custom-track"
     ? customTracks.find((item) => item.id === selectedItem.id) ?? null
     : null;
-  const selectedEditableTrack = selectedBuiltinTrack ?? selectedCustomTrack;
+  const selectedAttachedPointTrack = selectedItem?.type === "attached-point-track"
+    ? findAttachedPointTrackInCollections(builtinTracks, customTracks, selectedItem.id, selectedItem.parentTrackId)
+    : null;
+  const selectedEditableTrack = selectedBuiltinTrack ?? selectedCustomTrack ?? selectedAttachedPointTrack?.track ?? null;
   const typeOptionKeys = useMemo(
     () => buildTypeOptionKeys(
-      selectedBuiltinTrack?.options ?? selectedCustomTrack?.typeOptions ?? [],
+      selectedBuiltinTrack?.options ?? selectedCustomTrack?.typeOptions ?? selectedAttachedPointTrack?.track.typeOptions ?? [],
     ),
-    [selectedBuiltinTrack?.options, selectedCustomTrack?.typeOptions],
+    [selectedBuiltinTrack?.options, selectedCustomTrack?.typeOptions, selectedAttachedPointTrack?.track.typeOptions],
   );
   const remainingTypeOptionKeys = useMemo(
     () => typeOptionKeys.filter((_, index) => index !== draggedOptionIndex),
@@ -127,7 +153,7 @@ export function InspectorPanel({
   useEffect(() => {
     setTypeOptionDrafts(trackOptionsFromTrack(selectedEditableTrack));
     setComposingOptionIndexes({});
-  }, [selectedEditableTrack?.id, selectedBuiltinTrack?.options, selectedCustomTrack?.typeOptions]);
+  }, [selectedEditableTrack?.id, selectedBuiltinTrack?.options, selectedCustomTrack?.typeOptions, selectedAttachedPointTrack?.track.typeOptions]);
 
   useEffect(() => {
     return () => {
@@ -168,6 +194,10 @@ export function InspectorPanel({
     }
     if (selectedCustomTrack) {
       onCustomTrackRename(selectedCustomTrack.id, nextName);
+      return;
+    }
+    if (selectedAttachedPointTrack) {
+      onAttachedPointTrackRename(selectedAttachedPointTrack.track.id, nextName);
     }
   }
 
@@ -185,6 +215,10 @@ export function InspectorPanel({
     }
     if (selectedCustomTrack) {
       onCustomTrackTypeOptionChange(selectedCustomTrack.id, index, nextValue);
+      return;
+    }
+    if (selectedAttachedPointTrack) {
+      onAttachedPointTrackTypeOptionChange(selectedAttachedPointTrack.track.id, index, nextValue);
     }
   }
 
@@ -279,6 +313,9 @@ export function InspectorPanel({
         } else if (selectedCustomTrack) {
           onReorderCustomTrackTypeOption(selectedCustomTrack.id, optionReorderDrag.index, insertionIndex);
           flashMovedOption(Math.min(insertionIndex, selectedCustomTrack.typeOptions.length - 1));
+        } else if (selectedAttachedPointTrack) {
+          onReorderAttachedPointTrackTypeOption(selectedAttachedPointTrack.track.id, optionReorderDrag.index, insertionIndex);
+          flashMovedOption(Math.min(insertionIndex, selectedAttachedPointTrack.track.typeOptions.length - 1));
         }
       }
       draggedOptionIndexRef.current = null;
@@ -301,6 +338,8 @@ export function InspectorPanel({
     selectedBuiltinTrack,
     selectedEditableTrack,
     selectedCustomTrack,
+    selectedAttachedPointTrack,
+    onReorderAttachedPointTrackTypeOption,
   ]);
 
   if (!selectedItem) {
@@ -340,13 +379,28 @@ export function InspectorPanel({
     );
   }
 
-  if (selectedItem.type === "custom-track" || selectedItem.type === "builtin-track") {
+  if (
+    selectedItem.type === "custom-track" ||
+    selectedItem.type === "builtin-track" ||
+    selectedItem.type === "attached-point-track"
+  ) {
     const track = selectedEditableTrack;
     if (!track) {
       return null;
     }
     const trackOptions = "typeOptions" in track ? track.typeOptions : (track.options ?? []);
     const isBuiltinTrack = selectedItem.type === "builtin-track";
+    const isAttachedPointTrack = selectedItem.type === "attached-point-track";
+    const attachedPointTracks = "attachedPointTracks" in track ? track.attachedPointTracks ?? [] : [];
+    const attachedPointTracksExpanded =
+      !isAttachedPointTrack && "attachedPointTracksExpanded" in track
+        ? Boolean(track.attachedPointTracksExpanded)
+        : false;
+    const trackTypeLabel = isAttachedPointTrack
+      ? "附属打点轨"
+      : "trackType" in track
+        ? (track.trackType === "text" ? "文字类轨道" : "动作类轨道")
+        : ("type" in track && track.type === "character" ? "文字类轨道" : "动作类轨道");
     return (
       <section className="panel inspector-panel">
         <div className="panel-header">
@@ -354,6 +408,8 @@ export function InspectorPanel({
           <button onClick={() => {
             if (isBuiltinTrack) {
               onDeleteBuiltinTrack(track.id as BuiltinTrackId);
+            } else if (isAttachedPointTrack) {
+              onDeleteAttachedPointTrack(track.id);
             } else {
               onDeleteCustomTrack(track.id);
             }
@@ -393,12 +449,47 @@ export function InspectorPanel({
         </div>
         <div className="inspector-field">
           <label>轨道类型</label>
-          <div className="inspector-value">
-            {"trackType" in track
-              ? track.trackType === "text" ? "文字类轨道" : "动作类轨道"
-              : track.type === "character" ? "文字类轨道" : "动作类轨道"}
-          </div>
+          <div className="inspector-value">{trackTypeLabel}</div>
         </div>
+        {isAttachedPointTrack && selectedAttachedPointTrack ? (
+          <div className="inspector-field">
+            <label>父轨道</label>
+            <div className="inspector-value">{selectedAttachedPointTrack.parentTrack.name}</div>
+          </div>
+        ) : null}
+        {!isAttachedPointTrack ? (
+          <div className="inspector-field">
+            <label>附属打点轨</label>
+            <div className="track-option-list attached-point-track-list">
+              {attachedPointTracks.map((pointTrack) => (
+                <div key={pointTrack.id} className="track-option-row attached-point-track-row">
+                  <div className="attached-point-track-summary">
+                    <strong>{pointTrack.name}</strong>
+                    <span>{pointTrack.points.length} 个打点</span>
+                  </div>
+                  <div className="track-option-actions">
+                    <button
+                      type="button"
+                      onClick={() => onSelectAttachedPointTrack(pointTrack.id, track.id)}
+                    >
+                      设置
+                    </button>
+                  </div>
+                </div>
+              ))}
+              <div className="attached-point-track-actions">
+                <button type="button" onClick={() => onAddAttachedPointTrack(track.id)}>
+                  新增打点附属轨
+                </button>
+                {attachedPointTracks.length > 0 ? (
+                  <button type="button" onClick={() => onToggleAttachedPointTracks(track.id)}>
+                    {attachedPointTracksExpanded ? "隐藏附属打点轨" : "展开附属打点轨"}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
         <div className="inspector-field">
           <label>类型列表</label>
           <div className="track-option-list">
@@ -506,6 +597,8 @@ export function InspectorPanel({
                     onClick={() => {
                       if (isBuiltinTrack) {
                         onMoveBuiltinTrackTypeOption(track.id as BuiltinTrackId, index, "up");
+                      } else if (isAttachedPointTrack) {
+                        onMoveAttachedPointTrackTypeOption(track.id, index, "up");
                       } else {
                         onMoveCustomTrackTypeOption(track.id, index, "up");
                       }
@@ -521,6 +614,8 @@ export function InspectorPanel({
                     onClick={() => {
                       if (isBuiltinTrack) {
                         onMoveBuiltinTrackTypeOption(track.id as BuiltinTrackId, index, "down");
+                      } else if (isAttachedPointTrack) {
+                        onMoveAttachedPointTrackTypeOption(track.id, index, "down");
                       } else {
                         onMoveCustomTrackTypeOption(track.id, index, "down");
                       }
@@ -536,6 +631,8 @@ export function InspectorPanel({
                     onClick={() => {
                       if (isBuiltinTrack) {
                         onRemoveBuiltinTrackTypeOption(track.id as BuiltinTrackId, index);
+                      } else if (isAttachedPointTrack) {
+                        onRemoveAttachedPointTrackTypeOption(track.id, index);
                       } else {
                         onRemoveCustomTrackTypeOption(track.id, index);
                       }
@@ -550,6 +647,8 @@ export function InspectorPanel({
             <button type="button" onClick={() => {
               if (isBuiltinTrack) {
                 onAddBuiltinTrackTypeOption(track.id as BuiltinTrackId);
+              } else if (isAttachedPointTrack) {
+                onAddAttachedPointTrackTypeOption(track.id);
               } else {
                 onAddCustomTrackTypeOption(track.id);
               }
@@ -615,6 +714,61 @@ export function InspectorPanel({
               </option>
             ))}
           </select>
+        </div>
+      </section>
+    );
+  }
+
+  if (selectedItem.type === "attached-point") {
+    const pointTrackInfo = findAttachedPointTrackInCollections(
+      builtinTracks,
+      customTracks,
+      selectedItem.trackId,
+      selectedItem.parentTrackId,
+    );
+    const point = pointTrackInfo?.track.points.find((item) => item.id === selectedItem.id) ?? null;
+    if (!pointTrackInfo || !point) {
+      return null;
+    }
+    return (
+      <section className="panel inspector-panel">
+        <div className="panel-header">
+          <h2>打点属性</h2>
+          <button onClick={onDeleteSelected}>删除</button>
+        </div>
+        <div className="inspector-field">
+          <label>附属轨</label>
+          <div className="inspector-value">{pointTrackInfo.track.name}</div>
+        </div>
+        <div className="inspector-field">
+          <label>父轨道</label>
+          <div className="inspector-value">{pointTrackInfo.parentTrack.name}</div>
+        </div>
+        <div className="inspector-field">
+          <label>打点含义</label>
+          <select
+            value={point.label}
+            onChange={(event) =>
+              onAttachedPointUpdate(pointTrackInfo.track.id, point.id, { label: event.target.value })
+            }
+          >
+            {pointTrackInfo.track.typeOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="inspector-field">
+          <label>时间</label>
+          <input
+            type="number"
+            step="0.001"
+            value={point.time}
+            onChange={(event) =>
+              onAttachedPointUpdate(pointTrackInfo.track.id, point.id, { time: Number(event.target.value) })
+            }
+          />
         </div>
       </section>
     );
@@ -751,9 +905,28 @@ function buildTypeOptionKeys(typeOptions: string[]) {
   });
 }
 
-function trackOptionsFromTrack(track: BuiltinTrack | CustomTrack | null) {
+function trackOptionsFromTrack(track: BuiltinTrack | CustomTrack | AttachedPointTrack | null) {
   if (!track) {
     return [];
   }
   return "typeOptions" in track ? track.typeOptions : (track.options ?? []);
+}
+
+function findAttachedPointTrackInCollections(
+  builtinTracks: BuiltinTrack[],
+  customTracks: CustomTrack[],
+  pointTrackId: string,
+  parentTrackId: string,
+) {
+  const builtinParent = builtinTracks.find((track) => track.id === parentTrackId);
+  if (builtinParent) {
+    const track = (builtinParent.attachedPointTracks ?? []).find((item) => item.id === pointTrackId);
+    return track ? { parentTrack: builtinParent, track } : null;
+  }
+  const customParent = customTracks.find((track) => track.id === parentTrackId);
+  if (!customParent) {
+    return null;
+  }
+  const track = (customParent.attachedPointTracks ?? []).find((item) => item.id === pointTrackId);
+  return track ? { parentTrack: customParent, track } : null;
 }

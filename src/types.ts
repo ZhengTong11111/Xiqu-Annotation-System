@@ -4,6 +4,19 @@ export type BuiltinTrackId = "character-track" | "hand-action" | "body-action";
 export type CustomTrackType = "text" | "action";
 export type BuiltinTrackType = "character" | "action";
 
+export type AttachedPointAnnotation = {
+  id: string;
+  time: number;
+  label: string;
+};
+
+export type AttachedPointTrack = {
+  id: string;
+  name: string;
+  typeOptions: string[];
+  points: AttachedPointAnnotation[];
+};
+
 export type SubtitleLine = {
   id: string;
   text: string;
@@ -49,6 +62,8 @@ export type CustomTextTrack = {
   trackType: "text";
   typeOptions: string[];
   blocks: CustomTextTrackBlock[];
+  attachedPointTracks: AttachedPointTrack[];
+  attachedPointTracksExpanded?: boolean;
 };
 
 export type CustomActionTrack = {
@@ -57,6 +72,8 @@ export type CustomActionTrack = {
   trackType: "action";
   typeOptions: string[];
   blocks: CustomActionTrackBlock[];
+  attachedPointTracks: AttachedPointTrack[];
+  attachedPointTracksExpanded?: boolean;
 };
 
 export type CustomTrack = CustomTextTrack | CustomActionTrack;
@@ -76,15 +93,20 @@ export type BuiltinTrack = {
   name: string;
   type: BuiltinTrackType;
   options?: string[];
+  attachedPointTracks: AttachedPointTrack[];
+  attachedPointTracksExpanded?: boolean;
 };
 
 export type TrackDefinition = {
   id: string;
   name: string;
-  type: "character" | "action" | "custom-text" | "custom-action";
+  type: "character" | "action" | "custom-text" | "custom-action" | "attached-point";
   options?: string[];
   isCustom?: boolean;
   isBuiltin?: boolean;
+  isAttachedPointTrack?: boolean;
+  parentTrackId?: string;
+  parentTrackName?: string;
 };
 
 export type ProjectVideo = {
@@ -128,7 +150,9 @@ export type SelectedItem =
   | { type: "action"; id: string }
   | { type: "builtin-track"; id: BuiltinTrackId }
   | { type: "custom-track"; id: string }
+  | { type: "attached-point-track"; id: string; parentTrackId: string }
   | { type: "custom-block"; id: string; trackId: string }
+  | { type: "attached-point"; id: string; trackId: string; parentTrackId: string }
   | null;
 
 export type TimelineSelectionItem =
