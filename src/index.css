@@ -2035,6 +2035,82 @@ select {
   background: rgba(255, 255, 255, 0.94);
 }
 
+.import-merge-modal {
+  width: min(920px, calc(100vw - 40px));
+  max-height: min(80vh, 760px);
+  display: flex;
+  flex-direction: column;
+}
+
+.import-merge-warning {
+  color: #8a4b14;
+}
+
+.import-merge-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  margin-top: 8px;
+  padding-right: 2px;
+}
+
+.import-merge-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.9fr);
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(207, 216, 230, 0.85);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.96);
+}
+
+.import-merge-row.is-attached {
+  margin-left: 16px;
+  border-left: 3px solid rgba(15, 108, 189, 0.18);
+}
+
+.import-merge-row.is-disabled {
+  opacity: 0.7;
+}
+
+.import-merge-row-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.import-merge-row-copy strong {
+  font-size: 12px;
+}
+
+.import-merge-row-copy > span,
+.import-merge-note {
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.import-merge-row-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.import-merge-row-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.import-merge-row-controls select {
+  min-width: 0;
+}
+
 @media (max-width: 1440px) {
   .app-shell-body {
     padding: 6px;
@@ -2089,5 +2165,13 @@ select {
   .inspector-panel {
     padding-right: 6px;
     padding-left: 6px;
+  }
+
+  .import-merge-row {
+    grid-template-columns: 1fr;
+  }
+
+  .import-merge-row-controls {
+    grid-template-columns: 1fr;
   }
 }

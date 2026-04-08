@@ -52,7 +52,7 @@ import {
   parseSrt,
 } from "./utils/srt";
 
-type HistoryAction = "edit" | "import-video" | "import-srt" | "import-project";
+type HistoryAction = "edit" | "import-video" | "import-srt" | "import-project" | "merge-project";
 
 type HistoryEntry = {
   project: ProjectData;
@@ -177,6 +177,43 @@ type PendingPasteState = {
   conflicts: PasteConflict[];
 };
 
+type ImportMergeMode = "replace" | "overlay";
+
+type ImportMergeRow = {
+  key: string;
+  kind: "builtin-track" | "custom-track" | "attached-point-track";
+  sourceTrackId: string;
+  sourceTrackName: string;
+  sourceTrackType: "character" | "action" | "custom-text" | "custom-action" | "attached-point";
+  sourceParentKey?: string;
+  sourceParentTrackId?: string;
+  sourceParentTrackName?: string;
+  importedCount: number;
+  targetChoice: string;
+  mergeMode: ImportMergeMode;
+};
+
+type PendingImportMergeState = {
+  fileName: string;
+  sourceProject: ProjectData;
+  rows: ImportMergeRow[];
+  videoWarning: string | null;
+};
+
+type ImportMergeTargetOption = {
+  value: string;
+  label: string;
+  disabled?: boolean;
+};
+
+type ImportMergePreview = {
+  targetLabel: string;
+  importedCount: number;
+  existingCount: number;
+  duplicateCount: number;
+  disabledReason: string | null;
+};
+
 type TimelineContextMenu =
   | {
       type: "character";
@@ -218,6 +255,8 @@ const DEFAULT_CUSTOM_TEXT = "新标注";
 const CONTEXT_MENU_GAP = 10;
 const CONTEXT_MENU_VIEWPORT_MARGIN = 12;
 const PROJECT_FILE_VERSION = 2;
+const IMPORT_MERGE_SKIP = "__skip__";
+const IMPORT_MERGE_NEW = "__new__";
 const comparableProjectSignatureCache = new WeakMap<ProjectData, string>();
 const trackSnapSignatureCache = new WeakMap<Record<string, boolean>, string>();
 const WAVEFORM_KEYPOINT_MIN_SPACING_SECONDS = 0.06;
@@ -249,6 +288,7 @@ function App() {
   const [blockContextMenu, setBlockContextMenu] = useState<TimelineContextMenu | null>(null);
   const [timelineClipboard, setTimelineClipboard] = useState<TimelineClipboard | null>(null);
   const [pendingPasteState, setPendingPasteState] = useState<PendingPasteState | null>(null);
+  const [pendingImportMergeState, setPendingImportMergeState] = useState<PendingImportMergeState | null>(null);
   const [zoom, setZoom] = useState(20);
   const [lineFocusRequest, setLineFocusRequest] = useState<LineFocusRequest | null>(null);
   const [trackSnapEnabled, setTrackSnapEnabled] = useState<Record<string, boolean>>(
@@ -265,6 +305,7 @@ function App() {
   const videoFileInputRef = useRef<HTMLInputElement>(null);
   const srtFileInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
+  const mergeProjectFileInputRef = useRef<HTMLInputElement>(null);
   const projectRef = useRef(project);
   const savedProjectRef = useRef(project);
   const transientProjectRef = useRef<ProjectData | null>(null);
@@ -293,6 +334,17 @@ function App() {
     () => new Set(project.builtinTracks.map((track) => track.id)),
     [project.builtinTracks],
   );
+  const importMergePreviews = useMemo(() => {
+    if (!pendingImportMergeState) {
+      return {};
+    }
+    return Object.fromEntries(
+      pendingImportMergeState.rows.map((row) => [
+        row.key,
+        getImportMergePreview(projectRef.current, pendingImportMergeState.sourceProject, pendingImportMergeState.rows, row),
+      ]),
+    ) as Record<string, ImportMergePreview>;
+  }, [pendingImportMergeState]);
 
   useEffect(() => {
     projectRef.current = project;
@@ -2818,6 +2870,70 @@ function App() {
     }
   }
 
+  async function importAndMergeProjectFile(file: File) {
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as SavedProjectFile | ProjectData;
+      const normalized = normalizeImportedProjectFile(parsed);
+      const sourceProject = normalized.project;
+      const currentProject = projectRef.current;
+      const mergeRows = buildInitialImportMergeRows(currentProject, sourceProject);
+      if (mergeRows.length === 0) {
+        window.alert("导入的项目里没有可整合的轨道内容。");
+        return;
+      }
+      setPendingImportMergeState({
+        fileName: file.name,
+        sourceProject,
+        rows: mergeRows,
+        videoWarning: getImportMergeVideoWarning(currentProject, sourceProject),
+      });
+      setManualVideoRelinkPrompt(null);
+    } catch {
+      window.alert("导入整合失败。请选择由本工具导出的项目 JSON，或检查文件内容是否完整。");
+    }
+  }
+
+  function updateImportMergeRow(rowKey: string, updates: Partial<Pick<ImportMergeRow, "targetChoice" | "mergeMode">>) {
+    setPendingImportMergeState((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        rows: current.rows.map((row) =>
+          row.key === rowKey
+            ? {
+                ...row,
+                ...updates,
+              }
+            : row),
+      };
+    });
+  }
+
+  function applyImportMerge() {
+    const pendingState = pendingImportMergeState;
+    if (!pendingState) {
+      return;
+    }
+    const currentProject = projectRef.current;
+    const prepared = prepareImportMerge(currentProject, pendingState.sourceProject, pendingState.rows);
+    if (prepared.skippedAll) {
+      window.alert("当前整合设置没有可导入的轨道内容。请至少选择一条轨道进行替换或叠加。");
+      return;
+    }
+    if (prepared.warnings.length > 0) {
+      const confirmed = window.confirm(`整合前发现以下问题：\n\n${prepared.warnings.join("\n")}\n\n是否继续整合？`);
+      if (!confirmed) {
+        return;
+      }
+    }
+    const nextProject = applyPreparedImportMerge(currentProject, pendingState.sourceProject, prepared.plans);
+    commitProject(nextProject, undefined, "merge-project");
+    setPendingImportMergeState(null);
+  }
+
   async function saveProjectFile() {
     if (editingCharacterId) {
       commitCharacterTextEdit(editingCharacterId);
@@ -2881,6 +2997,7 @@ function App() {
           videoFileInputRef={videoFileInputRef}
           srtFileInputRef={srtFileInputRef}
           projectFileInputRef={projectFileInputRef}
+          mergeProjectFileInputRef={mergeProjectFileInputRef}
           onTogglePlay={togglePlay}
           onStep={(delta) => seekTo(currentTime + delta)}
           onPlaybackRateChange={setPlaybackRate}
@@ -2903,6 +3020,13 @@ function App() {
             const file = event.target.files?.[0];
             if (file) {
               void importProjectFile(file);
+            }
+            event.target.value = "";
+          }}
+          onMergeProjectFileChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) {
+              void importAndMergeProjectFile(file);
             }
             event.target.value = "";
           }}
@@ -3524,6 +3648,97 @@ function App() {
           </div>
         </div>
       ) : null}
+      {pendingImportMergeState ? (
+        <div className="app-modal-backdrop" onClick={() => setPendingImportMergeState(null)}>
+          <div className="app-modal import-merge-modal" onClick={(event) => event.stopPropagation()}>
+            <h2>整合外部标注</h2>
+            <p>已读取项目文件：{pendingImportMergeState.fileName}</p>
+            {pendingImportMergeState.videoWarning ? (
+              <p className="import-merge-warning">{pendingImportMergeState.videoWarning}</p>
+            ) : (
+              <p>已按轨道类型和名称给出一版默认对齐结果。你可以在确认后替换内容或叠加内容。</p>
+            )}
+            <div className="import-merge-list">
+              {pendingImportMergeState.rows.map((row) => {
+                const targetOptions = getImportMergeTargetOptions(project, pendingImportMergeState.rows, row);
+                const normalizedTargetChoice = getNormalizedImportMergeTargetChoice(
+                  project,
+                  pendingImportMergeState.rows,
+                  row,
+                );
+                const preview = importMergePreviews[row.key];
+                const isDisabled = Boolean(preview?.disabledReason);
+                return (
+                  <div
+                    key={row.key}
+                    className={[
+                      "import-merge-row",
+                      row.kind === "attached-point-track" ? "is-attached" : "",
+                      isDisabled ? "is-disabled" : "",
+                    ].join(" ")}
+                  >
+                    <div className="import-merge-row-copy">
+                      <strong>{row.sourceTrackName}</strong>
+                      <span>
+                        {getImportMergeRowTypeLabel(row)} · {row.importedCount} 项
+                        {row.sourceParentTrackName ? ` · 附属于 ${row.sourceParentTrackName}` : ""}
+                      </span>
+                      {preview?.disabledReason ? (
+                        <span className="import-merge-note">{preview.disabledReason}</span>
+                      ) : normalizedTargetChoice === IMPORT_MERGE_SKIP ? (
+                        <span className="import-merge-note">当前将跳过这条轨道。</span>
+                      ) : row.mergeMode === "replace" ? (
+                        <span className="import-merge-note">将替换目标轨当前的 {preview?.existingCount ?? 0} 项内容。</span>
+                      ) : preview && preview.duplicateCount > 0 ? (
+                        <span className="import-merge-note">
+                          检测到 {preview.duplicateCount} 项重复内容，叠加时会自动跳过。
+                        </span>
+                      ) : (
+                        <span className="import-merge-note">将把内容叠加到目标轨道。</span>
+                      )}
+                    </div>
+                    <div className="import-merge-row-controls">
+                      <label>
+                        <span>目标轨道</span>
+                        <select
+                          value={normalizedTargetChoice}
+                          onChange={(event) => updateImportMergeRow(row.key, { targetChoice: event.target.value })}
+                        >
+                          {targetOptions.map((option) => (
+                            <option key={option.value} value={option.value} disabled={option.disabled}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>导入方式</span>
+                        <select
+                          value={row.mergeMode}
+                          disabled={isDisabled || normalizedTargetChoice === IMPORT_MERGE_SKIP}
+                          onChange={(event) =>
+                            updateImportMergeRow(row.key, { mergeMode: event.target.value as ImportMergeMode })}
+                        >
+                          <option value="overlay">叠加内容</option>
+                          <option value="replace">替换内容</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="app-modal-actions">
+              <button type="button" className="secondary" onClick={() => setPendingImportMergeState(null)}>
+                取消
+              </button>
+              <button type="button" onClick={applyImportMerge}>
+                整合导入
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {manualVideoRelinkPrompt ? (
         <div className="app-modal-backdrop" onClick={() => setManualVideoRelinkPrompt(null)}>
           <div className="app-modal" onClick={(event) => event.stopPropagation()}>
@@ -3617,6 +3832,704 @@ function locatePointTrack(
     }
   }
   return null;
+}
+
+function buildInitialImportMergeRows(
+  currentProject: ProjectData,
+  sourceProject: ProjectData,
+) {
+  const rows: ImportMergeRow[] = [];
+  const orderedSourceTrackIds = sourceProject.activeTrackOrder.length > 0
+    ? sourceProject.activeTrackOrder
+    : [
+        ...sourceProject.builtinTracks.map((track) => track.id),
+        ...sourceProject.customTracks.map((track) => track.id),
+      ];
+
+  for (const trackId of orderedSourceTrackIds) {
+    const builtinTrack = sourceProject.builtinTracks.find((track) => track.id === trackId);
+    if (builtinTrack) {
+      const importedCount = getImportMergeBuiltinItemCount(sourceProject, builtinTrack.id);
+      if (importedCount > 0 || builtinTrack.attachedPointTracks.length > 0) {
+        rows.push({
+          key: `builtin:${builtinTrack.id}`,
+          kind: "builtin-track",
+          sourceTrackId: builtinTrack.id,
+          sourceTrackName: builtinTrack.name,
+          sourceTrackType: builtinTrack.type,
+          importedCount,
+          targetChoice: currentProject.builtinTracks.some((track) => track.id === builtinTrack.id)
+            ? builtinTrack.id
+            : IMPORT_MERGE_NEW,
+          mergeMode: "overlay",
+        });
+      }
+      for (const pointTrack of builtinTrack.attachedPointTracks) {
+        if (pointTrack.points.length === 0) {
+          continue;
+        }
+        const targetBuiltinTrack = currentProject.builtinTracks.find((track) => track.id === builtinTrack.id);
+        const matchedPointTrack = targetBuiltinTrack?.attachedPointTracks.find((track) => track.name === pointTrack.name);
+        rows.push({
+          key: `attached:${builtinTrack.id}:${pointTrack.id}`,
+          kind: "attached-point-track",
+          sourceTrackId: pointTrack.id,
+          sourceTrackName: pointTrack.name,
+          sourceTrackType: "attached-point",
+          sourceParentKey: `builtin:${builtinTrack.id}`,
+          sourceParentTrackId: builtinTrack.id,
+          sourceParentTrackName: builtinTrack.name,
+          importedCount: pointTrack.points.length,
+          targetChoice: matchedPointTrack?.id ?? IMPORT_MERGE_NEW,
+          mergeMode: "overlay",
+        });
+      }
+      continue;
+    }
+
+    const customTrack = sourceProject.customTracks.find((track) => track.id === trackId);
+    if (!customTrack) {
+      continue;
+    }
+    const importedCount = customTrack.blocks.length;
+    if (importedCount > 0 || customTrack.attachedPointTracks.length > 0) {
+      const matchedTrack = currentProject.customTracks.find((track) =>
+        track.trackType === customTrack.trackType && track.name === customTrack.name);
+      rows.push({
+        key: `custom:${customTrack.id}`,
+        kind: "custom-track",
+        sourceTrackId: customTrack.id,
+        sourceTrackName: customTrack.name,
+        sourceTrackType: customTrack.trackType === "text" ? "custom-text" : "custom-action",
+        importedCount,
+        targetChoice: matchedTrack?.id ?? IMPORT_MERGE_NEW,
+        mergeMode: "overlay",
+      });
+    }
+    for (const pointTrack of customTrack.attachedPointTracks) {
+      if (pointTrack.points.length === 0) {
+        continue;
+      }
+      const matchedTrack = currentProject.customTracks.find((track) =>
+        track.trackType === customTrack.trackType && track.name === customTrack.name);
+      const matchedPointTrack = matchedTrack?.attachedPointTracks.find((track) => track.name === pointTrack.name);
+      rows.push({
+        key: `attached:${customTrack.id}:${pointTrack.id}`,
+        kind: "attached-point-track",
+        sourceTrackId: pointTrack.id,
+        sourceTrackName: pointTrack.name,
+        sourceTrackType: "attached-point",
+        sourceParentKey: `custom:${customTrack.id}`,
+        sourceParentTrackId: customTrack.id,
+        sourceParentTrackName: customTrack.name,
+        importedCount: pointTrack.points.length,
+        targetChoice: matchedPointTrack?.id ?? IMPORT_MERGE_NEW,
+        mergeMode: "overlay",
+      });
+    }
+  }
+
+  return rows;
+}
+
+function getImportMergeVideoWarning(
+  currentProject: ProjectData,
+  sourceProject: ProjectData,
+) {
+  const currentVideoName = currentProject.video.name?.trim();
+  const sourceVideoName = sourceProject.video.name?.trim();
+  const currentVideoUrl = normalizeProjectVideoUrl(currentProject.video.url);
+  const sourceVideoUrl = normalizeProjectVideoUrl(sourceProject.video.url);
+
+  if (currentVideoName && sourceVideoName && currentVideoName !== sourceVideoName) {
+    return `当前项目视频为“${currentVideoName}”，导入项目视频为“${sourceVideoName}”。请先确认它们对应的是同一视频。`;
+  }
+  if (currentVideoUrl && sourceVideoUrl && currentVideoUrl !== sourceVideoUrl) {
+    return "当前项目与导入项目的视频链接不一致。请先确认它们对应的是同一视频。";
+  }
+  return null;
+}
+
+function getImportMergeTargetOptions(
+  currentProject: ProjectData,
+  rows: ImportMergeRow[],
+  row: ImportMergeRow,
+): ImportMergeTargetOption[] {
+  if (row.kind === "builtin-track") {
+    const builtinTrack = currentProject.builtinTracks.find((track) => track.id === row.sourceTrackId);
+    return [
+      ...(builtinTrack ? [{ value: builtinTrack.id, label: `对齐到 ${builtinTrack.name}` }] : []),
+      { value: IMPORT_MERGE_NEW, label: "新建对应内建轨" },
+      { value: IMPORT_MERGE_SKIP, label: "跳过此轨道" },
+    ];
+  }
+
+  if (row.kind === "custom-track") {
+    const compatibleTracks = currentProject.customTracks.filter((track) =>
+      (row.sourceTrackType === "custom-text" && track.trackType === "text") ||
+      (row.sourceTrackType === "custom-action" && track.trackType === "action"));
+    return [
+      ...compatibleTracks.map((track) => ({
+        value: track.id,
+        label: `对齐到 ${track.name}`,
+      })),
+      { value: IMPORT_MERGE_NEW, label: "新建同类轨道" },
+      { value: IMPORT_MERGE_SKIP, label: "跳过此轨道" },
+    ];
+  }
+
+  const parentRow = rows.find((candidate) => candidate.key === row.sourceParentKey);
+  if (!parentRow) {
+    return [{ value: IMPORT_MERGE_SKIP, label: "跳过此轨道" }];
+  }
+  const normalizedParentChoice = getNormalizedImportMergeTargetChoice(currentProject, rows, parentRow);
+  if (normalizedParentChoice === IMPORT_MERGE_SKIP) {
+    return [{ value: IMPORT_MERGE_SKIP, label: "父轨道已跳过" }];
+  }
+  if (normalizedParentChoice === IMPORT_MERGE_NEW) {
+    return [
+      { value: IMPORT_MERGE_NEW, label: "在新父轨下新建打点轨" },
+      { value: IMPORT_MERGE_SKIP, label: "跳过此轨道" },
+    ];
+  }
+  const parentTrack = findTopLevelTrackById(currentProject, normalizedParentChoice);
+  const attachedPointTracks = parentTrack?.attachedPointTracks ?? [];
+  return [
+    ...attachedPointTracks.map((track) => ({
+      value: track.id,
+      label: `对齐到 ${track.name}`,
+    })),
+    { value: IMPORT_MERGE_NEW, label: "在父轨下新建打点轨" },
+    { value: IMPORT_MERGE_SKIP, label: "跳过此轨道" },
+  ];
+}
+
+function getNormalizedImportMergeTargetChoice(
+  currentProject: ProjectData,
+  rows: ImportMergeRow[],
+  row: ImportMergeRow,
+) {
+  const options = getImportMergeTargetOptions(currentProject, rows, row);
+  return options.some((option) => option.value === row.targetChoice)
+    ? row.targetChoice
+    : (options[0]?.value ?? IMPORT_MERGE_SKIP);
+}
+
+function getImportMergePreview(
+  currentProject: ProjectData,
+  sourceProject: ProjectData,
+  rows: ImportMergeRow[],
+  row: ImportMergeRow,
+): ImportMergePreview {
+  const targetOptions = getImportMergeTargetOptions(currentProject, rows, row);
+  const normalizedTargetChoice = getNormalizedImportMergeTargetChoice(currentProject, rows, row);
+  const targetLabel = targetOptions.find((option) => option.value === normalizedTargetChoice)?.label ?? "未选择";
+
+  if (row.kind === "attached-point-track") {
+    const parentRow = rows.find((candidate) => candidate.key === row.sourceParentKey);
+    const normalizedParentChoice = parentRow
+      ? getNormalizedImportMergeTargetChoice(currentProject, rows, parentRow)
+      : IMPORT_MERGE_SKIP;
+    if (!parentRow || normalizedParentChoice === IMPORT_MERGE_SKIP) {
+      return {
+        targetLabel,
+        importedCount: row.importedCount,
+        existingCount: 0,
+        duplicateCount: 0,
+        disabledReason: "父轨道当前设置为跳过，附属打点轨不会导入。",
+      };
+    }
+  }
+
+  if (normalizedTargetChoice === IMPORT_MERGE_SKIP || normalizedTargetChoice === IMPORT_MERGE_NEW) {
+    return {
+      targetLabel,
+      importedCount: row.importedCount,
+      existingCount: 0,
+      duplicateCount: 0,
+      disabledReason: null,
+    };
+  }
+
+  return {
+    targetLabel,
+    importedCount: row.importedCount,
+    existingCount: getExistingImportMergeItemCount(currentProject, normalizedTargetChoice, row),
+    duplicateCount: countImportMergeDuplicates(currentProject, sourceProject, normalizedTargetChoice, row),
+    disabledReason: null,
+  };
+}
+
+function prepareImportMerge(
+  currentProject: ProjectData,
+  _sourceProject: ProjectData,
+  rows: ImportMergeRow[],
+) {
+  const plans = rows.map((row) => ({
+    ...row,
+    targetChoice: getNormalizedImportMergeTargetChoice(currentProject, rows, row),
+  }));
+  return {
+    plans,
+    warnings: [] as string[],
+    skippedAll: plans.every((row) => row.targetChoice === IMPORT_MERGE_SKIP),
+  };
+}
+
+function applyPreparedImportMerge(
+  currentProject: ProjectData,
+  sourceProject: ProjectData,
+  plans: ImportMergeRow[],
+) {
+  let nextProject = cloneProjectForMerge(currentProject);
+  const resolvedTargetIds = new Map<string, string | null>();
+
+  for (const row of plans.filter((candidate) => candidate.kind !== "attached-point-track")) {
+    if (row.targetChoice === IMPORT_MERGE_SKIP) {
+      resolvedTargetIds.set(row.key, null);
+      continue;
+    }
+
+    if (row.kind === "builtin-track") {
+      const sourceTrack = sourceProject.builtinTracks.find((track) => track.id === row.sourceTrackId);
+      if (!sourceTrack) {
+        resolvedTargetIds.set(row.key, null);
+        continue;
+      }
+      const targetTrackId: BuiltinTrackId = row.targetChoice === IMPORT_MERGE_NEW
+        ? ensureBuiltinTrackForMerge(nextProject, sourceTrack)
+        : row.targetChoice as BuiltinTrackId;
+      resolvedTargetIds.set(row.key, targetTrackId);
+      nextProject = mergeBuiltinTrackFromImport(nextProject, sourceProject, sourceTrack, targetTrackId, row.mergeMode);
+      continue;
+    }
+
+    const sourceTrack = sourceProject.customTracks.find((track) => track.id === row.sourceTrackId);
+    if (!sourceTrack) {
+      resolvedTargetIds.set(row.key, null);
+      continue;
+    }
+    const targetTrackId = row.targetChoice === IMPORT_MERGE_NEW
+      ? createCustomTrackForMerge(nextProject, sourceTrack)
+      : row.targetChoice;
+    resolvedTargetIds.set(row.key, targetTrackId);
+    nextProject = mergeCustomTrackFromImport(nextProject, sourceTrack, targetTrackId, row.mergeMode);
+  }
+
+  for (const row of plans.filter((candidate) => candidate.kind === "attached-point-track")) {
+    if (row.targetChoice === IMPORT_MERGE_SKIP) {
+      continue;
+    }
+    const parentTargetId = row.sourceParentKey ? resolvedTargetIds.get(row.sourceParentKey) : null;
+    if (!parentTargetId) {
+      continue;
+    }
+    const sourceTrack = findAttachedPointTrackInProject(sourceProject, row.sourceParentTrackId ?? "", row.sourceTrackId);
+    if (!sourceTrack) {
+      continue;
+    }
+    const targetTrackId = row.targetChoice === IMPORT_MERGE_NEW
+      ? createAttachedPointTrackForMerge(nextProject, parentTargetId, sourceTrack)
+      : row.targetChoice;
+    nextProject = mergeAttachedPointTrackFromImport(
+      nextProject,
+      parentTargetId,
+      sourceTrack,
+      targetTrackId,
+      row.mergeMode,
+    );
+  }
+
+  return nextProject;
+}
+
+function getImportMergeRowTypeLabel(row: ImportMergeRow) {
+  if (row.kind === "attached-point-track") {
+    return "附属打点轨";
+  }
+  if (row.sourceTrackType === "character") {
+    return "逐字轨";
+  }
+  if (row.sourceTrackType === "action") {
+    return "动作轨";
+  }
+  if (row.sourceTrackType === "custom-text") {
+    return "自定义文字轨";
+  }
+  return "自定义动作轨";
+}
+
+function getImportMergeBuiltinItemCount(project: ProjectData, trackId: string) {
+  if (trackId === "character-track") {
+    return project.characterAnnotations.length;
+  }
+  return project.actionAnnotations.filter((item) => item.trackId === trackId).length;
+}
+
+function getExistingImportMergeItemCount(
+  project: ProjectData,
+  targetTrackId: string,
+  row: ImportMergeRow,
+) {
+  if (row.kind === "builtin-track") {
+    if (row.sourceTrackType === "character") {
+      return project.characterAnnotations.length;
+    }
+    return project.actionAnnotations.filter((item) => item.trackId === targetTrackId).length;
+  }
+  if (row.kind === "custom-track") {
+    return project.customTracks.find((track) => track.id === targetTrackId)?.blocks.length ?? 0;
+  }
+  const parentTrack = findTopLevelTrackByAttachedPointTrackId(project, targetTrackId);
+  return parentTrack?.attachedPointTracks.find((track) => track.id === targetTrackId)?.points.length ?? 0;
+}
+
+function countImportMergeDuplicates(
+  currentProject: ProjectData,
+  sourceProject: ProjectData,
+  targetTrackId: string,
+  row: ImportMergeRow,
+) {
+  if (row.kind === "builtin-track") {
+    if (row.sourceTrackType === "character") {
+      return sourceProject.characterAnnotations.filter((sourceItem) =>
+        currentProject.characterAnnotations.some((targetItem) => areCharactersEquivalent(sourceItem, targetItem))).length;
+    }
+    return sourceProject.actionAnnotations.filter((sourceItem) =>
+      sourceItem.trackId === row.sourceTrackId &&
+      currentProject.actionAnnotations.some((targetItem) =>
+        targetItem.trackId === targetTrackId && areActionsEquivalent(sourceItem, targetItem))).length;
+  }
+
+  if (row.kind === "custom-track") {
+    const sourceTrack = sourceProject.customTracks.find((track) => track.id === row.sourceTrackId);
+    const targetTrack = currentProject.customTracks.find((track) => track.id === targetTrackId);
+    if (!sourceTrack || !targetTrack) {
+      return 0;
+    }
+    return sourceTrack.blocks.filter((sourceBlock) =>
+      targetTrack.blocks.some((targetBlock) => areCustomBlocksEquivalent(sourceBlock, targetBlock, sourceTrack.trackType))).length;
+  }
+
+  const sourceTrack = findAttachedPointTrackInProject(sourceProject, row.sourceParentTrackId ?? "", row.sourceTrackId);
+  const targetTrack = findAttachedPointTrackInProject(
+    currentProject,
+    findTopLevelTrackByAttachedPointTrackId(currentProject, targetTrackId)?.id ?? "",
+    targetTrackId,
+  );
+  if (!sourceTrack || !targetTrack) {
+    return 0;
+  }
+  return sourceTrack.points.filter((sourcePoint) =>
+    targetTrack.points.some((targetPoint) => areAttachedPointsEquivalent(sourcePoint, targetPoint))).length;
+}
+
+function cloneProjectForMerge(project: ProjectData): ProjectData {
+  return {
+    ...project,
+    subtitleLines: project.subtitleLines.map((line) => ({ ...line })),
+    characterAnnotations: project.characterAnnotations.map((item) => ({ ...item })),
+    actionAnnotations: project.actionAnnotations.map((item) => ({ ...item })),
+    builtinTracks: project.builtinTracks.map((track) => ({
+      ...track,
+      options: track.options ? [...track.options] : undefined,
+      attachedPointTracks: track.attachedPointTracks.map((pointTrack) => cloneAttachedPointTrack(pointTrack)),
+    })),
+    customTracks: project.customTracks.map((track) =>
+      track.trackType === "text"
+        ? {
+            ...track,
+            typeOptions: [...track.typeOptions],
+            blocks: track.blocks.map((block) => ({ ...block })),
+            attachedPointTracks: track.attachedPointTracks.map((pointTrack) => cloneAttachedPointTrack(pointTrack)),
+          }
+        : {
+            ...track,
+            typeOptions: [...track.typeOptions],
+            blocks: track.blocks.map((block) => ({ ...block })),
+            attachedPointTracks: track.attachedPointTracks.map((pointTrack) => cloneAttachedPointTrack(pointTrack)),
+          }),
+    activeTrackOrder: [...project.activeTrackOrder],
+  };
+}
+
+function cloneAttachedPointTrack(track: AttachedPointTrack): AttachedPointTrack {
+  return {
+    ...track,
+    typeOptions: [...track.typeOptions],
+    points: track.points.map((point) => ({ ...point })),
+  };
+}
+
+function ensureBuiltinTrackForMerge(project: ProjectData, sourceTrack: BuiltinTrack) {
+  if (project.builtinTracks.some((track) => track.id === sourceTrack.id)) {
+    return sourceTrack.id;
+  }
+  const nextTrack: BuiltinTrack = {
+    ...getBuiltinTrackDefinition(sourceTrack.id),
+    name: sourceTrack.name,
+    options: sourceTrack.options ? [...sourceTrack.options] : undefined,
+    snapToWaveformKeypoints: Boolean(sourceTrack.snapToWaveformKeypoints),
+    attachedPointTracks: [],
+    attachedPointTracksExpanded: false,
+  };
+  project.builtinTracks.push(nextTrack);
+  if (!project.activeTrackOrder.includes(nextTrack.id)) {
+    project.activeTrackOrder.push(nextTrack.id);
+  }
+  return nextTrack.id;
+}
+
+function createCustomTrackForMerge(project: ProjectData, sourceTrack: CustomTrack) {
+  const trackId = `custom-track-${crypto.randomUUID()}`;
+  const nextTrack: CustomTrack = sourceTrack.trackType === "text"
+    ? {
+        id: trackId,
+        name: sourceTrack.name,
+        trackType: "text",
+        typeOptions: [...sourceTrack.typeOptions],
+        blocks: [],
+        attachedPointTracks: [],
+        attachedPointTracksExpanded: false,
+        snapToWaveformKeypoints: Boolean(sourceTrack.snapToWaveformKeypoints),
+      }
+    : {
+        id: trackId,
+        name: sourceTrack.name,
+        trackType: "action",
+        typeOptions: [...sourceTrack.typeOptions],
+        blocks: [],
+        attachedPointTracks: [],
+        attachedPointTracksExpanded: false,
+        snapToWaveformKeypoints: Boolean(sourceTrack.snapToWaveformKeypoints),
+      };
+  project.customTracks.push(nextTrack);
+  project.activeTrackOrder.push(nextTrack.id);
+  return nextTrack.id;
+}
+
+function createAttachedPointTrackForMerge(
+  project: ProjectData,
+  parentTrackId: string,
+  sourceTrack: AttachedPointTrack,
+) {
+  const trackId = `point-track-${crypto.randomUUID()}`;
+  const nextTrack: AttachedPointTrack = {
+    id: trackId,
+    name: sourceTrack.name,
+    typeOptions: [...sourceTrack.typeOptions],
+    points: [],
+    snapToWaveformKeypoints: Boolean(sourceTrack.snapToWaveformKeypoints),
+    snapToParentBoundaries: Boolean(sourceTrack.snapToParentBoundaries),
+  };
+  return updateAttachedPointTrackCollection(project, parentTrackId, (tracks) => [...tracks, nextTrack]);
+}
+
+function mergeBuiltinTrackFromImport(
+  project: ProjectData,
+  sourceProject: ProjectData,
+  sourceTrack: BuiltinTrack,
+  targetTrackId: BuiltinTrackId,
+  mergeMode: ImportMergeMode,
+) {
+  project.builtinTracks = project.builtinTracks.map((track) =>
+    track.id === targetTrackId
+      ? {
+          ...track,
+          options: mergeUniqueStrings(track.options ?? [], sourceTrack.options ?? []),
+          snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints || sourceTrack.snapToWaveformKeypoints),
+        }
+      : track);
+
+  if (sourceTrack.type === "character") {
+    const sourceCharacters = sourceProject.characterAnnotations;
+    const oldLineIds = project.characterAnnotations.map((item) => item.lineId);
+    const incomingCharacters = sourceCharacters.map((item) => ({
+      ...item,
+      id: `char-${crypto.randomUUID()}`,
+    }));
+    const nonDuplicateCharacters = incomingCharacters.filter((item) =>
+      !project.characterAnnotations.some((existing) => areCharactersEquivalent(item, existing)));
+    project.characterAnnotations = mergeMode === "replace"
+      ? incomingCharacters
+      : [...project.characterAnnotations, ...nonDuplicateCharacters];
+    return syncSubtitleLines(project, [
+      ...oldLineIds,
+      ...incomingCharacters.map((item) => item.lineId),
+    ]);
+  }
+
+  const sourceActions = sourceProject.actionAnnotations.filter((item) => item.trackId === sourceTrack.id);
+  const incomingActions = sourceActions.map((item) => ({
+    ...item,
+    id: `${targetTrackId}-${crypto.randomUUID()}`,
+    trackId: targetTrackId,
+  }));
+  const nonDuplicateActions = incomingActions.filter((item) =>
+    !project.actionAnnotations.some((existing) =>
+      existing.trackId === targetTrackId && areActionsEquivalent(item, existing)));
+  project.actionAnnotations = mergeMode === "replace"
+    ? [
+        ...project.actionAnnotations.filter((item) => item.trackId !== targetTrackId),
+        ...incomingActions,
+      ]
+    : [...project.actionAnnotations, ...nonDuplicateActions];
+  return project;
+}
+
+function mergeCustomTrackFromImport(
+  project: ProjectData,
+  sourceTrack: CustomTrack,
+  targetTrackId: string,
+  mergeMode: ImportMergeMode,
+) {
+  project.customTracks = project.customTracks.map((track) => {
+    if (track.id !== targetTrackId || track.trackType !== sourceTrack.trackType) {
+      return track;
+    }
+    const incomingBlocks = sourceTrack.blocks.map((block) => ({
+      ...block,
+      id: `custom-block-${crypto.randomUUID()}`,
+    }));
+    const nonDuplicateBlocks = incomingBlocks.filter((block) =>
+      !track.blocks.some((existing) => areCustomBlocksEquivalent(block, existing, track.trackType)));
+    return {
+      ...track,
+      typeOptions: mergeUniqueStrings(track.typeOptions, sourceTrack.typeOptions),
+      snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints || sourceTrack.snapToWaveformKeypoints),
+      blocks: mergeMode === "replace"
+        ? incomingBlocks
+        : [...track.blocks, ...nonDuplicateBlocks],
+    } as CustomTrack;
+  });
+  return project;
+}
+
+function mergeAttachedPointTrackFromImport(
+  project: ProjectData,
+  parentTrackId: string,
+  sourceTrack: AttachedPointTrack,
+  targetTrackId: string,
+  mergeMode: ImportMergeMode,
+) {
+  updateAttachedPointTrackCollection(project, parentTrackId, (tracks) =>
+    tracks.map((track) => {
+      if (track.id !== targetTrackId) {
+        return track;
+      }
+      const incomingPoints = sourceTrack.points.map((point) => ({
+        ...point,
+        id: `point-${crypto.randomUUID()}`,
+      }));
+      const nonDuplicatePoints = incomingPoints.filter((point) =>
+        !track.points.some((existing) => areAttachedPointsEquivalent(point, existing)));
+      return {
+        ...track,
+        typeOptions: mergeUniqueStrings(track.typeOptions, sourceTrack.typeOptions),
+        snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints || sourceTrack.snapToWaveformKeypoints),
+        snapToParentBoundaries: Boolean(track.snapToParentBoundaries || sourceTrack.snapToParentBoundaries),
+        points: mergeMode === "replace"
+          ? incomingPoints
+          : [...track.points, ...nonDuplicatePoints],
+      };
+    }),
+  );
+  return project;
+}
+
+function updateAttachedPointTrackCollection(
+  project: ProjectData,
+  parentTrackId: string,
+  updater: (tracks: AttachedPointTrack[]) => AttachedPointTrack[],
+) {
+  const builtinIndex = project.builtinTracks.findIndex((track) => track.id === parentTrackId);
+  if (builtinIndex >= 0) {
+    const nextTracks = updater(project.builtinTracks[builtinIndex].attachedPointTracks);
+    project.builtinTracks[builtinIndex] = {
+      ...project.builtinTracks[builtinIndex],
+      attachedPointTracks: nextTracks,
+    };
+    return nextTracks[nextTracks.length - 1]?.id ?? "";
+  }
+  const customIndex = project.customTracks.findIndex((track) => track.id === parentTrackId);
+  if (customIndex >= 0) {
+    const nextTracks = updater(project.customTracks[customIndex].attachedPointTracks);
+    project.customTracks[customIndex] = {
+      ...project.customTracks[customIndex],
+      attachedPointTracks: nextTracks,
+    } as CustomTrack;
+    return nextTracks[nextTracks.length - 1]?.id ?? "";
+  }
+  return "";
+}
+
+function findTopLevelTrackById(project: ProjectData, trackId: string) {
+  return project.builtinTracks.find((track) => track.id === trackId) ??
+    project.customTracks.find((track) => track.id === trackId) ??
+    null;
+}
+
+function findTopLevelTrackByAttachedPointTrackId(project: ProjectData, trackId: string) {
+  return project.builtinTracks.find((track) => track.attachedPointTracks.some((item) => item.id === trackId)) ??
+    project.customTracks.find((track) => track.attachedPointTracks.some((item) => item.id === trackId)) ??
+    null;
+}
+
+function findAttachedPointTrackInProject(
+  project: ProjectData,
+  parentTrackId: string,
+  pointTrackId: string,
+) {
+  const parentTrack = findTopLevelTrackById(project, parentTrackId);
+  return parentTrack?.attachedPointTracks.find((track) => track.id === pointTrackId) ?? null;
+}
+
+function mergeUniqueStrings(currentValues: string[], nextValues: string[]) {
+  const result = [...currentValues];
+  for (const value of nextValues) {
+    if (!result.includes(value)) {
+      result.push(value);
+    }
+  }
+  return result;
+}
+
+function areCharactersEquivalent(left: CharacterAnnotation, right: CharacterAnnotation) {
+  return left.char === right.char &&
+    left.singingStyle === right.singingStyle &&
+    timesClose(left.startTime, right.startTime) &&
+    timesClose(left.endTime, right.endTime);
+}
+
+function areActionsEquivalent(left: ActionAnnotation, right: ActionAnnotation) {
+  return left.label === right.label &&
+    timesClose(left.startTime, right.startTime) &&
+    timesClose(left.endTime, right.endTime);
+}
+
+function areCustomBlocksEquivalent(
+  left: CustomTrack["blocks"][number],
+  right: CustomTrack["blocks"][number],
+  trackType: CustomTrackType,
+) {
+  if (trackType === "text") {
+    return "text" in left && "text" in right &&
+      left.type === right.type &&
+      left.text === right.text &&
+      timesClose(left.startTime, right.startTime) &&
+      timesClose(left.endTime, right.endTime);
+  }
+  return left.type === right.type &&
+    timesClose(left.startTime, right.startTime) &&
+    timesClose(left.endTime, right.endTime);
+}
+
+function areAttachedPointsEquivalent(left: AttachedPointAnnotation, right: AttachedPointAnnotation) {
+  return left.label === right.label && timesClose(left.time, right.time);
+}
+
+function timesClose(left: number, right: number) {
+  return Math.abs(left - right) <= 0.001;
 }
 
 function resolveTimelineSelectionItem(
@@ -3947,7 +4860,7 @@ function getTrackSnapStateSignature(trackSnapState: Record<string, boolean>) {
 }
 
 function requiresUndoConfirmation(action: HistoryAction) {
-  return action === "import-video" || action === "import-srt" || action === "import-project";
+  return action === "import-video" || action === "import-srt" || action === "import-project" || action === "merge-project";
 }
 
 function getUndoConfirmationMessage(action: HistoryAction) {
@@ -3959,6 +4872,9 @@ function getUndoConfirmationMessage(action: HistoryAction) {
   }
   if (action === "import-project") {
     return "确定要撤销导入项目吗？当前导入的轨道、标注和项目设置将回退到上一步状态。";
+  }
+  if (action === "merge-project") {
+    return "确定要撤销整合导入吗？当前合并进来的轨道内容与标注将回退到上一步状态。";
   }
   return "确定要执行撤销吗？";
 }

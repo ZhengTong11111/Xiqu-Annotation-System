@@ -11,9 +11,11 @@ type TopMenuBarProps = {
   videoFileInputRef: RefObject<HTMLInputElement>;
   srtFileInputRef: RefObject<HTMLInputElement>;
   projectFileInputRef: RefObject<HTMLInputElement>;
+  mergeProjectFileInputRef: RefObject<HTMLInputElement>;
   onVideoFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onSrtFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onProjectFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onMergeProjectFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onSaveProject: () => void;
   onExportTrack: (kind: "character" | "singing" | "hand" | "body") => void;
   onUndo: () => void;
@@ -36,9 +38,11 @@ export function TopMenuBar({
   videoFileInputRef,
   srtFileInputRef,
   projectFileInputRef,
+  mergeProjectFileInputRef,
   onVideoFileChange,
   onSrtFileChange,
   onProjectFileChange,
+  onMergeProjectFileChange,
   onSaveProject,
   onExportTrack,
   onUndo,
@@ -124,6 +128,9 @@ export function TopMenuBar({
                     </button>
                     <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(projectFileInputRef)}>
                       导入项目
+                    </button>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(mergeProjectFileInputRef)}>
+                      导入并整合标注
                     </button>
                     <div className="top-menu-divider" />
                     <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onSaveProject)}>
@@ -217,6 +224,7 @@ export function TopMenuBar({
       <input ref={videoFileInputRef} type="file" accept="video/*" onChange={onVideoFileChange} />
       <input ref={srtFileInputRef} type="file" accept=".srt" onChange={onSrtFileChange} />
       <input ref={projectFileInputRef} type="file" accept=".json" onChange={onProjectFileChange} />
+      <input ref={mergeProjectFileInputRef} type="file" accept=".json" onChange={onMergeProjectFileChange} />
     </header>
   );
 }
