@@ -1223,6 +1223,7 @@ export function Timeline({
             time: resolvedTime.time,
           },
         });
+        queuePreviewFrame(resolvedTime.time);
         return;
       }
 
