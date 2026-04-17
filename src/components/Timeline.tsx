@@ -28,6 +28,8 @@ type TimelineProps = {
   waveformData: WaveformData | null;
   isWaveformLoading: boolean;
   currentTime: number;
+  loopPlaybackRange: { start: number; end: number } | null;
+  loopPlaybackEnabled: boolean;
   selectedItem: SelectedItem;
   selectedTimelineItems: TimelineSelectionItem[];
   trackSnapEnabled: Record<string, boolean>;
@@ -43,6 +45,8 @@ type TimelineProps = {
   editingCustomTextValue: string;
   onZoomChange: (zoom: number) => void;
   onToggleTrackSnap: (trackId: string) => void;
+  onLoopPlaybackRangeChange: (range: { start: number; end: number } | null) => void;
+  onLoopPlaybackEnabledChange: (enabled: boolean) => void;
   onSeek: (time: number) => void;
   onPreviewFrame: (time: number | null) => void;
   onSelectItem: (item: SelectedItem) => void;
@@ -189,6 +193,7 @@ const WAVEFORM_MAX_SAMPLES_PER_BUCKET = 192;
 const CLICK_SUPPRESS_MS = 120;
 const FOCUS_SCROLL_DURATION_MS = 260;
 const SNAP_RELEASE_DISTANCE_PX = 16;
+const LOOP_RANGE_MIN_DURATION = 0.05;
 
 type ZoomGestureState = {
   startZoom: number;
@@ -276,6 +281,26 @@ type ResolvedAttachedPointTrack = {
   points: AttachedPointAnnotation[];
 };
 
+type LoopRangeSelectionState = {
+  pointerId: number;
+  originX: number;
+  currentX: number;
+};
+
+type LoopRangeDragState =
+  | {
+      pointerId: number;
+      mode: "move";
+      originX: number;
+      originalRange: { start: number; end: number };
+    }
+  | {
+      pointerId: number;
+      mode: "resize-start" | "resize-end";
+      originX: number;
+      originalRange: { start: number; end: number };
+    };
+
 export function Timeline({
   subtitleLines,
   builtinTracks,
@@ -287,6 +312,8 @@ export function Timeline({
   waveformData,
   isWaveformLoading,
   currentTime,
+  loopPlaybackRange,
+  loopPlaybackEnabled,
   selectedItem,
   selectedTimelineItems,
   trackSnapEnabled,
@@ -302,6 +329,8 @@ export function Timeline({
   editingCustomTextValue,
   onZoomChange,
   onToggleTrackSnap,
+  onLoopPlaybackRangeChange,
+  onLoopPlaybackEnabledChange,
   onSeek,
   onPreviewFrame,
   onSelectItem,
@@ -366,6 +395,8 @@ export function Timeline({
   const previewTimeRef = useRef<number | null>(null);
   const previewFrameRef = useRef<number | null>(null);
   const rulerScrubPointerIdRef = useRef<number | null>(null);
+  const loopRangeSelectionRef = useRef<LoopRangeSelectionState | null>(null);
+  const loopRangeDragRef = useRef<LoopRangeDragState | null>(null);
   const pendingRulerSeekTimeRef = useRef<number | null>(null);
   const rulerSeekFrameRef = useRef<number | null>(null);
   const focusScrollFrameRef = useRef<number | null>(null);
@@ -374,6 +405,7 @@ export function Timeline({
   const scrollFrameRef = useRef<number | null>(null);
   const suppressLineClickIdRef = useRef<string | null>(null);
   const suppressCanvasClickUntilRef = useRef(0);
+  const suppressLoopRangeClickUntilRef = useRef(0);
   const draggedTrackIdRef = useRef<string | null>(null);
   const trackRowRefs = useRef(new Map<string, HTMLDivElement>());
   const previousTrackRowPositionsRef = useRef(new Map<string, number>());
@@ -382,6 +414,8 @@ export function Timeline({
   const [hoveredBlock, setHoveredBlock] = useState<HoveredBlockState>(null);
   const [activeSnapIndicator, setActiveSnapIndicator] = useState<ActiveSnapIndicator>(null);
   const [previewGuideTime, setPreviewGuideTime] = useState<number | null>(null);
+  const [loopRangeDraft, setLoopRangeDraft] = useState<{ start: number; end: number } | null>(null);
+  const [loopRangePressed, setLoopRangePressed] = useState(false);
   const [trackHeight, setTrackHeight] = useState(DEFAULT_TRACK_HEIGHT);
   const [waveformTrackHeight, setWaveformTrackHeight] = useState(DEFAULT_WAVEFORM_TRACK_HEIGHT);
   const [waveformResizeDrag, setWaveformResizeDrag] = useState<{
@@ -515,6 +549,7 @@ export function Timeline({
     () => new Set(marqueePreviewItems.map((item) => getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" || item.type === "attached-point" ? item.trackId : undefined))),
     [marqueePreviewItems],
   );
+  const displayedLoopPlaybackRange = loopRangeDraft ?? loopPlaybackRange;
   const playheadViewportOffset = useMemo(
     () => Math.max(0, Math.min(viewportState.width, getCanvasX(currentTime, zoom) - viewportState.scrollLeft)),
     [currentTime, viewportState, zoom],
@@ -1673,6 +1708,164 @@ export function Timeline({
             ))}
           </div>
 
+          <div
+            className="timeline-loop-lane"
+            onPointerDown={(event) => {
+              if (event.button !== 0) {
+                return;
+              }
+              if ((event.target as HTMLElement | null)?.closest(".timeline-loop-range-chip")) {
+                return;
+              }
+              event.preventDefault();
+              loopRangeSelectionRef.current = {
+                pointerId: event.pointerId,
+                originX: event.clientX,
+                currentX: event.clientX,
+              };
+              event.currentTarget.setPointerCapture(event.pointerId);
+              const time = getRulerScrubTime(event.clientX);
+              setLoopRangeDraft({ start: time, end: time });
+            }}
+            onPointerMove={(event) => {
+              const currentSelection = loopRangeSelectionRef.current;
+              if (!currentSelection || currentSelection.pointerId !== event.pointerId) {
+                return;
+              }
+              event.preventDefault();
+              currentSelection.currentX = event.clientX;
+              setLoopRangeDraft(getLoopRangeFromClientXs(currentSelection.originX, currentSelection.currentX));
+            }}
+            onPointerUp={(event) => {
+              const currentSelection = loopRangeSelectionRef.current;
+              if (!currentSelection || currentSelection.pointerId !== event.pointerId) {
+                return;
+              }
+              event.preventDefault();
+              loopRangeSelectionRef.current = null;
+              event.currentTarget.releasePointerCapture(event.pointerId);
+              const nextRange = getLoopRangeFromClientXs(currentSelection.originX, currentSelection.currentX);
+              setLoopRangeDraft(null);
+              if (!nextRange || nextRange.end - nextRange.start < LOOP_RANGE_MIN_DURATION) {
+                return;
+              }
+              onLoopPlaybackRangeChange(nextRange);
+            }}
+            onPointerCancel={(event) => {
+              const currentSelection = loopRangeSelectionRef.current;
+              if (!currentSelection || currentSelection.pointerId !== event.pointerId) {
+                return;
+              }
+              loopRangeSelectionRef.current = null;
+              event.currentTarget.releasePointerCapture(event.pointerId);
+              setLoopRangeDraft(null);
+            }}
+            onDoubleClick={(event) => {
+              event.preventDefault();
+              loopRangeSelectionRef.current = null;
+              setLoopRangeDraft(null);
+              onLoopPlaybackRangeChange(null);
+            }}
+          >
+            {displayedLoopPlaybackRange ? (
+              <div
+                className={[
+                  "timeline-loop-range-chip",
+                  loopPlaybackEnabled ? "active" : "",
+                  loopRangePressed ? "pressed" : "",
+                ].join(" ")}
+                style={{
+                  left: getCanvasX(displayedLoopPlaybackRange.start, zoom),
+                  width: Math.max(
+                    (displayedLoopPlaybackRange.end - displayedLoopPlaybackRange.start) * zoom,
+                    4,
+                  ),
+                }}
+                onPointerDown={(event) => {
+                  if (event.button !== 0) {
+                    return;
+                  }
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const target = event.target as HTMLElement | null;
+                  const mode = target?.closest(".timeline-loop-range-handle.start")
+                    ? "resize-start"
+                    : target?.closest(".timeline-loop-range-handle.end")
+                      ? "resize-end"
+                      : "move";
+                  loopRangeDragRef.current = {
+                    pointerId: event.pointerId,
+                    mode,
+                    originX: event.clientX,
+                    originalRange: displayedLoopPlaybackRange,
+                  };
+                  setLoopRangePressed(true);
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerMove={(event) => {
+                  const currentDrag = loopRangeDragRef.current;
+                  if (!currentDrag || currentDrag.pointerId !== event.pointerId) {
+                    return;
+                  }
+                  event.preventDefault();
+                  const nextRange = currentDrag.mode === "move"
+                    ? getMovedLoopRange(currentDrag.originalRange, currentDrag.originX, event.clientX)
+                    : getResizedLoopRange(currentDrag.originalRange, currentDrag.mode, event.clientX);
+                  setLoopRangeDraft(nextRange);
+                }}
+                onPointerUp={(event) => {
+                  const currentDrag = loopRangeDragRef.current;
+                  if (!currentDrag || currentDrag.pointerId !== event.pointerId) {
+                    return;
+                  }
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const movedDistance = Math.abs(event.clientX - currentDrag.originX);
+                  loopRangeDragRef.current = null;
+                  setLoopRangePressed(false);
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                  const nextRange = currentDrag.mode === "move"
+                    ? getMovedLoopRange(currentDrag.originalRange, currentDrag.originX, event.clientX)
+                    : getResizedLoopRange(currentDrag.originalRange, currentDrag.mode, event.clientX);
+                  setLoopRangeDraft(null);
+                  if (movedDistance < DRAG_ACTIVATION_PX && currentDrag.mode === "move") {
+                    suppressLoopRangeClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
+                    onLoopPlaybackEnabledChange(!loopPlaybackEnabled);
+                    return;
+                  }
+                  onLoopPlaybackRangeChange(nextRange);
+                }}
+                onPointerCancel={(event) => {
+                  const currentDrag = loopRangeDragRef.current;
+                  if (!currentDrag || currentDrag.pointerId !== event.pointerId) {
+                    return;
+                  }
+                  loopRangeDragRef.current = null;
+                  setLoopRangePressed(false);
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                  setLoopRangeDraft(null);
+                }}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (performance.now() < suppressLoopRangeClickUntilRef.current) {
+                    return;
+                  }
+                  onLoopPlaybackEnabledChange(!loopPlaybackEnabled);
+                }}
+                onDoubleClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                title={loopPlaybackEnabled ? "点击关闭循环播放，拖动可移动/调整循环范围" : "点击开启循环播放，拖动可移动/调整循环范围"}
+              >
+                <span className="timeline-loop-range-handle start" />
+                <span className="timeline-loop-range-fill" />
+                <span className="timeline-loop-range-handle end" />
+              </div>
+            ) : null}
+          </div>
+
           <div className="timeline-top-deck">
             <div className="line-focus-layer">
               {subtitleLines.map((line) => (
@@ -2138,6 +2331,19 @@ export function Timeline({
             <div
               className={`timeline-snap-guide ${activeSnapIndicator.edge}`}
               style={{ left: getCanvasX(activeSnapIndicator.time, zoom) }}
+            />
+          ) : null}
+
+          {displayedLoopPlaybackRange && (loopPlaybackEnabled || loopRangeDraft !== null) ? (
+            <div
+              className={`timeline-loop-range-overlay ${loopPlaybackEnabled ? "active" : ""}`}
+              style={{
+                left: getCanvasX(displayedLoopPlaybackRange.start, zoom),
+                width: Math.max(
+                  (displayedLoopPlaybackRange.end - displayedLoopPlaybackRange.start) * zoom,
+                  4,
+                ),
+              }}
             />
           ) : null}
 
@@ -3060,6 +3266,52 @@ export function Timeline({
       Math.max(0, Math.min(clientX - bounds.left, container.clientWidth)),
       zoomRef.current,
     );
+  }
+
+  function getLoopRangeFromClientXs(startClientX: number, endClientX: number) {
+    const startTime = getRulerScrubTime(startClientX);
+    const endTime = getRulerScrubTime(endClientX);
+    return {
+      start: Math.max(0, Math.min(startTime, endTime)),
+      end: Math.min(duration, Math.max(startTime, endTime)),
+    };
+  }
+
+  function getLoopRangeDeltaSeconds(originClientX: number, currentClientX: number) {
+    return getRulerScrubTime(currentClientX) - getRulerScrubTime(originClientX);
+  }
+
+  function getMovedLoopRange(
+    originalRange: { start: number; end: number },
+    originClientX: number,
+    currentClientX: number,
+  ) {
+    const deltaSeconds = getLoopRangeDeltaSeconds(originClientX, currentClientX);
+    const rangeDuration = originalRange.end - originalRange.start;
+    const maxStart = Math.max(0, duration - rangeDuration);
+    const nextStart = Math.max(0, Math.min(originalRange.start + deltaSeconds, maxStart));
+    return {
+      start: nextStart,
+      end: Math.min(duration, nextStart + rangeDuration),
+    };
+  }
+
+  function getResizedLoopRange(
+    originalRange: { start: number; end: number },
+    mode: "resize-start" | "resize-end",
+    currentClientX: number,
+  ) {
+    const pointerTime = getRulerScrubTime(currentClientX);
+    if (mode === "resize-start") {
+      return {
+        start: Math.max(0, Math.min(pointerTime, originalRange.end - LOOP_RANGE_MIN_DURATION)),
+        end: originalRange.end,
+      };
+    }
+    return {
+      start: originalRange.start,
+      end: Math.min(duration, Math.max(pointerTime, originalRange.start + LOOP_RANGE_MIN_DURATION)),
+    };
   }
 
   function flushPendingRulerSeek() {

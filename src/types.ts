@@ -17,6 +17,7 @@ export type AttachedPointTrack = {
   points: AttachedPointAnnotation[];
   snapToWaveformKeypoints?: boolean;
   snapToParentBoundaries?: boolean;
+  autoSetLoopRangeOnSelect?: boolean;
 };
 
 export type SubtitleLine = {
@@ -67,6 +68,7 @@ export type CustomTextTrack = {
   attachedPointTracks: AttachedPointTrack[];
   attachedPointTracksExpanded?: boolean;
   snapToWaveformKeypoints?: boolean;
+  autoSetLoopRangeOnSelect?: boolean;
 };
 
 export type CustomActionTrack = {
@@ -78,6 +80,7 @@ export type CustomActionTrack = {
   attachedPointTracks: AttachedPointTrack[];
   attachedPointTracksExpanded?: boolean;
   snapToWaveformKeypoints?: boolean;
+  autoSetLoopRangeOnSelect?: boolean;
 };
 
 export type CustomTrack = CustomTextTrack | CustomActionTrack;
@@ -100,6 +103,7 @@ export type BuiltinTrack = {
   attachedPointTracks: AttachedPointTrack[];
   attachedPointTracksExpanded?: boolean;
   snapToWaveformKeypoints?: boolean;
+  autoSetLoopRangeOnSelect?: boolean;
 };
 
 export type TrackDefinition = {
@@ -140,6 +144,11 @@ export type SavedProjectFile = {
     currentTime?: number;
     playbackRate?: number;
     trackSnapEnabled?: Record<string, boolean>;
+    loopPlaybackEnabled?: boolean;
+    loopPlaybackRange?: {
+      start: number;
+      end: number;
+    } | null;
   };
 };
 

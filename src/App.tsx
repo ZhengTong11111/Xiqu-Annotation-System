@@ -290,6 +290,8 @@ function App() {
   const [pendingPasteState, setPendingPasteState] = useState<PendingPasteState | null>(null);
   const [pendingImportMergeState, setPendingImportMergeState] = useState<PendingImportMergeState | null>(null);
   const [zoom, setZoom] = useState(20);
+  const [loopPlaybackRange, setLoopPlaybackRange] = useState<{ start: number; end: number } | null>(null);
+  const [loopPlaybackEnabled, setLoopPlaybackEnabled] = useState(false);
   const [lineFocusRequest, setLineFocusRequest] = useState<LineFocusRequest | null>(null);
   const [trackSnapEnabled, setTrackSnapEnabled] = useState<Record<string, boolean>>(
     () => getDefaultTrackSnapEnabled(mockProject),
@@ -433,6 +435,7 @@ function App() {
 
   function applySelection(nextSelectedItem: SelectedItem, timelineItems?: TimelineSelectionItem[]) {
     setSelectedItem(nextSelectedItem);
+    syncLoopPlaybackRangeFromSelection(nextSelectedItem);
     if (timelineItems !== undefined) {
       setSelectedTimelineItems(timelineItems);
       return;
@@ -459,6 +462,38 @@ function App() {
       return;
     }
     setSelectedTimelineItems([]);
+  }
+
+  function syncLoopPlaybackRangeFromSelection(nextSelectedItem: SelectedItem) {
+    if (!nextSelectedItem) {
+      return;
+    }
+    const currentProject = projectRef.current;
+    if (nextSelectedItem.type === "character") {
+      const track = currentProject.builtinTracks.find((item) => item.id === "character-track");
+      const character = currentProject.characterAnnotations.find((item) => item.id === nextSelectedItem.id);
+      if (track?.autoSetLoopRangeOnSelect && character) {
+        setLoopPlaybackRange({ start: character.startTime, end: character.endTime });
+      }
+      return;
+    }
+    if (nextSelectedItem.type === "action") {
+      const action = currentProject.actionAnnotations.find((item) => item.id === nextSelectedItem.id);
+      const track = action
+        ? currentProject.builtinTracks.find((item) => item.id === action.trackId)
+        : null;
+      if (track?.autoSetLoopRangeOnSelect && action) {
+        setLoopPlaybackRange({ start: action.startTime, end: action.endTime });
+      }
+      return;
+    }
+    if (nextSelectedItem.type === "custom-block") {
+      const track = currentProject.customTracks.find((item) => item.id === nextSelectedItem.trackId);
+      const block = track?.blocks.find((item) => item.id === nextSelectedItem.id);
+      if (track?.autoSetLoopRangeOnSelect && block) {
+        setLoopPlaybackRange({ start: block.startTime, end: block.endTime });
+      }
+    }
   }
 
   function updateTimelinePasteTarget(trackId: string, time: number) {
@@ -508,6 +543,28 @@ function App() {
     }
     videoRef.current.playbackRate = playbackRate;
   }, [playbackRate]);
+
+  useEffect(() => {
+    if (
+      !isPlaying ||
+      previewTime !== null ||
+      !loopPlaybackEnabled ||
+      !loopPlaybackRange ||
+      !videoRef.current
+    ) {
+      return;
+    }
+    if (loopPlaybackRange.end - loopPlaybackRange.start <= 0.001) {
+      return;
+    }
+    const loopEndThreshold = Math.max(0.01, 0.04 / Math.max(playbackRate, 0.25));
+    if (currentTime < loopPlaybackRange.end - loopEndThreshold) {
+      return;
+    }
+    const nextTime = clampTime(loopPlaybackRange.start, duration);
+    videoRef.current.currentTime = nextTime;
+    setCurrentTime(nextTime);
+  }, [currentTime, duration, isPlaying, loopPlaybackEnabled, loopPlaybackRange, playbackRate, previewTime]);
 
   useEffect(() => {
     const videoUrl = project.video.url;
@@ -836,14 +893,33 @@ function App() {
     if (!videoRef.current) {
       return;
     }
+    const video = videoRef.current;
+    const needsLoopStartSeek =
+      video.paused &&
+      loopPlaybackEnabled &&
+      loopPlaybackRange &&
+      (currentTime < loopPlaybackRange.start || currentTime > loopPlaybackRange.end);
     if (previewTime !== null) {
-      videoRef.current.currentTime = currentTime;
+      video.currentTime = currentTime;
       setPreviewTime(null);
     }
-    if (videoRef.current.paused) {
-      void videoRef.current.play();
+    if (needsLoopStartSeek && loopPlaybackRange) {
+      const nextTime = clampTime(loopPlaybackRange.start, duration);
+      setCurrentTime(nextTime);
+      if (Math.abs(video.currentTime - nextTime) > 0.001) {
+        const handleSeeked = () => {
+          video.removeEventListener("seeked", handleSeeked);
+          void video.play();
+        };
+        video.addEventListener("seeked", handleSeeked);
+        video.currentTime = nextTime;
+        return;
+      }
+    }
+    if (video.paused) {
+      void video.play();
     } else {
-      videoRef.current.pause();
+      video.pause();
     }
   }
 
@@ -2383,6 +2459,31 @@ function App() {
     }));
   }
 
+  function updateTrackAutoLoopRange(trackId: string, enabled: boolean) {
+    const builtinTrack = projectRef.current.builtinTracks.find((track) => track.id === trackId);
+    if (builtinTrack) {
+      updateBuiltinTrack(trackId as BuiltinTrackId, (track) => ({
+        ...track,
+        autoSetLoopRangeOnSelect: enabled,
+      }));
+      return;
+    }
+
+    const customTrack = projectRef.current.customTracks.find((track) => track.id === trackId);
+    if (customTrack) {
+      updateCustomTrack(trackId, (track) => ({
+        ...track,
+        autoSetLoopRangeOnSelect: enabled,
+      }) as CustomTrack);
+      return;
+    }
+
+    updateAttachedPointTrack(trackId, (pointTrack) => ({
+      ...pointTrack,
+      autoSetLoopRangeOnSelect: enabled,
+    }));
+  }
+
   function updateAttachedPointTrackParentSnap(pointTrackId: string, enabled: boolean) {
     updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
       ...pointTrack,
@@ -2846,6 +2947,8 @@ function App() {
       applyTrackSnapEnabledState(normalizedTrackSnapEnabled);
       setZoom(normalized.uiState?.zoom ?? 20);
       setPlaybackRate(normalized.uiState?.playbackRate ?? 1);
+      setLoopPlaybackEnabled(Boolean(normalized.uiState?.loopPlaybackEnabled));
+      setLoopPlaybackRange(normalized.uiState?.loopPlaybackRange ?? null);
       setPreviewTime(null);
       setLineFocusRequest(null);
       setBlockContextMenu(null);
@@ -2952,6 +3055,8 @@ function App() {
         currentTime,
         playbackRate,
         trackSnapEnabled: trackSnapEnabledRef.current,
+        loopPlaybackEnabled,
+        loopPlaybackRange,
       },
     };
     downloadBlob(
@@ -2991,6 +3096,8 @@ function App() {
         <TopMenuBar
           isPlaying={isPlaying}
           playbackRate={playbackRate}
+          loopPlaybackEnabled={loopPlaybackEnabled}
+          hasLoopPlaybackRange={Boolean(loopPlaybackRange)}
           canUndo={undoStack.length > 0}
           canRedo={redoStack.length > 0}
           activeBuiltinTrackIds={Array.from(activeBuiltinTrackIds)}
@@ -3001,6 +3108,11 @@ function App() {
           onTogglePlay={togglePlay}
           onStep={(delta) => seekTo(currentTime + delta)}
           onPlaybackRateChange={setPlaybackRate}
+          onToggleLoopPlayback={() => setLoopPlaybackEnabled((current) => !current)}
+          onClearLoopPlaybackRange={() => {
+            setLoopPlaybackRange(null);
+            setLoopPlaybackEnabled(false);
+          }}
           onVideoFileChange={(event) => {
             const file = event.target.files?.[0];
             if (file) {
@@ -3079,6 +3191,8 @@ function App() {
                   waveformData={waveformData}
                   isWaveformLoading={isWaveformLoading}
                   currentTime={currentTime}
+                  loopPlaybackRange={loopPlaybackRange}
+                  loopPlaybackEnabled={loopPlaybackEnabled}
                   selectedItem={selectedItem}
                   selectedTimelineItems={selectedTimelineItems}
                   trackSnapEnabled={trackSnapEnabled}
@@ -3094,6 +3208,11 @@ function App() {
                       [trackId]: !trackSnapEnabledRef.current[trackId],
                     });
                   }}
+                  onLoopPlaybackRangeChange={(range) => {
+                    setLoopPlaybackRange(range);
+                    setLoopPlaybackEnabled(Boolean(range));
+                  }}
+                  onLoopPlaybackEnabledChange={setLoopPlaybackEnabled}
                   onSeek={seekTo}
                   onPreviewFrame={setPreviewTime}
                   onSelectItem={(item) => {
@@ -3366,6 +3485,7 @@ function App() {
                     onActionUpdate={updateAction}
                     onAttachedPointUpdate={commitAttachedPoint}
                     onTrackWaveformSnapChange={updateTrackWaveformSnap}
+                    onTrackAutoLoopRangeChange={updateTrackAutoLoopRange}
                     onAttachedPointTrackParentSnapChange={updateAttachedPointTrackParentSnap}
                     onSelectParentTrack={(trackId) =>
                       applySelection(

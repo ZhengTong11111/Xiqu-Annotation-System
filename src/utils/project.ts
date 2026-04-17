@@ -30,6 +30,7 @@ export const defaultBuiltinTracks: BuiltinTrack[] = [
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
     snapToWaveformKeypoints: false,
+    autoSetLoopRangeOnSelect: false,
   },
   {
     id: "hand-action",
@@ -39,6 +40,7 @@ export const defaultBuiltinTracks: BuiltinTrack[] = [
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
     snapToWaveformKeypoints: false,
+    autoSetLoopRangeOnSelect: false,
   },
   {
     id: "body-action",
@@ -48,6 +50,7 @@ export const defaultBuiltinTracks: BuiltinTrack[] = [
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
     snapToWaveformKeypoints: false,
+    autoSetLoopRangeOnSelect: false,
   },
 ];
 
@@ -58,6 +61,7 @@ export function getDefaultBuiltinTracks(): BuiltinTrack[] {
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
     snapToWaveformKeypoints: false,
+    autoSetLoopRangeOnSelect: false,
   }));
 }
 
@@ -72,6 +76,7 @@ export function getBuiltinTrackDefinition(trackId: BuiltinTrackId): BuiltinTrack
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
     snapToWaveformKeypoints: false,
+    autoSetLoopRangeOnSelect: false,
   };
 }
 

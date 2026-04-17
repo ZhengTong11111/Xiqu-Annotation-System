@@ -964,9 +964,73 @@ select {
   touch-action: none;
 }
 
-.timeline-top-deck {
+.timeline-loop-lane {
   position: sticky;
   top: 28px;
+  height: 18px;
+  border-bottom: 1px solid rgba(31, 41, 55, 0.08);
+  background: rgba(239, 243, 248, 0.98);
+  z-index: 6;
+  cursor: crosshair;
+  user-select: none;
+  touch-action: none;
+}
+
+.timeline-loop-range-chip {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.18);
+  border: 1px solid rgba(37, 99, 235, 0.38);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.timeline-loop-range-chip.active {
+  background: rgba(37, 99, 235, 0.26);
+  border-color: rgba(37, 99, 235, 0.56);
+}
+
+.timeline-loop-range-chip.pressed {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 0 0 1px rgba(37, 99, 235, 0.16);
+}
+
+.timeline-loop-range-fill {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.timeline-loop-range-handle {
+  flex: 0 0 auto;
+  width: 9px;
+  position: relative;
+}
+
+.timeline-loop-range-handle.start {
+  cursor: ew-resize;
+}
+
+.timeline-loop-range-handle.end {
+  cursor: ew-resize;
+}
+
+.timeline-loop-range-handle::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 4px;
+  width: 1px;
+  background: rgba(37, 99, 235, 0.58);
+}
+
+.timeline-top-deck {
+  position: sticky;
+  top: 46px;
   z-index: 9;
   background: linear-gradient(180deg, rgba(243, 246, 250, 0.98), rgba(239, 243, 248, 0.96));
   box-shadow: 0 1px 0 rgba(188, 198, 211, 0.88);
@@ -1893,6 +1957,21 @@ select {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.62);
   border-radius: 999px;
   pointer-events: none;
+}
+
+.timeline-loop-range-overlay {
+  position: absolute;
+  top: 46px;
+  bottom: 0;
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.05), rgba(59, 130, 246, 0.09));
+  border-left: 1px solid rgba(37, 99, 235, 0.2);
+  border-right: 1px solid rgba(37, 99, 235, 0.2);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.timeline-loop-range-overlay:not(.active) {
+  opacity: 0.72;
 }
 
 .track-option-row.drop-target-before::before {

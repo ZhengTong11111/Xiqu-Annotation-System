@@ -28,6 +28,7 @@ type InspectorPanelProps = {
   onActionUpdate: (id: string, changes: Partial<ActionAnnotation>) => void;
   onAttachedPointUpdate: (trackId: string, pointId: string, changes: { time?: number; label?: string }) => void;
   onTrackWaveformSnapChange: (trackId: string, enabled: boolean) => void;
+  onTrackAutoLoopRangeChange: (trackId: string, enabled: boolean) => void;
   onAttachedPointTrackParentSnapChange: (trackId: string, enabled: boolean) => void;
   onSelectParentTrack: (trackId: string) => void;
   onBuiltinTrackRename: (trackId: BuiltinTrackId, name: string) => void;
@@ -82,6 +83,7 @@ export function InspectorPanel({
   onActionUpdate,
   onAttachedPointUpdate,
   onTrackWaveformSnapChange,
+  onTrackAutoLoopRangeChange,
   onAttachedPointTrackParentSnapChange,
   onSelectParentTrack,
   onBuiltinTrackRename,
@@ -434,6 +436,7 @@ export function InspectorPanel({
         : false;
     const trackSnapOn = Boolean(trackSnapEnabled[track.id]);
     const waveformSnapOn = Boolean(track.snapToWaveformKeypoints);
+    const autoLoopRangeOn = Boolean(track.autoSetLoopRangeOnSelect);
     const parentBoundarySnapOn = isAttachedPointTrack && selectedAttachedPointTrack
       ? Boolean(selectedAttachedPointTrack.track.snapToParentBoundaries)
       : false;
@@ -527,6 +530,25 @@ export function InspectorPanel({
             </label>
           </div>
         </div>
+        {!isAttachedPointTrack ? (
+          <div className="inspector-field">
+            <label>选中块同步循环范围</label>
+            <div className="inspector-toggle-row">
+              <div className="inspector-toggle-copy">
+                <strong>选中块时更新循环范围</strong>
+                <span>选择该轨道上的块时，将循环范围同步到块的开始与结束时间，但不会自动开启循环播放。</span>
+              </div>
+              <label className="inspector-switch">
+                <input
+                  type="checkbox"
+                  checked={autoLoopRangeOn}
+                  onChange={(event) => onTrackAutoLoopRangeChange(track.id, event.target.checked)}
+                />
+                <span className="inspector-switch-slider" />
+              </label>
+            </div>
+          </div>
+        ) : null}
         {isAttachedPointTrack ? (
           <div className="inspector-field">
             <label>父轨道边界吸附</label>

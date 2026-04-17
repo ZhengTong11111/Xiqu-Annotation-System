@@ -5,6 +5,8 @@ import type { BuiltinTrackId } from "../types";
 type TopMenuBarProps = {
   isPlaying: boolean;
   playbackRate: number;
+  loopPlaybackEnabled: boolean;
+  hasLoopPlaybackRange: boolean;
   canUndo: boolean;
   canRedo: boolean;
   activeBuiltinTrackIds: BuiltinTrackId[];
@@ -24,6 +26,8 @@ type TopMenuBarProps = {
   onTogglePlay: () => void;
   onStep: (delta: number) => void;
   onPlaybackRateChange: (rate: number) => void;
+  onToggleLoopPlayback: () => void;
+  onClearLoopPlaybackRange: () => void;
 };
 
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5];
@@ -32,6 +36,8 @@ const menuOrder = ["文件", "编辑", "播放", "视图", "帮助"] as const;
 export function TopMenuBar({
   isPlaying,
   playbackRate,
+  loopPlaybackEnabled,
+  hasLoopPlaybackRange,
   canUndo,
   canRedo,
   activeBuiltinTrackIds,
@@ -51,6 +57,8 @@ export function TopMenuBar({
   onTogglePlay,
   onStep,
   onPlaybackRateChange,
+  onToggleLoopPlayback,
+  onClearLoopPlaybackRange,
 }: TopMenuBarProps) {
   const [openMenu, setOpenMenu] = useState<(typeof menuOrder)[number] | null>(null);
   const menuBarRef = useRef<HTMLElement>(null);
@@ -207,6 +215,25 @@ export function TopMenuBar({
                         {playbackRate === rate ? `✓ ${rate}x` : `${rate}x`}
                       </button>
                     ))}
+                    <div className="top-menu-divider" />
+                    <button
+                      type="button"
+                      className={`top-menu-dropdown-item ${
+                        hasLoopPlaybackRange && loopPlaybackEnabled ? "active-option" : ""
+                      }`}
+                      onClick={() => handleAction(onToggleLoopPlayback)}
+                      disabled={!hasLoopPlaybackRange}
+                    >
+                      {hasLoopPlaybackRange && loopPlaybackEnabled ? "✓ 循环播放选区" : "循环播放选区"}
+                    </button>
+                    <button
+                      type="button"
+                      className="top-menu-dropdown-item"
+                      onClick={() => handleAction(onClearLoopPlaybackRange)}
+                      disabled={!hasLoopPlaybackRange}
+                    >
+                      清除循环选区
+                    </button>
                   </>
                 ) : null}
                 {item === "视图" ? (
