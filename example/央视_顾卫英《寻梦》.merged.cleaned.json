@@ -10,6 +10,7 @@
     },
     "activeTrackOrder": [
       "character-track",
+      "custom-track-gongche-demo",
       "hand-action",
       "body-action"
     ],
@@ -1636,7 +1637,1764 @@
         "snapToWaveformKeypoints": false
       }
     ],
-    "customTracks": [],
+    "customTracks": [
+      {
+        "id": "custom-track-gongche-demo",
+        "name": "工尺谱（逐字展示）",
+        "trackType": "text",
+        "typeOptions": [
+          "嬾畫眉",
+          "惜花賺",
+          "忒忒令",
+          "嘉慶子",
+          "尹令",
+          "品令",
+          "豆葉黃",
+          "玉交枝",
+          "三月海棠",
+          "二犯六么令",
+          "江兒水",
+          "川撥棹",
+          "前腔",
+          "尾聲"
+        ],
+        "blocks": [
+          {
+            "id": "gongche-char-line-4-char-1",
+            "startTime": 61.203,
+            "endTime": 61.917,
+            "type": "嬾畫眉",
+            "text": "来{工-合}"
+          },
+          {
+            "id": "gongche-char-line-11-char-1",
+            "startTime": 72.648,
+            "endTime": 73.443,
+            "type": "惜花賺",
+            "text": "園{四上/}"
+          },
+          {
+            "id": "gongche-char-line-16-char-1",
+            "startTime": 78.708,
+            "endTime": 79.829,
+            "type": "惜花賺",
+            "text": "然{合四5}"
+          },
+          {
+            "id": "gongche-char-line-17-char-6",
+            "startTime": 87.57483051676836,
+            "endTime": 89.27,
+            "type": "惜花賺",
+            "text": "人{四/上尺}"
+          },
+          {
+            "id": "gongche-char-line-19-char-1",
+            "startTime": 112.352,
+            "endTime": 119.539,
+            "type": "忒忒令",
+            "text": "那{六4（五）上+2s五36h}"
+          },
+          {
+            "id": "gongche-char-line-20-char-1",
+            "startTime": 119.951,
+            "endTime": 126.215,
+            "type": "忒忒令",
+            "text": "一{六167/五六2}"
+          },
+          {
+            "id": "gongche-char-line-21-char-1",
+            "startTime": 126.952,
+            "endTime": 129.972,
+            "type": "忒忒令",
+            "text": "答{工46/}"
+          },
+          {
+            "id": "gongche-char-line-22-char-1",
+            "startTime": 130.304,
+            "endTime": 131.32,
+            "type": "忒忒令",
+            "text": "可{上3四}"
+          },
+          {
+            "id": "gongche-char-line-23-char-1",
+            "startTime": 131.717,
+            "endTime": 133.559,
+            "type": "忒忒令",
+            "text": "是{尺2h上}"
+          },
+          {
+            "id": "gongche-char-line-24-char-1",
+            "startTime": 133.559,
+            "endTime": 136.637,
+            "type": "忒忒令",
+            "text": "湖{四1/上2尺}"
+          },
+          {
+            "id": "gongche-char-line-25-char-1",
+            "startTime": 136.637,
+            "endTime": 146.012,
+            "type": "忒忒令",
+            "text": "山{上36/尺46上四36合}"
+          },
+          {
+            "id": "gongche-char-line-26-char-1",
+            "startTime": 146.012,
+            "endTime": 158.454,
+            "type": "忒忒令",
+            "text": "石{工-1/合276四46合工-36/}"
+          },
+          {
+            "id": "gongche-char-line-27-char-1",
+            "startTime": 158.454,
+            "endTime": 173.322,
+            "type": "忒忒令",
+            "text": "邊{六1676五46六工3656}"
+          },
+          {
+            "id": "gongche-char-line-28-char-1",
+            "startTime": 173.774,
+            "endTime": 182.862,
+            "type": "忒忒令",
+            "text": "這{上+36/上+4（尺+）上+2s五36h}"
+          },
+          {
+            "id": "gongche-char-line-29-char-1",
+            "startTime": 183.083,
+            "endTime": 189.009,
+            "type": "忒忒令",
+            "text": "一{六167/五六2}"
+          },
+          {
+            "id": "gongche-char-line-30-char-1",
+            "startTime": 189.255,
+            "endTime": 192.473,
+            "type": "忒忒令",
+            "text": "答{工46/}"
+          },
+          {
+            "id": "gongche-char-line-32-char-1",
+            "startTime": 195.181,
+            "endTime": 198.328,
+            "type": "忒忒令",
+            "text": "牡{上1四/上2尺}"
+          },
+          {
+            "id": "gongche-char-line-33-char-1",
+            "startTime": 198.328,
+            "endTime": 207.183,
+            "type": "忒忒令",
+            "text": "丹{工3686/尺3d上2}"
+          },
+          {
+            "id": "gongche-char-line-34-char-1",
+            "startTime": 207.435,
+            "endTime": 213.72,
+            "type": "忒忒令",
+            "text": "亭{四16/上3尺2}"
+          },
+          {
+            "id": "gongche-char-line-35-char-1",
+            "startTime": 213.72,
+            "endTime": 222.119,
+            "type": "忒忒令",
+            "text": "畔{上4（尺）工尺2d上四3656}"
+          },
+          {
+            "id": "gongche-char-line-35-char-2",
+            "startTime": 222.32876799870246,
+            "endTime": 225.05222805128713,
+            "type": "忒忒令",
+            "text": "嵌{五3d六工2}"
+          },
+          {
+            "id": "gongche-char-line-35-char-3",
+            "startTime": 225.05222805128713,
+            "endTime": 226.33915265381626,
+            "type": "忒忒令",
+            "text": "雕{尺4/d}"
+          },
+          {
+            "id": "gongche-char-line-35-char-5",
+            "startTime": 230.54776532272146,
+            "endTime": 233.23580862105086,
+            "type": "忒忒令",
+            "text": "芍{工16/尺}"
+          },
+          {
+            "id": "gongche-char-line-35-char-7",
+            "startTime": 241.32654136121016,
+            "endTime": 244.0862072644171,
+            "type": "忒忒令",
+            "text": "芽{上1/尺工2d尺}"
+          },
+          {
+            "id": "gongche-char-line-35-char-8",
+            "startTime": 244.06060360661186,
+            "endTime": 246.73766258148513,
+            "type": "忒忒令",
+            "text": "兒{上3尺工尺2c上}"
+          },
+          {
+            "id": "gongche-char-line-35-char-10",
+            "startTime": 254.71518638347564,
+            "endTime": 254.9431702581935,
+            "type": "忒忒令",
+            "text": "一{尺36/工}"
+          },
+          {
+            "id": "gongche-char-line-35-char-13",
+            "startTime": 262.93729360118977,
+            "endTime": 265.7980059847069,
+            "type": "忒忒令",
+            "text": "垂{工16尺}"
+          },
+          {
+            "id": "gongche-char-line-37-char-1",
+            "startTime": 275.73453267835566,
+            "endTime": 276.31933498161396,
+            "type": "忒忒令",
+            "text": "一{上}"
+          },
+          {
+            "id": "gongche-char-line-37-char-4",
+            "startTime": 279.1041904327563,
+            "endTime": 281.78119709598474,
+            "type": "忒忒令",
+            "text": "榆{四4上2}"
+          },
+          {
+            "id": "gongche-char-line-37-char-5",
+            "startTime": 281.78119709598474,
+            "endTime": 284.4491829482873,
+            "type": "忒忒令",
+            "text": "莢{尺3/工尺2c上}"
+          },
+          {
+            "id": "gongche-char-line-37-char-6",
+            "startTime": 284.4491829482873,
+            "endTime": 288.5539171944214,
+            "type": "忒忒令",
+            "text": "錢{四16/上36/（六）}"
+          },
+          {
+            "id": "gongche-char-line-38-char-3",
+            "startTime": 292.82255978057617,
+            "endTime": 295.25367109855017,
+            "type": "忒忒令",
+            "text": "兒{上3尺工尺2}"
+          },
+          {
+            "id": "gongche-char-line-38-char-4",
+            "startTime": 295.25367109855017,
+            "endTime": 297.1928292486419,
+            "type": "忒忒令",
+            "text": "春{上16/}"
+          },
+          {
+            "id": "gongche-char-line-38-char-5",
+            "startTime": 297.1928292486419,
+            "endTime": 298.04251917450483,
+            "type": "忒忒令",
+            "text": "甚{工h}"
+          },
+          {
+            "id": "gongche-char-line-38-char-6",
+            "startTime": 298.04251917450483,
+            "endTime": 303.3405571042959,
+            "type": "忒忒令",
+            "text": "金{尺36/工尺46上}"
+          },
+          {
+            "id": "gongche-char-line-38-char-7",
+            "startTime": 303.3405571042959,
+            "endTime": 305.5641758459134,
+            "type": "忒忒令",
+            "text": "錢{四3上2/（六d）}"
+          },
+          {
+            "id": "gongche-char-line-38-char-9",
+            "startTime": 306.30715053014376,
+            "endTime": 318.7888663285817,
+            "type": "忒忒令",
+            "text": "弔{五1六工2尺上36/尺46上四36上}"
+          },
+          {
+            "id": "gongche-char-line-38-char-10",
+            "startTime": 318.7888663285817,
+            "endTime": 330.04289179085254,
+            "type": "忒忒令",
+            "text": "轉{合1工-/合s四}"
+          },
+          {
+            "id": "gongche-char-line-44-char-1",
+            "startTime": 401.4626404451957,
+            "endTime": 410.40369617066875,
+            "type": "嘉慶子",
+            "text": "是{尺h上/}"
+          },
+          {
+            "id": "gongche-char-line-44-char-2",
+            "startTime": 410.40369617066875,
+            "endTime": 414.3565042709587,
+            "type": "嘉慶子",
+            "text": "誰{四4/上2尺}"
+          },
+          {
+            "id": "gongche-char-line-44-char-3",
+            "startTime": 414.3565042709587,
+            "endTime": 417.66045342505834,
+            "type": "嘉慶子",
+            "text": "家{上3/（工）尺2工}"
+          },
+          {
+            "id": "gongche-char-line-44-char-4",
+            "startTime": 417.66045342505834,
+            "endTime": 424.32930529035673,
+            "type": "嘉慶子",
+            "text": "少{六16h工尺3/d上2尺}"
+          },
+          {
+            "id": "gongche-char-line-44-char-5",
+            "startTime": 424.32930529035673,
+            "endTime": 430.76346774516804,
+            "type": "嘉慶子",
+            "text": "俊{工4h尺2d上四36/}"
+          },
+          {
+            "id": "gongche-char-line-44-char-6",
+            "startTime": 430.76346774516804,
+            "endTime": 434.04297563546277,
+            "type": "嘉慶子",
+            "text": "来{工1六2/}"
+          },
+          {
+            "id": "gongche-char-line-44-char-7",
+            "startTime": 434.04297563546277,
+            "endTime": 443.41128850095356,
+            "type": "嘉慶子",
+            "text": "近{六3（五）上+2五46/六工3d尺2/}"
+          },
+          {
+            "id": "gongche-char-line-44-char-8",
+            "startTime": 443.41128850095356,
+            "endTime": 457.8087099042159,
+            "type": "嘉慶子",
+            "text": "遠{上1676/尺46工3656}"
+          },
+          {
+            "id": "gongche-char-line-45-char-1",
+            "startTime": 458.51116534554484,
+            "endTime": 461.5155667654754,
+            "type": "嘉慶子",
+            "text": "敢{工36/尺}"
+          },
+          {
+            "id": "gongche-char-line-45-char-2",
+            "startTime": 461.5155667654754,
+            "endTime": 463.0351285442695,
+            "type": "嘉慶子",
+            "text": "迤{工4六五}"
+          },
+          {
+            "id": "gongche-char-line-45-char-3",
+            "startTime": 463.0351285442695,
+            "endTime": 466.17787490383984,
+            "type": "嘉慶子",
+            "text": "逗{六2（上+）五7上+d}"
+          },
+          {
+            "id": "gongche-char-line-45-char-4",
+            "startTime": 466.17787490383984,
+            "endTime": 467.6224522471614,
+            "type": "嘉慶子",
+            "text": "這{五2六工}"
+          },
+          {
+            "id": "gongche-char-line-45-char-5",
+            "startTime": 467.6224522471614,
+            "endTime": 473.47653097646713,
+            "type": "嘉慶子",
+            "text": "香{尺16/工尺36}"
+          },
+          {
+            "id": "gongche-char-line-45-char-6",
+            "startTime": 473.47653097646713,
+            "endTime": 481.59176670125515,
+            "type": "嘉慶子",
+            "text": "閨{上46/尺上3656}"
+          },
+          {
+            "id": "gongche-char-line-45-char-7",
+            "startTime": 481.59176670125515,
+            "endTime": 482.3296832341213,
+            "type": "嘉慶子",
+            "text": "去{上+}"
+          },
+          {
+            "id": "gongche-char-line-45-char-8",
+            "startTime": 482.3296832341213,
+            "endTime": 491.0174044846574,
+            "type": "嘉慶子",
+            "text": "沁{五36六工46/尺上3dd2四}"
+          },
+          {
+            "id": "gongche-char-line-45-char-9",
+            "startTime": 491.0174044846574,
+            "endTime": 493.61603603873147,
+            "type": "嘉慶子",
+            "text": "園{合1四2/}"
+          },
+          {
+            "id": "gongche-char-line-46-char-1",
+            "startTime": 494.1127737564086,
+            "endTime": 500.0753622969756,
+            "type": "嘉慶子",
+            "text": "話{六3（五）上+2五4/（尺+）上+2尺+工+}"
+          },
+          {
+            "id": "gongche-char-line-46-char-2",
+            "startTime": 500.0753622969756,
+            "endTime": 502.83358461921006,
+            "type": "嘉慶子",
+            "text": "到{尺+3/上+五2c六}"
+          },
+          {
+            "id": "gongche-char-line-46-char-3",
+            "startTime": 502.83358461921006,
+            "endTime": 505.9191682586188,
+            "type": "嘉慶子",
+            "text": "其{工1/六2五}"
+          },
+          {
+            "id": "gongche-char-line-46-char-4",
+            "startTime": 505.9191682586188,
+            "endTime": 510,
+            "type": "嘉慶子",
+            "text": "間{六36/五46六工36尺}"
+          },
+          {
+            "id": "gongche-char-line-47-char-3",
+            "startTime": 520.6394055488782,
+            "endTime": 528.1892578124999,
+            "type": "嘉慶子",
+            "text": "覥{四46/上3656}"
+          },
+          {
+            "id": "gongche-char-line-48-char-1",
+            "startTime": 528.4702287946428,
+            "endTime": 529.2205636160713,
+            "type": "嘉慶子",
+            "text": "他{上}"
+          },
+          {
+            "id": "gongche-char-line-48-char-2",
+            "startTime": 529.2205636160713,
+            "endTime": 531.8421107700893,
+            "type": "嘉慶子",
+            "text": "捏{四3/上2}"
+          },
+          {
+            "id": "gongche-char-line-48-char-3",
+            "startTime": 531.8421107700893,
+            "endTime": 533.0537493024555,
+            "type": "嘉慶子",
+            "text": "這{尺4h上}"
+          },
+          {
+            "id": "gongche-char-line-48-char-4",
+            "startTime": 533.0537493024555,
+            "endTime": 536.8388253348214,
+            "type": "嘉慶子",
+            "text": "眼{四2/上3尺2/（五）}"
+          },
+          {
+            "id": "gongche-char-line-48-char-5",
+            "startTime": 536.8388253348214,
+            "endTime": 539.3458879743304,
+            "type": "嘉慶子",
+            "text": "奈{六1（上+）五六工2d尺}"
+          },
+          {
+            "id": "gongche-char-line-48-char-6",
+            "startTime": 539.3458879743304,
+            "endTime": 544.4365443638393,
+            "type": "嘉慶子",
+            "text": "煩{上3/（工）尺2工尺4/d上2c四}"
+          },
+          {
+            "id": "gongche-char-line-48-char-7",
+            "startTime": 544.4365443638393,
+            "endTime": 547.0042096819196,
+            "type": "嘉慶子",
+            "text": "也{合3工-合2四}"
+          },
+          {
+            "id": "gongche-char-line-48-char-8",
+            "startTime": 547.0042096819196,
+            "endTime": 551.2207589285714,
+            "type": "嘉慶子",
+            "text": "天{上1676}"
+          },
+          {
+            "id": "gongche-char-line-49-char-1",
+            "startTime": 551.3738839285714,
+            "endTime": 552.0394101498358,
+            "type": "嘉慶子",
+            "text": "咱{五}"
+          },
+          {
+            "id": "gongche-char-line-49-char-2",
+            "startTime": 552.0394101498358,
+            "endTime": 557.1452866599226,
+            "type": "嘉慶子",
+            "text": "噷{六4/（五）六2s五36/}"
+          },
+          {
+            "id": "gongche-char-line-49-char-3",
+            "startTime": 557.1452866599226,
+            "endTime": 562.3020413661154,
+            "type": "嘉慶子",
+            "text": "這{上+16h五3d六2/}"
+          },
+          {
+            "id": "gongche-char-line-49-char-4",
+            "startTime": 562.3020413661154,
+            "endTime": 564.9465852612598,
+            "type": "嘉慶子",
+            "text": "口{四4上2/}"
+          },
+          {
+            "id": "gongche-char-line-49-char-5",
+            "startTime": 564.9465852612598,
+            "endTime": 572.5094701134765,
+            "type": "嘉慶子",
+            "text": "待{六3（五）上+五256/上+五3d六2/}"
+          },
+          {
+            "id": "gongche-char-line-49-char-6",
+            "startTime": 572.5094701134765,
+            "endTime": 577.5854347180683,
+            "type": "嘉慶子",
+            "text": "酬{工4六五2六3/d工2d尺}"
+          },
+          {
+            "id": "gongche-char-line-49-char-7",
+            "startTime": 577.5854347180683,
+            "endTime": 580.1545354833745,
+            "type": "嘉慶子",
+            "text": "言{上1尺2/}"
+          },
+          {
+            "id": "gongche-char-line-50-char-1",
+            "startTime": 580.1545354833745,
+            "endTime": 582.7165629398312,
+            "type": "尹令",
+            "text": "咱{六3五2}"
+          },
+          {
+            "id": "gongche-char-line-50-char-2",
+            "startTime": 582.7165629398312,
+            "endTime": 583.7887466462878,
+            "type": "尹令",
+            "text": "不{六4/（五）}"
+          },
+          {
+            "id": "gongche-char-line-50-char-3",
+            "startTime": 583.7887466462878,
+            "endTime": 587.6971468706017,
+            "type": "尹令",
+            "text": "是{六2（五）上+五3d六2}"
+          },
+          {
+            "id": "gongche-char-line-50-char-4",
+            "startTime": 587.6971468706017,
+            "endTime": 590.2688283449156,
+            "type": "尹令",
+            "text": "前{工1/六2五}"
+          },
+          {
+            "id": "gongche-char-line-50-char-5",
+            "startTime": 590.2688283449156,
+            "endTime": 595.1748848192294,
+            "type": "尹令",
+            "text": "生{六36五46/}"
+          },
+          {
+            "id": "gongche-char-line-50-char-7",
+            "startTime": 597.6638095971147,
+            "endTime": 600.23984375,
+            "type": "尹令",
+            "text": "眷{五1h六工2/}"
+          },
+          {
+            "id": "gongche-char-line-51-char-1",
+            "startTime": 600.23984375,
+            "endTime": 602.3478555484694,
+            "type": "尹令",
+            "text": "又{六3（五）上+2}"
+          },
+          {
+            "id": "gongche-char-line-51-char-2",
+            "startTime": 602.3478555484694,
+            "endTime": 603.8662468112244,
+            "type": "尹令",
+            "text": "素{五4上+（五六工）}"
+          },
+          {
+            "id": "gongche-char-line-51-char-3",
+            "startTime": 603.8662468112244,
+            "endTime": 607.517897002551,
+            "type": "尹令",
+            "text": "乏{尺2/工36}"
+          },
+          {
+            "id": "gongche-char-line-51-char-4",
+            "startTime": 607.517897002551,
+            "endTime": 609.7868463010204,
+            "type": "尹令",
+            "text": "平{工1六五六2s}"
+          },
+          {
+            "id": "gongche-char-line-51-char-5",
+            "startTime": 609.7868463010204,
+            "endTime": 617.5692442602042,
+            "type": "尹令",
+            "text": "生{工3686尺3d上2/}"
+          },
+          {
+            "id": "gongche-char-line-51-char-6",
+            "startTime": 617.5692442602042,
+            "endTime": 622.6109614158163,
+            "type": "尹令",
+            "text": "半{六16h尺3d上2/（尺）}"
+          },
+          {
+            "id": "gongche-char-line-51-char-7",
+            "startTime": 622.6109614158163,
+            "endTime": 629.6482142857143,
+            "type": "尹令",
+            "text": "面{上4尺6s上四365}"
+          },
+          {
+            "id": "gongche-char-line-52-char-2",
+            "startTime": 630.421447172619,
+            "endTime": 631.2932291666666,
+            "type": "尹令",
+            "text": "道{五h}"
+          },
+          {
+            "id": "gongche-char-line-52-char-3",
+            "startTime": 631.2932291666666,
+            "endTime": 632.6458705357143,
+            "type": "尹令",
+            "text": "来{工3}"
+          },
+          {
+            "id": "gongche-char-line-52-char-4",
+            "startTime": 632.6458705357143,
+            "endTime": 634.121447172619,
+            "type": "尹令",
+            "text": "生{六2}"
+          },
+          {
+            "id": "gongche-char-line-52-char-5",
+            "startTime": 634.121447172619,
+            "endTime": 635.6244791666667,
+            "type": "尹令",
+            "text": "出{六4/（五）}"
+          },
+          {
+            "id": "gongche-char-line-52-char-6",
+            "startTime": 635.6244791666667,
+            "endTime": 638.4190848214286,
+            "type": "尹令",
+            "text": "現{六2（上+）五7上+}"
+          },
+          {
+            "id": "gongche-char-line-53-char-1",
+            "startTime": 638.4190848214286,
+            "endTime": 639.0476562499999,
+            "type": "尹令",
+            "text": "乍{五2六}"
+          },
+          {
+            "id": "gongche-char-line-53-char-2",
+            "startTime": 639.0476562499999,
+            "endTime": 639.8755766369047,
+            "type": "尹令",
+            "text": "便{工}"
+          },
+          {
+            "id": "gongche-char-line-53-char-3",
+            "startTime": 639.8755766369047,
+            "endTime": 645.1104631696429,
+            "type": "尹令",
+            "text": "今{尺16/工尺36}"
+          },
+          {
+            "id": "gongche-char-line-53-char-4",
+            "startTime": 645.1104631696429,
+            "endTime": 653.1097470238095,
+            "type": "尹令",
+            "text": "生{上46/尺上3656}"
+          },
+          {
+            "id": "gongche-char-line-53-char-5",
+            "startTime": 653.1097470238095,
+            "endTime": 661.401329985119,
+            "type": "尹令",
+            "text": "夢{上3（尺）六2/d4dd2工尺36工}"
+          },
+          {
+            "id": "gongche-char-line-53-char-6",
+            "startTime": 661.401329985119,
+            "endTime": 664.5235491071428,
+            "type": "尹令",
+            "text": "見{尺1h上四2/}"
+          },
+          {
+            "id": "gongche-char-line-54-char-1",
+            "startTime": 664.6021763392857,
+            "endTime": 669.3738504464286,
+            "type": "尹令",
+            "text": "生{六3/（五）六2s五46/}"
+          },
+          {
+            "id": "gongche-char-line-54-char-2",
+            "startTime": 669.3738504464286,
+            "endTime": 670.5522767857143,
+            "type": "尹令",
+            "text": "就{六3五上+}"
+          },
+          {
+            "id": "gongche-char-line-54-char-3",
+            "startTime": 670.5522767857143,
+            "endTime": 671.5983928571428,
+            "type": "尹令",
+            "text": "個{五2六工}"
+          },
+          {
+            "id": "gongche-char-line-54-char-4",
+            "startTime": 671.5983928571428,
+            "endTime": 676.2702901785714,
+            "type": "尹令",
+            "text": "書{尺167/工2}"
+          },
+          {
+            "id": "gongche-char-line-54-char-5",
+            "startTime": 676.2702901785714,
+            "endTime": 683.2121651785714,
+            "type": "尹令",
+            "text": "生{尺46/工尺36/d1dd2上}"
+          },
+          {
+            "id": "gongche-char-line-55-char-3",
+            "startTime": 690.1869559151785,
+            "endTime": 694.9708914620535,
+            "type": "尹令",
+            "text": "生{六167五六2}"
+          },
+          {
+            "id": "gongche-char-line-55-char-4",
+            "startTime": 694.9708914620535,
+            "endTime": 699.8762555803571,
+            "type": "尹令",
+            "text": "生{工46/尺3d上2/}"
+          },
+          {
+            "id": "gongche-char-line-55-char-5",
+            "startTime": 699.8762555803571,
+            "endTime": 701.3084054129464,
+            "type": "尹令",
+            "text": "抱{上1六}"
+          },
+          {
+            "id": "gongche-char-line-55-char-6",
+            "startTime": 701.3084054129464,
+            "endTime": 702.9432896205357,
+            "type": "尹令",
+            "text": "咱{上2尺工}"
+          },
+          {
+            "id": "gongche-char-line-55-char-7",
+            "startTime": 702.9432896205357,
+            "endTime": 712.9377720424106,
+            "type": "尹令",
+            "text": "去{五36h六工46/尺上3d四2/}"
+          },
+          {
+            "id": "gongche-char-line-55-char-8",
+            "startTime": 712.9377720424106,
+            "endTime": 731.5867745535713,
+            "type": "尹令",
+            "text": "眠{合1四}"
+          },
+          {
+            "id": "gongche-char-line-57-char-2",
+            "startTime": 752.1770377690552,
+            "endTime": 752.7436027790408,
+            "type": "品令",
+            "text": "不{上1/四}"
+          },
+          {
+            "id": "gongche-char-line-58-char-1",
+            "startTime": 756.4342459711274,
+            "endTime": 757.797199096106,
+            "type": "豆葉黃",
+            "text": "那{上1六五}"
+          },
+          {
+            "id": "gongche-char-line-59-char-4",
+            "startTime": 776.8554624051295,
+            "endTime": 778.4339608051121,
+            "type": "豆葉黃",
+            "text": "般{五2六工尺}"
+          },
+          {
+            "id": "gongche-char-line-62-char-1",
+            "startTime": 814.7768439743793,
+            "endTime": 819.8302334332458,
+            "type": "玉交枝",
+            "text": "似{六五}"
+          },
+          {
+            "id": "gongche-char-line-62-char-2",
+            "startTime": 819.8302334332458,
+            "endTime": 823.3325986098365,
+            "type": "玉交枝",
+            "text": "這{上+h}"
+          },
+          {
+            "id": "gongche-char-line-62-char-3",
+            "startTime": 823.3325986098365,
+            "endTime": 829.1712425079565,
+            "type": "玉交枝",
+            "text": "等{工/}"
+          },
+          {
+            "id": "gongche-char-line-62-char-4",
+            "startTime": 829.7970546042951,
+            "endTime": 833.2753611666851,
+            "type": "玉交枝",
+            "text": "荒{六3/五2d六}"
+          },
+          {
+            "id": "gongche-char-line-62-char-5",
+            "startTime": 833.2753611666851,
+            "endTime": 842.608230650364,
+            "type": "玉交枝",
+            "text": "涼{工1/六五2d六工365/尺2}"
+          },
+          {
+            "id": "gongche-char-line-62-char-6",
+            "startTime": 842.608230650364,
+            "endTime": 845.4595726079508,
+            "type": "玉交枝",
+            "text": "地{上3（尺）六2/}"
+          },
+          {
+            "id": "gongche-char-line-62-char-7",
+            "startTime": 845.4595726079508,
+            "endTime": 853.9530917863136,
+            "type": "玉交枝",
+            "text": "面{上1尺6s上四3656}"
+          },
+          {
+            "id": "gongche-char-line-63-char-1",
+            "startTime": 854.0873950383422,
+            "endTime": 856.8344143993642,
+            "type": "玉交枝",
+            "text": "没{工36/}"
+          },
+          {
+            "id": "gongche-char-line-63-char-2",
+            "startTime": 857.2104923177554,
+            "endTime": 859.8245770305509,
+            "type": "玉交枝",
+            "text": "多{六16/}"
+          },
+          {
+            "id": "gongche-char-line-63-char-3",
+            "startTime": 860.1006388237389,
+            "endTime": 862.934960700963,
+            "type": "玉交枝",
+            "text": "半{五3六工2尺上}"
+          },
+          {
+            "id": "gongche-char-line-63-char-4",
+            "startTime": 862.934960700963,
+            "endTime": 863.8177976203134,
+            "type": "玉交枝",
+            "text": "亭{合1}"
+          },
+          {
+            "id": "gongche-char-line-63-char-5",
+            "startTime": 864.606365521403,
+            "endTime": 865.8948494044427,
+            "type": "玉交枝",
+            "text": "臺{四2上}"
+          },
+          {
+            "id": "gongche-char-line-63-char-6",
+            "startTime": 865.8948494044427,
+            "endTime": 868.9463110795963,
+            "type": "玉交枝",
+            "text": "靠{五3六工2c尺}"
+          },
+          {
+            "id": "gongche-char-line-64-char-1",
+            "startTime": 868.9463110795963,
+            "endTime": 872.3586519677627,
+            "type": "玉交枝",
+            "text": "邊{上16/尺上3/}"
+          },
+          {
+            "id": "gongche-char-line-65-char-1",
+            "startTime": 872.6705495710254,
+            "endTime": 873.076232550604,
+            "type": "玉交枝",
+            "text": "敢{六}"
+          },
+          {
+            "id": "gongche-char-line-65-char-2",
+            "startTime": 873.076232550604,
+            "endTime": 874.054932334247,
+            "type": "玉交枝",
+            "text": "是{五2h}"
+          },
+          {
+            "id": "gongche-char-line-65-char-3",
+            "startTime": 874.054932334247,
+            "endTime": 874.8193535822948,
+            "type": "玉交枝",
+            "text": "咱{六工}"
+          },
+          {
+            "id": "gongche-char-line-65-char-4",
+            "startTime": 874.8193535822948,
+            "endTime": 876.082558884336,
+            "type": "玉交枝",
+            "text": "瞇{尺1}"
+          },
+          {
+            "id": "gongche-char-line-65-char-6",
+            "startTime": 880.6013484879617,
+            "endTime": 883.1840679344294,
+            "type": "玉交枝",
+            "text": "色{上1/尺2c上}"
+          },
+          {
+            "id": "gongche-char-line-65-char-7",
+            "startTime": 883.1840679344294,
+            "endTime": 884.6007729576146,
+            "type": "玉交枝",
+            "text": "眼{合3（工-尺-）}"
+          },
+          {
+            "id": "gongche-char-line-65-char-9",
+            "startTime": 888.9435168932555,
+            "endTime": 891.7800403131866,
+            "type": "玉交枝",
+            "text": "難{合3/d四2上}"
+          },
+          {
+            "id": "gongche-char-line-65-char-10",
+            "startTime": 891.7800403131866,
+            "endTime": 894.3428877525686,
+            "type": "玉交枝",
+            "text": "見{尺1h上}"
+          },
+          {
+            "id": "gongche-char-line-66-char-1",
+            "startTime": 894.5473726358991,
+            "endTime": 895.8513073355438,
+            "type": "玉交枝",
+            "text": "放{六3h}"
+          },
+          {
+            "id": "gongche-char-line-66-char-2",
+            "startTime": 895.8513073355438,
+            "endTime": 897.9831032717467,
+            "type": "玉交枝",
+            "text": "著{尺2c上}"
+          },
+          {
+            "id": "gongche-char-line-66-char-3",
+            "startTime": 897.9831032717467,
+            "endTime": 900.9296506607221,
+            "type": "玉交枝",
+            "text": "白{四1上尺d2上四}"
+          },
+          {
+            "id": "gongche-char-line-66-char-4",
+            "startTime": 900.9296506607221,
+            "endTime": 904.3970598439681,
+            "type": "玉交枝",
+            "text": "日{合3/四25}"
+          },
+          {
+            "id": "gongche-char-line-66-char-5",
+            "startTime": 904.3970598439681,
+            "endTime": 908.5978605855556,
+            "type": "玉交枝",
+            "text": "青{上27尺上2}"
+          },
+          {
+            "id": "gongche-char-line-66-char-6",
+            "startTime": 908.5978605855556,
+            "endTime": 910.0458228273998,
+            "type": "玉交枝",
+            "text": "天{四1/}"
+          },
+          {
+            "id": "gongche-char-line-67-char-1",
+            "startTime": 910.0458228273998,
+            "endTime": 911.291148241176,
+            "type": "玉交枝",
+            "text": "猛{尺2}"
+          },
+          {
+            "id": "gongche-char-line-67-char-2",
+            "startTime": 911.291148241176,
+            "endTime": 911.9713123165691,
+            "type": "玉交枝",
+            "text": "教{工3h}"
+          },
+          {
+            "id": "gongche-char-line-67-char-3",
+            "startTime": 911.9713123165691,
+            "endTime": 913.8799743818006,
+            "type": "玉交枝",
+            "text": "人{尺工2/}"
+          },
+          {
+            "id": "gongche-char-line-67-char-4",
+            "startTime": 914.3086354988943,
+            "endTime": 915.6131750368107,
+            "type": "玉交枝",
+            "text": "抓{六1工}"
+          },
+          {
+            "id": "gongche-char-line-67-char-5",
+            "startTime": 915.6131750368107,
+            "endTime": 916.4908142344543,
+            "type": "玉交枝",
+            "text": "不{六2/五}"
+          },
+          {
+            "id": "gongche-char-line-67-char-6",
+            "startTime": 916.4908142344543,
+            "endTime": 919.961345366473,
+            "type": "玉交枝",
+            "text": "到{上+3h五2d六}"
+          },
+          {
+            "id": "gongche-char-line-67-char-7",
+            "startTime": 919.961345366473,
+            "endTime": 921.4447358099914,
+            "type": "玉交枝",
+            "text": "魂{工1六}"
+          },
+          {
+            "id": "gongche-char-line-67-char-8",
+            "startTime": 921.4447358099914,
+            "endTime": 925.6985044914503,
+            "type": "玉交枝",
+            "text": "夢{六2（五）上+7五2六工}"
+          },
+          {
+            "id": "gongche-char-line-67-char-9",
+            "startTime": 925.6985044914503,
+            "endTime": 931.0713949080341,
+            "type": "玉交枝",
+            "text": "前{尺1工6/六工36/}"
+          },
+          {
+            "id": "gongche-char-line-68-char-1",
+            "startTime": 931.0713949080341,
+            "endTime": 932.7352724075641,
+            "type": "玉交枝",
+            "text": "霎{工1/六工}"
+          },
+          {
+            "id": "gongche-char-line-68-char-2",
+            "startTime": 932.7352724075641,
+            "endTime": 936.8390103268891,
+            "type": "玉交枝",
+            "text": "時{尺2工7六工2尺}"
+          },
+          {
+            "id": "gongche-char-line-68-char-3",
+            "startTime": 936.8390103268891,
+            "endTime": 940.3271286466105,
+            "type": "玉交枝",
+            "text": "間{上1/尺2c上7}"
+          },
+          {
+            "id": "gongche-char-line-68-char-4",
+            "startTime": 940.3271286466105,
+            "endTime": 941.0027661535395,
+            "type": "玉交枝",
+            "text": "有{合}"
+          },
+          {
+            "id": "gongche-char-line-68-char-5",
+            "startTime": 941.0027661535395,
+            "endTime": 945.128329701915,
+            "type": "玉交枝",
+            "text": "如{工-2（合）四5/上2d四}"
+          },
+          {
+            "id": "gongche-char-line-68-char-6",
+            "startTime": 945.128329701915,
+            "endTime": 947.8448075886222,
+            "type": "玉交枝",
+            "text": "活{合3/d四2上}"
+          },
+          {
+            "id": "gongche-char-line-68-char-7",
+            "startTime": 947.8448075886222,
+            "endTime": 950.0296189142019,
+            "type": "玉交枝",
+            "text": "現{尺1h上四2/}"
+          },
+          {
+            "id": "gongche-char-line-69-char-1",
+            "startTime": 950.5592685855162,
+            "endTime": 953.414680338619,
+            "type": "玉交枝",
+            "text": "打{四3dd2上}"
+          },
+          {
+            "id": "gongche-char-line-69-char-2",
+            "startTime": 953.414680338619,
+            "endTime": 956.2700920917217,
+            "type": "玉交枝",
+            "text": "方{尺1/工2d尺}"
+          },
+          {
+            "id": "gongche-char-line-69-char-3",
+            "startTime": 956.2700920917217,
+            "endTime": 959.8005856780295,
+            "type": "玉交枝",
+            "text": "旋{上3尺25}"
+          },
+          {
+            "id": "gongche-char-line-69-char-4",
+            "startTime": 959.8005856780295,
+            "endTime": 962.9322032878783,
+            "type": "玉交枝",
+            "text": "再{六27h}"
+          },
+          {
+            "id": "gongche-char-line-69-char-5",
+            "startTime": 962.9322032878783,
+            "endTime": 964.1969012484519,
+            "type": "玉交枝",
+            "text": "得{尺2/d上}"
+          },
+          {
+            "id": "gongche-char-line-69-char-6",
+            "startTime": 964.1969012484519,
+            "endTime": 967.0249409255179,
+            "type": "玉交枝",
+            "text": "俄{四1上尺d2上四}"
+          },
+          {
+            "id": "gongche-char-line-69-char-7",
+            "startTime": 967.0249409255179,
+            "endTime": 971.3198717669353,
+            "type": "玉交枝",
+            "text": "延{合3/四256}"
+          },
+          {
+            "id": "gongche-char-line-70-char-1",
+            "startTime": 971.8491252634648,
+            "endTime": 972.6417069353533,
+            "type": "玉交枝",
+            "text": "是{五}"
+          },
+          {
+            "id": "gongche-char-line-70-char-2",
+            "startTime": 972.6417069353533,
+            "endTime": 975.5000519825694,
+            "type": "玉交枝",
+            "text": "這{上+3h五2}"
+          },
+          {
+            "id": "gongche-char-line-70-char-3",
+            "startTime": 975.5000519825694,
+            "endTime": 980.4797329226458,
+            "type": "玉交枝",
+            "text": "答{六1/五2d六}"
+          },
+          {
+            "id": "gongche-char-line-70-char-4",
+            "startTime": 980.4797329226458,
+            "endTime": 985.701944862765,
+            "type": "玉交枝",
+            "text": "兒{工36/六五1dd2六工36/}"
+          },
+          {
+            "id": "gongche-char-line-70-char-5",
+            "startTime": 985.701944862765,
+            "endTime": 986.3935739963227,
+            "type": "玉交枝",
+            "text": "壓{工}"
+          },
+          {
+            "id": "gongche-char-line-70-char-6",
+            "startTime": 986.3935739963227,
+            "endTime": 987.632464571171,
+            "type": "玉交枝",
+            "text": "黃{尺1工六}"
+          },
+          {
+            "id": "gongche-char-line-70-char-7",
+            "startTime": 987.632464571171,
+            "endTime": 990,
+            "type": "玉交枝",
+            "text": "金{工27六2/}"
+          },
+          {
+            "id": "gongche-char-line-71-char-1",
+            "startTime": 991.9243560900804,
+            "endTime": 998.1682617925487,
+            "type": "玉交枝",
+            "text": "钏{五16六工3/d尺2c上}"
+          },
+          {
+            "id": "gongche-char-line-71-char-2",
+            "startTime": 998.889697608066,
+            "endTime": 1006.158697012627,
+            "type": "玉交枝",
+            "text": "匾{四1上}"
+          },
+          {
+            "id": "gongche-char-line-73-char-3",
+            "startTime": 1045.2514139351686,
+            "endTime": 1046.448972318144,
+            "type": "三月海棠",
+            "text": "人{上2尺5工尺2c上}"
+          },
+          {
+            "id": "gongche-char-line-74-char-2",
+            "startTime": 1050.3431309036596,
+            "endTime": 1051.2767671227405,
+            "type": "三月海棠",
+            "text": "見{六1h工}"
+          },
+          {
+            "id": "gongche-char-line-74-char-6",
+            "startTime": 1055.4707025997534,
+            "endTime": 1056.6444898223908,
+            "type": "三月海棠",
+            "text": "一{上16/d}"
+          },
+          {
+            "id": "gongche-char-line-76-char-6",
+            "startTime": 1115.6871525845975,
+            "endTime": 1115.9572438983237,
+            "type": "二犯六么令",
+            "text": "得{上2}"
+          },
+          {
+            "id": "gongche-char-line-78-char-1",
+            "startTime": 1136.5878088565046,
+            "endTime": 1140.2493215803847,
+            "type": "江兒水",
+            "text": "偶{六工/}"
+          },
+          {
+            "id": "gongche-char-line-78-char-2",
+            "startTime": 1140.8782231675598,
+            "endTime": 1144.2604640906093,
+            "type": "江兒水",
+            "text": "然{工六}"
+          },
+          {
+            "id": "gongche-char-line-78-char-3",
+            "startTime": 1145.2706854404346,
+            "endTime": 1150.4356391138542,
+            "type": "江兒水",
+            "text": "間{五/}"
+          },
+          {
+            "id": "gongche-char-line-78-char-4",
+            "startTime": 1150.9906914083297,
+            "endTime": 1152.8444137225142,
+            "type": "江兒水",
+            "text": "心{上+1/}"
+          },
+          {
+            "id": "gongche-char-line-78-char-5",
+            "startTime": 1152.8444137225142,
+            "endTime": 1157.878156065515,
+            "type": "江兒水",
+            "text": "似{上+2（尺+）工+尺+3/上+五2c六}"
+          },
+          {
+            "id": "gongche-char-line-78-char-6",
+            "startTime": 1157.878156065515,
+            "endTime": 1162.4992868091229,
+            "type": "江兒水",
+            "text": "繾{工16/六五3/（六）}"
+          },
+          {
+            "id": "gongche-char-line-79-char-1",
+            "startTime": 1162.4992868091229,
+            "endTime": 1164.3160449909176,
+            "type": "江兒水",
+            "text": "在{五2h六}"
+          },
+          {
+            "id": "gongche-char-line-79-char-2",
+            "startTime": 1164.3160449909176,
+            "endTime": 1166.8533566956369,
+            "type": "江兒水",
+            "text": "梅{工1六2/}"
+          },
+          {
+            "id": "gongche-char-line-79-char-3",
+            "startTime": 1167.3612309436057,
+            "endTime": 1170.6557731981409,
+            "type": "江兒水",
+            "text": "樹{五3（尺+）上+2}"
+          },
+          {
+            "id": "gongche-char-line-79-char-4",
+            "startTime": 1170.6557731981409,
+            "endTime": 1174.3422414992565,
+            "type": "江兒水",
+            "text": "邊{五16/上+五3/}"
+          },
+          {
+            "id": "gongche-char-line-80-char-1",
+            "startTime": 1174.5180864529498,
+            "endTime": 1175.4342082677942,
+            "type": "江兒水",
+            "text": "似{六五}"
+          },
+          {
+            "id": "gongche-char-line-80-char-2",
+            "startTime": 1175.4342082677942,
+            "endTime": 1176.254940589835,
+            "type": "江兒水",
+            "text": "這{上+2h}"
+          },
+          {
+            "id": "gongche-char-line-80-char-3",
+            "startTime": 1176.254940589835,
+            "endTime": 1177.012578140648,
+            "type": "江兒水",
+            "text": "等{工}"
+          },
+          {
+            "id": "gongche-char-line-80-char-4",
+            "startTime": 1177.012578140648,
+            "endTime": 1177.8592133821817,
+            "type": "江兒水",
+            "text": "花{六1}"
+          },
+          {
+            "id": "gongche-char-line-80-char-5",
+            "startTime": 1178.7560257584341,
+            "endTime": 1183.1737702443381,
+            "type": "江兒水",
+            "text": "花{六27/工尺2c上}"
+          },
+          {
+            "id": "gongche-char-line-80-char-6",
+            "startTime": 1183.1737702443381,
+            "endTime": 1186.1789144612255,
+            "type": "江兒水",
+            "text": "草{四16/合}"
+          },
+          {
+            "id": "gongche-char-line-80-char-7",
+            "startTime": 1186.1789144612255,
+            "endTime": 1189.49157177069,
+            "type": "江兒水",
+            "text": "草{四3上}"
+          },
+          {
+            "id": "gongche-char-line-80-char-8",
+            "startTime": 1189.9565966105006,
+            "endTime": 1192.1247754167382,
+            "type": "江兒水",
+            "text": "由{上2尺5工d2尺上}"
+          },
+          {
+            "id": "gongche-char-line-80-char-9",
+            "startTime": 1192.1247754167382,
+            "endTime": 1194.449156458065,
+            "type": "江兒水",
+            "text": "人{四3上2/}"
+          },
+          {
+            "id": "gongche-char-line-81-char-1",
+            "startTime": 1202.0168188191049,
+            "endTime": 1205.2515604664593,
+            "type": "江兒水",
+            "text": "生{上+27尺+}"
+          },
+          {
+            "id": "gongche-char-line-81-char-2",
+            "startTime": 1205.2515604664593,
+            "endTime": 1206.8596671418902,
+            "type": "江兒水",
+            "text": "生{上+2五六}"
+          },
+          {
+            "id": "gongche-char-line-81-char-3",
+            "startTime": 1206.8596671418902,
+            "endTime": 1209.3634377100827,
+            "type": "江兒水",
+            "text": "死{工1/d尺2s}"
+          },
+          {
+            "id": "gongche-char-line-81-char-4",
+            "startTime": 1209.7684436539146,
+            "endTime": 1212.1418679832295,
+            "type": "江兒水",
+            "text": "死{工36/}"
+          },
+          {
+            "id": "gongche-char-line-81-char-5",
+            "startTime": 1212.5522304894337,
+            "endTime": 1214.101634378166,
+            "type": "江兒水",
+            "text": "隨{工1}"
+          },
+          {
+            "id": "gongche-char-line-81-char-6",
+            "startTime": 1214.101634378166,
+            "endTime": 1218.5844336796117,
+            "type": "江兒水",
+            "text": "人{工27六2/（五）}"
+          },
+          {
+            "id": "gongche-char-line-81-char-7",
+            "startTime": 1218.5844336796117,
+            "endTime": 1220.103943433661,
+            "type": "江兒水",
+            "text": "願{六1（五）上+6}"
+          },
+          {
+            "id": "gongche-char-line-82-char-1",
+            "startTime": 1220.7624681,
+            "endTime": 1221.534125984382,
+            "type": "江兒水",
+            "text": "便{五h}"
+          },
+          {
+            "id": "gongche-char-line-82-char-2",
+            "startTime": 1221.534125984382,
+            "endTime": 1222.2846039101153,
+            "type": "江兒水",
+            "text": "酸{六3}"
+          },
+          {
+            "id": "gongche-char-line-82-char-3",
+            "startTime": 1222.9264561436405,
+            "endTime": 1224.2455252855507,
+            "type": "江兒水",
+            "text": "酸{六2/}"
+          },
+          {
+            "id": "gongche-char-line-82-char-4",
+            "startTime": 1224.4544072579874,
+            "endTime": 1227.2577632505863,
+            "type": "江兒水",
+            "text": "楚{工1/六五2d六}"
+          },
+          {
+            "id": "gongche-char-line-82-char-5",
+            "startTime": 1227.2577632505863,
+            "endTime": 1228.7455403398699,
+            "type": "江兒水",
+            "text": "楚{工3d尺}"
+          },
+          {
+            "id": "gongche-char-line-82-char-6",
+            "startTime": 1228.7455403398699,
+            "endTime": 1233.0016191297757,
+            "type": "江兒水",
+            "text": "無{上2尺5工d2尺上}"
+          },
+          {
+            "id": "gongche-char-line-82-char-7",
+            "startTime": 1233.0016191297757,
+            "endTime": 1235,
+            "type": "江兒水",
+            "text": "人{四3/上2尺工}"
+          },
+          {
+            "id": "gongche-char-line-83-char-1",
+            "startTime": 1237.292063210227,
+            "endTime": 1238.6140092329547,
+            "type": "江兒水",
+            "text": "待{尺2h上}"
+          },
+          {
+            "id": "gongche-char-line-83-char-2",
+            "startTime": 1238.6140092329547,
+            "endTime": 1240.0776963271103,
+            "type": "江兒水",
+            "text": "打{合3}"
+          },
+          {
+            "id": "gongche-char-line-83-char-3",
+            "startTime": 1240.0776963271103,
+            "endTime": 1241.4745256696428,
+            "type": "江兒水",
+            "text": "併{四2上}"
+          },
+          {
+            "id": "gongche-char-line-83-char-4",
+            "startTime": 1241.4745256696428,
+            "endTime": 1244.3583578530843,
+            "type": "江兒水",
+            "text": "香{尺1/工2d尺}"
+          },
+          {
+            "id": "gongche-char-line-83-char-5",
+            "startTime": 1244.3583578530843,
+            "endTime": 1248.6824599228894,
+            "type": "江兒水",
+            "text": "魂{上3尺25}"
+          },
+          {
+            "id": "gongche-char-line-83-char-6",
+            "startTime": 1248.6824599228894,
+            "endTime": 1253.0191330154219,
+            "type": "江兒水",
+            "text": "一{尺2/工7d尺2工}"
+          },
+          {
+            "id": "gongche-char-line-83-char-7",
+            "startTime": 1253.0191330154219,
+            "endTime": 1255.753391335227,
+            "type": "江兒水",
+            "text": "片{尺1h上四2/}"
+          },
+          {
+            "id": "gongche-char-line-83-char-9",
+            "startTime": 1257.279071124188,
+            "endTime": 1258.76328125,
+            "type": "江兒水",
+            "text": "雨{四2上尺}"
+          },
+          {
+            "id": "gongche-char-line-83-char-10",
+            "startTime": 1258.76328125,
+            "endTime": 1264.350568181818,
+            "type": "江兒水",
+            "text": "梅{上1/（工）尺2工}"
+          },
+          {
+            "id": "gongche-char-line-83-char-11",
+            "startTime": 1264.350568181818,
+            "endTime": 1268.0549310064935,
+            "type": "江兒水",
+            "text": "天{尺365}"
+          },
+          {
+            "id": "gongche-char-line-83-char-13",
+            "startTime": 1269.3220738636364,
+            "endTime": 1270.5792167207792,
+            "type": "江兒水",
+            "text": "呀{六工}"
+          },
+          {
+            "id": "gongche-char-line-83-char-14",
+            "startTime": 1270.5792167207792,
+            "endTime": 1271.6313431305534,
+            "type": "江兒水",
+            "text": "人{尺3}"
+          },
+          {
+            "id": "gongche-char-line-83-char-15",
+            "startTime": 1271.6313431305534,
+            "endTime": 1273.4532968429594,
+            "type": "江兒水",
+            "text": "兒{尺}"
+          },
+          {
+            "id": "gongche-char-line-83-char-16",
+            "startTime": 1273.4532968429594,
+            "endTime": 1276.716874145591,
+            "type": "江兒水",
+            "text": "吓{工25}"
+          },
+          {
+            "id": "gongche-char-line-84-char-1",
+            "startTime": 1281.027737885109,
+            "endTime": 1282.9090042178616,
+            "type": "江兒水",
+            "text": "守{六2工}"
+          },
+          {
+            "id": "gongche-char-line-84-char-3",
+            "startTime": 1283.8279229896389,
+            "endTime": 1286.2565767983222,
+            "type": "江兒水",
+            "text": "個{上+h五2六工}"
+          },
+          {
+            "id": "gongche-char-line-84-char-4",
+            "startTime": 1286.2565767983222,
+            "endTime": 1287.9437120335135,
+            "type": "江兒水",
+            "text": "梅{尺1工六}"
+          },
+          {
+            "id": "gongche-char-line-84-char-5",
+            "startTime": 1287.9437120335135,
+            "endTime": 1292.4263693723638,
+            "type": "江兒水",
+            "text": "根{工27/六工2尺}"
+          },
+          {
+            "id": "gongche-char-line-84-char-6",
+            "startTime": 1292.4263693723638,
+            "endTime": 1298.4256425648725,
+            "type": "江兒水",
+            "text": "相{上16/尺3工2/}"
+          },
+          {
+            "id": "gongche-char-line-84-char-7",
+            "startTime": 1298.4256425648725,
+            "endTime": 1311.5767953849945,
+            "type": "江兒水",
+            "text": "見{六1h尺2上四36}"
+          },
+          {
+            "id": "gongche-char-line-85-char-7",
+            "startTime": 1319.8496429900085,
+            "endTime": 1320.4660342261905,
+            "type": "川撥棹",
+            "text": "院{六1（上+）五6六工36/工1dd2尺}"
+          },
+          {
+            "id": "gongche-char-line-86-char-9",
+            "startTime": 1335.6354559075344,
+            "endTime": 1335.886515410959,
+            "type": "川撥棹",
+            "text": "梅{四25/（尺）上2尺}"
+          },
+          {
+            "id": "gongche-char-line-86-char-10",
+            "startTime": 1335.886515410959,
+            "endTime": 1336.1309182363013,
+            "type": "川撥棹",
+            "text": "樹{工3h尺2c上}"
+          },
+          {
+            "id": "gongche-char-line-88-char-1",
+            "startTime": 1355.8906892123289,
+            "endTime": 1357.6884899400686,
+            "type": "前腔",
+            "text": "春{上3}"
+          },
+          {
+            "id": "gongche-char-line-88-char-2",
+            "startTime": 1357.6884899400686,
+            "endTime": 1358.590421660959,
+            "type": "前腔",
+            "text": "香{上}"
+          },
+          {
+            "id": "gongche-char-line-89-char-1",
+            "startTime": 1361.0731485445206,
+            "endTime": 1361.7086258561644,
+            "type": "前腔",
+            "text": "我{工}"
+          },
+          {
+            "id": "gongche-char-line-91-char-1",
+            "startTime": 1378.8717819940475,
+            "endTime": 1383.1716145833332,
+            "type": "尾聲",
+            "text": "少{上四}"
+          },
+          {
+            "id": "gongche-char-line-91-char-2",
+            "startTime": 1383.1716145833332,
+            "endTime": 1390.5523437499999,
+            "type": "尾聲",
+            "text": "不{上/（工）尺s}"
+          },
+          {
+            "id": "gongche-char-line-91-char-3",
+            "startTime": 1390.5523437499999,
+            "endTime": 1395.7840959821428,
+            "type": "尾聲",
+            "text": "得{上/}"
+          },
+          {
+            "id": "gongche-char-line-91-char-4",
+            "startTime": 1395.7840959821428,
+            "endTime": 1397.8977120535712,
+            "type": "尾聲",
+            "text": "樓{四4上尺}"
+          },
+          {
+            "id": "gongche-char-line-91-char-5",
+            "startTime": 1397.8977120535712,
+            "endTime": 1403.175,
+            "type": "尾聲",
+            "text": "上{工2d尺上3/（工）尺2工}"
+          },
+          {
+            "id": "gongche-char-line-91-char-6",
+            "startTime": 1403.175,
+            "endTime": 1409.978683035714,
+            "type": "尾聲",
+            "text": "花{六1/五2六工3d尺2}"
+          },
+          {
+            "id": "gongche-char-line-91-char-7",
+            "startTime": 1409.978683035714,
+            "endTime": 1414.2467075892855,
+            "type": "尾聲",
+            "text": "枝{上4/尺2d上四3/}"
+          },
+          {
+            "id": "gongche-char-line-91-char-8",
+            "startTime": 1414.2467075892855,
+            "endTime": 1415.1037853422617,
+            "type": "尾聲",
+            "text": "也{上四}"
+          },
+          {
+            "id": "gongche-char-line-91-char-10",
+            "startTime": 1416.0067894345236,
+            "endTime": 1416.8500837053568,
+            "type": "尾聲",
+            "text": "是{上尺}"
+          },
+          {
+            "id": "gongche-char-line-91-char-11",
+            "startTime": 1416.8500837053568,
+            "endTime": 1420.181603422619,
+            "type": "尾聲",
+            "text": "照{六1d工尺2c上}"
+          },
+          {
+            "id": "gongche-char-line-91-char-13",
+            "startTime": 1432.6687593005954,
+            "endTime": 1440.5543526785716,
+            "type": "尾聲",
+            "text": "眠{合1四}"
+          }
+        ],
+        "attachedPointTracks": [],
+        "attachedPointTracksExpanded": false,
+        "snapToWaveformKeypoints": false,
+        "autoSetLoopRangeOnSelect": false
+      }
+    ],
     "subtitleLines": [
       {
         "id": "line-1",
