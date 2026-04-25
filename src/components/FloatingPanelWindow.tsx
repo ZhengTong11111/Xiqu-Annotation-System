@@ -1,89 +1,72 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 type FloatingPanelWindowProps = {
   title: string;
-  initialX: number;
-  initialY: number;
-  initialWidth: number;
-  initialHeight: number;
+  targetWindow: Window;
   onClose: () => void;
   children: ReactNode;
 };
 
 export function FloatingPanelWindow({
   title,
-  initialX,
-  initialY,
-  initialWidth,
-  initialHeight,
+  targetWindow,
   onClose,
   children,
 }: FloatingPanelWindowProps) {
-  const [position, setPosition] = useState({ x: initialX, y: initialY });
-  const dragStateRef = useRef<{
-    pointerId: number;
-    originX: number;
-    originY: number;
-    startX: number;
-    startY: number;
-  } | null>(null);
+  const [container, setContainer] = useState<HTMLDivElement | null>(null);
+  const onCloseRef = useRef(onClose);
 
   useEffect(() => {
-    const handlePointerMove = (event: PointerEvent) => {
-      const dragState = dragStateRef.current;
-      if (!dragState || dragState.pointerId !== event.pointerId) {
-        return;
-      }
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
-      const nextX = Math.max(8, dragState.startX + (event.clientX - dragState.originX));
-      const nextY = Math.max(8, dragState.startY + (event.clientY - dragState.originY));
-      setPosition({ x: nextX, y: nextY });
+  useEffect(() => {
+    if (targetWindow.closed) {
+      onCloseRef.current();
+      return;
+    }
+
+    const targetDocument = targetWindow.document;
+    targetDocument.title = title;
+    targetDocument.body.innerHTML = "";
+    targetDocument.documentElement.classList.add("detached-window-document");
+    targetDocument.body.className = "detached-window-body";
+    copyDocumentStyles(document, targetDocument);
+
+    const nextContainer = targetDocument.createElement("div");
+    nextContainer.className = "detached-window-root";
+    targetDocument.body.appendChild(nextContainer);
+    setContainer(nextContainer);
+    targetWindow.focus();
+
+    const handleBeforeUnload = () => {
+      onCloseRef.current();
     };
-
-    const handlePointerUp = (event: PointerEvent) => {
-      const dragState = dragStateRef.current;
-      if (!dragState || dragState.pointerId !== event.pointerId) {
-        return;
+    const closedPoll = window.setInterval(() => {
+      if (targetWindow.closed) {
+        window.clearInterval(closedPoll);
+        onCloseRef.current();
       }
-      dragStateRef.current = null;
-    };
+    }, 500);
 
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-    window.addEventListener("pointercancel", handlePointerUp);
-
+    targetWindow.addEventListener("beforeunload", handleBeforeUnload);
     return () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-      window.removeEventListener("pointercancel", handlePointerUp);
+      window.clearInterval(closedPoll);
+      if (!targetWindow.closed) {
+        targetWindow.removeEventListener("beforeunload", handleBeforeUnload);
+      }
+      setContainer(null);
     };
-  }, []);
+  }, [targetWindow, title]);
 
-  return (
-    <div
-      className="floating-panel-window"
-      style={{
-        left: position.x,
-        top: position.y,
-        width: initialWidth,
-        height: initialHeight,
-      }}
-    >
-      <div
-        className="floating-panel-window-titlebar"
-        onPointerDown={(event) => {
-          if (event.button !== 0) {
-            return;
-          }
-          dragStateRef.current = {
-            pointerId: event.pointerId,
-            originX: event.clientX,
-            originY: event.clientY,
-            startX: position.x,
-            startY: position.y,
-          };
-        }}
-      >
+  if (!container || targetWindow.closed) {
+    return null;
+  }
+
+  return createPortal(
+    <div className="floating-panel-window floating-panel-window-system">
+      <div className="floating-panel-window-titlebar">
         <strong>{title}</strong>
         <button
           type="button"
@@ -98,7 +81,20 @@ export function FloatingPanelWindow({
       <div className="floating-panel-window-body">
         {children}
       </div>
-      <div className="floating-panel-window-resize-hint" aria-hidden="true" />
-    </div>
+    </div>,
+    container,
   );
+}
+
+function copyDocumentStyles(sourceDocument: Document, targetDocument: Document) {
+  const copiedStyleNodes = targetDocument.head.querySelectorAll("[data-detached-window-style]");
+  copiedStyleNodes.forEach((node) => node.remove());
+
+  sourceDocument
+    .querySelectorAll<HTMLLinkElement | HTMLStyleElement>('link[rel="stylesheet"], style')
+    .forEach((node) => {
+      const clone = node.cloneNode(true) as HTMLLinkElement | HTMLStyleElement;
+      clone.setAttribute("data-detached-window-style", "true");
+      targetDocument.head.appendChild(clone);
+    });
 }

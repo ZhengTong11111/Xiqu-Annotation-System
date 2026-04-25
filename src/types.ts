@@ -159,6 +159,56 @@ export type WaveformData = {
   keypoints: number[];
 };
 
+export type SpectrogramFrequencyScale = "linear" | "log" | "mel";
+
+export type SpectrogramFrequencyPreset = "full-vocal" | "vocal-2000" | "vocal-1500";
+
+export type SpectrogramAnalysisPreset = "time-detail" | "frequency-detail";
+
+export type SpectrogramSettings = {
+  visible: boolean;
+  showPitchContour: boolean;
+  frequencyScale: SpectrogramFrequencyScale;
+  frequencyPreset: SpectrogramFrequencyPreset;
+  analysisPreset: SpectrogramAnalysisPreset;
+};
+
+export type SpectrogramAnalysisConfig = {
+  analysisPreset: SpectrogramAnalysisPreset;
+  fftSize: number;
+  hopLength: number;
+  windowType: "hann";
+  minFrequency: number;
+  maxFrequency: number;
+  dynamicRangeDb: number;
+  analysisSampleRate: number;
+  outputFrequencyBinCount: number;
+};
+
+export type PitchFrame = {
+  time: number;
+  frequency: number;
+  confidence: number;
+  voiced: boolean;
+};
+
+export type SpectrogramData = {
+  magnitudes: Uint8Array;
+  frequencyBins: Float32Array;
+  frameCount: number;
+  frequencyBinCount: number;
+  sampleRate: number;
+  duration: number;
+  hopLength: number;
+  fftSize: number;
+  minFrequency: number;
+  maxFrequency: number;
+  dbMin: number;
+  dbMax: number;
+  analysisPreset: SpectrogramAnalysisPreset;
+  pitchFrames?: PitchFrame[];
+};
+
 export type SelectedItem =
   | { type: "line"; id: string }
   | { type: "character"; id: string }
@@ -166,6 +216,8 @@ export type SelectedItem =
   | { type: "builtin-track"; id: BuiltinTrackId }
   | { type: "custom-track"; id: string }
   | { type: "attached-point-track"; id: string; parentTrackId: string }
+  | { type: "waveform-track" }
+  | { type: "spectrogram-track" }
   | { type: "custom-block"; id: string; trackId: string }
   | { type: "attached-point"; id: string; trackId: string; parentTrackId: string }
   | null;

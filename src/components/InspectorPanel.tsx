@@ -969,6 +969,10 @@ export function InspectorPanel({
     );
   }
 
+  if (selectedItem.type === "waveform-track" || selectedItem.type === "spectrogram-track") {
+    return null;
+  }
+
   const action = actionAnnotations.find((annotation) => annotation.id === selectedItem.id);
   if (!action) {
     return null;

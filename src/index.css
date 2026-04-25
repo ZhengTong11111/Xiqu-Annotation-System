@@ -1453,6 +1453,10 @@ select {
   overflow: visible;
 }
 
+.waveform-label.selected {
+  background: linear-gradient(180deg, rgba(231, 241, 251, 0.98), rgba(220, 235, 248, 0.96));
+}
+
 .waveform-lane {
   overflow: hidden;
   min-height: 72px;
@@ -1561,6 +1565,327 @@ select {
 .waveform-track-bottom-resize-handle.active .waveform-track-resize-grip {
   background: rgba(15, 108, 189, 0.32);
   border-color: rgba(15, 108, 189, 0.36);
+}
+
+.spectrogram-track {
+  background: linear-gradient(180deg, rgba(238, 243, 248, 0.96), rgba(229, 237, 246, 0.92));
+}
+
+.spectrogram-label {
+  background: linear-gradient(180deg, rgba(241, 246, 251, 0.96), rgba(230, 238, 247, 0.92));
+  overflow: visible;
+}
+
+.spectrogram-label.selected {
+  background: linear-gradient(180deg, rgba(231, 241, 251, 0.98), rgba(220, 235, 248, 0.96));
+}
+
+.spectrogram-lane {
+  overflow: hidden;
+  min-height: 96px;
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.08), rgba(15, 23, 42, 0.03)),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.06) 1px, transparent 1px);
+  background-size: auto, 20px 100%;
+}
+
+.spectrogram-render-layer {
+  position: absolute;
+  top: 10px;
+  overflow: hidden;
+  border-top: 1px solid rgba(15, 23, 42, 0.1);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+  pointer-events: none;
+  contain: strict;
+  transform: translateZ(0);
+}
+
+.spectrogram-canvas {
+  position: absolute;
+  top: 0;
+  display: block;
+  image-rendering: auto;
+  transform: translateZ(0);
+}
+
+.spectrogram-canvas.detail.discrete-frames {
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+}
+
+.spectrogram-frequency-label {
+  position: absolute;
+  right: 8px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.56);
+  color: rgba(248, 250, 252, 0.92);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.spectrogram-frequency-label.top {
+  top: 4px;
+}
+
+.spectrogram-frequency-label.middle {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.spectrogram-frequency-label.bottom {
+  bottom: 4px;
+}
+
+.spectrogram-empty {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 16px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.spectrogram-settings-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.spectrogram-settings-panel .panel-header {
+  min-height: 42px;
+  flex: 0 0 auto;
+}
+
+.spectrogram-settings-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  overflow: auto;
+}
+
+.spectrogram-setting-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.42);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.62);
+}
+
+.spectrogram-setting-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.spectrogram-setting-heading strong {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.spectrogram-setting-heading span {
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: right;
+}
+
+.spectrogram-static-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.48);
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.spectrogram-static-row strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.spectrogram-toggle-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.spectrogram-toggle-row input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.spectrogram-toggle-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.46);
+  box-shadow: inset 0 0 0 1px rgba(100, 116, 139, 0.24);
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+
+.spectrogram-toggle-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.22);
+  transition: transform 140ms ease;
+}
+
+.spectrogram-toggle-row input:checked + .spectrogram-toggle-switch {
+  background: rgba(15, 108, 189, 0.86);
+  box-shadow: inset 0 0 0 1px rgba(15, 108, 189, 0.22);
+}
+
+.spectrogram-toggle-row input:checked + .spectrogram-toggle-switch::after {
+  transform: translateX(16px);
+}
+
+.spectrogram-toggle-row input:focus-visible + .spectrogram-toggle-switch {
+  outline: 2px solid rgba(15, 108, 189, 0.28);
+  outline-offset: 2px;
+}
+
+.spectrogram-toggle-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.spectrogram-toggle-copy strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.spectrogram-toggle-copy small,
+.spectrogram-setting-help {
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.spectrogram-segmented-control {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgba(148, 163, 184, 0.42);
+  border-radius: 8px;
+  background: rgba(226, 232, 240, 0.54);
+}
+
+.spectrogram-segmented-control button,
+.spectrogram-preset-list button {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+
+.spectrogram-segmented-control button {
+  min-height: 30px;
+  padding: 5px 6px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.spectrogram-segmented-control button:hover,
+.spectrogram-preset-list button:hover {
+  background: rgba(255, 255, 255, 0.64);
+  color: var(--ink);
+}
+
+.spectrogram-segmented-control button.active,
+.spectrogram-preset-list button.active {
+  background: #ffffff;
+  color: #0f4f86;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.08),
+    inset 0 0 0 1px rgba(15, 108, 189, 0.18);
+}
+
+.spectrogram-setting-help {
+  margin: 0;
+}
+
+.spectrogram-preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.spectrogram-preset-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  background: rgba(255, 255, 255, 0.42);
+  text-align: left;
+}
+
+.spectrogram-preset-list button span {
+  min-width: 0;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.spectrogram-preset-list button small {
+  flex: 0 0 auto;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.spectrogram-analysis-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.04);
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.spectrogram-analysis-summary strong {
+  color: var(--ink);
+  font-size: 12px;
 }
 
 .timeline-block {
@@ -1941,6 +2266,19 @@ select {
   resize: both;
 }
 
+.floating-panel-window-system {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  resize: none;
+}
+
 .floating-panel-window-titlebar {
   display: flex;
   align-items: center;
@@ -1952,6 +2290,10 @@ select {
   color: #f5f8ff;
   cursor: move;
   user-select: none;
+}
+
+.floating-panel-window-system .floating-panel-window-titlebar {
+  cursor: default;
 }
 
 .floating-panel-window-titlebar strong {
@@ -2000,6 +2342,19 @@ select {
   background:
     linear-gradient(135deg, transparent 0 38%, rgba(255, 255, 255, 0.36) 38% 44%, transparent 44% 56%, rgba(255, 255, 255, 0.28) 56% 62%, transparent 62% 100%);
   opacity: 0.9;
+}
+
+.detached-window-document,
+.detached-window-body,
+.detached-window-root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+.detached-window-body {
+  background: #e5ebf3;
 }
 
 .character-context-menu button.menu-option-active {
