@@ -12,6 +12,11 @@ import { TimelinePanel } from "./components/TimelinePanel";
 import { TopMenuBar } from "./components/TopMenuBar";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { mockProject } from "./mockData";
+import {
+  type HistoryAction,
+  type HistoryEntry,
+  useProjectDocumentState,
+} from "./state/projectDocumentState";
 import type {
   ActionAnnotation,
   AttachedPointAnnotation,
@@ -52,13 +57,6 @@ import {
   exportSingingStyleTrackToSrt,
   parseSrt,
 } from "./utils/srt";
-
-type HistoryAction = "edit" | "import-video" | "import-srt" | "import-project" | "merge-project";
-
-type HistoryEntry = {
-  project: ProjectData;
-  action: HistoryAction;
-};
 
 type CharacterEditLocation = "timeline" | "split-panel";
 type CharacterLineAction =
@@ -265,7 +263,28 @@ const WAVEFORM_KEYPOINT_MAX_COUNT = 1600;
 const WAVEFORM_KEYPOINT_FRAME_DURATION_SECONDS = 0.012;
 
 function App() {
-  const [project, setProject] = useState<ProjectData>(mockProject);
+  const {
+    project,
+    projectRef,
+    trackSnapEnabled,
+    trackSnapEnabledRef,
+    undoStack,
+    redoStack,
+    hasUnsavedChanges,
+    pendingOperations,
+    syncState,
+    applyProjectWithoutHistory,
+    commitProject,
+    applyTrackSnapEnabledState,
+    markProjectAsSaved,
+    undoProject,
+    redoProject,
+  } = useProjectDocumentState({
+    initialProject: mockProject,
+    initialTrackSnapEnabled: getDefaultTrackSnapEnabled(mockProject),
+    areProjectsEqual: projectsEqual,
+    areTrackSnapStatesEqual: trackSnapStatesEqual,
+  });
   const [currentTime, setCurrentTime] = useState(12.4);
   const [duration, setDuration] = useState(getProjectDuration(mockProject));
   const [selectedItem, setSelectedItem] = useState<SelectedItem>({
@@ -294,14 +313,8 @@ function App() {
   const [loopPlaybackRange, setLoopPlaybackRange] = useState<{ start: number; end: number } | null>(null);
   const [loopPlaybackEnabled, setLoopPlaybackEnabled] = useState(false);
   const [lineFocusRequest, setLineFocusRequest] = useState<LineFocusRequest | null>(null);
-  const [trackSnapEnabled, setTrackSnapEnabled] = useState<Record<string, boolean>>(
-    () => getDefaultTrackSnapEnabled(mockProject),
-  );
   const [isSubtitlePanelCollapsed, setIsSubtitlePanelCollapsed] = useState(false);
   const [isSplitPanelCollapsed, setIsSplitPanelCollapsed] = useState(false);
-  const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
-  const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
   const [currentProjectFileName, setCurrentProjectFileName] = useState<string | null>(null);
   const [isPreviewDetached, setIsPreviewDetached] = useState(false);
@@ -311,13 +324,6 @@ function App() {
   const srtFileInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
   const mergeProjectFileInputRef = useRef<HTMLInputElement>(null);
-  const projectRef = useRef(project);
-  const savedProjectRef = useRef(project);
-  const transientProjectRef = useRef<ProjectData | null>(null);
-  const trackSnapEnabledRef = useRef(trackSnapEnabled);
-  const savedTrackSnapEnabledRef = useRef(trackSnapEnabled);
-  const undoStackRef = useRef(undoStack);
-  const redoStackRef = useRef(redoStack);
   const waveformRequestIdRef = useRef(0);
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
   const blockContextMenuRef = useRef<HTMLDivElement>(null);
@@ -352,18 +358,6 @@ function App() {
   }, [pendingImportMergeState]);
 
   useEffect(() => {
-    projectRef.current = project;
-  }, [project]);
-
-  useEffect(() => {
-    undoStackRef.current = undoStack;
-  }, [undoStack]);
-
-  useEffect(() => {
-    redoStackRef.current = redoStack;
-  }, [redoStack]);
-
-  useEffect(() => {
     const currentTrackSnapState = trackSnapEnabledRef.current;
     const nextTrackSnapState = (() => {
       const next = Object.fromEntries(
@@ -377,9 +371,9 @@ function App() {
     })();
 
     if (nextTrackSnapState !== currentTrackSnapState) {
-      applyTrackSnapEnabledState(nextTrackSnapState);
+      applyTrackSnapEnabledState(nextTrackSnapState, { recordOperation: false });
     }
-  }, [timelineTrackDefinitions]);
+  }, [applyTrackSnapEnabledState, timelineTrackDefinitions, trackSnapEnabledRef]);
 
   useEffect(() => {
     if (!hasUnsavedChanges) {
@@ -394,47 +388,6 @@ function App() {
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [hasUnsavedChanges]);
-
-  function syncHasUnsavedChanges(
-    nextProject = projectRef.current,
-    nextTrackSnapState = trackSnapEnabledRef.current,
-  ) {
-    setHasUnsavedChanges(
-      !projectsEqual(savedProjectRef.current, nextProject) ||
-      !trackSnapStatesEqual(savedTrackSnapEnabledRef.current, nextTrackSnapState),
-    );
-  }
-
-  function applyProjectState(nextProject: ProjectData) {
-    projectRef.current = nextProject;
-    setProject(nextProject);
-    syncHasUnsavedChanges(nextProject, trackSnapEnabledRef.current);
-  }
-
-  function applyTrackSnapEnabledState(nextTrackSnapState: Record<string, boolean>) {
-    trackSnapEnabledRef.current = nextTrackSnapState;
-    setTrackSnapEnabled(nextTrackSnapState);
-    syncHasUnsavedChanges(projectRef.current, nextTrackSnapState);
-  }
-
-  function markProjectAsSaved(
-    projectToSave = projectRef.current,
-    trackSnapState = trackSnapEnabledRef.current,
-  ) {
-    savedProjectRef.current = projectToSave;
-    savedTrackSnapEnabledRef.current = trackSnapState;
-    setHasUnsavedChanges(false);
-  }
-
-  function applyUndoStackState(nextUndoStack: HistoryEntry[]) {
-    undoStackRef.current = nextUndoStack;
-    setUndoStack(nextUndoStack);
-  }
-
-  function applyRedoStackState(nextRedoStack: HistoryEntry[]) {
-    redoStackRef.current = nextRedoStack;
-    setRedoStack(nextRedoStack);
-  }
 
   function applySelection(nextSelectedItem: SelectedItem, timelineItems?: TimelineSelectionItem[]) {
     setSelectedItem(nextSelectedItem);
@@ -855,32 +808,6 @@ function App() {
 
   function projectsEqual(left: ProjectData, right: ProjectData) {
     return serializeComparableProject(left) === serializeComparableProject(right);
-  }
-
-  function commitProject(
-    nextProject: ProjectData,
-    baseProject = transientProjectRef.current ?? projectRef.current,
-    action: HistoryAction = "edit",
-  ) {
-    if (projectsEqual(baseProject, nextProject)) {
-      transientProjectRef.current = null;
-      applyProjectState(nextProject);
-      return;
-    }
-    applyUndoStackState([...undoStackRef.current.slice(-49), { project: baseProject, action }]);
-    applyRedoStackState([]);
-    transientProjectRef.current = null;
-    applyProjectState(nextProject);
-  }
-
-  function applyProjectWithoutHistory(nextProject: ProjectData) {
-    if (projectsEqual(projectRef.current, nextProject)) {
-      return;
-    }
-    if (!transientProjectRef.current) {
-      transientProjectRef.current = projectRef.current;
-    }
-    applyProjectState(nextProject);
   }
 
   function seekTo(time: number) {
@@ -2863,39 +2790,16 @@ function App() {
   }
 
   function undo() {
-    if (transientProjectRef.current) {
-      const transientProject = transientProjectRef.current;
-      transientProjectRef.current = null;
-      if (!projectsEqual(projectRef.current, transientProject)) {
-        applyProjectState(transientProject);
+    undoProject((previousEntry: HistoryEntry) => {
+      if (!requiresUndoConfirmation(previousEntry.action)) {
+        return true;
       }
-      return;
-    }
-    const currentUndoStack = undoStackRef.current;
-    const previousEntry = currentUndoStack[currentUndoStack.length - 1];
-    if (!previousEntry) {
-      return;
-    }
-    if (requiresUndoConfirmation(previousEntry.action)) {
-      const confirmed = window.confirm(getUndoConfirmationMessage(previousEntry.action));
-      if (!confirmed) {
-        return;
-      }
-    }
-    applyRedoStackState([...redoStackRef.current, { project: projectRef.current, action: previousEntry.action }]);
-    applyUndoStackState(currentUndoStack.slice(0, -1));
-    applyProjectState(previousEntry.project);
+      return window.confirm(getUndoConfirmationMessage(previousEntry.action));
+    });
   }
 
   function redo() {
-    const currentRedoStack = redoStackRef.current;
-    const nextEntry = currentRedoStack[currentRedoStack.length - 1];
-    if (!nextEntry) {
-      return;
-    }
-    applyUndoStackState([...undoStackRef.current, { project: projectRef.current, action: nextEntry.action }]);
-    applyRedoStackState(currentRedoStack.slice(0, -1));
-    applyProjectState(nextEntry.project);
+    redoProject();
   }
 
   async function importSrtFile(file: File) {
@@ -3288,6 +3192,10 @@ function App() {
           hasLoopPlaybackRange={Boolean(loopPlaybackRange)}
           canUndo={undoStack.length > 0}
           canRedo={redoStack.length > 0}
+          syncStatus={syncState.status}
+          localRevision={syncState.localRevision}
+          savedRevision={syncState.savedRevision}
+          pendingOperationCount={pendingOperations.length}
           activeBuiltinTrackIds={Array.from(activeBuiltinTrackIds)}
           videoFileInputRef={videoFileInputRef}
           srtFileInputRef={srtFileInputRef}

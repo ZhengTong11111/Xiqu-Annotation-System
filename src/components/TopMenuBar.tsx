@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, RefObject } from "react";
+import type { ProjectSyncStatus } from "../state/projectDocumentState";
 import type { BuiltinTrackId } from "../types";
 
 type TopMenuBarProps = {
@@ -9,6 +10,10 @@ type TopMenuBarProps = {
   hasLoopPlaybackRange: boolean;
   canUndo: boolean;
   canRedo: boolean;
+  syncStatus: ProjectSyncStatus;
+  localRevision: number;
+  savedRevision: number;
+  pendingOperationCount: number;
   activeBuiltinTrackIds: BuiltinTrackId[];
   videoFileInputRef: RefObject<HTMLInputElement>;
   srtFileInputRef: RefObject<HTMLInputElement>;
@@ -40,6 +45,10 @@ export function TopMenuBar({
   hasLoopPlaybackRange,
   canUndo,
   canRedo,
+  syncStatus,
+  localRevision,
+  savedRevision,
+  pendingOperationCount,
   activeBuiltinTrackIds,
   videoFileInputRef,
   srtFileInputRef,
@@ -64,6 +73,12 @@ export function TopMenuBar({
   const menuBarRef = useRef<HTMLElement>(null);
   const hasHandTrack = activeBuiltinTrackIds.includes("hand-action");
   const hasBodyTrack = activeBuiltinTrackIds.includes("body-action");
+  const syncStatusLabel = getSyncStatusLabel(
+    syncStatus,
+    localRevision,
+    savedRevision,
+    pendingOperationCount,
+  );
 
   useEffect(() => {
     if (!openMenu) {
@@ -247,11 +262,37 @@ export function TopMenuBar({
           </div>
         ))}
       </nav>
-      <div className="top-menu-status">研究标注环境</div>
+      <div className={`top-menu-status sync-status sync-status-${syncStatus}`}>
+        {syncStatusLabel}
+      </div>
       <input ref={videoFileInputRef} type="file" accept="video/*" onChange={onVideoFileChange} />
       <input ref={srtFileInputRef} type="file" accept=".srt" onChange={onSrtFileChange} />
       <input ref={projectFileInputRef} type="file" accept=".json" onChange={onProjectFileChange} />
       <input ref={mergeProjectFileInputRef} type="file" accept=".json" onChange={onMergeProjectFileChange} />
     </header>
   );
+}
+
+function getSyncStatusLabel(
+  status: ProjectSyncStatus,
+  localRevision: number,
+  savedRevision: number,
+  pendingOperationCount: number,
+) {
+  if (status === "saved") {
+    return `已保存 · r${savedRevision}`;
+  }
+  if (status === "saving") {
+    return `保存中 · r${localRevision}`;
+  }
+  if (status === "offline") {
+    return `离线待同步 · ${pendingOperationCount} 项`;
+  }
+  if (status === "conflict") {
+    return "存在远端冲突";
+  }
+  if (status === "error") {
+    return "同步失败";
+  }
+  return `本地更改 · ${pendingOperationCount} 项`;
 }
