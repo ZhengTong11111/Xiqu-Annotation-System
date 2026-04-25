@@ -6,6 +6,7 @@ import { InspectorPanel } from "./components/InspectorPanel";
 import { LeftWorkspace } from "./components/LeftWorkspace";
 import { PreviewPanel } from "./components/PreviewPanel";
 import { ResizableSplitLayout } from "./components/ResizableSplitLayout";
+import { SpectrogramSettingsPanel } from "./components/SpectrogramSettingsPanel";
 import { SubtitleList } from "./components/SubtitleList";
 import { Timeline } from "./components/Timeline";
 import { TimelinePanel } from "./components/TimelinePanel";
@@ -30,6 +31,8 @@ import type {
   ResolvedCustomTrackBlock,
   SavedProjectFile,
   SelectedItem,
+  SpectrogramData,
+  SpectrogramSettings,
   SubtitleLine,
   TimelineBatchMoveItem,
   TimelineSelectionItem,
@@ -57,6 +60,10 @@ import {
   exportSingingStyleTrackToSrt,
   parseSrt,
 } from "./utils/srt";
+import {
+  buildSpectrogramData,
+  defaultSpectrogramSettings,
+} from "./utils/spectrogram";
 
 type CharacterEditLocation = "timeline" | "split-panel";
 type CharacterLineAction =
@@ -297,6 +304,11 @@ function App() {
   const [previewTime, setPreviewTime] = useState<number | null>(null);
   const [waveformData, setWaveformData] = useState<WaveformData | null>(null);
   const [isWaveformLoading, setIsWaveformLoading] = useState(false);
+  const [spectrogramData, setSpectrogramData] = useState<SpectrogramData | null>(null);
+  const [isSpectrogramLoading, setIsSpectrogramLoading] = useState(false);
+  const [spectrogramSettings, setSpectrogramSettings] = useState<SpectrogramSettings>(
+    defaultSpectrogramSettings,
+  );
   const [editingCharacterId, setEditingCharacterId] = useState<string | null>(null);
   const [editingCharacterLocation, setEditingCharacterLocation] = useState<CharacterEditLocation | null>(null);
   const [editingCharacterValue, setEditingCharacterValue] = useState("");
@@ -317,14 +329,17 @@ function App() {
   const [isSplitPanelCollapsed, setIsSplitPanelCollapsed] = useState(false);
   const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
   const [currentProjectFileName, setCurrentProjectFileName] = useState<string | null>(null);
-  const [isPreviewDetached, setIsPreviewDetached] = useState(false);
-  const [isTimelineDetached, setIsTimelineDetached] = useState(false);
+  const [previewDetachedWindow, setPreviewDetachedWindow] = useState<Window | null>(null);
+  const [timelineDetachedWindow, setTimelineDetachedWindow] = useState<Window | null>(null);
+  const isPreviewDetached = Boolean(previewDetachedWindow && !previewDetachedWindow.closed);
+  const isTimelineDetached = Boolean(timelineDetachedWindow && !timelineDetachedWindow.closed);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoFileInputRef = useRef<HTMLInputElement>(null);
   const srtFileInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
   const mergeProjectFileInputRef = useRef<HTMLInputElement>(null);
   const waveformRequestIdRef = useRef(0);
+  const spectrogramRequestIdRef = useRef(0);
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
   const blockContextMenuRef = useRef<HTMLDivElement>(null);
   const [blockContextMenuPosition, setBlockContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
@@ -529,12 +544,15 @@ function App() {
 
     if (!videoUrl) {
       setWaveformData(null);
+      setSpectrogramData(null);
       setIsWaveformLoading(false);
+      setIsSpectrogramLoading(false);
       return;
     }
 
     let cancelled = false;
     setIsWaveformLoading(true);
+    setSpectrogramData(null);
 
     void buildWaveformData(videoUrl)
       .then((nextWaveformData) => {
@@ -560,6 +578,64 @@ function App() {
       cancelled = true;
     };
   }, [project.video.url]);
+
+  useEffect(() => {
+    const requestId = spectrogramRequestIdRef.current + 1;
+    spectrogramRequestIdRef.current = requestId;
+
+    if (!spectrogramSettings.visible || !waveformData) {
+      setSpectrogramData(null);
+      setIsSpectrogramLoading(false);
+      return;
+    }
+
+    if (
+      spectrogramData &&
+      (!spectrogramSettings.showPitchContour || spectrogramData.pitchFrames)
+    ) {
+      return;
+    }
+
+    const abortController = new AbortController();
+    setIsSpectrogramLoading(true);
+
+    void buildSpectrogramData(
+      waveformData,
+      spectrogramSettings.showPitchContour,
+      abortController.signal,
+    )
+      .then((nextSpectrogramData) => {
+        if (
+          abortController.signal.aborted ||
+          spectrogramRequestIdRef.current !== requestId
+        ) {
+          return;
+        }
+        setSpectrogramData(nextSpectrogramData);
+      })
+      .catch(() => {
+        if (
+          abortController.signal.aborted ||
+          spectrogramRequestIdRef.current !== requestId
+        ) {
+          return;
+        }
+        setSpectrogramData(null);
+      })
+      .finally(() => {
+        if (
+          abortController.signal.aborted ||
+          spectrogramRequestIdRef.current !== requestId
+        ) {
+          return;
+        }
+        setIsSpectrogramLoading(false);
+      });
+
+    return () => {
+      abortController.abort();
+    };
+  }, [spectrogramData, spectrogramSettings.showPitchContour, spectrogramSettings.visible, waveformData]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -2997,6 +3073,75 @@ function App() {
     downloadBlob(target.content, target.name, "application/x-subrip");
   }
 
+  function openDetachedWindow(
+    title: string,
+    name: string,
+    width: number,
+    height: number,
+    offsetX: number,
+    offsetY: number,
+  ) {
+    const left = Math.max(0, Math.round(window.screenX + offsetX));
+    const top = Math.max(0, Math.round(window.screenY + offsetY));
+    const features = [
+      "popup=yes",
+      "resizable=yes",
+      "scrollbars=no",
+      `width=${width}`,
+      `height=${height}`,
+      `left=${left}`,
+      `top=${top}`,
+    ].join(",");
+    const popup = window.open("", name, features);
+    if (!popup) {
+      window.alert("浏览器阻止了弹出窗口。请允许本站点弹出窗口后再试。");
+      return null;
+    }
+    popup.document.title = title;
+    popup.focus();
+    return popup;
+  }
+
+  function closePreviewDetachedWindow() {
+    setPreviewDetachedWindow((currentWindow) => {
+      if (currentWindow && !currentWindow.closed) {
+        currentWindow.close();
+      }
+      return null;
+    });
+  }
+
+  function closeTimelineDetachedWindow() {
+    setTimelineDetachedWindow((currentWindow) => {
+      if (currentWindow && !currentWindow.closed) {
+        currentWindow.close();
+      }
+      return null;
+    });
+  }
+
+  function togglePreviewDetachedWindow() {
+    if (previewDetachedWindow && !previewDetachedWindow.closed) {
+      closePreviewDetachedWindow();
+      return;
+    }
+    const popup = openDetachedWindow("视频播放器", "xiqu-preview-window", 760, 480, 80, 80);
+    if (popup) {
+      setPreviewDetachedWindow(popup);
+    }
+  }
+
+  function toggleTimelineDetachedWindow() {
+    if (timelineDetachedWindow && !timelineDetachedWindow.closed) {
+      closeTimelineDetachedWindow();
+      return;
+    }
+    const popup = openDetachedWindow("多轨时间轴", "xiqu-timeline-window", 1180, 620, 120, 120);
+    if (popup) {
+      setTimelineDetachedWindow(popup);
+    }
+  }
+
   function renderPreviewWorkspace(detached: boolean) {
     return (
       <VideoPlayer
@@ -3007,7 +3152,7 @@ function App() {
         previewTime={previewTime}
         isPlaying={isPlaying}
         isDetached={detached}
-        onToggleDetached={() => setIsPreviewDetached((current) => !current)}
+        onToggleDetached={togglePreviewDetachedWindow}
         onLoadedMetadata={(nextDuration) => setDuration(Math.max(nextDuration, getProjectDuration(project)))}
         onTimeUpdate={setCurrentTime}
         onPlayStateChange={setIsPlaying}
@@ -3027,6 +3172,9 @@ function App() {
         missingBuiltinTracks={missingBuiltinTracks}
         waveformData={waveformData}
         isWaveformLoading={isWaveformLoading}
+        spectrogramData={spectrogramData}
+        isSpectrogramLoading={isSpectrogramLoading}
+        spectrogramSettings={spectrogramSettings}
         currentTime={currentTime}
         loopPlaybackRange={loopPlaybackRange}
         loopPlaybackEnabled={loopPlaybackEnabled}
@@ -3051,7 +3199,7 @@ function App() {
           setLoopPlaybackEnabled(Boolean(range));
         }}
         onLoopPlaybackEnabledChange={setLoopPlaybackEnabled}
-        onToggleDetached={() => setIsTimelineDetached((current) => !current)}
+        onToggleDetached={toggleTimelineDetachedWindow}
         onSeek={seekTo}
         onPreviewFrame={setPreviewTime}
         onSelectItem={(item) => {
@@ -3401,57 +3549,68 @@ function App() {
                   </section>
                 )}
                 secondary={(
-                  <InspectorPanel
-                    selectedItem={selectedItem}
-                    subtitleLines={project.subtitleLines}
-                    characterAnnotations={project.characterAnnotations}
-                    actionAnnotations={project.actionAnnotations}
-                    builtinTracks={project.builtinTracks}
-                    customTracks={project.customTracks}
-                    trackDefinitions={timelineTrackDefinitions}
-                    trackSnapEnabled={trackSnapEnabled}
-                    onCharacterUpdate={updateCharacter}
-                    onActionUpdate={updateAction}
-                    onAttachedPointUpdate={commitAttachedPoint}
-                    onTrackWaveformSnapChange={updateTrackWaveformSnap}
-                    onTrackAutoLoopRangeChange={updateTrackAutoLoopRange}
-                    onAttachedPointTrackParentSnapChange={updateAttachedPointTrackParentSnap}
-                    onSelectParentTrack={(trackId) =>
-                      applySelection(
-                        activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
-                          ? { type: "builtin-track", id: trackId as BuiltinTrackId }
-                          : { type: "custom-track", id: trackId },
-                      )
-                    }
-                    onBuiltinTrackRename={renameBuiltinTrack}
-                    onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
-                    onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
-                    onMoveBuiltinTrackTypeOption={moveBuiltinTrackTypeOption}
-                    onReorderBuiltinTrackTypeOption={reorderBuiltinTrackTypeOption}
-                    onRemoveBuiltinTrackTypeOption={removeBuiltinTrackTypeOption}
-                    onDeleteBuiltinTrack={deleteBuiltinTrack}
-                    onAddAttachedPointTrack={addAttachedPointTrack}
-                    onToggleAttachedPointTracks={toggleAttachedPointTracks}
-                    onSelectAttachedPointTrack={(trackId, parentTrackId) =>
-                      applySelection({ type: "attached-point-track", id: trackId, parentTrackId })
-                    }
-                    onAttachedPointTrackRename={renameAttachedPointTrack}
-                    onAttachedPointTrackTypeOptionChange={updateAttachedPointTrackTypeOption}
-                    onAddAttachedPointTrackTypeOption={addAttachedPointTrackTypeOption}
-                    onMoveAttachedPointTrackTypeOption={moveAttachedPointTrackTypeOption}
-                    onReorderAttachedPointTrackTypeOption={reorderAttachedPointTrackTypeOption}
-                    onRemoveAttachedPointTrackTypeOption={removeAttachedPointTrackTypeOption}
-                    onDeleteAttachedPointTrack={deleteAttachedPointTrack}
-                    onCustomTrackRename={renameCustomTrack}
-                    onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
-                    onAddCustomTrackTypeOption={addCustomTrackTypeOption}
-                    onMoveCustomTrackTypeOption={moveCustomTrackTypeOption}
-                    onReorderCustomTrackTypeOption={reorderCustomTrackTypeOption}
-                    onRemoveCustomTrackTypeOption={removeCustomTrackTypeOption}
-                    onDeleteCustomTrack={deleteCustomTrack}
-                    onCustomBlockUpdate={updateCustomBlock}
-                    onDeleteSelected={deleteSelected}
-                  />
+                  selectedItem?.type === "waveform-track" || selectedItem?.type === "spectrogram-track" ? (
+                    <SpectrogramSettingsPanel
+                      settings={spectrogramSettings}
+                      isWaveformLoading={isWaveformLoading}
+                      hasWaveformData={Boolean(waveformData)}
+                      isLoading={isSpectrogramLoading}
+                      hasData={Boolean(spectrogramData)}
+                      onSettingsChange={setSpectrogramSettings}
+                    />
+                  ) : (
+                    <InspectorPanel
+                      selectedItem={selectedItem}
+                      subtitleLines={project.subtitleLines}
+                      characterAnnotations={project.characterAnnotations}
+                      actionAnnotations={project.actionAnnotations}
+                      builtinTracks={project.builtinTracks}
+                      customTracks={project.customTracks}
+                      trackDefinitions={timelineTrackDefinitions}
+                      trackSnapEnabled={trackSnapEnabled}
+                      onCharacterUpdate={updateCharacter}
+                      onActionUpdate={updateAction}
+                      onAttachedPointUpdate={commitAttachedPoint}
+                      onTrackWaveformSnapChange={updateTrackWaveformSnap}
+                      onTrackAutoLoopRangeChange={updateTrackAutoLoopRange}
+                      onAttachedPointTrackParentSnapChange={updateAttachedPointTrackParentSnap}
+                      onSelectParentTrack={(trackId) =>
+                        applySelection(
+                          activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
+                            ? { type: "builtin-track", id: trackId as BuiltinTrackId }
+                            : { type: "custom-track", id: trackId },
+                        )
+                      }
+                      onBuiltinTrackRename={renameBuiltinTrack}
+                      onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
+                      onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
+                      onMoveBuiltinTrackTypeOption={moveBuiltinTrackTypeOption}
+                      onReorderBuiltinTrackTypeOption={reorderBuiltinTrackTypeOption}
+                      onRemoveBuiltinTrackTypeOption={removeBuiltinTrackTypeOption}
+                      onDeleteBuiltinTrack={deleteBuiltinTrack}
+                      onAddAttachedPointTrack={addAttachedPointTrack}
+                      onToggleAttachedPointTracks={toggleAttachedPointTracks}
+                      onSelectAttachedPointTrack={(trackId, parentTrackId) =>
+                        applySelection({ type: "attached-point-track", id: trackId, parentTrackId })
+                      }
+                      onAttachedPointTrackRename={renameAttachedPointTrack}
+                      onAttachedPointTrackTypeOptionChange={updateAttachedPointTrackTypeOption}
+                      onAddAttachedPointTrackTypeOption={addAttachedPointTrackTypeOption}
+                      onMoveAttachedPointTrackTypeOption={moveAttachedPointTrackTypeOption}
+                      onReorderAttachedPointTrackTypeOption={reorderAttachedPointTrackTypeOption}
+                      onRemoveAttachedPointTrackTypeOption={removeAttachedPointTrackTypeOption}
+                      onDeleteAttachedPointTrack={deleteAttachedPointTrack}
+                      onCustomTrackRename={renameCustomTrack}
+                      onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
+                      onAddCustomTrackTypeOption={addCustomTrackTypeOption}
+                      onMoveCustomTrackTypeOption={moveCustomTrackTypeOption}
+                      onReorderCustomTrackTypeOption={reorderCustomTrackTypeOption}
+                      onRemoveCustomTrackTypeOption={removeCustomTrackTypeOption}
+                      onDeleteCustomTrack={deleteCustomTrack}
+                      onCustomBlockUpdate={updateCustomBlock}
+                      onDeleteSelected={deleteSelected}
+                    />
+                  )
                 )}
               />
             )}
@@ -3459,26 +3618,20 @@ function App() {
         )}
       />
       <div className="workspace-float-layer">
-        {isPreviewDetached ? (
+        {previewDetachedWindow && !previewDetachedWindow.closed ? (
           <FloatingPanelWindow
             title="视频播放器"
-            initialX={24}
-            initialY={24}
-            initialWidth={760}
-            initialHeight={480}
-            onClose={() => setIsPreviewDetached(false)}
+            targetWindow={previewDetachedWindow}
+            onClose={closePreviewDetachedWindow}
           >
             {renderPreviewWorkspace(true)}
           </FloatingPanelWindow>
         ) : null}
-        {isTimelineDetached ? (
+        {timelineDetachedWindow && !timelineDetachedWindow.closed ? (
           <FloatingPanelWindow
             title="多轨时间轴"
-            initialX={72}
-            initialY={96}
-            initialWidth={1180}
-            initialHeight={560}
-            onClose={() => setIsTimelineDetached(false)}
+            targetWindow={timelineDetachedWindow}
+            onClose={closeTimelineDetachedWindow}
           >
             {renderTimelineWorkspace(true)}
           </FloatingPanelWindow>

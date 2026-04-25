@@ -9,13 +9,17 @@ import type {
   ProjectData,
   ResolvedCustomTrackBlock,
   SelectedItem,
+  SpectrogramData,
+  SpectrogramSettings,
   SubtitleLine,
   TimelineBatchMoveItem,
   TimelineSelectionItem,
   TrackDefinition,
   WaveformData,
 } from "../types";
+import { SpectrogramCanvas } from "./SpectrogramCanvas";
 import { clampRange } from "../utils/project";
+import { getSpectrogramFrequencyRange } from "../utils/spectrogram";
 
 type TimelineProps = {
   subtitleLines: SubtitleLine[];
@@ -27,6 +31,9 @@ type TimelineProps = {
   missingBuiltinTracks: BuiltinTrack[];
   waveformData: WaveformData | null;
   isWaveformLoading: boolean;
+  spectrogramData: SpectrogramData | null;
+  isSpectrogramLoading: boolean;
+  spectrogramSettings: SpectrogramSettings;
   currentTime: number;
   loopPlaybackRange: { start: number; end: number } | null;
   loopPlaybackEnabled: boolean;
@@ -173,6 +180,9 @@ const TRACK_LABEL_WIDTH = 164;
 const DEFAULT_WAVEFORM_TRACK_HEIGHT = DEFAULT_TRACK_HEIGHT;
 const MIN_WAVEFORM_TRACK_HEIGHT = 44;
 const MAX_WAVEFORM_TRACK_HEIGHT = 240;
+const DEFAULT_SPECTROGRAM_TRACK_HEIGHT = 150;
+const MIN_SPECTROGRAM_TRACK_HEIGHT = 72;
+const MAX_SPECTROGRAM_TRACK_HEIGHT = 360;
 const SNAP_DISTANCE_PX = 4;
 const SNAP_VISUAL_MATCH_PX = 1;
 const REORDER_ACTIVATION_PX = 6;
@@ -186,9 +196,12 @@ const SELECTED_EDGE_HIT_SLOP_PX = 17;
 const LINKED_EDGE_HIT_RATIO = 0.55;
 const MIN_LINKED_EDGE_HIT_SLOP_PX = 4;
 const PREVIEW_UPDATE_EPSILON = 1 / 60;
+const SPECTROGRAM_ZOOM_PREVIEW_SETTLE_MS = 120;
 const MIN_BLOCK_WIDTH_PX = 44;
 const MIN_WAVEFORM_VIEW_HEIGHT = 32;
 const WAVEFORM_TRACK_VERTICAL_PADDING = 8;
+const MIN_SPECTROGRAM_VIEW_HEIGHT = 48;
+const SPECTROGRAM_TRACK_VERTICAL_PADDING = 10;
 const WAVEFORM_MAX_WIDTH = 1800;
 const WAVEFORM_MAX_BUCKETS = 960;
 const WAVEFORM_MAX_SAMPLES_PER_BUCKET = 192;
@@ -313,6 +326,9 @@ export function Timeline({
   missingBuiltinTracks,
   waveformData,
   isWaveformLoading,
+  spectrogramData,
+  isSpectrogramLoading,
+  spectrogramSettings,
   currentTime,
   loopPlaybackRange,
   loopPlaybackEnabled,
@@ -391,6 +407,7 @@ export function Timeline({
   const pendingZoomRef = useRef<PendingZoomState | null>(null);
   const sliderZoomRef = useRef<SliderZoomState | null>(null);
   const zoomFrameRef = useRef<number | null>(null);
+  const zoomPreviewTimerRef = useRef<number | null>(null);
   const dragStateRef = useRef<DragState>(null);
   const lastPointerClientXRef = useRef(0);
   const pendingDragUpdateRef = useRef<PendingDragUpdate | null>(null);
@@ -426,6 +443,12 @@ export function Timeline({
     startY: number;
     startHeight: number;
   } | null>(null);
+  const [spectrogramInteractionPreview, setSpectrogramInteractionPreview] = useState(false);
+  const [spectrogramTrackHeight, setSpectrogramTrackHeight] = useState(DEFAULT_SPECTROGRAM_TRACK_HEIGHT);
+  const [spectrogramResizeDrag, setSpectrogramResizeDrag] = useState<{
+    startY: number;
+    startHeight: number;
+  } | null>(null);
   const [viewportState, setViewportState] = useState({ scrollLeft: 0, width: 0 });
   const [draggedTrackId, setDraggedTrackId] = useState<string | null>(null);
   const [trackDropInsertionIndex, setTrackDropInsertionIndex] = useState<number | null>(null);
@@ -445,6 +468,13 @@ export function Timeline({
     MIN_WAVEFORM_VIEW_HEIGHT,
     waveformTrackHeight - WAVEFORM_TRACK_VERTICAL_PADDING * 2,
   );
+  const spectrogramViewHeight = Math.max(
+    MIN_SPECTROGRAM_VIEW_HEIGHT,
+    spectrogramTrackHeight - SPECTROGRAM_TRACK_VERTICAL_PADDING * 2,
+  );
+  const spectrogramFrequencyRange = getSpectrogramFrequencyRange(spectrogramSettings);
+  const isWaveformTrackSelected = selectedItem?.type === "waveform-track";
+  const isSpectrogramTrackSelected = selectedItem?.type === "spectrogram-track";
   const sliderZoom = Math.round(zoom / ZOOM_STEP) * ZOOM_STEP;
   const customBlocks = useMemo(
     () => flattenCustomBlocks(customTracks),
@@ -541,6 +571,35 @@ export function Timeline({
     const visibleEndTime = Math.min(duration, (laneViewportStart + laneViewportWidth) / zoom);
     return waveformData.keypoints.filter((time) => time >= visibleStartTime && time <= visibleEndTime);
   }, [duration, viewportState.scrollLeft, viewportState.width, waveformData, zoom]);
+  const spectrogramViewport = useMemo(() => {
+    const laneViewportStart = Math.max(0, viewportState.scrollLeft - TRACK_LABEL_WIDTH);
+    const laneViewportWidth = Math.max(
+      240,
+      viewportState.width - Math.max(TRACK_LABEL_WIDTH - viewportState.scrollLeft, 0),
+    );
+    const visibleStartTime = Math.max(0, laneViewportStart / zoom);
+    const visibleEndTime = Math.min(duration, (laneViewportStart + laneViewportWidth) / zoom);
+    const visibleDuration = Math.max(visibleEndTime - visibleStartTime, 0.001);
+    const overscanDuration = Math.max(1, visibleDuration * 0.55);
+    const tileDuration = Math.max(1, visibleDuration * 0.55);
+    const renderStartTime = Math.max(
+      0,
+      Math.floor(Math.max(0, visibleStartTime - overscanDuration) / tileDuration) * tileDuration,
+    );
+    const renderEndTime = Math.min(
+      duration,
+      Math.ceil((visibleEndTime + overscanDuration) / tileDuration) * tileDuration,
+    );
+    const renderDuration = Math.max(renderEndTime - renderStartTime, 0.001);
+    return {
+      startTime: renderStartTime,
+      endTime: renderEndTime,
+      activeStartTime: visibleStartTime,
+      activeEndTime: visibleEndTime,
+      left: renderStartTime * zoom,
+      width: Math.max(renderDuration * zoom, 1),
+    };
+  }, [duration, viewportState.scrollLeft, viewportState.width, zoom]);
   const selectedTimelineKeySet = useMemo(
     () => new Set(selectedTimelineItems.map((item) => getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" || item.type === "attached-point" ? item.trackId : undefined))),
     [selectedTimelineItems],
@@ -565,6 +624,29 @@ export function Timeline({
       startHeight: waveformTrackHeight,
     });
   }
+
+  function startSpectrogramResize(clientY: number) {
+    setSpectrogramResizeDrag({
+      startY: clientY,
+      startHeight: spectrogramTrackHeight,
+    });
+  }
+
+  function markSpectrogramZoomPreview(settleDelay = SPECTROGRAM_ZOOM_PREVIEW_SETTLE_MS) {
+    setSpectrogramInteractionPreview(true);
+    if (zoomPreviewTimerRef.current !== null) {
+      window.clearTimeout(zoomPreviewTimerRef.current);
+      zoomPreviewTimerRef.current = null;
+    }
+    if (!Number.isFinite(settleDelay)) {
+      return;
+    }
+    zoomPreviewTimerRef.current = window.setTimeout(() => {
+      zoomPreviewTimerRef.current = null;
+      setSpectrogramInteractionPreview(false);
+    }, settleDelay);
+  }
+
   const timelineCanvasStyle = useMemo(
     () =>
       ({
@@ -597,6 +679,9 @@ export function Timeline({
       }
       if (zoomFrameRef.current !== null) {
         cancelAnimationFrame(zoomFrameRef.current);
+      }
+      if (zoomPreviewTimerRef.current !== null) {
+        window.clearTimeout(zoomPreviewTimerRef.current);
       }
       if (dragFrameRef.current !== null) {
         cancelAnimationFrame(dragFrameRef.current);
@@ -643,6 +728,34 @@ export function Timeline({
       window.removeEventListener("pointerup", handlePointerUp);
     };
   }, [waveformResizeDrag]);
+
+  useEffect(() => {
+    if (!spectrogramResizeDrag) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const deltaY = event.clientY - spectrogramResizeDrag.startY;
+      setSpectrogramTrackHeight(
+        clampValue(
+          spectrogramResizeDrag.startHeight + deltaY,
+          MIN_SPECTROGRAM_TRACK_HEIGHT,
+          MAX_SPECTROGRAM_TRACK_HEIGHT,
+        ),
+      );
+    };
+
+    const handlePointerUp = () => {
+      setSpectrogramResizeDrag(null);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [spectrogramResizeDrag]);
 
   useEffect(() => {
     if (!trackReorderDrag) {
@@ -744,7 +857,7 @@ export function Timeline({
     previousTrackIdsRef.current = currentTrackIds;
   }, [activeTrackDefinitions, activeTrackIds]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const container = scrollRef.current;
     if (!container) {
       return;
@@ -752,10 +865,16 @@ export function Timeline({
 
     const updateViewport = () => {
       scrollFrameRef.current = null;
-      setViewportState({
-        scrollLeft: container.scrollLeft,
-        width: container.clientWidth,
-      });
+      const nextScrollLeft = container.scrollLeft;
+      const nextWidth = container.clientWidth;
+      setViewportState((current) =>
+        current.scrollLeft === nextScrollLeft && current.width === nextWidth
+          ? current
+          : {
+              scrollLeft: nextScrollLeft,
+              width: nextWidth,
+            },
+      );
     };
 
     const scheduleViewportUpdate = () => {
@@ -1044,9 +1163,18 @@ export function Timeline({
     const container = scrollRef.current;
     const { time, viewportOffset } = zoomAnchorRef.current;
     const maxScrollLeft = Math.max(timelineWidth - container.clientWidth, 0);
-    container.scrollLeft = Math.max(
+    const nextScrollLeft = Math.max(
       0,
       Math.min(getCanvasX(time, zoom) - viewportOffset, maxScrollLeft),
+    );
+    container.scrollLeft = nextScrollLeft;
+    setViewportState((current) =>
+      current.scrollLeft === nextScrollLeft && current.width === container.clientWidth
+        ? current
+        : {
+            scrollLeft: nextScrollLeft,
+            width: container.clientWidth,
+          },
     );
     zoomAnchorRef.current = null;
   }, [zoom, timelineWidth]);
@@ -1921,10 +2049,27 @@ export function Timeline({
             </div>
 
             <div className="timeline-track waveform-track" style={{ height: waveformTrackHeight }}>
-              <div className="track-label waveform-label" style={{ minHeight: waveformTrackHeight }}>
+              <div
+                className={[
+                  "track-label",
+                  "track-label-custom",
+                  "waveform-label",
+                  isWaveformTrackSelected ? "selected" : "",
+                ].join(" ")}
+                style={{ minHeight: waveformTrackHeight }}
+                onClick={() => onSelectItem({ type: "waveform-track" })}
+              >
                 <div className="track-label-copy">
                   <strong>音频波形</strong>
-                  <span>{isWaveformLoading ? "提取中..." : waveformData ? "窗口精细波形" : "暂无波形"}</span>
+                  <span>
+                    {isWaveformLoading
+                      ? "提取中..."
+                      : waveformData
+                        ? spectrogramSettings.visible
+                          ? "波形 + 频谱设置"
+                          : "波形设置"
+                        : "暂无波形"}
+                  </span>
                 </div>
                 <div
                   className={[
@@ -1954,6 +2099,7 @@ export function Timeline({
                 className="track-lane waveform-lane"
                 style={{ minHeight: waveformTrackHeight }}
                 onClick={(event) => {
+                  onSelectItem({ type: "waveform-track" });
                   onSeek(getLaneTime(event.currentTarget, event.clientX, zoom));
                 }}
               >
@@ -2009,6 +2155,110 @@ export function Timeline({
                 <span className="waveform-track-resize-grip" />
               </div>
             </div>
+
+            {spectrogramSettings.visible ? (
+              <div className="timeline-track spectrogram-track" style={{ height: spectrogramTrackHeight }}>
+                <div
+                  className={[
+                    "track-label",
+                    "track-label-custom",
+                    "spectrogram-label",
+                    isSpectrogramTrackSelected ? "selected" : "",
+                  ].join(" ")}
+                  style={{ minHeight: spectrogramTrackHeight }}
+                  onClick={() => onSelectItem({ type: "spectrogram-track" })}
+                >
+                  <div className="track-label-copy">
+                    <strong>人声频谱图</strong>
+                    <span>
+                      {isSpectrogramLoading
+                        ? "STFT 计算中..."
+                        : spectrogramData
+                          ? `${spectrogramSettings.frequencyScale} · ${spectrogramFrequencyRange.minFrequency}-${spectrogramFrequencyRange.maxFrequency} Hz`
+                          : "暂无频谱"}
+                    </span>
+                  </div>
+                  <div
+                    className={[
+                      "waveform-track-resize-handle",
+                      spectrogramResizeDrag ? "active" : "",
+                    ].join(" ")}
+                    onPointerDown={(event) => {
+                      if (event.button !== 0) {
+                        return;
+                      }
+                      event.preventDefault();
+                      event.stopPropagation();
+                      startSpectrogramResize(event.clientY);
+                    }}
+                    onDoubleClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setSpectrogramResizeDrag(null);
+                      setSpectrogramTrackHeight(DEFAULT_SPECTROGRAM_TRACK_HEIGHT);
+                    }}
+                    title="拖动调整频谱图高度，双击恢复默认高度"
+                  >
+                    <span className="waveform-track-resize-grip" />
+                  </div>
+                </div>
+                <div
+                  className="track-lane spectrogram-lane"
+                  style={{ minHeight: spectrogramTrackHeight }}
+                  onClick={(event) => {
+                    onSelectItem({ type: "spectrogram-track" });
+                    onSeek(getLaneTime(event.currentTarget, event.clientX, zoom));
+                  }}
+                >
+                  {spectrogramData ? (
+                    <SpectrogramCanvas
+                      data={spectrogramData}
+                      frequencyScale={spectrogramSettings.frequencyScale}
+                      minFrequency={spectrogramFrequencyRange.minFrequency}
+                      maxFrequency={spectrogramFrequencyRange.maxFrequency}
+                      visibleStartTime={spectrogramViewport.startTime}
+                      visibleEndTime={spectrogramViewport.endTime}
+                      activeVisibleStartTime={spectrogramViewport.activeStartTime}
+                      activeVisibleEndTime={spectrogramViewport.activeEndTime}
+                      left={spectrogramViewport.left}
+                      width={spectrogramViewport.width}
+                      height={spectrogramViewHeight}
+                      showPitchContour={spectrogramSettings.showPitchContour}
+                      interactionPreview={spectrogramInteractionPreview}
+                    />
+                  ) : (
+                    <div className="spectrogram-empty">
+                      {isSpectrogramLoading
+                        ? "正在使用 n_fft=4096 / hop=512 / Hann 计算 dB 频谱..."
+                        : "开启视频音频后可显示人声频谱图"}
+                    </div>
+                  )}
+                </div>
+                <div
+                  className={[
+                    "waveform-track-bottom-resize-handle",
+                    spectrogramResizeDrag ? "active" : "",
+                  ].join(" ")}
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) {
+                      return;
+                    }
+                    event.preventDefault();
+                    event.stopPropagation();
+                    startSpectrogramResize(event.clientY);
+                  }}
+                  onDoubleClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setSpectrogramResizeDrag(null);
+                    setSpectrogramTrackHeight(DEFAULT_SPECTROGRAM_TRACK_HEIGHT);
+                  }}
+                  title="拖动调整频谱图高度，双击恢复默认高度"
+                >
+                  <span className="waveform-track-resize-grip" />
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="timeline-track-list">
@@ -2964,6 +3214,7 @@ export function Timeline({
   }
 
   function queueZoom(nextZoom: number, anchorTime?: number, viewportOffset?: number) {
+    markSpectrogramZoomPreview();
     const container = scrollRef.current;
     if (!container) {
       const safeZoom = clampZoom(nextZoom);
@@ -3068,6 +3319,7 @@ export function Timeline({
     if (!container) {
       return;
     }
+    markSpectrogramZoomPreview(Number.POSITIVE_INFINITY);
     sliderZoomRef.current = {
       anchorTime: currentTimeRef.current,
       viewportOffset: getViewportOffsetForTime(container, currentTimeRef.current, zoomRef.current),
@@ -3078,6 +3330,7 @@ export function Timeline({
   function finishSliderZoom() {
     sliderZoomRef.current = null;
     zoomInteractionUntilRef.current = Date.now() + ZOOM_SETTLE_MS;
+    markSpectrogramZoomPreview();
   }
 
   function scheduleDragUpdate(update: PendingDragUpdate) {
