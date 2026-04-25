@@ -138,6 +138,7 @@ function computeSpectrogramData(
     maxFrequency,
     dbMin,
     dbMax,
+    analysisPreset: config.analysisPreset,
     pitchFrames: computePitch
       ? estimatePitchContour(analysisSamples, analysisSampleRate, frameCount, hopLength)
       : undefined,

@@ -1,9 +1,13 @@
 import type {
+  SpectrogramAnalysisPreset,
   SpectrogramFrequencyPreset,
   SpectrogramFrequencyScale,
   SpectrogramSettings,
 } from "../types";
-import { spectrogramFrequencyPresets } from "../utils/spectrogram";
+import {
+  spectrogramAnalysisPresets,
+  spectrogramFrequencyPresets,
+} from "../utils/spectrogram";
 
 type SpectrogramSettingsPanelProps = {
   settings: SpectrogramSettings;
@@ -57,6 +61,11 @@ export function SpectrogramSettingsPanel({
     SpectrogramFrequencyPreset,
     (typeof spectrogramFrequencyPresets)[SpectrogramFrequencyPreset],
   ]>;
+  const analysisPresetOptions = Object.entries(spectrogramAnalysisPresets) as Array<[
+    SpectrogramAnalysisPreset,
+    (typeof spectrogramAnalysisPresets)[SpectrogramAnalysisPreset],
+  ]>;
+  const activeAnalysisPreset = spectrogramAnalysisPresets[settings.analysisPreset];
 
   return (
     <section className="panel spectrogram-settings-panel">
@@ -143,9 +152,33 @@ export function SpectrogramSettingsPanel({
           </div>
         </div>
 
+        <div className="spectrogram-setting-group">
+          <div className="spectrogram-setting-heading">
+            <strong>分析精度</strong>
+            <span>{activeAnalysisPreset.label}</span>
+          </div>
+          <div className="spectrogram-preset-list">
+            {analysisPresetOptions.map(([value, preset]) => (
+              <button
+                key={value}
+                type="button"
+                className={settings.analysisPreset === value ? "active" : ""}
+                aria-pressed={settings.analysisPreset === value}
+                onClick={() => updateSetting("analysisPreset", value)}
+              >
+                <span>{preset.label}</span>
+                <small>n_fft={preset.fftSize} · hop={preset.hopLength}</small>
+              </button>
+            ))}
+          </div>
+          <p className="spectrogram-setting-help">{activeAnalysisPreset.description}</p>
+        </div>
+
         <div className="spectrogram-analysis-summary">
           <strong>STFT</strong>
-          <span>n_fft=4096 · hop=512 · Hann · dB heatmap · Worker 离线计算</span>
+          <span>
+            n_fft={activeAnalysisPreset.fftSize} · hop={activeAnalysisPreset.hopLength} · Hann · dB heatmap · Worker 离线计算
+          </span>
         </div>
       </div>
     </section>

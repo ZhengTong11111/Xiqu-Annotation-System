@@ -591,6 +591,7 @@ function App() {
 
     if (
       spectrogramData &&
+      spectrogramData.analysisPreset === spectrogramSettings.analysisPreset &&
       (!spectrogramSettings.showPitchContour || spectrogramData.pitchFrames)
     ) {
       return;
@@ -602,6 +603,7 @@ function App() {
     void buildSpectrogramData(
       waveformData,
       spectrogramSettings.showPitchContour,
+      spectrogramSettings.analysisPreset,
       abortController.signal,
     )
       .then((nextSpectrogramData) => {
@@ -635,7 +637,13 @@ function App() {
     return () => {
       abortController.abort();
     };
-  }, [spectrogramData, spectrogramSettings.showPitchContour, spectrogramSettings.visible, waveformData]);
+  }, [
+    spectrogramData,
+    spectrogramSettings.analysisPreset,
+    spectrogramSettings.showPitchContour,
+    spectrogramSettings.visible,
+    waveformData,
+  ]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {

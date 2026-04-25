@@ -1,4 +1,5 @@
 import type {
+  SpectrogramAnalysisPreset,
   SpectrogramAnalysisConfig,
   SpectrogramData,
   SpectrogramFrequencyPreset,
@@ -32,17 +33,39 @@ export const defaultSpectrogramSettings: SpectrogramSettings = {
   showPitchContour: false,
   frequencyScale: "log",
   frequencyPreset: "full-vocal",
+  analysisPreset: "time-detail",
 };
 
-export const defaultSpectrogramAnalysisConfig: SpectrogramAnalysisConfig = {
-  fftSize: 4096,
-  hopLength: 512,
-  windowType: "hann",
-  minFrequency: 50,
-  maxFrequency: 8000,
-  dynamicRangeDb: 85,
-  analysisSampleRate: 16000,
-  outputFrequencyBinCount: 512,
+export const spectrogramAnalysisPresets: Record<
+  SpectrogramAnalysisPreset,
+  SpectrogramAnalysisConfig & { label: string; description: string }
+> = {
+  "time-detail": {
+    analysisPreset: "time-detail",
+    label: "人声清晰",
+    description: "n_fft=1024, hop=128，适合放大后看念白/唱腔起伏。",
+    fftSize: 1024,
+    hopLength: 128,
+    windowType: "hann",
+    minFrequency: 50,
+    maxFrequency: 8000,
+    dynamicRangeDb: 85,
+    analysisSampleRate: 16000,
+    outputFrequencyBinCount: 512,
+  },
+  "frequency-detail": {
+    analysisPreset: "frequency-detail",
+    label: "频率细节",
+    description: "n_fft=4096, hop=512，频率更细但时间上更平滑。",
+    fftSize: 4096,
+    hopLength: 512,
+    windowType: "hann",
+    minFrequency: 50,
+    maxFrequency: 8000,
+    dynamicRangeDb: 85,
+    analysisSampleRate: 16000,
+    outputFrequencyBinCount: 512,
+  },
 };
 
 export function getSpectrogramFrequencyRange(settings: SpectrogramSettings) {
@@ -56,6 +79,7 @@ export function getSpectrogramFrequencyRange(settings: SpectrogramSettings) {
 export function buildSpectrogramData(
   waveformData: WaveformData,
   computePitch: boolean,
+  analysisPreset: SpectrogramAnalysisPreset,
   signal?: AbortSignal,
 ) {
   const samples = new Float32Array(waveformData.samples);
@@ -107,7 +131,7 @@ export function buildSpectrogramData(
         samples,
         sampleRate: waveformData.sampleRate,
         duration: waveformData.duration,
-        config: defaultSpectrogramAnalysisConfig,
+        config: spectrogramAnalysisPresets[analysisPreset],
         computePitch,
       },
       [samples.buffer],

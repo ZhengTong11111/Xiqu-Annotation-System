@@ -163,14 +163,18 @@ export type SpectrogramFrequencyScale = "linear" | "log" | "mel";
 
 export type SpectrogramFrequencyPreset = "full-vocal" | "vocal-2000" | "vocal-1500";
 
+export type SpectrogramAnalysisPreset = "time-detail" | "frequency-detail";
+
 export type SpectrogramSettings = {
   visible: boolean;
   showPitchContour: boolean;
   frequencyScale: SpectrogramFrequencyScale;
   frequencyPreset: SpectrogramFrequencyPreset;
+  analysisPreset: SpectrogramAnalysisPreset;
 };
 
 export type SpectrogramAnalysisConfig = {
+  analysisPreset: SpectrogramAnalysisPreset;
   fftSize: number;
   hopLength: number;
   windowType: "hann";
@@ -201,6 +205,7 @@ export type SpectrogramData = {
   maxFrequency: number;
   dbMin: number;
   dbMax: number;
+  analysisPreset: SpectrogramAnalysisPreset;
   pitchFrames?: PitchFrame[];
 };
 

@@ -183,6 +183,7 @@ function SpectrogramCanvasTile({
         tile.endTime,
         renderWidth,
         renderHeight,
+        tile.quality === "detail" && tile.cssPixelsPerFrame >= DISCRETE_FRAME_PIXEL_WIDTH,
       );
 
       if (showPitchContour && data.pitchFrames?.length) {
@@ -326,7 +327,23 @@ function renderSpectrogramTile(
   endTime: number,
   width: number,
   height: number,
+  renderDiscreteFrames: boolean,
 ) {
+  if (renderDiscreteFrames) {
+    renderDiscreteFrameSpectrogramTile(
+      context,
+      data,
+      frequencyScale,
+      minFrequency,
+      maxFrequency,
+      startTime,
+      endTime,
+      width,
+      height,
+    );
+    return;
+  }
+
   const imageData = context.createImageData(width, height);
   const visibleDuration = Math.max(endTime - startTime, 0.001);
   const maxFrameIndex = data.frameCount - 1;
@@ -371,6 +388,76 @@ function renderSpectrogramTile(
       imageData.data[pixelIndex + 3] = 255;
     }
   }
+  context.putImageData(imageData, 0, 0);
+}
+
+function renderDiscreteFrameSpectrogramTile(
+  context: CanvasRenderingContext2D,
+  data: SpectrogramData,
+  frequencyScale: SpectrogramFrequencyScale,
+  minFrequency: number,
+  maxFrequency: number,
+  startTime: number,
+  endTime: number,
+  width: number,
+  height: number,
+) {
+  const imageData = context.createImageData(width, height);
+  const visibleDuration = Math.max(endTime - startTime, 0.001);
+  const frameDuration = data.hopLength / data.sampleRate;
+  const frameCenterOffset = data.fftSize / 2 / data.sampleRate;
+  const firstFrameIndex = Math.max(
+    0,
+    Math.floor(((startTime - frameCenterOffset) * data.sampleRate) / data.hopLength) - 2,
+  );
+  const lastFrameIndex = Math.min(
+    data.frameCount - 1,
+    Math.ceil(((endTime - frameCenterOffset) * data.sampleRate) / data.hopLength) + 2,
+  );
+  const binIndexesByRow = new Uint16Array(height);
+
+  for (let y = 0; y < height; y += 1) {
+    const frequency = yToFrequency(
+      y,
+      height,
+      frequencyScale,
+      minFrequency,
+      maxFrequency,
+    );
+    binIndexesByRow[y] = findNearestFrequencyBin(data.frequencyBins, frequency);
+  }
+
+  for (let frameIndex = firstFrameIndex; frameIndex <= lastFrameIndex; frameIndex += 1) {
+    const centerTime = (frameIndex * data.hopLength) / data.sampleRate + frameCenterOffset;
+    const frameStartTime = centerTime - frameDuration / 2;
+    const frameEndTime = centerTime + frameDuration / 2;
+    const startX = Math.max(
+      0,
+      Math.floor(((frameStartTime - startTime) / visibleDuration) * width),
+    );
+    const endX = Math.min(
+      width,
+      Math.ceil(((frameEndTime - startTime) / visibleDuration) * width),
+    );
+    if (endX <= startX) {
+      continue;
+    }
+
+    const frameOffset = frameIndex * data.frequencyBinCount;
+    for (let y = 0; y < height; y += 1) {
+      const binIndex = binIndexesByRow[y];
+      const value = data.magnitudes[frameOffset + binIndex] ?? 0;
+      const [red, green, blue] = heatColor(sharpenMagnitude(value / 255));
+      for (let x = startX; x < endX; x += 1) {
+        const pixelIndex = (y * width + x) * 4;
+        imageData.data[pixelIndex] = red;
+        imageData.data[pixelIndex + 1] = green;
+        imageData.data[pixelIndex + 2] = blue;
+        imageData.data[pixelIndex + 3] = 255;
+      }
+    }
+  }
+
   context.putImageData(imageData, 0, 0);
 }
 
@@ -506,6 +593,11 @@ function heatColor(value: number): [number, number, number] {
     Math.max(green, floor),
     Math.max(blue, floor),
   ];
+}
+
+function sharpenMagnitude(value: number) {
+  const clamped = Math.max(0, Math.min(1, value));
+  return Math.max(0, Math.min(1, (clamped - 0.08) * 1.28));
 }
 
 function buildAxisLabels(
