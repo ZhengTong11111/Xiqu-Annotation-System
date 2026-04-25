@@ -839,6 +839,61 @@ select {
   background: rgba(15, 23, 42, 0.045);
 }
 
+.inspector-link-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.gongche-symbol-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gongche-symbol-row {
+  display: grid;
+  grid-template-columns: 24px minmax(38px, 0.55fr) minmax(54px, 0.8fr) minmax(64px, 1fr) minmax(64px, 1fr) auto;
+  gap: 5px;
+  align-items: center;
+}
+
+.gongche-symbol-row strong {
+  color: var(--ink-soft);
+  font-size: 11px;
+  text-align: center;
+}
+
+.gongche-symbol-row input {
+  min-width: 0;
+}
+
+.gongche-import-box {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.gongche-import-box textarea {
+  min-height: 150px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  line-height: 1.45;
+}
+
+.gongche-import-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.gongche-import-result {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
 .inspector-toggle-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1441,6 +1496,29 @@ select {
   right: 0;
   top: 50%;
   border-top: 1px dashed rgba(15, 108, 189, 0.18);
+  pointer-events: none;
+}
+
+.timeline-track-gongche .track-label {
+  background: linear-gradient(180deg, rgba(248, 250, 246, 0.98), rgba(239, 245, 237, 0.95));
+}
+
+.timeline-track-gongche .track-lane {
+  min-height: 36px;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(246, 250, 244, 0.72)),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
+  background-size: auto, 20px 100%;
+}
+
+.timeline-track-gongche .track-lane::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 1px dashed rgba(80, 104, 45, 0.2);
   pointer-events: none;
 }
 
@@ -2080,6 +2158,94 @@ select {
 
 .timeline-point-marker:hover .timeline-point-chip {
   transform: translateY(-1px);
+}
+
+.timeline-gongche-block {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 26px;
+  padding: 0;
+  border: 1px dashed rgba(85, 107, 47, 0.62);
+  border-radius: 6px;
+  background: rgba(245, 249, 239, 0.62);
+  color: #485f1f;
+  cursor: grab;
+  overflow: hidden;
+  user-select: none;
+  z-index: 4;
+}
+
+.timeline-gongche-block:active {
+  cursor: grabbing;
+}
+
+.timeline-gongche-block.selected {
+  outline: 2px solid rgba(85, 107, 47, 0.36);
+  background: rgba(242, 249, 230, 0.82);
+}
+
+.timeline-gongche-block.active {
+  box-shadow: inset 0 0 0 1px rgba(85, 107, 47, 0.22), 0 0 0 2px rgba(132, 153, 78, 0.12);
+}
+
+.timeline-gongche-line {
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  top: 50%;
+  border-top: 1px dashed rgba(85, 107, 47, 0.56);
+  pointer-events: none;
+}
+
+.timeline-gongche-symbols {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.timeline-gongche-symbol {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 12px;
+  height: 18px;
+  padding: 0 3px;
+  border-left: 1px dashed rgba(85, 107, 47, 0.32);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-gongche-boundary {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 12px;
+  transform: translateX(-50%);
+  cursor: ew-resize;
+  z-index: 3;
+}
+
+.timeline-gongche-boundary::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  border-left: 2px dashed rgba(85, 107, 47, 0.68);
+  transform: translateX(-50%);
+}
+
+.timeline-gongche-boundary:hover::after {
+  border-left-color: rgba(15, 108, 189, 0.78);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.78);
 }
 
 .inspector-checkbox {

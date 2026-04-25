@@ -36,6 +36,26 @@ export type CharacterAnnotation = {
   singingStyle: SingingStyle;
 };
 
+export type GongcheSymbol = {
+  id: string;
+  label: string;
+  notation?: string;
+  rawText?: string;
+  parenthesized?: boolean;
+  startTime: number;
+  endTime: number;
+  assetUrl?: string | null;
+};
+
+export type GongcheAnnotation = {
+  id: string;
+  parentTrackId: string;
+  parentBlockId: string;
+  startTime: number;
+  endTime: number;
+  symbols: GongcheSymbol[];
+};
+
 export type ActionAnnotation = {
   id: string;
   trackId: string;
@@ -109,11 +129,12 @@ export type BuiltinTrack = {
 export type TrackDefinition = {
   id: string;
   name: string;
-  type: "character" | "action" | "custom-text" | "custom-action" | "attached-point";
+  type: "character" | "action" | "custom-text" | "custom-action" | "attached-point" | "gongche-attached";
   options?: string[];
   isCustom?: boolean;
   isBuiltin?: boolean;
   isAttachedPointTrack?: boolean;
+  isGongcheTrack?: boolean;
   parentTrackId?: string;
   parentTrackName?: string;
 };
@@ -130,6 +151,7 @@ export type ProjectData = {
   video: ProjectVideo;
   subtitleLines: SubtitleLine[];
   characterAnnotations: CharacterAnnotation[];
+  gongcheAnnotations: GongcheAnnotation[];
   actionAnnotations: ActionAnnotation[];
   builtinTracks: BuiltinTrack[];
   customTracks: CustomTrack[];
@@ -216,9 +238,11 @@ export type SelectedItem =
   | { type: "builtin-track"; id: BuiltinTrackId }
   | { type: "custom-track"; id: string }
   | { type: "attached-point-track"; id: string; parentTrackId: string }
+  | { type: "gongche-track"; parentTrackId: string }
   | { type: "waveform-track" }
   | { type: "spectrogram-track" }
   | { type: "custom-block"; id: string; trackId: string }
+  | { type: "gongche-block"; id: string }
   | { type: "attached-point"; id: string; trackId: string; parentTrackId: string }
   | null;
 
