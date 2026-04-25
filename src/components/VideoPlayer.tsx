@@ -8,6 +8,8 @@ type VideoPlayerProps = {
   currentTime: number;
   previewTime: number | null;
   isPlaying: boolean;
+  isDetached?: boolean;
+  onToggleDetached?: () => void;
   onLoadedMetadata: (duration: number) => void;
   onTimeUpdate: (currentTime: number) => void;
   onPlayStateChange: (playing: boolean) => void;
@@ -21,6 +23,8 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
       currentTime,
       previewTime,
       isPlaying,
+      isDetached = false,
+      onToggleDetached,
       onLoadedMetadata,
       onTimeUpdate,
       onPlayStateChange,
@@ -180,7 +184,20 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
       <section className="panel video-panel">
         <div className="panel-header">
           <h2>视频播放器</h2>
-          <span>{previewTime === null ? (isPlaying ? "播放中" : "已暂停") : "边界预览中"}</span>
+          <div className="panel-header-actions">
+            <span>{previewTime === null ? (isPlaying ? "播放中" : "已暂停") : "边界预览中"}</span>
+            {onToggleDetached ? (
+              <button
+                type="button"
+                className="panel-window-button"
+                title={isDetached ? "收回工作台" : "弹出独立窗口"}
+                aria-label={isDetached ? "收回工作台" : "弹出独立窗口"}
+                onClick={onToggleDetached}
+              >
+                {isDetached ? "↩" : "↗"}
+              </button>
+            ) : null}
+          </div>
         </div>
         <div
           className="video-surface"

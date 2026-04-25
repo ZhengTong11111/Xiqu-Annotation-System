@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "./index.css";
 import { AppShell } from "./components/AppShell";
+import { FloatingPanelWindow } from "./components/FloatingPanelWindow";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { LeftWorkspace } from "./components/LeftWorkspace";
 import { PreviewPanel } from "./components/PreviewPanel";
@@ -303,6 +304,8 @@ function App() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
   const [currentProjectFileName, setCurrentProjectFileName] = useState<string | null>(null);
+  const [isPreviewDetached, setIsPreviewDetached] = useState(false);
+  const [isTimelineDetached, setIsTimelineDetached] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoFileInputRef = useRef<HTMLInputElement>(null);
   const srtFileInputRef = useRef<HTMLInputElement>(null);
@@ -3090,6 +3093,191 @@ function App() {
     downloadBlob(target.content, target.name, "application/x-subrip");
   }
 
+  function renderPreviewWorkspace(detached: boolean) {
+    return (
+      <VideoPlayer
+        ref={videoRef}
+        videoUrl={project.video.url}
+        playbackRate={playbackRate}
+        currentTime={currentTime}
+        previewTime={previewTime}
+        isPlaying={isPlaying}
+        isDetached={detached}
+        onToggleDetached={() => setIsPreviewDetached((current) => !current)}
+        onLoadedMetadata={(nextDuration) => setDuration(Math.max(nextDuration, getProjectDuration(project)))}
+        onTimeUpdate={setCurrentTime}
+        onPlayStateChange={setIsPlaying}
+      />
+    );
+  }
+
+  function renderTimelineWorkspace(detached: boolean) {
+    return (
+      <Timeline
+        subtitleLines={project.subtitleLines}
+        builtinTracks={project.builtinTracks}
+        characterAnnotations={project.characterAnnotations}
+        actionAnnotations={project.actionAnnotations}
+        customTracks={project.customTracks}
+        trackDefinitions={timelineTrackDefinitions}
+        missingBuiltinTracks={missingBuiltinTracks}
+        waveformData={waveformData}
+        isWaveformLoading={isWaveformLoading}
+        currentTime={currentTime}
+        loopPlaybackRange={loopPlaybackRange}
+        loopPlaybackEnabled={loopPlaybackEnabled}
+        isDetached={detached}
+        selectedItem={selectedItem}
+        selectedTimelineItems={selectedTimelineItems}
+        trackSnapEnabled={trackSnapEnabled}
+        zoom={zoom}
+        duration={duration}
+        focusRange={focusRange}
+        onFocusRangeHandled={() => setLineFocusRequest(null)}
+        getProjectSnapshot={() => projectRef.current}
+        onZoomChange={setZoom}
+        onToggleTrackSnap={(trackId) => {
+          applyTrackSnapEnabledState({
+            ...trackSnapEnabledRef.current,
+            [trackId]: !trackSnapEnabledRef.current[trackId],
+          });
+        }}
+        onLoopPlaybackRangeChange={(range) => {
+          setLoopPlaybackRange(range);
+          setLoopPlaybackEnabled(Boolean(range));
+        }}
+        onLoopPlaybackEnabledChange={setLoopPlaybackEnabled}
+        onToggleDetached={() => setIsTimelineDetached((current) => !current)}
+        onSeek={seekTo}
+        onPreviewFrame={setPreviewTime}
+        onSelectItem={(item) => {
+          setLineFocusRequest(null);
+          if (item?.type === "character") {
+            preferredCharacterEditLocationRef.current = "timeline";
+          }
+          applySelection(item);
+        }}
+        onCloseContextMenu={closeTimelineContextMenu}
+        onSelectTimelineItems={(items, primaryItem) => {
+          setLineFocusRequest(null);
+          if (primaryItem?.type === "character") {
+            preferredCharacterEditLocationRef.current = "timeline";
+          }
+          applySelection(primaryItem, items);
+        }}
+        onSelectLineOverlay={(lineId) => {
+          setLineFocusRequest(null);
+          applySelection({ type: "line", id: lineId });
+        }}
+        editingCharacterId={editingCharacterId}
+        editingCharacterLocation={editingCharacterLocation}
+        editingCharacterValue={editingCharacterValue}
+        editingCustomTextBlock={editingCustomTextBlock}
+        editingCustomTextValue={editingCustomTextValue}
+        onEditingCharacterValueChange={setEditingCharacterValue}
+        onEditingCustomTextValueChange={setEditingCustomTextValue}
+        onCommitCharacterTextEdit={commitCharacterTextEdit}
+        onCommitCustomTextEdit={commitCustomTextEdit}
+        onCancelCharacterTextEdit={cancelCharacterTextEdit}
+        onCancelCustomTextEdit={cancelCustomTextEdit}
+        onEditCharacterText={(id) => startCharacterTextEdit(id, "timeline")}
+        onEditCustomTextBlock={startCustomTextEdit}
+        onCreateCharacterAtTime={createCharacterAtTime}
+        onCreateActionAtTime={createActionAtTime}
+        onCreateCustomBlock={createCustomBlock}
+        onAddCustomTrack={addCustomTrack}
+        onUpdatePasteTarget={updateTimelinePasteTarget}
+        onSelectBuiltinTrack={(trackId) => {
+          setLineFocusRequest(null);
+          applySelection({ type: "builtin-track", id: trackId });
+        }}
+        onAddBuiltinTrack={addBuiltinTrack}
+        onSelectTrack={(trackId) => {
+          setLineFocusRequest(null);
+          applySelection(
+            activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
+              ? { type: "builtin-track", id: trackId as BuiltinTrackId }
+              : { type: "custom-track", id: trackId },
+          );
+        }}
+        onSelectAttachedPointTrack={(trackId, parentTrackId) => {
+          setLineFocusRequest(null);
+          applySelection({ type: "attached-point-track", id: trackId, parentTrackId });
+        }}
+        onMoveTrack={(trackId, direction) => {
+          if (activeBuiltinTrackIds.has(trackId as BuiltinTrackId)) {
+            moveBuiltinTrack(trackId as BuiltinTrackId, direction);
+          } else {
+            moveCustomTrack(trackId, direction);
+          }
+        }}
+        onReorderTrack={(trackId, insertionIndex) => {
+          if (activeBuiltinTrackIds.has(trackId as BuiltinTrackId)) {
+            reorderBuiltinTrack(trackId as BuiltinTrackId, insertionIndex);
+          } else {
+            reorderCustomTrack(trackId, insertionIndex);
+          }
+        }}
+        onToggleAttachedPointTracks={toggleAttachedPointTracks}
+        onDeleteBuiltinTrack={deleteBuiltinTrack}
+        onDeleteCustomTrack={deleteCustomTrack}
+        onOpenCharacterContextMenu={(id, time, x, y) => {
+          preferredCharacterEditLocationRef.current = "timeline";
+          updateTimelinePasteTarget("character-track", time);
+          setBlockContextMenu({
+            type: "character",
+            id,
+            trackId: "character-track",
+            time,
+            x,
+            y,
+          });
+        }}
+        onOpenActionContextMenu={(id, time, x, y) => {
+          const action = projectRef.current.actionAnnotations.find((item) => item.id === id);
+          updateTimelinePasteTarget(action?.trackId ?? "", time);
+          setBlockContextMenu({
+            type: "action",
+            id,
+            trackId: action?.trackId ?? "",
+            time,
+            x,
+            y,
+          });
+        }}
+        onOpenCustomBlockContextMenu={(trackId, id, time, x, y) => {
+          updateTimelinePasteTarget(trackId, time);
+          setBlockContextMenu({
+            type: "custom-block",
+            trackId,
+            id,
+            time,
+            x,
+            y,
+          });
+        }}
+        onOpenLaneContextMenu={(trackId, time, x, y) => {
+          updateTimelinePasteTarget(trackId, time);
+          setBlockContextMenu({ type: "lane", trackId, time, x, y });
+        }}
+        onLineChange={(id, changes) => updateLinePosition(id, changes, false)}
+        onLineCommit={(id, changes) => updateLinePosition(id, changes, true)}
+        onCharacterChange={(id, changes) => updateCharacter(id, changes, false)}
+        onCharacterCommit={(id, changes) => updateCharacter(id, changes, true)}
+        onActionChange={(id, changes) => updateAction(id, changes, false)}
+        onActionCommit={(id, changes) => updateAction(id, changes, true)}
+        onAttachedPointChange={changeAttachedPoint}
+        onAttachedPointCommit={commitAttachedPoint}
+        onCustomBlockChange={(trackId, id, changes) => updateCustomBlock(trackId, id, changes, false)}
+        onCustomBlockCommit={(trackId, id, changes) => updateCustomBlock(trackId, id, changes, true)}
+        onBatchMoveChange={(items) => updateTimelineSelectionBatch(items, false)}
+        onBatchMoveCommit={(items) => updateTimelineSelectionBatch(items, true)}
+        onCreateAction={createAction}
+        onCreateAttachedPoint={createAttachedPoint}
+      />
+    );
+  }
+
   return (
     <AppShell
       menuBar={(
@@ -3163,183 +3351,16 @@ function App() {
         secondaryClassName="workspace-region workspace-sidebar"
         primary={(
           <LeftWorkspace
+            previewDetached={isPreviewDetached}
+            timelineDetached={isTimelineDetached}
             previewPanel={(
               <PreviewPanel>
-                <VideoPlayer
-                  ref={videoRef}
-                  videoUrl={project.video.url}
-                  playbackRate={playbackRate}
-                  currentTime={currentTime}
-                  previewTime={previewTime}
-                  isPlaying={isPlaying}
-                  onLoadedMetadata={(nextDuration) => setDuration(Math.max(nextDuration, getProjectDuration(project)))}
-                  onTimeUpdate={setCurrentTime}
-                  onPlayStateChange={setIsPlaying}
-                />
+                {renderPreviewWorkspace(false)}
               </PreviewPanel>
             )}
             timelinePanel={(
               <TimelinePanel>
-                <Timeline
-                  subtitleLines={project.subtitleLines}
-                  builtinTracks={project.builtinTracks}
-                  characterAnnotations={project.characterAnnotations}
-                  actionAnnotations={project.actionAnnotations}
-                  customTracks={project.customTracks}
-                  trackDefinitions={timelineTrackDefinitions}
-                  missingBuiltinTracks={missingBuiltinTracks}
-                  waveformData={waveformData}
-                  isWaveformLoading={isWaveformLoading}
-                  currentTime={currentTime}
-                  loopPlaybackRange={loopPlaybackRange}
-                  loopPlaybackEnabled={loopPlaybackEnabled}
-                  selectedItem={selectedItem}
-                  selectedTimelineItems={selectedTimelineItems}
-                  trackSnapEnabled={trackSnapEnabled}
-                  zoom={zoom}
-                  duration={duration}
-                  focusRange={focusRange}
-                  onFocusRangeHandled={() => setLineFocusRequest(null)}
-                  getProjectSnapshot={() => projectRef.current}
-                  onZoomChange={setZoom}
-                  onToggleTrackSnap={(trackId) => {
-                    applyTrackSnapEnabledState({
-                      ...trackSnapEnabledRef.current,
-                      [trackId]: !trackSnapEnabledRef.current[trackId],
-                    });
-                  }}
-                  onLoopPlaybackRangeChange={(range) => {
-                    setLoopPlaybackRange(range);
-                    setLoopPlaybackEnabled(Boolean(range));
-                  }}
-                  onLoopPlaybackEnabledChange={setLoopPlaybackEnabled}
-                  onSeek={seekTo}
-                  onPreviewFrame={setPreviewTime}
-                  onSelectItem={(item) => {
-                    setLineFocusRequest(null);
-                    if (item?.type === "character") {
-                      preferredCharacterEditLocationRef.current = "timeline";
-                    }
-                    applySelection(item);
-                  }}
-                  onCloseContextMenu={closeTimelineContextMenu}
-                  onSelectTimelineItems={(items, primaryItem) => {
-                    setLineFocusRequest(null);
-                    if (primaryItem?.type === "character") {
-                      preferredCharacterEditLocationRef.current = "timeline";
-                    }
-                    applySelection(primaryItem, items);
-                  }}
-                  onSelectLineOverlay={(lineId) => {
-                    setLineFocusRequest(null);
-                    applySelection({ type: "line", id: lineId });
-                  }}
-                  editingCharacterId={editingCharacterId}
-                  editingCharacterLocation={editingCharacterLocation}
-                  editingCharacterValue={editingCharacterValue}
-                  editingCustomTextBlock={editingCustomTextBlock}
-                  editingCustomTextValue={editingCustomTextValue}
-                  onEditingCharacterValueChange={setEditingCharacterValue}
-                  onEditingCustomTextValueChange={setEditingCustomTextValue}
-                  onCommitCharacterTextEdit={commitCharacterTextEdit}
-                  onCommitCustomTextEdit={commitCustomTextEdit}
-                  onCancelCharacterTextEdit={cancelCharacterTextEdit}
-                  onCancelCustomTextEdit={cancelCustomTextEdit}
-                  onEditCharacterText={(id) => startCharacterTextEdit(id, "timeline")}
-                  onEditCustomTextBlock={startCustomTextEdit}
-                  onCreateCharacterAtTime={createCharacterAtTime}
-                  onCreateActionAtTime={createActionAtTime}
-                  onCreateCustomBlock={createCustomBlock}
-                  onAddCustomTrack={addCustomTrack}
-                  onUpdatePasteTarget={updateTimelinePasteTarget}
-                  onSelectBuiltinTrack={(trackId) => {
-                    setLineFocusRequest(null);
-                    applySelection({ type: "builtin-track", id: trackId });
-                  }}
-                  onAddBuiltinTrack={addBuiltinTrack}
-                  onSelectTrack={(trackId) => {
-                    setLineFocusRequest(null);
-                    applySelection(
-                      activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
-                        ? { type: "builtin-track", id: trackId as BuiltinTrackId }
-                        : { type: "custom-track", id: trackId },
-                    );
-                  }}
-                  onSelectAttachedPointTrack={(trackId, parentTrackId) => {
-                    setLineFocusRequest(null);
-                    applySelection({ type: "attached-point-track", id: trackId, parentTrackId });
-                  }}
-                  onMoveTrack={(trackId, direction) => {
-                    if (activeBuiltinTrackIds.has(trackId as BuiltinTrackId)) {
-                      moveBuiltinTrack(trackId as BuiltinTrackId, direction);
-                    } else {
-                      moveCustomTrack(trackId, direction);
-                    }
-                  }}
-                  onReorderTrack={(trackId, insertionIndex) => {
-                    if (activeBuiltinTrackIds.has(trackId as BuiltinTrackId)) {
-                      reorderBuiltinTrack(trackId as BuiltinTrackId, insertionIndex);
-                    } else {
-                      reorderCustomTrack(trackId, insertionIndex);
-                    }
-                  }}
-                  onToggleAttachedPointTracks={toggleAttachedPointTracks}
-                  onDeleteBuiltinTrack={deleteBuiltinTrack}
-                  onDeleteCustomTrack={deleteCustomTrack}
-                  onOpenCharacterContextMenu={(id, time, x, y) => {
-                    preferredCharacterEditLocationRef.current = "timeline";
-                    updateTimelinePasteTarget("character-track", time);
-                    setBlockContextMenu({
-                      type: "character",
-                      id,
-                      trackId: "character-track",
-                      time,
-                      x,
-                      y,
-                    });
-                  }}
-                  onOpenActionContextMenu={(id, time, x, y) => {
-                    const action = projectRef.current.actionAnnotations.find((item) => item.id === id);
-                    updateTimelinePasteTarget(action?.trackId ?? "", time);
-                    setBlockContextMenu({
-                      type: "action",
-                      id,
-                      trackId: action?.trackId ?? "",
-                      time,
-                      x,
-                      y,
-                    });
-                  }}
-                  onOpenCustomBlockContextMenu={(trackId, id, time, x, y) => {
-                    updateTimelinePasteTarget(trackId, time);
-                    setBlockContextMenu({
-                      type: "custom-block",
-                      trackId,
-                      id,
-                      time,
-                      x,
-                      y,
-                    });
-                  }}
-                  onOpenLaneContextMenu={(trackId, time, x, y) => {
-                    updateTimelinePasteTarget(trackId, time);
-                    setBlockContextMenu({ type: "lane", trackId, time, x, y });
-                  }}
-                  onLineChange={(id, changes) => updateLinePosition(id, changes, false)}
-                  onLineCommit={(id, changes) => updateLinePosition(id, changes, true)}
-                  onCharacterChange={(id, changes) => updateCharacter(id, changes, false)}
-                  onCharacterCommit={(id, changes) => updateCharacter(id, changes, true)}
-                  onActionChange={(id, changes) => updateAction(id, changes, false)}
-                  onActionCommit={(id, changes) => updateAction(id, changes, true)}
-                  onAttachedPointChange={changeAttachedPoint}
-                  onAttachedPointCommit={commitAttachedPoint}
-                  onCustomBlockChange={(trackId, id, changes) => updateCustomBlock(trackId, id, changes, false)}
-                  onCustomBlockCommit={(trackId, id, changes) => updateCustomBlock(trackId, id, changes, true)}
-                  onBatchMoveChange={(items) => updateTimelineSelectionBatch(items, false)}
-                  onBatchMoveCommit={(items) => updateTimelineSelectionBatch(items, true)}
-                  onCreateAction={createAction}
-                  onCreateAttachedPoint={createAttachedPoint}
-                />
+                {renderTimelineWorkspace(false)}
               </TimelinePanel>
             )}
           />
@@ -3529,6 +3550,32 @@ function App() {
           />
         )}
       />
+      <div className="workspace-float-layer">
+        {isPreviewDetached ? (
+          <FloatingPanelWindow
+            title="视频播放器"
+            initialX={24}
+            initialY={24}
+            initialWidth={760}
+            initialHeight={480}
+            onClose={() => setIsPreviewDetached(false)}
+          >
+            {renderPreviewWorkspace(true)}
+          </FloatingPanelWindow>
+        ) : null}
+        {isTimelineDetached ? (
+          <FloatingPanelWindow
+            title="多轨时间轴"
+            initialX={72}
+            initialY={96}
+            initialWidth={1180}
+            initialHeight={560}
+            onClose={() => setIsTimelineDetached(false)}
+          >
+            {renderTimelineWorkspace(true)}
+          </FloatingPanelWindow>
+        ) : null}
+      </div>
       {blockContextMenu ? (
         <div
           ref={blockContextMenuRef}

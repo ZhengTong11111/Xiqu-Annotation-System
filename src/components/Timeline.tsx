@@ -30,6 +30,7 @@ type TimelineProps = {
   currentTime: number;
   loopPlaybackRange: { start: number; end: number } | null;
   loopPlaybackEnabled: boolean;
+  isDetached?: boolean;
   selectedItem: SelectedItem;
   selectedTimelineItems: TimelineSelectionItem[];
   trackSnapEnabled: Record<string, boolean>;
@@ -47,6 +48,7 @@ type TimelineProps = {
   onToggleTrackSnap: (trackId: string) => void;
   onLoopPlaybackRangeChange: (range: { start: number; end: number } | null) => void;
   onLoopPlaybackEnabledChange: (enabled: boolean) => void;
+  onToggleDetached?: () => void;
   onSeek: (time: number) => void;
   onPreviewFrame: (time: number | null) => void;
   onSelectItem: (item: SelectedItem) => void;
@@ -314,6 +316,7 @@ export function Timeline({
   currentTime,
   loopPlaybackRange,
   loopPlaybackEnabled,
+  isDetached = false,
   selectedItem,
   selectedTimelineItems,
   trackSnapEnabled,
@@ -331,6 +334,7 @@ export function Timeline({
   onToggleTrackSnap,
   onLoopPlaybackRangeChange,
   onLoopPlaybackEnabledChange,
+  onToggleDetached,
   onSeek,
   onPreviewFrame,
   onSelectItem,
@@ -1641,6 +1645,17 @@ export function Timeline({
             />
             <strong>{trackHeight}px</strong>
           </label>
+          {onToggleDetached ? (
+            <button
+              type="button"
+              className="panel-window-button"
+              title={isDetached ? "收回工作台" : "弹出独立窗口"}
+              aria-label={isDetached ? "收回工作台" : "弹出独立窗口"}
+              onClick={onToggleDetached}
+            >
+              {isDetached ? "↩" : "↗"}
+            </button>
+          ) : null}
         </div>
       </div>
       <div

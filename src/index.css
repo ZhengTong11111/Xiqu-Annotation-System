@@ -117,6 +117,7 @@ select {
 }
 
 .app-shell-body {
+  position: relative;
   min-height: 0;
   overflow: hidden;
   padding: 8px;
@@ -576,6 +577,21 @@ select {
   gap: 6px;
   min-width: 0;
   margin-left: auto;
+}
+
+.panel-window-button {
+  min-width: 22px;
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
 }
 
 .panel-collapse-button {
@@ -1863,6 +1879,105 @@ select {
   font-size: 10px;
   font-weight: 600;
   color: var(--ink-soft);
+}
+
+.left-workspace-empty {
+  background:
+    linear-gradient(180deg, rgba(241, 245, 251, 0.88), rgba(232, 239, 247, 0.8)),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.02), rgba(15, 23, 42, 0));
+  border: 1px dashed rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+}
+
+.left-workspace-single-pane {
+  height: 100%;
+  min-height: 0;
+}
+
+.workspace-float-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 35;
+}
+
+.floating-panel-window {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  min-width: 420px;
+  min-height: 260px;
+  border: 1px solid rgba(124, 142, 166, 0.8);
+  border-radius: 10px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(229, 236, 246, 0.98), rgba(218, 227, 239, 0.96));
+  box-shadow:
+    0 20px 36px rgba(15, 23, 42, 0.18),
+    0 1px 0 rgba(255, 255, 255, 0.7) inset;
+  pointer-events: auto;
+  backdrop-filter: blur(12px);
+  resize: both;
+}
+
+.floating-panel-window-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 8px 0 10px;
+  background: linear-gradient(180deg, rgba(38, 50, 69, 0.96), rgba(45, 58, 79, 0.9));
+  color: #f5f8ff;
+  cursor: move;
+  user-select: none;
+}
+
+.floating-panel-window-titlebar strong {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.floating-panel-window-close {
+  min-width: 22px;
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #f5f8ff;
+  box-shadow: none;
+}
+
+.floating-panel-window-close:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.floating-panel-window-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.floating-panel-window-body > .panel {
+  height: 100%;
+  min-height: 0;
+}
+
+.floating-panel-window-resize-hint {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+  background:
+    linear-gradient(135deg, transparent 0 38%, rgba(255, 255, 255, 0.36) 38% 44%, transparent 44% 56%, rgba(255, 255, 255, 0.28) 56% 62%, transparent 62% 100%);
+  opacity: 0.9;
 }
 
 .character-context-menu button.menu-option-active {
