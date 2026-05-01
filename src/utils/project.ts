@@ -117,6 +117,18 @@ export function buildTimelineTrackDefinitions(
     }
     const parentTrack = builtinTracks.find((item) => item.id === trackId) ??
       customTracks.find((item) => item.id === trackId);
+    const gongcheTrackDefinitions = parentTrack &&
+      (("type" in parentTrack && parentTrack.type === "character") ||
+        ("trackType" in parentTrack && parentTrack.trackType === "text"))
+      ? [{
+          id: getGongcheTrackId(parentTrack.id),
+          name: "工尺谱附属轨",
+          type: "gongche-attached" as const,
+          isGongcheTrack: true,
+          parentTrackId: parentTrack.id,
+          parentTrackName: parentTrack.name,
+        }]
+      : [];
     const attachedPointTrackDefinitions = parentTrack?.attachedPointTracksExpanded
       ? (parentTrack.attachedPointTracks ?? []).map((pointTrack) => ({
           id: pointTrack.id,
@@ -128,8 +140,16 @@ export function buildTimelineTrackDefinitions(
           parentTrackName: parentTrack.name,
         }))
       : [];
-    return [track, ...attachedPointTrackDefinitions];
+    return [track, ...gongcheTrackDefinitions, ...attachedPointTrackDefinitions];
   });
+}
+
+export function getGongcheTrackId(parentTrackId: string) {
+  return `gongche:${parentTrackId}`;
+}
+
+export function getParentTrackIdFromGongcheTrackId(trackId: string) {
+  return trackId.startsWith("gongche:") ? trackId.slice("gongche:".length) : null;
 }
 
 export function flattenCustomTrackBlocks(customTracks: CustomTrack[]): ResolvedCustomTrackBlock[] {
@@ -210,6 +230,7 @@ export function buildProjectFromLines(
     video,
     subtitleLines,
     characterAnnotations: subtitleLines.flatMap(splitLineIntoCharacters),
+    gongcheAnnotations: [],
     actionAnnotations: [],
     builtinTracks: getDefaultBuiltinTracks(),
     customTracks: [],
@@ -219,6 +240,7 @@ export function buildProjectFromLines(
 
 export function getProjectDuration(project: ProjectData): number {
   const customBlockEndTimes = flattenCustomTrackBlocks(project.customTracks).map((block) => block.endTime);
+  const gongcheEndTimes = (project.gongcheAnnotations ?? []).map((block) => block.endTime);
   const attachedPointTimes = [
     ...project.builtinTracks.flatMap((track) =>
       (track.attachedPointTracks ?? []).flatMap((pointTrack) => pointTrack.points.map((point) => point.time)),
@@ -231,6 +253,7 @@ export function getProjectDuration(project: ProjectData): number {
     0,
     ...project.subtitleLines.map((line) => line.endTime),
     ...project.characterAnnotations.map((char) => char.endTime),
+    ...gongcheEndTimes,
     ...project.actionAnnotations.map((action) => action.endTime),
     ...customBlockEndTimes,
     ...attachedPointTimes,

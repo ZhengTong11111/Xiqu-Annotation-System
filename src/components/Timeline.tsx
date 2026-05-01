@@ -6,6 +6,8 @@ import type {
   BuiltinTrackId,
   CharacterAnnotation,
   CustomTrack,
+  GongcheAnnotation,
+  GongcheSymbol,
   ProjectData,
   ResolvedCustomTrackBlock,
   SelectedItem,
@@ -18,13 +20,14 @@ import type {
   WaveformData,
 } from "../types";
 import { SpectrogramCanvas } from "./SpectrogramCanvas";
-import { clampRange } from "../utils/project";
+import { clampRange, getParentTrackIdFromGongcheTrackId } from "../utils/project";
 import { getSpectrogramFrequencyRange } from "../utils/spectrogram";
 
 type TimelineProps = {
   subtitleLines: SubtitleLine[];
   builtinTracks: BuiltinTrack[];
   characterAnnotations: CharacterAnnotation[];
+  gongcheAnnotations: GongcheAnnotation[];
   actionAnnotations: ActionAnnotation[];
   customTracks: CustomTrack[];
   trackDefinitions: TrackDefinition[];
@@ -81,6 +84,7 @@ type TimelineProps = {
   onCreateCharacterAtTime: (time: number, endTime?: number) => void;
   onCreateActionAtTime: (trackId: string, startTime: number) => void;
   onCreateCustomBlock: (trackId: string, startTime: number, endTime?: number) => void;
+  onCreateGongcheBlockAtTime: (parentTrackId: string, time: number) => void;
   onCreateAttachedPoint: (trackId: string, time: number) => void;
   onAddBuiltinTrack: (trackId: BuiltinTrackId) => void;
   onAddCustomTrack: (trackType: "text" | "action") => void;
@@ -97,6 +101,14 @@ type TimelineProps = {
   onActionCommit: (id: string, changes: Partial<ActionAnnotation>) => void;
   onAttachedPointChange: (trackId: string, pointId: string, changes: Partial<AttachedPointAnnotation>) => void;
   onAttachedPointCommit: (trackId: string, pointId: string, changes: Partial<AttachedPointAnnotation>) => void;
+  onGongcheBlockChange: (
+    id: string,
+    changes: Partial<Pick<GongcheAnnotation, "startTime" | "endTime" | "symbols">>,
+  ) => void;
+  onGongcheBlockCommit: (
+    id: string,
+    changes: Partial<Pick<GongcheAnnotation, "startTime" | "endTime" | "symbols">>,
+  ) => void;
   onCustomBlockChange: (
     trackId: string,
     id: string,
@@ -141,6 +153,28 @@ type DragState =
       parentTrackId: string;
       originX: number;
       originalTime: number;
+    }
+  | {
+      kind: "move-gongche";
+      id: string;
+      parentTrackId: string;
+      parentBlockId: string;
+      originX: number;
+      originalStart: number;
+      originalEnd: number;
+      parentStart: number;
+      parentEnd: number;
+      originalSymbols: GongcheSymbol[];
+    }
+  | {
+      kind: "move-gongche-boundary";
+      id: string;
+      boundaryIndex: number;
+      originX: number;
+      originalBoundaryTime: number;
+      minTime: number;
+      maxTime: number;
+      originalSymbols: GongcheSymbol[];
     }
   | {
       kind: "move-selection";
@@ -209,6 +243,7 @@ const CLICK_SUPPRESS_MS = 120;
 const FOCUS_SCROLL_DURATION_MS = 260;
 const SNAP_RELEASE_DISTANCE_PX = 16;
 const LOOP_RANGE_MIN_DURATION = 0.05;
+const MIN_GONGCHE_DURATION = 0.04;
 
 type ZoomGestureState = {
   startZoom: number;
@@ -248,6 +283,11 @@ type PendingDragUpdate =
       trackId: string;
       pointId: string;
       changes: Partial<AttachedPointAnnotation>;
+    }
+  | {
+      target: "gongche";
+      id: string;
+      changes: Partial<Pick<GongcheAnnotation, "startTime" | "endTime" | "symbols">>;
     }
   | {
       target: "custom-block";
@@ -320,6 +360,7 @@ export function Timeline({
   subtitleLines,
   builtinTracks,
   characterAnnotations,
+  gongcheAnnotations,
   actionAnnotations,
   customTracks,
   trackDefinitions,
@@ -376,6 +417,7 @@ export function Timeline({
   onCreateCharacterAtTime,
   onCreateActionAtTime,
   onCreateCustomBlock,
+  onCreateGongcheBlockAtTime,
   onCreateAttachedPoint,
   onAddBuiltinTrack,
   onAddCustomTrack,
@@ -392,6 +434,8 @@ export function Timeline({
   onActionCommit,
   onAttachedPointChange,
   onAttachedPointCommit,
+  onGongcheBlockChange,
+  onGongcheBlockCommit,
   onCustomBlockChange,
   onCustomBlockCommit,
   onBatchMoveChange,
@@ -903,12 +947,13 @@ export function Timeline({
       0,
       ...subtitleLines.flatMap((line) => [line.startTime, line.endTime]),
       ...characterAnnotations.flatMap((item) => [item.startTime, item.endTime]),
+      ...gongcheAnnotations.flatMap((item) => [item.startTime, item.endTime]),
       ...actionAnnotations.flatMap((item) => [item.startTime, item.endTime]),
       ...customBlocks.flatMap((item) => [item.startTime, item.endTime]),
       ...attachedPointTracks.flatMap((track) => track.points.map((point) => point.time)),
       currentTime,
     ];
-  }, [subtitleLines, characterAnnotations, actionAnnotations, customBlocks, attachedPointTracks, currentTime]);
+  }, [subtitleLines, characterAnnotations, gongcheAnnotations, actionAnnotations, customBlocks, attachedPointTracks, currentTime]);
 
   function getLiveSnapPoints() {
     const liveProject = getProjectSnapshot();
@@ -918,6 +963,7 @@ export function Timeline({
       0,
       ...liveProject.subtitleLines.flatMap((line) => [line.startTime, line.endTime]),
       ...liveProject.characterAnnotations.flatMap((item) => [item.startTime, item.endTime]),
+      ...(liveProject.gongcheAnnotations ?? []).flatMap((item) => [item.startTime, item.endTime]),
       ...liveProject.actionAnnotations.flatMap((item) => [item.startTime, item.endTime]),
       ...liveCustomBlocks.flatMap((item) => [item.startTime, item.endTime]),
       ...liveAttachedPointTracks.flatMap((track) => track.points.map((point) => point.time)),
@@ -959,6 +1005,15 @@ export function Timeline({
       return [
         ...parentTrackSnapPoints,
         ...waveformKeypoints,
+      ];
+    }
+    const gongcheParentTrackId = getParentTrackIdFromGongcheTrackId(trackId);
+    if (gongcheParentTrackId) {
+      return [
+        ...getTextParentBoundarySnapPoints(liveProject, gongcheParentTrackId),
+        ...(liveProject.gongcheAnnotations ?? [])
+          .filter((item) => item.parentTrackId === gongcheParentTrackId)
+          .flatMap((item) => [item.startTime, item.endTime, ...item.symbols.flatMap((symbol) => [symbol.startTime, symbol.endTime])]),
       ];
     }
     const customTrack = liveProject.customTracks.find((track) => track.id === trackId);
@@ -1394,6 +1449,32 @@ export function Timeline({
         return;
       }
 
+      if (activeDragState.kind === "move-gongche") {
+        const next = computeMovedGongcheBlock(activeDragState, deltaSeconds);
+        setActiveSnapIndicator(null);
+        dragSnapLockRef.current = null;
+        scheduleDragUpdate({
+          target: "gongche",
+          id: activeDragState.id,
+          changes: next,
+        });
+        queuePreviewFrame(next.startTime ?? activeDragState.originalStart);
+        return;
+      }
+
+      if (activeDragState.kind === "move-gongche-boundary") {
+        const next = computeMovedGongcheBoundary(activeDragState, deltaSeconds);
+        setActiveSnapIndicator(null);
+        dragSnapLockRef.current = null;
+        scheduleDragUpdate({
+          target: "gongche",
+          id: activeDragState.id,
+          changes: next,
+        });
+        queuePreviewFrame(next.symbols?.[activeDragState.boundaryIndex]?.endTime ?? activeDragState.originalBoundaryTime);
+        return;
+      }
+
       if (isLineDrag(activeDragState)) {
         dragSnapLockRef.current = null;
         setActiveSnapIndicator(null);
@@ -1586,6 +1667,20 @@ export function Timeline({
           time: finalTime,
         });
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
+      } else if (activeDragState.kind === "move-gongche") {
+        const next = computeMovedGongcheBlock(
+          activeDragState,
+          (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+        );
+        onGongcheBlockCommit(activeDragState.id, next);
+        suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
+      } else if (activeDragState.kind === "move-gongche-boundary") {
+        const next = computeMovedGongcheBoundary(
+          activeDragState,
+          (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+        );
+        onGongcheBlockCommit(activeDragState.id, next);
+        suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (activeDragState.kind === "resize-linked") {
         const next = computeLinkedResizeRange(
           activeDragState,
@@ -1696,6 +1791,8 @@ export function Timeline({
     onCharacterCommit,
     onActionChange,
     onActionCommit,
+    onGongcheBlockChange,
+    onGongcheBlockCommit,
     onCustomBlockChange,
     onCustomBlockCommit,
     onBatchMoveChange,
@@ -2265,17 +2362,19 @@ export function Timeline({
             {trackDefinitions.map((track) => {
               const parentTrackMeta = parentTrackMap.get(track.id);
               const pointTrack = track.type === "attached-point" ? attachedPointTrackMap.get(track.id) : null;
+              const gongcheParentTrackId = track.type === "gongche-attached" ? track.parentTrackId ?? "" : "";
               return (
               <div
                 key={track.id}
                 className={[
                   "timeline-track",
                   track.type === "attached-point" ? "timeline-track-attached-point" : "",
+                  track.type === "gongche-attached" ? "timeline-track-gongche" : "",
                   (track.isCustom || track.isBuiltin) && customTrackDropBeforeId === track.id ? "drop-target-before" : "",
                   (track.isCustom || track.isBuiltin) && customTrackDropAfterId === track.id ? "drop-target-after" : "",
                   draggedTrackId === track.id ? "drag-source" : "",
                 ].join(" ")}
-                style={{ height: track.type === "attached-point" ? Math.max(36, trackHeight - 14) : trackHeight }}
+                style={{ height: track.type === "attached-point" || track.type === "gongche-attached" ? Math.max(36, trackHeight - 14) : trackHeight }}
                 ref={(node) => {
                   if (!track.isCustom && !track.isBuiltin) {
                     return;
@@ -2294,7 +2393,8 @@ export function Timeline({
                     compactTrackLabels ? "compact" : "",
                     (
                       ((selectedItem?.type === "custom-track" || selectedItem?.type === "builtin-track") && selectedItem.id === track.id) ||
-                      (selectedItem?.type === "attached-point-track" && selectedItem.id === track.id)
+                      (selectedItem?.type === "attached-point-track" && selectedItem.id === track.id) ||
+                      (selectedItem?.type === "gongche-track" && selectedItem.parentTrackId === track.parentTrackId)
                     ) ? "selected" : "",
                     draggedTrackId === track.id ? "dragging" : "",
                     recentlyMovedTrackId === track.id ? "recently-moved" : "",
@@ -2316,6 +2416,8 @@ export function Timeline({
                       onSelectTrack(track.id);
                     } else if (track.isAttachedPointTrack && track.parentTrackId) {
                       onSelectAttachedPointTrack(track.id, track.parentTrackId);
+                    } else if (track.isGongcheTrack && track.parentTrackId) {
+                      onSelectItem({ type: "gongche-track", parentTrackId: track.parentTrackId });
                     }
                   }}
                   onPointerDown={(event) => {
@@ -2363,9 +2465,12 @@ export function Timeline({
                       {!compactAttachedPointMeta && track.isAttachedPointTrack ? (
                         <span>{track.parentTrackName ? `附属于 ${track.parentTrackName}` : "附属打点轨"}</span>
                       ) : null}
+                      {!compactAttachedPointMeta && track.isGongcheTrack ? (
+                        <span>{track.parentTrackName ? `附属于 ${track.parentTrackName}` : "附属文字轨"}</span>
+                      ) : null}
                     </div>
                     <div className="track-label-footer">
-                    {!track.isAttachedPointTrack ? (
+                    {!track.isAttachedPointTrack && !track.isGongcheTrack ? (
                     <label className="track-snap-toggle" onClick={(event) => event.stopPropagation()}>
                       <input
                         type="checkbox"
@@ -2376,7 +2481,9 @@ export function Timeline({
                       <span>吸附</span>
                     </label>
                     ) : (
-                      <span className="track-attached-point-caption">附属打点轨</span>
+                      <span className="track-attached-point-caption">
+                        {track.isGongcheTrack ? "工尺谱" : "附属打点轨"}
+                      </span>
                     )}
                       {track.isCustom || track.isBuiltin ? (
                         <div
@@ -2480,12 +2587,12 @@ export function Timeline({
                   className="track-lane"
                   onPointerDown={(event) => {
                     const target = event.target as HTMLElement | null;
-                    if (event.button !== 0 || target?.closest(".timeline-block, .timeline-point-marker")) {
+                    if (event.button !== 0 || target?.closest(".timeline-block, .timeline-point-marker, .timeline-gongche-block")) {
                       return;
                     }
                     onCloseContextMenu();
                     if (event.metaKey || event.ctrlKey) {
-                      if (track.type === "attached-point") {
+                      if (track.type === "attached-point" || track.type === "gongche-attached") {
                         return;
                       }
                       lastPointerClientXRef.current = event.clientX;
@@ -2522,9 +2629,13 @@ export function Timeline({
                     const snappedLaneTime = trackSnapEnabled[track.id]
                       ? snapTime(laneTime, creationSnapPoints, zoom)
                       : laneTime;
-                    if (!target?.closest(".timeline-block, .timeline-point-marker") && event.detail === 2) {
+                    if (!target?.closest(".timeline-block, .timeline-point-marker, .timeline-gongche-block") && event.detail === 2) {
                       if (track.type === "attached-point") {
                         onCreateAttachedPoint(track.id, snappedLaneTime);
+                        return;
+                      }
+                      if (track.type === "gongche-attached" && gongcheParentTrackId) {
+                        onCreateGongcheBlockAtTime(gongcheParentTrackId, snappedLaneTime);
                         return;
                       }
                       const startTime = snappedLaneTime;
@@ -2539,14 +2650,14 @@ export function Timeline({
                       onCreateActionAtTime(track.id, startTime);
                       return;
                     }
-                    if (!target?.closest(".timeline-block, .timeline-point-marker") && selectedTimelineItems.length > 1) {
+                    if (!target?.closest(".timeline-block, .timeline-point-marker, .timeline-gongche-block") && selectedTimelineItems.length > 1) {
                       onSelectTimelineItems([], null);
                     }
                     onSeek(laneTime);
                   }}
                   onContextMenu={(event) => {
                     const target = event.target as HTMLElement | null;
-                    if (target?.closest(".timeline-block, .timeline-point-marker")) {
+                    if (target?.closest(".timeline-block, .timeline-point-marker, .timeline-gongche-block")) {
                       return;
                     }
                     event.preventDefault();
@@ -2566,6 +2677,10 @@ export function Timeline({
                         ? pointTrack
                           ? pointTrack.points.map((point) => renderAttachedPoint(point, pointTrack))
                           : []
+                      : track.type === "gongche-attached"
+                        ? gongcheAnnotations
+                            .filter((annotation) => annotation.parentTrackId === gongcheParentTrackId)
+                            .map((annotation) => renderGongcheBlock(annotation))
                       : customBlocks
                           .filter((annotation) => annotation.trackId === track.id)
                           .map((annotation) => renderBlock(annotation, "custom-block"))}
@@ -3213,6 +3328,145 @@ export function Timeline({
     );
   }
 
+  function renderGongcheBlock(annotation: GongcheAnnotation) {
+    const parentBlock = findTimelineGongcheParentBlock(
+      annotation.parentTrackId,
+      annotation.parentBlockId,
+      characterAnnotations,
+      customBlocks,
+    );
+    if (!parentBlock) {
+      return null;
+    }
+    const isSelected = selectedItem?.type === "gongche-block" && selectedItem.id === annotation.id;
+    const isActive = currentTime >= annotation.startTime && currentTime <= annotation.endTime;
+    const left = annotation.startTime * zoom;
+    const width = Math.max((annotation.endTime - annotation.startTime) * zoom, 10);
+    const displaySymbols = annotation.symbols.length > 0
+      ? annotation.symbols
+      : [{
+          id: `${annotation.id}-empty`,
+          label: "工",
+          startTime: annotation.startTime,
+          endTime: annotation.endTime,
+          assetUrl: null,
+        }];
+
+    return (
+      <button
+        key={annotation.id}
+        type="button"
+        className={[
+          "timeline-gongche-block",
+          isSelected ? "selected" : "",
+          isActive ? "active" : "",
+        ].join(" ")}
+        style={{ left, width }}
+        title={`工尺谱：${displaySymbols.map((symbol) => symbol.label).join(" ")}`}
+        onPointerDown={(event) => {
+          if (event.button !== 0) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          onCloseContextMenu();
+          if (event.metaKey || event.ctrlKey) {
+            return;
+          }
+          lastPointerClientXRef.current = event.clientX;
+          setDragState({
+            kind: "move-gongche",
+            id: annotation.id,
+            parentTrackId: annotation.parentTrackId,
+            parentBlockId: annotation.parentBlockId,
+            originX: event.clientX,
+            originalStart: annotation.startTime,
+            originalEnd: annotation.endTime,
+            parentStart: parentBlock.startTime,
+            parentEnd: parentBlock.endTime,
+            originalSymbols: annotation.symbols.map((symbol) => ({ ...symbol })),
+          });
+          onSelectItem({ type: "gongche-block", id: annotation.id });
+        }}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onCloseContextMenu();
+          if (performance.now() < suppressCanvasClickUntilRef.current) {
+            return;
+          }
+          onUpdatePasteTarget(getGongcheTrackIdForParent(annotation.parentTrackId), annotation.startTime);
+          onSelectItem({ type: "gongche-block", id: annotation.id });
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onCloseContextMenu();
+          onSelectItem({ type: "gongche-block", id: annotation.id });
+        }}
+      >
+        <span className="timeline-gongche-line" />
+        <span className="timeline-gongche-symbols">
+          {displaySymbols.map((symbol) => (
+            <span
+              key={symbol.id}
+              className="timeline-gongche-symbol"
+              style={{
+                left: `${((symbol.startTime - annotation.startTime) / Math.max(annotation.endTime - annotation.startTime, 0.001)) * 100}%`,
+                width: `${((symbol.endTime - symbol.startTime) / Math.max(annotation.endTime - annotation.startTime, 0.001)) * 100}%`,
+              }}
+            >
+              {symbol.label}
+            </span>
+          ))}
+        </span>
+        {annotation.symbols.slice(0, -1).map((symbol, index) => {
+          const position = ((symbol.endTime - annotation.startTime) /
+            Math.max(annotation.endTime - annotation.startTime, 0.001)) * 100;
+          return (
+            <span
+              key={`boundary-${symbol.id}`}
+              className="timeline-gongche-boundary"
+              style={{ left: `${position}%` }}
+              title="拖动调整工尺符号分界"
+              onPointerDown={(event) => {
+                if (event.button !== 0) {
+                  return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                onCloseContextMenu();
+                lastPointerClientXRef.current = event.clientX;
+                const previousSymbol = annotation.symbols[index - 1];
+                const nextSymbol = annotation.symbols[index + 1];
+                setDragState({
+                  kind: "move-gongche-boundary",
+                  id: annotation.id,
+                  boundaryIndex: index,
+                  originX: event.clientX,
+                  originalBoundaryTime: symbol.endTime,
+                  minTime: previousSymbol ? previousSymbol.endTime + MIN_GONGCHE_DURATION : annotation.startTime + MIN_GONGCHE_DURATION,
+                  maxTime: nextSymbol ? nextSymbol.endTime - MIN_GONGCHE_DURATION : annotation.endTime - MIN_GONGCHE_DURATION,
+                  originalSymbols: annotation.symbols.map((item) => ({ ...item })),
+                });
+                onSelectItem({ type: "gongche-block", id: annotation.id });
+              }}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              onDoubleClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onSelectItem({ type: "gongche-block", id: annotation.id });
+              }}
+            />
+          );
+        })}
+      </button>
+    );
+  }
+
   function queueZoom(nextZoom: number, anchorTime?: number, viewportOffset?: number) {
     markSpectrogramZoomPreview();
     const container = scrollRef.current;
@@ -3360,6 +3614,10 @@ export function Timeline({
     }
     if (pendingDragUpdate.target === "attached-point") {
       onAttachedPointChange(pendingDragUpdate.trackId, pendingDragUpdate.pointId, pendingDragUpdate.changes);
+      return;
+    }
+    if (pendingDragUpdate.target === "gongche") {
+      onGongcheBlockChange(pendingDragUpdate.id, pendingDragUpdate.changes);
       return;
     }
     if (pendingDragUpdate.target === "selection") {
@@ -4209,6 +4467,54 @@ function isActionDrag(
   return dragState.kind.includes("action") && dragState.kind !== "create-track-item";
 }
 
+function computeMovedGongcheBlock(
+  dragState: Extract<NonNullable<DragState>, { kind: "move-gongche" }>,
+  deltaSeconds: number,
+): Partial<Pick<GongcheAnnotation, "startTime" | "endTime" | "symbols">> {
+  const duration = Math.max(dragState.originalEnd - dragState.originalStart, MIN_GONGCHE_DURATION);
+  const minStart = dragState.parentStart;
+  const maxStart = Math.max(dragState.parentStart, dragState.parentEnd - duration);
+  const nextStart = clampValue(dragState.originalStart + deltaSeconds, minStart, maxStart);
+  const appliedDelta = nextStart - dragState.originalStart;
+  return {
+    startTime: nextStart,
+    endTime: nextStart + duration,
+    symbols: dragState.originalSymbols.map((symbol) => ({
+      ...symbol,
+      startTime: symbol.startTime + appliedDelta,
+      endTime: symbol.endTime + appliedDelta,
+    })),
+  };
+}
+
+function computeMovedGongcheBoundary(
+  dragState: Extract<NonNullable<DragState>, { kind: "move-gongche-boundary" }>,
+  deltaSeconds: number,
+): Partial<Pick<GongcheAnnotation, "symbols">> {
+  const nextBoundaryTime = clampValue(
+    dragState.originalBoundaryTime + deltaSeconds,
+    dragState.minTime,
+    dragState.maxTime,
+  );
+  return {
+    symbols: dragState.originalSymbols.map((symbol, index) => {
+      if (index === dragState.boundaryIndex) {
+        return {
+          ...symbol,
+          endTime: nextBoundaryTime,
+        };
+      }
+      if (index === dragState.boundaryIndex + 1) {
+        return {
+          ...symbol,
+          startTime: nextBoundaryTime,
+        };
+      }
+      return symbol;
+    }),
+  };
+}
+
 function getDraftStyle(
   dragState: Extract<NonNullable<DragState>, { kind: "create-track-item" }>,
 ) {
@@ -4334,6 +4640,48 @@ function flattenAttachedPointTracks(
       points: pointTrack.points,
     })),
   );
+}
+
+function findTimelineGongcheParentBlock(
+  parentTrackId: string,
+  parentBlockId: string,
+  characterAnnotations: CharacterAnnotation[],
+  customBlocks: ResolvedCustomTrackBlock[],
+) {
+  if (parentTrackId === "character-track") {
+    const character = characterAnnotations.find((item) => item.id === parentBlockId);
+    return character
+      ? {
+          startTime: character.startTime,
+          endTime: character.endTime,
+          label: character.char,
+        }
+      : null;
+  }
+  const block = customBlocks.find((item) =>
+    item.trackId === parentTrackId &&
+    item.id === parentBlockId &&
+    item.trackType === "text",
+  );
+  return block
+    ? {
+        startTime: block.startTime,
+        endTime: block.endTime,
+        label: block.text ?? block.type,
+      }
+    : null;
+}
+
+function getTextParentBoundarySnapPoints(project: ProjectData, parentTrackId: string) {
+  if (parentTrackId === "character-track") {
+    return project.characterAnnotations.flatMap((item) => [item.startTime, item.endTime]);
+  }
+  const customTrack = project.customTracks.find((track) => track.id === parentTrackId && track.trackType === "text");
+  return customTrack?.blocks.flatMap((item) => [item.startTime, item.endTime]) ?? [];
+}
+
+function getGongcheTrackIdForParent(parentTrackId: string) {
+  return `gongche:${parentTrackId}`;
 }
 
 function findResolvedAttachedPointTrack(project: ProjectData, trackId: string) {

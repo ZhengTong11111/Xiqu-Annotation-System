@@ -27,6 +27,8 @@ import type {
   CharacterAnnotation,
   CustomTrack,
   CustomTrackType,
+  GongcheAnnotation,
+  GongcheSymbol,
   ProjectData,
   ResolvedCustomTrackBlock,
   SavedProjectFile,
@@ -89,6 +91,24 @@ type PointTrackLocation =
       parentTrack: CustomTrack;
       pointTrack: AttachedPointTrack;
     };
+
+type GongcheParentBlock = {
+  parentTrackId: string;
+  parentBlockId: string;
+  label: string;
+  startTime: number;
+  endTime: number;
+};
+
+type ParsedGongcheEntry = {
+  text: string;
+  symbols: Array<{
+    label: string;
+    notation: string;
+    rawText: string;
+    parenthesized: boolean;
+  }>;
+};
 
 type TimelineClipboardItem =
   | {
@@ -462,6 +482,17 @@ function App() {
       const track = currentProject.customTracks.find((item) => item.id === nextSelectedItem.trackId);
       const block = track?.blocks.find((item) => item.id === nextSelectedItem.id);
       if (track?.autoSetLoopRangeOnSelect && block) {
+        setLoopPlaybackRange({ start: block.startTime, end: block.endTime });
+      }
+      return;
+    }
+    if (nextSelectedItem.type === "gongche-block") {
+      const block = currentProject.gongcheAnnotations.find((item) => item.id === nextSelectedItem.id);
+      const parentTrack = block
+        ? currentProject.builtinTracks.find((item) => item.id === block.parentTrackId) ??
+          currentProject.customTracks.find((item) => item.id === block.parentTrackId)
+        : null;
+      if (parentTrack?.autoSetLoopRangeOnSelect && block) {
         setLoopPlaybackRange({ start: block.startTime, end: block.endTime });
       }
     }
@@ -940,12 +971,16 @@ function App() {
   function updateCharacter(id: string, changes: Partial<CharacterAnnotation>, recordHistory = true) {
     const currentProject = projectRef.current;
     const currentCharacter = currentProject.characterAnnotations.find((item) => item.id === id);
-    const nextProject = {
+    const timingParentBefore = currentCharacter &&
+      (changes.startTime !== undefined || changes.endTime !== undefined)
+      ? new Map([[getGongcheParentKey("character-track", currentCharacter.id), toCharacterGongcheParent(currentCharacter)]])
+      : new Map<string, GongcheParentBlock>();
+    const nextProject = synchronizeGongcheWithChangedParents({
       ...currentProject,
       characterAnnotations: currentProject.characterAnnotations.map((item) =>
         item.id === id ? { ...item, ...changes } : item,
       ),
-    };
+    }, timingParentBefore);
     const synchronizedProject =
       currentCharacter && (
         changes.char !== undefined ||
@@ -973,8 +1008,13 @@ function App() {
     }
     const deltaSeconds = changes.startTime - currentLine.startTime;
     const hasCharacters = currentProject.characterAnnotations.some((item) => item.lineId === id);
+    const timingParentsBefore = new Map(
+      currentProject.characterAnnotations
+        .filter((item) => item.lineId === id)
+        .map((item) => [getGongcheParentKey("character-track", item.id), toCharacterGongcheParent(item)]),
+    );
 
-    const shiftedProject = {
+    const shiftedProject = synchronizeGongcheWithChangedParents({
       ...currentProject,
       subtitleLines: currentProject.subtitleLines.map((line) =>
         line.id === id
@@ -992,7 +1032,7 @@ function App() {
               : item,
           )
         : currentProject.characterAnnotations,
-    };
+    }, timingParentsBefore);
 
     const synchronizedProject = hasCharacters
       ? syncSubtitleLine(shiftedProject, id)
@@ -1279,16 +1319,30 @@ function App() {
     },
     recordHistory = true,
   ) {
-    updateCustomTrack(
-      trackId,
-      (track) => ({
-        ...track,
-        blocks: track.blocks.map((block) =>
-          block.id === blockId ? { ...block, ...changes } : block,
-        ) as CustomTrack["blocks"],
-      }) as CustomTrack,
-      recordHistory,
-    );
+    const currentProject = projectRef.current;
+    const currentBlock = findCustomBlock(currentProject.customTracks, trackId, blockId);
+    const timingParentsBefore = currentBlock &&
+      (changes.startTime !== undefined || changes.endTime !== undefined)
+      ? new Map([[getGongcheParentKey(trackId, blockId), toCustomBlockGongcheParent(currentBlock)]])
+      : new Map<string, GongcheParentBlock>();
+    const nextProject = synchronizeGongcheWithChangedParents({
+      ...currentProject,
+      customTracks: currentProject.customTracks.map((track) =>
+        track.id === trackId
+          ? {
+              ...track,
+              blocks: track.blocks.map((block) =>
+                block.id === blockId ? { ...block, ...changes } : block,
+              ) as CustomTrack["blocks"],
+            }
+          : track,
+      ) as CustomTrack[],
+    }, timingParentsBefore);
+    if (recordHistory) {
+      commitProject(nextProject);
+    } else {
+      applyProjectWithoutHistory(nextProject);
+    }
   }
 
   function startCustomTextEdit(trackId: string, blockId: string) {
@@ -1675,6 +1729,7 @@ function App() {
     }
 
     const currentProject = projectRef.current;
+    const timingParentsBefore = new Map<string, GongcheParentBlock>();
     const characterUpdates = new Map(
       items
         .filter((item): item is TimelineBatchMoveItem & { type: "character" } => item.type === "character")
@@ -1702,8 +1757,20 @@ function App() {
         .map((item) => [`${item.trackId}:${item.id}`, item]),
     );
     const affectedLineIds = new Set<string>();
+    for (const item of characterUpdates.values()) {
+      const character = currentProject.characterAnnotations.find((candidate) => candidate.id === item.id);
+      if (character) {
+        timingParentsBefore.set(getGongcheParentKey("character-track", character.id), toCharacterGongcheParent(character));
+      }
+    }
+    for (const item of customBlockUpdates.values()) {
+      const block = findCustomBlock(currentProject.customTracks, item.trackId, item.id);
+      if (block?.trackType === "text") {
+        timingParentsBefore.set(getGongcheParentKey(item.trackId, item.id), toCustomBlockGongcheParent(block));
+      }
+    }
 
-    const nextProject = {
+    const nextProject = synchronizeGongcheWithChangedParents({
       ...currentProject,
       characterAnnotations: currentProject.characterAnnotations.map((item) => {
         const update = characterUpdates.get(item.id);
@@ -1771,7 +1838,7 @@ function App() {
           };
         }) as CustomTrack["blocks"],
       })) as CustomTrack[],
-    };
+    }, timingParentsBefore);
 
     const synchronizedProject = affectedLineIds.size > 0
       ? syncSubtitleLines(nextProject, Array.from(affectedLineIds))
@@ -1898,7 +1965,10 @@ function App() {
       (sum, pointTrack) => sum + pointTrack.points.length,
       0,
     );
-    const affectedCount = affectedCharacterCount + affectedActionCount + affectedPointCount;
+    const affectedGongcheCount = currentProject.gongcheAnnotations.filter((item) =>
+      item.parentTrackId === trackId,
+    ).length;
+    const affectedCount = affectedCharacterCount + affectedActionCount + affectedPointCount + affectedGongcheCount;
     const confirmed = window.confirm(
       `确定要删除轨道“${targetTrack.name}”吗？` +
         `\n删除轨道会同时删除轨道上的全部标注` +
@@ -1915,18 +1985,22 @@ function App() {
           builtinTracks: currentProject.builtinTracks.filter((track) => track.id !== trackId),
           activeTrackOrder: currentProject.activeTrackOrder.filter((id) => id !== trackId),
           characterAnnotations: [],
+          gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
         }
       : {
           ...currentProject,
           builtinTracks: currentProject.builtinTracks.filter((track) => track.id !== trackId),
           activeTrackOrder: currentProject.activeTrackOrder.filter((id) => id !== trackId),
           actionAnnotations: currentProject.actionAnnotations.filter((item) => item.trackId !== trackId),
+          gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
         };
 
     if (trackId === "character-track") {
       cancelCharacterTextEdit();
       if (
         selectedItem?.type === "character" ||
+        selectedItem?.type === "gongche-block" ||
+        selectedItem?.type === "gongche-track" ||
         (selectedItem?.type === "builtin-track" && selectedItem.id === trackId) ||
         (selectedItem?.type === "attached-point-track" && selectedItem.parentTrackId === trackId) ||
         (selectedItem?.type === "attached-point" && selectedItem.parentTrackId === trackId)
@@ -2062,6 +2136,141 @@ function App() {
       setEditingCustomTextBlock({ trackId, id: nextBlock.id });
       setEditingCustomTextValue(DEFAULT_CUSTOM_TEXT);
     }
+  }
+
+  function createGongcheBlock(parentTrackId: string, parentBlockId: string) {
+    const currentProject = projectRef.current;
+    const parentBlock = findGongcheParentBlock(currentProject, parentTrackId, parentBlockId);
+    if (!parentBlock) {
+      return;
+    }
+    const existingBlock = currentProject.gongcheAnnotations.find((item) =>
+      item.parentTrackId === parentTrackId && item.parentBlockId === parentBlockId,
+    );
+    if (existingBlock) {
+      applySelection({ type: "gongche-block", id: existingBlock.id });
+      return;
+    }
+    const nextBlock: GongcheAnnotation = {
+      id: `gongche-${crypto.randomUUID()}`,
+      parentTrackId,
+      parentBlockId,
+      startTime: parentBlock.startTime,
+      endTime: parentBlock.endTime,
+      symbols: [{
+        id: `gongche-symbol-${crypto.randomUUID()}`,
+        label: "合",
+        notation: "",
+        rawText: "合",
+        parenthesized: false,
+        startTime: parentBlock.startTime,
+        endTime: parentBlock.endTime,
+        assetUrl: null,
+      }],
+    };
+    commitProject({
+      ...currentProject,
+      gongcheAnnotations: [...currentProject.gongcheAnnotations, nextBlock],
+    });
+    applySelection({ type: "gongche-block", id: nextBlock.id });
+  }
+
+  function createGongcheBlockAtTime(parentTrackId: string, time: number) {
+    const parentBlock = findGongcheParentBlockAtTime(projectRef.current, parentTrackId, time);
+    if (!parentBlock) {
+      return;
+    }
+    createGongcheBlock(parentTrackId, parentBlock.parentBlockId);
+  }
+
+  function updateGongcheBlock(
+    id: string,
+    changes: Partial<Pick<GongcheAnnotation, "startTime" | "endTime" | "symbols">>,
+    recordHistory = true,
+  ) {
+    const currentProject = projectRef.current;
+    const currentBlock = currentProject.gongcheAnnotations.find((item) => item.id === id);
+    if (!currentBlock) {
+      return;
+    }
+    const parentBlock = findGongcheParentBlock(currentProject, currentBlock.parentTrackId, currentBlock.parentBlockId);
+    const nextBlock = normalizeGongcheBlockTiming({
+      ...currentBlock,
+      ...changes,
+    }, parentBlock);
+    const nextProject = {
+      ...currentProject,
+      gongcheAnnotations: currentProject.gongcheAnnotations.map((item) =>
+        item.id === id ? nextBlock : item,
+      ),
+    };
+    if (recordHistory) {
+      commitProject(nextProject);
+    } else {
+      applyProjectWithoutHistory(nextProject);
+    }
+  }
+
+  function changeGongcheBlock(
+    id: string,
+    changes: Partial<Pick<GongcheAnnotation, "startTime" | "endTime" | "symbols">>,
+  ) {
+    updateGongcheBlock(id, changes, false);
+  }
+
+  function commitGongcheBlock(
+    id: string,
+    changes: Partial<Pick<GongcheAnnotation, "startTime" | "endTime" | "symbols">>,
+  ) {
+    updateGongcheBlock(id, changes, true);
+  }
+
+  function importGongcheText(parentTrackId: string, sourceText: string) {
+    const currentProject = projectRef.current;
+    const parsedEntries = parseGongcheSourceText(sourceText);
+    const parentBlocks = getOrderedGongcheParentBlocks(currentProject, parentTrackId);
+    const alignedPairs = alignGongcheEntriesToParentBlocks(parsedEntries, parentBlocks);
+    const importedBlocks: GongcheAnnotation[] = [];
+    let updated = 0;
+
+    for (const pair of alignedPairs) {
+      const entry = parsedEntries[pair.entryIndex];
+      const parentBlock = parentBlocks[pair.parentIndex];
+      const existingBlock = currentProject.gongcheAnnotations.find((item) =>
+        item.parentTrackId === parentTrackId && item.parentBlockId === parentBlock.parentBlockId,
+      );
+      if (existingBlock) {
+        updated += 1;
+      }
+      importedBlocks.push({
+        id: existingBlock?.id ?? `gongche-${crypto.randomUUID()}`,
+        parentTrackId,
+        parentBlockId: parentBlock.parentBlockId,
+        startTime: parentBlock.startTime,
+        endTime: parentBlock.endTime,
+        symbols: distributeParsedGongcheSymbols(entry.symbols, parentBlock.startTime, parentBlock.endTime),
+      });
+    }
+
+    if (importedBlocks.length > 0) {
+      const importedKeys = new Set(importedBlocks.map((block) => getGongcheParentKey(block.parentTrackId, block.parentBlockId)));
+      commitProject({
+        ...currentProject,
+        gongcheAnnotations: [
+          ...currentProject.gongcheAnnotations.filter((block) =>
+            !importedKeys.has(getGongcheParentKey(block.parentTrackId, block.parentBlockId)),
+          ),
+          ...importedBlocks,
+        ],
+      });
+    }
+
+    return {
+      parsed: parsedEntries.length,
+      imported: importedBlocks.length - updated,
+      updated,
+      unmatched: parsedEntries.length - importedBlocks.length,
+    };
   }
 
   function applyCharacterLineAction(id: string, action: CharacterLineAction) {
@@ -2229,6 +2438,10 @@ function App() {
           )
           .map((item) => `${item.trackId}:${item.id}`),
       );
+      const gongcheParentKeys = new Set([
+        ...Array.from(characterIds).map((id) => getGongcheParentKey("character-track", id)),
+        ...Array.from(customBlockKeys),
+      ]);
       const attachedPointKeys = new Set(
         timelineSelection
           .filter(
@@ -2247,6 +2460,9 @@ function App() {
         {
           ...currentProject,
           characterAnnotations: currentProject.characterAnnotations.filter((item) => !characterIds.has(item.id)),
+          gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) =>
+            !gongcheParentKeys.has(getGongcheParentKey(item.parentTrackId, item.parentBlockId)),
+          ),
           actionAnnotations: currentProject.actionAnnotations.filter((item) => !actionIds.has(item.id)),
           builtinTracks: currentProject.builtinTracks.map((track) => ({
             ...track,
@@ -2292,6 +2508,9 @@ function App() {
       const nextProject = syncSubtitleLine({
         ...currentProject,
         characterAnnotations: currentProject.characterAnnotations.filter((item) => item.id !== selectedItem.id),
+        gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) =>
+          item.parentTrackId !== "character-track" || item.parentBlockId !== selectedItem.id,
+        ),
       }, currentCharacter.lineId);
       commitProject(nextProject);
       if (editingCharacterId === selectedItem.id) {
@@ -2309,6 +2528,9 @@ function App() {
     if (selectedItem.type === "custom-block") {
       commitProject({
         ...currentProject,
+        gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) =>
+          item.parentTrackId !== selectedItem.trackId || item.parentBlockId !== selectedItem.id,
+        ),
         customTracks: currentProject.customTracks.map((track) =>
           track.id === selectedItem.trackId
             ? {
@@ -2324,6 +2546,13 @@ function App() {
       ) {
         cancelCustomTextEdit();
       }
+      applySelection(null);
+    }
+    if (selectedItem.type === "gongche-block") {
+      commitProject({
+        ...currentProject,
+        gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.id !== selectedItem.id),
+      });
       applySelection(null);
     }
     if (selectedItem.type === "attached-point") {
@@ -2810,10 +3039,11 @@ function App() {
     }
     const blockCount = track.blocks.length;
     const pointCount = (track.attachedPointTracks ?? []).reduce((sum, pointTrack) => sum + pointTrack.points.length, 0);
+    const gongcheCount = currentProject.gongcheAnnotations.filter((item) => item.parentTrackId === trackId).length;
     const confirmed = window.confirm(
       `确定要删除轨道“${track.name}”吗？` +
         `\n删除轨道会同时删除轨道上的全部标注` +
-        (blockCount + pointCount > 0 ? `（当前共 ${blockCount + pointCount} 条）` : "") +
+        (blockCount + pointCount + gongcheCount > 0 ? `（当前共 ${blockCount + pointCount + gongcheCount} 条）` : "") +
         `，此操作会进入撤销历史。`,
     );
     if (!confirmed) {
@@ -2823,6 +3053,7 @@ function App() {
       ...currentProject,
       activeTrackOrder: currentProject.activeTrackOrder.filter((id) => id !== trackId),
       customTracks: currentProject.customTracks.filter((item) => item.id !== trackId) as CustomTrack[],
+      gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
     };
     if (editingCustomTextBlock?.trackId === trackId) {
       cancelCustomTextEdit();
@@ -2831,6 +3062,9 @@ function App() {
     if (
       (selectedItem?.type === "custom-track" && selectedItem.id === trackId) ||
       (selectedItem?.type === "custom-block" && selectedItem.trackId === trackId) ||
+      (selectedItem?.type === "gongche-track" && selectedItem.parentTrackId === trackId) ||
+      (selectedItem?.type === "gongche-block" &&
+        currentProject.gongcheAnnotations.some((item) => item.id === selectedItem.id && item.parentTrackId === trackId)) ||
       (selectedItem?.type === "attached-point-track" && selectedItem.parentTrackId === trackId) ||
       (selectedItem?.type === "attached-point" && selectedItem.parentTrackId === trackId)
     ) {
@@ -3174,6 +3408,7 @@ function App() {
         subtitleLines={project.subtitleLines}
         builtinTracks={project.builtinTracks}
         characterAnnotations={project.characterAnnotations}
+        gongcheAnnotations={project.gongcheAnnotations}
         actionAnnotations={project.actionAnnotations}
         customTracks={project.customTracks}
         trackDefinitions={timelineTrackDefinitions}
@@ -3245,6 +3480,7 @@ function App() {
         onCreateCharacterAtTime={createCharacterAtTime}
         onCreateActionAtTime={createActionAtTime}
         onCreateCustomBlock={createCustomBlock}
+        onCreateGongcheBlockAtTime={createGongcheBlockAtTime}
         onAddCustomTrack={addCustomTrack}
         onUpdatePasteTarget={updateTimelinePasteTarget}
         onSelectBuiltinTrack={(trackId) => {
@@ -3328,6 +3564,8 @@ function App() {
         onActionCommit={(id, changes) => updateAction(id, changes, true)}
         onAttachedPointChange={changeAttachedPoint}
         onAttachedPointCommit={commitAttachedPoint}
+        onGongcheBlockChange={changeGongcheBlock}
+        onGongcheBlockCommit={commitGongcheBlock}
         onCustomBlockChange={(trackId, id, changes) => updateCustomBlock(trackId, id, changes, false)}
         onCustomBlockCommit={(trackId, id, changes) => updateCustomBlock(trackId, id, changes, true)}
         onBatchMoveChange={(items) => updateTimelineSelectionBatch(items, false)}
@@ -3571,12 +3809,16 @@ function App() {
                       selectedItem={selectedItem}
                       subtitleLines={project.subtitleLines}
                       characterAnnotations={project.characterAnnotations}
+                      gongcheAnnotations={project.gongcheAnnotations}
                       actionAnnotations={project.actionAnnotations}
                       builtinTracks={project.builtinTracks}
                       customTracks={project.customTracks}
                       trackDefinitions={timelineTrackDefinitions}
                       trackSnapEnabled={trackSnapEnabled}
                       onCharacterUpdate={updateCharacter}
+                      onCreateGongcheBlock={createGongcheBlock}
+                      onGongcheBlockUpdate={(id, changes) => updateGongcheBlock(id, changes)}
+                      onImportGongcheText={importGongcheText}
                       onActionUpdate={updateAction}
                       onAttachedPointUpdate={commitAttachedPoint}
                       onTrackWaveformSnapChange={updateTrackWaveformSnap}
@@ -4465,6 +4707,10 @@ function cloneProjectForMerge(project: ProjectData): ProjectData {
     ...project,
     subtitleLines: project.subtitleLines.map((line) => ({ ...line })),
     characterAnnotations: project.characterAnnotations.map((item) => ({ ...item })),
+    gongcheAnnotations: project.gongcheAnnotations.map((item) => ({
+      ...item,
+      symbols: item.symbols.map((symbol) => ({ ...symbol })),
+    })),
     actionAnnotations: project.actionAnnotations.map((item) => ({ ...item })),
     builtinTracks: project.builtinTracks.map((track) => ({
       ...track,
@@ -5021,6 +5267,411 @@ function findCustomBlock(
   };
 }
 
+function getGongcheParentKey(parentTrackId: string, parentBlockId: string) {
+  return `${parentTrackId}:${parentBlockId}`;
+}
+
+function toCharacterGongcheParent(character: CharacterAnnotation): GongcheParentBlock {
+  return {
+    parentTrackId: "character-track",
+    parentBlockId: character.id,
+    label: character.char,
+    startTime: character.startTime,
+    endTime: character.endTime,
+  };
+}
+
+function toCustomBlockGongcheParent(block: ResolvedCustomTrackBlock): GongcheParentBlock {
+  return {
+    parentTrackId: block.trackId,
+    parentBlockId: block.id,
+    label: block.text ?? block.type,
+    startTime: block.startTime,
+    endTime: block.endTime,
+  };
+}
+
+function findGongcheParentBlock(
+  project: ProjectData,
+  parentTrackId: string,
+  parentBlockId: string,
+): GongcheParentBlock | null {
+  if (parentTrackId === "character-track") {
+    const character = project.characterAnnotations.find((item) => item.id === parentBlockId);
+    return character ? toCharacterGongcheParent(character) : null;
+  }
+  const block = findCustomBlock(project.customTracks, parentTrackId, parentBlockId);
+  return block?.trackType === "text" ? toCustomBlockGongcheParent(block) : null;
+}
+
+function findGongcheParentBlockAtTime(project: ProjectData, parentTrackId: string, time: number) {
+  if (parentTrackId === "character-track") {
+    const character = project.characterAnnotations.find((item) => time >= item.startTime && time <= item.endTime);
+    return character ? toCharacterGongcheParent(character) : null;
+  }
+  const track = project.customTracks.find((item) => item.id === parentTrackId && item.trackType === "text");
+  const block = track?.blocks.find((item) => time >= item.startTime && time <= item.endTime);
+  return track && block
+    ? toCustomBlockGongcheParent({
+        id: block.id,
+        trackId: track.id,
+        trackType: track.trackType,
+        startTime: block.startTime,
+        endTime: block.endTime,
+        type: block.type,
+        text: "text" in block && typeof block.text === "string" ? block.text : undefined,
+      })
+    : null;
+}
+
+function getOrderedGongcheParentBlocks(project: ProjectData, parentTrackId: string): GongcheParentBlock[] {
+  if (parentTrackId === "character-track") {
+    return sortCharactersByTime(project.characterAnnotations).map(toCharacterGongcheParent);
+  }
+  const track = project.customTracks.find((item) => item.id === parentTrackId && item.trackType === "text");
+  return track
+    ? [...track.blocks]
+        .sort((left, right) => left.startTime - right.startTime)
+        .map((block) => toCustomBlockGongcheParent({
+          id: block.id,
+          trackId: track.id,
+          trackType: track.trackType,
+          startTime: block.startTime,
+          endTime: block.endTime,
+          type: block.type,
+          text: "text" in block && typeof block.text === "string" ? block.text : undefined,
+        }))
+    : [];
+}
+
+function parseGongcheSourceText(sourceText: string): ParsedGongcheEntry[] {
+  const entries: ParsedGongcheEntry[] = [];
+  const pattern = /([^\s{}])\{([^{}]*)\}/gu;
+  for (const match of sourceText.matchAll(pattern)) {
+    const text = match[1];
+    const content = match[2];
+    if (!isPotentialLyricCharacter(text)) {
+      continue;
+    }
+    const symbols = parseGongcheSymbolContent(content);
+    if (symbols.length === 0) {
+      continue;
+    }
+    entries.push({ text, symbols });
+  }
+  return entries;
+}
+
+function parseGongcheSymbolContent(content: string): ParsedGongcheEntry["symbols"] {
+  const matches = Array.from(content.matchAll(/（[合四上尺工六五][+-]?）|[合四上尺工六五][+-]?/gu));
+  return matches.map((match, index) => {
+    const rawPitch = match[0];
+    const startIndex = match.index ?? 0;
+    const nextIndex = matches[index + 1]?.index ?? content.length;
+    const rawText = content.slice(startIndex, nextIndex);
+    const parenthesized = rawPitch.startsWith("（");
+    const label = rawPitch.replace(/[（）]/g, "");
+    return {
+      label,
+      notation: rawText.slice(rawPitch.length),
+      rawText,
+      parenthesized,
+    };
+  });
+}
+
+function distributeParsedGongcheSymbols(
+  symbols: ParsedGongcheEntry["symbols"],
+  startTime: number,
+  endTime: number,
+): GongcheSymbol[] {
+  const safeSymbols = symbols.length > 0
+    ? symbols
+    : [{ label: "合", notation: "", rawText: "合", parenthesized: false }];
+  const duration = Math.max(endTime - startTime, 0.001);
+  const step = duration / safeSymbols.length;
+  return safeSymbols.map((symbol, index) => ({
+    id: `gongche-symbol-${crypto.randomUUID()}`,
+    label: symbol.label,
+    notation: symbol.notation,
+    rawText: symbol.rawText,
+    parenthesized: symbol.parenthesized,
+    startTime: startTime + step * index,
+    endTime: index === safeSymbols.length - 1 ? endTime : startTime + step * (index + 1),
+    assetUrl: null,
+  }));
+}
+
+function normalizeGongcheMatchText(text: string) {
+  const variantMap: Record<string, string> = {
+    來: "来",
+    妳: "你",
+    髙: "高",
+    麽: "么",
+    裠: "裙",
+    眀: "明",
+    𠁅: "处",
+  };
+  return Array.from(text.trim())
+    .map((char) => variantMap[char] ?? char)
+    .join("");
+}
+
+function isPotentialLyricCharacter(text: string) {
+  return !/^[\x00-\x7F]$/u.test(text) && !/^[，。？！、；：「」『』（）《》【】]$/u.test(text);
+}
+
+function alignGongcheEntriesToParentBlocks(
+  entries: ParsedGongcheEntry[],
+  parentBlocks: GongcheParentBlock[],
+) {
+  const entryCount = entries.length;
+  const parentCount = parentBlocks.length;
+  const sourceSkipCost = 0.48;
+  const parentSkipCost = 0.16;
+  const mismatchCost = 0.58;
+  const strongMatchCost = 0.2;
+  const dp = Array.from({ length: entryCount + 1 }, () => Array(parentCount + 1).fill(0) as number[]);
+  const back = Array.from({ length: entryCount + 1 }, () =>
+    Array(parentCount + 1).fill(null) as Array<"match" | "skip-entry" | "skip-parent" | null>,
+  );
+
+  for (let entryIndex = 1; entryIndex <= entryCount; entryIndex += 1) {
+    dp[entryIndex][0] = dp[entryIndex - 1][0] + sourceSkipCost;
+    back[entryIndex][0] = "skip-entry";
+  }
+  for (let parentIndex = 1; parentIndex <= parentCount; parentIndex += 1) {
+    dp[0][parentIndex] = dp[0][parentIndex - 1] + parentSkipCost;
+    back[0][parentIndex] = "skip-parent";
+  }
+
+  for (let entryIndex = 1; entryIndex <= entryCount; entryIndex += 1) {
+    for (let parentIndex = 1; parentIndex <= parentCount; parentIndex += 1) {
+      const cost = getGongcheTextMatchCost(
+        entries[entryIndex - 1].text,
+        parentBlocks[parentIndex - 1].label,
+        mismatchCost,
+      );
+      const candidates = [
+        {
+          op: "match" as const,
+          score: dp[entryIndex - 1][parentIndex - 1] + cost,
+        },
+        {
+          op: "skip-entry" as const,
+          score: dp[entryIndex - 1][parentIndex] + sourceSkipCost,
+        },
+        {
+          op: "skip-parent" as const,
+          score: dp[entryIndex][parentIndex - 1] + parentSkipCost,
+        },
+      ];
+      candidates.sort((left, right) => {
+        if (Math.abs(left.score - right.score) > 0.000001) {
+          return left.score - right.score;
+        }
+        const priority = { match: 0, "skip-parent": 1, "skip-entry": 2 };
+        return priority[left.op] - priority[right.op];
+      });
+      dp[entryIndex][parentIndex] = candidates[0].score;
+      back[entryIndex][parentIndex] = candidates[0].op;
+    }
+  }
+
+  const rawPairs: Array<{ entryIndex: number; parentIndex: number; cost: number }> = [];
+  let entryIndex = entryCount;
+  let parentIndex = parentCount;
+  while (entryIndex > 0 || parentIndex > 0) {
+    const op = back[entryIndex]?.[parentIndex];
+    if (op === "match") {
+      const cost = getGongcheTextMatchCost(
+        entries[entryIndex - 1].text,
+        parentBlocks[parentIndex - 1].label,
+        mismatchCost,
+      );
+      rawPairs.push({
+        entryIndex: entryIndex - 1,
+        parentIndex: parentIndex - 1,
+        cost,
+      });
+      entryIndex -= 1;
+      parentIndex -= 1;
+    } else if (op === "skip-entry") {
+      entryIndex -= 1;
+    } else {
+      parentIndex -= 1;
+    }
+  }
+
+  return rawPairs
+    .reverse()
+    .filter((pair, index, pairs) =>
+      pair.cost <= strongMatchCost || isContextualGongcheFuzzyMatch(pair, index, pairs, strongMatchCost),
+    );
+}
+
+function getGongcheTextMatchCost(left: string, right: string, mismatchCost: number) {
+  const normalizedLeft = normalizeGongcheMatchText(left);
+  const normalizedRight = normalizeGongcheMatchText(right);
+  if (!normalizedLeft || !normalizedRight) {
+    return mismatchCost;
+  }
+  if (normalizedLeft === normalizedRight) {
+    return left === right ? 0 : 0.04;
+  }
+  if (normalizedRight.includes(normalizedLeft) || normalizedLeft.includes(normalizedRight)) {
+    return 0.14;
+  }
+  return mismatchCost;
+}
+
+function isContextualGongcheFuzzyMatch(
+  pair: { entryIndex: number; parentIndex: number; cost: number },
+  index: number,
+  pairs: Array<{ entryIndex: number; parentIndex: number; cost: number }>,
+  strongMatchCost: number,
+) {
+  const previousStrong = findNearbyStrongGongchePair(pair, pairs.slice(Math.max(0, index - 3), index), strongMatchCost, -1);
+  const nextStrong = findNearbyStrongGongchePair(pair, pairs.slice(index + 1, index + 4), strongMatchCost, 1);
+  return Boolean(previousStrong && nextStrong);
+}
+
+function findNearbyStrongGongchePair(
+  pair: { entryIndex: number; parentIndex: number },
+  candidates: Array<{ entryIndex: number; parentIndex: number; cost: number }>,
+  strongMatchCost: number,
+  direction: -1 | 1,
+) {
+  return candidates.some((candidate) =>
+    candidate.cost <= strongMatchCost &&
+    (candidate.entryIndex - pair.entryIndex) * direction > 0 &&
+    (candidate.parentIndex - pair.parentIndex) * direction > 0,
+  );
+}
+
+function normalizeGongcheBlockTiming(
+  block: GongcheAnnotation,
+  parentBlock: GongcheParentBlock | null,
+): GongcheAnnotation {
+  if (!parentBlock) {
+    return {
+      ...block,
+      symbols: normalizeGongcheSymbols(block.symbols, block.startTime, block.endTime),
+    };
+  }
+  const startTime = clampNumber(block.startTime, parentBlock.startTime, parentBlock.endTime);
+  const endTime = clampNumber(
+    Math.max(block.endTime, startTime + MIN_CHARACTER_DURATION),
+    startTime + MIN_CHARACTER_DURATION,
+    parentBlock.endTime,
+  );
+  return {
+    ...block,
+    startTime,
+    endTime,
+    symbols: normalizeGongcheSymbols(block.symbols, startTime, endTime),
+  };
+}
+
+function normalizeGongcheSymbols(
+  symbols: GongcheSymbol[],
+  blockStartTime: number,
+  blockEndTime: number,
+): GongcheSymbol[] {
+  const fallback: GongcheSymbol[] = [{
+    id: `gongche-symbol-${crypto.randomUUID()}`,
+    label: "合",
+    notation: "",
+    rawText: "合",
+    parenthesized: false,
+    startTime: blockStartTime,
+    endTime: blockEndTime,
+    assetUrl: null,
+  }];
+  const source = Array.isArray(symbols) && symbols.length > 0 ? symbols : fallback;
+  const sorted = source
+    .filter((symbol) => symbol && typeof symbol.id === "string")
+    .map((symbol) => ({
+      ...symbol,
+      label: typeof symbol.label === "string" && symbol.label.trim() ? symbol.label.trim() : "合",
+      notation: typeof symbol.notation === "string" ? symbol.notation : "",
+      rawText: typeof symbol.rawText === "string" ? symbol.rawText : symbol.label,
+      parenthesized: Boolean(symbol.parenthesized),
+      startTime: clampNumber(symbol.startTime, blockStartTime, blockEndTime),
+      endTime: clampNumber(symbol.endTime, blockStartTime, blockEndTime),
+      assetUrl: symbol.assetUrl ?? null,
+    }))
+    .sort((left, right) => left.startTime - right.startTime);
+
+  return sorted.map((symbol, index) => {
+    const previousEnd = index === 0 ? blockStartTime : sorted[index - 1].endTime;
+    const nextStart = index === sorted.length - 1 ? blockEndTime : sorted[index + 1].startTime;
+    const startTime = index === 0 ? blockStartTime : Math.max(symbol.startTime, previousEnd);
+    const endTime = index === sorted.length - 1
+      ? blockEndTime
+      : clampNumber(Math.max(symbol.endTime, startTime + 0.001), startTime + 0.001, nextStart);
+    return {
+      ...symbol,
+      startTime,
+      endTime,
+    };
+  });
+}
+
+function synchronizeGongcheWithChangedParents(
+  project: ProjectData,
+  previousParents: Map<string, GongcheParentBlock>,
+): ProjectData {
+  if (previousParents.size === 0 || !Array.isArray(project.gongcheAnnotations)) {
+    return project;
+  }
+  return {
+    ...project,
+    gongcheAnnotations: project.gongcheAnnotations.map((block) => {
+      const key = getGongcheParentKey(block.parentTrackId, block.parentBlockId);
+      const previousParent = previousParents.get(key);
+      if (!previousParent) {
+        return block;
+      }
+      const nextParent = findGongcheParentBlock(project, block.parentTrackId, block.parentBlockId);
+      if (!nextParent) {
+        return block;
+      }
+      return mapGongcheBlockToParent(block, previousParent, nextParent);
+    }),
+  };
+}
+
+function mapGongcheBlockToParent(
+  block: GongcheAnnotation,
+  previousParent: GongcheParentBlock,
+  nextParent: GongcheParentBlock,
+): GongcheAnnotation {
+  const previousDuration = Math.max(previousParent.endTime - previousParent.startTime, 0.001);
+  const nextDuration = Math.max(nextParent.endTime - nextParent.startTime, MIN_CHARACTER_DURATION);
+  const mapTime = (time: number) => {
+    const ratio = clampNumber((time - previousParent.startTime) / previousDuration, 0, 1);
+    return nextParent.startTime + ratio * nextDuration;
+  };
+  return normalizeGongcheBlockTiming({
+    ...block,
+    startTime: mapTime(block.startTime),
+    endTime: mapTime(block.endTime),
+    symbols: block.symbols.map((symbol) => ({
+      ...symbol,
+      startTime: mapTime(symbol.startTime),
+      endTime: mapTime(symbol.endTime),
+    })),
+  }, nextParent);
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.max(min, Math.min(value, max));
+}
+
 function getOptionalBlockText(block: { text?: string }) {
   return typeof block.text === "string" ? block.text : undefined;
 }
@@ -5281,6 +5932,7 @@ function normalizeProjectData(value: ProjectData | (Partial<ProjectData> & { vid
     video: normalizeProjectVideo(value),
     subtitleLines: Array.isArray(value.subtitleLines) ? value.subtitleLines : [],
     characterAnnotations: Array.isArray(value.characterAnnotations) ? value.characterAnnotations : [],
+    gongcheAnnotations: normalizeGongcheAnnotations(value.gongcheAnnotations),
     actionAnnotations: Array.isArray(value.actionAnnotations) ? value.actionAnnotations : [],
     builtinTracks,
     customTracks,
@@ -5476,6 +6128,36 @@ function normalizeAttachedPointTracks(value: AttachedPointTrack[] | undefined) {
             }))
         : [],
     }] satisfies AttachedPointTrack[];
+  });
+}
+
+function normalizeGongcheAnnotations(value: ProjectData["gongcheAnnotations"] | undefined) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((block) => {
+    if (
+      !block ||
+      typeof block.id !== "string" ||
+      typeof block.parentTrackId !== "string" ||
+      typeof block.parentBlockId !== "string"
+    ) {
+      return [];
+    }
+    const startTime = typeof block.startTime === "number" ? block.startTime : 0;
+    const endTime = typeof block.endTime === "number" ? block.endTime : startTime + MIN_CHARACTER_DURATION;
+    return [{
+      id: block.id,
+      parentTrackId: block.parentTrackId,
+      parentBlockId: block.parentBlockId,
+      startTime,
+      endTime: Math.max(startTime + MIN_CHARACTER_DURATION, endTime),
+      symbols: normalizeGongcheSymbols(
+        Array.isArray(block.symbols) ? block.symbols : [],
+        startTime,
+        Math.max(startTime + MIN_CHARACTER_DURATION, endTime),
+      ),
+    }] satisfies GongcheAnnotation[];
   });
 }
 

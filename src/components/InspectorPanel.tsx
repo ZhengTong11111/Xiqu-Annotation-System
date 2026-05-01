@@ -6,6 +6,8 @@ import type {
   BuiltinTrackId,
   CharacterAnnotation,
   CustomTrack,
+  GongcheAnnotation,
+  GongcheSymbol,
   SelectedItem,
   SubtitleLine,
   TrackDefinition,
@@ -19,12 +21,22 @@ type InspectorPanelProps = {
   selectedItem: SelectedItem;
   subtitleLines: SubtitleLine[];
   characterAnnotations: CharacterAnnotation[];
+  gongcheAnnotations: GongcheAnnotation[];
   actionAnnotations: ActionAnnotation[];
   builtinTracks: BuiltinTrack[];
   customTracks: CustomTrack[];
   trackDefinitions: TrackDefinition[];
   trackSnapEnabled: Record<string, boolean>;
   onCharacterUpdate: (id: string, changes: Partial<CharacterAnnotation>) => void;
+  onCreateGongcheBlock: (parentTrackId: string, parentBlockId: string) => void;
+  onGongcheBlockUpdate: (
+    id: string,
+    changes: Partial<Pick<GongcheAnnotation, "startTime" | "endTime" | "symbols">>,
+  ) => void;
+  onImportGongcheText: (
+    parentTrackId: string,
+    sourceText: string,
+  ) => { parsed: number; imported: number; updated: number; unmatched: number };
   onActionUpdate: (id: string, changes: Partial<ActionAnnotation>) => void;
   onAttachedPointUpdate: (trackId: string, pointId: string, changes: { time?: number; label?: string }) => void;
   onTrackWaveformSnapChange: (trackId: string, enabled: boolean) => void;
@@ -74,12 +86,16 @@ export function InspectorPanel({
   selectedItem,
   subtitleLines,
   characterAnnotations,
+  gongcheAnnotations,
   actionAnnotations,
   builtinTracks,
   customTracks,
   trackDefinitions,
   trackSnapEnabled,
   onCharacterUpdate,
+  onCreateGongcheBlock,
+  onGongcheBlockUpdate,
+  onImportGongcheText,
   onActionUpdate,
   onAttachedPointUpdate,
   onTrackWaveformSnapChange,
@@ -114,6 +130,8 @@ export function InspectorPanel({
   onDeleteSelected,
 }: InspectorPanelProps) {
   const [trackNameDraft, setTrackNameDraft] = useState("");
+  const [gongcheImportDraft, setGongcheImportDraft] = useState("");
+  const [gongcheImportResult, setGongcheImportResult] = useState<string | null>(null);
   const [typeOptionDrafts, setTypeOptionDrafts] = useState<string[]>([]);
   const [isTrackNameComposing, setIsTrackNameComposing] = useState(false);
   const [composingOptionIndexes, setComposingOptionIndexes] = useState<Record<number, boolean>>({});
@@ -218,6 +236,7 @@ export function InspectorPanel({
     setOptionReorderDrag(null);
     setIsTrackNameComposing(false);
     setComposingOptionIndexes({});
+    setGongcheImportResult(null);
   }, [selectedItem]);
 
   function commitTrackName(nextName: string) {
@@ -445,6 +464,8 @@ export function InspectorPanel({
       : "trackType" in track
         ? (track.trackType === "text" ? "文字类轨道" : "动作类轨道")
         : ("type" in track && track.type === "character" ? "文字类轨道" : "动作类轨道");
+    const supportsGongcheImport = !isAttachedPointTrack &&
+      (("type" in track && track.type === "character") || ("trackType" in track && track.trackType === "text"));
     return (
       <section className="panel inspector-panel">
         <div className="panel-header">
@@ -605,6 +626,45 @@ export function InspectorPanel({
                   </button>
                 ) : null}
               </div>
+            </div>
+          </div>
+        ) : null}
+        {supportsGongcheImport ? (
+          <div className="inspector-field">
+            <label>导入工尺谱</label>
+            <div className="gongche-import-box">
+              <textarea
+                value={gongcheImportDraft}
+                placeholder="粘贴如：字{工尺内容} 的曲谱文本"
+                onChange={(event) => setGongcheImportDraft(event.target.value)}
+              />
+              <div className="gongche-import-actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const result = onImportGongcheText(track.id, gongcheImportDraft);
+                    setGongcheImportResult(
+                      `解析 ${result.parsed} 条，导入 ${result.imported} 条，更新 ${result.updated} 条，未匹配 ${result.unmatched} 条。`,
+                    );
+                  }}
+                  disabled={!gongcheImportDraft.trim()}
+                >
+                  导入到工尺谱附属轨
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGongcheImportDraft("");
+                    setGongcheImportResult(null);
+                  }}
+                  disabled={!gongcheImportDraft && !gongcheImportResult}
+                >
+                  清空
+                </button>
+              </div>
+              {gongcheImportResult ? (
+                <div className="inspector-value gongche-import-result">{gongcheImportResult}</div>
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -784,6 +844,9 @@ export function InspectorPanel({
     if (!item) {
       return null;
     }
+    const gongcheBlock = gongcheAnnotations.find((block) =>
+      block.parentTrackId === "character-track" && block.parentBlockId === item.id,
+    );
     return (
       <section className="panel inspector-panel">
         <div className="panel-header">
@@ -796,6 +859,20 @@ export function InspectorPanel({
         <div className="inspector-field">
           <label>字</label>
           <div className="inspector-value character-preview">{item.char}</div>
+        </div>
+        <div className="inspector-field">
+          <label>工尺谱</label>
+          <div className="inspector-link-row">
+            <div className="inspector-value">
+              {gongcheBlock ? gongcheBlock.symbols.map((symbol) => symbol.label).join(" ") : "此字暂无工尺谱块"}
+            </div>
+            <button
+              type="button"
+              onClick={() => onCreateGongcheBlock("character-track", item.id)}
+            >
+              {gongcheBlock ? "打开" : "创建"}
+            </button>
+          </div>
         </div>
         <div className="inspector-field">
           <label>开始时间</label>
@@ -835,6 +912,136 @@ export function InspectorPanel({
               </option>
             ))}
           </select>
+        </div>
+      </section>
+    );
+  }
+
+  if (selectedItem.type === "gongche-block") {
+    const block = gongcheAnnotations.find((item) => item.id === selectedItem.id);
+    if (!block) {
+      return null;
+    }
+    const parent = findGongcheInspectorParent(block, characterAnnotations, customTracks);
+    const symbolsText = block.symbols.map((symbol) => symbol.label).join("");
+    const updateSymbol = (symbolId: string, changes: Partial<GongcheSymbol>) => {
+      onGongcheBlockUpdate(block.id, {
+        symbols: block.symbols.map((symbol) =>
+          symbol.id === symbolId ? { ...symbol, ...changes } : symbol,
+        ),
+      });
+    };
+    const removeSymbol = (symbolId: string) => {
+      if (block.symbols.length <= 1) {
+        return;
+      }
+      onGongcheBlockUpdate(block.id, {
+        symbols: distributeGongcheSymbols(
+          block.symbols.filter((symbol) => symbol.id !== symbolId).map((symbol) => symbol.label),
+          block.startTime,
+          block.endTime,
+        ),
+      });
+    };
+    const addSymbol = () => {
+      onGongcheBlockUpdate(block.id, {
+        symbols: distributeGongcheSymbols(
+          [...block.symbols.map((symbol) => symbol.label), "合"],
+          block.startTime,
+          block.endTime,
+        ),
+      });
+    };
+
+    return (
+      <section className="panel inspector-panel">
+        <div className="panel-header">
+          <h2>工尺谱编辑</h2>
+          <div className="panel-header-actions">
+            {collapseButton}
+            <button onClick={onDeleteSelected}>删除</button>
+          </div>
+        </div>
+        <div className="inspector-field">
+          <label>对应文字</label>
+          <div className="inspector-value character-preview">{parent?.label ?? "未知文字块"}</div>
+        </div>
+        <div className="inspector-field">
+          <label>快速输入</label>
+          <input
+            value={symbolsText}
+            onChange={(event) =>
+              onGongcheBlockUpdate(block.id, {
+                symbols: distributeGongcheSymbols(
+                  Array.from(event.target.value).filter((char) => char.trim().length > 0),
+                  block.startTime,
+                  block.endTime,
+                ),
+              })
+            }
+          />
+        </div>
+        <div className="inspector-field">
+          <label>开始时间</label>
+          <input
+            type="number"
+            step="0.001"
+            value={block.startTime}
+            onChange={(event) => onGongcheBlockUpdate(block.id, { startTime: Number(event.target.value) })}
+          />
+        </div>
+        <div className="inspector-field">
+          <label>结束时间</label>
+          <input
+            type="number"
+            step="0.001"
+            value={block.endTime}
+            onChange={(event) => onGongcheBlockUpdate(block.id, { endTime: Number(event.target.value) })}
+          />
+        </div>
+        <div className="inspector-field">
+          <label>工尺符号拆分</label>
+          <div className="gongche-symbol-editor">
+            {block.symbols.map((symbol, index) => (
+              <div key={symbol.id} className="gongche-symbol-row">
+                <strong>{index + 1}</strong>
+                <input
+                  value={symbol.label}
+                  onChange={(event) => updateSymbol(symbol.id, { label: event.target.value })}
+                  aria-label="工尺符号"
+                />
+                <input
+                  value={symbol.notation ?? ""}
+                  onChange={(event) => updateSymbol(symbol.id, {
+                    notation: event.target.value,
+                    rawText: `${symbol.parenthesized ? `（${symbol.label}）` : symbol.label}${event.target.value}`,
+                  })}
+                  aria-label="附加信息"
+                  title={symbol.rawText ?? symbol.label}
+                />
+                <input
+                  type="number"
+                  step="0.001"
+                  value={symbol.startTime}
+                  onChange={(event) => updateSymbol(symbol.id, { startTime: Number(event.target.value) })}
+                  aria-label="开始时间"
+                />
+                <input
+                  type="number"
+                  step="0.001"
+                  value={symbol.endTime}
+                  onChange={(event) => updateSymbol(symbol.id, { endTime: Number(event.target.value) })}
+                  aria-label="结束时间"
+                />
+                <button type="button" onClick={() => removeSymbol(symbol.id)} disabled={block.symbols.length <= 1}>
+                  删
+                </button>
+              </div>
+            ))}
+            <button type="button" onClick={addSymbol}>
+              新增符号
+            </button>
+          </div>
         </div>
       </section>
     );
@@ -904,6 +1111,9 @@ export function InspectorPanel({
     if (!track || !block) {
       return null;
     }
+    const gongcheBlock = track.trackType === "text"
+      ? gongcheAnnotations.find((item) => item.parentTrackId === track.id && item.parentBlockId === block.id) ?? null
+      : null;
     return (
       <section className="panel inspector-panel">
         <div className="panel-header">
@@ -918,15 +1128,31 @@ export function InspectorPanel({
           <div className="inspector-value">{track.name}</div>
         </div>
         {track.trackType === "text" ? (
-          <div className="inspector-field">
-            <label>文本内容</label>
-            <input
-              value={getOptionalBlockText(block as unknown as { text?: string })}
-              onChange={(event) =>
-                onCustomBlockUpdate(track.id, block.id, { text: event.target.value })
-              }
-            />
-          </div>
+          <>
+            <div className="inspector-field">
+              <label>文本内容</label>
+              <input
+                value={getOptionalBlockText(block as unknown as { text?: string })}
+                onChange={(event) =>
+                  onCustomBlockUpdate(track.id, block.id, { text: event.target.value })
+                }
+              />
+            </div>
+            <div className="inspector-field">
+              <label>工尺谱</label>
+              <div className="inspector-link-row">
+                <div className="inspector-value">
+                  {gongcheBlock ? gongcheBlock.symbols.map((symbol) => symbol.label).join(" ") : "此文字块暂无工尺谱块"}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onCreateGongcheBlock(track.id, block.id)}
+                >
+                  {gongcheBlock ? "打开" : "创建"}
+                </button>
+              </div>
+            </div>
+          </>
         ) : null}
         <div className="inspector-field">
           <label>类型</label>
@@ -969,7 +1195,11 @@ export function InspectorPanel({
     );
   }
 
-  if (selectedItem.type === "waveform-track" || selectedItem.type === "spectrogram-track") {
+  if (
+    selectedItem.type === "waveform-track" ||
+    selectedItem.type === "spectrogram-track" ||
+    selectedItem.type === "gongche-track"
+  ) {
     return null;
   }
 
@@ -1028,6 +1258,49 @@ export function InspectorPanel({
 
 function getOptionalBlockText(block: { text?: string }) {
   return typeof block.text === "string" ? block.text : "";
+}
+
+function findGongcheInspectorParent(
+  block: GongcheAnnotation,
+  characterAnnotations: CharacterAnnotation[],
+  customTracks: CustomTrack[],
+) {
+  if (block.parentTrackId === "character-track") {
+    const character = characterAnnotations.find((item) => item.id === block.parentBlockId);
+    return character
+      ? {
+          label: character.char,
+          startTime: character.startTime,
+          endTime: character.endTime,
+        }
+      : null;
+  }
+  const track = customTracks.find((item) => item.id === block.parentTrackId && item.trackType === "text");
+  const parentBlock = track?.blocks.find((item) => item.id === block.parentBlockId);
+  return parentBlock
+    ? {
+        label: "text" in parentBlock && typeof parentBlock.text === "string" ? parentBlock.text : parentBlock.type,
+        startTime: parentBlock.startTime,
+        endTime: parentBlock.endTime,
+      }
+    : null;
+}
+
+function distributeGongcheSymbols(labels: string[], startTime: number, endTime: number): GongcheSymbol[] {
+  const normalizedLabels = labels.map((label) => label.trim()).filter(Boolean);
+  const safeLabels = normalizedLabels.length > 0 ? normalizedLabels : ["合"];
+  const duration = Math.max(endTime - startTime, 0.001);
+  const step = duration / safeLabels.length;
+  return safeLabels.map((label, index) => ({
+    id: `gongche-symbol-${crypto.randomUUID()}`,
+    label,
+    notation: "",
+    rawText: label,
+    parenthesized: false,
+    startTime: startTime + step * index,
+    endTime: index === safeLabels.length - 1 ? endTime : startTime + step * (index + 1),
+    assetUrl: null,
+  }));
 }
 
 function buildTypeOptionKeys(typeOptions: string[]) {
