@@ -12,6 +12,7 @@ import type {
   SubtitleLine,
   TrackDefinition,
 } from "../types";
+import { GongcheCharacterRenderer } from "./GongcheCharacterRenderer";
 
 const REORDER_ACTIVATION_PX = 6;
 
@@ -924,6 +925,15 @@ export function InspectorPanel({
     }
     const parent = findGongcheInspectorParent(block, characterAnnotations, customTracks);
     const symbolsText = block.symbols.map((symbol) => symbol.label).join("");
+    const previewSymbols = block.symbols.length > 0
+      ? block.symbols
+      : [{
+          id: `${block.id}-preview-empty`,
+          label: "工",
+          startTime: block.startTime,
+          endTime: block.endTime,
+          assetUrl: null,
+        }];
     const updateSymbol = (symbolId: string, changes: Partial<GongcheSymbol>) => {
       onGongcheBlockUpdate(block.id, {
         symbols: block.symbols.map((symbol) =>
@@ -965,6 +975,17 @@ export function InspectorPanel({
         <div className="inspector-field">
           <label>对应文字</label>
           <div className="inspector-value character-preview">{parent?.label ?? "未知文字块"}</div>
+        </div>
+        <div className="inspector-field">
+          <label>单字渲染预览</label>
+          <div className="gongche-render-preview">
+            <GongcheCharacterRenderer
+              character={parent?.label ?? "字"}
+              symbols={previewSymbols}
+              startTime={block.startTime}
+              endTime={block.endTime}
+            />
+          </div>
         </div>
         <div className="inspector-field">
           <label>快速输入</label>

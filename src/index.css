@@ -987,6 +987,16 @@ select {
   text-align: center;
 }
 
+.gongche-render-preview {
+  width: min(100%, 260px);
+  margin: 0 auto;
+  padding: 12px 14px;
+  border: 1px solid rgba(226, 222, 199, 0.86);
+  border-radius: 22px;
+  background: #fbfaee;
+  box-shadow: 0 14px 22px rgba(15, 23, 42, 0.12);
+}
+
 .empty-state {
   padding: 12px;
   color: var(--ink-soft);
@@ -2221,6 +2231,80 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.gongche-character-renderer {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.gongche-render-main-character {
+  fill: #22252b;
+  font-family: "Kaiti SC", "STKaiti", "KaiTi", "BiauKai", "Songti SC", serif;
+  font-size: 62px;
+  font-weight: 500;
+  text-anchor: middle;
+}
+
+.gongche-render-note {
+  fill: #22252b;
+  stroke: none;
+}
+
+.gongche-render-pitch {
+  fill: #22252b;
+  font-family: "Kaiti SC", "STKaiti", "KaiTi", "BiauKai", "Songti SC", serif;
+  font-size: 20px;
+  font-weight: 500;
+  text-anchor: middle;
+}
+
+.gongche-render-pitch.parenthesized {
+  font-size: 14px;
+  opacity: 0.74;
+}
+
+.gongche-render-register-high {
+  fill: #ff3b13;
+  font-family: Arial, sans-serif;
+  font-size: 19px;
+  font-weight: 700;
+  text-anchor: middle;
+}
+
+.gongche-render-register-low,
+.gongche-mark {
+  fill: none;
+  stroke: #22252b;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.gongche-mark.head-board,
+.gongche-mark.bottom-board {
+  stroke: #ff3b13;
+  stroke-width: 3.4;
+}
+
+.gongche-mark.head-eye,
+.gongche-mark.end-eye,
+.gongche-mark.die {
+  fill: #22252b;
+  stroke: none;
+}
+
+.gongche-mark.middle-eye {
+  fill: #fbfaee;
+  stroke: #ff3b13;
+  stroke-width: 2.4;
+}
+
+.gongche-mark.side-middle-eye {
+  fill: none;
+  stroke: #ff3b13;
+  stroke-width: 2.2;
 }
 
 .timeline-gongche-boundary {
