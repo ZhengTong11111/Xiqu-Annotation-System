@@ -8,8 +8,7 @@
 
 - 用户提供的 `【忒忒令】` 渲染截图。
 - `examples_insights/央视_顾卫英《寻梦》.merged.cleaned.json` 中已有的 `工尺谱（逐字展示）` 自定义文字轨。
-- 本地 Excel：`/Users/zhengtong/Documents/2025-2026第二学期/戏曲/0426新工尺/昆曲工尺谱识别教学-0418.xlsx`。
-- 本地 PDF：`/Users/zhengtong/Documents/2025-2026第二学期/戏曲/0426新工尺/课程回顾 _ 云端课程第二期：板正——浅识昆曲工尺谱.pdf`。
+- 本地教学 Excel 与 PDF 资料；这些文件仅用于研究对照，未纳入仓库。
 - `https://gongchepu.net/reader/647/`：页面隐藏的 `#gcn` 中包含同一套 GCN 文本；核心渲染脚本为 `/static/CACHE/js/d0aa98a3e71c.js`，样式为 `/static/CACHE/css/07eb7161b285.css`。
 
 ## gongchepu.net 的实际渲染模型
