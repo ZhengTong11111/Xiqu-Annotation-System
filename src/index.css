@@ -987,6 +987,16 @@ select {
   text-align: center;
 }
 
+.gongche-render-preview {
+  width: min(100%, 260px);
+  margin: 0 auto;
+  padding: 10px 14px 12px;
+  border: 1px solid rgba(226, 222, 199, 0.86);
+  border-radius: 22px;
+  background: #fbfaee;
+  box-shadow: 0 14px 22px rgba(15, 23, 42, 0.12);
+}
+
 .empty-state {
   padding: 12px;
   color: var(--ink-soft);
@@ -2221,6 +2231,282 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@font-face {
+  font-family: "GCNSymbol-Kai";
+  src: url("/fonts/GCNSymbolKai.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+
+.gcn-symbol {
+  display: block;
+  font-family: "GCNSymbol-Kai";
+  font-style: normal;
+  font-weight: bold;
+  font-variant: normal;
+  line-height: 1;
+  text-transform: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+[class^="gcn-s-"]::before,
+[class*=" gcn-s-"]::before {
+  display: block !important;
+}
+
+.gcn-s-he-l::before { content: "\00B1"; height: 1.1em; }
+.gcn-s-si-l::before { content: "\00B2"; height: 1.1em; }
+.gcn-s-one-l::before { content: "\00B3"; }
+.gcn-s-shang-l::before { content: "\0021"; height: 1.1em; }
+.gcn-s-che-l::before { content: "\0022"; height: 1.15em; }
+.gcn-s-gong-l::before { content: "\0023"; height: 1.1em; }
+.gcn-s-fan-l::before { content: "\0024"; height: 1.1em; }
+.gcn-s-he::before { content: "\0025"; }
+.gcn-s-si::before { content: "\0026"; }
+.gcn-s-one::before { content: "\0027"; }
+.gcn-s-shang::before { content: "\0028"; }
+.gcn-s-che::before { content: "\0029"; }
+.gcn-s-gong::before { content: "\002A"; }
+.gcn-s-fan::before { content: "\002B"; }
+.gcn-s-liu::before { content: "\002C"; }
+.gcn-s-wu::before { content: "\002D"; }
+.gcn-s-yi::before { content: "\002E"; }
+.gcn-s-shang-h::before { content: "\002F"; }
+.gcn-s-che-h::before { content: "\0030"; }
+.gcn-s-gong-h::before { content: "\0031"; }
+.gcn-s-fan-h::before { content: "\0032"; }
+.gcn-s-liu-h::before { content: "\0033"; }
+.gcn-s-wu-h::before { content: "\0034"; }
+.gcn-s-yi-h::before { content: "\0035"; }
+.gcn-s-qikou,
+.gcn-s-huoqiang {
+  display: block !important;
+}
+.gcn-s-qikou {
+  position: absolute;
+  left: 0;
+  top: 1em;
+}
+.lyrics-side-note .gcn-s-qikou {
+  left: -0.7em;
+  top: 0.8em;
+}
+.gcn-s-qikou::before {
+  content: "\0066";
+  font-size: 12px;
+  margin-top: -50%;
+  margin-left: -0.5em;
+}
+.gcn-s-dieqiang::before {
+  content: "\0072";
+  height: 1em;
+}
+.adj-dieqiang .gcn-s-dieqiang::before {
+  margin-left: 0.3em;
+}
+.gcn-s-cuoqiang::before {
+  content: "\0072";
+  height: 1em;
+  margin-top: -0.2em;
+  margin-bottom: 0.5em;
+}
+.gcn-s-huoqiang::before {
+  content: "\0071";
+  height: 0.6em;
+  margin-top: 0.2em;
+  margin-left: -0.1em;
+}
+.gcn-s-souqiang::before {
+  content: "\0073";
+  height: 0.8em;
+}
+.gcn-s-beat-1::before {
+  content: "\0061";
+  height: 0.8em;
+  margin-left: -0.2em;
+  font-size: 1.4em;
+}
+.gcn-s-beat-2::before {
+  content: "\0062";
+  height: 0.7em;
+}
+.gcn-s-beat-3::before {
+  content: "\0063";
+  height: 0.8em;
+}
+.gcn-s-beat-4::before {
+  content: "\0064";
+}
+.gcn-s-beat-5::before {
+  content: "\0068";
+  height: 0.5em;
+  margin-top: -0.2em;
+}
+.gcn-s-beat-6::before {
+  content: "\0066";
+  height: 0.8em;
+}
+.gcn-s-beat-7::before {
+  content: "\0067";
+  height: 0.8em;
+}
+.gcn-s-beat-8::before {
+  content: "\0065";
+}
+
+.gongche-reader-redmark .gcn-s-beat-1,
+.gongche-reader-redmark .gcn-s-beat-3,
+.gongche-reader-redmark .gcn-s-beat-4,
+.gongche-reader-redmark .gcn-s-beat-5,
+.gongche-reader-redmark .gcn-s-beat-7,
+.gongche-reader-redmark .gcn-s-beat-8 {
+  color: #ff4c00;
+}
+
+.gongche-character-renderer {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 138px;
+  overflow: visible;
+}
+
+.gongche-reader-cell {
+  position: absolute;
+  left: calc(50% - 110px);
+  top: 10px;
+  width: 160px;
+  height: 76px;
+  font-family: KaiTi, "Kaiti SC", STKaiti, KaiTi_GB2312, "楷体_GB2312", "方正楷体_GBK", "AR PL UKai CN", "AR PL UKai TW", sans-serif;
+  line-height: 1;
+  transform: scale(1.38);
+  transform-origin: left top;
+}
+
+.gongche-reader-cell .lyrics-text {
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: #22252b;
+  font-size: 40px;
+}
+
+.gongche-reader-cell .lyrics-notes {
+  position: absolute;
+  left: 40px;
+  top: 14px;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  color: #22252b;
+  font-size: 16px;
+  transform: rotate(-50deg) scaleY(0.93);
+  transform-origin: 0 0;
+}
+
+.gongche-reader-cell .lyrics-notes-nonote {
+  transform: none;
+}
+
+.gongche-reader-cell .lyrics-note {
+  position: relative;
+  width: 30px;
+  margin: -0.06em 0;
+  font-weight: bold;
+  line-height: 0.8;
+}
+
+.gongche-reader-cell .lyrics-note.adj-dieqiang {
+  height: 0.4em;
+  margin: -0.15em 0 0.2em;
+}
+
+.gongche-reader-cell .lyrics-note > .gcn-symbol {
+  display: inline-block;
+  width: 14px;
+  margin: 0;
+  font-size: 14px;
+  vertical-align: top;
+}
+
+.gongche-reader-cell .lyrics-side-note {
+  margin-top: 1px;
+  margin-left: 7px;
+  font-size: 11px;
+}
+
+.gongche-reader-cell .lyrics-side-note > .gcn-symbol {
+  width: 11px;
+  font-size: 11px;
+}
+
+.gongche-reader-cell .lyrics-beats {
+  display: inline-block;
+  width: 10px;
+  color: #22252b;
+  font-size: 10px;
+  font-weight: bold;
+  vertical-align: top;
+  word-break: break-all;
+  overflow-wrap: break-word;
+}
+
+.gongche-reader-cell .lyrics-beats span {
+  display: inline-block;
+  vertical-align: top;
+}
+
+.gongche-reader-cell .lyrics-beats .gcn-s-beat-1:first-child {
+  margin-top: -0.2em;
+}
+
+.gongche-reader-cell .lyrics-beats .gcn-s-beat-2:first-child {
+  margin-top: 0.15em;
+}
+
+.gongche-reader-cell .lyrics-beats .gcn-s-beat-3:first-child {
+  margin-top: 0.1em;
+}
+
+.gongche-reader-cell .lyrics-beats .gcn-s-beat-4:first-child {
+  margin-top: 0.2em;
+}
+
+.gongche-reader-cell .lyrics-beats .gcn-s-beat-5:first-child {
+  margin-top: 1.4em;
+}
+
+.gongche-reader-cell .lyrics-beats .gcn-s-beat-5:last-child {
+  margin-bottom: 0.1em;
+}
+
+.gongche-reader-cell .lyrics-beats .gcn-s-beat-6:first-child {
+  margin-top: 0.85em;
+}
+
+.gongche-reader-cell .lyrics-beats .gcn-s-beat-7:first-child,
+.gongche-reader-cell .lyrics-beats .gcn-s-beat-8:first-child {
+  margin-top: 0.8em;
+}
+
+.gongche-reader-cell .lyrics-beats .gcn-s-beat-1.first-before-diban {
+  min-height: 1.6em;
+}
+
+.gongche-reader-cell .lyrics-beats .gcn-s-beat-2.first-before-diban {
+  min-height: 1.25em;
+}
+
+.gongche-reader-cell .lyrics-beats .gcn-s-beat-3.first-before-diban {
+  min-height: 1.3em;
+}
+
+.gongche-reader-cell .lyrics-beats .gcn-s-beat-4.first-before-diban {
+  min-height: 1.2em;
 }
 
 .timeline-gongche-boundary {
