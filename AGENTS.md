@@ -1,58 +1,489 @@
 # Repository Guidelines
 
 ## Product Intent
-This repository is a front-end MVP for `戏曲数据库多轨时间标注`: a research-oriented tool for aligning video, sentence-level SRT, character-level timing, singing style labels, and independent action tracks. Keep SRT as the exchange format: sentence SRT in, editable TypeScript state in the app, per-track SRT out.
+This repository is a front-end MVP for `戏曲数据库多轨时间标注`: a research-oriented annotation workstation for aligning video, sentence-level SRT, character-level timing, singing-style labels, action tracks, point annotations, audio cues, and now demonstration-oriented Gongche notation. Keep SRT as the exchange format: sentence SRT in, editable TypeScript state in the app, per-track SRT out.
 
-## Project Structure & Ownership
-`src/App.tsx` is the state hub: playback time, preview frame state, undo/redo, import/export, context menus, clipboard, project save/load, track ordering, loop range, and project synchronization all live here. `src/components/Timeline.tsx` is still the heaviest interaction surface and now contains zoom, ruler scrubbing, snapping, marquee selection, drag/resize, creation flows, waveform/keypoint rendering, attached-point editing, and loop-range interaction. `src/components/VideoPlayer.tsx` owns playback sync, preview-frame behavior, native video UX, and panel detachment control. `src/components/InspectorPanel.tsx` is the canonical form editor for selected items and tracks. `src/components/ResizableSplitLayout.tsx` is the app’s core pane splitter. `src/components/FloatingPanelWindow.tsx` is the current lightweight in-app floating window shell for detached preview/timeline panes. Shared types live in `src/types.ts`; SRT helpers live in `src/utils/srt.ts`; track metadata and project helpers live in `src/utils/project.ts`; `src/mockData.ts` is the runnable demo dataset. `examples_insights/` stores real annotation examples plus research notes for format and workflow experiments.
+This is not a generic subtitle editor. It behaves more like a compact DAW / NLE / annotation workstation:
+- precise time-axis editing
+- cross-linked text/action/media annotation
+- strong local editing UX
+- future-facing state architecture for sync/collaboration
+
+## Current Repository Status
+Main currently contains all major recent feature lines that matter for context:
+- desktop-style workbench layout
+- detachable preview and timeline panes
+- dynamic tracks + reorderable active track model
+- attached point tracks
+- import/merge project workflow
+- DAW-style loop range playback
+- spectrogram preview + settings
+- Gongche attached-track workflow and renderer
+- Gongche glyph preview is currently marked finished for research/demo use, but the glyph font must be replaced or licensed before release
+- project document state architecture (`src/state/projectDocumentState.ts`)
+
+If starting a new conversation, assume the repo is already beyond the earlier simple waveform-only stage.
+
+## Directory & Ownership Map
+- `src/App.tsx`
+  - main orchestrator
+  - wires together project state, playback state, import/export, clipboard, selection, context menu, loop range, spectrogram settings, detached windows, and inspector actions
+- `src/state/projectDocumentState.ts`
+  - authoritative local document/history/sync-state hook
+  - owns undo/redo stacks, pending operations, revision counters, dirty/saved status
+- `src/components/Timeline.tsx`
+  - heaviest file
+  - owns zoom, ruler scrubbing, snapping, marquee selection, drag/resize, creation flows, waveform guides, spectrogram lane rendering, loop range interaction, Gongche lane rendering, attached point editing
+- `src/components/VideoPlayer.tsx`
+  - playback sync, preview-frame behavior, native controls auto-hide, detached-panel button
+- `src/components/InspectorPanel.tsx`
+  - canonical editor for selected items, tracks, attached point tracks, spectrogram settings entry, Gongche editing entry points
+- `src/components/SpectrogramCanvas.tsx`
+  - spectrogram viewport rendering
+- `src/components/SpectrogramSettingsPanel.tsx`
+  - spectrogram control surface
+- `src/components/GongcheCharacterRenderer.tsx`
+  - single-character Gongche preview renderer
+- `src/components/ResizableSplitLayout.tsx`
+  - reusable splitter for desktop-style panel layout
+- `src/components/FloatingPanelWindow.tsx`
+  - current lightweight in-app floating window shell for detached panes
+- `src/utils/project.ts`
+  - track defaults, timeline track definition expansion, project builders, duration helpers, Gongche attached track id helpers
+- `src/utils/srt.ts`
+  - SRT parse/export helpers
+- `src/utils/spectrogram.ts` + `src/utils/spectrogram.worker.ts`
+  - worker-driven spectrogram analysis pipeline
+- `src/types.ts`
+  - all shared project/data/UI selection types
+- `src/mockData.ts`
+  - runnable demo dataset
+- `examples_insights/`
+  - real example annotation data and research notes; use it as format/workflow reference, not as app runtime source
 
 ## Commands
-- `npm install`: install dependencies.
-- `npm run dev`: run the Vite app locally.
-- `npm run build`: type-check and build; this is the required pre-merge verification step.
-- `npm run preview`: inspect the production bundle locally.
+- `npm install`
+- `npm run dev`
+- `npm run build`
+- `npm run preview`
 
-There is still no dedicated test or lint script. Manual verification matters: import video/SRT, timeline editing, undo/redo, preview behavior, snapping, and export.
+There is still no dedicated lint/test script. `npm run build` is the mandatory pre-merge check.
 
 ## Coding Style
-Use React function components with TypeScript strict mode. Match the existing codebase: 2-space indentation, double quotes, semicolons, trailing commas. Keep shared shapes in `src/types.ts`. Treat Chinese subtitle content as character-based annotation data, not tokenized words.
+- React function components
+- TypeScript strict mode
+- 2-space indentation
+- double quotes
+- semicolons
+- trailing commas
+- keep shared shapes in `src/types.ts`
+- prefer localized helpers over ad hoc inline logic in JSX when behavior is reused
 
-## Current Layout & Workspace Model
-- The app now behaves like a desktop workbench instead of a document page. `AppShell` + nested `ResizableSplitLayout` control the main viewport.
-- The left side is a split workspace: preview on top, timeline below. The right side is a stacked sidebar: sentence list, per-line split panel, and inspector/settings.
-- Preview and timeline panes can now detach into in-app floating windows. This is intentionally lightweight windowing, not native browser popup windows yet.
-- Global page scrolling should remain disabled. Panels scroll internally.
+Treat Chinese subtitle content as character-based annotation data, not tokenized words.
 
-## Current Timeline & Annotation Model
-- Timeline zoom is intentionally research-oriented: `5-500 px/s`.
-- The top ruler is draggable and clickable for playhead scrubbing; this is separate from the video element controls.
-- There are built-in active tracks (`character-track`, `hand-action`, `body-action`) plus reorderable custom text/action tracks. Order is persisted through `activeTrackOrder`.
-- Each built-in/custom track may contain attached point tracks (`attachedPointTracks`). These are lightweight point-annotation subtracks used for things like breathing or other non-block events.
-- Character and action tracks both support `Command/Ctrl + drag` creation. Character tracks also support blank-area double-click creation with line-merge heuristics.
-- Multi-select is first-class: marquee select, `Command/Ctrl` additive select, blank-click clear, `Command/Ctrl + A`, group move, batch delete, and copy/cut/paste. Attached point annotations are part of this model now.
-- Character block context menus include split, line reassignment, and singing-style selection. Action block context menus include track-specific label selection.
-- There is DAW-style loop-range selection on the timeline. The loop range can be created, resized, moved, toggled on/off without clearing the range, and saved into project UI state.
+## Core Data Model
+The current `ProjectData` is broader than the original MVP:
+- `video`
+- `subtitleLines`
+- `characterAnnotations`
+- `gongcheAnnotations`
+- `actionAnnotations`
+- `builtinTracks`
+- `customTracks`
+- `activeTrackOrder`
 
-## State and History Notes
-Undo/redo is sensitive. `commitProject()` records real history; `applyProjectWithoutHistory()` is for transient drag updates. Do not collapse multiple completed drags into one history entry. Character timing/text edits must continue to resync sentence lines through `syncSubtitleLine()` / `syncSubtitleLines()`. Clipboard, import/merge flows, and transient drags all depend on `projectRef.current` being authoritative in hot paths.
+Important type families:
+- `BuiltinTrack`
+  - current built-ins: `character-track`, `hand-action`, `body-action`
+- `CustomTrack`
+  - `text` or `action`
+- `AttachedPointTrack`
+  - attached to either built-in or custom parent track
+- `GongcheAnnotation`
+  - attached to a text-capable parent block (`character-track` or custom text block)
+- `WaveformData`
+  - raw mixed audio samples + sample rate + keypoints
+- `SpectrogramData`
+  - worker-computed magnitudes + frequency bins + optional pitch frames
 
-## Snapping, Preview, and Media Notes
-- Dragging character/action edges previews video frames through `previewTime` without changing the real playhead. Creation drag uses the same preview idea.
-- Track labels are sticky on the left side of the timeline viewport. The per-track `吸附` toggle is expected to remain visible while horizontally scrolling.
-- Snapping behavior is intentionally nuanced: preserve the distinction between shared-boundary drag and individual edge drag. Hover feedback must match actual hit zones.
-- Tracks can optionally snap to waveform keypoints; attached point tracks can additionally snap to parent block boundaries. Audio keypoints are visualized on the waveform lane.
-- `VideoPlayer.tsx` sets initial volume to 50%, and native browser controls auto-hide when the pointer leaves the video surface so subtitles remain visible.
+## Track Model
+There are now several track layers in play:
 
-## Project Import / Save Notes
-- Project JSON import/export exists and is no longer just a raw `ProjectData` dump. It includes UI state such as zoom, loop range, and track snap state.
-- There is an import-merge workflow: incoming project tracks can be merged into the current project rather than only replacing it.
-- Local browser-imported videos cannot be reliably restored across sessions by disk path in plain web mode. The current workflow records relink metadata and prompts the user to manually relink when needed.
-- Imported project filenames are remembered in memory and reused as the default save filename.
+### 1. Active timeline tracks
+- built-in character/action tracks
+- custom text/action tracks
+- ordered by `activeTrackOrder`
 
-## Media, Waveform, and Demo Notes
-- The demo mock timeline in `src/mockData.ts` has been intentionally stretched to make editing easier at low zoom.
-- Waveform rendering in `Timeline.tsx` is optimized for visible-window rendering plus bounded per-bucket sampling. Preserve that performance posture when increasing waveform detail or adding spectrogram work later.
-- Attached point tracks, waveform keypoint guides, and loop range overlays all share the same dense timeline area; UI changes here should be tested together.
+### 2. Gongche attached tracks
+- text-capable parent tracks implicitly expose a Gongche attached lane
+- `buildTimelineTrackDefinitions()` injects `gongche-attached` pseudo-tracks for:
+  - built-in character track
+  - custom text tracks
+
+### 3. Attached point tracks
+- explicitly created subtracks under a parent track
+- used for things like breathing or other event markers
+- can be expanded/collapsed via `attachedPointTracksExpanded`
+
+Important implication:
+- not every visible lane is a first-class saved track entry
+- Gongche lanes are derived lanes
+- attached point lanes are saved under parent tracks
+
+## Current Layout & Windowing Model
+The app now behaves like a desktop workbench, not a document page:
+- `AppShell` wraps the viewport
+- nested `ResizableSplitLayout` components control main workspace, sidebar, and detail splits
+- global page scrolling should remain disabled
+- all scrolling should happen inside panels
+
+Main arrangement:
+- left: preview + timeline split
+- right: sentence list + current line split + inspector/settings
+
+Windowing:
+- preview and timeline can detach into in-app floating windows
+- this is not native browser popup logic
+- `FloatingPanelWindow.tsx` is the current implementation
+- when detached:
+  - original pane becomes a placeholder panel
+  - floating panel still uses the same shared React state
+  - selection/playback/timeline state stays synchronized
+
+## Project State Architecture
+The earlier ad hoc document state has been replaced by `useProjectDocumentState()` in `src/state/projectDocumentState.ts`.
+
+That hook currently owns:
+- `project`
+- `projectRef`
+- `trackSnapEnabled`
+- `trackSnapEnabledRef`
+- `undoStack`
+- `redoStack`
+- `hasUnsavedChanges`
+- `operationLog`
+- `pendingOperations`
+- `syncState`
+- `transientProjectRef`
+
+Important APIs:
+- `commitProject(nextProject, baseProject?, action?)`
+  - real history entry
+  - records document operation
+- `applyProjectWithoutHistory(nextProject)`
+  - transient drag/live updates
+  - preserves the ability to commit once on pointer-up
+- `applyTrackSnapEnabledState(nextState, options?)`
+- `markProjectAsSaved(...)`
+- `undoProject(...)`
+- `redoProject()`
+
+### Critical history rule
+Do not collapse multiple completed drags into one history entry.
+Dragging should remain:
+- transient during movement
+- single commit on completion
+
+### Critical state rule
+Hot interaction paths depend on `projectRef.current`, not just render-state closures.
+If changing drag, selection, clipboard, import merge, or undo logic, assume stale closure bugs are a real risk.
+
+## Sync / Revision Model
+Even though this is still local-first, the hook already tracks document-sync concepts:
+- `ProjectSyncStatus`
+  - `saved`, `dirty`, `saving`, `offline`, `conflict`, `error`
+- local revision
+- saved revision
+- pending operation count
+- operation log
+
+This means future remote sync/collaboration work should extend the existing document-state layer rather than bypass it inside `App.tsx`.
+
+## Timeline Interaction Model
+Timeline behavior is now quite rich and tightly coupled. Preserve these assumptions:
+
+### Zoom and ruler
+- zoom range: `5-500 px/s`
+- top ruler is clickable and draggable for playhead scrubbing
+- this is separate from native video controls
+
+### Track headers
+- sticky on the left while horizontal scrolling
+- per-track `吸附` toggle must remain visible
+- compact/low-height rendering exists and has special hiding behavior
+
+### Creation
+- character and action tracks support `Command/Ctrl + drag` creation
+- character tracks also support blank double-click creation with line-merge heuristics
+- attached point tracks support point creation
+- Gongche attached tracks create/open blocks relative to their parent text block timing
+
+### Selection
+- single selection
+- marquee selection
+- `Command/Ctrl` additive selection
+- blank-click clear
+- `Command/Ctrl + A`
+- group move
+- batch delete
+- clipboard copy/cut/paste
+
+Attached point annotations are part of the main selection/clipboard/multi-move model now.
+
+### Loop range
+DAW-style loop range exists:
+- create by dragging in loop lane
+- move entire range
+- resize edges
+- click loop block toggles loop playback on/off without clearing stored range
+- stored in project UI state
+- some tracks can auto-set loop range from selected block(s)
+- for multi-selection, contiguous blocks on the same track can define a merged loop range
+
+### Snapping
+Snapping is intentionally nuanced:
+- shared-boundary drag is different from individual edge drag
+- hover feedback must match actual hit zones
+- most snap behavior is now px-based, not second-threshold-based
+- attached point tracks can optionally snap to:
+  - waveform keypoints
+  - parent block boundaries
+- Gongche/text timelines may also inherit parent-based snap affordances
+
+If touching snapping, test:
+- block edge drag
+- block move
+- linked/shared-boundary drag
+- attached point drag
+- creation drag
+- low zoom and high zoom
+
+### Preview behavior
+Dragging block edges or creation drags should preview frames through `previewTime` without moving the real playhead.
+This behavior is easy to regress.
+
+## Spectrogram Feature
+Spectrogram support is now first-class, not experimental.
+
+Current shape:
+- `waveformData` is still the source audio base
+- `spectrogramSettings` lives in `App.tsx`
+- `spectrogramData` is computed by `buildSpectrogramData(...)`
+- computation runs in `src/utils/spectrogram.worker.ts`
+- rendering is done via `src/components/SpectrogramCanvas.tsx`
+- settings UI is in `src/components/SpectrogramSettingsPanel.tsx`
+
+Current settings dimensions:
+- visible / hidden
+- pitch contour on/off
+- frequency scale: `linear`, `log`, `mel`
+- frequency presets:
+  - `full-vocal`
+  - `vocal-2000`
+  - `vocal-1500`
+- analysis presets:
+  - `time-detail`
+  - `frequency-detail`
+
+Important implementation notes:
+- spectrogram uses worker-based offline computation
+- analysis is derived from `WaveformData`, not direct separate media decode
+- timeline has a selected state for `spectrogram-track`
+- there is a dedicated spectrogram settings panel path in the inspector
+- spectrogram was recently merged and should be treated as active product surface
+
+Performance posture:
+- visible-window rendering matters
+- do not casually move spectrogram work back onto the main thread
+- preserve worker/off-thread design
+
+## Gongche Feature
+Gongche support is now part of the repository and should be treated as real context, even if some workflows are still demo-oriented.
+
+Current model:
+- Gongche is attached to text-capable parent blocks
+- saved as `gongcheAnnotations`
+- each annotation contains `symbols`
+- each symbol has timing and optional notation metadata
+
+Where it appears:
+- built-in character track has a Gongche attached lane
+- custom text tracks also have Gongche attached lanes
+- selection types include:
+  - `gongche-track`
+  - `gongche-block`
+
+Current usage:
+- a selected character or custom text block can create/open a Gongche block from Inspector
+- Gongche source text can be imported in batch for a parent text track
+- importer aligns parsed Gongche entries to ordered parent text blocks using fuzzy/contextual matching
+- each Gongche block can be edited in Inspector:
+  - quick input
+  - symbol list
+  - per-symbol timing
+  - per-symbol notation/raw text
+
+Rendering:
+- `GongcheCharacterRenderer.tsx` renders a single-character Gongche preview
+- current renderer follows the `gongchepu.net`-style model: parse GCN-like tokens, build DOM note glyphs, stack them vertically, then rotate the note cluster
+- CSS contains extensive Gongche-specific glyph/layout classes
+- `public/fonts/GCNSymbolKai.woff2` is currently vendored so the preview can display the same style of glyphs offline
+
+### Gongche rendering IP / replacement warning
+The current Gongche glyph preview is intentionally marked as a finished research branch, but it is not a final release-safe asset strategy.
+
+Important:
+- the parser/layout approach is locally implemented, but it was informed by studying `gongchepu.net/reader/647/`
+- `GCNSymbolKai.woff2` came from that public site and does not currently have a confirmed license in this repository
+- before public release, distribution, or long-term productization, replace that font with:
+  - a self-owned glyph font
+  - a clearly licensed alternative
+  - or explicit permission from the original rights holder
+- do not expand dependency on that font without resolving licensing
+- keep `examples_insights/gongche_rendering_research.md` updated when the glyph strategy changes
+
+Important implementation tricks:
+- `buildTimelineTrackDefinitions()` injects Gongche pseudo-tracks using `getGongcheTrackId(parentTrackId)`
+- parent lookup helpers map Gongche track ids back to source text tracks
+- block timing is normalized against parent timing
+- when parent text timing changes, Gongche timing is remapped rather than discarded (`synchronizeGongcheWithChangedParents`)
+
+This means:
+- Gongche is not just a label string
+- it is timing-aware and parent-block-aware
+
+## Import / Save / Merge Behavior
+Project JSON handling is more advanced than a raw dump.
+
+### Save
+- saved file version: currently `2`
+- includes:
+  - normalized `project`
+  - `uiState`
+    - `zoom`
+    - `currentTime`
+    - `playbackRate`
+    - `trackSnapEnabled`
+    - `loopPlaybackEnabled`
+    - `loopPlaybackRange`
+
+### Import
+- supports either wrapped `SavedProjectFile` or older bare `ProjectData`
+- normalizes built-ins, customs, attached point tracks, Gongche annotations, and active track order
+- imported filename is remembered and reused as default save filename
+
+### Import merge
+- there is an overlay/replace merge flow for project import
+- imported project content can be mapped into current tracks instead of replacing the full project
+- this includes attached point tracks
+
+### Local video caveat
+Browser-imported local video cannot be reliably reopened by true disk path in plain web mode.
+Current behavior:
+- persist relink metadata
+- blank/normalize unstable blob URLs
+- prompt user to relink manually when needed
+- `filePath` field is preserved for future desktop/Electron-style use
+
+## Media Pipeline
+Current media behavior:
+- `VideoPlayer.tsx` starts at 50% volume
+- native controls auto-hide when pointer leaves video
+- playback sync is requestAnimationFrame-driven while playing
+- preview mode pauses/resumes around edge-preview seeks
+
+Audio pipeline:
+- video is fetched and decoded to build `WaveformData`
+- waveform keypoints are onset-like heuristics
+- spectrogram derives from waveform audio, not a second independent decode pipeline
+
+## Clipboard / Paste Model
+Timeline clipboard is more than simple browser copy:
+- own app clipboard state in `App.tsx`
+- supports:
+  - copy
+  - cut
+  - paste
+  - multi-selection
+  - conflict handling
+
+Paste has track/time awareness:
+- paste target comes from recent timeline click / context menu location
+- conflicts may offer:
+  - cancel
+  - overwrite
+  - replace
+  - keep original
+
+Do not replace this with raw browser clipboard semantics.
+
+## Inspector Rules
+`InspectorPanel.tsx` is now a broad control center:
+- selected line editing
+- character editing
+- action editing
+- custom block editing
+- attached point editing
+- track settings
+- spectrogram settings
+- Gongche editing
+
+If you add a new selectable entity, it usually needs:
+- a `SelectedItem` variant in `src/types.ts`
+- selection wiring in `Timeline.tsx`
+- inspector rendering branch in `InspectorPanel.tsx`
+
+## UI / Small-Screen Notes
+The UI has been repeatedly compacted toward a Premiere/Logic/VS Code feel:
+- smaller radii
+- denser controls
+- compact track headers
+- better small-screen handling
+
+Important:
+- small viewport behavior matters
+- right sidebar used to clip badly; layout now clamps more carefully
+- low-height track headers have custom compact modes and selective label hiding
+
+## Verification Checklist
+Before finishing substantial work, manually sanity-check the relevant subset:
+- import video
+- import SRT
+- save project
+- import project
+- import merge
+- video relink prompt
+- play/pause + ruler scrub
+- block edge preview
+- loop range create/move/resize/toggle
+- track snapping
+- attached point track create/drag/snap
+- Gongche create/open/edit/import
+- Gongche single-character preview, especially `（...）`, `/`, `+/-`, and `h/s/d/c`
+- spectrogram visibility/settings/pitch contour
+- detached preview/timeline panes
+- undo/redo after drag-heavy operations
+- export SRT tracks
+
+Always run:
+- `npm run build`
+
+## Example / Research Data
+- `examples_insights/` is intentionally in-repo for annotation examples and data-format experiments
+- do not assume those files are production fixtures
+- they are useful for import, schema, and workflow exploration
 
 ## Commit & PR Guidelines
-Prefer short imperative commits such as `Improve timeline block context menus`. Keep branches focused. For UI-heavy changes, include screenshots or recordings, and call out any behavior changes in snapping, undo/redo, preview, import/export, or SRT compatibility.
+Prefer short imperative commits such as:
+- `Add detachable workspace panels`
+- `Improve spectrogram clarity controls`
+- `Merge Gongche glyph renderer`
+
+Keep branches focused. For UI-heavy changes, include screenshots or recordings, and call out any behavior changes in:
+- snapping
+- undo/redo
+- preview
+- import/export
+- SRT compatibility
+- spectrogram settings
+- Gongche editing/import
