@@ -255,7 +255,7 @@ export function TopMenuBar({
                   <div className="top-menu-note">时间轴缩放、轨道显隐与布局操作保留在工作区内完成。</div>
                 ) : null}
                 {item === "帮助" ? (
-                  <div className="top-menu-note">空格播放/暂停，Command/Ctrl + S 保存项目，Command/Ctrl + 拖拽可创建块。</div>
+                  <div className="top-menu-note">空格播放/暂停，P 从循环范围起点开始循环，Command/Ctrl + S 保存项目，Command/Ctrl + 拖拽可创建块。</div>
                 ) : null}
               </div>
             ) : null}

@@ -354,6 +354,7 @@ function App() {
   const isPreviewDetached = Boolean(previewDetachedWindow && !previewDetachedWindow.closed);
   const isTimelineDetached = Boolean(timelineDetachedWindow && !timelineDetachedWindow.closed);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const loopPlaybackTemporarilyEnabledRef = useRef(false);
   const videoFileInputRef = useRef<HTMLInputElement>(null);
   const srtFileInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
@@ -460,6 +461,13 @@ function App() {
       return;
     }
     const currentProject = projectRef.current;
+    if (nextSelectedItem.type === "line") {
+      const line = currentProject.subtitleLines.find((item) => item.id === nextSelectedItem.id);
+      if (line && line.endTime - line.startTime > 0.001) {
+        setLoopPlaybackRange({ start: line.startTime, end: line.endTime });
+      }
+      return;
+    }
     if (nextSelectedItem.type === "character") {
       const track = currentProject.builtinTracks.find((item) => item.id === "character-track");
       const character = currentProject.characterAnnotations.find((item) => item.id === nextSelectedItem.id);
@@ -567,6 +575,12 @@ function App() {
     videoRef.current.currentTime = nextTime;
     setCurrentTime(nextTime);
   }, [currentTime, duration, isPlaying, loopPlaybackEnabled, loopPlaybackRange, playbackRate, previewTime]);
+
+  useEffect(() => {
+    if (!loopPlaybackEnabled) {
+      loopPlaybackTemporarilyEnabledRef.current = false;
+    }
+  }, [loopPlaybackEnabled]);
 
   useEffect(() => {
     const videoUrl = project.video.url;
@@ -683,13 +697,19 @@ function App() {
         void saveProjectFile();
         return;
       }
-      if ((event.target as HTMLElement | null)?.tagName === "INPUT" ||
-          (event.target as HTMLElement | null)?.tagName === "SELECT") {
+      if (isEditableKeyboardTarget(event.target)) {
         return;
       }
       if (event.code === "Space") {
         event.preventDefault();
+        if (continuePlaybackAfterTemporaryLoop()) {
+          return;
+        }
         togglePlay();
+      }
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        playLoopFromRangeStart();
       }
       if (event.key === "ArrowLeft") {
         event.preventDefault();
@@ -768,6 +788,9 @@ function App() {
     redoStack,
     project,
     trackSnapEnabled,
+    duration,
+    loopPlaybackRange,
+    loopPlaybackEnabled,
   ]);
 
   useEffect(() => {
@@ -966,6 +989,47 @@ function App() {
     } else {
       video.pause();
     }
+  }
+
+  function playLoopFromRangeStart() {
+    if (!videoRef.current || !loopPlaybackRange) {
+      return;
+    }
+    if (loopPlaybackRange.end - loopPlaybackRange.start <= 0.001) {
+      return;
+    }
+    const video = videoRef.current;
+    const nextTime = clampTime(loopPlaybackRange.start, duration);
+    setPreviewTime(null);
+    loopPlaybackTemporarilyEnabledRef.current = loopPlaybackTemporarilyEnabledRef.current || !loopPlaybackEnabled;
+    setLoopPlaybackEnabled(true);
+    setCurrentTime(nextTime);
+
+    const playAfterSeek = () => {
+      video.removeEventListener("seeked", playAfterSeek);
+      void video.play();
+    };
+
+    if (Math.abs(video.currentTime - nextTime) > 0.001) {
+      video.addEventListener("seeked", playAfterSeek);
+      video.currentTime = nextTime;
+      return;
+    }
+
+    void video.play();
+  }
+
+  function continuePlaybackAfterTemporaryLoop() {
+    if (!loopPlaybackTemporarilyEnabledRef.current) {
+      return false;
+    }
+    loopPlaybackTemporarilyEnabledRef.current = false;
+    setPreviewTime(null);
+    setLoopPlaybackEnabled(false);
+    if (videoRef.current?.paused) {
+      void videoRef.current.play();
+    }
+    return true;
   }
 
   function updateCharacter(id: string, changes: Partial<CharacterAnnotation>, recordHistory = true) {
@@ -6306,6 +6370,17 @@ function detectWaveformKeypoints(
   }
 
   return keypoints;
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null) {
+  const element = target instanceof HTMLElement ? target : null;
+  if (!element) {
+    return false;
+  }
+  if (element.isContentEditable) {
+    return true;
+  }
+  return ["INPUT", "SELECT", "TEXTAREA"].includes(element.tagName);
 }
 
 export default App;
