@@ -524,6 +524,11 @@ export function Timeline({
   const [hoveredBlock, setHoveredBlock] = useState<HoveredBlockState>(null);
   const [activeSnapIndicator, setActiveSnapIndicator] = useState<ActiveSnapIndicator>(null);
   const [previewGuideTime, setPreviewGuideTime] = useState<number | null>(null);
+  const [draggedPointPreview, setDraggedPointPreview] = useState<{
+    id: string;
+    trackId: string;
+    time: number;
+  } | null>(null);
   const [loopRangeDraft, setLoopRangeDraft] = useState<{ start: number; end: number } | null>(null);
   const [loopRangePressed, setLoopRangePressed] = useState(false);
   const [trackHeight, setTrackHeight] = useState(DEFAULT_TRACK_HEIGHT);
@@ -1650,6 +1655,11 @@ export function Timeline({
         dragSnapLockRef.current = toDragSnapLock(
           resolvedTime.snappedTo,
         );
+        setDraggedPointPreview({
+          id: activeDragState.id,
+          trackId: activeDragState.trackId,
+          time: resolvedTime.time,
+        });
         scheduleDragUpdate({
           target: "attached-point",
           trackId: activeDragState.trackId,
@@ -1897,6 +1907,7 @@ export function Timeline({
         onAttachedPointCommit(activeDragState.trackId, activeDragState.id, {
           time: finalTime,
         });
+        setDraggedPointPreview(null);
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (activeDragState.kind === "move-banyan-mark") {
         const finalTime = Math.max(
@@ -2011,6 +2022,7 @@ export function Timeline({
         }
       }
       setDragState(null);
+      setDraggedPointPreview(null);
     };
 
     window.addEventListener("pointermove", handlePointerMove);
@@ -2356,6 +2368,7 @@ export function Timeline({
           {renderBanyanGridLines()}
 
           <div className="timeline-top-deck">
+            {renderBanyanGridLines("timeline-banyan-grid-lines-floating")}
             <div className="line-focus-layer">
               {subtitleLines.map((line) => (
                 <button
@@ -3450,7 +3463,11 @@ export function Timeline({
     const selectionKey = getTimelineSelectionKey(selectionItem.type, selectionItem.id, selectionItem.trackId);
     const isSelected = selectedTimelineKeySet.has(selectionKey) || marqueePreviewKeySet.has(selectionKey);
     const isPartOfMultiSelection = selectedTimelineKeySet.has(selectionKey) && selectedTimelineItems.length > 1;
-    const isActive = Math.abs(currentTime - point.time) <= 0.05;
+    const visualTime =
+      draggedPointPreview?.id === point.id && draggedPointPreview.trackId === pointTrack.id
+        ? draggedPointPreview.time
+        : point.time;
+    const isActive = Math.abs(currentTime - visualTime) <= 0.05;
     const zIndex = isSelected ? 8 : isActive ? 6 : 4;
 
     return (
@@ -3463,7 +3480,7 @@ export function Timeline({
           isPartOfMultiSelection ? "multi-selected" : "",
           isActive ? "active" : "",
         ].join(" ")}
-        style={{ left: point.time * zoom, zIndex }}
+        style={{ left: visualTime * zoom, zIndex }}
         data-point-id={point.id}
         data-point-track-id={pointTrack.id}
         data-point-parent-track-id={pointTrack.parentTrackId}
@@ -3571,12 +3588,12 @@ export function Timeline({
     );
   }
 
-  function renderBanyanGridLines() {
+  function renderBanyanGridLines(extraClassName = "") {
     if (!banyanGridVisible || visibleBanyanMarks.length === 0) {
       return null;
     }
     return (
-      <div className="timeline-banyan-grid-lines" aria-hidden="true">
+      <div className={["timeline-banyan-grid-lines", extraClassName].filter(Boolean).join(" ")} aria-hidden="true">
         {visibleBanyanMarks.map((mark) => (
           <span
             key={`banyan-grid-${mark.id}`}
@@ -3587,7 +3604,7 @@ export function Timeline({
               mark.confidence === "manual" ? "manual" : "",
               mark.orphaned ? "orphaned" : "",
             ].join(" ")}
-            style={{ left: mark.time * zoom }}
+            style={{ left: getCanvasX(mark.time, zoom) }}
           />
         ))}
       </div>

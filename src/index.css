@@ -1191,11 +1191,17 @@ select {
   z-index: 2;
 }
 
+.timeline-banyan-grid-lines-floating {
+  top: 0;
+  z-index: 4;
+}
+
 .timeline-banyan-grid-line {
   position: absolute;
   top: 0;
   bottom: 0;
   width: 1px;
+  transform: translateX(-50%);
   background: rgba(31, 41, 55, 0.18);
 }
 
@@ -1209,7 +1215,7 @@ select {
 }
 
 .timeline-banyan-grid-line.manual {
-  box-shadow: 1px 0 0 rgba(37, 99, 235, 0.28);
+  opacity: 0.92;
 }
 
 .timeline-banyan-grid-line.orphaned {
@@ -1242,7 +1248,6 @@ select {
 
 .timeline-track {
   position: relative;
-  isolation: isolate;
   display: grid;
   grid-template-columns: var(--track-label-width, 164px) minmax(0, 1fr);
   border-bottom: 1px solid rgba(31, 41, 55, 0.08);
@@ -1282,7 +1287,7 @@ select {
 .track-label {
   position: sticky;
   left: 0;
-  z-index: 4;
+  z-index: 30;
   box-sizing: border-box;
   height: 100%;
   display: flex;
@@ -1317,7 +1322,7 @@ select {
 
 .track-label.dragging {
   opacity: 0.78;
-  z-index: 12;
+  z-index: 31;
   transition: none;
   box-shadow:
     0 12px 24px rgba(15, 23, 42, 0.18),
@@ -2377,21 +2382,13 @@ select {
 }
 
 .timeline-banyan-stem {
-  position: absolute;
-  left: 50%;
-  top: 3px;
-  transform: translateX(-50%);
-  width: 2px;
-  height: 18px;
-  border-radius: 999px;
-  background: rgba(31, 41, 55, 0.62);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.78);
+  display: none;
 }
 
 .timeline-banyan-dot {
   position: absolute;
   left: 50%;
-  top: 18px;
+  top: 13px;
   transform: translate(-50%, -50%);
   width: 11px;
   height: 11px;
@@ -2422,14 +2419,13 @@ select {
 .timeline-banyan-chip {
   position: absolute;
   left: 50%;
-  bottom: 100%;
+  top: 22px;
   transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
   min-width: 18px;
   justify-content: center;
   padding: 1px 5px;
-  margin-bottom: 2px;
   border-radius: 999px;
   background: rgba(255, 255, 252, 0.98);
   border: 1px solid rgba(31, 41, 55, 0.14);
@@ -2452,7 +2448,7 @@ select {
 }
 
 .timeline-banyan-mark.active .timeline-banyan-dot {
-  transform: translate(-50%, -50%) scale(1.12);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.88), 0 0 0 5px rgba(15, 108, 189, 0.16);
 }
 
 .timeline-gongche-block {
@@ -2846,6 +2842,7 @@ select {
   top: 0;
   bottom: 0;
   width: 2px;
+  transform: translateX(-50%);
   background: linear-gradient(180deg, rgba(14, 165, 233, 0.92), rgba(59, 130, 246, 0.78));
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.82), 0 0 12px rgba(14, 165, 233, 0.28);
   pointer-events: none;
@@ -3274,6 +3271,7 @@ select {
   top: 0;
   bottom: 0;
   width: 2px;
+  transform: translateX(-50%);
   background: linear-gradient(180deg, #ef4444, #f97316);
   box-shadow: 0 0 0 1px rgba(255,255,255,0.5);
   z-index: 14;
@@ -3289,6 +3287,7 @@ select {
   top: 0;
   bottom: 0;
   width: 2px;
+  transform: translateX(-50%);
   background:
     repeating-linear-gradient(
       180deg,

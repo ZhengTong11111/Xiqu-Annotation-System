@@ -114,31 +114,10 @@ export function generateBanyanMarksFromGongche(project: ProjectData): GenerateBa
 }
 
 export function getBanyanMarkDisplayLabel(mark: BanyanMark) {
-  if (mark.subtype === "mainBan" || mark.subtype === "headBan") {
-    return "板";
-  }
-  if (mark.subtype === "zengBan") {
-    return "赠";
-  }
-  if (mark.subtype === "bottomBan") {
-    return "底";
-  }
-  if (mark.subtype === "waistZengBan") {
-    return "腰赠";
-  }
-  if (mark.subtype === "middleEye") {
-    return "中";
-  }
   if (mark.subtype === "smallEye") {
-    return "眼";
+    return "小眼";
   }
-  if (mark.subtype === "sideHeadTailEye") {
-    return "侧";
-  }
-  if (mark.subtype === "sideMiddleEye") {
-    return "侧中";
-  }
-  return mark.sourceSymbol || "板眼";
+  return getBanyanSubtypeLabel(mark.subtype);
 }
 
 export function getBanyanSubtypeLabel(subtype: BanyanMark["subtype"]) {
