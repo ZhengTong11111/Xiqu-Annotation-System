@@ -6723,7 +6723,7 @@ function normalizeBanyanMarks(value: ProjectData["banyanMarks"] | undefined) {
       sourceTokenIndex: typeof mark.sourceTokenIndex === "number" ? mark.sourceTokenIndex : undefined,
       sourceKey: typeof mark.sourceKey === "string" ? mark.sourceKey : undefined,
       role: isBanyanRole(mark.role) ? mark.role : "auxiliary",
-      subtype: isBanyanSubtype(mark.subtype) ? mark.subtype : "unknown",
+      subtype: normalizeBanyanSubtype(mark.subtype),
       segment: isBanyanSegment(mark.segment) ? mark.segment : "unknown",
       beatIndex: typeof mark.beatIndex === "number" ? mark.beatIndex : null,
       cycleIndex: typeof mark.cycleIndex === "number" ? mark.cycleIndex : null,
@@ -6770,15 +6770,22 @@ function isBanyanSubtype(value: unknown): value is BanyanMark["subtype"] {
     "zengBan",
     "waistZengBan",
     "middleEye",
-    "headEye",
-    "tailEye",
     "smallEye",
-    "sideHeadEye",
-    "sideTailEye",
+    "sideHeadTailEye",
     "sideMiddleEye",
     "phraseBoundary",
     "unknown",
   ].includes(value);
+}
+
+function normalizeBanyanSubtype(value: unknown): BanyanMark["subtype"] {
+  if (value === "headEye" || value === "tailEye") {
+    return "smallEye";
+  }
+  if (value === "sideHeadEye" || value === "sideTailEye") {
+    return "sideHeadTailEye";
+  }
+  return isBanyanSubtype(value) ? value : "unknown";
 }
 
 function isBanyanSegment(value: unknown): value is BanyanMark["segment"] {

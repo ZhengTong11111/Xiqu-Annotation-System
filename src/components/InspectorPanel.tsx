@@ -24,23 +24,40 @@ import {
 
 const REORDER_ACTIVATION_PX = 6;
 
-const BANYAN_SUBTYPE_OPTIONS: BanyanMark["subtype"][] = [
+const BANYAN_BAN_SUBTYPE_OPTIONS: BanyanMark["subtype"][] = [
   "mainBan",
   "headBan",
   "waistBan",
   "bottomBan",
   "zengBan",
   "waistZengBan",
+];
+
+const BANYAN_YAN_SUBTYPE_OPTIONS: BanyanMark["subtype"][] = [
   "middleEye",
-  "headEye",
-  "tailEye",
   "smallEye",
-  "sideHeadEye",
-  "sideTailEye",
+  "sideHeadTailEye",
   "sideMiddleEye",
+];
+
+const BANYAN_AUXILIARY_SUBTYPE_OPTIONS: BanyanMark["subtype"][] = [
   "phraseBoundary",
   "unknown",
 ];
+
+function getBanyanSubtypeOptionsForRole(role: BanyanMark["role"]) {
+  if (role === "ban") {
+    return BANYAN_BAN_SUBTYPE_OPTIONS;
+  }
+  if (role === "yan") {
+    return BANYAN_YAN_SUBTYPE_OPTIONS;
+  }
+  return BANYAN_AUXILIARY_SUBTYPE_OPTIONS;
+}
+
+function getDefaultBanyanSubtypeForRole(role: BanyanMark["role"]) {
+  return getBanyanSubtypeOptionsForRole(role)[0] ?? "unknown";
+}
 
 type InspectorPanelProps = {
   collapsed?: boolean;
@@ -529,9 +546,13 @@ export function InspectorPanel({
             </div>
             <div className="banyan-code-grid">
               <div><strong>1</strong><span>板</span></div>
-              <div><strong>2</strong><span>小眼</span></div>
+              <div><strong>2</strong><span>小眼（头末眼）</span></div>
               <div><strong>3</strong><span>中眼</span></div>
               <div><strong>4</strong><span>赠板</span></div>
+              <div><strong>5</strong><span>底板</span></div>
+              <div><strong>6</strong><span>侧头末眼</span></div>
+              <div><strong>7</strong><span>侧中眼</span></div>
+              <div><strong>8</strong><span>腰赠板</span></div>
             </div>
             <p className="spectrogram-setting-help">生成结果只是初稿，可根据实际演奏继续拖动微调。</p>
           </div>
@@ -584,6 +605,10 @@ export function InspectorPanel({
     const section = mark.sectionId
       ? banyanSections.find((item) => item.id === mark.sectionId)
       : null;
+    const subtypeOptions = getBanyanSubtypeOptionsForRole(mark.role);
+    const selectedSubtype = subtypeOptions.includes(mark.subtype)
+      ? mark.subtype
+      : getDefaultBanyanSubtypeForRole(mark.role);
 
     return (
       <section className="panel inspector-panel">
@@ -619,7 +644,17 @@ export function InspectorPanel({
           <label>角色</label>
           <select
             value={mark.role}
-            onChange={(event) => onBanyanMarkUpdate(mark.id, { role: event.target.value as BanyanMark["role"] })}
+            onChange={(event) => {
+              const nextRole = event.target.value as BanyanMark["role"];
+              const nextSubtypeOptions = getBanyanSubtypeOptionsForRole(nextRole);
+              onBanyanMarkUpdate(mark.id, {
+                role: nextRole,
+                subtype: nextSubtypeOptions.includes(mark.subtype)
+                  ? mark.subtype
+                  : getDefaultBanyanSubtypeForRole(nextRole),
+                confidence: "manual",
+              });
+            }}
           >
             <option value="ban">板</option>
             <option value="yan">眼</option>
@@ -629,10 +664,13 @@ export function InspectorPanel({
         <div className="inspector-field">
           <label>类型</label>
           <select
-            value={mark.subtype}
-            onChange={(event) => onBanyanMarkUpdate(mark.id, { subtype: event.target.value as BanyanMark["subtype"] })}
+            value={selectedSubtype}
+            onChange={(event) => onBanyanMarkUpdate(mark.id, {
+              subtype: event.target.value as BanyanMark["subtype"],
+              confidence: "manual",
+            })}
           >
-            {BANYAN_SUBTYPE_OPTIONS.map((subtype) => (
+            {subtypeOptions.map((subtype) => (
               <option key={subtype} value={subtype}>{getBanyanSubtypeLabel(subtype)}</option>
             ))}
           </select>

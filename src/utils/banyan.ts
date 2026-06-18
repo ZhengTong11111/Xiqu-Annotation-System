@@ -19,7 +19,7 @@ export type GenerateBanyanMarksResult = {
 
 type BanyanCandidate = Omit<BanyanMark, "id" | "sectionId" | "confidence" | "manualOffset" | "orphaned">;
 
-const BANYAN_CORE_TOKEN_PATTERN = /[1234]/g;
+const BANYAN_CORE_TOKEN_PATTERN = /[1-8]/g;
 
 export function generateBanyanMarksFromGongche(project: ProjectData): GenerateBanyanMarksResult {
   const sortedGongche = [...(project.gongcheAnnotations ?? [])].sort((left, right) => left.startTime - right.startTime);
@@ -120,17 +120,23 @@ export function getBanyanMarkDisplayLabel(mark: BanyanMark) {
   if (mark.subtype === "zengBan") {
     return "赠";
   }
+  if (mark.subtype === "bottomBan") {
+    return "底";
+  }
+  if (mark.subtype === "waistZengBan") {
+    return "腰赠";
+  }
   if (mark.subtype === "middleEye") {
     return "中";
   }
-  if (mark.subtype === "headEye") {
-    return "头";
-  }
-  if (mark.subtype === "tailEye") {
-    return "末";
-  }
   if (mark.subtype === "smallEye") {
     return "眼";
+  }
+  if (mark.subtype === "sideHeadTailEye") {
+    return "侧";
+  }
+  if (mark.subtype === "sideMiddleEye") {
+    return "侧中";
   }
   return mark.sourceSymbol || "板眼";
 }
@@ -144,11 +150,8 @@ export function getBanyanSubtypeLabel(subtype: BanyanMark["subtype"]) {
     zengBan: "赠板",
     waistZengBan: "腰赠板",
     middleEye: "中眼",
-    headEye: "头眼",
-    tailEye: "末眼",
-    smallEye: "小眼",
-    sideHeadEye: "侧头眼",
-    sideTailEye: "侧末眼",
+    smallEye: "小眼（头末眼）",
+    sideHeadTailEye: "侧头末眼",
     sideMiddleEye: "侧中眼",
     phraseBoundary: "句读",
     unknown: "未定",
@@ -188,7 +191,7 @@ function inferBanyanCandidates(gongcheAnnotations: GongcheAnnotation[]) {
           const sourceSymbol = match[0];
           const estimatedTime = matches.length <= 1
             ? symbol.startTime
-            : symbol.startTime + (symbolDuration * tokenIndex) / Math.max(matches.length - 1, 1);
+            : symbol.startTime + (symbolDuration * tokenIndex) / matches.length;
           return {
             sourceSymbol,
             sourceTokenIndex: tokenIndex,
@@ -205,16 +208,14 @@ function inferBanyanCandidates(gongcheAnnotations: GongcheAnnotation[]) {
       }),
   ).sort((left, right) => left.estimatedTime - right.estimatedTime);
 
-  return rawCandidates.map((candidate, index, candidates): BanyanCandidate => ({
+  return rawCandidates.map((candidate): BanyanCandidate => ({
     ...candidate,
-    ...inferBanyanSemantics(candidate.sourceSymbol, index, candidates),
+    ...inferBanyanSemantics(candidate.sourceSymbol),
   }));
 }
 
 function inferBanyanSemantics(
   sourceSymbol: string,
-  index: number,
-  candidates: Array<{ sourceSymbol: string }>,
 ): Pick<BanyanCandidate, "role" | "subtype" | "segment" | "beatIndex" | "strength"> {
   if (sourceSymbol === "1") {
     return {
@@ -243,13 +244,48 @@ function inferBanyanSemantics(
       strength: "strong",
     };
   }
-  if (sourceSymbol === "2") {
-    const subtype = inferSmallEyeSubtype(index, candidates);
+  if (sourceSymbol === "5") {
+    return {
+      role: "ban",
+      subtype: "bottomBan",
+      segment: "main",
+      beatIndex: 1,
+      strength: "strong",
+    };
+  }
+  if (sourceSymbol === "6") {
     return {
       role: "yan",
-      subtype,
+      subtype: "sideHeadTailEye",
       segment: "main",
-      beatIndex: subtype === "tailEye" ? 4 : 2,
+      beatIndex: 2,
+      strength: "weak",
+    };
+  }
+  if (sourceSymbol === "7") {
+    return {
+      role: "yan",
+      subtype: "sideMiddleEye",
+      segment: "main",
+      beatIndex: 3,
+      strength: "medium",
+    };
+  }
+  if (sourceSymbol === "8") {
+    return {
+      role: "ban",
+      subtype: "waistZengBan",
+      segment: "zeng",
+      beatIndex: 1,
+      strength: "strong",
+    };
+  }
+  if (sourceSymbol === "2") {
+    return {
+      role: "yan",
+      subtype: "smallEye",
+      segment: "main",
+      beatIndex: 2,
       strength: "weak",
     };
   }
@@ -260,32 +296,6 @@ function inferBanyanSemantics(
     beatIndex: null,
     strength: "unknown",
   };
-}
-
-function inferSmallEyeSubtype(index: number, candidates: Array<{ sourceSymbol: string }>): BanyanMark["subtype"] {
-  const previousCore = findNearestCoreCandidate(candidates, index, -1);
-  const nextCore = findNearestCoreCandidate(candidates, index, 1);
-  if (nextCore?.sourceSymbol === "3") {
-    return "headEye";
-  }
-  if (previousCore?.sourceSymbol === "3") {
-    return "tailEye";
-  }
-  return "smallEye";
-}
-
-function findNearestCoreCandidate(
-  candidates: Array<{ sourceSymbol: string }>,
-  index: number,
-  direction: -1 | 1,
-) {
-  for (let candidateIndex = index + direction; candidateIndex >= 0 && candidateIndex < candidates.length; candidateIndex += direction) {
-    const candidate = candidates[candidateIndex];
-    if (candidate.sourceSymbol === "1" || candidate.sourceSymbol === "3" || candidate.sourceSymbol === "4") {
-      return candidate;
-    }
-  }
-  return null;
 }
 
 function ensureBanyanSection(

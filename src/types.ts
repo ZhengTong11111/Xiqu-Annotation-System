@@ -75,11 +75,8 @@ export type BanyanSubtype =
   | "zengBan"
   | "waistZengBan"
   | "middleEye"
-  | "headEye"
-  | "tailEye"
   | "smallEye"
-  | "sideHeadEye"
-  | "sideTailEye"
+  | "sideHeadTailEye"
   | "sideMiddleEye"
   | "phraseBoundary"
   | "unknown";
