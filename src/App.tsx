@@ -22,6 +22,8 @@ import type {
   ActionAnnotation,
   AttachedPointAnnotation,
   AttachedPointTrack,
+  BanyanMark,
+  BanyanSection,
   BuiltinTrack,
   BuiltinTrackId,
   CharacterAnnotation,
@@ -66,6 +68,7 @@ import {
   buildSpectrogramData,
   defaultSpectrogramSettings,
 } from "./utils/spectrogram";
+import { generateBanyanMarksFromGongche } from "./utils/banyan";
 
 type CharacterEditLocation = "timeline" | "split-panel";
 type CharacterLineAction =
@@ -142,6 +145,12 @@ type TimelineClipboardItem =
       parentTrackId: string;
       label: string;
       timeOffset: number;
+    }
+  | {
+      type: "banyan-mark";
+      sourceTrackId: "banyan-track";
+      mark: Omit<BanyanMark, "id" | "time" | "estimatedTime" | "manualOffset" | "sourceKey" | "sourceTokenIndex">;
+      timeOffset: number;
     };
 
 type TimelineClipboard = {
@@ -190,6 +199,12 @@ type PreparedPasteItem =
       parentTrackId: string;
       time: number;
       label: string;
+    }
+  | {
+      type: "banyan-mark";
+      targetTrackId: "banyan-track";
+      time: number;
+      mark: Omit<BanyanMark, "id" | "time" | "estimatedTime" | "manualOffset" | "sourceKey" | "sourceTokenIndex">;
     };
 
 type PasteConflict = {
@@ -266,6 +281,30 @@ type TimelineContextMenu =
       time: number;
     }
   | {
+      type: "attached-point";
+      id: string;
+      trackId: string;
+      parentTrackId: string;
+      x: number;
+      y: number;
+      time: number;
+    }
+  | {
+      type: "gongche-block";
+      id: string;
+      x: number;
+      y: number;
+      time: number;
+    }
+  | {
+      type: "banyan-mark";
+      id: string;
+      x: number;
+      y: number;
+      trackId: "banyan-track";
+      time: number;
+    }
+  | {
       type: "lane";
       trackId: string;
       x: number;
@@ -280,9 +319,10 @@ const DEFAULT_ACTION_DURATION = 0.8;
 const DEFAULT_CUSTOM_TEXT = "新标注";
 const CONTEXT_MENU_GAP = 10;
 const CONTEXT_MENU_VIEWPORT_MARGIN = 12;
-const PROJECT_FILE_VERSION = 2;
+const PROJECT_FILE_VERSION = 3;
 const IMPORT_MERGE_SKIP = "__skip__";
 const IMPORT_MERGE_NEW = "__new__";
+const POINT_PASTE_CONFLICT_EPSILON = 0.015;
 const comparableProjectSignatureCache = new WeakMap<ProjectData, string>();
 const trackSnapSignatureCache = new WeakMap<Record<string, boolean>, string>();
 const WAVEFORM_KEYPOINT_MIN_SPACING_SECONDS = 0.06;
@@ -329,6 +369,8 @@ function App() {
   const [spectrogramSettings, setSpectrogramSettings] = useState<SpectrogramSettings>(
     defaultSpectrogramSettings,
   );
+  const [banyanGridVisible, setBanyanGridVisible] = useState(true);
+  const [banyanTrackVisible, setBanyanTrackVisible] = useState(true);
   const [editingCharacterId, setEditingCharacterId] = useState<string | null>(null);
   const [editingCharacterLocation, setEditingCharacterLocation] = useState<CharacterEditLocation | null>(null);
   const [editingCharacterValue, setEditingCharacterValue] = useState("");
@@ -767,7 +809,10 @@ function App() {
           selectedTimelineItems.length > 0 ||
           selectedItem?.type === "character" ||
           selectedItem?.type === "action" ||
-          selectedItem?.type === "custom-block"
+          selectedItem?.type === "custom-block" ||
+          selectedItem?.type === "gongche-block" ||
+          selectedItem?.type === "attached-point" ||
+          selectedItem?.type === "banyan-mark"
         ) {
           event.preventDefault();
           deleteSelected();
@@ -842,6 +887,17 @@ function App() {
     ? customBlocks.find((item) =>
         item.id === blockContextMenu.id && item.trackId === blockContextMenu.trackId,
       ) ?? null
+    : null;
+  const contextMenuAttachedPoint = blockContextMenu?.type === "attached-point"
+    ? findPointTrackLocation(project, blockContextMenu.trackId)?.pointTrack.points.find((item) =>
+        item.id === blockContextMenu.id,
+      ) ?? null
+    : null;
+  const contextMenuGongcheBlock = blockContextMenu?.type === "gongche-block"
+    ? project.gongcheAnnotations.find((item) => item.id === blockContextMenu.id) ?? null
+    : null;
+  const contextMenuBanyanMark = blockContextMenu?.type === "banyan-mark"
+    ? project.banyanMarks.find((item) => item.id === blockContextMenu.id) ?? null
     : null;
   const contextMenuSplitCharacters = contextMenuCharacter
     ? getSplittableCharacters(contextMenuCharacter.char)
@@ -1484,6 +1540,8 @@ function App() {
             }]
         : selectedItem?.type === "custom-block"
           ? [{ type: "custom-block", id: selectedItem.id, trackId: selectedItem.trackId }]
+        : selectedItem?.type === "banyan-mark"
+          ? [{ type: "banyan-mark", id: selectedItem.id }]
           : [];
 
     return explicitSelection
@@ -1531,6 +1589,31 @@ function App() {
           sourceTrackId: item.trackId,
           parentTrackId: item.parentTrackId,
           label: item.label,
+          timeOffset: item.startTime - baseTime,
+        };
+      }
+      if (item.type === "banyan-mark") {
+        return {
+          type: "banyan-mark",
+          sourceTrackId: "banyan-track",
+          mark: {
+            sectionId: item.sectionId,
+            sourceSymbol: item.sourceSymbol,
+            role: item.role,
+            subtype: item.subtype,
+            segment: item.segment,
+            beatIndex: item.beatIndex,
+            cycleIndex: item.cycleIndex,
+            strength: item.strength,
+            attachment: item.attachment,
+            linkedGongcheAnnotationId: item.linkedGongcheAnnotationId,
+            linkedGongcheSymbolId: item.linkedGongcheSymbolId,
+            linkedGongcheSymbolIds: item.linkedGongcheSymbolIds ? [...item.linkedGongcheSymbolIds] : undefined,
+            confidence: item.confidence,
+            durationHint: item.durationHint,
+            orphaned: item.orphaned,
+            comment: item.comment,
+          },
           timeOffset: item.startTime - baseTime,
         };
       }
@@ -1666,6 +1749,25 @@ function App() {
       });
       insertedPointsByTrack.set(item.targetTrackId, points);
     }
+    const insertedBanyanMarks = safeItems.flatMap((item) =>
+      item.type === "banyan-mark"
+        ? [{
+            ...item.mark,
+            id: `banyan-mark-${crypto.randomUUID()}`,
+            time: item.time,
+            estimatedTime: item.time,
+            manualOffset: 0,
+            sourceKey: undefined,
+            sourceTokenIndex: undefined,
+            sourceSymbol: item.mark.sourceSymbol || "",
+            confidence: "manual" as const,
+            orphaned: item.mark.orphaned ?? false,
+            linkedGongcheSymbolIds: item.mark.linkedGongcheSymbolIds
+              ? [...item.mark.linkedGongcheSymbolIds]
+              : undefined,
+          }]
+        : [],
+    );
     const insertedCustomBlocksByTrack = new Map<string, Array<CustomTrack["blocks"][number]>>();
     for (const item of safeItems) {
       if (item.type !== "custom-block") {
@@ -1739,6 +1841,12 @@ function App() {
       {
         ...currentProject,
         characterAnnotations: nextCharacterAnnotations,
+        banyanMarks: [
+          ...currentProject.banyanMarks.filter((mark) =>
+            !(resolution === "replace" && conflictingKeys.has(`banyan-mark:${mark.id}`)),
+          ),
+          ...insertedBanyanMarks,
+        ].sort((left, right) => left.time - right.time || left.id.localeCompare(right.id)),
         actionAnnotations: nextActionAnnotations,
         builtinTracks: nextBuiltinTracks,
         customTracks: nextCustomTracks,
@@ -1760,6 +1868,7 @@ function App() {
       ...Array.from(insertedCustomBlocksByTrack.entries()).flatMap(([trackId, blocks]) =>
         blocks.map((block) => ({ type: "custom-block" as const, id: block.id, trackId })),
       ),
+      ...insertedBanyanMarks.map((mark) => ({ type: "banyan-mark" as const, id: mark.id })),
     ];
 
     commitProject(nextProject);
@@ -1775,6 +1884,8 @@ function App() {
                 trackId: primaryItem.trackId,
                 parentTrackId: primaryItem.parentTrackId,
               }
+          : primaryItem.type === "banyan-mark"
+            ? { type: "banyan-mark", id: primaryItem.id }
           : { type: primaryItem.type, id: primaryItem.id },
         nextSelectedItems,
       );
@@ -1820,6 +1931,11 @@ function App() {
         )
         .map((item) => [`${item.trackId}:${item.id}`, item]),
     );
+    const banyanMarkUpdates = new Map(
+      items
+        .filter((item): item is TimelineBatchMoveItem & { type: "banyan-mark" } => item.type === "banyan-mark")
+        .map((item) => [item.id, item]),
+    );
     const affectedLineIds = new Set<string>();
     for (const item of characterUpdates.values()) {
       const character = currentProject.characterAnnotations.find((candidate) => candidate.id === item.id);
@@ -1857,6 +1973,18 @@ function App() {
           ...item,
           startTime: update.startTime,
           endTime: update.endTime,
+        };
+      }),
+      banyanMarks: currentProject.banyanMarks.map((item) => {
+        const update = banyanMarkUpdates.get(item.id);
+        if (!update) {
+          return item;
+        }
+        return {
+          ...item,
+          time: update.startTime,
+          manualOffset: update.startTime - item.estimatedTime,
+          confidence: "manual",
         };
       }),
       builtinTracks: currentProject.builtinTracks.map((track) => ({
@@ -2337,6 +2465,92 @@ function App() {
     };
   }
 
+  function generateBanyanFromGongche() {
+    const result = generateBanyanMarksFromGongche(projectRef.current);
+    commitProject(result.project);
+    return result.stats;
+  }
+
+  function updateBanyanMark(id: string, changes: Partial<BanyanMark>, recordHistory = true) {
+    const currentProject = projectRef.current;
+    const currentMark = currentProject.banyanMarks.find((item) => item.id === id);
+    if (!currentMark) {
+      return;
+    }
+    const estimatedTime = typeof changes.estimatedTime === "number" ? Math.max(0, changes.estimatedTime) : currentMark.estimatedTime;
+    const nextTime = typeof changes.time === "number" ? Math.max(0, changes.time) : currentMark.time;
+    const nextMark: BanyanMark = {
+      ...currentMark,
+      ...changes,
+      time: nextTime,
+      estimatedTime,
+      manualOffset: nextTime - estimatedTime,
+      confidence: changes.confidence ?? (Math.abs(nextTime - currentMark.time) > 0.0005 ? "manual" : currentMark.confidence),
+    };
+    const nextProject = {
+      ...currentProject,
+      banyanMarks: currentProject.banyanMarks.map((item) => item.id === id ? nextMark : item),
+    };
+    if (recordHistory) {
+      commitProject(nextProject);
+    } else {
+      applyProjectWithoutHistory(nextProject);
+    }
+  }
+
+  function changeBanyanMark(id: string, changes: Partial<BanyanMark>) {
+    updateBanyanMark(id, changes, false);
+  }
+
+  function commitBanyanMark(id: string, changes: Partial<BanyanMark>) {
+    updateBanyanMark(id, changes, true);
+  }
+
+  function createBanyanMark(time: number) {
+    const currentProject = projectRef.current;
+    const safeTime = Math.max(0, time);
+    const section = findBanyanSectionAtTime(currentProject.banyanSections, safeTime) ??
+      currentProject.banyanSections[0] ??
+      null;
+    const nextSection = section ?? {
+      id: `banyan-section-${crypto.randomUUID()}`,
+      name: "板眼区段",
+      startTime: safeTime,
+      endTime: Math.max(safeTime + 1, getProjectDuration(currentProject)),
+      cycleType: "yi_ban_san_yan_zeng" as const,
+      freeRhythm: false,
+      beatCount: 8,
+      hasZengBan: true,
+      source: "manual",
+    };
+    const nextMark: BanyanMark = {
+      id: `banyan-mark-${crypto.randomUUID()}`,
+      sectionId: nextSection.id,
+      time: safeTime,
+      estimatedTime: safeTime,
+      sourceSymbol: "",
+      role: "ban",
+      subtype: "mainBan",
+      segment: "main",
+      beatIndex: 1,
+      cycleIndex: null,
+      strength: "strong",
+      attachment: "unknown",
+      linkedGongcheAnnotationId: null,
+      linkedGongcheSymbolId: null,
+      confidence: "manual",
+      manualOffset: 0,
+      durationHint: null,
+      comment: "",
+    };
+    commitProject({
+      ...currentProject,
+      banyanSections: section ? currentProject.banyanSections : [...currentProject.banyanSections, nextSection],
+      banyanMarks: [...currentProject.banyanMarks, nextMark].sort((left, right) => left.time - right.time),
+    });
+    applySelection({ type: "banyan-mark", id: nextMark.id });
+  }
+
   function applyCharacterLineAction(id: string, action: CharacterLineAction) {
     const currentProject = projectRef.current;
     const currentCharacter = currentProject.characterAnnotations.find((item) => item.id === id);
@@ -2461,7 +2675,7 @@ function App() {
 
   function deleteSelected() {
     const currentProject = projectRef.current;
-    const timelineSelection = selectedTimelineItems.length > 0
+    const timelineSelection: TimelineSelectionItem[] = selectedTimelineItems.length > 0
       ? selectedTimelineItems
       : selectedItem?.type === "character" || selectedItem?.type === "action"
         ? [{ type: selectedItem.type, id: selectedItem.id }]
@@ -2474,6 +2688,8 @@ function App() {
             }]
         : selectedItem?.type === "custom-block"
           ? [{ type: "custom-block", id: selectedItem.id, trackId: selectedItem.trackId }]
+        : selectedItem?.type === "banyan-mark"
+          ? [{ type: "banyan-mark", id: selectedItem.id }]
         : [];
 
     if (timelineSelection.length > 0) {
@@ -2497,7 +2713,7 @@ function App() {
       const customBlockKeys = new Set(
         timelineSelection
           .filter(
-            (item): item is TimelineSelectionItem & { type: "custom-block"; trackId: string } =>
+            (item): item is Extract<TimelineSelectionItem, { type: "custom-block" }> =>
               item.type === "custom-block",
           )
           .map((item) => `${item.trackId}:${item.id}`),
@@ -2509,10 +2725,15 @@ function App() {
       const attachedPointKeys = new Set(
         timelineSelection
           .filter(
-            (item): item is TimelineSelectionItem & { type: "attached-point"; trackId: string } =>
+            (item): item is Extract<TimelineSelectionItem, { type: "attached-point" }> =>
               item.type === "attached-point",
           )
           .map((item) => `${item.trackId}:${item.id}`),
+      );
+      const banyanMarkIds = new Set(
+        timelineSelection
+          .filter((item): item is TimelineSelectionItem & { type: "banyan-mark" } => item.type === "banyan-mark")
+          .map((item) => item.id),
       );
       const affectedLineIds = new Set(
         currentProject.characterAnnotations
@@ -2524,6 +2745,7 @@ function App() {
         {
           ...currentProject,
           characterAnnotations: currentProject.characterAnnotations.filter((item) => !characterIds.has(item.id)),
+          banyanMarks: currentProject.banyanMarks.filter((item) => !banyanMarkIds.has(item.id)),
           gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) =>
             !gongcheParentKeys.has(getGongcheParentKey(item.parentTrackId, item.parentBlockId)),
           ),
@@ -2630,6 +2852,13 @@ function App() {
       }));
       applySelection(null);
     }
+    if (selectedItem.type === "banyan-mark") {
+      commitProject({
+        ...currentProject,
+        banyanMarks: currentProject.banyanMarks.filter((item) => item.id !== selectedItem.id),
+      });
+      applySelection({ type: "banyan-track" });
+    }
     if (selectedItem.type === "attached-point-track") {
       deleteAttachedPointTrack(selectedItem.id);
     }
@@ -2666,6 +2895,7 @@ function App() {
           })),
         ),
       ),
+      ...currentProject.banyanMarks.map((item) => ({ type: "banyan-mark" as const, id: item.id })),
       ...flattenCustomTrackBlocks(currentProject.customTracks).map((item) => ({
         type: "custom-block" as const,
         id: item.id,
@@ -3473,6 +3703,10 @@ function App() {
         builtinTracks={project.builtinTracks}
         characterAnnotations={project.characterAnnotations}
         gongcheAnnotations={project.gongcheAnnotations}
+        banyanSections={project.banyanSections}
+        banyanMarks={project.banyanMarks}
+        banyanGridVisible={banyanGridVisible}
+        banyanTrackVisible={banyanTrackVisible}
         actionAnnotations={project.actionAnnotations}
         customTracks={project.customTracks}
         trackDefinitions={timelineTrackDefinitions}
@@ -3616,6 +3850,38 @@ function App() {
             y,
           });
         }}
+        onOpenAttachedPointContextMenu={(trackId, parentTrackId, id, time, x, y) => {
+          updateTimelinePasteTarget(trackId, time);
+          setBlockContextMenu({
+            type: "attached-point",
+            trackId,
+            parentTrackId,
+            id,
+            time,
+            x,
+            y,
+          });
+        }}
+        onOpenGongcheBlockContextMenu={(id, time, x, y) => {
+          setBlockContextMenu({
+            type: "gongche-block",
+            id,
+            time,
+            x,
+            y,
+          });
+        }}
+        onOpenBanyanMarkContextMenu={(id, time, x, y) => {
+          updateTimelinePasteTarget("banyan-track", time);
+          setBlockContextMenu({
+            type: "banyan-mark",
+            trackId: "banyan-track",
+            id,
+            time,
+            x,
+            y,
+          });
+        }}
         onOpenLaneContextMenu={(trackId, time, x, y) => {
           updateTimelinePasteTarget(trackId, time);
           setBlockContextMenu({ type: "lane", trackId, time, x, y });
@@ -3630,6 +3896,9 @@ function App() {
         onAttachedPointCommit={commitAttachedPoint}
         onGongcheBlockChange={changeGongcheBlock}
         onGongcheBlockCommit={commitGongcheBlock}
+        onBanyanMarkChange={changeBanyanMark}
+        onBanyanMarkCommit={commitBanyanMark}
+        onCreateBanyanMark={createBanyanMark}
         onCustomBlockChange={(trackId, id, changes) => updateCustomBlock(trackId, id, changes, false)}
         onCustomBlockCommit={(trackId, id, changes) => updateCustomBlock(trackId, id, changes, true)}
         onBatchMoveChange={(items) => updateTimelineSelectionBatch(items, false)}
@@ -3866,7 +4135,11 @@ function App() {
                       hasWaveformData={Boolean(waveformData)}
                       isLoading={isSpectrogramLoading}
                       hasData={Boolean(spectrogramData)}
+                      banyanGridVisible={banyanGridVisible}
+                      banyanTrackVisible={banyanTrackVisible}
                       onSettingsChange={setSpectrogramSettings}
+                      onBanyanGridVisibleChange={setBanyanGridVisible}
+                      onBanyanTrackVisibleChange={setBanyanTrackVisible}
                     />
                   ) : (
                     <InspectorPanel
@@ -3874,6 +4147,10 @@ function App() {
                       subtitleLines={project.subtitleLines}
                       characterAnnotations={project.characterAnnotations}
                       gongcheAnnotations={project.gongcheAnnotations}
+                      banyanSections={project.banyanSections}
+                      banyanMarks={project.banyanMarks}
+                      banyanGridVisible={banyanGridVisible}
+                      banyanTrackVisible={banyanTrackVisible}
                       actionAnnotations={project.actionAnnotations}
                       builtinTracks={project.builtinTracks}
                       customTracks={project.customTracks}
@@ -3883,6 +4160,10 @@ function App() {
                       onCreateGongcheBlock={createGongcheBlock}
                       onGongcheBlockUpdate={(id, changes) => updateGongcheBlock(id, changes)}
                       onImportGongcheText={importGongcheText}
+                      onGenerateBanyanFromGongche={generateBanyanFromGongche}
+                      onBanyanGridVisibleChange={setBanyanGridVisible}
+                      onBanyanTrackVisibleChange={setBanyanTrackVisible}
+                      onBanyanMarkUpdate={(id, changes) => updateBanyanMark(id, changes)}
                       onActionUpdate={updateAction}
                       onAttachedPointUpdate={commitAttachedPoint}
                       onTrackWaveformSnapChange={updateTrackWaveformSnap}
@@ -4162,6 +4443,118 @@ function App() {
               ))}
             </>
           ) : null}
+          {contextMenuAttachedPoint ? (
+            <>
+              <div className="character-context-menu-label">附属点</div>
+              <button
+                type="button"
+                onClick={() => {
+                  copyTimelineSelection();
+                  setBlockContextMenu(null);
+                }}
+              >
+                复制
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  cutTimelineSelection();
+                }}
+              >
+                剪切
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  pasteTimelineClipboard();
+                }}
+                disabled={!canPasteTimelineClipboard}
+              >
+                粘贴
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteSelected();
+                  setBlockContextMenu(null);
+                }}
+              >
+                删除
+              </button>
+            </>
+          ) : null}
+          {contextMenuBanyanMark ? (
+            <>
+              <div className="character-context-menu-label">板眼点</div>
+              <button
+                type="button"
+                onClick={() => {
+                  copyTimelineSelection();
+                  setBlockContextMenu(null);
+                }}
+              >
+                复制
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  cutTimelineSelection();
+                }}
+              >
+                剪切
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  pasteTimelineClipboard();
+                }}
+                disabled={!canPasteTimelineClipboard}
+              >
+                粘贴
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteSelected();
+                  setBlockContextMenu(null);
+                }}
+              >
+                删除
+              </button>
+            </>
+          ) : null}
+          {contextMenuGongcheBlock ? (
+            <>
+              <div className="character-context-menu-label">工尺谱块</div>
+              <button
+                type="button"
+                onClick={() => {
+                  applySelection({ type: "gongche-block", id: contextMenuGongcheBlock.id });
+                  setBlockContextMenu(null);
+                }}
+              >
+                打开编辑
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  pasteTimelineClipboard();
+                }}
+                disabled={!canPasteTimelineClipboard}
+              >
+                粘贴到此处
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteSelected();
+                  setBlockContextMenu(null);
+                }}
+              >
+                删除
+              </button>
+            </>
+          ) : null}
         </div>
       ) : null}
       {pendingPasteState ? (
@@ -4349,7 +4742,13 @@ type ResolvedClipboardSelectionItem =
       label: string;
       startTime: number;
       endTime: number;
-    };
+    }
+  | (BanyanMark & {
+      type: "banyan-mark";
+      trackId: "banyan-track";
+      startTime: number;
+      endTime: number;
+    });
 
 function locatePointTrack(
   project: ProjectData,
@@ -4775,6 +5174,11 @@ function cloneProjectForMerge(project: ProjectData): ProjectData {
       ...item,
       symbols: item.symbols.map((symbol) => ({ ...symbol })),
     })),
+    banyanSections: project.banyanSections.map((item) => ({ ...item })),
+    banyanMarks: project.banyanMarks.map((item) => ({
+      ...item,
+      linkedGongcheSymbolIds: item.linkedGongcheSymbolIds ? [...item.linkedGongcheSymbolIds] : undefined,
+    })),
     actionAnnotations: project.actionAnnotations.map((item) => ({ ...item })),
     builtinTracks: project.builtinTracks.map((track) => ({
       ...track,
@@ -5125,6 +5529,19 @@ function resolveTimelineSelectionItem(
         }
       : null;
   }
+  if (item.type === "banyan-mark") {
+    const mark = project.banyanMarks.find((candidate) => candidate.id === item.id);
+    return mark
+      ? {
+          ...mark,
+          linkedGongcheSymbolIds: mark.linkedGongcheSymbolIds ? [...mark.linkedGongcheSymbolIds] : undefined,
+          type: "banyan-mark",
+          trackId: "banyan-track",
+          startTime: mark.time,
+          endTime: mark.time,
+        }
+      : null;
+  }
   const block = findCustomBlock(project.customTracks, item.trackId, item.id);
   return block
     ? {
@@ -5160,6 +5577,9 @@ function resolveTimelinePasteTarget(
 }
 
 function resolveExistingPasteTrackId(project: ProjectData, trackId: string) {
+  if (trackId === "banyan-track") {
+    return "banyan-track";
+  }
   if (trackId === "character-track") {
     return project.builtinTracks.some((track) => track.id === trackId) ? trackId : null;
   }
@@ -5187,6 +5607,9 @@ function isCompatiblePasteTrack(
   if (item.type === "attached-point") {
     return Boolean(locatePointTrack(project, targetTrackId));
   }
+  if (item.type === "banyan-mark") {
+    return targetTrackId === "banyan-track";
+  }
   const targetTrack = project.customTracks.find((track) => track.id === targetTrackId);
   return Boolean(targetTrack && targetTrack.trackType === item.trackType);
 }
@@ -5203,6 +5626,20 @@ function buildPreparedPasteItems(
   return clipboard.items.reduce<PreparedPasteItem[]>((items, item) => {
     const targetTrackId = remapAllToTargetTrack ? target.trackId : item.sourceTrackId;
     if (!isCompatiblePasteTrack(project, item, targetTrackId)) {
+      return items;
+    }
+    if (item.type === "banyan-mark") {
+      items.push({
+        type: "banyan-mark" as const,
+        targetTrackId: "banyan-track" as const,
+        time: Math.max(0, target.time + item.timeOffset),
+        mark: {
+          ...item.mark,
+          linkedGongcheSymbolIds: item.mark.linkedGongcheSymbolIds
+            ? [...item.mark.linkedGongcheSymbolIds]
+            : undefined,
+        },
+      });
       return items;
     }
     if (item.type === "attached-point") {
@@ -5285,7 +5722,15 @@ function findConflictingKeysForPreparedItem(project: ProjectData, item: Prepared
       .map((annotation) => `action:${annotation.id}`);
   }
   if (item.type === "attached-point") {
-    return [];
+    const location = locatePointTrack(project, item.targetTrackId);
+    return (location?.pointTrack.points ?? [])
+      .filter((point) => Math.abs(point.time - item.time) <= POINT_PASTE_CONFLICT_EPSILON)
+      .map((point) => `attached-point:${item.targetTrackId}:${point.id}`);
+  }
+  if (item.type === "banyan-mark") {
+    return project.banyanMarks
+      .filter((mark) => Math.abs(mark.time - item.time) <= POINT_PASTE_CONFLICT_EPSILON)
+      .map((mark) => `banyan-mark:${mark.id}`);
   }
   const targetTrack = project.customTracks.find((track) => track.id === item.targetTrackId);
   return (targetTrack?.blocks ?? [])
@@ -5294,6 +5739,9 @@ function findConflictingKeysForPreparedItem(project: ProjectData, item: Prepared
 }
 
 function getTrackDisplayName(project: ProjectData, trackId: string) {
+  if (trackId === "banyan-track") {
+    return "板眼轨";
+  }
   return project.builtinTracks.find((track) => track.id === trackId)?.name ??
     project.customTracks.find((track) => track.id === trackId)?.name ??
     trackId;
@@ -5333,6 +5781,10 @@ function findCustomBlock(
 
 function getGongcheParentKey(parentTrackId: string, parentBlockId: string) {
   return `${parentTrackId}:${parentBlockId}`;
+}
+
+function findBanyanSectionAtTime(sections: BanyanSection[], time: number) {
+  return sections.find((section) => time >= section.startTime && time <= section.endTime) ?? null;
 }
 
 function toCharacterGongcheParent(character: CharacterAnnotation): GongcheParentBlock {
@@ -5997,6 +6449,8 @@ function normalizeProjectData(value: ProjectData | (Partial<ProjectData> & { vid
     subtitleLines: Array.isArray(value.subtitleLines) ? value.subtitleLines : [],
     characterAnnotations: Array.isArray(value.characterAnnotations) ? value.characterAnnotations : [],
     gongcheAnnotations: normalizeGongcheAnnotations(value.gongcheAnnotations),
+    banyanSections: normalizeBanyanSections(value.banyanSections),
+    banyanMarks: normalizeBanyanMarks(value.banyanMarks),
     actionAnnotations: Array.isArray(value.actionAnnotations) ? value.actionAnnotations : [],
     builtinTracks,
     customTracks,
@@ -6223,6 +6677,124 @@ function normalizeGongcheAnnotations(value: ProjectData["gongcheAnnotations"] | 
       ),
     }] satisfies GongcheAnnotation[];
   });
+}
+
+function normalizeBanyanSections(value: ProjectData["banyanSections"] | undefined) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((section) => {
+    if (!section || typeof section.id !== "string") {
+      return [];
+    }
+    const startTime = typeof section.startTime === "number" ? Math.max(0, section.startTime) : 0;
+    const endTime = typeof section.endTime === "number" ? Math.max(startTime, section.endTime) : startTime;
+    return [{
+      id: section.id,
+      name: typeof section.name === "string" && section.name.trim() ? section.name : "板眼区段",
+      startTime,
+      endTime,
+      cycleType: isBanyanCycleType(section.cycleType) ? section.cycleType : "yi_ban_san_yan_zeng",
+      freeRhythm: Boolean(section.freeRhythm),
+      beatCount: typeof section.beatCount === "number" ? section.beatCount : undefined,
+      hasZengBan: typeof section.hasZengBan === "boolean" ? section.hasZengBan : undefined,
+      source: typeof section.source === "string" ? section.source : undefined,
+      comment: typeof section.comment === "string" ? section.comment : undefined,
+    }] satisfies BanyanSection[];
+  });
+}
+
+function normalizeBanyanMarks(value: ProjectData["banyanMarks"] | undefined) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((mark) => {
+    if (!mark || typeof mark.id !== "string") {
+      return [];
+    }
+    const estimatedTime = typeof mark.estimatedTime === "number" ? Math.max(0, mark.estimatedTime) : 0;
+    const time = typeof mark.time === "number" ? Math.max(0, mark.time) : estimatedTime;
+    return [{
+      id: mark.id,
+      sectionId: typeof mark.sectionId === "string" ? mark.sectionId : null,
+      time,
+      estimatedTime,
+      sourceSymbol: typeof mark.sourceSymbol === "string" ? mark.sourceSymbol : "",
+      sourceTokenIndex: typeof mark.sourceTokenIndex === "number" ? mark.sourceTokenIndex : undefined,
+      sourceKey: typeof mark.sourceKey === "string" ? mark.sourceKey : undefined,
+      role: isBanyanRole(mark.role) ? mark.role : "auxiliary",
+      subtype: isBanyanSubtype(mark.subtype) ? mark.subtype : "unknown",
+      segment: isBanyanSegment(mark.segment) ? mark.segment : "unknown",
+      beatIndex: typeof mark.beatIndex === "number" ? mark.beatIndex : null,
+      cycleIndex: typeof mark.cycleIndex === "number" ? mark.cycleIndex : null,
+      strength: isBanyanStrength(mark.strength) ? mark.strength : "unknown",
+      attachment: isBanyanAttachment(mark.attachment) ? mark.attachment : "unknown",
+      linkedGongcheAnnotationId:
+        typeof mark.linkedGongcheAnnotationId === "string" ? mark.linkedGongcheAnnotationId : null,
+      linkedGongcheSymbolId:
+        typeof mark.linkedGongcheSymbolId === "string" ? mark.linkedGongcheSymbolId : null,
+      linkedGongcheSymbolIds: Array.isArray(mark.linkedGongcheSymbolIds)
+        ? mark.linkedGongcheSymbolIds.filter((id): id is string => typeof id === "string")
+        : undefined,
+      confidence: isBanyanConfidence(mark.confidence) ? mark.confidence : "auto",
+      manualOffset: typeof mark.manualOffset === "number" ? mark.manualOffset : time - estimatedTime,
+      durationHint: typeof mark.durationHint === "string" ? mark.durationHint : null,
+      orphaned: Boolean(mark.orphaned),
+      comment: typeof mark.comment === "string" ? mark.comment : undefined,
+    }] satisfies BanyanMark[];
+  });
+}
+
+function isBanyanCycleType(value: unknown): value is BanyanSection["cycleType"] {
+  return typeof value === "string" && [
+    "sanban",
+    "liushuiban",
+    "yi_ban_yi_yan",
+    "yi_ban_yi_yan_zeng",
+    "yi_ban_san_yan",
+    "yi_ban_san_yan_zeng",
+    "custom",
+  ].includes(value);
+}
+
+function isBanyanRole(value: unknown): value is BanyanMark["role"] {
+  return value === "ban" || value === "yan" || value === "auxiliary";
+}
+
+function isBanyanSubtype(value: unknown): value is BanyanMark["subtype"] {
+  return typeof value === "string" && [
+    "mainBan",
+    "headBan",
+    "waistBan",
+    "bottomBan",
+    "zengBan",
+    "waistZengBan",
+    "middleEye",
+    "headEye",
+    "tailEye",
+    "smallEye",
+    "sideHeadEye",
+    "sideTailEye",
+    "sideMiddleEye",
+    "phraseBoundary",
+    "unknown",
+  ].includes(value);
+}
+
+function isBanyanSegment(value: unknown): value is BanyanMark["segment"] {
+  return value === "main" || value === "zeng" || value === "free" || value === "unknown";
+}
+
+function isBanyanAttachment(value: unknown): value is BanyanMark["attachment"] {
+  return value === "on_note" || value === "in_between" || value === "at_phrase_end" || value === "unknown";
+}
+
+function isBanyanConfidence(value: unknown): value is BanyanMark["confidence"] {
+  return value === "auto" || value === "reviewed" || value === "manual";
+}
+
+function isBanyanStrength(value: unknown): value is NonNullable<BanyanMark["strength"]> {
+  return value === "strong" || value === "medium" || value === "weak" || value === "unknown";
 }
 
 function normalizeActiveTrackOrder(

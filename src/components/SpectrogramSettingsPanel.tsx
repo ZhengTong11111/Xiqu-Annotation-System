@@ -15,7 +15,11 @@ type SpectrogramSettingsPanelProps = {
   hasWaveformData: boolean;
   isLoading: boolean;
   hasData: boolean;
+  banyanGridVisible: boolean;
+  banyanTrackVisible: boolean;
   onSettingsChange: (settings: SpectrogramSettings) => void;
+  onBanyanGridVisibleChange: (visible: boolean) => void;
+  onBanyanTrackVisibleChange: (visible: boolean) => void;
 };
 
 export function SpectrogramSettingsPanel({
@@ -24,7 +28,11 @@ export function SpectrogramSettingsPanel({
   hasWaveformData,
   isLoading,
   hasData,
+  banyanGridVisible,
+  banyanTrackVisible,
   onSettingsChange,
+  onBanyanGridVisibleChange,
+  onBanyanTrackVisibleChange,
 }: SpectrogramSettingsPanelProps) {
   function updateSetting<K extends keyof SpectrogramSettings>(
     key: K,
@@ -86,6 +94,25 @@ export function SpectrogramSettingsPanel({
             <strong>音频波形轨道</strong>
             <span>始终显示，用作频谱图设置入口和时间轴对齐参考。</span>
           </div>
+        </div>
+
+        <div className="spectrogram-setting-group">
+          <div className="spectrogram-setting-heading">
+            <strong>板眼参考</strong>
+            <span>{banyanTrackVisible ? "板眼轨显示" : "板眼轨隐藏"}</span>
+          </div>
+          <ToggleRow
+            label="板眼轨"
+            description="关闭后从时间轴中移除；可在这里重新打开。"
+            checked={banyanTrackVisible}
+            onChange={onBanyanTrackVisibleChange}
+          />
+          <ToggleRow
+            label="全局板眼纵线"
+            description="在所有轨道背景中显示板眼参考线，便于和波形、频谱、文字对齐。"
+            checked={banyanGridVisible}
+            onChange={onBanyanGridVisibleChange}
+          />
         </div>
 
         <div className="spectrogram-setting-group">
@@ -185,14 +212,14 @@ export function SpectrogramSettingsPanel({
   );
 }
 
-type ToggleRowProps = {
+export type ToggleRowProps = {
   label: string;
   description: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
 };
 
-function ToggleRow({ label, description, checked, onChange }: ToggleRowProps) {
+export function ToggleRow({ label, description, checked, onChange }: ToggleRowProps) {
   return (
     <label className="spectrogram-toggle-row">
       <input

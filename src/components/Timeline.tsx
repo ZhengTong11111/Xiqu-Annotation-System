@@ -2,6 +2,8 @@ import { type CSSProperties, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import type {
   ActionAnnotation,
   AttachedPointAnnotation,
+  BanyanMark,
+  BanyanSection,
   BuiltinTrack,
   BuiltinTrackId,
   CharacterAnnotation,
@@ -22,12 +24,17 @@ import type {
 import { SpectrogramCanvas } from "./SpectrogramCanvas";
 import { clampRange, getParentTrackIdFromGongcheTrackId } from "../utils/project";
 import { getSpectrogramFrequencyRange } from "../utils/spectrogram";
+import { getBanyanMarkDisplayLabel, getBanyanSubtypeLabel } from "../utils/banyan";
 
 type TimelineProps = {
   subtitleLines: SubtitleLine[];
   builtinTracks: BuiltinTrack[];
   characterAnnotations: CharacterAnnotation[];
   gongcheAnnotations: GongcheAnnotation[];
+  banyanSections: BanyanSection[];
+  banyanMarks: BanyanMark[];
+  banyanGridVisible: boolean;
+  banyanTrackVisible: boolean;
   actionAnnotations: ActionAnnotation[];
   customTracks: CustomTrack[];
   trackDefinitions: TrackDefinition[];
@@ -92,6 +99,9 @@ type TimelineProps = {
   onOpenCharacterContextMenu: (id: string, time: number, x: number, y: number) => void;
   onOpenActionContextMenu: (id: string, time: number, x: number, y: number) => void;
   onOpenCustomBlockContextMenu: (trackId: string, id: string, time: number, x: number, y: number) => void;
+  onOpenAttachedPointContextMenu: (trackId: string, parentTrackId: string, id: string, time: number, x: number, y: number) => void;
+  onOpenGongcheBlockContextMenu: (id: string, time: number, x: number, y: number) => void;
+  onOpenBanyanMarkContextMenu: (id: string, time: number, x: number, y: number) => void;
   onOpenLaneContextMenu: (trackId: string, time: number, x: number, y: number) => void;
   onLineChange: (id: string, changes: Pick<SubtitleLine, "startTime" | "endTime">) => void;
   onLineCommit: (id: string, changes: Pick<SubtitleLine, "startTime" | "endTime">) => void;
@@ -109,6 +119,9 @@ type TimelineProps = {
     id: string,
     changes: Partial<Pick<GongcheAnnotation, "startTime" | "endTime" | "symbols">>,
   ) => void;
+  onBanyanMarkChange: (id: string, changes: Partial<BanyanMark>) => void;
+  onBanyanMarkCommit: (id: string, changes: Partial<BanyanMark>) => void;
+  onCreateBanyanMark: (time: number) => void;
   onCustomBlockChange: (
     trackId: string,
     id: string,
@@ -153,6 +166,13 @@ type DragState =
       parentTrackId: string;
       originX: number;
       originalTime: number;
+    }
+  | {
+      kind: "move-banyan-mark";
+      id: string;
+      originX: number;
+      originalTime: number;
+      estimatedTime: number;
     }
   | {
       kind: "move-gongche";
@@ -203,6 +223,10 @@ type DragState =
       originY: number;
       currentX: number;
       currentY: number;
+      originContentX: number;
+      originContentY: number;
+      currentContentX: number;
+      currentContentY: number;
     }
   | null;
 
@@ -217,6 +241,7 @@ const MAX_WAVEFORM_TRACK_HEIGHT = 240;
 const DEFAULT_SPECTROGRAM_TRACK_HEIGHT = 150;
 const MIN_SPECTROGRAM_TRACK_HEIGHT = 72;
 const MAX_SPECTROGRAM_TRACK_HEIGHT = 360;
+const BANYAN_TRACK_HEIGHT = 46;
 const SNAP_DISTANCE_PX = 4;
 const SNAP_VISUAL_MATCH_PX = 1;
 const REORDER_ACTIVATION_PX = 6;
@@ -244,6 +269,9 @@ const FOCUS_SCROLL_DURATION_MS = 260;
 const SNAP_RELEASE_DISTANCE_PX = 16;
 const LOOP_RANGE_MIN_DURATION = 0.05;
 const MIN_GONGCHE_DURATION = 0.04;
+const SELECT_BOX_AUTOSCROLL_HORIZONTAL_EDGE_PX = 10;
+const SELECT_BOX_AUTOSCROLL_VERTICAL_EDGE_PX = 10;
+const SELECT_BOX_AUTOSCROLL_MAX_SPEED = 18;
 
 type ZoomGestureState = {
   startZoom: number;
@@ -283,6 +311,11 @@ type PendingDragUpdate =
       trackId: string;
       pointId: string;
       changes: Partial<AttachedPointAnnotation>;
+    }
+  | {
+      target: "banyan-mark";
+      id: string;
+      changes: Partial<BanyanMark>;
     }
   | {
       target: "gongche";
@@ -361,6 +394,10 @@ export function Timeline({
   builtinTracks,
   characterAnnotations,
   gongcheAnnotations,
+  banyanSections,
+  banyanMarks,
+  banyanGridVisible,
+  banyanTrackVisible,
   actionAnnotations,
   customTracks,
   trackDefinitions,
@@ -425,6 +462,9 @@ export function Timeline({
   onOpenCharacterContextMenu,
   onOpenActionContextMenu,
   onOpenCustomBlockContextMenu,
+  onOpenAttachedPointContextMenu,
+  onOpenGongcheBlockContextMenu,
+  onOpenBanyanMarkContextMenu,
   onOpenLaneContextMenu,
   onLineChange,
   onLineCommit,
@@ -436,6 +476,9 @@ export function Timeline({
   onAttachedPointCommit,
   onGongcheBlockChange,
   onGongcheBlockCommit,
+  onBanyanMarkChange,
+  onBanyanMarkCommit,
+  onCreateBanyanMark,
   onCustomBlockChange,
   onCustomBlockCommit,
   onBatchMoveChange,
@@ -456,6 +499,8 @@ export function Timeline({
   const lastPointerClientXRef = useRef(0);
   const pendingDragUpdateRef = useRef<PendingDragUpdate | null>(null);
   const dragFrameRef = useRef<number | null>(null);
+  const selectBoxAutoScrollFrameRef = useRef<number | null>(null);
+  const selectBoxPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const pendingPreviewTimeRef = useRef<number | null>(null);
   const previewTimeRef = useRef<number | null>(null);
   const previewFrameRef = useRef<number | null>(null);
@@ -645,18 +690,31 @@ export function Timeline({
     };
   }, [duration, viewportState.scrollLeft, viewportState.width, zoom]);
   const selectedTimelineKeySet = useMemo(
-    () => new Set(selectedTimelineItems.map((item) => getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" || item.type === "attached-point" ? item.trackId : undefined))),
+    () => new Set(selectedTimelineItems.map((item) => getTimelineSelectionKey(item.type, item.id, getSelectionItemTrackId(item)))),
     [selectedTimelineItems],
   );
   const marqueePreviewItems = useMemo(
     () => (dragState?.kind === "select-box" ? getItemsInSelectionRect(dragState) : []),
-    [dragState, characterAnnotations, actionAnnotations, customBlocks, viewportState],
+    [dragState, characterAnnotations, actionAnnotations, customBlocks, banyanMarks, viewportState],
   );
   const marqueePreviewKeySet = useMemo(
-    () => new Set(marqueePreviewItems.map((item) => getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" || item.type === "attached-point" ? item.trackId : undefined))),
+    () => new Set(marqueePreviewItems.map((item) => getTimelineSelectionKey(item.type, item.id, getSelectionItemTrackId(item)))),
     [marqueePreviewItems],
   );
   const displayedLoopPlaybackRange = loopRangeDraft ?? loopPlaybackRange;
+  const visibleBanyanMarks = useMemo(() => {
+    if (!banyanMarks.length || (!banyanGridVisible && !banyanTrackVisible)) {
+      return [];
+    }
+    const laneViewportStart = Math.max(0, viewportState.scrollLeft - TRACK_LABEL_WIDTH);
+    const laneViewportWidth = Math.max(
+      240,
+      viewportState.width - Math.max(TRACK_LABEL_WIDTH - viewportState.scrollLeft, 0),
+    );
+    const visibleStartTime = Math.max(0, laneViewportStart / zoom - 1);
+    const visibleEndTime = Math.min(duration, (laneViewportStart + laneViewportWidth) / zoom + 1);
+    return banyanMarks.filter((mark) => mark.time >= visibleStartTime && mark.time <= visibleEndTime);
+  }, [banyanGridVisible, banyanMarks, banyanTrackVisible, duration, viewportState.scrollLeft, viewportState.width, zoom]);
   const playheadViewportOffset = useMemo(
     () => Math.max(0, Math.min(viewportState.width, getCanvasX(currentTime, zoom) - viewportState.scrollLeft)),
     [currentTime, viewportState, zoom],
@@ -717,6 +775,61 @@ export function Timeline({
   }, [dragState]);
 
   useEffect(() => {
+    if (dragState?.kind !== "select-box") {
+      stopSelectBoxAutoScroll();
+      return;
+    }
+
+    const tick = () => {
+      selectBoxAutoScrollFrameRef.current = null;
+      const activeDragState = dragStateRef.current;
+      const pointer = selectBoxPointerRef.current;
+      const container = scrollRef.current;
+      if (!pointer || !container || activeDragState?.kind !== "select-box") {
+        return;
+      }
+
+      const interactionBounds = getSelectBoxInteractionBounds(container);
+      const deltaX = getSelectBoxAutoScrollDelta(
+        pointer.clientX,
+        interactionBounds.left,
+        interactionBounds.right,
+        SELECT_BOX_AUTOSCROLL_HORIZONTAL_EDGE_PX,
+      );
+      const deltaY = getSelectBoxAutoScrollDelta(
+        pointer.clientY,
+        interactionBounds.top,
+        interactionBounds.bottom,
+        SELECT_BOX_AUTOSCROLL_VERTICAL_EDGE_PX,
+      );
+      const previousScrollLeft = container.scrollLeft;
+      const previousScrollTop = container.scrollTop;
+
+      if (deltaX !== 0 || deltaY !== 0) {
+        container.scrollLeft += deltaX;
+        container.scrollTop += deltaY;
+      }
+
+      if (
+        previousScrollLeft !== container.scrollLeft ||
+        previousScrollTop !== container.scrollTop
+      ) {
+        updateSelectBoxDrag(pointer.clientX, pointer.clientY);
+      }
+
+      selectBoxAutoScrollFrameRef.current = requestAnimationFrame(tick);
+    };
+
+    selectBoxAutoScrollFrameRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (selectBoxAutoScrollFrameRef.current !== null) {
+        cancelAnimationFrame(selectBoxAutoScrollFrameRef.current);
+        selectBoxAutoScrollFrameRef.current = null;
+      }
+    };
+  }, [dragState?.kind]);
+
+  useEffect(() => {
     return () => {
       if (moveTrackHighlightTimerRef.current !== null) {
         window.clearTimeout(moveTrackHighlightTimerRef.current);
@@ -729,6 +842,9 @@ export function Timeline({
       }
       if (dragFrameRef.current !== null) {
         cancelAnimationFrame(dragFrameRef.current);
+      }
+      if (selectBoxAutoScrollFrameRef.current !== null) {
+        cancelAnimationFrame(selectBoxAutoScrollFrameRef.current);
       }
       if (previewFrameRef.current !== null) {
         cancelAnimationFrame(previewFrameRef.current);
@@ -980,7 +1096,7 @@ export function Timeline({
     }
     const excludedKeySet = new Set(
       excludedItems.map((item) =>
-        getTimelineSelectionKey(item.type, item.id, item.type === "custom-block" ? item.trackId : undefined),
+        getTimelineSelectionKey(item.type, item.id, getSelectionItemTrackId(item)),
       ),
     );
     const liveProject = getProjectSnapshot();
@@ -1139,6 +1255,8 @@ export function Timeline({
               ? { type: "custom-block", id: item.id, trackId: item.trackId }
               : item.type === "attached-point"
                 ? { type: "attached-point", id: item.id, trackId: item.trackId, parentTrackId: item.parentTrackId }
+              : item.type === "banyan-mark"
+                ? { type: "banyan-mark", id: item.id }
               : { type: item.type, id: item.id },
           ),
           shouldSnap,
@@ -1164,6 +1282,109 @@ export function Timeline({
       })),
       snappedTo: nextRange.snappedTo,
     };
+  }
+
+  function getTimelineContentPoint(clientX: number, clientY: number) {
+    const container = scrollRef.current;
+    if (!container) {
+      return {
+        x: clientX,
+        y: clientY,
+      };
+    }
+    const bounds = container.getBoundingClientRect();
+    const interactionBounds = getSelectBoxInteractionBounds(container);
+    const clampedClientX = clampValue(clientX, interactionBounds.left, interactionBounds.right);
+    const clampedClientY = clampValue(clientY, interactionBounds.top, interactionBounds.bottom);
+    return {
+      x: clampedClientX - bounds.left + container.scrollLeft,
+      y: clampedClientY - bounds.top + container.scrollTop,
+    };
+  }
+
+  function updateSelectBoxDrag(clientX: number, clientY: number) {
+    const point = getTimelineContentPoint(clientX, clientY);
+    selectBoxPointerRef.current = { clientX, clientY };
+    setDragState((prev) =>
+      prev && prev.kind === "select-box"
+        ? {
+            ...prev,
+            currentX: clientX,
+            currentY: clientY,
+            currentContentX: point.x,
+            currentContentY: point.y,
+          }
+        : prev,
+    );
+  }
+
+  function startSelectBoxDrag(clientX: number, clientY: number) {
+    const point = getTimelineContentPoint(clientX, clientY);
+    selectBoxPointerRef.current = { clientX, clientY };
+    setDragState({
+      kind: "select-box",
+      originX: clientX,
+      originY: clientY,
+      currentX: clientX,
+      currentY: clientY,
+      originContentX: point.x,
+      originContentY: point.y,
+      currentContentX: point.x,
+      currentContentY: point.y,
+    });
+  }
+
+  function getSelectBoxInteractionBounds(container: HTMLDivElement) {
+    const bounds = container.getBoundingClientRect();
+    const topDeck = container.querySelector<HTMLElement>(".timeline-top-deck");
+    const topDeckBounds = topDeck?.getBoundingClientRect() ?? null;
+    const hasScrolledVertically = container.scrollTop > 0.5;
+    const fixedTopBoundary = topDeckBounds
+      ? clampValue(topDeckBounds.bottom, bounds.top, bounds.bottom)
+      : bounds.top;
+    const highestUsableTopBoundary = Math.max(
+      bounds.top,
+      bounds.bottom - SELECT_BOX_AUTOSCROLL_VERTICAL_EDGE_PX,
+    );
+    return {
+      left: Math.min(bounds.right, bounds.left + TRACK_LABEL_WIDTH),
+      right: bounds.right,
+      top: hasScrolledVertically
+        ? Math.min(fixedTopBoundary, highestUsableTopBoundary)
+        : bounds.top,
+      bottom: bounds.bottom,
+    };
+  }
+
+  function getSelectBoxAutoScrollDelta(
+    clientPosition: number,
+    start: number,
+    end: number,
+    edgeSize: number,
+  ) {
+    if (clientPosition < start + edgeSize) {
+      const distance = Math.max(0, start + edgeSize - clientPosition);
+      return -Math.min(
+        SELECT_BOX_AUTOSCROLL_MAX_SPEED,
+        Math.ceil((distance / edgeSize) * SELECT_BOX_AUTOSCROLL_MAX_SPEED),
+      );
+    }
+    if (clientPosition > end - edgeSize) {
+      const distance = Math.max(0, clientPosition - (end - edgeSize));
+      return Math.min(
+        SELECT_BOX_AUTOSCROLL_MAX_SPEED,
+        Math.ceil((distance / edgeSize) * SELECT_BOX_AUTOSCROLL_MAX_SPEED),
+      );
+    }
+    return 0;
+  }
+
+  function stopSelectBoxAutoScroll() {
+    selectBoxPointerRef.current = null;
+    if (selectBoxAutoScrollFrameRef.current !== null) {
+      cancelAnimationFrame(selectBoxAutoScrollFrameRef.current);
+      selectBoxAutoScrollFrameRef.current = null;
+    }
   }
 
   useEffect(() => {
@@ -1352,15 +1573,7 @@ export function Timeline({
 
       if (activeDragState.kind === "select-box") {
         setActiveSnapIndicator(null);
-        setDragState((prev) =>
-          prev && prev.kind === "select-box"
-            ? {
-                ...prev,
-                currentX: event.clientX,
-                currentY: event.clientY,
-              }
-            : prev,
-        );
+        updateSelectBoxDrag(event.clientX, event.clientY);
         return;
       }
 
@@ -1446,6 +1659,23 @@ export function Timeline({
           },
         });
         queuePreviewFrame(resolvedTime.time);
+        return;
+      }
+
+      if (activeDragState.kind === "move-banyan-mark") {
+        const nextTime = Math.max(0, activeDragState.originalTime + deltaSeconds);
+        setActiveSnapIndicator(null);
+        dragSnapLockRef.current = null;
+        scheduleDragUpdate({
+          target: "banyan-mark",
+          id: activeDragState.id,
+          changes: {
+            time: nextTime,
+            confidence: "manual",
+            manualOffset: nextTime - activeDragState.estimatedTime,
+          },
+        });
+        queuePreviewFrame(nextTime);
         return;
       }
 
@@ -1589,6 +1819,7 @@ export function Timeline({
       const activeDragState = dragStateRef.current;
       const finalSnapLock = dragSnapLockRef.current;
       dragSnapLockRef.current = null;
+      stopSelectBoxAutoScroll();
       clearPreviewFrame();
       setActiveSnapIndicator(null);
       flushPendingDragUpdate();
@@ -1665,6 +1896,17 @@ export function Timeline({
           : rawTime;
         onAttachedPointCommit(activeDragState.trackId, activeDragState.id, {
           time: finalTime,
+        });
+        suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
+      } else if (activeDragState.kind === "move-banyan-mark") {
+        const finalTime = Math.max(
+          0,
+          activeDragState.originalTime + (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+        );
+        onBanyanMarkCommit(activeDragState.id, {
+          time: finalTime,
+          confidence: "manual",
+          manualOffset: finalTime - activeDragState.estimatedTime,
         });
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (activeDragState.kind === "move-gongche") {
@@ -1793,6 +2035,8 @@ export function Timeline({
     onActionCommit,
     onGongcheBlockChange,
     onGongcheBlockCommit,
+    onBanyanMarkChange,
+    onBanyanMarkCommit,
     onCustomBlockChange,
     onCustomBlockCommit,
     onBatchMoveChange,
@@ -1832,6 +2076,9 @@ export function Timeline({
             </button>
             <button type="button" onClick={() => onAddCustomTrack("action")}>
               + 动作轨
+            </button>
+            <button type="button" onClick={() => onSelectItem({ type: "banyan-track" })}>
+              板眼
             </button>
           </div>
           <div className="timeline-zoom-controls">
@@ -2106,6 +2353,8 @@ export function Timeline({
             ) : null}
           </div>
 
+          {renderBanyanGridLines()}
+
           <div className="timeline-top-deck">
             <div className="line-focus-layer">
               {subtitleLines.map((line) => (
@@ -2144,6 +2393,60 @@ export function Timeline({
                 />
               ))}
             </div>
+
+            {banyanTrackVisible ? (
+              <div className="timeline-track banyan-track" style={{ height: BANYAN_TRACK_HEIGHT }}>
+                <div
+                  className={[
+                    "track-label",
+                    "track-label-custom",
+                    "banyan-label",
+                    selectedItem?.type === "banyan-track" ? "selected" : "",
+                  ].join(" ")}
+                  style={{ minHeight: BANYAN_TRACK_HEIGHT }}
+                  onClick={() => onSelectItem({ type: "banyan-track" })}
+                >
+                  <div className="track-label-copy">
+                    <strong>板眼</strong>
+                    <span>{banyanMarks.length > 0 ? `${banyanMarks.length} 点 · ${banyanSections.length} 段` : "未生成"}</span>
+                  </div>
+                </div>
+                <div
+                  className="track-lane banyan-lane"
+                  style={{ minHeight: BANYAN_TRACK_HEIGHT }}
+                  onPointerDown={(event) => {
+                    const target = event.target as HTMLElement | null;
+                    if (event.button !== 0 || target?.closest(".timeline-banyan-mark")) {
+                      return;
+                    }
+                    onCloseContextMenu();
+                    lastPointerClientXRef.current = event.clientX;
+                    startSelectBoxDrag(event.clientX, event.clientY);
+                  }}
+                  onClick={(event) => {
+                    const laneTime = getLaneTime(event.currentTarget, event.clientX, zoom);
+                    onUpdatePasteTarget("banyan-track", laneTime);
+                    if ((event.target as HTMLElement | null)?.closest(".timeline-banyan-mark")) {
+                      return;
+                    }
+                    if (event.detail === 2) {
+                      onCreateBanyanMark(laneTime);
+                      return;
+                    }
+                    onSelectItem({ type: "banyan-track" });
+                    onSeek(laneTime);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    const laneTime = getLaneTime(event.currentTarget, event.clientX, zoom);
+                    onUpdatePasteTarget("banyan-track", laneTime);
+                    onOpenLaneContextMenu("banyan-track", laneTime, event.clientX, event.clientY);
+                  }}
+                >
+                  {visibleBanyanMarks.map((mark) => renderBanyanMark(mark))}
+                </div>
+              </div>
+            ) : null}
 
             <div className="timeline-track waveform-track" style={{ height: waveformTrackHeight }}>
               <div
@@ -2607,13 +2910,7 @@ export function Timeline({
                       return;
                     }
                     lastPointerClientXRef.current = event.clientX;
-                    setDragState({
-                      kind: "select-box",
-                      originX: event.clientX,
-                      originY: event.clientY,
-                      currentX: event.clientX,
-                      currentY: event.clientY,
-                    });
+                    startSelectBoxDrag(event.clientX, event.clientY);
                   }}
                   onClick={(event) => {
                     onCloseContextMenu();
@@ -2703,7 +3000,7 @@ export function Timeline({
           {dragState?.kind === "select-box" && scrollRef.current ? (
             <div
               className="timeline-selection-box"
-              style={getSelectionBoxStyle(dragState, scrollRef.current)}
+              style={getSelectionBoxStyle(dragState)}
             />
           ) : null}
 
@@ -2939,40 +3236,7 @@ export function Timeline({
             selectedTimelineKeySet.has(targetSelectionKey);
           if (shouldMoveSelection) {
             const selectionItems = selectedTimelineItems
-              .map((item) => {
-                if (item.type === "attached-point") {
-                  const livePointTrack = findResolvedAttachedPointTrack(liveProject, item.trackId);
-                  const livePoint = livePointTrack?.points.find((candidate) => candidate.id === item.id);
-                  return livePoint
-                    ? {
-                        type: "attached-point" as const,
-                        id: item.id,
-                        trackId: item.trackId,
-                        parentTrackId: item.parentTrackId,
-                        startTime: livePoint.time,
-                        endTime: livePoint.time,
-                      }
-                    : null;
-                }
-                const liveSelectionAnnotation = findAnnotationById(
-                  item.id,
-                  item.type,
-                  liveProject.characterAnnotations,
-                  liveProject.actionAnnotations,
-                  flattenCustomBlocks(liveProject.customTracks),
-                  item.type === "custom-block" ? item.trackId : undefined,
-                );
-                if (!liveSelectionAnnotation) {
-                  return null;
-                }
-                return {
-                  type: item.type,
-                  id: item.id,
-                  ...(item.type === "custom-block" ? { trackId: item.trackId } : {}),
-                  startTime: liveSelectionAnnotation.startTime,
-                  endTime: liveSelectionAnnotation.endTime,
-                };
-              })
+              .map((item) => resolveLiveBatchMoveItem(item, liveProject))
               .filter((item): item is TimelineBatchMoveItem => item !== null);
             setDragState({
               kind: "move-selection",
@@ -3219,40 +3483,7 @@ export function Timeline({
             selectedTimelineKeySet.has(selectionKey);
           if (shouldMoveSelection) {
             const selectionItems = selectedTimelineItems
-              .map((item) => {
-                if (item.type === "attached-point") {
-                  const livePointTrack = findResolvedAttachedPointTrack(liveProject, item.trackId);
-                  const livePoint = livePointTrack?.points.find((candidate) => candidate.id === item.id);
-                  return livePoint
-                    ? {
-                        type: "attached-point" as const,
-                        id: item.id,
-                        trackId: item.trackId,
-                        parentTrackId: item.parentTrackId,
-                        startTime: livePoint.time,
-                        endTime: livePoint.time,
-                      }
-                    : null;
-                }
-                const liveSelectionAnnotation = findAnnotationById(
-                  item.id,
-                  item.type,
-                  liveProject.characterAnnotations,
-                  liveProject.actionAnnotations,
-                  flattenCustomBlocks(liveProject.customTracks),
-                  item.type === "custom-block" ? item.trackId : undefined,
-                );
-                if (!liveSelectionAnnotation) {
-                  return null;
-                }
-                return {
-                  type: item.type,
-                  id: item.id,
-                  ...(item.type === "custom-block" ? { trackId: item.trackId } : {}),
-                  startTime: liveSelectionAnnotation.startTime,
-                  endTime: liveSelectionAnnotation.endTime,
-                };
-              })
+              .map((item) => resolveLiveBatchMoveItem(item, liveProject))
               .filter((item): item is TimelineBatchMoveItem => item !== null);
             setDragState({
               kind: "move-selection",
@@ -3312,18 +3543,165 @@ export function Timeline({
           event.stopPropagation();
           onCloseContextMenu();
           onUpdatePasteTarget(pointTrack.id, point.time);
-          onSelectItem({
-            type: "attached-point",
-            id: point.id,
-            trackId: pointTrack.id,
-            parentTrackId: pointTrack.parentTrackId,
-          });
+          const preserveSelection =
+            selectedTimelineItems.length > 1 && selectedTimelineKeySet.has(selectionKey);
+          if (!preserveSelection) {
+            onSelectItem({
+              type: "attached-point",
+              id: point.id,
+              trackId: pointTrack.id,
+              parentTrackId: pointTrack.parentTrackId,
+            });
+          }
+          onOpenAttachedPointContextMenu(
+            pointTrack.id,
+            pointTrack.parentTrackId,
+            point.id,
+            point.time,
+            event.clientX,
+            event.clientY,
+          );
         }}
         title={`${pointTrack.name} · ${point.label}`}
       >
         <span className="timeline-point-stem" />
         <span className="timeline-point-dot" />
         <span className="timeline-point-chip">{point.label}</span>
+      </button>
+    );
+  }
+
+  function renderBanyanGridLines() {
+    if (!banyanGridVisible || visibleBanyanMarks.length === 0) {
+      return null;
+    }
+    return (
+      <div className="timeline-banyan-grid-lines" aria-hidden="true">
+        {visibleBanyanMarks.map((mark) => (
+          <span
+            key={`banyan-grid-${mark.id}`}
+            className={[
+              "timeline-banyan-grid-line",
+              mark.role === "ban" ? "ban" : "yan",
+              mark.subtype === "zengBan" ? "zeng" : "",
+              mark.confidence === "manual" ? "manual" : "",
+              mark.orphaned ? "orphaned" : "",
+            ].join(" ")}
+            style={{ left: mark.time * zoom }}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  function renderBanyanMark(mark: BanyanMark) {
+    const selectionItem: TimelineSelectionItem = {
+      type: "banyan-mark",
+      id: mark.id,
+    };
+    const selectionKey = getTimelineSelectionKey(selectionItem.type, selectionItem.id);
+    const isSelected =
+      selectedTimelineKeySet.has(selectionKey) ||
+      marqueePreviewKeySet.has(selectionKey) ||
+      (selectedItem?.type === "banyan-mark" && selectedItem.id === mark.id);
+    const isPartOfMultiSelection = selectedTimelineKeySet.has(selectionKey) && selectedTimelineItems.length > 1;
+    const isActive = Math.abs(currentTime - mark.time) <= 0.05;
+    return (
+      <button
+        key={mark.id}
+        type="button"
+        className={[
+          "timeline-banyan-mark",
+          mark.role === "ban" ? "ban" : "yan",
+          mark.subtype === "zengBan" ? "zeng" : "",
+          mark.confidence === "manual" ? "manual" : "",
+          mark.orphaned ? "orphaned" : "",
+          isSelected ? "selected" : "",
+          isPartOfMultiSelection ? "multi-selected" : "",
+          isActive ? "active" : "",
+        ].join(" ")}
+        style={{ left: mark.time * zoom }}
+        data-banyan-mark-id={mark.id}
+        title={`${getBanyanSubtypeLabel(mark.subtype)} ${mark.time.toFixed(3)}s`}
+        onPointerDown={(event) => {
+          if (event.button !== 0) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          onCloseContextMenu();
+          if (event.metaKey || event.ctrlKey) {
+            return;
+          }
+          const liveProject = getProjectSnapshot();
+          const shouldMoveSelection =
+            selectedTimelineItems.length > 1 &&
+            selectedTimelineKeySet.has(selectionKey);
+          if (shouldMoveSelection) {
+            const selectionItems = selectedTimelineItems
+              .map((item) => resolveLiveBatchMoveItem(item, liveProject))
+              .filter((item): item is TimelineBatchMoveItem => item !== null);
+            setDragState({
+              kind: "move-selection",
+              originX: event.clientX,
+              items: selectionItems,
+            });
+            return;
+          }
+          lastPointerClientXRef.current = event.clientX;
+          setDragState({
+            kind: "move-banyan-mark",
+            id: mark.id,
+            originX: event.clientX,
+            originalTime: mark.time,
+            estimatedTime: mark.estimatedTime,
+          });
+          onSelectItem({ type: "banyan-mark", id: mark.id });
+        }}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onCloseContextMenu();
+          if (performance.now() < suppressCanvasClickUntilRef.current) {
+            return;
+          }
+          onUpdatePasteTarget("banyan-track", mark.time);
+          if (event.metaKey || event.ctrlKey) {
+            const nextItems = toggleTimelineSelectionItem(selectionItem);
+            const lastItem = nextItems[nextItems.length - 1];
+            const primaryItem = lastItem
+              ? lastItem.type === "custom-block"
+                ? { type: "custom-block", id: lastItem.id, trackId: lastItem.trackId } as SelectedItem
+                : lastItem.type === "attached-point"
+                  ? {
+                      type: "attached-point",
+                      id: lastItem.id,
+                      trackId: lastItem.trackId,
+                      parentTrackId: lastItem.parentTrackId,
+                    } as SelectedItem
+                  : { type: lastItem.type, id: lastItem.id } as SelectedItem
+              : null;
+            onSelectTimelineItems(nextItems, primaryItem);
+            return;
+          }
+          onSelectItem({ type: "banyan-mark", id: mark.id });
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onCloseContextMenu();
+          onUpdatePasteTarget("banyan-track", mark.time);
+          const preserveSelection =
+            selectedTimelineItems.length > 1 && selectedTimelineKeySet.has(selectionKey);
+          if (!preserveSelection) {
+            onSelectItem({ type: "banyan-mark", id: mark.id });
+          }
+          onOpenBanyanMarkContextMenu(mark.id, mark.time, event.clientX, event.clientY);
+        }}
+      >
+        <span className="timeline-banyan-stem" />
+        <span className="timeline-banyan-dot" />
+        <span className="timeline-banyan-chip">{getBanyanMarkDisplayLabel(mark)}</span>
       </button>
     );
   }
@@ -3403,6 +3781,14 @@ export function Timeline({
           event.stopPropagation();
           onCloseContextMenu();
           onSelectItem({ type: "gongche-block", id: annotation.id });
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onCloseContextMenu();
+          onUpdatePasteTarget(getGongcheTrackIdForParent(annotation.parentTrackId), annotation.startTime);
+          onSelectItem({ type: "gongche-block", id: annotation.id });
+          onOpenGongcheBlockContextMenu(annotation.id, annotation.startTime, event.clientX, event.clientY);
         }}
       >
         <span className="timeline-gongche-line" />
@@ -3616,6 +4002,10 @@ export function Timeline({
       onAttachedPointChange(pendingDragUpdate.trackId, pendingDragUpdate.pointId, pendingDragUpdate.changes);
       return;
     }
+    if (pendingDragUpdate.target === "banyan-mark") {
+      onBanyanMarkChange(pendingDragUpdate.id, pendingDragUpdate.changes);
+      return;
+    }
     if (pendingDragUpdate.target === "gongche") {
       onGongcheBlockChange(pendingDragUpdate.id, pendingDragUpdate.changes);
       return;
@@ -3635,14 +4025,14 @@ export function Timeline({
     const itemKey = getTimelineSelectionKey(
       item.type,
       item.id,
-      item.type === "custom-block" || item.type === "attached-point" ? item.trackId : undefined,
+      getSelectionItemTrackId(item),
     );
     if (selectedTimelineKeySet.has(itemKey)) {
       return selectedTimelineItems.filter((selectedItem) =>
         getTimelineSelectionKey(
           selectedItem.type,
           selectedItem.id,
-          selectedItem.type === "custom-block" || selectedItem.type === "attached-point" ? selectedItem.trackId : undefined,
+          getSelectionItemTrackId(selectedItem),
         ) !== itemKey
       );
     }
@@ -3652,19 +4042,29 @@ export function Timeline({
   function getItemsInSelectionRect(
     selectionDragState: Extract<NonNullable<DragState>, { kind: "select-box" }>,
   ) {
-    const selectionRect = getClientSelectionRect(selectionDragState);
-    if (!selectionRect) {
+    const container = scrollRef.current;
+    const selectionRect = container ? getContentSelectionRect(selectionDragState) : null;
+    if (!selectionRect || !container) {
       return [];
     }
+    const containerBounds = container.getBoundingClientRect();
 
     const candidates = Array.from(
-      document.querySelectorAll<HTMLElement>(".timeline-block[data-block-id][data-block-type], .timeline-point-marker[data-point-id][data-point-track-id]"),
+      document.querySelectorAll<HTMLElement>(
+        ".timeline-block[data-block-id][data-block-type], .timeline-point-marker[data-point-id][data-point-track-id], .timeline-banyan-mark[data-banyan-mark-id]",
+      ),
     );
 
     return candidates
       .flatMap((element) => {
         const bounds = element.getBoundingClientRect();
-        if (!rectsIntersect(selectionRect, bounds)) {
+        const contentBounds = {
+          left: bounds.left - containerBounds.left + container.scrollLeft,
+          right: bounds.right - containerBounds.left + container.scrollLeft,
+          top: bounds.top - containerBounds.top + container.scrollTop,
+          bottom: bounds.bottom - containerBounds.top + container.scrollTop,
+        };
+        if (!rectsIntersect(selectionRect, contentBounds)) {
           return [];
         }
         if (element.classList.contains("timeline-point-marker")) {
@@ -3681,6 +4081,15 @@ export function Timeline({
             parentTrackId,
           }];
         }
+        if (element.classList.contains("timeline-banyan-mark")) {
+          const id = element.dataset.banyanMarkId;
+          return id
+            ? [{
+                id,
+                type: "banyan-mark" as const,
+              }]
+            : [];
+        }
         const id = element.dataset.blockId;
         const type = element.dataset.blockType;
         const trackId = element.dataset.blockTrackId;
@@ -3694,28 +4103,84 @@ export function Timeline({
         ] as TimelineSelectionItem[];
       })
       .sort((left, right) => {
-        const leftStartTime = left.type === "attached-point"
-          ? attachedPointTrackMap.get(left.trackId)?.points.find((point) => point.id === left.id)?.time ?? 0
-          : findAnnotationById(
-              left.id,
-              left.type,
-              characterAnnotations,
-              actionAnnotations,
-              customBlocks,
-              left.type === "custom-block" ? left.trackId : undefined,
-            )?.startTime ?? 0;
-        const rightStartTime = right.type === "attached-point"
-          ? attachedPointTrackMap.get(right.trackId)?.points.find((point) => point.id === right.id)?.time ?? 0
-          : findAnnotationById(
-              right.id,
-              right.type,
-              characterAnnotations,
-              actionAnnotations,
-              customBlocks,
-              right.type === "custom-block" ? right.trackId : undefined,
-            )?.startTime ?? 0;
+        const leftStartTime = getSelectionItemStartTime(left);
+        const rightStartTime = getSelectionItemStartTime(right);
         return leftStartTime - rightStartTime || left.id.localeCompare(right.id);
       });
+  }
+
+  function getSelectionItemStartTime(item: TimelineSelectionItem) {
+    if (item.type === "attached-point") {
+      return attachedPointTrackMap.get(item.trackId)?.points.find((point) => point.id === item.id)?.time ?? 0;
+    }
+    if (item.type === "banyan-mark") {
+      return banyanMarks.find((mark) => mark.id === item.id)?.time ?? 0;
+    }
+    return findAnnotationById(
+      item.id,
+      item.type,
+      characterAnnotations,
+      actionAnnotations,
+      customBlocks,
+      item.type === "custom-block" ? item.trackId : undefined,
+    )?.startTime ?? 0;
+  }
+
+  function resolveLiveBatchMoveItem(
+    item: TimelineSelectionItem,
+    liveProject: ProjectData,
+  ): TimelineBatchMoveItem | null {
+    if (item.type === "attached-point") {
+      const livePointTrack = findResolvedAttachedPointTrack(liveProject, item.trackId);
+      const livePoint = livePointTrack?.points.find((candidate) => candidate.id === item.id);
+      return livePoint
+        ? {
+            type: "attached-point",
+            id: item.id,
+            trackId: item.trackId,
+            parentTrackId: item.parentTrackId,
+            startTime: livePoint.time,
+            endTime: livePoint.time,
+          }
+        : null;
+    }
+    if (item.type === "banyan-mark") {
+      const liveMark = liveProject.banyanMarks.find((candidate) => candidate.id === item.id);
+      return liveMark
+        ? {
+            type: "banyan-mark",
+            id: item.id,
+            startTime: liveMark.time,
+            endTime: liveMark.time,
+          }
+        : null;
+    }
+    const liveSelectionAnnotation = findAnnotationById(
+      item.id,
+      item.type,
+      liveProject.characterAnnotations,
+      liveProject.actionAnnotations,
+      flattenCustomBlocks(liveProject.customTracks),
+      item.type === "custom-block" ? item.trackId : undefined,
+    );
+    if (!liveSelectionAnnotation) {
+      return null;
+    }
+    if (item.type === "custom-block") {
+      return {
+        type: "custom-block",
+        id: item.id,
+        trackId: item.trackId,
+        startTime: liveSelectionAnnotation.startTime,
+        endTime: liveSelectionAnnotation.endTime,
+      };
+    }
+    return {
+      type: item.type,
+      id: item.id,
+      startTime: liveSelectionAnnotation.startTime,
+      endTime: liveSelectionAnnotation.endTime,
+    };
   }
 
   function queuePreviewFrame(time: number | null) {
@@ -4561,27 +5026,25 @@ function getCreateTrackPreview(
 
 function getSelectionBoxStyle(
   dragState: Extract<NonNullable<DragState>, { kind: "select-box" }>,
-  container: HTMLDivElement,
 ) {
-  const bounds = container.getBoundingClientRect();
-  const left = Math.min(dragState.originX, dragState.currentX) - bounds.left + container.scrollLeft;
-  const top = Math.min(dragState.originY, dragState.currentY) - bounds.top + container.scrollTop;
+  const left = Math.min(dragState.originContentX, dragState.currentContentX);
+  const top = Math.min(dragState.originContentY, dragState.currentContentY);
   return {
     left: Math.max(0, left),
     top: Math.max(0, top),
-    width: Math.abs(dragState.currentX - dragState.originX),
-    height: Math.abs(dragState.currentY - dragState.originY),
+    width: Math.abs(dragState.currentContentX - dragState.originContentX),
+    height: Math.abs(dragState.currentContentY - dragState.originContentY),
   };
 }
 
-function getClientSelectionRect(
+function getContentSelectionRect(
   dragState: Extract<NonNullable<DragState>, { kind: "select-box" }>,
 ) {
   return {
-    left: Math.min(dragState.originX, dragState.currentX),
-    right: Math.max(dragState.originX, dragState.currentX),
-    top: Math.min(dragState.originY, dragState.currentY),
-    bottom: Math.max(dragState.originY, dragState.currentY),
+    left: Math.min(dragState.originContentX, dragState.currentContentX),
+    right: Math.max(dragState.originContentX, dragState.currentContentX),
+    top: Math.min(dragState.originContentY, dragState.currentContentY),
+    bottom: Math.max(dragState.originContentY, dragState.currentContentY),
   };
 }
 
@@ -4761,19 +5224,28 @@ function getTrackIdForSelectionItem(
   if (item.type === "custom-block") {
     return item.trackId;
   }
+  if (item.type === "banyan-mark") {
+    return "banyan-track";
+  }
   return actionAnnotations.find((actionItem) => actionItem.id === item.id)?.trackId ??
     customBlocks.find((block) => block.id === item.id)?.trackId ??
     null;
 }
 
 function getTimelineSelectionKey(
-  type: "character" | "action" | "custom-block" | "attached-point",
+  type: "character" | "action" | "custom-block" | "attached-point" | "banyan-mark",
   id: string,
   trackId?: string,
 ) {
   return type === "custom-block" || type === "attached-point"
     ? `${type}:${trackId ?? ""}:${id}`
     : `${type}:${id}`;
+}
+
+function getSelectionItemTrackId(item: TimelineSelectionItem | TimelineBatchMoveItem) {
+  return item.type === "custom-block" || item.type === "attached-point"
+    ? item.trackId
+    : undefined;
 }
 
 function getCanvasX(time: number, zoom: number) {

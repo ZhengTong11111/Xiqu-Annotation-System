@@ -231,6 +231,8 @@ export function buildProjectFromLines(
     subtitleLines,
     characterAnnotations: subtitleLines.flatMap(splitLineIntoCharacters),
     gongcheAnnotations: [],
+    banyanSections: [],
+    banyanMarks: [],
     actionAnnotations: [],
     builtinTracks: getDefaultBuiltinTracks(),
     customTracks: [],
@@ -241,6 +243,8 @@ export function buildProjectFromLines(
 export function getProjectDuration(project: ProjectData): number {
   const customBlockEndTimes = flattenCustomTrackBlocks(project.customTracks).map((block) => block.endTime);
   const gongcheEndTimes = (project.gongcheAnnotations ?? []).map((block) => block.endTime);
+  const banyanTimes = (project.banyanMarks ?? []).map((mark) => mark.time);
+  const banyanSectionEndTimes = (project.banyanSections ?? []).map((section) => section.endTime);
   const attachedPointTimes = [
     ...project.builtinTracks.flatMap((track) =>
       (track.attachedPointTracks ?? []).flatMap((pointTrack) => pointTrack.points.map((point) => point.time)),
@@ -254,6 +258,8 @@ export function getProjectDuration(project: ProjectData): number {
     ...project.subtitleLines.map((line) => line.endTime),
     ...project.characterAnnotations.map((char) => char.endTime),
     ...gongcheEndTimes,
+    ...banyanTimes,
+    ...banyanSectionEndTimes,
     ...project.actionAnnotations.map((action) => action.endTime),
     ...customBlockEndTimes,
     ...attachedPointTimes,

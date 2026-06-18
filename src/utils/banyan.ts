@@ -1,0 +1,330 @@
+import type {
+  BanyanMark,
+  BanyanSection,
+  GongcheAnnotation,
+  ProjectData,
+} from "../types";
+import { getProjectDuration } from "./project";
+
+export type GenerateBanyanMarksResult = {
+  project: ProjectData;
+  stats: {
+    created: number;
+    updated: number;
+    preserved: number;
+    orphaned: number;
+    sectionCreated: boolean;
+  };
+};
+
+type BanyanCandidate = Omit<BanyanMark, "id" | "sectionId" | "confidence" | "manualOffset" | "orphaned">;
+
+const BANYAN_CORE_TOKEN_PATTERN = /[1234]/g;
+
+export function generateBanyanMarksFromGongche(project: ProjectData): GenerateBanyanMarksResult {
+  const sortedGongche = [...(project.gongcheAnnotations ?? [])].sort((left, right) => left.startTime - right.startTime);
+  const candidates = inferBanyanCandidates(sortedGongche);
+  const sectionResult = ensureBanyanSection(project.banyanSections ?? [], candidates, project);
+  const sectionId = sectionResult.section?.id ?? null;
+  const candidateKeys = new Set(candidates.map((candidate) => candidate.sourceKey).filter(Boolean));
+  const existingBySourceKey = new Map(
+    (project.banyanMarks ?? [])
+      .filter((mark) => mark.sourceKey)
+      .map((mark) => [mark.sourceKey, mark]),
+  );
+  const nextMarks: BanyanMark[] = [];
+  const stats = {
+    created: 0,
+    updated: 0,
+    preserved: 0,
+    orphaned: 0,
+    sectionCreated: sectionResult.created,
+  };
+
+  for (const candidate of candidates) {
+    const existing = candidate.sourceKey ? existingBySourceKey.get(candidate.sourceKey) : null;
+    if (!existing) {
+      stats.created += 1;
+      nextMarks.push({
+        ...candidate,
+        id: `banyan-mark-${crypto.randomUUID()}`,
+        sectionId,
+        confidence: "auto",
+        manualOffset: 0,
+        orphaned: false,
+      });
+      continue;
+    }
+
+    const isManuallyAdjusted = existing.confidence === "manual" || existing.confidence === "reviewed";
+    if (isManuallyAdjusted) {
+      stats.preserved += 1;
+      nextMarks.push({
+        ...existing,
+        ...candidate,
+        id: existing.id,
+        sectionId: existing.sectionId ?? sectionId,
+        time: existing.time,
+        estimatedTime: candidate.estimatedTime,
+        confidence: existing.confidence,
+        manualOffset: existing.time - candidate.estimatedTime,
+        orphaned: false,
+        comment: existing.comment,
+      });
+    } else {
+      stats.updated += 1;
+      nextMarks.push({
+        ...existing,
+        ...candidate,
+        id: existing.id,
+        sectionId: existing.sectionId ?? sectionId,
+        time: candidate.estimatedTime,
+        estimatedTime: candidate.estimatedTime,
+        confidence: "auto",
+        manualOffset: 0,
+        orphaned: false,
+        comment: existing.comment,
+      });
+    }
+  }
+
+  for (const existing of project.banyanMarks ?? []) {
+    if (existing.sourceKey && candidateKeys.has(existing.sourceKey)) {
+      continue;
+    }
+    if (existing.sourceKey && !candidateKeys.has(existing.sourceKey)) {
+      stats.orphaned += existing.orphaned ? 0 : 1;
+      nextMarks.push({
+        ...existing,
+        orphaned: true,
+      });
+      continue;
+    }
+    nextMarks.push(existing);
+  }
+
+  return {
+    project: {
+      ...project,
+      banyanSections: sectionResult.sections,
+      banyanMarks: sortBanyanMarks(nextMarks),
+    },
+    stats,
+  };
+}
+
+export function getBanyanMarkDisplayLabel(mark: BanyanMark) {
+  if (mark.subtype === "mainBan" || mark.subtype === "headBan") {
+    return "板";
+  }
+  if (mark.subtype === "zengBan") {
+    return "赠";
+  }
+  if (mark.subtype === "middleEye") {
+    return "中";
+  }
+  if (mark.subtype === "headEye") {
+    return "头";
+  }
+  if (mark.subtype === "tailEye") {
+    return "末";
+  }
+  if (mark.subtype === "smallEye") {
+    return "眼";
+  }
+  return mark.sourceSymbol || "板眼";
+}
+
+export function getBanyanSubtypeLabel(subtype: BanyanMark["subtype"]) {
+  const labels: Record<BanyanMark["subtype"], string> = {
+    mainBan: "正板",
+    headBan: "头板",
+    waistBan: "腰板",
+    bottomBan: "底板",
+    zengBan: "赠板",
+    waistZengBan: "腰赠板",
+    middleEye: "中眼",
+    headEye: "头眼",
+    tailEye: "末眼",
+    smallEye: "小眼",
+    sideHeadEye: "侧头眼",
+    sideTailEye: "侧末眼",
+    sideMiddleEye: "侧中眼",
+    phraseBoundary: "句读",
+    unknown: "未定",
+  };
+  return labels[subtype];
+}
+
+export function getBanyanRoleLabel(role: BanyanMark["role"]) {
+  if (role === "ban") {
+    return "板";
+  }
+  if (role === "yan") {
+    return "眼";
+  }
+  return "辅助";
+}
+
+export function getBanyanConfidenceLabel(confidence: BanyanMark["confidence"]) {
+  if (confidence === "manual") {
+    return "手动";
+  }
+  if (confidence === "reviewed") {
+    return "已检查";
+  }
+  return "自动";
+}
+
+function inferBanyanCandidates(gongcheAnnotations: GongcheAnnotation[]) {
+  const rawCandidates = gongcheAnnotations.flatMap((annotation) =>
+    [...annotation.symbols]
+      .sort((left, right) => left.startTime - right.startTime)
+      .flatMap((symbol) => {
+        const notation = symbol.notation ?? "";
+        const matches = Array.from(notation.matchAll(BANYAN_CORE_TOKEN_PATTERN));
+        const symbolDuration = Math.max(symbol.endTime - symbol.startTime, 0.001);
+        return matches.map((match, tokenIndex) => {
+          const sourceSymbol = match[0];
+          const estimatedTime = matches.length <= 1
+            ? symbol.startTime
+            : symbol.startTime + (symbolDuration * tokenIndex) / Math.max(matches.length - 1, 1);
+          return {
+            sourceSymbol,
+            sourceTokenIndex: tokenIndex,
+            sourceKey: `${annotation.id}:${symbol.id}:${tokenIndex}:${sourceSymbol}`,
+            time: estimatedTime,
+            estimatedTime,
+            linkedGongcheAnnotationId: annotation.id,
+            linkedGongcheSymbolId: symbol.id,
+            linkedGongcheSymbolIds: [symbol.id],
+            durationHint: notation,
+            attachment: "on_note" as const,
+          };
+        });
+      }),
+  ).sort((left, right) => left.estimatedTime - right.estimatedTime);
+
+  return rawCandidates.map((candidate, index, candidates): BanyanCandidate => ({
+    ...candidate,
+    ...inferBanyanSemantics(candidate.sourceSymbol, index, candidates),
+  }));
+}
+
+function inferBanyanSemantics(
+  sourceSymbol: string,
+  index: number,
+  candidates: Array<{ sourceSymbol: string }>,
+): Pick<BanyanCandidate, "role" | "subtype" | "segment" | "beatIndex" | "strength"> {
+  if (sourceSymbol === "1") {
+    return {
+      role: "ban",
+      subtype: "mainBan",
+      segment: "main",
+      beatIndex: 1,
+      strength: "strong",
+    };
+  }
+  if (sourceSymbol === "3") {
+    return {
+      role: "yan",
+      subtype: "middleEye",
+      segment: "main",
+      beatIndex: 3,
+      strength: "medium",
+    };
+  }
+  if (sourceSymbol === "4") {
+    return {
+      role: "ban",
+      subtype: "zengBan",
+      segment: "zeng",
+      beatIndex: 1,
+      strength: "strong",
+    };
+  }
+  if (sourceSymbol === "2") {
+    const subtype = inferSmallEyeSubtype(index, candidates);
+    return {
+      role: "yan",
+      subtype,
+      segment: "main",
+      beatIndex: subtype === "tailEye" ? 4 : 2,
+      strength: "weak",
+    };
+  }
+  return {
+    role: "auxiliary",
+    subtype: "unknown",
+    segment: "unknown",
+    beatIndex: null,
+    strength: "unknown",
+  };
+}
+
+function inferSmallEyeSubtype(index: number, candidates: Array<{ sourceSymbol: string }>): BanyanMark["subtype"] {
+  const previousCore = findNearestCoreCandidate(candidates, index, -1);
+  const nextCore = findNearestCoreCandidate(candidates, index, 1);
+  if (nextCore?.sourceSymbol === "3") {
+    return "headEye";
+  }
+  if (previousCore?.sourceSymbol === "3") {
+    return "tailEye";
+  }
+  return "smallEye";
+}
+
+function findNearestCoreCandidate(
+  candidates: Array<{ sourceSymbol: string }>,
+  index: number,
+  direction: -1 | 1,
+) {
+  for (let candidateIndex = index + direction; candidateIndex >= 0 && candidateIndex < candidates.length; candidateIndex += direction) {
+    const candidate = candidates[candidateIndex];
+    if (candidate.sourceSymbol === "1" || candidate.sourceSymbol === "3" || candidate.sourceSymbol === "4") {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function ensureBanyanSection(
+  sections: BanyanSection[],
+  candidates: BanyanCandidate[],
+  project: ProjectData,
+) {
+  if (sections.length > 0 || candidates.length === 0) {
+    return {
+      sections,
+      section: sections[0] ?? null,
+      created: false,
+    };
+  }
+  const startTime = Math.max(0, candidates[0].estimatedTime);
+  const endTime = Math.max(
+    startTime,
+    candidates[candidates.length - 1].estimatedTime,
+    getProjectDuration(project),
+  );
+  const section: BanyanSection = {
+    id: `banyan-section-${crypto.randomUUID()}`,
+    name: "板眼区段",
+    startTime,
+    endTime,
+    cycleType: "yi_ban_san_yan_zeng",
+    freeRhythm: false,
+    beatCount: 8,
+    hasZengBan: true,
+    source: "gongche-notation",
+    comment: "由工尺谱 notation 自动生成的默认板眼区段，可按曲牌继续细分。",
+  };
+  return {
+    sections: [section],
+    section,
+    created: true,
+  };
+}
+
+function sortBanyanMarks(marks: BanyanMark[]) {
+  return [...marks].sort((left, right) => left.time - right.time);
+}

@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   ActionAnnotation,
   AttachedPointTrack,
+  BanyanMark,
+  BanyanSection,
   BuiltinTrack,
   BuiltinTrackId,
   CharacterAnnotation,
@@ -13,8 +15,32 @@ import type {
   TrackDefinition,
 } from "../types";
 import { GongcheCharacterRenderer } from "./GongcheCharacterRenderer";
+import { ToggleRow } from "./SpectrogramSettingsPanel";
+import {
+  getBanyanConfidenceLabel,
+  getBanyanRoleLabel,
+  getBanyanSubtypeLabel,
+} from "../utils/banyan";
 
 const REORDER_ACTIVATION_PX = 6;
+
+const BANYAN_SUBTYPE_OPTIONS: BanyanMark["subtype"][] = [
+  "mainBan",
+  "headBan",
+  "waistBan",
+  "bottomBan",
+  "zengBan",
+  "waistZengBan",
+  "middleEye",
+  "headEye",
+  "tailEye",
+  "smallEye",
+  "sideHeadEye",
+  "sideTailEye",
+  "sideMiddleEye",
+  "phraseBoundary",
+  "unknown",
+];
 
 type InspectorPanelProps = {
   collapsed?: boolean;
@@ -23,6 +49,10 @@ type InspectorPanelProps = {
   subtitleLines: SubtitleLine[];
   characterAnnotations: CharacterAnnotation[];
   gongcheAnnotations: GongcheAnnotation[];
+  banyanSections: BanyanSection[];
+  banyanMarks: BanyanMark[];
+  banyanGridVisible: boolean;
+  banyanTrackVisible: boolean;
   actionAnnotations: ActionAnnotation[];
   builtinTracks: BuiltinTrack[];
   customTracks: CustomTrack[];
@@ -38,6 +68,16 @@ type InspectorPanelProps = {
     parentTrackId: string,
     sourceText: string,
   ) => { parsed: number; imported: number; updated: number; unmatched: number };
+  onGenerateBanyanFromGongche: () => {
+    created: number;
+    updated: number;
+    preserved: number;
+    orphaned: number;
+    sectionCreated: boolean;
+  };
+  onBanyanGridVisibleChange: (visible: boolean) => void;
+  onBanyanTrackVisibleChange: (visible: boolean) => void;
+  onBanyanMarkUpdate: (id: string, changes: Partial<BanyanMark>) => void;
   onActionUpdate: (id: string, changes: Partial<ActionAnnotation>) => void;
   onAttachedPointUpdate: (trackId: string, pointId: string, changes: { time?: number; label?: string }) => void;
   onTrackWaveformSnapChange: (trackId: string, enabled: boolean) => void;
@@ -88,6 +128,10 @@ export function InspectorPanel({
   subtitleLines,
   characterAnnotations,
   gongcheAnnotations,
+  banyanSections,
+  banyanMarks,
+  banyanGridVisible,
+  banyanTrackVisible,
   actionAnnotations,
   builtinTracks,
   customTracks,
@@ -97,6 +141,10 @@ export function InspectorPanel({
   onCreateGongcheBlock,
   onGongcheBlockUpdate,
   onImportGongcheText,
+  onGenerateBanyanFromGongche,
+  onBanyanGridVisibleChange,
+  onBanyanTrackVisibleChange,
+  onBanyanMarkUpdate,
   onActionUpdate,
   onAttachedPointUpdate,
   onTrackWaveformSnapChange,
@@ -133,6 +181,7 @@ export function InspectorPanel({
   const [trackNameDraft, setTrackNameDraft] = useState("");
   const [gongcheImportDraft, setGongcheImportDraft] = useState("");
   const [gongcheImportResult, setGongcheImportResult] = useState<string | null>(null);
+  const [banyanGenerateResult, setBanyanGenerateResult] = useState<string | null>(null);
   const [typeOptionDrafts, setTypeOptionDrafts] = useState<string[]>([]);
   const [isTrackNameComposing, setIsTrackNameComposing] = useState(false);
   const [composingOptionIndexes, setComposingOptionIndexes] = useState<Record<number, boolean>>({});
@@ -238,6 +287,7 @@ export function InspectorPanel({
     setIsTrackNameComposing(false);
     setComposingOptionIndexes({});
     setGongcheImportResult(null);
+    setBanyanGenerateResult(null);
   }, [selectedItem]);
 
   function commitTrackName(nextName: string) {
@@ -406,6 +456,223 @@ export function InspectorPanel({
           {collapseButton ? <div className="panel-header-actions">{collapseButton}</div> : null}
         </div>
         <p className="empty-state">选择一句字幕、一个 block、或一条自定义轨道后可在这里编辑属性。</p>
+      </section>
+    );
+  }
+
+  if (selectedItem.type === "banyan-track") {
+    return (
+      <section className="panel inspector-panel banyan-settings-panel">
+        <div className="panel-header">
+          <div className="panel-header-copy">
+            <h2>板眼设置</h2>
+            <span>{banyanMarks.length} 个板眼点 · {banyanSections.length} 个区段</span>
+          </div>
+          {collapseButton ? <div className="panel-header-actions">{collapseButton}</div> : null}
+        </div>
+        <div className="spectrogram-settings-body banyan-settings-body">
+          <div className="spectrogram-setting-group">
+            <div className="spectrogram-setting-heading">
+              <strong>显示</strong>
+              <span>{banyanTrackVisible ? "板眼轨显示" : "板眼轨隐藏"}</span>
+            </div>
+            <ToggleRow
+              label="板眼轨"
+              description="关闭后从时间轴中移除；也可在音频波形设置中重新打开。"
+              checked={banyanTrackVisible}
+              onChange={onBanyanTrackVisibleChange}
+            />
+            <ToggleRow
+              label="全局板眼纵线"
+              description="在所有轨道背景中显示板眼参考线，用于对照波形、频谱和文字。"
+              checked={banyanGridVisible}
+              onChange={onBanyanGridVisibleChange}
+            />
+          </div>
+
+          <div className="spectrogram-setting-group">
+            <div className="spectrogram-setting-heading">
+              <strong>从工尺谱生成</strong>
+              <span>{gongcheAnnotations.length} 个工尺谱块</span>
+            </div>
+            <div className="banyan-generate-card">
+              <div>
+                <strong>板眼初稿</strong>
+                <span>使用工尺谱符号中的 1/2/3/4 生成初稿，手动微调过的位置会保留。</span>
+              </div>
+              <button
+                type="button"
+                className="banyan-primary-button"
+                onClick={() => {
+                  const result = onGenerateBanyanFromGongche();
+                  setBanyanGenerateResult(
+                    `新增 ${result.created}，更新 ${result.updated}，保留手动 ${result.preserved}，失去来源 ${result.orphaned}`,
+                  );
+                }}
+                disabled={gongcheAnnotations.length === 0}
+              >
+                生成 / 重新生成
+              </button>
+            </div>
+            {banyanGenerateResult ? (
+              <div className="spectrogram-static-row banyan-result-row">
+                <strong>生成结果</strong>
+                <span>{banyanGenerateResult}</span>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="spectrogram-setting-group">
+            <div className="spectrogram-setting-heading">
+              <strong>当前解释</strong>
+              <span>一板三眼带赠板</span>
+            </div>
+            <div className="banyan-code-grid">
+              <div><strong>1</strong><span>板</span></div>
+              <div><strong>2</strong><span>小眼</span></div>
+              <div><strong>3</strong><span>中眼</span></div>
+              <div><strong>4</strong><span>赠板</span></div>
+            </div>
+            <p className="spectrogram-setting-help">生成结果只是初稿，可根据实际演奏继续拖动微调。</p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (selectedItem.type === "banyan-section") {
+    const section = banyanSections.find((item) => item.id === selectedItem.id);
+    if (!section) {
+      return null;
+    }
+    return (
+      <section className="panel inspector-panel banyan-settings-panel">
+        <div className="panel-header">
+          <div className="panel-header-copy">
+            <h2>板眼区段</h2>
+            <span>{section.name}</span>
+          </div>
+          {collapseButton ? <div className="panel-header-actions">{collapseButton}</div> : null}
+        </div>
+        <div className="spectrogram-settings-body banyan-settings-body">
+          <div className="spectrogram-setting-group">
+            <div className="spectrogram-setting-heading">
+              <strong>区段信息</strong>
+              <span>{section.cycleType}</span>
+            </div>
+            <div className="spectrogram-static-row">
+              <strong>{section.name}</strong>
+              <span>{section.startTime.toFixed(3)}s - {section.endTime.toFixed(3)}s</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (selectedItem.type === "banyan-mark") {
+    const mark = banyanMarks.find((item) => item.id === selectedItem.id);
+    if (!mark) {
+      return null;
+    }
+    const linkedGongcheBlock = mark.linkedGongcheAnnotationId
+      ? gongcheAnnotations.find((item) => item.id === mark.linkedGongcheAnnotationId)
+      : null;
+    const linkedGongcheSymbol = mark.linkedGongcheSymbolId
+      ? linkedGongcheBlock?.symbols.find((symbol) => symbol.id === mark.linkedGongcheSymbolId)
+      : null;
+    const section = mark.sectionId
+      ? banyanSections.find((item) => item.id === mark.sectionId)
+      : null;
+
+    return (
+      <section className="panel inspector-panel">
+        <div className="panel-header">
+          <div>
+            <h2>板眼编辑</h2>
+            <span>{getBanyanSubtypeLabel(mark.subtype)} · {getBanyanConfidenceLabel(mark.confidence)}</span>
+          </div>
+          <div className="panel-header-actions">
+            {collapseButton}
+            <button type="button" onClick={onDeleteSelected}>删除</button>
+          </div>
+        </div>
+        <div className="inspector-field">
+          <label>时间</label>
+          <input
+            type="number"
+            step="0.001"
+            value={mark.time}
+            onChange={(event) => onBanyanMarkUpdate(mark.id, {
+              time: Number(event.target.value),
+              confidence: "manual",
+            })}
+          />
+        </div>
+        <div className="inspector-field">
+          <label>原始估计</label>
+          <div className="inspector-value">
+            {mark.estimatedTime.toFixed(3)}s · 偏移 {(mark.time - mark.estimatedTime).toFixed(3)}s
+          </div>
+        </div>
+        <div className="inspector-field">
+          <label>角色</label>
+          <select
+            value={mark.role}
+            onChange={(event) => onBanyanMarkUpdate(mark.id, { role: event.target.value as BanyanMark["role"] })}
+          >
+            <option value="ban">板</option>
+            <option value="yan">眼</option>
+            <option value="auxiliary">辅助</option>
+          </select>
+        </div>
+        <div className="inspector-field">
+          <label>类型</label>
+          <select
+            value={mark.subtype}
+            onChange={(event) => onBanyanMarkUpdate(mark.id, { subtype: event.target.value as BanyanMark["subtype"] })}
+          >
+            {BANYAN_SUBTYPE_OPTIONS.map((subtype) => (
+              <option key={subtype} value={subtype}>{getBanyanSubtypeLabel(subtype)}</option>
+            ))}
+          </select>
+        </div>
+        <div className="inspector-field">
+          <label>状态</label>
+          <select
+            value={mark.confidence}
+            onChange={(event) => onBanyanMarkUpdate(mark.id, { confidence: event.target.value as BanyanMark["confidence"] })}
+          >
+            <option value="auto">自动</option>
+            <option value="reviewed">已检查</option>
+            <option value="manual">手动</option>
+          </select>
+        </div>
+        <div className="inspector-field">
+          <label>来源</label>
+          <div className="inspector-value">
+            {mark.sourceSymbol ? `源码 ${mark.sourceSymbol}` : "手动创建"}
+            {linkedGongcheSymbol ? ` · ${linkedGongcheSymbol.rawText ?? linkedGongcheSymbol.label}` : ""}
+            {mark.orphaned ? " · 来源已失效" : ""}
+          </div>
+        </div>
+        <div className="inspector-field">
+          <label>区段</label>
+          <div className="inspector-value">{section?.name ?? "未绑定区段"}</div>
+        </div>
+        <div className="inspector-field">
+          <label>备注</label>
+          <textarea
+            value={mark.comment ?? ""}
+            onChange={(event) => onBanyanMarkUpdate(mark.id, { comment: event.target.value })}
+          />
+        </div>
+        <div className="inspector-field">
+          <label>摘要</label>
+          <div className="inspector-value">
+            {getBanyanRoleLabel(mark.role)} / {getBanyanSubtypeLabel(mark.subtype)} / {mark.segment}
+          </div>
+        </div>
       </section>
     );
   }

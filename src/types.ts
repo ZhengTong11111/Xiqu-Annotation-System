@@ -56,6 +56,78 @@ export type GongcheAnnotation = {
   symbols: GongcheSymbol[];
 };
 
+export type BanyanCycleType =
+  | "sanban"
+  | "liushuiban"
+  | "yi_ban_yi_yan"
+  | "yi_ban_yi_yan_zeng"
+  | "yi_ban_san_yan"
+  | "yi_ban_san_yan_zeng"
+  | "custom";
+
+export type BanyanRole = "ban" | "yan" | "auxiliary";
+
+export type BanyanSubtype =
+  | "mainBan"
+  | "headBan"
+  | "waistBan"
+  | "bottomBan"
+  | "zengBan"
+  | "waistZengBan"
+  | "middleEye"
+  | "headEye"
+  | "tailEye"
+  | "smallEye"
+  | "sideHeadEye"
+  | "sideTailEye"
+  | "sideMiddleEye"
+  | "phraseBoundary"
+  | "unknown";
+
+export type BanyanSegment = "main" | "zeng" | "free" | "unknown";
+
+export type BanyanAttachment = "on_note" | "in_between" | "at_phrase_end" | "unknown";
+
+export type BanyanConfidence = "auto" | "reviewed" | "manual";
+
+export type BanyanSection = {
+  id: string;
+  name: string;
+  startTime: number;
+  endTime: number;
+  cycleType: BanyanCycleType;
+  freeRhythm: boolean;
+  beatCount?: number;
+  hasZengBan?: boolean;
+  source?: string;
+  comment?: string;
+};
+
+export type BanyanMark = {
+  id: string;
+  sectionId?: string | null;
+  time: number;
+  estimatedTime: number;
+  sourceSymbol: string;
+  sourceTokenIndex?: number;
+  sourceKey?: string;
+  role: BanyanRole;
+  subtype: BanyanSubtype;
+  segment: BanyanSegment;
+  beatIndex?: number | null;
+  cycleIndex?: number | null;
+  strength?: "strong" | "medium" | "weak" | "unknown";
+  attachment: BanyanAttachment;
+  linkedGongcheAnnotationId?: string | null;
+  linkedGongcheSymbolId?: string | null;
+  linkedGongcheSymbolIds?: string[];
+  confidence: BanyanConfidence;
+  manualOffset?: number;
+  durationHint?: string | null;
+  orphaned?: boolean;
+  comment?: string;
+};
+
 export type ActionAnnotation = {
   id: string;
   trackId: string;
@@ -152,6 +224,8 @@ export type ProjectData = {
   subtitleLines: SubtitleLine[];
   characterAnnotations: CharacterAnnotation[];
   gongcheAnnotations: GongcheAnnotation[];
+  banyanSections: BanyanSection[];
+  banyanMarks: BanyanMark[];
   actionAnnotations: ActionAnnotation[];
   builtinTracks: BuiltinTrack[];
   customTracks: CustomTrack[];
@@ -159,7 +233,7 @@ export type ProjectData = {
 };
 
 export type SavedProjectFile = {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   project: ProjectData;
   uiState?: {
     zoom?: number;
@@ -239,6 +313,9 @@ export type SelectedItem =
   | { type: "custom-track"; id: string }
   | { type: "attached-point-track"; id: string; parentTrackId: string }
   | { type: "gongche-track"; parentTrackId: string }
+  | { type: "banyan-track" }
+  | { type: "banyan-section"; id: string }
+  | { type: "banyan-mark"; id: string }
   | { type: "waveform-track" }
   | { type: "spectrogram-track" }
   | { type: "custom-block"; id: string; trackId: string }
@@ -265,6 +342,10 @@ export type TimelineSelectionItem =
       type: "custom-block";
       id: string;
       trackId: string;
+    }
+  | {
+      type: "banyan-mark";
+      id: string;
     };
 
 export type TimelineBatchMoveItem = TimelineSelectionItem & {
