@@ -227,6 +227,8 @@ type DragState =
       originContentY: number;
       currentContentX: number;
       currentContentY: number;
+      shiftKey: boolean;
+      additive: boolean;
     }
   | null;
 
@@ -553,6 +555,7 @@ export function Timeline({
     currentY: number;
   } | null>(null);
   const moveTrackHighlightTimerRef = useRef<number | null>(null);
+  const selectionAnchorRef = useRef<TimelineSelectionItem | null>(selectedTimelineItems[0] ?? null);
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
   const trackBlockHeight = Math.round(clampValue(trackHeight - 22, 24, 54));
   const trackBlockTop = Math.round(Math.max(5, (trackHeight - trackBlockHeight) / 2));
@@ -602,6 +605,10 @@ export function Timeline({
   const activeTrackOrderMap = useMemo(
     () => new Map(activeTrackDefinitions.map((track, index) => [track.id, index])),
     [activeTrackDefinitions],
+  );
+  const timelineTrackOrderMap = useMemo(
+    () => new Map(trackDefinitions.map((track, index) => [track.id, index])),
+    [trackDefinitions],
   );
   const activeTrackIds = useMemo(
     () => activeTrackDefinitions.map((track) => track.id),
@@ -698,9 +705,29 @@ export function Timeline({
     () => new Set(selectedTimelineItems.map((item) => getTimelineSelectionKey(item.type, item.id, getSelectionItemTrackId(item)))),
     [selectedTimelineItems],
   );
+  useEffect(() => {
+    const anchor = selectionAnchorRef.current;
+    if (
+      anchor &&
+      selectedTimelineKeySet.has(getTimelineSelectionKey(anchor.type, anchor.id, getSelectionItemTrackId(anchor)))
+    ) {
+      return;
+    }
+    selectionAnchorRef.current = selectedTimelineItems[selectedTimelineItems.length - 1] ?? null;
+  }, [selectedTimelineItems, selectedTimelineKeySet]);
   const marqueePreviewItems = useMemo(
-    () => (dragState?.kind === "select-box" ? getItemsInSelectionRect(dragState) : []),
-    [dragState, characterAnnotations, actionAnnotations, customBlocks, banyanMarks, viewportState],
+    () => (dragState?.kind === "select-box" ? getItemsForSelectionDrag(dragState) : []),
+    [
+      dragState,
+      characterAnnotations,
+      actionAnnotations,
+      customBlocks,
+      attachedPointTracks,
+      banyanMarks,
+      viewportState,
+      selectedTimelineItems,
+      timelineTrackOrderMap,
+    ],
   );
   const marqueePreviewKeySet = useMemo(
     () => new Set(marqueePreviewItems.map((item) => getTimelineSelectionKey(item.type, item.id, getSelectionItemTrackId(item)))),
@@ -1323,7 +1350,11 @@ export function Timeline({
     );
   }
 
-  function startSelectBoxDrag(clientX: number, clientY: number) {
+  function startSelectBoxDrag(
+    clientX: number,
+    clientY: number,
+    options: { shiftKey?: boolean; additive?: boolean } = {},
+  ) {
     const point = getTimelineContentPoint(clientX, clientY);
     selectBoxPointerRef.current = { clientX, clientY };
     setDragState({
@@ -1336,6 +1367,8 @@ export function Timeline({
       originContentY: point.y,
       currentContentX: point.x,
       currentContentY: point.y,
+      shiftKey: Boolean(options.shiftKey),
+      additive: Boolean(options.additive),
     });
   }
 
@@ -1870,8 +1903,14 @@ export function Timeline({
         }
       } else if (activeDragState.kind === "select-box") {
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
-        const selectedItems = getItemsInSelectionRect(activeDragState);
-        onSelectTimelineItems(selectedItems, selectedItems[0] ?? null);
+        const selectedItems = getItemsForSelectionDrag(activeDragState);
+        if (activeDragState.shiftKey) {
+          selectionAnchorRef.current = selectedItems[0] ?? null;
+        } else {
+          selectionAnchorRef.current = selectedItems[selectedItems.length - 1] ?? null;
+        }
+        const primaryItem = selectedItems[selectedItems.length - 1] ?? selectedItems[0] ?? null;
+        onSelectTimelineItems(selectedItems, primaryItem ? toSelectedItem(primaryItem) : null);
       } else if (activeDragState.kind === "move-selection") {
         const minStartTime = Math.min(...activeDragState.items.map((item) => item.startTime));
         const selectionTrackId = getSelectionTrackId(activeDragState.items);
@@ -2430,7 +2469,10 @@ export function Timeline({
                     }
                     onCloseContextMenu();
                     lastPointerClientXRef.current = event.clientX;
-                    startSelectBoxDrag(event.clientX, event.clientY);
+                    startSelectBoxDrag(event.clientX, event.clientY, {
+                      shiftKey: event.shiftKey,
+                      additive: event.metaKey || event.ctrlKey,
+                    });
                   }}
                   onClick={(event) => {
                     const laneTime = getLaneTime(event.currentTarget, event.clientX, zoom);
@@ -2919,7 +2961,10 @@ export function Timeline({
                       return;
                     }
                     lastPointerClientXRef.current = event.clientX;
-                    startSelectBoxDrag(event.clientX, event.clientY);
+                    startSelectBoxDrag(event.clientX, event.clientY, {
+                      shiftKey: event.shiftKey,
+                      additive: event.metaKey || event.ctrlKey,
+                    });
                   }}
                   onClick={(event) => {
                     onCloseContextMenu();
@@ -3178,7 +3223,7 @@ export function Timeline({
           }
           onCloseContextMenu();
           event.stopPropagation();
-          if (event.metaKey || event.ctrlKey) {
+          if (event.metaKey || event.ctrlKey || event.shiftKey) {
             return;
           }
           const preferredHit = resolvePreferredBlockHit(
@@ -3328,32 +3373,7 @@ export function Timeline({
               (type === "character" ? "character-track" : (annotation as ActionAnnotation).trackId),
             annotation.startTime,
           );
-          if (event.metaKey || event.ctrlKey) {
-            const nextItems = toggleTimelineSelectionItem(currentSelectionItem);
-            const lastItem = nextItems[nextItems.length - 1];
-            const primaryItem = lastItem
-              ? lastItem.type === "custom-block"
-                ? {
-                    type: "custom-block",
-                    id: lastItem.id,
-                    trackId: lastItem.trackId,
-                  } as SelectedItem
-                : lastItem.type === "attached-point"
-                  ? {
-                      type: "attached-point",
-                      id: lastItem.id,
-                      trackId: lastItem.trackId,
-                      parentTrackId: lastItem.parentTrackId,
-                    } as SelectedItem
-                : {
-                    type: lastItem.type,
-                    id: lastItem.id,
-                  } as SelectedItem
-              : null;
-            onSelectTimelineItems(nextItems, primaryItem);
-            return;
-          }
-          onSelectItem(currentSelectedItem);
+          handleTimelineSelectionClick(currentSelectionItem, event);
         }}
         onDoubleClick={(event) => {
           event.stopPropagation();
@@ -3486,7 +3506,7 @@ export function Timeline({
           }
           event.stopPropagation();
           onCloseContextMenu();
-          if (event.metaKey || event.ctrlKey) {
+          if (event.metaKey || event.ctrlKey || event.shiftKey) {
             return;
           }
           lastPointerClientXRef.current = event.clientX;
@@ -3526,30 +3546,7 @@ export function Timeline({
           if (performance.now() < suppressCanvasClickUntilRef.current) {
             return;
           }
-          if (event.metaKey || event.ctrlKey) {
-            const nextItems = toggleTimelineSelectionItem(selectionItem);
-            const lastItem = nextItems[nextItems.length - 1];
-            const primaryItem = lastItem
-              ? lastItem.type === "custom-block"
-                ? { type: "custom-block", id: lastItem.id, trackId: lastItem.trackId } as SelectedItem
-                : lastItem.type === "attached-point"
-                  ? {
-                      type: "attached-point",
-                      id: lastItem.id,
-                      trackId: lastItem.trackId,
-                      parentTrackId: lastItem.parentTrackId,
-                    } as SelectedItem
-                  : { type: lastItem.type, id: lastItem.id } as SelectedItem
-              : null;
-            onSelectTimelineItems(nextItems, primaryItem);
-            return;
-          }
-          onSelectItem({
-            type: "attached-point",
-            id: point.id,
-            trackId: pointTrack.id,
-            parentTrackId: pointTrack.parentTrackId,
-          });
+          handleTimelineSelectionClick(selectionItem, event);
         }}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -3643,7 +3640,7 @@ export function Timeline({
           event.preventDefault();
           event.stopPropagation();
           onCloseContextMenu();
-          if (event.metaKey || event.ctrlKey) {
+          if (event.metaKey || event.ctrlKey || event.shiftKey) {
             return;
           }
           const liveProject = getProjectSnapshot();
@@ -3679,25 +3676,7 @@ export function Timeline({
             return;
           }
           onUpdatePasteTarget("banyan-track", mark.time);
-          if (event.metaKey || event.ctrlKey) {
-            const nextItems = toggleTimelineSelectionItem(selectionItem);
-            const lastItem = nextItems[nextItems.length - 1];
-            const primaryItem = lastItem
-              ? lastItem.type === "custom-block"
-                ? { type: "custom-block", id: lastItem.id, trackId: lastItem.trackId } as SelectedItem
-                : lastItem.type === "attached-point"
-                  ? {
-                      type: "attached-point",
-                      id: lastItem.id,
-                      trackId: lastItem.trackId,
-                      parentTrackId: lastItem.parentTrackId,
-                    } as SelectedItem
-                  : { type: lastItem.type, id: lastItem.id } as SelectedItem
-              : null;
-            onSelectTimelineItems(nextItems, primaryItem);
-            return;
-          }
-          onSelectItem({ type: "banyan-mark", id: mark.id });
+          handleTimelineSelectionClick(selectionItem, event);
         }}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -4052,6 +4031,162 @@ export function Timeline({
     return [...selectedTimelineItems, item];
   }
 
+  function toSelectedItem(item: TimelineSelectionItem): SelectedItem {
+    if (item.type === "custom-block") {
+      return { type: "custom-block", id: item.id, trackId: item.trackId };
+    }
+    if (item.type === "attached-point") {
+      return {
+        type: "attached-point",
+        id: item.id,
+        trackId: item.trackId,
+        parentTrackId: item.parentTrackId,
+      };
+    }
+    return { type: item.type, id: item.id };
+  }
+
+  function isSameTimelineSelectionItem(left: TimelineSelectionItem | null, right: TimelineSelectionItem | null) {
+    if (!left || !right) {
+      return false;
+    }
+    return getTimelineSelectionKey(left.type, left.id, getSelectionItemTrackId(left)) ===
+      getTimelineSelectionKey(right.type, right.id, getSelectionItemTrackId(right));
+  }
+
+  function mergeTimelineSelectionItems(
+    existingItems: TimelineSelectionItem[],
+    incomingItems: TimelineSelectionItem[],
+  ) {
+    if (existingItems.length === 0) {
+      return incomingItems;
+    }
+    if (incomingItems.length === 0) {
+      return existingItems;
+    }
+    const targetKeySet = new Set(
+      [...existingItems, ...incomingItems].map((item) =>
+        getTimelineSelectionKey(item.type, item.id, getSelectionItemTrackId(item)),
+      ),
+    );
+    const orderedItems = getSelectableTimelineItems().filter((item) =>
+      targetKeySet.has(getTimelineSelectionKey(item.type, item.id, getSelectionItemTrackId(item))),
+    );
+    const orderedKeySet = new Set(
+      orderedItems.map((item) => getTimelineSelectionKey(item.type, item.id, getSelectionItemTrackId(item))),
+    );
+    const staleItems = [...existingItems, ...incomingItems].filter((item) =>
+      !orderedKeySet.has(getTimelineSelectionKey(item.type, item.id, getSelectionItemTrackId(item))),
+    );
+    return [...orderedItems, ...staleItems];
+  }
+
+  function handleTimelineSelectionClick(
+    item: TimelineSelectionItem,
+    event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean },
+  ) {
+    const additive = event.metaKey || event.ctrlKey;
+    if (event.shiftKey) {
+      const anchorItem = selectionAnchorRef.current ?? item;
+      const rangeItems = getTimelineSelectionRange(anchorItem, item);
+      const nextItems = additive
+        ? mergeTimelineSelectionItems(selectedTimelineItems, rangeItems)
+        : rangeItems;
+      if (!selectionAnchorRef.current) {
+        selectionAnchorRef.current = item;
+      }
+      onSelectTimelineItems(nextItems, toSelectedItem(item));
+      return;
+    }
+
+    if (additive) {
+      const nextItems = toggleTimelineSelectionItem(item);
+      const itemIsSelected = nextItems.some((selectedItem) => isSameTimelineSelectionItem(selectedItem, item));
+      if (itemIsSelected) {
+        selectionAnchorRef.current = item;
+      } else if (isSameTimelineSelectionItem(selectionAnchorRef.current, item)) {
+        selectionAnchorRef.current = nextItems[nextItems.length - 1] ?? null;
+      }
+      const primaryItem = nextItems[nextItems.length - 1] ?? null;
+      onSelectTimelineItems(nextItems, primaryItem ? toSelectedItem(primaryItem) : null);
+      return;
+    }
+
+    selectionAnchorRef.current = item;
+    onSelectItem(toSelectedItem(item));
+  }
+
+  function getItemsForSelectionDrag(
+    selectionDragState: Extract<NonNullable<DragState>, { kind: "select-box" }>,
+  ) {
+    const rectItems = getItemsInSelectionRect(selectionDragState);
+    const nextItems = selectionDragState.shiftKey
+      ? getTimelineSelectionRangeFromEndpoints(rectItems)
+      : rectItems;
+    return selectionDragState.additive
+      ? mergeTimelineSelectionItems(selectedTimelineItems, nextItems)
+      : nextItems;
+  }
+
+  function getTimelineSelectionRangeFromEndpoints(endpointItems: TimelineSelectionItem[]) {
+    if (endpointItems.length === 0) {
+      return [];
+    }
+    const sortedEndpointItems = [...endpointItems].sort(compareTimelineSelectionItems);
+    const anchorItem = sortedEndpointItems[0];
+    const targetItem = sortedEndpointItems[sortedEndpointItems.length - 1];
+    return getTimelineSelectionRange(anchorItem, targetItem);
+  }
+
+  function getTimelineSelectionRange(anchorItem: TimelineSelectionItem, targetItem: TimelineSelectionItem) {
+    const orderedItems = getSelectableTimelineItems();
+    const anchorKey = getTimelineSelectionKey(anchorItem.type, anchorItem.id, getSelectionItemTrackId(anchorItem));
+    const targetKey = getTimelineSelectionKey(targetItem.type, targetItem.id, getSelectionItemTrackId(targetItem));
+    const anchorIndex = orderedItems.findIndex((item) =>
+      getTimelineSelectionKey(item.type, item.id, getSelectionItemTrackId(item)) === anchorKey,
+    );
+    const targetIndex = orderedItems.findIndex((item) =>
+      getTimelineSelectionKey(item.type, item.id, getSelectionItemTrackId(item)) === targetKey,
+    );
+    if (anchorIndex < 0 || targetIndex < 0) {
+      return [targetItem];
+    }
+    const startIndex = Math.min(anchorIndex, targetIndex);
+    const endIndex = Math.max(anchorIndex, targetIndex);
+    return orderedItems.slice(startIndex, endIndex + 1);
+  }
+
+  function getSelectableTimelineItems() {
+    const items: TimelineSelectionItem[] = [
+      ...characterAnnotations.map((annotation) => ({
+        type: "character" as const,
+        id: annotation.id,
+      })),
+      ...actionAnnotations.map((annotation) => ({
+        type: "action" as const,
+        id: annotation.id,
+      })),
+      ...customBlocks.map((annotation) => ({
+        type: "custom-block" as const,
+        id: annotation.id,
+        trackId: annotation.trackId,
+      })),
+      ...attachedPointTracks.flatMap((track) =>
+        track.points.map((point) => ({
+          type: "attached-point" as const,
+          id: point.id,
+          trackId: track.id,
+          parentTrackId: track.parentTrackId,
+        })),
+      ),
+      ...banyanMarks.map((mark) => ({
+        type: "banyan-mark" as const,
+        id: mark.id,
+      })),
+    ];
+    return items.sort(compareTimelineSelectionItems);
+  }
+
   function getItemsInSelectionRect(
     selectionDragState: Extract<NonNullable<DragState>, { kind: "select-box" }>,
   ) {
@@ -4115,11 +4250,7 @@ export function Timeline({
             : { id, type },
         ] as TimelineSelectionItem[];
       })
-      .sort((left, right) => {
-        const leftStartTime = getSelectionItemStartTime(left);
-        const rightStartTime = getSelectionItemStartTime(right);
-        return leftStartTime - rightStartTime || left.id.localeCompare(right.id);
-      });
+      .sort(compareTimelineSelectionItems);
   }
 
   function getSelectionItemStartTime(item: TimelineSelectionItem) {
@@ -4137,6 +4268,62 @@ export function Timeline({
       customBlocks,
       item.type === "custom-block" ? item.trackId : undefined,
     )?.startTime ?? 0;
+  }
+
+  function getSelectionItemEndTime(item: TimelineSelectionItem) {
+    if (item.type === "attached-point") {
+      return attachedPointTrackMap.get(item.trackId)?.points.find((point) => point.id === item.id)?.time ?? 0;
+    }
+    if (item.type === "banyan-mark") {
+      return banyanMarks.find((mark) => mark.id === item.id)?.time ?? 0;
+    }
+    return findAnnotationById(
+      item.id,
+      item.type,
+      characterAnnotations,
+      actionAnnotations,
+      customBlocks,
+      item.type === "custom-block" ? item.trackId : undefined,
+    )?.endTime ?? getSelectionItemStartTime(item);
+  }
+
+  function getSelectionItemTrackSortIndex(item: TimelineSelectionItem) {
+    if (item.type === "character") {
+      return timelineTrackOrderMap.get("character-track") ?? 0;
+    }
+    if (item.type === "banyan-mark") {
+      return -1;
+    }
+    if (item.type === "attached-point") {
+      return timelineTrackOrderMap.get(item.trackId) ??
+        timelineTrackOrderMap.get(item.parentTrackId) ??
+        activeTrackOrderMap.get(item.parentTrackId) ??
+        Number.MAX_SAFE_INTEGER;
+    }
+    if (item.type === "custom-block") {
+      return timelineTrackOrderMap.get(item.trackId) ??
+        activeTrackOrderMap.get(item.trackId) ??
+        Number.MAX_SAFE_INTEGER;
+    }
+    const actionTrackId = actionAnnotations.find((annotation) => annotation.id === item.id)?.trackId;
+    return actionTrackId
+      ? timelineTrackOrderMap.get(actionTrackId) ?? activeTrackOrderMap.get(actionTrackId) ?? Number.MAX_SAFE_INTEGER
+      : Number.MAX_SAFE_INTEGER;
+  }
+
+  function compareTimelineSelectionItems(left: TimelineSelectionItem, right: TimelineSelectionItem) {
+    const leftStartTime = getSelectionItemStartTime(left);
+    const rightStartTime = getSelectionItemStartTime(right);
+    const leftEndTime = getSelectionItemEndTime(left);
+    const rightEndTime = getSelectionItemEndTime(right);
+    const leftTrackIndex = getSelectionItemTrackSortIndex(left);
+    const rightTrackIndex = getSelectionItemTrackSortIndex(right);
+    return leftStartTime - rightStartTime ||
+      leftEndTime - rightEndTime ||
+      leftTrackIndex - rightTrackIndex ||
+      getTimelineSelectionKey(left.type, left.id, getSelectionItemTrackId(left)).localeCompare(
+        getTimelineSelectionKey(right.type, right.id, getSelectionItemTrackId(right)),
+      );
   }
 
   function resolveLiveBatchMoveItem(
