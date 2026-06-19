@@ -4121,25 +4121,44 @@ export function Timeline({
   ) {
     const rectItems = getItemsInSelectionRect(selectionDragState);
     const nextItems = selectionDragState.shiftKey
-      ? getTimelineSelectionRangeFromEndpoints(rectItems)
+      ? getTimelineSelectionRangeFromSelectionDrag(rectItems, selectionDragState)
       : rectItems;
     return selectionDragState.additive
       ? mergeTimelineSelectionItems(selectedTimelineItems, nextItems)
       : nextItems;
   }
 
-  function getTimelineSelectionRangeFromEndpoints(endpointItems: TimelineSelectionItem[]) {
+  function getTimelineSelectionRangeFromSelectionDrag(
+    endpointItems: TimelineSelectionItem[],
+    selectionDragState: Extract<NonNullable<DragState>, { kind: "select-box" }>,
+  ) {
     if (endpointItems.length === 0) {
       return [];
     }
+    const endpointLaneIds = new Set(endpointItems.map((item) => getSelectionItemLaneId(item)));
     const sortedEndpointItems = [...endpointItems].sort(compareTimelineSelectionItems);
+    if (endpointLaneIds.size > 1) {
+      const selectionRect = getContentSelectionRect(selectionDragState);
+      const minLaneIndex = Math.min(...endpointItems.map((item) => getSelectionItemTrackSortIndex(item)));
+      const maxLaneIndex = Math.max(...endpointItems.map((item) => getSelectionItemTrackSortIndex(item)));
+      const minTime = Math.max(0, (selectionRect.left - TRACK_LABEL_WIDTH) / zoom);
+      const maxTime = Math.max(minTime, (selectionRect.right - TRACK_LABEL_WIDTH) / zoom);
+      return getMultiTrackSelectionRangeWithinBounds(minLaneIndex, maxLaneIndex, minTime, maxTime);
+    }
     const anchorItem = sortedEndpointItems[0];
     const targetItem = sortedEndpointItems[sortedEndpointItems.length - 1];
     return getTimelineSelectionRange(anchorItem, targetItem);
   }
 
   function getTimelineSelectionRange(anchorItem: TimelineSelectionItem, targetItem: TimelineSelectionItem) {
-    const orderedItems = getSelectableTimelineItems();
+    return getSelectionItemLaneId(anchorItem) === getSelectionItemLaneId(targetItem)
+      ? getTrackLocalSelectionRange(anchorItem, targetItem)
+      : getMultiTrackSelectionRange(anchorItem, targetItem);
+  }
+
+  function getTrackLocalSelectionRange(anchorItem: TimelineSelectionItem, targetItem: TimelineSelectionItem) {
+    const laneId = getSelectionItemLaneId(anchorItem);
+    const orderedItems = getSelectableTimelineItems().filter((item) => getSelectionItemLaneId(item) === laneId);
     const anchorKey = getTimelineSelectionKey(anchorItem.type, anchorItem.id, getSelectionItemTrackId(anchorItem));
     const targetKey = getTimelineSelectionKey(targetItem.type, targetItem.id, getSelectionItemTrackId(targetItem));
     const anchorIndex = orderedItems.findIndex((item) =>
@@ -4154,6 +4173,36 @@ export function Timeline({
     const startIndex = Math.min(anchorIndex, targetIndex);
     const endIndex = Math.max(anchorIndex, targetIndex);
     return orderedItems.slice(startIndex, endIndex + 1);
+  }
+
+  function getMultiTrackSelectionRange(anchorItem: TimelineSelectionItem, targetItem: TimelineSelectionItem) {
+    return getMultiTrackSelectionRangeForItems([anchorItem, targetItem]);
+  }
+
+  function getMultiTrackSelectionRangeForItems(endpointItems: TimelineSelectionItem[]) {
+    const laneIndexes = endpointItems.map((item) => getSelectionItemTrackSortIndex(item));
+    const timeRanges = endpointItems.map((item) => getSelectionItemTimeRange(item));
+    const minLaneIndex = Math.min(...laneIndexes);
+    const maxLaneIndex = Math.max(...laneIndexes);
+    const minTime = Math.min(...timeRanges.map((range) => range.start));
+    const maxTime = Math.max(...timeRanges.map((range) => range.end));
+    return getMultiTrackSelectionRangeWithinBounds(minLaneIndex, maxLaneIndex, minTime, maxTime);
+  }
+
+  function getMultiTrackSelectionRangeWithinBounds(
+    minLaneIndex: number,
+    maxLaneIndex: number,
+    minTime: number,
+    maxTime: number,
+  ) {
+    return getSelectableTimelineItems().filter((item) => {
+      const laneIndex = getSelectionItemTrackSortIndex(item);
+      const timeRange = getSelectionItemTimeRange(item);
+      return laneIndex >= minLaneIndex &&
+        laneIndex <= maxLaneIndex &&
+        timeRange.end >= minTime &&
+        timeRange.start <= maxTime;
+    });
   }
 
   function getSelectableTimelineItems() {
@@ -4285,6 +4334,26 @@ export function Timeline({
       customBlocks,
       item.type === "custom-block" ? item.trackId : undefined,
     )?.endTime ?? getSelectionItemStartTime(item);
+  }
+
+  function getSelectionItemTimeRange(item: TimelineSelectionItem) {
+    return {
+      start: getSelectionItemStartTime(item),
+      end: getSelectionItemEndTime(item),
+    };
+  }
+
+  function getSelectionItemLaneId(item: TimelineSelectionItem) {
+    if (item.type === "character") {
+      return "character-track";
+    }
+    if (item.type === "banyan-mark") {
+      return "banyan-track";
+    }
+    if (item.type === "attached-point" || item.type === "custom-block") {
+      return item.trackId;
+    }
+    return actionAnnotations.find((annotation) => annotation.id === item.id)?.trackId ?? "unknown-action-track";
   }
 
   function getSelectionItemTrackSortIndex(item: TimelineSelectionItem) {
