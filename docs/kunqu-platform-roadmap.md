@@ -4,6 +4,86 @@
 
 当前分支：`codex/aggressive-backend-collab-save`
 
+## 0. 执行记录
+
+### 2026-06-19：阶段 1-8 第一版工程骨架
+
+本次在不破坏现有标注编辑器的前提下，完成了阶段 1-8 的第一版可编译骨架：
+
+- 新增 `packages/shared`，用于放置账号、权限、媒体、项目、标注文档、版本、后端任务和 API contract 类型。
+- 新增 `packages/document-model`，用于放置标注文档 snapshot/version 生成和权限范围校验逻辑。
+- 新增 `apps/api`，实现 Node HTTP 后端服务骨架。
+- 后端第一版包含：
+  - `GET /api/health`
+  - `POST /api/auth/login`
+  - `GET /api/auth/me`
+  - `GET /api/projects`
+  - `POST /api/projects`
+  - `POST /api/media`
+  - `GET /api/projects/:projectId/documents`
+  - `POST /api/projects/:projectId/documents`
+  - `GET /api/annotation-documents/:documentId`
+  - `POST /api/annotation-documents/:documentId/save`
+  - `GET /api/annotation-documents/:documentId/versions`
+  - `POST /api/annotation-documents/:documentId/versions`
+  - `POST /api/jobs`
+- 新增 `src/api/platformClient.ts`，作为前端访问平台后端的统一客户端。
+- 新增 `src/platform/platformSession.ts` 和 `src/platform/PlatformHome.tsx`，为后续登录页、主页和项目库接入准备边界。
+- 更新构建脚本：
+  - `npm run build:shared`
+  - `npm run build:document-model`
+  - `npm run build:web`
+  - `npm run build:api`
+  - `npm run build`
+  - `npm run start:api`
+
+本次验证：
+
+- 已运行 `npm run build`，前端、共享类型、文档模型、后端均通过 TypeScript 构建。
+- 已运行 `npm run start:api`。
+- 已用 HTTP 请求验证 health、login、me、projects、document read、document save、version create。
+
+与最终计划的差异：
+
+- 阶段 1-8 目前是“工程骨架第一版”，不是完整生产实现。
+- 账号系统目前使用内存账号和开发 token，生产版必须替换为数据库、密码哈希、会话过期、审计日志。
+- 统一文件系统目前只有类型和媒体资产登记接口，尚未实现真实上传、对象存储和文件 hash。
+- 服务端保存目前使用内存仓储，尚未接 PostgreSQL/Prisma。
+- 前端新增了 API client 和平台主页组件，但尚未把登录页、主页、项目库接入主 UI。
+- 当前编辑器仍保持本地模式，尚未将 `useProjectDocumentState()` 的保存流程接入远端。
+
+### 2026-06-19：新平台 UI 第一版
+
+本次新增平台入口 UI，将当前编辑器作为平台内的子工作台打开：
+
+- 新增 `src/platform/PlatformWorkspace.tsx`。
+- 将原 `App` 主体改名为 `EditorWorkbench`，新的 `App` 负责渲染平台入口。
+- 平台入口包含：
+  - 登录面板。
+  - 开发账号提示。
+  - 项目库。
+  - 标注文档列表。
+  - 返回平台主页/进入当前标注工具。
+  - 后端未启动时的错误提示。
+- 平台 UI 复用现有视觉方向：
+  - 深色顶部 chrome。
+  - 浅色工作台面板。
+  - 紧凑控件。
+  - 8px 以内圆角。
+  - 不使用营销式落地页。
+- 当前仍保留“不登录，进入本地标注工具”入口，避免后端不可用时阻断本地标注。
+
+本次验证：
+
+- 已运行 `npm run build`，前端、共享类型、文档模型、后端均通过构建。
+
+与最终计划的差异：
+
+- 平台 UI 目前只接入项目/文档列表，没有接入真实服务端打开文档。
+- 点击标注文档进入的仍是当前本地编辑器实例。
+- “保存为新版本”“分配标注范围”等按钮已占位但暂未启用。
+- 登录 token 仍保存在本地开发 storage 中，后续要替换为更完整的 session 策略。
+
 ## 1. 最终目标
 
 最终项目不应只是一个字幕或时间轴编辑器，而应成为一个面向昆曲研究、教学、资料整理和多模态分析的综合平台。

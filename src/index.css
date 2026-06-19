@@ -93,6 +93,327 @@ select {
   overflow: hidden;
 }
 
+.platform-shell {
+  height: 100vh;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  padding: 8px;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.05), rgba(0, 0, 0, 0) 72px),
+    linear-gradient(180deg, #d8dee6 0%, #d1d8e2 100%);
+}
+
+.platform-login-panel {
+  align-self: center;
+  justify-self: center;
+  width: min(860px, calc(100vw - 32px));
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) 320px;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  border-radius: 8px;
+  background: rgba(238, 242, 246, 0.96);
+  box-shadow: var(--shadow);
+}
+
+.platform-login-copy,
+.platform-login-form,
+.platform-main-panel,
+.platform-sidebar,
+.platform-list-panel,
+.platform-detail-panel {
+  border: 1px solid rgba(188, 198, 211, 0.86);
+  border-radius: 8px;
+  background: rgba(245, 247, 250, 0.88);
+}
+
+.platform-login-copy {
+  padding: 18px;
+}
+
+.platform-login-copy h1,
+.platform-section-header h1,
+.platform-detail-title h2 {
+  margin: 4px 0 8px;
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.platform-login-copy p,
+.platform-muted,
+.platform-login-hint,
+.platform-sidebar-note,
+.platform-detail-title span {
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.platform-kicker {
+  color: #0f4473;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.platform-login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
+
+.platform-login-form label {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.platform-login-form button,
+.platform-action-row button,
+.platform-user-box button,
+.platform-section-header button {
+  min-height: 32px;
+}
+
+.platform-secondary-button {
+  background: rgba(238, 242, 246, 0.8);
+}
+
+.platform-error {
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid rgba(220, 38, 38, 0.25);
+  border-radius: 6px;
+  background: rgba(254, 226, 226, 0.82);
+  color: #991b1b;
+  font-size: 12px;
+}
+
+.platform-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 6px 10px;
+  border-radius: 8px 8px 0 0;
+  background: linear-gradient(180deg, var(--chrome-dark) 0%, var(--chrome-dark-2) 100%);
+  color: #f3f7ff;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.12);
+}
+
+.platform-brand,
+.platform-user-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.platform-brand div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.platform-brand strong {
+  font-size: 12px;
+}
+
+.platform-brand span,
+.platform-user-box span {
+  color: rgba(226, 232, 240, 0.68);
+  font-size: 11px;
+}
+
+.platform-user-box button {
+  min-height: 26px;
+  padding: 3px 8px;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.07);
+  color: #eef4ff;
+  box-shadow: none;
+}
+
+.platform-dashboard {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 8px;
+  overflow: hidden;
+  padding-top: 8px;
+}
+
+.platform-sidebar,
+.platform-main-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.platform-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+}
+
+.platform-sidebar h2,
+.platform-list-panel h2,
+.platform-detail-panel h2 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.platform-sidebar button {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.platform-sidebar button.active,
+.platform-list-panel button.selected,
+.platform-document-list button.selected {
+  border-color: rgba(15, 108, 189, 0.36);
+  background: rgba(15, 108, 189, 0.12);
+  color: #0f4473;
+}
+
+.platform-sidebar-note {
+  margin-top: auto;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(226, 232, 240, 0.62);
+}
+
+.platform-main-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+}
+
+.platform-section-header,
+.platform-detail-title,
+.platform-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.platform-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 10px;
+  overflow: hidden;
+}
+
+.platform-list-panel,
+.platform-detail-panel {
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.platform-list-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.platform-list-panel button,
+.platform-document-list button {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  width: 100%;
+  min-height: 52px;
+  text-align: left;
+  box-shadow: none;
+}
+
+.platform-list-panel button span,
+.platform-document-list button span {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.platform-detail-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.platform-document-list {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  overflow: auto;
+}
+
+.platform-action-row {
+  justify-content: flex-start;
+  padding-top: 8px;
+  border-top: 1px solid rgba(188, 198, 211, 0.66);
+}
+
+.platform-editor-host {
+  height: 100vh;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.platform-editor-return-bar {
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 4px 8px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.2);
+  background: linear-gradient(180deg, var(--chrome-dark) 0%, var(--chrome-dark-2) 100%);
+  color: #eef4ff;
+}
+
+.platform-editor-return-bar button {
+  min-height: 26px;
+  padding: 3px 8px;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.07);
+  color: #eef4ff;
+  box-shadow: none;
+}
+
+.platform-editor-return-bar span {
+  color: rgba(226, 232, 240, 0.72);
+  font-size: 12px;
+}
+
+.platform-editor-body {
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 860px) {
+  .platform-login-panel,
+  .platform-dashboard,
+  .platform-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .platform-sidebar {
+    min-height: 160px;
+  }
+}
+
 .app-shell {
   height: 100vh;
   display: grid;

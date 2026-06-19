@@ -13,6 +13,7 @@ import { TimelinePanel } from "./components/TimelinePanel";
 import { TopMenuBar } from "./components/TopMenuBar";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { mockProject } from "./mockData";
+import { PlatformWorkspace } from "./platform/PlatformWorkspace";
 import {
   type HistoryAction,
   type HistoryEntry,
@@ -350,7 +351,7 @@ const WAVEFORM_KEYPOINT_MIN_SPACING_SECONDS = 0.06;
 const WAVEFORM_KEYPOINT_MAX_COUNT = 1600;
 const WAVEFORM_KEYPOINT_FRAME_DURATION_SECONDS = 0.012;
 
-function App() {
+function EditorWorkbench() {
   const {
     project,
     projectRef,
@@ -7696,6 +7697,10 @@ function isEditableKeyboardTarget(target: EventTarget | null) {
     return true;
   }
   return ["INPUT", "SELECT", "TEXTAREA"].includes(element.tagName);
+}
+
+function App() {
+  return <PlatformWorkspace renderEditor={() => <EditorWorkbench />} />;
 }
 
 export default App;

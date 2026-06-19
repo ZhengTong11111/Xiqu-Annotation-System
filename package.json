@@ -3,9 +3,19 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev:web": "vite",
+    "build": "npm run build:shared && npm run build:document-model && npm run build:web && npm run build:api",
+    "build:web": "tsc -p tsconfig.app.json --noEmit --incremental false && tsc -p tsconfig.node.json --noEmit --incremental false && vite build",
+    "build:shared": "tsc -p packages/shared/tsconfig.json",
+    "build:document-model": "tsc -p packages/document-model/tsconfig.json",
+    "build:api": "tsc -p apps/api/tsconfig.json",
+    "start:api": "node dist/api/server.js",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -13,6 +23,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@types/node": "^26.0.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.1",
