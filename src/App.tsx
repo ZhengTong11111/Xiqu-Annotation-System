@@ -53,13 +53,11 @@ import {
   getDefaultAttachedPointTypeOptions,
   getDefaultCustomTrackName,
   getDefaultCustomTrackTypeOptions,
-  getDefaultFixedActionLabel,
   getMissingBuiltinTracks,
   getProjectDuration,
   getNextCustomTrackTypeOptionName,
 } from "./utils/project";
 import {
-  exportActionTrackToSrt,
   exportCharacterTrackToSrt,
   exportSingingStyleTrackToSrt,
   parseSrt,
@@ -2047,7 +2045,7 @@ function App() {
   function getBuiltinTrackDefaultOption(trackId: BuiltinTrackId) {
     const currentProject = projectRef.current;
     const options = getBuiltinTrackOptions(currentProject.builtinTracks, trackId);
-    return options[0] ?? getDefaultFixedActionLabel(trackId);
+    return options[0] ?? "其他";
   }
 
   function updateTimelineSelectionBatch(items: TimelineBatchMoveItem[], recordHistory = true) {
@@ -3057,28 +3055,6 @@ function App() {
     applySelection(items[0] ?? null, items);
   }
 
-  function addAction(trackId: "hand-action" | "body-action") {
-    const currentProject = projectRef.current;
-    if (!currentProject.builtinTracks.some((track) => track.id === trackId)) {
-      return;
-    }
-    const startTime = currentTime;
-    const endTime = Math.min(duration, startTime + DEFAULT_ACTION_DURATION);
-    commitProject({
-      ...currentProject,
-      actionAnnotations: [
-        ...currentProject.actionAnnotations,
-        {
-          id: `${trackId}-${crypto.randomUUID()}`,
-          trackId,
-          label: getBuiltinTrackDefaultOption(trackId),
-          startTime,
-          endTime,
-        },
-      ],
-    });
-  }
-
   function createAction(trackId: string, startTime: number, endTime: number) {
     const currentProject = projectRef.current;
     if (!currentProject.builtinTracks.some((track) => track.id === trackId)) {
@@ -3738,7 +3714,7 @@ function App() {
     markProjectAsSaved(projectToSave, trackSnapEnabledRef.current);
   }
 
-  function handleExport(kind: "character" | "singing" | "hand" | "body") {
+  function handleExport(kind: "character" | "singing") {
     const fileMap = {
       character: {
         name: "character_track.srt",
@@ -3747,14 +3723,6 @@ function App() {
       singing: {
         name: "singing_style_track.srt",
         content: exportSingingStyleTrackToSrt(project.characterAnnotations),
-      },
-      hand: {
-        name: "hand_action_track.srt",
-        content: exportActionTrackToSrt(project.actionAnnotations, "hand-action"),
-      },
-      body: {
-        name: "body_action_track.srt",
-        content: exportActionTrackToSrt(project.actionAnnotations, "body-action"),
       },
     };
     const target = fileMap[kind];
@@ -4075,7 +4043,6 @@ function App() {
           localRevision={syncState.localRevision}
           savedRevision={syncState.savedRevision}
           pendingOperationCount={pendingOperations.length}
-          activeBuiltinTrackIds={Array.from(activeBuiltinTrackIds)}
           videoFileInputRef={videoFileInputRef}
           srtFileInputRef={srtFileInputRef}
           projectFileInputRef={projectFileInputRef}
@@ -4123,7 +4090,6 @@ function App() {
           onExportTrack={handleExport}
           onUndo={undo}
           onRedo={redo}
-          onAddAction={addAction}
         />
       )}
     >
@@ -6695,7 +6661,11 @@ function normalizeImportedProjectFile(value: SavedProjectFile | ProjectData) {
 
 function normalizeProjectData(value: ProjectData | (Partial<ProjectData> & { videoUrl?: string; videoName?: string | null })) {
   const builtinTracks = normalizeBuiltinTracks(value.builtinTracks);
-  const customTracks = normalizeCustomTracks(value.customTracks);
+  const customTracks = migrateLegacyBuiltinActionTracks(
+    normalizeCustomTracks(value.customTracks),
+    value.builtinTracks,
+    value.actionAnnotations,
+  );
   return {
     video: normalizeProjectVideo(value),
     subtitleLines: Array.isArray(value.subtitleLines) ? value.subtitleLines : [],
@@ -6703,15 +6673,217 @@ function normalizeProjectData(value: ProjectData | (Partial<ProjectData> & { vid
     gongcheAnnotations: normalizeGongcheAnnotations(value.gongcheAnnotations),
     banyanSections: normalizeBanyanSections(value.banyanSections),
     banyanMarks: normalizeBanyanMarks(value.banyanMarks),
-    actionAnnotations: Array.isArray(value.actionAnnotations) ? value.actionAnnotations : [],
+    actionAnnotations: [],
     builtinTracks,
     customTracks,
     activeTrackOrder: normalizeActiveTrackOrder(
-      value.activeTrackOrder,
+      migrateLegacyBuiltinActionTrackOrder(value.activeTrackOrder, builtinTracks, customTracks),
       builtinTracks,
       customTracks,
     ),
   } satisfies ProjectData;
+}
+
+const legacyBuiltinActionTrackDefaults: Record<string, { name: string; typeOptions: string[] }> = {
+  "hand-action": {
+    name: "手部动作轨",
+    typeOptions: ["抬手", "落手", "指向", "翻腕", "水袖动作", "其他"],
+  },
+  "body-action": {
+    name: "肢体动作轨",
+    typeOptions: ["转身", "移步", "屈伸", "亮相", "前倾", "后仰", "其他"],
+  },
+};
+
+function migrateLegacyBuiltinActionTracks(
+  customTracks: CustomTrack[],
+  builtinTracksValue: ProjectData["builtinTracks"] | undefined,
+  actionAnnotationsValue: ProjectData["actionAnnotations"] | undefined,
+): CustomTrack[] {
+  const legacyTracks = getLegacyBuiltinActionTracks(builtinTracksValue);
+  const actionAnnotations = Array.isArray(actionAnnotationsValue) ? actionAnnotationsValue : [];
+  const legacyTrackIds = new Set([
+    ...legacyTracks.map((track) => track.id),
+    ...actionAnnotations
+      .filter((annotation) => Boolean(legacyBuiltinActionTrackDefaults[annotation.trackId]))
+      .map((annotation) => annotation.trackId),
+  ]);
+  const legacyActions = actionAnnotations.filter((annotation) => legacyTrackIds.has(annotation.trackId));
+
+  if (legacyTrackIds.size === 0) {
+    return customTracks;
+  }
+
+  const migrationTracks = legacyTracks.length > 0
+    ? legacyTracks
+    : Array.from(legacyTrackIds).map(createLegacyBuiltinActionTrack);
+
+  if (
+    migrationTracks.every((track) => !legacyBuiltinActionTrackDefaults[track.id]) &&
+    legacyActions.length === 0
+  ) {
+    return customTracks;
+  }
+
+  if (migrationTracks.length === 0 && legacyActions.length === 0) {
+    return customTracks;
+  }
+
+  const nextCustomTracks = [...customTracks];
+  for (const legacyTrack of migrationTracks) {
+    const existingIndex = nextCustomTracks.findIndex((track) =>
+      track.trackType === "action" && track.name === legacyTrack.name);
+    const blocks = legacyActions
+      .filter((annotation) => annotation.trackId === legacyTrack.id)
+      .map((annotation) => ({
+        id: `custom-block-${annotation.id}`,
+        startTime: annotation.startTime,
+        endTime: annotation.endTime,
+        type: annotation.label || legacyTrack.typeOptions[0] || "类型 1",
+      }));
+
+    if (existingIndex >= 0) {
+      const existingTrack = nextCustomTracks[existingIndex];
+      if (existingTrack.trackType !== "action") {
+        continue;
+      }
+      nextCustomTracks[existingIndex] = {
+        ...existingTrack,
+        typeOptions: mergeUniqueStrings(existingTrack.typeOptions, legacyTrack.typeOptions),
+        blocks: [
+          ...existingTrack.blocks,
+          ...blocks.filter((block) =>
+            !existingTrack.blocks.some((existingBlock) =>
+              existingBlock.type === block.type &&
+              timesClose(existingBlock.startTime, block.startTime) &&
+              timesClose(existingBlock.endTime, block.endTime))),
+        ],
+        attachedPointTracks: mergeAttachedPointTrackLists(
+          existingTrack.attachedPointTracks,
+          legacyTrack.attachedPointTracks,
+        ),
+        attachedPointTracksExpanded:
+          Boolean(existingTrack.attachedPointTracksExpanded || legacyTrack.attachedPointTracksExpanded),
+        snapToWaveformKeypoints:
+          Boolean(existingTrack.snapToWaveformKeypoints || legacyTrack.snapToWaveformKeypoints),
+        autoSetLoopRangeOnSelect:
+          Boolean(existingTrack.autoSetLoopRangeOnSelect || legacyTrack.autoSetLoopRangeOnSelect),
+      } as CustomTrack;
+      continue;
+    }
+
+    nextCustomTracks.push({
+      id: getLegacyBuiltinActionCustomTrackId(legacyTrack.id),
+      name: legacyTrack.name,
+      trackType: "action",
+      typeOptions: legacyTrack.typeOptions,
+      blocks,
+      attachedPointTracks: legacyTrack.attachedPointTracks,
+      attachedPointTracksExpanded: legacyTrack.attachedPointTracksExpanded,
+      snapToWaveformKeypoints: legacyTrack.snapToWaveformKeypoints,
+      autoSetLoopRangeOnSelect: legacyTrack.autoSetLoopRangeOnSelect,
+    });
+  }
+  return nextCustomTracks;
+}
+
+function migrateLegacyBuiltinActionTrackOrder(
+  value: ProjectData["activeTrackOrder"] | undefined,
+  builtinTracks: ProjectData["builtinTracks"],
+  customTracks: ProjectData["customTracks"],
+) {
+  if (!Array.isArray(value)) {
+    return value;
+  }
+  const availableIds = new Set([
+    ...builtinTracks.map((track) => track.id),
+    ...customTracks.map((track) => track.id),
+  ]);
+  const nextOrder: string[] = [];
+  for (const trackId of value) {
+    const migratedId = legacyBuiltinActionTrackDefaults[trackId]
+      ? getLegacyBuiltinActionCustomTrackId(trackId)
+      : trackId;
+    if (availableIds.has(migratedId) && !nextOrder.includes(migratedId)) {
+      nextOrder.push(migratedId);
+    }
+  }
+  return nextOrder;
+}
+
+function getLegacyBuiltinActionTracks(value: ProjectData["builtinTracks"] | undefined) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((track) => {
+    const trackId = String((track as { id?: unknown }).id ?? "");
+    if (!legacyBuiltinActionTrackDefaults[trackId]) {
+      return [];
+    }
+    const fallback = legacyBuiltinActionTrackDefaults[trackId];
+    return [{
+      id: trackId,
+      name: typeof track.name === "string" && track.name.trim() ? track.name : fallback.name,
+      typeOptions: Array.isArray(track.options) && track.options.length > 0
+        ? track.options
+        : fallback.typeOptions,
+      attachedPointTracks: normalizeAttachedPointTracks(track.attachedPointTracks),
+      attachedPointTracksExpanded: Boolean(track.attachedPointTracksExpanded),
+      snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints),
+      autoSetLoopRangeOnSelect: Boolean(track.autoSetLoopRangeOnSelect),
+    }];
+  });
+}
+
+function createLegacyBuiltinActionTrack(trackId: string) {
+  const fallback = legacyBuiltinActionTrackDefaults[trackId] ?? {
+    name: "动作轨",
+    typeOptions: getDefaultCustomTrackTypeOptions(),
+  };
+  return {
+    id: trackId,
+    name: fallback.name,
+    typeOptions: fallback.typeOptions,
+    attachedPointTracks: [],
+    attachedPointTracksExpanded: false,
+    snapToWaveformKeypoints: false,
+    autoSetLoopRangeOnSelect: false,
+  };
+}
+
+function getLegacyBuiltinActionCustomTrackId(trackId: string) {
+  return `custom-track-legacy-${trackId}`;
+}
+
+function mergeAttachedPointTrackLists(
+  currentTracks: AttachedPointTrack[],
+  incomingTracks: AttachedPointTrack[],
+) {
+  const nextTracks = [...currentTracks];
+  for (const incomingTrack of incomingTracks) {
+    const existingIndex = nextTracks.findIndex((track) => track.name === incomingTrack.name);
+    if (existingIndex < 0) {
+      nextTracks.push(incomingTrack);
+      continue;
+    }
+    const existingTrack = nextTracks[existingIndex];
+    nextTracks[existingIndex] = {
+      ...existingTrack,
+      typeOptions: mergeUniqueStrings(existingTrack.typeOptions, incomingTrack.typeOptions),
+      points: [
+        ...existingTrack.points,
+        ...incomingTrack.points.filter((point) =>
+          !existingTrack.points.some((existingPoint) => areAttachedPointsEquivalent(point, existingPoint))),
+      ],
+      snapToWaveformKeypoints:
+        Boolean(existingTrack.snapToWaveformKeypoints || incomingTrack.snapToWaveformKeypoints),
+      snapToParentBoundaries:
+        Boolean(existingTrack.snapToParentBoundaries || incomingTrack.snapToParentBoundaries),
+      autoSetLoopRangeOnSelect:
+        Boolean(existingTrack.autoSetLoopRangeOnSelect || incomingTrack.autoSetLoopRangeOnSelect),
+    };
+  }
+  return nextTracks;
 }
 
 function normalizeProjectVideo(
@@ -6823,14 +6995,15 @@ function normalizeBuiltinTracks(value: ProjectData["builtinTracks"] | undefined)
   }
   const seenIds = new Set<string>();
   const tracks = value.flatMap((track) => {
-    if (!track || seenIds.has(track.id)) {
+    const trackId = String((track as { id?: unknown }).id ?? "");
+    if (!track || seenIds.has(trackId)) {
       return [];
     }
-    if (track.id !== "character-track" && track.id !== "hand-action" && track.id !== "body-action") {
+    if (trackId !== "character-track") {
       return [];
     }
-    seenIds.add(track.id);
-    const defaultTrack = getBuiltinTrackDefinition(track.id);
+    seenIds.add(trackId);
+    const defaultTrack = getBuiltinTrackDefinition(trackId);
     return [{
       ...defaultTrack,
       name: typeof track.name === "string" && track.name.trim() ? track.name : defaultTrack.name,

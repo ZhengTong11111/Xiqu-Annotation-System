@@ -1,12 +1,10 @@
 import type { ChangeEvent, RefObject } from "react";
-import type { BuiltinTrackId } from "../types";
 
 type ToolbarProps = {
   isPlaying: boolean;
   playbackRate: number;
   canUndo: boolean;
   canRedo: boolean;
-  activeBuiltinTrackIds: BuiltinTrackId[];
   onTogglePlay: () => void;
   onStep: (delta: number) => void;
   onPlaybackRateChange: (rate: number) => void;
@@ -15,10 +13,9 @@ type ToolbarProps = {
   onSrtFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onProjectFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onSaveProject: () => void;
-  onExportTrack: (kind: "character" | "singing" | "hand" | "body") => void;
+  onExportTrack: (kind: "character" | "singing") => void;
   onUndo: () => void;
   onRedo: () => void;
-  onAddAction: (trackId: "hand-action" | "body-action") => void;
 };
 
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5];
@@ -28,7 +25,6 @@ export function Toolbar({
   playbackRate,
   canUndo,
   canRedo,
-  activeBuiltinTrackIds,
   onTogglePlay,
   onStep,
   onPlaybackRateChange,
@@ -40,11 +36,7 @@ export function Toolbar({
   onExportTrack,
   onUndo,
   onRedo,
-  onAddAction,
 }: ToolbarProps) {
-  const hasHandTrack = activeBuiltinTrackIds.includes("hand-action");
-  const hasBodyTrack = activeBuiltinTrackIds.includes("body-action");
-
   return (
     <header className="toolbar">
       <div className="toolbar-group">
@@ -65,8 +57,6 @@ export function Toolbar({
         </button>
         <button onClick={() => onExportTrack("character")}>导出逐字 SRT</button>
         <button onClick={() => onExportTrack("singing")}>导出唱腔 SRT</button>
-        <button onClick={() => onExportTrack("hand")}>导出手部动作</button>
-        <button onClick={() => onExportTrack("body")}>导出肢体动作</button>
       </div>
 
       <div className="toolbar-group">
@@ -88,12 +78,6 @@ export function Toolbar({
       </div>
 
       <div className="toolbar-group">
-        <button onClick={() => onAddAction("hand-action")} disabled={!hasHandTrack}>
-          新增手部动作
-        </button>
-        <button onClick={() => onAddAction("body-action")} disabled={!hasBodyTrack}>
-          新增肢体动作
-        </button>
         <button onClick={onUndo} disabled={!canUndo}>
           撤销
         </button>

@@ -2076,11 +2076,7 @@ export function Timeline({
           <div className="timeline-track-actions">
             {missingBuiltinTracks.map((track) => (
               <button key={track.id} type="button" onClick={() => onAddBuiltinTrack(track.id)}>
-                {track.id === "character-track"
-                  ? "+ 逐字轨"
-                  : track.id === "hand-action"
-                    ? "+ 手部轨"
-                    : "+ 肢体轨"}
+                + 逐字轨
               </button>
             ))}
             <button type="button" onClick={() => onAddCustomTrack("text")}>

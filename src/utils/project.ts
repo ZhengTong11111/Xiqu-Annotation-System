@@ -32,26 +32,6 @@ export const defaultBuiltinTracks: BuiltinTrack[] = [
     snapToWaveformKeypoints: false,
     autoSetLoopRangeOnSelect: false,
   },
-  {
-    id: "hand-action",
-    name: "手部动作轨",
-    type: "action",
-    options: ["抬手", "落手", "指向", "翻腕", "水袖动作", "其他"],
-    attachedPointTracks: [],
-    attachedPointTracksExpanded: false,
-    snapToWaveformKeypoints: false,
-    autoSetLoopRangeOnSelect: false,
-  },
-  {
-    id: "body-action",
-    name: "肢体动作轨",
-    type: "action",
-    options: ["转身", "移步", "屈伸", "亮相", "前倾", "后仰", "其他"],
-    attachedPointTracks: [],
-    attachedPointTracksExpanded: false,
-    snapToWaveformKeypoints: false,
-    autoSetLoopRangeOnSelect: false,
-  },
 ];
 
 export function getDefaultBuiltinTracks(): BuiltinTrack[] {
@@ -164,11 +144,6 @@ export function flattenCustomTrackBlocks(customTracks: CustomTrack[]): ResolvedC
       text: "text" in block ? block.text : undefined,
     })),
   );
-}
-
-export function getDefaultFixedActionLabel(trackId: string): string {
-  const track = defaultBuiltinTracks.find((item) => item.id === trackId);
-  return track?.options?.[0] ?? "其他";
 }
 
 export function getBuiltinTrackOptions(

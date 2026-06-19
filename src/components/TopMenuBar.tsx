@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, RefObject } from "react";
 import type { ProjectSyncStatus } from "../state/projectDocumentState";
-import type { BuiltinTrackId } from "../types";
 
 type TopMenuBarProps = {
   isPlaying: boolean;
@@ -14,7 +13,6 @@ type TopMenuBarProps = {
   localRevision: number;
   savedRevision: number;
   pendingOperationCount: number;
-  activeBuiltinTrackIds: BuiltinTrackId[];
   videoFileInputRef: RefObject<HTMLInputElement>;
   srtFileInputRef: RefObject<HTMLInputElement>;
   projectFileInputRef: RefObject<HTMLInputElement>;
@@ -24,10 +22,9 @@ type TopMenuBarProps = {
   onProjectFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onMergeProjectFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onSaveProject: () => void;
-  onExportTrack: (kind: "character" | "singing" | "hand" | "body") => void;
+  onExportTrack: (kind: "character" | "singing") => void;
   onUndo: () => void;
   onRedo: () => void;
-  onAddAction: (trackId: "hand-action" | "body-action") => void;
   onTogglePlay: () => void;
   onStep: (delta: number) => void;
   onPlaybackRateChange: (rate: number) => void;
@@ -49,7 +46,6 @@ export function TopMenuBar({
   localRevision,
   savedRevision,
   pendingOperationCount,
-  activeBuiltinTrackIds,
   videoFileInputRef,
   srtFileInputRef,
   projectFileInputRef,
@@ -62,7 +58,6 @@ export function TopMenuBar({
   onExportTrack,
   onUndo,
   onRedo,
-  onAddAction,
   onTogglePlay,
   onStep,
   onPlaybackRateChange,
@@ -71,8 +66,6 @@ export function TopMenuBar({
 }: TopMenuBarProps) {
   const [openMenu, setOpenMenu] = useState<(typeof menuOrder)[number] | null>(null);
   const menuBarRef = useRef<HTMLElement>(null);
-  const hasHandTrack = activeBuiltinTrackIds.includes("hand-action");
-  const hasBodyTrack = activeBuiltinTrackIds.includes("body-action");
   const syncStatusLabel = getSyncStatusLabel(
     syncStatus,
     localRevision,
@@ -166,12 +159,6 @@ export function TopMenuBar({
                     <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(() => onExportTrack("singing"))}>
                       导出唱腔 SRT
                     </button>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(() => onExportTrack("hand"))}>
-                      导出手部动作 SRT
-                    </button>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(() => onExportTrack("body"))}>
-                      导出肢体动作 SRT
-                    </button>
                   </>
                 ) : null}
                 {item === "编辑" ? (
@@ -181,23 +168,6 @@ export function TopMenuBar({
                     </button>
                     <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onRedo)} disabled={!canRedo}>
                       重做
-                    </button>
-                    <div className="top-menu-divider" />
-                    <button
-                      type="button"
-                      className="top-menu-dropdown-item"
-                      onClick={() => handleAction(() => onAddAction("hand-action"))}
-                      disabled={!hasHandTrack}
-                    >
-                      新增手部动作
-                    </button>
-                    <button
-                      type="button"
-                      className="top-menu-dropdown-item"
-                      onClick={() => handleAction(() => onAddAction("body-action"))}
-                      disabled={!hasBodyTrack}
-                    >
-                      新增肢体动作
                     </button>
                   </>
                 ) : null}

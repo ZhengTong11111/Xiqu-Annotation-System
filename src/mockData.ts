@@ -1,4 +1,4 @@
-import type { ActionAnnotation, ProjectData, SubtitleLine } from "./types";
+import type { ProjectData, SubtitleLine } from "./types";
 import { buildProjectFromLines } from "./utils/project";
 
 const MOCK_TIMELINE_STRETCH = 8;
@@ -24,24 +24,24 @@ const baseMockLines: SubtitleLine[] = [
   },
 ];
 
-const baseMockActions: ActionAnnotation[] = [
+const baseMockActions = [
   {
     id: "hand-1",
-    trackId: "hand-action",
+    trackId: "custom-track-demo-hand",
     label: "抬手",
     startTime: 13.2,
     endTime: 14.1,
   },
   {
     id: "hand-2",
-    trackId: "hand-action",
+    trackId: "custom-track-demo-hand",
     label: "翻腕",
     startTime: 14.3,
     endTime: 15.0,
   },
   {
     id: "body-1",
-    trackId: "body-action",
+    trackId: "custom-track-demo-body",
     label: "转身",
     startTime: 18.0,
     endTime: 19.1,
@@ -75,5 +75,47 @@ export const mockProject: ProjectData = {
       source: "url",
     },
   ),
-  actionAnnotations: mockActions,
+  customTracks: [
+    {
+      id: "custom-track-demo-hand",
+      name: "手部动作轨",
+      trackType: "action",
+      typeOptions: ["抬手", "落手", "指向", "翻腕", "水袖动作", "其他"],
+      blocks: mockActions
+        .filter((action) => action.trackId === "custom-track-demo-hand")
+        .map((action) => ({
+          id: action.id,
+          startTime: action.startTime,
+          endTime: action.endTime,
+          type: action.label,
+        })),
+      attachedPointTracks: [],
+      attachedPointTracksExpanded: false,
+      snapToWaveformKeypoints: false,
+      autoSetLoopRangeOnSelect: false,
+    },
+    {
+      id: "custom-track-demo-body",
+      name: "肢体动作轨",
+      trackType: "action",
+      typeOptions: ["转身", "移步", "屈伸", "亮相", "前倾", "后仰", "其他"],
+      blocks: mockActions
+        .filter((action) => action.trackId === "custom-track-demo-body")
+        .map((action) => ({
+          id: action.id,
+          startTime: action.startTime,
+          endTime: action.endTime,
+          type: action.label,
+        })),
+      attachedPointTracks: [],
+      attachedPointTracksExpanded: false,
+      snapToWaveformKeypoints: false,
+      autoSetLoopRangeOnSelect: false,
+    },
+  ],
+  activeTrackOrder: [
+    "character-track",
+    "custom-track-demo-hand",
+    "custom-track-demo-body",
+  ],
 };

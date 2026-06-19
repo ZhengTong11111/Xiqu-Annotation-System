@@ -1,6 +1,6 @@
 export type SingingStyle = string;
 
-export type BuiltinTrackId = "character-track" | "hand-action" | "body-action";
+export type BuiltinTrackId = "character-track";
 export type CustomTrackType = "text" | "action";
 export type BuiltinTrackType = "character" | "action";
 
