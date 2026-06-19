@@ -29,6 +29,16 @@ export type ApiMediaAsset = {
   updatedAt: string;
 };
 
+export type ApiFileObject = {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  storageKey: string;
+  checksum: string | null;
+  createdAt: string;
+};
+
 export type ApiAnnotationProject = {
   id: string;
   title: string;
@@ -75,6 +85,8 @@ export type ApiAnnotationDocument = {
   mode: ApiAnnotationMode;
   currentVersionId: string | null;
   updatedAt: string;
+  project: ApiAnnotationProject;
+  mediaAsset: ApiMediaAsset;
   grants: ApiPermissionGrant[];
   latestSnapshot: ApiAnnotationSnapshot;
 };

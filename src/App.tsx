@@ -13,7 +13,11 @@ import { TimelinePanel } from "./components/TimelinePanel";
 import { TopMenuBar } from "./components/TopMenuBar";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { mockProject } from "./mockData";
-import { PlatformWorkspace } from "./platform/PlatformWorkspace";
+import {
+  PlatformWorkspace,
+  prepareProjectForServer,
+  type PlatformEditorSession,
+} from "./platform/PlatformWorkspace";
 import {
   type HistoryAction,
   type HistoryEntry,
@@ -48,7 +52,6 @@ import {
   buildTimelineTrackDefinitions,
   flattenCustomTrackBlocks,
   getBuiltinTrackDefinition,
-  getDefaultBuiltinTracks,
   getBuiltinTrackOptions,
   getDefaultAttachedPointTrackName,
   getDefaultAttachedPointTypeOptions,
@@ -69,6 +72,16 @@ import {
   defaultSpectrogramSettings,
 } from "./utils/spectrogram";
 import { generateBanyanMarksFromGongche, getBanyanSubtypeLabel } from "./utils/banyan";
+import {
+  PROJECT_FILE_VERSION,
+  getManualVideoImportMessageLines,
+  getNormalizedProjectFileName,
+  getPersistableProjectData,
+  getProjectFileName,
+  normalizeImportedProjectFile,
+  normalizeProjectVideoUrl,
+  shouldPromptForManualVideoImport,
+} from "./utils/projectFile";
 
 type CharacterEditLocation = "timeline" | "split-panel";
 type CharacterLineAction =
@@ -341,7 +354,6 @@ const DEFAULT_ACTION_DURATION = 0.8;
 const DEFAULT_CUSTOM_TEXT = "新标注";
 const CONTEXT_MENU_GAP = 10;
 const CONTEXT_MENU_VIEWPORT_MARGIN = 12;
-const PROJECT_FILE_VERSION = 3;
 const IMPORT_MERGE_SKIP = "__skip__";
 const IMPORT_MERGE_NEW = "__new__";
 const POINT_PASTE_CONFLICT_EPSILON = 0.015;
@@ -351,7 +363,12 @@ const WAVEFORM_KEYPOINT_MIN_SPACING_SECONDS = 0.06;
 const WAVEFORM_KEYPOINT_MAX_COUNT = 1600;
 const WAVEFORM_KEYPOINT_FRAME_DURATION_SECONDS = 0.012;
 
-function EditorWorkbench() {
+type EditorWorkbenchProps = {
+  editorSession: PlatformEditorSession | null;
+};
+
+function EditorWorkbench({ editorSession }: EditorWorkbenchProps) {
+  const initialProject = editorSession?.initialProject ?? mockProject;
   const {
     project,
     projectRef,
@@ -368,14 +385,16 @@ function EditorWorkbench() {
     markProjectAsSaved,
     undoProject,
     redoProject,
+    setSyncStatus,
   } = useProjectDocumentState({
-    initialProject: mockProject,
-    initialTrackSnapEnabled: getDefaultTrackSnapEnabled(mockProject),
+    initialProject,
+    initialTrackSnapEnabled: getDefaultTrackSnapEnabled(initialProject),
     areProjectsEqual: projectsEqual,
     areTrackSnapStatesEqual: trackSnapStatesEqual,
   });
+  const [remoteBaseRevision, setRemoteBaseRevision] = useState(editorSession?.baseRevision ?? 0);
   const [currentTime, setCurrentTime] = useState(12.4);
-  const [duration, setDuration] = useState(getProjectDuration(mockProject));
+  const [duration, setDuration] = useState(getProjectDuration(initialProject));
   const [selectedItem, setSelectedItem] = useState<SelectedItem>({
     type: "line",
     id: "line-1",
@@ -3816,6 +3835,56 @@ function EditorWorkbench() {
     markProjectAsSaved(projectToSave, trackSnapEnabledRef.current);
   }
 
+  async function saveProjectToServer() {
+    if (!editorSession) {
+      window.alert("当前不是服务器文档。请从平台主页打开一个标注文档后再保存到服务器。");
+      return;
+    }
+    if (editingCharacterId) {
+      commitCharacterTextEdit(editingCharacterId);
+    }
+    if (editingCustomTextBlock) {
+      commitCustomTextEdit(editingCustomTextBlock.trackId, editingCustomTextBlock.id);
+    }
+
+    setSyncStatus("saving");
+    try {
+      const projectToSave = prepareProjectForServer(getPersistableProjectData(projectRef.current));
+      const savedDocument = await editorSession.client.saveAnnotationDocument<ProjectData>(editorSession.documentId, {
+        baseRevision: remoteBaseRevision,
+        payload: projectToSave,
+      });
+      setRemoteBaseRevision(savedDocument.latestSnapshot.revision);
+      editorSession.onDocumentSaved(savedDocument);
+      markProjectAsSaved(projectRef.current, trackSnapEnabledRef.current);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "保存到服务器失败。";
+      setSyncStatus("error", { errorMessage: message });
+      window.alert(message);
+    }
+  }
+
+  async function createServerVersion() {
+    if (!editorSession) {
+      window.alert("当前不是服务器文档。请从平台主页打开一个标注文档后再保存版本。");
+      return;
+    }
+    const name = window.prompt("请输入版本名称：", `版本 ${new Date().toLocaleString("zh-CN")}`);
+    if (!name) {
+      return;
+    }
+    await saveProjectToServer();
+    try {
+      await editorSession.client.createAnnotationVersion<ProjectData>(editorSession.documentId, {
+        name,
+      });
+      window.alert("服务器版本已保存。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "保存服务器版本失败。";
+      window.alert(message);
+    }
+  }
+
   function handleExport(kind: "character" | "singing") {
     const fileMap = {
       character: {
@@ -4189,6 +4258,12 @@ function EditorWorkbench() {
           onSaveProject={() => {
             void saveProjectFile();
           }}
+          onSaveProjectToServer={editorSession ? () => {
+            void saveProjectToServer();
+          } : undefined}
+          onCreateServerVersion={editorSession ? () => {
+            void createServerVersion();
+          } : undefined}
           onExportTrack={handleExport}
           onUndo={undo}
           onRedo={redo}
@@ -6944,628 +7019,6 @@ function clampTime(time: number, maxDuration: number) {
   return Math.max(0, Math.min(time, maxDuration));
 }
 
-function getProjectFileName(project: ProjectData, importedProjectFileName?: string | null) {
-  if (importedProjectFileName) {
-    return getNormalizedProjectFileName(importedProjectFileName);
-  }
-  const baseName = (project.video.name ?? "xiqu_annotation_project").replace(/\.[^.]+$/, "");
-  return `${baseName || "xiqu_annotation_project"}.annotation.json`;
-}
-
-function getNormalizedProjectFileName(fileName: string) {
-  const normalized = fileName.trim();
-  return normalized || "xiqu_annotation_project.annotation.json";
-}
-
-function normalizeImportedProjectFile(value: SavedProjectFile | ProjectData) {
-  if ("project" in value && value.project) {
-    return {
-      version: PROJECT_FILE_VERSION,
-      project: normalizeProjectData(value.project),
-      uiState: value.uiState,
-    } satisfies SavedProjectFile;
-  }
-  return {
-    version: PROJECT_FILE_VERSION,
-    project: normalizeProjectData(value as ProjectData),
-  } satisfies SavedProjectFile;
-}
-
-function normalizeProjectData(value: ProjectData | (Partial<ProjectData> & { videoUrl?: string; videoName?: string | null })) {
-  const builtinTracks = normalizeBuiltinTracks(value.builtinTracks);
-  const customTracks = migrateLegacyBuiltinActionTracks(
-    normalizeCustomTracks(value.customTracks),
-    value.builtinTracks,
-    value.actionAnnotations,
-  );
-  return {
-    video: normalizeProjectVideo(value),
-    subtitleLines: Array.isArray(value.subtitleLines) ? value.subtitleLines : [],
-    characterAnnotations: Array.isArray(value.characterAnnotations) ? value.characterAnnotations : [],
-    gongcheAnnotations: normalizeGongcheAnnotations(value.gongcheAnnotations),
-    banyanSections: normalizeBanyanSections(value.banyanSections),
-    banyanMarks: normalizeBanyanMarks(value.banyanMarks),
-    actionAnnotations: [],
-    builtinTracks,
-    customTracks,
-    activeTrackOrder: normalizeActiveTrackOrder(
-      migrateLegacyBuiltinActionTrackOrder(value.activeTrackOrder, builtinTracks, customTracks),
-      builtinTracks,
-      customTracks,
-    ),
-  } satisfies ProjectData;
-}
-
-const legacyBuiltinActionTrackDefaults: Record<string, { name: string; typeOptions: string[] }> = {
-  "hand-action": {
-    name: "手部动作轨",
-    typeOptions: ["抬手", "落手", "指向", "翻腕", "水袖动作", "其他"],
-  },
-  "body-action": {
-    name: "肢体动作轨",
-    typeOptions: ["转身", "移步", "屈伸", "亮相", "前倾", "后仰", "其他"],
-  },
-};
-
-function migrateLegacyBuiltinActionTracks(
-  customTracks: CustomTrack[],
-  builtinTracksValue: ProjectData["builtinTracks"] | undefined,
-  actionAnnotationsValue: ProjectData["actionAnnotations"] | undefined,
-): CustomTrack[] {
-  const legacyTracks = getLegacyBuiltinActionTracks(builtinTracksValue);
-  const actionAnnotations = Array.isArray(actionAnnotationsValue) ? actionAnnotationsValue : [];
-  const legacyTrackIds = new Set([
-    ...legacyTracks.map((track) => track.id),
-    ...actionAnnotations
-      .filter((annotation) => Boolean(legacyBuiltinActionTrackDefaults[annotation.trackId]))
-      .map((annotation) => annotation.trackId),
-  ]);
-  const legacyActions = actionAnnotations.filter((annotation) => legacyTrackIds.has(annotation.trackId));
-
-  if (legacyTrackIds.size === 0) {
-    return customTracks;
-  }
-
-  const migrationTracks = legacyTracks.length > 0
-    ? legacyTracks
-    : Array.from(legacyTrackIds).map(createLegacyBuiltinActionTrack);
-
-  if (
-    migrationTracks.every((track) => !legacyBuiltinActionTrackDefaults[track.id]) &&
-    legacyActions.length === 0
-  ) {
-    return customTracks;
-  }
-
-  if (migrationTracks.length === 0 && legacyActions.length === 0) {
-    return customTracks;
-  }
-
-  const nextCustomTracks = [...customTracks];
-  for (const legacyTrack of migrationTracks) {
-    const existingIndex = nextCustomTracks.findIndex((track) =>
-      track.trackType === "action" && track.name === legacyTrack.name);
-    const blocks = legacyActions
-      .filter((annotation) => annotation.trackId === legacyTrack.id)
-      .map((annotation) => ({
-        id: `custom-block-${annotation.id}`,
-        startTime: annotation.startTime,
-        endTime: annotation.endTime,
-        type: annotation.label || legacyTrack.typeOptions[0] || "类型 1",
-      }));
-
-    if (existingIndex >= 0) {
-      const existingTrack = nextCustomTracks[existingIndex];
-      if (existingTrack.trackType !== "action") {
-        continue;
-      }
-      nextCustomTracks[existingIndex] = {
-        ...existingTrack,
-        typeOptions: mergeUniqueStrings(existingTrack.typeOptions, legacyTrack.typeOptions),
-        blocks: [
-          ...existingTrack.blocks,
-          ...blocks.filter((block) =>
-            !existingTrack.blocks.some((existingBlock) =>
-              existingBlock.type === block.type &&
-              timesClose(existingBlock.startTime, block.startTime) &&
-              timesClose(existingBlock.endTime, block.endTime))),
-        ],
-        attachedPointTracks: mergeAttachedPointTrackLists(
-          existingTrack.attachedPointTracks,
-          legacyTrack.attachedPointTracks,
-        ),
-        attachedPointTracksExpanded:
-          Boolean(existingTrack.attachedPointTracksExpanded || legacyTrack.attachedPointTracksExpanded),
-        snapToWaveformKeypoints:
-          Boolean(existingTrack.snapToWaveformKeypoints || legacyTrack.snapToWaveformKeypoints),
-        autoSetLoopRangeOnSelect:
-          Boolean(existingTrack.autoSetLoopRangeOnSelect || legacyTrack.autoSetLoopRangeOnSelect),
-      } as CustomTrack;
-      continue;
-    }
-
-    nextCustomTracks.push({
-      id: getLegacyBuiltinActionCustomTrackId(legacyTrack.id),
-      name: legacyTrack.name,
-      trackType: "action",
-      typeOptions: legacyTrack.typeOptions,
-      blocks,
-      attachedPointTracks: legacyTrack.attachedPointTracks,
-      attachedPointTracksExpanded: legacyTrack.attachedPointTracksExpanded,
-      snapToWaveformKeypoints: legacyTrack.snapToWaveformKeypoints,
-      autoSetLoopRangeOnSelect: legacyTrack.autoSetLoopRangeOnSelect,
-    });
-  }
-  return nextCustomTracks;
-}
-
-function migrateLegacyBuiltinActionTrackOrder(
-  value: ProjectData["activeTrackOrder"] | undefined,
-  builtinTracks: ProjectData["builtinTracks"],
-  customTracks: ProjectData["customTracks"],
-) {
-  if (!Array.isArray(value)) {
-    return value;
-  }
-  const availableIds = new Set([
-    ...builtinTracks.map((track) => track.id),
-    ...customTracks.map((track) => track.id),
-  ]);
-  const nextOrder: string[] = [];
-  for (const trackId of value) {
-    const migratedId = legacyBuiltinActionTrackDefaults[trackId]
-      ? getLegacyBuiltinActionCustomTrackId(trackId)
-      : trackId;
-    if (availableIds.has(migratedId) && !nextOrder.includes(migratedId)) {
-      nextOrder.push(migratedId);
-    }
-  }
-  return nextOrder;
-}
-
-function getLegacyBuiltinActionTracks(value: ProjectData["builtinTracks"] | undefined) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.flatMap((track) => {
-    const trackId = String((track as { id?: unknown }).id ?? "");
-    if (!legacyBuiltinActionTrackDefaults[trackId]) {
-      return [];
-    }
-    const fallback = legacyBuiltinActionTrackDefaults[trackId];
-    return [{
-      id: trackId,
-      name: typeof track.name === "string" && track.name.trim() ? track.name : fallback.name,
-      typeOptions: Array.isArray(track.options) && track.options.length > 0
-        ? track.options
-        : fallback.typeOptions,
-      attachedPointTracks: normalizeAttachedPointTracks(track.attachedPointTracks),
-      attachedPointTracksExpanded: Boolean(track.attachedPointTracksExpanded),
-      snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints),
-      autoSetLoopRangeOnSelect: Boolean(track.autoSetLoopRangeOnSelect),
-    }];
-  });
-}
-
-function createLegacyBuiltinActionTrack(trackId: string) {
-  const fallback = legacyBuiltinActionTrackDefaults[trackId] ?? {
-    name: "动作轨",
-    typeOptions: getDefaultCustomTrackTypeOptions(),
-  };
-  return {
-    id: trackId,
-    name: fallback.name,
-    typeOptions: fallback.typeOptions,
-    attachedPointTracks: [],
-    attachedPointTracksExpanded: false,
-    snapToWaveformKeypoints: false,
-    autoSetLoopRangeOnSelect: false,
-  };
-}
-
-function getLegacyBuiltinActionCustomTrackId(trackId: string) {
-  return `custom-track-legacy-${trackId}`;
-}
-
-function mergeAttachedPointTrackLists(
-  currentTracks: AttachedPointTrack[],
-  incomingTracks: AttachedPointTrack[],
-) {
-  const nextTracks = [...currentTracks];
-  for (const incomingTrack of incomingTracks) {
-    const existingIndex = nextTracks.findIndex((track) => track.name === incomingTrack.name);
-    if (existingIndex < 0) {
-      nextTracks.push(incomingTrack);
-      continue;
-    }
-    const existingTrack = nextTracks[existingIndex];
-    nextTracks[existingIndex] = {
-      ...existingTrack,
-      typeOptions: mergeUniqueStrings(existingTrack.typeOptions, incomingTrack.typeOptions),
-      points: [
-        ...existingTrack.points,
-        ...incomingTrack.points.filter((point) =>
-          !existingTrack.points.some((existingPoint) => areAttachedPointsEquivalent(point, existingPoint))),
-      ],
-      snapToWaveformKeypoints:
-        Boolean(existingTrack.snapToWaveformKeypoints || incomingTrack.snapToWaveformKeypoints),
-      snapToParentBoundaries:
-        Boolean(existingTrack.snapToParentBoundaries || incomingTrack.snapToParentBoundaries),
-      autoSetLoopRangeOnSelect:
-        Boolean(existingTrack.autoSetLoopRangeOnSelect || incomingTrack.autoSetLoopRangeOnSelect),
-    };
-  }
-  return nextTracks;
-}
-
-function normalizeProjectVideo(
-  value: Partial<ProjectData> & { videoUrl?: string; videoName?: string | null },
-) {
-  if (value.video && typeof value.video.url === "string") {
-    const normalizedFilePath = normalizeProjectVideoFilePath(value.video.filePath);
-    const normalizedUrl = normalizeProjectVideoUrl(value.video.url);
-    return {
-      url: normalizedUrl,
-      name: value.video.name ?? null,
-      source: value.video.source === "embedded" ? "embedded" : "url",
-      filePath: normalizedFilePath,
-      requiresManualImport:
-        typeof value.video.requiresManualImport === "boolean"
-          ? value.video.requiresManualImport
-          : shouldFlagVideoForManualImport(
-              value.video.source === "embedded" ? "embedded" : "url",
-              normalizedUrl,
-              normalizedFilePath,
-            ),
-    } satisfies ProjectData["video"];
-  }
-  const legacyUrl = typeof value.videoUrl === "string" ? value.videoUrl : "";
-  const normalizedLegacyFilePath = normalizeProjectVideoFilePath(undefined);
-  return {
-    url: normalizeProjectVideoUrl(legacyUrl),
-    name: value.videoName ?? null,
-    source: legacyUrl.startsWith("data:") ? "embedded" : "url",
-    filePath: normalizedLegacyFilePath,
-    requiresManualImport: shouldFlagVideoForManualImport(
-      legacyUrl.startsWith("data:") ? "embedded" : "url",
-      normalizeProjectVideoUrl(legacyUrl),
-      normalizedLegacyFilePath,
-    ),
-  } satisfies ProjectData["video"];
-}
-
-function getPersistableProjectData(project: ProjectData): ProjectData {
-  return {
-    ...project,
-    video: getPersistableProjectVideo(project.video),
-  };
-}
-
-function getPersistableProjectVideo(video: ProjectData["video"]): ProjectData["video"] {
-  const filePath = normalizeProjectVideoFilePath(video.filePath);
-  if (video.source === "embedded") {
-    return {
-      url: "",
-      name: video.name ?? null,
-      source: "embedded",
-      filePath,
-      requiresManualImport: true,
-    };
-  }
-  return {
-    url: video.url,
-    name: video.name ?? null,
-    source: "url",
-    filePath,
-    requiresManualImport: false,
-  };
-}
-
-function normalizeProjectVideoFilePath(filePath: unknown) {
-  return typeof filePath === "string" && filePath.trim() ? filePath.trim() : null;
-}
-
-function normalizeProjectVideoUrl(url: string) {
-  if (url.startsWith("blob:")) {
-    return "";
-  }
-  return url;
-}
-
-function shouldFlagVideoForManualImport(
-  source: ProjectData["video"]["source"],
-  url: string,
-  filePath: string | null,
-) {
-  if (source === "embedded") {
-    return !url || !url.startsWith("data:");
-  }
-  return url.startsWith("file:") || (!url && Boolean(filePath));
-}
-
-function shouldPromptForManualVideoImport(video: ProjectData["video"]) {
-  return Boolean(video.requiresManualImport);
-}
-
-function getManualVideoImportMessageLines(video: ProjectData["video"]) {
-  const lines = [
-    "该项目关联的是本地视频，当前浏览器无法自动恢复磁盘文件。",
-    "请手动重新导入视频以继续编辑。",
-  ];
-  if (video.name) {
-    lines.push(`原视频文件名：${video.name}`);
-  }
-  if (video.filePath) {
-    lines.push(`项目中已保留磁盘路径字段：${video.filePath}`);
-  }
-  return lines;
-}
-
-function normalizeBuiltinTracks(value: ProjectData["builtinTracks"] | undefined) {
-  if (!Array.isArray(value) || value.length === 0) {
-    return getDefaultBuiltinTracks();
-  }
-  const seenIds = new Set<string>();
-  const tracks = value.flatMap((track) => {
-    const trackId = String((track as { id?: unknown }).id ?? "");
-    if (!track || seenIds.has(trackId)) {
-      return [];
-    }
-    if (trackId !== "character-track") {
-      return [];
-    }
-    seenIds.add(trackId);
-    const defaultTrack = getBuiltinTrackDefinition(trackId);
-    return [{
-      ...defaultTrack,
-      name: typeof track.name === "string" && track.name.trim() ? track.name : defaultTrack.name,
-      options: Array.isArray(track.options) && track.options.length > 0
-        ? track.options
-        : defaultTrack.options,
-      attachedPointTracks: normalizeAttachedPointTracks(track.attachedPointTracks),
-      attachedPointTracksExpanded: Boolean(track.attachedPointTracksExpanded),
-      snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints),
-    }];
-  });
-  return tracks.length > 0 ? tracks : getDefaultBuiltinTracks();
-}
-
-function normalizeCustomTracks(value: ProjectData["customTracks"] | undefined) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.flatMap((track) => {
-    if (!track || typeof track.id !== "string" || (track.trackType !== "text" && track.trackType !== "action")) {
-      return [];
-    }
-    return [{
-      ...track,
-      name: typeof track.name === "string" && track.name.trim() ? track.name : "自定义轨道",
-      typeOptions: Array.isArray(track.typeOptions) && track.typeOptions.length > 0
-        ? track.typeOptions
-        : getDefaultCustomTrackTypeOptions(),
-      blocks: Array.isArray(track.blocks) ? track.blocks : [],
-      attachedPointTracks: normalizeAttachedPointTracks(track.attachedPointTracks),
-      attachedPointTracksExpanded: Boolean(track.attachedPointTracksExpanded),
-      snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints),
-    }] as CustomTrack[];
-  });
-}
-
-function normalizeAttachedPointTracks(value: AttachedPointTrack[] | undefined) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.flatMap((track) => {
-    if (!track || typeof track.id !== "string") {
-      return [];
-    }
-    return [{
-      id: track.id,
-      name: typeof track.name === "string" && track.name.trim() ? track.name : "打点轨",
-      typeOptions: Array.isArray(track.typeOptions) && track.typeOptions.length > 0
-        ? track.typeOptions
-        : getDefaultAttachedPointTypeOptions(),
-      snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints),
-      snapToParentBoundaries:
-        typeof track.snapToParentBoundaries === "boolean"
-          ? track.snapToParentBoundaries
-          : true,
-      points: Array.isArray(track.points)
-        ? track.points
-            .filter((point) => point && typeof point.id === "string")
-            .map((point) => ({
-              id: point.id,
-              time: typeof point.time === "number" ? point.time : 0,
-              label: typeof point.label === "string" && point.label.trim()
-                ? point.label
-                : (Array.isArray(track.typeOptions) && track.typeOptions[0]) || "标记 1",
-            }))
-        : [],
-    }] satisfies AttachedPointTrack[];
-  });
-}
-
-function normalizeGongcheAnnotations(value: ProjectData["gongcheAnnotations"] | undefined) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.flatMap((block) => {
-    if (
-      !block ||
-      typeof block.id !== "string" ||
-      typeof block.parentTrackId !== "string" ||
-      typeof block.parentBlockId !== "string"
-    ) {
-      return [];
-    }
-    const startTime = typeof block.startTime === "number" ? block.startTime : 0;
-    const endTime = typeof block.endTime === "number" ? block.endTime : startTime + MIN_CHARACTER_DURATION;
-    return [{
-      id: block.id,
-      parentTrackId: block.parentTrackId,
-      parentBlockId: block.parentBlockId,
-      startTime,
-      endTime: Math.max(startTime + MIN_CHARACTER_DURATION, endTime),
-      symbols: normalizeGongcheSymbols(
-        Array.isArray(block.symbols) ? block.symbols : [],
-        startTime,
-        Math.max(startTime + MIN_CHARACTER_DURATION, endTime),
-      ),
-    }] satisfies GongcheAnnotation[];
-  });
-}
-
-function normalizeBanyanSections(value: ProjectData["banyanSections"] | undefined) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.flatMap((section) => {
-    if (!section || typeof section.id !== "string") {
-      return [];
-    }
-    const startTime = typeof section.startTime === "number" ? Math.max(0, section.startTime) : 0;
-    const endTime = typeof section.endTime === "number" ? Math.max(startTime, section.endTime) : startTime;
-    return [{
-      id: section.id,
-      name: typeof section.name === "string" && section.name.trim() ? section.name : "板眼区段",
-      startTime,
-      endTime,
-      cycleType: isBanyanCycleType(section.cycleType) ? section.cycleType : "yi_ban_san_yan_zeng",
-      freeRhythm: Boolean(section.freeRhythm),
-      beatCount: typeof section.beatCount === "number" ? section.beatCount : undefined,
-      hasZengBan: typeof section.hasZengBan === "boolean" ? section.hasZengBan : undefined,
-      source: typeof section.source === "string" ? section.source : undefined,
-      comment: typeof section.comment === "string" ? section.comment : undefined,
-    }] satisfies BanyanSection[];
-  });
-}
-
-function normalizeBanyanMarks(value: ProjectData["banyanMarks"] | undefined) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.flatMap((mark) => {
-    if (!mark || typeof mark.id !== "string") {
-      return [];
-    }
-    const estimatedTime = typeof mark.estimatedTime === "number" ? Math.max(0, mark.estimatedTime) : 0;
-    const time = typeof mark.time === "number" ? Math.max(0, mark.time) : estimatedTime;
-    return [{
-      id: mark.id,
-      sectionId: typeof mark.sectionId === "string" ? mark.sectionId : null,
-      time,
-      estimatedTime,
-      sourceSymbol: typeof mark.sourceSymbol === "string" ? mark.sourceSymbol : "",
-      sourceTokenIndex: typeof mark.sourceTokenIndex === "number" ? mark.sourceTokenIndex : undefined,
-      sourceKey: typeof mark.sourceKey === "string" ? mark.sourceKey : undefined,
-      role: isBanyanRole(mark.role) ? mark.role : "auxiliary",
-      subtype: normalizeBanyanSubtype(mark.subtype),
-      segment: isBanyanSegment(mark.segment) ? mark.segment : "unknown",
-      beatIndex: typeof mark.beatIndex === "number" ? mark.beatIndex : null,
-      cycleIndex: typeof mark.cycleIndex === "number" ? mark.cycleIndex : null,
-      strength: isBanyanStrength(mark.strength) ? mark.strength : "unknown",
-      attachment: isBanyanAttachment(mark.attachment) ? mark.attachment : "unknown",
-      linkedGongcheAnnotationId:
-        typeof mark.linkedGongcheAnnotationId === "string" ? mark.linkedGongcheAnnotationId : null,
-      linkedGongcheSymbolId:
-        typeof mark.linkedGongcheSymbolId === "string" ? mark.linkedGongcheSymbolId : null,
-      linkedGongcheSymbolIds: Array.isArray(mark.linkedGongcheSymbolIds)
-        ? mark.linkedGongcheSymbolIds.filter((id): id is string => typeof id === "string")
-        : undefined,
-      confidence: isBanyanConfidence(mark.confidence) ? mark.confidence : "auto",
-      manualOffset: typeof mark.manualOffset === "number" ? mark.manualOffset : time - estimatedTime,
-      durationHint: typeof mark.durationHint === "string" ? mark.durationHint : null,
-      orphaned: Boolean(mark.orphaned),
-      comment: typeof mark.comment === "string" ? mark.comment : undefined,
-    }] satisfies BanyanMark[];
-  });
-}
-
-function isBanyanCycleType(value: unknown): value is BanyanSection["cycleType"] {
-  return typeof value === "string" && [
-    "sanban",
-    "liushuiban",
-    "yi_ban_yi_yan",
-    "yi_ban_yi_yan_zeng",
-    "yi_ban_san_yan",
-    "yi_ban_san_yan_zeng",
-    "custom",
-  ].includes(value);
-}
-
-function isBanyanRole(value: unknown): value is BanyanMark["role"] {
-  return value === "ban" || value === "yan" || value === "auxiliary";
-}
-
-function isBanyanSubtype(value: unknown): value is BanyanMark["subtype"] {
-  return typeof value === "string" && [
-    "mainBan",
-    "headBan",
-    "waistBan",
-    "bottomBan",
-    "zengBan",
-    "waistZengBan",
-    "middleEye",
-    "smallEye",
-    "sideHeadTailEye",
-    "sideMiddleEye",
-    "phraseBoundary",
-    "unknown",
-  ].includes(value);
-}
-
-function normalizeBanyanSubtype(value: unknown): BanyanMark["subtype"] {
-  if (value === "headEye" || value === "tailEye") {
-    return "smallEye";
-  }
-  if (value === "sideHeadEye" || value === "sideTailEye") {
-    return "sideHeadTailEye";
-  }
-  return isBanyanSubtype(value) ? value : "unknown";
-}
-
-function isBanyanSegment(value: unknown): value is BanyanMark["segment"] {
-  return value === "main" || value === "zeng" || value === "free" || value === "unknown";
-}
-
-function isBanyanAttachment(value: unknown): value is BanyanMark["attachment"] {
-  return value === "on_note" || value === "in_between" || value === "at_phrase_end" || value === "unknown";
-}
-
-function isBanyanConfidence(value: unknown): value is BanyanMark["confidence"] {
-  return value === "auto" || value === "reviewed" || value === "manual";
-}
-
-function isBanyanStrength(value: unknown): value is NonNullable<BanyanMark["strength"]> {
-  return value === "strong" || value === "medium" || value === "weak" || value === "unknown";
-}
-
-function normalizeActiveTrackOrder(
-  value: ProjectData["activeTrackOrder"] | undefined,
-  builtinTracks: ProjectData["builtinTracks"],
-  customTracks: ProjectData["customTracks"],
-) {
-  const availableIds = new Set([
-    ...builtinTracks.map((track) => track.id),
-    ...customTracks.map((track) => track.id),
-  ]);
-  const nextOrder = Array.isArray(value)
-    ? value.filter((trackId) => availableIds.has(trackId))
-    : [];
-  for (const track of builtinTracks) {
-    if (!nextOrder.includes(track.id)) {
-      nextOrder.push(track.id);
-    }
-  }
-  for (const track of customTracks) {
-    if (!nextOrder.includes(track.id)) {
-      nextOrder.push(track.id);
-    }
-  }
-  return nextOrder;
-}
-
 async function buildWaveformData(videoUrl: string): Promise<WaveformData | null> {
   const AudioContextCtor = window.AudioContext || (window as typeof window & {
     webkitAudioContext?: typeof AudioContext;
@@ -7700,7 +7153,16 @@ function isEditableKeyboardTarget(target: EventTarget | null) {
 }
 
 function App() {
-  return <PlatformWorkspace renderEditor={() => <EditorWorkbench />} />;
+  return (
+    <PlatformWorkspace
+      renderEditor={(editorSession) => (
+        <EditorWorkbench
+          key={editorSession?.documentId ?? "local-editor"}
+          editorSession={editorSession}
+        />
+      )}
+    />
+  );
 }
 
 export default App;

@@ -9,6 +9,7 @@ import type {
   PlatformUser,
   ProcessingJob,
   ProcessingJobType,
+  StoredFileObject,
 } from "./platform.js";
 
 export type ApiErrorCode =
@@ -53,6 +54,10 @@ export type CreateMediaAssetRequest = {
   primaryFileId?: string | null;
 };
 
+export type UploadFileResponse = {
+  file: StoredFileObject;
+};
+
 export type CreateAnnotationDocumentRequest<TPayload = unknown> = {
   title: string;
   mode: AnnotationMode;
@@ -86,6 +91,15 @@ export type PlatformApiContract<TPayload = unknown> = {
   };
   listProjects: {
     response: AnnotationProjectSummary[];
+  };
+  listFiles: {
+    response: StoredFileObject[];
+  };
+  uploadFile: {
+    response: UploadFileResponse;
+  };
+  listMediaAssets: {
+    response: MediaAsset[];
   };
   createProject: {
     request: CreateProjectRequest;

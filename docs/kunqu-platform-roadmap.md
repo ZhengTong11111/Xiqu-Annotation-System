@@ -6,6 +6,179 @@
 
 ## 0. 执行记录
 
+### 2026-06-19：阶段 1-8 真实工具链接入版
+
+本次根据“不要使用临时简单工具，直接使用最终工具链”的要求，将上一版内存 API 骨架推进为接近最终部署形态的全栈基础设施：
+
+- 引入 PostgreSQL + Prisma 7：
+  - 新增 `prisma/schema.prisma`。
+  - 新增 `prisma.config.ts`，适配 Prisma 7 datasource 配置方式。
+  - 新增 `docker-compose.yml`，本地开发预期使用 PostgreSQL 16。
+  - 新增 `.env.example`。
+- 后端从原生 Node HTTP 骨架切换为 Fastify：
+  - 使用 `fastify`。
+  - 使用 `@fastify/cors`。
+  - 使用 `@fastify/multipart`。
+  - 删除旧 `apps/api/src/http.ts`。
+- 引入 Prisma PostgreSQL driver adapter：
+  - 使用 `pg`。
+  - 使用 `@prisma/adapter-pg`。
+- 后端 repository 从内存 Map 升级为 `PrismaPlatformRepository`：
+  - 用户、角色、会话。
+  - 文件对象。
+  - 媒体资产。
+  - 标注项目。
+  - 标注文档。
+  - 标注快照。
+  - 标注版本。
+  - 授权记录。
+  - 后端任务。
+- 为避免后端仓储变成单文件堆砌，已拆分：
+  - `apps/api/src/repository.ts`：业务读写、权限判断、revision 校验。
+  - `apps/api/src/repositoryMappers.ts`：Prisma 数据行到 API DTO 的转换。
+  - `apps/api/src/repositorySeed.ts`：开发账号与示例项目 seed。
+- 账号系统第一版从“明文内存密码”升级为：
+  - 数据库用户。
+  - Node `scrypt` 密码哈希。
+  - token 只保存 sha256 hash。
+  - session 过期时间。
+  - 启动时 seed 开发账号。
+- 统一文件系统第一版：
+  - 新增 `apps/api/src/storage.ts`。
+  - 当前使用本地对象存储目录 `XIQU_STORAGE_ROOT`。
+  - 文件上传使用 multipart。
+  - 文件写入时计算 sha256。
+  - 文件元数据写入 PostgreSQL。
+  - 新增受 token 保护的文件读取 URL，供视频/音频预览使用。
+  - 视频内容读取接口支持 HTTP Range / `206 Partial Content`，保证大 MP4 在浏览器 `<video>` 中可以稳定跳转时间轴。
+- 平台 UI 第一版从“只展示项目列表”升级为：
+  - 上传媒体文件。
+  - 创建媒体资产。
+  - 创建标注项目。
+  - 创建初始标注文档。
+  - 打开服务端文档。
+- 编辑器接入服务端文档上下文：
+  - `EditorWorkbench` 支持平台文档初始 payload。
+  - 顶部文件菜单新增“保存到服务器”。
+  - 顶部文件菜单新增“保存为服务器版本”。
+  - 本地 JSON 保存仍保留为“保存本地项目”。
+  - 服务端保存使用 `baseRevision`，后端做 revision 冲突检查。
+
+本次验证：
+
+- 已运行 `DATABASE_URL=... npm run db:generate`，Prisma Client 生成通过。
+- 已运行 `DATABASE_URL=... npx prisma validate`，schema 校验通过。
+- 已运行 `npm run build`，共享包、document-model、前端、API 均通过构建。
+- 已运行 `npm run dev:web -- --host 127.0.0.1 --port 5173` 并用 `curl` 验证入口 HTML 可访问。
+- 已安装并启动 PostgreSQL 16.14，本地数据目录为 `/opt/homebrew/var/postgresql@16-xiqu`，监听端口 `54329`。
+- 已运行 `npm run db:push`，PostgreSQL schema 已同步。
+- 已运行 `npm run dev:api`，API 正常启动并完成 seed。
+- 已完成 API 冒烟：
+  - health。
+  - admin 登录。
+  - me。
+  - multipart 文件上传。
+  - 文件内容读取。
+  - 创建媒体资产。
+  - 创建项目。
+  - 创建标注文档。
+  - 保存标注文档快照。
+  - 创建版本。
+  - 恢复版本。
+  - student 越权保存返回 403。
+  - stale revision 保存返回 409。
+- 已用 `psql` 检查数据库落库计数：
+  - users。
+  - annotation_projects。
+  - annotation_documents。
+  - annotation_snapshots。
+  - annotation_versions。
+  - files。
+- 已同时启动 `npm run dev:web -- --host 127.0.0.1 --port 5173` 和 `npm run dev:api`，确认前端入口与 API health 可访问。
+- 2026-06-20 已用《央视_顾卫英〈寻梦〉》真实视频验证媒体接口：
+  - 修复前：`Range: bytes=1000-1999` 返回 `200 OK` 整文件，浏览器时间轴点击后播放头会被旧 `video.currentTime` 拉回。
+  - 修复后：返回 `206 Partial Content`、`Accept-Ranges: bytes`、`Content-Range`，时间尺点击可稳定跳转并停留在目标时间。
+
+### 2026-06-19：项目内 JSON 导入与版本管理 UI
+
+本次补齐项目库里更接近真实使用的两个入口：
+
+- 在选中的项目内导入已有标注 JSON：
+  - 支持当前保存格式 `SavedProjectFile`。
+  - 支持直接的 `ProjectData` JSON。
+  - 导入后创建为当前项目下的新标注文档。
+  - 导入文档可选择独立标注或协作标注。
+  - 导入 payload 进入服务端 `annotation_snapshots.payload`，并继续由当前项目媒体资产负责打开时补齐文件 URL。
+- 在项目详情中增加标注版本管理：
+  - 选中文档后自动加载版本列表。
+  - 支持手动输入版本名称和备注。
+  - 支持创建版本。
+  - 支持恢复版本；恢复会基于目标版本生成新的当前快照。
+  - 支持刷新版本列表。
+
+本次验证：
+
+- 已运行 `npm run build`，共享包、document-model、前端、API 均通过构建。
+
+后续仍需补充：
+
+- 版本 diff / 对比视图。
+- 版本恢复后的审计日志。
+- 浏览器自动化点击测试。
+- 更宽容的旧项目 JSON schema 迁移器。目前已补齐第一版共享归一化入口，后续仍需给 schema 迁移增加单元测试。
+
+### 2026-06-19：平台导入旧标注 JSON 后编辑器空白问题修复
+
+排查 `260508_新工尺_央视_顾卫英《寻梦》.merged.cleaned_声腔标注_v1.json` 后确认：
+
+- 该文件是旧版保存格式，顶层为 `version: 2` + `project`。
+- `project` 中已有文字、工尺谱、内置轨、自定义轨等内容。
+- 该旧文件缺少后续新增的 `banyanSections` 与 `banyanMarks` 字段。
+- 本地“导入项目”此前会经过 `normalizeImportedProjectFile()`，但平台首页“导入现有标注 JSON”只做浅层类型判断，直接把缺字段 payload 写入服务端快照。
+- 编辑器从平台文档进入时拿到未归一化的 `ProjectData`，容易在时间轴/板眼相关渲染路径中因缺字段而显示空白。
+
+本次修复：
+
+- 新增 `src/utils/projectFile.ts`，集中管理项目 JSON 的读写归一化：
+  - 旧版 `SavedProjectFile` 升级到当前 `PROJECT_FILE_VERSION`。
+  - 补齐 `gongcheAnnotations`、`banyanSections`、`banyanMarks`、轨道顺序等新字段。
+  - 保留旧项目中已有的文字轨、工尺谱、自定义轨、附属打点轨数据。
+  - 保留旧内置手部/肢体动作轨向自定义动作轨迁移逻辑。
+- `src/App.tsx` 改为复用共享归一化工具，避免本地导入和平台导入各维护一套规则。
+- `src/platform/PlatformWorkspace.tsx` 在两个入口补齐归一化：
+  - 导入 JSON 创建服务端标注文档之前。
+  - 打开服务端文档、从快照进入编辑器之前。
+- 这样已经导入到数据库里的旧格式快照，重新打开时也会被前端归一化后进入编辑器。
+
+本次验证：
+
+- 已运行 `npm run build`，通过。
+- 已用 `npx tsx` 读取该 JSON 并调用 `normalizeImportedProjectFile()`：
+  - `isProjectFileLike: true`。
+  - 升级后 `version: 3`。
+  - `subtitleLines: 91`。
+  - `characterAnnotations: 427`。
+  - `gongcheAnnotations: 277`。
+  - `banyanSections` 与 `banyanMarks` 均为数组。
+  - 内置文字轨、自定义轨与 `activeTrackOrder` 均保留。
+
+当前环境限制：
+
+- 本机没有 `docker`，所以没有使用 `docker-compose.yml` 路径。
+- Homebrew tap 下载在本机网络下较慢；本次通过下载 PostgreSQL 16.14 bottle 并手动修复 bottle install names 完成安装。
+- Playwright 不在当前项目依赖中，本轮 UI 检查完成了 Vite 构建和入口可访问性，未做自动浏览器点击截图测试。
+
+与阶段 1-8 的对应：
+
+- 阶段 1：共享类型边界已建立，并继续扩展文件上传/媒体/项目/文档 API contract。
+- 阶段 2：workspace 和 monorepo 命令已建立；暂未强行移动现有前端到 `apps/web`，避免一次性破坏 Vite worker、public 资源和大量相对路径。
+- 阶段 3：Fastify API 骨架已完成，并接 Prisma。
+- 阶段 4：账号系统第一版已接数据库、密码哈希和 session。
+- 阶段 5：主页与项目库已接真实后端 API。
+- 阶段 6：统一文件系统第一版已实现 multipart 上传、本地对象存储 adapter 和文件表。
+- 阶段 7：服务端标注文档保存已实现快照保存与 revision 冲突检查；前端新增服务器保存入口。
+- 阶段 8：版本管理已实现创建版本和恢复版本 API；前端已提供保存版本入口，版本列表 UI 后续继续完善。
+
 ### 2026-06-19：阶段 1-8 第一版工程骨架
 
 本次在不破坏现有标注编辑器的前提下，完成了阶段 1-8 的第一版可编译骨架：

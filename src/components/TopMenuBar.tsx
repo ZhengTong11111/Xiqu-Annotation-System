@@ -22,6 +22,8 @@ type TopMenuBarProps = {
   onProjectFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onMergeProjectFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onSaveProject: () => void;
+  onSaveProjectToServer?: () => void;
+  onCreateServerVersion?: () => void;
   onExportTrack: (kind: "character" | "singing") => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -55,6 +57,8 @@ export function TopMenuBar({
   onProjectFileChange,
   onMergeProjectFileChange,
   onSaveProject,
+  onSaveProjectToServer,
+  onCreateServerVersion,
   onExportTrack,
   onUndo,
   onRedo,
@@ -150,7 +154,31 @@ export function TopMenuBar({
                     </button>
                     <div className="top-menu-divider" />
                     <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onSaveProject)}>
-                      保存项目
+                      保存本地项目
+                    </button>
+                    <button
+                      type="button"
+                      className="top-menu-dropdown-item"
+                      onClick={() => {
+                        if (onSaveProjectToServer) {
+                          handleAction(onSaveProjectToServer);
+                        }
+                      }}
+                      disabled={!onSaveProjectToServer}
+                    >
+                      保存到服务器
+                    </button>
+                    <button
+                      type="button"
+                      className="top-menu-dropdown-item"
+                      onClick={() => {
+                        if (onCreateServerVersion) {
+                          handleAction(onCreateServerVersion);
+                        }
+                      }}
+                      disabled={!onCreateServerVersion}
+                    >
+                      保存为服务器版本
                     </button>
                     <div className="top-menu-divider" />
                     <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(() => onExportTrack("character"))}>

@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: xiqu-platform-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: xiqu_platform
+      POSTGRES_USER: xiqu
+      POSTGRES_PASSWORD: xiqu_dev_password
+    ports:
+      - "54329:5432"
+    volumes:
+      - xiqu-platform-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xiqu -d xiqu_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  xiqu-platform-postgres-data:

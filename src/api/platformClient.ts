@@ -14,6 +14,8 @@ import type {
   PlatformUser,
   ProcessingJob,
   SaveAnnotationDocumentRequest,
+  StoredFileObject,
+  UploadFileResponse,
 } from "../../packages/shared/src/index";
 
 export type PlatformClientOptions = {
@@ -61,6 +63,25 @@ export class PlatformClient {
 
   listProjects() {
     return this.request<AnnotationProjectSummary[]>("/projects");
+  }
+
+  listFiles() {
+    return this.request<StoredFileObject[]>("/files");
+  }
+
+  getFileContentUrl(fileId: string) {
+    const tokenQuery = this.accessToken ? `?access_token=${encodeURIComponent(this.accessToken)}` : "";
+    return `${this.baseUrl}/files/${encodeURIComponent(fileId)}/content${tokenQuery}`;
+  }
+
+  async uploadFile(file: File) {
+    const body = new FormData();
+    body.set("file", file);
+    return this.requestMultipart<UploadFileResponse>("/files", body);
+  }
+
+  listMediaAssets() {
+    return this.request<MediaAsset[]>("/media");
   }
 
   createMediaAsset(request: CreateMediaAssetRequest) {
@@ -119,6 +140,12 @@ export class PlatformClient {
     });
   }
 
+  restoreAnnotationVersion<TPayload>(versionId: string) {
+    return this.request<AnnotationDocument<TPayload>>(`/annotation-versions/${versionId}/restore`, {
+      method: "POST",
+    });
+  }
+
   createProcessingJob(request: CreateProcessingJobRequest) {
     return this.request<ProcessingJob>("/jobs", {
       method: "POST",
@@ -160,6 +187,34 @@ export class PlatformClient {
     }
 
     // 后端统一返回 { data }，这里集中解包，避免 UI 层散落响应格式判断。
+    return payload?.data as TData;
+  }
+
+  private async requestMultipart<TData>(path: string, body: FormData) {
+    const headers = new Headers();
+    if (this.accessToken) {
+      headers.set("authorization", `Bearer ${this.accessToken}`);
+    }
+
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    const payload = await response.json().catch(() => null) as
+      | { data?: TData; error?: { code: string; message: string; details?: unknown } }
+      | null;
+
+    if (!response.ok || payload?.error) {
+      const error = payload?.error;
+      throw new PlatformApiError(
+        response.status,
+        error?.code ?? "internal_error",
+        error?.message ?? "平台接口请求失败。",
+        error?.details,
+      );
+    }
+
     return payload?.data as TData;
   }
 }

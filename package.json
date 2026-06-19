@@ -10,7 +10,11 @@
   "scripts": {
     "dev": "vite",
     "dev:web": "vite",
-    "build": "npm run build:shared && npm run build:document-model && npm run build:web && npm run build:api",
+    "dev:api": "tsx apps/api/src/server.ts",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:push": "prisma db push",
+    "build": "npm run db:generate && npm run build:shared && npm run build:document-model && npm run build:web && npm run build:api",
     "build:web": "tsc -p tsconfig.app.json --noEmit --incremental false && tsc -p tsconfig.node.json --noEmit --incremental false && vite build",
     "build:shared": "tsc -p packages/shared/tsconfig.json",
     "build:document-model": "tsc -p packages/document-model/tsconfig.json",
@@ -19,14 +23,23 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@fastify/multipart": "^10.0.0",
+    "@prisma/adapter-pg": "^7.8.0",
+    "@prisma/client": "^7.8.0",
+    "fastify": "^5.8.5",
+    "pg": "^8.22.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",
+    "@types/pg": "^8.20.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.1",
+    "prisma": "^7.8.0",
+    "tsx": "^4.22.4",
     "typescript": "^5.6.3",
     "vite": "^5.4.10"
   }

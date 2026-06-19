@@ -1,307 +1,447 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
+import {
+  AnnotationMode as DbAnnotationMode,
+  PrismaClient,
+  ProcessingJobType as DbProcessingJobType,
+} from "@prisma/client";
+import { hashToken, verifyPassword } from "./auth.js";
 import type {
-  ApiAnnotationDocument,
   ApiAnnotationMode,
-  ApiAnnotationProject,
-  ApiAnnotationSnapshot,
-  ApiAnnotationVersion,
-  ApiMediaAsset,
   ApiPermissionGrant,
   ApiProcessingJob,
   ApiRole,
-  ApiSession,
   ApiUser,
 } from "./domain.js";
 import { conflict, forbidden, notFound, unauthorized } from "./errors.js";
+import {
+  createGrantData,
+  documentInclude,
+  expandDocument,
+  toDocumentSummary,
+  toFileObject,
+  toGrantCreateData,
+  toJsonPayload,
+  toMediaAsset,
+  toProcessingJob,
+  toProjectSummary,
+  toPublicUser,
+  toVersion,
+  type GrantRecord,
+} from "./repositoryMappers.js";
+import { ensurePlatformSeedData } from "./repositorySeed.js";
 
-type SeedUser = ApiUser & {
-  password: string;
-};
+const privilegedRoles: ApiRole[] = ["super_admin", "admin", "teacher", "ta"];
 
-const seedUsers: SeedUser[] = [
-  {
-    id: "user-admin",
-    accountName: "admin",
-    displayName: "系统管理员",
-    password: "admin123",
-    roles: ["super_admin"],
-  },
-  {
-    id: "user-ta",
-    accountName: "ta",
-    displayName: "助教账号",
-    password: "ta123",
-    roles: ["ta"],
-  },
-  {
-    id: "user-student",
-    accountName: "student",
-    displayName: "学生账号",
-    password: "student123",
-    roles: ["annotator"],
-  },
-];
+export class PrismaPlatformRepository {
+  constructor(private readonly prisma: PrismaClient) {}
 
-export class InMemoryPlatformRepository {
-  private readonly users = new Map(seedUsers.map((user) => [user.id, user]));
-  private readonly sessions = new Map<string, ApiSession>();
-  private readonly mediaAssets = new Map<string, ApiMediaAsset>();
-  private readonly projects = new Map<string, ApiAnnotationProject>();
-  private readonly documents = new Map<string, ApiAnnotationDocument>();
-  private readonly versions = new Map<string, ApiAnnotationVersion[]>();
-  private readonly jobs = new Map<string, ApiProcessingJob>();
-
-  constructor() {
-    const now = new Date().toISOString();
-    const mediaAsset: ApiMediaAsset = {
-      id: "media-xunmeng-demo",
-      title: "示例视频：顾卫英《寻梦》",
-      description: "开发环境内置示例媒体资产，用于验证项目库和服务端保存接口。",
-      primaryFileId: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const project: ApiAnnotationProject = {
-      id: "project-xunmeng-demo",
-      title: "示例项目：昆曲《寻梦》",
-      mediaAssetId: mediaAsset.id,
-      ownerUserId: "user-admin",
-      documentCount: 1,
-      updatedAt: now,
-    };
-    const snapshot = this.createSnapshot("document-xunmeng-base", {}, 0, "user-admin");
-    const document: ApiAnnotationDocument = {
-      id: "document-xunmeng-base",
-      projectId: project.id,
-      title: "基准标注文档",
-      mode: "collaborative",
-      currentVersionId: null,
-      updatedAt: now,
-      grants: [
-        this.createGrant("user-admin", project.id, "document-xunmeng-base", ["view", "edit", "manage", "confirm", "merge"]),
-        this.createGrant("user-ta", project.id, "document-xunmeng-base", ["view", "edit", "review", "merge"]),
-        this.createGrant("user-student", project.id, "document-xunmeng-base", ["view"]),
-      ],
-      latestSnapshot: snapshot,
-    };
-    this.mediaAssets.set(mediaAsset.id, mediaAsset);
-    this.projects.set(project.id, project);
-    this.documents.set(document.id, document);
-    this.versions.set(document.id, []);
+  async ensureSeedData() {
+    await ensurePlatformSeedData(this.prisma);
   }
 
-  login(accountName: string, password: string) {
-    const user = Array.from(this.users.values()).find((candidate) => candidate.accountName === accountName);
-    // 开发版先使用内存账号验证，生产版必须替换为带盐哈希和登录审计。
-    if (!user || user.password !== password) {
+  async login(accountName: string, password: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { accountName },
+      include: { roles: true },
+    });
+    if (!user || !user.isActive || !(await verifyPassword(password, user.passwordHash))) {
       throw unauthorized("账号或密码错误。");
     }
-    const token = `dev-token-${randomUUID()}`;
-    this.sessions.set(token, {
-      token,
-      userId: user.id,
-      createdAt: new Date().toISOString(),
+    const token = `xiqu_${randomBytes(32).toString("base64url")}`;
+    const tokenHash = hashToken(token);
+    const expiresAt = new Date(Date.now() + this.getAuthTokenTtlMs());
+    await this.prisma.session.create({
+      data: {
+        tokenHash,
+        userId: user.id,
+        expiresAt,
+      },
     });
     return {
-      user: this.toPublicUser(user),
+      user: toPublicUser(user),
       accessToken: token,
     };
   }
 
-  getUserByToken(token: string | null) {
+  async getUserByToken(token: string | null) {
     if (!token) {
       throw unauthorized();
     }
-    const session = this.sessions.get(token);
-    if (!session) {
+    const session = await this.prisma.session.findUnique({
+      where: { tokenHash: hashToken(token) },
+      include: {
+        user: {
+          include: { roles: true },
+        },
+      },
+    });
+    if (!session || session.expiresAt.getTime() < Date.now() || !session.user.isActive) {
       throw unauthorized();
     }
-    const user = this.users.get(session.userId);
-    if (!user) {
-      throw unauthorized();
+    return toPublicUser(session.user);
+  }
+
+  async listFiles(user: ApiUser) {
+    const where = this.hasAnyRole(user, privilegedRoles) ? {} : { ownerUserId: user.id };
+    const files = await this.prisma.fileObject.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+    });
+    return files.map((file) => toFileObject(file));
+  }
+
+  async createPendingFile(user: ApiUser, input: { name: string; mimeType: string; size: number; storageKey: string }) {
+    const file = await this.prisma.fileObject.create({
+      data: {
+        name: input.name,
+        mimeType: input.mimeType,
+        size: input.size,
+        storageKey: input.storageKey,
+        checksum: null,
+        ownerUserId: user.id,
+      },
+    });
+    return toFileObject(file);
+  }
+
+  async createUploadedFile(
+    user: ApiUser,
+    input: { name: string; mimeType: string; size: number; storageKey: string; checksum: string },
+  ) {
+    const file = await this.prisma.fileObject.create({
+      data: {
+        name: input.name,
+        mimeType: input.mimeType,
+        size: input.size,
+        storageKey: input.storageKey,
+        checksum: input.checksum,
+        ownerUserId: user.id,
+      },
+    });
+    return toFileObject(file);
+  }
+
+  async finalizeFileUpload(user: ApiUser, fileId: string, input: { checksum: string; size: number }) {
+    const file = await this.prisma.fileObject.findUnique({ where: { id: fileId } });
+    if (!file) {
+      throw notFound("文件不存在。");
     }
-    return this.toPublicUser(user);
-  }
-
-  listProjects(user: ApiUser) {
-    if (this.hasAnyRole(user, ["super_admin", "admin", "teacher", "ta"])) {
-      return Array.from(this.projects.values());
+    if (file.ownerUserId !== user.id && !this.hasAnyRole(user, privilegedRoles)) {
+      throw forbidden();
     }
-    const viewableDocumentProjectIds = new Set(
-      Array.from(this.documents.values())
-        .filter((document) => this.canDocumentGrant(user.id, document, "view"))
-        .map((document) => document.projectId),
-    );
-    return Array.from(this.projects.values()).filter((project) => viewableDocumentProjectIds.has(project.id));
+    const updated = await this.prisma.fileObject.update({
+      where: { id: fileId },
+      data: {
+        checksum: input.checksum,
+        size: input.size,
+      },
+    });
+    return toFileObject(updated);
   }
 
-  createMediaAsset(user: ApiUser, input: { title: string; description?: string | null; primaryFileId?: string | null }) {
-    this.requireRole(user, ["super_admin", "admin", "teacher", "ta"]);
-    const now = new Date().toISOString();
-    const mediaAsset: ApiMediaAsset = {
-      id: `media-${randomUUID()}`,
-      title: input.title,
-      description: input.description ?? null,
-      primaryFileId: input.primaryFileId ?? null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.mediaAssets.set(mediaAsset.id, mediaAsset);
-    return mediaAsset;
+  async getFileForRead(user: ApiUser, fileId: string) {
+    const file = await this.prisma.fileObject.findUnique({ where: { id: fileId } });
+    if (!file) {
+      throw notFound("文件不存在。");
+    }
+    if (file.ownerUserId !== user.id && !this.hasAnyRole(user, privilegedRoles)) {
+      throw forbidden();
+    }
+    return toFileObject(file);
   }
 
-  createProject(user: ApiUser, input: { title: string; mediaAssetId: string }) {
-    this.requireRole(user, ["super_admin", "admin", "teacher", "ta"]);
-    if (!this.mediaAssets.has(input.mediaAssetId)) {
+  async listMediaAssets(user: ApiUser) {
+    this.requireRole(user, privilegedRoles);
+    const mediaAssets = await this.prisma.mediaAsset.findMany({
+      orderBy: { updatedAt: "desc" },
+    });
+    return mediaAssets.map((mediaAsset) => toMediaAsset(mediaAsset));
+  }
+
+  async createMediaAsset(user: ApiUser, input: { title: string; description?: string | null; primaryFileId?: string | null }) {
+    this.requireRole(user, privilegedRoles);
+    if (input.primaryFileId) {
+      await this.assertFileVisible(user, input.primaryFileId);
+    }
+    const mediaAsset = await this.prisma.mediaAsset.create({
+      data: {
+        title: input.title,
+        description: input.description ?? null,
+        primaryFileId: input.primaryFileId ?? null,
+      },
+    });
+    return toMediaAsset(mediaAsset);
+  }
+
+  async listProjects(user: ApiUser) {
+    if (this.hasAnyRole(user, privilegedRoles)) {
+      const projects = await this.prisma.annotationProject.findMany({
+        include: { _count: { select: { documents: true } } },
+        orderBy: { updatedAt: "desc" },
+      });
+      return projects.map((project) => toProjectSummary(project));
+    }
+    const grants = await this.prisma.permissionGrant.findMany({
+      where: {
+        userId: user.id,
+        actions: { has: "view" },
+        projectId: { not: null },
+      },
+      select: { projectId: true },
+    });
+    const projectIds = Array.from(new Set(grants.map((grant) => grant.projectId).filter(Boolean))) as string[];
+    const projects = await this.prisma.annotationProject.findMany({
+      where: { id: { in: projectIds } },
+      include: { _count: { select: { documents: true } } },
+      orderBy: { updatedAt: "desc" },
+    });
+    return projects.map((project) => toProjectSummary(project));
+  }
+
+  async createProject(user: ApiUser, input: { title: string; mediaAssetId: string }) {
+    this.requireRole(user, privilegedRoles);
+    const mediaAsset = await this.prisma.mediaAsset.findUnique({ where: { id: input.mediaAssetId } });
+    if (!mediaAsset) {
       throw notFound("媒体资产不存在。");
     }
-    const project: ApiAnnotationProject = {
-      id: `project-${randomUUID()}`,
-      title: input.title,
-      mediaAssetId: input.mediaAssetId,
-      ownerUserId: user.id,
-      documentCount: 0,
-      updatedAt: new Date().toISOString(),
-    };
-    this.projects.set(project.id, project);
-    return project;
+    const project = await this.prisma.annotationProject.create({
+      data: {
+        title: input.title,
+        mediaAssetId: input.mediaAssetId,
+        ownerUserId: user.id,
+      },
+      include: { _count: { select: { documents: true } } },
+    });
+    return toProjectSummary(project);
   }
 
-  listProjectDocuments(user: ApiUser, projectId: string) {
-    this.assertProjectVisible(user, projectId);
-    return Array.from(this.documents.values())
-      .filter((document) => document.projectId === projectId)
-      .map(({ latestSnapshot: _latestSnapshot, grants: _grants, ...summary }) => summary);
+  async listProjectDocuments(user: ApiUser, projectId: string) {
+    await this.assertProjectVisible(user, projectId);
+    const documents = await this.prisma.annotationDocument.findMany({
+      where: { projectId },
+      orderBy: { updatedAt: "desc" },
+    });
+    return documents.map((document) => toDocumentSummary(document));
   }
 
-  createDocument(
+  async createDocument(
     user: ApiUser,
     projectId: string,
     input: { title: string; mode: ApiAnnotationMode; initialPayload: unknown; grants?: ApiPermissionGrant[] },
   ) {
-    this.assertProjectManageable(user, projectId);
-    const project = this.projects.get(projectId);
+    await this.assertProjectManageable(user, projectId);
+    const project = await this.prisma.annotationProject.findUnique({ where: { id: projectId } });
     if (!project) {
       throw notFound("项目不存在。");
     }
-    const documentId = `document-${randomUUID()}`;
-    const snapshot = this.createSnapshot(documentId, input.initialPayload, 1, user.id);
-    const document: ApiAnnotationDocument = {
-      id: documentId,
-      projectId,
-      title: input.title,
-      mode: input.mode,
-      currentVersionId: null,
-      updatedAt: snapshot.createdAt,
-      grants: input.grants?.length
-        ? input.grants
-        : [this.createGrant(user.id, projectId, documentId, ["view", "edit", "manage", "confirm", "merge"])],
-      latestSnapshot: snapshot,
-    };
-    this.documents.set(document.id, document);
-    this.versions.set(document.id, []);
-    this.projects.set(projectId, {
-      ...project,
-      documentCount: project.documentCount + 1,
-      updatedAt: snapshot.createdAt,
+
+    const document = await this.prisma.$transaction(async (transaction) => {
+      const createdDocument = await transaction.annotationDocument.create({
+        data: {
+          projectId,
+          title: input.title,
+          mode: input.mode as DbAnnotationMode,
+        },
+      });
+      const snapshot = await transaction.annotationSnapshot.create({
+        data: {
+          documentId: createdDocument.id,
+          revision: 1,
+          payload: toJsonPayload(input.initialPayload),
+          createdBy: user.id,
+        },
+      });
+      await transaction.permissionGrant.createMany({
+        data: input.grants?.length
+          ? input.grants.map((grant) => toGrantCreateData(grant, projectId, createdDocument.id))
+          : [createGrantData(user.id, projectId, createdDocument.id, ["view", "edit", "manage", "confirm", "merge"])],
+      });
+      return transaction.annotationDocument.update({
+        where: { id: createdDocument.id },
+        data: {
+          latestSnapshotId: snapshot.id,
+        },
+        include: documentInclude,
+      });
     });
-    return this.expandDocument(document);
+    await this.prisma.annotationProject.update({
+      where: { id: projectId },
+      data: { updatedAt: new Date() },
+    });
+
+    return expandDocument(document);
   }
 
-  getDocument(user: ApiUser, documentId: string) {
-    const document = this.getDocumentOrThrow(documentId);
-    if (!this.canDocumentGrant(user.id, document, "view") && !this.hasAnyRole(user, ["super_admin", "admin", "teacher", "ta"])) {
+  async getDocument(user: ApiUser, documentId: string) {
+    const document = await this.getDocumentOrThrow(documentId);
+    if (!this.canDocumentGrant(user.id, document.grants, "view") && !this.hasAnyRole(user, privilegedRoles)) {
       throw forbidden();
     }
-    return this.expandDocument(document);
+    return expandDocument(document);
   }
 
-  saveDocument(user: ApiUser, documentId: string, input: { baseRevision: number; payload: unknown }) {
-    const document = this.getDocumentOrThrow(documentId);
-    if (!this.canDocumentGrant(user.id, document, "edit") && !this.hasAnyRole(user, ["super_admin", "admin", "teacher", "ta"])) {
+  async saveDocument(user: ApiUser, documentId: string, input: { baseRevision: number; payload: unknown }) {
+    const currentDocument = await this.getDocumentOrThrow(documentId);
+    if (!this.canDocumentGrant(user.id, currentDocument.grants, "edit") && !this.hasAnyRole(user, privilegedRoles)) {
       throw forbidden();
     }
-    if (document.latestSnapshot.revision !== input.baseRevision) {
+    if (!currentDocument.latestSnapshot || currentDocument.latestSnapshot.revision !== input.baseRevision) {
       throw conflict("文档版本已变化，请先刷新或进入冲突处理流程。", {
-        expectedRevision: document.latestSnapshot.revision,
+        expectedRevision: currentDocument.latestSnapshot?.revision ?? null,
         receivedRevision: input.baseRevision,
       });
     }
-    const snapshot = this.createSnapshot(document.id, input.payload, input.baseRevision + 1, user.id);
-    const nextDocument = {
-      ...document,
-      updatedAt: snapshot.createdAt,
-      latestSnapshot: snapshot,
-    };
-    this.documents.set(document.id, nextDocument);
-    return this.expandDocument(nextDocument);
-  }
-
-  listVersions(user: ApiUser, documentId: string) {
-    this.getDocument(user, documentId);
-    return this.versions.get(documentId) ?? [];
-  }
-
-  createVersion(user: ApiUser, documentId: string, input: { name: string; description?: string | null }) {
-    const document = this.getDocumentOrThrow(documentId);
-    if (!this.canDocumentGrant(user.id, document, "edit") && !this.hasAnyRole(user, ["super_admin", "admin", "teacher", "ta"])) {
-      throw forbidden();
-    }
-    const version: ApiAnnotationVersion = {
-      id: `version-${randomUUID()}`,
-      documentId,
-      name: input.name,
-      description: input.description ?? null,
-      revision: document.latestSnapshot.revision,
-      snapshot: document.latestSnapshot,
-      createdBy: user.id,
-      createdAt: new Date().toISOString(),
-    };
-    this.versions.set(documentId, [...(this.versions.get(documentId) ?? []), version]);
-    this.documents.set(documentId, {
-      ...document,
-      currentVersionId: version.id,
+    const nextDocument = await this.prisma.$transaction(async (transaction) => {
+      const snapshot = await transaction.annotationSnapshot.create({
+        data: {
+          documentId,
+          revision: input.baseRevision + 1,
+          payload: toJsonPayload(input.payload),
+          createdBy: user.id,
+        },
+      });
+      return transaction.annotationDocument.update({
+        where: { id: documentId },
+        data: {
+          latestSnapshotId: snapshot.id,
+          updatedAt: new Date(),
+        },
+        include: documentInclude,
+      });
     });
-    return version;
+    await this.prisma.annotationProject.update({
+      where: { id: nextDocument.projectId },
+      data: { updatedAt: new Date() },
+    });
+    return expandDocument(nextDocument);
   }
 
-  createProcessingJob(user: ApiUser, input: Omit<ApiProcessingJob, "id" | "status" | "outputFileIds" | "createdBy" | "createdAt" | "updatedAt" | "errorMessage">) {
-    this.requireRole(user, ["super_admin", "admin", "teacher", "ta", "service"]);
-    const now = new Date().toISOString();
-    const job: ApiProcessingJob = {
-      id: `job-${randomUUID()}`,
-      type: input.type,
-      status: "queued",
-      inputFileIds: input.inputFileIds,
-      outputFileIds: [],
-      documentId: input.documentId ?? null,
-      createdBy: user.id,
-      createdAt: now,
-      updatedAt: now,
-      errorMessage: null,
-    };
-    this.jobs.set(job.id, job);
-    return job;
+  async listVersions(user: ApiUser, documentId: string) {
+    await this.getDocument(user, documentId);
+    const versions = await this.prisma.annotationVersion.findMany({
+      where: { documentId },
+      include: { snapshot: true },
+      orderBy: { createdAt: "desc" },
+    });
+    return versions.map((version) => toVersion(version));
   }
 
-  private assertProjectVisible(user: ApiUser, projectId: string) {
-    if (this.hasAnyRole(user, ["super_admin", "admin", "teacher", "ta"])) {
-      return;
+  async createVersion(user: ApiUser, documentId: string, input: { name: string; description?: string | null }) {
+    const document = await this.getDocumentOrThrow(documentId);
+    if (!this.canDocumentGrant(user.id, document.grants, "edit") && !this.hasAnyRole(user, privilegedRoles)) {
+      throw forbidden();
     }
-    if (!this.listProjects(user).some((project) => project.id === projectId)) {
+    const latestSnapshot = document.latestSnapshot;
+    if (!latestSnapshot) {
+      throw conflict("当前文档还没有可保存为版本的快照。");
+    }
+    const version = await this.prisma.$transaction(async (transaction) => {
+      const createdVersion = await transaction.annotationVersion.create({
+        data: {
+          documentId,
+          snapshotId: latestSnapshot.id,
+          name: input.name,
+          description: input.description ?? null,
+          revision: latestSnapshot.revision,
+          createdBy: user.id,
+        },
+        include: { snapshot: true },
+      });
+      await transaction.annotationDocument.update({
+        where: { id: documentId },
+        data: {
+          currentVersionId: createdVersion.id,
+        },
+      });
+      return createdVersion;
+    });
+    return toVersion(version);
+  }
+
+  async restoreVersion(user: ApiUser, versionId: string) {
+    const version = await this.prisma.annotationVersion.findUnique({
+      where: { id: versionId },
+      include: {
+        snapshot: true,
+        document: {
+          include: documentInclude,
+        },
+      },
+    });
+    if (!version) {
+      throw notFound("版本不存在。");
+    }
+    if (!this.canDocumentGrant(user.id, version.document.grants, "edit") && !this.hasAnyRole(user, privilegedRoles)) {
+      throw forbidden();
+    }
+    return this.saveDocument(user, version.documentId, {
+      baseRevision: version.document.latestSnapshot?.revision ?? 0,
+      payload: version.snapshot.payload,
+    });
+  }
+
+  async createProcessingJob(
+    user: ApiUser,
+    input: Omit<ApiProcessingJob, "id" | "status" | "outputFileIds" | "createdBy" | "createdAt" | "updatedAt" | "errorMessage">,
+  ) {
+    this.requireRole(user, [...privilegedRoles, "service"]);
+    const job = await this.prisma.processingJob.create({
+      data: {
+        type: input.type as DbProcessingJobType,
+        status: "queued",
+        inputFileIds: input.inputFileIds,
+        outputFileIds: [],
+        documentId: input.documentId ?? null,
+        createdBy: user.id,
+      },
+    });
+    return toProcessingJob(job);
+  }
+
+  private async assertFileVisible(user: ApiUser, fileId: string) {
+    const file = await this.prisma.fileObject.findUnique({ where: { id: fileId } });
+    if (!file) {
+      throw notFound("文件不存在。");
+    }
+    if (file.ownerUserId !== user.id && !this.hasAnyRole(user, privilegedRoles)) {
       throw forbidden();
     }
   }
 
-  private assertProjectManageable(user: ApiUser, projectId: string) {
-    if (this.hasAnyRole(user, ["super_admin", "admin", "teacher", "ta"])) {
+  private async assertProjectVisible(user: ApiUser, projectId: string) {
+    if (this.hasAnyRole(user, privilegedRoles)) {
       return;
     }
-    const project = this.projects.get(projectId);
-    if (!project) {
-      throw notFound("项目不存在。");
+    const grant = await this.prisma.permissionGrant.findFirst({
+      where: {
+        userId: user.id,
+        projectId,
+        actions: { has: "view" },
+      },
+    });
+    if (!grant) {
+      throw forbidden();
     }
-    throw forbidden();
+  }
+
+  private async assertProjectManageable(user: ApiUser, projectId: string) {
+    if (this.hasAnyRole(user, privilegedRoles)) {
+      const project = await this.prisma.annotationProject.findUnique({ where: { id: projectId } });
+      if (!project) {
+        throw notFound("项目不存在。");
+      }
+      return;
+    }
+    const grant = await this.prisma.permissionGrant.findFirst({
+      where: {
+        userId: user.id,
+        projectId,
+        actions: { has: "manage" },
+      },
+    });
+    if (!grant) {
+      throw forbidden();
+    }
   }
 
   private requireRole(user: ApiUser, allowedRoles: ApiRole[]) {
@@ -314,67 +454,23 @@ export class InMemoryPlatformRepository {
     return user.roles.some((role) => allowedRoles.includes(role));
   }
 
-  private canDocumentGrant(userId: string, document: ApiAnnotationDocument, action: ApiPermissionGrant["actions"][number]) {
-    return document.grants.some((grant) => grant.userId === userId && grant.actions.includes(action));
+  private canDocumentGrant(userId: string, grants: GrantRecord[], action: ApiPermissionGrant["actions"][number]) {
+    return grants.some((grant) => grant.userId === userId && grant.actions.includes(action));
   }
 
-  private getDocumentOrThrow(documentId: string) {
-    const document = this.documents.get(documentId);
+  private async getDocumentOrThrow(documentId: string) {
+    const document = await this.prisma.annotationDocument.findUnique({
+      where: { id: documentId },
+      include: documentInclude,
+    });
     if (!document) {
       throw notFound("标注文档不存在。");
     }
     return document;
   }
 
-  private expandDocument(document: ApiAnnotationDocument) {
-    const project = this.projects.get(document.projectId);
-    const mediaAsset = project ? this.mediaAssets.get(project.mediaAssetId) : null;
-    if (!project || !mediaAsset) {
-      throw notFound("标注文档关联的项目或媒体不存在。");
-    }
-    return {
-      ...document,
-      project,
-      mediaAsset,
-    };
-  }
-
-  private createSnapshot(documentId: string, payload: unknown, revision: number, userId: string): ApiAnnotationSnapshot {
-    return {
-      id: `snapshot-${randomUUID()}`,
-      documentId,
-      revision,
-      payload,
-      createdBy: userId,
-      createdAt: new Date().toISOString(),
-    };
-  }
-
-  private createGrant(
-    userId: string,
-    projectId: string,
-    documentId: string,
-    actions: ApiPermissionGrant["actions"],
-  ): ApiPermissionGrant {
-    return {
-      id: `grant-${randomUUID()}`,
-      userId,
-      actions,
-      scope: {
-        projectId,
-        documentId,
-      },
-      expiresAt: null,
-      createdAt: new Date().toISOString(),
-    };
-  }
-
-  private toPublicUser(user: SeedUser): ApiUser {
-    return {
-      id: user.id,
-      accountName: user.accountName,
-      displayName: user.displayName,
-      roles: user.roles,
-    };
+  private getAuthTokenTtlMs() {
+    const days = Number(process.env.XIQU_AUTH_TOKEN_DAYS ?? 14);
+    return Math.max(1, days) * 24 * 60 * 60 * 1000;
   }
 }
