@@ -1053,6 +1053,22 @@ select {
   position: relative;
   min-height: 280px;
   isolation: isolate;
+  /* 时间轴层级约定：普通轨道 < 粘性轨道头 < 悬浮媒体轨 < 时间指示线。 */
+  --timeline-layer-grid: 2;
+  --timeline-layer-loop-overlay: 3;
+  --timeline-layer-track-item: 4;
+  --timeline-layer-track-boundary: 6;
+  --timeline-layer-track-drop: 7;
+  --timeline-layer-track-item-hover: 8;
+  --timeline-layer-track-item-active: 10;
+  --timeline-layer-track-input: 11;
+  --timeline-layer-drag: 12;
+  --timeline-layer-track-header: 30;
+  --timeline-layer-floating-deck: 60;
+  --timeline-layer-fixed-controls: 70;
+  --timeline-layer-selection: 80;
+  --timeline-layer-transient-guide: 82;
+  --timeline-layer-time-guide: 90;
 }
 
 .timeline-ruler {
@@ -1060,8 +1076,8 @@ select {
   top: 0;
   height: 28px;
   border-bottom: 1px solid var(--border);
-  background: rgba(243, 246, 250, 0.98);
-  z-index: 6;
+  background: #f3f6fa;
+  z-index: var(--timeline-layer-fixed-controls);
   cursor: ew-resize;
   user-select: none;
   touch-action: none;
@@ -1072,8 +1088,8 @@ select {
   top: 28px;
   height: 18px;
   border-bottom: 1px solid rgba(31, 41, 55, 0.08);
-  background: rgba(239, 243, 248, 0.98);
-  z-index: 6;
+  background: #eff3f8;
+  z-index: var(--timeline-layer-fixed-controls);
   cursor: crosshair;
   user-select: none;
   touch-action: none;
@@ -1134,8 +1150,8 @@ select {
 .timeline-top-deck {
   position: sticky;
   top: 46px;
-  z-index: 9;
-  background: linear-gradient(180deg, rgba(243, 246, 250, 0.98), rgba(239, 243, 248, 0.96));
+  z-index: var(--timeline-layer-floating-deck);
+  background: linear-gradient(180deg, #f3f6fa, #eff3f8);
   box-shadow: 0 1px 0 rgba(188, 198, 211, 0.88);
 }
 
@@ -1159,7 +1175,7 @@ select {
 .line-focus-layer {
   position: relative;
   height: 18px;
-  background: rgba(243, 246, 250, 0.98);
+  background: #f3f6fa;
   border-bottom: 1px dashed rgba(31, 41, 55, 0.1);
 }
 
@@ -1188,12 +1204,12 @@ select {
   left: 0;
   right: 0;
   pointer-events: none;
-  z-index: 2;
+  z-index: var(--timeline-layer-grid);
 }
 
 .timeline-banyan-grid-lines-floating {
   top: 0;
-  z-index: 4;
+  z-index: calc(var(--timeline-layer-grid) + 2);
 }
 
 .timeline-banyan-grid-line {
@@ -1260,7 +1276,7 @@ select {
 
 .timeline-track.drag-source {
   overflow: visible;
-  z-index: 12;
+  z-index: var(--timeline-layer-drag);
 }
 
 .timeline-track.drop-target-before::after,
@@ -1273,7 +1289,7 @@ select {
   background: rgba(15, 108, 189, 0.7);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
   pointer-events: none;
-  z-index: 7;
+  z-index: var(--timeline-layer-track-drop);
 }
 
 .timeline-track.drop-target-before::after {
@@ -1287,7 +1303,7 @@ select {
 .track-label {
   position: sticky;
   left: 0;
-  z-index: 30;
+  z-index: var(--timeline-layer-track-header);
   box-sizing: border-box;
   height: 100%;
   display: flex;
@@ -1322,7 +1338,7 @@ select {
 
 .track-label.dragging {
   opacity: 0.78;
-  z-index: 31;
+  z-index: calc(var(--timeline-layer-track-header) + 1);
   transition: none;
   box-shadow:
     0 12px 24px rgba(15, 23, 42, 0.18),
@@ -1625,7 +1641,7 @@ select {
   width: 1px;
   border-left: 1px dashed rgba(15, 108, 189, 0.42);
   pointer-events: none;
-  z-index: 1;
+  z-index: var(--timeline-layer-grid);
 }
 
 .waveform-detail-svg {
@@ -1671,7 +1687,7 @@ select {
   align-items: center;
   justify-content: center;
   cursor: ns-resize;
-  z-index: 9;
+  z-index: var(--timeline-layer-track-item-active);
 }
 
 .waveform-track-bottom-resize-handle {
@@ -1684,7 +1700,7 @@ select {
   align-items: center;
   justify-content: center;
   cursor: ns-resize;
-  z-index: 6;
+  z-index: var(--timeline-layer-track-boundary);
 }
 
 .waveform-track-resize-grip {
@@ -2180,6 +2196,7 @@ select {
   overflow: hidden;
   cursor: grab;
   transition: box-shadow 120ms ease, outline-color 120ms ease, transform 120ms ease;
+  z-index: var(--timeline-layer-track-item);
 }
 
 .timeline-block.character {
@@ -2208,25 +2225,30 @@ select {
 
 .timeline-block.selected {
   outline: 2px solid rgba(15, 108, 189, 0.5);
+  z-index: var(--timeline-layer-track-item-active);
 }
 
 .timeline-block.active {
   box-shadow: inset 0 0 0 1px rgba(15, 108, 189, 0.36), 0 0 0 2px rgba(15, 108, 189, 0.14);
+  z-index: var(--timeline-layer-track-item-active);
 }
 
 .timeline-block.hover-move {
   box-shadow: inset 0 0 0 1px rgba(15, 108, 189, 0.28), 0 0 0 2px rgba(15, 108, 189, 0.12);
   transform: translateY(-1px);
+  z-index: var(--timeline-layer-track-item-hover);
 }
 
 .timeline-block.hover-resize-left,
 .timeline-block.hover-resize-right {
   box-shadow: inset 0 0 0 1px rgba(15, 108, 189, 0.24), 0 0 0 2px rgba(15, 108, 189, 0.1);
+  z-index: var(--timeline-layer-track-item-hover);
 }
 
 .timeline-block.hover-linked-left,
 .timeline-block.hover-linked-right {
   box-shadow: inset 0 0 0 1px rgba(8, 145, 178, 0.32), 0 0 0 2px rgba(14, 165, 233, 0.14);
+  z-index: var(--timeline-layer-track-item-hover);
 }
 
 .timeline-block.hover-resize-left::before,
@@ -2270,6 +2292,7 @@ select {
 .timeline-block.draft {
   opacity: 0.7;
   pointer-events: none;
+  z-index: var(--timeline-layer-track-item-hover);
 }
 
 .timeline-point-marker {
@@ -2282,7 +2305,7 @@ select {
   border: 0;
   background: transparent;
   cursor: grab;
-  z-index: 4;
+  z-index: var(--timeline-layer-track-item);
 }
 
 .timeline-point-marker:active {
@@ -2290,7 +2313,7 @@ select {
 }
 
 .timeline-point-marker:hover {
-  z-index: 7;
+  z-index: var(--timeline-layer-track-item-hover);
 }
 
 .timeline-point-stem {
@@ -2370,7 +2393,7 @@ select {
   border: 0;
   background: transparent;
   cursor: grab;
-  z-index: 5;
+  z-index: var(--timeline-layer-track-item);
 }
 
 .timeline-banyan-mark:active {
@@ -2378,7 +2401,7 @@ select {
 }
 
 .timeline-banyan-mark:hover {
-  z-index: 8;
+  z-index: var(--timeline-layer-track-item-hover);
 }
 
 .timeline-banyan-stem {
@@ -2464,7 +2487,7 @@ select {
   cursor: grab;
   overflow: hidden;
   user-select: none;
-  z-index: 4;
+  z-index: var(--timeline-layer-track-item);
 }
 
 .timeline-gongche-block:active {
@@ -2474,10 +2497,12 @@ select {
 .timeline-gongche-block.selected {
   outline: 2px solid rgba(85, 107, 47, 0.36);
   background: rgba(242, 249, 230, 0.82);
+  z-index: var(--timeline-layer-track-item-active);
 }
 
 .timeline-gongche-block.active {
   box-shadow: inset 0 0 0 1px rgba(85, 107, 47, 0.22), 0 0 0 2px rgba(132, 153, 78, 0.12);
+  z-index: var(--timeline-layer-track-item-active);
 }
 
 .timeline-gongche-line {
@@ -2797,7 +2822,7 @@ select {
   width: 12px;
   transform: translateX(-50%);
   cursor: ew-resize;
-  z-index: 3;
+  z-index: var(--timeline-layer-track-boundary);
 }
 
 .timeline-gongche-boundary::after {
@@ -2834,7 +2859,7 @@ select {
   background: rgba(15, 108, 189, 0.12);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
   pointer-events: none;
-  z-index: 11;
+  z-index: var(--timeline-layer-selection);
 }
 
 .timeline-snap-guide {
@@ -2846,7 +2871,7 @@ select {
   background: linear-gradient(180deg, rgba(14, 165, 233, 0.92), rgba(59, 130, 246, 0.78));
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.82), 0 0 12px rgba(14, 165, 233, 0.28);
   pointer-events: none;
-  z-index: 12;
+  z-index: var(--timeline-layer-transient-guide);
 }
 
 .timeline-snap-guide.left::before,
@@ -2872,7 +2897,7 @@ select {
   font-size: 13px;
   font-weight: 600;
   line-height: 1.2;
-  z-index: 2;
+  z-index: var(--timeline-layer-track-input);
 }
 
 .resize-handle {
@@ -3193,7 +3218,7 @@ select {
   border-left: 1px solid rgba(37, 99, 235, 0.2);
   border-right: 1px solid rgba(37, 99, 235, 0.2);
   pointer-events: none;
-  z-index: 2;
+  z-index: var(--timeline-layer-loop-overlay);
 }
 
 .timeline-loop-range-overlay:not(.active) {
@@ -3274,12 +3299,12 @@ select {
   transform: translateX(-50%);
   background: linear-gradient(180deg, #ef4444, #f97316);
   box-shadow: 0 0 0 1px rgba(255,255,255,0.5);
-  z-index: 14;
+  z-index: var(--timeline-layer-time-guide);
   pointer-events: none;
 }
 
 .playhead.playhead-sticky-overlay {
-  z-index: 15;
+  z-index: var(--timeline-layer-time-guide);
 }
 
 .timeline-preview-guide {
@@ -3295,7 +3320,7 @@ select {
       rgba(15, 108, 189, 0.15) 8px 14px
     );
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.45), 0 0 10px rgba(15, 108, 189, 0.18);
-  z-index: 13;
+  z-index: var(--timeline-layer-time-guide);
   pointer-events: none;
 }
 
