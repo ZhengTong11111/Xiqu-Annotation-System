@@ -68,7 +68,7 @@ import {
   buildSpectrogramData,
   defaultSpectrogramSettings,
 } from "./utils/spectrogram";
-import { generateBanyanMarksFromGongche } from "./utils/banyan";
+import { generateBanyanMarksFromGongche, getBanyanSubtypeLabel } from "./utils/banyan";
 
 type CharacterEditLocation = "timeline" | "split-panel";
 type CharacterLineAction =
@@ -311,6 +311,28 @@ type TimelineContextMenu =
       y: number;
       time: number;
     };
+
+const BANYAN_CONTEXT_SUBTYPE_GROUPS: Array<{
+  label: string;
+  role: BanyanMark["role"];
+  subtypes: BanyanMark["subtype"][];
+}> = [
+  {
+    label: "板",
+    role: "ban",
+    subtypes: ["mainBan", "headBan", "waistBan", "bottomBan", "zengBan", "waistZengBan"],
+  },
+  {
+    label: "眼",
+    role: "yan",
+    subtypes: ["middleEye", "smallEye", "sideHeadTailEye", "sideMiddleEye"],
+  },
+  {
+    label: "辅助",
+    role: "auxiliary",
+    subtypes: ["phraseBoundary", "unknown"],
+  },
+];
 
 const CHARACTER_CREATE_ATTACH_WINDOW = 1;
 const DEFAULT_CHARACTER_DURATION = 1.05;
@@ -909,6 +931,10 @@ function App() {
   const contextMenuCustomTrack = contextMenuCustomBlock
     ? project.customTracks.find((track) => track.id === contextMenuCustomBlock.trackId) ?? null
     : null;
+  const contextMenuAttachedPointTrackLocation = blockContextMenu?.type === "attached-point"
+    ? findPointTrackLocation(project, blockContextMenu.trackId)
+    : null;
+  const contextMenuAttachedPointTrack = contextMenuAttachedPointTrackLocation?.pointTrack ?? null;
   const canPasteTimelineClipboard = Boolean(timelineClipboard?.items.length);
 
   useLayoutEffect(() => {
@@ -1524,6 +1550,132 @@ function App() {
 
   function applyCustomBlockType(trackId: string, blockId: string, type: string) {
     updateCustomBlock(trackId, blockId, { type });
+  }
+
+  function applyAttachedPointLabel(pointTrackId: string, pointId: string, label: string) {
+    updateAttachedPoint(pointTrackId, pointId, { label });
+  }
+
+  function applyBanyanMarkSubtype(id: string, subtype: BanyanMark["subtype"]) {
+    updateBanyanMark(id, {
+      subtype,
+      role: getBanyanRoleForSubtype(subtype),
+      confidence: "manual",
+    });
+  }
+
+  function createContextMenuTypeOption(target: Exclude<TimelineContextMenu["type"], "lane" | "gongche-block" | "banyan-mark">) {
+    if (!blockContextMenu || blockContextMenu.type !== target) {
+      return;
+    }
+    const rawValue = window.prompt("新建类型名称");
+    const nextType = normalizeNewTypeOption(rawValue);
+    if (!nextType) {
+      return;
+    }
+    const currentProject = projectRef.current;
+
+    if (target === "character") {
+      const character = currentProject.characterAnnotations.find((item) => item.id === blockContextMenu.id);
+      const track = currentProject.builtinTracks.find((item) => item.id === "character-track");
+      if (!character || !track) {
+        return;
+      }
+      const nextOptions = appendUniqueTypeOption(track.options ?? [], nextType);
+      commitProject({
+        ...currentProject,
+        builtinTracks: currentProject.builtinTracks.map((item) =>
+          item.id === "character-track" ? { ...item, options: nextOptions } : item,
+        ),
+        characterAnnotations: currentProject.characterAnnotations.map((item) =>
+          item.id === character.id ? { ...item, singingStyle: nextType } : item,
+        ),
+      });
+      setBlockContextMenu(null);
+      return;
+    }
+
+    if (target === "action") {
+      const action = currentProject.actionAnnotations.find((item) => item.id === blockContextMenu.id);
+      if (!action) {
+        return;
+      }
+      const track = currentProject.builtinTracks.find((item) => item.id === action.trackId);
+      const nextOptions = appendUniqueTypeOption(track?.options ?? [], nextType);
+      commitProject({
+        ...currentProject,
+        builtinTracks: currentProject.builtinTracks.map((item) =>
+          item.id === action.trackId ? { ...item, options: nextOptions } : item,
+        ),
+        actionAnnotations: currentProject.actionAnnotations.map((item) =>
+          item.id === action.id ? { ...item, label: nextType } : item,
+        ),
+      });
+      setBlockContextMenu(null);
+      return;
+    }
+
+    if (target === "custom-block") {
+      const customBlockMenu = blockContextMenu;
+      const targetTrack = currentProject.customTracks.find((track) => track.id === customBlockMenu.trackId);
+      if (!targetTrack) {
+        return;
+      }
+      commitProject({
+        ...currentProject,
+        customTracks: currentProject.customTracks.map((track) =>
+          track.id === targetTrack.id
+            ? {
+                ...track,
+                typeOptions: appendUniqueTypeOption(track.typeOptions, nextType),
+                blocks: track.blocks.map((block) =>
+                  block.id === customBlockMenu.id ? { ...block, type: nextType } : block,
+                ) as CustomTrack["blocks"],
+              } as CustomTrack
+            : track,
+        ),
+      });
+      setBlockContextMenu(null);
+      return;
+    }
+
+    if (target === "attached-point") {
+      const pointMenu = blockContextMenu;
+      const location = findPointTrackLocation(currentProject, pointMenu.trackId);
+      if (!location) {
+        return;
+      }
+      const updateTrackList = (pointTracks: AttachedPointTrack[]) =>
+        pointTracks.map((pointTrack) =>
+          pointTrack.id === pointMenu.trackId
+            ? {
+                ...pointTrack,
+                typeOptions: appendUniqueTypeOption(pointTrack.typeOptions, nextType),
+                points: pointTrack.points.map((point) =>
+                  point.id === pointMenu.id ? { ...point, label: nextType } : point,
+                ),
+              }
+            : pointTrack,
+        );
+      commitProject({
+        ...currentProject,
+        builtinTracks: location.parentType === "builtin"
+          ? currentProject.builtinTracks.map((track) =>
+              track.id === location.parentTrack.id
+                ? { ...track, attachedPointTracks: updateTrackList(track.attachedPointTracks) }
+                : track,
+            )
+          : currentProject.builtinTracks,
+        customTracks: location.parentType === "custom"
+          ? currentProject.customTracks.map((track) =>
+              track.id === location.parentTrack.id
+                ? { ...track, attachedPointTracks: updateTrackList(track.attachedPointTracks) } as CustomTrack
+                : track,
+            )
+          : currentProject.customTracks,
+      });
+      setBlockContextMenu(null);
+    }
   }
 
   function getCopyableTimelineSelection(currentProject: ProjectData) {
@@ -4347,6 +4499,13 @@ function App() {
                   {contextMenuCharacter.singingStyle === style ? `✓ ${style}` : style}
                 </button>
               ))}
+              <div className="character-context-menu-divider" />
+              <button
+                type="button"
+                onClick={() => createContextMenuTypeOption("character")}
+              >
+                新建类型...
+              </button>
             </>
           ) : null}
           {contextMenuAction ? (
@@ -4394,6 +4553,13 @@ function App() {
                   {contextMenuAction.label === label ? `✓ ${label}` : label}
                 </button>
               ))}
+              <div className="character-context-menu-divider" />
+              <button
+                type="button"
+                onClick={() => createContextMenuTypeOption("action")}
+              >
+                新建类型...
+              </button>
             </>
           ) : null}
           {contextMenuCustomBlock && contextMenuCustomTrack ? (
@@ -4441,6 +4607,13 @@ function App() {
                   {contextMenuCustomBlock.type === option ? `✓ ${option}` : option}
                 </button>
               ))}
+              <div className="character-context-menu-divider" />
+              <button
+                type="button"
+                onClick={() => createContextMenuTypeOption("custom-block")}
+              >
+                新建类型...
+              </button>
             </>
           ) : null}
           {contextMenuAttachedPoint ? (
@@ -4480,6 +4653,33 @@ function App() {
                 }}
               >
                 删除
+              </button>
+              <div className="character-context-menu-divider" />
+              <div className="character-context-menu-label">
+                {contextMenuAttachedPointTrack?.name ?? "点类型"}
+              </div>
+              {(contextMenuAttachedPointTrack?.typeOptions ?? [contextMenuAttachedPoint.label]).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={contextMenuAttachedPoint.label === option ? "menu-option-active" : ""}
+                  onClick={() => {
+                    if (blockContextMenu?.type !== "attached-point") {
+                      return;
+                    }
+                    applyAttachedPointLabel(blockContextMenu.trackId, contextMenuAttachedPoint.id, option);
+                    setBlockContextMenu(null);
+                  }}
+                >
+                  {contextMenuAttachedPoint.label === option ? `✓ ${option}` : option}
+                </button>
+              ))}
+              <div className="character-context-menu-divider" />
+              <button
+                type="button"
+                onClick={() => createContextMenuTypeOption("attached-point")}
+              >
+                新建类型...
               </button>
             </>
           ) : null}
@@ -4521,6 +4721,27 @@ function App() {
               >
                 删除
               </button>
+              <div className="character-context-menu-divider" />
+              {BANYAN_CONTEXT_SUBTYPE_GROUPS.map((group) => (
+                <div key={group.role}>
+                  <div className="character-context-menu-label">{group.label}</div>
+                  {group.subtypes.map((subtype) => (
+                    <button
+                      key={subtype}
+                      type="button"
+                      className={contextMenuBanyanMark.subtype === subtype ? "menu-option-active" : ""}
+                      onClick={() => {
+                        applyBanyanMarkSubtype(contextMenuBanyanMark.id, subtype);
+                        setBlockContextMenu(null);
+                      }}
+                    >
+                      {contextMenuBanyanMark.subtype === subtype
+                        ? `✓ ${getBanyanSubtypeLabel(subtype)}`
+                        : getBanyanSubtypeLabel(subtype)}
+                    </button>
+                  ))}
+                </div>
+              ))}
             </>
           ) : null}
           {contextMenuGongcheBlock ? (
@@ -5442,6 +5663,37 @@ function mergeUniqueStrings(currentValues: string[], nextValues: string[]) {
     }
   }
   return result;
+}
+
+function normalizeNewTypeOption(value: string | null) {
+  const normalizedValue = value?.trim() ?? "";
+  return normalizedValue.length > 0 ? normalizedValue : null;
+}
+
+function appendUniqueTypeOption(options: string[], nextOption: string) {
+  return options.includes(nextOption) ? options : [...options, nextOption];
+}
+
+function getBanyanRoleForSubtype(subtype: BanyanMark["subtype"]): BanyanMark["role"] {
+  if (
+    subtype === "mainBan" ||
+    subtype === "headBan" ||
+    subtype === "waistBan" ||
+    subtype === "bottomBan" ||
+    subtype === "zengBan" ||
+    subtype === "waistZengBan"
+  ) {
+    return "ban";
+  }
+  if (
+    subtype === "middleEye" ||
+    subtype === "smallEye" ||
+    subtype === "sideHeadTailEye" ||
+    subtype === "sideMiddleEye"
+  ) {
+    return "yan";
+  }
+  return "auxiliary";
 }
 
 function areCharactersEquivalent(left: CharacterAnnotation, right: CharacterAnnotation) {
