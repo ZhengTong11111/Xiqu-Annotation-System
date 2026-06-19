@@ -5,6 +5,7 @@ type FloatingPanelWindowProps = {
   title: string;
   targetWindow: Window;
   onClose: () => void;
+  onGlobalKeyDown?: (event: KeyboardEvent) => void;
   children: ReactNode;
 };
 
@@ -12,14 +13,20 @@ export function FloatingPanelWindow({
   title,
   targetWindow,
   onClose,
+  onGlobalKeyDown,
   children,
 }: FloatingPanelWindowProps) {
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const onCloseRef = useRef(onClose);
+  const onGlobalKeyDownRef = useRef(onGlobalKeyDown);
 
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
+
+  useEffect(() => {
+    onGlobalKeyDownRef.current = onGlobalKeyDown;
+  }, [onGlobalKeyDown]);
 
   useEffect(() => {
     if (targetWindow.closed) {
@@ -43,6 +50,9 @@ export function FloatingPanelWindow({
     const handleBeforeUnload = () => {
       onCloseRef.current();
     };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      onGlobalKeyDownRef.current?.(event);
+    };
     const closedPoll = window.setInterval(() => {
       if (targetWindow.closed) {
         window.clearInterval(closedPoll);
@@ -51,10 +61,12 @@ export function FloatingPanelWindow({
     }, 500);
 
     targetWindow.addEventListener("beforeunload", handleBeforeUnload);
+    targetWindow.addEventListener("keydown", handleKeyDown);
     return () => {
       window.clearInterval(closedPoll);
       if (!targetWindow.closed) {
         targetWindow.removeEventListener("beforeunload", handleBeforeUnload);
+        targetWindow.removeEventListener("keydown", handleKeyDown);
       }
       setContainer(null);
     };

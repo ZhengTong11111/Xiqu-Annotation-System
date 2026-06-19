@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "./index.css";
 import { AppShell } from "./components/AppShell";
 import { FloatingPanelWindow } from "./components/FloatingPanelWindow";
@@ -753,95 +753,91 @@ function App() {
     waveformData,
   ]);
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-        event.preventDefault();
-        void saveProjectFile();
+  const handleGlobalKeyDown = useCallback((event: KeyboardEvent) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      void saveProjectFile();
+      return;
+    }
+    if (isEditableKeyboardTarget(event.target)) {
+      return;
+    }
+    if (event.code === "Space") {
+      event.preventDefault();
+      if (continuePlaybackAfterTemporaryLoop()) {
         return;
       }
-      if (isEditableKeyboardTarget(event.target)) {
-        return;
-      }
-      if (event.code === "Space") {
+      togglePlay();
+    }
+    if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "p") {
+      event.preventDefault();
+      playLoopFromRangeStart();
+    }
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      seekTo(currentTime - (event.shiftKey ? 1 : 0.04));
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      seekTo(currentTime + (event.shiftKey ? 1 : 0.04));
+    }
+    if (event.key === "Enter") {
+      if (selectedItem?.type === "character" && !editingCharacterId) {
         event.preventDefault();
-        if (continuePlaybackAfterTemporaryLoop()) {
-          return;
-        }
-        togglePlay();
+        startCharacterTextEdit(selectedItem.id, preferredCharacterEditLocationRef.current);
       }
-      if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "p") {
+      if (
+        selectedItem?.type === "custom-block" &&
+        !editingCustomTextBlock &&
+        findCustomBlock(projectRef.current.customTracks, selectedItem.trackId, selectedItem.id)?.trackType === "text"
+      ) {
         event.preventDefault();
-        playLoopFromRangeStart();
+        startCustomTextEdit(selectedItem.trackId, selectedItem.id);
       }
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        seekTo(currentTime - (event.shiftKey ? 1 : 0.04));
-      }
-      if (event.key === "ArrowRight") {
-        event.preventDefault();
-        seekTo(currentTime + (event.shiftKey ? 1 : 0.04));
-      }
-      if (event.key === "Enter") {
-        if (selectedItem?.type === "character" && !editingCharacterId) {
-          event.preventDefault();
-          startCharacterTextEdit(selectedItem.id, preferredCharacterEditLocationRef.current);
-        }
-        if (
-          selectedItem?.type === "custom-block" &&
-          !editingCustomTextBlock &&
-          findCustomBlock(projectRef.current.customTracks, selectedItem.trackId, selectedItem.id)?.trackType === "text"
-        ) {
-          event.preventDefault();
-          startCustomTextEdit(selectedItem.trackId, selectedItem.id);
-        }
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
-        event.preventDefault();
-        if (event.shiftKey) {
-          redo();
-        } else {
-          undo();
-        }
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "y") {
-        event.preventDefault();
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      if (event.shiftKey) {
         redo();
+      } else {
+        undo();
       }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "y") {
+      event.preventDefault();
+      redo();
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+      event.preventDefault();
+      selectAllTimelineItems();
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
+      event.preventDefault();
+      copyTimelineSelection();
+      closeTimelineContextMenu();
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "x") {
+      event.preventDefault();
+      cutTimelineSelection();
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") {
+      event.preventDefault();
+      pasteTimelineClipboard();
+    }
+    if (event.key === "Delete" || event.key === "Backspace") {
+      if (
+        selectedTimelineItems.length > 0 ||
+        selectedItem?.type === "character" ||
+        selectedItem?.type === "action" ||
+        selectedItem?.type === "custom-block" ||
+        selectedItem?.type === "gongche-block" ||
+        selectedItem?.type === "attached-point" ||
+        selectedItem?.type === "banyan-mark"
+      ) {
         event.preventDefault();
-        selectAllTimelineItems();
+        deleteSelected();
       }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
-        event.preventDefault();
-        copyTimelineSelection();
-        closeTimelineContextMenu();
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "x") {
-        event.preventDefault();
-        cutTimelineSelection();
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") {
-        event.preventDefault();
-        pasteTimelineClipboard();
-      }
-      if (event.key === "Delete" || event.key === "Backspace") {
-        if (
-          selectedTimelineItems.length > 0 ||
-          selectedItem?.type === "character" ||
-          selectedItem?.type === "action" ||
-          selectedItem?.type === "custom-block" ||
-          selectedItem?.type === "gongche-block" ||
-          selectedItem?.type === "attached-point" ||
-          selectedItem?.type === "banyan-mark"
-        ) {
-          event.preventDefault();
-          deleteSelected();
-        }
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    }
   }, [
     currentTime,
     editingCharacterId,
@@ -858,6 +854,11 @@ function App() {
     loopPlaybackRange,
     loopPlaybackEnabled,
   ]);
+
+  useEffect(() => {
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [handleGlobalKeyDown]);
 
   useEffect(() => {
     const preventPageZoom = (event: WheelEvent) => {
@@ -4436,6 +4437,7 @@ function App() {
             title="视频播放器"
             targetWindow={previewDetachedWindow}
             onClose={closePreviewDetachedWindow}
+            onGlobalKeyDown={handleGlobalKeyDown}
           >
             {renderPreviewWorkspace(true)}
           </FloatingPanelWindow>
@@ -4445,6 +4447,7 @@ function App() {
             title="多轨时间轴"
             targetWindow={timelineDetachedWindow}
             onClose={closeTimelineDetachedWindow}
+            onGlobalKeyDown={handleGlobalKeyDown}
           >
             {renderTimelineWorkspace(true)}
           </FloatingPanelWindow>
