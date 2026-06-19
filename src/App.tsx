@@ -60,6 +60,7 @@ import {
 import {
   exportCharacterTrackToSrt,
   exportSingingStyleTrackToSrt,
+  formatSecondsToSrtTime,
   parseSrt,
 } from "./utils/srt";
 import {
@@ -922,6 +923,9 @@ function App() {
   const contextMenuSplitCharacters = contextMenuCharacter
     ? getSplittableCharacters(contextMenuCharacter.char)
     : [];
+  const selectedCharacterLineMergeContext = contextMenuCharacter
+    ? getSelectedCharacterLineMergeContext(contextMenuCharacter.id, project)
+    : null;
   const contextMenuCharacterTrack = timelineTrackDefinitions.find((track) => track.id === "character-track") ?? null;
   const contextMenuActionTrack = contextMenuAction
     ? timelineTrackDefinitions.find((track) => track.id === contextMenuAction.trackId) ?? null
@@ -966,7 +970,16 @@ function App() {
     setBlockContextMenuPosition((current) =>
       current?.left === left && current?.top === top ? current : { left, top },
     );
-  }, [blockContextMenu, contextMenuSplitCharacters.length, contextMenuActionTrack, project.characterAnnotations, project.actionAnnotations]);
+  }, [
+    blockContextMenu,
+    contextMenuSplitCharacters.length,
+    contextMenuActionTrack,
+    selectedCharacterLineMergeContext?.selectedCharacters.length,
+    selectedCharacterLineMergeContext?.canMergeIntoPrevious,
+    selectedCharacterLineMergeContext?.canMergeIntoNext,
+    project.characterAnnotations,
+    project.actionAnnotations,
+  ]);
 
   useEffect(() => {
     if (!editingCharacterId) {
@@ -2823,6 +2836,93 @@ function App() {
     commitProject(splitProject);
   }
 
+  function getSelectedCharacterLineMergeContext(
+    triggerCharacterId: string,
+    currentProject: ProjectData = projectRef.current,
+  ) {
+    if (
+      selectedTimelineItems.length < 2 ||
+      !selectedTimelineItems.every((item) => item.type === "character") ||
+      !selectedTimelineItems.some((item) => item.id === triggerCharacterId)
+    ) {
+      return null;
+    }
+
+    const selectedIds = new Set(selectedTimelineItems.map((item) => item.id));
+    const sortedCharacters = sortCharactersByTime(currentProject.characterAnnotations);
+    const selectedCharacters = sortedCharacters.filter((character) => selectedIds.has(character.id));
+    if (selectedCharacters.length !== selectedIds.size || selectedCharacters.length < 2) {
+      return null;
+    }
+
+    const firstCharacter = selectedCharacters[0];
+    const lastCharacter = selectedCharacters[selectedCharacters.length - 1];
+    const firstIndex = sortedCharacters.findIndex((character) => character.id === firstCharacter.id);
+    const lastIndex = sortedCharacters.findIndex((character) => character.id === lastCharacter.id);
+    if (firstIndex < 0 || lastIndex < firstIndex) {
+      return null;
+    }
+
+    const rangeCharacters = sortedCharacters.slice(firstIndex, lastIndex + 1);
+    const skippedCount = rangeCharacters.filter((character) => !selectedIds.has(character.id)).length;
+    const adjacentAvailability = getMergedCharacterLineAdjacentAvailability(currentProject, rangeCharacters);
+    return {
+      selectedCharacters,
+      rangeCharacters,
+      firstCharacter,
+      lastCharacter,
+      skippedCount,
+      canMergeIntoPrevious: adjacentAvailability.previous,
+      canMergeIntoNext: adjacentAvailability.next,
+    };
+  }
+
+  function mergeSelectedCharactersIntoLine(
+    triggerCharacterId: string,
+    mergeInto?: "previous" | "next",
+  ) {
+    const currentProject = projectRef.current;
+    const mergeContext = getSelectedCharacterLineMergeContext(triggerCharacterId, currentProject);
+    if (!mergeContext) {
+      return;
+    }
+
+    if (mergeContext.skippedCount > 0 && mergeContext.selectedCharacters.length > 2) {
+      const confirmed = window.confirm(
+        [
+          `当前选中了 ${mergeContext.selectedCharacters.length} 个字块，但首尾之间共有 ${mergeContext.rangeCharacters.length} 个字块，`,
+          `中间跳过了 ${mergeContext.skippedCount} 个未选字块。`,
+          "",
+          `首字：${formatCharacterMergeEndpoint(mergeContext.firstCharacter)}`,
+          `末字：${formatCharacterMergeEndpoint(mergeContext.lastCharacter)}`,
+          "",
+          "是否从首字合并到末字，并把中间未选字块也纳入新句？",
+        ].join("\n"),
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    const newLineId = `line-${crypto.randomUUID()}`;
+    const nextProject = buildProjectWithMergedCharacterLine(
+      currentProject,
+      mergeContext.rangeCharacters,
+      newLineId,
+    );
+    const finalResult = mergeInto
+      ? mergeCharacterLineIntoAdjacentLine(nextProject, newLineId, mergeInto)
+      : { project: nextProject, lineId: newLineId };
+
+    if (!finalResult) {
+      return;
+    }
+
+    commitProject(finalResult.project);
+    applySelection({ type: "line", id: finalResult.lineId });
+    setLineFocusRequest({ lineId: finalResult.lineId, requestId: Date.now() });
+  }
+
   function deleteSelected() {
     const currentProject = projectRef.current;
     const timelineSelection: TimelineSelectionItem[] = selectedTimelineItems.length > 0
@@ -4403,53 +4503,91 @@ function App() {
                 粘贴
               </button>
               <div className="character-context-menu-divider" />
-              {contextMenuSplitCharacters.length > 1 ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    applyCharacterLineAction(contextMenuCharacter.id, "split-block");
-                    setBlockContextMenu(null);
-                  }}
-                >
-                  拆分
-                </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => {
-                  applyCharacterLineAction(contextMenuCharacter.id, "set-line-start");
-                  setBlockContextMenu(null);
-                }}
-              >
-                设为本句首字
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  applyCharacterLineAction(contextMenuCharacter.id, "set-line-end");
-                  setBlockContextMenu(null);
-                }}
-              >
-                设为本句末字
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  applyCharacterLineAction(contextMenuCharacter.id, "merge-prev-line");
-                  setBlockContextMenu(null);
-                }}
-              >
-                并入前一句
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  applyCharacterLineAction(contextMenuCharacter.id, "merge-next-line");
-                  setBlockContextMenu(null);
-                }}
-              >
-                并入后一句
-              </button>
+              {selectedCharacterLineMergeContext ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      mergeSelectedCharactersIntoLine(contextMenuCharacter.id);
+                      setBlockContextMenu(null);
+                    }}
+                  >
+                    合并为一句
+                  </button>
+                  {selectedCharacterLineMergeContext.canMergeIntoPrevious ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        mergeSelectedCharactersIntoLine(contextMenuCharacter.id, "previous");
+                        setBlockContextMenu(null);
+                      }}
+                    >
+                      合并后并入前一句
+                    </button>
+                  ) : null}
+                  {selectedCharacterLineMergeContext.canMergeIntoNext ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        mergeSelectedCharactersIntoLine(contextMenuCharacter.id, "next");
+                        setBlockContextMenu(null);
+                      }}
+                    >
+                      合并后并入后一句
+                    </button>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  {contextMenuSplitCharacters.length > 1 ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        applyCharacterLineAction(contextMenuCharacter.id, "split-block");
+                        setBlockContextMenu(null);
+                      }}
+                    >
+                      拆分
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      applyCharacterLineAction(contextMenuCharacter.id, "set-line-start");
+                      setBlockContextMenu(null);
+                    }}
+                  >
+                    设为本句首字
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      applyCharacterLineAction(contextMenuCharacter.id, "set-line-end");
+                      setBlockContextMenu(null);
+                    }}
+                  >
+                    设为本句末字
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      applyCharacterLineAction(contextMenuCharacter.id, "merge-prev-line");
+                      setBlockContextMenu(null);
+                    }}
+                  >
+                    并入前一句
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      applyCharacterLineAction(contextMenuCharacter.id, "merge-next-line");
+                      setBlockContextMenu(null);
+                    }}
+                  >
+                    并入后一句
+                  </button>
+                </>
+              )}
               <div className="character-context-menu-divider" />
               <div className="character-context-menu-label">唱腔类型</div>
               {(contextMenuCharacterTrack?.options ?? [contextMenuCharacter.singingStyle]).map((style) => (
@@ -6522,6 +6660,176 @@ function sortSubtitleLines(lines: SubtitleLine[]) {
     left.endTime - right.endTime ||
     left.id.localeCompare(right.id),
   );
+}
+
+function formatCharacterMergeEndpoint(character: CharacterAnnotation) {
+  return `“${character.char}” ${formatSecondsToSrtTime(character.startTime)} - ${formatSecondsToSrtTime(character.endTime)}`;
+}
+
+function buildProjectWithMergedCharacterLine(
+  project: ProjectData,
+  rangeCharacters: CharacterAnnotation[],
+  newLineId: string,
+) {
+  const normalizedRangeCharacters = sortCharactersByTime(rangeCharacters);
+  if (normalizedRangeCharacters.length === 0) {
+    return project;
+  }
+
+  const rangeCharacterIds = new Set(normalizedRangeCharacters.map((character) => character.id));
+  const affectedLineIds = new Set(normalizedRangeCharacters.map((character) => character.lineId));
+  const lineIdReassignments = new Map<string, string>();
+  const replacementLines: SubtitleLine[] = [];
+  const allCharactersByTime = sortCharactersByTime(project.characterAnnotations);
+
+  for (const lineId of affectedLineIds) {
+    const originalLineCharacters = allCharactersByTime.filter((character) => character.lineId === lineId);
+    const originalIndexByCharacterId = new Map(
+      originalLineCharacters.map((character, index) => [character.id, index]),
+    );
+    const remainingCharacters = originalLineCharacters.filter((character) => !rangeCharacterIds.has(character.id));
+    const remainingSegments = splitCharactersByOriginalContinuity(remainingCharacters, originalIndexByCharacterId);
+
+    remainingSegments.forEach((segment, segmentIndex) => {
+      const targetLineId = segmentIndex === 0 ? lineId : `line-${crypto.randomUUID()}`;
+      for (const character of segment) {
+        lineIdReassignments.set(character.id, targetLineId);
+      }
+      replacementLines.push(buildSubtitleLineFromCharacters(targetLineId, segment));
+    });
+  }
+
+  for (const character of normalizedRangeCharacters) {
+    lineIdReassignments.set(character.id, newLineId);
+  }
+
+  const mergedLine = buildSubtitleLineFromCharacters(newLineId, normalizedRangeCharacters);
+  return {
+    ...project,
+    subtitleLines: sortSubtitleLines([
+      ...project.subtitleLines.filter((line) => !affectedLineIds.has(line.id)),
+      ...replacementLines,
+      mergedLine,
+    ]),
+    characterAnnotations: project.characterAnnotations.map((character) => {
+      const nextLineId = lineIdReassignments.get(character.id);
+      return nextLineId ? { ...character, lineId: nextLineId } : character;
+    }),
+  };
+}
+
+function mergeCharacterLineIntoAdjacentLine(
+  project: ProjectData,
+  lineId: string,
+  direction: "previous" | "next",
+) {
+  const sortedLines = sortSubtitleLines(project.subtitleLines);
+  const lineIndex = sortedLines.findIndex((line) => line.id === lineId);
+  const adjacentLine = direction === "previous"
+    ? sortedLines[lineIndex - 1]
+    : sortedLines[lineIndex + 1];
+  if (lineIndex < 0 || !adjacentLine) {
+    return null;
+  }
+
+  const nextProject = syncSubtitleLine({
+    ...project,
+    subtitleLines: project.subtitleLines.filter((line) => line.id !== lineId),
+    characterAnnotations: project.characterAnnotations.map((character) =>
+      character.lineId === lineId ? { ...character, lineId: adjacentLine.id } : character,
+    ),
+  }, adjacentLine.id);
+
+  return {
+    project: nextProject,
+    lineId: adjacentLine.id,
+  };
+}
+
+function getMergedCharacterLineAdjacentAvailability(
+  project: ProjectData,
+  rangeCharacters: CharacterAnnotation[],
+) {
+  const previewLineId = "__merged-character-line-preview__";
+  const previewLines = buildSubtitleLinesForMergedCharacterLinePreview(
+    project,
+    rangeCharacters,
+    previewLineId,
+  );
+  const lineIndex = previewLines.findIndex((line) => line.id === previewLineId);
+  return {
+    previous: lineIndex > 0,
+    next: lineIndex >= 0 && lineIndex < previewLines.length - 1,
+  };
+}
+
+function buildSubtitleLinesForMergedCharacterLinePreview(
+  project: ProjectData,
+  rangeCharacters: CharacterAnnotation[],
+  previewLineId: string,
+) {
+  const normalizedRangeCharacters = sortCharactersByTime(rangeCharacters);
+  if (normalizedRangeCharacters.length === 0) {
+    return sortSubtitleLines(project.subtitleLines);
+  }
+
+  const rangeCharacterIds = new Set(normalizedRangeCharacters.map((character) => character.id));
+  const affectedLineIds = new Set(normalizedRangeCharacters.map((character) => character.lineId));
+  const replacementLines: SubtitleLine[] = [];
+  const allCharactersByTime = sortCharactersByTime(project.characterAnnotations);
+
+  for (const lineId of affectedLineIds) {
+    const originalLineCharacters = allCharactersByTime.filter((character) => character.lineId === lineId);
+    const originalIndexByCharacterId = new Map(
+      originalLineCharacters.map((character, index) => [character.id, index]),
+    );
+    const remainingCharacters = originalLineCharacters.filter((character) => !rangeCharacterIds.has(character.id));
+    const remainingSegments = splitCharactersByOriginalContinuity(remainingCharacters, originalIndexByCharacterId);
+
+    remainingSegments.forEach((segment, segmentIndex) => {
+      replacementLines.push(buildSubtitleLineFromCharacters(
+        `${lineId}:preview-segment-${segmentIndex}`,
+        segment,
+      ));
+    });
+  }
+
+  return sortSubtitleLines([
+    ...project.subtitleLines.filter((line) => !affectedLineIds.has(line.id)),
+    ...replacementLines,
+    buildSubtitleLineFromCharacters(previewLineId, normalizedRangeCharacters),
+  ]);
+}
+
+function splitCharactersByOriginalContinuity(
+  characters: CharacterAnnotation[],
+  originalIndexByCharacterId: Map<string, number>,
+) {
+  const segments: CharacterAnnotation[][] = [];
+  for (const character of characters) {
+    const previousSegment = segments[segments.length - 1];
+    const previousCharacter = previousSegment?.[previousSegment.length - 1];
+    const currentIndex = originalIndexByCharacterId.get(character.id) ?? -1;
+    const previousIndex = previousCharacter
+      ? originalIndexByCharacterId.get(previousCharacter.id) ?? -1
+      : -1;
+    if (!previousSegment || currentIndex !== previousIndex + 1) {
+      segments.push([character]);
+      continue;
+    }
+    previousSegment.push(character);
+  }
+  return segments;
+}
+
+function buildSubtitleLineFromCharacters(lineId: string, characters: CharacterAnnotation[]): SubtitleLine {
+  const sortedCharacters = sortCharactersByTime(characters);
+  return {
+    id: lineId,
+    text: sortedCharacters.map((character) => character.char).join(""),
+    startTime: sortedCharacters[0].startTime,
+    endTime: sortedCharacters[sortedCharacters.length - 1].endTime,
+  };
 }
 
 function syncSubtitleLine(project: ProjectData, lineId: string) {
