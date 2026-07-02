@@ -2,7 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, RefObject } from "react";
 import type { ProjectSyncStatus } from "../state/projectDocumentState";
 
+export type TopMenuPlatformNavigation = {
+  label: string;
+  title: string;
+  onBack: () => void;
+};
+
 type TopMenuBarProps = {
+  platformNavigation?: TopMenuPlatformNavigation;
   isPlaying: boolean;
   playbackRate: number;
   loopPlaybackEnabled: boolean;
@@ -38,6 +45,7 @@ const playbackRates = [0.5, 0.75, 1, 1.25, 1.5];
 const menuOrder = ["文件", "编辑", "播放", "视图", "帮助"] as const;
 
 export function TopMenuBar({
+  platformNavigation,
   isPlaying,
   playbackRate,
   loopPlaybackEnabled,
@@ -112,6 +120,16 @@ export function TopMenuBar({
   return (
     <header className="top-menu-bar" ref={menuBarRef}>
       <div className="top-menu-brand">
+        {platformNavigation ? (
+          <button
+            type="button"
+            className="top-menu-platform-back"
+            title={platformNavigation.title}
+            onClick={platformNavigation.onBack}
+          >
+            {platformNavigation.label}
+          </button>
+        ) : null}
         <span className="top-menu-brand-dot" />
         <div className="top-menu-brand-copy">
           <strong>戏曲多轨标注工作台</strong>

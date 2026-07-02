@@ -17,6 +17,7 @@ import type {
   MediaAsset,
   PlatformUser,
 } from "../../packages/shared/src/index";
+import type { TopMenuPlatformNavigation } from "../components/TopMenuBar";
 
 export type PlatformEditorSession = {
   client: PlatformClient;
@@ -28,8 +29,19 @@ export type PlatformEditorSession = {
   onDocumentSaved: (document: AnnotationDocument<ProjectData>) => void;
 };
 
+export type LocalEditorSession = {
+  id: string;
+  title: string;
+  initialProject: ProjectData;
+  source: "demo" | "json";
+};
+
 type PlatformWorkspaceProps = {
-  renderEditor: (session: PlatformEditorSession | null) => JSX.Element;
+  renderEditor: (
+    session: PlatformEditorSession | null,
+    localSession: LocalEditorSession | null,
+    platformNavigation: TopMenuPlatformNavigation,
+  ) => JSX.Element;
 };
 
 type PlatformView = "login" | "home" | "editor";
@@ -53,6 +65,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
   const [editorSession, setEditorSession] = useState<PlatformEditorSession | null>(null);
+  const [localEditorSession, setLocalEditorSession] = useState<LocalEditorSession | null>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [newProjectTitle, setNewProjectTitle] = useState("");
   const [newDocumentTitle, setNewDocumentTitle] = useState("基准标注文档");
@@ -231,7 +244,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
 
   async function handleOpenSelectedDocument() {
     if (!selectedDocument) {
-      setView("editor");
+      openLocalDemoProject();
       return;
     }
     setIsLoading(true);
@@ -239,6 +252,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     try {
       const document = await client.getAnnotationDocument<ProjectData>(selectedDocument.id);
       setEditorSession(createEditorSession(document, client, handleDocumentSaved));
+      setLocalEditorSession(null);
       setView("editor");
     } catch (error) {
       setErrorMessage(getPlatformErrorMessage(error));
@@ -314,6 +328,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
 
   function handleDocumentSaved(document: AnnotationDocument<ProjectData>) {
     setEditorSession(createEditorSession(document, client, handleDocumentSaved));
+    setLocalEditorSession(null);
     setDocumentsByProjectId((current) => ({
       ...current,
       [document.projectId]: (current[document.projectId] ?? []).map((item) =>
@@ -341,24 +356,56 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setSelectedProjectId(null);
     setSelectedDocumentId(null);
     setEditorSession(null);
+    setLocalEditorSession(null);
     setVersionsByDocumentId({});
     setView("login");
   }
 
+  function openLocalDemoProject() {
+    setEditorSession(null);
+    setLocalEditorSession(createLocalEditorSession(mockProject, "本地示例项目", "demo"));
+    setView("editor");
+  }
+
+  async function handleOpenLocalProjectJson(file: File) {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const importedProject = await readProjectJsonFile(file);
+      setEditorSession(null);
+      setLocalEditorSession(createLocalEditorSession(
+        importedProject,
+        stripFileExtension(file.name) || "本地标注项目",
+        "json",
+      ));
+      setView("editor");
+    } catch (error) {
+      setErrorMessage(getPlatformErrorMessage(error));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  function handleLocalProjectFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (file) {
+      void handleOpenLocalProjectJson(file);
+    }
+    event.target.value = "";
+  }
+
   if (view === "editor") {
+    const isServerDocument = Boolean(editorSession);
+    const platformNavigation: TopMenuPlatformNavigation = {
+      label: isServerDocument || accessToken ? "← 平台" : "← 入口",
+      title: isServerDocument || accessToken ? "返回平台主页" : "返回登录与本地入口",
+      onBack: () => setView(isServerDocument || accessToken ? "home" : "login"),
+    };
+
     return (
       <div className="platform-editor-host">
-        <div className="platform-editor-return-bar">
-          <button type="button" onClick={() => setView("home")}>
-            返回平台主页
-          </button>
-          <span>
-            {editorSession?.projectTitle ?? selectedProject?.title ?? "本地标注项目"}
-            {editorSession?.documentTitle ? ` / ${editorSession.documentTitle}` : selectedDocument ? ` / ${selectedDocument.title}` : ""}
-          </span>
-        </div>
         <div className="platform-editor-body">
-          {renderEditor(editorSession)}
+          {renderEditor(editorSession, localEditorSession, platformNavigation)}
         </div>
       </div>
     );
@@ -398,12 +445,22 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
             <button type="submit" disabled={isLoading}>
               {isLoading ? "正在登录..." : "登录平台"}
             </button>
-            <button type="button" className="platform-secondary-button" onClick={() => {
-              setEditorSession(null);
-              setView("editor");
-            }}>
-              不登录，进入本地标注工具
-            </button>
+            <div className="platform-local-entry-panel">
+              <div>
+                <span className="platform-kicker">Local Workspace</span>
+                <strong>不登录，进入本地标注工具</strong>
+                <span>本地导入、编辑和保存 JSON，不连接服务器账号。</span>
+              </div>
+              <div className="platform-local-entry-actions">
+                <button type="button" className="platform-secondary-button" onClick={openLocalDemoProject}>
+                  新建本地示例项目
+                </button>
+                <label className="platform-file-button">
+                  打开本地项目 JSON
+                  <input type="file" accept="application/json,.json" onChange={handleLocalProjectFileChange} />
+                </label>
+              </div>
+            </div>
             <p className="platform-login-hint">开发账号：admin/admin123、ta/ta123、student/student123</p>
           </form>
         </section>
@@ -423,6 +480,13 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         </div>
         <div className="platform-user-box">
           <span>{user ? `${user.displayName} · ${user.roles.join("/")}` : "未连接账号"}</span>
+          <button type="button" onClick={openLocalDemoProject}>
+            本地工具
+          </button>
+          <label className="platform-topbar-file-button">
+            打开本地 JSON
+            <input type="file" accept="application/json,.json" onChange={handleLocalProjectFileChange} />
+          </label>
           <button type="button" onClick={() => void loadPlatformHome()} disabled={isLoading}>
             刷新
           </button>
@@ -662,6 +726,19 @@ function createEmptyProjectForFile(fileId: string, fileName: string, client: Pla
     source: "url",
     filePath: `${PLATFORM_FILE_PATH_PREFIX}${fileId}`,
   });
+}
+
+function createLocalEditorSession(
+  initialProject: ProjectData,
+  title: string,
+  source: LocalEditorSession["source"],
+): LocalEditorSession {
+  return {
+    id: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    title,
+    initialProject,
+    source,
+  };
 }
 
 function hydrateProjectForClient(payload: unknown, mediaAsset: MediaAsset, client: PlatformClient): ProjectData {

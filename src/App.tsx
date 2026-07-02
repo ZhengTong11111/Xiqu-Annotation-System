@@ -10,10 +10,11 @@ import { SpectrogramSettingsPanel } from "./components/SpectrogramSettingsPanel"
 import { SubtitleList } from "./components/SubtitleList";
 import { Timeline } from "./components/Timeline";
 import { TimelinePanel } from "./components/TimelinePanel";
-import { TopMenuBar } from "./components/TopMenuBar";
+import { TopMenuBar, type TopMenuPlatformNavigation } from "./components/TopMenuBar";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { mockProject } from "./mockData";
 import {
+  type LocalEditorSession,
   PlatformWorkspace,
   prepareProjectForServer,
   type PlatformEditorSession,
@@ -365,10 +366,12 @@ const WAVEFORM_KEYPOINT_FRAME_DURATION_SECONDS = 0.012;
 
 type EditorWorkbenchProps = {
   editorSession: PlatformEditorSession | null;
+  localEditorSession?: LocalEditorSession | null;
+  platformNavigation?: TopMenuPlatformNavigation;
 };
 
-function EditorWorkbench({ editorSession }: EditorWorkbenchProps) {
-  const initialProject = editorSession?.initialProject ?? mockProject;
+function EditorWorkbench({ editorSession, localEditorSession, platformNavigation }: EditorWorkbenchProps) {
+  const initialProject = editorSession?.initialProject ?? localEditorSession?.initialProject ?? mockProject;
   const {
     project,
     projectRef,
@@ -507,6 +510,17 @@ function EditorWorkbench({ editorSession }: EditorWorkbenchProps) {
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [hasUnsavedChanges]);
+
+  useEffect(() => {
+    if (!localEditorSession || localEditorSession.source !== "json") {
+      return;
+    }
+    setManualVideoRelinkPrompt(
+      shouldPromptForManualVideoImport(localEditorSession.initialProject.video)
+        ? localEditorSession.initialProject.video
+        : null,
+    );
+  }, [localEditorSession?.id]);
 
   function applySelection(nextSelectedItem: SelectedItem, timelineItems?: TimelineSelectionItem[]) {
     setSelectedItem(nextSelectedItem);
@@ -4204,6 +4218,7 @@ function EditorWorkbench({ editorSession }: EditorWorkbenchProps) {
     <AppShell
       menuBar={(
         <TopMenuBar
+          platformNavigation={platformNavigation}
           isPlaying={isPlaying}
           playbackRate={playbackRate}
           loopPlaybackEnabled={loopPlaybackEnabled}
@@ -7155,10 +7170,12 @@ function isEditableKeyboardTarget(target: EventTarget | null) {
 function App() {
   return (
     <PlatformWorkspace
-      renderEditor={(editorSession) => (
+      renderEditor={(editorSession, localEditorSession, platformNavigation) => (
         <EditorWorkbench
-          key={editorSession?.documentId ?? "local-editor"}
+          key={editorSession?.documentId ?? localEditorSession?.id ?? "local-editor"}
           editorSession={editorSession}
+          localEditorSession={localEditorSession}
+          platformNavigation={platformNavigation}
         />
       )}
     />
