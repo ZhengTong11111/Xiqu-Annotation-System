@@ -2,7 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, RefObject } from "react";
 import type { ProjectSyncStatus } from "../state/projectDocumentState";
 
+export type TopMenuPlatformNavigation = {
+  label: string;
+  title: string;
+  onBack: () => void;
+};
+
 type TopMenuBarProps = {
+  platformNavigation?: TopMenuPlatformNavigation;
   isPlaying: boolean;
   playbackRate: number;
   loopPlaybackEnabled: boolean;
@@ -22,6 +29,8 @@ type TopMenuBarProps = {
   onProjectFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onMergeProjectFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onSaveProject: () => void;
+  onSaveProjectToServer?: () => void;
+  onCreateServerVersion?: () => void;
   onExportTrack: (kind: "character" | "singing") => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -36,6 +45,7 @@ const playbackRates = [0.5, 0.75, 1, 1.25, 1.5];
 const menuOrder = ["文件", "编辑", "播放", "视图", "帮助"] as const;
 
 export function TopMenuBar({
+  platformNavigation,
   isPlaying,
   playbackRate,
   loopPlaybackEnabled,
@@ -55,6 +65,8 @@ export function TopMenuBar({
   onProjectFileChange,
   onMergeProjectFileChange,
   onSaveProject,
+  onSaveProjectToServer,
+  onCreateServerVersion,
   onExportTrack,
   onUndo,
   onRedo,
@@ -108,6 +120,16 @@ export function TopMenuBar({
   return (
     <header className="top-menu-bar" ref={menuBarRef}>
       <div className="top-menu-brand">
+        {platformNavigation ? (
+          <button
+            type="button"
+            className="top-menu-platform-back"
+            title={platformNavigation.title}
+            onClick={platformNavigation.onBack}
+          >
+            {platformNavigation.label}
+          </button>
+        ) : null}
         <span className="top-menu-brand-dot" />
         <div className="top-menu-brand-copy">
           <strong>戏曲多轨标注工作台</strong>
@@ -150,7 +172,31 @@ export function TopMenuBar({
                     </button>
                     <div className="top-menu-divider" />
                     <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onSaveProject)}>
-                      保存项目
+                      保存本地项目
+                    </button>
+                    <button
+                      type="button"
+                      className="top-menu-dropdown-item"
+                      onClick={() => {
+                        if (onSaveProjectToServer) {
+                          handleAction(onSaveProjectToServer);
+                        }
+                      }}
+                      disabled={!onSaveProjectToServer}
+                    >
+                      保存到服务器
+                    </button>
+                    <button
+                      type="button"
+                      className="top-menu-dropdown-item"
+                      onClick={() => {
+                        if (onCreateServerVersion) {
+                          handleAction(onCreateServerVersion);
+                        }
+                      }}
+                      disabled={!onCreateServerVersion}
+                    >
+                      保存为服务器版本
                     </button>
                     <div className="top-menu-divider" />
                     <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(() => onExportTrack("character"))}>

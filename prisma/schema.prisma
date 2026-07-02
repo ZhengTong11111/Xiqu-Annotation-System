@@ -1,0 +1,239 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PlatformRole {
+  super_admin
+  admin
+  teacher
+  ta
+  annotator
+  reviewer
+  service
+}
+
+enum AnnotationMode {
+  independent
+  collaborative
+}
+
+enum ProcessingJobType {
+  pitch_extraction
+  spectrogram_generation
+  staff_notation_render
+  gongche_render
+  pose_estimation
+  video_transcode
+  audio_extract
+  annotation_export
+}
+
+enum ProcessingJobStatus {
+  queued
+  running
+  succeeded
+  failed
+}
+
+model User {
+  id           String   @id @default(uuid())
+  accountName String   @unique @map("account_name")
+  displayName String   @map("display_name")
+  passwordHash String  @map("password_hash")
+  isActive     Boolean @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  roles      UserRole[]
+  sessions   Session[]
+  ownedFiles FileObject[] @relation("FileOwner")
+  projects   AnnotationProject[] @relation("ProjectOwner")
+  snapshots  AnnotationSnapshot[] @relation("SnapshotCreator")
+  versions   AnnotationVersion[] @relation("VersionCreator")
+  grants     PermissionGrant[]
+  jobs       ProcessingJob[] @relation("JobCreator")
+
+  @@map("users")
+}
+
+model UserRole {
+  id     String       @id @default(uuid())
+  userId String       @map("user_id")
+  role   PlatformRole
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, role])
+  @@map("user_roles")
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  tokenHash String  @unique @map("token_hash")
+  userId    String  @map("user_id")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model FileObject {
+  id          String   @id @default(uuid())
+  name        String
+  mimeType    String   @map("mime_type")
+  size        Int
+  storageKey  String   @unique @map("storage_key")
+  checksum    String?
+  ownerUserId String   @map("owner_user_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  owner       User         @relation("FileOwner", fields: [ownerUserId], references: [id])
+  mediaAssets MediaAsset[] @relation("PrimaryMediaFile")
+
+  @@index([ownerUserId])
+  @@map("files")
+}
+
+model MediaAsset {
+  id            String   @id @default(uuid())
+  title         String
+  description   String?
+  primaryFileId String?  @map("primary_file_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  primaryFile FileObject? @relation("PrimaryMediaFile", fields: [primaryFileId], references: [id], onDelete: SetNull)
+  projects    AnnotationProject[]
+
+  @@index([primaryFileId])
+  @@map("media_assets")
+}
+
+model AnnotationProject {
+  id           String   @id @default(uuid())
+  title        String
+  mediaAssetId String   @map("media_asset_id")
+  ownerUserId  String   @map("owner_user_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  mediaAsset MediaAsset @relation(fields: [mediaAssetId], references: [id])
+  owner      User       @relation("ProjectOwner", fields: [ownerUserId], references: [id])
+  documents  AnnotationDocument[]
+  grants     PermissionGrant[]
+  jobs       ProcessingJob[]
+
+  @@index([mediaAssetId])
+  @@index([ownerUserId])
+  @@map("annotation_projects")
+}
+
+model AnnotationDocument {
+  id               String         @id @default(uuid())
+  projectId        String         @map("project_id")
+  title            String
+  mode             AnnotationMode
+  currentVersionId String?        @map("current_version_id")
+  latestSnapshotId String?        @unique @map("latest_snapshot_id")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+
+  project        AnnotationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  latestSnapshot AnnotationSnapshot? @relation("LatestSnapshot", fields: [latestSnapshotId], references: [id], onDelete: SetNull)
+  snapshots      AnnotationSnapshot[] @relation("DocumentSnapshots")
+  versions       AnnotationVersion[]
+  grants         PermissionGrant[]
+  jobs           ProcessingJob[]
+
+  @@index([projectId])
+  @@map("annotation_documents")
+}
+
+model AnnotationSnapshot {
+  id         String   @id @default(uuid())
+  documentId String   @map("document_id")
+  revision   Int
+  payload    Json
+  createdBy  String   @map("created_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  document       AnnotationDocument @relation("DocumentSnapshots", fields: [documentId], references: [id], onDelete: Cascade)
+  latestDocument AnnotationDocument? @relation("LatestSnapshot")
+  creator        User @relation("SnapshotCreator", fields: [createdBy], references: [id])
+  versions       AnnotationVersion[]
+
+  @@unique([documentId, revision])
+  @@index([createdBy])
+  @@map("annotation_snapshots")
+}
+
+model AnnotationVersion {
+  id          String   @id @default(uuid())
+  documentId  String   @map("document_id")
+  snapshotId  String   @map("snapshot_id")
+  name        String
+  description String?
+  revision    Int
+  createdBy   String   @map("created_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  document AnnotationDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  snapshot AnnotationSnapshot @relation(fields: [snapshotId], references: [id])
+  creator  User @relation("VersionCreator", fields: [createdBy], references: [id])
+
+  @@index([documentId])
+  @@index([snapshotId])
+  @@map("annotation_versions")
+}
+
+model PermissionGrant {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  projectId   String?  @map("project_id")
+  documentId  String?  @map("document_id")
+  actions     String[]
+  startTime   Float?   @map("start_time")
+  endTime     Float?   @map("end_time")
+  trackIds    String[] @map("track_ids")
+  expiresAt   DateTime? @map("expires_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  user     User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project  AnnotationProject? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document AnnotationDocument? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([projectId])
+  @@index([documentId])
+  @@map("permission_grants")
+}
+
+model ProcessingJob {
+  id            String              @id @default(uuid())
+  type          ProcessingJobType
+  status        ProcessingJobStatus @default(queued)
+  inputFileIds  String[]            @map("input_file_ids")
+  outputFileIds String[]            @default([]) @map("output_file_ids")
+  projectId     String?             @map("project_id")
+  documentId    String?             @map("document_id")
+  createdBy     String              @map("created_by")
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @updatedAt @map("updated_at")
+  errorMessage  String?             @map("error_message")
+
+  project  AnnotationProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  document AnnotationDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  creator  User @relation("JobCreator", fields: [createdBy], references: [id])
+
+  @@index([documentId])
+  @@index([projectId])
+  @@index([createdBy])
+  @@map("processing_jobs")
+}
