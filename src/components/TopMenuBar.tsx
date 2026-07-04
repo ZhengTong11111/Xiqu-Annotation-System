@@ -34,6 +34,7 @@ type TopMenuBarProps = {
   onExportTrack: (kind: "character" | "singing") => void;
   onUndo: () => void;
   onRedo: () => void;
+  onRepairSentenceCharacterTrack: () => void;
   onTogglePlay: () => void;
   onStep: (delta: number) => void;
   onPlaybackRateChange: (rate: number) => void;
@@ -70,6 +71,7 @@ export function TopMenuBar({
   onExportTrack,
   onUndo,
   onRedo,
+  onRepairSentenceCharacterTrack,
   onTogglePlay,
   onStep,
   onPlaybackRateChange,
@@ -214,6 +216,10 @@ export function TopMenuBar({
                     </button>
                     <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onRedo)} disabled={!canRedo}>
                       重做
+                    </button>
+                    <div className="top-menu-divider" />
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onRepairSentenceCharacterTrack)}>
+                      检查句级/逐字文字轨
                     </button>
                   </>
                 ) : null}

@@ -72,6 +72,11 @@ import {
   buildSpectrogramData,
   defaultSpectrogramSettings,
 } from "./utils/spectrogram";
+import {
+  analyzeSentenceCharacterAlignment,
+  createSentenceCharacterRepairs,
+  formatSentenceCharacterAlignmentSummary,
+} from "./utils/sentenceCharacterAlignment";
 import { generateBanyanMarksFromGongche, getBanyanSubtypeLabel } from "./utils/banyan";
 import {
   PROJECT_FILE_VERSION,
@@ -3755,6 +3760,67 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
   }
 
+  function repairSentenceCharacterTrack() {
+    const currentProject = projectRef.current;
+    const report = analyzeSentenceCharacterAlignment(currentProject);
+    const conflictCount =
+      report.textMismatchLines.length +
+      report.timeOutOfRangeCharacters.length +
+      report.orphanCharacters.length +
+      report.overlappingCharacters.length;
+    const summary = formatSentenceCharacterAlignmentSummary(report);
+
+    if (report.missingLineCharacters.length === 0) {
+      window.alert([
+        "句级文字轨和逐字文字轨检查完成。",
+        "",
+        ...summary,
+        conflictCount > 0
+          ? "当前存在需要人工检查的冲突，本功能不会自动覆盖已有逐字块。"
+          : "没有发现需要自动补齐的句级字幕。",
+      ].join("\n"));
+      return;
+    }
+
+    const repairPreviewLines = report.missingLineCharacters
+      .slice(0, 5)
+      .map(({ line }) => `- ${line.id} ${formatSecondsToSrtTime(line.startTime)}-${formatSecondsToSrtTime(line.endTime)} “${line.text}”`);
+    const confirmed = window.confirm([
+      "句级文字轨和逐字文字轨检查完成。",
+      "",
+      ...summary,
+      "",
+      `将为 ${report.missingLineCharacters.length} 条没有逐字块的句级字幕创建“整句文字块”。`,
+      "已有逐字块不会被拆分、覆盖或删除。",
+      conflictCount > 0
+        ? "注意：当前还存在冲突项，本次只补齐缺失句，冲突项需要之后人工检查。"
+        : "",
+      "",
+      "示例：",
+      ...repairPreviewLines,
+      report.missingLineCharacters.length > repairPreviewLines.length ? "- ..." : "",
+      "",
+      "是否继续？",
+    ].filter(Boolean).join("\n"));
+
+    if (!confirmed) {
+      return;
+    }
+
+    const repairResult = createSentenceCharacterRepairs(currentProject, report);
+    if (repairResult.createdCharacters.length === 0) {
+      window.alert("没有可创建的整句文字块。请检查句级字幕是否为空。");
+      return;
+    }
+
+    commitProject(repairResult.project, undefined, "repair-sentence-character-track");
+    const firstCreatedCharacter = repairResult.createdCharacters[0];
+    applySelection({ type: "character", id: firstCreatedCharacter.id });
+    setLineFocusRequest({ lineId: firstCreatedCharacter.lineId, requestId: Date.now() });
+    seekTo(firstCreatedCharacter.startTime);
+    window.alert(`已创建 ${repairResult.createdCharacters.length} 个整句文字块。`);
+  }
+
   async function importAndMergeProjectFile(file: File) {
     try {
       const text = await file.text();
@@ -4282,6 +4348,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           onExportTrack={handleExport}
           onUndo={undo}
           onRedo={redo}
+          onRepairSentenceCharacterTrack={repairSentenceCharacterTrack}
         />
       )}
     >
