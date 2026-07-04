@@ -6,7 +6,8 @@ export type HistoryAction =
   | "import-video"
   | "import-srt"
   | "import-project"
-  | "merge-project";
+  | "merge-project"
+  | "repair-sentence-character-track";
 
 export type HistoryEntry = {
   project: ProjectData;
