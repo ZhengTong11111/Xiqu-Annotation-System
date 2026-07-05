@@ -2,6 +2,7 @@ import { type CSSProperties, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import type {
   ActionAnnotation,
   AttachedPointAnnotation,
+  BranchScope,
   BanyanMark,
   BanyanSection,
   BuiltinTrack,
@@ -22,7 +23,8 @@ import type {
   WaveformData,
 } from "../types";
 import { SpectrogramCanvas } from "./SpectrogramCanvas";
-import { clampRange, getParentTrackIdFromGongcheTrackId } from "../utils/project";
+import { clampRange, flattenBranchLanes, getParentTrackIdFromGongcheTrackId } from "../utils/project";
+import { getBranchLaneCount } from "../utils/trackBranching";
 import { getSpectrogramFrequencyRange } from "../utils/spectrogram";
 import { getBanyanMarkDisplayLabel, getBanyanSubtypeLabel } from "../utils/banyan";
 
@@ -90,9 +92,10 @@ type TimelineProps = {
   onCancelCustomTextEdit: () => void;
   onCreateCharacterAtTime: (time: number, endTime?: number) => void;
   onCreateActionAtTime: (trackId: string, startTime: number) => void;
-  onCreateCustomBlock: (trackId: string, startTime: number, endTime?: number) => void;
+  onCreateCustomBlock: (trackId: string, startTime: number, endTime?: number, branchScope?: BranchScope) => void;
   onCreateGongcheBlockAtTime: (parentTrackId: string, time: number) => void;
   onCreateAttachedPoint: (trackId: string, time: number) => void;
+  onCustomTrackBranchDisplayModeChange: (trackId: string, displayMode: "merged" | "expanded") => void;
   onAddBuiltinTrack: (trackId: BuiltinTrackId) => void;
   onAddCustomTrack: (trackType: "text" | "action") => void;
   onUpdatePasteTarget: (trackId: string, time: number) => void;
@@ -213,6 +216,8 @@ type DragState =
       kind: "create-track-item";
       trackId: string;
       trackType: "character" | "action" | "custom-text" | "custom-action";
+      visualTrackId: string;
+      branchScope?: BranchScope;
       originX: number;
       currentX: number;
       laneLeft: number;
@@ -274,6 +279,10 @@ const MIN_GONGCHE_DURATION = 0.04;
 const SELECT_BOX_AUTOSCROLL_HORIZONTAL_EDGE_PX = 10;
 const SELECT_BOX_AUTOSCROLL_VERTICAL_EDGE_PX = 10;
 const SELECT_BOX_AUTOSCROLL_MAX_SPEED = 18;
+const STACKED_TRACK_ROW_HEIGHT = 28;
+const STACKED_TRACK_ROW_GAP = 4;
+const STACKED_TRACK_VERTICAL_PADDING = 6;
+const STACKED_TRACK_OVERLAP_TOLERANCE_SECONDS = 0.025;
 
 type ZoomGestureState = {
   startZoom: number;
@@ -371,6 +380,25 @@ type ResolvedAttachedPointTrack = {
   points: AttachedPointAnnotation[];
 };
 
+type StackedTrackBlockLayout = {
+  rowIndex: number;
+  rowCount: number;
+};
+
+type StackedTrackConflictZone = {
+  startTime: number;
+  endTime: number;
+  rowCount: number;
+};
+
+type StackedTrackLayout = {
+  rowCount: number;
+  trackHeight: number;
+  blockLayouts: Map<string, StackedTrackBlockLayout>;
+  conflictZones: StackedTrackConflictZone[];
+  autoExpandOnConflict: boolean;
+};
+
 type LoopRangeSelectionState = {
   pointerId: number;
   originX: number;
@@ -458,6 +486,7 @@ export function Timeline({
   onCreateCustomBlock,
   onCreateGongcheBlockAtTime,
   onCreateAttachedPoint,
+  onCustomTrackBranchDisplayModeChange,
   onAddBuiltinTrack,
   onAddCustomTrack,
   onUpdatePasteTarget,
@@ -576,6 +605,16 @@ export function Timeline({
   const customBlocks = useMemo(
     () => flattenCustomBlocks(customTracks),
     [customTracks],
+  );
+  const trackBlockLayouts = useMemo(
+    () => buildTrackBlockLayouts(
+      trackDefinitions,
+      customTracks,
+      characterAnnotations,
+      actionAnnotations,
+      customBlocks,
+    ),
+    [trackDefinitions, customTracks, characterAnnotations, actionAnnotations, customBlocks],
   );
   const attachedPointTracks = useMemo(
     () => flattenAttachedPointTracks(builtinTracks, customTracks),
@@ -1896,7 +1935,7 @@ export function Timeline({
             activeDragState.trackType === "custom-text" ||
             activeDragState.trackType === "custom-action"
           ) {
-            onCreateCustomBlock(activeDragState.trackId, startTime, endTime);
+            onCreateCustomBlock(activeDragState.trackId, startTime, endTime, activeDragState.branchScope);
           } else {
             onCreateAction(activeDragState.trackId, startTime, endTime);
           }
@@ -2717,6 +2756,14 @@ export function Timeline({
               const parentTrackMeta = parentTrackMap.get(track.id);
               const pointTrack = track.type === "attached-point" ? attachedPointTrackMap.get(track.id) : null;
               const gongcheParentTrackId = track.type === "gongche-attached" ? track.parentTrackId ?? "" : "";
+              const customBlockCreationTarget = getCustomBlockCreationTarget(track);
+              const stackedTrackLayout = trackBlockLayouts.get(track.id);
+              const baseTrackHeight = track.type === "attached-point" || track.type === "gongche-attached" || track.type === "branch-lane"
+                ? Math.max(36, trackHeight - 14)
+                : trackHeight;
+              const trackActualHeight = stackedTrackLayout
+                ? Math.max(baseTrackHeight, stackedTrackLayout.trackHeight)
+                : baseTrackHeight;
               return (
               <div
                 key={track.id}
@@ -2724,11 +2771,12 @@ export function Timeline({
                   "timeline-track",
                   track.type === "attached-point" ? "timeline-track-attached-point" : "",
                   track.type === "gongche-attached" ? "timeline-track-gongche" : "",
+                  track.type === "branch-lane" ? "timeline-track-branch-lane" : "",
                   (track.isCustom || track.isBuiltin) && customTrackDropBeforeId === track.id ? "drop-target-before" : "",
                   (track.isCustom || track.isBuiltin) && customTrackDropAfterId === track.id ? "drop-target-after" : "",
                   draggedTrackId === track.id ? "drag-source" : "",
                 ].join(" ")}
-                style={{ height: track.type === "attached-point" || track.type === "gongche-attached" ? Math.max(36, trackHeight - 14) : trackHeight }}
+                style={{ height: trackActualHeight }}
                 ref={(node) => {
                   if (!track.isCustom && !track.isBuiltin) {
                     return;
@@ -2748,26 +2796,32 @@ export function Timeline({
                     (
                       ((selectedItem?.type === "custom-track" || selectedItem?.type === "builtin-track") && selectedItem.id === track.id) ||
                       (selectedItem?.type === "attached-point-track" && selectedItem.id === track.id) ||
-                      (selectedItem?.type === "gongche-track" && selectedItem.parentTrackId === track.parentTrackId)
+                      (selectedItem?.type === "gongche-track" && selectedItem.parentTrackId === track.parentTrackId) ||
+                      (track.isBranchLaneTrack && selectedItem?.type === "custom-track" && selectedItem.id === track.parentTrackId)
                     ) ? "selected" : "",
                     draggedTrackId === track.id ? "dragging" : "",
                     recentlyMovedTrackId === track.id ? "recently-moved" : "",
                   ].join(" ")}
-                  style={
-                    draggedTrackId === track.id &&
+                  style={{
+                    ...(track.isBranchLaneTrack
+                      ? { "--branch-depth": track.branchDepth ?? 0 } as CSSProperties
+                      : {}),
+                    ...(draggedTrackId === track.id &&
                       trackReorderDrag &&
                       Math.abs(trackReorderDrag.currentY - trackReorderDrag.startY) >= REORDER_ACTIVATION_PX
                       ? {
                           transform: `translateY(${trackReorderDrag.currentY - trackReorderDrag.startY}px)`,
                           zIndex: 8,
                         }
-                      : undefined
-                  }
+                      : {}),
+                  }}
                   onClick={() => {
                     if (track.isBuiltin) {
                       onSelectBuiltinTrack(track.id as BuiltinTrackId);
                     } else if (track.isCustom) {
                       onSelectTrack(track.id);
+                    } else if (track.isBranchLaneTrack && track.parentTrackId) {
+                      onSelectTrack(track.parentTrackId);
                     } else if (track.isAttachedPointTrack && track.parentTrackId) {
                       onSelectAttachedPointTrack(track.id, track.parentTrackId);
                     } else if (track.isGongcheTrack && track.parentTrackId) {
@@ -2813,6 +2867,14 @@ export function Timeline({
                       {!compactTrackLabels && track.isCustom ? (
                         <span>{track.type === "custom-text" ? "文字类自定义轨" : "动作类自定义轨"}</span>
                       ) : null}
+                      {track.isCustom && track.branching?.enabled ? (
+                        <span className="track-branch-badge">
+                          分叉 · {track.branching.displayMode === "expanded" ? "展开" : "合并"}
+                          {getBranchLaneCount(track.branching.lanes) > 0
+                            ? ` · ${getBranchLaneCount(track.branching.lanes)}`
+                            : ""}
+                        </span>
+                      ) : null}
                       {!compactTrackLabels && track.isBuiltin ? (
                         <span>{track.type === "character" ? "文字类内建轨" : "动作类内建轨"}</span>
                       ) : null}
@@ -2822,9 +2884,17 @@ export function Timeline({
                       {!compactAttachedPointMeta && track.isGongcheTrack ? (
                         <span>{track.parentTrackName ? `附属于 ${track.parentTrackName}` : "附属文字轨"}</span>
                       ) : null}
+                      {!compactAttachedPointMeta && track.isBranchLaneTrack ? (
+                        <span
+                          className="track-branch-lane-meta"
+                          style={{ "--branch-depth": track.branchDepth ?? 0 } as CSSProperties}
+                        >
+                          {track.parentTrackName ? `分叉 · ${track.parentTrackName}` : "分叉子轨"}
+                        </span>
+                      ) : null}
                     </div>
                     <div className="track-label-footer">
-                    {!track.isAttachedPointTrack && !track.isGongcheTrack ? (
+                    {!track.isAttachedPointTrack && !track.isGongcheTrack && !track.isBranchLaneTrack ? (
                     <label className="track-snap-toggle" onClick={(event) => event.stopPropagation()}>
                       <input
                         type="checkbox"
@@ -2836,7 +2906,7 @@ export function Timeline({
                     </label>
                     ) : (
                       <span className="track-attached-point-caption">
-                        {track.isGongcheTrack ? "工尺谱" : "附属打点轨"}
+                        {track.isBranchLaneTrack ? "分叉子轨" : track.isGongcheTrack ? "工尺谱" : "附属打点轨"}
                       </span>
                     )}
                       {track.isCustom || track.isBuiltin ? (
@@ -2949,11 +3019,26 @@ export function Timeline({
                       if (track.type === "attached-point" || track.type === "gongche-attached") {
                         return;
                       }
+                      if (!customBlockCreationTarget && track.type === "branch-lane") {
+                        return;
+                      }
+                      const creationTrackType = customBlockCreationTarget?.trackType ??
+                        (track.type === "character" ||
+                          track.type === "action" ||
+                          track.type === "custom-text" ||
+                          track.type === "custom-action"
+                          ? track.type
+                          : null);
+                      if (!creationTrackType) {
+                        return;
+                      }
                       lastPointerClientXRef.current = event.clientX;
                       setDragState({
                         kind: "create-track-item",
-                        trackId: track.id,
-                        trackType: track.type,
+                        trackId: customBlockCreationTarget?.trackId ?? track.id,
+                        trackType: creationTrackType,
+                        visualTrackId: track.id,
+                        branchScope: customBlockCreationTarget?.branchScope,
                         originX: event.clientX,
                         currentX: event.clientX,
                         laneLeft: event.currentTarget.getBoundingClientRect().left,
@@ -2973,11 +3058,12 @@ export function Timeline({
                     }
                     const target = event.target as HTMLElement | null;
                     const laneTime = getLaneTime(event.currentTarget, event.clientX, zoom);
-                    onUpdatePasteTarget(track.id, laneTime);
-                    const creationSnapPoints = trackSnapEnabled[track.id]
-                      ? [...snapPoints, ...getTrackSnapPoints(track.id)]
+                    const snapTrackId = customBlockCreationTarget?.trackId ?? track.id;
+                    onUpdatePasteTarget(snapTrackId, laneTime);
+                    const creationSnapPoints = trackSnapEnabled[snapTrackId]
+                      ? [...snapPoints, ...getTrackSnapPoints(snapTrackId)]
                       : [];
-                    const snappedLaneTime = trackSnapEnabled[track.id]
+                    const snappedLaneTime = trackSnapEnabled[snapTrackId]
                       ? snapTime(laneTime, creationSnapPoints, zoom)
                       : laneTime;
                     if (!target?.closest(".timeline-block, .timeline-point-marker, .timeline-gongche-block") && event.detail === 2) {
@@ -2994,11 +3080,28 @@ export function Timeline({
                         onCreateCharacterAtTime(startTime);
                         return;
                       }
-                      if (track.type === "custom-text" || track.type === "custom-action") {
-                        onCreateCustomBlock(track.id, startTime);
+                      if (customBlockCreationTarget) {
+                        onCreateCustomBlock(
+                          customBlockCreationTarget.trackId,
+                          startTime,
+                          undefined,
+                          customBlockCreationTarget.branchScope,
+                        );
                         return;
                       }
                       onCreateActionAtTime(track.id, startTime);
+                      return;
+                    }
+                    const canExpandMergedBranchFromBlankArea =
+                      !target?.closest(".timeline-block, .timeline-point-marker, .timeline-gongche-block") &&
+                      event.detail === 1 &&
+                      track.isCustom &&
+                      Boolean(stackedTrackLayout?.autoExpandOnConflict);
+                    const hitConflictZone = canExpandMergedBranchFromBlankArea && stackedTrackLayout
+                      ? findStackedTrackConflictAtTime(stackedTrackLayout, laneTime)
+                      : null;
+                    if (hitConflictZone && hitConflictZone.rowCount > 1) {
+                      onCustomTrackBranchDisplayModeChange(track.id, "expanded");
                       return;
                     }
                     if (!target?.closest(".timeline-block, .timeline-point-marker, .timeline-gongche-block") && selectedTimelineItems.length > 1) {
@@ -3014,16 +3117,20 @@ export function Timeline({
                     event.preventDefault();
                     onCloseContextMenu();
                     const laneTime = getLaneTime(event.currentTarget, event.clientX, zoom);
-                    onUpdatePasteTarget(track.id, laneTime);
+                    onUpdatePasteTarget(customBlockCreationTarget?.trackId ?? track.id, laneTime);
                     onOpenLaneContextMenu(track.id, laneTime, event.clientX, event.clientY);
                   }}
                 >
                   {track.type === "character"
-                    ? characterAnnotations.map((annotation) => renderBlock(annotation, "character"))
+                    ? characterAnnotations.map((annotation) => renderBlock(annotation, "character", {
+                        blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
+                      }))
                     : track.type === "action"
                       ? actionAnnotations
                           .filter((annotation) => annotation.trackId === track.id)
-                          .map((annotation) => renderBlock(annotation, "action"))
+                          .map((annotation) => renderBlock(annotation, "action", {
+                            blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
+                          }))
                       : track.type === "attached-point"
                         ? pointTrack
                           ? pointTrack.points.map((point) => renderAttachedPoint(point, pointTrack))
@@ -3033,9 +3140,13 @@ export function Timeline({
                             .filter((annotation) => annotation.parentTrackId === gongcheParentTrackId)
                             .map((annotation) => renderGongcheBlock(annotation))
                       : customBlocks
-                          .filter((annotation) => annotation.trackId === track.id)
-                          .map((annotation) => renderBlock(annotation, "custom-block"))}
-                  {dragState?.kind === "create-track-item" && dragState.trackId === track.id && scrollRef.current ? (
+                          .filter((annotation) => isCustomBlockVisibleOnTrack(annotation, track))
+                          .map((annotation) =>
+                            renderBlock(annotation, "custom-block", {
+                              blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
+                            })
+                          )}
+                  {dragState?.kind === "create-track-item" && dragState.visualTrackId === track.id && scrollRef.current ? (
                     <div
                       className={`timeline-block draft ${
                         dragState.trackType === "character" || dragState.trackType === "custom-text"
@@ -3101,6 +3212,9 @@ export function Timeline({
   function renderBlock(
     annotation: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock,
     type: "character" | "action" | "custom-block",
+    options: {
+      blockLayout?: StackedTrackBlockLayout;
+    } = {},
   ) {
     const characterAnnotation = type === "character" ? annotation as CharacterAnnotation : null;
     const actionAnnotation = type === "action" ? annotation as ActionAnnotation : null;
@@ -3139,6 +3253,10 @@ export function Timeline({
           ? customAnnotation.text ?? ""
           : customAnnotation.type
         : actionAnnotation?.label ?? "";
+    const blockTop = options.blockLayout
+      ? STACKED_TRACK_VERTICAL_PADDING + options.blockLayout.rowIndex * (STACKED_TRACK_ROW_HEIGHT + STACKED_TRACK_ROW_GAP)
+      : trackBlockTop;
+    const blockHeight = options.blockLayout ? STACKED_TRACK_ROW_HEIGHT : trackBlockHeight;
     const zIndex = isSelected ? 4 : isActive ? 3 : 1;
     const hoveredEdge = hoveredBlock?.id === annotation.id &&
       hoveredBlock.type === type &&
@@ -3165,8 +3283,9 @@ export function Timeline({
           hoveredEdge === "right" ? "hover-resize-right" : "",
           hoveredEdge === "linked-left" ? "hover-linked-left" : "",
           hoveredEdge === "linked-right" ? "hover-linked-right" : "",
+          options.blockLayout && options.blockLayout.rowCount > 1 ? "stacked-track-block" : "",
         ].join(" ")}
-        style={{ left, width, top: trackBlockTop, height: trackBlockHeight, zIndex }}
+        style={{ left, width, top: blockTop, height: blockHeight, zIndex }}
         onPointerMove={(event) => {
           const preferredHit = resolvePreferredBlockHit(
             event.clientX,
@@ -5344,6 +5463,259 @@ function buildHoveredBlockState(
     : { id, type, edge };
 }
 
+function buildTrackBlockLayouts(
+  trackDefinitions: TrackDefinition[],
+  customTracks: CustomTrack[],
+  characterAnnotations: CharacterAnnotation[],
+  actionAnnotations: ActionAnnotation[],
+  customBlocks: ResolvedCustomTrackBlock[],
+): Map<string, StackedTrackLayout> {
+  const customTrackMap = new Map(customTracks.map((track) => [track.id, track]));
+  const layouts = new Map<string, StackedTrackLayout>();
+
+  for (const track of trackDefinitions) {
+    const layoutInput = getStackedLayoutInputForTrack(
+      track,
+      customTrackMap,
+      characterAnnotations,
+      actionAnnotations,
+      customBlocks,
+    );
+    if (!layoutInput || layoutInput.blocks.length <= 1) {
+      continue;
+    }
+    const layout = layoutStackedTrackBlocks(layoutInput.blocks, layoutInput.getPriority, layoutInput.autoExpandOnConflict);
+    if (layout.rowCount <= 1) {
+      continue;
+    }
+    layouts.set(track.id, layout);
+  }
+
+  return layouts;
+}
+
+function getStackedLayoutInputForTrack(
+  track: TrackDefinition,
+  customTrackMap: Map<string, CustomTrack>,
+  characterAnnotations: CharacterAnnotation[],
+  actionAnnotations: ActionAnnotation[],
+  customBlocks: ResolvedCustomTrackBlock[],
+): {
+  blocks: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>;
+  getPriority: (block: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock) => number;
+  autoExpandOnConflict: boolean;
+} | null {
+  if (track.type === "character") {
+    return {
+      blocks: characterAnnotations,
+      getPriority: () => 0,
+      autoExpandOnConflict: false,
+    };
+  }
+  if (track.type === "action") {
+    return {
+      blocks: actionAnnotations.filter((annotation) => annotation.trackId === track.id),
+      getPriority: () => 0,
+      autoExpandOnConflict: false,
+    };
+  }
+  if (track.type !== "custom-text" && track.type !== "custom-action" && track.type !== "branch-lane") {
+    return null;
+  }
+
+  const visibleBlocks = customBlocks.filter((block) => isCustomBlockVisibleOnTrack(block, track));
+  const sourceTrackId = track.type === "branch-lane" ? track.parentTrackId : track.id;
+  const sourceTrack = sourceTrackId ? customTrackMap.get(sourceTrackId) : undefined;
+  const isMergedBranchParent = Boolean(
+    track.isCustom &&
+      sourceTrack?.branching?.enabled &&
+      sourceTrack.branching.displayMode === "merged",
+  );
+
+  return {
+    blocks: visibleBlocks,
+    getPriority: isMergedBranchParent && sourceTrack?.branching
+      ? createMergedBranchPriorityResolver(sourceTrack)
+      : () => 0,
+    autoExpandOnConflict: isMergedBranchParent,
+  };
+}
+
+function createMergedBranchPriorityResolver(
+  track: CustomTrack,
+): (block: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock) => number {
+  const branchOrder = new Map<string, number>();
+  flattenBranchLanes(track.branching?.lanes ?? []).forEach((lane, index) => {
+    branchOrder.set(lane.id, index + 1);
+  });
+  return (block) => {
+    if (!isResolvedCustomTrackBlock(block) || block.trackId !== track.id) {
+      return 0;
+    }
+    if (!block.branchScope || block.branchScope.mode === "root") {
+      return 0;
+    }
+    // 一个块可能属于多个分叉。合并父轨只渲染一次，并按它所属分叉里最靠上的那条轨排序。
+    return Math.min(
+      ...block.branchScope.laneIds.map((laneId) => branchOrder.get(laneId) ?? Number.MAX_SAFE_INTEGER),
+    );
+  };
+}
+
+function isResolvedCustomTrackBlock(
+  block: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock,
+): block is ResolvedCustomTrackBlock {
+  return "trackType" in block;
+}
+
+function layoutStackedTrackBlocks(
+  blocks: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>,
+  getPriority: (block: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock) => number,
+  autoExpandOnConflict: boolean,
+): StackedTrackLayout {
+  const sortedBlocks = [...blocks].sort((left, right) => {
+    const priorityDiff = getPriority(left) - getPriority(right);
+    if (priorityDiff !== 0) {
+      return priorityDiff;
+    }
+    return left.startTime === right.startTime
+      ? left.endTime - right.endTime
+      : left.startTime - right.startTime;
+  });
+  const rowIntervals: Array<Array<{ startTime: number; endTime: number }>> = [];
+  const pendingLayouts = new Map<string, number>();
+  const conflictSeeds: StackedTrackConflictZone[] = [];
+
+  for (const block of sortedBlocks) {
+    // 这里按真实时间重叠分行。首尾相接和 0.025 秒以内的导入误差仍视为同一行可容纳。
+    let rowIndex = rowIntervals.findIndex((intervals) =>
+      intervals.every((interval) => !areTimelineIntervalsOverlapping(block, interval))
+    );
+    if (rowIndex < 0) {
+      rowIndex = rowIntervals.length;
+      rowIntervals.push([]);
+    }
+    rowIntervals[rowIndex].push({ startTime: block.startTime, endTime: block.endTime });
+    pendingLayouts.set(block.id, rowIndex);
+    if (rowIndex > 0) {
+      conflictSeeds.push({
+        startTime: block.startTime,
+        endTime: block.endTime,
+        rowCount: rowIndex + 1,
+      });
+    }
+  }
+
+  const rowCount = Math.max(1, rowIntervals.length);
+  const blockLayouts = new Map<string, StackedTrackBlockLayout>();
+  pendingLayouts.forEach((rowIndex, blockId) => {
+    blockLayouts.set(blockId, {
+      rowIndex,
+      rowCount,
+    });
+  });
+
+  return {
+    rowCount,
+    trackHeight: getStackedTrackHeight(rowCount),
+    blockLayouts,
+    conflictZones: mergeStackedTrackConflictZones(conflictSeeds),
+    autoExpandOnConflict,
+  };
+}
+
+function areTimelineIntervalsOverlapping(
+  left: { startTime: number; endTime: number },
+  right: { startTime: number; endTime: number },
+) {
+  return left.startTime < right.endTime - STACKED_TRACK_OVERLAP_TOLERANCE_SECONDS &&
+    left.endTime > right.startTime + STACKED_TRACK_OVERLAP_TOLERANCE_SECONDS;
+}
+
+function getStackedTrackHeight(rowCount: number) {
+  return Math.max(
+    DEFAULT_TRACK_HEIGHT,
+    STACKED_TRACK_VERTICAL_PADDING * 2 +
+      rowCount * STACKED_TRACK_ROW_HEIGHT +
+      Math.max(0, rowCount - 1) * STACKED_TRACK_ROW_GAP,
+  );
+}
+
+function mergeStackedTrackConflictZones(zones: StackedTrackConflictZone[]) {
+  const sortedZones = [...zones].sort((left, right) => left.startTime - right.startTime);
+  const mergedZones: StackedTrackConflictZone[] = [];
+  for (const zone of sortedZones) {
+    const previous = mergedZones[mergedZones.length - 1];
+    if (!previous || zone.startTime > previous.endTime) {
+      mergedZones.push({ ...zone });
+      continue;
+    }
+    previous.endTime = Math.max(previous.endTime, zone.endTime);
+    previous.rowCount = Math.max(previous.rowCount, zone.rowCount);
+  }
+  return mergedZones;
+}
+
+function findStackedTrackConflictAtTime(
+  layout: StackedTrackLayout,
+  time: number,
+) {
+  return layout.conflictZones.find((zone) =>
+    time >= zone.startTime && time <= zone.endTime
+  ) ?? null;
+}
+
+function isCustomBlockVisibleOnTrack(
+  block: ResolvedCustomTrackBlock,
+  track: TrackDefinition,
+) {
+  if (track.type === "branch-lane") {
+    return Boolean(
+      track.parentTrackId &&
+      track.branchLaneId &&
+      block.trackId === track.parentTrackId &&
+      block.branchScope?.mode === "lanes" &&
+      block.branchScope.laneIds.includes(track.branchLaneId),
+    );
+  }
+  if (track.type !== "custom-text" && track.type !== "custom-action") {
+    return false;
+  }
+  if (block.trackId !== track.id) {
+    return false;
+  }
+  if (track.branching?.enabled && track.branching.displayMode === "expanded") {
+    // 展开后父轨只保留未细分/全轨块，分叉块交给派生子轨显示。
+    return !block.branchScope || block.branchScope.mode === "root";
+  }
+  return true;
+}
+
+function getCustomBlockCreationTarget(track: TrackDefinition): {
+  trackId: string;
+  trackType: "custom-text" | "custom-action";
+  branchScope?: BranchScope;
+} | null {
+  if (track.type === "custom-text" || track.type === "custom-action") {
+    return {
+      trackId: track.id,
+      trackType: track.type,
+    };
+  }
+  if (!track.isBranchLaneTrack || !track.parentTrackId || !track.branchLaneId || !track.branchTrackType) {
+    return null;
+  }
+  return {
+    trackId: track.parentTrackId,
+    trackType: track.branchTrackType === "text" ? "custom-text" : "custom-action",
+    // 分叉子轨是显示层；新建块仍保存到父轨，只在 branchScope 上记录归属。
+    branchScope: {
+      mode: "lanes",
+      laneIds: [track.branchLaneId],
+    },
+  };
+}
+
 function flattenCustomBlocks(customTracks: CustomTrack[]): ResolvedCustomTrackBlock[] {
   return customTracks.flatMap((track) =>
     track.blocks.map((block) => ({
@@ -5354,6 +5726,9 @@ function flattenCustomBlocks(customTracks: CustomTrack[]): ResolvedCustomTrackBl
       endTime: block.endTime,
       type: block.type,
       text: "text" in block ? block.text : undefined,
+      branchScope: block.branchScope,
+      branchGroupId: block.branchGroupId,
+      branchParentBlockId: block.branchParentBlockId,
     })),
   );
 }

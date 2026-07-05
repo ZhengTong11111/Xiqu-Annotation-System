@@ -4,6 +4,36 @@ export type BuiltinTrackId = "character-track";
 export type CustomTrackType = "text" | "action";
 export type BuiltinTrackType = "character" | "action";
 
+// 分叉归属刻意用“根轨/多个分支”表达，而不是单一 branchId：
+// 有些标注块属于整条轨道，有些标注块可能由多个下层分叉共同拥有。
+export type BranchScope =
+  | {
+      mode: "root";
+    }
+  | {
+      mode: "lanes";
+      laneIds: string[];
+    };
+
+// BranchLane 是递归树节点。parentId 便于扁平化渲染和未来局部展开，
+// children 保留完整层级关系，支持“手 -> 扇 -> 扇面”等继续细分。
+export type BranchLane = {
+  id: string;
+  name: string;
+  parentId: string | null;
+  color?: string;
+  children?: BranchLane[];
+};
+
+export type TrackBranchDisplayMode = "merged" | "expanded";
+
+export type TrackBranching = {
+  enabled: boolean;
+  rootLabel?: string;
+  displayMode: TrackBranchDisplayMode;
+  lanes: BranchLane[];
+};
+
 export type AttachedPointAnnotation = {
   id: string;
   time: number;
@@ -139,6 +169,9 @@ export type CustomTextTrackBlock = {
   endTime: number;
   text: string;
   type: string;
+  branchScope?: BranchScope;
+  branchGroupId?: string;
+  branchParentBlockId?: string;
 };
 
 export type CustomActionTrackBlock = {
@@ -146,6 +179,9 @@ export type CustomActionTrackBlock = {
   startTime: number;
   endTime: number;
   type: string;
+  branchScope?: BranchScope;
+  branchGroupId?: string;
+  branchParentBlockId?: string;
 };
 
 export type CustomTextTrack = {
@@ -155,6 +191,7 @@ export type CustomTextTrack = {
   typeOptions: string[];
   blocks: CustomTextTrackBlock[];
   attachedPointTracks: AttachedPointTrack[];
+  branching?: TrackBranching;
   attachedPointTracksExpanded?: boolean;
   snapToWaveformKeypoints?: boolean;
   autoSetLoopRangeOnSelect?: boolean;
@@ -167,6 +204,7 @@ export type CustomActionTrack = {
   typeOptions: string[];
   blocks: CustomActionTrackBlock[];
   attachedPointTracks: AttachedPointTrack[];
+  branching?: TrackBranching;
   attachedPointTracksExpanded?: boolean;
   snapToWaveformKeypoints?: boolean;
   autoSetLoopRangeOnSelect?: boolean;
@@ -182,6 +220,9 @@ export type ResolvedCustomTrackBlock = {
   endTime: number;
   type: string;
   text?: string;
+  branchScope?: BranchScope;
+  branchGroupId?: string;
+  branchParentBlockId?: string;
 };
 
 export type BuiltinTrack = {
@@ -198,14 +239,19 @@ export type BuiltinTrack = {
 export type TrackDefinition = {
   id: string;
   name: string;
-  type: "character" | "action" | "custom-text" | "custom-action" | "attached-point" | "gongche-attached";
+  type: "character" | "action" | "custom-text" | "custom-action" | "attached-point" | "gongche-attached" | "branch-lane";
   options?: string[];
   isCustom?: boolean;
   isBuiltin?: boolean;
   isAttachedPointTrack?: boolean;
   isGongcheTrack?: boolean;
+  isBranchLaneTrack?: boolean;
   parentTrackId?: string;
   parentTrackName?: string;
+  branchLaneId?: string;
+  branchDepth?: number;
+  branchTrackType?: CustomTrackType;
+  branching?: TrackBranching;
 };
 
 export type ProjectVideo = {
@@ -230,7 +276,7 @@ export type ProjectData = {
 };
 
 export type SavedProjectFile = {
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   project: ProjectData;
   uiState?: {
     zoom?: number;

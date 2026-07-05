@@ -1,5 +1,6 @@
 import type {
   AttachedPointTrack,
+  BranchLane,
   BuiltinTrack,
   BuiltinTrackId,
   CharacterAnnotation,
@@ -11,6 +12,7 @@ import type {
   SubtitleLine,
   TrackDefinition,
 } from "../types";
+import { getBranchLaneCount } from "./trackBranching";
 
 export const singingStyleOptions: SingingStyle[] = [
   "普通唱",
@@ -81,6 +83,7 @@ export function buildTimelineTrackDefinitions(
         type: (track.trackType === "text" ? "custom-text" : "custom-action") as TrackDefinition["type"],
         options: track.typeOptions,
         isCustom: true,
+        branching: track.branching,
       } satisfies TrackDefinition,
     ] as [string, TrackDefinition]),
   ];
@@ -97,6 +100,24 @@ export function buildTimelineTrackDefinitions(
     }
     const parentTrack = builtinTracks.find((item) => item.id === trackId) ??
       customTracks.find((item) => item.id === trackId);
+    const branchLaneTrackDefinitions =
+      parentTrack &&
+      "trackType" in parentTrack &&
+      parentTrack.branching?.enabled &&
+      parentTrack.branching.displayMode === "expanded"
+        ? flattenBranchLanes(parentTrack.branching.lanes).map((lane) => ({
+            id: getBranchLaneTrackId(parentTrack.id, lane.id),
+            name: lane.name,
+            type: "branch-lane" as const,
+            options: parentTrack.typeOptions,
+            isBranchLaneTrack: true,
+            parentTrackId: parentTrack.id,
+            parentTrackName: parentTrack.name,
+            branchLaneId: lane.id,
+            branchDepth: lane.depth,
+            branchTrackType: parentTrack.trackType,
+          }))
+        : [];
     const gongcheTrackDefinitions = parentTrack &&
       (("type" in parentTrack && parentTrack.type === "character") ||
         ("trackType" in parentTrack && parentTrack.trackType === "text"))
@@ -120,7 +141,8 @@ export function buildTimelineTrackDefinitions(
           parentTrackName: parentTrack.name,
         }))
       : [];
-    return [track, ...gongcheTrackDefinitions, ...attachedPointTrackDefinitions];
+    // 分叉子轨道是从自定义轨道派生出来的显示层，不写入 activeTrackOrder。
+    return [track, ...branchLaneTrackDefinitions, ...gongcheTrackDefinitions, ...attachedPointTrackDefinitions];
   });
 }
 
@@ -130,6 +152,18 @@ export function getGongcheTrackId(parentTrackId: string) {
 
 export function getParentTrackIdFromGongcheTrackId(trackId: string) {
   return trackId.startsWith("gongche:") ? trackId.slice("gongche:".length) : null;
+}
+
+export function getBranchLaneTrackId(parentTrackId: string, branchLaneId: string) {
+  return `branch-lane:${parentTrackId}:${branchLaneId}`;
+}
+
+export function getBranchLaneTrackParts(trackId: string) {
+  if (!trackId.startsWith("branch-lane:")) {
+    return null;
+  }
+  const [, parentTrackId, branchLaneId] = trackId.split(":");
+  return parentTrackId && branchLaneId ? { parentTrackId, branchLaneId } : null;
 }
 
 export function flattenCustomTrackBlocks(customTracks: CustomTrack[]): ResolvedCustomTrackBlock[] {
@@ -142,8 +176,32 @@ export function flattenCustomTrackBlocks(customTracks: CustomTrack[]): ResolvedC
       endTime: block.endTime,
       type: block.type,
       text: "text" in block ? block.text : undefined,
+      branchScope: block.branchScope,
+      branchGroupId: block.branchGroupId,
+      branchParentBlockId: block.branchParentBlockId,
     })),
   );
+}
+
+export function getTrackBranchSummary(track: CustomTrack) {
+  if (!track.branching?.enabled) {
+    return null;
+  }
+  const branchCount = getBranchLaneCount(track.branching.lanes);
+  return {
+    displayMode: track.branching.displayMode,
+    branchCount,
+    label: branchCount > 0
+      ? `${branchCount} 个分叉 · ${track.branching.displayMode === "expanded" ? "展开" : "合并"}`
+      : "已启用分叉",
+  };
+}
+
+export function flattenBranchLanes(lanes: BranchLane[], depth = 0): Array<BranchLane & { depth: number }> {
+  return lanes.flatMap((lane) => [
+    { ...lane, depth },
+    ...flattenBranchLanes(lane.children ?? [], depth + 1),
+  ]);
 }
 
 export function getBuiltinTrackOptions(

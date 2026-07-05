@@ -1,8 +1,11 @@
 import type {
   AttachedPointAnnotation,
   AttachedPointTrack,
+  BranchScope,
   BanyanMark,
   BanyanSection,
+  CustomActionTrackBlock,
+  CustomTextTrackBlock,
   CustomTrack,
   GongcheAnnotation,
   GongcheSymbol,
@@ -15,8 +18,13 @@ import {
   getDefaultBuiltinTracks,
   getDefaultCustomTrackTypeOptions,
 } from "./project";
+import {
+  getBranchLaneIds,
+  normalizeBranchScope,
+  normalizeTrackBranching,
+} from "./trackBranching";
 
-export const PROJECT_FILE_VERSION = 3;
+export const PROJECT_FILE_VERSION = 4;
 
 const MIN_NORMALIZED_CHARACTER_DURATION = 0.04;
 
@@ -439,18 +447,97 @@ function normalizeCustomTracks(value: ProjectData["customTracks"] | undefined) {
     if (!track || typeof track.id !== "string" || (track.trackType !== "text" && track.trackType !== "action")) {
       return [];
     }
+    const branching = normalizeTrackBranching((track as CustomTrack).branching);
+    // 块的分叉归属只允许引用当前轨道自己的分叉节点，避免跨轨道串线。
+    const validLaneIds = new Set(getBranchLaneIds(branching?.lanes ?? []));
     return [{
       ...track,
       name: typeof track.name === "string" && track.name.trim() ? track.name : "自定义轨道",
       typeOptions: Array.isArray(track.typeOptions) && track.typeOptions.length > 0
         ? track.typeOptions
         : getDefaultCustomTrackTypeOptions(),
-      blocks: Array.isArray(track.blocks) ? track.blocks : [],
+      blocks: track.trackType === "text"
+        ? normalizeCustomTextTrackBlocks(track.blocks, validLaneIds)
+        : normalizeCustomActionTrackBlocks(track.blocks, validLaneIds),
       attachedPointTracks: normalizeAttachedPointTracks(track.attachedPointTracks),
+      branching,
       attachedPointTracksExpanded: Boolean(track.attachedPointTracksExpanded),
       snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints),
     }] as CustomTrack[];
   });
+}
+
+function normalizeCustomTextTrackBlocks(value: unknown, validLaneIds: Set<string>): CustomTextTrackBlock[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((block) => {
+    if (!block || typeof block !== "object") {
+      return [];
+    }
+    const source = block as Partial<CustomTextTrackBlock>;
+    if (typeof source.id !== "string") {
+      return [];
+    }
+    const startTime = typeof source.startTime === "number" ? source.startTime : 0;
+    const endTime = typeof source.endTime === "number"
+      ? Math.max(source.endTime, startTime + MIN_NORMALIZED_CHARACTER_DURATION)
+      : startTime + MIN_NORMALIZED_CHARACTER_DURATION;
+    return [{
+      id: source.id,
+      startTime,
+      endTime,
+      text: typeof source.text === "string" ? source.text : "",
+      type: typeof source.type === "string" && source.type.trim() ? source.type : "类型 1",
+      ...normalizeCustomBlockBranchFields(source, validLaneIds),
+    }] satisfies CustomTextTrackBlock[];
+  });
+}
+
+function normalizeCustomActionTrackBlocks(value: unknown, validLaneIds: Set<string>): CustomActionTrackBlock[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((block) => {
+    if (!block || typeof block !== "object") {
+      return [];
+    }
+    const source = block as Partial<CustomActionTrackBlock>;
+    if (typeof source.id !== "string") {
+      return [];
+    }
+    const startTime = typeof source.startTime === "number" ? source.startTime : 0;
+    const endTime = typeof source.endTime === "number"
+      ? Math.max(source.endTime, startTime + MIN_NORMALIZED_CHARACTER_DURATION)
+      : startTime + MIN_NORMALIZED_CHARACTER_DURATION;
+    return [{
+      id: source.id,
+      startTime,
+      endTime,
+      type: typeof source.type === "string" && source.type.trim() ? source.type : "类型 1",
+      ...normalizeCustomBlockBranchFields(source, validLaneIds),
+    }] satisfies CustomActionTrackBlock[];
+  });
+}
+
+function normalizeCustomBlockBranchFields(
+  source: Partial<CustomTextTrackBlock | CustomActionTrackBlock>,
+  validLaneIds: Set<string>,
+): {
+  branchScope?: BranchScope;
+  branchGroupId?: string;
+  branchParentBlockId?: string;
+} {
+  const branchScope = normalizeBranchScope(source.branchScope, validLaneIds);
+  return {
+    branchScope,
+    branchGroupId: typeof source.branchGroupId === "string" && source.branchGroupId.trim()
+      ? source.branchGroupId
+      : undefined,
+    branchParentBlockId: typeof source.branchParentBlockId === "string" && source.branchParentBlockId.trim()
+      ? source.branchParentBlockId
+      : undefined,
+  };
 }
 
 function normalizeAttachedPointTracks(value: AttachedPointTrack[] | undefined) {

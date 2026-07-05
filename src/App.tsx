@@ -28,6 +28,7 @@ import type {
   ActionAnnotation,
   AttachedPointAnnotation,
   AttachedPointTrack,
+  BranchScope,
   BanyanMark,
   BanyanSection,
   BuiltinTrack,
@@ -46,6 +47,7 @@ import type {
   SubtitleLine,
   TimelineBatchMoveItem,
   TimelineSelectionItem,
+  TrackBranchDisplayMode,
   WaveformData,
 } from "./types";
 import {
@@ -62,6 +64,15 @@ import {
   getProjectDuration,
   getNextCustomTrackTypeOptionName,
 } from "./utils/project";
+import {
+  addBranchLane,
+  createBranchLane,
+  createDefaultTrackBranching,
+  getBranchLaneIds,
+  getNextBranchLaneName,
+  removeBranchLane,
+  renameBranchLane,
+} from "./utils/trackBranching";
 import {
   exportCharacterTrackToSrt,
   exportSingingStyleTrackToSrt,
@@ -1513,6 +1524,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       endTime?: number;
       text?: string;
       type?: string;
+      branchScope?: BranchScope;
     },
     recordHistory = true,
   ) {
@@ -2488,6 +2500,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     trackId: string,
     startTime: number,
     explicitEndTime?: number,
+    branchScope?: BranchScope,
   ) {
     const currentProject = projectRef.current;
     const targetTrack = currentProject.customTracks.find((track) => track.id === trackId);
@@ -2506,12 +2519,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           endTime,
           text: DEFAULT_CUSTOM_TEXT,
           type: defaultType,
+          branchScope,
         }
       : {
           id: `custom-block-${crypto.randomUUID()}`,
           startTime: safeStartTime,
           endTime,
           type: defaultType,
+          branchScope,
         };
 
     commitProject({
@@ -3237,6 +3252,99 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ...pointTrack,
       name: normalizedName.length > 0 ? normalizedName : pointTrack.name,
     }));
+  }
+
+  function setCustomTrackBranchingEnabled(trackId: string, enabled: boolean) {
+    updateCustomTrack(trackId, (track) => ({
+      ...track,
+      branching: {
+        ...(track.branching ?? createDefaultTrackBranching()),
+        enabled,
+      },
+    }) as CustomTrack);
+  }
+
+  function setCustomTrackBranchDisplayMode(trackId: string, displayMode: TrackBranchDisplayMode) {
+    updateCustomTrack(trackId, (track) => ({
+      ...track,
+      branching: {
+        ...(track.branching ?? createDefaultTrackBranching()),
+        displayMode,
+        enabled: true,
+      },
+    }) as CustomTrack);
+  }
+
+  function addCustomTrackBranchLane(trackId: string, parentLaneId: string | null) {
+    const track = projectRef.current.customTracks.find((item) => item.id === trackId);
+    if (!track) {
+      return;
+    }
+    const currentBranching = track.branching ?? createDefaultTrackBranching();
+    const fallbackName = getNextBranchLaneName(currentBranching.lanes, parentLaneId);
+    const rawName = window.prompt("请输入分叉名称", fallbackName);
+    const name = rawName?.trim();
+    if (!name) {
+      return;
+    }
+    updateCustomTrack(trackId, (currentTrack) => {
+      const branching = currentTrack.branching ?? createDefaultTrackBranching();
+      return {
+        ...currentTrack,
+        branching: {
+          ...branching,
+          enabled: true,
+          lanes: addBranchLane(branching.lanes, parentLaneId, createBranchLane(name, parentLaneId)),
+        },
+      } as CustomTrack;
+    });
+  }
+
+  function renameCustomTrackBranchLane(trackId: string, laneId: string, name: string) {
+    const normalizedName = name.trimStart();
+    updateCustomTrack(trackId, (track) => {
+      if (!track.branching || normalizedName.length === 0) {
+        return track;
+      }
+      return {
+        ...track,
+        branching: {
+          ...track.branching,
+          lanes: renameBranchLane(track.branching.lanes, laneId, normalizedName),
+        },
+      } as CustomTrack;
+    });
+  }
+
+  function deleteCustomTrackBranchLane(trackId: string, laneId: string) {
+    updateCustomTrack(trackId, (track) => {
+      if (!track.branching) {
+        return track;
+      }
+      const laneIdsBefore = new Set(getBranchLaneIds(track.branching.lanes));
+      const nextLanes = removeBranchLane(track.branching.lanes, laneId);
+      const laneIdsAfter = new Set(getBranchLaneIds(nextLanes));
+      const removedLaneIds = new Set(Array.from(laneIdsBefore).filter((id) => !laneIdsAfter.has(id)));
+      // 删除分叉只移除结构，不销毁标注内容；失去所有分叉归属的块回到根轨。
+      const blocks = track.blocks.map((block) => {
+        if (!block.branchScope || block.branchScope.mode !== "lanes") {
+          return block;
+        }
+        const laneIds = block.branchScope.laneIds.filter((id) => !removedLaneIds.has(id));
+        return {
+          ...block,
+          branchScope: laneIds.length > 0 ? { mode: "lanes" as const, laneIds } : { mode: "root" as const },
+        };
+      }) as CustomTrack["blocks"];
+      return {
+        ...track,
+        branching: {
+          ...track.branching,
+          lanes: nextLanes,
+        },
+        blocks,
+      } as CustomTrack;
+    });
   }
 
   function updateTrackWaveformSnap(trackId: string, enabled: boolean) {
@@ -4151,6 +4259,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         onCreateCustomBlock={createCustomBlock}
         onCreateGongcheBlockAtTime={createGongcheBlockAtTime}
         onAddCustomTrack={addCustomTrack}
+        onCustomTrackBranchDisplayModeChange={setCustomTrackBranchDisplayMode}
         onUpdatePasteTarget={updateTimelinePasteTarget}
         onSelectBuiltinTrack={(trackId) => {
           setLineFocusRequest(null);
@@ -4579,6 +4688,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                       onReorderCustomTrackTypeOption={reorderCustomTrackTypeOption}
                       onRemoveCustomTrackTypeOption={removeCustomTrackTypeOption}
                       onDeleteCustomTrack={deleteCustomTrack}
+                      onCustomTrackBranchingEnabledChange={setCustomTrackBranchingEnabled}
+                      onCustomTrackBranchDisplayModeChange={setCustomTrackBranchDisplayMode}
+                      onAddCustomTrackBranchLane={addCustomTrackBranchLane}
+                      onCustomTrackBranchLaneRename={renameCustomTrackBranchLane}
+                      onDeleteCustomTrackBranchLane={deleteCustomTrackBranchLane}
                       onCustomBlockUpdate={updateCustomBlock}
                       onDeleteSelected={deleteSelected}
                     />

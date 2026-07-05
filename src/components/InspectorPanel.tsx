@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type {
   ActionAnnotation,
   AttachedPointTrack,
+  BranchScope,
   BanyanMark,
   BanyanSection,
   BuiltinTrack,
@@ -12,6 +13,7 @@ import type {
   GongcheSymbol,
   SelectedItem,
   SubtitleLine,
+  TrackBranchDisplayMode,
   TrackDefinition,
 } from "../types";
 import { GongcheCharacterRenderer } from "./GongcheCharacterRenderer";
@@ -21,6 +23,7 @@ import {
   getBanyanRoleLabel,
   getBanyanSubtypeLabel,
 } from "../utils/banyan";
+import { flattenBranchLanes, getTrackBranchSummary } from "../utils/project";
 
 const REORDER_ACTIVATION_PX = 6;
 
@@ -125,6 +128,11 @@ type InspectorPanelProps = {
   onReorderCustomTrackTypeOption: (trackId: string, fromIndex: number, toIndex: number) => void;
   onRemoveCustomTrackTypeOption: (trackId: string, index: number) => void;
   onDeleteCustomTrack: (trackId: string) => void;
+  onCustomTrackBranchingEnabledChange: (trackId: string, enabled: boolean) => void;
+  onCustomTrackBranchDisplayModeChange: (trackId: string, displayMode: TrackBranchDisplayMode) => void;
+  onAddCustomTrackBranchLane: (trackId: string, parentLaneId: string | null) => void;
+  onCustomTrackBranchLaneRename: (trackId: string, laneId: string, name: string) => void;
+  onDeleteCustomTrackBranchLane: (trackId: string, laneId: string) => void;
   onCustomBlockUpdate: (
     trackId: string,
     blockId: string,
@@ -133,6 +141,7 @@ type InspectorPanelProps = {
       endTime?: number;
       text?: string;
       type?: string;
+      branchScope?: BranchScope;
     },
   ) => void;
   onDeleteSelected: () => void;
@@ -192,6 +201,11 @@ export function InspectorPanel({
   onReorderCustomTrackTypeOption,
   onRemoveCustomTrackTypeOption,
   onDeleteCustomTrack,
+  onCustomTrackBranchingEnabledChange,
+  onCustomTrackBranchDisplayModeChange,
+  onAddCustomTrackBranchLane,
+  onCustomTrackBranchLaneRename,
+  onDeleteCustomTrackBranchLane,
   onCustomBlockUpdate,
   onDeleteSelected,
 }: InspectorPanelProps) {
@@ -770,6 +784,10 @@ export function InspectorPanel({
       : "trackType" in track
         ? (track.trackType === "text" ? "文字类轨道" : "动作类轨道")
         : ("type" in track && track.type === "character" ? "文字类轨道" : "动作类轨道");
+    const isCustomTrack = selectedItem.type === "custom-track" && selectedCustomTrack !== null;
+    const branchSummary = selectedCustomTrack ? getTrackBranchSummary(selectedCustomTrack) : null;
+    const branchLanes = selectedCustomTrack?.branching?.lanes ?? [];
+    const flattenedBranchLanes = flattenBranchLanes(branchLanes);
     const supportsGongcheImport = !isAttachedPointTrack &&
       (("type" in track && track.type === "character") || ("trackType" in track && track.trackType === "text"));
     return (
@@ -839,6 +857,112 @@ export function InspectorPanel({
           <label>轨道类型</label>
           <div className="inspector-value">{trackTypeLabel}</div>
         </div>
+        {isCustomTrack && selectedCustomTrack ? (
+          <div className="inspector-field">
+            <label>递归分叉</label>
+            <div className="branching-editor">
+              <div className="inspector-toggle-row">
+                <div className="inspector-toggle-copy">
+                  <strong>启用轨道内分叉</strong>
+                  <span>
+                    {branchSummary
+                      ? branchSummary.label
+                      : "用于同一轨道内的层级标注，例如手/扇/身段等可自定义结构"}
+                  </span>
+                </div>
+                <label className="inspector-switch">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(selectedCustomTrack.branching?.enabled)}
+                    onChange={(event) =>
+                      onCustomTrackBranchingEnabledChange(selectedCustomTrack.id, event.target.checked)
+                    }
+                  />
+                  <span className="inspector-switch-slider" />
+                </label>
+              </div>
+              {selectedCustomTrack.branching?.enabled ? (
+                <>
+                  <div className="branching-mode-row">
+                    <span>显示方式</span>
+                    <select
+                      value={selectedCustomTrack.branching.displayMode}
+                      onChange={(event) =>
+                        onCustomTrackBranchDisplayModeChange(
+                          selectedCustomTrack.id,
+                          event.target.value as TrackBranchDisplayMode,
+                        )
+                      }
+                    >
+                      <option value="merged">合并显示</option>
+                      <option value="expanded">展开显示</option>
+                    </select>
+                  </div>
+                  <div className="branching-tree">
+                    {flattenedBranchLanes.length > 0 ? (
+                      flattenedBranchLanes.map((lane) => (
+                        <div
+                          key={lane.id}
+                          className="branching-lane-row"
+                          style={{ "--branch-depth": lane.depth } as CSSProperties}
+                        >
+                          <input
+                            defaultValue={lane.name}
+                            onBlur={(event) =>
+                              onCustomTrackBranchLaneRename(selectedCustomTrack.id, lane.id, event.target.value)
+                            }
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                onCustomTrackBranchLaneRename(selectedCustomTrack.id, lane.id, event.currentTarget.value);
+                                event.currentTarget.blur();
+                              }
+                              if (event.key === "Escape") {
+                                event.preventDefault();
+                                event.currentTarget.value = lane.name;
+                                event.currentTarget.blur();
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => onAddCustomTrackBranchLane(selectedCustomTrack.id, lane.id)}
+                          >
+                            子分叉
+                          </button>
+                          <button
+                            type="button"
+                            className="branching-danger-button"
+                            onClick={() => {
+                              const confirmed = window.confirm(`删除“${lane.name}”及其子分叉？相关标注会回到根轨。`);
+                              if (confirmed) {
+                                onDeleteCustomTrackBranchLane(selectedCustomTrack.id, lane.id);
+                              }
+                            }}
+                          >
+                            删除
+                          </button>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="branching-empty">
+                        还没有分叉。新增时请按当前标注对象命名，不会默认假设为左右手。
+                      </div>
+                    )}
+                  </div>
+                  <div className="branching-actions">
+                    <button
+                      type="button"
+                      onClick={() => onAddCustomTrackBranchLane(selectedCustomTrack.id, null)}
+                    >
+                      新增顶层分叉
+                    </button>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
         <div className="inspector-field">
           <label>音频关键点吸附</label>
           <div className={`inspector-toggle-row ${trackSnapOn ? "" : "disabled"}`.trim()}>
@@ -1440,6 +1564,17 @@ export function InspectorPanel({
     const gongcheBlock = track.trackType === "text"
       ? gongcheAnnotations.find((item) => item.parentTrackId === track.id && item.parentBlockId === block.id) ?? null
       : null;
+    const blockBranchLanes = track.branching?.enabled ? flattenBranchLanes(track.branching.lanes) : [];
+    const blockBranchScope = block.branchScope ?? { mode: "root" as const };
+    const selectedBranchLaneIds = blockBranchScope.mode === "lanes" ? blockBranchScope.laneIds : [];
+    const updateBlockBranchLane = (laneId: string, checked: boolean) => {
+      const nextLaneIds = checked
+        ? Array.from(new Set([...selectedBranchLaneIds, laneId]))
+        : selectedBranchLaneIds.filter((id) => id !== laneId);
+      onCustomBlockUpdate(track.id, block.id, {
+        branchScope: nextLaneIds.length > 0 ? { mode: "lanes", laneIds: nextLaneIds } : { mode: "root" },
+      });
+    };
     return (
       <section className="panel inspector-panel">
         <div className="panel-header">
@@ -1495,6 +1630,46 @@ export function InspectorPanel({
             ))}
           </select>
         </div>
+        {track.branching?.enabled ? (
+          <div className="inspector-field">
+            <label>分叉归属</label>
+            <div className="branch-scope-editor">
+              <label className="branch-scope-root">
+                <input
+                  type="radio"
+                  checked={blockBranchScope.mode === "root"}
+                  onChange={() => onCustomBlockUpdate(track.id, block.id, { branchScope: { mode: "root" } })}
+                />
+                <span>{track.branching.rootLabel ?? "全轨"} / 未细分</span>
+              </label>
+              {blockBranchLanes.length > 0 ? (
+                <div className="branch-scope-lane-list">
+                  {blockBranchLanes.map((lane) => (
+                    <label
+                      key={lane.id}
+                      className="branch-scope-lane"
+                      style={{ "--branch-depth": lane.depth } as CSSProperties}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedBranchLaneIds.includes(lane.id)}
+                        onChange={(event) => updateBlockBranchLane(lane.id, event.target.checked)}
+                      />
+                      <span>{lane.name}</span>
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <div className="branching-empty">
+                  当前轨道已启用分叉，但还没有分支。请先在轨道设置中新增分叉。
+                </div>
+              )}
+              <p className="branch-scope-help">
+                勾选多个分叉表示该标注块由这些分叉共有；选择根轨则表示暂不细分。
+              </p>
+            </div>
+          </div>
+        ) : null}
         <div className="inspector-field">
           <label>开始时间</label>
           <input
