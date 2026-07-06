@@ -283,9 +283,6 @@ const MIN_GONGCHE_DURATION = 0.04;
 const SELECT_BOX_AUTOSCROLL_HORIZONTAL_EDGE_PX = 10;
 const SELECT_BOX_AUTOSCROLL_VERTICAL_EDGE_PX = 10;
 const SELECT_BOX_AUTOSCROLL_MAX_SPEED = 18;
-const STACKED_TRACK_ROW_HEIGHT = 28;
-const STACKED_TRACK_ROW_GAP = 4;
-const STACKED_TRACK_VERTICAL_PADDING = 6;
 const STACKED_TRACK_OVERLAP_TOLERANCE_SECONDS = 0.025;
 
 type ZoomGestureState = {
@@ -397,11 +394,20 @@ type ResolvedAttachedPointTrack = {
 type StackedTrackBlockLayout = {
   rowIndex: number;
   rowCount: number;
+  top: number;
+  height: number;
 };
 
 type StackedTrackBlockDisplayLayout = {
   top: number;
   height: number;
+};
+
+type StackedTrackSizing = {
+  rowHeight: number;
+  rowGap: number;
+  verticalPadding: number;
+  trackHeight: number;
 };
 
 type StackedTrackLayout = {
@@ -673,8 +679,9 @@ export function Timeline({
       characterAnnotations,
       actionAnnotations,
       customBlocks,
+      trackHeight,
     ),
-    [trackDefinitions, customTracks, characterAnnotations, actionAnnotations, customBlocks],
+    [trackDefinitions, customTracks, characterAnnotations, actionAnnotations, customBlocks, trackHeight],
   );
   const attachedPointTracks = useMemo(
     () => flattenAttachedPointTracks(builtinTracks, customTracks),
@@ -2878,9 +2885,7 @@ export function Timeline({
               const gongcheParentTrackId = track.type === "gongche-attached" ? track.parentTrackId ?? "" : "";
               const customBlockCreationTarget = getCustomBlockCreationTarget(track);
               const stackedTrackLayout = trackBlockLayouts.get(track.id);
-              const baseTrackHeight = track.type === "attached-point" || track.type === "gongche-attached" || track.type === "branch-lane"
-                ? Math.max(36, trackHeight - 14)
-                : trackHeight;
+              const baseTrackHeight = getTimelineTrackBaseHeight(track, trackHeight);
               const trackActualHeight = stackedTrackLayout
                 ? Math.max(baseTrackHeight, stackedTrackLayout.trackHeight)
                 : baseTrackHeight;
@@ -3410,12 +3415,12 @@ export function Timeline({
     const blockTop = options.displayLayout
       ? options.displayLayout.top
       : options.blockLayout
-      ? STACKED_TRACK_VERTICAL_PADDING + options.blockLayout.rowIndex * (STACKED_TRACK_ROW_HEIGHT + STACKED_TRACK_ROW_GAP)
+      ? options.blockLayout.top
       : options.trackBlockMetrics?.top ?? trackBlockTop;
     const blockHeight = options.displayLayout
       ? options.displayLayout.height
       : options.blockLayout
-      ? STACKED_TRACK_ROW_HEIGHT
+      ? options.blockLayout.height
       : options.trackBlockMetrics?.height ?? trackBlockHeight;
     const zIndex = isSelected ? 4 : isActive ? 3 : 1;
     const hoveredEdge = hoveredBlock?.id === annotation.id &&
@@ -5732,17 +5737,25 @@ function getTrackBlockMetrics(trackHeight: number): TrackBlockMetrics {
   };
 }
 
+function getTimelineTrackBaseHeight(track: TrackDefinition, trackHeight: number) {
+  return track.type === "attached-point" || track.type === "gongche-attached" || track.type === "branch-lane"
+    ? Math.max(36, trackHeight - 14)
+    : trackHeight;
+}
+
 function buildTrackBlockLayouts(
   trackDefinitions: TrackDefinition[],
   customTracks: CustomTrack[],
   characterAnnotations: CharacterAnnotation[],
   actionAnnotations: ActionAnnotation[],
   customBlocks: ResolvedCustomTrackBlock[],
+  baseTrackHeightSetting: number,
 ): Map<string, StackedTrackLayout> {
   const customTrackMap = new Map(customTracks.map((track) => [track.id, track]));
   const layouts = new Map<string, StackedTrackLayout>();
 
   for (const track of trackDefinitions) {
+    const baseTrackHeight = getTimelineTrackBaseHeight(track, baseTrackHeightSetting);
     const layoutInput = getStackedLayoutInputForTrack(
       track,
       customTrackMap,
@@ -5757,8 +5770,8 @@ function buildTrackBlockLayouts(
       continue;
     }
     const layout = layoutInput.mode === "merged-branch"
-      ? layoutMergedBranchTrackBlocks(layoutInput.blocks, layoutInput.sourceTrack)
-      : layoutStackedTrackBlocks(layoutInput.blocks);
+      ? layoutMergedBranchTrackBlocks(layoutInput.blocks, layoutInput.sourceTrack, baseTrackHeight)
+      : layoutStackedTrackBlocks(layoutInput.blocks, baseTrackHeight);
     if (layout.rowCount <= 1) {
       continue;
     }
@@ -5816,18 +5829,20 @@ function getStackedLayoutInputForTrack(
 
 function layoutStackedTrackBlocks(
   blocks: TimelineLayoutBlock[],
+  baseTrackHeight: number,
 ): StackedTrackLayout {
   const rowAssignments = layoutBlocksIntoRows(blocks);
-  return buildStackedTrackLayout(rowAssignments.blockRows, rowAssignments.rowCount);
+  return buildStackedTrackLayout(rowAssignments.blockRows, rowAssignments.rowCount, baseTrackHeight);
 }
 
 function layoutMergedBranchTrackBlocks(
   blocks: ResolvedCustomTrackBlock[],
   track: CustomTrack,
+  baseTrackHeight: number,
 ): StackedTrackLayout {
   const { root, laneNodeMap } = buildBranchLayoutTree(track.branching?.lanes ?? []);
   assignBlocksToBranchLayoutTree(blocks, root, laneNodeMap);
-  return layoutMergedBranchTrackDisplayLayouts(root);
+  return layoutMergedBranchTrackDisplayLayouts(root, baseTrackHeight);
 }
 
 function buildBranchLayoutTree(lanes: BranchLane[]) {
@@ -5920,21 +5935,23 @@ function getBranchNodePath(node: BranchLayoutNode) {
 
 function layoutMergedBranchTrackDisplayLayouts(
   root: BranchLayoutNode,
+  baseTrackHeight: number,
 ): StackedTrackLayout {
   const measurement = measureBranchBand(root);
   if (!measurement) {
-    return buildStackedTrackLayout(new Map(), 1);
+    return buildStackedTrackLayout(new Map(), 1, baseTrackHeight);
   }
 
+  const sizing = getStackedTrackSizing(measurement.subtreeRowCount, baseTrackHeight);
   const geometryMap = new Map<string, BranchBandGeometry>();
-  assignBranchBandGeometry(measurement, STACKED_TRACK_VERTICAL_PADDING, geometryMap);
+  assignBranchBandGeometry(measurement, sizing.verticalPadding, sizing, geometryMap);
   const descendantBlockMap = buildDescendantBranchBlockMap(root);
   const blockDisplayLayouts = new Map<string, StackedTrackBlockDisplayLayout>();
-  appendBranchBlockDisplayLayouts(root, geometryMap, descendantBlockMap, blockDisplayLayouts);
+  appendBranchBlockDisplayLayouts(root, geometryMap, sizing, descendantBlockMap, blockDisplayLayouts);
 
   return {
     rowCount: measurement.subtreeRowCount,
-    trackHeight: getStackedTrackHeight(measurement.subtreeRowCount),
+    trackHeight: sizing.trackHeight,
     blockLayouts: new Map(),
     blockDisplayLayouts,
   };
@@ -5970,19 +5987,20 @@ function measureBranchBand(
 function assignBranchBandGeometry(
   measurement: BranchBandMeasurement,
   top: number,
+  sizing: StackedTrackSizing,
   geometryMap: Map<string, BranchBandGeometry>,
 ) {
-  const ownHeight = getStackedRowsHeight(measurement.ownRowCount);
+  const ownHeight = getStackedRowsHeight(measurement.ownRowCount, sizing);
   let cursor = top + ownHeight + (
-    measurement.childMeasurements.length > 0 ? STACKED_TRACK_ROW_GAP : 0
+    measurement.childMeasurements.length > 0 ? sizing.rowGap : 0
   );
 
   for (const child of measurement.childMeasurements) {
-    assignBranchBandGeometry(child, cursor, geometryMap);
-    cursor += getStackedRowsHeight(child.subtreeRowCount) + STACKED_TRACK_ROW_GAP;
+    assignBranchBandGeometry(child, cursor, sizing, geometryMap);
+    cursor += getStackedRowsHeight(child.subtreeRowCount, sizing) + sizing.rowGap;
   }
 
-  const subtreeHeight = getStackedRowsHeight(measurement.subtreeRowCount);
+  const subtreeHeight = getStackedRowsHeight(measurement.subtreeRowCount, sizing);
   geometryMap.set(measurement.node.key, {
     ownTop: top,
     subtreeTop: top,
@@ -5994,6 +6012,7 @@ function assignBranchBandGeometry(
 function appendBranchBlockDisplayLayouts(
   node: BranchLayoutNode,
   geometryMap: Map<string, BranchBandGeometry>,
+  sizing: StackedTrackSizing,
   descendantBlockMap: Map<string, ResolvedCustomTrackBlock[]>,
   blockDisplayLayouts: Map<string, StackedTrackBlockDisplayLayout>,
 ) {
@@ -6002,7 +6021,7 @@ function appendBranchBlockDisplayLayouts(
     return;
   }
   const ownRowAssignments = layoutBlocksIntoRows(node.blocks);
-  const ownRowSlots = splitStackedRows(geometry.ownTop, geometry.ownRowCount);
+  const ownRowSlots = splitStackedRows(geometry.ownTop, geometry.ownRowCount, sizing);
   const overlapGroups = buildBlockOverlapGroups(node.blocks);
 
   for (const group of overlapGroups) {
@@ -6012,6 +6031,7 @@ function appendBranchBlockDisplayLayouts(
       geometry.subtreeTop,
       geometry.subtreeHeight,
       groupRowAssignments.rowCount,
+      sizing,
     );
 
     for (const block of group) {
@@ -6029,7 +6049,7 @@ function appendBranchBlockDisplayLayouts(
   }
 
   node.children.forEach((child) => {
-    appendBranchBlockDisplayLayouts(child, geometryMap, descendantBlockMap, blockDisplayLayouts);
+    appendBranchBlockDisplayLayouts(child, geometryMap, sizing, descendantBlockMap, blockDisplayLayouts);
   });
 }
 
@@ -6094,17 +6114,22 @@ function buildDescendantBranchBlockMap(root: BranchLayoutNode) {
   return descendantBlockMap;
 }
 
-function splitStackedRows(top: number, rowCount: number) {
+function splitStackedRows(top: number, rowCount: number, sizing: StackedTrackSizing) {
   return Array.from({ length: Math.max(1, rowCount) }, (_, rowIndex) => ({
-    top: top + rowIndex * (STACKED_TRACK_ROW_HEIGHT + STACKED_TRACK_ROW_GAP),
-    height: STACKED_TRACK_ROW_HEIGHT,
+    top: top + rowIndex * (sizing.rowHeight + sizing.rowGap),
+    height: sizing.rowHeight,
   }));
 }
 
-function splitRowsAcrossBand(top: number, height: number, rowCount: number) {
+function splitRowsAcrossBand(
+  top: number,
+  height: number,
+  rowCount: number,
+  sizing: StackedTrackSizing,
+) {
   const normalizedRowCount = Math.max(1, rowCount);
   const gap = normalizedRowCount > 1
-    ? Math.min(STACKED_TRACK_ROW_GAP, height / Math.max(normalizedRowCount * 5, 1))
+    ? Math.min(sizing.rowGap, height / Math.max(normalizedRowCount * 5, 1))
     : 0;
   const rowHeight = Math.max(
     1,
@@ -6119,9 +6144,9 @@ function splitRowsAcrossBand(top: number, height: number, rowCount: number) {
   }));
 }
 
-function getStackedRowsHeight(rowCount: number) {
-  return Math.max(1, rowCount) * STACKED_TRACK_ROW_HEIGHT +
-    Math.max(0, rowCount - 1) * STACKED_TRACK_ROW_GAP;
+function getStackedRowsHeight(rowCount: number, sizing: StackedTrackSizing) {
+  return Math.max(1, rowCount) * sizing.rowHeight +
+    Math.max(0, rowCount - 1) * sizing.rowGap;
 }
 
 function layoutBlocksIntoRows(blocks: TimelineLayoutBlock[]) {
@@ -6155,19 +6180,23 @@ function layoutBlocksIntoRows(blocks: TimelineLayoutBlock[]) {
 function buildStackedTrackLayout(
   blockRows: Map<string, number>,
   rowCount: number,
+  baseTrackHeight: number,
 ): StackedTrackLayout {
   const normalizedRowCount = Math.max(1, rowCount);
+  const sizing = getStackedTrackSizing(normalizedRowCount, baseTrackHeight);
   const blockLayouts = new Map<string, StackedTrackBlockLayout>();
   blockRows.forEach((rowIndex, blockId) => {
     blockLayouts.set(blockId, {
       rowIndex,
       rowCount: normalizedRowCount,
+      top: sizing.verticalPadding + rowIndex * (sizing.rowHeight + sizing.rowGap),
+      height: sizing.rowHeight,
     });
   });
 
   return {
     rowCount: normalizedRowCount,
-    trackHeight: getStackedTrackHeight(normalizedRowCount),
+    trackHeight: sizing.trackHeight,
     blockLayouts,
     blockDisplayLayouts: new Map(),
   };
@@ -6181,13 +6210,34 @@ function areTimelineIntervalsOverlapping(
     left.endTime > right.startTime + STACKED_TRACK_OVERLAP_TOLERANCE_SECONDS;
 }
 
-function getStackedTrackHeight(rowCount: number) {
-  return Math.max(
-    DEFAULT_TRACK_HEIGHT,
-    STACKED_TRACK_VERTICAL_PADDING * 2 +
-      rowCount * STACKED_TRACK_ROW_HEIGHT +
-      Math.max(0, rowCount - 1) * STACKED_TRACK_ROW_GAP,
+function getStackedTrackSizing(rowCount: number, baseTrackHeight: number): StackedTrackSizing {
+  const normalizedRowCount = Math.max(1, rowCount);
+  const verticalPadding = Math.round(clampValue(baseTrackHeight * 0.1, 4, 10));
+  const rowGap = normalizedRowCount > 1
+    ? Math.round(clampValue(baseTrackHeight * 0.06, 3, 7))
+    : 0;
+  const availableRowHeight = (
+    baseTrackHeight -
+    verticalPadding * 2 -
+    rowGap * Math.max(0, normalizedRowCount - 1)
+  ) / normalizedRowCount;
+  const minRowHeight = Math.round(clampValue(baseTrackHeight * 0.34, 16, 24));
+  // 堆叠轨道既要响应“纵向”缩放，又不能在层数多时把块压到不可读。
+  // 因此优先把行放进当前基础高度；放不下时用随缩放变化的最小行高撑开轨道。
+  const rowHeight = Math.max(minRowHeight, availableRowHeight);
+  const trackHeight = Math.max(
+    baseTrackHeight,
+    verticalPadding * 2 +
+      normalizedRowCount * rowHeight +
+      Math.max(0, normalizedRowCount - 1) * rowGap,
   );
+
+  return {
+    rowHeight,
+    rowGap,
+    verticalPadding,
+    trackHeight,
+  };
 }
 
 function isCustomBlockVisibleOnTrack(
