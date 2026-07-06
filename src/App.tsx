@@ -966,6 +966,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     setBlockContextMenu(null);
   }
 
+  function enableBranchTrackAndOpenSettings(trackId: string) {
+    // 未启用分叉的轨道也从右键进入同一套 Inspector 设置，避免把分叉编辑拆成两套入口。
+    setCustomTrackBranchingEnabled(trackId, true);
+    openBranchTrackSettings(trackId);
+  }
+
   function openBlockBranchScopeSettings(trackId: string, blockId: string) {
     setLineFocusRequest(null);
     applySelection({ type: "custom-block", trackId, id: blockId });
@@ -4792,6 +4798,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                     onClick={() => openBranchTrackSettings(contextMenuLaneCustomTrack.id)}
                   >
                     设置分叉轨道
+                  </button>
+                  <div className="character-context-menu-divider" />
+                </>
+              ) : null}
+              {contextMenuLaneCustomTrack && !contextMenuLaneCustomTrack.branching?.enabled ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => enableBranchTrackAndOpenSettings(contextMenuLaneCustomTrack.id)}
+                  >
+                    新增分叉轨道...
                   </button>
                   <div className="character-context-menu-divider" />
                 </>
