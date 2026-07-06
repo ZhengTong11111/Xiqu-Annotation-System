@@ -209,8 +209,7 @@ type DragState =
       trackId: string;
       originX: number;
       boundaryTime: number;
-      leftItem: TimelineBatchMoveItem;
-      rightItem: TimelineBatchMoveItem;
+      members: BoundaryGroupMember[];
     }
   | {
       kind: "create-track-item";
@@ -370,6 +369,15 @@ type DragSnapLock = {
 } | null;
 
 type EdgeHit = "left" | "right" | "center" | "linked-left" | "linked-right";
+
+// 联合调整只描述“哪些块边界会一起被改动”，不要和可吸附参考点混为一谈。
+// 调用方通过 linkedBoundaryCandidates 决定联合范围：
+// - 分叉合并显示：传入父轨当前可见块，允许跨分叉联合拖动；
+// - 分叉展开显示：传入当前子轨可见块，只在子轨内部联合拖动。
+type BoundaryGroupMember = {
+  item: TimelineBatchMoveItem;
+  edge: "start" | "end";
+};
 
 type ResolvedAttachedPointTrack = {
   id: string;
@@ -1660,8 +1668,7 @@ export function Timeline({
           deltaSeconds,
           zoom,
           getTrackSnapPoints(activeDragState.trackId, [
-            toTimelineSelectionItem(activeDragState.leftItem),
-            toTimelineSelectionItem(activeDragState.rightItem),
+            ...activeDragState.members.map((member) => toTimelineSelectionItem(member.item)),
           ]),
           true,
           pointerStepPx,
@@ -1673,7 +1680,7 @@ export function Timeline({
         dragSnapLockRef.current = toDragSnapLock(next.snappedTo);
         scheduleDragUpdate({
           target: "selection",
-          items: [next.leftItem, next.rightItem],
+          items: next.items,
         });
         queuePreviewFrame(next.boundaryTime);
         return;
@@ -2018,13 +2025,12 @@ export function Timeline({
           (lastPointerClientXRef.current - activeDragState.originX) / zoom,
           zoom,
           getTrackSnapPoints(activeDragState.trackId, [
-            toTimelineSelectionItem(activeDragState.leftItem),
-            toTimelineSelectionItem(activeDragState.rightItem),
+            ...activeDragState.members.map((member) => toTimelineSelectionItem(member.item)),
           ]),
           true,
           0,
         );
-        onBatchMoveCommit([next.leftItem, next.rightItem]);
+        onBatchMoveCommit(next.items);
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (isLineDrag(activeDragState)) {
         const next = computeNextRange(
@@ -2764,6 +2770,16 @@ export function Timeline({
               const trackActualHeight = stackedTrackLayout
                 ? Math.max(baseTrackHeight, stackedTrackLayout.trackHeight)
                 : baseTrackHeight;
+              const actionBlocksForTrack = track.type === "action"
+                ? actionAnnotations.filter((annotation) => annotation.trackId === track.id)
+                : [];
+              const customBlocksForTrack =
+                track.type === "custom-text" || track.type === "custom-action" || track.type === "branch-lane"
+                  ? customBlocks.filter((annotation) => isCustomBlockVisibleOnTrack(annotation, track))
+                  : [];
+              // 联合边界候选跟随“当前显示方式”：
+              // 合并显示的父轨会传入父轨所有可见块，允许跨分叉联合拖动；
+              // 展开显示的分叉子轨只传入本子轨可见块，避免误改兄弟子轨。
               return (
               <div
                 key={track.id}
@@ -3124,12 +3140,15 @@ export function Timeline({
                   {track.type === "character"
                     ? characterAnnotations.map((annotation) => renderBlock(annotation, "character", {
                         blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
+                        visualTrackId: track.id,
+                        linkedBoundaryCandidates: characterAnnotations,
                       }))
                     : track.type === "action"
-                      ? actionAnnotations
-                          .filter((annotation) => annotation.trackId === track.id)
+                      ? actionBlocksForTrack
                           .map((annotation) => renderBlock(annotation, "action", {
                             blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
+                            visualTrackId: track.id,
+                            linkedBoundaryCandidates: actionBlocksForTrack,
                           }))
                       : track.type === "attached-point"
                         ? pointTrack
@@ -3139,11 +3158,12 @@ export function Timeline({
                         ? gongcheAnnotations
                             .filter((annotation) => annotation.parentTrackId === gongcheParentTrackId)
                             .map((annotation) => renderGongcheBlock(annotation))
-                      : customBlocks
-                          .filter((annotation) => isCustomBlockVisibleOnTrack(annotation, track))
+                      : customBlocksForTrack
                           .map((annotation) =>
                             renderBlock(annotation, "custom-block", {
                               blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
+                              visualTrackId: track.id,
+                              linkedBoundaryCandidates: customBlocksForTrack,
                             })
                           )}
                   {dragState?.kind === "create-track-item" && dragState.visualTrackId === track.id && scrollRef.current ? (
@@ -3214,6 +3234,8 @@ export function Timeline({
     type: "character" | "action" | "custom-block",
     options: {
       blockLayout?: StackedTrackBlockLayout;
+      visualTrackId?: string;
+      linkedBoundaryCandidates?: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>;
     } = {},
   ) {
     const characterAnnotation = type === "character" ? annotation as CharacterAnnotation : null;
@@ -3270,6 +3292,7 @@ export function Timeline({
         data-block-id={annotation.id}
         data-block-type={type}
         data-block-track-id={customAnnotation?.trackId}
+        data-block-visual-track-id={options.visualTrackId}
         className={[
           "timeline-block",
           type === "character" || customAnnotation?.trackType === "text"
@@ -3299,6 +3322,8 @@ export function Timeline({
             trackSnapEnabled,
             zoom,
             customAnnotation?.trackId,
+            options.visualTrackId,
+            options.linkedBoundaryCandidates,
           );
           const hoverTarget = (preferredHit ?? buildHoveredBlockState(
             annotation.id,
@@ -3315,6 +3340,8 @@ export function Timeline({
                   customBlocks,
                   trackSnapEnabled,
                   zoom,
+                  options.visualTrackId,
+                  options.linkedBoundaryCandidates,
                 ),
             customAnnotation?.trackId,
           )) as Exclude<HoveredBlockState, null>;
@@ -3357,6 +3384,8 @@ export function Timeline({
             trackSnapEnabled,
             zoom,
             customAnnotation?.trackId,
+            options.visualTrackId,
+            options.linkedBoundaryCandidates,
           );
           const displayedHoverHit =
             hoveredBlock?.id === annotation.id &&
@@ -3386,6 +3415,8 @@ export function Timeline({
                   customBlocks,
                   trackSnapEnabled,
                   zoom,
+                  options.visualTrackId,
+                  options.linkedBoundaryCandidates,
                 );
           const liveProject = getProjectSnapshot();
           const targetAnnotation = findAnnotationById(
@@ -3419,8 +3450,8 @@ export function Timeline({
             return;
           }
           const trackId = getTrackIdForAnnotation(targetAnnotation, targetType);
-          const linkedPair = isLinkedEdgeHit(targetEdge) && trackSnapEnabled[trackId]
-            ? findLinkedPair(
+          const boundaryGroup = isLinkedEdgeHit(targetEdge) && trackSnapEnabled[trackId]
+            ? findBoundaryGroup(
                 targetAnnotation,
                 targetType,
                 targetEdge === "linked-left" ? "left" : "right",
@@ -3428,16 +3459,17 @@ export function Timeline({
                 liveProject.actionAnnotations,
                 flattenCustomBlocks(liveProject.customTracks),
                 zoom,
+                options.visualTrackId,
+                options.linkedBoundaryCandidates,
               )
             : null;
-          if (linkedPair) {
+          if (boundaryGroup) {
             setDragState({
               kind: "resize-linked",
               trackId,
               originX: event.clientX,
-              boundaryTime: linkedPair.leftItem.endTime,
-              leftItem: linkedPair.leftItem,
-              rightItem: linkedPair.rightItem,
+              boundaryTime: boundaryGroup.time,
+              members: boundaryGroup.members,
             });
             setHoveredBlock(buildHoveredBlockState(targetAnnotation.id, targetType, targetEdge, trackId));
             onSelectItem(
@@ -4752,6 +4784,8 @@ function resolveEdgeForElement(
   customBlocks: ResolvedCustomTrackBlock[],
   trackSnapEnabled: Record<string, boolean>,
   zoom: number,
+  visualTrackId?: string,
+  linkedBoundaryCandidates?: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>,
 ): EdgeHit {
   const rect = element.getBoundingClientRect();
   const offset = clientX - rect.left;
@@ -4760,7 +4794,7 @@ function resolveEdgeForElement(
   const rightOffset = rect.width - offset;
 
   if (offset < edgeHitSlop) {
-    const linkedPair = hasLinkedPairForEdge(
+    const boundaryGroup = findBoundaryGroupForEdge(
       annotation,
       type,
       "left",
@@ -4769,14 +4803,16 @@ function resolveEdgeForElement(
       customBlocks,
       trackSnapEnabled,
       zoom,
+      visualTrackId,
+      linkedBoundaryCandidates,
     );
-    if (linkedPair && offset <= linkedEdgeHitSlop) {
+    if (boundaryGroup && offset <= linkedEdgeHitSlop) {
       return "linked-left";
     }
     return "left";
   }
   if (rightOffset < edgeHitSlop) {
-    const linkedPair = hasLinkedPairForEdge(
+    const boundaryGroup = findBoundaryGroupForEdge(
       annotation,
       type,
       "right",
@@ -4785,8 +4821,10 @@ function resolveEdgeForElement(
       customBlocks,
       trackSnapEnabled,
       zoom,
+      visualTrackId,
+      linkedBoundaryCandidates,
     );
-    if (linkedPair && rightOffset <= linkedEdgeHitSlop) {
+    if (boundaryGroup && rightOffset <= linkedEdgeHitSlop) {
       return "linked-right";
     }
     return "right";
@@ -4806,6 +4844,8 @@ function resolvePreferredBlockHit(
   trackSnapEnabled: Record<string, boolean>,
   zoom: number,
   fallbackTrackId?: string,
+  fallbackVisualTrackId?: string,
+  fallbackBoundaryBlocks?: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>,
 ): HoveredBlockState {
   if (typeof document === "undefined") {
     return fallbackType === "custom-block"
@@ -4819,6 +4859,7 @@ function resolvePreferredBlockHit(
       const id = element.dataset.blockId;
       const type = element.dataset.blockType as "character" | "action" | "custom-block" | undefined;
       const trackId = element.dataset.blockTrackId;
+      const visualTrackId = element.dataset.blockVisualTrackId ?? fallbackVisualTrackId;
       if (!id || !type) {
         return null;
       }
@@ -4843,6 +4884,8 @@ function resolvePreferredBlockHit(
         customBlocks,
         trackSnapEnabled,
         zoom,
+        visualTrackId,
+        visualTrackId === fallbackVisualTrackId ? fallbackBoundaryBlocks : undefined,
       );
       const rect = element.getBoundingClientRect();
       const physicalEdge = getPhysicalEdge(edge);
@@ -4887,7 +4930,7 @@ function resolvePreferredBlockHit(
   );
 }
 
-function hasLinkedPairForEdge(
+function findBoundaryGroupForEdge(
   annotation: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock,
   type: "character" | "action" | "custom-block",
   edge: "left" | "right",
@@ -4896,12 +4939,24 @@ function hasLinkedPairForEdge(
   customBlocks: ResolvedCustomTrackBlock[],
   trackSnapEnabled: Record<string, boolean>,
   zoom: number,
+  visualTrackId?: string,
+  linkedBoundaryCandidates?: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>,
 ) {
   const trackId = getTrackIdForAnnotation(annotation, type);
   if (!trackSnapEnabled[trackId]) {
     return null;
   }
-  return findLinkedPair(annotation, type, edge, characterAnnotations, actionAnnotations, customBlocks, zoom);
+  return findBoundaryGroup(
+    annotation,
+    type,
+    edge,
+    characterAnnotations,
+    actionAnnotations,
+    customBlocks,
+    zoom,
+    visualTrackId,
+    linkedBoundaryCandidates,
+  );
 }
 
 function findAnnotationById(
@@ -4923,7 +4978,7 @@ function findAnnotationById(
   );
 }
 
-function findLinkedPair(
+function findBoundaryGroup(
   annotation: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock,
   type: "character" | "action" | "custom-block",
   edge: "left" | "right",
@@ -4931,44 +4986,75 @@ function findLinkedPair(
   actionAnnotations: ActionAnnotation[],
   customBlocks: ResolvedCustomTrackBlock[],
   zoom: number,
+  _visualTrackId?: string,
+  linkedBoundaryCandidates?: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>,
 ) {
-  const items = type === "character"
-    ? sortCharactersByTimeLocal(characterAnnotations)
-    : type === "custom-block"
-      ? sortCustomBlocksByTimeLocal(
-          customBlocks.filter((item) => item.trackId === (annotation as ResolvedCustomTrackBlock).trackId),
-        )
-    : sortActionsByTimeLocal(
-        actionAnnotations.filter((item) => item.trackId === (annotation as ActionAnnotation).trackId),
-      );
-  const index = items.findIndex((item) => item.id === annotation.id);
-  if (index === -1) {
-    return null;
-  }
-  if (edge === "right") {
-    const rightNeighbor = items[index + 1];
-    if (
-      !rightNeighbor ||
-      Math.abs(annotation.endTime - rightNeighbor.startTime) > getSnapToleranceSeconds(zoom)
-    ) {
-      return null;
-    }
-    return {
-      leftItem: toBatchMoveItem(annotation, type),
-      rightItem: toBatchMoveItem(rightNeighbor, type),
-    };
-  }
-  const leftNeighbor = items[index - 1];
-  if (
-    !leftNeighbor ||
-    Math.abs(leftNeighbor.endTime - annotation.startTime) > getSnapToleranceSeconds(zoom)
-  ) {
+  const boundaryTime = edge === "right" ? annotation.endTime : annotation.startTime;
+  const tolerance = getSnapToleranceSeconds(zoom);
+  // 吸附参考点和联合编辑范围是两套规则：吸附点可以来自父轨/同级轨，
+  // 但这里只在 linkedBoundaryCandidates 指定的候选集合内形成“会一起被修改”的边界组。
+  const candidates = linkedBoundaryCandidates ?? getDefaultLinkedBoundaryCandidates(
+    annotation,
+    type,
+    characterAnnotations,
+    actionAnnotations,
+    customBlocks,
+  );
+  const members = collectLinkedBoundaryGroupMembers(candidates, type, boundaryTime, tolerance);
+  const currentMemberEdge = edge === "right" ? "end" : "start";
+  const containsCurrentBoundary = members.some((member) =>
+    member.item.id === annotation.id &&
+    member.item.type === type &&
+    member.edge === currentMemberEdge
+  );
+  if (!containsCurrentBoundary || members.length < 2) {
     return null;
   }
   return {
-    leftItem: toBatchMoveItem(leftNeighbor, type),
-    rightItem: toBatchMoveItem(annotation, type),
+    time: boundaryTime,
+    members,
   };
+}
+
+function getDefaultLinkedBoundaryCandidates(
+  annotation: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock,
+  type: "character" | "action" | "custom-block",
+  characterAnnotations: CharacterAnnotation[],
+  actionAnnotations: ActionAnnotation[],
+  customBlocks: ResolvedCustomTrackBlock[],
+) {
+  if (type === "character") {
+    return characterAnnotations;
+  }
+  if (type === "custom-block") {
+    return customBlocks.filter((item) => item.trackId === (annotation as ResolvedCustomTrackBlock).trackId);
+  }
+  return actionAnnotations.filter((item) => item.trackId === (annotation as ActionAnnotation).trackId);
+}
+
+function collectLinkedBoundaryGroupMembers(
+  candidates: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>,
+  type: "character" | "action" | "custom-block",
+  boundaryTime: number,
+  tolerance: number,
+) {
+  const members: BoundaryGroupMember[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const item = toBatchMoveItem(candidate, type);
+    const trackId = getSelectionItemTrackId(item);
+    const startKey = `${item.type}:${item.id}:${trackId}:start`;
+    if (Math.abs(candidate.startTime - boundaryTime) <= tolerance && !seen.has(startKey)) {
+      seen.add(startKey);
+      members.push({ item, edge: "start" });
+    }
+    const endKey = `${item.type}:${item.id}:${trackId}:end`;
+    if (Math.abs(candidate.endTime - boundaryTime) <= tolerance && !seen.has(endKey)) {
+      seen.add(endKey);
+      members.push({ item, edge: "end" });
+    }
+  }
+  return members;
 }
 
 function computeLinkedResizeRange(
@@ -4982,8 +5068,19 @@ function computeLinkedResizeRange(
 ) {
   const minDuration = Math.max(0.04, MIN_BLOCK_WIDTH_PX / Math.max(zoom, 1));
   const rawBoundary = dragState.boundaryTime + deltaSeconds;
-  const minBoundary = dragState.leftItem.startTime + minDuration;
-  const maxBoundary = dragState.rightItem.endTime - minDuration;
+  // 一个边界组可能包含多个 end 和多个 start；新边界必须同时满足所有成员的最小块宽。
+  const minBoundary = Math.max(
+    0,
+    ...dragState.members
+      .filter((member) => member.edge === "end")
+      .map((member) => member.item.startTime + minDuration),
+  );
+  const maxBoundary = Math.min(
+    Number.POSITIVE_INFINITY,
+    ...dragState.members
+      .filter((member) => member.edge === "start")
+      .map((member) => member.item.endTime - minDuration),
+  );
   const clampedBoundary = Math.max(minBoundary, Math.min(maxBoundary, rawBoundary));
   const resolvedBoundary = shouldSnap
     ? resolveSnappedEdgeTime(
@@ -5000,14 +5097,12 @@ function computeLinkedResizeRange(
     Math.min(maxBoundary, resolvedBoundary.time),
   );
   return {
-    leftItem: {
-      ...dragState.leftItem,
-      endTime: snappedBoundary,
-    },
-    rightItem: {
-      ...dragState.rightItem,
-      startTime: snappedBoundary,
-    },
+    items: dragState.members.map((member) => ({
+      ...member.item,
+      ...(member.edge === "start"
+        ? { startTime: snappedBoundary }
+        : { endTime: snappedBoundary }),
+    })),
     boundaryTime: snappedBoundary,
     snappedTo:
       resolvedBoundary.snappedTo &&
@@ -5049,30 +5144,6 @@ function toTimelineSelectionItem(
     : item.type === "attached-point"
       ? { type: "attached-point", id: item.id, trackId: item.trackId, parentTrackId: item.parentTrackId }
     : { type: item.type, id: item.id };
-}
-
-function sortCharactersByTimeLocal(characters: CharacterAnnotation[]) {
-  return [...characters].sort((left, right) =>
-    left.startTime - right.startTime ||
-    left.endTime - right.endTime ||
-    left.id.localeCompare(right.id),
-  );
-}
-
-function sortActionsByTimeLocal(actions: ActionAnnotation[]) {
-  return [...actions].sort((left, right) =>
-    left.startTime - right.startTime ||
-    left.endTime - right.endTime ||
-    left.id.localeCompare(right.id),
-  );
-}
-
-function sortCustomBlocksByTimeLocal(blocks: ResolvedCustomTrackBlock[]) {
-  return [...blocks].sort((left, right) =>
-    left.startTime - right.startTime ||
-    left.endTime - right.endTime ||
-    left.id.localeCompare(right.id),
-  );
 }
 
 function snapTime(
