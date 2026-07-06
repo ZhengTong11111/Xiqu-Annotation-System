@@ -1691,8 +1691,11 @@ export function Timeline({
           ? (event.clientX - activeDragState.originX) / zoom
           : 0;
       if (activeDragState.kind === "create-track-item") {
+        // 创建拖拽必须用本次 pointermove 的坐标来计算预览和吸附。
+        // 旧逻辑先用上一帧 currentX 计算，再更新 currentX，在低缩放/触摸板下会让反馈慢一帧。
+        const currentCreateDragState = { ...activeDragState, currentX: event.clientX };
         const dragPreview = getCreateTrackPreview(
-          activeDragState,
+          currentCreateDragState,
           zoom,
           trackSnapEnabled[activeDragState.trackId]
             ? getTrackSnapPoints(activeDragState.trackId)
@@ -1710,7 +1713,7 @@ export function Timeline({
         queuePreviewFrame(dragPreview.previewTime);
         setDragState((prev) =>
           prev && prev.kind === "create-track-item"
-            ? { ...prev, currentX: event.clientX }
+            ? currentCreateDragState
             : prev,
         );
         return;
@@ -1964,7 +1967,7 @@ export function Timeline({
       updatePreviewFrame(activeDragState.kind, next);
     };
 
-    const handlePointerUp = () => {
+    const handlePointerUp = (event: PointerEvent) => {
       const activeDragState = dragStateRef.current;
       const finalSnapLock = dragSnapLockRef.current;
       dragSnapLockRef.current = null;
@@ -1978,9 +1981,15 @@ export function Timeline({
         setDragState(null);
         return;
       }
+      const finalPointerClientX =
+        "originX" in activeDragState ? event.clientX : lastPointerClientXRef.current;
+      const finalPointerStepPx =
+        "originX" in activeDragState
+          ? Math.abs(finalPointerClientX - (lastPointerClientXRef.current || finalPointerClientX))
+          : lastPointerStepPxRef.current;
       if (
         "originX" in activeDragState &&
-        Math.abs(lastPointerClientXRef.current - activeDragState.originX) < DRAG_ACTIVATION_PX
+        Math.abs(finalPointerClientX - activeDragState.originX) < DRAG_ACTIVATION_PX
       ) {
         lastResolvedDragUpdateRef.current = null;
         lastPointerStepPxRef.current = 0;
@@ -1992,29 +2001,31 @@ export function Timeline({
       // fallback 重新计算只用于没有 pointermove 预览结果的边界情况，且必须沿用最后的 snapLock/pointerStep。
       const liveSnapPoints = getLiveSnapPoints();
       if (activeDragState.kind === "create-track-item" && scrollRef.current) {
-        const left = Math.max(0, Math.min(activeDragState.originX, activeDragState.currentX) - activeDragState.laneLeft);
-        const right = Math.max(0, Math.max(activeDragState.originX, activeDragState.currentX) - activeDragState.laneLeft);
+        // pointerup 可能带来最后一段位移，但不一定再触发 pointermove。
+        // 提交时使用最终事件坐标，避免“预览到了、松手没创建”的触摸板边界问题。
+        const left = Math.max(0, Math.min(activeDragState.originX, finalPointerClientX) - activeDragState.laneLeft);
+        const right = Math.max(0, Math.max(activeDragState.originX, finalPointerClientX) - activeDragState.laneLeft);
         const createSnapPoints = getTrackSnapPoints(activeDragState.trackId);
         const startTime = trackSnapEnabled[activeDragState.trackId]
-          ? snapTime(left / zoom, createSnapPoints, zoom, lastPointerStepPxRef.current, finalSnapLock, "left")
+          ? snapTime(left / zoom, createSnapPoints, zoom, finalPointerStepPx, finalSnapLock, "left")
           : left / zoom;
         const minDuration = Math.max(0.04, MIN_BLOCK_WIDTH_PX / Math.max(zoom, 1));
         const rawEndTime = right / zoom;
         const snappedEndTime = trackSnapEnabled[activeDragState.trackId]
-          ? snapTime(rawEndTime, createSnapPoints, zoom, lastPointerStepPxRef.current, finalSnapLock, "right")
+          ? snapTime(rawEndTime, createSnapPoints, zoom, finalPointerStepPx, finalSnapLock, "right")
           : rawEndTime;
         const endTime = Math.max(startTime + minDuration, snappedEndTime);
-        if (endTime - startTime >= minDuration) {
-          if (activeDragState.trackType === "character") {
-            onCreateCharacterAtTime(startTime, endTime);
-          } else if (
-            activeDragState.trackType === "custom-text" ||
-            activeDragState.trackType === "custom-action"
-          ) {
-            onCreateCustomBlock(activeDragState.trackId, startTime, endTime, activeDragState.branchScope);
-          } else {
-            onCreateAction(activeDragState.trackId, startTime, endTime);
-          }
+        // endTime 已经被强制不短于 minDuration；这里不要再用浮点减法二次判断，
+        // 否则在 11px/s 等特定倍率下可能因为 1e-15 级误差吞掉合法创建。
+        if (activeDragState.trackType === "character") {
+          onCreateCharacterAtTime(startTime, endTime);
+        } else if (
+          activeDragState.trackType === "custom-text" ||
+          activeDragState.trackType === "custom-action"
+        ) {
+          onCreateCustomBlock(activeDragState.trackId, startTime, endTime, activeDragState.branchScope);
+        } else {
+          onCreateAction(activeDragState.trackId, startTime, endTime);
         }
       } else if (activeDragState.kind === "select-box") {
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
