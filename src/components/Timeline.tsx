@@ -407,6 +407,11 @@ type StackedTrackLayout = {
   autoExpandOnConflict: boolean;
 };
 
+type TrackBlockMetrics = {
+  top: number;
+  height: number;
+};
+
 type LoopRangeSelectionState = {
   pointerId: number;
   originX: number;
@@ -596,8 +601,9 @@ export function Timeline({
   const moveTrackHighlightTimerRef = useRef<number | null>(null);
   const selectionAnchorRef = useRef<TimelineSelectionItem | null>(selectedTimelineItems[0] ?? null);
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
-  const trackBlockHeight = Math.round(clampValue(trackHeight - 22, 24, 54));
-  const trackBlockTop = Math.round(Math.max(5, (trackHeight - trackBlockHeight) / 2));
+  const defaultTrackBlockMetrics = getTrackBlockMetrics(trackHeight);
+  const trackBlockHeight = defaultTrackBlockMetrics.height;
+  const trackBlockTop = defaultTrackBlockMetrics.top;
   const compactTrackLabels = trackHeight <= 52;
   const compactAttachedPointMeta = trackHeight <= 64;
   const waveformViewHeight = Math.max(
@@ -2834,6 +2840,8 @@ export function Timeline({
               const trackActualHeight = stackedTrackLayout
                 ? Math.max(baseTrackHeight, stackedTrackLayout.trackHeight)
                 : baseTrackHeight;
+              // 派生子轨比普通轨矮，块的位置必须按当前可见轨道高度重新计算。
+              const trackBlockMetrics = getTrackBlockMetrics(trackActualHeight);
               const actionBlocksForTrack = track.type === "action"
                 ? actionAnnotations.filter((annotation) => annotation.trackId === track.id)
                 : [];
@@ -3204,6 +3212,7 @@ export function Timeline({
                   {track.type === "character"
                     ? characterAnnotations.map((annotation) => renderBlock(annotation, "character", {
                         blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
+                        trackBlockMetrics,
                         visualTrackId: track.id,
                         linkedBoundaryCandidates: characterAnnotations,
                       }))
@@ -3211,6 +3220,7 @@ export function Timeline({
                       ? actionBlocksForTrack
                           .map((annotation) => renderBlock(annotation, "action", {
                             blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
+                            trackBlockMetrics,
                             visualTrackId: track.id,
                             linkedBoundaryCandidates: actionBlocksForTrack,
                           }))
@@ -3226,6 +3236,7 @@ export function Timeline({
                           .map((annotation) =>
                             renderBlock(annotation, "custom-block", {
                               blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
+                              trackBlockMetrics,
                               visualTrackId: track.id,
                               linkedBoundaryCandidates: customBlocksForTrack,
                             })
@@ -3298,6 +3309,7 @@ export function Timeline({
     type: "character" | "action" | "custom-block",
     options: {
       blockLayout?: StackedTrackBlockLayout;
+      trackBlockMetrics?: TrackBlockMetrics;
       visualTrackId?: string;
       linkedBoundaryCandidates?: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>;
     } = {},
@@ -3341,8 +3353,10 @@ export function Timeline({
         : actionAnnotation?.label ?? "";
     const blockTop = options.blockLayout
       ? STACKED_TRACK_VERTICAL_PADDING + options.blockLayout.rowIndex * (STACKED_TRACK_ROW_HEIGHT + STACKED_TRACK_ROW_GAP)
-      : trackBlockTop;
-    const blockHeight = options.blockLayout ? STACKED_TRACK_ROW_HEIGHT : trackBlockHeight;
+      : options.trackBlockMetrics?.top ?? trackBlockTop;
+    const blockHeight = options.blockLayout
+      ? STACKED_TRACK_ROW_HEIGHT
+      : options.trackBlockMetrics?.height ?? trackBlockHeight;
     const zIndex = isSelected ? 4 : isActive ? 3 : 1;
     const hoveredEdge = hoveredBlock?.id === annotation.id &&
       hoveredBlock.type === type &&
@@ -5631,6 +5645,14 @@ function buildHoveredBlockState(
   return type === "custom-block"
     ? { id, type, trackId: trackId ?? "", edge }
     : { id, type, edge };
+}
+
+function getTrackBlockMetrics(trackHeight: number): TrackBlockMetrics {
+  const height = Math.round(clampValue(trackHeight - 22, 24, 54));
+  return {
+    top: Math.round(Math.max(5, (trackHeight - height) / 2)),
+    height,
+  };
 }
 
 function buildTrackBlockLayouts(

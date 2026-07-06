@@ -1634,20 +1634,20 @@ export function InspectorPanel({
           <div className="inspector-field">
             <label>分叉归属</label>
             <div className="branch-scope-editor">
-              <label className="branch-scope-root">
+              <label className="branch-scope-option branch-scope-root">
                 <input
                   type="radio"
                   checked={blockBranchScope.mode === "root"}
                   onChange={() => onCustomBlockUpdate(track.id, block.id, { branchScope: { mode: "root" } })}
                 />
-                <span>{track.branching.rootLabel ?? "全轨"} / 未细分</span>
+                <span className="branch-scope-option-label">{track.branching.rootLabel ?? "全轨"} / 未细分</span>
               </label>
               {blockBranchLanes.length > 0 ? (
                 <div className="branch-scope-lane-list">
                   {blockBranchLanes.map((lane) => (
                     <label
                       key={lane.id}
-                      className="branch-scope-lane"
+                      className="branch-scope-option branch-scope-lane"
                       style={{ "--branch-depth": lane.depth } as CSSProperties}
                     >
                       <input
@@ -1655,7 +1655,7 @@ export function InspectorPanel({
                         checked={selectedBranchLaneIds.includes(lane.id)}
                         onChange={(event) => updateBlockBranchLane(lane.id, event.target.checked)}
                       />
-                      <span>{lane.name}</span>
+                      <span className="branch-scope-option-label">{lane.name}</span>
                     </label>
                   ))}
                 </div>

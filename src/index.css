@@ -1538,20 +1538,29 @@ select {
   background: rgba(246, 248, 251, 0.72);
 }
 
-.branch-scope-root,
-.branch-scope-lane {
-  display: flex;
+.branch-scope-option {
+  /* 固定控件列，避免右侧属性面板变窄时文字被挤成竖排。 */
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
   align-items: center;
   gap: 6px;
   min-width: 0;
   color: var(--ink);
   font-size: 12px;
+  line-height: 1.35;
 }
 
-.branch-scope-root input,
-.branch-scope-lane input {
+.branch-scope-option input {
+  width: 16px;
+  height: 16px;
   margin: 0;
-  flex: 0 0 auto;
+  justify-self: center;
+}
+
+.branch-scope-option-label {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .branch-scope-lane-list {
@@ -1564,6 +1573,7 @@ select {
 
 .branch-scope-lane {
   padding-left: calc(var(--branch-depth, 0) * 14px);
+  box-sizing: border-box;
 }
 
 .branch-scope-help {
