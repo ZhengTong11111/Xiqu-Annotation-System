@@ -536,7 +536,9 @@ export function Timeline({
   const zoomPreviewTimerRef = useRef<number | null>(null);
   const dragStateRef = useRef<DragState>(null);
   const lastPointerClientXRef = useRef(0);
+  const lastPointerStepPxRef = useRef(0);
   const pendingDragUpdateRef = useRef<PendingDragUpdate | null>(null);
+  const lastResolvedDragUpdateRef = useRef<PendingDragUpdate | null>(null);
   const dragFrameRef = useRef<number | null>(null);
   const selectBoxAutoScrollFrameRef = useRef<number | null>(null);
   const selectBoxPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
@@ -1613,6 +1615,7 @@ export function Timeline({
       const previousPointerClientX = lastPointerClientXRef.current || event.clientX;
       lastPointerClientXRef.current = event.clientX;
       const pointerStepPx = Math.abs(event.clientX - previousPointerClientX);
+      lastPointerStepPxRef.current = pointerStepPx;
       const deltaPixels =
         "originX" in activeDragState
           ? event.clientX - activeDragState.originX
@@ -1913,6 +1916,8 @@ export function Timeline({
       setActiveSnapIndicator(null);
       flushPendingDragUpdate();
       if (!activeDragState) {
+        lastResolvedDragUpdateRef.current = null;
+        lastPointerStepPxRef.current = 0;
         setDragState(null);
         return;
       }
@@ -1920,19 +1925,26 @@ export function Timeline({
         "originX" in activeDragState &&
         Math.abs(lastPointerClientXRef.current - activeDragState.originX) < DRAG_ACTIVATION_PX
       ) {
+        lastResolvedDragUpdateRef.current = null;
+        lastPointerStepPxRef.current = 0;
         setDragState(null);
         return;
       }
+      const resolvedDragUpdate = lastResolvedDragUpdateRef.current;
+      // 主路径：提交拖动过程中最后一次已经展示出来的结果。
+      // fallback 重新计算只用于没有 pointermove 预览结果的边界情况，且必须沿用最后的 snapLock/pointerStep。
       const liveSnapPoints = getLiveSnapPoints();
       if (activeDragState.kind === "create-track-item" && scrollRef.current) {
         const left = Math.max(0, Math.min(activeDragState.originX, activeDragState.currentX) - activeDragState.laneLeft);
         const right = Math.max(0, Math.max(activeDragState.originX, activeDragState.currentX) - activeDragState.laneLeft);
         const createSnapPoints = getTrackSnapPoints(activeDragState.trackId);
-        const startTime = trackSnapEnabled[activeDragState.trackId] ? snapTime(left / zoom, createSnapPoints, zoom) : left / zoom;
+        const startTime = trackSnapEnabled[activeDragState.trackId]
+          ? snapTime(left / zoom, createSnapPoints, zoom, lastPointerStepPxRef.current, finalSnapLock, "left")
+          : left / zoom;
         const minDuration = Math.max(0.04, MIN_BLOCK_WIDTH_PX / Math.max(zoom, 1));
         const rawEndTime = right / zoom;
         const snappedEndTime = trackSnapEnabled[activeDragState.trackId]
-          ? snapTime(rawEndTime, createSnapPoints, zoom)
+          ? snapTime(rawEndTime, createSnapPoints, zoom, lastPointerStepPxRef.current, finalSnapLock, "right")
           : rawEndTime;
         const endTime = Math.max(startTime + minDuration, snappedEndTime);
         if (endTime - startTime >= minDuration) {
@@ -1958,120 +1970,166 @@ export function Timeline({
         const primaryItem = selectedItems[selectedItems.length - 1] ?? selectedItems[0] ?? null;
         onSelectTimelineItems(selectedItems, primaryItem ? toSelectedItem(primaryItem) : null);
       } else if (activeDragState.kind === "move-selection") {
-        const minStartTime = Math.min(...activeDragState.items.map((item) => item.startTime));
-        const selectionTrackId = getSelectionTrackId(activeDragState.items);
-        const next = computeSelectionMoveRange(
-          activeDragState.items,
-          Math.max((lastPointerClientXRef.current - activeDragState.originX) / zoom, -minStartTime),
-          selectionTrackId,
-          zoom,
-          true,
-        );
-        onBatchMoveCommit(
-          next.items,
-        );
+        if (resolvedDragUpdate?.target === "selection") {
+          commitResolvedDragUpdate(resolvedDragUpdate);
+        } else {
+          const minStartTime = Math.min(...activeDragState.items.map((item) => item.startTime));
+          const selectionTrackId = getSelectionTrackId(activeDragState.items);
+          const next = computeSelectionMoveRange(
+            activeDragState.items,
+            Math.max((lastPointerClientXRef.current - activeDragState.originX) / zoom, -minStartTime),
+            selectionTrackId,
+            zoom,
+            true,
+            lastPointerStepPxRef.current,
+            finalSnapLock,
+          );
+          onBatchMoveCommit(
+            next.items,
+          );
+        }
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (activeDragState.kind === "move-point") {
-        const finalPointSnapPoints = trackSnapEnabled[activeDragState.trackId]
-          ? getTrackSnapPoints(activeDragState.trackId)
-          : [];
-        const rawTime = Math.max(
-          0,
-          activeDragState.originalTime + (lastPointerClientXRef.current - activeDragState.originX) / zoom,
-        );
-        const finalTime = trackSnapEnabled[activeDragState.trackId]
-          ? resolveSnappedEdgeTime(
-              rawTime,
-              "left",
-              finalPointSnapPoints,
-              zoom,
-              0,
-              finalSnapLock,
-            ).time
-          : rawTime;
-        onAttachedPointCommit(activeDragState.trackId, activeDragState.id, {
-          time: finalTime,
-        });
+        if (resolvedDragUpdate?.target === "attached-point") {
+          commitResolvedDragUpdate(resolvedDragUpdate);
+        } else {
+          const finalPointSnapPoints = trackSnapEnabled[activeDragState.trackId]
+            ? getTrackSnapPoints(activeDragState.trackId)
+            : [];
+          const rawTime = Math.max(
+            0,
+            activeDragState.originalTime + (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+          );
+          const finalTime = trackSnapEnabled[activeDragState.trackId]
+            ? resolveSnappedEdgeTime(
+                rawTime,
+                "left",
+                finalPointSnapPoints,
+                zoom,
+                lastPointerStepPxRef.current,
+                finalSnapLock,
+              ).time
+            : rawTime;
+          onAttachedPointCommit(activeDragState.trackId, activeDragState.id, {
+            time: finalTime,
+          });
+        }
         setDraggedPointPreview(null);
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (activeDragState.kind === "move-banyan-mark") {
-        const finalTime = Math.max(
-          0,
-          activeDragState.originalTime + (lastPointerClientXRef.current - activeDragState.originX) / zoom,
-        );
-        onBanyanMarkCommit(activeDragState.id, {
-          time: finalTime,
-          confidence: "manual",
-          manualOffset: finalTime - activeDragState.estimatedTime,
-        });
+        if (resolvedDragUpdate?.target === "banyan-mark") {
+          commitResolvedDragUpdate(resolvedDragUpdate);
+        } else {
+          const finalTime = Math.max(
+            0,
+            activeDragState.originalTime + (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+          );
+          onBanyanMarkCommit(activeDragState.id, {
+            time: finalTime,
+            confidence: "manual",
+            manualOffset: finalTime - activeDragState.estimatedTime,
+          });
+        }
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (activeDragState.kind === "move-gongche") {
-        const next = computeMovedGongcheBlock(
-          activeDragState,
-          (lastPointerClientXRef.current - activeDragState.originX) / zoom,
-        );
-        onGongcheBlockCommit(activeDragState.id, next);
+        if (resolvedDragUpdate?.target === "gongche") {
+          commitResolvedDragUpdate(resolvedDragUpdate);
+        } else {
+          const next = computeMovedGongcheBlock(
+            activeDragState,
+            (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+          );
+          onGongcheBlockCommit(activeDragState.id, next);
+        }
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (activeDragState.kind === "move-gongche-boundary") {
-        const next = computeMovedGongcheBoundary(
-          activeDragState,
-          (lastPointerClientXRef.current - activeDragState.originX) / zoom,
-        );
-        onGongcheBlockCommit(activeDragState.id, next);
+        if (resolvedDragUpdate?.target === "gongche") {
+          commitResolvedDragUpdate(resolvedDragUpdate);
+        } else {
+          const next = computeMovedGongcheBoundary(
+            activeDragState,
+            (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+          );
+          onGongcheBlockCommit(activeDragState.id, next);
+        }
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (activeDragState.kind === "resize-linked") {
-        const next = computeLinkedResizeRange(
-          activeDragState,
-          (lastPointerClientXRef.current - activeDragState.originX) / zoom,
-          zoom,
-          getTrackSnapPoints(activeDragState.trackId, [
-            ...activeDragState.members.map((member) => toTimelineSelectionItem(member.item)),
-          ]),
-          true,
-          0,
-        );
-        onBatchMoveCommit(next.items);
+        if (resolvedDragUpdate?.target === "selection") {
+          commitResolvedDragUpdate(resolvedDragUpdate);
+        } else {
+          const next = computeLinkedResizeRange(
+            activeDragState,
+            (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+            zoom,
+            getTrackSnapPoints(activeDragState.trackId, [
+              ...activeDragState.members.map((member) => toTimelineSelectionItem(member.item)),
+            ]),
+            true,
+            lastPointerStepPxRef.current,
+            finalSnapLock,
+          );
+          onBatchMoveCommit(next.items);
+        }
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
       } else if (isLineDrag(activeDragState)) {
-        const next = computeNextRange(
-          activeDragState.originalStart,
-          activeDragState.originalEnd,
-          (lastPointerClientXRef.current - activeDragState.originX) / zoom,
-          0,
-          activeDragState.kind,
-          liveSnapPoints,
-          zoom,
-          true,
-        );
+        const next = resolvedDragUpdate?.target === "line"
+          ? null
+          : computeNextRange(
+              activeDragState.originalStart,
+              activeDragState.originalEnd,
+              (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+              lastPointerStepPxRef.current,
+              activeDragState.kind,
+              liveSnapPoints,
+              zoom,
+              false,
+              null,
+            );
         suppressLineClickIdRef.current = activeDragState.id;
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
-        onLineCommit(activeDragState.id, next);
+        if (resolvedDragUpdate?.target === "line") {
+          commitResolvedDragUpdate(resolvedDragUpdate);
+        } else if (next) {
+          onLineCommit(activeDragState.id, next);
+        }
       } else if (isCharacterDrag(activeDragState)) {
-        const next = computeRangeWithTrackSnap({
-          originalStart: activeDragState.originalStart,
-          originalEnd: activeDragState.originalEnd,
-          deltaSeconds: (lastPointerClientXRef.current - activeDragState.originX) / zoom,
-          pointerStepPx: 0,
-          kind: activeDragState.kind,
-          zoomLevel: zoom,
-          trackId: "character-track",
-          excludedItems: [{ type: "character", id: activeDragState.id }],
-          shouldSnap: true,
-        });
+        const next = resolvedDragUpdate?.target === "character"
+          ? null
+          : computeRangeWithTrackSnap({
+              originalStart: activeDragState.originalStart,
+              originalEnd: activeDragState.originalEnd,
+              deltaSeconds: (lastPointerClientXRef.current - activeDragState.originX) / zoom,
+              pointerStepPx: lastPointerStepPxRef.current,
+              kind: activeDragState.kind,
+              zoomLevel: zoom,
+              trackId: "character-track",
+              excludedItems: [{ type: "character", id: activeDragState.id }],
+              shouldSnap: true,
+              snapLock: finalSnapLock,
+            });
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
-        onCharacterCommit(activeDragState.id, {
-          startTime: next.startTime,
-          endTime: next.endTime,
-        });
+        if (resolvedDragUpdate?.target === "character") {
+          commitResolvedDragUpdate(resolvedDragUpdate);
+        } else if (next) {
+          onCharacterCommit(activeDragState.id, {
+            startTime: next.startTime,
+            endTime: next.endTime,
+          });
+        }
       } else if (isActionDrag(activeDragState)) {
         const actionAnnotation = actionAnnotations.find((item) => item.id === activeDragState.id);
         const customBlock = customBlocks.find((item) => item.id === activeDragState.id);
-        const next = actionAnnotation || customBlock
+        const canUseResolvedActionUpdate =
+          (actionAnnotation && resolvedDragUpdate?.target === "action") ||
+          (customBlock && resolvedDragUpdate?.target === "custom-block");
+        const next = canUseResolvedActionUpdate
+          ? null
+          : actionAnnotation || customBlock
           ? computeRangeWithTrackSnap({
               originalStart: activeDragState.originalStart,
               originalEnd: activeDragState.originalEnd,
               deltaSeconds: (lastPointerClientXRef.current - activeDragState.originX) / zoom,
-              pointerStepPx: 0,
+              pointerStepPx: lastPointerStepPxRef.current,
               kind: activeDragState.kind,
               zoomLevel: zoom,
               trackId: actionAnnotation?.trackId ?? customBlock?.trackId ?? "",
@@ -2081,30 +2139,36 @@ export function Timeline({
                   : { type: "action", id: activeDragState.id },
               ],
               shouldSnap: true,
+              snapLock: finalSnapLock,
             })
           : computeNextRange(
               activeDragState.originalStart,
               activeDragState.originalEnd,
               (lastPointerClientXRef.current - activeDragState.originX) / zoom,
-              0,
+              lastPointerStepPxRef.current,
               activeDragState.kind,
               liveSnapPoints,
               zoom,
               true,
+              finalSnapLock,
             );
         suppressCanvasClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
-        if (customBlock) {
+        if (canUseResolvedActionUpdate && resolvedDragUpdate) {
+          commitResolvedDragUpdate(resolvedDragUpdate);
+        } else if (customBlock && next) {
           onCustomBlockCommit(customBlock.trackId, activeDragState.id, {
             startTime: next.startTime,
             endTime: next.endTime,
           });
-        } else {
+        } else if (next) {
           onActionCommit(activeDragState.id, {
             startTime: next.startTime,
             endTime: next.endTime,
           });
         }
       }
+      lastResolvedDragUpdateRef.current = null;
+      lastPointerStepPxRef.current = 0;
       setDragState(null);
       setDraggedPointPreview(null);
     };
@@ -4117,6 +4181,9 @@ export function Timeline({
   }
 
   function scheduleDragUpdate(update: PendingDragUpdate) {
+    // 拖动预览和松手提交必须共享同一个 resolved 结果。
+    // 触摸板会让 pointerStepPx 波动，如果松手时重新计算，可能出现“预览吸附、提交脱开”。
+    lastResolvedDragUpdateRef.current = update;
     pendingDragUpdateRef.current = update;
     if (dragFrameRef.current !== null) {
       return;
@@ -4125,6 +4192,38 @@ export function Timeline({
       dragFrameRef.current = null;
       flushPendingDragUpdate();
     });
+  }
+
+  function commitResolvedDragUpdate(update: PendingDragUpdate) {
+    if (update.target === "line") {
+      onLineCommit(update.id, update.changes as Pick<SubtitleLine, "startTime" | "endTime">);
+      return;
+    }
+    if (update.target === "character") {
+      onCharacterCommit(update.id, update.changes);
+      return;
+    }
+    if (update.target === "attached-point") {
+      onAttachedPointCommit(update.trackId, update.pointId, update.changes);
+      return;
+    }
+    if (update.target === "banyan-mark") {
+      onBanyanMarkCommit(update.id, update.changes);
+      return;
+    }
+    if (update.target === "gongche") {
+      onGongcheBlockCommit(update.id, update.changes);
+      return;
+    }
+    if (update.target === "selection") {
+      onBatchMoveCommit(update.items);
+      return;
+    }
+    if (update.target === "custom-block") {
+      onCustomBlockCommit(update.trackId, update.id, update.changes);
+      return;
+    }
+    onActionCommit(update.id, update.changes);
   }
 
   function flushPendingDragUpdate() {
