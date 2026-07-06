@@ -1,7 +1,9 @@
 # Repository Guidelines
 
 ## Product Intent
-This repository is a front-end MVP for `戏曲数据库多轨时间标注`: a research-oriented annotation workstation for aligning video, sentence-level SRT, character-level timing, singing-style labels, action tracks, point annotations, audio cues, and now demonstration-oriented Gongche notation. Keep SRT as the exchange format: sentence SRT in, editable TypeScript state in the app, per-track SRT out.
+This repository is evolving from a local React/TypeScript annotation workstation into a full Kunqu multimodal academic database and classroom annotation platform. It now includes the original timeline editor plus an early but real Fastify/Prisma/PostgreSQL platform backend for accounts, media files, projects, annotation documents, snapshots, and versions.
+
+The editor remains a research-oriented workstation for aligning video, sentence-level SRT, character-level timing, singing-style labels, action tracks, point annotations, audio cues, Banyan beat/eye information, Gongche notation, and recursive custom-track branches. SRT remains an important exchange format for subtitle-like tracks: sentence SRT in, editable TypeScript state in the app, per-track SRT out.
 
 This is not a generic subtitle editor. It behaves more like a compact DAW / NLE / annotation workstation:
 - precise time-axis editing
@@ -20,6 +22,9 @@ Main currently contains all major recent feature lines that matter for context:
 - spectrogram preview + settings
 - Gongche attached-track workflow and renderer
 - Gongche glyph preview is currently marked finished for research/demo use, but the glyph font must be replaced or licensed before release
+- Banyan beat/eye parsing, track display, editing, and global vertical guide rendering
+- platform login/home UI, local editor entry, media upload, project/document management, JSON import, server save, and version management
+- Fastify API backed by Prisma 7 and PostgreSQL, with local object storage under `data/`
 - project document state architecture (`src/state/projectDocumentState.ts`)
 - recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
 
@@ -29,6 +34,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/App.tsx`
   - main orchestrator
   - wires together project state, playback state, import/export, clipboard, selection, context menu, loop range, spectrogram settings, detached windows, and inspector actions
+- `src/platform/PlatformWorkspace.tsx`
+  - platform login/home/editor switch
+  - media upload, project/document creation, JSON document import, version list/create/restore, local editor entry
+- `src/platform/PlatformHome.tsx`
+  - platform project/document management UI
+- `src/api/platformClient.ts`
+  - browser-side API client for platform backend calls
 - `src/state/projectDocumentState.ts`
   - authoritative local document/history/sync-state hook
   - owns undo/redo stacks, pending operations, revision counters, dirty/saved status
@@ -50,11 +62,29 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/components/FloatingPanelWindow.tsx`
   - current lightweight in-app floating window shell for detached panes
 - `src/utils/project.ts`
-  - track defaults, timeline track definition expansion, project builders, duration helpers, Gongche attached track id helpers
+  - track defaults, timeline track definition expansion, project builders, duration helpers, Gongche attached track id helpers, branch-lane track id helpers
+- `src/utils/projectFile.ts`
+  - saved project JSON normalization/migration, local/project-platform import compatibility, `PROJECT_FILE_VERSION`
 - `src/utils/srt.ts`
   - SRT parse/export helpers
+- `src/utils/banyan.ts`
+  - Banyan/Gongche-derived beat/eye parsing helpers
 - `src/utils/spectrogram.ts` + `src/utils/spectrogram.worker.ts`
   - worker-driven spectrogram analysis pipeline
+- `src/utils/trackBranching.ts`
+  - recursive branch-lane flattening/counting helpers
+- `src/utils/trackColors.ts`
+  - track/branch color defaults, palette helpers, and CSS variable helpers
+- `apps/api/src/`
+  - Fastify backend: auth, routes, repository, Prisma mapping, local object storage
+- `packages/shared/src/`
+  - API/platform DTOs and shared contract types used by web and API
+- `packages/document-model/src/`
+  - document snapshot/version and permission-scope helpers for future collaboration/server workflows
+- `prisma/schema.prisma`
+  - PostgreSQL schema for users, sessions, files, media assets, projects, documents, snapshots, versions, grants, and processing jobs
+- `docs/`
+  - roadmap, architecture notes, and curated screenshots; keep this updated for long-running platform/backend work
 - `src/types.ts`
   - all shared project/data/UI selection types
 - `src/mockData.ts`
@@ -65,10 +95,26 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 ## Commands
 - `npm install`
 - `npm run dev`
+- `npm run dev:web`
+- `npm run dev:api`
+- `npm run db:generate`
+- `npm run db:push`
+- `npm run db:migrate`
 - `npm run build`
+- `npm run build:web`
+- `npm run build:api`
+- `npm run build:shared`
+- `npm run build:document-model`
 - `npm run preview`
 
-There is still no dedicated lint/test script. `npm run build` is the mandatory pre-merge check.
+There is still no dedicated lint/test script. `npm run build` is the mandatory pre-merge check; it runs Prisma generation plus shared, document-model, web, and API builds.
+
+Backend local defaults:
+- API port defaults to `4317`
+- Prisma/PostgreSQL defaults to `postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public`
+- local uploaded objects default to `./data/storage`
+- `.env` and `data/` are intentionally ignored
+- committed Prisma migrations do not currently exist; use `db:push` for local schema sync unless intentionally adding migrations
 
 ## Coding Style
 - React function components
@@ -88,6 +134,8 @@ The current `ProjectData` is broader than the original MVP:
 - `subtitleLines`
 - `characterAnnotations`
 - `gongcheAnnotations`
+- `banyanSections`
+- `banyanMarks`
 - `actionAnnotations`
 - `builtinTracks`
 - `customTracks`
@@ -95,23 +143,32 @@ The current `ProjectData` is broader than the original MVP:
 
 Important type families:
 - `BuiltinTrack`
-  - current built-ins: `character-track`, `hand-action`, `body-action`
+  - current built-in track id is only `character-track`
+  - older hand/body action built-ins were migrated away; use custom action tracks for action categories
 - `CustomTrack`
   - `text` or `action`
+  - supports saved color and optional recursive `branching`
 - `AttachedPointTrack`
   - attached to either built-in or custom parent track
 - `GongcheAnnotation`
   - attached to a text-capable parent block (`character-track` or custom text block)
+- `BanyanSection` / `BanyanMark`
+  - beat/eye sections and parsed/editable marks derived from Gongche or manually adjusted
 - `WaveformData`
   - raw mixed audio samples + sample rate + keypoints
 - `SpectrogramData`
   - worker-computed magnitudes + frequency bins + optional pitch frames
 
+Saved project JSON:
+- current `PROJECT_FILE_VERSION` is `4`
+- import must go through `normalizeImportedProjectFile()` from `src/utils/projectFile.ts`
+- do not duplicate project-file migration logic in platform or local import paths
+
 ## Track Model
 There are now several track layers in play:
 
 ### 1. Active timeline tracks
-- built-in character/action tracks
+- built-in character track
 - custom text/action tracks
 - ordered by `activeTrackOrder`
 
@@ -215,6 +272,45 @@ Even though this is still local-first, the hook already tracks document-sync con
 
 This means future remote sync/collaboration work should extend the existing document-state layer rather than bypass it inside `App.tsx`.
 
+## Platform / Backend Status
+The platform backend is no longer just a mock, but it is still an early development platform:
+- Fastify server entry: `apps/api/src/server.ts`
+- routes: `apps/api/src/router.ts`
+- repository and permission checks: `apps/api/src/repository.ts`
+- Prisma row-to-DTO conversion: `apps/api/src/repositoryMappers.ts`
+- development seed accounts/projects: `apps/api/src/repositorySeed.ts`
+- local object storage: `apps/api/src/storage.ts`
+- shared API types: `packages/shared/src/`
+- document snapshot/version helpers: `packages/document-model/src/`
+
+Current backend capabilities:
+- login/session tokens with scrypt password hashing and sha256 token hashes
+- users/roles/sessions in PostgreSQL
+- media/file upload through multipart
+- file metadata in PostgreSQL and binary data in local object storage
+- protected file reading, including HTTP Range / `206 Partial Content` for stable MP4 seeking
+- media assets, annotation projects, annotation documents
+- document snapshot save with `baseRevision` conflict checking
+- annotation version creation/list/restore
+- placeholder processing-job API for future pitch, spectrogram, Gongche render, pose, transcode, and export services
+
+Current platform UI capabilities:
+- login page with development defaults
+- project home
+- upload media and create project/document
+- import existing local annotation JSON into a project document
+- open server documents in the existing editor
+- save current editor document back to the server
+- save and restore named versions
+- enter a local editor mode without login
+
+Important backend caveats:
+- real-time collaborative editing is not implemented yet
+- permission grants exist in schema and repository concepts, but fine-grained classroom workflows are still incomplete
+- the API is currently for local/dev use; production deployment hardening, migrations, auditing, rate limits, and secure file serving are future work
+- platform client currently targets `http://localhost:4317/api` in `src/platform/PlatformWorkspace.tsx`
+- if backend contracts change, update `packages/shared`, API repository/routes, `src/api/platformClient.ts`, and `docs/kunqu-platform-roadmap.md` together
+
 ## Timeline Interaction Model
 Timeline behavior is now quite rich and tightly coupled. Preserve these assumptions:
 
@@ -231,7 +327,7 @@ Timeline behavior is now quite rich and tightly coupled. Preserve these assumpti
 - right-click on custom tracks can enter branch settings; block context menus can set branch ownership
 
 ### Creation
-- character and action tracks support `Command/Ctrl + drag` creation
+- character, custom text, custom action, and branch-lane tracks support `Command/Ctrl + drag` creation
 - character tracks also support blank double-click creation with line-merge heuristics
 - attached point tracks support point creation
 - Gongche attached tracks create/open blocks relative to their parent text block timing
@@ -405,7 +501,7 @@ This means:
 Project JSON handling is more advanced than a raw dump.
 
 ### Save
-- saved file version: currently `2`
+- saved file version: currently `4`
 - includes:
   - normalized `project`
   - `uiState`
@@ -418,13 +514,13 @@ Project JSON handling is more advanced than a raw dump.
 
 ### Import
 - supports either wrapped `SavedProjectFile` or older bare `ProjectData`
-- normalizes built-ins, customs, attached point tracks, Gongche annotations, and active track order
+- normalizes built-ins, customs, attached point tracks, Gongche annotations, Banyan data, branch metadata/colors, and active track order
 - imported filename is remembered and reused as default save filename
 
 ### Import merge
 - there is an overlay/replace merge flow for project import
 - imported project content can be mapped into current tracks instead of replacing the full project
-- this includes attached point tracks
+- this includes attached point tracks; be careful when extending it for recursive branch ownership
 
 ### Local video caveat
 Browser-imported local video cannot be reliably reopened by true disk path in plain web mode.
@@ -433,6 +529,26 @@ Current behavior:
 - blank/normalize unstable blob URLs
 - prompt user to relink manually when needed
 - `filePath` field is preserved for future desktop/Electron-style use
+
+## Documentation / Development Log Rules
+Use `docs/` as the handoff memory for long-running architecture work, especially backend/platform changes that span multiple conversations.
+
+Current docs:
+- `docs/kunqu-platform-roadmap.md`
+  - canonical roadmap and execution log for the backend/platform/database/collaboration transformation
+  - update it when changing API behavior, Prisma schema, platform UI workflows, storage, auth, permissions, document save/version semantics, or phase status
+- `docs/state-architecture.md`
+  - state-management and document-state notes; update it when changing `useProjectDocumentState()` or history/sync semantics
+- `docs/screenshots/`
+  - curated screenshots for README/docs; avoid dumping transient screenshots here
+
+Documentation rules:
+- record what changed, why, validation performed, and any divergence from the roadmap
+- keep notes actionable for another agent; include relevant commands and outcome summaries, not huge raw logs
+- do not include private absolute local paths, access tokens, database passwords beyond the existing local-dev examples, or large pasted data
+- do not commit generated runtime data from `data/`, local database files, or uploaded media binaries
+- if a backend change requires manual DB setup, note the required `DATABASE_URL`, `db:generate`, `db:push`/migration, and seed expectations
+- if UI behavior changes substantially, update docs or README screenshots only with curated images that are safe to keep in the repo
 
 ## Media Pipeline
 Current media behavior:
@@ -514,6 +630,10 @@ Before finishing substantial work, manually sanity-check the relevant subset:
 - detached preview/timeline panes
 - undo/redo after drag-heavy operations
 - export SRT tracks
+- platform login/home/local-editor entry when touching platform UI
+- file upload + MP4 Range seeking when touching backend media/file serving
+- server document save/version create/restore when touching backend document APIs
+- `docs/kunqu-platform-roadmap.md` update when backend/platform/database behavior changes
 
 Always run:
 - `npm run build`
