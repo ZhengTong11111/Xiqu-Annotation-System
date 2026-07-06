@@ -371,6 +371,11 @@ type DragSnapLock = {
 } | null;
 
 type EdgeHit = "left" | "right" | "center" | "linked-left" | "linked-right";
+type TimelineIntervalBlock = {
+  id: string;
+  startTime: number;
+  endTime: number;
+};
 type TimelineLayoutBlock = CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock;
 
 // 联合调整只描述“哪些块边界会一起被改动”，不要和可吸附参考点混为一谈。
@@ -3282,6 +3287,7 @@ export function Timeline({
                   {track.type === "character"
                     ? characterAnnotations.map((annotation) => renderBlock(annotation, "character", {
                         blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
+                        displayLayout: stackedTrackLayout?.blockDisplayLayouts.get(annotation.id),
                         trackBlockMetrics,
                         visualTrackId: track.id,
                         linkedBoundaryCandidates: characterAnnotations,
@@ -3290,6 +3296,7 @@ export function Timeline({
                       ? actionBlocksForTrack
                           .map((annotation) => renderBlock(annotation, "action", {
                             blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
+                            displayLayout: stackedTrackLayout?.blockDisplayLayouts.get(annotation.id),
                             trackBlockMetrics,
                             visualTrackId: track.id,
                             linkedBoundaryCandidates: actionBlocksForTrack,
@@ -5782,7 +5789,7 @@ function buildTrackBlockLayouts(
     }
     const layout = layoutInput.mode === "merged-branch"
       ? layoutMergedBranchTrackBlocks(layoutInput.blocks, layoutInput.sourceTrack, baseTrackHeight)
-      : layoutStackedTrackBlocks(layoutInput.blocks, baseTrackHeight);
+      : layoutSingleBandTrackBlocks(layoutInput.blocks, baseTrackHeight);
     if (layout.rowCount <= 1) {
       continue;
     }
@@ -5838,12 +5845,39 @@ function getStackedLayoutInputForTrack(
   };
 }
 
-function layoutStackedTrackBlocks(
+function layoutSingleBandTrackBlocks(
   blocks: TimelineLayoutBlock[],
   baseTrackHeight: number,
 ): StackedTrackLayout {
   const rowAssignments = layoutBlocksIntoRows(blocks);
-  return buildStackedTrackLayout(rowAssignments.blockRows, rowAssignments.rowCount, baseTrackHeight);
+  const normalizedRowCount = Math.max(1, rowAssignments.rowCount);
+  const sizing = getStackedTrackSizing(normalizedRowCount, baseTrackHeight);
+  const blockLayouts = buildStackedBlockLayoutMap(
+    rowAssignments.blockRows,
+    normalizedRowCount,
+    sizing,
+  );
+  const blockDisplayLayouts = new Map<string, StackedTrackBlockDisplayLayout>();
+  const bandHeight = getStackedRowsHeight(normalizedRowCount, sizing);
+
+  // 普通轨道没有父/子分叉语义，但仍然可以复用合并分叉轨道的“按重叠组铺满”逻辑：
+  // 有冲突的时间段在整条 band 内错层；没有冲突的时间段则铺满整条 band。
+  for (const group of buildBlockOverlapGroups(blocks)) {
+    appendBlockGroupDisplayLayouts(
+      group,
+      sizing.verticalPadding,
+      bandHeight,
+      sizing,
+      blockDisplayLayouts,
+    );
+  }
+
+  return {
+    rowCount: normalizedRowCount,
+    trackHeight: sizing.trackHeight,
+    blockLayouts,
+    blockDisplayLayouts,
+  };
 }
 
 function layoutMergedBranchTrackBlocks(
@@ -5950,7 +5984,13 @@ function layoutMergedBranchTrackDisplayLayouts(
 ): StackedTrackLayout {
   const measurement = measureBranchBand(root);
   if (!measurement) {
-    return buildStackedTrackLayout(new Map(), 1, baseTrackHeight);
+    const sizing = getStackedTrackSizing(1, baseTrackHeight);
+    return {
+      rowCount: 1,
+      trackHeight: sizing.trackHeight,
+      blockLayouts: new Map(),
+      blockDisplayLayouts: new Map(),
+    };
   }
 
   const sizing = getStackedTrackSizing(measurement.subtreeRowCount, baseTrackHeight);
@@ -6037,21 +6077,23 @@ function appendBranchBlockDisplayLayouts(
 
   for (const group of overlapGroups) {
     const canFillSubtree = canBlockGroupFillBranchSubtree(group, node, descendantBlockMap);
-    const groupRowAssignments = layoutBlocksIntoRows(group);
-    const expandedGroupSlots = splitRowsAcrossBand(
-      geometry.subtreeTop,
-      geometry.subtreeHeight,
-      groupRowAssignments.rowCount,
-      sizing,
-    );
+
+    if (canFillSubtree) {
+      appendBlockGroupDisplayLayouts(
+        group,
+        geometry.subtreeTop,
+        geometry.subtreeHeight,
+        sizing,
+        blockDisplayLayouts,
+      );
+      continue;
+    }
 
     for (const block of group) {
       // 铺满必须以“父层重叠组”为单位决定，不能逐块决定。
       // 否则一个大块因子分叉回到父层，旁边与它重叠的小块却铺满子树，
       // 就会出现上下高度策略混用后的视觉穿插。
-      const slot = canFillSubtree
-        ? expandedGroupSlots[groupRowAssignments.blockRows.get(block.id) ?? 0] ?? expandedGroupSlots[0]
-        : ownRowSlots[ownRowAssignments.blockRows.get(block.id) ?? 0] ?? ownRowSlots[0];
+      const slot = ownRowSlots[ownRowAssignments.blockRows.get(block.id) ?? 0] ?? ownRowSlots[0];
       blockDisplayLayouts.set(block.id, {
         top: slot.top,
         height: slot.height,
@@ -6064,14 +6106,14 @@ function appendBranchBlockDisplayLayouts(
   });
 }
 
-function buildBlockOverlapGroups(blocks: ResolvedCustomTrackBlock[]) {
+function buildBlockOverlapGroups<T extends TimelineIntervalBlock>(blocks: T[]) {
   const sortedBlocks = [...blocks].sort((left, right) =>
     left.startTime === right.startTime
       ? left.endTime - right.endTime
       : left.startTime - right.startTime
   );
-  const groups: ResolvedCustomTrackBlock[][] = [];
-  let currentGroup: ResolvedCustomTrackBlock[] = [];
+  const groups: T[][] = [];
+  let currentGroup: T[] = [];
   let currentGroupEnd = Number.NEGATIVE_INFINITY;
 
   for (const block of sortedBlocks) {
@@ -6089,6 +6131,32 @@ function buildBlockOverlapGroups(blocks: ResolvedCustomTrackBlock[]) {
     groups.push(currentGroup);
   }
   return groups;
+}
+
+function appendBlockGroupDisplayLayouts<T extends TimelineIntervalBlock>(
+  group: T[],
+  top: number,
+  height: number,
+  sizing: StackedTrackSizing,
+  blockDisplayLayouts: Map<string, StackedTrackBlockDisplayLayout>,
+) {
+  // 同一个重叠组内部才需要分行；不同重叠组互不压缩，
+  // 这样普通轨道也能像合并分叉轨道一样，在非冲突段恢复铺满高度。
+  const groupRowAssignments = layoutBlocksIntoRows(group);
+  const groupSlots = splitRowsAcrossBand(
+    top,
+    height,
+    groupRowAssignments.rowCount,
+    sizing,
+  );
+
+  for (const block of group) {
+    const slot = groupSlots[groupRowAssignments.blockRows.get(block.id) ?? 0] ?? groupSlots[0];
+    blockDisplayLayouts.set(block.id, {
+      top: slot.top,
+      height: slot.height,
+    });
+  }
 }
 
 function canBlockGroupFillBranchSubtree(
@@ -6147,8 +6215,8 @@ function splitRowsAcrossBand(
     (height - gap * Math.max(0, normalizedRowCount - 1)) / normalizedRowCount,
   );
 
-  // 父层块铺满子树时，仍要尊重父层自身的重叠错层：
-  // 如果父层同一时间有多行冲突，就把整个子树高度按这些父层行均分。
+  // 在一个可用 band 内铺满时，仍要尊重该时间段自身的重叠错层：
+  // 如果同一重叠组有多行冲突，就把整个 band 高度按这些行均分。
   return Array.from({ length: normalizedRowCount }, (_, rowIndex) => ({
     top: top + rowIndex * (rowHeight + gap),
     height: rowHeight,
@@ -6160,7 +6228,7 @@ function getStackedRowsHeight(rowCount: number, sizing: StackedTrackSizing) {
     Math.max(0, rowCount - 1) * sizing.rowGap;
 }
 
-function layoutBlocksIntoRows(blocks: TimelineLayoutBlock[]) {
+function layoutBlocksIntoRows<T extends TimelineIntervalBlock>(blocks: T[]) {
   const sortedBlocks = [...blocks].sort((left, right) =>
     left.startTime === right.startTime
       ? left.endTime - right.endTime
@@ -6188,13 +6256,12 @@ function layoutBlocksIntoRows(blocks: TimelineLayoutBlock[]) {
   };
 }
 
-function buildStackedTrackLayout(
+function buildStackedBlockLayoutMap(
   blockRows: Map<string, number>,
   rowCount: number,
-  baseTrackHeight: number,
-): StackedTrackLayout {
+  sizing: StackedTrackSizing,
+) {
   const normalizedRowCount = Math.max(1, rowCount);
-  const sizing = getStackedTrackSizing(normalizedRowCount, baseTrackHeight);
   const blockLayouts = new Map<string, StackedTrackBlockLayout>();
   blockRows.forEach((rowIndex, blockId) => {
     blockLayouts.set(blockId, {
@@ -6205,12 +6272,7 @@ function buildStackedTrackLayout(
     });
   });
 
-  return {
-    rowCount: normalizedRowCount,
-    trackHeight: sizing.trackHeight,
-    blockLayouts,
-    blockDisplayLayouts: new Map(),
-  };
+  return blockLayouts;
 }
 
 function areTimelineIntervalsOverlapping(
