@@ -396,13 +396,6 @@ type ResolvedAttachedPointTrack = {
   points: AttachedPointAnnotation[];
 };
 
-type StackedTrackBlockLayout = {
-  rowIndex: number;
-  rowCount: number;
-  top: number;
-  height: number;
-};
-
 type StackedTrackBlockDisplayLayout = {
   top: number;
   height: number;
@@ -418,7 +411,6 @@ type StackedTrackSizing = {
 type StackedTrackLayout = {
   rowCount: number;
   trackHeight: number;
-  blockLayouts: Map<string, StackedTrackBlockLayout>;
   blockDisplayLayouts: Map<string, StackedTrackBlockDisplayLayout>;
 };
 
@@ -3286,7 +3278,6 @@ export function Timeline({
                 >
                   {track.type === "character"
                     ? characterAnnotations.map((annotation) => renderBlock(annotation, "character", {
-                        blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
                         displayLayout: stackedTrackLayout?.blockDisplayLayouts.get(annotation.id),
                         trackBlockMetrics,
                         visualTrackId: track.id,
@@ -3295,7 +3286,6 @@ export function Timeline({
                     : track.type === "action"
                       ? actionBlocksForTrack
                           .map((annotation) => renderBlock(annotation, "action", {
-                            blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
                             displayLayout: stackedTrackLayout?.blockDisplayLayouts.get(annotation.id),
                             trackBlockMetrics,
                             visualTrackId: track.id,
@@ -3312,7 +3302,6 @@ export function Timeline({
                       : customBlocksForTrack
                           .map((annotation) =>
                             renderBlock(annotation, "custom-block", {
-                              blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
                               displayLayout: stackedTrackLayout?.blockDisplayLayouts.get(annotation.id),
                               trackBlockMetrics,
                               visualTrackId: track.id,
@@ -3386,7 +3375,6 @@ export function Timeline({
     annotation: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock,
     type: "character" | "action" | "custom-block",
     options: {
-      blockLayout?: StackedTrackBlockLayout;
       displayLayout?: StackedTrackBlockDisplayLayout;
       trackBlockMetrics?: TrackBlockMetrics;
       visualTrackId?: string;
@@ -3432,13 +3420,9 @@ export function Timeline({
         : actionAnnotation?.label ?? "";
     const blockTop = options.displayLayout
       ? options.displayLayout.top
-      : options.blockLayout
-      ? options.blockLayout.top
       : options.trackBlockMetrics?.top ?? trackBlockTop;
     const blockHeight = options.displayLayout
       ? options.displayLayout.height
-      : options.blockLayout
-      ? options.blockLayout.height
       : options.trackBlockMetrics?.height ?? trackBlockHeight;
     const zIndex = isSelected ? 4 : isActive ? 3 : 1;
     const hoveredEdge = hoveredBlock?.id === annotation.id &&
@@ -3479,9 +3463,7 @@ export function Timeline({
           hoveredEdge === "right" ? "hover-resize-right" : "",
           hoveredEdge === "linked-left" ? "hover-linked-left" : "",
           hoveredEdge === "linked-right" ? "hover-linked-right" : "",
-          (options.blockLayout && options.blockLayout.rowCount > 1) || options.displayLayout
-            ? "stacked-track-block"
-            : "",
+          options.displayLayout ? "stacked-track-block" : "",
           customAnnotation?.branchScope?.mode === "lanes" && customAnnotation.branchScope.laneIds.length > 1
             ? "shared-branch-block"
             : "",
@@ -5852,11 +5834,6 @@ function layoutSingleBandTrackBlocks(
   const rowAssignments = layoutBlocksIntoRows(blocks);
   const normalizedRowCount = Math.max(1, rowAssignments.rowCount);
   const sizing = getStackedTrackSizing(normalizedRowCount, baseTrackHeight);
-  const blockLayouts = buildStackedBlockLayoutMap(
-    rowAssignments.blockRows,
-    normalizedRowCount,
-    sizing,
-  );
   const blockDisplayLayouts = new Map<string, StackedTrackBlockDisplayLayout>();
   const bandHeight = getStackedRowsHeight(normalizedRowCount, sizing);
 
@@ -5875,7 +5852,6 @@ function layoutSingleBandTrackBlocks(
   return {
     rowCount: normalizedRowCount,
     trackHeight: sizing.trackHeight,
-    blockLayouts,
     blockDisplayLayouts,
   };
 }
@@ -5988,7 +5964,6 @@ function layoutMergedBranchTrackDisplayLayouts(
     return {
       rowCount: 1,
       trackHeight: sizing.trackHeight,
-      blockLayouts: new Map(),
       blockDisplayLayouts: new Map(),
     };
   }
@@ -6003,7 +5978,6 @@ function layoutMergedBranchTrackDisplayLayouts(
   return {
     rowCount: measurement.subtreeRowCount,
     trackHeight: sizing.trackHeight,
-    blockLayouts: new Map(),
     blockDisplayLayouts,
   };
 }
@@ -6254,25 +6228,6 @@ function layoutBlocksIntoRows<T extends TimelineIntervalBlock>(blocks: T[]) {
     rowCount: rowIntervals.length,
     blockRows,
   };
-}
-
-function buildStackedBlockLayoutMap(
-  blockRows: Map<string, number>,
-  rowCount: number,
-  sizing: StackedTrackSizing,
-) {
-  const normalizedRowCount = Math.max(1, rowCount);
-  const blockLayouts = new Map<string, StackedTrackBlockLayout>();
-  blockRows.forEach((rowIndex, blockId) => {
-    blockLayouts.set(blockId, {
-      rowIndex,
-      rowCount: normalizedRowCount,
-      top: sizing.verticalPadding + rowIndex * (sizing.rowHeight + sizing.rowGap),
-      height: sizing.rowHeight,
-    });
-  });
-
-  return blockLayouts;
 }
 
 function areTimelineIntervalsOverlapping(
