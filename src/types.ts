@@ -34,6 +34,11 @@ export type TrackBranching = {
   lanes: BranchLane[];
 };
 
+export type InspectorFocusRequest = {
+  target: "track-branching" | "block-branch-scope";
+  requestId: number;
+};
+
 export type AttachedPointAnnotation = {
   id: string;
   time: number;

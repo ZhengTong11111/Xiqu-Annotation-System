@@ -1308,6 +1308,14 @@ select {
   padding: 7px 2px;
 }
 
+.inspector-field-focused {
+  border-radius: 8px;
+  outline: 2px solid rgba(15, 108, 189, 0.4);
+  background: rgba(15, 108, 189, 0.08);
+  box-shadow: 0 0 0 4px rgba(15, 108, 189, 0.08);
+  transition: background 160ms ease, box-shadow 160ms ease, outline-color 160ms ease;
+}
+
 .inspector-field label {
   color: var(--ink-soft);
   font-size: 11px;

@@ -11,6 +11,7 @@ import type {
   CustomTrack,
   GongcheAnnotation,
   GongcheSymbol,
+  InspectorFocusRequest,
   SelectedItem,
   SubtitleLine,
   TrackBranchDisplayMode,
@@ -133,6 +134,7 @@ type InspectorPanelProps = {
   onAddCustomTrackBranchLane: (trackId: string, parentLaneId: string | null) => void;
   onCustomTrackBranchLaneRename: (trackId: string, laneId: string, name: string) => void;
   onDeleteCustomTrackBranchLane: (trackId: string, laneId: string) => void;
+  inspectorFocusRequest?: InspectorFocusRequest | null;
   onCustomBlockUpdate: (
     trackId: string,
     blockId: string,
@@ -206,6 +208,7 @@ export function InspectorPanel({
   onAddCustomTrackBranchLane,
   onCustomTrackBranchLaneRename,
   onDeleteCustomTrackBranchLane,
+  inspectorFocusRequest,
   onCustomBlockUpdate,
   onDeleteSelected,
 }: InspectorPanelProps) {
@@ -229,6 +232,10 @@ export function InspectorPanel({
   const optionRowRefs = useRef(new Map<string, HTMLDivElement>());
   const previousOptionRowPositionsRef = useRef(new Map<string, number>());
   const previousTypeOptionKeysRef = useRef<string[]>([]);
+  const trackBranchingFieldRef = useRef<HTMLDivElement>(null);
+  const blockBranchScopeFieldRef = useRef<HTMLDivElement>(null);
+  const [highlightedFocusTarget, setHighlightedFocusTarget] = useState<InspectorFocusRequest["target"] | null>(null);
+  const inspectorFocusTimerRef = useRef<number | null>(null);
   const selectedBuiltinTrack = selectedItem?.type === "builtin-track"
     ? builtinTracks.find((item) => item.id === selectedItem.id) ?? null
     : null;
@@ -295,8 +302,35 @@ export function InspectorPanel({
       if (moveOptionHighlightTimerRef.current !== null) {
         window.clearTimeout(moveOptionHighlightTimerRef.current);
       }
+      if (inspectorFocusTimerRef.current !== null) {
+        window.clearTimeout(inspectorFocusTimerRef.current);
+      }
     };
   }, []);
+
+  useEffect(() => {
+    if (!inspectorFocusRequest) {
+      return;
+    }
+    const targetElement = inspectorFocusRequest.target === "track-branching"
+      ? trackBranchingFieldRef.current
+      : blockBranchScopeFieldRef.current;
+    if (!targetElement) {
+      return;
+    }
+    // 右键菜单只负责把用户带到对应设置区；实际编辑仍交给 Inspector，避免复制一套分叉表单。
+    targetElement.scrollIntoView({ block: "center", behavior: "smooth" });
+    setHighlightedFocusTarget(inspectorFocusRequest.target);
+    if (inspectorFocusTimerRef.current !== null) {
+      window.clearTimeout(inspectorFocusTimerRef.current);
+    }
+    inspectorFocusTimerRef.current = window.setTimeout(() => {
+      setHighlightedFocusTarget((current) =>
+        current === inspectorFocusRequest.target ? null : current,
+      );
+      inspectorFocusTimerRef.current = null;
+    }, 1200);
+  }, [inspectorFocusRequest]);
 
   function flashMovedOption(index: number) {
     setRecentlyMovedOptionIndex(index);
@@ -858,7 +892,10 @@ export function InspectorPanel({
           <div className="inspector-value">{trackTypeLabel}</div>
         </div>
         {isCustomTrack && selectedCustomTrack ? (
-          <div className="inspector-field">
+          <div
+            ref={trackBranchingFieldRef}
+            className={`inspector-field ${highlightedFocusTarget === "track-branching" ? "inspector-field-focused" : ""}`.trim()}
+          >
             <label>递归分叉</label>
             <div className="branching-editor">
               <div className="inspector-toggle-row">
@@ -1631,7 +1668,10 @@ export function InspectorPanel({
           </select>
         </div>
         {track.branching?.enabled ? (
-          <div className="inspector-field">
+          <div
+            ref={blockBranchScopeFieldRef}
+            className={`inspector-field ${highlightedFocusTarget === "block-branch-scope" ? "inspector-field-focused" : ""}`.trim()}
+          >
             <label>分叉归属</label>
             <div className="branch-scope-editor">
               <label className="branch-scope-option branch-scope-root">

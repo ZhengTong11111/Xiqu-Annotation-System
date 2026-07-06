@@ -95,7 +95,6 @@ type TimelineProps = {
   onCreateCustomBlock: (trackId: string, startTime: number, endTime?: number, branchScope?: BranchScope) => void;
   onCreateGongcheBlockAtTime: (parentTrackId: string, time: number) => void;
   onCreateAttachedPoint: (trackId: string, time: number) => void;
-  onCustomTrackBranchDisplayModeChange: (trackId: string, displayMode: "merged" | "expanded") => void;
   onAddBuiltinTrack: (trackId: BuiltinTrackId) => void;
   onAddCustomTrack: (trackType: "text" | "action") => void;
   onUpdatePasteTarget: (trackId: string, time: number) => void;
@@ -393,18 +392,10 @@ type StackedTrackBlockLayout = {
   rowCount: number;
 };
 
-type StackedTrackConflictZone = {
-  startTime: number;
-  endTime: number;
-  rowCount: number;
-};
-
 type StackedTrackLayout = {
   rowCount: number;
   trackHeight: number;
   blockLayouts: Map<string, StackedTrackBlockLayout>;
-  conflictZones: StackedTrackConflictZone[];
-  autoExpandOnConflict: boolean;
 };
 
 type TrackBlockMetrics = {
@@ -499,7 +490,6 @@ export function Timeline({
   onCreateCustomBlock,
   onCreateGongcheBlockAtTime,
   onCreateAttachedPoint,
-  onCustomTrackBranchDisplayModeChange,
   onAddBuiltinTrack,
   onAddCustomTrack,
   onUpdatePasteTarget,
@@ -3180,18 +3170,6 @@ export function Timeline({
                       onCreateActionAtTime(track.id, startTime);
                       return;
                     }
-                    const canExpandMergedBranchFromBlankArea =
-                      !target?.closest(".timeline-block, .timeline-point-marker, .timeline-gongche-block") &&
-                      event.detail === 1 &&
-                      track.isCustom &&
-                      Boolean(stackedTrackLayout?.autoExpandOnConflict);
-                    const hitConflictZone = canExpandMergedBranchFromBlankArea && stackedTrackLayout
-                      ? findStackedTrackConflictAtTime(stackedTrackLayout, laneTime)
-                      : null;
-                    if (hitConflictZone && hitConflictZone.rowCount > 1) {
-                      onCustomTrackBranchDisplayModeChange(track.id, "expanded");
-                      return;
-                    }
                     if (!target?.closest(".timeline-block, .timeline-point-marker, .timeline-gongche-block") && selectedTimelineItems.length > 1) {
                       onSelectTimelineItems([], null);
                     }
@@ -5676,7 +5654,7 @@ function buildTrackBlockLayouts(
     if (!layoutInput || layoutInput.blocks.length <= 1) {
       continue;
     }
-    const layout = layoutStackedTrackBlocks(layoutInput.blocks, layoutInput.getPriority, layoutInput.autoExpandOnConflict);
+    const layout = layoutStackedTrackBlocks(layoutInput.blocks, layoutInput.getPriority);
     if (layout.rowCount <= 1) {
       continue;
     }
@@ -5695,20 +5673,17 @@ function getStackedLayoutInputForTrack(
 ): {
   blocks: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>;
   getPriority: (block: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock) => number;
-  autoExpandOnConflict: boolean;
 } | null {
   if (track.type === "character") {
     return {
       blocks: characterAnnotations,
       getPriority: () => 0,
-      autoExpandOnConflict: false,
     };
   }
   if (track.type === "action") {
     return {
       blocks: actionAnnotations.filter((annotation) => annotation.trackId === track.id),
       getPriority: () => 0,
-      autoExpandOnConflict: false,
     };
   }
   if (track.type !== "custom-text" && track.type !== "custom-action" && track.type !== "branch-lane") {
@@ -5729,7 +5704,6 @@ function getStackedLayoutInputForTrack(
     getPriority: isMergedBranchParent && sourceTrack?.branching
       ? createMergedBranchPriorityResolver(sourceTrack)
       : () => 0,
-    autoExpandOnConflict: isMergedBranchParent,
   };
 }
 
@@ -5763,7 +5737,6 @@ function isResolvedCustomTrackBlock(
 function layoutStackedTrackBlocks(
   blocks: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>,
   getPriority: (block: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock) => number,
-  autoExpandOnConflict: boolean,
 ): StackedTrackLayout {
   const sortedBlocks = [...blocks].sort((left, right) => {
     const priorityDiff = getPriority(left) - getPriority(right);
@@ -5776,7 +5749,6 @@ function layoutStackedTrackBlocks(
   });
   const rowIntervals: Array<Array<{ startTime: number; endTime: number }>> = [];
   const pendingLayouts = new Map<string, number>();
-  const conflictSeeds: StackedTrackConflictZone[] = [];
 
   for (const block of sortedBlocks) {
     // 这里按真实时间重叠分行。首尾相接和 0.025 秒以内的导入误差仍视为同一行可容纳。
@@ -5789,13 +5761,6 @@ function layoutStackedTrackBlocks(
     }
     rowIntervals[rowIndex].push({ startTime: block.startTime, endTime: block.endTime });
     pendingLayouts.set(block.id, rowIndex);
-    if (rowIndex > 0) {
-      conflictSeeds.push({
-        startTime: block.startTime,
-        endTime: block.endTime,
-        rowCount: rowIndex + 1,
-      });
-    }
   }
 
   const rowCount = Math.max(1, rowIntervals.length);
@@ -5811,8 +5776,6 @@ function layoutStackedTrackBlocks(
     rowCount,
     trackHeight: getStackedTrackHeight(rowCount),
     blockLayouts,
-    conflictZones: mergeStackedTrackConflictZones(conflictSeeds),
-    autoExpandOnConflict,
   };
 }
 
@@ -5831,30 +5794,6 @@ function getStackedTrackHeight(rowCount: number) {
       rowCount * STACKED_TRACK_ROW_HEIGHT +
       Math.max(0, rowCount - 1) * STACKED_TRACK_ROW_GAP,
   );
-}
-
-function mergeStackedTrackConflictZones(zones: StackedTrackConflictZone[]) {
-  const sortedZones = [...zones].sort((left, right) => left.startTime - right.startTime);
-  const mergedZones: StackedTrackConflictZone[] = [];
-  for (const zone of sortedZones) {
-    const previous = mergedZones[mergedZones.length - 1];
-    if (!previous || zone.startTime > previous.endTime) {
-      mergedZones.push({ ...zone });
-      continue;
-    }
-    previous.endTime = Math.max(previous.endTime, zone.endTime);
-    previous.rowCount = Math.max(previous.rowCount, zone.rowCount);
-  }
-  return mergedZones;
-}
-
-function findStackedTrackConflictAtTime(
-  layout: StackedTrackLayout,
-  time: number,
-) {
-  return layout.conflictZones.find((zone) =>
-    time >= zone.startTime && time <= zone.endTime
-  ) ?? null;
 }
 
 function isCustomBlockVisibleOnTrack(

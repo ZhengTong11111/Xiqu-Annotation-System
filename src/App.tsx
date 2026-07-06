@@ -38,6 +38,7 @@ import type {
   CustomTrackType,
   GongcheAnnotation,
   GongcheSymbol,
+  InspectorFocusRequest,
   ProjectData,
   ResolvedCustomTrackBlock,
   SavedProjectFile,
@@ -61,6 +62,7 @@ import {
   getDefaultCustomTrackName,
   getDefaultCustomTrackTypeOptions,
   getMissingBuiltinTracks,
+  getBranchLaneTrackParts,
   getProjectDuration,
   getNextCustomTrackTypeOptionName,
 } from "./utils/project";
@@ -440,6 +442,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   } | null>(null);
   const [editingCustomTextValue, setEditingCustomTextValue] = useState("");
   const [blockContextMenu, setBlockContextMenu] = useState<TimelineContextMenu | null>(null);
+  const [inspectorFocusRequest, setInspectorFocusRequest] = useState<InspectorFocusRequest | null>(null);
   const [timelineClipboard, setTimelineClipboard] = useState<TimelineClipboard | null>(null);
   const [pendingPasteState, setPendingPasteState] = useState<PendingPasteState | null>(null);
   const [pendingImportMergeState, setPendingImportMergeState] = useState<PendingImportMergeState | null>(null);
@@ -949,6 +952,27 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     setIsSplitPanelCollapsed((current) => !current);
   }
 
+  function requestInspectorFocus(target: InspectorFocusRequest["target"]) {
+    setInspectorFocusRequest({
+      target,
+      requestId: performance.now(),
+    });
+  }
+
+  function openBranchTrackSettings(trackId: string) {
+    setLineFocusRequest(null);
+    applySelection({ type: "custom-track", id: trackId });
+    requestInspectorFocus("track-branching");
+    setBlockContextMenu(null);
+  }
+
+  function openBlockBranchScopeSettings(trackId: string, blockId: string) {
+    setLineFocusRequest(null);
+    applySelection({ type: "custom-block", trackId, id: blockId });
+    requestInspectorFocus("block-branch-scope");
+    setBlockContextMenu(null);
+  }
+
   const contextMenuCharacter = blockContextMenu?.type === "character"
     ? project.characterAnnotations.find((item) => item.id === blockContextMenu.id) ?? null
     : null;
@@ -983,6 +1007,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     : null;
   const contextMenuCustomTrack = contextMenuCustomBlock
     ? project.customTracks.find((track) => track.id === contextMenuCustomBlock.trackId) ?? null
+    : null;
+  const contextMenuLaneBranchParts = blockContextMenu?.type === "lane"
+    ? getBranchLaneTrackParts(blockContextMenu.trackId)
+    : null;
+  const contextMenuLaneTrackId = blockContextMenu?.type === "lane"
+    ? contextMenuLaneBranchParts?.parentTrackId ?? blockContextMenu.trackId
+    : null;
+  const contextMenuLaneCustomTrack = contextMenuLaneTrackId
+    ? project.customTracks.find((track) => track.id === contextMenuLaneTrackId) ?? null
     : null;
   const contextMenuAttachedPointTrackLocation = blockContextMenu?.type === "attached-point"
     ? findPointTrackLocation(project, blockContextMenu.trackId)
@@ -4259,7 +4292,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         onCreateCustomBlock={createCustomBlock}
         onCreateGongcheBlockAtTime={createGongcheBlockAtTime}
         onAddCustomTrack={addCustomTrack}
-        onCustomTrackBranchDisplayModeChange={setCustomTrackBranchDisplayMode}
         onUpdatePasteTarget={updateTimelinePasteTarget}
         onSelectBuiltinTrack={(trackId) => {
           setLineFocusRequest(null);
@@ -4363,7 +4395,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           });
         }}
         onOpenLaneContextMenu={(trackId, time, x, y) => {
-          updateTimelinePasteTarget(trackId, time);
+          const branchLaneParts = getBranchLaneTrackParts(trackId);
+          updateTimelinePasteTarget(branchLaneParts?.parentTrackId ?? trackId, time);
           setBlockContextMenu({ type: "lane", trackId, time, x, y });
         }}
         onLineChange={(id, changes) => updateLinePosition(id, changes, false)}
@@ -4693,6 +4726,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                       onAddCustomTrackBranchLane={addCustomTrackBranchLane}
                       onCustomTrackBranchLaneRename={renameCustomTrackBranchLane}
                       onDeleteCustomTrackBranchLane={deleteCustomTrackBranchLane}
+                      inspectorFocusRequest={inspectorFocusRequest}
                       onCustomBlockUpdate={updateCustomBlock}
                       onDeleteSelected={deleteSelected}
                     />
@@ -4738,6 +4772,30 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           {blockContextMenu.type === "lane" ? (
             <>
               <div className="character-context-menu-label">时间轴</div>
+              {contextMenuLaneCustomTrack?.branching?.enabled ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // 分叉子轨只是显示层；展开/合并必须写回父自定义轨道。
+                      setCustomTrackBranchDisplayMode(
+                        contextMenuLaneCustomTrack.id,
+                        contextMenuLaneCustomTrack.branching?.displayMode === "expanded" ? "merged" : "expanded",
+                      );
+                      setBlockContextMenu(null);
+                    }}
+                  >
+                    {contextMenuLaneCustomTrack.branching.displayMode === "expanded" ? "合并显示分叉" : "展开显示分叉"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openBranchTrackSettings(contextMenuLaneCustomTrack.id)}
+                  >
+                    设置分叉轨道
+                  </button>
+                  <div className="character-context-menu-divider" />
+                </>
+              ) : null}
               <button
                 type="button"
                 onClick={() => {
@@ -4993,6 +5051,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               >
                 新建类型...
               </button>
+              {contextMenuCustomTrack.branching?.enabled ? (
+                <>
+                  <div className="character-context-menu-divider" />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      openBlockBranchScopeSettings(contextMenuCustomTrack.id, contextMenuCustomBlock.id)
+                    }
+                  >
+                    设置分叉归属
+                  </button>
+                </>
+              ) : null}
             </>
           ) : null}
           {contextMenuAttachedPoint ? (
