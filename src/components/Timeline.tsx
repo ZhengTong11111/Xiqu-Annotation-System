@@ -43,6 +43,7 @@ type TimelineProps = {
   banyanMarks: BanyanMark[];
   banyanGridVisible: boolean;
   banyanTrackVisible: boolean;
+  waveformVisible: boolean;
   actionAnnotations: ActionAnnotation[];
   customTracks: CustomTrack[];
   trackDefinitions: TrackDefinition[];
@@ -481,6 +482,7 @@ export function Timeline({
   banyanMarks,
   banyanGridVisible,
   banyanTrackVisible,
+  waveformVisible,
   actionAnnotations,
   customTracks,
   trackDefinitions,
@@ -2673,32 +2675,93 @@ export function Timeline({
               </div>
             ) : null}
 
-            <div className="timeline-track waveform-track" style={{ height: waveformTrackHeight }}>
-              <div
-                className={[
-                  "track-label",
-                  "track-label-custom",
-                  "waveform-label",
-                  isWaveformTrackSelected ? "selected" : "",
-                ].join(" ")}
-                style={{ minHeight: waveformTrackHeight }}
-                onClick={() => onSelectItem({ type: "waveform-track" })}
-              >
-                <div className="track-label-copy">
-                  <strong>音频波形</strong>
-                  <span>
-                    {isWaveformLoading
-                      ? "提取中..."
-                      : waveformData
-                        ? spectrogramSettings.visible
-                          ? "波形 + 频谱设置"
-                          : "波形设置"
-                        : "暂无波形"}
-                  </span>
+            {waveformVisible ? (
+              <div className="timeline-track waveform-track" style={{ height: waveformTrackHeight }}>
+                <div
+                  className={[
+                    "track-label",
+                    "track-label-custom",
+                    "waveform-label",
+                    isWaveformTrackSelected ? "selected" : "",
+                  ].join(" ")}
+                  style={{ minHeight: waveformTrackHeight }}
+                  onClick={() => onSelectItem({ type: "waveform-track" })}
+                >
+                  <div className="track-label-copy">
+                    <strong>音频波形</strong>
+                    <span>
+                      {isWaveformLoading
+                        ? "提取中..."
+                        : waveformData
+                          ? spectrogramSettings.visible
+                            ? "波形 + 频谱设置"
+                            : "波形设置"
+                          : "暂无波形"}
+                    </span>
+                  </div>
+                  <div
+                    className={[
+                      "waveform-track-resize-handle",
+                      waveformResizeDrag ? "active" : "",
+                    ].join(" ")}
+                    onPointerDown={(event) => {
+                      if (event.button !== 0) {
+                        return;
+                      }
+                      event.preventDefault();
+                      event.stopPropagation();
+                      startWaveformResize(event.clientY);
+                    }}
+                    onDoubleClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setWaveformResizeDrag(null);
+                      setWaveformTrackHeight(DEFAULT_WAVEFORM_TRACK_HEIGHT);
+                    }}
+                    title="拖动调整波形轨高度，双击恢复默认高度"
+                  >
+                    <span className="waveform-track-resize-grip" />
+                  </div>
+                </div>
+                <div
+                  className="track-lane waveform-lane"
+                  style={{ minHeight: waveformTrackHeight }}
+                  onClick={(event) => {
+                    onSelectItem({ type: "waveform-track" });
+                    onSeek(getLaneTime(event.currentTarget, event.clientX, zoom));
+                  }}
+                >
+                  {visibleWaveformKeypoints.map((time) => (
+                    <div
+                      key={`waveform-keypoint-${time}`}
+                      className="waveform-keypoint-guide"
+                      style={{ left: time * zoom }}
+                    />
+                  ))}
+                  {waveformDetail ? (
+                    <svg
+                      className="waveform-detail-svg"
+                      viewBox={`0 0 ${waveformDetail.viewWidth} ${waveformViewHeight}`}
+                      preserveAspectRatio="none"
+                      style={{
+                        left: waveformDetail.left,
+                        width: waveformDetail.width,
+                        top: (waveformTrackHeight - waveformViewHeight) / 2,
+                        height: waveformViewHeight,
+                      }}
+                    >
+                      <path className="waveform-area" d={waveformDetail.areaPath} />
+                      <path className="waveform-center-line" d={waveformDetail.centerLinePath} />
+                    </svg>
+                  ) : (
+                    <div className="waveform-empty">
+                      {isWaveformLoading ? "正在从视频中提取音频波形..." : "当前视频暂无可显示的音频波形"}
+                    </div>
+                  )}
                 </div>
                 <div
                   className={[
-                    "waveform-track-resize-handle",
+                    "waveform-track-bottom-resize-handle",
                     waveformResizeDrag ? "active" : "",
                   ].join(" ")}
                   onPointerDown={(event) => {
@@ -2720,66 +2783,7 @@ export function Timeline({
                   <span className="waveform-track-resize-grip" />
                 </div>
               </div>
-              <div
-                className="track-lane waveform-lane"
-                style={{ minHeight: waveformTrackHeight }}
-                onClick={(event) => {
-                  onSelectItem({ type: "waveform-track" });
-                  onSeek(getLaneTime(event.currentTarget, event.clientX, zoom));
-                }}
-              >
-                {visibleWaveformKeypoints.map((time) => (
-                  <div
-                    key={`waveform-keypoint-${time}`}
-                    className="waveform-keypoint-guide"
-                    style={{ left: time * zoom }}
-                  />
-                ))}
-                {waveformDetail ? (
-                  <svg
-                    className="waveform-detail-svg"
-                    viewBox={`0 0 ${waveformDetail.viewWidth} ${waveformViewHeight}`}
-                    preserveAspectRatio="none"
-                    style={{
-                      left: waveformDetail.left,
-                      width: waveformDetail.width,
-                      top: (waveformTrackHeight - waveformViewHeight) / 2,
-                      height: waveformViewHeight,
-                    }}
-                  >
-                    <path className="waveform-area" d={waveformDetail.areaPath} />
-                    <path className="waveform-center-line" d={waveformDetail.centerLinePath} />
-                  </svg>
-                ) : (
-                  <div className="waveform-empty">
-                    {isWaveformLoading ? "正在从视频中提取音频波形..." : "当前视频暂无可显示的音频波形"}
-                  </div>
-                )}
-              </div>
-              <div
-                className={[
-                  "waveform-track-bottom-resize-handle",
-                  waveformResizeDrag ? "active" : "",
-                ].join(" ")}
-                onPointerDown={(event) => {
-                  if (event.button !== 0) {
-                    return;
-                  }
-                  event.preventDefault();
-                  event.stopPropagation();
-                  startWaveformResize(event.clientY);
-                }}
-                onDoubleClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setWaveformResizeDrag(null);
-                  setWaveformTrackHeight(DEFAULT_WAVEFORM_TRACK_HEIGHT);
-                }}
-                title="拖动调整波形轨高度，双击恢复默认高度"
-              >
-                <span className="waveform-track-resize-grip" />
-              </div>
-            </div>
+            ) : null}
 
             {spectrogramSettings.visible ? (
               <div className="timeline-track spectrogram-track" style={{ height: spectrogramTrackHeight }}>

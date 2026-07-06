@@ -440,6 +440,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   );
   const [banyanGridVisible, setBanyanGridVisible] = useState(true);
   const [banyanTrackVisible, setBanyanTrackVisible] = useState(true);
+  const [waveformVisible, setWaveformVisible] = useState(true);
   const [editingCharacterId, setEditingCharacterId] = useState<string | null>(null);
   const [editingCharacterLocation, setEditingCharacterLocation] = useState<CharacterEditLocation | null>(null);
   const [editingCharacterValue, setEditingCharacterValue] = useState("");
@@ -4267,6 +4268,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         banyanMarks={project.banyanMarks}
         banyanGridVisible={banyanGridVisible}
         banyanTrackVisible={banyanTrackVisible}
+        waveformVisible={waveformVisible}
         actionAnnotations={project.actionAnnotations}
         customTracks={project.customTracks}
         trackDefinitions={timelineTrackDefinitions}
@@ -4539,6 +4541,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           onUndo={undo}
           onRedo={redo}
           onRepairSentenceCharacterTrack={repairSentenceCharacterTrack}
+          waveformVisible={waveformVisible}
+          banyanTrackVisible={banyanTrackVisible}
+          banyanGridVisible={banyanGridVisible}
+          spectrogramVisible={spectrogramSettings.visible}
+          onWaveformVisibleChange={setWaveformVisible}
+          onBanyanTrackVisibleChange={setBanyanTrackVisible}
+          onBanyanGridVisibleChange={setBanyanGridVisible}
+          onSpectrogramVisibleChange={(visible) => setSpectrogramSettings((prev) => ({ ...prev, visible }))}
         />
       )}
     >
@@ -4700,13 +4710,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                       settings={spectrogramSettings}
                       isWaveformLoading={isWaveformLoading}
                       hasWaveformData={Boolean(waveformData)}
+                      waveformVisible={waveformVisible}
                       isLoading={isSpectrogramLoading}
                       hasData={Boolean(spectrogramData)}
-                      banyanGridVisible={banyanGridVisible}
-                      banyanTrackVisible={banyanTrackVisible}
                       onSettingsChange={setSpectrogramSettings}
-                      onBanyanGridVisibleChange={setBanyanGridVisible}
-                      onBanyanTrackVisibleChange={setBanyanTrackVisible}
+                      onWaveformVisibleChange={setWaveformVisible}
                     />
                   ) : (
                     <InspectorPanel

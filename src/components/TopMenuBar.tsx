@@ -40,6 +40,14 @@ type TopMenuBarProps = {
   onPlaybackRateChange: (rate: number) => void;
   onToggleLoopPlayback: () => void;
   onClearLoopPlaybackRange: () => void;
+  waveformVisible: boolean;
+  banyanTrackVisible: boolean;
+  banyanGridVisible: boolean;
+  spectrogramVisible: boolean;
+  onWaveformVisibleChange: (visible: boolean) => void;
+  onBanyanTrackVisibleChange: (visible: boolean) => void;
+  onBanyanGridVisibleChange: (visible: boolean) => void;
+  onSpectrogramVisibleChange: (visible: boolean) => void;
 };
 
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5];
@@ -77,6 +85,14 @@ export function TopMenuBar({
   onPlaybackRateChange,
   onToggleLoopPlayback,
   onClearLoopPlaybackRange,
+  waveformVisible,
+  banyanTrackVisible,
+  banyanGridVisible,
+  spectrogramVisible,
+  onWaveformVisibleChange,
+  onBanyanTrackVisibleChange,
+  onBanyanGridVisibleChange,
+  onSpectrogramVisibleChange,
 }: TopMenuBarProps) {
   const [openMenu, setOpenMenu] = useState<(typeof menuOrder)[number] | null>(null);
   const menuBarRef = useRef<HTMLElement>(null);
@@ -274,7 +290,37 @@ export function TopMenuBar({
                   </>
                 ) : null}
                 {item === "视图" ? (
-                  <div className="top-menu-note">时间轴缩放、轨道显隐与布局操作保留在工作区内完成。</div>
+                  <>
+                    <button
+                      type="button"
+                      className={`top-menu-dropdown-item ${waveformVisible ? "active-option" : ""}`}
+                      onClick={() => handleAction(() => onWaveformVisibleChange(!waveformVisible))}
+                    >
+                      {waveformVisible ? "✓ 音频波形" : "音频波形"}
+                    </button>
+                    <button
+                      type="button"
+                      className={`top-menu-dropdown-item ${spectrogramVisible ? "active-option" : ""}`}
+                      onClick={() => handleAction(() => onSpectrogramVisibleChange(!spectrogramVisible))}
+                    >
+                      {spectrogramVisible ? "✓ 人声频谱图" : "人声频谱图"}
+                    </button>
+                    <div className="top-menu-divider" />
+                    <button
+                      type="button"
+                      className={`top-menu-dropdown-item ${banyanTrackVisible ? "active-option" : ""}`}
+                      onClick={() => handleAction(() => onBanyanTrackVisibleChange(!banyanTrackVisible))}
+                    >
+                      {banyanTrackVisible ? "✓ 板眼轨" : "板眼轨"}
+                    </button>
+                    <button
+                      type="button"
+                      className={`top-menu-dropdown-item ${banyanGridVisible ? "active-option" : ""}`}
+                      onClick={() => handleAction(() => onBanyanGridVisibleChange(!banyanGridVisible))}
+                    >
+                      {banyanGridVisible ? "✓ 全局板眼纵线" : "全局板眼纵线"}
+                    </button>
+                  </>
                 ) : null}
                 {item === "帮助" ? (
                   <div className="top-menu-note">空格播放/暂停，P 从循环范围起点开始循环，Command/Ctrl + S 保存项目，Command/Ctrl + 拖拽可创建块。</div>
