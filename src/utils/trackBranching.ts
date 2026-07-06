@@ -15,13 +15,29 @@ export function createDefaultTrackBranching(): TrackBranching {
   };
 }
 
-export function createBranchLane(name: string, parentId: string | null = null): BranchLane {
+export function createBranchLane(name: string, parentId: string | null = null, color?: string): BranchLane {
   return {
     id: `branch-lane-${crypto.randomUUID()}`,
     name,
     parentId,
+    color,
     children: [],
   };
+}
+
+export function recolorBranchLane(lanes: BranchLane[], laneId: string, color: string): BranchLane[] {
+  return lanes.map((lane) => {
+    if (lane.id === laneId) {
+      return {
+        ...lane,
+        color,
+      };
+    }
+    return {
+      ...lane,
+      children: recolorBranchLane(lane.children ?? [], laneId, color),
+    };
+  });
 }
 
 export function getBranchLaneCount(lanes: BranchLane[]): number {
@@ -153,10 +169,18 @@ function normalizeBranchLanes(value: unknown, parentId: string | null, seenIds: 
       id: source.id,
       name,
       parentId,
-      color: typeof source.color === "string" && source.color.trim() ? source.color : undefined,
+      color: normalizeBranchLaneColor(source.color),
       children: normalizeBranchLanes(source.children, source.id, seenIds),
     }] satisfies BranchLane[];
   });
+}
+
+function normalizeBranchLaneColor(value: unknown) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(normalized) ? normalized : undefined;
 }
 
 function isTrackBranchDisplayMode(value: unknown): value is TrackBranchDisplayMode {

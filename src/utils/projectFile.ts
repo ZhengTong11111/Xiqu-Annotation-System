@@ -23,6 +23,10 @@ import {
   normalizeBranchScope,
   normalizeTrackBranching,
 } from "./trackBranching";
+import {
+  getTrackFallbackColor,
+  normalizeHexColor,
+} from "./trackColors";
 
 export const PROJECT_FILE_VERSION = 4;
 
@@ -443,7 +447,7 @@ function normalizeCustomTracks(value: ProjectData["customTracks"] | undefined) {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value.flatMap((track) => {
+  return value.flatMap((track, trackIndex) => {
     if (!track || typeof track.id !== "string" || (track.trackType !== "text" && track.trackType !== "action")) {
       return [];
     }
@@ -453,6 +457,7 @@ function normalizeCustomTracks(value: ProjectData["customTracks"] | undefined) {
     return [{
       ...track,
       name: typeof track.name === "string" && track.name.trim() ? track.name : "自定义轨道",
+      color: normalizeHexColor((track as CustomTrack).color) ?? getTrackFallbackColor(trackIndex),
       typeOptions: Array.isArray(track.typeOptions) && track.typeOptions.length > 0
         ? track.typeOptions
         : getDefaultCustomTrackTypeOptions(),

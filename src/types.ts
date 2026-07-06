@@ -193,6 +193,7 @@ export type CustomTextTrack = {
   id: string;
   name: string;
   trackType: "text";
+  color?: string;
   typeOptions: string[];
   blocks: CustomTextTrackBlock[];
   attachedPointTracks: AttachedPointTrack[];
@@ -206,6 +207,7 @@ export type CustomActionTrack = {
   id: string;
   name: string;
   trackType: "action";
+  color?: string;
   typeOptions: string[];
   blocks: CustomActionTrackBlock[];
   attachedPointTracks: AttachedPointTrack[];
@@ -257,6 +259,7 @@ export type TrackDefinition = {
   branchDepth?: number;
   branchTrackType?: CustomTrackType;
   branching?: TrackBranching;
+  color?: string;
 };
 
 export type ProjectVideo = {

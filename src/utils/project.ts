@@ -84,6 +84,7 @@ export function buildTimelineTrackDefinitions(
         options: track.typeOptions,
         isCustom: true,
         branching: track.branching,
+        color: track.color,
       } satisfies TrackDefinition,
     ] as [string, TrackDefinition]),
   ];
@@ -116,6 +117,7 @@ export function buildTimelineTrackDefinitions(
             branchLaneId: lane.id,
             branchDepth: lane.depth,
             branchTrackType: parentTrack.trackType,
+            color: lane.color ?? parentTrack.color,
           }))
         : [];
     const gongcheTrackDefinitions = parentTrack &&

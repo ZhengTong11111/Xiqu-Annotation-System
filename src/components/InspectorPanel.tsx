@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { HexColorInput, HexColorPicker } from "react-colorful";
 import type {
   ActionAnnotation,
   AttachedPointTrack,
@@ -25,6 +26,14 @@ import {
   getBanyanSubtypeLabel,
 } from "../utils/banyan";
 import { flattenBranchLanes, getTrackBranchSummary } from "../utils/project";
+import {
+  DEFAULT_TRACK_COLORS,
+  getBranchLaneColor,
+  normalizeHexColor,
+  QUICK_TRACK_COLOR_PALETTE,
+  resolveCustomTrackColor,
+  STANDARD_TRACK_COLORS,
+} from "../utils/trackColors";
 
 const REORDER_ACTIVATION_PX = 6;
 
@@ -123,6 +132,7 @@ type InspectorPanelProps = {
   onRemoveAttachedPointTrackTypeOption: (trackId: string, index: number) => void;
   onDeleteAttachedPointTrack: (trackId: string) => void;
   onCustomTrackRename: (trackId: string, name: string) => void;
+  onCustomTrackColorChange: (trackId: string, color: string) => void;
   onCustomTrackTypeOptionChange: (trackId: string, index: number, value: string) => void;
   onAddCustomTrackTypeOption: (trackId: string) => void;
   onMoveCustomTrackTypeOption: (trackId: string, index: number, direction: "up" | "down") => void;
@@ -133,6 +143,7 @@ type InspectorPanelProps = {
   onCustomTrackBranchDisplayModeChange: (trackId: string, displayMode: TrackBranchDisplayMode) => void;
   onAddCustomTrackBranchLane: (trackId: string, parentLaneId: string | null) => void;
   onCustomTrackBranchLaneRename: (trackId: string, laneId: string, name: string) => void;
+  onCustomTrackBranchLaneColorChange: (trackId: string, laneId: string, color: string) => void;
   onDeleteCustomTrackBranchLane: (trackId: string, laneId: string) => void;
   inspectorFocusRequest?: InspectorFocusRequest | null;
   onCustomBlockUpdate: (
@@ -197,6 +208,7 @@ export function InspectorPanel({
   onRemoveAttachedPointTrackTypeOption,
   onDeleteAttachedPointTrack,
   onCustomTrackRename,
+  onCustomTrackColorChange,
   onCustomTrackTypeOptionChange,
   onAddCustomTrackTypeOption,
   onMoveCustomTrackTypeOption,
@@ -207,6 +219,7 @@ export function InspectorPanel({
   onCustomTrackBranchDisplayModeChange,
   onAddCustomTrackBranchLane,
   onCustomTrackBranchLaneRename,
+  onCustomTrackBranchLaneColorChange,
   onDeleteCustomTrackBranchLane,
   inspectorFocusRequest,
   onCustomBlockUpdate,
@@ -892,6 +905,15 @@ export function InspectorPanel({
           <div className="inspector-value">{trackTypeLabel}</div>
         </div>
         {isCustomTrack && selectedCustomTrack ? (
+          <div className="inspector-field">
+            <label>轨道颜色</label>
+            <TrackColorControl
+              value={resolveCustomTrackColor(selectedCustomTrack)}
+              onChange={(color) => onCustomTrackColorChange(selectedCustomTrack.id, color)}
+            />
+          </div>
+        ) : null}
+        {isCustomTrack && selectedCustomTrack ? (
           <div
             ref={trackBranchingFieldRef}
             className={`inspector-field ${highlightedFocusTarget === "track-branching" ? "inspector-field-focused" : ""}`.trim()}
@@ -943,6 +965,14 @@ export function InspectorPanel({
                           className="branching-lane-row"
                           style={{ "--branch-depth": lane.depth } as CSSProperties}
                         >
+                          <TrackColorControl
+                            value={normalizeHexColor(lane.color) ??
+                              getBranchLaneColor(resolveCustomTrackColor(selectedCustomTrack), branchLanes, lane.parentId)}
+                            compact
+                            onChange={(color) =>
+                              onCustomTrackBranchLaneColorChange(selectedCustomTrack.id, lane.id, color)
+                            }
+                          />
                           <input
                             defaultValue={lane.name}
                             onBlur={(event) =>
@@ -963,13 +993,14 @@ export function InspectorPanel({
                           />
                           <button
                             type="button"
+                            className="branching-lane-action-button"
                             onClick={() => onAddCustomTrackBranchLane(selectedCustomTrack.id, lane.id)}
                           >
                             子分叉
                           </button>
                           <button
                             type="button"
-                            className="branching-danger-button"
+                            className="branching-lane-action-button branching-danger-button"
                             onClick={() => {
                               const confirmed = window.confirm(`删除“${lane.name}”及其子分叉？相关标注会回到根轨。`);
                               if (confirmed) {
@@ -1858,6 +1889,169 @@ function trackOptionsFromTrack(track: BuiltinTrack | CustomTrack | AttachedPoint
     return [];
   }
   return "typeOptions" in track ? track.typeOptions : (track.options ?? []);
+}
+
+type TrackColorControlProps = {
+  value: string;
+  compact?: boolean;
+  onChange: (color: string) => void;
+};
+
+type TrackColorPickerMode = "quick" | "custom";
+
+function TrackColorControl({ value, compact = false, onChange }: TrackColorControlProps) {
+  const normalizedValue = normalizeHexColor(value) ?? DEFAULT_TRACK_COLORS[0];
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [isOpen, setIsOpen] = useState(false);
+  const [pickerMode, setPickerMode] = useState<TrackColorPickerMode>("quick");
+  useDismissiblePopover(rootRef, isOpen, () => setIsOpen(false));
+
+  const commitColor = (color: string) => {
+    const normalizedColor = normalizeHexColor(color) ?? normalizeHexColor(`#${color}`);
+    if (normalizedColor) {
+      onChange(normalizedColor);
+    }
+  };
+
+  const commitQuickColor = (color: string) => {
+    commitColor(color);
+    setIsOpen(false);
+  };
+
+  return (
+    <div ref={rootRef} className={`track-color-control ${compact ? "compact" : ""}`}>
+      <div className="track-color-picker">
+        <button
+          type="button"
+          className="track-color-trigger"
+          title="调整颜色"
+          aria-haspopup="dialog"
+          aria-expanded={isOpen}
+          onClick={() => setIsOpen((current) => !current)}
+        >
+          <span
+            className="track-color-swatch"
+            style={{ background: normalizedValue }}
+          />
+        </button>
+        {isOpen ? (
+          <div className="track-color-picker-popover" role="dialog" aria-label="轨道颜色选择">
+            <div className="track-color-picker-tabs" role="tablist" aria-label="颜色选择方式">
+              <button
+                type="button"
+                className={pickerMode === "quick" ? "active" : ""}
+                onClick={() => setPickerMode("quick")}
+              >
+                快速
+              </button>
+              <button
+                type="button"
+                className={pickerMode === "custom" ? "active" : ""}
+                onClick={() => setPickerMode("custom")}
+              >
+                自定义
+              </button>
+            </div>
+            {pickerMode === "quick" ? (
+              <TrackQuickColorPalette
+                value={normalizedValue}
+                onChange={commitQuickColor}
+              />
+            ) : (
+              <div className="track-color-custom-panel">
+                <HexColorPicker color={normalizedValue} onChange={commitColor} />
+                <HexColorInput
+                  className="track-color-input popover-input"
+                  color={normalizedValue}
+                  prefixed
+                  onChange={commitColor}
+                />
+              </div>
+            )}
+          </div>
+        ) : null}
+      </div>
+      <HexColorInput
+        className="track-color-input"
+        color={normalizedValue}
+        prefixed
+        onChange={commitColor}
+      />
+    </div>
+  );
+}
+
+function useDismissiblePopover(
+  rootRef: RefObject<HTMLElement | null>,
+  isOpen: boolean,
+  onDismiss: () => void,
+) {
+  useEffect(() => {
+    if (!isOpen) {
+      return undefined;
+    }
+    const handlePointerDown = (event: PointerEvent) => {
+      const rootElement = rootRef.current;
+      // 颜色面板内部需要支持拖动色盘和连续点击色块；只有真正点到外部才关闭。
+      if (!rootElement || !rootElement.contains(event.target as Node)) {
+        onDismiss();
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onDismiss();
+      }
+    };
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isOpen, onDismiss, rootRef]);
+}
+
+function TrackQuickColorPalette({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (color: string) => void;
+}) {
+  return (
+    <div className="track-color-quick-panel">
+      <div className="track-color-palette-title">主题颜色</div>
+      <div className="track-color-theme-grid">
+        {QUICK_TRACK_COLOR_PALETTE.map((row, rowIndex) =>
+          row.map((color, columnIndex) => (
+            <button
+              key={`${rowIndex}-${columnIndex}-${color}`}
+              type="button"
+              className={color === value ? "active" : ""}
+              style={{ background: color }}
+              title={color}
+              aria-label={`使用主题颜色 ${color}`}
+              onClick={() => onChange(color)}
+            />
+          ))
+        )}
+      </div>
+      <div className="track-color-palette-title">标准颜色</div>
+      <div className="track-color-standard-grid">
+        {STANDARD_TRACK_COLORS.map((color) => (
+          <button
+            key={color}
+            type="button"
+            className={color === value ? "active" : ""}
+            style={{ background: color }}
+            title={color}
+            aria-label={`使用标准颜色 ${color}`}
+            onClick={() => onChange(color)}
+          />
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function findAttachedPointTrackInCollections(

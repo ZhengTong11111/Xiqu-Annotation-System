@@ -27,6 +27,11 @@ import { clampRange, flattenBranchLanes, getParentTrackIdFromGongcheTrackId } fr
 import { getBranchLaneCount } from "../utils/trackBranching";
 import { getSpectrogramFrequencyRange } from "../utils/spectrogram";
 import { getBanyanMarkDisplayLabel, getBanyanSubtypeLabel } from "../utils/banyan";
+import {
+  getColorCssVariables,
+  getCustomBlockDisplayColor,
+  resolveCustomTrackColor,
+} from "../utils/trackColors";
 
 type TimelineProps = {
   subtitleLines: SubtitleLine[];
@@ -611,6 +616,14 @@ export function Timeline({
   const customBlocks = useMemo(
     () => flattenCustomBlocks(customTracks),
     [customTracks],
+  );
+  const customTrackMap = useMemo(
+    () => new Map(customTracks.map((track, index) => [track.id, { track, index }])),
+    [customTracks],
+  );
+  const trackDefinitionMap = useMemo(
+    () => new Map(trackDefinitions.map((track) => [track.id, track])),
+    [trackDefinitions],
   );
   const trackBlockLayouts = useMemo(
     () => buildTrackBlockLayouts(
@@ -2839,6 +2852,15 @@ export function Timeline({
                 track.type === "custom-text" || track.type === "custom-action" || track.type === "branch-lane"
                   ? customBlocks.filter((annotation) => isCustomBlockVisibleOnTrack(annotation, track))
                   : [];
+              const trackColor = track.isCustom
+                ? (() => {
+                    const info = customTrackMap.get(track.id);
+                    return info ? resolveCustomTrackColor(info.track, info.index) : track.color;
+                  })()
+                : track.isBranchLaneTrack
+                  ? track.color
+                  : undefined;
+              const trackColorVariables = trackColor ? getColorCssVariables(trackColor) : {};
               // 联合边界候选跟随“当前显示方式”：
               // 合并显示的父轨会传入父轨所有可见块，允许跨分叉联合拖动；
               // 展开显示的分叉子轨只传入本子轨可见块，避免误改兄弟子轨。
@@ -2884,6 +2906,7 @@ export function Timeline({
                     ...(track.isBranchLaneTrack
                       ? { "--branch-depth": track.branchDepth ?? 0 } as CSSProperties
                       : {}),
+                    ...trackColorVariables,
                     ...(draggedTrackId === track.id &&
                       trackReorderDrag &&
                       Math.abs(trackReorderDrag.currentY - trackReorderDrag.startY) >= REORDER_ACTIVATION_PX
@@ -2941,26 +2964,36 @@ export function Timeline({
                         startTrackReorder(track.id, event.clientY);
                       }}
                     >
-                      <strong>{track.name}</strong>
+                      <div className="track-label-title-row">
+                        {trackColor ? <span className="track-label-color-dot" aria-hidden="true" /> : null}
+                        <strong>{track.name}</strong>
+                      </div>
                       {!compactTrackLabels && track.isCustom ? (
-                        <span>{track.type === "custom-text" ? "文字类自定义轨" : "动作类自定义轨"}</span>
-                      ) : null}
-                      {track.isCustom && track.branching?.enabled ? (
-                        <span className="track-branch-badge">
-                          分叉 · {track.branching.displayMode === "expanded" ? "展开" : "合并"}
-                          {getBranchLaneCount(track.branching.lanes) > 0
-                            ? ` · ${getBranchLaneCount(track.branching.lanes)}`
+                        <span className="track-label-meta">
+                          {track.type === "custom-text" ? "文字类自定义轨" : "动作类自定义轨"}
+                          {track.branching?.enabled
+                            ? ` · 分叉${track.branching.displayMode === "expanded" ? "展开" : "合并"}${
+                              getBranchLaneCount(track.branching.lanes) > 0
+                                ? ` ${getBranchLaneCount(track.branching.lanes)}`
+                                : ""
+                            }`
                             : ""}
                         </span>
                       ) : null}
                       {!compactTrackLabels && track.isBuiltin ? (
-                        <span>{track.type === "character" ? "文字类内建轨" : "动作类内建轨"}</span>
+                        <span className="track-label-meta">
+                          {track.type === "character" ? "文字类内建轨" : "动作类内建轨"}
+                        </span>
                       ) : null}
                       {!compactAttachedPointMeta && track.isAttachedPointTrack ? (
-                        <span>{track.parentTrackName ? `附属于 ${track.parentTrackName}` : "附属打点轨"}</span>
+                        <span className="track-label-meta">
+                          {track.parentTrackName ? `附属于 ${track.parentTrackName}` : "附属打点轨"}
+                        </span>
                       ) : null}
                       {!compactAttachedPointMeta && track.isGongcheTrack ? (
-                        <span>{track.parentTrackName ? `附属于 ${track.parentTrackName}` : "附属文字轨"}</span>
+                        <span className="track-label-meta">
+                          {track.parentTrackName ? `附属于 ${track.parentTrackName}` : "附属文字轨"}
+                        </span>
                       ) : null}
                       {!compactAttachedPointMeta && track.isBranchLaneTrack ? (
                         <span
@@ -2972,21 +3005,23 @@ export function Timeline({
                       ) : null}
                     </div>
                     <div className="track-label-footer">
-                    {!track.isAttachedPointTrack && !track.isGongcheTrack && !track.isBranchLaneTrack ? (
-                    <label className="track-snap-toggle" onClick={(event) => event.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        draggable={false}
-                        checked={Boolean(trackSnapEnabled[track.id])}
-                        onChange={() => onToggleTrackSnap(track.id)}
-                      />
-                      <span>吸附</span>
-                    </label>
-                    ) : (
-                      <span className="track-attached-point-caption">
-                        {track.isBranchLaneTrack ? "分叉子轨" : track.isGongcheTrack ? "工尺谱" : "附属打点轨"}
-                      </span>
-                    )}
+                      <div className="track-label-footer-left">
+                        {!track.isAttachedPointTrack && !track.isGongcheTrack && !track.isBranchLaneTrack ? (
+                          <label className="track-snap-toggle" onClick={(event) => event.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              draggable={false}
+                              checked={Boolean(trackSnapEnabled[track.id])}
+                              onChange={() => onToggleTrackSnap(track.id)}
+                            />
+                            <span>吸附</span>
+                          </label>
+                        ) : (
+                          <span className="track-attached-point-caption">
+                            {track.isBranchLaneTrack ? "分叉子轨" : track.isGongcheTrack ? "工尺谱" : "附属打点轨"}
+                          </span>
+                        )}
+                      </div>
                       {track.isCustom || track.isBuiltin ? (
                         <div
                           className="track-label-tools"
@@ -3341,6 +3376,18 @@ export function Timeline({
       (!customAnnotation || (hoveredBlock.type === "custom-block" && hoveredBlock.trackId === customAnnotation.trackId))
       ? hoveredBlock.edge
       : null;
+    const customTrackInfo = customAnnotation ? customTrackMap.get(customAnnotation.trackId) : null;
+    const visualTrack = options.visualTrackId ? trackDefinitionMap.get(options.visualTrackId) : undefined;
+    const customColorVariables = customAnnotation && customTrackInfo
+      ? getColorCssVariables(
+          getCustomBlockDisplayColor(
+            customTrackInfo.track,
+            customAnnotation,
+            visualTrack,
+            customTrackInfo.index,
+          ),
+        )
+      : {};
 
     return (
       <div
@@ -3363,8 +3410,11 @@ export function Timeline({
           hoveredEdge === "linked-left" ? "hover-linked-left" : "",
           hoveredEdge === "linked-right" ? "hover-linked-right" : "",
           options.blockLayout && options.blockLayout.rowCount > 1 ? "stacked-track-block" : "",
+          customAnnotation?.branchScope?.mode === "lanes" && customAnnotation.branchScope.laneIds.length > 1
+            ? "shared-branch-block"
+            : "",
         ].join(" ")}
-        style={{ left, width, top: blockTop, height: blockHeight, zIndex }}
+        style={{ left, width, top: blockTop, height: blockHeight, zIndex, ...customColorVariables }}
         onPointerMove={(event) => {
           const preferredHit = resolvePreferredBlockHit(
             event.clientX,

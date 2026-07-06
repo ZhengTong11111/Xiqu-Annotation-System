@@ -73,8 +73,15 @@ import {
   getBranchLaneIds,
   getNextBranchLaneName,
   removeBranchLane,
+  recolorBranchLane,
   renameBranchLane,
 } from "./utils/trackBranching";
+import {
+  getBranchLaneColor,
+  getNextTrackColor,
+  normalizeHexColor,
+  resolveCustomTrackColor,
+} from "./utils/trackColors";
 import {
   exportCharacterTrackToSrt,
   exportSingingStyleTrackToSrt,
@@ -2483,11 +2490,13 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function addCustomTrack(trackType: CustomTrackType) {
     const currentProject = projectRef.current;
+    const color = getNextTrackColor(currentProject.customTracks);
     const nextTrack: CustomTrack = trackType === "text"
       ? {
           id: `custom-track-${crypto.randomUUID()}`,
           name: getDefaultCustomTrackName(currentProject.customTracks, trackType),
           trackType,
+          color,
           typeOptions: getDefaultCustomTrackTypeOptions(),
           blocks: [],
           attachedPointTracks: [],
@@ -2497,6 +2506,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           id: `custom-track-${crypto.randomUUID()}`,
           name: getDefaultCustomTrackName(currentProject.customTracks, trackType),
           trackType,
+          color,
           typeOptions: getDefaultCustomTrackTypeOptions(),
         blocks: [],
         attachedPointTracks: [],
@@ -3277,6 +3287,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }) as CustomTrack);
   }
 
+  function updateCustomTrackColor(trackId: string, color: string) {
+    const normalizedColor = normalizeHexColor(color);
+    if (!normalizedColor) {
+      return;
+    }
+    updateCustomTrack(trackId, (track) => ({
+      ...track,
+      color: normalizedColor,
+    }) as CustomTrack);
+  }
+
   function renameBuiltinTrack(trackId: BuiltinTrackId, name: string) {
     const normalizedName = name.trimStart();
     updateBuiltinTrack(trackId, (track) => ({
@@ -3328,12 +3349,33 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
     updateCustomTrack(trackId, (currentTrack) => {
       const branching = currentTrack.branching ?? createDefaultTrackBranching();
+      const parentColor = resolveCustomTrackColor(currentTrack);
+      const laneColor = getBranchLaneColor(parentColor, branching.lanes, parentLaneId);
       return {
         ...currentTrack,
         branching: {
           ...branching,
           enabled: true,
-          lanes: addBranchLane(branching.lanes, parentLaneId, createBranchLane(name, parentLaneId)),
+          lanes: addBranchLane(branching.lanes, parentLaneId, createBranchLane(name, parentLaneId, laneColor)),
+        },
+      } as CustomTrack;
+    });
+  }
+
+  function updateCustomTrackBranchLaneColor(trackId: string, laneId: string, color: string) {
+    const normalizedColor = normalizeHexColor(color);
+    if (!normalizedColor) {
+      return;
+    }
+    updateCustomTrack(trackId, (track) => {
+      if (!track.branching) {
+        return track;
+      }
+      return {
+        ...track,
+        branching: {
+          ...track.branching,
+          lanes: recolorBranchLane(track.branching.lanes, laneId, normalizedColor),
         },
       } as CustomTrack;
     });
@@ -4721,6 +4763,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                       onRemoveAttachedPointTrackTypeOption={removeAttachedPointTrackTypeOption}
                       onDeleteAttachedPointTrack={deleteAttachedPointTrack}
                       onCustomTrackRename={renameCustomTrack}
+                      onCustomTrackColorChange={updateCustomTrackColor}
                       onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
                       onAddCustomTrackTypeOption={addCustomTrackTypeOption}
                       onMoveCustomTrackTypeOption={moveCustomTrackTypeOption}
@@ -4731,6 +4774,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                       onCustomTrackBranchDisplayModeChange={setCustomTrackBranchDisplayMode}
                       onAddCustomTrackBranchLane={addCustomTrackBranchLane}
                       onCustomTrackBranchLaneRename={renameCustomTrackBranchLane}
+                      onCustomTrackBranchLaneColorChange={updateCustomTrackBranchLaneColor}
                       onDeleteCustomTrackBranchLane={deleteCustomTrackBranchLane}
                       inspectorFocusRequest={inspectorFocusRequest}
                       onCustomBlockUpdate={updateCustomBlock}
@@ -5920,11 +5964,13 @@ function ensureBuiltinTrackForMerge(project: ProjectData, sourceTrack: BuiltinTr
 
 function createCustomTrackForMerge(project: ProjectData, sourceTrack: CustomTrack) {
   const trackId = `custom-track-${crypto.randomUUID()}`;
+  const color = normalizeHexColor(sourceTrack.color) ?? getNextTrackColor(project.customTracks);
   const nextTrack: CustomTrack = sourceTrack.trackType === "text"
     ? {
         id: trackId,
         name: sourceTrack.name,
         trackType: "text",
+        color,
         typeOptions: [...sourceTrack.typeOptions],
         blocks: [],
         attachedPointTracks: [],
@@ -5935,6 +5981,7 @@ function createCustomTrackForMerge(project: ProjectData, sourceTrack: CustomTrac
         id: trackId,
         name: sourceTrack.name,
         trackType: "action",
+        color,
         typeOptions: [...sourceTrack.typeOptions],
         blocks: [],
         attachedPointTracks: [],
@@ -6033,6 +6080,7 @@ function mergeCustomTrackFromImport(
       !track.blocks.some((existing) => areCustomBlocksEquivalent(block, existing, track.trackType)));
     return {
       ...track,
+      color: normalizeHexColor(track.color) ?? normalizeHexColor(sourceTrack.color) ?? getNextTrackColor(project.customTracks),
       typeOptions: mergeUniqueStrings(track.typeOptions, sourceTrack.typeOptions),
       snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints || sourceTrack.snapToWaveformKeypoints),
       blocks: mergeMode === "replace"

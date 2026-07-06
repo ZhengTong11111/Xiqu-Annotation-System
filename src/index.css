@@ -1499,7 +1499,7 @@ select {
 
 .branching-lane-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 5px;
   padding-left: calc(var(--branch-depth, 0) * 14px);
@@ -1509,7 +1509,168 @@ select {
   min-width: 0;
 }
 
-.branching-lane-row button,
+.track-color-control {
+  display: grid;
+  grid-template-columns: auto minmax(88px, 1fr);
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+.track-color-control.compact {
+  grid-template-columns: auto;
+}
+
+.track-color-control.compact .track-color-input {
+  display: none;
+}
+
+.track-color-picker {
+  position: relative;
+}
+
+.track-color-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(189, 201, 217, 0.88);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.88);
+  cursor: pointer;
+}
+
+.track-color-trigger[aria-expanded="true"] {
+  border-color: rgba(67, 115, 204, 0.56);
+  box-shadow: 0 0 0 2px rgba(42, 104, 214, 0.14);
+}
+
+.track-color-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 2px solid rgba(255, 255, 255, 0.96);
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.18);
+}
+
+.track-color-picker-popover {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 286px;
+  padding: 8px;
+  border: 1px solid rgba(189, 201, 217, 0.9);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+}
+
+.track-color-picker-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 8px;
+  padding: 3px;
+  border-radius: 7px;
+  background: rgba(226, 232, 240, 0.68);
+}
+
+.track-color-picker-tabs button {
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--ink-soft);
+  background: transparent;
+  font-size: 11px;
+}
+
+.track-color-picker-tabs button.active {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+}
+
+.track-color-custom-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.track-color-picker .react-colorful {
+  width: 100%;
+  height: 138px;
+}
+
+.track-color-input {
+  min-width: 0;
+  height: 28px;
+  padding: 4px 8px;
+  border: 1px solid rgba(189, 201, 217, 0.86);
+  border-radius: 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.track-color-input.popover-input {
+  width: 100%;
+}
+
+.track-color-quick-panel {
+  display: grid;
+  gap: 7px;
+}
+
+.track-color-palette-title {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.track-color-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(18, 1fr);
+  gap: 3px;
+}
+
+.track-color-standard-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 4px;
+}
+
+.track-color-theme-grid button,
+.track-color-standard-grid button {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 1px solid rgba(15, 23, 42, 0.13);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+.track-color-theme-grid button {
+  min-height: 18px;
+}
+
+.track-color-standard-grid button {
+  min-height: 22px;
+}
+
+.track-color-theme-grid button.active,
+.track-color-standard-grid button.active {
+  border-color: rgba(255, 255, 255, 0.96);
+  box-shadow:
+    0 0 0 2px rgba(15, 108, 189, 0.62),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.34);
+}
+
+/* 分支行里会嵌套颜色弹窗；按钮样式只给行内操作按钮，避免误伤弹窗色块。 */
+.branching-lane-action-button,
 .branching-actions button {
   min-height: 26px;
   padding: 4px 8px;
@@ -2038,52 +2199,56 @@ select {
   min-width: 0;
 }
 
+.track-label-title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.track-label-color-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--track-color, rgba(15, 108, 189, 0.8));
+  border: 2px solid rgba(255, 255, 255, 0.88);
+  box-shadow: 0 0 0 1px var(--track-color-border, rgba(15, 108, 189, 0.24));
+  flex: 0 0 auto;
+}
+
 .track-label.compact .track-label-main {
   gap: 0;
 }
 
-.track-label-main strong,
-.track-label-main span {
+.track-label-title-row strong,
+.track-label-meta {
   display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.track-label-main strong {
+.track-label-title-row strong {
   line-height: 1.2;
 }
 
-.track-label.compact .track-label-main strong {
+.track-label.compact .track-label-title-row strong {
   line-height: 1.05;
   font-size: 11px;
 }
 
-.track-label-main span {
+.track-label-meta {
   line-height: 1.15;
   white-space: nowrap;
-}
-
-.track-label-main .track-branch-badge {
-  display: inline-flex;
-  align-items: center;
-  width: fit-content;
-  max-width: 100%;
-  padding: 2px 6px;
-  border: 1px solid rgba(15, 108, 189, 0.18);
-  border-radius: 999px;
-  background: rgba(232, 242, 252, 0.86);
-  color: #175f9f;
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 1;
 }
 
 .track-label-main .track-branch-lane-meta {
   padding-left: calc(var(--branch-depth, 0) * 10px);
 }
 
-.track-label.compact .track-label-main span {
+/* compact 模式只隐藏元信息，不隐藏标题行里的颜色点。 */
+.track-label.compact .track-label-meta,
+.track-label.compact .track-branch-lane-meta {
   display: none;
 }
 
@@ -2117,12 +2282,28 @@ select {
   min-height: 14px;
 }
 
+/* footer 左侧统一承载“吸附”和附属轨说明，避免不同轨道类型的基线各自漂移。 */
+.track-label-footer-left {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 16px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.track-label.compact .track-label-footer-left {
+  min-height: 14px;
+}
+
 .track-label-copy strong {
   font-size: 12px;
   font-weight: 600;
 }
 
-.track-label-copy span {
+.track-label-meta,
+.track-attached-point-caption,
+.track-label-main .track-branch-lane-meta {
   color: var(--ink-soft);
   font-size: 10px;
 }
@@ -2137,10 +2318,9 @@ select {
   white-space: nowrap;
   flex-shrink: 0;
   min-width: 0;
-  line-height: 1;
-  align-self: center;
+  min-height: 16px;
+  line-height: 1.1;
   overflow: hidden;
-  justify-self: start;
   width: fit-content;
   max-width: max-content;
 }
@@ -2148,8 +2328,7 @@ select {
 .track-label.compact .track-snap-toggle {
   gap: 2px;
   font-size: 9px;
-  align-self: end;
-  justify-self: start;
+  min-height: 14px;
 }
 
 .track-snap-toggle input {
@@ -2168,11 +2347,16 @@ select {
   display: inline-flex;
   align-items: center;
   min-width: 0;
+  min-height: 16px;
   font-size: 10px;
   color: var(--ink-soft);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.track-label.compact .track-attached-point-caption {
+  min-height: 14px;
 }
 
 .track-label.compact .track-label-tools {
@@ -2223,7 +2407,7 @@ select {
     linear-gradient(180deg, rgba(244, 249, 252, 0.98), rgba(235, 245, 250, 0.94));
 }
 
-.timeline-track-branch-lane .track-label-main strong {
+.timeline-track-branch-lane .track-label-title-row strong {
   padding-left: calc(var(--branch-depth, 0) * 10px);
 }
 
@@ -2876,15 +3060,27 @@ select {
 }
 
 .timeline-block.custom-text {
-  background: linear-gradient(180deg, rgba(8, 145, 178, 0.2), rgba(8, 145, 178, 0.11));
-  border-color: rgba(8, 145, 178, 0.28);
-  color: #0f5b6c;
+  background: linear-gradient(180deg, var(--track-color-soft, rgba(8, 145, 178, 0.2)), var(--track-color-softer, rgba(8, 145, 178, 0.11)));
+  border-color: var(--track-color-border, rgba(8, 145, 178, 0.28));
+  color: var(--track-color, #0f5b6c);
 }
 
 .timeline-block.custom-action {
-  background: linear-gradient(180deg, rgba(180, 122, 28, 0.2), rgba(180, 122, 28, 0.1));
-  border-color: rgba(180, 122, 28, 0.28);
-  color: #7a4d0b;
+  background: linear-gradient(180deg, var(--track-color-soft, rgba(180, 122, 28, 0.2)), var(--track-color-softer, rgba(180, 122, 28, 0.1)));
+  border-color: var(--track-color-border, rgba(180, 122, 28, 0.28));
+  color: var(--track-color, #7a4d0b);
+}
+
+.timeline-block.shared-branch-block {
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.22) 0,
+      rgba(255, 255, 255, 0.22) 5px,
+      transparent 5px,
+      transparent 10px
+    ),
+    linear-gradient(180deg, var(--track-color-soft, rgba(8, 145, 178, 0.2)), var(--track-color-softer, rgba(8, 145, 178, 0.11)));
 }
 
 .timeline-block.selected {
