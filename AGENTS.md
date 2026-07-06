@@ -21,6 +21,7 @@ Main currently contains all major recent feature lines that matter for context:
 - Gongche attached-track workflow and renderer
 - Gongche glyph preview is currently marked finished for research/demo use, but the glyph font must be replaced or licensed before release
 - project document state architecture (`src/state/projectDocumentState.ts`)
+- recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
 
 If starting a new conversation, assume the repo is already beyond the earlier simple waveform-only stage.
 
@@ -125,10 +126,25 @@ There are now several track layers in play:
 - used for things like breathing or other event markers
 - can be expanded/collapsed via `attachedPointTracksExpanded`
 
+### 4. Recursive custom-track branches
+- custom text/action tracks can enable recursive branches through `CustomTrack.branching`
+- branches are not separate saved top-level tracks; blocks remain saved on the parent custom track
+- block branch ownership is stored on `ResolvedCustomTrackBlock.branchScope`
+  - root/unscoped blocks belong to the parent/root lane
+  - `mode: "lanes"` blocks belong to one or more branch lane ids
+  - multi-lane blocks represent shared/common annotations
+- branch display modes:
+  - `merged`: one visible parent lane, with semantic bands for root and descendant branches
+  - `expanded`: parent/root lane plus derived `branch-lane` pseudo-tracks
+- branch names are user-defined; do not assume left/right hands
+- per-track and per-branch colors are saved and used by custom block rendering
+- branch helpers live primarily in `src/utils/trackBranching.ts` and timeline layout code in `src/components/Timeline.tsx`
+
 Important implication:
 - not every visible lane is a first-class saved track entry
 - Gongche lanes are derived lanes
 - attached point lanes are saved under parent tracks
+- branch lanes are derived lanes; do not add them to `activeTrackOrder` as independent saved tracks
 
 ## Current Layout & Windowing Model
 The app now behaves like a desktop workbench, not a document page:
@@ -211,12 +227,15 @@ Timeline behavior is now quite rich and tightly coupled. Preserve these assumpti
 - sticky on the left while horizontal scrolling
 - per-track `吸附` toggle must remain visible
 - compact/low-height rendering exists and has special hiding behavior
+- branch track headers expose display state such as `分叉合并` / `分叉展开`
+- right-click on custom tracks can enter branch settings; block context menus can set branch ownership
 
 ### Creation
 - character and action tracks support `Command/Ctrl + drag` creation
 - character tracks also support blank double-click creation with line-merge heuristics
 - attached point tracks support point creation
 - Gongche attached tracks create/open blocks relative to their parent text block timing
+- branch-lane creation still creates a custom block on the parent track and writes branch ownership to `branchScope`
 
 ### Selection
 - single selection
@@ -257,6 +276,36 @@ If touching snapping, test:
 - attached point drag
 - creation drag
 - low zoom and high zoom
+
+### Recursive branch layout / filled overlap layout
+`Timeline.tsx` now has one active visual layout path for timeline blocks:
+- `buildTrackBlockLayouts()` builds per-track `StackedTrackLayout`
+- normal character/action/custom/expanded branch-lane tracks use `layoutSingleBandTrackBlocks()`
+- merged branch parent tracks use `layoutMergedBranchTrackBlocks()`
+- rendering consumes `blockDisplayLayouts` only
+
+Important layout rules:
+- ordinary non-branch tracks also use filled overlap layout now:
+  - blocks are grouped by true time overlap
+  - each overlap group is laid out independently
+  - non-conflicting groups fill the available band height
+  - conflicting groups split the band vertically only for that group
+- merged branch tracks preserve semantic bands:
+  - parent/root band first
+  - descendant branch bands in tree order
+  - empty branch subtrees are hidden
+  - parent/root groups can fill the descendant subtree only when no descendant block overlaps that group in time
+  - if a parent/root group fills, its own internal conflicts still split the filled subtree height
+- expanded branch-lane tracks use the same single-band filled overlap layout within each visible branch lane
+
+Removed legacy path:
+- the old fixed-row render interface (`blockLayout`, `blockLayouts`, `StackedTrackBlockLayout`, and `buildStackedBlockLayoutMap`) has been removed
+- do not reintroduce block positioning through `blockLayout`
+- new layout work should write `StackedTrackBlockDisplayLayout` entries into `blockDisplayLayouts`
+
+Creation drag note:
+- `Command/Ctrl + drag` finalization uses the pointer-up coordinate and avoids a second floating-point min-duration rejection
+- this fixes deterministic creation failures at some zoom ratios such as around `11px/s`
 
 ### Preview behavior
 Dragging block edges or creation drags should preview frames through `previewTime` without moving the real playhead.
@@ -457,6 +506,7 @@ Before finishing substantial work, manually sanity-check the relevant subset:
 - block edge preview
 - loop range create/move/resize/toggle
 - track snapping
+- recursive branch merged/expanded display, including parent/root fill, empty branch hiding, and ordinary non-branch filled overlap layout
 - attached point track create/drag/snap
 - Gongche create/open/edit/import
 - Gongche single-character preview, especially `（...）`, `/`, `+/-`, and `h/s/d/c`
