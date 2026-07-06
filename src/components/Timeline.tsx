@@ -3,6 +3,7 @@ import type {
   ActionAnnotation,
   AttachedPointAnnotation,
   BranchScope,
+  BranchLane,
   BanyanMark,
   BanyanSection,
   BuiltinTrack,
@@ -23,7 +24,7 @@ import type {
   WaveformData,
 } from "../types";
 import { SpectrogramCanvas } from "./SpectrogramCanvas";
-import { clampRange, flattenBranchLanes, getParentTrackIdFromGongcheTrackId } from "../utils/project";
+import { clampRange, getParentTrackIdFromGongcheTrackId } from "../utils/project";
 import { getBranchLaneCount } from "../utils/trackBranching";
 import { getSpectrogramFrequencyRange } from "../utils/spectrogram";
 import { getBanyanMarkDisplayLabel, getBanyanSubtypeLabel } from "../utils/banyan";
@@ -373,6 +374,7 @@ type DragSnapLock = {
 } | null;
 
 type EdgeHit = "left" | "right" | "center" | "linked-left" | "linked-right";
+type TimelineLayoutBlock = CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock;
 
 // 联合调整只描述“哪些块边界会一起被改动”，不要和可吸附参考点混为一谈。
 // 调用方通过 linkedBoundaryCandidates 决定联合范围：
@@ -397,10 +399,49 @@ type StackedTrackBlockLayout = {
   rowCount: number;
 };
 
+type StackedTrackBlockDisplayLayout = {
+  top: number;
+  height: number;
+};
+
 type StackedTrackLayout = {
   rowCount: number;
   trackHeight: number;
   blockLayouts: Map<string, StackedTrackBlockLayout>;
+  blockDisplayLayouts: Map<string, StackedTrackBlockDisplayLayout>;
+};
+
+type StackedLayoutInput =
+  | {
+      mode: "standard";
+      blocks: TimelineLayoutBlock[];
+    }
+  | {
+      mode: "merged-branch";
+      blocks: ResolvedCustomTrackBlock[];
+      sourceTrack: CustomTrack;
+    };
+
+type BranchLayoutNode = {
+  key: string;
+  laneId: string | null;
+  parent: BranchLayoutNode | null;
+  children: BranchLayoutNode[];
+  blocks: ResolvedCustomTrackBlock[];
+};
+
+type BranchBandMeasurement = {
+  node: BranchLayoutNode;
+  ownRowCount: number;
+  subtreeRowCount: number;
+  childMeasurements: BranchBandMeasurement[];
+};
+
+type BranchBandGeometry = {
+  ownTop: number;
+  subtreeTop: number;
+  subtreeHeight: number;
+  ownRowCount: number;
 };
 
 type TrackBlockMetrics = {
@@ -3249,6 +3290,7 @@ export function Timeline({
                           .map((annotation) =>
                             renderBlock(annotation, "custom-block", {
                               blockLayout: stackedTrackLayout?.blockLayouts.get(annotation.id),
+                              displayLayout: stackedTrackLayout?.blockDisplayLayouts.get(annotation.id),
                               trackBlockMetrics,
                               visualTrackId: track.id,
                               linkedBoundaryCandidates: customBlocksForTrack,
@@ -3322,6 +3364,7 @@ export function Timeline({
     type: "character" | "action" | "custom-block",
     options: {
       blockLayout?: StackedTrackBlockLayout;
+      displayLayout?: StackedTrackBlockDisplayLayout;
       trackBlockMetrics?: TrackBlockMetrics;
       visualTrackId?: string;
       linkedBoundaryCandidates?: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>;
@@ -3364,10 +3407,14 @@ export function Timeline({
           ? customAnnotation.text ?? ""
           : customAnnotation.type
         : actionAnnotation?.label ?? "";
-    const blockTop = options.blockLayout
+    const blockTop = options.displayLayout
+      ? options.displayLayout.top
+      : options.blockLayout
       ? STACKED_TRACK_VERTICAL_PADDING + options.blockLayout.rowIndex * (STACKED_TRACK_ROW_HEIGHT + STACKED_TRACK_ROW_GAP)
       : options.trackBlockMetrics?.top ?? trackBlockTop;
-    const blockHeight = options.blockLayout
+    const blockHeight = options.displayLayout
+      ? options.displayLayout.height
+      : options.blockLayout
       ? STACKED_TRACK_ROW_HEIGHT
       : options.trackBlockMetrics?.height ?? trackBlockHeight;
     const zIndex = isSelected ? 4 : isActive ? 3 : 1;
@@ -3409,7 +3456,9 @@ export function Timeline({
           hoveredEdge === "right" ? "hover-resize-right" : "",
           hoveredEdge === "linked-left" ? "hover-linked-left" : "",
           hoveredEdge === "linked-right" ? "hover-linked-right" : "",
-          options.blockLayout && options.blockLayout.rowCount > 1 ? "stacked-track-block" : "",
+          (options.blockLayout && options.blockLayout.rowCount > 1) || options.displayLayout
+            ? "stacked-track-block"
+            : "",
           customAnnotation?.branchScope?.mode === "lanes" && customAnnotation.branchScope.laneIds.length > 1
             ? "shared-branch-block"
             : "",
@@ -5701,10 +5750,15 @@ function buildTrackBlockLayouts(
       actionAnnotations,
       customBlocks,
     );
-    if (!layoutInput || layoutInput.blocks.length <= 1) {
+    if (!layoutInput) {
       continue;
     }
-    const layout = layoutStackedTrackBlocks(layoutInput.blocks, layoutInput.getPriority);
+    if (layoutInput.mode === "standard" && layoutInput.blocks.length <= 1) {
+      continue;
+    }
+    const layout = layoutInput.mode === "merged-branch"
+      ? layoutMergedBranchTrackBlocks(layoutInput.blocks, layoutInput.sourceTrack)
+      : layoutStackedTrackBlocks(layoutInput.blocks);
     if (layout.rowCount <= 1) {
       continue;
     }
@@ -5720,20 +5774,17 @@ function getStackedLayoutInputForTrack(
   characterAnnotations: CharacterAnnotation[],
   actionAnnotations: ActionAnnotation[],
   customBlocks: ResolvedCustomTrackBlock[],
-): {
-  blocks: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>;
-  getPriority: (block: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock) => number;
-} | null {
+): StackedLayoutInput | null {
   if (track.type === "character") {
     return {
+      mode: "standard",
       blocks: characterAnnotations,
-      getPriority: () => 0,
     };
   }
   if (track.type === "action") {
     return {
+      mode: "standard",
       blocks: actionAnnotations.filter((annotation) => annotation.trackId === track.id),
-      getPriority: () => 0,
     };
   }
   if (track.type !== "custom-text" && track.type !== "custom-action" && track.type !== "branch-lane") {
@@ -5749,56 +5800,338 @@ function getStackedLayoutInputForTrack(
       sourceTrack.branching.displayMode === "merged",
   );
 
+  if (isMergedBranchParent && sourceTrack?.branching) {
+    return {
+      mode: "merged-branch",
+      blocks: visibleBlocks,
+      sourceTrack,
+    };
+  }
+
   return {
+    mode: "standard",
     blocks: visibleBlocks,
-    getPriority: isMergedBranchParent && sourceTrack?.branching
-      ? createMergedBranchPriorityResolver(sourceTrack)
-      : () => 0,
   };
-}
-
-function createMergedBranchPriorityResolver(
-  track: CustomTrack,
-): (block: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock) => number {
-  const branchOrder = new Map<string, number>();
-  flattenBranchLanes(track.branching?.lanes ?? []).forEach((lane, index) => {
-    branchOrder.set(lane.id, index + 1);
-  });
-  return (block) => {
-    if (!isResolvedCustomTrackBlock(block) || block.trackId !== track.id) {
-      return 0;
-    }
-    if (!block.branchScope || block.branchScope.mode === "root") {
-      return 0;
-    }
-    // 一个块可能属于多个分叉。合并父轨只渲染一次，并按它所属分叉里最靠上的那条轨排序。
-    return Math.min(
-      ...block.branchScope.laneIds.map((laneId) => branchOrder.get(laneId) ?? Number.MAX_SAFE_INTEGER),
-    );
-  };
-}
-
-function isResolvedCustomTrackBlock(
-  block: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock,
-): block is ResolvedCustomTrackBlock {
-  return "trackType" in block;
 }
 
 function layoutStackedTrackBlocks(
-  blocks: Array<CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock>,
-  getPriority: (block: CharacterAnnotation | ActionAnnotation | ResolvedCustomTrackBlock) => number,
+  blocks: TimelineLayoutBlock[],
 ): StackedTrackLayout {
-  const sortedBlocks = [...blocks].sort((left, right) => {
-    const priorityDiff = getPriority(left) - getPriority(right);
-    if (priorityDiff !== 0) {
-      return priorityDiff;
+  const rowAssignments = layoutBlocksIntoRows(blocks);
+  return buildStackedTrackLayout(rowAssignments.blockRows, rowAssignments.rowCount);
+}
+
+function layoutMergedBranchTrackBlocks(
+  blocks: ResolvedCustomTrackBlock[],
+  track: CustomTrack,
+): StackedTrackLayout {
+  const { root, laneNodeMap } = buildBranchLayoutTree(track.branching?.lanes ?? []);
+  assignBlocksToBranchLayoutTree(blocks, root, laneNodeMap);
+  return layoutMergedBranchTrackDisplayLayouts(root);
+}
+
+function buildBranchLayoutTree(lanes: BranchLane[]) {
+  const root = createBranchLayoutNode("__root__", null, null);
+  const laneNodeMap = new Map<string, BranchLayoutNode>();
+
+  const appendChildren = (parent: BranchLayoutNode, items: BranchLane[]) => {
+    for (const lane of items) {
+      const node = createBranchLayoutNode(lane.id, lane.id, parent);
+      parent.children.push(node);
+      laneNodeMap.set(lane.id, node);
+      appendChildren(node, lane.children ?? []);
     }
-    return left.startTime === right.startTime
-      ? left.endTime - right.endTime
-      : left.startTime - right.startTime;
+  };
+
+  appendChildren(root, lanes);
+  return { root, laneNodeMap };
+}
+
+function createBranchLayoutNode(
+  key: string,
+  laneId: string | null,
+  parent: BranchLayoutNode | null,
+): BranchLayoutNode {
+  return {
+    key,
+    laneId,
+    parent,
+    children: [],
+    blocks: [],
+  };
+}
+
+function assignBlocksToBranchLayoutTree(
+  blocks: ResolvedCustomTrackBlock[],
+  root: BranchLayoutNode,
+  laneNodeMap: Map<string, BranchLayoutNode>,
+) {
+  for (const block of blocks) {
+    const targetNode = getBranchLayoutNodeForBlock(block, root, laneNodeMap);
+    targetNode.blocks.push(block);
+  }
+}
+
+function getBranchLayoutNodeForBlock(
+  block: ResolvedCustomTrackBlock,
+  root: BranchLayoutNode,
+  laneNodeMap: Map<string, BranchLayoutNode>,
+) {
+  if (!block.branchScope || block.branchScope.mode === "root" || block.branchScope.laneIds.length === 0) {
+    return root;
+  }
+  const laneNodes = block.branchScope.laneIds
+    .map((laneId) => laneNodeMap.get(laneId))
+    .filter((node): node is BranchLayoutNode => Boolean(node));
+  if (laneNodes.length === 0) {
+    return root;
+  }
+  if (laneNodes.length === 1) {
+    return laneNodes[0];
+  }
+  // 多分叉共有块放到最近公共父节点，而不是塞进第一条分叉，语义更接近“共有动作/共有文本”。
+  return getNearestCommonBranchAncestor(laneNodes) ?? root;
+}
+
+function getNearestCommonBranchAncestor(nodes: BranchLayoutNode[]) {
+  const paths = nodes.map(getBranchNodePath);
+  const shortestPathLength = Math.min(...paths.map((path) => path.length));
+  let commonNode: BranchLayoutNode | null = null;
+  for (let index = 0; index < shortestPathLength; index += 1) {
+    const candidate = paths[0][index];
+    if (paths.every((path) => path[index] === candidate)) {
+      commonNode = candidate;
+    } else {
+      break;
+    }
+  }
+  return commonNode;
+}
+
+function getBranchNodePath(node: BranchLayoutNode) {
+  const path: BranchLayoutNode[] = [];
+  let current: BranchLayoutNode | null = node;
+  while (current) {
+    path.unshift(current);
+    current = current.parent;
+  }
+  return path;
+}
+
+function layoutMergedBranchTrackDisplayLayouts(
+  root: BranchLayoutNode,
+): StackedTrackLayout {
+  const measurement = measureBranchBand(root);
+  if (!measurement) {
+    return buildStackedTrackLayout(new Map(), 1);
+  }
+
+  const geometryMap = new Map<string, BranchBandGeometry>();
+  assignBranchBandGeometry(measurement, STACKED_TRACK_VERTICAL_PADDING, geometryMap);
+  const descendantBlockMap = buildDescendantBranchBlockMap(root);
+  const blockDisplayLayouts = new Map<string, StackedTrackBlockDisplayLayout>();
+  appendBranchBlockDisplayLayouts(root, geometryMap, descendantBlockMap, blockDisplayLayouts);
+
+  return {
+    rowCount: measurement.subtreeRowCount,
+    trackHeight: getStackedTrackHeight(measurement.subtreeRowCount),
+    blockLayouts: new Map(),
+    blockDisplayLayouts,
+  };
+}
+
+function measureBranchBand(
+  node: BranchLayoutNode,
+): BranchBandMeasurement | null {
+  const childMeasurements = node.children
+    .map(measureBranchBand)
+    .filter((measurement): measurement is BranchBandMeasurement => Boolean(measurement));
+  const ownRowCount = layoutBlocksIntoRows(node.blocks).rowCount;
+  const hasOwnBlocks = node.blocks.length > 0;
+  const hasChildContent = childMeasurements.length > 0;
+
+  if (!hasOwnBlocks && !hasChildContent) {
+    return null;
+  }
+
+  // 合并显示虽然只有一条物理轨道，但必须保留“父轨 / 子分叉”的语义层。
+  // 因此只要某个分叉节点下有内容，就给这个节点保留自己的 band；
+  // 这样子分叉不会因为父层暂时没块而上浮占用父层位置。
+  const reservedOwnRows = Math.max(1, ownRowCount);
+  return {
+    node,
+    ownRowCount: reservedOwnRows,
+    subtreeRowCount: reservedOwnRows +
+      childMeasurements.reduce((total, child) => total + child.subtreeRowCount, 0),
+    childMeasurements,
+  };
+}
+
+function assignBranchBandGeometry(
+  measurement: BranchBandMeasurement,
+  top: number,
+  geometryMap: Map<string, BranchBandGeometry>,
+) {
+  const ownHeight = getStackedRowsHeight(measurement.ownRowCount);
+  let cursor = top + ownHeight + (
+    measurement.childMeasurements.length > 0 ? STACKED_TRACK_ROW_GAP : 0
+  );
+
+  for (const child of measurement.childMeasurements) {
+    assignBranchBandGeometry(child, cursor, geometryMap);
+    cursor += getStackedRowsHeight(child.subtreeRowCount) + STACKED_TRACK_ROW_GAP;
+  }
+
+  const subtreeHeight = getStackedRowsHeight(measurement.subtreeRowCount);
+  geometryMap.set(measurement.node.key, {
+    ownTop: top,
+    subtreeTop: top,
+    subtreeHeight,
+    ownRowCount: measurement.ownRowCount,
   });
+}
+
+function appendBranchBlockDisplayLayouts(
+  node: BranchLayoutNode,
+  geometryMap: Map<string, BranchBandGeometry>,
+  descendantBlockMap: Map<string, ResolvedCustomTrackBlock[]>,
+  blockDisplayLayouts: Map<string, StackedTrackBlockDisplayLayout>,
+) {
+  const geometry = geometryMap.get(node.key);
+  if (!geometry) {
+    return;
+  }
+  const ownRowAssignments = layoutBlocksIntoRows(node.blocks);
+  const ownRowSlots = splitStackedRows(geometry.ownTop, geometry.ownRowCount);
+  const overlapGroups = buildBlockOverlapGroups(node.blocks);
+
+  for (const group of overlapGroups) {
+    const canFillSubtree = canBlockGroupFillBranchSubtree(group, node, descendantBlockMap);
+    const groupRowAssignments = layoutBlocksIntoRows(group);
+    const expandedGroupSlots = splitRowsAcrossBand(
+      geometry.subtreeTop,
+      geometry.subtreeHeight,
+      groupRowAssignments.rowCount,
+    );
+
+    for (const block of group) {
+      // 铺满必须以“父层重叠组”为单位决定，不能逐块决定。
+      // 否则一个大块因子分叉回到父层，旁边与它重叠的小块却铺满子树，
+      // 就会出现上下高度策略混用后的视觉穿插。
+      const slot = canFillSubtree
+        ? expandedGroupSlots[groupRowAssignments.blockRows.get(block.id) ?? 0] ?? expandedGroupSlots[0]
+        : ownRowSlots[ownRowAssignments.blockRows.get(block.id) ?? 0] ?? ownRowSlots[0];
+      blockDisplayLayouts.set(block.id, {
+        top: slot.top,
+        height: slot.height,
+      });
+    }
+  }
+
+  node.children.forEach((child) => {
+    appendBranchBlockDisplayLayouts(child, geometryMap, descendantBlockMap, blockDisplayLayouts);
+  });
+}
+
+function buildBlockOverlapGroups(blocks: ResolvedCustomTrackBlock[]) {
+  const sortedBlocks = [...blocks].sort((left, right) =>
+    left.startTime === right.startTime
+      ? left.endTime - right.endTime
+      : left.startTime - right.startTime
+  );
+  const groups: ResolvedCustomTrackBlock[][] = [];
+  let currentGroup: ResolvedCustomTrackBlock[] = [];
+  let currentGroupEnd = Number.NEGATIVE_INFINITY;
+
+  for (const block of sortedBlocks) {
+    if (currentGroup.length === 0 || block.startTime < currentGroupEnd - STACKED_TRACK_OVERLAP_TOLERANCE_SECONDS) {
+      currentGroup.push(block);
+      currentGroupEnd = Math.max(currentGroupEnd, block.endTime);
+      continue;
+    }
+    groups.push(currentGroup);
+    currentGroup = [block];
+    currentGroupEnd = block.endTime;
+  }
+
+  if (currentGroup.length > 0) {
+    groups.push(currentGroup);
+  }
+  return groups;
+}
+
+function canBlockGroupFillBranchSubtree(
+  blocks: ResolvedCustomTrackBlock[],
+  node: BranchLayoutNode,
+  descendantBlockMap: Map<string, ResolvedCustomTrackBlock[]>,
+) {
+  if (node.children.length === 0) {
+    return true;
+  }
+
+  // 父层铺满要以重叠组为单位：只要组内任意块和子分叉有时间重叠，
+  // 整组都回到父层自己的 band，避免同一组块混用不同高度策略。
+  return !blocks.some((block) =>
+    (descendantBlockMap.get(node.key) ?? []).some((descendantBlock) =>
+      areTimelineIntervalsOverlapping(block, descendantBlock)
+    )
+  );
+}
+
+function buildDescendantBranchBlockMap(root: BranchLayoutNode) {
+  const descendantBlockMap = new Map<string, ResolvedCustomTrackBlock[]>();
+
+  const collect = (node: BranchLayoutNode): ResolvedCustomTrackBlock[] => {
+    const descendants: ResolvedCustomTrackBlock[] = [];
+    for (const child of node.children) {
+      descendants.push(...child.blocks, ...collect(child));
+    }
+    descendantBlockMap.set(node.key, descendants);
+    return descendants;
+  };
+
+  collect(root);
+  return descendantBlockMap;
+}
+
+function splitStackedRows(top: number, rowCount: number) {
+  return Array.from({ length: Math.max(1, rowCount) }, (_, rowIndex) => ({
+    top: top + rowIndex * (STACKED_TRACK_ROW_HEIGHT + STACKED_TRACK_ROW_GAP),
+    height: STACKED_TRACK_ROW_HEIGHT,
+  }));
+}
+
+function splitRowsAcrossBand(top: number, height: number, rowCount: number) {
+  const normalizedRowCount = Math.max(1, rowCount);
+  const gap = normalizedRowCount > 1
+    ? Math.min(STACKED_TRACK_ROW_GAP, height / Math.max(normalizedRowCount * 5, 1))
+    : 0;
+  const rowHeight = Math.max(
+    1,
+    (height - gap * Math.max(0, normalizedRowCount - 1)) / normalizedRowCount,
+  );
+
+  // 父层块铺满子树时，仍要尊重父层自身的重叠错层：
+  // 如果父层同一时间有多行冲突，就把整个子树高度按这些父层行均分。
+  return Array.from({ length: normalizedRowCount }, (_, rowIndex) => ({
+    top: top + rowIndex * (rowHeight + gap),
+    height: rowHeight,
+  }));
+}
+
+function getStackedRowsHeight(rowCount: number) {
+  return Math.max(1, rowCount) * STACKED_TRACK_ROW_HEIGHT +
+    Math.max(0, rowCount - 1) * STACKED_TRACK_ROW_GAP;
+}
+
+function layoutBlocksIntoRows(blocks: TimelineLayoutBlock[]) {
+  const sortedBlocks = [...blocks].sort((left, right) =>
+    left.startTime === right.startTime
+      ? left.endTime - right.endTime
+      : left.startTime - right.startTime
+  );
   const rowIntervals: Array<Array<{ startTime: number; endTime: number }>> = [];
-  const pendingLayouts = new Map<string, number>();
+  const blockRows = new Map<string, number>();
 
   for (const block of sortedBlocks) {
     // 这里按真实时间重叠分行。首尾相接和 0.025 秒以内的导入误差仍视为同一行可容纳。
@@ -5810,22 +6143,33 @@ function layoutStackedTrackBlocks(
       rowIntervals.push([]);
     }
     rowIntervals[rowIndex].push({ startTime: block.startTime, endTime: block.endTime });
-    pendingLayouts.set(block.id, rowIndex);
+    blockRows.set(block.id, rowIndex);
   }
 
-  const rowCount = Math.max(1, rowIntervals.length);
+  return {
+    rowCount: rowIntervals.length,
+    blockRows,
+  };
+}
+
+function buildStackedTrackLayout(
+  blockRows: Map<string, number>,
+  rowCount: number,
+): StackedTrackLayout {
+  const normalizedRowCount = Math.max(1, rowCount);
   const blockLayouts = new Map<string, StackedTrackBlockLayout>();
-  pendingLayouts.forEach((rowIndex, blockId) => {
+  blockRows.forEach((rowIndex, blockId) => {
     blockLayouts.set(blockId, {
       rowIndex,
-      rowCount,
+      rowCount: normalizedRowCount,
     });
   });
 
   return {
-    rowCount,
-    trackHeight: getStackedTrackHeight(rowCount),
+    rowCount: normalizedRowCount,
+    trackHeight: getStackedTrackHeight(normalizedRowCount),
     blockLayouts,
+    blockDisplayLayouts: new Map(),
   };
 }
 
