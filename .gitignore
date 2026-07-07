@@ -2,6 +2,7 @@ node_modules/
 dist/
 data/
 .env
+CLAUDE_WORK.md
 *.tsbuildinfo
 .DS_Store
 **/.DS_Store
