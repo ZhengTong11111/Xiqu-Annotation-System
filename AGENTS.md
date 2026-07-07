@@ -54,7 +54,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/components/SpectrogramCanvas.tsx`
   - spectrogram viewport rendering
 - `src/components/SpectrogramSettingsPanel.tsx`
-  - spectrogram control surface
+  - spectrogram control surface plus redundant waveform visibility toggle
+- `src/components/TopMenuBar.tsx`
+  - global file/edit/view/help menu
+  - view menu owns visibility toggles for waveform, spectrogram, Banyan track, and global Banyan grid lines
 - `src/components/GongcheCharacterRenderer.tsx`
   - single-character Gongche preview renderer
 - `src/components/ResizableSplitLayout.tsx`
@@ -213,6 +216,15 @@ The app now behaves like a desktop workbench, not a document page:
 Main arrangement:
 - left: preview + timeline split
 - right: sentence list + current line split + inspector/settings
+
+Global visibility controls:
+- the top menu `视图` is the canonical place for toggling:
+  - `音频波形`
+  - `人声频谱图`
+  - `板眼轨`
+  - `全局板眼纵线`
+- do not move Banyan visibility toggles back into `SpectrogramSettingsPanel`
+- `SpectrogramSettingsPanel` may expose waveform visibility as a redundant convenience control because the waveform track is also the settings entry point for audio analysis
 
 Windowing:
 - preview and timeline can detach into in-app floating windows
@@ -412,6 +424,7 @@ Spectrogram support is now first-class, not experimental.
 
 Current shape:
 - `waveformData` is still the source audio base
+- waveform track visibility is controlled by `waveformVisible` in `App.tsx` and can be toggled from `TopMenuBar` view menu
 - `spectrogramSettings` lives in `App.tsx`
 - `spectrogramData` is computed by `buildSpectrogramData(...)`
 - computation runs in `src/utils/spectrogram.worker.ts`
