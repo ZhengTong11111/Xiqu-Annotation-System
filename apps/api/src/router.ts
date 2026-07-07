@@ -238,8 +238,8 @@ export function registerApiRoutes(
     const user = await getCurrentUser(repository, request);
     const rawLimit = request.query.limit;
     const limit = rawLimit === undefined ? undefined : Number(rawLimit);
-    // limit 非法（非有限正数）时显式拒绝，避免 NaN 透传到 Prisma take。
-    if (limit !== undefined && (!Number.isFinite(limit) || limit < 1)) {
+    // limit 非法时显式拒绝，避免 NaN/小数透传到 Prisma take。
+    if (limit !== undefined && (!isNonNegativeInteger(limit) || limit < 1)) {
       throw badRequest("limit 必须是正整数。");
     }
     return repository.listAuditLogs(user, {
@@ -259,14 +259,18 @@ export function registerApiRoutes(
   // 提交一条标注操作。初版只落日志，不改变文档 snapshot。
   app.post<{ Params: DocumentParams; Body: { baseRevision?: number; localRevision?: number | null; action?: string; payload?: unknown } }>("/api/annotation-documents/:documentId/operations", async (request) => {
     const user = await getCurrentUser(repository, request);
-    if (typeof request.body?.baseRevision !== "number" || !request.body.action) {
+    const { baseRevision, localRevision, action, payload } = request.body ?? {};
+    if (!isNonNegativeInteger(baseRevision) || typeof action !== "string" || !action.trim()) {
       throw badRequest("operation 必须包含 baseRevision 和 action。");
     }
+    if (localRevision !== undefined && localRevision !== null && !isNonNegativeInteger(localRevision)) {
+      throw badRequest("localRevision 必须是非负整数或 null。");
+    }
     return repository.createOperation(user, request.params.documentId, {
-      baseRevision: request.body.baseRevision,
-      localRevision: request.body.localRevision ?? null,
-      action: request.body.action,
-      payload: request.body.payload ?? {},
+      baseRevision,
+      localRevision: localRevision ?? null,
+      action: action.trim(),
+      payload: payload ?? {},
     });
   });
 
@@ -293,6 +297,10 @@ function getBearerToken(request: FastifyRequest) {
 
 function isAnnotationMode(value: unknown): value is ApiAnnotationMode {
   return value === "independent" || value === "collaborative";
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function parseByteRange(header: string | string[] | undefined, size: number): ByteRange | "unsatisfiable" | null {

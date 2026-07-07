@@ -46,6 +46,7 @@
 - `GET /api/audit-logs`：查询审计日志。需 `super_admin/admin/teacher/ta` 角色。支持 query：`projectId`, `documentId`, `actorUserId`, `limit`（默认 50，最大 200）。按 `createdAt desc`。
 - `GET /api/annotation-documents/:documentId/operations`：列出标注操作日志。需文档 `view` 权限或特权角色。
 - `POST /api/annotation-documents/:documentId/operations`：创建标注操作日志。需文档 `edit` 权限或特权角色。`baseRevision` 与最新 snapshot 不一致时返 409；暂不改变文档内容（初版只落日志）。
+- 代码审查后补强运行时校验：`limit` 必须是正整数；operation 的 `baseRevision/localRevision` 必须是非负整数（`localRevision` 也可为 `null`），`action` 必须是非空字符串，避免坏 JSON 透传到 Prisma 变成 500。
 
 **新增 shared 类型：**
 
@@ -55,7 +56,7 @@
 
 **新增前端 client 方法：** `PlatformClient.listAuditLogs()`, `listAnnotationOperations()`, `createAnnotationOperation()`（`src/api/platformClient.ts`）。
 
-**验证：** 已运行 `npx prisma validate`（通过）、`npm run db:generate`（通过）、`npm run build`（通过）。因本地 PostgreSQL 未启动，未做 DB 冒烟（本轮未改动现有 logic，仅新增 schema/mapper/route/client）。
+**验证：** 已运行 `npx prisma validate`（通过）、`npm run db:generate`（通过）、`npm run build`（通过）。代码审查修复后用临时 API 端口验证坏 `limit` / 坏 `localRevision` 均返回 `400 bad_request`，过期 `baseRevision` 返回 `409 conflict`。
 
 ### 2026-07-07：后端平台继续完善前状态校准
 

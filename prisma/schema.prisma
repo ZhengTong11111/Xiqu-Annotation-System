@@ -301,7 +301,7 @@ model AuditLog {
 }
 
 // 标注操作日志：记录客户端提交的每次编辑 operation。
-// 初版只落日志、不改变文档 snapshot；revision 冲突时 baseRevision 不一致记为 rejected。
+// 初版只落日志、不改变文档 snapshot；baseRevision 不一致时 API 直接返回 409，不落 rejected 行。
 // 后续可演进为服务端 operation log 和协同同步的基础。
 model AnnotationOperation {
   id             String                    @id @default(uuid())
