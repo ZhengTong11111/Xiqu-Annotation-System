@@ -1968,7 +1968,7 @@ select {
 
 .line-focus-layer {
   position: relative;
-  height: 18px;
+  height: 26px;
   background: #f3f6fa;
   border-bottom: 1px dashed rgba(31, 41, 55, 0.1);
 }
@@ -1976,14 +1976,28 @@ select {
 .line-overlay {
   position: absolute;
   top: 4px;
-  height: 10px;
+  height: 18px;
   min-height: 0;
-  padding: 0;
+  padding: 0 10px;
   box-shadow: none;
   border-radius: 999px;
   background: rgba(15, 108, 189, 0.14);
   border: 1px solid rgba(15, 108, 189, 0.18);
   cursor: grab;
+  display: flex;
+  align-items: center;
+  overflow: clip;
+  font-size: 11px;
+  color: #18418c;
+}
+
+/* 文字默认居左；胶囊左边沿即将出时间轴窗口左边缘时，sticky 把文字钉在窗口左边缘，
+   直到胶囊可见段容不下文字才随胶囊向左滚出。clip 不建立滚动容器，sticky 仍贴外层时间轴滚动容器。 */
+.line-overlay-text {
+  position: sticky;
+  left: 10px;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .line-overlay.selected {

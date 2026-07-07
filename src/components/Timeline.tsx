@@ -2624,7 +2624,9 @@ export function Timeline({
                     onSelectLineOverlay(line.id);
                   }}
                   title={line.text}
-                />
+                >
+                  <span className="line-overlay-text">{line.text}</span>
+                </button>
               ))}
             </div>
 
