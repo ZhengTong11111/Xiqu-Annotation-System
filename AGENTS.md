@@ -342,7 +342,7 @@ Timeline behavior is now quite rich and tightly coupled. Preserve these assumpti
 ### Sentence preview pills
 - `.line-overlay` pills in `.line-focus-layer` (top-deck) represent each `SubtitleLine` time range; drag to move the line, click to select
 - each pill shows its sentence text, left-aligned, clipped to the capsule (`border-radius: 999px`)
-- the text is `position: sticky; left: 10px`; the pill uses `overflow: clip` (not `hidden`) so the sticky anchors to the timeline scroll container instead of the pill — when a pill scrolls off the window's left edge the text slides to the left edge and stays readable, scrolling out left only when the pill's visible portion can no longer fit it
+- the text is `position: sticky; left: calc(var(--track-label-width) + 10px)`; the pill uses `overflow: clip` (not `hidden`) so the sticky anchors to the timeline scroll container instead of the pill — when a pill scrolls behind the left track-header column the text slides to the header's right edge and stays readable, scrolling out left only when the pill's visible portion can no longer fit it
 - do NOT switch the pill back to `overflow: hidden`: `hidden` establishes a scroll container and breaks the sticky; `clip` does not
 
 ### Track headers
@@ -661,7 +661,7 @@ Before finishing substantial work, manually sanity-check the relevant subset:
 - Gongche single-character preview, especially `（...）`, `/`, `+/-`, and `h/s/d/c`
 - four-tone: set on a character, save and reimport, tone preserved across split/merge/copy/paste; old v4 JSON imports with `tone: null`
 - character block tone label: inline when wide, stacked when only vertical room, bold-only when cramped, none when unannotated
-- sentence preview pill: text left-aligned, sticks to timeline window left edge when scrolled off-left, scrolls out left when it no longer fits
+- sentence preview pill: text left-aligned, sticks to the track header's right edge when scrolled behind it, scrolls out left when it no longer fits
 - spectrogram visibility/settings/pitch contour
 - detached preview/timeline panes
 - undo/redo after drag-heavy operations

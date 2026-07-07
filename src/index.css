@@ -1847,6 +1847,8 @@ select {
   position: relative;
   min-height: 280px;
   isolation: isolate;
+  /* 与 Timeline.tsx 的 TRACK_LABEL_WIDTH 对齐，供句子胶囊文字 sticky 偏移引用。 */
+  --track-label-width: 164px;
   /* 时间轴层级约定：普通轨道 < 粘性轨道头 < 悬浮媒体轨 < 时间指示线。 */
   --timeline-layer-grid: 2;
   --timeline-layer-loop-overlay: 3;
@@ -1991,11 +1993,11 @@ select {
   color: #18418c;
 }
 
-/* 文字默认居左；胶囊左边沿即将出时间轴窗口左边缘时，sticky 把文字钉在窗口左边缘，
+/* 文字默认居左；胶囊左边沿被左侧轨道头标签列遮挡时，sticky 把文字钉在标签列右沿，
    直到胶囊可见段容不下文字才随胶囊向左滚出。clip 不建立滚动容器，sticky 仍贴外层时间轴滚动容器。 */
 .line-overlay-text {
   position: sticky;
-  left: 10px;
+  left: calc(var(--track-label-width) + 10px);
   white-space: nowrap;
   pointer-events: none;
 }
