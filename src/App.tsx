@@ -418,6 +418,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     applyProjectWithoutHistory,
     commitProject,
     applyTrackSnapEnabledState,
+    markOperationsAsSubmitted,
     markProjectAsSaved,
     undoProject,
     redoProject,
@@ -482,6 +483,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const mergeProjectFileInputRef = useRef<HTMLInputElement>(null);
   const waveformRequestIdRef = useRef(0);
   const spectrogramRequestIdRef = useRef(0);
+  const serverSaveInFlightRef = useRef(false);
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
   const blockContextMenuRef = useRef<HTMLDivElement>(null);
   const [blockContextMenuPosition, setBlockContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
@@ -4122,6 +4124,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       window.alert("当前不是服务器文档。请从平台主页打开一个标注文档后再保存到服务器。");
       return;
     }
+    if (serverSaveInFlightRef.current) {
+      window.alert("正在保存到服务器，请等待本次保存完成。");
+      return;
+    }
     if (editingCharacterId) {
       commitCharacterTextEdit(editingCharacterId);
     }
@@ -4129,7 +4135,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       commitCustomTextEdit(editingCustomTextBlock.trackId, editingCustomTextBlock.id);
     }
 
+    serverSaveInFlightRef.current = true;
     setSyncStatus("saving");
+    const submittedOperationIds: string[] = [];
     try {
       // 1. 先把本地 pending operations 作为服务端 operation log 写入。
       //    用 pendingOperationsRef 而非 state：commitCharacterTextEdit 等同步提交的编辑
@@ -4137,16 +4145,28 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       //    所有 operation 共用当前 remoteBaseRevision（snapshot 还没写，revision 不变）。
       //    只发摘要 payload，不发完整 ProjectData，避免 operation log 膨胀。
       const pendingSnapshot = pendingOperationsRef.current;
+      const coveredOperationIds = pendingSnapshot.map((operation) => operation.id);
+      const savedLocalRevision = pendingSnapshot.length > 0
+        ? pendingSnapshot.reduce(
+            (maxRevision, operation) => Math.max(maxRevision, operation.localRevision),
+            syncState.savedRevision,
+          )
+        : syncState.localRevision;
+      // 保存开始时固定项目和吸附状态快照。保存期间用户可能继续编辑；
+      // 那些新编辑不能混入本次 snapshot，也不能在成功后被误标为已保存。
+      const projectSnapshot = projectRef.current;
+      const trackSnapSnapshot = trackSnapEnabledRef.current;
       if (pendingSnapshot.length > 0) {
         await submitPendingOperations(
           editorSession.client,
           editorSession.documentId,
           pendingSnapshot,
           remoteBaseRevision,
+          (operationId) => submittedOperationIds.push(operationId),
         );
       }
       // 2. 保存完整 ProjectData snapshot（snapshot 仍由 /save 写入，operation log 不驱动 snapshot）。
-      const projectToSave = prepareProjectForServer(getPersistableProjectData(projectRef.current));
+      const projectToSave = prepareProjectForServer(getPersistableProjectData(projectSnapshot));
       const savedDocument = await editorSession.client.saveAnnotationDocument<ProjectData>(editorSession.documentId, {
         baseRevision: remoteBaseRevision,
         payload: projectToSave,
@@ -4154,14 +4174,22 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       // 3. 成功后更新 baseRevision 并确认本地 pending operations（清空 pending、标 acknowledged）。
       setRemoteBaseRevision(savedDocument.latestSnapshot.revision);
       editorSession.onDocumentSaved(savedDocument);
-      markProjectAsSaved(projectRef.current, trackSnapEnabledRef.current);
+      markProjectAsSaved(projectSnapshot, trackSnapSnapshot, {
+        acknowledgedOperationIds: coveredOperationIds,
+        savedLocalRevision,
+      });
     } catch (error) {
+      if (submittedOperationIds.length > 0) {
+        markOperationsAsSubmitted(submittedOperationIds);
+      }
       // 失败时不调用 markProjectAsSaved，保留 pending operations 供重试。
-      // operation log 可能已部分写入服务器：初版可接受，因为 operation log 只是审计/同步地基，不驱动 snapshot。
+      // 已写入服务端 operation log 的条目标为 submitted，重试保存时会跳过，避免重复写 operation rows。
       const classified = describeServerSaveError(error);
       setSyncStatus(classified.status, { errorMessage: classified.message });
       console.error("保存到服务器失败:", error);
       window.alert(classified.message);
+    } finally {
+      serverSaveInFlightRef.current = false;
     }
   }
 

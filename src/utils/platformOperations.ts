@@ -65,13 +65,22 @@ export async function submitPendingOperations(
   documentId: string,
   pendingOperations: ProjectDocumentOperation[],
   serverBaseRevision: number,
+  onSubmitted?: (operationId: string) => void,
 ) {
+  const submittedOperationIds: string[] = [];
   for (const operation of pendingOperations) {
+    if (operation.syncState !== "pending") {
+      continue;
+    }
     await client.createAnnotationOperation(
       documentId,
       buildServerOperationRequest(operation, serverBaseRevision),
     );
+    submittedOperationIds.push(operation.id);
+    // 逐条回调，让调用方即使在后续 operation 失败时，也能知道哪些已经写入服务端。
+    onSubmitted?.(operation.id);
   }
+  return submittedOperationIds;
 }
 
 // 把服务器保存过程中的错误归类为对用户有意义的同步状态。

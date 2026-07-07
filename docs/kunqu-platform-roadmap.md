@@ -23,12 +23,16 @@
 **修改 `src/App.tsx` 的 `saveProjectToServer`：**
 
 - 保存流程改为：`setSyncStatus("saving")` → 先 `submitPendingOperations`（用 `pendingOperationsRef.current` 而非 state，避免漏掉 `commitCharacterTextEdit` 等同步提交的编辑）→ 再 `saveAnnotationDocument` → 成功后 `setRemoteBaseRevision` + `onDocumentSaved` + `markProjectAsSaved`。
-- 失败时按 `describeServerSaveError` 设 `syncState`（conflict/offline/error），**不调用 `markProjectAsSaved`**，保留 pending operations 供重试。operation log 可能已部分写入服务器——初版可接受，因 operation log 不驱动 snapshot。
+- 保存开始时固定 project / track snap / pending operation 快照，避免保存期间继续编辑时把新改动误标为已保存。
+- 失败时按 `describeServerSaveError` 设 `syncState`（conflict/offline/error），**不调用 `markProjectAsSaved`**，保留 pending operations 供重试。
+- 已写入服务端 operation log 但 snapshot 保存失败的 operation 会标为 `submitted`；重试保存时跳过这些 operation，避免重复写 operation rows。
+- 成功后只确认本次保存开始时覆盖的 operation ids；保存期间新增的 operation 保持 pending，界面回到 dirty。
 - 本地模式（无 editorSession）和本地 JSON 保存不受影响，不访问服务器 operation API。
 
 **修改 `src/state/projectDocumentState.ts`：**
 
 - 导出 `pendingOperationsRef`，供保存流程读取最新 pending（state 是异步的，ref 同步）。
+- `ProjectDocumentOperation.syncState` 增加 `submitted`，并新增按 operation id 标记 submitted、按 operation id 确认保存的能力。
 
 **未改：** `Timeline.tsx`、`InspectorPanel.tsx`、Gongche/Banyan/Spectrogram、Prisma schema、后端 repository/router（接口已够用）。
 
