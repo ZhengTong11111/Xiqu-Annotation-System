@@ -33,6 +33,7 @@ import {
   getCustomBlockDisplayColor,
   resolveCustomTrackColor,
 } from "../utils/trackColors";
+import { getCharacterToneLabel, isValidCharacterToneInfo } from "../utils/tone";
 
 type TimelineProps = {
   subtitleLines: SubtitleLine[];
@@ -269,6 +270,15 @@ const MIN_LINKED_EDGE_HIT_SLOP_PX = 4;
 const PREVIEW_UPDATE_EPSILON = 1 / 60;
 const SPECTROGRAM_ZOOM_PREVIEW_SETTLE_MS = 120;
 const MIN_BLOCK_WIDTH_PX = 44;
+// 逐字块内四声标签的宽度估算：用于判断块是否够宽/够高能放下标签。
+// TONE_LABEL_CHAR_PX 是 10px 字号下每个 CJK 的近似宽度；
+// TONE_LABEL_RESERVED_PX 是横向并排时的固定开销（字宽 + 间距 + 两侧留白）；
+// TONE_LABEL_SIDE_PADDING 是上下两层时标签独占一行所需的两侧留白；
+// TONE_LABEL_STACK_MIN_HEIGHT 是上下两层所需的最小块高（字行 + 间距 + 标签行）。
+const TONE_LABEL_CHAR_PX = 10;
+const TONE_LABEL_RESERVED_PX = 28;
+const TONE_LABEL_SIDE_PADDING = 6;
+const TONE_LABEL_STACK_MIN_HEIGHT = 30;
 const MIN_WAVEFORM_VIEW_HEIGHT = 32;
 const WAVEFORM_TRACK_VERTICAL_PADDING = 8;
 const MIN_SPECTROGRAM_VIEW_HEIGHT = 48;
@@ -3428,6 +3438,17 @@ export function Timeline({
     const blockHeight = options.displayLayout
       ? options.displayLayout.height
       : options.trackBlockMetrics?.height ?? trackBlockHeight;
+    // 四声仅内建逐字轨有。优先横向并排；横向放不下但纵向够且标签自身能放进块宽，
+    // 则上下两层；都不行则只靠加粗表达“有四声”。
+    const toneInfo = characterAnnotation?.tone ?? null;
+    const hasTone = Boolean(toneInfo) && isValidCharacterToneInfo(toneInfo);
+    const toneLabel = hasTone ? getCharacterToneLabel(toneInfo) : null;
+    const showToneInline = toneLabel !== null && !isEditing &&
+      width >= TONE_LABEL_RESERVED_PX + toneLabel.length * TONE_LABEL_CHAR_PX;
+    const showToneStacked = toneLabel !== null && !isEditing && !showToneInline &&
+      blockHeight >= TONE_LABEL_STACK_MIN_HEIGHT &&
+      width >= toneLabel.length * TONE_LABEL_CHAR_PX + TONE_LABEL_SIDE_PADDING;
+    const showToneLabel = showToneInline || showToneStacked;
     const zIndex = isSelected ? 4 : isActive ? 3 : 1;
     const hoveredEdge = hoveredBlock?.id === annotation.id &&
       hoveredBlock.type === type &&
@@ -3471,6 +3492,9 @@ export function Timeline({
           customAnnotation?.branchScope?.mode === "lanes" && customAnnotation.branchScope.laneIds.length > 1
             ? "shared-branch-block"
             : "",
+          hasTone ? "has-tone" : "",
+          showToneInline ? "tone-inline" : "",
+          showToneStacked ? "tone-stacked" : "",
         ].join(" ")}
         style={{ left, width, top: blockTop, height: blockHeight, zIndex, ...customColorVariables }}
         onPointerMove={(event) => {
@@ -3777,7 +3801,10 @@ export function Timeline({
             }}
           />
         ) : (
-          <span>{label}</span>
+          <>
+            <span className="timeline-block-text">{label}</span>
+            {showToneLabel ? <span className="timeline-block-tone">{toneLabel}</span> : null}
+          </>
         )}
         <div className="resize-handle right" />
       </div>

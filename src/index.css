@@ -1335,6 +1335,30 @@ select {
   gap: 8px;
 }
 
+.tone-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tone-preview-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: var(--radius-control);
+  background: rgba(15, 23, 42, 0.06);
+  font-size: 11px;
+}
+
+.tone-preview-char {
+  font-weight: 600;
+}
+
+.tone-preview-label {
+  color: var(--ink-soft);
+}
+
 .gongche-symbol-editor {
   display: flex;
   flex-direction: column;
@@ -3054,6 +3078,29 @@ select {
   background: linear-gradient(180deg, rgba(37, 99, 235, 0.18), rgba(37, 99, 235, 0.1));
   border-color: rgba(37, 99, 235, 0.24);
   color: #18418c;
+}
+
+/* 有四声的逐字块：字加粗；标签用偏灰小字标在字旁。
+   横向够宽时并排（tone-inline），横向不够但纵向够时上下两层（tone-stacked），
+   都不够则不渲染标签（由 JS 控制），只保留加粗。 */
+.timeline-block.has-tone .timeline-block-text {
+  font-weight: 600;
+}
+
+.timeline-block.tone-inline {
+  gap: 3px;
+}
+
+.timeline-block.tone-stacked {
+  flex-direction: column;
+  gap: 1px;
+}
+
+.timeline-block-tone {
+  font-size: 10px;
+  font-weight: 500;
+  color: rgba(24, 65, 140, 0.5);
+  white-space: nowrap;
 }
 
 .timeline-block.action {

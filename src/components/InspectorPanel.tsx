@@ -34,6 +34,12 @@ import {
   resolveCustomTrackColor,
   STANDARD_TRACK_COLORS,
 } from "../utils/trackColors";
+import {
+  TONE_SELECT_OPTIONS,
+  buildLineTonePreview,
+  getToneInfoForSelectValue,
+  getToneSelectValue,
+} from "../utils/tone";
 
 const REORDER_ACTIVATION_PX = 6;
 
@@ -781,6 +787,8 @@ export function InspectorPanel({
     if (!line) {
       return null;
     }
+    // 句级四声预览从该句下属逐字块派生，不复制存储，避免逐字编辑时产生同步问题。
+    const tonePreview = buildLineTonePreview(line, characterAnnotations);
     return (
       <section className="panel inspector-panel">
         <div className="panel-header">
@@ -798,6 +806,19 @@ export function InspectorPanel({
         <div className="inspector-field">
           <label>结束时间</label>
           <div className="inspector-value">{line.endTime.toFixed(3)}s</div>
+        </div>
+        <div className="inspector-field">
+          <label>四声预览</label>
+          <div className="inspector-value tone-preview">
+            {tonePreview.length === 0
+              ? "该句暂无逐字块"
+              : tonePreview.map((item, index) => (
+                <span key={`${line.id}-${index}-${item.char}`} className="tone-preview-chip">
+                  <span className="tone-preview-char">{item.char}</span>
+                  <span className="tone-preview-label">{item.label}</span>
+                </span>
+              ))}
+          </div>
         </div>
       </section>
     );
@@ -1407,6 +1428,23 @@ export function InspectorPanel({
             {(trackDefinitions.find((track) => track.id === "character-track")?.options ?? [item.singingStyle]).map((style) => (
               <option key={style} value={style}>
                 {style}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="inspector-field">
+          <label>四声信息</label>
+          <select
+            value={getToneSelectValue(item.tone)}
+            onChange={(event) =>
+              onCharacterUpdate(item.id, {
+                tone: getToneInfoForSelectValue(event.target.value),
+              })
+            }
+          >
+            {TONE_SELECT_OPTIONS.map((option) => (
+              <option key={option.value || "none"} value={option.value}>
+                {option.label}
               </option>
             ))}
           </select>

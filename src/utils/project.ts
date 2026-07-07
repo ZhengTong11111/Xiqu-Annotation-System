@@ -253,6 +253,8 @@ export function splitLineIntoCharacters(line: SubtitleLine): CharacterAnnotation
       startTime,
       endTime,
       singingStyle: "普通唱",
+      // 句级 SRT 拆字时不带四声信息，统一留空，由用户在逐字属性中手动标注。
+      tone: null,
     };
   });
 }

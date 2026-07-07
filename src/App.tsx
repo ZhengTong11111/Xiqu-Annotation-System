@@ -34,6 +34,7 @@ import type {
   BuiltinTrack,
   BuiltinTrackId,
   CharacterAnnotation,
+  CharacterToneInfo,
   CustomTrack,
   CustomTrackType,
   GongcheAnnotation,
@@ -159,6 +160,7 @@ type TimelineClipboardItem =
       sourceLineId: string;
       char: string;
       singingStyle: string;
+      tone: CharacterToneInfo | null;
       startOffset: number;
       endOffset: number;
     }
@@ -214,6 +216,7 @@ type PreparedPasteItem =
       endTime: number;
       char: string;
       singingStyle: string;
+      tone: CharacterToneInfo | null;
       sourceLineId: string;
     }
   | {
@@ -1832,6 +1835,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           sourceLineId: item.lineId,
           char: item.char,
           singingStyle: item.singingStyle,
+          tone: item.tone ?? null,
           startOffset: item.startTime - baseTime,
           endOffset: item.endTime - baseTime,
         };
@@ -1984,6 +1988,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             startTime: item.startTime,
             endTime: item.endTime,
             singingStyle: item.singingStyle,
+            tone: item.tone ?? null,
           }]
         : [],
     );
@@ -2330,6 +2335,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             startTime: range.startTime,
             endTime: range.endTime,
             singingStyle: "普通唱",
+            tone: null,
           },
         ],
       }, target.line.id);
@@ -2357,6 +2363,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             startTime,
             endTime,
             singingStyle: "普通唱",
+            tone: null,
           },
         ],
       };
@@ -5453,6 +5460,7 @@ type ResolvedClipboardSelectionItem =
       lineId: string;
       char: string;
       singingStyle: string;
+      tone: CharacterToneInfo | null;
       startTime: number;
       endTime: number;
     }
@@ -6271,6 +6279,7 @@ function resolveTimelineSelectionItem(
           lineId: annotation.lineId,
           char: annotation.char,
           singingStyle: annotation.singingStyle,
+          tone: annotation.tone ?? null,
           startTime: annotation.startTime,
           endTime: annotation.endTime,
         }
@@ -6439,6 +6448,7 @@ function buildPreparedPasteItems(
         endTime,
         char: item.char,
         singingStyle: item.singingStyle,
+        tone: item.tone ?? null,
         sourceLineId: item.sourceLineId,
       });
       return items;

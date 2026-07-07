@@ -1,5 +1,31 @@
 export type SingingStyle = string;
 
+// 《韵学骊珠》四声阴阳体系。
+// 主系统是四声分阴阳共八类（ToneClass）；上声在原书另有 阴上/阳上/阴阳通用 三层，
+// 因此额外用 YxlzShangSubtype 保留原书层级，避免“阴阳通用”被简单当作普通阳上。
+export type ToneBase = "ping" | "shang" | "qu" | "ru";
+export type ToneYinYang = "yin" | "yang";
+export type ToneClass =
+  | "yin_ping"
+  | "yang_ping"
+  | "yin_shang"
+  | "yang_shang"
+  | "yin_qu"
+  | "yang_qu"
+  | "yin_ru"
+  | "yang_ru";
+// 仅上声使用：原书把上声细分为阴上、阳上、阴阳通用三类。
+// 阴阳通用在八类系统中落到 yang_shang，但靠此字段保留原书层级。
+export type YxlzShangSubtype = "yin_shang" | "yang_shang" | "yinyang_tongyong";
+
+export type CharacterToneInfo = {
+  // 四声阴阳八类，是逐字四声信息的主存储字段。
+  toneClass: ToneClass;
+  // 仅上声有意义：保留原书 阴上/阳上/阴阳通用 层级。
+  // 非 上声 不应设置此字段；导入时若残留会被丢弃。
+  yxlzShangSubtype?: YxlzShangSubtype;
+};
+
 export type BuiltinTrackId = "character-track";
 export type CustomTrackType = "text" | "action";
 export type BuiltinTrackType = "character" | "action";
@@ -69,6 +95,9 @@ export type CharacterAnnotation = {
   startTime: number;
   endTime: number;
   singingStyle: SingingStyle;
+  // 四声信息挂在逐字块上；句级字幕的四声预览由本字段派生，不再重复存储。
+  // null 表示未标注；导入旧文件无此字段时统一归一化为 null。
+  tone?: CharacterToneInfo | null;
 };
 
 export type GongcheSymbol = {
@@ -284,7 +313,7 @@ export type ProjectData = {
 };
 
 export type SavedProjectFile = {
-  version: 1 | 2 | 3 | 4;
+  version: 1 | 2 | 3 | 4 | 5;
   project: ProjectData;
   uiState?: {
     zoom?: number;

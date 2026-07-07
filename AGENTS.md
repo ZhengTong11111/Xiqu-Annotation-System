@@ -163,7 +163,7 @@ Important type families:
   - worker-computed magnitudes + frequency bins + optional pitch frames
 
 Saved project JSON:
-- current `PROJECT_FILE_VERSION` is `4`
+- current `PROJECT_FILE_VERSION` is `5`
 - import must go through `normalizeImportedProjectFile()` from `src/utils/projectFile.ts`
 - do not duplicate project-file migration logic in platform or local import paths
 
@@ -514,7 +514,7 @@ This means:
 Project JSON handling is more advanced than a raw dump.
 
 ### Save
-- saved file version: currently `4`
+- saved file version: currently `5`
 - includes:
   - normalized `project`
   - `uiState`

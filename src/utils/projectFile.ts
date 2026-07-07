@@ -4,6 +4,8 @@ import type {
   BranchScope,
   BanyanMark,
   BanyanSection,
+  CharacterAnnotation,
+  CharacterToneInfo,
   CustomActionTrackBlock,
   CustomTextTrackBlock,
   CustomTrack,
@@ -27,8 +29,14 @@ import {
   getTrackFallbackColor,
   normalizeHexColor,
 } from "./trackColors";
+import {
+  isShangToneClass,
+  isToneClass,
+  isYxlzShangSubtype,
+  normalizeShangSubtype,
+} from "./tone";
 
-export const PROJECT_FILE_VERSION = 4;
+export const PROJECT_FILE_VERSION = 5;
 
 const MIN_NORMALIZED_CHARACTER_DURATION = 0.04;
 
@@ -96,7 +104,7 @@ export function normalizeProjectData(value: LegacyProjectInput | ProjectData | u
   return {
     video: normalizeProjectVideo(source),
     subtitleLines: Array.isArray(source.subtitleLines) ? source.subtitleLines : [],
-    characterAnnotations: Array.isArray(source.characterAnnotations) ? source.characterAnnotations : [],
+    characterAnnotations: normalizeCharacterAnnotations(source.characterAnnotations),
     gongcheAnnotations: normalizeGongcheAnnotations(source.gongcheAnnotations),
     banyanSections: normalizeBanyanSections(source.banyanSections),
     banyanMarks: normalizeBanyanMarks(source.banyanMarks),
@@ -576,6 +584,58 @@ function normalizeAttachedPointTracks(value: AttachedPointTrack[] | undefined) {
             }))
         : [],
     }] satisfies AttachedPointTrack[];
+  });
+}
+
+// 归一化单条四声信息：toneClass 非法则整块丢弃；上声补默认 subtype；
+// 非上声上残留的 subtype 直接丢弃。统一返回 null 表示“未标注”。
+export function normalizeCharacterToneInfo(value: unknown): CharacterToneInfo | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as Partial<CharacterToneInfo>;
+  if (!isToneClass(candidate.toneClass)) {
+    return null;
+  }
+  const toneClass = candidate.toneClass;
+  const rawSubtype = candidate.yxlzShangSubtype;
+  if (isShangToneClass(toneClass)) {
+    // 上声必须带 subtype：合法则保留，缺失或非法则补原书默认层级。
+    const tone: CharacterToneInfo = isYxlzShangSubtype(rawSubtype)
+      ? { toneClass, yxlzShangSubtype: rawSubtype }
+      : { toneClass };
+    return normalizeShangSubtype(tone);
+  }
+  // 非上声不应带 subtype；出现即丢弃，只保留 toneClass。
+  return { toneClass };
+}
+
+// 归一化逐字块数组：补默认字段、丢弃缺 id 的残项，并为每条补上规范化的 tone。
+export function normalizeCharacterAnnotations(value: unknown): CharacterAnnotation[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item): CharacterAnnotation[] => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+    const source = item as Partial<CharacterAnnotation>;
+    if (typeof source.id !== "string") {
+      return [];
+    }
+    const startTime = typeof source.startTime === "number" ? source.startTime : 0;
+    const endTime = typeof source.endTime === "number"
+      ? Math.max(source.endTime, startTime + MIN_NORMALIZED_CHARACTER_DURATION)
+      : startTime + MIN_NORMALIZED_CHARACTER_DURATION;
+    return [{
+      id: source.id,
+      lineId: typeof source.lineId === "string" ? source.lineId : "",
+      char: typeof source.char === "string" ? source.char : "",
+      startTime,
+      endTime,
+      singingStyle: typeof source.singingStyle === "string" ? source.singingStyle : "普通唱",
+      tone: normalizeCharacterToneInfo(source.tone),
+    }] satisfies CharacterAnnotation[];
   });
 }
 
