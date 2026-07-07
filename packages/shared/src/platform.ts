@@ -138,6 +138,51 @@ export type ProcessingJobType =
 
 export type ProcessingJobStatus = "queued" | "running" | "succeeded" | "failed";
 
+// 审计日志：记录平台关键操作的追溯信息。
+export type AuditAction =
+  | "auth_login"
+  | "file_upload"
+  | "media_create"
+  | "project_create"
+  | "document_create"
+  | "document_save"
+  | "version_create"
+  | "version_restore"
+  | "job_create";
+
+export type AuditLogEntry = {
+  id: string;
+  action: AuditAction;
+  actorUserId: string | null;
+  projectId?: string | null;
+  documentId?: string | null;
+  fileId?: string | null;
+  versionId?: string | null;
+  jobId?: string | null;
+  targetType?: string | null;
+  targetId?: string | null;
+  detail?: unknown;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  createdAt: string;
+};
+
+// 标注操作日志：记录客户端提交的每次编辑 operation。
+export type AnnotationOperationStatus = "accepted" | "rejected" | "superseded";
+
+export type AnnotationOperationRecord = {
+  id: string;
+  documentId: string;
+  actorUserId: string;
+  baseRevision: number;
+  localRevision?: number | null;
+  serverRevision?: number | null;
+  action: string;
+  payload: unknown;
+  status: AnnotationOperationStatus;
+  createdAt: string;
+};
+
 export type ProcessingJob = {
   id: string;
   type: ProcessingJobType;

@@ -1,13 +1,17 @@
 import type {
   AnnotationDocument,
   AnnotationDocumentSummary,
+  AnnotationOperationRecord,
   AnnotationProjectSummary,
   AnnotationVersion,
+  AuditLogEntry,
   CreateAnnotationDocumentRequest,
+  CreateAnnotationOperationRequest,
   CreateAnnotationVersionRequest,
   CreateMediaAssetRequest,
   CreateProjectRequest,
   CreateProcessingJobRequest,
+  ListAuditLogsOptions,
   LoginRequest,
   LoginResponse,
   MediaAsset,
@@ -148,6 +152,31 @@ export class PlatformClient {
 
   createProcessingJob(request: CreateProcessingJobRequest) {
     return this.request<ProcessingJob>("/jobs", {
+      method: "POST",
+      body: request,
+    });
+  }
+
+  // 查询审计日志。仅管理员/教师/助教可访问（后端做权限检查）。
+  async listAuditLogs(options: ListAuditLogsOptions = {}) {
+    const params = new URLSearchParams();
+    if (options.projectId) params.set("projectId", options.projectId);
+    if (options.documentId) params.set("documentId", options.documentId);
+    if (options.actorUserId) params.set("actorUserId", options.actorUserId);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    const query = params.toString();
+    const path = query ? `/audit-logs?${query}` : "/audit-logs";
+    return this.request<AuditLogEntry[]>(path);
+  }
+
+  // 列出文档的标注操作日志。
+  listAnnotationOperations(documentId: string) {
+    return this.request<AnnotationOperationRecord[]>(`/annotation-documents/${documentId}/operations`);
+  }
+
+  // 提交一条标注操作。
+  createAnnotationOperation(documentId: string, request: CreateAnnotationOperationRequest) {
+    return this.request<AnnotationOperationRecord>(`/annotation-documents/${documentId}/operations`, {
       method: "POST",
       body: request,
     });

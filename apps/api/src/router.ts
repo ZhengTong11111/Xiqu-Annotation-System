@@ -233,6 +233,43 @@ export function registerApiRoutes(
     });
   });
 
+  // 审计日志查询。仅管理员/教师/助教可访问，支持按 project/document/actor 筛选。
+  app.get<{ Querystring: { projectId?: string; documentId?: string; actorUserId?: string; limit?: string } }>("/api/audit-logs", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    const rawLimit = request.query.limit;
+    const limit = rawLimit === undefined ? undefined : Number(rawLimit);
+    // limit 非法（非有限正数）时显式拒绝，避免 NaN 透传到 Prisma take。
+    if (limit !== undefined && (!Number.isFinite(limit) || limit < 1)) {
+      throw badRequest("limit 必须是正整数。");
+    }
+    return repository.listAuditLogs(user, {
+      projectId: request.query.projectId,
+      documentId: request.query.documentId,
+      actorUserId: request.query.actorUserId,
+      limit,
+    });
+  });
+
+  // 列出文档标注操作日志。
+  app.get<{ Params: DocumentParams }>("/api/annotation-documents/:documentId/operations", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    return repository.listOperations(user, request.params.documentId);
+  });
+
+  // 提交一条标注操作。初版只落日志，不改变文档 snapshot。
+  app.post<{ Params: DocumentParams; Body: { baseRevision?: number; localRevision?: number | null; action?: string; payload?: unknown } }>("/api/annotation-documents/:documentId/operations", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    if (typeof request.body?.baseRevision !== "number" || !request.body.action) {
+      throw badRequest("operation 必须包含 baseRevision 和 action。");
+    }
+    return repository.createOperation(user, request.params.documentId, {
+      baseRevision: request.body.baseRevision,
+      localRevision: request.body.localRevision ?? null,
+      action: request.body.action,
+      payload: request.body.payload ?? {},
+    });
+  });
+
   app.setNotFoundHandler(() => {
     throw notFound("接口不存在。");
   });
