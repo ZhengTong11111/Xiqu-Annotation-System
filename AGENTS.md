@@ -78,6 +78,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - recursive branch-lane flattening/counting helpers
 - `src/utils/trackColors.ts`
   - track/branch color defaults, palette helpers, and CSS variable helpers
+- `src/utils/tone.ts`
+  - 《韵学骊珠》four-tone (yin/yang × ping/shang/qu/ru) label mapping, validity checks, and sentence-level tone summary helpers
+  - used by Inspector (character tone editor + derived sentence preview), Timeline (in-block tone label), and `projectFile.ts` (tone normalization)
 - `apps/api/src/`
   - Fastify backend: auth, routes, repository, Prisma mapping, local object storage
 - `packages/shared/src/`
@@ -155,6 +158,11 @@ Important type families:
   - attached to either built-in or custom parent track
 - `GongcheAnnotation`
   - attached to a text-capable parent block (`character-track` or custom text block)
+- `CharacterToneInfo` (optional `tone` field on `CharacterAnnotation`)
+  - 《韵学骊珠》four-tone eight-class system: `toneClass` is one of yin/yang × ping/shang/qu/ru
+  - `yxlzShangSubtype` preserves the 上声 阴阳通用 layer (`toneClass: "yang_shang"`, subtype `yinyang_tongyong`); only set for 上声
+  - `null` means unannotated; old files and SRT-imported characters normalize to `null`
+  - four-tone lives only on character blocks; the sentence-level tone preview is derived from a line's character blocks, never copied onto `SubtitleLine`
 - `BanyanSection` / `BanyanMark`
   - beat/eye sections and parsed/editable marks derived from Gongche or manually adjusted
 - `WaveformData`
@@ -331,6 +339,12 @@ Timeline behavior is now quite rich and tightly coupled. Preserve these assumpti
 - top ruler is clickable and draggable for playhead scrubbing
 - this is separate from native video controls
 
+### Sentence preview pills
+- `.line-overlay` pills in `.line-focus-layer` (top-deck) represent each `SubtitleLine` time range; drag to move the line, click to select
+- each pill shows its sentence text, left-aligned, clipped to the capsule (`border-radius: 999px`)
+- the text is `position: sticky; left: 10px`; the pill uses `overflow: clip` (not `hidden`) so the sticky anchors to the timeline scroll container instead of the pill — when a pill scrolls off the window's left edge the text slides to the left edge and stays readable, scrolling out left only when the pill's visible portion can no longer fit it
+- do NOT switch the pill back to `overflow: hidden`: `hidden` establishes a scroll container and breaks the sticky; `clip` does not
+
 ### Track headers
 - sticky on the left while horizontal scrolling
 - per-track `吸附` toggle must remain visible
@@ -418,6 +432,12 @@ Creation drag note:
 ### Preview behavior
 Dragging block edges or creation drags should preview frames through `previewTime` without moving the real playhead.
 This behavior is easy to regress.
+
+### Character block tone label
+- a character block with a valid `tone` bolds its glyph (`.has-tone`) and shows a gray tone label beside it
+- layout is progressive by available space: inline beside the glyph when the block is wide enough, stacked two-row (glyph above, label below) when only vertical room exists, otherwise just bold with no label
+- the inline/stacked decision is computed in `renderBlock` from the block's pixel width and height against `TONE_LABEL_*` constants; do not move it back into CSS-only logic
+- only the built-in `character-track` carries tone; custom text tracks do not
 
 ## Spectrogram Feature
 Spectrogram support is now first-class, not experimental.
@@ -597,8 +617,8 @@ Do not replace this with raw browser clipboard semantics.
 
 ## Inspector Rules
 `InspectorPanel.tsx` is now a broad control center:
-- selected line editing
-- character editing
+- selected line editing (includes a derived four-tone preview from the line's character blocks)
+- character editing (includes 四声 tone editing)
 - action editing
 - custom block editing
 - attached point editing
@@ -639,6 +659,9 @@ Before finishing substantial work, manually sanity-check the relevant subset:
 - attached point track create/drag/snap
 - Gongche create/open/edit/import
 - Gongche single-character preview, especially `（...）`, `/`, `+/-`, and `h/s/d/c`
+- four-tone: set on a character, save and reimport, tone preserved across split/merge/copy/paste; old v4 JSON imports with `tone: null`
+- character block tone label: inline when wide, stacked when only vertical room, bold-only when cramped, none when unannotated
+- sentence preview pill: text left-aligned, sticks to timeline window left edge when scrolled off-left, scrolls out left when it no longer fits
 - spectrogram visibility/settings/pitch contour
 - detached preview/timeline panes
 - undo/redo after drag-heavy operations
