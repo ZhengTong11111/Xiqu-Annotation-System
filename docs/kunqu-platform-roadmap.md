@@ -6,6 +6,41 @@
 
 ## 0. 执行记录
 
+### 2026-07-07：前端 pending operations 接入服务端 operation log
+
+本轮把前端 `useProjectDocumentState()` 的 pending operations 与服务端 operation log API 接起来，为后续自动保存、离线恢复、冲突提示打基础。仍属过渡设计：snapshot 仍由 `/save` 写入整份 payload，operation log 只记录摘要、不驱动 snapshot。
+
+**新增文件 `src/utils/platformOperations.ts`：**
+
+- `buildServerOperationRequest(operation, serverBaseRevision)`：把本地 `ProjectDocumentOperation` 转成 `CreateAnnotationOperationRequest`。
+  - 请求的 `baseRevision` 用「服务器当前 snapshot revision」(serverBaseRevision)，不是 `operation.baseRevision`（后者是本地记录时的 local revision，语义不同）。
+  - `action` 用 `operation.type`（如 `project.commit`）；更细的 `historyAction`（edit/import-srt 等）放 payload。
+  - **payload 刻意只放摘要**（localOperationId、localCreatedAt、type、historyAction、localBaseRevision、hasProjectBeforeAfter、hasTrackSnapBeforeAfter），不发完整 `beforeProject/afterProject`。原因：当前完整数据由 snapshot 保存，operation log 只是审计/同步地基；若每条 operation 都存整份项目，数据库会快速膨胀。
+  - `track-snap.update` 额外记 `changedTrackIds`（前后吸附开关 diff）。
+- `submitPendingOperations(client, documentId, pending, serverBaseRevision)`：顺序提交（不用 `Promise.all`，服务端要求相同 baseRevision，并发会让错误定位变乱）；共用同一 serverBaseRevision，因提交期间 snapshot 未变。
+- `describeServerSaveError(error)`：把保存错误归类为 `conflict`(409) / `offline`(navigator.onLine===false) / `error`，返回用户可见文案。
+
+**修改 `src/App.tsx` 的 `saveProjectToServer`：**
+
+- 保存流程改为：`setSyncStatus("saving")` → 先 `submitPendingOperations`（用 `pendingOperationsRef.current` 而非 state，避免漏掉 `commitCharacterTextEdit` 等同步提交的编辑）→ 再 `saveAnnotationDocument` → 成功后 `setRemoteBaseRevision` + `onDocumentSaved` + `markProjectAsSaved`。
+- 失败时按 `describeServerSaveError` 设 `syncState`（conflict/offline/error），**不调用 `markProjectAsSaved`**，保留 pending operations 供重试。operation log 可能已部分写入服务器——初版可接受，因 operation log 不驱动 snapshot。
+- 本地模式（无 editorSession）和本地 JSON 保存不受影响，不访问服务器 operation API。
+
+**修改 `src/state/projectDocumentState.ts`：**
+
+- 导出 `pendingOperationsRef`，供保存流程读取最新 pending（state 是异步的，ref 同步）。
+
+**未改：** `Timeline.tsx`、`InspectorPanel.tsx`、Gongche/Banyan/Spectrogram、Prisma schema、后端 repository/router（接口已够用）。
+
+**验证：** `npm run build` 通过（新增 `platformOperations.ts` 模块）。`npx prisma validate` 通过（未改 schema）。本地 PostgreSQL 未启动，未做 DB 冒烟——本轮只改前端保存流程，后端 operation API 上一轮已冒烟过。
+
+**本轮仍是过渡设计，后续未完成：**
+
+- 自动保存节流（目前仍手动「保存到服务器」）。
+- 离线队列恢复（离线时 pending 保留在本地，恢复在线后需手动重试保存）。
+- operation log 差分化（当前 payload 是摘要，未来若要做协同同步需细化成领域命令）。
+- 冲突对比/合并 UI（目前 409 只弹窗提示，未提供版本对比或合并工具）。
+
 ### 2026-07-07：审计日志与操作日志基础设施
 
 本轮按路线图「平台后端可治理」方向，落地审计日志和标注操作日志的 schema、API、repository 和前端 client。

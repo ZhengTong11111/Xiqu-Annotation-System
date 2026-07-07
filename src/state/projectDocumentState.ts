@@ -395,6 +395,7 @@ export function useProjectDocumentState({
     hasUnsavedChanges,
     operationLog,
     pendingOperations,
+    pendingOperationsRef,
     syncState,
     transientProjectRef,
     applyProjectState,

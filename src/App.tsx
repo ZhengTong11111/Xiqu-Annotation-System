@@ -68,6 +68,10 @@ import {
   getNextCustomTrackTypeOptionName,
 } from "./utils/project";
 import {
+  describeServerSaveError,
+  submitPendingOperations,
+} from "./utils/platformOperations";
+import {
   addBranchLane,
   createBranchLane,
   createDefaultTrackBranching,
@@ -409,6 +413,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     redoStack,
     hasUnsavedChanges,
     pendingOperations,
+    pendingOperationsRef,
     syncState,
     applyProjectWithoutHistory,
     commitProject,
@@ -4126,18 +4131,37 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
     setSyncStatus("saving");
     try {
+      // 1. 先把本地 pending operations 作为服务端 operation log 写入。
+      //    用 pendingOperationsRef 而非 state：commitCharacterTextEdit 等同步提交的编辑
+      //    会立即更新 ref，但 state 要等下一次渲染，闭包里的 pendingOperations 可能漏掉它们。
+      //    所有 operation 共用当前 remoteBaseRevision（snapshot 还没写，revision 不变）。
+      //    只发摘要 payload，不发完整 ProjectData，避免 operation log 膨胀。
+      const pendingSnapshot = pendingOperationsRef.current;
+      if (pendingSnapshot.length > 0) {
+        await submitPendingOperations(
+          editorSession.client,
+          editorSession.documentId,
+          pendingSnapshot,
+          remoteBaseRevision,
+        );
+      }
+      // 2. 保存完整 ProjectData snapshot（snapshot 仍由 /save 写入，operation log 不驱动 snapshot）。
       const projectToSave = prepareProjectForServer(getPersistableProjectData(projectRef.current));
       const savedDocument = await editorSession.client.saveAnnotationDocument<ProjectData>(editorSession.documentId, {
         baseRevision: remoteBaseRevision,
         payload: projectToSave,
       });
+      // 3. 成功后更新 baseRevision 并确认本地 pending operations（清空 pending、标 acknowledged）。
       setRemoteBaseRevision(savedDocument.latestSnapshot.revision);
       editorSession.onDocumentSaved(savedDocument);
       markProjectAsSaved(projectRef.current, trackSnapEnabledRef.current);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "保存到服务器失败。";
-      setSyncStatus("error", { errorMessage: message });
-      window.alert(message);
+      // 失败时不调用 markProjectAsSaved，保留 pending operations 供重试。
+      // operation log 可能已部分写入服务器：初版可接受，因为 operation log 只是审计/同步地基，不驱动 snapshot。
+      const classified = describeServerSaveError(error);
+      setSyncStatus(classified.status, { errorMessage: classified.message });
+      console.error("保存到服务器失败:", error);
+      window.alert(classified.message);
     }
   }
 
