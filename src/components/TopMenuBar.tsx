@@ -323,7 +323,7 @@ export function TopMenuBar({
                   </>
                 ) : null}
                 {item === "帮助" ? (
-                  <div className="top-menu-note">空格播放/暂停，P 从循环范围起点开始循环，Command/Ctrl + S 保存项目，Command/Ctrl + 拖拽可创建块。</div>
+                  <div className="top-menu-note">空格播放/暂停，P 从循环范围起点持续循环，Tab 从循环范围起点播放一遍，Command/Ctrl + 左/右 选择当前轨道相邻块，Command/Ctrl + S 保存项目，Command/Ctrl + 拖拽可创建块。</div>
                 ) : null}
               </div>
             ) : null}

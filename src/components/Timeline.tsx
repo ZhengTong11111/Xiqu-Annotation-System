@@ -3400,13 +3400,25 @@ export function Timeline({
     const characterAnnotation = type === "character" ? annotation as CharacterAnnotation : null;
     const actionAnnotation = type === "action" ? annotation as ActionAnnotation : null;
     const customAnnotation = type === "custom-block" ? annotation as ResolvedCustomTrackBlock : null;
+    const visualTrack = options.visualTrackId ? trackDefinitionMap.get(options.visualTrackId) : undefined;
+    const branchLaneId = visualTrack?.type === "branch-lane" ? visualTrack.branchLaneId : undefined;
     const currentSelectionItem = customAnnotation
-      ? { type: "custom-block" as const, id: annotation.id, trackId: customAnnotation.trackId }
+      ? {
+          type: "custom-block" as const,
+          id: annotation.id,
+          trackId: customAnnotation.trackId,
+          branchLaneId,
+        }
       : characterAnnotation
         ? { type: "character" as const, id: annotation.id }
         : { type: "action" as const, id: annotation.id };
     const currentSelectedItem = customAnnotation
-      ? { type: "custom-block" as const, id: annotation.id, trackId: customAnnotation.trackId }
+      ? {
+          type: "custom-block" as const,
+          id: annotation.id,
+          trackId: customAnnotation.trackId,
+          branchLaneId,
+        }
       : characterAnnotation
         ? { type: "character" as const, id: annotation.id }
         : { type: "action" as const, id: annotation.id };
@@ -3458,7 +3470,6 @@ export function Timeline({
       ? hoveredBlock.edge
       : null;
     const customTrackInfo = customAnnotation ? customTrackMap.get(customAnnotation.trackId) : null;
-    const visualTrack = options.visualTrackId ? trackDefinitionMap.get(options.visualTrackId) : undefined;
     const customColorVariables = customAnnotation && customTrackInfo
       ? getColorCssVariables(
           getCustomBlockDisplayColor(
@@ -3664,7 +3675,7 @@ export function Timeline({
             setHoveredBlock(buildHoveredBlockState(targetAnnotation.id, targetType, targetEdge, trackId));
             onSelectItem(
               targetType === "custom-block"
-                ? { type: "custom-block", trackId, id: targetAnnotation.id }
+                ? { type: "custom-block", trackId, id: targetAnnotation.id, branchLaneId }
                 : { type: targetType, id: targetAnnotation.id },
             );
             return;
@@ -3699,7 +3710,7 @@ export function Timeline({
           setHoveredBlock(buildHoveredBlockState(targetAnnotation.id, targetType, targetEdge, trackId));
           onSelectItem(
             targetType === "custom-block"
-              ? { type: "custom-block", trackId, id: targetAnnotation.id }
+              ? { type: "custom-block", trackId, id: targetAnnotation.id, branchLaneId }
               : { type: targetType, id: targetAnnotation.id },
           );
         }}
@@ -4412,7 +4423,12 @@ export function Timeline({
 
   function toSelectedItem(item: TimelineSelectionItem): SelectedItem {
     if (item.type === "custom-block") {
-      return { type: "custom-block", id: item.id, trackId: item.trackId };
+      return {
+        type: "custom-block",
+        id: item.id,
+        trackId: item.trackId,
+        branchLaneId: item.branchLaneId,
+      };
     }
     if (item.type === "attached-point") {
       return {
@@ -4669,12 +4685,16 @@ export function Timeline({
         const id = element.dataset.blockId;
         const type = element.dataset.blockType;
         const trackId = element.dataset.blockTrackId;
+        const visualTrackId = element.dataset.blockVisualTrackId;
+        const branchLaneId = visualTrackId
+          ? trackDefinitionMap.get(visualTrackId)?.branchLaneId
+          : undefined;
         if (!id || (type !== "character" && type !== "action" && type !== "custom-block")) {
           return [];
         }
         return [
           type === "custom-block"
-            ? { id, type, trackId: trackId ?? "" }
+            ? { id, type, trackId: trackId ?? "", branchLaneId }
             : { id, type },
         ] as TimelineSelectionItem[];
       })
