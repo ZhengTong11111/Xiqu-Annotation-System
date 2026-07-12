@@ -380,6 +380,10 @@ DAW-style loop range exists:
 - stored in project UI state
 - some tracks can auto-set loop range from selected block(s)
 - for multi-selection, contiguous blocks on the same track can define a merged loop range
+- `P` starts continuous playback from the loop-range start; when it temporarily enables looping, Space exits that temporary loop without changing the normal Space semantics
+- `Tab` plays the current loop range exactly once and pauses at its end, while preserving the user's persistent loop setting
+- `Command/Ctrl + Left/Right` selects the adjacent duration block on the current logical lane; tracks with `autoSetLoopRangeOnSelect` then update the loop range through the normal selection path
+- expanded recursive branches carry a transient selected branch-lane id so shared blocks navigate along the lane instance the user actually clicked; this context is UI-only and is not saved in project JSON
 
 ### Snapping
 Snapping is intentionally nuanced:

@@ -77,6 +77,7 @@ import {
   recolorBranchLane,
   renameBranchLane,
 } from "./utils/trackBranching";
+import { findAdjacentNavigableBlock } from "./utils/timelineNavigation";
 import {
   getBranchLaneColor,
   getNextTrackColor,
@@ -470,7 +471,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const isPreviewDetached = Boolean(previewDetachedWindow && !previewDetachedWindow.closed);
   const isTimelineDetached = Boolean(timelineDetachedWindow && !timelineDetachedWindow.closed);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const loopPlaybackTemporarilyEnabledRef = useRef(false);
+  // 临时范围播放意图，统一表达 P 临时持续循环和 Tab 单次范围播放两种运行时行为，
+  // 避免多个含义重叠的布尔 ref 互相覆盖。null 表示无临时意图（仅持久循环或普通播放）。
+  const rangePlaybackIntentRef = useRef<RangePlaybackIntent | null>(null);
   const videoFileInputRef = useRef<HTMLInputElement>(null);
   const srtFileInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
@@ -572,7 +575,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
     if (nextSelectedItem?.type === "custom-block") {
       setSelectedTimelineItems([
-        { type: "custom-block", id: nextSelectedItem.id, trackId: nextSelectedItem.trackId },
+        {
+          type: "custom-block",
+          id: nextSelectedItem.id,
+          trackId: nextSelectedItem.trackId,
+          branchLaneId: nextSelectedItem.branchLaneId,
+        },
       ]);
       return;
     }
@@ -689,20 +697,39 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }, [playbackRate]);
 
   useEffect(() => {
-    if (
-      !isPlaying ||
-      previewTime !== null ||
-      !loopPlaybackEnabled ||
-      !loopPlaybackRange ||
-      !videoRef.current
-    ) {
+    const video = videoRef.current;
+    const intent = rangePlaybackIntentRef.current;
+    if (previewTime !== null || !loopPlaybackRange || !video) {
       return;
     }
     if (loopPlaybackRange.end - loopPlaybackRange.start <= 0.001) {
       return;
     }
+    // 沿用现有与 playbackRate 相关的终点阈值，避免高速播放越过终点。
     const loopEndThreshold = Math.max(0.01, 0.04 / Math.max(playbackRate, 0.25));
-    if (currentTime < loopPlaybackRange.end - loopEndThreshold) {
+    if (intent?.mode === "play-range-once") {
+      // 范围已经由选择或拖动改变时，旧意图交给下方清理 effect 取消，不能套用到新范围。
+      if (!doesRangePlaybackIntentMatch(intent, loopPlaybackRange)) {
+        return;
+      }
+      if (currentTime < intent.playbackEnd - loopEndThreshold && !video.ended) {
+        return;
+      }
+      // 单次范围播放到终点：校正到 end、暂停、清除意图、恢复进入前的持久循环设置，不跳回起点。
+      finishOneShotRangePlayback(intent);
+      return;
+    }
+    if (
+      intent?.mode === "temporary-continuous-loop" &&
+      !doesRangePlaybackIntentMatch(intent, loopPlaybackRange)
+    ) {
+      return;
+    }
+    if (!isPlaying || currentTime < loopPlaybackRange.end - loopEndThreshold) {
+      return;
+    }
+    // 持久循环或 P 临时持续循环：到终点跳回起点。
+    if (!loopPlaybackEnabled) {
       return;
     }
     const nextTime = clampTime(loopPlaybackRange.start, duration);
@@ -710,11 +737,31 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     setCurrentTime(nextTime);
   }, [currentTime, duration, isPlaying, loopPlaybackEnabled, loopPlaybackRange, playbackRate, previewTime]);
 
+  // 持久循环被关闭时，终止 P 临时持续循环意图；单次播放意图不在此清理
+  //（由终点、空格、清除范围或切换视频处理）。
   useEffect(() => {
     if (!loopPlaybackEnabled) {
-      loopPlaybackTemporarilyEnabledRef.current = false;
+      if (rangePlaybackIntentRef.current?.mode === "temporary-continuous-loop") {
+        rangePlaybackIntentRef.current = null;
+      }
     }
   }, [loopPlaybackEnabled]);
+
+  // 清除、替换循环范围或切换视频时，不能留下指向旧范围的单次/临时播放意图。
+  // 依赖具体边界而不是“是否为空”，因此块选择把 A 范围换成 B 范围也会取消旧播放意图。
+  useEffect(() => {
+    const intent = rangePlaybackIntentRef.current;
+    if (
+      intent &&
+      (!loopPlaybackRange || !doesRangePlaybackIntentMatch(intent, loopPlaybackRange))
+    ) {
+      cancelRangePlaybackIntent();
+    }
+  }, [loopPlaybackRange?.start, loopPlaybackRange?.end]);
+
+  useEffect(() => {
+    cancelRangePlaybackIntent();
+  }, [project.video.url]);
 
   useEffect(() => {
     const videoUrl = project.video.url;
@@ -835,7 +882,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
     if (event.code === "Space") {
       event.preventDefault();
-      if (continuePlaybackAfterTemporaryLoop()) {
+      if (tryConsumeSpaceForRangeIntent()) {
         return;
       }
       togglePlay();
@@ -843,6 +890,23 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "p") {
       event.preventDefault();
       playLoopFromRangeStart();
+      return;
+    }
+    if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key === "Tab") {
+      event.preventDefault();
+      playLoopRangeOnce();
+      return;
+    }
+    // Command/Ctrl + 左右：选择当前逻辑轨道相邻块，优先于普通方向键的时间步进。
+    if ((event.metaKey || event.ctrlKey) && event.key === "ArrowLeft") {
+      event.preventDefault();
+      selectAdjacentTimelineBlock("previous");
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key === "ArrowRight") {
+      event.preventDefault();
+      selectAdjacentTimelineBlock("next");
+      return;
     }
     if (event.key === "ArrowLeft") {
       event.preventDefault();
@@ -1202,7 +1266,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const video = videoRef.current;
     const nextTime = clampTime(loopPlaybackRange.start, duration);
     setPreviewTime(null);
-    loopPlaybackTemporarilyEnabledRef.current = loopPlaybackTemporarilyEnabledRef.current || !loopPlaybackEnabled;
+    // P 取消任何单次播放意图，切换为持续循环。持久循环已开时不标临时（空格走普通暂停），
+    // 否则标 temporary-continuous-loop（空格退出临时循环并继续普通播放）。
+    rangePlaybackIntentRef.current = loopPlaybackEnabled
+      ? null
+      : {
+          mode: "temporary-continuous-loop",
+          rangeStart: loopPlaybackRange.start,
+          rangeEnd: loopPlaybackRange.end,
+        };
     setLoopPlaybackEnabled(true);
     setCurrentTime(nextTime);
 
@@ -1220,17 +1292,126 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     void video.play();
   }
 
-  function continuePlaybackAfterTemporaryLoop() {
-    if (!loopPlaybackTemporarilyEnabledRef.current) {
+  // Tab：从循环范围起点播放一遍，到终点暂停不跳回。
+  // 无论当前播放头在哪、是否在播放，都重新跳到范围起点开始单次播放。
+  function playLoopRangeOnce() {
+    if (!videoRef.current || !loopPlaybackRange) {
+      return;
+    }
+    if (loopPlaybackRange.end - loopPlaybackRange.start <= 0.001) {
+      return;
+    }
+    const video = videoRef.current;
+    const mediaDuration = Number.isFinite(video.duration) && video.duration > 0
+      ? video.duration
+      : duration;
+    const nextTime = clampTime(loopPlaybackRange.start, mediaDuration);
+    const playbackEnd = clampTime(loopPlaybackRange.end, mediaDuration);
+    if (playbackEnd - nextTime <= 0.001) {
+      return;
+    }
+    setPreviewTime(null);
+    // restoreLoopEnabled = 进入 Tab 前的持久循环状态。
+    // P 临时持续循环期间 loopPlaybackEnabled 被临时设 true，但持久实为 false，需要识别并还原。
+    const wasTemporaryContinuous = rangePlaybackIntentRef.current?.mode === "temporary-continuous-loop";
+    const restoreLoopEnabled = wasTemporaryContinuous ? false : loopPlaybackEnabled;
+    if (wasTemporaryContinuous) {
+      // 结束 P 临时循环：把被临时打开的 loopPlaybackEnabled 关回 false。
+      setLoopPlaybackEnabled(false);
+    }
+    rangePlaybackIntentRef.current = {
+      mode: "play-range-once",
+      restoreLoopEnabled,
+      rangeStart: loopPlaybackRange.start,
+      rangeEnd: loopPlaybackRange.end,
+      playbackEnd,
+    };
+    setCurrentTime(nextTime);
+
+    const playAfterSeek = () => {
+      video.removeEventListener("seeked", playAfterSeek);
+      void video.play();
+    };
+
+    if (Math.abs(video.currentTime - nextTime) > 0.001) {
+      video.addEventListener("seeked", playAfterSeek);
+      video.currentTime = nextTime;
+      return;
+    }
+
+    void video.play();
+  }
+
+  // 空格时处理临时范围播放意图。
+  // - P 临时持续循环：退出临时循环并继续普通播放，返回 true（空格被消费）。
+  // - 单次范围播放：取消单次意图，返回 false 让 togglePlay 执行正常暂停（不误判成 P 退出）。
+  // - 无意图：返回 false，空格走普通播放/暂停。
+  function tryConsumeSpaceForRangeIntent() {
+    const intent = rangePlaybackIntentRef.current;
+    if (intent?.mode === "temporary-continuous-loop") {
+      cancelRangePlaybackIntent();
+      setPreviewTime(null);
+      if (videoRef.current?.paused) {
+        void videoRef.current.play();
+      }
+      return true;
+    }
+    if (intent?.mode === "play-range-once") {
+      rangePlaybackIntentRef.current = null;
       return false;
     }
-    loopPlaybackTemporarilyEnabledRef.current = false;
-    setPreviewTime(null);
-    setLoopPlaybackEnabled(false);
-    if (videoRef.current?.paused) {
-      void videoRef.current.play();
+    return false;
+  }
+
+  // Command/Ctrl + 左右：选择当前逻辑轨道内的相邻可导航块。
+  // 通过 applySelection 统一入口，使开启「选中块时更新循环范围」的轨道自动联动循环范围。
+  function selectAdjacentTimelineBlock(direction: "previous" | "next") {
+    const target = findAdjacentNavigableBlock(projectRef.current, selectedItem, direction);
+    if (target) {
+      applySelection(target);
     }
-    return true;
+  }
+
+  function finishOneShotRangePlayback(intent: Extract<RangePlaybackIntent, { mode: "play-range-once" }>) {
+    const video = videoRef.current;
+    rangePlaybackIntentRef.current = null;
+    if (video) {
+      video.currentTime = intent.playbackEnd;
+      video.pause();
+    }
+    setCurrentTime(intent.playbackEnd);
+    setLoopPlaybackEnabled(intent.restoreLoopEnabled);
+  }
+
+  function cancelRangePlaybackIntent() {
+    const intent = rangePlaybackIntentRef.current;
+    rangePlaybackIntentRef.current = null;
+    if (intent?.mode === "temporary-continuous-loop") {
+      setLoopPlaybackEnabled(false);
+    }
+  }
+
+  function updateLoopPlaybackEnabledFromUser(enabled: boolean) {
+    const intent = rangePlaybackIntentRef.current;
+    if (intent?.mode === "play-range-once") {
+      // 用户在单次播放期间的新选择优先，结束时不得恢复旧的循环开关值。
+      rangePlaybackIntentRef.current = { ...intent, restoreLoopEnabled: enabled };
+    } else {
+      rangePlaybackIntentRef.current = null;
+    }
+    setLoopPlaybackEnabled(enabled);
+  }
+
+  function updateLoopPlaybackRangeFromTimeline(range: { start: number; end: number } | null) {
+    cancelRangePlaybackIntent();
+    setLoopPlaybackRange(range);
+    setLoopPlaybackEnabled(Boolean(range));
+  }
+
+  function clearLoopPlaybackRange() {
+    cancelRangePlaybackIntent();
+    setLoopPlaybackRange(null);
+    setLoopPlaybackEnabled(false);
   }
 
   function updateCharacter(id: string, changes: Partial<CharacterAnnotation>, recordHistory = true) {
@@ -4315,11 +4496,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             [trackId]: !trackSnapEnabledRef.current[trackId],
           });
         }}
-        onLoopPlaybackRangeChange={(range) => {
-          setLoopPlaybackRange(range);
-          setLoopPlaybackEnabled(Boolean(range));
-        }}
-        onLoopPlaybackEnabledChange={setLoopPlaybackEnabled}
+        onLoopPlaybackRangeChange={updateLoopPlaybackRangeFromTimeline}
+        onLoopPlaybackEnabledChange={updateLoopPlaybackEnabledFromUser}
         onToggleDetached={toggleTimelineDetachedWindow}
         onSeek={seekTo}
         onPreviewFrame={setPreviewTime}
@@ -4512,11 +4690,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           onTogglePlay={togglePlay}
           onStep={(delta) => seekTo(currentTime + delta)}
           onPlaybackRateChange={setPlaybackRate}
-          onToggleLoopPlayback={() => setLoopPlaybackEnabled((current) => !current)}
-          onClearLoopPlaybackRange={() => {
-            setLoopPlaybackRange(null);
-            setLoopPlaybackEnabled(false);
-          }}
+          onToggleLoopPlayback={() => updateLoopPlaybackEnabledFromUser(!loopPlaybackEnabled)}
+          onClearLoopPlaybackRange={clearLoopPlaybackRange}
           onVideoFileChange={(event) => {
             const file = event.target.files?.[0];
             if (file) {
@@ -7378,6 +7553,32 @@ function getNormalizedTrackSnapEnabled(
 
 function clampTime(time: number, maxDuration: number) {
   return Math.max(0, Math.min(time, maxDuration));
+}
+
+// 临时范围播放意图。
+// - temporary-continuous-loop：P 在持久循环关闭时临时开启的持续循环，终点跳回起点，空格退出并继续普通播放。
+// - play-range-once：Tab 单次范围播放，到终点暂停不跳回，结束后恢复进入前的持久循环设置。
+// 持久循环（loopPlaybackEnabled）由用户主动开关，不在此 intent 内表达。
+type RangePlaybackIntent =
+  | {
+      mode: "temporary-continuous-loop";
+      rangeStart: number;
+      rangeEnd: number;
+    }
+  | {
+      mode: "play-range-once";
+      restoreLoopEnabled: boolean;
+      rangeStart: number;
+      rangeEnd: number;
+      playbackEnd: number;
+    };
+
+function doesRangePlaybackIntentMatch(
+  intent: RangePlaybackIntent,
+  range: { start: number; end: number },
+) {
+  return Math.abs(intent.rangeStart - range.start) <= 0.000001 &&
+    Math.abs(intent.rangeEnd - range.end) <= 0.000001;
 }
 
 async function buildWaveformData(videoUrl: string): Promise<WaveformData | null> {

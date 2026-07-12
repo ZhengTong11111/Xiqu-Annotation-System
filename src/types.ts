@@ -398,7 +398,14 @@ export type SelectedItem =
   | { type: "banyan-mark"; id: string }
   | { type: "waveform-track" }
   | { type: "spectrogram-track" }
-  | { type: "custom-block"; id: string; trackId: string }
+  | {
+      type: "custom-block";
+      id: string;
+      trackId: string;
+      // 展开分叉时，同一个共有块可能出现在多个派生轨道上；该字段只记录本次选择的可视 lane。
+      // 它属于运行时选择上下文，不写入项目文件，也不改变块自身的 branchScope。
+      branchLaneId?: string;
+    }
   | { type: "gongche-block"; id: string }
   | { type: "attached-point"; id: string; trackId: string; parentTrackId: string }
   | null;
@@ -422,6 +429,7 @@ export type TimelineSelectionItem =
       type: "custom-block";
       id: string;
       trackId: string;
+      branchLaneId?: string;
     }
   | {
       type: "banyan-mark";
