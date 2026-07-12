@@ -552,9 +552,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     );
   }, [localEditorSession?.id]);
 
-  function applySelection(nextSelectedItem: SelectedItem, timelineItems?: TimelineSelectionItem[]) {
+  function applySelection(
+    nextSelectedItem: SelectedItem,
+    timelineItems?: TimelineSelectionItem[],
+    options?: { syncLoopPlaybackRange?: boolean },
+  ) {
     setSelectedItem(nextSelectedItem);
-    syncLoopPlaybackRangeFromSelection(nextSelectedItem);
+    // 导入项目时只是恢复界面焦点，不能让“选中第一句”覆盖文件中保存的循环范围。
+    if (options?.syncLoopPlaybackRange !== false) {
+      syncLoopPlaybackRangeFromSelection(nextSelectedItem);
+    }
     if (timelineItems !== undefined) {
       setSelectedTimelineItems(timelineItems);
       return;
@@ -3938,7 +3945,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       setBlockContextMenu(null);
       cancelCharacterTextEdit();
       cancelCustomTextEdit();
-      applySelection(hydratedProject.subtitleLines[0] ? { type: "line", id: hydratedProject.subtitleLines[0].id } : null);
+      applySelection(
+        hydratedProject.subtitleLines[0] ? { type: "line", id: hydratedProject.subtitleLines[0].id } : null,
+        undefined,
+        { syncLoopPlaybackRange: false },
+      );
       seekTo(
         clampTime(
           normalized.uiState?.currentTime ?? hydratedProject.subtitleLines[0]?.startTime ?? 0,
