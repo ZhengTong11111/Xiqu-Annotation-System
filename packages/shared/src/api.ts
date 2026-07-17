@@ -2,8 +2,10 @@ import type {
   AnnotationDocument,
   AnnotationDocumentSummary,
   AnnotationMode,
+  AnnotationOperationRecord,
   AnnotationProjectSummary,
   AnnotationVersion,
+  AuditLogEntry,
   MediaAsset,
   PermissionGrant,
   PlatformUser,
@@ -75,6 +77,20 @@ export type CreateAnnotationVersionRequest = {
   description?: string | null;
 };
 
+export type CreateAnnotationOperationRequest = {
+  baseRevision: number;
+  localRevision?: number | null;
+  action: string;
+  payload: unknown;
+};
+
+export type ListAuditLogsOptions = {
+  projectId?: string;
+  documentId?: string;
+  actorUserId?: string;
+  limit?: number;
+};
+
 export type CreateProcessingJobRequest = {
   type: ProcessingJobType;
   inputFileIds: string[];
@@ -133,5 +149,15 @@ export type PlatformApiContract<TPayload = unknown> = {
   createProcessingJob: {
     request: CreateProcessingJobRequest;
     response: ProcessingJob;
+  };
+  listAuditLogs: {
+    response: AuditLogEntry[];
+  };
+  listAnnotationOperations: {
+    response: AnnotationOperationRecord[];
+  };
+  createAnnotationOperation: {
+    request: CreateAnnotationOperationRequest;
+    response: AnnotationOperationRecord;
   };
 };

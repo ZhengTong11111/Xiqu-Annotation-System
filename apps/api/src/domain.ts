@@ -102,6 +102,45 @@ export type ApiAnnotationVersion = {
   createdAt: string;
 };
 
+export type ApiAuditLogEntry = {
+  id: string;
+  action:
+    | "auth_login"
+    | "file_upload"
+    | "media_create"
+    | "project_create"
+    | "document_create"
+    | "document_save"
+    | "version_create"
+    | "version_restore"
+    | "job_create";
+  actorUserId: string | null;
+  projectId: string | null;
+  documentId: string | null;
+  fileId: string | null;
+  versionId: string | null;
+  jobId: string | null;
+  targetType: string | null;
+  targetId: string | null;
+  detail: unknown;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: string;
+};
+
+export type ApiAnnotationOperation = {
+  id: string;
+  documentId: string;
+  actorUserId: string;
+  baseRevision: number;
+  localRevision: number | null;
+  serverRevision: number | null;
+  action: string;
+  payload: unknown;
+  status: "accepted" | "rejected" | "superseded";
+  createdAt: string;
+};
+
 export type ApiProcessingJob = {
   id: string;
   type:

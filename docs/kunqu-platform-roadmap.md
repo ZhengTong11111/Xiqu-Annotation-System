@@ -2,9 +2,136 @@
 
 本文档记录从当前 React/TypeScript 本地标注工具，逐步升级为完整前后端、账号权限、统一文件系统、版本管理、独立/协同标注、课堂作业、学术数据库与后端分析服务平台的工程计划。
 
-当前分支：`codex/aggressive-backend-collab-save`
+当前分支：`codex/continue-backend-platform`
 
 ## 0. 执行记录
+
+### 2026-07-07：前端 pending operations 接入服务端 operation log
+
+本轮把前端 `useProjectDocumentState()` 的 pending operations 与服务端 operation log API 接起来，为后续自动保存、离线恢复、冲突提示打基础。仍属过渡设计：snapshot 仍由 `/save` 写入整份 payload，operation log 只记录摘要、不驱动 snapshot。
+
+**新增文件 `src/utils/platformOperations.ts`：**
+
+- `buildServerOperationRequest(operation, serverBaseRevision)`：把本地 `ProjectDocumentOperation` 转成 `CreateAnnotationOperationRequest`。
+  - 请求的 `baseRevision` 用「服务器当前 snapshot revision」(serverBaseRevision)，不是 `operation.baseRevision`（后者是本地记录时的 local revision，语义不同）。
+  - `action` 用 `operation.type`（如 `project.commit`）；更细的 `historyAction`（edit/import-srt 等）放 payload。
+  - **payload 刻意只放摘要**（localOperationId、localCreatedAt、type、historyAction、localBaseRevision、hasProjectBeforeAfter、hasTrackSnapBeforeAfter），不发完整 `beforeProject/afterProject`。原因：当前完整数据由 snapshot 保存，operation log 只是审计/同步地基；若每条 operation 都存整份项目，数据库会快速膨胀。
+  - `track-snap.update` 额外记 `changedTrackIds`（前后吸附开关 diff）。
+- `submitPendingOperations(client, documentId, pending, serverBaseRevision)`：顺序提交（不用 `Promise.all`，服务端要求相同 baseRevision，并发会让错误定位变乱）；共用同一 serverBaseRevision，因提交期间 snapshot 未变。
+- `describeServerSaveError(error)`：把保存错误归类为 `conflict`(409) / `offline`(navigator.onLine===false) / `error`，返回用户可见文案。
+
+**修改 `src/App.tsx` 的 `saveProjectToServer`：**
+
+- 保存流程改为：`setSyncStatus("saving")` → 先 `submitPendingOperations`（用 `pendingOperationsRef.current` 而非 state，避免漏掉 `commitCharacterTextEdit` 等同步提交的编辑）→ 再 `saveAnnotationDocument` → 成功后 `setRemoteBaseRevision` + `onDocumentSaved` + `markProjectAsSaved`。
+- 保存开始时固定 project / track snap / pending operation 快照，避免保存期间继续编辑时把新改动误标为已保存。
+- 失败时按 `describeServerSaveError` 设 `syncState`（conflict/offline/error），**不调用 `markProjectAsSaved`**，保留 pending operations 供重试。
+- 已写入服务端 operation log 但 snapshot 保存失败的 operation 会标为 `submitted`；重试保存时跳过这些 operation，避免重复写 operation rows。
+- 成功后只确认本次保存开始时覆盖的 operation ids；保存期间新增的 operation 保持 pending，界面回到 dirty。
+- 本地模式（无 editorSession）和本地 JSON 保存不受影响，不访问服务器 operation API。
+
+**修改 `src/state/projectDocumentState.ts`：**
+
+- 导出 `pendingOperationsRef`，供保存流程读取最新 pending（state 是异步的，ref 同步）。
+- `ProjectDocumentOperation.syncState` 增加 `submitted`，并新增按 operation id 标记 submitted、按 operation id 确认保存的能力。
+
+**未改：** `Timeline.tsx`、`InspectorPanel.tsx`、Gongche/Banyan/Spectrogram、Prisma schema、后端 repository/router（接口已够用）。
+
+**验证：** `npm run build` 通过（新增 `platformOperations.ts` 模块）。`npx prisma validate` 通过（未改 schema）。本地 PostgreSQL 未启动，未做 DB 冒烟——本轮只改前端保存流程，后端 operation API 上一轮已冒烟过。
+
+**本轮仍是过渡设计，后续未完成：**
+
+- 自动保存节流（目前仍手动「保存到服务器」）。
+- 离线队列恢复（离线时 pending 保留在本地，恢复在线后需手动重试保存）。
+- operation log 差分化（当前 payload 是摘要，未来若要做协同同步需细化成领域命令）。
+- 冲突对比/合并 UI（目前 409 只弹窗提示，未提供版本对比或合并工具）。
+
+### 2026-07-07：审计日志与操作日志基础设施
+
+本轮按路线图「平台后端可治理」方向，落地审计日志和标注操作日志的 schema、API、repository 和前端 client。
+
+**新增 Prisma 模型：**
+
+- `AuditLog` 表（`audit_logs`）：
+  - 枚举 `AuditAction`：`auth_login, file_upload, media_create, project_create, document_create, document_save, version_create, version_restore, job_create`。
+  - 字段：`action`, `actorUserId`, `projectId`, `documentId`, `fileId`, `versionId`, `jobId`, `targetType`, `targetId`, `detail`(Json), `ipAddress`, `userAgent`, `createdAt`。
+  - 关联对象删除时用 `SetNull`，审计记录不级联删除，保证追溯链不断。
+  - 索引：`actorUserId`, `projectId`, `documentId`, `createdAt`。
+  - 反向关系加在 User, AnnotationProject, AnnotationDocument, FileObject, AnnotationVersion, ProcessingJob。
+- `AnnotationOperation` 表（`annotation_operations`）：
+  - 枚举 `AnnotationOperationStatus`：`accepted, rejected, superseded`。
+  - 字段：`documentId`, `actorUserId`, `baseRevision`, `localRevision`, `serverRevision`, `action`, `payload`(Json), `status`, `createdAt`。
+  - 关联文档删除时 `Cascade`；关联用户为 `AnnotationOperationActor`。
+  - 索引：`[documentId, createdAt]`, `actorUserId`。
+  - 反向关系加在 User（`annotationOperations`）和 AnnotationDocument（`operations`）。
+
+**审计写入：**
+
+- `PrismaPlatformRepository.writeAuditLog()` 私有 helper：写入失败不抛异常（`catch` 并 `console.error`），避免阻断主业务流程。
+- 已接入引审计的现有方法：
+  - `login` → `auth_login`
+  - `createUploadedFile` → `file_upload`（detail: name, mimeType, size, checksum）
+  - `createMediaAsset` → `media_create`
+  - `createProject` → `project_create`
+  - `createDocument` → `document_create`（在 transaction 内，detail: title, mode, revision:1）
+  - `saveDocument` → `document_save`（在 transaction 内，detail: baseRevision, nextRevision）
+  - `createVersion` → `version_create`（在 transaction 内，detail: name, revision）
+  - `restoreVersion` → `version_restore`（detail: restoredVersionId, restoredRevision；内部 saveDocument 另记 document_save）
+  - `createProcessingJob` → `job_create`（detail: type, inputFileIds, documentId）
+- 所有审计的 `detail` 只存摘要字段，不存完整 payload 或文件内容。
+- ipAddress / userAgent 字段预留但本轮未接入（`prisma.auditLog.create` 未传）。
+
+**新增 API 路由：**
+
+- `GET /api/audit-logs`：查询审计日志。需 `super_admin/admin/teacher/ta` 角色。支持 query：`projectId`, `documentId`, `actorUserId`, `limit`（默认 50，最大 200）。按 `createdAt desc`。
+- `GET /api/annotation-documents/:documentId/operations`：列出标注操作日志。需文档 `view` 权限或特权角色。
+- `POST /api/annotation-documents/:documentId/operations`：创建标注操作日志。需文档 `edit` 权限或特权角色。`baseRevision` 与最新 snapshot 不一致时返 409；暂不改变文档内容（初版只落日志）。
+- 代码审查后补强运行时校验：`limit` 必须是正整数；operation 的 `baseRevision/localRevision` 必须是非负整数（`localRevision` 也可为 `null`），`action` 必须是非空字符串，避免坏 JSON 透传到 Prisma 变成 500。
+
+**新增 shared 类型：**
+
+- `AuditAction`, `AuditLogEntry`, `AnnotationOperationStatus`, `AnnotationOperationRecord`（`platform.ts`）。
+- `CreateAnnotationOperationRequest`, `ListAuditLogsOptions`（`api.ts`）。
+- 合同新增条目：`listAuditLogs`, `listAnnotationOperations`, `createAnnotationOperation`。
+
+**新增前端 client 方法：** `PlatformClient.listAuditLogs()`, `listAnnotationOperations()`, `createAnnotationOperation()`（`src/api/platformClient.ts`）。
+
+**验证：** 已运行 `npx prisma validate`（通过）、`npm run db:generate`（通过）、`npm run build`（通过）。代码审查修复后用临时 API 端口验证坏 `limit` / 坏 `localRevision` 均返回 `400 bad_request`，过期 `baseRevision` 返回 `409 conflict`。
+
+### 2026-07-07：后端平台继续完善前状态校准
+
+本次在继续后端平台工作前，重新对照 `AGENTS.md`、当前 Prisma schema、Fastify API、平台前端和状态架构文档，修正路线图中的早期描述。此前文档中“没有后端服务、没有账号系统、没有数据库、没有统一文件系统”等表述属于早期规划阶段的历史状态，不应再作为当前事实使用。
+
+当前真实基础：
+
+- 已有 Fastify API、Prisma 7、PostgreSQL schema 与本地对象存储。
+- 已有账号登录、角色、session token、密码哈希和开发 seed 数据。
+- 已有文件上传、文件元数据、sha256 checksum、本地 storage key，以及受 token 保护的文件读取接口。
+- 视频文件读取支持 HTTP Range / `206 Partial Content`，可支撑浏览器 `<video>` 时间轴跳转。
+- 已有媒体资产、项目、标注文档、快照、版本、权限授权记录、processing job 占位表。
+- 已有项目库平台 UI：登录、本地工具入口、媒体上传、创建项目/文档、导入现有 JSON、打开服务端文档、保存服务器快照、创建/恢复版本。
+- 已有 `useProjectDocumentState()` 的本地 revision、operation log、pending operations 和 sync status，适合作为后续自动保存、远端同步、协作的前端边界。
+
+当前仍未闭环的关键问题：
+
+- 权限仍主要是粗粒度 `view/edit/manage` 判断；尚未按时间范围、轨道范围对保存内容做服务端差异校验。
+- 缺少审计日志表与统一写入机制；创建项目、保存快照、恢复版本、权限变更等关键行为还不能完整追溯。
+- 服务端保存仍以整份 snapshot 为主；operation log 尚未落到数据库，前端 pending operations 也未真正同步到后端。
+- 自动保存尚未接入；前端仍主要依赖手动“保存到服务器”。
+- 版本能创建/恢复，但还没有 diff / 对比视图，也没有恢复审计记录。
+- 课程、作业、提交、进度管理、学生独立副本、助教审核尚未实现。
+- `ConfirmedRange` 已在 shared 类型中出现，但 Prisma/API/前端锁定显示与保存校验尚未实现。
+- Processing job 目前只能创建 queued 占位任务；缺少列表、详情、状态更新、worker/mock worker 和输出文件绑定。
+- 实时协同、presence、WebSocket、冲突解决仍未实现。
+
+建议本分支优先推进“平台后端可治理”的地基，而不是直接进入实时协同：
+
+1. 增加 `audit_logs` schema、shared DTO、repository helper，并给现有关键 API 写审计日志。
+2. 增加 `annotation_operations` schema/API，先保存粗粒度 operation，后续再细化为领域命令。
+3. 把前端 `pendingOperations` 和服务器保存边界对齐，为自动保存和离线恢复做准备。
+4. 给版本恢复、保存冲突、权限不足补充更清晰的前端状态提示。
+5. 再进入权限范围校验、课堂作业、确定标注、协作同步等更高层功能。
+
+本轮文档更新仅校准路线图与下一步任务，没有修改数据库 schema 或业务代码。
 
 ### 2026-06-19：阶段 1-8 真实工具链接入版
 
@@ -274,29 +401,43 @@
 
 ## 2. 当前项目基础
 
-当前仓库是一个 Vite + React + TypeScript 前端项目。
+当前仓库已经不是单纯的 Vite + React + TypeScript 前端项目，而是一个保留本地编辑器能力的全栈 monorepo 雏形。前端仍以现有标注工作台为核心，后端已经接入 Fastify、Prisma、PostgreSQL 和本地对象存储。
 
-已有能力：
+已有编辑器能力：
 
 - 多轨时间轴编辑。
 - 字符级字幕、句级字幕、动作轨、自定义轨、附属点轨。
 - 工尺谱附属轨、工尺谱导入、单字预览渲染。
 - 板眼轨、板眼解析、板眼编辑、板眼全局纵线。
 - 音频波形、人声频谱图、F0 曲线预留。
+- 《韵学骊珠》四声信息逐字标注与句级预览。
 - 循环播放、快捷键、框选、多选、复制/剪切/粘贴。
 - 可分离的视频/时间轴窗口。
 - 本地 JSON 项目保存、导入、合并。
 - `src/state/projectDocumentState.ts` 中已有本地 revision、operation log、sync state 的雏形。
 
+已有平台/后端能力：
+
+- Fastify API 与 Prisma/PostgreSQL。
+- 账号、角色、session token、密码哈希。
+- 文件上传、本地对象存储、文件元数据、checksum、受保护文件读取。
+- MP4 Range 读取，支持视频时间轴稳定 seek。
+- 媒体资产、项目、标注文档、快照、版本。
+- 服务端保存 snapshot，使用 `baseRevision` 做乐观并发冲突检查。
+- 版本创建、版本恢复。
+- Processing job 占位 API。
+- 平台 UI 支持登录、项目库、媒体上传、创建项目/文档、导入 JSON、打开服务端文档、保存到服务器、保存/恢复版本、本地工具入口。
+
 主要不足：
 
-- 没有后端服务。
-- 没有账号系统。
-- 没有数据库。
-- 没有统一文件系统。
-- 没有服务端保存和权限校验。
-- 没有真正的多用户同步。
-- 版本和操作日志仍停留在前端本地。
+- 权限系统还没有完成时间范围、轨道范围的服务端差异校验。
+- 缺少审计日志，关键行为尚不能完整追溯。
+- 版本和 snapshot 已落库，但 operation log 仍主要停留在前端本地状态层。
+- 自动保存、离线恢复、冲突处理 UI 尚未闭环。
+- 没有真正的多用户实时同步、presence 和协作冲突处理。
+- 没有课堂课程、作业分发、提交、助教进度管理。
+- 没有确定标注区间的锁定与服务端保护。
+- 后端任务系统仍是占位，尚未有 worker、状态推进、输出文件绑定。
 - 当前 `ProjectData` 是单体大对象，不适合直接作为长期服务端协同数据模型。
 
 ## 3. 总体工程策略

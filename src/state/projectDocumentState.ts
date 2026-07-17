@@ -35,7 +35,7 @@ export type ProjectDocumentOperation = {
   localRevision: number;
   baseRevision: number;
   createdAt: number;
-  syncState: "pending" | "acknowledged";
+  syncState: "pending" | "submitted" | "acknowledged";
   beforeProject?: ProjectData;
   afterProject?: ProjectData;
   beforeTrackSnapEnabled?: Record<string, boolean>;
@@ -68,6 +68,11 @@ type ProjectDocumentStateOptions = {
 
 type TrackSnapUpdateOptions = {
   recordOperation?: boolean;
+};
+
+type MarkProjectSavedOptions = {
+  acknowledgedOperationIds?: string[];
+  savedLocalRevision?: number;
 };
 
 const DEFAULT_HISTORY_LIMIT = 50;
@@ -291,29 +296,54 @@ export function useProjectDocumentState({
     syncDirtyState(projectRef.current, nextTrackSnapState);
   }
 
+  function markOperationsAsSubmitted(operationIds: string[]) {
+    if (!operationIds.length) {
+      return;
+    }
+    const operationIdSet = new Set(operationIds);
+    const markSubmitted = (operation: ProjectDocumentOperation): ProjectDocumentOperation =>
+      operationIdSet.has(operation.id) && operation.syncState === "pending"
+        ? { ...operation, syncState: "submitted" }
+        : operation;
+    operationLogRef.current = operationLogRef.current.map(markSubmitted);
+    pendingOperationsRef.current = pendingOperationsRef.current.map(markSubmitted);
+    setOperationLog(operationLogRef.current);
+    setPendingOperations(pendingOperationsRef.current);
+    syncDirtyState(projectRef.current, trackSnapEnabledRef.current);
+  }
+
   function markProjectAsSaved(
     projectToSave = projectRef.current,
     trackSnapState = trackSnapEnabledRef.current,
+    options: MarkProjectSavedOptions = {},
   ) {
     const savedAt = Date.now();
+    const acknowledgedOperationIdSet = options.acknowledgedOperationIds
+      ? new Set(options.acknowledgedOperationIds)
+      : null;
+    const shouldAcknowledge = (operation: ProjectDocumentOperation) =>
+      !acknowledgedOperationIdSet || acknowledgedOperationIdSet.has(operation.id);
     savedProjectRef.current = projectToSave;
     savedTrackSnapEnabledRef.current = trackSnapState;
-    savedRevisionRef.current = localRevisionRef.current;
-    pendingOperationsRef.current = [];
+    savedRevisionRef.current = options.savedLocalRevision ?? localRevisionRef.current;
+    pendingOperationsRef.current = pendingOperationsRef.current.filter((operation) => !shouldAcknowledge(operation));
     operationLogRef.current = operationLogRef.current.map((operation) =>
-      operation.syncState === "pending"
+      shouldAcknowledge(operation) && operation.syncState !== "acknowledged"
         ? { ...operation, syncState: "acknowledged" }
         : operation,
     );
     setOperationLog(operationLogRef.current);
-    setPendingOperations([]);
-    setHasUnsavedChanges(false);
+    setPendingOperations(pendingOperationsRef.current);
+    const nextHasUnsavedChanges = computeHasUnsavedChanges(projectRef.current, trackSnapEnabledRef.current);
+    setHasUnsavedChanges(nextHasUnsavedChanges);
+    // 服务器保存可能跨过多个 await。若保存期间用户继续编辑，新 operation 不应被误清空；
+    // 此时 savedProjectRef 指向已保存的快照，当前 projectRef 仍然更“新”，状态应回到 dirty。
     setSyncState((current) => ({
       ...current,
-      status: "saved",
+      status: nextHasUnsavedChanges ? "dirty" : "saved",
       localRevision: localRevisionRef.current,
       savedRevision: savedRevisionRef.current,
-      pendingOperationCount: 0,
+      pendingOperationCount: pendingOperationsRef.current.length,
       lastSavedAt: savedAt,
       errorMessage: null,
     }));
@@ -395,12 +425,14 @@ export function useProjectDocumentState({
     hasUnsavedChanges,
     operationLog,
     pendingOperations,
+    pendingOperationsRef,
     syncState,
     transientProjectRef,
     applyProjectState,
     applyProjectWithoutHistory,
     commitProject,
     applyTrackSnapEnabledState,
+    markOperationsAsSubmitted,
     markProjectAsSaved,
     undoProject,
     redoProject,

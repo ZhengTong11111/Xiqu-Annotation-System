@@ -2,9 +2,11 @@ import { Prisma, type User, type UserRole } from "@prisma/client";
 import type {
   ApiAnnotationDocument,
   ApiAnnotationMode,
+  ApiAnnotationOperation,
   ApiAnnotationProject,
   ApiAnnotationSnapshot,
   ApiAnnotationVersion,
+  ApiAuditLogEntry,
   ApiFileObject,
   ApiMediaAsset,
   ApiPermissionGrant,
@@ -202,4 +204,41 @@ export function toProcessingJob(job: Prisma.ProcessingJobGetPayload<Record<strin
 
 export function toJsonPayload(payload: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(payload ?? {})) as Prisma.InputJsonValue;
+}
+
+// Prisma AuditLog 行到 API DTO 的映射。
+// detail 字段在 Prisma 是 JsonValue，直接转为 unknown；API 侧不做进一步解释。
+export function toAuditLogEntry(row: { id: string; action: string; actorUserId: string | null; projectId: string | null; documentId: string | null; fileId: string | null; versionId: string | null; jobId: string | null; targetType: string | null; targetId: string | null; detail: unknown; ipAddress: string | null; userAgent: string | null; createdAt: Date }): ApiAuditLogEntry {
+  return {
+    id: row.id,
+    action: row.action as ApiAuditLogEntry["action"],
+    actorUserId: row.actorUserId,
+    projectId: row.projectId,
+    documentId: row.documentId,
+    fileId: row.fileId,
+    versionId: row.versionId,
+    jobId: row.jobId,
+    targetType: row.targetType,
+    targetId: row.targetId,
+    detail: row.detail,
+    ipAddress: row.ipAddress,
+    userAgent: row.userAgent,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+// Prisma AnnotationOperation 行到 API DTO 的映射。
+export function toAnnotationOperation(row: { id: string; documentId: string; actorUserId: string; baseRevision: number; localRevision: number | null; serverRevision: number | null; action: string; payload: unknown; status: string; createdAt: Date }): ApiAnnotationOperation {
+  return {
+    id: row.id,
+    documentId: row.documentId,
+    actorUserId: row.actorUserId,
+    baseRevision: row.baseRevision,
+    localRevision: row.localRevision,
+    serverRevision: row.serverRevision,
+    action: row.action,
+    payload: row.payload,
+    status: row.status as ApiAnnotationOperation["status"],
+    createdAt: row.createdAt.toISOString(),
+  };
 }

@@ -25,6 +25,7 @@ Main currently contains all major recent feature lines that matter for context:
 - Banyan beat/eye parsing, track display, editing, and global vertical guide rendering
 - platform login/home UI, local editor entry, media upload, project/document management, JSON import, server save, and version management
 - Fastify API backed by Prisma 7 and PostgreSQL, with local object storage under `data/`
+- backend audit logs and annotation operation logs for the first platform-governance layer
 - project document state architecture (`src/state/projectDocumentState.ts`)
 - recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
 
@@ -40,7 +41,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/PlatformHome.tsx`
   - platform project/document management UI
 - `src/api/platformClient.ts`
-  - browser-side API client for platform backend calls
+  - browser-side API client for platform backend calls, including audit log and annotation operation APIs
 - `src/state/projectDocumentState.ts`
   - authoritative local document/history/sync-state hook
   - owns undo/redo stacks, pending operations, revision counters, dirty/saved status
@@ -88,7 +89,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `packages/document-model/src/`
   - document snapshot/version and permission-scope helpers for future collaboration/server workflows
 - `prisma/schema.prisma`
-  - PostgreSQL schema for users, sessions, files, media assets, projects, documents, snapshots, versions, grants, and processing jobs
+  - PostgreSQL schema for users, sessions, files, media assets, projects, documents, snapshots, versions, grants, processing jobs, audit logs, and annotation operations
 - `docs/`
   - roadmap, architecture notes, and curated screenshots; keep this updated for long-running platform/backend work
 - `src/types.ts`
@@ -312,6 +313,8 @@ Current backend capabilities:
 - media assets, annotation projects, annotation documents
 - document snapshot save with `baseRevision` conflict checking
 - annotation version creation/list/restore
+- audit-log table and API for key platform events such as login, upload, project/document creation, document save, version create/restore, and processing job creation
+- annotation operation-log table and API for recording client-submitted edit operations before future autosave/collaboration work
 - placeholder processing-job API for future pitch, spectrogram, Gongche render, pose, transcode, and export services
 
 Current platform UI capabilities:
@@ -327,7 +330,10 @@ Current platform UI capabilities:
 Important backend caveats:
 - real-time collaborative editing is not implemented yet
 - permission grants exist in schema and repository concepts, but fine-grained classroom workflows are still incomplete
-- the API is currently for local/dev use; production deployment hardening, migrations, auditing, rate limits, and secure file serving are future work
+- annotation operations currently only record operation metadata/payload and do not mutate document snapshots; full document snapshots are still written by `/api/annotation-documents/:documentId/save`
+- audit logs intentionally store summary `detail` objects, not full annotation payloads or uploaded file contents
+- API route handlers should perform runtime validation before Prisma writes; invalid revision/action/limit inputs should return `400`, stale document revisions should return `409`
+- the API is currently for local/dev use; production deployment hardening, migrations, rate limits, and secure file serving are future work
 - platform client currently targets `http://localhost:4317/api` in `src/platform/PlatformWorkspace.tsx`
 - if backend contracts change, update `packages/shared`, API repository/routes, `src/api/platformClient.ts`, and `docs/kunqu-platform-roadmap.md` together
 
@@ -576,8 +582,16 @@ Current docs:
   - update it when changing API behavior, Prisma schema, platform UI workflows, storage, auth, permissions, document save/version semantics, or phase status
 - `docs/state-architecture.md`
   - state-management and document-state notes; update it when changing `useProjectDocumentState()` or history/sync semantics
+- `docs/development-log.md`
+  - committed cross-agent development log for important completed changes, validation, and residual risks
+  - use it for what actually changed; keep `docs/kunqu-platform-roadmap.md` focused on architecture direction and phase planning
 - `docs/screenshots/`
   - curated screenshots for README/docs; avoid dumping transient screenshots here
+- `CLAUDE_WORK.md`
+  - local-only handoff/task file for Claude Code or other local agents
+  - intentionally ignored by git; never stage or commit it
+  - keep only the current task, not historical logs
+  - rewrite it after reviews when the next local agent needs a clearer task boundary
 
 Documentation rules:
 - record what changed, why, validation performed, and any divergence from the roadmap
@@ -586,6 +600,7 @@ Documentation rules:
 - do not commit generated runtime data from `data/`, local database files, or uploaded media binaries
 - if a backend change requires manual DB setup, note the required `DATABASE_URL`, `db:generate`, `db:push`/migration, and seed expectations
 - if UI behavior changes substantially, update docs or README screenshots only with curated images that are safe to keep in the repo
+- when maintaining `CLAUDE_WORK.md`, be explicit about uncommitted changes, non-goals, files to read, validation order, and review expectations
 
 ## Media Pipeline
 Current media behavior:
@@ -673,6 +688,8 @@ Before finishing substantial work, manually sanity-check the relevant subset:
 - platform login/home/local-editor entry when touching platform UI
 - file upload + MP4 Range seeking when touching backend media/file serving
 - server document save/version create/restore when touching backend document APIs
+- audit log list and annotation operation create/list when touching platform governance or sync APIs
+- bad platform API inputs return `400`, stale document revisions return `409`, and normal edit/save paths do not regress to `500`
 - `docs/kunqu-platform-roadmap.md` update when backend/platform/database behavior changes
 
 Always run:
