@@ -405,6 +405,9 @@ type EditorWorkbenchProps = {
 
 function EditorWorkbench({ editorSession, localEditorSession, platformNavigation }: EditorWorkbenchProps) {
   const initialProject = editorSession?.initialProject ?? localEditorSession?.initialProject ?? mockProject;
+  const isReadOnly = Boolean(
+    editorSession && !editorSession.effectivePermission.canEdit,
+  );
   const {
     project,
     projectRef,
@@ -429,6 +432,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     initialTrackSnapEnabled: getDefaultTrackSnapEnabled(initialProject),
     areProjectsEqual: projectsEqual,
     areTrackSnapStatesEqual: trackSnapStatesEqual,
+    readOnly: isReadOnly,
   });
   const [remoteBaseRevision, setRemoteBaseRevision] = useState(editorSession?.baseRevision ?? 0);
   const [currentTime, setCurrentTime] = useState(12.4);
@@ -4311,14 +4315,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     markProjectAsSaved(projectToSave, trackSnapEnabledRef.current);
   }
 
-  async function saveProjectToServer() {
+  async function saveProjectToServer(): Promise<boolean> {
     if (!editorSession) {
       window.alert("当前不是服务器文档。请从平台主页打开一个标注文档后再保存到服务器。");
-      return;
+      return false;
+    }
+    // 整文档只读：无 edit 权限时不发起保存请求。
+    if (!editorSession.effectivePermission.canEdit) {
+      window.alert("当前文档为只读状态，你只能查看和导航，不能保存到服务器。");
+      return false;
     }
     if (serverSaveInFlightRef.current) {
       window.alert("正在保存到服务器，请等待本次保存完成。");
-      return;
+      return false;
     }
     if (editingCharacterId) {
       commitCharacterTextEdit(editingCharacterId);
@@ -4370,16 +4379,25 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         acknowledgedOperationIds: coveredOperationIds,
         savedLocalRevision,
       });
+      return true;
     } catch (error) {
       if (submittedOperationIds.length > 0) {
         markOperationsAsSubmitted(submittedOperationIds);
       }
       // 失败时不调用 markProjectAsSaved，保留 pending operations 供重试。
       // 已写入服务端 operation log 的条目标为 submitted，重试保存时会跳过，避免重复写 operation rows。
+      // 服务端 permission_scope_violation 返回 403 with code，提前拦截并显示越权信息。
+      const mayBe403 = error as Error & { status?: number; code?: string; message?: string };
+      if (mayBe403.status === 403 && mayBe403.code === "permission_scope_violation") {
+        setSyncStatus("error", { errorMessage: mayBe403.message ?? "本次修改超出可编辑的轨道或时间范围。" });
+        window.alert(mayBe403.message ?? "本次修改超出可编辑的轨道或时间范围。");
+        return false;
+      }
       const classified = describeServerSaveError(error);
       setSyncStatus(classified.status, { errorMessage: classified.message });
       console.error("保存到服务器失败:", error);
       window.alert(classified.message);
+      return false;
     } finally {
       serverSaveInFlightRef.current = false;
     }
@@ -4390,11 +4408,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       window.alert("当前不是服务器文档。请从平台主页打开一个标注文档后再保存版本。");
       return;
     }
+    if (!editorSession.effectivePermission.canEdit) {
+      window.alert("当前文档为只读状态，不能创建服务器版本。");
+      return;
+    }
     const name = window.prompt("请输入版本名称：", `版本 ${new Date().toLocaleString("zh-CN")}`);
     if (!name) {
       return;
     }
-    await saveProjectToServer();
+    if (!await saveProjectToServer()) {
+      return;
+    }
     try {
       await editorSession.client.createAnnotationVersion<ProjectData>(editorSession.documentId, {
         name,
@@ -4735,6 +4759,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           localRevision={syncState.localRevision}
           savedRevision={syncState.savedRevision}
           pendingOperationCount={pendingOperations.length}
+          accessLabel={isReadOnly ? "只读" : editorSession ? "可编辑" : undefined}
           videoFileInputRef={videoFileInputRef}
           srtFileInputRef={srtFileInputRef}
           projectFileInputRef={projectFileInputRef}
@@ -4776,10 +4801,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           onSaveProject={() => {
             void saveProjectFile();
           }}
-          onSaveProjectToServer={editorSession ? () => {
+          onSaveProjectToServer={editorSession?.effectivePermission.canEdit ? () => {
             void saveProjectToServer();
           } : undefined}
-          onCreateServerVersion={editorSession ? () => {
+          onCreateServerVersion={editorSession?.effectivePermission.canEdit ? () => {
             void createServerVersion();
           } : undefined}
           onExportTrack={handleExport}

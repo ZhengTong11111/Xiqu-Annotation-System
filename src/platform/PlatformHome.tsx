@@ -1,4 +1,4 @@
-import type { AnnotationProjectSummary } from "../../packages/shared/src/index";
+import type { AnnotationProjectSummary } from "@xiqu/shared";
 
 type PlatformHomeProps = {
   projects: AnnotationProjectSummary[];

@@ -13,6 +13,57 @@
 - 不写私有绝对路径、访问 token、生产密码或大段样例数据。
 - 后端/数据库/API/平台 UI 的重要变化必须记录验证命令和剩余风险。
 
+## 2026-07-27
+
+### Codex 修复 DeepSeek 阶段 9 权限实现
+
+在上一条阻断审查之后，Codex 完成了权限实现的修复、清理和验证：
+
+- 将 `packages/shared`、`packages/document-model` 改为可运行的 workspace 包，API 改为直接使用 `@xiqu/document-model`；删除 API 侧复制权限实现和源码目录误生成的 JavaScript。
+- 修复 grant 用户判定优先级、动作隐含关系、过期授权、项目级授权、owner/admin 语义以及 teacher/TA 全局越权。
+- 重写 snapshot mutation 分析，覆盖视频、点时间、真实动作/工尺父轨、递归分叉共有块、附属点、轨道结构和未知字段。
+- grant CRUD 增加运行时校验、真实轨道校验、scope 清空语义和 manage 防提权；越权保存使用标准 `HttpError` 返回结构化 403。
+- 前端权限加载改为 fail-closed，document state 增加整文档只读写保护；保存和版本按钮按有效权限显示。
+- 额外修复空 body POST 携带 JSON content type、Fastify 4xx 被包装成 500 的既有错误。
+
+验证：
+
+- `npm run test:permissions`：8 项通过。
+- `npm run build`：Prisma、shared、document-model、web、API 全部通过。
+- `npm run db:push`：本地 PostgreSQL 16 schema 同步通过。
+- API 冒烟通过：admin/TA/student 登录、项目与文档可见性、只读读取、scoped edit 范围内保存、范围外 403、非法 action/轨道 400、受限用户防提权 403、edit 创建版本、无 manage 恢复版本 403。
+
+遗留项：
+
+- grant 管理 UI 和 scoped-edit 时间/轨道可视提示尚未实现。
+- 本轮 operation log 仍只记录摘要，不驱动 snapshot；实时协作仍属后续阶段。
+
+### DeepSeek 阶段 9 权限范围实现审查：阻断提交
+
+DeepSeek 在 `codex/backend-permission-scopes` 分支实现了 permission grant API、有效权限摘要、snapshot mutation 范围校验和前端最小接入。Codex 审查后确认该版本可以通过 TypeScript 构建与 Prisma schema 校验，但权限安全和交付完整性仍存在阻断问题，因此本轮没有提交，也没有启动后端供试用。
+
+主要阻断项：
+
+- API 使用 `apps/api/src/permissionsClient.ts` 复制了一套权限实现，没有复用 `packages/document-model/src/permissions.ts`；两套逻辑已经存在差异，后者当前基本未进入运行路径。
+- 越权保存抛出普通对象，而全局错误处理器只识别 `HttpError`，实际会返回 `500 internal_error`，不是约定的 `403 permission_scope_violation`。
+- grant 创建/修改接口缺少 action、scope、时间、轨道和过期时间的运行时校验，也没有防止受限 `manage` 用户创建超出自身权限的 grant。
+- snapshot mutation 提取遗漏或错误映射了视频、板眼/附属点的单点时间、动作块真实轨道、工尺谱父轨和递归分叉归属，存在范围校验绕过和误拒绝。
+- 旧的 `canDocumentGrant()`、项目查询和 operation API 仍忽略 grant 过期、动作隐含关系及 owner 语义；版本恢复仍以 `edit` 为入口，与权限文档要求的 `manage` 不一致。
+- 前端权限查询失败时回退到 `null` 并继续进入编辑器；当前只拦截服务器保存，没有形成完整只读状态。保存错误还检查了不存在的 `statusCode` 字段，而 `PlatformApiError` 暴露的是 `status`。
+- 源码目录出现未跟踪的编译产物 `.js`；另有新增 grant client 方法和大部分 document-model 权限 helper 当前没有实际调用。
+- `docs/kunqu-platform-roadmap.md` 未更新，本轮也没有增加权限用例或 API 冒烟验证。
+
+验证：
+
+- `npm run build`：通过。
+- `npx prisma validate`：通过。
+- 纯函数回归验证确认：
+  - 当前 `canPerformActionWithGrants()` 会把其他用户的某些 grant 错判给当前用户。
+  - 将板眼时间从授权范围内移动到范围外时，mutation 没有时间范围，校验错误放行。
+  - 修改项目视频字段不会生成 mutation。
+
+后续应先修复并补齐权限核心与 API 冒烟矩阵，再由 Codex 复审；在此之前不要提交或启动该后端版本。
+
 ## 2026-07-07
 
 ### Claude Code 任务交接与实际完成内容

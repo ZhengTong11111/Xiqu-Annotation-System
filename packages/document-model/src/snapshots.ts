@@ -1,7 +1,7 @@
 import type {
   AnnotationDocumentSnapshot,
   AnnotationVersion,
-} from "../../shared/src/index.js";
+} from "@xiqu/shared";
 
 export type CreateSnapshotInput<TPayload> = {
   documentId: string;

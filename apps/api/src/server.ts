@@ -49,6 +49,17 @@ app.setErrorHandler((error, _request, response) => {
     });
     return;
   }
+  // Fastify 自身会为 JSON 解析、multipart 限制等客户端错误提供 4xx。
+  // 这些错误不能落入 500，否则前端无法区分请求格式问题与服务端故障。
+  if (hasClientErrorStatus(error)) {
+    void response.status(error.statusCode).send({
+      error: {
+        code: "bad_request",
+        message: error.statusCode === 413 ? "请求内容过大。" : "请求格式不正确。",
+      },
+    });
+    return;
+  }
   app.log.error(error);
   void response.status(500).send({
     error: {
@@ -95,4 +106,16 @@ process.on("SIGTERM", () => {
 
 function isStreamLike(payload: object) {
   return "pipe" in payload && typeof payload.pipe === "function";
+}
+
+function hasClientErrorStatus(
+  error: unknown,
+): error is { statusCode: number } {
+  if (!error || typeof error !== "object" || !("statusCode" in error)) {
+    return false;
+  }
+  const statusCode = error.statusCode;
+  return typeof statusCode === "number" &&
+    statusCode >= 400 &&
+    statusCode < 500;
 }

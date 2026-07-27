@@ -51,6 +51,10 @@ enum AuditAction {
   version_create
   version_restore
   job_create
+  permission_grant_create
+  permission_grant_update
+  permission_grant_revoke
+  permission_denied
 }
 
 // 标注操作日志：记录客户端提交的每次编辑 operation。

@@ -5,6 +5,22 @@ import {
   PrismaClient,
   ProcessingJobType as DbProcessingJobType,
 } from "@prisma/client";
+import {
+  authorizeProjectMutations,
+  collectPersistedPermissionTrackIds,
+  collectProjectMutations,
+  doesGrantAuthorizeAction,
+  isGrantActive,
+  isScopeAuthorized,
+  resolveEffectiveDocumentPermission,
+} from "@xiqu/document-model";
+import type {
+  CreateGrantRequest,
+  PermissionAction,
+  PermissionGrant,
+  PermissionScope,
+  UpdateGrantRequest,
+} from "@xiqu/shared";
 import { hashToken, verifyPassword } from "./auth.js";
 import type {
   ApiAnnotationMode,
@@ -15,7 +31,14 @@ import type {
   ApiRole,
   ApiUser,
 } from "./domain.js";
-import { conflict, forbidden, notFound, unauthorized } from "./errors.js";
+import {
+  badRequest,
+  conflict,
+  forbidden,
+  notFound,
+  permissionScopeViolation,
+  unauthorized,
+} from "./errors.js";
 import {
   createGrantData,
   documentInclude,
@@ -25,17 +48,24 @@ import {
   toDocumentSummary,
   toFileObject,
   toGrantCreateData,
+  toGrant,
   toJsonPayload,
   toMediaAsset,
   toProcessingJob,
   toProjectSummary,
   toPublicUser,
   toVersion,
-  type GrantRecord,
+  type DocumentWithDetails,
 } from "./repositoryMappers.js";
 import { ensurePlatformSeedData } from "./repositorySeed.js";
 
-const privilegedRoles: ApiRole[] = ["super_admin", "admin", "teacher", "ta"];
+const globalAdminRoles: ApiRole[] = ["super_admin", "admin"];
+const contentCreatorRoles: ApiRole[] = [
+  "super_admin",
+  "admin",
+  "teacher",
+  "ta",
+];
 
 export class PrismaPlatformRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -93,7 +123,7 @@ export class PrismaPlatformRepository {
   }
 
   async listFiles(user: ApiUser) {
-    const where = this.hasAnyRole(user, privilegedRoles) ? {} : { ownerUserId: user.id };
+    const where = this.hasAnyRole(user, contentCreatorRoles) ? {} : { ownerUserId: user.id };
     const files = await this.prisma.fileObject.findMany({
       where,
       orderBy: { createdAt: "desc" },
@@ -146,7 +176,7 @@ export class PrismaPlatformRepository {
     if (!file) {
       throw notFound("文件不存在。");
     }
-    if (file.ownerUserId !== user.id && !this.hasAnyRole(user, privilegedRoles)) {
+    if (file.ownerUserId !== user.id && !this.hasAnyRole(user, globalAdminRoles)) {
       throw forbidden();
     }
     const updated = await this.prisma.fileObject.update({
@@ -164,14 +194,20 @@ export class PrismaPlatformRepository {
     if (!file) {
       throw notFound("文件不存在。");
     }
-    if (file.ownerUserId !== user.id && !this.hasAnyRole(user, privilegedRoles)) {
-      throw forbidden();
-    }
+    await this.assertFileVisible(user, fileId);
     return toFileObject(file);
   }
 
   async listMediaAssets(user: ApiUser) {
-    this.requireRole(user, privilegedRoles);
+    if (!this.hasAnyRole(user, contentCreatorRoles)) {
+      const projects = await this.listProjects(user);
+      const mediaAssetIds = [...new Set(projects.map((project) => project.mediaAssetId))];
+      const mediaAssets = await this.prisma.mediaAsset.findMany({
+        where: { id: { in: mediaAssetIds } },
+        orderBy: { updatedAt: "desc" },
+      });
+      return mediaAssets.map((mediaAsset) => toMediaAsset(mediaAsset));
+    }
     const mediaAssets = await this.prisma.mediaAsset.findMany({
       orderBy: { updatedAt: "desc" },
     });
@@ -179,7 +215,7 @@ export class PrismaPlatformRepository {
   }
 
   async createMediaAsset(user: ApiUser, input: { title: string; description?: string | null; primaryFileId?: string | null }) {
-    this.requireRole(user, privilegedRoles);
+    this.requireRole(user, contentCreatorRoles);
     if (input.primaryFileId) {
       await this.assertFileVisible(user, input.primaryFileId);
     }
@@ -199,7 +235,7 @@ export class PrismaPlatformRepository {
   }
 
   async listProjects(user: ApiUser) {
-    if (this.hasAnyRole(user, privilegedRoles)) {
+    if (this.hasAnyRole(user, globalAdminRoles)) {
       const projects = await this.prisma.annotationProject.findMany({
         include: { _count: { select: { documents: true } } },
         orderBy: { updatedAt: "desc" },
@@ -209,14 +245,28 @@ export class PrismaPlatformRepository {
     const grants = await this.prisma.permissionGrant.findMany({
       where: {
         userId: user.id,
-        actions: { has: "view" },
         projectId: { not: null },
       },
-      select: { projectId: true },
     });
-    const projectIds = Array.from(new Set(grants.map((grant) => grant.projectId).filter(Boolean))) as string[];
+    const projectIds = Array.from(new Set(
+      grants
+        .filter((grant) =>
+          isGrantActive(toGrant(grant)) &&
+          doesGrantAuthorizeAction(
+            grant.actions as PermissionAction[],
+            "view",
+          ),
+        )
+        .map((grant) => grant.projectId)
+        .filter(Boolean),
+    )) as string[];
     const projects = await this.prisma.annotationProject.findMany({
-      where: { id: { in: projectIds } },
+      where: {
+        OR: [
+          { ownerUserId: user.id },
+          { id: { in: projectIds } },
+        ],
+      },
       include: { _count: { select: { documents: true } } },
       orderBy: { updatedAt: "desc" },
     });
@@ -224,7 +274,7 @@ export class PrismaPlatformRepository {
   }
 
   async createProject(user: ApiUser, input: { title: string; mediaAssetId: string }) {
-    this.requireRole(user, privilegedRoles);
+    this.requireRole(user, contentCreatorRoles);
     const mediaAsset = await this.prisma.mediaAsset.findUnique({ where: { id: input.mediaAssetId } });
     if (!mediaAsset) {
       throw notFound("媒体资产不存在。");
@@ -252,7 +302,21 @@ export class PrismaPlatformRepository {
       where: { projectId },
       orderBy: { updatedAt: "desc" },
     });
-    return documents.map((document) => toDocumentSummary(document));
+    if (
+      this.hasAnyRole(user, globalAdminRoles) ||
+      await this.isProjectOwner(user.id, projectId)
+    ) {
+      return documents.map((document) => toDocumentSummary(document));
+    }
+    // 文档级授权不应让用户顺带看到同项目下未授权的课堂作业。
+    const visibleDocuments = [];
+    for (const document of documents) {
+      const permission = await this.getEffectiveDocumentPermission(user, document.id);
+      if (permission.canView) {
+        visibleDocuments.push(toDocumentSummary(document));
+      }
+    }
+    return visibleDocuments;
   }
 
   async createDocument(
@@ -316,15 +380,17 @@ export class PrismaPlatformRepository {
 
   async getDocument(user: ApiUser, documentId: string) {
     const document = await this.getDocumentOrThrow(documentId);
-    if (!this.canDocumentGrant(user.id, document.grants, "view") && !this.hasAnyRole(user, privilegedRoles)) {
+    const permission = await this.getEffectiveDocumentPermission(user, documentId);
+    if (!permission.canView) {
       throw forbidden();
     }
-    return expandDocument(document);
+    return this.expandDocumentForPermission(document, permission.canManage);
   }
 
   async saveDocument(user: ApiUser, documentId: string, input: { baseRevision: number; payload: unknown }) {
     const currentDocument = await this.getDocumentOrThrow(documentId);
-    if (!this.canDocumentGrant(user.id, currentDocument.grants, "edit") && !this.hasAnyRole(user, privilegedRoles)) {
+    const permission = await this.getEffectiveDocumentPermission(user, documentId);
+    if (!permission.canEdit) {
       throw forbidden();
     }
     if (!currentDocument.latestSnapshot || currentDocument.latestSnapshot.revision !== input.baseRevision) {
@@ -333,6 +399,14 @@ export class PrismaPlatformRepository {
         receivedRevision: input.baseRevision,
       });
     }
+    // 权限范围校验：对比旧/新 payload，确保 scoped edit 不越权。
+    // 管理员/owner 在 assertSavePermissionScope 内部直接通过（unrestricted editor）。
+    await this.assertSavePermissionScope(
+      user,
+      documentId,
+      currentDocument.latestSnapshot.payload,
+      input.payload,
+    );
     const nextDocument = await this.prisma.$transaction(async (transaction) => {
       const snapshot = await transaction.annotationSnapshot.create({
         data: {
@@ -366,7 +440,7 @@ export class PrismaPlatformRepository {
       where: { id: nextDocument.projectId },
       data: { updatedAt: new Date() },
     });
-    return expandDocument(nextDocument);
+    return this.expandDocumentForPermission(nextDocument, permission.canManage);
   }
 
   async listVersions(user: ApiUser, documentId: string) {
@@ -381,7 +455,8 @@ export class PrismaPlatformRepository {
 
   async createVersion(user: ApiUser, documentId: string, input: { name: string; description?: string | null }) {
     const document = await this.getDocumentOrThrow(documentId);
-    if (!this.canDocumentGrant(user.id, document.grants, "edit") && !this.hasAnyRole(user, privilegedRoles)) {
+    const permission = await this.getEffectiveDocumentPermission(user, documentId);
+    if (!permission.canEdit) {
       throw forbidden();
     }
     const latestSnapshot = document.latestSnapshot;
@@ -435,7 +510,8 @@ export class PrismaPlatformRepository {
     if (!version) {
       throw notFound("版本不存在。");
     }
-    if (!this.canDocumentGrant(user.id, version.document.grants, "edit") && !this.hasAnyRole(user, privilegedRoles)) {
+    const permission = await this.getEffectiveDocumentPermission(user, version.documentId);
+    if (!permission.canManage) {
       throw forbidden();
     }
     const restoredDocument = await this.saveDocument(user, version.documentId, {
@@ -458,7 +534,7 @@ export class PrismaPlatformRepository {
     user: ApiUser,
     input: Omit<ApiProcessingJob, "id" | "status" | "outputFileIds" | "createdBy" | "createdAt" | "updatedAt" | "errorMessage">,
   ) {
-    this.requireRole(user, [...privilegedRoles, "service"]);
+    this.requireRole(user, [...contentCreatorRoles, "service"]);
     const job = await this.prisma.processingJob.create({
       data: {
         type: input.type as DbProcessingJobType,
@@ -486,7 +562,7 @@ export class PrismaPlatformRepository {
     user: ApiUser,
     options: { projectId?: string; documentId?: string; actorUserId?: string; limit?: number },
   ): Promise<ApiAuditLogEntry[]> {
-    this.requireRole(user, privilegedRoles);
+    this.requireRole(user, contentCreatorRoles);
     const limit = Math.max(1, Math.min(options.limit ?? 50, 200));
     // Prisma where 对 undefined 字段自动忽略，这里直接传可选值即可。
     const rows = await this.prisma.auditLog.findMany({
@@ -507,8 +583,8 @@ export class PrismaPlatformRepository {
     user: ApiUser,
     documentId: string,
   ): Promise<ApiAnnotationOperation[]> {
-    const document = await this.getDocumentOrThrow(documentId);
-    if (!this.canDocumentGrant(user.id, document.grants, "view") && !this.hasAnyRole(user, privilegedRoles)) {
+    const permission = await this.getEffectiveDocumentPermission(user, documentId);
+    if (!permission.canView) {
       throw forbidden();
     }
     const rows = await this.prisma.annotationOperation.findMany({
@@ -528,7 +604,8 @@ export class PrismaPlatformRepository {
     input: { baseRevision: number; localRevision?: number | null; action: string; payload: unknown },
   ): Promise<ApiAnnotationOperation> {
     const document = await this.getDocumentOrThrow(documentId);
-    if (!this.canDocumentGrant(user.id, document.grants, "edit") && !this.hasAnyRole(user, privilegedRoles)) {
+    const permission = await this.getEffectiveDocumentPermission(user, documentId);
+    if (!permission.canEdit) {
       throw forbidden();
     }
     const latestRevision = document.latestSnapshot?.revision ?? 0;
@@ -554,49 +631,391 @@ export class PrismaPlatformRepository {
     return toAnnotationOperation(row);
   }
 
+  // 列出文档的所有 grant。仅项目 owner、管理员或有效 manage 用户可查看。
+  async listDocumentGrants(user: ApiUser, documentId: string) {
+    const document = await this.getDocumentOrThrow(documentId);
+    const permission = await this.getEffectiveDocumentPermission(user, documentId);
+    if (!permission.canManage) {
+      throw forbidden();
+    }
+    const grants = await this.prisma.permissionGrant.findMany({
+      where: {
+        OR: [
+          { documentId },
+          { documentId: null, projectId: document.projectId },
+        ],
+      },
+      include: {
+        user: {
+          select: {
+            displayName: true,
+            accountName: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    return grants.map((grant) => ({
+      ...toGrant(grant),
+      displayName: grant.user.displayName,
+      accountName: grant.user.accountName,
+    }));
+  }
+
+  // 给文档新增一条 grant。仅项目 owner、管理员或有效 manage 用户可操作。
+  async createDocumentGrant(
+    user: ApiUser,
+    documentId: string,
+    input: CreateGrantRequest,
+  ) {
+    const document = await this.getDocumentOrThrow(documentId);
+    const scope = this.normalizeDocumentGrantScope(document, input.scope);
+    await this.assertGrantScopeManageable(user, documentId, scope);
+    await this.assertGrantTracksExist(document, scope);
+
+    // 确保目标用户存在。
+    const targetUser = await this.prisma.user.findUnique({ where: { id: input.userId } });
+    if (!targetUser) throw notFound("被授权用户不存在。");
+    const grant = await this.prisma.permissionGrant.create({
+      data: {
+        userId: input.userId,
+        projectId: document.projectId,
+        documentId,
+        actions: input.actions,
+        startTime: scope.timeRange?.startTime ?? null,
+        endTime: scope.timeRange?.endTime ?? null,
+        trackIds: scope.trackScope?.trackIds ?? [],
+        expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
+      },
+    });
+    await this.writeAuditLog({
+      action: "permission_grant_create",
+      actorUserId: user.id,
+      projectId: document.projectId,
+      documentId,
+      detail: { grantId: grant.id, targetUserId: input.userId, actions: input.actions },
+    });
+    return toGrant(grant);
+  }
+
+  // 修改已有 grant。仅项目 owner、管理员或有效 manage 用户可操作。
+  async updatePermissionGrant(
+    user: ApiUser,
+    grantId: string,
+    input: UpdateGrantRequest,
+  ) {
+    const grant = await this.prisma.permissionGrant.findUnique({ where: { id: grantId } });
+    if (!grant) throw notFound("授权记录不存在。");
+    const document = grant.documentId
+      ? await this.getDocumentOrThrow(grant.documentId)
+      : null;
+    if (!document) throw notFound("授权关联的文档不存在。");
+    const currentScope = toGrant(grant).scope;
+    const nextScope = this.normalizeDocumentGrantScope(document, {
+      timeRange:
+        input.scope?.timeRange === undefined
+          ? currentScope.timeRange
+          : input.scope.timeRange ?? undefined,
+      trackScope:
+        input.scope?.trackScope === undefined
+          ? currentScope.trackScope
+          : input.scope.trackScope ?? undefined,
+    });
+    // 管理者必须同时覆盖授权修改前后的范围，避免先扩大后再接管越权授权。
+    await this.assertGrantScopeManageable(user, document.id, currentScope);
+    await this.assertGrantScopeManageable(user, document.id, nextScope);
+    await this.assertGrantTracksExist(document, nextScope);
+
+    const updated = await this.prisma.permissionGrant.update({
+      where: { id: grantId },
+      data: {
+        actions: input.actions ?? undefined,
+        startTime: input.scope ? nextScope.timeRange?.startTime ?? null : undefined,
+        endTime: input.scope ? nextScope.timeRange?.endTime ?? null : undefined,
+        trackIds: input.scope ? nextScope.trackScope?.trackIds ?? [] : undefined,
+        expiresAt: input.expiresAt !== undefined ? (input.expiresAt ? new Date(input.expiresAt) : null) : undefined,
+      },
+    });
+    await this.writeAuditLog({
+      action: "permission_grant_update",
+      actorUserId: user.id,
+      projectId: document.projectId,
+      documentId: grant.documentId ?? null,
+      detail: { grantId: grant.id, updatedActions: input.actions, updatedExpiresAt: input.expiresAt },
+    });
+    return toGrant(updated);
+  }
+
+  // 撤销 grant。仅项目 owner、管理员或有效 manage 用户可操作。
+  async revokePermissionGrant(user: ApiUser, grantId: string) {
+    const grant = await this.prisma.permissionGrant.findUnique({ where: { id: grantId } });
+    if (!grant) throw notFound("授权记录不存在。");
+    if (!grant.documentId) {
+      throw badRequest("项目级授权暂不通过文档授权接口撤销。");
+    }
+    const document = await this.getDocumentOrThrow(grant.documentId);
+    await this.assertGrantScopeManageable(user, document.id, toGrant(grant).scope);
+    await this.prisma.permissionGrant.delete({ where: { id: grantId } });
+    await this.writeAuditLog({
+      action: "permission_grant_revoke",
+      actorUserId: user.id,
+      projectId: grant.projectId ?? null,
+      documentId: grant.documentId ?? null,
+      detail: { grantId: grant.id, targetUserId: grant.userId },
+    });
+  }
+
+  // 获取当前用户对文档的有效权限摘要。
+  async getEffectiveDocumentPermission(user: ApiUser, documentId: string) {
+    const document = await this.getDocumentOrThrow(documentId);
+    const isOwner = document.project.ownerUserId === user.id;
+    const isAdmin = this.hasAnyRole(user, globalAdminRoles);
+    // 项目级授权与文档级授权共同构成文档有效权限；过期过滤由权限核心统一完成。
+    const grants = isAdmin || isOwner
+      ? []
+      : await this.listRelevantPermissionGrants(user.id, documentId, document.projectId);
+    return resolveEffectiveDocumentPermission({
+      userId: user.id,
+      isOwner,
+      isAdmin,
+      grants,
+      documentId,
+      projectId: document.projectId,
+    });
+  }
+
+  // 在保存 snapshot 时进行权限范围校验。旧/新 payload 均可能是 unknown，
+  // 由 document-model 的 collectProjectMutations / authorizeProjectMutations 完成比较。
+  // 管理员和 owner 不受范围约束（在 resolveEffectiveDocumentPermission 中 complete 返回）。
+  // 普通用户若 scope 不足，返回 403，不创建 snapshot。
+  async assertSavePermissionScope(user: ApiUser, documentId: string, beforePayload: unknown, afterPayload: unknown) {
+    const effectivePermission = await this.getEffectiveDocumentPermission(user, documentId);
+    // unrestricted editor 通过，不做 scope diff。
+    if (effectivePermission.isUnrestrictedEditor) {
+      return;
+    }
+    const document = await this.getDocumentOrThrow(documentId);
+    const mutations = collectProjectMutations(beforePayload, afterPayload);
+    const result = authorizeProjectMutations(mutations, effectivePermission);
+    if (!result.allowed) {
+      const violations = result.violations.slice(0, 20);
+      const total = result.totalViolationCount;
+      // 记录越权审计摘要，不保存完整 payload。
+      await this.writeAuditLog({
+        action: "permission_denied",
+        actorUserId: user.id,
+        projectId: document.projectId,
+        documentId,
+        detail: {
+          mutationCount: mutations.length,
+          violationCount: total,
+          sampleViolations: violations.map((v) => ({ kind: v.kind, trackIds: v.trackIds, timeRange: v.timeRange })),
+        },
+      });
+      throw permissionScopeViolation(
+        "本次修改超出可编辑的轨道或时间范围。",
+        {
+        violations,
+        totalViolationCount: total,
+        },
+      );
+    }
+  }
+
   private async assertFileVisible(user: ApiUser, fileId: string) {
     const file = await this.prisma.fileObject.findUnique({ where: { id: fileId } });
     if (!file) {
       throw notFound("文件不存在。");
     }
-    if (file.ownerUserId !== user.id && !this.hasAnyRole(user, privilegedRoles)) {
-      throw forbidden();
+    if (file.ownerUserId === user.id || this.hasAnyRole(user, globalAdminRoles)) {
+      return;
     }
+    const projects = await this.prisma.annotationProject.findMany({
+      where: {
+        mediaAsset: {
+          primaryFileId: fileId,
+        },
+      },
+      select: {
+        id: true,
+        ownerUserId: true,
+      },
+    });
+    if (projects.some((project) => project.ownerUserId === user.id)) {
+      return;
+    }
+    const projectIds = projects.map((project) => project.id);
+    if (projectIds.length) {
+      const grants = await this.prisma.permissionGrant.findMany({
+        where: {
+          userId: user.id,
+          projectId: { in: projectIds },
+        },
+      });
+      if (grants.some((grant) =>
+        isGrantActive(toGrant(grant)) &&
+        doesGrantAuthorizeAction(
+          grant.actions as PermissionAction[],
+          "view",
+        ),
+      )) {
+        return;
+      }
+    }
+    throw forbidden();
   }
 
   private async assertProjectVisible(user: ApiUser, projectId: string) {
-    if (this.hasAnyRole(user, privilegedRoles)) {
+    const project = await this.prisma.annotationProject.findUnique({
+      where: { id: projectId },
+      select: { ownerUserId: true },
+    });
+    if (!project) {
+      throw notFound("项目不存在。");
+    }
+    if (
+      project.ownerUserId === user.id ||
+      this.hasAnyRole(user, globalAdminRoles)
+    ) {
       return;
     }
-    const grant = await this.prisma.permissionGrant.findFirst({
+    const grants = await this.prisma.permissionGrant.findMany({
       where: {
         userId: user.id,
         projectId,
-        actions: { has: "view" },
       },
     });
-    if (!grant) {
+    if (!grants.some((grant) =>
+      isGrantActive(toGrant(grant)) &&
+      doesGrantAuthorizeAction(
+        grant.actions as PermissionAction[],
+        "view",
+      ),
+    )) {
       throw forbidden();
     }
   }
 
   private async assertProjectManageable(user: ApiUser, projectId: string) {
-    if (this.hasAnyRole(user, privilegedRoles)) {
-      const project = await this.prisma.annotationProject.findUnique({ where: { id: projectId } });
-      if (!project) {
-        throw notFound("项目不存在。");
-      }
+    const project = await this.prisma.annotationProject.findUnique({
+      where: { id: projectId },
+      select: { ownerUserId: true },
+    });
+    if (!project) {
+      throw notFound("项目不存在。");
+    }
+    if (
+      project.ownerUserId === user.id ||
+      this.hasAnyRole(user, globalAdminRoles)
+    ) {
       return;
     }
-    const grant = await this.prisma.permissionGrant.findFirst({
+    const grants = await this.prisma.permissionGrant.findMany({
       where: {
         userId: user.id,
         projectId,
-        actions: { has: "manage" },
+        documentId: null,
       },
     });
-    if (!grant) {
+    if (!grants.some((grant) => {
+      const mappedGrant = toGrant(grant);
+      return isGrantActive(mappedGrant) &&
+        doesGrantAuthorizeAction(mappedGrant.actions, "manage") &&
+        !mappedGrant.scope.timeRange &&
+        !mappedGrant.scope.trackScope?.trackIds.length;
+    })) {
       throw forbidden();
+    }
+  }
+
+  private async isProjectOwner(userId: string, projectId: string) {
+    return Boolean(await this.prisma.annotationProject.findFirst({
+      where: {
+        id: projectId,
+        ownerUserId: userId,
+      },
+      select: { id: true },
+    }));
+  }
+
+  private async listRelevantPermissionGrants(
+    userId: string,
+    documentId: string,
+    projectId: string,
+  ): Promise<PermissionGrant[]> {
+    const grants = await this.prisma.permissionGrant.findMany({
+      where: {
+        userId,
+        OR: [
+          { documentId },
+          { documentId: null, projectId },
+        ],
+      },
+    });
+    return grants.map((grant) => toGrant(grant));
+  }
+
+  private normalizeDocumentGrantScope(
+    document: DocumentWithDetails,
+    scope: PermissionScope | undefined,
+  ): PermissionScope {
+    if (
+      (scope?.projectId && scope.projectId !== document.projectId) ||
+      (scope?.documentId && scope.documentId !== document.id)
+    ) {
+      throw badRequest("授权 scope 不能指向当前文档之外的项目或文档。");
+    }
+    return {
+      projectId: document.projectId,
+      documentId: document.id,
+      timeRange: scope?.timeRange,
+      trackScope: scope?.trackScope?.trackIds.length
+        ? { trackIds: [...new Set(scope.trackScope.trackIds)] }
+        : undefined,
+    };
+  }
+
+  private async assertGrantTracksExist(
+    document: DocumentWithDetails,
+    scope: PermissionScope,
+  ) {
+    const requestedTrackIds = scope.trackScope?.trackIds ?? [];
+    if (!requestedTrackIds.length) {
+      return;
+    }
+    const knownTrackIds = collectPersistedPermissionTrackIds(
+      document.latestSnapshot?.payload,
+    );
+    const missingTrackIds = requestedTrackIds.filter(
+      (trackId) => !knownTrackIds.has(trackId),
+    );
+    if (missingTrackIds.length) {
+      throw badRequest("授权范围包含不存在的轨道。", { missingTrackIds });
+    }
+  }
+
+  private async assertGrantScopeManageable(
+    user: ApiUser,
+    documentId: string,
+    scope: PermissionScope,
+  ) {
+    const document = await this.getDocumentOrThrow(documentId);
+    if (
+      document.project.ownerUserId === user.id ||
+      this.hasAnyRole(user, globalAdminRoles)
+    ) {
+      return;
+    }
+    const permission = await this.getEffectiveDocumentPermission(user, documentId);
+    if (
+      !permission.canManage ||
+      !isScopeAuthorized(
+        permission.manageScopes,
+        scope.trackScope?.trackIds ?? [],
+        scope.timeRange,
+      )
+    ) {
+      throw forbidden("不能创建、修改或撤销超出自身管理范围的授权。");
     }
   }
 
@@ -610,10 +1029,6 @@ export class PrismaPlatformRepository {
     return user.roles.some((role) => allowedRoles.includes(role));
   }
 
-  private canDocumentGrant(userId: string, grants: GrantRecord[], action: ApiPermissionGrant["actions"][number]) {
-    return grants.some((grant) => grant.userId === userId && grant.actions.includes(action));
-  }
-
   private async getDocumentOrThrow(documentId: string) {
     const document = await this.prisma.annotationDocument.findUnique({
       where: { id: documentId },
@@ -623,6 +1038,15 @@ export class PrismaPlatformRepository {
       throw notFound("标注文档不存在。");
     }
     return document;
+  }
+
+  private expandDocumentForPermission(
+    document: DocumentWithDetails,
+    canManage: boolean,
+  ) {
+    const expanded = expandDocument(document);
+    // grant 包含其他账号的身份和授权范围；非 manager 不应通过普通文档读取旁路获得。
+    return canManage ? expanded : { ...expanded, grants: [] };
   }
 
   private getAuthTokenTtlMs() {

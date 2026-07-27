@@ -1,5 +1,5 @@
 import { PlatformApiError, type PlatformClient } from "../api/platformClient";
-import type { CreateAnnotationOperationRequest } from "../../packages/shared/src/index";
+import type { CreateAnnotationOperationRequest } from "@xiqu/shared";
 import type { ProjectDocumentOperation } from "../state/projectDocumentState";
 
 // 服务端 operation log 的 payload 摘要形状。

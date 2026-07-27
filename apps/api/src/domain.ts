@@ -113,7 +113,11 @@ export type ApiAuditLogEntry = {
     | "document_save"
     | "version_create"
     | "version_restore"
-    | "job_create";
+    | "job_create"
+    | "permission_grant_create"
+    | "permission_grant_update"
+    | "permission_grant_revoke"
+    | "permission_denied";
   actorUserId: string | null;
   projectId: string | null;
   documentId: string | null;

@@ -35,6 +35,88 @@ export type PermissionScope = {
   trackScope?: TrackScope;
 };
 
+// PATCH 请求需要能够显式清空时间或轨道范围；undefined 表示“不修改”，null 表示“清空”。
+export type MutablePermissionScope = {
+  timeRange?: TimeRangeScope | null;
+  trackScope?: TrackScope | null;
+};
+
+// 合并后可用于前端展示的紧凑范围。
+export type MergedScope = {
+  trackIds: string[];
+  timeRanges: TimeRangeScope[];
+};
+
+// 有效权限摘要：前端不需要重新猜角色和 grant，后端仍以原始 user/grants 为最终可信输入。
+export type EffectiveDocumentPermission = {
+  canView: boolean;
+  canEdit: boolean;
+  canManage: boolean;
+  isUnrestrictedViewer: boolean;
+  isUnrestrictedEditor: boolean;
+  isUnrestrictedManager: boolean;
+  source: "admin" | "owner" | "grant" | "none";
+  editScopes: MergedScope[];
+  viewScopes: MergedScope[];
+  manageScopes: MergedScope[];
+};
+
+// 保存差异描述：拆分整份 snapshot 的变动为可独立校验的 mutation。
+export type ProjectMutation = {
+  kind: string;
+  action: "create" | "update" | "delete" | "move" | "structure";
+  trackIds: string[];
+  timeRange?: {
+    startTime: number;
+    endTime: number;
+  };
+  requiresManage: boolean;
+  entityId?: string;
+  summary?: string;
+};
+
+// 保存越权的错误响应中返回的违规摘要。
+export type MutationScopeViolation = {
+  kind: string;
+  trackIds: string[];
+  timeRange?: {
+    startTime: number;
+    endTime: number;
+  };
+};
+
+export type PermissionScopeViolationBody = {
+  code: "permission_scope_violation";
+  message: string;
+  violations: MutationScopeViolation[];
+  totalViolationCount: number;
+};
+
+// 用于 API 接收的 grant 操作请求。
+export type CreateGrantRequest = {
+  userId: string;
+  actions: PermissionAction[];
+  scope?: PermissionScope;
+  expiresAt?: string | null;
+};
+
+export type UpdateGrantRequest = {
+  actions?: PermissionAction[];
+  scope?: MutablePermissionScope;
+  expiresAt?: string | null;
+};
+
+export type GrantSummary = {
+  id: string;
+  userId: string;
+  displayName?: string;
+  accountName?: string;
+  actions: PermissionAction[];
+  scope: PermissionScope;
+  expiresAt?: string | null;
+  createdAt: string;
+};
+
 export type PermissionGrant = {
   id: string;
   userId: string;
@@ -148,7 +230,11 @@ export type AuditAction =
   | "document_save"
   | "version_create"
   | "version_restore"
-  | "job_create";
+  | "job_create"
+  | "permission_grant_create"
+  | "permission_grant_update"
+  | "permission_grant_revoke"
+  | "permission_denied";
 
 export type AuditLogEntry = {
   id: string;

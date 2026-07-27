@@ -20,6 +20,7 @@ type TopMenuBarProps = {
   localRevision: number;
   savedRevision: number;
   pendingOperationCount: number;
+  accessLabel?: string;
   videoFileInputRef: RefObject<HTMLInputElement>;
   srtFileInputRef: RefObject<HTMLInputElement>;
   projectFileInputRef: RefObject<HTMLInputElement>;
@@ -65,6 +66,7 @@ export function TopMenuBar({
   localRevision,
   savedRevision,
   pendingOperationCount,
+  accessLabel,
   videoFileInputRef,
   srtFileInputRef,
   projectFileInputRef,
@@ -331,6 +333,7 @@ export function TopMenuBar({
         ))}
       </nav>
       <div className={`top-menu-status sync-status sync-status-${syncStatus}`}>
+        {accessLabel ? `${accessLabel} · ` : ""}
         {syncStatusLabel}
       </div>
       <input ref={videoFileInputRef} type="file" accept="video/*" onChange={onVideoFileChange} />

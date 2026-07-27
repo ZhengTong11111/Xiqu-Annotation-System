@@ -14,9 +14,10 @@ import type {
   AnnotationMode,
   AnnotationProjectSummary,
   AnnotationVersion,
+  EffectiveDocumentPermission,
   MediaAsset,
   PlatformUser,
-} from "../../packages/shared/src/index";
+} from "@xiqu/shared";
 import type { TopMenuPlatformNavigation } from "../components/TopMenuBar";
 
 export type PlatformEditorSession = {
@@ -27,6 +28,7 @@ export type PlatformEditorSession = {
   baseRevision: number;
   initialProject: ProjectData;
   onDocumentSaved: (document: AnnotationDocument<ProjectData>) => void;
+  effectivePermission: EffectiveDocumentPermission;
 };
 
 export type LocalEditorSession = {
@@ -74,6 +76,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   const [jsonImportTitle, setJsonImportTitle] = useState("");
   const [jsonImportMode, setJsonImportMode] = useState<AnnotationMode>("independent");
   const [versionsByDocumentId, setVersionsByDocumentId] = useState<Record<string, AnnotationVersion<ProjectData>[]>>({});
+  const [permissionsByDocumentId, setPermissionsByDocumentId] = useState<Record<string, EffectiveDocumentPermission>>({});
   const [versionName, setVersionName] = useState("");
   const [versionDescription, setVersionDescription] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -92,6 +95,9 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   const selectedDocuments = selectedProject ? documentsByProjectId[selectedProject.id] ?? [] : [];
   const selectedDocument = selectedDocuments.find((document) => document.id === selectedDocumentId) ?? selectedDocuments[0] ?? null;
   const selectedVersions = selectedDocument ? versionsByDocumentId[selectedDocument.id] ?? [] : [];
+  const selectedPermission = selectedDocument
+    ? permissionsByDocumentId[selectedDocument.id]
+    : undefined;
 
   useEffect(() => {
     if (!accessToken || view === "login") {
@@ -198,7 +204,17 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       setUploadFile(null);
       setNewProjectTitle("");
       setNewDocumentTitle("基准标注文档");
-      setEditorSession(createEditorSession(document, client, handleDocumentSaved));
+      const effectivePermission = await client.getEffectiveDocumentPermission(document.id);
+      setPermissionsByDocumentId((current) => ({
+        ...current,
+        [document.id]: effectivePermission,
+      }));
+      setEditorSession(createEditorSession(
+        document,
+        client,
+        handleDocumentSaved,
+        effectivePermission,
+      ));
       setView("editor");
     } catch (error) {
       setErrorMessage(getPlatformErrorMessage(error));
@@ -250,8 +266,15 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const document = await client.getAnnotationDocument<ProjectData>(selectedDocument.id);
-      setEditorSession(createEditorSession(document, client, handleDocumentSaved));
+      const [document, effectivePermission] = await Promise.all([
+        client.getAnnotationDocument<ProjectData>(selectedDocument.id),
+        client.getEffectiveDocumentPermission(selectedDocument.id),
+      ]);
+      setPermissionsByDocumentId((current) => ({
+        ...current,
+        [selectedDocument.id]: effectivePermission,
+      }));
+      setEditorSession(createEditorSession(document, client, handleDocumentSaved, effectivePermission));
       setLocalEditorSession(null);
       setView("editor");
     } catch (error) {
@@ -265,10 +288,17 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setIsLoadingVersions(true);
     setErrorMessage(null);
     try {
-      const versions = await client.listAnnotationVersions<ProjectData>(documentId);
+      const [versions, effectivePermission] = await Promise.all([
+        client.listAnnotationVersions<ProjectData>(documentId),
+        client.getEffectiveDocumentPermission(documentId),
+      ]);
       setVersionsByDocumentId((current) => ({
         ...current,
         [documentId]: versions,
+      }));
+      setPermissionsByDocumentId((current) => ({
+        ...current,
+        [documentId]: effectivePermission,
       }));
     } catch (error) {
       setErrorMessage(getPlatformErrorMessage(error));
@@ -281,6 +311,10 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     event.preventDefault();
     if (!selectedDocument) {
       setErrorMessage("请先选择要保存版本的标注文档。");
+      return;
+    }
+    if (!selectedPermission?.canEdit) {
+      setErrorMessage("当前账号没有为该文档创建版本的权限。");
       return;
     }
     const trimmedName = versionName.trim();
@@ -307,6 +341,10 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   }
 
   async function handleRestoreVersion(version: AnnotationVersion<ProjectData>) {
+    if (!selectedPermission?.canManage) {
+      setErrorMessage("恢复版本需要该文档的管理权限。");
+      return;
+    }
     if (!window.confirm(`确定要从版本“${version.name}”恢复吗？恢复会基于该版本生成新的当前快照。`)) {
       return;
     }
@@ -327,7 +365,17 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   }
 
   function handleDocumentSaved(document: AnnotationDocument<ProjectData>) {
-    setEditorSession(createEditorSession(document, client, handleDocumentSaved));
+    // 保存后重建 session：沿用当前 effectivePermission（权限范围不因保存而变化）。
+    const effectivePermission = permissionsByDocumentId[document.id] ??
+      editorSession?.effectivePermission;
+    if (effectivePermission) {
+      setEditorSession(createEditorSession(
+        document,
+        client,
+        handleDocumentSaved,
+        effectivePermission,
+      ));
+    }
     setLocalEditorSession(null);
     setDocumentsByProjectId((current) => ({
       ...current,
@@ -358,6 +406,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setEditorSession(null);
     setLocalEditorSession(null);
     setVersionsByDocumentId({});
+    setPermissionsByDocumentId({});
     setView("login");
   }
 
@@ -644,15 +693,15 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
                     value={versionName}
                     onChange={(event) => setVersionName(event.target.value)}
                     placeholder="版本名称"
-                    disabled={!selectedDocument}
+                    disabled={!selectedDocument || !selectedPermission?.canEdit}
                   />
                   <input
                     value={versionDescription}
                     onChange={(event) => setVersionDescription(event.target.value)}
                     placeholder="版本备注，可选"
-                    disabled={!selectedDocument}
+                    disabled={!selectedDocument || !selectedPermission?.canEdit}
                   />
-                  <button type="submit" disabled={!selectedDocument || isCreatingVersion}>
+                  <button type="submit" disabled={!selectedDocument || !selectedPermission?.canEdit || isCreatingVersion}>
                     {isCreatingVersion ? "保存中..." : "保存版本"}
                   </button>
                 </form>
@@ -665,7 +714,12 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
                         <span>revision {version.revision} · {formatDateTime(version.createdAt)}</span>
                         {version.description ? <p>{version.description}</p> : null}
                       </div>
-                      <button type="button" onClick={() => void handleRestoreVersion(version)}>
+                      <button
+                        type="button"
+                        onClick={() => void handleRestoreVersion(version)}
+                        disabled={!selectedPermission?.canManage}
+                        title={selectedPermission?.canManage ? "恢复此版本" : "恢复版本需要管理权限"}
+                      >
                         恢复
                       </button>
                     </article>
@@ -707,6 +761,7 @@ function createEditorSession(
   document: AnnotationDocument<ProjectData>,
   client: PlatformClient,
   onDocumentSaved: (document: AnnotationDocument<ProjectData>) => void,
+  effectivePermission: EffectiveDocumentPermission,
 ): PlatformEditorSession {
   return {
     client,
@@ -716,6 +771,7 @@ function createEditorSession(
     baseRevision: document.latestSnapshot.revision,
     initialProject: hydrateProjectForClient(document.latestSnapshot.payload, document.mediaAsset, client),
     onDocumentSaved,
+    effectivePermission,
   };
 }
 

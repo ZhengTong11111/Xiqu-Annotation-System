@@ -2,9 +2,29 @@
 
 本文档记录从当前 React/TypeScript 本地标注工具，逐步升级为完整前后端、账号权限、统一文件系统、版本管理、独立/协同标注、课堂作业、学术数据库与后端分析服务平台的工程计划。
 
-当前分支：`codex/continue-backend-platform`
+当前开发分支：`codex/backend-permission-scopes`
 
 ## 0. 执行记录
+
+### 2026-07-27：阶段 9 权限范围与只读裁剪闭环
+
+本轮完成阶段 9 的第一套可运行闭环，并在 DeepSeek 初稿基础上进行了安全审查和重构：
+
+- `packages/shared` 与 `packages/document-model` 成为真实 workspace 运行包；API 直接复用唯一权限核心，不再维护复制实现。
+- 明确 admin/owner/grant 语义：只有 `super_admin/admin` 全局放行，teacher/TA 通过 owner 或显式 grant 获权；开发 seed 给 TA 示例文档的显式 manage grant。
+- project-level 与 document-level grant 共同生效；`manage -> edit -> view`，过期 grant 在所有鉴权路径失效。
+- grant CRUD 增加 action、scope、日期、文档归属和真实轨道 ID 运行时校验；受限 manager 不能签发、修改或撤销超出自身 manage scope 的授权。
+- snapshot diff 覆盖视频、句级/逐字、真实动作轨、工尺父轨、板眼点、内建/自定义附属点、递归分叉与共有块、轨道结构和未知字段。
+- 范围外保存返回 `403 permission_scope_violation`，不写 snapshot；多条相邻时间 grant 可合并覆盖一次修改。
+- 前端打开服务端文档时强制加载有效权限；权限查询失败不进入编辑器。整文档只读由 document-state 层拦截写操作，菜单同步显示只读状态。
+- 创建版本要求 edit，恢复版本要求 manage；修复无 body POST 的空 JSON 与 Fastify 4xx 被误报成 500 的既有问题。
+- 新增权限核心回归测试和 PostgreSQL/API 冒烟矩阵。
+
+仍未完成：
+
+- grant 管理的完整平台 UI（API/client 已具备）。
+- 时间/轨道范围的可视遮罩与局部编辑提示；当前前端只形成整文档只读闭环，scoped edit 最终由服务器保存校验兜底。
+- 课程、作业、确定标注与实时协作，按阶段 10 以后继续。
 
 ### 2026-07-07：前端 pending operations 接入服务端 operation log
 
@@ -111,7 +131,7 @@
 - 已有项目库平台 UI：登录、本地工具入口、媒体上传、创建项目/文档、导入现有 JSON、打开服务端文档、保存服务器快照、创建/恢复版本。
 - 已有 `useProjectDocumentState()` 的本地 revision、operation log、pending operations 和 sync status，适合作为后续自动保存、远端同步、协作的前端边界。
 
-当前仍未闭环的关键问题：
+以下是 **2026-07-07 当时** 尚未闭环的问题；审计、operation log 接入和阶段 9 权限范围已在后续执行记录中完成，不应再作为当前状态：
 
 - 权限仍主要是粗粒度 `view/edit/manage` 判断；尚未按时间范围、轨道范围对保存内容做服务端差异校验。
 - 缺少审计日志表与统一写入机制；创建项目、保存快照、恢复版本、权限变更等关键行为还不能完整追溯。
@@ -130,6 +150,8 @@
 3. 把前端 `pendingOperations` 和服务器保存边界对齐，为自动保存和离线恢复做准备。
 4. 给版本恢复、保存冲突、权限不足补充更清晰的前端状态提示。
 5. 再进入权限范围校验、课堂作业、确定标注、协作同步等更高层功能。
+
+> 状态校准：上面的 1–5 已推进到“审计与 operation log 已落库、前端 pending operations 已接入、阶段 9 服务端范围校验已完成”。当前后续重点是授权管理 UI、局部范围可视提示、自动保存/离线恢复和阶段 10 课堂作业。
 
 本轮文档更新仅校准路线图与下一步任务，没有修改数据库 schema 或业务代码。
 
@@ -430,9 +452,8 @@
 
 主要不足：
 
-- 权限系统还没有完成时间范围、轨道范围的服务端差异校验。
-- 缺少审计日志，关键行为尚不能完整追溯。
-- 版本和 snapshot 已落库，但 operation log 仍主要停留在前端本地状态层。
+- 授权管理 API 和保存范围校验已完成，但还没有完整的授权管理 UI 与局部范围可视提示。
+- 审计日志和 operation log 已落库；operation payload 仍是摘要，尚不能驱动协同回放。
 - 自动保存、离线恢复、冲突处理 UI 尚未闭环。
 - 没有真正的多用户实时同步、presence 和协作冲突处理。
 - 没有课堂课程、作业分发、提交、助教进度管理。
@@ -1095,6 +1116,8 @@ AnnotationEditorPage
 - 学生只能编辑分配范围。
 - 助教可查看进度但不一定能修改全部内容。
 - 管理员可修改所有内容。
+
+状态：**第一套服务端范围校验与整文档只读闭环已于 2026-07-27 完成。** 局部范围遮罩和授权管理 UI 留在阶段 9 后续增量，不阻塞阶段 10 的数据模型设计。
 
 ### 阶段 10：独立标注作业
 

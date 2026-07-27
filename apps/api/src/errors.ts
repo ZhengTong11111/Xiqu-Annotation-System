@@ -4,6 +4,7 @@ export type ApiErrorCode =
   | "forbidden"
   | "not_found"
   | "conflict"
+  | "permission_scope_violation"
   | "internal_error";
 
 export class HttpError extends Error {
@@ -29,6 +30,10 @@ export function unauthorized(message = "请先登录。") {
 
 export function forbidden(message = "当前账号没有执行此操作的权限。") {
   return new HttpError(403, "forbidden", message);
+}
+
+export function permissionScopeViolation(message: string, details: unknown) {
+  return new HttpError(403, "permission_scope_violation", message, details);
 }
 
 export function notFound(message: string) {

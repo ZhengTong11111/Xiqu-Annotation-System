@@ -64,6 +64,7 @@ type ProjectDocumentStateOptions = {
   ) => boolean;
   historyLimit?: number;
   operationLogLimit?: number;
+  readOnly?: boolean;
 };
 
 type TrackSnapUpdateOptions = {
@@ -92,6 +93,7 @@ export function useProjectDocumentState({
   areTrackSnapStatesEqual,
   historyLimit = DEFAULT_HISTORY_LIMIT,
   operationLogLimit = DEFAULT_OPERATION_LOG_LIMIT,
+  readOnly = false,
 }: ProjectDocumentStateOptions) {
   const [project, setProject] = useState<ProjectData>(initialProject);
   const [trackSnapEnabled, setTrackSnapEnabled] = useState(initialTrackSnapEnabled);
@@ -125,9 +127,11 @@ export function useProjectDocumentState({
   const pendingOperationsRef = useRef<ProjectDocumentOperation[]>([]);
   const areProjectsEqualRef = useRef(areProjectsEqual);
   const areTrackSnapStatesEqualRef = useRef(areTrackSnapStatesEqual);
+  const readOnlyRef = useRef(readOnly);
 
   areProjectsEqualRef.current = areProjectsEqual;
   areTrackSnapStatesEqualRef.current = areTrackSnapStatesEqual;
+  readOnlyRef.current = readOnly;
 
   const computeHasUnsavedChanges = useCallback((
     nextProject = projectRef.current,
@@ -242,6 +246,10 @@ export function useProjectDocumentState({
     baseProject = transientProjectRef.current ?? projectRef.current,
     action: HistoryAction = "edit",
   ) {
+    if (readOnlyRef.current) {
+      transientProjectRef.current = null;
+      return;
+    }
     if (areProjectsEqual(baseProject, nextProject)) {
       transientProjectRef.current = null;
       applyProjectState(nextProject);
@@ -264,6 +272,9 @@ export function useProjectDocumentState({
   }
 
   function applyProjectWithoutHistory(nextProject: ProjectData) {
+    if (readOnlyRef.current) {
+      return;
+    }
     if (areProjectsEqual(projectRef.current, nextProject)) {
       return;
     }
@@ -277,6 +288,9 @@ export function useProjectDocumentState({
     nextTrackSnapState: Record<string, boolean>,
     options: TrackSnapUpdateOptions = {},
   ) {
+    if (readOnlyRef.current) {
+      return;
+    }
     if (areTrackSnapStatesEqual(trackSnapEnabledRef.current, nextTrackSnapState)) {
       return;
     }
@@ -350,6 +364,9 @@ export function useProjectDocumentState({
   }
 
   function undoProject(shouldUndo?: (entry: HistoryEntry) => boolean) {
+    if (readOnlyRef.current) {
+      return false;
+    }
     if (transientProjectRef.current) {
       const transientProject = transientProjectRef.current;
       transientProjectRef.current = null;
@@ -381,6 +398,9 @@ export function useProjectDocumentState({
   }
 
   function redoProject() {
+    if (readOnlyRef.current) {
+      return false;
+    }
     const currentRedoStack = redoStackRef.current;
     const nextEntry = currentRedoStack[currentRedoStack.length - 1];
     if (!nextEntry) {

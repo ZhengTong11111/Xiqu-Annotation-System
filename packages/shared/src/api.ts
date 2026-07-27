@@ -6,12 +6,16 @@ import type {
   AnnotationProjectSummary,
   AnnotationVersion,
   AuditLogEntry,
+  CreateGrantRequest,
+  EffectiveDocumentPermission,
+  GrantSummary,
   MediaAsset,
   PermissionGrant,
   PlatformUser,
   ProcessingJob,
   ProcessingJobType,
   StoredFileObject,
+  UpdateGrantRequest,
 } from "./platform.js";
 
 export type ApiErrorCode =
@@ -20,6 +24,7 @@ export type ApiErrorCode =
   | "forbidden"
   | "not_found"
   | "conflict"
+  | "permission_scope_violation"
   | "validation_error"
   | "internal_error";
 
@@ -159,5 +164,22 @@ export type PlatformApiContract<TPayload = unknown> = {
   createAnnotationOperation: {
     request: CreateAnnotationOperationRequest;
     response: AnnotationOperationRecord;
+  };
+  getEffectiveDocumentPermission: {
+    response: EffectiveDocumentPermission;
+  };
+  listDocumentGrants: {
+    response: GrantSummary[];
+  };
+  createDocumentGrant: {
+    request: CreateGrantRequest;
+    response: GrantSummary;
+  };
+  updatePermissionGrant: {
+    request: UpdateGrantRequest;
+    response: GrantSummary;
+  };
+  revokePermissionGrant: {
+    response: void;
   };
 };

@@ -1,0 +1,17 @@
+{
+  "name": "@xiqu/document-model",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@xiqu/shared": "0.1.0"
+  }
+}

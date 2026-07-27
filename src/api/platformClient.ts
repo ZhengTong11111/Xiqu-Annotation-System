@@ -8,9 +8,12 @@ import type {
   CreateAnnotationDocumentRequest,
   CreateAnnotationOperationRequest,
   CreateAnnotationVersionRequest,
+  CreateGrantRequest,
   CreateMediaAssetRequest,
   CreateProjectRequest,
   CreateProcessingJobRequest,
+  EffectiveDocumentPermission,
+  GrantSummary,
   ListAuditLogsOptions,
   LoginRequest,
   LoginResponse,
@@ -19,8 +22,9 @@ import type {
   ProcessingJob,
   SaveAnnotationDocumentRequest,
   StoredFileObject,
+  UpdateGrantRequest,
   UploadFileResponse,
-} from "../../packages/shared/src/index";
+} from "@xiqu/shared";
 
 export type PlatformClientOptions = {
   baseUrl?: string;
@@ -182,6 +186,39 @@ export class PlatformClient {
     });
   }
 
+  // 获取当前用户对文档的有效权限摘要。
+  getEffectiveDocumentPermission(documentId: string) {
+    return this.request<EffectiveDocumentPermission>(`/annotation-documents/${documentId}/permissions/effective`);
+  }
+
+  // 列出文档 grant。需 manage 权限。
+  listDocumentGrants(documentId: string) {
+    return this.request<GrantSummary[]>(`/annotation-documents/${documentId}/grants`);
+  }
+
+  // 为文档新增 grant。
+  createDocumentGrant(documentId: string, request: CreateGrantRequest) {
+    return this.request<GrantSummary>(`/annotation-documents/${documentId}/grants`, {
+      method: "POST",
+      body: request,
+    });
+  }
+
+  // 修改已有 grant。
+  updatePermissionGrant(grantId: string, request: UpdateGrantRequest) {
+    return this.request<GrantSummary>(`/permission-grants/${grantId}`, {
+      method: "PATCH",
+      body: request,
+    });
+  }
+
+  // 撤销 grant。
+  revokePermissionGrant(grantId: string) {
+    return this.request<void>(`/permission-grants/${grantId}`, {
+      method: "DELETE",
+    });
+  }
+
   private async request<TData>(
     path: string,
     options: {
@@ -191,7 +228,10 @@ export class PlatformClient {
     } = {},
   ) {
     const headers = new Headers();
-    headers.set("content-type", "application/json");
+    // 无 body 的 POST（例如版本恢复）不能声明 JSON，否则 Fastify 会把空请求体判为语法错误。
+    if (options.body !== undefined) {
+      headers.set("content-type", "application/json");
+    }
     if (!options.skipAuth && this.accessToken) {
       headers.set("authorization", `Bearer ${this.accessToken}`);
     }

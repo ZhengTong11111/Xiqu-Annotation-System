@@ -77,6 +77,7 @@ export async function ensurePlatformSeedData(prisma: PrismaClient) {
     where: { id: "project-xunmeng-demo" },
   });
   if (existingDemoProject) {
+    await ensureDemoPermissionGrants(prisma);
     return;
   }
 
@@ -125,9 +126,42 @@ export async function ensurePlatformSeedData(prisma: PrismaClient) {
     await transaction.permissionGrant.createMany({
       data: [
         createGrantData("user-admin", project.id, document.id, ["view", "edit", "manage", "confirm", "merge"]),
-        createGrantData("user-ta", project.id, document.id, ["view", "edit", "review", "merge"]),
+        createGrantData("user-ta", project.id, document.id, ["view", "edit", "review", "merge", "manage"]),
         createGrantData("user-student", project.id, document.id, ["view"]),
       ],
     });
   });
+}
+
+async function ensureDemoPermissionGrants(prisma: PrismaClient) {
+  const expectedActionsByUserId: Record<string, string[]> = {
+    "user-admin": ["view", "edit", "manage", "confirm", "merge"],
+    "user-ta": ["view", "edit", "review", "merge", "manage"],
+    "user-student": ["view"],
+  };
+  for (const [userId, actions] of Object.entries(expectedActionsByUserId)) {
+    const grant = await prisma.permissionGrant.findFirst({
+      where: {
+        userId,
+        projectId: "project-xunmeng-demo",
+        documentId: "document-xunmeng-base",
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    if (grant) {
+      await prisma.permissionGrant.update({
+        where: { id: grant.id },
+        data: { actions },
+      });
+      continue;
+    }
+    await prisma.permissionGrant.create({
+      data: createGrantData(
+        userId,
+        "project-xunmeng-demo",
+        "document-xunmeng-base",
+        actions as Parameters<typeof createGrantData>[3],
+      ),
+    });
+  }
 }

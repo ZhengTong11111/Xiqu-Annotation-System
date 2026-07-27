@@ -114,7 +114,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run build:document-model`
 - `npm run preview`
 
-There is still no dedicated lint/test script. `npm run build` is the mandatory pre-merge check; it runs Prisma generation plus shared, document-model, web, and API builds.
+There is still no general lint/full-test script. `npm run test:permissions` covers the scoped permission core. `npm run build` remains the mandatory pre-merge check; it runs Prisma generation plus shared, document-model, web, and API builds.
 
 Backend local defaults:
 - API port defaults to `4317`
@@ -316,6 +316,17 @@ Current backend capabilities:
 - audit-log table and API for key platform events such as login, upload, project/document creation, document save, version create/restore, and processing job creation
 - annotation operation-log table and API for recording client-submitted edit operations before future autosave/collaboration work
 - placeholder processing-job API for future pitch, spectrogram, Gongche render, pose, transcode, and export services
+- scoped document permissions:
+  - `super_admin/admin` are the only global bypass roles
+  - project owner has implicit full document permission
+  - teacher/TA require ownership or active project/document grants
+  - project-level and document-level grants are combined; expired grants never authorize
+  - `manage` implies `edit/view`, and `edit` implies `view`
+  - snapshot saves are diffed against the previous payload and checked by persistent track/time scope
+  - permission core lives in `packages/document-model`; do not create a second API-local implementation
+  - branch scope ids use `parent#branch:lane`, attached-point scope ids use `parent#point:track`
+  - shared branch blocks require coverage for every owned lane
+  - scope violations return `403 permission_scope_violation`
 
 Current platform UI capabilities:
 - login page with development defaults
@@ -335,6 +346,8 @@ Important backend caveats:
 - API route handlers should perform runtime validation before Prisma writes; invalid revision/action/limit inputs should return `400`, stale document revisions should return `409`
 - the API is currently for local/dev use; production deployment hardening, migrations, rate limits, and secure file serving are future work
 - platform client currently targets `http://localhost:4317/api` in `src/platform/PlatformWorkspace.tsx`
+- frontend read-only state is enforced centrally by `useProjectDocumentState({ readOnly })`; UI disabling is not the security boundary, and permission lookup failures must fail closed
+- permission core regression tests run with `npm run test:permissions`
 - if backend contracts change, update `packages/shared`, API repository/routes, `src/api/platformClient.ts`, and `docs/kunqu-platform-roadmap.md` together
 
 ## Timeline Interaction Model

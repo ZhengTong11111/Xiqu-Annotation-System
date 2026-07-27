@@ -1,4 +1,10 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { validatePermissionScope } from "@xiqu/document-model";
+import type {
+  MutablePermissionScope,
+  PermissionAction,
+  PermissionScope,
+} from "@xiqu/shared";
 import { badRequest, notFound } from "./errors.js";
 import type { ApiAnnotationMode, ApiUser } from "./domain.js";
 import type { PrismaPlatformRepository } from "./repository.js";
@@ -274,6 +280,64 @@ export function registerApiRoutes(
     });
   });
 
+  // 获取当前用户对文档的有效权限摘要。
+  app.get<{ Params: DocumentParams }>("/api/annotation-documents/:documentId/permissions/effective", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    return repository.getEffectiveDocumentPermission(user, request.params.documentId);
+  });
+
+  // 列出文档的所有 grant。需项目 owner / 管理员 / manage 权限。
+  app.get<{ Params: DocumentParams }>("/api/annotation-documents/:documentId/grants", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    return repository.listDocumentGrants(user, request.params.documentId);
+  });
+
+  // 为文档新增一条 grant。
+  app.post<{ Params: DocumentParams; Body: { userId?: string; actions?: unknown; scope?: unknown; expiresAt?: unknown } }>("/api/annotation-documents/:documentId/grants", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    if (!request.body?.userId) {
+      throw badRequest("userId 和 actions 不能为空。");
+    }
+    const actions = parsePermissionActions(request.body.actions, true);
+    const scope = parseCreatePermissionScope(request.body.scope);
+    const expiresAt = parseExpiration(request.body.expiresAt);
+    return repository.createDocumentGrant(user, request.params.documentId, {
+      userId: request.body.userId,
+      actions,
+      scope,
+      expiresAt,
+    });
+  });
+
+  // 修改已有 grant。
+  app.patch<{ Params: { grantId: string }; Body: { actions?: unknown; scope?: unknown; expiresAt?: unknown } }>("/api/permission-grants/:grantId", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    const body = request.body ?? {};
+    if (
+      body.actions === undefined &&
+      body.scope === undefined &&
+      body.expiresAt === undefined
+    ) {
+      throw badRequest("至少需要提供一个要更新的授权字段。");
+    }
+    return repository.updatePermissionGrant(user, request.params.grantId, {
+      actions: body.actions === undefined
+        ? undefined
+        : parsePermissionActions(body.actions, true),
+      scope: parseUpdatePermissionScope(body.scope),
+      expiresAt: body.expiresAt === undefined
+        ? undefined
+        : parseExpiration(body.expiresAt),
+    });
+  });
+
+  // 撤销 grant。
+  app.delete<{ Params: { grantId: string } }>("/api/permission-grants/:grantId", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    await repository.revokePermissionGrant(user, request.params.grantId);
+    return { data: null };
+  });
+
   app.setNotFoundHandler(() => {
     throw notFound("接口不存在。");
   });
@@ -301,6 +365,88 @@ function isAnnotationMode(value: unknown): value is ApiAnnotationMode {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+const PERMISSION_ACTIONS = new Set<PermissionAction>([
+  "view",
+  "edit",
+  "comment",
+  "submit",
+  "review",
+  "merge",
+  "confirm",
+  "manage",
+]);
+
+function parsePermissionActions(value: unknown, required: boolean) {
+  if (!Array.isArray(value)) {
+    throw badRequest("actions 必须是权限动作数组。");
+  }
+  const actions = [...new Set(value)];
+  if (
+    (required && actions.length === 0) ||
+    actions.some((action) =>
+      typeof action !== "string" ||
+      !PERMISSION_ACTIONS.has(action as PermissionAction),
+    )
+  ) {
+    throw badRequest("actions 包含空值或不支持的权限动作。");
+  }
+  return actions as PermissionAction[];
+}
+
+function parseCreatePermissionScope(value: unknown): PermissionScope | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const result = validatePermissionScope(value);
+  if (!result.valid) {
+    throw badRequest(result.reason);
+  }
+  return value as PermissionScope;
+}
+
+function parseUpdatePermissionScope(value: unknown): MutablePermissionScope | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw badRequest("scope 必须是对象。");
+  }
+  const scope = value as Record<string, unknown>;
+  if (
+    Object.keys(scope).some((key) =>
+      key !== "timeRange" && key !== "trackScope",
+    )
+  ) {
+    throw badRequest("更新 scope 只能包含 timeRange 和 trackScope。");
+  }
+  const validationValue = {
+    ...(scope.timeRange === null ? {} : { timeRange: scope.timeRange }),
+    ...(scope.trackScope === null ? {} : { trackScope: scope.trackScope }),
+  };
+  const result = validatePermissionScope(validationValue);
+  if (!result.valid) {
+    throw badRequest(result.reason);
+  }
+  return {
+    timeRange: scope.timeRange as MutablePermissionScope["timeRange"],
+    trackScope: scope.trackScope as MutablePermissionScope["trackScope"],
+  };
+}
+
+function parseExpiration(value: unknown): string | null {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw badRequest("expiresAt 必须是 ISO 日期字符串或 null。");
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp) || timestamp <= Date.now()) {
+    throw badRequest("expiresAt 必须是有效的未来时间。");
+  }
+  return new Date(timestamp).toISOString();
 }
 
 function parseByteRange(header: string | string[] | undefined, size: number): ByteRange | "unsatisfiable" | null {
