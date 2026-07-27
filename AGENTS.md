@@ -593,6 +593,17 @@ Current docs:
   - keep only the current task, not historical logs
   - rewrite it after reviews when the next local agent needs a clearer task boundary
 
+Cross-agent workflow:
+- At the start of backend/platform/database/collaboration work, read `AGENTS.md`, `docs/kunqu-platform-roadmap.md`, and `docs/development-log.md` before planning or editing.
+- Use `docs/kunqu-platform-roadmap.md` to understand the intended architecture, phase order, and any approved deviations from the original plan.
+- Use `docs/development-log.md` to understand what actually happened in recent rounds, including Codex reviews, Claude Code/GLM changes, validations, residual risks, and follow-up tasks.
+- When handing work to Claude Code or another local agent, rewrite `CLAUDE_WORK.md` as a current-task brief. Include branch/status, files to read, implementation goals, non-goals, quality expectations, validation order, and review expectations.
+- Do not let `CLAUDE_WORK.md` become a log. After each review or task change, replace stale instructions with the next actionable task.
+- After reviewing Claude Code/GLM output, record the review outcome in `docs/development-log.md`: what the other agent changed, what Codex found, what Codex fixed, what was validated, and what still needs attention.
+- If a change affects long-term architecture, API contracts, database shape, permissions, storage, sync semantics, or platform workflow, update `docs/kunqu-platform-roadmap.md` in the same work round.
+- If a change creates or clarifies a durable repo rule, module responsibility, data-format rule, or agent handoff convention, update `AGENTS.md`; also remove or rewrite stale guidance that could mislead future agents.
+- The intended order for substantial platform work is: check git status, read the three context docs, update `CLAUDE_WORK.md` if delegation is needed, implement/review, run the relevant build or smoke checks, update roadmap/log/AGENTS as needed, then commit.
+
 Documentation rules:
 - record what changed, why, validation performed, and any divergence from the roadmap
 - keep notes actionable for another agent; include relevant commands and outcome summaries, not huge raw logs
