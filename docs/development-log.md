@@ -15,6 +15,45 @@
 
 ## 2026-07-27
 
+### 阶段 9 第二轮审查：权限边界、资源所有权与僵尸接口清理
+
+Codex 在首轮权限闭环提交后继续做了权限核心、API、前端只读路径和资源查询的第二轮审查，并修复以下问题：
+
+- 权限核心：
+  - 受限 grant 不再授权缺少 project/document/track 约束的宽范围请求。
+  - 未知历史 action 安全返回未授权，不抛运行时异常。
+  - mutation 数组中的非对象、重复 id 不再被 `Map`/过滤逻辑静默吞掉。
+  - 畸形 `branchScope` 和不存在的递归 lane 被标记为需要 manage 的异常修改。
+- grant 与审计：
+  - 文档 grant 接口不再混入暂时无法由该接口更新/撤销的 project-level grant。
+  - 受限 manager 只能看到自己 manage scope 覆盖的授权；文档主体仅向整文档 manager 附带完整 grant 清单。
+  - 拆开 mutation scope 与 grant scope 的空轨道语义；“全轨道、限时段”的 manager 现在可以管理同范围或更窄授权，同时仍不能编辑无法识别轨道的 mutation。
+  - 全局审计只对 admin 开放；TA/teacher 必须指定可管理项目或整文档 manage 文档。
+  - project/document 审计筛选不一致时返回 `400`。
+- 文件、媒体与项目：
+  - teacher/TA 不再全局列出所有文件和媒体，只能看到自己拥有或有效 grant 可见的资源。
+  - 项目摘要的文档数量按当前用户可见文档计算，避免侧信道泄露其他课堂作业数量。
+  - `MediaAsset` 增加可空 `ownerUserId`；新媒体记录创建者，即使尚未绑定文件/项目也可被创建者继续管理。
+  - 创建项目会校验媒体资产可见性。
+- 后台任务：
+  - 路由校验任务类型、非空文件 id 和 documentId。
+  - 普通用户必须可读输入文件、可编辑关联文档；service 也只能引用真实文件。
+- 清理：
+  - 删除未使用的 `canPerformAction` 别名和与真实 HttpError 结构不一致的 `PermissionScopeViolationBody`。
+
+验证：
+
+- `npm run test:permissions`：12 项通过。
+- `npm run build`：Prisma、shared、document-model、web、API 全部通过。
+- `npm run db:push`：本地 PostgreSQL schema 同步通过。
+- API 冒烟：全局/文档审计权限、错误筛选、任务坏输入/不存在文件、admin/TA/student 资源可见性、TA 创建未绑定媒体并重新列出均符合预期；临时媒体与审计数据已清理。
+
+残余设计边界：
+
+- track/time `view` scope 当前仍是文档准入和前端范围描述，不会裁剪整份 snapshot。局部读取需与后续 fragment/operation/delta 协议共同设计，避免保存时删除未加载内容。
+- `MediaAsset.ownerUserId` 对旧数据为可空；无法从旧记录可靠推断创建者，只能继续通过主文件或项目关系授权。
+- 当前 repository 仍保留为分片上传预留的 pending/finalize 方法；它们有明确后续用途且有注释，不视为僵尸代码。
+
 ### Codex 修复 DeepSeek 阶段 9 权限实现
 
 在上一条阻断审查之后，Codex 完成了权限实现的修复、清理和验证：

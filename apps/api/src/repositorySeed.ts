@@ -88,6 +88,7 @@ export async function ensurePlatformSeedData(prisma: PrismaClient) {
         id: "media-xunmeng-demo",
         title: "示例视频：顾卫英《寻梦》",
         description: "开发环境内置示例媒体资产，用于验证项目库和服务端保存接口。",
+        ownerUserId: "user-admin",
       },
     });
     const project = await transaction.annotationProject.create({

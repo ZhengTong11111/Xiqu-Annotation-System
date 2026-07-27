@@ -311,6 +311,7 @@ Current backend capabilities:
 - file metadata in PostgreSQL and binary data in local object storage
 - protected file reading, including HTTP Range / `206 Partial Content` for stable MP4 seeking
 - media assets, annotation projects, annotation documents
+- media assets carry nullable `ownerUserId`; new assets record their creator, while legacy assets may still rely on primary-file ownership or visible-project linkage
 - document snapshot save with `baseRevision` conflict checking
 - annotation version creation/list/restore
 - audit-log table and API for key platform events such as login, upload, project/document creation, document save, version create/restore, and processing job creation
@@ -326,7 +327,11 @@ Current backend capabilities:
   - permission core lives in `packages/document-model`; do not create a second API-local implementation
   - branch scope ids use `parent#branch:lane`, attached-point scope ids use `parent#point:track`
   - shared branch blocks require coverage for every owned lane
+  - use `isScopeAuthorized()` for concrete mutations and `isGrantScopeAuthorized()` for delegated grant scopes; empty track ids mean “unknown” in a mutation but “all tracks” in a grant
   - scope violations return `403 permission_scope_violation`
+  - teacher/TA are not global resource browsers: file/media/project/audit visibility must come from ownership or active grants
+  - scoped managers must not receive the complete document grant list; only unrestricted managers may receive all grants embedded in a document response
+  - track/time `viewScopes` currently admit the user to the whole-snapshot protocol but do not redact payload fragments; true partial reads require a future fragment/operation protocol
 
 Current platform UI capabilities:
 - login page with development defaults
@@ -343,6 +348,8 @@ Important backend caveats:
 - permission grants exist in schema and repository concepts, but fine-grained classroom workflows are still incomplete
 - annotation operations currently only record operation metadata/payload and do not mutate document snapshots; full document snapshots are still written by `/api/annotation-documents/:documentId/save`
 - audit logs intentionally store summary `detail` objects, not full annotation payloads or uploaded file contents
+- global audit queries are admin-only; non-admin queries require a manageable project or an unrestricted-manage document
+- processing jobs must validate job type and referenced resources; service roles bypass user visibility, not file existence
 - API route handlers should perform runtime validation before Prisma writes; invalid revision/action/limit inputs should return `400`, stale document revisions should return `409`
 - the API is currently for local/dev use; production deployment hardening, migrations, rate limits, and secure file serving are future work
 - platform client currently targets `http://localhost:4317/api` in `src/platform/PlatformWorkspace.tsx`

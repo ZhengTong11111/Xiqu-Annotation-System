@@ -145,6 +145,17 @@ type EffectiveDocumentPermission = {
 
 前端的只读限制是体验层保护，真正的安全边界仍在服务端。服务器文档打开时若有效权限查询失败，编辑器必须拒绝进入而不是回退到可编辑状态；无 `edit` 权限时，项目状态层会拒绝 commit、临时拖动写入、吸附设置修改、undo 和 redo。
 
+### 6.1 当前局部 view 的协议边界
+
+当前标注文档仍以整份 snapshot 作为读取与保存单位。因此：
+
+- track/time `view` scope 当前用于判断用户是否可以进入文档，并通过 `viewScopes` 告知前端授权范围。
+- API 暂不裁剪 snapshot payload。若只返回局部 payload，scoped editor 随后保存整份 snapshot 时会把未返回内容误判为删除。
+- 保存安全由 `editScopes` 的旧/新 snapshot mutation diff 保证；范围外修改会被拒绝。
+- 真正的局部内容隐藏必须与服务端 fragment 或 operation/delta 协议一起实现，并在合并时保留客户端未加载的内容。
+
+在该协议落地前，不要把 `viewScopes` 描述为严格的数据脱敏能力，也不要在 API 层直接删除不可见轨道或时间段。
+
 ## 7. 保存差异校验（mutation scope check）
 
 ### 7.1 流程
@@ -179,3 +190,14 @@ type ProjectMutation = {
 新增 `AuditAction`：`permission_grant_create`、`permission_grant_update`、`permission_grant_revoke`、`permission_denied`。
 
 `permission_denied` 的 detail 只包含：documentId、被拒绝 mutation 的数量/类型/范围摘要、操作用户 id。**不**保存完整 snapshot 或完整 mutation payload。
+
+全局审计查询只允许 `super_admin/admin`。其他账号必须指定可管理的项目，或自己具有整文档 manage 权限的文档；受限 manager 不能读取整份文档审计，因为当前审计行没有足以逐条执行轨道/时间裁剪的信息。
+
+## 9. 平台资源可见性
+
+- 只有 `super_admin/admin` 可以全局列出文件、媒体、项目和审计日志。
+- teacher/TA 与普通账号一样，通过资源所有权或有效 project/document grant 获得可见性。
+- `FileObject.ownerUserId` 记录上传者；授权项目引用的主媒体文件也可被项目成员读取。
+- `MediaAsset.ownerUserId` 记录媒体创建者。旧媒体若没有 owner，仍可通过主文件所有权或可见项目访问。
+- 文档级 grant 只应暴露对应文档，项目摘要的 `documentCount` 也必须按当前用户可见文档计算。
+- 创建项目前必须校验当前用户有权使用所选媒体资产。

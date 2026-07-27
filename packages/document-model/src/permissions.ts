@@ -83,7 +83,7 @@ export function doesGrantAuthorizeAction(
 ) {
   return grantActions.some((grantedAction) =>
     grantedAction === requestedAction ||
-    IMPLIED_ACTIONS[grantedAction].includes(requestedAction),
+    IMPLIED_ACTIONS[grantedAction]?.includes(requestedAction) === true,
   );
 }
 
@@ -101,22 +101,18 @@ export function canPerformActionWithGrants({
   );
 }
 
-export const canPerformAction = canPerformActionWithGrants;
-
 export function doesScopeContain(
   grantScope: PermissionScope,
   requestedScope: PermissionScope,
 ) {
   if (
     grantScope.projectId &&
-    requestedScope.projectId &&
     grantScope.projectId !== requestedScope.projectId
   ) {
     return false;
   }
   if (
     grantScope.documentId &&
-    requestedScope.documentId &&
     grantScope.documentId !== requestedScope.documentId
   ) {
     return false;
@@ -130,6 +126,9 @@ export function doesScopeContain(
   }
   const requestedTrackIds = requestedScope.trackScope?.trackIds ?? [];
   const grantedTrackIds = grantScope.trackScope?.trackIds ?? [];
+  if (grantedTrackIds.length > 0 && requestedTrackIds.length === 0) {
+    return false;
+  }
   return requestedTrackIds.every((trackId) =>
     grantedTrackIds.length === 0 ||
     grantedTrackIds.some((grantedTrackId) =>
@@ -291,6 +290,41 @@ export function isScopeAuthorized(
       timeRange,
     );
   });
+}
+
+// grant scope 中空 trackIds/空 timeRange 分别表示“全部轨道/全部时间”。
+// 这与 mutation 缺少 trackIds 时的保守拒绝语义不同，不能复用 isScopeAuthorized()。
+export function isGrantScopeAuthorized(
+  managerScopes: MergedScope[],
+  requestedTrackIds: string[],
+  requestedTimeRange: TimeRange | undefined,
+) {
+  const scopeCoversTrack = (scope: MergedScope, trackId: string | null) =>
+    trackId === null
+      ? scope.trackIds.length === 0
+      : scope.trackIds.length === 0 ||
+        scope.trackIds.some((grantedTrackId) =>
+          doesGrantedTrackCover(grantedTrackId, trackId),
+        );
+  const scopeCoversTime = (candidateScopes: MergedScope[]) => {
+    if (!requestedTimeRange) {
+      return candidateScopes.some((scope) => scope.timeRanges.length === 0);
+    }
+    if (candidateScopes.some((scope) => scope.timeRanges.length === 0)) {
+      return true;
+    }
+    return doRangesCover(
+      candidateScopes.flatMap((scope) => scope.timeRanges),
+      requestedTimeRange,
+    );
+  };
+  const tracksToCheck: Array<string | null> =
+    requestedTrackIds.length > 0 ? requestedTrackIds : [null];
+  return tracksToCheck.every((trackId) =>
+    scopeCoversTime(
+      managerScopes.filter((scope) => scopeCoversTrack(scope, trackId)),
+    ),
+  );
 }
 
 export function isMutationScopeAuthorized(
@@ -532,6 +566,8 @@ function collectTrackContainers(
         id,
         beforeTrack.blocks,
         afterTrack.blocks,
+        collectBranchLaneIds(beforeTrack.branching),
+        collectBranchLaneIds(afterTrack.branching),
         collector,
       );
     }
@@ -548,6 +584,8 @@ function collectCustomBlocks(
   parentTrackId: string,
   beforeValue: unknown,
   afterValue: unknown,
+  beforeLaneIds: Set<string>,
+  afterLaneIds: Set<string>,
   collector: MutationCollector,
 ) {
   collectDynamicTrackEntities(
@@ -559,9 +597,13 @@ function collectCustomBlocks(
     getTimeRange,
     (beforeItem, afterItem) =>
       Boolean(
-        beforeItem &&
-        afterItem &&
-        !areValuesEqual(beforeItem.branchScope, afterItem.branchScope),
+        (beforeItem &&
+          hasInvalidBranchScope(beforeItem.branchScope, beforeLaneIds)) ||
+        (afterItem &&
+          hasInvalidBranchScope(afterItem.branchScope, afterLaneIds)) ||
+        (beforeItem &&
+          afterItem &&
+          !areValuesEqual(beforeItem.branchScope, afterItem.branchScope)),
       ),
   );
 }
@@ -763,9 +805,11 @@ function buildIdIndex(beforeValue: unknown, afterValue: unknown) {
   const afterItems = asRecords(afterValue);
   const beforeMalformed =
     !Array.isArray(beforeValue) ||
+    beforeItems.length !== beforeValue.length ||
     beforeItems.some((item) => !getString(item.id));
   const afterMalformed =
     !Array.isArray(afterValue) ||
+    afterItems.length !== afterValue.length ||
     afterItems.some((item) => !getString(item.id));
   const oldMap = new Map(beforeItems.map((item) => [getString(item.id) ?? "", item]));
   const newMap = new Map(afterItems.map((item) => [getString(item.id) ?? "", item]));
@@ -891,6 +935,48 @@ function collectBranchTrackIds(
     }
   };
   roots.forEach(visit);
+}
+
+function collectBranchLaneIds(branching: unknown) {
+  const laneIds = new Set<string>();
+  if (!isRecord(branching)) {
+    return laneIds;
+  }
+  const visit = (lane: RecordValue) => {
+    const laneId = getString(lane.id);
+    if (laneId) {
+      laneIds.add(laneId);
+    }
+    asRecords(lane.children).forEach(visit);
+  };
+  asRecords(branching.lanes).forEach(visit);
+  return laneIds;
+}
+
+function hasInvalidBranchScope(
+  branchScope: unknown,
+  knownLaneIds: Set<string>,
+) {
+  if (branchScope === undefined) {
+    return false;
+  }
+  if (!isRecord(branchScope)) {
+    return true;
+  }
+  if (branchScope.mode === "root") {
+    return Object.keys(branchScope).some((key) => key !== "mode");
+  }
+  if (
+    branchScope.mode !== "lanes" ||
+    !Array.isArray(branchScope.laneIds) ||
+    branchScope.laneIds.length === 0
+  ) {
+    return true;
+  }
+  return branchScope.laneIds.some((laneId) =>
+    typeof laneId !== "string" ||
+    !knownLaneIds.has(laneId),
+  );
 }
 
 function areRecordsEqualWithoutKeys(

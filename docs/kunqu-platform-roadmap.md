@@ -6,6 +6,24 @@
 
 ## 0. 执行记录
 
+### 2026-07-27：阶段 9 第二轮安全审查与资源所有权补强
+
+在阶段 9 第一套闭环之上，继续审查了权限核心、授权生命周期、资源列表和后台任务接口：
+
+- 受限 grant 不再覆盖缺少 project/document/track 约束的宽范围请求；未知历史 action 安全拒绝，不再可能触发运行时异常。
+- mutation 提取对数组中的非对象、重复 id、畸形 `branchScope` 和不存在的递归分支 lane 采取保守拒绝，避免坏数据被静默忽略。
+- 文档 grant 列表只返回文档级授权；受限 manager 只能看到自身 manage scope 覆盖的授权，普通文档读取也不再旁路暴露整份 grant 清单。
+- 拆分 mutation 范围校验与 grant 委派范围校验：授权中的空 track scope 表示全轨道，而 mutation 缺失轨道仍按不可安全映射处理。
+- 全局审计日志只允许 `super_admin/admin`；其他用户必须指定自己可整文档管理的 document 或可管理的 project。project/document 筛选不匹配时返回 `400`。
+- 文件、媒体和项目列表不再把 teacher/TA 当作全局管理员；只展示所有权或有效 grant 可见资源。项目摘要的文档数量也按可见文档计算。
+- `MediaAsset` 增加可空 `ownerUserId`，新媒体保存创建者；旧数据继续通过主文件所有权和项目授权兼容。
+- processing job 增加任务类型、非空文件 id、documentId 的运行时校验；普通用户必须能读取输入文件并编辑关联文档，service 也必须引用真实存在的文件。
+- 删除未使用的权限别名和错误响应旧类型，避免形成第二套调用方式。
+
+验证包括 12 项权限核心测试、全量构建、Prisma schema 同步，以及 admin/TA/student 的真实 PostgreSQL/API 冒烟。
+
+仍需明确：当前 snapshot 协议以整份 `ProjectData` 为读写单位。track/time `view` scope 目前用于文档准入和权限摘要，尚未对返回 payload 做裁剪；直接裁剪会让 scoped editor 保存时删除不可见内容。真正的局部只读需要阶段 13/14 的服务端片段或 operation/delta 协议配合，不能在现有整份 snapshot 上草率实现。
+
 ### 2026-07-27：阶段 9 权限范围与只读裁剪闭环
 
 本轮完成阶段 9 的第一套可运行闭环，并在 DeepSeek 初稿基础上进行了安全审查和重构：
@@ -102,7 +120,7 @@
 
 **新增 API 路由：**
 
-- `GET /api/audit-logs`：查询审计日志。需 `super_admin/admin/teacher/ta` 角色。支持 query：`projectId`, `documentId`, `actorUserId`, `limit`（默认 50，最大 200）。按 `createdAt desc`。
+- `GET /api/audit-logs`：查询审计日志。`super_admin/admin` 可全局查询；其他账号必须指定自己可管理的项目或整文档 manage 文档。支持 query：`projectId`, `documentId`, `actorUserId`, `limit`（默认 50，最大 200）。按 `createdAt desc`。
 - `GET /api/annotation-documents/:documentId/operations`：列出标注操作日志。需文档 `view` 权限或特权角色。
 - `POST /api/annotation-documents/:documentId/operations`：创建标注操作日志。需文档 `edit` 权限或特权角色。`baseRevision` 与最新 snapshot 不一致时返 409；暂不改变文档内容（初版只落日志）。
 - 代码审查后补强运行时校验：`limit` 必须是正整数；operation 的 `baseRevision/localRevision` 必须是非负整数（`localRevision` 也可为 `null`），`action` 必须是非空字符串，避免坏 JSON 透传到 Prisma 变成 500。
@@ -1117,7 +1135,7 @@ AnnotationEditorPage
 - 助教可查看进度但不一定能修改全部内容。
 - 管理员可修改所有内容。
 
-状态：**第一套服务端范围校验与整文档只读闭环已于 2026-07-27 完成。** 局部范围遮罩和授权管理 UI 留在阶段 9 后续增量，不阻塞阶段 10 的数据模型设计。
+状态：**第一套服务端范围校验、整文档只读闭环及第二轮资源边界审查已于 2026-07-27 完成。** 局部范围遮罩、授权管理 UI 和真正的局部读取协议留在后续增量；阶段 10 可并行进行数据模型设计，但局部读取应与阶段 13/14 的 operation/delta 协议联合设计。
 
 ### 阶段 10：独立标注作业
 

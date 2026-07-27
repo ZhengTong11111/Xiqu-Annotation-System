@@ -85,13 +85,6 @@ export type MutationScopeViolation = {
   };
 };
 
-export type PermissionScopeViolationBody = {
-  code: "permission_scope_violation";
-  message: string;
-  violations: MutationScopeViolation[];
-  totalViolationCount: number;
-};
-
 // 用于 API 接收的 grant 操作请求。
 export type CreateGrantRequest = {
   userId: string;

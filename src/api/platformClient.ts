@@ -161,7 +161,7 @@ export class PlatformClient {
     });
   }
 
-  // 查询审计日志。仅管理员/教师/助教可访问（后端做权限检查）。
+  // 查询审计日志。管理员可全局查询，其他账号必须指定后端确认可管理的项目或文档。
   async listAuditLogs(options: ListAuditLogsOptions = {}) {
     const params = new URLSearchParams();
     if (options.projectId) params.set("projectId", options.projectId);

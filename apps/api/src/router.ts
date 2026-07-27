@@ -4,6 +4,7 @@ import type {
   MutablePermissionScope,
   PermissionAction,
   PermissionScope,
+  ProcessingJobType,
 } from "@xiqu/shared";
 import { badRequest, notFound } from "./errors.js";
 import type { ApiAnnotationMode, ApiUser } from "./domain.js";
@@ -68,10 +69,21 @@ type CreateVersionBody = {
 };
 
 type CreateJobBody = {
-  type?: "pitch_extraction" | "spectrogram_generation" | "staff_notation_render" | "gongche_render" | "pose_estimation" | "video_transcode" | "audio_extract" | "annotation_export";
+  type?: ProcessingJobType;
   inputFileIds?: string[];
   documentId?: string | null;
 };
+
+const processingJobTypes = new Set<ProcessingJobType>([
+  "pitch_extraction",
+  "spectrogram_generation",
+  "staff_notation_render",
+  "gongche_render",
+  "pose_estimation",
+  "video_transcode",
+  "audio_extract",
+  "annotation_export",
+]);
 
 export function registerApiRoutes(
   app: FastifyInstance,
@@ -229,17 +241,31 @@ export function registerApiRoutes(
 
   app.post<{ Body: CreateJobBody }>("/api/jobs", async (request) => {
     const user = await getCurrentUser(repository, request);
-    if (!request.body?.type || !Array.isArray(request.body.inputFileIds)) {
+    const { type, inputFileIds, documentId } = request.body ?? {};
+    if (
+      !type ||
+      !processingJobTypes.has(type) ||
+      !Array.isArray(inputFileIds) ||
+      inputFileIds.length === 0 ||
+      inputFileIds.some((fileId) => typeof fileId !== "string" || !fileId.trim())
+    ) {
       throw badRequest("任务类型和输入文件不能为空。");
     }
+    if (
+      documentId !== undefined &&
+      documentId !== null &&
+      (typeof documentId !== "string" || !documentId.trim())
+    ) {
+      throw badRequest("documentId 必须是非空字符串或 null。");
+    }
     return repository.createProcessingJob(user, {
-      type: request.body.type,
-      inputFileIds: request.body.inputFileIds,
-      documentId: request.body.documentId ?? null,
+      type,
+      inputFileIds: [...new Set(inputFileIds.map((fileId) => fileId.trim()))],
+      documentId: documentId?.trim() || null,
     });
   });
 
-  // 审计日志查询。仅管理员/教师/助教可访问，支持按 project/document/actor 筛选。
+  // 审计日志查询。管理员可全局访问，其他用户必须管理指定的项目或文档。
   app.get<{ Querystring: { projectId?: string; documentId?: string; actorUserId?: string; limit?: string } }>("/api/audit-logs", async (request) => {
     const user = await getCurrentUser(repository, request);
     const rawLimit = request.query.limit;
