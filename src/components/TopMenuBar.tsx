@@ -31,7 +31,7 @@ type TopMenuBarProps = {
   onMergeProjectFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onSaveProject: () => void;
   onSaveProjectToServer?: () => void;
-  onCreateServerVersion?: () => void;
+  onCompleteAnnotationVersion?: () => void;
   onExportTrack: (kind: "character" | "singing") => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -77,7 +77,7 @@ export function TopMenuBar({
   onMergeProjectFileChange,
   onSaveProject,
   onSaveProjectToServer,
-  onCreateServerVersion,
+  onCompleteAnnotationVersion,
   onExportTrack,
   onUndo,
   onRedo,
@@ -204,19 +204,19 @@ export function TopMenuBar({
                       }}
                       disabled={!onSaveProjectToServer}
                     >
-                      保存到服务器
+                      保存平台工作区
                     </button>
                     <button
                       type="button"
                       className="top-menu-dropdown-item"
                       onClick={() => {
-                        if (onCreateServerVersion) {
-                          handleAction(onCreateServerVersion);
+                        if (onCompleteAnnotationVersion) {
+                          handleAction(onCompleteAnnotationVersion);
                         }
                       }}
-                      disabled={!onCreateServerVersion}
+                      disabled={!onCompleteAnnotationVersion}
                     >
-                      保存为服务器版本
+                      完成标注版本
                     </button>
                     <div className="top-menu-divider" />
                     <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(() => onExportTrack("character"))}>

@@ -1,54 +1,23 @@
 import type {
-  EffectiveDocumentPermission,
-  MergedScope,
+  EffectiveWorkspacePermission,
   MutationScopeViolation,
-  PermissionAction,
-  PermissionGrant,
-  PermissionScope,
   ProjectMutation,
   TimeRangeScope,
 } from "@xiqu/shared";
 
 export type {
-  EffectiveDocumentPermission,
+  EffectiveWorkspacePermission,
   MutationScopeViolation,
   ProjectMutation,
 } from "@xiqu/shared";
 
-export type PermissionCheckInput = {
-  userId: string;
-  action: PermissionAction;
-  scope: PermissionScope;
-  grants: PermissionGrant[];
-};
-
-export type ResolveEffectivePermissionInput = {
-  userId: string;
-  isOwner: boolean;
-  isAdmin: boolean;
-  grants: PermissionGrant[];
-  documentId: string;
-  projectId: string;
-};
-
-export type PermissionScopeValidationResult =
+export type ProjectScopeValidationResult =
   | { valid: true }
   | { valid: false; reason: string };
 
 type RecordValue = Record<string, unknown>;
 type TimeRange = { startTime: number; endTime: number };
 type MutationCollector = { add: (mutation: ProjectMutation) => void };
-
-const IMPLIED_ACTIONS: Record<PermissionAction, PermissionAction[]> = {
-  view: [],
-  edit: ["view"],
-  manage: ["edit", "view"],
-  comment: [],
-  submit: [],
-  review: [],
-  merge: [],
-  confirm: [],
-};
 
 const KNOWN_PROJECT_KEYS = new Set([
   "video",
@@ -66,98 +35,26 @@ const KNOWN_PROJECT_KEYS = new Set([
 const CUSTOM_TRACK_CONTENT_KEYS = new Set(["blocks", "attachedPointTracks"]);
 const BUILTIN_TRACK_CONTENT_KEYS = new Set(["attachedPointTracks"]);
 
-export function isGrantActive(
-  grant: { expiresAt?: string | null },
+export function isMembershipActive(
+  membership: { expiresAt?: string | null },
   now = Date.now(),
 ) {
-  if (!grant.expiresAt) {
+  if (!membership.expiresAt) {
     return true;
   }
-  const expiresAt = Date.parse(grant.expiresAt);
+  const expiresAt = Date.parse(membership.expiresAt);
   return Number.isFinite(expiresAt) && expiresAt > now;
 }
 
-export function doesGrantAuthorizeAction(
-  grantActions: readonly PermissionAction[],
-  requestedAction: PermissionAction,
-) {
-  return grantActions.some((grantedAction) =>
-    grantedAction === requestedAction ||
-    IMPLIED_ACTIONS[grantedAction]?.includes(requestedAction) === true,
-  );
-}
-
-export function canPerformActionWithGrants({
-  userId,
-  action,
-  scope,
-  grants,
-}: PermissionCheckInput) {
-  return grants.some((grant) =>
-    grant.userId === userId &&
-    isGrantActive(grant) &&
-    doesGrantAuthorizeAction(grant.actions, action) &&
-    doesScopeContain(grant.scope, scope),
-  );
-}
-
-export function doesScopeContain(
-  grantScope: PermissionScope,
-  requestedScope: PermissionScope,
-) {
-  if (
-    grantScope.projectId &&
-    grantScope.projectId !== requestedScope.projectId
-  ) {
-    return false;
-  }
-  if (
-    grantScope.documentId &&
-    grantScope.documentId !== requestedScope.documentId
-  ) {
-    return false;
-  }
-  if (
-    grantScope.timeRange &&
-    (!requestedScope.timeRange ||
-      !containsTimeRange(grantScope.timeRange, requestedScope.timeRange))
-  ) {
-    return false;
-  }
-  const requestedTrackIds = requestedScope.trackScope?.trackIds ?? [];
-  const grantedTrackIds = grantScope.trackScope?.trackIds ?? [];
-  if (grantedTrackIds.length > 0 && requestedTrackIds.length === 0) {
-    return false;
-  }
-  return requestedTrackIds.every((trackId) =>
-    grantedTrackIds.length === 0 ||
-    grantedTrackIds.some((grantedTrackId) =>
-      doesGrantedTrackCover(grantedTrackId, trackId),
-    ),
-  );
-}
-
-export function validatePermissionScope(
+export function validateProjectScope(
   scope: unknown,
-): PermissionScopeValidationResult {
+): ProjectScopeValidationResult {
   if (!isRecord(scope)) {
     return { valid: false, reason: "scope 必须是对象。" };
   }
-  const allowedKeys = new Set(["projectId", "documentId", "timeRange", "trackScope"]);
+  const allowedKeys = new Set(["timeRange", "trackScope"]);
   if (Object.keys(scope).some((key) => !allowedKeys.has(key))) {
     return { valid: false, reason: "scope 包含不支持的字段。" };
-  }
-  if (
-    scope.projectId !== undefined &&
-    (typeof scope.projectId !== "string" || !scope.projectId.trim())
-  ) {
-    return { valid: false, reason: "projectId 必须是非空字符串。" };
-  }
-  if (
-    scope.documentId !== undefined &&
-    (typeof scope.documentId !== "string" || !scope.documentId.trim())
-  ) {
-    return { valid: false, reason: "documentId 必须是非空字符串。" };
   }
   if (scope.timeRange !== undefined) {
     if (!isRecord(scope.timeRange)) {
@@ -194,158 +91,58 @@ export function validatePermissionScope(
   return { valid: true };
 }
 
-export function resolveEffectiveDocumentPermission({
-  userId,
-  isOwner,
-  isAdmin,
-  grants,
-  documentId,
-  projectId,
-}: ResolveEffectivePermissionInput): EffectiveDocumentPermission {
-  if (isAdmin || isOwner) {
-    return {
-      canView: true,
-      canEdit: true,
-      canManage: true,
-      isUnrestrictedViewer: true,
-      isUnrestrictedEditor: true,
-      isUnrestrictedManager: true,
-      source: isAdmin ? "admin" : "owner",
-      editScopes: [],
-      viewScopes: [],
-      manageScopes: [],
-    };
-  }
-
-  const relevantGrants = grants.filter((grant) =>
-    grant.userId === userId &&
-    isGrantActive(grant) &&
-    (!grant.scope.documentId || grant.scope.documentId === documentId) &&
-    (!grant.scope.projectId || grant.scope.projectId === projectId),
-  );
-  const grantsFor = (action: PermissionAction) =>
-    relevantGrants.filter((grant) =>
-      doesGrantAuthorizeAction(grant.actions, action),
-    );
-  const viewGrants = grantsFor("view");
-  const editGrants = grantsFor("edit");
-  const manageGrants = grantsFor("manage");
-
-  return {
-    canView: viewGrants.length > 0,
-    canEdit: editGrants.length > 0,
-    canManage: manageGrants.length > 0,
-    isUnrestrictedViewer: viewGrants.some((grant) =>
-      hasUnrestrictedScope(grant.scope),
-    ),
-    isUnrestrictedEditor: editGrants.some((grant) =>
-      hasUnrestrictedScope(grant.scope),
-    ),
-    isUnrestrictedManager: manageGrants.some((grant) =>
-      hasUnrestrictedScope(grant.scope),
-    ),
-    source:
-      manageGrants.length || editGrants.length || viewGrants.length
-        ? "grant"
-        : "none",
-    viewScopes: mergeGrantScopes(viewGrants.map((grant) => grant.scope)),
-    editScopes: mergeGrantScopes(editGrants.map((grant) => grant.scope)),
-    manageScopes: mergeGrantScopes(manageGrants.map((grant) => grant.scope)),
-  };
-}
-
-export function mergeGrantScopes(scopes: PermissionScope[]): MergedScope[] {
-  return scopes.map((scope) => ({
-    trackIds: [...new Set(scope.trackScope?.trackIds ?? [])],
-    timeRanges: scope.timeRange ? [scope.timeRange] : [],
-  }));
-}
-
-export function isScopeAuthorized(
-  scopes: MergedScope[],
+export function isProjectScopeAuthorized(
+  allowedTrackIds: string[],
+  allowedTimeRange: TimeRangeScope | null | undefined,
   trackIds: string[],
   timeRange: TimeRange | undefined,
 ) {
-  // 缺失轨道或时间的 mutation 无法安全映射到受限授权，只允许完整范围。
-  if (trackIds.length === 0) {
-    return scopes.some((scope) =>
-      scope.trackIds.length === 0 && scope.timeRanges.length === 0,
-    );
+  // 无法映射到具体轨道/时间的结构性 mutation，只允许完全不受限的成员执行。
+  if (trackIds.length === 0 && allowedTrackIds.length > 0) {
+    return false;
   }
-  return trackIds.every((trackId) => {
-    const matchingScopes = scopes.filter((scope) =>
-      scope.trackIds.length === 0 ||
-      scope.trackIds.some((grantedTrackId) =>
-        doesGrantedTrackCover(grantedTrackId, trackId),
-      ),
-    );
-    if (!timeRange) {
-      return matchingScopes.some((scope) => scope.timeRanges.length === 0);
-    }
-    if (matchingScopes.some((scope) => scope.timeRanges.length === 0)) {
-      return true;
-    }
-    return doRangesCover(
-      matchingScopes.flatMap((scope) => scope.timeRanges),
-      timeRange,
-    );
-  });
-}
-
-// grant scope 中空 trackIds/空 timeRange 分别表示“全部轨道/全部时间”。
-// 这与 mutation 缺少 trackIds 时的保守拒绝语义不同，不能复用 isScopeAuthorized()。
-export function isGrantScopeAuthorized(
-  managerScopes: MergedScope[],
-  requestedTrackIds: string[],
-  requestedTimeRange: TimeRange | undefined,
-) {
-  const scopeCoversTrack = (scope: MergedScope, trackId: string | null) =>
-    trackId === null
-      ? scope.trackIds.length === 0
-      : scope.trackIds.length === 0 ||
-        scope.trackIds.some((grantedTrackId) =>
-          doesGrantedTrackCover(grantedTrackId, trackId),
-        );
-  const scopeCoversTime = (candidateScopes: MergedScope[]) => {
-    if (!requestedTimeRange) {
-      return candidateScopes.some((scope) => scope.timeRanges.length === 0);
-    }
-    if (candidateScopes.some((scope) => scope.timeRanges.length === 0)) {
-      return true;
-    }
-    return doRangesCover(
-      candidateScopes.flatMap((scope) => scope.timeRanges),
-      requestedTimeRange,
-    );
-  };
-  const tracksToCheck: Array<string | null> =
-    requestedTrackIds.length > 0 ? requestedTrackIds : [null];
-  return tracksToCheck.every((trackId) =>
-    scopeCoversTime(
-      managerScopes.filter((scope) => scopeCoversTrack(scope, trackId)),
+  const tracksAllowed = trackIds.every((trackId) =>
+    allowedTrackIds.length === 0 ||
+    allowedTrackIds.some((allowedTrackId) =>
+      doesGrantedTrackCover(allowedTrackId, trackId),
     ),
   );
+  if (!tracksAllowed) {
+    return false;
+  }
+  if (!allowedTimeRange) {
+    return true;
+  }
+  return Boolean(timeRange && containsTimeRange(allowedTimeRange, timeRange));
 }
 
 export function isMutationScopeAuthorized(
-  permission: EffectiveDocumentPermission,
+  permission: EffectiveWorkspacePermission,
   trackIds: string[],
   timeRange: TimeRange | undefined,
   requiresManage: boolean,
 ) {
   if (requiresManage) {
-    return permission.isUnrestrictedManager ||
-      (permission.canManage &&
-        isScopeAuthorized(permission.manageScopes, trackIds, timeRange));
+    return permission.canManage &&
+      isProjectScopeAuthorized(
+        permission.trackIds,
+        permission.timeRange,
+        trackIds,
+        timeRange,
+      );
   }
-  return permission.isUnrestrictedEditor ||
-    (permission.canEdit &&
-      isScopeAuthorized(permission.editScopes, trackIds, timeRange));
+  return permission.canEdit &&
+    isProjectScopeAuthorized(
+      permission.trackIds,
+      permission.timeRange,
+      trackIds,
+      timeRange,
+    );
 }
 
 export function authorizeProjectMutations(
   mutations: ProjectMutation[],
-  permission: EffectiveDocumentPermission,
+  permission: EffectiveWorkspacePermission,
 ) {
   const violations: MutationScopeViolation[] = [];
   for (const mutation of mutations) {
@@ -843,33 +640,9 @@ function containsTimeRange(granted: TimeRangeScope, requested: TimeRangeScope) {
     granted.endTime >= requested.endTime;
 }
 
-function hasUnrestrictedScope(scope: PermissionScope) {
-  return !scope.timeRange && (scope.trackScope?.trackIds.length ?? 0) === 0;
-}
-
 function doesGrantedTrackCover(grantedTrackId: string, requestedTrackId: string) {
   return requestedTrackId === grantedTrackId ||
     requestedTrackId.startsWith(`${grantedTrackId}#`);
-}
-
-function doRangesCover(ranges: TimeRangeScope[], requested: TimeRange) {
-  const sorted = ranges
-    .filter((range) => range.endTime >= requested.startTime && range.startTime <= requested.endTime)
-    .sort((left, right) => left.startTime - right.startTime);
-  let coveredUntil = requested.startTime;
-  for (const range of sorted) {
-    if (range.startTime > coveredUntil) {
-      return false;
-    }
-    coveredUntil = Math.max(coveredUntil, range.endTime);
-    if (coveredUntil >= requested.endTime) {
-      return true;
-    }
-  }
-  return requested.startTime === requested.endTime &&
-    sorted.some((range) =>
-      range.startTime <= requested.startTime && range.endTime >= requested.endTime,
-    );
 }
 
 function normalizeRange(startTime: unknown, endTime: unknown) {

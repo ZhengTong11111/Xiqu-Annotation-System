@@ -8,7 +8,11 @@ import { HttpError } from "./errors.js";
 import { PrismaPlatformRepository } from "./repository.js";
 import { registerApiRoutes } from "./router.js";
 import { LocalObjectStorage } from "./storage.js";
-import { CourseAssignmentService } from "./courseAssignmentService.js";
+import { ProjectMemberService } from "./projectMemberService.js";
+import { ProjectAccessService } from "./projectAccess.js";
+import { AnnotationWorkspaceService } from "./annotationWorkspaceService.js";
+import { AnnotationVersionService } from "./annotationVersionService.js";
+import { ProjectVersionService } from "./projectVersionService.js";
 
 const port = Number(process.env.PORT ?? 4317);
 const databaseUrl = process.env.DATABASE_URL ??
@@ -17,8 +21,19 @@ const pool = new pg.Pool({ connectionString: databaseUrl });
 const prisma = new PrismaClient({
   adapter: new PrismaPg(pool),
 });
-const repository = new PrismaPlatformRepository(prisma);
-const courseAssignments = new CourseAssignmentService(prisma, repository);
+const projectAccess = new ProjectAccessService(prisma);
+const repository = new PrismaPlatformRepository(prisma, projectAccess);
+const projectMembers = new ProjectMemberService(prisma, projectAccess);
+const annotationWorkspaces = new AnnotationWorkspaceService(
+  prisma,
+  projectAccess,
+);
+const annotationVersions = new AnnotationVersionService(
+  prisma,
+  projectAccess,
+  annotationWorkspaces,
+);
+const projectVersions = new ProjectVersionService(prisma, projectAccess);
 const storage = new LocalObjectStorage();
 
 const app = Fastify({
@@ -31,6 +46,9 @@ const app = Fastify({
 await app.register(cors, {
   origin: true,
   credentials: true,
+  // 平台管理页会用 PATCH 修改成员授权、用 DELETE 移除项目成员。
+  // 显式列出方法，避免浏览器预检通过 OPTIONS 后拦截真正的写请求。
+  methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
 });
 
 await app.register(multipart, {
@@ -81,7 +99,12 @@ app.addHook("preSerialization", async (_request, _response, payload) => {
   return { data: payload };
 });
 
-registerApiRoutes(app, repository, storage, courseAssignments);
+registerApiRoutes(app, repository, storage, {
+  projectMembers,
+  annotationWorkspaces,
+  annotationVersions,
+  projectVersions,
+});
 
 try {
   await repository.ensureSeedData();

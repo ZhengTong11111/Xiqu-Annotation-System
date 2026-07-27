@@ -4317,12 +4317,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   async function saveProjectToServer(): Promise<boolean> {
     if (!editorSession) {
-      window.alert("当前不是服务器文档。请从平台主页打开一个标注文档后再保存到服务器。");
+      window.alert("当前不是平台工作区。请从项目库打开工作区后再保存。");
       return false;
     }
-    // 整文档只读：无 edit 权限时不发起保存请求。
+    // 工作区只读：无 edit 权限时不发起保存请求。
     if (!editorSession.effectivePermission.canEdit) {
-      window.alert("当前文档为只读状态，你只能查看和导航，不能保存到服务器。");
+      window.alert("当前工作区为只读状态，你只能查看和导航，不能保存。");
       return false;
     }
     if (serverSaveInFlightRef.current) {
@@ -4360,21 +4360,21 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (pendingSnapshot.length > 0) {
         await submitPendingOperations(
           editorSession.client,
-          editorSession.documentId,
+          editorSession.workspaceId,
           pendingSnapshot,
           remoteBaseRevision,
           (operationId) => submittedOperationIds.push(operationId),
         );
       }
-      // 2. 保存完整 ProjectData snapshot（snapshot 仍由 /save 写入，operation log 不驱动 snapshot）。
+      // 2. 保存完整 ProjectData snapshot（operation log 不直接改变工作区内容）。
       const projectToSave = prepareProjectForServer(getPersistableProjectData(projectSnapshot));
-      const savedDocument = await editorSession.client.saveAnnotationDocument<ProjectData>(editorSession.documentId, {
+      const savedWorkspace = await editorSession.client.saveWorkspace<ProjectData>(editorSession.workspaceId, {
         baseRevision: remoteBaseRevision,
         payload: projectToSave,
       });
       // 3. 成功后更新 baseRevision 并确认本地 pending operations（清空 pending、标 acknowledged）。
-      setRemoteBaseRevision(savedDocument.latestSnapshot.revision);
-      editorSession.onDocumentSaved(savedDocument);
+      setRemoteBaseRevision(savedWorkspace.latestSnapshot.revision);
+      editorSession.onWorkspaceSaved(savedWorkspace);
       markProjectAsSaved(projectSnapshot, trackSnapSnapshot, {
         acknowledgedOperationIds: coveredOperationIds,
         savedLocalRevision,
@@ -4403,13 +4403,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
   }
 
-  async function createServerVersion() {
+  async function completeAnnotationVersion() {
     if (!editorSession) {
-      window.alert("当前不是服务器文档。请从平台主页打开一个标注文档后再保存版本。");
+      window.alert("当前不是平台工作区。请从项目库打开工作区后再完成标注版本。");
       return;
     }
-    if (!editorSession.effectivePermission.canEdit) {
-      window.alert("当前文档为只读状态，不能创建服务器版本。");
+    if (
+      !editorSession.effectivePermission.canEdit ||
+      !editorSession.effectivePermission.capabilities.includes(
+        "complete_version",
+      )
+    ) {
+      window.alert("当前账号不能在此工作区完成标注版本。");
       return;
     }
     const name = window.prompt("请输入版本名称：", `版本 ${new Date().toLocaleString("zh-CN")}`);
@@ -4420,12 +4425,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
     try {
-      await editorSession.client.createAnnotationVersion<ProjectData>(editorSession.documentId, {
+      await editorSession.client.completeAnnotationVersion<ProjectData>(editorSession.workspaceId, {
         name,
       });
-      window.alert("服务器版本已保存。");
+      window.alert("标注版本已完成。之后仍可继续编辑当前工作区。");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "保存服务器版本失败。";
+      const message = error instanceof Error ? error.message : "完成标注版本失败。";
       window.alert(message);
     }
   }
@@ -4804,9 +4809,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           onSaveProjectToServer={editorSession?.effectivePermission.canEdit ? () => {
             void saveProjectToServer();
           } : undefined}
-          onCreateServerVersion={editorSession?.effectivePermission.canEdit ? () => {
-            void createServerVersion();
-          } : undefined}
+          onCompleteAnnotationVersion={
+            editorSession?.effectivePermission.canEdit &&
+              editorSession.effectivePermission.capabilities.includes(
+                "complete_version",
+              )
+              ? () => {
+                  void completeAnnotationVersion();
+                }
+              : undefined
+          }
           onExportTrack={handleExport}
           onUndo={undo}
           onRedo={redo}
@@ -7796,7 +7808,7 @@ function App() {
     <PlatformWorkspace
       renderEditor={(editorSession, localEditorSession, platformNavigation) => (
         <EditorWorkbench
-          key={editorSession?.documentId ?? localEditorSession?.id ?? "local-editor"}
+          key={editorSession?.workspaceId ?? localEditorSession?.id ?? "local-editor"}
           editorSession={editorSession}
           localEditorSession={localEditorSession}
           platformNavigation={platformNavigation}

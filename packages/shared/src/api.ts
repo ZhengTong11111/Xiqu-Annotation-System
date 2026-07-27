@@ -1,74 +1,42 @@
 import type {
-  AnnotationDocument,
-  AnnotationDocumentSummary,
-  AnnotationMode,
   AnnotationOperationRecord,
   AnnotationProjectSummary,
   AnnotationVersion,
+  AnnotationVersionKind,
+  AnnotationVersionSummary,
+  AnnotationVersionStatus,
+  AnnotationWorkspace,
+  AnnotationWorkspaceSummary,
   AuditLogEntry,
-  CreateGrantRequest,
-  EffectiveDocumentPermission,
-  GrantSummary,
-  AssignmentRecipient,
-  AssignmentSummary,
-  CourseMember,
-  CourseMemberRole,
-  CourseSummary,
-  MyAssignment,
-  PermissionTrackOption,
   MediaAsset,
-  PermissionGrant,
+  MutableProjectScope,
+  PermissionTrackOption,
   PlatformUser,
   ProcessingJob,
   ProcessingJobType,
+  ProjectCapability,
+  ProjectMember,
+  ProjectMemberRole,
+  ProjectVersion,
+  ProjectVersionStatus,
   StoredFileObject,
-  UpdateGrantRequest,
+  WorkspaceStatus,
+  WorkspaceType,
 } from "./platform.js";
 
-export type CreateCourseRequest = {
-  title: string;
-  description?: string | null;
-};
-
-export type AddCourseMemberRequest = {
+export type AddProjectMemberRequest = {
   userId: string;
-  role: CourseMemberRole;
+  role: ProjectMemberRole;
+  capabilities?: ProjectCapability[];
+  scope?: MutableProjectScope;
+  expiresAt?: string | null;
 };
 
-export type UpdateCourseMemberRequest = {
-  role: CourseMemberRole;
-};
-
-export type CreateAssignmentRequest = {
-  title: string;
-  description?: string | null;
-  projectId: string;
-  sourceDocumentId: string;
-  startAt?: string | null;
-  dueAt?: string | null;
-  scope: {
-    startTime?: number | null;
-    endTime?: number | null;
-    trackIds: string[];
-  };
-  recipientUserIds: string[];
-};
-
-export type ReturnAssignmentRequest = {
-  feedback?: string | null;
-};
-
-export type UpdateDraftAssignmentRequest = {
-  title: string;
-  description?: string | null;
-  startAt?: string | null;
-  dueAt?: string | null;
-  scope: {
-    startTime?: number | null;
-    endTime?: number | null;
-    trackIds: string[];
-  };
-  recipientUserIds: string[];
+export type UpdateProjectMemberRequest = {
+  role?: ProjectMemberRole;
+  capabilities?: ProjectCapability[];
+  scope?: MutableProjectScope;
+  expiresAt?: string | null;
 };
 
 export type ApiErrorCode =
@@ -118,21 +86,44 @@ export type UploadFileResponse = {
   file: StoredFileObject;
 };
 
-export type CreateAnnotationDocumentRequest<TPayload = unknown> = {
-  title: string;
-  mode: AnnotationMode;
+export type CreateWorkspaceRequest<TPayload = unknown> = {
+  name: string;
+  workspaceType?: WorkspaceType;
+  ownerUserId?: string;
   initialPayload: TPayload;
-  grants?: PermissionGrant[];
 };
 
-export type SaveAnnotationDocumentRequest<TPayload = unknown> = {
+export type SaveWorkspaceRequest<TPayload = unknown> = {
   baseRevision: number;
   payload: TPayload;
 };
 
-export type CreateAnnotationVersionRequest = {
+export type UpdateWorkspaceStatusRequest = {
+  status: WorkspaceStatus;
+};
+
+export type CompleteAnnotationVersionRequest = {
   name: string;
   description?: string | null;
+  kind?: AnnotationVersionKind;
+};
+
+export type ForkAnnotationVersionRequest = {
+  workspaceName: string;
+};
+
+export type UpdateAnnotationVersionStatusRequest = {
+  status: Extract<AnnotationVersionStatus, "archived">;
+};
+
+export type CreateProjectVersionRequest = {
+  sourceVersionId: string;
+  name: string;
+  description?: string | null;
+};
+
+export type UpdateProjectVersionStatusRequest = {
+  status: Exclude<ProjectVersionStatus, "published" | "superseded">;
 };
 
 export type CreateAnnotationOperationRequest = {
@@ -144,7 +135,7 @@ export type CreateAnnotationOperationRequest = {
 
 export type ListAuditLogsOptions = {
   projectId?: string;
-  documentId?: string;
+  workspaceId?: string;
   actorUserId?: string;
   limit?: number;
 };
@@ -152,105 +143,70 @@ export type ListAuditLogsOptions = {
 export type CreateProcessingJobRequest = {
   type: ProcessingJobType;
   inputFileIds: string[];
-  documentId?: string | null;
+  workspaceId?: string | null;
 };
 
 export type PlatformApiContract<TPayload = unknown> = {
-  login: {
-    request: LoginRequest;
-    response: LoginResponse;
+  login: { request: LoginRequest; response: LoginResponse };
+  me: { response: PlatformUser };
+  listProjects: { response: AnnotationProjectSummary[] };
+  listFiles: { response: StoredFileObject[] };
+  uploadFile: { response: UploadFileResponse };
+  listMediaAssets: { response: MediaAsset[] };
+  createProject: { request: CreateProjectRequest; response: AnnotationProjectSummary };
+  createMediaAsset: { request: CreateMediaAssetRequest; response: MediaAsset };
+  listProjectWorkspaces: { response: AnnotationWorkspaceSummary[] };
+  createWorkspace: {
+    request: CreateWorkspaceRequest<TPayload>;
+    response: AnnotationWorkspace<TPayload>;
   };
-  me: {
-    response: PlatformUser;
+  getWorkspace: { response: AnnotationWorkspace<TPayload> };
+  saveWorkspace: {
+    request: SaveWorkspaceRequest<TPayload>;
+    response: AnnotationWorkspace<TPayload>;
   };
-  listProjects: {
-    response: AnnotationProjectSummary[];
+  updateWorkspaceStatus: {
+    request: UpdateWorkspaceStatusRequest;
+    response: AnnotationWorkspaceSummary;
   };
-  listFiles: {
-    response: StoredFileObject[];
-  };
-  uploadFile: {
-    response: UploadFileResponse;
-  };
-  listMediaAssets: {
-    response: MediaAsset[];
-  };
-  createProject: {
-    request: CreateProjectRequest;
-    response: AnnotationProjectSummary;
-  };
-  createMediaAsset: {
-    request: CreateMediaAssetRequest;
-    response: MediaAsset;
-  };
-  listProjectDocuments: {
-    response: AnnotationDocumentSummary[];
-  };
-  createAnnotationDocument: {
-    request: CreateAnnotationDocumentRequest<TPayload>;
-    response: AnnotationDocument<TPayload>;
-  };
-  getAnnotationDocument: {
-    response: AnnotationDocument<TPayload>;
-  };
-  saveAnnotationDocument: {
-    request: SaveAnnotationDocumentRequest<TPayload>;
-    response: AnnotationDocument<TPayload>;
-  };
-  listAnnotationVersions: {
-    response: AnnotationVersion<TPayload>[];
-  };
-  createAnnotationVersion: {
-    request: CreateAnnotationVersionRequest;
+  listProjectAnnotationVersions: { response: AnnotationVersionSummary[] };
+  listWorkspaceAnnotationVersions: { response: AnnotationVersionSummary[] };
+  completeAnnotationVersion: {
+    request: CompleteAnnotationVersionRequest;
     response: AnnotationVersion<TPayload>;
+  };
+  forkAnnotationVersion: {
+    request: ForkAnnotationVersionRequest;
+    response: AnnotationWorkspace<TPayload>;
+  };
+  updateAnnotationVersionStatus: {
+    request: UpdateAnnotationVersionStatusRequest;
+    response: AnnotationVersionSummary;
+  };
+  listProjectVersions: { response: ProjectVersion[] };
+  createProjectVersion: {
+    request: CreateProjectVersionRequest;
+    response: ProjectVersion;
+  };
+  publishProjectVersion: { response: ProjectVersion };
+  updateProjectVersionStatus: {
+    request: UpdateProjectVersionStatusRequest;
+    response: ProjectVersion;
   };
   createProcessingJob: {
     request: CreateProcessingJobRequest;
     response: ProcessingJob;
   };
-  listAuditLogs: {
-    response: AuditLogEntry[];
-  };
-  listAnnotationOperations: {
-    response: AnnotationOperationRecord[];
-  };
+  listAuditLogs: { response: AuditLogEntry[] };
+  listAnnotationOperations: { response: AnnotationOperationRecord[] };
   createAnnotationOperation: {
     request: CreateAnnotationOperationRequest;
     response: AnnotationOperationRecord;
   };
-  getEffectiveDocumentPermission: {
-    response: EffectiveDocumentPermission;
-  };
-  listDocumentGrants: {
-    response: GrantSummary[];
-  };
-  createDocumentGrant: {
-    request: CreateGrantRequest;
-    response: GrantSummary;
-  };
-  updatePermissionGrant: {
-    request: UpdateGrantRequest;
-    response: GrantSummary;
-  };
-  revokePermissionGrant: {
-    response: void;
-  };
   listDirectoryUsers: { response: PlatformUser[] };
-  listCourses: { response: CourseSummary[] };
-  createCourse: { request: CreateCourseRequest; response: CourseSummary };
-  getCourse: { response: CourseSummary };
-  listCourseMembers: { response: CourseMember[] };
-  addCourseMember: { request: AddCourseMemberRequest; response: CourseMember };
-  updateCourseMember: { request: UpdateCourseMemberRequest; response: CourseMember };
-  removeCourseMember: { response: void };
-  listCourseAssignments: { response: AssignmentSummary[] };
-  createAssignment: { request: CreateAssignmentRequest; response: AssignmentSummary };
-  getAssignment: { response: AssignmentSummary };
-  updateDraftAssignment: { request: UpdateDraftAssignmentRequest; response: AssignmentSummary };
-  publishAssignment: { response: AssignmentSummary };
-  listAssignmentRecipients: { response: AssignmentRecipient[] };
-  submitAssignment: { response: AssignmentRecipient };
-  returnAssignment: { request: ReturnAssignmentRequest; response: AssignmentRecipient };
-  listMyAssignments: { response: MyAssignment[] };
+  listProjectMembers: { response: ProjectMember[] };
+  addProjectMember: { request: AddProjectMemberRequest; response: ProjectMember };
+  updateProjectMember: { request: UpdateProjectMemberRequest; response: ProjectMember };
+  removeProjectMember: { response: void };
   listPermissionTracks: { response: PermissionTrackOption[] };
 };

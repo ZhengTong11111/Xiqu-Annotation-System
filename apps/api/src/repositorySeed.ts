@@ -1,11 +1,12 @@
 import {
-  AnnotationMode as DbAnnotationMode,
   PlatformRole as DbPlatformRole,
+  ProjectCapability as DbProjectCapability,
+  ProjectMemberRole as DbProjectMemberRole,
   type PrismaClient,
 } from "@prisma/client";
+import { DEFAULT_PROJECT_ROLE_CAPABILITIES } from "@xiqu/shared";
 import { hashPassword } from "./auth.js";
 import type { ApiRole } from "./domain.js";
-import { createGrantData } from "./repositoryMappers.js";
 
 const seedUsers: Array<{
   id: string;
@@ -52,7 +53,9 @@ export async function ensurePlatformSeedData(prisma: PrismaClient) {
         displayName: seedUser.displayName,
         passwordHash,
         roles: {
-          create: seedUser.roles.map((role) => ({ role: role as DbPlatformRole })),
+          create: seedUser.roles.map((role) => ({
+            role: role as DbPlatformRole,
+          })),
         },
       },
     });
@@ -60,34 +63,35 @@ export async function ensurePlatformSeedData(prisma: PrismaClient) {
       where: { accountName: seedUser.accountName },
       include: { roles: true },
     });
-    const existingRoles = new Set(user.roles.map((role) => role.role));
+    const existingRoles = new Set(user.roles.map((entry) => entry.role));
     for (const role of seedUser.roles) {
       if (!existingRoles.has(role as DbPlatformRole)) {
         await prisma.userRole.create({
-          data: {
-            userId: user.id,
-            role: role as DbPlatformRole,
-          },
+          data: { userId: user.id, role: role as DbPlatformRole },
         });
       }
     }
   }
 
-  const existingDemoProject = await prisma.annotationProject.findUnique({
+  if (await prisma.annotationProject.findUnique({
     where: { id: "project-xunmeng-demo" },
-  });
-  if (existingDemoProject) {
-    await ensureDemoPermissionGrants(prisma);
+  })) {
     return;
   }
 
-  const now = new Date();
+  const annotatorCapabilities = [
+    ...DEFAULT_PROJECT_ROLE_CAPABILITIES.annotator,
+  ] as DbProjectCapability[];
+  const reviewerCapabilities = [
+    ...DEFAULT_PROJECT_ROLE_CAPABILITIES.reviewer,
+  ] as DbProjectCapability[];
+
   await prisma.$transaction(async (transaction) => {
     const mediaAsset = await transaction.mediaAsset.create({
       data: {
         id: "media-xunmeng-demo",
         title: "示例视频：顾卫英《寻梦》",
-        description: "开发环境内置示例媒体资产，用于验证项目库和服务端保存接口。",
+        description: "开发环境内置示例媒体，用于验证工作区和版本流程。",
         ownerUserId: "user-admin",
       },
     });
@@ -99,70 +103,49 @@ export async function ensurePlatformSeedData(prisma: PrismaClient) {
         ownerUserId: "user-admin",
       },
     });
-    const document = await transaction.annotationDocument.create({
+    const workspace = await transaction.annotationWorkspace.create({
       data: {
-        id: "document-xunmeng-base",
+        id: "workspace-xunmeng-main",
         projectId: project.id,
-        title: "基准标注文档",
-        mode: DbAnnotationMode.collaborative,
-        createdAt: now,
+        name: "项目主工作区",
+        workspaceType: "main",
+        status: "active",
+        ownerUserId: "user-admin",
+        createdBy: "user-admin",
       },
     });
     const snapshot = await transaction.annotationSnapshot.create({
       data: {
-        id: "snapshot-xunmeng-base-0",
-        documentId: document.id,
-        revision: 0,
+        id: "snapshot-xunmeng-main-1",
+        workspaceId: workspace.id,
+        revision: 1,
         payload: {},
         createdBy: "user-admin",
-        createdAt: now,
       },
     });
-    await transaction.annotationDocument.update({
-      where: { id: document.id },
-      data: {
-        latestSnapshotId: snapshot.id,
-      },
+    await transaction.annotationWorkspace.update({
+      where: { id: workspace.id },
+      data: { latestSnapshotId: snapshot.id },
     });
-    await transaction.permissionGrant.createMany({
+    await transaction.annotationProject.update({
+      where: { id: project.id },
+      data: { primaryWorkspaceId: workspace.id },
+    });
+    await transaction.projectMember.createMany({
       data: [
-        createGrantData("user-admin", project.id, document.id, ["view", "edit", "manage", "confirm", "merge"]),
-        createGrantData("user-ta", project.id, document.id, ["view", "edit", "review", "merge", "manage"]),
-        createGrantData("user-student", project.id, document.id, ["view"]),
+        {
+          projectId: project.id,
+          userId: "user-ta",
+          role: DbProjectMemberRole.reviewer,
+          capabilities: reviewerCapabilities,
+        },
+        {
+          projectId: project.id,
+          userId: "user-student",
+          role: DbProjectMemberRole.annotator,
+          capabilities: annotatorCapabilities,
+        },
       ],
     });
   });
-}
-
-async function ensureDemoPermissionGrants(prisma: PrismaClient) {
-  const expectedActionsByUserId: Record<string, string[]> = {
-    "user-admin": ["view", "edit", "manage", "confirm", "merge"],
-    "user-ta": ["view", "edit", "review", "merge", "manage"],
-    "user-student": ["view"],
-  };
-  for (const [userId, actions] of Object.entries(expectedActionsByUserId)) {
-    const grant = await prisma.permissionGrant.findFirst({
-      where: {
-        userId,
-        projectId: "project-xunmeng-demo",
-        documentId: "document-xunmeng-base",
-      },
-      orderBy: { createdAt: "asc" },
-    });
-    if (grant) {
-      await prisma.permissionGrant.update({
-        where: { id: grant.id },
-        data: { actions },
-      });
-      continue;
-    }
-    await prisma.permissionGrant.create({
-      data: createGrantData(
-        userId,
-        "project-xunmeng-demo",
-        "document-xunmeng-base",
-        actions as Parameters<typeof createGrantData>[3],
-      ),
-    });
-  }
 }

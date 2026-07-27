@@ -1,104 +1,89 @@
-import { Prisma, type User, type UserRole } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import type {
-  ApiAnnotationDocument,
-  ApiAnnotationMode,
-  ApiAnnotationOperation,
-  ApiAnnotationProject,
-  ApiAnnotationSnapshot,
-  ApiAnnotationVersion,
-  ApiAuditLogEntry,
-  ApiFileObject,
-  ApiMediaAsset,
-  ApiPermissionGrant,
-  ApiProcessingJob,
-  ApiRole,
-  ApiUser,
-} from "./domain.js";
+  AnnotationProjectSummary,
+  AnnotationVersion,
+  AnnotationVersionSummary,
+  AnnotationWorkspace,
+  AnnotationWorkspaceSummary,
+  EffectiveWorkspacePermission,
+  ProjectCapability,
+  ProjectVersion,
+} from "@xiqu/shared";
+import type { ApiUser } from "./domain.js";
 
-export type UserWithRoles = User & {
-  roles: UserRole[];
-};
+export const userReferenceSelect = {
+  id: true,
+  accountName: true,
+  displayName: true,
+} satisfies Prisma.UserSelect;
 
-export type GrantRecord = {
-  userId: string;
-  actions: string[];
-};
+export const workspaceSummaryInclude = {
+  owner: { select: userReferenceSelect },
+  creator: { select: userReferenceSelect },
+  latestSnapshot: true,
+  _count: { select: { versions: true } },
+} satisfies Prisma.AnnotationWorkspaceInclude;
 
-export type ProjectSummaryRecord = {
-  id: string;
-  title: string;
-  mediaAssetId: string;
-  ownerUserId: string;
-  updatedAt: Date;
-  _count?: {
-    documents: number;
-  };
-};
-
-export const documentInclude = {
-  project: {
+export const annotationVersionInclude = {
+  snapshot: true,
+  creator: { select: userReferenceSelect },
+  workspace: {
     include: {
-      mediaAsset: true,
-      _count: { select: { documents: true } },
+      owner: { select: userReferenceSelect },
     },
   },
-  latestSnapshot: true,
-  grants: true,
-} satisfies Prisma.AnnotationDocumentInclude;
+} satisfies Prisma.AnnotationVersionInclude;
 
-export type DocumentWithDetails = Prisma.AnnotationDocumentGetPayload<{ include: typeof documentInclude }>;
+export const projectVersionInclude = {
+  creator: { select: userReferenceSelect },
+  publisher: { select: userReferenceSelect },
+  sourceVersion: {
+    include: {
+      creator: { select: userReferenceSelect },
+      snapshot: true,
+    },
+  },
+} satisfies Prisma.ProjectVersionInclude;
 
-export function expandDocument(document: DocumentWithDetails): ApiAnnotationDocument {
-  if (!document.latestSnapshot) {
-    throw new Error("标注文档缺少快照。");
-  }
-  return {
-    ...toDocumentSummary(document),
-    project: toProjectSummary(document.project),
-    mediaAsset: toMediaAsset(document.project.mediaAsset),
-    grants: document.grants.map((grant) => toGrant(grant)),
-    latestSnapshot: toSnapshot(document.latestSnapshot),
-  };
-}
+export type WorkspaceWithSummary = Prisma.AnnotationWorkspaceGetPayload<{
+  include: typeof workspaceSummaryInclude;
+}>;
 
-export function createGrantData(
-  userId: string,
-  projectId: string,
-  documentId: string,
-  actions: ApiPermissionGrant["actions"],
-) {
-  return {
-    userId,
-    projectId,
-    documentId,
-    actions,
-    trackIds: [],
-  };
-}
+export type AnnotationVersionWithDetails = Prisma.AnnotationVersionGetPayload<{
+  include: typeof annotationVersionInclude;
+}>;
 
-export function toGrantCreateData(grant: ApiPermissionGrant, projectId: string, documentId: string) {
-  return {
-    userId: grant.userId,
-    projectId: grant.scope.projectId ?? projectId,
-    documentId: grant.scope.documentId ?? documentId,
-    actions: grant.actions,
-    startTime: grant.scope.timeRange?.startTime ?? null,
-    endTime: grant.scope.timeRange?.endTime ?? null,
-    trackIds: grant.scope.trackScope?.trackIds ?? [],
-    expiresAt: grant.expiresAt ? new Date(grant.expiresAt) : null,
-  };
-}
+export type ProjectVersionWithDetails = Prisma.ProjectVersionGetPayload<{
+  include: typeof projectVersionInclude;
+}>;
 
-export function toPublicUser(user: UserWithRoles): ApiUser {
+export function toPublicUser(user: {
+  id: string;
+  accountName: string;
+  displayName: string;
+  roles: Array<{ role: string }>;
+}): ApiUser {
   return {
     id: user.id,
     accountName: user.accountName,
     displayName: user.displayName,
-    roles: user.roles.map((role) => role.role as ApiRole),
+    roles: user.roles.map((entry) => entry.role) as ApiUser["roles"],
   };
 }
 
-export function toFileObject(file: Prisma.FileObjectGetPayload<Record<string, never>>): ApiFileObject {
+export function toJsonPayload(payload: unknown): Prisma.InputJsonValue {
+  return payload as Prisma.InputJsonValue;
+}
+
+export function toFile(file: {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  storageKey: string;
+  checksum: string | null;
+  createdAt: Date;
+}) {
   return {
     id: file.id,
     name: file.name,
@@ -110,135 +95,201 @@ export function toFileObject(file: Prisma.FileObjectGetPayload<Record<string, ne
   };
 }
 
-export function toMediaAsset(mediaAsset: Prisma.MediaAssetGetPayload<Record<string, never>>): ApiMediaAsset {
+export function toMediaAsset(asset: {
+  id: string;
+  title: string;
+  description: string | null;
+  primaryFileId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}) {
   return {
-    id: mediaAsset.id,
-    title: mediaAsset.title,
-    description: mediaAsset.description,
-    primaryFileId: mediaAsset.primaryFileId,
-    createdAt: mediaAsset.createdAt.toISOString(),
-    updatedAt: mediaAsset.updatedAt.toISOString(),
+    id: asset.id,
+    title: asset.title,
+    description: asset.description,
+    primaryFileId: asset.primaryFileId,
+    createdAt: asset.createdAt.toISOString(),
+    updatedAt: asset.updatedAt.toISOString(),
   };
 }
 
-export function toProjectSummary(project: ProjectSummaryRecord): ApiAnnotationProject {
+export function toProjectSummary(
+  project: {
+    id: string;
+    title: string;
+    mediaAssetId: string;
+    ownerUserId: string;
+    primaryWorkspaceId: string | null;
+    currentProjectVersionId: string | null;
+    updatedAt: Date;
+    _count: {
+      workspaces: number;
+      annotationVersions: number;
+      projectVersions: number;
+      members: number;
+    };
+  },
+  capabilities: ProjectCapability[],
+): AnnotationProjectSummary {
   return {
     id: project.id,
     title: project.title,
     mediaAssetId: project.mediaAssetId,
     ownerUserId: project.ownerUserId,
-    documentCount: project._count?.documents ?? 0,
+    workspaceCount: project._count.workspaces,
+    annotationVersionCount: project._count.annotationVersions,
+    projectVersionCount: project._count.projectVersions,
+    memberCount: project._count.members + 1,
+    primaryWorkspaceId: project.primaryWorkspaceId,
+    currentProjectVersionId: project.currentProjectVersionId,
+    currentUserCapabilities: capabilities,
     updatedAt: project.updatedAt.toISOString(),
   };
 }
 
-export function toDocumentSummary(
-  document: Prisma.AnnotationDocumentGetPayload<Record<string, never>>,
-): Omit<ApiAnnotationDocument, "project" | "mediaAsset" | "grants" | "latestSnapshot"> {
+export function toWorkspaceSummary(
+  workspace: WorkspaceWithSummary,
+  permission: EffectiveWorkspacePermission,
+): AnnotationWorkspaceSummary {
   return {
-    id: document.id,
-    projectId: document.projectId,
-    title: document.title,
-    mode: document.mode as ApiAnnotationMode,
-    currentVersionId: document.currentVersionId,
-    updatedAt: document.updatedAt.toISOString(),
+    id: workspace.id,
+    projectId: workspace.projectId,
+    name: workspace.name,
+    workspaceType: workspace.workspaceType,
+    status: workspace.status,
+    owner: workspace.owner,
+    creator: workspace.creator,
+    forkedFromVersionId: workspace.forkedFromVersionId,
+    latestRevision: workspace.latestSnapshot?.revision ?? 0,
+    versionCount: workspace._count.versions,
+    submittedAt: workspace.submittedAt?.toISOString() ?? null,
+    archivedAt: workspace.archivedAt?.toISOString() ?? null,
+    createdAt: workspace.createdAt.toISOString(),
+    updatedAt: workspace.updatedAt.toISOString(),
+    permission,
   };
 }
 
-export function toSnapshot(snapshot: Prisma.AnnotationSnapshotGetPayload<Record<string, never>>): ApiAnnotationSnapshot {
+export function toWorkspace<TPayload>(
+  workspace: WorkspaceWithSummary & {
+    project: {
+      id: string;
+      title: string;
+      mediaAssetId: string;
+      ownerUserId: string;
+      primaryWorkspaceId: string | null;
+      currentProjectVersionId: string | null;
+      updatedAt: Date;
+      mediaAsset: {
+        id: string;
+        title: string;
+        description: string | null;
+        primaryFileId: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+      };
+      _count: {
+        workspaces: number;
+        annotationVersions: number;
+        projectVersions: number;
+        members: number;
+      };
+    };
+  },
+  permission: EffectiveWorkspacePermission,
+  projectCapabilities: ProjectCapability[],
+): AnnotationWorkspace<TPayload> {
+  if (!workspace.latestSnapshot) {
+    throw new Error("标注工作区缺少 latest snapshot。");
+  }
   return {
-    id: snapshot.id,
-    documentId: snapshot.documentId,
-    revision: snapshot.revision,
-    payload: snapshot.payload,
-    createdBy: snapshot.createdBy,
-    createdAt: snapshot.createdAt.toISOString(),
+    ...toWorkspaceSummary(workspace, permission),
+    project: toProjectSummary(workspace.project, projectCapabilities),
+    mediaAsset: toMediaAsset(workspace.project.mediaAsset),
+    latestSnapshot: {
+      id: workspace.latestSnapshot.id,
+      workspaceId: workspace.latestSnapshot.workspaceId,
+      revision: workspace.latestSnapshot.revision,
+      payload: workspace.latestSnapshot.payload as TPayload,
+      createdBy: workspace.latestSnapshot.createdBy,
+      createdAt: workspace.latestSnapshot.createdAt.toISOString(),
+    },
   };
 }
 
-export function toVersion(version: Prisma.AnnotationVersionGetPayload<{ include: { snapshot: true } }>): ApiAnnotationVersion {
+export function toAnnotationVersionSummary(
+  version: {
+    id: string;
+    projectId: string;
+    workspaceId: string;
+    snapshotId: string;
+    parentVersionId: string | null;
+    name: string;
+    description: string | null;
+    kind: "checkpoint" | "submission";
+    status: "active" | "archived";
+    completedAt: Date;
+    archivedAt: Date | null;
+    createdAt: Date;
+    snapshot: { revision: number };
+    creator: { id: string; accountName: string; displayName: string };
+  },
+): AnnotationVersionSummary {
   return {
     id: version.id,
-    documentId: version.documentId,
+    projectId: version.projectId,
+    workspaceId: version.workspaceId,
+    snapshotId: version.snapshotId,
+    parentVersionId: version.parentVersionId,
     name: version.name,
     description: version.description,
-    revision: version.revision,
-    snapshot: toSnapshot(version.snapshot),
-    createdBy: version.createdBy,
+    kind: version.kind,
+    status: version.status,
+    revision: version.snapshot.revision,
+    creator: version.creator,
+    completedAt: version.completedAt.toISOString(),
+    archivedAt: version.archivedAt?.toISOString() ?? null,
     createdAt: version.createdAt.toISOString(),
   };
 }
 
-export function toGrant(grant: Prisma.PermissionGrantGetPayload<Record<string, never>>): ApiPermissionGrant {
+export function toAnnotationVersion<TPayload>(
+  version: AnnotationVersionWithDetails,
+): AnnotationVersion<TPayload> {
   return {
-    id: grant.id,
-    userId: grant.userId,
-    actions: grant.actions as ApiPermissionGrant["actions"],
-    scope: {
-      projectId: grant.projectId ?? undefined,
-      documentId: grant.documentId ?? undefined,
-      timeRange: typeof grant.startTime === "number" && typeof grant.endTime === "number"
-        ? { startTime: grant.startTime, endTime: grant.endTime }
-        : undefined,
-      trackScope: grant.trackIds.length ? { trackIds: grant.trackIds } : undefined,
+    ...toAnnotationVersionSummary(version),
+    snapshot: {
+      id: version.snapshot.id,
+      workspaceId: version.snapshot.workspaceId,
+      revision: version.snapshot.revision,
+      payload: version.snapshot.payload as TPayload,
+      createdBy: version.snapshot.createdBy,
+      createdAt: version.snapshot.createdAt.toISOString(),
     },
-    expiresAt: grant.expiresAt?.toISOString() ?? null,
-    createdAt: grant.createdAt.toISOString(),
+    workspace: {
+      id: version.workspace.id,
+      name: version.workspace.name,
+      workspaceType: version.workspace.workspaceType,
+      status: version.workspace.status,
+      owner: version.workspace.owner,
+    },
   };
 }
 
-export function toProcessingJob(job: Prisma.ProcessingJobGetPayload<Record<string, never>>): ApiProcessingJob {
+export function toProjectVersion(version: ProjectVersionWithDetails): ProjectVersion {
   return {
-    id: job.id,
-    type: job.type,
-    status: job.status,
-    inputFileIds: job.inputFileIds,
-    outputFileIds: job.outputFileIds,
-    documentId: job.documentId,
-    createdBy: job.createdBy,
-    createdAt: job.createdAt.toISOString(),
-    updatedAt: job.updatedAt.toISOString(),
-    errorMessage: job.errorMessage,
-  };
-}
-
-export function toJsonPayload(payload: unknown): Prisma.InputJsonValue {
-  return JSON.parse(JSON.stringify(payload ?? {})) as Prisma.InputJsonValue;
-}
-
-// Prisma AuditLog 行到 API DTO 的映射。
-// detail 字段在 Prisma 是 JsonValue，直接转为 unknown；API 侧不做进一步解释。
-export function toAuditLogEntry(row: { id: string; action: string; actorUserId: string | null; projectId: string | null; documentId: string | null; fileId: string | null; versionId: string | null; jobId: string | null; targetType: string | null; targetId: string | null; detail: unknown; ipAddress: string | null; userAgent: string | null; createdAt: Date }): ApiAuditLogEntry {
-  return {
-    id: row.id,
-    action: row.action as ApiAuditLogEntry["action"],
-    actorUserId: row.actorUserId,
-    projectId: row.projectId,
-    documentId: row.documentId,
-    fileId: row.fileId,
-    versionId: row.versionId,
-    jobId: row.jobId,
-    targetType: row.targetType,
-    targetId: row.targetId,
-    detail: row.detail,
-    ipAddress: row.ipAddress,
-    userAgent: row.userAgent,
-    createdAt: row.createdAt.toISOString(),
-  };
-}
-
-// Prisma AnnotationOperation 行到 API DTO 的映射。
-export function toAnnotationOperation(row: { id: string; documentId: string; actorUserId: string; baseRevision: number; localRevision: number | null; serverRevision: number | null; action: string; payload: unknown; status: string; createdAt: Date }): ApiAnnotationOperation {
-  return {
-    id: row.id,
-    documentId: row.documentId,
-    actorUserId: row.actorUserId,
-    baseRevision: row.baseRevision,
-    localRevision: row.localRevision,
-    serverRevision: row.serverRevision,
-    action: row.action,
-    payload: row.payload,
-    status: row.status as ApiAnnotationOperation["status"],
-    createdAt: row.createdAt.toISOString(),
+    id: version.id,
+    projectId: version.projectId,
+    sourceVersionId: version.sourceVersionId,
+    sequence: version.sequence,
+    name: version.name,
+    description: version.description,
+    status: version.status,
+    sourceVersion: toAnnotationVersionSummary(version.sourceVersion),
+    creator: version.creator,
+    publisher: version.publisher,
+    publishedAt: version.publishedAt?.toISOString() ?? null,
+    archivedAt: version.archivedAt?.toISOString() ?? null,
+    createdAt: version.createdAt.toISOString(),
   };
 }

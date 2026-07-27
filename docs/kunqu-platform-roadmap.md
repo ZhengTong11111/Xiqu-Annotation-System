@@ -1,10 +1,35 @@
 # 昆曲多模态学术数据库与课堂标注平台完整改造路线图
 
-本文档记录从当前 React/TypeScript 本地标注工具，逐步升级为完整前后端、账号权限、统一文件系统、版本管理、独立/协同标注、课堂作业、学术数据库与后端分析服务平台的工程计划。
+本文档记录从当前 React/TypeScript 本地标注工具，逐步升级为完整前后端、账号权限、统一文件系统、版本管理、独立/协同标注、项目授权、学术数据库与后端分析服务平台的工程计划。
+
+> **2026-07-27 领域模型调整：** 平台不再维护与项目平行的“课程/作业”实体，也不再保留
+> `AnnotationDocument + PermissionGrant` 旧模型。“项目库”管理 `AnnotationProject`、可持续编辑的
+> `AnnotationWorkspace`、不可变 `AnnotationVersion` 与可发布 `ProjectVersion`；“项目权限管理”
+> 直接维护同一项目的 `ProjectMember`。旧结果的继续编辑使用 Fork，不原地恢复不可变版本。
 
 当前开发分支：`codex/backend-permission-scopes`
 
 ## 0. 执行记录
+
+### 2026-07-27：工作区、标注版本与项目版本模型落地
+
+- 破坏性替换旧平台文档模型，不迁移开发期 Course/Assignment、`AnnotationDocument` 或
+  `PermissionGrant` 数据；本地开发库经目标检查后使用 `db:push --force-reset` 重建。
+- `ProjectMember` 成为项目权限唯一真相，直接保存角色、能力、时间范围、轨道范围与有效期。
+- `AnnotationWorkspace` 作为可变工作副本，保存采用 immutable snapshot + `baseRevision`；
+  个人工作区只有 owner 可编辑，管理者可查看成果和管理生命周期，但不能改写他人工作区。
+- `AnnotationVersion` 固定到一个 snapshot 并保留 parent lineage；从历史结果继续工作必须 Fork
+  到新的 revision 1 工作区。`ProjectVersion` 从完成的标注版本建立候选，并支持原子发布和旧
+  发布版本 supersede。
+- 项目库分为“工作区 / 成员标注 / 项目版本”三视图；权限页逐账号编辑能力与 scope，并展示
+  该成员的工作区和完成版本。无 `manage_members` 的账号不能进入权限管理入口。
+- 保存 revision、项目版本 sequence、完成版本固定快照与项目发布使用可串行事务；主工作区
+  使用条件项目指针保证唯一，避免并发请求产生重复 current 资源。
+- 验证：`npm run test:permissions` 10 项通过，`npm run build` 通过；真实 PostgreSQL/API
+  冒烟覆盖成员 scope、范围内保存、范围外 403、完成版本、候选发布、固定版本 Fork、成员
+  移除/重加及非管理员 403；浏览器复核项目三视图、左右独立滚动与逐成员权限切换。
+
+当前下一步：补充工作区提交/审核意见和进度聚合；随后进入版本 diff、选择性合并与确定范围。
 
 ### 2026-07-27：阶段 9 第二轮安全审查与资源所有权补强
 
@@ -42,7 +67,7 @@
 
 - grant 管理的完整平台 UI（API/client 已具备）。
 - 时间/轨道范围的可视遮罩与局部编辑提示；当前前端只形成整文档只读闭环，scoped edit 最终由服务器保存校验兜底。
-- 课程、作业、确定标注与实时协作，按阶段 10 以后继续。
+- 项目级提交/审核工作流、确定标注与实时协作，按阶段 10 以后继续。
 
 ### 2026-07-07：前端 pending operations 接入服务端 operation log
 
@@ -156,7 +181,7 @@
 - 服务端保存仍以整份 snapshot 为主；operation log 尚未落到数据库，前端 pending operations 也未真正同步到后端。
 - 自动保存尚未接入；前端仍主要依赖手动“保存到服务器”。
 - 版本能创建/恢复，但还没有 diff / 对比视图，也没有恢复审计记录。
-- 课程、作业、提交、进度管理、学生独立副本、助教审核尚未实现。
+- 项目成员与逐账号授权已经实现；项目级提交、进度、独立副本与审核工作流尚未实现。
 - `ConfirmedRange` 已在 shared 类型中出现，但 Prisma/API/前端锁定显示与保存校验尚未实现。
 - Processing job 目前只能创建 queued 占位任务；缺少列表、详情、状态更新、worker/mock worker 和输出文件绑定。
 - 实时协同、presence、WebSocket、冲突解决仍未实现。
@@ -167,9 +192,9 @@
 2. 增加 `annotation_operations` schema/API，先保存粗粒度 operation，后续再细化为领域命令。
 3. 把前端 `pendingOperations` 和服务器保存边界对齐，为自动保存和离线恢复做准备。
 4. 给版本恢复、保存冲突、权限不足补充更清晰的前端状态提示。
-5. 再进入权限范围校验、课堂作业、确定标注、协作同步等更高层功能。
+5. 再进入权限范围校验、项目工作流、确定标注、协作同步等更高层功能。
 
-> 状态校准：上面的 1–5 已推进到“审计与 operation log 已落库、前端 pending operations 已接入、阶段 9 服务端范围校验已完成”。当前后续重点是授权管理 UI、局部范围可视提示、自动保存/离线恢复和阶段 10 课堂作业。
+> 状态校准：上面的 1–5 已推进到“审计与 operation log 已落库、前端 pending operations 已接入、阶段 9 服务端范围校验已完成、项目成员权限管理已接入”。当前后续重点是局部范围可视提示、自动保存/离线恢复和阶段 10 项目级提交/审核工作流。
 
 本轮文档更新仅校准路线图与下一步任务，没有修改数据库 schema 或业务代码。
 
@@ -430,10 +455,10 @@
 
 目标形态：
 
-- 有账号、角色、权限、课程、项目、作业与管理后台。
+- 有账号、角色、项目、逐账号权限与管理后台。
 - 所有视频、音频、标注、工尺谱、板眼、频谱、音高、姿态、渲染结果统一管理。
 - 每个视频可以拥有多个标注文档、多个版本、多个标注任务与多个审定结果。
-- 支持独立标注、协同标注、课堂分发、助教管理、教师审核、版本合并。
+- 支持独立标注、协同标注、项目分发、助教管理、教师审核、版本合并。
 - 支持确定标注区间，对某视频的某时间段、某轨道范围进行审定和锁定。
 - 支持公网服务器部署，供多个账号访问。
 - 预留后端任务系统，后续接入音高提取、五线谱处理、姿态估计、工尺谱渲染、谱例导出等服务。
@@ -470,11 +495,11 @@
 
 主要不足：
 
-- 授权管理 API 和保存范围校验已完成，但还没有完整的授权管理 UI 与局部范围可视提示。
+- 授权管理 API、逐账号项目权限 UI 和保存范围校验已完成，但还没有局部范围可视提示。
 - 审计日志和 operation log 已落库；operation payload 仍是摘要，尚不能驱动协同回放。
 - 自动保存、离线恢复、冲突处理 UI 尚未闭环。
 - 没有真正的多用户实时同步、presence 和协作冲突处理。
-- 没有课堂课程、作业分发、提交、助教进度管理。
+- 没有项目内提交、退回、进度统计和助教审核工作流。
 - 没有确定标注区间的锁定与服务端保护。
 - 后端任务系统仍是占位，尚未有 worker、状态推进、输出文件绑定。
 - 当前 `ProjectData` 是单体大对象，不适合直接作为长期服务端协同数据模型。
@@ -629,9 +654,7 @@ docs/
 User
 Role
 Organization
-Course
-CourseMember
-PermissionGrant
+ProjectMember
 AuditLog
 ```
 
@@ -651,7 +674,8 @@ AuditLog
 RBAC 角色权限 + ABAC 项目/轨道/时间范围授权
 ```
 
-不要只靠角色判断编辑能力。一个学生是否能编辑，要看具体项目、文档、轨道、时间范围、任务状态。
+不要只靠平台角色判断编辑能力。一个成员是否能操作项目，要看 `ProjectMember.capabilities`、
+工作区所有权、轨道/时间范围和授权有效期。
 
 ### 6.2 媒体与剧目资料
 
@@ -666,13 +690,14 @@ FileObject        统一文件记录
 
 `MediaAsset` 不等于文件。一个视频资产可能有原始文件、压缩代理文件、音频抽取文件、缩略图、频谱缓存。
 
-### 6.3 标注文档
+### 6.3 工作区与版本
 
 ```text
 AnnotationProject
-AnnotationDocument
-AnnotationVersion
+AnnotationWorkspace
 AnnotationSnapshot
+AnnotationVersion
+ProjectVersion
 AnnotationOperation
 AnnotationBranch
 ConfirmedRange
@@ -683,30 +708,29 @@ ConfirmedRange
 ```text
 MediaAsset
   └─ AnnotationProject
-       ├─ Base Document
-       ├─ Class Assignment Document
-       ├─ Student Independent Document
-       ├─ Collaborative Document
-       └─ Published / Confirmed Versions
+       ├─ Main Workspace
+       ├─ Personal Workspaces
+       ├─ Collaborative Workspaces
+       ├─ Immutable Annotation Versions
+       └─ Candidate / Published Project Versions
 ```
 
-当前 `ProjectData` 可先作为 `AnnotationSnapshot.payload` 存储，但长期应拆出元数据与大文档 payload。
+`AnnotationWorkspace` 是可持续编辑的工作副本；`AnnotationSnapshot` 是 revision 快照；
+`AnnotationVersion` 固定到某个 snapshot；`ProjectVersion` 指向一个完成标注版本并表达项目级
+候选/发布状态。当前 `ProjectData` 作为 snapshot payload，长期再拆元数据与大文档内容。
 
-### 6.4 标注授权
+### 6.4 项目成员与标注授权
 
 ```text
-AnnotationAssignment
-AssignmentMember
-AssignmentScope
+ProjectMember
 ```
 
 授权范围必须支持：
 
-- 文档范围。
 - 时间范围。
 - 轨道范围。
-- 权限动作：查看、编辑、评论、提交、审核、合并、确认。
-- 模式：独立标注、协作标注。
+- 项目能力：查看、创建工作区、Fork、完成、提交、审核、建立/发布项目版本、成员管理。
+- 工作区模式：主工作区、个人工作区、协作工作区。
 - 有效时间。
 - 是否允许导出。
 - 是否允许查看他人标注。
@@ -740,8 +764,6 @@ users
 roles
 user_roles
 organizations
-courses
-course_members
 
 files
 media_assets
@@ -751,16 +773,14 @@ excerpts
 performances
 
 annotation_projects
-annotation_documents
-annotation_versions
+project_members
+annotation_workspaces
 annotation_snapshots
+annotation_versions
+project_versions
 annotation_operations
 annotation_branches
 confirmed_ranges
-
-annotation_assignments
-assignment_members
-assignment_scopes
 
 merge_requests
 merge_request_items
@@ -785,28 +805,27 @@ audit_logs
 
 1. 管理员上传视频或登记媒体来源。
 2. 创建剧目、折子、演出资料。
-3. 创建基准标注文档。
+3. 创建基准工作区。
 4. 导入字幕、工尺谱、板眼初始数据。
 5. 研究人员细修字块、动作、板眼、工尺谱、音频分析。
 6. 教师/管理员审定某些时间范围。
 7. 发布版本。
 8. 后续新研究可从发布版本分支。
 
-### 8.2 课堂作业流程
+### 8.2 项目教学流程
 
-1. 教师创建课程。
-2. 助教导入学生账号。
-3. 教师选择视频、时间范围、轨道范围。
-4. 创建独立标注任务。
-5. 每个学生获得独立副本。
-6. 学生完成并提交。
-7. 助教查看进度和质量。
-8. 教师选择优秀标注或片段合并。
-9. 合并结果进入课程基准版本或研究库候选版本。
+1. 教师或管理员在项目库创建项目。
+2. 在项目权限管理中添加学生、助教或研究人员。
+3. 为每个成员设置动作、时间、轨道范围与有效期。
+4. 成员创建个人工作区，或由项目建立协作工作区。
+5. 成员完成并提交工作区中的标注版本。
+6. 助教查看进度和质量。
+7. 教师选择优秀标注或片段合并。
+8. 合并结果进入项目基准版本或研究库候选版本。
 
 ### 8.3 协同研究流程
 
-1. 创建协作文档。
+1. 创建协作工作区。
 2. 分配多个研究人员。
 3. 多人同时进入编辑器。
 4. WebSocket 同步 presence、选区、操作。
@@ -849,35 +868,41 @@ POST   /api/files/upload-url
 POST   /api/files/complete
 ```
 
-### 9.3 标注文档
+### 9.3 标注工作区
 
 ```text
-GET    /api/annotation-documents/:documentId
-POST   /api/projects/:projectId/documents
-PATCH  /api/annotation-documents/:documentId
-POST   /api/annotation-documents/:documentId/save
-POST   /api/annotation-documents/:documentId/operations
-GET    /api/annotation-documents/:documentId/operations
+GET    /api/projects/:projectId/workspaces
+POST   /api/projects/:projectId/workspaces
+GET    /api/annotation-workspaces/:workspaceId
+POST   /api/annotation-workspaces/:workspaceId/save
+PATCH  /api/annotation-workspaces/:workspaceId/status
+POST   /api/annotation-workspaces/:workspaceId/operations
+GET    /api/annotation-workspaces/:workspaceId/operations
 ```
 
 ### 9.4 版本
 
 ```text
-GET    /api/annotation-documents/:documentId/versions
-POST   /api/annotation-documents/:documentId/versions
-GET    /api/annotation-versions/:versionId
-POST   /api/annotation-versions/:versionId/restore
+GET    /api/projects/:projectId/annotation-versions
+GET    /api/annotation-workspaces/:workspaceId/versions
+POST   /api/annotation-workspaces/:workspaceId/versions
+POST   /api/annotation-versions/:versionId/forks
+PATCH  /api/annotation-versions/:versionId/status
+
+GET    /api/projects/:projectId/project-versions
+POST   /api/projects/:projectId/project-versions
+POST   /api/project-versions/:projectVersionId/publish
+PATCH  /api/project-versions/:projectVersionId/status
 ```
 
-### 9.5 授权与作业
+### 9.5 项目成员与授权
 
 ```text
-GET    /api/assignments
-POST   /api/assignments
-GET    /api/assignments/:assignmentId
-PATCH  /api/assignments/:assignmentId
-POST   /api/assignments/:assignmentId/submit
-GET    /api/assignments/:assignmentId/progress
+GET    /api/projects/:projectId/members
+POST   /api/projects/:projectId/members
+PATCH  /api/projects/:projectId/members/:memberId
+DELETE /api/projects/:projectId/members/:memberId
+GET    /api/projects/:projectId/permission-tracks
 ```
 
 ### 9.6 合并与审核
@@ -926,10 +951,8 @@ lock.release
 /home
 /projects
 /projects/:projectId
+/projects/:projectId/permissions
 /projects/:projectId/documents/:documentId
-/courses
-/courses/:courseId
-/courses/:courseId/assignments/:assignmentId
 /review/:documentId
 /admin/users
 /admin/roles
@@ -1137,28 +1160,30 @@ AnnotationEditorPage
 
 状态：**第一套服务端范围校验、整文档只读闭环及第二轮资源边界审查已于 2026-07-27 完成。** 局部范围遮罩、授权管理 UI 和真正的局部读取协议留在后续增量；阶段 10 可并行进行数据模型设计，但局部读取应与阶段 13/14 的 operation/delta 协议联合设计。
 
-### 阶段 10：独立标注作业
+### 阶段 10：项目成员授权与项目工作流
 
-目标：课堂分发场景可用。
+目标：不建立平行的课程/作业层级，直接围绕项目完成账号授权，并为后续提交、审核和独立
+标注文档工作流留下清晰边界。
 
-任务：
+已完成：
 
-- 设计 courses/assignments。
-- 教师/助教创建作业。
-- 为学生生成独立标注文档。
-- 学生提交。
-- 助教查看完成度、提交状态、最后编辑时间。
+- “项目库”和“项目权限管理”共享同一批 `AnnotationProject` 和选择状态。
+- `ProjectMember` 是成员职责与授权的唯一真相，直接保存角色、能力、时间范围、轨道范围和有效期。
+- 项目 owner 作为不可降级、不可移除的完整权限成员显示。
+- 移除成员会归档其活动工作区，但保留快照、完成版本、项目版本和审计历史。
+- `AnnotationWorkspace` 支持持续编辑、revision 冲突检查、个人 owner 语义及主工作区。
+- 完成工作区产生固定 snapshot 的不可变 `AnnotationVersion`，历史继续编辑使用 Fork。
+- 管理者可从完成版本建立 `ProjectVersion` 候选并原子发布；旧发布版本自动 supersede。
+- 项目库显示每个工作区/版本的创建者、revision、完成或发布时间与来源。
 
-验收：
+后续任务：
 
-- 同一个视频可分发给多个学生。
-- 每个学生得到独立文档。
-- 助教能查看进度。
+- 完成 submitted 工作区的审核、退回、审核意见和进度聚合 UI/API。
+- 设计版本差异与选择性合并；不要改写历史 `AnnotationVersion`。
+- 与阶段 11 的差异比较和片段合并共用文档/版本语义。
 
-状态：**第一套可运行闭环已于 2026-07-27 完成。** 已实现课程与成员角色、冻结基准
-snapshot 的作业草稿、事务化发布、每名学生独立文档与范围 grant、学生保存/提交锁、
-助教进度查看和退回重做。前端已增加“课堂作业”工作区和“我的作业”入口。阶段 11 的
-差异比较、片段合并和审核批注仍按后续阶段实施。
+状态：**项目成员、工作区、完成版本、Fork 与项目发布闭环已于 2026-07-27 完成；审核退回、
+版本 diff/合并和确定范围待后续实现。**
 
 ### 阶段 11：合并与审核
 
@@ -1359,8 +1384,8 @@ snapshot 的作业草稿、事务化发布、每名学生独立文档与范围 g
 最终项目应满足：
 
 - 管理员可以创建账号和分配角色。
-- 助教可以创建和管理课堂标注任务。
-- 学生可以看到自己的作业并进入标注。
+- 助教可以管理授权项目中的成员和标注文档。
+- 学生可以看到自己获授权的项目并进入标注。
 - 研究人员可以创建协作文档。
 - 视频和标注统一保存，不依赖本机绝对路径。
 - 每个标注文档有版本列表。
@@ -1400,12 +1425,11 @@ snapshot 的作业草稿、事务化发布、每名学生独立文档与范围 g
 - 标注文档保存/加载。
 - 版本列表。
 
-### M3：课堂作业
+### M3：项目成员与项目工作流
 
-- 课程。
-- 学生账号。
-- 独立标注任务。
-- 进度管理。
+- 项目成员与逐账号权限。
+- 项目内独立标注文档。
+- 提交、退回和进度管理。
 
 ### M4：审核合并
 
@@ -1471,7 +1495,7 @@ snapshot 的作业草稿、事务化发布、每名学生独立文档与范围 g
 先平台化
 再服务端保存
 再版本和权限
-再课堂作业与审核合并
+再项目提交、审核与合并
 再实时协同
 最后扩展后端多模态服务与公开数据库
 ```

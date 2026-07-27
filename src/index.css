@@ -319,54 +319,6 @@ select {
   overflow: hidden;
 }
 
-/* 课程作业沿用平台现有面板密度，不使用营销式大卡片。 */
-.platform-course-workspace {
-  display: grid;
-  gap: 14px;
-}
-
-.platform-course-grid {
-  display: grid;
-  grid-template-columns: minmax(220px, 0.34fr) minmax(0, 1fr);
-  gap: 12px;
-  min-height: 0;
-}
-
-.platform-assignment-section,
-.platform-assignment-form {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
-}
-
-.platform-assignment-list {
-  display: grid;
-  gap: 8px;
-}
-
-.platform-assignment-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--panel-muted);
-}
-
-.platform-assignment-card > div:first-child {
-  display: grid;
-  gap: 3px;
-}
-
-.platform-assignment-card.selected {
-  border-color: var(--accent);
-}
-
 .platform-inline-form {
   display: flex;
   gap: 8px;
@@ -374,21 +326,17 @@ select {
 }
 
 .platform-inline-form input,
-.platform-inline-form select,
-.platform-assignment-form input,
-.platform-assignment-form select {
+.platform-inline-form select {
   min-width: 0;
   width: 100%;
 }
 
-.platform-member-strip,
 .platform-check-grid {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.platform-member-strip span,
 .platform-check-grid label {
   padding: 5px 8px;
   border: 1px solid var(--border);
@@ -396,41 +344,302 @@ select {
   background: var(--panel-muted);
 }
 
-.platform-member-strip span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+.platform-subsection-heading h3,
+.platform-subsection-heading p {
+  margin: 0;
 }
 
-.platform-member-strip span button {
-  min-height: 20px;
-  padding: 0 5px;
+.platform-subsection-heading h3 {
+  font-size: 14px;
 }
 
-.platform-progress-table {
+.platform-subsection-heading p {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+/*
+ * 项目权限页与项目库共享项目状态，但拥有独立布局。主面板不负责滚动，
+ * 左侧项目列表和右侧权限详情各自承担滚动，避免长表单把另一栏带走。
+ */
+.platform-main-panel-permissions {
+  display: flex;
+  flex-direction: column;
+}
+
+.platform-permission-workspace {
+  flex: 1;
+  min-height: 0;
   display: grid;
-  gap: 1px;
-  margin-top: 10px;
-  background: var(--border);
+  grid-template-columns: minmax(220px, 0.28fr) minmax(0, 1fr);
+  gap: 10px;
+  overflow: hidden;
+}
+
+.platform-permission-projects,
+.platform-permission-detail {
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
   border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: rgba(245, 247, 250, 0.88);
 }
 
-.platform-progress-table > div {
+.platform-permission-column-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.platform-permission-column-header h1 {
+  margin: 2px 0 0;
+  font-size: 16px;
+}
+
+.platform-permission-scroll {
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 10px;
+}
+
+.platform-permission-projects .platform-permission-scroll {
   display: grid;
-  grid-template-columns: minmax(130px, 1fr) 80px minmax(145px, 1fr) minmax(145px, 1fr) minmax(145px, 1fr) auto auto;
-  align-items: center;
-  gap: 8px;
-  padding: 8px;
+  align-content: start;
+  gap: 6px;
+}
+
+.platform-permission-projects .platform-permission-scroll button,
+.platform-member-list button {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  box-shadow: none;
+}
+
+.platform-permission-projects .platform-permission-scroll button span,
+.platform-member-list button span {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.platform-permission-projects .platform-permission-scroll button.selected,
+.platform-member-list button.selected {
+  border-color: rgba(15, 108, 189, 0.42);
+  background: var(--accent-soft);
+}
+
+.platform-permission-detail > .platform-permission-scroll {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.platform-member-add-panel,
+.platform-member-list,
+.platform-member-editor,
+.platform-member-results {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
   background: var(--panel);
 }
 
+.platform-member-add-panel h2,
+.platform-member-list h2,
+.platform-member-results h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+/*
+ * 新增成员始终保持“账号、角色、命令”三列，防止窄栏下按钮文字逐字换行。
+ */
+.platform-member-add-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.3fr) minmax(140px, 0.7fr) auto;
+  gap: 8px;
+}
+
+.platform-member-add-grid button {
+  min-width: 88px;
+  white-space: nowrap;
+}
+
+.platform-member-management-grid {
+  min-height: 430px;
+  display: grid;
+  grid-template-columns: minmax(210px, 0.3fr) minmax(420px, 1fr);
+  gap: 10px;
+}
+
+.platform-member-list {
+  align-self: start;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+
+.platform-member-editor {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.platform-member-editor > label,
+.platform-scope-grid label {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.platform-scope-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1.2fr;
+  gap: 8px;
+}
+
+.platform-capability-grid,
+.platform-track-scope-list {
+  min-width: 0;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.platform-capability-grid legend,
+.platform-track-scope-list legend {
+  padding: 0 5px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.platform-capability-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.platform-capability-grid label,
+.platform-track-scope-list label {
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 7px;
+  border-radius: 6px;
+  background: var(--panel-muted);
+}
+
+.platform-capability-grid input,
+.platform-track-scope-list input {
+  width: auto;
+}
+
+.platform-track-scope-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.platform-track-scope-list legend,
+.platform-track-scope-list p {
+  flex-basis: 100%;
+}
+
+.platform-track-scope-list p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+
+.platform-member-results {
+  display: grid;
+  gap: 8px;
+}
+
+.platform-member-results .platform-version-list {
+  max-height: 260px;
+  overflow: auto;
+}
+
+.platform-segmented-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border-radius: 7px;
+  background: var(--panel-muted);
+}
+
+.platform-segmented-tabs button {
+  min-height: 28px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.platform-segmented-tabs button.active {
+  border-color: var(--border);
+  background: var(--panel-strong);
+  color: #0f4473;
+}
+
+.platform-item-main-button {
+  min-width: 0;
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  box-shadow: none;
+}
+
+.platform-item-main-button:hover {
+  border: 0;
+  background: transparent;
+}
+
+.platform-inline-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.platform-action-row .danger {
+  border-color: rgba(190, 55, 55, 0.42);
+  color: #a62f2f;
+}
+
 @media (max-width: 900px) {
-  .platform-course-grid {
+  .platform-permission-workspace {
+    grid-template-columns: minmax(180px, 0.34fr) minmax(0, 1fr);
+  }
+
+  .platform-member-management-grid,
+  .platform-member-add-grid {
     grid-template-columns: 1fr;
   }
 
-  .platform-progress-table > div {
-    grid-template-columns: 1fr 1fr;
+  .platform-scope-grid,
+  .platform-capability-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -563,7 +772,8 @@ select {
 
 .platform-detail-panel {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  /* 标题、页签、当前列表、底部元数据各占一行；只有列表承担剩余高度。 */
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 10px;
 }
 
@@ -612,9 +822,15 @@ select {
 
 .platform-version-list {
   display: grid;
+  align-content: start;
   gap: 6px;
   max-height: 190px;
   overflow: auto;
+}
+
+.platform-detail-panel > .platform-version-list {
+  min-height: 0;
+  max-height: none;
 }
 
 .platform-version-item {

@@ -1,7 +1,50 @@
 # Development Log
 
+## 2026-07-27：工作区、标注版本与项目版本重构
+
+- 按最终领域语义破坏性移除 Course/Assignment、`AnnotationDocument` 与 `PermissionGrant`
+  运行时模型。`ProjectMember` 直接保存角色、能力、时间/轨道范围和有效期，不再存在第二份
+  可能漂移的授权记录。
+- 新增 `AnnotationWorkspaceService`、`AnnotationVersionService`、
+  `ProjectVersionService` 和 `ProjectAccessService`，将成员、可变工作区、不可变标注版本和
+  项目发布职责从通用 repository 中拆开。
+- 工作区保存继续使用 snapshot + `baseRevision`；完成版本固定事务内最新 snapshot 并记录
+  parent lineage；Fork 始终复制指定版本的固定 snapshot，不读取来源工作区的后续状态。
+- 项目版本支持候选、发布、superseded 与归档；发布事务原子更新旧发布版本和项目 current
+  指针。保存、版本序号和发布路径使用可串行事务有限重试，主工作区通过条件指针保证唯一。
+- 收尾审查补充了两个生命周期边界：已过期成员不能成为新工作区 owner；建立项目候选版本
+  会在串行事务内重新确认来源标注版本仍处于 active，避免与归档并发时产生失效候选。
+- 项目库改为“工作区 / 成员标注 / 项目版本”三视图；项目权限管理明确选中账号后编辑能力和
+  scope，并展示该成员成果。无管理能力账号不会进入权限页面。修复了新页签套用旧 grid 行
+  定义导致页签占满内容区的问题。
+- 删除未使用的 `PlatformHome.tsx`、课程服务/策略/测试及旧权限测试；重写 10 项
+  document-model 权限测试，并把角色默认能力与能力目录集中到 `packages/shared`。
+- 本地数据库确认指向 `localhost:54329/xiqu_platform` 后执行 `db:push --force-reset`，符合
+  本轮“不兼容旧平台开发数据”的决策。
+- 验证：`npm run test:permissions`、`npm run build` 通过。真实 Fastify/PostgreSQL 冒烟覆盖
+  管理员设置学生 scope、范围内保存、范围外 `403 permission_scope_violation`、完成版本、
+  候选发布、固定版本 Fork、成员移除/重加及学生管理接口 403。浏览器验证管理员/学生导航、
+  逐成员权限归属、独立滚动和三类项目视图。
+- 未完成：submitted 工作区审核/退回与意见、版本 diff/选择性合并、确定范围、自动保存、
+  operation 驱动同步和实时协作。
+
 ## 2026-07-27：阶段 10 独立标注作业第一套完整闭环
 
+> 本节保留为历史开发记录；其 Course/Assignment 运行时实现已被上方“项目库与项目权限
+> 管理统一”决策撤销，不再代表当前代码结构。
+
+- 后续 Chrome 实机复查发现成员新增使用 `POST` 正常，但成员权限修改和移除分别使用
+  `PATCH` / `DELETE`，原 CORS 默认方法没有放行，导致浏览器只完成预检并显示
+  `Failed to fetch`。API 已显式允许平台使用的完整 HTTP 方法集合。
+- 课程成员 UI 改为逐账号权限行：每个账号独立显示平台角色、课程角色、能力说明，
+  可以直接保存课程权限或通过明确的确认面板移出课程，不再复用含义模糊的共用下拉框和
+  `×` 按钮。成功请求会清除旧错误，避免历史网络错误继续误导用户。
+- 成员移出/学生升为 staff 的数据语义已补齐：草稿 recipient 直接移除；已发布 recipient
+  转为 `withdrawn`；个人文档和进度保留；所有 assignment 来源 grant 撤销；学生“我的作业”
+  不再展示已撤销任务。手工创建、没有 `assignmentId` 的 grant 不受影响。
+- Chrome 完整验证“添加学生 -> 改为助教 -> 移出课程”均成功且无残留错误；真实 PostgreSQL
+  冒烟验证已发布作业从 `assigned` 转为 `withdrawn`、学生列表隐藏、原文档访问返回 `403`，
+  自动验证数据已清理。
 - 根据 `CLAUDE_WORK.md` 的当前任务完成课程、成员和独立作业全栈实现。
 - Prisma 新增 `Course`、`CourseMember`、`Assignment`、`AssignmentRecipient` 及状态枚举；
   作业在创建时冻结 source snapshot，发布时为每名学生复制独立 revision 1 snapshot。

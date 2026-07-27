@@ -62,7 +62,7 @@ function diffTrackSnapTrackIds(operation: ProjectDocumentOperation): string[] {
 // 直接抛出，由调用方进入 conflict 状态，不再继续提交后续 operation。
 export async function submitPendingOperations(
   client: PlatformClient,
-  documentId: string,
+  workspaceId: string,
   pendingOperations: ProjectDocumentOperation[],
   serverBaseRevision: number,
   onSubmitted?: (operationId: string) => void,
@@ -73,7 +73,7 @@ export async function submitPendingOperations(
       continue;
     }
     await client.createAnnotationOperation(
-      documentId,
+      workspaceId,
       buildServerOperationRequest(operation, serverBaseRevision),
     );
     submittedOperationIds.push(operation.id);
@@ -84,7 +84,7 @@ export async function submitPendingOperations(
 }
 
 // 把服务器保存过程中的错误归类为对用户有意义的同步状态。
-// - 409：服务器文档版本已变化，需要刷新或处理冲突，不应继续保存。
+// - 409：服务器工作区 revision 已变化，需要刷新或处理冲突，不应继续保存。
 // - 离线：浏览器判定 navigator.onLine === false，保存未到达服务器。
 // - 其他 API 错误（含 403/500 等）或网络异常归为 error。
 // 调用方据此 setSyncStatus，不要在失败时调用 markProjectAsSaved。
@@ -96,7 +96,7 @@ export function describeServerSaveError(error: unknown): {
     if (error.status === 409) {
       return {
         status: "conflict",
-        message: "服务器文档版本已变化，请刷新或另存为版本后再处理。",
+        message: "服务器工作区已有更新，请刷新后处理冲突。",
       };
     }
     if (error.status === 403) {

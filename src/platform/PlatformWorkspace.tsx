@@ -1,6 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
+import type {
+  AnnotationProjectSummary,
+  AnnotationVersionSummary,
+  AnnotationWorkspace,
+  AnnotationWorkspaceSummary,
+  EffectiveWorkspacePermission,
+  MediaAsset,
+  PlatformUser,
+  ProjectVersion,
+} from "@xiqu/shared";
 import { PlatformApiError, PlatformClient } from "../api/platformClient";
+import type { TopMenuPlatformNavigation } from "../components/TopMenuBar";
 import { mockProject } from "../mockData";
 import type { ProjectData } from "../types";
 import { buildProjectFromLines } from "../utils/project";
@@ -8,28 +19,17 @@ import {
   isProjectFileLike,
   normalizeImportedProjectFile,
 } from "../utils/projectFile";
-import type {
-  AnnotationDocument,
-  AnnotationDocumentSummary,
-  AnnotationMode,
-  AnnotationProjectSummary,
-  AnnotationVersion,
-  EffectiveDocumentPermission,
-  MediaAsset,
-  PlatformUser,
-} from "@xiqu/shared";
-import type { TopMenuPlatformNavigation } from "../components/TopMenuBar";
-import { CourseWorkspace } from "./CourseWorkspace";
+import { ProjectPermissionWorkspace } from "./ProjectPermissionWorkspace";
 
 export type PlatformEditorSession = {
   client: PlatformClient;
-  documentId: string;
-  documentTitle: string;
+  workspaceId: string;
+  workspaceName: string;
   projectTitle: string;
   baseRevision: number;
   initialProject: ProjectData;
-  onDocumentSaved: (document: AnnotationDocument<ProjectData>) => void;
-  effectivePermission: EffectiveDocumentPermission;
+  onWorkspaceSaved: (workspace: AnnotationWorkspace<ProjectData>) => void;
+  effectivePermission: EffectiveWorkspacePermission;
 };
 
 export type LocalEditorSession = {
@@ -48,73 +48,93 @@ type PlatformWorkspaceProps = {
 };
 
 type PlatformView = "login" | "home" | "editor";
-type PlatformHomeSection = "projects" | "courses";
+type PlatformHomeSection = "projects" | "permissions";
+type ProjectDetailTab = "workspaces" | "annotations" | "versions";
 
 const PLATFORM_TOKEN_STORAGE_KEY = "xiqu-platform-dev-token";
 const PLATFORM_FILE_PATH_PREFIX = "platform-file:";
 
 export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   const [view, setView] = useState<PlatformView>(() =>
-    window.localStorage.getItem(PLATFORM_TOKEN_STORAGE_KEY) ? "home" : "login",
+    window.localStorage.getItem(PLATFORM_TOKEN_STORAGE_KEY) ? "home" : "login"
   );
   const [accountName, setAccountName] = useState("admin");
   const [password, setPassword] = useState("admin123");
   const [user, setUser] = useState<PlatformUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(() =>
-    window.localStorage.getItem(PLATFORM_TOKEN_STORAGE_KEY),
+    window.localStorage.getItem(PLATFORM_TOKEN_STORAGE_KEY)
   );
   const [projects, setProjects] = useState<AnnotationProjectSummary[]>([]);
   const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>([]);
-  const [documentsByProjectId, setDocumentsByProjectId] = useState<Record<string, AnnotationDocumentSummary[]>>({});
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
-  const [editorSession, setEditorSession] = useState<PlatformEditorSession | null>(null);
-  const [localEditorSession, setLocalEditorSession] = useState<LocalEditorSession | null>(null);
+  const [workspacesByProjectId, setWorkspacesByProjectId] = useState<
+    Record<string, AnnotationWorkspaceSummary[]>
+  >({});
+  const [annotationVersionsByProjectId, setAnnotationVersionsByProjectId] =
+    useState<Record<string, AnnotationVersionSummary[]>>({});
+  const [projectVersionsByProjectId, setProjectVersionsByProjectId] = useState<
+    Record<string, ProjectVersion[]>
+  >({});
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    null,
+  );
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(
+    null,
+  );
+  const [editorSession, setEditorSession] =
+    useState<PlatformEditorSession | null>(null);
+  const [localEditorSession, setLocalEditorSession] =
+    useState<LocalEditorSession | null>(null);
+  const [homeSection, setHomeSection] =
+    useState<PlatformHomeSection>("projects");
+  const [detailTab, setDetailTab] =
+    useState<ProjectDetailTab>("workspaces");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [newProjectTitle, setNewProjectTitle] = useState("");
-  const [newDocumentTitle, setNewDocumentTitle] = useState("基准标注文档");
-  const [newDocumentMode, setNewDocumentMode] = useState<AnnotationMode>("collaborative");
+  const [newWorkspaceName, setNewWorkspaceName] = useState("项目主工作区");
   const [jsonImportFile, setJsonImportFile] = useState<File | null>(null);
-  const [jsonImportTitle, setJsonImportTitle] = useState("");
-  const [jsonImportMode, setJsonImportMode] = useState<AnnotationMode>("independent");
-  const [versionsByDocumentId, setVersionsByDocumentId] = useState<Record<string, AnnotationVersion<ProjectData>[]>>({});
-  const [permissionsByDocumentId, setPermissionsByDocumentId] = useState<Record<string, EffectiveDocumentPermission>>({});
-  const [versionName, setVersionName] = useState("");
-  const [versionDescription, setVersionDescription] = useState("");
+  const [jsonImportName, setJsonImportName] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [isCreatingProject, setIsCreatingProject] = useState(false);
-  const [isImportingJson, setIsImportingJson] = useState(false);
-  const [isLoadingVersions, setIsLoadingVersions] = useState(false);
-  const [isCreatingVersion, setIsCreatingVersion] = useState(false);
+  const [isMutating, setIsMutating] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [homeSection, setHomeSection] = useState<PlatformHomeSection>("projects");
 
   const client = useMemo(() => new PlatformClient({
     baseUrl: "http://localhost:4317/api",
     accessToken,
   }), [accessToken]);
 
-  const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
-  const selectedDocuments = selectedProject ? documentsByProjectId[selectedProject.id] ?? [] : [];
-  const selectedDocument = selectedDocuments.find((document) => document.id === selectedDocumentId) ?? selectedDocuments[0] ?? null;
-  const selectedVersions = selectedDocument ? versionsByDocumentId[selectedDocument.id] ?? [] : [];
-  const selectedPermission = selectedDocument
-    ? permissionsByDocumentId[selectedDocument.id]
-    : undefined;
+  const selectedProject =
+    projects.find((project) => project.id === selectedProjectId) ??
+    projects[0] ??
+    null;
+  const selectedWorkspaces = selectedProject
+    ? workspacesByProjectId[selectedProject.id] ?? []
+    : [];
+  const selectedWorkspace =
+    selectedWorkspaces.find((workspace) =>
+      workspace.id === selectedWorkspaceId) ??
+    selectedWorkspaces[0] ??
+    null;
+  const selectedAnnotationVersions = selectedProject
+    ? annotationVersionsByProjectId[selectedProject.id] ?? []
+    : [];
+  const selectedProjectVersions = selectedProject
+    ? projectVersionsByProjectId[selectedProject.id] ?? []
+    : [];
+  const canManageAnyProject = projects.some((project) =>
+    project.currentUserCapabilities.includes("manage_members")
+  );
 
   useEffect(() => {
-    if (!accessToken || view === "login") {
-      return;
-    }
+    if (!accessToken || view === "login") return;
     void loadPlatformHome(client);
   }, [accessToken, client, view]);
 
   useEffect(() => {
-    if (!selectedDocument || view !== "home") {
-      return;
+    // 切换账号后不能沿用上一位管理员停留的权限页面。
+    if (homeSection === "permissions" && !canManageAnyProject) {
+      setHomeSection("projects");
     }
-    void loadDocumentVersions(selectedDocument.id);
-  }, [selectedDocument?.id, view]);
+  }, [canManageAnyProject, homeSection]);
 
   async function loadPlatformHome(nextClient = client) {
     setIsLoading(true);
@@ -125,35 +145,46 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         nextClient.listProjects(),
         nextClient.listMediaAssets(),
       ]);
-      const nextDocumentsByProjectId: Record<string, AnnotationDocumentSummary[]> = {};
-      for (const project of nextProjects) {
-        nextDocumentsByProjectId[project.id] = await nextClient.listProjectDocuments(project.id);
-      }
+      const nextWorkspaces: Record<string, AnnotationWorkspaceSummary[]> = {};
+      const nextAnnotationVersions: Record<string, AnnotationVersionSummary[]> =
+        {};
+      const nextProjectVersions: Record<string, ProjectVersion[]> = {};
+      await Promise.all(nextProjects.map(async (project) => {
+        const [workspaces, versions, projectVersions] = await Promise.all([
+          nextClient.listProjectWorkspaces(project.id),
+          nextClient.listProjectAnnotationVersions(project.id),
+          nextClient.listProjectVersions(project.id),
+        ]);
+        nextWorkspaces[project.id] = workspaces;
+        nextAnnotationVersions[project.id] = versions;
+        nextProjectVersions[project.id] = projectVersions;
+      }));
       setUser(nextUser);
       setProjects(nextProjects);
       setMediaAssets(nextMediaAssets);
-      setDocumentsByProjectId(nextDocumentsByProjectId);
-      setSelectedProjectId((current) => {
-        if (current && nextProjects.some((project) => project.id === current)) {
-          return current;
-        }
-        return nextProjects[0]?.id ?? null;
-      });
-      setSelectedDocumentId((current) => {
-        if (current) {
+      setWorkspacesByProjectId(nextWorkspaces);
+      setAnnotationVersionsByProjectId(nextAnnotationVersions);
+      setProjectVersionsByProjectId(nextProjectVersions);
+      setSelectedProjectId((current) =>
+        current && nextProjects.some((project) => project.id === current)
+          ? current
+          : nextProjects[0]?.id ?? null
+      );
+      setSelectedWorkspaceId((current) => {
+        if (
+          current &&
+          Object.values(nextWorkspaces).some((items) =>
+            items.some((workspace) => workspace.id === current))
+        ) {
           return current;
         }
         const firstProjectId = nextProjects[0]?.id;
-        return firstProjectId ? nextDocumentsByProjectId[firstProjectId]?.[0]?.id ?? null : null;
+        return firstProjectId
+          ? nextWorkspaces[firstProjectId]?.[0]?.id ?? null
+          : null;
       });
     } catch (error) {
-      setErrorMessage(getPlatformErrorMessage(error));
-      if (error instanceof PlatformApiError && error.status === 401) {
-        window.localStorage.removeItem(PLATFORM_TOKEN_STORAGE_KEY);
-        setAccessToken(null);
-        setUser(null);
-        setView("login");
-      }
+      handlePlatformError(error);
     } finally {
       setIsLoading(false);
     }
@@ -164,10 +195,14 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const loginResult = await client.login({ accountName, password });
-      window.localStorage.setItem(PLATFORM_TOKEN_STORAGE_KEY, loginResult.accessToken);
-      setAccessToken(loginResult.accessToken);
-      setUser(loginResult.user);
+      const login = await client.login({ accountName, password });
+      window.localStorage.setItem(
+        PLATFORM_TOKEN_STORAGE_KEY,
+        login.accessToken,
+      );
+      setAccessToken(login.accessToken);
+      setUser(login.user);
+      setHomeSection("projects");
       setView("home");
     } catch (error) {
       setErrorMessage(getPlatformErrorMessage(error));
@@ -179,107 +214,90 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   async function handleCreateProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!uploadFile) {
-      setErrorMessage("请先选择要上传的视频或音频文件。");
+      setErrorMessage("请先选择视频或音频文件。");
       return;
     }
-    setIsCreatingProject(true);
+    setIsMutating(true);
     setErrorMessage(null);
     try {
       const uploaded = await client.uploadFile(uploadFile);
-      const title = newProjectTitle.trim() || stripFileExtension(uploadFile.name);
-      const mediaAsset = await client.createMediaAsset({
+      const title =
+        newProjectTitle.trim() || stripFileExtension(uploadFile.name);
+      const media = await client.createMediaAsset({
         title,
         primaryFileId: uploaded.file.id,
       });
       const project = await client.createProject({
         title,
-        mediaAssetId: mediaAsset.id,
+        mediaAssetId: media.id,
       });
-      const initialProject = createEmptyProjectForFile(uploaded.file.id, uploaded.file.name, client);
-      const document = await client.createAnnotationDocument<ProjectData>(project.id, {
-        title: newDocumentTitle.trim() || "基准标注文档",
-        mode: newDocumentMode,
+      const initialProject = createEmptyProjectForFile(
+        uploaded.file.id,
+        uploaded.file.name,
+        client,
+      );
+      const workspace = await client.createWorkspace<ProjectData>(project.id, {
+        name: newWorkspaceName.trim() || "项目主工作区",
+        workspaceType: "main",
         initialPayload: prepareProjectForServer(initialProject),
       });
       await loadPlatformHome();
       setSelectedProjectId(project.id);
-      setSelectedDocumentId(document.id);
+      setSelectedWorkspaceId(workspace.id);
       setUploadFile(null);
       setNewProjectTitle("");
-      setNewDocumentTitle("基准标注文档");
-      const effectivePermission = await client.getEffectiveDocumentPermission(document.id);
-      setPermissionsByDocumentId((current) => ({
-        ...current,
-        [document.id]: effectivePermission,
-      }));
-      setEditorSession(createEditorSession(
-        document,
-        client,
-        handleDocumentSaved,
-        effectivePermission,
-      ));
-      setView("editor");
+      setNewWorkspaceName("项目主工作区");
+      openServerWorkspace(workspace);
     } catch (error) {
       setErrorMessage(getPlatformErrorMessage(error));
     } finally {
-      setIsCreatingProject(false);
+      setIsMutating(false);
     }
   }
 
-  async function handleImportJsonDocument(event: FormEvent<HTMLFormElement>) {
+  async function handleImportJson(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selectedProject) {
-      setErrorMessage("请先选择要导入到哪个项目。");
+    if (!selectedProject || !jsonImportFile) {
+      setErrorMessage("请先选择项目和要导入的 JSON 文件。");
       return;
     }
-    if (!jsonImportFile) {
-      setErrorMessage("请选择要导入的项目 JSON 文件。");
-      return;
-    }
-    setIsImportingJson(true);
+    setIsMutating(true);
     setErrorMessage(null);
     try {
-      const importedProject = await readProjectJsonFile(jsonImportFile);
-      const document = await client.createAnnotationDocument<ProjectData>(selectedProject.id, {
-        title: jsonImportTitle.trim() || stripFileExtension(jsonImportFile.name),
-        mode: jsonImportMode,
-        initialPayload: prepareProjectForServer(importedProject),
-      });
+      const imported = await readProjectJsonFile(jsonImportFile);
+      const workspace = await client.createWorkspace<ProjectData>(
+        selectedProject.id,
+        {
+          name:
+            jsonImportName.trim() ||
+            stripFileExtension(jsonImportFile.name),
+          workspaceType: "personal",
+          initialPayload: prepareProjectForServer(imported),
+        },
+      );
+      setJsonImportFile(null);
+      setJsonImportName("");
       await loadPlatformHome();
       setSelectedProjectId(selectedProject.id);
-      setSelectedDocumentId(document.id);
-      setJsonImportFile(null);
-      setJsonImportTitle("");
-      setVersionsByDocumentId((current) => ({
-        ...current,
-        [document.id]: [],
-      }));
+      setSelectedWorkspaceId(workspace.id);
     } catch (error) {
       setErrorMessage(getPlatformErrorMessage(error));
     } finally {
-      setIsImportingJson(false);
+      setIsMutating(false);
     }
   }
 
-  async function handleOpenSelectedDocument() {
-    if (!selectedDocument) {
-      openLocalDemoProject();
+  async function handleOpenWorkspace(workspaceId = selectedWorkspace?.id) {
+    if (!workspaceId) {
+      setErrorMessage("请先选择工作区。");
       return;
     }
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const [document, effectivePermission] = await Promise.all([
-        client.getAnnotationDocument<ProjectData>(selectedDocument.id),
-        client.getEffectiveDocumentPermission(selectedDocument.id),
-      ]);
-      setPermissionsByDocumentId((current) => ({
-        ...current,
-        [selectedDocument.id]: effectivePermission,
-      }));
-      setEditorSession(createEditorSession(document, client, handleDocumentSaved, effectivePermission));
-      setLocalEditorSession(null);
-      setView("editor");
+      openServerWorkspace(
+        await client.getWorkspace<ProjectData>(workspaceId),
+      );
     } catch (error) {
       setErrorMessage(getPlatformErrorMessage(error));
     } finally {
@@ -287,131 +305,90 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     }
   }
 
-  async function handleOpenDocumentById(documentId: string) {
-    setIsLoading(true);
-    setErrorMessage(null);
+  async function handleForkVersion(version: AnnotationVersionSummary) {
+    const name = window.prompt(
+      `从“${version.name}”创建新工作区：`,
+      `${version.name} 的分支`,
+    )?.trim();
+    if (!name) return;
+    setIsMutating(true);
     try {
-      const [document, effectivePermission] = await Promise.all([
-        client.getAnnotationDocument<ProjectData>(documentId),
-        client.getEffectiveDocumentPermission(documentId),
-      ]);
-      setPermissionsByDocumentId((current) => ({ ...current, [documentId]: effectivePermission }));
-      setEditorSession(createEditorSession(document, client, handleDocumentSaved, effectivePermission));
-      setLocalEditorSession(null);
-      setView("editor");
+      const workspace = await client.forkAnnotationVersion<ProjectData>(
+        version.id,
+        { workspaceName: name },
+      );
+      await loadPlatformHome();
+      setSelectedProjectId(version.projectId);
+      setSelectedWorkspaceId(workspace.id);
+      openServerWorkspace(workspace);
     } catch (error) {
       setErrorMessage(getPlatformErrorMessage(error));
     } finally {
-      setIsLoading(false);
+      setIsMutating(false);
     }
   }
 
-  async function loadDocumentVersions(documentId: string) {
-    setIsLoadingVersions(true);
-    setErrorMessage(null);
+  async function handleCreateProjectVersion(version: AnnotationVersionSummary) {
+    if (!selectedProject) return;
+    const name = window.prompt(
+      "项目候选版本名称：",
+      `项目版本：${version.name}`,
+    )?.trim();
+    if (!name) return;
+    setIsMutating(true);
     try {
-      const [versions, effectivePermission] = await Promise.all([
-        client.listAnnotationVersions<ProjectData>(documentId),
-        client.getEffectiveDocumentPermission(documentId),
-      ]);
-      setVersionsByDocumentId((current) => ({
-        ...current,
-        [documentId]: versions,
-      }));
-      setPermissionsByDocumentId((current) => ({
-        ...current,
-        [documentId]: effectivePermission,
-      }));
-    } catch (error) {
-      setErrorMessage(getPlatformErrorMessage(error));
-    } finally {
-      setIsLoadingVersions(false);
-    }
-  }
-
-  async function handleCreateVersion(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedDocument) {
-      setErrorMessage("请先选择要保存版本的标注文档。");
-      return;
-    }
-    if (!selectedPermission?.canEdit) {
-      setErrorMessage("当前账号没有为该文档创建版本的权限。");
-      return;
-    }
-    const trimmedName = versionName.trim();
-    if (!trimmedName) {
-      setErrorMessage("版本名称不能为空。");
-      return;
-    }
-    setIsCreatingVersion(true);
-    setErrorMessage(null);
-    try {
-      await client.createAnnotationVersion<ProjectData>(selectedDocument.id, {
-        name: trimmedName,
-        description: versionDescription.trim() || null,
+      await client.createProjectVersion(selectedProject.id, {
+        sourceVersionId: version.id,
+        name,
       });
-      setVersionName("");
-      setVersionDescription("");
-      await loadDocumentVersions(selectedDocument.id);
       await loadPlatformHome();
+      setDetailTab("versions");
     } catch (error) {
       setErrorMessage(getPlatformErrorMessage(error));
     } finally {
-      setIsCreatingVersion(false);
+      setIsMutating(false);
     }
   }
 
-  async function handleRestoreVersion(version: AnnotationVersion<ProjectData>) {
-    if (!selectedPermission?.canManage) {
-      setErrorMessage("恢复版本需要该文档的管理权限。");
-      return;
-    }
-    if (!window.confirm(`确定要从版本“${version.name}”恢复吗？恢复会基于该版本生成新的当前快照。`)) {
-      return;
-    }
-    setIsLoadingVersions(true);
-    setErrorMessage(null);
+  async function handlePublishProjectVersion(version: ProjectVersion) {
+    if (!window.confirm(`确认发布项目版本“${version.name}”？`)) return;
+    setIsMutating(true);
     try {
-      const restoredDocument = await client.restoreAnnotationVersion<ProjectData>(version.id);
-      handleDocumentSaved(restoredDocument);
-      setSelectedProjectId(restoredDocument.projectId);
-      setSelectedDocumentId(restoredDocument.id);
-      await loadDocumentVersions(restoredDocument.id);
+      await client.publishProjectVersion(version.id);
       await loadPlatformHome();
     } catch (error) {
       setErrorMessage(getPlatformErrorMessage(error));
     } finally {
-      setIsLoadingVersions(false);
+      setIsMutating(false);
     }
   }
 
-  function handleDocumentSaved(document: AnnotationDocument<ProjectData>) {
-    // 保存后重建 session：沿用当前 effectivePermission（权限范围不因保存而变化）。
-    const effectivePermission = permissionsByDocumentId[document.id] ??
-      editorSession?.effectivePermission;
-    if (effectivePermission) {
-      setEditorSession(createEditorSession(
-        document,
-        client,
-        handleDocumentSaved,
-        effectivePermission,
-      ));
-    }
+  function openServerWorkspace(workspace: AnnotationWorkspace<ProjectData>) {
+    setEditorSession(createEditorSession(
+      workspace,
+      client,
+      handleWorkspaceSaved,
+    ));
     setLocalEditorSession(null);
-    setDocumentsByProjectId((current) => ({
+    setSelectedProjectId(workspace.projectId);
+    setSelectedWorkspaceId(workspace.id);
+    setView("editor");
+  }
+
+  function handleWorkspaceSaved(
+    workspace: AnnotationWorkspace<ProjectData>,
+  ) {
+    setEditorSession(createEditorSession(
+      workspace,
+      client,
+      handleWorkspaceSaved,
+    ));
+    setWorkspacesByProjectId((current) => ({
       ...current,
-      [document.projectId]: (current[document.projectId] ?? []).map((item) =>
-        item.id === document.id
-          ? {
-              id: document.id,
-              projectId: document.projectId,
-              title: document.title,
-              mode: document.mode,
-              currentVersionId: document.currentVersionId,
-              updatedAt: document.updatedAt,
-            }
-          : item,
+      [workspace.projectId]: (current[workspace.projectId] ?? []).map((item) =>
+        item.id === workspace.id
+          ? workspace
+          : item
       ),
     }));
   }
@@ -422,19 +399,22 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setUser(null);
     setProjects([]);
     setMediaAssets([]);
-    setDocumentsByProjectId({});
+    setWorkspacesByProjectId({});
+    setAnnotationVersionsByProjectId({});
+    setProjectVersionsByProjectId({});
     setSelectedProjectId(null);
-    setSelectedDocumentId(null);
+    setSelectedWorkspaceId(null);
     setEditorSession(null);
     setLocalEditorSession(null);
-    setVersionsByDocumentId({});
-    setPermissionsByDocumentId({});
+    setHomeSection("projects");
     setView("login");
   }
 
   function openLocalDemoProject() {
     setEditorSession(null);
-    setLocalEditorSession(createLocalEditorSession(mockProject, "本地示例项目", "demo"));
+    setLocalEditorSession(
+      createLocalEditorSession(mockProject, "本地示例项目", "demo"),
+    );
     setView("editor");
   }
 
@@ -442,10 +422,10 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const importedProject = await readProjectJsonFile(file);
+      const imported = await readProjectJsonFile(file);
       setEditorSession(null);
       setLocalEditorSession(createLocalEditorSession(
-        importedProject,
+        imported,
         stripFileExtension(file.name) || "本地标注项目",
         "json",
       ));
@@ -457,26 +437,41 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     }
   }
 
-  function handleLocalProjectFileChange(event: ChangeEvent<HTMLInputElement>) {
+  function handleLocalProjectFileChange(
+    event: ChangeEvent<HTMLInputElement>,
+  ) {
     const file = event.target.files?.[0];
-    if (file) {
-      void handleOpenLocalProjectJson(file);
-    }
+    if (file) void handleOpenLocalProjectJson(file);
     event.target.value = "";
   }
 
-  if (view === "editor") {
-    const isServerDocument = Boolean(editorSession);
-    const platformNavigation: TopMenuPlatformNavigation = {
-      label: isServerDocument || accessToken ? "← 平台" : "← 入口",
-      title: isServerDocument || accessToken ? "返回平台主页" : "返回登录与本地入口",
-      onBack: () => setView(isServerDocument || accessToken ? "home" : "login"),
-    };
+  function handlePlatformError(error: unknown) {
+    setErrorMessage(getPlatformErrorMessage(error));
+    if (error instanceof PlatformApiError && error.status === 401) {
+      window.localStorage.removeItem(PLATFORM_TOKEN_STORAGE_KEY);
+      setAccessToken(null);
+      setUser(null);
+      setView("login");
+    }
+  }
 
+  if (view === "editor") {
+    const isServerWorkspace = Boolean(editorSession);
+    const platformNavigation: TopMenuPlatformNavigation = {
+      label: isServerWorkspace || accessToken ? "← 平台" : "← 入口",
+      title: isServerWorkspace || accessToken
+        ? "返回平台主页"
+        : "返回登录与本地入口",
+      onBack: () => setView(isServerWorkspace || accessToken ? "home" : "login"),
+    };
     return (
       <div className="platform-editor-host">
         <div className="platform-editor-body">
-          {renderEditor(editorSession, localEditorSession, platformNavigation)}
+          {renderEditor(
+            editorSession,
+            localEditorSession,
+            platformNavigation,
+          )}
         </div>
       </div>
     );
@@ -489,10 +484,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
           <div className="platform-login-copy">
             <span className="platform-kicker">Kunqu Research Workspace</span>
             <h1>昆曲多模态标注平台</h1>
-            <p>
-              统一管理视频、标注文档、课堂任务、版本与协同编辑。当前接入真实后端与数据库，
-              可使用开发账号验证平台入口。
-            </p>
+            <p>统一管理媒体、标注工作区、成员成果和可追溯项目版本。</p>
           </div>
           <form className="platform-login-form" onSubmit={handleLogin}>
             <label>
@@ -512,7 +504,9 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
                 autoComplete="current-password"
               />
             </label>
-            {errorMessage ? <p className="platform-error" role="alert">{errorMessage}</p> : null}
+            {errorMessage
+              ? <p className="platform-error" role="alert">{errorMessage}</p>
+              : null}
             <button type="submit" disabled={isLoading}>
               {isLoading ? "正在登录..." : "登录平台"}
             </button>
@@ -523,16 +517,26 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
                 <span>本地导入、编辑和保存 JSON，不连接服务器账号。</span>
               </div>
               <div className="platform-local-entry-actions">
-                <button type="button" className="platform-secondary-button" onClick={openLocalDemoProject}>
+                <button
+                  type="button"
+                  className="platform-secondary-button"
+                  onClick={openLocalDemoProject}
+                >
                   新建本地示例项目
                 </button>
                 <label className="platform-file-button">
                   打开本地项目 JSON
-                  <input type="file" accept="application/json,.json" onChange={handleLocalProjectFileChange} />
+                  <input
+                    type="file"
+                    accept="application/json,.json"
+                    onChange={handleLocalProjectFileChange}
+                  />
                 </label>
               </div>
             </div>
-            <p className="platform-login-hint">开发账号：admin/admin123、ta/ta123、student/student123</p>
+            <p className="platform-login-hint">
+              开发账号：admin/admin123、ta/ta123、student/student123
+            </p>
           </form>
         </section>
       </main>
@@ -546,271 +550,490 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
           <span className="top-menu-brand-dot" />
           <div>
             <strong>戏曲多轨标注工作台</strong>
-            <span>数据库平台预览</span>
+            <span>工作区与版本平台</span>
           </div>
         </div>
         <div className="platform-user-box">
-          <span>{user ? `${user.displayName} · ${user.roles.join("/")}` : "未连接账号"}</span>
-          <button type="button" onClick={openLocalDemoProject}>
-            本地工具
-          </button>
+          <span>
+            {user
+              ? `${user.displayName} · ${user.roles.join("/")}`
+              : "未连接账号"}
+          </span>
+          <button type="button" onClick={openLocalDemoProject}>本地工具</button>
           <label className="platform-topbar-file-button">
             打开本地 JSON
-            <input type="file" accept="application/json,.json" onChange={handleLocalProjectFileChange} />
+            <input
+              type="file"
+              accept="application/json,.json"
+              onChange={handleLocalProjectFileChange}
+            />
           </label>
-          <button type="button" onClick={() => void loadPlatformHome()} disabled={isLoading}>
+          <button
+            type="button"
+            onClick={() => void loadPlatformHome()}
+            disabled={isLoading}
+          >
             刷新
           </button>
-          <button type="button" onClick={handleLogout}>
-            退出
-          </button>
+          <button type="button" onClick={handleLogout}>退出</button>
         </div>
       </header>
 
       <section className="platform-dashboard">
         <aside className="platform-sidebar">
           <h2>平台导航</h2>
-          <button type="button" className={homeSection === "projects" ? "active" : ""} onClick={() => setHomeSection("projects")}>项目库</button>
-          <button type="button" className={homeSection === "courses" ? "active" : ""} onClick={() => setHomeSection("courses")}>课堂作业</button>
-          <button type="button" disabled>账号权限</button>
+          <button
+            type="button"
+            className={homeSection === "projects" ? "active" : ""}
+            onClick={() => setHomeSection("projects")}
+          >
+            项目库
+          </button>
+          <button
+            type="button"
+            className={homeSection === "permissions" ? "active" : ""}
+            onClick={() => setHomeSection("permissions")}
+            disabled={!canManageAnyProject}
+            title={canManageAnyProject
+              ? "管理项目成员及其授权范围"
+              : "当前账号没有可管理的项目"}
+          >
+            项目权限管理
+          </button>
           <button type="button" disabled>后端任务</button>
           <div className="platform-sidebar-note">
-            当前已接入 PostgreSQL、文件上传、项目库和服务端标注文档保存。
+            工作区用于持续编辑；完成版本和项目版本均不可变、可追溯。
           </div>
         </aside>
 
-        <section className="platform-main-panel">
-          {errorMessage ? <p className="platform-error" role="alert">{errorMessage}</p> : null}
-          {homeSection === "courses" ? (
-            <CourseWorkspace
-              client={client}
-              user={user!}
-              projects={projects}
-              documentsByProjectId={documentsByProjectId}
-              onOpenDocument={handleOpenDocumentById}
-              onError={setErrorMessage}
-            />
-          ) : (
-          <>
-          <div className="platform-section-header">
-            <div>
-              <span className="platform-kicker">Project Library</span>
-              <h1>视频与标注文档</h1>
-            </div>
-            <button type="button" onClick={() => void handleOpenSelectedDocument()} disabled={isLoading}>
-              打开选中文档
-            </button>
-          </div>
-
-          {isLoading ? <p className="platform-muted">正在从后端加载项目...</p> : null}
-
-          <form className="platform-create-panel" onSubmit={handleCreateProject}>
-            <div>
-              <span className="platform-kicker">Upload</span>
-              <h2>上传媒体并创建项目</h2>
-            </div>
-            <label>
-              媒体文件
-              <input type="file" accept="video/*,audio/*" onChange={handleUploadFileChange} />
-            </label>
-            <label>
-              项目标题
-              <input
-                value={newProjectTitle}
-                onChange={(event) => setNewProjectTitle(event.target.value)}
-                placeholder={uploadFile ? stripFileExtension(uploadFile.name) : "例如：顾卫英《寻梦》"}
-              />
-            </label>
-            <label>
-              初始文档
-              <input
-                value={newDocumentTitle}
-                onChange={(event) => setNewDocumentTitle(event.target.value)}
-              />
-            </label>
-            <label>
-              标注模式
-              <select value={newDocumentMode} onChange={(event) => setNewDocumentMode(event.target.value as AnnotationMode)}>
-                <option value="collaborative">协作标注</option>
-                <option value="independent">独立标注</option>
-              </select>
-            </label>
-            <button type="submit" disabled={isCreatingProject}>
-              {isCreatingProject ? "正在创建..." : "上传并创建"}
-            </button>
-          </form>
-
-          <form className="platform-create-panel platform-json-import-panel" onSubmit={handleImportJsonDocument}>
-            <div>
-              <span className="platform-kicker">Import JSON</span>
-              <h2>导入现有标注 JSON</h2>
-            </div>
-            <label>
-              项目 JSON
-              <input type="file" accept="application/json,.json" onChange={handleJsonImportFileChange} />
-            </label>
-            <label>
-              文档标题
-              <input
-                value={jsonImportTitle}
-                onChange={(event) => setJsonImportTitle(event.target.value)}
-                placeholder={jsonImportFile ? stripFileExtension(jsonImportFile.name) : "导入后显示的文档名"}
-              />
-            </label>
-            <label>
-              标注模式
-              <select value={jsonImportMode} onChange={(event) => setJsonImportMode(event.target.value as AnnotationMode)}>
-                <option value="independent">独立标注</option>
-                <option value="collaborative">协作标注</option>
-              </select>
-            </label>
-            <button type="submit" disabled={!selectedProject || isImportingJson}>
-              {isImportingJson ? "正在导入..." : "导入到当前项目"}
-            </button>
-          </form>
-
-          <div className="platform-grid">
-            <div className="platform-list-panel">
-              <h2>项目</h2>
-              {projects.map((project) => (
-                <button
-                  key={project.id}
-                  type="button"
-                  className={project.id === selectedProject?.id ? "selected" : ""}
-                  onClick={() => {
-                    setSelectedProjectId(project.id);
-                    setSelectedDocumentId(documentsByProjectId[project.id]?.[0]?.id ?? null);
+        <section className={`platform-main-panel ${
+          homeSection === "permissions"
+            ? "platform-main-panel-permissions"
+            : ""
+        }`}>
+          {errorMessage
+            ? <p className="platform-error" role="alert">{errorMessage}</p>
+            : null}
+          {homeSection === "permissions"
+            ? (
+                <ProjectPermissionWorkspace
+                  client={client}
+                  projects={projects}
+                  selectedProjectId={selectedProjectId}
+                  onSelectProject={setSelectedProjectId}
+                  onOpenWorkspace={(workspaceId) =>
+                    void handleOpenWorkspace(workspaceId)}
+                  onProjectsChanged={() => loadPlatformHome()}
+                  onError={setErrorMessage}
+                />
+              )
+            : (
+                <ProjectLibrary
+                  projects={projects}
+                  selectedProject={selectedProject}
+                  selectedWorkspaces={selectedWorkspaces}
+                  selectedWorkspace={selectedWorkspace}
+                  annotationVersions={selectedAnnotationVersions}
+                  projectVersions={selectedProjectVersions}
+                  detailTab={detailTab}
+                  isLoading={isLoading}
+                  isMutating={isMutating}
+                  uploadFile={uploadFile}
+                  newProjectTitle={newProjectTitle}
+                  newWorkspaceName={newWorkspaceName}
+                  jsonImportFile={jsonImportFile}
+                  jsonImportName={jsonImportName}
+                  mediaAssetCount={mediaAssets.length}
+                  onSelectProject={(projectId) => {
+                    setSelectedProjectId(projectId);
+                    setSelectedWorkspaceId(
+                      workspacesByProjectId[projectId]?.[0]?.id ?? null,
+                    );
                   }}
-                >
-                  <strong>{project.title}</strong>
-                  <span>{project.documentCount} 份标注文档</span>
-                </button>
-              ))}
-              {!projects.length && !isLoading ? <p className="platform-muted">暂无项目。</p> : null}
-            </div>
-
-            <div className="platform-detail-panel">
-              <div className="platform-detail-title">
-                <h2>{selectedProject?.title ?? "未选择项目"}</h2>
-                <span>{selectedProject?.updatedAt ? `更新于 ${formatDateTime(selectedProject.updatedAt)}` : "等待加载"}</span>
-              </div>
-              <div className="platform-document-list">
-                {selectedDocuments.map((document) => (
-                  <button
-                    key={document.id}
-                    type="button"
-                    className={document.id === selectedDocument?.id ? "selected" : ""}
-                    onClick={() => setSelectedDocumentId(document.id)}
-                  >
-                    <strong>{document.title}</strong>
-                    <span>{document.mode === "collaborative" ? "协作标注" : "独立标注"}</span>
-                  </button>
-                ))}
-                {!selectedDocuments.length ? <p className="platform-muted">该项目暂无可访问标注文档。</p> : null}
-              </div>
-              <div className="platform-action-row">
-                <button type="button" onClick={() => void handleOpenSelectedDocument()} disabled={!selectedDocument || isLoading}>
-                  打开标注编辑器
-                </button>
-                <button type="button" onClick={() => selectedDocument && void loadDocumentVersions(selectedDocument.id)} disabled={!selectedDocument || isLoadingVersions}>
-                  刷新版本
-                </button>
-              </div>
-              <section className="platform-version-panel">
-                <div className="platform-detail-title">
-                  <h2>标注版本</h2>
-                  <span>{selectedDocument ? `${selectedVersions.length} 个版本` : "未选择文档"}</span>
-                </div>
-                <form className="platform-version-form" onSubmit={handleCreateVersion}>
-                  <input
-                    value={versionName}
-                    onChange={(event) => setVersionName(event.target.value)}
-                    placeholder="版本名称"
-                    disabled={!selectedDocument || !selectedPermission?.canEdit}
-                  />
-                  <input
-                    value={versionDescription}
-                    onChange={(event) => setVersionDescription(event.target.value)}
-                    placeholder="版本备注，可选"
-                    disabled={!selectedDocument || !selectedPermission?.canEdit}
-                  />
-                  <button type="submit" disabled={!selectedDocument || !selectedPermission?.canEdit || isCreatingVersion}>
-                    {isCreatingVersion ? "保存中..." : "保存版本"}
-                  </button>
-                </form>
-                <div className="platform-version-list">
-                  {isLoadingVersions ? <p className="platform-muted">正在加载版本...</p> : null}
-                  {selectedVersions.map((version) => (
-                    <article key={version.id} className="platform-version-item">
-                      <div>
-                        <strong>{version.name}</strong>
-                        <span>revision {version.revision} · {formatDateTime(version.createdAt)}</span>
-                        {version.description ? <p>{version.description}</p> : null}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleRestoreVersion(version)}
-                        disabled={!selectedPermission?.canManage}
-                        title={selectedPermission?.canManage ? "恢复此版本" : "恢复版本需要管理权限"}
-                      >
-                        恢复
-                      </button>
-                    </article>
-                  ))}
-                  {selectedDocument && !isLoadingVersions && selectedVersions.length === 0 ? (
-                    <p className="platform-muted">当前文档还没有手动保存的版本。</p>
-                  ) : null}
-                </div>
-              </section>
-              <div className="platform-metadata-strip">
-                <span>媒体资产：{mediaAssets.length}</span>
-                <span>当前版本：{selectedDocument?.currentVersionId ?? "未保存版本"}</span>
-              </div>
-            </div>
-          </div>
-          </>
-          )}
+                  onSelectWorkspace={setSelectedWorkspaceId}
+                  onDetailTab={setDetailTab}
+                  onUploadFile={(file) => {
+                    setUploadFile(file);
+                    if (file && !newProjectTitle.trim()) {
+                      setNewProjectTitle(stripFileExtension(file.name));
+                    }
+                  }}
+                  onNewProjectTitle={setNewProjectTitle}
+                  onNewWorkspaceName={setNewWorkspaceName}
+                  onJsonFile={(file) => {
+                    setJsonImportFile(file);
+                    if (file && !jsonImportName.trim()) {
+                      setJsonImportName(stripFileExtension(file.name));
+                    }
+                  }}
+                  onJsonImportName={setJsonImportName}
+                  onCreateProject={handleCreateProject}
+                  onImportJson={handleImportJson}
+                  onOpenWorkspace={(workspaceId) =>
+                    void handleOpenWorkspace(workspaceId)}
+                  onForkVersion={(version) => void handleForkVersion(version)}
+                  onCreateProjectVersion={(version) =>
+                    void handleCreateProjectVersion(version)}
+                  onPublishProjectVersion={(version) =>
+                    void handlePublishProjectVersion(version)}
+                />
+              )}
         </section>
       </section>
     </main>
   );
+}
 
-  function handleUploadFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0] ?? null;
-    setUploadFile(file);
-    if (file && !newProjectTitle.trim()) {
-      setNewProjectTitle(stripFileExtension(file.name));
-    }
-  }
+type ProjectLibraryProps = {
+  projects: AnnotationProjectSummary[];
+  selectedProject: AnnotationProjectSummary | null;
+  selectedWorkspaces: AnnotationWorkspaceSummary[];
+  selectedWorkspace: AnnotationWorkspaceSummary | null;
+  annotationVersions: AnnotationVersionSummary[];
+  projectVersions: ProjectVersion[];
+  detailTab: ProjectDetailTab;
+  isLoading: boolean;
+  isMutating: boolean;
+  uploadFile: File | null;
+  newProjectTitle: string;
+  newWorkspaceName: string;
+  jsonImportFile: File | null;
+  jsonImportName: string;
+  mediaAssetCount: number;
+  onSelectProject: (projectId: string) => void;
+  onSelectWorkspace: (workspaceId: string) => void;
+  onDetailTab: (tab: ProjectDetailTab) => void;
+  onUploadFile: (file: File | null) => void;
+  onNewProjectTitle: (value: string) => void;
+  onNewWorkspaceName: (value: string) => void;
+  onJsonFile: (file: File | null) => void;
+  onJsonImportName: (value: string) => void;
+  onCreateProject: (event: FormEvent<HTMLFormElement>) => void;
+  onImportJson: (event: FormEvent<HTMLFormElement>) => void;
+  onOpenWorkspace: (workspaceId?: string) => void;
+  onForkVersion: (version: AnnotationVersionSummary) => void;
+  onCreateProjectVersion: (version: AnnotationVersionSummary) => void;
+  onPublishProjectVersion: (version: ProjectVersion) => void;
+};
 
-  function handleJsonImportFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0] ?? null;
-    setJsonImportFile(file);
-    if (file && !jsonImportTitle.trim()) {
-      setJsonImportTitle(stripFileExtension(file.name));
-    }
-  }
+function ProjectLibrary(props: ProjectLibraryProps) {
+  const canCreateProjectVersion =
+    props.selectedProject?.currentUserCapabilities.includes(
+      "create_project_version",
+    ) ?? false;
+  const canPublish =
+    props.selectedProject?.currentUserCapabilities.includes(
+      "publish_project_version",
+    ) ?? false;
+  return (
+    <>
+      <div className="platform-section-header">
+        <div>
+          <span className="platform-kicker">Project Library</span>
+          <h1>项目、工作区与版本</h1>
+        </div>
+        <button
+          type="button"
+          onClick={() => props.onOpenWorkspace(props.selectedWorkspace?.id)}
+          disabled={!props.selectedWorkspace || props.isLoading}
+        >
+          打开工作区
+        </button>
+      </div>
+
+      <form className="platform-create-panel" onSubmit={props.onCreateProject}>
+        <div>
+          <span className="platform-kicker">Upload</span>
+          <h2>上传媒体并创建项目</h2>
+        </div>
+        <label>
+          媒体文件
+          <input
+            type="file"
+            accept="video/*,audio/*"
+            onChange={(event) =>
+              props.onUploadFile(event.target.files?.[0] ?? null)}
+          />
+        </label>
+        <label>
+          项目标题
+          <input
+            value={props.newProjectTitle}
+            onChange={(event) =>
+              props.onNewProjectTitle(event.target.value)}
+            placeholder={props.uploadFile
+              ? stripFileExtension(props.uploadFile.name)
+              : "例如：顾卫英《寻梦》"}
+          />
+        </label>
+        <label>
+          主工作区
+          <input
+            value={props.newWorkspaceName}
+            onChange={(event) =>
+              props.onNewWorkspaceName(event.target.value)}
+          />
+        </label>
+        <button type="submit" disabled={props.isMutating}>
+          {props.isMutating ? "正在创建..." : "上传并创建"}
+        </button>
+      </form>
+
+      <form
+        className="platform-create-panel platform-json-import-panel"
+        onSubmit={props.onImportJson}
+      >
+        <div>
+          <span className="platform-kicker">Import JSON</span>
+          <h2>导入为个人工作区</h2>
+        </div>
+        <label>
+          项目 JSON
+          <input
+            type="file"
+            accept="application/json,.json"
+            onChange={(event) =>
+              props.onJsonFile(event.target.files?.[0] ?? null)}
+          />
+        </label>
+        <label>
+          工作区名称
+          <input
+            value={props.jsonImportName}
+            onChange={(event) =>
+              props.onJsonImportName(event.target.value)}
+            placeholder={props.jsonImportFile
+              ? stripFileExtension(props.jsonImportFile.name)
+              : "导入后的工作区名称"}
+          />
+        </label>
+        <button
+          type="submit"
+          disabled={!props.selectedProject || props.isMutating}
+        >
+          导入到当前项目
+        </button>
+      </form>
+
+      <div className="platform-grid">
+        <div className="platform-list-panel">
+          <h2>项目</h2>
+          {props.projects.map((project) => (
+            <button
+              key={project.id}
+              type="button"
+              className={
+                project.id === props.selectedProject?.id ? "selected" : ""
+              }
+              onClick={() => props.onSelectProject(project.id)}
+            >
+              <strong>{project.title}</strong>
+              <span>
+                {project.workspaceCount} 个工作区 ·{" "}
+                {project.annotationVersionCount} 个完成版本
+              </span>
+            </button>
+          ))}
+          {!props.projects.length && !props.isLoading
+            ? <p className="platform-muted">暂无项目。</p>
+            : null}
+        </div>
+
+        <div className="platform-detail-panel">
+          <div className="platform-detail-title">
+            <h2>{props.selectedProject?.title ?? "未选择项目"}</h2>
+            <span>
+              {props.selectedProject?.updatedAt
+                ? `更新于 ${formatDateTime(props.selectedProject.updatedAt)}`
+                : "等待加载"}
+            </span>
+          </div>
+          <div className="platform-segmented-tabs">
+            <button
+              type="button"
+              className={props.detailTab === "workspaces" ? "active" : ""}
+              onClick={() => props.onDetailTab("workspaces")}
+            >
+              工作区
+            </button>
+            <button
+              type="button"
+              className={props.detailTab === "annotations" ? "active" : ""}
+              onClick={() => props.onDetailTab("annotations")}
+            >
+              成员标注
+            </button>
+            <button
+              type="button"
+              className={props.detailTab === "versions" ? "active" : ""}
+              onClick={() => props.onDetailTab("versions")}
+            >
+              项目版本
+            </button>
+          </div>
+
+          {props.detailTab === "workspaces"
+            ? (
+                <div className="platform-version-list">
+                  {props.selectedWorkspaces.map((workspace) => (
+                    <article
+                      key={workspace.id}
+                      className={`platform-version-item ${
+                        workspace.id === props.selectedWorkspace?.id
+                          ? "selected"
+                          : ""
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        className="platform-item-main-button"
+                        onClick={() => props.onSelectWorkspace(workspace.id)}
+                      >
+                        <strong>{workspace.name}</strong>
+                        <span>
+                          {workspace.owner.displayName} · revision{" "}
+                          {workspace.latestRevision} · {workspace.status}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          props.onSelectWorkspace(workspace.id);
+                          props.onOpenWorkspace(workspace.id);
+                        }}
+                      >
+                        打开
+                      </button>
+                    </article>
+                  ))}
+                  {!props.selectedWorkspaces.length
+                    ? <p className="platform-muted">该项目暂无工作区。</p>
+                    : null}
+                </div>
+              )
+            : null}
+
+          {props.detailTab === "annotations"
+            ? (
+                <div className="platform-version-list">
+                  {props.annotationVersions.map((version) => (
+                    <article key={version.id} className="platform-version-item">
+                      <div>
+                        <strong>{version.name}</strong>
+                        <span>
+                          {version.creator.displayName} · revision{" "}
+                          {version.revision} ·{" "}
+                          {formatDateTime(version.completedAt)}
+                        </span>
+                        {version.parentVersionId
+                          ? <p>来源版本：{version.parentVersionId}</p>
+                          : null}
+                      </div>
+                      <div className="platform-inline-actions">
+                        <button
+                          type="button"
+                          onClick={() => props.onForkVersion(version)}
+                        >
+                          Fork
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!canCreateProjectVersion}
+                          onClick={() =>
+                            props.onCreateProjectVersion(version)}
+                        >
+                          建立候选
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                  {!props.annotationVersions.length
+                    ? <p className="platform-muted">暂无完成的标注版本。</p>
+                    : null}
+                </div>
+              )
+            : null}
+
+          {props.detailTab === "versions"
+            ? (
+                <div className="platform-version-list">
+                  {props.projectVersions.map((version) => (
+                    <article key={version.id} className="platform-version-item">
+                      <div>
+                        <strong>
+                          v{version.sequence} · {version.name}
+                        </strong>
+                        <span>
+                          {version.status} · 来源：
+                          {version.sourceVersion.name}（
+                          {version.sourceVersion.creator.displayName}）
+                        </span>
+                        {version.publishedAt
+                          ? <p>发布于 {formatDateTime(version.publishedAt)}</p>
+                          : null}
+                      </div>
+                      {version.status === "candidate"
+                        ? (
+                            <button
+                              type="button"
+                              disabled={!canPublish}
+                              onClick={() =>
+                                props.onPublishProjectVersion(version)}
+                            >
+                              发布
+                            </button>
+                          )
+                        : null}
+                    </article>
+                  ))}
+                  {!props.projectVersions.length
+                    ? <p className="platform-muted">暂无项目版本。</p>
+                    : null}
+                </div>
+              )
+            : null}
+
+          <div className="platform-metadata-strip">
+            <span>媒体资产：{props.mediaAssetCount}</span>
+            <span>
+              当前发布版本：
+              {props.selectedProject?.currentProjectVersionId ?? "尚未发布"}
+            </span>
+          </div>
+        </div>
+      </div>
+    </>
+  );
 }
 
 function createEditorSession(
-  document: AnnotationDocument<ProjectData>,
+  workspace: AnnotationWorkspace<ProjectData>,
   client: PlatformClient,
-  onDocumentSaved: (document: AnnotationDocument<ProjectData>) => void,
-  effectivePermission: EffectiveDocumentPermission,
+  onWorkspaceSaved: (
+    workspace: AnnotationWorkspace<ProjectData>,
+  ) => void,
 ): PlatformEditorSession {
   return {
     client,
-    documentId: document.id,
-    documentTitle: document.title,
-    projectTitle: document.project.title,
-    baseRevision: document.latestSnapshot.revision,
-    initialProject: hydrateProjectForClient(document.latestSnapshot.payload, document.mediaAsset, client),
-    onDocumentSaved,
-    effectivePermission,
+    workspaceId: workspace.id,
+    workspaceName: workspace.name,
+    projectTitle: workspace.project.title,
+    baseRevision: workspace.latestSnapshot.revision,
+    initialProject: hydrateProjectForClient(
+      workspace.latestSnapshot.payload,
+      workspace.mediaAsset,
+      client,
+    ),
+    onWorkspaceSaved,
+    effectivePermission: workspace.permission,
   };
 }
 
-function createEmptyProjectForFile(fileId: string, fileName: string, client: PlatformClient): ProjectData {
+function createEmptyProjectForFile(
+  fileId: string,
+  fileName: string,
+  client: PlatformClient,
+): ProjectData {
   return buildProjectFromLines([], {
     url: client.getFileContentUrl(fileId),
     name: fileName,
@@ -832,12 +1055,17 @@ function createLocalEditorSession(
   };
 }
 
-function hydrateProjectForClient(payload: unknown, mediaAsset: MediaAsset, client: PlatformClient): ProjectData {
-  const project = isProjectFileLike(payload) ? normalizeImportedProjectFile(payload).project : mockProject;
-  const platformFileId = getPlatformFileId(project.video.filePath) ?? mediaAsset.primaryFileId;
-  if (!platformFileId) {
-    return project;
-  }
+function hydrateProjectForClient(
+  payload: unknown,
+  mediaAsset: MediaAsset,
+  client: PlatformClient,
+): ProjectData {
+  const project = isProjectFileLike(payload)
+    ? normalizeImportedProjectFile(payload).project
+    : mockProject;
+  const platformFileId =
+    getPlatformFileId(project.video.filePath) ?? mediaAsset.primaryFileId;
+  if (!platformFileId) return project;
   return {
     ...project,
     video: {
@@ -856,7 +1084,7 @@ export function prepareProjectForServer(project: ProjectData): ProjectData {
     video: platformFileId
       ? {
           ...project.video,
-          // 服务端快照不保存带短期 token 的视频 URL，打开时由平台 client 重新补齐。
+          // 快照不保存带会话 token 的 URL，重新打开时由 PlatformClient 注入。
           url: "",
           source: "url",
           filePath: `${PLATFORM_FILE_PATH_PREFIX}${platformFileId}`,
@@ -872,8 +1100,7 @@ function getPlatformFileId(filePath: string | null | undefined) {
 }
 
 async function readProjectJsonFile(file: File): Promise<ProjectData> {
-  const text = await file.text();
-  const parsed = JSON.parse(text) as unknown;
+  const parsed = JSON.parse(await file.text()) as unknown;
   if (!isProjectFileLike(parsed)) {
     throw new Error("所选 JSON 不是有效的标注项目文件。");
   }
@@ -894,11 +1121,7 @@ function formatDateTime(value: string) {
 }
 
 function getPlatformErrorMessage(error: unknown) {
-  if (error instanceof PlatformApiError) {
-    return error.message;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
+  if (error instanceof PlatformApiError) return error.message;
+  if (error instanceof Error) return error.message;
   return "平台请求失败，请确认后端 API 是否已启动。";
 }

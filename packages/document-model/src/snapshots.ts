@@ -1,10 +1,12 @@
 import type {
-  AnnotationDocumentSnapshot,
+  AnnotationSnapshot,
   AnnotationVersion,
+  AnnotationVersionKind,
+  AnnotationWorkspaceSummary,
 } from "@xiqu/shared";
 
 export type CreateSnapshotInput<TPayload> = {
-  documentId: string;
+  workspaceId: string;
   payload: TPayload;
   revision: number;
   userId: string;
@@ -12,23 +14,27 @@ export type CreateSnapshotInput<TPayload> = {
 };
 
 export type CreateVersionInput<TPayload> = {
-  snapshot: AnnotationDocumentSnapshot<TPayload>;
+  projectId: string;
+  workspace: AnnotationWorkspaceSummary;
+  snapshot: AnnotationSnapshot<TPayload>;
   name: string;
   description?: string | null;
+  kind?: AnnotationVersionKind;
+  parentVersionId?: string | null;
   userId: string;
   now?: Date;
 };
 
 export function createAnnotationSnapshot<TPayload>({
-  documentId,
+  workspaceId,
   payload,
   revision,
   userId,
   now = new Date(),
-}: CreateSnapshotInput<TPayload>): AnnotationDocumentSnapshot<TPayload> {
+}: CreateSnapshotInput<TPayload>): AnnotationSnapshot<TPayload> {
   return {
     id: createStableEnoughId("snapshot"),
-    documentId,
+    workspaceId,
     revision,
     payload,
     createdBy: userId,
@@ -37,26 +43,48 @@ export function createAnnotationSnapshot<TPayload>({
 }
 
 export function createAnnotationVersion<TPayload>({
+  projectId,
+  workspace,
   snapshot,
   name,
   description = null,
+  kind = "checkpoint",
+  parentVersionId = null,
   userId,
   now = new Date(),
 }: CreateVersionInput<TPayload>): AnnotationVersion<TPayload> {
+  const completedAt = now.toISOString();
   return {
     id: createStableEnoughId("version"),
-    documentId: snapshot.documentId,
+    projectId,
+    workspaceId: workspace.id,
+    snapshotId: snapshot.id,
+    parentVersionId,
     name,
     description,
+    kind,
+    status: "active",
     revision: snapshot.revision,
     snapshot,
-    createdBy: userId,
-    createdAt: now.toISOString(),
+    workspace: {
+      id: workspace.id,
+      name: workspace.name,
+      workspaceType: workspace.workspaceType,
+      status: workspace.status,
+      owner: workspace.owner,
+    },
+    creator: {
+      id: userId,
+      accountName: "",
+      displayName: "",
+    },
+    completedAt,
+    archivedAt: null,
+    createdAt: completedAt,
   };
 }
 
 function createStableEnoughId(prefix: string) {
-  // 这里刻意不绑定浏览器或 Node 的 crypto，实现跨前后端可复用的临时 ID。
-  // 真正落库后应由数据库/服务端统一生成不可碰撞 ID。
+  // 该 helper 只用于不落库的 document-model 测试；真正平台记录始终由数据库生成 UUID。
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }

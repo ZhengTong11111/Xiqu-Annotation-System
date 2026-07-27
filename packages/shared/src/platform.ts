@@ -7,17 +7,17 @@ export type PlatformRole =
   | "reviewer"
   | "service";
 
-export type PermissionAction =
-  | "view"
-  | "edit"
-  | "comment"
-  | "submit"
-  | "review"
-  | "merge"
-  | "confirm"
-  | "manage";
+export type PlatformUser = {
+  id: string;
+  displayName: string;
+  accountName: string;
+  roles: PlatformRole[];
+};
 
-export type AnnotationMode = "independent" | "collaborative";
+export type UserReference = Pick<
+  PlatformUser,
+  "id" | "displayName" | "accountName"
+>;
 
 export type TimeRangeScope = {
   startTime: number;
@@ -28,187 +28,113 @@ export type TrackScope = {
   trackIds: string[];
 };
 
-export type PermissionScope = {
-  projectId?: string;
-  documentId?: string;
-  timeRange?: TimeRangeScope;
-  trackScope?: TrackScope;
-};
-
-// PATCH 请求需要能够显式清空时间或轨道范围；undefined 表示“不修改”，null 表示“清空”。
-export type MutablePermissionScope = {
+export type MutableProjectScope = {
   timeRange?: TimeRangeScope | null;
   trackScope?: TrackScope | null;
 };
 
-// 合并后可用于前端展示的紧凑范围。
-export type MergedScope = {
-  trackIds: string[];
-  timeRanges: TimeRangeScope[];
+export type ProjectMemberRole = "manager" | "reviewer" | "annotator" | "viewer";
+
+export type ProjectCapability =
+  | "view_project"
+  | "create_workspace"
+  | "fork_version"
+  | "complete_version"
+  | "submit_version"
+  | "review_versions"
+  | "create_project_version"
+  | "publish_project_version"
+  | "manage_all_versions"
+  | "manage_members";
+
+// 前端角色预设、API 校验和管理员全权限必须共享同一份能力目录，
+// 否则新增能力时很容易出现“按钮可见但后端拒绝”或反向漏权。
+export const PROJECT_CAPABILITIES: readonly ProjectCapability[] = [
+  "view_project",
+  "create_workspace",
+  "fork_version",
+  "complete_version",
+  "submit_version",
+  "review_versions",
+  "create_project_version",
+  "publish_project_version",
+  "manage_all_versions",
+  "manage_members",
+];
+
+export const DEFAULT_PROJECT_ROLE_CAPABILITIES: Readonly<
+  Record<ProjectMemberRole, readonly ProjectCapability[]>
+> = {
+  manager: PROJECT_CAPABILITIES,
+  reviewer: [
+    "view_project",
+    "review_versions",
+    "create_project_version",
+    "manage_all_versions",
+  ],
+  annotator: [
+    "view_project",
+    "create_workspace",
+    "fork_version",
+    "complete_version",
+    "submit_version",
+  ],
+  viewer: ["view_project"],
 };
 
-// 有效权限摘要：前端不需要重新猜角色和 grant，后端仍以原始 user/grants 为最终可信输入。
-export type EffectiveDocumentPermission = {
-  canView: boolean;
-  canEdit: boolean;
-  canManage: boolean;
-  isUnrestrictedViewer: boolean;
-  isUnrestrictedEditor: boolean;
-  isUnrestrictedManager: boolean;
-  source: "admin" | "owner" | "grant" | "none";
-  editScopes: MergedScope[];
-  viewScopes: MergedScope[];
-  manageScopes: MergedScope[];
-};
-
-// 保存差异描述：拆分整份 snapshot 的变动为可独立校验的 mutation。
-export type ProjectMutation = {
-  kind: string;
-  action: "create" | "update" | "delete" | "move" | "structure";
-  trackIds: string[];
-  timeRange?: {
-    startTime: number;
-    endTime: number;
-  };
-  requiresManage: boolean;
-  entityId?: string;
-  summary?: string;
-};
-
-// 保存越权的错误响应中返回的违规摘要。
-export type MutationScopeViolation = {
-  kind: string;
-  trackIds: string[];
-  timeRange?: {
-    startTime: number;
-    endTime: number;
-  };
-};
-
-// 用于 API 接收的 grant 操作请求。
-export type CreateGrantRequest = {
-  userId: string;
-  actions: PermissionAction[];
-  scope?: PermissionScope;
-  expiresAt?: string | null;
-};
-
-export type UpdateGrantRequest = {
-  actions?: PermissionAction[];
-  scope?: MutablePermissionScope;
-  expiresAt?: string | null;
-};
-
-export type GrantSummary = {
+export type ProjectMember = {
   id: string;
-  userId: string;
-  displayName?: string;
-  accountName?: string;
-  actions: PermissionAction[];
-  scope: PermissionScope;
-  expiresAt?: string | null;
-  createdAt: string;
-};
-
-export type PermissionGrant = {
-  id: string;
-  userId: string;
-  actions: PermissionAction[];
-  scope: PermissionScope;
-  expiresAt?: string | null;
-  createdAt: string;
-};
-
-export type PlatformUser = {
-  id: string;
-  displayName: string;
-  accountName: string;
-  roles: PlatformRole[];
-};
-
-export type CourseMemberRole = "instructor" | "assistant" | "student";
-export type CourseStatus = "active" | "archived";
-export type AssignmentStatus = "draft" | "published" | "closed";
-export type AssignmentRecipientStatus =
-  | "pending"
-  | "assigned"
-  | "in_progress"
-  | "submitted"
-  | "returned";
-
-export type CourseSummary = {
-  id: string;
-  title: string;
-  description?: string | null;
-  status: CourseStatus;
-  ownerUserId: string;
-  currentUserRole: CourseMemberRole;
-  memberCount: number;
-  assignmentCount: number;
-  updatedAt: string;
-};
-
-export type CourseMember = {
-  id: string;
+  projectId: string;
   userId: string;
   accountName: string;
   displayName: string;
   platformRoles: PlatformRole[];
-  role: CourseMemberRole;
-  createdAt: string;
-};
-
-export type AssignmentScope = {
-  timeRange?: TimeRangeScope;
+  role: ProjectMemberRole | "owner";
+  capabilities: ProjectCapability[];
+  timeRange?: TimeRangeScope | null;
   trackIds: string[];
-};
-
-export type AssignmentSummary = {
-  id: string;
-  courseId: string;
-  projectId: string;
-  sourceDocumentId: string;
-  sourceSnapshotId: string;
-  sourceRevision: number;
-  title: string;
-  description?: string | null;
-  status: AssignmentStatus;
-  startAt?: string | null;
-  dueAt?: string | null;
-  scope: AssignmentScope;
-  recipientCount: number;
-  submittedCount: number;
-  publishedAt?: string | null;
+  expiresAt?: string | null;
+  isOwner: boolean;
   createdAt: string;
   updatedAt: string;
 };
 
-export type AssignmentRecipient = {
-  id: string;
-  assignmentId: string;
-  userId: string;
-  accountName: string;
-  displayName: string;
-  documentId?: string | null;
-  status: AssignmentRecipientStatus;
-  assignedAt?: string | null;
-  firstEditedAt?: string | null;
-  lastActivityAt?: string | null;
-  submittedAt?: string | null;
-  returnedAt?: string | null;
-  feedback?: string | null;
+export type EffectiveProjectPermission = {
+  source: "admin" | "owner" | "membership" | "none";
+  capabilities: ProjectCapability[];
+  timeRange?: TimeRangeScope | null;
+  trackIds: string[];
+  expiresAt?: string | null;
 };
 
-export type MyAssignment = {
-  assignment: AssignmentSummary;
-  courseTitle: string;
-  recipient: AssignmentRecipient;
+export type EffectiveWorkspacePermission = EffectiveProjectPermission & {
+  canView: boolean;
+  canEdit: boolean;
+  canManage: boolean;
+  isWorkspaceOwner: boolean;
 };
 
 export type PermissionTrackOption = {
   id: string;
   label: string;
   kind: "builtin" | "custom" | "attached-point" | "branch" | "derived";
+};
+
+// 保存差异描述由 document-model 生成，后端据此检查成员的时间和轨道范围。
+export type ProjectMutation = {
+  kind: string;
+  action: "create" | "update" | "delete" | "move" | "structure";
+  trackIds: string[];
+  timeRange?: TimeRangeScope;
+  requiresManage: boolean;
+  entityId?: string;
+  summary?: string;
+};
+
+export type MutationScopeViolation = {
+  kind: string;
+  trackIds: string[];
+  timeRange?: TimeRangeScope;
 };
 
 export type MediaAsset = {
@@ -235,55 +161,102 @@ export type AnnotationProjectSummary = {
   title: string;
   mediaAssetId: string;
   ownerUserId: string;
-  documentCount: number;
+  workspaceCount: number;
+  annotationVersionCount: number;
+  projectVersionCount: number;
+  memberCount: number;
+  primaryWorkspaceId?: string | null;
+  currentProjectVersionId?: string | null;
+  currentUserCapabilities: ProjectCapability[];
   updatedAt: string;
 };
 
-export type AnnotationDocumentSummary = {
+export type WorkspaceType = "main" | "personal" | "collaborative";
+export type WorkspaceStatus = "active" | "submitted" | "archived";
+
+export type AnnotationWorkspaceSummary = {
   id: string;
   projectId: string;
-  title: string;
-  mode: AnnotationMode;
-  currentVersionId?: string | null;
+  name: string;
+  workspaceType: WorkspaceType;
+  status: WorkspaceStatus;
+  owner: UserReference;
+  creator: UserReference;
+  forkedFromVersionId?: string | null;
+  latestRevision: number;
+  versionCount: number;
+  submittedAt?: string | null;
+  archivedAt?: string | null;
+  createdAt: string;
   updatedAt: string;
+  permission: EffectiveWorkspacePermission;
 };
 
-export type AnnotationDocumentSnapshot<TPayload = unknown> = {
+export type AnnotationSnapshot<TPayload = unknown> = {
   id: string;
-  documentId: string;
+  workspaceId: string;
   revision: number;
   payload: TPayload;
   createdBy: string;
   createdAt: string;
 };
 
-export type AnnotationVersion<TPayload = unknown> = {
+export type AnnotationWorkspace<TPayload = unknown> =
+  AnnotationWorkspaceSummary & {
+    project: AnnotationProjectSummary;
+    mediaAsset: MediaAsset;
+    latestSnapshot: AnnotationSnapshot<TPayload>;
+  };
+
+export type AnnotationVersionKind = "checkpoint" | "submission";
+export type AnnotationVersionStatus = "active" | "archived";
+
+export type AnnotationVersionSummary = {
   id: string;
-  documentId: string;
+  projectId: string;
+  workspaceId: string;
+  snapshotId: string;
+  parentVersionId?: string | null;
   name: string;
   description?: string | null;
+  kind: AnnotationVersionKind;
+  status: AnnotationVersionStatus;
   revision: number;
-  snapshot: AnnotationDocumentSnapshot<TPayload>;
-  createdBy: string;
+  creator: UserReference;
+  completedAt: string;
+  archivedAt?: string | null;
   createdAt: string;
 };
 
-export type AnnotationDocument<TPayload = unknown> = AnnotationDocumentSummary & {
-  project: AnnotationProjectSummary;
-  mediaAsset: MediaAsset;
-  grants: PermissionGrant[];
-  latestSnapshot: AnnotationDocumentSnapshot<TPayload>;
-};
+export type AnnotationVersion<TPayload = unknown> =
+  AnnotationVersionSummary & {
+    snapshot: AnnotationSnapshot<TPayload>;
+    workspace: Pick<
+      AnnotationWorkspaceSummary,
+      "id" | "name" | "workspaceType" | "status" | "owner"
+    >;
+  };
 
-export type ConfirmedRange = {
+export type ProjectVersionStatus =
+  | "candidate"
+  | "published"
+  | "superseded"
+  | "archived";
+
+export type ProjectVersion = {
   id: string;
   projectId: string;
-  documentId: string;
-  timeRange: TimeRangeScope;
-  trackScope: TrackScope;
-  confirmedBy: string;
-  confirmedAt: string;
-  comment?: string | null;
+  sourceVersionId: string;
+  sequence: number;
+  name: string;
+  description?: string | null;
+  status: ProjectVersionStatus;
+  sourceVersion: AnnotationVersionSummary;
+  creator: UserReference;
+  publisher?: UserReference | null;
+  publishedAt?: string | null;
+  archivedAt?: string | null;
+  createdAt: string;
 };
 
 export type ProcessingJobType =
@@ -298,39 +271,35 @@ export type ProcessingJobType =
 
 export type ProcessingJobStatus = "queued" | "running" | "succeeded" | "failed";
 
-// 审计日志：记录平台关键操作的追溯信息。
 export type AuditAction =
   | "auth_login"
   | "file_upload"
   | "media_create"
   | "project_create"
-  | "document_create"
-  | "document_save"
-  | "version_create"
-  | "version_restore"
+  | "workspace_create"
+  | "workspace_save"
+  | "workspace_status_update"
+  | "annotation_version_create"
+  | "annotation_version_archive"
+  | "annotation_version_fork"
+  | "project_version_create"
+  | "project_version_publish"
+  | "project_version_archive"
   | "job_create"
-  | "permission_grant_create"
-  | "permission_grant_update"
-  | "permission_grant_revoke"
   | "permission_denied"
-  | "course_create"
-  | "course_member_add"
-  | "course_member_update"
-  | "course_member_remove"
-  | "assignment_create"
-  | "assignment_update"
-  | "assignment_publish"
-  | "assignment_submit"
-  | "assignment_return";
+  | "project_member_add"
+  | "project_member_update"
+  | "project_member_remove";
 
 export type AuditLogEntry = {
   id: string;
   action: AuditAction;
   actorUserId: string | null;
   projectId?: string | null;
-  documentId?: string | null;
+  workspaceId?: string | null;
+  annotationVersionId?: string | null;
+  projectVersionId?: string | null;
   fileId?: string | null;
-  versionId?: string | null;
   jobId?: string | null;
   targetType?: string | null;
   targetId?: string | null;
@@ -340,12 +309,11 @@ export type AuditLogEntry = {
   createdAt: string;
 };
 
-// 标注操作日志：记录客户端提交的每次编辑 operation。
 export type AnnotationOperationStatus = "accepted" | "rejected" | "superseded";
 
 export type AnnotationOperationRecord = {
   id: string;
-  documentId: string;
+  workspaceId: string;
   actorUserId: string;
   baseRevision: number;
   localRevision?: number | null;
@@ -362,7 +330,7 @@ export type ProcessingJob = {
   status: ProcessingJobStatus;
   inputFileIds: string[];
   outputFileIds: string[];
-  documentId?: string | null;
+  workspaceId?: string | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
