@@ -40,6 +40,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - media upload, project/document creation, JSON document import, version list/create/restore, local editor entry
 - `src/platform/PlatformHome.tsx`
   - platform project/document management UI
+- `src/platform/CourseWorkspace.tsx`
+  - course membership, independent assignment publishing, student submission, and teacher review UI
 - `src/api/platformClient.ts`
   - browser-side API client for platform backend calls, including audit log and annotation operation APIs
 - `src/state/projectDocumentState.ts`
@@ -84,6 +86,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - used by Inspector (character tone editor + derived sentence preview), Timeline (in-block tone label), and `projectFile.ts` (tone normalization)
 - `apps/api/src/`
   - Fastify backend: auth, routes, repository, Prisma mapping, local object storage
+- `apps/api/src/courseAssignmentService.ts`
+  - course/member administration and the independent-assignment lifecycle
+- `apps/api/src/assignmentPolicy.ts`
+  - document-save policy that enforces assignment start/submission locks
 - `packages/shared/src/`
   - API/platform DTOs and shared contract types used by web and API
 - `packages/document-model/src/`
@@ -112,9 +118,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run build:api`
 - `npm run build:shared`
 - `npm run build:document-model`
+- `npm run test:assignments`
 - `npm run preview`
 
-There is still no general lint/full-test script. `npm run test:permissions` covers the scoped permission core. `npm run build` remains the mandatory pre-merge check; it runs Prisma generation plus shared, document-model, web, and API builds.
+There is still no general lint/full-test script. `npm run test:permissions` covers the scoped permission core and `npm run test:assignments` covers assignment transitions/course-role policy. `npm run build` remains the mandatory pre-merge check; it runs Prisma generation plus shared, document-model, web, and API builds.
 
 Backend local defaults:
 - API port defaults to `4317`
@@ -317,6 +324,13 @@ Current backend capabilities:
 - audit-log table and API for key platform events such as login, upload, project/document creation, document save, version create/restore, and processing job creation
 - annotation operation-log table and API for recording client-submitted edit operations before future autosave/collaboration work
 - placeholder processing-job API for future pitch, spectrogram, Gongche render, pose, transcode, and export services
+- course/member administration and independent classroom assignments:
+  - draft assignments freeze a source snapshot revision plus track/time scope
+  - publication creates one independent document, snapshot, recipient row, and scoped grant per student
+  - students can submit; teachers/assistants can inspect progress and return submitted work
+  - submission locks the student's document until staff return it
+  - assignment-generated grants carry `assignmentId`, so course-role changes reconcile only generated grants and preserve manual grants
+  - course teachers manage membership; assistants manage assignments but cannot change course membership
 - scoped document permissions:
   - `super_admin/admin` are the only global bypass roles
   - project owner has implicit full document permission
@@ -345,7 +359,7 @@ Current platform UI capabilities:
 
 Important backend caveats:
 - real-time collaborative editing is not implemented yet
-- permission grants exist in schema and repository concepts, but fine-grained classroom workflows are still incomplete
+- classroom assignment publication/submission is implemented, but later cross-submission merge, confirmed-annotation workflow, and real-time collaboration phases are not
 - annotation operations currently only record operation metadata/payload and do not mutate document snapshots; full document snapshots are still written by `/api/annotation-documents/:documentId/save`
 - audit logs intentionally store summary `detail` objects, not full annotation payloads or uploaded file contents
 - global audit queries are admin-only; non-admin queries require a manageable project or an unrestricted-manage document

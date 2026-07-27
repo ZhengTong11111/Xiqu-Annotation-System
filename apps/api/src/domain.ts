@@ -117,7 +117,16 @@ export type ApiAuditLogEntry = {
     | "permission_grant_create"
     | "permission_grant_update"
     | "permission_grant_revoke"
-    | "permission_denied";
+    | "permission_denied"
+    | "course_create"
+    | "course_member_add"
+    | "course_member_update"
+    | "course_member_remove"
+    | "assignment_create"
+    | "assignment_update"
+    | "assignment_publish"
+    | "assignment_submit"
+    | "assignment_return";
   actorUserId: string | null;
   projectId: string | null;
   documentId: string | null;

@@ -24,6 +24,18 @@ import type {
   StoredFileObject,
   UpdateGrantRequest,
   UploadFileResponse,
+  AssignmentRecipient,
+  AssignmentSummary,
+  CourseMember,
+  CourseSummary,
+  CreateAssignmentRequest,
+  CreateCourseRequest,
+  MyAssignment,
+  PermissionTrackOption,
+  ReturnAssignmentRequest,
+  AddCourseMemberRequest,
+  UpdateCourseMemberRequest,
+  UpdateDraftAssignmentRequest,
 } from "@xiqu/shared";
 
 export type PlatformClientOptions = {
@@ -67,6 +79,100 @@ export class PlatformClient {
 
   me() {
     return this.request<PlatformUser>("/auth/me");
+  }
+
+  listDirectoryUsers(options: { courseId?: string; query?: string; limit?: number } = {}) {
+    const params = new URLSearchParams();
+    if (options.courseId) params.set("courseId", options.courseId);
+    if (options.query) params.set("query", options.query);
+    if (options.limit) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return this.request<PlatformUser[]>(query ? `/users?${query}` : "/users");
+  }
+
+  listCourses() {
+    return this.request<CourseSummary[]>("/courses");
+  }
+
+  createCourse(request: CreateCourseRequest) {
+    return this.request<CourseSummary>("/courses", { method: "POST", body: request });
+  }
+
+  getCourse(courseId: string) {
+    return this.request<CourseSummary>(`/courses/${courseId}`);
+  }
+
+  listCourseMembers(courseId: string) {
+    return this.request<CourseMember[]>(`/courses/${courseId}/members`);
+  }
+
+  addCourseMember(courseId: string, request: AddCourseMemberRequest) {
+    return this.request<CourseMember>(`/courses/${courseId}/members`, {
+      method: "POST",
+      body: request,
+    });
+  }
+
+  updateCourseMember(courseId: string, memberId: string, request: UpdateCourseMemberRequest) {
+    return this.request<CourseMember>(`/courses/${courseId}/members/${memberId}`, {
+      method: "PATCH",
+      body: request,
+    });
+  }
+
+  removeCourseMember(courseId: string, memberId: string) {
+    return this.request<void>(`/courses/${courseId}/members/${memberId}`, {
+      method: "DELETE",
+    });
+  }
+
+  listCourseAssignments(courseId: string) {
+    return this.request<AssignmentSummary[]>(`/courses/${courseId}/assignments`);
+  }
+
+  createAssignment(courseId: string, request: CreateAssignmentRequest) {
+    return this.request<AssignmentSummary>(`/courses/${courseId}/assignments`, {
+      method: "POST",
+      body: request,
+    });
+  }
+
+  getAssignment(assignmentId: string) {
+    return this.request<AssignmentSummary>(`/assignments/${assignmentId}`);
+  }
+
+  updateDraftAssignment(assignmentId: string, request: UpdateDraftAssignmentRequest) {
+    return this.request<AssignmentSummary>(`/assignments/${assignmentId}`, {
+      method: "PATCH",
+      body: request,
+    });
+  }
+
+  publishAssignment(assignmentId: string) {
+    return this.request<AssignmentSummary>(`/assignments/${assignmentId}/publish`, { method: "POST" });
+  }
+
+  listAssignmentRecipients(assignmentId: string) {
+    return this.request<AssignmentRecipient[]>(`/assignments/${assignmentId}/recipients`);
+  }
+
+  submitAssignment(assignmentId: string) {
+    return this.request<AssignmentRecipient>(`/assignments/${assignmentId}/submit`, { method: "POST" });
+  }
+
+  returnAssignment(assignmentId: string, recipientId: string, request: ReturnAssignmentRequest) {
+    return this.request<AssignmentRecipient>(
+      `/assignments/${assignmentId}/recipients/${recipientId}/return`,
+      { method: "POST", body: request },
+    );
+  }
+
+  listMyAssignments() {
+    return this.request<MyAssignment[]>("/my-assignments");
+  }
+
+  listPermissionTracks(documentId: string) {
+    return this.request<PermissionTrackOption[]>(`/annotation-documents/${documentId}/permission-tracks`);
   }
 
   listProjects() {

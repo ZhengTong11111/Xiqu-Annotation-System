@@ -58,6 +58,10 @@ import {
   type DocumentWithDetails,
 } from "./repositoryMappers.js";
 import { ensurePlatformSeedData } from "./repositorySeed.js";
+import {
+  assertAssignmentDocumentWritable,
+  recordAssignmentDocumentActivity,
+} from "./assignmentPolicy.js";
 
 const globalAdminRoles: ApiRole[] = ["super_admin", "admin"];
 const contentCreatorRoles: ApiRole[] = [
@@ -402,6 +406,8 @@ export class PrismaPlatformRepository {
   }
 
   async saveDocument(user: ApiUser, documentId: string, input: { baseRevision: number; payload: unknown }) {
+    // 作业提交锁独立于 grant：学生不能借其他项目级 edit grant 绕过提交状态。
+    await assertAssignmentDocumentWritable(this.prisma, user, documentId);
     const currentDocument = await this.getDocumentOrThrow(documentId);
     const permission = await this.getEffectiveDocumentPermission(user, documentId);
     if (!permission.canEdit) {
@@ -448,6 +454,7 @@ export class PrismaPlatformRepository {
           detail: toJsonPayload({ baseRevision: input.baseRevision, nextRevision: input.baseRevision + 1 }),
         },
       });
+      await recordAssignmentDocumentActivity(transaction, user, documentId);
       return updated;
     });
     await this.prisma.annotationProject.update({
@@ -662,6 +669,7 @@ export class PrismaPlatformRepository {
     documentId: string,
     input: { baseRevision: number; localRevision?: number | null; action: string; payload: unknown },
   ): Promise<ApiAnnotationOperation> {
+    await assertAssignmentDocumentWritable(this.prisma, user, documentId);
     const document = await this.getDocumentOrThrow(documentId);
     const permission = await this.getEffectiveDocumentPermission(user, documentId);
     if (!permission.canEdit) {

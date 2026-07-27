@@ -5,11 +5,13 @@ import type {
   PermissionAction,
   PermissionScope,
   ProcessingJobType,
+  CourseMemberRole,
 } from "@xiqu/shared";
 import { badRequest, notFound } from "./errors.js";
 import type { ApiAnnotationMode, ApiUser } from "./domain.js";
 import type { PrismaPlatformRepository } from "./repository.js";
 import type { LocalObjectStorage } from "./storage.js";
+import type { CourseAssignmentService } from "./courseAssignmentService.js";
 
 type LoginBody = {
   accountName?: string;
@@ -74,6 +76,19 @@ type CreateJobBody = {
   documentId?: string | null;
 };
 
+type ValidDraftAssignmentBody = {
+  title: string;
+  description?: string | null;
+  startAt?: string | null;
+  dueAt?: string | null;
+  scope: {
+    startTime?: number | null;
+    endTime?: number | null;
+    trackIds: string[];
+  };
+  recipientUserIds: string[];
+};
+
 const processingJobTypes = new Set<ProcessingJobType>([
   "pitch_extraction",
   "spectrogram_generation",
@@ -89,6 +104,7 @@ export function registerApiRoutes(
   app: FastifyInstance,
   repository: PrismaPlatformRepository,
   storage: LocalObjectStorage,
+  courseAssignments: CourseAssignmentService,
 ) {
   app.get("/api/health", async () => ({
     status: "ok",
@@ -104,6 +120,207 @@ export function registerApiRoutes(
   });
 
   app.get("/api/auth/me", async (request) => getCurrentUser(repository, request));
+
+  app.get<{ Querystring: { courseId?: string; query?: string; limit?: string } }>("/api/users", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    const limit = request.query.limit === undefined ? 50 : Number(request.query.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw badRequest("limit 必须是 1–100 的整数。");
+    }
+    return courseAssignments.listDirectoryUsers(user, {
+      courseId: request.query.courseId?.trim() || undefined,
+      query: request.query.query?.trim() || undefined,
+      limit,
+    });
+  });
+
+  app.get("/api/courses", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    return courseAssignments.listCourses(user);
+  });
+
+  app.post<{ Body: { title?: string; description?: string | null } }>("/api/courses", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    if (
+      typeof request.body?.title !== "string" ||
+      !request.body.title.trim() ||
+      (request.body.description !== undefined &&
+        request.body.description !== null &&
+        typeof request.body.description !== "string")
+    ) {
+      throw badRequest("课程名称不能为空，说明必须是字符串或 null。");
+    }
+    return courseAssignments.createCourse(user, {
+      title: request.body.title.trim(),
+      description: request.body.description?.trim() || null,
+    });
+  });
+
+  app.get<{ Params: { courseId: string } }>("/api/courses/:courseId", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    return courseAssignments.getCourse(user, request.params.courseId);
+  });
+
+  app.get<{ Params: { courseId: string } }>("/api/courses/:courseId/members", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    return courseAssignments.listCourseMembers(user, request.params.courseId);
+  });
+
+  app.post<{ Params: { courseId: string }; Body: { userId?: string; role?: CourseMemberRole } }>("/api/courses/:courseId/members", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    if (
+      typeof request.body?.userId !== "string" ||
+      !request.body.userId.trim() ||
+      !isCourseMemberRole(request.body.role)
+    ) {
+      throw badRequest("课程成员必须包含有效 userId 和 role。");
+    }
+    return courseAssignments.addCourseMember(user, request.params.courseId, {
+      userId: request.body.userId,
+      role: request.body.role,
+    });
+  });
+
+  app.patch<{ Params: { courseId: string; memberId: string }; Body: { role?: CourseMemberRole } }>("/api/courses/:courseId/members/:memberId", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    if (!isCourseMemberRole(request.body?.role)) {
+      throw badRequest("role 必须是 instructor、assistant 或 student。");
+    }
+    return courseAssignments.updateCourseMember(
+      user,
+      request.params.courseId,
+      request.params.memberId,
+      { role: request.body.role },
+    );
+  });
+
+  app.delete<{ Params: { courseId: string; memberId: string } }>("/api/courses/:courseId/members/:memberId", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    await courseAssignments.removeCourseMember(user, request.params.courseId, request.params.memberId);
+    return { data: null };
+  });
+
+  app.get<{ Params: { courseId: string } }>("/api/courses/:courseId/assignments", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    return courseAssignments.listCourseAssignments(user, request.params.courseId);
+  });
+
+  app.post<{
+    Params: { courseId: string };
+    Body: {
+      title?: string; description?: string | null; projectId?: string;
+      sourceDocumentId?: string; startAt?: string | null; dueAt?: string | null;
+      scope?: { startTime?: number | null; endTime?: number | null; trackIds?: string[] };
+      recipientUserIds?: string[];
+    };
+  }>("/api/courses/:courseId/assignments", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    const body = request.body;
+    if (
+      typeof body?.title !== "string" || !body.title.trim() ||
+      typeof body.projectId !== "string" || !body.projectId.trim() ||
+      typeof body.sourceDocumentId !== "string" || !body.sourceDocumentId.trim() ||
+      (body.description !== undefined && body.description !== null && typeof body.description !== "string") ||
+      !isOptionalIsoDate(body.startAt) || !isOptionalIsoDate(body.dueAt) ||
+      !body.scope || !Array.isArray(body.scope.trackIds) ||
+      body.scope.trackIds.some((id) => typeof id !== "string" || !id.trim()) ||
+      !isOptionalFiniteNumber(body.scope.startTime) ||
+      !isOptionalFiniteNumber(body.scope.endTime) ||
+      !Array.isArray(body.recipientUserIds) || body.recipientUserIds.length === 0 ||
+      body.recipientUserIds.some((id) => typeof id !== "string" || !id.trim()) ||
+      new Set(body.recipientUserIds.map((id) => id.trim())).size !== body.recipientUserIds.length
+    ) {
+      throw badRequest("作业标题、基准文档、范围和至少一名学生不能为空。");
+    }
+    return courseAssignments.createAssignment(user, request.params.courseId, {
+      title: body.title.trim(),
+      description: body.description?.trim() || null,
+      projectId: body.projectId.trim(),
+      sourceDocumentId: body.sourceDocumentId.trim(),
+      startAt: body.startAt ?? null,
+      dueAt: body.dueAt ?? null,
+      scope: {
+        startTime: body.scope.startTime ?? null,
+        endTime: body.scope.endTime ?? null,
+        trackIds: [...new Set(body.scope.trackIds.map((id) => id.trim()))],
+      },
+      recipientUserIds: body.recipientUserIds.map((id) => id.trim()),
+    });
+  });
+
+  app.get<{ Params: { assignmentId: string } }>("/api/assignments/:assignmentId", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    return courseAssignments.getAssignment(user, request.params.assignmentId);
+  });
+
+  app.patch<{
+    Params: { assignmentId: string };
+    Body: {
+      title?: string; description?: string | null; startAt?: string | null; dueAt?: string | null;
+      scope?: { startTime?: number | null; endTime?: number | null; trackIds?: string[] };
+      recipientUserIds?: string[];
+    };
+  }>("/api/assignments/:assignmentId", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    const body = request.body;
+    if (!isValidDraftAssignmentBody(body)) {
+      throw badRequest("草稿必须包含合法标题、日期、范围和至少一名学生。");
+    }
+    return courseAssignments.updateDraftAssignment(user, request.params.assignmentId, {
+      title: body.title.trim(),
+      description: body.description?.trim() || null,
+      startAt: body.startAt ?? null,
+      dueAt: body.dueAt ?? null,
+      scope: {
+        startTime: body.scope.startTime ?? null,
+        endTime: body.scope.endTime ?? null,
+        trackIds: [...new Set(body.scope.trackIds.map((id) => id.trim()))],
+      },
+      recipientUserIds: body.recipientUserIds.map((id) => id.trim()),
+    });
+  });
+
+  app.post<{ Params: { assignmentId: string } }>("/api/assignments/:assignmentId/publish", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    return courseAssignments.publishAssignment(user, request.params.assignmentId);
+  });
+
+  app.get<{ Params: { assignmentId: string } }>("/api/assignments/:assignmentId/recipients", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    return courseAssignments.listAssignmentRecipients(user, request.params.assignmentId);
+  });
+
+  app.post<{ Params: { assignmentId: string } }>("/api/assignments/:assignmentId/submit", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    return courseAssignments.submitAssignment(user, request.params.assignmentId);
+  });
+
+  app.post<{ Params: { assignmentId: string; recipientId: string }; Body: { feedback?: string | null } }>("/api/assignments/:assignmentId/recipients/:recipientId/return", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    if (
+      request.body?.feedback !== undefined &&
+      request.body.feedback !== null &&
+      typeof request.body.feedback !== "string"
+    ) {
+      throw badRequest("退回说明必须是字符串或 null。");
+    }
+    return courseAssignments.returnAssignment(
+      user,
+      request.params.assignmentId,
+      request.params.recipientId,
+      { feedback: request.body?.feedback?.trim() || null },
+    );
+  });
+
+  app.get("/api/my-assignments", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    return courseAssignments.listMyAssignments(user);
+  });
+
+  app.get<{ Params: DocumentParams }>("/api/annotation-documents/:documentId/permission-tracks", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    return courseAssignments.listPermissionTracks(user, request.params.documentId);
+  });
 
   app.get("/api/files", async (request) => {
     const user = await getCurrentUser(repository, request);
@@ -387,6 +604,43 @@ function getBearerToken(request: FastifyRequest) {
 
 function isAnnotationMode(value: unknown): value is ApiAnnotationMode {
   return value === "independent" || value === "collaborative";
+}
+
+function isCourseMemberRole(value: unknown): value is CourseMemberRole {
+  return value === "instructor" || value === "assistant" || value === "student";
+}
+
+function isOptionalFiniteNumber(value: unknown) {
+  return value === undefined || value === null ||
+    (typeof value === "number" && Number.isFinite(value));
+}
+
+function isOptionalIsoDate(value: unknown) {
+  return value === undefined || value === null ||
+    (typeof value === "string" && Number.isFinite(Date.parse(value)));
+}
+
+function isValidDraftAssignmentBody(value: unknown): value is ValidDraftAssignmentBody {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  const scope = body.scope;
+  if (!scope || typeof scope !== "object" || Array.isArray(scope)) return false;
+  const scopeRecord = scope as Record<string, unknown>;
+  return (
+    typeof body.title === "string" &&
+    Boolean(body.title.trim()) &&
+    (body.description === undefined || body.description === null || typeof body.description === "string") &&
+    isOptionalIsoDate(body.startAt) &&
+    isOptionalIsoDate(body.dueAt) &&
+    isOptionalFiniteNumber(scopeRecord.startTime) &&
+    isOptionalFiniteNumber(scopeRecord.endTime) &&
+    Array.isArray(scopeRecord.trackIds) &&
+    scopeRecord.trackIds.every((id) => typeof id === "string" && Boolean(id.trim())) &&
+    Array.isArray(body.recipientUserIds) &&
+    body.recipientUserIds.length > 0 &&
+    body.recipientUserIds.every((id) => typeof id === "string" && Boolean(id.trim())) &&
+    new Set(body.recipientUserIds.map((id) => (id as string).trim())).size === body.recipientUserIds.length
+  );
 }
 
 function isNonNegativeInteger(value: unknown): value is number {

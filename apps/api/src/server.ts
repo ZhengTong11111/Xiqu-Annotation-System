@@ -8,6 +8,7 @@ import { HttpError } from "./errors.js";
 import { PrismaPlatformRepository } from "./repository.js";
 import { registerApiRoutes } from "./router.js";
 import { LocalObjectStorage } from "./storage.js";
+import { CourseAssignmentService } from "./courseAssignmentService.js";
 
 const port = Number(process.env.PORT ?? 4317);
 const databaseUrl = process.env.DATABASE_URL ??
@@ -17,6 +18,7 @@ const prisma = new PrismaClient({
   adapter: new PrismaPg(pool),
 });
 const repository = new PrismaPlatformRepository(prisma);
+const courseAssignments = new CourseAssignmentService(prisma, repository);
 const storage = new LocalObjectStorage();
 
 const app = Fastify({
@@ -79,7 +81,7 @@ app.addHook("preSerialization", async (_request, _response, payload) => {
   return { data: payload };
 });
 
-registerApiRoutes(app, repository, storage);
+registerApiRoutes(app, repository, storage, courseAssignments);
 
 try {
   await repository.ensureSeedData();

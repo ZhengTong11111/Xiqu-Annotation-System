@@ -126,6 +126,91 @@ export type PlatformUser = {
   roles: PlatformRole[];
 };
 
+export type CourseMemberRole = "instructor" | "assistant" | "student";
+export type CourseStatus = "active" | "archived";
+export type AssignmentStatus = "draft" | "published" | "closed";
+export type AssignmentRecipientStatus =
+  | "pending"
+  | "assigned"
+  | "in_progress"
+  | "submitted"
+  | "returned";
+
+export type CourseSummary = {
+  id: string;
+  title: string;
+  description?: string | null;
+  status: CourseStatus;
+  ownerUserId: string;
+  currentUserRole: CourseMemberRole;
+  memberCount: number;
+  assignmentCount: number;
+  updatedAt: string;
+};
+
+export type CourseMember = {
+  id: string;
+  userId: string;
+  accountName: string;
+  displayName: string;
+  platformRoles: PlatformRole[];
+  role: CourseMemberRole;
+  createdAt: string;
+};
+
+export type AssignmentScope = {
+  timeRange?: TimeRangeScope;
+  trackIds: string[];
+};
+
+export type AssignmentSummary = {
+  id: string;
+  courseId: string;
+  projectId: string;
+  sourceDocumentId: string;
+  sourceSnapshotId: string;
+  sourceRevision: number;
+  title: string;
+  description?: string | null;
+  status: AssignmentStatus;
+  startAt?: string | null;
+  dueAt?: string | null;
+  scope: AssignmentScope;
+  recipientCount: number;
+  submittedCount: number;
+  publishedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AssignmentRecipient = {
+  id: string;
+  assignmentId: string;
+  userId: string;
+  accountName: string;
+  displayName: string;
+  documentId?: string | null;
+  status: AssignmentRecipientStatus;
+  assignedAt?: string | null;
+  firstEditedAt?: string | null;
+  lastActivityAt?: string | null;
+  submittedAt?: string | null;
+  returnedAt?: string | null;
+  feedback?: string | null;
+};
+
+export type MyAssignment = {
+  assignment: AssignmentSummary;
+  courseTitle: string;
+  recipient: AssignmentRecipient;
+};
+
+export type PermissionTrackOption = {
+  id: string;
+  label: string;
+  kind: "builtin" | "custom" | "attached-point" | "branch" | "derived";
+};
+
 export type MediaAsset = {
   id: string;
   title: string;
@@ -227,7 +312,16 @@ export type AuditAction =
   | "permission_grant_create"
   | "permission_grant_update"
   | "permission_grant_revoke"
-  | "permission_denied";
+  | "permission_denied"
+  | "course_create"
+  | "course_member_add"
+  | "course_member_update"
+  | "course_member_remove"
+  | "assignment_create"
+  | "assignment_update"
+  | "assignment_publish"
+  | "assignment_submit"
+  | "assignment_return";
 
 export type AuditLogEntry = {
   id: string;

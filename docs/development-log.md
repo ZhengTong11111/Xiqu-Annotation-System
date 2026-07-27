@@ -1,5 +1,30 @@
 # Development Log
 
+## 2026-07-27：阶段 10 独立标注作业第一套完整闭环
+
+- 根据 `CLAUDE_WORK.md` 的当前任务完成课程、成员和独立作业全栈实现。
+- Prisma 新增 `Course`、`CourseMember`、`Assignment`、`AssignmentRecipient` 及状态枚举；
+  作业在创建时冻结 source snapshot，发布时为每名学生复制独立 revision 1 snapshot。
+- 新增独立 `CourseAssignmentService`，没有继续把课程逻辑堆入已有 repository。发布使用
+  Serializable transaction，学生文档、快照、范围 grant、接收记录和审计同生共死，重复发布
+  不会重复生成副本。
+- 学生提交后，作业专用 grant 降为只读；`saveDocument` 和 operation 入口另有提交锁，
+  防止其他 project-level edit grant 绕过。助教退回后恢复编辑，并记录首次保存、最后活动、
+  提交和退回时间。
+- 平台新增课程管理、成员设置、作业范围/接收者选择、发布与进度表，以及学生“我的作业”
+  打开和提交入口。UI 复用现有紧凑工作台样式。
+- 新增纯状态机测试，并保留较详细中文注释解释事务、权限与提交锁设计。
+- Codex 提交前审查补齐了最初实现遗漏的课程详情、成员新增/修改/移除、草稿详情与修改、
+  受课程上下文约束的账号搜索等接口；学生视图会裁剪教师草稿、全班提交统计和其他成员身份。
+- 修复审查中发现的边界问题：发布不再误写学生活动时间；课程角色变化会同步撤销/恢复
+  assignment 来源的 staff grant；助教不能管理课程成员或自我提升；owner 和最后一名教师
+  不能被降级/移除；Serializable 并发发布对 P2034 做有限重试。
+- 验证：`db:push`、assignment tests、既有 permission tests、web/API build 均通过；真实
+  PostgreSQL + Fastify 冒烟完成“建课 -> 加学生 -> 建草稿 -> 重复安全发布 -> 学生保存
+  -> 提交 -> 保存 403 -> 助教退回 -> 学生重新保存 200”；扩展冒烟还覆盖并发发布、
+  草稿修改、成员增改删、学生数据裁剪、坏请求 400 和审计动作。自动验证数据已清理。
+- 尚未包含阶段 11 合并审核、阶段 12 确定范围、自动保存、实时协作和局部 snapshot 裁剪。
+
 本文件记录跨对话、跨 agent 的实际开发变更。它和 `CLAUDE_WORK.md` 分工不同：
 
 - `CLAUDE_WORK.md`：本机 ignored 文件，只写当前下一轮任务，不提交。

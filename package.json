@@ -20,6 +20,7 @@
     "build:shared": "tsc -p packages/shared/tsconfig.json",
     "build:document-model": "tsc -p packages/document-model/tsconfig.json",
     "test:permissions": "npm run build:shared && npm run build:document-model && node --test packages/document-model/test/permissions.test.mjs",
+    "test:assignments": "npm run build:shared && npm run build:document-model && node --test packages/document-model/test/assignments.test.mjs",
     "build:api": "tsc -p apps/api/tsconfig.json",
     "start:api": "node dist/api/server.js",
     "preview": "vite preview"

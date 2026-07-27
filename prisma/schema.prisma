@@ -55,6 +55,15 @@ enum AuditAction {
   permission_grant_update
   permission_grant_revoke
   permission_denied
+  course_create
+  course_member_add
+  course_member_update
+  course_member_remove
+  assignment_create
+  assignment_update
+  assignment_publish
+  assignment_submit
+  assignment_return
 }
 
 // 标注操作日志：记录客户端提交的每次编辑 operation。
@@ -63,6 +72,31 @@ enum AnnotationOperationStatus {
   accepted
   rejected
   superseded
+}
+
+enum CourseMemberRole {
+  instructor
+  assistant
+  student
+}
+
+enum CourseStatus {
+  active
+  archived
+}
+
+enum AssignmentStatus {
+  draft
+  published
+  closed
+}
+
+enum AssignmentRecipientStatus {
+  pending
+  assigned
+  in_progress
+  submitted
+  returned
 }
 
 model User {
@@ -85,6 +119,10 @@ model User {
   jobs       ProcessingJob[] @relation("JobCreator")
   auditLogs           AuditLog[] @relation("AuditActor")
   annotationOperations AnnotationOperation[] @relation("AnnotationOperationActor")
+  ownedCourses         Course[] @relation("CourseOwner")
+  courseMemberships    CourseMember[]
+  createdAssignments   Assignment[] @relation("AssignmentCreator")
+  assignmentRecipients AssignmentRecipient[]
 
   @@map("users")
 }
@@ -163,6 +201,7 @@ model AnnotationProject {
   grants     PermissionGrant[]
   jobs       ProcessingJob[]
   auditLogs  AuditLog[]
+  assignments Assignment[]
 
   @@index([mediaAssetId])
   @@index([ownerUserId])
@@ -187,6 +226,8 @@ model AnnotationDocument {
   jobs           ProcessingJob[]
   auditLogs      AuditLog[]
   operations     AnnotationOperation[]
+  sourceAssignments Assignment[] @relation("AssignmentSourceDocument")
+  assignmentRecipient AssignmentRecipient? @relation("AssignmentRecipientDocument")
 
   @@index([projectId])
   @@map("annotation_documents")
@@ -204,6 +245,7 @@ model AnnotationSnapshot {
   latestDocument AnnotationDocument? @relation("LatestSnapshot")
   creator        User @relation("SnapshotCreator", fields: [createdBy], references: [id])
   versions       AnnotationVersion[]
+  sourceAssignments Assignment[] @relation("AssignmentSourceSnapshot")
 
   @@unique([documentId, revision])
   @@index([createdBy])
@@ -235,6 +277,7 @@ model PermissionGrant {
   userId      String   @map("user_id")
   projectId   String?  @map("project_id")
   documentId  String?  @map("document_id")
+  assignmentId String? @map("assignment_id")
   actions     String[]
   startTime   Float?   @map("start_time")
   endTime     Float?   @map("end_time")
@@ -245,11 +288,111 @@ model PermissionGrant {
   user     User @relation(fields: [userId], references: [id], onDelete: Cascade)
   project  AnnotationProject? @relation(fields: [projectId], references: [id], onDelete: Cascade)
   document AnnotationDocument? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  assignment Assignment? @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  assignmentRecipient AssignmentRecipient? @relation("AssignmentRecipientGrant")
 
   @@index([userId])
   @@index([projectId])
   @@index([documentId])
+  @@index([assignmentId])
   @@map("permission_grants")
+}
+
+// 课程角色与平台全局角色相互独立：teacher/ta 不能因此自动管理全部课程。
+model Course {
+  id          String       @id @default(uuid())
+  title       String
+  description String?
+  status      CourseStatus @default(active)
+  ownerUserId String       @map("owner_user_id")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  owner       User         @relation("CourseOwner", fields: [ownerUserId], references: [id])
+  members     CourseMember[]
+  assignments Assignment[]
+
+  @@index([ownerUserId])
+  @@map("courses")
+}
+
+model CourseMember {
+  id        String           @id @default(uuid())
+  courseId  String           @map("course_id")
+  userId    String           @map("user_id")
+  role      CourseMemberRole
+  createdAt DateTime         @default(now()) @map("created_at")
+  updatedAt DateTime         @updatedAt @map("updated_at")
+
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, userId])
+  @@index([userId])
+  @@map("course_members")
+}
+
+// 作业创建时冻结 sourceSnapshotId。发布时每名学生复制为独立 revision 1，
+// 因而教师后续修改基准文档不会悄悄改变已经创建的作业。
+model Assignment {
+  id               String           @id @default(uuid())
+  courseId         String           @map("course_id")
+  projectId        String           @map("project_id")
+  sourceDocumentId String           @map("source_document_id")
+  sourceSnapshotId String           @map("source_snapshot_id")
+  sourceRevision   Int              @map("source_revision")
+  title            String
+  description      String?
+  status           AssignmentStatus @default(draft)
+  startAt          DateTime?        @map("start_at")
+  dueAt            DateTime?        @map("due_at")
+  scopeStartTime   Float?           @map("scope_start_time")
+  scopeEndTime     Float?           @map("scope_end_time")
+  scopeTrackIds    String[]         @default([]) @map("scope_track_ids")
+  createdBy        String           @map("created_by")
+  publishedAt      DateTime?        @map("published_at")
+  closedAt         DateTime?        @map("closed_at")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  course         Course             @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  project        AnnotationProject  @relation(fields: [projectId], references: [id])
+  sourceDocument AnnotationDocument @relation("AssignmentSourceDocument", fields: [sourceDocumentId], references: [id])
+  sourceSnapshot AnnotationSnapshot @relation("AssignmentSourceSnapshot", fields: [sourceSnapshotId], references: [id])
+  creator        User               @relation("AssignmentCreator", fields: [createdBy], references: [id])
+  recipients     AssignmentRecipient[]
+  grants         PermissionGrant[]
+
+  @@index([courseId])
+  @@index([projectId])
+  @@index([sourceDocumentId])
+  @@map("assignments")
+}
+
+model AssignmentRecipient {
+  id             String                    @id @default(uuid())
+  assignmentId   String                    @map("assignment_id")
+  userId         String                    @map("user_id")
+  documentId     String?                   @unique @map("document_id")
+  studentGrantId String?                   @unique @map("student_grant_id")
+  status         AssignmentRecipientStatus @default(pending)
+  assignedAt     DateTime?                 @map("assigned_at")
+  firstEditedAt  DateTime?                 @map("first_edited_at")
+  lastActivityAt DateTime?                 @map("last_activity_at")
+  submittedAt    DateTime?                 @map("submitted_at")
+  returnedAt     DateTime?                 @map("returned_at")
+  feedback       String?
+  createdAt      DateTime                  @default(now()) @map("created_at")
+  updatedAt      DateTime                  @updatedAt @map("updated_at")
+
+  assignment Assignment          @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  user       User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  document   AnnotationDocument? @relation("AssignmentRecipientDocument", fields: [documentId], references: [id], onDelete: SetNull)
+  studentGrant PermissionGrant?  @relation("AssignmentRecipientGrant", fields: [studentGrantId], references: [id], onDelete: SetNull)
+
+  @@unique([assignmentId, userId])
+  @@index([userId, status])
+  @@map("assignment_recipients")
 }
 
 model ProcessingJob {

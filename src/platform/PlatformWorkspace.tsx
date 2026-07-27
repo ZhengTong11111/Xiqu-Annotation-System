@@ -19,6 +19,7 @@ import type {
   PlatformUser,
 } from "@xiqu/shared";
 import type { TopMenuPlatformNavigation } from "../components/TopMenuBar";
+import { CourseWorkspace } from "./CourseWorkspace";
 
 export type PlatformEditorSession = {
   client: PlatformClient;
@@ -47,6 +48,7 @@ type PlatformWorkspaceProps = {
 };
 
 type PlatformView = "login" | "home" | "editor";
+type PlatformHomeSection = "projects" | "courses";
 
 const PLATFORM_TOKEN_STORAGE_KEY = "xiqu-platform-dev-token";
 const PLATFORM_FILE_PATH_PREFIX = "platform-file:";
@@ -85,6 +87,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   const [isLoadingVersions, setIsLoadingVersions] = useState(false);
   const [isCreatingVersion, setIsCreatingVersion] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [homeSection, setHomeSection] = useState<PlatformHomeSection>("projects");
 
   const client = useMemo(() => new PlatformClient({
     baseUrl: "http://localhost:4317/api",
@@ -274,6 +277,25 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         ...current,
         [selectedDocument.id]: effectivePermission,
       }));
+      setEditorSession(createEditorSession(document, client, handleDocumentSaved, effectivePermission));
+      setLocalEditorSession(null);
+      setView("editor");
+    } catch (error) {
+      setErrorMessage(getPlatformErrorMessage(error));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleOpenDocumentById(documentId: string) {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const [document, effectivePermission] = await Promise.all([
+        client.getAnnotationDocument<ProjectData>(documentId),
+        client.getEffectiveDocumentPermission(documentId),
+      ]);
+      setPermissionsByDocumentId((current) => ({ ...current, [documentId]: effectivePermission }));
       setEditorSession(createEditorSession(document, client, handleDocumentSaved, effectivePermission));
       setLocalEditorSession(null);
       setView("editor");
@@ -548,8 +570,8 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       <section className="platform-dashboard">
         <aside className="platform-sidebar">
           <h2>平台导航</h2>
-          <button type="button" className="active">项目库</button>
-          <button type="button" disabled>课堂作业</button>
+          <button type="button" className={homeSection === "projects" ? "active" : ""} onClick={() => setHomeSection("projects")}>项目库</button>
+          <button type="button" className={homeSection === "courses" ? "active" : ""} onClick={() => setHomeSection("courses")}>课堂作业</button>
           <button type="button" disabled>账号权限</button>
           <button type="button" disabled>后端任务</button>
           <div className="platform-sidebar-note">
@@ -558,6 +580,18 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         </aside>
 
         <section className="platform-main-panel">
+          {errorMessage ? <p className="platform-error" role="alert">{errorMessage}</p> : null}
+          {homeSection === "courses" ? (
+            <CourseWorkspace
+              client={client}
+              user={user!}
+              projects={projects}
+              documentsByProjectId={documentsByProjectId}
+              onOpenDocument={handleOpenDocumentById}
+              onError={setErrorMessage}
+            />
+          ) : (
+          <>
           <div className="platform-section-header">
             <div>
               <span className="platform-kicker">Project Library</span>
@@ -568,7 +602,6 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
             </button>
           </div>
 
-          {errorMessage ? <p className="platform-error" role="alert">{errorMessage}</p> : null}
           {isLoading ? <p className="platform-muted">正在从后端加载项目...</p> : null}
 
           <form className="platform-create-panel" onSubmit={handleCreateProject}>
@@ -735,6 +768,8 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
               </div>
             </div>
           </div>
+          </>
+          )}
         </section>
       </section>
     </main>

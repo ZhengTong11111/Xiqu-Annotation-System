@@ -9,6 +9,13 @@ import type {
   CreateGrantRequest,
   EffectiveDocumentPermission,
   GrantSummary,
+  AssignmentRecipient,
+  AssignmentSummary,
+  CourseMember,
+  CourseMemberRole,
+  CourseSummary,
+  MyAssignment,
+  PermissionTrackOption,
   MediaAsset,
   PermissionGrant,
   PlatformUser,
@@ -17,6 +24,52 @@ import type {
   StoredFileObject,
   UpdateGrantRequest,
 } from "./platform.js";
+
+export type CreateCourseRequest = {
+  title: string;
+  description?: string | null;
+};
+
+export type AddCourseMemberRequest = {
+  userId: string;
+  role: CourseMemberRole;
+};
+
+export type UpdateCourseMemberRequest = {
+  role: CourseMemberRole;
+};
+
+export type CreateAssignmentRequest = {
+  title: string;
+  description?: string | null;
+  projectId: string;
+  sourceDocumentId: string;
+  startAt?: string | null;
+  dueAt?: string | null;
+  scope: {
+    startTime?: number | null;
+    endTime?: number | null;
+    trackIds: string[];
+  };
+  recipientUserIds: string[];
+};
+
+export type ReturnAssignmentRequest = {
+  feedback?: string | null;
+};
+
+export type UpdateDraftAssignmentRequest = {
+  title: string;
+  description?: string | null;
+  startAt?: string | null;
+  dueAt?: string | null;
+  scope: {
+    startTime?: number | null;
+    endTime?: number | null;
+    trackIds: string[];
+  };
+  recipientUserIds: string[];
+};
 
 export type ApiErrorCode =
   | "bad_request"
@@ -182,4 +235,22 @@ export type PlatformApiContract<TPayload = unknown> = {
   revokePermissionGrant: {
     response: void;
   };
+  listDirectoryUsers: { response: PlatformUser[] };
+  listCourses: { response: CourseSummary[] };
+  createCourse: { request: CreateCourseRequest; response: CourseSummary };
+  getCourse: { response: CourseSummary };
+  listCourseMembers: { response: CourseMember[] };
+  addCourseMember: { request: AddCourseMemberRequest; response: CourseMember };
+  updateCourseMember: { request: UpdateCourseMemberRequest; response: CourseMember };
+  removeCourseMember: { response: void };
+  listCourseAssignments: { response: AssignmentSummary[] };
+  createAssignment: { request: CreateAssignmentRequest; response: AssignmentSummary };
+  getAssignment: { response: AssignmentSummary };
+  updateDraftAssignment: { request: UpdateDraftAssignmentRequest; response: AssignmentSummary };
+  publishAssignment: { response: AssignmentSummary };
+  listAssignmentRecipients: { response: AssignmentRecipient[] };
+  submitAssignment: { response: AssignmentRecipient };
+  returnAssignment: { request: ReturnAssignmentRequest; response: AssignmentRecipient };
+  listMyAssignments: { response: MyAssignment[] };
+  listPermissionTracks: { response: PermissionTrackOption[] };
 };
