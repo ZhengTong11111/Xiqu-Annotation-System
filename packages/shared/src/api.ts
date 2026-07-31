@@ -1,43 +1,22 @@
 import type {
+  AnnotationFile,
   AnnotationOperationRecord,
-  AnnotationProjectSummary,
-  AnnotationVersion,
-  AnnotationVersionKind,
-  AnnotationVersionSummary,
-  AnnotationVersionStatus,
-  AnnotationWorkspace,
-  AnnotationWorkspaceSummary,
+  AnnotationRecoverySnapshot,
   AuditLogEntry,
-  MediaAsset,
-  MutableProjectScope,
-  PermissionTrackOption,
   PlatformUser,
   ProcessingJob,
   ProcessingJobType,
-  ProjectCapability,
-  ProjectMember,
-  ProjectMemberRole,
-  ProjectVersion,
-  ProjectVersionStatus,
+  ResourceCapability,
+  ResourceEntry,
+  ResourceListPage,
+  ResourceListView,
+  ResourcePermissionMatrixRow,
+  ResourcePermissionRecord,
+  ResourceSortField,
+  ResourceType,
+  SortDirection,
   StoredFileObject,
-  WorkspaceStatus,
-  WorkspaceType,
 } from "./platform.js";
-
-export type AddProjectMemberRequest = {
-  userId: string;
-  role: ProjectMemberRole;
-  capabilities?: ProjectCapability[];
-  scope?: MutableProjectScope;
-  expiresAt?: string | null;
-};
-
-export type UpdateProjectMemberRequest = {
-  role?: ProjectMemberRole;
-  capabilities?: ProjectCapability[];
-  scope?: MutableProjectScope;
-  expiresAt?: string | null;
-};
 
 export type ApiErrorCode =
   | "bad_request"
@@ -45,7 +24,6 @@ export type ApiErrorCode =
   | "forbidden"
   | "not_found"
   | "conflict"
-  | "permission_scope_violation"
   | "validation_error"
   | "internal_error";
 
@@ -57,9 +35,7 @@ export type ApiErrorBody = {
   };
 };
 
-export type ApiSuccess<TData> = {
-  data: TData;
-};
+export type ApiSuccess<TData> = { data: TData };
 
 export type LoginRequest = {
   accountName: string;
@@ -71,59 +47,69 @@ export type LoginResponse = {
   accessToken: string;
 };
 
-export type CreateProjectRequest = {
-  title: string;
-  mediaAssetId: string;
+export type ListResourcesOptions = {
+  parentId?: string | null;
+  view?: ResourceListView;
+  query?: string;
+  type?: ResourceType;
+  sortBy?: ResourceSortField;
+  direction?: SortDirection;
+  cursor?: string;
+  limit?: number;
 };
 
-export type CreateMediaAssetRequest = {
-  title: string;
-  description?: string | null;
-  primaryFileId?: string | null;
-};
-
-export type UploadFileResponse = {
-  file: StoredFileObject;
-};
-
-export type CreateWorkspaceRequest<TPayload = unknown> = {
+export type CreateResourceRequest = {
+  parentId?: string | null;
+  type: Extract<ResourceType, "folder" | "project">;
   name: string;
-  workspaceType?: WorkspaceType;
-  ownerUserId?: string;
-  initialPayload: TPayload;
+  description?: string | null;
 };
 
-export type SaveWorkspaceRequest<TPayload = unknown> = {
+export type CreateAnnotationFileRequest<TPayload = unknown> = {
+  parentId: string;
+  name: string;
+  payload: TPayload;
+  mediaResourceId?: string | null;
+};
+
+export type ImportMediaFileRequest = {
+  parentId: string;
+  fileId: string;
+  name?: string;
+};
+
+export type UpdateResourceRequest = {
+  name?: string;
+  archived?: boolean;
+  favorite?: boolean;
+};
+
+export type MoveResourceRequest = {
+  parentId: string | null;
+};
+
+export type CopyResourceRequest = {
+  parentId: string;
+  name?: string;
+};
+
+export type SaveAnnotationFileRequest<TPayload = unknown> = {
   baseRevision: number;
   payload: TPayload;
 };
 
-export type UpdateWorkspaceStatusRequest = {
-  status: WorkspaceStatus;
+export type UpsertResourcePermissionRequest = {
+  capabilities: ResourceCapability[];
+  inheritToChildren?: boolean;
+  expiresAt?: string | null;
 };
 
-export type CompleteAnnotationVersionRequest = {
-  name: string;
-  description?: string | null;
-  kind?: AnnotationVersionKind;
+export type UpdateResourceInheritanceRequest = {
+  breakPermissionInheritance: boolean;
 };
 
-export type ForkAnnotationVersionRequest = {
-  workspaceName: string;
-};
-
-export type UpdateAnnotationVersionStatusRequest = {
-  status: Extract<AnnotationVersionStatus, "archived">;
-};
-
-export type CreateProjectVersionRequest = {
-  sourceVersionId: string;
-  name: string;
-  description?: string | null;
-};
-
-export type UpdateProjectVersionStatusRequest = {
-  status: Exclude<ProjectVersionStatus, "published" | "superseded">;
+export type UploadFileResponse = {
+  file: StoredFileObject;
 };
 
 export type CreateAnnotationOperationRequest = {
@@ -134,8 +120,7 @@ export type CreateAnnotationOperationRequest = {
 };
 
 export type ListAuditLogsOptions = {
-  projectId?: string;
-  workspaceId?: string;
+  resourceId?: string;
   actorUserId?: string;
   limit?: number;
 };
@@ -143,55 +128,44 @@ export type ListAuditLogsOptions = {
 export type CreateProcessingJobRequest = {
   type: ProcessingJobType;
   inputFileIds: string[];
-  workspaceId?: string | null;
+  resourceId?: string | null;
 };
 
 export type PlatformApiContract<TPayload = unknown> = {
   login: { request: LoginRequest; response: LoginResponse };
   me: { response: PlatformUser };
-  listProjects: { response: AnnotationProjectSummary[] };
-  listFiles: { response: StoredFileObject[] };
+  listDirectoryUsers: { response: PlatformUser[] };
+  listResources: { response: ResourceListPage };
+  getResource: { response: ResourceEntry };
+  createResource: { request: CreateResourceRequest; response: ResourceEntry };
+  updateResource: { request: UpdateResourceRequest; response: ResourceEntry };
+  moveResource: { request: MoveResourceRequest; response: ResourceEntry };
+  copyResource: { request: CopyResourceRequest; response: ResourceEntry };
+  trashResource: { response: ResourceEntry };
+  restoreResource: { response: ResourceEntry };
   uploadFile: { response: UploadFileResponse };
-  listMediaAssets: { response: MediaAsset[] };
-  createProject: { request: CreateProjectRequest; response: AnnotationProjectSummary };
-  createMediaAsset: { request: CreateMediaAssetRequest; response: MediaAsset };
-  listProjectWorkspaces: { response: AnnotationWorkspaceSummary[] };
-  createWorkspace: {
-    request: CreateWorkspaceRequest<TPayload>;
-    response: AnnotationWorkspace<TPayload>;
+  importMediaFile: { request: ImportMediaFileRequest; response: ResourceEntry };
+  createAnnotationFile: {
+    request: CreateAnnotationFileRequest<TPayload>;
+    response: AnnotationFile<TPayload>;
   };
-  getWorkspace: { response: AnnotationWorkspace<TPayload> };
-  saveWorkspace: {
-    request: SaveWorkspaceRequest<TPayload>;
-    response: AnnotationWorkspace<TPayload>;
+  getAnnotationFile: { response: AnnotationFile<TPayload> };
+  saveAnnotationFile: {
+    request: SaveAnnotationFileRequest<TPayload>;
+    response: AnnotationFile<TPayload>;
   };
-  updateWorkspaceStatus: {
-    request: UpdateWorkspaceStatusRequest;
-    response: AnnotationWorkspaceSummary;
+  listRecoverySnapshots: {
+    response: AnnotationRecoverySnapshot<TPayload>[];
   };
-  listProjectAnnotationVersions: { response: AnnotationVersionSummary[] };
-  listWorkspaceAnnotationVersions: { response: AnnotationVersionSummary[] };
-  completeAnnotationVersion: {
-    request: CompleteAnnotationVersionRequest;
-    response: AnnotationVersion<TPayload>;
+  listResourcePermissions: { response: ResourcePermissionMatrixRow[] };
+  upsertResourcePermission: {
+    request: UpsertResourcePermissionRequest;
+    response: ResourcePermissionRecord;
   };
-  forkAnnotationVersion: {
-    request: ForkAnnotationVersionRequest;
-    response: AnnotationWorkspace<TPayload>;
-  };
-  updateAnnotationVersionStatus: {
-    request: UpdateAnnotationVersionStatusRequest;
-    response: AnnotationVersionSummary;
-  };
-  listProjectVersions: { response: ProjectVersion[] };
-  createProjectVersion: {
-    request: CreateProjectVersionRequest;
-    response: ProjectVersion;
-  };
-  publishProjectVersion: { response: ProjectVersion };
-  updateProjectVersionStatus: {
-    request: UpdateProjectVersionStatusRequest;
-    response: ProjectVersion;
+  removeResourcePermission: { response: void };
+  updateResourceInheritance: {
+    request: UpdateResourceInheritanceRequest;
+    response: ResourceEntry;
   };
   createProcessingJob: {
     request: CreateProcessingJobRequest;
@@ -203,10 +177,4 @@ export type PlatformApiContract<TPayload = unknown> = {
     request: CreateAnnotationOperationRequest;
     response: AnnotationOperationRecord;
   };
-  listDirectoryUsers: { response: PlatformUser[] };
-  listProjectMembers: { response: ProjectMember[] };
-  addProjectMember: { request: AddProjectMemberRequest; response: ProjectMember };
-  updateProjectMember: { request: UpdateProjectMemberRequest; response: ProjectMember };
-  removeProjectMember: { response: void };
-  listPermissionTracks: { response: PermissionTrackOption[] };
 };

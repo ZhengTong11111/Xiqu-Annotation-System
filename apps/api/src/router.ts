@@ -1,53 +1,42 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type {
-  AnnotationVersionKind,
-  MutableProjectScope,
-  ProcessingJobType,
-  ProjectCapability,
-  ProjectMemberRole,
-  WorkspaceStatus,
-  WorkspaceType,
+import {
+  RESOURCE_CAPABILITIES,
+  type ProcessingJobType,
+  type ResourceCapability,
+  type ResourceListView,
+  type ResourceSortField,
+  type ResourceType,
+  type SortDirection,
 } from "@xiqu/shared";
-import { PROJECT_CAPABILITIES as PROJECT_CAPABILITY_LIST } from "@xiqu/shared";
-import { validateProjectScope } from "@xiqu/document-model";
-import type { AnnotationVersionService } from "./annotationVersionService.js";
-import type { AnnotationWorkspaceService } from "./annotationWorkspaceService.js";
+import { Readable } from "node:stream";
 import { badRequest } from "./errors.js";
-import type { ProjectMemberService } from "./projectMemberService.js";
-import type { ProjectVersionService } from "./projectVersionService.js";
 import type { PrismaPlatformRepository } from "./repository.js";
+import type { ResourceService } from "./resourceService.js";
 import type { LocalObjectStorage } from "./storage.js";
 
-type Services = {
-  projectMembers: ProjectMemberService;
-  annotationWorkspaces: AnnotationWorkspaceService;
-  annotationVersions: AnnotationVersionService;
-  projectVersions: ProjectVersionService;
-};
-
-const PROJECT_MEMBER_ROLES = new Set<ProjectMemberRole>([
-  "manager",
-  "reviewer",
-  "annotator",
-  "viewer",
+const RESOURCE_TYPES = new Set<ResourceType>([
+  "folder",
+  "project",
+  "annotation_file",
+  "media_file",
 ]);
-const PROJECT_CAPABILITIES = new Set<ProjectCapability>(
-  PROJECT_CAPABILITY_LIST,
-);
-const WORKSPACE_TYPES = new Set<WorkspaceType>([
-  "main",
-  "personal",
-  "collaborative",
-]);
-const WORKSPACE_STATUSES = new Set<WorkspaceStatus>([
-  "active",
-  "submitted",
+const RESOURCE_VIEWS = new Set<ResourceListView>([
+  "children",
+  "all_projects",
+  "recent",
+  "favorites",
+  "shared",
   "archived",
+  "trash",
 ]);
-const ANNOTATION_VERSION_KINDS = new Set<AnnotationVersionKind>([
-  "checkpoint",
-  "submission",
+const RESOURCE_SORT_FIELDS = new Set<ResourceSortField>([
+  "name",
+  "createdAt",
+  "updatedAt",
+  "size",
 ]);
+const SORT_DIRECTIONS = new Set<SortDirection>(["asc", "desc"]);
+const CAPABILITIES = new Set<ResourceCapability>(RESOURCE_CAPABILITIES);
 const PROCESSING_JOB_TYPES = new Set<ProcessingJobType>([
   "pitch_extraction",
   "spectrogram_generation",
@@ -62,16 +51,9 @@ const PROCESSING_JOB_TYPES = new Set<ProcessingJobType>([
 export function registerApiRoutes(
   app: FastifyInstance,
   repository: PrismaPlatformRepository,
+  resources: ResourceService,
   storage: LocalObjectStorage,
-  services: Services,
 ) {
-  const {
-    projectMembers,
-    annotationWorkspaces,
-    annotationVersions,
-    projectVersions,
-  } = services;
-
   app.get("/api/health", async () => ({
     status: "ok",
     service: "xiqu-platform-api",
@@ -90,125 +72,390 @@ export function registerApiRoutes(
   app.get("/api/auth/me", async (request) =>
     getCurrentUser(repository, request));
 
-  app.get<{
-    Querystring: { projectId?: string; query?: string; limit?: string };
-  }>("/api/users", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    const limit = request.query.limit === undefined
-      ? 50
-      : Number(request.query.limit);
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw badRequest("limit 必须是 1–100 的整数。");
-    }
-    return projectMembers.listDirectoryUsers(user, {
-      projectId: normalizedString(request.query.projectId),
-      query: normalizedString(request.query.query),
-      limit,
-    });
-  });
+  app.get<{ Querystring: { query?: string } }>("/api/users", async (request) =>
+    repository.listDirectoryUsers(
+      await getCurrentUser(repository, request),
+      normalizedString(request.query.query),
+    ));
 
-  app.get<{ Params: { projectId: string } }>(
-    "/api/projects/:projectId/members",
-    async (request) => {
-      const user = await getCurrentUser(repository, request);
-      return projectMembers.listProjectMembers(user, request.params.projectId);
-    },
-  );
-  app.post<{
-    Params: { projectId: string };
-    Body: {
-      userId?: unknown;
-      role?: unknown;
-      capabilities?: unknown;
-      scope?: unknown;
-      expiresAt?: unknown;
+  app.get<{
+    Querystring: {
+      parentId?: string;
+      view?: string;
+      query?: string;
+      type?: string;
+      sortBy?: string;
+      direction?: string;
+      cursor?: string;
+      limit?: string;
     };
-  }>("/api/projects/:projectId/members", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    const body = requireObject(request.body, [
-      "userId",
-      "role",
-      "capabilities",
-      "scope",
-      "expiresAt",
-    ]);
-    if (
-      typeof body.userId !== "string" ||
-      !body.userId.trim() ||
-      !isProjectMemberRole(body.role)
-    ) {
-      throw badRequest("项目成员必须包含有效 userId 和 role。");
-    }
-    return projectMembers.addProjectMember(user, request.params.projectId, {
-      userId: body.userId.trim(),
-      role: body.role,
-      capabilities: body.capabilities === undefined
-        ? undefined
-        : parseCapabilities(body.capabilities),
-      scope: body.scope === undefined ? undefined : parseScope(body.scope),
-      expiresAt: parseExpiration(body.expiresAt),
-    });
-  });
-  app.patch<{
-    Params: { projectId: string; memberId: string };
-    Body: {
-      role?: unknown;
-      capabilities?: unknown;
-      scope?: unknown;
-      expiresAt?: unknown;
-    };
-  }>("/api/projects/:projectId/members/:memberId", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    const body = requireObject(request.body, [
-      "role",
-      "capabilities",
-      "scope",
-      "expiresAt",
-    ], true);
-    if (body.role !== undefined && !isProjectMemberRole(body.role)) {
-      throw badRequest("项目角色无效。");
-    }
-    return projectMembers.updateProjectMember(
-      user,
-      request.params.projectId,
-      request.params.memberId,
+  }>("/api/resources", async (request) => {
+    const limit = parseOptionalInteger(request.query.limit, "limit", 1, 200);
+    return resources.listResources(
+      await getCurrentUser(repository, request),
       {
-        role: body.role,
-        capabilities: body.capabilities === undefined
-          ? undefined
-          : parseCapabilities(body.capabilities),
-        scope: body.scope === undefined ? undefined : parseScope(body.scope),
-        expiresAt: body.expiresAt === undefined
-          ? undefined
-          : parseExpiration(body.expiresAt),
+        parentId: normalizedString(request.query.parentId),
+        view: parseOptionalSetValue(
+          request.query.view,
+          RESOURCE_VIEWS,
+          "资源视图",
+        ),
+        query: normalizedString(request.query.query),
+        type: parseOptionalSetValue(
+          request.query.type,
+          RESOURCE_TYPES,
+          "资源类型",
+        ),
+        sortBy: parseOptionalSetValue(
+          request.query.sortBy,
+          RESOURCE_SORT_FIELDS,
+          "排序字段",
+        ),
+        direction: parseOptionalSetValue(
+          request.query.direction,
+          SORT_DIRECTIONS,
+          "排序方向",
+        ),
+        cursor: normalizedString(request.query.cursor),
+        limit,
       },
     );
   });
-  app.delete<{ Params: { projectId: string; memberId: string } }>(
-    "/api/projects/:projectId/members/:memberId",
+
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/resources/:resourceId",
+    async (request) =>
+      resources.getResource(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+      ),
+  );
+
+  app.post<{
+    Body: {
+      parentId?: unknown;
+      type?: unknown;
+      name?: unknown;
+      description?: unknown;
+    };
+  }>("/api/resources", async (request) => {
+    const body = requireObject(request.body);
+    if (
+      (body.type !== "folder" && body.type !== "project") ||
+      typeof body.name !== "string"
+    ) {
+      throw badRequest("创建资源需要有效的 type 和 name。");
+    }
+    const user = await getCurrentUser(repository, request);
+    const created = await resources.createResource(user, {
+      parentId: optionalStringOrNull(body.parentId) ?? null,
+      type: body.type,
+      name: body.name,
+      description: optionalStringOrNull(body.description),
+    });
+    await repository.writeAuditLog({
+      action: "resource_create",
+      actorUserId: user.id,
+      resourceId: created.id,
+      detail: { type: created.type, name: created.name },
+    });
+    return created;
+  });
+
+  app.patch<{
+    Params: { resourceId: string };
+    Body: { name?: unknown; archived?: unknown; favorite?: unknown };
+  }>("/api/resources/:resourceId", async (request) => {
+    const body = requireObject(request.body);
+    if (body.name !== undefined && typeof body.name !== "string") {
+      throw badRequest("资源名称必须是字符串。");
+    }
+    if (body.archived !== undefined && typeof body.archived !== "boolean") {
+      throw badRequest("archived 必须是布尔值。");
+    }
+    if (body.favorite !== undefined && typeof body.favorite !== "boolean") {
+      throw badRequest("favorite 必须是布尔值。");
+    }
+    const user = await getCurrentUser(repository, request);
+    const updated = await resources.updateResource(user, request.params.resourceId, {
+      name: body.name,
+      archived: body.archived,
+      favorite: body.favorite,
+    });
+    await repository.writeAuditLog({
+      action: "resource_update",
+      actorUserId: user.id,
+      resourceId: updated.id,
+      detail: body,
+    });
+    return updated;
+  });
+
+  app.post<{
+    Params: { resourceId: string };
+    Body: { parentId?: unknown };
+  }>("/api/resources/:resourceId/move", async (request) => {
+    const body = requireObject(request.body);
+    const user = await getCurrentUser(repository, request);
+    const updated = await resources.moveResource(user, request.params.resourceId, {
+      parentId: optionalStringOrNull(body.parentId) ?? null,
+    });
+    await repository.writeAuditLog({
+      action: "resource_move",
+      actorUserId: user.id,
+      resourceId: updated.id,
+      detail: { parentId: updated.parentId },
+    });
+    return updated;
+  });
+
+  app.post<{
+    Params: { resourceId: string };
+    Body: { parentId?: unknown; name?: unknown };
+  }>("/api/resources/:resourceId/copy", async (request) => {
+    const body = requireObject(request.body);
+    if (typeof body.parentId !== "string") {
+      throw badRequest("复制资源需要目标 parentId。");
+    }
+    if (body.name !== undefined && typeof body.name !== "string") {
+      throw badRequest("副本名称必须是字符串。");
+    }
+    const user = await getCurrentUser(repository, request);
+    const copied = await resources.copyResource(user, request.params.resourceId, {
+      parentId: body.parentId,
+      name: body.name,
+    });
+    await repository.writeAuditLog({
+      action: "resource_copy",
+      actorUserId: user.id,
+      resourceId: copied.id,
+      detail: { sourceResourceId: request.params.resourceId },
+    });
+    return copied;
+  });
+
+  for (const [suffix, trashed, action] of [
+    ["trash", true, "resource_trash"],
+    ["restore", false, "resource_restore"],
+  ] as const) {
+    app.post<{ Params: { resourceId: string } }>(
+      `/api/resources/:resourceId/${suffix}`,
+      async (request) => {
+        const user = await getCurrentUser(repository, request);
+        const updated = await resources.setTrashed(
+          user,
+          request.params.resourceId,
+          trashed,
+        );
+        await repository.writeAuditLog({
+          action,
+          actorUserId: user.id,
+          resourceId: updated.id,
+          detail: {},
+        });
+        return updated;
+      },
+    );
+  }
+
+  app.post<{
+    Body: {
+      parentId?: unknown;
+      name?: unknown;
+      payload?: unknown;
+      mediaResourceId?: unknown;
+    };
+  }>("/api/annotation-files", async (request) => {
+    const body = requireObject(request.body);
+    if (typeof body.parentId !== "string" || typeof body.name !== "string") {
+      throw badRequest("创建标注文件需要 parentId 和 name。");
+    }
+    return resources.createAnnotationFile(
+      await getCurrentUser(repository, request),
+      {
+        parentId: body.parentId,
+        name: body.name,
+        payload: body.payload ?? {},
+        mediaResourceId: optionalStringOrNull(body.mediaResourceId),
+      },
+    );
+  });
+
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/annotation-files/:resourceId",
+    async (request) =>
+      resources.getAnnotationFile(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+      ),
+  );
+
+  app.put<{
+    Params: { resourceId: string };
+    Body: { baseRevision?: unknown; payload?: unknown };
+  }>("/api/annotation-files/:resourceId", async (request) => {
+    const body = requireObject(request.body);
+    if (!Number.isInteger(body.baseRevision) || Number(body.baseRevision) < 1) {
+      throw badRequest("baseRevision 必须是正整数。");
+    }
+    const user = await getCurrentUser(repository, request);
+    const saved = await resources.saveAnnotationFile(
+      user,
+      request.params.resourceId,
+      {
+        baseRevision: Number(body.baseRevision),
+        payload: body.payload ?? {},
+      },
+    );
+    await repository.writeAuditLog({
+      action: "annotation_file_save",
+      actorUserId: user.id,
+      resourceId: saved.resource.id,
+      detail: { revision: saved.revision },
+    });
+    return saved;
+  });
+
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/annotation-files/:resourceId/recovery-snapshots",
+    async (request) =>
+      resources.listRecoverySnapshots(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+      ),
+  );
+
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/resources/:resourceId/permissions",
+    async (request) =>
+      resources.listPermissionMatrix(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+      ),
+  );
+
+  app.put<{
+    Params: { resourceId: string; userId: string };
+    Body: {
+      capabilities?: unknown;
+      inheritToChildren?: unknown;
+      expiresAt?: unknown;
+    };
+  }>("/api/resources/:resourceId/permissions/:userId", async (request) => {
+    const body = requireObject(request.body);
+    const capabilities = parseCapabilities(body.capabilities);
+    if (
+      body.inheritToChildren !== undefined &&
+      typeof body.inheritToChildren !== "boolean"
+    ) {
+      throw badRequest("inheritToChildren 必须是布尔值。");
+    }
+    const user = await getCurrentUser(repository, request);
+    const permission = await resources.upsertPermission(
+      user,
+      request.params.resourceId,
+      request.params.userId,
+      {
+        capabilities,
+        inheritToChildren: body.inheritToChildren,
+        expiresAt: optionalDateStringOrNull(body.expiresAt, "权限到期时间"),
+      },
+    );
+    await repository.writeAuditLog({
+      action: "resource_permission_upsert",
+      actorUserId: user.id,
+      resourceId: request.params.resourceId,
+      targetUserId: request.params.userId,
+      detail: {
+        capabilities,
+        inheritToChildren: permission.inheritToChildren,
+      },
+    });
+    return permission;
+  });
+
+  app.delete<{ Params: { resourceId: string; userId: string } }>(
+    "/api/resources/:resourceId/permissions/:userId",
     async (request) => {
       const user = await getCurrentUser(repository, request);
-      await projectMembers.removeProjectMember(
+      await resources.removePermission(
         user,
-        request.params.projectId,
-        request.params.memberId,
+        request.params.resourceId,
+        request.params.userId,
       );
+      await repository.writeAuditLog({
+        action: "resource_permission_remove",
+        actorUserId: user.id,
+        resourceId: request.params.resourceId,
+        targetUserId: request.params.userId,
+        detail: {},
+      });
       return null;
     },
   );
-  app.get<{ Params: { projectId: string } }>(
-    "/api/projects/:projectId/permission-tracks",
-    async (request) => {
-      const user = await getCurrentUser(repository, request);
-      return projectMembers.listPermissionTracks(
-        user,
-        request.params.projectId,
-      );
-    },
-  );
 
-  app.get("/api/files", async (request) =>
-    repository.listFiles(await getCurrentUser(repository, request)));
+  app.patch<{
+    Params: { resourceId: string };
+    Body: { breakPermissionInheritance?: unknown };
+  }>("/api/resources/:resourceId/permission-inheritance", async (request) => {
+    const body = requireObject(request.body);
+    if (typeof body.breakPermissionInheritance !== "boolean") {
+      throw badRequest("breakPermissionInheritance 必须是布尔值。");
+    }
+    const user = await getCurrentUser(repository, request);
+    const updated = await resources.updateInheritance(
+      user,
+      request.params.resourceId,
+      body.breakPermissionInheritance,
+    );
+    await repository.writeAuditLog({
+      action: "resource_inheritance_update",
+      actorUserId: user.id,
+      resourceId: updated.id,
+      detail: {
+        breakPermissionInheritance: updated.breakPermissionInheritance,
+      },
+    });
+    return updated;
+  });
+
+  app.post("/api/files/upload", async (request) => {
+    const user = await getCurrentUser(repository, request);
+    const file = await request.file();
+    if (!file) throw badRequest("请选择需要上传的文件。");
+    const storageKey = storage.createStorageKey(file.filename);
+    const stored = await storage.putObject(
+      storageKey,
+      Readable.from(file.file),
+    );
+    return {
+      file: await repository.createUploadedFile(user, {
+        name: file.filename,
+        mimeType: file.mimetype,
+        size: stored.size,
+        storageKey: stored.storageKey,
+        checksum: stored.checksum,
+      }),
+    };
+  });
+
+  app.post<{
+    Body: { parentId?: unknown; fileId?: unknown; name?: unknown };
+  }>("/api/media-files", async (request) => {
+    const body = requireObject(request.body);
+    if (typeof body.parentId !== "string" || typeof body.fileId !== "string") {
+      throw badRequest("媒体文件需要 parentId 和 fileId。");
+    }
+    return resources.importMediaFile(
+      await getCurrentUser(repository, request),
+      {
+        parentId: body.parentId,
+        fileId: body.fileId,
+        name: typeof body.name === "string" ? body.name : undefined,
+      },
+    );
+  });
+
   app.get<{
     Params: { fileId: string };
     Querystring: { access_token?: string };
@@ -219,554 +466,197 @@ export function registerApiRoutes(
       request.query.access_token ?? null,
     );
     const file = await repository.getFileForRead(user, request.params.fileId);
-    const range = parseByteRange(request.headers.range, file.size);
-    reply.header("content-type", file.mimeType);
-    reply.header("accept-ranges", "bytes");
-    reply.header(
-      "content-disposition",
-      `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`,
-    );
-    if (range === "unsatisfiable") {
-      reply.header("content-range", `bytes */${file.size}`);
-      return reply.status(416).send();
-    }
+    const range = parseRange(request.headers.range, file.size);
+    reply.header("Accept-Ranges", "bytes");
+    reply.header("Content-Type", file.mimeType);
     if (range) {
-      reply.header("content-length", String(range.end - range.start + 1));
+      reply.status(206);
       reply.header(
-        "content-range",
+        "Content-Range",
         `bytes ${range.start}-${range.end}/${file.size}`,
       );
-      return reply.status(206).send(
-        storage.getObjectStream(file.storageKey, range),
-      );
+      reply.header("Content-Length", range.end - range.start + 1);
+      return reply.send(storage.getObjectStream(file.storageKey, range));
     }
-    reply.header("content-length", String(file.size));
+    reply.header("Content-Length", file.size);
     return reply.send(storage.getObjectStream(file.storageKey));
   });
-  app.post("/api/files", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    const uploaded = await request.file();
-    if (!uploaded) throw badRequest("请选择要上传的文件。");
-    const storageKey = storage.createStorageKey(uploaded.filename);
-    const stored = await storage.putObject(storageKey, uploaded.file);
-    return {
-      file: await repository.createUploadedFile(user, {
-        name: uploaded.filename,
-        mimeType: uploaded.mimetype || "application/octet-stream",
-        size: stored.size,
-        storageKey,
-        checksum: stored.checksum,
-      }),
-    };
-  });
 
-  app.get("/api/media", async (request) =>
-    repository.listMediaAssets(await getCurrentUser(repository, request)));
   app.post<{
-    Body: {
-      title?: string;
-      description?: string | null;
-      primaryFileId?: string | null;
-    };
-  }>("/api/media", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    if (!request.body?.title?.trim()) {
-      throw badRequest("媒体标题不能为空。");
-    }
-    return repository.createMediaAsset(user, {
-      title: request.body.title.trim(),
-      description: request.body.description ?? null,
-      primaryFileId: request.body.primaryFileId ?? null,
-    });
-  });
-
-  app.get("/api/projects", async (request) =>
-    repository.listProjects(await getCurrentUser(repository, request)));
-  app.post<{ Body: { title?: string; mediaAssetId?: string } }>(
-    "/api/projects",
-    async (request) => {
-      const user = await getCurrentUser(repository, request);
-      if (!request.body?.title?.trim() || !request.body.mediaAssetId?.trim()) {
-        throw badRequest("项目标题和媒体资产不能为空。");
-      }
-      return repository.createProject(user, {
-        title: request.body.title.trim(),
-        mediaAssetId: request.body.mediaAssetId.trim(),
-      });
-    },
-  );
-
-  app.get<{
-    Params: { projectId: string };
-    Querystring: { ownerUserId?: string };
-  }>("/api/projects/:projectId/workspaces", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    return annotationWorkspaces.listProjectWorkspaces(
-      user,
-      request.params.projectId,
-      normalizedString(request.query.ownerUserId),
-    );
-  });
-  app.post<{
-    Params: { projectId: string };
-    Body: {
-      name?: unknown;
-      workspaceType?: unknown;
-      ownerUserId?: unknown;
-      initialPayload?: unknown;
-    };
-  }>("/api/projects/:projectId/workspaces", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    const body = requireObject(request.body, [
-      "name",
-      "workspaceType",
-      "ownerUserId",
-      "initialPayload",
-    ]);
-    if (typeof body.name !== "string" || !body.name.trim()) {
-      throw badRequest("工作区名称不能为空。");
-    }
+    Body: { type?: unknown; inputFileIds?: unknown; resourceId?: unknown };
+  }>("/api/processing-jobs", async (request) => {
+    const body = requireObject(request.body);
     if (
-      body.workspaceType !== undefined &&
-      !isWorkspaceType(body.workspaceType)
+      typeof body.type !== "string" ||
+      !PROCESSING_JOB_TYPES.has(body.type as ProcessingJobType) ||
+      !Array.isArray(body.inputFileIds) ||
+      body.inputFileIds.some((id) => typeof id !== "string")
     ) {
-      throw badRequest("工作区类型无效。");
+      throw badRequest("处理任务参数不正确。");
     }
-    if (
-      body.ownerUserId !== undefined &&
-      (typeof body.ownerUserId !== "string" || !body.ownerUserId.trim())
-    ) {
-      throw badRequest("ownerUserId 必须是非空字符串。");
-    }
-    return annotationWorkspaces.createWorkspace(
-      user,
-      request.params.projectId,
+    return repository.createProcessingJob(
+      await getCurrentUser(repository, request),
       {
-        name: body.name.trim(),
-        workspaceType: body.workspaceType,
-        ownerUserId: normalizedString(body.ownerUserId),
-        initialPayload: body.initialPayload ?? {},
+        type: body.type as ProcessingJobType,
+        inputFileIds: body.inputFileIds as string[],
+        resourceId: optionalStringOrNull(body.resourceId),
       },
-    );
-  });
-  app.get<{ Params: { workspaceId: string } }>(
-    "/api/annotation-workspaces/:workspaceId",
-    async (request) =>
-      annotationWorkspaces.getWorkspace(
-        await getCurrentUser(repository, request),
-        request.params.workspaceId,
-      ),
-  );
-  app.post<{
-    Params: { workspaceId: string };
-    Body: { baseRevision?: unknown; payload?: unknown };
-  }>("/api/annotation-workspaces/:workspaceId/save", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    if (!isNonNegativeInteger(request.body?.baseRevision)) {
-      throw badRequest("保存工作区必须包含非负整数 baseRevision。");
-    }
-    return annotationWorkspaces.saveWorkspace(
-      user,
-      request.params.workspaceId,
-      {
-        baseRevision: request.body.baseRevision,
-        payload: request.body.payload ?? {},
-      },
-    );
-  });
-  app.patch<{
-    Params: { workspaceId: string };
-    Body: { status?: unknown };
-  }>("/api/annotation-workspaces/:workspaceId/status", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    if (!isWorkspaceStatus(request.body?.status)) {
-      throw badRequest("工作区状态无效。");
-    }
-    return annotationWorkspaces.updateWorkspaceStatus(
-      user,
-      request.params.workspaceId,
-      { status: request.body.status },
     );
   });
 
   app.get<{
-    Params: { projectId: string };
-    Querystring: { createdBy?: string; workspaceId?: string };
-  }>("/api/projects/:projectId/annotation-versions", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    return annotationVersions.listProjectVersions(
-      user,
-      request.params.projectId,
+    Querystring: { resourceId?: string; actorUserId?: string; limit?: string };
+  }>("/api/audit-logs", async (request) =>
+    repository.listAuditLogs(
+      await getCurrentUser(repository, request),
       {
-        createdBy: normalizedString(request.query.createdBy),
-        workspaceId: normalizedString(request.query.workspaceId),
+        resourceId: normalizedString(request.query.resourceId),
+        actorUserId: normalizedString(request.query.actorUserId),
+        limit: parseOptionalInteger(request.query.limit, "limit", 1, 200),
       },
-    );
-  });
-  app.get<{ Params: { workspaceId: string } }>(
-    "/api/annotation-workspaces/:workspaceId/versions",
-    async (request) =>
-      annotationVersions.listWorkspaceVersions(
-        await getCurrentUser(repository, request),
-        request.params.workspaceId,
-      ),
-  );
-  app.post<{
-    Params: { workspaceId: string };
-    Body: {
-      name?: unknown;
-      description?: unknown;
-      kind?: unknown;
-    };
-  }>("/api/annotation-workspaces/:workspaceId/versions", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    const body = requireObject(request.body, ["name", "description", "kind"]);
-    if (typeof body.name !== "string" || !body.name.trim()) {
-      throw badRequest("标注版本名称不能为空。");
-    }
-    if (body.kind !== undefined && !isAnnotationVersionKind(body.kind)) {
-      throw badRequest("标注版本类型无效。");
-    }
-    return annotationVersions.completeVersion(
-      user,
-      request.params.workspaceId,
-      {
-        name: body.name.trim(),
-        description: nullableString(body.description),
-        kind: body.kind,
-      },
-    );
-  });
-  app.post<{
-    Params: { versionId: string };
-    Body: { workspaceName?: unknown };
-  }>("/api/annotation-versions/:versionId/forks", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    if (
-      typeof request.body?.workspaceName !== "string" ||
-      !request.body.workspaceName.trim()
-    ) {
-      throw badRequest("Fork 后的工作区名称不能为空。");
-    }
-    return annotationVersions.forkVersion(
-      user,
-      request.params.versionId,
-      { workspaceName: request.body.workspaceName.trim() },
-    );
-  });
-  app.patch<{
-    Params: { versionId: string };
-    Body: { status?: unknown };
-  }>("/api/annotation-versions/:versionId/status", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    if (request.body?.status !== "archived") {
-      throw badRequest("已完成标注版本只支持归档。");
-    }
-    return annotationVersions.updateVersionStatus(
-      user,
-      request.params.versionId,
-      { status: request.body.status },
-    );
-  });
+    ));
 
-  app.get<{ Params: { projectId: string } }>(
-    "/api/projects/:projectId/project-versions",
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/annotation-files/:resourceId/operations",
     async (request) =>
-      projectVersions.listProjectVersions(
+      repository.listAnnotationOperations(
         await getCurrentUser(repository, request),
-        request.params.projectId,
+        request.params.resourceId,
       ),
   );
-  app.post<{
-    Params: { projectId: string };
-    Body: {
-      sourceVersionId?: unknown;
-      name?: unknown;
-      description?: unknown;
-    };
-  }>("/api/projects/:projectId/project-versions", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    const body = requireObject(request.body, [
-      "sourceVersionId",
-      "name",
-      "description",
-    ]);
-    if (
-      typeof body.sourceVersionId !== "string" ||
-      !body.sourceVersionId.trim() ||
-      typeof body.name !== "string" ||
-      !body.name.trim()
-    ) {
-      throw badRequest("项目版本必须包含来源标注版本和名称。");
-    }
-    return projectVersions.createProjectVersion(
-      user,
-      request.params.projectId,
-      {
-        sourceVersionId: body.sourceVersionId.trim(),
-        name: body.name.trim(),
-        description: nullableString(body.description),
-      },
-    );
-  });
-  app.post<{ Params: { projectVersionId: string } }>(
-    "/api/project-versions/:projectVersionId/publish",
-    async (request) =>
-      projectVersions.publishProjectVersion(
-        await getCurrentUser(repository, request),
-        request.params.projectVersionId,
-      ),
-  );
-  app.patch<{
-    Params: { projectVersionId: string };
-    Body: { status?: unknown };
-  }>("/api/project-versions/:projectVersionId/status", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    if (request.body?.status !== "archived") {
-      throw badRequest("项目版本状态更新只支持 archived。");
-    }
-    return projectVersions.updateProjectVersionStatus(
-      user,
-      request.params.projectVersionId,
-      { status: "archived" },
-    );
-  });
 
   app.post<{
-    Body: {
-      type?: unknown;
-      inputFileIds?: unknown;
-      workspaceId?: unknown;
-    };
-  }>("/api/jobs", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    const { type, inputFileIds, workspaceId } = request.body ?? {};
-    if (
-      !isProcessingJobType(type) ||
-      !Array.isArray(inputFileIds) ||
-      inputFileIds.length === 0 ||
-      inputFileIds.some((id) => typeof id !== "string" || !id.trim())
-    ) {
-      throw badRequest("任务类型和输入文件不能为空。");
-    }
-    if (
-      workspaceId !== undefined &&
-      workspaceId !== null &&
-      (typeof workspaceId !== "string" || !workspaceId.trim())
-    ) {
-      throw badRequest("workspaceId 必须是非空字符串或 null。");
-    }
-    return repository.createProcessingJob(user, {
-      type,
-      inputFileIds: [...new Set(inputFileIds.map((id) => id.trim()))],
-      workspaceId: normalizedString(workspaceId) ?? null,
-    });
-  });
-
-  app.get<{
-    Querystring: {
-      projectId?: string;
-      workspaceId?: string;
-      actorUserId?: string;
-      limit?: string;
-    };
-  }>("/api/audit-logs", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    const limit = request.query.limit === undefined
-      ? undefined
-      : Number(request.query.limit);
-    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
-      throw badRequest("limit 必须是正整数。");
-    }
-    return repository.listAuditLogs(user, {
-      projectId: normalizedString(request.query.projectId),
-      workspaceId: normalizedString(request.query.workspaceId),
-      actorUserId: normalizedString(request.query.actorUserId),
-      limit,
-    });
-  });
-  app.get<{ Params: { workspaceId: string } }>(
-    "/api/annotation-workspaces/:workspaceId/operations",
-    async (request) =>
-      repository.listOperations(
-        await getCurrentUser(repository, request),
-        request.params.workspaceId,
-      ),
-  );
-  app.post<{
-    Params: { workspaceId: string };
+    Params: { resourceId: string };
     Body: {
       baseRevision?: unknown;
       localRevision?: unknown;
       action?: unknown;
       payload?: unknown;
     };
-  }>("/api/annotation-workspaces/:workspaceId/operations", async (request) => {
-    const user = await getCurrentUser(repository, request);
-    const { baseRevision, localRevision, action, payload } = request.body ?? {};
+  }>("/api/annotation-files/:resourceId/operations", async (request) => {
+    const body = requireObject(request.body);
     if (
-      !isNonNegativeInteger(baseRevision) ||
-      typeof action !== "string" ||
-      !action.trim()
+      !Number.isInteger(body.baseRevision) ||
+      Number(body.baseRevision) < 0 ||
+      (body.localRevision !== undefined &&
+        body.localRevision !== null &&
+        (!Number.isInteger(body.localRevision) ||
+          Number(body.localRevision) < 0)) ||
+      typeof body.action !== "string" ||
+      !body.action.trim()
     ) {
-      throw badRequest("operation 必须包含 baseRevision 和 action。");
+      throw badRequest("标注操作参数不正确。");
     }
-    if (
-      localRevision !== undefined &&
-      localRevision !== null &&
-      !isNonNegativeInteger(localRevision)
-    ) {
-      throw badRequest("localRevision 必须是非负整数或 null。");
-    }
-    return repository.createOperation(user, request.params.workspaceId, {
-      baseRevision,
-      localRevision: localRevision as number | null | undefined,
-      action: action.trim(),
-      payload: payload ?? {},
-    });
+    return repository.createAnnotationOperation(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      {
+        baseRevision: Number(body.baseRevision),
+        localRevision: body.localRevision === null ||
+          body.localRevision === undefined
+          ? null
+          : Number(body.localRevision),
+        action: body.action,
+        payload: body.payload ?? {},
+      },
+    );
   });
 }
 
 async function getCurrentUser(
   repository: PrismaPlatformRepository,
   request: FastifyRequest,
-  fallbackToken: string | null = null,
+  queryToken: string | null = null,
 ) {
-  return repository.getUserByToken(
-    getBearerToken(request) ?? fallbackToken,
-  );
+  const header = request.headers.authorization;
+  const token = header?.startsWith("Bearer ")
+    ? header.slice("Bearer ".length)
+    : queryToken;
+  return repository.getUserByToken(token);
 }
 
-function getBearerToken(request: FastifyRequest) {
-  const authorization = request.headers.authorization;
-  if (!authorization?.startsWith("Bearer ")) return null;
-  return authorization.slice("Bearer ".length).trim() || null;
-}
-
-function requireObject(
-  value: unknown,
-  allowedKeys: string[],
-  requireAtLeastOne = false,
-): Record<string, unknown> {
+function requireObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw badRequest("请求结构无效。");
+    throw badRequest("请求体必须是 JSON 对象。");
   }
-  const record = value as Record<string, unknown>;
-  if (
-    (requireAtLeastOne && Object.keys(record).length === 0) ||
-    Object.keys(record).some((key) => !allowedKeys.includes(key))
-  ) {
-    throw badRequest("请求包含未知字段或缺少更新内容。");
-  }
-  return record;
-}
-
-function parseCapabilities(value: unknown): ProjectCapability[] {
-  if (
-    !Array.isArray(value) ||
-    value.some((capability) =>
-      typeof capability !== "string" ||
-      !PROJECT_CAPABILITIES.has(capability as ProjectCapability)
-    )
-  ) {
-    throw badRequest("capabilities 必须是有效项目能力数组。");
-  }
-  return [...new Set(value)] as ProjectCapability[];
-}
-
-function parseScope(value: unknown): MutableProjectScope {
-  if (value === null) {
-    return { timeRange: null, trackScope: null };
-  }
-  const validation = validateProjectScope(value);
-  if (!validation.valid) throw badRequest(validation.reason);
-  const record = value as {
-    timeRange?: MutableProjectScope["timeRange"];
-    trackScope?: MutableProjectScope["trackScope"];
-  };
-  return {
-    timeRange: record.timeRange,
-    trackScope: record.trackScope,
-  };
-}
-
-function parseExpiration(value: unknown) {
-  if (value === undefined || value === null || value === "") return null;
-  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) {
-    throw badRequest("expiresAt 必须是合法日期或 null。");
-  }
-  return value;
-}
-
-function nullableString(value: unknown): string | null {
-  if (value === undefined || value === null || value === "") return null;
-  if (typeof value !== "string") throw badRequest("说明必须是字符串。");
-  return value.trim() || null;
+  return value as Record<string, unknown>;
 }
 
 function normalizedString(value: unknown) {
-  return typeof value === "string" && value.trim()
-    ? value.trim()
-    : undefined;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function isProjectMemberRole(value: unknown): value is ProjectMemberRole {
-  return typeof value === "string" &&
-    PROJECT_MEMBER_ROLES.has(value as ProjectMemberRole);
+function optionalStringOrNull(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw badRequest("字段必须是字符串或 null。");
+  return value.trim() || null;
 }
 
-function isWorkspaceType(value: unknown): value is WorkspaceType {
-  return typeof value === "string" &&
-    WORKSPACE_TYPES.has(value as WorkspaceType);
-}
-
-function isWorkspaceStatus(value: unknown): value is WorkspaceStatus {
-  return typeof value === "string" &&
-    WORKSPACE_STATUSES.has(value as WorkspaceStatus);
-}
-
-function isAnnotationVersionKind(
+function optionalDateStringOrNull(
   value: unknown,
-): value is AnnotationVersionKind {
-  return typeof value === "string" &&
-    ANNOTATION_VERSION_KINDS.has(value as AnnotationVersionKind);
-}
-
-function isProcessingJobType(value: unknown): value is ProcessingJobType {
-  return typeof value === "string" &&
-    PROCESSING_JOB_TYPES.has(value as ProcessingJobType);
-}
-
-function isNonNegativeInteger(value: unknown): value is number {
-  return Number.isInteger(value) && (value as number) >= 0;
-}
-
-type ByteRange = { start: number; end: number };
-
-function parseByteRange(
-  header: string | undefined,
-  size: number,
-): ByteRange | "unsatisfiable" | null {
-  if (!header) return null;
-  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
-  if (!match || size <= 0) return "unsatisfiable";
-  const [, rawStart, rawEnd] = match;
-  if (!rawStart && !rawEnd) return "unsatisfiable";
-  if (!rawStart) {
-    const suffix = Number(rawEnd);
-    if (!Number.isInteger(suffix) || suffix <= 0) return "unsatisfiable";
-    return { start: Math.max(0, size - suffix), end: size - 1 };
+  label: string,
+): string | null | undefined {
+  const normalized = optionalStringOrNull(value);
+  if (
+    typeof normalized === "string" &&
+    Number.isNaN(Date.parse(normalized))
+  ) {
+    throw badRequest(`${label}必须是有效日期时间。`);
   }
-  const start = Number(rawStart);
-  const requestedEnd = rawEnd ? Number(rawEnd) : size - 1;
+  return normalized;
+}
+
+function parseCapabilities(value: unknown): ResourceCapability[] {
+  if (
+    !Array.isArray(value) ||
+    value.some((item) =>
+      typeof item !== "string" ||
+      !CAPABILITIES.has(item as ResourceCapability))
+  ) {
+    throw badRequest("capabilities 包含无效的资源能力。");
+  }
+  return [...new Set(value as ResourceCapability[])];
+}
+
+function parseOptionalSetValue<T extends string>(
+  value: unknown,
+  set: Set<T>,
+  label: string,
+) {
+  if (value === undefined || value === "") return undefined;
+  if (typeof value !== "string" || !set.has(value as T)) {
+    throw badRequest(`${label}无效。`);
+  }
+  return value as T;
+}
+
+function parseOptionalInteger(
+  value: unknown,
+  label: string,
+  minimum: number,
+  maximum: number,
+) {
+  if (value === undefined || value === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw badRequest(`${label} 必须是 ${minimum}–${maximum} 的整数。`);
+  }
+  return parsed;
+}
+
+function parseRange(header: string | undefined, size: number) {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header);
+  if (!match) return null;
+  const start = match[1] ? Number(match[1]) : 0;
+  const end = match[2] ? Number(match[2]) : size - 1;
   if (
     !Number.isInteger(start) ||
-    !Number.isInteger(requestedEnd) ||
+    !Number.isInteger(end) ||
     start < 0 ||
-    requestedEnd < start ||
+    end < start ||
     start >= size
-  ) {
-    return "unsatisfiable";
-  }
-  return { start, end: Math.min(requestedEnd, size - 1) };
+  ) return null;
+  return { start, end: Math.min(end, size - 1) };
 }

@@ -1,17 +1,36 @@
 # 昆曲多模态学术数据库与课堂标注平台完整改造路线图
 
-本文档记录从当前 React/TypeScript 本地标注工具，逐步升级为完整前后端、账号权限、统一文件系统、版本管理、独立/协同标注、项目授权、学术数据库与后端分析服务平台的工程计划。
+本文档记录从 React/TypeScript 本地标注工具，逐步升级为完整前后端、账号权限、统一资源树、
+逐文件授权、恢复历史、协同标注、学术数据库与后端分析服务平台的工程计划。
 
-> **2026-07-27 领域模型调整：** 平台不再维护与项目平行的“课程/作业”实体，也不再保留
-> `AnnotationDocument + PermissionGrant` 旧模型。“项目库”管理 `AnnotationProject`、可持续编辑的
-> `AnnotationWorkspace`、不可变 `AnnotationVersion` 与可发布 `ProjectVersion`；“项目权限管理”
-> 直接维护同一项目的 `ProjectMember`。旧结果的继续编辑使用 Fork，不原地恢复不可变版本。
+> **2026-07-27 当前领域模型：** 平台采用 `ResourceEntry` 统一项目、文件夹、标注文件和媒体
+> 文件。管理员通过 `ResourcePermission` 编辑“每一个资源 × 每一个账号”的权限；目录授权可
+> 继承，单个文件可断开继承。标注文件是带 revision 的可变文件，覆盖前生成隐藏恢复快照。
+> Workspace、Fork、完成标注版本和项目发布版本已经从当前产品与运行时代码中删除。
 
 当前开发分支：`codex/backend-permission-scopes`
 
 ## 0. 执行记录
 
-### 2026-07-27：工作区、标注版本与项目版本模型落地
+### 2026-07-27：资源树、标注文件与逐资源 ACL 落地（当前）
+
+- `ResourceEntry` 统一四类资源：`folder`、`project`、`annotation_file`、`media_file`。
+- `ResourcePermission` 直接保存逐账号能力，支持项目/文件夹向后代继承和资源级断开继承；
+  服务端 `resourceAccess.ts` 是最终鉴权边界。
+- `AnnotationFile` 以 payload + revision 持续保存；同 revision 并发保存通过 PostgreSQL 行锁和
+  条件更新保证一个成功、一个 409，覆盖前内容写入 `AnnotationRecoverySnapshot`。
+- 前端改为三栏资源管理器；右侧 Inspector 是逐账号权限编辑入口，时间轴继续作为标注文件
+  编辑器复用。
+- 旧 `ProjectMember`、`AnnotationWorkspace`、`AnnotationVersion`、`ProjectVersion`、Fork 和
+  发布状态机已删除，不再作为后续功能的基础。
+- 本地 JSON `PROJECT_FILE_VERSION=5` 保持独立，平台 ACL/revision 不写入 `ProjectData`。
+- 验证：`npm run build`、5 项 `test:permissions`、PostgreSQL/API 权限与并发冒烟、浏览器资源
+  管理与权限 Inspector 冒烟均通过。
+
+当前下一步：完善移动目标选择器、文件夹递归复制、真正的 column view、虚拟列表和恢复快照
+管理 UI；随后在 annotation-file revision/operation 基础上继续自动保存、离线恢复和实时协作。
+
+### 2026-07-27：工作区、标注版本与项目版本模型落地（历史，已撤销）
 
 - 破坏性替换旧平台文档模型，不迁移开发期 Course/Assignment、`AnnotationDocument` 或
   `PermissionGrant` 数据；本地开发库经目标检查后使用 `db:push --force-reset` 重建。
@@ -29,7 +48,8 @@
   冒烟覆盖成员 scope、范围内保存、范围外 403、完成版本、候选发布、固定版本 Fork、成员
   移除/重加及非管理员 403；浏览器复核项目三视图、左右独立滚动与逐成员权限切换。
 
-当前下一步：补充工作区提交/审核意见和进度聚合；随后进入版本 diff、选择性合并与确定范围。
+该模型随后被资源树与逐文件权限模型替换。以下内容仅保留为决策历史，不应据此继续实现
+工作区提交、Fork 或项目发布功能。
 
 ### 2026-07-27：阶段 9 第二轮安全审查与资源所有权补强
 
@@ -1502,7 +1522,64 @@ AnnotationEditorPage
 
 当前标注工具已经足够复杂，接下来最重要的不是继续往 `App.tsx` 和 `Timeline.tsx` 里直接堆功能，而是建立清晰的前后端边界、数据模型、权限模型、文件系统和版本体系。只要这个地基打稳，后面的协同编辑、课堂教具、学术数据库和自动分析服务都能自然接上。
 
-## 19. 2026-07-02 本地入口修复记录
+## 19. 2026-07-27 资源树与逐文件权限重构
+
+本轮根据实际使用反馈，撤销此前“工作区 -> 完成标注版本 -> 项目发布版本 -> Fork”的产品
+流程。该模型对课堂和个人标注都暴露了过多生命周期概念，用户真正需要的是可以直接理解的
+文件管理操作，以及管理员对每个文件、每个账号的精确授权。
+
+新的平台基础模型：
+
+- `ResourceEntry` 统一表示文件夹、项目、标注文件和媒体文件。
+- 项目是带项目元数据的容器资源，不再维护一套平行的项目成员/工作区导航。
+- `AnnotationFile` 是可直接打开和编辑的标注文件，保存时使用整数 revision 和
+  `baseRevision` 防止静默覆盖。
+- 每次覆盖标注文件 payload 前自动写入隐藏的 `AnnotationRecoverySnapshot`，用于事故恢复；
+  它不是需要用户理解或发布的“版本”。
+- `ResourcePermission` 为“资源 × 账号”的直接授权，能力包括读、写、创建子项、复制、移动、
+  删除、下载和管理权限。
+- 文件夹/项目授权默认向后代继承；资源可通过 `breakPermissionInheritance` 截断继承。
+- 不引入显式 deny；直接授权与继承授权取并集。资源所有者与系统管理员拥有完整权限。
+- 复制标注文件会创建 revision 1 的独立文件，复制者成为新文件所有者，因此天然可编辑。
+
+前端已经改为接近 Finder / VS Code Explorer 的三栏资源管理器：
+
+- 左侧为所有项目、最近打开、收藏、共享、归档、回收站和本地工具入口。
+- 中间为资源列表/网格/列视图，支持搜索、排序、面包屑、多选、快捷键和右键菜单。
+- 右侧 Inspector 展示资源详情与逐账号权限矩阵；管理员可直接编辑选中文件上每个账号的
+  权限，而不是先进入课程、作业或工作区。
+- 现有时间轴编辑器作为标注文件的编辑器复用，读写能力由服务端返回的有效权限决定。
+
+本轮有意删除且不再兼容的旧平台开发数据：
+
+- `ProjectMember`
+- `AnnotationWorkspace`
+- `AnnotationVersion`
+- `ProjectVersion`
+- Fork、完成版本、候选发布和 superseded 状态机
+
+本地 JSON `PROJECT_FILE_VERSION=5` 不受影响；它仍是标注内容交换格式。平台资源树、revision
+与 ACL 属于服务端管理层，不写入 `ProjectData`。
+
+已验证：
+
+- Prisma PostgreSQL schema 重新生成并通过 `db:push --force-reset`。
+- 共享包、document-model、Web 和 API 完整构建通过。
+- 资源权限测试覆盖所有者、直接授权、继承、截断继承和能力合并。
+- 真实 API 冒烟覆盖管理员资源浏览、学生继承读取、无写权限拒绝、复制后所有权、修订保存、
+  管理员补充直接写权限和恢复快照。
+- 浏览器验证登录、三栏资源浏览、项目下钻、逐账号权限编辑和标注文件进入编辑器。
+
+后续优先级：
+
+1. 增加真正的移动目标选择器和拖拽移动，不用资源 id 或临时对话框代替。
+2. 增加文件夹/项目递归复制，并明确大媒体复制采用引用还是物理副本。
+3. 将 column view 做成真正的 Finder 多列层级导航。
+4. 增加虚拟列表和服务端分页/搜索，准备 1000+ 资源规模。
+5. 增加恢复快照浏览/恢复 UI、审计日志 UI 和管理员批量授权。
+6. 在该清晰文件边界上继续自动保存、离线 operation 队列和实时协作。
+
+## 20. 2026-07-02 本地入口修复记录
 
 本轮在不合并主分支的前提下，补齐了平台化分支中“不登录，进入本地标注工具”的最低可用闭环：
 

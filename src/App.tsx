@@ -406,7 +406,7 @@ type EditorWorkbenchProps = {
 function EditorWorkbench({ editorSession, localEditorSession, platformNavigation }: EditorWorkbenchProps) {
   const initialProject = editorSession?.initialProject ?? localEditorSession?.initialProject ?? mockProject;
   const isReadOnly = Boolean(
-    editorSession && !editorSession.effectivePermission.canEdit,
+    editorSession && !editorSession.canWrite,
   );
   const {
     project,
@@ -4320,9 +4320,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       window.alert("当前不是平台工作区。请从项目库打开工作区后再保存。");
       return false;
     }
-    // 工作区只读：无 edit 权限时不发起保存请求。
-    if (!editorSession.effectivePermission.canEdit) {
-      window.alert("当前工作区为只读状态，你只能查看和导航，不能保存。");
+    // 标注文件只读：无 write 权限时不发起保存请求。
+    if (!editorSession.canWrite) {
+      window.alert("当前标注文件为只读状态，你只能查看和导航，不能保存。");
       return false;
     }
     if (serverSaveInFlightRef.current) {
@@ -4360,21 +4360,21 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (pendingSnapshot.length > 0) {
         await submitPendingOperations(
           editorSession.client,
-          editorSession.workspaceId,
+          editorSession.annotationFileId,
           pendingSnapshot,
           remoteBaseRevision,
           (operationId) => submittedOperationIds.push(operationId),
         );
       }
-      // 2. 保存完整 ProjectData snapshot（operation log 不直接改变工作区内容）。
+      // 2. 保存完整 ProjectData；服务端在覆盖前自动留一份隐藏恢复快照。
       const projectToSave = prepareProjectForServer(getPersistableProjectData(projectSnapshot));
-      const savedWorkspace = await editorSession.client.saveWorkspace<ProjectData>(editorSession.workspaceId, {
+      const savedFile = await editorSession.client.saveAnnotationFile<ProjectData>(editorSession.annotationFileId, {
         baseRevision: remoteBaseRevision,
         payload: projectToSave,
       });
       // 3. 成功后更新 baseRevision 并确认本地 pending operations（清空 pending、标 acknowledged）。
-      setRemoteBaseRevision(savedWorkspace.latestSnapshot.revision);
-      editorSession.onWorkspaceSaved(savedWorkspace);
+      setRemoteBaseRevision(savedFile.revision);
+      editorSession.onAnnotationFileSaved(savedFile);
       markProjectAsSaved(projectSnapshot, trackSnapSnapshot, {
         acknowledgedOperationIds: coveredOperationIds,
         savedLocalRevision,
@@ -4386,13 +4386,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       }
       // 失败时不调用 markProjectAsSaved，保留 pending operations 供重试。
       // 已写入服务端 operation log 的条目标为 submitted，重试保存时会跳过，避免重复写 operation rows。
-      // 服务端 permission_scope_violation 返回 403 with code，提前拦截并显示越权信息。
-      const mayBe403 = error as Error & { status?: number; code?: string; message?: string };
-      if (mayBe403.status === 403 && mayBe403.code === "permission_scope_violation") {
-        setSyncStatus("error", { errorMessage: mayBe403.message ?? "本次修改超出可编辑的轨道或时间范围。" });
-        window.alert(mayBe403.message ?? "本次修改超出可编辑的轨道或时间范围。");
-        return false;
-      }
       const classified = describeServerSaveError(error);
       setSyncStatus(classified.status, { errorMessage: classified.message });
       console.error("保存到服务器失败:", error);
@@ -4400,38 +4393,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return false;
     } finally {
       serverSaveInFlightRef.current = false;
-    }
-  }
-
-  async function completeAnnotationVersion() {
-    if (!editorSession) {
-      window.alert("当前不是平台工作区。请从项目库打开工作区后再完成标注版本。");
-      return;
-    }
-    if (
-      !editorSession.effectivePermission.canEdit ||
-      !editorSession.effectivePermission.capabilities.includes(
-        "complete_version",
-      )
-    ) {
-      window.alert("当前账号不能在此工作区完成标注版本。");
-      return;
-    }
-    const name = window.prompt("请输入版本名称：", `版本 ${new Date().toLocaleString("zh-CN")}`);
-    if (!name) {
-      return;
-    }
-    if (!await saveProjectToServer()) {
-      return;
-    }
-    try {
-      await editorSession.client.completeAnnotationVersion<ProjectData>(editorSession.workspaceId, {
-        name,
-      });
-      window.alert("标注版本已完成。之后仍可继续编辑当前工作区。");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "完成标注版本失败。";
-      window.alert(message);
     }
   }
 
@@ -4764,7 +4725,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           localRevision={syncState.localRevision}
           savedRevision={syncState.savedRevision}
           pendingOperationCount={pendingOperations.length}
-          accessLabel={isReadOnly ? "只读" : editorSession ? "可编辑" : undefined}
+          accessLabel={editorSession?.accessLabel}
           videoFileInputRef={videoFileInputRef}
           srtFileInputRef={srtFileInputRef}
           projectFileInputRef={projectFileInputRef}
@@ -4806,19 +4767,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           onSaveProject={() => {
             void saveProjectFile();
           }}
-          onSaveProjectToServer={editorSession?.effectivePermission.canEdit ? () => {
+          onSaveProjectToServer={editorSession?.canWrite ? () => {
             void saveProjectToServer();
           } : undefined}
-          onCompleteAnnotationVersion={
-            editorSession?.effectivePermission.canEdit &&
-              editorSession.effectivePermission.capabilities.includes(
-                "complete_version",
-              )
-              ? () => {
-                  void completeAnnotationVersion();
-                }
-              : undefined
-          }
           onExportTrack={handleExport}
           onUndo={undo}
           onRedo={redo}
@@ -7808,7 +7759,7 @@ function App() {
     <PlatformWorkspace
       renderEditor={(editorSession, localEditorSession, platformNavigation) => (
         <EditorWorkbench
-          key={editorSession?.workspaceId ?? localEditorSession?.id ?? "local-editor"}
+          key={editorSession?.annotationFileId ?? localEditorSession?.id ?? "local-editor"}
           editorSession={editorSession}
           localEditorSession={localEditorSession}
           platformNavigation={platformNavigation}

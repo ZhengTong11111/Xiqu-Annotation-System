@@ -1,5 +1,74 @@
 # Development Log
 
+## 2026-07-27：资源管理器与逐文件账号权限重构
+
+本轮由 Codex 根据用户确认的新产品逻辑直接设计并实现，没有沿用上一轮
+Workspace/Fork/发布版本状态机，也没有由 Claude Code 或 GLM 代写。
+
+实现内容：
+
+- 在开始破坏性重构前提交旧工作区版本，基线提交为
+  `743d2db Replace assignments with workspace version model`。
+- 重写 Prisma 平台领域模型：
+  - `ResourceEntry` 统一文件夹、项目、标注文件和媒体文件。
+  - `AnnotationFile` 保存 payload 与 revision。
+  - `AnnotationRecoverySnapshot` 保存覆盖前内容。
+  - `ResourcePermission` 保存逐资源、逐账号能力。
+  - `ResourceUserState` 保存收藏和最近打开状态。
+- 新增 `resourceAccess.ts` 与 `resourceService.ts`，集中处理继承权限、资源树修改、
+  标注文件复制、revision 冲突和恢复快照。
+- 删除旧 `AnnotationWorkspaceService`、`AnnotationVersionService`、
+  `ProjectVersionService`、项目成员服务和串行发布事务帮助器，避免旧生命周期逻辑继续存在。
+- 重写 shared DTO、API 路由/client 和 document-model 权限测试。
+- 新增 `ResourceExplorer.tsx`：
+  - 三栏桌面式资源管理界面。
+  - 搜索、排序、列表/网格/列模式、面包屑、多选、快捷键和右键操作。
+  - 新建项目/文件夹、导入 JSON、上传媒体、复制标注文件、重命名和移入回收站。
+  - Inspector 直接展示和编辑选中资源上每个账号的能力与继承设置。
+- `PlatformWorkspace.tsx` 只负责登录、资源管理器和编辑器会话切换；
+  `App.tsx` 改为按 annotation-file id/revision 保存。
+- 保留原有本地 JSON 与本地工具入口，平台 revision/ACL 不污染 `ProjectData`。
+
+审查与修复：
+
+- 修复全局 checkbox 样式污染权限矩阵的问题，限定资源权限复选框尺寸。
+- 系统管理员行明确显示“完整权限”，不再误显示为“尚未授权”。
+- 标注文件打开失败时立即显示用户可见错误，不让错误只停留在不可见的外层状态。
+- 删除旧后台、成员、Workspace 和版本页面遗留的 600 余行无引用 CSS，并把登录页样式收敛为
+  当前单面板结构；避免旧两栏登录布局和已删除页面选择器继续污染维护边界。
+- 并发审查发现 revision 预检若放在事务外，两次同 revision 保存可能竞争恢复快照；
+  保存事务现在先用 PostgreSQL 行锁串行化同一标注文件，再在事务内复核 revision，并以
+  条件 UPDATE 作为第二层保护。真实并发请求结果稳定为一个 `200`、一个 `409 conflict`。
+- 恢复权限到期时间和 operation log 参数的严格运行时校验，无效日期、负 revision 和空
+  action 现在返回 `400`，不会穿透到 Prisma 形成 `500`。
+- 全仓检索确认活动代码不再引用 Workspace、Fork、AnnotationVersion 或 ProjectVersion。
+- 更新 `AGENTS.md` 和 roadmap，删除会误导后续 agent 的旧领域约束。
+- 同步重写 README 的平台入口、PostgreSQL/API 启动方式、三栏资源管理、逐文件账号权限、
+  revision/恢复快照和当前限制；原有详细时间轴说明继续保留。本地模式与平台模式现在有各自
+  明确的启动和保存说明。
+- 修正 roadmap 顶部的“当前模型”声明，并把紧邻顶部的 Workspace/Fork 落地记录标注为
+  已撤销历史；后续实施应以资源树与逐文件 ACL 阶段为准。
+
+验证：
+
+- `npm run build`：Prisma、shared、document-model、Web、API 全部通过。
+- `npm run test:permissions`：5 项资源权限测试通过。
+- `npm run db:push -- --force-reset`：本地 PostgreSQL schema 与新种子成功重建。
+- 真实 API 冒烟：
+  - 学生可继承读取项目和标注文件。
+  - 对原文件无写权限时保存返回 403。
+  - 复制后学生成为新文件 owner，可保存并递增 revision。
+  - 管理员可给原文件补充直接写权限。
+  - 覆盖前 payload 正确形成 recovery snapshot。
+  - 两个并发保存使用相同 `baseRevision` 时仅一个成功，另一个返回 409。
+- 浏览器冒烟：登录、三栏浏览、项目下钻、权限矩阵展开编辑和进入时间轴编辑器均通过。
+
+后续事项：
+
+- 移动 API 已具备，但前端仍需专业的目标选择器和拖拽移动。
+- 文件夹/项目递归复制、真正的 Finder column view、虚拟列表和服务端搜索尚未实现。
+- recovery snapshot 管理、批量权限、实时协作与离线恢复继续沿 roadmap 推进。
+
 ## 2026-07-27：工作区、标注版本与项目版本重构
 
 - 按最终领域语义破坏性移除 Course/Assignment、`AnnotationDocument` 与 `PermissionGrant`

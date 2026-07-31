@@ -1,35 +1,29 @@
 import type {
-  AddProjectMemberRequest,
+  AnnotationFile,
   AnnotationOperationRecord,
-  AnnotationProjectSummary,
-  AnnotationVersion,
-  AnnotationVersionSummary,
-  AnnotationWorkspace,
-  AnnotationWorkspaceSummary,
+  AnnotationRecoverySnapshot,
   AuditLogEntry,
-  CompleteAnnotationVersionRequest,
+  CopyResourceRequest,
+  CreateAnnotationFileRequest,
   CreateAnnotationOperationRequest,
-  CreateMediaAssetRequest,
   CreateProcessingJobRequest,
-  CreateProjectRequest,
-  CreateProjectVersionRequest,
-  CreateWorkspaceRequest,
-  ForkAnnotationVersionRequest,
+  CreateResourceRequest,
+  ImportMediaFileRequest,
   ListAuditLogsOptions,
+  ListResourcesOptions,
   LoginRequest,
   LoginResponse,
-  MediaAsset,
-  PermissionTrackOption,
+  MoveResourceRequest,
   PlatformUser,
   ProcessingJob,
-  ProjectMember,
-  ProjectVersion,
-  SaveWorkspaceRequest,
-  StoredFileObject,
-  UpdateAnnotationVersionStatusRequest,
-  UpdateProjectMemberRequest,
-  UpdateProjectVersionStatusRequest,
-  UpdateWorkspaceStatusRequest,
+  ResourceEntry,
+  ResourceListPage,
+  ResourcePermissionMatrixRow,
+  ResourcePermissionRecord,
+  SaveAnnotationFileRequest,
+  UpdateResourceInheritanceRequest,
+  UpdateResourceRequest,
+  UpsertResourcePermissionRequest,
   UploadFileResponse,
 } from "@xiqu/shared";
 
@@ -79,58 +73,146 @@ export class PlatformClient {
     return this.request<PlatformUser>("/auth/me");
   }
 
-  listDirectoryUsers(
-    options: { projectId?: string; query?: string; limit?: number } = {},
-  ) {
+  listDirectoryUsers(query?: string) {
     const params = new URLSearchParams();
-    if (options.projectId) params.set("projectId", options.projectId);
-    if (options.query) params.set("query", options.query);
-    if (options.limit) params.set("limit", String(options.limit));
-    const query = params.toString();
-    return this.request<PlatformUser[]>(query ? `/users?${query}` : "/users");
+    if (query) params.set("query", query);
+    return this.request<PlatformUser[]>(
+      params.size ? `/users?${params}` : "/users",
+    );
   }
 
-  listProjectMembers(projectId: string) {
-    return this.request<ProjectMember[]>(`/projects/${projectId}/members`);
+  listResources(options: ListResourcesOptions = {}) {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(options)) {
+      if (value !== undefined && value !== null && value !== "") {
+        params.set(key, String(value));
+      }
+    }
+    return this.request<ResourceListPage>(
+      params.size ? `/resources?${params}` : "/resources",
+    );
   }
 
-  addProjectMember(projectId: string, request: AddProjectMemberRequest) {
-    return this.request<ProjectMember>(`/projects/${projectId}/members`, {
+  getResource(resourceId: string) {
+    return this.request<ResourceEntry>(`/resources/${resourceId}`);
+  }
+
+  createResource(request: CreateResourceRequest) {
+    return this.request<ResourceEntry>("/resources", {
       method: "POST",
       body: request,
     });
   }
 
-  updateProjectMember(
-    projectId: string,
-    memberId: string,
-    request: UpdateProjectMemberRequest,
+  updateResource(resourceId: string, request: UpdateResourceRequest) {
+    return this.request<ResourceEntry>(`/resources/${resourceId}`, {
+      method: "PATCH",
+      body: request,
+    });
+  }
+
+  moveResource(resourceId: string, request: MoveResourceRequest) {
+    return this.request<ResourceEntry>(`/resources/${resourceId}/move`, {
+      method: "POST",
+      body: request,
+    });
+  }
+
+  copyResource(resourceId: string, request: CopyResourceRequest) {
+    return this.request<ResourceEntry>(`/resources/${resourceId}/copy`, {
+      method: "POST",
+      body: request,
+    });
+  }
+
+  trashResource(resourceId: string) {
+    return this.request<ResourceEntry>(`/resources/${resourceId}/trash`, {
+      method: "POST",
+    });
+  }
+
+  restoreResource(resourceId: string) {
+    return this.request<ResourceEntry>(`/resources/${resourceId}/restore`, {
+      method: "POST",
+    });
+  }
+
+  createAnnotationFile<TPayload>(
+    request: CreateAnnotationFileRequest<TPayload>,
   ) {
-    return this.request<ProjectMember>(
-      `/projects/${projectId}/members/${memberId}`,
-      { method: "PATCH", body: request },
+    return this.request<AnnotationFile<TPayload>>("/annotation-files", {
+      method: "POST",
+      body: request,
+    });
+  }
+
+  getAnnotationFile<TPayload>(resourceId: string) {
+    return this.request<AnnotationFile<TPayload>>(
+      `/annotation-files/${resourceId}`,
     );
   }
 
-  removeProjectMember(projectId: string, memberId: string) {
+  saveAnnotationFile<TPayload>(
+    resourceId: string,
+    request: SaveAnnotationFileRequest<TPayload>,
+  ) {
+    return this.request<AnnotationFile<TPayload>>(
+      `/annotation-files/${resourceId}`,
+      { method: "PUT", body: request },
+    );
+  }
+
+  listRecoverySnapshots<TPayload>(resourceId: string) {
+    return this.request<AnnotationRecoverySnapshot<TPayload>[]>(
+      `/annotation-files/${resourceId}/recovery-snapshots`,
+    );
+  }
+
+  listResourcePermissions(resourceId: string) {
+    return this.request<ResourcePermissionMatrixRow[]>(
+      `/resources/${resourceId}/permissions`,
+    );
+  }
+
+  upsertResourcePermission(
+    resourceId: string,
+    userId: string,
+    request: UpsertResourcePermissionRequest,
+  ) {
+    return this.request<ResourcePermissionRecord>(
+      `/resources/${resourceId}/permissions/${userId}`,
+      { method: "PUT", body: request },
+    );
+  }
+
+  removeResourcePermission(resourceId: string, userId: string) {
     return this.request<void>(
-      `/projects/${projectId}/members/${memberId}`,
+      `/resources/${resourceId}/permissions/${userId}`,
       { method: "DELETE" },
     );
   }
 
-  listPermissionTracks(projectId: string) {
-    return this.request<PermissionTrackOption[]>(
-      `/projects/${projectId}/permission-tracks`,
+  updateResourceInheritance(
+    resourceId: string,
+    request: UpdateResourceInheritanceRequest,
+  ) {
+    return this.request<ResourceEntry>(
+      `/resources/${resourceId}/permission-inheritance`,
+      { method: "PATCH", body: request },
     );
   }
 
-  listProjects() {
-    return this.request<AnnotationProjectSummary[]>("/projects");
+  async uploadFile(file: File) {
+    const body = new FormData();
+    body.set("file", file);
+    return this.requestMultipart<UploadFileResponse>("/files/upload", body);
   }
 
-  listFiles() {
-    return this.request<StoredFileObject[]>("/files");
+  importMediaFile(request: ImportMediaFileRequest) {
+    return this.request<ResourceEntry>("/media-files", {
+      method: "POST",
+      body: request,
+    });
   }
 
   getFileContentUrl(fileId: string) {
@@ -140,164 +222,8 @@ export class PlatformClient {
     return `${this.baseUrl}/files/${encodeURIComponent(fileId)}/content${tokenQuery}`;
   }
 
-  async uploadFile(file: File) {
-    const body = new FormData();
-    body.set("file", file);
-    return this.requestMultipart<UploadFileResponse>("/files", body);
-  }
-
-  listMediaAssets() {
-    return this.request<MediaAsset[]>("/media");
-  }
-
-  createMediaAsset(request: CreateMediaAssetRequest) {
-    return this.request<MediaAsset>("/media", {
-      method: "POST",
-      body: request,
-    });
-  }
-
-  createProject(request: CreateProjectRequest) {
-    return this.request<AnnotationProjectSummary>("/projects", {
-      method: "POST",
-      body: request,
-    });
-  }
-
-  listProjectWorkspaces(
-    projectId: string,
-    options: { ownerUserId?: string } = {},
-  ) {
-    const params = new URLSearchParams();
-    if (options.ownerUserId) {
-      params.set("ownerUserId", options.ownerUserId);
-    }
-    const query = params.toString();
-    return this.request<AnnotationWorkspaceSummary[]>(
-      `/projects/${projectId}/workspaces${query ? `?${query}` : ""}`,
-    );
-  }
-
-  createWorkspace<TPayload>(
-    projectId: string,
-    request: CreateWorkspaceRequest<TPayload>,
-  ) {
-    return this.request<AnnotationWorkspace<TPayload>>(
-      `/projects/${projectId}/workspaces`,
-      { method: "POST", body: request },
-    );
-  }
-
-  getWorkspace<TPayload>(workspaceId: string) {
-    return this.request<AnnotationWorkspace<TPayload>>(
-      `/annotation-workspaces/${workspaceId}`,
-    );
-  }
-
-  saveWorkspace<TPayload>(
-    workspaceId: string,
-    request: SaveWorkspaceRequest<TPayload>,
-  ) {
-    return this.request<AnnotationWorkspace<TPayload>>(
-      `/annotation-workspaces/${workspaceId}/save`,
-      { method: "POST", body: request },
-    );
-  }
-
-  updateWorkspaceStatus(
-    workspaceId: string,
-    request: UpdateWorkspaceStatusRequest,
-  ) {
-    return this.request<AnnotationWorkspaceSummary>(
-      `/annotation-workspaces/${workspaceId}/status`,
-      { method: "PATCH", body: request },
-    );
-  }
-
-  listProjectAnnotationVersions(
-    projectId: string,
-    filters: { createdBy?: string; workspaceId?: string } = {},
-  ) {
-    const params = new URLSearchParams();
-    if (filters.createdBy) params.set("createdBy", filters.createdBy);
-    if (filters.workspaceId) params.set("workspaceId", filters.workspaceId);
-    const query = params.toString();
-    return this.request<AnnotationVersionSummary[]>(
-      `/projects/${projectId}/annotation-versions${query ? `?${query}` : ""}`,
-    );
-  }
-
-  listWorkspaceAnnotationVersions(workspaceId: string) {
-    return this.request<AnnotationVersionSummary[]>(
-      `/annotation-workspaces/${workspaceId}/versions`,
-    );
-  }
-
-  completeAnnotationVersion<TPayload>(
-    workspaceId: string,
-    request: CompleteAnnotationVersionRequest,
-  ) {
-    return this.request<AnnotationVersion<TPayload>>(
-      `/annotation-workspaces/${workspaceId}/versions`,
-      { method: "POST", body: request },
-    );
-  }
-
-  forkAnnotationVersion<TPayload>(
-    versionId: string,
-    request: ForkAnnotationVersionRequest,
-  ) {
-    return this.request<AnnotationWorkspace<TPayload>>(
-      `/annotation-versions/${versionId}/forks`,
-      { method: "POST", body: request },
-    );
-  }
-
-  updateAnnotationVersionStatus(
-    versionId: string,
-    request: UpdateAnnotationVersionStatusRequest,
-  ) {
-    return this.request<AnnotationVersionSummary>(
-      `/annotation-versions/${versionId}/status`,
-      { method: "PATCH", body: request },
-    );
-  }
-
-  listProjectVersions(projectId: string) {
-    return this.request<ProjectVersion[]>(
-      `/projects/${projectId}/project-versions`,
-    );
-  }
-
-  createProjectVersion(
-    projectId: string,
-    request: CreateProjectVersionRequest,
-  ) {
-    return this.request<ProjectVersion>(
-      `/projects/${projectId}/project-versions`,
-      { method: "POST", body: request },
-    );
-  }
-
-  publishProjectVersion(projectVersionId: string) {
-    return this.request<ProjectVersion>(
-      `/project-versions/${projectVersionId}/publish`,
-      { method: "POST" },
-    );
-  }
-
-  updateProjectVersionStatus(
-    projectVersionId: string,
-    request: UpdateProjectVersionStatusRequest,
-  ) {
-    return this.request<ProjectVersion>(
-      `/project-versions/${projectVersionId}/status`,
-      { method: "PATCH", body: request },
-    );
-  }
-
   createProcessingJob(request: CreateProcessingJobRequest) {
-    return this.request<ProcessingJob>("/jobs", {
+    return this.request<ProcessingJob>("/processing-jobs", {
       method: "POST",
       body: request,
     });
@@ -305,32 +231,26 @@ export class PlatformClient {
 
   listAuditLogs(options: ListAuditLogsOptions = {}) {
     const params = new URLSearchParams();
-    if (options.projectId) params.set("projectId", options.projectId);
-    if (options.workspaceId) params.set("workspaceId", options.workspaceId);
-    if (options.actorUserId) {
-      params.set("actorUserId", options.actorUserId);
-    }
-    if (options.limit !== undefined) {
-      params.set("limit", String(options.limit));
-    }
-    const query = params.toString();
+    if (options.resourceId) params.set("resourceId", options.resourceId);
+    if (options.actorUserId) params.set("actorUserId", options.actorUserId);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
     return this.request<AuditLogEntry[]>(
-      query ? `/audit-logs?${query}` : "/audit-logs",
+      params.size ? `/audit-logs?${params}` : "/audit-logs",
     );
   }
 
-  listAnnotationOperations(workspaceId: string) {
+  listAnnotationOperations(annotationFileId: string) {
     return this.request<AnnotationOperationRecord[]>(
-      `/annotation-workspaces/${workspaceId}/operations`,
+      `/annotation-files/${annotationFileId}/operations`,
     );
   }
 
   createAnnotationOperation(
-    workspaceId: string,
+    annotationFileId: string,
     request: CreateAnnotationOperationRequest,
   ) {
     return this.request<AnnotationOperationRecord>(
-      `/annotation-workspaces/${workspaceId}/operations`,
+      `/annotation-files/${annotationFileId}/operations`,
       { method: "POST", body: request },
     );
   }
@@ -338,24 +258,20 @@ export class PlatformClient {
   private async request<TData>(
     path: string,
     options: {
-      method?: "GET" | "POST" | "PATCH" | "DELETE";
+      method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
       body?: unknown;
       skipAuth?: boolean;
     } = {},
   ) {
     const headers = new Headers();
-    if (options.body !== undefined) {
-      headers.set("content-type", "application/json");
-    }
+    if (options.body !== undefined) headers.set("content-type", "application/json");
     if (!options.skipAuth && this.accessToken) {
       headers.set("authorization", `Bearer ${this.accessToken}`);
     }
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: options.method ?? "GET",
       headers,
-      body: options.body === undefined
-        ? undefined
-        : JSON.stringify(options.body),
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
     return unwrapResponse<TData>(response);
   }
@@ -375,6 +291,7 @@ export class PlatformClient {
 }
 
 async function unwrapResponse<TData>(response: Response) {
+  if (response.status === 204) return undefined as TData;
   const payload = await response.json().catch(() => null) as
     | {
         data?: TData;

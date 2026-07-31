@@ -62,7 +62,7 @@ function diffTrackSnapTrackIds(operation: ProjectDocumentOperation): string[] {
 // 直接抛出，由调用方进入 conflict 状态，不再继续提交后续 operation。
 export async function submitPendingOperations(
   client: PlatformClient,
-  workspaceId: string,
+  annotationFileId: string,
   pendingOperations: ProjectDocumentOperation[],
   serverBaseRevision: number,
   onSubmitted?: (operationId: string) => void,
@@ -73,7 +73,7 @@ export async function submitPendingOperations(
       continue;
     }
     await client.createAnnotationOperation(
-      workspaceId,
+      annotationFileId,
       buildServerOperationRequest(operation, serverBaseRevision),
     );
     submittedOperationIds.push(operation.id);

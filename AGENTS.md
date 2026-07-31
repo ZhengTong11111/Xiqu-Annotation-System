@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Product Intent
-This repository is evolving from a local React/TypeScript annotation workstation into a full Kunqu multimodal academic database and classroom annotation platform. It now includes the original timeline editor plus a real Fastify/Prisma/PostgreSQL platform backend for accounts, media files, projects, mutable annotation workspaces, immutable snapshots, annotation versions, and project versions.
+This repository is evolving from a local React/TypeScript annotation workstation into a full Kunqu multimodal academic database and classroom annotation platform. It now includes the original timeline editor plus a real Fastify/Prisma/PostgreSQL platform backend for accounts, a hierarchical resource tree, media files, mutable annotation files, recovery snapshots, and per-resource account permissions.
 
 The editor remains a research-oriented workstation for aligning video, sentence-level SRT, character-level timing, singing-style labels, action tracks, point annotations, audio cues, Banyan beat/eye information, Gongche notation, and recursive custom-track branches. SRT remains an important exchange format for subtitle-like tracks: sentence SRT in, editable TypeScript state in the app, per-track SRT out.
 
@@ -23,7 +23,7 @@ Main currently contains all major recent feature lines that matter for context:
 - Gongche attached-track workflow and renderer
 - Gongche glyph preview is currently marked finished for research/demo use, but the glyph font must be replaced or licensed before release
 - Banyan beat/eye parsing, track display, editing, and global vertical guide rendering
-- platform login/home UI, local editor entry, media upload, project/workspace management, JSON import, server save, per-member permissions, Fork, annotation versions, and published project versions
+- platform login/resource-explorer UI, local editor entry, media upload, project/folder/file management, JSON import, revision-checked server save, recovery snapshots, and per-resource account permissions
 - Fastify API backed by Prisma 7 and PostgreSQL, with local object storage under `data/`
 - backend audit logs and annotation operation logs for the first platform-governance layer
 - project document state architecture (`src/state/projectDocumentState.ts`)
@@ -36,12 +36,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - main orchestrator
   - wires together project state, playback state, import/export, clipboard, selection, context menu, loop range, spectrogram settings, detached windows, and inspector actions
 - `src/platform/PlatformWorkspace.tsx`
-  - platform login/home/editor switch
-  - media upload, project/workspace creation, JSON workspace import, annotation/project version workflows, local editor entry
-  - contains the current project-library UI; there is no separate `PlatformHome.tsx`
-- `src/platform/ProjectPermissionWorkspace.tsx`
-  - project member and per-account permission management UI
-  - shares `AnnotationProject` ids and selection state with the project library; it must not create a parallel course/project entity
+  - platform login/resource-explorer/editor switch and local editor entry
+- `src/platform/ResourceExplorer.tsx`
+  - desktop-style three-pane resource manager
+  - owns folder navigation, list/grid/column presentation, selection, keyboard/context-menu actions, import/upload, and the resource Inspector
+  - the Inspector is the canonical UI for editing each account's direct permissions on the selected resource
 - `src/api/platformClient.ts`
   - browser-side API client for platform backend calls, including audit log and annotation operation APIs
 - `src/state/projectDocumentState.ts`
@@ -85,24 +84,18 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - 《韵学骊珠》four-tone (yin/yang × ping/shang/qu/ru) label mapping, validity checks, and sentence-level tone summary helpers
   - used by Inspector (character tone editor + derived sentence preview), Timeline (in-block tone label), and `projectFile.ts` (tone normalization)
 - `apps/api/src/`
-  - Fastify backend: auth, routes, project access, member/workspace/version services, Prisma mapping, local object storage
-- `apps/api/src/projectMemberService.ts`
-  - single source of truth for project member roles, capabilities, time/track scopes, and expiry
-  - owns project-role validation, time/track scope normalization, account-directory access, and permission-track options
-- `apps/api/src/annotationWorkspaceService.ts`
-  - mutable workspace creation, revision-checked snapshot saves, and workspace lifecycle
-- `apps/api/src/annotationVersionService.ts`
-  - immutable annotation version completion, lineage, archive, and fixed-snapshot Fork
-- `apps/api/src/projectVersionService.ts`
-  - project candidate creation and atomic publication/supersession
-- `apps/api/src/serializableTransaction.ts`
-  - bounded retry helper for revision, sequence, and publication transactions that require serializable isolation
+  - Fastify backend: auth, resource routes, resource ACL evaluation, annotation-file revision saves, Prisma mapping, and local object storage
+- `apps/api/src/resourceAccess.ts`
+  - authoritative server-side resource capability resolution
+  - combines global admin bypass, ownership, direct grants, and nearest inherited folder grants
+- `apps/api/src/resourceService.ts`
+  - resource-tree mutations, copy/move/trash behavior, annotation-file save, and recovery-snapshot creation
 - `packages/shared/src/`
   - API/platform DTOs and shared contract types used by web and API
 - `packages/document-model/src/`
-  - document snapshot/version and permission-scope helpers for future collaboration/server workflows
+  - pure resource-capability helpers and their regression tests
 - `prisma/schema.prisma`
-  - PostgreSQL schema for users, sessions, files, media assets, projects, members, workspaces, snapshots, annotation/project versions, processing jobs, audit logs, and annotation operations
+  - PostgreSQL schema for users, sessions, resource entries, projects, annotation/media files, resource permissions/user state, recovery snapshots, processing jobs, audit logs, and annotation operations
 - `docs/`
   - roadmap, architecture notes, and curated screenshots; keep this updated for long-running platform/backend work
 - `src/types.ts`
@@ -310,12 +303,14 @@ This means future remote sync/collaboration work should extend the existing docu
 The platform backend is no longer just a mock, but it is still an early development platform:
 - Fastify server entry: `apps/api/src/server.ts`
 - routes: `apps/api/src/router.ts`
-- repository and permission checks: `apps/api/src/repository.ts`
+- repository queries: `apps/api/src/repository.ts`
+- resource permission evaluation: `apps/api/src/resourceAccess.ts`
+- resource and annotation-file mutations: `apps/api/src/resourceService.ts`
 - Prisma row-to-DTO conversion: `apps/api/src/repositoryMappers.ts`
-- development seed accounts/projects: `apps/api/src/repositorySeed.ts`
+- development seed accounts/resource tree: `apps/api/src/repositorySeed.ts`
 - local object storage: `apps/api/src/storage.ts`
 - shared API types: `packages/shared/src/`
-- document snapshot/version helpers: `packages/document-model/src/`
+- resource-capability helpers: `packages/document-model/src/`
 
 Current backend capabilities:
 - login/session tokens with scrypt password hashing and sha256 token hashes
@@ -323,57 +318,41 @@ Current backend capabilities:
 - media/file upload through multipart
 - file metadata in PostgreSQL and binary data in local object storage
 - protected file reading, including HTTP Range / `206 Partial Content` for stable MP4 seeking
-- media assets and annotation projects
-- media assets carry nullable `ownerUserId`; new assets record their creator, while legacy assets may still rely on primary-file ownership or visible-project linkage
-- mutable `AnnotationWorkspace` records with immutable revision snapshots and `baseRevision` conflict checking
-- immutable annotation versions fixed to one snapshot; restoring old work is done by Forking a version into a new workspace
-- project candidate versions and one atomic current published project version
-- audit-log table and API for key platform events such as login, upload, project/workspace creation, workspace save, version complete/Fork/publish, and processing job creation
+- hierarchical `ResourceEntry` tree with `folder`, `project`, `annotation_file`, and `media_file` resource types
+- mutable annotation files with integer revision and `baseRevision` conflict checking
+- hidden recovery snapshots created automatically before an annotation-file payload is replaced
+- file-like copy, move, rename, soft-delete, restore, favorite, and recent-open state
+- audit-log table and API for key platform events such as login, upload, resource creation/move/copy/delete, permission changes, and annotation-file save
 - annotation operation-log table and API for recording client-submitted edit operations before future autosave/collaboration work
 - placeholder processing-job API for future pitch, spectrogram, Gongche render, pose, transcode, and export services
-- project member administration:
-  - “项目库” and “项目权限管理” are two views of the same `AnnotationProject` rows
-  - `ProjectMember` is the only permission truth for one account: role, capabilities, time range, track ids, and expiry live on the same row
-  - owner is exposed as a virtual, immutable full-permission member in the API
-  - member roles are `manager`, `reviewer`, `annotator`, and `viewer`; role changes load shared default capabilities, while the saved capability array remains authoritative
-  - only owner/global admin or a member with `manage_members` may manage project members
-  - an account with `manage_members` cannot have a partial time/track scope
-  - removing a member archives that account's active workspaces but preserves snapshots, annotation versions, project versions, and audit history
-  - the former Course/Assignment runtime model and routes were removed; do not recreate a second project-like hierarchy unless a future workflow has an independently approved domain need
-- scoped workspace permissions:
-  - `super_admin/admin` are the only global bypass roles
-  - project owner has all project capabilities
-  - other users require an active `ProjectMember`; platform roles alone do not grant project access
-  - a personal workspace is editable only by its owner, while reviewers/managers can inspect and manage lifecycle without silently rewriting another member's work
-  - snapshot saves are diffed against the previous payload and checked against the member's persistent track/time scope
-  - permission core lives in `packages/document-model`; do not create a second API-local implementation
-  - branch scope ids use `parent#branch:lane`, attached-point scope ids use `parent#point:track`
-  - shared branch blocks require coverage for every owned lane
-  - empty member track ids mean all tracks; empty mutation track ids remain unknown and require workspace-manage authority
-  - scope violations return `403 permission_scope_violation`
-  - track/time scope currently constrains saves but does not redact whole-snapshot reads; true partial reads require a future fragment/operation protocol
+- per-resource ACL:
+  - capabilities are `read`, `write`, `create_child`, `copy`, `move`, `delete`, `download`, and `manage_permissions`
+  - `super_admin` / `admin`, the resource owner, and the owner of an ancestor project/folder receive full effective access
+  - direct grants belong to one resource and one account
+  - folder/project grants inherit to descendants unless a descendant sets `breakPermissionInheritance`
+  - there is no explicit deny rule; a direct grant augments inherited capabilities
+  - only users with effective `manage_permissions` may edit grants
+  - authorization is enforced by the API; disabled frontend controls are only an affordance
+  - permission core lives in `packages/document-model` plus `resourceAccess.ts`; do not create a second UI-only implementation
 
 Current platform UI capabilities:
 - login page with development defaults
-- project home
-- upload media and create a project plus its main workspace
-- import existing local annotation JSON as a personal workspace
-- open mutable or read-only server workspaces in the existing editor
-- revision-checked workspace save and immutable annotation-version completion
-- list each member's workspaces and completed versions
-- Fork an annotation version into a new personal workspace
-- create candidate project versions and atomically publish/supersede them
-- manage project member roles, capabilities, time/track scopes, and expiry
+- desktop-style three-pane resource explorer with folder/project navigation, search, sorting, list/grid/column modes, multi-selection, keyboard shortcuts, and context menus
+- create projects/folders, import annotation JSON, upload media, copy annotation files, rename, move through the API, and soft-delete resources
+- open mutable or read-only annotation files in the existing editor
+- revision-checked annotation-file save
+- Inspector details plus per-account permission matrix for every selected resource
+- toggle permission inheritance and edit direct per-account capabilities when authorized
 - enter a local editor mode without login
 
 Important backend caveats:
 - real-time collaborative editing is not implemented yet
-- project-specific submission/review workflow, cross-version merge, confirmed-annotation workflow, and real-time collaboration are not implemented yet
-- annotation operations currently only record operation metadata/payload and do not mutate snapshots; full snapshots are still written by `/api/annotation-workspaces/:workspaceId/save`
+- assignment/submission/review workflow, confirmed-annotation workflow, and real-time collaboration are not implemented yet
+- annotation operations currently only record operation metadata/payload and do not mutate annotation-file payloads; full payloads are still written by the annotation-file save route
 - audit logs intentionally store summary `detail` objects, not full annotation payloads or uploaded file contents
-- global audit queries are admin-only; non-admin queries require project visibility/management appropriate to the route
+- global audit queries are admin-only; non-admin queries require effective resource visibility appropriate to the route
 - processing jobs must validate job type and referenced resources; service roles bypass user visibility, not file existence
-- API route handlers should perform runtime validation before Prisma writes; invalid revision/action/limit inputs should return `400`, stale workspace revisions should return `409`
+- API route handlers should perform runtime validation before Prisma writes; invalid revision/action/limit inputs should return `400`, stale annotation-file revisions should return `409`
 - browser platform writes use `PATCH` and `DELETE`; keep both methods in the Fastify CORS allow-list when changing server bootstrap
 - the API is currently for local/dev use; production deployment hardening, migrations, rate limits, and secure file serving are future work
 - platform client currently targets `http://localhost:4317/api` in `src/platform/PlatformWorkspace.tsx`
@@ -381,13 +360,15 @@ Important backend caveats:
 - permission core regression tests run with `npm run test:permissions`
 - if backend contracts change, update `packages/shared`, API repository/routes, `src/api/platformClient.ts`, and `docs/kunqu-platform-roadmap.md` together
 
-### Workspace and version invariants
-- `AnnotationWorkspace` is mutable and owns a linear sequence of immutable snapshots.
-- `AnnotationVersion` is immutable and pins exactly one snapshot; completing a version does not mutate or close the workspace.
-- Fork always copies the selected version's fixed snapshot into revision 1 of a new workspace. Never Fork from the source workspace's later `latestSnapshot`.
-- `ProjectVersion` points to one completed annotation version. Publishing supersedes the previous published project version and updates `AnnotationProject.currentProjectVersionId` atomically.
-- sequence allocation, concurrent workspace save, and project publication use `runSerializableTransaction()`; do not weaken these paths to independent reads and writes.
-- do not add an in-place “restore immutable version” path. “Continue from old result” is a Fork.
+### Resource and annotation-file invariants
+- `ResourceEntry` is the common identity, hierarchy, ownership, archive, and permission boundary for every managed item.
+- a project is a specialized container resource, not a separate parallel navigation hierarchy.
+- an annotation file is the mutable user-facing unit. Copying it creates an independent annotation file at revision 1 owned by the copier.
+- saving an annotation file must compare `baseRevision`; stale writes return `409` rather than silently overwriting.
+- before replacing a payload, preserve the previous payload as an `AnnotationRecoverySnapshot`.
+- recovery snapshots are implementation history, not ordinary user-visible files or published versions.
+- moving a resource must reject cycles and destinations where the caller lacks `create_child`.
+- descendants inherit folder/project grants unless inheritance is explicitly broken; never infer permissions only from what the frontend happens to display.
 
 ## Timeline Interaction Model
 Timeline behavior is now quite rich and tightly coupled. Preserve these assumptions:
@@ -606,11 +587,14 @@ Project JSON handling is more advanced than a raw dump.
     - `trackSnapEnabled`
     - `loopPlaybackEnabled`
     - `loopPlaybackRange`
+- the local JSON format and the platform resource model are separate layers
+- on the platform, this payload is stored inside one mutable `AnnotationFile`; server revision and recovery snapshots must not be embedded into `ProjectData`
 
 ### Import
 - supports either wrapped `SavedProjectFile` or older bare `ProjectData`
 - normalizes built-ins, customs, attached point tracks, Gongche annotations, Banyan data, branch metadata/colors, and active track order
 - imported filename is remembered and reused as default save filename
+- platform JSON import must call the same normalization path, then create a new annotation-file resource rather than inventing a workspace/version wrapper
 
 ### Import merge
 - there is an overlay/replace merge flow for project import

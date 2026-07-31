@@ -8,42 +8,21 @@ import {
 import type {
   AnnotationOperationRecord,
   AuditLogEntry,
+  CreateAnnotationOperationRequest,
   CreateProcessingJobRequest,
   ProcessingJob,
 } from "@xiqu/shared";
 import { hashToken, verifyPassword } from "./auth.js";
-import type { ApiRole, ApiUser } from "./domain.js";
-import {
-  badRequest,
-  conflict,
-  forbidden,
-  notFound,
-  unauthorized,
-} from "./errors.js";
-import {
-  ALL_PROJECT_CAPABILITIES,
-  ProjectAccessService,
-} from "./projectAccess.js";
-import {
-  toFile,
-  toJsonPayload,
-  toMediaAsset,
-  toProjectSummary,
-  toPublicUser,
-} from "./repositoryMappers.js";
+import type { ApiUser } from "./domain.js";
+import { forbidden, notFound, unauthorized } from "./errors.js";
+import { ResourceAccessService } from "./resourceAccess.js";
+import { toFile, toPublicUser } from "./repositoryMappers.js";
 import { ensurePlatformSeedData } from "./repositorySeed.js";
-
-const CONTENT_CREATOR_ROLES: ApiRole[] = [
-  "super_admin",
-  "admin",
-  "teacher",
-  "ta",
-];
 
 export class PrismaPlatformRepository {
   constructor(
     private readonly prisma: PrismaClient,
-    private readonly access: ProjectAccessService,
+    private readonly access: ResourceAccessService,
   ) {}
 
   async ensureSeedData() {
@@ -67,7 +46,7 @@ export class PrismaPlatformRepository {
       data: {
         tokenHash: hashToken(token),
         userId: user.id,
-        expiresAt: new Date(Date.now() + this.getAuthTokenTtlMs()),
+        expiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
       },
     });
     await this.writeAuditLog({
@@ -94,26 +73,27 @@ export class PrismaPlatformRepository {
     return toPublicUser(session.user);
   }
 
-  async listFiles(user: ApiUser) {
-    const visibleProjectIds = await this.listVisibleProjectIds(user);
-    const files = await this.prisma.fileObject.findMany({
-      where: this.access.isGlobalAdmin(user)
-        ? {}
-        : {
-            OR: [
-              { ownerUserId: user.id },
-              {
-                mediaAssets: {
-                  some: {
-                    projects: { some: { id: { in: visibleProjectIds } } },
-                  },
-                },
-              },
-            ],
-          },
-      orderBy: { createdAt: "desc" },
+  async listDirectoryUsers(user: ApiUser, query?: string) {
+    if (!this.access.isGlobalAdmin(user) && !user.roles.includes("ta")) {
+      throw forbidden("只有管理员和助教可以浏览账号目录。");
+    }
+    const rows = await this.prisma.user.findMany({
+      where: {
+        isActive: true,
+        ...(query?.trim()
+          ? {
+              OR: [
+                { displayName: { contains: query.trim(), mode: "insensitive" } },
+                { accountName: { contains: query.trim(), mode: "insensitive" } },
+              ],
+            }
+          : {}),
+      },
+      include: { roles: true },
+      orderBy: { displayName: "asc" },
+      take: 200,
     });
-    return files.map(toFile);
+    return rows.map(toPublicUser);
   }
 
   async createUploadedFile(
@@ -127,10 +107,7 @@ export class PrismaPlatformRepository {
     },
   ) {
     const file = await this.prisma.fileObject.create({
-      data: {
-        ...input,
-        ownerUserId: user.id,
-      },
+      data: { ...input, ownerUserId: user.id },
     });
     await this.writeAuditLog({
       action: "file_upload",
@@ -140,7 +117,6 @@ export class PrismaPlatformRepository {
         name: input.name,
         mimeType: input.mimeType,
         size: input.size,
-        checksum: input.checksum,
       },
     });
     return toFile(file);
@@ -149,262 +125,71 @@ export class PrismaPlatformRepository {
   async getFileForRead(user: ApiUser, fileId: string) {
     const file = await this.prisma.fileObject.findUnique({
       where: { id: fileId },
+      include: { mediaFile: true },
     });
     if (!file) throw notFound("文件不存在。");
-    if (
-      file.ownerUserId !== user.id &&
-      !this.access.isGlobalAdmin(user)
-    ) {
-      const project = await this.prisma.annotationProject.findFirst({
-        where: {
-          mediaAsset: { primaryFileId: fileId },
-          OR: [
-            { ownerUserId: user.id },
-            {
-              members: {
-                some: {
-                  userId: user.id,
-                  capabilities: { has: "view_project" },
-                  OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-                },
-              },
-            },
-          ],
-        },
-      });
-      if (!project) throw forbidden("当前账号不能读取该文件。");
+    if (file.ownerUserId !== user.id && !this.access.isGlobalAdmin(user)) {
+      if (!file.mediaFile) throw forbidden("当前账号不能读取该文件。");
+      await this.access.assertCapability(user, file.mediaFile.resourceId, "download");
     }
     return toFile(file);
-  }
-
-  async listMediaAssets(user: ApiUser) {
-    const visibleProjectIds = await this.listVisibleProjectIds(user);
-    const assets = await this.prisma.mediaAsset.findMany({
-      where: this.access.isGlobalAdmin(user)
-        ? {}
-        : {
-            OR: [
-              { ownerUserId: user.id },
-              { primaryFile: { ownerUserId: user.id } },
-              { projects: { some: { id: { in: visibleProjectIds } } } },
-            ],
-          },
-      orderBy: { updatedAt: "desc" },
-    });
-    return assets.map(toMediaAsset);
-  }
-
-  async createMediaAsset(
-    user: ApiUser,
-    input: {
-      title: string;
-      description?: string | null;
-      primaryFileId?: string | null;
-    },
-  ) {
-    this.requireRole(user, CONTENT_CREATOR_ROLES);
-    if (input.primaryFileId) {
-      const file = await this.prisma.fileObject.findUnique({
-        where: { id: input.primaryFileId },
-      });
-      if (!file) throw notFound("主媒体文件不存在。");
-      if (
-        file.ownerUserId !== user.id &&
-        !this.access.isGlobalAdmin(user)
-      ) {
-        throw forbidden("只能使用自己上传的媒体文件。");
-      }
-    }
-    const asset = await this.prisma.mediaAsset.create({
-      data: {
-        title: input.title,
-        description: input.description ?? null,
-        primaryFileId: input.primaryFileId ?? null,
-        ownerUserId: user.id,
-      },
-    });
-    await this.writeAuditLog({
-      action: "media_create",
-      actorUserId: user.id,
-      detail: {
-        title: input.title,
-        primaryFileId: input.primaryFileId ?? null,
-      },
-    });
-    return toMediaAsset(asset);
-  }
-
-  async listProjects(user: ApiUser) {
-    const projects = await this.prisma.annotationProject.findMany({
-      where: this.access.isGlobalAdmin(user)
-        ? {}
-        : {
-            OR: [
-              { ownerUserId: user.id },
-              {
-                members: {
-                  some: {
-                    userId: user.id,
-                    capabilities: { has: "view_project" },
-                    OR: [
-                      { expiresAt: null },
-                      { expiresAt: { gt: new Date() } },
-                    ],
-                  },
-                },
-              },
-            ],
-          },
-      include: {
-        _count: {
-          select: {
-            workspaces: true,
-            annotationVersions: true,
-            projectVersions: true,
-            members: true,
-          },
-        },
-      },
-      orderBy: { updatedAt: "desc" },
-    });
-    return Promise.all(projects.map(async (project) => {
-      const permission = await this.access.getEffectiveProjectPermission(
-        user,
-        project.id,
-      );
-      return toProjectSummary(project, permission.capabilities);
-    }));
-  }
-
-  async createProject(
-    user: ApiUser,
-    input: { title: string; mediaAssetId: string },
-  ) {
-    this.requireRole(user, CONTENT_CREATOR_ROLES);
-    const media = await this.prisma.mediaAsset.findUnique({
-      where: { id: input.mediaAssetId },
-    });
-    if (!media) throw notFound("媒体资产不存在。");
-    if (
-      media.ownerUserId !== user.id &&
-      !this.access.isGlobalAdmin(user)
-    ) {
-      throw forbidden("当前账号不能使用该媒体资产创建项目。");
-    }
-    const project = await this.prisma.annotationProject.create({
-      data: {
-        title: input.title,
-        mediaAssetId: input.mediaAssetId,
-        ownerUserId: user.id,
-      },
-      include: {
-        _count: {
-          select: {
-            workspaces: true,
-            annotationVersions: true,
-            projectVersions: true,
-            members: true,
-          },
-        },
-      },
-    });
-    await this.writeAuditLog({
-      action: "project_create",
-      actorUserId: user.id,
-      projectId: project.id,
-      detail: { title: input.title, mediaAssetId: input.mediaAssetId },
-    });
-    return toProjectSummary(project, ALL_PROJECT_CAPABILITIES);
   }
 
   async createProcessingJob(
     user: ApiUser,
     input: CreateProcessingJobRequest,
   ): Promise<ProcessingJob> {
-    this.requireRole(user, [...CONTENT_CREATOR_ROLES, "service"]);
+    if (input.resourceId) {
+      await this.access.assertCapability(user, input.resourceId, "write");
+    }
     for (const fileId of input.inputFileIds) {
       await this.getFileForRead(user, fileId);
     }
-    let projectId: string | null = null;
-    if (input.workspaceId) {
-      const workspace = await this.prisma.annotationWorkspace.findUnique({
-        where: { id: input.workspaceId },
-      });
-      if (!workspace) throw notFound("标注工作区不存在。");
-      const permission = await this.access.resolveWorkspacePermission(
-        user,
-        workspace,
-      );
-      if (!permission.canEdit && !permission.canManage) {
-        throw forbidden("创建分析任务需要该工作区的编辑或管理权限。");
-      }
-      projectId = workspace.projectId;
-    }
-    const job = await this.prisma.processingJob.create({
+    const row = await this.prisma.processingJob.create({
       data: {
         type: input.type as DbProcessingJobType,
+        resourceId: input.resourceId ?? null,
         inputFileIds: input.inputFileIds,
-        projectId,
-        workspaceId: input.workspaceId ?? null,
         createdBy: user.id,
       },
     });
     await this.writeAuditLog({
       action: "job_create",
       actorUserId: user.id,
-      projectId,
-      workspaceId: input.workspaceId ?? null,
-      jobId: job.id,
-      detail: {
-        type: input.type,
-        inputFileIds: input.inputFileIds,
-      },
+      resourceId: input.resourceId ?? null,
+      detail: { type: input.type, inputFileIds: input.inputFileIds },
     });
     return {
-      id: job.id,
-      type: job.type,
-      status: job.status,
-      inputFileIds: job.inputFileIds,
-      outputFileIds: job.outputFileIds,
-      workspaceId: job.workspaceId,
-      createdBy: job.createdBy,
-      createdAt: job.createdAt.toISOString(),
-      updatedAt: job.updatedAt.toISOString(),
-      errorMessage: job.errorMessage,
+      id: row.id,
+      type: row.type,
+      status: row.status,
+      resourceId: row.resourceId,
+      inputFileIds: row.inputFileIds,
+      createdBy: row.createdBy,
+      progress: row.progress,
+      errorMessage: row.errorMessage,
+      result: row.result,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
     };
   }
 
   async listAuditLogs(
     user: ApiUser,
-    options: {
-      projectId?: string;
-      workspaceId?: string;
-      actorUserId?: string;
-      limit?: number;
-    },
+    options: { resourceId?: string; actorUserId?: string; limit?: number },
   ): Promise<AuditLogEntry[]> {
-    if (!this.access.isGlobalAdmin(user)) {
-      if (!options.projectId) {
-        throw forbidden("非管理员查询审计日志时必须指定项目。");
-      }
+    if (options.resourceId) {
       await this.access.assertCapability(
         user,
-        options.projectId,
-        "manage_all_versions",
+        options.resourceId,
+        "manage_permissions",
       );
-    }
-    if (options.workspaceId && options.projectId) {
-      const workspace = await this.prisma.annotationWorkspace.findUnique({
-        where: { id: options.workspaceId },
-      });
-      if (!workspace || workspace.projectId !== options.projectId) {
-        throw badRequest("workspaceId 不属于指定项目。");
-      }
+    } else if (!this.access.isGlobalAdmin(user)) {
+      throw forbidden("非管理员查询审计日志时必须指定资源。");
     }
     const rows = await this.prisma.auditLog.findMany({
       where: {
-        projectId: options.projectId,
-        workspaceId: options.workspaceId,
+        resourceId: options.resourceId,
         actorUserId: options.actorUserId,
       },
       orderBy: { createdAt: "desc" },
@@ -414,168 +199,92 @@ export class PrismaPlatformRepository {
       id: row.id,
       action: row.action,
       actorUserId: row.actorUserId,
-      projectId: row.projectId,
-      workspaceId: row.workspaceId,
-      annotationVersionId: row.annotationVersionId,
-      projectVersionId: row.projectVersionId,
+      resourceId: row.resourceId,
       fileId: row.fileId,
-      jobId: row.jobId,
-      targetType: row.targetType,
-      targetId: row.targetId,
+      targetUserId: row.targetUserId,
       detail: row.detail,
-      ipAddress: row.ipAddress,
-      userAgent: row.userAgent,
       createdAt: row.createdAt.toISOString(),
     }));
   }
 
-  async listOperations(
+  async listAnnotationOperations(
     user: ApiUser,
-    workspaceId: string,
+    annotationFileId: string,
   ): Promise<AnnotationOperationRecord[]> {
-    const workspace = await this.getWorkspaceOrThrow(workspaceId);
-    await this.access.assertWorkspaceVisible(user, workspace);
+    await this.access.assertCapability(user, annotationFileId, "read");
     const rows = await this.prisma.annotationOperation.findMany({
-      where: { workspaceId },
+      where: { annotationFileId },
       orderBy: { createdAt: "desc" },
+      take: 200,
     });
-    return rows.map(toOperation);
+    return rows.map(this.mapOperation);
   }
 
-  async createOperation(
+  async createAnnotationOperation(
     user: ApiUser,
-    workspaceId: string,
-    input: {
-      baseRevision: number;
-      localRevision?: number | null;
-      action: string;
-      payload: unknown;
-    },
-  ): Promise<AnnotationOperationRecord> {
-    const workspace = await this.prisma.annotationWorkspace.findUnique({
-      where: { id: workspaceId },
-      include: { latestSnapshot: true },
+    annotationFileId: string,
+    input: CreateAnnotationOperationRequest,
+  ) {
+    await this.access.assertCapability(user, annotationFileId, "write");
+    const file = await this.prisma.annotationFile.findUnique({
+      where: { resourceId: annotationFileId },
     });
-    if (!workspace) throw notFound("标注工作区不存在。");
-    const permission = await this.access.resolveWorkspacePermission(
-      user,
-      workspace,
-    );
-    if (!permission.canEdit) throw forbidden("当前工作区不可编辑。");
-    const latestRevision = workspace.latestSnapshot?.revision ?? 0;
-    if (input.baseRevision !== latestRevision) {
-      throw conflict("操作的基础版本已过期，请先刷新工作区。", {
-        expectedRevision: latestRevision,
-        receivedRevision: input.baseRevision,
-      });
-    }
+    if (!file) throw notFound("标注文件不存在。");
     const row = await this.prisma.annotationOperation.create({
       data: {
-        workspaceId,
+        annotationFileId,
         actorUserId: user.id,
         baseRevision: input.baseRevision,
         localRevision: input.localRevision ?? null,
-        serverRevision: latestRevision,
         action: input.action,
-        payload: toJsonPayload(input.payload),
+        payload: input.payload as Prisma.InputJsonValue,
+        status: input.baseRevision === file.revision ? "accepted" : "superseded",
       },
     });
-    return toOperation(row);
+    return this.mapOperation(row);
   }
 
   async writeAuditLog(input: {
     action: AuditAction;
     actorUserId?: string | null;
-    projectId?: string | null;
-    workspaceId?: string | null;
-    annotationVersionId?: string | null;
-    projectVersionId?: string | null;
+    resourceId?: string | null;
     fileId?: string | null;
-    jobId?: string | null;
-    targetType?: string | null;
-    targetId?: string | null;
+    targetUserId?: string | null;
     detail?: unknown;
   }) {
     await this.prisma.auditLog.create({
       data: {
-        ...input,
-        detail: input.detail === undefined
-          ? undefined
-          : toJsonPayload(input.detail),
+        action: input.action,
+        actorUserId: input.actorUserId ?? null,
+        resourceId: input.resourceId ?? null,
+        fileId: input.fileId ?? null,
+        targetUserId: input.targetUserId ?? null,
+        detail: (input.detail ?? {}) as Prisma.InputJsonValue,
       },
     });
   }
 
-  private async getWorkspaceOrThrow(workspaceId: string) {
-    const workspace = await this.prisma.annotationWorkspace.findUnique({
-      where: { id: workspaceId },
-    });
-    if (!workspace) throw notFound("标注工作区不存在。");
-    return workspace;
+  private mapOperation(row: {
+    id: string;
+    annotationFileId: string;
+    actorUserId: string;
+    baseRevision: number;
+    localRevision: number | null;
+    action: string;
+    payload: Prisma.JsonValue;
+    status: "accepted" | "rejected" | "superseded";
+    createdAt: Date;
+  }): AnnotationOperationRecord {
+    return {
+      id: row.id,
+      annotationFileId: row.annotationFileId,
+      actorUserId: row.actorUserId,
+      baseRevision: row.baseRevision,
+      localRevision: row.localRevision,
+      action: row.action,
+      payload: row.payload,
+      status: row.status,
+      createdAt: row.createdAt.toISOString(),
+    };
   }
-
-  private async listVisibleProjectIds(user: ApiUser) {
-    if (this.access.isGlobalAdmin(user)) {
-      return (await this.prisma.annotationProject.findMany({
-        select: { id: true },
-      })).map((project) => project.id);
-    }
-    const projects = await this.prisma.annotationProject.findMany({
-      where: {
-        OR: [
-          { ownerUserId: user.id },
-          {
-            members: {
-              some: {
-                userId: user.id,
-                capabilities: { has: "view_project" },
-                OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-              },
-            },
-          },
-        ],
-      },
-      select: { id: true },
-    });
-    return projects.map((project) => project.id);
-  }
-
-  private requireRole(user: ApiUser, allowedRoles: ApiRole[]) {
-    if (!user.roles.some((role) => allowedRoles.includes(role))) {
-      throw forbidden();
-    }
-  }
-
-  private getAuthTokenTtlMs() {
-    const configured = Number(process.env.AUTH_TOKEN_TTL_MS);
-    return Number.isFinite(configured) && configured > 0
-      ? configured
-      : 1000 * 60 * 60 * 24 * 7;
-  }
-}
-
-function toOperation(row: {
-  id: string;
-  workspaceId: string;
-  actorUserId: string;
-  baseRevision: number;
-  localRevision: number | null;
-  serverRevision: number | null;
-  action: string;
-  payload: Prisma.JsonValue;
-  status: "accepted" | "rejected" | "superseded";
-  createdAt: Date;
-}): AnnotationOperationRecord {
-  return {
-    id: row.id,
-    workspaceId: row.workspaceId,
-    actorUserId: row.actorUserId,
-    baseRevision: row.baseRevision,
-    localRevision: row.localRevision,
-    serverRevision: row.serverRevision,
-    action: row.action,
-    payload: row.payload,
-    status: row.status,
-    createdAt: row.createdAt.toISOString(),
-  };
 }

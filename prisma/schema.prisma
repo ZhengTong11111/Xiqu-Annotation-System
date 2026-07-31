@@ -16,53 +16,22 @@ enum PlatformRole {
   service
 }
 
-enum ProjectMemberRole {
-  manager
-  reviewer
-  annotator
-  viewer
+enum ResourceType {
+  folder
+  project
+  annotation_file
+  media_file
 }
 
-enum ProjectCapability {
-  view_project
-  create_workspace
-  fork_version
-  complete_version
-  submit_version
-  review_versions
-  create_project_version
-  publish_project_version
-  manage_all_versions
-  manage_members
-}
-
-enum WorkspaceType {
-  main
-  personal
-  collaborative
-}
-
-enum WorkspaceStatus {
-  active
-  submitted
-  archived
-}
-
-enum AnnotationVersionKind {
-  checkpoint
-  submission
-}
-
-enum AnnotationVersionStatus {
-  active
-  archived
-}
-
-enum ProjectVersionStatus {
-  candidate
-  published
-  superseded
-  archived
+enum ResourceCapability {
+  read
+  write
+  create_child
+  copy
+  move
+  delete
+  download
+  manage_permissions
 }
 
 enum ProcessingJobType {
@@ -86,22 +55,19 @@ enum ProcessingJobStatus {
 enum AuditAction {
   auth_login
   file_upload
-  media_create
-  project_create
-  workspace_create
-  workspace_save
-  workspace_status_update
-  annotation_version_create
-  annotation_version_archive
-  annotation_version_fork
-  project_version_create
-  project_version_publish
-  project_version_archive
+  resource_create
+  resource_update
+  resource_copy
+  resource_move
+  resource_trash
+  resource_restore
+  resource_delete
+  annotation_file_save
+  resource_permission_upsert
+  resource_permission_remove
+  resource_inheritance_update
   job_create
   permission_denied
-  project_member_add
-  project_member_update
-  project_member_remove
 }
 
 enum AnnotationOperationStatus {
@@ -121,19 +87,16 @@ model User {
 
   roles                     UserRole[]
   sessions                  Session[]
-  ownedFiles                FileObject[]          @relation("FileOwner")
-  ownedMediaAssets          MediaAsset[]          @relation("MediaAssetOwner")
-  projects                  AnnotationProject[]   @relation("ProjectOwner")
-  ownedWorkspaces           AnnotationWorkspace[] @relation("WorkspaceOwner")
-  createdWorkspaces         AnnotationWorkspace[] @relation("WorkspaceCreator")
-  snapshots                 AnnotationSnapshot[]  @relation("SnapshotCreator")
-  annotationVersions        AnnotationVersion[]   @relation("AnnotationVersionCreator")
-  createdProjectVersions    ProjectVersion[]      @relation("ProjectVersionCreator")
-  publishedProjectVersions  ProjectVersion[]      @relation("ProjectVersionPublisher")
-  jobs                      ProcessingJob[]        @relation("JobCreator")
-  auditLogs                 AuditLog[]             @relation("AuditActor")
-  annotationOperations      AnnotationOperation[] @relation("AnnotationOperationActor")
-  projectMemberships        ProjectMember[]
+  ownedFiles                FileObject[]                @relation("FileOwner")
+  ownedResources            ResourceEntry[]             @relation("ResourceOwner")
+  resourcePermissions       ResourcePermission[]        @relation("PermissionSubject")
+  grantedResourcePermissions ResourcePermission[]       @relation("PermissionGrantor")
+  resourceStates            ResourceUserState[]
+  editedAnnotationFiles     AnnotationFile[]            @relation("AnnotationLastEditor")
+  recoverySnapshots         AnnotationRecoverySnapshot[] @relation("RecoverySnapshotCreator")
+  jobs                      ProcessingJob[]             @relation("JobCreator")
+  auditLogs                 AuditLog[]                   @relation("AuditActor")
+  annotationOperations      AnnotationOperation[]       @relation("AnnotationOperationActor")
 
   @@map("users")
 }
@@ -162,6 +125,7 @@ model Session {
   @@map("sessions")
 }
 
+// FileObject 只负责对象存储中的二进制实体；目录层级和权限统一由 ResourceEntry 管理。
 model FileObject {
   id          String   @id @default(uuid())
   name        String
@@ -172,266 +136,192 @@ model FileObject {
   ownerUserId String   @map("owner_user_id")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  owner       User         @relation("FileOwner", fields: [ownerUserId], references: [id])
-  mediaAssets MediaAsset[] @relation("PrimaryMediaFile")
-  auditLogs   AuditLog[]
+  owner     User       @relation("FileOwner", fields: [ownerUserId], references: [id])
+  mediaFile MediaFile?
+  auditLogs AuditLog[]
 
   @@index([ownerUserId])
   @@map("files")
 }
 
-model MediaAsset {
-  id            String   @id @default(uuid())
-  title         String
-  description   String?
-  primaryFileId String?  @map("primary_file_id")
-  ownerUserId   String?  @map("owner_user_id")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+// 所有可见对象共用一棵资源树。project 是具有额外元数据的特殊文件夹。
+model ResourceEntry {
+  id                         String       @id @default(uuid())
+  parentId                   String?      @map("parent_id")
+  type                       ResourceType
+  name                       String
+  ownerUserId                String       @map("owner_user_id")
+  breakPermissionInheritance Boolean      @default(false) @map("break_permission_inheritance")
+  archivedAt                 DateTime?    @map("archived_at")
+  trashedAt                  DateTime?    @map("trashed_at")
+  createdAt                  DateTime     @default(now()) @map("created_at")
+  updatedAt                  DateTime     @updatedAt @map("updated_at")
 
-  primaryFile FileObject?        @relation("PrimaryMediaFile", fields: [primaryFileId], references: [id], onDelete: SetNull)
-  owner       User?              @relation("MediaAssetOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
-  projects    AnnotationProject[]
-
-  @@index([primaryFileId])
-  @@index([ownerUserId])
-  @@map("media_assets")
-}
-
-model AnnotationProject {
-  id                      String   @id @default(uuid())
-  title                   String
-  mediaAssetId            String   @map("media_asset_id")
-  ownerUserId             String   @map("owner_user_id")
-  primaryWorkspaceId      String?  @unique @map("primary_workspace_id")
-  currentProjectVersionId String?  @unique @map("current_project_version_id")
-  createdAt               DateTime @default(now()) @map("created_at")
-  updatedAt               DateTime @updatedAt @map("updated_at")
-
-  mediaAsset            MediaAsset          @relation(fields: [mediaAssetId], references: [id])
-  owner                 User                @relation("ProjectOwner", fields: [ownerUserId], references: [id])
-  primaryWorkspace      AnnotationWorkspace? @relation("PrimaryWorkspace", fields: [primaryWorkspaceId], references: [id], onDelete: SetNull)
-  currentProjectVersion ProjectVersion?      @relation("CurrentProjectVersion", fields: [currentProjectVersionId], references: [id], onDelete: SetNull)
-  workspaces            AnnotationWorkspace[] @relation("ProjectWorkspaces")
-  annotationVersions    AnnotationVersion[]
-  projectVersions       ProjectVersion[]     @relation("ProjectVersions")
-  jobs                  ProcessingJob[]
-  auditLogs             AuditLog[]
-  members               ProjectMember[]
-
-  @@index([mediaAssetId])
-  @@index([ownerUserId])
-  @@map("annotation_projects")
-}
-
-// 项目成员是项目权限的唯一来源。角色只提供默认能力模板，实际能力、时间和轨道范围
-// 都保存在成员记录上，避免成员身份与授权范围形成两套可能不一致的真相。
-model ProjectMember {
-  id               String              @id @default(uuid())
-  projectId        String              @map("project_id")
-  userId           String              @map("user_id")
-  role             ProjectMemberRole
-  capabilities     ProjectCapability[]
-  allowedStartTime Float?              @map("allowed_start_time")
-  allowedEndTime   Float?              @map("allowed_end_time")
-  allowedTrackIds  String[]            @default([]) @map("allowed_track_ids")
-  expiresAt        DateTime?           @map("expires_at")
-  createdAt        DateTime            @default(now()) @map("created_at")
-  updatedAt        DateTime            @updatedAt @map("updated_at")
-
-  project AnnotationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([projectId, userId])
-  @@index([userId])
-  @@map("project_members")
-}
-
-model AnnotationWorkspace {
-  id                  String          @id @default(uuid())
-  projectId           String          @map("project_id")
-  name                String
-  workspaceType       WorkspaceType   @map("workspace_type")
-  status              WorkspaceStatus @default(active)
-  ownerUserId         String          @map("owner_user_id")
-  createdBy           String          @map("created_by")
-  forkedFromVersionId String?         @map("forked_from_version_id")
-  latestSnapshotId    String?         @unique @map("latest_snapshot_id")
-  submittedAt         DateTime?       @map("submitted_at")
-  archivedAt          DateTime?       @map("archived_at")
-  createdAt           DateTime        @default(now()) @map("created_at")
-  updatedAt           DateTime        @updatedAt @map("updated_at")
-
-  project             AnnotationProject  @relation("ProjectWorkspaces", fields: [projectId], references: [id], onDelete: Cascade)
-  primaryForProject   AnnotationProject? @relation("PrimaryWorkspace")
-  owner               User               @relation("WorkspaceOwner", fields: [ownerUserId], references: [id])
-  creator             User               @relation("WorkspaceCreator", fields: [createdBy], references: [id])
-  forkedFromVersion   AnnotationVersion? @relation("WorkspaceForkSource", fields: [forkedFromVersionId], references: [id], onDelete: SetNull)
-  latestSnapshot      AnnotationSnapshot? @relation("LatestWorkspaceSnapshot", fields: [latestSnapshotId], references: [id], onDelete: SetNull)
-  snapshots           AnnotationSnapshot[] @relation("WorkspaceSnapshots")
-  versions            AnnotationVersion[]
-  jobs                ProcessingJob[]
-  auditLogs           AuditLog[]
-  operations          AnnotationOperation[]
-
-  @@index([projectId])
-  @@index([ownerUserId])
-  @@index([forkedFromVersionId])
-  @@map("annotation_workspaces")
-}
-
-model AnnotationSnapshot {
-  id          String   @id @default(uuid())
-  workspaceId String   @map("workspace_id")
-  revision    Int
-  payload     Json
-  createdBy   String   @map("created_by")
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  workspace       AnnotationWorkspace  @relation("WorkspaceSnapshots", fields: [workspaceId], references: [id], onDelete: Cascade)
-  latestWorkspace AnnotationWorkspace? @relation("LatestWorkspaceSnapshot")
-  creator         User                 @relation("SnapshotCreator", fields: [createdBy], references: [id])
-  versions        AnnotationVersion[]
-
-  @@unique([workspaceId, revision])
-  @@index([createdBy])
-  @@map("annotation_snapshots")
-}
-
-model AnnotationVersion {
-  id              String                  @id @default(uuid())
-  projectId       String                  @map("project_id")
-  workspaceId     String                  @map("workspace_id")
-  snapshotId      String                  @map("snapshot_id")
-  parentVersionId String?                 @map("parent_version_id")
-  name            String
-  description     String?
-  kind            AnnotationVersionKind
-  status          AnnotationVersionStatus @default(active)
-  createdBy       String                  @map("created_by")
-  completedAt     DateTime                @default(now()) @map("completed_at")
-  archivedAt      DateTime?               @map("archived_at")
-  createdAt       DateTime                @default(now()) @map("created_at")
-
-  project          AnnotationProject     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  workspace        AnnotationWorkspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  snapshot         AnnotationSnapshot    @relation(fields: [snapshotId], references: [id])
-  parentVersion    AnnotationVersion?    @relation("AnnotationVersionAncestry", fields: [parentVersionId], references: [id], onDelete: SetNull)
-  childVersions    AnnotationVersion[]   @relation("AnnotationVersionAncestry")
-  forkedWorkspaces AnnotationWorkspace[] @relation("WorkspaceForkSource")
-  creator          User                  @relation("AnnotationVersionCreator", fields: [createdBy], references: [id])
-  projectVersions  ProjectVersion[]
-  auditLogs        AuditLog[]
-
-  @@index([projectId, completedAt])
-  @@index([workspaceId, completedAt])
-  @@index([snapshotId])
-  @@index([parentVersionId])
-  @@map("annotation_versions")
-}
-
-model ProjectVersion {
-  id              String               @id @default(uuid())
-  projectId       String               @map("project_id")
-  sourceVersionId String               @map("source_version_id")
-  sequence        Int
-  name            String
-  description     String?
-  status          ProjectVersionStatus @default(candidate)
-  createdBy       String               @map("created_by")
-  publishedBy     String?              @map("published_by")
-  publishedAt     DateTime?            @map("published_at")
-  archivedAt      DateTime?            @map("archived_at")
-  createdAt       DateTime             @default(now()) @map("created_at")
-
-  project           AnnotationProject  @relation("ProjectVersions", fields: [projectId], references: [id], onDelete: Cascade)
-  currentForProject AnnotationProject? @relation("CurrentProjectVersion")
-  sourceVersion     AnnotationVersion  @relation(fields: [sourceVersionId], references: [id])
-  creator           User               @relation("ProjectVersionCreator", fields: [createdBy], references: [id])
-  publisher         User?              @relation("ProjectVersionPublisher", fields: [publishedBy], references: [id], onDelete: SetNull)
+  parent            ResourceEntry?       @relation("ResourceTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children          ResourceEntry[]      @relation("ResourceTree")
+  owner             User                 @relation("ResourceOwner", fields: [ownerUserId], references: [id])
+  projectMetadata   ProjectMetadata?
+  annotationFile    AnnotationFile?
+  mediaFile         MediaFile?
+  permissions       ResourcePermission[]
+  userStates        ResourceUserState[]
+  processingJobs    ProcessingJob[]
   auditLogs         AuditLog[]
 
-  @@unique([projectId, sequence])
-  @@index([sourceVersionId])
-  @@index([projectId, status])
-  @@map("project_versions")
+  @@index([parentId, type])
+  @@index([ownerUserId])
+  @@index([trashedAt])
+  @@map("resource_entries")
+}
+
+model ProjectMetadata {
+  resourceId  String  @id @map("resource_id")
+  description String?
+
+  resource ResourceEntry @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  @@map("project_metadata")
+}
+
+model AnnotationFile {
+  resourceId      String   @id @map("resource_id")
+  payload         Json
+  revision        Int      @default(1)
+  mediaResourceId String?  @map("media_resource_id")
+  lastEditedBy    String   @map("last_edited_by")
+  lastSavedAt     DateTime @default(now()) @map("last_saved_at")
+
+  resource          ResourceEntry               @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  lastEditor        User                        @relation("AnnotationLastEditor", fields: [lastEditedBy], references: [id])
+  recoverySnapshots AnnotationRecoverySnapshot[]
+  operations        AnnotationOperation[]
+
+  @@index([mediaResourceId])
+  @@index([lastEditedBy])
+  @@map("annotation_files")
+}
+
+// 恢复快照是系统内部安全网，不在资源管理器中作为“版本”暴露。
+model AnnotationRecoverySnapshot {
+  id               String   @id @default(uuid())
+  annotationFileId String   @map("annotation_file_id")
+  revision         Int
+  payload          Json
+  createdBy        String   @map("created_by")
+  reason           String?
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
+  creator        User           @relation("RecoverySnapshotCreator", fields: [createdBy], references: [id])
+
+  @@unique([annotationFileId, revision])
+  @@index([createdBy])
+  @@map("annotation_recovery_snapshots")
+}
+
+model MediaFile {
+  resourceId String  @id @map("resource_id")
+  fileId     String  @unique @map("file_id")
+  mimeType   String  @map("mime_type")
+  size       Int
+  duration   Float?
+
+  resource ResourceEntry @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  file     FileObject    @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@map("media_files")
+}
+
+// 不使用“拒绝”记录：有效权限由管理员/所有者特权、直接授权和未被截断的祖先授权合并得到。
+model ResourcePermission {
+  id                String               @id @default(uuid())
+  resourceId        String               @map("resource_id")
+  userId            String               @map("user_id")
+  capabilities      ResourceCapability[]
+  inheritToChildren Boolean              @default(true) @map("inherit_to_children")
+  expiresAt         DateTime?            @map("expires_at")
+  createdBy         String               @map("created_by")
+  createdAt         DateTime             @default(now()) @map("created_at")
+  updatedAt         DateTime             @updatedAt @map("updated_at")
+
+  resource ResourceEntry @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  user     User          @relation("PermissionSubject", fields: [userId], references: [id], onDelete: Cascade)
+  grantor  User          @relation("PermissionGrantor", fields: [createdBy], references: [id])
+
+  @@unique([resourceId, userId])
+  @@index([userId])
+  @@map("resource_permissions")
+}
+
+model ResourceUserState {
+  resourceId   String    @map("resource_id")
+  userId       String    @map("user_id")
+  favorite     Boolean   @default(false)
+  lastOpenedAt DateTime? @map("last_opened_at")
+
+  resource ResourceEntry @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([resourceId, userId])
+  @@index([userId, favorite])
+  @@map("resource_user_states")
 }
 
 model ProcessingJob {
-  id            String              @id @default(uuid())
-  type          ProcessingJobType
-  status        ProcessingJobStatus @default(queued)
-  inputFileIds  String[]            @map("input_file_ids")
-  outputFileIds String[]            @default([]) @map("output_file_ids")
-  projectId     String?             @map("project_id")
-  workspaceId   String?             @map("workspace_id")
-  createdBy     String              @map("created_by")
-  createdAt     DateTime            @default(now()) @map("created_at")
-  updatedAt     DateTime            @updatedAt @map("updated_at")
-  errorMessage  String?             @map("error_message")
+  id           String              @id @default(uuid())
+  type         ProcessingJobType
+  status       ProcessingJobStatus @default(queued)
+  resourceId   String?             @map("resource_id")
+  inputFileIds String[]            @default([]) @map("input_file_ids")
+  createdBy    String              @map("created_by")
+  progress     Float               @default(0)
+  errorMessage String?             @map("error_message")
+  result       Json?
+  createdAt    DateTime            @default(now()) @map("created_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
 
-  project   AnnotationProject?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  workspace AnnotationWorkspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
-  creator   User                 @relation("JobCreator", fields: [createdBy], references: [id])
-  auditLogs AuditLog[]
+  resource ResourceEntry? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  creator  User           @relation("JobCreator", fields: [createdBy], references: [id])
 
-  @@index([workspaceId])
-  @@index([projectId])
-  @@index([createdBy])
+  @@index([resourceId])
+  @@index([status])
   @@map("processing_jobs")
 }
 
-// 审计只存动作摘要，不存完整标注 payload。目标对象删除时使用 SetNull，
-// 这样项目版本的来源和责任人仍可从历史记录中追溯。
 model AuditLog {
-  id                  String      @id @default(uuid())
-  action              AuditAction
-  actorUserId         String?     @map("actor_user_id")
-  projectId           String?     @map("project_id")
-  workspaceId         String?     @map("workspace_id")
-  annotationVersionId String?     @map("annotation_version_id")
-  projectVersionId    String?     @map("project_version_id")
-  fileId              String?     @map("file_id")
-  jobId               String?     @map("job_id")
-  targetType          String?     @map("target_type")
-  targetId            String?     @map("target_id")
-  detail              Json?
-  ipAddress           String?     @map("ip_address")
-  userAgent           String?     @map("user_agent")
-  createdAt           DateTime    @default(now()) @map("created_at")
+  id           String      @id @default(uuid())
+  action       AuditAction
+  actorUserId  String?     @map("actor_user_id")
+  resourceId   String?     @map("resource_id")
+  fileId       String?     @map("file_id")
+  targetUserId String?     @map("target_user_id")
+  detail       Json?
+  createdAt    DateTime    @default(now()) @map("created_at")
 
-  actor            User?                @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
-  project          AnnotationProject?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  workspace        AnnotationWorkspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
-  annotationVersion AnnotationVersion?  @relation(fields: [annotationVersionId], references: [id], onDelete: SetNull)
-  projectVersion   ProjectVersion?      @relation(fields: [projectVersionId], references: [id], onDelete: SetNull)
-  file             FileObject?          @relation(fields: [fileId], references: [id], onDelete: SetNull)
-  job              ProcessingJob?       @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  actor    User?          @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  resource ResourceEntry? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  file     FileObject?    @relation(fields: [fileId], references: [id], onDelete: SetNull)
 
-  @@index([actorUserId])
-  @@index([projectId])
-  @@index([workspaceId])
-  @@index([createdAt])
+  @@index([resourceId, createdAt])
+  @@index([actorUserId, createdAt])
   @@map("audit_logs")
 }
 
-// Operation 永远属于可编辑工作区；不可变版本只引用 snapshot，不接收后续 operation。
 model AnnotationOperation {
-  id             String                    @id @default(uuid())
-  workspaceId    String                    @map("workspace_id")
-  actorUserId    String                    @map("actor_user_id")
-  baseRevision   Int                       @map("base_revision")
-  localRevision  Int?                      @map("local_revision")
-  serverRevision Int?                      @map("server_revision")
-  action         String
-  payload        Json
-  status         AnnotationOperationStatus @default(accepted)
-  createdAt      DateTime                  @default(now()) @map("created_at")
+  id               String                    @id @default(uuid())
+  annotationFileId String                    @map("annotation_file_id")
+  actorUserId      String                    @map("actor_user_id")
+  baseRevision     Int                       @map("base_revision")
+  localRevision    Int?                      @map("local_revision")
+  action           String
+  payload          Json
+  status           AnnotationOperationStatus @default(accepted)
+  createdAt        DateTime                  @default(now()) @map("created_at")
 
-  workspace AnnotationWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  actor     User                @relation("AnnotationOperationActor", fields: [actorUserId], references: [id])
+  annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
+  actor         User           @relation("AnnotationOperationActor", fields: [actorUserId], references: [id])
 
-  @@index([workspaceId, createdAt])
-  @@index([actorUserId])
+  @@index([annotationFileId, createdAt])
+  @@index([actorUserId, createdAt])
   @@map("annotation_operations")
 }

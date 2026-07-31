@@ -6,56 +6,33 @@ import Fastify from "fastify";
 import pg from "pg";
 import { HttpError } from "./errors.js";
 import { PrismaPlatformRepository } from "./repository.js";
+import { ResourceAccessService } from "./resourceAccess.js";
+import { ResourceService } from "./resourceService.js";
 import { registerApiRoutes } from "./router.js";
 import { LocalObjectStorage } from "./storage.js";
-import { ProjectMemberService } from "./projectMemberService.js";
-import { ProjectAccessService } from "./projectAccess.js";
-import { AnnotationWorkspaceService } from "./annotationWorkspaceService.js";
-import { AnnotationVersionService } from "./annotationVersionService.js";
-import { ProjectVersionService } from "./projectVersionService.js";
 
 const port = Number(process.env.PORT ?? 4317);
 const databaseUrl = process.env.DATABASE_URL ??
   "postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public";
 const pool = new pg.Pool({ connectionString: databaseUrl });
-const prisma = new PrismaClient({
-  adapter: new PrismaPg(pool),
-});
-const projectAccess = new ProjectAccessService(prisma);
-const repository = new PrismaPlatformRepository(prisma, projectAccess);
-const projectMembers = new ProjectMemberService(prisma, projectAccess);
-const annotationWorkspaces = new AnnotationWorkspaceService(
-  prisma,
-  projectAccess,
-);
-const annotationVersions = new AnnotationVersionService(
-  prisma,
-  projectAccess,
-  annotationWorkspaces,
-);
-const projectVersions = new ProjectVersionService(prisma, projectAccess);
+const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
+const access = new ResourceAccessService(prisma);
+const repository = new PrismaPlatformRepository(prisma, access);
+const resources = new ResourceService(prisma, access);
 const storage = new LocalObjectStorage();
 
 const app = Fastify({
-  logger: {
-    level: process.env.LOG_LEVEL ?? "info",
-  },
+  logger: { level: process.env.LOG_LEVEL ?? "info" },
   bodyLimit: 1024 * 1024 * 1024,
 });
 
 await app.register(cors, {
   origin: true,
   credentials: true,
-  // 平台管理页会用 PATCH 修改成员授权、用 DELETE 移除项目成员。
-  // 显式列出方法，避免浏览器预检通过 OPTIONS 后拦截真正的写请求。
-  methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
+  methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 });
-
 await app.register(multipart, {
-  limits: {
-    fileSize: 1024 * 1024 * 1024,
-    files: 1,
-  },
+  limits: { fileSize: 1024 * 1024 * 1024, files: 1 },
 });
 
 app.setErrorHandler((error, _request, response) => {
@@ -69,8 +46,6 @@ app.setErrorHandler((error, _request, response) => {
     });
     return;
   }
-  // Fastify 自身会为 JSON 解析、multipart 限制等客户端错误提供 4xx。
-  // 这些错误不能落入 500，否则前端无法区分请求格式问题与服务端故障。
   if (hasClientErrorStatus(error)) {
     void response.status(error.statusCode).send({
       error: {
@@ -82,29 +57,22 @@ app.setErrorHandler((error, _request, response) => {
   }
   app.log.error(error);
   void response.status(500).send({
-    error: {
-      code: "internal_error",
-      message: "服务端内部错误。",
-    },
+    error: { code: "internal_error", message: "服务端内部错误。" },
   });
 });
 
 app.addHook("preSerialization", async (_request, _response, payload) => {
-  if (payload === null || payload === undefined || typeof payload !== "object" || isStreamLike(payload)) {
-    return payload;
-  }
-  if ("error" in payload) {
-    return payload;
-  }
+  if (
+    payload === null ||
+    payload === undefined ||
+    typeof payload !== "object" ||
+    isStreamLike(payload) ||
+    "error" in payload
+  ) return payload;
   return { data: payload };
 });
 
-registerApiRoutes(app, repository, storage, {
-  projectMembers,
-  annotationWorkspaces,
-  annotationVersions,
-  projectVersions,
-});
+registerApiRoutes(app, repository, resources, storage);
 
 try {
   await repository.ensureSeedData();
@@ -122,12 +90,8 @@ async function shutdown() {
   await pool.end();
 }
 
-process.on("SIGINT", () => {
-  void shutdown().finally(() => process.exit(0));
-});
-process.on("SIGTERM", () => {
-  void shutdown().finally(() => process.exit(0));
-});
+process.on("SIGINT", () => void shutdown().finally(() => process.exit(0)));
+process.on("SIGTERM", () => void shutdown().finally(() => process.exit(0)));
 
 function isStreamLike(payload: object) {
   return "pipe" in payload && typeof payload.pipe === "function";
