@@ -63,7 +63,7 @@ export class ResourceService {
       // 回收站只展示自身带 trashedAt 的入口，不在这里重复过滤。
       if (
         options.view !== "trash" &&
-        await this.hasTrashedAncestor(row.parentId)
+        await this.hasTrashedAncestor(this.prisma, row.parentId)
       ) continue;
       const permission = await this.access.getEffectivePermission(user, row.id);
       if (permission.capabilities.includes("read")) {
@@ -409,11 +409,7 @@ export class ResourceService {
       throw forbidden("只有管理员可以把资源移动到根目录。");
     }
     await this.prisma.$transaction(async (transaction) => {
-      // 所有 move 共用一把树结构锁，避免 A->B 与 B->A 同时通过循环检查。
-      await transaction.$queryRaw`
-        SELECT 1::integer AS locked
-        FROM pg_advisory_xact_lock(hashtext('xiqu:resource-tree:move'))
-      `;
+      await this.lockResourceTreeMutation(transaction);
       await this.lockResourceRow(transaction, resourceId);
       const latest = await transaction.resourceEntry.findUnique({
         where: { id: resourceId },
@@ -502,13 +498,37 @@ export class ResourceService {
   async setTrashed(user: ApiUser, resourceId: string, trashed: boolean) {
     await this.access.assertCapability(user, resourceId, "delete");
     await this.prisma.$transaction(async (transaction) => {
+      // 移动、删除和恢复都会改变活动资源树；共用锁可防止恢复校验后父目录又被并发移动或删除。
+      await this.lockResourceTreeMutation(transaction);
       await this.lockResourceRow(transaction, resourceId);
       const current = await transaction.resourceEntry.findUnique({
         where: { id: resourceId },
       });
       if (!current) throw notFound("资源不存在。");
+      if (trashed === Boolean(current.trashedAt)) {
+        throw badRequest(trashed ? "资源已在回收站中。" : "资源不在回收站中。");
+      }
       await this.lockParentNamespaces(transaction, [current.parentId]);
       if (!trashed) {
+        if (current.parentId) {
+          const parent = await transaction.resourceEntry.findUnique({
+            where: { id: current.parentId },
+            select: {
+              type: true,
+              parentId: true,
+              trashedAt: true,
+            },
+          });
+          if (!parent || (parent.type !== "folder" && parent.type !== "project")) {
+            throw conflict("原上级目录已经不存在，无法恢复到原位置。");
+          }
+          if (
+            parent.trashedAt ||
+            await this.hasTrashedAncestor(transaction, parent.parentId)
+          ) {
+            throw conflict("请先恢复上级目录。");
+          }
+        }
         await this.assertNameAvailable(
           transaction,
           current.parentId,
@@ -923,6 +943,16 @@ export class ResourceService {
     }
   }
 
+  private async lockResourceTreeMutation(
+    transaction: Prisma.TransactionClient,
+  ) {
+    // 结构写操作必须先拿同一把事务锁；固定顺序可防止 move 与 restore 交错后产生隐藏资源。
+    await transaction.$queryRaw`
+      SELECT 1::integer AS locked
+      FROM pg_advisory_xact_lock(hashtext('xiqu:resource-tree:mutation'))
+    `;
+  }
+
   private async lockResourceRow(
     transaction: Prisma.TransactionClient,
     resourceId: string,
@@ -937,11 +967,14 @@ export class ResourceService {
     if (!rows.length) throw notFound("资源不存在。");
   }
 
-  private async hasTrashedAncestor(parentId: string | null) {
+  private async hasTrashedAncestor(
+    database: PrismaClient | Prisma.TransactionClient,
+    parentId: string | null,
+  ) {
     let currentId = parentId;
     while (currentId) {
       const row: { parentId: string | null; trashedAt: Date | null } | null =
-        await this.prisma.resourceEntry.findUnique({
+        await database.resourceEntry.findUnique({
           where: { id: currentId },
           select: { parentId: true, trashedAt: true },
         });

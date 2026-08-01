@@ -413,6 +413,91 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(restored.statusCode, 200);
       assert.equal(dataOf(restored.json()).trashedAt, null);
+
+      const directlyTrashedChild = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: {
+          parentId: childFolderId,
+          type: "folder",
+          name: "单独删除的子目录",
+        },
+      });
+      const directlyTrashedChildId = String(
+        dataOf(directlyTrashedChild.json()).id,
+      );
+      await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${directlyTrashedChildId}/trash`,
+      });
+      const unauthorizedRestore = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/resources/${directlyTrashedChildId}/restore`,
+      });
+      assert.equal(unauthorizedRestore.statusCode, 403);
+      await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${childFolderId}/trash`,
+      });
+
+      // 子项不能越过仍在回收站的父目录恢复，否则 API 虽然返回成功，普通资源视图仍看不到它。
+      const hiddenChildRestore = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${directlyTrashedChildId}/restore`,
+      });
+      assert.equal(hiddenChildRestore.statusCode, 409);
+      const childAfterRejectedRestore = await prisma.resourceEntry.findUnique({
+        where: { id: directlyTrashedChildId },
+        select: { trashedAt: true },
+      });
+      assert.ok(childAfterRejectedRestore?.trashedAt);
+      assert.equal(await prisma.auditLog.count({
+        where: {
+          action: "resource_restore",
+          resourceId: directlyTrashedChildId,
+        },
+      }), 0);
+
+      const parentRestore = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${childFolderId}/restore`,
+      });
+      assert.equal(parentRestore.statusCode, 200);
+      const childRestore = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${directlyTrashedChildId}/restore`,
+      });
+      assert.equal(childRestore.statusCode, 200);
+      assert.equal(await prisma.auditLog.count({
+        where: {
+          action: "resource_restore",
+          resourceId: directlyTrashedChildId,
+        },
+      }), 1);
+
+      const rootProject = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "根级恢复测试" },
+      });
+      const rootProjectId = String(dataOf(rootProject.json()).id);
+      await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${rootProjectId}/trash`,
+      });
+      const rootRestore = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${rootProjectId}/restore`,
+      });
+      assert.equal(rootRestore.statusCode, 200);
+      const duplicateRootRestore = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${rootProjectId}/restore`,
+      });
+      assert.equal(duplicateRootRestore.statusCode, 400);
+      assert.equal(await prisma.auditLog.count({
+        where: { action: "resource_restore", resourceId: rootProjectId },
+      }), 1);
     });
 
     await suite.test("媒体上传、受保护读取和 Range", async () => {

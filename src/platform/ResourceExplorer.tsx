@@ -17,6 +17,7 @@ import {
   MoreHorizontal,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Settings2,
   ShieldCheck,
@@ -48,6 +49,7 @@ import {
 } from "../utils/projectFile";
 import { prepareProjectForServer } from "./PlatformWorkspace";
 import { ResourceDestinationPicker } from "./ResourceDestinationPicker";
+import { restoreResourcesSequentially } from "./resourceRestore";
 
 type ExplorerMode = "list" | "grid" | "column";
 
@@ -93,13 +95,16 @@ export function ResourceExplorer(props: {
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
   const [clipboard, setClipboard] = useState<ResourceEntry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [movingResource, setMovingResource] = useState<ResourceEntry | null>(null);
   const jsonInputRef = useRef<HTMLInputElement>(null);
   const mediaInputRef = useRef<HTMLInputElement>(null);
+  const restoreInFlightRef = useRef(false);
 
   const selected =
     page.items.find((item) => item.id === selectedIds[0]) ?? null;
+  const isTrashView = folderId === null && rootView === "trash";
   const refresh = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -137,11 +142,12 @@ export function ResourceExplorer(props: {
   }, [props.onOpenAnnotationFile]);
 
   const copySelection = useCallback(() => {
+    if (isTrashView) return;
     setClipboard(page.items.filter((item) => selectedIds.includes(item.id)));
-  }, [page.items, selectedIds]);
+  }, [isTrashView, page.items, selectedIds]);
 
   const pasteClipboard = useCallback(async () => {
-    if (!folderId || !clipboard.length) return;
+    if (isTrashView || !folderId || !clipboard.length) return;
     setIsLoading(true);
     try {
       for (const item of clipboard) {
@@ -153,12 +159,40 @@ export function ResourceExplorer(props: {
     } finally {
       setIsLoading(false);
     }
-  }, [clipboard, folderId, props.client, refresh]);
+  }, [clipboard, folderId, isTrashView, props.client, refresh]);
+
+  const restoreResources = useCallback(async (resources: ResourceEntry[]) => {
+    if (!resources.length || restoreInFlightRef.current) return;
+    // React 状态更新前仍可能收到第二次菜单事件；ref 用于阻止同一资源被并发恢复两次。
+    restoreInFlightRef.current = true;
+    setIsRestoring(true);
+    setError(null);
+    try {
+      const result = await restoreResourcesSequentially(
+        resources,
+        (resourceId) => props.client.restoreResource(resourceId),
+      );
+      await refresh();
+      const failedIds = result.failed.map(({ resource }) => resource.id);
+      setSelectedIds(failedIds);
+      setAnchorId(failedIds[0] ?? null);
+      if (result.failed.length) {
+        const details = result.failed.map(({ resource, error }) =>
+          `${resource.name}：${describeError(error)}`).join("；");
+        setError(
+          `已恢复 ${result.restored.length} 项，${result.failed.length} 项失败。${details}`,
+        );
+      }
+    } finally {
+      restoreInFlightRef.current = false;
+      setIsRestoring(false);
+    }
+  }, [props.client, refresh]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       // Radix 对话框负责其内部键盘交互，打开时不能让资源列表的全局快捷键同时执行。
-      if (movingResource) return;
+      if (movingResource || isRestoring) return;
       const target = event.target as HTMLElement | null;
       if (
         target?.isContentEditable ||
@@ -170,29 +204,31 @@ export function ResourceExplorer(props: {
         setSelectedIds(page.items.map((item) => item.id));
       } else if (command && event.key.toLowerCase() === "c") {
         event.preventDefault();
-        copySelection();
+        if (!isTrashView) copySelection();
       } else if (command && event.key.toLowerCase() === "v") {
         event.preventDefault();
         void pasteClipboard();
       } else if (command && event.key.toLowerCase() === "f") {
         event.preventDefault();
         document.querySelector<HTMLInputElement>(".resource-search-input")?.focus();
-      } else if (event.key === "Enter" && selected) {
+      } else if (event.key === "Enter" && selected && !isTrashView) {
         openResource(selected);
       } else if (event.key === "Escape") {
         setSelectedIds([]);
-      } else if (event.key === "F2" && selected) {
+      } else if (event.key === "F2" && selected && !isTrashView) {
         event.preventDefault();
         void renameResource(props.client, selected, refresh, setError);
       } else if (
         (event.key === "Delete" || event.key === "Backspace") &&
-        selectedIds.length &&
-        window.confirm("将所选资源移到回收站？")
+        selectedIds.length
       ) {
         event.preventDefault();
-        void Promise.all(
-          selectedIds.map((id) => props.client.trashResource(id)),
-        ).then(refresh).catch((nextError) => setError(describeError(nextError)));
+        // 永久删除尚未定义对象存储清理和恢复期限；回收站内必须明确抑制普通删除快捷键。
+        if (!isTrashView && window.confirm("将所选资源移到回收站？")) {
+          void Promise.all(
+            selectedIds.map((id) => props.client.trashResource(id)),
+          ).then(refresh).catch((nextError) => setError(describeError(nextError)));
+        }
       }
     }
     window.addEventListener("keydown", handleKeyDown);
@@ -205,6 +241,8 @@ export function ResourceExplorer(props: {
     props.client,
     refresh,
     movingResource,
+    isRestoring,
+    isTrashView,
     selected,
     selectedIds,
   ]);
@@ -365,18 +403,39 @@ export function ResourceExplorer(props: {
               ))}
             </div>
             <div className="resource-toolbar-actions">
-              <button type="button" onClick={() => void createContainer("project")}>
-                <Plus size={16} /> 项目
-              </button>
-              <button type="button" disabled={!folderId} onClick={() => void createContainer("folder")} title="新建文件夹">
-                <Folder size={16} />
-              </button>
-              <button type="button" disabled={!folderId} onClick={() => jsonInputRef.current?.click()} title="导入标注 JSON">
-                <FileJson2 size={16} />
-              </button>
-              <button type="button" disabled={!folderId} onClick={() => mediaInputRef.current?.click()} title="上传媒体">
-                <Upload size={16} />
-              </button>
+              {isTrashView ? (
+                <button
+                  type="button"
+                  disabled={
+                    isRestoring ||
+                    !page.items.some((item) =>
+                      selectedIds.includes(item.id) &&
+                      item.permission.capabilities.includes("delete"))
+                  }
+                  onClick={() => void restoreResources(
+                    page.items.filter((item) => selectedIds.includes(item.id)),
+                  )}
+                  title="恢复到原位置"
+                >
+                  <RotateCcw size={16} />
+                  {isRestoring ? "正在恢复" : `恢复所选${selectedIds.length ? `（${selectedIds.length}）` : ""}`}
+                </button>
+              ) : (
+                <>
+                  <button type="button" onClick={() => void createContainer("project")}>
+                    <Plus size={16} /> 项目
+                  </button>
+                  <button type="button" disabled={!folderId} onClick={() => void createContainer("folder")} title="新建文件夹">
+                    <Folder size={16} />
+                  </button>
+                  <button type="button" disabled={!folderId} onClick={() => jsonInputRef.current?.click()} title="导入标注 JSON">
+                    <FileJson2 size={16} />
+                  </button>
+                  <button type="button" disabled={!folderId} onClick={() => mediaInputRef.current?.click()} title="上传媒体">
+                    <Upload size={16} />
+                  </button>
+                </>
+              )}
               <span className="resource-toolbar-divider" />
               <button type="button" className={mode === "list" ? "active" : ""} onClick={() => setMode("list")} title="列表"><List size={16} /></button>
               <button type="button" className={mode === "grid" ? "active" : ""} onClick={() => setMode("grid")} title="网格"><Grid2X2 size={16} /></button>
@@ -401,10 +460,12 @@ export function ResourceExplorer(props: {
             }}
             onSelect={selectResource}
             onOpen={openResource}
+            isTrashView={isTrashView}
             onRename={(resource) =>
               void renameResource(props.client, resource, refresh, setError)}
             onCopy={(resource) => setClipboard([resource])}
             onMove={setMovingResource}
+            onRestore={(resource) => void restoreResources([resource])}
             onTrash={(resource) =>
               void props.client.trashResource(resource.id)
                 .then(refresh)
@@ -415,6 +476,7 @@ export function ResourceExplorer(props: {
         <ResourceInspector
           client={props.client}
           resource={selected}
+          readOnly={isTrashView}
           onChanged={() => void refresh()}
           onError={setError}
         />
@@ -460,6 +522,7 @@ type CollectionProps = {
   selectedIds: string[];
   mode: ExplorerMode;
   isLoading: boolean;
+  isTrashView: boolean;
   sortBy: string;
   direction: "asc" | "desc";
   onSort: (field: "name" | "createdAt" | "updatedAt" | "size") => void;
@@ -468,6 +531,7 @@ type CollectionProps = {
   onRename: (resource: ResourceEntry) => void;
   onCopy: (resource: ResourceEntry) => void;
   onMove: (resource: ResourceEntry) => void;
+  onRestore: (resource: ResourceEntry) => void;
   onTrash: (resource: ResourceEntry) => void;
 };
 
@@ -487,7 +551,9 @@ function ResourceCollection(props: CollectionProps) {
               type="button"
               className={`resource-grid-item ${props.selectedIds.includes(resource.id) ? "selected" : ""}`}
               onClick={(event) => props.onSelect(event, resource)}
-              onDoubleClick={() => props.onOpen(resource)}
+              onDoubleClick={() => {
+                if (!props.isTrashView) props.onOpen(resource);
+              }}
             >
               <ResourceIcon resource={resource} size={34} />
               <strong>{resource.name}</strong>
@@ -513,7 +579,9 @@ function ResourceCollection(props: CollectionProps) {
             type="button"
             className={`resource-list-row ${props.selectedIds.includes(resource.id) ? "selected" : ""}`}
             onClick={(event) => props.onSelect(event, resource)}
-            onDoubleClick={() => props.onOpen(resource)}
+            onDoubleClick={() => {
+              if (!props.isTrashView) props.onOpen(resource);
+            }}
           >
             <span className="resource-name-cell"><ResourceIcon resource={resource} size={18} /><strong>{resource.name}</strong></span>
             <span>{typeLabel(resource.type)}</span>
@@ -537,13 +605,24 @@ function ResourceMenu(props: CollectionProps & {
       <ContextMenu.Trigger asChild>{props.children}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content className="resource-context-menu">
-          <ContextMenu.Item onSelect={() => props.onOpen(props.resource)}><FolderOpen size={15} /> 打开</ContextMenu.Item>
-          <ContextMenu.Separator />
-          <ContextMenu.Item disabled={!capabilities.includes("copy")} onSelect={() => props.onCopy(props.resource)}><Copy size={15} /> 复制</ContextMenu.Item>
-          <ContextMenu.Item disabled={!capabilities.includes("move")} onSelect={() => props.onMove(props.resource)}><FolderInput size={15} /> 移动到…</ContextMenu.Item>
-          <ContextMenu.Item disabled={!capabilities.includes("write")} onSelect={() => props.onRename(props.resource)}><Settings2 size={15} /> 重命名</ContextMenu.Item>
-          <ContextMenu.Separator />
-          <ContextMenu.Item className="danger" disabled={!capabilities.includes("delete")} onSelect={() => props.onTrash(props.resource)}><Trash2 size={15} /> 移到回收站</ContextMenu.Item>
+          {props.isTrashView ? (
+            <ContextMenu.Item
+              disabled={!capabilities.includes("delete")}
+              onSelect={() => props.onRestore(props.resource)}
+            >
+              <RotateCcw size={15} /> 恢复到原位置
+            </ContextMenu.Item>
+          ) : (
+            <>
+              <ContextMenu.Item onSelect={() => props.onOpen(props.resource)}><FolderOpen size={15} /> 打开</ContextMenu.Item>
+              <ContextMenu.Separator />
+              <ContextMenu.Item disabled={!capabilities.includes("copy")} onSelect={() => props.onCopy(props.resource)}><Copy size={15} /> 复制</ContextMenu.Item>
+              <ContextMenu.Item disabled={!capabilities.includes("move")} onSelect={() => props.onMove(props.resource)}><FolderInput size={15} /> 移动到…</ContextMenu.Item>
+              <ContextMenu.Item disabled={!capabilities.includes("write")} onSelect={() => props.onRename(props.resource)}><Settings2 size={15} /> 重命名</ContextMenu.Item>
+              <ContextMenu.Separator />
+              <ContextMenu.Item className="danger" disabled={!capabilities.includes("delete")} onSelect={() => props.onTrash(props.resource)}><Trash2 size={15} /> 移到回收站</ContextMenu.Item>
+            </>
+          )}
         </ContextMenu.Content>
       </ContextMenu.Portal>
     </ContextMenu.Root>
@@ -567,12 +646,14 @@ function SortButton(props: {
 function ResourceInspector(props: {
   client: PlatformClient;
   resource: ResourceEntry | null;
+  readOnly: boolean;
   onChanged: () => void;
   onError: (message: string | null) => void;
 }) {
   const [matrix, setMatrix] = useState<ResourcePermissionMatrixRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const canManage = props.resource?.permission.canManagePermissions ?? false;
+  const canManage = !props.readOnly &&
+    (props.resource?.permission.canManagePermissions ?? false);
 
   const load = useCallback(async () => {
     if (!props.resource || !canManage) {
@@ -610,21 +691,27 @@ function ResourceInspector(props: {
         <dt>修改</dt><dd>{formatDate(props.resource.updatedAt)}</dd>
         {props.resource.revision ? <><dt>修订</dt><dd>{props.resource.revision}</dd></> : null}
       </dl>
-      <button
-        type="button"
-        className="resource-favorite-button"
-        onClick={() => void props.client.updateResource(props.resource!.id, {
-          favorite: !props.resource!.favorite,
-        }).then(props.onChanged).catch((error) => props.onError(describeError(error)))}
-      >
-        <Heart size={16} fill={props.resource.favorite ? "currentColor" : "none"} />
-        {props.resource.favorite ? "已收藏" : "添加收藏"}
-      </button>
+      {!props.readOnly ? (
+        <button
+          type="button"
+          className="resource-favorite-button"
+          onClick={() => void props.client.updateResource(props.resource!.id, {
+            favorite: !props.resource!.favorite,
+          }).then(props.onChanged).catch((error) => props.onError(describeError(error)))}
+        >
+          <Heart size={16} fill={props.resource.favorite ? "currentColor" : "none"} />
+          {props.resource.favorite ? "已收藏" : "添加收藏"}
+        </button>
+      ) : (
+        <div className="resource-permission-readonly">
+          回收站资源仅显示基本信息；恢复后可编辑收藏和账号权限。
+        </div>
+      )}
       <div className="resource-inspector-section-heading">
         <div><strong>账号权限</strong><span>当前选中资源的逐账号授权</span></div>
         {canManage ? <button type="button" onClick={() => void load()} title="刷新权限"><RefreshCw size={15} /></button> : null}
       </div>
-      {!canManage ? (
+      {!canManage && !props.readOnly ? (
         <div className="resource-permission-readonly">
           你拥有：{props.resource.permission.capabilities.map((item) => CAPABILITY_LABELS[item]).join("、") || "无权限"}
         </div>

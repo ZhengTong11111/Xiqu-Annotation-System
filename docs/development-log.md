@@ -6,6 +6,47 @@
 > `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
 > 回写或删除历史记录。
 
+## 2026-08-01：R1.2 回收站恢复与虚拟视图操作闭环
+
+Codex 先将已完成并验证的 R1.1 移动目标选择器提交为 `8ca74c3`，再按本机
+`CLAUDE_WORK.md` 开始 R1.2。本轮没有修改数据库 schema、shared API 合同、对象存储或时间轴。
+
+实现内容：
+
+- 回收站右键菜单改为上下文语义，只提供按有效 `delete` 能力启用的“恢复到原位置”，不再显示
+  打开、复制、移动、重命名和重复移入回收站。
+- 回收站工具栏增加可见的“恢复所选（N）”；隐藏新建项目/文件夹、导入 JSON 和上传媒体入口，
+  并抑制 Enter、F2、Command/Ctrl+C、双击和 Delete/Backspace 的普通资源操作。
+- 回收站 Inspector 保持只读详情，不允许在已删除资源上继续编辑收藏或账号权限。
+- 新增纯前端 `resourceRestore.ts`：按选中父子关系让祖先优先，随后顺序调用现有单项恢复 API；
+  多选采用明确的部分成功语义，一个名称冲突不会阻止无关资源恢复，失败项保留选择并显示资源名
+  与具体原因。
+- 恢复 orchestration 使用 ref 阻止 React 状态提交前的重复菜单事件发起并发恢复；右键单项和工具栏
+  多选共用同一请求路径。
+- 后端先通过新增失败测试复现“父目录仍在回收站，子项恢复却返回 200”的问题，再修复为 `409`。
+  恢复现在在事务内检查原父目录存在、仍为容器、父目录及全部祖先处于活动树，并继续执行同名
+  冲突检查。
+- 将 move 专用 advisory lock 收敛为 `lockResourceTreeMutation()`；move、trash、restore 按统一的
+  树结构锁、资源行锁、父目录命名空间锁顺序执行，防止恢复校验后父目录被并发移动或删除。
+- `hasTrashedAncestor()` 显式接收 Prisma client/transaction，事务中的恢复检查不再退回事务外
+  client 读取过期树状态。
+- 重复 trash/restore 请求返回清楚的 `400`，避免没有真实状态变化却写入成功审计。
+
+测试与审查：
+
+- `npm run test:api`：10 组通过。新增断言覆盖父目录未恢复时子项 `409`、拒绝后仍保持 trashed、
+  无权限恢复 `403`、失败不写成功审计、先父后子恢复成功、根级项目恢复成功。
+- `npm run test:permissions`：5 项通过。
+- `npm run build`：Prisma、shared、document-model、Web、API 全部通过。
+- 单独运行 Web build 与恢复排序 helper，确认选中父项先于子项执行。
+- `git diff --check` 通过。
+- 本地 Web/API 服务均可访问；浏览器验证到平台登录页。没有替用户提交登录表单或修改开发数据，
+  因此已认证的回收站菜单、多选与冲突反馈仍需按交付顺序人工走查。
+- 仍存在上游 Prisma adapter 的 pg 9 前置弃用提醒和 Vite 603 kB 大 chunk 提醒，均非本轮回归。
+
+本轮明确没有实现永久删除。物理对象清理、恢复期限和审计策略没有确定前，不提供不可逆按钮。
+递归复制、媒体复制语义、拖拽/批量移动和真正的 Finder column view 继续留在 R1 后续切片。
+
 ## 2026-08-01：R1.1 资源移动目标选择器
 
 R0 稳定化实现经完整 build、API 集成测试、权限测试和 diff check 复核后，Codex 将其提交为

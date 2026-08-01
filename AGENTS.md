@@ -41,6 +41,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - desktop-style three-pane resource manager
   - owns folder navigation, list/grid/column presentation, selection, keyboard/context-menu actions, import/upload, and the resource Inspector
   - the Inspector is the canonical UI for editing each account's direct permissions on the selected resource
+- `src/platform/resourceRestore.ts`
+  - trash multi-restore ordering and partial-result aggregation helper
+  - restores selected ancestors before descendants; keep this orchestration outside `ResourceExplorer.tsx`
 - `src/api/platformClient.ts`
   - browser-side API client for platform backend calls, including audit log and annotation operation APIs
 - `src/state/projectDocumentState.ts`
@@ -145,6 +148,29 @@ Backend local defaults:
 - prefer localized helpers over ad hoc inline logic in JSX when behavior is reused
 
 Treat Chinese subtitle content as character-based annotation data, not tokenized words.
+
+## Dependency Selection
+
+新增依赖不是默认禁止项。若成熟依赖能够与现有视觉和交互风格保持一致，并且可以明显减少自维护
+代码、简化状态与边界逻辑、提高无障碍或跨浏览器稳定性，应优先考虑采用依赖，而不是为了“零依赖”
+重复实现复杂基础设施。代码清晰、行为稳定和长期可维护性高于表面上的依赖数量。
+
+引入依赖前必须确认：
+
+- 现有 React、Radix、Lucide、Prisma 或本仓库 helper 不能以同等清晰度直接满足需求，避免功能重叠。
+- 依赖维护活跃、TypeScript 支持可靠、许可证可用于本项目，且没有已知的知识产权或安全风险。
+- 优先选择可按需引入的小型、职责单一包；不要为了一个控件引入整套风格冲突的 UI 框架。
+- 组件必须能沿用当前低饱和桌面工作站风格；依赖只负责稳定行为，不应强迫产品变成通用后台模板。
+- 评估 bundle 体积、运行时成本、服务端/浏览器边界和未来升级成本。高频时间轴、音视频与频谱热路径
+  不得因使用便利组件而引入不必要开销。
+- 引入后删除被替代的手写实现和僵尸代码，不保留两套并行路径作为“备用”。
+- 在 `docs/development-log.md` 记录选择该依赖的原因、替代了什么、许可证/维护判断和验证结果；若影响
+  长期架构或部署，同时更新 roadmap 或相关架构文档。
+- 同步提交 `package.json` 与 lockfile，并运行受影响测试和完整 `npm run build`。依赖不能成为跳过
+  错误处理、类型建模或服务端鉴权的理由。
+
+典型适用场景包括可访问对话框、菜单、表格/虚拟列表、拖拽、快捷键、颜色选择器和成熟领域算法。
+对于很小且稳定的纯函数、已有本地 helper 能清楚表达的逻辑，继续使用仓库现有实现，避免过度依赖。
 
 ## Core Data Model
 The current `ProjectData` is broader than the original MVP:
@@ -326,7 +352,7 @@ Current backend capabilities:
 - hierarchical `ResourceEntry` tree with `folder`, `project`, `annotation_file`, and `media_file` resource types
 - mutable annotation files with integer revision and `baseRevision` conflict checking
 - hidden recovery snapshots created automatically before an annotation-file payload is replaced
-- file-like copy, move, rename, soft-delete, restore, favorite, and recent-open state
+- annotation-file copy, file-like move/rename/soft-delete/restore, favorite, and recent-open state
 - audit-log table and API for key platform events such as login, upload, resource creation/move/copy/delete, permission changes, and annotation-file save
 - annotation operation-log table and API for recording client-submitted edit operations before future autosave/collaboration work
 - placeholder processing-job API for future pitch, spectrogram, Gongche render, pose, transcode, and export services
@@ -348,9 +374,14 @@ Current platform UI capabilities:
 - revision-checked annotation-file save
 - Inspector details plus per-account permission matrix for every selected resource
 - toggle permission inheritance and edit direct per-account capabilities when authorized
+- trash is a read-only resource context except for single/multi restore; normal open/copy/move/rename/delete
+  shortcuts are suppressed while the trash view is active
 - enter a local editor mode without login
 
 Important backend caveats:
+- `copyResource()` currently creates independent copies only for annotation files. The resource-manager clipboard can
+  hold other resource types, but recursive folder/project copy and media-resource copy are the active R1.3 gap; do
+  not describe generic copy/paste as complete until that service path and migration land.
 - real-time collaborative editing is not implemented yet
 - the removed Course/Assignment/Submission runtime is not a pending compatibility target; future classroom
   distribution/review should build on resource copy, ACL, file comparison, and a separate confirmed-annotation layer
@@ -371,10 +402,15 @@ Important backend caveats:
 - `ResourceEntry` is the common identity, hierarchy, ownership, archive, and permission boundary for every managed item.
 - a project is a specialized container resource, not a separate parallel navigation hierarchy.
 - an annotation file is the mutable user-facing unit. Copying it creates an independent annotation file at revision 1 owned by the copier.
+- annotation-file copy preserves an external media reference. Recursive container copy must remap references that
+  point to media inside the copied subtree instead of leaving them attached to the source tree.
 - saving an annotation file must compare `baseRevision`; stale writes return `409` rather than silently overwriting.
 - before replacing a payload, preserve the previous payload as an `AnnotationRecoverySnapshot`.
 - recovery snapshots are implementation history, not ordinary user-visible files or published versions.
 - moving a resource must reject cycles and destinations where the caller lacks `create_child`.
+- move, trash, and restore share the resource-tree mutation advisory lock before resource-row and parent-namespace
+  locks. Restore must reject an absent/non-container/trashed original parent or trashed ancestor; it must never return
+  success for an item that remains hidden behind a trashed ancestor.
 - descendants inherit folder/project grants unless inheritance is explicitly broken; never infer permissions only from what the frontend happens to display.
 
 ## Timeline Interaction Model
