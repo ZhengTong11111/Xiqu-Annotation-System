@@ -86,7 +86,7 @@ PostgreSQL 或 API，适合单机整理、演示和紧急离线标注。
 docker compose up -d postgres
 cp .env.example .env
 npm run db:generate
-npm run db:push
+npm run db:deploy
 ```
 
 分别启动后端和前端：
@@ -106,18 +106,21 @@ Web: http://127.0.0.1:5173/
 API: http://127.0.0.1:4317/
 ```
 
-开发种子账号为 `admin / admin123`。首次启动或 Prisma schema 变化后执行 `npm run db:push`；
-`db:push --force-reset` 会清空本地开发数据库，只应在明确不保留数据时使用。
+开发种子账号为 `admin / admin123`。全新数据库应通过 `npm run db:deploy` 应用已提交的
+Prisma migration；`db:push` 仅适合一次性的本地 schema 实验。`db:push --force-reset` 会清空
+目标数据库，只能在核对 `DATABASE_URL` 且明确不保留数据时使用。
 
 ### 4. 生产构建与权限测试
 
 ```bash
 npm run build
 npm run test:permissions
+npm run test:api
 ```
 
-当前没有通用 lint/全量测试脚本；`test:permissions` 覆盖资源权限核心，重要修改完成后至少应
-同时运行上述两条命令。
+当前没有通用 lint 或完整 UI 自动化套件；`test:permissions` 覆盖纯权限核心，`test:api` 使用
+独立 `api_test` PostgreSQL schema 和临时对象存储验证资源、ACL、revision、恢复快照与媒体
+Range。重要平台修改完成后应同时运行上述三条命令。
 
 ## 平台资源管理与逐文件权限
 
@@ -922,7 +925,7 @@ npm install
 docker compose up -d postgres
 cp .env.example .env
 npm run db:generate
-npm run db:push
+npm run db:deploy
 ```
 
 ### 启动前端与 API
@@ -939,6 +942,7 @@ npm run dev:api
 ```bash
 npm run build
 npm run test:permissions
+npm run test:api
 ```
 
 ### 预览生产构建
@@ -952,8 +956,8 @@ npm run preview
 ### 1. 平台后端已经可用，但不是生产部署版本
 
 账号、资源树、媒体上传、标注文件保存、恢复快照和逐文件权限已经接入
-Fastify/Prisma/PostgreSQL。生产部署所需的数据库迁移、HTTPS、反向代理、限流、备份、对象存储
-迁移和运维监控仍未完成。
+Fastify/Prisma/PostgreSQL，并已建立第一条资源树 baseline migration。生产部署所需的迁移发布
+规范、HTTPS、反向代理、限流、备份、对象存储迁移和运维监控仍未完成。
 
 ### 2. 尚未实现实时多人协作
 
@@ -971,11 +975,12 @@ Fastify/Prisma/PostgreSQL。生产部署所需的数据库迁移、HTTPS、反�
 
 ### 5. 测试体系仍不完整
 
-目前没有通用 lint 和完整 UI 自动化套件。资源权限核心已有专门测试；修改后至少运行：
+目前没有通用 lint 和完整 UI 自动化套件。资源权限核心和平台 API 已有专门测试；修改后至少运行：
 
 ```bash
 npm run build
 npm run test:permissions
+npm run test:api
 ```
 
 并手动检查：

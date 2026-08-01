@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -37,7 +37,13 @@ export class LocalObjectStorage {
       },
     });
 
-    await pipeline(stream, hashingStream, createWriteStream(targetPath));
+    try {
+      await pipeline(stream, hashingStream, createWriteStream(targetPath));
+    } catch (error) {
+      // 文件流中断时 createWriteStream 可能已经留下半个对象，不能让它冒充完整上传结果。
+      await rm(targetPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
     return {
       storageKey,
       checksum: hash.digest("hex"),
@@ -47,6 +53,10 @@ export class LocalObjectStorage {
 
   getObjectStream(storageKey: string, range?: { start: number; end: number }) {
     return createReadStream(this.resolveStoragePath(storageKey), range);
+  }
+
+  async deleteObject(storageKey: string) {
+    await rm(this.resolveStoragePath(storageKey), { force: true });
   }
 
   private resolveStoragePath(storageKey: string) {

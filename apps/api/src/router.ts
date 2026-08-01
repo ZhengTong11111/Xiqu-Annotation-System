@@ -428,15 +428,23 @@ export function registerApiRoutes(
       storageKey,
       Readable.from(file.file),
     );
-    return {
-      file: await repository.createUploadedFile(user, {
-        name: file.filename,
-        mimeType: file.mimetype,
-        size: stored.size,
-        storageKey: stored.storageKey,
-        checksum: stored.checksum,
-      }),
-    };
+    try {
+      return {
+        file: await repository.createUploadedFile(user, {
+          name: file.filename,
+          mimeType: file.mimetype,
+          size: stored.size,
+          storageKey: stored.storageKey,
+          checksum: stored.checksum,
+        }),
+      };
+    } catch (error) {
+      // PostgreSQL 无法回滚已经完成的文件系统写入；数据库落库失败时必须显式补偿。
+      await storage.deleteObject(stored.storageKey).catch((cleanupError) => {
+        request.log.error(cleanupError, "清理上传孤儿对象失败");
+      });
+      throw error;
+    }
   });
 
   app.post<{
@@ -469,7 +477,12 @@ export function registerApiRoutes(
     const range = parseRange(request.headers.range, file.size);
     reply.header("Accept-Ranges", "bytes");
     reply.header("Content-Type", file.mimeType);
-    if (range) {
+    if (range.kind === "invalid") {
+      reply.status(416);
+      reply.header("Content-Range", `bytes */${file.size}`);
+      return reply.send();
+    }
+    if (range.kind === "range") {
       reply.status(206);
       reply.header(
         "Content-Range",
@@ -645,18 +658,43 @@ function parseOptionalInteger(
   return parsed;
 }
 
-function parseRange(header: string | undefined, size: number) {
-  if (!header) return null;
+type ParsedRange =
+  | { kind: "none" }
+  | { kind: "invalid" }
+  | { kind: "range"; start: number; end: number };
+
+function parseRange(header: string | undefined, size: number): ParsedRange {
+  if (!header) return { kind: "none" };
   const match = /^bytes=(\d*)-(\d*)$/.exec(header);
-  if (!match) return null;
-  const start = match[1] ? Number(match[1]) : 0;
-  const end = match[2] ? Number(match[2]) : size - 1;
+  if (!match || (!match[1] && !match[2]) || size <= 0) {
+    return { kind: "invalid" };
+  }
+
+  // `bytes=-N` 表示最后 N 个字节，不是从 0 到 N；单独处理可避免视频尾部 seek 错位。
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isInteger(suffixLength) || suffixLength <= 0) {
+      return { kind: "invalid" };
+    }
+    return {
+      kind: "range",
+      start: Math.max(size - suffixLength, 0),
+      end: size - 1,
+    };
+  }
+
+  const start = Number(match[1]);
+  const requestedEnd = match[2] ? Number(match[2]) : size - 1;
   if (
     !Number.isInteger(start) ||
-    !Number.isInteger(end) ||
+    !Number.isInteger(requestedEnd) ||
     start < 0 ||
-    end < start ||
+    requestedEnd < start ||
     start >= size
-  ) return null;
-  return { start, end: Math.min(end, size - 1) };
+  ) return { kind: "invalid" };
+  return {
+    kind: "range",
+    start,
+    end: Math.min(requestedEnd, size - 1),
+  };
 }

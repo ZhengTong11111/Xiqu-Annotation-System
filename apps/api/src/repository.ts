@@ -14,7 +14,7 @@ import type {
 } from "@xiqu/shared";
 import { hashToken, verifyPassword } from "./auth.js";
 import type { ApiUser } from "./domain.js";
-import { forbidden, notFound, unauthorized } from "./errors.js";
+import { conflict, forbidden, notFound, unauthorized } from "./errors.js";
 import { ResourceAccessService } from "./resourceAccess.js";
 import { toFile, toPublicUser } from "./repositoryMappers.js";
 import { ensurePlatformSeedData } from "./repositorySeed.js";
@@ -226,20 +226,37 @@ export class PrismaPlatformRepository {
     input: CreateAnnotationOperationRequest,
   ) {
     await this.access.assertCapability(user, annotationFileId, "write");
-    const file = await this.prisma.annotationFile.findUnique({
-      where: { resourceId: annotationFileId },
-    });
-    if (!file) throw notFound("标注文件不存在。");
-    const row = await this.prisma.annotationOperation.create({
-      data: {
-        annotationFileId,
-        actorUserId: user.id,
-        baseRevision: input.baseRevision,
-        localRevision: input.localRevision ?? null,
-        action: input.action,
-        payload: input.payload as Prisma.InputJsonValue,
-        status: input.baseRevision === file.revision ? "accepted" : "superseded",
-      },
+    const row = await this.prisma.$transaction(async (transaction) => {
+      // 与完整 payload 保存锁定同一行，避免刚确认 baseRevision 后另一个事务先推进 revision。
+      await transaction.$queryRaw`
+        SELECT resource_id
+        FROM annotation_files
+        WHERE resource_id = ${annotationFileId}
+        FOR SHARE
+      `;
+      const file = await transaction.annotationFile.findUnique({
+        where: { resourceId: annotationFileId },
+      });
+      if (!file) throw notFound("标注文件不存在。");
+      if (input.baseRevision !== file.revision) {
+        // operation log 与完整 payload 保存共享同一个远端基线；记录过期操作会让客户端
+        // 误以为该操作已被服务器接受，因此必须保留客户端 pending 队列。
+        throw conflict("标注文件已被其他人修改，请刷新后再提交操作。", {
+          expectedRevision: file.revision,
+          receivedRevision: input.baseRevision,
+        });
+      }
+      return transaction.annotationOperation.create({
+        data: {
+          annotationFileId,
+          actorUserId: user.id,
+          baseRevision: input.baseRevision,
+          localRevision: input.localRevision ?? null,
+          action: input.action,
+          payload: input.payload as Prisma.InputJsonValue,
+          status: "accepted",
+        },
+      });
     });
     return this.mapOperation(row);
   }
@@ -252,16 +269,27 @@ export class PrismaPlatformRepository {
     targetUserId?: string | null;
     detail?: unknown;
   }) {
-    await this.prisma.auditLog.create({
-      data: {
+    try {
+      await this.prisma.auditLog.create({
+        data: {
+          action: input.action,
+          actorUserId: input.actorUserId ?? null,
+          resourceId: input.resourceId ?? null,
+          fileId: input.fileId ?? null,
+          targetUserId: input.targetUserId ?? null,
+          detail: (input.detail ?? {}) as Prisma.InputJsonValue,
+        },
+      });
+    } catch (error) {
+      // 多数审计在主业务事务提交后写入。此时返回 500 会诱导客户端重试已完成的写操作，
+      // 反而制造重复资源；记录最小上下文并保持主操作结果。
+      console.error("写入平台审计日志失败", {
         action: input.action,
         actorUserId: input.actorUserId ?? null,
         resourceId: input.resourceId ?? null,
-        fileId: input.fileId ?? null,
-        targetUserId: input.targetUserId ?? null,
-        detail: (input.detail ?? {}) as Prisma.InputJsonValue,
-      },
-    });
+        error,
+      });
+    }
   }
 
   private mapOperation(row: {

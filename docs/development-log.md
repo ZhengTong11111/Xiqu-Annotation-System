@@ -1,5 +1,76 @@
 # Development Log
 
+> 本文件是按时间追加的实施历史，不是当前架构规范。旧章节中的 Course/Assignment、
+> Workspace/Fork、ProjectMember、AnnotationVersion、ProjectVersion、PermissionGrant 和
+> 轨道/时间 scope 均可能已被后续重构撤销。当前设计以 `AGENTS.md`、
+> `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
+> 回写或删除历史记录。
+
+## 2026-08-01：R0 migration、API 集成测试与事务保护线
+
+Codex 在 `codex/backend-r0-stabilization` 分支开始实施新 roadmap 的 R0。本轮直接读取并审查
+Prisma schema、Fastify 装配、资源 service、ACL、对象存储和现有纯权限测试，没有修改时间轴。
+
+实现内容：
+
+- 从当前资源树 schema 生成 `20260801000000_resource_tree_baseline` migration，并新增
+  `db:deploy`。本地数据库账号没有 `CREATE DATABASE` 权限，因此测试采用独立 `api_test`
+  PostgreSQL schema；准备器硬性拒绝清理名称不以 `_test` 结尾的 schema。
+- 将 Fastify 应用装配抽到 `apps/api/src/app.ts`。生产 `server.ts` 只负责 Prisma/pool、seed、
+  listen 和进程关闭；测试通过同一 app factory 使用 `inject()`。
+- 新增 API 测试 tsconfig、临时对象存储和 `npm run test:api`。10 组集成测试覆盖认证、资源创建与
+  循环、ACL 继承/截断/过期/委派、移动继承重算、标注复制、并发 revision 保存、恢复快照、
+  回收站、媒体 Range、审计、operation 与 processing job 边界。
+- 目录命名写操作使用 transaction advisory lock；创建、重命名、移动、复制与恢复在锁内重新
+  检查名称。move 另有全局树结构事务锁，避免并发交叉移动同时通过循环检查。
+- 对象流写入失败会删除半文件；文件已写入而数据库落库失败时执行补偿删除。
+
+测试驱动修复：
+
+- 非法/越界 Range 不再退化为整文件 200，而是返回 416；`bytes=-N` 正确读取尾部字节。
+- stale annotation operation 不再以 `superseded` 状态返回 200，而是与 snapshot 保存一致返回
+  409，并在共享行锁下确认 revision。
+- 已删除容器的后代不再穿透到 all-projects 等普通视图。
+- 回收站资源恢复时若同目录已有同名替代项，返回 409，不制造两个活动同名项。
+- 审计日志写入失败不再把已经完成的主操作伪装成 500，避免客户端重试制造重复资源。
+
+验证：
+
+- baseline 首次 deploy 成功，重复 deploy 无 pending migration。
+- Prisma schema 与 `api_test` 数据库 diff 为零。
+- `npm run test:api`：10 组通过。
+- 仍需在最终审查阶段运行 permission tests、完整 build 和 diff check。
+- Prisma pg adapter 的并发事务测试会触发 `pg` 8 的 pg 9 前置弃用警告；堆栈位于上游 adapter，
+  当前没有测试失败或数据错误。
+
+## 2026-08-01：资源树重构后的文档基线重置
+
+本轮没有修改运行时代码。资源树与逐文件 ACL 已合并到 `main` 后，Codex 重新审查了 roadmap、
+权限文档、状态架构、README 和 AGENTS，发现旧 20 阶段路线与旧 `PermissionGrant + 轨道/时间
+scope` 文档仍可能让后续 agent 按已经删除的模型继续开发。
+
+完成内容：
+
+- 将 `docs/kunqu-platform-roadmap.md` 从累积式旧计划重写为当前 R0-R7 路线：先 migration 与
+  API 集成测试保护线，再补资源操作、恢复/比较、规模化、自动保存、实时协作、多模态任务和
+  学术数据库/生产部署。
+- 明确 Course/Assignment、Workspace/Fork、ProjectMember、AnnotationVersion、ProjectVersion
+  和旧轨道/时间 scope 只属于历史，不是待完成兼容项。
+- 重写 `docs/permissions-model.md`，统一为 `ResourceEntry + ResourcePermission` 的能力、继承、
+  ownership、复制/移动/保存与 fail-closed 语义。
+- 重写 `docs/state-architecture.md`，记录当前 `useProjectDocumentState()`、平台 revision save、
+  operation 摘要边界，以及自动保存/实时协作的真实前置条件。
+- 更新 `AGENTS.md`，移除旧 Workspace/Fork 发布流程验证项，并明确未来课堂流程应基于资源复制、
+  ACL、文件比较和确认层。
+- 将本机 `CLAUDE_WORK.md` 整体替换为下一轮 R0 详细任务单；该文件继续被 `.gitignore` 排除，
+  不作为历史日志提交。
+
+验证：
+
+- 全仓检索现行规范中的旧模型引用；保留的引用均用于明确“已删除/不得恢复”。
+- `git diff --check` 通过。
+- 本轮只有 Markdown 文档变更，未运行构建或数据库测试。
+
 ## 2026-07-27：资源管理器与逐文件账号权限重构
 
 本轮由 Codex 根据用户确认的新产品逻辑直接设计并实现，没有沿用上一轮

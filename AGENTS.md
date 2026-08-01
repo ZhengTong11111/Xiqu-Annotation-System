@@ -113,7 +113,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run db:generate`
 - `npm run db:push`
 - `npm run db:migrate`
+- `npm run db:deploy`
 - `npm run build`
+- `npm run test:api`
 - `npm run build:web`
 - `npm run build:api`
 - `npm run build:shared`
@@ -127,7 +129,10 @@ Backend local defaults:
 - Prisma/PostgreSQL defaults to `postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public`
 - local uploaded objects default to `./data/storage`
 - `.env` and `data/` are intentionally ignored
-- committed Prisma migrations do not currently exist; use `db:push` for local schema sync unless intentionally adding migrations
+- `prisma/migrations/20260801000000_resource_tree_baseline` is the committed resource-tree baseline;
+  use `db:deploy` for a fresh/current database and reserve `db:push` for disposable local schema experiments
+- `npm run test:api` applies migrations to the isolated `api_test` PostgreSQL schema; its safety guard rejects
+  destructive cleanup unless the schema name ends with `_test`
 
 ## Coding Style
 - React function components
@@ -347,7 +352,9 @@ Current platform UI capabilities:
 
 Important backend caveats:
 - real-time collaborative editing is not implemented yet
-- assignment/submission/review workflow, confirmed-annotation workflow, and real-time collaboration are not implemented yet
+- the removed Course/Assignment/Submission runtime is not a pending compatibility target; future classroom
+  distribution/review should build on resource copy, ACL, file comparison, and a separate confirmed-annotation layer
+- confirmed-annotation workflow and real-time collaboration are not implemented yet
 - annotation operations currently only record operation metadata/payload and do not mutate annotation-file payloads; full payloads are still written by the annotation-file save route
 - audit logs intentionally store summary `detail` objects, not full annotation payloads or uploaded file contents
 - global audit queries are admin-only; non-admin queries require effective resource visibility appropriate to the route
@@ -614,7 +621,7 @@ Use `docs/` as the handoff memory for long-running architecture work, especially
 
 Current docs:
 - `docs/kunqu-platform-roadmap.md`
-  - canonical roadmap and execution log for the backend/platform/database/collaboration transformation
+  - canonical current architecture and roadmap for the backend/platform/database/collaboration transformation
   - update it when changing API behavior, Prisma schema, platform UI workflows, storage, auth, permissions, document save/version semantics, or phase status
 - `docs/state-architecture.md`
   - state-management and document-state notes; update it when changing `useProjectDocumentState()` or history/sync semantics
@@ -734,7 +741,8 @@ Before finishing substantial work, manually sanity-check the relevant subset:
 - export SRT tracks
 - platform login/home/local-editor entry when touching platform UI
 - file upload + MP4 Range seeking when touching backend media/file serving
-- workspace save, annotation-version completion/Fork, and project-version publish when touching backend version APIs
+- resource-tree create/move/copy/trash/restore, per-resource ACL inheritance, annotation-file revision save,
+  and recovery snapshots when touching platform persistence APIs
 - audit log list and annotation operation create/list when touching platform governance or sync APIs
 - bad platform API inputs return `400`, stale document revisions return `409`, and normal edit/save paths do not regress to `500`
 - `docs/kunqu-platform-roadmap.md` update when backend/platform/database behavior changes

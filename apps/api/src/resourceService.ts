@@ -59,6 +59,12 @@ export class ResourceService {
     });
     const visible: Array<{ row: ResourceRow; permission: EffectiveResourcePermission }> = [];
     for (const row of rows) {
+      // 软删除容器时不逐条改写整棵子树；所有普通视图因此必须排除拥有已删除祖先的后代。
+      // 回收站只展示自身带 trashedAt 的入口，不在这里重复过滤。
+      if (
+        options.view !== "trash" &&
+        await this.hasTrashedAncestor(row.parentId)
+      ) continue;
       const permission = await this.access.getEffectivePermission(user, row.id);
       if (permission.capabilities.includes("read")) {
         visible.push({ row, permission });
@@ -102,18 +108,22 @@ export class ResourceService {
       throw forbidden("只有管理员可以在资源根目录创建项目或文件夹。");
     }
     const name = this.validateName(input.name);
-    await this.assertNameAvailable(input.parentId ?? null, name);
-    const resource = await this.prisma.resourceEntry.create({
-      data: {
-        parentId: input.parentId ?? null,
-        type: input.type,
-        name,
-        ownerUserId: user.id,
-        projectMetadata: input.type === "project"
-          ? { create: { description: input.description ?? null } }
-          : undefined,
-      },
-      include: resourceInclude,
+    const parentId = input.parentId ?? null;
+    const resource = await this.prisma.$transaction(async (transaction) => {
+      await this.lockParentNamespaces(transaction, [parentId]);
+      await this.assertNameAvailable(transaction, parentId, name);
+      return transaction.resourceEntry.create({
+        data: {
+          parentId,
+          type: input.type,
+          name,
+          ownerUserId: user.id,
+          projectMetadata: input.type === "project"
+            ? { create: { description: input.description ?? null } }
+            : undefined,
+        },
+        include: resourceInclude,
+      });
     });
     return this.mapResource(
       user,
@@ -129,27 +139,34 @@ export class ResourceService {
     await this.assertContainer(input.parentId);
     await this.access.assertCapability(user, input.parentId, "create_child");
     const name = this.validateName(input.name);
-    await this.assertNameAvailable(input.parentId, name);
-    const resource = await this.prisma.resourceEntry.create({
-      data: {
-        parentId: input.parentId,
-        type: "annotation_file",
+    const resource = await this.prisma.$transaction(async (transaction) => {
+      await this.lockParentNamespaces(transaction, [input.parentId]);
+      await this.assertNameAvailable(
+        transaction,
+        input.parentId,
         name,
-        ownerUserId: user.id,
-        annotationFile: {
-          create: {
-            payload: input.payload as Prisma.InputJsonValue,
-            mediaResourceId: input.mediaResourceId ?? null,
-            lastEditedBy: user.id,
+      );
+      return transaction.resourceEntry.create({
+        data: {
+          parentId: input.parentId,
+          type: "annotation_file",
+          name,
+          ownerUserId: user.id,
+          annotationFile: {
+            create: {
+              payload: input.payload as Prisma.InputJsonValue,
+              mediaResourceId: input.mediaResourceId ?? null,
+              lastEditedBy: user.id,
+            },
           },
         },
-      },
-      include: {
-        ...resourceInclude,
-        annotationFile: {
-          include: { lastEditor: { include: { roles: true } } },
+        include: {
+          ...resourceInclude,
+          annotationFile: {
+            include: { lastEditor: { include: { roles: true } } },
+          },
         },
-      },
+      });
     });
     return this.mapAnnotationFile<TPayload>(
       user,
@@ -172,22 +189,29 @@ export class ResourceService {
       throw forbidden("只能把自己上传的文件加入资源树。");
     }
     const name = this.validateName(input.name ?? file.name);
-    await this.assertNameAvailable(input.parentId, name);
-    const resource = await this.prisma.resourceEntry.create({
-      data: {
-        parentId: input.parentId,
-        type: "media_file",
+    const resource = await this.prisma.$transaction(async (transaction) => {
+      await this.lockParentNamespaces(transaction, [input.parentId]);
+      await this.assertNameAvailable(
+        transaction,
+        input.parentId,
         name,
-        ownerUserId: user.id,
-        mediaFile: {
-          create: {
-            fileId: file.id,
-            mimeType: file.mimeType,
-            size: file.size,
+      );
+      return transaction.resourceEntry.create({
+        data: {
+          parentId: input.parentId,
+          type: "media_file",
+          name,
+          ownerUserId: user.id,
+          mediaFile: {
+            create: {
+              fileId: file.id,
+              mimeType: file.mimeType,
+              size: file.size,
+            },
           },
         },
-      },
-      include: resourceInclude,
+        include: resourceInclude,
+      });
     });
     return this.mapResource(
       user,
@@ -327,23 +351,32 @@ export class ResourceService {
     if (input.name !== undefined) {
       await this.access.assertCapability(user, resourceId, "write");
     }
-    const current = await this.prisma.resourceEntry.findUnique({
-      where: { id: resourceId },
-    });
-    if (!current) throw notFound("资源不存在。");
-    if (input.name !== undefined) {
-      const name = this.validateName(input.name);
-      await this.assertNameAvailable(current.parentId, name, resourceId);
-    }
+    const normalizedName = input.name === undefined
+      ? undefined
+      : this.validateName(input.name);
     if (input.archived !== undefined) {
       await this.access.assertCapability(user, resourceId, "delete");
     }
     await this.prisma.$transaction(async (transaction) => {
+      await this.lockResourceRow(transaction, resourceId);
+      const latest = await transaction.resourceEntry.findUnique({
+        where: { id: resourceId },
+      });
+      if (!latest) throw notFound("资源不存在。");
+      if (normalizedName !== undefined) {
+        await this.lockParentNamespaces(transaction, [latest.parentId]);
+        await this.assertNameAvailable(
+          transaction,
+          latest.parentId,
+          normalizedName,
+          resourceId,
+        );
+      }
       if (input.name !== undefined || input.archived !== undefined) {
         await transaction.resourceEntry.update({
           where: { id: resourceId },
           data: {
-            name: input.name?.trim(),
+            name: normalizedName,
             archivedAt: input.archived ? new Date() : null,
           },
         });
@@ -369,23 +402,53 @@ export class ResourceService {
     input: MoveResourceRequest,
   ) {
     await this.access.assertCapability(user, resourceId, "move");
-    const resource = await this.prisma.resourceEntry.findUnique({
-      where: { id: resourceId },
-    });
-    if (!resource) throw notFound("资源不存在。");
     if (input.parentId) {
       await this.assertContainer(input.parentId);
       await this.access.assertCapability(user, input.parentId, "create_child");
-      if (await this.isDescendant(input.parentId, resourceId)) {
-        throw badRequest("不能把文件夹移动到它自己的子目录中。");
-      }
     } else if (!this.access.isGlobalAdmin(user)) {
       throw forbidden("只有管理员可以把资源移动到根目录。");
     }
-    await this.assertNameAvailable(input.parentId, resource.name, resourceId);
-    await this.prisma.resourceEntry.update({
-      where: { id: resourceId },
-      data: { parentId: input.parentId },
+    await this.prisma.$transaction(async (transaction) => {
+      // 所有 move 共用一把树结构锁，避免 A->B 与 B->A 同时通过循环检查。
+      await transaction.$queryRaw`
+        SELECT 1::integer AS locked
+        FROM pg_advisory_xact_lock(hashtext('xiqu:resource-tree:move'))
+      `;
+      await this.lockResourceRow(transaction, resourceId);
+      const latest = await transaction.resourceEntry.findUnique({
+        where: { id: resourceId },
+      });
+      if (!latest) throw notFound("资源不存在。");
+      if (input.parentId) {
+        const target = await transaction.resourceEntry.findUnique({
+          where: { id: input.parentId },
+        });
+        if (!target) throw notFound("目标目录不存在。");
+        if (target.type !== "folder" && target.type !== "project") {
+          throw badRequest("目标资源不能包含子文件。");
+        }
+        if (target.trashedAt) throw badRequest("不能移动到回收站资源中。");
+      }
+      await this.lockParentNamespaces(transaction, [
+        latest.parentId,
+        input.parentId,
+      ]);
+      if (
+        input.parentId &&
+        await this.isDescendant(transaction, input.parentId, resourceId)
+      ) {
+        throw badRequest("不能把文件夹移动到它自己的子目录中。");
+      }
+      await this.assertNameAvailable(
+        transaction,
+        input.parentId,
+        latest.name,
+        resourceId,
+      );
+      await transaction.resourceEntry.update({
+        where: { id: resourceId },
+        data: { parentId: input.parentId },
+      });
     });
     return this.getMappedResource(user, resourceId);
   }
@@ -406,25 +469,31 @@ export class ResourceService {
     if (source.type !== "annotation_file" || !source.annotationFile) {
       throw badRequest("当前阶段仅支持复制标注文件。");
     }
-    const name = await this.availableCopyName(
-      input.parentId,
-      input.name?.trim() || source.name,
-    );
-    const created = await this.prisma.resourceEntry.create({
-      data: {
-        parentId: input.parentId,
-        type: "annotation_file",
-        name,
-        ownerUserId: user.id,
-        annotationFile: {
-          create: {
-            payload: source.annotationFile.payload as Prisma.InputJsonValue,
-            revision: 1,
-            mediaResourceId: source.annotationFile.mediaResourceId,
-            lastEditedBy: user.id,
+    const sourceFile = source.annotationFile;
+    const requestedName = input.name?.trim() || source.name;
+    const created = await this.prisma.$transaction(async (transaction) => {
+      await this.lockParentNamespaces(transaction, [input.parentId]);
+      const name = await this.availableCopyName(
+        transaction,
+        input.parentId,
+        requestedName,
+      );
+      return transaction.resourceEntry.create({
+        data: {
+          parentId: input.parentId,
+          type: "annotation_file",
+          name,
+          ownerUserId: user.id,
+          annotationFile: {
+            create: {
+              payload: sourceFile.payload as Prisma.InputJsonValue,
+              revision: 1,
+              mediaResourceId: sourceFile.mediaResourceId,
+              lastEditedBy: user.id,
+            },
           },
         },
-      },
+      });
     });
     // 复制不携带源文件直接 ACL；新副本由复制者拥有，并继承目标目录权限。
     return this.getMappedResource(user, created.id);
@@ -432,9 +501,25 @@ export class ResourceService {
 
   async setTrashed(user: ApiUser, resourceId: string, trashed: boolean) {
     await this.access.assertCapability(user, resourceId, "delete");
-    await this.prisma.resourceEntry.update({
-      where: { id: resourceId },
-      data: { trashedAt: trashed ? new Date() : null },
+    await this.prisma.$transaction(async (transaction) => {
+      await this.lockResourceRow(transaction, resourceId);
+      const current = await transaction.resourceEntry.findUnique({
+        where: { id: resourceId },
+      });
+      if (!current) throw notFound("资源不存在。");
+      await this.lockParentNamespaces(transaction, [current.parentId]);
+      if (!trashed) {
+        await this.assertNameAvailable(
+          transaction,
+          current.parentId,
+          current.name,
+          resourceId,
+        );
+      }
+      await transaction.resourceEntry.update({
+        where: { id: resourceId },
+        data: { trashedAt: trashed ? new Date() : null },
+      });
     });
     return this.getMappedResource(user, resourceId);
   }
@@ -765,11 +850,12 @@ export class ResourceService {
   }
 
   private async assertNameAvailable(
+    database: Prisma.TransactionClient,
     parentId: string | null,
     name: string,
     excludeId?: string,
   ) {
-    const duplicate = await this.prisma.resourceEntry.findFirst({
+    const duplicate = await database.resourceEntry.findFirst({
       where: {
         parentId,
         name: { equals: name, mode: "insensitive" },
@@ -780,7 +866,11 @@ export class ResourceService {
     if (duplicate) throw conflict("同一目录中已存在同名资源。");
   }
 
-  private async availableCopyName(parentId: string, originalName: string) {
+  private async availableCopyName(
+    database: Prisma.TransactionClient,
+    parentId: string,
+    originalName: string,
+  ) {
     const dot = originalName.lastIndexOf(".");
     const stem = dot > 0 ? originalName.slice(0, dot) : originalName;
     const extension = dot > 0 ? originalName.slice(dot) : "";
@@ -788,7 +878,7 @@ export class ResourceService {
       const candidate = index === 1
         ? `${stem} 副本${extension}`
         : `${stem} 副本 ${index}${extension}`;
-      const exists = await this.prisma.resourceEntry.findFirst({
+      const exists = await database.resourceEntry.findFirst({
         where: {
           parentId,
           name: { equals: candidate, mode: "insensitive" },
@@ -800,16 +890,64 @@ export class ResourceService {
     throw conflict("无法生成可用的副本名称。");
   }
 
-  private async isDescendant(candidateId: string, ancestorId: string) {
+  private async isDescendant(
+    database: Prisma.TransactionClient,
+    candidateId: string,
+    ancestorId: string,
+  ) {
     let currentId: string | null = candidateId;
     while (currentId) {
       if (currentId === ancestorId) return true;
       const row: { parentId: string | null } | null =
-        await this.prisma.resourceEntry.findUnique({
+        await database.resourceEntry.findUnique({
         where: { id: currentId },
         select: { parentId: true },
       });
       currentId = row?.parentId ?? null;
+    }
+    return false;
+  }
+
+  private async lockParentNamespaces(
+    transaction: Prisma.TransactionClient,
+    parentIds: Array<string | null>,
+  ) {
+    // 同一事务可能同时涉及源、目标目录；固定排序可避免两个 move 以相反顺序拿锁而死锁。
+    const lockKeys = [...new Set(parentIds.map((id) =>
+      `xiqu:resource-parent:${id ?? "<root>"}`))].sort();
+    for (const lockKey of lockKeys) {
+      await transaction.$queryRaw`
+        SELECT 1::integer AS locked
+        FROM pg_advisory_xact_lock(hashtext(${lockKey}))
+      `;
+    }
+  }
+
+  private async lockResourceRow(
+    transaction: Prisma.TransactionClient,
+    resourceId: string,
+  ) {
+    // 资源改名、移动和回收都依赖当前父目录；先锁定资源行，避免读取后被并发请求换父级。
+    const rows = await transaction.$queryRaw<Array<{ id: string }>>`
+      SELECT id
+      FROM resource_entries
+      WHERE id = ${resourceId}
+      FOR UPDATE
+    `;
+    if (!rows.length) throw notFound("资源不存在。");
+  }
+
+  private async hasTrashedAncestor(parentId: string | null) {
+    let currentId = parentId;
+    while (currentId) {
+      const row: { parentId: string | null; trashedAt: Date | null } | null =
+        await this.prisma.resourceEntry.findUnique({
+          where: { id: currentId },
+          select: { parentId: true, trashedAt: true },
+        });
+      if (!row) return true;
+      if (row.trashedAt) return true;
+      currentId = row.parentId;
     }
     return false;
   }
