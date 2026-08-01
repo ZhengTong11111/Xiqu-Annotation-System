@@ -1,10 +1,13 @@
+import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
+  AlertTriangle,
   ChevronDown,
   ChevronRight,
   Clock3,
   History,
   RefreshCw,
+  RotateCcw,
   X,
 } from "lucide-react";
 import {
@@ -15,11 +18,15 @@ import {
   useState,
 } from "react";
 import type {
+  AnnotationFile,
   AnnotationRecoverySnapshotDetail,
   AnnotationRecoverySnapshotSummary,
   ResourceEntry,
 } from "@xiqu/shared";
-import type { PlatformClient } from "../api/platformClient";
+import {
+  PlatformApiError,
+  type PlatformClient,
+} from "../api/platformClient";
 import { formatResourceDate } from "./ResourceItem";
 import {
   buildRecoverySnapshotPreview,
@@ -30,6 +37,7 @@ import {
 export function ResourceRecoveryHistory(props: {
   client: PlatformClient;
   resource: ResourceEntry;
+  onRestored?: (file: AnnotationFile<unknown>) => void | Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [summaries, setSummaries] = useState<
@@ -45,9 +53,16 @@ export function ResourceRecoveryHistory(props: {
   >({});
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [currentRevision, setCurrentRevision] = useState(
+    props.resource.revision ?? 0,
+  );
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
   const listRequestGenerationRef = useRef(0);
   const detailRequestGenerationRef = useRef(0);
-  const canReadHistory = props.resource.permission.capabilities.includes(
+  const restoreRequestGenerationRef = useRef(0);
+  const canUseRecoveryHistory = props.resource.permission.capabilities.includes(
     "write",
   );
 
@@ -55,6 +70,7 @@ export function ResourceRecoveryHistory(props: {
   useEffect(() => {
     listRequestGenerationRef.current += 1;
     detailRequestGenerationRef.current += 1;
+    restoreRequestGenerationRef.current += 1;
     setExpanded(false);
     setSummaries([]);
     setListLoaded(false);
@@ -63,11 +79,20 @@ export function ResourceRecoveryHistory(props: {
     setDetails({});
     setDetailLoadingId(null);
     setDetailError(null);
+    setCurrentRevision(props.resource.revision ?? 0);
+    setRestoreConfirmOpen(false);
+    setRestoring(false);
+    setRestoreError(null);
   }, [props.resource.id]);
+
+  // 外层资源刷新可能带回更高 revision，但不应因此折叠用户正在查看的历史列表。
+  useEffect(() => {
+    setCurrentRevision(props.resource.revision ?? 0);
+  }, [props.resource.revision]);
 
   // 摘要仅在首次展开或用户刷新时加载，不跟随资源列表的普通刷新反复请求。
   const loadSummaries = useCallback(async () => {
-    if (!canReadHistory || listLoading) return;
+    if (!canUseRecoveryHistory || listLoading) return;
     const generation = ++listRequestGenerationRef.current;
     setListLoading(true);
     setListError(null);
@@ -87,7 +112,7 @@ export function ResourceRecoveryHistory(props: {
       }
     }
   }, [
-    canReadHistory,
+    canUseRecoveryHistory,
     listLoading,
     props.client,
     props.resource.id,
@@ -129,8 +154,38 @@ export function ResourceRecoveryHistory(props: {
     }
   };
 
+  // 恢复必须把用户预览时看到的当前 revision 交给服务端，防止并发保存被静默覆盖。
+  const restoreSelectedSnapshot = async () => {
+    if (!selectedSummary || restoring || currentRevision < 1) return;
+    const generation = ++restoreRequestGenerationRef.current;
+    setRestoring(true);
+    setRestoreError(null);
+    try {
+      const restored = await props.client.restoreAnnotationRecoverySnapshot(
+        props.resource.id,
+        selectedSummary.id,
+        { baseRevision: currentRevision },
+      );
+      if (generation !== restoreRequestGenerationRef.current) return;
+      setCurrentRevision(restored.revision);
+      setRestoreConfirmOpen(false);
+      setSelectedSummary(null);
+      setDetails({});
+      await props.onRestored?.(restored);
+      if (generation !== restoreRequestGenerationRef.current) return;
+      await loadSummaries();
+    } catch (error) {
+      if (generation !== restoreRequestGenerationRef.current) return;
+      setRestoreError(describeRestoreError(error));
+    } finally {
+      if (generation === restoreRequestGenerationRef.current) {
+        setRestoring(false);
+      }
+    }
+  };
+
   // 没有编辑权限的账号只能看到明确权限状态，浏览器不会发送必然失败的历史请求。
-  if (!canReadHistory) {
+  if (!canUseRecoveryHistory) {
     return (
       <section className="resource-recovery-history">
         <div className="resource-recovery-heading">
@@ -213,19 +268,32 @@ export function ResourceRecoveryHistory(props: {
         </div>
       ) : null}
 
-      {/* 预览对话框只消费历史详情，不暴露恢复、保存或覆盖当前文件的命令。 */}
+      {/* 预览与恢复确认分层，避免用户浏览历史时误触覆盖当前内容。 */}
       <RecoverySnapshotDialog
+        resourceName={props.resource.name}
         summary={selectedSummary}
         detail={selectedSummary ? details[selectedSummary.id] : undefined}
         loading={Boolean(
           selectedSummary && detailLoadingId === selectedSummary.id,
         )}
         error={detailError}
+        currentRevision={currentRevision}
+        restoreConfirmOpen={restoreConfirmOpen}
+        restoring={restoring}
+        restoreError={restoreError}
+        onRestoreConfirmOpenChange={(open) => {
+          if (restoring) return;
+          setRestoreConfirmOpen(open);
+          if (!open) setRestoreError(null);
+        }}
+        onRestore={() => void restoreSelectedSnapshot()}
         onClose={() => {
           detailRequestGenerationRef.current += 1;
           setSelectedSummary(null);
           setDetailLoadingId(null);
           setDetailError(null);
+          setRestoreConfirmOpen(false);
+          setRestoreError(null);
         }}
         onRetry={selectedSummary
           ? () => {
@@ -239,10 +307,17 @@ export function ResourceRecoveryHistory(props: {
 
 // 对话框把未知 payload 转成安全摘要；转换失败时仍保留快照元数据供用户定位。
 function RecoverySnapshotDialog(props: {
+  resourceName: string;
   summary: AnnotationRecoverySnapshotSummary | null;
   detail?: AnnotationRecoverySnapshotDetail<unknown>;
   loading: boolean;
   error: string | null;
+  currentRevision: number;
+  restoreConfirmOpen: boolean;
+  restoring: boolean;
+  restoreError: string | null;
+  onRestoreConfirmOpenChange: (open: boolean) => void;
+  onRestore: () => void;
   onClose: () => void;
   onRetry?: () => void;
 }) {
@@ -256,7 +331,7 @@ function RecoverySnapshotDialog(props: {
     <Dialog.Root
       open={Boolean(props.summary)}
       onOpenChange={(open) => {
-        if (!open) props.onClose();
+        if (!open && !props.restoring) props.onClose();
       }}
     >
       <Dialog.Portal>
@@ -313,9 +388,118 @@ function RecoverySnapshotDialog(props: {
               </div>
             ) : null}
           </div>
+
+          {/* 快照可以无法生成结构化预览，但仍可能是可恢复的旧数据，因此只警告而不武断禁用。 */}
+          <footer className="resource-recovery-dialog-footer">
+            <span>
+              当前文件修订 {props.currentRevision}
+              {preview && !preview.ok ? " · 快照格式无法预览" : ""}
+            </span>
+            <button
+              type="button"
+              className="primary"
+              disabled={!props.detail || props.loading || Boolean(props.error)}
+              onClick={() => props.onRestoreConfirmOpenChange(true)}
+            >
+              <RotateCcw size={15} />
+              恢复此快照
+            </button>
+          </footer>
         </Dialog.Content>
       </Dialog.Portal>
+
+      {/* 二次确认使用可访问的 AlertDialog，焦点锁定和 Escape 行为由成熟依赖统一处理。 */}
+      <RestoreSnapshotAlertDialog
+        open={props.restoreConfirmOpen}
+        resourceName={props.resourceName}
+        summary={props.summary}
+        currentRevision={props.currentRevision}
+        previewUnavailable={Boolean(preview && !preview.ok)}
+        restoring={props.restoring}
+        error={props.restoreError}
+        onOpenChange={props.onRestoreConfirmOpenChange}
+        onRestore={props.onRestore}
+      />
     </Dialog.Root>
+  );
+}
+
+// 确认框明确说明恢复会生成新 revision，而不是回退或删除当前历史。
+function RestoreSnapshotAlertDialog(props: {
+  open: boolean;
+  resourceName: string;
+  summary: AnnotationRecoverySnapshotSummary | null;
+  currentRevision: number;
+  previewUnavailable: boolean;
+  restoring: boolean;
+  error: string | null;
+  onOpenChange: (open: boolean) => void;
+  onRestore: () => void;
+}) {
+  return (
+    <AlertDialog.Root
+      open={props.open}
+      onOpenChange={(open) => {
+        if (!props.restoring) props.onOpenChange(open);
+      }}
+    >
+      <AlertDialog.Portal>
+        <AlertDialog.Overlay className="resource-alert-backdrop" />
+        <AlertDialog.Content className="resource-restore-alert">
+          <header>
+            <AlertTriangle size={21} />
+            <span>
+              <AlertDialog.Title>恢复历史内容？</AlertDialog.Title>
+              <AlertDialog.Description>
+                当前内容会先自动保存为恢复快照，然后生成一个新的修订。
+              </AlertDialog.Description>
+            </span>
+          </header>
+          <dl>
+            <dt>标注文件</dt>
+            <dd>{props.resourceName}</dd>
+            <dt>当前修订</dt>
+            <dd>{props.currentRevision}</dd>
+            <dt>恢复来源</dt>
+            <dd>修订 {props.summary?.revision ?? "—"}</dd>
+            <dt>快照创建者</dt>
+            <dd>{props.summary?.creator.displayName ?? "—"}</dd>
+            <dt>快照时间</dt>
+            <dd>{props.summary
+              ? formatResourceDate(props.summary.createdAt)
+              : "—"}</dd>
+          </dl>
+          {props.previewUnavailable ? (
+            <p className="resource-restore-warning">
+              此快照无法安全预览。恢复后可能需要旧版工具、重新关联视频或人工修复。
+            </p>
+          ) : null}
+          {props.error ? (
+            <p className="resource-restore-error">{props.error}</p>
+          ) : null}
+          <footer>
+            <AlertDialog.Cancel asChild>
+              <button type="button" disabled={props.restoring}>取消</button>
+            </AlertDialog.Cancel>
+            <AlertDialog.Action asChild>
+              <button
+                type="button"
+                className="danger"
+                disabled={props.restoring}
+                onClick={(event) => {
+                  // 请求完成前阻止 Radix 自动关闭，失败信息才能留在当前确认上下文中。
+                  event.preventDefault();
+                  props.onRestore();
+                }}
+              >
+                <RotateCcw size={15} />
+                {props.restoring ? "正在恢复..." : "确认恢复"}
+              </button>
+            </AlertDialog.Action>
+          </footer>
+        </AlertDialog.Content>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
   );
 }
 
@@ -364,10 +548,19 @@ function RecoveryProjectSummary(props: {
 // 服务端 reason 使用稳定机器值，UI 在一处映射为可读中文。
 function formatSnapshotReason(reason?: string | null) {
   if (!reason || reason === "save") return "保存前自动快照";
+  if (reason === "before_snapshot_restore") return "恢复前保护快照";
   return reason;
 }
 
 // 网络与权限错误统一收敛为 Inspector 内联信息，不污染资源列表的全局错误状态。
 function describeRecoveryError(error: unknown) {
   return error instanceof Error ? error.message : "读取恢复历史失败。";
+}
+
+// revision 冲突需要给出可操作提示，其他服务端错误则保留原始用户可见信息。
+function describeRestoreError(error: unknown) {
+  if (error instanceof PlatformApiError && error.status === 409) {
+    return "当前文件已被其他保存推进。请关闭预览、刷新文件信息后重新选择快照。";
+  }
+  return error instanceof Error ? error.message : "恢复快照失败。";
 }

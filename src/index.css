@@ -1404,7 +1404,7 @@ select {
   top: 50%;
   left: 50%;
   display: grid;
-  grid-template-rows: auto auto minmax(180px, 1fr);
+  grid-template-rows: auto auto minmax(180px, 1fr) auto;
   width: min(620px, calc(100vw - 32px));
   max-height: min(76vh, 680px);
   overflow: hidden;
@@ -1500,6 +1500,159 @@ select {
   min-height: 160px;
   color: #718095;
   font-size: 13px;
+}
+
+/* 恢复命令固定在预览底部，和只读摘要滚动区分离，避免长摘要把关键操作挤出视口。 */
+.resource-recovery-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 54px;
+  padding: 9px 14px;
+  color: #758297;
+  background: #eef2f7;
+  border-top: 1px solid #d2dae5;
+  font-size: 11px;
+}
+
+.resource-recovery-dialog-footer button,
+.resource-restore-alert footer button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  color: #425168;
+  background: #fff;
+  border: 1px solid #c7d1de;
+  border-radius: 5px;
+}
+
+.resource-recovery-dialog-footer button.primary {
+  color: #fff;
+  background: #276ba8;
+  border-color: #276ba8;
+}
+
+.resource-recovery-dialog-footer button:disabled,
+.resource-restore-alert footer button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* 恢复确认覆盖在快照预览之上，独立层级确保焦点和危险操作不会落回底层 Dialog。 */
+.resource-alert-backdrop {
+  position: fixed;
+  z-index: 12002;
+  inset: 0;
+  background: rgb(16 27 42 / 42%);
+  backdrop-filter: blur(4px);
+}
+
+.resource-restore-alert {
+  position: fixed;
+  z-index: 12003;
+  top: 50%;
+  left: 50%;
+  width: min(440px, calc(100vw - 32px));
+  overflow: hidden;
+  color: #29384d;
+  background: #f8fafc;
+  border: 1px solid #c5cfdb;
+  border-radius: 8px;
+  box-shadow: 0 24px 64px rgb(16 27 42 / 28%);
+  outline: none;
+  transform: translate(-50%, -50%);
+}
+
+.resource-restore-alert > header {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 16px;
+  background: #fff8e9;
+  border-bottom: 1px solid #e5d7bb;
+}
+
+.resource-restore-alert > header > svg {
+  flex: 0 0 auto;
+  color: #a7681a;
+}
+
+.resource-restore-alert > header > span {
+  display: grid;
+  gap: 4px;
+}
+
+.resource-restore-alert h2,
+.resource-restore-alert p {
+  margin: 0;
+}
+
+.resource-restore-alert h2 {
+  font-size: 15px;
+}
+
+.resource-restore-alert header p {
+  color: #746955;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.resource-restore-alert dl {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 0;
+  padding: 15px 16px;
+  font-size: 12px;
+}
+
+.resource-restore-alert dt {
+  color: #8490a1;
+}
+
+.resource-restore-alert dd {
+  margin: 0;
+  color: #405068;
+}
+
+.resource-restore-warning,
+.resource-restore-error {
+  margin: 0 16px 12px !important;
+  padding: 9px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.resource-restore-warning {
+  color: #805817;
+  background: #fff5d9;
+  border: 1px solid #ead7a5;
+}
+
+.resource-restore-error {
+  color: #98363b;
+  background: #fff0f1;
+  border: 1px solid #e6c3c5;
+}
+
+.resource-restore-alert > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #eef2f7;
+  border-top: 1px solid #d2dae5;
+}
+
+.resource-restore-alert footer button.danger {
+  color: #fff;
+  background: #a84045;
+  border-color: #a84045;
 }
 
 .resource-recovery-summary dl {

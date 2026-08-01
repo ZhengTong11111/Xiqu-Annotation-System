@@ -946,7 +946,7 @@ export function ResourceExplorer(props: {
           client={props.client}
           resource={selected}
           readOnly={isTrashView}
-          onChanged={() => void refreshCurrentView()}
+          onChanged={() => refreshCurrentView()}
           onError={setError}
         />
       </section>
@@ -1136,7 +1136,7 @@ function ResourceInspector(props: {
   client: PlatformClient;
   resource: ResourceEntry | null;
   readOnly: boolean;
-  onChanged: () => void;
+  onChanged: () => void | Promise<void>;
   onError: (message: string | null) => void;
 }) {
   const [matrix, setMatrix] = useState<ResourcePermissionMatrixRow[]>([]);
@@ -1202,6 +1202,7 @@ function ResourceInspector(props: {
           key={props.resource.id}
           client={props.client}
           resource={props.resource}
+          onRestored={() => props.onChanged()}
         />
       ) : null}
       <div className="resource-inspector-section-heading">

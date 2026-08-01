@@ -22,6 +22,7 @@ import type {
   ResourceListPage,
   ResourcePermissionMatrixRow,
   ResourcePermissionRecord,
+  RestoreAnnotationRecoverySnapshotRequest,
   SaveAnnotationFileRequest,
   UpdateResourceRequest,
   UpsertResourcePermissionRequest,
@@ -274,21 +275,15 @@ export class ResourceService {
     resourceId: string,
     input: SaveAnnotationFileRequest<TPayload>,
   ): Promise<AnnotationFile<TPayload>> {
+    // 锁外预检用于快速拒绝常见无权限请求；事务内仍会在树结构稳定后再次复核。
     await this.access.assertCapability(user, resourceId, "write");
     await this.prisma.$transaction(async (transaction) => {
-      // 先锁住这一份标注文件。仅把 revision 放进 UPDATE 条件还不够：
-      // 两个事务可能同时尝试创建同一 revision 的恢复快照，导致唯一键错误先于
-      // 乐观锁冲突发生。行锁让后到的事务等待，并在锁释放后读到最新 revision。
-      await transaction.$queryRaw`
-        SELECT resource_id
-        FROM annotation_files
-        WHERE resource_id = ${resourceId}
-        FOR UPDATE
-      `;
-      const current = await transaction.annotationFile.findUnique({
-        where: { resourceId },
-      });
-      if (!current) throw notFound("标注文件不存在。");
+      // 普通保存与快照恢复共用同一锁顺序，避免保存期间资源被移动或藏入回收站。
+      const current = await this.lockAnnotationFileForContentMutation(
+        transaction,
+        user,
+        resourceId,
+      );
       if (current.revision !== input.baseRevision) {
         throw conflict("标注文件已被其他人修改，请刷新后再保存。", {
           expectedRevision: current.revision,
@@ -338,6 +333,16 @@ export class ResourceService {
       await transaction.resourceEntry.update({
         where: { id: resourceId },
         data: { updatedAt: new Date() },
+      });
+
+      // 保存审计与 payload 写入同属一个事务，失败时不会出现“已保存但无审计”的半完成状态。
+      await transaction.auditLog.create({
+        data: {
+          action: "annotation_file_save",
+          actorUserId: user.id,
+          resourceId,
+          detail: { revision: current.revision + 1 },
+        },
       });
     });
     return this.getAnnotationFile<TPayload>(user, resourceId);
@@ -403,6 +408,100 @@ export class ResourceService {
       reason: row.reason,
       createdAt: row.createdAt.toISOString(),
     };
+  }
+
+  // 恢复历史不是 revision 回退，而是把目标 payload 写成新的当前 revision，并保留恢复前内容。
+  async restoreAnnotationRecoverySnapshot<TPayload>(
+    user: ApiUser,
+    resourceId: string,
+    snapshotId: string,
+    input: RestoreAnnotationRecoverySnapshotRequest,
+  ): Promise<AnnotationFile<TPayload>> {
+    // 锁外预检减少无权限请求占用事务；真正安全边界仍在锁内 helper 中。
+    await this.access.assertCapability(user, resourceId, "write");
+    await this.prisma.$transaction(async (transaction) => {
+      const current = await this.lockAnnotationFileForContentMutation(
+        transaction,
+        user,
+        resourceId,
+      );
+      if (current.revision !== input.baseRevision) {
+        throw conflict("标注文件已被其他人修改，请刷新后再恢复。", {
+          expectedRevision: current.revision,
+          receivedRevision: input.baseRevision,
+        });
+      }
+
+      // 快照 id 必须和路径中的文件 id 同时匹配，不能借其他文件的 id 读取或恢复 payload。
+      const sourceSnapshot = await transaction.annotationRecoverySnapshot
+        .findFirst({
+          where: {
+            id: snapshotId,
+            annotationFileId: resourceId,
+          },
+        });
+      if (!sourceSnapshot) throw notFound("恢复快照不存在。");
+
+      // 覆盖前保存当前内容，使用户能够再次恢复到本次操作之前的状态。
+      await transaction.annotationRecoverySnapshot.upsert({
+        where: {
+          annotationFileId_revision: {
+            annotationFileId: resourceId,
+            revision: current.revision,
+          },
+        },
+        update: {},
+        create: {
+          annotationFileId: resourceId,
+          revision: current.revision,
+          payload: current.payload as Prisma.InputJsonValue,
+          createdBy: user.id,
+          reason: "before_snapshot_restore",
+        },
+      });
+
+      // revision 仍参与条件更新；即使未来锁实现变化，乐观锁也不会静默覆盖并发写入。
+      const updated = await transaction.annotationFile.updateMany({
+        where: { resourceId, revision: input.baseRevision },
+        data: {
+          payload: sourceSnapshot.payload as Prisma.InputJsonValue,
+          revision: { increment: 1 },
+          lastEditedBy: user.id,
+          lastSavedAt: new Date(),
+        },
+      });
+      if (updated.count !== 1) {
+        const latest = await transaction.annotationFile.findUnique({
+          where: { resourceId },
+          select: { revision: true },
+        });
+        throw conflict("标注文件已被其他人修改，请刷新后再恢复。", {
+          expectedRevision: latest?.revision ?? input.baseRevision,
+          receivedRevision: input.baseRevision,
+        });
+      }
+
+      // 资源修改时间和恢复审计与内容替换同时提交，审计只记录定位信息而不复制 payload。
+      const nextRevision = current.revision + 1;
+      await transaction.resourceEntry.update({
+        where: { id: resourceId },
+        data: { updatedAt: new Date() },
+      });
+      await transaction.auditLog.create({
+        data: {
+          action: "annotation_snapshot_restore",
+          actorUserId: user.id,
+          resourceId,
+          detail: {
+            sourceSnapshotId: sourceSnapshot.id,
+            sourceRevision: sourceSnapshot.revision,
+            previousRevision: current.revision,
+            revision: nextRevision,
+          },
+        },
+      });
+    });
+    return this.getAnnotationFile<TPayload>(user, resourceId);
   }
 
   async updateResource(
@@ -1340,9 +1439,12 @@ export class ResourceService {
     `;
   }
 
-  // 恢复历史只能属于活动标注文件；已删除节点或被删除祖先隐藏的后代均不可从历史接口穿透读取。
-  private async assertActiveAnnotationFile(resourceId: string) {
-    const resource = await this.prisma.resourceEntry.findUnique({
+  // 恢复历史和内容写入只能作用于活动标注文件；transaction 参数保证检查使用同一事务快照。
+  private async assertActiveAnnotationFile(
+    resourceId: string,
+    database: PrismaClient | Prisma.TransactionClient = this.prisma,
+  ) {
+    const resource = await database.resourceEntry.findUnique({
       where: { id: resourceId },
       select: {
         type: true,
@@ -1356,10 +1458,40 @@ export class ResourceService {
       resource.type !== "annotation_file" ||
       !resource.annotationFile ||
       resource.trashedAt ||
-      await this.hasTrashedAncestor(this.prisma, resource.parentId)
+      await this.hasTrashedAncestor(database, resource.parentId)
     ) {
       throw notFound("活动标注文件不存在。");
     }
+  }
+
+  // 所有 annotation payload mutation 统一在资源树共享锁后复核权限，并锁住当前文件行。
+  private async lockAnnotationFileForContentMutation(
+    transaction: Prisma.TransactionClient,
+    user: ApiUser,
+    resourceId: string,
+  ) {
+    await this.lockResourceTreeForContentWrite(transaction);
+    await this.lockResourceRows(transaction, [resourceId]);
+    await this.assertActiveAnnotationFile(resourceId, transaction);
+    await this.access.assertCapability(
+      user,
+      resourceId,
+      "write",
+      transaction,
+    );
+
+    // 仅依赖 revision 条件不够：两个事务可能先争抢同一 revision 的快照唯一键，行锁需先串行同一文件。
+    await transaction.$queryRaw`
+      SELECT resource_id
+      FROM annotation_files
+      WHERE resource_id = ${resourceId}
+      FOR UPDATE
+    `;
+    const current = await transaction.annotationFile.findUnique({
+      where: { resourceId },
+    });
+    if (!current) throw notFound("标注文件不存在。");
+    return current;
   }
 
   private async isDescendant(
@@ -1402,6 +1534,18 @@ export class ResourceService {
     await transaction.$queryRaw`
       SELECT 1::integer AS locked
       FROM pg_advisory_xact_lock(hashtext('xiqu:resource-tree:mutation'))
+    `;
+  }
+
+  private async lockResourceTreeForContentWrite(
+    transaction: Prisma.TransactionClient,
+  ) {
+    // 内容写入取得同一 advisory key 的共享锁：不同文件可并发，树移动/回收则等待所有写入结束。
+    await transaction.$queryRaw`
+      SELECT 1::integer AS locked
+      FROM pg_advisory_xact_lock_shared(
+        hashtext('xiqu:resource-tree:mutation')
+      )
     `;
   }
 

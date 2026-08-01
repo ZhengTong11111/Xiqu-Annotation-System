@@ -374,12 +374,6 @@ export function registerApiRoutes(
         payload: body.payload ?? {},
       },
     );
-    await repository.writeAuditLog({
-      action: "annotation_file_save",
-      actorUserId: user.id,
-      resourceId: saved.resource.id,
-      detail: { revision: saved.revision },
-    });
     return saved;
   });
 
@@ -401,6 +395,29 @@ export function registerApiRoutes(
         request.params.resourceId,
         request.params.snapshotId,
       ),
+  );
+
+  // 恢复请求必须携带当前 revision；服务端把历史内容写成新 revision，而不是回退计数器。
+  app.post<{
+    Params: { resourceId: string; snapshotId: string };
+    Body: { baseRevision?: unknown };
+  }>(
+    "/api/annotation-files/:resourceId/recovery-snapshots/:snapshotId/restore",
+    async (request) => {
+      const body = requireObject(request.body);
+      if (
+        !Number.isInteger(body.baseRevision) ||
+        Number(body.baseRevision) < 1
+      ) {
+        throw badRequest("baseRevision 必须是正整数。");
+      }
+      return resources.restoreAnnotationRecoverySnapshot(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        request.params.snapshotId,
+        { baseRevision: Number(body.baseRevision) },
+      );
+    },
   );
 
   app.get<{ Params: { resourceId: string } }>(

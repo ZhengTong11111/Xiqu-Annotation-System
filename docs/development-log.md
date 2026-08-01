@@ -6,6 +6,45 @@
 > `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
 > 回写或删除历史记录。
 
+## 2026-08-01：R2.2 恢复快照 mutation 与内容写入保护线
+
+Codex 按本机 `CLAUDE_WORK.md` 直接完成 R2.2，没有委派给其他 agent。开始前工作区已干净，因此没有
+制造无内容的占位提交；实现完成后再统一提交可审查的功能切片。本轮引入
+`@radix-ui/react-alert-dialog` 1.1.23（MIT，Radix 官方仓库）：它与既有 Radix Dialog 同源，用于危险
+恢复操作的焦点锁定、Escape 和取消语义，替代自制确认弹层或 `window.confirm`，不引入新的视觉框架。
+
+实现内容：
+
+- 新增专用恢复 API。请求必须提交正整数 `baseRevision`；服务端验证快照同时属于路径中的标注文件，
+  stale revision 返回 409，跨文件或不存在快照返回 404，无写权限返回 403。
+- 恢复不是 revision 回退：事务先把当前 payload 保存为 `before_snapshot_restore` 保护快照，再把目标
+  快照 payload 写成新的当前 revision，并更新编辑者、保存时间和资源修改时间。源快照继续保留。
+- 新增 `annotation_snapshot_restore` 审计 action 与可部署 Prisma migration。审计只记录源快照 id、
+  源/原/新 revision，不复制完整 payload；保护快照、文件更新和审计在同一事务提交。
+- 普通保存与快照恢复共用活动标注文件内容写入 helper。两者先取得资源树 advisory key 的 shared
+  transaction lock，再锁资源和 annotation 行、复核活动状态与 `write` 权限；move/trash/restore 继续
+  对同一 key 取 exclusive lock。不同文件仍可并发写入，结构 mutation 与内容 mutation 不会交叉穿透。
+- 将普通保存的 `annotation_file_save` audit 从 router 的事务后写入迁移到 service 事务内，并删除旧
+  路径，避免“payload 已保存但审计失败”的半完成状态。
+- Inspector 快照预览新增固定恢复入口与 Radix 二次确认，明确当前/目标 revision、文件、创建者与
+  时间。恢复成功后刷新资源和历史；409 保留确认上下文并提示刷新；不可解析的旧 payload 仍可恢复，
+  但确认框会提示可能需要旧版工具或人工修复。
+
+审查与验证：
+
+- `npm run test:api`：19 项通过。新增恢复成功、保护快照、审计、重复请求 409、坏输入、越权、跨文件
+  快照、缺失资源，以及被回收祖先隐藏时 save/restore 均拒绝的回归。
+- `npm run test:permissions`：5 项通过；`npm run test:resource-columns`：7 项通过；
+  `npm run test:recovery-preview`：3 项通过。
+- `npm run build` 通过 Prisma generation、shared、document-model、web 和 API；仍只有既有 Vite 大
+  chunk 提醒。
+- 新依赖经本地 package metadata 核对为 MIT；功能按需引入，不改变资源管理器低饱和桌面样式。
+- 浏览器实际验证了坏 payload 警告、取消不修改文件、二次确认、正式恢复后 revision 2 -> 3、历史中
+  新增“恢复前保护快照”，以及 Inspector 在资源刷新后仍保持展开；页面视觉层级正常。
+
+下一步：R2.3 先建立可测试的 ProjectData 结构化 diff 模型与只读摘要入口。片段合并、确认标注层、
+自动保存和协作继续保持独立边界。
+
 ## 2026-08-01：R2.1 恢复历史列表、详情与只读预览
 
 Codex 先把“新增逻辑代码块必须附带中文功能注释”的长期规范写入 `AGENTS.md` 并独立提交，随后按

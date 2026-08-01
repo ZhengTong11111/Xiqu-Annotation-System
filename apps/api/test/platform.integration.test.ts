@@ -986,6 +986,202 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(missingSnapshot.statusCode, 404);
     });
 
+    await suite.test("恢复快照生成新修订并原子保留当前内容", async () => {
+      const sourceSnapshot = await prisma.annotationRecoverySnapshot
+        .findUniqueOrThrow({
+          where: {
+            annotationFileId_revision: {
+              annotationFileId,
+              revision: 1,
+            },
+          },
+        });
+      const saveAuditCountBefore = await prisma.auditLog.count({
+        where: {
+          action: "annotation_file_save",
+          resourceId: annotationFileId,
+        },
+      });
+      assert.equal(saveAuditCountBefore, 2, "两次成功保存应各有且仅有一条审计");
+
+      // 路由必须拒绝所有非正整数 revision，且坏请求不能创建保护快照或审计。
+      const snapshotsBeforeInvalidInput = await prisma
+        .annotationRecoverySnapshot.count({ where: { annotationFileId } });
+      const auditsBeforeInvalidInput = await prisma.auditLog.count({
+        where: { resourceId: annotationFileId },
+      });
+      for (const baseRevision of [undefined, -1, 0, 1.5, "3"]) {
+        const invalid = await jsonRequest(app, adminToken, {
+          method: "POST",
+          url: `/api/annotation-files/${annotationFileId}/recovery-snapshots/${sourceSnapshot.id}/restore`,
+          payload: baseRevision === undefined ? {} : { baseRevision },
+        });
+        assert.equal(invalid.statusCode, 400);
+      }
+      assert.equal(await prisma.annotationRecoverySnapshot.count({
+        where: { annotationFileId },
+      }), snapshotsBeforeInvalidInput);
+      assert.equal(await prisma.auditLog.count({
+        where: { resourceId: annotationFileId },
+      }), auditsBeforeInvalidInput);
+
+      // 只读账号不能绕过 Inspector 直接调用恢复 mutation。
+      const forbiddenRestore = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots/${sourceSnapshot.id}/restore`,
+        payload: { baseRevision: 3 },
+      });
+      assert.equal(forbiddenRestore.statusCode, 403);
+
+      // snapshot id 必须属于路径中的 annotation file，不匹配时统一返回 404。
+      const foreignSnapshot = await prisma.annotationRecoverySnapshot
+        .findFirstOrThrow({
+          where: { annotationFileId: { not: annotationFileId } },
+        });
+      const crossFileRestore = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots/${foreignSnapshot.id}/restore`,
+        payload: { baseRevision: 3 },
+      });
+      assert.equal(crossFileRestore.statusCode, 404);
+
+      // 恢复 revision 1 后当前 revision 单调增加到 4，旧快照不被消费。
+      const restored = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots/${sourceSnapshot.id}/restore`,
+        payload: { baseRevision: 3 },
+      });
+      assert.equal(restored.statusCode, 200, restored.body);
+      assert.equal(dataOf(restored.json()).revision, 4);
+      assert.deepEqual(dataOf(restored.json()).payload, { marker: "original" });
+      const current = await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: annotationFileId },
+      });
+      assert.equal(current.revision, 4);
+      assert.deepEqual(current.payload, { marker: "original" });
+      assert.ok(await prisma.annotationRecoverySnapshot.findUnique({
+        where: { id: sourceSnapshot.id },
+      }));
+
+      // 恢复前 revision 3 的当前内容必须成为可再次找回的保护快照。
+      const protectionSnapshot = await prisma.annotationRecoverySnapshot
+        .findUniqueOrThrow({
+          where: {
+            annotationFileId_revision: {
+              annotationFileId,
+              revision: 3,
+            },
+          },
+        });
+      assert.deepEqual(
+        protectionSnapshot.payload,
+        { marker: "current-after-history-test" },
+      );
+      assert.equal(protectionSnapshot.reason, "before_snapshot_restore");
+
+      // 恢复审计只记录定位信息，不泄漏历史或当前 payload。
+      const restoreAudits = await prisma.auditLog.findMany({
+        where: {
+          action: "annotation_snapshot_restore",
+          resourceId: annotationFileId,
+        },
+      });
+      assert.equal(restoreAudits.length, 1);
+      assert.deepEqual(restoreAudits[0]?.detail, {
+        sourceSnapshotId: sourceSnapshot.id,
+        sourceRevision: 1,
+        previousRevision: 3,
+        revision: 4,
+      });
+
+      // 相同请求重试时旧 baseRevision 必须 409，且不得产生第二条审计或新快照。
+      const snapshotCountAfterRestore = await prisma
+        .annotationRecoverySnapshot.count({ where: { annotationFileId } });
+      const staleRestore = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots/${sourceSnapshot.id}/restore`,
+        payload: { baseRevision: 3 },
+      });
+      assert.equal(staleRestore.statusCode, 409);
+      assert.equal(await prisma.annotationRecoverySnapshot.count({
+        where: { annotationFileId },
+      }), snapshotCountAfterRestore);
+      assert.equal(await prisma.auditLog.count({
+        where: {
+          action: "annotation_snapshot_restore",
+          resourceId: annotationFileId,
+        },
+      }), 1);
+
+      // 不存在的文件和快照保持明确 404，不把归属信息暴露为其他错误。
+      const missingFile = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/missing-file/recovery-snapshots/${sourceSnapshot.id}/restore`,
+        payload: { baseRevision: 1 },
+      });
+      assert.equal(missingFile.statusCode, 404);
+      const missingSnapshot = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots/missing-snapshot/restore`,
+        payload: { baseRevision: 4 },
+      });
+      assert.equal(missingSnapshot.statusCode, 404);
+    });
+
+    await suite.test("回收站祖先阻止普通保存与快照恢复", async () => {
+      // 独立测试树避免回收主测试文件影响后续 operation 用例。
+      const container = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "标注写入活动状态测试" },
+      });
+      const containerId = String(dataOf(container.json()).id);
+      const created = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: containerId,
+          name: "祖先回收后不可写.json",
+          payload: { marker: "before-trash" },
+        },
+      });
+      const hiddenFileId = String(
+        (dataOf(created.json()).resource as JsonObject).id,
+      );
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${hiddenFileId}`,
+        payload: { baseRevision: 1, payload: { marker: "current" } },
+      });
+      const snapshot = await prisma.annotationRecoverySnapshot
+        .findFirstOrThrow({ where: { annotationFileId: hiddenFileId } });
+      const trashed = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources/trash-batch",
+        payload: { resourceIds: [containerId] },
+      });
+      assert.equal(trashed.statusCode, 200, trashed.body);
+
+      // 子文件自身未写 trashedAt，但已被回收祖先隐藏，内容 mutation 必须 fail closed。
+      const deniedSave = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${hiddenFileId}`,
+        payload: { baseRevision: 2, payload: { marker: "must-not-save" } },
+      });
+      assert.equal(deniedSave.statusCode, 404);
+      const deniedRestore = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${hiddenFileId}/recovery-snapshots/${snapshot.id}/restore`,
+        payload: { baseRevision: 2 },
+      });
+      assert.equal(deniedRestore.statusCode, 404);
+      const unchanged = await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: hiddenFileId },
+      });
+      assert.equal(unchanged.revision, 2);
+      assert.deepEqual(unchanged.payload, { marker: "current" });
+    });
+
     await suite.test("批量移入回收站保持原子性并压缩父子选择", async () => {
       const trashProject = await jsonRequest(app, adminToken, {
         method: "POST",

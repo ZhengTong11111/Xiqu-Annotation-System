@@ -119,6 +119,11 @@ export type SaveAnnotationFileRequest<TPayload = unknown> = {
   payload: TPayload;
 };
 
+// 恢复历史内容仍然是一次乐观锁写入，只需提交调用方看到的当前 revision。
+export type RestoreAnnotationRecoverySnapshotRequest = {
+  baseRevision: number;
+};
+
 export type UpsertResourcePermissionRequest = {
   capabilities: ResourceCapability[];
   inheritToChildren?: boolean;
@@ -188,6 +193,10 @@ export type PlatformApiContract<TPayload = unknown> = {
   };
   getRecoverySnapshot: {
     response: AnnotationRecoverySnapshotDetail<TPayload>;
+  };
+  restoreAnnotationRecoverySnapshot: {
+    request: RestoreAnnotationRecoverySnapshotRequest;
+    response: AnnotationFile<TPayload>;
   };
   listResourcePermissions: { response: ResourcePermissionMatrixRow[] };
   upsertResourcePermission: {

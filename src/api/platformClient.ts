@@ -25,6 +25,7 @@ import type {
   ResourceListPage,
   ResourcePermissionMatrixRow,
   ResourcePermissionRecord,
+  RestoreAnnotationRecoverySnapshotRequest,
   SaveAnnotationFileRequest,
   UpdateResourceInheritanceRequest,
   UpdateResourceRequest,
@@ -186,6 +187,18 @@ export class PlatformClient {
   getRecoverySnapshot<TPayload>(resourceId: string, snapshotId: string) {
     return this.request<AnnotationRecoverySnapshotDetail<TPayload>>(
       `/annotation-files/${resourceId}/recovery-snapshots/${snapshotId}`,
+    );
+  }
+
+  // 恢复由专用 mutation 完成，客户端不能把历史 payload 取回后绕过服务端保护直接保存。
+  restoreAnnotationRecoverySnapshot<TPayload>(
+    resourceId: string,
+    snapshotId: string,
+    request: RestoreAnnotationRecoverySnapshotRequest,
+  ) {
+    return this.request<AnnotationFile<TPayload>>(
+      `/annotation-files/${resourceId}/recovery-snapshots/${snapshotId}/restore`,
+      { method: "POST", body: request },
     );
   }
 

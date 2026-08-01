@@ -63,6 +63,7 @@ enum AuditAction {
   resource_restore
   resource_delete
   annotation_file_save
+  annotation_snapshot_restore
   resource_permission_upsert
   resource_permission_remove
   resource_inheritance_update

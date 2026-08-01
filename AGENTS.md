@@ -401,6 +401,8 @@ Current backend capabilities:
 - atomic batch move with parent/descendant selection collapsing; the legacy single-item endpoint delegates to the same core
 - mutable annotation files with integer revision and `baseRevision` conflict checking
 - hidden recovery snapshots created automatically before an annotation-file payload is replaced
+- recovery-snapshot restore writes historical payload as a new monotonically increasing revision; current payload
+  protection, annotation update, and audit entry commit in one transaction
 - lightweight recovery-snapshot summary API plus a file-bound detail API for controlled Inspector previews
 - recursive project/folder copy, media/annotation-file copy, file-like move/rename/soft-delete/restore, favorite, and recent-open state
 - atomic batch trash with parent/descendant selection collapsing; the legacy single-item endpoint delegates to the same core
@@ -426,7 +428,8 @@ Current platform UI capabilities:
 - open mutable or read-only annotation files in the existing editor
 - revision-checked annotation-file save
 - Inspector details plus per-account permission matrix for every selected resource
-- annotation-file Inspector recovery-history list and on-demand read-only multimodal snapshot summary
+- annotation-file Inspector recovery history supports a lazy list, on-demand read-only multimodal summary, and an
+  explicit confirmed restore command; unpreviewable historical payloads remain recoverable with a prominent warning
 - toggle permission inheritance and edit direct per-account capabilities when authorized
 - trash is a read-only resource context except for single/multi restore; normal open/copy/move/rename/delete
   shortcuts are suppressed while the trash view is active
@@ -466,6 +469,11 @@ Important backend caveats:
   copied. The copier owns every new node and permissions are inherited afresh from the target.
 - saving an annotation file must compare `baseRevision`; stale writes return `409` rather than silently overwriting.
 - before replacing a payload, preserve the previous payload as an `AnnotationRecoverySnapshot`.
+- ordinary saves and snapshot restores share the same active-file content-mutation path. They acquire a shared
+  transaction advisory lock on the resource-tree mutation key before resource/annotation row locks; structural
+  move/trash/restore operations acquire the exclusive form of that same lock. Do not reverse this order.
+- restoring a recovery snapshot never decrements revision or deletes the source snapshot. It protects the current
+  payload, writes the historical payload as `revision + 1`, and records an audit summary without payload content.
 - recovery snapshots are implementation history, not ordinary user-visible files or published versions.
 - recovery-history lists must never select or return snapshot payloads; full payloads are read only through a detail
   endpoint that binds both annotation-file id and snapshot id and currently requires effective `write` capability.
