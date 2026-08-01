@@ -172,6 +172,20 @@ Backend local defaults:
 - keep shared shapes in `src/types.ts`
 - prefer localized helpers over ad hoc inline logic in JSX when behavior is reused
 
+### 中文功能注释（强制）
+
+- 每个新增的逻辑代码块都必须配有中文注释，先说明这一段负责什么功能，再让读者进入实现细节。
+- 至少覆盖：新文件或模块职责、类型/常量分组、函数与 React 组件、hook/effect、事件处理器、事务、
+  循环，以及包含业务判断的条件分支。连续几行共同完成一个原子步骤时写一条块级注释，不要遗漏。
+- 注释应说明功能、业务意图、边界条件或“为什么这样实现”，不能只把代码逐字翻译成中文，也不能
+  用注释掩盖过长函数、重复逻辑或含糊命名。
+- JSX 中新增独立功能区、复杂条件渲染或交互状态区时，在相邻 JSX/辅助函数处添加中文功能注释；
+  简单的闭合标签、纯样式属性和显而易见的一行映射无需机械地逐行注释。
+- 修改已有复杂逻辑时，如果附近没有足以帮助后续维护者理解的中文说明，应在本次修改中补齐；
+  清理实现时同步删除失效注释，禁止留下与运行行为不一致的历史说明。
+- 代码审查必须把“新增逻辑块是否具有准确中文功能注释”作为检查项；缺失注释视为未完成，而不是
+  可选的后续优化。
+
 Treat Chinese subtitle content as character-based annotation data, not tokenized words.
 
 ## Dependency Selection
