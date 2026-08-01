@@ -6,6 +6,41 @@
 > `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
 > 回写或删除历史记录。
 
+## 2026-08-01：R1.1 资源移动目标选择器
+
+R0 稳定化实现经完整 build、API 集成测试、权限测试和 diff check 复核后，Codex 将其提交为
+`fc5471a`，随后开始 R1 的第一个独立资源操作切片。本轮没有修改数据库、shared API 合同、
+后端移动事务或时间轴。
+
+实现内容：
+
+- 在资源右键菜单增加“移动到…”，按资源的有效 `move` 能力决定是否启用。
+- 新增独立 `ResourceDestinationPicker`，通过现有 `listResources()` 浏览项目/文件夹，通过
+  `moveResource()` 提交目标 parent id；没有复制 ACL 或循环检测算法到前端。
+- 目标选择器区分浏览位置和选中目标，支持根目录、面包屑、返回、单击选择、双击/Enter 进入、
+  Escape 关闭、加载/空目录/无权限/同目录/失败/提交中状态。
+- 禁止进入待移动容器本身，从 UI 层避免选择其后代；服务端事务内 cycle 和 `create_child` 检查
+  仍是安全边界。
+- 目录请求使用递增请求 id 让旧响应失效，避免快速切换路径时较慢响应覆盖当前目录。
+- 移动成功后清理已离开列表的选择和 anchor，再按服务端结果刷新目录，避免 Inspector 持有旧对象。
+- 引入 MIT 许可的 `@radix-ui/react-dialog`，复用其 Portal、焦点锁定、Escape 和无障碍语义；
+  相比维护手写 modal/focus trap，减少了容易失效的交互代码，并与现有 Radix Context Menu 一致。
+- 增加符合现有低饱和桌面资源管理器的对话框样式，目录列表独立滚动并适配窄窗口。
+
+审查与验证：
+
+- `npm run test:api`：10 组通过，移动继承重算、循环保护、目标权限和名称冲突继续由真实
+  PostgreSQL 集成测试覆盖。
+- `npm run test:permissions`：5 项通过。
+- `npm run build`：Prisma、shared、document-model、Web 和 API 全部通过。
+- `git diff --check` 通过。
+- 本地浏览器实测右键入口、源项目禁用、目标选择后确认启用、双击下钻、面包屑、返回和对话框
+  布局；验证过程中没有提交实际移动，不改变测试数据。
+- 仍保留上游 Prisma adapter 的 pg 9 前置弃用提醒和 Vite 大 chunk 提醒，均非本轮回归。
+
+本轮明确未做多选批量移动、拖拽移动、递归复制、通用文件网盘和 ZIP 打包；这些继续按 roadmap
+后续 R1/R3 切片实施。
+
 ## 2026-08-01：R0 migration、API 集成测试与事务保护线
 
 Codex 在 `codex/backend-r0-stabilization` 分支开始实施新 roadmap 的 R0。本轮直接读取并审查

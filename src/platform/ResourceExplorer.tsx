@@ -7,6 +7,7 @@ import {
   FileJson2,
   FileVideo2,
   Folder,
+  FolderInput,
   FolderOpen,
   Grid2X2,
   HardDrive,
@@ -46,6 +47,7 @@ import {
   normalizeImportedProjectFile,
 } from "../utils/projectFile";
 import { prepareProjectForServer } from "./PlatformWorkspace";
+import { ResourceDestinationPicker } from "./ResourceDestinationPicker";
 
 type ExplorerMode = "list" | "grid" | "column";
 
@@ -92,6 +94,7 @@ export function ResourceExplorer(props: {
   const [clipboard, setClipboard] = useState<ResourceEntry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [movingResource, setMovingResource] = useState<ResourceEntry | null>(null);
   const jsonInputRef = useRef<HTMLInputElement>(null);
   const mediaInputRef = useRef<HTMLInputElement>(null);
 
@@ -154,6 +157,8 @@ export function ResourceExplorer(props: {
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      // Radix 对话框负责其内部键盘交互，打开时不能让资源列表的全局快捷键同时执行。
+      if (movingResource) return;
       const target = event.target as HTMLElement | null;
       if (
         target?.isContentEditable ||
@@ -199,6 +204,7 @@ export function ResourceExplorer(props: {
     pasteClipboard,
     props.client,
     refresh,
+    movingResource,
     selected,
     selectedIds,
   ]);
@@ -398,6 +404,7 @@ export function ResourceExplorer(props: {
             onRename={(resource) =>
               void renameResource(props.client, resource, refresh, setError)}
             onCopy={(resource) => setClipboard([resource])}
+            onMove={setMovingResource}
             onTrash={(resource) =>
               void props.client.trashResource(resource.id)
                 .then(refresh)
@@ -414,6 +421,23 @@ export function ResourceExplorer(props: {
       </section>
       <input ref={jsonInputRef} hidden type="file" accept="application/json,.json" onChange={(event) => void importJson(event)} />
       <input ref={mediaInputRef} hidden type="file" accept="video/*,audio/*" onChange={(event) => void uploadMedia(event)} />
+      {movingResource && props.user ? (
+        <ResourceDestinationPicker
+          client={props.client}
+          resource={movingResource}
+          user={props.user}
+          onCancel={() => setMovingResource(null)}
+          onMove={async (parentId) => {
+            await props.client.moveResource(movingResource.id, { parentId });
+            // 成功后以服务端目录重新归一化选择，避免 Inspector 持有已移出列表的旧对象。
+            setSelectedIds((current) =>
+              current.filter((id) => id !== movingResource.id));
+            setAnchorId(null);
+            setMovingResource(null);
+            await refresh();
+          }}
+        />
+      ) : null}
     </main>
   );
 }
@@ -443,6 +467,7 @@ type CollectionProps = {
   onOpen: (resource: ResourceEntry) => void;
   onRename: (resource: ResourceEntry) => void;
   onCopy: (resource: ResourceEntry) => void;
+  onMove: (resource: ResourceEntry) => void;
   onTrash: (resource: ResourceEntry) => void;
 };
 
@@ -515,6 +540,7 @@ function ResourceMenu(props: CollectionProps & {
           <ContextMenu.Item onSelect={() => props.onOpen(props.resource)}><FolderOpen size={15} /> 打开</ContextMenu.Item>
           <ContextMenu.Separator />
           <ContextMenu.Item disabled={!capabilities.includes("copy")} onSelect={() => props.onCopy(props.resource)}><Copy size={15} /> 复制</ContextMenu.Item>
+          <ContextMenu.Item disabled={!capabilities.includes("move")} onSelect={() => props.onMove(props.resource)}><FolderInput size={15} /> 移动到…</ContextMenu.Item>
           <ContextMenu.Item disabled={!capabilities.includes("write")} onSelect={() => props.onRename(props.resource)}><Settings2 size={15} /> 重命名</ContextMenu.Item>
           <ContextMenu.Separator />
           <ContextMenu.Item className="danger" disabled={!capabilities.includes("delete")} onSelect={() => props.onTrash(props.resource)}><Trash2 size={15} /> 移到回收站</ContextMenu.Item>
