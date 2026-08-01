@@ -125,12 +125,24 @@ export class PrismaPlatformRepository {
   async getFileForRead(user: ApiUser, fileId: string) {
     const file = await this.prisma.fileObject.findUnique({
       where: { id: fileId },
-      include: { mediaFile: true },
+      include: { mediaFiles: true },
     });
     if (!file) throw notFound("文件不存在。");
     if (file.ownerUserId !== user.id && !this.access.isGlobalAdmin(user)) {
-      if (!file.mediaFile) throw forbidden("当前账号不能读取该文件。");
-      await this.access.assertCapability(user, file.mediaFile.resourceId, "download");
+      let canDownload = false;
+      // 一个不可变 FileObject 可以被多个媒体资源复用；只要账号能下载其中任一资源，就能读取
+      // 同一物理对象。这里不能再依赖历史上的单数 mediaFile 关系。
+      for (const mediaFile of file.mediaFiles) {
+        const permission = await this.access.getEffectivePermission(
+          user,
+          mediaFile.resourceId,
+        );
+        if (permission.capabilities.includes("download")) {
+          canDownload = true;
+          break;
+        }
+      }
+      if (!canDownload) throw forbidden("当前账号不能读取该文件。");
     }
     return toFile(file);
   }

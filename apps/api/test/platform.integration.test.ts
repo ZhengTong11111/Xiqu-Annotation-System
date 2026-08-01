@@ -315,6 +315,225 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(dataOf(ownerSave.json()).revision, 2);
     });
 
+    await suite.test("项目递归复制复用媒体对象并重映射内部引用", async () => {
+      const sourceProjectResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: {
+          type: "project",
+          name: "递归复制源项目",
+          description: "需要保留的项目说明",
+        },
+      });
+      const sourceProjectId = String(dataOf(sourceProjectResponse.json()).id);
+      const sourceFolderResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: {
+          parentId: sourceProjectId,
+          type: "folder",
+          name: "素材与标注",
+        },
+      });
+      const sourceFolderId = String(dataOf(sourceFolderResponse.json()).id);
+      const targetProjectResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "递归复制目标项目" },
+      });
+      const targetProjectId = String(dataOf(targetProjectResponse.json()).id);
+
+      const upload = await multipartUpload(
+        app,
+        adminToken,
+        "shared-copy.mp4",
+        "video/mp4",
+        Buffer.from("recursive-copy-media", "utf8"),
+      );
+      const sourceFileId = String((dataOf(upload.json()).file as JsonObject).id);
+      const sourceMediaResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/media-files",
+        payload: {
+          parentId: sourceFolderId,
+          fileId: sourceFileId,
+          name: "共享视频.mp4",
+        },
+      });
+      const sourceMediaId = String(dataOf(sourceMediaResponse.json()).id);
+      const sourceAnnotationResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: sourceFolderId,
+          name: "关联视频的标注.json",
+          mediaResourceId: sourceMediaId,
+          payload: { marker: "recursive-source" },
+        },
+      });
+      const sourceAnnotationId = String(
+        (dataOf(sourceAnnotationResponse.json()).resource as JsonObject).id,
+      );
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${sourceAnnotationId}`,
+        payload: {
+          baseRevision: 1,
+          payload: { marker: "recursive-source-saved" },
+        },
+      });
+
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${sourceProjectId}/permissions/user-student`,
+        payload: {
+          capabilities: ["read", "copy"],
+          inheritToChildren: true,
+        },
+      });
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${targetProjectId}/permissions/user-student`,
+        payload: {
+          capabilities: ["read", "create_child"],
+          inheritToChildren: true,
+        },
+      });
+
+      const copiedResponse = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/resources/${sourceProjectId}/copy`,
+        payload: { parentId: targetProjectId },
+      });
+      assert.equal(copiedResponse.statusCode, 200, copiedResponse.body);
+      const copiedProjectId = String(dataOf(copiedResponse.json()).id);
+      const copiedProject = await prisma.resourceEntry.findUniqueOrThrow({
+        where: { id: copiedProjectId },
+        include: { projectMetadata: true },
+      });
+      assert.equal(copiedProject.ownerUserId, "user-student");
+      assert.equal(copiedProject.projectMetadata?.description, "需要保留的项目说明");
+
+      const copiedFolder = await prisma.resourceEntry.findFirstOrThrow({
+        where: { parentId: copiedProjectId, name: "素材与标注" },
+      });
+      const copiedChildren = await prisma.resourceEntry.findMany({
+        where: { parentId: copiedFolder.id },
+        include: { annotationFile: true, mediaFile: true },
+      });
+      const copiedMedia = copiedChildren.find(({ type }) => type === "media_file");
+      const copiedAnnotation = copiedChildren.find(({ type }) =>
+        type === "annotation_file");
+      assert.ok(copiedMedia?.mediaFile);
+      assert.ok(copiedAnnotation?.annotationFile);
+      assert.equal(copiedMedia.mediaFile.fileId, sourceFileId);
+      assert.equal(
+        copiedAnnotation.annotationFile.mediaResourceId,
+        copiedMedia.id,
+        "副本标注必须引用副本树内的媒体资源",
+      );
+      assert.equal(copiedAnnotation.annotationFile.revision, 1);
+      assert.deepEqual(
+        copiedAnnotation.annotationFile.payload,
+        { marker: "recursive-source-saved" },
+      );
+      assert.equal(await prisma.fileObject.count({ where: { id: sourceFileId } }), 1);
+      assert.equal(await prisma.mediaFile.count({ where: { fileId: sourceFileId } }), 2);
+      assert.equal(await prisma.annotationRecoverySnapshot.count({
+        where: { annotationFileId: copiedAnnotation.id },
+      }), 0);
+      assert.equal(await prisma.resourcePermission.count({
+        where: { resourceId: { in: [
+          copiedProjectId,
+          copiedFolder.id,
+          copiedMedia.id,
+          copiedAnnotation.id,
+        ] } },
+      }), 0);
+
+      const copiedMediaRead = await app.inject({
+        method: "GET",
+        url: `/api/files/${sourceFileId}/content`,
+        headers: { authorization: `Bearer ${studentToken}` },
+      });
+      assert.equal(copiedMediaRead.statusCode, 200);
+      assert.deepEqual(
+        copiedMediaRead.rawPayload,
+        Buffer.from("recursive-copy-media", "utf8"),
+      );
+
+      const standaloneMediaCopy = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/resources/${sourceMediaId}/copy`,
+        payload: { parentId: targetProjectId },
+      });
+      assert.equal(standaloneMediaCopy.statusCode, 200);
+      const standaloneMediaId = String(dataOf(standaloneMediaCopy.json()).id);
+      assert.equal((await prisma.mediaFile.findUniqueOrThrow({
+        where: { resourceId: standaloneMediaId },
+      })).fileId, sourceFileId);
+
+      const standaloneAnnotationCopy = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/resources/${sourceAnnotationId}/copy`,
+        payload: { parentId: targetProjectId },
+      });
+      assert.equal(standaloneAnnotationCopy.statusCode, 200);
+      const standaloneAnnotationId = String(
+        dataOf(standaloneAnnotationCopy.json()).id,
+      );
+      assert.equal((await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: standaloneAnnotationId },
+      })).mediaResourceId, sourceMediaId, "单独复制标注时保留外部媒体引用");
+      assert.equal(await prisma.fileObject.count({ where: { id: sourceFileId } }), 1);
+      assert.equal(await prisma.mediaFile.count({ where: { fileId: sourceFileId } }), 3);
+
+      const copyIntoDescendant = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${sourceProjectId}/copy`,
+        payload: { parentId: sourceFolderId },
+      });
+      assert.equal(copyIntoDescendant.statusCode, 400);
+
+      const restrictedChildResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: {
+          parentId: sourceProjectId,
+          type: "folder",
+          name: "受限后代",
+        },
+      });
+      const restrictedChildId = String(dataOf(restrictedChildResponse.json()).id);
+      await jsonRequest(app, adminToken, {
+        method: "PATCH",
+        url: `/api/resources/${restrictedChildId}/permission-inheritance`,
+        payload: { breakPermissionInheritance: true },
+      });
+      const targetChildCountBefore = await prisma.resourceEntry.count({
+        where: { parentId: targetProjectId },
+      });
+      const deniedTreeCopy = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/resources/${sourceProjectId}/copy`,
+        payload: { parentId: targetProjectId },
+      });
+      assert.equal(deniedTreeCopy.statusCode, 403);
+      assert.equal(await prisma.resourceEntry.count({
+        where: { parentId: targetProjectId },
+      }), targetChildCountBefore, "无权复制后代时不能留下半棵副本");
+
+      const copyAudit = await prisma.auditLog.findFirst({
+        where: { action: "resource_copy", resourceId: copiedProjectId },
+      });
+      assert.deepEqual(copyAudit?.detail, {
+        sourceResourceId: sourceProjectId,
+        copiedNodeCount: 4,
+        copiedAnnotationCount: 1,
+        reusedFileObjectCount: 1,
+      });
+    });
+
     await suite.test("标注保存并发、恢复快照和只读拒绝", async () => {
       const forbiddenSave = await jsonRequest(app, studentToken, {
         method: "PUT",

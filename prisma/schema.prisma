@@ -136,9 +136,9 @@ model FileObject {
   ownerUserId String   @map("owner_user_id")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  owner     User       @relation("FileOwner", fields: [ownerUserId], references: [id])
-  mediaFile MediaFile?
-  auditLogs AuditLog[]
+  owner      User        @relation("FileOwner", fields: [ownerUserId], references: [id])
+  mediaFiles MediaFile[]
+  auditLogs  AuditLog[]
 
   @@index([ownerUserId])
   @@map("files")
@@ -221,7 +221,7 @@ model AnnotationRecoverySnapshot {
 
 model MediaFile {
   resourceId String  @id @map("resource_id")
-  fileId     String  @unique @map("file_id")
+  fileId     String  @map("file_id")
   mimeType   String  @map("mime_type")
   size       Int
   duration   Float?
@@ -229,6 +229,7 @@ model MediaFile {
   resource ResourceEntry @relation(fields: [resourceId], references: [id], onDelete: Cascade)
   file     FileObject    @relation(fields: [fileId], references: [id], onDelete: Cascade)
 
+  @@index([fileId])
   @@map("media_files")
 }
 

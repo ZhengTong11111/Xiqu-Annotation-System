@@ -25,6 +25,11 @@ import type {
 import type { ApiUser } from "./domain.js";
 import { badRequest, conflict, forbidden, notFound } from "./errors.js";
 import { ResourceAccessService } from "./resourceAccess.js";
+import {
+  buildResourceCopyPlan,
+  MAX_RECURSIVE_COPY_NODES,
+  type CopySourceNode,
+} from "./resourceCopy.js";
 import { toPublicUser } from "./repositoryMappers.js";
 
 const resourceInclude = {
@@ -37,6 +42,15 @@ const resourceInclude = {
 type ResourceRow = Prisma.ResourceEntryGetPayload<{
   include: typeof resourceInclude;
 }>;
+
+export type CopyResourceResult = {
+  resource: ResourceEntry;
+  summary: {
+    copiedNodeCount: number;
+    copiedAnnotationCount: number;
+    reusedFileObjectCount: number;
+  };
+};
 
 const NAME_COLLATOR = new Intl.Collator("zh-CN", {
   numeric: true,
@@ -453,46 +467,154 @@ export class ResourceService {
     user: ApiUser,
     resourceId: string,
     input: CopyResourceRequest,
-  ) {
+  ): Promise<CopyResourceResult> {
+    await this.access.assertCapability(user, resourceId, "read");
     await this.access.assertCapability(user, resourceId, "copy");
     await this.assertContainer(input.parentId);
     await this.access.assertCapability(user, input.parentId, "create_child");
     const source = await this.prisma.resourceEntry.findUnique({
       where: { id: resourceId },
-      include: { annotationFile: true },
     });
     if (!source) throw notFound("资源不存在。");
-    if (source.type !== "annotation_file" || !source.annotationFile) {
-      throw badRequest("当前阶段仅支持复制标注文件。");
+    if (
+      source.trashedAt ||
+      await this.hasTrashedAncestor(this.prisma, source.parentId)
+    ) {
+      throw badRequest("不能复制回收站中的资源。");
     }
-    const sourceFile = source.annotationFile;
+    if (
+      (source.type === "folder" || source.type === "project") &&
+      await this.isDescendant(this.prisma, input.parentId, resourceId)
+    ) {
+      throw badRequest("不能把文件夹复制到它自己或它的子目录中。");
+    }
+
+    const authorizedSnapshot = await this.loadCopySourceNodes(
+      this.prisma,
+      resourceId,
+    );
+    if (authorizedSnapshot.length > MAX_RECURSIVE_COPY_NODES) {
+      throw badRequest(
+        `单次最多复制 ${MAX_RECURSIVE_COPY_NODES} 个资源，请缩小复制范围。`,
+      );
+    }
+    for (const node of authorizedSnapshot) {
+      // 容器复制必须对整棵活动子树都拥有 read + copy。任何一个受限后代都会让整个根复制失败，
+      // 避免悄悄生成一棵缺文件且难以察觉的副本。
+      await this.access.assertCapability(user, node.id, "read");
+      await this.access.assertCapability(user, node.id, "copy");
+    }
     const requestedName = input.name?.trim() || source.name;
-    const created = await this.prisma.$transaction(async (transaction) => {
-      await this.lockParentNamespaces(transaction, [input.parentId]);
+    const authorizedIds = new Set(authorizedSnapshot.map((node) => node.id));
+    const copied = await this.prisma.$transaction(async (transaction) => {
+      await this.lockResourceTreeMutation(transaction);
+      await this.lockResourceRow(transaction, resourceId);
+      const sourceContainerIds = authorizedSnapshot
+        .filter((node) => node.type === "folder" || node.type === "project")
+        .map((node) => node.id);
+      // 新建子项也会拿父命名空间锁。复制时锁住所有源容器，保证复制计划期间不会插入新后代。
+      await this.lockParentNamespaces(transaction, [
+        input.parentId,
+        ...sourceContainerIds,
+      ]);
+
+      const latestSource = await transaction.resourceEntry.findUnique({
+        where: { id: resourceId },
+      });
+      if (!latestSource) throw notFound("资源不存在。");
+      if (
+        latestSource.trashedAt ||
+        await this.hasTrashedAncestor(transaction, latestSource.parentId)
+      ) {
+        throw conflict("复制期间源资源位置发生变化，请刷新后重试。");
+      }
+      const target = await transaction.resourceEntry.findUnique({
+        where: { id: input.parentId },
+      });
+      if (!target || (target.type !== "folder" && target.type !== "project")) {
+        throw notFound("目标目录不存在。");
+      }
+      if (
+        target.trashedAt ||
+        await this.hasTrashedAncestor(transaction, target.parentId)
+      ) {
+        throw conflict("目标目录已在回收站中，请选择其他位置。");
+      }
+      if (
+        (latestSource.type === "folder" || latestSource.type === "project") &&
+        await this.isDescendant(transaction, input.parentId, resourceId)
+      ) {
+        throw badRequest("不能把文件夹复制到它自己或它的子目录中。");
+      }
+
+      const latestNodes = await this.loadCopySourceNodes(
+        transaction,
+        resourceId,
+      );
+      if (
+        latestNodes.length !== authorizedIds.size ||
+        latestNodes.some((node) => !authorizedIds.has(node.id))
+      ) {
+        throw conflict("复制期间源目录发生变化，请刷新后重试。");
+      }
       const name = await this.availableCopyName(
         transaction,
         input.parentId,
         requestedName,
       );
-      return transaction.resourceEntry.create({
-        data: {
-          parentId: input.parentId,
-          type: "annotation_file",
-          name,
-          ownerUserId: user.id,
-          annotationFile: {
-            create: {
-              payload: sourceFile.payload as Prisma.InputJsonValue,
-              revision: 1,
-              mediaResourceId: sourceFile.mediaResourceId,
-              lastEditedBy: user.id,
-            },
-          },
-        },
+      const plan = buildResourceCopyPlan({
+        sourceRootId: resourceId,
+        targetParentId: input.parentId,
+        rootName: name,
+        nodes: latestNodes,
       });
+      for (const node of plan.nodes) {
+        await transaction.resourceEntry.create({
+          data: {
+            id: node.id,
+            parentId: node.parentId,
+            type: node.type,
+            name: node.name,
+            ownerUserId: user.id,
+            breakPermissionInheritance: false,
+            archivedAt: node.archivedAt,
+            projectMetadata: node.type === "project"
+              ? { create: { description: node.projectDescription } }
+              : undefined,
+            annotationFile: node.type === "annotation_file"
+              ? {
+                  create: {
+                    payload: node.annotationPayload as Prisma.InputJsonValue,
+                    revision: 1,
+                    mediaResourceId: node.annotationMediaResourceId,
+                    lastEditedBy: user.id,
+                  },
+                }
+              : undefined,
+            mediaFile: node.type === "media_file" && node.mediaFile
+              ? {
+                  create: {
+                    fileId: node.mediaFile.fileId,
+                    mimeType: node.mediaFile.mimeType,
+                    size: node.mediaFile.size,
+                    duration: node.mediaFile.duration,
+                  },
+                }
+              : undefined,
+          },
+        });
+      }
+      return { rootId: plan.nodes[0]!.id, summary: plan };
     });
-    // 复制不携带源文件直接 ACL；新副本由复制者拥有，并继承目标目录权限。
-    return this.getMappedResource(user, created.id);
+    // 副本不携带源 ACL、收藏、恢复历史或 operation；复制者拥有新节点，其余权限重新从目标继承。
+    return {
+      resource: await this.getMappedResource(user, copied.rootId),
+      summary: {
+        copiedNodeCount: copied.summary.copiedNodeCount,
+        copiedAnnotationCount: copied.summary.copiedAnnotationCount,
+        reusedFileObjectCount: copied.summary.reusedFileObjectCount,
+      },
+    };
   }
 
   async setTrashed(user: ApiUser, resourceId: string, trashed: boolean) {
@@ -910,8 +1032,55 @@ export class ResourceService {
     throw conflict("无法生成可用的副本名称。");
   }
 
+  private async loadCopySourceNodes(
+    database: PrismaClient | Prisma.TransactionClient,
+    resourceId: string,
+  ): Promise<CopySourceNode[]> {
+    const ids = await database.$queryRaw<Array<{ id: string }>>`
+      WITH RECURSIVE resource_subtree AS (
+        SELECT id
+        FROM resource_entries
+        WHERE id = ${resourceId}
+          AND trashed_at IS NULL
+
+        UNION ALL
+
+        SELECT child.id
+        FROM resource_entries AS child
+        INNER JOIN resource_subtree AS parent ON child.parent_id = parent.id
+        WHERE child.trashed_at IS NULL
+      )
+      SELECT id
+      FROM resource_subtree
+      LIMIT ${MAX_RECURSIVE_COPY_NODES + 1}
+    `;
+    if (!ids.length) return [];
+    return database.resourceEntry.findMany({
+      where: { id: { in: ids.map(({ id }) => id) } },
+      select: {
+        id: true,
+        parentId: true,
+        type: true,
+        name: true,
+        archivedAt: true,
+        projectMetadata: { select: { description: true } },
+        annotationFile: {
+          select: { payload: true, mediaResourceId: true },
+        },
+        mediaFile: {
+          select: {
+            fileId: true,
+            mimeType: true,
+            size: true,
+            duration: true,
+          },
+        },
+      },
+    });
+  }
+
   private async isDescendant(
-    database: Prisma.TransactionClient,
+    database: PrismaClient | Prisma.TransactionClient,
     candidateId: string,
     ancestorId: string,
   ) {

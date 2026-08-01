@@ -6,6 +6,52 @@
 > `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
 > 回写或删除历史记录。
 
+## 2026-08-01：R1.3 递归复制与统一复制/粘贴语义
+
+Codex 根据本机 `CLAUDE_WORK.md` 完成 R1.3。本轮把前端“可复制任意资源”与后端“只支持标注文件”
+的矛盾收敛为统一文件管理语义，没有修改时间轴、本地项目 JSON 或标注编辑器数据模型。
+
+实现内容：
+
+- 新增 `resourceCopy.ts` 纯规划层：验证资源树连通性，按父先子后排序，为整棵树预分配新 id，并把
+  标注文件指向子树内媒体的 `mediaResourceId` 重映射到副本；复制上限为每个根 2,000 个活动节点。
+- `copyResource()` 支持 project、folder、annotation_file、media_file。项目/文件夹的每个根在单一
+  数据库事务内全有或全无；任一活动后代缺少 read/copy 时整棵拒绝，不留下半成品。
+- 副本所有节点由复制者拥有，不复制 direct ACL、收藏/最近状态、恢复快照、operation、job 或审计
+  历史；新节点从目标目录重新继承权限。标注 revision 重置为 1。
+- 媒体普通复制只创建新 ResourceEntry/MediaFile，并复用不可变 FileObject。新增正式 migration
+  `20260801010000_media_file_object_reuse`，把 FileObject/MediaFile 从一对一改为一对多。
+- 媒体读取鉴权改为检查账号是否能下载任一引用同一 FileObject 的媒体资源，继续保留 owner/admin
+  快速路径和 Range 行为。
+- 前端新增 `resourceClipboard.ts`，多个根顺序复制并收集独立结果；一个根失败不阻止后续根。工具栏
+  增加可见“粘贴”，成功后选中新副本，失败时按资源汇总原因，并用 ref 阻止快捷键/按钮重复提交。
+- 复制审计只记录源 id、节点数、标注数和复用对象数，不写 payload 或二进制内容。
+
+审查过程中发现并修复测试数据库隔离漏洞：
+
+- Prisma URL 的 `?schema=api_test` 不会自动改变 node-postgres 的 `search_path`；旧测试 migration
+  部署到 `api_test`，但 Prisma/raw SQL 可能仍访问 `public`。
+- 新增共享 `database.ts`，同时给 PrismaPg adapter 和 PostgreSQL search_path 指定同一 schema；生产
+  与测试不再各自构建连接。
+- 测试清库前除校验 URL 以 `_test` 结尾，还读取 `current_schema()` 验证实际连接，防止误清开发数据。
+- 开发 public schema 原先已有 baseline 表但没有 migration history。本轮先核对表与媒体唯一索引，
+  使用 `migrate resolve --applied` 无损登记 baseline，再通过 `db:deploy` 应用 R1.3 migration；未 reset、
+  未清理开发数据或对象存储。
+
+验证：
+
+- `npm run test:api`：11 组通过。递归复制测试覆盖项目说明、多层目录、媒体对象复用、内部/外部
+  媒体引用、revision、ACL/恢复历史不复制、下载、禁止复制到自身后代、受限后代整体回滚和审计摘要。
+- `npm run test:permissions`：5 项通过。
+- `npm run build`：Prisma generate、shared、document-model、Web 与 API 全部通过；Vite 仍报告既有的
+  604.74 kB 大 chunk 提醒，本轮未增加相关依赖或扩大 bundle 路径。
+- `npm run db:deploy`：public schema 成功应用媒体对象复用 migration。
+- 没有新增依赖：递归拓扑、id 映射和顺序结果收集均为短小领域逻辑，引入通用图/队列依赖不会减少
+  维护成本。
+
+尚待用户浏览器人工验收：四类资源单独复制、含内部媒体引用的项目复制、多选部分失败、连续粘贴
+防重，以及回收站仍只提供恢复。永久删除、FileObject 引用计数/孤儿清理和大型异步复制不在本轮。
+
 ## 2026-08-01：R1.2 回收站恢复与虚拟视图操作闭环
 
 Codex 先将已完成并验证的 R1.1 移动目标选择器提交为 `8ca74c3`，再按本机

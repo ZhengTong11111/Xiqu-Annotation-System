@@ -1,14 +1,11 @@
-import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@prisma/client";
 import type { FastifyInstance } from "fastify";
-import pg from "pg";
 import { buildApiApp } from "./app.js";
+import { createPrismaConnection } from "./database.js";
 
 const port = Number(process.env.PORT ?? 4317);
 const databaseUrl = process.env.DATABASE_URL ??
   "postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public";
-const pool = new pg.Pool({ connectionString: databaseUrl });
-const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
+const { prisma, pool } = createPrismaConnection(databaseUrl);
 let app: FastifyInstance;
 
 try {

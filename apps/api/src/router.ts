@@ -228,10 +228,15 @@ export function registerApiRoutes(
     await repository.writeAuditLog({
       action: "resource_copy",
       actorUserId: user.id,
-      resourceId: copied.id,
-      detail: { sourceResourceId: request.params.resourceId },
+      resourceId: copied.resource.id,
+      detail: {
+        sourceResourceId: request.params.resourceId,
+        copiedNodeCount: copied.summary.copiedNodeCount,
+        copiedAnnotationCount: copied.summary.copiedAnnotationCount,
+        reusedFileObjectCount: copied.summary.reusedFileObjectCount,
+      },
     });
-    return copied;
+    return copied.resource;
   });
 
   for (const [suffix, trashed, action] of [

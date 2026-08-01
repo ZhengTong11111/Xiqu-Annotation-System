@@ -41,6 +41,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - desktop-style three-pane resource manager
   - owns folder navigation, list/grid/column presentation, selection, keyboard/context-menu actions, import/upload, and the resource Inspector
   - the Inspector is the canonical UI for editing each account's direct permissions on the selected resource
+- `src/platform/resourceClipboard.ts`
+  - multi-root copy/paste result orchestration
+  - each root remains a separate server transaction; one failed root does not suppress unrelated successful roots
 - `src/platform/resourceRestore.ts`
   - trash multi-restore ordering and partial-result aggregation helper
   - restores selected ancestors before descendants; keep this orchestration outside `ResourceExplorer.tsx`
@@ -88,11 +91,16 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - used by Inspector (character tone editor + derived sentence preview), Timeline (in-block tone label), and `projectFile.ts` (tone normalization)
 - `apps/api/src/`
   - Fastify backend: auth, resource routes, resource ACL evaluation, annotation-file revision saves, Prisma mapping, and local object storage
+- `apps/api/src/database.ts`
+  - shared PrismaPg connection factory
+  - explicitly aligns Prisma schema and PostgreSQL `search_path`; do not construct a second adapter path in tests
 - `apps/api/src/resourceAccess.ts`
   - authoritative server-side resource capability resolution
   - combines global admin bypass, ownership, direct grants, and nearest inherited folder grants
 - `apps/api/src/resourceService.ts`
   - resource-tree mutations, copy/move/trash behavior, annotation-file save, and recovery-snapshot creation
+- `apps/api/src/resourceCopy.ts`
+  - pure recursive-copy planning, topological ordering, id allocation, and internal media-reference remapping
 - `packages/shared/src/`
   - API/platform DTOs and shared contract types used by web and API
 - `packages/document-model/src/`
@@ -135,7 +143,9 @@ Backend local defaults:
 - `prisma/migrations/20260801000000_resource_tree_baseline` is the committed resource-tree baseline;
   use `db:deploy` for a fresh/current database and reserve `db:push` for disposable local schema experiments
 - `npm run test:api` applies migrations to the isolated `api_test` PostgreSQL schema; its safety guard rejects
-  destructive cleanup unless the schema name ends with `_test`
+  destructive cleanup unless the schema name ends with `_test`, and verifies the connection's actual schema before
+  truncating. PrismaPg and node-postgres must both be configured through `apps/api/src/database.ts`; URL `?schema=`
+  alone does not set pg `search_path`
 
 ## Coding Style
 - React function components
@@ -352,7 +362,7 @@ Current backend capabilities:
 - hierarchical `ResourceEntry` tree with `folder`, `project`, `annotation_file`, and `media_file` resource types
 - mutable annotation files with integer revision and `baseRevision` conflict checking
 - hidden recovery snapshots created automatically before an annotation-file payload is replaced
-- annotation-file copy, file-like move/rename/soft-delete/restore, favorite, and recent-open state
+- recursive project/folder copy, media/annotation-file copy, file-like move/rename/soft-delete/restore, favorite, and recent-open state
 - audit-log table and API for key platform events such as login, upload, resource creation/move/copy/delete, permission changes, and annotation-file save
 - annotation operation-log table and API for recording client-submitted edit operations before future autosave/collaboration work
 - placeholder processing-job API for future pitch, spectrogram, Gongche render, pose, transcode, and export services
@@ -369,7 +379,7 @@ Current backend capabilities:
 Current platform UI capabilities:
 - login page with development defaults
 - desktop-style three-pane resource explorer with folder/project navigation, search, sorting, list/grid/column modes, multi-selection, keyboard shortcuts, and context menus
-- create projects/folders, import annotation JSON, upload media, copy annotation files, rename, move through the API, and soft-delete resources
+- create projects/folders, import annotation JSON, upload media, copy/paste all four resource types, rename, move through the API, and soft-delete resources
 - open mutable or read-only annotation files in the existing editor
 - revision-checked annotation-file save
 - Inspector details plus per-account permission matrix for every selected resource
@@ -379,9 +389,10 @@ Current platform UI capabilities:
 - enter a local editor mode without login
 
 Important backend caveats:
-- `copyResource()` currently creates independent copies only for annotation files. The resource-manager clipboard can
-  hold other resource types, but recursive folder/project copy and media-resource copy are the active R1.3 gap; do
-  not describe generic copy/paste as complete until that service path and migration land.
+- recursive copy is synchronous and capped at 2,000 active nodes per root. Larger copies should become future
+  processing jobs rather than extending one HTTP/database transaction without a bound.
+- media copy creates a new media resource that reuses the immutable `FileObject`; physical object duplication,
+  reference-counted permanent deletion, and orphan cleanup are not implemented yet.
 - real-time collaborative editing is not implemented yet
 - the removed Course/Assignment/Submission runtime is not a pending compatibility target; future classroom
   distribution/review should build on resource copy, ACL, file comparison, and a separate confirmed-annotation layer
@@ -402,8 +413,11 @@ Important backend caveats:
 - `ResourceEntry` is the common identity, hierarchy, ownership, archive, and permission boundary for every managed item.
 - a project is a specialized container resource, not a separate parallel navigation hierarchy.
 - an annotation file is the mutable user-facing unit. Copying it creates an independent annotation file at revision 1 owned by the copier.
-- annotation-file copy preserves an external media reference. Recursive container copy must remap references that
-  point to media inside the copied subtree instead of leaving them attached to the source tree.
+- standalone annotation-file copy preserves an external media reference. Recursive container copy remaps references
+  that point to media inside the copied subtree to the corresponding copied media resource.
+- recursive copy requires effective `read` and `copy` on every active source descendant and `create_child` on the
+  target. Each root is atomic; direct ACL, user state, recovery snapshots, operations, jobs, and audit history are not
+  copied. The copier owns every new node and permissions are inherited afresh from the target.
 - saving an annotation file must compare `baseRevision`; stale writes return `409` rather than silently overwriting.
 - before replacing a payload, preserve the previous payload as an `AnnotationRecoverySnapshot`.
 - recovery snapshots are implementation history, not ordinary user-visible files or published versions.

@@ -2,6 +2,7 @@ import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
   Archive,
   ChevronRight,
+  ClipboardPaste,
   Clock3,
   Copy,
   FileJson2,
@@ -49,6 +50,7 @@ import {
 } from "../utils/projectFile";
 import { prepareProjectForServer } from "./PlatformWorkspace";
 import { ResourceDestinationPicker } from "./ResourceDestinationPicker";
+import { copyResourcesSequentially } from "./resourceClipboard";
 import { restoreResourcesSequentially } from "./resourceRestore";
 
 type ExplorerMode = "list" | "grid" | "column";
@@ -95,12 +97,14 @@ export function ResourceExplorer(props: {
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
   const [clipboard, setClipboard] = useState<ResourceEntry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isPasting, setIsPasting] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [movingResource, setMovingResource] = useState<ResourceEntry | null>(null);
   const jsonInputRef = useRef<HTMLInputElement>(null);
   const mediaInputRef = useRef<HTMLInputElement>(null);
   const restoreInFlightRef = useRef(false);
+  const pasteInFlightRef = useRef(false);
 
   const selected =
     page.items.find((item) => item.id === selectedIds[0]) ?? null;
@@ -147,17 +151,37 @@ export function ResourceExplorer(props: {
   }, [isTrashView, page.items, selectedIds]);
 
   const pasteClipboard = useCallback(async () => {
-    if (isTrashView || !folderId || !clipboard.length) return;
-    setIsLoading(true);
+    if (
+      isTrashView ||
+      !folderId ||
+      !clipboard.length ||
+      pasteInFlightRef.current
+    ) return;
+    // 快捷键与工具栏可能在 React 状态提交前连续触发；ref 保证同一剪贴板不会并发粘贴两轮。
+    pasteInFlightRef.current = true;
+    setIsPasting(true);
+    setError(null);
     try {
-      for (const item of clipboard) {
-        await props.client.copyResource(item.id, { parentId: folderId });
-      }
+      const result = await copyResourcesSequentially(
+        clipboard,
+        folderId,
+        (resourceId, parentId) =>
+          props.client.copyResource(resourceId, { parentId }),
+      );
       await refresh();
-    } catch (nextError) {
-      setError(describeError(nextError));
+      const copiedIds = result.copied.map(({ copy }) => copy.id);
+      setSelectedIds(copiedIds);
+      setAnchorId(copiedIds[0] ?? null);
+      if (result.failed.length) {
+        const details = result.failed.map(({ source, error }) =>
+          `${source.name}：${describeError(error)}`).join("；");
+        setError(
+          `已复制 ${result.copied.length} 项，${result.failed.length} 项失败。${details}`,
+        );
+      }
     } finally {
-      setIsLoading(false);
+      pasteInFlightRef.current = false;
+      setIsPasting(false);
     }
   }, [clipboard, folderId, isTrashView, props.client, refresh]);
 
@@ -192,7 +216,7 @@ export function ResourceExplorer(props: {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       // Radix 对话框负责其内部键盘交互，打开时不能让资源列表的全局快捷键同时执行。
-      if (movingResource || isRestoring) return;
+      if (movingResource || isRestoring || isPasting) return;
       const target = event.target as HTMLElement | null;
       if (
         target?.isContentEditable ||
@@ -242,6 +266,7 @@ export function ResourceExplorer(props: {
     refresh,
     movingResource,
     isRestoring,
+    isPasting,
     isTrashView,
     selected,
     selectedIds,
@@ -433,6 +458,17 @@ export function ResourceExplorer(props: {
                   </button>
                   <button type="button" disabled={!folderId} onClick={() => mediaInputRef.current?.click()} title="上传媒体">
                     <Upload size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!folderId || !clipboard.length || isPasting}
+                    onClick={() => void pasteClipboard()}
+                    title={folderId
+                      ? `粘贴 ${clipboard.length} 项到当前目录`
+                      : "请先进入项目或文件夹"}
+                  >
+                    <ClipboardPaste size={16} />
+                    {isPasting ? "粘贴中" : "粘贴"}
                   </button>
                 </>
               )}
