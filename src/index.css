@@ -879,6 +879,12 @@ select {
   color: #1766b2;
 }
 
+.resource-breadcrumbs button.drop-target-active {
+  color: #0f5798;
+  background: #dceafb;
+  box-shadow: inset 0 0 0 1px #79aada;
+}
+
 .resource-toolbar-actions {
   gap: 2px;
 }
@@ -980,6 +986,33 @@ select {
   color: #154f8a;
   background: #dceafb;
   box-shadow: inset 0 0 0 1px #9dbfe5;
+}
+
+.resource-list-row.dragging,
+.resource-grid-item.dragging {
+  opacity: 0.5;
+}
+
+.resource-list-row.drop-target-active,
+.resource-grid-item.drop-target-active {
+  color: #0f5798;
+  background: #d7eafa;
+  box-shadow: inset 0 0 0 2px #6da5d8;
+}
+
+.resource-native-drag-preview {
+  max-width: 280px;
+  padding: 7px 10px;
+  overflow: hidden;
+  color: #213a56;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgb(247 250 254 / 96%);
+  border: 1px solid #9bbadb;
+  border-radius: 6px;
+  box-shadow: 0 8px 22px rgb(43 65 91 / 18%);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .resource-name-cell {

@@ -3,6 +3,8 @@ import type {
   AnnotationOperationRecord,
   AnnotationRecoverySnapshot,
   AuditLogEntry,
+  BatchMoveResourcesRequest,
+  BatchMoveResourcesResponse,
   CopyResourceRequest,
   CreateAnnotationFileRequest,
   CreateAnnotationOperationRequest,
@@ -113,6 +115,13 @@ export class PlatformClient {
 
   moveResource(resourceId: string, request: MoveResourceRequest) {
     return this.request<ResourceEntry>(`/resources/${resourceId}/move`, {
+      method: "POST",
+      body: request,
+    });
+  }
+
+  moveResources(request: BatchMoveResourcesRequest) {
+    return this.request<BatchMoveResourcesResponse>("/resources/move-batch", {
       method: "POST",
       body: request,
     });

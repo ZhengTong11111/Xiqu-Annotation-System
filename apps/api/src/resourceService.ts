@@ -1,18 +1,19 @@
 import {
-  type Prisma,
+  Prisma,
   type PrismaClient,
   type ResourceType as DbResourceType,
 } from "@prisma/client";
 import type {
   AnnotationFile,
   AnnotationRecoverySnapshot,
+  BatchMoveResourcesRequest,
+  BatchMoveResourcesResponse,
   CopyResourceRequest,
   CreateAnnotationFileRequest,
   CreateResourceRequest,
   EffectiveResourcePermission,
   ImportMediaFileRequest,
   ListResourcesOptions,
-  MoveResourceRequest,
   ResourceCapability,
   ResourceEntry,
   ResourceListPage,
@@ -30,6 +31,10 @@ import {
   MAX_RECURSIVE_COPY_NODES,
   type CopySourceNode,
 } from "./resourceCopy.js";
+import {
+  normalizeMoveSelection,
+  type MoveSelectionNode,
+} from "./resourceMove.js";
 import { toPublicUser } from "./repositoryMappers.js";
 
 const resourceInclude = {
@@ -372,7 +377,7 @@ export class ResourceService {
       await this.access.assertCapability(user, resourceId, "delete");
     }
     await this.prisma.$transaction(async (transaction) => {
-      await this.lockResourceRow(transaction, resourceId);
+      await this.lockResourceRows(transaction, [resourceId]);
       const latest = await transaction.resourceEntry.findUnique({
         where: { id: resourceId },
       });
@@ -410,25 +415,73 @@ export class ResourceService {
     return this.getMappedResource(user, resourceId);
   }
 
-  async moveResource(
+  async moveResources(
     user: ApiUser,
-    resourceId: string,
-    input: MoveResourceRequest,
-  ) {
-    await this.access.assertCapability(user, resourceId, "move");
+    input: BatchMoveResourcesRequest,
+  ): Promise<BatchMoveResourcesResponse> {
+    const requestedIds = [...new Set(input.resourceIds)];
+    const selectionSnapshot = await this.loadMoveSelectionNodes(
+      this.prisma,
+      requestedIds,
+    );
+    const requestedNodeIds = new Set(selectionSnapshot.map(({ id }) => id));
+    if (requestedIds.some((id) => !requestedNodeIds.has(id))) {
+      throw notFound("部分待移动资源不存在。");
+    }
+    const normalizedSnapshot = normalizeMoveSelection(
+      requestedIds,
+      selectionSnapshot,
+    );
+    for (const resourceId of normalizedSnapshot.rootIds) {
+      // 选中父目录时，后代随父目录保持内部层级，不要求后代额外具备 move 权限。
+      await this.access.assertCapability(user, resourceId, "move");
+    }
     if (input.parentId) {
       await this.assertContainer(input.parentId);
       await this.access.assertCapability(user, input.parentId, "create_child");
     } else if (!this.access.isGlobalAdmin(user)) {
       throw forbidden("只有管理员可以把资源移动到根目录。");
     }
-    await this.prisma.$transaction(async (transaction) => {
+    const moved = await this.prisma.$transaction(async (transaction) => {
       await this.lockResourceTreeMutation(transaction);
-      await this.lockResourceRow(transaction, resourceId);
-      const latest = await transaction.resourceEntry.findUnique({
-        where: { id: resourceId },
+      const latestSelection = await this.loadMoveSelectionNodes(
+        transaction,
+        requestedIds,
+      );
+      const normalizedLatest = normalizeMoveSelection(
+        requestedIds,
+        latestSelection,
+      );
+      if (!sameStringSets(
+        normalizedSnapshot.rootIds,
+        normalizedLatest.rootIds,
+      )) {
+        throw conflict("移动期间资源层级发生变化，请刷新后重试。");
+      }
+
+      await this.lockResourceRows(transaction, normalizedLatest.rootIds);
+      const roots = await transaction.resourceEntry.findMany({
+        where: { id: { in: normalizedLatest.rootIds } },
+        select: {
+          id: true,
+          parentId: true,
+          type: true,
+          name: true,
+          trashedAt: true,
+        },
       });
-      if (!latest) throw notFound("资源不存在。");
+      if (roots.length !== normalizedLatest.rootIds.length) {
+        throw notFound("部分待移动资源不存在。");
+      }
+      for (const root of roots) {
+        if (
+          root.trashedAt ||
+          await this.hasTrashedAncestor(transaction, root.parentId)
+        ) {
+          throw badRequest("不能移动回收站中的资源。");
+        }
+      }
+
       if (input.parentId) {
         const target = await transaction.resourceEntry.findUnique({
           where: { id: input.parentId },
@@ -437,30 +490,61 @@ export class ResourceService {
         if (target.type !== "folder" && target.type !== "project") {
           throw badRequest("目标资源不能包含子文件。");
         }
-        if (target.trashedAt) throw badRequest("不能移动到回收站资源中。");
+        if (
+          target.trashedAt ||
+          await this.hasTrashedAncestor(transaction, target.parentId)
+        ) {
+          throw badRequest("不能移动到回收站资源中。");
+        }
       }
       await this.lockParentNamespaces(transaction, [
-        latest.parentId,
+        ...roots.map(({ parentId }) => parentId),
         input.parentId,
       ]);
-      if (
-        input.parentId &&
-        await this.isDescendant(transaction, input.parentId, resourceId)
-      ) {
-        throw badRequest("不能把文件夹移动到它自己的子目录中。");
+
+      const rootById = new Map(roots.map((root) => [root.id, root]));
+      const movedIds: string[] = [];
+      const unchangedIds: string[] = [];
+      // 固定顺序执行名称检查和更新。第一项写入后，后续同名来源会被同一事务检测并整体回滚。
+      for (const resourceId of [...normalizedLatest.rootIds].sort()) {
+        const root = rootById.get(resourceId)!;
+        if (root.parentId === input.parentId) {
+          unchangedIds.push(resourceId);
+          continue;
+        }
+        if (
+          input.parentId &&
+          (root.type === "folder" || root.type === "project") &&
+          await this.isDescendant(transaction, input.parentId, resourceId)
+        ) {
+          throw badRequest("不能把文件夹移动到它自己的子目录中。");
+        }
+        await this.assertNameAvailable(
+          transaction,
+          input.parentId,
+          root.name,
+          resourceId,
+        );
+        await transaction.resourceEntry.update({
+          where: { id: resourceId },
+          data: { parentId: input.parentId },
+        });
+        movedIds.push(resourceId);
       }
-      await this.assertNameAvailable(
-        transaction,
-        input.parentId,
-        latest.name,
-        resourceId,
-      );
-      await transaction.resourceEntry.update({
-        where: { id: resourceId },
-        data: { parentId: input.parentId },
-      });
+      return {
+        movedIds,
+        unchangedIds,
+        collapsedDescendantIds: normalizedLatest.collapsedDescendantIds,
+      };
     });
-    return this.getMappedResource(user, resourceId);
+
+    return {
+      moved: await Promise.all(moved.movedIds.map((id) =>
+        this.getMappedResource(user, id))),
+      unchanged: await Promise.all(moved.unchangedIds.map((id) =>
+        this.getMappedResource(user, id))),
+      collapsedDescendantIds: moved.collapsedDescendantIds,
+    };
   }
 
   async copyResource(
@@ -508,7 +592,7 @@ export class ResourceService {
     const authorizedIds = new Set(authorizedSnapshot.map((node) => node.id));
     const copied = await this.prisma.$transaction(async (transaction) => {
       await this.lockResourceTreeMutation(transaction);
-      await this.lockResourceRow(transaction, resourceId);
+      await this.lockResourceRows(transaction, [resourceId]);
       const sourceContainerIds = authorizedSnapshot
         .filter((node) => node.type === "folder" || node.type === "project")
         .map((node) => node.id);
@@ -622,7 +706,7 @@ export class ResourceService {
     await this.prisma.$transaction(async (transaction) => {
       // 移动、删除和恢复都会改变活动资源树；共用锁可防止恢复校验后父目录又被并发移动或删除。
       await this.lockResourceTreeMutation(transaction);
-      await this.lockResourceRow(transaction, resourceId);
+      await this.lockResourceRows(transaction, [resourceId]);
       const current = await transaction.resourceEntry.findUnique({
         where: { id: resourceId },
       });
@@ -792,7 +876,15 @@ export class ResourceService {
     };
     switch (options.view ?? "children") {
       case "all_projects":
-        return { ...common, type: "project", trashedAt: null };
+        // “所有项目”同时承担资源管理器根目录的职责。若把嵌套项目也平铺到这里，
+        // 项目移动进另一个项目后会在根视图和目标项目中同时出现，视觉上像是复制。
+        // 最近、收藏和共享仍是跨目录聚合视图；只有根项目视图遵循直接子项语义。
+        return {
+          ...common,
+          parentId: null,
+          type: "project",
+          trashedAt: null,
+        };
       case "recent":
         return {
           ...common,
@@ -1079,6 +1171,29 @@ export class ResourceService {
     });
   }
 
+  private async loadMoveSelectionNodes(
+    database: PrismaClient | Prisma.TransactionClient,
+    resourceIds: string[],
+  ): Promise<MoveSelectionNode[]> {
+    if (!resourceIds.length) return [];
+    // 只读取所选节点到根目录的祖先链，足以判断“父与后代同时被选中”，无需加载整棵资源树。
+    return database.$queryRaw<MoveSelectionNode[]>`
+      WITH RECURSIVE selected_ancestors AS (
+        SELECT id, parent_id AS "parentId"
+        FROM resource_entries
+        WHERE id IN (${Prisma.join(resourceIds)})
+
+        UNION
+
+        SELECT parent.id, parent.parent_id AS "parentId"
+        FROM resource_entries AS parent
+        INNER JOIN selected_ancestors AS child ON child."parentId" = parent.id
+      )
+      SELECT DISTINCT id, "parentId"
+      FROM selected_ancestors
+    `;
+  }
+
   private async isDescendant(
     database: PrismaClient | Prisma.TransactionClient,
     candidateId: string,
@@ -1122,18 +1237,21 @@ export class ResourceService {
     `;
   }
 
-  private async lockResourceRow(
+  private async lockResourceRows(
     transaction: Prisma.TransactionClient,
-    resourceId: string,
+    resourceIds: string[],
   ) {
-    // 资源改名、移动和回收都依赖当前父目录；先锁定资源行，避免读取后被并发请求换父级。
+    const orderedIds = [...new Set(resourceIds)].sort();
+    if (!orderedIds.length) return;
+    // 批量移动会同时锁多行；所有调用统一按 id 排序，避免两个事务以相反顺序等待而死锁。
     const rows = await transaction.$queryRaw<Array<{ id: string }>>`
       SELECT id
       FROM resource_entries
-      WHERE id = ${resourceId}
+      WHERE id IN (${Prisma.join(orderedIds)})
+      ORDER BY id
       FOR UPDATE
     `;
-    if (!rows.length) throw notFound("资源不存在。");
+    if (rows.length !== orderedIds.length) throw notFound("部分资源不存在。");
   }
 
   private async hasTrashedAncestor(
@@ -1153,4 +1271,10 @@ export class ResourceService {
     }
     return false;
   }
+}
+
+function sameStringSets(left: string[], right: string[]) {
+  if (left.length !== right.length) return false;
+  const rightSet = new Set(right);
+  return left.every((value) => rightSet.has(value));
 }

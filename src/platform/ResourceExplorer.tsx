@@ -51,6 +51,10 @@ import {
 import { prepareProjectForServer } from "./PlatformWorkspace";
 import { ResourceDestinationPicker } from "./ResourceDestinationPicker";
 import { copyResourcesSequentially } from "./resourceClipboard";
+import {
+  registerResourceDraggable,
+  registerResourceDropTarget,
+} from "./resourceDragAndDrop";
 import { restoreResourcesSequentially } from "./resourceRestore";
 
 type ExplorerMode = "list" | "grid" | "column";
@@ -99,15 +103,24 @@ export function ResourceExplorer(props: {
   const [isLoading, setIsLoading] = useState(false);
   const [isPasting, setIsPasting] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
+  const [isMovingResources, setIsMovingResources] = useState(false);
+  const [draggedResourceIds, setDraggedResourceIds] = useState<string[]>([]);
+  const [breadcrumbResources, setBreadcrumbResources] = useState<
+    Record<string, ResourceEntry>
+  >({});
   const [error, setError] = useState<string | null>(null);
-  const [movingResource, setMovingResource] = useState<ResourceEntry | null>(null);
+  const [movingResources, setMovingResources] = useState<ResourceEntry[]>([]);
   const jsonInputRef = useRef<HTMLInputElement>(null);
   const mediaInputRef = useRef<HTMLInputElement>(null);
   const restoreInFlightRef = useRef(false);
   const pasteInFlightRef = useRef(false);
+  const moveInFlightRef = useRef(false);
+  const breadcrumbRequestIdRef = useRef(0);
 
   const selected =
     page.items.find((item) => item.id === selectedIds[0]) ?? null;
+  const selectedResources = page.items.filter((item) =>
+    selectedIds.includes(item.id));
   const isTrashView = folderId === null && rootView === "trash";
   const refresh = useCallback(async () => {
     setIsLoading(true);
@@ -135,6 +148,30 @@ export function ResourceExplorer(props: {
     const timer = window.setTimeout(() => void refresh(), search ? 180 : 0);
     return () => window.clearTimeout(timer);
   }, [refresh, search]);
+
+  useEffect(() => {
+    const requestId = ++breadcrumbRequestIdRef.current;
+    if (!page.breadcrumbs.length) {
+      setBreadcrumbResources({});
+      return;
+    }
+    void Promise.all(page.breadcrumbs.map((item) =>
+      props.client.getResource(item.id))).then((resources) => {
+      if (requestId !== breadcrumbRequestIdRef.current) return;
+      setBreadcrumbResources(Object.fromEntries(resources.map((resource) =>
+        [resource.id, resource])));
+    }).catch(() => {
+      // 面包屑权限信息只用于拖拽预判；读取失败时 fail closed，不影响普通路径导航。
+      if (requestId === breadcrumbRequestIdRef.current) {
+        setBreadcrumbResources({});
+      }
+    });
+    return () => {
+      if (requestId === breadcrumbRequestIdRef.current) {
+        breadcrumbRequestIdRef.current += 1;
+      }
+    };
+  }, [page.breadcrumbs, props.client]);
 
   const openResource = useCallback((resource: ResourceEntry) => {
     if (resource.type === "folder" || resource.type === "project") {
@@ -216,7 +253,12 @@ export function ResourceExplorer(props: {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       // Radix 对话框负责其内部键盘交互，打开时不能让资源列表的全局快捷键同时执行。
-      if (movingResource || isRestoring || isPasting) return;
+      if (
+        movingResources.length ||
+        isMovingResources ||
+        isRestoring ||
+        isPasting
+      ) return;
       const target = event.target as HTMLElement | null;
       if (
         target?.isContentEditable ||
@@ -264,9 +306,10 @@ export function ResourceExplorer(props: {
     pasteClipboard,
     props.client,
     refresh,
-    movingResource,
+    movingResources.length,
     isRestoring,
     isPasting,
+    isMovingResources,
     isTrashView,
     selected,
     selectedIds,
@@ -300,6 +343,61 @@ export function ResourceExplorer(props: {
         : [...current, resource.id]
       : [resource.id]);
   }
+
+  function openMovePicker(resource: ResourceEntry) {
+    if (isTrashView || moveInFlightRef.current) return;
+    const resources = selectedIds.includes(resource.id)
+      ? selectedResources
+      : [resource];
+    if (!resources.length || resources.some((item) =>
+      !item.permission.capabilities.includes("move"))) return;
+    if (!selectedIds.includes(resource.id)) {
+      setSelectedIds([resource.id]);
+      setAnchorId(resource.id);
+    }
+    // 对话框持有打开瞬间的选择快照，后续刷新不会改变本次移动的资源集合。
+    setMovingResources(resources);
+  }
+
+  const moveResourcesTo = useCallback(async (
+    resourceIds: string[],
+    parentId: string | null,
+  ) => {
+    if (moveInFlightRef.current) return null;
+    moveInFlightRef.current = true;
+    setIsMovingResources(true);
+    setError(null);
+    try {
+      const result = await props.client.moveResources({ resourceIds, parentId });
+      setSelectedIds([]);
+      setAnchorId(null);
+      await refresh();
+      if (!result.moved.length && result.unchanged.length) {
+        setError("所选资源已经位于目标目录中。");
+      }
+      return result;
+    } finally {
+      moveInFlightRef.current = false;
+      setIsMovingResources(false);
+      setDraggedResourceIds([]);
+    }
+  }, [props.client, refresh]);
+
+  const handleResourceDragStart = useCallback((resourceIds: string[]) => {
+    setDraggedResourceIds(resourceIds);
+    setSelectedIds(resourceIds);
+    setAnchorId(resourceIds[0] ?? null);
+  }, []);
+  const handleResourceDragFinish = useCallback(() => {
+    setDraggedResourceIds([]);
+  }, []);
+  const handleResourceDrop = useCallback((
+    resourceIds: string[],
+    targetId: string,
+  ) => {
+    void moveResourcesTo(resourceIds, targetId)
+      .catch((nextError) => setError(describeError(nextError)));
+  }, [moveResourcesTo]);
 
   async function createContainer(type: "folder" | "project") {
     const name = window.prompt(type === "project" ? "项目名称：" : "文件夹名称：");
@@ -421,9 +519,21 @@ export function ResourceExplorer(props: {
               {page.breadcrumbs.map((item) => (
                 <span key={item.id}>
                   <ChevronRight size={14} />
-                  <button type="button" onClick={() => setFolderId(item.id)}>
+                  <ResourceBreadcrumbTarget
+                    resource={breadcrumbResources[item.id] ?? null}
+                    disabled={
+                      isTrashView ||
+                      isLoading ||
+                      isPasting ||
+                      isRestoring ||
+                      isMovingResources ||
+                      movingResources.length > 0
+                    }
+                    onNavigate={() => setFolderId(item.id)}
+                    onDrop={handleResourceDrop}
+                  >
                     {item.name}
-                  </button>
+                  </ResourceBreadcrumbTarget>
                 </span>
               ))}
             </div>
@@ -470,6 +580,22 @@ export function ResourceExplorer(props: {
                     <ClipboardPaste size={16} />
                     {isPasting ? "粘贴中" : "粘贴"}
                   </button>
+                  <button
+                    type="button"
+                    disabled={
+                      !selectedResources.length ||
+                      isMovingResources ||
+                      selectedResources.some((resource) =>
+                        !resource.permission.capabilities.includes("move"))
+                    }
+                    onClick={() => openMovePicker(selectedResources[0]!)}
+                    title="移动所选资源"
+                  >
+                    <FolderInput size={16} />
+                    {selectedResources.length > 1
+                      ? `移动（${selectedResources.length}）`
+                      : "移动"}
+                  </button>
                 </>
               )}
               <span className="resource-toolbar-divider" />
@@ -500,7 +626,19 @@ export function ResourceExplorer(props: {
             onRename={(resource) =>
               void renameResource(props.client, resource, refresh, setError)}
             onCopy={(resource) => setClipboard([resource])}
-            onMove={setMovingResource}
+            onMove={openMovePicker}
+            interactionDisabled={
+              isTrashView ||
+              isLoading ||
+              isPasting ||
+              isRestoring ||
+              isMovingResources ||
+              movingResources.length > 0
+            }
+            draggedResourceIds={draggedResourceIds}
+            onDragStart={handleResourceDragStart}
+            onDragFinish={handleResourceDragFinish}
+            onDropResources={handleResourceDrop}
             onRestore={(resource) => void restoreResources([resource])}
             onTrash={(resource) =>
               void props.client.trashResource(resource.id)
@@ -519,20 +657,18 @@ export function ResourceExplorer(props: {
       </section>
       <input ref={jsonInputRef} hidden type="file" accept="application/json,.json" onChange={(event) => void importJson(event)} />
       <input ref={mediaInputRef} hidden type="file" accept="video/*,audio/*" onChange={(event) => void uploadMedia(event)} />
-      {movingResource && props.user ? (
+      {movingResources.length && props.user ? (
         <ResourceDestinationPicker
           client={props.client}
-          resource={movingResource}
+          resources={movingResources}
           user={props.user}
-          onCancel={() => setMovingResource(null)}
+          onCancel={() => setMovingResources([])}
           onMove={async (parentId) => {
-            await props.client.moveResource(movingResource.id, { parentId });
-            // 成功后以服务端目录重新归一化选择，避免 Inspector 持有已移出列表的旧对象。
-            setSelectedIds((current) =>
-              current.filter((id) => id !== movingResource.id));
-            setAnchorId(null);
-            setMovingResource(null);
-            await refresh();
+            const result = await moveResourcesTo(
+              movingResources.map(({ id }) => id),
+              parentId,
+            );
+            if (result) setMovingResources([]);
           }}
         />
       ) : null}
@@ -553,6 +689,46 @@ function NavItem(props: {
   );
 }
 
+function ResourceBreadcrumbTarget(props: {
+  resource: ResourceEntry | null;
+  disabled: boolean;
+  onNavigate: () => void;
+  onDrop: (resourceIds: string[], targetId: string) => void;
+  children: string;
+}) {
+  const elementRef = useRef<HTMLButtonElement>(null);
+  const latestPropsRef = useRef(props);
+  const [dropActive, setDropActive] = useState(false);
+  latestPropsRef.current = props;
+
+  useEffect(() => {
+    const element = elementRef.current;
+    const resource = props.resource;
+    if (!element || !resource) return;
+    return registerResourceDropTarget({
+      element,
+      targetId: resource.id,
+      canCreateChild: () => latestPropsRef.current.resource?.permission
+        .capabilities.includes("create_child") ?? false,
+      disabled: () => latestPropsRef.current.disabled,
+      onActiveChange: setDropActive,
+      onDrop: (resourceIds, targetId) =>
+        latestPropsRef.current.onDrop(resourceIds, targetId),
+    });
+  }, [props.resource?.id]);
+
+  return (
+    <button
+      ref={elementRef}
+      type="button"
+      className={dropActive ? "drop-target-active" : ""}
+      onClick={props.onNavigate}
+    >
+      {props.children}
+    </button>
+  );
+}
+
 type CollectionProps = {
   items: ResourceEntry[];
   selectedIds: string[];
@@ -567,6 +743,11 @@ type CollectionProps = {
   onRename: (resource: ResourceEntry) => void;
   onCopy: (resource: ResourceEntry) => void;
   onMove: (resource: ResourceEntry) => void;
+  interactionDisabled: boolean;
+  draggedResourceIds: string[];
+  onDragStart: (resourceIds: string[]) => void;
+  onDragFinish: () => void;
+  onDropResources: (resourceIds: string[], targetId: string) => void;
   onRestore: (resource: ResourceEntry) => void;
   onTrash: (resource: ResourceEntry) => void;
 };
@@ -582,20 +763,12 @@ function ResourceCollection(props: CollectionProps) {
     return (
       <div className="resource-grid">
         {props.items.map((resource) => (
-          <ResourceMenu key={resource.id} resource={resource} {...props}>
-            <button
-              type="button"
-              className={`resource-grid-item ${props.selectedIds.includes(resource.id) ? "selected" : ""}`}
-              onClick={(event) => props.onSelect(event, resource)}
-              onDoubleClick={() => {
-                if (!props.isTrashView) props.onOpen(resource);
-              }}
-            >
-              <ResourceIcon resource={resource} size={34} />
-              <strong>{resource.name}</strong>
-              <span>{resource.owner.displayName}</span>
-            </button>
-          </ResourceMenu>
+          <ResourceCollectionItem
+            key={resource.id}
+            resource={resource}
+            displayMode="grid"
+            {...props}
+          />
         ))}
       </div>
     );
@@ -610,24 +783,99 @@ function ResourceCollection(props: CollectionProps) {
         <SortButton label="大小" field="size" {...props} />
       </div>
       {props.items.map((resource) => (
-        <ResourceMenu key={resource.id} resource={resource} {...props}>
-          <button
-            type="button"
-            className={`resource-list-row ${props.selectedIds.includes(resource.id) ? "selected" : ""}`}
-            onClick={(event) => props.onSelect(event, resource)}
-            onDoubleClick={() => {
-              if (!props.isTrashView) props.onOpen(resource);
-            }}
-          >
-            <span className="resource-name-cell"><ResourceIcon resource={resource} size={18} /><strong>{resource.name}</strong></span>
-            <span>{typeLabel(resource.type)}</span>
-            <span>{formatDate(resource.updatedAt)}</span>
-            <span>{resource.owner.displayName}</span>
-            <span>{formatSize(resource.size)}</span>
-          </button>
-        </ResourceMenu>
+        <ResourceCollectionItem
+          key={resource.id}
+          resource={resource}
+          displayMode="list"
+          {...props}
+        />
       ))}
     </div>
+  );
+}
+
+function ResourceCollectionItem(props: CollectionProps & {
+  resource: ResourceEntry;
+  displayMode: "list" | "grid";
+}) {
+  const elementRef = useRef<HTMLButtonElement>(null);
+  const latestPropsRef = useRef(props);
+  latestPropsRef.current = props;
+  const [dropActive, setDropActive] = useState(false);
+  const isSelected = props.selectedIds.includes(props.resource.id);
+  const isDragging = props.draggedResourceIds.includes(props.resource.id);
+  const isContainer = props.resource.type === "folder" ||
+    props.resource.type === "project";
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element) return;
+    const cleanups = [registerResourceDraggable({
+      element,
+      getResources: () => {
+        const latest = latestPropsRef.current;
+        return latest.selectedIds.includes(latest.resource.id)
+          ? latest.items.filter(({ id }) => latest.selectedIds.includes(id))
+          : [latest.resource];
+      },
+      disabled: () => latestPropsRef.current.interactionDisabled,
+      onDragStart: (resourceIds) =>
+        latestPropsRef.current.onDragStart(resourceIds),
+      onDragFinish: () => latestPropsRef.current.onDragFinish(),
+    })];
+    if (isContainer) {
+      cleanups.push(registerResourceDropTarget({
+        element,
+        targetId: props.resource.id,
+        canCreateChild: () => latestPropsRef.current.resource.permission
+          .capabilities.includes("create_child"),
+        disabled: () => latestPropsRef.current.interactionDisabled,
+        onActiveChange: setDropActive,
+        onDrop: (resourceIds, targetId) =>
+          latestPropsRef.current.onDropResources(resourceIds, targetId),
+      }));
+    }
+    // Pragmatic DnD 使用命令式注册；每次依赖变化和组件卸载时都必须注销，避免重复 drop。
+    return () => cleanups.forEach((cleanup) => cleanup());
+  }, [
+    isContainer,
+    props.resource.id,
+  ]);
+
+  const className = [
+    props.displayMode === "grid" ? "resource-grid-item" : "resource-list-row",
+    isSelected ? "selected" : "",
+    isDragging ? "dragging" : "",
+    dropActive ? "drop-target-active" : "",
+  ].filter(Boolean).join(" ");
+
+  return (
+    <ResourceMenu {...props}>
+      <button
+        ref={elementRef}
+        type="button"
+        className={className}
+        onClick={(event) => props.onSelect(event, props.resource)}
+        onDoubleClick={() => {
+          if (!props.isTrashView) props.onOpen(props.resource);
+        }}
+      >
+        {props.displayMode === "grid" ? (
+          <>
+            <ResourceIcon resource={props.resource} size={34} />
+            <strong>{props.resource.name}</strong>
+            <span>{props.resource.owner.displayName}</span>
+          </>
+        ) : (
+          <>
+            <span className="resource-name-cell"><ResourceIcon resource={props.resource} size={18} /><strong>{props.resource.name}</strong></span>
+            <span>{typeLabel(props.resource.type)}</span>
+            <span>{formatDate(props.resource.updatedAt)}</span>
+            <span>{props.resource.owner.displayName}</span>
+            <span>{formatSize(props.resource.size)}</span>
+          </>
+        )}
+      </button>
+    </ResourceMenu>
   );
 }
 

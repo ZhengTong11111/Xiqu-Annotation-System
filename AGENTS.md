@@ -39,7 +39,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - platform login/resource-explorer/editor switch and local editor entry
 - `src/platform/ResourceExplorer.tsx`
   - desktop-style three-pane resource manager
-  - owns folder navigation, list/grid/column presentation, selection, keyboard/context-menu actions, import/upload, and the resource Inspector
+  - owns folder navigation, list/grid presentation, selection, keyboard/context-menu actions, import/upload, and the resource Inspector
+  - the current `column` toggle is only a list-style placeholder; the real Finder-style multi-column browser is the next R1.5 slice and must not be described as complete
   - the Inspector is the canonical UI for editing each account's direct permissions on the selected resource
 - `src/platform/resourceClipboard.ts`
   - multi-root copy/paste result orchestration
@@ -360,6 +361,7 @@ Current backend capabilities:
 - file metadata in PostgreSQL and binary data in local object storage
 - protected file reading, including HTTP Range / `206 Partial Content` for stable MP4 seeking
 - hierarchical `ResourceEntry` tree with `folder`, `project`, `annotation_file`, and `media_file` resource types
+- atomic batch move with parent/descendant selection collapsing; the legacy single-item endpoint delegates to the same core
 - mutable annotation files with integer revision and `baseRevision` conflict checking
 - hidden recovery snapshots created automatically before an annotation-file payload is replaced
 - recursive project/folder copy, media/annotation-file copy, file-like move/rename/soft-delete/restore, favorite, and recent-open state
@@ -378,7 +380,8 @@ Current backend capabilities:
 
 Current platform UI capabilities:
 - login page with development defaults
-- desktop-style three-pane resource explorer with folder/project navigation, search, sorting, list/grid/column modes, multi-selection, keyboard shortcuts, and context menus
+- desktop-style three-pane resource explorer with folder/project navigation, search, sorting, list/grid modes, multi-selection, keyboard shortcuts, and context menus; the visible column-mode toggle is not yet a true multi-column browser
+- multi-selection destination picker plus list/grid/breadcrumb drag-to-move powered by headless Pragmatic Drag and Drop
 - create projects/folders, import annotation JSON, upload media, copy/paste all four resource types, rename, move through the API, and soft-delete resources
 - open mutable or read-only annotation files in the existing editor
 - revision-checked annotation-file save
@@ -411,7 +414,9 @@ Important backend caveats:
 
 ### Resource and annotation-file invariants
 - `ResourceEntry` is the common identity, hierarchy, ownership, archive, and permission boundary for every managed item.
-- a project is a specialized container resource, not a separate parallel navigation hierarchy.
+- a project is a specialized container resource, not a separate parallel navigation hierarchy. Project and folder use the same create-child, ACL, copy, move, trash, restore, naming, and cycle-protection paths; do not fork these operations by container type.
+- project currently differs from folder through its resource type, icon/navigation semantics, and optional `ProjectMetadata`; it is not a separate storage volume, revision boundary, or permission engine.
+- `all_projects` is the resource explorer's root-directory view and returns only top-level projects (`parentId = null`). It is not a recursive project search. Nested projects appear under their actual parent; recent, favorites, shared, archived, and trash remain virtual/aggregate views with their own semantics.
 - an annotation file is the mutable user-facing unit. Copying it creates an independent annotation file at revision 1 owned by the copier.
 - standalone annotation-file copy preserves an external media reference. Recursive container copy remaps references
   that point to media inside the copied subtree to the corresponding copied media resource.
@@ -422,6 +427,7 @@ Important backend caveats:
 - before replacing a payload, preserve the previous payload as an `AnnotationRecoverySnapshot`.
 - recovery snapshots are implementation history, not ordinary user-visible files or published versions.
 - moving a resource must reject cycles and destinations where the caller lacks `create_child`.
+- moving a selection is all-or-nothing; selected descendants collapse under their selected ancestor and must not be moved a second time.
 - move, trash, and restore share the resource-tree mutation advisory lock before resource-row and parent-namespace
   locks. Restore must reject an absent/non-container/trashed original parent or trashed ancestor; it must never return
   success for an item that remains hidden behind a trashed ancestor.

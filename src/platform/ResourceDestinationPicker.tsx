@@ -23,7 +23,7 @@ import type { PlatformClient } from "../api/platformClient";
 
 type DestinationPickerProps = {
   client: PlatformClient;
-  resource: ResourceEntry;
+  resources: ResourceEntry[];
   user: PlatformUser;
   onCancel: () => void;
   onMove: (parentId: string | null) => Promise<void>;
@@ -57,8 +57,13 @@ export function ResourceDestinationPicker(props: DestinationPickerProps) {
   const canCreateInCandidate = candidate
     ? candidate.permission.capabilities.includes("create_child")
     : folderId === null && isAdmin;
-  const isCurrentParent = (props.resource.parentId ?? null) === candidateId;
-  const isSourceCandidate = candidateId === props.resource.id;
+  const sourceIds = useMemo(
+    () => new Set(props.resources.map(({ id }) => id)),
+    [props.resources],
+  );
+  const isCurrentParent = props.resources.every((resource) =>
+    (resource.parentId ?? null) === candidateId);
+  const isSourceCandidate = candidateId !== null && sourceIds.has(candidateId);
   const canConfirm = !isLoading &&
     !isMoving &&
     canCreateInCandidate &&
@@ -121,7 +126,7 @@ export function ResourceDestinationPicker(props: DestinationPickerProps) {
   function enterDirectory(resource: ResourceEntry) {
     // 后代只能经过其父容器进入；禁用源容器入口即可在 UI 层阻止选择 source subtree。
     // 后端仍会在事务内重新检查循环关系，前端判断不承担安全职责。
-    if (resource.id === props.resource.id || isMoving) return;
+    if (sourceIds.has(resource.id) || isMoving) return;
     setFolderId(resource.id);
   }
 
@@ -169,7 +174,7 @@ export function ResourceDestinationPicker(props: DestinationPickerProps) {
             <div>
               <FolderInput size={20} />
               <span>
-                <Dialog.Title>移动“{props.resource.name}”</Dialog.Title>
+                <Dialog.Title>{buildPickerTitle(props.resources)}</Dialog.Title>
                 <Dialog.Description>选择目标项目或文件夹</Dialog.Description>
               </span>
             </div>
@@ -209,7 +214,7 @@ export function ResourceDestinationPicker(props: DestinationPickerProps) {
               <div className="resource-destination-empty">正在读取目录…</div>
             ) : directory.children.length ? (
               directory.children.map((resource) => {
-                const isSource = resource.id === props.resource.id;
+                const isSource = sourceIds.has(resource.id);
                 const isSelected = selectedTarget?.id === resource.id;
                 const canCreate = resource.permission.capabilities.includes("create_child");
                 return (
@@ -275,4 +280,10 @@ export function ResourceDestinationPicker(props: DestinationPickerProps) {
 
 function describePickerError(error: unknown) {
   return error instanceof Error ? error.message : "移动失败，请稍后重试。";
+}
+
+function buildPickerTitle(resources: ResourceEntry[]) {
+  if (resources.length === 1) return `移动“${resources[0]!.name}”`;
+  const summary = resources.slice(0, 2).map(({ name }) => `“${name}”`).join("、");
+  return `移动 ${resources.length} 项（${summary}${resources.length > 2 ? "等" : ""}）`;
 }

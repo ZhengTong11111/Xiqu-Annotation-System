@@ -265,6 +265,308 @@ test("平台资源 API 集成测试", async (suite) => {
       );
     });
 
+    await suite.test("批量移动保持原子性并压缩父子选择", async () => {
+      const sourceResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "批量移动源" },
+      });
+      const sourceId = String(dataOf(sourceResponse.json()).id);
+      const targetResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "批量移动目标" },
+      });
+      const targetId = String(dataOf(targetResponse.json()).id);
+      const parentResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: sourceId, type: "folder", name: "父目录" },
+      });
+      const parentId = String(dataOf(parentResponse.json()).id);
+      const childResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId, type: "folder", name: "随父移动的子目录" },
+      });
+      const childId = String(dataOf(childResponse.json()).id);
+      const siblingResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: sourceId, type: "folder", name: "同批兄弟目录" },
+      });
+      const siblingId = String(dataOf(siblingResponse.json()).id);
+
+      const moved = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources/move-batch",
+        payload: {
+          resourceIds: [parentId, childId, siblingId, siblingId],
+          parentId: targetId,
+        },
+      });
+      assert.equal(moved.statusCode, 200, moved.body);
+      const moveData = dataOf(moved.json());
+      assert.deepEqual(moveData.collapsedDescendantIds, [childId]);
+      assert.deepEqual(
+        (moveData.moved as JsonObject[]).map(({ id }) => id).sort(),
+        [parentId, siblingId].sort(),
+      );
+      assert.equal(
+        (await prisma.resourceEntry.findUnique({ where: { id: childId } }))
+          ?.parentId,
+        parentId,
+        "选中的后代必须保持在父目录内，不能被第二次改写 parentId",
+      );
+
+      const nestedProjectResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "待嵌套项目" },
+      });
+      const nestedProjectId = String(dataOf(nestedProjectResponse.json()).id);
+      const nestedProjectMove = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources/move-batch",
+        payload: { resourceIds: [nestedProjectId], parentId: targetId },
+      });
+      assert.equal(nestedProjectMove.statusCode, 200, nestedProjectMove.body);
+      assert.equal(
+        (await prisma.resourceEntry.findUnique({ where: { id: nestedProjectId } }))
+          ?.parentId,
+        targetId,
+        "项目移动后数据库中必须只有新的父级关系",
+      );
+      const rootProjectsAfterMove = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/resources?view=all_projects",
+      });
+      assert.ok(
+        !(dataOf(rootProjectsAfterMove.json()).items as JsonObject[])
+          .some(({ id }) => id === nestedProjectId),
+        "嵌套项目不能继续穿透显示在资源管理器根视图",
+      );
+      const targetChildrenAfterMove = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/resources?parentId=${encodeURIComponent(targetId)}`,
+      });
+      assert.ok(
+        (dataOf(targetChildrenAfterMove.json()).items as JsonObject[])
+          .some(({ id }) => id === nestedProjectId),
+        "嵌套项目只能显示在移动后的目标项目内",
+      );
+
+      const auditCountBeforeNoop = await prisma.auditLog.count({
+        where: { action: "resource_move", resourceId: parentId },
+      });
+      const unchanged = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources/move-batch",
+        payload: { resourceIds: [parentId], parentId: targetId },
+      });
+      assert.equal(unchanged.statusCode, 200);
+      assert.equal((dataOf(unchanged.json()).moved as unknown[]).length, 0);
+      assert.equal((dataOf(unchanged.json()).unchanged as unknown[]).length, 1);
+      assert.equal(await prisma.auditLog.count({
+        where: { action: "resource_move", resourceId: parentId },
+      }), auditCountBeforeNoop, "同目录 no-op 不应伪造移动审计");
+
+      const duplicateSource = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: sourceId, type: "folder", name: "冲突名称" },
+      });
+      const duplicateSourceId = String(dataOf(duplicateSource.json()).id);
+      await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: targetId, type: "folder", name: "冲突名称" },
+      });
+      const rollbackCandidate = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: sourceId, type: "folder", name: "必须回滚" },
+      });
+      const rollbackCandidateId = String(dataOf(rollbackCandidate.json()).id);
+      const conflictMove = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources/move-batch",
+        payload: {
+          resourceIds: [rollbackCandidateId, duplicateSourceId],
+          parentId: targetId,
+        },
+      });
+      assert.equal(conflictMove.statusCode, 409);
+      assert.equal(
+        (await prisma.resourceEntry.findUnique({
+          where: { id: rollbackCandidateId },
+        }))?.parentId,
+        sourceId,
+        "任一名称冲突时，已经处理的同批资源也必须回滚",
+      );
+
+      const sameNameParentA = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: sourceId, type: "folder", name: "同名来源甲" },
+      });
+      const sameNameParentAId = String(dataOf(sameNameParentA.json()).id);
+      const sameNameParentB = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: sourceId, type: "folder", name: "同名来源乙" },
+      });
+      const sameNameParentBId = String(dataOf(sameNameParentB.json()).id);
+      const sameNameA = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: sameNameParentAId, type: "folder", name: "批内同名" },
+      });
+      const sameNameAId = String(dataOf(sameNameA.json()).id);
+      const sameNameB = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: sameNameParentBId, type: "folder", name: "批内同名" },
+      });
+      const sameNameBId = String(dataOf(sameNameB.json()).id);
+      const internalConflict = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources/move-batch",
+        payload: {
+          resourceIds: [sameNameAId, sameNameBId],
+          parentId: targetId,
+        },
+      });
+      assert.equal(internalConflict.statusCode, 409);
+      assert.equal(
+        (await prisma.resourceEntry.findUnique({ where: { id: sameNameAId } }))
+          ?.parentId,
+        sameNameParentAId,
+      );
+      assert.equal(
+        (await prisma.resourceEntry.findUnique({ where: { id: sameNameBId } }))
+          ?.parentId,
+        sameNameParentBId,
+      );
+
+      const cycleMove = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources/move-batch",
+        payload: { resourceIds: [parentId], parentId: childId },
+      });
+      assert.equal(cycleMove.statusCode, 400);
+
+      const invalidBatch = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources/move-batch",
+        payload: { resourceIds: [], parentId: targetId },
+      });
+      assert.equal(invalidBatch.statusCode, 400);
+
+      const restrictedSource = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "批量权限源" },
+      });
+      const restrictedSourceId = String(dataOf(restrictedSource.json()).id);
+      const allowedItem = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: restrictedSourceId, type: "folder", name: "允许移动" },
+      });
+      const allowedItemId = String(dataOf(allowedItem.json()).id);
+      const deniedItem = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: restrictedSourceId, type: "folder", name: "拒绝移动" },
+      });
+      const deniedItemId = String(dataOf(deniedItem.json()).id);
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${allowedItemId}/permissions/user-student`,
+        payload: { capabilities: ["read", "move"] },
+      });
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${deniedItemId}/permissions/user-student`,
+        payload: { capabilities: ["read"] },
+      });
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${targetId}/permissions/user-student`,
+        payload: { capabilities: ["read", "create_child"] },
+      });
+      const deniedBatch = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: "/api/resources/move-batch",
+        payload: {
+          resourceIds: [allowedItemId, deniedItemId],
+          parentId: targetId,
+        },
+      });
+      assert.equal(deniedBatch.statusCode, 403);
+      assert.equal(
+        (await prisma.resourceEntry.findUnique({ where: { id: allowedItemId } }))
+          ?.parentId,
+        restrictedSourceId,
+        "权限预检失败时不能移动同批中已授权的资源",
+      );
+
+      const inaccessibleTarget = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "无新建权限目标" },
+      });
+      const inaccessibleTargetId = String(dataOf(inaccessibleTarget.json()).id);
+      const deniedTarget = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: "/api/resources/move-batch",
+        payload: {
+          resourceIds: [allowedItemId],
+          parentId: inaccessibleTargetId,
+        },
+      });
+      assert.equal(deniedTarget.statusCode, 403);
+      assert.equal(
+        (await prisma.resourceEntry.findUnique({ where: { id: allowedItemId } }))
+          ?.parentId,
+        restrictedSourceId,
+      );
+
+      const trashedTargetParent = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "已回收目标祖先" },
+      });
+      const trashedTargetParentId = String(dataOf(trashedTargetParent.json()).id);
+      const hiddenTarget = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: {
+          parentId: trashedTargetParentId,
+          type: "folder",
+          name: "隐藏目标",
+        },
+      });
+      const hiddenTargetId = String(dataOf(hiddenTarget.json()).id);
+      await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${trashedTargetParentId}/trash`,
+      });
+      const hiddenTargetMove = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources/move-batch",
+        payload: { resourceIds: [rollbackCandidateId], parentId: hiddenTargetId },
+      });
+      assert.equal(hiddenTargetMove.statusCode, 400);
+      assert.equal(
+        (await prisma.resourceEntry.findUnique({
+          where: { id: rollbackCandidateId },
+        }))?.parentId,
+        sourceId,
+      );
+    });
+
     await suite.test("标注文件复制产生独立 owner 和 revision", async () => {
       const created = await jsonRequest(app, adminToken, {
         method: "POST",

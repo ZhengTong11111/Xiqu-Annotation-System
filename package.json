@@ -27,6 +27,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@atlaskit/pragmatic-drag-and-drop": "^2.0.1",
     "@fastify/cors": "^11.2.0",
     "@fastify/multipart": "^10.0.0",
     "@prisma/adapter-pg": "^7.8.0",

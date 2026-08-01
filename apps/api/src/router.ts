@@ -12,6 +12,7 @@ import { Readable } from "node:stream";
 import { badRequest } from "./errors.js";
 import type { PrismaPlatformRepository } from "./repository.js";
 import type { ResourceService } from "./resourceService.js";
+import { MAX_BATCH_MOVE_RESOURCES } from "./resourceMove.js";
 import type { LocalObjectStorage } from "./storage.js";
 
 const RESOURCE_TYPES = new Set<ResourceType>([
@@ -192,20 +193,60 @@ export function registerApiRoutes(
   });
 
   app.post<{
+    Body: { resourceIds?: unknown; parentId?: unknown };
+  }>("/api/resources/move-batch", async (request) => {
+    const body = requireObject(request.body);
+    const resourceIds = parseUniqueStringArray(
+      body.resourceIds,
+      "resourceIds",
+      1,
+      MAX_BATCH_MOVE_RESOURCES,
+    );
+    const user = await getCurrentUser(repository, request);
+    const result = await resources.moveResources(user, {
+      resourceIds,
+      parentId: optionalStringOrNull(body.parentId) ?? null,
+    });
+    for (const resource of result.moved) {
+      await repository.writeAuditLog({
+        action: "resource_move",
+        actorUserId: user.id,
+        resourceId: resource.id,
+        detail: {
+          parentId: resource.parentId,
+          batchSize: resourceIds.length,
+          collapsedSelectionCount: result.collapsedDescendantIds.length,
+        },
+      });
+    }
+    return result;
+  });
+
+  app.post<{
     Params: { resourceId: string };
     Body: { parentId?: unknown };
   }>("/api/resources/:resourceId/move", async (request) => {
     const body = requireObject(request.body);
     const user = await getCurrentUser(repository, request);
-    const updated = await resources.moveResource(user, request.params.resourceId, {
+    // 单项接口保留兼容性，但与批量移动共享同一个事务核心，避免两套权限和循环规则漂移。
+    const result = await resources.moveResources(user, {
+      resourceIds: [request.params.resourceId],
       parentId: optionalStringOrNull(body.parentId) ?? null,
     });
-    await repository.writeAuditLog({
-      action: "resource_move",
-      actorUserId: user.id,
-      resourceId: updated.id,
-      detail: { parentId: updated.parentId },
-    });
+    const updated = result.moved[0] ?? result.unchanged[0];
+    if (!updated) throw badRequest("待移动资源不存在。");
+    if (result.moved.length) {
+      await repository.writeAuditLog({
+        action: "resource_move",
+        actorUserId: user.id,
+        resourceId: updated.id,
+        detail: {
+          parentId: updated.parentId,
+          batchSize: 1,
+          collapsedSelectionCount: 0,
+        },
+      });
+    }
     return updated;
   });
 
@@ -635,6 +676,25 @@ function parseCapabilities(value: unknown): ResourceCapability[] {
     throw badRequest("capabilities 包含无效的资源能力。");
   }
   return [...new Set(value as ResourceCapability[])];
+}
+
+function parseUniqueStringArray(
+  value: unknown,
+  label: string,
+  minimum: number,
+  maximum: number,
+) {
+  if (
+    !Array.isArray(value) ||
+    value.some((item) => typeof item !== "string" || !item.trim())
+  ) {
+    throw badRequest(`${label} 必须是非空字符串数组。`);
+  }
+  const normalized = [...new Set(value.map((item) => item.trim()))];
+  if (normalized.length < minimum || normalized.length > maximum) {
+    throw badRequest(`${label} 必须包含 ${minimum}–${maximum} 个不同资源。`);
+  }
+  return normalized;
 }
 
 function parseOptionalSetValue<T extends string>(
