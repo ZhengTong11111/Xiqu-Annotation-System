@@ -111,6 +111,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - combines global admin bypass, ownership, direct grants, and nearest inherited folder grants
 - `apps/api/src/resourceService.ts`
   - resource-tree mutations, copy/move/trash behavior, annotation-file save, and recovery-snapshot creation
+- `apps/api/src/resourceSelection.ts`
+  - pure parent/descendant selection normalization shared by atomic batch move and batch trash
+  - selected descendants collapse under a selected ancestor so a subtree is mutated only once
 - `apps/api/src/resourceCopy.ts`
   - pure recursive-copy planning, topological ordering, id allocation, and internal media-reference remapping
 - `packages/shared/src/`
@@ -376,6 +379,7 @@ Current backend capabilities:
 - mutable annotation files with integer revision and `baseRevision` conflict checking
 - hidden recovery snapshots created automatically before an annotation-file payload is replaced
 - recursive project/folder copy, media/annotation-file copy, file-like move/rename/soft-delete/restore, favorite, and recent-open state
+- atomic batch trash with parent/descendant selection collapsing; the legacy single-item endpoint delegates to the same core
 - audit-log table and API for key platform events such as login, upload, resource creation/move/copy/delete, permission changes, and annotation-file save
 - annotation operation-log table and API for recording client-submitted edit operations before future autosave/collaboration work
 - placeholder processing-job API for future pitch, spectrogram, Gongche render, pose, transcode, and export services
@@ -440,6 +444,9 @@ Important backend caveats:
 - recovery snapshots are implementation history, not ordinary user-visible files or published versions.
 - moving a resource must reject cycles and destinations where the caller lacks `create_child`.
 - moving a selection is all-or-nothing; selected descendants collapse under their selected ancestor and must not be moved a second time.
+- moving to trash is also all-or-nothing. Only normalized logical roots receive `trashedAt`; descendants keep their
+  parent links and remain hidden through their trashed ancestor. Permission rechecks and one audit row per logical root
+  belong to the same transaction.
 - move, trash, and restore share the resource-tree mutation advisory lock before resource-row and parent-namespace
   locks. Restore must reject an absent/non-container/trashed original parent or trashed ancestor; it must never return
   success for an item that remains hidden behind a trashed ancestor.

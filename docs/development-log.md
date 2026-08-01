@@ -6,6 +6,46 @@
 > `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
 > 回写或删除历史记录。
 
+## 2026-08-01：R1.6 原子批量移入回收站
+
+Codex 先将 R1.5 共享资源项造成的详细列表 class 回归独立修复并提交为 `91abdd1`，随后按本机
+`CLAUDE_WORK.md` 完成 R1.6。本轮没有修改数据库 schema、对象存储或标注文件格式，也没有新增
+依赖；前端继续复用现有 Radix 菜单和资源管理器状态模型。
+
+实现内容：
+
+- 将原 `resourceMove.ts` 中实际与 move 无关的父子选择压缩逻辑迁移为 `resourceSelection.ts`。
+  move 与 trash 现在共用 `normalizeResourceSelection()`；旧文件和旧命名已删除，避免两套树选择
+  规则逐渐分叉。
+- 新增 `POST /api/resources/trash-batch` 与 shared/client 合同，接收 1–200 个资源 id。父项和后代
+  同时选择时只软删除最外层逻辑根，后代保持原父子关系并通过 trashed ancestor 隐藏。
+- 整批 mutation 在一个 Prisma 事务中完成：取得统一资源树 advisory lock、锁定逻辑根与父命名
+  空间、重新读取层级、通过 transaction client 复核每个根的 `delete` capability、统一写入
+  `trashedAt`，并为每个逻辑根写 `resource_trash` 审计。任一资源不存在、无权限或状态非法时整批
+  回滚。
+- 单项 trash endpoint 保留服务端兼容入口，但委托同一个批量 service；浏览器客户端已删除无调用者
+  的旧单项方法，不保留并行业务路径。
+- 资源管理器新增统一批量 orchestration。工具栏、Delete/Backspace，以及列表、网格、分栏三种
+  视图的右键菜单都调用一次 batch API；右键已选项作用于当前选择，失败时保留选择并显示原因，
+  in-flight ref 防止确认框或快捷键重复提交。
+- 三种视图均按整个待删除选择计算表面权限。服务端仍是最终鉴权边界，禁用菜单只用于提前说明。
+- `npm run test:api` 改为执行全部 API 测试文件，并新增树选择纯函数测试；集成测试覆盖请求校验、
+  缺失资源全量回滚、混合权限全量回滚、父子折叠、审计、重复删除和恢复清理。
+
+验证：
+
+- `npm run test:api`：16 项通过（包括 3 项选择归一化纯函数测试）。
+- `npm run test:permissions`：5 项通过；`npm run test:resource-columns`：7 项通过。
+- `npm run build`：Prisma generation、shared、document-model、web 和 API 全部通过；仅保留既有 Vite
+  大 chunk 提醒。
+- 浏览器实际页面验证：列表中 Command 多选两项后，工具栏显示并启用“将所选 2 项移到回收站”；
+  右键当前选择中的资源显示统一“移到回收站”命令；Inspector 选择状态正常，控制台无 error。
+  浏览器控制环境未能可靠接管原生 `window.confirm` 生命周期，因此没有把自动化点击冒充为完成
+  删除；真实删除、失败回滚、审计和恢复清理由 PostgreSQL API 集成测试覆盖。
+
+下一步：进入 R2.1，把现有自动恢复快照变成用户可见、可定位的历史列表和只读预览。真正恢复、
+结构化 diff、永久删除、对象清理、标签与批量 ACL 继续作为独立切片，避免混入本轮事务语义。
+
 ## 2026-08-01：R1.5 Finder 式分栏资源浏览器
 
 Codex 先把 R1.4 原子批量移动与桌面拖拽独立提交为 `13bf103`，随后按本机

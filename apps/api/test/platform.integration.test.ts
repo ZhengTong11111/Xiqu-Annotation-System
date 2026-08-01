@@ -879,6 +879,195 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(invalidRevision.statusCode, 400);
     });
 
+    await suite.test("批量移入回收站保持原子性并压缩父子选择", async () => {
+      const trashProject = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "批量回收站测试" },
+      });
+      const trashProjectId = String(dataOf(trashProject.json()).id);
+      const parent = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: {
+          parentId: trashProjectId,
+          type: "folder",
+          name: "待删除父目录",
+        },
+      });
+      const parentId = String(dataOf(parent.json()).id);
+      const child = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId, type: "folder", name: "随父隐藏的子目录" },
+      });
+      const childId = String(dataOf(child.json()).id);
+      const sibling = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: {
+          parentId: trashProjectId,
+          type: "folder",
+          name: "同批兄弟目录",
+        },
+      });
+      const siblingId = String(dataOf(sibling.json()).id);
+
+      for (const payload of [
+        {},
+        { resourceIds: [] },
+        { resourceIds: "not-an-array" },
+        { resourceIds: [""] },
+        { resourceIds: Array.from({ length: 201 }, (_, index) => `id-${index}`) },
+      ]) {
+        const invalid = await jsonRequest(app, adminToken, {
+          method: "POST",
+          url: "/api/resources/trash-batch",
+          payload,
+        });
+        assert.equal(invalid.statusCode, 400, invalid.body);
+      }
+
+      const missingRollback = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources/trash-batch",
+        payload: { resourceIds: [siblingId, "missing-resource"] },
+      });
+      assert.equal(missingRollback.statusCode, 404);
+      assert.equal((await prisma.resourceEntry.findUniqueOrThrow({
+        where: { id: siblingId },
+      })).trashedAt, null, "任一资源不存在时整批必须保持不变");
+
+      const permitted = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: {
+          parentId: trashProjectId,
+          type: "folder",
+          name: "学生可删除",
+        },
+      });
+      const permittedId = String(dataOf(permitted.json()).id);
+      const denied = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: {
+          parentId: trashProjectId,
+          type: "folder",
+          name: "学生不可删除",
+        },
+      });
+      const deniedId = String(dataOf(denied.json()).id);
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${permittedId}/permissions/user-student`,
+        payload: {
+          capabilities: ["read", "delete"],
+          inheritToChildren: false,
+        },
+      });
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${deniedId}/permissions/user-student`,
+        payload: { capabilities: ["read"], inheritToChildren: false },
+      });
+      const forbiddenBatch = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: "/api/resources/trash-batch",
+        payload: { resourceIds: [permittedId, deniedId] },
+      });
+      assert.equal(forbiddenBatch.statusCode, 403, forbiddenBatch.body);
+      const permissionRollbackRows = await prisma.resourceEntry.findMany({
+        where: { id: { in: [permittedId, deniedId] } },
+        select: { id: true, trashedAt: true },
+      });
+      assert.ok(permissionRollbackRows.every(({ trashedAt }) => !trashedAt));
+
+      const trashed = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources/trash-batch",
+        payload: {
+          resourceIds: [parentId, childId, siblingId, siblingId],
+        },
+      });
+      assert.equal(trashed.statusCode, 200, trashed.body);
+      const trashData = dataOf(trashed.json());
+      assert.deepEqual(trashData.collapsedDescendantIds, [childId]);
+      assert.deepEqual(
+        (trashData.trashed as JsonObject[]).map(({ id }) => id).sort(),
+        [parentId, siblingId].sort(),
+      );
+      const storedTree = await prisma.resourceEntry.findMany({
+        where: { id: { in: [parentId, childId, siblingId] } },
+        select: { id: true, parentId: true, trashedAt: true },
+      });
+      const storedById = new Map(storedTree.map((row) => [row.id, row]));
+      assert.ok(storedById.get(parentId)?.trashedAt);
+      assert.ok(storedById.get(siblingId)?.trashedAt);
+      assert.equal(storedById.get(childId)?.trashedAt, null);
+      assert.equal(
+        storedById.get(childId)?.parentId,
+        parentId,
+        "折叠后代必须保留原父子关系，不能被重复标记或重挂载",
+      );
+
+      const activeChildren = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/resources?parentId=${encodeURIComponent(trashProjectId)}`,
+      });
+      const activeIds = (dataOf(activeChildren.json()).items as JsonObject[])
+        .map(({ id }) => id);
+      assert.ok(!activeIds.includes(parentId));
+      assert.ok(!activeIds.includes(siblingId));
+      const trashView = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/resources?view=trash",
+      });
+      const trashIds = (dataOf(trashView.json()).items as JsonObject[])
+        .map(({ id }) => id);
+      assert.ok(trashIds.includes(parentId));
+      assert.ok(trashIds.includes(siblingId));
+      assert.ok(!trashIds.includes(childId));
+
+      const audits = await prisma.auditLog.findMany({
+        where: {
+          action: "resource_trash",
+          resourceId: { in: [parentId, childId, siblingId] },
+        },
+        orderBy: { resourceId: "asc" },
+      });
+      assert.equal(audits.length, 2);
+      assert.ok(audits.every(({ actorUserId, detail }) =>
+        actorUserId === "user-admin" &&
+        (detail as JsonObject).batchSize === 3 &&
+        (detail as JsonObject).logicalRootCount === 2 &&
+        (detail as JsonObject).collapsedSelectionCount === 1));
+
+      const auditCountBeforeDuplicate = audits.length;
+      const duplicateTrash = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources/trash-batch",
+        payload: { resourceIds: [parentId] },
+      });
+      assert.equal(duplicateTrash.statusCode, 400);
+      assert.equal(await prisma.auditLog.count({
+        where: {
+          action: "resource_trash",
+          resourceId: { in: [parentId, childId, siblingId] },
+        },
+      }), auditCountBeforeDuplicate);
+
+      // 单项恢复仍使用原恢复不变量；先父后子无需改写未直接 trashed 的后代。
+      assert.equal((await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${parentId}/restore`,
+      })).statusCode, 200);
+      assert.equal((await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${siblingId}/restore`,
+      })).statusCode, 200);
+    });
+
     await suite.test("回收站隐藏与恢复", async () => {
       const nestedProject = await jsonRequest(app, adminToken, {
         method: "POST",

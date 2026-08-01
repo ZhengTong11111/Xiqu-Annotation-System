@@ -110,6 +110,7 @@ export function ResourceExplorer(props: {
   const [isLoading, setIsLoading] = useState(false);
   const [isPasting, setIsPasting] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
+  const [isTrashing, setIsTrashing] = useState(false);
   const [isMovingResources, setIsMovingResources] = useState(false);
   const [draggedResourceIds, setDraggedResourceIds] = useState<string[]>([]);
   const [breadcrumbResources, setBreadcrumbResources] = useState<
@@ -122,6 +123,7 @@ export function ResourceExplorer(props: {
   const restoreInFlightRef = useRef(false);
   const pasteInFlightRef = useRef(false);
   const moveInFlightRef = useRef(false);
+  const trashInFlightRef = useRef(false);
   const breadcrumbRequestIdRef = useRef(0);
   const pendingColumnSelectionRef = useRef<number | null>(null);
 
@@ -305,6 +307,40 @@ export function ResourceExplorer(props: {
     }
   }, [props.client, refreshCurrentView]);
 
+  const trashResources = useCallback(async (resources: ResourceEntry[]) => {
+    if (
+      isTrashView ||
+      !resources.length ||
+      trashInFlightRef.current
+    ) return;
+    const count = resources.length;
+    if (!window.confirm(
+      count === 1
+        ? `将“${resources[0]!.name}”移到回收站？`
+        : `将选中的 ${count} 项资源移到回收站？`,
+    )) return;
+
+    // 右键、工具栏和快捷键可能在 React 状态提交前连续触发；ref 保证只提交一批。
+    trashInFlightRef.current = true;
+    setIsTrashing(true);
+    setError(null);
+    try {
+      await props.client.trashResources({
+        resourceIds: resources.map(({ id }) => id),
+      });
+      setSelectedIds([]);
+      setAnchorId(null);
+      setDraggedResourceIds([]);
+      await refreshCurrentView();
+    } catch (nextError) {
+      // 失败时保留原选择，用户可以检查权限或刷新后重试。
+      setError(describeError(nextError));
+    } finally {
+      trashInFlightRef.current = false;
+      setIsTrashing(false);
+    }
+  }, [isTrashView, props.client, refreshCurrentView]);
+
   useEffect(() => {
     const pendingIndex = pendingColumnSelectionRef.current;
     if (pendingIndex === null) return;
@@ -336,6 +372,7 @@ export function ResourceExplorer(props: {
       if (
         movingResources.length ||
         isMovingResources ||
+        isTrashing ||
         isRestoring ||
         isPasting
       ) return;
@@ -428,12 +465,7 @@ export function ResourceExplorer(props: {
       ) {
         event.preventDefault();
         // 永久删除尚未定义对象存储清理和恢复期限；回收站内必须明确抑制普通删除快捷键。
-        if (!isTrashView && window.confirm("将所选资源移到回收站？")) {
-          void Promise.all(
-            selectedIds.map((id) => props.client.trashResource(id)),
-          ).then(refreshCurrentView)
-            .catch((nextError) => setError(describeError(nextError)));
-        }
+        if (!isTrashView) void trashResources(selectedResources);
       }
     }
     window.addEventListener("keydown", handleKeyDown);
@@ -452,11 +484,14 @@ export function ResourceExplorer(props: {
     isRestoring,
     isPasting,
     isMovingResources,
+    isTrashing,
     isTrashView,
     selected,
     selectedIds,
     selectionColumnIndex,
     selectionItems,
+    selectedResources,
+    trashResources,
   ]);
 
   function chooseView(view: ResourceListView) {
@@ -655,6 +690,7 @@ export function ResourceExplorer(props: {
     isPasting ||
     isRestoring ||
     isMovingResources ||
+    isTrashing ||
     movingResources.length > 0;
   const renameSelectedResource = (resource: ResourceEntry) =>
     void renameResource(
@@ -663,10 +699,12 @@ export function ResourceExplorer(props: {
       refreshCurrentView,
       setError,
     );
-  const trashSelectedResource = (resource: ResourceEntry) =>
-    void props.client.trashResource(resource.id)
-      .then(refreshCurrentView)
-      .catch((nextError) => setError(describeError(nextError)));
+  const trashFromContext = (resource: ResourceEntry) => {
+    const resources = selectedIds.includes(resource.id)
+      ? selectedResources
+      : [resource];
+    void trashResources(resources);
+  };
 
   return (
     <main className="resource-explorer-shell">
@@ -817,6 +855,21 @@ export function ResourceExplorer(props: {
                   >
                     <FolderInput size={16} />
                   </button>
+                  <button
+                    type="button"
+                    disabled={
+                      !selectedResources.length ||
+                      isTrashing ||
+                      selectedResources.some((resource) =>
+                        !resource.permission.capabilities.includes("delete"))
+                    }
+                    onClick={() => void trashResources(selectedResources)}
+                    title={selectedResources.length
+                      ? `将所选 ${selectedResources.length} 项移到回收站`
+                      : "请先选择资源"}
+                  >
+                    <Trash2 size={16} />
+                  </button>
                 </>
               )}
               <span className="resource-toolbar-divider" />
@@ -846,7 +899,7 @@ export function ResourceExplorer(props: {
               onCopy={(resource) => setClipboard([resource])}
               onMove={openMovePicker}
               onRestore={(resource) => void restoreResources([resource])}
-              onTrash={trashSelectedResource}
+              onTrash={trashFromContext}
               onDragStart={(resourceIds, columnIndex) => {
                 setSelectionColumnIndex(columnIndex);
                 setAnchorColumnIndex(columnIndex);
@@ -883,7 +936,7 @@ export function ResourceExplorer(props: {
             onDragFinish={handleResourceDragFinish}
             onDropResources={handleResourceDrop}
             onRestore={(resource) => void restoreResources([resource])}
-            onTrash={trashSelectedResource}
+            onTrash={trashFromContext}
           />
           )}
         </section>
@@ -1036,12 +1089,19 @@ function ResourceCollection(props: CollectionProps) {
 }
 
 function resourceItemProps(props: CollectionProps, resource: ResourceEntry) {
+  const isSelected = props.selectedIds.includes(resource.id);
+  const trashCandidates = isSelected
+    ? props.items.filter(({ id }) => props.selectedIds.includes(id))
+    : [resource];
   return {
-    isSelected: props.selectedIds.includes(resource.id),
+    isSelected,
     isDragging: props.draggedResourceIds.includes(resource.id),
     interactionDisabled: props.interactionDisabled,
     isTrashView: props.isTrashView,
-    getDragResources: () => props.selectedIds.includes(resource.id)
+    // 右键已选资源时操作的是整组选择，因此菜单可用性也必须按整组权限计算。
+    canTrashSelection: trashCandidates.every((item) =>
+      item.permission.capabilities.includes("delete")),
+    getDragResources: () => isSelected
       ? props.items.filter(({ id }) => props.selectedIds.includes(id))
       : [resource],
     onSelect: props.onSelect,

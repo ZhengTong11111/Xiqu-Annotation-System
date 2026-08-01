@@ -83,6 +83,12 @@ export function ResourceColumnBrowser(props: {
                   isDragging={props.draggedResourceIds.includes(resource.id)}
                   interactionDisabled={props.interactionDisabled}
                   isTrashView={props.isTrashView}
+                  canTrashSelection={columnSelection.includes(resource.id)
+                    ? column.items
+                      .filter(({ id }) => columnSelection.includes(id))
+                      .every((item) =>
+                        item.permission.capabilities.includes("delete"))
+                    : resource.permission.capabilities.includes("delete")}
                   getDragResources={() => columnSelection.includes(resource.id)
                     ? column.items.filter(({ id }) =>
                       columnSelection.includes(id))

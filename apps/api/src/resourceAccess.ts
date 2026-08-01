@@ -1,4 +1,5 @@
 import type {
+  Prisma,
   PrismaClient,
   ResourceCapability as DbResourceCapability,
 } from "@prisma/client";
@@ -22,8 +23,9 @@ export class ResourceAccessService {
   async getEffectivePermission(
     user: ApiUser,
     resourceId: string,
+    database: PrismaClient | Prisma.TransactionClient = this.prisma,
   ): Promise<EffectiveResourcePermission> {
-    const resource = await this.prisma.resourceEntry.findUnique({
+    const resource = await database.resourceEntry.findUnique({
       where: { id: resourceId },
       select: {
         id: true,
@@ -44,7 +46,7 @@ export class ResourceAccessService {
     const now = new Date();
     const capabilities = new Set<ResourceCapability>();
     const inheritedFrom: EffectiveResourcePermission["inheritedFrom"] = [];
-    const direct = await this.prisma.resourcePermission.findUnique({
+    const direct = await database.resourcePermission.findUnique({
       where: { resourceId_userId: { resourceId, userId: user.id } },
     });
     if (direct && (!direct.expiresAt || direct.expiresAt > now)) {
@@ -56,7 +58,7 @@ export class ResourceAccessService {
     if (!resource.breakPermissionInheritance) {
       let parentId = resource.parentId;
       while (parentId) {
-        const parent = await this.prisma.resourceEntry.findUnique({
+        const parent = await database.resourceEntry.findUnique({
           where: { id: parentId },
           select: {
             id: true,
@@ -111,8 +113,13 @@ export class ResourceAccessService {
     user: ApiUser,
     resourceId: string,
     capability: ResourceCapability,
+    database: PrismaClient | Prisma.TransactionClient = this.prisma,
   ) {
-    const permission = await this.getEffectivePermission(user, resourceId);
+    const permission = await this.getEffectivePermission(
+      user,
+      resourceId,
+      database,
+    );
     if (!permission.capabilities.includes(capability)) {
       throw forbidden(`当前账号缺少“${capability}”权限。`);
     }

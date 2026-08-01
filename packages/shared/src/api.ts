@@ -99,6 +99,15 @@ export type BatchMoveResourcesResponse = {
   collapsedDescendantIds: string[];
 };
 
+export type BatchTrashResourcesRequest = {
+  resourceIds: string[];
+};
+
+export type BatchTrashResourcesResponse = {
+  trashed: ResourceEntry[];
+  collapsedDescendantIds: string[];
+};
+
 export type CopyResourceRequest = {
   parentId: string;
   name?: string;
@@ -154,6 +163,10 @@ export type PlatformApiContract<TPayload = unknown> = {
   moveResources: {
     request: BatchMoveResourcesRequest;
     response: BatchMoveResourcesResponse;
+  };
+  trashResources: {
+    request: BatchTrashResourcesRequest;
+    response: BatchTrashResourcesResponse;
   };
   copyResource: { request: CopyResourceRequest; response: ResourceEntry };
   trashResource: { response: ResourceEntry };

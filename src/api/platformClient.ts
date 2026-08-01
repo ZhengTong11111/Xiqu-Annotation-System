@@ -5,6 +5,8 @@ import type {
   AuditLogEntry,
   BatchMoveResourcesRequest,
   BatchMoveResourcesResponse,
+  BatchTrashResourcesRequest,
+  BatchTrashResourcesResponse,
   CopyResourceRequest,
   CreateAnnotationFileRequest,
   CreateAnnotationOperationRequest,
@@ -127,16 +129,17 @@ export class PlatformClient {
     });
   }
 
-  copyResource(resourceId: string, request: CopyResourceRequest) {
-    return this.request<ResourceEntry>(`/resources/${resourceId}/copy`, {
+  trashResources(request: BatchTrashResourcesRequest) {
+    return this.request<BatchTrashResourcesResponse>("/resources/trash-batch", {
       method: "POST",
       body: request,
     });
   }
 
-  trashResource(resourceId: string) {
-    return this.request<ResourceEntry>(`/resources/${resourceId}/trash`, {
+  copyResource(resourceId: string, request: CopyResourceRequest) {
+    return this.request<ResourceEntry>(`/resources/${resourceId}/copy`, {
       method: "POST",
+      body: request,
     });
   }
 

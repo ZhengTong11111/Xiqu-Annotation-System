@@ -30,6 +30,7 @@ export function ResourceItem(props: {
   isDragging: boolean;
   interactionDisabled: boolean;
   isTrashView: boolean;
+  canTrashSelection?: boolean;
   getDragResources: () => ResourceEntry[];
   onSelect: (event: MouseEvent, resource: ResourceEntry) => void;
   onOpen: (resource: ResourceEntry) => void;
@@ -131,6 +132,7 @@ export function ResourceItem(props: {
 function ResourceContextMenu(props: {
   resource: ResourceEntry;
   isTrashView: boolean;
+  canTrashSelection?: boolean;
   children: ReactNode;
   onOpen: (resource: ResourceEntry) => void;
   onRename: (resource: ResourceEntry) => void;
@@ -179,7 +181,8 @@ function ResourceContextMenu(props: {
               <ContextMenu.Separator />
               <ContextMenu.Item
                 className="danger"
-                disabled={!capabilities.includes("delete")}
+                disabled={props.canTrashSelection === false ||
+                  !capabilities.includes("delete")}
                 onSelect={() => props.onTrash(props.resource)}
               >
                 <Trash2 size={15} /> 移到回收站

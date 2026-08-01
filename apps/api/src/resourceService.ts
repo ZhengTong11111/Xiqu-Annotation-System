@@ -8,6 +8,8 @@ import type {
   AnnotationRecoverySnapshot,
   BatchMoveResourcesRequest,
   BatchMoveResourcesResponse,
+  BatchTrashResourcesRequest,
+  BatchTrashResourcesResponse,
   CopyResourceRequest,
   CreateAnnotationFileRequest,
   CreateResourceRequest,
@@ -32,9 +34,9 @@ import {
   type CopySourceNode,
 } from "./resourceCopy.js";
 import {
-  normalizeMoveSelection,
-  type MoveSelectionNode,
-} from "./resourceMove.js";
+  normalizeResourceSelection,
+  type ResourceSelectionNode,
+} from "./resourceSelection.js";
 import { toPublicUser } from "./repositoryMappers.js";
 
 const resourceInclude = {
@@ -420,7 +422,7 @@ export class ResourceService {
     input: BatchMoveResourcesRequest,
   ): Promise<BatchMoveResourcesResponse> {
     const requestedIds = [...new Set(input.resourceIds)];
-    const selectionSnapshot = await this.loadMoveSelectionNodes(
+    const selectionSnapshot = await this.loadResourceSelectionNodes(
       this.prisma,
       requestedIds,
     );
@@ -428,7 +430,7 @@ export class ResourceService {
     if (requestedIds.some((id) => !requestedNodeIds.has(id))) {
       throw notFound("部分待移动资源不存在。");
     }
-    const normalizedSnapshot = normalizeMoveSelection(
+    const normalizedSnapshot = normalizeResourceSelection(
       requestedIds,
       selectionSnapshot,
     );
@@ -444,11 +446,11 @@ export class ResourceService {
     }
     const moved = await this.prisma.$transaction(async (transaction) => {
       await this.lockResourceTreeMutation(transaction);
-      const latestSelection = await this.loadMoveSelectionNodes(
+      const latestSelection = await this.loadResourceSelectionNodes(
         transaction,
         requestedIds,
       );
-      const normalizedLatest = normalizeMoveSelection(
+      const normalizedLatest = normalizeResourceSelection(
         requestedIds,
         latestSelection,
       );
@@ -701,7 +703,114 @@ export class ResourceService {
     };
   }
 
-  async setTrashed(user: ApiUser, resourceId: string, trashed: boolean) {
+  async trashResources(
+    user: ApiUser,
+    input: BatchTrashResourcesRequest,
+  ): Promise<BatchTrashResourcesResponse> {
+    const requestedIds = [...new Set(input.resourceIds)];
+    const selectionSnapshot = await this.loadResourceSelectionNodes(
+      this.prisma,
+      requestedIds,
+    );
+    const requestedNodeIds = new Set(selectionSnapshot.map(({ id }) => id));
+    if (requestedIds.some((id) => !requestedNodeIds.has(id))) {
+      throw notFound("部分待删除资源不存在。");
+    }
+    const normalizedSnapshot = normalizeResourceSelection(
+      requestedIds,
+      selectionSnapshot,
+    );
+
+    const trashed = await this.prisma.$transaction(async (transaction) => {
+      // 所有资源树 mutation 共用同一把 advisory lock。锁后重新读取层级，避免删除期间父子关系变化。
+      await this.lockResourceTreeMutation(transaction);
+      const latestSelection = await this.loadResourceSelectionNodes(
+        transaction,
+        requestedIds,
+      );
+      const latestNodeIds = new Set(latestSelection.map(({ id }) => id));
+      if (requestedIds.some((id) => !latestNodeIds.has(id))) {
+        throw notFound("部分待删除资源不存在。");
+      }
+      const normalizedLatest = normalizeResourceSelection(
+        requestedIds,
+        latestSelection,
+      );
+      if (!sameStringSets(
+        normalizedSnapshot.rootIds,
+        normalizedLatest.rootIds,
+      )) {
+        throw conflict("删除期间资源层级发生变化，请刷新后重试。");
+      }
+
+      await this.lockResourceRows(transaction, normalizedLatest.rootIds);
+      const roots = await transaction.resourceEntry.findMany({
+        where: { id: { in: normalizedLatest.rootIds } },
+        select: {
+          id: true,
+          parentId: true,
+          trashedAt: true,
+        },
+      });
+      if (roots.length !== normalizedLatest.rootIds.length) {
+        throw notFound("部分待删除资源不存在。");
+      }
+      for (const root of roots) {
+        if (
+          root.trashedAt ||
+          await this.hasTrashedAncestor(transaction, root.parentId)
+        ) {
+          throw badRequest("不能重复删除回收站中的资源。");
+        }
+        // 权限必须在资源树锁内通过 transaction client 重新解析，不能只依赖锁前的 UI 或预检查。
+        await this.access.assertCapability(
+          user,
+          root.id,
+          "delete",
+          transaction,
+        );
+      }
+      await this.lockParentNamespaces(
+        transaction,
+        roots.map(({ parentId }) => parentId),
+      );
+
+      const trashedAt = new Date();
+      const sortedRootIds = [...normalizedLatest.rootIds].sort();
+      await transaction.resourceEntry.updateMany({
+        where: { id: { in: sortedRootIds } },
+        data: { trashedAt },
+      });
+      // 审计与软删除处于同一事务；任一审计写入失败时整批状态也回滚。
+      for (const resourceId of sortedRootIds) {
+        await transaction.auditLog.create({
+          data: {
+            action: "resource_trash",
+            actorUserId: user.id,
+            resourceId,
+            detail: {
+              batchSize: requestedIds.length,
+              logicalRootCount: sortedRootIds.length,
+              collapsedSelectionCount:
+                normalizedLatest.collapsedDescendantIds.length,
+            },
+          },
+        });
+      }
+      return {
+        rootIds: sortedRootIds,
+        collapsedDescendantIds: normalizedLatest.collapsedDescendantIds,
+      };
+    });
+
+    return {
+      trashed: await Promise.all(trashed.rootIds.map((id) =>
+        this.getMappedResource(user, id))),
+      collapsedDescendantIds: trashed.collapsedDescendantIds,
+    };
+  }
+
+  async restoreResource(user: ApiUser, resourceId: string) {
     await this.access.assertCapability(user, resourceId, "delete");
     await this.prisma.$transaction(async (transaction) => {
       // 移动、删除和恢复都会改变活动资源树；共用锁可防止恢复校验后父目录又被并发移动或删除。
@@ -711,40 +820,36 @@ export class ResourceService {
         where: { id: resourceId },
       });
       if (!current) throw notFound("资源不存在。");
-      if (trashed === Boolean(current.trashedAt)) {
-        throw badRequest(trashed ? "资源已在回收站中。" : "资源不在回收站中。");
-      }
+      if (!current.trashedAt) throw badRequest("资源不在回收站中。");
       await this.lockParentNamespaces(transaction, [current.parentId]);
-      if (!trashed) {
-        if (current.parentId) {
-          const parent = await transaction.resourceEntry.findUnique({
-            where: { id: current.parentId },
-            select: {
-              type: true,
-              parentId: true,
-              trashedAt: true,
-            },
-          });
-          if (!parent || (parent.type !== "folder" && parent.type !== "project")) {
-            throw conflict("原上级目录已经不存在，无法恢复到原位置。");
-          }
-          if (
-            parent.trashedAt ||
-            await this.hasTrashedAncestor(transaction, parent.parentId)
-          ) {
-            throw conflict("请先恢复上级目录。");
-          }
+      if (current.parentId) {
+        const parent = await transaction.resourceEntry.findUnique({
+          where: { id: current.parentId },
+          select: {
+            type: true,
+            parentId: true,
+            trashedAt: true,
+          },
+        });
+        if (!parent || (parent.type !== "folder" && parent.type !== "project")) {
+          throw conflict("原上级目录已经不存在，无法恢复到原位置。");
         }
-        await this.assertNameAvailable(
-          transaction,
-          current.parentId,
-          current.name,
-          resourceId,
-        );
+        if (
+          parent.trashedAt ||
+          await this.hasTrashedAncestor(transaction, parent.parentId)
+        ) {
+          throw conflict("请先恢复上级目录。");
+        }
       }
+      await this.assertNameAvailable(
+        transaction,
+        current.parentId,
+        current.name,
+        resourceId,
+      );
       await transaction.resourceEntry.update({
         where: { id: resourceId },
-        data: { trashedAt: trashed ? new Date() : null },
+        data: { trashedAt: null },
       });
     });
     return this.getMappedResource(user, resourceId);
@@ -1171,13 +1276,13 @@ export class ResourceService {
     });
   }
 
-  private async loadMoveSelectionNodes(
+  private async loadResourceSelectionNodes(
     database: PrismaClient | Prisma.TransactionClient,
     resourceIds: string[],
-  ): Promise<MoveSelectionNode[]> {
+  ): Promise<ResourceSelectionNode[]> {
     if (!resourceIds.length) return [];
     // 只读取所选节点到根目录的祖先链，足以判断“父与后代同时被选中”，无需加载整棵资源树。
-    return database.$queryRaw<MoveSelectionNode[]>`
+    return database.$queryRaw<ResourceSelectionNode[]>`
       WITH RECURSIVE selected_ancestors AS (
         SELECT id, parent_id AS "parentId"
         FROM resource_entries

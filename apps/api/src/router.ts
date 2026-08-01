@@ -12,7 +12,7 @@ import { Readable } from "node:stream";
 import { badRequest } from "./errors.js";
 import type { PrismaPlatformRepository } from "./repository.js";
 import type { ResourceService } from "./resourceService.js";
-import { MAX_BATCH_MOVE_RESOURCES } from "./resourceMove.js";
+import { MAX_BATCH_RESOURCE_SELECTION } from "./resourceSelection.js";
 import type { LocalObjectStorage } from "./storage.js";
 
 const RESOURCE_TYPES = new Set<ResourceType>([
@@ -200,7 +200,7 @@ export function registerApiRoutes(
       body.resourceIds,
       "resourceIds",
       1,
-      MAX_BATCH_MOVE_RESOURCES,
+      MAX_BATCH_RESOURCE_SELECTION,
     );
     const user = await getCurrentUser(repository, request);
     const result = await resources.moveResources(user, {
@@ -280,29 +280,50 @@ export function registerApiRoutes(
     return copied.resource;
   });
 
-  for (const [suffix, trashed, action] of [
-    ["trash", true, "resource_trash"],
-    ["restore", false, "resource_restore"],
-  ] as const) {
-    app.post<{ Params: { resourceId: string } }>(
-      `/api/resources/:resourceId/${suffix}`,
-      async (request) => {
-        const user = await getCurrentUser(repository, request);
-        const updated = await resources.setTrashed(
-          user,
-          request.params.resourceId,
-          trashed,
-        );
-        await repository.writeAuditLog({
-          action,
-          actorUserId: user.id,
-          resourceId: updated.id,
-          detail: {},
-        });
-        return updated;
-      },
-    );
-  }
+  app.post<{ Body: { resourceIds?: unknown } }>(
+    "/api/resources/trash-batch",
+    async (request) => {
+      const body = requireObject(request.body);
+      const resourceIds = parseUniqueStringArray(
+        body.resourceIds,
+        "resourceIds",
+        1,
+        MAX_BATCH_RESOURCE_SELECTION,
+      );
+      const user = await getCurrentUser(repository, request);
+      return resources.trashResources(user, { resourceIds });
+    },
+  );
+
+  app.post<{ Params: { resourceId: string } }>(
+    "/api/resources/:resourceId/trash",
+    async (request) => {
+      const user = await getCurrentUser(repository, request);
+      // 单项接口保留兼容性，但删除事务和审计只由批量核心实现一次。
+      const result = await resources.trashResources(user, {
+        resourceIds: [request.params.resourceId],
+      });
+      return result.trashed[0]!;
+    },
+  );
+
+  app.post<{ Params: { resourceId: string } }>(
+    "/api/resources/:resourceId/restore",
+    async (request) => {
+      const user = await getCurrentUser(repository, request);
+      const restored = await resources.restoreResource(
+        user,
+        request.params.resourceId,
+      );
+      await repository.writeAuditLog({
+        action: "resource_restore",
+        actorUserId: user.id,
+        resourceId: restored.id,
+        detail: {},
+      });
+      return restored;
+    },
+  );
 
   app.post<{
     Body: {
