@@ -21,6 +21,7 @@
     "build:shared": "tsc -p packages/shared/tsconfig.json",
     "build:document-model": "tsc -p packages/document-model/tsconfig.json",
     "test:permissions": "npm run build:shared && npm run build:document-model && node --test packages/document-model/test/permissions.test.mjs",
+    "test:resource-columns": "node --import tsx --test src/platform/resourceColumnModel.test.ts",
     "test:api": "npm run build:shared && npm run build:document-model && tsc -p apps/api/tsconfig.test.json && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/platform.integration.test.ts",
     "build:api": "tsc -p apps/api/tsconfig.json",
     "start:api": "node dist/api/server.js",

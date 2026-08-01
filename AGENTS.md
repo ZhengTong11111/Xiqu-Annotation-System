@@ -39,9 +39,17 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - platform login/resource-explorer/editor switch and local editor entry
 - `src/platform/ResourceExplorer.tsx`
   - desktop-style three-pane resource manager
-  - owns folder navigation, list/grid presentation, selection, keyboard/context-menu actions, import/upload, and the resource Inspector
-  - the current `column` toggle is only a list-style placeholder; the real Finder-style multi-column browser is the next R1.5 slice and must not be described as complete
+  - owns folder navigation, view switching, selection, keyboard actions, import/upload, and the resource Inspector
   - the Inspector is the canonical UI for editing each account's direct permissions on the selected resource
+- `src/platform/ResourceItem.tsx`
+  - shared list/grid/column resource item, formatting, Radix context menu, and Pragmatic DnD lifecycle
+  - keep resource commands and drag/drop registration shared instead of forking behavior by view mode
+- `src/platform/resourceColumnModel.ts`
+  - pure Finder-style column-path transitions, truncation, current-location, and path-validation helpers
+- `src/platform/useResourceColumns.ts`
+  - asynchronous visible-column loader with stale-response protection and conservative path validation
+- `src/platform/ResourceColumnBrowser.tsx`
+  - multi-column renderer; column group scrolls horizontally while each column owns vertical scrolling
 - `src/platform/resourceClipboard.ts`
   - multi-root copy/paste result orchestration
   - each root remains a separate server transaction; one failed root does not suppress unrelated successful roots
@@ -380,8 +388,9 @@ Current backend capabilities:
 
 Current platform UI capabilities:
 - login page with development defaults
-- desktop-style three-pane resource explorer with folder/project navigation, search, sorting, list/grid modes, multi-selection, keyboard shortcuts, and context menus; the visible column-mode toggle is not yet a true multi-column browser
-- multi-selection destination picker plus list/grid/breadcrumb drag-to-move powered by headless Pragmatic Drag and Drop
+- desktop-style three-pane resource explorer with folder/project navigation, search, sorting, list/grid/Finder-column modes, multi-selection, keyboard shortcuts, and context menus
+- column mode keeps selection within one logical column, searches only the rightmost visible column, and preserves ancestor columns; temporary column read failures must not truncate an otherwise valid path
+- multi-selection destination picker plus list/grid/column/breadcrumb drag-to-move powered by headless Pragmatic Drag and Drop
 - create projects/folders, import annotation JSON, upload media, copy/paste all four resource types, rename, move through the API, and soft-delete resources
 - open mutable or read-only annotation files in the existing editor
 - revision-checked annotation-file save

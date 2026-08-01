@@ -1,12 +1,9 @@
-import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
   Archive,
   ChevronRight,
   ClipboardPaste,
   Clock3,
-  Copy,
   FileJson2,
-  FileVideo2,
   Folder,
   FolderInput,
   FolderOpen,
@@ -49,13 +46,21 @@ import {
   normalizeImportedProjectFile,
 } from "../utils/projectFile";
 import { prepareProjectForServer } from "./PlatformWorkspace";
+import { ResourceColumnBrowser } from "./ResourceColumnBrowser";
 import { ResourceDestinationPicker } from "./ResourceDestinationPicker";
+import {
+  formatResourceDate,
+  ResourceIcon,
+  ResourceItem,
+  resourceTypeLabel,
+} from "./ResourceItem";
 import { copyResourcesSequentially } from "./resourceClipboard";
 import {
-  registerResourceDraggable,
   registerResourceDropTarget,
 } from "./resourceDragAndDrop";
 import { restoreResourcesSequentially } from "./resourceRestore";
+import { isResourceContainer } from "./resourceColumnModel";
+import { useResourceColumns } from "./useResourceColumns";
 
 type ExplorerMode = "list" | "grid" | "column";
 
@@ -94,6 +99,8 @@ export function ResourceExplorer(props: {
   });
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [anchorId, setAnchorId] = useState<string | null>(null);
+  const [anchorColumnIndex, setAnchorColumnIndex] = useState(0);
+  const [selectionColumnIndex, setSelectionColumnIndex] = useState(0);
   const [mode, setMode] = useState<ExplorerMode>("list");
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] =
@@ -116,13 +123,28 @@ export function ResourceExplorer(props: {
   const pasteInFlightRef = useRef(false);
   const moveInFlightRef = useRef(false);
   const breadcrumbRequestIdRef = useRef(0);
+  const pendingColumnSelectionRef = useRef<number | null>(null);
 
-  const selected =
-    page.items.find((item) => item.id === selectedIds[0]) ?? null;
-  const selectedResources = page.items.filter((item) =>
+  const columnBrowser = useResourceColumns({
+    client: props.client,
+    enabled: mode === "column",
+    rootView,
+    query: search,
+    sortBy,
+    direction,
+  });
+  const selectionItems = mode === "column"
+    ? columnBrowser.columns[selectionColumnIndex]?.items ?? []
+    : page.items;
+  const selected = selectionItems.find((item) =>
+    item.id === selectedIds[0]) ?? null;
+  const selectedResources = selectionItems.filter((item) =>
     selectedIds.includes(item.id));
-  const isTrashView = folderId === null && rootView === "trash";
-  const refresh = useCallback(async () => {
+  const isTrashView = rootView === "trash";
+  const locationParentId = mode === "column"
+    ? columnBrowser.locationParentId
+    : folderId;
+  const refreshPage = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
@@ -145,9 +167,18 @@ export function ResourceExplorer(props: {
   }, [direction, folderId, props.client, rootView, search, sortBy]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void refresh(), search ? 180 : 0);
+    if (mode === "column") return;
+    const timer = window.setTimeout(() => void refreshPage(), search ? 180 : 0);
     return () => window.clearTimeout(timer);
-  }, [refresh, search]);
+  }, [mode, refreshPage, search]);
+
+  const refreshCurrentView = useCallback(async () => {
+    if (mode === "column") {
+      columnBrowser.refreshVisibleColumns();
+      return;
+    }
+    await refreshPage();
+  }, [columnBrowser.refreshVisibleColumns, mode, refreshPage]);
 
   useEffect(() => {
     const requestId = ++breadcrumbRequestIdRef.current;
@@ -174,23 +205,39 @@ export function ResourceExplorer(props: {
   }, [page.breadcrumbs, props.client]);
 
   const openResource = useCallback((resource: ResourceEntry) => {
-    if (resource.type === "folder" || resource.type === "project") {
+    if (isResourceContainer(resource)) {
+      if (mode === "column") {
+        const columnIndex = columnBrowser.columns.findIndex((column) =>
+          column.items.some(({ id }) => id === resource.id));
+        if (columnIndex >= 0 && !isTrashView) {
+          columnBrowser.openResource(columnIndex, resource);
+          setFolderId(resource.id);
+        }
+        return;
+      }
       setFolderId(resource.id);
       setSelectedIds([]);
     } else if (resource.type === "annotation_file") {
       props.onOpenAnnotationFile(resource);
     }
-  }, [props.onOpenAnnotationFile]);
+  }, [
+    columnBrowser.columns,
+    columnBrowser.openResource,
+    isTrashView,
+    mode,
+    props.onOpenAnnotationFile,
+  ]);
 
   const copySelection = useCallback(() => {
     if (isTrashView) return;
-    setClipboard(page.items.filter((item) => selectedIds.includes(item.id)));
-  }, [isTrashView, page.items, selectedIds]);
+    setClipboard(selectionItems.filter((item) =>
+      selectedIds.includes(item.id)));
+  }, [isTrashView, selectedIds, selectionItems]);
 
   const pasteClipboard = useCallback(async () => {
     if (
       isTrashView ||
-      !folderId ||
+      !locationParentId ||
       !clipboard.length ||
       pasteInFlightRef.current
     ) return;
@@ -201,14 +248,15 @@ export function ResourceExplorer(props: {
     try {
       const result = await copyResourcesSequentially(
         clipboard,
-        folderId,
+        locationParentId,
         (resourceId, parentId) =>
           props.client.copyResource(resourceId, { parentId }),
       );
-      await refresh();
+      await refreshCurrentView();
       const copiedIds = result.copied.map(({ copy }) => copy.id);
       setSelectedIds(copiedIds);
       setAnchorId(copiedIds[0] ?? null);
+      setSelectionColumnIndex(Math.max(0, columnBrowser.columns.length - 1));
       if (result.failed.length) {
         const details = result.failed.map(({ source, error }) =>
           `${source.name}：${describeError(error)}`).join("；");
@@ -220,7 +268,14 @@ export function ResourceExplorer(props: {
       pasteInFlightRef.current = false;
       setIsPasting(false);
     }
-  }, [clipboard, folderId, isTrashView, props.client, refresh]);
+  }, [
+    clipboard,
+    columnBrowser.columns.length,
+    isTrashView,
+    locationParentId,
+    props.client,
+    refreshCurrentView,
+  ]);
 
   const restoreResources = useCallback(async (resources: ResourceEntry[]) => {
     if (!resources.length || restoreInFlightRef.current) return;
@@ -233,7 +288,7 @@ export function ResourceExplorer(props: {
         resources,
         (resourceId) => props.client.restoreResource(resourceId),
       );
-      await refresh();
+      await refreshCurrentView();
       const failedIds = result.failed.map(({ resource }) => resource.id);
       setSelectedIds(failedIds);
       setAnchorId(failedIds[0] ?? null);
@@ -248,7 +303,32 @@ export function ResourceExplorer(props: {
       restoreInFlightRef.current = false;
       setIsRestoring(false);
     }
-  }, [props.client, refresh]);
+  }, [props.client, refreshCurrentView]);
+
+  useEffect(() => {
+    const pendingIndex = pendingColumnSelectionRef.current;
+    if (pendingIndex === null) return;
+    const column = columnBrowser.columns[pendingIndex];
+    if (!column || column.loading) return;
+    pendingColumnSelectionRef.current = null;
+    const first = column.items[0];
+    setSelectionColumnIndex(pendingIndex);
+    setAnchorColumnIndex(pendingIndex);
+    setAnchorId(first?.id ?? null);
+    setSelectedIds(first ? [first.id] : []);
+  }, [columnBrowser.columns]);
+
+  useEffect(() => {
+    if (mode !== "column" || selectionColumnIndex < columnBrowser.columns.length) {
+      return;
+    }
+    // 移动、删除或权限变化可能让 hook 自动截断右侧路径；选择状态必须同时回到最后一个有效列。
+    const lastIndex = Math.max(0, columnBrowser.columns.length - 1);
+    setSelectionColumnIndex(lastIndex);
+    setAnchorColumnIndex(lastIndex);
+    setSelectedIds([]);
+    setAnchorId(null);
+  }, [columnBrowser.columns.length, mode, selectionColumnIndex]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -267,7 +347,7 @@ export function ResourceExplorer(props: {
       const command = event.metaKey || event.ctrlKey;
       if (command && event.key.toLowerCase() === "a") {
         event.preventDefault();
-        setSelectedIds(page.items.map((item) => item.id));
+        setSelectedIds(selectionItems.map((item) => item.id));
       } else if (command && event.key.toLowerCase() === "c") {
         event.preventDefault();
         if (!isTrashView) copySelection();
@@ -277,13 +357,71 @@ export function ResourceExplorer(props: {
       } else if (command && event.key.toLowerCase() === "f") {
         event.preventDefault();
         document.querySelector<HTMLInputElement>(".resource-search-input")?.focus();
+      } else if (
+        mode === "column" &&
+        (event.key === "ArrowUp" || event.key === "ArrowDown")
+      ) {
+        event.preventDefault();
+        if (!selectionItems.length) return;
+        const currentIndex = selectionItems.findIndex(({ id }) =>
+          id === selectedIds[0]);
+        const delta = event.key === "ArrowUp" ? -1 : 1;
+        const nextIndex = Math.min(
+          selectionItems.length - 1,
+          Math.max(0, currentIndex < 0 ? 0 : currentIndex + delta),
+        );
+        const next = selectionItems[nextIndex]!;
+        setSelectedIds([next.id]);
+        setAnchorId(next.id);
+        setAnchorColumnIndex(selectionColumnIndex);
+      } else if (
+        mode === "column" &&
+        event.key === "ArrowRight" &&
+        selected &&
+        isResourceContainer(selected) &&
+        !isTrashView
+      ) {
+        event.preventDefault();
+        columnBrowser.openResource(selectionColumnIndex, selected);
+        setFolderId(selected.id);
+        pendingColumnSelectionRef.current = selectionColumnIndex + 1;
+      } else if (
+        mode === "column" &&
+        event.key === "ArrowLeft" &&
+        selectionColumnIndex > 0
+      ) {
+        event.preventDefault();
+        const openedBy = columnBrowser.columns[selectionColumnIndex]
+          ?.openedByResourceId;
+        setSelectionColumnIndex(selectionColumnIndex - 1);
+        setAnchorColumnIndex(selectionColumnIndex - 1);
+        setAnchorId(openedBy ?? null);
+        setSelectedIds(openedBy ? [openedBy] : []);
       } else if (event.key === "Enter" && selected && !isTrashView) {
-        openResource(selected);
+        event.preventDefault();
+        if (mode === "column" && isResourceContainer(selected)) {
+          columnBrowser.openResource(selectionColumnIndex, selected);
+          setFolderId(selected.id);
+          pendingColumnSelectionRef.current = selectionColumnIndex + 1;
+        } else {
+          openResource(selected);
+        }
       } else if (event.key === "Escape") {
         setSelectedIds([]);
+        if (mode === "column") {
+          columnBrowser.truncateAfter(selectionColumnIndex);
+          setFolderId(
+            columnBrowser.columns[selectionColumnIndex]?.parentId ?? null,
+          );
+        }
       } else if (event.key === "F2" && selected && !isTrashView) {
         event.preventDefault();
-        void renameResource(props.client, selected, refresh, setError);
+        void renameResource(
+          props.client,
+          selected,
+          refreshCurrentView,
+          setError,
+        );
       } else if (
         (event.key === "Delete" || event.key === "Backspace") &&
         selectedIds.length
@@ -293,19 +431,23 @@ export function ResourceExplorer(props: {
         if (!isTrashView && window.confirm("将所选资源移到回收站？")) {
           void Promise.all(
             selectedIds.map((id) => props.client.trashResource(id)),
-          ).then(refresh).catch((nextError) => setError(describeError(nextError)));
+          ).then(refreshCurrentView)
+            .catch((nextError) => setError(describeError(nextError)));
         }
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
+    columnBrowser.columns,
+    columnBrowser.openResource,
+    columnBrowser.truncateAfter,
     copySelection,
+    mode,
     openResource,
-    page.items,
     pasteClipboard,
     props.client,
-    refresh,
+    refreshCurrentView,
     movingResources.length,
     isRestoring,
     isPasting,
@@ -313,21 +455,33 @@ export function ResourceExplorer(props: {
     isTrashView,
     selected,
     selectedIds,
+    selectionColumnIndex,
+    selectionItems,
   ]);
 
   function chooseView(view: ResourceListView) {
     setFolderId(null);
     setRootView(view);
     setSelectedIds([]);
+    setAnchorId(null);
+    setSelectionColumnIndex(0);
+    setAnchorColumnIndex(0);
   }
 
-  function selectResource(event: MouseEvent, resource: ResourceEntry) {
+  function selectResource(
+    event: MouseEvent,
+    resource: ResourceEntry,
+    items = page.items,
+    columnIndex = 0,
+  ) {
     const command = event.metaKey || event.ctrlKey;
-    if (event.shiftKey && anchorId) {
-      const start = page.items.findIndex((item) => item.id === anchorId);
-      const end = page.items.findIndex((item) => item.id === resource.id);
+    const wasSameColumn = selectionColumnIndex === columnIndex;
+    setSelectionColumnIndex(columnIndex);
+    if (event.shiftKey && anchorId && anchorColumnIndex === columnIndex) {
+      const start = items.findIndex((item) => item.id === anchorId);
+      const end = items.findIndex((item) => item.id === resource.id);
       if (start >= 0 && end >= 0) {
-        const range = page.items
+        const range = items
           .slice(Math.min(start, end), Math.max(start, end) + 1)
           .map((item) => item.id);
         setSelectedIds(command
@@ -336,11 +490,20 @@ export function ResourceExplorer(props: {
       }
       return;
     }
+    if (mode === "column" && !command && !event.shiftKey) {
+      if (!isTrashView) columnBrowser.openResource(columnIndex, resource);
+      setFolderId(isResourceContainer(resource)
+        ? resource.id
+        : columnBrowser.columns[columnIndex]?.parentId ?? null);
+    }
     setAnchorId(resource.id);
+    setAnchorColumnIndex(columnIndex);
     setSelectedIds((current) => command
-      ? current.includes(resource.id)
+      ? wasSameColumn && current.includes(resource.id)
         ? current.filter((id) => id !== resource.id)
-        : [...current, resource.id]
+        : wasSameColumn
+          ? [...current, resource.id]
+          : [resource.id]
       : [resource.id]);
   }
 
@@ -371,7 +534,7 @@ export function ResourceExplorer(props: {
       const result = await props.client.moveResources({ resourceIds, parentId });
       setSelectedIds([]);
       setAnchorId(null);
-      await refresh();
+      await refreshCurrentView();
       if (!result.moved.length && result.unchanged.length) {
         setError("所选资源已经位于目标目录中。");
       }
@@ -381,7 +544,7 @@ export function ResourceExplorer(props: {
       setIsMovingResources(false);
       setDraggedResourceIds([]);
     }
-  }, [props.client, refresh]);
+  }, [props.client, refreshCurrentView]);
 
   const handleResourceDragStart = useCallback((resourceIds: string[]) => {
     setDraggedResourceIds(resourceIds);
@@ -404,11 +567,11 @@ export function ResourceExplorer(props: {
     if (!name) return;
     try {
       await props.client.createResource({
-        parentId: folderId,
+        parentId: locationParentId,
         type,
         name,
       });
-      await refresh();
+      await refreshCurrentView();
     } catch (nextError) {
       setError(describeError(nextError));
     }
@@ -423,14 +586,14 @@ export function ResourceExplorer(props: {
       if (!isProjectFileLike(parsed)) {
         throw new Error("所选 JSON 不是有效的标注项目文件。");
       }
-      if (!folderId) throw new Error("请先进入项目或文件夹。");
+      if (!locationParentId) throw new Error("请先进入项目或文件夹。");
       const project = normalizeImportedProjectFile(parsed).project;
       await props.client.createAnnotationFile({
-        parentId: folderId,
+        parentId: locationParentId,
         name: file.name,
         payload: prepareProjectForServer(project),
       });
-      await refresh();
+      await refreshCurrentView();
     } catch (nextError) {
       setError(describeError(nextError));
     }
@@ -440,7 +603,7 @@ export function ResourceExplorer(props: {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    if (!folderId) {
+    if (!locationParentId) {
       setError("请先进入项目或文件夹。");
       return;
     }
@@ -448,17 +611,62 @@ export function ResourceExplorer(props: {
     try {
       const uploaded = await props.client.uploadFile(file);
       await props.client.importMediaFile({
-        parentId: folderId,
+        parentId: locationParentId,
         fileId: uploaded.file.id,
         name: file.name,
       });
-      await refresh();
+      await refreshCurrentView();
     } catch (nextError) {
       setError(describeError(nextError));
     } finally {
       setIsLoading(false);
     }
   }
+
+  function changeMode(nextMode: ExplorerMode) {
+    if (nextMode === mode) return;
+    if (nextMode === "column") {
+      // 单页目录的 breadcrumbs 包含当前容器；据此恢复完整路径，而不是切换后跳回根目录。
+      columnBrowser.resetToBreadcrumbs(page.breadcrumbs);
+      setSelectionColumnIndex(page.breadcrumbs.length);
+      setAnchorColumnIndex(page.breadcrumbs.length);
+    } else if (mode === "column") {
+      setFolderId(columnBrowser.locationParentId);
+      if (selectionColumnIndex !== columnBrowser.columns.length - 1) {
+        setSelectedIds([]);
+        setAnchorId(null);
+      }
+    }
+    setMode(nextMode);
+  }
+
+  const columnBreadcrumbs = columnBrowser.columns.slice(1).flatMap(
+    (column, index) => {
+      const resource = columnBrowser.columns[index]?.items.find(({ id }) =>
+        id === column.openedByResourceId);
+      return resource ? [resource] : [];
+    },
+  );
+  const displayBreadcrumbs = mode === "column"
+    ? columnBreadcrumbs
+    : page.breadcrumbs;
+  const interactionDisabled = isTrashView ||
+    isLoading ||
+    isPasting ||
+    isRestoring ||
+    isMovingResources ||
+    movingResources.length > 0;
+  const renameSelectedResource = (resource: ResourceEntry) =>
+    void renameResource(
+      props.client,
+      resource,
+      refreshCurrentView,
+      setError,
+    );
+  const trashSelectedResource = (resource: ResourceEntry) =>
+    void props.client.trashResource(resource.id)
+      .then(refreshCurrentView)
+      .catch((nextError) => setError(describeError(nextError)));
 
   return (
     <main className="resource-explorer-shell">
@@ -481,7 +689,7 @@ export function ResourceExplorer(props: {
         </div>
         <div className="resource-account">
           <span>{props.user?.displayName ?? "正在验证账号"}</span>
-          <button type="button" title="刷新" onClick={() => void refresh()}>
+          <button type="button" title="刷新" onClick={() => void refreshCurrentView()}>
             <RefreshCw size={17} />
           </button>
           <button type="button" title="退出" onClick={props.onLogout}>
@@ -516,11 +724,13 @@ export function ResourceExplorer(props: {
               <button type="button" onClick={() => chooseView(rootView)}>
                 {VIEW_LABELS[rootView]}
               </button>
-              {page.breadcrumbs.map((item) => (
+              {displayBreadcrumbs.map((item, index) => (
                 <span key={item.id}>
                   <ChevronRight size={14} />
                   <ResourceBreadcrumbTarget
-                    resource={breadcrumbResources[item.id] ?? null}
+                    resource={mode === "column"
+                      ? columnBreadcrumbs[index] ?? null
+                      : breadcrumbResources[item.id] ?? null}
                     disabled={
                       isTrashView ||
                       isLoading ||
@@ -529,7 +739,18 @@ export function ResourceExplorer(props: {
                       isMovingResources ||
                       movingResources.length > 0
                     }
-                    onNavigate={() => setFolderId(item.id)}
+                    onNavigate={() => {
+                      if (mode === "column") {
+                        columnBrowser.openResource(index, item);
+                        setFolderId(item.id);
+                        setSelectionColumnIndex(index);
+                        setAnchorColumnIndex(index);
+                        setAnchorId(item.id);
+                        setSelectedIds([item.id]);
+                      } else {
+                        setFolderId(item.id);
+                      }
+                    }}
                     onDrop={handleResourceDrop}
                   >
                     {item.name}
@@ -543,12 +764,12 @@ export function ResourceExplorer(props: {
                   type="button"
                   disabled={
                     isRestoring ||
-                    !page.items.some((item) =>
+                    !selectionItems.some((item) =>
                       selectedIds.includes(item.id) &&
                       item.permission.capabilities.includes("delete"))
                   }
                   onClick={() => void restoreResources(
-                    page.items.filter((item) => selectedIds.includes(item.id)),
+                    selectionItems.filter((item) => selectedIds.includes(item.id)),
                   )}
                   title="恢复到原位置"
                 >
@@ -557,28 +778,31 @@ export function ResourceExplorer(props: {
                 </button>
               ) : (
                 <>
-                  <button type="button" onClick={() => void createContainer("project")}>
-                    <Plus size={16} /> 项目
+                  <button
+                    type="button"
+                    onClick={() => void createContainer("project")}
+                    title="新建项目"
+                  >
+                    <Plus size={16} />
                   </button>
-                  <button type="button" disabled={!folderId} onClick={() => void createContainer("folder")} title="新建文件夹">
+                  <button type="button" disabled={!locationParentId} onClick={() => void createContainer("folder")} title="新建文件夹">
                     <Folder size={16} />
                   </button>
-                  <button type="button" disabled={!folderId} onClick={() => jsonInputRef.current?.click()} title="导入标注 JSON">
+                  <button type="button" disabled={!locationParentId} onClick={() => jsonInputRef.current?.click()} title="导入标注 JSON">
                     <FileJson2 size={16} />
                   </button>
-                  <button type="button" disabled={!folderId} onClick={() => mediaInputRef.current?.click()} title="上传媒体">
+                  <button type="button" disabled={!locationParentId} onClick={() => mediaInputRef.current?.click()} title="上传媒体">
                     <Upload size={16} />
                   </button>
                   <button
                     type="button"
-                    disabled={!folderId || !clipboard.length || isPasting}
+                    disabled={!locationParentId || !clipboard.length || isPasting}
                     onClick={() => void pasteClipboard()}
-                    title={folderId
+                    title={locationParentId
                       ? `粘贴 ${clipboard.length} 项到当前目录`
                       : "请先进入项目或文件夹"}
                   >
                     <ClipboardPaste size={16} />
-                    {isPasting ? "粘贴中" : "粘贴"}
                   </button>
                   <button
                     type="button"
@@ -592,19 +816,46 @@ export function ResourceExplorer(props: {
                     title="移动所选资源"
                   >
                     <FolderInput size={16} />
-                    {selectedResources.length > 1
-                      ? `移动（${selectedResources.length}）`
-                      : "移动"}
                   </button>
                 </>
               )}
               <span className="resource-toolbar-divider" />
-              <button type="button" className={mode === "list" ? "active" : ""} onClick={() => setMode("list")} title="列表"><List size={16} /></button>
-              <button type="button" className={mode === "grid" ? "active" : ""} onClick={() => setMode("grid")} title="网格"><Grid2X2 size={16} /></button>
-              <button type="button" className={mode === "column" ? "active" : ""} onClick={() => setMode("column")} title="分栏"><MoreHorizontal size={16} /></button>
+              <button type="button" className={mode === "list" ? "active" : ""} onClick={() => changeMode("list")} title="列表"><List size={16} /></button>
+              <button type="button" className={mode === "grid" ? "active" : ""} onClick={() => changeMode("grid")} title="网格"><Grid2X2 size={16} /></button>
+              <button type="button" className={mode === "column" ? "active" : ""} onClick={() => changeMode("column")} title="分栏"><MoreHorizontal size={16} /></button>
             </div>
           </div>
           {error ? <div className="resource-error-banner">{error}</div> : null}
+          {mode === "column" ? (
+            <ResourceColumnBrowser
+              columns={columnBrowser.columns}
+              viewLabels={VIEW_LABELS}
+              selectedIds={selectedIds}
+              selectionColumnIndex={selectionColumnIndex}
+              draggedResourceIds={draggedResourceIds}
+              interactionDisabled={interactionDisabled}
+              isTrashView={isTrashView}
+              onSelect={(event, resource, columnIndex) => selectResource(
+                event,
+                resource,
+                columnBrowser.columns[columnIndex]?.items ?? [],
+                columnIndex,
+              )}
+              onOpen={openResource}
+              onRename={renameSelectedResource}
+              onCopy={(resource) => setClipboard([resource])}
+              onMove={openMovePicker}
+              onRestore={(resource) => void restoreResources([resource])}
+              onTrash={trashSelectedResource}
+              onDragStart={(resourceIds, columnIndex) => {
+                setSelectionColumnIndex(columnIndex);
+                setAnchorColumnIndex(columnIndex);
+                handleResourceDragStart(resourceIds);
+              }}
+              onDragFinish={handleResourceDragFinish}
+              onDropResources={handleResourceDrop}
+            />
+          ) : (
           <ResourceCollection
             items={page.items}
             selectedIds={selectedIds}
@@ -623,35 +874,25 @@ export function ResourceExplorer(props: {
             onSelect={selectResource}
             onOpen={openResource}
             isTrashView={isTrashView}
-            onRename={(resource) =>
-              void renameResource(props.client, resource, refresh, setError)}
+            onRename={renameSelectedResource}
             onCopy={(resource) => setClipboard([resource])}
             onMove={openMovePicker}
-            interactionDisabled={
-              isTrashView ||
-              isLoading ||
-              isPasting ||
-              isRestoring ||
-              isMovingResources ||
-              movingResources.length > 0
-            }
+            interactionDisabled={interactionDisabled}
             draggedResourceIds={draggedResourceIds}
             onDragStart={handleResourceDragStart}
             onDragFinish={handleResourceDragFinish}
             onDropResources={handleResourceDrop}
             onRestore={(resource) => void restoreResources([resource])}
-            onTrash={(resource) =>
-              void props.client.trashResource(resource.id)
-                .then(refresh)
-                .catch((nextError) => setError(describeError(nextError)))}
+            onTrash={trashSelectedResource}
           />
+          )}
         </section>
 
         <ResourceInspector
           client={props.client}
           resource={selected}
           readOnly={isTrashView}
-          onChanged={() => void refresh()}
+          onChanged={() => void refreshCurrentView()}
           onError={setError}
         />
       </section>
@@ -763,18 +1004,18 @@ function ResourceCollection(props: CollectionProps) {
     return (
       <div className="resource-grid">
         {props.items.map((resource) => (
-          <ResourceCollectionItem
+          <ResourceItem
             key={resource.id}
             resource={resource}
             displayMode="grid"
-            {...props}
+            {...resourceItemProps(props, resource)}
           />
         ))}
       </div>
     );
   }
   return (
-    <div className={`resource-list ${props.mode === "column" ? "column-mode" : ""}`}>
+    <div className="resource-list">
       <div className="resource-list-header">
         <SortButton label="名称" field="name" {...props} />
         <span>类型</span>
@@ -783,134 +1024,37 @@ function ResourceCollection(props: CollectionProps) {
         <SortButton label="大小" field="size" {...props} />
       </div>
       {props.items.map((resource) => (
-        <ResourceCollectionItem
+        <ResourceItem
           key={resource.id}
           resource={resource}
           displayMode="list"
-          {...props}
+          {...resourceItemProps(props, resource)}
         />
       ))}
     </div>
   );
 }
 
-function ResourceCollectionItem(props: CollectionProps & {
-  resource: ResourceEntry;
-  displayMode: "list" | "grid";
-}) {
-  const elementRef = useRef<HTMLButtonElement>(null);
-  const latestPropsRef = useRef(props);
-  latestPropsRef.current = props;
-  const [dropActive, setDropActive] = useState(false);
-  const isSelected = props.selectedIds.includes(props.resource.id);
-  const isDragging = props.draggedResourceIds.includes(props.resource.id);
-  const isContainer = props.resource.type === "folder" ||
-    props.resource.type === "project";
-  useEffect(() => {
-    const element = elementRef.current;
-    if (!element) return;
-    const cleanups = [registerResourceDraggable({
-      element,
-      getResources: () => {
-        const latest = latestPropsRef.current;
-        return latest.selectedIds.includes(latest.resource.id)
-          ? latest.items.filter(({ id }) => latest.selectedIds.includes(id))
-          : [latest.resource];
-      },
-      disabled: () => latestPropsRef.current.interactionDisabled,
-      onDragStart: (resourceIds) =>
-        latestPropsRef.current.onDragStart(resourceIds),
-      onDragFinish: () => latestPropsRef.current.onDragFinish(),
-    })];
-    if (isContainer) {
-      cleanups.push(registerResourceDropTarget({
-        element,
-        targetId: props.resource.id,
-        canCreateChild: () => latestPropsRef.current.resource.permission
-          .capabilities.includes("create_child"),
-        disabled: () => latestPropsRef.current.interactionDisabled,
-        onActiveChange: setDropActive,
-        onDrop: (resourceIds, targetId) =>
-          latestPropsRef.current.onDropResources(resourceIds, targetId),
-      }));
-    }
-    // Pragmatic DnD 使用命令式注册；每次依赖变化和组件卸载时都必须注销，避免重复 drop。
-    return () => cleanups.forEach((cleanup) => cleanup());
-  }, [
-    isContainer,
-    props.resource.id,
-  ]);
-
-  const className = [
-    props.displayMode === "grid" ? "resource-grid-item" : "resource-list-row",
-    isSelected ? "selected" : "",
-    isDragging ? "dragging" : "",
-    dropActive ? "drop-target-active" : "",
-  ].filter(Boolean).join(" ");
-
-  return (
-    <ResourceMenu {...props}>
-      <button
-        ref={elementRef}
-        type="button"
-        className={className}
-        onClick={(event) => props.onSelect(event, props.resource)}
-        onDoubleClick={() => {
-          if (!props.isTrashView) props.onOpen(props.resource);
-        }}
-      >
-        {props.displayMode === "grid" ? (
-          <>
-            <ResourceIcon resource={props.resource} size={34} />
-            <strong>{props.resource.name}</strong>
-            <span>{props.resource.owner.displayName}</span>
-          </>
-        ) : (
-          <>
-            <span className="resource-name-cell"><ResourceIcon resource={props.resource} size={18} /><strong>{props.resource.name}</strong></span>
-            <span>{typeLabel(props.resource.type)}</span>
-            <span>{formatDate(props.resource.updatedAt)}</span>
-            <span>{props.resource.owner.displayName}</span>
-            <span>{formatSize(props.resource.size)}</span>
-          </>
-        )}
-      </button>
-    </ResourceMenu>
-  );
-}
-
-function ResourceMenu(props: CollectionProps & {
-  resource: ResourceEntry;
-  children: JSX.Element;
-}) {
-  const capabilities = props.resource.permission.capabilities;
-  return (
-    <ContextMenu.Root>
-      <ContextMenu.Trigger asChild>{props.children}</ContextMenu.Trigger>
-      <ContextMenu.Portal>
-        <ContextMenu.Content className="resource-context-menu">
-          {props.isTrashView ? (
-            <ContextMenu.Item
-              disabled={!capabilities.includes("delete")}
-              onSelect={() => props.onRestore(props.resource)}
-            >
-              <RotateCcw size={15} /> 恢复到原位置
-            </ContextMenu.Item>
-          ) : (
-            <>
-              <ContextMenu.Item onSelect={() => props.onOpen(props.resource)}><FolderOpen size={15} /> 打开</ContextMenu.Item>
-              <ContextMenu.Separator />
-              <ContextMenu.Item disabled={!capabilities.includes("copy")} onSelect={() => props.onCopy(props.resource)}><Copy size={15} /> 复制</ContextMenu.Item>
-              <ContextMenu.Item disabled={!capabilities.includes("move")} onSelect={() => props.onMove(props.resource)}><FolderInput size={15} /> 移动到…</ContextMenu.Item>
-              <ContextMenu.Item disabled={!capabilities.includes("write")} onSelect={() => props.onRename(props.resource)}><Settings2 size={15} /> 重命名</ContextMenu.Item>
-              <ContextMenu.Separator />
-              <ContextMenu.Item className="danger" disabled={!capabilities.includes("delete")} onSelect={() => props.onTrash(props.resource)}><Trash2 size={15} /> 移到回收站</ContextMenu.Item>
-            </>
-          )}
-        </ContextMenu.Content>
-      </ContextMenu.Portal>
-    </ContextMenu.Root>
-  );
+function resourceItemProps(props: CollectionProps, resource: ResourceEntry) {
+  return {
+    isSelected: props.selectedIds.includes(resource.id),
+    isDragging: props.draggedResourceIds.includes(resource.id),
+    interactionDisabled: props.interactionDisabled,
+    isTrashView: props.isTrashView,
+    getDragResources: () => props.selectedIds.includes(resource.id)
+      ? props.items.filter(({ id }) => props.selectedIds.includes(id))
+      : [resource],
+    onSelect: props.onSelect,
+    onOpen: props.onOpen,
+    onRename: props.onRename,
+    onCopy: props.onCopy,
+    onMove: props.onMove,
+    onRestore: props.onRestore,
+    onTrash: props.onTrash,
+    onDragStart: props.onDragStart,
+    onDragFinish: props.onDragFinish,
+    onDropResources: props.onDropResources,
+  };
 }
 
 function SortButton(props: {
@@ -969,10 +1113,10 @@ function ResourceInspector(props: {
       <div className="resource-inspector-preview"><ResourceIcon resource={props.resource} size={38} /></div>
       <h2>{props.resource.name}</h2>
       <dl>
-        <dt>类型</dt><dd>{typeLabel(props.resource.type)}</dd>
+        <dt>类型</dt><dd>{resourceTypeLabel(props.resource.type)}</dd>
         <dt>所有者</dt><dd>{props.resource.owner.displayName}</dd>
-        <dt>创建</dt><dd>{formatDate(props.resource.createdAt)}</dd>
-        <dt>修改</dt><dd>{formatDate(props.resource.updatedAt)}</dd>
+        <dt>创建</dt><dd>{formatResourceDate(props.resource.createdAt)}</dd>
+        <dt>修改</dt><dd>{formatResourceDate(props.resource.updatedAt)}</dd>
         {props.resource.revision ? <><dt>修订</dt><dd>{props.resource.revision}</dd></> : null}
       </dl>
       {!props.readOnly ? (
@@ -1133,13 +1277,6 @@ function PermissionRow(props: {
   );
 }
 
-function ResourceIcon(props: { resource: ResourceEntry; size: number }) {
-  if (props.resource.type === "project") return <FolderOpen size={props.size} className="project-icon" />;
-  if (props.resource.type === "folder") return <Folder size={props.size} className="folder-icon" />;
-  if (props.resource.type === "media_file") return <FileVideo2 size={props.size} className="media-icon" />;
-  return <FileJson2 size={props.size} className="annotation-icon" />;
-}
-
 async function renameResource(
   client: PlatformClient,
   resource: ResourceEntry,
@@ -1154,31 +1291,6 @@ async function renameResource(
   } catch (error) {
     onError(describeError(error));
   }
-}
-
-function typeLabel(type: ResourceEntry["type"]) {
-  return {
-    folder: "文件夹",
-    project: "项目",
-    annotation_file: "标注文件",
-    media_file: "媒体文件",
-  }[type];
-}
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
-}
-
-function formatSize(value?: number | null) {
-  if (!value) return "—";
-  return value < 1024 * 1024
-    ? `${Math.ceil(value / 1024)} KB`
-    : `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function describeError(error: unknown) {

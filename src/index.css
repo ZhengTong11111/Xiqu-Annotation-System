@@ -858,6 +858,7 @@ select {
 }
 
 .resource-breadcrumbs {
+  flex: 1 1 auto;
   overflow: hidden;
   white-space: nowrap;
 }
@@ -886,10 +887,21 @@ select {
 }
 
 .resource-toolbar-actions {
+  flex: 0 1 auto;
   gap: 2px;
+  max-width: 62%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.resource-toolbar-actions::-webkit-scrollbar {
+  display: none;
 }
 
 .resource-toolbar-actions button {
+  flex: 0 0 auto;
+  white-space: nowrap;
   color: #40516a;
   border-color: #d4dce7;
 }
@@ -982,19 +994,22 @@ select {
 }
 
 .resource-list-row.selected,
-.resource-grid-item.selected {
+.resource-grid-item.selected,
+.resource-column-item.selected {
   color: #154f8a;
   background: #dceafb;
   box-shadow: inset 0 0 0 1px #9dbfe5;
 }
 
 .resource-list-row.dragging,
-.resource-grid-item.dragging {
+.resource-grid-item.dragging,
+.resource-column-item.dragging {
   opacity: 0.5;
 }
 
 .resource-list-row.drop-target-active,
-.resource-grid-item.drop-target-active {
+.resource-grid-item.drop-target-active,
+.resource-column-item.drop-target-active {
   color: #0f5798;
   background: #d7eafa;
   box-shadow: inset 0 0 0 2px #6da5d8;
@@ -1062,6 +1077,98 @@ select {
 .resource-grid-item span {
   color: #8390a1;
   font-size: 11px;
+}
+
+/* Finder 式分栏：列组只负责横向滚动，每一列单独维护纵向滚动位置。 */
+.resource-column-browser {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: #f7f9fc;
+  scrollbar-gutter: stable;
+}
+
+.resource-column {
+  display: grid;
+  flex: 0 0 clamp(220px, 27vw, 300px);
+  grid-template-rows: 30px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  background: #fff;
+  border-right: 1px solid #d7dee8;
+}
+
+.resource-column.active {
+  background: #fbfdff;
+}
+
+.resource-column > header {
+  padding: 7px 10px 0;
+  overflow: hidden;
+  color: #758196;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: #f7f9fc;
+  border-bottom: 1px solid #e1e6ed;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.resource-column-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.resource-column-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 18px;
+  align-items: center;
+  width: 100%;
+  height: 34px;
+  padding: 0 7px;
+  color: #435168;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #f0f2f6;
+}
+
+.resource-column-item:hover,
+.resource-column-item.path-selected {
+  background: #edf3fa;
+}
+
+.resource-column-item.path-selected {
+  color: #285f96;
+  box-shadow: inset -2px 0 0 #9bbce0;
+}
+
+.resource-column-item strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.resource-column-item > svg:last-child {
+  color: #98a3b2;
+}
+
+.resource-column-message {
+  padding: 18px 12px;
+  color: #8894a5;
+  text-align: center;
+  font-size: 12px;
+}
+
+.resource-column-message.error {
+  color: #9c2d30;
+  background: #fff3f3;
 }
 
 .project-icon,
