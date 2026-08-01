@@ -392,6 +392,17 @@ export function registerApiRoutes(
       ),
   );
 
+  // 完整快照按需读取，路由中的 resourceId 参与归属校验而不是只凭 snapshotId 查询。
+  app.get<{ Params: { resourceId: string; snapshotId: string } }>(
+    "/api/annotation-files/:resourceId/recovery-snapshots/:snapshotId",
+    async (request) =>
+      resources.getRecoverySnapshot(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        request.params.snapshotId,
+      ),
+  );
+
   app.get<{ Params: { resourceId: string } }>(
     "/api/resources/:resourceId/permissions",
     async (request) =>

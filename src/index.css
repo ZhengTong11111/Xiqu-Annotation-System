@@ -1244,6 +1244,297 @@ select {
   border-radius: 5px;
 }
 
+/* 恢复历史嵌入资源详情栏，默认折叠并沿用低饱和桌面检查器的层级。 */
+.resource-recovery-history {
+  margin-bottom: 14px;
+  padding-top: 13px;
+  border-top: 1px solid #d3dae4;
+}
+
+.resource-recovery-heading,
+.resource-recovery-toggle,
+.resource-recovery-item,
+.resource-recovery-dialog-header,
+.resource-recovery-dialog-header > span {
+  display: flex;
+  align-items: center;
+}
+
+.resource-recovery-heading {
+  min-height: 30px;
+  color: #415168;
+}
+
+.resource-recovery-heading > svg {
+  flex: 0 0 auto;
+  margin-right: 8px;
+}
+
+.resource-recovery-heading > div,
+.resource-recovery-toggle > span {
+  display: grid;
+  min-width: 0;
+}
+
+.resource-recovery-heading span,
+.resource-recovery-toggle small {
+  margin-top: 2px;
+  color: #8490a1;
+  font-size: 11px;
+}
+
+.resource-recovery-toggle {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  gap: 7px;
+  padding: 0;
+  color: #415168;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+
+.resource-recovery-toggle > span {
+  flex: 1;
+}
+
+.resource-recovery-refresh {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: #657389;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+
+.resource-recovery-toggle:hover,
+.resource-recovery-refresh:hover:not(:disabled) {
+  color: #1e65a6;
+}
+
+.resource-recovery-refresh:hover:not(:disabled) {
+  background: #e8eef6;
+  border-color: #ccd6e2;
+}
+
+.resource-recovery-content {
+  margin-top: 6px;
+  border-top: 1px solid #d9e0e9;
+}
+
+.resource-recovery-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 2px;
+  color: #718095;
+  font-size: 12px;
+}
+
+.resource-recovery-state.error,
+.resource-recovery-dialog-state.error {
+  color: #9c3539;
+}
+
+.resource-recovery-state button,
+.resource-recovery-dialog-state button {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 0 9px;
+  color: #315f8e;
+  background: #f8fbff;
+  border: 1px solid #c9d6e4;
+  border-radius: 5px;
+}
+
+.resource-recovery-list {
+  max-height: 238px;
+  overflow: auto;
+}
+
+.resource-recovery-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  width: 100%;
+  min-height: 49px;
+  padding: 7px 2px;
+  color: #405068;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #d9e0e9;
+  border-radius: 0;
+}
+
+.resource-recovery-item:hover {
+  background: #eaf1f8;
+}
+
+.resource-recovery-item > span {
+  display: grid;
+  min-width: 0;
+}
+
+.resource-recovery-item > span:last-child {
+  justify-items: end;
+  text-align: right;
+}
+
+.resource-recovery-item small,
+.resource-recovery-item time {
+  overflow: hidden;
+  color: #8490a1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+}
+
+/* 快照详情使用现有 Radix Dialog 行为，只新增与资源平台一致的视觉外壳。 */
+.resource-recovery-dialog {
+  position: fixed;
+  z-index: 12001;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  grid-template-rows: auto auto minmax(180px, 1fr);
+  width: min(620px, calc(100vw - 32px));
+  max-height: min(76vh, 680px);
+  overflow: hidden;
+  color: #29384d;
+  background: #f7f9fc;
+  border: 1px solid #c5cfdb;
+  border-radius: 8px;
+  box-shadow: 0 24px 64px rgb(16 27 42 / 24%);
+  outline: none;
+  transform: translate(-50%, -50%);
+}
+
+.resource-recovery-dialog-header {
+  gap: 10px;
+  min-height: 58px;
+  padding: 0 14px 0 16px;
+  background: #eef2f7;
+  border-bottom: 1px solid #d2dae5;
+}
+
+.resource-recovery-dialog-header > span {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
+.resource-recovery-dialog-header h2,
+.resource-recovery-dialog-header p {
+  margin: 0;
+}
+
+.resource-recovery-dialog-header h2 {
+  font-size: 15px;
+}
+
+.resource-recovery-dialog-header p {
+  margin-top: 2px;
+  color: #758297;
+  font-size: 11px;
+}
+
+.resource-recovery-dialog-header button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: #56657a;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+
+.resource-recovery-dialog-header button:hover {
+  color: #195d9d;
+  background: #e3eaf3;
+  border-color: #c8d3df;
+}
+
+.resource-recovery-metadata {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 7px 12px;
+  margin: 0;
+  padding: 14px 16px;
+  background: #fff;
+  border-bottom: 1px solid #d8e0e9;
+  font-size: 12px;
+}
+
+.resource-recovery-metadata dt,
+.resource-recovery-summary dt {
+  color: #8390a2;
+}
+
+.resource-recovery-metadata dd,
+.resource-recovery-summary dd {
+  margin: 0;
+  color: #425168;
+}
+
+.resource-recovery-dialog-body {
+  min-height: 0;
+  padding: 14px 16px 18px;
+  overflow: auto;
+}
+
+.resource-recovery-dialog-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 160px;
+  color: #718095;
+  font-size: 13px;
+}
+
+.resource-recovery-summary dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  background: #d9e0e9;
+  border: 1px solid #d9e0e9;
+  border-radius: 6px;
+}
+
+.resource-recovery-summary dl > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 11px;
+  background: #fff;
+}
+
+.resource-recovery-summary dd {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.resource-recovery-summary p {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  color: #6d5b33;
+  background: #fff8e8;
+  border-left: 3px solid #d5aa51;
+  font-size: 12px;
+}
+
 .resource-inspector-section-heading {
   justify-content: space-between;
   padding-top: 13px;

@@ -1,7 +1,8 @@
 import type {
   AnnotationFile,
   AnnotationOperationRecord,
-  AnnotationRecoverySnapshot,
+  AnnotationRecoverySnapshotDetail,
+  AnnotationRecoverySnapshotSummary,
   AuditLogEntry,
   PlatformUser,
   ProcessingJob,
@@ -183,7 +184,10 @@ export type PlatformApiContract<TPayload = unknown> = {
     response: AnnotationFile<TPayload>;
   };
   listRecoverySnapshots: {
-    response: AnnotationRecoverySnapshot<TPayload>[];
+    response: AnnotationRecoverySnapshotSummary[];
+  };
+  getRecoverySnapshot: {
+    response: AnnotationRecoverySnapshotDetail<TPayload>;
   };
   listResourcePermissions: { response: ResourcePermissionMatrixRow[] };
   upsertResourcePermission: {

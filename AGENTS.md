@@ -41,6 +41,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - desktop-style three-pane resource manager
   - owns folder navigation, view switching, selection, keyboard actions, import/upload, and the resource Inspector
   - the Inspector is the canonical UI for editing each account's direct permissions on the selected resource
+- `src/platform/ResourceRecoveryHistory.tsx`
+  - annotation-file Inspector recovery-history list and read-only snapshot dialog
+  - loads lightweight summaries first and requests one full payload only after explicit selection
+- `src/platform/recoverySnapshotPreview.ts`
+  - pure, failure-contained conversion from unknown historical payload to a current-format multimodal summary
+  - reuses `normalizeImportedProjectFile()`; do not create a second project migration path for snapshot previews
 - `src/platform/ResourceItem.tsx`
   - shared list/grid/column resource item, formatting, Radix context menu, and Pragmatic DnD lifecycle
   - keep resource commands and drag/drop registration shared instead of forking behavior by view mode
@@ -142,6 +148,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run db:deploy`
 - `npm run build`
 - `npm run test:api`
+- `npm run test:permissions`
+- `npm run test:resource-columns`
+- `npm run test:recovery-preview`
 - `npm run build:web`
 - `npm run build:api`
 - `npm run build:shared`
@@ -392,6 +401,7 @@ Current backend capabilities:
 - atomic batch move with parent/descendant selection collapsing; the legacy single-item endpoint delegates to the same core
 - mutable annotation files with integer revision and `baseRevision` conflict checking
 - hidden recovery snapshots created automatically before an annotation-file payload is replaced
+- lightweight recovery-snapshot summary API plus a file-bound detail API for controlled Inspector previews
 - recursive project/folder copy, media/annotation-file copy, file-like move/rename/soft-delete/restore, favorite, and recent-open state
 - atomic batch trash with parent/descendant selection collapsing; the legacy single-item endpoint delegates to the same core
 - audit-log table and API for key platform events such as login, upload, resource creation/move/copy/delete, permission changes, and annotation-file save
@@ -416,6 +426,7 @@ Current platform UI capabilities:
 - open mutable or read-only annotation files in the existing editor
 - revision-checked annotation-file save
 - Inspector details plus per-account permission matrix for every selected resource
+- annotation-file Inspector recovery-history list and on-demand read-only multimodal snapshot summary
 - toggle permission inheritance and edit direct per-account capabilities when authorized
 - trash is a read-only resource context except for single/multi restore; normal open/copy/move/rename/delete
   shortcuts are suppressed while the trash view is active
@@ -456,6 +467,10 @@ Important backend caveats:
 - saving an annotation file must compare `baseRevision`; stale writes return `409` rather than silently overwriting.
 - before replacing a payload, preserve the previous payload as an `AnnotationRecoverySnapshot`.
 - recovery snapshots are implementation history, not ordinary user-visible files or published versions.
+- recovery-history lists must never select or return snapshot payloads; full payloads are read only through a detail
+  endpoint that binds both annotation-file id and snapshot id and currently requires effective `write` capability.
+- historical payload preview must fail inside its own UI boundary and reuse the canonical project-file normalizer; a bad
+  snapshot must not replace, open, or mutate the current editor document.
 - moving a resource must reject cycles and destinations where the caller lacks `create_child`.
 - moving a selection is all-or-nothing; selected descendants collapse under their selected ancestor and must not be moved a second time.
 - moving to trash is also all-or-nothing. Only normalized logical roots receive `trashedAt`; descendants keep their

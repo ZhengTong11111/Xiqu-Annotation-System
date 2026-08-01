@@ -201,7 +201,7 @@ model AnnotationFile {
   @@map("annotation_files")
 }
 
-// 恢复快照是系统内部安全网，不在资源管理器中作为“版本”暴露。
+// 恢复快照通过标注文件 Inspector 受控查看，但不是普通资源、Fork 或发布版本。
 model AnnotationRecoverySnapshot {
   id               String   @id @default(uuid())
   annotationFileId String   @map("annotation_file_id")

@@ -1,7 +1,8 @@
 import type {
   AnnotationFile,
   AnnotationOperationRecord,
-  AnnotationRecoverySnapshot,
+  AnnotationRecoverySnapshotDetail,
+  AnnotationRecoverySnapshotSummary,
   AuditLogEntry,
   BatchMoveResourcesRequest,
   BatchMoveResourcesResponse,
@@ -174,9 +175,17 @@ export class PlatformClient {
     );
   }
 
-  listRecoverySnapshots<TPayload>(resourceId: string) {
-    return this.request<AnnotationRecoverySnapshot<TPayload>[]>(
+  // 历史列表只读取轻量摘要，避免在展开 Inspector 时下载多份完整标注。
+  listRecoverySnapshots(resourceId: string) {
+    return this.request<AnnotationRecoverySnapshotSummary[]>(
       `/annotation-files/${resourceId}/recovery-snapshots`,
+    );
+  }
+
+  // 完整 payload 仅在用户主动打开某条只读预览时按需请求。
+  getRecoverySnapshot<TPayload>(resourceId: string, snapshotId: string) {
+    return this.request<AnnotationRecoverySnapshotDetail<TPayload>>(
+      `/annotation-files/${resourceId}/recovery-snapshots/${snapshotId}`,
     );
   }
 

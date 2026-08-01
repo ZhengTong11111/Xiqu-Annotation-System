@@ -6,6 +6,42 @@
 > `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
 > 回写或删除历史记录。
 
+## 2026-08-01：R2.1 恢复历史列表、详情与只读预览
+
+Codex 先把“新增逻辑代码块必须附带中文功能注释”的长期规范写入 `AGENTS.md` 并独立提交，随后按
+本机 `CLAUDE_WORK.md` 完成 R2.1。本轮没有引入新依赖：仓库已有 Radix Dialog，足以提供焦点管理、
+Esc 关闭和遮罩行为；继续复用它比增加另一套 UI 基础设施更稳定。
+
+实现内容：
+
+- 将原来同时承担列表与详情的完整恢复快照 DTO 拆为 summary/detail。列表从 Prisma 查询层明确
+  `select` 排除 payload，最多返回 50 条 revision、创建者、原因和时间；用户选择单条后才读取完整
+  payload。
+- 详情查询同时约束 annotation-file id 与 snapshot id；列表和详情均要求有效 `write` capability，
+  并拒绝不存在、已回收或被已回收祖先隐藏的标注文件。跨文件 snapshot id 返回 404，不泄露归属。
+- 新增纯函数 `recoverySnapshotPreview.ts`，从 `unknown` 开始校验，复用
+  `normalizeImportedProjectFile()` 迁移当前/旧项目格式，再汇总视频、句级/逐字、工尺谱、板眼、
+  自定义轨道/块和附属点数量。空对象、非项目 payload 或迁移失败只生成可显示错误，不影响 Inspector。
+- 新增独立 `ResourceRecoveryHistory` 组件。标注文件 Inspector 默认折叠历史区，摘要和详情分别加载，
+  使用请求 generation 防止快速切换资源时旧响应覆盖新状态；详情对话框明确只读，不提供恢复、保存
+  或覆盖当前文件命令。
+- 更新 shared 合同、浏览器 API client、Prisma 注释、命令清单和长期恢复快照不变量；删除旧的完整
+  列表类型和调用路径，没有保留两套恢复读取接口。
+
+审查与验证：
+
+- `npm run test:recovery-preview`：3 项通过；覆盖当前项目、旧 `videoUrl` 格式与不可识别 payload。
+- `npm run test:permissions`：5 项通过；`npm run test:resource-columns`：7 项通过。
+- `npm run test:api`：17 项通过。新增用例覆盖轻量列表、详情内容、查看不修改当前 revision/payload、
+  无 write 的 403、跨文件 snapshot id 的 404，以及缺失文件/快照。
+- `npm run build:web` 通过；仅保留既有 Vite 大 chunk 提醒。
+- 浏览器实际页面验证了标注文件 Inspector 入口、延迟展开、列表、坏快照隔离、Radix 对话框关闭与
+  控制台零 error。开发数据库中的该历史 payload 是测试占位对象，因此 UI 正确显示不可识别提示；
+  正常 ProjectData 摘要由纯函数测试覆盖。
+
+下一步：R2.2 增加真正恢复 mutation。它必须把恢复视为一次新的 revision 写入：用 `baseRevision`
+防并发覆盖，先快照当前 payload，再写入目标历史 payload，并记录不含标注内容的审计摘要。
+
 ## 2026-08-01：R1.6 原子批量移入回收站
 
 Codex 先将 R1.5 共享资源项造成的详细列表 class 回归独立修复并提交为 `91abdd1`，随后按本机

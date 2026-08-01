@@ -5,7 +5,8 @@ import {
 } from "@prisma/client";
 import type {
   AnnotationFile,
-  AnnotationRecoverySnapshot,
+  AnnotationRecoverySnapshotDetail,
+  AnnotationRecoverySnapshotSummary,
   BatchMoveResourcesRequest,
   BatchMoveResourcesResponse,
   BatchTrashResourcesRequest,
@@ -295,7 +296,7 @@ export class ResourceService {
         });
       }
 
-      // 保存前把旧内容写入隐藏恢复快照；资源管理器不将它展示为业务“版本”。
+      // 保存前把旧内容写入恢复快照；它只通过标注文件 Inspector 受控查看，不是业务“版本”。
       await transaction.annotationRecoverySnapshot.upsert({
         where: {
           annotationFileId_revision: {
@@ -342,18 +343,58 @@ export class ResourceService {
     return this.getAnnotationFile<TPayload>(user, resourceId);
   }
 
-  async listRecoverySnapshots<TPayload>(
+  // 历史列表只返回轻量元数据，避免一次读取最多 50 份完整 ProjectData。
+  async listRecoverySnapshots(
     user: ApiUser,
     resourceId: string,
-  ): Promise<AnnotationRecoverySnapshot<TPayload>[]> {
+  ): Promise<AnnotationRecoverySnapshotSummary[]> {
     await this.access.assertCapability(user, resourceId, "write");
+    await this.assertActiveAnnotationFile(resourceId);
     const rows = await this.prisma.annotationRecoverySnapshot.findMany({
       where: { annotationFileId: resourceId },
-      include: { creator: { include: { roles: true } } },
-      orderBy: { revision: "desc" },
+      select: {
+        id: true,
+        annotationFileId: true,
+        revision: true,
+        creator: { include: { roles: true } },
+        reason: true,
+        createdAt: true,
+      },
+      // revision 理论上已唯一；附加时间和 id 让异常迁移数据也保持稳定顺序。
+      orderBy: [
+        { revision: "desc" },
+        { createdAt: "desc" },
+        { id: "desc" },
+      ],
       take: 50,
     });
     return rows.map((row) => ({
+      id: row.id,
+      annotationFileId: row.annotationFileId,
+      revision: row.revision,
+      creator: toPublicUser(row.creator),
+      reason: row.reason,
+      createdAt: row.createdAt.toISOString(),
+    }));
+  }
+
+  // 详情查询同时绑定文件和快照 id，防止利用其他文件的 snapshot id 越权读取 payload。
+  async getRecoverySnapshot<TPayload>(
+    user: ApiUser,
+    resourceId: string,
+    snapshotId: string,
+  ): Promise<AnnotationRecoverySnapshotDetail<TPayload>> {
+    await this.access.assertCapability(user, resourceId, "write");
+    await this.assertActiveAnnotationFile(resourceId);
+    const row = await this.prisma.annotationRecoverySnapshot.findFirst({
+      where: {
+        id: snapshotId,
+        annotationFileId: resourceId,
+      },
+      include: { creator: { include: { roles: true } } },
+    });
+    if (!row) throw notFound("恢复快照不存在。");
+    return {
       id: row.id,
       annotationFileId: row.annotationFileId,
       revision: row.revision,
@@ -361,7 +402,7 @@ export class ResourceService {
       creator: toPublicUser(row.creator),
       reason: row.reason,
       createdAt: row.createdAt.toISOString(),
-    }));
+    };
   }
 
   async updateResource(
@@ -1297,6 +1338,28 @@ export class ResourceService {
       SELECT DISTINCT id, "parentId"
       FROM selected_ancestors
     `;
+  }
+
+  // 恢复历史只能属于活动标注文件；已删除节点或被删除祖先隐藏的后代均不可从历史接口穿透读取。
+  private async assertActiveAnnotationFile(resourceId: string) {
+    const resource = await this.prisma.resourceEntry.findUnique({
+      where: { id: resourceId },
+      select: {
+        type: true,
+        parentId: true,
+        trashedAt: true,
+        annotationFile: { select: { resourceId: true } },
+      },
+    });
+    if (
+      !resource ||
+      resource.type !== "annotation_file" ||
+      !resource.annotationFile ||
+      resource.trashedAt ||
+      await this.hasTrashedAncestor(this.prisma, resource.parentId)
+    ) {
+      throw notFound("活动标注文件不存在。");
+    }
   }
 
   private async isDescendant(

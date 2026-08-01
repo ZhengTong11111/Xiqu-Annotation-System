@@ -134,15 +134,21 @@ export type AnnotationFile<TPayload = unknown> = {
   lastSavedAt: string;
 };
 
-export type AnnotationRecoverySnapshot<TPayload = unknown> = {
+// 恢复快照摘要用于历史列表，刻意不携带大体积标注 payload。
+export type AnnotationRecoverySnapshotSummary = {
   id: string;
   annotationFileId: string;
   revision: number;
-  payload: TPayload;
   creator: UserReference;
   reason?: string | null;
   createdAt: string;
 };
+
+// 恢复快照详情只在用户主动预览单条历史时返回完整 payload。
+export type AnnotationRecoverySnapshotDetail<TPayload = unknown> =
+  AnnotationRecoverySnapshotSummary & {
+    payload: TPayload;
+  };
 
 export type StoredFileObject = {
   id: string;

@@ -6,10 +6,10 @@ Workspace/Fork、完成版本和项目发布版本模型仅在 `docs/development
 
 最后更新：2026-08-01
 
-当前开发基线：R1.6 原子批量移入回收站已完成；详细列表 class 回归已独立提交为 `91abdd1`
+当前开发基线：R1 资源操作闭环与 R2.1 恢复历史只读预览已完成
 
-当前阶段：常用 R1 资源操作已形成闭环；下一独立切片进入 R2.1 恢复快照列表、详情与只读预览，
-不与真正恢复 mutation、结构化 diff 或永久删除混做
+当前阶段：下一独立切片进入 R2.2 恢复快照 mutation；继续使用 revision 冲突保护，并在覆盖当前
+payload 前保存新的事故恢复快照，不与结构化 diff、永久删除或发布版本混做
 
 ## 1. 产品目标
 
@@ -60,6 +60,8 @@ Workspace/Fork、完成版本和项目发布版本模型仅在 `docs/development
 ### 2.3 前端
 
 - `ResourceExplorer.tsx` 提供三栏资源管理器、搜索、排序、多选、快捷键、右键菜单和 Inspector。
+- 标注文件 Inspector 已提供默认折叠的恢复历史：列表只读取轻量摘要，选择单条后才读取完整
+  payload，并通过正式项目迁移入口生成只读多模态统计；坏历史数据被隔离在预览错误状态中。
 - column view 已使用路径列模型实现 Finder 式多列导航：列组横向滚动、每列独立纵向滚动，支持
   左右/上下方向键、路径选择、Inspector 跟随，并与列表/网格共用资源项、右键菜单和拖拽入口。
 - Inspector 是逐账号直接授权与继承状态的唯一管理入口。
@@ -90,7 +92,7 @@ Workspace/Fork、完成版本和项目发布版本模型仅在 `docs/development
 - 原子批量移入回收站已实现。父子混合选择会压缩为逻辑根，整批权限/活动树校验、软删除和审计
   位于同一事务；前端三个视图的工具栏、右键和 Delete/Backspace 共用一个入口。
 - Finder 式 column view 已完成；当前仍是每列最多 200 项，尚未进入 R3 的服务端分页与虚拟列表。
-- 恢复快照没有用户界面、预览和恢复操作闭环。
+- 恢复快照已有受控列表和只读预览，但尚无真正恢复 mutation；也没有结构化 diff。
 - 大资源量下没有服务端分页、搜索和虚拟列表。
 - 没有自动保存、浏览器持久化离线队列和联网恢复。
 - 没有 WebSocket presence、实时 operation 协议或冲突合并界面。
@@ -164,9 +166,11 @@ Workspace/Fork、完成版本和项目发布版本模型仅在 `docs/development
 
 ### R2：恢复历史、比较与研究审核
 
-- 恢复快照列表、创建者、时间、原因和 revision 展示。
-- 快照只读预览与恢复；恢复本身生成新的 recovery snapshot 和 audit log。
-- 标注文件 diff：先支持 ProjectData 的结构化摘要，再支持轨道/时间范围可视比较。
+- R2.1 已完成：轻量恢复快照列表、创建者/时间/原因/revision 展示、按需详情和安全只读摘要。
+  列表不读取 payload；详情绑定 annotation file 与 snapshot id，并要求有效 `write` 权限。
+- R2.2 下一步：真正恢复 mutation。恢复必须携带当前 `baseRevision`，先保存当前 payload 为新的
+  recovery snapshot，再把目标历史 payload 写成当前文件的新 revision，并记录不含 payload 的 audit log。
+- R2.3：标注文件 diff；先支持 ProjectData 的结构化摘要，再支持轨道/时间范围可视比较。
 - 从两个标注文件选择片段合并到目标文件，复用现有 import merge 与冲突策略。
 - 设计“已确认标注范围”作为独立、可审计的研究审核层，而不是 ACL 或普通快照。
 

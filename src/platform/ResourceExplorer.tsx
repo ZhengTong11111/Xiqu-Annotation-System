@@ -54,6 +54,7 @@ import {
   ResourceItem,
   resourceTypeLabel,
 } from "./ResourceItem";
+import { ResourceRecoveryHistory } from "./ResourceRecoveryHistory";
 import { copyResourcesSequentially } from "./resourceClipboard";
 import {
   registerResourceDropTarget,
@@ -1195,6 +1196,14 @@ function ResourceInspector(props: {
           回收站资源仅显示基本信息；恢复后可编辑收藏和账号权限。
         </div>
       )}
+      {/* 活动标注文件在详情栏中独立展示只读恢复历史，不与业务版本或普通资源混排。 */}
+      {!props.readOnly && props.resource.type === "annotation_file" ? (
+        <ResourceRecoveryHistory
+          key={props.resource.id}
+          client={props.client}
+          resource={props.resource}
+        />
+      ) : null}
       <div className="resource-inspector-section-heading">
         <div><strong>账号权限</strong><span>当前选中资源的逐账号授权</span></div>
         {canManage ? <button type="button" onClick={() => void load()} title="刷新权限"><RefreshCw size={15} /></button> : null}

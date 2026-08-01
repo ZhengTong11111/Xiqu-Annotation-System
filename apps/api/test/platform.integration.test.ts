@@ -879,6 +879,113 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(invalidRevision.statusCode, 400);
     });
 
+    await suite.test("恢复快照列表轻量化、详情归属与权限边界", async () => {
+      // 再保存一次以形成两个历史 revision，并保留 revision 2 的真实 payload 供详情核对。
+      const beforeSecondSave = await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: annotationFileId },
+      });
+      const secondSave = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${annotationFileId}`,
+        payload: {
+          baseRevision: 2,
+          payload: { marker: "current-after-history-test" },
+        },
+      });
+      assert.equal(secondSave.statusCode, 200, secondSave.body);
+
+      // 列表必须按 revision 倒序返回摘要，任何条目都不应意外携带大体积 payload。
+      const listResponse = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots`,
+      });
+      assert.equal(listResponse.statusCode, 200, listResponse.body);
+      const listBody = listResponse.json() as { data: JsonObject[] };
+      assert.deepEqual(
+        listBody.data.map(({ revision }) => revision),
+        [2, 1],
+      );
+      assert.ok(listBody.data.every((summary) => !("payload" in summary)));
+      assert.ok(listBody.data.every((summary) =>
+        typeof summary.createdAt === "string" &&
+        typeof (summary.creator as JsonObject).displayName === "string"));
+
+      // 单条详情按需返回旧 payload，读取动作不能改变当前标注 revision 或内容。
+      const revisionTwoSummary = listBody.data.find(({ revision }) =>
+        revision === 2);
+      assert.ok(revisionTwoSummary);
+      const detailResponse = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots/${revisionTwoSummary.id}`,
+      });
+      assert.equal(detailResponse.statusCode, 200, detailResponse.body);
+      assert.deepEqual(
+        dataOf(detailResponse.json()).payload,
+        beforeSecondSave.payload,
+      );
+      const currentAfterRead = await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: annotationFileId },
+      });
+      assert.equal(currentAfterRead.revision, 3);
+      assert.deepEqual(
+        currentAfterRead.payload,
+        { marker: "current-after-history-test" },
+      );
+
+      // 只有 read/copy 的学生不能读取内部事故恢复历史，前端隐藏入口不是安全边界。
+      const forbiddenList = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots`,
+      });
+      assert.equal(forbiddenList.statusCode, 403);
+      const forbiddenDetail = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots/${revisionTwoSummary.id}`,
+      });
+      assert.equal(forbiddenDetail.statusCode, 403);
+
+      // 创建另一份有快照的文件，验证 snapshot id 不能跨 annotation file 路径读取。
+      const otherCreated = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "快照归属校验.json",
+          payload: { marker: "other-original" },
+        },
+      });
+      const otherFileId = String(
+        (dataOf(otherCreated.json()).resource as JsonObject).id,
+      );
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${otherFileId}`,
+        payload: {
+          baseRevision: 1,
+          payload: { marker: "other-current" },
+        },
+      });
+      const otherSnapshot = await prisma.annotationRecoverySnapshot
+        .findFirstOrThrow({ where: { annotationFileId: otherFileId } });
+      const crossFileRead = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots/${otherSnapshot.id}`,
+      });
+      assert.equal(crossFileRead.statusCode, 404);
+
+      // 不存在的文件或快照都返回明确 404，而不是伪装为空历史。
+      const missingFile = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/annotation-files/missing-file/recovery-snapshots",
+      });
+      assert.equal(missingFile.statusCode, 404);
+      const missingSnapshot = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots/missing-snapshot`,
+      });
+      assert.equal(missingSnapshot.statusCode, 404);
+    });
+
     await suite.test("批量移入回收站保持原子性并压缩父子选择", async () => {
       const trashProject = await jsonRequest(app, adminToken, {
         method: "POST",
