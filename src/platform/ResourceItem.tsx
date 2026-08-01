@@ -75,8 +75,12 @@ export function ResourceItem(props: {
     return () => cleanups.forEach((cleanup) => cleanup());
   }, [isContainer, props.resource.id]);
 
+  // 详细列表沿用既有 `.resource-list-row` 五列布局；它与 grid/column 的 `*-item` 命名并不对称。
+  const displayClassName = props.displayMode === "list"
+    ? "resource-list-row"
+    : `resource-${props.displayMode}-item`;
   const className = [
-    `resource-${props.displayMode}-item`,
+    displayClassName,
     props.isSelected ? "selected" : "",
     props.isPathSelected ? "path-selected" : "",
     props.isDragging ? "dragging" : "",

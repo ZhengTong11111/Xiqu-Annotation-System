@@ -44,6 +44,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/ResourceItem.tsx`
   - shared list/grid/column resource item, formatting, Radix context menu, and Pragmatic DnD lifecycle
   - keep resource commands and drag/drop registration shared instead of forking behavior by view mode
+  - display CSS names are intentionally asymmetric: list uses `.resource-list-row`, while grid/column use
+    `.resource-grid-item` / `.resource-column-item`; do not derive all three from one `*-item` template because
+    the existing five-column detail layout and its selected/drag/drop states depend on `.resource-list-row`
 - `src/platform/resourceColumnModel.ts`
   - pure Finder-style column-path transitions, truncation, current-location, and path-validation helpers
 - `src/platform/useResourceColumns.ts`
