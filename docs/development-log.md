@@ -1225,3 +1225,64 @@ Codex 审查发现并修复：
   scope/freshness/权限算法，也没有确认复制或物理删除路径。服务端是唯一权限与 revision 真相。
 - R2.5b 已闭环。下一轮 R2.5c 在标注文件 Inspector 与时间轴中消费这些真实 API：先展示 current/stale、
   active/revoked 范围，再提供受 review 控制的创建/撤销；不得先写 mock UI，也不得把状态回写项目 JSON。
+
+## 2026-08-02：R2.5c 已确认标注范围的 Inspector 与时间轴审核交互
+
+本轮先依据实际代码和 R2.5b 服务端合同重写被忽略的 `CLAUDE_WORK.md`，再实现平台编辑器中的真实审核
+工作流。工作由 Codex 直接完成、浏览器验收和自审，没有委托 Claude Code、GLM 或其他代理。实现没有
+新增第三方依赖：现有 React、Radix AlertDialog、Lucide、共享合同与 document-model helper 已足够，
+继续引入组件库反而会扩大视觉和状态边界。
+
+模块与状态边界：
+
+- 新增 `annotationConfirmationView.ts` 作为唯一纯视图模型：集中维护八类研究领域中文标签、真实持久
+  轨道选项、历史目标摘要、current/stale 与 active/revoked 安全派生、创建阻断原因、撤销入口可见性和
+  半开区间分层。未知历史轨道仍显示原 id；异常历史保守标为 stale/revoked 并展示校验原因，不静默丢弃。
+- 新增 `useAnnotationConfirmations.ts` 管理一份打开文件的 list/create/revoke。创建和撤销均以服务端响应
+  为事实，成功后重新 list，不做乐观拼接；命令成功而刷新失败会得到独立提示。请求、资源和 mutation
+  generation 共同防止文件切换时旧响应覆盖新列表、旧错误污染新面板或旧 finally 清掉新命令 pending。
+- 新增 `AnnotationConfirmationPanel.tsx`，作为平台治理区与原内容 Inspector 纵向组合。面板可折叠并
+  独立滚动，支持有效/全部历史、all/domains/tracks 目标、备注、刷新、时间轴显隐、精确导航和 Radix
+  二次确认撤销。轨道选项仅来自 `character-track` 与顶层 custom track；轨道被删除后会裁剪旧表单选择。
+- `App.tsx` 只负责组合平台会话、确认 hook、文档 dirty/revision、循环范围和时间轴焦点。创建范围复用
+  现有 loop range，但不会打开循环或修改范围；未设置范围、文件有未保存修改、列表加载、缺少 review
+  或服务器 revision 与编辑器保存 revision 不一致时均明确阻断。保存成功后非阻塞刷新确认列表，使旧
+  revision 事实立即呈现 stale；刷新失败不会反转已经成功的文件保存。
+- 平台会话新增当前账号、角色、review 能力和撤销他人确认的 owner 权威。自审发现服务端允许祖先容器
+  owner 撤销，而初版前端只识别文件/直接父级 owner；随后补为沿祖先链保守查询。查询失败只隐藏入口，
+  不授予能力，API 仍在事务内做最终鉴权。
+
+时间轴精确行为：
+
+- `Timeline` 只接收最小的扁平只读范围，不依赖平台 API DTO 或权限模型。在 loop lane 与 top deck 之间
+  增加可隐藏确认栏；重叠范围用稳定区间着色分层，半开区间首尾相接复用同层。
+- chip 左边界严格为 `getCanvasX(startTime, zoom)`，宽度为 `(endTime-startTime)*zoom`，仅以 4px 下限保证
+  极短范围可点击。点击直接使用记录原始时间 seek/focus，不从 DOM 像素反算，也不进入吸附、拖拽、
+  框选、块历史或项目文档状态。
+- 原先散落的 46px 固定顶部偏移收敛为 CSS 变量；top deck、板眼全局纵线和 loop overlay 共同加入可选
+  确认栏高度，避免插入治理栏后纵向遮挡。平台面板关闭时间轴显示时栏高归零；本地编辑器从不渲染栏。
+
+测试、自审和真实验收：
+
+- 新增 `test:annotation-confirmation-view`，5/5 覆盖持久轨道过滤、领域/未知轨道摘要、半开区间布局、
+  创建阻断优先级和创建者/owner/admin 撤销入口。既有 `test:annotation-confirmations` 10/10、
+  `test:permissions` 5/5、`test:api` 21/21 均通过；`npm run build` 与 `git diff --check` 通过。
+- 在真实平台管理员会话打开“示例项目：昆曲《寻梦》”的现有标注文件。无范围时创建被正确阻断；在
+  时间轴拖出 `5.050-9.050` 秒循环范围后创建成功，面板显示一条 current 记录，时间轴出现一条范围。
+  在 20px/s 下实测 chip 左边界为 265px（164px 轨道头 + 5.05×20），宽度为 80px（4×20），确认栏与
+  top deck 间距为 0；点击后媒体时间精确跳到 5.050 秒，没有改变循环范围。
+- 通过撤销对话框填写“R2.5c 浏览器验收”并成功撤销。有效列表和时间轴随权威刷新清空，“全部”保留
+  撤销者、时间和原因。显隐开关可移除/恢复整条确认栏；进入“不登录的本地标注工具”后确认面板与
+  时间轴栏数量均为 0。浏览器控制台无 error/warn。
+- 上述浏览器验收在本地开发数据库留下了一条已撤销确认记录，撤销原因即“R2.5c 浏览器验收”；它是
+  可追溯的开发验收数据，不属于 seed 或产品示例合同。浏览器自动化未能可靠触发 React 原生 range 的
+  缩放 change，因此没有声称完成交互式多倍率验收；坐标公式随 `zoom` 重算，并已在实际 20px/s 和构建
+  中核对。既有 Vite 大 chunk 提示和 pg 9 前置弃用提示仍在，本轮没有新增运行警告。
+
+完成结论与后续边界：
+
+- R2.5c 已形成“服务端事实、平台治理面板、精确只读时间轴栏”的端到端闭环。没有确认状态进入
+  `ProjectData`、导出 JSON、undo/redo、operation log 或恢复快照，也没有修改现有吸附和块编辑代码。
+- 本轮不做实体级确认、评论/签名、跨 revision 指纹续期、确认范围拖动、课堂作业或实时协作。R2 到此
+  完成恢复、比较、选择性整合与研究审核主链；下一轮转入 R3a，先稳定大规模资源查询的分页、排序、
+  搜索合同和 PostgreSQL 索引，再考虑前端虚拟列表，避免在不稳定 API 上先重写三种资源视图。

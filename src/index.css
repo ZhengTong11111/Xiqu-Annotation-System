@@ -3323,6 +3323,381 @@ select {
   padding-left: 8px;
 }
 
+/* 平台治理面板和通用 Inspector 共用右侧空间，但各自保留独立滚动和职责边界。 */
+.editor-inspector-stack {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.editor-inspector-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.editor-inspector-content > .inspector-panel,
+.editor-inspector-content > .spectrogram-settings-panel {
+  height: 100%;
+}
+
+.annotation-confirmation-panel {
+  flex: 0 1 auto;
+  max-height: 48%;
+  min-height: 38px;
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid rgba(188, 198, 211, 0.88);
+  background: rgba(244, 247, 250, 0.97);
+  color: var(--ink);
+}
+
+.annotation-confirmation-heading {
+  flex: 0 0 auto;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+}
+
+.annotation-confirmation-expand,
+.annotation-confirmation-heading-actions,
+.annotation-confirmation-heading-actions label,
+.annotation-confirmation-history-heading > span,
+.annotation-confirmation-primary,
+.annotation-confirmation-revoke {
+  display: inline-flex;
+  align-items: center;
+}
+
+.annotation-confirmation-expand {
+  min-width: 0;
+  gap: 5px;
+  padding: 3px 4px;
+  border: 0;
+  background: transparent;
+  color: #334155;
+}
+
+.annotation-confirmation-heading-actions {
+  gap: 6px;
+}
+
+.annotation-confirmation-heading-actions label {
+  gap: 4px;
+  color: var(--ink-soft);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.annotation-confirmation-heading-actions input,
+.annotation-confirmation-options input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
+.annotation-confirmation-heading-actions .icon-button {
+  width: 26px;
+  height: 26px;
+  min-height: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+
+.annotation-confirmation-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 8px 8px;
+  overscroll-behavior: contain;
+}
+
+.annotation-confirmation-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  padding: 4px 0 7px;
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.annotation-confirmation-error,
+.annotation-confirmation-notice,
+.annotation-confirmation-blocker {
+  margin: 0 0 7px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.annotation-confirmation-error,
+.annotation-confirmation-blocker {
+  color: #8f383d;
+  background: rgba(255, 237, 238, 0.92);
+  border: 1px solid rgba(193, 89, 95, 0.22);
+}
+
+.annotation-confirmation-notice {
+  color: #276253;
+  background: rgba(226, 246, 239, 0.9);
+  border: 1px solid rgba(55, 139, 116, 0.2);
+}
+
+.annotation-confirmation-create {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(188, 198, 211, 0.78);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.annotation-confirmation-range {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+
+.annotation-confirmation-range strong {
+  color: #334155;
+  font-variant-numeric: tabular-nums;
+}
+
+.annotation-confirmation-segments {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  padding: 2px;
+  border-radius: 5px;
+  background: rgba(216, 224, 234, 0.72);
+}
+
+.annotation-confirmation-segments.compact {
+  display: inline-grid;
+  grid-template-columns: repeat(2, auto);
+}
+
+.annotation-confirmation-segments button {
+  min-height: 25px;
+  padding: 2px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  box-shadow: none;
+  font-size: 10px;
+}
+
+.annotation-confirmation-segments button.active {
+  background: rgba(255, 255, 255, 0.96);
+  color: #245d94;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.annotation-confirmation-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 8px;
+  max-height: 104px;
+  overflow: auto;
+  padding: 4px 2px;
+  font-size: 10px;
+}
+
+.annotation-confirmation-options label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.annotation-confirmation-create textarea,
+.annotation-confirmation-revoke-dialog textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 48px;
+  padding: 6px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.94);
+  font: inherit;
+}
+
+.annotation-confirmation-primary {
+  justify-content: center;
+  gap: 5px;
+  min-height: 29px;
+  color: #fff;
+  border-color: #27756d;
+  background: #27756d;
+}
+
+.annotation-confirmation-history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 9px;
+  padding: 7px 0 5px;
+  border-top: 1px solid rgba(188, 198, 211, 0.7);
+}
+
+.annotation-confirmation-history-heading > span {
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.annotation-confirmation-list {
+  display: grid;
+  gap: 5px;
+}
+
+.annotation-confirmation-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 5px;
+  padding: 6px;
+  border-left: 3px solid rgba(13, 148, 136, 0.6);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.annotation-confirmation-item.stale {
+  border-left-color: rgba(180, 120, 24, 0.68);
+}
+
+.annotation-confirmation-item.revoked {
+  border-left-color: rgba(100, 116, 139, 0.54);
+  opacity: 0.76;
+}
+
+.annotation-confirmation-item-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #334155;
+  text-align: left;
+  box-shadow: none;
+}
+
+.annotation-confirmation-item-main > span,
+.annotation-confirmation-item-main > strong,
+.annotation-confirmation-item-main > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-confirmation-item-main strong {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.annotation-confirmation-item-main > span:not(.annotation-confirmation-item-state),
+.annotation-confirmation-item-main small,
+.annotation-confirmation-muted {
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+
+.annotation-confirmation-item-state {
+  justify-self: start;
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: #23675e;
+  background: rgba(45, 212, 191, 0.14);
+  font-size: 9px;
+}
+
+.annotation-confirmation-item.stale .annotation-confirmation-item-state {
+  color: #78531b;
+  background: rgba(245, 190, 73, 0.18);
+}
+
+.annotation-confirmation-item.revoked .annotation-confirmation-item-state {
+  color: #596578;
+  background: rgba(148, 163, 184, 0.18);
+}
+
+.annotation-confirmation-item-main small.invalid {
+  color: #973d43;
+}
+
+.annotation-confirmation-revoke {
+  gap: 3px;
+  min-height: 25px;
+  padding: 3px 6px;
+  color: #9a4145;
+  background: transparent;
+  border-color: rgba(154, 65, 69, 0.28);
+  font-size: 10px;
+}
+
+.annotation-confirmation-revoke-dialog {
+  position: fixed;
+  z-index: 12003;
+  top: 50%;
+  left: 50%;
+  width: min(420px, calc(100vw - 32px));
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  color: #29384d;
+  background: #f8fafc;
+  border: 1px solid #c5cfdb;
+  border-radius: 8px;
+  box-shadow: 0 24px 64px rgb(16 27 42 / 28%);
+  outline: none;
+  transform: translate(-50%, -50%);
+}
+
+.annotation-confirmation-revoke-dialog h2,
+.annotation-confirmation-revoke-dialog p {
+  margin: 0;
+}
+
+.annotation-confirmation-revoke-dialog h2 {
+  font-size: 15px;
+}
+
+.annotation-confirmation-revoke-dialog p,
+.annotation-confirmation-revoke-dialog label {
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.annotation-confirmation-revoke-dialog label {
+  display: grid;
+  gap: 5px;
+}
+
+.annotation-confirmation-revoke-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.annotation-confirmation-revoke-actions button.danger {
+  color: #fff;
+  background: #a84045;
+  border-color: #a84045;
+}
+
 .inspector-field {
   display: flex;
   flex-direction: column;
@@ -3887,6 +4262,10 @@ select {
   --timeline-layer-selection: 80;
   --timeline-layer-transient-guide: 82;
   --timeline-layer-time-guide: 90;
+  /* 固定顶部由 ruler + loop + 可选确认栏组成，所有悬浮层共同引用，避免插入栏后发生纵向错位。 */
+  --timeline-fixed-base-height: 46px;
+  --confirmation-lane-height: 0px;
+  --timeline-fixed-deck-top: calc(var(--timeline-fixed-base-height) + var(--confirmation-lane-height));
 }
 
 .timeline-ruler {
@@ -3967,10 +4346,72 @@ select {
 
 .timeline-top-deck {
   position: sticky;
-  top: 46px;
+  top: var(--timeline-fixed-deck-top);
   z-index: var(--timeline-layer-floating-deck);
   background: linear-gradient(180deg, #f3f6fa, #eff3f8);
   box-shadow: 0 1px 0 rgba(188, 198, 211, 0.88);
+}
+
+/* 确认栏严格使用时间轴画布坐标，仅承担只读导航，不参与块编辑或吸附命中。 */
+.timeline-confirmation-lane {
+  position: sticky;
+  top: var(--timeline-fixed-base-height);
+  min-height: 22px;
+  border-bottom: 1px solid rgba(31, 41, 55, 0.1);
+  background: rgba(242, 246, 248, 0.98);
+  z-index: var(--timeline-layer-fixed-controls);
+  overflow: hidden;
+}
+
+.timeline-confirmation-lane-label {
+  position: sticky;
+  left: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  color: var(--ink-soft);
+  background: rgba(242, 246, 248, 0.94);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.timeline-confirmation-chip {
+  position: absolute;
+  height: 16px;
+  min-width: 4px;
+  min-height: 0;
+  padding: 0 6px;
+  border-radius: 3px;
+  border: 1px solid rgba(13, 148, 136, 0.48);
+  background: rgba(45, 212, 191, 0.2);
+  color: #0f5f59;
+  box-shadow: none;
+  overflow: hidden;
+  cursor: pointer;
+  font-size: 9px;
+  line-height: 14px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.timeline-confirmation-chip span {
+  pointer-events: none;
+}
+
+.timeline-confirmation-chip.stale {
+  border-color: rgba(180, 120, 24, 0.56);
+  border-style: dashed;
+  background: rgba(245, 190, 73, 0.18);
+  color: #7a5417;
+}
+
+.timeline-confirmation-chip:hover,
+.timeline-confirmation-chip:focus-visible {
+  z-index: 3;
+  border-color: rgba(15, 108, 189, 0.72);
+  outline: 2px solid rgba(15, 108, 189, 0.16);
 }
 
 .tick {
@@ -4034,7 +4475,7 @@ select {
 
 .timeline-banyan-grid-lines {
   position: absolute;
-  top: 46px;
+  top: var(--timeline-fixed-deck-top);
   bottom: 0;
   left: 0;
   right: 0;
@@ -6160,7 +6601,7 @@ select {
 
 .timeline-loop-range-overlay {
   position: absolute;
-  top: 46px;
+  top: var(--timeline-fixed-deck-top);
   bottom: 0;
   background: linear-gradient(180deg, rgba(59, 130, 246, 0.05), rgba(59, 130, 246, 0.09));
   border-left: 1px solid rgba(37, 99, 235, 0.2);

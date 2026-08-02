@@ -47,6 +47,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - annotation-file Inspector recovery-history list, read-only snapshot detail, safe restore, and snapshot/current comparison entry
   - loads lightweight summaries first, requests one full snapshot payload only after explicit selection, and refetches the
     current annotation file when comparison starts rather than trusting stale Inspector metadata
+- `src/platform/AnnotationConfirmationPanel.tsx`
+  - platform-editor governance panel for browsing, creating, navigating to, and revoking confirmed annotation ranges
+  - uses the existing loop range as an explicit review range; it must not edit `ProjectData` or replace the content Inspector
+- `src/platform/useAnnotationConfirmations.ts`
+  - authoritative client-side list/create/revoke lifecycle for one open annotation file
+  - rejects stale async responses across file switches and refreshes after mutations instead of optimistically inventing facts
+- `src/platform/annotationConfirmationView.ts`
+  - pure labels, persisted-track options, lifecycle/freshness view records, create blockers, revoke visibility, and interval layout
+  - Timeline and panel must consume this module instead of duplicating confirmation state or target formatting
 - `src/platform/recoverySnapshotPreview.ts`
   - pure, failure-contained conversion from unknown historical payload to a current-format multimodal summary
   - reuses `normalizeImportedProjectFile()`; do not create a second project migration path for snapshot previews
@@ -185,7 +194,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `packages/document-model/src/annotationConfirmations.ts`
   - pure normalization, validation, lifecycle/freshness, overlap, persisted-track, and review-decision helpers for
     confirmed annotation ranges
-  - contains no Prisma, API, React, payload mutation, or global-role lookup; backend and forthcoming UI must reuse
+  - contains no Prisma, API, React, payload mutation, or global-role lookup; backend and platform UI must reuse
     this contract instead of duplicating scope or freshness rules
 - `prisma/schema.prisma`
   - PostgreSQL schema for users, sessions, resource entries, projects, annotation/media files, resource permissions/user state, recovery snapshots, confirmed ranges, processing jobs, audit logs, and annotation operations
@@ -211,6 +220,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:api`
 - `npm run test:permissions`
 - `npm run test:annotation-confirmations`
+- `npm run test:annotation-confirmation-view`
 - `npm run test:resource-columns`
 - `npm run test:recovery-preview`
 - `npm run test:annotation-diff`
@@ -522,9 +532,9 @@ Current backend capabilities:
   - permission core lives in `packages/document-model` plus `resourceAccess.ts`; do not create a second UI-only implementation
 
 Confirmed-annotation contract status:
-- R2.5b provides the PostgreSQL table, shared DTOs, pure domain rules, live `review` ResourceCapability, and
-  list/create/revoke APIs. The Inspector/Timeline user workflow is still R2.5c work, so do not present the backend
-  contract alone as a complete end-user feature.
+- R2.5c completes the platform-editor workflow on top of the R2.5b database/API: a dedicated Inspector section lists
+  current/stale/revoked facts, creates from the saved loop range, navigates to exact times, and revokes through a
+  confirmed dialog. The Timeline renders active facts in a separate read-only lane.
 - a confirmation binds one annotation file revision to a non-empty half-open time range and either all content, stable
   research domains, or real persisted parent-track ids. Derived Gongche, attached-point, and branch-lane visual tracks
   are not saved top-level track ids.
@@ -545,6 +555,8 @@ Current platform UI capabilities:
 - open mutable or read-only annotation files in the existing editor
 - compare two ordinary annotation files and selectively integrate stable-id entities with dependency closure, explicit
   conflict decisions, stale-plan rejection, and one editor-side undoable commit
+- browse/create/revoke confirmed annotation ranges in the platform editor, with current/stale history, explicit
+  all/domain/persisted-track targets, exact Timeline navigation, and a local-mode boundary
 - revision-checked annotation-file save
 - Inspector details plus per-account permission matrix for every selected resource
 - annotation-file Inspector recovery history supports a lazy list, on-demand read-only multimodal summary, and an
@@ -564,8 +576,8 @@ Important backend caveats:
 - real-time collaborative editing is not implemented yet
 - the removed Course/Assignment/Submission runtime is not a pending compatibility target; future classroom
   distribution/review should build on resource copy, ACL, file comparison, and a separate confirmed-annotation layer
-- confirmed-range backend is implemented, but its Inspector/Timeline browsing, creation and revocation workflow
-  remains R2.5c; real-time collaboration is not implemented
+- confirmed-range review is implemented end to end; entity-level confirmation, comments/signatures, automatic
+  carry-forward across revisions, and real-time collaboration are not implemented
 - annotation operations currently only record operation metadata/payload and do not mutate annotation-file payloads; full payloads are still written by the annotation-file save route
 - audit logs intentionally store summary `detail` objects, not full annotation payloads or uploaded file contents
 - global audit queries are admin-only; non-admin queries require effective resource visibility appropriate to the route
@@ -612,6 +624,16 @@ Important backend caveats:
   global admin, resource owner or ancestor owner may revoke another user's record.
 - saving does not delete or rewrite confirmations; older facts become stale. Annotation-file copy does not copy
   confirmations, and active-file checks prohibit listing/creating/revoking through a trashed resource or ancestor.
+- confirmation UI exists only for an authenticated platform editor session. It must not appear in local mode, and its
+  state must never be serialized into `ProjectData` or local JSON.
+- confirmation creation uses the existing loop range but does not enable/change looping. It is blocked while the
+  document is dirty, while list state is loading, without `review`, without a range, or when the server revision differs
+  from the editor's saved revision.
+- confirmation track choices include only `character-track` and top-level saved custom tracks. The read-only Timeline
+  lane uses the same `getCanvasX(time, zoom)` coordinate system as the ruler and navigates from original record times;
+  it must not participate in snapping, dragging, block history, or pixel-to-time reverse mapping.
+- frontend revoke visibility mirrors creator/admin/resource-owner/ancestor-owner rules only as an affordance. Network
+  lookup failure hides owner-only commands, and the service remains the authoritative permission boundary.
 - recovery-snapshot comparison must refetch the current annotation file when the user starts comparison, keep the
   historical snapshot fixed on the left and the current server revision on the right, and reuse `AnnotationDiffReview`.
   It is read-only: never add side swapping, snapshot opening/editing, selective merge, revision writes, or a second

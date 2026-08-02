@@ -13,12 +13,21 @@ import { TimelinePanel } from "./components/TimelinePanel";
 import { TopMenuBar, type TopMenuPlatformNavigation } from "./components/TopMenuBar";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { mockProject } from "./mockData";
+import { AnnotationConfirmationPanel } from "./platform/AnnotationConfirmationPanel";
+import {
+  buildAnnotationConfirmationViewRecords,
+  canShowAnnotationConfirmationRevoke,
+  getAnnotationConfirmationCreateBlocker,
+  getAnnotationConfirmationTrackOptions,
+  layoutAnnotationConfirmationTimelineItems,
+} from "./platform/annotationConfirmationView";
 import {
   type LocalEditorSession,
   PlatformWorkspace,
   prepareProjectForServer,
   type PlatformEditorSession,
 } from "./platform/PlatformWorkspace";
+import { useAnnotationConfirmations } from "./platform/useAnnotationConfirmations";
 import {
   type HistoryAction,
   type HistoryEntry,
@@ -437,6 +446,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     readOnly: isReadOnly,
   });
   const [remoteBaseRevision, setRemoteBaseRevision] = useState(editorSession?.baseRevision ?? 0);
+  // 平台确认事实独立于项目文档历史；本地会话传入 null，因此不会请求或展示服务端治理状态。
+  const annotationConfirmations = useAnnotationConfirmations({
+    client: editorSession?.client ?? null,
+    annotationFileId: editorSession?.annotationFileId ?? null,
+  });
+  const [confirmationTimelineVisible, setConfirmationTimelineVisible] = useState(true);
+  const [confirmationFocusRange, setConfirmationFocusRange] = useState<{
+    requestId: number;
+    start: number;
+    end: number;
+  } | null>(null);
   // 比较入口传入的时间是一次性会话起点；普通打开继续保持原有演示时间，不污染项目数据。
   const [currentTime, setCurrentTime] = useState(() => initialPlatformFocus
     ? clampTime(initialPlatformFocus.time, initialProjectDuration)
@@ -516,6 +536,50 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     () => buildTimelineTrackDefinitions(project.builtinTracks, project.customTracks, project.activeTrackOrder),
     [project.activeTrackOrder, project.builtinTracks, project.customTracks],
   );
+  // 确认轨道选项只从当前项目真实持久轨道生成，不复用包含派生伪轨的 Timeline definitions。
+  const confirmationTrackOptions = useMemo(
+    () => getAnnotationConfirmationTrackOptions(project),
+    [project.builtinTracks, project.customTracks],
+  );
+  const confirmationViewRecords = useMemo(
+    () => buildAnnotationConfirmationViewRecords(
+      annotationConfirmations.data?.confirmations ?? [],
+      annotationConfirmations.data?.currentRevision ?? remoteBaseRevision,
+      confirmationTrackOptions,
+    ),
+    [
+      annotationConfirmations.data,
+      confirmationTrackOptions,
+      remoteBaseRevision,
+    ],
+  );
+  const confirmationTimelineItems = useMemo(
+    () => layoutAnnotationConfirmationTimelineItems(
+      confirmationViewRecords.filter((record) => record.lifecycle === "active"),
+    ),
+    [confirmationViewRecords],
+  );
+  // Timeline 只接收渲染所需的扁平只读字段，不依赖平台 API 记录结构或权限判断。
+  const confirmationTimelineRanges = useMemo(
+    () => confirmationTimelineItems.map((item) => ({
+      id: item.record.id,
+      startTime: item.record.scope.startTime,
+      endTime: item.record.scope.endTime,
+      label: item.targetLabel,
+      lane: item.lane,
+      lifecycle: item.lifecycle,
+      freshness: item.freshness,
+    })),
+    [confirmationTimelineItems],
+  );
+  const confirmationCreateBlocker = getAnnotationConfirmationCreateBlocker({
+    canReview: editorSession?.canReview ?? false,
+    hasRange: Boolean(loopPlaybackRange),
+    hasUnsavedChanges,
+    editorRevision: remoteBaseRevision,
+    serverRevision: annotationConfirmations.data?.currentRevision ?? null,
+    loading: annotationConfirmations.loading,
+  });
   const customBlocks = useMemo(
     () => flattenCustomTrackBlocks(project.customTracks),
     [project.customTracks],
@@ -694,6 +758,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       : null;
 
   const focusRange = useMemo(() => {
+    if (confirmationFocusRange) {
+      return confirmationFocusRange;
+    }
     if (!lineFocusRequest) {
       return initialPlatformFocusRange;
     }
@@ -706,17 +773,21 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       start: Math.max(0, line.startTime - 1.5),
       end: line.endTime + 1.5,
     };
-  }, [initialPlatformFocusRange, lineFocusRequest, project.subtitleLines]);
+  }, [confirmationFocusRange, initialPlatformFocusRange, lineFocusRequest, project.subtitleLines]);
 
   // Timeline 回报已接收后按来源清理请求；用户触发句级定位时一并淘汰尚未消费的启动焦点。
   const handleFocusRangeHandled = useCallback(() => {
+    if (confirmationFocusRange) {
+      setConfirmationFocusRange(null);
+      return;
+    }
     if (lineFocusRequest) {
       setLineFocusRequest(null);
       setInitialPlatformFocusRange(null);
       return;
     }
     setInitialPlatformFocusRange(null);
-  }, [lineFocusRequest]);
+  }, [confirmationFocusRange, lineFocusRequest]);
 
   useEffect(() => {
     setDuration(
@@ -4418,6 +4489,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         acknowledgedOperationIds: coveredOperationIds,
         savedLocalRevision,
       });
+      // 保存推进服务器 revision 后刷新确认事实，使旧记录立即呈现为 stale；刷新失败不反转已成功保存。
+      void annotationConfirmations.refresh();
       return true;
     } catch (error) {
       if (submittedOperationIds.length > 0) {
@@ -4561,6 +4634,20 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         currentTime={currentTime}
         loopPlaybackRange={loopPlaybackRange}
         loopPlaybackEnabled={loopPlaybackEnabled}
+        confirmationRanges={editorSession && confirmationTimelineVisible
+          ? confirmationTimelineRanges
+          : []}
+        confirmationRangesVisible={Boolean(editorSession && confirmationTimelineVisible)}
+        onSelectConfirmationRange={(range) => {
+          seekTo(range.startTime);
+          setLineFocusRequest(null);
+          setInitialPlatformFocusRange(null);
+          setConfirmationFocusRange({
+            requestId: Date.now(),
+            start: range.startTime,
+            end: range.endTime,
+          });
+        }}
         isDetached={detached}
         selectedItem={selectedItem}
         selectedTimelineItems={selectedTimelineItems}
@@ -5005,90 +5092,137 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                   </section>
                 )}
                 secondary={(
-                  selectedItem?.type === "waveform-track" || selectedItem?.type === "spectrogram-track" ? (
-                    <SpectrogramSettingsPanel
-                      settings={spectrogramSettings}
-                      isWaveformLoading={isWaveformLoading}
-                      hasWaveformData={Boolean(waveformData)}
-                      waveformVisible={waveformVisible}
-                      isLoading={isSpectrogramLoading}
-                      hasData={Boolean(spectrogramData)}
-                      onSettingsChange={setSpectrogramSettings}
-                      onWaveformVisibleChange={setWaveformVisible}
-                    />
-                  ) : (
-                    <InspectorPanel
-                      selectedItem={selectedItem}
-                      subtitleLines={project.subtitleLines}
-                      characterAnnotations={project.characterAnnotations}
-                      gongcheAnnotations={project.gongcheAnnotations}
-                      banyanSections={project.banyanSections}
-                      banyanMarks={project.banyanMarks}
-                      banyanGridVisible={banyanGridVisible}
-                      banyanTrackVisible={banyanTrackVisible}
-                      actionAnnotations={project.actionAnnotations}
-                      builtinTracks={project.builtinTracks}
-                      customTracks={project.customTracks}
-                      trackDefinitions={timelineTrackDefinitions}
-                      trackSnapEnabled={trackSnapEnabled}
-                      onCharacterUpdate={updateCharacter}
-                      onCreateGongcheBlock={createGongcheBlock}
-                      onGongcheBlockUpdate={(id, changes) => updateGongcheBlock(id, changes)}
-                      onImportGongcheText={importGongcheText}
-                      onGenerateBanyanFromGongche={generateBanyanFromGongche}
-                      onBanyanGridVisibleChange={setBanyanGridVisible}
-                      onBanyanTrackVisibleChange={setBanyanTrackVisible}
-                      onBanyanMarkUpdate={(id, changes) => updateBanyanMark(id, changes)}
-                      onActionUpdate={updateAction}
-                      onAttachedPointUpdate={commitAttachedPoint}
-                      onTrackWaveformSnapChange={updateTrackWaveformSnap}
-                      onTrackAutoLoopRangeChange={updateTrackAutoLoopRange}
-                      onAttachedPointTrackParentSnapChange={updateAttachedPointTrackParentSnap}
-                      onSelectParentTrack={(trackId) =>
-                        applySelection(
-                          activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
-                            ? { type: "builtin-track", id: trackId as BuiltinTrackId }
-                            : { type: "custom-track", id: trackId },
-                        )
-                      }
-                      onBuiltinTrackRename={renameBuiltinTrack}
-                      onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
-                      onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
-                      onMoveBuiltinTrackTypeOption={moveBuiltinTrackTypeOption}
-                      onReorderBuiltinTrackTypeOption={reorderBuiltinTrackTypeOption}
-                      onRemoveBuiltinTrackTypeOption={removeBuiltinTrackTypeOption}
-                      onDeleteBuiltinTrack={deleteBuiltinTrack}
-                      onAddAttachedPointTrack={addAttachedPointTrack}
-                      onToggleAttachedPointTracks={toggleAttachedPointTracks}
-                      onSelectAttachedPointTrack={(trackId, parentTrackId) =>
-                        applySelection({ type: "attached-point-track", id: trackId, parentTrackId })
-                      }
-                      onAttachedPointTrackRename={renameAttachedPointTrack}
-                      onAttachedPointTrackTypeOptionChange={updateAttachedPointTrackTypeOption}
-                      onAddAttachedPointTrackTypeOption={addAttachedPointTrackTypeOption}
-                      onMoveAttachedPointTrackTypeOption={moveAttachedPointTrackTypeOption}
-                      onReorderAttachedPointTrackTypeOption={reorderAttachedPointTrackTypeOption}
-                      onRemoveAttachedPointTrackTypeOption={removeAttachedPointTrackTypeOption}
-                      onDeleteAttachedPointTrack={deleteAttachedPointTrack}
-                      onCustomTrackRename={renameCustomTrack}
-                      onCustomTrackColorChange={updateCustomTrackColor}
-                      onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
-                      onAddCustomTrackTypeOption={addCustomTrackTypeOption}
-                      onMoveCustomTrackTypeOption={moveCustomTrackTypeOption}
-                      onReorderCustomTrackTypeOption={reorderCustomTrackTypeOption}
-                      onRemoveCustomTrackTypeOption={removeCustomTrackTypeOption}
-                      onDeleteCustomTrack={deleteCustomTrack}
-                      onCustomTrackBranchingEnabledChange={setCustomTrackBranchingEnabled}
-                      onCustomTrackBranchDisplayModeChange={setCustomTrackBranchDisplayMode}
-                      onAddCustomTrackBranchLane={addCustomTrackBranchLane}
-                      onCustomTrackBranchLaneRename={renameCustomTrackBranchLane}
-                      onCustomTrackBranchLaneColorChange={updateCustomTrackBranchLaneColor}
-                      onDeleteCustomTrackBranchLane={deleteCustomTrackBranchLane}
-                      inspectorFocusRequest={inspectorFocusRequest}
-                      onCustomBlockUpdate={updateCustomBlock}
-                      onDeleteSelected={deleteSelected}
-                    />
-                  )
+                  <div className="editor-inspector-stack">
+                    {editorSession ? (
+                      <AnnotationConfirmationPanel
+                        records={confirmationViewRecords}
+                        currentRevision={annotationConfirmations.data?.currentRevision ?? null}
+                        editorRevision={remoteBaseRevision}
+                        range={loopPlaybackRange}
+                        trackOptions={confirmationTrackOptions}
+                        canReview={editorSession.canReview}
+                        createBlocker={confirmationCreateBlocker}
+                        loading={annotationConfirmations.loading}
+                        mutationPending={annotationConfirmations.mutationPending}
+                        error={annotationConfirmations.error}
+                        timelineVisible={confirmationTimelineVisible}
+                        onTimelineVisibleChange={setConfirmationTimelineVisible}
+                        onRefresh={annotationConfirmations.refresh}
+                        onCreate={({ scope, note }) => annotationConfirmations.create({
+                          confirmedRevision: remoteBaseRevision,
+                          scope,
+                          note,
+                        })}
+                        onRevoke={(record, reason) => annotationConfirmations.revoke(
+                          record.record.id,
+                          { reason },
+                        )}
+                        canRevoke={(record) => canShowAnnotationConfirmationRevoke({
+                          record,
+                          canReview: editorSession.canReview,
+                          currentUserId: editorSession.currentUserId,
+                          currentUserRoles: editorSession.currentUserRoles,
+                          hasOwnerAuthority: editorSession.canRevokeAnyConfirmation,
+                        })}
+                        onNavigate={(record) => {
+                          seekTo(record.record.scope.startTime);
+                          setLineFocusRequest(null);
+                          setInitialPlatformFocusRange(null);
+                          setConfirmationFocusRange({
+                            requestId: Date.now(),
+                            start: record.record.scope.startTime,
+                            end: record.record.scope.endTime,
+                          });
+                        }}
+                      />
+                    ) : null}
+                    <div className="editor-inspector-content">
+                      {selectedItem?.type === "waveform-track" || selectedItem?.type === "spectrogram-track" ? (
+                        <SpectrogramSettingsPanel
+                          settings={spectrogramSettings}
+                          isWaveformLoading={isWaveformLoading}
+                          hasWaveformData={Boolean(waveformData)}
+                          waveformVisible={waveformVisible}
+                          isLoading={isSpectrogramLoading}
+                          hasData={Boolean(spectrogramData)}
+                          onSettingsChange={setSpectrogramSettings}
+                          onWaveformVisibleChange={setWaveformVisible}
+                        />
+                      ) : (
+                        <InspectorPanel
+                          selectedItem={selectedItem}
+                          subtitleLines={project.subtitleLines}
+                          characterAnnotations={project.characterAnnotations}
+                          gongcheAnnotations={project.gongcheAnnotations}
+                          banyanSections={project.banyanSections}
+                          banyanMarks={project.banyanMarks}
+                          banyanGridVisible={banyanGridVisible}
+                          banyanTrackVisible={banyanTrackVisible}
+                          actionAnnotations={project.actionAnnotations}
+                          builtinTracks={project.builtinTracks}
+                          customTracks={project.customTracks}
+                          trackDefinitions={timelineTrackDefinitions}
+                          trackSnapEnabled={trackSnapEnabled}
+                          onCharacterUpdate={updateCharacter}
+                          onCreateGongcheBlock={createGongcheBlock}
+                          onGongcheBlockUpdate={(id, changes) => updateGongcheBlock(id, changes)}
+                          onImportGongcheText={importGongcheText}
+                          onGenerateBanyanFromGongche={generateBanyanFromGongche}
+                          onBanyanGridVisibleChange={setBanyanGridVisible}
+                          onBanyanTrackVisibleChange={setBanyanTrackVisible}
+                          onBanyanMarkUpdate={(id, changes) => updateBanyanMark(id, changes)}
+                          onActionUpdate={updateAction}
+                          onAttachedPointUpdate={commitAttachedPoint}
+                          onTrackWaveformSnapChange={updateTrackWaveformSnap}
+                          onTrackAutoLoopRangeChange={updateTrackAutoLoopRange}
+                          onAttachedPointTrackParentSnapChange={updateAttachedPointTrackParentSnap}
+                          onSelectParentTrack={(trackId) =>
+                            applySelection(
+                              activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
+                                ? { type: "builtin-track", id: trackId as BuiltinTrackId }
+                                : { type: "custom-track", id: trackId },
+                            )
+                          }
+                          onBuiltinTrackRename={renameBuiltinTrack}
+                          onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
+                          onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
+                          onMoveBuiltinTrackTypeOption={moveBuiltinTrackTypeOption}
+                          onReorderBuiltinTrackTypeOption={reorderBuiltinTrackTypeOption}
+                          onRemoveBuiltinTrackTypeOption={removeBuiltinTrackTypeOption}
+                          onDeleteBuiltinTrack={deleteBuiltinTrack}
+                          onAddAttachedPointTrack={addAttachedPointTrack}
+                          onToggleAttachedPointTracks={toggleAttachedPointTracks}
+                          onSelectAttachedPointTrack={(trackId, parentTrackId) =>
+                            applySelection({ type: "attached-point-track", id: trackId, parentTrackId })
+                          }
+                          onAttachedPointTrackRename={renameAttachedPointTrack}
+                          onAttachedPointTrackTypeOptionChange={updateAttachedPointTrackTypeOption}
+                          onAddAttachedPointTrackTypeOption={addAttachedPointTrackTypeOption}
+                          onMoveAttachedPointTrackTypeOption={moveAttachedPointTrackTypeOption}
+                          onReorderAttachedPointTrackTypeOption={reorderAttachedPointTrackTypeOption}
+                          onRemoveAttachedPointTrackTypeOption={removeAttachedPointTrackTypeOption}
+                          onDeleteAttachedPointTrack={deleteAttachedPointTrack}
+                          onCustomTrackRename={renameCustomTrack}
+                          onCustomTrackColorChange={updateCustomTrackColor}
+                          onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
+                          onAddCustomTrackTypeOption={addCustomTrackTypeOption}
+                          onMoveCustomTrackTypeOption={moveCustomTrackTypeOption}
+                          onReorderCustomTrackTypeOption={reorderCustomTrackTypeOption}
+                          onRemoveCustomTrackTypeOption={removeCustomTrackTypeOption}
+                          onDeleteCustomTrack={deleteCustomTrack}
+                          onCustomTrackBranchingEnabledChange={setCustomTrackBranchingEnabled}
+                          onCustomTrackBranchDisplayModeChange={setCustomTrackBranchDisplayMode}
+                          onAddCustomTrackBranchLane={addCustomTrackBranchLane}
+                          onCustomTrackBranchLaneRename={renameCustomTrackBranchLane}
+                          onCustomTrackBranchLaneColorChange={updateCustomTrackBranchLaneColor}
+                          onDeleteCustomTrackBranchLane={deleteCustomTrackBranchLane}
+                          inspectorFocusRequest={inspectorFocusRequest}
+                          onCustomBlockUpdate={updateCustomBlock}
+                          onDeleteSelected={deleteSelected}
+                        />
+                      )}
+                    </div>
+                  </div>
                 )}
               />
             )}

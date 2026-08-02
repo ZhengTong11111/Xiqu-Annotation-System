@@ -1,7 +1,12 @@
 import { HardDrive } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
-import type { AnnotationFile, PlatformUser, ResourceEntry } from "@xiqu/shared";
+import type {
+  AnnotationFile,
+  PlatformRole,
+  PlatformUser,
+  ResourceEntry,
+} from "@xiqu/shared";
 import { PlatformClient } from "../api/platformClient";
 import type { TopMenuPlatformNavigation } from "../components/TopMenuBar";
 import { mockProject } from "../mockData";
@@ -25,6 +30,10 @@ export type PlatformEditorSession = {
   initialProject: ProjectData;
   onAnnotationFileSaved: (file: AnnotationFile<ProjectData>) => void;
   canWrite: boolean;
+  canReview: boolean;
+  currentUserId: string;
+  currentUserRoles: PlatformRole[];
+  canRevokeAnyConfirmation: boolean;
   accessLabel: string;
   initialFocus?: AnnotationComparisonFocus;
   pendingMergeDraft?: AnnotationMergeDraft;
@@ -111,9 +120,21 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     initialFocus?: AnnotationComparisonFocus;
     pendingMergeDraft?: AnnotationMergeDraft;
   }) => {
+    // 平台治理命令必须绑定已登录账号；会话尚未恢复完成时不允许构造匿名编辑器状态。
+    if (!user) {
+      throw new Error("登录会话尚未恢复，请刷新后重试。");
+    }
     const parent = input.file.resource.parentId
       ? await client.getResource(input.file.resource.parentId).catch(() => null)
       : null;
+    // 撤销他人确认的 owner 权威覆盖整个祖先容器链，必须与服务端 hasOwnerAuthority 语义一致。
+    const hasOwnerAuthority = input.file.resource.permission.isOwner ||
+      parent?.owner.id === user.id ||
+      await hasAncestorOwnerAuthority(
+        client,
+        parent?.parentId,
+        user.id,
+      );
     const next: PlatformEditorSession = {
       client,
       annotationFileId: input.file.resource.id,
@@ -122,6 +143,12 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       baseRevision: input.file.revision,
       initialProject: input.initialProject,
       canWrite: input.file.resource.permission.capabilities.includes("write"),
+      canReview: input.file.resource.permission.capabilities.includes("review"),
+      currentUserId: user.id,
+      currentUserRoles: [...user.roles],
+      canRevokeAnyConfirmation: hasOwnerAuthority || user.roles.some(
+        (role) => role === "admin" || role === "super_admin",
+      ),
       accessLabel: input.file.resource.permission.isOwner
         ? "文件所有者"
         : input.file.resource.permission.capabilities.includes("write")
@@ -142,7 +169,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setEditorSession(next);
     setLocalSession(null);
     setView("editor");
-  }, [client]);
+  }, [client, user]);
 
   // 平台文件只有这一条打开路径：每次重新读取最新内容、revision 与权限，再建立隔离的编辑器会话。
   const openPlatformAnnotationFile = useCallback(async (
@@ -300,6 +327,24 @@ function getPlatformFileId(filePath: string | null | undefined) {
   return filePath?.startsWith(PLATFORM_FILE_PATH_PREFIX)
     ? filePath.slice(PLATFORM_FILE_PATH_PREFIX.length)
     : null;
+}
+
+// 前端只用祖先 owner 结果决定是否展示命令；服务端仍会在事务内重新遍历并执行权威校验。
+async function hasAncestorOwnerAuthority(
+  client: PlatformClient,
+  initialParentId: string | null | undefined,
+  userId: string,
+): Promise<boolean> {
+  let parentId = initialParentId ?? null;
+  const visited = new Set<string>();
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = await client.getResource(parentId).catch(() => null);
+    if (!parent) return false;
+    if (parent.owner.id === userId) return true;
+    parentId = parent.parentId ?? null;
+  }
+  return false;
 }
 
 function describeError(error: unknown) {
