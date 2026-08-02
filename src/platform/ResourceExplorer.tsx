@@ -4,6 +4,7 @@ import {
   ClipboardPaste,
   Clock3,
   FileJson2,
+  Files,
   Folder,
   FolderInput,
   FolderOpen,
@@ -46,6 +47,7 @@ import {
   normalizeImportedProjectFile,
 } from "../utils/projectFile";
 import { prepareProjectForServer } from "./PlatformWorkspace";
+import { AnnotationComparisonDialog } from "./AnnotationComparisonDialog";
 import { ResourceColumnBrowser } from "./ResourceColumnBrowser";
 import { ResourceDestinationPicker } from "./ResourceDestinationPicker";
 import {
@@ -62,6 +64,7 @@ import {
 import { restoreResourcesSequentially } from "./resourceRestore";
 import { isResourceContainer } from "./resourceColumnModel";
 import { useResourceColumns } from "./useResourceColumns";
+import { getComparableAnnotationFiles } from "./resourceComparison";
 
 type ExplorerMode = "list" | "grid" | "column";
 
@@ -119,6 +122,9 @@ export function ResourceExplorer(props: {
   >({});
   const [error, setError] = useState<string | null>(null);
   const [movingResources, setMovingResources] = useState<ResourceEntry[]>([]);
+  const [comparisonFiles, setComparisonFiles] = useState<
+    [ResourceEntry, ResourceEntry] | null
+  >(null);
   const jsonInputRef = useRef<HTMLInputElement>(null);
   const mediaInputRef = useRef<HTMLInputElement>(null);
   const restoreInFlightRef = useRef(false);
@@ -693,6 +699,12 @@ export function ResourceExplorer(props: {
     isMovingResources ||
     isTrashing ||
     movingResources.length > 0;
+  // 工具栏和三种视图的右键菜单共用同一个资格判定，并按 selectedIds 保留左右顺序。
+  const comparableFiles = getComparableAnnotationFiles(
+    selectedIds,
+    selectionItems,
+    { isTrashView, interactionDisabled },
+  );
   const renameSelectedResource = (resource: ResourceEntry) =>
     void renameResource(
       props.client,
@@ -871,6 +883,16 @@ export function ResourceExplorer(props: {
                   >
                     <Trash2 size={16} />
                   </button>
+                  <button
+                    type="button"
+                    disabled={!comparableFiles}
+                    onClick={() => setComparisonFiles(comparableFiles)}
+                    title={comparableFiles
+                      ? "比较所选的两个标注文件"
+                      : "请选择两个可读取的标注文件"}
+                  >
+                    <Files size={16} />
+                  </button>
                 </>
               )}
               <span className="resource-toolbar-divider" />
@@ -901,6 +923,10 @@ export function ResourceExplorer(props: {
               onMove={openMovePicker}
               onRestore={(resource) => void restoreResources([resource])}
               onTrash={trashFromContext}
+              canCompareSelection={Boolean(comparableFiles)}
+              onCompare={() => {
+                if (comparableFiles) setComparisonFiles(comparableFiles);
+              }}
               onDragStart={(resourceIds, columnIndex) => {
                 setSelectionColumnIndex(columnIndex);
                 setAnchorColumnIndex(columnIndex);
@@ -938,6 +964,10 @@ export function ResourceExplorer(props: {
             onDropResources={handleResourceDrop}
             onRestore={(resource) => void restoreResources([resource])}
             onTrash={trashFromContext}
+            canCompareSelection={Boolean(comparableFiles)}
+            onCompare={() => {
+              if (comparableFiles) setComparisonFiles(comparableFiles);
+            }}
           />
           )}
         </section>
@@ -967,6 +997,12 @@ export function ResourceExplorer(props: {
           }}
         />
       ) : null}
+      {/* 比较对话框持有打开瞬间的文件快照，关闭后保留资源选择便于继续操作。 */}
+      <AnnotationComparisonDialog
+        client={props.client}
+        files={comparisonFiles}
+        onClose={() => setComparisonFiles(null)}
+      />
     </main>
   );
 }
@@ -1045,6 +1081,8 @@ type CollectionProps = {
   onDropResources: (resourceIds: string[], targetId: string) => void;
   onRestore: (resource: ResourceEntry) => void;
   onTrash: (resource: ResourceEntry) => void;
+  canCompareSelection: boolean;
+  onCompare: (resource: ResourceEntry) => void;
 };
 
 function ResourceCollection(props: CollectionProps) {
@@ -1102,6 +1140,7 @@ function resourceItemProps(props: CollectionProps, resource: ResourceEntry) {
     // 右键已选资源时操作的是整组选择，因此菜单可用性也必须按整组权限计算。
     canTrashSelection: trashCandidates.every((item) =>
       item.permission.capabilities.includes("delete")),
+    canCompareSelection: isSelected && props.canCompareSelection,
     getDragResources: () => isSelected
       ? props.items.filter(({ id }) => props.selectedIds.includes(id))
       : [resource],
@@ -1112,6 +1151,7 @@ function resourceItemProps(props: CollectionProps, resource: ResourceEntry) {
     onMove: props.onMove,
     onRestore: props.onRestore,
     onTrash: props.onTrash,
+    onCompare: props.onCompare,
     onDragStart: props.onDragStart,
     onDragFinish: props.onDragFinish,
     onDropResources: props.onDropResources,

@@ -24,6 +24,8 @@ export function ResourceColumnBrowser(props: {
   onMove: (resource: ResourceEntry) => void;
   onRestore: (resource: ResourceEntry) => void;
   onTrash: (resource: ResourceEntry) => void;
+  onCompare: (resource: ResourceEntry) => void;
+  canCompareSelection: boolean;
   onDragStart: (resourceIds: string[], columnIndex: number) => void;
   onDragFinish: () => void;
   onDropResources: (resourceIds: string[], targetId: string) => void;
@@ -89,6 +91,10 @@ export function ResourceColumnBrowser(props: {
                       .every((item) =>
                         item.permission.capabilities.includes("delete"))
                     : resource.permission.capabilities.includes("delete")}
+                  canCompareSelection={
+                    props.canCompareSelection &&
+                    columnSelection.includes(resource.id)
+                  }
                   getDragResources={() => columnSelection.includes(resource.id)
                     ? column.items.filter(({ id }) =>
                       columnSelection.includes(id))
@@ -101,6 +107,7 @@ export function ResourceColumnBrowser(props: {
                   onMove={props.onMove}
                   onRestore={props.onRestore}
                   onTrash={props.onTrash}
+                  onCompare={props.onCompare}
                   onDragStart={(resourceIds) =>
                     props.onDragStart(resourceIds, columnIndex)}
                   onDragFinish={props.onDragFinish}

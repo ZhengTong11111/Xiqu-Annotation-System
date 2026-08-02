@@ -3,6 +3,7 @@ import {
   ChevronRight,
   Copy,
   FileJson2,
+  Files,
   FileVideo2,
   Folder,
   FolderInput,
@@ -31,6 +32,7 @@ export function ResourceItem(props: {
   interactionDisabled: boolean;
   isTrashView: boolean;
   canTrashSelection?: boolean;
+  canCompareSelection?: boolean;
   getDragResources: () => ResourceEntry[];
   onSelect: (event: MouseEvent, resource: ResourceEntry) => void;
   onOpen: (resource: ResourceEntry) => void;
@@ -39,6 +41,7 @@ export function ResourceItem(props: {
   onMove: (resource: ResourceEntry) => void;
   onRestore: (resource: ResourceEntry) => void;
   onTrash: (resource: ResourceEntry) => void;
+  onCompare: (resource: ResourceEntry) => void;
   onDragStart: (resourceIds: string[]) => void;
   onDragFinish: () => void;
   onDropResources: (resourceIds: string[], targetId: string) => void;
@@ -133,6 +136,7 @@ function ResourceContextMenu(props: {
   resource: ResourceEntry;
   isTrashView: boolean;
   canTrashSelection?: boolean;
+  canCompareSelection?: boolean;
   children: ReactNode;
   onOpen: (resource: ResourceEntry) => void;
   onRename: (resource: ResourceEntry) => void;
@@ -140,6 +144,7 @@ function ResourceContextMenu(props: {
   onMove: (resource: ResourceEntry) => void;
   onRestore: (resource: ResourceEntry) => void;
   onTrash: (resource: ResourceEntry) => void;
+  onCompare: (resource: ResourceEntry) => void;
 }) {
   const capabilities = props.resource.permission.capabilities;
   return (
@@ -159,6 +164,12 @@ function ResourceContextMenu(props: {
               <ContextMenu.Item onSelect={() => props.onOpen(props.resource)}>
                 <FolderOpen size={15} /> 打开
               </ContextMenu.Item>
+              {/* 比较入口只在当前整组选中项恰好构成两个可读标注文件时出现。 */}
+              {props.canCompareSelection ? (
+                <ContextMenu.Item onSelect={() => props.onCompare(props.resource)}>
+                  <Files size={15} /> 比较标注文件
+                </ContextMenu.Item>
+              ) : null}
               <ContextMenu.Separator />
               <ContextMenu.Item
                 disabled={!capabilities.includes("copy")}

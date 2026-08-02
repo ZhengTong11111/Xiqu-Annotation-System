@@ -47,6 +47,16 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/recoverySnapshotPreview.ts`
   - pure, failure-contained conversion from unknown historical payload to a current-format multimodal summary
   - reuses `normalizeImportedProjectFile()`; do not create a second project migration path for snapshot previews
+- `src/platform/AnnotationComparisonDialog.tsx`
+  - read-only two-file comparison dialog; owns parallel payload reads, stale-response protection, side-specific errors,
+    left/right swapping, and grouped diff presentation
+- `src/platform/annotationDiff.ts`
+  - pure `unknown payload -> canonical ProjectData -> structured multimodal diff` pipeline
+  - matches saved entities by stable identity, excludes derived timeline lanes and random Gongche fallback symbol ids,
+    and warns when duplicate ids make one-to-one matching unsafe
+- `src/platform/resourceComparison.ts`
+  - centralized list/grid/column selection qualification for comparing exactly two readable annotation files
+  - preserves `selectedIds` order as the comparison's left/right order
 - `src/platform/ResourceItem.tsx`
   - shared list/grid/column resource item, formatting, Radix context menu, and Pragmatic DnD lifecycle
   - keep resource commands and drag/drop registration shared instead of forking behavior by view mode
@@ -151,6 +161,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:permissions`
 - `npm run test:resource-columns`
 - `npm run test:recovery-preview`
+- `npm run test:annotation-diff`
+- `npm run test:resource-comparison`
 - `npm run build:web`
 - `npm run build:api`
 - `npm run build:shared`
@@ -430,6 +442,8 @@ Current platform UI capabilities:
 - Inspector details plus per-account permission matrix for every selected resource
 - annotation-file Inspector recovery history supports a lazy list, on-demand read-only multimodal summary, and an
   explicit confirmed restore command; unpreviewable historical payloads remain recoverable with a prominent warning
+- two selected readable annotation files can be compared from the shared toolbar or list/grid/column context menu;
+  both payloads are loaded on demand, normalized through the canonical importer, and shown as a read-only grouped diff
 - toggle permission inheritance and edit direct per-account capabilities when authorized
 - trash is a read-only resource context except for single/multi restore; normal open/copy/move/rename/delete
   shortcuts are suppressed while the trash view is active
@@ -479,6 +493,10 @@ Important backend caveats:
   endpoint that binds both annotation-file id and snapshot id and currently requires effective `write` capability.
 - historical payload preview must fail inside its own UI boundary and reuse the canonical project-file normalizer; a bad
   snapshot must not replace, open, or mutate the current editor document.
+- ordinary annotation-file comparison is also read-only: it must not save either file, create recovery snapshots, append
+  editor history, or mutate resource selection. Compare by stable saved entity ids rather than array positions; derived
+  Gongche/branch lanes are not saved entities, random fallback symbol ids are not semantic fields, and duplicate stable
+  ids must produce a visible warning instead of being silently accepted.
 - moving a resource must reject cycles and destinations where the caller lacks `create_child`.
 - moving a selection is all-or-nothing; selected descendants collapse under their selected ancestor and must not be moved a second time.
 - moving to trash is also all-or-nothing. Only normalized logical roots receive `trashedAt`; descendants keep their
@@ -758,6 +776,12 @@ Cross-agent workflow:
 - If a change affects long-term architecture, API contracts, database shape, permissions, storage, sync semantics, or platform workflow, update `docs/kunqu-platform-roadmap.md` in the same work round.
 - If a change creates or clarifies a durable repo rule, module responsibility, data-format rule, or agent handoff convention, update `AGENTS.md`; also remove or rewrite stale guidance that could mislead future agents.
 - The intended order for substantial platform work is: check git status, read the three context docs, update `CLAUDE_WORK.md` if delegation is needed, implement/review, run the relevant build or smoke checks, update roadmap/log/AGENTS as needed, then commit.
+- For an autonomous multi-round goal, treat every roadmap slice as a separate closed round. At the beginning of each
+  round, reassess the actual code and tests, update the roadmap if reality has changed, and completely rewrite
+  `CLAUDE_WORK.md` with only that round's detailed plan. Implement only that brief, then review functionality, logic,
+  dead code, Chinese comments, tests and browser behavior; update development log/roadmap/AGENTS and commit the round.
+  Only after the commit is clean may the next roadmap slice be planned and written to `CLAUDE_WORK.md`. Do not batch
+  several nominal phases into one unreviewed implementation, and do not preserve stale task text as a progress log.
 
 Documentation rules:
 - record what changed, why, validation performed, and any divergence from the roadmap

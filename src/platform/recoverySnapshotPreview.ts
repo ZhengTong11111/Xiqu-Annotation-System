@@ -1,5 +1,6 @@
 import type { ProjectData } from "../types";
 import {
+  isRecognizableProjectPayload,
   normalizeImportedProjectFile,
   PROJECT_FILE_VERSION,
 } from "../utils/projectFile";
@@ -32,25 +33,6 @@ export type RecoverySnapshotPreviewResult =
       ok: false;
       message: string;
     };
-
-// 只接受至少带有一种项目结构信号的对象，防止空对象被归一化成看似有效的空白项目。
-function isRecognizableProjectPayload(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  if (record.project && typeof record.project === "object") {
-    return true;
-  }
-  return [
-    "video",
-    "videoUrl",
-    "subtitleLines",
-    "characterAnnotations",
-    "builtinTracks",
-    "customTracks",
-  ].some((key) => key in record);
-}
 
 // 汇总内建轨和自定义轨的附属点，确保历史检查能反映呼吸等点状标注是否存在。
 function countAttachedPoints(project: ProjectData): number {

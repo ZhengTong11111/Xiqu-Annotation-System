@@ -79,6 +79,25 @@ export function isProjectDataLike(payload: unknown): payload is ProjectData {
   );
 }
 
+// 历史预览和文件比较需要接受可迁移旧格式，但必须拒绝会被归一化成假空项目的任意空对象。
+export function isRecognizableProjectPayload(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.project && typeof record.project === "object") {
+    return true;
+  }
+  return [
+    "video",
+    "videoUrl",
+    "subtitleLines",
+    "characterAnnotations",
+    "builtinTracks",
+    "customTracks",
+  ].some((key) => key in record);
+}
+
 export function normalizeImportedProjectFile(value: SavedProjectFile | ProjectData | unknown) {
   if (isSavedProjectFileLike(value)) {
     return {

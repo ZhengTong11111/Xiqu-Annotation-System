@@ -737,3 +737,57 @@ Codex 审查发现并修复：
 - 前端 `pendingOperations` 尚未提交到服务端 `annotation_operations`。
 - 当前 operation log 仍是记录层，不是差分同步或协同编辑协议。
 - 自动保存、离线恢复、权限范围 diff 校验、版本 diff UI 仍未实现。
+
+## 2026-08-02：R2.3a 两个标注文件的结构化比较
+
+本轮严格按 `CLAUDE_WORK.md` 的单轮任务完成普通标注文件比较基础，没有混入片段合并、快照恢复、
+已确认范围或实时协作。
+
+实际实现：
+
+- 新增 `src/platform/annotationDiff.ts`：
+  - 两侧 `unknown` payload 先通过共享可识别边界，再复用唯一的
+    `normalizeImportedProjectFile()` 迁移到当前 `ProjectData`。
+  - 按稳定实体 id 比较项目/媒体、句级字幕、逐字与四声、工尺谱、板眼区段/标记、递归自定义轨道、
+    自定义块和附属点。
+  - 显示派生的 Gongche/branch pseudo lane 不作为保存实体重复计数；工尺 fallback symbol 的随机 id
+    不进入语义 fingerprint。
+  - 重复稳定 id 不再被 `Map` 静默吞掉，结果会指出左/右侧、领域和重复标识数量。
+- 把“可识别旧项目 payload”判断收敛到 `src/utils/projectFile.ts`，快照预览和文件比较共享同一边界，
+  仍由正式 normalizer 承担唯一迁移逻辑。
+- 新增 `AnnotationComparisonDialog.tsx`：
+  - 并行按需读取两个完整标注文件，使用请求 generation 阻止关闭、交换或换文件后的迟到响应污染。
+  - 分别呈现左右读取/权限/迁移错误，支持交换左右、重试、总计和领域差异展开。
+  - UI 只显示结构化摘要，不把 payload 写入 URL、日志、localStorage 或 audit。
+- 新增 `resourceComparison.ts`，集中判定“恰好两个、均为可读标注文件、非回收站、无 mutation”资格，
+  并按 `selectedIds` 而非资源排序保留左右顺序。
+- 列表、网格和 Finder 分栏共用 `ResourceItem` 右键命令；工具栏使用同一资格 helper，没有三套分支。
+- 没有新增依赖：现有 Radix Dialog、Radix Context Menu 和 Lucide 足以提供稳定行为与当前视觉风格。
+
+浏览器验收：
+
+- 两个不可识别的集成测试 payload 会分别显示左/右迁移错误，不生成空项目假 diff。
+- 使用有效《寻梦》示例文件验证了差异总计、领域展开、字段与时间范围、警告、左右交换和内部滚动。
+- 列表工具栏、网格右键和 Finder 分栏右键均能从同一组选中的两个标注文件打开比较。
+- 浏览器验收向本地开发数据库的示例项目导入了一份仓库内有效 JSON，仅作为运行数据，`data/` 仍被
+  git ignore，不进入提交。
+
+自动验证：
+
+- `npm run test:annotation-diff`：10/10 通过。
+- `npm run test:resource-comparison`：2/2 通过。
+- `npm run test:recovery-preview`：3/3 通过。
+- `npm run test:resource-columns`：7/7 通过。
+- `npm run test:permissions`：5/5 通过。
+- `npm run test:api`：19/19 通过。
+- `npm run build`：通过。
+- 既有提示仍存在：Prisma/pg 并发测试输出 pg 9 前置弃用警告；Vite 主 chunk 超过 500 kB。本轮没有
+  引入新的相关回归。
+
+本轮核对结论与下一步：
+
+- 未发现比较操作修改文件 revision、恢复快照、audit、编辑器 history 或资源选择的路径。
+- 当前 UI 展开大领域时会一次渲染该领域全部变化；真实示例约千级差异可用，若后续规模明显扩大，
+  再以测量结果决定虚拟列表，不提前引入重型表格依赖。
+- 下一轮是 R2.3b：先设计结构化差异到时间范围导航/现有 Timeline 只读联动的边界，再决定单时间轴
+  标记或双视图方案；不得直接进入片段合并。
