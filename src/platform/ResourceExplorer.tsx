@@ -48,6 +48,7 @@ import {
 } from "../utils/projectFile";
 import { prepareProjectForServer } from "./PlatformWorkspace";
 import { AnnotationComparisonDialog } from "./AnnotationComparisonDialog";
+import type { AnnotationComparisonFocus } from "./annotationComparisonNavigation";
 import { ResourceColumnBrowser } from "./ResourceColumnBrowser";
 import { ResourceDestinationPicker } from "./ResourceDestinationPicker";
 import {
@@ -93,7 +94,10 @@ export function ResourceExplorer(props: {
   user: PlatformUser | null;
   onLogout: () => void;
   onOpenLocalJson: (project: ProjectData, title: string) => void;
-  onOpenAnnotationFile: (resource: ResourceEntry) => void;
+  onOpenAnnotationFile: (
+    resource: ResourceEntry,
+    initialFocus?: AnnotationComparisonFocus,
+  ) => Promise<boolean>;
 }) {
   const [rootView, setRootView] = useState<ResourceListView>("all_projects");
   const [folderId, setFolderId] = useState<string | null>(null);
@@ -227,7 +231,7 @@ export function ResourceExplorer(props: {
       setFolderId(resource.id);
       setSelectedIds([]);
     } else if (resource.type === "annotation_file") {
-      props.onOpenAnnotationFile(resource);
+      void props.onOpenAnnotationFile(resource);
     }
   }, [
     columnBrowser.columns,
@@ -1001,6 +1005,7 @@ export function ResourceExplorer(props: {
       <AnnotationComparisonDialog
         client={props.client}
         files={comparisonFiles}
+        onOpenFileAtTime={props.onOpenAnnotationFile}
         onClose={() => setComparisonFiles(null)}
       />
     </main>

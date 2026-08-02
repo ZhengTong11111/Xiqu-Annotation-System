@@ -2231,6 +2231,49 @@ select {
   white-space: nowrap;
 }
 
+/* 差异导航命令与时间概览组成一条紧凑工具栏，长标签收缩而不会挤压两侧打开按钮。 */
+.annotation-comparison-open-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.annotation-comparison-open-actions > span {
+  overflow: hidden;
+  color: #66758a;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-comparison-open-actions > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 9px;
+  color: #2d547b;
+  background: #f8fafc;
+  border: 1px solid #bdcad9;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.annotation-comparison-open-actions > button:hover:not(:disabled) {
+  background: #e8f0f8;
+  border-color: #8fa9c5;
+}
+
+.annotation-comparison-open-actions > button:disabled {
+  color: #9aa5b3;
+  background: #f2f4f7;
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
 .annotation-comparison-groups {
   border-bottom: 1px solid #d9e0e9;
 }

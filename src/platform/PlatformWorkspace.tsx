@@ -1,12 +1,13 @@
 import { HardDrive } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
-import type { AnnotationFile, PlatformUser } from "@xiqu/shared";
+import type { AnnotationFile, PlatformUser, ResourceEntry } from "@xiqu/shared";
 import { PlatformClient } from "../api/platformClient";
 import type { TopMenuPlatformNavigation } from "../components/TopMenuBar";
 import { mockProject } from "../mockData";
 import type { ProjectData } from "../types";
 import { normalizeImportedProjectFile } from "../utils/projectFile";
+import type { AnnotationComparisonFocus } from "./annotationComparisonNavigation";
 import { ResourceExplorer } from "./ResourceExplorer";
 
 export type PlatformEditorSession = {
@@ -19,6 +20,7 @@ export type PlatformEditorSession = {
   onAnnotationFileSaved: (file: AnnotationFile<ProjectData>) => void;
   canWrite: boolean;
   accessLabel: string;
+  initialFocus?: AnnotationComparisonFocus;
 };
 
 export type LocalEditorSession = {
@@ -95,6 +97,54 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setView("editor");
   }
 
+  // 平台文件只有这一条打开路径：每次重新读取最新内容、revision 与权限，再建立隔离的编辑器会话。
+  const openPlatformAnnotationFile = useCallback(async (
+    resource: ResourceEntry,
+    initialFocus?: AnnotationComparisonFocus,
+  ): Promise<boolean> => {
+    setError(null);
+    try {
+      const file = await client.getAnnotationFile<ProjectData>(resource.id);
+      const parent = file.resource.parentId
+        ? await client.getResource(file.resource.parentId).catch(() => null)
+        : null;
+      const next: PlatformEditorSession = {
+        client,
+        annotationFileId: file.resource.id,
+        annotationFileName: file.resource.name,
+        projectTitle: parent?.name ?? "平台标注项目",
+        baseRevision: file.revision,
+        initialProject: hydrateProjectForClient(file.payload, client),
+        canWrite: file.resource.permission.capabilities.includes("write"),
+        accessLabel: file.resource.permission.isOwner
+          ? "文件所有者"
+          : file.resource.permission.capabilities.includes("write")
+            ? "可编辑"
+            : "只读",
+        initialFocus,
+        onAnnotationFileSaved: (saved) => {
+          setEditorSession((current) => current
+            ? {
+                ...current,
+                baseRevision: saved.revision,
+                annotationFileName: saved.resource.name,
+              }
+            : current);
+        },
+      };
+      setEditorSession(next);
+      setLocalSession(null);
+      setView("editor");
+      return true;
+    } catch (nextError) {
+      const message = describeError(nextError);
+      setError(message);
+      // 资源管理器当前没有承载外层错误条，打开失败时需要立即给出可见反馈并保留原页面状态。
+      window.alert(message);
+      return false;
+    }
+  }, [client]);
+
   if (view === "login") {
     return (
       <main className="platform-login-shell">
@@ -155,45 +205,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         setView("login");
       }}
       onOpenLocalJson={openLocal}
-      onOpenAnnotationFile={async (resource) => {
-        try {
-          const file = await client.getAnnotationFile<ProjectData>(resource.id);
-          const parent = file.resource.parentId
-            ? await client.getResource(file.resource.parentId).catch(() => null)
-            : null;
-          const next: PlatformEditorSession = {
-            client,
-            annotationFileId: file.resource.id,
-            annotationFileName: file.resource.name,
-            projectTitle: parent?.name ?? "平台标注项目",
-            baseRevision: file.revision,
-            initialProject: hydrateProjectForClient(file.payload, client),
-            canWrite: file.resource.permission.capabilities.includes("write"),
-            accessLabel: file.resource.permission.isOwner
-              ? "文件所有者"
-              : file.resource.permission.capabilities.includes("write")
-                ? "可编辑"
-                : "只读",
-            onAnnotationFileSaved: (saved) => {
-              setEditorSession((current) => current
-                ? {
-                    ...current,
-                    baseRevision: saved.revision,
-                    annotationFileName: saved.resource.name,
-                  }
-                : current);
-            },
-          };
-          setEditorSession(next);
-          setLocalSession(null);
-          setView("editor");
-        } catch (nextError) {
-          const message = describeError(nextError);
-          setError(message);
-          // 资源管理器当前没有承载外层错误条，打开失败时需要立即给出可见反馈。
-          window.alert(message);
-        }
-      }}
+      onOpenAnnotationFile={openPlatformAnnotationFile}
     />
   );
 }

@@ -37,6 +37,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - wires together project state, playback state, import/export, clipboard, selection, context menu, loop range, spectrogram settings, detached windows, and inspector actions
 - `src/platform/PlatformWorkspace.tsx`
   - platform login/resource-explorer/editor switch and local editor entry
+  - owns the single authoritative annotation-file open path; ordinary opens and comparison navigation both refetch
+    the latest payload, revision, and permissions before creating one `PlatformEditorSession`
 - `src/platform/ResourceExplorer.tsx`
   - desktop-style three-pane resource manager
   - owns folder navigation, view switching, selection, keyboard actions, import/upload, and the resource Inspector
@@ -56,15 +58,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/AnnotationDiffTimelineOverview.tsx`
   - high-DPI read-only Canvas for left/right diff distribution; does not load files or own editor state
 - `src/platform/AnnotationComparisonDialog.tsx`
-  - orchestrates two side-isolated file reads, structured diff display, time filters, and Canvas/list bidirectional location
+  - owns parallel side-isolated reads, stale-response protection, structured diff presentation, time filters,
+    Canvas/list bidirectional selection, left/right swapping, and explicit open-left/open-right commands
   - comparison remains read-only and must not instantiate a second editable Timeline inside the dialog
-- `src/platform/AnnotationComparisonDialog.tsx`
-  - read-only two-file comparison dialog; owns parallel payload reads, stale-response protection, side-specific errors,
-    left/right swapping, and grouped diff presentation
-- `src/platform/annotationDiff.ts`
-  - pure `unknown payload -> canonical ProjectData -> structured multimodal diff` pipeline
-  - matches saved entities by stable identity, excludes derived timeline lanes and random Gongche fallback symbol ids,
-    and warns when duplicate ids make one-to-one matching unsafe
+- `src/platform/annotationComparisonNavigation.ts`
+  - pure validation and normalization from one diff entry's real left/right time range to a one-shot editor focus
+  - missing, negative, or non-finite ranges return `null`; never substitute zero or the opposite side's time
 - `src/platform/resourceComparison.ts`
   - centralized list/grid/column selection qualification for comparing exactly two readable annotation files
   - preserves `selectedIds` order as the comparison's left/right order
@@ -390,6 +389,16 @@ Dragging should remain:
 ### Critical state rule
 Hot interaction paths depend on `projectRef.current`, not just render-state closures.
 If changing drag, selection, clipboard, import merge, or undo logic, assume stale closure bugs are a real risk.
+
+### Platform editor startup focus
+- `PlatformEditorSession.initialFocus` is an optional one-shot navigation command, currently produced by annotation
+  comparison; it is runtime session state, not part of `ProjectData`, saved JSON, localStorage, operations, or history.
+- Comparison navigation must use `buildAnnotationComparisonFocus()` and the selected side's real range. Missing or
+  invalid ranges disable navigation rather than falling back to zero or borrowing the opposite side.
+- `EditorWorkbench` initializes the playhead from the focus and exposes one focus range to the existing Timeline.
+  Timeline acknowledgment clears it; later scrolling or zooming must never snap back to the startup location.
+- Opening from comparison still uses the normal single-file session and server-provided capabilities. Do not infer
+  write access from the comparison UI or preserve the Dialog's previously fetched payload as the editor document.
 
 ## Sync / Revision Model
 Even though this is still local-first, the hook already tracks document-sync concepts:

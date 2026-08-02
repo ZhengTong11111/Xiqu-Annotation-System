@@ -844,3 +844,58 @@ Codex 审查发现并修复：
 
 - R2.3b2 只处理“从选中差异打开左侧或右侧文件并定位时间”的平台会话合同。必须复用现有单文件
   编辑器和 read-only 权限，不能在比较 Dialog 复制完整 Timeline；片段合并继续留在后续独立轮次。
+
+## 2026-08-02：R2.3b2 从比较差异打开对应文件并定位时间
+
+本轮严格按重写后的 `CLAUDE_WORK.md` 完成一个闭环，只建立“结构化差异 → 单侧文件 → 现有编辑器”
+导航，没有混入第二套 Timeline、双文档编辑、片段合并、恢复快照或协作协议。
+
+实际实现：
+
+- 新增 `annotationComparisonNavigation.ts` 纯导航合同：
+  - 左右命令只读取所选侧自己的 `leftTimeRange/rightTimeRange`；
+  - 缺失、负数、NaN 和 Infinity 返回 `null`，不伪造 0 秒；
+  - 零时长打点保留，反向有限范围统一归一化，播放起点取归一化 start；
+  - 生成的 `AnnotationComparisonFocus` 明确标记为一次性运行时会话状态。
+- `PlatformWorkspace` 抽出唯一 `openPlatformAnnotationFile()`：普通双击和比较导航现在共用最新文件
+  读取、父标题、受保护媒体 hydrate、revision、权限和只读判定。旧内联打开实现已删除；失败返回
+  `false` 并保留资源管理器/比较窗口状态。
+- 比较 Dialog 在选中差异后显示“打开左侧/打开右侧”：
+  - 只有该侧存在合法范围时启用；打开期间防止重复提交和左右交换；
+  - 当前条目只通过稳定 key 从 diff 反查，不复制陈旧实体；
+  - 交换左右会重建比较结果与命令方向，失败后当前选择与筛选不被清空。
+- `PlatformEditorSession` 增加可选 `initialFocus`。`EditorWorkbench` 把播放头初始化为真实范围 start，
+  并向现有 Timeline 提供一次性带缓冲的 focus range；Timeline 回报消费后清理，后续人工滚动不会
+  再被拉回。该字段不进入 ProjectData、JSON、undo/history、operation log 或服务器保存。
+- 没有新增依赖；现有 React、Radix Dialog、Lucide 和 Timeline focus 接口足以清楚实现边界。
+- 清理 `AGENTS.md` 中 R2.3a 遗留的重复目录说明，并补充平台唯一打开入口与一次性焦点不变量。
+
+浏览器验收：
+
+- 使用本地《寻梦》r3 与 r1 文件比较：选择只在右侧存在的 `line-1` 时左侧禁用、右侧启用；进入
+  右侧文件后当前时间严格显示 `58.199s`，时间轴首屏从约 58 秒开始，句级与逐字内容属于右侧文件。
+- 选择只在左侧存在的删除项时仅左侧可用；选择无时间的项目/媒体差异时两侧均禁用。
+- 交换左右后，同一 `line-1` 变为左侧删除项，仅左侧可用，说明命令方向跟随文件而非旧选择。
+- 1280×720 截图确认编辑器播放头、时间轴和比较命令布局没有溢出；验收标签和本轮 Web 进程已清理。
+- 本轮未人为停止正在复用的 API 进程来验证失败分支；失败保留由 callback 的 `false` 合同和上一轮
+  实际 API 中断验收共同覆盖，后续若引入组件测试框架可补 UI 级网络失败自动化。
+
+自动验证：
+
+- `npm run test:annotation-comparison-navigation`：8/8 通过。
+- `npm run test:annotation-diff-timeline`：10/10 通过。
+- `npm run test:annotation-diff`：10/10 通过。
+- `npm run test:resource-comparison`：2/2 通过。
+- `npm run test:recovery-preview`：3/3 通过。
+- `npm run test:resource-columns`：7/7 通过。
+- `npm run test:permissions`：5/5 通过。
+- `npm run test:api`：19/19 通过。
+- `npm run build` 与 `git diff --check`：通过。
+- 既有 pg 9 前置弃用提示和 Vite 主 chunk 超过 500 kB 提示仍存在；本轮没有新增依赖或相关回归。
+
+核对结论与下一步：
+
+- 未发现导航写入 payload、revision、恢复快照、audit、operation 或编辑历史的路径；read-only 继续由
+  服务端 capabilities 与 `useProjectDocumentState({ readOnly })` 决定。
+- 下一轮进入 R2.3c 选择性片段整合合同，必须先定义目标文件、引用完整性、冲突决策和单次可撤销提交，
+  不能把它简化成整份 JSON 覆盖，也不能与确认标注或实时协作同时实现。

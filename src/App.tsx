@@ -405,6 +405,8 @@ type EditorWorkbenchProps = {
 
 function EditorWorkbench({ editorSession, localEditorSession, platformNavigation }: EditorWorkbenchProps) {
   const initialProject = editorSession?.initialProject ?? localEditorSession?.initialProject ?? mockProject;
+  const initialProjectDuration = getProjectDuration(initialProject);
+  const initialPlatformFocus = editorSession?.initialFocus;
   const isReadOnly = Boolean(
     editorSession && !editorSession.canWrite,
   );
@@ -435,7 +437,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     readOnly: isReadOnly,
   });
   const [remoteBaseRevision, setRemoteBaseRevision] = useState(editorSession?.baseRevision ?? 0);
-  const [currentTime, setCurrentTime] = useState(12.4);
+  // 比较入口传入的时间是一次性会话起点；普通打开继续保持原有演示时间，不污染项目数据。
+  const [currentTime, setCurrentTime] = useState(() => initialPlatformFocus
+    ? clampTime(initialPlatformFocus.time, initialProjectDuration)
+    : 12.4);
   const [duration, setDuration] = useState(getProjectDuration(initialProject));
   const [selectedItem, setSelectedItem] = useState<SelectedItem>({
     type: "line",
@@ -472,6 +477,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [loopPlaybackRange, setLoopPlaybackRange] = useState<{ start: number; end: number } | null>(null);
   const [loopPlaybackEnabled, setLoopPlaybackEnabled] = useState(false);
   const [lineFocusRequest, setLineFocusRequest] = useState<LineFocusRequest | null>(null);
+  // 平台初始焦点只供 Timeline 首次挂载消费，清理后用户滚动不会被再次拉回。
+  const [initialPlatformFocusRange, setInitialPlatformFocusRange] = useState(() =>
+    initialPlatformFocus
+      ? {
+          requestId: 1,
+          start: clampTime(initialPlatformFocus.start - 1.5, initialProjectDuration),
+          end: clampTime(initialPlatformFocus.end + 1.5, initialProjectDuration),
+        }
+      : null);
   const [isSubtitlePanelCollapsed, setIsSubtitlePanelCollapsed] = useState(false);
   const [isSplitPanelCollapsed, setIsSplitPanelCollapsed] = useState(false);
   const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
@@ -678,7 +692,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   const focusRange = useMemo(() => {
     if (!lineFocusRequest) {
-      return null;
+      return initialPlatformFocusRange;
     }
     const line = project.subtitleLines.find((item) => item.id === lineFocusRequest.lineId);
     if (!line) {
@@ -689,7 +703,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       start: Math.max(0, line.startTime - 1.5),
       end: line.endTime + 1.5,
     };
-  }, [lineFocusRequest, project.subtitleLines]);
+  }, [initialPlatformFocusRange, lineFocusRequest, project.subtitleLines]);
+
+  // Timeline 回报已接收后按来源清理请求；用户触发句级定位时一并淘汰尚未消费的启动焦点。
+  const handleFocusRangeHandled = useCallback(() => {
+    if (lineFocusRequest) {
+      setLineFocusRequest(null);
+      setInitialPlatformFocusRange(null);
+      return;
+    }
+    setInitialPlatformFocusRange(null);
+  }, [lineFocusRequest]);
 
   useEffect(() => {
     setDuration(
@@ -4529,7 +4553,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         zoom={zoom}
         duration={duration}
         focusRange={focusRange}
-        onFocusRangeHandled={() => setLineFocusRequest(null)}
+        onFocusRangeHandled={handleFocusRangeHandled}
         getProjectSnapshot={() => projectRef.current}
         onZoomChange={setZoom}
         onToggleTrackSnap={(trackId) => {

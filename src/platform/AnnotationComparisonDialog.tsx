@@ -7,6 +7,7 @@ import {
   ChevronRight,
   CircleMinus,
   CirclePlus,
+  ExternalLink,
   Files,
   RefreshCw,
   X,
@@ -25,6 +26,11 @@ import {
   type AnnotationDiffTimeRange,
 } from "./annotationDiff";
 import {
+  buildAnnotationComparisonFocus,
+  type AnnotationComparisonFocus,
+  type AnnotationComparisonSide,
+} from "./annotationComparisonNavigation";
+import {
   ANNOTATION_DIFF_DOMAIN_COLORS,
   AnnotationDiffTimelineOverview,
 } from "./AnnotationDiffTimelineOverview";
@@ -38,7 +44,6 @@ import {
 import { formatResourceDate } from "./ResourceItem";
 
 // 双侧请求状态与变化标签集中定义，避免组件分支使用不一致的状态文本。
-type ComparisonSide = "left" | "right";
 type LoadedComparisonSide = {
   file: AnnotationFile<unknown> | null;
   loading: boolean;
@@ -62,6 +67,10 @@ const CHANGE_LABELS: Record<AnnotationDiffChangeType, string> = {
 export function AnnotationComparisonDialog(props: {
   client: PlatformClient;
   files: [ResourceEntry, ResourceEntry] | null;
+  onOpenFileAtTime: (
+    resource: ResourceEntry,
+    focus: AnnotationComparisonFocus,
+  ) => Promise<boolean>;
   onClose: () => void;
 }) {
   const [orderedFiles, setOrderedFiles] = useState<
@@ -71,6 +80,7 @@ export function AnnotationComparisonDialog(props: {
   const [right, setRight] = useState<LoadedComparisonSide>(EMPTY_SIDE);
   const [diff, setDiff] = useState<AnnotationDiffResult | null>(null);
   const [expandedDomains, setExpandedDomains] = useState<Set<string>>(new Set());
+  const [openingSide, setOpeningSide] = useState<AnnotationComparisonSide | null>(null);
   const requestGenerationRef = useRef(0);
 
   // 外层选择确定一次比较会话；关闭和重新打开时重新建立明确的左右顺序。
@@ -87,9 +97,10 @@ export function AnnotationComparisonDialog(props: {
     setRight({ file: null, loading: true, error: null });
     setDiff(null);
     setExpandedDomains(new Set());
+    setOpeningSide(null);
 
     const loadSide = async (
-      side: ComparisonSide,
+      side: AnnotationComparisonSide,
       resource: ResourceEntry,
     ): Promise<AnnotationFile<unknown> | null> => {
       try {
@@ -187,7 +198,12 @@ export function AnnotationComparisonDialog(props: {
             </span>
             <button
               type="button"
-              disabled={!orderedFiles || left.loading || right.loading}
+              disabled={
+                !orderedFiles ||
+                left.loading ||
+                right.loading ||
+                openingSide !== null
+              }
               onClick={() => setOrderedFiles((current) => current
                 ? [current[1], current[0]]
                 : null)}
@@ -233,8 +249,15 @@ export function AnnotationComparisonDialog(props: {
                     key={`${orderedFiles[0].id}:${left.file?.revision ?? 0}:${orderedFiles[1].id}:${right.file?.revision ?? 0}`}
                     diff={diff}
                     expandedDomains={expandedDomains}
+                    files={orderedFiles}
+                    openingSide={openingSide}
                     onToggleDomain={toggleDomain}
                     onExpandDomain={expandDomain}
+                    onOpenFileAtTime={async (resource, focus, side) => {
+                      setOpeningSide(side);
+                      const opened = await props.onOpenFileAtTime(resource, focus);
+                      if (!opened) setOpeningSide(null);
+                    }}
                   />
                 ) : (
                   <ComparisonState icon={<AlertTriangle size={18} />} error>
@@ -278,9 +301,16 @@ function ComparisonSideHeader(props: {
 // 结果总览先给出全局计数，再按固定研究领域展开差异条目。
 function ComparisonResult(props: {
   diff: AnnotationDiffResult;
+  files: [ResourceEntry, ResourceEntry];
+  openingSide: AnnotationComparisonSide | null;
   expandedDomains: Set<string>;
   onToggleDomain: (domain: string) => void;
   onExpandDomain: (domain: string) => void;
+  onOpenFileAtTime: (
+    resource: ResourceEntry,
+    focus: AnnotationComparisonFocus,
+    side: AnnotationComparisonSide,
+  ) => Promise<void>;
 }) {
   const timelineIndex = useMemo(() =>
     buildAnnotationDiffTimelineIndex(props.diff), [props.diff]);
@@ -309,6 +339,22 @@ function ComparisonResult(props: {
   ).size, [filteredTimeline.segments]);
   const groupLabels = useMemo(() => new Map(props.diff.groups.map((group) =>
     [group.domain, group.label])), [props.diff.groups]);
+  // 当前条目始终从稳定 key 反查，不复制 diff 对象，交换与筛选后不会保留陈旧实体。
+  const selectedEntry = useMemo(() => {
+    if (!selectedEntryKey) return null;
+    for (const group of props.diff.groups) {
+      const entry = group.entries.find((item) =>
+        getAnnotationDiffEntryKey(item) === selectedEntryKey);
+      if (entry) return entry;
+    }
+    return null;
+  }, [props.diff.groups, selectedEntryKey]);
+  const leftFocus = selectedEntry
+    ? buildAnnotationComparisonFocus(selectedEntry, "left")
+    : null;
+  const rightFocus = selectedEntry
+    ? buildAnnotationComparisonFocus(selectedEntry, "right")
+    : null;
 
   // 等目标领域真正展开并挂载差异按钮后再滚动，避免依赖 React 提交时序猜测 DOM 是否存在。
   useEffect(() => {
@@ -436,6 +482,44 @@ function ComparisonResult(props: {
           selectedEntryKey={selectedEntryKey}
           onSelectSegment={selectTimelineSegment}
         />
+        {/* 单侧打开命令使用真实结构化范围；不存在或无时间的侧明确禁用，不回退到 0 秒。 */}
+        <div className="annotation-comparison-open-actions">
+          <span>
+            {selectedEntry
+              ? `当前选择：${selectedEntry.label || selectedEntry.identity}`
+              : "选择时间概览或下方差异条目后，可打开对应文件定位。"}
+          </span>
+          <button
+            type="button"
+            disabled={!leftFocus || props.openingSide !== null}
+            title={leftFocus ? "打开左侧文件并定位到该差异" : "左侧没有可定位时间范围"}
+            onClick={() => {
+              if (leftFocus) {
+                void props.onOpenFileAtTime(props.files[0], leftFocus, "left");
+              }
+            }}
+          >
+            {props.openingSide === "left"
+              ? <RefreshCw className="spinning" size={14} />
+              : <ExternalLink size={14} />}
+            打开左侧
+          </button>
+          <button
+            type="button"
+            disabled={!rightFocus || props.openingSide !== null}
+            title={rightFocus ? "打开右侧文件并定位到该差异" : "右侧没有可定位时间范围"}
+            onClick={() => {
+              if (rightFocus) {
+                void props.onOpenFileAtTime(props.files[1], rightFocus, "right");
+              }
+            }}
+          >
+            {props.openingSide === "right"
+              ? <RefreshCw className="spinning" size={14} />
+              : <ExternalLink size={14} />}
+            打开右侧
+          </button>
+        </div>
       </section>
 
       <div className="annotation-comparison-groups">
