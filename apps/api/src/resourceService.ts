@@ -1,9 +1,14 @@
 import {
+  AnnotationConfirmationDomain as DbAnnotationConfirmationDomain,
   Prisma,
   type PrismaClient,
   type ResourceType as DbResourceType,
 } from "@prisma/client";
 import type {
+  AnnotationConfirmationDomain,
+  AnnotationConfirmationDraft,
+  AnnotationConfirmationList,
+  AnnotationConfirmationRecord,
   AnnotationFile,
   AnnotationRecoverySnapshotDetail,
   AnnotationRecoverySnapshotSummary,
@@ -27,6 +32,13 @@ import type {
   UpdateResourceRequest,
   UpsertResourcePermissionRequest,
 } from "@xiqu/shared";
+import {
+  canCreateAnnotationConfirmation,
+  canRevokeAnnotationConfirmation,
+  extractPersistedAnnotationTrackIds,
+  validateAnnotationConfirmationDraft,
+  validateAnnotationConfirmationTracks,
+} from "@xiqu/document-model";
 import type { ApiUser } from "./domain.js";
 import { badRequest, conflict, forbidden, notFound } from "./errors.js";
 import { ResourceAccessService } from "./resourceAccess.js";
@@ -48,8 +60,16 @@ const resourceInclude = {
   mediaFile: true,
 } satisfies Prisma.ResourceEntryInclude;
 
+const annotationConfirmationInclude = {
+  creator: { include: { roles: true } },
+  revoker: { include: { roles: true } },
+} satisfies Prisma.AnnotationConfirmationInclude;
+
 type ResourceRow = Prisma.ResourceEntryGetPayload<{
   include: typeof resourceInclude;
+}>;
+type AnnotationConfirmationRow = Prisma.AnnotationConfirmationGetPayload<{
+  include: typeof annotationConfirmationInclude;
 }>;
 
 export type CopyResourceResult = {
@@ -65,6 +85,37 @@ const NAME_COLLATOR = new Intl.Collator("zh-CN", {
   numeric: true,
   sensitivity: "base",
 });
+const MAX_CONFIRMATION_REVOKE_REASON_LENGTH = 1_000;
+
+// Prisma 枚举与共享合同保持显式双向映射，避免数据库命名变化被隐式类型断言掩盖。
+const DB_CONFIRMATION_DOMAINS: Record<
+  AnnotationConfirmationDomain,
+  DbAnnotationConfirmationDomain
+> = {
+  subtitle_lines: DbAnnotationConfirmationDomain.subtitle_lines,
+  character_annotations: DbAnnotationConfirmationDomain.character_annotations,
+  gongche_annotations: DbAnnotationConfirmationDomain.gongche_annotations,
+  banyan_sections: DbAnnotationConfirmationDomain.banyan_sections,
+  banyan_marks: DbAnnotationConfirmationDomain.banyan_marks,
+  custom_tracks: DbAnnotationConfirmationDomain.custom_tracks,
+  custom_blocks: DbAnnotationConfirmationDomain.custom_blocks,
+  attached_points: DbAnnotationConfirmationDomain.attached_points,
+};
+
+// 出站映射与入站映射分开定义，让 TypeScript 在新增数据库领域时强制提示补齐 API 合同。
+const SHARED_CONFIRMATION_DOMAINS: Record<
+  DbAnnotationConfirmationDomain,
+  AnnotationConfirmationDomain
+> = {
+  subtitle_lines: "subtitle_lines",
+  character_annotations: "character_annotations",
+  gongche_annotations: "gongche_annotations",
+  banyan_sections: "banyan_sections",
+  banyan_marks: "banyan_marks",
+  custom_tracks: "custom_tracks",
+  custom_blocks: "custom_blocks",
+  attached_points: "attached_points",
+};
 
 export class ResourceService {
   constructor(
@@ -502,6 +553,166 @@ export class ResourceService {
       });
     });
     return this.getAnnotationFile<TPayload>(user, resourceId);
+  }
+
+  // 确认列表只返回治理元数据和当前 revision，不读取或复制 annotation payload。
+  async listAnnotationConfirmations(
+    user: ApiUser,
+    resourceId: string,
+  ): Promise<AnnotationConfirmationList> {
+    await this.access.assertCapability(user, resourceId, "read");
+    await this.assertActiveAnnotationFile(resourceId);
+    const [file, rows] = await Promise.all([
+      this.prisma.annotationFile.findUnique({
+        where: { resourceId },
+        select: { revision: true },
+      }),
+      this.prisma.annotationConfirmation.findMany({
+        where: { annotationFileId: resourceId },
+        include: annotationConfirmationInclude,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 200,
+      }),
+    ]);
+    if (!file) throw notFound("标注文件不存在。");
+    return {
+      currentRevision: file.revision,
+      confirmations: rows.map((row) => this.mapAnnotationConfirmation(row)),
+    };
+  }
+
+  // 创建确认在锁内重新校验 revision、活动资源、逐资源 review 和真实持久轨道。
+  async createAnnotationConfirmation(
+    user: ApiUser,
+    resourceId: string,
+    input: Omit<AnnotationConfirmationDraft, "annotationFileId">,
+  ): Promise<AnnotationConfirmationRecord> {
+    const validated = validateAnnotationConfirmationDraft({
+      annotationFileId: resourceId,
+      ...input,
+    });
+    if (!validated.ok) {
+      throw badRequest("确认范围格式不正确。", { issues: validated.issues });
+    }
+
+    return this.prisma.$transaction(async (transaction) => {
+      const current = await this.lockAnnotationFileForConfirmation(
+        transaction,
+        user,
+        resourceId,
+      );
+      if (current.revision !== validated.value.confirmedRevision) {
+        throw conflict("标注文件已产生新修订，请刷新后重新审核。", {
+          expectedRevision: current.revision,
+          receivedRevision: validated.value.confirmedRevision,
+        });
+      }
+
+      // tracks 只能引用当前 payload 中真实保存的顶层轨道；无法识别旧结构时保守拒绝。
+      if (validated.value.scope.targets.mode === "tracks") {
+        const trackIds = extractPersistedAnnotationTrackIds(current.payload);
+        if (!trackIds.ok) {
+          throw badRequest("当前标注内容无法验证轨道作用域。", {
+            issues: trackIds.issues,
+          });
+        }
+        const trackScope = validateAnnotationConfirmationTracks(
+          validated.value.scope,
+          new Set(trackIds.value),
+        );
+        if (!trackScope.ok) {
+          throw badRequest("确认范围包含无效轨道。", { issues: trackScope.issues });
+        }
+      }
+
+      const created = await transaction.annotationConfirmation.create({
+        data: this.toAnnotationConfirmationCreateData(user.id, validated.value),
+        include: annotationConfirmationInclude,
+      });
+      // 审计与确认记录同事务提交，detail 只保留定位字段，不复制 note 或 payload。
+      await transaction.auditLog.create({
+        data: {
+          action: "annotation_confirmation_create",
+          actorUserId: user.id,
+          resourceId,
+          detail: {
+            confirmationId: created.id,
+            confirmedRevision: created.confirmedRevision,
+            startTime: created.startTime,
+            endTime: created.endTime,
+            targetMode: created.targetMode,
+          },
+        },
+      });
+      return this.mapAnnotationConfirmation(created);
+    });
+  }
+
+  // 撤销只补充撤销事实；重复请求幂等返回原记录，不产生第二条审计。
+  async revokeAnnotationConfirmation(
+    user: ApiUser,
+    resourceId: string,
+    confirmationId: string,
+    reason?: string | null,
+  ): Promise<AnnotationConfirmationRecord> {
+    const revokeReason = reason?.trim() || null;
+    if (revokeReason && revokeReason.length > MAX_CONFIRMATION_REVOKE_REASON_LENGTH) {
+      throw badRequest(
+        `撤销原因不能超过 ${MAX_CONFIRMATION_REVOKE_REASON_LENGTH} 个字符。`,
+      );
+    }
+
+    return this.prisma.$transaction(async (transaction) => {
+      await this.lockAnnotationFileForConfirmation(
+        transaction,
+        user,
+        resourceId,
+      );
+      await transaction.$queryRaw`
+        SELECT id
+        FROM annotation_confirmations
+        WHERE id = ${confirmationId} AND annotation_file_id = ${resourceId}
+        FOR UPDATE
+      `;
+      const existing = await transaction.annotationConfirmation.findFirst({
+        where: { id: confirmationId, annotationFileId: resourceId },
+        include: annotationConfirmationInclude,
+      });
+      if (!existing) throw notFound("确认记录不存在。");
+      if (existing.revokedAt) return this.mapAnnotationConfirmation(existing);
+
+      const isAdminOrOwner = await this.access.hasOwnerAuthority(
+        user,
+        resourceId,
+        transaction,
+      );
+      const permission = canRevokeAnnotationConfirmation({
+        actorUserId: user.id,
+        canRead: true,
+        canReview: true,
+        isAdminOrOwner,
+      }, existing.createdBy);
+      if (!permission.allowed) throw forbidden("只能撤销自己创建的确认记录。");
+
+      const revokedAt = new Date();
+      const updated = await transaction.annotationConfirmation.update({
+        where: { id: existing.id },
+        data: { revokedBy: user.id, revokedAt, revokeReason },
+        include: annotationConfirmationInclude,
+      });
+      await transaction.auditLog.create({
+        data: {
+          action: "annotation_confirmation_revoke",
+          actorUserId: user.id,
+          resourceId,
+          detail: {
+            confirmationId: updated.id,
+            confirmedRevision: updated.confirmedRevision,
+          },
+        },
+      });
+      return this.mapAnnotationConfirmation(updated);
+    });
   }
 
   async updateResource(
@@ -1235,6 +1446,68 @@ export class ResourceService {
     };
   }
 
+  // 确认创建输入映射集中处理互斥目标字段，数据库 CHECK 继续作为第二层保护。
+  private toAnnotationConfirmationCreateData(
+    createdBy: string,
+    draft: AnnotationConfirmationDraft,
+  ): Prisma.AnnotationConfirmationUncheckedCreateInput {
+    const targets = draft.scope.targets;
+    return {
+      annotationFileId: draft.annotationFileId,
+      confirmedRevision: draft.confirmedRevision,
+      startTime: draft.scope.startTime,
+      endTime: draft.scope.endTime,
+      targetMode: targets.mode,
+      domains: targets.mode === "domains"
+        ? targets.domains.map((domain) => DB_CONFIRMATION_DOMAINS[domain])
+        : [],
+      trackIds: targets.mode === "tracks" ? targets.trackIds : [],
+      note: draft.note ?? null,
+      createdBy,
+    };
+  }
+
+  // Prisma 行统一映射共享 DTO；freshness 由列表 currentRevision 在客户端/领域层派生。
+  private mapAnnotationConfirmation(
+    row: AnnotationConfirmationRow,
+  ): AnnotationConfirmationRecord {
+    const targets = row.targetMode === "domains"
+      ? {
+          mode: "domains" as const,
+          domains: row.domains.map((domain) => SHARED_CONFIRMATION_DOMAINS[domain]),
+        }
+      : row.targetMode === "tracks"
+        ? { mode: "tracks" as const, trackIds: [...row.trackIds] }
+        : { mode: "all" as const };
+    const base = {
+      id: row.id,
+      annotationFileId: row.annotationFileId,
+      confirmedRevision: row.confirmedRevision,
+      scope: {
+        startTime: row.startTime,
+        endTime: row.endTime,
+        targets,
+      },
+      note: row.note,
+      createdBy: toPublicUser(row.creator),
+      createdAt: row.createdAt.toISOString(),
+    };
+    if (row.revokedAt && row.revoker) {
+      return {
+        ...base,
+        revokedAt: row.revokedAt.toISOString(),
+        revokedBy: toPublicUser(row.revoker),
+        revokeReason: row.revokeReason,
+      };
+    }
+    return {
+      ...base,
+      revokedAt: null,
+      revokedBy: null,
+      revokeReason: null,
+    };
+  }
+
   private mapPermission(row: {
     id: string;
     resourceId: string;
@@ -1486,6 +1759,41 @@ export class ResourceService {
       FROM annotation_files
       WHERE resource_id = ${resourceId}
       FOR UPDATE
+    `;
+    const current = await transaction.annotationFile.findUnique({
+      where: { resourceId },
+    });
+    if (!current) throw notFound("标注文件不存在。");
+    return current;
+  }
+
+  // 审核事务沿用内容写入的锁顺序，但只共享锁 annotation 行，保证 revision 核对期间不能被保存推进。
+  private async lockAnnotationFileForConfirmation(
+    transaction: Prisma.TransactionClient,
+    user: ApiUser,
+    resourceId: string,
+  ) {
+    await this.lockResourceTreeForContentWrite(transaction);
+    await this.lockResourceRows(transaction, [resourceId]);
+    await this.assertActiveAnnotationFile(resourceId, transaction);
+    const permission = await this.access.getEffectivePermission(
+      user,
+      resourceId,
+      transaction,
+    );
+    const decision = canCreateAnnotationConfirmation({
+      actorUserId: user.id,
+      canRead: permission.capabilities.includes("read"),
+      canReview: permission.capabilities.includes("review"),
+      isAdminOrOwner: permission.source === "admin" || permission.isOwner,
+    });
+    if (!decision.allowed) throw forbidden("当前账号缺少该标注文件的审核权限。");
+
+    await transaction.$queryRaw`
+      SELECT resource_id
+      FROM annotation_files
+      WHERE resource_id = ${resourceId}
+      FOR SHARE
     `;
     const current = await transaction.annotationFile.findUnique({
       where: { resourceId },

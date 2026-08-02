@@ -1,4 +1,7 @@
 import type {
+  AnnotationConfirmationDraft,
+  AnnotationConfirmationList,
+  AnnotationConfirmationRecord,
   AnnotationFile,
   AnnotationOperationRecord,
   AnnotationRecoverySnapshotDetail,
@@ -124,6 +127,16 @@ export type RestoreAnnotationRecoverySnapshotRequest = {
   baseRevision: number;
 };
 
+// 创建确认只接收审核 revision、范围和备注；文件 id 始终来自受保护的路由路径。
+export type CreateAnnotationConfirmationRequest = Pick<
+  AnnotationConfirmationDraft,
+  "confirmedRevision" | "scope" | "note"
+>;
+
+export type RevokeAnnotationConfirmationRequest = {
+  reason?: string | null;
+};
+
 export type UpsertResourcePermissionRequest = {
   capabilities: ResourceCapability[];
   inheritToChildren?: boolean;
@@ -197,6 +210,15 @@ export type PlatformApiContract<TPayload = unknown> = {
   restoreAnnotationRecoverySnapshot: {
     request: RestoreAnnotationRecoverySnapshotRequest;
     response: AnnotationFile<TPayload>;
+  };
+  listAnnotationConfirmations: { response: AnnotationConfirmationList };
+  createAnnotationConfirmation: {
+    request: CreateAnnotationConfirmationRequest;
+    response: AnnotationConfirmationRecord;
+  };
+  revokeAnnotationConfirmation: {
+    request: RevokeAnnotationConfirmationRequest;
+    response: AnnotationConfirmationRecord;
   };
   listResourcePermissions: { response: ResourcePermissionMatrixRow[] };
   upsertResourcePermission: {

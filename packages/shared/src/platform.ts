@@ -28,6 +28,7 @@ export type ResourceType =
 export type ResourceCapability =
   | "read"
   | "write"
+  | "review"
   | "create_child"
   | "copy"
   | "move"
@@ -38,6 +39,7 @@ export type ResourceCapability =
 export const RESOURCE_CAPABILITIES: readonly ResourceCapability[] = [
   "read",
   "write",
+  "review",
   "create_child",
   "copy",
   "move",
@@ -213,6 +215,12 @@ export type AnnotationConfirmationRecord = AnnotationConfirmationDraft & {
 
 export type AnnotationConfirmationLifecycle = "active" | "revoked";
 export type AnnotationConfirmationFreshness = "current" | "stale";
+
+// 列表携带服务器当前 revision，调用方据此用纯 helper 判断每条确认是否已过期。
+export type AnnotationConfirmationList = {
+  currentRevision: number;
+  confirmations: AnnotationConfirmationRecord[];
+};
 
 export type StoredFileObject = {
   id: string;

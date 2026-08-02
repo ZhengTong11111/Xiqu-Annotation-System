@@ -1,4 +1,6 @@
 import type {
+  AnnotationConfirmationList,
+  AnnotationConfirmationRecord,
   AnnotationFile,
   AnnotationOperationRecord,
   AnnotationRecoverySnapshotDetail,
@@ -9,6 +11,7 @@ import type {
   BatchTrashResourcesRequest,
   BatchTrashResourcesResponse,
   CopyResourceRequest,
+  CreateAnnotationConfirmationRequest,
   CreateAnnotationFileRequest,
   CreateAnnotationOperationRequest,
   CreateProcessingJobRequest,
@@ -25,6 +28,7 @@ import type {
   ResourceListPage,
   ResourcePermissionMatrixRow,
   ResourcePermissionRecord,
+  RevokeAnnotationConfirmationRequest,
   RestoreAnnotationRecoverySnapshotRequest,
   SaveAnnotationFileRequest,
   UpdateResourceInheritanceRequest,
@@ -198,6 +202,36 @@ export class PlatformClient {
   ) {
     return this.request<AnnotationFile<TPayload>>(
       `/annotation-files/${resourceId}/recovery-snapshots/${snapshotId}/restore`,
+      { method: "POST", body: request },
+    );
+  }
+
+  // 确认列表只包含范围与治理元数据，不会把当前标注 payload 再下载一份。
+  listAnnotationConfirmations(resourceId: string) {
+    return this.request<AnnotationConfirmationList>(
+      `/annotation-files/${resourceId}/confirmations`,
+    );
+  }
+
+  // 创建确认绑定调用方正在审核的 revision，过期 revision 由服务端以 409 拒绝。
+  createAnnotationConfirmation(
+    resourceId: string,
+    request: CreateAnnotationConfirmationRequest,
+  ) {
+    return this.request<AnnotationConfirmationRecord>(
+      `/annotation-files/${resourceId}/confirmations`,
+      { method: "POST", body: request },
+    );
+  }
+
+  // 撤销保留原确认事实；客户端不暴露删除确认记录的接口。
+  revokeAnnotationConfirmation(
+    resourceId: string,
+    confirmationId: string,
+    request: RevokeAnnotationConfirmationRequest = {},
+  ) {
+    return this.request<AnnotationConfirmationRecord>(
+      `/annotation-files/${resourceId}/confirmations/${confirmationId}/revoke`,
       { method: "POST", body: request },
     );
   }

@@ -20,6 +20,27 @@ export class ResourceAccessService {
     return user.roles.includes("super_admin") || user.roles.includes("admin");
   }
 
+  // 撤销他人审核记录需要真实管理权威；逐级 owner 与全局管理员都可管理其资源子树。
+  async hasOwnerAuthority(
+    user: ApiUser,
+    resourceId: string,
+    database: PrismaClient | Prisma.TransactionClient = this.prisma,
+  ) {
+    if (this.isGlobalAdmin(user)) return true;
+    let currentId: string | null = resourceId;
+    while (currentId) {
+      const resource: { ownerUserId: string; parentId: string | null } | null =
+        await database.resourceEntry.findUnique({
+          where: { id: currentId },
+          select: { ownerUserId: true, parentId: true },
+        });
+      if (!resource) return false;
+      if (resource.ownerUserId === user.id) return true;
+      currentId = resource.parentId;
+    }
+    return false;
+  }
+
   async getEffectivePermission(
     user: ApiUser,
     resourceId: string,

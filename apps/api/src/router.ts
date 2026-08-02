@@ -1,6 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
+  ANNOTATION_CONFIRMATION_DOMAINS,
   RESOURCE_CAPABILITIES,
+  type AnnotationConfirmationDomain,
+  type AnnotationConfirmationScope,
   type ProcessingJobType,
   type ResourceCapability,
   type ResourceListView,
@@ -38,6 +41,9 @@ const RESOURCE_SORT_FIELDS = new Set<ResourceSortField>([
 ]);
 const SORT_DIRECTIONS = new Set<SortDirection>(["asc", "desc"]);
 const CAPABILITIES = new Set<ResourceCapability>(RESOURCE_CAPABILITIES);
+const CONFIRMATION_DOMAINS = new Set<AnnotationConfirmationDomain>(
+  ANNOTATION_CONFIRMATION_DOMAINS,
+);
 const PROCESSING_JOB_TYPES = new Set<ProcessingJobType>([
   "pitch_extraction",
   "spectrogram_generation",
@@ -420,6 +426,74 @@ export function registerApiRoutes(
     },
   );
 
+  // 确认列表属于标注文件治理元数据；读取权限由服务层按文件逐项执行。
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/annotation-files/:resourceId/confirmations",
+    async (request) =>
+      resources.listAnnotationConfirmations(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+      ),
+  );
+
+  // 创建请求在路由边界解析 unknown，revision、轨道存在性和 review 权限仍由事务服务校验。
+  app.post<{
+    Params: { resourceId: string };
+    Body: {
+      confirmedRevision?: unknown;
+      scope?: unknown;
+      note?: unknown;
+    };
+  }>("/api/annotation-files/:resourceId/confirmations", async (request) => {
+    const body = requireObject(request.body);
+    if (
+      !Number.isInteger(body.confirmedRevision) ||
+      Number(body.confirmedRevision) < 1
+    ) {
+      throw badRequest("confirmedRevision 必须是正整数。");
+    }
+    if (
+      body.note !== undefined &&
+      body.note !== null &&
+      typeof body.note !== "string"
+    ) {
+      throw badRequest("审核备注必须是字符串或 null。");
+    }
+    return resources.createAnnotationConfirmation(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      {
+        confirmedRevision: Number(body.confirmedRevision),
+        scope: parseAnnotationConfirmationScope(body.scope),
+        note: body.note as string | null | undefined,
+      },
+    );
+  });
+
+  // 撤销使用独立命令而非删除，历史事实与审计记录因此能够长期保留。
+  app.post<{
+    Params: { resourceId: string; confirmationId: string };
+    Body: { reason?: unknown };
+  }>(
+    "/api/annotation-files/:resourceId/confirmations/:confirmationId/revoke",
+    async (request) => {
+      const body = requireObject(request.body);
+      if (
+        body.reason !== undefined &&
+        body.reason !== null &&
+        typeof body.reason !== "string"
+      ) {
+        throw badRequest("撤销原因必须是字符串或 null。");
+      }
+      return resources.revokeAnnotationConfirmation(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        request.params.confirmationId,
+        body.reason as string | null | undefined,
+      );
+    },
+  );
+
   app.get<{ Params: { resourceId: string } }>(
     "/api/resources/:resourceId/permissions",
     async (request) =>
@@ -725,6 +799,55 @@ function parseCapabilities(value: unknown): ResourceCapability[] {
     throw badRequest("capabilities 包含无效的资源能力。");
   }
   return [...new Set(value as ResourceCapability[])];
+}
+
+// 作用域解析只接受三种互斥目标形状；更细的去重、长度与时间规则交给共享领域校验器。
+function parseAnnotationConfirmationScope(
+  value: unknown,
+): AnnotationConfirmationScope {
+  const scope = requireObject(value);
+  if (
+    typeof scope.startTime !== "number" ||
+    typeof scope.endTime !== "number"
+  ) {
+    throw badRequest("审核时间范围必须使用数字秒数。");
+  }
+  const targets = requireObject(scope.targets);
+  if (targets.mode === "all") {
+    return {
+      startTime: scope.startTime,
+      endTime: scope.endTime,
+      targets: { mode: "all" },
+    };
+  }
+  if (
+    targets.mode === "domains" &&
+    Array.isArray(targets.domains) &&
+    targets.domains.every((domain) =>
+      typeof domain === "string" &&
+      CONFIRMATION_DOMAINS.has(domain as AnnotationConfirmationDomain))
+  ) {
+    return {
+      startTime: scope.startTime,
+      endTime: scope.endTime,
+      targets: {
+        mode: "domains",
+        domains: targets.domains as AnnotationConfirmationDomain[],
+      },
+    };
+  }
+  if (
+    targets.mode === "tracks" &&
+    Array.isArray(targets.trackIds) &&
+    targets.trackIds.every((trackId) => typeof trackId === "string")
+  ) {
+    return {
+      startTime: scope.startTime,
+      endTime: scope.endTime,
+      targets: { mode: "tracks", trackIds: targets.trackIds as string[] },
+    };
+  }
+  throw badRequest("审核目标必须是 all、有效领域列表或轨道标识列表。");
 }
 
 function parseUniqueStringArray(

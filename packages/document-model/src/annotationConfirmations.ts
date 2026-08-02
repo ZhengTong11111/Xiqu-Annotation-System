@@ -20,6 +20,7 @@ export type AnnotationConfirmationIssueCode =
   | "unknown_domain"
   | "invalid_track_id"
   | "unknown_track_id"
+  | "unrecognized_track_payload"
   | "note_too_long"
   | "invalid_revocation"
   | "revision_regressed";
@@ -150,6 +151,37 @@ export function validateAnnotationConfirmationTracks(
       field: "scope.targets.trackIds",
       message: `轨道“${trackId}”不是该项目的持久轨道。`,
     })),
+  };
+}
+
+// 服务端只从当前格式 payload 的真实顶层轨道定义提取 id，不把可视伪轨或 activeTrackOrder 当作事实。
+export function extractPersistedAnnotationTrackIds(
+  payload: unknown,
+): AnnotationConfirmationValidationResult<string[]> {
+  if (!isPlainObject(payload)) return unrecognizedTrackPayload();
+  const builtinTracks = payload.builtinTracks;
+  const customTracks = payload.customTracks;
+  if (!Array.isArray(builtinTracks) || !Array.isArray(customTracks)) {
+    return unrecognizedTrackPayload();
+  }
+  const trackIds = new Set<string>();
+
+  // 当前唯一持久内建轨是逐字轨；旧动作内建轨和其他未知 id 不应重新进入新审核合同。
+  for (const track of builtinTracks) {
+    if (isPlainObject(track) && track.id === "character-track") {
+      trackIds.add("character-track");
+    }
+  }
+
+  // 自定义轨只读取顶层定义 id，branching/attachedPointTracks 内部 id 刻意不参与。
+  for (const track of customTracks) {
+    if (!isPlainObject(track) || typeof track.id !== "string") continue;
+    const trackId = normalizeIdentifier(track.id);
+    if (trackId) trackIds.add(trackId);
+  }
+  return {
+    ok: true,
+    value: [...trackIds].sort((left, right) => left.localeCompare(right)),
   };
 }
 
@@ -320,4 +352,21 @@ function normalizeIdentifier(value: string) {
 function normalizeOptionalText(value: string | null | undefined) {
   const normalized = value?.trim() ?? "";
   return normalized || null;
+}
+
+// unknown payload 的对象判断集中处理，避免轨道提取阶段使用类型断言绕过运行时边界。
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// 无法识别当前轨道结构时保守拒绝 tracks 确认，不尝试复制前端项目迁移逻辑。
+function unrecognizedTrackPayload(): AnnotationConfirmationValidationResult<string[]> {
+  return {
+    ok: false,
+    issues: [{
+      code: "unrecognized_track_payload",
+      field: "payload",
+      message: "当前标注内容没有可验证的持久轨道结构，请先在编辑器中正常保存。",
+    }],
+  };
 }

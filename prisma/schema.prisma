@@ -26,6 +26,7 @@ enum ResourceType {
 enum ResourceCapability {
   read
   write
+  review
   create_child
   copy
   move
@@ -64,11 +65,30 @@ enum AuditAction {
   resource_delete
   annotation_file_save
   annotation_snapshot_restore
+  annotation_confirmation_create
+  annotation_confirmation_revoke
   resource_permission_upsert
   resource_permission_remove
   resource_inheritance_update
   job_create
   permission_denied
+}
+
+enum AnnotationConfirmationTargetMode {
+  all
+  domains
+  tracks
+}
+
+enum AnnotationConfirmationDomain {
+  subtitle_lines
+  character_annotations
+  gongche_annotations
+  banyan_sections
+  banyan_marks
+  custom_tracks
+  custom_blocks
+  attached_points
 }
 
 enum AnnotationOperationStatus {
@@ -95,6 +115,8 @@ model User {
   resourceStates            ResourceUserState[]
   editedAnnotationFiles     AnnotationFile[]            @relation("AnnotationLastEditor")
   recoverySnapshots         AnnotationRecoverySnapshot[] @relation("RecoverySnapshotCreator")
+  createdConfirmations      AnnotationConfirmation[]      @relation("AnnotationConfirmationCreator")
+  revokedConfirmations      AnnotationConfirmation[]      @relation("AnnotationConfirmationRevoker")
   jobs                      ProcessingJob[]             @relation("JobCreator")
   auditLogs                 AuditLog[]                   @relation("AuditActor")
   annotationOperations      AnnotationOperation[]       @relation("AnnotationOperationActor")
@@ -195,11 +217,40 @@ model AnnotationFile {
   resource          ResourceEntry               @relation(fields: [resourceId], references: [id], onDelete: Cascade)
   lastEditor        User                        @relation("AnnotationLastEditor", fields: [lastEditedBy], references: [id])
   recoverySnapshots AnnotationRecoverySnapshot[]
+  confirmations     AnnotationConfirmation[]
   operations        AnnotationOperation[]
 
   @@index([mediaResourceId])
   @@index([lastEditedBy])
   @@map("annotation_files")
+}
+
+// 确认记录保存独立研究审核事实；撤销只补充字段，不删除原始确认。
+model AnnotationConfirmation {
+  id                String                           @id @default(uuid())
+  annotationFileId  String                           @map("annotation_file_id")
+  confirmedRevision Int                              @map("confirmed_revision")
+  startTime         Float                            @map("start_time")
+  endTime           Float                            @map("end_time")
+  targetMode        AnnotationConfirmationTargetMode @map("target_mode")
+  domains           AnnotationConfirmationDomain[]   @default([])
+  trackIds          String[]                         @default([]) @map("track_ids")
+  note              String?
+  createdBy         String                           @map("created_by")
+  createdAt         DateTime                         @default(now()) @map("created_at")
+  revokedBy         String?                          @map("revoked_by")
+  revokedAt         DateTime?                        @map("revoked_at")
+  revokeReason      String?                          @map("revoke_reason")
+
+  annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
+  creator        User           @relation("AnnotationConfirmationCreator", fields: [createdBy], references: [id])
+  revoker        User?          @relation("AnnotationConfirmationRevoker", fields: [revokedBy], references: [id], onDelete: Restrict)
+
+  @@index([annotationFileId, createdAt])
+  @@index([annotationFileId, confirmedRevision])
+  @@index([createdBy])
+  @@index([revokedBy])
+  @@map("annotation_confirmations")
 }
 
 // 恢复快照通过标注文件 Inspector 受控查看，但不是普通资源、Fork 或发布版本。

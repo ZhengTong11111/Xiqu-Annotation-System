@@ -1163,3 +1163,65 @@ Codex 审查发现并修复：
 - R2.5b 将一次性把 `review` 加入 Prisma/shared ACL，增加确认表、迁移、列表/创建/撤销 API、AuditAction
   与集成测试。必须复用本轮纯校验，创建时锁定并核对当前 annotation revision，撤销只追加撤销事实，
   不修改 payload、revision 或恢复快照；在这条服务端闭环完成前不提前制作前端假数据界面。
+
+## 2026-08-02：R2.5b 已确认标注范围的数据库、ACL 与 API 闭环
+
+本轮按 `CLAUDE_WORK.md` 的 R2.5b 任务单继续推进，没有提前制作确认范围 UI。开始时复核了 R2.5a
+共享合同、资源 ACL 合并规则、标注保存/快照恢复的锁顺序、AuditLog 事务边界和资源复制行为；实现后
+再针对权限、revision、轨道、撤销、复制、回收站和并发逐项自审。代码由 Codex 直接实现并审查，未
+委托 Claude Code 或其他代理，也没有引入新依赖。
+
+数据库与共享合同：
+
+- Prisma `ResourceCapability` 增加独立 `review`，`AuditAction` 增加确认创建/撤销；新增确认目标模式、
+  八个研究领域枚举与 `AnnotationConfirmation` 表。表保存文件、被审核 revision、半开时间范围、互斥
+  all/domains/tracks 目标、备注、创建者和追加式撤销事实，不保存 freshness、payload、diff 或 UI 状态。
+- 新 migration `20260802030000_annotation_confirmations` 只追加 enum 和表/索引/FK/CHECK，没有修改
+  baseline。时间、目标互斥、正 revision 与撤销字段成组均有数据库第二层约束；迁移已分别部署到隔离
+  `api_test` schema 和本地开发 `public` schema。
+- shared API 增加列表、创建、撤销合同；浏览器客户端补齐三个真实请求方法。资源 Inspector 继续复用
+  `RESOURCE_CAPABILITIES` 生成权限矩阵，只新增“审核”中文标签，没有另造 UI 权限枚举。
+
+服务端行为与安全边界：
+
+- `ResourceService` 的确认列表只要求活动文件 `read`，最多返回 200 条治理元数据和当前 revision，绝不
+  读取/返回 payload。创建与撤销要求同一资源上的 `read + review`；普通 write、manage_permissions 和
+  全局 reviewer 角色均不能替代逐资源授权。
+- 创建复用 R2.5a 草稿校验，并按现有内容写入顺序取得资源树 shared advisory lock、资源行锁和
+  annotation 行共享锁；在锁内复核活动状态、权限和 revision。tracks 模式只接受锁内当前 payload 的
+  `character-track` 与顶层 custom track id，派生工尺/分叉/附属点可视轨及不可识别旧结构保守返回 400。
+- 撤销锁定文件与确认行，记录 `revokedBy/revokedAt/reason` 而不删除原事实；创建者可撤销自己记录，
+  全局管理员、当前资源 owner 或祖先 owner 可撤销他人记录。重复撤销幂等返回首次结果，不覆盖原因，
+  也不重复写审计。
+- 创建/撤销 AuditLog 与业务记录在同一事务，detail 仅保存确认 id、revision、时间和目标模式等定位摘要，
+  不含 note 或 payload。普通保存推进 revision 后旧确认原样保留，由客户端纯 helper 派生 stale。
+- 标注文件复制继续只复制当前 payload 形成 revision 1 独立文件，不复制确认、恢复快照、operation、ACL
+  或审计。回收站文件/隐藏后代不能列出、创建或撤销确认，恢复后历史事实仍保留。
+
+自审与修复：
+
+- 首次分层构建发现 Prisma/shared 领域之间缺少显式双向映射，补成穷尽 `Record`，以后任一侧新增领域
+  都会由 TypeScript 强制提示同步；同时把重复 Prisma include 收敛到共享常量。
+- 权限测试原先写死“完整能力数量为 8”，加入 review 后失败。改为比较 admin/owner 的完整能力集合并
+  明确断言包含 review，移除随能力扩展必然过期的数字断言。
+- 集成测试验证普通 write 无法创建确认，随后给同一账号 read+review 且无 write 后可以创建；另一个
+  reviewer 无法撤销创建者记录，而管理员可以。跨文件 id、重复撤销、过期 revision、派生轨、坏范围、
+  审计泄漏、复制和回收站均有数据库断言。
+- 新增保存与确认并发测试：保存必定把 revision 1 推到 2；确认只能在先取得锁时合法绑定 revision 1，
+  或在保存先完成后得到 409，不可能写入与真实审核时刻不一致的 revision。
+
+验证结果：
+
+- `test:permissions`：5/5；`test:annotation-confirmations`：10/10。
+- `test:api`：21/21，其中平台主集成套件新增确认生命周期和保存并发两组真实 PostgreSQL 用例。
+- `npm run db:deploy` 成功应用开发库迁移；`npm run build` 与 `git diff --check` 通过。
+- 浏览器在真实平台开发库中打开“示例项目：昆曲《寻梦》”权限 Inspector，展开学生账号后确认“审核”
+  与查看、编辑等能力并列显示且可由现有矩阵管理；页面控制台无 error/warn。本轮没有提交权限变更。
+- 仍只有既有 pg 9 `client.query()` 前置弃用提示和 Vite 主 chunk 超过 500 kB 提醒，没有新增运行警告。
+
+核对结论与下一步：
+
+- 未发现确认事实进入 ProjectData、编辑器 history、payload、恢复快照或 operation log；没有第二套
+  scope/freshness/权限算法，也没有确认复制或物理删除路径。服务端是唯一权限与 revision 真相。
+- R2.5b 已闭环。下一轮 R2.5c 在标注文件 Inspector 与时间轴中消费这些真实 API：先展示 current/stale、
+  active/revoked 范围，再提供受 review 控制的创建/撤销；不得先写 mock UI，也不得把状态回写项目 JSON。

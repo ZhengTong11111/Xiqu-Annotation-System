@@ -9,9 +9,9 @@ Workspace/Fork、完成版本和项目发布版本模型仅在 `docs/development
 当前开发基线：R1 资源操作闭环、R2.2 快照安全恢复、R2.3 普通标注文件的结构化比较与选择性整合，
 以及 R2.4 恢复快照对当前文件的只读结构化比较已完成
 
-当前阶段：R2.5a 已完成“已确认标注范围”的共享合同与纯领域核心，进入 R2.5b 数据库、独立 `review`
-ACL capability、API、事务审计和集成测试。该能力不能混入恢复快照、选择性整合或 ProjectData 的
-临时界面状态。
+当前阶段：R2.5b 已完成“已确认标注范围”的数据库、独立 `review` ACL、列表/创建/撤销 API、事务
+审计和集成测试，进入 R2.5c Inspector 与时间轴审核交互。确认事实继续独立于恢复快照、选择性整合
+和 ProjectData；前端只消费服务端事实，不能自行伪造审核状态。
 
 ## 1. 产品目标
 
@@ -227,10 +227,13 @@ ACL capability、API、事务审计和集成测试。该能力不能混入恢复
   revision、半开时间范围、明确的研究领域/保存轨道作用域、审核者与审计时间；定义 active/revoked 及
   current/stale 判定。读取沿用资源 `read`，创建/撤销将使用独立 `review` 能力，
   不把普通 `write`、`manage_permissions` 或全局 reviewer 角色直接当作资源审核授权。
-- R2.5b 当前轮：在 R2.5a 合同上增加 Prisma 模型、`review` ACL capability、迁移、API、事务审计和
-  集成测试。确认与撤销采用可追溯记录，不覆盖标注 payload，不伪装为恢复快照或 annotation operation。
-- R2.5c 后续：在标注文件 Inspector 和现有时间轴中增加确认范围浏览、创建、撤销和过期提示；服务端
-  仍是权限与状态真相，前端不得把确认状态写回 `ProjectData`。
+- R2.5b 已完成：新增 Prisma `AnnotationConfirmation`、独立 `review` capability、追加式 migration、
+  列表/创建/撤销 API 和同事务治理审计。创建在统一资源树/资源行/annotation 行锁序下核对活动文件、
+  当前 revision 与真实持久轨道；撤销保留原事实且幂等。普通保存只使旧确认变为 stale，复制不携带
+  确认，回收站文件不能治理；确认不会覆盖 payload、revision、恢复快照或 annotation operation。
+- R2.5c 当前下一轮：在标注文件 Inspector 和现有时间轴中增加确认范围浏览、创建、撤销和过期提示；
+  服务端仍是权限与状态真相，前端不得把确认状态写回 `ProjectData`。先完成只读可视化和明确的创建
+  范围入口，再开放受 `review` 控制的提交/撤销命令；不得通过 UI 禁用代替 API 鉴权。
 
 完成标准：误操作可恢复，研究者能比较和选择性整合不同文件。
 

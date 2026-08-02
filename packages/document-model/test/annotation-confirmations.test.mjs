@@ -4,6 +4,7 @@ import {
   annotationConfirmationScopesOverlap,
   canCreateAnnotationConfirmation,
   canRevokeAnnotationConfirmation,
+  extractPersistedAnnotationTrackIds,
   getAnnotationConfirmationFreshness,
   getAnnotationConfirmationLifecycle,
   normalizeAnnotationConfirmationScope,
@@ -156,6 +157,28 @@ test("轨道作用域按真实持久轨道集合校验", () => {
   assert.equal(invalid.ok, false);
   if (!invalid.ok) {
     assert.equal(invalid.issues.filter(({ code }) => code === "unknown_track_id").length, 2);
+  }
+});
+
+// payload 轨道提取只接受顶层保存轨，明确排除工尺、分叉和附属点可视轨。
+test("从当前 payload 保守提取持久轨道", () => {
+  const payload = {
+    builtinTracks: [{ id: "character-track" }, { id: "legacy-action" }],
+    customTracks: [{
+      id: "custom-1",
+      branching: { lanes: [{ id: "branch-lane-1" }] },
+      attachedPointTracks: [{ id: "point-track-1" }],
+    }],
+    activeTrackOrder: ["gongche:character-track", "branch-lane:custom-1:branch-lane-1"],
+  };
+  assert.deepEqual(extractPersistedAnnotationTrackIds(payload), {
+    ok: true,
+    value: ["character-track", "custom-1"],
+  });
+  const unrecognized = extractPersistedAnnotationTrackIds({ customTracks: [] });
+  assert.equal(unrecognized.ok, false);
+  if (!unrecognized.ok) {
+    assert.equal(unrecognized.issues[0].code, "unrecognized_track_payload");
   }
 });
 

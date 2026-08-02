@@ -85,6 +85,7 @@ const VIEW_LABELS: Record<ResourceListView, string> = {
 const CAPABILITY_LABELS: Record<ResourceCapability, string> = {
   read: "查看",
   write: "编辑",
+  review: "审核",
   create_child: "新建子项",
   copy: "复制",
   move: "移动",

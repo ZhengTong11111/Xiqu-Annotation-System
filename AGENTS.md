@@ -172,7 +172,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - authoritative server-side resource capability resolution
   - combines global admin bypass, ownership, direct grants, and nearest inherited folder grants
 - `apps/api/src/resourceService.ts`
-  - resource-tree mutations, copy/move/trash behavior, annotation-file save, and recovery-snapshot creation
+  - resource-tree mutations, copy/move/trash behavior, annotation-file save/recovery, and confirmed-range governance
 - `apps/api/src/resourceSelection.ts`
   - pure parent/descendant selection normalization shared by atomic batch move and batch trash
   - selected descendants collapse under a selected ancestor so a subtree is mutated only once
@@ -185,9 +185,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `packages/document-model/src/annotationConfirmations.ts`
   - pure normalization, validation, lifecycle/freshness, overlap, persisted-track, and review-decision helpers for
     confirmed annotation ranges
-  - contains no Prisma, API, React, payload mutation, or global-role lookup; R2.5 backend work must reuse this contract
+  - contains no Prisma, API, React, payload mutation, or global-role lookup; backend and forthcoming UI must reuse
+    this contract instead of duplicating scope or freshness rules
 - `prisma/schema.prisma`
-  - PostgreSQL schema for users, sessions, resource entries, projects, annotation/media files, resource permissions/user state, recovery snapshots, processing jobs, audit logs, and annotation operations
+  - PostgreSQL schema for users, sessions, resource entries, projects, annotation/media files, resource permissions/user state, recovery snapshots, confirmed ranges, processing jobs, audit logs, and annotation operations
 - `docs/`
   - roadmap, architecture notes, and curated screenshots; keep this updated for long-running platform/backend work
 - `src/types.ts`
@@ -209,6 +210,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run build`
 - `npm run test:api`
 - `npm run test:permissions`
+- `npm run test:annotation-confirmations`
 - `npm run test:resource-columns`
 - `npm run test:recovery-preview`
 - `npm run test:annotation-diff`
@@ -505,9 +507,12 @@ Current backend capabilities:
 - atomic batch trash with parent/descendant selection collapsing; the legacy single-item endpoint delegates to the same core
 - audit-log table and API for key platform events such as login, upload, resource creation/move/copy/delete, permission changes, and annotation-file save
 - annotation operation-log table and API for recording client-submitted edit operations before future autosave/collaboration work
+- confirmed annotation ranges backed by PostgreSQL, with all/domain/persisted-track scopes, immutable revision binding,
+  additive revocation facts, list/create/revoke APIs, and same-transaction audit summaries
 - placeholder processing-job API for future pitch, spectrogram, Gongche render, pose, transcode, and export services
 - per-resource ACL:
-  - capabilities are `read`, `write`, `create_child`, `copy`, `move`, `delete`, `download`, and `manage_permissions`
+  - capabilities are `read`, `write`, `review`, `create_child`, `copy`, `move`, `delete`, `download`, and
+    `manage_permissions`
   - `super_admin` / `admin`, the resource owner, and the owner of an ancestor project/folder receive full effective access
   - direct grants belong to one resource and one account
   - folder/project grants inherit to descendants unless a descendant sets `breakPermissionInheritance`
@@ -517,15 +522,16 @@ Current backend capabilities:
   - permission core lives in `packages/document-model` plus `resourceAccess.ts`; do not create a second UI-only implementation
 
 Confirmed-annotation contract status:
-- R2.5a defines shared DTOs and pure domain rules, but there is not yet a database table, API, UI, or live `review`
-  ResourceCapability. Do not present the contract as a completed user feature.
+- R2.5b provides the PostgreSQL table, shared DTOs, pure domain rules, live `review` ResourceCapability, and
+  list/create/revoke APIs. The Inspector/Timeline user workflow is still R2.5c work, so do not present the backend
+  contract alone as a complete end-user feature.
 - a confirmation binds one annotation file revision to a non-empty half-open time range and either all content, stable
   research domains, or real persisted parent-track ids. Derived Gongche, attached-point, and branch-lane visual tracks
   are not saved top-level track ids.
 - confirmation is server governance metadata, never part of `ProjectData`, annotation payload, recovery snapshots, or
   annotation operation logs. Revision advancement makes a record stale until a future explicit re-review; it is not
   silently carried forward.
-- future read access reuses resource `read`; create/revoke will require an independent per-resource `review` capability.
+- read access reuses resource `read`; create/revoke require an independent per-resource `review` capability.
   `write`, `manage_permissions`, and the global reviewer role must not independently imply review authority.
 - revocation preserves the original confirmation and records revoker/time/reason. Do not update or delete the original
   audit fact in place.
@@ -558,7 +564,8 @@ Important backend caveats:
 - real-time collaborative editing is not implemented yet
 - the removed Course/Assignment/Submission runtime is not a pending compatibility target; future classroom
   distribution/review should build on resource copy, ACL, file comparison, and a separate confirmed-annotation layer
-- confirmed-annotation workflow and real-time collaboration are not implemented yet
+- confirmed-range backend is implemented, but its Inspector/Timeline browsing, creation and revocation workflow
+  remains R2.5c; real-time collaboration is not implemented
 - annotation operations currently only record operation metadata/payload and do not mutate annotation-file payloads; full payloads are still written by the annotation-file save route
 - audit logs intentionally store summary `detail` objects, not full annotation payloads or uploaded file contents
 - global audit queries are admin-only; non-admin queries require effective resource visibility appropriate to the route
@@ -594,6 +601,17 @@ Important backend caveats:
   endpoint that binds both annotation-file id and snapshot id and currently requires effective `write` capability.
 - historical payload preview must fail inside its own UI boundary and reuse the canonical project-file normalizer; a bad
   snapshot must not replace, open, or mutate the current editor document.
+- confirmed annotation ranges are governance records outside `ProjectData`: `[startTime, endTime)` is half-open,
+  `confirmedRevision` never auto-advances, and current/stale is derived against the file's current revision.
+- listing confirmations requires `read`; creating and revoking require both `read` and the independent per-resource
+  `review` capability. `write`, `manage_permissions`, or the global `reviewer` role do not substitute for `review`.
+- track-scoped confirmations may reference only current payload top-level persisted tracks (`character-track` and saved
+  custom track ids). Derived Gongche, branch-lane and attached-point visual lanes are not standalone confirmation tracks.
+- confirmation creation follows the same resource-tree shared lock, ordered resource-row lock and annotation-row lock
+  sequence as content writes, then compares the locked revision. Revocation is additive and idempotent; only the creator,
+  global admin, resource owner or ancestor owner may revoke another user's record.
+- saving does not delete or rewrite confirmations; older facts become stale. Annotation-file copy does not copy
+  confirmations, and active-file checks prohibit listing/creating/revoking through a trashed resource or ancestor.
 - recovery-snapshot comparison must refetch the current annotation file when the user starts comparison, keep the
   historical snapshot fixed on the left and the current server revision on the right, and reuse `AnnotationDiffReview`.
   It is read-only: never add side swapping, snapshot opening/editing, selective merge, revision writes, or a second

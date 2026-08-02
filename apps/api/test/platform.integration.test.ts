@@ -1128,6 +1128,335 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(missingSnapshot.statusCode, 404);
     });
 
+    await suite.test("标注确认权限、作用域、撤销和资源生命周期", async () => {
+      // 使用当前格式 payload 建立独立审核夹具，确保轨道校验不会误借旧测试的 marker 对象。
+      const created = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "标注确认合同.json",
+          payload: {
+            builtinTracks: [{ id: "character-track" }],
+            customTracks: [{ id: "custom-action-1" }],
+            activeTrackOrder: [
+              "character-track",
+              "branch-lane:custom-action-1:branch-1",
+            ],
+          },
+        },
+      });
+      const confirmationFileId = String(
+        (dataOf(created.json()).resource as JsonObject).id,
+      );
+
+      // 普通 write 不能代替 review；列表仍只要求 read，便于只读账号查看治理结果。
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${confirmationFileId}/permissions/user-student`,
+        payload: {
+          capabilities: ["read", "write", "copy"],
+          inheritToChildren: false,
+        },
+      });
+      const deniedWithoutReview = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations`,
+        payload: {
+          confirmedRevision: 1,
+          scope: { startTime: 0, endTime: 10, targets: { mode: "all" } },
+        },
+      });
+      assert.equal(deniedWithoutReview.statusCode, 403);
+      const readableEmptyList = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations`,
+      });
+      assert.equal(readableEmptyList.statusCode, 200);
+
+      // 学生和助教分别取得逐资源 review；角色名称本身不绕过资源 ACL。
+      for (const userId of ["user-student", "user-ta"]) {
+        const grant = await jsonRequest(app, adminToken, {
+          method: "PUT",
+          url: `/api/resources/${confirmationFileId}/permissions/${userId}`,
+          payload: {
+            capabilities: ["read", "review", "copy"],
+            inheritToChildren: false,
+          },
+        });
+        assert.equal(grant.statusCode, 200, grant.body);
+      }
+
+      // 路由坏输入、过期 revision 和派生轨道必须在落库前失败且不产生审计。
+      const invalidBodies = [
+        {
+          confirmedRevision: 0,
+          scope: { startTime: 0, endTime: 1, targets: { mode: "all" } },
+        },
+        {
+          confirmedRevision: 1,
+          scope: { startTime: 2, endTime: 1, targets: { mode: "all" } },
+        },
+        {
+          confirmedRevision: 1,
+          scope: {
+            startTime: 0,
+            endTime: 1,
+            targets: { mode: "domains", domains: ["unknown-domain"] },
+          },
+        },
+      ];
+      for (const payload of invalidBodies) {
+        const invalid = await jsonRequest(app, studentToken, {
+          method: "POST",
+          url: `/api/annotation-files/${confirmationFileId}/confirmations`,
+          payload,
+        });
+        assert.equal(invalid.statusCode, 400);
+      }
+      const stale = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations`,
+        payload: {
+          confirmedRevision: 2,
+          scope: { startTime: 0, endTime: 1, targets: { mode: "all" } },
+        },
+      });
+      assert.equal(stale.statusCode, 409);
+      const derivedTrack = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations`,
+        payload: {
+          confirmedRevision: 1,
+          scope: {
+            startTime: 0,
+            endTime: 1,
+            targets: {
+              mode: "tracks",
+              trackIds: ["branch-lane:custom-action-1:branch-1"],
+            },
+          },
+        },
+      });
+      assert.equal(derivedTrack.statusCode, 400);
+      assert.equal(await prisma.annotationConfirmation.count({
+        where: { annotationFileId: confirmationFileId },
+      }), 0);
+
+      // 领域和持久轨道两种确认均绑定 revision 1，备注会 trim 但不会进入审计 detail。
+      const domainCreated = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations`,
+        payload: {
+          confirmedRevision: 1,
+          scope: {
+            startTime: 10,
+            endTime: 20,
+            targets: {
+              mode: "domains",
+              domains: ["subtitle_lines", "gongche_annotations"],
+            },
+          },
+          note: "  已核对唱段  ",
+        },
+      });
+      assert.equal(domainCreated.statusCode, 200, domainCreated.body);
+      const domainConfirmation = dataOf(domainCreated.json());
+      assert.equal(domainConfirmation.note, "已核对唱段");
+      const trackCreated = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations`,
+        payload: {
+          confirmedRevision: 1,
+          scope: {
+            startTime: 20,
+            endTime: 30,
+            targets: {
+              mode: "tracks",
+              trackIds: ["character-track", "custom-action-1"],
+            },
+          },
+        },
+      });
+      assert.equal(trackCreated.statusCode, 200, trackCreated.body);
+      const trackConfirmation = dataOf(trackCreated.json());
+
+      // 列表只返回治理元数据和服务器当前 revision，不泄漏标注 payload。
+      const listed = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations`,
+      });
+      assert.equal(listed.statusCode, 200, listed.body);
+      const listedBody = dataOf(listed.json());
+      assert.equal(listedBody.currentRevision, 1);
+      const confirmations = listedBody.confirmations as JsonObject[];
+      assert.equal(confirmations.length, 2);
+      assert.ok(confirmations.every((record) => !("payload" in record)));
+
+      // 其他 reviewer 不能撤销学生记录；创建者撤销幂等且只写一条撤销审计。
+      const trackConfirmationId = String(trackConfirmation.id);
+      const deniedOtherReviewer = await jsonRequest(app, taToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations/${trackConfirmationId}/revoke`,
+        payload: { reason: "非创建者尝试撤销" },
+      });
+      assert.equal(deniedOtherReviewer.statusCode, 403);
+      const revokedByCreator = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations/${trackConfirmationId}/revoke`,
+        payload: { reason: "  范围选择错误  " },
+      });
+      assert.equal(revokedByCreator.statusCode, 200, revokedByCreator.body);
+      assert.equal(dataOf(revokedByCreator.json()).revokeReason, "范围选择错误");
+      const repeatedRevoke = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations/${trackConfirmationId}/revoke`,
+        payload: { reason: "重复请求不应覆盖原原因" },
+      });
+      assert.equal(repeatedRevoke.statusCode, 200);
+      assert.equal(
+        await prisma.auditLog.count({
+          where: {
+            action: "annotation_confirmation_revoke",
+            resourceId: confirmationFileId,
+          },
+        }),
+        1,
+      );
+
+      // 管理员可以撤销任意创建者的记录；路径绑定阻止用其他文件 id 操作同一确认。
+      const domainConfirmationId = String(domainConfirmation.id);
+      const crossFileRevoke = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/confirmations/${domainConfirmationId}/revoke`,
+        payload: {},
+      });
+      assert.equal(crossFileRevoke.statusCode, 404);
+      const revokedByAdmin = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations/${domainConfirmationId}/revoke`,
+        payload: {},
+      });
+      assert.equal(revokedByAdmin.statusCode, 200, revokedByAdmin.body);
+
+      // 普通保存只推进当前 revision；历史确认保留并由调用方派生为 stale。
+      const saved = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${confirmationFileId}`,
+        payload: {
+          baseRevision: 1,
+          payload: {
+            builtinTracks: [{ id: "character-track" }],
+            customTracks: [{ id: "custom-action-1" }],
+          },
+        },
+      });
+      assert.equal(saved.statusCode, 200, saved.body);
+      const staleList = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations`,
+      });
+      assert.equal(dataOf(staleList.json()).currentRevision, 2);
+      assert.ok((dataOf(staleList.json()).confirmations as JsonObject[])
+        .every(({ confirmedRevision }) => confirmedRevision === 1));
+
+      // 文件复制是独立标注工作副本，不复制确认事实、恢复历史或治理审计。
+      const copied = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${confirmationFileId}/copy`,
+        payload: { parentId: projectId, name: "标注确认合同副本.json" },
+      });
+      assert.equal(copied.statusCode, 200, copied.body);
+      const copiedId = String(dataOf(copied.json()).id);
+      assert.equal(await prisma.annotationConfirmation.count({
+        where: { annotationFileId: copiedId },
+      }), 0);
+
+      // 审计 detail 只包含定位数据，备注和 payload 均不得进入治理日志。
+      const confirmationAudits = await prisma.auditLog.findMany({
+        where: { resourceId: confirmationFileId },
+      });
+      assert.ok(confirmationAudits
+        .filter(({ action }) => action.startsWith("annotation_confirmation"))
+        .every(({ detail }) => {
+          const value = detail as JsonObject;
+          return !("note" in value) && !("payload" in value);
+        }));
+
+      // 回收站中的标注文件不能再列出或创建确认，恢复资源后仍保留历史确认事实。
+      await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${confirmationFileId}/trash`,
+      });
+      const trashedList = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations`,
+      });
+      assert.equal(trashedList.statusCode, 404);
+      await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${confirmationFileId}/restore`,
+      });
+      assert.equal(await prisma.annotationConfirmation.count({
+        where: { annotationFileId: confirmationFileId },
+      }), 2);
+    });
+
+    await suite.test("标注保存与确认并发保持 revision 原子性", async () => {
+      // 两种操作共享固定锁序：保存必定成功，确认只能绑定保存前 revision 或得到 409。
+      const created = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "确认并发测试.json",
+          payload: {
+            builtinTracks: [{ id: "character-track" }],
+            customTracks: [],
+          },
+        },
+      });
+      const concurrentFileId = String(
+        (dataOf(created.json()).resource as JsonObject).id,
+      );
+      const [confirmation, save] = await Promise.all([
+        jsonRequest(app, adminToken, {
+          method: "POST",
+          url: `/api/annotation-files/${concurrentFileId}/confirmations`,
+          payload: {
+            confirmedRevision: 1,
+            scope: { startTime: 0, endTime: 2, targets: { mode: "all" } },
+          },
+        }),
+        jsonRequest(app, adminToken, {
+          method: "PUT",
+          url: `/api/annotation-files/${concurrentFileId}`,
+          payload: {
+            baseRevision: 1,
+            payload: {
+              builtinTracks: [{ id: "character-track" }],
+              customTracks: [],
+              marker: "saved",
+            },
+          },
+        }),
+      ]);
+      assert.equal(save.statusCode, 200, save.body);
+      assert.ok(
+        confirmation.statusCode === 200 || confirmation.statusCode === 409,
+        `确认并发结果应为 200 或 409，实际为 ${confirmation.statusCode}`,
+      );
+      const stored = await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: concurrentFileId },
+      });
+      assert.equal(stored.revision, 2);
+      const records = await prisma.annotationConfirmation.findMany({
+        where: { annotationFileId: concurrentFileId },
+      });
+      assert.equal(records.length, confirmation.statusCode === 200 ? 1 : 0);
+      assert.ok(records.every(({ confirmedRevision }) => confirmedRevision === 1));
+    });
+
     await suite.test("回收站祖先阻止普通保存与快照恢复", async () => {
       // 独立测试树避免回收主测试文件影响后续 operation 用例。
       const container = await jsonRequest(app, adminToken, {
