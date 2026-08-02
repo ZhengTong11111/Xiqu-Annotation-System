@@ -111,6 +111,10 @@ API: http://127.0.0.1:4317/
 `XIQU_PLATFORM_STORAGE_QUOTA_BYTES` 和 `XIQU_ORPHAN_GRACE_MS` 调整。服务端会检查真实媒体签名，
 浏览器文件选择器显示的类型并不是安全边界。
 
+后端提供 `/api/health/live` 与 `/api/health/ready`，前者只检查进程存活，后者检查 PostgreSQL 和对象
+目录。全局管理员可从资源工作区顶部打开“系统诊断”，查看容量、资源、任务、对象一致性与近期运维
+事件。Prometheus `/metrics` 默认关闭；仅配置 `XIQU_METRICS_TOKEN` 后启用，并要求对应 Bearer token。
+
 开发种子账号为 `admin / admin123`。全新数据库应通过 `npm run db:deploy` 应用已提交的
 Prisma migration；`db:push` 仅适合一次性的本地 schema 实验。`db:push --force-reset` 会清空
 目标数据库，只能在核对 `DATABASE_URL` 且明确不保留数据时使用。
@@ -121,6 +125,7 @@ Prisma migration；`db:push` 仅适合一次性的本地 schema 实验。`db:pus
 npm run build
 npm run test:permissions
 npm run test:uploads
+npm run test:observability
 npm run test:api
 ```
 
@@ -988,7 +993,8 @@ npm run preview
 
 账号、资源树、带签名/配额/补偿的媒体上传、标注文件保存、恢复快照和逐文件权限已经接入
 Fastify/Prisma/PostgreSQL，并由一组可部署 migration 维护。生产部署所需的 HTTPS、反向代理、限流、
-一致备份恢复、对象存储迁移和运维监控仍未完成。
+一致备份恢复、对象存储迁移和生产告警接入仍未完成；当前已有 liveness/readiness、低基数 Prometheus
+指标和管理员诊断面板，可用于本地与部署前故障定位。
 
 ### 2. 尚未实现实时多人协作
 

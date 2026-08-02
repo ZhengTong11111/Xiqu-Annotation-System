@@ -18,6 +18,7 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  ServerCog,
   Settings2,
   ShieldCheck,
   Trash2,
@@ -62,6 +63,7 @@ import {
 } from "./ResourceItem";
 import { ResourceVirtualCollection } from "./ResourceVirtualCollection";
 import { ResourceRecoveryHistory } from "./ResourceRecoveryHistory";
+import { SystemDiagnosticsDialog } from "./SystemDiagnosticsDialog";
 import { copyResourcesSequentially } from "./resourceClipboard";
 import {
   registerResourceDropTarget,
@@ -136,6 +138,7 @@ export function ResourceExplorer(props: {
     Record<string, ResourceEntry>
   >({});
   const [error, setError] = useState<string | null>(null);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [movingResources, setMovingResources] = useState<ResourceEntry[]>([]);
   const [comparisonFiles, setComparisonFiles] = useState<
     [ResourceEntry, ResourceEntry] | null
@@ -169,6 +172,8 @@ export function ResourceExplorer(props: {
   const locationParentId = mode === "column"
     ? columnBrowser.locationParentId
     : folderId;
+  const isGlobalAdmin = props.user?.roles.some((role) =>
+    role === "super_admin" || role === "admin") ?? false;
   // 首次读取替换列表，下一页读取保留既有资源；request id 防止旧查询响应串入新目录。
   const loadPage = useCallback(async (cursor: string | null = null) => {
     const requestId = ++pageRequestIdRef.current;
@@ -774,6 +779,15 @@ export function ResourceExplorer(props: {
         </div>
         <div className="resource-account">
           <span>{props.user?.displayName ?? "正在验证账号"}</span>
+          {isGlobalAdmin ? (
+            <button
+              type="button"
+              title="系统诊断"
+              onClick={() => setDiagnosticsOpen(true)}
+            >
+              <ServerCog size={17} />
+            </button>
+          ) : null}
           <button type="button" title="刷新" onClick={() => void refreshCurrentView()}>
             <RefreshCw size={17} />
           </button>
@@ -1051,6 +1065,14 @@ export function ResourceExplorer(props: {
         onPrepareMerge={props.onPrepareAnnotationMerge}
         onClose={() => setComparisonFiles(null)}
       />
+      {/* 系统诊断是全局管理员工具，不依赖当前资源选择，也不会挤占右侧资源 Inspector。 */}
+      {isGlobalAdmin ? (
+        <SystemDiagnosticsDialog
+          client={props.client}
+          open={diagnosticsOpen}
+          onOpenChange={setDiagnosticsOpen}
+        />
+      ) : null}
     </main>
   );
 }

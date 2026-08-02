@@ -1482,3 +1482,76 @@ Development Log，因此本条同时记录计划与实现差异、失败测试�
 - R3d 应进入结构化运行指标、容量/失败诊断、PostgreSQL 与对象目录一致备份恢复演练，并明确未来
   S3/MinIO 适配接口。大于 2 GB、分片/断点上传和通用研究附件继续留在科研资产中心扩展，不在本轮
   以局部 size 类型修改冒充完成。
+
+## 2026-08-02：R3d1 运行健康、低基数指标与管理员诊断
+
+本轮继续执行“审计实际代码 → 整体重写被忽略的 `CLAUDE_WORK.md` → 实现 → 专项/API/构建 → 浏览器
+验收 → 自审修复 → 文档”的固定流水线，由 Codex 直接完成，没有委托 Claude Code、GLM 或其他代理。
+用户再次明确要求记录 Development Log，因此本条保留设计边界、测试中间结果、自审发现和开发数据
+诊断结果，而不只记录最终文件列表。
+
+审计与阶段拆分：
+
+- 原 `/api/health` 无条件返回 `ok`，即使 PostgreSQL 或对象目录不可用也会误导反向代理；上传、HTTP
+  延迟、状态码和对象清理没有结构化指标，R3c 的孤儿 API 也没有容量/任务/一致性聚合界面。
+- R3d 被拆为 R3d1 可观测性/管理员诊断和 R3d2 一致备份恢复。原因是 PostgreSQL 与本地对象目录没有
+  跨介质快照；在所有写入口尚未受统一维护边界约束时，直接执行 `pg_dump` 与目录复制无法保证两者处于
+  同一业务时刻。本轮没有用文档命令假装完成灾备。
+- 引入 `prom-client` 15.1.3（Apache-2.0，Node 16/18/20+，当前 unpacked size 约 126 kB）。它替代手写
+  Prometheus 文本、直方图和 Node 默认指标实现；没有引入通用 Dashboard 或第二套 UI 框架。package 与
+  lockfile 已同步，管理界面继续使用现有 Radix Dialog、Lucide 和资源平台 CSS。
+
+后端实现与安全边界：
+
+- 新 `HealthService` 提供 dependency-free `/api/health/live` 与 PostgreSQL + 对象根目录
+  `/api/health/ready`；兼容 `/api/health` 改为 readiness。依赖失败返回 503，并只公开组件状态、安全文案
+  和耗时，不回传连接串或绝对路径。对象 readiness 仅检查目录存在、类型和读写权限，不递归扫描资产。
+- 新 `ApiObservability` 为每个 `buildApiApp()` 建立独立 Registry，避免测试或多实例重复注册。HTTP 指标
+  使用 Fastify route pattern、method 和 status code；404 固定 `unknown`，不把 UUID/query 作为标签。
+  上传结果只使用 success、too_large、unsupported_media、validation、quota、forbidden、conflict、
+  internal；另记录提交成功字节、暂存/final 补偿失败和清理结果。没有用户、文件名、资源 id、storage key
+  或错误文案标签。
+- `/metrics` 默认 404，仅配置 `XIQU_METRICS_TOKEN` 后启用，并以恒定时间比较独立 Bearer token。显式
+  `buildApiApp({ metricsToken: null })` 会关闭入口，不会被环境变量重新打开；浏览器 session 与监控凭据
+  保持分离。
+- 新 `SystemDiagnosticsService` 只允许 super_admin/admin，资源级 `manage_permissions` 不会获得系统权限。
+  它并行聚合数据库往返、活动/回收资源、类型、唯一 FileObject 容量、当前管理员对象容量、媒体/标注/
+  快照、任务状态、磁盘 final/staged 汇总、四类对象一致性问题和最近上传/清理摘要。平台/账号 80%/95%
+  容量、missing binary、可清理孤儿、失败任务和显著排队由服务端生成稳定告警 code。
+- 诊断容量继续按唯一 FileObject 计算，媒体复制不会重复计费。普通诊断只返回一致性计数，不返回完整
+  storage key；具体孤儿列表仍留在受控生命周期 API。对象清理仍需 `{confirm:true}`，missing binary
+  永远只报告。
+
+前端实现与浏览器验收：
+
+- 资源工作区顶部为全局管理员增加“系统诊断”图标；普通账号不渲染入口。新 Dialog 使用独立滚动区域，
+  以紧凑分区显示服务状态、平台/当前账号容量、数据与任务摘要、对象一致性、告警和最近运维事件；没有
+  改造成传统后台统计卡页面，也没有挤占右侧资源 Inspector。
+- “清理合格孤儿”仅在可清理数大于零时启用，浏览器二次确认后调用既有 cleanup，再刷新全量诊断。
+  加载、刷新、错误、空运维事件和成功通知均有状态。
+- 实际浏览器以管理员登录后成功打开面板：PostgreSQL 与对象目录均正常、容量进度和各统计可见，长内容
+  由 Dialog 内部滚动；退出后以 student 登录，DOM 中无系统诊断入口。没有对开发数据执行清理。
+- 这次诊断真实暴露当前开发 public 数据存在 6 个超过宽限期的磁盘孤儿和 2 个缺失二进制。由于缺失
+  二进制需判断恢复来源，孤儿清理也属于显式管理员决策，本轮只记录结果，没有擅自删除开发资产。
+
+测试、自审与计划差异：
+
+- 新 `test:observability` 4/4，覆盖 Registry 隔离、规范化 route 标签、token 比较、业务指标以及“存储
+  故障降低 readiness 但不影响 liveness”。`test:uploads` 4/4、`test:permissions` 5/5。
+- API 集成增至 36/36：验证 live/ready/兼容 health、metrics 缺失/正确 token、显式关闭 metrics、普通
+  用户 diagnostics 403、管理员容量和健康摘要；既有资源、ACL、恢复、确认、上传、Range 和孤儿清理
+  回归全部通过。`npm run build` 与 `git diff --check` 通过；仍只有既有 pg 9 前置弃用提示和 Vite 主 chunk
+  超过 500 kB 提醒。
+- 第一次 API 运行在 TypeScript 编译阶段发现测试把未知 JSON 深层字段直接访问，修正为明确 JsonObject
+  边界后重跑通过，并未以 `any` 绕过。
+- 自审发现初版在 `commitUploadedMedia()` 已提交后仍等待 DTO 映射成功才记录上传 success；若映射失败，
+  同一次已提交上传会被错误记成 internal failure。最终把成功字节计数移动到数据库提交边界，并让提交后
+  展示失败仅由 HTTP 500 指标表达，不重复记录上传失败。自审还明确了 `metricsToken: null` 的关闭语义，
+  增加 dependency failure 回归，并补齐新增 helper 的中文功能注释。
+
+完成边界与下一步：
+
+- R3d1 已让系统具备可部署探针、受保护指标和管理员故障定位入口，但尚未连接外部 Prometheus/Grafana
+  或告警通知；这属于部署配置，不在浏览器内伪造。
+- 下一轮 R3d2 必须先建立覆盖所有数据库/对象写入的维护静默边界，再实现带 manifest/checksum 的数据库
+  与对象目录一致备份、隔离恢复演练和回滚说明。不得只提供两个并行复制命令后宣称灾备完成。

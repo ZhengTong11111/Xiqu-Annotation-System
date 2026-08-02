@@ -11,13 +11,19 @@ import {
   type ResourceType,
   type SortDirection,
 } from "@xiqu/shared";
-import { badRequest } from "./errors.js";
+import { badRequest, unauthorized } from "./errors.js";
+import type { HealthService } from "./healthService.js";
 import type { MediaUploadService } from "./mediaUploadService.js";
 import type { ObjectLifecycleService } from "./objectLifecycleService.js";
+import {
+  type ApiObservability,
+  isValidMetricsToken,
+} from "./observability.js";
 import type { PrismaPlatformRepository } from "./repository.js";
 import type { ResourceService } from "./resourceService.js";
 import { MAX_BATCH_RESOURCE_SELECTION } from "./resourceSelection.js";
 import type { LocalObjectStorage } from "./storage.js";
+import type { SystemDiagnosticsService } from "./systemDiagnosticsService.js";
 
 const RESOURCE_TYPES = new Set<ResourceType>([
   "folder",
@@ -63,12 +69,33 @@ export function registerApiRoutes(
   storage: LocalObjectStorage,
   mediaUploads: MediaUploadService,
   objectLifecycle: ObjectLifecycleService,
+  health: HealthService,
+  diagnostics: SystemDiagnosticsService,
+  observability: ApiObservability,
+  metricsToken: string | null,
 ) {
-  app.get("/api/health", async () => ({
-    status: "ok",
-    service: "xiqu-platform-api",
-    time: new Date().toISOString(),
-  }));
+  // liveness 不访问外部依赖；readiness 与兼容 health 在依赖失败时明确返回 503。
+  app.get("/api/health/live", async () => health.getLiveness());
+  app.get("/api/health/ready", async (_request, reply) => {
+    const result = await health.getReadiness();
+    if (result.status === "unavailable") reply.status(503);
+    return result;
+  });
+  app.get("/api/health", async (_request, reply) => {
+    const result = await health.getReadiness();
+    if (result.status === "unavailable") reply.status(503);
+    return result;
+  });
+
+  // Prometheus 凭据与用户 session 分离；未配置时关闭入口，避免开发默认意外暴露进程指标。
+  app.get("/metrics", async (request, reply) => {
+    if (!metricsToken) return reply.status(404).send();
+    if (!isValidMetricsToken(metricsToken, request.headers.authorization)) {
+      throw unauthorized("监控凭据无效。");
+    }
+    reply.header("Content-Type", observability.registry.contentType);
+    return observability.registry.metrics();
+  });
 
   app.post<{ Body: { accountName?: string; password?: string } }>(
     "/api/auth/login",
@@ -625,9 +652,26 @@ export function registerApiRoutes(
       if (request.body?.confirm !== true) {
         throw badRequest("清理对象存储需要显式确认。");
       }
-      return objectLifecycle.cleanup(await getCurrentUser(repository, request));
+      try {
+        const result = await objectLifecycle.cleanup(
+          await getCurrentUser(repository, request),
+        );
+        observability.recordStorageCleanup(
+          "success",
+          result.deletedBinaryCount,
+          result.deletedFileObjectCount,
+        );
+        return result;
+      } catch (error) {
+        observability.recordStorageCleanup("failure");
+        throw error;
+      }
     },
   );
+
+  // 系统级容量和对象一致性只对全局管理员开放，资源级 ACL 不会放大为系统诊断权限。
+  app.get("/api/admin/diagnostics", async (request) =>
+    diagnostics.getDiagnostics(await getCurrentUser(repository, request)));
 
   app.get<{
     Params: { fileId: string };

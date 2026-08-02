@@ -931,6 +931,253 @@ select {
   font-size: 13px;
 }
 
+/* 系统诊断沿用资源工作区的低饱和桌面样式，并把长内容限制在独立滚动区域。 */
+.system-diagnostics-backdrop {
+  position: fixed;
+  z-index: 300;
+  inset: 0;
+  background: rgb(18 27 39 / 42%);
+}
+
+.system-diagnostics-dialog {
+  position: fixed;
+  z-index: 301;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(720px, calc(100vw - 48px));
+  max-height: min(820px, calc(100vh - 48px));
+  overflow: hidden;
+  color: #26384f;
+  background: #f5f7fa;
+  border: 1px solid #bfc9d6;
+  border-radius: 8px;
+  box-shadow: 0 22px 60px rgb(17 28 43 / 28%);
+  transform: translate(-50%, -50%);
+}
+
+.system-diagnostics-header,
+.system-diagnostics-header > div,
+.system-diagnostics-header-actions,
+.system-diagnostics-section h3,
+.system-health-row,
+.system-capacity-row > div,
+.system-diagnostics-empty,
+.system-alert-list > div {
+  display: flex;
+  align-items: center;
+}
+
+.system-diagnostics-header {
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 58px;
+  padding: 10px 14px;
+  background: #edf2f7;
+  border-bottom: 1px solid #ccd5e0;
+}
+
+.system-diagnostics-header > div:first-child {
+  gap: 10px;
+}
+
+.system-diagnostics-header > div:first-child > div {
+  display: grid;
+  gap: 2px;
+}
+
+.system-diagnostics-header h2,
+.system-diagnostics-header p {
+  margin: 0;
+}
+
+.system-diagnostics-header h2 {
+  font-size: 16px;
+}
+
+.system-diagnostics-header p {
+  color: #708097;
+  font-size: 12px;
+}
+
+.system-diagnostics-header-actions {
+  gap: 4px;
+}
+
+.system-diagnostics-header-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  color: #52647b;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+
+.system-diagnostics-header-actions button:hover {
+  color: #174f8c;
+  background: #dce8f6;
+}
+
+.system-diagnostics-content {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.system-diagnostics-section {
+  padding: 11px 12px;
+  background: #fff;
+  border: 1px solid #d8dfe8;
+  border-radius: 6px;
+}
+
+.system-diagnostics-section h3 {
+  gap: 7px;
+  margin: 0 0 10px;
+  color: #33465f;
+  font-size: 13px;
+}
+
+.system-diagnostics-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.system-health-list,
+.system-operation-list,
+.system-alert-list {
+  display: grid;
+  gap: 6px;
+}
+
+.system-health-row {
+  display: grid;
+  grid-template-columns: auto minmax(100px, 1fr) auto 80px;
+  gap: 8px;
+  min-height: 28px;
+  color: #387154;
+}
+
+.system-health-row[data-status="unavailable"] {
+  color: #a43b3e;
+}
+
+.system-health-row small {
+  color: #7a8798;
+  text-align: right;
+}
+
+.system-capacity-row + .system-capacity-row {
+  margin-top: 11px;
+}
+
+.system-capacity-row > div {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 5px;
+  font-size: 12px;
+}
+
+.system-capacity-row progress {
+  width: 100%;
+  height: 8px;
+  accent-color: #3379ba;
+}
+
+.system-metric-line,
+.system-operation-list > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px solid #edf0f4;
+  font-size: 12px;
+}
+
+.system-metric-line:last-child,
+.system-operation-list > div:last-child {
+  border-bottom: 0;
+}
+
+.system-operation-list time {
+  flex: 0 0 92px;
+  color: #7a8798;
+}
+
+.system-operation-list span {
+  flex: 1;
+}
+
+.system-alert-list > div {
+  gap: 7px;
+  padding: 7px 9px;
+  color: #775c1c;
+  background: #fff8df;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.system-alert-list > div[data-severity="critical"] {
+  color: #9a3336;
+  background: #fff0f0;
+}
+
+.system-diagnostics-cleanup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  margin-top: 10px;
+  padding: 0 10px;
+  color: #8d3639;
+  background: #fff;
+  border: 1px solid #ddb8ba;
+  border-radius: 5px;
+}
+
+.system-diagnostics-cleanup:disabled {
+  opacity: 0.45;
+}
+
+.system-diagnostics-loading,
+.system-diagnostics-empty,
+.system-diagnostics-notice {
+  color: #65758a;
+  font-size: 12px;
+}
+
+.system-diagnostics-empty {
+  gap: 6px;
+}
+
+.system-diagnostics-notice {
+  padding: 8px 10px;
+  color: #296045;
+  background: #eaf7ef;
+  border: 1px solid #bcdcc9;
+}
+
+@keyframes system-diagnostics-spin {
+  to { transform: rotate(360deg); }
+}
+
+.system-diagnostics-header-actions .is-spinning {
+  animation: system-diagnostics-spin 0.8s linear infinite;
+}
+
+@media (max-width: 720px) {
+  .system-diagnostics-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* 反馈容器为空时高度为零，但仍占据明确网格行，避免内容区因条件渲染落到 auto 行。 */
 .resource-browser-feedback {
   min-height: 0;

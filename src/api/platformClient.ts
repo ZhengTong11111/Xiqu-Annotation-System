@@ -32,6 +32,7 @@ import type {
   SaveAnnotationFileRequest,
   StorageOrphanCleanupResult,
   StorageOrphanReport,
+  SystemDiagnostics,
   UpdateResourceInheritanceRequest,
   UpdateResourceRequest,
   UpsertResourcePermissionRequest,
@@ -291,6 +292,11 @@ export class PlatformClient {
       "/admin/storage/orphans/cleanup",
       { method: "POST", body: { confirm: true } },
     );
+  }
+
+  // 系统诊断由服务端完成权限和告警聚合，浏览器不自行扫描资源或推导容量阈值。
+  getSystemDiagnostics() {
+    return this.request<SystemDiagnostics>("/admin/diagnostics");
   }
 
   getFileContentUrl(fileId: string) {

@@ -202,6 +202,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/mediaUploadService.ts`
   - single-command media upload across storage staging, quota transaction, publish, and compensation
 - `apps/api/src/objectLifecycleService.ts`
+  - admin-only object orphan inspection and confirmed cleanup
+- `apps/api/src/healthService.ts`
+  - liveness/readiness dependency probes; readiness stays lightweight and does not recursively scan storage
+- `apps/api/src/observability.ts`
+  - per-app Prometheus Registry, normalized HTTP metrics, upload/cleanup outcomes, and metrics-token validation
+- `apps/api/src/systemDiagnosticsService.ts`
+  - admin-only capacity/resource/job/object-consistency aggregation and server-authored alerts
   - admin-only dry-run and confirmed cleanup for aged storage/database orphans; missing binaries are report-only
 - `apps/api/src/resourceSelection.ts`
   - pure parent/descendant selection normalization shared by atomic batch move and batch trash
@@ -250,6 +257,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:resource-column-pages`
 - `npm run test:resource-columns`
 - `npm run test:uploads`
+- `npm run test:observability`
 - `npm run test:recovery-preview`
 - `npm run test:annotation-diff`
 - `npm run test:annotation-diff-timeline`
@@ -272,6 +280,11 @@ Backend local defaults:
 - runtime Node.js must be 22 or newer because the media-signature dependency and backend toolchain require it
 - upload defaults are `XIQU_MAX_UPLOAD_BYTES=1 GiB`, `XIQU_USER_STORAGE_QUOTA_BYTES=20 GiB`,
   `XIQU_PLATFORM_STORAGE_QUOTA_BYTES=200 GiB`, and `XIQU_ORPHAN_GRACE_MS=24h`; invalid values fail startup
+- `/api/health/live` is dependency-free liveness; `/api/health/ready` and compatibility `/api/health` check
+  PostgreSQL and storage-root readiness and return 503 when unavailable
+- `/metrics` is disabled unless `XIQU_METRICS_TOKEN` is configured; it uses a separate Bearer credential rather than
+  a browser session. Metric labels must remain low-cardinality and must never include user/resource ids, filenames,
+  query strings, storage keys, or error messages
 - `.env` and `data/` are intentionally ignored
 - `prisma/migrations/20260801000000_resource_tree_baseline` is the committed resource-tree baseline;
   use `db:deploy` for a fresh/current database and reserve `db:push` for disposable local schema experiments
@@ -628,6 +641,8 @@ Important backend caveats:
 - audit logs intentionally store summary `detail` objects, not full annotation payloads or uploaded file contents
 - global audit queries are admin-only; non-admin queries require effective resource visibility appropriate to the route
 - processing jobs must validate job type and referenced resources; service roles bypass user visibility, not file existence
+- system diagnostics are global-admin-only. Resource-level `manage_permissions` never grants platform diagnostics,
+  and the UI must display server-authored capacity/alert conclusions instead of reimplementing quota rules
 - API route handlers should perform runtime validation before Prisma writes; invalid revision/action/limit inputs should return `400`, stale annotation-file revisions should return `409`
 - browser platform writes use `PATCH` and `DELETE`; keep both methods in the Fastify CORS allow-list when changing server bootstrap
 - the API is currently for local/dev use; production deployment hardening, migrations, rate limits, and secure file serving are future work

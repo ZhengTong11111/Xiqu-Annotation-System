@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { constants, createReadStream, createWriteStream } from "node:fs";
 import {
+  access,
   lstat,
   mkdir,
   readdir,
@@ -120,6 +121,16 @@ export class LocalObjectStorage {
 
   async deleteObject(storageKey: string) {
     await rm(this.resolveStoragePath(storageKey), { force: true });
+  }
+
+  // readiness 只验证根目录可读写，不递归扫描对象，避免高频探针随资产数量变慢。
+  async checkReadiness() {
+    await mkdir(this.rootDir, { recursive: true });
+    const metadata = await stat(this.rootDir);
+    if (!metadata.isDirectory()) {
+      throw new Error("对象存储根位置不是目录。");
+    }
+    await access(this.rootDir, constants.R_OK | constants.W_OK);
   }
 
   // 生命周期审计只返回安全相对 key；符号链接不跟随，避免越过存储根目录。

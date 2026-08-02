@@ -173,6 +173,65 @@ export type StorageOrphanCleanupResult = {
   deletedFileObjectCount: number;
 };
 
+// 健康探针只公开组件状态和耗时，不把数据库地址或对象目录路径暴露给调用方。
+export type HealthComponentStatus = {
+  status: "ok" | "unavailable";
+  latencyMs: number;
+  message?: string;
+};
+
+export type ServiceHealthResponse = {
+  status: "ok" | "ready" | "unavailable";
+  service: "xiqu-platform-api";
+  time: string;
+  startedAt: string;
+  components?: {
+    database: HealthComponentStatus;
+    storage: HealthComponentStatus;
+  };
+};
+
+export type SystemDiagnosticAlert = {
+  code: string;
+  severity: "info" | "warning" | "critical";
+  message: string;
+};
+
+export type SystemDiagnostics = {
+  generatedAt: string;
+  health: ServiceHealthResponse;
+  capacity: {
+    platformUsedBytes: number;
+    platformQuotaBytes: number;
+    accountUsedBytes: number;
+    accountQuotaBytes: number;
+  };
+  resources: {
+    active: number;
+    trashed: number;
+    byType: Record<ResourceType, number>;
+    fileObjects: number;
+    mediaFiles: number;
+    annotationFiles: number;
+    recoverySnapshots: number;
+  };
+  storage: {
+    finalObjectCount: number;
+    finalObjectBytes: number;
+    stagedObjectCount: number;
+    stagedObjectBytes: number;
+    issuesByCategory: Record<StorageOrphanCategory, number>;
+    cleanupEligibleCount: number;
+  };
+  jobs: Record<"queued" | "running" | "succeeded" | "failed", number>;
+  alerts: SystemDiagnosticAlert[];
+  recentOperations: Array<{
+    action: "media_upload" | "storage_orphan_cleanup";
+    createdAt: string;
+    summary: string;
+  }>;
+};
+
 export type CreateAnnotationOperationRequest = {
   baseRevision: number;
   localRevision?: number | null;
@@ -215,6 +274,8 @@ export type PlatformApiContract<TPayload = unknown> = {
   uploadMedia: { response: ResourceEntry };
   inspectStorageOrphans: { response: StorageOrphanReport };
   cleanupStorageOrphans: { response: StorageOrphanCleanupResult };
+  health: { response: ServiceHealthResponse };
+  systemDiagnostics: { response: SystemDiagnostics };
   createAnnotationFile: {
     request: CreateAnnotationFileRequest<TPayload>;
     response: AnnotationFile<TPayload>;

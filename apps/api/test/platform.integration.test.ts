@@ -37,6 +37,7 @@ test("平台资源 API 集成测试", async (suite) => {
       platformQuotaBytes: 200,
       orphanGraceMs: 1_000,
     },
+    metricsToken: "integration-metrics-token",
   });
   await app.ready();
 
@@ -51,7 +52,51 @@ test("平台资源 API 集成测试", async (suite) => {
     await suite.test("认证、会话和健康检查", async () => {
       const health = await app.inject({ method: "GET", url: "/api/health" });
       assert.equal(health.statusCode, 200);
-      assert.equal(dataOf(health.json()).status, "ok");
+      assert.equal(dataOf(health.json()).status, "ready");
+
+      const live = await app.inject({ method: "GET", url: "/api/health/live" });
+      assert.equal(live.statusCode, 200);
+      assert.equal(dataOf(live.json()).status, "ok");
+      const ready = await app.inject({ method: "GET", url: "/api/health/ready" });
+      assert.equal(ready.statusCode, 200);
+      const readyComponents = dataOf(ready.json()).components as JsonObject;
+      assert.equal((readyComponents.database as JsonObject).status, "ok");
+      assert.equal((readyComponents.storage as JsonObject).status, "ok");
+
+      const missingMetricsToken = await app.inject({
+        method: "GET",
+        url: "/metrics",
+      });
+      assert.equal(missingMetricsToken.statusCode, 401);
+      const metrics = await app.inject({
+        method: "GET",
+        url: "/metrics",
+        headers: { authorization: "Bearer integration-metrics-token" },
+      });
+      assert.equal(metrics.statusCode, 200);
+      assert.match(metrics.body, /xiqu_http_requests_total/);
+
+      // 显式 null 必须覆盖环境变量并关闭指标入口，便于内嵌或测试实例采用最小暴露面。
+      const metricsDisabledApp = await buildApiApp({
+        prisma,
+        storage,
+        logger: false,
+        seed: false,
+        metricsToken: null,
+        uploadPolicy: {
+          maxUploadBytes: 64,
+          userQuotaBytes: 80,
+          platformQuotaBytes: 200,
+          orphanGraceMs: 1_000,
+        },
+      });
+      await metricsDisabledApp.ready();
+      const disabledMetrics = await metricsDisabledApp.inject({
+        method: "GET",
+        url: "/metrics",
+      });
+      assert.equal(disabledMetrics.statusCode, 404);
+      await metricsDisabledApp.close();
 
       const adminLogin = await login(app, "admin", "admin123");
       adminToken = adminLogin.accessToken;
@@ -70,6 +115,24 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(anonymous.statusCode, 401);
       const sessions = await prisma.session.findMany();
       assert.ok(sessions.every(({ tokenHash }) => !tokenHash.includes("xiqu_")));
+
+      const forbiddenDiagnostics = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: "/api/admin/diagnostics",
+      });
+      assert.equal(forbiddenDiagnostics.statusCode, 403);
+      const diagnostics = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/admin/diagnostics",
+      });
+      assert.equal(diagnostics.statusCode, 200, diagnostics.body);
+      const diagnosticData = dataOf(diagnostics.json());
+      assert.equal((diagnosticData.health as JsonObject).status, "ready");
+      assert.equal(
+        (diagnosticData.capacity as JsonObject).platformQuotaBytes,
+        200,
+      );
+      assert.ok(Array.isArray(diagnosticData.alerts));
     });
 
     await suite.test("资源创建、名称校验和层级循环保护", async () => {

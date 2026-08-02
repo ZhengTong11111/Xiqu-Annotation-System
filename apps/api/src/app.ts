@@ -14,6 +14,9 @@ import { registerApiRoutes } from "./router.js";
 import { LocalObjectStorage } from "./storage.js";
 import { MediaUploadService } from "./mediaUploadService.js";
 import { ObjectLifecycleService } from "./objectLifecycleService.js";
+import { ApiObservability } from "./observability.js";
+import { HealthService } from "./healthService.js";
+import { SystemDiagnosticsService } from "./systemDiagnosticsService.js";
 import { loadUploadPolicy, type UploadPolicy } from "./uploadPolicy.js";
 
 export type BuildApiAppOptions = {
@@ -22,6 +25,7 @@ export type BuildApiAppOptions = {
   logger?: FastifyServerOptions["logger"] | FastifyBaseLogger;
   seed?: boolean;
   uploadPolicy?: Partial<UploadPolicy>;
+  metricsToken?: string | null;
 };
 
 /**
@@ -38,7 +42,14 @@ export async function buildApiApp(
   const resources = new ResourceService(options.prisma, access);
   const storage = options.storage ?? new LocalObjectStorage();
   const uploadPolicy = loadUploadPolicy(options.uploadPolicy);
-  const mediaUploads = new MediaUploadService(resources, storage, uploadPolicy);
+  const observability = new ApiObservability();
+  const health = new HealthService(options.prisma, storage);
+  const mediaUploads = new MediaUploadService(
+    resources,
+    storage,
+    uploadPolicy,
+    observability,
+  );
   const objectLifecycle = new ObjectLifecycleService(
     options.prisma,
     access,
@@ -49,6 +60,15 @@ export async function buildApiApp(
     logger: options.logger ?? { level: process.env.LOG_LEVEL ?? "info" },
     bodyLimit: uploadPolicy.maxUploadBytes + 1024 * 1024,
   });
+  observability.registerHttpHooks(app);
+  const diagnostics = new SystemDiagnosticsService(
+    options.prisma,
+    access,
+    storage,
+    objectLifecycle,
+    health,
+    uploadPolicy,
+  );
 
   await app.register(cors, {
     origin: true,
@@ -115,6 +135,12 @@ export async function buildApiApp(
     storage,
     mediaUploads,
     objectLifecycle,
+    health,
+    diagnostics,
+    observability,
+    options.metricsToken === undefined
+      ? process.env.XIQU_METRICS_TOKEN ?? null
+      : options.metricsToken,
   );
   if (options.seed) await repository.ensureSeedData();
   return app;
