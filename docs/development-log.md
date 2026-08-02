@@ -1108,3 +1108,58 @@ Codex 审查发现并修复：
 - R2.4 已形成快照“查看摘要、与当前比较、安全恢复”三种明确且互不替代的操作。下一轮进入 R2.5a，
   先定义“已确认标注范围”的数据、权限、时间/轨道边界和审计合同，不直接把它塞进 ProjectData、ACL
   或恢复快照，也不在合同未稳定前同时开发完整数据库和 UI。
+
+## 2026-08-02：R2.5a 已确认标注范围的共享合同与纯领域核心
+
+本轮先审计 Prisma 的 AnnotationFile、RecoverySnapshot、ResourcePermission、AuditLog 与平台角色，
+以及 ProjectData 的句级、逐字、工尺谱、板眼、自定义轨道和附属点结构。审计确认现有 `reviewer` 只是
+全局角色标签，无法表达“只允许审核某一个文件”，而 `write` 与 `manage_permissions` 分别代表修改内容
+和分配权限，也不应被误用为研究审核授权。因此本轮只稳定合同和纯规则，没有提前制造 shared/schema
+不一致的半迁移状态。
+
+实际合同与实现：
+
+- `packages/shared/src/platform.ts` 新增八个稳定确认领域、互斥的 all/domains/tracks 目标、半开时间范围、
+  确认草稿、带撤销判别联合的确认记录，以及 active/revoked、current/stale 状态类型。
+- 时间语义固定为 `[startTime, endTime)`，要求有限、非负且 `endTime > startTime`。相邻范围首尾相接不
+  算重叠；零时长点事件暂不冒充整段确认，未来若需要实体级审核将另设显式合同。
+- domains 按共享领域顺序去重，tracks trim、去重并确定排序。轨道字符串规范化不猜测项目结构；
+  `validateAnnotationConfirmationTracks()` 要求调用方提供当前项目真实持久轨道 id 集合，因此 branch-lane、
+  Gongche 附属轨和 attached point 可视轨只有在被错误传入时才会被明确拒绝，不依赖脆弱前缀推断。
+- `validateAnnotationConfirmationDraft()` 集中校验文件 id、正整数 revision、时间/目标与 2,000 字备注，
+  空白备注统一为 null。非法领域或空目标产生结构化 issue，不会静默退化为 all。
+- `getAnnotationConfirmationLifecycle()` 要求撤销账号和合法撤销时间成组出现；只有撤销原因、非法日期或
+  半截字段均拒绝。原确认事实不会被覆盖或删除。
+- `getAnnotationConfirmationFreshness()` 只按服务器 revision 保守判断：相同为 current，向前保存后为
+  stale；revision 倒退或非法值是数据错误。本轮不假装通过局部 fingerprint 让旧确认跨 revision 生效。
+- `annotationConfirmationScopesOverlap()` 先判断半开时间相交，再处理 all 或同维度 domain/track 交集；
+  domains 与 tracks 跨维度不猜测映射关系。
+- `canCreateAnnotationConfirmation()` 要求 read + 独立 review；撤销还要求本人记录或管理员/owner。
+  决策输入刻意不包含 write/manage_permissions，防止未来 API 把普通编辑、权限管理或全局 reviewer 角色
+  当作逐资源审核授权。
+- 新增 `test:annotation-confirmations`，本轮没有修改 Prisma、migration、API、ResourceCapability 或 UI，
+  也没有新增第三方依赖。
+
+自审修复：
+
+- 第一次严格构建发现一个未使用类型 import，直接删除而未使用 lint/TypeScript 禁用绕行。
+- 初版生命周期只检查撤销时间与账号是否同时存在；自审进一步发现“只有撤销原因”和非法日期仍可能
+  形成半截审计事实，随后补齐拒绝规则和测试。
+- 轨道校验没有使用 `gongche:` / `branch-lane:` 等前缀作为唯一事实，因为自定义 id 和附属点 id 的
+  命名不属于可靠持久合同；改为显式传入真实保存轨道集合。
+
+自动验证：
+
+- `test:annotation-confirmations`：9/9，覆盖三种作用域、确定规范化、输入不变、坏时间/目标/领域/轨道、
+  草稿字段、生命周期、freshness、半开重叠与审核权限矩阵。
+- `test:permissions`：5/5；`test:api`：19/19。
+- `npm run build` 与 `git diff --check` 通过。仍只有既有 pg 9 前置弃用提示和 Vite 主 chunk 超过 500 kB
+  提醒；本轮没有 UI，因此浏览器验收不适用，也没有为了形式打开页面。
+
+核对结论与下一步：
+
+- 未发现确认事实进入 ProjectData、annotation payload、恢复快照、operation log 或 UI 状态的路径；纯
+  模块没有 Prisma、React、网络、副作用、随机 id、any 或类型断言绕行。
+- R2.5b 将一次性把 `review` 加入 Prisma/shared ACL，增加确认表、迁移、列表/创建/撤销 API、AuditAction
+  与集成测试。必须复用本轮纯校验，创建时锁定并核对当前 annotation revision，撤销只追加撤销事实，
+  不修改 payload、revision 或恢复快照；在这条服务端闭环完成前不提前制作前端假数据界面。

@@ -150,6 +150,70 @@ export type AnnotationRecoverySnapshotDetail<TPayload = unknown> =
     payload: TPayload;
   };
 
+// 已确认标注范围使用稳定保存领域，不引用时间轴的派生伪轨或当前 UI 折叠状态。
+export const ANNOTATION_CONFIRMATION_DOMAINS = [
+  "subtitle_lines",
+  "character_annotations",
+  "gongche_annotations",
+  "banyan_sections",
+  "banyan_marks",
+  "custom_tracks",
+  "custom_blocks",
+  "attached_points",
+] as const;
+
+export type AnnotationConfirmationDomain =
+  (typeof ANNOTATION_CONFIRMATION_DOMAINS)[number];
+
+// 作用域三种模式保持互斥，避免 domains 与 tracks 的交集/并集语义在客户端和服务端发生分歧。
+export type AnnotationConfirmationTargets =
+  | {
+      mode: "all";
+    }
+  | {
+      mode: "domains";
+      domains: AnnotationConfirmationDomain[];
+    }
+  | {
+      mode: "tracks";
+      trackIds: string[];
+    };
+
+// 时间范围采用 [startTime, endTime) 半开区间；零时长点事件不属于本合同。
+export type AnnotationConfirmationScope = {
+  startTime: number;
+  endTime: number;
+  targets: AnnotationConfirmationTargets;
+};
+
+export type AnnotationConfirmationDraft = {
+  annotationFileId: string;
+  confirmedRevision: number;
+  scope: AnnotationConfirmationScope;
+  note?: string | null;
+};
+
+// 撤销字段作为判别联合成组出现，保留审核事实而不是原地删除记录。
+export type AnnotationConfirmationRecord = AnnotationConfirmationDraft & {
+  id: string;
+  createdBy: UserReference;
+  createdAt: string;
+} & (
+  | {
+      revokedAt?: null;
+      revokedBy?: null;
+      revokeReason?: null;
+    }
+  | {
+      revokedAt: string;
+      revokedBy: UserReference;
+      revokeReason?: string | null;
+    }
+);
+
+export type AnnotationConfirmationLifecycle = "active" | "revoked";
+export type AnnotationConfirmationFreshness = "current" | "stale";
+
 export type StoredFileObject = {
   id: string;
   name: string;

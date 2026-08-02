@@ -181,7 +181,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `packages/shared/src/`
   - API/platform DTOs and shared contract types used by web and API
 - `packages/document-model/src/`
-  - pure resource-capability helpers and their regression tests
+  - pure resource-capability helpers and annotation-confirmation contract logic with regression tests
+- `packages/document-model/src/annotationConfirmations.ts`
+  - pure normalization, validation, lifecycle/freshness, overlap, persisted-track, and review-decision helpers for
+    confirmed annotation ranges
+  - contains no Prisma, API, React, payload mutation, or global-role lookup; R2.5 backend work must reuse this contract
 - `prisma/schema.prisma`
   - PostgreSQL schema for users, sessions, resource entries, projects, annotation/media files, resource permissions/user state, recovery snapshots, processing jobs, audit logs, and annotation operations
 - `docs/`
@@ -511,6 +515,20 @@ Current backend capabilities:
   - only users with effective `manage_permissions` may edit grants
   - authorization is enforced by the API; disabled frontend controls are only an affordance
   - permission core lives in `packages/document-model` plus `resourceAccess.ts`; do not create a second UI-only implementation
+
+Confirmed-annotation contract status:
+- R2.5a defines shared DTOs and pure domain rules, but there is not yet a database table, API, UI, or live `review`
+  ResourceCapability. Do not present the contract as a completed user feature.
+- a confirmation binds one annotation file revision to a non-empty half-open time range and either all content, stable
+  research domains, or real persisted parent-track ids. Derived Gongche, attached-point, and branch-lane visual tracks
+  are not saved top-level track ids.
+- confirmation is server governance metadata, never part of `ProjectData`, annotation payload, recovery snapshots, or
+  annotation operation logs. Revision advancement makes a record stale until a future explicit re-review; it is not
+  silently carried forward.
+- future read access reuses resource `read`; create/revoke will require an independent per-resource `review` capability.
+  `write`, `manage_permissions`, and the global reviewer role must not independently imply review authority.
+- revocation preserves the original confirmation and records revoker/time/reason. Do not update or delete the original
+  audit fact in place.
 
 Current platform UI capabilities:
 - login page with development defaults
