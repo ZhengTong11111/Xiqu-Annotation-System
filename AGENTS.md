@@ -123,10 +123,20 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/resourcePageState.ts`
   - pure first-page/next-page aggregation for the main list/grid explorer
   - preserves server order, removes cross-page duplicate ids, and never converts pagination into a hidden all-pages fetch
+- `src/platform/resourceColumnPageState.ts`
+  - pure Finder-column page replacement/append/failure state; next-page errors retain loaded resources and cursor
+- `src/platform/resourceDestinationPaging.ts`
+  - bounded multi-page scan for move destinations; skips file-only pages without eagerly reading an entire directory
 - `src/platform/useResourceColumns.ts`
-  - asynchronous visible-column loader with stale-response protection and conservative path validation
+  - asynchronous per-column pagination with stale-response protection and conservative path validation
+  - an upstream path may be truncated only after its source column is exhausted; a missing item on an incomplete page is
+    not evidence that the container was moved or deleted
 - `src/platform/ResourceColumnBrowser.tsx`
-  - multi-column renderer; column group scrolls horizontally while each column owns vertical scrolling
+  - virtualized multi-column renderer; column group scrolls horizontally while each column owns vertical scrolling and
+    its own next-page lifecycle
+- `src/platform/ResourceVirtualCollection.tsx`
+  - TanStack Virtual-backed list/grid renderer; only visible/overscan resources mount `ResourceItem`, while selection and
+    commands remain based on the complete set of pages loaded in browser state
 - `src/platform/resourceClipboard.ts`
   - multi-root copy/paste result orchestration
   - each root remains a separate server transaction; one failed root does not suppress unrelated successful roots
@@ -229,6 +239,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:annotation-confirmation-view`
 - `npm run test:resource-pagination`
 - `npm run test:resource-page-state`
+- `npm run test:resource-column-pages`
 - `npm run test:resource-columns`
 - `npm run test:recovery-preview`
 - `npm run test:annotation-diff`
@@ -559,9 +570,13 @@ Confirmed-annotation contract status:
 Current platform UI capabilities:
 - login page with development defaults
 - desktop-style three-pane resource explorer with folder/project navigation, search, sorting, list/grid/Finder-column modes, multi-selection, keyboard shortcuts, and context menus
-- list/grid mode can append server pages without clearing existing resources; search/location/sort changes invalidate old
-  responses. Column mode and destination picker intentionally remain first-page consumers until R3b.
-- column mode keeps selection within one logical column, searches only the rightmost visible column, and preserves ancestor columns; temporary column read failures must not truncate an otherwise valid path
+- list/grid mode and every Finder column consume server pages incrementally without clearing loaded resources;
+  search/location/sort changes invalidate old responses. List, grid, and column resource items are virtualized through
+  `@tanstack/react-virtual`, while the shared `ResourceItem` remains the only menu/permission/DnD implementation.
+- column mode keeps selection within one logical column, searches only the rightmost visible column, and preserves
+  ancestor columns. Temporary errors and incomplete upstream pages must not truncate an otherwise valid path.
+- the move destination picker scans a bounded number of additional pages when a page contains only files, then exposes
+  an explicit “load more locations” command; it must not reintroduce an eager all-pages helper.
 - multi-selection destination picker plus list/grid/column/breadcrumb drag-to-move powered by headless Pragmatic Drag and Drop
 - create projects/folders, import annotation JSON, upload media, copy/paste all four resource types, rename, move through the API, and soft-delete resources
 - open mutable or read-only annotation files in the existing editor
@@ -615,7 +630,10 @@ Important backend caveats:
   mismatched, moved, or deleted cursor is a `400` refresh condition, never permission evidence or a reason to fall back
   silently to page one. Every page re-evaluates effective read permission.
 - resource ordering is a stable total order of the requested database field plus id in the same direction. Do not restore
-  Node-side full-list sorting or use offset pagination. The main list/grid may append pages; column mode must gain its own
+  Node-side full-list sorting or use offset pagination. Main list/grid and each column append pages independently;
+  virtual rendering must not become a reason to preload every page.
+- `Command/Ctrl+A`, Shift ranges, multi-selection commands, and drag payloads operate on resources already loaded in the
+  current logical list/column. They do not silently claim selection of server pages that have not been requested.
   per-column pagination rather than calling a helper that eagerly fetches all pages.
 - an annotation file is the mutable user-facing unit. Copying it creates an independent annotation file at revision 1 owned by the copier.
 - standalone annotation-file copy preserves an external media reference. Recursive container copy remaps references

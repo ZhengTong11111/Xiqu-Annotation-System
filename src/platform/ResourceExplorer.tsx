@@ -58,9 +58,9 @@ import { ResourceDestinationPicker } from "./ResourceDestinationPicker";
 import {
   formatResourceDate,
   ResourceIcon,
-  ResourceItem,
   resourceTypeLabel,
 } from "./ResourceItem";
+import { ResourceVirtualCollection } from "./ResourceVirtualCollection";
 import { ResourceRecoveryHistory } from "./ResourceRecoveryHistory";
 import { copyResourcesSequentially } from "./resourceClipboard";
 import {
@@ -537,6 +537,9 @@ export function ResourceExplorer(props: {
   ]);
 
   function chooseView(view: ResourceListView) {
+    // 在同一虚拟入口内从深层路径返回根目录时 rootView 不会变化，因此必须显式清空 Finder 列路径。
+    // 否则随后切回 list/grid 会把旧最右列 parentId 再写回普通视图。
+    if (mode === "column") columnBrowser.resetToBreadcrumbs([]);
     setFolderId(null);
     setRootView(view);
     setSelectedIds([]);
@@ -936,7 +939,10 @@ export function ResourceExplorer(props: {
               <button type="button" className={mode === "column" ? "active" : ""} onClick={() => changeMode("column")} title="分栏"><MoreHorizontal size={16} /></button>
             </div>
           </div>
-          {error ? <div className="resource-error-banner">{error}</div> : null}
+          {/* 固定保留反馈行，确保无错误时资源集合仍落在可伸展的第三个网格轨道。 */}
+          <div className="resource-browser-feedback">
+            {error ? <div className="resource-error-banner">{error}</div> : null}
+          </div>
           {mode === "column" ? (
             <ResourceColumnBrowser
               columns={columnBrowser.columns}
@@ -969,14 +975,20 @@ export function ResourceExplorer(props: {
               }}
               onDragFinish={handleResourceDragFinish}
               onDropResources={handleResourceDrop}
+              onLoadMore={columnBrowser.loadMore}
             />
           ) : (
             <>
-              <ResourceCollection
+              <ResourceVirtualCollection
                 items={page.items}
                 selectedIds={selectedIds}
                 mode={mode}
                 isLoading={isLoading}
+                isLoadingMore={isLoadingMore}
+                hasNextPage={Boolean(page.nextCursor)}
+                onLoadMore={() => {
+                  if (page.nextCursor) void loadPage(page.nextCursor);
+                }}
                 sortBy={sortBy}
                 direction={direction}
                 onSort={(field) => {
@@ -1005,18 +1017,6 @@ export function ResourceExplorer(props: {
                   if (comparableFiles) setComparisonFiles(comparableFiles);
                 }}
               />
-              {/* 主列表按需追加服务器页面；column 模式仍由独立路径状态管理。 */}
-              {page.nextCursor ? (
-                <div className="resource-load-more">
-                  <button
-                    type="button"
-                    disabled={isLoading || isLoadingMore}
-                    onClick={() => void loadPage(page.nextCursor)}
-                  >
-                    {isLoadingMore ? "正在加载…" : "加载更多"}
-                  </button>
-                </div>
-              ) : null}
             </>
           )}
         </section>
@@ -1108,118 +1108,6 @@ function ResourceBreadcrumbTarget(props: {
       onClick={props.onNavigate}
     >
       {props.children}
-    </button>
-  );
-}
-
-type CollectionProps = {
-  items: ResourceEntry[];
-  selectedIds: string[];
-  mode: ExplorerMode;
-  isLoading: boolean;
-  isTrashView: boolean;
-  sortBy: string;
-  direction: "asc" | "desc";
-  onSort: (field: "name" | "createdAt" | "updatedAt" | "size") => void;
-  onSelect: (event: MouseEvent, resource: ResourceEntry) => void;
-  onOpen: (resource: ResourceEntry) => void;
-  onRename: (resource: ResourceEntry) => void;
-  onCopy: (resource: ResourceEntry) => void;
-  onMove: (resource: ResourceEntry) => void;
-  interactionDisabled: boolean;
-  draggedResourceIds: string[];
-  onDragStart: (resourceIds: string[]) => void;
-  onDragFinish: () => void;
-  onDropResources: (resourceIds: string[], targetId: string) => void;
-  onRestore: (resource: ResourceEntry) => void;
-  onTrash: (resource: ResourceEntry) => void;
-  canCompareSelection: boolean;
-  onCompare: (resource: ResourceEntry) => void;
-};
-
-function ResourceCollection(props: CollectionProps) {
-  if (props.isLoading && !props.items.length) {
-    return <div className="resource-empty">正在读取资源...</div>;
-  }
-  if (!props.items.length) {
-    return <div className="resource-empty">这个位置还没有可见资源。</div>;
-  }
-  if (props.mode === "grid") {
-    return (
-      <div className="resource-grid">
-        {props.items.map((resource) => (
-          <ResourceItem
-            key={resource.id}
-            resource={resource}
-            displayMode="grid"
-            {...resourceItemProps(props, resource)}
-          />
-        ))}
-      </div>
-    );
-  }
-  return (
-    <div className="resource-list">
-      <div className="resource-list-header">
-        <SortButton label="名称" field="name" {...props} />
-        <span>类型</span>
-        <SortButton label="修改时间" field="updatedAt" {...props} />
-        <span>负责人</span>
-        <SortButton label="大小" field="size" {...props} />
-      </div>
-      {props.items.map((resource) => (
-        <ResourceItem
-          key={resource.id}
-          resource={resource}
-          displayMode="list"
-          {...resourceItemProps(props, resource)}
-        />
-      ))}
-    </div>
-  );
-}
-
-function resourceItemProps(props: CollectionProps, resource: ResourceEntry) {
-  const isSelected = props.selectedIds.includes(resource.id);
-  const trashCandidates = isSelected
-    ? props.items.filter(({ id }) => props.selectedIds.includes(id))
-    : [resource];
-  return {
-    isSelected,
-    isDragging: props.draggedResourceIds.includes(resource.id),
-    interactionDisabled: props.interactionDisabled,
-    isTrashView: props.isTrashView,
-    // 右键已选资源时操作的是整组选择，因此菜单可用性也必须按整组权限计算。
-    canTrashSelection: trashCandidates.every((item) =>
-      item.permission.capabilities.includes("delete")),
-    canCompareSelection: isSelected && props.canCompareSelection,
-    getDragResources: () => isSelected
-      ? props.items.filter(({ id }) => props.selectedIds.includes(id))
-      : [resource],
-    onSelect: props.onSelect,
-    onOpen: props.onOpen,
-    onRename: props.onRename,
-    onCopy: props.onCopy,
-    onMove: props.onMove,
-    onRestore: props.onRestore,
-    onTrash: props.onTrash,
-    onCompare: props.onCompare,
-    onDragStart: props.onDragStart,
-    onDragFinish: props.onDragFinish,
-    onDropResources: props.onDropResources,
-  };
-}
-
-function SortButton(props: {
-  label: string;
-  field: "name" | "createdAt" | "updatedAt" | "size";
-  sortBy: string;
-  direction: "asc" | "desc";
-  onSort: (field: "name" | "createdAt" | "updatedAt" | "size") => void;
-}) {
-  return (
-    <button type="button" onClick={() => props.onSort(props.field)}>
-      {props.label}{props.sortBy === props.field ? (props.direction === "asc" ? " ↑" : " ↓") : ""}
     </button>
   );
 }

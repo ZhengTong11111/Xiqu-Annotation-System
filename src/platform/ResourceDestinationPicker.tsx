@@ -20,6 +20,7 @@ import type {
   ResourceEntry,
 } from "@xiqu/shared";
 import type { PlatformClient } from "../api/platformClient";
+import { collectDestinationContainers } from "./resourceDestinationPaging";
 
 type DestinationPickerProps = {
   client: PlatformClient;
@@ -33,12 +34,14 @@ type DirectoryState = {
   current: ResourceEntry | null;
   breadcrumbs: ResourceBreadcrumb[];
   children: ResourceEntry[];
+  nextCursor: string | null;
 };
 
 const EMPTY_DIRECTORY: DirectoryState = {
   current: null,
   breadcrumbs: [],
   children: [],
+  nextCursor: null,
 };
 
 export function ResourceDestinationPicker(props: DestinationPickerProps) {
@@ -47,6 +50,7 @@ export function ResourceDestinationPicker(props: DestinationPickerProps) {
   const [selectedTarget, setSelectedTarget] = useState<ResourceEntry | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isMoving, setIsMoving] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
 
@@ -87,18 +91,21 @@ export function ResourceDestinationPicker(props: DestinationPickerProps) {
   useEffect(() => {
     const requestId = ++requestIdRef.current;
     setIsLoading(true);
+    // 切换目录会使旧追加请求失效，新目录不能继承旧页的 loading 锁。
+    setIsLoadingMore(false);
     setError(null);
     setSelectedTarget(null);
     setDirectory(EMPTY_DIRECTORY);
 
     void Promise.all([
-      props.client.listResources({
+      collectDestinationContainers((cursor) => props.client.listResources({
         parentId: folderId,
         view: "children",
         sortBy: "name",
         direction: "asc",
+        cursor: cursor ?? undefined,
         limit: 200,
-      }),
+      }), null),
       folderId ? props.client.getResource(folderId) : Promise.resolve(null),
     ]).then(([page, current]) => {
       // 快速切换目录会产生并发请求，只允许最后一次响应更新视图，避免路径和内容串页。
@@ -106,8 +113,8 @@ export function ResourceDestinationPicker(props: DestinationPickerProps) {
       setDirectory({
         current,
         breadcrumbs: page.breadcrumbs,
-        children: page.items.filter((item) =>
-          item.type === "folder" || item.type === "project"),
+        children: page.items,
+        nextCursor: page.nextCursor,
       });
     }).catch((nextError: unknown) => {
       if (requestId !== requestIdRef.current) return;
@@ -122,6 +129,44 @@ export function ResourceDestinationPicker(props: DestinationPickerProps) {
       if (requestId === requestIdRef.current) requestIdRef.current += 1;
     };
   }, [folderId, props.client]);
+
+  async function loadMoreDirectories() {
+    const cursor = directory.nextCursor;
+    if (!cursor || isLoadingMore || isMoving) return;
+    const requestId = requestIdRef.current;
+    setIsLoadingMore(true);
+    setError(null);
+    try {
+      const page = await collectDestinationContainers((nextCursor) =>
+        props.client.listResources({
+          parentId: folderId,
+          view: "children",
+          sortBy: "name",
+          direction: "asc",
+          cursor: nextCursor ?? undefined,
+          limit: 200,
+        }), cursor);
+      if (requestId !== requestIdRef.current) return;
+      setDirectory((current) => {
+        const seen = new Set(current.children.map(({ id }) => id));
+        return {
+          ...current,
+          children: [
+            ...current.children,
+            ...page.items.filter(({ id }) => !seen.has(id)),
+          ],
+          nextCursor: page.nextCursor,
+        };
+      });
+    } catch (nextError) {
+      // 后续页失败保留已加载目标和 cursor，用户可在同一位置重试。
+      if (requestId === requestIdRef.current) {
+        setError(describePickerError(nextError));
+      }
+    } finally {
+      if (requestId === requestIdRef.current) setIsLoadingMore(false);
+    }
+  }
 
   function enterDirectory(resource: ResourceEntry) {
     // 后代只能经过其父容器进入；禁用源容器入口即可在 UI 层阻止选择 source subtree。
@@ -252,6 +297,18 @@ export function ResourceDestinationPicker(props: DestinationPickerProps) {
             ) : (
               <div className="resource-destination-empty">这个位置没有可浏览的子目录。</div>
             )}
+            {/* 目录可能位于服务器后续页；显式入口同时承担有限扫描后的继续与失败重试。 */}
+            {directory.nextCursor ? (
+              <div className="resource-destination-load-more">
+                <button
+                  type="button"
+                  disabled={isLoadingMore || isMoving}
+                  onClick={() => void loadMoreDirectories()}
+                >
+                  {isLoadingMore ? "正在查找更多位置…" : "加载更多位置"}
+                </button>
+              </div>
+            ) : null}
           </div>
 
           <footer className="resource-destination-footer">

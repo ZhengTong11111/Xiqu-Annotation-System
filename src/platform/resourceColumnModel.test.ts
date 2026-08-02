@@ -95,6 +95,18 @@ test("上游列临时读取失败时保留已有路径", () => {
   }, new Set(["children:project-a"])), columns.length);
 });
 
+// 分页列尚未穷尽时，当前首批找不到路径容器并不能证明容器已经不存在。
+test("上游列仍有后续页时保留尚未加载的路径", () => {
+  const columns = buildResourceColumnPath("all_projects", [
+    breadcrumb("project-a", null, "project"),
+    breadcrumb("folder-a", "project-a", "folder"),
+  ]);
+  assert.equal(getValidResourceColumnPathLength(columns, {
+    "root:all_projects": [project],
+    "children:project-a": [],
+  }, new Set(), new Set(["children:project-a"])), columns.length);
+});
+
 function resource(
   id: string,
   type: ResourceEntry["type"],

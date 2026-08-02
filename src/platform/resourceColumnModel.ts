@@ -79,12 +79,17 @@ export function getValidResourceColumnPathLength(
   columns: ResourceColumnDescriptor[],
   itemsByColumnKey: Record<string, ResourceEntry[]>,
   erroredColumnKeys: ReadonlySet<string>,
+  incompleteColumnKeys: ReadonlySet<string> = new Set(),
 ): number {
   let validLength = columns.length;
   for (let index = 0; index < columns.length - 1; index += 1) {
     const sourceColumn = columns[index]!;
-    // 网络错误无法证明目录已被移动或删除。此时保留现有路径，避免一次临时失败让用户丢失工作位置。
-    if (erroredColumnKeys.has(sourceColumn.key)) continue;
+    // 网络错误或尚有后续页都无法证明目录已被移动或删除。只有完整读完一列仍找不到打开者，
+    // 才允许截断路径，避免第 201 项之后的容器被分页误判为已删除。
+    if (
+      erroredColumnKeys.has(sourceColumn.key) ||
+      incompleteColumnKeys.has(sourceColumn.key)
+    ) continue;
     const openedId = columns[index + 1]?.openedByResourceId;
     const sourceItems = itemsByColumnKey[sourceColumn.key] ?? [];
     if (!openedId || !sourceItems.some(({ id }) => id === openedId)) {

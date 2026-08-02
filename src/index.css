@@ -931,6 +931,11 @@ select {
   font-size: 13px;
 }
 
+/* 反馈容器为空时高度为零，但仍占据明确网格行，避免内容区因条件渲染落到 auto 行。 */
+.resource-browser-feedback {
+  min-height: 0;
+}
+
 .resource-empty {
   display: grid;
   place-items: center;
@@ -1040,13 +1045,23 @@ select {
 }
 
 .resource-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(138px, 1fr));
-  align-content: start;
-  gap: 8px;
   min-height: 0;
-  padding: 12px;
   overflow: auto;
+}
+
+/* 虚拟网格以“整行”为测量单位，避免单卡片绝对定位破坏自适应列宽。 */
+.resource-grid-spacer {
+  margin: 12px;
+}
+
+.resource-grid-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  height: 120px;
 }
 
 .resource-grid-item {
@@ -1072,6 +1087,24 @@ select {
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 三种资源视图共用的虚拟占位层只管理几何位置，交互仍由内部 ResourceItem 注册。 */
+.resource-virtual-spacer {
+  position: relative;
+  min-width: 760px;
+}
+
+.resource-virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
+.resource-grid .resource-virtual-spacer,
+.resource-column-scroll .resource-virtual-spacer {
+  min-width: 0;
 }
 
 /* 分页入口属于资源内容区而非全局工具栏，加载下一页时保留当前列表和选择。 */
@@ -1134,6 +1167,23 @@ select {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+.resource-column-load-more {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  padding: 8px;
+  color: #9c2d30;
+  font-size: 11px;
+}
+
+.resource-column-load-more button {
+  min-height: 26px;
+  color: #46637f;
+  background: #f5f8fb;
+  border: 1px solid #ccd7e3;
+  border-radius: 5px;
 }
 
 .resource-column-item {
@@ -2950,6 +3000,21 @@ select {
   padding: 7px;
   overflow: auto;
   background: #fff;
+}
+
+.resource-destination-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 8px;
+}
+
+.resource-destination-load-more button {
+  min-height: 30px;
+  padding: 0 12px;
+  color: #42617f;
+  background: #f2f6fa;
+  border: 1px solid #cbd6e2;
+  border-radius: 5px;
 }
 
 .resource-destination-list > button {

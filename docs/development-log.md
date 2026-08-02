@@ -1351,3 +1351,66 @@ Codex 审查发现并修复：
 - R3a 完成 API 与 list/grid 的增量基线。R3b 将为每个 Finder column 建立独立 cursor 状态，并评估成熟
   headless 虚拟化依赖，覆盖 list/grid/column 1000+ DOM、选择、键盘、右键和 Pragmatic DnD，不改变
   资源查询和 ACL 合同。
+
+## 2026-08-02：R3b Finder 逐列分页、三视图虚拟化与目标目录增量读取
+
+本轮在 commit `53b122d` 后先审计 `ResourceExplorer`、Finder 列模型、移动目标选择器和现有 CSS，随后
+整体重写被忽略的 `CLAUDE_WORK.md`。审计确认 R3a 的主 list/grid 已能追加页面，但会把全部已加载资源
+挂载为 DOM；Finder 每列和移动目标选择器仍固定读取 200 条。实现由 Codex 直接完成、测试、浏览器验收
+和自审，没有委托 Claude Code、GLM 或其他代理。
+
+依赖判断：
+
+- 引入 `@tanstack/react-virtual` 3.14.9（MIT，headless，TypeScript）。它只替代滚动可视区测量、
+  overscan 和虚拟行定位，不接管现有样式、权限、选择、菜单或拖拽。list/grid/column 继续渲染唯一的
+  `ResourceItem`，因此 Radix Context Menu 与 Pragmatic DnD 没有出现第二套注册路径。
+- 未引入完整 table/grid UI 框架，也没有把虚拟列表变成 eager 全页预取。依赖与 lockfile 同步提交；
+  Vite 主 chunk 从本轮构建看仍约 762 kB，既有大 chunk 提醒未消失，但没有新增运行错误。
+
+分页与路径状态：
+
+- 新增 `resourceColumnPageState.ts`，把 Finder 单列的首屏替换、后续页去重追加、cursor 更新和追加失败
+  保留建成纯函数。`useResourceColumns()` 现在为每列保存 `nextCursor/loading/loadingMore/error/
+  loadMoreError`，并以整组路径 request generation 和 cursor 复核阻止旧响应串列。
+- 路径完整性判定新增“列尚未穷尽”边界：上游列有 nextCursor 时，首批找不到打开者不能证明容器已
+  移动或删除；只有列耗尽且无读取错误才允许截断路径。搜索仍只作用于最右列，祖先列保持未过滤。
+- `ResourceColumnBrowser` 每列独立虚拟 34px 行，接近末端自动请求该列下一页，并保留显式加载/错误
+  重试入口。选中项通过数据索引调用 virtualizer 定位，不再查询可能尚未挂载的 DOM。
+- 浏览器验收中还发现同一 root view 的深层 column 点击“所有项目”后，由于 rootView 值未变化，旧列
+  路径不会自动重置；随后切回 list 会把旧 parentId 写回。现已在根导航命令中显式清空 Finder 路径，
+  并复核 column → root → list 不再落回旧目录。
+
+虚拟渲染与目标选择器：
+
+- 新增 `ResourceVirtualCollection.tsx`。list 使用固定 38px 行并保留五列表头；grid 根据容器宽度计算
+  列数后按整行虚拟化；两者接近已加载末端时预取下一页，并保留键盘可达的“加载更多”命令。
+- 旧 `ResourceExplorer.tsx` 内 list/grid 直接 `map()`、重复 item props 和 SortButton 已删除。选择数组、
+  Shift/Command 范围、全选、Inspector 和拖拽 payload 仍按浏览器中已加载的完整资源集合计算，不受
+  虚拟项卸载影响，也不声称选中尚未请求的服务器页面。
+- 资源浏览器原本依靠条件 error banner 决定 CSS grid 子项位置；无错误时内容可能落入 auto 行。新增
+  固定零高反馈行，使三种内容视图稳定占据可伸展轨道。自审又发现初版把 list 表头和数据横向滚动
+  拆开会导致窄窗口列错位，最终收敛回同一滚动容器和 sticky 表头。
+- 新增 `resourceDestinationPaging.ts`。移动目标选择器每次最多跨过四个纯文件页面，发现 project/folder
+  即停止；若预算耗尽则保留 cursor 和“加载更多位置”，不会一次读取目录全集。后续页失败保留当前
+  路径、已加载目标和 cursor，可直接重试。
+
+测试、自审与浏览器验收：
+
+- `test:resource-column-pages` 4/4，覆盖列追加去重、失败保留、目标选择器跨纯文件页和有限扫描预算；
+  `test:resource-columns` 8/8，新增未穷尽列不截断路径；`test:resource-page-state` 2/2。
+- `test:permissions` 5/5；`test:api` 27/27；`npm run build` 与 `git diff --check` 通过。仍只有既有 pg 9
+  前置弃用提示和 Vite 主 chunk 超过 500 kB 提醒。
+- 浏览器在开发库临时插入 1000 个顶层项目。list 首屏只挂载 26 个资源节点，连续分页到第 1000 项后
+  只挂载约 31 个；grid 约 36 个；Finder column 约 35 个，并实际到达第 600 项后的页面。移动目标
+  Dialog 显示后续页入口，点击后可见第 200 项后的目标。
+- 验收结束删除全部 1000 条 `R3B 虚拟化验收` 临时资源，数据库复核剩余 0 条。没有把压力数据写入
+  seed、migration 或产品示例。浏览器控制器对位于长虚拟 spacer 末端的普通 click 会在自动滚动期间
+  超时，但滚动触发的实际分页和 DOM 上限均可观测；没有把该控制器限制冒充产品错误。
+
+完成结论与下一步：
+
+- R3b 已完成 list/grid/column 的增量消费和虚拟 DOM 基线。没有修改服务端 ACL/cursor、数据库 schema、
+  标注文件或时间轴，也没有保留旧全量渲染备用路径。
+- 下一轮 R3c 进入上传可靠性、容量限制和对象生命周期。必须先审计 multipart 临时文件、对象落盘与
+  PostgreSQL 元数据之间的失败窗口，再设计配额、校验、补偿和孤儿清理；不能直接用前端 accept 当
+  安全校验，也不能在尚无生命周期规则时实现永久删除。
