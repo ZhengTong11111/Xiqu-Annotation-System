@@ -117,6 +117,11 @@ API: http://127.0.0.1:4317/
 拒绝新的编辑、上传和资源变更。Prometheus `/metrics` 默认关闭；仅配置 `XIQU_METRICS_TOKEN` 后启用，
 并要求对应 Bearer token。
 
+全局管理员还可以从同一工具栏打开“审计日志”。该窗口支持按操作类型、操作者、目标账号、资源和
+时间范围筛选，以稳定游标逐页加载，并由服务端导出与当前筛选条件一致的 CSV。单次导出最多
+10,000 条，CSV 会防护电子表格公式注入；资源级管理者只能查询自己具有“管理权限”能力的资源，不能
+借此读取平台全局日志。
+
 开发种子账号为 `admin / admin123`。全新数据库应通过 `npm run db:deploy` 应用已提交的
 Prisma migration；`db:push` 仅适合一次性的本地 schema 实验。`db:push --force-reset` 会清空
 目标数据库，只能在核对 `DATABASE_URL` 且明确不保留数据时使用。
@@ -129,12 +134,13 @@ npm run test:permissions
 npm run test:uploads
 npm run test:observability
 npm run test:maintenance
+npm run test:audit-log
 npm run test:api
 ```
 
 当前没有通用 lint 或完整 UI 自动化套件；`test:permissions` 覆盖纯权限核心，`test:api` 使用
 独立 `api_test` PostgreSQL schema 和临时对象存储验证资源、ACL、revision、恢复快照与媒体
-Range。重要平台修改完成后应同时运行上述三条命令。
+Range。重要平台修改完成后应同时运行相关专项测试和完整构建。
 
 ## 平台资源管理与逐文件权限
 

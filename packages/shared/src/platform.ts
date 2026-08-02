@@ -252,15 +252,59 @@ export type ProcessingJob = {
   updatedAt: string;
 };
 
+// 审计动作列表同时供 API 运行时校验和管理界面筛选使用，避免前后端维护两份漂移枚举。
+export const AUDIT_ACTIONS = [
+  "auth_login",
+  "file_upload",
+  "media_upload",
+  "resource_create",
+  "resource_update",
+  "resource_copy",
+  "resource_move",
+  "resource_trash",
+  "resource_restore",
+  "resource_delete",
+  "annotation_file_save",
+  "annotation_snapshot_restore",
+  "annotation_confirmation_create",
+  "annotation_confirmation_revoke",
+  "resource_permission_upsert",
+  "resource_permission_remove",
+  "resource_inheritance_update",
+  "job_create",
+  "permission_denied",
+  "storage_orphan_cleanup",
+  "maintenance_enable",
+  "maintenance_disable",
+] as const;
+
+export type AuditActionName = typeof AUDIT_ACTIONS[number];
+
+// 审计资源摘要只携带浏览所需身份，不展开资源树、权限或文件 payload。
+export type AuditResourceReference = {
+  id: string;
+  name: string;
+  type: ResourceType;
+};
+
 export type AuditLogEntry = {
   id: string;
-  action: string;
+  action: AuditActionName;
   actorUserId?: string | null;
   resourceId?: string | null;
   fileId?: string | null;
   targetUserId?: string | null;
   detail?: unknown;
   createdAt: string;
+  actor?: UserReference | null;
+  resource?: AuditResourceReference | null;
+  targetUser?: UserReference | null;
+};
+
+// 审计列表以 opaque cursor 增量读取，调用方不能从 items 数量猜测是否还有下一页。
+export type AuditLogPage = {
+  items: AuditLogEntry[];
+  nextCursor: string | null;
 };
 
 export type AnnotationOperationRecord = {

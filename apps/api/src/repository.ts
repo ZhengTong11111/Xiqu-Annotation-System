@@ -7,14 +7,18 @@ import {
 } from "@prisma/client";
 import type {
   AnnotationOperationRecord,
-  AuditLogEntry,
   CreateAnnotationOperationRequest,
   CreateProcessingJobRequest,
   ProcessingJob,
 } from "@xiqu/shared";
 import { hashToken, verifyPassword } from "./auth.js";
 import type { ApiUser } from "./domain.js";
-import { conflict, forbidden, notFound, unauthorized } from "./errors.js";
+import {
+  conflict,
+  forbidden,
+  notFound,
+  unauthorized,
+} from "./errors.js";
 import { ResourceAccessService } from "./resourceAccess.js";
 import { toFile, toPublicUser } from "./repositoryMappers.js";
 import { ensurePlatformSeedData } from "./repositorySeed.js";
@@ -158,39 +162,6 @@ export class PrismaPlatformRepository {
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
-  }
-
-  async listAuditLogs(
-    user: ApiUser,
-    options: { resourceId?: string; actorUserId?: string; limit?: number },
-  ): Promise<AuditLogEntry[]> {
-    if (options.resourceId) {
-      await this.access.assertCapability(
-        user,
-        options.resourceId,
-        "manage_permissions",
-      );
-    } else if (!this.access.isGlobalAdmin(user)) {
-      throw forbidden("非管理员查询审计日志时必须指定资源。");
-    }
-    const rows = await this.prisma.auditLog.findMany({
-      where: {
-        resourceId: options.resourceId,
-        actorUserId: options.actorUserId,
-      },
-      orderBy: { createdAt: "desc" },
-      take: Math.max(1, Math.min(options.limit ?? 50, 200)),
-    });
-    return rows.map((row) => ({
-      id: row.id,
-      action: row.action,
-      actorUserId: row.actorUserId,
-      resourceId: row.resourceId,
-      fileId: row.fileId,
-      targetUserId: row.targetUserId,
-      detail: row.detail,
-      createdAt: row.createdAt.toISOString(),
-    }));
   }
 
   async listAnnotationOperations(

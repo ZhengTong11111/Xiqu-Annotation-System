@@ -21,6 +21,7 @@ import {
   ServerCog,
   Settings2,
   ShieldCheck,
+  ScrollText,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -49,6 +50,7 @@ import {
 } from "../utils/projectFile";
 import { prepareProjectForServer } from "./PlatformWorkspace";
 import { AnnotationComparisonDialog } from "./AnnotationComparisonDialog";
+import { AuditLogDialog } from "./AuditLogDialog";
 import type { AnnotationComparisonFocus } from "./annotationComparisonNavigation";
 import type {
   AnnotationMergePreparationRequest,
@@ -139,6 +141,7 @@ export function ResourceExplorer(props: {
   >({});
   const [error, setError] = useState<string | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [auditLogOpen, setAuditLogOpen] = useState(false);
   const [movingResources, setMovingResources] = useState<ResourceEntry[]>([]);
   const [comparisonFiles, setComparisonFiles] = useState<
     [ResourceEntry, ResourceEntry] | null
@@ -780,13 +783,23 @@ export function ResourceExplorer(props: {
         <div className="resource-account">
           <span>{props.user?.displayName ?? "正在验证账号"}</span>
           {isGlobalAdmin ? (
-            <button
-              type="button"
-              title="系统诊断"
-              onClick={() => setDiagnosticsOpen(true)}
-            >
-              <ServerCog size={17} />
-            </button>
+            <>
+              {/* 全局审计与系统诊断使用独立窗口，避免健康指标和业务日志混成一个超长面板。 */}
+              <button
+                type="button"
+                title="审计日志"
+                onClick={() => setAuditLogOpen(true)}
+              >
+                <ScrollText size={17} />
+              </button>
+              <button
+                type="button"
+                title="系统诊断"
+                onClick={() => setDiagnosticsOpen(true)}
+              >
+                <ServerCog size={17} />
+              </button>
+            </>
           ) : null}
           <button type="button" title="刷新" onClick={() => void refreshCurrentView()}>
             <RefreshCw size={17} />
@@ -1067,11 +1080,19 @@ export function ResourceExplorer(props: {
       />
       {/* 系统诊断是全局管理员工具，不依赖当前资源选择，也不会挤占右侧资源 Inspector。 */}
       {isGlobalAdmin ? (
-        <SystemDiagnosticsDialog
-          client={props.client}
-          open={diagnosticsOpen}
-          onOpenChange={setDiagnosticsOpen}
-        />
+        <>
+          {/* 审计窗口独立持有分页和筛选状态，不依赖当前资源选择。 */}
+          <AuditLogDialog
+            client={props.client}
+            open={auditLogOpen}
+            onOpenChange={setAuditLogOpen}
+          />
+          <SystemDiagnosticsDialog
+            client={props.client}
+            open={diagnosticsOpen}
+            onOpenChange={setDiagnosticsOpen}
+          />
+        </>
       ) : null}
     </main>
   );

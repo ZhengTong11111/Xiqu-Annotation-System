@@ -8,6 +8,7 @@ import Fastify, {
 } from "fastify";
 import type { Pool } from "pg";
 import { HttpError } from "./errors.js";
+import { AuditLogService } from "./auditLogService.js";
 import { PrismaPlatformRepository } from "./repository.js";
 import { ResourceAccessService } from "./resourceAccess.js";
 import { ResourceService } from "./resourceService.js";
@@ -43,6 +44,8 @@ export async function buildApiApp(
 ): Promise<FastifyInstance> {
   const access = new ResourceAccessService(options.prisma);
   const repository = new PrismaPlatformRepository(options.prisma, access);
+  // 审计读取拥有独立授权、分页和导出边界，不把治理查询重新塞回通用资源仓储。
+  const auditLogs = new AuditLogService(options.prisma, access);
   const resources = new ResourceService(options.prisma, access);
   // 生产默认只通过工厂装配一次；测试可注入 typed adapter，不读取宿主环境。
   const storage = options.storage ?? createObjectStorageFromEnvironment();
@@ -86,6 +89,12 @@ export async function buildApiApp(
     origin: true,
     credentials: true,
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    // 审计 CSV 下载需要读取服务端给出的文件名、条数和截断状态。
+    exposedHeaders: [
+      "Content-Disposition",
+      "X-Audit-Export-Count",
+      "X-Audit-Export-Truncated",
+    ],
   });
   await app.register(multipart, {
     limits: { fileSize: uploadPolicy.maxUploadBytes, files: 1 },
@@ -143,6 +152,7 @@ export async function buildApiApp(
   registerApiRoutes(
     app,
     repository,
+    auditLogs,
     resources,
     storage,
     mediaUploads,

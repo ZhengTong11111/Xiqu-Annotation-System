@@ -5,7 +5,7 @@ import type {
   AnnotationOperationRecord,
   AnnotationRecoverySnapshotDetail,
   AnnotationRecoverySnapshotSummary,
-  AuditLogEntry,
+  AuditLogPage,
   BatchMoveResourcesRequest,
   BatchMoveResourcesResponse,
   BatchTrashResourcesRequest,
@@ -43,6 +43,14 @@ import type {
 export type PlatformClientOptions = {
   baseUrl?: string;
   accessToken?: string | null;
+};
+
+// 审计下载保留服务端元数据，界面可以明确提示导出条数和上限截断。
+export type AuditLogExportResult = {
+  blob: Blob;
+  filename: string;
+  exportedCount: number;
+  truncated: boolean;
 };
 
 export class PlatformApiError extends Error {
@@ -334,14 +342,34 @@ export class PlatformClient {
     });
   }
 
+  // 审计列表只消费服务端 opaque cursor，客户端不推导页码或自行重排记录。
   listAuditLogs(options: ListAuditLogsOptions = {}) {
-    const params = new URLSearchParams();
-    if (options.resourceId) params.set("resourceId", options.resourceId);
-    if (options.actorUserId) params.set("actorUserId", options.actorUserId);
-    if (options.limit !== undefined) params.set("limit", String(options.limit));
-    return this.request<AuditLogEntry[]>(
+    const params = buildAuditLogQuery(options);
+    return this.request<AuditLogPage>(
       params.size ? `/audit-logs?${params}` : "/audit-logs",
     );
+  }
+
+  // CSV 由服务端按同一筛选和授权生成；浏览器只接收文件，不拼接已加载的页面。
+  async exportAuditLogs(
+    options: Omit<ListAuditLogsOptions, "cursor" | "limit"> = {},
+  ): Promise<AuditLogExportResult> {
+    const params = buildAuditLogQuery(options);
+    const headers = new Headers();
+    if (this.accessToken) {
+      headers.set("authorization", `Bearer ${this.accessToken}`);
+    }
+    const response = await fetch(
+      `${this.baseUrl}/audit-logs/export${params.size ? `?${params}` : ""}`,
+      { headers },
+    );
+    if (!response.ok) await unwrapResponse<never>(response);
+    return {
+      blob: await response.blob(),
+      filename: parseDownloadFilename(response.headers.get("content-disposition")),
+      exportedCount: Number(response.headers.get("x-audit-export-count") ?? 0),
+      truncated: response.headers.get("x-audit-export-truncated") === "true",
+    };
   }
 
   listAnnotationOperations(annotationFileId: string) {
@@ -393,6 +421,23 @@ export class PlatformClient {
     });
     return unwrapResponse<TData>(response);
   }
+}
+
+// 列表与导出共用 query 序列化，undefined/null/空字符串不会形成伪筛选。
+function buildAuditLogQuery(options: ListAuditLogsOptions): URLSearchParams {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
+  }
+  return params;
+}
+
+// 服务端文件名只接受安全 basename；跨域未暴露响应头时使用稳定默认名。
+function parseDownloadFilename(contentDisposition: string | null): string {
+  const match = contentDisposition?.match(/filename="([^"\\/]+)"/i);
+  return match?.[1] ?? "xiqu-audit.csv";
 }
 
 async function unwrapResponse<TData>(response: Response) {

@@ -362,8 +362,12 @@ model AuditLog {
   resource ResourceEntry? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
   file     FileObject?    @relation(fields: [fileId], references: [id], onDelete: SetNull)
 
-  @@index([resourceId, createdAt])
-  @@index([actorUserId, createdAt])
+  @@index([createdAt, id])
+  @@index([action, createdAt, id])
+  @@index([resourceId, createdAt, id])
+  @@index([actorUserId, createdAt, id])
+  @@index([targetUserId, createdAt, id])
+  @@index([fileId, createdAt, id])
   @@map("audit_logs")
 }
 

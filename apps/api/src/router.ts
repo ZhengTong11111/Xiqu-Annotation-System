@@ -1,9 +1,11 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   ANNOTATION_CONFIRMATION_DOMAINS,
+  AUDIT_ACTIONS,
   RESOURCE_CAPABILITIES,
   type AnnotationConfirmationDomain,
   type AnnotationConfirmationScope,
+  type AuditActionName,
   type ProcessingJobType,
   type ResourceCapability,
   type ResourceListView,
@@ -11,6 +13,7 @@ import {
   type ResourceType,
   type SortDirection,
 } from "@xiqu/shared";
+import type { AuditLogService } from "./auditLogService.js";
 import { badRequest, unauthorized } from "./errors.js";
 import type { HealthService } from "./healthService.js";
 import type { MediaUploadService } from "./mediaUploadService.js";
@@ -62,10 +65,13 @@ const PROCESSING_JOB_TYPES = new Set<ProcessingJobType>([
   "audio_extract",
   "annotation_export",
 ]);
+// 路由运行时校验复用 shared 动作清单，未知 action 在进入 Prisma 前返回 400。
+const AUDIT_ACTION_NAMES = new Set<AuditActionName>(AUDIT_ACTIONS);
 
 export function registerApiRoutes(
   app: FastifyInstance,
   repository: PrismaPlatformRepository,
+  auditLogs: AuditLogService,
   resources: ResourceService,
   storage: Pick<ObjectStorage, "getObjectStream">,
   mediaUploads: MediaUploadService,
@@ -760,16 +766,66 @@ export function registerApiRoutes(
   });
 
   app.get<{
-    Querystring: { resourceId?: string; actorUserId?: string; limit?: string };
-  }>("/api/audit-logs", async (request) =>
-    repository.listAuditLogs(
+    Querystring: {
+      resourceId?: string;
+      actorUserId?: string;
+      targetUserId?: string;
+      action?: string;
+      createdFrom?: string;
+      createdTo?: string;
+      cursor?: string;
+      limit?: string;
+    };
+  }>("/api/audit-logs", async (request) => {
+    // action 使用共享枚举做运行时收窄，未知值不能穿过类型断言进入 Prisma。
+    const action = parseOptionalAuditAction(request.query.action);
+    return auditLogs.listAuditLogs(
       await getCurrentUser(repository, request),
       {
         resourceId: normalizedString(request.query.resourceId),
         actorUserId: normalizedString(request.query.actorUserId),
+        targetUserId: normalizedString(request.query.targetUserId),
+        action,
+        createdFrom: normalizedString(request.query.createdFrom),
+        createdTo: normalizedString(request.query.createdTo),
+        cursor: normalizedString(request.query.cursor),
         limit: parseOptionalInteger(request.query.limit, "limit", 1, 200),
       },
-    ));
+    );
+  });
+
+  app.get<{
+    Querystring: {
+      resourceId?: string;
+      actorUserId?: string;
+      targetUserId?: string;
+      action?: string;
+      createdFrom?: string;
+      createdTo?: string;
+    };
+  }>("/api/audit-logs/export", async (request, reply) => {
+    // 导出不接收 cursor/limit，始终由服务端按当前筛选执行有界完整扫描。
+    const result = await auditLogs.exportAuditLogs(
+      await getCurrentUser(repository, request),
+      {
+        resourceId: normalizedString(request.query.resourceId),
+        actorUserId: normalizedString(request.query.actorUserId),
+        targetUserId: normalizedString(request.query.targetUserId),
+        action: parseOptionalAuditAction(request.query.action),
+        createdFrom: normalizedString(request.query.createdFrom),
+        createdTo: normalizedString(request.query.createdTo),
+      },
+    );
+    const timestamp = new Date().toISOString().replaceAll(/[-:]/g, "").slice(0, 15);
+    reply.header("Content-Type", "text/csv; charset=utf-8");
+    reply.header(
+      "Content-Disposition",
+      `attachment; filename="xiqu-audit-${timestamp}.csv"`,
+    );
+    reply.header("X-Audit-Export-Count", String(result.exportedCount));
+    reply.header("X-Audit-Export-Truncated", String(result.truncated));
+    return result.csv;
+  });
 
   app.get<{ Params: { resourceId: string } }>(
     "/api/annotation-files/:resourceId/operations",
@@ -839,6 +895,16 @@ function requireObject(value: unknown): Record<string, unknown> {
 
 function normalizedString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+// 可选审计动作只接受共享合同中的稳定值，空字符串等同于未筛选。
+function parseOptionalAuditAction(value: unknown): AuditActionName | undefined {
+  const normalized = normalizedString(value);
+  if (!normalized) return undefined;
+  if (!AUDIT_ACTION_NAMES.has(normalized as AuditActionName)) {
+    throw badRequest("审计动作筛选值无效。");
+  }
+  return normalized as AuditActionName;
 }
 
 function optionalStringOrNull(value: unknown): string | null | undefined {

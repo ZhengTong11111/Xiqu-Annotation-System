@@ -957,6 +957,26 @@ select {
   transform: translate(-50%, -50%);
 }
 
+/* 审计日志复用诊断窗口的桌面层级，但为筛选、表头和增量列表保留独立网格行。 */
+.audit-log-dialog {
+  position: fixed;
+  z-index: 301;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  width: min(1180px, calc(100vw - 48px));
+  height: min(780px, calc(100vh - 48px));
+  min-height: 420px;
+  overflow: hidden;
+  color: #26384f;
+  background: #f5f7fa;
+  border: 1px solid #bfc9d6;
+  border-radius: 8px;
+  box-shadow: 0 22px 60px rgb(17 28 43 / 28%);
+  transform: translate(-50%, -50%);
+}
+
 .system-diagnostics-header,
 .system-diagnostics-header > div,
 .system-diagnostics-header-actions,
@@ -1272,9 +1292,191 @@ select {
   animation: system-diagnostics-spin 0.8s linear infinite;
 }
 
+/* 审计筛选采用紧凑工具面布局，标签固定在控件上方并允许窄窗口自动换列。 */
+.audit-log-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: 8px 10px;
+  padding: 10px 12px;
+  background: #f1f4f8;
+  border-bottom: 1px solid #d5dde7;
+}
+
+.audit-log-filters label {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: #617187;
+  font-size: 11px;
+}
+
+.audit-log-filters input,
+.audit-log-filters select {
+  min-width: 0;
+  height: 31px;
+  color: #2d4058;
+  font-size: 12px;
+}
+
+.audit-log-filter-actions,
+.audit-log-footer,
+.audit-log-footer button {
+  display: flex;
+  align-items: center;
+}
+
+.audit-log-filter-actions {
+  align-self: end;
+  justify-content: flex-end;
+  gap: 6px;
+  grid-column: 3;
+}
+
+.audit-log-filter-actions button,
+.audit-log-footer button {
+  justify-content: center;
+  gap: 5px;
+  min-height: 31px;
+  color: #41546c;
+  background: #fff;
+  border-color: #bdc8d5;
+}
+
+.audit-log-filter-actions .is-primary {
+  color: #fff;
+  background: #315f91;
+  border-color: #315f91;
+}
+
+.audit-log-feedback {
+  min-height: 0;
+}
+
+.audit-log-feedback .resource-error-banner,
+.audit-log-feedback .system-diagnostics-notice {
+  padding: 7px 12px;
+  border-width: 0 0 1px;
+}
+
+/* 表格头和记录共享同一个滚动区域与列定义，横向滚动时不会发生错列；长 detail 只占一行。 */
+.audit-log-table-region {
+  min-height: 0;
+  overflow: auto;
+  background: #fff;
+}
+
+.audit-log-table-header,
+.audit-log-table-row {
+  display: grid;
+  grid-template-columns: 150px 142px 190px 220px minmax(220px, 1fr);
+  align-items: center;
+  min-width: 940px;
+}
+
+.audit-log-table-header {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  min-height: 34px;
+  color: #607188;
+  background: #edf2f7;
+  border-bottom: 1px solid #cfd8e3;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.audit-log-table-header > span,
+.audit-log-table-row > span,
+.audit-log-table-row > time {
+  min-width: 0;
+  padding: 0 10px;
+}
+
+.audit-log-table-body {
+  min-height: 0;
+}
+
+.audit-log-table-row {
+  min-height: 45px;
+  color: #344860;
+  border-bottom: 1px solid #e5eaf0;
+  font-size: 12px;
+}
+
+.audit-log-table-row:hover {
+  background: #f5f9fd;
+}
+
+.audit-log-table-row > time,
+.audit-log-table-row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-log-table-row > span:nth-child(4) {
+  display: grid;
+  gap: 1px;
+}
+
+.audit-log-table-row small {
+  overflow: hidden;
+  color: #7a899a;
+  text-overflow: ellipsis;
+}
+
+.audit-log-action {
+  color: #285c8f;
+  font-weight: 600;
+}
+
+.audit-log-detail {
+  color: #68788c;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.audit-log-empty {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  color: #79889a;
+  font-size: 12px;
+}
+
+.audit-log-load-more {
+  display: block;
+  min-width: 120px;
+  margin: 10px auto;
+}
+
+.audit-log-footer {
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 46px;
+  padding: 7px 12px;
+  color: #697a8f;
+  background: #edf2f7;
+  border-top: 1px solid #ccd5e0;
+  font-size: 12px;
+}
+
 @media (max-width: 720px) {
   .system-diagnostics-columns {
     grid-template-columns: 1fr;
+  }
+
+  .audit-log-dialog {
+    width: calc(100vw - 20px);
+    height: calc(100vh - 20px);
+  }
+
+  .audit-log-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .audit-log-filter-actions {
+    grid-column: 1;
   }
 }
 

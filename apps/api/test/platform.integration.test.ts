@@ -2382,12 +2382,152 @@ test("平台资源 API 集成测试", async (suite) => {
       }), 1);
     });
 
+    await suite.test("审计日志分页、筛选、授权与 CSV 导出", async () => {
+      const admin = await prisma.user.findUniqueOrThrow({
+        where: { accountName: "admin" },
+      });
+      const student = await prisma.user.findUniqueOrThrow({
+        where: { accountName: "student" },
+      });
+      const auditProject = await prisma.resourceEntry.create({
+        data: {
+          id: "audit-filter-project",
+          name: "=审计公式测试",
+          type: "project",
+          ownerUserId: admin.id,
+        },
+      });
+      const sharedTime = new Date("2026-08-03T06:00:00.000Z");
+      await prisma.auditLog.createMany({
+        data: ["a", "b", "c"].map((suffix, index) => ({
+          id: `audit-page-${suffix}`,
+          action: "permission_denied" as const,
+          actorUserId: admin.id,
+          resourceId: auditProject.id,
+          targetUserId: student.id,
+          detail: { formula: "=SUM(A1)", order: index },
+          createdAt: sharedTime,
+        })),
+      });
+
+      // 普通账号既不能读取全局审计，也不能在尚未授权时读取资源范围审计。
+      const forbiddenGlobal = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: "/api/audit-logs",
+      });
+      assert.equal(forbiddenGlobal.statusCode, 403);
+      const forbiddenResource = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/audit-logs?resourceId=${auditProject.id}`,
+      });
+      assert.equal(forbiddenResource.statusCode, 403);
+
+      const query = new URLSearchParams({
+        resourceId: auditProject.id,
+        actorUserId: admin.id,
+        targetUserId: student.id,
+        action: "permission_denied",
+        createdFrom: sharedTime.toISOString(),
+        createdTo: sharedTime.toISOString(),
+        limit: "2",
+      });
+      const firstPageResponse = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/audit-logs?${query}`,
+      });
+      assert.equal(firstPageResponse.statusCode, 200, firstPageResponse.body);
+      const firstPage = dataOf(firstPageResponse.json());
+      assert.deepEqual(
+        (firstPage.items as JsonObject[]).map(({ id }) => id),
+        ["audit-page-c", "audit-page-b"],
+      );
+      assert.equal(
+        ((firstPage.items as JsonObject[])[0]!.actor as JsonObject).accountName,
+        "admin",
+      );
+      assert.equal(
+        ((firstPage.items as JsonObject[])[0]!.targetUser as JsonObject).accountName,
+        "student",
+      );
+      assert.equal(
+        ((firstPage.items as JsonObject[])[0]!.resource as JsonObject).name,
+        "=审计公式测试",
+      );
+      assert.equal(
+        "passwordHash" in ((firstPage.items as JsonObject[])[0]!.actor as JsonObject),
+        false,
+      );
+
+      // 同毫秒日志依靠 id 倒序稳定续页，跨筛选 cursor 则必须拒绝。
+      const cursor = String(firstPage.nextCursor);
+      const secondPageResponse = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/audit-logs?${query}&cursor=${encodeURIComponent(cursor)}`,
+      });
+      assert.deepEqual(
+        (dataOf(secondPageResponse.json()).items as JsonObject[]).map(({ id }) => id),
+        ["audit-page-a"],
+      );
+      assert.equal(dataOf(secondPageResponse.json()).nextCursor, null);
+      const mismatchedCursor = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/audit-logs?action=resource_move&cursor=${encodeURIComponent(cursor)}`,
+      });
+      assert.equal(mismatchedCursor.statusCode, 400);
+
+      // 直接资源授权后，非全局管理员只能读取该资源范围的同一结果集。
+      await prisma.resourcePermission.create({
+        data: {
+          resourceId: auditProject.id,
+          userId: student.id,
+          capabilities: ["manage_permissions"],
+          createdBy: admin.id,
+        },
+      });
+      const scopedAllowed = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/audit-logs?${query}`,
+      });
+      assert.equal(scopedAllowed.statusCode, 200, scopedAllowed.body);
+
+      // CSV 与列表共用筛选，返回导出元数据并把资源名公式前缀转为纯文本。
+      const exportResponse = await app.inject({
+        method: "GET",
+        url: `/api/audit-logs/export?${query}`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      assert.equal(exportResponse.statusCode, 200, exportResponse.body);
+      assert.match(exportResponse.headers["content-type"] ?? "", /text\/csv/);
+      assert.match(exportResponse.headers["content-disposition"] ?? "", /attachment/);
+      assert.equal(exportResponse.headers["x-audit-export-count"], "3");
+      assert.equal(exportResponse.headers["x-audit-export-truncated"], "false");
+      assert.ok(exportResponse.body.startsWith("\uFEFF\"时间\""));
+      assert.match(exportResponse.body, /"'=审计公式测试"/);
+    });
+
     await suite.test("治理接口坏输入和 operation revision 冲突", async () => {
       const badLimit = await jsonRequest(app, adminToken, {
         method: "GET",
         url: "/api/audit-logs?limit=1.5",
       });
       assert.equal(badLimit.statusCode, 400);
+
+      // 审计筛选必须在 Router/Repository 边界拒绝未知动作、宽松日期和倒置范围。
+      const badAuditAction = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/audit-logs?action=unknown_action",
+      });
+      assert.equal(badAuditAction.statusCode, 400);
+      const badAuditTime = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/audit-logs?createdFrom=2026-08-03",
+      });
+      assert.equal(badAuditTime.statusCode, 400);
+      const reversedAuditTime = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/audit-logs?createdFrom=2026-08-03T02%3A00%3A00.000Z&createdTo=2026-08-03T01%3A00%3A00.000Z",
+      });
+      assert.equal(reversedAuditTime.statusCode, 400);
 
       const badOperation = await jsonRequest(app, adminToken, {
         method: "POST",

@@ -36,6 +36,7 @@
     "test:backup": "npm run build:shared && tsc -p apps/api/tsconfig.test.json && node --import tsx --test apps/api/test/backupManifest.test.ts",
     "test:object-storage": "node --import tsx --test apps/api/test/storage.test.ts apps/api/test/objectStorageFactory.test.ts",
     "test:s3-storage": "node --import tsx --test apps/api/test/s3ObjectStorage.integration.ts",
+    "test:audit-log": "npm run build:shared && node --import tsx --test apps/api/test/auditLogQuery.test.ts src/platform/auditLogView.test.ts",
     "test:recovery-preview": "node --import tsx --test src/platform/recoverySnapshotPreview.test.ts",
     "test:recovery-comparison": "node --import tsx --test src/platform/recoverySnapshotComparison.test.ts",
     "test:annotation-diff": "node --import tsx --test src/platform/annotationDiff.test.ts",
