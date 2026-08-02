@@ -26,6 +26,7 @@
     "test:annotation-diff": "node --import tsx --test src/platform/annotationDiff.test.ts",
     "test:annotation-diff-timeline": "node --import tsx --test src/platform/annotationDiffTimeline.test.ts",
     "test:annotation-comparison-navigation": "node --import tsx --test src/platform/annotationComparisonNavigation.test.ts",
+    "test:annotation-merge-plan": "node --import tsx --test src/platform/annotationMergePlan.test.ts",
     "test:resource-comparison": "node --import tsx --test src/platform/resourceComparison.test.ts",
     "test:api": "npm run build:shared && npm run build:document-model && tsc -p apps/api/tsconfig.test.json && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/*.test.ts",
     "build:api": "tsc -p apps/api/tsconfig.json",

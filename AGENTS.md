@@ -64,6 +64,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/annotationComparisonNavigation.ts`
   - pure validation and normalization from one diff entry's real left/right time range to a one-shot editor focus
   - missing, negative, or non-finite ranges return `null`; never substitute zero or the opposite side's time
+- `src/platform/annotationMergePlan.ts`
+  - pure dependency-aware plan for future selective left-to-right/right-to-left annotation integration
+  - uses structured diff keys, closes strong entity references, reports machine-readable integrity issues, and never
+    mutates either `ProjectData`; UI and apply stages must not reimplement this graph
 - `src/platform/resourceComparison.ts`
   - centralized list/grid/column selection qualification for comparing exactly two readable annotation files
   - preserves `selectedIds` order as the comparison's left/right order
@@ -173,6 +177,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:recovery-preview`
 - `npm run test:annotation-diff`
 - `npm run test:annotation-diff-timeline`
+- `npm run test:annotation-comparison-navigation`
+- `npm run test:annotation-merge-plan`
 - `npm run test:resource-comparison`
 - `npm run build:web`
 - `npm run build:api`
@@ -399,6 +405,20 @@ If changing drag, selection, clipboard, import merge, or undo logic, assume stal
   Timeline acknowledgment clears it; later scrolling or zooming must never snap back to the startup location.
 - Opening from comparison still uses the normal single-file session and server-provided capabilities. Do not infer
   write access from the comparison UI or preserve the Dialog's previously fetched payload as the editor document.
+
+### Selective annotation integration planning
+- `buildAnnotationMergePlan()` is the only dependency-closure source for future selective integration. It accepts
+  normalized left/right projects, the structured diff, a direction, and stable entry keys; React must not infer
+  dependencies from visible rows or time overlap.
+- Strong references currently include character → subtitle line, Gongche → parent text block, Banyan mark → section
+  and linked Gongche, custom block → track and recursive parent block, and attached point → point-track definition →
+  custom parent track. Selecting a container does not automatically absorb all descendants.
+- A plan distinguishes explicit selection from automatic dependencies and `add`, `replace-conflict`, and
+  `already-equal`. Conflicts are not structural failure, but missing/invalid/cyclic references and project-level
+  selection make the plan non-applicable.
+- The planner is deliberately read-only: it does not generate ids, clone entities, call `commitProject()`, save an
+  annotation file, or touch revision/history/operation state. The future UI must preview this plan before a separate
+  apply stage performs one explicit, undoable target-document commit.
 
 ## Sync / Revision Model
 Even though this is still local-first, the hook already tracks document-sync concepts:

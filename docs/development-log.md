@@ -899,3 +899,45 @@ Codex 审查发现并修复：
   服务端 capabilities 与 `useProjectDocumentState({ readOnly })` 决定。
 - 下一轮进入 R2.3c 选择性片段整合合同，必须先定义目标文件、引用完整性、冲突决策和单次可撤销提交，
   不能把它简化成整份 JSON 覆盖，也不能与确认标注或实时协作同时实现。
+
+## 2026-08-02：R2.3c1 选择性整合的实体计划与引用依赖核心
+
+本轮先重新审查现有 `App.tsx` 轨道级“导入并整合”实现，确认它按时间/文本匹配、复制并重建 id，且
+没有覆盖工尺谱、板眼和稳定实体引用闭包，因此没有把旧实现直接接到结构化比较。按照本机
+`CLAUDE_WORK.md`，本轮只建立纯计划/预检核心，没有增加比较 UI 或目标文件写入。
+
+实际实现：
+
+- 新增 `annotationMergePlan.ts`，以左→右/右→左方向、两份已归一化 `ProjectData`、现有结构化 diff
+  和稳定 entry keys 生成确定计划。方向依据真实 source/target，不把 diff 的 added/removed 固定绑定
+  到某个复制方向。
+- 项目实体先集中建立索引，再以拓扑遍历计算最小强引用闭包：字符带所属句，工尺带内建逐字或自定义
+  文字块/轨道，板眼标记带区段和关联工尺，自定义块带轨道与递归父块，附属点带定义和自定义父轨。
+  选择上游实体不会反向吸入全部下游内容。
+- 计划明确区分用户选中与自动依赖，并按目标状态给出 add、replace-conflict、already-equal。冲突本身
+  可以进入后续用户决策；未知 key、错误方向导致的来源缺失、坏引用、动作轨工尺、递归父块循环和
+  project 领域则形成机器可判定 issue，使计划不可应用。
+- 输出按依赖优先、固定领域和 identity 稳定排序；重复/乱序选择得到相同结果，requiredBy 和摘要均
+  可直接成为下一轮 UI 的唯一数据源。函数不生成 id、不读时间、不修改输入，也不调用 React、API、
+  `commitProject()`、revision、history、operation 或恢复快照。
+- 新增 `test:annotation-merge-plan`。11 个测试组覆盖 20 余项场景，包括双向新增、依赖三态、工尺与
+  板眼多级闭包、递归父块、自定义/内建附属点、坏引用、非法父轨、循环、未知/不支持 key、方向错误、
+  确定性、输入不变和五类摘要统计。本轮没有新增第三方依赖。
+
+自动验证：
+
+- `npm run test:annotation-merge-plan`：11/11 通过。
+- `npm run test:annotation-comparison-navigation`：8/8；`test:annotation-diff-timeline`：10/10；
+  `test:annotation-diff`：10/10；`test:resource-comparison`：2/2。
+- `npm run test:recovery-preview`：3/3；`test:resource-columns`：7/7；`test:permissions`：5/5；
+  `test:api`：19/19。
+- `npm run build` 和 `git diff --check` 通过；仍只有既有 pg 9 前置弃用提示与 Vite 主 chunk 提醒。
+- 本轮是无 UI 的纯领域模块，浏览器验收不适用，没有为了形式打开页面。
+
+核对结论与下一步：
+
+- 未发现第二套项目迁移、diff identity、目标写入或旧轨道 merge 调用路径；新核心与现有导入整合保持
+  隔离，后者暂未删除，待实际应用阶段证明可替代后再单独清理。
+- 下一轮 R2.3c2 只在比较 Dialog 增加方向、实体多选和计划预览，展示 selected/dependency、三种目标
+  动作和结构 issue；仍不修改文件。完成并重新核对后，R2.3c3 才接冲突决策和目标编辑器的一次可撤销
+  commit。
