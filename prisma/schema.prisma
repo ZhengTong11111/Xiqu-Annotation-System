@@ -74,6 +74,8 @@ enum AuditAction {
   job_create
   permission_denied
   storage_orphan_cleanup
+  maintenance_enable
+  maintenance_disable
 }
 
 enum AnnotationConfirmationTargetMode {
@@ -363,6 +365,18 @@ model AuditLog {
   @@index([resourceId, createdAt])
   @@index([actorUserId, createdAt])
   @@map("audit_logs")
+}
+
+// 单行运行状态跨 API 实例持久化；维护锁本身由 PostgreSQL advisory lock 协调。
+model PlatformRuntimeState {
+  id                     String   @id
+  maintenanceMode        Boolean  @default(false) @map("maintenance_mode")
+  maintenanceReason      String?  @map("maintenance_reason")
+  maintenanceStartedAt   DateTime? @map("maintenance_started_at")
+  maintenanceStartedBy   String?  @map("maintenance_started_by")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  @@map("platform_runtime_state")
 }
 
 model AnnotationOperation {

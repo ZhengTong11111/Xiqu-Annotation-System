@@ -7,6 +7,7 @@ import {
   HardDrive,
   RefreshCw,
   ServerCog,
+  ShieldAlert,
   Trash2,
   X,
 } from "lucide-react";
@@ -30,6 +31,9 @@ export function SystemDiagnosticsDialog(
   const [loading, setLoading] = useState(false);
   const [cleaning, setCleaning] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [switchingMaintenance, setSwitchingMaintenance] = useState(false);
+  const [maintenanceDraft, setMaintenanceDraft] = useState<"enable" | "disable" | null>(null);
+  const [maintenanceReason, setMaintenanceReason] = useState("");
 
   // 刷新使用一次原子状态切换，旧诊断保留到新响应到达，避免面板闪空。
   const load = useCallback(async () => {
@@ -48,6 +52,8 @@ export function SystemDiagnosticsDialog(
     // Dialog 关闭时不轮询；每次重新打开读取当前容量和对象状态。
     if (!props.open) return;
     setNotice(null);
+    setMaintenanceDraft(null);
+    setMaintenanceReason("");
     void load();
   }, [load, props.open]);
 
@@ -71,6 +77,43 @@ export function SystemDiagnosticsDialog(
       setError(describeDiagnosticsError(nextError));
     } finally {
       setCleaning(false);
+    }
+  }
+
+  // 先展开面板内确认区，不依赖浏览器原生 prompt/confirm，便于管理员核对原因和风险。
+  function beginMaintenanceChange() {
+    if (!diagnostics || switchingMaintenance) return;
+    setMaintenanceDraft(diagnostics.maintenance.enabled ? "disable" : "enable");
+    setMaintenanceReason("");
+    setError(null);
+    setNotice(null);
+  }
+
+  // 确认命令只使用受控输入；服务端仍会再次校验管理员身份和原因长度。
+  async function submitMaintenanceChange() {
+    if (!diagnostics || !maintenanceDraft || switchingMaintenance) return;
+    const enabling = maintenanceDraft === "enable";
+    const reason = maintenanceReason.trim();
+    if (enabling && !reason) {
+      setError("进入维护模式前必须填写维护原因。");
+      return;
+    }
+    setSwitchingMaintenance(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const status = await props.client.setPlatformMaintenance({
+        enabled: enabling,
+        reason: enabling ? reason : null,
+      });
+      setNotice(status.enabled ? "平台已进入维护模式。" : "平台已恢复写入。");
+      setMaintenanceDraft(null);
+      setMaintenanceReason("");
+      await load();
+    } catch (nextError) {
+      setError(describeDiagnosticsError(nextError));
+    } finally {
+      setSwitchingMaintenance(false);
     }
   }
 
@@ -112,6 +155,92 @@ export function SystemDiagnosticsDialog(
             ) : null}
             {diagnostics ? (
               <>
+                {/* 维护状态置于首位，管理员进入诊断后能立即判断平台是否允许写入。 */}
+                <DiagnosticSection icon={<ShieldAlert size={17} />} title="维护状态">
+                  <div
+                    className="system-maintenance-status"
+                    data-active={diagnostics.maintenance.enabled}
+                  >
+                    <div>
+                      <strong>
+                        {diagnostics.maintenance.enabled ? "维护中" : "正常写入"}
+                      </strong>
+                      <span>
+                        {diagnostics.maintenance.enabled
+                          ? diagnostics.maintenance.reason ?? "未记录原因"
+                          : "新的编辑、上传和资源操作可正常提交"}
+                      </span>
+                      {diagnostics.maintenance.startedAt ? (
+                        <small>
+                          {formatDiagnosticTime(diagnostics.maintenance.startedAt)}
+                          {diagnostics.maintenance.startedBy
+                            ? ` · ${diagnostics.maintenance.startedBy.displayName}`
+                            : ""}
+                        </small>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={switchingMaintenance || loading}
+                      onClick={beginMaintenanceChange}
+                    >
+                      {switchingMaintenance
+                        ? "正在切换"
+                        : diagnostics.maintenance.enabled
+                          ? "恢复写入"
+                          : "进入维护"}
+                    </button>
+                  </div>
+                  {maintenanceDraft ? (
+                    /* 维护确认区保留在状态卡下方，避免原生弹窗脱离诊断上下文。 */
+                    <div className="system-maintenance-confirmation">
+                      <strong>
+                        {maintenanceDraft === "enable" ? "确认进入维护" : "确认恢复写入"}
+                      </strong>
+                      <p>
+                        {maintenanceDraft === "enable"
+                          ? "平台会先等待在途写入完成，随后拒绝新的编辑、上传和资源变更；读取仍然可用。"
+                          : "请确认备份或维护操作已经结束，恢复后新的写入会立即放行。"}
+                      </p>
+                      {maintenanceDraft === "enable" ? (
+                        <label>
+                          <span>维护原因</span>
+                          <textarea
+                            autoFocus
+                            maxLength={240}
+                            placeholder="例如：执行数据库与对象存储一致性备份"
+                            value={maintenanceReason}
+                            onChange={(event) => setMaintenanceReason(event.target.value)}
+                          />
+                          <small>{maintenanceReason.length} / 240</small>
+                        </label>
+                      ) : null}
+                      <div className="system-maintenance-confirmation-actions">
+                        <button
+                          type="button"
+                          disabled={switchingMaintenance}
+                          onClick={() => {
+                            setMaintenanceDraft(null);
+                            setMaintenanceReason("");
+                          }}
+                        >
+                          取消
+                        </button>
+                        <button
+                          type="button"
+                          className="is-primary"
+                          disabled={switchingMaintenance || (
+                            maintenanceDraft === "enable" && !maintenanceReason.trim()
+                          )}
+                          onClick={() => void submitMaintenanceChange()}
+                        >
+                          {switchingMaintenance ? "正在切换" : "确认执行"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </DiagnosticSection>
+
                 {/* 就绪状态明确区分数据库与对象存储，方便管理员快速定位不可用组件。 */}
                 <DiagnosticSection icon={<Activity size={17} />} title="服务状态">
                   <div className="system-health-list">

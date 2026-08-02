@@ -207,6 +207,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - liveness/readiness dependency probes; readiness stays lightweight and does not recursively scan storage
 - `apps/api/src/observability.ts`
   - per-app Prometheus Registry, normalized HTTP metrics, upload/cleanup outcomes, and metrics-token validation
+- `apps/api/src/maintenanceCoordinator.ts`
+  - persistent global maintenance mode and cross-instance PostgreSQL shared/exclusive advisory write gate
+  - uses a dedicated pg Pool so request-lifetime permits cannot exhaust Prisma's business-query connections
 - `apps/api/src/systemDiagnosticsService.ts`
   - admin-only capacity/resource/job/object-consistency aggregation and server-authored alerts
   - admin-only dry-run and confirmed cleanup for aged storage/database orphans; missing binaries are report-only
@@ -643,6 +646,18 @@ Important backend caveats:
 - processing jobs must validate job type and referenced resources; service roles bypass user visibility, not file existence
 - system diagnostics are global-admin-only. Resource-level `manage_permissions` never grants platform diagnostics,
   and the UI must display server-authored capacity/alert conclusions instead of reimplementing quota rules
+- maintenance state is stored in `PlatformRuntimeState`; all HTTP mutations except the dedicated admin maintenance
+  command acquire a shared advisory permit until response completion, while enabling maintenance takes the exclusive
+  form and waits for in-flight mutations to drain. Do not add a mutation route that bypasses this Fastify gate.
+- maintenance locks must use the dedicated `maintenancePool`, not Prisma's adapter Pool. Sharing one finite pool can
+  deadlock when requests hold permits while waiting for Prisma connections. New API instances/tests must pass and close
+  both pools explicitly.
+- GET/HEAD handlers allowed during maintenance must be genuinely side-effect free. “最近打开” is an explicit
+  `POST /resources/:resourceId/opened`; do not move that write back into annotation-file GET. Future worker/CLI writers
+  must acquire the same shared maintenance permit before mutation; the HTTP hook cannot govern out-of-process work.
+- maintenance mode intentionally blocks login and all ordinary mutations. The browser diagnostic panel can restore
+  through its authenticated bypass endpoint; R3d2b must also provide a controlled local CLI recovery path so expired
+  browser sessions cannot strand a deployment in maintenance.
 - API route handlers should perform runtime validation before Prisma writes; invalid revision/action/limit inputs should return `400`, stale annotation-file revisions should return `409`
 - browser platform writes use `PATCH` and `DELETE`; keep both methods in the Fastify CORS allow-list when changing server bootstrap
 - the API is currently for local/dev use; production deployment hardening, migrations, rate limits, and secure file serving are future work

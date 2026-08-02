@@ -7,6 +7,7 @@ import type {
 import type { ApiUser } from "./domain.js";
 import { forbidden } from "./errors.js";
 import type { HealthService } from "./healthService.js";
+import type { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
 import type { ObjectLifecycleService } from "./objectLifecycleService.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
 import type { LocalObjectStorage } from "./storage.js";
@@ -34,6 +35,7 @@ export class SystemDiagnosticsService {
     private readonly storage: LocalObjectStorage,
     private readonly objectLifecycle: ObjectLifecycleService,
     private readonly health: HealthService,
+    private readonly maintenance: MaintenanceCoordinator,
     private readonly policy: UploadPolicy,
   ) {}
 
@@ -58,6 +60,7 @@ export class SystemDiagnosticsService {
       diskObjects,
       orphanReport,
       recentOperations,
+      maintenance,
     ] = await Promise.all([
       this.health.getReadiness(),
       this.prisma.resourceEntry.count({ where: { trashedAt: null } }),
@@ -90,6 +93,7 @@ export class SystemDiagnosticsService {
         take: 20,
         select: { action: true, detail: true, createdAt: true },
       }),
+      this.maintenance.getStatus(user),
     ]);
 
     const byType = Object.fromEntries(RESOURCE_TYPES.map((type) => [type, 0])) as
@@ -154,6 +158,7 @@ export class SystemDiagnosticsService {
         createdAt: entry.createdAt.toISOString(),
         summary: summarizeOperation(entry.action, entry.detail),
       })),
+      maintenance,
     };
   }
 }

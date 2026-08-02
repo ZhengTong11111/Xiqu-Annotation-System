@@ -419,16 +419,21 @@ export class ResourceService {
       },
     });
     if (!resource?.annotationFile) throw notFound("标注文件不存在。");
-    await this.prisma.resourceUserState.upsert({
-      where: { resourceId_userId: { resourceId, userId: user.id } },
-      update: { lastOpenedAt: new Date() },
-      create: { resourceId, userId: user.id, lastOpenedAt: new Date() },
-    });
     return this.mapAnnotationFile<TPayload>(
       user,
       resource,
       resource.annotationFile,
     );
+  }
+
+  // 最近打开是独立的非关键写命令；读取标注 payload 本身保持纯 GET，维护期间仍可只读查看。
+  async markResourceOpened(user: ApiUser, resourceId: string) {
+    await this.access.assertCapability(user, resourceId, "read");
+    await this.prisma.resourceUserState.upsert({
+      where: { resourceId_userId: { resourceId, userId: user.id } },
+      update: { lastOpenedAt: new Date() },
+      create: { resourceId, userId: user.id, lastOpenedAt: new Date() },
+    });
   }
 
   async saveAnnotationFile<TPayload>(

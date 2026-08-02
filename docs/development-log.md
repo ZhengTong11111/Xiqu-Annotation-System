@@ -1555,3 +1555,80 @@ Development Log，因此本条同时记录计划与实现差异、失败测试�
   或告警通知；这属于部署配置，不在浏览器内伪造。
 - 下一轮 R3d2 必须先建立覆盖所有数据库/对象写入的维护静默边界，再实现带 manifest/checksum 的数据库
   与对象目录一致备份、隔离恢复演练和回滚说明。不得只提供两个并行复制命令后宣称灾备完成。
+
+## 2026-08-02：R3d2a 全局维护模式与跨实例写入静默边界
+
+本轮按既定流水线从 R3d1 commit `4d82ca3` 开始：先审计实际 mutation、数据库连接装配与路线图，整体
+重写被忽略的 `CLAUDE_WORK.md`，再实现、专项/API/全前端测试、全新 schema migration、浏览器验收和
+自审修复。由 Codex 直接完成，没有委托 Claude Code、GLM 或其他代理。用户特别要求维护详细
+Development Log，因此这里同时记录计划外发现、失败的浏览器交互和最终恢复状态。
+
+阶段拆分与锁协议：
+
+- R3d2 被明确拆为 R3d2a 写入静默边界和 R3d2b 备份/恢复。原因是 PostgreSQL 与本地对象目录没有共同
+  快照；如果备份时仍有上传、标注保存、登录 session 或资源树事务提交，分别复制数据库和目录不能形成
+  可证明的一致恢复点。本轮没有先写两个 shell copy 命令后宣称灾备完成。
+- 新增单行 `PlatformRuntimeState`，持久保存维护状态、原因、开始时间、操作者 id 和更新时间；migration
+  同时增加 maintenance enable/disable audit action，默认关闭。状态不依赖 Node 内存，因此 API 重启和
+  多实例观察同一事实。
+- 新 `MaintenanceCoordinator` 为所有非 GET/HEAD/OPTIONS HTTP 请求获取 PostgreSQL shared advisory
+  permit，并持有到 response 或 request abort。管理员开启维护时获取同 key exclusive lock，先等待所有
+  在途写请求排空，再在 Prisma transaction 中写 runtime state 与 audit。独占锁释放后，新 mutation
+  虽可取得共享锁，但会在同一数据库 session 读取 active 并立即返回 `503 maintenance_mode`。
+- 只有 `POST /api/admin/maintenance` 绕过普通 gate，handler 仍要求 global admin；否则进入维护后没有
+  恢复通道。重复设置同一状态不重复写 audit。unlock 失败会销毁连接而不是把可能仍持锁的 session 放回
+  池；业务与解锁同时失败时用 `AggregateError` 保留两条原因，请求正常响应和中断共用幂等释放 helper。
+
+连接池与只读边界自审：
+
+- 初步设计曾考虑复用 PrismaPg 的 pg Pool。审计发现请求级 shared permit 会持续到响应结束：足够多并发
+  写请求可能占满该 Pool，随后每个 handler 又等待 Prisma 取得同池连接，形成自锁。最终
+  `createPrismaConnection()` 显式返回第二个、同数据库与 search_path 的 `maintenancePool`；生产 server、
+  API factory 和测试负责同时注入/关闭。没有保留共池备用路径。
+- 第一次专项/API 测试通过后，自审发现 `GET /annotation-files/:id` 会 upsert `lastOpenedAt`。这意味着维护
+  期间虽然 GET 被放行，数据库仍在写，破坏静默承诺。最终删除 GET 副作用，新增受 gate 保护的
+  `POST /resources/:id/opened`；平台成功进入编辑器后 fire-and-forget 记录最近打开，维护期失败只写
+  console warning，不阻止只读打开。集成测试直接核对 GET 后 `ResourceUserState` 仍为 0、维护中 POST
+  为 503、解除后 POST 204 且记录为 1。
+- 未来独立 worker、备份 CLI 或其他进程写入不会自动经过 HTTP hook，必须复用同一 advisory 协议。本轮
+  尚无真实 worker；R3d2b 必须提供不依赖浏览器 session 的受控 CLI 维护恢复路径，避免 session 过期后
+  平台长期停留在持久维护状态。
+
+API、前端与交互：
+
+- shared 合同新增 maintenance status/request 和错误码；诊断响应复用 coordinator，不建立第二套状态查询。
+  管理员 GET/POST 可读写维护状态，普通用户 403；维护中普通 mutation（包括 login）统一返回 503，健康、
+  metrics、诊断、资源与标注文件读取继续可用。原因必填/长度约束同时由 coordinator 维护，便于未来 CLI
+  复用；普通 503 不包含维护原因，避免向匿名 mutation 泄漏运维细节。
+- 系统诊断首区显示“正常写入/维护中”、原因、时间和操作者。初版按计划使用 `window.prompt/confirm`；实际
+  内嵌浏览器验收会自动取消原生 prompt，而且该交互脱离诊断上下文。最终改成面板内受控确认区：进入
+  维护必须填写最多 240 字原因，风险说明、字符计数、取消和最终确认都可见；恢复写入也有明确确认区。
+  没有引入新的 UI 依赖，沿用既有 Radix Dialog 与低饱和桌面样式。
+
+测试、迁移与浏览器验收：
+
+- 新 `test:maintenance` 1/1：两个 coordinator 共用数据库状态，持有 shared permit 时 enable Promise
+  不完成；幂等 release 后才完成；active 跨 coordinator 生效，新 permit 返回 503，普通用户读取状态
+  403，disable 后恢复，enable/disable audit 各一条。
+- API 全套增至 38/38，覆盖管理员/学生切换权限、维护中资源/标注 GET、GET 无用户状态副作用、普通
+  resource mutation、recent-open mutation 和 login 拒绝、diagnostics 状态、专用恢复与恢复后 mutation。
+  既有认证、分页、ACL、复制、移动、恢复、确认、上传、Range、孤儿清理全部回归通过。
+- 其余前端/纯函数测试全部通过：permissions 5/5、annotation confirmations 10/10、confirmation view
+  5/5、resource pagination 5/5、page state 2/2、column pages 4/4、columns 8/8、uploads 4/4、observability
+  4/4、recovery preview 3/3、comparison 4/4、diff/timeline/navigation 10/10/8/8，以及全部 merge 和 resource
+  comparison 测试。`npm run build` 与 `git diff --check` 通过；仍只有既有 Vite 主 chunk 提醒和 pg 9
+  前置弃用提示。
+- migration 已应用 public 与 api_test，并在全新 `r3d2a_fresh_test` schema 从 baseline 连续部署全部 7 条
+  migration、核对默认 maintenance=false 后删除临时 schema。公共数据库最终状态再次查询为 false。
+- API 以最新代码重启。浏览器管理员诊断页先显示正常；通过真实管理 API 进入维护后刷新可见原因和操作
+  者，匿名 mutation 实测返回 `HTTP 503 / maintenance_mode`。改成面板内确认区后，又从 UI 完成一次
+  “原因输入 → 进入维护 → 状态显示 → 恢复写入”，最终页面为“正常写入”、数据库为 false。没有清理
+  R3d1 发现的 6 个磁盘孤儿或处理 2 个 missing binary，也没有创建验收项目。
+
+完成边界与下一步：
+
+- R3d2a 只提供可证明的写入静默点，不包含备份产物。R3d2b 应基于它建立可重复 CLI：开启/校验维护、
+  `pg_dump`、对象目录快照、manifest/checksum、失败清理、隔离 PostgreSQL/schema 与临时对象目录恢复、
+  自动一致性核验、最终恢复写入及操作手册。不能把 public 数据直接覆盖作为演练。
+- R3d2b 还应明确中断恢复和“维护已开启但备份进程崩溃”的处理，且 CLI 自身不能依赖被维护 gate 拒绝的
+  login；完成前路线图仍不得声称数据库与对象已经可恢复。

@@ -23,11 +23,12 @@ type JsonObject = Record<string, unknown>;
 
 test("平台资源 API 集成测试", async (suite) => {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "xiqu-api-test-"));
-  const { prisma, pool } = createTestPrisma();
+  const { prisma, pool, maintenancePool } = createTestPrisma();
   await truncateTestDatabase(prisma);
   const storage = new LocalObjectStorage(storageRoot);
   const app = await buildApiApp({
     prisma,
+    maintenancePool,
     storage,
     logger: false,
     seed: true,
@@ -79,6 +80,7 @@ test("平台资源 API 集成测试", async (suite) => {
       // 显式 null 必须覆盖环境变量并关闭指标入口，便于内嵌或测试实例采用最小暴露面。
       const metricsDisabledApp = await buildApiApp({
         prisma,
+        maintenancePool,
         storage,
         logger: false,
         seed: false,
@@ -194,6 +196,119 @@ test("平台资源 API 集成测试", async (suite) => {
         concurrentCreates.map(({ statusCode }) => statusCode).sort(),
         [200, 409],
         "并发创建同名资源时只能有一个成功",
+      );
+    });
+
+    await suite.test("维护模式排空写入并保留管理员恢复通道", async () => {
+      // 先准备维护期读取样本；进入维护后不能再借助 mutation 构造测试数据。
+      const readableAnnotation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "维护期只读标注.json",
+          payload: { marker: "maintenance-readable" },
+        },
+      });
+      assert.equal(readableAnnotation.statusCode, 200, readableAnnotation.body);
+      const readableAnnotationId = String(
+        (dataOf(readableAnnotation.json()).resource as JsonObject).id,
+      );
+      const forbiddenToggle = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: "/api/admin/maintenance",
+        payload: { enabled: true, reason: "越权维护" },
+      });
+      assert.equal(forbiddenToggle.statusCode, 403);
+
+      const enabled = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/admin/maintenance",
+        payload: { enabled: true, reason: "集成测试维护" },
+      });
+      assert.equal(enabled.statusCode, 200, enabled.body);
+      assert.equal(dataOf(enabled.json()).enabled, true);
+
+      const readsRemainAvailable = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/resources?view=all_projects",
+      });
+      assert.equal(readsRemainAvailable.statusCode, 200);
+      const annotationRead = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${readableAnnotationId}`,
+      });
+      assert.equal(annotationRead.statusCode, 200, annotationRead.body);
+      assert.equal(
+        await prisma.resourceUserState.count({
+          where: { resourceId: readableAnnotationId, userId: "user-admin" },
+        }),
+        0,
+        "标注文件 GET 在维护期间必须保持无副作用",
+      );
+      const blockedRecentWrite = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${readableAnnotationId}/opened`,
+      });
+      assert.equal(blockedRecentWrite.statusCode, 503);
+      const blockedWrite = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "维护中不应创建" },
+      });
+      assert.equal(blockedWrite.statusCode, 503);
+      assert.equal((blockedWrite.json() as JsonObject).error instanceof Object, true);
+      assert.equal(
+        ((blockedWrite.json() as JsonObject).error as JsonObject).details,
+        undefined,
+        "维护拒绝不能向匿名或未授权 mutation 泄漏运维原因",
+      );
+      const blockedLogin = await app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { accountName: "admin", password: "admin123" },
+      });
+      assert.equal(blockedLogin.statusCode, 503);
+
+      const diagnostics = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/admin/diagnostics",
+      });
+      assert.equal(
+        (dataOf(diagnostics.json()).maintenance as JsonObject).enabled,
+        true,
+      );
+      const stillForbidden = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: "/api/admin/maintenance",
+        payload: { enabled: false },
+      });
+      assert.equal(stillForbidden.statusCode, 403);
+
+      const disabled = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/admin/maintenance",
+        payload: { enabled: false },
+      });
+      assert.equal(disabled.statusCode, 200, disabled.body);
+      assert.equal(dataOf(disabled.json()).enabled, false);
+      const resumed = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "维护后恢复创建" },
+      });
+      assert.equal(resumed.statusCode, 200, resumed.body);
+      const resumedRecentWrite = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${readableAnnotationId}/opened`,
+      });
+      assert.equal(resumedRecentWrite.statusCode, 204);
+      assert.equal(
+        await prisma.resourceUserState.count({
+          where: { resourceId: readableAnnotationId, userId: "user-admin" },
+        }),
+        1,
+        "解除维护后最近打开状态应恢复写入",
       );
     });
 
@@ -2324,6 +2439,7 @@ test("平台资源 API 集成测试", async (suite) => {
     await app.close();
     await prisma.$disconnect();
     await pool.end();
+    await maintenancePool.end();
     await rm(storageRoot, { recursive: true, force: true });
   }
 });

@@ -32,6 +32,7 @@
     "test:resource-columns": "node --import tsx --test src/platform/resourceColumnModel.test.ts",
     "test:uploads": "npm run build:shared && node --import tsx --test apps/api/test/uploadPolicy.test.ts apps/api/test/storage.test.ts",
     "test:observability": "npm run build:shared && node --import tsx --test apps/api/test/observability.test.ts",
+    "test:maintenance": "npm run build:shared && tsc -p apps/api/tsconfig.test.json && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/maintenanceCoordinator.test.ts",
     "test:recovery-preview": "node --import tsx --test src/platform/recoverySnapshotPreview.test.ts",
     "test:recovery-comparison": "node --import tsx --test src/platform/recoverySnapshotComparison.test.ts",
     "test:annotation-diff": "node --import tsx --test src/platform/annotationDiff.test.ts",

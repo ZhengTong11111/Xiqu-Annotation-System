@@ -6,6 +6,7 @@ import Fastify, {
   type FastifyInstance,
   type FastifyServerOptions,
 } from "fastify";
+import type { Pool } from "pg";
 import { HttpError } from "./errors.js";
 import { PrismaPlatformRepository } from "./repository.js";
 import { ResourceAccessService } from "./resourceAccess.js";
@@ -13,6 +14,7 @@ import { ResourceService } from "./resourceService.js";
 import { registerApiRoutes } from "./router.js";
 import { LocalObjectStorage } from "./storage.js";
 import { MediaUploadService } from "./mediaUploadService.js";
+import { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
 import { ObjectLifecycleService } from "./objectLifecycleService.js";
 import { ApiObservability } from "./observability.js";
 import { HealthService } from "./healthService.js";
@@ -21,6 +23,7 @@ import { loadUploadPolicy, type UploadPolicy } from "./uploadPolicy.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
+  maintenancePool: Pool;
   storage?: LocalObjectStorage;
   logger?: FastifyServerOptions["logger"] | FastifyBaseLogger;
   seed?: boolean;
@@ -44,6 +47,11 @@ export async function buildApiApp(
   const uploadPolicy = loadUploadPolicy(options.uploadPolicy);
   const observability = new ApiObservability();
   const health = new HealthService(options.prisma, storage);
+  const maintenance = new MaintenanceCoordinator(
+    options.prisma,
+    options.maintenancePool,
+    access,
+  );
   const mediaUploads = new MediaUploadService(
     resources,
     storage,
@@ -61,12 +69,14 @@ export async function buildApiApp(
     bodyLimit: uploadPolicy.maxUploadBytes + 1024 * 1024,
   });
   observability.registerHttpHooks(app);
+  maintenance.registerRequestGate(app);
   const diagnostics = new SystemDiagnosticsService(
     options.prisma,
     access,
     storage,
     objectLifecycle,
     health,
+    maintenance,
     uploadPolicy,
   );
 
@@ -136,6 +146,7 @@ export async function buildApiApp(
     mediaUploads,
     objectLifecycle,
     health,
+    maintenance,
     diagnostics,
     observability,
     options.metricsToken === undefined

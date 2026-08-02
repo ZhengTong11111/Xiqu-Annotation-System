@@ -14,10 +14,16 @@ export function createPrismaConnection(databaseUrl: string) {
     connectionString: databaseUrl,
     options: `-c search_path=${schema}`,
   });
+  // 请求级 advisory permit 可能持续到响应结束，必须与 Prisma 业务连接分池，避免并发写入自锁。
+  const maintenancePool = new pg.Pool({
+    connectionString: databaseUrl,
+    options: `-c search_path=${schema}`,
+    max: 20,
+  });
   const prisma = new PrismaClient({
     adapter: new PrismaPg(pool, { schema }),
   });
-  return { prisma, pool, schema };
+  return { prisma, pool, maintenancePool, schema };
 }
 
 export function parseDatabaseSchema(databaseUrl: string) {

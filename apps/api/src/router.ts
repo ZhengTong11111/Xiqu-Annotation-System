@@ -14,6 +14,7 @@ import {
 import { badRequest, unauthorized } from "./errors.js";
 import type { HealthService } from "./healthService.js";
 import type { MediaUploadService } from "./mediaUploadService.js";
+import type { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
 import type { ObjectLifecycleService } from "./objectLifecycleService.js";
 import {
   type ApiObservability,
@@ -70,6 +71,7 @@ export function registerApiRoutes(
   mediaUploads: MediaUploadService,
   objectLifecycle: ObjectLifecycleService,
   health: HealthService,
+  maintenance: MaintenanceCoordinator,
   diagnostics: SystemDiagnosticsService,
   observability: ApiObservability,
   metricsToken: string | null,
@@ -85,6 +87,25 @@ export function registerApiRoutes(
     const result = await health.getReadiness();
     if (result.status === "unavailable") reply.status(503);
     return result;
+  });
+
+  // 维护状态读取和切换均要求全局管理员；POST 是唯一可绕过维护 gate 的恢复通道。
+  app.get("/api/admin/maintenance", async (request) =>
+    maintenance.getStatus(await getCurrentUser(repository, request)));
+  app.post<{
+    Body: { enabled?: unknown; reason?: unknown };
+  }>("/api/admin/maintenance", async (request) => {
+    if (typeof request.body?.enabled !== "boolean") {
+      throw badRequest("维护状态需要有效的 enabled 参数。");
+    }
+    const reason = normalizedString(
+      typeof request.body.reason === "string" ? request.body.reason : undefined,
+    );
+    // 业务层统一维护原因必填和长度约束，供 HTTP 与后续运维 CLI 共用同一不变量。
+    return maintenance.setMaintenance(
+      await getCurrentUser(repository, request),
+      { enabled: request.body.enabled, reason: reason ?? null },
+    );
   });
 
   // Prometheus 凭据与用户 session 分离；未配置时关闭入口，避免开发默认意外暴露进程指标。
@@ -166,6 +187,18 @@ export function registerApiRoutes(
         await getCurrentUser(repository, request),
         request.params.resourceId,
       ),
+  );
+
+  // 最近打开从 GET 副作用中拆出，确保维护模式可以放行真正只读的标注文件读取。
+  app.post<{ Params: { resourceId: string } }>(
+    "/api/resources/:resourceId/opened",
+    async (request, reply) => {
+      await resources.markResourceOpened(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+      );
+      return reply.status(204).send();
+    },
   );
 
   app.post<{

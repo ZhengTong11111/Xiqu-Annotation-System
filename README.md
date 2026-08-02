@@ -113,7 +113,9 @@ API: http://127.0.0.1:4317/
 
 后端提供 `/api/health/live` 与 `/api/health/ready`，前者只检查进程存活，后者检查 PostgreSQL 和对象
 目录。全局管理员可从资源工作区顶部打开“系统诊断”，查看容量、资源、任务、对象一致性与近期运维
-事件。Prometheus `/metrics` 默认关闭；仅配置 `XIQU_METRICS_TOKEN` 后启用，并要求对应 Bearer token。
+事件，并可在执行备份或维护前进入全局维护模式：平台会等待在途写入完成，继续允许读取，并以 503
+拒绝新的编辑、上传和资源变更。Prometheus `/metrics` 默认关闭；仅配置 `XIQU_METRICS_TOKEN` 后启用，
+并要求对应 Bearer token。
 
 开发种子账号为 `admin / admin123`。全新数据库应通过 `npm run db:deploy` 应用已提交的
 Prisma migration；`db:push` 仅适合一次性的本地 schema 实验。`db:push --force-reset` 会清空
@@ -126,6 +128,7 @@ npm run build
 npm run test:permissions
 npm run test:uploads
 npm run test:observability
+npm run test:maintenance
 npm run test:api
 ```
 
@@ -994,7 +997,8 @@ npm run preview
 账号、资源树、带签名/配额/补偿的媒体上传、标注文件保存、恢复快照和逐文件权限已经接入
 Fastify/Prisma/PostgreSQL，并由一组可部署 migration 维护。生产部署所需的 HTTPS、反向代理、限流、
 一致备份恢复、对象存储迁移和生产告警接入仍未完成；当前已有 liveness/readiness、低基数 Prometheus
-指标和管理员诊断面板，可用于本地与部署前故障定位。
+指标、管理员诊断面板和跨实例维护写入静默边界，可用于本地与部署前故障定位。维护状态持久化在
+PostgreSQL，API 重启不会自动解除；管理员应在维护任务完成后从诊断面板明确恢复写入。
 
 ### 2. 尚未实现实时多人协作
 

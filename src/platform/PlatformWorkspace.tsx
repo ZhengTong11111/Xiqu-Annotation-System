@@ -184,6 +184,10 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         initialProject: hydrateProjectForClient(file.payload, client),
         initialFocus,
       });
+      // 最近打开失败不应阻止已读取的文件进入编辑器；维护模式下该辅助写入会被预期拒绝。
+      void client.markResourceOpened(resource.id).catch((markError) => {
+        console.warn("记录最近打开失败", markError);
+      });
       return true;
     } catch (nextError) {
       const message = describeError(nextError);

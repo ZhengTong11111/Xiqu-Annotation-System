@@ -22,6 +22,7 @@ import type {
   LoginResponse,
   MoveResourceRequest,
   PlatformUser,
+  PlatformMaintenanceStatus,
   ProcessingJob,
   ResourceEntry,
   ResourceListPage,
@@ -30,6 +31,7 @@ import type {
   RevokeAnnotationConfirmationRequest,
   RestoreAnnotationRecoverySnapshotRequest,
   SaveAnnotationFileRequest,
+  SetPlatformMaintenanceRequest,
   StorageOrphanCleanupResult,
   StorageOrphanReport,
   SystemDiagnostics,
@@ -106,6 +108,13 @@ export class PlatformClient {
 
   getResource(resourceId: string) {
     return this.request<ResourceEntry>(`/resources/${resourceId}`);
+  }
+
+  // 最近打开是可失败的辅助写入，不再混入标注文件 GET 的数据读取语义。
+  markResourceOpened(resourceId: string) {
+    return this.request<void>(`/resources/${resourceId}/opened`, {
+      method: "POST",
+    });
   }
 
   createResource(request: CreateResourceRequest) {
@@ -297,6 +306,18 @@ export class PlatformClient {
   // 系统诊断由服务端完成权限和告警聚合，浏览器不自行扫描资源或推导容量阈值。
   getSystemDiagnostics() {
     return this.request<SystemDiagnostics>("/admin/diagnostics");
+  }
+
+  // 维护切换使用专用管理员命令；该命令是维护期间唯一允许的 mutation 恢复通道。
+  getPlatformMaintenance() {
+    return this.request<PlatformMaintenanceStatus>("/admin/maintenance");
+  }
+
+  setPlatformMaintenance(request: SetPlatformMaintenanceRequest) {
+    return this.request<PlatformMaintenanceStatus>("/admin/maintenance", {
+      method: "POST",
+      body: request,
+    });
   }
 
   getFileContentUrl(fileId: string) {

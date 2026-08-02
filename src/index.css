@@ -1153,6 +1153,106 @@ select {
   font-size: 12px;
 }
 
+/* 维护状态使用单一强调带，不与容量/资源摘要竞争视觉层级。 */
+.system-maintenance-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 10px;
+  background: #edf6ef;
+  border-left: 3px solid #4c8b64;
+}
+
+.system-maintenance-status[data-active="true"] {
+  background: #fff5e4;
+  border-left-color: #c17a20;
+}
+
+.system-maintenance-status > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.system-maintenance-status span,
+.system-maintenance-status small {
+  color: #65758a;
+  font-size: 12px;
+}
+
+.system-maintenance-status button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 10px;
+  color: #344d68;
+  background: #fff;
+  border: 1px solid #bcc8d5;
+  border-radius: 5px;
+}
+
+/* 维护切换使用面板内确认区，原因、风险和最终命令始终处于同一视觉上下文。 */
+.system-maintenance-confirmation {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px;
+  background: #f7f9fb;
+  border: 1px solid #d5dde6;
+}
+
+.system-maintenance-confirmation p {
+  margin: 0;
+  color: #65758a;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.system-maintenance-confirmation label {
+  display: grid;
+  gap: 5px;
+  color: #42556c;
+  font-size: 12px;
+}
+
+.system-maintenance-confirmation textarea {
+  min-height: 62px;
+  padding: 7px 9px;
+  resize: vertical;
+  color: #26384d;
+  font: inherit;
+  line-height: 1.45;
+  background: #fff;
+  border: 1px solid #bfcbd8;
+  border-radius: 5px;
+}
+
+.system-maintenance-confirmation label small {
+  justify-self: end;
+  color: #7a899b;
+}
+
+.system-maintenance-confirmation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.system-maintenance-confirmation-actions button {
+  min-height: 30px;
+  padding: 0 11px;
+  color: #42556c;
+  background: #fff;
+  border: 1px solid #bcc8d5;
+  border-radius: 5px;
+}
+
+.system-maintenance-confirmation-actions .is-primary {
+  color: #fff;
+  background: #315f91;
+  border-color: #315f91;
+}
+
 .system-diagnostics-empty {
   gap: 6px;
 }

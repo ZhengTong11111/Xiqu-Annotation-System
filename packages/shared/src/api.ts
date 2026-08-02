@@ -31,6 +31,7 @@ export type ApiErrorCode =
   | "upload_too_large"
   | "unsupported_media"
   | "storage_quota_exceeded"
+  | "maintenance_mode"
   | "internal_error";
 
 export type ApiErrorBody = {
@@ -230,6 +231,24 @@ export type SystemDiagnostics = {
     createdAt: string;
     summary: string;
   }>;
+  maintenance: PlatformMaintenanceStatus;
+};
+
+export type PlatformMaintenanceStatus = {
+  enabled: boolean;
+  reason: string | null;
+  startedAt: string | null;
+  startedBy: {
+    id: string;
+    accountName: string;
+    displayName: string;
+  } | null;
+  updatedAt: string;
+};
+
+export type SetPlatformMaintenanceRequest = {
+  enabled: boolean;
+  reason?: string | null;
 };
 
 export type CreateAnnotationOperationRequest = {
@@ -257,6 +276,7 @@ export type PlatformApiContract<TPayload = unknown> = {
   listDirectoryUsers: { response: PlatformUser[] };
   listResources: { response: ResourceListPage };
   getResource: { response: ResourceEntry };
+  markResourceOpened: { response: void };
   createResource: { request: CreateResourceRequest; response: ResourceEntry };
   updateResource: { request: UpdateResourceRequest; response: ResourceEntry };
   moveResource: { request: MoveResourceRequest; response: ResourceEntry };
@@ -276,6 +296,11 @@ export type PlatformApiContract<TPayload = unknown> = {
   cleanupStorageOrphans: { response: StorageOrphanCleanupResult };
   health: { response: ServiceHealthResponse };
   systemDiagnostics: { response: SystemDiagnostics };
+  getPlatformMaintenance: { response: PlatformMaintenanceStatus };
+  setPlatformMaintenance: {
+    request: SetPlatformMaintenanceRequest;
+    response: PlatformMaintenanceStatus;
+  };
   createAnnotationFile: {
     request: CreateAnnotationFileRequest<TPayload>;
     response: AnnotationFile<TPayload>;
