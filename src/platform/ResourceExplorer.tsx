@@ -689,12 +689,8 @@ export function ResourceExplorer(props: {
     }
     setIsLoading(true);
     try {
-      const uploaded = await props.client.uploadFile(file);
-      await props.client.importMediaFile({
-        parentId: locationParentId,
-        fileId: uploaded.file.id,
-        name: file.name,
-      });
+      // accept 仅改善文件选择体验；媒体签名、容量和权限都由统一服务端上传命令复核。
+      await props.client.uploadMedia(locationParentId, file, file.name);
       await refreshCurrentView();
     } catch (nextError) {
       setError(describeError(nextError));

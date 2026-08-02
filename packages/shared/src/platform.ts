@@ -222,16 +222,6 @@ export type AnnotationConfirmationList = {
   confirmations: AnnotationConfirmationRecord[];
 };
 
-export type StoredFileObject = {
-  id: string;
-  name: string;
-  mimeType: string;
-  size: number;
-  storageKey: string;
-  checksum?: string | null;
-  createdAt: string;
-};
-
 export type ProcessingJobType =
   | "pitch_extraction"
   | "spectrogram_generation"

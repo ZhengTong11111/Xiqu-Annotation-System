@@ -96,32 +96,6 @@ export class PrismaPlatformRepository {
     return rows.map(toPublicUser);
   }
 
-  async createUploadedFile(
-    user: ApiUser,
-    input: {
-      name: string;
-      mimeType: string;
-      size: number;
-      storageKey: string;
-      checksum: string;
-    },
-  ) {
-    const file = await this.prisma.fileObject.create({
-      data: { ...input, ownerUserId: user.id },
-    });
-    await this.writeAuditLog({
-      action: "file_upload",
-      actorUserId: user.id,
-      fileId: file.id,
-      detail: {
-        name: input.name,
-        mimeType: input.mimeType,
-        size: input.size,
-      },
-    });
-    return toFile(file);
-  }
-
   async getFileForRead(user: ApiUser, fileId: string) {
     const file = await this.prisma.fileObject.findUnique({
       where: { id: fileId },

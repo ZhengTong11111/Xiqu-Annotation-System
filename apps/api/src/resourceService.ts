@@ -20,7 +20,6 @@ import type {
   CreateAnnotationFileRequest,
   CreateResourceRequest,
   EffectiveResourcePermission,
-  ImportMediaFileRequest,
   ListResourcesOptions,
   ResourceCapability,
   ResourceEntry,
@@ -40,7 +39,13 @@ import {
   validateAnnotationConfirmationTracks,
 } from "@xiqu/document-model";
 import type { ApiUser } from "./domain.js";
-import { badRequest, conflict, forbidden, notFound } from "./errors.js";
+import {
+  badRequest,
+  conflict,
+  forbidden,
+  notFound,
+  storageQuotaExceeded,
+} from "./errors.js";
 import { ResourceAccessService } from "./resourceAccess.js";
 import {
   buildResourceCopyPlan,
@@ -283,28 +288,88 @@ export class ResourceService {
     );
   }
 
-  async importMediaFile(
+  // 上传流开始前先拒绝无效目录和无权限请求，避免为必然失败的命令写入大文件。
+  async prepareMediaUpload(user: ApiUser, parentId: string, name: string) {
+    this.validateName(name);
+    await this.assertContainer(parentId);
+    await this.access.assertCapability(user, parentId, "create_child");
+  }
+
+  // 二进制原子发布后，在一个事务中完成容量复核、文件元数据、资源节点和审计记录。
+  async commitUploadedMedia(
     user: ApiUser,
-    input: ImportMediaFileRequest,
+    input: {
+      parentId: string;
+      name: string;
+      mimeType: string;
+      size: number;
+      storageKey: string;
+      checksum: string;
+      userQuotaBytes: number;
+      platformQuotaBytes: number;
+    },
   ) {
     await this.assertContainer(input.parentId);
     await this.access.assertCapability(user, input.parentId, "create_child");
-    const file = await this.prisma.fileObject.findUnique({
-      where: { id: input.fileId },
-    });
-    if (!file) throw notFound("上传文件不存在。");
-    if (file.ownerUserId !== user.id && !this.access.isGlobalAdmin(user)) {
-      throw forbidden("只能把自己上传的文件加入资源树。");
-    }
-    const name = this.validateName(input.name ?? file.name);
+    const name = this.validateName(input.name);
     const resource = await this.prisma.$transaction(async (transaction) => {
+      // 配额锁顺序固定为平台、用户、目录，避免并发上传各自通过旧使用量并减少死锁风险。
+      await transaction.$queryRaw`
+        SELECT 1::integer AS locked
+        FROM pg_advisory_xact_lock(hashtext('xiqu:storage-quota:platform'))
+      `;
+      await transaction.$queryRaw`
+        SELECT 1::integer AS locked
+        FROM pg_advisory_xact_lock(hashtext(${`xiqu:storage-quota:user:${user.id}`}))
+      `;
       await this.lockParentNamespaces(transaction, [input.parentId]);
       await this.assertNameAvailable(
         transaction,
         input.parentId,
         name,
       );
-      return transaction.resourceEntry.create({
+
+      // FileObject 是容量计费单位；多个媒体资源复用同一对象时只计算一次。
+      // PrismaPg 的事务使用单连接，容量查询顺序执行以避免在同一 client 上并发 query。
+      const platformUsageRow = await transaction.$queryRaw<
+        Array<{ total: bigint }>
+      >`
+        SELECT COALESCE(SUM(size), 0)::bigint AS total FROM files
+      `;
+      const userUsageRow = await transaction.$queryRaw<
+        Array<{ total: bigint }>
+      >`
+        SELECT COALESCE(SUM(size), 0)::bigint AS total
+        FROM files WHERE owner_user_id = ${user.id}
+      `;
+      const platformUsedBytes = Number(platformUsageRow[0]?.total ?? 0n);
+      const userUsedBytes = Number(userUsageRow[0]?.total ?? 0n);
+      if (platformUsedBytes + input.size > input.platformQuotaBytes) {
+        throw storageQuotaExceeded("平台存储容量不足。", {
+          usedBytes: platformUsedBytes,
+          quotaBytes: input.platformQuotaBytes,
+          requiredBytes: input.size,
+        });
+      }
+      if (userUsedBytes + input.size > input.userQuotaBytes) {
+        throw storageQuotaExceeded("当前账号的存储容量不足。", {
+          usedBytes: userUsedBytes,
+          quotaBytes: input.userQuotaBytes,
+          requiredBytes: input.size,
+        });
+      }
+
+      const file = await transaction.fileObject.create({
+        data: {
+          name,
+          mimeType: input.mimeType,
+          size: input.size,
+          storageKey: input.storageKey,
+          checksum: input.checksum,
+          ownerUserId: user.id,
+        },
+      });
+      const createdResource = await transaction.resourceEntry.create({
         data: {
           parentId: input.parentId,
           type: "media_file",
@@ -313,19 +378,30 @@ export class ResourceService {
           mediaFile: {
             create: {
               fileId: file.id,
-              mimeType: file.mimeType,
-              size: file.size,
+              mimeType: input.mimeType,
+              size: input.size,
             },
           },
         },
-        include: resourceInclude,
+        select: { id: true },
       });
+      await transaction.auditLog.create({
+        data: {
+          action: "media_upload",
+          actorUserId: user.id,
+          resourceId: createdResource.id,
+          fileId: file.id,
+          detail: {
+            name,
+            mimeType: input.mimeType,
+            size: input.size,
+          },
+        },
+      });
+      return createdResource;
     });
-    return this.mapResource(
-      user,
-      resource,
-      await this.access.getEffectivePermission(user, resource.id),
-    );
+    // 这里只返回已提交资源 id；DTO 映射在上传编排层标记 committed 后进行，避免映射失败误删二进制。
+    return resource.id;
   }
 
   async getAnnotationFile<TPayload>(

@@ -2,6 +2,9 @@
   "name": "xiqu-annotation-system",
   "private": true,
   "version": "0.1.0",
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "workspaces": [
     "apps/*",
@@ -27,6 +30,7 @@
     "test:resource-page-state": "node --import tsx --test src/platform/resourcePageState.test.ts",
     "test:resource-column-pages": "node --import tsx --test src/platform/resourceColumnPageState.test.ts src/platform/resourceDestinationPaging.test.ts",
     "test:resource-columns": "node --import tsx --test src/platform/resourceColumnModel.test.ts",
+    "test:uploads": "npm run build:shared && node --import tsx --test apps/api/test/uploadPolicy.test.ts apps/api/test/storage.test.ts",
     "test:recovery-preview": "node --import tsx --test src/platform/recoverySnapshotPreview.test.ts",
     "test:recovery-comparison": "node --import tsx --test src/platform/recoverySnapshotComparison.test.ts",
     "test:annotation-diff": "node --import tsx --test src/platform/annotationDiff.test.ts",
@@ -54,6 +58,7 @@
     "@radix-ui/react-dialog": "^1.1.23",
     "@tanstack/react-virtual": "^3.14.9",
     "fastify": "^5.8.5",
+    "file-type": "^22.0.1",
     "lucide-react": "^1.27.0",
     "pg": "^8.22.0",
     "react": "^18.3.1",

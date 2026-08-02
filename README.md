@@ -79,7 +79,7 @@ PostgreSQL 或 API，适合单机整理、演示和紧急离线标注。
 
 ### 3. 启动完整平台
 
-完整平台需要 PostgreSQL、API 和 Web 三部分。仓库提供 PostgreSQL 16 的 Docker Compose
+完整平台需要 Node.js 22+、PostgreSQL、API 和 Web 三部分。仓库提供 PostgreSQL 16 的 Docker Compose
 配置：
 
 ```bash
@@ -106,6 +106,11 @@ Web: http://127.0.0.1:5173/
 API: http://127.0.0.1:4317/
 ```
 
+媒体上传默认限制为单文件 1 GiB、每个账号 20 GiB、平台 200 GiB；可通过
+`XIQU_MAX_UPLOAD_BYTES`、`XIQU_USER_STORAGE_QUOTA_BYTES`、
+`XIQU_PLATFORM_STORAGE_QUOTA_BYTES` 和 `XIQU_ORPHAN_GRACE_MS` 调整。服务端会检查真实媒体签名，
+浏览器文件选择器显示的类型并不是安全边界。
+
 开发种子账号为 `admin / admin123`。全新数据库应通过 `npm run db:deploy` 应用已提交的
 Prisma migration；`db:push` 仅适合一次性的本地 schema 实验。`db:push --force-reset` 会清空
 目标数据库，只能在核对 `DATABASE_URL` 且明确不保留数据时使用。
@@ -115,6 +120,7 @@ Prisma migration；`db:push` 仅适合一次性的本地 schema 实验。`db:pus
 ```bash
 npm run build
 npm run test:permissions
+npm run test:uploads
 npm run test:api
 ```
 
@@ -980,9 +986,9 @@ npm run preview
 
 ### 1. 平台后端已经可用，但不是生产部署版本
 
-账号、资源树、媒体上传、标注文件保存、恢复快照和逐文件权限已经接入
-Fastify/Prisma/PostgreSQL，并已建立第一条资源树 baseline migration。生产部署所需的迁移发布
-规范、HTTPS、反向代理、限流、备份、对象存储迁移和运维监控仍未完成。
+账号、资源树、带签名/配额/补偿的媒体上传、标注文件保存、恢复快照和逐文件权限已经接入
+Fastify/Prisma/PostgreSQL，并由一组可部署 migration 维护。生产部署所需的 HTTPS、反向代理、限流、
+一致备份恢复、对象存储迁移和运维监控仍未完成。
 
 ### 2. 尚未实现实时多人协作
 

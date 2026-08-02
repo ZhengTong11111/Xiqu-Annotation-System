@@ -11,8 +11,9 @@ import {
   type ResourceType,
   type SortDirection,
 } from "@xiqu/shared";
-import { Readable } from "node:stream";
 import { badRequest } from "./errors.js";
+import type { MediaUploadService } from "./mediaUploadService.js";
+import type { ObjectLifecycleService } from "./objectLifecycleService.js";
 import type { PrismaPlatformRepository } from "./repository.js";
 import type { ResourceService } from "./resourceService.js";
 import { MAX_BATCH_RESOURCE_SELECTION } from "./resourceSelection.js";
@@ -60,6 +61,8 @@ export function registerApiRoutes(
   repository: PrismaPlatformRepository,
   resources: ResourceService,
   storage: LocalObjectStorage,
+  mediaUploads: MediaUploadService,
+  objectLifecycle: ObjectLifecycleService,
 ) {
   app.get("/api/health", async () => ({
     status: "ok",
@@ -588,50 +591,43 @@ export function registerApiRoutes(
     return updated;
   });
 
-  app.post("/api/files/upload", async (request) => {
+  app.post<{
+    Querystring: { parentId?: string; name?: string };
+  }>("/api/media-files/upload", async (request) => {
+    if (!request.query.parentId || !request.query.name) {
+      throw badRequest("媒体上传需要目标目录和文件名。");
+    }
     const user = await getCurrentUser(repository, request);
+    // request.file 只解析 multipart 并交出流；服务会在真正消费流和落盘前完成权限预检。
     const file = await request.file();
     if (!file) throw badRequest("请选择需要上传的文件。");
-    const storageKey = storage.createStorageKey(file.filename);
-    const stored = await storage.putObject(
-      storageKey,
-      Readable.from(file.file),
+    return mediaUploads.upload(
+      user,
+      {
+        parentId: request.query.parentId,
+        name: request.query.name,
+        stream: file.file,
+        wasTruncated: () => file.file.truncated,
+      },
+      request.log,
     );
-    try {
-      return {
-        file: await repository.createUploadedFile(user, {
-          name: file.filename,
-          mimeType: file.mimetype,
-          size: stored.size,
-          storageKey: stored.storageKey,
-          checksum: stored.checksum,
-        }),
-      };
-    } catch (error) {
-      // PostgreSQL 无法回滚已经完成的文件系统写入；数据库落库失败时必须显式补偿。
-      await storage.deleteObject(stored.storageKey).catch((cleanupError) => {
-        request.log.error(cleanupError, "清理上传孤儿对象失败");
-      });
-      throw error;
-    }
   });
 
-  app.post<{
-    Body: { parentId?: unknown; fileId?: unknown; name?: unknown };
-  }>("/api/media-files", async (request) => {
-    const body = requireObject(request.body);
-    if (typeof body.parentId !== "string" || typeof body.fileId !== "string") {
-      throw badRequest("媒体文件需要 parentId 和 fileId。");
-    }
-    return resources.importMediaFile(
+  // 对象审计为管理员运维接口；GET 永不删除，cleanup 必须显式确认。
+  app.get("/api/admin/storage/orphans", async (request) =>
+    objectLifecycle.inspect(
       await getCurrentUser(repository, request),
-      {
-        parentId: body.parentId,
-        fileId: body.fileId,
-        name: typeof body.name === "string" ? body.name : undefined,
-      },
-    );
-  });
+    ));
+
+  app.post<{ Body: { confirm?: unknown } }>(
+    "/api/admin/storage/orphans/cleanup",
+    async (request) => {
+      if (request.body?.confirm !== true) {
+        throw badRequest("清理对象存储需要显式确认。");
+      }
+      return objectLifecycle.cleanup(await getCurrentUser(repository, request));
+    },
+  );
 
   app.get<{
     Params: { fileId: string };

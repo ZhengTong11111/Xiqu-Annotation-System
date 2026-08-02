@@ -16,7 +16,6 @@ import type {
   CreateAnnotationOperationRequest,
   CreateProcessingJobRequest,
   CreateResourceRequest,
-  ImportMediaFileRequest,
   ListAuditLogsOptions,
   ListResourcesOptions,
   LoginRequest,
@@ -31,10 +30,11 @@ import type {
   RevokeAnnotationConfirmationRequest,
   RestoreAnnotationRecoverySnapshotRequest,
   SaveAnnotationFileRequest,
+  StorageOrphanCleanupResult,
+  StorageOrphanReport,
   UpdateResourceInheritanceRequest,
   UpdateResourceRequest,
   UpsertResourcePermissionRequest,
-  UploadFileResponse,
 } from "@xiqu/shared";
 
 export type PlatformClientOptions = {
@@ -270,17 +270,27 @@ export class PlatformClient {
     );
   }
 
-  async uploadFile(file: File) {
+  // 媒体二进制与资源节点通过一个服务端命令创建，避免浏览器中断后留下裸 FileObject。
+  async uploadMedia(parentId: string, file: File, name = file.name) {
     const body = new FormData();
     body.set("file", file);
-    return this.requestMultipart<UploadFileResponse>("/files/upload", body);
+    const query = new URLSearchParams({ parentId, name });
+    return this.requestMultipart<ResourceEntry>(
+      `/media-files/upload?${query.toString()}`,
+      body,
+    );
   }
 
-  importMediaFile(request: ImportMediaFileRequest) {
-    return this.request<ResourceEntry>("/media-files", {
-      method: "POST",
-      body: request,
-    });
+  // 对象生命周期接口只供后续管理员运维界面使用，当前客户端先提供类型安全调用边界。
+  inspectStorageOrphans() {
+    return this.request<StorageOrphanReport>("/admin/storage/orphans");
+  }
+
+  cleanupStorageOrphans() {
+    return this.request<StorageOrphanCleanupResult>(
+      "/admin/storage/orphans/cleanup",
+      { method: "POST", body: { confirm: true } },
+    );
   }
 
   getFileContentUrl(fileId: string) {

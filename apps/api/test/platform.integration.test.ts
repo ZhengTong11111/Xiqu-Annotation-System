@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -17,11 +25,18 @@ test("平台资源 API 集成测试", async (suite) => {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "xiqu-api-test-"));
   const { prisma, pool } = createTestPrisma();
   await truncateTestDatabase(prisma);
+  const storage = new LocalObjectStorage(storageRoot);
   const app = await buildApiApp({
     prisma,
-    storage: new LocalObjectStorage(storageRoot),
+    storage,
     logger: false,
     seed: true,
+    uploadPolicy: {
+      maxUploadBytes: 64,
+      userQuotaBytes: 80,
+      platformQuotaBytes: 200,
+      orphanGraceMs: 1_000,
+    },
   });
   await app.ready();
 
@@ -729,21 +744,18 @@ test("平台资源 API 集成测试", async (suite) => {
       const upload = await multipartUpload(
         app,
         adminToken,
+        sourceFolderId,
         "shared-copy.mp4",
         "video/mp4",
-        Buffer.from("recursive-copy-media", "utf8"),
+        minimalMp4(),
       );
-      const sourceFileId = String((dataOf(upload.json()).file as JsonObject).id);
-      const sourceMediaResponse = await jsonRequest(app, adminToken, {
-        method: "POST",
-        url: "/api/media-files",
-        payload: {
-          parentId: sourceFolderId,
-          fileId: sourceFileId,
-          name: "共享视频.mp4",
-        },
-      });
+      assert.equal(upload.statusCode, 200, upload.body);
+      const sourceMediaResponse = upload;
       const sourceMediaId = String(dataOf(sourceMediaResponse.json()).id);
+      const sourceMedia = await prisma.mediaFile.findUniqueOrThrow({
+        where: { resourceId: sourceMediaId },
+      });
+      const sourceFileId = sourceMedia.fileId;
       const sourceAnnotationResponse = await jsonRequest(app, adminToken, {
         method: "POST",
         url: "/api/annotation-files",
@@ -842,7 +854,7 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(copiedMediaRead.statusCode, 200);
       assert.deepEqual(
         copiedMediaRead.rawPayload,
-        Buffer.from("recursive-copy-media", "utf8"),
+        minimalMp4(),
       );
 
       const standaloneMediaCopy = await jsonRequest(app, studentToken, {
@@ -1923,25 +1935,41 @@ test("平台资源 API 集成测试", async (suite) => {
       }), 1);
     });
 
-    await suite.test("媒体上传、受保护读取和 Range", async () => {
-      const content = Buffer.from("0123456789abcdef", "utf8");
+    await suite.test("统一媒体上传、校验、配额补偿和受保护 Range", async () => {
+      const content = minimalMp4();
+      const initialFileCount = await prisma.fileObject.count();
       const upload = await multipartUpload(
         app,
         adminToken,
+        projectId,
         "sample.mp4",
         "video/mp4",
         content,
       );
-      assert.equal(upload.statusCode, 200);
-      const file = dataOf(upload.json()).file as JsonObject;
-      const fileId = String(file.id);
+      assert.equal(upload.statusCode, 200, upload.body);
+      const mediaResourceId = String(dataOf(upload.json()).id);
+      const media = await prisma.mediaFile.findUniqueOrThrow({
+        where: { resourceId: mediaResourceId },
+        include: { file: true },
+      });
+      const fileId = media.fileId;
+      assert.equal(media.file.mimeType, "video/mp4");
+      assert.equal(media.file.size, content.length);
+      assert.equal(await prisma.fileObject.count(), initialFileCount + 1);
 
-      const media = await jsonRequest(app, adminToken, {
+      // 旧两段式入口必须消失，防止浏览器或第三方继续制造无资源引用的 FileObject。
+      const legacyUpload = await app.inject({
+        method: "POST",
+        url: "/api/files/upload",
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      assert.equal(legacyUpload.statusCode, 404);
+      const legacyImport = await jsonRequest(app, adminToken, {
         method: "POST",
         url: "/api/media-files",
-        payload: { parentId: projectId, fileId, name: "测试视频.mp4" },
+        payload: { parentId: projectId, fileId },
       });
-      assert.equal(media.statusCode, 200);
+      assert.equal(legacyImport.statusCode, 404);
 
       const range = await app.inject({
         method: "GET",
@@ -1952,8 +1980,11 @@ test("平台资源 API 集成测试", async (suite) => {
         },
       });
       assert.equal(range.statusCode, 206);
-      assert.equal(range.headers["content-range"], "bytes 2-5/16");
-      assert.deepEqual(range.rawPayload, Buffer.from("2345"));
+      assert.equal(
+        range.headers["content-range"],
+        `bytes 2-5/${content.length}`,
+      );
+      assert.deepEqual(range.rawPayload, content.subarray(2, 6));
 
       const suffixRange = await app.inject({
         method: "GET",
@@ -1964,7 +1995,7 @@ test("平台资源 API 集成测试", async (suite) => {
         },
       });
       assert.equal(suffixRange.statusCode, 206);
-      assert.deepEqual(suffixRange.rawPayload, Buffer.from("cdef"));
+      assert.deepEqual(suffixRange.rawPayload, content.subarray(-4));
 
       const invalidRange = await app.inject({
         method: "GET",
@@ -1983,8 +2014,194 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(denied.statusCode, 403);
 
-      const storedPath = path.join(storageRoot, String(file.storageKey));
+      const storedPath = path.join(storageRoot, media.file.storageKey);
       assert.deepEqual(await readFile(storedPath), content);
+
+      // 无权限必须在读取流和落盘前失败；存储对象与数据库行均保持不变。
+      const storedBeforeDenied = await storage.listStoredObjects();
+      const privateProject = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "媒体上传私有目标" },
+      });
+      const privateProjectId = String(dataOf(privateProject.json()).id);
+      const deniedUpload = await multipartUpload(
+        app,
+        studentToken,
+        privateProjectId,
+        "denied.mp4",
+        "video/mp4",
+        content,
+      );
+      assert.equal(deniedUpload.statusCode, 403);
+      assert.equal((await storage.listStoredObjects()).length, storedBeforeDenied.length);
+      assert.equal(await prisma.fileObject.count(), initialFileCount + 1);
+
+      // 空文件、文本伪装和签名扩展冲突都不能留下暂存或最终对象。
+      for (const invalid of [
+        { name: "empty.mp4", content: Buffer.alloc(0) },
+        { name: "fake.mp4", content: Buffer.from("not-media") },
+        { name: "wrong.wav", content },
+      ]) {
+        const response = await multipartUpload(
+          app,
+          adminToken,
+          projectId,
+          invalid.name,
+          "video/mp4",
+          invalid.content,
+        );
+        assert.equal(response.statusCode, 400, response.body);
+      }
+      assert.equal((await storage.listStoredObjects()).length, storedBeforeDenied.length);
+
+      // multipart 与存储层共享单文件上限；超限响应稳定为 413 且无残留。
+      const oversized = await multipartUpload(
+        app,
+        adminToken,
+        projectId,
+        "large.mp4",
+        "video/mp4",
+        Buffer.concat([content, Buffer.alloc(41)]),
+      );
+      assert.equal(oversized.statusCode, 413, oversized.body);
+      assert.equal((oversized.json() as JsonObject).error instanceof Object, true);
+      assert.equal((await storage.listStoredObjects()).length, storedBeforeDenied.length);
+
+      // 第二个合法对象会超过账号配额；二进制已发布但事务拒绝后必须被补偿删除。
+      const quotaExceeded = await multipartUpload(
+        app,
+        adminToken,
+        projectId,
+        "quota.mp4",
+        "video/mp4",
+        Buffer.concat([content, Buffer.alloc(40)]),
+      );
+      assert.equal(quotaExceeded.statusCode, 409, quotaExceeded.body);
+      assert.equal(await prisma.fileObject.count(), initialFileCount + 1);
+      assert.equal((await storage.listStoredObjects()).length, storedBeforeDenied.length);
+
+      // 两个并发上传都基于同一旧使用量时，配额 advisory lock 必须只允许其中一个提交。
+      const concurrentUploads = await Promise.all([
+        multipartUpload(
+          app,
+          adminToken,
+          projectId,
+          "concurrent-a.mp4",
+          "video/mp4",
+          content,
+        ),
+        multipartUpload(
+          app,
+          adminToken,
+          projectId,
+          "concurrent-b.mp4",
+          "video/mp4",
+          content,
+        ),
+      ]);
+      assert.deepEqual(
+        concurrentUploads.map((response) => response.statusCode).sort(),
+        [200, 409],
+      );
+      assert.equal(await prisma.fileObject.count(), initialFileCount + 2);
+      assert.equal(
+        (await storage.listStoredObjects()).length,
+        storedBeforeDenied.length + 1,
+      );
+    });
+
+    await suite.test("对象生命周期审计只清理过期确定孤儿", async () => {
+      const admin = await prisma.user.findUniqueOrThrow({
+        where: { accountName: "admin" },
+      });
+      const oldDate = new Date(Date.now() - 10_000);
+      const writeStoredObject = async (storageKey: string, content: Buffer, old: boolean) => {
+        const absolutePath = path.join(storageRoot, storageKey);
+        await mkdir(path.dirname(absolutePath), { recursive: true });
+        await writeFile(absolutePath, content);
+        if (old) await utimes(absolutePath, oldDate, oldDate);
+      };
+
+      await writeStoredObject("orphan/old.mp4", minimalMp4(), true);
+      await writeStoredObject("orphan/fresh.mp4.upload-test", minimalMp4(), false);
+      await writeStoredObject("orphan/unreferenced.mp4", minimalMp4(), true);
+      const unreferenced = await prisma.fileObject.create({
+        data: {
+          name: "unreferenced.mp4",
+          mimeType: "video/mp4",
+          size: 24,
+          storageKey: "orphan/unreferenced.mp4",
+          ownerUserId: admin.id,
+          createdAt: oldDate,
+        },
+      });
+      const missing = await prisma.fileObject.create({
+        data: {
+          name: "missing.mp4",
+          mimeType: "video/mp4",
+          size: 24,
+          storageKey: "orphan/missing.mp4",
+          ownerUserId: admin.id,
+          createdAt: oldDate,
+        },
+      });
+      const missingResource = await prisma.resourceEntry.create({
+        data: {
+          parentId: projectId,
+          type: "media_file",
+          name: "缺失二进制.mp4",
+          ownerUserId: admin.id,
+          mediaFile: {
+            create: { fileId: missing.id, mimeType: "video/mp4", size: 24 },
+          },
+        },
+      });
+
+      const denied = await jsonRequest(app, taToken, {
+        method: "GET",
+        url: "/api/admin/storage/orphans",
+      });
+      assert.equal(denied.statusCode, 403);
+      const reportResponse = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/admin/storage/orphans",
+      });
+      assert.equal(reportResponse.statusCode, 200, reportResponse.body);
+      const report = dataOf(reportResponse.json());
+      const items = report.items as JsonObject[];
+      assert.ok(items.some((item) =>
+        item.category === "orphan_binary" && item.cleanupEligible === true));
+      assert.ok(items.some((item) =>
+        item.category === "staged_binary" && item.cleanupEligible === false));
+      assert.ok(items.some((item) =>
+        item.category === "unreferenced_file" && item.fileId === unreferenced.id));
+      assert.ok(items.some((item) =>
+        item.category === "missing_binary" && item.fileId === missing.id));
+
+      const missingConfirm = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/admin/storage/orphans/cleanup",
+        payload: { confirm: false },
+      });
+      assert.equal(missingConfirm.statusCode, 400);
+      const cleanup = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/admin/storage/orphans/cleanup",
+        payload: { confirm: true },
+      });
+      assert.equal(cleanup.statusCode, 200, cleanup.body);
+      assert.equal(await prisma.fileObject.findUnique({
+        where: { id: unreferenced.id },
+      }), null);
+      assert.ok(await prisma.fileObject.findUnique({ where: { id: missing.id } }));
+      assert.ok(await prisma.resourceEntry.findUnique({ where: { id: missingResource.id } }));
+      await assert.rejects(access(path.join(storageRoot, "orphan/old.mp4")));
+      await assert.rejects(access(path.join(storageRoot, "orphan/unreferenced.mp4")));
+      await access(path.join(storageRoot, "orphan/fresh.mp4.upload-test"));
+      assert.equal(await prisma.auditLog.count({
+        where: { action: "storage_orphan_cleanup" },
+      }), 1);
     });
 
     await suite.test("治理接口坏输入和 operation revision 冲突", async () => {
@@ -2086,6 +2303,7 @@ function dataOf(value: unknown): JsonObject {
 function multipartUpload(
   app: FastifyInstance,
   token: string,
+  parentId: string,
   filename: string,
   mimeType: string,
   content: Buffer,
@@ -2099,11 +2317,24 @@ function multipartUpload(
   const suffix = Buffer.from(`\r\n--${boundary}--\r\n`);
   return app.inject({
     method: "POST",
-    url: "/api/files/upload",
+    url: `/api/media-files/upload?${new URLSearchParams({
+      parentId,
+      name: filename,
+    }).toString()}`,
     headers: {
       authorization: `Bearer ${token}`,
       "content-type": `multipart/form-data; boundary=${boundary}`,
     },
     payload: Buffer.concat([prefix, content, suffix]),
   });
+}
+
+// 最小 MP4 ftyp box 足以让 file-type 识别容器，同时让 Range 断言保持可控。
+function minimalMp4() {
+  return Buffer.concat([
+    Buffer.from([0, 0, 0, 24]),
+    Buffer.from("ftypisom"),
+    Buffer.alloc(4),
+    Buffer.from("isomiso2"),
+  ]);
 }

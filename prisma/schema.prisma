@@ -56,6 +56,7 @@ enum ProcessingJobStatus {
 enum AuditAction {
   auth_login
   file_upload
+  media_upload
   resource_create
   resource_update
   resource_copy
@@ -72,6 +73,7 @@ enum AuditAction {
   resource_inheritance_update
   job_create
   permission_denied
+  storage_orphan_cleanup
 }
 
 enum AnnotationConfirmationTargetMode {

@@ -12,12 +12,16 @@ import { ResourceAccessService } from "./resourceAccess.js";
 import { ResourceService } from "./resourceService.js";
 import { registerApiRoutes } from "./router.js";
 import { LocalObjectStorage } from "./storage.js";
+import { MediaUploadService } from "./mediaUploadService.js";
+import { ObjectLifecycleService } from "./objectLifecycleService.js";
+import { loadUploadPolicy, type UploadPolicy } from "./uploadPolicy.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
   storage?: LocalObjectStorage;
   logger?: FastifyServerOptions["logger"] | FastifyBaseLogger;
   seed?: boolean;
+  uploadPolicy?: Partial<UploadPolicy>;
 };
 
 /**
@@ -33,9 +37,17 @@ export async function buildApiApp(
   const repository = new PrismaPlatformRepository(options.prisma, access);
   const resources = new ResourceService(options.prisma, access);
   const storage = options.storage ?? new LocalObjectStorage();
+  const uploadPolicy = loadUploadPolicy(options.uploadPolicy);
+  const mediaUploads = new MediaUploadService(resources, storage, uploadPolicy);
+  const objectLifecycle = new ObjectLifecycleService(
+    options.prisma,
+    access,
+    storage,
+    uploadPolicy,
+  );
   const app = Fastify({
     logger: options.logger ?? { level: process.env.LOG_LEVEL ?? "info" },
-    bodyLimit: 1024 * 1024 * 1024,
+    bodyLimit: uploadPolicy.maxUploadBytes + 1024 * 1024,
   });
 
   await app.register(cors, {
@@ -44,7 +56,7 @@ export async function buildApiApp(
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
   await app.register(multipart, {
-    limits: { fileSize: 1024 * 1024 * 1024, files: 1 },
+    limits: { fileSize: uploadPolicy.maxUploadBytes, files: 1 },
   });
 
   app.setErrorHandler((error, _request, response) => {
@@ -54,6 +66,16 @@ export async function buildApiApp(
           code: error.code,
           message: error.message,
           details: error.details,
+        },
+      });
+      return;
+    }
+    if (isMultipartSizeError(error)) {
+      void response.status(413).send({
+        error: {
+          code: "upload_too_large",
+          message: "媒体文件超过单文件上传限制。",
+          details: { maxBytes: uploadPolicy.maxUploadBytes },
         },
       });
       return;
@@ -86,9 +108,22 @@ export async function buildApiApp(
     return { data: payload };
   });
 
-  registerApiRoutes(app, repository, resources, storage);
+  registerApiRoutes(
+    app,
+    repository,
+    resources,
+    storage,
+    mediaUploads,
+    objectLifecycle,
+  );
   if (options.seed) await repository.ensureSeedData();
   return app;
+}
+
+// multipart 在消费流时使用稳定 Fastify code 报超限，统一映射为平台上传错误合同。
+function isMultipartSizeError(error: unknown) {
+  return error instanceof Error && "code" in error &&
+    error.code === "FST_REQ_FILE_TOO_LARGE";
 }
 
 function isStreamLike(payload: object) {

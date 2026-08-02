@@ -1414,3 +1414,71 @@ Codex 审查发现并修复：
 - 下一轮 R3c 进入上传可靠性、容量限制和对象生命周期。必须先审计 multipart 临时文件、对象落盘与
   PostgreSQL 元数据之间的失败窗口，再设计配额、校验、补偿和孤儿清理；不能直接用前端 accept 当
   安全校验，也不能在尚无生命周期规则时实现永久删除。
+
+## 2026-08-02：R3c 单命令媒体上传、容量锁与对象生命周期审计
+
+本轮按固定流水线先审计实际代码和 R3 路线图，再整体重写被忽略的 `CLAUDE_WORK.md`，随后由 Codex
+直接实现、测试、自审和修复。没有委托 Claude Code、GLM 或其他代理。用户特别要求保留详细
+Development Log，因此本条同时记录计划与实现差异、失败测试和浏览器工具边界。
+
+审计与架构决策：
+
+- 原流程由 `POST /files/upload` 创建裸 `FileObject`，浏览器再调用 `POST /media-files` 创建资源。第二步
+  重名、权限、网络或进程失败都会留下数据库和磁盘孤儿。新流程删除这两个写入口及 shared/client
+  合同，改为 `POST /media-files/upload?parentId&name` 单一命令；资源管理器只调用一次。
+- 文件系统和 PostgreSQL 无法真正共事务。新 `MediaUploadService` 先验证目标目录和 `create_child`，
+  再把流写到同目录唯一暂存对象，同时计算 size、SHA-256 和 8192 字节签名头；验证后以 rename 发布
+  final 对象，最后在数据库事务中创建 FileObject、ResourceEntry、MediaFile 和 audit。事务前失败删除
+  暂存，发布后事务失败删除 final。进程若恰在 publish 与 transaction 间退出，只会留下可审计磁盘
+  orphan，不会留下指向缺失文件的已提交资源。
+- 自审发现数据库提交后原实现还会做一次 DTO 权限映射；若映射异常被外层当作提交失败，可能删除已经
+  被 DB 引用的二进制。实现因此改成 commit 先返回 resource id，上传服务标记 `databaseCommitted` 后
+  再映射 DTO；提交后的展示异常不再触发文件补偿。
+- 容量按唯一 FileObject 计算，因此普通媒体复制复用对象且不重复计费。事务以固定“平台 quota lock、
+  用户 quota lock、父目录 namespace lock”顺序拿 advisory lock，再顺序查询平台/账号容量，防止两个
+  并发上传同时依据旧使用量越过配额。默认单文件 1 GiB、用户 20 GiB、平台 200 GiB、孤儿宽限 24h，
+  均可通过环境变量配置；单文件上限硬性低于 2,000,000,000，等待未来 FileObject/MediaFile/API DTO
+  同步迁移 BigInt 后再支持更大资产。
+
+媒体验证与依赖：
+
+- 引入 `file-type` 22.0.1，MIT，包体约 136 kB，Node >=22。它只负责从二进制签名识别媒体类型，替代
+  不可信的浏览器 MIME 声明；没有引入 UI 框架。根 package 明确 Node >=22，package 与 lockfile 同步。
+- `uploadPolicy.ts` 集中维护 MP4/M4A/MOV/WebM/MKV/AVI/MP3/WAV/FLAC/OGG/Opus/AAC 等签名、MIME 和
+  扩展别名。前端 `accept` 只保留为文件选择便利。空文件、文本伪装和扩展/签名冲突均在发布前拒绝。
+- 集成测试第一次暴露 `@fastify/multipart` 在当前消费方式下会把 65 字节输入截成 64 字节并设置
+  `file.truncated`，但不会自动抛出预期异常；若不检查，会继续进入配额判断并错误返回 409。上传服务
+  现于签名检测和发布前显式检查该标志，稳定返回 `413 upload_too_large` 并删除暂存文件。
+- `LocalObjectStorage` 改用 `path.relative` 校验根目录边界，避免旧字符串 `startsWith(rootDir)` 对相似
+  前缀目录判断失真；目录审计不跟随符号链接，只返回相对 storage key。
+
+生命周期与 migration：
+
+- 新 `ObjectLifecycleService` 提供管理员 GET dry-run 和显式 `{confirm:true}` cleanup。它区分过期暂存、
+  磁盘无 DB 对象、DB 无 MediaFile 引用和 DB 引用但二进制缺失；只有超过宽限期的前三类确定孤儿可按
+  规则清理，`missing_binary` 永远只报告。无引用 FileObject 删除前再次以关系条件复核。
+- audit enum 新增 `media_upload` 与 `storage_orphan_cleanup`，由 migration
+  `20260802050000_media_upload_lifecycle_audit` 部署。migration 已成功应用到 public、隔离 api_test，并在
+  全新 `r3c_migration_test` schema 从 baseline 连续部署六条 migration 后删除临时 schema。
+
+测试与验收：
+
+- 新 `test:uploads` 4/4：配置边界、名称/签名、暂存发布、超限半文件清理和路径越界。
+- `test:api` 32/32：真实最小 MP4 签名的一步上传、旧入口 404、受保护 Range、无权限写入前拒绝、空/
+  伪装/错扩展、multipart 超限、配额事务补偿、两个并发上传只允许一个提交，以及孤儿 dry-run/cleanup
+  不误删 fresh staged 和 missing-binary 元数据。递归媒体复制测试改用真实 MP4，并继续证明两个媒体
+  资源复用一个 FileObject。
+- `test:permissions` 5/5；`npm run build` 与 `git diff --check` 通过。仍只有既有 Vite 主 chunk 超过
+  500 kB 提醒和集成测试中的 pg 9 前置弃用提示。
+- 开发 API 已在应用 public migration 后重启，资源管理器可登录、进入项目，上传入口按目录状态启用，
+  页面没有新增错误。当前浏览器控制器不提供 `setInputFiles`，其页面沙箱也没有可构造的 DataTransfer，
+  因而不能自动完成原生文件选择；没有改用不受支持的 DOM 伪造来声称浏览器上传成功。运行中 API 的
+  真实 multipart 链路由上述集成矩阵覆盖，前端合同由 web build 验证。
+
+完成结论与后续：
+
+- 旧裸上传 repository 方法、route、shared DTO 和 client 调用均已删除，没有双路径僵尸代码。对象清理
+  是管理员运维能力，不等同于用户永久删除；用户可见永久删除仍需完整引用/保留策略。
+- R3d 应进入结构化运行指标、容量/失败诊断、PostgreSQL 与对象目录一致备份恢复演练，并明确未来
+  S3/MinIO 适配接口。大于 2 GB、分片/断点上传和通用研究附件继续留在科研资产中心扩展，不在本轮
+  以局部 size 类型修改冒充完成。

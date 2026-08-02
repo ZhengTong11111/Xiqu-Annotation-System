@@ -19,7 +19,6 @@ import type {
   ResourceSortField,
   ResourceType,
   SortDirection,
-  StoredFileObject,
 } from "./platform.js";
 
 export type ApiErrorCode =
@@ -29,6 +28,9 @@ export type ApiErrorCode =
   | "not_found"
   | "conflict"
   | "validation_error"
+  | "upload_too_large"
+  | "unsupported_media"
+  | "storage_quota_exceeded"
   | "internal_error";
 
 export type ApiErrorBody = {
@@ -74,12 +76,6 @@ export type CreateAnnotationFileRequest<TPayload = unknown> = {
   name: string;
   payload: TPayload;
   mediaResourceId?: string | null;
-};
-
-export type ImportMediaFileRequest = {
-  parentId: string;
-  fileId: string;
-  name?: string;
 };
 
 export type UpdateResourceRequest = {
@@ -147,8 +143,34 @@ export type UpdateResourceInheritanceRequest = {
   breakPermissionInheritance: boolean;
 };
 
-export type UploadFileResponse = {
-  file: StoredFileObject;
+export type StorageOrphanCategory =
+  | "staged_binary"
+  | "orphan_binary"
+  | "unreferenced_file"
+  | "missing_binary";
+
+// 存储审计只返回相对 key 和元数据，不暴露服务器绝对路径或文件内容。
+export type StorageOrphanSummary = {
+  category: StorageOrphanCategory;
+  fileId?: string;
+  name?: string;
+  storageKey: string;
+  size: number;
+  createdAt: string;
+  cleanupEligible: boolean;
+};
+
+export type StorageOrphanReport = {
+  generatedAt: string;
+  graceMs: number;
+  items: StorageOrphanSummary[];
+};
+
+export type StorageOrphanCleanupResult = {
+  inspectedCount: number;
+  eligibleCount: number;
+  deletedBinaryCount: number;
+  deletedFileObjectCount: number;
 };
 
 export type CreateAnnotationOperationRequest = {
@@ -190,8 +212,9 @@ export type PlatformApiContract<TPayload = unknown> = {
   copyResource: { request: CopyResourceRequest; response: ResourceEntry };
   trashResource: { response: ResourceEntry };
   restoreResource: { response: ResourceEntry };
-  uploadFile: { response: UploadFileResponse };
-  importMediaFile: { request: ImportMediaFileRequest; response: ResourceEntry };
+  uploadMedia: { response: ResourceEntry };
+  inspectStorageOrphans: { response: StorageOrphanReport };
+  cleanupStorageOrphans: { response: StorageOrphanCleanupResult };
   createAnnotationFile: {
     request: CreateAnnotationFileRequest<TPayload>;
     response: AnnotationFile<TPayload>;

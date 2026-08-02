@@ -195,6 +195,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - combines global admin bypass, ownership, direct grants, and nearest inherited folder grants
 - `apps/api/src/resourceService.ts`
   - resource-tree mutations, copy/move/trash behavior, annotation-file save/recovery, and confirmed-range governance
+- `apps/api/src/storage.ts`
+  - local object staging, checksum/size/header capture, atomic publish, safe listing, and idempotent deletion
+- `apps/api/src/uploadPolicy.ts`
+  - centralized upload limits, filename rules, and binary-signature media validation
+- `apps/api/src/mediaUploadService.ts`
+  - single-command media upload across storage staging, quota transaction, publish, and compensation
+- `apps/api/src/objectLifecycleService.ts`
+  - admin-only dry-run and confirmed cleanup for aged storage/database orphans; missing binaries are report-only
 - `apps/api/src/resourceSelection.ts`
   - pure parent/descendant selection normalization shared by atomic batch move and batch trash
   - selected descendants collapse under a selected ancestor so a subtree is mutated only once
@@ -241,6 +249,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:resource-page-state`
 - `npm run test:resource-column-pages`
 - `npm run test:resource-columns`
+- `npm run test:uploads`
 - `npm run test:recovery-preview`
 - `npm run test:annotation-diff`
 - `npm run test:annotation-diff-timeline`
@@ -260,6 +269,9 @@ Backend local defaults:
 - API port defaults to `4317`
 - Prisma/PostgreSQL defaults to `postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public`
 - local uploaded objects default to `./data/storage`
+- runtime Node.js must be 22 or newer because the media-signature dependency and backend toolchain require it
+- upload defaults are `XIQU_MAX_UPLOAD_BYTES=1 GiB`, `XIQU_USER_STORAGE_QUOTA_BYTES=20 GiB`,
+  `XIQU_PLATFORM_STORAGE_QUOTA_BYTES=200 GiB`, and `XIQU_ORPHAN_GRACE_MS=24h`; invalid values fail startup
 - `.env` and `data/` are intentionally ignored
 - `prisma/migrations/20260801000000_resource_tree_baseline` is the committed resource-tree baseline;
   use `db:deploy` for a fresh/current database and reserve `db:push` for disposable local schema experiments
@@ -522,7 +534,10 @@ The platform backend is no longer just a mock, but it is still an early developm
 Current backend capabilities:
 - login/session tokens with scrypt password hashing and sha256 token hashes
 - users/roles/sessions in PostgreSQL
-- media/file upload through multipart
+- media upload through one multipart business command; the former bare FileObject upload/import pair is removed
+- server-side signature/extension validation via `file-type`, streaming size limits, checksum capture,
+  platform/user quota locks, and compensating deletion when the metadata transaction fails
+- admin-only object-lifecycle inspection and confirmed cleanup for aged staged/disk/database orphans
 - file metadata in PostgreSQL and binary data in local object storage
 - protected file reading, including HTTP Range / `206 Partial Content` for stable MP4 seeking
 - hierarchical `ResourceEntry` tree with `folder`, `project`, `annotation_file`, and `media_file` resource types
@@ -602,8 +617,8 @@ Important backend caveats:
   deployment prerequisite and must not be installed/moved by an isolated-schema application migration.
 - recursive copy is synchronous and capped at 2,000 active nodes per root. Larger copies should become future
   processing jobs rather than extending one HTTP/database transaction without a bound.
-- media copy creates a new media resource that reuses the immutable `FileObject`; physical object duplication,
-  reference-counted permanent deletion, and orphan cleanup are not implemented yet.
+- media copy creates a new media resource that reuses the immutable `FileObject`; copies do not consume quota again.
+  Aged orphan inspection/cleanup exists, but user-facing permanent deletion and physical duplication remain future work.
 - real-time collaborative editing is not implemented yet
 - the removed Course/Assignment/Submission runtime is not a pending compatibility target; future classroom
   distribution/review should build on resource copy, ACL, file comparison, and a separate confirmed-annotation layer
@@ -636,6 +651,16 @@ Important backend caveats:
   current logical list/column. They do not silently claim selection of server pages that have not been requested.
   per-column pagination rather than calling a helper that eagerly fetches all pages.
 - an annotation file is the mutable user-facing unit. Copying it creates an independent annotation file at revision 1 owned by the copier.
+- media upload is one command: validate target `create_child` before consuming the stream, stage and validate the binary,
+  atomically publish it, then under platform/user quota locks create FileObject, media resource and audit in one database
+  transaction. Never restore the removed browser-visible bare FileObject endpoint.
+- storage quota counts each immutable FileObject once, regardless of how many media resources reuse it. The current
+  per-file ceiling must stay below PostgreSQL integer range until FileObject/MediaFile/shared DTOs migrate together.
+- filesystem and PostgreSQL cannot share a transaction. A failure before database commit deletes staged/final binary;
+  a crash between publish and commit leaves an aged disk orphan discoverable by lifecycle audit. After database commit,
+  DTO mapping failure must not delete the now-referenced binary.
+- lifecycle cleanup may delete only objects older than its grace period and confirmed to have no media reference.
+  `missing_binary` is diagnostic and must never trigger automatic metadata deletion.
 - standalone annotation-file copy preserves an external media reference. Recursive container copy remaps references
   that point to media inside the copied subtree to the corresponding copied media resource.
 - recursive copy requires effective `read` and `copy` on every active source descendant and `create_child` on the
