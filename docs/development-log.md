@@ -791,3 +791,56 @@ Codex 审查发现并修复：
   再以测量结果决定虚拟列表，不提前引入重型表格依赖。
 - 下一轮是 R2.3b：先设计结构化差异到时间范围导航/现有 Timeline 只读联动的边界，再决定单时间轴
   标记或双视图方案；不得直接进入片段合并。
+
+## 2026-08-02：R2.3b1 标注差异的只读双侧时间概览
+
+本轮先结合现有单文档 `PlatformEditorSession`、mutation callback 很重的 `Timeline.tsx` 和 R2.3a
+结构化 diff 重新拆分 roadmap，没有把第二份 `ProjectData` 或完整时间轴硬塞进比较 Dialog。
+
+实际实现：
+
+- 新增 `annotationDiffTimeline.ts` 纯模型：
+  - 只消费 `AnnotationDiffResult.groups[].entries`，按 domain + identity 建立稳定实体键；
+  - 修改项可生成左右两个片段，新增/删除按实际存在范围生成单侧片段，零时长板眼/打点保留点语义；
+  - 反向有限范围归一化并向 UI 报告纠正数，负数、NaN 和 Infinity 不进入 Canvas，并单独计数；
+  - 领域、变化类型和可选时间窗口筛选保持共同 duration，不因切换筛选让坐标轴跳动；
+  - CSS 像素 hit-test 在重叠片段中按距离、较短范围和稳定 key 选择唯一结果。
+- 新增高 DPI `AnnotationDiffTimelineOverview.tsx`：
+  - `ResizeObserver` 跟随 Dialog 实际宽度，两条语义轨共享时间刻度；
+  - Canvas 一次绘制千级片段，不为每个范围创建 React 节点；领域颜色、左右轨、变化轮廓和相邻状态
+    文字共同表达语义；
+  - hover/选中只触发轻量重绘，Canvas 不拥有筛选、网络请求或编辑器状态。
+- 比较 Dialog 增加研究领域与新增/删除/修改筛选、可定位实体数、无时间差异数和非法范围提示。
+  Canvas 选择会明确展开领域并在 React 挂载目标按钮后滚动；差异行改为可键盘操作的 button，选择后
+  自动恢复其领域/变化筛选并高亮左右时间范围。无时间项目差异显示明确说明。
+- 左右交换以文件 id + revision 重建结果组件，筛选和选择不会引用交换前实体。没有新增依赖，现有
+  React、Canvas、Radix Dialog 与测试工具已经足够。
+
+浏览器验收：
+
+- 使用本地有效《寻梦》两份标注，约 1,120 项结构化变化中 1,116 项具有时间范围；Canvas 在共同
+  0–24:00 轴上稳定绘制，左侧短文件和右侧长文件的分布符合数据。
+- 关闭工尺谱后可定位实体从 1,116 降至 838，继续关闭逐字后降至 684；API 日志确认筛选没有重新请求
+  annotation-file payload。
+- 点击差异行能够高亮对应时间范围；无时间项目差异显示“没有可定位的时间范围”。左右交换后文件
+  方向正确、旧选择清空、筛选恢复默认。
+- 验收期间原有 API 进程退出，Dialog 正确显示双侧 `Failed to fetch` 和重试；健康检查确认是服务进程
+  不可用而非交换状态错误，重启 API 后通过原按钮恢复。Browser 自动化表面对 Canvas 的任意坐标点击
+  支持有限，因此精确命中规则由专项纯函数测试覆盖，视觉与列表到 Canvas 的方向由浏览器验收覆盖。
+
+自动验证：
+
+- `npm run test:annotation-diff-timeline`：10/10 通过。
+- `npm run test:annotation-diff`：10/10 通过。
+- `npm run test:resource-comparison`：2/2 通过。
+- `npm run test:recovery-preview`：3/3 通过。
+- `npm run test:resource-columns`：7/7 通过。
+- `npm run test:permissions`：5/5 通过。
+- `npm run test:api`：19/19 通过。
+- `npm run build` 与 `git diff --check`：通过。
+- 既有 pg 9 前置弃用提示和 Vite 主 chunk 超过 500 kB 提示仍存在，本轮没有新增依赖或相关回归。
+
+下一步：
+
+- R2.3b2 只处理“从选中差异打开左侧或右侧文件并定位时间”的平台会话合同。必须复用现有单文件
+  编辑器和 read-only 权限，不能在比较 Dialog 复制完整 Timeline；片段合并继续留在后续独立轮次。

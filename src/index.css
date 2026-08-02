@@ -1922,7 +1922,11 @@ select {
 .annotation-comparison-state button,
 .annotation-comparison-warnings span,
 .annotation-comparison-group > button,
-.annotation-comparison-entry-list > div {
+.annotation-comparison-entry-list > button,
+.annotation-comparison-timeline-heading,
+.annotation-comparison-timeline-heading > span,
+.annotation-comparison-filters,
+.annotation-comparison-filters label {
   display: flex;
   align-items: center;
 }
@@ -2114,6 +2118,119 @@ select {
   gap: 6px;
 }
 
+/* 时间概览保持为连续工具带；筛选和 Canvas 都在 Dialog 内滚动，不制造新的嵌套卡片。 */
+.annotation-comparison-timeline-section {
+  padding: 12px 0 10px;
+  border-bottom: 1px solid #d9e0e9;
+}
+
+.annotation-comparison-timeline-heading {
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+}
+
+.annotation-comparison-timeline-heading > span {
+  display: grid;
+  gap: 2px;
+}
+
+.annotation-comparison-timeline-heading strong {
+  font-size: 12px;
+}
+
+.annotation-comparison-timeline-heading small,
+.annotation-comparison-timeline-heading em {
+  color: #718095;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.annotation-comparison-filters {
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  margin: 5px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.annotation-comparison-filters legend {
+  float: left;
+  min-width: 58px;
+  padding: 0;
+  color: #66758a;
+  font-size: 10px;
+}
+
+.annotation-comparison-filters label {
+  gap: 4px;
+  min-height: 24px;
+  padding: 0 7px 0 5px;
+  color: #4e5e73;
+  background: #eef2f7;
+  border: 1px solid #d3dce7;
+  border-radius: 5px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.annotation-comparison-filters label:has(input:checked) {
+  color: #254f79;
+  background: #e4edf7;
+  border-color: #aebfd2;
+}
+
+.annotation-comparison-filters input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+}
+
+.annotation-comparison-domain-swatch {
+  width: 7px;
+  height: 7px;
+  background: var(--annotation-domain-color, #8290a3);
+  border-radius: 2px;
+}
+
+.annotation-comparison-filters > small {
+  margin-left: auto;
+  color: #9a6516;
+  font-size: 10px;
+}
+
+.annotation-diff-timeline-overview {
+  margin-top: 8px;
+  background: #f7f9fc;
+  border: 1px solid #d7e0ea;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.annotation-diff-timeline-canvas-host {
+  width: 100%;
+  height: 116px;
+}
+
+.annotation-diff-timeline-canvas-host canvas {
+  display: block;
+  cursor: crosshair;
+}
+
+.annotation-diff-timeline-overview > p {
+  min-height: 28px;
+  margin: 0;
+  padding: 6px 10px;
+  overflow: hidden;
+  color: #657489;
+  background: #fff;
+  border-top: 1px solid #e1e7ee;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .annotation-comparison-groups {
   border-bottom: 1px solid #d9e0e9;
 }
@@ -2158,21 +2275,38 @@ select {
   border-top: 1px solid #e3e8ef;
 }
 
-.annotation-comparison-entry-list > div {
+.annotation-comparison-entry-list > button {
   display: grid;
   grid-template-columns: 18px minmax(150px, 1fr) minmax(170px, auto) minmax(120px, 1fr);
+  width: 100%;
   gap: 9px;
   min-height: 45px;
   padding: 5px 9px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
   border-bottom: 1px solid #edf0f4;
+  border-radius: 0;
   font-size: 11px;
 }
 
-.annotation-comparison-entry-list > div:last-child {
+.annotation-comparison-entry-list > button:hover,
+.annotation-comparison-entry-list > button:focus-visible {
+  background: #f0f5fa;
+  outline: none;
+}
+
+.annotation-comparison-entry-list > button.selected {
+  background: #e6f0fa;
+  box-shadow: inset 3px 0 #4c83b7;
+}
+
+.annotation-comparison-entry-list > button:last-child {
   border-bottom: 0;
 }
 
-.annotation-comparison-entry-list > div > span {
+.annotation-comparison-entry-list > button > span {
   display: grid;
   min-width: 0;
 }
@@ -2211,8 +2345,14 @@ select {
     border-left: 0;
   }
 
-  .annotation-comparison-entry-list > div {
+  .annotation-comparison-entry-list > button {
     grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .annotation-comparison-timeline-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
   }
 
   .annotation-comparison-entry-list time,

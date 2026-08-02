@@ -47,6 +47,17 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/recoverySnapshotPreview.ts`
   - pure, failure-contained conversion from unknown historical payload to a current-format multimodal summary
   - reuses `normalizeImportedProjectFile()`; do not create a second project migration path for snapshot previews
+- `src/platform/annotationDiff.ts`
+  - pure stable-id structured comparison for two normalized annotation payloads
+  - owns research-domain matching and left/right time ranges; UI must not re-diff raw payloads
+- `src/platform/annotationDiffTimeline.ts`
+  - pure time-index, filter, range validation, coordinate, and hit-test model derived only from structured diff
+  - preserves one shared duration while filters change; invalid or untimed differences never enter Canvas as fake ranges
+- `src/platform/AnnotationDiffTimelineOverview.tsx`
+  - high-DPI read-only Canvas for left/right diff distribution; does not load files or own editor state
+- `src/platform/AnnotationComparisonDialog.tsx`
+  - orchestrates two side-isolated file reads, structured diff display, time filters, and Canvas/list bidirectional location
+  - comparison remains read-only and must not instantiate a second editable Timeline inside the dialog
 - `src/platform/AnnotationComparisonDialog.tsx`
   - read-only two-file comparison dialog; owns parallel payload reads, stale-response protection, side-specific errors,
     left/right swapping, and grouped diff presentation
@@ -162,6 +173,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:resource-columns`
 - `npm run test:recovery-preview`
 - `npm run test:annotation-diff`
+- `npm run test:annotation-diff-timeline`
 - `npm run test:resource-comparison`
 - `npm run build:web`
 - `npm run build:api`

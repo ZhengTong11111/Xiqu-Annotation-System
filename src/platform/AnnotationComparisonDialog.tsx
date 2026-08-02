@@ -11,7 +11,7 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AnnotationFile, ResourceEntry } from "@xiqu/shared";
 import {
   PlatformApiError,
@@ -24,6 +24,17 @@ import {
   type AnnotationDiffResult,
   type AnnotationDiffTimeRange,
 } from "./annotationDiff";
+import {
+  ANNOTATION_DIFF_DOMAIN_COLORS,
+  AnnotationDiffTimelineOverview,
+} from "./AnnotationDiffTimelineOverview";
+import {
+  buildAnnotationDiffTimelineIndex,
+  filterAnnotationDiffTimeline,
+  getAnnotationDiffEntryKey,
+  type AnnotationDiffTimelineChangeType,
+  type AnnotationDiffTimelineSegment,
+} from "./annotationDiffTimeline";
 import { formatResourceDate } from "./ResourceItem";
 
 // 双侧请求状态与变化标签集中定义，避免组件分支使用不一致的状态文本。
@@ -148,6 +159,13 @@ export function AnnotationComparisonDialog(props: {
     });
   };
 
+  // Canvas 定位需要把目标领域明确展开；与用户手动折叠的 toggle 语义分开。
+  const expandDomain = (domain: string) => {
+    setExpandedDomains((current) => current.has(domain)
+      ? current
+      : new Set([...current, domain]));
+  };
+
   const close = () => {
     requestGenerationRef.current += 1;
     props.onClose();
@@ -212,9 +230,11 @@ export function AnnotationComparisonDialog(props: {
                   </ComparisonState>
                 ) : diff ? (
                   <ComparisonResult
+                    key={`${orderedFiles[0].id}:${left.file?.revision ?? 0}:${orderedFiles[1].id}:${right.file?.revision ?? 0}`}
                     diff={diff}
                     expandedDomains={expandedDomains}
                     onToggleDomain={toggleDomain}
+                    onExpandDomain={expandDomain}
                   />
                 ) : (
                   <ComparisonState icon={<AlertTriangle size={18} />} error>
@@ -260,7 +280,86 @@ function ComparisonResult(props: {
   diff: AnnotationDiffResult;
   expandedDomains: Set<string>;
   onToggleDomain: (domain: string) => void;
+  onExpandDomain: (domain: string) => void;
 }) {
+  const timelineIndex = useMemo(() =>
+    buildAnnotationDiffTimelineIndex(props.diff), [props.diff]);
+  const availableDomains = useMemo(() => new Set(
+    props.diff.groups
+      .filter((group) => changedCount(group) > 0)
+      .map(({ domain }) => domain),
+  ), [props.diff.groups]);
+  const [selectedDomains, setSelectedDomains] = useState(() =>
+    new Set(availableDomains));
+  const [selectedChangeTypes, setSelectedChangeTypes] = useState<
+    Set<AnnotationDiffTimelineChangeType>
+  >(() => new Set(["added", "removed", "modified"]));
+  const [selectedEntryKey, setSelectedEntryKey] = useState<string | null>(null);
+  const [pendingScrollEntryKey, setPendingScrollEntryKey] = useState<string | null>(null);
+  const entryElementsRef = useRef(new Map<string, HTMLButtonElement>());
+  const filteredTimeline = useMemo(() => filterAnnotationDiffTimeline(
+    timelineIndex,
+    {
+      domains: selectedDomains,
+      changeTypes: selectedChangeTypes,
+    },
+  ), [timelineIndex, selectedChangeTypes, selectedDomains]);
+  const visibleEntryCount = useMemo(() => new Set(
+    filteredTimeline.segments.map(({ entryKey }) => entryKey),
+  ).size, [filteredTimeline.segments]);
+  const groupLabels = useMemo(() => new Map(props.diff.groups.map((group) =>
+    [group.domain, group.label])), [props.diff.groups]);
+
+  // 等目标领域真正展开并挂载差异按钮后再滚动，避免依赖 React 提交时序猜测 DOM 是否存在。
+  useEffect(() => {
+    if (!pendingScrollEntryKey) return;
+    const element = entryElementsRef.current.get(pendingScrollEntryKey);
+    if (!element) return;
+    element.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    setPendingScrollEntryKey(null);
+  }, [pendingScrollEntryKey, props.expandedDomains]);
+
+  // 筛选切换以不可变 Set 更新，并清理可能已隐藏的旧高亮。
+  const toggleTimelineDomain = (domain: AnnotationDiffGroup["domain"]) => {
+    setSelectedEntryKey(null);
+    setSelectedDomains((current) => toggleSetValue(current, domain));
+  };
+
+  const toggleTimelineChangeType = (
+    changeType: AnnotationDiffTimelineChangeType,
+  ) => {
+    setSelectedEntryKey(null);
+    setSelectedChangeTypes((current) => toggleSetValue(current, changeType));
+  };
+
+  // Canvas 片段定位先展开领域，再等 React 挂载目标按钮后滚到当前 Dialog 视口内。
+  const selectTimelineSegment = (segment: AnnotationDiffTimelineSegment) => {
+    setSelectedEntryKey(segment.entryKey);
+    setPendingScrollEntryKey(segment.entryKey);
+    props.onExpandDomain(segment.domain);
+  };
+
+  // 差异按钮引用只服务定位，在领域折叠卸载时同步删除，避免保存失效 DOM。
+  const registerEntryElement = (key: string, element: HTMLButtonElement | null) => {
+    if (element) entryElementsRef.current.set(key, element);
+    else entryElementsRef.current.delete(key);
+  };
+
+  // 从结构化列表选择条目时同步打开对应筛选，使 Canvas 必然能高亮其左右时间范围。
+  const selectDiffEntry = (
+    entry: AnnotationDiffGroup["entries"][number],
+  ) => {
+    setSelectedEntryKey(getAnnotationDiffEntryKey(entry));
+    if (entry.changeType === "unchanged") return;
+    const visibleChangeType: AnnotationDiffTimelineChangeType = entry.changeType;
+    setSelectedDomains((current) => current.has(entry.domain)
+      ? current
+      : new Set([...current, entry.domain]));
+    setSelectedChangeTypes((current) => current.has(visibleChangeType)
+      ? current
+      : new Set([...current, visibleChangeType]));
+  };
+
   return (
     <>
       <div className="annotation-comparison-summary">
@@ -282,6 +381,63 @@ function ComparisonResult(props: {
         </div>
       ) : null}
 
+      {/* 时间概览使用纯 diff 索引，提供筛选及 Canvas/条目双向定位，不加载第二份编辑器。 */}
+      <section className="annotation-comparison-timeline-section">
+        <div className="annotation-comparison-timeline-heading">
+          <span>
+            <strong>时间差异概览</strong>
+            <small>左右文件共用 0–{formatAxisDuration(timelineIndex.duration)} 时间尺度</small>
+          </span>
+          <em>
+            {visibleEntryCount} 项可定位 · {filteredTimeline.untimedChangedCount} 项无时间
+          </em>
+        </div>
+        <fieldset className="annotation-comparison-filters">
+          <legend>研究领域</legend>
+          {[...availableDomains].map((domain) => (
+            <label
+              key={domain}
+              style={{
+                "--annotation-domain-color": ANNOTATION_DIFF_DOMAIN_COLORS[domain],
+              } as React.CSSProperties}
+            >
+              <input
+                type="checkbox"
+                checked={selectedDomains.has(domain)}
+                onChange={() => toggleTimelineDomain(domain)}
+              />
+              <span className="annotation-comparison-domain-swatch" aria-hidden="true" />
+              {groupLabels.get(domain) ?? domain}
+            </label>
+          ))}
+        </fieldset>
+        <fieldset className="annotation-comparison-filters compact">
+          <legend>变化类型</legend>
+          {(["added", "removed", "modified"] as const).map((changeType) => (
+            <label key={changeType} className={`change-${changeType}`}>
+              <input
+                type="checkbox"
+                checked={selectedChangeTypes.has(changeType)}
+                onChange={() => toggleTimelineChangeType(changeType)}
+              />
+              {CHANGE_LABELS[changeType]}
+            </label>
+          ))}
+          {timelineIndex.invalidRangeCount ? (
+            <small>{timelineIndex.invalidRangeCount} 个非法时间范围未绘制</small>
+          ) : null}
+          {timelineIndex.normalizedRangeCount ? (
+            <small>{timelineIndex.normalizedRangeCount} 个反向范围已纠正</small>
+          ) : null}
+        </fieldset>
+        <AnnotationDiffTimelineOverview
+          duration={filteredTimeline.duration}
+          segments={filteredTimeline.segments}
+          selectedEntryKey={selectedEntryKey}
+          onSelectSegment={selectTimelineSegment}
+        />
+      </section>
+
       <div className="annotation-comparison-groups">
         {props.diff.groups.map((group) => (
           <ComparisonGroup
@@ -289,6 +445,9 @@ function ComparisonResult(props: {
             group={group}
             expanded={props.expandedDomains.has(group.domain)}
             onToggle={() => props.onToggleDomain(group.domain)}
+            selectedEntryKey={selectedEntryKey}
+            onSelectEntry={selectDiffEntry}
+            registerEntryElement={registerEntryElement}
           />
         ))}
       </div>
@@ -301,6 +460,9 @@ function ComparisonGroup(props: {
   group: AnnotationDiffGroup;
   expanded: boolean;
   onToggle: () => void;
+  selectedEntryKey: string | null;
+  onSelectEntry: (entry: AnnotationDiffGroup["entries"][number]) => void;
+  registerEntryElement: (key: string, element: HTMLButtonElement | null) => void;
 }) {
   const changedEntries = props.group.entries.filter(({ changeType }) =>
     changeType !== "unchanged");
@@ -314,8 +476,17 @@ function ComparisonGroup(props: {
       </button>
       {props.expanded ? (
         <div className="annotation-comparison-entry-list">
-          {changedEntries.length ? changedEntries.map((entry) => (
-            <div key={`${entry.changeType}:${entry.identity}`} className={`change-${entry.changeType}`}>
+          {changedEntries.length ? changedEntries.map((entry) => {
+            const entryKey = getAnnotationDiffEntryKey(entry);
+            return (
+            <button
+              key={`${entry.changeType}:${entry.identity}`}
+              ref={(element) => props.registerEntryElement(entryKey, element)}
+              type="button"
+              className={`change-${entry.changeType}${props.selectedEntryKey === entryKey ? " selected" : ""}`}
+              onClick={() => props.onSelectEntry(entry)}
+              aria-pressed={props.selectedEntryKey === entryKey}
+            >
               <ChangeIcon type={entry.changeType} />
               <span>
                 <strong title={entry.label}>{entry.label || entry.identity}</strong>
@@ -325,8 +496,8 @@ function ComparisonGroup(props: {
               <em>{entry.changedFields.length
                 ? entry.changedFields.join("、")
                 : CHANGE_LABELS[entry.changeType]}</em>
-            </div>
-          )) : (
+            </button>
+          );}) : (
             <p>该领域没有结构化差异。</p>
           )}
         </div>
@@ -384,4 +555,19 @@ function describeComparisonError(error: unknown) {
 // 分组差异数排除未变化项，用于默认展开和标题摘要。
 function changedCount(group: AnnotationDiffGroup) {
   return group.counts.added + group.counts.removed + group.counts.modified;
+}
+
+// Set 切换 helper 同时服务领域和变化类型，避免两个事件处理器维护不同更新语义。
+function toggleSetValue<T>(current: ReadonlySet<T>, value: T) {
+  const next = new Set(current);
+  if (next.has(value)) next.delete(value);
+  else next.add(value);
+  return next;
+}
+
+// 轴总长使用简洁分秒格式，毫秒精度继续保留在具体条目的时间文字中。
+function formatAxisDuration(seconds: number) {
+  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  const minutes = Math.floor(safeSeconds / 60);
+  return `${minutes}:${Math.floor(safeSeconds % 60).toString().padStart(2, "0")}`;
 }
