@@ -178,10 +178,17 @@ test("比较不会修改输入对象", () => {
   const leftBefore = JSON.stringify(left);
   const rightBefore = JSON.stringify(right);
 
-  buildAnnotationDiff(left, right);
+  const result = buildAnnotationDiff(left, right);
 
   assert.equal(JSON.stringify(left), leftBefore);
   assert.equal(JSON.stringify(right), rightBefore);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    // 比较会话获得规范化副本，不能把输入对象本身当作可供后续预检修改的状态。
+    assert.notEqual(result.leftProject, left);
+    assert.notEqual(result.rightProject, right);
+    assert.equal(result.leftProject.characterAnnotations[0]?.tone?.toneClass, "yin_ping");
+  }
 });
 
 // 重复稳定 id 不能被 Map 静默吞掉，结果必须向用户暴露数据质量风险。

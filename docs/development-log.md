@@ -941,3 +941,54 @@ Codex 审查发现并修复：
 - 下一轮 R2.3c2 只在比较 Dialog 增加方向、实体多选和计划预览，展示 selected/dependency、三种目标
   动作和结构 issue；仍不修改文件。完成并重新核对后，R2.3c3 才接冲突决策和目标编辑器的一次可撤销
   commit。
+
+## 2026-08-02：R2.3c2 比较端选择与只读整合预检
+
+本轮按 `CLAUDE_WORK.md` 把 c1 纯计划核心接入现有比较 Dialog，只建立方向、多选和预检反馈，没有
+增加应用按钮、目标文件写入、revision 更新、恢复快照或编辑器历史提交。
+
+实际实现：
+
+- `annotationDiff.ts` 在一次成功规范化后同时返回 diff 与左右 `ProjectData`。比较展示和计划器共享
+  同一次正式迁移结果，不从原始 payload 建立第二套解释路径。
+- 新增 `annotationMergeSelection.ts`：集中处理方向可选性、方向切换后的选择裁剪、单项/领域级不可变
+  Set 更新，以及 checked/indeterminate 三态。项目设置、未变化实体和来源侧不存在的实体不能显式
+  选择；筛选与折叠不参与选择模型。
+- 比较 Dialog 把“时间/条目导航选择”和“整合多选”拆成两个状态。点击 Canvas 或差异行只控制
+  打开左/右侧文件的焦点；复选框只控制预检。方向切换保留仍合法的双侧修改项并裁剪来源缺失项，
+  交换左右文件重建会话并清空旧选择。
+- 新增 `AnnotationMergePlanPanel.tsx`：显示左右方向及文件名、用户选择/自动依赖/新增/待决冲突/目标
+  已相同计数、结构 issue 和计划项。超过 40 项时先限制 DOM，再按 100 项递增展示；面板持续明确
+  标记“只读”和“不会修改、保存或创建新修订”。
+- 差异组标题增加领域级复选框和半选状态；差异行拆为独立复选框与导航按钮，避免嵌套交互元素。
+  已删除旧整行按钮 CSS 路径，并补充窄屏布局。
+- 修复项目迁移中的确定性缺陷：空工尺块 fallback symbol id 改由父块稳定 id 派生。此前把规范化项目
+  暴露给计划器后，重复读取同一输入会因随机占位符产生不稳定对象；旧随机 id helper 已删除。
+- 新增 `test:annotation-merge-selection`，覆盖双向可选性、未知 key 裁剪、不可变更新、分组批选以及
+  checked/indeterminate。本轮没有新增第三方依赖。
+
+浏览器验收：
+
+- 使用平台中两份真实《寻梦》标注验证默认左→右与交换后的右→左方向、文件名和单侧实体禁用原因。
+- 领域全选 3 项和 91 项均生成正确计划；91 项预检只首批渲染 40 项并显示剩余 51 项入口。
+- 单项取消后领域复选框进入半选；隐藏句级字幕筛选后选择仍保留。点击只存在于右侧的 `line-1` 只
+  启用“打开右侧”，且不会加入整合选择。
+- 方向切换会裁剪新来源缺失的旧选择；交换左右会清空整合选择。820×900 窄屏下 Dialog
+  `clientWidth === scrollWidth`，无横向溢出；浏览器控制台没有 warning/error。
+- API 验收日志只有认证、资源、权限和两侧 annotation-file 的 OPTIONS/GET，没有 PATCH、DELETE、
+  保存、快照或其他写请求，确认预检只读。
+
+自动验证：
+
+- `test:annotation-merge-selection`：5/5；`test:annotation-merge-plan`：11/11；
+  `test:annotation-diff`：10/10；`test:annotation-comparison-navigation`：8/8；
+  `test:annotation-diff-timeline`：10/10；`test:resource-comparison`：2/2。
+- `test:recovery-preview`：3/3；`test:resource-columns`：7/7；`test:permissions`：5/5；
+  `test:api`：19/19。
+- `npm run build` 与 `git diff --check` 通过。仍只有既有 pg 9 前置弃用提示和 Vite 主 chunk 提醒。
+
+核对结论与下一步：
+
+- 未发现 UI 重算依赖、随机迁移、嵌套按钮、目标写入或旧选择泄漏；计划器仍是唯一引用闭包来源。
+- 下一轮 R2.3c3 必须先补冲突决策与纯应用模型，再在应用前重新读取目标 revision/权限并重新预检，
+  最终只向目标单文件编辑器交付一次可撤销 `commitProject()`；本轮不提前实现。

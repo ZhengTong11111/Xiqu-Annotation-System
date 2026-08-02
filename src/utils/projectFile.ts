@@ -683,6 +683,7 @@ function normalizeGongcheAnnotations(value: ProjectData["gongcheAnnotations"] | 
         Array.isArray(block.symbols) ? block.symbols : [],
         startTime,
         Math.max(startTime + MIN_NORMALIZED_CHARACTER_DURATION, endTime),
+        block.id,
       ),
     }] satisfies GongcheAnnotation[];
   });
@@ -692,9 +693,11 @@ function normalizeGongcheSymbols(
   symbols: GongcheSymbol[],
   blockStartTime: number,
   blockEndTime: number,
+  parentBlockId: string,
 ): GongcheSymbol[] {
+  // 空工尺块的展示占位符属于迁移结果，使用父块稳定 id，避免同一文件每次读取都产生随机差异。
   const fallback: GongcheSymbol[] = [{
-    id: `gongche-symbol-${createClientId()}`,
+    id: `gongche-symbol-${parentBlockId}-fallback`,
     label: "合",
     notation: "",
     rawText: "合",
@@ -915,8 +918,4 @@ function clampNumber(value: number, min: number, max: number) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");
-}
-
-function createClientId() {
-  return globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
 }

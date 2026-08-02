@@ -80,6 +80,9 @@ export type AnnotationDiffBuildResult =
   | {
       ok: true;
       diff: AnnotationDiffResult;
+      // 规范化项目只属于当前比较会话，供后续只读分析复用，不能写回原始文件。
+      leftProject: ProjectData;
+      rightProject: ProjectData;
     }
   | {
       ok: false;
@@ -151,6 +154,8 @@ export function buildAnnotationDiff(
         ...buildDuplicateIdentityWarnings(definitions),
       ],
     },
+    leftProject,
+    rightProject,
   };
 }
 

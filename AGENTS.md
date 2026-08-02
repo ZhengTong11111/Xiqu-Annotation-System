@@ -52,6 +52,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/annotationDiff.ts`
   - pure stable-id structured comparison for two normalized annotation payloads
   - owns research-domain matching and left/right time ranges; UI must not re-diff raw payloads
+  - one successful build also returns both normalized projects for the merge planner; this is runtime comparison state,
+    not a second migration path or saved document state
 - `src/platform/annotationDiffTimeline.ts`
   - pure time-index, filter, range validation, coordinate, and hit-test model derived only from structured diff
   - preserves one shared duration while filters change; invalid or untimed differences never enter Canvas as fake ranges
@@ -68,6 +70,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - pure dependency-aware plan for future selective left-to-right/right-to-left annotation integration
   - uses structured diff keys, closes strong entity references, reports machine-readable integrity issues, and never
     mutates either `ProjectData`; UI and apply stages must not reimplement this graph
+- `src/platform/annotationMergeSelection.ts`
+  - pure direction-aware selection normalization plus item/group checkbox state
+  - excludes project/unchanged and source-missing entities; filtering and folding must not be inputs to this module
+- `src/platform/AnnotationMergePlanPanel.tsx`
+  - read-only selective-integration preview for direction, selected/dependency counts, actions, and structural issues
+  - caps the initial DOM list and contains no save, revision, history, or apply command
 - `src/platform/resourceComparison.ts`
   - centralized list/grid/column selection qualification for comparing exactly two readable annotation files
   - preserves `selectedIds` order as the comparison's left/right order
@@ -179,6 +187,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:annotation-diff-timeline`
 - `npm run test:annotation-comparison-navigation`
 - `npm run test:annotation-merge-plan`
+- `npm run test:annotation-merge-selection`
 - `npm run test:resource-comparison`
 - `npm run build:web`
 - `npm run build:api`
@@ -419,6 +428,13 @@ If changing drag, selection, clipboard, import merge, or undo logic, assume stal
 - The planner is deliberately read-only: it does not generate ids, clone entities, call `commitProject()`, save an
   annotation file, or touch revision/history/operation state. The future UI must preview this plan before a separate
   apply stage performs one explicit, undoable target-document commit.
+- Comparison navigation selection and merge selection are separate state. Clicking a timeline segment or diff row may
+  change the open-left/open-right focus, but must never toggle an integration checkbox.
+- Merge selection is direction-aware and survives domain/change filters and group folding. Direction changes retain
+  still-valid modified entities while pruning entities absent from the new source; swapping files rebuilds the
+  comparison session and clears prior selections.
+- The c2 plan panel is intentionally read-only and bounded for large plans. Do not add an apply button until the c3
+  conflict-decision and target-session commit contract has revalidated target revision and permissions.
 
 ## Sync / Revision Model
 Even though this is still local-first, the hook already tracks document-sync concepts:
@@ -536,8 +552,8 @@ Important backend caveats:
   snapshot must not replace, open, or mutate the current editor document.
 - ordinary annotation-file comparison is also read-only: it must not save either file, create recovery snapshots, append
   editor history, or mutate resource selection. Compare by stable saved entity ids rather than array positions; derived
-  Gongche/branch lanes are not saved entities, random fallback symbol ids are not semantic fields, and duplicate stable
-  ids must produce a visible warning instead of being silently accepted.
+  Gongche/branch lanes are not saved entities, normalized fallback symbol ids must be deterministic, and duplicate
+  stable ids must produce a visible warning instead of being silently accepted.
 - moving a resource must reject cycles and destinations where the caller lacks `create_child`.
 - moving a selection is all-or-nothing; selected descendants collapse under their selected ancestor and must not be moved a second time.
 - moving to trash is also all-or-nothing. Only normalized logical roots receive `trashedAt`; descendants keep their
