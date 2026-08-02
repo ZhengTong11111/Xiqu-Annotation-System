@@ -37,6 +37,17 @@ import {
   type AnnotationMergeDirection,
 } from "./annotationMergePlan";
 import {
+  getAnnotationMergePlanFingerprint,
+  getAnnotationMergePreparationState,
+  normalizeMergeConflictResolutions,
+  setMergeConflictResolution,
+  type AnnotationMergeConflictResolutions,
+} from "./annotationMergeConflict";
+import type {
+  AnnotationMergePreparationRequest,
+  AnnotationMergePreparationResult,
+} from "./annotationMergeDraft";
+import {
   getMergeGroupSelectionState,
   isMergeEntrySelectable,
   normalizeMergeSelection,
@@ -91,6 +102,9 @@ export function AnnotationComparisonDialog(props: {
     resource: ResourceEntry,
     focus: AnnotationComparisonFocus,
   ) => Promise<boolean>;
+  onPrepareMerge: (
+    request: AnnotationMergePreparationRequest,
+  ) => Promise<AnnotationMergePreparationResult>;
   onClose: () => void;
 }) {
   const [orderedFiles, setOrderedFiles] = useState<
@@ -276,6 +290,8 @@ export function AnnotationComparisonDialog(props: {
                     expandedDomains={expandedDomains}
                     files={orderedFiles}
                     openingSide={openingSide}
+                    leftRevision={left.file!.revision}
+                    rightRevision={right.file!.revision}
                     onToggleDomain={toggleDomain}
                     onExpandDomain={expandDomain}
                     onOpenFileAtTime={async (resource, focus, side) => {
@@ -283,6 +299,7 @@ export function AnnotationComparisonDialog(props: {
                       const opened = await props.onOpenFileAtTime(resource, focus);
                       if (!opened) setOpeningSide(null);
                     }}
+                    onPrepareMerge={props.onPrepareMerge}
                   />
                 ) : (
                   <ComparisonState icon={<AlertTriangle size={18} />} error>
@@ -328,6 +345,8 @@ function ComparisonResult(props: {
   comparison: LoadedComparisonModel;
   files: [ResourceEntry, ResourceEntry];
   openingSide: AnnotationComparisonSide | null;
+  leftRevision: number;
+  rightRevision: number;
   expandedDomains: Set<string>;
   onToggleDomain: (domain: string) => void;
   onExpandDomain: (domain: string) => void;
@@ -336,6 +355,9 @@ function ComparisonResult(props: {
     focus: AnnotationComparisonFocus,
     side: AnnotationComparisonSide,
   ) => Promise<void>;
+  onPrepareMerge: (
+    request: AnnotationMergePreparationRequest,
+  ) => Promise<AnnotationMergePreparationResult>;
 }) {
   const diff = props.comparison.diff;
   const timelineIndex = useMemo(() =>
@@ -357,6 +379,10 @@ function ComparisonResult(props: {
   const [mergeSelectedEntryKeys, setMergeSelectedEntryKeys] = useState<Set<string>>(
     new Set(),
   );
+  const [conflictResolutions, setConflictResolutions] =
+    useState<AnnotationMergeConflictResolutions>({});
+  const [preparingMerge, setPreparingMerge] = useState(false);
+  const [preparationError, setPreparationError] = useState<string | null>(null);
   const [pendingScrollEntryKey, setPendingScrollEntryKey] = useState<string | null>(null);
   const entryElementsRef = useRef(new Map<string, HTMLButtonElement>());
   const filteredTimeline = useMemo(() => filterAnnotationDiffTimeline(
@@ -388,6 +414,10 @@ function ComparisonResult(props: {
     direction: mergeDirection,
     selectedEntryKeys: [...mergeSelectedEntryKeys],
   }), [diff, mergeDirection, mergeSelectedEntryKeys, props.comparison]);
+  const preparationState = useMemo(() => getAnnotationMergePreparationState(
+    mergePlan,
+    conflictResolutions,
+  ), [conflictResolutions, mergePlan]);
   const leftFocus = selectedEntry
     ? buildAnnotationComparisonFocus(selectedEntry, "left")
     : null;
@@ -403,6 +433,34 @@ function ComparisonResult(props: {
     element.scrollIntoView({ block: "nearest", behavior: "smooth" });
     setPendingScrollEntryKey(null);
   }, [pendingScrollEntryKey, props.expandedDomains]);
+
+  // 选择或方向改变会生成新计划；只保留仍属于当前冲突集合的人工决定。
+  useEffect(() => {
+    setConflictResolutions((current) =>
+      normalizeMergeConflictResolutions(mergePlan, current));
+    setPreparationError(null);
+  }, [mergePlan]);
+
+  // 准备请求携带屏幕预检指纹，平台层会以最新 revision 重建并逐项核对后才打开编辑器。
+  const prepareMerge = async () => {
+    if (!preparationState.canPrepare || preparingMerge) return;
+    setPreparingMerge(true);
+    setPreparationError(null);
+    const result = await props.onPrepareMerge({
+      leftResourceId: props.files[0].id,
+      rightResourceId: props.files[1].id,
+      leftRevision: props.leftRevision,
+      rightRevision: props.rightRevision,
+      direction: mergeDirection,
+      selectedEntryKeys: [...mergeSelectedEntryKeys].sort(),
+      conflictResolutions,
+      planFingerprint: getAnnotationMergePlanFingerprint(mergePlan),
+    });
+    if (!result.ok) {
+      setPreparationError(result.message);
+      setPreparingMerge(false);
+    }
+  };
 
   // 筛选切换以不可变 Set 更新，并清理可能已隐藏的旧高亮。
   const toggleTimelineDomain = (domain: AnnotationDiffGroup["domain"]) => {
@@ -567,13 +625,24 @@ function ComparisonResult(props: {
         rightFileName={props.files[1].name}
         selectedEntryCount={mergeSelectedEntryKeys.size}
         plan={mergePlan}
+        conflictResolutions={conflictResolutions}
+        preparationState={preparationState}
+        preparing={preparingMerge}
+        preparationError={preparationError}
         onDirectionChange={(direction) => {
           // 方向切换保留双侧修改项，但清除新来源侧不存在的单侧实体。
           setMergeDirection(direction);
+          setPreparationError(null);
           setMergeSelectedEntryKeys((current) =>
             normalizeMergeSelection(diff, direction, current));
         }}
         onClearSelection={() => setMergeSelectedEntryKeys(new Set())}
+        onResolveConflict={(entryKey, resolution) => {
+          setConflictResolutions((current) =>
+            setMergeConflictResolution(current, entryKey, resolution));
+          setPreparationError(null);
+        }}
+        onPrepare={() => void prepareMerge()}
       />
 
       <div className="annotation-comparison-groups">

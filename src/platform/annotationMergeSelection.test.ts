@@ -112,6 +112,7 @@ function diffFixture(): AnnotationDiffResult {
     leftSummary: summary(),
     rightSummary: summary(),
     warnings: [],
+    hasDuplicateIdentities: false,
   };
 }
 

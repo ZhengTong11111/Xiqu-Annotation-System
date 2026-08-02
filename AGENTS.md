@@ -62,20 +62,32 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/AnnotationComparisonDialog.tsx`
   - owns parallel side-isolated reads, stale-response protection, structured diff presentation, time filters,
     Canvas/list bidirectional selection, left/right swapping, and explicit open-left/open-right commands
-  - comparison remains read-only and must not instantiate a second editable Timeline inside the dialog
+  - owns selective-merge selection and explicit conflict decisions, but never writes a file from the dialog
+  - comparison must not instantiate a second editable Timeline inside the dialog
 - `src/platform/annotationComparisonNavigation.ts`
   - pure validation and normalization from one diff entry's real left/right time range to a one-shot editor focus
   - missing, negative, or non-finite ranges return `null`; never substitute zero or the opposite side's time
 - `src/platform/annotationMergePlan.ts`
-  - pure dependency-aware plan for future selective left-to-right/right-to-left annotation integration
+  - pure dependency-aware plan for selective left-to-right/right-to-left annotation integration
   - uses structured diff keys, closes strong entity references, reports machine-readable integrity issues, and never
     mutates either `ProjectData`; UI and apply stages must not reimplement this graph
 - `src/platform/annotationMergeSelection.ts`
   - pure direction-aware selection normalization plus item/group checkbox state
   - excludes project/unchanged and source-missing entities; filtering and folding must not be inputs to this module
 - `src/platform/AnnotationMergePlanPanel.tsx`
-  - read-only selective-integration preview for direction, selected/dependency counts, actions, and structural issues
-  - caps the initial DOM list and contains no save, revision, history, or apply command
+  - selective-integration preview for direction, selected/dependency counts, actions, structural issues, and explicit
+    per-conflict decisions; caps the initial non-conflict DOM list and never saves a file itself
+- `src/platform/annotationMergeConflict.ts`
+  - pure normalization and readiness model for explicit take-source/keep-target conflict decisions
+- `src/platform/annotationMergeApply.ts`
+  - pure all-or-nothing application of a reviewed plan to a cloned target project
+  - preserves unselected collection contents and validates cross-domain references before a draft can reach the editor
+- `src/platform/annotationMergePreparation.ts`
+  - rechecks latest file identities, revisions, capabilities, normalized diff, plan fingerprint, and conflict decisions
+    before creating a runtime merge draft
+- `src/platform/annotationMergeDraft.ts`
+  - runtime-only contract passed from the platform comparison flow into the existing target-file editor
+  - must never be serialized into `ProjectData`, annotation payloads, local storage, audit logs, or operation logs
 - `src/platform/resourceComparison.ts`
   - centralized list/grid/column selection qualification for comparing exactly two readable annotation files
   - preserves `selectedIds` order as the comparison's left/right order
@@ -495,6 +507,8 @@ Current platform UI capabilities:
 - multi-selection destination picker plus list/grid/column/breadcrumb drag-to-move powered by headless Pragmatic Drag and Drop
 - create projects/folders, import annotation JSON, upload media, copy/paste all four resource types, rename, move through the API, and soft-delete resources
 - open mutable or read-only annotation files in the existing editor
+- compare two ordinary annotation files and selectively integrate stable-id entities with dependency closure, explicit
+  conflict decisions, stale-plan rejection, and one editor-side undoable commit
 - revision-checked annotation-file save
 - Inspector details plus per-account permission matrix for every selected resource
 - annotation-file Inspector recovery history supports a lazy list, on-demand read-only multimodal summary, and an
@@ -550,6 +564,10 @@ Important backend caveats:
   endpoint that binds both annotation-file id and snapshot id and currently requires effective `write` capability.
 - historical payload preview must fail inside its own UI boundary and reuse the canonical project-file normalizer; a bad
   snapshot must not replace, open, or mutate the current editor document.
+- selective merge is a two-step local editor operation: the comparison dialog only prepares a reviewed runtime draft;
+  the editor applies it with exactly one `commitProject()` and never auto-saves. Preparation must refetch both files,
+  recheck source `read` and target `write`, reject changed revisions/duplicate identities/fingerprint drift, and rerun
+  the pure application integrity checks. A later normal save remains the only server payload mutation path.
 - ordinary annotation-file comparison is also read-only: it must not save either file, create recovery snapshots, append
   editor history, or mutate resource selection. Compare by stable saved entity ids rather than array positions; derived
   Gongche/branch lanes are not saved entities, normalized fallback symbol ids must be deterministic, and duplicate

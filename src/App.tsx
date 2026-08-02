@@ -473,6 +473,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [timelineClipboard, setTimelineClipboard] = useState<TimelineClipboard | null>(null);
   const [pendingPasteState, setPendingPasteState] = useState<PendingPasteState | null>(null);
   const [pendingImportMergeState, setPendingImportMergeState] = useState<PendingImportMergeState | null>(null);
+  const [pendingAnnotationMergeDraft, setPendingAnnotationMergeDraft] = useState(
+    editorSession?.pendingMergeDraft ?? null,
+  );
   const [zoom, setZoom] = useState(20);
   const [loopPlaybackRange, setLoopPlaybackRange] = useState<{ start: number; end: number } | null>(null);
   const [loopPlaybackEnabled, setLoopPlaybackEnabled] = useState(false);
@@ -1246,6 +1249,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function projectsEqual(left: ProjectData, right: ProjectData) {
     return serializeComparableProject(left) === serializeComparableProject(right);
+  }
+
+  // 选择性整合只在用户于目标编辑器再次确认时写入本地历史，并严格形成一个可撤销操作。
+  function applyPendingAnnotationMergeDraft() {
+    const draft = pendingAnnotationMergeDraft;
+    if (!draft) return;
+    if (!projectsEqual(projectRef.current, draft.baseProject)) {
+      window.alert("目标文件在草稿准备后已被编辑。请取消本草稿并重新比较，避免覆盖当前改动。");
+      return;
+    }
+    commitProject(draft.mergedProject, draft.baseProject, "merge-project");
+    setPendingAnnotationMergeDraft(null);
   }
 
   function seekTo(time: number) {
@@ -4809,6 +4824,34 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         />
       )}
     >
+      {/* 整合草稿确认栏属于编辑会话而非保存版本；取消不改历史，应用后仍需用户正常保存。 */}
+      {pendingAnnotationMergeDraft ? (
+        <section className="annotation-merge-draft-bar" role="status">
+          <span>
+            <strong>待应用的选择性整合</strong>
+            <small>
+              {pendingAnnotationMergeDraft.sourceFileName} → {pendingAnnotationMergeDraft.targetFileName}
+              · 新增 {pendingAnnotationMergeDraft.summary.added}
+              · 替换 {pendingAnnotationMergeDraft.summary.replaced}
+              · 保留目标 {pendingAnnotationMergeDraft.summary.keptTarget}
+            </small>
+          </span>
+          <em>应用后形成一次可撤销编辑，不会自动保存到服务器。</em>
+          <button
+            type="button"
+            onClick={() => setPendingAnnotationMergeDraft(null)}
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={applyPendingAnnotationMergeDraft}
+          >
+            应用到当前文档
+          </button>
+        </section>
+      ) : null}
       <ResizableSplitLayout
         orientation="horizontal"
         initialPrimarySize={0.74}

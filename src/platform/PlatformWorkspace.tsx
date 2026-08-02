@@ -8,6 +8,12 @@ import { mockProject } from "../mockData";
 import type { ProjectData } from "../types";
 import { normalizeImportedProjectFile } from "../utils/projectFile";
 import type { AnnotationComparisonFocus } from "./annotationComparisonNavigation";
+import type {
+  AnnotationMergeDraft,
+  AnnotationMergePreparationRequest,
+  AnnotationMergePreparationResult,
+} from "./annotationMergeDraft";
+import { prepareAnnotationMergeDraft } from "./annotationMergePreparation";
 import { ResourceExplorer } from "./ResourceExplorer";
 
 export type PlatformEditorSession = {
@@ -21,6 +27,7 @@ export type PlatformEditorSession = {
   canWrite: boolean;
   accessLabel: string;
   initialFocus?: AnnotationComparisonFocus;
+  pendingMergeDraft?: AnnotationMergeDraft;
 };
 
 export type LocalEditorSession = {
@@ -97,6 +104,46 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setView("editor");
   }
 
+  // 平台编辑会话在一处构造，普通打开与整合草稿打开共享 revision、权限和保存回调规则。
+  const enterPlatformEditor = useCallback(async (input: {
+    file: AnnotationFile<ProjectData>;
+    initialProject: ProjectData;
+    initialFocus?: AnnotationComparisonFocus;
+    pendingMergeDraft?: AnnotationMergeDraft;
+  }) => {
+    const parent = input.file.resource.parentId
+      ? await client.getResource(input.file.resource.parentId).catch(() => null)
+      : null;
+    const next: PlatformEditorSession = {
+      client,
+      annotationFileId: input.file.resource.id,
+      annotationFileName: input.file.resource.name,
+      projectTitle: parent?.name ?? "平台标注项目",
+      baseRevision: input.file.revision,
+      initialProject: input.initialProject,
+      canWrite: input.file.resource.permission.capabilities.includes("write"),
+      accessLabel: input.file.resource.permission.isOwner
+        ? "文件所有者"
+        : input.file.resource.permission.capabilities.includes("write")
+          ? "可编辑"
+          : "只读",
+      initialFocus: input.initialFocus,
+      pendingMergeDraft: input.pendingMergeDraft,
+      onAnnotationFileSaved: (saved) => {
+        setEditorSession((current) => current
+          ? {
+              ...current,
+              baseRevision: saved.revision,
+              annotationFileName: saved.resource.name,
+            }
+          : current);
+      },
+    };
+    setEditorSession(next);
+    setLocalSession(null);
+    setView("editor");
+  }, [client]);
+
   // 平台文件只有这一条打开路径：每次重新读取最新内容、revision 与权限，再建立隔离的编辑器会话。
   const openPlatformAnnotationFile = useCallback(async (
     resource: ResourceEntry,
@@ -105,36 +152,11 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setError(null);
     try {
       const file = await client.getAnnotationFile<ProjectData>(resource.id);
-      const parent = file.resource.parentId
-        ? await client.getResource(file.resource.parentId).catch(() => null)
-        : null;
-      const next: PlatformEditorSession = {
-        client,
-        annotationFileId: file.resource.id,
-        annotationFileName: file.resource.name,
-        projectTitle: parent?.name ?? "平台标注项目",
-        baseRevision: file.revision,
+      await enterPlatformEditor({
+        file,
         initialProject: hydrateProjectForClient(file.payload, client),
-        canWrite: file.resource.permission.capabilities.includes("write"),
-        accessLabel: file.resource.permission.isOwner
-          ? "文件所有者"
-          : file.resource.permission.capabilities.includes("write")
-            ? "可编辑"
-            : "只读",
         initialFocus,
-        onAnnotationFileSaved: (saved) => {
-          setEditorSession((current) => current
-            ? {
-                ...current,
-                baseRevision: saved.revision,
-                annotationFileName: saved.resource.name,
-              }
-            : current);
-        },
-      };
-      setEditorSession(next);
-      setLocalSession(null);
-      setView("editor");
+      });
       return true;
     } catch (nextError) {
       const message = describeError(nextError);
@@ -143,7 +165,35 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       window.alert(message);
       return false;
     }
-  }, [client]);
+  }, [client, enterPlatformEditor]);
+
+  // 选择性整合准备会重新读取并重建整套语义计划；任何过期、权限或结构变化都留在比较页报告。
+  const prepareAnnotationMerge = useCallback(async (
+    request: AnnotationMergePreparationRequest,
+  ): Promise<AnnotationMergePreparationResult> => {
+    try {
+      const [leftFile, rightFile] = await Promise.all([
+        client.getAnnotationFile<unknown>(request.leftResourceId),
+        client.getAnnotationFile<unknown>(request.rightResourceId),
+      ]);
+      const prepared = prepareAnnotationMergeDraft({
+        leftFile,
+        rightFile,
+        request,
+        hydrateProject: (project) => hydrateProjectForClient(project, client),
+      });
+      if (!prepared.ok) return prepared;
+      const typedTargetFile = prepared.value.targetFile as AnnotationFile<ProjectData>;
+      await enterPlatformEditor({
+        file: typedTargetFile,
+        initialProject: prepared.value.draft.baseProject,
+        pendingMergeDraft: prepared.value.draft,
+      });
+      return { ok: true };
+    } catch (nextError) {
+      return { ok: false, message: describeError(nextError) };
+    }
+  }, [client, enterPlatformEditor]);
 
   if (view === "login") {
     return (
@@ -206,11 +256,12 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       }}
       onOpenLocalJson={openLocal}
       onOpenAnnotationFile={openPlatformAnnotationFile}
+      onPrepareAnnotationMerge={prepareAnnotationMerge}
     />
   );
 }
 
-function hydrateProjectForClient(
+export function hydrateProjectForClient(
   payload: unknown,
   client: PlatformClient,
 ): ProjectData {
@@ -227,6 +278,7 @@ function hydrateProjectForClient(
     },
   };
 }
+
 
 export function prepareProjectForServer(project: ProjectData): ProjectData {
   const fileId = getPlatformFileId(project.video.filePath);

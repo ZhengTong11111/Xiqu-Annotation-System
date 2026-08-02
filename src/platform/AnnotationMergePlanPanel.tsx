@@ -13,6 +13,11 @@ import type {
   AnnotationMergePlan,
   AnnotationMergePlanItem,
 } from "./annotationMergePlan";
+import type {
+  AnnotationMergeConflictResolution,
+  AnnotationMergeConflictResolutions,
+  AnnotationMergePreparationState,
+} from "./annotationMergeConflict";
 
 const INITIAL_VISIBLE_ITEMS = 40;
 const VISIBLE_ITEM_STEP = 100;
@@ -36,13 +41,27 @@ export function AnnotationMergePlanPanel(props: {
   rightFileName: string;
   selectedEntryCount: number;
   plan: AnnotationMergePlan;
+  conflictResolutions: AnnotationMergeConflictResolutions;
+  preparationState: AnnotationMergePreparationState;
+  preparing: boolean;
+  preparationError: string | null;
   onDirectionChange: (direction: AnnotationMergeDirection) => void;
   onClearSelection: () => void;
+  onResolveConflict: (
+    entryKey: string,
+    resolution: AnnotationMergeConflictResolution,
+  ) => void;
+  onPrepare: () => void;
 }) {
   const [visibleItemLimit, setVisibleItemLimit] = useState(INITIAL_VISIBLE_ITEMS);
   const visibleItems = useMemo(() =>
-    props.plan.items.slice(0, visibleItemLimit),
+    props.plan.items
+      .filter(({ action }) => action !== "replace-conflict")
+      .slice(0, visibleItemLimit),
   [props.plan.items, visibleItemLimit]);
+  const conflicts = useMemo(() => props.plan.items.filter(({ action }) =>
+    action === "replace-conflict"), [props.plan.items]);
+  const nonConflictItemCount = props.plan.items.length - conflicts.length;
 
   // 每次方向或选择生成新计划时收起长列表，避免旧的展开量拖慢新的预检。
   useEffect(() => {
@@ -51,12 +70,12 @@ export function AnnotationMergePlanPanel(props: {
 
   return (
     <section className="annotation-merge-plan" aria-labelledby="annotation-merge-plan-title">
-      {/* 标题区明确标记只读属性，避免用户把预检误认为已经写入目标文件。 */}
+      {/* 标题区明确标记当前仍是应用前草稿，避免用户把预检误认为已经写入目标文件。 */}
       <header className="annotation-merge-plan-header">
         <span>
           <GitMerge size={16} />
           <strong id="annotation-merge-plan-title">选择性整合预检</strong>
-          <small>只读</small>
+          <small>未应用</small>
         </span>
         {props.selectedEntryCount > 0 ? (
           <button type="button" onClick={props.onClearSelection}>
@@ -111,34 +130,92 @@ export function AnnotationMergePlanPanel(props: {
             </div>
           ) : null}
 
+          {/* 冲突决策独立于普通计划列表，所有冲突都保持可见并要求用户显式选择。 */}
+          {conflicts.length > 0 ? (
+            <div className="annotation-merge-conflicts">
+              <strong>逐项处理内容冲突</strong>
+              {conflicts.map((item) => (
+                <div key={item.entryKey} className="annotation-merge-conflict-row">
+                  <span>
+                    <strong>{item.label || item.identity}</strong>
+                    <small>{DOMAIN_LABELS[item.domain]}</small>
+                  </span>
+                  <div role="group" aria-label={`${item.label}冲突处理`}>
+                    <ConflictChoice
+                      selected={props.conflictResolutions[item.entryKey] === "take-source"}
+                      label="采用来源"
+                      onClick={() => props.onResolveConflict(item.entryKey, "take-source")}
+                    />
+                    <ConflictChoice
+                      selected={props.conflictResolutions[item.entryKey] === "keep-target"}
+                      label="保留目标"
+                      onClick={() => props.onResolveConflict(item.entryKey, "keep-target")}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           <div className="annotation-merge-item-list">
             {visibleItems.map((item) => (
               <MergePlanItem key={item.entryKey} item={item} />
             ))}
           </div>
-          {visibleItems.length < props.plan.items.length ? (
+          {visibleItems.length < nonConflictItemCount ? (
             <button
               type="button"
               className="annotation-merge-show-more"
               onClick={() => setVisibleItemLimit((current) =>
-                Math.min(props.plan.items.length, current + VISIBLE_ITEM_STEP))}
+                Math.min(nonConflictItemCount, current + VISIBLE_ITEM_STEP))}
             >
               再显示 {Math.min(
                 VISIBLE_ITEM_STEP,
-                props.plan.items.length - visibleItems.length,
+                nonConflictItemCount - visibleItems.length,
               )} 项
             </button>
           ) : null}
 
           <p className="annotation-merge-readonly-note">
-            {props.plan.counts.conflicts > 0
-              ? "目标已有不同内容；本阶段仅标出冲突，尚未选择保留目标或采用来源。"
-              : "预检未发现内容冲突。"}
-            当前不会修改、保存或创建左右文件的新修订。
+            准备后将打开目标编辑器；在编辑器再次确认前，不会修改文档历史或保存服务端修订。
           </p>
+
+          {/* 准备按钮只建立会话草稿；结构问题或未决冲突都会使用纯状态统一阻断。 */}
+          {props.preparationError ? (
+            <p className="annotation-merge-preparation-error" role="alert">
+              <AlertTriangle size={14} /> {props.preparationError}
+            </p>
+          ) : null}
+          <button
+            type="button"
+            className="annotation-merge-prepare"
+            disabled={!props.preparationState.canPrepare || props.preparing}
+            onClick={props.onPrepare}
+          >
+            <GitMerge size={14} />
+            {props.preparing ? "正在复核最新文件…" : "准备整合草稿"}
+          </button>
         </>
       )}
     </section>
+  );
+}
+
+// 二选一冲突控件使用显式 pressed 状态，不以按钮位置暗示当前决定。
+function ConflictChoice(props: {
+  selected: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={props.selected ? "selected" : ""}
+      aria-pressed={props.selected}
+      onClick={props.onClick}
+    >
+      {props.label}
+    </button>
   );
 }
 

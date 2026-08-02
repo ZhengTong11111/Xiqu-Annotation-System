@@ -74,6 +74,7 @@ export type AnnotationDiffResult = {
   leftSummary: AnnotationDiffSideSummary;
   rightSummary: AnnotationDiffSideSummary;
   warnings: string[];
+  hasDuplicateIdentities: boolean;
 };
 
 export type AnnotationDiffBuildResult =
@@ -135,6 +136,7 @@ export function buildAnnotationDiff(
   const rightProject = right.project;
   const definitions = buildDomainDefinitions(leftProject, rightProject);
   const groups = definitions.map(buildDiffGroup);
+  const duplicateIdentityWarnings = buildDuplicateIdentityWarnings(definitions);
   const counts = groups.reduce(
     (total, group) => addCounts(total, group.counts),
     emptyCounts(),
@@ -151,8 +153,10 @@ export function buildAnnotationDiff(
       rightSummary: summarizeProject(rightProject),
       warnings: [
         ...buildDiffWarnings(leftProject, rightProject),
-        ...buildDuplicateIdentityWarnings(definitions),
+        ...duplicateIdentityWarnings,
       ],
+      // 重复稳定标识会令后续局部整合无法唯一定位实体，因此提供结构化阻断标记，避免调用方解析提示文案。
+      hasDuplicateIdentities: duplicateIdentityWarnings.length > 0,
     },
     leftProject,
     rightProject,

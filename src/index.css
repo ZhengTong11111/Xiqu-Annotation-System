@@ -2428,6 +2428,65 @@ select {
   gap: 5px;
 }
 
+/* 冲突决策使用紧凑分行布局，让每一项都能清楚对应“采用来源/保留目标”。 */
+.annotation-merge-conflicts {
+  display: grid;
+  gap: 4px;
+  margin: 5px 0 8px;
+  padding: 7px 8px;
+  background: #fffaf0;
+  border-top: 1px solid #ead8b8;
+  border-bottom: 1px solid #ead8b8;
+}
+
+.annotation-merge-conflicts > strong {
+  color: #76521c;
+  font-size: 10px;
+}
+
+.annotation-merge-conflict-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  border-top: 1px solid rgb(145 108 49 / 12%);
+}
+
+.annotation-merge-conflict-row > span {
+  display: grid;
+  min-width: 0;
+}
+
+.annotation-merge-conflict-row small {
+  color: #7b8797;
+  font-size: 9px;
+}
+
+.annotation-merge-conflict-row > div {
+  display: flex;
+  gap: 3px;
+  padding: 2px;
+  background: #eceff3;
+  border-radius: 5px;
+}
+
+.annotation-merge-conflict-row button {
+  min-height: 25px;
+  padding: 0 8px;
+  color: #66758a;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 9px;
+}
+
+.annotation-merge-conflict-row button.selected {
+  color: #244f79;
+  background: #fff;
+  border-color: #b9c9da;
+}
+
 .annotation-merge-item-list {
   background: #fff;
   border-top: 1px solid #e1e7ee;
@@ -2491,6 +2550,79 @@ select {
   margin: 5px 0 0;
   color: #6f7d90;
   font-size: 9px;
+}
+
+.annotation-merge-preparation-error {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 4px 0;
+  color: #963c42;
+  font-size: 10px;
+}
+
+.annotation-merge-prepare {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  color: #fff;
+  background: #356f9f;
+  border: 1px solid #2b638f;
+  border-radius: 5px;
+  font-size: 10px;
+}
+
+.annotation-merge-prepare:disabled {
+  color: #8b97a6;
+  background: #e7ebf0;
+  border-color: #d3dae3;
+  cursor: not-allowed;
+}
+
+/* 编辑器确认栏固定为工作区顶部信息带，不占用时间轴或检查器内部空间。 */
+.annotation-merge-draft-bar {
+  display: grid;
+  grid-template-columns: minmax(250px, 1fr) minmax(220px, auto) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 6px 12px;
+  color: #31465d;
+  background: #edf5fb;
+  border-bottom: 1px solid #bfd2e3;
+}
+
+.annotation-merge-draft-bar > span {
+  display: grid;
+  min-width: 0;
+}
+
+.annotation-merge-draft-bar small,
+.annotation-merge-draft-bar em {
+  overflow: hidden;
+  color: #66778a;
+  font-size: 10px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-merge-draft-bar button {
+  min-height: 30px;
+  padding: 0 10px;
+  color: #42566d;
+  background: #fff;
+  border: 1px solid #bfcbd8;
+  border-radius: 5px;
+}
+
+.annotation-merge-draft-bar button.primary {
+  color: #fff;
+  background: #356f9f;
+  border-color: #2b638f;
 }
 
 .annotation-comparison-groups {

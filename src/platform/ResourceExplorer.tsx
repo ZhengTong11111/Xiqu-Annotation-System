@@ -49,6 +49,10 @@ import {
 import { prepareProjectForServer } from "./PlatformWorkspace";
 import { AnnotationComparisonDialog } from "./AnnotationComparisonDialog";
 import type { AnnotationComparisonFocus } from "./annotationComparisonNavigation";
+import type {
+  AnnotationMergePreparationRequest,
+  AnnotationMergePreparationResult,
+} from "./annotationMergeDraft";
 import { ResourceColumnBrowser } from "./ResourceColumnBrowser";
 import { ResourceDestinationPicker } from "./ResourceDestinationPicker";
 import {
@@ -98,6 +102,9 @@ export function ResourceExplorer(props: {
     resource: ResourceEntry,
     initialFocus?: AnnotationComparisonFocus,
   ) => Promise<boolean>;
+  onPrepareAnnotationMerge: (
+    request: AnnotationMergePreparationRequest,
+  ) => Promise<AnnotationMergePreparationResult>;
 }) {
   const [rootView, setRootView] = useState<ResourceListView>("all_projects");
   const [folderId, setFolderId] = useState<string | null>(null);
@@ -1006,6 +1013,7 @@ export function ResourceExplorer(props: {
         client={props.client}
         files={comparisonFiles}
         onOpenFileAtTime={props.onOpenAnnotationFile}
+        onPrepareMerge={props.onPrepareAnnotationMerge}
         onClose={() => setComparisonFiles(null)}
       />
     </main>

@@ -992,3 +992,57 @@ Codex 审查发现并修复：
 - 未发现 UI 重算依赖、随机迁移、嵌套按钮、目标写入或旧选择泄漏；计划器仍是唯一引用闭包来源。
 - 下一轮 R2.3c3 必须先补冲突决策与纯应用模型，再在应用前重新读取目标 revision/权限并重新预检，
   最终只向目标单文件编辑器交付一次可撤销 `commitProject()`；本轮不提前实现。
+
+## 2026-08-02：R2.3c3 冲突决策、陈旧计划保护与单次可撤销应用
+
+本轮按 `CLAUDE_WORK.md` 完成普通标注文件选择性整合闭环。比较 Dialog 仍不写文件；它只收集明确
+冲突决策并发起最新状态复核，实际变更必须在现有目标单文件编辑器中由用户第二次确认。
+
+实际实现：
+
+- `annotationMergeConflict.ts` 集中管理 `take-source` / `keep-target` 显式决策、计划变化后的陈旧决策
+  裁剪、未决冲突和准备可用状态，并以方向、选择、计划项和 issue 生成确定语义指纹。
+- `AnnotationMergePlanPanel` 把冲突与普通计划项分离展示；自动依赖中的冲突同样必须逐项决定。按钮
+  文案明确为“准备整合草稿”，结构 issue、空选择或未决冲突均阻断下一步。
+- `annotationMergeApply.ts` 在目标克隆上按拓扑计划全量应用或整体失败：新增轨道/附属轨时先建立空
+  定义容器，只写入明确计划中的块和点；替换定义保留目标未选集合。应用后统一排序并校验重复 id、
+  逐字所属句、工尺父块和符号、板眼引用、递归父块/分叉归属、附属轨及活动轨道顺序。
+- `annotationMergePreparation.ts` 在进入编辑器前重新读取两侧文件，核对文件 id、revision、来源
+  `read`、目标 `write`、重复 identity，并重新规范化、diff、选择裁剪、计划和语义指纹。任何变化
+  都要求返回比较页重新检查，不沿用陈旧 payload。
+- `annotationMergeDraft.ts` 定义仅存在于运行时会话的 base/merged 项目和摘要；草稿不写入项目 JSON、
+  localStorage、operation、audit 或 URL。
+- `PlatformWorkspace` 抽取普通打开与草稿打开共用的编辑器会话入口。`App.tsx` 显示紧凑确认条；取消
+  不产生历史，确认前验证当前项目仍等于 draft base，确认后只调用一次 `commitProject(...,
+  "merge-project")`。此步骤不调用服务器保存，后续普通保存继续使用 `baseRevision` 和既有 409 保护。
+- 自审阶段移除了自定义块写入的 `as never` 类型绕行，并把附属点 identity 从冒号反解析改成按真实
+  实体构造完整 key 精确匹配，避免合法 id 字符造成隐含约束；同时补齐附属轨定义和工尺符号引用校验。
+- 本轮没有新增第三方依赖。
+
+浏览器验收：
+
+- 使用平台中两份真实《寻梦》文件选择 3 条句级字幕，从比较页成功准备并进入目标编辑器；确认条
+  显示来源、目标、新增/替换/保留目标摘要，1280 px 视口无横向溢出。
+- 首次验收发现浏览器中裸调用 `crypto.randomUUID` 会触发 `Illegal invocation`。改为绑定宿主对象调用，
+  并增加默认 id 路径专项测试后重试成功。
+- 点击“应用到当前文档”后确认条消失，编辑菜单出现一个可用“撤销”，而“重做”仍禁用，符合单次
+  历史提交。自动点击撤销时浏览器控制在超长时间轴 DOM 上超时，因此本轮只将“单次撤销入口可用”
+  记为实际通过，不把自动撤销后的内容比对夸大为已通过。
+- 比较和草稿应用阶段均未调用服务器保存；数据库 revision 与恢复快照仍由用户后续普通保存决定。
+
+自动验证：
+
+- `test:annotation-merge-conflict`：1/1；`test:annotation-merge-apply`：4/4；
+  `test:annotation-merge-preparation`：4/4。
+- 既有 `test:annotation-merge-plan`、`test:annotation-merge-selection`、`test:annotation-diff`、
+  `test:annotation-diff-timeline`、`test:annotation-comparison-navigation` 和 `test:resource-comparison`
+  均在实现阶段通过。
+- `npm run build` 与 `git diff --check` 通过；仍只有既有 Vite 主 chunk 体积提醒。本轮没有改 API schema
+  或数据库迁移。
+
+核对结论与下一步：
+
+- 未发现第二条目标文件写入、自动保存、整份 JSON 覆盖、随机 id、快照发布化或绕过项目 history 的
+  路径；比较选择、计划、准备、纯应用和编辑器确认职责分离。
+- 下一轮 R2.4 把所选恢复快照与当前文件送入同一结构化 diff UI。快照保持只读，详情继续按需读取，
+  不进入选择性整合，也不改变现有安全恢复命令。
