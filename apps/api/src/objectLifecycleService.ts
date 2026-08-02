@@ -7,7 +7,7 @@ import type {
 import type { ApiUser } from "./domain.js";
 import { forbidden } from "./errors.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
-import type { LocalObjectStorage } from "./storage.js";
+import type { ObjectStorage } from "./objectStorage.js";
 import type { UploadPolicy } from "./uploadPolicy.js";
 
 // 对象生命周期服务只处理“确定无引用且超过宽限期”的孤儿；缺失二进制只报告，不静默删学术元数据。
@@ -15,7 +15,7 @@ export class ObjectLifecycleService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly access: ResourceAccessService,
-    private readonly storage: LocalObjectStorage,
+    private readonly storage: Pick<ObjectStorage, "listStoredObjects" | "deleteObject">,
     private readonly policy: UploadPolicy,
   ) {}
 

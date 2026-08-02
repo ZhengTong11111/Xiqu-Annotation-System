@@ -6,10 +6,10 @@ import { HttpError, uploadTooLarge, unsupportedMedia } from "./errors.js";
 import type { ApiObservability, UploadMetricResult } from "./observability.js";
 import type { ResourceService } from "./resourceService.js";
 import {
-  LocalObjectStorage,
   StorageSizeLimitError,
+  type ObjectStorage,
   type StagedBinary,
-} from "./storage.js";
+} from "./objectStorage.js";
 import {
   detectAndValidateMedia,
   normalizeUploadName,
@@ -24,7 +24,13 @@ export type MediaUploadLogger = {
 export class MediaUploadService {
   constructor(
     private readonly resources: ResourceService,
-    private readonly storage: LocalObjectStorage,
+    private readonly storage: Pick<
+      ObjectStorage,
+      | "createStorageKey"
+      | "putStagedObject"
+      | "promoteStagedObject"
+      | "deleteObject"
+    >,
     private readonly policy: UploadPolicy,
     private readonly observability?: ApiObservability,
   ) {}

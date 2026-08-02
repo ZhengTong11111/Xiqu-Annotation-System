@@ -5,7 +5,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { ApiUser } from "../domain.js";
 import type { MaintenanceCoordinator } from "../maintenanceCoordinator.js";
-import type { LocalObjectStorage } from "../storage.js";
+import { requireLocalSnapshotRoot, type ObjectStorage } from "../objectStorage.js";
 import { normalizeBackupManifest, writeBackupManifest } from "./backupManifest.js";
 import {
   assertSafeRelativePath,
@@ -34,7 +34,7 @@ export type CreateBackupOptions = {
   maintenance: MaintenanceCoordinator;
   operator: ApiUser;
   databaseUrl: string;
-  storage: LocalObjectStorage;
+  storage: ObjectStorage;
   outputRoot: string;
   maintenanceReason: string;
   keepMaintenanceOnFailure?: boolean;
@@ -43,7 +43,7 @@ export type CreateBackupOptions = {
 
 // 备份服务拥有完整静默窗口：预检不改状态，进入维护后才 dump/copy，校验成功才发布 final。
 export async function createPlatformBackup(options: CreateBackupOptions) {
-  const storageRoot = options.storage.getRootDirectory();
+  const storageRoot = requireLocalSnapshotRoot(options.storage);
   const outputRoot = path.resolve(options.outputRoot);
   assertSeparatedDirectories(storageRoot, outputRoot);
   await options.storage.checkReadiness();

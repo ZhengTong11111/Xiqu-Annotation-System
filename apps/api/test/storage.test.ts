@@ -6,8 +6,8 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import {
   LocalObjectStorage,
-  StorageSizeLimitError,
 } from "../src/storage.js";
+import { StorageSizeLimitError } from "../src/objectStorage.js";
 
 test("本地对象存储以暂存、校验、原子发布完成上传", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "xiqu-storage-test-"));

@@ -12,36 +12,26 @@ import {
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import {
+  StorageSizeLimitError,
+  type ObjectStorage,
+  type StagedBinary,
+  type StoredObjectSummary,
+} from "./objectStorage.js";
 
 const MEDIA_HEADER_BYTES = 8_192;
 
-export type StagedBinary = {
-  finalStorageKey: string;
-  stagedStorageKey: string;
-  checksum: string;
-  size: number;
-  header: Uint8Array;
-};
-
-export type StoredObjectSummary = {
-  storageKey: string;
-  size: number;
-  modifiedAt: Date;
-  staged: boolean;
-};
-
-export class StorageSizeLimitError extends Error {}
-
-export class LocalObjectStorage {
+// 本地适配器实现对象存储端口，并保留同文件系统 staged rename 的原子发布语义。
+export class LocalObjectStorage implements ObjectStorage {
   private readonly rootDir: string;
 
   constructor(rootDir = process.env.XIQU_STORAGE_ROOT ?? "./data/storage") {
     this.rootDir = path.resolve(rootDir);
   }
 
-  // 运维备份只读取受控根目录描述；具体复制与校验仍由备份领域编排，避免污染上传职责。
-  getRootDirectory() {
-    return this.rootDir;
+  // 后端描述是唯一公开本地根目录的能力出口，普通业务服务不应读取该字段。
+  describeBackend() {
+    return { kind: "local" as const, rootDirectory: this.rootDir };
   }
 
   // 最终 key 不再复用原文件扩展名，扩展由签名检测通过后统一传入。

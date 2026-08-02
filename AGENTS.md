@@ -190,13 +190,20 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/database.ts`
   - shared PrismaPg connection factory
   - explicitly aligns Prisma schema and PostgreSQL `search_path`; do not construct a second adapter path in tests
+- `apps/api/src/objectStorage.ts`
+  - stable object-storage port, staged publish/read/range/lifecycle contracts, backend descriptor, and local-backup
+    capability narrowing
+- `apps/api/src/objectStorageFactory.ts`
+  - the only production environment composition root for object storage; undefined defaults to `local`, while blank or
+    unknown backends fail closed
 - `apps/api/src/resourceAccess.ts`
   - authoritative server-side resource capability resolution
   - combines global admin bypass, ownership, direct grants, and nearest inherited folder grants
 - `apps/api/src/resourceService.ts`
   - resource-tree mutations, copy/move/trash behavior, annotation-file save/recovery, and confirmed-range governance
 - `apps/api/src/storage.ts`
-  - local object staging, checksum/size/header capture, atomic publish, safe listing, and idempotent deletion
+  - local filesystem adapter for `ObjectStorage`, including staging, checksum/size/header capture, atomic publish, safe
+    listing, and idempotent deletion; business services must not depend on `LocalObjectStorage` directly
 - `apps/api/src/uploadPolicy.ts`
   - centralized upload limits, filename rules, and binary-signature media validation
 - `apps/api/src/mediaUploadService.ts`
@@ -288,6 +295,8 @@ Backend local defaults:
 - API port defaults to `4317`
 - Prisma/PostgreSQL defaults to `postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public`
 - local uploaded objects default to `./data/storage`
+- `XIQU_OBJECT_STORAGE_BACKEND` currently supports only `local`; missing means local, while blank or unknown values fail
+  startup instead of silently writing to the wrong backend
 - local full backups default to `./data/backups`; `XIQU_PG_BIN_DIR` may point to PostgreSQL 16 client tools when they
   are not on `PATH`
 - runtime Node.js must be 22 or newer because the media-signature dependency and backend toolchain require it
@@ -649,6 +658,9 @@ Important backend caveats:
 - real-time collaborative editing is not implemented yet
 - current backups are local full backups only: no scheduler, encryption, incremental chain, remote replication, or
   S3/MinIO adapter is implemented yet
+- business storage consumers must depend on `ObjectStorage` or a narrow `Pick` of required methods. The concrete local
+  adapter is confined to the factory, adapter tests, and the explicitly local restore-drill target. S3/MinIO must be
+  implemented as a real adapter with integration tests, not as a path shim.
 - the removed Course/Assignment/Submission runtime is not a pending compatibility target; future classroom
   distribution/review should build on resource copy, ACL, file comparison, and a separate confirmed-annotation layer
 - confirmed-range review is implemented end to end; entity-level confirmation, comments/signatures, automatic

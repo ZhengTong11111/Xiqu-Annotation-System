@@ -1702,3 +1702,59 @@ Claude Code、GLM 或其他代理。用户再次强调 Development Log 必须详
 - R3d2b 完成的是本地对象目录全量一致备份与可证明恢复，不包含定时调度、备份加密、增量链、远端副本、
   S3/MinIO 或生产告警。下一轮应先收敛对象存储接口和部署运维基线，不能让业务 service 或未来备份继续
   依赖本地路径细节。
+
+## 2026-08-03：R3e1 对象存储端口、本地适配器与装配边界
+
+本轮继续执行“审计实际代码与 roadmap → 整体重写被忽略的 `CLAUDE_WORK.md` → 实现 → 专项/API/构建
+验证 → 真实运行故障验证 → 自审 → 文档”的逐轮流程。由 Codex 直接完成，没有委托 Claude Code、
+DeepSeek、GLM 或其他代理。用户明确要求 Development Log 不只写最终结果，因此这里同时记录迁移范围、
+自审修正和因磁盘空间不足未完成的新备份事实。
+
+审计结论与设计边界：
+
+- R3d2b 后，`LocalObjectStorage` 同时承担稳定业务合同和本地实现身份；API 装配、上传、Range 下载、
+  readiness、对象生命周期、系统诊断与备份都直接引用 concrete class。测试中的故障替身还需要
+  `as unknown as LocalObjectStorage`，说明抽象边界并不真实。`getRootDirectory()` 又让备份算法直接依赖
+  本地路径，未来远端适配器只能伪装文件系统或复制业务 service。
+- 本轮没有为了“支持远端”引入 AWS SDK，也没有创建一个不能运行的 S3 类。新增稳定 `ObjectStorage`
+  端口，覆盖现有业务真实需要的 staged publish、流式读取/Range、存在/删除、readiness 和安全对象摘要；
+  后端描述采用 `local | remote` 判别联合。`LocalObjectStorage` 成为该端口的本地适配器。
+- 新增唯一生产装配函数 `createObjectStorageFromEnvironment()`。`XIQU_OBJECT_STORAGE_BACKEND` 未配置时
+  兼容当前部署并选择 local，显式 `local` 同路径装配；空字符串或任何未知值在启动阶段 fail closed，
+  防止本来要写远端的部署悄悄落到本机磁盘。
+- API composition root 接受 `ObjectStorage` 注入；上传、下载、健康、清理和诊断服务进一步使用最小
+  `Pick<ObjectStorage, ...>` 能力。测试故障替身不再伪装具体类。扫描确认 concrete local 只保留在工厂、
+  本地适配器测试、API 集成测试和明确创建隔离本地恢复目标的位置。
+
+备份和恢复边界：
+
+- 本地全量备份不能假装对任意远端后端成立。新增 `requireLocalSnapshotRoot()`，在进入维护模式前根据
+  判别描述收窄能力；远端描述即使实现全部普通业务方法，也会明确拒绝本地快照命令，不能伪造
+  `rootDirectory` 绕过。
+- 备份 CLI 与 API 使用同一个环境工厂，不再分别 `new LocalObjectStorage()`。恢复演练的目标仍明确是
+  隔离本地目录，这是当前命令的受控范围；但恢复后对象一致性算法改为对 `getObjectStream()` 计算
+  SHA-256，不再拼接本地根路径。`digestFile()` 和对象流复用同一个流式摘要核心。
+- 自审时发现 `compareRestoredObjects()` 虽已改为流读取，参数仍写死 concrete local。最终改成只依赖
+  `listStoredObjects` 与 `getObjectStream` 的最小端口切片，没有保留半抽象签名或兼容 re-export。
+
+测试、真实运行与限制：
+
+- 新 `test:object-storage` 5/5：本地暂存/原子发布、超限与越界清理、默认/显式 local 工厂、空白/未知
+  配置拒绝，以及 typed remote fixture 不能取得本地快照根。`test:backup` 7/7、`test:uploads` 4/4、
+  `test:observability` 4/4 全部通过。
+- API 全套增至 48/48，既有认证、分页、ACL、移动/复制/回收站、恢复快照、确认、维护模式、媒体上传、
+  Range 下载、对象生命周期和备份边界均通过。`npm run build`、API test TypeScript 和
+  `git diff --check` 通过；仍只有既有 Vite 主 chunk 超过 500 kB 提醒与 pg 9 前置弃用提示。
+- 使用 `XIQU_OBJECT_STORAGE_BACKEND=local` 和 PostgreSQL 16.14 客户端走真实 `backup:create` 工厂路径。
+  当前数据卷只余约 1.2 GiB，命令在写入阶段真实返回 `ENOSPC`。失败补偿正确：没有发布 final 或留下
+  staging，空输出目录已删除，public maintenance 自动恢复为 false；运行中 API `/api/health/ready`
+  返回 200，database/storage 均为 ok。由于用户磁盘空间不足，本轮没有声称创建了一份新的成功备份；
+  上轮 R3d2b 的完整成功恢复演练仍是当前灾备基线，且未删除任何正式备份、数据库对象或孤儿资产。
+
+完成边界与下一步：
+
+- R3e1 完成的是可替换对象存储的业务端口、唯一装配边界和本地能力收窄，不是 S3/MinIO 支持本身。
+  下一轮应选择并实现一个真实 S3-compatible 适配器，以 MinIO 等兼容服务执行 multipart/Range、暂存发布、
+  readiness、列举和删除集成测试；同时单独设计远端一致备份策略，不能继续调用本地目录快照。
+- 在进行新的大型真实备份或 MinIO 镜像拉取前，需要先释放磁盘空间或使用容量充足的独立卷。本轮没有
+  擅自清理 R3d1/R3d2b 已记录的 missing/orphan，也没有删除用户数据来换取测试空间。

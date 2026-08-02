@@ -7,7 +7,6 @@ import {
   ApiObservability,
   isValidMetricsToken,
 } from "../src/observability.js";
-import type { LocalObjectStorage } from "../src/storage.js";
 
 test("独立 Registry 可重复创建且只记录规范化路由", async () => {
   const first = new ApiObservability();
@@ -59,7 +58,7 @@ test("对象存储故障只降低 readiness，不影响进程 liveness", async (
       checkReadiness: async () => {
         throw new Error("测试存储故障");
       },
-    } as unknown as LocalObjectStorage,
+    },
   );
   assert.equal(health.getLiveness().status, "ok");
   const readiness = await health.getReadiness();

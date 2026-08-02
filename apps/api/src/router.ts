@@ -23,7 +23,7 @@ import {
 import type { PrismaPlatformRepository } from "./repository.js";
 import type { ResourceService } from "./resourceService.js";
 import { MAX_BATCH_RESOURCE_SELECTION } from "./resourceSelection.js";
-import type { LocalObjectStorage } from "./storage.js";
+import type { ObjectStorage } from "./objectStorage.js";
 import type { SystemDiagnosticsService } from "./systemDiagnosticsService.js";
 
 const RESOURCE_TYPES = new Set<ResourceType>([
@@ -67,7 +67,7 @@ export function registerApiRoutes(
   app: FastifyInstance,
   repository: PrismaPlatformRepository,
   resources: ResourceService,
-  storage: LocalObjectStorage,
+  storage: Pick<ObjectStorage, "getObjectStream">,
   mediaUploads: MediaUploadService,
   objectLifecycle: ObjectLifecycleService,
   health: HealthService,

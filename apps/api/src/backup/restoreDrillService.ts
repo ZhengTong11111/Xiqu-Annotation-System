@@ -5,6 +5,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import pg from "pg";
 import { createPrismaConnection } from "../database.js";
+import type { ObjectStorage } from "../objectStorage.js";
 import { LocalObjectStorage } from "../storage.js";
 import { readDatabaseSummary } from "./backupService.js";
 import {
@@ -18,7 +19,7 @@ import type {
   RestoreDrillReport,
 } from "./backupTypes.js";
 import { verifyBackupDirectory } from "./backupVerifier.js";
-import { digestFile } from "./checksum.js";
+import { digestReadable } from "./checksum.js";
 import {
   parsePostgresConnection,
   resolvePostgresTool,
@@ -213,7 +214,7 @@ function compareDatabaseSummary(
 async function compareRestoredObjects(
   database: BackupDatabaseSummary,
   expectedObjects: Array<{ storageKey: string; size: number; sha256: string }>,
-  storage: LocalObjectStorage,
+  storage: Pick<ObjectStorage, "listStoredObjects" | "getObjectStream">,
 ) {
   const actualObjects = await storage.listStoredObjects();
   const expectedByKey = new Map(expectedObjects.map((object) => [object.storageKey, object]));
@@ -225,7 +226,7 @@ async function compareRestoredObjects(
       failures.push(`出现额外对象 ${object.storageKey}`);
       continue;
     }
-    const digest = await digestFile(path.join(storage.getRootDirectory(), ...object.storageKey.split("/")));
+    const digest = await digestReadable(storage.getObjectStream(object.storageKey));
     if (digest.size !== expected.size || digest.sha256 !== expected.sha256) {
       failures.push(`对象内容不一致 ${object.storageKey}`);
     }

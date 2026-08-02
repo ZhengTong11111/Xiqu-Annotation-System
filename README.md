@@ -999,6 +999,8 @@ npm run preview
 ```bash
 # PostgreSQL 客户端不在 PATH 时，指向包含 pg_dump / pg_restore 的目录。
 export XIQU_PG_BIN_DIR=/path/to/postgresql/bin
+# 当前生产适配器为 local；未配置时也默认 local，未知值会拒绝启动。
+export XIQU_OBJECT_STORAGE_BACKEND=local
 
 npm run maintenance:status -- --operator admin
 npm run backup:create -- --operator admin --output ./data/backups \
@@ -1038,7 +1040,8 @@ npm run maintenance:disable -- --operator admin
 
 不得把备份输出放进对象存储目录，不得把恢复演练指向当前数据库或 `postgres/template` 系统库，也不要
 在未执行 `backup:verify` 的情况下手工解包恢复。manifest 会如实记录源数据已有的 missing/orphan 警告，
-备份命令不会擅自清理这些资产。
+备份命令不会擅自清理这些资产。业务服务通过统一对象存储端口工作，但当前一致备份和恢复演练仍只支持
+`local` 后端；未来接入 S3/MinIO 时必须先提供对应的快照/导出策略，不能把远端位置伪装成本地目录。
 
 ## 当前限制与注意事项
 

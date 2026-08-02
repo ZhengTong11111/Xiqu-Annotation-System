@@ -12,7 +12,8 @@ import { PrismaPlatformRepository } from "./repository.js";
 import { ResourceAccessService } from "./resourceAccess.js";
 import { ResourceService } from "./resourceService.js";
 import { registerApiRoutes } from "./router.js";
-import { LocalObjectStorage } from "./storage.js";
+import type { ObjectStorage } from "./objectStorage.js";
+import { createObjectStorageFromEnvironment } from "./objectStorageFactory.js";
 import { MediaUploadService } from "./mediaUploadService.js";
 import { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
 import { ObjectLifecycleService } from "./objectLifecycleService.js";
@@ -24,7 +25,7 @@ import { loadUploadPolicy, type UploadPolicy } from "./uploadPolicy.js";
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
   maintenancePool: Pool;
-  storage?: LocalObjectStorage;
+  storage?: ObjectStorage;
   logger?: FastifyServerOptions["logger"] | FastifyBaseLogger;
   seed?: boolean;
   uploadPolicy?: Partial<UploadPolicy>;
@@ -43,7 +44,8 @@ export async function buildApiApp(
   const access = new ResourceAccessService(options.prisma);
   const repository = new PrismaPlatformRepository(options.prisma, access);
   const resources = new ResourceService(options.prisma, access);
-  const storage = options.storage ?? new LocalObjectStorage();
+  // 生产默认只通过工厂装配一次；测试可注入 typed adapter，不读取宿主环境。
+  const storage = options.storage ?? createObjectStorageFromEnvironment();
   const uploadPolicy = loadUploadPolicy(options.uploadPolicy);
   const observability = new ApiObservability();
   const health = new HealthService(options.prisma, storage);

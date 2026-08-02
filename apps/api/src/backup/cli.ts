@@ -1,8 +1,9 @@
 import path from "node:path";
 import { createPrismaConnection } from "../database.js";
 import { MaintenanceCoordinator } from "../maintenanceCoordinator.js";
+import { requireLocalSnapshotRoot } from "../objectStorage.js";
+import { createObjectStorageFromEnvironment } from "../objectStorageFactory.js";
 import { ResourceAccessService } from "../resourceAccess.js";
-import { LocalObjectStorage } from "../storage.js";
 import { createPlatformBackup } from "./backupService.js";
 import { loadMaintenanceOperator } from "./maintenanceOperator.js";
 import { runRestoreDrill } from "./restoreDrillService.js";
@@ -65,9 +66,10 @@ async function runCommand(
     if (!targetDatabaseUrl) {
       throw new Error("请通过 XIQU_RESTORE_DATABASE_URL 或 --target-database-url 指定隔离数据库。 ");
     }
+    const sourceStorage = createObjectStorageFromEnvironment();
     const result = await runRestoreDrill({
       backupDirectory: requireValue(values, "backup"),
-      sourceStorageRoot: process.env.XIQU_STORAGE_ROOT ?? "./data/storage",
+      sourceStorageRoot: requireLocalSnapshotRoot(sourceStorage),
       targetDatabaseUrl,
       targetStorageRoot: requireValue(values, "target-storage"),
       reportPath: values.get("report"),
@@ -108,7 +110,7 @@ async function runCommand(
         maintenance,
         operator,
         databaseUrl,
-        storage: new LocalObjectStorage(),
+        storage: createObjectStorageFromEnvironment(),
         outputRoot: values.get("output") ?? "./data/backups",
         maintenanceReason: values.get("reason") ?? "创建平台一致备份",
         keepMaintenanceOnFailure: flags.has("keep-maintenance-on-failure"),

@@ -3,7 +3,7 @@ import type {
   HealthComponentStatus,
   ServiceHealthResponse,
 } from "@xiqu/shared";
-import type { LocalObjectStorage } from "./storage.js";
+import type { ObjectStorage } from "./objectStorage.js";
 
 // 健康服务区分进程存活与外部依赖就绪，避免数据库故障触发无意义的进程重启循环。
 export class HealthService {
@@ -11,7 +11,7 @@ export class HealthService {
 
   constructor(
     private readonly prisma: PrismaClient,
-    private readonly storage: LocalObjectStorage,
+    private readonly storage: Pick<ObjectStorage, "checkReadiness">,
   ) {}
 
   getLiveness(): ServiceHealthResponse {

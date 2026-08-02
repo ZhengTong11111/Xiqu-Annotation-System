@@ -10,7 +10,7 @@ import type { HealthService } from "./healthService.js";
 import type { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
 import type { ObjectLifecycleService } from "./objectLifecycleService.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
-import type { LocalObjectStorage } from "./storage.js";
+import type { ObjectStorage } from "./objectStorage.js";
 import type { UploadPolicy } from "./uploadPolicy.js";
 
 // 统计结果始终补齐所有固定类别，空类别也返回 0，前端无需处理缺失键。
@@ -32,7 +32,7 @@ export class SystemDiagnosticsService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly access: ResourceAccessService,
-    private readonly storage: LocalObjectStorage,
+    private readonly storage: Pick<ObjectStorage, "listStoredObjects">,
     private readonly objectLifecycle: ObjectLifecycleService,
     private readonly health: HealthService,
     private readonly maintenance: MaintenanceCoordinator,
