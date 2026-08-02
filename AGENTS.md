@@ -44,11 +44,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - owns folder navigation, view switching, selection, keyboard actions, import/upload, and the resource Inspector
   - the Inspector is the canonical UI for editing each account's direct permissions on the selected resource
 - `src/platform/ResourceRecoveryHistory.tsx`
-  - annotation-file Inspector recovery-history list and read-only snapshot dialog
-  - loads lightweight summaries first and requests one full payload only after explicit selection
+  - annotation-file Inspector recovery-history list, read-only snapshot detail, safe restore, and snapshot/current comparison entry
+  - loads lightweight summaries first, requests one full snapshot payload only after explicit selection, and refetches the
+    current annotation file when comparison starts rather than trusting stale Inspector metadata
 - `src/platform/recoverySnapshotPreview.ts`
   - pure, failure-contained conversion from unknown historical payload to a current-format multimodal summary
   - reuses `normalizeImportedProjectFile()`; do not create a second project migration path for snapshot previews
+- `src/platform/recoverySnapshotComparison.ts`
+  - pure fixed-direction comparison with historical snapshot on the left and current annotation file on the right
+  - delegates normalization and stable-id matching to `buildAnnotationDiff()`; it has no restore, merge, or network behavior
 - `src/platform/annotationDiff.ts`
   - pure stable-id structured comparison for two normalized annotation payloads
   - owns research-domain matching and left/right time ranges; UI must not re-diff raw payloads
@@ -59,11 +63,19 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - preserves one shared duration while filters change; invalid or untimed differences never enter Canvas as fake ranges
 - `src/platform/AnnotationDiffTimelineOverview.tsx`
   - high-DPI read-only Canvas for left/right diff distribution; does not load files or own editor state
+- `src/platform/AnnotationDiffReview.tsx`
+  - shared read-only summary, warnings, filters, Canvas timeline, domain groups, and entry navigation used by ordinary-file
+    and recovery-snapshot comparisons
+  - extension slots may add ordinary-file merge controls, but this component must not learn merge, restore, or persistence
+    semantics
 - `src/platform/AnnotationComparisonDialog.tsx`
-  - owns parallel side-isolated reads, stale-response protection, structured diff presentation, time filters,
-    Canvas/list bidirectional selection, left/right swapping, and explicit open-left/open-right commands
+  - owns parallel side-isolated reads, stale-response protection, left/right swapping, ordinary-file open commands, and
+    composition of the shared read-only diff review
   - owns selective-merge selection and explicit conflict decisions, but never writes a file from the dialog
   - comparison must not instantiate a second editable Timeline inside the dialog
+- `src/platform/RecoverySnapshotComparisonDialog.tsx`
+  - composes the shared read-only diff review with fixed snapshot-left/current-right metadata
+  - only the current-file side can open in the editor; there is no swap or selective-merge surface
 - `src/platform/annotationComparisonNavigation.ts`
   - pure validation and normalization from one diff entry's real left/right time range to a one-shot editor focus
   - missing, negative, or non-finite ranges return `null`; never substitute zero or the opposite side's time
@@ -564,6 +576,10 @@ Important backend caveats:
   endpoint that binds both annotation-file id and snapshot id and currently requires effective `write` capability.
 - historical payload preview must fail inside its own UI boundary and reuse the canonical project-file normalizer; a bad
   snapshot must not replace, open, or mutate the current editor document.
+- recovery-snapshot comparison must refetch the current annotation file when the user starts comparison, keep the
+  historical snapshot fixed on the left and the current server revision on the right, and reuse `AnnotationDiffReview`.
+  It is read-only: never add side swapping, snapshot opening/editing, selective merge, revision writes, or a second
+  migration path. Closing it must return to the underlying snapshot detail so restore remains a separate confirmed act.
 - selective merge is a two-step local editor operation: the comparison dialog only prepares a reviewed runtime draft;
   the editor applies it with exactly one `commitProject()` and never auto-saves. Preparation must refetch both files,
   recheck source `read` and target `write`, reject changed revisions/duplicate identities/fingerprint drift, and rerun

@@ -2,12 +2,6 @@ import * as Dialog from "@radix-ui/react-dialog";
 import {
   AlertTriangle,
   ArrowLeftRight,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  CircleMinus,
-  CirclePlus,
-  ExternalLink,
   Files,
   RefreshCw,
   X,
@@ -21,16 +15,13 @@ import {
 } from "../api/platformClient";
 import {
   buildAnnotationDiff,
-  type AnnotationDiffChangeType,
   type AnnotationDiffGroup,
   type AnnotationDiffResult,
-  type AnnotationDiffTimeRange,
 } from "./annotationDiff";
 import { AnnotationMergePlanPanel } from "./AnnotationMergePlanPanel";
-import {
-  buildAnnotationComparisonFocus,
-  type AnnotationComparisonFocus,
-  type AnnotationComparisonSide,
+import type {
+  AnnotationComparisonFocus,
+  AnnotationComparisonSide,
 } from "./annotationComparisonNavigation";
 import {
   buildAnnotationMergePlan,
@@ -55,16 +46,10 @@ import {
   setMergeGroupSelection,
 } from "./annotationMergeSelection";
 import {
-  ANNOTATION_DIFF_DOMAIN_COLORS,
-  AnnotationDiffTimelineOverview,
-} from "./AnnotationDiffTimelineOverview";
-import {
-  buildAnnotationDiffTimelineIndex,
-  filterAnnotationDiffTimeline,
-  getAnnotationDiffEntryKey,
-  type AnnotationDiffTimelineChangeType,
-  type AnnotationDiffTimelineSegment,
-} from "./annotationDiffTimeline";
+  AnnotationDiffReview,
+  type AnnotationDiffReviewEntry,
+} from "./AnnotationDiffReview";
+import { getAnnotationDiffEntryKey } from "./annotationDiffTimeline";
 import { formatResourceDate } from "./ResourceItem";
 
 // 双侧请求状态与变化标签集中定义，避免组件分支使用不一致的状态文本。
@@ -85,13 +70,6 @@ const EMPTY_SIDE: LoadedComparisonSide = {
   file: null,
   loading: false,
   error: null,
-};
-
-const CHANGE_LABELS: Record<AnnotationDiffChangeType, string> = {
-  added: "新增",
-  removed: "删除",
-  modified: "修改",
-  unchanged: "未变",
 };
 
 // 对话框独立读取两份完整标注，只把结构化差异交给展示层，不污染资源选择或编辑器历史。
@@ -360,19 +338,6 @@ function ComparisonResult(props: {
   ) => Promise<AnnotationMergePreparationResult>;
 }) {
   const diff = props.comparison.diff;
-  const timelineIndex = useMemo(() =>
-    buildAnnotationDiffTimelineIndex(diff), [diff]);
-  const availableDomains = useMemo(() => new Set(
-    diff.groups
-      .filter((group) => changedCount(group) > 0)
-      .map(({ domain }) => domain),
-  ), [diff.groups]);
-  const [selectedDomains, setSelectedDomains] = useState(() =>
-    new Set(availableDomains));
-  const [selectedChangeTypes, setSelectedChangeTypes] = useState<
-    Set<AnnotationDiffTimelineChangeType>
-  >(() => new Set(["added", "removed", "modified"]));
-  const [navigationEntryKey, setNavigationEntryKey] = useState<string | null>(null);
   const [mergeDirection, setMergeDirection] = useState<AnnotationMergeDirection>(
     "left-to-right",
   );
@@ -383,30 +348,6 @@ function ComparisonResult(props: {
     useState<AnnotationMergeConflictResolutions>({});
   const [preparingMerge, setPreparingMerge] = useState(false);
   const [preparationError, setPreparationError] = useState<string | null>(null);
-  const [pendingScrollEntryKey, setPendingScrollEntryKey] = useState<string | null>(null);
-  const entryElementsRef = useRef(new Map<string, HTMLButtonElement>());
-  const filteredTimeline = useMemo(() => filterAnnotationDiffTimeline(
-    timelineIndex,
-    {
-      domains: selectedDomains,
-      changeTypes: selectedChangeTypes,
-    },
-  ), [timelineIndex, selectedChangeTypes, selectedDomains]);
-  const visibleEntryCount = useMemo(() => new Set(
-    filteredTimeline.segments.map(({ entryKey }) => entryKey),
-  ).size, [filteredTimeline.segments]);
-  const groupLabels = useMemo(() => new Map(diff.groups.map((group) =>
-    [group.domain, group.label])), [diff.groups]);
-  // 当前条目始终从稳定 key 反查，不复制 diff 对象，交换与筛选后不会保留陈旧实体。
-  const selectedEntry = useMemo(() => {
-    if (!navigationEntryKey) return null;
-    for (const group of diff.groups) {
-      const entry = group.entries.find((item) =>
-        getAnnotationDiffEntryKey(item) === navigationEntryKey);
-      if (entry) return entry;
-    }
-    return null;
-  }, [diff.groups, navigationEntryKey]);
   const mergePlan = useMemo(() => buildAnnotationMergePlan({
     leftProject: props.comparison.leftProject,
     rightProject: props.comparison.rightProject,
@@ -418,21 +359,6 @@ function ComparisonResult(props: {
     mergePlan,
     conflictResolutions,
   ), [conflictResolutions, mergePlan]);
-  const leftFocus = selectedEntry
-    ? buildAnnotationComparisonFocus(selectedEntry, "left")
-    : null;
-  const rightFocus = selectedEntry
-    ? buildAnnotationComparisonFocus(selectedEntry, "right")
-    : null;
-
-  // 等目标领域真正展开并挂载差异按钮后再滚动，避免依赖 React 提交时序猜测 DOM 是否存在。
-  useEffect(() => {
-    if (!pendingScrollEntryKey) return;
-    const element = entryElementsRef.current.get(pendingScrollEntryKey);
-    if (!element) return;
-    element.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    setPendingScrollEntryKey(null);
-  }, [pendingScrollEntryKey, props.expandedDomains]);
 
   // 选择或方向改变会生成新计划；只保留仍属于当前冲突集合的人工决定。
   useEffect(() => {
@@ -462,164 +388,28 @@ function ComparisonResult(props: {
     }
   };
 
-  // 筛选切换以不可变 Set 更新，并清理可能已隐藏的旧高亮。
-  const toggleTimelineDomain = (domain: AnnotationDiffGroup["domain"]) => {
-    setNavigationEntryKey(null);
-    setSelectedDomains((current) => toggleSetValue(current, domain));
-  };
-
-  const toggleTimelineChangeType = (
-    changeType: AnnotationDiffTimelineChangeType,
-  ) => {
-    setNavigationEntryKey(null);
-    setSelectedChangeTypes((current) => toggleSetValue(current, changeType));
-  };
-
-  // Canvas 片段定位先展开领域，再等 React 挂载目标按钮后滚到当前 Dialog 视口内。
-  const selectTimelineSegment = (segment: AnnotationDiffTimelineSegment) => {
-    setNavigationEntryKey(segment.entryKey);
-    setPendingScrollEntryKey(segment.entryKey);
-    props.onExpandDomain(segment.domain);
-  };
-
-  // 差异按钮引用只服务定位，在领域折叠卸载时同步删除，避免保存失效 DOM。
-  const registerEntryElement = (key: string, element: HTMLButtonElement | null) => {
-    if (element) entryElementsRef.current.set(key, element);
-    else entryElementsRef.current.delete(key);
-  };
-
-  // 从结构化列表选择条目时同步打开对应筛选，使 Canvas 必然能高亮其左右时间范围。
-  const selectDiffEntry = (
-    entry: AnnotationDiffGroup["entries"][number],
-  ) => {
-    setNavigationEntryKey(getAnnotationDiffEntryKey(entry));
-    if (entry.changeType === "unchanged") return;
-    const visibleChangeType: AnnotationDiffTimelineChangeType = entry.changeType;
-    setSelectedDomains((current) => current.has(entry.domain)
-      ? current
-      : new Set([...current, entry.domain]));
-    setSelectedChangeTypes((current) => current.has(visibleChangeType)
-      ? current
-      : new Set([...current, visibleChangeType]));
-  };
-
   return (
-    <>
-      <div className="annotation-comparison-summary">
-        {(["added", "removed", "modified", "unchanged"] as const).map((type) => (
-          <span key={type} className={`change-${type}`}>
-            <ChangeIcon type={type} />
-            {CHANGE_LABELS[type]} <strong>{diff.counts[type]}</strong>
-          </span>
-        ))}
-        <em>{diff.hasDifferences ? "检测到结构化差异" : "两个文件内容一致"}</em>
-      </div>
-
-      {/* 警告只呈现可解释的比较限制，不显示或持久化原始 payload。 */}
-      {diff.warnings.length ? (
-        <div className="annotation-comparison-warnings">
-          {diff.warnings.map((warning) => (
-            <span key={warning}><AlertTriangle size={13} /> {warning}</span>
-          ))}
-        </div>
-      ) : null}
-
-      {/* 时间概览使用纯 diff 索引，提供筛选及 Canvas/条目双向定位，不加载第二份编辑器。 */}
-      <section className="annotation-comparison-timeline-section">
-        <div className="annotation-comparison-timeline-heading">
-          <span>
-            <strong>时间差异概览</strong>
-            <small>左右文件共用 0–{formatAxisDuration(timelineIndex.duration)} 时间尺度</small>
-          </span>
-          <em>
-            {visibleEntryCount} 项可定位 · {filteredTimeline.untimedChangedCount} 项无时间
-          </em>
-        </div>
-        <fieldset className="annotation-comparison-filters">
-          <legend>研究领域</legend>
-          {[...availableDomains].map((domain) => (
-            <label
-              key={domain}
-              style={{
-                "--annotation-domain-color": ANNOTATION_DIFF_DOMAIN_COLORS[domain],
-              } as React.CSSProperties}
-            >
-              <input
-                type="checkbox"
-                checked={selectedDomains.has(domain)}
-                onChange={() => toggleTimelineDomain(domain)}
-              />
-              <span className="annotation-comparison-domain-swatch" aria-hidden="true" />
-              {groupLabels.get(domain) ?? domain}
-            </label>
-          ))}
-        </fieldset>
-        <fieldset className="annotation-comparison-filters compact">
-          <legend>变化类型</legend>
-          {(["added", "removed", "modified"] as const).map((changeType) => (
-            <label key={changeType} className={`change-${changeType}`}>
-              <input
-                type="checkbox"
-                checked={selectedChangeTypes.has(changeType)}
-                onChange={() => toggleTimelineChangeType(changeType)}
-              />
-              {CHANGE_LABELS[changeType]}
-            </label>
-          ))}
-          {timelineIndex.invalidRangeCount ? (
-            <small>{timelineIndex.invalidRangeCount} 个非法时间范围未绘制</small>
-          ) : null}
-          {timelineIndex.normalizedRangeCount ? (
-            <small>{timelineIndex.normalizedRangeCount} 个反向范围已纠正</small>
-          ) : null}
-        </fieldset>
-        <AnnotationDiffTimelineOverview
-          duration={filteredTimeline.duration}
-          segments={filteredTimeline.segments}
-          selectedEntryKey={navigationEntryKey}
-          onSelectSegment={selectTimelineSegment}
-        />
-        {/* 单侧打开命令使用真实结构化范围；不存在或无时间的侧明确禁用，不回退到 0 秒。 */}
-        <div className="annotation-comparison-open-actions">
-          <span>
-            {selectedEntry
-              ? `当前选择：${selectedEntry.label || selectedEntry.identity}`
-              : "选择时间概览或下方差异条目后，可打开对应文件定位。"}
-          </span>
-          <button
-            type="button"
-            disabled={!leftFocus || props.openingSide !== null}
-            title={leftFocus ? "打开左侧文件并定位到该差异" : "左侧没有可定位时间范围"}
-            onClick={() => {
-              if (leftFocus) {
-                void props.onOpenFileAtTime(props.files[0], leftFocus, "left");
-              }
-            }}
-          >
-            {props.openingSide === "left"
-              ? <RefreshCw className="spinning" size={14} />
-              : <ExternalLink size={14} />}
-            打开左侧
-          </button>
-          <button
-            type="button"
-            disabled={!rightFocus || props.openingSide !== null}
-            title={rightFocus ? "打开右侧文件并定位到该差异" : "右侧没有可定位时间范围"}
-            onClick={() => {
-              if (rightFocus) {
-                void props.onOpenFileAtTime(props.files[1], rightFocus, "right");
-              }
-            }}
-          >
-            {props.openingSide === "right"
-              ? <RefreshCw className="spinning" size={14} />
-              : <ExternalLink size={14} />}
-            打开右侧
-          </button>
-        </div>
-      </section>
-
-      <AnnotationMergePlanPanel
+    <AnnotationDiffReview
+      diff={diff}
+      expandedDomains={props.expandedDomains}
+      openingSide={props.openingSide}
+      onToggleDomain={props.onToggleDomain}
+      onExpandDomain={props.onExpandDomain}
+      sideActions={[
+        {
+          side: "left",
+          label: "打开左侧",
+          unavailableTitle: "左侧没有可定位时间范围",
+          onOpen: (focus) => props.onOpenFileAtTime(props.files[0], focus, "left"),
+        },
+        {
+          side: "right",
+          label: "打开右侧",
+          unavailableTitle: "右侧没有可定位时间范围",
+          onOpen: (focus) => props.onOpenFileAtTime(props.files[1], focus, "right"),
+        },
+      ]}
+      beforeGroups={<AnnotationMergePlanPanel
         direction={mergeDirection}
         leftFileName={props.files[0].name}
         rightFileName={props.files[1].name}
@@ -643,124 +433,55 @@ function ComparisonResult(props: {
           setPreparationError(null);
         }}
         onPrepare={() => void prepareMerge()}
-      />
-
-      <div className="annotation-comparison-groups">
-        {diff.groups.map((group) => (
-          <ComparisonGroup
-            key={group.domain}
-            group={group}
-            expanded={props.expandedDomains.has(group.domain)}
-            onToggle={() => props.onToggleDomain(group.domain)}
-            navigationEntryKey={navigationEntryKey}
-            mergeDirection={mergeDirection}
-            mergeSelectedEntryKeys={mergeSelectedEntryKeys}
-            onSelectEntry={selectDiffEntry}
-            onSetMergeEntrySelection={(entryKey, selected) => {
-              setMergeSelectedEntryKeys((current) =>
-                setMergeEntrySelection(current, entryKey, selected));
-            }}
-            onSetMergeGroupSelection={(selected) => {
-              setMergeSelectedEntryKeys((current) =>
-                setMergeGroupSelection(current, group, mergeDirection, selected));
-            }}
-            registerEntryElement={registerEntryElement}
-          />
-        ))}
-      </div>
-    </>
+      />}
+      renderGroupControl={(group) => (
+        <MergeGroupCheckbox
+          state={getMergeGroupSelectionState(
+            mergeSelectedEntryKeys,
+            group,
+            mergeDirection,
+          )}
+          label={`${group.label}整合选择`}
+          onChange={(selected) => setMergeSelectedEntryKeys((current) =>
+            setMergeGroupSelection(current, group, mergeDirection, selected))}
+        />
+      )}
+      renderEntryControl={(entry) => (
+        <MergeEntryCheckbox
+          entry={entry}
+          direction={mergeDirection}
+          selected={mergeSelectedEntryKeys.has(getAnnotationDiffEntryKey(entry))}
+          onChange={(selected) => setMergeSelectedEntryKeys((current) =>
+            setMergeEntrySelection(current, getAnnotationDiffEntryKey(entry), selected))}
+        />
+      )}
+    />
   );
 }
 
-// 分组默认只列出真正变化的保存实体，未变化数量仍保留在分组计数中供用户核对。
-function ComparisonGroup(props: {
-  group: AnnotationDiffGroup;
-  expanded: boolean;
-  onToggle: () => void;
-  navigationEntryKey: string | null;
-  mergeDirection: AnnotationMergeDirection;
-  mergeSelectedEntryKeys: ReadonlySet<string>;
-  onSelectEntry: (entry: AnnotationDiffGroup["entries"][number]) => void;
-  onSetMergeEntrySelection: (entryKey: string, selected: boolean) => void;
-  onSetMergeGroupSelection: (selected: boolean) => void;
-  registerEntryElement: (key: string, element: HTMLButtonElement | null) => void;
+// 单项整合复选框只存在于普通文件比较包装层，快照复用共享视图时不会得到该控件。
+function MergeEntryCheckbox(props: {
+  entry: AnnotationDiffReviewEntry;
+  direction: AnnotationMergeDirection;
+  selected: boolean;
+  onChange: (selected: boolean) => void;
 }) {
-  const changedEntries = props.group.entries.filter(({ changeType }) =>
-    changeType !== "unchanged");
-  const groupSelection = getMergeGroupSelectionState(
-    props.mergeSelectedEntryKeys,
-    props.group,
-    props.mergeDirection,
-  );
+  const mergeSelectable = isMergeEntrySelectable(props.entry, props.direction);
   return (
-    <section className="annotation-comparison-group">
-      <header className="annotation-comparison-group-header">
-        <button type="button" onClick={props.onToggle} aria-expanded={props.expanded}>
-          {props.expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-          <strong>{props.group.label}</strong>
-          <span>{changedEntries.length} 处差异</span>
-          <small>{props.group.counts.unchanged} 项未变</small>
-        </button>
-        <MergeGroupCheckbox
-          state={groupSelection}
-          label={`${props.group.label}整合选择`}
-          onChange={props.onSetMergeGroupSelection}
-        />
-      </header>
-      {props.expanded ? (
-        <div className="annotation-comparison-entry-list">
-          {changedEntries.length ? changedEntries.map((entry) => {
-            const entryKey = getAnnotationDiffEntryKey(entry);
-            const mergeSelectable = isMergeEntrySelectable(
-              entry,
-              props.mergeDirection,
-            );
-            return (
-              <div
-                key={`${entry.changeType}:${entry.identity}`}
-                className={`annotation-comparison-entry-row change-${entry.changeType}`}
-              >
-                <label
-                  className="annotation-comparison-merge-checkbox"
-                  title={mergeSelectable
-                    ? "加入选择性整合预检"
-                    : getMergeDisabledReason(entry, props.mergeDirection)}
-                >
-                  <input
-                    type="checkbox"
-                    checked={props.mergeSelectedEntryKeys.has(entryKey)}
-                    disabled={!mergeSelectable}
-                    aria-label={`${entry.label || entry.identity}加入整合预检`}
-                    onChange={(event) => props.onSetMergeEntrySelection(
-                      entryKey,
-                      event.currentTarget.checked,
-                    )}
-                  />
-                </label>
-                <button
-                  ref={(element) => props.registerEntryElement(entryKey, element)}
-                  type="button"
-                  className={props.navigationEntryKey === entryKey ? "selected" : ""}
-                  onClick={() => props.onSelectEntry(entry)}
-                  aria-pressed={props.navigationEntryKey === entryKey}
-                >
-                  <ChangeIcon type={entry.changeType} />
-                  <span>
-                    <strong title={entry.label}>{entry.label || entry.identity}</strong>
-                    <small title={entry.identity}>{entry.identity}</small>
-                  </span>
-                  <time>{formatComparisonRanges(entry.leftTimeRange, entry.rightTimeRange)}</time>
-                  <em>{entry.changedFields.length
-                    ? entry.changedFields.join("、")
-                    : CHANGE_LABELS[entry.changeType]}</em>
-                </button>
-              </div>
-          );}) : (
-            <p>该领域没有结构化差异。</p>
-          )}
-        </div>
-      ) : null}
-    </section>
+    <label
+      className="annotation-comparison-merge-checkbox"
+      title={mergeSelectable
+        ? "加入选择性整合预检"
+        : getMergeDisabledReason(props.entry, props.direction)}
+    >
+      <input
+        type="checkbox"
+        checked={props.selected}
+        disabled={!mergeSelectable}
+        aria-label={`${props.entry.label || props.entry.identity}加入整合预检`}
+        onChange={(event) => props.onChange(event.currentTarget.checked)}
+      />
+    </label>
   );
 }
 
@@ -822,28 +543,6 @@ function ComparisonState(props: {
   );
 }
 
-// 变化图标为颜色之外提供第二重含义，保证不同视觉条件下仍能识别状态。
-function ChangeIcon(props: { type: AnnotationDiffChangeType }) {
-  if (props.type === "added") return <CirclePlus size={14} />;
-  if (props.type === "removed") return <CircleMinus size={14} />;
-  if (props.type === "modified") return <RefreshCw size={14} />;
-  return <Check size={14} />;
-}
-
-// 时间范围同时保留左右值；只有一侧存在时仍能定位新增或删除对象。
-function formatComparisonRanges(
-  left: AnnotationDiffTimeRange | null,
-  right: AnnotationDiffTimeRange | null,
-) {
-  const format = (value: AnnotationDiffTimeRange | null) => value
-    ? `${value.start.toFixed(3)}–${value.end.toFixed(3)}s`
-    : "—";
-  if (left && right && left.start === right.start && left.end === right.end) {
-    return format(left);
-  }
-  return `左 ${format(left)} / 右 ${format(right)}`;
-}
-
 // 网络错误只输出安全的人类可读摘要，不把响应详情或 payload 暴露到界面。
 function describeComparisonError(error: unknown) {
   if (error instanceof PlatformApiError) {
@@ -857,19 +556,4 @@ function describeComparisonError(error: unknown) {
 // 分组差异数排除未变化项，用于默认展开和标题摘要。
 function changedCount(group: AnnotationDiffGroup) {
   return group.counts.added + group.counts.removed + group.counts.modified;
-}
-
-// Set 切换 helper 同时服务领域和变化类型，避免两个事件处理器维护不同更新语义。
-function toggleSetValue<T>(current: ReadonlySet<T>, value: T) {
-  const next = new Set(current);
-  if (next.has(value)) next.delete(value);
-  else next.add(value);
-  return next;
-}
-
-// 轴总长使用简洁分秒格式，毫秒精度继续保留在具体条目的时间文字中。
-function formatAxisDuration(seconds: number) {
-  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
-  const minutes = Math.floor(safeSeconds / 60);
-  return `${minutes}:${Math.floor(safeSeconds % 60).toString().padStart(2, "0")}`;
 }

@@ -1516,6 +1516,13 @@ select {
   font-size: 11px;
 }
 
+/* 快照详情把只读比较和恢复写入命令并排分组，保持两种操作的层级区别。 */
+.resource-recovery-dialog-footer > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .resource-recovery-dialog-footer button,
 .resource-restore-alert footer button {
   display: inline-flex;

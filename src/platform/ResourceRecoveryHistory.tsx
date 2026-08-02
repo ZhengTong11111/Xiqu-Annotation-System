@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   Clock3,
+  Files,
   History,
   RefreshCw,
   RotateCcw,
@@ -32,12 +33,15 @@ import {
   buildRecoverySnapshotPreview,
   type RecoverySnapshotProjectSummary,
 } from "./recoverySnapshotPreview";
+import type { AnnotationComparisonFocus } from "./annotationComparisonNavigation";
+import { RecoverySnapshotComparisonDialog } from "./RecoverySnapshotComparisonDialog";
 
 // 组件只管理一份标注文件的恢复历史；资源切换时由 key 重新创建，避免缓存跨文件串用。
 export function ResourceRecoveryHistory(props: {
   client: PlatformClient;
   resource: ResourceEntry;
   onRestored?: (file: AnnotationFile<unknown>) => void | Promise<void>;
+  onOpenCurrentAtTime: (focus: AnnotationComparisonFocus) => Promise<boolean>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [summaries, setSummaries] = useState<
@@ -59,9 +63,15 @@ export function ResourceRecoveryHistory(props: {
   const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [comparisonSnapshotId, setComparisonSnapshotId] = useState<string | null>(null);
+  const [comparisonCurrentFile, setComparisonCurrentFile] =
+    useState<AnnotationFile<unknown> | null>(null);
+  const [comparisonLoading, setComparisonLoading] = useState(false);
+  const [comparisonError, setComparisonError] = useState<string | null>(null);
   const listRequestGenerationRef = useRef(0);
   const detailRequestGenerationRef = useRef(0);
   const restoreRequestGenerationRef = useRef(0);
+  const comparisonRequestGenerationRef = useRef(0);
   const canUseRecoveryHistory = props.resource.permission.capabilities.includes(
     "write",
   );
@@ -71,6 +81,7 @@ export function ResourceRecoveryHistory(props: {
     listRequestGenerationRef.current += 1;
     detailRequestGenerationRef.current += 1;
     restoreRequestGenerationRef.current += 1;
+    comparisonRequestGenerationRef.current += 1;
     setExpanded(false);
     setSummaries([]);
     setListLoaded(false);
@@ -83,6 +94,10 @@ export function ResourceRecoveryHistory(props: {
     setRestoreConfirmOpen(false);
     setRestoring(false);
     setRestoreError(null);
+    setComparisonSnapshotId(null);
+    setComparisonCurrentFile(null);
+    setComparisonLoading(false);
+    setComparisonError(null);
   }, [props.resource.id]);
 
   // 外层资源刷新可能带回更高 revision，但不应因此折叠用户正在查看的历史列表。
@@ -171,6 +186,11 @@ export function ResourceRecoveryHistory(props: {
       setRestoreConfirmOpen(false);
       setSelectedSummary(null);
       setDetails({});
+      comparisonRequestGenerationRef.current += 1;
+      setComparisonSnapshotId(null);
+      setComparisonCurrentFile(null);
+      setComparisonLoading(false);
+      setComparisonError(null);
       await props.onRestored?.(restored);
       if (generation !== restoreRequestGenerationRef.current) return;
       await loadSummaries();
@@ -180,6 +200,29 @@ export function ResourceRecoveryHistory(props: {
     } finally {
       if (generation === restoreRequestGenerationRef.current) {
         setRestoring(false);
+      }
+    }
+  };
+
+  // 比较打开时重新读取当前文件，避免把资源列表旧 revision 或编辑器未保存状态当作服务器事实。
+  const openCurrentComparison = async () => {
+    if (!selectedSummary || !details[selectedSummary.id] || comparisonLoading) return;
+    const generation = ++comparisonRequestGenerationRef.current;
+    setComparisonSnapshotId(selectedSummary.id);
+    setComparisonCurrentFile(null);
+    setComparisonLoading(true);
+    setComparisonError(null);
+    try {
+      const currentFile = await props.client.getAnnotationFile<unknown>(props.resource.id);
+      if (generation !== comparisonRequestGenerationRef.current) return;
+      setComparisonCurrentFile(currentFile);
+      setCurrentRevision(currentFile.revision);
+    } catch (error) {
+      if (generation !== comparisonRequestGenerationRef.current) return;
+      setComparisonError(describeRecoveryError(error));
+    } finally {
+      if (generation === comparisonRequestGenerationRef.current) {
+        setComparisonLoading(false);
       }
     }
   };
@@ -300,6 +343,25 @@ export function ResourceRecoveryHistory(props: {
               void openSnapshot(selectedSummary, true);
             }
           : undefined}
+        onCompare={() => void openCurrentComparison()}
+      />
+      {/* 快照比较是独立只读层；关闭后保留原快照详情和恢复确认上下文。 */}
+      <RecoverySnapshotComparisonDialog
+        open={Boolean(comparisonSnapshotId)}
+        resource={props.resource}
+        snapshot={comparisonSnapshotId ? details[comparisonSnapshotId] ?? null : null}
+        currentFile={comparisonCurrentFile}
+        loading={comparisonLoading}
+        error={comparisonError}
+        onOpenChange={(open) => {
+          if (open) return;
+          comparisonRequestGenerationRef.current += 1;
+          setComparisonSnapshotId(null);
+          setComparisonCurrentFile(null);
+          setComparisonLoading(false);
+          setComparisonError(null);
+        }}
+        onOpenCurrentAtTime={props.onOpenCurrentAtTime}
       />
     </section>
   );
@@ -320,6 +382,7 @@ function RecoverySnapshotDialog(props: {
   onRestore: () => void;
   onClose: () => void;
   onRetry?: () => void;
+  onCompare: () => void;
 }) {
   const preview = useMemo(
     () => props.detail
@@ -395,15 +458,25 @@ function RecoverySnapshotDialog(props: {
               当前文件修订 {props.currentRevision}
               {preview && !preview.ok ? " · 快照格式无法预览" : ""}
             </span>
-            <button
-              type="button"
-              className="primary"
-              disabled={!props.detail || props.loading || Boolean(props.error)}
-              onClick={() => props.onRestoreConfirmOpenChange(true)}
-            >
-              <RotateCcw size={15} />
-              恢复此快照
-            </button>
+            <div>
+              <button
+                type="button"
+                disabled={!preview?.ok || props.loading || Boolean(props.error)}
+                onClick={props.onCompare}
+              >
+                <Files size={15} />
+                与当前文件比较
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={!props.detail || props.loading || Boolean(props.error)}
+                onClick={() => props.onRestoreConfirmOpenChange(true)}
+              >
+                <RotateCcw size={15} />
+                恢复此快照
+              </button>
+            </div>
           </footer>
         </Dialog.Content>
       </Dialog.Portal>

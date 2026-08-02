@@ -77,6 +77,12 @@ export type AnnotationDiffResult = {
   hasDuplicateIdentities: boolean;
 };
 
+// 单侧迁移错误由普通文件和恢复快照比较共享，调用方可以保持左右错误隔离。
+export type AnnotationDiffBuildError = {
+  side: "left" | "right";
+  message: string;
+};
+
 export type AnnotationDiffBuildResult =
   | {
       ok: true;
@@ -87,10 +93,7 @@ export type AnnotationDiffBuildResult =
     }
   | {
       ok: false;
-      errors: Array<{
-        side: "left" | "right";
-        message: string;
-      }>;
+      errors: AnnotationDiffBuildError[];
     };
 
 type DiffCandidate = {

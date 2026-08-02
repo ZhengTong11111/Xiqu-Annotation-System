@@ -1046,3 +1046,65 @@ Codex 审查发现并修复：
   路径；比较选择、计划、准备、纯应用和编辑器确认职责分离。
 - 下一轮 R2.4 把所选恢复快照与当前文件送入同一结构化 diff UI。快照保持只读，详情继续按需读取，
   不进入选择性整合，也不改变现有安全恢复命令。
+
+## 2026-08-02：R2.4 恢复快照与当前文件的只读结构化比较
+
+本轮按本机 `CLAUDE_WORK.md` 先审计普通文件比较、恢复详情和当前文件打开路径，再实现恢复快照比较。
+目标不是复制一套比较页面，而是把已经稳定的结构化差异审阅抽成共享只读能力，同时维持恢复历史与
+普通文件选择性整合之间的严格边界。
+
+实际实现：
+
+- 新增 `AnnotationDiffReview.tsx`，集中承载差异摘要、重复标识警告、研究领域/变化类型筛选、高 DPI
+  Canvas 时间概览、Canvas 与条目双向定位、领域折叠以及单侧打开动作。组件只理解结构化 diff 和
+  导航，不理解文件读取、恢复、选择性整合或持久化；普通比较可通过 group/entry 插槽组合整合复选框。
+- `AnnotationComparisonDialog.tsx` 改为复用共享只读审阅层，仍由普通文件包装层负责左右交换、整合
+  方向、多选、依赖计划、冲突决策和草稿准备。删除原组件内重复的筛选、时间索引、条目列表、图标、
+  时间格式化与 DOM 定位实现，净减少数百行重复展示逻辑，没有保留旧备用路径。
+- 新增纯函数 `recoverySnapshotComparison.ts`，固定快照为左侧、当前文件为右侧，并直接调用既有
+  `buildAnnotationDiff()`。两侧继续共用 `normalizeImportedProjectFile()`、稳定实体 id、重复 id 警告和
+  迁移错误隔离，不生成第二种历史格式，也没有网络或恢复 mutation。
+- 新增 `RecoverySnapshotComparisonDialog.tsx`。头部明确展示快照 revision/创建者/创建时间和当前
+  revision/编辑者/保存时间；主体复用共享差异审阅。快照侧没有打开、交换或整合命令，只有当前文件
+  可以按所选条目的真实右侧时间范围进入现有单文件编辑器。
+- `ResourceRecoveryHistory.tsx` 在可成功预览的快照详情底部增加“与当前文件比较”。每次点击都通过
+  annotation-file API 重新读取服务器当前 payload、revision 和权限相关资源信息，不把 Inspector 中
+  可能过期的 revision 或本地编辑器未保存内容当作服务器事实；请求使用 generation 隔离，资源切换、
+  恢复成功或关闭比较都会使旧响应失效。
+- 比较弹窗作为快照详情上方的独立 Radix 层。关闭比较会返回原快照详情，恢复按钮与二次确认仍然
+  存在；当前文件读取或迁移失败只在比较层显示局部错误，不折叠恢复历史，也不把坏 payload 当空项目。
+- `ResourceExplorer.tsx` 只向恢复历史传递现有 `onOpenAnnotationFile`，因此当前文件定位继续走平台唯一
+  打开路径，重新读取最新文件并沿用真实 capabilities；没有复制第二套编辑器会话或 UI 鉴权。
+- 新增 `test:recovery-comparison`，覆盖固定左右方向、当前新增实体、相同 payload、快照/当前/双侧迁移
+  错误、重复 identity 警告和输入不可变。本轮没有新增依赖、API、Prisma schema 或 migration。
+
+真实浏览器验收：
+
+- 使用平台中的“示例项目：昆曲《寻梦》”及 `《寻梦》示例标注.json`（当前 r3、两个恢复快照）打开
+  r2 快照详情，确认只有可预览快照启用“与当前文件比较”。
+- 比较结果固定显示左侧 r2 快照和右侧 r3 当前文件，得到 2 项新增、0 项删除/修改和 5 项未变化；
+  时间概览、筛选、领域折叠和条目定位正常，页面没有出现“选择性整合预检”或任何快照编辑入口。
+- 选择当前侧新增句后，“打开当前文件并定位”正确启用；关闭比较后，底层快照详情仍保持打开，恢复
+  按钮和当前 revision 提示均未丢失，证明嵌套 Dialog 没有破坏恢复上下文。
+- 另外重新选择两份真实《寻梦》普通标注文件打开原比较页，确认领域/条目整合复选框、方向和预检
+  仍存在，证明共享只读层抽取没有把普通文件的 R2.3c 能力带入快照，也没有使其回归。
+
+自动验证：
+
+- `test:recovery-comparison`：4/4；`test:recovery-preview`：3/3；`test:annotation-diff`：10/10；
+  `test:annotation-diff-timeline`：10/10；`test:annotation-comparison-navigation`：8/8；
+  `test:resource-comparison`：2/2。
+- `test:annotation-merge-plan`：11/11；`test:annotation-merge-selection`：5/5；
+  `test:annotation-merge-conflict`：1/1；`test:annotation-merge-apply`：4/4；
+  `test:annotation-merge-preparation`：4/4。
+- `test:resource-columns`：7/7；`test:permissions`：5/5；`test:api`：19/19。
+- `npm run build` 与 `git diff --check` 通过。仍只有既有 pg 9 前置弃用提示和 Vite 主 chunk 超过
+  500 kB 提醒；本轮没有引入新的构建或运行警告。
+
+核对结论与下一步：
+
+- 未发现第二套项目迁移、第二套差异算法、快照修改、快照整合、自动恢复、服务器保存或编辑器 history
+  写入路径。普通文件整合语义只存在于包装层，`AnnotationDiffReview` 保持纯只读组合边界。
+- R2.4 已形成快照“查看摘要、与当前比较、安全恢复”三种明确且互不替代的操作。下一轮进入 R2.5a，
+  先定义“已确认标注范围”的数据、权限、时间/轨道边界和审计合同，不直接把它塞进 ProjectData、ACL
+  或恢复快照，也不在合同未稳定前同时开发完整数据库和 UI。

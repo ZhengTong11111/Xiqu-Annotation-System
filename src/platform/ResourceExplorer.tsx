@@ -989,6 +989,7 @@ export function ResourceExplorer(props: {
           readOnly={isTrashView}
           onChanged={() => refreshCurrentView()}
           onError={setError}
+          onOpenAnnotationFile={props.onOpenAnnotationFile}
         />
       </section>
       <input ref={jsonInputRef} hidden type="file" accept="application/json,.json" onChange={(event) => void importJson(event)} />
@@ -1191,6 +1192,10 @@ function ResourceInspector(props: {
   readOnly: boolean;
   onChanged: () => void | Promise<void>;
   onError: (message: string | null) => void;
+  onOpenAnnotationFile: (
+    resource: ResourceEntry,
+    initialFocus?: AnnotationComparisonFocus,
+  ) => Promise<boolean>;
 }) {
   const [matrix, setMatrix] = useState<ResourcePermissionMatrixRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1256,6 +1261,10 @@ function ResourceInspector(props: {
           client={props.client}
           resource={props.resource}
           onRestored={() => props.onChanged()}
+          onOpenCurrentAtTime={(focus) => props.onOpenAnnotationFile(
+            props.resource!,
+            focus,
+          )}
         />
       ) : null}
       <div className="resource-inspector-section-heading">
