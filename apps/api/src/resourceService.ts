@@ -51,6 +51,16 @@ import {
   normalizeResourceSelection,
   type ResourceSelectionNode,
 } from "./resourceSelection.js";
+import {
+  ResourceCursorError,
+  buildResourceOrderBy,
+  decodeResourceCursor,
+  encodeResourceCursor,
+  getResourceScanBatchSize,
+  mapWithConcurrency,
+  normalizeResourceQuery,
+  type NormalizedResourceQuery,
+} from "./resourcePagination.js";
 import { toPublicUser } from "./repositoryMappers.js";
 
 const resourceInclude = {
@@ -81,10 +91,6 @@ export type CopyResourceResult = {
   };
 };
 
-const NAME_COLLATOR = new Intl.Collator("zh-CN", {
-  numeric: true,
-  sensitivity: "base",
-});
 const MAX_CONFIRMATION_REVOKE_REASON_LENGTH = 1_000;
 
 // Prisma 枚举与共享合同保持显式双向映射，避免数据库命名变化被隐式类型断言掩盖。
@@ -127,44 +133,72 @@ export class ResourceService {
     user: ApiUser,
     options: ListResourcesOptions,
   ): Promise<ResourceListPage> {
-    const rows = await this.prisma.resourceEntry.findMany({
-      where: this.buildListWhere(user, options),
-      include: resourceInclude,
-    });
-    const visible: Array<{ row: ResourceRow; permission: EffectiveResourcePermission }> = [];
-    for (const row of rows) {
-      // 软删除容器时不逐条改写整棵子树；所有普通视图因此必须排除拥有已删除祖先的后代。
-      // 回收站只展示自身带 trashedAt 的入口，不在这里重复过滤。
-      if (
-        options.view !== "trash" &&
-        await this.hasTrashedAncestor(this.prisma, row.parentId)
-      ) continue;
-      const permission = await this.access.getEffectivePermission(user, row.id);
-      if (permission.capabilities.includes("read")) {
-        visible.push({ row, permission });
+    const query = normalizeResourceQuery(options);
+    const where = this.buildListWhere(user, query);
+    const limit = Math.max(1, Math.min(options.limit ?? 100, 200));
+    const scanBatchSize = getResourceScanBatchSize(limit);
+    let candidateCursorId: string | null = null;
+    if (options.cursor) {
+      try {
+        candidateCursorId = decodeResourceCursor(options.cursor, query);
+      } catch (error) {
+        if (error instanceof ResourceCursorError) throw badRequest(error.message);
+        throw error;
+      }
+      // cursor 行必须仍属于同一数据库候选集合；资源已移动/删除时要求调用方刷新第一页。
+      const cursorStillMatches = await this.prisma.resourceEntry.findFirst({
+        where: { AND: [where, { id: candidateCursorId }] },
+        select: { id: true },
+      });
+      if (!cursorStillMatches) {
+        throw badRequest("资源分页游标已经失效，请刷新当前目录。");
       }
     }
 
-    visible.sort((left, right) => this.compareResources(
-      left.row,
-      right.row,
-      options.sortBy ?? "name",
-      options.direction ?? "asc",
-    ));
-    const cursorIndex = options.cursor
-      ? visible.findIndex(({ row }) => row.id === options.cursor) + 1
-      : 0;
-    const start = Math.max(cursorIndex, 0);
-    const limit = Math.max(1, Math.min(options.limit ?? 100, 200));
-    const page = visible.slice(start, start + limit);
+    const visible: Array<{ row: ResourceRow; permission: EffectiveResourcePermission }> = [];
+    let exhausted = false;
+    // ACL 在数据库候选之后判断，因此按有限批次持续扫描，直到得到 limit+1 个可见项或候选耗尽。
+    while (visible.length <= limit && !exhausted) {
+      const rows = await this.prisma.resourceEntry.findMany({
+        where,
+        include: resourceInclude,
+        orderBy: buildResourceOrderBy(query),
+        take: scanBatchSize,
+        ...(candidateCursorId
+          ? { cursor: { id: candidateCursorId }, skip: 1 }
+          : {}),
+      });
+      if (rows.length === 0) break;
+      exhausted = rows.length < scanBatchSize;
+      candidateCursorId = rows.at(-1)!.id;
+
+      // 每批以有界并发计算软删除祖先和有效 ACL，结果顺序仍与数据库稳定排序一致。
+      const evaluated = await mapWithConcurrency(rows, 12, async (row) => {
+        if (
+          query.view !== "trash" &&
+          await this.hasTrashedAncestor(this.prisma, row.parentId)
+        ) {
+          return null;
+        }
+        const permission = await this.access.getEffectivePermission(user, row.id);
+        return permission.capabilities.includes("read")
+          ? { row, permission }
+          : null;
+      });
+      for (const item of evaluated) {
+        if (item) visible.push(item);
+      }
+    }
+
+    const page = visible.slice(0, limit);
     return {
       items: await Promise.all(page.map(({ row, permission }) =>
         this.mapResource(user, row, permission))),
       breadcrumbs: options.parentId
         ? await this.buildBreadcrumbs(user, options.parentId)
         : [],
-      nextCursor: visible.length > start + limit
-        ? page.at(-1)?.row.id ?? null
+      nextCursor: visible.length > limit && page.length > 0
+        ? encodeResourceCursor(page.at(-1)!.row.id, query)
         : null,
     };
   }
@@ -1323,7 +1357,7 @@ export class ResourceService {
 
   private buildListWhere(
     user: ApiUser,
-    options: ListResourcesOptions,
+    options: NormalizedResourceQuery,
   ): Prisma.ResourceEntryWhereInput {
     const query = options.query?.trim();
     const common: Prisma.ResourceEntryWhereInput = {
@@ -1561,25 +1595,6 @@ export class ResourceService {
       currentId = row.parentId;
     }
     return items;
-  }
-
-  private compareResources(
-    left: ResourceRow,
-    right: ResourceRow,
-    field: NonNullable<ListResourcesOptions["sortBy"]>,
-    direction: NonNullable<ListResourcesOptions["direction"]>,
-  ) {
-    const multiplier = direction === "asc" ? 1 : -1;
-    if (field === "name") {
-      return NAME_COLLATOR.compare(left.name, right.name) * multiplier;
-    }
-    const leftValue = field === "size"
-      ? left.mediaFile?.size ?? 0
-      : left[field].getTime();
-    const rightValue = field === "size"
-      ? right.mediaFile?.size ?? 0
-      : right[field].getTime();
-    return (leftValue - rightValue) * multiplier;
   }
 
   private async assertContainer(resourceId: string) {

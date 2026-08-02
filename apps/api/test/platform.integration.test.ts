@@ -119,6 +119,87 @@ test("平台资源 API 集成测试", async (suite) => {
       );
     });
 
+    await suite.test("资源分页保持稳定顺序、查询绑定和 ACL 后填页", async () => {
+      const paginationProject = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "分页查询项目" },
+      });
+      const paginationProjectId = String(dataOf(paginationProject.json()).id);
+      const childIds: string[] = [];
+      // 创建多于一页的同时间资源，强制验证 id tie-break，而不是依赖自然产生的时间差。
+      for (const name of ["分页甲", "分页乙", "分页丙", "分页丁", "分页戊", "分页己", "分页庚"]) {
+        const response = await jsonRequest(app, adminToken, {
+          method: "POST",
+          url: "/api/resources",
+          payload: { parentId: paginationProjectId, type: "folder", name },
+        });
+        childIds.push(String(dataOf(response.json()).id));
+      }
+      const fixedTime = new Date("2026-08-02T06:00:00.000Z");
+      await prisma.resourceEntry.updateMany({
+        where: { id: { in: childIds } },
+        data: { updatedAt: fixedTime },
+      });
+
+      const collected: string[] = [];
+      let cursor: string | null = null;
+      // 连续消费 opaque cursor，所有页面合并后必须无重复、无遗漏且顺序确定。
+      do {
+        const params = new URLSearchParams({
+          parentId: paginationProjectId,
+          sortBy: "updatedAt",
+          direction: "desc",
+          limit: "3",
+        });
+        if (cursor) params.set("cursor", cursor);
+        const response = await jsonRequest(app, adminToken, {
+          method: "GET",
+          url: `/api/resources?${params}`,
+        });
+        assert.equal(response.statusCode, 200, response.body);
+        const page = dataOf(response.json());
+        collected.push(...(page.items as JsonObject[]).map(({ id }) => String(id)));
+        cursor = typeof page.nextCursor === "string" ? page.nextCursor : null;
+      } while (cursor);
+      assert.deepEqual(collected, [...childIds].sort().reverse());
+      assert.equal(new Set(collected).size, childIds.length);
+
+      const firstPage = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/resources?parentId=${paginationProjectId}&sortBy=updatedAt&direction=desc&limit=3`,
+      });
+      const firstCursor = String(dataOf(firstPage.json()).nextCursor);
+      const mismatchedCursor = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/resources?parentId=${paginationProjectId}&sortBy=name&direction=asc&limit=3&cursor=${encodeURIComponent(firstCursor)}`,
+      });
+      assert.equal(mismatchedCursor.statusCode, 400, "cursor 不能跨排序上下文复用");
+
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${paginationProjectId}/permissions/user-student`,
+        payload: { capabilities: ["read"], inheritToChildren: true },
+      });
+      // 前两项截断继承后不可读；服务端仍应继续扫描并填满两个可见资源，而不是返回短页。
+      for (const hiddenId of childIds.slice(0, 2)) {
+        await jsonRequest(app, adminToken, {
+          method: "PATCH",
+          url: `/api/resources/${hiddenId}/permission-inheritance`,
+          payload: { breakPermissionInheritance: true },
+        });
+      }
+      const studentPage = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/resources?parentId=${paginationProjectId}&sortBy=updatedAt&direction=desc&limit=2`,
+      });
+      assert.equal(studentPage.statusCode, 200, studentPage.body);
+      assert.equal((dataOf(studentPage.json()).items as JsonObject[]).length, 2);
+      assert.ok(dataOf(studentPage.json()).nextCursor, "仍有可见资源时必须返回下一页 cursor");
+      assert.ok((dataOf(studentPage.json()).items as JsonObject[]).every(({ id }) =>
+        !childIds.slice(0, 2).includes(String(id))), "不可读资源不能泄漏到分页结果");
+    });
+
     await suite.test("ACL 继承、截断、直接授权和输入校验", async () => {
       const grant = await jsonRequest(app, adminToken, {
         method: "PUT",

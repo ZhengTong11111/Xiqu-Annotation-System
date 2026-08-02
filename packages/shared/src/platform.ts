@@ -124,7 +124,7 @@ export type SortDirection = "asc" | "desc";
 export type ResourceListPage = {
   items: ResourceEntry[];
   breadcrumbs: ResourceBreadcrumb[];
-  nextCursor?: string | null;
+  nextCursor: string | null;
 };
 
 export type AnnotationFile<TPayload = unknown> = {

@@ -1074,6 +1074,20 @@ select {
   white-space: nowrap;
 }
 
+/* 分页入口属于资源内容区而非全局工具栏，加载下一页时保留当前列表和选择。 */
+.resource-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 10px 12px 16px;
+}
+
+.resource-load-more button {
+  min-width: 112px;
+  color: #3e617f;
+  background: rgba(244, 248, 252, 0.92);
+  border-color: rgba(142, 164, 187, 0.62);
+}
+
 .resource-grid-item span {
   color: #8390a1;
   font-size: 11px;

@@ -1286,3 +1286,68 @@ Codex 审查发现并修复：
 - 本轮不做实体级确认、评论/签名、跨 revision 指纹续期、确认范围拖动、课堂作业或实时协作。R2 到此
   完成恢复、比较、选择性整合与研究审核主链；下一轮转入 R3a，先稳定大规模资源查询的分页、排序、
   搜索合同和 PostgreSQL 索引，再考虑前端虚拟列表，避免在不稳定 API 上先重写三种资源视图。
+
+## 2026-08-02：R3a 资源查询稳定分页与 list/grid 增量加载
+
+本轮在 commit `8669d1f` 后先审计 shared API、Fastify route、`ResourceService`、Prisma schema、三种资源
+视图和移动目标选择器，并整体重写 ignored 的 `CLAUDE_WORK.md`。审计发现 cursor/limit 虽已存在，但
+服务端仍一次读取全部候选、逐条串行检查删除祖先和 ACL、在 Node 内存排序后 slice；裸 id cursor 在
+排序相等或跨查询复用时也没有稳定语义。因此本轮删除旧内存分页，而不是在其外面再包一层 UI。
+
+服务端查询与合同：
+
+- 新增 `resourcePagination.ts`。查询先规范化 view、parent、trim 后搜索、type、sort 和 direction；limit
+  刻意不进入查询指纹，允许翻页时调整页大小。cursor 是 base64url 的版本化 JSON，只保存最后返回 id
+  和 sha256 查询指纹，不暴露搜索词，也不携带权限。坏格式、未知版本、上下文不一致及 cursor 行已移出
+  当前候选集合均返回 400，不再静默回第一页。
+- Prisma 排序改为请求字段加同方向 id tie-break，形成稳定总序；删除原 `Intl.Collator`、Node 全集 sort、
+  `findIndex(cursor)` 和 slice 路径。名称排序现在以 PostgreSQL 实际 collation 为准，不再出现浏览器/服务端
+  两套排序事实。
+- `listResources()` 每次只取 50-200 条候选。每批以最多 12 个 worker 有界并发检查已删除祖先和权威
+  effective read ACL，按数据库顺序收集到 `limit+1` 个可见资源或候选耗尽；额外一项只用于判断是否有
+  下一页，不返回隐藏数量或总候选数。每页仍重新算权限，cursor 从不成为授权凭据。
+- shared `ResourceListPage.nextCursor` 从 optional 收敛为明确 `string|null`；browser client 只透传 token，
+  不解析或构造 cursor。没有引入新依赖。
+
+前端增量边界：
+
+- 新增 `resourcePageState.ts`，下一页按服务器顺序追加、按 id 去重、保留路径并更新 nextCursor。
+- `ResourceExplorer` 的 list/grid 共用首次替换和下一页追加请求。目录、虚拟 view、搜索、排序或方向改变
+  时立即增加 request generation，连 180ms 搜索防抖窗口中的旧响应也不能写回；下一页失败保留已有项
+  和 cursor，允许重试。只有首次替换裁剪选择，未加载页不会被误判为已删除。
+- 有下一页时内容区底部显示克制的“加载更多”；加载期间不清空现有资源。Finder column 和移动目标
+  选择器本轮仍只消费首批 200 条，没有用 `listAllPages()` 伪装扩展能力；其逐列分页与虚拟化明确留给
+  R3b。
+
+数据库索引与一次失败验证：
+
+- migration `20260802040000_resource_query_indexes` 增加目录 name/id、updatedAt/id 复合索引及
+  user/lastOpenedAt 索引，Prisma schema 同步声明。索引使用 `IF NOT EXISTS`，便于本地失败迁移按 Prisma
+  正式 resolve 流程恢复，但没有修改 baseline 或 force reset。
+- 初版曾尝试在 migration 中 `CREATE EXTENSION pg_trgm` 并创建 GIN trigram 名称索引。隔离 `api_test`
+  schema 首次成功，却把数据库级扩展安装进测试 schema；随后 public 部署先因找不到 operator class、再
+  因扩展函数所有权无法移动而失败。这证明应用 migration 不能安全管理数据库级扩展。Codex 没有手工
+  标记成功或忽略错误，而是用 `prisma migrate resolve --rolled-back` 恢复失败记录，删除自动扩展/GIN
+  逻辑，仅部署可移植 B-tree 索引；测试遗留扩展和临时索引随后清理。最终 migration 在 public 成功，
+  并在全新临时 schema 从 baseline 到最新完整部署后删除临时 schema。`pg_trgm` 改为未来运维预置能力。
+
+测试与浏览器验收：
+
+- `test:resource-pagination` 5/5：cursor 往返、坏 token/版本/六类上下文漂移、limit 可变、稳定 orderBy、
+  scan 上下界和有限并发保序。
+- `test:resource-page-state` 2/2；`test:resource-columns` 7/7；`test:permissions` 5/5。
+- `test:api` 27/27。新增真实 PostgreSQL 用例创建 7 个相同 updatedAt 资源，以 3 条分页验证 id desc 总序
+  无重无漏；验证跨排序 cursor 为 400，并混入截断继承的不可读子项，确认 limit=2 的页面仍填满且不
+  泄漏隐藏项。既有资源、复制、移动、快照、确认和回收站测试全部通过。
+- `npm run build` 与 `git diff --check` 通过；仍只有既有 Vite 大 chunk 和 pg 9 前置弃用提示。
+- 浏览器在开发库临时插入 205 个顶层验收项目：list 首批出现“加载更多”，点击后 R3a 项目从 199 条
+  增至完整 205 条且按钮消失；搜索精确名称只剩 1 条且无下一页；清空搜索切换 grid 后重新出现首批
+  199 条和加载入口。临时 205 条资源随后全部删除并刷新确认无错误，未留下产品数据。
+
+自审结论与后续：
+
+- 没有 offset pagination、totalCount、全页预取、UI 权限替代、第二套 sort 或旧裸 cursor 僵尸路径。
+  candidate ACL 仍是逐资源查询，但已由全集串行变为有限批次/有界并发；后续应先测量再批量化。
+- R3a 完成 API 与 list/grid 的增量基线。R3b 将为每个 Finder column 建立独立 cursor 状态，并评估成熟
+  headless 虚拟化依赖，覆盖 list/grid/column 1000+ DOM、选择、键盘、右键和 Pragmatic DnD，不改变
+  资源查询和 ACL 合同。

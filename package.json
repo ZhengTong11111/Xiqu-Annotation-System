@@ -23,6 +23,8 @@
     "test:permissions": "npm run build:shared && npm run build:document-model && node --test packages/document-model/test/permissions.test.mjs",
     "test:annotation-confirmations": "npm run build:shared && npm run build:document-model && node --test packages/document-model/test/annotation-confirmations.test.mjs",
     "test:annotation-confirmation-view": "npm run build:shared && npm run build:document-model && node --import tsx --test src/platform/annotationConfirmationView.test.ts",
+    "test:resource-pagination": "npm run build:shared && node --import tsx --test apps/api/test/resourcePagination.test.ts",
+    "test:resource-page-state": "node --import tsx --test src/platform/resourcePageState.test.ts",
     "test:resource-columns": "node --import tsx --test src/platform/resourceColumnModel.test.ts",
     "test:recovery-preview": "node --import tsx --test src/platform/recoverySnapshotPreview.test.ts",
     "test:recovery-comparison": "node --import tsx --test src/platform/recoverySnapshotComparison.test.ts",

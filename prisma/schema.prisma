@@ -192,6 +192,8 @@ model ResourceEntry {
   auditLogs         AuditLog[]
 
   @@index([parentId, type])
+  @@index([parentId, trashedAt, archivedAt, name, id], map: "resource_entries_directory_name_idx")
+  @@index([parentId, trashedAt, archivedAt, updatedAt, id], map: "resource_entries_directory_updated_idx")
   @@index([ownerUserId])
   @@index([trashedAt])
   @@map("resource_entries")
@@ -317,6 +319,7 @@ model ResourceUserState {
 
   @@id([resourceId, userId])
   @@index([userId, favorite])
+  @@index([userId, lastOpenedAt], map: "resource_user_states_recent_idx")
   @@map("resource_user_states")
 }
 

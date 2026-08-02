@@ -120,6 +120,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     the existing five-column detail layout and its selected/drag/drop states depend on `.resource-list-row`
 - `src/platform/resourceColumnModel.ts`
   - pure Finder-style column-path transitions, truncation, current-location, and path-validation helpers
+- `src/platform/resourcePageState.ts`
+  - pure first-page/next-page aggregation for the main list/grid explorer
+  - preserves server order, removes cross-page duplicate ids, and never converts pagination into a hidden all-pages fetch
 - `src/platform/useResourceColumns.ts`
   - asynchronous visible-column loader with stale-response protection and conservative path validation
 - `src/platform/ResourceColumnBrowser.tsx`
@@ -185,6 +188,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/resourceSelection.ts`
   - pure parent/descendant selection normalization shared by atomic batch move and batch trash
   - selected descendants collapse under a selected ancestor so a subtree is mutated only once
+- `apps/api/src/resourcePagination.ts`
+  - pure normalized query context, opaque cursor, stable Prisma order, bounded scan size, and limited-concurrency helpers
+  - cursors bind view/parent/search/type/sort/direction but never carry permission facts; API still evaluates ACL per request
 - `apps/api/src/resourceCopy.ts`
   - pure recursive-copy planning, topological ordering, id allocation, and internal media-reference remapping
 - `packages/shared/src/`
@@ -221,6 +227,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:permissions`
 - `npm run test:annotation-confirmations`
 - `npm run test:annotation-confirmation-view`
+- `npm run test:resource-pagination`
+- `npm run test:resource-page-state`
 - `npm run test:resource-columns`
 - `npm run test:recovery-preview`
 - `npm run test:annotation-diff`
@@ -507,6 +515,8 @@ Current backend capabilities:
 - file metadata in PostgreSQL and binary data in local object storage
 - protected file reading, including HTTP Range / `206 Partial Content` for stable MP4 seeking
 - hierarchical `ResourceEntry` tree with `folder`, `project`, `annotation_file`, and `media_file` resource types
+- stable resource keyset pagination with query-bound opaque cursors, database ordering plus id tie-break, bounded candidate
+  scans, and ACL-after-query page filling
 - atomic batch move with parent/descendant selection collapsing; the legacy single-item endpoint delegates to the same core
 - mutable annotation files with integer revision and `baseRevision` conflict checking
 - hidden recovery snapshots created automatically before an annotation-file payload is replaced
@@ -549,6 +559,8 @@ Confirmed-annotation contract status:
 Current platform UI capabilities:
 - login page with development defaults
 - desktop-style three-pane resource explorer with folder/project navigation, search, sorting, list/grid/Finder-column modes, multi-selection, keyboard shortcuts, and context menus
+- list/grid mode can append server pages without clearing existing resources; search/location/sort changes invalidate old
+  responses. Column mode and destination picker intentionally remain first-page consumers until R3b.
 - column mode keeps selection within one logical column, searches only the rightmost visible column, and preserves ancestor columns; temporary column read failures must not truncate an otherwise valid path
 - multi-selection destination picker plus list/grid/column/breadcrumb drag-to-move powered by headless Pragmatic Drag and Drop
 - create projects/folders, import annotation JSON, upload media, copy/paste all four resource types, rename, move through the API, and soft-delete resources
@@ -569,6 +581,10 @@ Current platform UI capabilities:
 - enter a local editor mode without login
 
 Important backend caveats:
+- resource pagination bounds database candidate batches and browser memory, but effective ACL and trashed-ancestor checks
+  are still evaluated per candidate. R3b/R3 operations may batch/cache those reads after measuring real workloads.
+- name `contains` search currently uses PostgreSQL `ILIKE` without a trigram index. `pg_trgm` is a database-level
+  deployment prerequisite and must not be installed/moved by an isolated-schema application migration.
 - recursive copy is synchronous and capped at 2,000 active nodes per root. Larger copies should become future
   processing jobs rather than extending one HTTP/database transaction without a bound.
 - media copy creates a new media resource that reuses the immutable `FileObject`; physical object duplication,
@@ -595,6 +611,12 @@ Important backend caveats:
 - a project is a specialized container resource, not a separate parallel navigation hierarchy. Project and folder use the same create-child, ACL, copy, move, trash, restore, naming, and cycle-protection paths; do not fork these operations by container type.
 - project currently differs from folder through its resource type, icon/navigation semantics, and optional `ProjectMetadata`; it is not a separate storage volume, revision boundary, or permission engine.
 - `all_projects` is the resource explorer's root-directory view and returns only top-level projects (`parentId = null`). It is not a recursive project search. Nested projects appear under their actual parent; recent, favorites, shared, archived, and trash remain virtual/aggregate views with their own semantics.
+- resource list cursors are opaque, versioned and bound to normalized view/parent/query/type/sort/direction. A malformed,
+  mismatched, moved, or deleted cursor is a `400` refresh condition, never permission evidence or a reason to fall back
+  silently to page one. Every page re-evaluates effective read permission.
+- resource ordering is a stable total order of the requested database field plus id in the same direction. Do not restore
+  Node-side full-list sorting or use offset pagination. The main list/grid may append pages; column mode must gain its own
+  per-column pagination rather than calling a helper that eagerly fetches all pages.
 - an annotation file is the mutable user-facing unit. Copying it creates an independent annotation file at revision 1 owned by the copier.
 - standalone annotation-file copy preserves an external media reference. Recursive container copy remaps references
   that point to media inside the copied subtree to the corresponding copied media resource.

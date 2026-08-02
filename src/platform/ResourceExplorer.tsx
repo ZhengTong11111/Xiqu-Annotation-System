@@ -69,6 +69,7 @@ import {
 import { restoreResourcesSequentially } from "./resourceRestore";
 import { isResourceContainer } from "./resourceColumnModel";
 import { useResourceColumns } from "./useResourceColumns";
+import { appendResourceListPage } from "./resourcePageState";
 import { getComparableAnnotationFiles } from "./resourceComparison";
 
 type ExplorerMode = "list" | "grid" | "column";
@@ -112,6 +113,7 @@ export function ResourceExplorer(props: {
   const [page, setPage] = useState<ResourceListPage>({
     items: [],
     breadcrumbs: [],
+    nextCursor: null,
   });
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [anchorId, setAnchorId] = useState<string | null>(null);
@@ -124,6 +126,7 @@ export function ResourceExplorer(props: {
   const [direction, setDirection] = useState<"asc" | "desc">("asc");
   const [clipboard, setClipboard] = useState<ResourceEntry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [isPasting, setIsPasting] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
   const [isTrashing, setIsTrashing] = useState(false);
@@ -145,6 +148,7 @@ export function ResourceExplorer(props: {
   const trashInFlightRef = useRef(false);
   const breadcrumbRequestIdRef = useRef(0);
   const pendingColumnSelectionRef = useRef<number | null>(null);
+  const pageRequestIdRef = useRef(0);
 
   const columnBrowser = useResourceColumns({
     client: props.client,
@@ -165,8 +169,11 @@ export function ResourceExplorer(props: {
   const locationParentId = mode === "column"
     ? columnBrowser.locationParentId
     : folderId;
-  const refreshPage = useCallback(async () => {
-    setIsLoading(true);
+  // 首次读取替换列表，下一页读取保留既有资源；request id 防止旧查询响应串入新目录。
+  const loadPage = useCallback(async (cursor: string | null = null) => {
+    const requestId = ++pageRequestIdRef.current;
+    if (cursor) setIsLoadingMore(true);
+    else setIsLoading(true);
     setError(null);
     try {
       const result = await props.client.listResources({
@@ -175,20 +182,36 @@ export function ResourceExplorer(props: {
         query: search || undefined,
         sortBy,
         direction,
+        cursor: cursor ?? undefined,
         limit: 200,
       });
-      setPage(result);
-      setSelectedIds((current) =>
-        current.filter((id) => result.items.some((item) => item.id === id)));
+      if (requestId !== pageRequestIdRef.current) return;
+      if (cursor) {
+        setPage((current) => appendResourceListPage(current, result));
+      } else {
+        setPage(result);
+        // 首次替换才裁剪选择；尚未加载的后续页不能被误判为资源已删除。
+        setSelectedIds((current) =>
+          current.filter((id) => result.items.some((item) => item.id === id)));
+      }
     } catch (nextError) {
-      setError(describeError(nextError));
+      if (requestId === pageRequestIdRef.current) setError(describeError(nextError));
     } finally {
-      setIsLoading(false);
+      if (requestId === pageRequestIdRef.current) {
+        setIsLoading(false);
+        setIsLoadingMore(false);
+      }
     }
   }, [direction, folderId, props.client, rootView, search, sortBy]);
 
+  // 既有调用继续把 refresh 解释为重新读取第一页，mutation 后不会把旧 cursor 留在页面中。
+  const refreshPage = useCallback(() => loadPage(null), [loadPage]);
+
   useEffect(() => {
     if (mode === "column") return;
+    // 查询条件一变化就先让旧响应失效；搜索防抖期间也不能短暂写回上一关键词的结果。
+    pageRequestIdRef.current += 1;
+    setIsLoadingMore(false);
     const timer = window.setTimeout(() => void refreshPage(), search ? 180 : 0);
     return () => window.clearTimeout(timer);
   }, [mode, refreshPage, search]);
@@ -948,39 +971,53 @@ export function ResourceExplorer(props: {
               onDropResources={handleResourceDrop}
             />
           ) : (
-          <ResourceCollection
-            items={page.items}
-            selectedIds={selectedIds}
-            mode={mode}
-            isLoading={isLoading}
-            sortBy={sortBy}
-            direction={direction}
-            onSort={(field) => {
-              if (sortBy === field) {
-                setDirection((current) => current === "asc" ? "desc" : "asc");
-              } else {
-                setSortBy(field);
-                setDirection("asc");
-              }
-            }}
-            onSelect={selectResource}
-            onOpen={openResource}
-            isTrashView={isTrashView}
-            onRename={renameSelectedResource}
-            onCopy={(resource) => setClipboard([resource])}
-            onMove={openMovePicker}
-            interactionDisabled={interactionDisabled}
-            draggedResourceIds={draggedResourceIds}
-            onDragStart={handleResourceDragStart}
-            onDragFinish={handleResourceDragFinish}
-            onDropResources={handleResourceDrop}
-            onRestore={(resource) => void restoreResources([resource])}
-            onTrash={trashFromContext}
-            canCompareSelection={Boolean(comparableFiles)}
-            onCompare={() => {
-              if (comparableFiles) setComparisonFiles(comparableFiles);
-            }}
-          />
+            <>
+              <ResourceCollection
+                items={page.items}
+                selectedIds={selectedIds}
+                mode={mode}
+                isLoading={isLoading}
+                sortBy={sortBy}
+                direction={direction}
+                onSort={(field) => {
+                  if (sortBy === field) {
+                    setDirection((current) => current === "asc" ? "desc" : "asc");
+                  } else {
+                    setSortBy(field);
+                    setDirection("asc");
+                  }
+                }}
+                onSelect={selectResource}
+                onOpen={openResource}
+                isTrashView={isTrashView}
+                onRename={renameSelectedResource}
+                onCopy={(resource) => setClipboard([resource])}
+                onMove={openMovePicker}
+                interactionDisabled={interactionDisabled}
+                draggedResourceIds={draggedResourceIds}
+                onDragStart={handleResourceDragStart}
+                onDragFinish={handleResourceDragFinish}
+                onDropResources={handleResourceDrop}
+                onRestore={(resource) => void restoreResources([resource])}
+                onTrash={trashFromContext}
+                canCompareSelection={Boolean(comparableFiles)}
+                onCompare={() => {
+                  if (comparableFiles) setComparisonFiles(comparableFiles);
+                }}
+              />
+              {/* 主列表按需追加服务器页面；column 模式仍由独立路径状态管理。 */}
+              {page.nextCursor ? (
+                <div className="resource-load-more">
+                  <button
+                    type="button"
+                    disabled={isLoading || isLoadingMore}
+                    onClick={() => void loadPage(page.nextCursor)}
+                  >
+                    {isLoadingMore ? "正在加载…" : "加载更多"}
+                  </button>
+                </div>
+              ) : null}
+            </>
           )}
         </section>
 
