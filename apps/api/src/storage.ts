@@ -39,6 +39,11 @@ export class LocalObjectStorage {
     this.rootDir = path.resolve(rootDir);
   }
 
+  // 运维备份只读取受控根目录描述；具体复制与校验仍由备份领域编排，避免污染上传职责。
+  getRootDirectory() {
+    return this.rootDir;
+  }
+
   // 最终 key 不再复用原文件扩展名，扩展由签名检测通过后统一传入。
   createStorageKey(extension: string) {
     const safeExtension = /^[a-z0-9]{1,12}$/.test(extension)

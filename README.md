@@ -990,15 +990,66 @@ npm run test:api
 npm run preview
 ```
 
+### 平台维护、备份与隔离恢复演练
+
+平台备份不是简单并行复制数据库和媒体目录。`backup:create` 会先进入跨实例维护模式，等待在途写入
+排空，再依次生成 PostgreSQL custom dump、复制整个受控对象根、计算每个文件的 SHA-256、写入
+`manifest.json` 并执行离线复核；只有全部成功后才把 staging 原子发布为 final 备份目录。
+
+```bash
+# PostgreSQL 客户端不在 PATH 时，指向包含 pg_dump / pg_restore 的目录。
+export XIQU_PG_BIN_DIR=/path/to/postgresql/bin
+
+npm run maintenance:status -- --operator admin
+npm run backup:create -- --operator admin --output ./data/backups \
+  --reason "每周离线备份"
+npm run backup:verify -- --backup ./data/backups/xiqu-backup-...
+```
+
+备份包结构固定为：
+
+```text
+xiqu-backup-.../
+├── manifest.json
+├── database.dump
+└── objects/
+    └── <原 storageKey>
+```
+
+恢复演练必须使用**与源名称不同、没有任何用户表的隔离数据库**和不存在或为空的隔离对象目录。
+应用账号通常没有 `CREATE DATABASE`；请由数据库运维账号预先创建并把 owner 设置为应用账号。连接串
+包含密码时推荐通过环境变量传入，避免写入 shell history：
+
+```bash
+export XIQU_RESTORE_DATABASE_URL='postgresql://xiqu:***@localhost:54329/xiqu_restore_drill?schema=public'
+npm run backup:restore-drill -- \
+  --backup ./data/backups/xiqu-backup-... \
+  --target-storage /tmp/xiqu-restore-storage \
+  --report /tmp/xiqu-restore-report.json
+```
+
+恢复库会保留备份时的 `maintenance=true`，这是防止误接流量的安全设计。人工检查完成并准备正式切换
+后，必须让 CLI 指向恢复库，再明确执行 `maintenance:disable`。若备份进程被 `SIGKILL` 或恢复写入失败，
+源平台也可能继续处于持久维护状态；请检查状态并使用下列本机恢复通道，不需要浏览器 session：
+
+```bash
+npm run maintenance:disable -- --operator admin
+```
+
+不得把备份输出放进对象存储目录，不得把恢复演练指向当前数据库或 `postgres/template` 系统库，也不要
+在未执行 `backup:verify` 的情况下手工解包恢复。manifest 会如实记录源数据已有的 missing/orphan 警告，
+备份命令不会擅自清理这些资产。
+
 ## 当前限制与注意事项
 
 ### 1. 平台后端已经可用，但不是生产部署版本
 
 账号、资源树、带签名/配额/补偿的媒体上传、标注文件保存、恢复快照和逐文件权限已经接入
-Fastify/Prisma/PostgreSQL，并由一组可部署 migration 维护。生产部署所需的 HTTPS、反向代理、限流、
-一致备份恢复、对象存储迁移和生产告警接入仍未完成；当前已有 liveness/readiness、低基数 Prometheus
-指标、管理员诊断面板和跨实例维护写入静默边界，可用于本地与部署前故障定位。维护状态持久化在
-PostgreSQL，API 重启不会自动解除；管理员应在维护任务完成后从诊断面板明确恢复写入。
+Fastify/Prisma/PostgreSQL，并由一组可部署 migration 维护。当前已有 liveness/readiness、低基数
+Prometheus 指标、管理员诊断面板、跨实例维护写入静默边界，以及带 manifest/checksum 的 PostgreSQL
+与本地对象目录一致备份和隔离恢复演练。生产部署所需的 HTTPS、反向代理、限流、S3/MinIO 对象存储
+迁移和外部告警接入仍未完成。维护状态持久化在 PostgreSQL，API 重启不会自动解除；管理员应在维护
+任务完成后从诊断面板或本机 CLI 明确恢复写入。
 
 ### 2. 尚未实现实时多人协作
 

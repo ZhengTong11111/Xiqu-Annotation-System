@@ -221,6 +221,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - cursors bind view/parent/search/type/sort/direction but never carry permission facts; API still evaluates ACL per request
 - `apps/api/src/resourceCopy.ts`
   - pure recursive-copy planning, topological ordering, id allocation, and internal media-reference remapping
+- `apps/api/src/backup/`
+  - versioned local full-backup, offline verification, PostgreSQL tool runner, maintenance operator CLI, and isolated
+    restore-drill modules
+  - `backupService.ts` owns the maintenance window and staging-to-final publication; `restoreDrillService.ts` may only
+    target a different empty database and isolated storage directory
+  - native PostgreSQL commands receive credentials through `PG*` environment variables, never shell-concatenated argv
 - `packages/shared/src/`
   - API/platform DTOs and shared contract types used by web and API
 - `packages/document-model/src/`
@@ -261,6 +267,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:resource-columns`
 - `npm run test:uploads`
 - `npm run test:observability`
+- `npm run test:maintenance`
+- `npm run test:backup`
 - `npm run test:recovery-preview`
 - `npm run test:annotation-diff`
 - `npm run test:annotation-diff-timeline`
@@ -280,6 +288,8 @@ Backend local defaults:
 - API port defaults to `4317`
 - Prisma/PostgreSQL defaults to `postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public`
 - local uploaded objects default to `./data/storage`
+- local full backups default to `./data/backups`; `XIQU_PG_BIN_DIR` may point to PostgreSQL 16 client tools when they
+  are not on `PATH`
 - runtime Node.js must be 22 or newer because the media-signature dependency and backend toolchain require it
 - upload defaults are `XIQU_MAX_UPLOAD_BYTES=1 GiB`, `XIQU_USER_STORAGE_QUOTA_BYTES=20 GiB`,
   `XIQU_PLATFORM_STORAGE_QUOTA_BYTES=200 GiB`, and `XIQU_ORPHAN_GRACE_MS=24h`; invalid values fail startup
@@ -556,6 +566,7 @@ Current backend capabilities:
 - admin-only object-lifecycle inspection and confirmed cleanup for aged staged/disk/database orphans
 - file metadata in PostgreSQL and binary data in local object storage
 - protected file reading, including HTTP Range / `206 Partial Content` for stable MP4 seeking
+- maintenance-coordinated PostgreSQL/local-object full backup, offline checksum verification, and isolated restore drill
 - hierarchical `ResourceEntry` tree with `folder`, `project`, `annotation_file`, and `media_file` resource types
 - stable resource keyset pagination with query-bound opaque cursors, database ordering plus id tie-break, bounded candidate
   scans, and ACL-after-query page filling
@@ -636,6 +647,8 @@ Important backend caveats:
 - media copy creates a new media resource that reuses the immutable `FileObject`; copies do not consume quota again.
   Aged orphan inspection/cleanup exists, but user-facing permanent deletion and physical duplication remain future work.
 - real-time collaborative editing is not implemented yet
+- current backups are local full backups only: no scheduler, encryption, incremental chain, remote replication, or
+  S3/MinIO adapter is implemented yet
 - the removed Course/Assignment/Submission runtime is not a pending compatibility target; future classroom
   distribution/review should build on resource copy, ACL, file comparison, and a separate confirmed-annotation layer
 - confirmed-range review is implemented end to end; entity-level confirmation, comments/signatures, automatic
@@ -656,8 +669,8 @@ Important backend caveats:
   `POST /resources/:resourceId/opened`; do not move that write back into annotation-file GET. Future worker/CLI writers
   must acquire the same shared maintenance permit before mutation; the HTTP hook cannot govern out-of-process work.
 - maintenance mode intentionally blocks login and all ordinary mutations. The browser diagnostic panel can restore
-  through its authenticated bypass endpoint; R3d2b must also provide a controlled local CLI recovery path so expired
-  browser sessions cannot strand a deployment in maintenance.
+  through its authenticated bypass endpoint; `maintenance:disable` is also a controlled local CLI recovery path, so
+  expired browser sessions do not strand a deployment in maintenance.
 - API route handlers should perform runtime validation before Prisma writes; invalid revision/action/limit inputs should return `400`, stale annotation-file revisions should return `409`
 - browser platform writes use `PATCH` and `DELETE`; keep both methods in the Fastify CORS allow-list when changing server bootstrap
 - the API is currently for local/dev use; production deployment hardening, migrations, rate limits, and secure file serving are future work
@@ -665,6 +678,26 @@ Important backend caveats:
 - frontend read-only state is enforced centrally by `useProjectDocumentState({ readOnly })`; UI disabling is not the security boundary, and permission lookup failures must fail closed
 - permission core regression tests run with `npm run test:permissions`
 - if backend contracts change, update `packages/shared`, API repository/routes, `src/api/platformClient.ts`, and `docs/kunqu-platform-roadmap.md` together
+
+### Maintenance, backup, and restore invariants
+
+- every HTTP mutation acquires the shared maintenance advisory permit; future worker/CLI writers must use the same
+  protocol instead of writing directly while a backup may hold the maintenance window
+- `backup:create` refuses to take ownership of an already-active maintenance window. It preflights tools, paths, and a
+  real active global-admin operator before enabling maintenance; controlled failure normally restores writes, while
+  `--keep-maintenance-on-failure` and process crashes intentionally fail closed
+- a valid final backup is published only after PostgreSQL custom dump, complete local object-root copy, SHA-256/size
+  manifest, fsync, and offline verification succeed in staging. Failed staging must never be renamed as final
+- backup output and source object storage must be physically separate even through symlinked ancestors. Object keys and
+  manifest paths are normalized relative POSIX paths; symlinks in the source object tree are rejected
+- manifest contains safe database identity and data summaries, never passwords, tokens, full database URLs, or public
+  absolute paths. Existing missing binaries and disk orphans remain explicit warnings and are not auto-cleaned
+- restore drill must first pass offline verification, then target a different-named database with no user tables and an
+  absent/empty isolated storage directory. It must never target the source/current database or PostgreSQL system DBs
+- restored databases intentionally retain the captured `maintenance=true`; an operator must inspect the report and
+  explicitly disable maintenance before routing traffic to a recovered database
+- `maintenance:disable` loads an active global-admin operator directly from PostgreSQL and continues using the existing
+  maintenance audit path; it does not depend on a browser session or bypass coordinator state transitions
 
 ### Resource and annotation-file invariants
 - `ResourceEntry` is the common identity, hierarchy, ownership, archive, and permission boundary for every managed item.

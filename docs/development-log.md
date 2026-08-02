@@ -1632,3 +1632,73 @@ API、前端与交互：
   自动一致性核验、最终恢复写入及操作手册。不能把 public 数据直接覆盖作为演练。
 - R3d2b 还应明确中断恢复和“维护已开启但备份进程崩溃”的处理，且 CLI 自身不能依赖被维护 gate 拒绝的
   login；完成前路线图仍不得声称数据库与对象已经可恢复。
+
+## 2026-08-03：R3d2b 一致备份包、离线校验与隔离恢复演练
+
+本轮从 R3d2a commit `3b81494` 开始，先重新审计数据库连接、维护 coordinator、本地对象存储、测试数据库
+和 PostgreSQL 客户端环境，再重写被忽略的 `CLAUDE_WORK.md`。由 Codex 直接实现、测试和自审，没有委托
+Claude Code、GLM 或其他代理。用户再次强调 Development Log 必须详细，因此这里保留真实失败过程，
+而不是只记录最终成功命令。
+
+备份格式与安全边界：
+
+- 新增 `apps/api/src/backup/`，把 manifest 类型/运行时校验、路径隔离、流式 checksum、PostgreSQL 工具、
+  维护操作者、备份编排、离线 verify、隔离 restore drill 和 CLI 分开。没有引入新依赖：固定六个命令与
+  纯文件/子进程边界使用 Node 标准库更清楚，避免为少量参数引入重型 CLI 框架。
+- 备份包固定为 `manifest.json`、PostgreSQL 16 custom-format `database.dump` 和 `objects/<storageKey>`。
+  manifest v1 记录无秘密数据库身份、pg_dump 版本、dump/每个对象的 size + SHA-256、数据库资源/FileObject
+  摘要、对象聚合、操作者和一致性 warning；运行时拒绝未知版本、坏摘要、重复 key、路径穿越和聚合不符。
+- `backup:create` 在路径、工具和 global-admin 操作者预检后才进入既有 maintenance exclusive 边界；dump、
+  完整对象根复制、数据库摘要和 verify 都在同一静默窗口。文件与 manifest 显式 fsync，staging 自校验后
+  才原子 rename 为 final 并同步父目录。受控失败清理 staging 并默认恢复写入；显式保留维护和 SIGKILL
+  仍按 fail-closed 处理。输出/对象目录同时做词法和 realpath 分离，源树 symlink 会中止。
+- 原生工具只通过 `spawn(tool, argv)` 调用，数据库用户/密码放在 `PG*` 环境而不进入 argv/日志；支持
+  `XIQU_PG_BIN_DIR`、PATH 和 Homebrew 稳定位置发现，不提交本机 Cellar 绝对路径。CLI 参数错误也进入统一
+  错误边界，不再打印内部堆栈。
+- `maintenance:status|enable|disable` 不依赖 login/token，直接从数据库加载 active global-admin 操作者并
+  复用 `MaintenanceCoordinator`，因此浏览器 session 失效后仍有受审计恢复通道。备份命令拒绝接管别人
+  已开启的维护窗口。
+
+恢复设计、自审修复与真实失败：
+
+- `backup:restore-drill` 必须先离线 verify，然后拒绝与源同名的数据库、`postgres/template` 系统库、任何
+  含用户表的目标数据库、与源/备份重叠或非空的对象目录。对象先写同级 staging 再原子发布；恢复报告
+  复核 migration history、runtime state、资源/FileObject 摘要和每个对象内容。
+- 第一次真实恢复失败：`pg_restore` 报“one of -d/--dbname and -f/--file must be specified”。审计确认它与
+  `pg_dump` 不同，即使已有 `PGDATABASE` 仍要求 `--dbname`；最终只把无秘密数据库名加入 argv，密码仍在
+  环境。
+- 第二次真实恢复失败：新数据库天然存在 `public`，而按 schema 的 custom dump 包含 `CREATE SCHEMA
+  public`。由于恢复前已证明目标数据库没有任何用户表，最终使用
+  `--clean --if-exists --single-transaction` 原子重建 schema。没有通过忽略错误或覆盖非空库来绕过。
+- 第一次成功后自审发现报告只验证运行状态表存在，没有确认恢复库安全闭锁。最终进一步要求恢复状态为
+  `maintenance=true` 并在报告中提示人工确认后显式 disable；同时把对象恢复改为 staging 原子发布、把
+  目标“空 schema”提升为“整个数据库没有用户表”、同库保护提升为不受 localhost/127 别名影响的数据库
+  名不同，并增加文件/目录 fsync 与父目录 symlink 物理路径检查。
+
+真实演练和故障注入结果：
+
+- 本机 `pg_dump/pg_restore` 为 PostgreSQL 16.14，工具不在 PATH，通过本轮支持的 `XIQU_PG_BIN_DIR` 指向
+  未提交本机目录。实际 public 全量备份发布到 ignored `data/backups-r3d2b/`，包含 1 个 dump 和 6 个磁盘
+  对象。manifest 如实记录 8 条 warning：2 个数据库 FileObject 缺失磁盘文件、6 个磁盘孤儿（其中包含
+  `.DS_Store`）；未执行清理。
+- 使用本机未提交运维连接创建 `xiqu_restore_r3d2b_final`，owner 为应用角色 `xiqu`，真实 pg_restore 到
+  `public` 并恢复隔离对象目录。最终报告四项全通过：migration history、maintenance=true、database
+  summary、object content；源与恢复库均为 34 个资源、2 个 FileObject，源 maintenance=false、恢复库
+  maintenance=true，missing=2/orphan=6 状态被完整保留。随后强制关闭连接、删除临时数据库、对象目录和
+  报告，未改 public 内容。
+- API 已在 4317 运行。CLI 进入维护后 `/api/health/ready` 返回 200，匿名 login mutation 返回
+  `HTTP 503 maintenance_mode` 且不泄漏维护原因；CLI disable 后 public 状态为 false。
+- 故障注入使用隔离对象根 symlink，让流程在 pg_dump 后、对象复制阶段失败。命令退出 1、错误只报告
+  相对 key，输出目录没有 final 或 staging，public maintenance 自动恢复 false；临时目录已清理。
+
+测试与完成边界：
+
+- 新 `test:backup` 7/7，覆盖稳定 manifest/离线 verify、对象篡改、manifest 外额外文件、路径穿越、
+  源/输出与恢复目录重叠、同名数据库、PG 密码与安全身份隔离、未知版本拒绝。API 全套增至 45/45，包含既有维护、健康、指标、
+  资源、ACL、复制、恢复、确认、上传和对象生命周期回归；`test:maintenance` 1/1、`test:uploads` 4/4、
+  `test:observability` 4/4 通过。
+- `npm run build`、API TypeScript、`git diff --check` 均通过。仍只有既有 Vite 主 chunk 超过 500 kB 警告和
+  pg 9 前置弃用提示。本轮无 schema 变化，因此没有新增 migration。
+- R3d2b 完成的是本地对象目录全量一致备份与可证明恢复，不包含定时调度、备份加密、增量链、远端副本、
+  S3/MinIO 或生产告警。下一轮应先收敛对象存储接口和部署运维基线，不能让业务 service 或未来备份继续
+  依赖本地路径细节。

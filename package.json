@@ -33,6 +33,7 @@
     "test:uploads": "npm run build:shared && node --import tsx --test apps/api/test/uploadPolicy.test.ts apps/api/test/storage.test.ts",
     "test:observability": "npm run build:shared && node --import tsx --test apps/api/test/observability.test.ts",
     "test:maintenance": "npm run build:shared && tsc -p apps/api/tsconfig.test.json && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/maintenanceCoordinator.test.ts",
+    "test:backup": "npm run build:shared && tsc -p apps/api/tsconfig.test.json && node --import tsx --test apps/api/test/backupManifest.test.ts",
     "test:recovery-preview": "node --import tsx --test src/platform/recoverySnapshotPreview.test.ts",
     "test:recovery-comparison": "node --import tsx --test src/platform/recoverySnapshotComparison.test.ts",
     "test:annotation-diff": "node --import tsx --test src/platform/annotationDiff.test.ts",
@@ -47,6 +48,12 @@
     "test:api": "npm run build:shared && npm run build:document-model && tsc -p apps/api/tsconfig.test.json && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/*.test.ts",
     "build:api": "tsc -p apps/api/tsconfig.json",
     "start:api": "node dist/api/server.js",
+    "maintenance:status": "tsx apps/api/src/backup/cli.ts maintenance:status",
+    "maintenance:enable": "tsx apps/api/src/backup/cli.ts maintenance:enable",
+    "maintenance:disable": "tsx apps/api/src/backup/cli.ts maintenance:disable",
+    "backup:create": "tsx apps/api/src/backup/cli.ts backup:create",
+    "backup:verify": "tsx apps/api/src/backup/cli.ts backup:verify",
+    "backup:restore-drill": "tsx apps/api/src/backup/cli.ts backup:restore-drill",
     "preview": "vite preview"
   },
   "dependencies": {
