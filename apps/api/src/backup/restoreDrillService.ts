@@ -226,7 +226,7 @@ async function compareRestoredObjects(
       failures.push(`出现额外对象 ${object.storageKey}`);
       continue;
     }
-    const digest = await digestReadable(storage.getObjectStream(object.storageKey));
+    const digest = await digestReadable(await storage.getObjectStream(object.storageKey));
     if (digest.size !== expected.size || digest.sha256 !== expected.sha256) {
       failures.push(`对象内容不一致 ${object.storageKey}`);
     }

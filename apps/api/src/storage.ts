@@ -100,7 +100,8 @@ export class LocalObjectStorage implements ObjectStorage {
     );
   }
 
-  getObjectStream(storageKey: string, range?: { start: number; end: number }) {
+  // 读取统一返回 Promise，使本地和远端适配器共享相同的网络错误边界。
+  async getObjectStream(storageKey: string, range?: { start: number; end: number }) {
     return createReadStream(this.resolveStoragePath(storageKey), range);
   }
 

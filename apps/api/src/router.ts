@@ -731,10 +731,10 @@ export function registerApiRoutes(
         `bytes ${range.start}-${range.end}/${file.size}`,
       );
       reply.header("Content-Length", range.end - range.start + 1);
-      return reply.send(storage.getObjectStream(file.storageKey, range));
+      return reply.send(await storage.getObjectStream(file.storageKey, range));
     }
     reply.header("Content-Length", file.size);
-    return reply.send(storage.getObjectStream(file.storageKey));
+    return reply.send(await storage.getObjectStream(file.storageKey));
   });
 
   app.post<{

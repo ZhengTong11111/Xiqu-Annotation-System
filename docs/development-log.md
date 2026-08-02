@@ -1758,3 +1758,62 @@ DeepSeek、GLM 或其他代理。用户明确要求 Development Log 不只写最
   readiness、列举和删除集成测试；同时单独设计远端一致备份策略，不能继续调用本地目录快照。
 - 在进行新的大型真实备份或 MinIO 镜像拉取前，需要先释放磁盘空间或使用容量充足的独立卷。本轮没有
   擅自清理 R3d1/R3d2b 已记录的 missing/orphan，也没有删除用户数据来换取测试空间。
+
+## 2026-08-03：R3e2 S3-compatible 运行适配器与真实协议验证
+
+本轮在 R3e1 commit `d1c32d1` 后继续同一逐轮流程：审计实际端口与 roadmap、整体重写被忽略的
+`CLAUDE_WORK.md`、实现、专项/API/build、依赖安全审计、真实协议故障排查、自审和文档。由 Codex
+直接完成，没有委托 Claude Code、DeepSeek、GLM 或其他代理。
+
+合同修正与生产适配器：
+
+- 审计发现 R3e1 的 `getObjectStream()` 同步返回 `Readable`，只适合本地 `createReadStream()`；S3
+  `GetObject` 必须先等待网络响应。如果用延迟代理流维持同步签名，认证、404 和网络错误可能发生在
+  Fastify 已发响应头之后。最终把端口改为 `Promise<Readable>`，local adapter、Range route 和恢复摘要
+  一次迁移，不保留同步兼容接口。API 仍直接把解析后的 Node stream 交给 Fastify，不缓冲完整媒体。
+- 引入官方 `@aws-sdk/client-s3` / `@aws-sdk/lib-storage` 3.1101.0（Apache-2.0、Node >=20；本仓库要求
+  Node >=22）。新 `S3ObjectStorage` 使用流式 Transform 同时执行 maxBytes、SHA-256 和前 8192 字节签名头；
+  SDK Upload 使用有限并发 multipart 写临时 key。成功后 CopyObject 生成 final，再删除 staged；失败会
+  abort multipart、幂等清理 staged，并让既有上传 service 继续执行数据库/对象补偿。
+- 适配器实现闭区间 Range、HeadObject exists、DeleteObject、HeadBucket readiness 和官方 paginator
+  ListObjectsV2。数据库只保存逻辑 storageKey；bucket/prefix 映射集中在 adapter 内，拒绝绝对路径、
+  反斜杠、空/点/父级/NUL segment。列表严格剥离配置 prefix，不向业务层泄漏 endpoint、bucket 或凭据。
+- 工厂新增显式 `s3`。bucket、region、access key、secret 必填；endpoint、path-style 和 prefix 可配置；
+  坏 URL、半套凭据、坏布尔或坏 prefix 启动即失败且错误不回显秘密。当前故意不启用宿主默认凭据链，
+  避免开发服务器误用机器/云实例身份；IAM role 支持留给生产部署安全审查。
+- R3d2b 的本地全量备份边界未放宽：S3 backend 会在进入维护前被 local capability assertion 拒绝。
+  运行时 S3 支持不等于远端备份已经完成。
+
+依赖选择与真实协议排查：
+
+- 最初评估 dev-only `s3rver` 3.7.1。它能快速跑通协议，但 npm 官方 audit 显示该包直接处于 high
+  风险范围，并携带旧 busboy/dicer/fast-xml-parser；按照 AGENTS 依赖准则立即卸载，lockfile 不保留，
+  没有以“仅测试依赖”为由接受已知风险。
+- 本机无 Docker且数据卷仅余约 1 GiB，没有拉取 MinIO/LocalStack 大镜像。Homebrew 的 MinIO formula
+  已因上游归档而 deprecated；最终安装并使用 SeaweedFS 4.40（Apache-2.0、当前 Homebrew stable，
+  bottle 约 40 MB、安装约 135 MB），以临时目录和随机 master/volume/filer/S3/gRPC 端口启动真实 S3
+  HTTP 服务。该二进制是本机测试前置条件，不作为 npm 或仓库运行依赖提交。
+- 第一次 SeaweedFS 上传返回 `InternalError`。增加受控尾部服务日志后确认不是 S3 adapter/CopySource，
+  而是宿主磁盘达到 100%，SeaweedFS 默认 1% 最低空闲阈值把测试卷标为只读。最终仅对临时测试进程设置
+  10 MiB volume 上限、最多 5 卷和 0% 测试保留阈值，真实 staged/promote/Range/list/delete 随后通过；
+  未修改生产配置，也未删除用户对象或 R3d2b 备份。
+- 集成夹具每次使用随机端口、显式测试凭据、临时目录，真实 CreateBucket 作为 readiness polling；启动
+  失败和正常结束都会销毁 SDK client、终止/必要时强杀子进程并删除临时目录。测试文件使用
+  `.integration.ts`，不混入无 SeaweedFS 的普通 `test:api` 环境；`npm run test:s3-storage` 显式执行。
+
+测试、安全审计与边界：
+
+- `test:s3-storage` 2/2：真实协议验证 staged metadata、promote、完整读取、精确 Range、Head、prefix
+  隔离、分页列表、delete、超限无残留、bucket readiness/缺失失败。object factory 增至 6 项，增加 S3
+  装配、秘密不泄漏、缺凭据、坏布尔和坏 prefix。
+- `test:uploads` 4/4、`test:observability` 4/4、`test:backup` 7/7、API 普通套件 49/49、S3 协议套件 2/2、
+  `npm run build` 和 `git diff --check` 通过。本地媒体 Range 与恢复摘要证明 async stream 迁移无回归。
+  协议文件使用 `.integration.ts`，普通 API 套件不依赖外部 SeaweedFS 二进制。
+- npm 官方 audit 显示新增 AWS SDK 链没有已知 advisory。仓库仍有此前 Prisma/Fastify/Vite 工具链的
+  既有 11 项（0 critical、4 high、6 moderate、1 low）；直接项为 Prisma 与 Vite，升级涉及框架大版本，
+  不在本轮用 `audit fix --force` 冒险改动。国内 npm 镜像不实现 audit API，审计改用官方 registry。
+- R3e2 完成的是可运行、经过真实兼容协议验证的 S3 adapter。尚未完成：真实生产 MinIO/AWS bucket
+  smoke、TLS/证书、IAM role、S3 原生备份/恢复、版本化/生命周期策略和远端副本。SeaweedFS 证明本轮
+  使用的 API 子集具有兼容性，但不能替代目标生产供应商验收。
+- 最新 API 已用本轮代码重启在 4317；`/api/health/ready` 返回 200，PostgreSQL 与默认 local storage 均为
+  ok，public maintenance 最终为 false。

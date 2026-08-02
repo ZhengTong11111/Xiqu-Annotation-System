@@ -976,6 +976,34 @@ npm run dev:api
 
 这两条命令应在两个终端中分别运行。若只测试本地标注模式，可以只运行 `npm run dev:web`。
 
+### 选择对象存储后端
+
+开发环境默认使用本地目录，不配置 backend 也等同于 `local`：
+
+```bash
+export XIQU_OBJECT_STORAGE_BACKEND=local
+export XIQU_STORAGE_ROOT=./data/storage
+```
+
+服务器可切换到 S3-compatible 对象存储。自托管 MinIO、SeaweedFS 等通常需要 endpoint 与 path-style；
+直接连接 AWS S3 时可以省略 endpoint，并按部署方式设置 `XIQU_S3_FORCE_PATH_STYLE=false`：
+
+```bash
+export XIQU_OBJECT_STORAGE_BACKEND=s3
+export XIQU_S3_ENDPOINT=http://127.0.0.1:8333
+export XIQU_S3_REGION=us-east-1
+export XIQU_S3_BUCKET=xiqu-assets
+export XIQU_S3_ACCESS_KEY_ID=replace-me
+export XIQU_S3_SECRET_ACCESS_KEY=replace-me
+export XIQU_S3_FORCE_PATH_STYLE=true
+export XIQU_S3_PREFIX=platform
+```
+
+当前适配器要求显式成对凭据，尚未开放宿主 IAM 默认凭据链。空白、缺项、坏布尔值和未知 backend 会在
+启动时失败，不会静默回退本地。S3 上传使用临时 key + server-side copy 发布，下载支持单段 Range；
+`npm run test:s3-storage` 需要 PATH 中存在 Apache-2.0 的 SeaweedFS `weed` 命令，用真实 S3 HTTP 协议
+验证 staged、promote、Range、prefix、列举、删除和 readiness。
+
 ### 构建
 
 ```bash
@@ -1050,8 +1078,8 @@ npm run maintenance:disable -- --operator admin
 账号、资源树、带签名/配额/补偿的媒体上传、标注文件保存、恢复快照和逐文件权限已经接入
 Fastify/Prisma/PostgreSQL，并由一组可部署 migration 维护。当前已有 liveness/readiness、低基数
 Prometheus 指标、管理员诊断面板、跨实例维护写入静默边界，以及带 manifest/checksum 的 PostgreSQL
-与本地对象目录一致备份和隔离恢复演练。生产部署所需的 HTTPS、反向代理、限流、S3/MinIO 对象存储
-迁移和外部告警接入仍未完成。维护状态持久化在 PostgreSQL，API 重启不会自动解除；管理员应在维护
+与本地对象目录一致备份和隔离恢复演练。S3-compatible 运行适配器已完成，但远端对象备份/恢复、真实
+生产桶 smoke、HTTPS、反向代理、限流和外部告警接入仍未完成。维护状态持久化在 PostgreSQL，API 重启不会自动解除；管理员应在维护
 任务完成后从诊断面板或本机 CLI 明确恢复写入。
 
 ### 2. 尚未实现实时多人协作

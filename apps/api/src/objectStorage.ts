@@ -35,7 +35,7 @@ export interface ObjectStorage {
     maxBytes: number,
   ): Promise<StagedBinary>;
   promoteStagedObject(staged: StagedBinary): Promise<void>;
-  getObjectStream(storageKey: string, range?: ObjectReadRange): Readable;
+  getObjectStream(storageKey: string, range?: ObjectReadRange): Promise<Readable>;
   objectExists(storageKey: string): Promise<boolean>;
   deleteObject(storageKey: string): Promise<void>;
   checkReadiness(): Promise<void>;

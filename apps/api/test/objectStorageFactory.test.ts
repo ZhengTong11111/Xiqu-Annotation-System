@@ -28,8 +28,55 @@ test("对象存储工厂对空白和未知后端 fail closed", () => {
     /<empty>/,
   );
   assert.throws(
-    () => createObjectStorageFromEnvironment({ XIQU_OBJECT_STORAGE_BACKEND: "s3" }),
-    /当前可用值只有 local/,
+    () => createObjectStorageFromEnvironment({ XIQU_OBJECT_STORAGE_BACKEND: "gcs" }),
+    /当前可用值为 local、s3/,
+  );
+});
+
+// S3 工厂必须完整验证配置，并且后端描述不能泄漏 access key 或 secret。
+test("对象存储工厂装配 S3 后端并拒绝不完整配置", () => {
+  const storage = createObjectStorageFromEnvironment({
+    XIQU_OBJECT_STORAGE_BACKEND: "s3",
+    XIQU_S3_ENDPOINT: "http://127.0.0.1:9000",
+    XIQU_S3_REGION: "us-east-1",
+    XIQU_S3_BUCKET: "xiqu-assets",
+    XIQU_S3_ACCESS_KEY_ID: "test-access",
+    XIQU_S3_SECRET_ACCESS_KEY: "test-secret",
+    XIQU_S3_PREFIX: "platform",
+  });
+  const descriptor = storage.describeBackend();
+  assert.equal(descriptor.kind, "remote");
+  assert.doesNotMatch(JSON.stringify(descriptor), /test-access|test-secret/);
+  assert.throws(
+    () => createObjectStorageFromEnvironment({
+      XIQU_OBJECT_STORAGE_BACKEND: "s3",
+      XIQU_S3_REGION: "us-east-1",
+      XIQU_S3_BUCKET: "xiqu-assets",
+      XIQU_S3_ACCESS_KEY_ID: "test-access",
+    }),
+    /XIQU_S3_SECRET_ACCESS_KEY/,
+  );
+  assert.throws(
+    () => createObjectStorageFromEnvironment({
+      XIQU_OBJECT_STORAGE_BACKEND: "s3",
+      XIQU_S3_REGION: "us-east-1",
+      XIQU_S3_BUCKET: "xiqu-assets",
+      XIQU_S3_ACCESS_KEY_ID: "test-access",
+      XIQU_S3_SECRET_ACCESS_KEY: "test-secret",
+      XIQU_S3_FORCE_PATH_STYLE: "sometimes",
+    }),
+    /只能是 true 或 false/,
+  );
+  assert.throws(
+    () => createObjectStorageFromEnvironment({
+      XIQU_OBJECT_STORAGE_BACKEND: "s3",
+      XIQU_S3_REGION: "us-east-1",
+      XIQU_S3_BUCKET: "xiqu-assets",
+      XIQU_S3_ACCESS_KEY_ID: "test-access",
+      XIQU_S3_SECRET_ACCESS_KEY: "test-secret",
+      XIQU_S3_PREFIX: "../outside",
+    }),
+    /非法路径段/,
   );
 });
 
@@ -47,7 +94,7 @@ test("本地快照能力拒绝远端后端而不读取伪造路径", () => {
       header: new Uint8Array(),
     }),
     promoteStagedObject: async () => undefined,
-    getObjectStream: () => Readable.from([]),
+    getObjectStream: async () => Readable.from([]),
     objectExists: async () => false,
     deleteObject: async () => undefined,
     checkReadiness: async () => undefined,

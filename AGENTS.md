@@ -24,7 +24,7 @@ Main currently contains all major recent feature lines that matter for context:
 - Gongche glyph preview is currently marked finished for research/demo use, but the glyph font must be replaced or licensed before release
 - Banyan beat/eye parsing, track display, editing, and global vertical guide rendering
 - platform login/resource-explorer UI, local editor entry, media upload, project/folder/file management, JSON import, revision-checked server save, recovery snapshots, and per-resource account permissions
-- Fastify API backed by Prisma 7 and PostgreSQL, with local object storage under `data/`
+- Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - backend audit logs and annotation operation logs for the first platform-governance layer
 - project document state architecture (`src/state/projectDocumentState.ts`)
 - recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
@@ -186,7 +186,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - 《韵学骊珠》four-tone (yin/yang × ping/shang/qu/ru) label mapping, validity checks, and sentence-level tone summary helpers
   - used by Inspector (character tone editor + derived sentence preview), Timeline (in-block tone label), and `projectFile.ts` (tone normalization)
 - `apps/api/src/`
-  - Fastify backend: auth, resource routes, resource ACL evaluation, annotation-file revision saves, Prisma mapping, and local object storage
+  - Fastify backend: auth, resource routes, resource ACL evaluation, annotation-file revision saves, Prisma mapping,
+    and replaceable local/S3 object storage
 - `apps/api/src/database.ts`
   - shared PrismaPg connection factory
   - explicitly aligns Prisma schema and PostgreSQL `search_path`; do not construct a second adapter path in tests
@@ -194,8 +195,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - stable object-storage port, staged publish/read/range/lifecycle contracts, backend descriptor, and local-backup
     capability narrowing
 - `apps/api/src/objectStorageFactory.ts`
-  - the only production environment composition root for object storage; undefined defaults to `local`, while blank or
-    unknown backends fail closed
+  - the only production environment composition root for local/S3 object storage; undefined defaults to `local`, while
+    blank, unknown, or incomplete backends fail closed
+- `apps/api/src/s3ObjectStorage.ts`
+  - AWS SDK v3 adapter for S3-compatible staged multipart upload, server-side-copy publish, Range reads, paginated
+    listing, deletion, readiness, and prefix isolation
 - `apps/api/src/resourceAccess.ts`
   - authoritative server-side resource capability resolution
   - combines global admin bypass, ownership, direct grants, and nearest inherited folder grants
@@ -295,8 +299,11 @@ Backend local defaults:
 - API port defaults to `4317`
 - Prisma/PostgreSQL defaults to `postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public`
 - local uploaded objects default to `./data/storage`
-- `XIQU_OBJECT_STORAGE_BACKEND` currently supports only `local`; missing means local, while blank or unknown values fail
-  startup instead of silently writing to the wrong backend
+- `XIQU_OBJECT_STORAGE_BACKEND` supports `local` and `s3`; missing means local, while blank, unknown, or incomplete
+  values fail startup instead of silently writing to the wrong backend
+- S3 uses explicit `XIQU_S3_REGION`, `XIQU_S3_BUCKET`, `XIQU_S3_ACCESS_KEY_ID`, and
+  `XIQU_S3_SECRET_ACCESS_KEY`; endpoint, path-style, and prefix are configurable. The default provider credential chain
+  is intentionally disabled until a separate deployment/security review.
 - local full backups default to `./data/backups`; `XIQU_PG_BIN_DIR` may point to PostgreSQL 16 client tools when they
   are not on `PATH`
 - runtime Node.js must be 22 or newer because the media-signature dependency and backend toolchain require it
@@ -562,7 +569,8 @@ The platform backend is no longer just a mock, but it is still an early developm
 - resource and annotation-file mutations: `apps/api/src/resourceService.ts`
 - Prisma row-to-DTO conversion: `apps/api/src/repositoryMappers.ts`
 - development seed accounts/resource tree: `apps/api/src/repositorySeed.ts`
-- local object storage: `apps/api/src/storage.ts`
+- object storage port/factory: `apps/api/src/objectStorage.ts`, `apps/api/src/objectStorageFactory.ts`
+- local/S3 adapters: `apps/api/src/storage.ts`, `apps/api/src/s3ObjectStorage.ts`
 - shared API types: `packages/shared/src/`
 - resource-capability helpers: `packages/document-model/src/`
 
@@ -657,10 +665,12 @@ Important backend caveats:
   Aged orphan inspection/cleanup exists, but user-facing permanent deletion and physical duplication remain future work.
 - real-time collaborative editing is not implemented yet
 - current backups are local full backups only: no scheduler, encryption, incremental chain, remote replication, or
-  S3/MinIO adapter is implemented yet
+  S3-native backup/restore strategy is implemented yet. Runtime S3-compatible storage support does not make the local
+  directory snapshot command valid for remote buckets.
 - business storage consumers must depend on `ObjectStorage` or a narrow `Pick` of required methods. The concrete local
   adapter is confined to the factory, adapter tests, and the explicitly local restore-drill target. S3/MinIO must be
-  implemented as a real adapter with integration tests, not as a path shim.
+  implemented as a real adapter with integration tests, not as a path shim. `getObjectStream()` is asynchronous so
+  authentication/network errors happen before Fastify sends the response stream.
 - the removed Course/Assignment/Submission runtime is not a pending compatibility target; future classroom
   distribution/review should build on resource copy, ACL, file comparison, and a separate confirmed-annotation layer
 - confirmed-range review is implemented end to end; entity-level confirmation, comments/signatures, automatic
