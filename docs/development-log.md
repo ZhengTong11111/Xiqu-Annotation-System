@@ -3456,3 +3456,75 @@ ProjectData builder、adapter 与编辑器接线：
   放宽完整 next 门禁。
 - 下一轮 R5a4c 先设计显式锁、受控事务、操作预算和冲突恢复，再选择一个真实结构写路径落地；不能直接
   把大范围结构变化塞进普通 state/lifecycle 命令，也不能在服务端形成第二套 ProjectData 解释器。
+
+## 2026-08-04：R5a4c1 结构性变更短时独占租约
+
+计划与边界：
+
+- R5a4b3 提交后先审计真实轨道写路径。改名、颜色和显示模式只改元数据；删除递归分叉会同步重写多个块的
+  branchScope；整轨删除还会级联块、附属点、工尺和板眼引用。Codex 因而没有直接增加一个宽松“轨道
+  state”命令，而是把 `CLAUDE_WORK.md` 整体切换为 R5a4c1：先建立跨 API 实例有效的文件级短时独占租约，
+  下一轮再接首个结构 UI。
+- 用途限制为 track_structure、bulk_import、bulk_repair，只服务审计和提示，不扩大权限。租约按 annotation
+  file 唯一，绑定 holder、base revision、创建/过期时间；默认 60 秒，续期总生命周期最多 5 分钟。
+- 本轮明确不接编辑器定时续租和轨道 UI，不引入 WebSocket，不解释 ProjectData 结构，也不把整轨删除或批量
+  导入纳入普通 CRUD。无租约路径必须完全保持旧行为。
+
+数据库、token 与 API：
+
+- Prisma 新增 `AnnotationMutationPurpose` 和 `AnnotationMutationLease`，annotationFileId 为主键，holder 与
+  expiresAt 有索引；文件或账号删除会级联清理。migration `20260804110000_annotation_mutation_leases` 同步
+  增加 acquire/renew/release 三类审计动作。
+- `annotationMutationLease.ts` 集中 token、purpose 和时间策略。token 使用 32 随机字节与固定前缀，数据库只
+  保存 SHA-256；比较使用 timingSafeEqual。明文只在 acquire/renew 响应和请求内存在，不进入 audit、operation
+  payload 或日志。
+- API 增加 status/acquire/renew/release；共享 DTO 和 platformClient 同步。operation、save、snapshot restore
+  请求新增可选 mutationLeaseToken：无活动租约可省略，有活动租约则账号、token、base revision 和有效期必须
+  全部匹配。operation 接受后继续持锁，只有完整 save/restore 成功推进 revision 才在同一事务释放；任何快照、
+  operation 绑定或 revision 失败都会整体回滚并保留租约。
+- 错误详情使用稳定 code 区分 held、required、invalid、expired、revision_conflict；对外 status/冲突只显示
+  holder 公共摘要、purpose 和 expiresAt，不回显摘要或数据库内部凭据。
+
+统一写锁与实现中修复的问题：
+
+- 初版租约 guard 已覆盖 operation/save，但自审发现 snapshot restore 同样会覆盖 payload/revision，可能绕过
+  活动租约。恢复请求随后接入同一 token guard，并在成功恢复时原子释放；无 token 的恢复在持锁期间返回
+  409。
+- 继续审查发现 operation 原有 write capability 只在事务外检查，且只锁 annotation file 行；权限撤销、资源
+  移动或移入回收站可能从检查间隙穿过。新增 `annotationFileWriteLock.ts`，固定顺序为资源树共享 advisory
+  lock → 资源行 → 当前及祖先活动检查 → transaction client ACL → annotation file 行。operation、save、
+  restore 和所有 lease mutation 现在复用这一 helper，删除了 ResourceService 内旧的近似实现，没有留下两套
+  锁顺序。
+- 过期租约在 acquire 时锁内删除并可被新 writer 接管；普通无 token 写入遇到过期记录也会清理后继续。
+  携带旧 token 时 fail closed，不会在租约消失后悄悄降级成普通结构写入。
+- operation 的幂等重放仍在锁前返回已接受的同指纹记录，因为它不产生新写入；mutation token 刻意不进入
+  request fingerprint，避免把秘密写入持久化事实。不同 payload 使用相同 clientOperationId 仍按原规则冲突。
+- 最终回归第一次运行时，普通无租约 snapshot restore 的审计详情多出无意义的
+  `mutationLeaseReleased: false`，导致稳定审计形状测试失败。实现改为只在确实释放租约时写入 `true`，保留
+  旧路径原有详情；修正后 API 91/91。没有通过放宽断言掩盖合同漂移。
+
+验证与自审：
+
+- 新纯函数专项 3/3：固定 token/摘要、purpose 严格解析、过期与最长续期。审计专项 7/7，新增动作与 Prisma
+  enum 保持一致。
+- PostgreSQL API 集成由 90 增至 91 项：覆盖 writer acquire/status/renew/release、reader 可见 summary、第二
+  账号竞争、同账号无 token、他人持 token、operation/save/restore 阻断、正确 token operation、失败 save
+  保留租约与 revision、成功 save 原子释放、过期接管、旧 token 失效，以及审计不含明文 token。12 条 migration
+  在 `api_test` schema 成功应用；全套 91/91 通过，仅保留既有 node-postgres pg 9 弃用提示。
+- `npm run build` 通过 Prisma generation、shared、document-model、Web 与 API；Web 仍转换 2058 模块，主
+  chunk 868.72 kB / gzip 262.24 kB，仅有既有大包提示。`git diff --check` 通过。
+- 提交前对开发库执行 `npm run db:deploy`。`public` schema 当时落后于测试库，部署实际补齐了 operation
+  sequence、operation commit state 和本轮 mutation lease 三条 migration，最终与 `api_test` 同为 12 条。
+  随后使用当前工作树重启 Fastify；`/api/health/ready` 返回 HTTP 200，数据库探针约 3.57 ms、对象存储探针
+  约 1.08 ms。这里记录的是本机开发环境验收，不替代目标服务器迁移与部署检查。
+- 本轮没有视觉 UI 变化，也没有调用浏览器自动化。API client 方法已具备，但没有把“能发请求”冒充编辑器
+  已完成租约交互；实际轨道 UI acquire/续期/取消/冲突恢复明确留给 R5a4c2。
+
+文档与下一步：
+
+- README、state architecture、roadmap 和 AGENTS 已记录租约合同、统一写锁模块所有权、测试命令和 UI 未接
+  边界；本 Development Log 记录计划、实际实现、自审修复和验证。`CLAUDE_WORK.md` 仍只保留本轮任务。
+- 本轮未引入新依赖，Node crypto、Prisma 与 Fastify 已足够；未发现明文 token、进程内伪锁、重复 guard 或
+  被新 helper 取代后仍存活的旧锁函数。
+- 下一轮 R5a4c2 应先定义有界轨道结构命令，选择自定义轨道元数据和递归分叉作为首条真实路径，建立编辑器
+  acquire → renew → operation/save → release/失败恢复；整轨删除、批量导入与大范围修复继续分轮处理。

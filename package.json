@@ -35,6 +35,7 @@
     "test:annotation-content-command": "npm run build:shared && node --import tsx --test src/utils/annotationContentCommandApply.test.ts",
     "test:annotation-lifecycle-command": "npm run build:shared && node --import tsx --test src/utils/annotationLifecycleCommandApply.test.ts",
     "test:annotation-state-command": "npm run build:shared && node --import tsx --test src/utils/annotationStateCommandApply.test.ts src/utils/annotationCompositeEntities.test.ts",
+    "test:annotation-mutation-lease": "npm run build:shared && node --import tsx --test apps/api/src/annotationMutationLease.test.ts",
     "test:annotation-transaction-command": "npm run build:shared && node --import tsx --test src/utils/annotationTransactionCommandApply.test.ts",
     "test:platform-auto-save": "node --import tsx --test src/platform/platformAutoSavePolicy.test.ts",
     "test:platform-auto-save-runtime": "node --import tsx --test src/platform/platformAutoSaveRuntime.test.ts",

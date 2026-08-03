@@ -29,8 +29,9 @@ opaque 续读游标和有界 operation feed。R5a3a 已把保存声明的 operat
 重放与权威快照降级。R5a4a 已完成逐字/句/动作/自定义块/附属点的稳定内容命令、严格全项目差异门禁、
 草稿往返和混合 timing/content 追赶。R5a4b1 已完成自定义块/附属点叶实体创建删除；R5a4b2 已完成逐字/
 句/工尺块生命周期、句同步与父块工尺级联原子事务；R5a4b3 已完成工尺符号稳定身份、内部增删改、板眼
-复合状态、删除断链和 state/lifecycle 原子事务；下一步进入 R5a4c，先为轨道结构、递归分叉、批量导入
-和大范围修复确定显式锁与受控事务边界；
+复合状态、删除断链和 state/lifecycle 原子事务；R5a4c1 已建立标注文件级短时独占租约、事务内活动文件/
+ACL 复核，以及 operation/save/restore 的统一写入门禁；下一步 R5a4c2 将首个自定义轨道结构路径接入
+acquire/renew/controlled save/release；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -444,8 +445,12 @@ opaque 续读游标和有界 operation feed。R5a3a 已把保存声明的 operat
     section；lifecycle 同步扩展三类实体。工尺快速编辑按索引保留稳定 symbol id；删除 symbol/block 时保留
     板眼研究记录、清除失效链接并标记 orphaned，再由 state → lifecycle transaction 原子提交。所有 after
     均通过统一板眼/工尺引用门禁，草稿、API 与 clean catch-up 已可验证和重放 state。
-- R5a4c 待推进：轨道结构、递归分叉、批量导入和大范围修复不纳入普通实体 CRUD，先设计资源级/轨道级
-  显式锁、受控事务、操作预算和冲突恢复，再选择首个真实写路径实现。
+- R5a4c1 已完成：新增 PostgreSQL `AnnotationMutationLease`，按文件唯一绑定 holder、purpose、base revision、
+  60 秒 TTL 和 5 分钟最长生命周期；明文 token 只返回客户端。统一写锁 helper 让 operation、save、restore
+  和租约 mutation 共享资源树锁、活动祖先检查、事务内 ACL 与文件行锁；有效租约存在时所有内容写入必须
+  带匹配 token，成功 revision 写入原子释放。API/client 和审计已接入，编辑器 UI 尚未启用租约。
+- R5a4c2 待推进：先选择自定义轨道元数据与递归分叉结构作为首个受控 UI 路径，设计有界结构命令、续期/
+  取消/冲突提示和保存失败恢复；整轨删除、批量导入与大范围修复继续留在后续切片。
 - WebSocket 会话、presence、光标/选区与连接状态。
 - 服务端 operation 排序、确认、重放和权限复核。
 - 先针对块级编辑实现协作，再评估 OT/CRDT；不直接合并任意完整快照。

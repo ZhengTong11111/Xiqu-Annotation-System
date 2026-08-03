@@ -225,6 +225,11 @@ Range。重要平台修改完成后应同时运行相关专项测试和完整构
 - 恢复快照是事故恢复安全网，不作为普通文件或“发布版本”展示。
 - 本地 JSON 的 `PROJECT_FILE_VERSION` 与平台 revision 是两个独立层次。
 
+轨道结构、递归分叉和批量导入等大范围操作现在已有服务端短时独占租约底座。租约按标注文件绑定账号、
+用途与基线 revision，数据库只保存一次性 token 的 SHA-256 摘要；有效租约存在时，operation、完整保存和
+快照恢复都必须携带匹配 token。成功保存/恢复会在同一事务释放租约，失败不会提前解锁。当前前端 API
+client 已具备 acquire/renew/release/status 调用，但编辑器 UI 尚未接入，普通无租约编辑行为不变。
+
 operation log 已开始从编辑摘要渐进迁移为版本化领域命令。时间轴句块、逐字块、动作块、自定义块、
 附属打点、工尺块和板眼点的纯时间调整可记录 `timeline.items.timing.update` version 1 envelope；逐字与
 派生句文本、动作标签、自定义块文字/类型和附属点标签可记录 `annotation.items.content.update`；当前格式

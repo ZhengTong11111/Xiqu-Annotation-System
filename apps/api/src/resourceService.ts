@@ -10,6 +10,9 @@ import type {
   AnnotationConfirmationList,
   AnnotationConfirmationRecord,
   AnnotationFile,
+  AnnotationMutationLeaseGrant,
+  AnnotationMutationLeaseSummary,
+  AnnotationMutationPurpose,
   AnnotationRecoverySnapshotDetail,
   AnnotationRecoverySnapshotSummary,
   BatchMoveResourcesRequest,
@@ -68,6 +71,15 @@ import {
 } from "./resourcePagination.js";
 import { encodeAnnotationSnapshotOperationCursor } from "./annotationCommittedOperationPagination.js";
 import { toPublicUser } from "./repositoryMappers.js";
+import {
+  calculateAnnotationMutationLeaseExpiry,
+  createAnnotationMutationLeaseToken,
+  hashAnnotationMutationLeaseToken,
+  isAnnotationMutationLeaseExpired,
+  matchesAnnotationMutationLeaseToken,
+} from "./annotationMutationLease.js";
+import { assertAnnotationMutationLeaseForWrite } from "./annotationMutationLeaseStore.js";
+import { lockActiveAnnotationFileForWrite } from "./annotationFileWriteLock.js";
 
 const resourceInclude = {
   owner: { include: { roles: true } },
@@ -81,11 +93,18 @@ const annotationConfirmationInclude = {
   revoker: { include: { roles: true } },
 } satisfies Prisma.AnnotationConfirmationInclude;
 
+const annotationMutationLeaseInclude = {
+  holder: { include: { roles: true } },
+} satisfies Prisma.AnnotationMutationLeaseInclude;
+
 type ResourceRow = Prisma.ResourceEntryGetPayload<{
   include: typeof resourceInclude;
 }>;
 type AnnotationConfirmationRow = Prisma.AnnotationConfirmationGetPayload<{
   include: typeof annotationConfirmationInclude;
+}>;
+type AnnotationMutationLeaseRow = Prisma.AnnotationMutationLeaseGetPayload<{
+  include: typeof annotationMutationLeaseInclude;
 }>;
 
 export type CopyResourceResult = {
@@ -446,17 +465,20 @@ export class ResourceService {
     await this.access.assertCapability(user, resourceId, "write");
     await this.prisma.$transaction(async (transaction) => {
       // 普通保存与快照恢复共用同一锁顺序，避免保存期间资源被移动或藏入回收站。
-      const current = await this.lockAnnotationFileForContentMutation(
-        transaction,
-        user,
-        resourceId,
-      );
+      const current = await lockActiveAnnotationFileForWrite(transaction, this.access, user, resourceId);
       if (current.revision !== input.baseRevision) {
         throw conflict("标注文件已被其他人修改，请刷新后再保存。", {
           expectedRevision: current.revision,
           receivedRevision: input.baseRevision,
         });
       }
+      const leaseGuard = await assertAnnotationMutationLeaseForWrite(
+        transaction,
+        resourceId,
+        user.id,
+        input.baseRevision,
+        input.mutationLeaseToken,
+      );
 
       // 本次完整 payload 覆盖的 operation 必须全部属于当前文件、账号和 base revision。
       // 先完整验证再写快照，任何缺失或重复都不能形成部分 committed 事实。
@@ -556,6 +578,11 @@ export class ResourceService {
         data: { updatedAt: new Date() },
       });
 
+      // 受控结构变更只有在 payload、operation 和 revision 全部提交成功后才释放租约。
+      if (leaseGuard.leaseWasUsed) {
+        await transaction.annotationMutationLease.delete({ where: { annotationFileId: resourceId } });
+      }
+
       // 保存审计与 payload 写入同属一个事务，失败时不会出现“已保存但无审计”的半完成状态。
       await transaction.auditLog.create({
         data: {
@@ -565,11 +592,142 @@ export class ResourceService {
           detail: {
             revision: targetRevision,
             operationCount: operationIds.length,
+            ...(leaseGuard.leaseWasUsed ? { mutationLeaseReleased: true } : {}),
           },
         },
       });
     });
     return this.getAnnotationFile<TPayload>(user, resourceId);
+  }
+
+  async getAnnotationMutationLease(
+    user: ApiUser,
+    resourceId: string,
+  ): Promise<AnnotationMutationLeaseSummary | null> {
+    await this.access.assertCapability(user, resourceId, "read");
+    await this.assertActiveAnnotationFile(resourceId);
+    const lease = await this.prisma.annotationMutationLease.findUnique({
+      where: { annotationFileId: resourceId },
+      include: { holder: { include: { roles: true } } },
+    });
+    return !lease || isAnnotationMutationLeaseExpired(lease.expiresAt)
+      ? null
+      : mapAnnotationMutationLease(lease);
+  }
+
+  async acquireAnnotationMutationLease(
+    user: ApiUser,
+    resourceId: string,
+    input: { baseRevision: number; purpose: AnnotationMutationPurpose },
+  ): Promise<AnnotationMutationLeaseGrant> {
+    await this.access.assertCapability(user, resourceId, "write");
+    const token = createAnnotationMutationLeaseToken();
+    return this.prisma.$transaction(async (transaction) => {
+      const current = await lockActiveAnnotationFileForWrite(transaction, this.access, user, resourceId);
+      if (current.revision !== input.baseRevision) {
+        throw conflict("标注文件版本已变化，不能取得结构变更租约。", {
+          code: "annotation_mutation_lease_revision_conflict",
+          expectedRevision: current.revision,
+          receivedRevision: input.baseRevision,
+        });
+      }
+      const existing = await transaction.annotationMutationLease.findUnique({
+        where: { annotationFileId: resourceId },
+        include: { holder: { include: { roles: true } } },
+      });
+      if (existing && !isAnnotationMutationLeaseExpired(existing.expiresAt)) {
+        throw conflict("该标注文件已有结构变更租约。", {
+          code: "annotation_mutation_lease_held",
+          holder: toPublicUser(existing.holder),
+          purpose: existing.purpose,
+          expiresAt: existing.expiresAt.toISOString(),
+        });
+      }
+      if (existing) {
+        await transaction.annotationMutationLease.delete({ where: { annotationFileId: resourceId } });
+      }
+      const now = new Date();
+      const created = await transaction.annotationMutationLease.create({
+        data: {
+          annotationFileId: resourceId,
+          holderUserId: user.id,
+          tokenHash: hashAnnotationMutationLeaseToken(token),
+          purpose: input.purpose,
+          baseRevision: input.baseRevision,
+          createdAt: now,
+          expiresAt: calculateAnnotationMutationLeaseExpiry(now, now),
+        },
+        include: { holder: { include: { roles: true } } },
+      });
+      await transaction.auditLog.create({
+        data: {
+          action: "annotation_mutation_lease_acquire",
+          actorUserId: user.id,
+          resourceId,
+          detail: {
+            purpose: created.purpose,
+            baseRevision: created.baseRevision,
+            expiresAt: created.expiresAt.toISOString(),
+          },
+        },
+      });
+      return { ...mapAnnotationMutationLease(created), token };
+    });
+  }
+
+  async renewAnnotationMutationLease(
+    user: ApiUser,
+    resourceId: string,
+    token: string,
+  ): Promise<AnnotationMutationLeaseGrant> {
+    await this.access.assertCapability(user, resourceId, "write");
+    return this.prisma.$transaction(async (transaction) => {
+      const current = await lockActiveAnnotationFileForWrite(transaction, this.access, user, resourceId);
+      const lease = await transaction.annotationMutationLease.findUnique({
+        where: { annotationFileId: resourceId },
+        include: { holder: { include: { roles: true } } },
+      });
+      assertOwnedActiveMutationLease(lease, user.id, token, current.revision);
+      const now = new Date();
+      const expiresAt = calculateAnnotationMutationLeaseExpiry(lease.createdAt, now);
+      if (expiresAt.getTime() <= now.getTime()) {
+        throw conflict("结构变更租约已达到最长生命周期，请重新取得。", {
+          code: "annotation_mutation_lease_expired",
+        });
+      }
+      const renewed = await transaction.annotationMutationLease.update({
+        where: { annotationFileId: resourceId },
+        data: { expiresAt },
+        include: { holder: { include: { roles: true } } },
+      });
+      await transaction.auditLog.create({
+        data: {
+          action: "annotation_mutation_lease_renew",
+          actorUserId: user.id,
+          resourceId,
+          detail: { purpose: renewed.purpose, baseRevision: renewed.baseRevision, expiresAt: expiresAt.toISOString() },
+        },
+      });
+      return { ...mapAnnotationMutationLease(renewed), token };
+    });
+  }
+
+  async releaseAnnotationMutationLease(user: ApiUser, resourceId: string, token: string) {
+    await this.access.assertCapability(user, resourceId, "write");
+    await this.prisma.$transaction(async (transaction) => {
+      const current = await lockActiveAnnotationFileForWrite(transaction, this.access, user, resourceId);
+      const lease = await transaction.annotationMutationLease.findUnique({ where: { annotationFileId: resourceId } });
+      assertOwnedActiveMutationLease(lease, user.id, token, current.revision);
+      await transaction.annotationMutationLease.delete({ where: { annotationFileId: resourceId } });
+      await transaction.auditLog.create({
+        data: {
+          action: "annotation_mutation_lease_release",
+          actorUserId: user.id,
+          resourceId,
+          detail: { purpose: lease.purpose, baseRevision: lease.baseRevision },
+        },
+      });
+    });
   }
 
   // 历史列表只返回轻量元数据，避免一次读取最多 50 份完整 ProjectData。
@@ -644,17 +802,21 @@ export class ResourceService {
     // 锁外预检减少无权限请求占用事务；真正安全边界仍在锁内 helper 中。
     await this.access.assertCapability(user, resourceId, "write");
     await this.prisma.$transaction(async (transaction) => {
-      const current = await this.lockAnnotationFileForContentMutation(
-        transaction,
-        user,
-        resourceId,
-      );
+      const current = await lockActiveAnnotationFileForWrite(transaction, this.access, user, resourceId);
       if (current.revision !== input.baseRevision) {
         throw conflict("标注文件已被其他人修改，请刷新后再恢复。", {
           expectedRevision: current.revision,
           receivedRevision: input.baseRevision,
         });
       }
+
+      const leaseGuard = await assertAnnotationMutationLeaseForWrite(
+        transaction,
+        resourceId,
+        user.id,
+        input.baseRevision,
+        input.mutationLeaseToken,
+      );
 
       // 快照 id 必须和路径中的文件 id 同时匹配，不能借其他文件的 id 读取或恢复 payload。
       const sourceSnapshot = await transaction.annotationRecoverySnapshot
@@ -711,6 +873,9 @@ export class ResourceService {
         where: { id: resourceId },
         data: { updatedAt: new Date() },
       });
+      if (leaseGuard.leaseWasUsed) {
+        await transaction.annotationMutationLease.delete({ where: { annotationFileId: resourceId } });
+      }
       await transaction.auditLog.create({
         data: {
           action: "annotation_snapshot_restore",
@@ -721,6 +886,7 @@ export class ResourceService {
             sourceRevision: sourceSnapshot.revision,
             previousRevision: current.revision,
             revision: nextRevision,
+            ...(leaseGuard.leaseWasUsed ? { mutationLeaseReleased: true } : {}),
           },
         },
       });
@@ -1892,36 +2058,6 @@ export class ResourceService {
     }
   }
 
-  // 所有 annotation payload mutation 统一在资源树共享锁后复核权限，并锁住当前文件行。
-  private async lockAnnotationFileForContentMutation(
-    transaction: Prisma.TransactionClient,
-    user: ApiUser,
-    resourceId: string,
-  ) {
-    await this.lockResourceTreeForContentWrite(transaction);
-    await this.lockResourceRows(transaction, [resourceId]);
-    await this.assertActiveAnnotationFile(resourceId, transaction);
-    await this.access.assertCapability(
-      user,
-      resourceId,
-      "write",
-      transaction,
-    );
-
-    // 仅依赖 revision 条件不够：两个事务可能先争抢同一 revision 的快照唯一键，行锁需先串行同一文件。
-    await transaction.$queryRaw`
-      SELECT resource_id
-      FROM annotation_files
-      WHERE resource_id = ${resourceId}
-      FOR UPDATE
-    `;
-    const current = await transaction.annotationFile.findUnique({
-      where: { resourceId },
-    });
-    if (!current) throw notFound("标注文件不存在。");
-    return current;
-  }
-
   // 审核事务沿用内容写入的锁顺序，但只共享锁 annotation 行，保证 revision 核对期间不能被保存推进。
   private async lockAnnotationFileForConfirmation(
     transaction: Prisma.TransactionClient,
@@ -2052,4 +2188,46 @@ function sameStringSets(left: string[], right: string[]) {
   if (left.length !== right.length) return false;
   const rightSet = new Set(right);
   return left.every((value) => rightSet.has(value));
+}
+
+function mapAnnotationMutationLease(lease: AnnotationMutationLeaseRow): AnnotationMutationLeaseSummary {
+  return {
+    annotationFileId: lease.annotationFileId,
+    holder: toPublicUser(lease.holder),
+    purpose: lease.purpose,
+    baseRevision: lease.baseRevision,
+    createdAt: lease.createdAt.toISOString(),
+    expiresAt: lease.expiresAt.toISOString(),
+  };
+}
+
+type OwnedMutationLease = {
+  holderUserId: string;
+  tokenHash: string;
+  purpose: AnnotationMutationPurpose;
+  baseRevision: number;
+  createdAt: Date;
+  expiresAt: Date;
+};
+
+// renew/release 必须同时证明账号、明文凭据、基线版本和有效期，不能只凭“同一用户”解锁。
+function assertOwnedActiveMutationLease(
+  lease: OwnedMutationLease | null,
+  actorUserId: string,
+  token: string,
+  currentRevision: number,
+): asserts lease is OwnedMutationLease {
+  if (!lease || isAnnotationMutationLeaseExpired(lease.expiresAt)) {
+    throw conflict("结构变更租约不存在或已过期。", { code: "annotation_mutation_lease_expired" });
+  }
+  if (lease.baseRevision !== currentRevision) {
+    throw conflict("文件版本已变化，结构变更租约失效。", {
+      code: "annotation_mutation_lease_revision_conflict",
+      expectedRevision: currentRevision,
+      receivedRevision: lease.baseRevision,
+    });
+  }
+  if (lease.holderUserId !== actorUserId || !matchesAnnotationMutationLeaseToken(token, lease.tokenHash)) {
+    throw conflict("结构变更租约凭据不匹配。", { code: "annotation_mutation_lease_invalid" });
+  }
 }

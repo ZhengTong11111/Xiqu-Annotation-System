@@ -3051,6 +3051,199 @@ test("平台资源 API 集成测试", async (suite) => {
         !detail || !("payload" in (detail as JsonObject))));
     });
 
+    await suite.test("结构变更租约跨账号阻断写入并在成功保存时原子释放", async () => {
+      const created = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "mutation-lease-test.json",
+          payload: { marker: "revision-1" },
+        },
+      });
+      assert.equal(created.statusCode, 200, created.body);
+      const fileId = String((dataOf(created.json()).resource as JsonObject).id);
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${fileId}/permissions/user-student`,
+        payload: { capabilities: ["read", "write"], inheritToChildren: false },
+      });
+
+      const acquired = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/mutation-lease`,
+        payload: { baseRevision: 1, purpose: "track_structure" },
+      });
+      assert.equal(acquired.statusCode, 200, acquired.body);
+      const grant = dataOf(acquired.json());
+      const leaseToken = String(grant.token);
+      assert.match(leaseToken, /^xiqu_lease_/);
+      assert.equal(grant.purpose, "track_structure");
+
+      const visibleToStudent = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${fileId}/mutation-lease`,
+      });
+      assert.equal(visibleToStudent.statusCode, 200, visibleToStudent.body);
+      assert.equal(dataOf(visibleToStudent.json()).holder instanceof Object, true);
+      assert.equal("token" in dataOf(visibleToStudent.json()), false);
+
+      const competingAcquire = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/mutation-lease`,
+        payload: { baseRevision: 1, purpose: "bulk_import" },
+      });
+      assert.equal(competingAcquire.statusCode, 409);
+
+      const operationWithoutToken = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/operations`,
+        payload: {
+          clientOperationId: "lease-op-without-token",
+          baseRevision: 1,
+          action: "project.commit",
+          payload: { historyAction: "track-structure" },
+        },
+      });
+      assert.equal(operationWithoutToken.statusCode, 409);
+      assert.equal((errorOf(operationWithoutToken.json()).details as JsonObject).code, "annotation_mutation_lease_required");
+
+      const wrongUserOperation = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/operations`,
+        payload: {
+          clientOperationId: "lease-op-wrong-user",
+          baseRevision: 1,
+          action: "project.commit",
+          payload: { historyAction: "track-structure" },
+          mutationLeaseToken: leaseToken,
+        },
+      });
+      assert.equal(wrongUserOperation.statusCode, 409);
+
+      const renewed = await jsonRequest(app, adminToken, {
+        method: "PATCH",
+        url: `/api/annotation-files/${fileId}/mutation-lease`,
+        payload: { token: leaseToken },
+      });
+      assert.equal(renewed.statusCode, 200, renewed.body);
+      assert.equal(String(dataOf(renewed.json()).token), leaseToken);
+
+      const acceptedOperation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/operations`,
+        payload: {
+          clientOperationId: "lease-op-accepted",
+          baseRevision: 1,
+          action: "project.commit",
+          payload: { historyAction: "track-structure" },
+          mutationLeaseToken: leaseToken,
+        },
+      });
+      assert.equal(acceptedOperation.statusCode, 200, acceptedOperation.body);
+
+      const blockedSave = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${fileId}`,
+        payload: { baseRevision: 1, payload: { marker: "blocked" }, clientOperationIds: [] },
+      });
+      assert.equal(blockedSave.statusCode, 409);
+      assert.equal(await prisma.annotationMutationLease.count({ where: { annotationFileId: fileId } }), 1);
+
+      const failedControlledSave = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${fileId}`,
+        payload: {
+          baseRevision: 1,
+          payload: { marker: "must-roll-back" },
+          clientOperationIds: ["missing-lease-operation"],
+          mutationLeaseToken: leaseToken,
+        },
+      });
+      assert.equal(failedControlledSave.statusCode, 409);
+      assert.equal(await prisma.annotationMutationLease.count({ where: { annotationFileId: fileId } }), 1);
+      assert.equal((await prisma.annotationFile.findUniqueOrThrow({ where: { resourceId: fileId } })).revision, 1);
+
+      const saved = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${fileId}`,
+        payload: {
+          baseRevision: 1,
+          payload: { marker: "revision-2" },
+          clientOperationIds: ["lease-op-accepted"],
+          mutationLeaseToken: leaseToken,
+        },
+      });
+      assert.equal(saved.statusCode, 200, saved.body);
+      assert.equal(dataOf(saved.json()).revision, 2);
+      assert.equal(await prisma.annotationMutationLease.count({ where: { annotationFileId: fileId } }), 0);
+
+      const secondLease = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/mutation-lease`,
+        payload: { baseRevision: 2, purpose: "bulk_repair" },
+      });
+      const secondToken = String(dataOf(secondLease.json()).token);
+      const recoverySnapshot = await prisma.annotationRecoverySnapshot.findFirstOrThrow({
+        where: { annotationFileId: fileId, revision: 1 },
+      });
+      const blockedRestore = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/recovery-snapshots/${recoverySnapshot.id}/restore`,
+        payload: { baseRevision: 2 },
+      });
+      assert.equal(blockedRestore.statusCode, 409);
+      const released = await jsonRequest(app, adminToken, {
+        method: "DELETE",
+        url: `/api/annotation-files/${fileId}/mutation-lease`,
+        payload: { token: secondToken },
+      });
+      assert.equal(released.statusCode, 204, released.body);
+
+      const thirdLease = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/mutation-lease`,
+        payload: { baseRevision: 2, purpose: "bulk_import" },
+      });
+      const thirdToken = String(dataOf(thirdLease.json()).token);
+      await prisma.annotationMutationLease.update({
+        where: { annotationFileId: fileId },
+        data: { expiresAt: new Date(Date.now() - 1_000) },
+      });
+      const takeover = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/mutation-lease`,
+        payload: { baseRevision: 2, purpose: "track_structure" },
+      });
+      assert.equal(takeover.statusCode, 200, takeover.body);
+      assert.notEqual(String(dataOf(takeover.json()).token), thirdToken);
+      const staleTokenWrite = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/operations`,
+        payload: {
+          clientOperationId: "lease-op-stale-token",
+          baseRevision: 2,
+          action: "project.commit",
+          payload: { historyAction: "track-structure" },
+          mutationLeaseToken: thirdToken,
+        },
+      });
+      assert.equal(staleTokenWrite.statusCode, 409);
+
+      const leaseAudits = await prisma.auditLog.findMany({
+        where: {
+          resourceId: fileId,
+          action: { in: [
+            "annotation_mutation_lease_acquire",
+            "annotation_mutation_lease_renew",
+            "annotation_mutation_lease_release",
+          ] },
+        },
+      });
+      assert.ok(leaseAudits.length >= 5);
+      assert.ok(leaseAudits.every((row) => !JSON.stringify(row.detail).includes("xiqu_lease_")));
+    });
+
     await suite.test("operation 与快照 revision 原子绑定并按提交顺序续读", async () => {
       // 独立文件避免前一组 acceptance-feed 测试的历史行影响 committed 游标断言。
       const createdFileResponse = await jsonRequest(app, adminToken, {
@@ -3346,6 +3539,14 @@ function dataOf(value: unknown): JsonObject {
   const data = (value as { data: unknown }).data;
   assert.ok(data && typeof data === "object" && !Array.isArray(data));
   return data as JsonObject;
+}
+
+function errorOf(value: unknown): JsonObject {
+  assert.ok(value && typeof value === "object" && !Array.isArray(value));
+  assert.ok("error" in value);
+  const error = (value as { error: unknown }).error;
+  assert.ok(error && typeof error === "object" && !Array.isArray(error));
+  return error as JsonObject;
 }
 
 function multipartUpload(

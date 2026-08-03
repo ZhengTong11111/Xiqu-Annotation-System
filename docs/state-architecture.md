@@ -271,6 +271,22 @@ Inspector 快速输入按索引复用已有 symbol id，仅新增尾项生成新
 的元数据。整段工尺导入、整轨删除等仍可使用 legacy 快照，但提交前必须经过同一引用修复。自动板眼生成
 只有在状态/生命周期事务能重建完整 next 时才写领域命令，否则安全回退快照。
 
+### 4.9 R5a4c1 结构性变更租约
+
+轨道结构、递归分叉、批量导入和大范围修复仍不属于普通实体命令。服务端新增按 annotation file 唯一的
+短时独占租约，绑定 holder、purpose、base revision、创建/过期时间；客户端只得到一次性明文 token，
+PostgreSQL 仅保存 SHA-256。默认 TTL 为 60 秒，续期总计不超过 5 分钟，过期记录在后续锁事务中惰性清理。
+
+`lockActiveAnnotationFileForWrite()` 是内容写入的统一锁边界：先取得资源树共享 advisory lock，再锁资源行、
+检查当前和全部祖先未进回收站、在 transaction client 上复核 write capability，最后锁 annotation file 行。
+operation、snapshot save、snapshot restore 和租约 acquire/renew/release 全部复用该顺序；权限撤销和资源树移动
+不能再从 operation 的事务外 ACL 检查间隙穿过。
+
+没有有效租约时旧写入完全不变。有有效租约时，同账号另一个标签页也必须提交匹配 token；账号、摘要、
+base revision 或有效期任一不符均返回可解释 409。operation 接受不释放租约；只有完整 payload revision 与
+operation commit 成功后，才在同一事务删除租约。恢复快照同样受 guard 保护并在成功时释放。R5a4c1 只建立
+后端与 client 合同，尚未让编辑器自动 acquire/renew；首个轨道结构 UI 接线属于 R5a4c2。
+
 ## 5. 浏览器草稿与离线恢复边界
 
 R4b1 已为可写平台会话建立 version 1 IndexedDB envelope：

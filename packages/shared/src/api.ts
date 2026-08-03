@@ -121,11 +121,42 @@ export type SaveAnnotationFileRequest<TPayload = unknown> = {
   baseRevision: number;
   payload: TPayload;
   clientOperationIds: string[];
+  mutationLeaseToken?: string;
 };
+
+export const ANNOTATION_MUTATION_PURPOSES = [
+  "track_structure",
+  "bulk_import",
+  "bulk_repair",
+] as const;
+
+export type AnnotationMutationPurpose = typeof ANNOTATION_MUTATION_PURPOSES[number];
+
+export type AnnotationMutationLeaseSummary = {
+  annotationFileId: string;
+  holder: { id: string; accountName: string; displayName: string };
+  purpose: AnnotationMutationPurpose;
+  baseRevision: number;
+  createdAt: string;
+  expiresAt: string;
+};
+
+export type AnnotationMutationLeaseGrant = AnnotationMutationLeaseSummary & {
+  token: string;
+};
+
+export type AcquireAnnotationMutationLeaseRequest = {
+  baseRevision: number;
+  purpose: AnnotationMutationPurpose;
+};
+
+export type RenewAnnotationMutationLeaseRequest = { token: string };
+export type ReleaseAnnotationMutationLeaseRequest = { token: string };
 
 // 恢复历史内容仍然是一次乐观锁写入，只需提交调用方看到的当前 revision。
 export type RestoreAnnotationRecoverySnapshotRequest = {
   baseRevision: number;
+  mutationLeaseToken?: string;
 };
 
 // 创建确认只接收审核 revision、范围和备注；文件 id 始终来自受保护的路由路径。
@@ -261,6 +292,7 @@ export type CreateAnnotationOperationRequest = {
   localRevision?: number | null;
   action: string;
   payload: unknown;
+  mutationLeaseToken?: string;
 };
 
 export type ListAnnotationOperationsOptions = {
@@ -326,6 +358,19 @@ export type PlatformApiContract<TPayload = unknown> = {
   saveAnnotationFile: {
     request: SaveAnnotationFileRequest<TPayload>;
     response: AnnotationFile<TPayload>;
+  };
+  getAnnotationMutationLease: { response: AnnotationMutationLeaseSummary | null };
+  acquireAnnotationMutationLease: {
+    request: AcquireAnnotationMutationLeaseRequest;
+    response: AnnotationMutationLeaseGrant;
+  };
+  renewAnnotationMutationLease: {
+    request: RenewAnnotationMutationLeaseRequest;
+    response: AnnotationMutationLeaseGrant;
+  };
+  releaseAnnotationMutationLease: {
+    request: ReleaseAnnotationMutationLeaseRequest;
+    response: void;
   };
   listRecoverySnapshots: {
     response: AnnotationRecoverySnapshotSummary[];

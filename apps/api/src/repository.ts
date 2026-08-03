@@ -37,6 +37,8 @@ import {
   encodeAnnotationCommittedOperationCursor,
   normalizeAnnotationCommittedOperationPage,
 } from "./annotationCommittedOperationPagination.js";
+import { assertAnnotationMutationLeaseForWrite } from "./annotationMutationLeaseStore.js";
+import { lockActiveAnnotationFileForWrite } from "./annotationFileWriteLock.js";
 
 export class PrismaPlatformRepository {
   constructor(
@@ -305,13 +307,13 @@ export class PrismaPlatformRepository {
         return existing;
       }
 
-      // 排他锁同时串行化同一文件的 sequence 分配；不同文件仍可独立并发。
-      await transaction.$queryRaw`
-        SELECT resource_id
-        FROM annotation_files
-        WHERE resource_id = ${annotationFileId}
-        FOR UPDATE
-      `;
+      // operation 与完整保存复用同一锁和事务内 ACL，不允许回收/权限变更从检查间隙穿过。
+      const file = await lockActiveAnnotationFileForWrite(
+        transaction,
+        this.access,
+        user,
+        annotationFileId,
+      );
       // 并发相同 key 可能都在加锁前读到空；取得锁后必须再次检查，避免浪费一个 sequence。
       const existingAfterLock = await transaction.annotationOperation.findUnique({
         where: uniqueWhere,
@@ -320,10 +322,6 @@ export class PrismaPlatformRepository {
         assertIdempotentOperationMatch(existingAfterLock.requestHash, requestHash);
         return existingAfterLock;
       }
-      const file = await transaction.annotationFile.findUnique({
-        where: { resourceId: annotationFileId },
-      });
-      if (!file) throw notFound("标注文件不存在。");
       if (input.baseRevision !== file.revision) {
         // operation log 与完整 payload 保存共享同一个远端基线；记录过期操作会让客户端
         // 误以为该操作已被服务器接受，因此必须保留客户端 pending 队列。
@@ -332,6 +330,13 @@ export class PrismaPlatformRepository {
           receivedRevision: input.baseRevision,
         });
       }
+      await assertAnnotationMutationLeaseForWrite(
+        transaction,
+        annotationFileId,
+        user.id,
+        input.baseRevision,
+        input.mutationLeaseToken,
+      );
       // 文件行计数器是唯一序号分配源，不能用 max(sequence)+1 产生并发重复。
       const sequenceState = await transaction.annotationFile.update({
         where: { resourceId: annotationFileId },

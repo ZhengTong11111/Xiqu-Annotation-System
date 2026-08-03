@@ -3,6 +3,8 @@ import type {
   AnnotationConfirmationRecord,
   AnnotationCommittedOperationPage,
   AnnotationFile,
+  AnnotationMutationLeaseGrant,
+  AnnotationMutationLeaseSummary,
   AnnotationOperationPage,
   AnnotationOperationRecord,
   AnnotationRecoverySnapshotDetail,
@@ -13,6 +15,7 @@ import type {
   BatchTrashResourcesRequest,
   BatchTrashResourcesResponse,
   CopyResourceRequest,
+  AcquireAnnotationMutationLeaseRequest,
   CreateAnnotationConfirmationRequest,
   CreateAnnotationFileRequest,
   CreateAnnotationOperationRequest,
@@ -32,6 +35,8 @@ import type {
   ResourcePermissionRecord,
   RevokeAnnotationConfirmationRequest,
   RestoreAnnotationRecoverySnapshotRequest,
+  RenewAnnotationMutationLeaseRequest,
+  ReleaseAnnotationMutationLeaseRequest,
   SaveAnnotationFileRequest,
   SetPlatformMaintenanceRequest,
   StorageOrphanCleanupResult,
@@ -197,6 +202,42 @@ export class PlatformClient {
     return this.request<AnnotationFile<TPayload>>(
       `/annotation-files/${resourceId}`,
       { method: "PUT", body: request },
+    );
+  }
+
+  getAnnotationMutationLease(resourceId: string) {
+    return this.request<AnnotationMutationLeaseSummary | null>(
+      `/annotation-files/${resourceId}/mutation-lease`,
+    );
+  }
+
+  acquireAnnotationMutationLease(
+    resourceId: string,
+    request: AcquireAnnotationMutationLeaseRequest,
+  ) {
+    return this.request<AnnotationMutationLeaseGrant>(
+      `/annotation-files/${resourceId}/mutation-lease`,
+      { method: "POST", body: request },
+    );
+  }
+
+  renewAnnotationMutationLease(
+    resourceId: string,
+    request: RenewAnnotationMutationLeaseRequest,
+  ) {
+    return this.request<AnnotationMutationLeaseGrant>(
+      `/annotation-files/${resourceId}/mutation-lease`,
+      { method: "PATCH", body: request },
+    );
+  }
+
+  releaseAnnotationMutationLease(
+    resourceId: string,
+    request: ReleaseAnnotationMutationLeaseRequest,
+  ) {
+    return this.request<void>(
+      `/annotation-files/${resourceId}/mutation-lease`,
+      { method: "DELETE", body: request },
     );
   }
 

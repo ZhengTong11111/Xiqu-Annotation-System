@@ -31,6 +31,10 @@ import { MAX_BATCH_RESOURCE_SELECTION } from "./resourceSelection.js";
 import type { ObjectStorage } from "./objectStorage.js";
 import type { SystemDiagnosticsService } from "./systemDiagnosticsService.js";
 import { isValidClientOperationId } from "./annotationOperationIdempotency.js";
+import {
+  isValidAnnotationMutationLeaseToken,
+  parseAnnotationMutationPurpose,
+} from "./annotationMutationLease.js";
 
 const RESOURCE_TYPES = new Set<ResourceType>([
   "folder",
@@ -445,9 +449,60 @@ export function registerApiRoutes(
       ),
   );
 
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/annotation-files/:resourceId/mutation-lease",
+    async (request) => resources.getAnnotationMutationLease(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+    ),
+  );
+
+  app.post<{
+    Params: { resourceId: string };
+    Body: { baseRevision?: unknown; purpose?: unknown };
+  }>("/api/annotation-files/:resourceId/mutation-lease", async (request) => {
+    const body = requireObject(request.body);
+    const purpose = parseAnnotationMutationPurpose(body.purpose);
+    if (!Number.isInteger(body.baseRevision) || Number(body.baseRevision) < 1 || !purpose) {
+      throw badRequest("结构变更租约的 baseRevision 或 purpose 无效。");
+    }
+    return resources.acquireAnnotationMutationLease(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      { baseRevision: Number(body.baseRevision), purpose },
+    );
+  });
+
+  app.patch<{
+    Params: { resourceId: string };
+    Body: { token?: unknown };
+  }>("/api/annotation-files/:resourceId/mutation-lease", async (request) => {
+    const body = requireObject(request.body);
+    if (!isValidAnnotationMutationLeaseToken(body.token)) throw badRequest("结构变更租约 token 无效。");
+    return resources.renewAnnotationMutationLease(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      body.token,
+    );
+  });
+
+  app.delete<{
+    Params: { resourceId: string };
+    Body: { token?: unknown };
+  }>("/api/annotation-files/:resourceId/mutation-lease", async (request, reply) => {
+    const body = requireObject(request.body);
+    if (!isValidAnnotationMutationLeaseToken(body.token)) throw badRequest("结构变更租约 token 无效。");
+    await resources.releaseAnnotationMutationLease(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      body.token,
+    );
+    return reply.status(204).send();
+  });
+
   app.put<{
     Params: { resourceId: string };
-    Body: { baseRevision?: unknown; payload?: unknown; clientOperationIds?: unknown };
+    Body: { baseRevision?: unknown; payload?: unknown; clientOperationIds?: unknown; mutationLeaseToken?: unknown };
   }>("/api/annotation-files/:resourceId", async (request) => {
     const body = requireObject(request.body);
     if (!Number.isInteger(body.baseRevision) || Number(body.baseRevision) < 1) {
@@ -461,6 +516,7 @@ export function registerApiRoutes(
         baseRevision: Number(body.baseRevision),
         payload: body.payload ?? {},
         clientOperationIds: parseSaveClientOperationIds(body.clientOperationIds),
+        mutationLeaseToken: parseOptionalMutationLeaseToken(body.mutationLeaseToken),
       },
     );
     return saved;
@@ -489,7 +545,7 @@ export function registerApiRoutes(
   // 恢复请求必须携带当前 revision；服务端把历史内容写成新 revision，而不是回退计数器。
   app.post<{
     Params: { resourceId: string; snapshotId: string };
-    Body: { baseRevision?: unknown };
+    Body: { baseRevision?: unknown; mutationLeaseToken?: unknown };
   }>(
     "/api/annotation-files/:resourceId/recovery-snapshots/:snapshotId/restore",
     async (request) => {
@@ -504,7 +560,10 @@ export function registerApiRoutes(
         await getCurrentUser(repository, request),
         request.params.resourceId,
         request.params.snapshotId,
-        { baseRevision: Number(body.baseRevision) },
+        {
+          baseRevision: Number(body.baseRevision),
+          mutationLeaseToken: parseOptionalMutationLeaseToken(body.mutationLeaseToken),
+        },
       );
     },
   );
@@ -875,6 +934,7 @@ export function registerApiRoutes(
       localRevision?: unknown;
       action?: unknown;
       payload?: unknown;
+      mutationLeaseToken?: unknown;
     };
   }>("/api/annotation-files/:resourceId/operations", async (request) => {
     const body = requireObject(request.body);
@@ -905,6 +965,7 @@ export function registerApiRoutes(
           : Number(body.localRevision),
         action: body.action,
         payload: body.payload ?? {},
+        mutationLeaseToken: parseOptionalMutationLeaseToken(body.mutationLeaseToken),
       },
     );
   });
@@ -948,6 +1009,12 @@ function optionalStringOrNull(value: unknown): string | null | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string") throw badRequest("字段必须是字符串或 null。");
   return value.trim() || null;
+}
+
+function parseOptionalMutationLeaseToken(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (!isValidAnnotationMutationLeaseToken(value)) throw badRequest("结构变更租约 token 无效。");
+  return value;
 }
 
 function optionalDateStringOrNull(

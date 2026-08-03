@@ -26,6 +26,8 @@ Main currently contains all major recent feature lines that matter for context:
 - platform login/resource-explorer UI, local editor entry, media upload, project/folder/file management, JSON import, revision-checked server save, recovery snapshots, and per-resource account permissions
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - backend audit logs and annotation operation logs for the first platform-governance layer
+- database-backed short-lived annotation mutation leases for structural/bulk writes; ordinary operation/save/restore stays
+  unchanged without a lease, while an active lease requires its one-time token and is released only by a successful revision write
 - version 1 timing, stable content-update, lifecycle, composite-state, and dependency-transaction domain commands with strict shared validation,
   draft persistence, inverse/precondition semantics, all-or-nothing ProjectData adapters, server logging, and clean-client
   HTTP replay; lifecycle covers sentences, characters, custom blocks, attached points, Gongche blocks/symbols, and Banyan
@@ -332,6 +334,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - resource-tree mutations, copy/move/trash behavior, annotation-file save/recovery, and confirmed-range governance
   - annotation save atomically binds the current actor's declared client operation ids to the new payload revision;
     missing, foreign, stale-base, or already-committed ids must roll back payload, revision, snapshots, and audit together
+- `apps/api/src/annotationFileWriteLock.ts`
+  - the single transaction lock order for annotation content writes: shared resource-tree lock, resource row, active ancestry,
+    transaction-scoped ACL, then annotation-file row
+  - operation, save, restore, and mutation-lease services must reuse it instead of checking permission/activity independently
+- `apps/api/src/annotationMutationLease.ts`
+  - pure lease purpose/token/hash/expiry policy; plaintext lease tokens must never enter PostgreSQL, audit details, logs, or payloads
+- `apps/api/src/annotationMutationLeaseStore.ts`
+  - shared active-lease write guard for operation/save/restore; an active lease requires holder, token, and base revision to match
 - `apps/api/src/storage.ts`
   - local filesystem adapter for `ObjectStorage`, including staging, checksum/size/header capture, atomic publish, safe
     listing, and idempotent deletion; business services must not depend on `LocalObjectStorage` directly
@@ -443,6 +453,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:annotation-content-command`
 - `npm run test:annotation-lifecycle-command`
 - `npm run test:annotation-state-command`
+- `npm run test:annotation-mutation-lease`
 - `npm run test:annotation-transaction-command`
 - `npm run test:platform-operations`
 - `npm run test:platform-auto-save`

@@ -65,6 +65,9 @@ enum AuditAction {
   resource_restore
   resource_delete
   annotation_file_save
+  annotation_mutation_lease_acquire
+  annotation_mutation_lease_renew
+  annotation_mutation_lease_release
   annotation_snapshot_restore
   annotation_confirmation_create
   annotation_confirmation_revoke
@@ -101,6 +104,12 @@ enum AnnotationOperationStatus {
   superseded
 }
 
+enum AnnotationMutationPurpose {
+  track_structure
+  bulk_import
+  bulk_repair
+}
+
 model User {
   id           String   @id @default(uuid())
   accountName  String   @unique @map("account_name")
@@ -124,6 +133,7 @@ model User {
   jobs                      ProcessingJob[]             @relation("JobCreator")
   auditLogs                 AuditLog[]                   @relation("AuditActor")
   annotationOperations      AnnotationOperation[]       @relation("AnnotationOperationActor")
+  annotationMutationLeases  AnnotationMutationLease[]   @relation("AnnotationMutationLeaseHolder")
 
   @@map("users")
 }
@@ -226,10 +236,29 @@ model AnnotationFile {
   recoverySnapshots AnnotationRecoverySnapshot[]
   confirmations     AnnotationConfirmation[]
   operations        AnnotationOperation[]
+  mutationLease     AnnotationMutationLease?
 
   @@index([mediaResourceId])
   @@index([lastEditedBy])
   @@map("annotation_files")
+}
+
+// 大范围结构变更使用数据库租约跨 API 实例互斥；明文 token 只返回客户端，数据库仅保存摘要。
+model AnnotationMutationLease {
+  annotationFileId String                    @id @map("annotation_file_id")
+  holderUserId     String                    @map("holder_user_id")
+  tokenHash        String                    @unique @map("token_hash")
+  purpose          AnnotationMutationPurpose
+  baseRevision     Int                       @map("base_revision")
+  createdAt        DateTime                  @default(now()) @map("created_at")
+  expiresAt        DateTime                  @map("expires_at")
+
+  annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
+  holder         User           @relation("AnnotationMutationLeaseHolder", fields: [holderUserId], references: [id], onDelete: Cascade)
+
+  @@index([holderUserId])
+  @@index([expiresAt])
+  @@map("annotation_mutation_leases")
 }
 
 // 确认记录保存独立研究审核事实；撤销只补充字段，不删除原始确认。
