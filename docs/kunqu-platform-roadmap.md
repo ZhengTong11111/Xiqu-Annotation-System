@@ -4,7 +4,7 @@
 Workspace/Fork、完成版本和项目发布版本模型仅在 `docs/development-log.md` 中作为历史记录保留，
 不得据此继续实现。
 
-最后更新：2026-08-03
+最后更新：2026-08-04
 
 当前开发基线：R1 资源操作闭环、R2.2 快照安全恢复、R2.3 普通标注文件的结构化比较与选择性整合，
 以及 R2.4 恢复快照对当前文件的只读结构化比较已完成
@@ -25,8 +25,9 @@ R4c2 保存冲突可视化续接、R4c3 可测试自动保存生命周期协调�
 建立首批 version 1 时间轴领域命令、严格前后端校验、草稿往返和成熟拖拽提交接入；R5a2a 已完成纯
 precondition/inverse/all-or-nothing ProjectData apply；R5a2b 已完成服务端单文件 sequence、权限复核、
 opaque 续读游标和有界 operation feed。R5a3a 已把保存声明的 operation 与新 payload revision 在同一事务
-绑定，并建立独立 committed feed 与快照 cursor；R5a3b 已完成 clean-only HTTP catch-up、原子时间命令
-重放与权威快照降级。下一步 R5a4a 扩展稳定领域命令对文本/标签内容更新的覆盖；
+绑定，并建立独立 committed feed 与快照 cursor；R5a3b 已完成 clean-only HTTP catch-up、原子领域命令
+重放与权威快照降级。R5a4a 已完成逐字/句/动作/自定义块/附属点的稳定内容命令、严格全项目差异门禁、
+草稿往返和混合 timing/content 追赶。下一步 R5a4b 设计实体创建/删除及依赖闭包；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -420,12 +421,14 @@ opaque 续读游标和有界 operation feed。R5a3a 已把保存声明的 operat
   payload revision 的 opaque snapshot cursor。未被一次保存声明的旧-base operation 永久保持 accepted，
   不能被后续 revision 自动认领。
 - R5a3b 已完成：可停止、可换文件、single-flight 的 HTTP catch-up coordinator 从 snapshot cursor 有界读取
-  committed pages。完整连续的领域时间命令只在局部项目全部通过前置条件后一次替换 clean 基线；legacy、
+  committed pages。完整连续的已知领域命令只在局部项目全部通过前置条件后一次替换 clean 基线；legacy、
   revision gap、分页预算、坏页和前置失败统一重取权威快照。dirty/pending/transient/行内编辑/保存/冲突/
   待确认整合均暂停，文件切换和 dispose 的迟到响应失效；远端替换不写 undo、operation 或 dirty。
-- R5a4a：把逐字/句/动作/自定义块的文本、标签与类型更新收敛为稳定 id 的 versioned 内容命令，建立
-  严格 before/after、全量 precondition、inverse 和 ProjectData all-or-nothing adapter；结构创建删除仍
-  保持 snapshot fallback，避免一轮同时扩展两种语义。
+- R5a4a 已完成：新增 `annotation.items.content.update`，覆盖 sentence.text、character.char、action.label、
+  custom-block.text/type 与 attached-point.label。shared 严格约束字段/实体/track scope、字符串长度、重复、
+  no-op 与 action/type；ProjectData builder 以同一纯写入器重建完整 next，发现任何时间、结构或其他合同外
+  变化即回退 snapshot。五类 apply/inverse 全量前置检查、IndexedDB 草稿、API replayability 和 clean HTTP
+  catch-up 已共用通用命令分派，混合 timing/content revision 链保持原子。
 - R5a4b：再覆盖实体创建/删除及必要依赖闭包；轨道结构、递归分叉和批量导入需单独设计锁/事务命令。
 - WebSocket 会话、presence、光标/选区与连接状态。
 - 服务端 operation 排序、确认、重放和权限复核。

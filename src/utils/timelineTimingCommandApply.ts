@@ -1,7 +1,7 @@
 import {
   assessTimelineTimingExecution,
-  parseAnnotationCommandEnvelope,
-  type AnnotationCommandEnvelope,
+  parseTimelineTimingCommandEnvelope,
+  type TimelineTimingCommandEnvelope,
   type TimelineTimingActual,
   type TimelineTimingPreconditionIssue,
   type TimelineTimingUpdateItem,
@@ -18,7 +18,7 @@ export type TimelineTimingCommandApplyResult =
   | {
       status: "applied";
       project: ProjectData;
-      envelope: AnnotationCommandEnvelope;
+      envelope: TimelineTimingCommandEnvelope;
     };
 
 // ProjectData adapter 先解析并核对全部 before，只有 ready 才统一写 after，避免批量命令部分落地。
@@ -26,7 +26,7 @@ export function applyTimelineTimingCommandToProject(
   project: ProjectData,
   value: unknown,
 ): TimelineTimingCommandApplyResult {
-  const envelope = parseAnnotationCommandEnvelope(value);
+  const envelope = parseTimelineTimingCommandEnvelope(value);
   if (!envelope) return { status: "invalid_command" };
   const actuals: TimelineTimingActual[] = [];
   for (const item of envelope.command.items) {

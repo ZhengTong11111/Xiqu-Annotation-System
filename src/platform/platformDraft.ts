@@ -5,9 +5,9 @@ import type {
   ProjectDocumentRecoveryState,
 } from "../state/projectDocumentState";
 import {
+  ANNOTATION_DOMAIN_COMMAND_TYPES,
   LEGACY_ANNOTATION_OPERATION_ACTIONS,
   parseAnnotationCommandEnvelope,
-  TIMELINE_TIMING_UPDATE_COMMAND,
 } from "@xiqu/shared";
 import type { ProjectData } from "../types";
 import {
@@ -45,8 +45,9 @@ export type PlatformDraftCompatibility =
 
 const OPERATION_TYPES = new Set<ProjectDocumentOperationType>([
   ...LEGACY_ANNOTATION_OPERATION_ACTIONS,
-  TIMELINE_TIMING_UPDATE_COMMAND,
+  ...ANNOTATION_DOMAIN_COMMAND_TYPES,
 ]);
+const DOMAIN_OPERATION_TYPES = new Set<ProjectDocumentOperationType>(ANNOTATION_DOMAIN_COMMAND_TYPES);
 const HISTORY_ACTIONS = new Set<ProjectDocumentOperation["action"]>([
   "edit",
   "import-video",
@@ -193,7 +194,7 @@ function normalizeOperation(value: unknown): ProjectDocumentOperation | null {
     : parseAnnotationCommandEnvelope(value.commandEnvelope);
   if (value.commandEnvelope !== undefined && !commandEnvelope) return null;
   // 领域 operation 必须携带同类型 envelope；legacy operation 不能夹带命令伪装成另一种语义。
-  const isDomainOperation = value.type === TIMELINE_TIMING_UPDATE_COMMAND;
+  const isDomainOperation = DOMAIN_OPERATION_TYPES.has(value.type as ProjectDocumentOperationType);
   if (isDomainOperation
     ? commandEnvelope?.command.type !== value.type
     : commandEnvelope !== null) return null;

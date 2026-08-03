@@ -122,6 +122,44 @@ test("平台草稿完整往返版本化 timing command", () => {
   }, { userId: "user-1", annotationFileId: "file-1" }), null);
 });
 
+// 内容命令与 timing 共用草稿边界；刷新后仍须保留字段、track scope 与 before/after。
+test("平台草稿完整往返版本化 content command", () => {
+  const recoveryState = createRecoveryState();
+  recoveryState.pendingOperations = [{
+    ...recoveryState.pendingOperations[0],
+    type: "annotation.items.content.update",
+    commandEnvelope: {
+      version: 1,
+      command: {
+        type: "annotation.items.content.update",
+        items: [{
+          entityType: "attached-point",
+          entityId: "point-1",
+          trackId: "point-track-1",
+          field: "label",
+          before: "原标签",
+          after: "新标签",
+        }],
+      },
+    },
+  }];
+  const record = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState,
+  });
+  const normalized = normalizePlatformDraftRecord(record, {
+    userId: "user-1",
+    annotationFileId: "file-1",
+  });
+
+  assert.deepEqual(
+    normalized?.pendingOperations[0].commandEnvelope,
+    recoveryState.pendingOperations[0].commandEnvelope,
+  );
+});
+
 // 草稿只可由原账号打开原文件；损坏 operation、越界 revision 和假项目均 fail closed。
 test("平台草稿 unknown 边界拒绝身份与结构损坏", () => {
   const record = buildPlatformDraftRecord({

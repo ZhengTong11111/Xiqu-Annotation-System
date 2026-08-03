@@ -88,6 +88,7 @@ import {
   submitPendingOperations,
   type PlatformSaveOutcome,
 } from "./utils/platformOperations";
+import { buildProjectAnnotationContentCommand } from "./utils/annotationContentCommand";
 import { findAdjacentNavigableBlock } from "./utils/timelineNavigation";
 import {
   buildProjectTimelineTimingCommand,
@@ -1735,7 +1736,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       const isTimingOnly = Object.keys(changes).every((key) =>
         key === "startTime" || key === "endTime",
       );
-      // 逐字 timing 提交同时记录派生句界和工尺块；文本/四声等编辑继续使用受控 snapshot commit。
+      const changedKeys = Object.keys(changes);
+      const isCharacterTextOnly = changedKeys.length === 1 && changedKeys[0] === "char";
+      // 逐字文本会同步句文本，因此 content 命令同时包含 character 与其 sentence 两个稳定目标。
       const commandEnvelope = isTimingOnly && currentCharacter
         ? buildProjectTimelineTimingCommand(baseProject, synchronizedProject, [
             { entityType: "character", entityId: id },
@@ -1746,6 +1749,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               [id],
             ),
           ])
+        : isCharacterTextOnly && currentCharacter
+          ? buildProjectAnnotationContentCommand(baseProject, synchronizedProject, [
+              { entityType: "character", entityId: id, field: "char" },
+              { entityType: "sentence", entityId: currentCharacter.lineId, field: "text" },
+            ])
         : null;
       commitProject(synchronizedProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
@@ -1930,39 +1938,42 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     return null;
   }
 
+  // 所有附属点轨修改先生成完整 nextProject；调用者再决定 transient、history 或领域命令语义。
+  function buildProjectWithUpdatedAttachedPointTrack(
+    projectToUpdate: ProjectData,
+    pointTrackId: string,
+    updater: (pointTrack: AttachedPointTrack) => AttachedPointTrack,
+  ): ProjectData | null {
+    const location = findPointTrackLocation(projectToUpdate, pointTrackId);
+    if (!location) return null;
+    const updateTrackList = (tracks: AttachedPointTrack[]) => tracks.map((pointTrack) =>
+      pointTrack.id === pointTrackId ? updater(pointTrack) : pointTrack,
+    );
+    return {
+      ...projectToUpdate,
+      builtinTracks: location.parentType === "builtin"
+        ? projectToUpdate.builtinTracks.map((track) => track.id === location.parentTrack.id
+          ? { ...track, attachedPointTracks: updateTrackList(track.attachedPointTracks ?? []) }
+          : track)
+        : projectToUpdate.builtinTracks,
+      customTracks: location.parentType === "custom"
+        ? projectToUpdate.customTracks.map((track) => track.id === location.parentTrack.id
+          ? { ...track, attachedPointTracks: updateTrackList(track.attachedPointTracks ?? []) } as CustomTrack
+          : track)
+        : projectToUpdate.customTracks,
+    };
+  }
+
   function updateAttachedPointTrack(
     pointTrackId: string,
     updater: (pointTrack: AttachedPointTrack) => AttachedPointTrack,
     recordHistory = true,
   ) {
     const currentProject = projectRef.current;
-    const location = findPointTrackLocation(currentProject, pointTrackId);
-    if (!location) {
-      return;
-    }
-    const updateTrackList = (attachedPointTracks: AttachedPointTrack[]) =>
-      attachedPointTracks.map((pointTrack) =>
-        pointTrack.id === pointTrackId ? updater(pointTrack) : pointTrack,
-      );
-    if (location.parentType === "builtin") {
-      updateBuiltinTrack(
-        location.parentTrack.id,
-        (track) => ({
-          ...track,
-          attachedPointTracks: updateTrackList(track.attachedPointTracks ?? []),
-        }),
-        recordHistory,
-      );
-      return;
-    }
-    updateCustomTrack(
-      location.parentTrack.id,
-      (track) => ({
-        ...track,
-        attachedPointTracks: updateTrackList(track.attachedPointTracks ?? []),
-      }) as CustomTrack,
-      recordHistory,
-    );
+    const nextProject = buildProjectWithUpdatedAttachedPointTrack(currentProject, pointTrackId, updater);
+    if (!nextProject) return;
+    if (recordHistory) commitProject(nextProject);
+    else applyProjectWithoutHistory(nextProject);
   }
 
   function updateAttachedPoint(
@@ -1971,7 +1982,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     changes: Partial<AttachedPointAnnotation>,
     recordHistory = true,
   ) {
-    updateAttachedPointTrack(
+    const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
+    const nextProject = buildProjectWithUpdatedAttachedPointTrack(
+      currentProject,
       pointTrackId,
       (pointTrack) => ({
         ...pointTrack,
@@ -1979,8 +1993,24 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           point.id === pointId ? { ...point, ...changes } : point,
         ),
       }),
-      recordHistory,
     );
+    if (!nextProject) return;
+    if (!recordHistory) {
+      applyProjectWithoutHistory(nextProject);
+      return;
+    }
+    const changedKeys = Object.keys(changes);
+    const isLabelOnly = changedKeys.length === 1 && changedKeys[0] === "label";
+    // 本轮只迁移附属点 label；尚未接入命令的时间或复合字段继续安全记录 legacy snapshot operation。
+    const commandEnvelope = isLabelOnly
+      ? buildProjectAnnotationContentCommand(baseProject, nextProject, [{
+          entityType: "attached-point",
+          entityId: pointId,
+          trackId: pointTrackId,
+          field: "label",
+        }])
+      : null;
+    commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
   }
 
   function changeAttachedPoint(
@@ -2122,7 +2152,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       const isTimingOnly = Object.keys(changes).every((key) =>
         key === "startTime" || key === "endTime",
       );
-      // 自定义块 timing 与其派生工尺块构成一个命令；内容、类型和分叉归属不混入 timing 语义。
+      const contentField = Object.keys(changes).length === 1 && changes.text !== undefined
+        ? "text"
+        : Object.keys(changes).length === 1 && changes.type !== undefined
+          ? "type"
+          : null;
+      // 自定义块 timing 与内容使用不同领域命令；分叉归属等结构变化仍回退 snapshot。
       const commandEnvelope = isTimingOnly && currentBlock
         ? buildProjectTimelineTimingCommand(baseProject, nextProject, [
             { entityType: "custom-block", entityId: blockId, trackId },
@@ -2132,6 +2167,13 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               [blockId],
             ),
           ])
+        : contentField && currentBlock
+          ? buildProjectAnnotationContentCommand(baseProject, nextProject, [{
+              entityType: "custom-block",
+              entityId: blockId,
+              trackId,
+              field: contentField,
+            }])
         : null;
       commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
@@ -2187,13 +2229,22 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       const isTimingOnly = Object.keys(changes).every((key) =>
         key === "startTime" || key === "endTime",
       );
-      // 旧动作轨纯时间变化进入 timing command，标签或轨道身份变化仍保留 snapshot 语义。
+      const changedKeys = Object.keys(changes);
+      const isLabelOnly = changedKeys.length === 1 && changedKeys[0] === "label";
+      // 旧动作轨纯时间和标签分别进入各自命令；轨道身份等结构变化仍保留 snapshot 语义。
       const commandEnvelope = isTimingOnly && currentAction
         ? buildProjectTimelineTimingCommand(baseProject, nextProject, [{
             entityType: "action",
             entityId: id,
             trackId: currentAction.trackId,
           }])
+        : isLabelOnly && currentAction
+          ? buildProjectAnnotationContentCommand(baseProject, nextProject, [{
+              entityType: "action",
+              entityId: id,
+              trackId: currentAction.trackId,
+              field: "label",
+            }])
         : null;
       commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {

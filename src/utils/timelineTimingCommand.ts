@@ -1,7 +1,7 @@
 import {
   buildTimelineTimingUpdateEnvelope,
   getTimelineTimingTargetKey,
-  type AnnotationCommandEnvelope,
+  type TimelineTimingCommandEnvelope,
   type TimelineEntityType,
   type TimelineTimingUpdateItem,
 } from "@xiqu/shared";
@@ -41,7 +41,7 @@ export function buildProjectTimelineTimingCommand(
   baseProject: ProjectData,
   nextProject: ProjectData,
   targets: readonly TimelineTimingTarget[],
-): AnnotationCommandEnvelope | null {
+): TimelineTimingCommandEnvelope | null {
   const uniqueTargets = new Map<string, TimelineTimingTarget>();
   for (const target of targets) {
     uniqueTargets.set(getTimelineTimingTargetKey(target), target);

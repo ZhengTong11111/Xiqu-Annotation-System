@@ -32,6 +32,7 @@
     "test:annotation-committed-operation-pagination": "npm run build:shared && node --import tsx --test apps/api/test/annotationCommittedOperationPagination.test.ts",
     "test:timeline-timing-command": "npm run build:shared && node --import tsx --test src/utils/timelineTimingCommand.test.ts",
     "test:timeline-timing-command-apply": "npm run build:shared && node --import tsx --test src/utils/timelineTimingCommandApply.test.ts",
+    "test:annotation-content-command": "npm run build:shared && node --import tsx --test src/utils/annotationContentCommandApply.test.ts",
     "test:platform-auto-save": "node --import tsx --test src/platform/platformAutoSavePolicy.test.ts",
     "test:platform-auto-save-runtime": "node --import tsx --test src/platform/platformAutoSaveRuntime.test.ts",
     "test:platform-operation-catch-up": "npm run build:shared && node --import tsx --test src/platform/platformOperationCatchUp.test.ts src/platform/platformOperationCatchUpRuntime.test.ts src/state/projectDocumentRemote.test.ts",

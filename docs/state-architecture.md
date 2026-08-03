@@ -102,6 +102,8 @@ JSON 导入导出，也可以作为平台 `AnnotationFile.payload` 保存。
 R5a1 建立了首批 version 1 `timeline.items.timing.update` envelope。一个命令可原子记录 sentence、
 character、action、custom-block、attached-point、gongche-block 和 banyan-mark 的稳定目标与 before/after；
 点状实体使用零长度区间。逐字/句块/自定义文字块移动所引起的句界和工尺派生时间也必须进入同一命令。
+R5a4a 又加入 `annotation.items.content.update`，覆盖 sentence.text、character.char、action.label、
+custom-block.text/type 和 attached-point.label。
 
 命令由本次 undo 的真实 `baseProject` 和最终 `nextProject` 提取。连续拖动仍只在 pointer-up 形成一条
 operation；若目标缺失、id 不满足协议、超过 500 项，或同一次编辑还修改了文本/类型/结构等合同外字段，
@@ -109,8 +111,8 @@ operation；若目标缺失、id 不满足协议、超过 500 项，或同一次
 
 当前 operation 是“领域命令与摘要并存”的渐进阶段：
 
-- version 1 时间命令可严格验证、持久化和幂等重放请求，但服务端尚未 apply 到 payload。
-- 文本、类型、创建删除、分叉结构、导入和 undo/redo 仍是摘要，不可领域重放。
+- version 1 时间与首批内容命令可严格验证、持久化和幂等重放请求，但服务端尚未 apply 到 payload。
+- 四声、唱腔、工尺符号、创建删除、分叉结构、导入和 undo/redo 仍是摘要，不可领域重放。
 - 它不会修改 annotation file payload。
 - 它不能作为恢复完整项目的唯一来源。
 - 不应把完整 before/after `ProjectData` 复制进每一条 operation。
@@ -168,7 +170,7 @@ revision，后续协调器据此识别“revision 推进但没有 operation”�
 
 纯 coordinator 按 committed revision、acceptance sequence 验证全部页：cursor 必须前进，记录必须属于
 当前文件并处于 committed/accepted 状态，从已知 revision 到服务器 currentRevision 不得缺号。只有所有
-operation 都是 versioned timing command，且在局部 `ProjectData` 上逐条通过 before precondition，才返回
+operation 都是已知 versioned command，且在局部 `ProjectData` 上逐条通过 before precondition，才返回
 一个原子 applied 项目；任何 legacy、坏页、revision gap、分页预算耗尽或前置失败都只返回
 `requires_snapshot`，不泄漏已经应用了一半的局部值。
 
@@ -181,9 +183,30 @@ document clean 状态。
 这不是自动 rebase：dirty 内容永远优先保留，协调器等待保存成功或人工解决冲突。它也不替代 WebSocket、
 presence、服务端命令执行或后续更广的领域命令覆盖。
 
+### 4.5 R5a4a 稳定内容更新命令
+
+内容命令的 shared item 使用 `entityType/entityId/trackId/field/before/after`，其中实体与字段严格配对：句和
+逐字不允许 track scope，动作、自定义块和附属点必须带正确 track id；字符串长度、额外字段、重复目标和
+no-op 均 fail closed。通用 parser 只按 command type 分派到 timing/content 单域 parser，不以联合类型放宽
+原有 timing 合同。
+
+`buildProjectAnnotationContentCommand()` 不只读取声明目标。它会用和 replay 相同的纯写入器从 base 重建
+项目，并递归比较完整 next；同一次 UI 提交若还改变时间、四声、分叉、typeOptions 或其他未声明字段，
+builder 返回 null，document state 继续记录 legacy snapshot operation。这样不会为了提高领域命令覆盖率
+而漏记派生变化。
+
+内容 adapter 固定执行 `parse -> resolve all actuals -> assess all before -> immutable apply`，五类实体任一
+缺失、错轨或 before 冲突都会阻断整批。草稿 unknown 边界、平台请求和 API 使用同一 envelope/action
+合同；repository 不再硬编码 timing action，而以任一合法 command type 判断 `domain_command`。clean
+catch-up 通过通用 ProjectData dispatcher 顺序重放 timing/content 混合 revision 链，最后一项失败时仍只
+要求权威快照，不泄漏前面已应用的局部项目。
+
+当前 App 只在精确单字段提交时生成内容命令：逐字 char 同时显式记录派生句 text；动作 label、自定义块
+text/type、附属点 label 各自使用稳定目标。创建/删除、复合编辑和 undo/redo 仍保留 legacy；服务器仍不
+直接执行命令写 payload。
+
 后续领域命令逐步引入：
 
-- `character.updateText`
 - `block.create`
 - `block.delete`
 - `track.rename`

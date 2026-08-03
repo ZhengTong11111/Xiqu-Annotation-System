@@ -2560,6 +2560,22 @@ test("平台资源 API 集成测试", async (suite) => {
           payload: { ...validTimingEnvelope, version: 2 },
         },
         { action: "project.commit", payload: validTimingEnvelope },
+        {
+          action: "timeline.items.timing.update",
+          payload: {
+            version: 1,
+            command: {
+              type: "annotation.items.content.update",
+              items: [{
+                entityType: "character",
+                entityId: "char-1",
+                field: "char",
+                before: "甲",
+                after: "乙",
+              }],
+            },
+          },
+        },
       ]) {
         const invalidOperation = await jsonRequest(app, adminToken, {
           method: "POST",
@@ -2827,6 +2843,34 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(await prisma.annotationOperation.count({
         where: { annotationFileId },
       }), 6);
+
+      // 新的内容命令与 timing 命令使用同一严格 envelope/action 合同，并可被 committed feed 声明为可重放。
+      const contentOperation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+        payload: {
+          clientOperationId: "op-content-domain-command",
+          baseRevision: latestRevision,
+          localRevision: 31,
+          action: "annotation.items.content.update",
+          payload: {
+            version: 1,
+            command: {
+              type: "annotation.items.content.update",
+              items: [{
+                entityType: "character",
+                entityId: "char-content-api",
+                field: "char",
+                before: "甲",
+                after: "乙",
+              }],
+            },
+          },
+        },
+      });
+      assert.equal(contentOperation.statusCode, 200, contentOperation.body);
+      assert.equal(dataOf(contentOperation.json()).sequence, 7);
+      assert.equal(dataOf(contentOperation.json()).replayability, "domain_command");
 
       const invalidJob = await jsonRequest(app, adminToken, {
         method: "POST",

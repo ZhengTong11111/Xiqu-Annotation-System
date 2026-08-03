@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ANNOTATION_CONTENT_UPDATE_COMMAND,
+  assessAnnotationContentExecution,
+  buildAnnotationContentUpdateEnvelope,
+  MAX_ANNOTATION_CONTENT_LENGTH,
   ANNOTATION_COMMAND_ENVELOPE_VERSION,
   assessTimelineTimingExecution,
   buildTimelineTimingUpdateEnvelope,
@@ -10,6 +14,71 @@ import {
   parseAnnotationCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
 } from "../dist/index.js";
+
+// 内容命令严格保存稳定字段、track scope，并复用通用 inverse/action 合同。
+test("内容领域命令可构建、反向并检查前置条件", () => {
+  const envelope = buildAnnotationContentUpdateEnvelope([
+    {
+      entityType: "character",
+      entityId: "char-content",
+      field: "char",
+      before: "原",
+      after: "新",
+    },
+    {
+      entityType: "custom-block",
+      entityId: "block-content",
+      trackId: "track-content",
+      field: "type",
+      before: "原类",
+      after: "新类",
+    },
+  ]);
+  assert.ok(envelope);
+  assert.equal(envelope.command.type, ANNOTATION_CONTENT_UPDATE_COMMAND);
+  assert.equal(isValidAnnotationOperationPayload(ANNOTATION_CONTENT_UPDATE_COMMAND, envelope), true);
+  const ready = assessAnnotationContentExecution(envelope, [
+    { entityType: "character", entityId: "char-content", field: "char", current: "原" },
+    {
+      entityType: "custom-block",
+      entityId: "block-content",
+      trackId: "track-content",
+      field: "type",
+      current: "原类",
+    },
+  ]);
+  assert.equal(ready.status, "ready");
+  assert.equal(invertAnnotationCommandEnvelope(envelope)?.command.items[0].before, "新");
+});
+
+// 字段与实体配对、track scope、额外字段和 no-op 都不能进入命令日志。
+test("内容领域命令拒绝含糊字段和作用域", () => {
+  for (const item of [
+    { entityType: "character", entityId: "char-1", field: "label", before: "甲", after: "乙" },
+    { entityType: "action", entityId: "action-1", field: "label", before: "甲", after: "乙" },
+    { entityType: "sentence", entityId: "line-1", trackId: "bad-track", field: "text", before: "甲", after: "乙" },
+    { entityType: "character", entityId: "char-1", field: "char", before: "甲", after: "甲" },
+  ]) {
+    assert.equal(buildAnnotationContentUpdateEnvelope([item]), null);
+  }
+
+  const duplicate = {
+    entityType: "character",
+    entityId: "char-duplicate",
+    field: "char",
+    before: "甲",
+    after: "乙",
+  };
+  assert.equal(buildAnnotationContentUpdateEnvelope([duplicate, duplicate]), null);
+  assert.equal(buildAnnotationContentUpdateEnvelope([{
+    ...duplicate,
+    extra: true,
+  }]), null);
+  assert.equal(buildAnnotationContentUpdateEnvelope([{
+    ...duplicate,
+    after: "字".repeat(MAX_ANNOTATION_CONTENT_LENGTH + 1),
+  }]), null);
+});
 
 // 合法区间和点状目标应构成稳定排序、可再次解析的 version 1 envelope。
 test("时间轴领域命令可稳定构建和解析", () => {

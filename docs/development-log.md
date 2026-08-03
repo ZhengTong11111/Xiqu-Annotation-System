@@ -3101,3 +3101,85 @@ committed feed DTO 与 R5a2a ProjectData adapter，再把 `CLAUDE_WORK.md` 完�
 - 下一轮 R5a4a 先扩展稳定 id 的文本/标签/类型内容更新命令，复用严格 before/after、precondition、inverse
   和 all-or-nothing ProjectData adapter。创建/删除、轨道结构、递归分叉、WebSocket、presence、OT/CRDT
   继续分阶段处理，不能在一轮里混成无法审查的大命令协议。
+
+## 2026-08-04：R5a4a 稳定实体内容更新领域命令
+
+本轮在 R5a3b commit `1e41077` 后沿活动 goal 自动续接。Codex 先核对工作树、roadmap、R5a3b committed
+catch-up、shared command union、ProjectData timing adapter、App 行内编辑路径、IndexedDB 草稿边界和 API
+repository，再把被 gitignore 的 `CLAUDE_WORK.md` 整体替换为 R5a4a 当前任务书。任务范围只包含稳定实体
+已有字符串字段：sentence.text、character.char、action.label、custom-block.text/type 和
+attached-point.label；创建删除、轨道结构、四声、唱腔、工尺符号、批量导入、undo/redo、WebSocket 与
+presence 明确留在后续。本轮由 Codex 直接审查和实现，没有调用 Claude Code、GLM、DeepSeek 或其他代理；
+现有 TypeScript/shared 合同已足够清晰，没有新增依赖。
+
+共享协议与完整差异门禁：
+
+- shared 新增 `annotation.items.content.update` 判别命令以及 timing/content envelope 联合。内容 item 使用
+  `entityType/entityId/trackId/field/before/after`：句 text 与逐字 char 禁止 trackId；动作 label、自定义块
+  text/type 和附属点 label 必须带安全 trackId。parser 同时拒绝额外字段、非法 id、错误字段配对、空项、
+  重复目标、no-op、超过 500 项及超过 2000 UTF-16 code units 的字符串。
+- 通用 `parseAnnotationCommandEnvelope()` 只读取 command.type 并分派给严格单域 parser，没有把原 timing
+  parser 改成宽松联合解析。builder 对目标确定排序并复制输入；inverse 按命令种类交换 before/after；内容
+  assessment 与 timing 一样先收集全部 missing/mismatch，再决定 ready，禁止部分应用。
+- 第一版 `buildProjectAnnotationContentCommand()` 只权威读取声明目标的 before/after，却没有证明同一次
+  `nextProject` 不含未声明变化；这与任务书的安全边界不一致。自审后加入“命令重建完整 next”门禁：
+  builder 调用与 replay 相同的纯 immutable writer 从 base 重建项目，再用引用优先的无环深比较检查完整
+  ProjectData。媒体 URL 等巨大未变字符串按引用/值立即返回，变化数组才递归；任何时间、结构或派生字段
+  差异都会返回 null，使 document state 继续记录 legacy snapshot operation。
+- 内容 writer 按集合归组，句、逐字、动作、自定义块和内建/自定义父轨下的附属点只遍历一次相关集合。
+  `annotationContentCommandApply.ts` 先 strict parse，再 resolve 全部 actual 并执行 shared precondition，ready
+  后复用同一个 writer。删除了最初“用空 actuals 人为制造 blocked 结果以取得 envelope”以及第二套重复
+  map 写入逻辑。`annotationCommandApply.ts` 只负责 timing/content 判别分派，R5a3b coordinator 因而可以
+  在同一 committed revision 链中顺序重放两类命令。
+
+编辑器、草稿和服务端接线：
+
+- App 的逐字 char 提交显式同时记录同步得到的 sentence.text；动作 label、自定义文字块 text、自定义块
+  type 和附属点 label 只在 changes 恰好包含一个对应字段时生成内容命令。完整重建门禁仍会拦截任何隐藏
+  派生变化，不能由 UI 的 key 判断替代协议证明。context-menu 的动作/块类型/附属点标签入口复用这些函数。
+- 附属点原实现通过轨道 updater 隐藏了 base/next，第一版接线因此复制了内建轨与自定义轨两套嵌套 map。
+  自审将其收敛为 `buildProjectWithUpdatedAttachedPointTrack()`，轨道设置和单点编辑共用同一项目变换。
+  随后又发现 recordHistory 提交错误地显式采用已经 transient 更新的 currentProject 作为 base，会破坏原始
+  undo 基线并让内容命令失去真实 before；最终恢复 `transientProjectRef.current ?? currentProject` 为权威
+  base。附属点 time 本轮仍是 legacy，不用不准确注释冒充已迁移 timing 路径。
+- `PlatformDraftRecord` 的 unknown 规范化最初仍把领域类型硬编码为 timing。专项审查后增加 content 类型和
+  统一 domain-type set；内容 envelope 可完整往返 IndexedDB，领域 operation 缺 envelope、类型不一致或
+  legacy 夹带 envelope 继续 fail closed。
+- API repository 的 replayability 从 timing action 硬编码改为“shared parser 成功且 command.type 等于
+  row.action”。Fastify 仍只校验、幂等记录并在完整 payload 保存时绑定 committed revision，不直接把命令
+  写入 AnnotationFile payload。集成测试同时验证合法内容命令得到 `domain_command`，内容 envelope 冒充
+  timing action 返回 400。
+
+测试过程、发现与验证：
+
+- shared 首轮测试出现 1 项失败：测试假设 inverse 的第一个 item 是 custom-block，但稳定 target key 排序
+  实际把 character 放在前面；修正断言后 8/8。随后补齐内容字段/scope、额外字段、重复、no-op、长度、
+  inverse、action 一致和全量前置条件覆盖。
+- Web 首轮构建暴露 TypeScript 对 custom-block 的 `text | type` 联合不能在链式条件末尾收窄到 never。
+  实现改为先按 custom-block 实体分支、再按 field 分支，而不是断言类型；没有使用 `any` 或放宽 strict。
+- 新内容 adapter 测试 3/3：五类实体同批 apply、inverse 恢复、输入不可变；错轨/before 冲突 all-or-nothing；
+  缺失目标及“char 与 startTime 同时变化”的合同外项目拒绝生成命令。
+- catch-up 11/11 将原跨页第二 revision 改成 content command，真实验证 timing 移动后继续改变逐字文字；
+  最终 ProjectData 同时含两类结果。既有第二项前置失败测试继续证明 coordinator 不泄漏第一项半成品。
+- 受影响专项最终 44/44：shared command 8、timing builder 3、timing adapter 3、content adapter 3、平台
+  operation 4、平台草稿/恢复 12、catch-up/runtime/document gate 11。完整 API 在隔离 `api_test` PostgreSQL
+  schema 应用 11 个 migration 后 90/90，通过资源、ACL、revision、operation、恢复、确认、上传、审计、
+  维护、备份和对象存储回归；只保留既有 node-postgres 关于 pg 9 的弃用提示。
+- `npm run build` 通过 Prisma generation、shared、document-model、Web 2048 个模块转换和 API 类型构建；
+  Vite 只保留既有主 chunk 831.87 kB / gzip 253.81 kB 提醒。`git diff --check` 通过。运行中的旧 API 实例
+  readiness 仍为 ready，database 4.33 ms、storage 1.83 ms；它启动于本轮代码之前，所以只证明本地依赖
+  可用，R5a4a 服务端行为以隔离数据库 API 全套回归为准。
+- 既有 Browser 自动化禁令仍有效。本轮没有新增 UI，也不需要视觉布局验收；没有绕到 Chrome、替代浏览器
+  或其他自动化表面，并且没有把纯函数/API 测试描述成浏览器手测。
+
+文档、自审与下一步：
+
+- README 更新用户可见 operation/catch-up 能力；state architecture 新增 R5a4a 合同、完整差异门禁和混合
+  replay；roadmap 标记 R5a4a 完成并把下一步推进到 R5a4b；AGENTS 增加三个内容命令模块的所有权、builder
+  安全不变量和专项命令。本 Development Log 记录计划、实际实现、修复与测试，不把 CLAUDE_WORK 当日志。
+- 本轮没有重复 parser、第二套 apply writer或 timing-only replayability hardcode；新增逻辑块均有准确中文
+  功能注释。`annotationContentCommand.ts` 的深比较只用于低频 pointer-up/表单提交的协议证明，不进入
+  pointer-move 热路径。
+- R5a4b 必须先按实体依赖设计 create/delete 命令：明确 id 生成、集合插入顺序、父子依赖、inverse、
+  已存在/已删除前置条件和完整 next 重建。轨道结构、递归分叉及批量导入仍不能伪装成普通块创建删除；
+  WebSocket/presence 也应等稳定 mutation 合同继续扩展后再进入。

@@ -226,8 +226,10 @@ Range。重要平台修改完成后应同时运行相关专项测试和完整构
 - 本地 JSON 的 `PROJECT_FILE_VERSION` 与平台 revision 是两个独立层次。
 
 operation log 已开始从编辑摘要渐进迁移为版本化领域命令。时间轴句块、逐字块、动作块、自定义块、
-附属打点、工尺块和板眼点的纯时间调整可记录 `timeline.items.timing.update` version 1 envelope，包含稳定
-目标及 before/after 时间；文本、类型、创建删除、导入和轨道结构等尚未迁移的编辑仍记录 legacy 摘要。
+附属打点、工尺块和板眼点的纯时间调整可记录 `timeline.items.timing.update` version 1 envelope；逐字与
+派生句文本、动作标签、自定义块文字/类型和附属点标签可记录 `annotation.items.content.update`。两类命令
+都包含稳定目标及 before/after；四声、唱腔、工尺符号、创建删除、导入和轨道结构等尚未迁移的编辑仍记录
+legacy 摘要。
 客户端纯函数现可检查全部 before 前置条件、原子应用命令并生成反向命令；目标缺失或时间冲突会返回可
 解释结果而不会部分修改项目。服务器当前只严格校验并保存命令，不用它直接改写完整标注内容；权威内容仍由 revision-checked 文件保存
 接口写入。每个客户端 operation 使用 `(标注文件、账号、clientOperationId)` 服务端唯一作用域和请求指纹：响应丢失后的完全
@@ -240,7 +242,8 @@ operation log 已开始从编辑摘要渐进迁移为版本化领域命令。时
 每个标注文件现在还拥有独立、连续的 operation `sequence`。服务端在同一文件的排他锁内完成幂等复查、
 revision 复核和序号分配；不同文件仍可并行写入。读取接口按 sequence 升序返回有界 page，opaque cursor
 绑定文件与协议版本，坏游标或跨文件游标会被拒绝，并且每次读取都会重新检查资源读取权限。可严格解析的
-时间命令标记为 `domain_command`，旧式摘要标记为 `requires_snapshot`，后者禁止被客户端误当作可执行命令。
+已知 timing/content 命令标记为 `domain_command`，旧式摘要标记为 `requires_snapshot`，后者禁止被客户端
+误当作可执行命令。
 这里的 sequence/cursor 只表示日志的接收顺序与客户端的已观察位置，不代表相应完整项目 payload 已经保存；
 权威内容仍以 annotation file revision 和快照保存结果为准。
 
@@ -249,7 +252,7 @@ revision 复核和序号分配；不同文件仍可并行写入。读取接口�
 `committedRevision/committedAt`；任一项不匹配都会整体回滚。全部已接收日志与已进入权威快照的日志使用
 两条独立 feed：后者按 `(committedRevision, sequence)` 续读，可以安全跳过已接收但从未保存的 sequence
 空洞。每个 AnnotationFile 响应还带有与当前 payload revision 对齐的 opaque operation cursor。平台编辑器
-在本地完全 clean 时会每 5 秒有界读取 committed feed：连续且全部可重放的时间命令先在局部项目中完整
+在本地完全 clean 时会每 5 秒有界读取 committed feed：连续且全部可重放的 timing/content 命令先在局部项目中完整
 验证，再一次性替换 clean 基线；revision 缺口、旧式 operation、分页预算耗尽或命令前置失败会改为重读
 权威完整快照。行内文字、拖拽临时态、pending operation、保存、冲突和待确认整合都会暂停追赶。
 
@@ -1186,9 +1189,9 @@ Prometheus 指标、管理员诊断面板、跨实例维护写入静默边界，
 
 ### 2. 尚未实现实时多人协作
 
-已有 pending operations、幂等 operation log、首批 version 1 时间轴领域命令、revision 冲突、同步状态和
+已有 pending operations、幂等 operation log、version 1 时间与稳定内容领域命令、revision 冲突、同步状态和
 浏览器 IndexedDB 恢复草稿。clean 平台会话已经能消费与权威 revision 绑定的 committed operation：完整
-连续的时间命令本地原子重放，其余情况刷新完整快照。服务器仍不会以命令直接修改 payload，浏览器也
+连续的 timing/content 命令本地原子重放，其余情况刷新完整快照。服务器仍不会以命令直接修改 payload，浏览器也
 不会在 dirty 状态自动 rebase。
 同 revision 草稿可在重新打开时恢复；stale 草稿可按稳定实体与服务器当前文件比较并选择性整合，但仍
 必须经过编辑器确认和普通 revision save。平台编辑器已有空闲自动保存、保存中继续编辑、在线恢复和

@@ -6,6 +6,7 @@ import type {
 } from "@xiqu/shared";
 import { mockProject } from "../mockData";
 import type { ProjectData } from "../types";
+import { buildProjectAnnotationContentCommand } from "../utils/annotationContentCommand";
 import { buildProjectTimelineTimingCommand } from "../utils/timelineTimingCommand";
 import { catchUpCommittedAnnotationOperations } from "./platformOperationCatchUp";
 
@@ -26,6 +27,21 @@ function createCharacterMove(
     entityId: character.id,
   }]);
   if (!envelope) throw new Error("未能建立时间命令。 ");
+  return { next, envelope };
+}
+
+// 内容命令夹具只改变稳定逐字文本，用于验证 timing/content 可在同一 committed chain 中混合重放。
+function createCharacterTextUpdate(base: ProjectData, text: string) {
+  const next = structuredClone(base);
+  const character = next.characterAnnotations[0];
+  if (!character) throw new Error("mockProject 缺少逐字标注。 ");
+  character.char = text;
+  const envelope = buildProjectAnnotationContentCommand(base, next, [{
+    entityType: "character",
+    entityId: character.id,
+    field: "char",
+  }]);
+  if (!envelope) throw new Error("未能建立内容命令。 ");
   return { next, envelope };
 }
 
@@ -72,7 +88,7 @@ function createPageReader(pages: AnnotationCommittedOperationPage[]) {
 
 test("clean 客户端顺序重放跨页连续 revision", async () => {
   const first = createCharacterMove(mockProject, 0.1);
-  const second = createCharacterMove(first.next, 0.2);
+  const second = createCharacterTextUpdate(first.next, "新");
   const reader = createPageReader([
     {
       items: [createOperation(1, 1, first.envelope)],
@@ -81,7 +97,9 @@ test("clean 客户端顺序重放跨页连续 revision", async () => {
       currentRevision: 2,
     },
     {
-      items: [createOperation(2, 2, second.envelope)],
+      items: [createOperation(2, 2, second.envelope, {
+        action: "annotation.items.content.update",
+      })],
       nextCursor: "cursor-2",
       hasMore: false,
       currentRevision: 2,
@@ -103,6 +121,7 @@ test("clean 客户端顺序重放跨页连续 revision", async () => {
     result.project.characterAnnotations[0].startTime,
     second.next.characterAnnotations[0].startTime,
   );
+  assert.equal(result.project.characterAnnotations[0].char, "新");
   assert.deepEqual(reader.calls, ["snapshot-0", "cursor-1"]);
 });
 

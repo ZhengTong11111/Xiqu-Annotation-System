@@ -3,7 +3,7 @@ import type {
   AnnotationOperationRecord,
 } from "@xiqu/shared";
 import type { ProjectData } from "../types";
-import { applyTimelineTimingCommandToProject } from "../utils/timelineTimingCommandApply";
+import { applyAnnotationCommandToProject } from "../utils/annotationCommandApply";
 
 export const PLATFORM_CATCH_UP_PAGE_SIZE = 200;
 export const PLATFORM_CATCH_UP_MAX_PAGES = 10;
@@ -119,7 +119,7 @@ export async function catchUpCommittedAnnotationOperations({
     if (operation.replayability !== "domain_command") {
       return { status: "requires_snapshot", reason: "requires_snapshot_operation" };
     }
-    const applied = applyTimelineTimingCommandToProject(nextProject, operation.payload);
+    const applied = applyAnnotationCommandToProject(nextProject, operation.payload);
     if (applied.status !== "applied") {
       return { status: "requires_snapshot", reason: "command_precondition_failed" };
     }

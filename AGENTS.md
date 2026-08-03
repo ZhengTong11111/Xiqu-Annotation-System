@@ -26,9 +26,9 @@ Main currently contains all major recent feature lines that matter for context:
 - platform login/resource-explorer UI, local editor entry, media upload, project/folder/file management, JSON import, revision-checked server save, recovery snapshots, and per-resource account permissions
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - backend audit logs and annotation operation logs for the first platform-governance layer
-- version 1 timeline timing domain commands with strict shared validation, draft persistence, and server logging;
-  shared precondition/inverse semantics and a pure ProjectData apply adapter exist, but server-side application/replay
-  is not implemented yet
+- version 1 timing and stable content-update domain commands with strict shared validation, draft persistence, inverse/
+  precondition semantics, all-or-nothing ProjectData adapters, server logging, and clean-client HTTP replay; server-side
+  application is not implemented yet
 - per-file operation acceptance sequence plus snapshot-committed operation facts and separate bounded feeds; clean web
   sessions now perform bounded HTTP catch-up, atomically replay complete timing-command chains, and fall back to the
   authoritative snapshot for incomplete or non-replayable evidence
@@ -71,7 +71,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - thin React facts/callback adapter around one `PlatformAutoSaveRuntime`
   - Strict Effects cleanup must dispose and clear the runtime ref so the second setup creates a live instance
 - `src/platform/platformOperationCatchUp.ts`
-  - pure bounded committed-feed reader, revision-continuity validator, and all-or-nothing timing-command replay planner
+  - pure bounded committed-feed reader, revision-continuity validator, and all-or-nothing known-command replay planner
   - malformed pages, revision gaps, legacy operations, pagination overflow, and precondition failures require a snapshot
 - `src/platform/platformOperationCatchUpRuntime.ts`
   - owns the HTTP catch-up timer, single-flight request, retry delay, session generation, and disposal behavior
@@ -255,10 +255,21 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     because derived targets are already explicit command items
   - Banyan timing apply also maintains manualOffset/manual confidence; inverse currently guarantees timing restoration,
     not byte-identical restoration of that derived review metadata
+- `src/utils/annotationContentCommand.ts`
+  - authoritative ProjectData resolver, builder, complete-next reconstruction gate, and validated-item immutable writer for
+    stable sentence/character/action/custom-block/attached-point content fields
+  - builder must apply its own envelope to the base and compare the complete project; target-only equality is insufficient
+    because it could omit timing, structure, or derived changes from the operation fact
+- `src/utils/annotationContentCommandApply.ts`
+  - all-or-nothing ProjectData adapter for `annotation.items.content.update`; resolves all current values and checks every
+    before precondition before reusing the single immutable content writer
+- `src/utils/annotationCommandApply.ts`
+  - generic ProjectData command dispatcher used by clean catch-up; it only discriminates validated command types and must
+    not duplicate a domain parser, precondition, or apply implementation
 - `packages/shared/src/annotationCommands.ts`
-  - authoritative versioned annotation-command DTO, deterministic builder/inverse, strict unknown parser, all-target
-    precondition assessment, target keys, limits, and API action/payload allowlist shared by web, IndexedDB recovery,
-    and Fastify
+  - authoritative timing/content annotation-command DTOs, deterministic builders/inverse, strict discriminated unknown
+    parsers, all-target precondition assessment, target keys, limits, and API action/payload allowlist shared by web,
+    IndexedDB recovery, and Fastify
   - the server currently validates and logs these commands but does not apply them to `AnnotationFile.payload`
 - `apps/api/src/`
   - Fastify backend: auth, resource routes, resource ACL evaluation, annotation-file revision saves, Prisma mapping,
@@ -395,6 +406,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:annotation-commands`
 - `npm run test:timeline-timing-command`
 - `npm run test:timeline-timing-command-apply`
+- `npm run test:annotation-content-command`
 - `npm run test:platform-operations`
 - `npm run test:platform-auto-save`
 - `npm run test:platform-auto-save-runtime`

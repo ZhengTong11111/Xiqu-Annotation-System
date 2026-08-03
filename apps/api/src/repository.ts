@@ -417,8 +417,7 @@ export class PrismaPlatformRepository {
       commitState: row.committedRevision === null ? "accepted" : "committed",
       committedRevision: row.committedRevision,
       committedAt: row.committedAt?.toISOString() ?? null,
-      replayability: parseAnnotationCommandEnvelope(row.payload) &&
-        row.action === "timeline.items.timing.update"
+      replayability: parseAnnotationCommandEnvelope(row.payload)?.command.type === row.action
         ? "domain_command"
         : "requires_snapshot",
       createdAt: row.createdAt.toISOString(),
