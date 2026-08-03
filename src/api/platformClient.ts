@@ -2,6 +2,7 @@ import type {
   AnnotationConfirmationList,
   AnnotationConfirmationRecord,
   AnnotationFile,
+  AnnotationOperationPage,
   AnnotationOperationRecord,
   AnnotationRecoverySnapshotDetail,
   AnnotationRecoverySnapshotSummary,
@@ -372,9 +373,12 @@ export class PlatformClient {
     };
   }
 
-  listAnnotationOperations(annotationFileId: string) {
-    return this.request<AnnotationOperationRecord[]>(
-      `/annotation-files/${annotationFileId}/operations`,
+  listAnnotationOperations(annotationFileId: string, options: { cursor?: string; limit?: number } = {}) {
+    const query = new URLSearchParams();
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    return this.request<AnnotationOperationPage>(
+      `/annotation-files/${annotationFileId}/operations${query.size > 0 ? `?${query}` : ""}`,
     );
   }
 

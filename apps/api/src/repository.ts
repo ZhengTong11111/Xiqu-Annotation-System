@@ -6,6 +6,7 @@ import {
   type ProcessingJobType as DbProcessingJobType,
 } from "@prisma/client";
 import type {
+  AnnotationOperationPage,
   AnnotationOperationRecord,
   CreateAnnotationOperationRequest,
   CreateProcessingJobRequest,
@@ -14,6 +15,7 @@ import type {
 import { hashToken, verifyPassword } from "./auth.js";
 import type { ApiUser } from "./domain.js";
 import {
+  badRequest,
   conflict,
   forbidden,
   notFound,
@@ -23,6 +25,12 @@ import { ResourceAccessService } from "./resourceAccess.js";
 import { toFile, toPublicUser } from "./repositoryMappers.js";
 import { ensurePlatformSeedData } from "./repositorySeed.js";
 import { createAnnotationOperationRequestHash } from "./annotationOperationIdempotency.js";
+import {
+  AnnotationOperationCursorError,
+  encodeAnnotationOperationCursor,
+  normalizeAnnotationOperationPage,
+} from "./annotationOperationPagination.js";
+import { parseAnnotationCommandEnvelope } from "@xiqu/shared";
 
 export class PrismaPlatformRepository {
   constructor(
@@ -168,14 +176,34 @@ export class PrismaPlatformRepository {
   async listAnnotationOperations(
     user: ApiUser,
     annotationFileId: string,
-  ): Promise<AnnotationOperationRecord[]> {
+    options: { cursor?: unknown; limit?: unknown } = {},
+  ): Promise<AnnotationOperationPage> {
     await this.access.assertCapability(user, annotationFileId, "read");
+    let page;
+    try {
+      page = normalizeAnnotationOperationPage({ annotationFileId, ...options });
+    } catch (error) {
+      if (error instanceof AnnotationOperationCursorError) throw badRequest(error.message);
+      throw error;
+    }
     const rows = await this.prisma.annotationOperation.findMany({
-      where: { annotationFileId },
-      orderBy: { createdAt: "desc" },
-      take: 200,
+      where: { annotationFileId, sequence: { gt: page.afterSequence } },
+      orderBy: { sequence: "asc" },
+      take: page.limit + 1,
     });
-    return rows.map(this.mapOperation);
+    const hasMore = rows.length > page.limit;
+    const visibleRows = rows.slice(0, page.limit);
+    const lastSequence = visibleRows.length > 0
+      ? visibleRows[visibleRows.length - 1]?.sequence
+      : undefined;
+    return {
+      items: visibleRows.map(this.mapOperation),
+      // 空页保留调用方已有 cursor，后续轮询不会倒退到文件开头。
+      nextCursor: lastSequence === undefined
+        ? page.sourceCursor
+        : encodeAnnotationOperationCursor(annotationFileId, lastSequence),
+      hasMore,
+    };
   }
 
   async createAnnotationOperation(
@@ -208,13 +236,21 @@ export class PrismaPlatformRepository {
         return existing;
       }
 
-      // 与完整 payload 保存锁定同一行，避免刚确认 baseRevision 后另一个事务先推进 revision。
+      // 排他锁同时串行化同一文件的 sequence 分配；不同文件仍可独立并发。
       await transaction.$queryRaw`
         SELECT resource_id
         FROM annotation_files
         WHERE resource_id = ${annotationFileId}
-        FOR SHARE
+        FOR UPDATE
       `;
+      // 并发相同 key 可能都在加锁前读到空；取得锁后必须再次检查，避免浪费一个 sequence。
+      const existingAfterLock = await transaction.annotationOperation.findUnique({
+        where: uniqueWhere,
+      });
+      if (existingAfterLock) {
+        assertIdempotentOperationMatch(existingAfterLock.requestHash, requestHash);
+        return existingAfterLock;
+      }
       const file = await transaction.annotationFile.findUnique({
         where: { resourceId: annotationFileId },
       });
@@ -227,16 +263,20 @@ export class PrismaPlatformRepository {
           receivedRevision: input.baseRevision,
         });
       }
-      // upsert 让并发相同 key 在数据库唯一约束下收敛为一行；返回后仍核对 hash，拒绝同 key 异内容。
-      const accepted = await transaction.annotationOperation.upsert({
-        where: uniqueWhere,
-        // 对唯一键做无语义赋值，使 Prisma 生成数据库原子 upsert；空 update 在并发下可能退化为先查后插。
-        update: { clientOperationId: input.clientOperationId },
-        create: {
+      // 文件行计数器是唯一序号分配源，不能用 max(sequence)+1 产生并发重复。
+      const sequenceState = await transaction.annotationFile.update({
+        where: { resourceId: annotationFileId },
+        data: { lastOperationSequence: { increment: 1 } },
+        select: { lastOperationSequence: true },
+      });
+      // 文件锁内已完成幂等复查，此处只保留唯一创建路径，避免并行 upsert 语义掩盖序号来源。
+      return transaction.annotationOperation.create({
+        data: {
           annotationFileId,
           actorUserId: user.id,
           clientOperationId: input.clientOperationId,
           requestHash,
+          sequence: sequenceState.lastOperationSequence,
           baseRevision: input.baseRevision,
           localRevision: input.localRevision ?? null,
           action: input.action,
@@ -244,8 +284,6 @@ export class PrismaPlatformRepository {
           status: "accepted",
         },
       });
-      assertIdempotentOperationMatch(accepted.requestHash, requestHash);
-      return accepted;
     });
     return this.mapOperation(row);
   }
@@ -286,6 +324,7 @@ export class PrismaPlatformRepository {
     annotationFileId: string;
     actorUserId: string;
     clientOperationId: string;
+    sequence: number;
     baseRevision: number;
     localRevision: number | null;
     action: string;
@@ -298,11 +337,16 @@ export class PrismaPlatformRepository {
       annotationFileId: row.annotationFileId,
       actorUserId: row.actorUserId,
       clientOperationId: row.clientOperationId,
+      sequence: row.sequence,
       baseRevision: row.baseRevision,
       localRevision: row.localRevision,
       action: row.action,
       payload: row.payload,
       status: row.status,
+      replayability: parseAnnotationCommandEnvelope(row.payload) &&
+        row.action === "timeline.items.timing.update"
+        ? "domain_command"
+        : "requires_snapshot",
       createdAt: row.createdAt.toISOString(),
     };
   }

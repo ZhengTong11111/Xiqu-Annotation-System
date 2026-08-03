@@ -129,7 +129,24 @@ operation；若目标缺失、id 不满足协议、超过 500 项，或同一次
 
 该纯 adapter 当前用于合同证明和未来远端接入测试，尚未替换成熟的本地直接编辑或 undo/redo 路径。
 
-下一步应复用已完成的纯 apply/precondition 建立服务端顺序与确认合同，再逐步引入：
+### 4.2 R5a2b 服务端顺序与续读合同
+
+每个 `AnnotationFile` 保存 `lastOperationSequence`，每条 `AnnotationOperation` 保存文件内唯一 sequence。
+新请求在同一文件行的排他锁内依次执行“幂等二次检查、base revision 检查、计数器递增、operation 创建”；
+相同幂等键重放返回原 sequence，不同文件不共享全局锁。历史数据迁移按 `(createdAt, id)` 为每个文件稳定
+回填 1..N，不能清空旧 operation 或以运行时 `max(sequence)+1` 代替事务计数器。
+
+读取接口按 sequence 升序提供有界 page：默认 100、最大 200。opaque cursor 包含协议版本、文件 id 和
+已观察到的 sequence；空页保持原 cursor，便于后续轮询不倒退。cursor 不是权限凭证，每次 GET 仍需实时
+通过 read capability。`domain_command` 表示 payload 可通过 shared parser；`requires_snapshot` 表示只可
+审计，不能 apply。
+
+必须区分三件事：operation sequence 是**日志接收顺序**，读取 cursor 是**客户端观察位置**，annotation
+file revision 才是**权威完整 payload 的保存版本**。当前服务端不会把领域命令 apply 到 payload，因此一条
+operation 已分配 sequence 不等于对应快照已经保存。R5a3 必须先建立 operation 与 snapshot revision 的
+确认事实及 HTTP catch-up 协调，再接实时传输。
+
+后续领域命令逐步引入：
 
 - `character.updateText`
 - `block.create`

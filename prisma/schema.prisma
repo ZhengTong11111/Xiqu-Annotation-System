@@ -219,6 +219,7 @@ model AnnotationFile {
   mediaResourceId String?  @map("media_resource_id")
   lastEditedBy    String   @map("last_edited_by")
   lastSavedAt     DateTime @default(now()) @map("last_saved_at")
+  lastOperationSequence Int @default(0) @map("last_operation_sequence")
 
   resource          ResourceEntry               @relation(fields: [resourceId], references: [id], onDelete: Cascade)
   lastEditor        User                        @relation("AnnotationLastEditor", fields: [lastEditedBy], references: [id])
@@ -389,6 +390,7 @@ model AnnotationOperation {
   actorUserId       String                    @map("actor_user_id")
   clientOperationId String                    @map("client_operation_id")
   requestHash       String                    @map("request_hash")
+  sequence          Int
   baseRevision      Int                       @map("base_revision")
   localRevision     Int?                      @map("local_revision")
   action            String
@@ -401,6 +403,7 @@ model AnnotationOperation {
 
   @@index([annotationFileId, createdAt])
   @@index([actorUserId, createdAt])
+  @@unique([annotationFileId, sequence])
   @@unique([annotationFileId, actorUserId, clientOperationId])
   @@map("annotation_operations")
 }

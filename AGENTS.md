@@ -308,6 +308,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - pure bounded client-operation-id validation and stable JSON/SHA-256 request fingerprinting
   - idempotency scope is `(annotationFileId, actorUserId, clientOperationId)`; an exact accepted replay returns the original
     row before current-revision rejection, while the same key with a different fingerprint is a 409 conflict
+- `apps/api/src/annotationOperationPagination.ts`
+  - pure bounded operation-feed limit and opaque file-bound cursor validation
+  - sequence is a per-annotation-file log acceptance order and cursor is an observed-read position; neither proves that
+    the corresponding full annotation payload has been persisted at a newer revision
 - `apps/api/src/backup/`
   - versioned local/remote full-backup, offline/streamed verification, PostgreSQL tool runner, maintenance operator CLI,
     and isolated local/remote restore-drill modules
@@ -399,6 +403,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:annotation-comparison-navigation`
 - `npm run test:annotation-merge-plan`
 - `npm run test:annotation-merge-selection`
+- `npm run test:annotation-operation-pagination`
 - `npm run test:resource-comparison`
 - `npm run build:web`
 - `npm run build:api`

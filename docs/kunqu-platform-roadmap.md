@@ -23,7 +23,9 @@ R3g2a 已完成远端包单次流式物化和真实 PostgreSQL/对象目录隔�
 R4b1 浏览器草稿持久化/同 revision 恢复、R4b2 stale 草稿结构化整合、R4c1 自动保存调度/在线退避和
 R4c2 保存冲突可视化续接、R4c3 可测试自动保存生命周期协调与异常收口；R4 工程闭环已完成。R5a1 已
 建立首批 version 1 时间轴领域命令、严格前后端校验、草稿往返和成熟拖拽提交接入；R5a2a 已完成纯
-precondition/inverse/all-or-nothing ProjectData apply；下一步 R5a2b 建立服务端排序、确认和有界重放合同；
+precondition/inverse/all-or-nothing ProjectData apply；R5a2b 已完成服务端单文件 sequence、权限复核、
+opaque 续读游标和有界 operation feed。下一步 R5a3 建立 operation 与权威快照 revision 的明确确认状态，
+并完成 HTTP catch-up 的客户端协调；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -405,8 +407,14 @@ precondition/inverse/all-or-nothing ProjectData apply；下一步 R5a2b 建立�
   和确定 inverse；Web 唯一 ProjectData adapter 覆盖七类实体，先检查全部目标再不可变写入，板眼同步
   manualOffset/confidence，错误 track/缺失/冲突均不产生部分项目。命令已显式包含的句界/工尺派生时间
   不会被 apply 再次同步。该 adapter 还未接服务器或替换本地 undo。
-- R5a2b：定义服务器单文件 sequence、acknowledged cursor、按权限复核和有界重放读取合同；复用 R5a2a
-  前置语义，先用 HTTP 与确定性测试闭环，不把实时传输和领域应用混成一个不可审查步骤。
+- R5a2b 已完成：`AnnotationFile` 维护单文件序号计数器，operation 在文件排他锁内幂等复查、revision
+  复核并连续分配 sequence；历史行按 `(createdAt, id)` 确定回填。HTTP feed 使用绑定文件和版本的 opaque
+  cursor、100/200 默认与上限、升序有界读取，并在每次读取时重新检查 read capability。可解析领域命令
+  标为 `domain_command`，legacy 摘要标为 `requires_snapshot`。该 cursor 只表示客户端已观察到哪里，
+  sequence 只表示日志接收顺序；二者都不证明对应完整 payload 已保存。
+- R5a3：为 operation 增加与权威 annotation-file revision 对齐的提交/确认事实，明确“已接收命令但完整
+  快照尚未保存”的恢复策略；实现可停止、可换文件且能处理 `requires_snapshot` 的 HTTP catch-up
+  coordinator。先用确定性测试闭环，不把 WebSocket、presence 和服务端 apply 混入同一步。
 - 后续把宽泛 `project.commit` 逐步替换为文本、创建删除和轨道结构等稳定 id 领域命令。
 - WebSocket 会话、presence、光标/选区与连接状态。
 - 服务端 operation 排序、确认、重放和权限复核。

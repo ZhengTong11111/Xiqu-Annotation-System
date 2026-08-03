@@ -4,6 +4,7 @@ import type {
   AnnotationConfirmationRecord,
   AnnotationFile,
   AnnotationOperationRecord,
+  AnnotationOperationPage,
   AnnotationRecoverySnapshotDetail,
   AnnotationRecoverySnapshotSummary,
   AuditActionName,
@@ -260,6 +261,11 @@ export type CreateAnnotationOperationRequest = {
   payload: unknown;
 };
 
+export type ListAnnotationOperationsOptions = {
+  cursor?: string;
+  limit?: number;
+};
+
 export type ListAuditLogsOptions = {
   resourceId?: string;
   actorUserId?: string;
@@ -351,7 +357,7 @@ export type PlatformApiContract<TPayload = unknown> = {
     response: ProcessingJob;
   };
   listAuditLogs: { response: AuditLogPage };
-  listAnnotationOperations: { response: AnnotationOperationRecord[] };
+  listAnnotationOperations: { response: AnnotationOperationPage };
   createAnnotationOperation: {
     request: CreateAnnotationOperationRequest;
     response: AnnotationOperationRecord;

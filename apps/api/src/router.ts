@@ -840,12 +840,16 @@ export function registerApiRoutes(
     return result.csv;
   });
 
-  app.get<{ Params: { resourceId: string } }>(
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { cursor?: unknown; limit?: unknown };
+  }>(
     "/api/annotation-files/:resourceId/operations",
     async (request) =>
       repository.listAnnotationOperations(
         await getCurrentUser(repository, request),
         request.params.resourceId,
+        { cursor: request.query.cursor, limit: request.query.limit },
       ),
   );
 

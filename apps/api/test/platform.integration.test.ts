@@ -2618,6 +2618,9 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(replayedOperation.statusCode, 200, replayedOperation.body);
       assert.equal(dataOf(firstOperation.json()).id, dataOf(replayedOperation.json()).id);
       assert.equal(dataOf(firstOperation.json()).clientOperationId, replayRequest.clientOperationId);
+      assert.equal(dataOf(firstOperation.json()).sequence, 1);
+      assert.equal(dataOf(replayedOperation.json()).sequence, 1);
+      assert.equal(dataOf(firstOperation.json()).replayability, "domain_command");
       assert.equal(await prisma.annotationOperation.count({
         where: { annotationFileId },
       }), 1);
@@ -2639,6 +2642,7 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(replayAfterSave.statusCode, 200, replayAfterSave.body);
       assert.equal(dataOf(replayAfterSave.json()).id, dataOf(firstOperation.json()).id);
+      assert.equal(dataOf(replayAfterSave.json()).sequence, 1);
 
       // 同 key 但 payload 不同属于幂等冲突；新 key 使用旧 revision 则仍是普通 revision 冲突。
       const mismatchedReplay = await jsonRequest(app, adminToken, {
@@ -2691,6 +2695,8 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(concurrentLeft.statusCode, 200, concurrentLeft.body);
       assert.equal(concurrentRight.statusCode, 200, concurrentRight.body);
       assert.equal(dataOf(concurrentLeft.json()).id, dataOf(concurrentRight.json()).id);
+      assert.equal(dataOf(concurrentLeft.json()).sequence, 2);
+      assert.equal(dataOf(concurrentRight.json()).sequence, 2);
 
       // 幂等作用域包含 actor；给学生临时 write 后，相同 client key 生成其自己的 operation。
       await prisma.resourcePermission.update({
@@ -2709,9 +2715,118 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(studentOperation.statusCode, 200, studentOperation.body);
       assert.notEqual(dataOf(studentOperation.json()).id, dataOf(concurrentLeft.json()).id);
+      assert.equal(dataOf(studentOperation.json()).sequence, 3);
+
+      // 同一文件的不同并发请求必须在文件行锁内顺序分配游标，不能得到重复或跳号序列。
+      const concurrentDistinctRequests = ["left", "right"].map((suffix, index) => ({
+        ...replayRequest,
+        clientOperationId: `op-concurrent-distinct-${suffix}`,
+        baseRevision: latestRevision,
+        localRevision: 20 + index,
+      }));
+      const concurrentDistinctResults = await Promise.all(
+        concurrentDistinctRequests.map((payload) => jsonRequest(app, adminToken, {
+          method: "POST",
+          url: `/api/annotation-files/${annotationFileId}/operations`,
+          payload,
+        })),
+      );
+      for (const response of concurrentDistinctResults) {
+        assert.equal(response.statusCode, 200, response.body);
+      }
+      assert.deepEqual(
+        concurrentDistinctResults
+          .map((response) => Number(dataOf(response.json()).sequence))
+          .sort((left, right) => left - right),
+        [4, 5],
+      );
+
+      // 旧式 project.commit 仍可审计，但服务端必须声明它不能作为领域命令重放。
+      const legacyOperation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+        payload: {
+          clientOperationId: "op-legacy-snapshot-only",
+          baseRevision: latestRevision,
+          localRevision: 30,
+          action: "project.commit",
+          payload: { historyAction: "legacy edit" },
+        },
+      });
+      assert.equal(legacyOperation.statusCode, 200, legacyOperation.body);
+      assert.equal(dataOf(legacyOperation.json()).sequence, 6);
+      assert.equal(dataOf(legacyOperation.json()).replayability, "requires_snapshot");
+
+      // 顺序游标按固定页长追赶操作，跨页不得重复、漏项或改变文件作用域。
+      const firstOperationPage = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/operations?limit=2`,
+      });
+      assert.equal(firstOperationPage.statusCode, 200, firstOperationPage.body);
+      const firstPageData = dataOf(firstOperationPage.json());
+      assert.deepEqual(
+        (firstPageData.items as JsonObject[]).map((item) => item.sequence),
+        [1, 2],
+      );
+      assert.equal(firstPageData.hasMore, true);
+      assert.equal(typeof firstPageData.nextCursor, "string");
+
+      const secondOperationPage = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/operations?limit=2&cursor=${encodeURIComponent(String(firstPageData.nextCursor))}`,
+      });
+      assert.equal(secondOperationPage.statusCode, 200, secondOperationPage.body);
+      const secondPageData = dataOf(secondOperationPage.json());
+      assert.deepEqual(
+        (secondPageData.items as JsonObject[]).map((item) => item.sequence),
+        [3, 4],
+      );
+      assert.equal(secondPageData.hasMore, true);
+
+      const thirdOperationPage = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/operations?limit=2&cursor=${encodeURIComponent(String(secondPageData.nextCursor))}`,
+      });
+      assert.equal(thirdOperationPage.statusCode, 200, thirdOperationPage.body);
+      const thirdPageData = dataOf(thirdOperationPage.json());
+      assert.deepEqual(
+        (thirdPageData.items as JsonObject[]).map((item) => item.sequence),
+        [5, 6],
+      );
+      assert.equal(thirdPageData.hasMore, false);
+      assert.equal((thirdPageData.items as JsonObject[])[1]?.replayability, "requires_snapshot");
+
+      // 游标损坏与权限撤销都必须 fail closed，不能泄露同文件的操作历史。
+      const badOperationCursor = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/operations?cursor=not-a-cursor`,
+      });
+      assert.equal(badOperationCursor.statusCode, 400);
+      await prisma.resourcePermission.update({
+        where: {
+          resourceId_userId: {
+            resourceId: annotationFileId,
+            userId: "user-student",
+          },
+        },
+        data: { capabilities: [] },
+      });
+      await prisma.resourceEntry.update({
+        where: { id: annotationFileId },
+        data: { breakPermissionInheritance: true },
+      });
+      const forbiddenOperationPage = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+      });
+      assert.equal(forbiddenOperationPage.statusCode, 403);
+      await prisma.resourceEntry.update({
+        where: { id: annotationFileId },
+        data: { breakPermissionInheritance: false },
+      });
       assert.equal(await prisma.annotationOperation.count({
         where: { annotationFileId },
-      }), 3);
+      }), 6);
 
       const invalidJob = await jsonRequest(app, adminToken, {
         method: "POST",

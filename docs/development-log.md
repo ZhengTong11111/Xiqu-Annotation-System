@@ -2885,3 +2885,68 @@ ProjectData adapter 与旧逻辑清理：
 - R5a2b 应基于现有 `AnnotationOperation` 幂等表设计单文件稳定 sequence、ack cursor 和 bounded replay
   page。必须保留每请求 write 权限复核、旧幂等重放先于当前 revision 拒绝的语义，并决定服务端怎样复用
   ProjectData adapter，而不是从 API 反向 import Web 源码。WebSocket/presence 仍在其后。
+
+## 2026-08-03：R5a2b 单文件 operation 顺序与有界续读
+
+本轮在 R5a2a commit `2381e8b` 后继续执行滚动目标。Codex 先核对 roadmap、Prisma operation 表、幂等
+事务、Fastify 路由、共享 DTO 和浏览器 API client，再把被 gitignore 的 `CLAUDE_WORK.md` 整体替换为
+R5a2b 当前任务书。本轮由 Codex 直接实现，没有调用 Claude Code、GLM、DeepSeek 或其他代理，也没有
+新增依赖：现有 PostgreSQL 行锁、Prisma transaction、Node base64url 和 TypeScript runtime guard 已能以
+更小的维护面完成该合同。
+
+数据库迁移与并发顺序：
+
+- `AnnotationFile` 新增 `lastOperationSequence` 计数器，`AnnotationOperation` 新增非空 `sequence`，并以
+  `(annotationFileId, sequence)` 建立唯一约束。sequence 是**单文件日志接收顺序**，不是全局时钟。
+- 可部署 migration 不删除历史数据：先加 nullable sequence，按每文件 `(createdAt ASC, id ASC)` 使用
+  `ROW_NUMBER()` 确定回填 1..N，再把文件计数器推进到历史最大值，最后设置 NOT NULL 和唯一索引。
+  `npm run test:api` 已在隔离 `api_test` schema 真实执行该 migration。
+- 新 operation 仍在事务外层逐请求复核 write capability。事务先检查既有 `(文件、actor、client id)`；
+  未命中才对 annotation-file 行取得 `FOR UPDATE`，锁后再次检查幂等键，再检查 base revision、原子递增
+  文件计数器并创建 operation。完全相同的迟到重放在 revision 已推进后仍返回旧行和旧 sequence；同 key
+  异内容继续 409，旧 revision 的新 key 继续 409。
+- 第一版在文件锁和二次检查之后仍保留旧原子 upsert。自审确认此时同文件请求已经串行化，upsert 只会
+  制造第二套并发语义和无意义 update，因此提交前删除，收敛为单一 `create` 路径。
+
+读取合同与兼容边界：
+
+- 新增 `annotationOperationPagination.ts`：默认 100、最大 200，严格接受正整数 limit；opaque cursor
+  精确包含 version 1、annotationFileId 和 afterSequence，拒绝额外字段、坏 base64/JSON、未知版本、
+  跨文件复用和非安全整数。cursor 不保存权限事实。
+- GET operation 从旧的“createdAt 倒序最多 200 数组”改为 sequence 升序 page：`items`、`nextCursor`、
+  `hasMore`。查询使用 limit + 1 判断后页；空页保留输入 cursor，因此轮询不会意外退回文件开头；每次
+  请求仍实时检查 read capability。
+- 共享 `AnnotationOperationRecord` 增加 sequence 和 replayability。能够通过 shared command parser 且
+  action 匹配的时间命令标记 `domain_command`；legacy 摘要或历史损坏值标记 `requires_snapshot`。浏览器
+  `PlatformClient` 已改用 page DTO 和 cursor/limit，但本轮没有建立轮询 hook、远端 apply 或 WebSocket。
+- 文档明确区分三个事实：sequence 是服务端接收日志的顺序，cursor 是某客户端已观察的位置，annotation
+  file revision 才是完整 payload 的权威保存版本。服务端当前不 apply command，所以不能把前两者写成
+  “快照已确认”；这项缺口进入 R5a3。
+
+测试过程与发现：
+
+- 新增 cursor 纯测试，覆盖默认值、round trip、最大值、坏格式、跨文件、未知版本、零/超限/小数 limit；
+  `test:annotation-operation-pagination` 2/2 通过，并加入 package scripts 与 AGENTS 命令表。
+- API 集成把现有 operation 用例扩展为真实序列断言：首次/幂等重放均为 1；并发相同 key 同行同 sequence
+  2；不同 actor 同 key 获得 sequence 3；同文件并发不同 key 获得连续唯一 `[4, 5]`；legacy 摘要为 6 且
+  `requires_snapshot`。两项一页的续读稳定得到 `[1,2] -> [3,4] -> [5,6]`，无重复、漏项或倒序。
+- 第一轮权限测试把文件直接 ACL 清空后期待 403，实际仍返回 200。检查发现账号合法继承了父目录 read；
+  这是测试假设错误而非接口泄露。用例随后显式截断该文件权限继承再验证 403，并恢复继承状态，因而同时
+  保住了“直接空权限不抹掉父级授权”的既有 ACL 语义。
+- `npm run test:api` 最终 87/87，通过 operation、ACL、资源、上传、恢复、审计、维护、备份与对象存储全套
+  回归；仍只保留既有 node-postgres 关于 pg 9 前置行为的弃用提示。
+
+文档、审查与未实现项：
+
+- README 增加用户可见的单文件顺序与 `requires_snapshot` 解释；state architecture 固化锁、游标和三种
+  事实边界；roadmap 标记 R5a2b 完成并拆出 R5a3；AGENTS 增加分页 helper 的所有权和专项命令。
+- R4/R5 受影响专项合并执行 36/36：command 6、timing extraction 3、all-or-nothing apply 3、operation
+  request 4、draft 7、auto-save policy 4、runtime 8、operation cursor 2（部分测试文件包含多项断言，Node
+  汇总为 36 项）。完整 `npm run build` 通过 Prisma generation、shared、document-model、web 与 API；
+  Vite 只保留既有主 chunk 超过 500 kB 提醒。`git diff --check` 通过。
+- 运行中的 `/api/health/ready` 返回 ready，database 2.85 ms、storage 0.55 ms。该进程仍是本轮提交前已在
+  运行的 API 实例；新 migration 和新 operation 路径由隔离 `api_test` PostgreSQL 全套验证，提交后进入
+  下一轮前需按开发运行流程部署 main schema/restart，不能用旧进程 readiness 冒充新代码已热加载。
+- 本轮没有服务端 apply、客户端 catch-up、operation 与保存 revision 的绑定、WebSocket、presence、OT
+  或 CRDT。下一轮 R5a3 必须先解决“日志已接收但完整快照保存失败/尚未发生”的明确状态，再让客户端
+  消费 operation feed；不能仅凭 sequence 乐观宣称远端内容已持久化。

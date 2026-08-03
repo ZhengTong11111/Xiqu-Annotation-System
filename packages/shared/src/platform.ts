@@ -312,10 +312,19 @@ export type AnnotationOperationRecord = {
   annotationFileId: string;
   actorUserId: string;
   clientOperationId: string;
+  sequence: number;
   baseRevision: number;
   localRevision?: number | null;
   action: string;
   payload: unknown;
   status: "accepted" | "rejected" | "superseded";
+  replayability: "domain_command" | "requires_snapshot";
   createdAt: string;
+};
+
+// operation feed 始终按文件内 sequence 升序；nextCursor 也是客户端已观察事实的确认位置。
+export type AnnotationOperationPage = {
+  items: AnnotationOperationRecord[];
+  nextCursor: string | null;
+  hasMore: boolean;
 };
