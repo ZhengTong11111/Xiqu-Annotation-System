@@ -454,13 +454,22 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     initialRecoveryState: editorSession?.initialRecoveryState,
   });
   const [remoteBaseRevision, setRemoteBaseRevision] = useState(editorSession?.baseRevision ?? 0);
+  const [saveConflictReviewBusy, setSaveConflictReviewBusy] = useState(false);
+  const [saveConflictReviewError, setSaveConflictReviewError] = useState<string | null>(null);
+  // 冲突解除后清理旧交接错误，下一次独立冲突不能显示上一次请求的诊断。
+  useEffect(() => {
+    if (syncState.status !== "conflict") {
+      setSaveConflictReviewBusy(false);
+      setSaveConflictReviewError(null);
+    }
+  }, [syncState.status]);
   // operation 同步状态变化也要触发草稿重写，保证刷新后不会重复提交已进入服务器日志的条目。
   const pendingOperationSignature = useMemo(
     () => pendingOperations.map((operation) => `${operation.id}:${operation.syncState}`).join("|"),
     [pendingOperations],
   );
   // 浏览器草稿仅服务平台可写会话；本地 JSON 和只读文件继续走各自原有保存边界。
-  usePlatformDraftPersistence({
+  const { flushNow: flushPlatformDraftNow } = usePlatformDraftPersistence({
     enabled: Boolean(editorSession?.canWrite),
     // 待确认整合还没有进入文档历史；草稿来源若是浏览器恢复数据，此时必须保持原 envelope 不动。
     suspended: pendingAnnotationMergeDraft !== null,
@@ -472,7 +481,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     pendingOperationSignature,
     getRecoveryState,
     onPersistenceError: (message) => {
-      setSyncStatus("error", {
+      // 冲突交接 flush 失败时保留 conflict 主状态，用户仍需看到并可重试处理入口。
+      setSyncStatus(syncState.status === "conflict" ? "conflict" : "error", {
         errorMessage: `本地恢复草稿写入失败：${message}`,
       });
     },
@@ -1382,6 +1392,28 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
     setPendingAnnotationMergeDraft(null);
+  }
+
+  // 409 处理先沿草稿串行队列固定当前文档，再由 Workspace 重读服务器并打开既有结构化比较。
+  async function openSaveConflictReview() {
+    if (
+      !editorSession ||
+      syncState.status !== "conflict" ||
+      saveConflictReviewBusy
+    ) return;
+    setSaveConflictReviewBusy(true);
+    setSaveConflictReviewError(null);
+    try {
+      const flushed = await flushPlatformDraftNow();
+      if (!flushed.ok) {
+        setSaveConflictReviewError(flushed.message);
+        return;
+      }
+      const opened = await editorSession.openSaveConflictReview();
+      if (!opened.ok) setSaveConflictReviewError(opened.message);
+    } finally {
+      setSaveConflictReviewBusy(false);
+    }
   }
 
   function seekTo(time: number) {
@@ -4969,6 +5001,23 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         />
       )}
     >
+      {/* 保存冲突不自动打断编辑；用户明确触发后才固定草稿并进入服务器比较。 */}
+      {editorSession && syncState.status === "conflict" && !pendingAnnotationMergeDraft ? (
+        <section className="platform-save-conflict-bar" role="alert">
+          <span>
+            <strong>服务器文件已有新版本</strong>
+            <small>当前本地编辑仍安全保留，处理前不会覆盖服务器。</small>
+          </span>
+          {saveConflictReviewError ? <em>{saveConflictReviewError}</em> : null}
+          <button
+            type="button"
+            disabled={saveConflictReviewBusy}
+            onClick={() => void openSaveConflictReview()}
+          >
+            {saveConflictReviewBusy ? "正在读取最新文件…" : "比较并处理冲突"}
+          </button>
+        </section>
+      ) : null}
       {/* 整合草稿确认栏属于编辑会话而非保存版本；取消不改历史，应用后仍需用户正常保存。 */}
       {pendingAnnotationMergeDraft ? (
         <section className="annotation-merge-draft-bar" role="status">

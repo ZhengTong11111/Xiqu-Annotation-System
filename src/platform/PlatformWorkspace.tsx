@@ -56,6 +56,9 @@ export type PlatformEditorSession = {
   initialFocus?: AnnotationComparisonFocus;
   pendingMergeDraft?: AnnotationMergeDraft;
   initialRecoveryState?: ProjectDocumentRecoveryState;
+  openSaveConflictReview: () => Promise<
+    { ok: true } | { ok: false; message: string }
+  >;
 };
 
 export type LocalEditorSession = {
@@ -195,6 +198,45 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
               annotationFileName: saved.resource.name,
             }
           : current);
+      },
+      // 编辑器只负责先 flush 当前草稿；Workspace 再权威重读两侧并决定展示哪一种恢复流程。
+      openSaveConflictReview: async () => {
+        try {
+          const [latestFile, rawDraft] = await Promise.all([
+            client.getAnnotationFile<ProjectData>(input.file.resource.id),
+            platformDraftStore.get(user.id, input.file.resource.id),
+          ]);
+          const draft = normalizePlatformDraftRecord(rawDraft, {
+            userId: user.id,
+            annotationFileId: input.file.resource.id,
+          });
+          if (!draft) {
+            return {
+              ok: false,
+              message: "最新浏览器草稿不存在或已损坏，请留在编辑器后重试。",
+            };
+          }
+          const serverProject = hydrateProjectForClient(latestFile.payload, client);
+          const compatibility = assessPlatformDraftCompatibility(draft, latestFile.revision);
+          const mode: PlatformDraftRecoveryMode =
+            !latestFile.resource.permission.capabilities.includes("write")
+              ? "read-only"
+              : compatibility.status;
+
+          // 两侧都读取成功后才切换视图，失败不能让用户离开仍含 dirty 内容的编辑器。
+          setPendingDraftOpen({
+            file: latestFile,
+            serverProject,
+            draft,
+            mode,
+          });
+          setDraftConflictVisible(mode === "revision-conflict");
+          setEditorSession(null);
+          setView("explorer");
+          return { ok: true };
+        } catch (nextError) {
+          return { ok: false, message: describeError(nextError) };
+        }
       },
     };
     setEditorSession(next);

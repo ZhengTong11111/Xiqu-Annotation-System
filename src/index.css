@@ -3302,6 +3302,50 @@ select {
   border-color: #2b638f;
 }
 
+/* 保存冲突栏沿用编辑器信息带密度，以克制警示色区分普通待应用整合。 */
+.platform-save-conflict-bar {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(220px, auto) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 6px 12px;
+  color: #68411d;
+  background: #fff7e8;
+  border-bottom: 1px solid #e5c58d;
+}
+
+.platform-save-conflict-bar > span {
+  display: grid;
+  min-width: 0;
+}
+
+.platform-save-conflict-bar small,
+.platform-save-conflict-bar em {
+  overflow: hidden;
+  color: #856748;
+  font-size: 10px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.platform-save-conflict-bar button {
+  min-height: 30px;
+  padding: 0 11px;
+  color: #fff;
+  background: #9a6028;
+  border: 1px solid #815020;
+  border-radius: 5px;
+}
+
+.platform-save-conflict-bar button:disabled {
+  color: #8d7b68;
+  background: #eadfce;
+  border-color: #d5c4ad;
+  cursor: wait;
+}
+
 .annotation-comparison-groups {
   border-bottom: 1px solid #d9e0e9;
 }

@@ -43,6 +43,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - owns the single authoritative annotation-file open path; ordinary opens and comparison navigation both refetch
     the latest payload, revision, and permissions before creating one `PlatformEditorSession`
   - resolves browser recovery drafts before editor construction; selective merge must not bypass an unresolved draft
+  - editor save-conflict handoff refetches the latest file and flushed IndexedDB draft before leaving the dirty editor
 - `src/platform/platformProjectPayload.ts`
   - single platform client/server payload boundary for adding current protected media URLs and removing them before save
 - `src/platform/platformDraft.ts`
@@ -54,6 +55,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/usePlatformDraftPersistence.ts`
   - serialized/debounced draft writes, editor-unmount final capture, and clean-state deletion for writable sessions
   - must suspend all put/delete while any runtime merge draft is awaiting the editor's second confirmation
+  - `flushNow()` must use the same task queue as debounce/unmount writes; conflict UI must never issue a parallel store put
 - `src/platform/platformAutoSavePolicy.ts`
   - pure idle/retry/block decision and bounded exponential-backoff constants for server autosave
 - `src/platform/usePlatformAutoSave.ts`

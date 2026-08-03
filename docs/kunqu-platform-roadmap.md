@@ -20,8 +20,8 @@ liveness/readiness、低基数 Prometheus 指标和管理员容量/一致性诊�
 R3g2a 已完成远端包单次流式物化和真实 PostgreSQL/对象目录隔离恢复演练，R3g2b1 已完成 manifest-aware
 远端包检查、保留计划、稳定 token 和确认清理；R3g2b2a 已补齐无残留能力验收命令、最小 IAM 模板和
 部署检查表。真实生产 MinIO/AWS 的 R3g2b2 等待目标环境；本地开发已完成 R4a operation 幂等接收、
-R4b1 浏览器草稿持久化/同 revision 恢复、R4b2 stale 草稿结构化整合和 R4c1 自动保存调度/在线退避，
-下一步进入 R4c2 自动保存冲突的可视化续接；
+R4b1 浏览器草稿持久化/同 revision 恢复、R4b2 stale 草稿结构化整合、R4c1 自动保存调度/在线退避和
+R4c2 保存冲突可视化续接；下一步评估 R4 完成标准并补齐生命周期验收缺口；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -376,10 +376,12 @@ R4b1 浏览器草稿持久化/同 revision 恢复、R4b2 stale 草稿结构化�
   指数退避；409 与确定 4xx 停止自动重试。pending merge 暂停调度，手动保存与自动保存共用结构化
   outcome 和同一 operation/payload/revision 边界。beforeunload 不伪造无法等待的异步保存，仍由
   IndexedDB 草稿兜底。
-- R4c2：把自动保存产生的 409 conflict 接入最新服务器文件重读、结构化比较、用户决策和继续同步；
-  不能用刷新页面或自动覆盖作为解决方案。
-- 自动保存产生的 `409` 仍需进入显式比较和用户决策，禁止自动覆盖远端；R4b2 已提供可复用的 stale
-  草稿实体比较与整合基础，但 R4c2 还需把自动保存 conflict 接入该边界。
+- R4c2 已完成：409 conflict 在编辑器显示显式处理栏；用户点击后，草稿 persistence 沿同一串行队列
+  flush 当前 recovery state，Workspace 再重读服务器文件、权限与草稿。两侧成功后才离开 dirty 编辑器，
+  并按 revision-conflict/read-only/recoverable 进入 R4b2 既有流程；整合确认后由 R4c1 从最新 revision
+  继续保存。失败留在编辑器，不清 dirty、不静默覆盖。
+- 自动保存产生的 `409` 必须保持进入显式比较和用户决策，禁止未来改成自动覆盖远端；R4b2 提供可复用
+  的 stale 草稿实体比较与整合基础，R4c2 负责从保存冲突稳定进入该边界。
 - 快照保存和 operation 日志的确认边界保持一致。
 
 完成标准：断网和刷新不会静默丢失编辑，恢复在线后可安全继续同步。

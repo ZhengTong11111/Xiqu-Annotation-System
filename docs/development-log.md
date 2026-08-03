@@ -2599,3 +2599,72 @@ Codex 直接完成，没有调用 Claude Code、GLM、DeepSeek 或其他代理�
   WebSocket 或 operation 增量应用。自动保存成功仍会触发既有恢复快照与确认范围 freshness 刷新。
 - R4c2 应让 conflict 状态提供“读取最新服务器并比较”的明确入口，复用 R4b2 diff/plan/apply 和编辑器
   二次确认，同时保留当前 dirty 草稿；不应通过页面刷新、清空 IndexedDB 或自动覆盖来解除冲突。
+
+## 2026-08-03：R4c2 自动保存冲突的显式比较与继续同步
+
+本轮从 R4c1 commit `f7a4c28` 和干净工作树开始。Codex 审计编辑器 conflict 状态、Workspace 会话构造、
+R4b2 `PendingDraftOpen`/固定方向比较入口，以及草稿 debounce/unmount 写队列；随后将 `CLAUDE_WORK.md`
+整体替换为 R4c2 当前任务。工作由 Codex 直接实现，没有调用 Claude Code、GLM、DeepSeek 或其他代理，
+也没有新增依赖。
+
+核心流程与职责边界：
+
+- 409 仍由唯一保存事务归类为 conflict，自动保存停止，document/undo/pending operations/dirty baseline
+  原样保留。编辑器新增紧凑冲突栏，但不自动弹窗打断时间轴；用户可继续编辑，只有明确点击“比较并处理
+  冲突”才启动交接。
+- `usePlatformDraftPersistence()` 新增稳定 `flushNow()`。它不在 App 或 Workspace 另开 IndexedDB put，
+  而是复用 debounce、clean delete 和 unmount capture 的同一串行队列；flush 等待先前任务，并在真正执行
+  时读取最新 options/recovery refs。这样较旧 debounce 写入不可能在冲突导航的精确草稿之后反向覆盖。
+- `PlatformEditorSession.openSaveConflictReview()` 属于 Workspace 编排命令。App 先等待 flush；Workspace
+  再并行读取最新服务器文件和同账号/文件草稿，重新归一化并计算 recoverable/revision-conflict/read-only。
+  任一读取或归一化失败都会返回错误并留在当前 dirty editor；只有两侧事实完整后才设置 pending modal、
+  清 editor session 并切到资源管理器。
+- 预期 revision-conflict 会直接展示 R4b2 `PlatformDraftConflictDialog`，固定本地草稿在左、服务器当前在
+  右。若权限在冲突期间被撤销，进入 read-only 导出/丢弃保护；若服务器 revision 极端情况下回到同值，
+  进入 recoverable 提示。交接本身不写服务器、不创建资源、不记录 operation/audit，也不标记 saved。
+- 用户完成 R4b2 选择、依赖闭包、冲突决定和编辑器二次确认后形成一次 dirty commit；R4c1 自动保存从
+  新服务器 revision 继续。取消/退出仍按 R4b2 规则保留或显式放弃草稿。
+
+队列测试与实现修正：
+
+- 为避免只测试 `put/delete/none` 决策而漏掉真正竞态，将草稿串行器抽为
+  `createPlatformDraftTaskQueue()`。每个调用者得到自己的 execution Promise，能感知显式 flush 失败；
+  内部 tail 会报告错误并恢复，使一次 IndexedDB 故障不毒死后续写入。
+- 新增回归测试构造“延迟首写 → 失败写 → flush”，断言事件严格按 first/failed/flush 排序，失败 Promise
+  对调用者 reject、错误回调收到一次诊断、最终 flush 仍执行。没有为测试引入 jsdom 或第二套 repository。
+- 冲突栏维护 busy/error；重复点击被阻止。状态离开 conflict 后清理旧错误，下一次冲突不会显示上一次
+  请求诊断。最终自审还发现 flush 失败原本会通过通用草稿错误回调把 conflict 改成 error，导致处理入口
+  消失；现在冲突期间只更新错误说明并保留 conflict 主状态，用户可以修复存储问题后重试。样式复用
+  编辑器顶部信息带密度，以低饱和橙色区分普通蓝色 merge draft，不改时间轴布局。
+- 队列抽取后的第二次自审发现：显式 flush 需要拿到 rejected Promise，但 debounce、clean 删除和卸载写入
+  没有调用者等待；直接用 `void` 丢弃会在 IndexedDB 失败时形成未处理 rejection。最终实现保留同一队列
+  的统一错误上报，并让三类后台调用显式消费已上报的 rejection；没有恢复旧的吞错队列，也没有建立
+  第二条草稿写入路径。随后完整构建又定位到身份缺失分支会令写入 helper 返回 `undefined` 的类型漏洞；
+  helper 现已固定返回 `Promise<void>`，缺少账号或文件标识时明确失败，不以可选链把非法调用伪装成成功。
+
+测试与运行状态：
+
+- `npm run test:platform-drafts` 10/10：在 R4b1/R4b2 原 9 项上新增队列顺序、失败反馈与恢复验证。
+- `npm run test:platform-auto-save` 4/4，确认 conflict 仍阻断调度；R4c1 policy 无回归。
+- `build:web` 在实现过程中通过，覆盖新增 session callback、flush result、App banner 与 CSS 类型边界。
+- merge 回归通过：diff 10/10、plan 11/11、selection 5/5、conflict 1/1、apply 4/4、preparation 4/4。
+- `npm run test:api` 85/85；本轮无 API/schema 变化，revision/ACL/恢复/运维合同继续通过，仅保留既有
+  pg 9 前置弃用提示。
+- `npm run build` 完整通过 Prisma generation、shared、document-model、web 和 API；只保留既有 Vite
+  主 chunk 超过 500 kB 提醒。`git diff --check` 通过；`/api/health/ready` 的 database/storage 均为 ok。
+
+浏览器与人工验收边界：
+
+- R4b1 Browser 会话仍处于安全策略禁止导航的错误 `data:` 页，并明确禁止绕过或换用其他浏览器表面。
+  本轮没有违反该限制，也不会把构建冒充成冲突栏真实点击验收。
+- 人工顺序：会话 A 修改后暂不保存；会话 B 推进服务器 revision；A 自动保存进入 conflict，确认冲突栏
+  出现且仍可继续编辑；点击处理，确认 busy 后直接进入固定方向比较；返回/失败时 dirty 不丢；完成选择
+  和二次确认后，观察自动保存从最新 revision 成功并清除旧草稿。处理期间撤销 write 权限应进入 read-only
+  保护而非错误打开可写 editor。
+
+后续边界：
+
+- R4a 至 R4c2 已形成“幂等 operation → IndexedDB 恢复 → stale 结构化整合 → 自动保存/退避 → 409 显式
+  交接”闭环。没有 WebSocket、presence、领域 operation 重放或实时多人合并。
+- 下一轮必须对照 R4 完成标准做一次生命周期与残余风险审计；若缺少可自动化的 timer/hook 集成测试、
+  用户可见重试信息或关闭页面一致性证明，应拆 R4c3 补齐，而不是因主路径可编译就直接宣布 R4 完成。

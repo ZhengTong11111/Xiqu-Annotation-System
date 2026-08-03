@@ -136,8 +136,21 @@ R4b1 已为可写平台会话建立 version 1 IndexedDB envelope：
 - 编辑器显示运行时草稿期间，持久化 hook 暂停全部 put/delete：二次确认后形成一次可撤销 dirty commit，
   再以最新服务器 revision 覆盖旧 envelope；明确取消后 clean 状态删除旧草稿；未确认就离开则继续保留。
 
-R4c1 已提供服务器自动保存与联网退避，但 409 目前只停在 conflict 状态。下一步 R4c2 应在上述显式
-冲突边界之上接入最新服务器文件比较与继续同步；任何流程都不得自动覆盖远端。
+R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict 显式交接到上述结构化比较边界；任何
+流程都不得自动覆盖远端。
+
+### 5.1 R4c2 保存冲突交接
+
+1. 409 保持当前 editor dirty/conflict，自动保存停止；用户仍可继续编辑，debounced IndexedDB 草稿继续
+   覆盖同一 envelope。
+2. 用户明确点击处理后，App 调用 `usePlatformDraftPersistence().flushNow()`。flush 与 debounce/unmount
+   共用同一任务队列，必须等待之前写任务并使用最新 recovery refs，禁止平行 `store.put()`。
+3. flush 成功后，Workspace 重新读取当前账号/文件草稿和最新服务器 `AnnotationFile`。任一失败都留在
+   editor；只有两侧事实完整时才建立 `PendingDraftOpen` 并切换资源管理器。
+4. revision-conflict 直接进入 R4b2 固定本地到服务器比较；权限撤销进入 read-only 数据保险；极端情况下
+   revision 未变化则进入同 revision 恢复提示。Workspace 不自动应用或保存。
+5. 用户完成选择、冲突决定和编辑器二次确认后形成一次 dirty commit；R4c1 再从最新 remote revision
+   自动保存。取消或退出继续遵循 R4b2 草稿保留规则。
 
 ## 6. 实时协作方向
 

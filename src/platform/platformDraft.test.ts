@@ -8,7 +8,10 @@ import {
   normalizePlatformDraftRecord,
   toProjectDocumentRecoveryState,
 } from "./platformDraft";
-import { getPlatformDraftPersistenceAction } from "./usePlatformDraftPersistence";
+import {
+  createPlatformDraftTaskQueue,
+  getPlatformDraftPersistenceAction,
+} from "./usePlatformDraftPersistence";
 
 // 测试夹具包含 dirty 项目与稳定 operation id，用来验证刷新后仍能继续幂等提交。
 function createRecoveryState(): ProjectDocumentRecoveryState {
@@ -132,4 +135,30 @@ test("草稿持久化决策区分暂停、写入与删除", () => {
     ...base,
     hasUnsavedChanges: false,
   }), "delete");
+});
+
+// 显式 flush 必须排在 debounce 写入后；失败既反馈调用者，也不能毒死后续队列。
+test("草稿写入队列保持顺序并可在失败后继续", async () => {
+  const events: string[] = [];
+  const errors: string[] = [];
+  const queue = createPlatformDraftTaskQueue((error) => {
+    errors.push(error instanceof Error ? error.message : "unknown");
+  });
+  const first = queue.enqueue(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    events.push("first");
+  });
+  const failed = queue.enqueue(async () => {
+    events.push("failed");
+    throw new Error("write failed");
+  });
+  const final = queue.enqueue(async () => {
+    events.push("flush");
+  });
+
+  await first;
+  await assert.rejects(failed, /write failed/);
+  await final;
+  assert.deepEqual(events, ["first", "failed", "flush"]);
+  assert.deepEqual(errors, ["write failed"]);
 });
