@@ -11,6 +11,7 @@ import { buildProjectAnnotationLifecycleCommand } from "../utils/annotationLifec
 import { buildProjectAnnotationStateCommand } from "../utils/annotationStateCommand";
 import { buildProjectAnnotationTransactionCommand } from "../utils/annotationTransactionCommand";
 import { buildProjectCustomTrackStructureCommand } from "../utils/customTrackStructureCommand";
+import { buildProjectTrackStructureTransactionCommand } from "../utils/trackStructureTransactionCommand";
 import { buildProjectTimelineTimingCommand } from "../utils/timelineTimingCommand";
 import { catchUpCommittedAnnotationOperations } from "./platformOperationCatchUp";
 
@@ -279,6 +280,42 @@ test("committed feed 可重放自定义轨道结构命令", async () => {
     listPage: async () => ({
       items: [createOperation(1, 1, envelope, { action: "annotation.track.structure.update" })],
       nextCursor: "cursor-structure",
+      hasMore: false,
+      currentRevision: 1,
+    }),
+  });
+  assert.equal(result.status, "applied");
+  if (result.status === "applied") assert.deepEqual(result.project, next);
+});
+
+test("committed feed 可原子重放 typeOptions 与块类型结构事务", async () => {
+  const base = createCatchUpProject();
+  const next = structuredClone(base);
+  const trackId = next.customTracks[0].id;
+  const oldType = next.customTracks[0].typeOptions[0];
+  next.customTracks[0].typeOptions[0] = "远端新类型";
+  next.customTracks[0].blocks = next.customTracks[0].blocks.map((block) =>
+    block.type === oldType ? { ...block, type: "远端新类型" } : block);
+  const envelope = buildProjectTrackStructureTransactionCommand(base, next, {
+    customTrackStructureIds: [trackId],
+    contentTargets: base.customTracks[0].blocks.filter((block) => block.type === oldType).map((block) => ({
+      entityType: "custom-block",
+      entityId: block.id,
+      trackId,
+      field: "type",
+    })),
+  });
+  assert.ok(envelope);
+  const result = await catchUpCommittedAnnotationOperations({
+    annotationFileId: FILE_ID,
+    project: base,
+    knownRevision: 0,
+    cursor: "snapshot-0",
+    listPage: async () => ({
+      items: [createOperation(1, 1, envelope, {
+        action: "annotation.track.structure.transaction.apply",
+      })],
+      nextCursor: "cursor-structure-transaction",
       hasMore: false,
       currentRevision: 1,
     }),

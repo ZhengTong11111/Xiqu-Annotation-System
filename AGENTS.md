@@ -31,6 +31,9 @@ Main currently contains all major recent feature lines that matter for context:
 - existing custom-track metadata, recursive branch trees, and block branch ownership now use the strict top-level
   `annotation.track.structure.update` command; platform edits acquire/renew a file lease before local commit, and structural
   undo/redo retain inverse/forward command envelopes
+- custom-track and attached-point-track creation/deletion plus custom type-option/block-type coupling now use the bounded
+  `annotation.track.structure.transaction.apply`; it composes strict structure/content/lifecycle/state leaves, requires the
+  same mutation lease, and is replayable by drafts/history/clean HTTP catch-up
 - version 1 timing, stable content-update, lifecycle, composite-state, and dependency-transaction domain commands with strict shared validation,
   draft persistence, inverse/precondition semantics, all-or-nothing ProjectData adapters, server logging, and clean-client
   HTTP replay; lifecycle covers sentences, characters, custom blocks, attached points, Gongche blocks/symbols, and Banyan
@@ -313,6 +316,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - the only ProjectData snapshot/builder/apply path for `annotation.track.structure.update`
   - the command updates existing custom tracks only; its complete-next equality gate must reject block content, timing,
     lifecycle, attached-point, or other out-of-contract changes
+- `src/utils/trackStructureLifecycleCommand.ts` + `src/utils/trackStructureLifecycleCommandApply.ts`
+  - canonical full-owned-subtree snapshots and exact collection-position apply path for custom-track and attached-point-track
+    creation/deletion leaves
+  - custom tracks must occur exactly once in both `customTracks` and `activeTrackOrder`; attached point-track ids are global
+    across parents. Malformed absence must never be reinterpreted as a valid creation.
+- `src/utils/trackStructureTransactionCommand.ts` + `src/utils/trackStructureTransactionCommandApply.ts`
+  - the only ProjectData builder/apply path for `annotation.track.structure.transaction.apply`
+  - orders parent creation/deletion around content/lifecycle/state children, proves the complete next project by replay, and
+    publishes no partial result when any child or final reference/container invariant fails
 - `src/utils/annotationCommandApply.ts`
   - generic ProjectData command dispatcher used by clean catch-up; it only discriminates validated command types and must
     not duplicate a domain parser, precondition, or apply implementation
@@ -320,12 +332,18 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - authoritative timing/content/state/lifecycle/transaction annotation-command DTOs, deterministic builders/inverse, strict discriminated unknown
     parsers, all-target precondition assessment, target keys, limits, and API action/payload allowlist shared by web,
     IndexedDB recovery, and Fastify
+  - `annotation.track.structure.transaction.apply` is the only top-level container allowed to combine structure leaves with
+    ordinary domain leaves; it requires one structure child, forbids recursion, and shares one 20-command/500-entity budget
+  - `isAnnotationMutationLeaseRequiredCommandType()` is the sole App/API lease discriminator for structure operation types
   - the server currently validates and logs these commands but does not apply them to `AnnotationFile.payload`
 - `packages/shared/src/customTrackStructureCommands.ts`
   - strict top-level structure DTO/parser/builder/inverse; it is excluded from `annotation.transaction.apply` because every
     newly accepted structure operation requires a file mutation lease
   - before/after keep track type and block identities stable; recursive lane identity/parentage, block-parent cycles,
     branch-scope references, ordering, no-op, and the 500-item budget fail closed
+- `packages/shared/src/trackStructureLifecycleCommands.ts`
+  - strict structure-only leaf DTOs for custom-track and attached-point-track lifecycle; these leaves are legal only inside
+    the top-level structure transaction and are not standalone operation actions
 - `apps/api/src/`
   - Fastify backend: auth, resource routes, resource ACL evaluation, annotation-file revision saves, Prisma mapping,
     and replaceable local/S3 object storage

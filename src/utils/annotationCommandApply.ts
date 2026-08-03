@@ -4,6 +4,7 @@ import {
   ANNOTATION_STATE_UPDATE_COMMAND,
   ANNOTATION_TRANSACTION_APPLY_COMMAND,
   CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
+  TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND,
   parseAnnotationCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
 } from "@xiqu/shared";
@@ -14,6 +15,7 @@ import { applyAnnotationStateCommandToProject } from "./annotationStateCommandAp
 import { applyAnnotationTransactionCommandToProject } from "./annotationTransactionCommandApply";
 import { applyTimelineTimingCommandToProject } from "./timelineTimingCommandApply";
 import { applyCustomTrackStructureCommandToProject } from "./customTrackStructureCommandApply";
+import { applyTrackStructureTransactionCommandToProject } from "./trackStructureTransactionCommandApply";
 
 // 通用 ProjectData 命令入口只做判别分派；各领域继续拥有独立 parser、precondition 和写入 adapter。
 export function applyAnnotationCommandToProject(project: ProjectData, value: unknown) {
@@ -33,6 +35,9 @@ export function applyAnnotationCommandToProject(project: ProjectData, value: unk
   }
   if (envelope.command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND) {
     return applyCustomTrackStructureCommandToProject(project, envelope);
+  }
+  if (envelope.command.type === TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND) {
+    return applyTrackStructureTransactionCommandToProject(project, envelope);
   }
   if (envelope.command.type === ANNOTATION_TRANSACTION_APPLY_COMMAND) {
     return applyAnnotationTransactionCommandToProject(project, envelope);

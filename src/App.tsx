@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND } from "@xiqu/shared";
+import {
+  isAnnotationMutationLeaseRequiredCommandType,
+  type AnnotationCommandEnvelope,
+} from "@xiqu/shared";
 import "./index.css";
 import { PlatformApiError } from "./api/platformClient";
 import { AppShell } from "./components/AppShell";
@@ -93,6 +96,9 @@ import {
 } from "./utils/platformOperations";
 import { buildProjectAnnotationContentCommand } from "./utils/annotationContentCommand";
 import { buildProjectCustomTrackStructureCommand } from "./utils/customTrackStructureCommand";
+import {
+  buildProjectTrackStructureTransactionCommand,
+} from "./utils/trackStructureTransactionCommand";
 import { areProjectValuesEqual } from "./utils/projectValueEquality";
 import {
   buildProjectAnnotationLifecycleCommand,
@@ -1911,22 +1917,42 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     cancelCharacterTextEdit();
   }
 
-  function updateCustomTrack(
-    trackId: string,
-    updater: (track: CustomTrack) => CustomTrack,
-    recordHistory = true,
+  // 所有受租约保护的结构写入共用这一串行入口，避免 UI 调用点各自处理 acquire、重算和失败降级。
+  async function runTrackStructureMutation(
+    buildNextProject: (baseProject: ProjectData) => ProjectData,
+    buildCommand: (
+      baseProject: ProjectData,
+      nextProject: ProjectData,
+    ) => AnnotationCommandEnvelope | null,
   ) {
-    const currentProject = projectRef.current;
-    const nextProject = {
-      ...currentProject,
-      customTracks: currentProject.customTracks.map((track) =>
-        track.id === trackId ? updater(track) : track,
-      ) as CustomTrack[],
-    };
-    if (recordHistory) {
-      commitProject(nextProject);
-    } else {
-      applyProjectWithoutHistory(nextProject);
+    const previewBase = projectRef.current;
+    if (areProjectValuesEqual(previewBase, buildNextProject(previewBase))) return false;
+    if (structureMutationInFlightRef.current) return false;
+
+    structureMutationInFlightRef.current = true;
+    const hadLease = Boolean(mutationLease.getToken());
+    try {
+      if (editorSession) await mutationLease.acquire("track_structure");
+      // acquire 期间普通内容编辑仍可发生；拿锁后必须基于最新项目重建，不能覆盖这段时间的新内容。
+      const baseProject = projectRef.current;
+      const nextProject = buildNextProject(baseProject);
+      if (areProjectValuesEqual(baseProject, nextProject)) {
+        if (editorSession && !hadLease) await mutationLease.release().catch(() => undefined);
+        return false;
+      }
+      const commandEnvelope = buildCommand(baseProject, nextProject);
+      if (!commandEnvelope) {
+        if (editorSession && !hadLease) await mutationLease.release().catch(() => undefined);
+        window.alert("本次结构变更无法形成完整且有界的协作命令，项目未被修改。请拆分操作后重试。");
+        return false;
+      }
+      commitProject(nextProject, baseProject, { commandEnvelope });
+      return true;
+    } catch (error) {
+      window.alert(formatMutationLeaseError(error));
+      return false;
+    } finally {
+      structureMutationInFlightRef.current = false;
     }
   }
 
@@ -1941,33 +1967,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         track.id === trackId ? updater(track) : track,
       ) as CustomTrack[],
     });
-    const previewBase = projectRef.current;
-    if (areProjectValuesEqual(previewBase, buildNextProject(previewBase))) return false;
-    if (structureMutationInFlightRef.current) return false;
-
-    structureMutationInFlightRef.current = true;
-    const hadLease = Boolean(mutationLease.getToken());
-    try {
-      if (editorSession) {
-        await mutationLease.acquire("track_structure");
-      }
-
-      // acquire 期间仍可能发生普通本地编辑；取得租约后必须基于最新 projectRef 重算，不能覆盖新变化。
-      const baseProject = projectRef.current;
-      const nextProject = buildNextProject(baseProject);
-      if (areProjectValuesEqual(baseProject, nextProject)) {
-        if (editorSession && !hadLease) await mutationLease.release().catch(() => undefined);
-        return false;
-      }
-      const commandEnvelope = buildProjectCustomTrackStructureCommand(baseProject, nextProject, [trackId]);
-      commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
-      return true;
-    } catch (error) {
-      window.alert(formatMutationLeaseError(error));
-      return false;
-    } finally {
-      structureMutationInFlightRef.current = false;
-    }
+    return runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) =>
+        buildProjectCustomTrackStructureCommand(baseProject, nextProject, [trackId]),
+    );
   }
 
   function updateBuiltinTrack(
@@ -2135,13 +2139,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function addAttachedPointTrack(parentTrackId: string) {
-    const currentProject = projectRef.current;
-    const builtinParent = currentProject.builtinTracks.find((track) => track.id === parentTrackId);
-    const customParent = currentProject.customTracks.find((track) => track.id === parentTrackId);
+    const previewProject = projectRef.current;
+    const builtinParent = previewProject.builtinTracks.find((track) => track.id === parentTrackId);
+    const customParent = previewProject.customTracks.find((track) => track.id === parentTrackId);
     if (!builtinParent && !customParent) {
       return;
     }
     const parentTrack = builtinParent ?? customParent;
+    const parentTrackType = builtinParent ? "builtin" as const : "custom" as const;
     const nextPointTrack: AttachedPointTrack = {
       id: `point-track-${crypto.randomUUID()}`,
       name: getDefaultAttachedPointTrackName(parentTrack?.attachedPointTracks ?? []),
@@ -2150,20 +2155,39 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       snapToWaveformKeypoints: false,
       snapToParentBoundaries: true,
     };
-    if (builtinParent) {
-      updateBuiltinTrack(parentTrackId as BuiltinTrackId, (track) => ({
-        ...track,
-        attachedPointTracksExpanded: true,
-        attachedPointTracks: [...(track.attachedPointTracks ?? []), nextPointTrack],
-      }));
-    } else if (customParent) {
-      updateCustomTrack(parentTrackId, (track) => ({
-        ...track,
-        attachedPointTracksExpanded: true,
-        attachedPointTracks: [...(track.attachedPointTracks ?? []), nextPointTrack],
-      }) as CustomTrack);
-    }
-    applySelection({ type: "attached-point-track", id: nextPointTrack.id, parentTrackId });
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
+      builtinTracks: parentTrackType === "builtin"
+        ? baseProject.builtinTracks.map((track) => track.id === parentTrackId
+          ? {
+              ...track,
+              attachedPointTracksExpanded: true,
+              attachedPointTracks: [...track.attachedPointTracks, nextPointTrack],
+            }
+          : track)
+        : baseProject.builtinTracks,
+      customTracks: parentTrackType === "custom"
+        ? baseProject.customTracks.map((track) => track.id === parentTrackId
+          ? {
+              ...track,
+              attachedPointTracksExpanded: true,
+              attachedPointTracks: [...track.attachedPointTracks, nextPointTrack],
+            } as CustomTrack
+          : track) as CustomTrack[]
+        : baseProject.customTracks,
+    });
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        attachedPointTrackLifecycleTargets: [{
+          pointTrackId: nextPointTrack.id,
+          parentTrackId,
+          parentTrackType,
+        }],
+      }),
+    ).then((committed) => {
+      if (committed) applySelection({ type: "attached-point-track", id: nextPointTrack.id, parentTrackId });
+    });
   }
 
   function toggleAttachedPointTracks(parentTrackId: string) {
@@ -3276,12 +3300,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function addCustomTrack(trackType: CustomTrackType) {
-    const currentProject = projectRef.current;
-    const color = getNextTrackColor(currentProject.customTracks);
+    const previewProject = projectRef.current;
+    const color = getNextTrackColor(previewProject.customTracks);
     const nextTrack: CustomTrack = trackType === "text"
       ? {
           id: `custom-track-${crypto.randomUUID()}`,
-          name: getDefaultCustomTrackName(currentProject.customTracks, trackType),
+          name: getDefaultCustomTrackName(previewProject.customTracks, trackType),
           trackType,
           color,
           typeOptions: getDefaultCustomTrackTypeOptions(),
@@ -3291,7 +3315,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         }
       : {
           id: `custom-track-${crypto.randomUUID()}`,
-          name: getDefaultCustomTrackName(currentProject.customTracks, trackType),
+          name: getDefaultCustomTrackName(previewProject.customTracks, trackType),
           trackType,
           color,
           typeOptions: getDefaultCustomTrackTypeOptions(),
@@ -3301,12 +3325,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         snapToWaveformKeypoints: false,
       };
 
-    commitProject({
-      ...currentProject,
-      customTracks: [...currentProject.customTracks, nextTrack] as CustomTrack[],
-      activeTrackOrder: [...currentProject.activeTrackOrder, nextTrack.id],
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
+      customTracks: [...baseProject.customTracks, nextTrack] as CustomTrack[],
+      activeTrackOrder: [...baseProject.activeTrackOrder, nextTrack.id],
     });
-    applySelection({ type: "custom-track", id: nextTrack.id });
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        customTrackLifecycleTargets: [{ trackId: nextTrack.id }],
+      }),
+    ).then((committed) => {
+      if (committed) applySelection({ type: "custom-track", id: nextTrack.id });
+    });
   }
 
   function createAttachedPoint(pointTrackId: string, time: number) {
@@ -4514,20 +4545,37 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function updateCustomTrackTypeOption(trackId: string, index: number, value: string) {
     const normalizedValue = value.trimStart();
-    updateCustomTrack(trackId, (track) => {
-      const previousValue = track.typeOptions[index];
-      const nextValue = normalizedValue.length > 0 ? normalizedValue : previousValue;
-      const nextTypeOptions = track.typeOptions.map((option, optionIndex) =>
-        optionIndex === index ? nextValue : option,
-      );
-      return {
-        ...track,
-        typeOptions: nextTypeOptions,
-        blocks: track.blocks.map((block) =>
-          block.type === previousValue ? { ...block, type: nextValue } : block,
-        ) as CustomTrack["blocks"],
-      } as CustomTrack;
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
+      customTracks: baseProject.customTracks.map((track) => {
+        const previousValue = track.id === trackId ? track.typeOptions[index] : undefined;
+        if (track.id !== trackId || previousValue === undefined) return track;
+        const nextValue = normalizedValue.length > 0 ? normalizedValue : previousValue;
+        return {
+          ...track,
+          typeOptions: track.typeOptions.map((option, optionIndex) =>
+            optionIndex === index ? nextValue : option),
+          blocks: track.blocks.map((block) =>
+            block.type === previousValue ? { ...block, type: nextValue } : block,
+          ) as CustomTrack["blocks"],
+        } as CustomTrack;
+      }) as CustomTrack[],
     });
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => {
+        const baseTrack = baseProject.customTracks.find((track) => track.id === trackId);
+        const nextTrack = nextProject.customTracks.find((track) => track.id === trackId);
+        if (!baseTrack || !nextTrack) return null;
+        return buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          customTrackStructureIds: [trackId],
+          contentTargets: baseTrack.blocks.flatMap((block) =>
+            nextTrack.blocks.find((candidate) => candidate.id === block.id)?.type !== block.type
+              ? [{ entityType: "custom-block" as const, entityId: block.id, trackId, field: "type" as const }]
+              : []),
+        });
+      },
+    );
   }
 
   function updateBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number, value: string) {
@@ -4726,21 +4774,38 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function removeCustomTrackTypeOption(trackId: string, index: number) {
-    updateCustomTrack(trackId, (track) => {
-      if (track.typeOptions.length <= 1) {
-        return track;
-      }
-      const removedValue = track.typeOptions[index];
-      const nextTypeOptions = track.typeOptions.filter((_, optionIndex) => optionIndex !== index);
-      const fallbackType = nextTypeOptions[0] ?? "类型 1";
-      return {
-        ...track,
-        typeOptions: nextTypeOptions,
-        blocks: track.blocks.map((block) =>
-          block.type === removedValue ? { ...block, type: fallbackType } : block,
-        ) as CustomTrack["blocks"],
-      } as CustomTrack;
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
+      customTracks: baseProject.customTracks.map((track) => {
+        if (track.id !== trackId || track.typeOptions.length <= 1 ||
+          index < 0 || index >= track.typeOptions.length) return track;
+        const removedValue = track.typeOptions[index];
+        const nextTypeOptions = track.typeOptions.filter((_, optionIndex) => optionIndex !== index);
+        const fallbackType = nextTypeOptions[0] ?? "类型 1";
+        return {
+          ...track,
+          typeOptions: nextTypeOptions,
+          blocks: track.blocks.map((block) =>
+            block.type === removedValue ? { ...block, type: fallbackType } : block,
+          ) as CustomTrack["blocks"],
+        } as CustomTrack;
+      }) as CustomTrack[],
     });
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => {
+        const baseTrack = baseProject.customTracks.find((track) => track.id === trackId);
+        const nextTrack = nextProject.customTracks.find((track) => track.id === trackId);
+        if (!baseTrack || !nextTrack) return null;
+        return buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          customTrackStructureIds: [trackId],
+          contentTargets: baseTrack.blocks.flatMap((block) =>
+            nextTrack.blocks.find((candidate) => candidate.id === block.id)?.type !== block.type
+              ? [{ entityType: "custom-block" as const, entityId: block.id, trackId, field: "type" as const }]
+              : []),
+        });
+      },
+    );
   }
 
   function removeBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number) {
@@ -4811,29 +4876,43 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!confirmed) {
       return;
     }
-    const projectWithoutTrack = {
-      ...currentProject,
-      activeTrackOrder: currentProject.activeTrackOrder.filter((id) => id !== trackId),
-      customTracks: currentProject.customTracks.filter((item) => item.id !== trackId) as CustomTrack[],
-      gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
+    const buildNextProject = (baseProject: ProjectData): ProjectData => {
+      const projectWithoutTrack = {
+        ...baseProject,
+        activeTrackOrder: baseProject.activeTrackOrder.filter((id) => id !== trackId),
+        customTracks: baseProject.customTracks.filter((item) => item.id !== trackId) as CustomTrack[],
+        gongcheAnnotations: baseProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
+      };
+      // 删除拥有者后，板眼记录保留但必须先断开指向已删除工尺的强引用。
+      return repairBanyanGongcheReferences(projectWithoutTrack).project;
     };
-    // 自定义轨删除会连带删除其工尺附属块，因此同样执行统一引用修复。
-    const nextProject = repairBanyanGongcheReferences(projectWithoutTrack).project;
-    if (editingCustomTextBlock?.trackId === trackId) {
-      cancelCustomTextEdit();
-    }
-    commitProject(nextProject);
-    if (
-      (selectedItem?.type === "custom-track" && selectedItem.id === trackId) ||
-      (selectedItem?.type === "custom-block" && selectedItem.trackId === trackId) ||
-      (selectedItem?.type === "gongche-track" && selectedItem.parentTrackId === trackId) ||
-      (selectedItem?.type === "gongche-block" &&
-        currentProject.gongcheAnnotations.some((item) => item.id === selectedItem.id && item.parentTrackId === trackId)) ||
-      (selectedItem?.type === "attached-point-track" && selectedItem.parentTrackId === trackId) ||
-      (selectedItem?.type === "attached-point" && selectedItem.parentTrackId === trackId)
-    ) {
-      applySelection(null);
-    }
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        customTrackLifecycleTargets: [{ trackId }],
+        lifecycleTargets: baseProject.gongcheAnnotations
+          .filter((item) => item.parentTrackId === trackId)
+          .map((item) => ({ entityType: "gongche-block" as const, entityId: item.id, trackId })),
+        stateTargets: baseProject.banyanMarks.flatMap((mark) => {
+          const nextMark = nextProject.banyanMarks.find((candidate) => candidate.id === mark.id);
+          return nextMark && !areProjectValuesEqual(mark, nextMark)
+            ? [{ entityType: "banyan-mark" as const, entityId: mark.id }]
+            : [];
+        }),
+      }),
+    ).then((committed) => {
+      if (!committed) return;
+      if (editingCustomTextBlock?.trackId === trackId) cancelCustomTextEdit();
+      if (
+        (selectedItem?.type === "custom-track" && selectedItem.id === trackId) ||
+        (selectedItem?.type === "custom-block" && selectedItem.trackId === trackId) ||
+        (selectedItem?.type === "gongche-track" && selectedItem.parentTrackId === trackId) ||
+        (selectedItem?.type === "gongche-block" &&
+          currentProject.gongcheAnnotations.some((item) => item.id === selectedItem.id && item.parentTrackId === trackId)) ||
+        (selectedItem?.type === "attached-point-track" && selectedItem.parentTrackId === trackId) ||
+        (selectedItem?.type === "attached-point" && selectedItem.parentTrackId === trackId)
+      ) applySelection(null);
+    });
   }
 
   function deleteAttachedPointTrack(pointTrackId: string) {
@@ -4852,23 +4931,35 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!confirmed) {
       return;
     }
-    if (location.parentType === "builtin") {
-      updateBuiltinTrack(location.parentTrack.id, (track) => ({
-        ...track,
-        attachedPointTracks: (track.attachedPointTracks ?? []).filter((pointTrack) => pointTrack.id !== pointTrackId),
-      }));
-    } else {
-      updateCustomTrack(location.parentTrack.id, (track) => ({
-        ...track,
-        attachedPointTracks: (track.attachedPointTracks ?? []).filter((pointTrack) => pointTrack.id !== pointTrackId),
-      }) as CustomTrack);
-    }
-    if (
-      (selectedItem?.type === "attached-point-track" && selectedItem.id === pointTrackId) ||
-      (selectedItem?.type === "attached-point" && selectedItem.trackId === pointTrackId)
-    ) {
-      applySelection(null);
-    }
+    const parentTrackId = location.parentTrack.id;
+    const parentTrackType = location.parentType;
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
+      builtinTracks: parentTrackType === "builtin"
+        ? baseProject.builtinTracks.map((track) => track.id === parentTrackId
+          ? { ...track, attachedPointTracks: track.attachedPointTracks.filter((item) => item.id !== pointTrackId) }
+          : track)
+        : baseProject.builtinTracks,
+      customTracks: parentTrackType === "custom"
+        ? baseProject.customTracks.map((track) => track.id === parentTrackId
+          ? ({
+              ...track,
+              attachedPointTracks: track.attachedPointTracks.filter((item) => item.id !== pointTrackId),
+            } as CustomTrack)
+          : track) as CustomTrack[]
+        : baseProject.customTracks,
+    });
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        attachedPointTrackLifecycleTargets: [{ pointTrackId, parentTrackId, parentTrackType }],
+      }),
+    ).then((committed) => {
+      if (committed && (
+        (selectedItem?.type === "attached-point-track" && selectedItem.id === pointTrackId) ||
+        (selectedItem?.type === "attached-point" && selectedItem.trackId === pointTrackId)
+      )) applySelection(null);
+    });
   }
 
   function undo() {
@@ -4876,7 +4967,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!previousEntry) return;
     if (requiresUndoConfirmation(previousEntry.action) &&
       !window.confirm(getUndoConfirmationMessage(previousEntry.action))) return;
-    if (previousEntry.commandEnvelope?.command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND) {
+    if (isAnnotationMutationLeaseRequiredCommandType(previousEntry.commandEnvelope?.command.type)) {
       void runHistoryMutationWithStructureLease(() => undoProject(() => true));
       return;
     }
@@ -4885,7 +4976,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function redo() {
     const nextEntry = redoStack[redoStack.length - 1];
-    if (nextEntry?.commandEnvelope?.command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND) {
+    if (isAnnotationMutationLeaseRequiredCommandType(nextEntry?.commandEnvelope?.command.type)) {
       void runHistoryMutationWithStructureLease(redoProject);
       return;
     }
@@ -5183,7 +5274,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     try {
       // 续期失效后结构命令仍保留在草稿中；保存前按真实 pending 事实补取租约，形成可恢复闭环。
       const requiresStructureLease = pendingOperationsRef.current.some(
-        (operation) => operation.commandEnvelope?.command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
+        (operation) => isAnnotationMutationLeaseRequiredCommandType(
+          operation.commandEnvelope?.command.type,
+        ),
       );
       if (requiresStructureLease && !mutationLease.getToken()) {
         await mutationLease.acquire("track_structure");

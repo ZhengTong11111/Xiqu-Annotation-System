@@ -29,6 +29,23 @@ export function buildProjectCustomTrackStructureCommand(
   return reconstructed && areProjectValuesEqual(reconstructed, nextProject) ? envelope : null;
 }
 
+// 结构事务复用同一提取逻辑，但完整项目覆盖证明由更高层事务统一完成。
+export function buildProjectCustomTrackStructureEnvelope(
+  baseProject: ProjectData,
+  nextProject: ProjectData,
+  trackIds: readonly string[],
+): CustomTrackStructureCommandEnvelope | null {
+  const uniqueTrackIds = [...new Set(trackIds)];
+  const items: CustomTrackStructureUpdateItem[] = [];
+  for (const trackId of uniqueTrackIds) {
+    const before = resolveCustomTrackStructureSnapshot(baseProject, trackId);
+    const after = resolveCustomTrackStructureSnapshot(nextProject, trackId);
+    if (!before || !after) return null;
+    items.push({ trackId, before, after });
+  }
+  return buildCustomTrackStructureUpdateEnvelope(items);
+}
+
 export function resolveCustomTrackStructureSnapshot(
   project: ProjectData,
   trackId: string,

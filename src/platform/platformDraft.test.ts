@@ -3,6 +3,7 @@ import test from "node:test";
 import { mockProject } from "../mockData";
 import type { ProjectDocumentRecoveryState } from "../state/projectDocumentState";
 import { buildProjectCustomTrackStructureCommand } from "../utils/customTrackStructureCommand";
+import { buildProjectTrackStructureTransactionCommand } from "../utils/trackStructureTransactionCommand";
 import {
   assessPlatformDraftCompatibility,
   buildPlatformDraftRecord,
@@ -137,6 +138,49 @@ test("平台草稿完整往返自定义轨道结构命令", () => {
   recoveryState.pendingOperations = [{
     ...recoveryState.pendingOperations[0],
     type: "annotation.track.structure.update",
+    commandEnvelope,
+  }];
+  const record = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState,
+  });
+  const normalized = normalizePlatformDraftRecord(record, {
+    userId: "user-1",
+    annotationFileId: "file-1",
+  });
+  assert.deepEqual(normalized?.pendingOperations[0].commandEnvelope, commandEnvelope);
+});
+
+test("平台草稿完整往返租约保护的结构事务", () => {
+  const recoveryState = createRecoveryState();
+  const currentProject = structuredClone(recoveryState.savedProject);
+  const trackId = currentProject.customTracks[0].id;
+  const oldType = currentProject.customTracks[0].typeOptions[0];
+  currentProject.customTracks[0].typeOptions[0] = "草稿新类型";
+  currentProject.customTracks[0].blocks = currentProject.customTracks[0].blocks.map((block) =>
+    block.type === oldType ? { ...block, type: "草稿新类型" } : block);
+  const commandEnvelope = buildProjectTrackStructureTransactionCommand(
+    recoveryState.savedProject,
+    currentProject,
+    {
+      customTrackStructureIds: [trackId],
+      contentTargets: recoveryState.savedProject.customTracks[0].blocks
+        .filter((block) => block.type === oldType)
+        .map((block) => ({
+          entityType: "custom-block" as const,
+          entityId: block.id,
+          trackId,
+          field: "type" as const,
+        })),
+    },
+  );
+  assert.ok(commandEnvelope);
+  recoveryState.currentProject = currentProject;
+  recoveryState.pendingOperations = [{
+    ...recoveryState.pendingOperations[0],
+    type: "annotation.track.structure.transaction.apply",
     commandEnvelope,
   }];
   const record = buildPlatformDraftRecord({

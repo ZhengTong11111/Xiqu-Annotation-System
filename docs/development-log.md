@@ -3627,3 +3627,107 @@ ProjectData builder、adapter 与编辑器接线：
   这些变化需要组合结构与实体内容/生命周期，不能扩大当前 update 命令的语义；批量导入和批量修复继续单列。
 - 服务端仍只验证、排序和持久化领域命令，不直接 apply 到权威 payload。WebSocket/presence 和服务端命令执行
   继续依赖领域覆盖率与冲突语义稳定后再推进。
+
+## 2026-08-04：R5a4c3 有界轨道结构事务与复合生命周期
+
+### 本轮任务书与实施边界
+
+- 本轮在 R5a4c2 commit `ec347fb` 上继续活动 goal。Codex 先核对 roadmap、现有结构租约、领域命令、
+  ProjectData apply、草稿和 clean catch-up 边界，再把被 gitignore 的 `CLAUDE_WORK.md` 整体替换为
+  R5a4c3 当前任务书。任务书只覆盖整条自定义轨生命周期、附属点轨生命周期，以及自定义 typeOptions
+  重命名/删除与 block.type 联动；没有保留上一轮模板或把历史日志塞进任务文件。
+- 明确排除内建轨整轨生命周期、内建 options、既有轨道重排、附属点轨 typeOptions/point label 联动、
+  批量导入/修复和 WebSocket。它们进入 R5a4c4，不能为了表面覆盖率把结构变化伪装成普通 transaction 或
+  在 command builder 失败时静默提交 legacy 快照。
+- 本轮由 Codex 直接按任务书实现、复核和测试，没有把外部代理的输出未经审查直接纳入。roadmap 在实现前
+  先标记 R5a4c3 进行中，完成验证后再改为已完成；本日志记录计划、实际代码、审查修复和偏差。
+
+### 共享结构命令合同
+
+- 新增 `packages/shared/src/trackStructureLifecycleCommands.ts`，定义两个只能作为结构事务子命令存在的严格
+  lifecycle leaf：`annotation.custom-track.lifecycle.update` 和
+  `annotation.attached-point-track.lifecycle.update`。它们不会进入顶层 operation action allowlist，避免
+  客户端绕过“顶层 action 必须明显要求租约”的服务端门禁。
+- 自定义轨非空快照保存轨道结构、完整拥有块 payload、附属点轨/点，以及 `customTracks` 和
+  `activeTrackOrder` 两个集合的 index、length、前后稳定锚点。附属点轨快照保存父轨 id/type、父集合位置、
+  完整点轨/点和操作前后展开状态。inverse 交换 before/after；创建/删除必须恰有一侧为空。
+- shared parser 对 unknown 输入执行精确 key、安全 id、时间与字符串长度、轨道类型/块文字形态、块身份集合、
+  递归分叉引用、点/点轨重复、集合位置和预算校验。结构成本复用既有结构快照成本，点轨及点也进入统一
+  500 实体上限；没有按外层 item 数伪装成有界命令。
+- 新增顶层 `annotation.track.structure.transaction.apply`。它可直接组合普通 timing/content/lifecycle/state、
+  既有 custom-track structure，以及上述两个结构 lifecycle leaf；必须至少包含一个结构子命令，最多 20 个
+  child、总成本最多 500，禁止普通 transaction 嵌套和结构事务递归。inverse 按 child 逆序逐个反向。
+- `isAnnotationMutationLeaseRequiredCommandType()` 成为 App undo/redo、保存前补锁和 API repository 的唯一结构
+  action 判别源，覆盖旧 structure update 与新 structure transaction。删除了各层对单个常量的重复判断。
+
+### ProjectData builder、apply 与完整性门禁
+
+- 新增 `trackStructureLifecycleCommand.ts`，集中创建整轨/点轨规范快照和集合位置；新增
+  `trackStructureLifecycleCommandApply.ts`，在局部项目内验证全部 before 后才重建集合。删除先移除目标，创建
+  再按最终位置落槽并复核相邻锚点，inverse 因此可恢复原位置而不是粗略 append。
+- 新增 `trackStructureTransactionCommand.ts`。高层 plan 把创建父轨、创建点轨、state、annotation lifecycle、
+  content、既有结构更新、删除点轨、删除父轨按依赖顺序组成一笔命令。builder 用新 apply 从 base 完整重建，
+  再与真实 next ProjectData 深比较；任何未声明变化都会返回 null。
+- 新增 `trackStructureTransactionCommandApply.ts`。每个 child 只写局部变量，任一 parser/precondition/apply 失败
+  返回 blocked，不泄漏前面已经应用的半成品；全部完成后再统一检查板眼/工尺引用和轨道容器完整性。
+- 审查中发现 `resolveCustomTrackLifecycleState()` 的 null 同时可能表示“真正不存在”和“customTracks 与
+  activeTrackOrder 已失配”。最终 builder 显式检查两处 occurrence，不再把畸形存在误编码成创建/删除。
+  同样增加点轨跨所有父轨的全局 occurrence 检查，局部父轨缺失不再掩盖同 id 已落在其他父轨的冲突。
+- 最终容器门禁验证：内建/自定义轨 id 不冲突、activeTrackOrder 无重复、每条自定义轨在排序中恰出现一次、
+  自定义块 id 在父轨内唯一、附属点轨 id 跨父轨唯一、点 id 在点轨内唯一。该门禁同时用于 lifecycle leaf
+  完成和整个结构事务完成。
+
+### 编辑器真实写路径与服务端接入
+
+- App 新增通用 `runTrackStructureMutation()`：先预览 no-op，再以现有串行门禁 acquire/reuse
+  `track_structure` lease；等待网络后基于最新 `projectRef` 重建 next。完整命令构造失败时释放本轮新取租约、
+  显示用户错误并保持项目不变，不再提交无法重放的 legacy 结构快照。
+- 自定义轨创建现在同时写 customTracks 和 activeTrackOrder 生命周期；删除自定义轨把板眼引用 state 修复、
+  根级工尺 lifecycle 删除和轨道 lifecycle 删除放入一笔结构事务。附属点轨在内建/自定义父轨上的创建删除
+  均保存父轨展开状态和精确集合位置。selection 与文字编辑态只在 commit 成功后更新。
+- 自定义 typeOptions 重命名/删除现在组合既有结构快照和所有命中 block.type 的 content child；纯增加/排序
+  继续复用 R5a4c2 的 structure update。被新通用入口完全替代且无调用方的旧 `updateCustomTrack()` 已删除；
+  仍服务 R5a4c4 边界的 builtin/attached-point updater 保留，没有为“清理”误删现行功能。
+- 通用 `annotationCommandApply.ts`、IndexedDB 草稿、history inverse/redo 和 clean committed-feed catch-up 增加
+  新顶层结构事务的单一分派。API repository 使用 shared 租约 helper，因此新事务即使数据库暂时没有活动
+  lease 行也会返回 `annotation_mutation_lease_required`，普通 operation 不受影响。
+
+### 自我审查与实现中修复
+
+- 初版测试只证明新结构 action 在无租约时被拒绝，不能证明持锁正向路径。最终 API 集成用例额外提交一条
+  持有效 token 的结构事务，并把它和旧结构 operation 一起声明进 revision save，确认 operation 接受、快照
+  revision 绑定和租约释放在真实 PostgreSQL 事务中完成。
+- 初版容器验证只检查 custom track id 与 point track id，遗漏 activeTrackOrder 一一对应、重复 block id 和
+  畸形 null 的歧义。上述门禁已补齐，并增加排序失配、重复块、跨父轨重复点轨的失败回归。
+- 审查删除了没有调用方的 `TRACK_STRUCTURE_LIFECYCLE_COMMAND_TYPES`。第一次完整构建随后准确发现两个只为该
+  常量服务的残留 import；删除僵尸导入后构建通过。没有保留“编译不报错但语义已失效”的过渡代码。
+- 本轮没有新依赖和 Prisma migration。TypeScript、现有 shared workspace、React document state 与租约运行时
+  已能清楚表达合同；为这一范围引入状态机或第三方事务库只会增加第二套语义。
+
+### 测试、构建与运行结果
+
+- `npm run test:custom-track-structure-command`：10/10。覆盖既有结构、整轨创建/删除与精确位置 inverse、内建
+  父轨点轨创建、自定义父轨点轨删除、跨父轨重复 id、typeOptions/content 联动、工尺/板眼删除依赖、坏
+  precondition、无结构事务、排序失配和重复块。
+- `npm run test:annotation-commands`：19/19；`npm run test:platform-drafts`：18/18；
+  `npm run test:platform-operation-catch-up`：14/14。新事务可严格解析/双重 inverse、在 IndexedDB 完整往返，
+  clean 客户端可原子重放 typeOptions 与 block type 联动。
+- `npm run test:platform-operations`：4/4；`npm run test:annotation-mutation-lease`：3/3；
+  `npm run test:annotation-transaction-command`：7/7。普通依赖事务合同未被结构事务扩容或破坏。
+- `npm run test:api`：91/91。真实 PostgreSQL 集成同时覆盖新结构事务无锁拒绝和持锁接受/提交，ACL、资源树、
+  上传、快照、审计、备份、监控和维护测试无回归；仍只有既有 node-postgres pg 9 弃用提示。
+- `npm run build` 通过 Prisma generation、shared、document-model、Web 和 API。Vite 转换 2068 个模块，主 JS
+  905.40 kB / gzip 270.89 kB；仅保留既有大 chunk 提示。`git diff --check` 通过。
+- 使用当前工作树重启 Fastify（PID 43029），`GET /api/health/ready` 返回 HTTP 200；数据库探针约 6.01 ms、
+  对象存储约 1.20 ms。开发库仍为 12 条 migration。
+- 本轮没有新增视觉界面，也没有调用浏览器自动化。人工验证重点是：平台首次新增/删除轨道时锁状态、整轨
+  删除后的工尺/板眼与 undo、内建/自定义父轨点轨增删、typeOptions 联动、保存释放租约，以及第二账号竞争。
+
+### 文档与下一轮
+
+- README 已更新用户可见的结构事务覆盖面；state architecture 记录结构 leaf、顶层事务、完整性门禁和
+  “结构 builder 失败必须阻止提交”策略；AGENTS 增加四个 ProjectData 模块、shared lifecycle 模块及唯一
+  租约判别规则；roadmap 将 R5a4c3 标为完成。
+- 下一轮 R5a4c4 应先盘点所有剩余 legacy 结构入口，再按风险拆分：轨道重排、内建轨配置/生命周期、附属点
+  轨 typeOptions 与 point label 联动，以及批量导入/修复。小而稳定的结构编辑可继续扩展有界命令；超预算
+  批量操作应使用显式受控流程，不能靠扩大 500 实体上限或静默 legacy 降级解决。

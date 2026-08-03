@@ -92,7 +92,10 @@ export function parseCustomTrackStructureCommandEnvelope(
     if (!item || trackIds.has(item.trackId) || areStructureValuesEqual(item.before, item.after)) return null;
     trackIds.add(item.trackId);
     // before/after 表达同一批结构身份，预算按两侧较大值计一次，防止单侧异常膨胀绕过 500 项上限。
-    totalCost += Math.max(getSnapshotCost(item.before), getSnapshotCost(item.after));
+    totalCost += Math.max(
+      getCustomTrackStructureSnapshotCost(item.before),
+      getCustomTrackStructureSnapshotCost(item.after),
+    );
     if (totalCost > MAX_COMMAND_ITEMS) return null;
     items.push(item);
   }
@@ -121,15 +124,15 @@ export function getCustomTrackStructureTargetKey(item: Pick<CustomTrackStructure
 
 function parseStructureItem(value: unknown): CustomTrackStructureUpdateItem | null {
   if (!isExactRecord(value, ["trackId", "before", "after"]) || !isSafeId(value.trackId)) return null;
-  const before = parseStructureSnapshot(value.before);
-  const after = parseStructureSnapshot(value.after);
+  const before = parseCustomTrackStructureSnapshot(value.before);
+  const after = parseCustomTrackStructureSnapshot(value.after);
   if (!before || !after || before.id !== value.trackId || after.id !== value.trackId ||
     before.trackType !== after.trackType ||
     !haveSameStableIds(before.blocks, after.blocks)) return null;
   return { trackId: value.trackId, before, after };
 }
 
-function parseStructureSnapshot(value: unknown): CustomTrackStructureSnapshot | null {
+export function parseCustomTrackStructureSnapshot(value: unknown): CustomTrackStructureSnapshot | null {
   if (!isExactRecord(value, [
     "id",
     "trackType",
@@ -274,7 +277,7 @@ function collectLaneIds(lanes: readonly CustomTrackStructureBranchLane[], ids: S
   return true;
 }
 
-function getSnapshotCost(snapshot: CustomTrackStructureSnapshot) {
+export function getCustomTrackStructureSnapshotCost(snapshot: CustomTrackStructureSnapshot) {
   return 1 + countLanes(snapshot.branching?.lanes ?? []) + snapshot.blocks.length;
 }
 

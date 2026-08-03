@@ -6,6 +6,7 @@ import {
   ANNOTATION_STATE_UPDATE_COMMAND,
   ANNOTATION_TRANSACTION_APPLY_COMMAND,
   CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
+  TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND,
   assessAnnotationContentExecution,
   assessAnnotationLifecycleExecution,
   assessAnnotationStateExecution,
@@ -14,12 +15,14 @@ import {
   buildAnnotationStateUpdateEnvelope,
   buildAnnotationTransactionEnvelope,
   buildCustomTrackStructureUpdateEnvelope,
+  buildTrackStructureTransactionEnvelope,
   MAX_ANNOTATION_CONTENT_LENGTH,
   ANNOTATION_COMMAND_ENVELOPE_VERSION,
   assessTimelineTimingExecution,
   buildTimelineTimingUpdateEnvelope,
   isValidAnnotationOperationPayload,
   invertAnnotationCommandEnvelope,
+  isAnnotationMutationLeaseRequiredCommandType,
   MAX_TIMELINE_COMMAND_ITEMS,
   parseAnnotationCommandEnvelope,
   parseAnnotationTransactionCommandEnvelope,
@@ -142,6 +145,37 @@ test("轨道结构命令拒绝悬空 lane、父节点错位、块父引用和宽
       ...valid.command,
       items: [{ trackId: "track-structure", before: cycleBefore, after: cycleAfter }],
     },
+  }), null);
+});
+
+test("结构事务必须包含结构叶命令、不可递归并统一要求租约", () => {
+  const before = customTrackStructureSnapshot();
+  const structure = buildCustomTrackStructureUpdateEnvelope([{
+    trackId: "track-structure",
+    before,
+    after: customTrackStructureSnapshot({ name: "结构事务" }),
+  }]);
+  assert.ok(structure);
+  const transaction = buildTrackStructureTransactionEnvelope([structure]);
+  assert.ok(transaction);
+  assert.equal(transaction.command.type, TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND);
+  assert.equal(isValidAnnotationOperationPayload(TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND, transaction), true);
+  assert.equal(isAnnotationMutationLeaseRequiredCommandType(TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND), true);
+  assert.deepEqual(invertAnnotationCommandEnvelope(invertAnnotationCommandEnvelope(transaction)), transaction);
+
+  const content = buildAnnotationContentUpdateEnvelope([{
+    entityType: "custom-block",
+    entityId: "block-one",
+    trackId: "track-structure",
+    field: "type",
+    before: "默认",
+    after: "新类型",
+  }]);
+  assert.ok(content);
+  assert.equal(buildTrackStructureTransactionEnvelope([content]), null);
+  assert.equal(parseAnnotationCommandEnvelope({
+    version: 1,
+    command: { type: TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND, commands: [transaction.command] },
   }), null);
 });
 

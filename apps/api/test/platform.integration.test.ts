@@ -3163,6 +3163,31 @@ test("平台资源 API 集成测试", async (suite) => {
         },
       });
       assert.equal(acceptedOperation.statusCode, 200, acceptedOperation.body);
+      const acceptedStructureTransaction = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/operations`,
+        payload: {
+          clientOperationId: "lease-structure-transaction-accepted",
+          baseRevision: 1,
+          action: "annotation.track.structure.transaction.apply",
+          payload: {
+            version: 1,
+            command: {
+              type: "annotation.track.structure.transaction.apply",
+              commands: [{
+                type: "annotation.track.structure.update",
+                items: [{
+                  trackId: "custom-track-one",
+                  before: structureBefore,
+                  after: { ...structureBefore, name: "结构事务改名" },
+                }],
+              }],
+            },
+          },
+          mutationLeaseToken: leaseToken,
+        },
+      });
+      assert.equal(acceptedStructureTransaction.statusCode, 200, acceptedStructureTransaction.body);
 
       const blockedSave = await jsonRequest(app, adminToken, {
         method: "PUT",
@@ -3192,7 +3217,7 @@ test("平台资源 API 集成测试", async (suite) => {
         payload: {
           baseRevision: 1,
           payload: { marker: "revision-2" },
-          clientOperationIds: ["lease-op-accepted"],
+          clientOperationIds: ["lease-op-accepted", "lease-structure-transaction-accepted"],
           mutationLeaseToken: leaseToken,
         },
       });
@@ -3235,6 +3260,34 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(structureOperationWithoutLease.statusCode, 409, structureOperationWithoutLease.body);
       assert.equal(
         (errorOf(structureOperationWithoutLease.json()).details as JsonObject).code,
+        "annotation_mutation_lease_required",
+      );
+      const structureTransactionWithoutLease = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/operations`,
+        payload: {
+          clientOperationId: "lease-structure-transaction-without-token",
+          baseRevision: 2,
+          action: "annotation.track.structure.transaction.apply",
+          payload: {
+            version: 1,
+            command: {
+              type: "annotation.track.structure.transaction.apply",
+              commands: [{
+                type: "annotation.track.structure.update",
+                items: [{
+                  trackId: "custom-track-one",
+                  before: structureBefore,
+                  after: { ...structureBefore, name: "结构事务改名" },
+                }],
+              }],
+            },
+          },
+        },
+      });
+      assert.equal(structureTransactionWithoutLease.statusCode, 409, structureTransactionWithoutLease.body);
+      assert.equal(
+        (errorOf(structureTransactionWithoutLease.json()).details as JsonObject).code,
         "annotation_mutation_lease_required",
       );
 

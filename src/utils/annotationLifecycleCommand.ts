@@ -230,7 +230,7 @@ export function applyAnnotationLifecycleItems(
       attachedPointTracks: replacePointCollections(track.attachedPointTracks, nextPointCollections),
     }) as CustomTrack),
   };
-  return validateLifecycleReferences(nextProject) ? nextProject : null;
+  return validateProjectAnnotationReferences(nextProject) ? nextProject : null;
 }
 
 // 判别联合后组装对应快照，禁止通过不安全断言把全局实体误装入轨道作用域。
@@ -482,7 +482,7 @@ function groupScopedLifecycleItems(
 }
 
 // 批次完成后的引用图才是权威结果；父子同批删除不应被中间态误判为孤儿。
-function validateLifecycleReferences(project: ProjectData) {
+export function validateProjectAnnotationReferences(project: ProjectData) {
   const lineIds = new Set(project.subtitleLines.map((line) => line.id));
   if (lineIds.size !== project.subtitleLines.length ||
     new Set(project.characterAnnotations.map((character) => character.id)).size !== project.characterAnnotations.length ||
