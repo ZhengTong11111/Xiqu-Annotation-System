@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ANNOTATION_CONTENT_UPDATE_COMMAND,
+  ANNOTATION_LIFECYCLE_UPDATE_COMMAND,
   assessAnnotationContentExecution,
+  assessAnnotationLifecycleExecution,
   buildAnnotationContentUpdateEnvelope,
+  buildAnnotationLifecycleUpdateEnvelope,
   MAX_ANNOTATION_CONTENT_LENGTH,
   ANNOTATION_COMMAND_ENVELOPE_VERSION,
   assessTimelineTimingExecution,
@@ -14,6 +17,111 @@ import {
   parseAnnotationCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
 } from "../dist/index.js";
+
+// 生命周期夹具显式携带集合位置，测试创建、删除和 inverse 是否保持同一稳定顺序事实。
+function customBlockState(id, index, collectionLength, previousEntityId, nextEntityId) {
+  return {
+    entity: {
+      id,
+      startTime: index,
+      endTime: index + 1,
+      text: "文字",
+      type: "类型",
+      branchScope: { mode: "lanes", laneIds: ["lane-1"] },
+      branchGroupId: null,
+      branchParentBlockId: null,
+    },
+    position: { index, collectionLength, previousEntityId, nextEntityId },
+  };
+}
+
+test("生命周期命令可创建、删除、反向并检查完整前置状态", () => {
+  const created = customBlockState("block-new", 1, 3, "block-a", "block-b");
+  const envelope = buildAnnotationLifecycleUpdateEnvelope([{
+    entityType: "custom-block",
+    entityId: "block-new",
+    trackId: "track-1",
+    before: null,
+    after: created,
+  }]);
+  assert.ok(envelope);
+  assert.equal(envelope.command.type, ANNOTATION_LIFECYCLE_UPDATE_COMMAND);
+  assert.equal(isValidAnnotationOperationPayload(ANNOTATION_LIFECYCLE_UPDATE_COMMAND, envelope), true);
+  assert.equal(assessAnnotationLifecycleExecution(envelope, [{
+    entityType: "custom-block",
+    entityId: "block-new",
+    trackId: "track-1",
+    parentExists: true,
+    current: null,
+  }]).status, "ready");
+
+  const inverse = invertAnnotationCommandEnvelope(envelope);
+  assert.deepEqual(inverse?.command.items[0].before, created);
+  assert.equal(inverse?.command.items[0].after, null);
+  assert.deepEqual(invertAnnotationCommandEnvelope(inverse), envelope);
+  created.entity.branchScope.laneIds[0] = "lane-mutated";
+  assert.deepEqual(envelope.command.items[0].after.entity.branchScope.laneIds, ["lane-1"]);
+});
+
+test("生命周期命令拒绝坏位置、宽松快照和重复目标", () => {
+  const validItem = {
+    entityType: "attached-point",
+    entityId: "point-1",
+    trackId: "point-track",
+    before: {
+      entity: { id: "point-1", time: 2, label: "呼吸" },
+      position: { index: 0, collectionLength: 1, previousEntityId: null, nextEntityId: null },
+    },
+    after: null,
+  };
+  assert.ok(buildAnnotationLifecycleUpdateEnvelope([validItem]));
+  assert.equal(buildAnnotationLifecycleUpdateEnvelope([validItem, validItem]), null);
+  assert.equal(buildAnnotationLifecycleUpdateEnvelope([{ ...validItem, before: null }]), null);
+  assert.equal(buildAnnotationLifecycleUpdateEnvelope([{
+    ...validItem,
+    before: {
+      ...validItem.before,
+      position: { ...validItem.before.position, previousEntityId: "impossible" },
+    },
+  }]), null);
+  assert.equal(buildAnnotationLifecycleUpdateEnvelope([{
+    ...validItem,
+    before: {
+      ...validItem.before,
+      entity: { ...validItem.before.entity, extra: true },
+    },
+  }]), null);
+});
+
+test("生命周期前置检查区分父容器、存在性和状态冲突", () => {
+  const state = customBlockState("block-delete", 0, 1, null, null);
+  const envelope = buildAnnotationLifecycleUpdateEnvelope([{
+    entityType: "custom-block",
+    entityId: "block-delete",
+    trackId: "track-delete",
+    before: state,
+    after: null,
+  }]);
+  assert.ok(envelope);
+  const parentMissing = assessAnnotationLifecycleExecution(envelope, [{
+    entityType: "custom-block",
+    entityId: "block-delete",
+    trackId: "track-delete",
+    parentExists: false,
+    current: null,
+  }]);
+  assert.equal(parentMissing.status, "blocked");
+  assert.equal(parentMissing.status === "blocked" ? parentMissing.issues[0].code : null, "parent_missing");
+  const stateMismatch = assessAnnotationLifecycleExecution(envelope, [{
+    entityType: "custom-block",
+    entityId: "block-delete",
+    trackId: "track-delete",
+    parentExists: true,
+    current: { ...state, entity: { ...state.entity, type: "已变化" } },
+  }]);
+  assert.equal(stateMismatch.status, "blocked");
+  assert.equal(stateMismatch.status === "blocked" ? stateMismatch.issues[0].code : null, "state_mismatch");
+});
 
 // 内容命令严格保存稳定字段、track scope，并复用通用 inverse/action 合同。
 test("内容领域命令可构建、反向并检查前置条件", () => {

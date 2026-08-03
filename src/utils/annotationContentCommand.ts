@@ -5,6 +5,7 @@ import {
   type AnnotationContentUpdateItem,
 } from "@xiqu/shared";
 import type { CustomTrack, ProjectData } from "../types";
+import { areProjectValuesEqual } from "./projectValueEquality";
 
 // UI 只声明稳定目标身份，字符串 before/after 始终由 base/next ProjectData 权威读取。
 export type AnnotationContentTarget = AnnotationContentUpdateItem extends infer TItem
@@ -178,27 +179,6 @@ function groupAnnotationContentUpdates(items: readonly AnnotationContentUpdateIt
 
 function getScopedEntityKey(trackId: string, entityId: string) {
   return `${trackId}:${entityId}`;
-}
-
-// ProjectData 是无环纯数据；引用相同的巨大媒体 URL 会立即返回，变化集合才递归比较。
-function areProjectValuesEqual(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true;
-  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) return false;
-  if (Array.isArray(left) || Array.isArray(right)) {
-    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-    for (let index = 0; index < left.length; index += 1) {
-      if (!areProjectValuesEqual(left[index], right[index])) return false;
-    }
-    return true;
-  }
-  const leftRecord = left as Record<string, unknown>;
-  const rightRecord = right as Record<string, unknown>;
-  const leftKeys = Object.keys(leftRecord);
-  const rightKeys = Object.keys(rightRecord);
-  if (leftKeys.length !== rightKeys.length || leftKeys.some(
-    (key) => !Object.prototype.hasOwnProperty.call(rightRecord, key),
-  )) return false;
-  return leftKeys.every((key) => areProjectValuesEqual(leftRecord[key], rightRecord[key]));
 }
 
 function assertNever(value: never): never {

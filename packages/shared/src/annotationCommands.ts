@@ -2,10 +2,12 @@
 export const ANNOTATION_COMMAND_ENVELOPE_VERSION = 1 as const;
 export const TIMELINE_TIMING_UPDATE_COMMAND = "timeline.items.timing.update" as const;
 export const ANNOTATION_CONTENT_UPDATE_COMMAND = "annotation.items.content.update" as const;
+export const ANNOTATION_LIFECYCLE_UPDATE_COMMAND = "annotation.items.lifecycle.update" as const;
 // 所有持久化边界复用这一份领域 action 表；新增命令时不能让草稿/API 各维护一套名单。
 export const ANNOTATION_DOMAIN_COMMAND_TYPES = [
   TIMELINE_TIMING_UPDATE_COMMAND,
   ANNOTATION_CONTENT_UPDATE_COMMAND,
+  ANNOTATION_LIFECYCLE_UPDATE_COMMAND,
 ] as const;
 export const MAX_ANNOTATION_COMMAND_ITEMS = 500;
 // 保留既有 timing 常量名作为公开合同别名，调用方无需因命令联合扩展而迁移。
@@ -70,9 +72,62 @@ export type AnnotationItemsContentUpdateCommand = {
   items: AnnotationContentUpdateItem[];
 };
 
+// 生命周期位置同时保留索引、集合长度和相邻稳定 id；inverse 因此能恢复原顺序，而不只恢复实体内容。
+export type AnnotationLifecyclePosition = {
+  index: number;
+  collectionLength: number;
+  previousEntityId: string | null;
+  nextEntityId: string | null;
+};
+
+export type AnnotationLifecycleBranchScope =
+  | { mode: "root" }
+  | { mode: "lanes"; laneIds: string[] };
+
+// 可选字段统一编码为 null，避免“字段缺失”和“字段为空”在不同客户端产生两种命令摘要。
+export type CustomBlockLifecycleSnapshot = {
+  id: string;
+  startTime: number;
+  endTime: number;
+  text: string | null;
+  type: string;
+  branchScope: AnnotationLifecycleBranchScope | null;
+  branchGroupId: string | null;
+  branchParentBlockId: string | null;
+};
+
+export type AttachedPointLifecycleSnapshot = {
+  id: string;
+  time: number;
+  label: string;
+};
+
+export type AnnotationLifecycleState<TEntity> = {
+  entity: TEntity;
+  position: AnnotationLifecyclePosition;
+};
+
+export type AnnotationLifecycleUpdateItem =
+  | LifecycleUpdateItem<"custom-block", CustomBlockLifecycleSnapshot>
+  | LifecycleUpdateItem<"attached-point", AttachedPointLifecycleSnapshot>;
+
+type LifecycleUpdateItem<TEntityType extends string, TSnapshot> = {
+  entityType: TEntityType;
+  entityId: string;
+  trackId: string;
+  before: AnnotationLifecycleState<TSnapshot> | null;
+  after: AnnotationLifecycleState<TSnapshot> | null;
+};
+
+export type AnnotationItemsLifecycleUpdateCommand = {
+  type: typeof ANNOTATION_LIFECYCLE_UPDATE_COMMAND;
+  items: AnnotationLifecycleUpdateItem[];
+};
+
 export type AnnotationDomainCommand =
   | TimelineItemsTimingUpdateCommand
-  | AnnotationItemsContentUpdateCommand;
+  | AnnotationItemsContentUpdateCommand
+  | AnnotationItemsLifecycleUpdateCommand;
 
 export type TimelineTimingCommandEnvelope = {
   version: typeof ANNOTATION_COMMAND_ENVELOPE_VERSION;
@@ -84,9 +139,15 @@ export type AnnotationContentCommandEnvelope = {
   command: AnnotationItemsContentUpdateCommand;
 };
 
+export type AnnotationLifecycleCommandEnvelope = {
+  version: typeof ANNOTATION_COMMAND_ENVELOPE_VERSION;
+  command: AnnotationItemsLifecycleUpdateCommand;
+};
+
 export type AnnotationCommandEnvelope =
   | TimelineTimingCommandEnvelope
-  | AnnotationContentCommandEnvelope;
+  | AnnotationContentCommandEnvelope
+  | AnnotationLifecycleCommandEnvelope;
 
 // 调用者提供的当前时间快照与命令目标使用同一稳定身份，不把 ProjectData 结构泄漏到 shared。
 export type TimelineTimingActual = Pick<
@@ -242,6 +303,52 @@ export function parseAnnotationContentCommandEnvelope(
   };
 }
 
+// 生命周期 builder 只复制并稳定排序；实体快照、位置和批量集合不变量全部交回严格 parser 复核。
+export function buildAnnotationLifecycleUpdateEnvelope(
+  items: readonly AnnotationLifecycleUpdateItem[],
+): AnnotationLifecycleCommandEnvelope | null {
+  if (items.length === 0 || items.length > MAX_ANNOTATION_COMMAND_ITEMS) return null;
+  const copiedItems = items
+    .map(cloneLifecycleItem)
+    .sort((left, right) => compareStableKeys(
+      getAnnotationLifecycleTargetKey(left),
+      getAnnotationLifecycleTargetKey(right),
+    ));
+  return parseAnnotationLifecycleCommandEnvelope({
+    version: ANNOTATION_COMMAND_ENVELOPE_VERSION,
+    command: { type: ANNOTATION_LIFECYCLE_UPDATE_COMMAND, items: copiedItems },
+  });
+}
+
+// 生命周期 unknown 输入拒绝宽松 CRUD：每项必须恰好表示一次创建或删除，并通过整组集合事实校验。
+export function parseAnnotationLifecycleCommandEnvelope(
+  value: unknown,
+): AnnotationLifecycleCommandEnvelope | null {
+  if (!isExactRecord(value, ["version", "command"]) ||
+    value.version !== ANNOTATION_COMMAND_ENVELOPE_VERSION ||
+    !isExactRecord(value.command, ["type", "items"]) ||
+    value.command.type !== ANNOTATION_LIFECYCLE_UPDATE_COMMAND ||
+    !Array.isArray(value.command.items) ||
+    value.command.items.length === 0 ||
+    value.command.items.length > MAX_ANNOTATION_COMMAND_ITEMS) return null;
+
+  const items: AnnotationLifecycleUpdateItem[] = [];
+  const targets = new Set<string>();
+  for (const rawItem of value.command.items) {
+    const item = parseLifecycleItem(rawItem);
+    if (!item) return null;
+    const key = getAnnotationLifecycleTargetKey(item);
+    if (targets.has(key)) return null;
+    targets.add(key);
+    items.push(item);
+  }
+  if (!validateLifecycleCollectionFacts(items)) return null;
+  return {
+    version: ANNOTATION_COMMAND_ENVELOPE_VERSION,
+    command: { type: ANNOTATION_LIFECYCLE_UPDATE_COMMAND, items },
+  };
+}
+
 // 通用入口先读取判别字段，再交给单域 parser；未知命令不能落入某个宽松默认分支。
 export function parseAnnotationCommandEnvelope(value: unknown): AnnotationCommandEnvelope | null {
   if (!isRecord(value) || !isRecord(value.command)) return null;
@@ -250,6 +357,9 @@ export function parseAnnotationCommandEnvelope(value: unknown): AnnotationComman
   }
   if (value.command.type === ANNOTATION_CONTENT_UPDATE_COMMAND) {
     return parseAnnotationContentCommandEnvelope(value);
+  }
+  if (value.command.type === ANNOTATION_LIFECYCLE_UPDATE_COMMAND) {
+    return parseAnnotationLifecycleCommandEnvelope(value);
   }
   return null;
 }
@@ -260,17 +370,21 @@ export function invertAnnotationCommandEnvelope(
 ): AnnotationCommandEnvelope | null {
   const envelope = parseAnnotationCommandEnvelope(value);
   if (!envelope) return null;
-  return envelope.command.type === TIMELINE_TIMING_UPDATE_COMMAND
-    ? buildTimelineTimingUpdateEnvelope(envelope.command.items.map((item) => ({
+  if (envelope.command.type === TIMELINE_TIMING_UPDATE_COMMAND) {
+    return buildTimelineTimingUpdateEnvelope(envelope.command.items.map((item) => ({
+      ...item,
+      before: item.after,
+      after: item.before,
+    })));
+  }
+  if (envelope.command.type === ANNOTATION_CONTENT_UPDATE_COMMAND) {
+    return buildAnnotationContentUpdateEnvelope(envelope.command.items.map((item) => ({
         ...item,
         before: item.after,
         after: item.before,
-      })))
-    : buildAnnotationContentUpdateEnvelope(envelope.command.items.map((item) => ({
-        ...item,
-        before: item.after,
-        after: item.before,
-      })));
+    })));
+  }
+  return buildAnnotationLifecycleUpdateEnvelope(envelope.command.items.map(invertLifecycleItem));
 }
 
 // 执行前一次性检查全部目标；返回 ready 之前调用者不得修改项目，确保批量命令原子应用。
@@ -357,6 +471,63 @@ export function assessAnnotationContentExecution(
     : { status: "ready", envelope };
 }
 
+export type AnnotationLifecycleActual = Pick<
+  AnnotationLifecycleUpdateItem,
+  "entityType" | "entityId" | "trackId"
+> & {
+  parentExists: boolean;
+  current: AnnotationLifecycleUpdateItem["before"];
+};
+
+export type AnnotationLifecyclePreconditionIssue =
+  | { code: "parent_missing"; targetKey: string }
+  | { code: "target_presence_mismatch"; targetKey: string }
+  | { code: "state_mismatch"; targetKey: string };
+
+// 生命周期前置检查同时验证父容器、存在性、完整实体和集合位置，全部 ready 前不得重建任何集合。
+export function assessAnnotationLifecycleExecution(
+  value: unknown,
+  actuals: readonly AnnotationLifecycleActual[],
+):
+  | { status: "invalid_command" }
+  | { status: "blocked"; envelope: AnnotationLifecycleCommandEnvelope; issues: AnnotationLifecyclePreconditionIssue[] }
+  | { status: "ready"; envelope: AnnotationLifecycleCommandEnvelope } {
+  const envelope = parseAnnotationLifecycleCommandEnvelope(value);
+  if (!envelope) return { status: "invalid_command" };
+  const actualByKey = new Map<string, AnnotationLifecycleActual>();
+  const duplicates = new Set<string>();
+  for (const actual of actuals) {
+    const key = getAnnotationLifecycleTargetKey(actual);
+    if (actualByKey.has(key) || duplicates.has(key)) {
+      actualByKey.delete(key);
+      duplicates.add(key);
+    } else {
+      actualByKey.set(key, actual);
+    }
+  }
+
+  const issues: AnnotationLifecyclePreconditionIssue[] = [];
+  for (const item of envelope.command.items) {
+    const targetKey = getAnnotationLifecycleTargetKey(item);
+    const actual = actualByKey.get(targetKey);
+    if (!actual?.parentExists) {
+      issues.push({ code: "parent_missing", targetKey });
+      continue;
+    }
+    const expected = item.before;
+    if ((actual.current === null) !== (expected === null)) {
+      issues.push({ code: "target_presence_mismatch", targetKey });
+      continue;
+    }
+    if (!areLifecycleValuesEqual(actual.current, expected)) {
+      issues.push({ code: "state_mismatch", targetKey });
+    }
+  }
+  return issues.length > 0
+    ? { status: "blocked", envelope, issues }
+    : { status: "ready", envelope };
+}
+
 // API 只接受显式 legacy action 或 action/envelope 一致的已知领域命令。
 export function isValidAnnotationOperationPayload(action: unknown, payload: unknown): boolean {
   if (typeof action !== "string") return false;
@@ -378,6 +549,13 @@ export function getAnnotationContentTargetKey(
   item: Pick<AnnotationContentUpdateItem, "entityType" | "entityId" | "field" | "trackId">,
 ) {
   return `${item.entityType}:${item.trackId ?? ""}:${item.entityId}:${item.field}`;
+}
+
+// 生命周期目标只由实体类型、父集合和稳定 id 定位；状态与位置不参与身份。
+export function getAnnotationLifecycleTargetKey(
+  item: Pick<AnnotationLifecycleUpdateItem, "entityType" | "entityId" | "trackId">,
+) {
+  return `${item.entityType}:${item.trackId}:${item.entityId}`;
 }
 
 // 逐项解析按 entity/field 配对决定 trackId 是否必需，禁止借内容命令改任意字段。
@@ -403,6 +581,163 @@ function parseContentUpdateItem(value: unknown): AnnotationContentUpdateItem | n
   if (globalValid && !hasTrack) return { ...value } as AnnotationContentUpdateItem;
   if (scopedValid && hasTrack && isSafeId(value.trackId)) return { ...value } as AnnotationContentUpdateItem;
   return null;
+}
+
+// 生命周期单项采用固定六字段，before/after 只能一侧非空，禁止借 create/delete 协议做实体更新。
+function parseLifecycleItem(value: unknown): AnnotationLifecycleUpdateItem | null {
+  if (!isExactRecord(value, ["entityType", "entityId", "trackId", "before", "after"]) ||
+    !isSafeId(value.entityId) ||
+    !isSafeId(value.trackId) ||
+    (value.entityType !== "custom-block" && value.entityType !== "attached-point") ||
+    (value.before === null) === (value.after === null)) return null;
+
+  if (value.entityType === "custom-block") {
+    const before = parseLifecycleState(value.before, parseCustomBlockLifecycleSnapshot);
+    const after = parseLifecycleState(value.after, parseCustomBlockLifecycleSnapshot);
+    if ((value.before !== null && !before) || (value.after !== null && !after)) return null;
+    const state = before ?? after;
+    if (!state || state.entity.id !== value.entityId) return null;
+    return {
+      entityType: "custom-block",
+      entityId: value.entityId,
+      trackId: value.trackId,
+      before,
+      after,
+    };
+  }
+
+  const before = parseLifecycleState(value.before, parseAttachedPointLifecycleSnapshot);
+  const after = parseLifecycleState(value.after, parseAttachedPointLifecycleSnapshot);
+  if ((value.before !== null && !before) || (value.after !== null && !after)) return null;
+  const state = before ?? after;
+  if (!state || state.entity.id !== value.entityId) return null;
+  return {
+    entityType: "attached-point",
+    entityId: value.entityId,
+    trackId: value.trackId,
+    before,
+    after,
+  };
+}
+
+// null 是合法的不存在状态；非 null 状态必须同时通过实体和位置 parser。
+function parseLifecycleState<TEntity>(
+  value: unknown,
+  parseEntity: (entity: unknown) => TEntity | null,
+): AnnotationLifecycleState<TEntity> | null {
+  if (value === null) return null;
+  if (!isExactRecord(value, ["entity", "position"])) return null;
+  const entity = parseEntity(value.entity);
+  const position = parseLifecyclePosition(value.position);
+  return entity && position ? { entity, position } : null;
+}
+
+// 位置边界必须自洽：首项没有前邻、末项没有后邻，中间项两侧都必须给出稳定 id。
+function parseLifecyclePosition(value: unknown): AnnotationLifecyclePosition | null {
+  if (!isExactRecord(value, ["index", "collectionLength", "previousEntityId", "nextEntityId"]) ||
+    !Number.isSafeInteger(value.index) ||
+    !Number.isSafeInteger(value.collectionLength) ||
+    (value.index as number) < 0 ||
+    (value.collectionLength as number) <= 0 ||
+    (value.index as number) >= (value.collectionLength as number) ||
+    (value.previousEntityId !== null && !isSafeId(value.previousEntityId)) ||
+    (value.nextEntityId !== null && !isSafeId(value.nextEntityId))) return null;
+  const index = value.index as number;
+  const collectionLength = value.collectionLength as number;
+  if ((index === 0) !== (value.previousEntityId === null) ||
+    (index === collectionLength - 1) !== (value.nextEntityId === null)) return null;
+  return {
+    index,
+    collectionLength,
+    previousEntityId: value.previousEntityId,
+    nextEntityId: value.nextEntityId,
+  };
+}
+
+// 自定义块快照固定所有可选字段，防止借生命周期命令夹带未知块属性。
+function parseCustomBlockLifecycleSnapshot(value: unknown): CustomBlockLifecycleSnapshot | null {
+  if (!isExactRecord(value, [
+    "id",
+    "startTime",
+    "endTime",
+    "text",
+    "type",
+    "branchScope",
+    "branchGroupId",
+    "branchParentBlockId",
+  ]) ||
+    !isSafeId(value.id) ||
+    !isNonNegativeFiniteNumber(value.startTime) ||
+    !isNonNegativeFiniteNumber(value.endTime) ||
+    value.endTime < value.startTime ||
+    (value.text !== null && (typeof value.text !== "string" || value.text.length > MAX_ANNOTATION_CONTENT_LENGTH)) ||
+    typeof value.type !== "string" ||
+    value.type.length > MAX_ANNOTATION_CONTENT_LENGTH ||
+    (value.branchGroupId !== null && !isSafeId(value.branchGroupId)) ||
+    (value.branchParentBlockId !== null && !isSafeId(value.branchParentBlockId))) return null;
+  const branchScope = parseLifecycleBranchScope(value.branchScope);
+  if (value.branchScope !== null && !branchScope) return null;
+  return {
+    id: value.id,
+    startTime: value.startTime,
+    endTime: value.endTime,
+    text: value.text,
+    type: value.type,
+    branchScope,
+    branchGroupId: value.branchGroupId,
+    branchParentBlockId: value.branchParentBlockId,
+  };
+}
+
+// 分叉归属只接受根轨或非空且不重复的稳定 lane id 集合。
+function parseLifecycleBranchScope(value: unknown): AnnotationLifecycleBranchScope | null {
+  if (value === null) return null;
+  if (isExactRecord(value, ["mode"]) && value.mode === "root") return { mode: "root" };
+  if (!isExactRecord(value, ["mode", "laneIds"]) ||
+    value.mode !== "lanes" ||
+    !Array.isArray(value.laneIds) ||
+    value.laneIds.length === 0 ||
+    value.laneIds.length > MAX_ANNOTATION_COMMAND_ITEMS) return null;
+  const laneIds = value.laneIds.filter(isSafeId);
+  if (laneIds.length !== value.laneIds.length || new Set(laneIds).size !== laneIds.length) return null;
+  return { mode: "lanes", laneIds: [...laneIds] };
+}
+
+// 附属点是最小叶实体，只接受稳定 id、有限非负时间和有界标签。
+function parseAttachedPointLifecycleSnapshot(value: unknown): AttachedPointLifecycleSnapshot | null {
+  if (!isExactRecord(value, ["id", "time", "label"]) ||
+    !isSafeId(value.id) ||
+    !isNonNegativeFiniteNumber(value.time) ||
+    typeof value.label !== "string" ||
+    value.label.length > MAX_ANNOTATION_CONTENT_LENGTH) return null;
+  return { id: value.id, time: value.time, label: value.label };
+}
+
+// 同一父集合的状态必须声明一致长度和唯一索引；长度变化必须等于创建数减删除数。
+function validateLifecycleCollectionFacts(items: readonly AnnotationLifecycleUpdateItem[]) {
+  const groups = new Map<string, AnnotationLifecycleUpdateItem[]>();
+  for (const item of items) {
+    const key = `${item.entityType}:${item.trackId}`;
+    const group = groups.get(key) ?? [];
+    group.push(item);
+    groups.set(key, group);
+  }
+  for (const group of groups.values()) {
+    const beforeStates = group.flatMap((item) => item.before ? [item.before] : []);
+    const afterStates = group.flatMap((item) => item.after ? [item.after] : []);
+    const beforeLengths = new Set(beforeStates.map((state) => state.position.collectionLength));
+    const afterLengths = new Set(afterStates.map((state) => state.position.collectionLength));
+    if (beforeLengths.size > 1 || afterLengths.size > 1 ||
+      new Set(beforeStates.map((state) => state.position.index)).size !== beforeStates.length ||
+      new Set(afterStates.map((state) => state.position.index)).size !== afterStates.length) return false;
+    const beforeLength = beforeStates[0]?.position.collectionLength;
+    const afterLength = afterStates[0]?.position.collectionLength;
+    if (beforeLength !== undefined && afterLength !== undefined &&
+      afterLength !== beforeLength - beforeStates.length + afterStates.length) return false;
+    if (beforeLength === undefined && afterLength !== undefined && afterLength < afterStates.length) return false;
+    if (afterLength === undefined && beforeLength !== undefined && beforeLength < beforeStates.length) return false;
+  }
+  return true;
 }
 
 // 单项解析同时执行 track scope 与时间范围约束，点状实体必须使用零长度区间。
@@ -457,6 +792,59 @@ function cloneTimingItem(item: TimelineTimingUpdateItem): TimelineTimingUpdateIt
     before: { ...item.before },
     after: { ...item.after },
   };
+}
+
+// 生命周期 builder 深复制嵌套位置和 laneIds，防止调用者后续修改实体快照污染已记录命令。
+function cloneLifecycleItem(item: AnnotationLifecycleUpdateItem): AnnotationLifecycleUpdateItem {
+  if (item.entityType === "custom-block") {
+    const cloneState = (
+      state: AnnotationLifecycleState<CustomBlockLifecycleSnapshot> | null,
+    ): AnnotationLifecycleState<CustomBlockLifecycleSnapshot> | null => state === null
+      ? null
+      : {
+          entity: {
+            ...state.entity,
+            branchScope: state.entity.branchScope?.mode === "lanes"
+              ? { mode: "lanes", laneIds: [...state.entity.branchScope.laneIds] }
+              : state.entity.branchScope?.mode === "root"
+                ? { mode: "root" }
+                : null,
+          },
+          position: { ...state.position },
+        };
+    return { ...item, before: cloneState(item.before), after: cloneState(item.after) };
+  }
+  const cloneState = (
+    state: AnnotationLifecycleState<AttachedPointLifecycleSnapshot> | null,
+  ): AnnotationLifecycleState<AttachedPointLifecycleSnapshot> | null => state === null
+    ? null
+    : { entity: { ...state.entity }, position: { ...state.position } };
+  return { ...item, before: cloneState(item.before), after: cloneState(item.after) };
+}
+
+// 判别联合必须在 helper 内逐类交换，避免 TypeScript 把两种实体快照错误扩成可交叉联合。
+function invertLifecycleItem(item: AnnotationLifecycleUpdateItem): AnnotationLifecycleUpdateItem {
+  if (item.entityType === "custom-block") {
+    return { ...item, before: item.after, after: item.before };
+  }
+  return { ...item, before: item.after, after: item.before };
+}
+
+// shared 前置条件比较的是规范化纯数据，递归比较可覆盖 laneIds 而不依赖 JSON 属性顺序。
+function areLifecycleValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    return left.every((item, index) => areLifecycleValuesEqual(item, right[index]));
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key) => Object.prototype.hasOwnProperty.call(rightRecord, key) &&
+      areLifecycleValuesEqual(leftRecord[key], rightRecord[key]));
 }
 
 function areTimingValuesEqual(left: TimelineTimingValue, right: TimelineTimingValue) {

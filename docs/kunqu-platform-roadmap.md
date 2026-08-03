@@ -27,7 +27,8 @@ precondition/inverse/all-or-nothing ProjectData apply；R5a2b 已完成服务端
 opaque 续读游标和有界 operation feed。R5a3a 已把保存声明的 operation 与新 payload revision 在同一事务
 绑定，并建立独立 committed feed 与快照 cursor；R5a3b 已完成 clean-only HTTP catch-up、原子领域命令
 重放与权威快照降级。R5a4a 已完成逐字/句/动作/自定义块/附属点的稳定内容命令、严格全项目差异门禁、
-草稿往返和混合 timing/content 追赶。下一步 R5a4b 设计实体创建/删除及依赖闭包；
+草稿往返和混合 timing/content 追赶。R5a4b1 已完成自定义块/附属点叶实体创建删除命令；下一步
+R5a4b2 处理逐字/句与自定义块工尺依赖闭包；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -429,7 +430,13 @@ opaque 续读游标和有界 operation feed。R5a3a 已把保存声明的 operat
   no-op 与 action/type；ProjectData builder 以同一纯写入器重建完整 next，发现任何时间、结构或其他合同外
   变化即回退 snapshot。五类 apply/inverse 全量前置检查、IndexedDB 草稿、API replayability 和 clean HTTP
   catch-up 已共用通用命令分派，混合 timing/content revision 链保持原子。
-- R5a4b：再覆盖实体创建/删除及必要依赖闭包；轨道结构、递归分叉和批量导入需单独设计锁/事务命令。
+- R5a4b 按依赖闭包分阶段推进，不能用一个宽松 CRUD 命令覆盖所有实体：
+  - R5a4b1 已完成：当前格式真实使用的自定义块与附属点叶实体创建/删除，严格保存父作用域、完整快照、集合
+    位置、inverse 和 all-or-nothing 前置条件；有关联工尺的自定义块先回退快照；混合
+    timing/content/lifecycle 链可 clean catch-up。旧 `actionAnnotations` 只保留导入兼容，不再扩展命令。
+  - R5a4b2：逐字/句级字幕与自定义块生命周期，显式覆盖句文本/边界同步和关联工尺块级联。
+  - R5a4b3：工尺块/符号、板眼标记/区段等复合实体，先固定引用完整性和删除策略再开放命令。
+  - 轨道结构、递归分叉、批量导入和大范围修复仍单独设计锁/受控事务命令，不纳入普通实体 CRUD。
 - WebSocket 会话、presence、光标/选区与连接状态。
 - 服务端 operation 排序、确认、重放和权限复核。
 - 先针对块级编辑实现协作，再评估 OT/CRDT；不直接合并任意完整快照。

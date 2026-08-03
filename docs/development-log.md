@@ -3183,3 +3183,95 @@ presence 明确留在后续。本轮由 Codex 直接审查和实现，没有调�
 - R5a4b 必须先按实体依赖设计 create/delete 命令：明确 id 生成、集合插入顺序、父子依赖、inverse、
   已存在/已删除前置条件和完整 next 重建。轨道结构、递归分叉及批量导入仍不能伪装成普通块创建删除；
   WebSocket/presence 也应等稳定 mutation 合同继续扩展后再进入。
+
+## 2026-08-04：R5a4b1 自定义块与附属点叶实体生命周期命令
+
+计划、审计与范围修正：
+
+- 本轮从 R5a4a commit `31c7ce9` 继续活动 goal。Codex 先确认工作树干净、分支领先远端 2 个提交，再读取
+  roadmap、shared command union、ProjectData 类型、App 全部创建/删除入口、项目文件迁移和 committed
+  catch-up。随后把 gitignore 中的 `CLAUDE_WORK.md` 整体替换为 R5a4b1 当前任务书，并先在 roadmap 把
+  R5a4b 拆成叶实体、句/工尺依赖闭包、复合工尺/板眼三个子阶段。
+- 初始计划把 `actionAnnotations` 当作叶实体。代码审计发现当前文件格式只保留内建逐字轨；旧内建动作轨和
+  `actionAnnotations` 会在 `normalizeImportedProjectFile()` 中迁移为 custom action track/block，随后把
+  action 数组归一化为空。继续给该数组增加生命周期协议会扩展僵尸模型。任务书、roadmap 和实现因此在
+  写协议前修正为当前 UI 真正使用的 custom-block 与 attached-point。
+- custom-block 可能拥有工尺子块，所以 R5a4b1 只接受“没有关联工尺级联”的叶形态。删除若同步移除工尺、
+  混合多选还改变字符/板眼或任何其他项目字段，完整 next 门禁返回 null 并保留 legacy snapshot。逐字/句、
+  工尺引用与板眼区段留给后续显式依赖闭包，而不是被宽松 CRUD 悄悄遗漏。
+- 本轮由 Codex 直接规划、实现、自审和验证，没有调用 Claude Code、GLM、DeepSeek 或其他代理。纯
+  TypeScript 集合规划足够清晰，没有新增依赖。
+
+共享合同与集合顺序语义：
+
+- shared 新增 version 1 `annotation.items.lifecycle.update`，并加入唯一 `ANNOTATION_DOMAIN_COMMAND_TYPES`、
+  envelope/command union、通用 parser、inverse 和 API action/payload allowlist。首批 item 只允许
+  custom-block 与 attached-point，必须携带安全 `entityId/trackId`，before/after 恰有一侧为 null；两侧
+  同空、同存或借生命周期命令更新实体均 fail closed。
+- 非空状态包含完整规范实体和位置。custom block 快照保留起止时间、文字或动作轨的 null text、type、
+  branchScope/laneIds、branchGroupId 和 branchParentBlockId；attached point 保留 id/time/label。可选字段统一
+  编码 null，builder 深复制 laneIds，避免不同客户端用“缺字段/空字段”制造两个 operation 指纹。
+- 位置状态不是 UI 装饰，而是 `index/collectionLength/previousEntityId/nextEntityId` 四项协作事实。parser
+  校验边界索引必须对应 null 邻居、同父集合长度一致、before/after 索引唯一，以及长度变化等于创建数减
+  删除数。最多 500 项；实体、分叉 id、字符串、有限非负时间、区间、额外字段和重复目标均严格验证。
+- 生命周期 assessment 一次区分 parent_missing、target_presence_mismatch 和 state_mismatch。完整实体和位置
+  都匹配前才 ready；inverse 只交换 before/after 并重新经过 builder/parser，因此删除可以恢复原索引而非
+  追加到尾部。
+
+ProjectData builder、adapter 与编辑器接线：
+
+- 新 `annotationLifecycleCommand.ts` 唯一解释父集合和快照。自定义块要求唯一 custom track id；附属点在
+  内建/自定义父轨的所有 point track 中要求 id 唯一；重复父或重复实体不会“取第一个”。builder 从 base/
+  next 权威读取两侧状态，拒绝双方同存/同缺，再调用纯 apply 重建完整 next。
+- 同一集合的多项变化不是逐个 splice：先移除全部 before 目标，按 after 的最终 index 占位，再以原顺序
+  填入未修改实体，最后复核集合长度和新实体的前后邻居。任一集合计划失败返回 null，其他集合也不落地。
+  `annotationLifecycleCommandApply.ts` 固定执行 strict parse、resolve all parents/actuals、assess all、grouped
+  immutable apply；通用 dispatcher 仅新增 lifecycle 判别，不复制单域逻辑。
+- R5a4a 的 ProjectData 深比较抽到 `projectValueEquality.ts`，内容和生命周期 builder 共用。它保持引用优先、
+  数组有序和对象自有字段精确比较，没有新增 JSON.stringify 或 target-only 第二路径。
+- App 新增一个 `commitProjectWithLifecycle()` 边界。自定义文字/动作块创建、无工尺级联单删、附属点创建/
+  单删，以及多选中的 custom-block/attached-point 都只声明候选目标；builder 证明不了完整 next 时仍调用
+  原 `commitProject` legacy 路径。混合多选因此不会只记录一半事实。
+- 自审发现候选最初从 `${trackId}:${entityId}` 复合 key 再拆分，但协议允许 id 含冒号；该实现会错误寻址，
+  在测试前改为直接从结构化 TimelineSelectionItem 生成目标。创建 custom block 也从写入
+  `branchScope: undefined` 改为条件 spread，保证内存对象、命令重建和 JSON 往返使用相同字段集合。
+- `actionAnnotations` 的既有时间/内容兼容代码本轮没有顺手大删，避免把协议阶段扩成数据模型迁移；但没有
+  新增任何 action lifecycle 调用或测试，AGENTS 已明确当前功能必须面向 custom block。
+
+草稿、API 与 catch-up：
+
+- IndexedDB 草稿本来已复用领域命令总表和通用 parser，无需增加新的类型硬编码。新增测试证明 lifecycle
+  完整实体和位置可以 unknown 校验后原样往返，坏字段仍拒绝。
+- API repository 已在 R5a4a 使用通用 parser 判定 replayability，本轮没有增加第三个 action 特判。真实
+  Fastify 集成测试新增合法 lifecycle operation，得到连续 acceptance sequence 8 和 `domain_command`；
+  before/after 同空的坏命令返回 400。服务端仍不 apply payload。
+- catch-up 用例从 timing/content 两段扩为跨页 timing/content/lifecycle 三个连续 revision。新附属点只在
+  既有 point track 基线中创建，最终局部项目同时包含三类结果；生命周期父容器、位置或前置状态失败仍由
+  通用 adapter 返回 blocked，coordinator 整链降级权威快照且不泄漏前面半成品。
+
+测试、构建与验收：
+
+- shared command 11/11：生命周期 build/parse/inverse/precondition、坏位置、额外字段、重复目标，以及原
+  timing/content 合同全部通过。生命周期 ProjectData 5/5：动作型 custom block 创建/inverse、文字块文本
+  与递归分叉归属、多附属点同集合删除/inverse、错父/位置漂移/已存在冲突、合同外变化和工尺级联回退。
+- 受影响专项共 50/50：shared 11、timing builder 3、timing apply 3、content 3、lifecycle 5、platform
+  operations 4、catch-up/runtime/document gate 11、draft/conflict/store/recovery 13。`git diff --check` 通过。
+- `npm run test:api` 在真实 PostgreSQL `api_test` schema、11 条 migration 上 90/90，通过资源、ACL、保存、
+  operation、恢复、确认、上传、审计、维护、备份和对象存储全套；只保留既有 pg 9 弃用提示。
+- `npm run build` 通过 Prisma generate、shared、document-model、Web 和 API。Web 转换 2051 模块，主 chunk
+  842.61 kB / gzip 256.52 kB，只保留既有大包提示。没有一般 lint 脚本。
+- 测试前检查 `127.0.0.1:4317` 时没有 API 进程监听；这不是 readiness 依赖失败。最终用当前工作树执行
+  `npm run dev:api`，shared/document-model 预构建后 Fastify 正常监听 4317；`/api/health/ready` 返回 ready，
+  database 3.81 ms、storage 1.31 ms。既有浏览器自动化禁令继续有效，本轮没有绕用 Chrome/其他浏览器，
+  也没有把纯函数和 API 回归冒充人工 UI 验收。
+
+文档、自审与下一步：
+
+- README、state architecture、roadmap 和 AGENTS 已同步第三类命令、位置不变量、完整差异门禁、新模块
+  所有权、专项测试命令与 legacy action 迁移事实；本 Development Log 记录计划修正、实际实现、问题和
+  验证，`CLAUDE_WORK.md` 仍只保存当前任务。
+- 当前没有重复 ProjectData deep equality、lifecycle parser、apply writer或 repository action hardcode；新
+  逻辑块均有中文功能注释。生命周期生成发生在创建/删除提交边界，不进入 pointer-move 热路径。
+- 下一轮 R5a4b2 需要先列出逐字创建/删除对句文本、句时间、空句保留策略和工尺子块的完整闭包，再决定
+  custom block 工尺级联能否复用同一高层事务命令。不能只把 Gongche id 加进叶命令；板眼对工尺符号的
+  引用策略也必须在 R5a4b3 前固定。

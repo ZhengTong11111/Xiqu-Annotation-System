@@ -2872,6 +2872,67 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(dataOf(contentOperation.json()).sequence, 7);
       assert.equal(dataOf(contentOperation.json()).replayability, "domain_command");
 
+      // 生命周期命令通过同一 parser 进入日志；实体快照和位置事实完整合法时才标记可重放。
+      const lifecycleOperation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+        payload: {
+          clientOperationId: "op-lifecycle-domain-command",
+          baseRevision: latestRevision,
+          localRevision: 32,
+          action: "annotation.items.lifecycle.update",
+          payload: {
+            version: 1,
+            command: {
+              type: "annotation.items.lifecycle.update",
+              items: [{
+                entityType: "attached-point",
+                entityId: "point-api-created",
+                trackId: "point-track-api",
+                before: null,
+                after: {
+                  entity: { id: "point-api-created", time: 2, label: "呼吸" },
+                  position: {
+                    index: 0,
+                    collectionLength: 1,
+                    previousEntityId: null,
+                    nextEntityId: null,
+                  },
+                },
+              }],
+            },
+          },
+        },
+      });
+      assert.equal(lifecycleOperation.statusCode, 200, lifecycleOperation.body);
+      assert.equal(dataOf(lifecycleOperation.json()).sequence, 8);
+      assert.equal(dataOf(lifecycleOperation.json()).replayability, "domain_command");
+
+      const invalidLifecycleOperation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+        payload: {
+          clientOperationId: "op-lifecycle-invalid",
+          baseRevision: latestRevision,
+          localRevision: 33,
+          action: "annotation.items.lifecycle.update",
+          payload: {
+            version: 1,
+            command: {
+              type: "annotation.items.lifecycle.update",
+              items: [{
+                entityType: "attached-point",
+                entityId: "point-api-created",
+                trackId: "point-track-api",
+                before: null,
+                after: null,
+              }],
+            },
+          },
+        },
+      });
+      assert.equal(invalidLifecycleOperation.statusCode, 400);
+
       const invalidJob = await jsonRequest(app, adminToken, {
         method: "POST",
         url: "/api/processing-jobs",

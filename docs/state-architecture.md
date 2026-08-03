@@ -104,6 +104,8 @@ character、action、custom-block、attached-point、gongche-block 和 banyan-ma
 点状实体使用零长度区间。逐字/句块/自定义文字块移动所引起的句界和工尺派生时间也必须进入同一命令。
 R5a4a 又加入 `annotation.items.content.update`，覆盖 sentence.text、character.char、action.label、
 custom-block.text/type 和 attached-point.label。
+R5a4b1 再加入 `annotation.items.lifecycle.update`，首批覆盖当前格式真实使用的 custom-block 与
+attached-point 无级联创建/删除；旧 `actionAnnotations` 是导入兼容字段，不再扩展新协议。
 
 命令由本次 undo 的真实 `baseProject` 和最终 `nextProject` 提取。连续拖动仍只在 pointer-up 形成一条
 operation；若目标缺失、id 不满足协议、超过 500 项，或同一次编辑还修改了文本/类型/结构等合同外字段，
@@ -111,8 +113,9 @@ operation；若目标缺失、id 不满足协议、超过 500 项，或同一次
 
 当前 operation 是“领域命令与摘要并存”的渐进阶段：
 
-- version 1 时间与首批内容命令可严格验证、持久化和幂等重放请求，但服务端尚未 apply 到 payload。
-- 四声、唱腔、工尺符号、创建删除、分叉结构、导入和 undo/redo 仍是摘要，不可领域重放。
+- version 1 时间、首批内容和叶实体生命周期命令可严格验证、持久化和幂等重放请求，但服务端尚未
+  apply 到 payload。
+- 四声、唱腔、工尺符号、依赖级联创建删除、分叉结构、导入和 undo/redo 仍是摘要，不可领域重放。
 - 它不会修改 annotation file payload。
 - 它不能作为恢复完整项目的唯一来源。
 - 不应把完整 before/after `ProjectData` 复制进每一条 operation。
@@ -202,15 +205,31 @@ catch-up 通过通用 ProjectData dispatcher 顺序重放 timing/content 混合 
 要求权威快照，不泄漏前面已应用的局部项目。
 
 当前 App 只在精确单字段提交时生成内容命令：逐字 char 同时显式记录派生句 text；动作 label、自定义块
-text/type、附属点 label 各自使用稳定目标。创建/删除、复合编辑和 undo/redo 仍保留 legacy；服务器仍不
-直接执行命令写 payload。
+text/type、附属点 label 各自使用稳定目标。本节建立时创建/删除仍是 legacy；R5a4b1 已迁移其中无级联的
+custom-block/attached-point 路径，详见下一节。复合编辑和 undo/redo 仍保留 legacy；服务器仍不直接执行
+命令写 payload。
 
-后续领域命令逐步引入：
+### 4.6 R5a4b1 叶实体生命周期命令
 
-- `block.create`
-- `block.delete`
-- `track.rename`
-- `attachedPoint.move`
+生命周期 item 使用 `entityType/entityId/trackId/before/after`。before/after 必须恰有一侧为 null，非空侧
+同时保存完整实体快照与 `index/collectionLength/previousEntityId/nextEntityId`。因此该协议只能表达创建或
+删除，不能伪装成实体更新；inverse 交换两侧后能把删除实体恢复到原集合顺序。
+
+shared parser 严格限制 custom-block 与 attached-point 两类当前实体，校验文字/动作块差异、分叉 laneIds、
+点时间、字符串、父 scope、重复目标、集合长度和索引。ProjectData adapter 先唯一解析父轨/附属点轨，
+再检查全部目标存在性、完整 before 实体和位置；同一集合的多项变化先整体删除，再按最终 index 一次放置，
+禁止逐项 splice 造成索引漂移。任何父容器、相邻 id、集合长度或实体快照冲突都阻断整批。
+
+`buildProjectAnnotationLifecycleCommand()` 与内容 builder 一样，会用 replay 的同一写入器重建完整 next 并
+递归比较整个 ProjectData。自定义块删除若还级联移除工尺块、混合多选还删除字符/板眼，或存在其他合同外
+变化，builder 返回 null 并保留 legacy snapshot。App 当前接入自定义文字/动作块创建、无工尺级联删除、
+附属点创建/删除和只含这些目标的多选删除。草稿、API replayability 与 clean catch-up 通过通用 parser/
+dispatcher 接受 timing/content/lifecycle 混合 revision 链。
+
+旧 `actionAnnotations` 已在导入归一化时迁移为 custom action block 并清空。本阶段没有为了“覆盖动作创建”
+给该兼容数组继续增加生命周期协议。下一阶段应处理逐字/句与自定义块工尺依赖闭包，而不是恢复旧模型。
+
+后续领域命令逐步引入逐字/句同步、自定义块工尺级联、复合工尺/板眼实体和必要的轨道元数据变更。
 
 批量导入、轨道结构和递归分叉变更可能需要更高层事务命令，不能强拆成没有原子边界的小操作。
 

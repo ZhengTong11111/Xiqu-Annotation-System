@@ -89,6 +89,10 @@ import {
   type PlatformSaveOutcome,
 } from "./utils/platformOperations";
 import { buildProjectAnnotationContentCommand } from "./utils/annotationContentCommand";
+import {
+  buildProjectAnnotationLifecycleCommand,
+  type AnnotationLifecycleTarget,
+} from "./utils/annotationLifecycleCommand";
 import { findAdjacentNavigableBlock } from "./utils/timelineNavigation";
 import {
   buildProjectTimelineTimingCommand,
@@ -1976,6 +1980,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     else applyProjectWithoutHistory(nextProject);
   }
 
+  // 创建/删除调用点只声明候选实体；完整差异门禁证明命令覆盖 next 后才写领域 envelope，否则保留快照。
+  function commitProjectWithLifecycle(
+    baseProject: ProjectData,
+    nextProject: ProjectData,
+    targets: readonly AnnotationLifecycleTarget[],
+  ) {
+    const commandEnvelope = buildProjectAnnotationLifecycleCommand(baseProject, nextProject, targets);
+    commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
+  }
+
   function updateAttachedPoint(
     pointTrackId: string,
     pointId: string,
@@ -3191,10 +3205,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       time: Math.max(0, time),
       label: location.pointTrack.typeOptions[0] ?? "标记 1",
     };
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
+    const nextProject = buildProjectWithUpdatedAttachedPointTrack(currentProject, pointTrackId, (pointTrack) => ({
       ...pointTrack,
       points: [...pointTrack.points, nextPoint].sort((left, right) => left.time - right.time),
     }));
+    if (!nextProject) return;
+    commitProjectWithLifecycle(currentProject, nextProject, [{
+      entityType: "attached-point",
+      entityId: nextPoint.id,
+      trackId: pointTrackId,
+    }]);
     applySelection({
       type: "attached-point",
       id: nextPoint.id,
@@ -3219,6 +3239,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ? safeStartTime + DEFAULT_ACTION_DURATION
       : Math.max(safeStartTime + MIN_CHARACTER_DURATION, explicitEndTime);
     const defaultType = targetTrack.typeOptions[0] ?? "类型 1";
+    // undefined 可选字段不进入实体对象，确保命令重建和 JSON 往返使用同一规范结构。
     const nextBlock = targetTrack.trackType === "text"
       ? {
           id: `custom-block-${crypto.randomUUID()}`,
@@ -3226,17 +3247,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           endTime,
           text: DEFAULT_CUSTOM_TEXT,
           type: defaultType,
-          branchScope,
+          ...(branchScope ? { branchScope } : {}),
         }
       : {
           id: `custom-block-${crypto.randomUUID()}`,
           startTime: safeStartTime,
           endTime,
           type: defaultType,
-          branchScope,
+          ...(branchScope ? { branchScope } : {}),
         };
 
-    commitProject({
+    const nextProject: ProjectData = {
       ...currentProject,
       customTracks: currentProject.customTracks.map((track) =>
         track.id === trackId
@@ -3246,7 +3267,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             }
           : track,
       ) as CustomTrack[],
-    });
+    };
+    commitProjectWithLifecycle(currentProject, nextProject, [{
+      entityType: "custom-block",
+      entityId: nextBlock.id,
+      trackId,
+    }]);
 
     applySelection({ type: "custom-block", trackId, id: nextBlock.id });
     if (targetTrack.trackType === "text") {
@@ -3811,7 +3837,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ) {
         cancelCustomTextEdit();
       }
-      commitProject(nextProject);
+      const lifecycleTargets: AnnotationLifecycleTarget[] = [
+        ...timelineSelection.flatMap((item) => item.type === "custom-block"
+          ? [{ entityType: "custom-block" as const, trackId: item.trackId, entityId: item.id }]
+          : []),
+        ...timelineSelection.flatMap((item) => item.type === "attached-point"
+          ? [{ entityType: "attached-point" as const, trackId: item.trackId, entityId: item.id }]
+          : []),
+      ];
+      // 混合多选会由完整差异门禁自动回退快照；这里只集中声明已迁移的叶实体候选。
+      commitProjectWithLifecycle(currentProject, nextProject, lifecycleTargets);
       applySelection(null);
       return;
     }
@@ -3845,7 +3880,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       applySelection(null);
     }
     if (selectedItem.type === "custom-block") {
-      commitProject({
+      const nextProject: ProjectData = {
         ...currentProject,
         gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) =>
           item.parentTrackId !== selectedItem.trackId || item.parentBlockId !== selectedItem.id,
@@ -3858,7 +3893,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               }
             : track,
         ) as CustomTrack[],
-      });
+      };
+      commitProjectWithLifecycle(currentProject, nextProject, [{
+        entityType: "custom-block",
+        entityId: selectedItem.id,
+        trackId: selectedItem.trackId,
+      }]);
       if (
         editingCustomTextBlock?.trackId === selectedItem.trackId &&
         editingCustomTextBlock.id === selectedItem.id
@@ -3879,10 +3919,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (!location) {
         return;
       }
-      updateAttachedPointTrack(selectedItem.trackId, (pointTrack) => ({
+      const nextProject = buildProjectWithUpdatedAttachedPointTrack(currentProject, selectedItem.trackId, (pointTrack) => ({
         ...pointTrack,
         points: pointTrack.points.filter((point) => point.id !== selectedItem.id),
       }));
+      if (!nextProject) return;
+      commitProjectWithLifecycle(currentProject, nextProject, [{
+        entityType: "attached-point",
+        entityId: selectedItem.id,
+        trackId: selectedItem.trackId,
+      }]);
       applySelection(null);
     }
     if (selectedItem.type === "banyan-mark") {

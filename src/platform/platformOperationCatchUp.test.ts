@@ -7,6 +7,7 @@ import type {
 import { mockProject } from "../mockData";
 import type { ProjectData } from "../types";
 import { buildProjectAnnotationContentCommand } from "../utils/annotationContentCommand";
+import { buildProjectAnnotationLifecycleCommand } from "../utils/annotationLifecycleCommand";
 import { buildProjectTimelineTimingCommand } from "../utils/timelineTimingCommand";
 import { catchUpCommittedAnnotationOperations } from "./platformOperationCatchUp";
 
@@ -43,6 +44,31 @@ function createCharacterTextUpdate(base: ProjectData, text: string) {
   }]);
   if (!envelope) throw new Error("未能建立内容命令。 ");
   return { next, envelope };
+}
+
+// 生命周期夹具在既有附属点轨中创建新点，父轨结构属于 snapshot 基线而不是命令的一部分。
+function createAttachedPoint(base: ProjectData) {
+  const next = structuredClone(base);
+  const pointTrack = next.builtinTracks[0].attachedPointTracks[0];
+  pointTrack.points.push({ id: "catch-up-point", time: 2, label: "呼吸" });
+  const envelope = buildProjectAnnotationLifecycleCommand(base, next, [{
+    entityType: "attached-point",
+    entityId: "catch-up-point",
+    trackId: pointTrack.id,
+  }]);
+  if (!envelope) throw new Error("未能建立生命周期命令。 ");
+  return { next, envelope };
+}
+
+function createCatchUpProject() {
+  const project = structuredClone(mockProject);
+  project.builtinTracks[0].attachedPointTracks = [{
+    id: "catch-up-point-track",
+    name: "呼吸轨",
+    typeOptions: ["呼吸"],
+    points: [],
+  }];
+  return project;
 }
 
 // operation 夹具完整满足 committed feed 合同，测试只覆盖 coordinator 自身判断。
@@ -86,42 +112,46 @@ function createPageReader(pages: AnnotationCommittedOperationPage[]) {
   };
 }
 
-test("clean 客户端顺序重放跨页连续 revision", async () => {
-  const first = createCharacterMove(mockProject, 0.1);
+test("clean 客户端顺序重放跨页 timing/content/lifecycle 连续 revision", async () => {
+  const base = createCatchUpProject();
+  const first = createCharacterMove(base, 0.1);
   const second = createCharacterTextUpdate(first.next, "新");
+  const third = createAttachedPoint(second.next);
   const reader = createPageReader([
     {
       items: [createOperation(1, 1, first.envelope)],
       nextCursor: "cursor-1",
       hasMore: true,
-      currentRevision: 2,
+      currentRevision: 3,
     },
     {
-      items: [createOperation(2, 2, second.envelope, {
-        action: "annotation.items.content.update",
-      })],
-      nextCursor: "cursor-2",
+      items: [
+        createOperation(2, 2, second.envelope, { action: "annotation.items.content.update" }),
+        createOperation(3, 3, third.envelope, { action: "annotation.items.lifecycle.update" }),
+      ],
+      nextCursor: "cursor-3",
       hasMore: false,
-      currentRevision: 2,
+      currentRevision: 3,
     },
   ]);
   const result = await catchUpCommittedAnnotationOperations({
     annotationFileId: FILE_ID,
-    project: mockProject,
+    project: base,
     knownRevision: 0,
     cursor: "snapshot-0",
     listPage: reader.listPage,
   });
   assert.equal(result.status, "applied");
   if (result.status !== "applied") return;
-  assert.equal(result.revision, 2);
-  assert.equal(result.cursor, "cursor-2");
-  assert.equal(result.operationCount, 2);
+  assert.equal(result.revision, 3);
+  assert.equal(result.cursor, "cursor-3");
+  assert.equal(result.operationCount, 3);
   assert.equal(
     result.project.characterAnnotations[0].startTime,
     second.next.characterAnnotations[0].startTime,
   );
   assert.equal(result.project.characterAnnotations[0].char, "新");
+  assert.equal(result.project.builtinTracks[0].attachedPointTracks[0].points[0].id, "catch-up-point");
   assert.deepEqual(reader.calls, ["snapshot-0", "cursor-1"]);
 });
 

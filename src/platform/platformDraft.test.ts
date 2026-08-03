@@ -160,6 +160,50 @@ test("平台草稿完整往返版本化 content command", () => {
   );
 });
 
+// 生命周期命令的完整实体与位置事实必须原样往返，否则恢复后的 operation 无法安全重放或反向。
+test("平台草稿完整往返版本化 lifecycle command", () => {
+  const recoveryState = createRecoveryState();
+  recoveryState.pendingOperations = [{
+    ...recoveryState.pendingOperations[0],
+    type: "annotation.items.lifecycle.update",
+    commandEnvelope: {
+      version: 1,
+      command: {
+        type: "annotation.items.lifecycle.update",
+        items: [{
+          entityType: "attached-point",
+          entityId: "point-created",
+          trackId: "point-track-1",
+          before: null,
+          after: {
+            entity: { id: "point-created", time: 2, label: "呼吸" },
+            position: {
+              index: 0,
+              collectionLength: 1,
+              previousEntityId: null,
+              nextEntityId: null,
+            },
+          },
+        }],
+      },
+    },
+  }];
+  const record = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState,
+  });
+  const normalized = normalizePlatformDraftRecord(record, {
+    userId: "user-1",
+    annotationFileId: "file-1",
+  });
+  assert.deepEqual(
+    normalized?.pendingOperations[0].commandEnvelope,
+    recoveryState.pendingOperations[0].commandEnvelope,
+  );
+});
+
 // 草稿只可由原账号打开原文件；损坏 operation、越界 revision 和假项目均 fail closed。
 test("平台草稿 unknown 边界拒绝身份与结构损坏", () => {
   const record = buildPlatformDraftRecord({
