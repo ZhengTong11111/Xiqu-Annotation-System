@@ -80,6 +80,8 @@ import {
 } from "./annotationMutationLease.js";
 import { assertAnnotationMutationLeaseForWrite } from "./annotationMutationLeaseStore.js";
 import { lockActiveAnnotationFileForWrite } from "./annotationFileWriteLock.js";
+import { assertActiveAnnotationFile as assertActiveAnnotationFileActivity } from "./annotationFileActivity.js";
+import type { AnnotationRevisionPublisher } from "./annotationCollaborationHub.js";
 
 const resourceInclude = {
   owner: { include: { roles: true } },
@@ -152,6 +154,9 @@ export class ResourceService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly access: ResourceAccessService,
+    private readonly revisionPublisher: AnnotationRevisionPublisher = {
+      publishRevisionAdvanced: () => undefined,
+    },
   ) {}
 
   async listResources(
@@ -463,7 +468,7 @@ export class ResourceService {
   ): Promise<AnnotationFile<TPayload>> {
     // 锁外预检用于快速拒绝常见无权限请求；事务内仍会在树结构稳定后再次复核。
     await this.access.assertCapability(user, resourceId, "write");
-    await this.prisma.$transaction(async (transaction) => {
+    const committedRevision = await this.prisma.$transaction(async (transaction) => {
       // 普通保存与快照恢复共用同一锁顺序，避免保存期间资源被移动或藏入回收站。
       const current = await lockActiveAnnotationFileForWrite(transaction, this.access, user, resourceId);
       if (current.revision !== input.baseRevision) {
@@ -596,6 +601,13 @@ export class ResourceService {
           },
         },
       });
+      return targetRevision;
+    });
+    // 事务返回本次确切 revision；不能在锁外重读后把另一笔更晚保存误报成本次提交。
+    this.revisionPublisher.publishRevisionAdvanced({
+      annotationFileId: resourceId,
+      revision: committedRevision,
+      operationCursor: encodeAnnotationSnapshotOperationCursor(resourceId, committedRevision),
     });
     return this.getAnnotationFile<TPayload>(user, resourceId);
   }
@@ -801,7 +813,7 @@ export class ResourceService {
   ): Promise<AnnotationFile<TPayload>> {
     // 锁外预检减少无权限请求占用事务；真正安全边界仍在锁内 helper 中。
     await this.access.assertCapability(user, resourceId, "write");
-    await this.prisma.$transaction(async (transaction) => {
+    const committedRevision = await this.prisma.$transaction(async (transaction) => {
       const current = await lockActiveAnnotationFileForWrite(transaction, this.access, user, resourceId);
       if (current.revision !== input.baseRevision) {
         throw conflict("标注文件已被其他人修改，请刷新后再恢复。", {
@@ -890,6 +902,13 @@ export class ResourceService {
           },
         },
       });
+      return nextRevision;
+    });
+    // 快照恢复同样形成新的权威 revision，clean 客户端通过既有 HTTP catch-up 获取真实内容。
+    this.revisionPublisher.publishRevisionAdvanced({
+      annotationFileId: resourceId,
+      revision: committedRevision,
+      operationCursor: encodeAnnotationSnapshotOperationCursor(resourceId, committedRevision),
     });
     return this.getAnnotationFile<TPayload>(user, resourceId);
   }
@@ -2038,24 +2057,7 @@ export class ResourceService {
     resourceId: string,
     database: PrismaClient | Prisma.TransactionClient = this.prisma,
   ) {
-    const resource = await database.resourceEntry.findUnique({
-      where: { id: resourceId },
-      select: {
-        type: true,
-        parentId: true,
-        trashedAt: true,
-        annotationFile: { select: { resourceId: true } },
-      },
-    });
-    if (
-      !resource ||
-      resource.type !== "annotation_file" ||
-      !resource.annotationFile ||
-      resource.trashedAt ||
-      await this.hasTrashedAncestor(database, resource.parentId)
-    ) {
-      throw notFound("活动标注文件不存在。");
-    }
+    await assertActiveAnnotationFileActivity(database, resourceId);
   }
 
   // 审核事务沿用内容写入的锁顺序，但只共享锁 annotation 行，保证 revision 核对期间不能被保存推进。

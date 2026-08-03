@@ -40,6 +40,7 @@ import {
 } from "./platform/platformProjectPayload";
 import { catchUpCommittedAnnotationOperations } from "./platform/platformOperationCatchUp";
 import { usePlatformOperationCatchUp } from "./platform/usePlatformOperationCatchUp";
+import { usePlatformCollaborationSession } from "./platform/usePlatformCollaborationSession";
 import { useAnnotationConfirmations } from "./platform/useAnnotationConfirmations";
 import { usePlatformAutoSave } from "./platform/usePlatformAutoSave";
 import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
@@ -503,6 +504,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   remoteOperationCursorRef.current = remoteOperationCursor;
   const [saveConflictReviewBusy, setSaveConflictReviewBusy] = useState(false);
   const [saveConflictReviewError, setSaveConflictReviewError] = useState<string | null>(null);
+  const [browserOnline, setBrowserOnline] = useState(
+    () => typeof navigator === "undefined" || navigator.onLine !== false,
+  );
+  // 连接传输需要独立响应 online/offline；不能依赖文档 dirty 状态是否恰好触发一次重渲染。
+  useEffect(() => {
+    const update = () => setBrowserOnline(navigator.onLine !== false);
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, []);
   // 冲突解除后清理旧交接错误，下一次独立冲突不能显示上一次请求的诊断。
   useEffect(() => {
     if (syncState.status !== "conflict") {
@@ -646,7 +660,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   // acquire 需要等待网络；这一门禁串行化结构、批量导入和批量修复，避免连续点击重复提交。
   const exclusiveMutationInFlightRef = useRef(false);
   // clean 平台会话低频追赶已提交 revision；行内编辑、保存、拖拽和整合期间必须暂停。
-  usePlatformOperationCatchUp({
+  const requestPlatformCatchUp = usePlatformOperationCatchUp({
     enabled: Boolean(editorSession),
     blocked:
       hasUnsavedChanges ||
@@ -657,7 +671,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       editingCustomTextBlock !== null ||
       syncState.status !== "saved" ||
       serverSaveInFlightRef.current,
-    online: typeof navigator === "undefined" || navigator.onLine !== false,
+    online: browserOnline,
     sessionKey: editorSession?.annotationFileId ?? "local",
     knownRevision: remoteBaseRevision,
     cursor: remoteOperationCursor,
@@ -710,6 +724,24 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     // 网络失败只保留当前 snapshot/cursor 等待下轮；不能把 clean 文档伪装成保存错误或冲突。
     onError: (error) => {
       console.warn("平台远端操作追赶失败，将在稍后重试。", error);
+    },
+  });
+  const collaborationStatus = usePlatformCollaborationSession({
+    client: editorSession?.client ?? null,
+    annotationFileId: editorSession?.annotationFileId ?? null,
+    enabled: Boolean(editorSession),
+    online: browserOnline,
+    onMessage: (message) => {
+      // ready 也可能观察到打开文件后、socket 建立前发生的新 revision；两类消息统一只唤醒 HTTP 追赶。
+      if (
+        message.annotationFileId === editorSession?.annotationFileId &&
+        message.revision > remoteBaseRevisionRef.current
+      ) {
+        requestPlatformCatchUp();
+      }
+    },
+    onError: (error) => {
+      console.warn("平台实时通知连接异常；HTTP 轮询仍会继续同步。", error);
     },
   });
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
@@ -5793,6 +5825,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           pendingOperationCount={pendingOperations.length}
           accessLabel={editorSession?.accessLabel}
           mutationLeaseLabel={mutationLeaseLabel}
+          collaborationStatus={editorSession ? collaborationStatus : undefined}
           videoFileInputRef={videoFileInputRef}
           srtFileInputRef={srtFileInputRef}
           projectFileInputRef={projectFileInputRef}

@@ -1,6 +1,8 @@
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
+import websocket from "@fastify/websocket";
 import type { PrismaClient } from "@prisma/client";
+import { ANNOTATION_COLLABORATION_WEBSOCKET_PROTOCOL } from "@xiqu/shared";
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyInstance,
@@ -26,6 +28,9 @@ import {
 import { HealthService } from "./healthService.js";
 import { SystemDiagnosticsService } from "./systemDiagnosticsService.js";
 import { loadUploadPolicy, type UploadPolicy } from "./uploadPolicy.js";
+import { AnnotationCollaborationTicketService } from "./annotationCollaborationTicketService.js";
+import { AnnotationCollaborationHub } from "./annotationCollaborationHub.js";
+import { registerAnnotationCollaborationRoutes } from "./annotationCollaborationRoutes.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -51,7 +56,9 @@ export async function buildApiApp(
   const repository = new PrismaPlatformRepository(options.prisma, access);
   // 审计读取拥有独立授权、分页和导出边界，不把治理查询重新塞回通用资源仓储。
   const auditLogs = new AuditLogService(options.prisma, access);
-  const resources = new ResourceService(options.prisma, access);
+  const collaborationHub = new AnnotationCollaborationHub();
+  const collaborationTickets = new AnnotationCollaborationTicketService(options.prisma, access);
+  const resources = new ResourceService(options.prisma, access, collaborationHub);
   // 生产默认只通过工厂装配一次；测试可注入 typed adapter，不读取宿主环境。
   const storage = options.storage ?? createObjectStorageFromEnvironment();
   const uploadPolicy = loadUploadPolicy(options.uploadPolicy);
@@ -112,6 +119,17 @@ export async function buildApiApp(
   });
   await app.register(multipart, {
     limits: { fileSize: uploadPolicy.maxUploadBytes, files: 1 },
+  });
+  // WebSocket plugin 必须先于 websocket route 注册；payload 上限防止通知通道被当成大消息入口。
+  await app.register(websocket, {
+    options: {
+      maxPayload: 16 * 1024,
+      // 只回显稳定协议名，绝不能把客户端排列在前的一次性票据写回响应头。
+      handleProtocols: (protocols: Set<string>) =>
+        protocols.has(ANNOTATION_COLLABORATION_WEBSOCKET_PROTOCOL)
+          ? ANNOTATION_COLLABORATION_WEBSOCKET_PROTOCOL
+          : false,
+    },
   });
 
   app.setErrorHandler((error, _request, response) => {
@@ -180,6 +198,15 @@ export async function buildApiApp(
       ? process.env.XIQU_METRICS_TOKEN ?? null
       : options.metricsToken,
   );
+  registerAnnotationCollaborationRoutes(
+    app,
+    repository,
+    collaborationTickets,
+    collaborationHub,
+  );
+  app.addHook("onClose", async () => {
+    collaborationHub.closeAll();
+  });
   if (options.seed) await repository.ensureSeedData();
   return app;
 }

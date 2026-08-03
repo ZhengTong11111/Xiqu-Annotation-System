@@ -100,6 +100,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - a stale file response must never apply or recreate a timer for a later editor session
 - `src/platform/usePlatformOperationCatchUp.ts`
   - thin React facts/callback adapter; App owns snapshot hydration and document replacement gating
+- `src/platform/platformCollaborationRuntime.ts`
+  - owns one collaboration ticket request, WebSocket, handshake timeout, retry timer, generation, and connection status
+  - waits for strict `session.ready`; revision messages only wake HTTP catch-up and never apply project payloads
+  - permanent protocol/authorization failures halt until the file, online state, or session changes
+- `src/platform/usePlatformCollaborationSession.ts`
+  - thin browser/React adapter around the collaboration runtime
+  - local editor sessions must remain disabled; Strict Effects cleanup must dispose and clear the runtime ref
 - `src/platform/PlatformDraftRecoveryDialog.tsx`
   - explicit same-revision recovery, stale comparison entry, and read-only export-or-discard decision before opening editor
 - `src/platform/PlatformDraftConflictDialog.tsx`
@@ -448,6 +455,21 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - pure cursor for committed operation order `(committedRevision, acceptanceSequence)` and snapshot-revision starting points
   - acceptance and committed feeds intentionally use different cursors; never filter nullable committed rows behind an
     acceptance-sequence cursor because a sequence hole may become permanent
+- `apps/api/src/annotationCollaborationTicketService.ts`
+  - issues 30-second one-use WebSocket tickets and stores only SHA-256 token hashes
+  - plaintext tickets travel in a WebSocket subprotocol header, never in the upgrade URL or normal access logs
+  - consumption and every established-session recheck use current account activity, current roles, ACL, and active-tree state
+- `apps/api/src/annotationCollaborationHub.ts`
+  - process-local monotonic revision notification hub; it is not a cross-instance event bus
+  - save/restore publish only after commit and must use the exact revision returned by the write transaction
+- `apps/api/src/annotationCollaborationRoutes.ts`
+  - authenticated notification-only WebSocket route with strict ready/revision messages, native heartbeat, serialized sends,
+    and stable authorization/protocol close codes
+  - client business messages are rejected; HTTP remains the only operation/save/snapshot path
+- `apps/api/src/requestAuthentication.ts`
+  - shared HTTP Bearer parser; protected-media query-token compatibility remains explicit at its existing call site
+- `apps/api/src/annotationFileActivity.ts`
+  - shared active annotation-file and trashed-ancestor check used by content governance and collaboration tickets
 - `apps/api/src/backup/`
   - versioned local/remote full-backup, offline/streamed verification, PostgreSQL tool runner, maintenance operator CLI,
     and isolated local/remote restore-drill modules
@@ -525,6 +547,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:platform-auto-save-runtime`
 - `npm run test:platform-mutation-lease-runtime`
 - `npm run test:platform-operation-catch-up`
+- `npm run test:annotation-collaboration`
 - `npm run test:platform-drafts`
 - `npm run test:resource-pagination`
 - `npm run test:resource-page-state`

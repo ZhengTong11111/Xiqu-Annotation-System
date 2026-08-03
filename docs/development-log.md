@@ -3924,3 +3924,94 @@ ProjectData builder、adapter 与编辑器接线：
   连接票据、认证 WebSocket 文件会话、心跳/重连/文件切换和连接状态 UI，只广播 revision/operation
   invalidation，客户端继续复用既有 HTTP catch-up/snapshot。首轮不能让 socket 成为第二条写入、ACL、
   revision 或租约通道；presence、跨实例分发和实时 command submit 继续留给后续切片。
+
+## 2026-08-04：R5b1 认证文件会话与实时 revision 通知
+
+### 本轮任务书、阶段核对与依赖决策
+
+- 本轮开始时用户沿用了较早的“R2.3c2”名称；Codex 对照 roadmap、最近 commit 和 Development Log 后确认
+  比较/整合阶段早已完成，实际下一阶段是 R5b1。被 gitignore 的 `CLAUDE_WORK.md` 已整体重写成 R5b1 当前
+  任务书，没有把旧阶段日志继续留给后续代理。
+- 本轮边界明确为“通知优先”：WebSocket 只建立认证文件会话并发布权威 revision 失效事件，浏览器仍通过
+  已有 HTTP committed feed 或完整 snapshot 获取内容。没有通过 socket 发送 `ProjectData`、提交领域命令、
+  自动 rebase dirty 文档，也没有开始 presence、远端光标或 OT/CRDT。
+- 新增官方 `@fastify/websocket` 11.3.0（MIT，基于 `ws` 8.21.2）。它复用 Fastify 生命周期与注入测试，减少
+  自行维护 upgrade/router/close 清理代码；没有为了一个通知通道引入完整协作框架。
+- Prisma 新增 `AnnotationCollaborationTicket` 和第 13 条 migration。票据有效期 30 秒、只可使用一次，数据库
+  只保存 SHA-256 摘要；明文票据通过 WebSocket 子协议头发送，upgrade URL 不含票据或平台 access token。
+  开发 schema 与 API 测试 schema 均已通过 migration deploy。
+
+### 共享协议、API 会话与事务后通知
+
+- `annotationCollaboration.ts` 定义 version 1 `session.ready` 与 `annotation.revision.advanced`。unknown parser
+  要求 exact keys、有界稳定 id、正整数 revision、有效 cursor 和心跳范围；未知版本、额外字段、二进制或
+  非法 JSON 都不能进入客户端同步状态机。
+- `AnnotationCollaborationTicketService` 在签发、消费和连接存活复核时检查活动账号、当前角色、资源 read
+  capability、文件类型及整个祖先链的回收站状态。正确文件上的票据一经消费即烧毁，即使随后发现撤权或
+  回收也不能因事务回滚让同一明文重试；跨文件、过期、重复票据统一拒绝。
+- `AnnotationCollaborationRoutes` 在消费票据期间先安装 close/error 处理器；会话 ready 后使用原生 ping/pong
+  和周期权限复核。每条 revision 发送前也重新鉴权，并在单连接 Promise 队列中串行复核和发送，避免连续
+  保存导致较晚 revision 越过较早 revision。客户端业务消息以协议错误关闭，HTTP 继续是唯一写入通道。
+- `AnnotationCollaborationHub` 当前是按文件隔离的进程内通知端口，拒绝重复或倒退 revision；应用关闭时
+  统一关闭订阅。`ResourceService` 的普通保存和快照恢复只在数据库事务成功后发布，并使用事务直接返回的
+  确切 committed revision/cursor，禁止锁外重读把另一笔更晚提交误认为本次事件。
+- 提取了共用 Bearer 解析和活动标注文件检查，删除 ResourceService 中重复的祖先遍历；既有受保护媒体
+  query token 路径仍显式保留，没有被协作认证重构破坏。
+
+### 浏览器连接运行时与 HTTP 追赶衔接
+
+- `PlatformCollaborationRuntime` 独占一次性票据请求、socket、握手/ready 超时、generation、退避 timer 和连接
+  状态；只在严格 `session.ready` 后显示 connected。文件切换、离线、dispose 和 React Strict Effects 都会
+  使旧 generation 失效，迟到票据、消息或 close 不得污染新文件。
+- 网络/临时关闭使用 1–30 秒有界指数退避和新票据；401/403/404、协议错误与服务端授权关闭进入 halted，
+  直到会话或在线事实改变，避免 React 重渲染形成永久错误忙循环。握手前、握手后等待 ready 两段都有明确
+  超时。
+- 既有 `PlatformOperationCatchUpRuntime` 新增 `requestCheck()`：空闲时立即检查，flight 中多个通知合并成
+  一次后续检查，blocked/offline 时保留一次唤醒，恢复 clean 后才执行。socket 消息从不直接应用项目，也不
+  绕过 dirty/pending/transient/保存/冲突门禁。
+- 顶部菜单在原同步状态区域紧凑显示“实时已连接/连接中/重连中/离线/异常”，并用 tooltip 说明实时通知与
+  保存状态不同。本地编辑器不创建 socket，也不显示伪造的实时状态。旧 CSS 会在 1440px 以下隐藏整个
+  状态区；浏览器验收后改为中等宽度截断、仅 900px 以下隐藏，1280px 工作区可直接看到连接与保存状态。
+
+### 自我审查中发现并修复的问题
+
+- 初始集成测试删除学生直接 ACL 后，继承自项目的 read 权限仍然有效，导致“撤权后关闭”断言错误。最终测试
+  显式截断文件权限继承，区分了产品权限语义与协作连接逻辑；服务端没有为了让测试通过而错误忽略继承 ACL。
+- 初版只在票据消费时鉴权，已建立连接可能在撤权后继续接收事件。最终增加心跳和每次发送前的当前权限复核，
+  集成测试覆盖既有 socket 在下一次 revision 时以 4403 关闭。
+- 第二轮自审发现存活复核读取了账号启用状态和当前 ACL，却仍把票据签发时的角色快照传入 global-admin
+  判定。最终改为每次从数据库读取当前角色后再解析 capability，角色降级不会被旧连接缓存。
+- 初版 revision 发送异步鉴权未串行，连续事件理论上可能乱序；最终使用每连接 delivery queue。保存/恢复的
+  初版通知若在锁外读取文件，可能误报并发保存的更高 revision；最终事务直接返回本次 revision。
+- 初版永久票据错误在后续 React facts 更新时可能再次 connect；最终引入显式 halted。握手超时最初只覆盖
+  ticket 和 ready，最终补齐 socket open 阶段。被替代的重复认证、活动文件遍历和旧 wake 调度均已清理。
+- 浏览器验收时发现 Fastify 默认访问日志会原样记录 upgrade URL；初版把一次性票据放在 query，仍会让短时
+  明文进入日志。最终改用稳定 WebSocket 子协议名加唯一 ticket 子协议项，API URL 和常规请求日志只保留
+  文件路径；真实注入测试同步改为协议头，不以票据寿命短为理由保留可避免的凭据日志。
+- 浏览器首次截图显示 DOM 中已有“实时已连接”，但常见 1280px 宽度被旧响应式规则隐藏。最终缩小隐藏范围
+  并重新截图确认状态可见，没有通过只检查 DOM 文本来冒充视觉验收。
+
+### 测试、构建与实际运行
+
+- `npm run test:annotation-collaboration`：8/8。shared parser 2 项；进程内 hub 2 项；浏览器 runtime 4 项，
+  覆盖 ready、重连新票据、永久错误停止、文件切换迟到消息、坏协议、离线和 dispose。
+- `npm run test:platform-operation-catch-up`：17/17；新增显式唤醒、flight 合并和 blocked 后恢复测试，原有
+  committed command 原子重放、快照降级、换文件和网络退避均通过。
+- `npm run test:api`：94/94。真实 PostgreSQL/Fastify WebSocket 集成覆盖匿名拒绝、明文不落库、ready、保存
+  后 revision、重复/跨文件/过期票据、签发后撤权、新票据拒绝、既有连接关闭及全局角色撤销复核；资源、
+  ACL、上传、恢复、审计、备份、维护与监控无回归。仍只有仓库既有 node-postgres pg 9 弃用提示。
+- `npm run build` 通过 Prisma generation、shared、document-model、Web 和 API。Vite 转换 2075 个模块，CSS
+  121.08 kB / gzip 22.35 kB，主 JS 929.81 kB / gzip 276.69 kB；只有既有超过 500 kB 的 chunk 提示。
+  `git diff --check` 通过。
+- 当前工作树 API（PID 61306）在 4317 端口运行，`/api/health/ready` 返回 200。使用 in-app Browser 登录平台并打开真实
+  服务器标注文件，编辑器成功显示服务器/本地 revision 3，并读到“实时已连接”；时间轴与确认面板正常
+  渲染。最终子协议实现重连后，Fastify upgrade 日志只包含 `/collaboration` 文件路径，不再出现票据 query。
+  浏览器本轮验证的是单 API 进程链路，不能冒充跨实例通知验收。
+
+### 文档、已知边界与下一轮
+
+- README、state architecture、AGENTS 和 roadmap 已同步通知-only 合同、模块所有权、测试命令和单进程
+  限制。本条按用户要求详细记录计划、实现、自审修复、测试和浏览器结果；`CLAUDE_WORK.md` 仍只服务下一轮。
+- R5b1 不保证跨 API 实例事件抵达：另一个实例提交后，本实例客户端最终仍可依靠周期 HTTP catch-up 正确
+  恢复，但不会立即被内存 hub 唤醒。下一轮 R5b2a 应先抽象并实现跨实例 revision event bus、重连与指标，
+  仍保持 HTTP 权威恢复；完成后再进入 R5b2b presence/光标/选区。

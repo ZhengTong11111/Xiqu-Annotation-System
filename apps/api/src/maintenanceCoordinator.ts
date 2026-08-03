@@ -31,7 +31,11 @@ export class MaintenanceCoordinator {
   // Fastify gate 放在业务 handler 之前；任何失败都 fail closed，不允许在状态未知时继续写入。
   registerRequestGate(app: FastifyInstance) {
     app.addHook("onRequest", async (request) => {
-      if (SAFE_METHODS.has(request.method) || isMaintenanceMutation(request)) {
+      if (
+        SAFE_METHODS.has(request.method) ||
+        isMaintenanceMutation(request) ||
+        isReadSessionTicketRequest(request)
+      ) {
         return;
       }
       const permit = await this.acquireWritePermit();
@@ -214,6 +218,12 @@ export class MaintenanceCoordinator {
 function isMaintenanceMutation(request: FastifyRequest) {
   return request.method === "POST" &&
     request.url.split("?", 1)[0] === "/api/admin/maintenance";
+}
+
+// 协作票据虽然写入短时认证元数据，但只建立只读通知会话，维护期间仍应允许已有文件被查看。
+function isReadSessionTicketRequest(request: FastifyRequest) {
+  return request.method === "POST" &&
+    /^\/api\/annotation-files\/[^/]+\/collaboration-ticket(?:\?|$)/u.test(request.url);
 }
 
 // advisory lock 属于数据库 session，必须先显式 unlock 再归还连接池。

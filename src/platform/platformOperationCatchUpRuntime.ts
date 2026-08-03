@@ -25,6 +25,7 @@ type RuntimeDependencies = {
 
 export type PlatformOperationCatchUpRuntime = {
   update: (facts: PlatformOperationCatchUpFacts) => void;
+  requestCheck: () => void;
   dispose: () => void;
 };
 
@@ -37,6 +38,7 @@ export function createPlatformOperationCatchUpRuntime(
   let inFlight = false;
   let disposed = false;
   let generation = 0;
+  let wakeRequested = false;
 
   // timer 只能由协调器持有一个，facts 变化时先清旧计划再重新求值。
   function clearTimer() {
@@ -53,6 +55,8 @@ export function createPlatformOperationCatchUpRuntime(
   function runCheck() {
     if (disposed || inFlight || !isEligible(facts) || !facts) return;
     clearTimer();
+    // 多个 WebSocket revision 通知合并成一个 flight；flight 期间的新通知会再次把该标志置回 true。
+    wakeRequested = false;
     const requestFacts = facts;
     const requestGeneration = generation;
     let failed = false;
@@ -77,7 +81,7 @@ export function createPlatformOperationCatchUpRuntime(
         if (disposed) return;
         // 文件/基线在请求中变化时立即检查新会话；普通失败使用短退避，成功则回到稳定轮询周期。
         schedule(
-          generation !== requestGeneration
+          generation !== requestGeneration || wakeRequested
             ? 0
             : failed
               ? PLATFORM_CATCH_UP_RETRY_MS
@@ -99,6 +103,7 @@ export function createPlatformOperationCatchUpRuntime(
   return {
     update(nextFacts) {
       if (disposed) return;
+      const sessionChanged = Boolean(facts && facts.sessionKey !== nextFacts.sessionKey);
       const identityChanged = !facts ||
         facts.sessionKey !== nextFacts.sessionKey ||
         facts.knownRevision !== nextFacts.knownRevision ||
@@ -106,6 +111,7 @@ export function createPlatformOperationCatchUpRuntime(
       const becameEligible = !isEligible(facts) && isEligible(nextFacts);
       const becameIneligible = isEligible(facts) && !isEligible(nextFacts);
       facts = nextFacts;
+      if (sessionChanged) wakeRequested = false;
       if (identityChanged || becameIneligible) generation += 1;
       clearTimer();
       if (!isEligible(nextFacts)) return;
@@ -116,11 +122,19 @@ export function createPlatformOperationCatchUpRuntime(
       if (!inFlight) schedule(PLATFORM_CATCH_UP_INTERVAL_MS);
     },
 
+    // revision 通知只唤醒现有 HTTP 检查；blocked/offline 时保留一次待处理唤醒，不能直接应用消息内容。
+    requestCheck() {
+      if (disposed) return;
+      wakeRequested = true;
+      if (isEligible(facts) && !inFlight) schedule(0);
+    },
+
     // dispose 使在途 Promise 结果失效；网络请求可自然结束，但不能再应用或重建 timer。
     dispose() {
       if (disposed) return;
       disposed = true;
       generation += 1;
+      wakeRequested = false;
       clearTimer();
     },
   };

@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import {
   ANNOTATION_CONFIRMATION_DOMAINS,
   AUDIT_ACTIONS,
@@ -35,6 +35,7 @@ import {
   isValidAnnotationMutationLeaseToken,
   parseAnnotationMutationPurpose,
 } from "./annotationMutationLease.js";
+import { getCurrentUser } from "./requestAuthentication.js";
 
 const RESOURCE_TYPES = new Set<ResourceType>([
   "folder",
@@ -969,18 +970,6 @@ export function registerApiRoutes(
       },
     );
   });
-}
-
-async function getCurrentUser(
-  repository: PrismaPlatformRepository,
-  request: FastifyRequest,
-  queryToken: string | null = null,
-) {
-  const header = request.headers.authorization;
-  const token = header?.startsWith("Bearer ")
-    ? header.slice("Bearer ".length)
-    : queryToken;
-  return repository.getUserByToken(token);
 }
 
 function requireObject(value: unknown): Record<string, unknown> {

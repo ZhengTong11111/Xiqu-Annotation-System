@@ -34,8 +34,9 @@ ACL 复核，以及 operation/save/restore 的统一写入门禁；R5a4c2 已把
 块分叉归属接入严格结构命令、编辑器 acquire/renew、受控保存、历史 inverse 和失锁恢复；R5a4c3 已完成
 有界结构事务、自定义轨整轨生命周期、内建/自定义父轨的附属点轨生命周期，以及自定义 typeOptions 与块
 type 的原子联动；R5a4c4a 已完成既有顶层轨道排序、既有内建轨配置、既有附属点轨配置，以及各自
-typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建轨生命周期和批量受控快照边界，下一步
-进入 R5b1 的认证 WebSocket 文件会话与连接状态底座；
+typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建轨生命周期和批量受控快照边界。R5b1
+已完成短时一次性票据、认证 WebSocket 文件会话、权限重验、连接生命周期与 revision 通知；下一步进入
+R5b2a 的跨实例事件分发，随后再建设 presence 与远端选区；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -412,7 +413,8 @@ typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建�
   附属打点、工尺块和板眼点的 before/after；逐字/句/自定义文字块的派生句界与工尺时间同命令记录。
   shared parser 严格限制版本、字段、实体、id、时间、重复项和 500 项上限；草稿恢复、平台请求和 API
   复用同一合同。纯时间拖拽/缩放从真实 transient base 与最终项目提取命令，合同外变更和不可表达旧 id
-  安全回退 `project.commit`。服务端目前只验证和记录，不 apply payload，也没有启动 WebSocket。
+  安全回退 `project.commit`。服务端目前仍只验证和记录命令、不直接 apply payload；R5b1 后建立的 WebSocket
+  只通知 revision 推进，不改变这条持久化边界。
 - R5a2a 已完成：shared 提供半毫秒容差的全量 before 前置检查、可解释 target_missing/before_mismatch
   和确定 inverse；Web 唯一 ProjectData adapter 覆盖七类实体，先检查全部目标再不可变写入，板眼同步
   manualOffset/confidence，错误 track/缺失/冲突均不产生部分项目。命令已显式包含的句界/工尺派生时间
@@ -478,11 +480,17 @@ typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建�
     由 committed feed 重放，clean catch-up 必须读取权威 snapshot。平台覆盖导入在真实服务器保存前保持 dirty。
 - R5b 按“先会话、再通知、后 presence/协作写入”分阶段推进，不能让 WebSocket 成为绕过现有 HTTP 权限、
   revision、operation 幂等或 mutation lease 的第二条写路径：
-  - R5b1 待推进：建立短时一次性连接票据、认证 WebSocket 文件会话、文件切换/重连/下线生命周期、连接状态
-    UI 和有界心跳。首轮只发布服务端权威的 revision/operation invalidation 事件，客户端仍通过既有 HTTP
-    committed feed 或 snapshot 追赶；不在 socket payload 中传完整 ProjectData，也不直接提交编辑命令。
-  - R5b2 待推进：在 R5b1 会话稳定后接入跨实例事件分发、presence、光标/选区和在线成员视图，并明确慢消费、
-    断线和权限撤销语义。
+  - R5b1 已完成：PostgreSQL 保存 30 秒一次性票据摘要，明文票据通过 WebSocket 子协议头发送，upgrade URL
+    不携带票据或平台 access token；文件会话
+    严格校验协议、活动资源、账号、当前角色与 ACL，并通过心跳和每次发送前复核响应停用、撤权或移入回收站。
+    服务端只发布 `session.ready` 与单调 `annotation.revision.advanced`，客户端仅用它唤醒已有 clean-only HTTP
+    committed feed/snapshot 追赶。文件切换、离线、超时、退避重连、Strict Effects 清理和紧凑连接状态 UI 已有
+    确定性测试；本阶段 hub 仍是单进程内存实现。
+  - R5b2a 待推进：把 revision 事件从单进程 hub 提升为跨 API 实例分发。优先评估 PostgreSQL LISTEN/NOTIFY
+    或可替换 event-bus port，要求事件只携带有界文件 id/revision/cursor，支持重复/乱序去重、实例重连、优雅
+    关闭和可观测性；HTTP catch-up 仍是丢消息后的权威恢复路径。
+  - R5b2b 待推进：在跨实例通知稳定后增加短生命周期 presence、光标/选区和在线成员视图，并明确节流、慢消费、
+    文件切换、断线、撤权和隐私语义；presence 不写入 ProjectData、恢复快照或 operation log。
   - R5b3 待推进：评估并接入领域 operation 的实时提交/确认；继续复用现有幂等键、文件 sequence、revision
     绑定、租约和 HTTP 恢复路径，再决定块级 OT/CRDT 或混合策略。
 - 服务端 operation 排序、确认、重放和权限复核。

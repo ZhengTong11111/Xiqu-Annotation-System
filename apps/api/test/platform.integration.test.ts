@@ -12,7 +12,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type { FastifyInstance, InjectOptions } from "fastify";
+import {
+  ANNOTATION_COLLABORATION_TICKET_PROTOCOL_PREFIX,
+  ANNOTATION_COLLABORATION_WEBSOCKET_PROTOCOL,
+} from "@xiqu/shared";
 import { buildApiApp } from "../src/app.js";
+import { hashToken } from "../src/auth.js";
 import { LocalObjectStorage } from "../src/storage.js";
 import {
   createTestPrisma,
@@ -893,6 +898,246 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(ownerSave.statusCode, 200);
       assert.equal(dataOf(ownerSave.json()).revision, 2);
+    });
+
+    await suite.test("协作票据一次性消费并在权威保存后推送 revision", async () => {
+      const created = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "协作通知测试.json",
+          payload: { marker: "collaboration-base" },
+        },
+      });
+      const collaborationFileId = String((dataOf(created.json()).resource as JsonObject).id);
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${collaborationFileId}/permissions/user-student`,
+        payload: { capabilities: ["read"], inheritToChildren: false },
+      });
+      await jsonRequest(app, adminToken, {
+        method: "PATCH",
+        url: `/api/resources/${collaborationFileId}/permission-inheritance`,
+        payload: { breakPermissionInheritance: true },
+      });
+
+      const anonymous = await app.inject({
+        method: "POST",
+        url: `/api/annotation-files/${collaborationFileId}/collaboration-ticket`,
+      });
+      assert.equal(anonymous.statusCode, 401);
+      const issued = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${collaborationFileId}/collaboration-ticket`,
+      });
+      assert.equal(issued.statusCode, 200, issued.body);
+      const ticket = dataOf(issued.json());
+      const plaintext = String(ticket.ticket);
+      const storedTicket = await prisma.annotationCollaborationTicket.findFirstOrThrow({
+        where: { annotationFileId: collaborationFileId },
+      });
+      assert.notEqual(storedTicket.tokenHash, plaintext);
+      assert.equal(storedTicket.consumedAt, null);
+
+      let resolveReady!: (message: JsonObject) => void;
+      let resolveAdvanced!: (message: JsonObject) => void;
+      const readyMessage = new Promise<JsonObject>((resolve) => {
+        resolveReady = resolve;
+      });
+      const advancedMessage = new Promise<JsonObject>((resolve) => {
+        resolveAdvanced = resolve;
+      });
+      const socket = await app.injectWS(
+        String(ticket.websocketPath),
+        { headers: collaborationWsHeaders(plaintext) },
+        {
+          onInit: (openedSocket) => {
+            openedSocket.on("message", (payload: unknown) => {
+              const message = JSON.parse(String(payload)) as JsonObject;
+              if (message.type === "session.ready") resolveReady(message);
+              if (message.type === "annotation.revision.advanced") resolveAdvanced(message);
+            });
+          },
+        },
+      );
+      const ready = await withTimeout(readyMessage, "等待协作 session.ready 超时");
+      assert.equal(ready.annotationFileId, collaborationFileId);
+      assert.equal(ready.revision, 1);
+      assert.equal(
+        (await prisma.annotationCollaborationTicket.findUniqueOrThrow({
+          where: { id: storedTicket.id },
+        })).consumedAt instanceof Date,
+        true,
+      );
+
+      const saved = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${collaborationFileId}`,
+        payload: { baseRevision: 1, payload: { marker: "collaboration-saved" } },
+      });
+      assert.equal(saved.statusCode, 200, saved.body);
+      const advanced = await withTimeout(advancedMessage, "等待 revision 推送超时");
+      assert.equal(advanced.annotationFileId, collaborationFileId);
+      assert.equal(advanced.revision, 2);
+
+      // 同一票据再次 upgrade 仍会建立底层 socket，但应用会话必须以 4401 立即拒绝。
+      let resolveRejected!: (code: number) => void;
+      const rejected = new Promise<number>((resolve) => {
+        resolveRejected = resolve;
+      });
+      const replaySocket = await app.injectWS(
+        String(ticket.websocketPath),
+        { headers: collaborationWsHeaders(plaintext) },
+        { onInit: (openedSocket) => openedSocket.once("close", resolveRejected) },
+      );
+      assert.equal(await withTimeout(rejected, "等待重复票据拒绝超时"), 4401);
+      replaySocket.close();
+
+      const secondTicketResponse = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${collaborationFileId}/collaboration-ticket`,
+      });
+      const secondTicket = dataOf(secondTicketResponse.json());
+      let resolveActiveRevoked!: (code: number) => void;
+      const activeRevoked = new Promise<number>((resolve) => {
+        resolveActiveRevoked = resolve;
+      });
+      socket.once("close", resolveActiveRevoked);
+      await jsonRequest(app, adminToken, {
+        method: "DELETE",
+        url: `/api/resources/${collaborationFileId}/permissions/user-student`,
+      });
+      let resolveRevoked!: (code: number) => void;
+      const revoked = new Promise<number>((resolve) => {
+        resolveRevoked = resolve;
+      });
+      const revokedSocket = await app.injectWS(
+        String(secondTicket.websocketPath),
+        { headers: collaborationWsHeaders(String(secondTicket.ticket)) },
+        { onInit: (openedSocket) => openedSocket.once("close", resolveRevoked) },
+      );
+      assert.equal(await withTimeout(revoked, "等待撤权票据拒绝超时"), 4403);
+      const savedAfterRevoke = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${collaborationFileId}`,
+        payload: { baseRevision: 2, payload: { marker: "after-revoke" } },
+      });
+      assert.equal(savedAfterRevoke.statusCode, 200, savedAfterRevoke.body);
+      assert.equal(
+        await withTimeout(activeRevoked, "等待既有连接响应撤权超时"),
+        4403,
+      );
+      socket.close();
+      revokedSocket.close();
+
+      const deniedTicket = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${collaborationFileId}/collaboration-ticket`,
+      });
+      assert.equal(deniedTicket.statusCode, 403);
+
+      const wrongFileTicketResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${collaborationFileId}/collaboration-ticket`,
+      });
+      const wrongFileTicket = dataOf(wrongFileTicketResponse.json());
+      let resolveWrongFile!: (code: number) => void;
+      const wrongFile = new Promise<number>((resolve) => {
+        resolveWrongFile = resolve;
+      });
+      const wrongFileSocket = await app.injectWS(
+        `/api/annotation-files/${annotationFileId}/collaboration`,
+        { headers: collaborationWsHeaders(String(wrongFileTicket.ticket)) },
+        { onInit: (openedSocket) => openedSocket.once("close", resolveWrongFile) },
+      );
+      assert.equal(await withTimeout(wrongFile, "等待跨文件票据拒绝超时"), 4401);
+      wrongFileSocket.close();
+
+      const expiredTicketResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${collaborationFileId}/collaboration-ticket`,
+      });
+      const expiredTicket = dataOf(expiredTicketResponse.json());
+      const newestTicket = await prisma.annotationCollaborationTicket.findFirstOrThrow({
+        where: { annotationFileId: collaborationFileId, consumedAt: null },
+        orderBy: { createdAt: "desc" },
+      });
+      await prisma.annotationCollaborationTicket.update({
+        where: { id: newestTicket.id },
+        data: { expiresAt: new Date(Date.now() - 1_000) },
+      });
+      let resolveExpired!: (code: number) => void;
+      const expired = new Promise<number>((resolve) => {
+        resolveExpired = resolve;
+      });
+      const expiredSocket = await app.injectWS(
+        String(expiredTicket.websocketPath),
+        { headers: collaborationWsHeaders(String(expiredTicket.ticket)) },
+        { onInit: (openedSocket) => openedSocket.once("close", resolveExpired) },
+      );
+      assert.equal(await withTimeout(expired, "等待过期票据拒绝超时"), 4401);
+      expiredSocket.close();
+
+      // 该账号没有文件 ACL 或所有权，只依靠当前全局角色读取；角色撤销后旧连接也必须失效。
+      const roleOnlyToken = "collaboration-role-only-token";
+      await prisma.user.create({
+        data: {
+          id: "user-collaboration-role-only",
+          accountName: "collaboration_role_only",
+          displayName: "协作角色复核账号",
+          passwordHash: "not-used-by-this-test",
+          roles: { create: { role: "super_admin" } },
+          sessions: {
+            create: {
+              tokenHash: hashToken(roleOnlyToken),
+              expiresAt: new Date(Date.now() + 60_000),
+            },
+          },
+        },
+      });
+      const roleTicketResponse = await jsonRequest(app, roleOnlyToken, {
+        method: "POST",
+        url: `/api/annotation-files/${collaborationFileId}/collaboration-ticket`,
+      });
+      assert.equal(roleTicketResponse.statusCode, 200, roleTicketResponse.body);
+      const roleTicket = dataOf(roleTicketResponse.json());
+      let resolveRoleReady!: () => void;
+      let resolveRoleRevoked!: (code: number) => void;
+      const roleReady = new Promise<void>((resolve) => {
+        resolveRoleReady = resolve;
+      });
+      const roleRevoked = new Promise<number>((resolve) => {
+        resolveRoleRevoked = resolve;
+      });
+      const roleSocket = await app.injectWS(
+        String(roleTicket.websocketPath),
+        { headers: collaborationWsHeaders(String(roleTicket.ticket)) },
+        {
+          onInit: (openedSocket) => {
+            openedSocket.on("message", (payload: unknown) => {
+              const message = JSON.parse(String(payload)) as JsonObject;
+              if (message.type === "session.ready") resolveRoleReady();
+            });
+            openedSocket.once("close", resolveRoleRevoked);
+          },
+        },
+      );
+      await withTimeout(roleReady, "等待角色账号 session.ready 超时");
+      await prisma.userRole.deleteMany({
+        where: { userId: "user-collaboration-role-only", role: "super_admin" },
+      });
+      const savedAfterRoleRevoke = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${collaborationFileId}`,
+        payload: { baseRevision: 3, payload: { marker: "after-role-revoke" } },
+      });
+      assert.equal(savedAfterRoleRevoke.statusCode, 200, savedAfterRoleRevoke.body);
+      assert.equal(
+        await withTimeout(roleRevoked, "等待既有连接响应角色撤销超时"),
+        4403,
+      );
+      roleSocket.close();
     });
 
     await suite.test("项目递归复制复用媒体对象并重映射内部引用", async () => {
@@ -3674,12 +3919,36 @@ function jsonRequest(
   });
 }
 
+function collaborationWsHeaders(ticket: string) {
+  return {
+    "sec-websocket-protocol": [
+      ANNOTATION_COLLABORATION_WEBSOCKET_PROTOCOL,
+      `${ANNOTATION_COLLABORATION_TICKET_PROTOCOL_PREFIX}${ticket}`,
+    ].join(", "),
+  };
+}
+
 function dataOf(value: unknown): JsonObject {
   assert.ok(value && typeof value === "object" && !Array.isArray(value));
   assert.ok("data" in value);
   const data = (value as { data: unknown }).data;
   assert.ok(data && typeof data === "object" && !Array.isArray(data));
   return data as JsonObject;
+}
+
+async function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), 2_000);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function errorOf(value: unknown): JsonObject {

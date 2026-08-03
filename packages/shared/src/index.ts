@@ -5,3 +5,4 @@ export * from "./customTrackStructureCommands.js";
 export * from "./trackStructureLifecycleCommands.js";
 export * from "./trackConfigurationCommands.js";
 export * from "./projectSnapshotBoundaryCommands.js";
+export * from "./annotationCollaboration.js";

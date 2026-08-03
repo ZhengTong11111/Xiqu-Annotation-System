@@ -396,7 +396,17 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
 
 实时协作不能合并任意完整 `ProjectData`：
 
-- WebSocket 负责 presence 和 operation 传输，不替代持久化事务。
+- R5b1 的 WebSocket 已经落地，但当前只负责经过认证的文件 revision 失效通知，不传完整 payload，也不提交
+  operation。`session.ready` 或 `annotation.revision.advanced` 观察到更高 revision 时，只调用现有 catch-up
+  runtime 的 `requestCheck()`；dirty、保存中、冲突或行内编辑期间仍保留一次唤醒，直到 clean 后才走 HTTP。
+- HTTP committed feed 与权威 snapshot 仍是唯一远端内容来源。WebSocket 断线、丢事件或重复事件不会改变
+  正确性，只影响多久开始下一次 HTTP 检查；客户端不能从通知消息直接替换 `ProjectData`。
+- 一次性连接票据、socket、超时、重连 timer 和 generation 由独立运行时持有。明文票据通过 WebSocket
+  子协议头发送，upgrade URL 不含票据或平台 access token；本地编辑器不创建连接，文件切换和 React
+  Strict Effects 都必须销毁旧 generation。
+- 当前服务端 hub 仅覆盖单 API 进程；跨实例事件分发属于 R5b2a。在这之前不能把单实例浏览器验收描述为
+  生产级多实例实时通知。
+- 后续 WebSocket 可负责 presence 和 operation 传输，但仍不得替代持久化事务。
 - 服务端必须排序、鉴权、幂等确认和重放 operation。
 - 客户端需要 optimistic apply、ack、reject 和 rebase。
 - 普通块级命令与轨道结构/批量导入采用不同冲突策略。

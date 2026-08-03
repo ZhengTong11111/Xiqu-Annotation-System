@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, RefObject } from "react";
 import type { ProjectSyncStatus } from "../state/projectDocumentState";
+import type { PlatformCollaborationStatus } from "../platform/platformCollaborationRuntime";
 
 export type TopMenuPlatformNavigation = {
   label: string;
@@ -22,6 +23,7 @@ type TopMenuBarProps = {
   pendingOperationCount: number;
   accessLabel?: string;
   mutationLeaseLabel?: string;
+  collaborationStatus?: PlatformCollaborationStatus;
   videoFileInputRef: RefObject<HTMLInputElement>;
   srtFileInputRef: RefObject<HTMLInputElement>;
   projectFileInputRef: RefObject<HTMLInputElement>;
@@ -68,6 +70,7 @@ export function TopMenuBar({
   pendingOperationCount,
   accessLabel,
   mutationLeaseLabel,
+  collaborationStatus,
   videoFileInputRef,
   srtFileInputRef,
   projectFileInputRef,
@@ -321,6 +324,16 @@ export function TopMenuBar({
         ))}
       </nav>
       <div className={`top-menu-status sync-status sync-status-${syncStatus}`}>
+        {collaborationStatus ? (
+          <span
+            className={`collaboration-status collaboration-status-${collaborationStatus}`}
+            title="实时连接只负责远端 revision 通知，标注保存状态以后方文案为准。"
+          >
+            <span className="collaboration-status-dot" aria-hidden="true" />
+            {getCollaborationStatusLabel(collaborationStatus)}
+          </span>
+        ) : null}
+        {collaborationStatus ? " · " : ""}
         {accessLabel ? `${accessLabel} · ` : ""}
         {mutationLeaseLabel ? `${mutationLeaseLabel} · ` : ""}
         {syncStatusLabel}
@@ -331,6 +344,15 @@ export function TopMenuBar({
       <input ref={mergeProjectFileInputRef} type="file" accept=".json" onChange={onMergeProjectFileChange} />
     </header>
   );
+}
+
+function getCollaborationStatusLabel(status: PlatformCollaborationStatus) {
+  if (status === "connected") return "实时已连接";
+  if (status === "connecting") return "实时连接中";
+  if (status === "reconnecting") return "实时重连中";
+  if (status === "offline") return "实时离线";
+  if (status === "error") return "实时连接异常";
+  return "实时未启用";
 }
 
 function getSyncStatusLabel(

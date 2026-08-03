@@ -290,6 +290,34 @@ select {
   color: #fecaca;
 }
 
+.collaboration-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.collaboration-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.collaboration-status-connected .collaboration-status-dot {
+  background: #34d399;
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.14);
+}
+
+.collaboration-status-connecting .collaboration-status-dot,
+.collaboration-status-reconnecting .collaboration-status-dot,
+.collaboration-status-offline .collaboration-status-dot {
+  background: #fbbf24;
+}
+
+.collaboration-status-error .collaboration-status-dot {
+  background: #f87171;
+}
+
 .top-menu-items {
   display: inline-flex;
   align-items: center;
@@ -7572,7 +7600,9 @@ select {
   }
 
   .top-menu-status {
-    display: none;
+    max-width: 38vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .workspace-sidebar {
@@ -7589,6 +7619,13 @@ select {
   .inspector-panel {
     padding-left: 6px;
     padding-right: 6px;
+  }
+}
+
+@media (max-width: 900px) {
+  /* 极窄工作区优先保留编辑菜单；连接和保存状态仍可由现有错误/冲突界面反馈。 */
+  .top-menu-status {
+    display: none;
   }
 }
 

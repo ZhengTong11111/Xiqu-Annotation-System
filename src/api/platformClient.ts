@@ -1,5 +1,6 @@
 import type {
   AnnotationConfirmationList,
+  AnnotationCollaborationTicket,
   AnnotationConfirmationRecord,
   AnnotationCommittedOperationPage,
   AnnotationFile,
@@ -203,6 +204,23 @@ export class PlatformClient {
       `/annotation-files/${resourceId}`,
       { method: "PUT", body: request },
     );
+  }
+
+  // WebSocket 只使用短时一次性票据；URL 只保留资源路径，明文凭据由 hook 放入子协议头。
+  issueAnnotationCollaborationTicket(resourceId: string) {
+    return this.request<AnnotationCollaborationTicket>(
+      `/annotation-files/${resourceId}/collaboration-ticket`,
+      { method: "POST" },
+    );
+  }
+
+  createAnnotationCollaborationWebSocketUrl(
+    ticket: AnnotationCollaborationTicket,
+  ) {
+    const apiBase = new URL(this.baseUrl, window.location.href);
+    const endpoint = new URL(ticket.websocketPath, apiBase.origin);
+    endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
+    return endpoint.toString();
   }
 
   getAnnotationMutationLease(resourceId: string) {

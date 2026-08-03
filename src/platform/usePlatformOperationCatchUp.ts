@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { PlatformOperationCatchUpResult } from "./platformOperationCatchUp";
 import {
   createPlatformOperationCatchUpRuntime,
@@ -62,5 +62,10 @@ export function usePlatformOperationCatchUp(options: UsePlatformOperationCatchUp
   useEffect(() => () => {
     runtimeRef.current?.dispose();
     runtimeRef.current = null;
+  }, []);
+
+  // 返回稳定命令供 WebSocket 通知唤醒 HTTP catch-up，不把 runtime 实例泄漏给 App。
+  return useCallback(() => {
+    ensureRuntime().requestCheck();
   }, []);
 }

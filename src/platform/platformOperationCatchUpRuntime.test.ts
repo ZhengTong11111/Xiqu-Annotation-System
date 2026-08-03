@@ -158,3 +158,41 @@ test("网络异常报告一次并使用短退避重试", async () => {
   assert.equal(harness.getChecks(), 2);
   harness.runtime.dispose();
 });
+
+test("显式唤醒在 idle 时立即检查，并把 flight 期间多次通知合并成一次后续检查", async () => {
+  const first = deferred<{ status: "up_to_date"; revision: number; cursor: string }>();
+  let useFirst = true;
+  const harness = createHarness(async () => {
+    if (useFirst) {
+      useFirst = false;
+      return first.promise;
+    }
+    return { status: "up_to_date", revision: 1, cursor: "cursor-1" };
+  });
+  harness.runtime.update(FACTS);
+  await flushPromises();
+  harness.runtime.requestCheck();
+  harness.runtime.requestCheck();
+  assert.equal(harness.getChecks(), 1);
+  first.resolve({ status: "up_to_date", revision: 1, cursor: "cursor-1" });
+  await flushPromises();
+  await harness.clock.advanceBy(0);
+  assert.equal(harness.getChecks(), 2);
+  harness.runtime.dispose();
+});
+
+test("blocked 时保留一次通知唤醒，恢复 clean 后立即执行", async () => {
+  const harness = createHarness(async () => ({
+    status: "up_to_date",
+    revision: 1,
+    cursor: "cursor-1",
+  }));
+  harness.runtime.update({ ...FACTS, blocked: true });
+  harness.runtime.requestCheck();
+  await harness.clock.advanceBy(10_000);
+  assert.equal(harness.getChecks(), 0);
+  harness.runtime.update(FACTS);
+  await flushPromises();
+  assert.equal(harness.getChecks(), 1);
+  harness.runtime.dispose();
+});
