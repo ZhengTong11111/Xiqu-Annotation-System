@@ -17,8 +17,9 @@ liveness/readiness、低基数 Prometheus 指标和管理员容量/一致性诊�
 隔离恢复演练和无浏览器 session 的运维恢复 CLI。R3e1/R3e2 已建立对象存储端口和真实 S3-compatible
 适配器，R3f1 已完成通用审计日志浏览、筛选和安全导出，R3f2 已建立标准 Prometheus/Alertmanager 外部
 告警基线，R3g1 已完成独立 S3-compatible 命名空间中的 manifest-last 远端一致备份创建与流式校验，
-R3g2a 已完成远端包单次流式物化和真实 PostgreSQL/对象目录隔离恢复演练。R3 下一切片转向未完成包与
-已提交包保留/清理、生产桶/IAM 验收；`pg_trgm` 仍作为数据库级部署能力留到运维基线显式预置。
+R3g2a 已完成远端包单次流式物化和真实 PostgreSQL/对象目录隔离恢复演练，R3g2b1 已完成 manifest-aware
+远端包检查、保留计划、稳定 token 和确认清理。R3 下一切片转向生产桶/IAM 验收；`pg_trgm` 仍作为
+数据库级部署能力留到运维基线显式预置。
 
 ## 1. 产品目标
 
@@ -309,8 +310,12 @@ R3g2a 已完成远端包单次流式物化和真实 PostgreSQL/对象目录隔�
   dump 和每个对象各打开一次远端流，在唯一临时目录落盘并同步复算 size/SHA-256，完整后再由本地
   verifier 二次复核。远端恢复编排复用唯一 `restoreDrillService`，成功/失败/中止均清理临时包；真实
   SeaweedFS + PostgreSQL 16 隔离恢复验证 migration、maintenance、数据库摘要和对象内容全部通过。
-- 对象存储端口、本地/S3-compatible 适配器、本地/远端隔离恢复已完成；下一步为 R3g2b 未完成包与
-  已提交包保留/清理，以及真实生产 MinIO/AWS bucket/IAM smoke。
+- R3g2b1 已完成：独立备份命名空间一次 list 后按严格 production id 分组；无 manifest 包按最新对象时间
+  享有宽限，结构完整包按 manifest 时间、保留天数和至少最新 N 个生成计划。计划 token 绑定全部对象
+  事实与策略，确认清理前重新扫描；完整包 manifest-first，坏 manifest/不一致/未知对象只报告。真实
+  SeaweedFS CLI inspect -> token -> cleanup -> verify smoke 已通过。
+- 对象存储端口、本地/S3-compatible 适配器、本地/远端隔离恢复与远端保留清理已完成；下一步为 R3g2b2
+  真实生产 MinIO/AWS bucket、TLS/网络和最小 IAM 权限 smoke，并明确默认凭据链策略。
 
 完成标准：大量资源下仍可用，故障可定位，数据库和对象可恢复。
 

@@ -24,21 +24,38 @@ export type RemoteBackupPackageIndex = {
   objectSetErrors: string[];
 };
 
+// 远端 manifest 读取独立成单一出口，生命周期检查无需为每个包重新扫描整个 bucket。
+export async function readRemoteBackupManifest(
+  storage: Pick<ObjectStorage, "getObjectStream">,
+  backupId: string,
+) {
+  const safeBackupId = assertSafeRemoteBackupId(backupId);
+  const manifestText = await readUtf8WithLimit(
+    await storage.getObjectStream(remoteBackupKeys.manifest(safeBackupId)),
+    MAX_REMOTE_MANIFEST_BYTES,
+  );
+  return parseBackupManifestText(manifestText);
+}
+
+// 从已验证 manifest 构造稳定 payload 列表，verify、materialize 和 retention 共用同一 key 映射。
+export function buildRemoteBackupPackageFiles(
+  backupId: string,
+  manifest: BackupManifest,
+): RemoteBackupPackageFile[] {
+  return [manifest.database.dump, ...manifest.objects.entries].map((entry) => ({
+    entry,
+    remoteKey: remoteBackupKey(backupId, entry.relativePath),
+  }));
+}
+
 // 校验器和物化器共享同一包索引：manifest、远端 key 映射和精确对象集合不能各维护一份规则。
 export async function readRemoteBackupPackageIndex(
   storage: Pick<ObjectStorage, "getObjectStream" | "listStoredObjects">,
   backupId: string,
 ): Promise<RemoteBackupPackageIndex> {
   const safeBackupId = assertSafeRemoteBackupId(backupId);
-  const manifestText = await readUtf8WithLimit(
-    await storage.getObjectStream(remoteBackupKeys.manifest(safeBackupId)),
-    MAX_REMOTE_MANIFEST_BYTES,
-  );
-  const manifest = parseBackupManifestText(manifestText);
-  const files = [manifest.database.dump, ...manifest.objects.entries].map((entry) => ({
-    entry,
-    remoteKey: remoteBackupKey(safeBackupId, entry.relativePath),
-  }));
+  const manifest = await readRemoteBackupManifest(storage, safeBackupId);
+  const files = buildRemoteBackupPackageFiles(safeBackupId, manifest);
 
   // 同一个 backup id 下只允许 manifest 声明的 final 对象，额外 staged/final 对象都表示包不完整或受污染。
   const expectedKeys = new Set([

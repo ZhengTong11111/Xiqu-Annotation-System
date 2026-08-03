@@ -33,7 +33,7 @@
     "test:uploads": "npm run build:shared && node --import tsx --test apps/api/test/uploadPolicy.test.ts apps/api/test/storage.test.ts",
     "test:observability": "npm run build:shared && node --import tsx --test apps/api/test/observability.test.ts apps/api/test/monitoringConfig.test.ts",
     "test:maintenance": "npm run build:shared && tsc -p apps/api/tsconfig.test.json && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/maintenanceCoordinator.test.ts",
-    "test:backup": "npm run build:shared && tsc -p apps/api/tsconfig.test.json && node --import tsx --test apps/api/test/backupManifest.test.ts apps/api/test/remoteBackup.test.ts",
+    "test:backup": "npm run build:shared && tsc -p apps/api/tsconfig.test.json && node --import tsx --test apps/api/test/backupManifest.test.ts apps/api/test/remoteBackup.test.ts apps/api/test/remoteBackupLifecycle.test.ts",
     "test:object-storage": "node --import tsx --test apps/api/test/storage.test.ts apps/api/test/objectStorageFactory.test.ts",
     "test:s3-storage": "node --import tsx --test --test-concurrency=1 apps/api/test/s3ObjectStorage.integration.ts",
     "test:audit-log": "npm run build:shared && node --import tsx --test apps/api/test/auditLogQuery.test.ts src/platform/auditLogView.test.ts",
@@ -60,6 +60,8 @@
     "backup:verify-remote": "tsx apps/api/src/backup/cli.ts backup:verify-remote",
     "backup:restore-drill": "tsx apps/api/src/backup/cli.ts backup:restore-drill",
     "backup:restore-remote-drill": "tsx apps/api/src/backup/cli.ts backup:restore-remote-drill",
+    "backup:inspect-remote": "tsx apps/api/src/backup/cli.ts backup:inspect-remote",
+    "backup:cleanup-remote": "tsx apps/api/src/backup/cli.ts backup:cleanup-remote",
     "preview": "vite preview"
   },
   "dependencies": {

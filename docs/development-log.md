@@ -2115,3 +2115,71 @@ DeepSeek、GLM 或其他代理。用户明确要求 Development Log 不只写最
 - R3g2a 完成的是明确 backup id 的人工隔离恢复演练，不是生产自动恢复。尚无未完成包/已提交包保留
   清理、调度、增量、加密、跨区域复制或生产 IAM/default credential-chain 验收。下一轮 R3g2b 应先设计
   有宽限期、dry-run、显式确认和 manifest commit-marker 感知的远端清理，再做目标部署桶权限 smoke。
+
+## 2026-08-03：R3g2b1 远端备份保留计划与确认清理
+
+本轮从已提交且工作树干净的 R3g2a commit `881d90c` 开始。先审计现有对象孤儿治理、S3/local
+`listStoredObjects()`、manifest-last 发布、远端 key、CLI 参数解析和 roadmap，再整体重写被忽略的
+`CLAUDE_WORK.md`。生产 bucket/IAM 依赖真实部署环境，因此本轮进一步拆为 b1 生命周期治理；b2 才做
+生产验收，不能把 SeaweedFS 当成 AWS/MinIO 运维验收。全部实现、测试、自审与文档由 Codex 直接完成，
+未委托 Claude Code、DeepSeek、GLM 或其他代理。
+
+分类、策略与安全取舍：
+
+- 生命周期只自动识别 `createRemoteBackupId()` 真实生成的 production id。显式 verifier 仍能读取安全的
+  历史/测试 id，但自动清理不会因为一个普通顶层目录“长得像备份”就删除它。
+- 无 manifest 包分类为 incomplete，以包内最新对象修改时间应用 24 小时默认宽限；任一 fresh staged/
+  payload 都会保护整个包。manifest 无法解析、manifest 声明与实际 key/size 不一致、未知顶层对象均只
+  报告，不进入自动删除。
+- 结构完整包按 manifest `createdAt` 统一排序，默认保留 30 天且至少保护最新 3 个。不能按 S3 list 顺序
+  逐个决定。inspect 不重算全部 payload SHA-256，否则轻量 dry-run 会退化成整桶下载；恢复前 verifier
+  仍负责完整 hash，生命周期结构检查至少核对 key 与声明 size。
+- plan token 是策略、全部识别包分类、对象 key/size/modifiedAt/staged、未知对象和最终 eligible 集合的
+  稳定 JSON SHA-256，不含 generatedAt。同状态重复 inspect 稳定；cleanup 重新扫描，任何对象或策略
+  变化都在首个 delete 前拒绝，不能使用过期 dry-run。
+- 完整包删除严格 manifest-first：先撤销唯一 commit marker，再删除 payload；manifest 删除失败时该包
+  payload 零触碰。不同包独立，某包失败不会阻止无关 eligible 包，结果逐包返回 deleted/failed、对象数、
+  字节数和安全错误。未完成包没有 commit marker，可逐项幂等重试。
+
+实现与代码清理：
+
+- `remoteBackupPackage.ts` 抽出唯一 manifest 读取与 manifest-to-key helper，verifier、materializer、
+  lifecycle 共享格式知识，不为每个包重复 list bucket。`remoteBackupPaths.ts` 新增 production id 判定，
+  没有削弱显式 backup id 的路径安全守卫。
+- 新 `remoteBackupRetentionPolicy.ts` 统一环境和 CLI 覆盖：grace 1 分钟至 30 天、retention 1 至 3650 天、
+  minimum retained 1 至 1000；只接受十进制安全整数，坏配置扫描前 fail closed。
+- 新 `RemoteBackupLifecycleService` 一次列举并分组，逐 manifest 分类，再统一应用保留策略和 token。对象
+  字节汇总显式拒绝超过 JavaScript 安全整数；删除结果不读取/返回正文或 SDK 对象。
+- CLI 新增 `backup:inspect-remote` 与 `backup:cleanup-remote`。cleanup 必须同时提供当前 plan token 和
+  `--confirm`；部分失败先输出结构化逐包结果，再以非零状态提醒运维。旧 parser 中只特殊识别
+  `keep-maintenance-on-failure` 的硬编码已删除，所有布尔 flag 由命令白名单统一解析。
+
+测试、自审与真实 CLI：
+
+- 新生命周期内存测试覆盖 complete/incomplete/fresh incomplete/invalid/inconsistent/unrecognized、
+  retention + minimum newest、token 稳定与漂移、缺 confirm、manifest-first、manifest 删除失败不碰
+  payload、独立包部分成功和策略边界。首次专项为 24/25，失败不是业务错误，而是测试错误地要求完整包
+  manifest 必须是所有包的全局第一项；独立未完成包先删除是合法的。断言改为同一完整包内 manifest
+  相对 dump 在前，随后通过。
+- 自审后把结构一致从 key 精确集合加强为 payload key + size，并让安全字节汇总真实检查
+  `Number.isSafeInteger`；补充 size mismatch 与一个包失败不阻止另一个包的测试，没有保留旧弱判断。
+- 提交前静态审查又发现根级普通对象可能恰好与 production id 同名；分组最终要求真实 `<id>/...` 结构，
+  无斜杠同名对象进入 unrecognized 只报告集合，并补入回归测试，避免把普通根对象当未完成包删除。
+- SeaweedFS 协议测试新增两个正式包，真实 staged/promote 后计划只选择过期包，确认删除后最新包仍通过
+  `verifyRemoteBackup()`，旧 prefix 已消失。
+- 真实 CLI smoke 使用临时 SeaweedFS bucket/prefix 和 AWS SDK 写入两个有效最小包：旧包
+  `xiqu-backup-2026-01-01T00-00-00-000Z-aaaaaaaa`、新包
+  `xiqu-backup-2026-08-03T00-00-00-000Z-bbbbbbbb`。`backup:inspect-remote --retention-days 1
+  --minimum-retained 1` 只选旧包（2 对象、681 字节），返回 64 位 token；cleanup 用 token + confirm 删除
+  1 包/2 对象，新包 verify valid=true，二次 inspect 只剩新包且 eligible=0。临时服务与卷退出后删除，
+  命令全程未连接 PostgreSQL、未改变平台维护状态。
+
+最终验证与下一步：
+
+- 最终 `npm run test:backup` 25/25、`npm run test:s3-storage` 4/4、API 全套 79/79、`npm run build` 与
+  `git diff --check` 通过。完整构建覆盖 Prisma generation、shared、document-model、web 和 API；既有
+  Vite 主 chunk >500 kB 与 pg 9 前置弃用提醒不冒充本轮失败。新增模块、类型组、函数、循环和删除条件
+  均有中文功能注释，没有新依赖或并行清理路径。
+- R3g2b1 仍不是生产灾备验收。下一轮 R3g2b2 需要真实目标 MinIO/AWS bucket、TLS/网络路径、最小 IAM
+  policy（create/verify/restore/list/delete 所需动作分离）、凭据轮换和默认 credential-chain 决策；若当前
+  开发环境没有这类外部资源，应先产出可执行验收工具/文档，不能伪造生产通过。

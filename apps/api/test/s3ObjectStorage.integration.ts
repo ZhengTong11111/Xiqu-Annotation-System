@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -21,6 +22,9 @@ import {
   removeMaterializedRemoteBackup,
 } from "../src/backup/remoteBackupMaterializer.js";
 import { verifyBackupDirectory } from "../src/backup/backupVerifier.js";
+import { serializeBackupManifest } from "../src/backup/backupManifest.js";
+import { RemoteBackupLifecycleService } from "../src/backup/remoteBackupLifecycle.js";
+import { remoteBackupKeys } from "../src/backup/remoteBackupPaths.js";
 
 const TEST_ACCESS_KEY = "S3RVER";
 const TEST_SECRET_KEY = "S3RVER";
@@ -178,6 +182,84 @@ test("S3 隔离命名空间可发布并校验远端备份包", async () => {
     await rm(workDirectory, { recursive: true, force: true });
   }
 });
+
+// 生命周期 smoke 在真实 S3 prefix 中删除过期完整包，并证明受保护新包仍可完整校验。
+test("S3 远端备份保留计划按 manifest-first 清理过期包", async () => {
+  const storage = new S3ObjectStorage({
+    ...sharedFixture.options,
+    prefix: "platform-backup-lifecycle",
+  });
+  const oldId = "xiqu-backup-2026-01-01T00-00-00-000Z-aaaaaaaa";
+  const newId = "xiqu-backup-2026-08-03T00-00-00-000Z-bbbbbbbb";
+  await putMinimalRemoteBackup(storage, oldId, "2026-01-01T00:00:00.000Z");
+  await putMinimalRemoteBackup(storage, newId, "2026-08-03T00:00:00.000Z");
+  const lifecycle = new RemoteBackupLifecycleService(storage);
+  const policy = { incompleteGraceMs: 60_000, retentionDays: 1, minimumRetained: 1 };
+  const report = await lifecycle.inspect(policy, new Date("2026-08-03T12:00:00.000Z"));
+  assert.deepEqual(
+    report.packages.filter(({ cleanupEligible }) => cleanupEligible).map(({ backupId }) => backupId),
+    [oldId],
+  );
+  const result = await lifecycle.cleanup(
+    policy,
+    report.planToken,
+    true,
+    new Date("2026-08-03T12:00:00.000Z"),
+  );
+  assert.equal(result.deletedPackageCount, 1);
+  assert.equal((await verifyRemoteBackup(storage, newId)).valid, true);
+  assert.equal(
+    (await storage.listStoredObjects()).some(({ storageKey }) =>
+      storageKey.startsWith(`${oldId}/`)),
+    false,
+  );
+});
+
+// 最小远端包仍使用正式 manifest 和 staged/promote 协议，生命周期测试不直接伪造 list 结果。
+async function putMinimalRemoteBackup(
+  storage: S3ObjectStorage,
+  backupId: string,
+  createdAt: string,
+) {
+  const dump = Buffer.from(`dump:${backupId}`);
+  const manifest = serializeBackupManifest({
+    format: "xiqu-platform-backup",
+    version: 1,
+    createdAt,
+    operator: { accountName: "admin", userId: "admin-id" },
+    maintenanceReason: "S3 生命周期测试",
+    database: {
+      identity: {
+        host: "localhost",
+        port: 54329,
+        database: "xiqu_platform",
+        schema: "public",
+      },
+      postgresToolVersion: "pg_dump (PostgreSQL) 16.14",
+      dump: {
+        relativePath: "database.dump",
+        size: dump.length,
+        sha256: createHash("sha256").update(dump).digest("hex"),
+      },
+      summary: {
+        resourceCount: 0,
+        annotationFileCount: 0,
+        mediaFileCount: 0,
+        fileObjectCount: 0,
+        fileObjects: [],
+      },
+    },
+    objects: { count: 0, totalBytes: 0, entries: [] },
+    warnings: [],
+  });
+  for (const [key, content] of [
+    [remoteBackupKeys.database(backupId), dump],
+    [remoteBackupKeys.manifest(backupId), Buffer.from(manifest)],
+  ] as const) {
+    const staged = await storage.putStagedObject(key, Readable.from([content]), content.length);
+    await storage.promoteStagedObject(staged);
+  }
+}
 
 // 夹具使用官方客户端创建 bucket，适配器和测试准备共享同一真实 S3 HTTP 协议边界。
 async function createS3Fixture() {

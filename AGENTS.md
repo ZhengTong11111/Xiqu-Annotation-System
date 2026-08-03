@@ -259,6 +259,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - `remoteBackupMaterializer.ts` downloads each remote payload once into a unique temporary local package while
     checking size/SHA-256; `remoteRestoreDrillService.ts` only owns cleanup and delegates recovery to the single
     `restoreDrillService.ts` implementation
+  - `remoteBackupLifecycle.ts` owns one-list package discovery, manifest-aware classification, retention planning,
+    stable plan tokens, and manifest-first confirmed cleanup; malformed/inconsistent/unrecognized objects are
+    report-only and must not silently become deletion candidates
+  - `remoteBackupRetentionPolicy.ts` is the only parser for environment and CLI retention values
   - native PostgreSQL commands receive credentials through `PG*` environment variables, never shell-concatenated argv
 - `packages/shared/src/`
   - API/platform DTOs and shared contract types used by web and API
@@ -309,6 +313,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run backup:create-remote`
 - `npm run backup:verify-remote`
 - `npm run backup:restore-remote-drill`
+- `npm run backup:inspect-remote`
+- `npm run backup:cleanup-remote`
 - `npm run test:recovery-preview`
 - `npm run test:annotation-diff`
 - `npm run test:annotation-diff-timeline`
@@ -699,8 +705,9 @@ Important backend caveats:
 - media copy creates a new media resource that reuses the immutable `FileObject`; copies do not consume quota again.
   Aged orphan inspection/cleanup exists, but user-facing permanent deletion and physical duplication remain future work.
 - real-time collaborative editing is not implemented yet
-- local directory backup/restore and S3-compatible manifest-last remote backup create/verify/isolated restore are
-  implemented. There is still no scheduler, encryption, incremental chain, retention cleanup, production IAM/default
+- local directory backup/restore and S3-compatible manifest-last remote backup create/verify/isolated restore and
+  manifest-aware retention cleanup are implemented. There is still no scheduler, encryption, incremental chain,
+  production IAM/default
   credential-chain review, or production bucket acceptance. The local directory snapshot command remains local-only.
 - remote backup targets use an independent `XIQU_BACKUP_S3_*` configuration and a required non-empty prefix. The source
   and target namespaces must not be equal or contain one another. `manifest.json` is the only commit marker; payloads
@@ -709,6 +716,11 @@ Important backend caveats:
   payload are opened once over the network while payloads are written and hashed; the existing local verifier then
   rechecks on-disk bytes before the sole restore implementation runs. Success, failure, and cancellation must remove
   the materialized package, and cleanup failures must not be swallowed.
+- remote retention inspection scans the dedicated backup namespace once, recognizes only production backup ids, and
+  protects incomplete packages by their newest object modification time. Complete packages use manifest `createdAt`,
+  retention days, and a minimum-newest count. Cleanup requires the exact current SHA-256 plan token plus explicit
+  confirmation; complete-package deletion must revoke `manifest.json` before payloads. Invalid manifest, inconsistent
+  package, and unrecognized objects remain report-only.
 - business storage consumers must depend on `ObjectStorage` or a narrow `Pick` of required methods. The concrete local
   adapter is confined to the factory, adapter tests, and the explicitly local restore-drill target. S3/MinIO must be
   implemented as a real adapter with integration tests, not as a path shim. `getObjectStream()` is asynchronous so
@@ -768,6 +780,9 @@ Important backend caveats:
 - remote restore must not call full remote verification and then download the package a second time. Shared remote
   package indexing performs manifest/object-set checks, materialization performs one streamed download, and the local
   verifier provides the separate post-download disk check.
+- remote cleanup must re-inspect immediately before mutation. A changed object or policy invalidates the plan token and
+  causes zero deletions. Package failures are isolated, but manifest deletion failure must stop deletion within that
+  complete package; successful independent packages may still be reported and removed.
 - restored databases intentionally retain the captured `maintenance=true`; an operator must inspect the report and
   explicitly disable maintenance before routing traffic to a recovered database
 - `maintenance:disable` loads an active global-admin operator directly from PostgreSQL and continues using the existing

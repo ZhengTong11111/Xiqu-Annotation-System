@@ -12,6 +12,8 @@ import { createRemotePlatformBackup } from "./remoteBackupService.js";
 import { createRemoteBackupStorageFromEnvironment } from "./remoteBackupStorageFactory.js";
 import { verifyRemoteBackup } from "./remoteBackupVerifier.js";
 import { runRemoteRestoreDrill } from "./remoteRestoreDrillService.js";
+import { RemoteBackupLifecycleService } from "./remoteBackupLifecycle.js";
+import { resolveRemoteBackupRetentionPolicy } from "./remoteBackupRetentionPolicy.js";
 
 const DEFAULT_DATABASE_URL =
   "postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public";
@@ -44,6 +46,19 @@ const COMMAND_OPTIONS: Record<string, { values: string[]; flags: string[] }> = {
       "report",
     ],
     flags: [],
+  },
+  "backup:inspect-remote": {
+    values: ["incomplete-grace-ms", "retention-days", "minimum-retained"],
+    flags: [],
+  },
+  "backup:cleanup-remote": {
+    values: [
+      "plan-token",
+      "incomplete-grace-ms",
+      "retention-days",
+      "minimum-retained",
+    ],
+    flags: ["confirm"],
   },
 };
 
@@ -138,6 +153,31 @@ async function runCommand(
     });
     return;
   }
+  // 远端生命周期命令只访问独立备份对象存储；inspect 永不删除，cleanup 还需 token 与 confirm 双重门槛。
+  if (command === "backup:inspect-remote" || command === "backup:cleanup-remote") {
+    const lifecycle = new RemoteBackupLifecycleService(
+      createRemoteBackupStorageFromEnvironment(),
+    );
+    const policy = resolveRemoteBackupRetentionPolicy(process.env, {
+      incompleteGraceMs: values.get("incomplete-grace-ms"),
+      retentionDays: values.get("retention-days"),
+      minimumRetained: values.get("minimum-retained"),
+    });
+    if (command === "backup:inspect-remote") {
+      printJson(await lifecycle.inspect(policy));
+      return;
+    }
+    const result = await lifecycle.cleanup(
+      policy,
+      requireValue(values, "plan-token"),
+      flags.has("confirm"),
+    );
+    printJson(result);
+    if (result.failedPackageCount > 0) {
+      throw new Error("部分远端备份包清理失败，请检查逐包结果后重新 inspect。 ");
+    }
+    return;
+  }
 
   const databaseUrl = process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL;
   const { prisma, pool, maintenancePool } = createPrismaConnection(databaseUrl);
@@ -220,15 +260,20 @@ async function runCommand(
 // 小型参数解析器区分取值参数和唯一布尔 flag，并拒绝重复值。
 function parseArguments(args: string[]) {
   const [command = "", ...rest] = args;
+  const allowed = COMMAND_OPTIONS[command];
   const values = new Map<string, string>();
   const flags = new Set<string>();
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index]!;
     if (!token.startsWith("--")) throw new Error(`无法识别参数“${token}”。`);
     const name = token.slice(2);
-    if (name === "keep-maintenance-on-failure") {
+    if (allowed?.flags.includes(name)) {
+      if (flags.has(name)) throw new Error(`参数 --${name} 不能重复。`);
       flags.add(name);
       continue;
+    }
+    if (allowed && !allowed.values.includes(name)) {
+      throw new Error(`命令 ${command} 不支持参数 --${name}。`);
     }
     const value = rest[index + 1];
     if (!value || value.startsWith("--")) throw new Error(`参数 --${name} 缺少值。`);
