@@ -2,7 +2,7 @@
 
 本文档说明编辑器本地状态、平台 annotation file 和未来同步层之间的当前边界。
 
-最后更新：2026-08-01
+最后更新：2026-08-03
 
 ## 1. 三个层次
 
@@ -79,8 +79,9 @@ JSON 导入导出，也可以作为平台 `AnnotationFile.payload` 保存。
    - 明确离线 -> `offline`
    - 其他 -> `error`
 
-`submitted` 只表示 operation 摘要已写入日志，不表示 payload 已保存。当前去重只在页面内存层面
-有效；刷新后重试仍缺少服务端幂等键。
+`submitted` 只表示 operation 摘要已写入日志，不表示 payload 已保存。每条 operation 使用稳定
+`clientOperationId`，服务端在“标注文件 + 账号 + clientOperationId”作用域内按请求指纹幂等接收；
+响应丢失或完整保存推进 revision 后，完全相同请求仍可安全重放。
 
 ## 4. Operation log 的当前边界
 
@@ -102,19 +103,21 @@ JSON 导入导出，也可以作为平台 `AnnotationFile.payload` 保存。
 
 批量导入、轨道结构和递归分叉变更可能需要更高层事务命令，不能强拆成没有原子边界的小操作。
 
-## 5. 自动保存与离线恢复前置条件
+## 5. 浏览器草稿与离线恢复边界
 
-下一步不能只在 React effect 中加 debounce。至少需要：
+R4b1 已为可写平台会话建立 version 1 IndexedDB envelope：
 
-- pending operations 持久化到 IndexedDB。
-- 每个 client operation 的稳定幂等 id 和数据库唯一约束。
-- 页面刷新后恢复本地文档、remote base revision 和队列。
-- 保存中继续编辑的快照隔离。
-- 失败重试与退避。
-- 409 冲突比较/用户决策，不自动覆盖。
-- 页面关闭和视频/大 payload 保存性能策略。
+- 主键严格绑定当前账号 id 与标注文件 id，切换账号不会读取他人草稿。
+- 一份 envelope 只保存 current/saved 项目、吸附状态、本地 revision、服务器基准 revision、时间戳和
+  紧凑 pending operation；每条 operation 不再复制完整 before/after 项目。
+- 持久化前移除受保护媒体 URL、访问 token、Blob 和运行时状态；项目迁移仍只经过
+  `normalizeImportedProjectFile()`。
+- dirty 编辑短延迟覆盖同一 envelope；离开编辑器时立即排入最后快照；完整保存确认 clean 后删除草稿。
+- 打开文件时必须先读取服务器最新 payload、revision 和权限。同 revision 草稿可由用户显式恢复；
+  stale 或只读草稿禁止直接恢复，只允许导出或明确丢弃。损坏记录不能进入 document state。
 
-详见 roadmap R4；这些工作必须在 R0 的 migration 和 API 集成测试保护线之后进行。
+这仍不是自动保存：当前没有后台保存调度、联网重试退避或 stale 草稿合并。下一步应先为 stale 草稿
+复用结构化 diff/merge 建立明确冲突决策，再接自动保存；任何流程都不得自动覆盖远端。
 
 ## 6. 实时协作方向
 
@@ -146,4 +149,6 @@ JSON 导入导出，也可以作为平台 `AnnotationFile.payload` 保存。
 - stale base revision 返回 conflict，不调用 `markProjectAsSaved()`。
 - read-only session 无法通过 commit、transient update、undo/redo 绕过。
 - 本地 JSON 保存/导入与平台保存互不污染。
+- IndexedDB 草稿按账号/文件隔离，且不含 token、Blob 或每 operation 完整项目快照。
+- 同 revision 才能恢复；stale/read-only/损坏草稿不能进入可写 document state。
 - `npm run build` 通过；平台保存改动还应有 API 集成测试。

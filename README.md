@@ -227,8 +227,10 @@ Range。重要平台修改完成后应同时运行相关专项测试和完整构
 
 当前 operation log 只记录编辑摘要，完整标注内容仍由 revision-checked 文件保存接口写入。每个客户端
 operation 使用 `(标注文件、账号、clientOperationId)` 服务端唯一作用域和请求指纹：响应丢失后的完全
-相同重试返回原记录，同 key 异内容明确冲突，不会重复落日志。该幂等基础不等于自动保存；浏览器持久化
-离线队列和实时多人同步尚未实现。
+相同重试返回原记录，同 key 异内容明确冲突，不会重复落日志。可写平台文件还会把一份经过脱敏的本地
+恢复草稿保存到 IndexedDB：草稿按账号与文件隔离，刷新后只有服务器 revision 未变化时才允许显式恢复；
+stale 或只读草稿只能导出或丢弃，正常保存成功后自动清除。该机制仍不等于服务器自动保存；联网重试、
+stale 草稿合并和实时多人同步尚未实现。
 
 ## 界面总览
 
@@ -1153,9 +1155,9 @@ Prometheus 指标、管理员诊断面板、跨实例维护写入静默边界，
 
 ### 2. 尚未实现实时多人协作
 
-已有 pending operations、幂等 operation log、revision 冲突和同步状态基础，但 WebSocket、presence、
-实时 operation 合并、IndexedDB 队列和离线自动恢复尚未实现。多人同时保存同一 revision 时，后到者会收到
-冲突提示。
+已有 pending operations、幂等 operation log、revision 冲突、同步状态和浏览器 IndexedDB 恢复草稿。
+同 revision 草稿可在重新打开时恢复，但 WebSocket、presence、实时 operation 合并、自动保存调度、
+联网重试和 stale 草稿合并尚未实现。多人同时保存同一 revision 时，后到者会收到冲突提示。
 
 ### 3. 本地视频需要重新关联
 

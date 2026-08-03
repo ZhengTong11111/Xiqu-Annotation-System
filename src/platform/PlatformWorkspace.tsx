@@ -11,7 +11,7 @@ import { PlatformClient } from "../api/platformClient";
 import type { TopMenuPlatformNavigation } from "../components/TopMenuBar";
 import { mockProject } from "../mockData";
 import type { ProjectData } from "../types";
-import { normalizeImportedProjectFile } from "../utils/projectFile";
+import type { ProjectDocumentRecoveryState } from "../state/projectDocumentState";
 import type { AnnotationComparisonFocus } from "./annotationComparisonNavigation";
 import type {
   AnnotationMergeDraft,
@@ -20,6 +20,18 @@ import type {
 } from "./annotationMergeDraft";
 import { prepareAnnotationMergeDraft } from "./annotationMergePreparation";
 import { ResourceExplorer } from "./ResourceExplorer";
+import { hydrateProjectForClient } from "./platformProjectPayload";
+import {
+  assessPlatformDraftCompatibility,
+  normalizePlatformDraftRecord,
+  toProjectDocumentRecoveryState,
+  type PlatformDraftRecord,
+} from "./platformDraft";
+import { platformDraftStore } from "./platformDraftStore";
+import {
+  PlatformDraftRecoveryDialog,
+  type PlatformDraftRecoveryMode,
+} from "./PlatformDraftRecoveryDialog";
 
 export type PlatformEditorSession = {
   client: PlatformClient;
@@ -37,6 +49,7 @@ export type PlatformEditorSession = {
   accessLabel: string;
   initialFocus?: AnnotationComparisonFocus;
   pendingMergeDraft?: AnnotationMergeDraft;
+  initialRecoveryState?: ProjectDocumentRecoveryState;
 };
 
 export type LocalEditorSession = {
@@ -56,8 +69,15 @@ type PlatformWorkspaceProps = {
 
 type PlatformView = "login" | "explorer" | "editor";
 
+type PendingDraftOpen = {
+  file: AnnotationFile<ProjectData>;
+  serverProject: ProjectData;
+  initialFocus?: AnnotationComparisonFocus;
+  draft: PlatformDraftRecord;
+  mode: PlatformDraftRecoveryMode;
+};
+
 const TOKEN_KEY = "xiqu-platform-dev-token";
-const PLATFORM_FILE_PATH_PREFIX = "platform-file:";
 
 export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   const [view, setView] = useState<PlatformView>(() =>
@@ -72,6 +92,8 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   const [localSession, setLocalSession] =
     useState<LocalEditorSession | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingDraftOpen, setPendingDraftOpen] = useState<PendingDraftOpen | null>(null);
+  const [draftDecisionBusy, setDraftDecisionBusy] = useState(false);
 
   const client = useMemo(() => new PlatformClient({
     baseUrl: "http://localhost:4317/api",
@@ -119,6 +141,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     initialProject: ProjectData;
     initialFocus?: AnnotationComparisonFocus;
     pendingMergeDraft?: AnnotationMergeDraft;
+    initialRecoveryState?: ProjectDocumentRecoveryState;
   }) => {
     // 平台治理命令必须绑定已登录账号；会话尚未恢复完成时不允许构造匿名编辑器状态。
     if (!user) {
@@ -156,6 +179,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
           : "只读",
       initialFocus: input.initialFocus,
       pendingMergeDraft: input.pendingMergeDraft,
+      initialRecoveryState: input.initialRecoveryState,
       onAnnotationFileSaved: (saved) => {
         setEditorSession((current) => current
           ? {
@@ -171,6 +195,19 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setView("editor");
   }, [client, user]);
 
+  // 文件真正进入编辑器后再记录最近打开；恢复对话框取消时不能留下虚假的访问记录。
+  const enterPlatformFileAndMarkOpened = useCallback(async (input: {
+    file: AnnotationFile<ProjectData>;
+    initialProject: ProjectData;
+    initialFocus?: AnnotationComparisonFocus;
+    initialRecoveryState?: ProjectDocumentRecoveryState;
+  }) => {
+    await enterPlatformEditor(input);
+    void client.markResourceOpened(input.file.resource.id).catch((markError) => {
+      console.warn("记录最近打开失败", markError);
+    });
+  }, [client, enterPlatformEditor]);
+
   // 平台文件只有这一条打开路径：每次重新读取最新内容、revision 与权限，再建立隔离的编辑器会话。
   const openPlatformAnnotationFile = useCallback(async (
     resource: ResourceEntry,
@@ -179,15 +216,39 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setError(null);
     try {
       const file = await client.getAnnotationFile<ProjectData>(resource.id);
-      await enterPlatformEditor({
-        file,
-        initialProject: hydrateProjectForClient(file.payload, client),
-        initialFocus,
+      const serverProject = hydrateProjectForClient(file.payload, client);
+      // 草稿严格按当前登录账号和文件读取；未知或损坏数据不能通过类型断言进入编辑器。
+      if (!user) throw new Error("登录会话尚未恢复，请刷新后重试。");
+      const rawDraft = await platformDraftStore.get(user.id, resource.id);
+      const draft = normalizePlatformDraftRecord(rawDraft, {
+        userId: user.id,
+        annotationFileId: resource.id,
       });
-      // 最近打开失败不应阻止已读取的文件进入编辑器；维护模式下该辅助写入会被预期拒绝。
-      void client.markResourceOpened(resource.id).catch((markError) => {
-        console.warn("记录最近打开失败", markError);
-      });
+      if (rawDraft !== null && !draft) {
+        // 损坏草稿不能进入 document state，但也不能永久阻塞文件；仅在用户明确确认后删除并继续。
+        const shouldDiscardInvalidDraft = window.confirm(
+          "浏览器中的本地草稿格式已损坏或不兼容，无法安全恢复。\n\n"
+          + "是否删除这份无效草稿并打开服务器版本？取消将保留草稿且不打开文件。",
+        );
+        if (!shouldDiscardInvalidDraft) return false;
+        await platformDraftStore.delete(user.id, resource.id);
+        await enterPlatformFileAndMarkOpened({ file, initialProject: serverProject, initialFocus });
+        return true;
+      }
+      if (draft) {
+        const compatibility = assessPlatformDraftCompatibility(draft, file.revision);
+        setPendingDraftOpen({
+          file,
+          serverProject,
+          initialFocus,
+          draft,
+          mode: !file.resource.permission.capabilities.includes("write")
+            ? "read-only"
+            : compatibility.status,
+        });
+        return true;
+      }
+      await enterPlatformFileAndMarkOpened({ file, initialProject: serverProject, initialFocus });
       return true;
     } catch (nextError) {
       const message = describeError(nextError);
@@ -196,7 +257,55 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       window.alert(message);
       return false;
     }
-  }, [client, enterPlatformEditor]);
+  }, [client, enterPlatformFileAndMarkOpened, user]);
+
+  // 同 revision 草稿恢复保留本地 operation id/revision；媒体 URL 在恢复时重新按当前会话生成。
+  const recoverPendingDraft = useCallback(async () => {
+    const pending = pendingDraftOpen;
+    if (!pending || pending.mode !== "recoverable" || draftDecisionBusy) return;
+    setDraftDecisionBusy(true);
+    try {
+      const recoveryState = toProjectDocumentRecoveryState(
+        pending.draft,
+        (project) => hydrateProjectForClient(project, client),
+      );
+      await enterPlatformFileAndMarkOpened({
+        file: pending.file,
+        initialProject: recoveryState.currentProject,
+        initialFocus: pending.initialFocus,
+        initialRecoveryState: recoveryState,
+      });
+      setPendingDraftOpen(null);
+    } catch (nextError) {
+      const message = describeError(nextError);
+      setError(message);
+      window.alert(message);
+    } finally {
+      setDraftDecisionBusy(false);
+    }
+  }, [client, draftDecisionBusy, enterPlatformFileAndMarkOpened, pendingDraftOpen]);
+
+  // 丢弃是显式不可逆决策：先删除 IndexedDB 草稿成功，再打开最新服务器内容。
+  const discardPendingDraftAndOpen = useCallback(async () => {
+    const pending = pendingDraftOpen;
+    if (!pending || draftDecisionBusy) return;
+    setDraftDecisionBusy(true);
+    try {
+      await platformDraftStore.delete(pending.draft.userId, pending.draft.annotationFileId);
+      await enterPlatformFileAndMarkOpened({
+        file: pending.file,
+        initialProject: pending.serverProject,
+        initialFocus: pending.initialFocus,
+      });
+      setPendingDraftOpen(null);
+    } catch (nextError) {
+      const message = describeError(nextError);
+      setError(message);
+      window.alert(message);
+    } finally {
+      setDraftDecisionBusy(false);
+    }
+  }, [draftDecisionBusy, enterPlatformFileAndMarkOpened, pendingDraftOpen]);
 
   // 选择性整合准备会重新读取并重建整套语义计划；任何过期、权限或结构变化都留在比较页报告。
   const prepareAnnotationMerge = useCallback(async (
@@ -215,6 +324,21 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       });
       if (!prepared.ok) return prepared;
       const typedTargetFile = prepared.value.targetFile as AnnotationFile<ProjectData>;
+      // 整合草稿不能绕过本地恢复草稿：先让用户普通打开目标文件处理草稿，再重新比较生成新计划。
+      if (!user) return { ok: false, message: "登录会话尚未恢复，请刷新后重试。" };
+      const rawDraft = await platformDraftStore.get(user.id, typedTargetFile.resource.id);
+      if (rawDraft !== null) {
+        const localDraft = normalizePlatformDraftRecord(rawDraft, {
+          userId: user.id,
+          annotationFileId: typedTargetFile.resource.id,
+        });
+        return {
+          ok: false,
+          message: localDraft
+            ? "目标文件存在未处理的浏览器草稿。请先普通打开目标文件，恢复或丢弃草稿后再重新比较。"
+            : "目标文件存在损坏或不兼容的浏览器草稿，暂不允许准备整合以避免覆盖本地数据。",
+        };
+      }
       await enterPlatformEditor({
         file: typedTargetFile,
         initialProject: prepared.value.draft.baseProject,
@@ -224,7 +348,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     } catch (nextError) {
       return { ok: false, message: describeError(nextError) };
     }
-  }, [client, enterPlatformEditor]);
+  }, [client, enterPlatformEditor, user]);
 
   if (view === "login") {
     return (
@@ -276,61 +400,35 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   }
 
   return (
-    <ResourceExplorer
-      client={client}
-      user={user}
-      onLogout={() => {
-        window.localStorage.removeItem(TOKEN_KEY);
-        setAccessToken(null);
-        setUser(null);
-        setView("login");
-      }}
-      onOpenLocalJson={openLocal}
-      onOpenAnnotationFile={openPlatformAnnotationFile}
-      onPrepareAnnotationMerge={prepareAnnotationMerge}
-    />
+    <>
+      <ResourceExplorer
+        client={client}
+        user={user}
+        onLogout={() => {
+          window.localStorage.removeItem(TOKEN_KEY);
+          setAccessToken(null);
+          setUser(null);
+          setPendingDraftOpen(null);
+          setView("login");
+        }}
+        onOpenLocalJson={openLocal}
+        onOpenAnnotationFile={openPlatformAnnotationFile}
+        onPrepareAnnotationMerge={prepareAnnotationMerge}
+      />
+      {pendingDraftOpen ? (
+        <PlatformDraftRecoveryDialog
+          fileName={pendingDraftOpen.file.resource.name}
+          remoteRevision={pendingDraftOpen.file.revision}
+          draft={pendingDraftOpen.draft}
+          mode={pendingDraftOpen.mode}
+          busy={draftDecisionBusy}
+          onCancel={() => setPendingDraftOpen(null)}
+          onRecover={() => void recoverPendingDraft()}
+          onDiscardAndOpen={() => void discardPendingDraftAndOpen()}
+        />
+      ) : null}
+    </>
   );
-}
-
-export function hydrateProjectForClient(
-  payload: unknown,
-  client: PlatformClient,
-): ProjectData {
-  const project = normalizeImportedProjectFile(payload).project;
-  const fileId = getPlatformFileId(project.video.filePath);
-  if (!fileId) return project;
-  return {
-    ...project,
-    video: {
-      ...project.video,
-      url: client.getFileContentUrl(fileId),
-      source: "url",
-      filePath: `${PLATFORM_FILE_PATH_PREFIX}${fileId}`,
-    },
-  };
-}
-
-
-export function prepareProjectForServer(project: ProjectData): ProjectData {
-  const fileId = getPlatformFileId(project.video.filePath);
-  return {
-    ...project,
-    video: fileId
-      ? {
-          ...project.video,
-          // 会话 token 不落盘，打开文件时再生成受保护的媒体 URL。
-          url: "",
-          source: "url",
-          filePath: `${PLATFORM_FILE_PATH_PREFIX}${fileId}`,
-        }
-      : project.video,
-  };
-}
-
-function getPlatformFileId(filePath: string | null | undefined) {
-  return filePath?.startsWith(PLATFORM_FILE_PATH_PREFIX)
-    ? filePath.slice(PLATFORM_FILE_PATH_PREFIX.length)
-    : null;
 }
 
 // 前端只用祖先 owner 结果决定是否展示命令；服务端仍会在事务内重新遍历并执行权威校验。

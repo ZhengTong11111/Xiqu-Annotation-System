@@ -36,10 +36,25 @@ export type ProjectDocumentOperation = {
   baseRevision: number;
   createdAt: number;
   syncState: "pending" | "submitted" | "acknowledged";
-  beforeProject?: ProjectData;
-  afterProject?: ProjectData;
-  beforeTrackSnapEnabled?: Record<string, boolean>;
-  afterTrackSnapEnabled?: Record<string, boolean>;
+  // 操作只保留服务端审计需要的紧凑摘要；完整项目由当前草稿快照单份保存，不能在每条操作中重复。
+  summary: {
+    hasProjectChange: boolean;
+    hasTrackSnapChange: boolean;
+    changedTrackIds?: string[];
+  };
+};
+
+// 浏览器草稿恢复 document hook 所需的最小完整状态，不包含临时拖拽、undo/redo 或 UI 浮层状态。
+export type ProjectDocumentRecoveryState = {
+  currentProject: ProjectData;
+  savedProject: ProjectData;
+  currentTrackSnapEnabled: Record<string, boolean>;
+  savedTrackSnapEnabled: Record<string, boolean>;
+  pendingOperations: ProjectDocumentOperation[];
+  localRevision: number;
+  savedRevision: number;
+  lastChangedAt: number | null;
+  lastSavedAt: number | null;
 };
 
 export type ProjectSyncState = {
@@ -65,6 +80,7 @@ type ProjectDocumentStateOptions = {
   historyLimit?: number;
   operationLogLimit?: number;
   readOnly?: boolean;
+  initialRecoveryState?: ProjectDocumentRecoveryState;
 };
 
 type TrackSnapUpdateOptions = {
@@ -94,37 +110,53 @@ export function useProjectDocumentState({
   historyLimit = DEFAULT_HISTORY_LIMIT,
   operationLogLimit = DEFAULT_OPERATION_LOG_LIMIT,
   readOnly = false,
+  initialRecoveryState,
 }: ProjectDocumentStateOptions) {
-  const [project, setProject] = useState<ProjectData>(initialProject);
-  const [trackSnapEnabled, setTrackSnapEnabled] = useState(initialTrackSnapEnabled);
+  // 恢复状态必须在首次 render 时一次性装入 state 与 refs，避免 effect 回填造成短暂的错误 clean 状态。
+  const initialCurrentProject = initialRecoveryState?.currentProject ?? initialProject;
+  const initialSavedProject = initialRecoveryState?.savedProject ?? initialProject;
+  const initialCurrentTrackSnapEnabled = initialRecoveryState?.currentTrackSnapEnabled ?? initialTrackSnapEnabled;
+  const initialSavedTrackSnapEnabled = initialRecoveryState?.savedTrackSnapEnabled ?? initialTrackSnapEnabled;
+  const initialPendingOperations = initialRecoveryState?.pendingOperations ?? [];
+  const initialLocalRevision = initialRecoveryState?.localRevision ?? 0;
+  const initialSavedRevision = initialRecoveryState?.savedRevision ?? 0;
+  const initialHasUnsavedChanges = !areProjectsEqual(initialSavedProject, initialCurrentProject) ||
+    !areTrackSnapStatesEqual(initialSavedTrackSnapEnabled, initialCurrentTrackSnapEnabled);
+
+  const [project, setProject] = useState<ProjectData>(initialCurrentProject);
+  const [trackSnapEnabled, setTrackSnapEnabled] = useState(initialCurrentTrackSnapEnabled);
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([]);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  const [operationLog, setOperationLog] = useState<ProjectDocumentOperation[]>([]);
-  const [pendingOperations, setPendingOperations] = useState<ProjectDocumentOperation[]>([]);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(initialHasUnsavedChanges);
+  const [operationLog, setOperationLog] = useState<ProjectDocumentOperation[]>(initialPendingOperations);
+  const [pendingOperations, setPendingOperations] = useState<ProjectDocumentOperation[]>(initialPendingOperations);
   const [syncState, setSyncState] = useState<ProjectSyncState>({
-    status: "saved",
-    localRevision: 0,
-    savedRevision: 0,
+    status: initialHasUnsavedChanges
+      ? typeof navigator !== "undefined" && navigator.onLine === false
+        ? "offline"
+        : "dirty"
+      : "saved",
+    localRevision: initialLocalRevision,
+    savedRevision: initialSavedRevision,
     remoteRevision: null,
-    pendingOperationCount: 0,
-    lastChangedAt: null,
-    lastSavedAt: null,
+    pendingOperationCount: initialPendingOperations.length,
+    lastChangedAt: initialRecoveryState?.lastChangedAt ?? null,
+    lastSavedAt: initialRecoveryState?.lastSavedAt ?? null,
     lastSyncAttemptAt: null,
     errorMessage: null,
   });
 
   const projectRef = useRef(project);
   const trackSnapEnabledRef = useRef(trackSnapEnabled);
-  const savedProjectRef = useRef(initialProject);
-  const savedTrackSnapEnabledRef = useRef(initialTrackSnapEnabled);
+  const savedProjectRef = useRef(initialSavedProject);
+  const savedTrackSnapEnabledRef = useRef(initialSavedTrackSnapEnabled);
   const undoStackRef = useRef(undoStack);
   const redoStackRef = useRef(redoStack);
   const transientProjectRef = useRef<ProjectData | null>(null);
-  const localRevisionRef = useRef(0);
-  const savedRevisionRef = useRef(0);
-  const operationLogRef = useRef<ProjectDocumentOperation[]>([]);
-  const pendingOperationsRef = useRef<ProjectDocumentOperation[]>([]);
+  const localRevisionRef = useRef(initialLocalRevision);
+  const savedRevisionRef = useRef(initialSavedRevision);
+  const operationLogRef = useRef<ProjectDocumentOperation[]>(initialPendingOperations);
+  const pendingOperationsRef = useRef<ProjectDocumentOperation[]>(initialPendingOperations);
   const areProjectsEqualRef = useRef(areProjectsEqual);
   const areTrackSnapStatesEqualRef = useRef(areTrackSnapStatesEqual);
   const readOnlyRef = useRef(readOnly);
@@ -266,8 +298,10 @@ export function useProjectDocumentState({
       type: "project.commit",
       action,
       baseRevision: localRevisionRef.current,
-      beforeProject: baseProject,
-      afterProject: nextProject,
+      summary: {
+        hasProjectChange: true,
+        hasTrackSnapChange: false,
+      },
     });
   }
 
@@ -298,12 +332,22 @@ export function useProjectDocumentState({
     trackSnapEnabledRef.current = nextTrackSnapState;
     setTrackSnapEnabled(nextTrackSnapState);
     if (options.recordOperation !== false) {
+      // 吸附操作在产生时计算变化轨道；恢复后无需保留两份完整开关对象也能提交相同审计摘要。
+      const trackIds = new Set([
+        ...Object.keys(previousTrackSnapState),
+        ...Object.keys(nextTrackSnapState),
+      ]);
       recordOperation({
         type: "track-snap.update",
         action: "track-snap",
         baseRevision: localRevisionRef.current,
-        beforeTrackSnapEnabled: previousTrackSnapState,
-        afterTrackSnapEnabled: nextTrackSnapState,
+        summary: {
+          hasProjectChange: false,
+          hasTrackSnapChange: true,
+          changedTrackIds: Array.from(trackIds).filter(
+            (trackId) => previousTrackSnapState[trackId] !== nextTrackSnapState[trackId],
+          ),
+        },
       });
       return;
     }
@@ -391,8 +435,10 @@ export function useProjectDocumentState({
       type: "project.undo",
       action: previousEntry.action,
       baseRevision: localRevisionRef.current,
-      beforeProject: currentProject,
-      afterProject: previousEntry.project,
+      summary: {
+        hasProjectChange: true,
+        hasTrackSnapChange: false,
+      },
     });
     return true;
   }
@@ -414,8 +460,10 @@ export function useProjectDocumentState({
       type: "project.redo",
       action: nextEntry.action,
       baseRevision: localRevisionRef.current,
-      beforeProject: currentProject,
-      afterProject: nextEntry.project,
+      summary: {
+        hasProjectChange: true,
+        hasTrackSnapChange: false,
+      },
     });
     return true;
   }
@@ -433,6 +481,21 @@ export function useProjectDocumentState({
           ? Date.now()
           : current.lastSyncAttemptAt,
     }));
+  }
+
+  // IndexedDB 层只通过这一条快照接口读取 document 状态，避免 App 直接拼接内部 refs 与 revision。
+  function getRecoveryState(): ProjectDocumentRecoveryState {
+    return {
+      currentProject: projectRef.current,
+      savedProject: savedProjectRef.current,
+      currentTrackSnapEnabled: trackSnapEnabledRef.current,
+      savedTrackSnapEnabled: savedTrackSnapEnabledRef.current,
+      pendingOperations: pendingOperationsRef.current,
+      localRevision: localRevisionRef.current,
+      savedRevision: savedRevisionRef.current,
+      lastChangedAt: syncState.lastChangedAt,
+      lastSavedAt: syncState.lastSavedAt,
+    };
   }
 
   return {
@@ -457,5 +520,6 @@ export function useProjectDocumentState({
     undoProject,
     redoProject,
     setSyncStatus,
+    getRecoveryState,
   };
 }

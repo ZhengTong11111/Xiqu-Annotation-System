@@ -2344,3 +2344,90 @@ GLM 或其他代理。
   用当前代码重启为 PID 19329；`/api/health/ready` 返回 ready，database/storage 均为 ok。
 - API 当前继续运行在 `http://127.0.0.1:4317`。本轮没有修改前端布局，不需要浏览器视觉验收；真正的
   用户可见离线恢复流程留给后续 R4b。
+
+## 2026-08-03：R4b1 浏览器离线草稿持久化与同 revision 恢复
+
+本轮从 R4a commit `95929ce` 和干净工作树开始。Codex 先审计 `useProjectDocumentState()`、平台唯一文件
+打开路径、完整 revision save、operation 提交顺序、比较整合入口和本地/平台 payload 边界，再把被忽略的
+`CLAUDE_WORK.md` 整体替换为 R4b1 当前任务书。本轮由 Codex 直接实现，没有调用 Claude Code、GLM、
+DeepSeek 或其他代理。目标严格限定为“浏览器崩溃/刷新/返回资源管理器后保住未保存内容，并在同服务器
+revision 下显式恢复”，不把 IndexedDB 草稿宣传成服务器自动保存或实时协作。
+
+审计与数据结构决策：
+
+- 原 `ProjectDocumentOperation` 在每次 commit/undo/redo 中各存一份完整 `beforeProject` 和
+  `afterProject`，吸附操作也重复两份完整开关表。若直接持久化 pending 队列，项目体积会按操作数成倍
+  膨胀。现在 operation 只保留稳定 id、type/action、local/base revision、时间、syncState 和紧凑
+  `summary`；完整 current/saved 项目只在草稿 envelope 中各存一次。服务端 operation request 直接消费
+  摘要，删除旧 diff helper 和快照字段，没有保留两条并行路径。
+- 新建 version 1 `PlatformDraftRecord`，稳定主键为编码后的“账号 id + 标注文件 id”。内容包括
+  current/saved ProjectData、current/saved 吸附状态、紧凑 pending operations、本地/已保存 revision、
+  服务器基准 revision 和时间戳；不保存 undo/redo、临时拖拽、比较焦点、整合草稿、界面浮层或任何
+  每-operation 项目快照。
+- IndexedDB 属于不可信 `unknown` 边界。归一化会验证 schema/身份/key、整数 revision、时间戳、operation
+  id/类型/摘要一致性、唯一 id 与 revision 范围，再让 current/saved 项目共同经过唯一
+  `normalizeImportedProjectFile()` 迁移入口。损坏记录不能进入 document state；普通打开会让用户明确
+  确认是否删除坏记录并打开服务器版本，取消则保留记录且不打开，避免既静默丢数据又永久锁死文件。
+- 平台 payload 脱水/水合从 `PlatformWorkspace.tsx` 抽到 `platformProjectPayload.ts`。草稿构建先经过
+  `getPersistableProjectData()` 和 `prepareProjectForServer()`，因此受保护媒体 URL 中的登录 token、Blob
+  URL 与浏览器运行时字段不会写进 IndexedDB；恢复时再按当前会话生成媒体访问 URL。
+
+持久化、恢复与竞态边界：
+
+- 引入 `idb` 8.0.3（ISC）作为生产依赖，封装 versioned IndexedDB 连接、object store 和类型化事务；它
+  替代容易写错的原生 request/transaction 回调，没有带入新的 UI 风格。测试引入 `fake-indexeddb`
+  6.2.5（Apache-2.0），在 Node 中运行真实 IndexedDB 事务语义。两者维护活跃、TypeScript 类型完整、
+  许可证适合项目，且只进入浏览器草稿/测试边界。
+- `usePlatformDraftPersistence()` 只在可写平台会话启用。dirty 编辑以 700ms 合并写入同一 envelope；
+  写任务执行时读取 document refs 的最新快照，队列串行化 put/delete，避免迟到 put 在保存成功删除后
+  重新制造草稿。编辑器卸载会立即排入最后一份 dirty 快照，因此 700ms 内返回资源管理器也不会漏写。
+  clean 只来自初始服务器状态或成功完整保存，此时删除草稿。
+- `useProjectDocumentState()` 新增一次性 `initialRecoveryState`，首次 render 原子恢复 current/saved 项目、
+  吸附状态、pending operation id/revision 与时间；不使用 effect 先显示错误 clean 状态。新增
+  `getRecoveryState()` 作为 IndexedDB 唯一完整快照接口，App 不再拼接 hook 内部 refs。
+- 平台打开仍只有一条权威路径：先读取服务器最新 payload、revision 和权限，再读取当前账号/文件草稿。
+  revision 完全相同时可显式恢复；远端已变化或当前只读时禁止直接恢复，只能导出标准 v5 JSON，或明确
+  丢弃后打开服务器版本。恢复保留原 operation id/local revision，未来重试继续复用 R4a 幂等键。
+- 选择性整合不能绕过恢复入口。准备 merge draft 前会检查目标文件是否存在任何本地草稿；存在有效或
+  损坏记录都阻止进入目标编辑器，要求先普通打开并处理，避免比较流程覆盖尚未恢复的数据。
+- 正常完整保存仍按“固定 payload/operation ids -> 顺序提交 operation 摘要 -> revision save -> 只确认本次
+  覆盖内容”的既有流程运行。保存成功后 `hasUnsavedChanges=false` 触发草稿删除；保存期间继续编辑仍保留
+  新 operation 和 dirty envelope。
+
+界面与样式：
+
+- 新增 Radix Dialog 草稿恢复界面，沿用现有恢复历史的低饱和桌面风格，明确文件名、更新时间、草稿
+  基准 revision、服务器当前 revision 和待同步数量。同 revision 显示恢复入口；stale/read-only 只显示
+  导出与丢弃，不用禁用按钮假装可恢复。
+- 本轮没有改时间轴布局、标注数据格式或服务器 schema。`ResourceExplorer` 只有 payload helper import
+  迁移，平台/本地 JSON 的既有入口不变。
+
+失败、修复与验证：
+
+- 第一次 `build:web` 在 `unknown` 草稿归一化处触发 TS18046；先把通过 integer guard 的 revision 保存为
+  已收窄局部数值，再参与 operation 范围判断。没有用 `as any` 绕过边界。
+- 第一次 document recovery 测试在 Node SSR 中报 `React is not defined`；测试显式导入 React 并使用
+  `React.createElement`，保留应用的现代 JSX 配置，不修改生产构建。
+- `npm run test:platform-operations` 2/2；覆盖稳定 operation id 和恢复后的紧凑吸附摘要。
+- `npm run test:platform-drafts` 5/5；覆盖 token URL 脱敏、无每操作完整快照、operation id/revision 保留、
+  unknown 损坏拒绝、同 revision 判定、账号/文件隔离、覆盖/删除，以及 hook 首次挂载原子恢复。
+- `npm run test:api` 85/85；隔离 `api_test` schema 无待迁移，并确认本轮前端状态重构没有破坏幂等 API、
+  revision save、恢复快照、ACL、上传、备份和运维边界。仍输出既有 pg 9 前置弃用提示，不影响结果。
+- `npm run build` 完整通过 Prisma generation、shared、document-model、web 和 API；仅保留既有 Vite
+  主 chunk 超过 500 kB 提醒。`git diff --check` 通过，API `/api/health/ready` 返回 database/storage ok。
+- 尝试使用内置 Browser 做真实刷新恢复点击测试时，第一次导航发生在 Vite 启动前，形成
+  `ERR_CONNECTION_REFUSED` 的 `data:` 错误页；随后虽已启动 `http://127.0.0.1:5173/`，Browser 运行时
+  URL 安全策略禁止从该错误页导航、刷新或读取，并明确禁止绕过或换用另一浏览器表面。因此本轮没有
+  冒充完成浏览器视觉/生命周期手测；自动化覆盖了数据、IndexedDB 事务和首次恢复状态，真实浏览器的
+  “编辑后立即返回、刷新恢复、stale 导出/丢弃、保存后不再提示”仍列为人工验收项。
+
+自我审查与后续边界：
+
+- 全文检索确认旧完整 before/after 字段只剩解释其危害的注释和断言其不存在的测试；没有僵尸 helper。
+  `idb` 与 `fake-indexeddb` 同 package/lockfile 提交，未引入第二套项目迁移或 UI 框架。
+- 当前 envelope 保存 current 与 saved 两份项目是恢复 dirty 基线所需的有界重复，不随 operation 数增长；
+  大项目的序列化耗时、配额和 worker 化应在真实性能数据出现后处理，不能提前把 ProjectData 拆成未经
+  设计的局部缓存。
+- R4b1 遇到 stale revision 会 fail closed，并提供 JSON 数据保险，但尚不能结构化审阅/整合 stale 草稿；
+  R4b2 应复用现有 `annotationDiff`/merge planner 建立“本地草稿 vs 服务器当前文件”的明确决策。之后
+  R4c 才加入服务器自动保存节流、在线恢复和退避。WebSocket/presence 继续留在 R5。

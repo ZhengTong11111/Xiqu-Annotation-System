@@ -28,12 +28,12 @@ export function buildServerOperationRequest(
     type: operation.type,
     historyAction: operation.action,
     localBaseRevision: operation.baseRevision,
-    hasProjectBeforeAfter: Boolean(operation.beforeProject || operation.afterProject),
-    hasTrackSnapBeforeAfter: Boolean(operation.beforeTrackSnapEnabled || operation.afterTrackSnapEnabled),
+    hasProjectBeforeAfter: operation.summary.hasProjectChange,
+    hasTrackSnapBeforeAfter: operation.summary.hasTrackSnapChange,
   };
   // track-snap.update 额外记录哪些轨道的吸附开关变化了，便于后续按轨道维度审查。
   if (operation.type === "track-snap.update") {
-    payload.changedTrackIds = diffTrackSnapTrackIds(operation);
+    payload.changedTrackIds = operation.summary.changedTrackIds ?? [];
   }
   return {
     // 本地稳定 id 是服务端一等幂等键；网络响应丢失后的重试不会再插入重复 operation。
@@ -45,13 +45,6 @@ export function buildServerOperationRequest(
     action: operation.type,
     payload,
   };
-}
-
-function diffTrackSnapTrackIds(operation: ProjectDocumentOperation): string[] {
-  const before = operation.beforeTrackSnapEnabled ?? {};
-  const after = operation.afterTrackSnapEnabled ?? {};
-  const trackIds = new Set<string>([...Object.keys(before), ...Object.keys(after)]);
-  return Array.from(trackIds).filter((id) => before[id] !== after[id]);
 }
 
 // 顺序提交 pending operations 到服务端 operation log。

@@ -48,7 +48,7 @@ import {
   isProjectFileLike,
   normalizeImportedProjectFile,
 } from "../utils/projectFile";
-import { prepareProjectForServer } from "./PlatformWorkspace";
+import { prepareProjectForServer } from "./platformProjectPayload";
 import { AnnotationComparisonDialog } from "./AnnotationComparisonDialog";
 import { AuditLogDialog } from "./AuditLogDialog";
 import type { AnnotationComparisonFocus } from "./annotationComparisonNavigation";

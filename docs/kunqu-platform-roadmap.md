@@ -19,7 +19,8 @@ liveness/readiness、低基数 Prometheus 指标和管理员容量/一致性诊�
 告警基线，R3g1 已完成独立 S3-compatible 命名空间中的 manifest-last 远端一致备份创建与流式校验，
 R3g2a 已完成远端包单次流式物化和真实 PostgreSQL/对象目录隔离恢复演练，R3g2b1 已完成 manifest-aware
 远端包检查、保留计划、稳定 token 和确认清理；R3g2b2a 已补齐无残留能力验收命令、最小 IAM 模板和
-部署检查表。真实生产 MinIO/AWS 的 R3g2b2 等待目标环境，本地开发转入 R4a operation 幂等接收基础；
+部署检查表。真实生产 MinIO/AWS 的 R3g2b2 等待目标环境；本地开发已完成 R4a operation 幂等接收和
+R4b1 浏览器草稿持久化/同 revision 恢复，下一步进入 R4b2 显式冲突处理；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -129,7 +130,8 @@ R3g2a 已完成远端包单次流式物化和真实 PostgreSQL/对象目录隔�
 - 恢复快照已有受控列表、只读预览、安全恢复 mutation，以及对当前服务器 revision 的结构化比较；
   普通标注文件已有结构化 diff、双侧时间概览、按侧打开定位和选择性整合闭环。
 - 服务端与三种视图已具备资源分页、名称搜索和虚拟渲染；高级筛选、查询指标和全文索引仍未完成。
-- 没有自动保存、浏览器持久化离线队列和联网恢复。
+- 可写平台文件已有按账号/文件隔离的 IndexedDB 草稿、刷新后同 revision 显式恢复和 stale revision
+  保护；尚无后台自动保存调度、联网重试退避和 stale 草稿的结构化冲突解决。
 - 没有 WebSocket presence、实时 operation 协议或冲突合并界面。
 - 后端任务仍是占位模型，没有独立 worker、队列和结果资产管理。
 - 生产迁移、对象存储、备份、监控和部署加固尚未完成。
@@ -359,11 +361,15 @@ R3g2a 已完成远端包单次流式物化和真实 PostgreSQL/对象目录隔�
 - R4a 已完成：把本地 operation id 提升为服务端一等幂等键，建立请求指纹、数据库唯一约束、并发
   单行接收和 revision 推进后的安全重放；这是持久离线队列与自动保存的前置，不会直接应用 operation
   payload 或替代完整 revision save。
-- 定义自动保存节流、保存中继续编辑和页面关闭策略。
-- pending operations 持久化到 IndexedDB，不能只留在 React 内存。
-- 为客户端 operation 增加服务端幂等键，刷新重试不重复落日志。
+- R4b1 已完成：operation 改为紧凑摘要，完整项目只在每个账号/标注文件的一份 versioned IndexedDB
+  envelope 中保存；草稿不含访问 token、Blob、undo/redo 或每操作项目快照。刷新或返回资源管理器后，
+  平台先读取服务器最新 revision，再允许同 revision 草稿显式恢复；stale/read-only 草稿只能导出或
+  丢弃，损坏草稿必须经确认清除。成功保存回到 clean 后删除草稿。
+- R4b2：为 stale 草稿建立“本地草稿 vs 服务器当前文件”的结构化比较与明确决策，不能直接覆盖远端；
+  复用现有 diff/merge 语义，但不得把恢复草稿伪装成普通资源文件。
+- R4c：定义并实现自动保存节流、保存中继续编辑、页面关闭策略，以及在线恢复、重试和指数退避。
 - 在线恢复、重试退避和明确的 saved/dirty/saving/offline/conflict/error 状态。
-- `409` 冲突比较和用户决策流程；禁止自动覆盖远端。
+- `409` 冲突比较和用户决策流程；禁止自动覆盖远端。R4b1 目前只阻止 stale 草稿直接恢复。
 - 快照保存和 operation 日志的确认边界保持一致。
 
 完成标准：断网和刷新不会静默丢失编辑，恢复在线后可安全继续同步。

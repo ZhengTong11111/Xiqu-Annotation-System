@@ -1,0 +1,111 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { mockProject } from "../mockData";
+import type { ProjectDocumentRecoveryState } from "../state/projectDocumentState";
+import {
+  assessPlatformDraftCompatibility,
+  buildPlatformDraftRecord,
+  normalizePlatformDraftRecord,
+  toProjectDocumentRecoveryState,
+} from "./platformDraft";
+
+// 测试夹具包含 dirty 项目与稳定 operation id，用来验证刷新后仍能继续幂等提交。
+function createRecoveryState(): ProjectDocumentRecoveryState {
+  return {
+    currentProject: {
+      ...mockProject,
+      video: {
+        ...mockProject.video,
+        url: "http://localhost:4317/api/files/media-1/content?access_token=secret",
+        filePath: "platform-file:media-1",
+      },
+      subtitleLines: mockProject.subtitleLines.map((line, index) => index === 0
+        ? { ...line, text: `${line.text}（本地编辑）` }
+        : line),
+    },
+    savedProject: mockProject,
+    currentTrackSnapEnabled: { "character-track": false },
+    savedTrackSnapEnabled: { "character-track": true },
+    pendingOperations: [{
+      id: "op-recoverable",
+      type: "project.commit",
+      action: "edit",
+      localRevision: 3,
+      baseRevision: 2,
+      createdAt: 1_785_700_000_000,
+      syncState: "pending",
+      summary: {
+        hasProjectChange: true,
+        hasTrackSnapChange: false,
+      },
+    }],
+    localRevision: 3,
+    savedRevision: 2,
+    lastChangedAt: 1_785_700_000_000,
+    lastSavedAt: 1_785_699_000_000,
+  };
+}
+
+// 构建草稿会清除受保护媒体 URL，并保留单份项目、稳定 operation 和 revision。
+test("构建并恢复平台草稿不会持久化会话 URL", () => {
+  const record = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState: createRecoveryState(),
+    now: 1_785_700_100_000,
+  });
+  assert.equal(record.currentProject.video.url, "");
+  assert.equal(record.pendingOperations.length, 1);
+  assert.equal("beforeProject" in record.pendingOperations[0], false);
+  assert.equal("afterProject" in record.pendingOperations[0], false);
+
+  const normalized = normalizePlatformDraftRecord(record, {
+    userId: "user-1",
+    annotationFileId: "file-1",
+  });
+  assert.ok(normalized);
+  const recovered = toProjectDocumentRecoveryState(normalized, (project) => ({
+    ...project,
+    video: { ...project.video, url: "fresh-protected-url" },
+  }));
+  assert.equal(recovered.currentProject.video.url, "fresh-protected-url");
+  assert.equal(recovered.pendingOperations[0].id, "op-recoverable");
+  assert.equal(recovered.localRevision, 3);
+});
+
+// 草稿只可由原账号打开原文件；损坏 operation、越界 revision 和假项目均 fail closed。
+test("平台草稿 unknown 边界拒绝身份与结构损坏", () => {
+  const record = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState: createRecoveryState(),
+    now: 1_785_700_100_000,
+  });
+  assert.equal(normalizePlatformDraftRecord(record, {
+    userId: "user-2",
+    annotationFileId: "file-1",
+  }), null);
+  assert.equal(normalizePlatformDraftRecord({
+    ...record,
+    pendingOperations: [{ ...record.pendingOperations[0], localRevision: 99 }],
+  }, { userId: "user-1", annotationFileId: "file-1" }), null);
+  assert.equal(normalizePlatformDraftRecord({
+    ...record,
+    currentProject: {},
+  }, { userId: "user-1", annotationFileId: "file-1" }), null);
+});
+
+// revision 判定绝不偷偷把旧草稿提升到服务器当前 revision。
+test("只有相同服务器 revision 的草稿可直接恢复", () => {
+  const record = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState: createRecoveryState(),
+  });
+  assert.equal(assessPlatformDraftCompatibility(record, 7).status, "recoverable");
+  assert.equal(assessPlatformDraftCompatibility(record, 8).status, "revision-conflict");
+  assert.equal(record.remoteBaseRevision, 7);
+});

@@ -27,6 +27,8 @@ Main currently contains all major recent feature lines that matter for context:
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - backend audit logs and annotation operation logs for the first platform-governance layer
 - project document state architecture (`src/state/projectDocumentState.ts`)
+- versioned browser recovery drafts for writable platform files, isolated by account/file and recoverable only against
+  the same server revision
 - recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
 
 If starting a new conversation, assume the repo is already beyond the earlier simple waveform-only stage.
@@ -39,6 +41,19 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - platform login/resource-explorer/editor switch and local editor entry
   - owns the single authoritative annotation-file open path; ordinary opens and comparison navigation both refetch
     the latest payload, revision, and permissions before creating one `PlatformEditorSession`
+  - resolves browser recovery drafts before editor construction; selective merge must not bypass an unresolved draft
+- `src/platform/platformProjectPayload.ts`
+  - single platform client/server payload boundary for adding current protected media URLs and removing them before save
+- `src/platform/platformDraft.ts`
+  - versioned, unknown-input-validated browser draft envelope and recovery compatibility rules
+  - persists one sanitized project pair plus compact operations; it never stores access tokens, Blob URLs, or
+    per-operation project snapshots
+- `src/platform/platformDraftStore.ts`
+  - `idb`-backed IndexedDB repository keyed by encoded account id and annotation-file id
+- `src/platform/usePlatformDraftPersistence.ts`
+  - serialized/debounced draft writes, editor-unmount final capture, and clean-state deletion for writable sessions
+- `src/platform/PlatformDraftRecoveryDialog.tsx`
+  - explicit same-revision recovery and stale/read-only export-or-discard decision before opening the editor
 - `src/platform/ResourceExplorer.tsx`
   - desktop-style three-pane resource manager
   - owns folder navigation, view switching, selection, keyboard actions, import/upload, and the resource Inspector
@@ -312,6 +327,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:permissions`
 - `npm run test:annotation-confirmations`
 - `npm run test:annotation-confirmation-view`
+- `npm run test:platform-operations`
+- `npm run test:platform-drafts`
 - `npm run test:resource-pagination`
 - `npm run test:resource-page-state`
 - `npm run test:resource-column-pages`
@@ -547,6 +564,7 @@ That hook currently owns:
 - `pendingOperations`
 - `syncState`
 - `transientProjectRef`
+- one-shot `initialRecoveryState` for atomic first-render restoration
 
 Important APIs:
 - `commitProject(nextProject, baseProject?, action?)`
@@ -559,6 +577,25 @@ Important APIs:
 - `markProjectAsSaved(...)`
 - `undoProject(...)`
 - `redoProject()`
+- `getRecoveryState()`
+  - returns the only supported complete snapshot for browser-draft persistence
+
+`ProjectDocumentOperation` is intentionally compact. It contains stable id/revisions, action/type/sync state, and a
+small change summary; do not restore the old full `beforeProject`/`afterProject` or duplicated track-snap maps. The
+browser draft stores current/saved projects once per account/file envelope.
+
+### Browser recovery draft rules
+- Browser drafts apply only to writable platform editor sessions. Local JSON and read-only sessions keep their existing
+  boundaries.
+- The IndexedDB key is account id + annotation-file id. Never key by display name, filename, token, or current folder.
+- Persisted projects must pass through `getPersistableProjectData()` and `prepareProjectForServer()`; protected media
+  URLs, access tokens, Blob URLs, pending merge drafts, focus commands, and UI overlays must never enter IndexedDB.
+- Opening always fetches the latest server file first. Only an exact `remoteBaseRevision` match can restore directly.
+  Stale/read-only drafts may be exported or explicitly discarded, but must not silently overwrite or enter editable state.
+- A successful full save returns the document to clean and deletes its draft. Writes and deletes must stay serialized so
+  a delayed write cannot recreate a draft after save.
+- This is recovery persistence, not autosave. Do not describe it as server synchronization, retry/backoff, stale-draft
+  merging, operation replay into payload, or real-time collaboration.
 
 ### Critical history rule
 Do not collapse multiple completed drags into one history entry.
@@ -609,6 +646,9 @@ Even though this is still local-first, the hook already tracks document-sync con
 - saved revision
 - pending operation count
 - operation log
+
+Writable platform sessions additionally persist one sanitized, versioned IndexedDB recovery envelope. Refresh recovery
+is explicit and same-revision only; stale-draft comparison, network retry/backoff, and server autosave remain R4 work.
 
 This means future remote sync/collaboration work should extend the existing document-state layer rather than bypass it inside `App.tsx`.
 

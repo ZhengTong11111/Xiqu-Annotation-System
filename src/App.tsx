@@ -24,10 +24,11 @@ import {
 import {
   type LocalEditorSession,
   PlatformWorkspace,
-  prepareProjectForServer,
   type PlatformEditorSession,
 } from "./platform/PlatformWorkspace";
+import { prepareProjectForServer } from "./platform/platformProjectPayload";
 import { useAnnotationConfirmations } from "./platform/useAnnotationConfirmations";
+import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
 import {
   type HistoryAction,
   type HistoryEntry,
@@ -438,14 +439,37 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     undoProject,
     redoProject,
     setSyncStatus,
+    getRecoveryState,
   } = useProjectDocumentState({
     initialProject,
     initialTrackSnapEnabled: getDefaultTrackSnapEnabled(initialProject),
     areProjectsEqual: projectsEqual,
     areTrackSnapStatesEqual: trackSnapStatesEqual,
     readOnly: isReadOnly,
+    initialRecoveryState: editorSession?.initialRecoveryState,
   });
   const [remoteBaseRevision, setRemoteBaseRevision] = useState(editorSession?.baseRevision ?? 0);
+  // operation 同步状态变化也要触发草稿重写，保证刷新后不会重复提交已进入服务器日志的条目。
+  const pendingOperationSignature = useMemo(
+    () => pendingOperations.map((operation) => `${operation.id}:${operation.syncState}`).join("|"),
+    [pendingOperations],
+  );
+  // 浏览器草稿仅服务平台可写会话；本地 JSON 和只读文件继续走各自原有保存边界。
+  usePlatformDraftPersistence({
+    enabled: Boolean(editorSession?.canWrite),
+    userId: editorSession?.currentUserId ?? null,
+    annotationFileId: editorSession?.annotationFileId ?? null,
+    remoteBaseRevision,
+    hasUnsavedChanges,
+    localRevision: syncState.localRevision,
+    pendingOperationSignature,
+    getRecoveryState,
+    onPersistenceError: (message) => {
+      setSyncStatus("error", {
+        errorMessage: `本地恢复草稿写入失败：${message}`,
+      });
+    },
+  });
   // 平台确认事实独立于项目文档历史；本地会话传入 null，因此不会请求或展示服务端治理状态。
   const annotationConfirmations = useAnnotationConfirmations({
     client: editorSession?.client ?? null,
