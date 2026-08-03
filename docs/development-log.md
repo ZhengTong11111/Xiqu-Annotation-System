@@ -2668,3 +2668,58 @@ R4b2 `PendingDraftOpen`/固定方向比较入口，以及草稿 debounce/unmount
   交接”闭环。没有 WebSocket、presence、领域 operation 重放或实时多人合并。
 - 下一轮必须对照 R4 完成标准做一次生命周期与残余风险审计；若缺少可自动化的 timer/hook 集成测试、
   用户可见重试信息或关闭页面一致性证明，应拆 R4c3 补齐，而不是因主路径可编译就直接宣布 R4 完成。
+
+## 2026-08-03：R4c3 自动保存生命周期协调器与 R4 工程验收
+
+本轮从 R4c2 commit `9689070` 和干净工作树开始。Codex 先对照 roadmap 的 R4 完成标准审计
+`usePlatformAutoSave()`、纯 policy、document online/offline listener、唯一服务器保存事务、IndexedDB 草稿
+和现有测试。审计确认产品主路径已连通，但只有纯 policy 有测试，timer、single-flight、保存期间继续编辑、
+online 恢复、dispose 和异常 Promise 仍耦合在 React hook 内。随后将 `CLAUDE_WORK.md` 整体替换为 R4c3
+单一任务。工作由 Codex 直接实施，没有调用 Claude Code、GLM、DeepSeek 或其他代理，也没有新增依赖。
+
+实现与旧逻辑清理：
+
+- 新增 `platformAutoSaveRuntime.ts`。运行时只接收六项会话 facts，并注入 now/timer/save/error callback；
+  内部至多保留一个 timer 和一个 in-flight 请求，继续复用 R4c1 纯 policy 与退避函数，没有复制决策逻辑。
+- runtime 的 `update()` 统一处理 local revision、offline→online 和普通 facts 变化；`evaluate()` 是唯一调度
+  入口。正常 outcome 只调整 idle/retry/block 状态，服务器 revision、saved baseline、operation ack 和
+  IndexedDB 仍由 App/document/draft 各自所有。
+- `usePlatformAutoSave.ts` 删除原来的 idle/retry dueAt、attempt、blocked、in-flight、mounted refs 和
+  `useReducer` 强制 render。hook 现在只把最新回调保存在 ref、向 runtime 更新 facts，并在卸载时 dispose。
+- App 新增合同外异常回调：记录开发者错误并设置用户可见 sync error；它不标记 saved、不清 dirty、不清
+  operation 或草稿，也不进入盲目自动重试。
+
+实现过程中的自审修正：
+
+- 初始 runtime 测试 7/8，通过项包括 idle、退避、offline、阻断、suspend、异常和 dispose。唯一失败来自
+  测试误以为保存 Promise 完成就等于 React document 已从 saving 推进到 dirty；最终保留产品边界，让
+  runtime 在 saving facts 下等待 document 更新，并按真实顺序修正测试，没有让协调器越权修改同步状态。
+- 第二次自审发现 React 18 Strict Effects 风险：若 runtime 在 render 创建，开发态模拟卸载 dispose 后，
+  第二次 effect setup 会继续取得已销毁实例，导致自动保存永久失效。最终改为 effect 通过
+  `ensureRuntime()` 按需创建，cleanup 同时 dispose 并置空 ref；第二次 setup 会建立新实例。
+- 保存调用改为 `Promise.resolve().then(save)`，同步 throw 和异步 reject 走同一 catch；catch 先阻断、清
+  dueAt、通知 App，finally 再释放锁并重新求值。dispose 后迟到成功/失败都不再建 timer 或调用 UI。
+
+确定性测试：
+
+- 新增 `npm run test:platform-auto-save-runtime`，使用手写 fake clock，不引入 jsdom、fake timer 库或真实
+  3 秒等待。8/8 覆盖：单 idle timer、single-flight、保存中继续编辑、2s/4s 退避、online 立即恢复、
+  conflict/确定错误阻断、pending merge suspend、同步 throw/异步 reject、dispose 迟到响应。
+- `npm run test:platform-auto-save` 4/4、`npm run test:platform-drafts` 10/10、
+  `npm run test:platform-operations` 3/3 通过；前端构建通过，只保留既有 Vite 主 chunk 超过 500 kB 提醒。
+- merge 回归 35/35：diff 10、plan 11、selection 5、conflict 1、apply 4、preparation 4；R4c3 没有改变
+  structured merge、冲突决定或二次确认边界。
+- `npm run test:api` 85/85；本轮无 API/schema 变化，revision、operation 幂等、ACL、恢复、上传、审计、
+  维护与备份合同继续通过，只保留既有 pg 9 前置弃用提示。
+- `npm run build` 完整通过 Prisma generation、shared、document-model、web 和 API；`git diff --check`
+  通过。运行中的 `/api/health/ready` 返回 ready，database 6.23 ms、storage 1.93 ms，均为 ok。Vite 只保留
+  既有主 chunk 超过 500 kB 提醒。
+
+浏览器与后续边界：
+
+- 既有 Browser 会话仍受错误 `data:` 页安全策略限制，并明确禁止绕过或换用其他浏览器表面。本轮继续
+  遵守限制；确定性 runtime 测试证明调度语义，但不冒充真实浏览器弱网、刷新和 IndexedDB 验收。
+- 人工验收仍按 R4c2 顺序增加两项：开发态 Strict Mode 修改后应在约 3 秒正常保存；制造未知 save 异常时
+  应显示同步失败、保持 dirty 且不形成请求风暴。生产上线前还需真实跨设备、弱网和浏览器关闭场景验收。
+- R4 工程闭环通过最终回归后，下一轮进入 R5 前置：先稳定块级领域命令与协作权限/排序合同，不直接把
+  任意完整 `ProjectData` 快照塞进 WebSocket，也不提前绑定 OT/CRDT。

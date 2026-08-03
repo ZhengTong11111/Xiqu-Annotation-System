@@ -1,11 +1,10 @@
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { ProjectSyncStatus } from "../state/projectDocumentState";
 import type { PlatformSaveOutcome } from "../utils/platformOperations";
 import {
-  getPlatformAutoSaveDecision,
-  getPlatformAutoSaveRetryDelay,
-  PLATFORM_AUTO_SAVE_IDLE_DELAY_MS,
-} from "./platformAutoSavePolicy";
+  createPlatformAutoSaveRuntime,
+  type PlatformAutoSaveRuntime,
+} from "./platformAutoSaveRuntime";
 
 type PlatformAutoSaveOptions = {
   enabled: boolean;
@@ -14,120 +13,47 @@ type PlatformAutoSaveOptions = {
   localRevision: number;
   syncStatus: ProjectSyncStatus;
   save: () => Promise<PlatformSaveOutcome>;
+  onUnexpectedError: (error: unknown) => void;
 };
 
-// 自动保存 hook 只编排一个 timer 和一个请求；真正的保存事务仍由 App 的唯一保存命令负责。
+// 自动保存 hook 只把 React facts 接到独立运行时；timer、single-flight 和退避不再散落于组件生命周期。
 export function usePlatformAutoSave(options: PlatformAutoSaveOptions) {
   const saveRef = useRef(options.save);
-  const latestOptionsRef = useRef(options);
-  const inFlightRef = useRef(false);
-  const idleDueAtRef = useRef<number | null>(null);
-  const retryDueAtRef = useRef<number | null>(null);
-  const retryAttemptRef = useRef(0);
-  const retryBlockedRef = useRef(false);
-  const lastLocalRevisionRef = useRef(options.localRevision);
-  const lastOnlineRef = useRef(typeof navigator === "undefined" || navigator.onLine !== false);
-  const mountedRef = useRef(true);
-  const [, rerender] = useReducer((value: number) => value + 1, 0);
+  const onUnexpectedErrorRef = useRef(options.onUnexpectedError);
+  const runtimeRef = useRef<PlatformAutoSaveRuntime | null>(null);
 
   saveRef.current = options.save;
-  latestOptionsRef.current = options;
+  onUnexpectedErrorRef.current = options.onUnexpectedError;
 
-  // 组件卸载后允许在途请求自然完成，但禁止其继续安排当前会话的 timer 或 render。
+  // effect setup 按需创建运行时；Strict Mode 模拟卸载置空后，第二次 setup 会得到新实例。
+  const ensureRuntime = () => {
+    if (runtimeRef.current) return runtimeRef.current;
+    const runtime = createPlatformAutoSaveRuntime({
+      now: () => Date.now(),
+      setTimer: (callback, delayMs) => window.setTimeout(callback, delayMs),
+      clearTimer: (timerId) => window.clearTimeout(timerId),
+      save: () => saveRef.current(),
+      onUnexpectedError: (error) => onUnexpectedErrorRef.current(error),
+    });
+    runtimeRef.current = runtime;
+    return runtime;
+  };
+
+  // 每次产品 facts 改变只更新协调器；协调器内部保证 timer 与请求均为单实例。
   useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  // 新用户编辑重新开始空闲计时；revision conflict 不能靠继续编辑自动解除。
-  if (lastLocalRevisionRef.current !== options.localRevision) {
-    lastLocalRevisionRef.current = options.localRevision;
-    const nextDueAt = Date.now() + PLATFORM_AUTO_SAVE_IDLE_DELAY_MS;
-    // 已知可重试 error 保留“有 retry 截止时间”的证据，只把长退避缩回一次空闲窗口。
-    if (options.syncStatus === "error" && retryDueAtRef.current !== null) {
-      retryDueAtRef.current = nextDueAt;
-      idleDueAtRef.current = null;
-    } else {
-      idleDueAtRef.current = nextDueAt;
-      retryDueAtRef.current = null;
-    }
-    retryAttemptRef.current = 0;
-  }
-
-  useEffect(() => {
-    const online = typeof navigator === "undefined" || navigator.onLine !== false;
-    const cameOnline = online && !lastOnlineRef.current;
-    lastOnlineRef.current = online;
-    if (cameOnline && options.dirty && options.syncStatus !== "conflict") {
-      // 恢复在线后立即重新尝试，不额外等待完整空闲窗口。
-      idleDueAtRef.current = Date.now();
-      retryDueAtRef.current = null;
-      retryAttemptRef.current = 0;
-    }
-  }, [options.dirty, options.syncStatus]);
-
-  useEffect(() => {
-    const online = typeof navigator === "undefined" || navigator.onLine !== false;
-
-    // clean 或禁用后清空会话内退避；IndexedDB 草稿生命周期由独立 hook 管理。
-    if (!options.enabled || !options.dirty) {
-      idleDueAtRef.current = null;
-      retryDueAtRef.current = null;
-      retryAttemptRef.current = 0;
-      retryBlockedRef.current = false;
-    } else if (idleDueAtRef.current === null && retryDueAtRef.current === null) {
-      idleDueAtRef.current = Date.now() + PLATFORM_AUTO_SAVE_IDLE_DELAY_MS;
-    }
-
-    const decision = getPlatformAutoSaveDecision({
+    ensureRuntime().update({
       enabled: options.enabled,
       dirty: options.dirty,
       suspended: options.suspended,
-      online,
+      localRevision: options.localRevision,
       syncStatus: options.syncStatus,
-      inFlight: inFlightRef.current,
-      retryBlocked: retryBlockedRef.current,
-      idleDueAt: idleDueAtRef.current,
-      retryDueAt: retryDueAtRef.current,
-      now: Date.now(),
-    });
-    if (decision.action === "disabled" || decision.action === "blocked") return;
-    if (decision.action === "waiting") {
-      if (decision.reason === "in-flight") return;
-      const timer = window.setTimeout(() => rerender(), Math.max(0, decision.delayMs));
-      return () => window.clearTimeout(timer);
-    }
-
-    // 到点后只允许一个请求；请求期间 facts 可继续变化，但不能启动第二份并发保存。
-    inFlightRef.current = true;
-    idleDueAtRef.current = null;
-    retryDueAtRef.current = null;
-    void saveRef.current().then((outcome) => {
-      if (!mountedRef.current) return;
-      if (outcome.status === "offline") {
-        retryDueAtRef.current = null;
-      } else if (outcome.status === "error" && outcome.retryable) {
-        retryDueAtRef.current = Date.now() + getPlatformAutoSaveRetryDelay(
-          retryAttemptRef.current,
-        );
-        retryAttemptRef.current += 1;
-      } else if (
-        outcome.status === "conflict" ||
-        (outcome.status === "error" && !outcome.retryable)
-      ) {
-        retryBlockedRef.current = true;
-      } else {
-        retryAttemptRef.current = 0;
-        // 保存期间出现的新编辑会在下一 render 重新进入空闲窗口。
-        if (latestOptionsRef.current.dirty) {
-          idleDueAtRef.current = Date.now() + PLATFORM_AUTO_SAVE_IDLE_DELAY_MS;
-        }
-      }
-    }).finally(() => {
-      inFlightRef.current = false;
-      if (mountedRef.current) rerender();
+      online: typeof navigator === "undefined" || navigator.onLine !== false,
     });
   }, [options.dirty, options.enabled, options.localRevision, options.suspended, options.syncStatus]);
+
+  // 卸载时销毁并置空；这同时兼容 React 18 开发态的 Strict Effects setup-cleanup-setup 顺序。
+  useEffect(() => () => {
+    runtimeRef.current?.dispose();
+    runtimeRef.current = null;
+  }, []);
 }

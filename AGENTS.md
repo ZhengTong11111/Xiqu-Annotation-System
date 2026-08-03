@@ -58,9 +58,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - `flushNow()` must use the same task queue as debounce/unmount writes; conflict UI must never issue a parallel store put
 - `src/platform/platformAutoSavePolicy.ts`
   - pure idle/retry/block decision and bounded exponential-backoff constants for server autosave
+- `src/platform/platformAutoSaveRuntime.ts`
+  - testable timer, single-flight, online-resume, retry, disposal, and unexpected-save-error coordinator
+  - consumes policy decisions and save outcomes; it never owns project payloads, revisions, operations, or IndexedDB
 - `src/platform/usePlatformAutoSave.ts`
-  - single-timer/single-flight server-save scheduler for writable platform sessions
-  - it never owns payload, operation acknowledgement, revision mutation, IndexedDB, or conflict overwrite behavior
+  - thin React facts/callback adapter around one `PlatformAutoSaveRuntime`
+  - Strict Effects cleanup must dispose and clear the runtime ref so the second setup creates a live instance
 - `src/platform/PlatformDraftRecoveryDialog.tsx`
   - explicit same-revision recovery, stale comparison entry, and read-only export-or-discard decision before opening editor
 - `src/platform/PlatformDraftConflictDialog.tsx`
@@ -349,6 +352,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:annotation-confirmation-view`
 - `npm run test:platform-operations`
 - `npm run test:platform-auto-save`
+- `npm run test:platform-auto-save-runtime`
 - `npm run test:platform-drafts`
 - `npm run test:resource-pagination`
 - `npm run test:resource-page-state`

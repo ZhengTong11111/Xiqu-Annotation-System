@@ -152,6 +152,21 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
 5. 用户完成选择、冲突决定和编辑器二次确认后形成一次 dirty commit；R4c1 再从最新 remote revision
    自动保存。取消或退出继续遵循 R4b2 草稿保留规则。
 
+### 5.2 R4c3 自动保存运行时
+
+自动保存采用单向依赖：React 会话 facts → `platformAutoSavePolicy` 纯决策 →
+`PlatformAutoSaveRuntime` 生命周期协调 → App 唯一保存事务。各层职责如下：
+
+- hook 只传入 enabled、dirty、suspended、local revision、sync status 与 online，不保留 timer 或退避状态。
+- policy 只返回 disabled/blocked/waiting/save-now，不发请求、不读取项目。
+- runtime 至多维护一个 timer 和一个 in-flight 请求；它处理新 revision、online 恢复、正常 outcome、
+  合同外异常和 dispose，但不修改 revision、saved baseline、operation 或草稿。
+- App 保存事务固定 payload/吸附/operation 快照，处理服务器响应并更新 document state。同步 throw 或
+  rejected Promise 被 runtime 视为合同外错误：释放请求锁、阻断后台重试、通知 App 显示 error，禁止
+  伪装成正常 outcome。
+- React 18 Strict Effects 的模拟卸载会 dispose 并清空 runtime ref；第二次 effect setup 必须重新创建实例，
+  否则开发模式会留下永久失效的自动保存协调器。
+
 ## 6. 实时协作方向
 
 实时协作不能合并任意完整 `ProjectData`：

@@ -495,6 +495,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     localRevision: syncState.localRevision,
     syncStatus: syncState.status,
     save: () => saveProjectToServer({ source: "auto" }),
+    // 保存命令原则上返回结构化 outcome；合同外异常必须显式阻断并保留 dirty 状态供人工处理。
+    onUnexpectedError: (error) => {
+      const message = error instanceof Error ? error.message : "未知自动保存错误";
+      console.error("自动保存运行时异常", error);
+      setSyncStatus("error", { errorMessage: `自动保存异常：${message}` });
+    },
   });
   // 平台确认事实独立于项目文档历史；本地会话传入 null，因此不会请求或展示服务端治理状态。
   const annotationConfirmations = useAnnotationConfirmations({
