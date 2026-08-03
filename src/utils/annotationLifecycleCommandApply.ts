@@ -1,5 +1,6 @@
 import {
   assessAnnotationLifecycleExecution,
+  getAnnotationLifecycleTargetKey,
   parseAnnotationLifecycleCommandEnvelope,
   type AnnotationLifecycleActual,
   type AnnotationLifecycleCommandEnvelope,
@@ -29,7 +30,7 @@ export function applyAnnotationLifecycleCommandToProject(
     if (resolved.ambiguous) {
       return {
         status: "blocked",
-        issues: [{ code: "state_mismatch", targetKey: `${item.entityType}:${item.trackId}:${item.entityId}` }],
+        issues: [{ code: "state_mismatch", targetKey: getAnnotationLifecycleTargetKey(item) }],
       };
     }
     actuals.push({
@@ -50,7 +51,7 @@ export function applyAnnotationLifecycleCommandToProject(
         status: "blocked",
         issues: assessment.envelope.command.items.map((item) => ({
           code: "state_mismatch" as const,
-          targetKey: `${item.entityType}:${item.trackId}:${item.entityId}`,
+          targetKey: getAnnotationLifecycleTargetKey(item),
         })),
       };
 }

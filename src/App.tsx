@@ -93,6 +93,10 @@ import {
   buildProjectAnnotationLifecycleCommand,
   type AnnotationLifecycleTarget,
 } from "./utils/annotationLifecycleCommand";
+import {
+  buildProjectAnnotationTransactionCommand,
+  type AnnotationTransactionPlan,
+} from "./utils/annotationTransactionCommand";
 import { findAdjacentNavigableBlock } from "./utils/timelineNavigation";
 import {
   buildProjectTimelineTimingCommand,
@@ -1990,6 +1994,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
   }
 
+  // 句同步和工尺级联必须作为一个 operation 提交；builder 证明不了完整闭包时安全回退快照。
+  function commitProjectWithTransaction(
+    baseProject: ProjectData,
+    nextProject: ProjectData,
+    plan: AnnotationTransactionPlan,
+  ) {
+    const commandEnvelope = buildProjectAnnotationTransactionCommand(baseProject, nextProject, plan);
+    commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
+  }
+
   function updateAttachedPoint(
     pointTrackId: string,
     pointId: string,
@@ -3033,7 +3047,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       };
     }
 
-    commitProject(nextProject);
+    if (target) {
+      commitProjectWithTransaction(currentProject, nextProject, {
+        contentTargets: [{ entityType: "sentence", entityId: target.line.id, field: "text" }],
+        timingTargets: [{ entityType: "sentence", entityId: target.line.id }],
+        lifecycleTargets: [{ entityType: "character", entityId: characterId }],
+      });
+    } else {
+      const createdLine = nextProject.characterAnnotations.find((item) => item.id === characterId)?.lineId;
+      commitProjectWithLifecycle(currentProject, nextProject, [
+        ...(createdLine ? [{ entityType: "sentence" as const, entityId: createdLine }] : []),
+        { entityType: "character", entityId: characterId },
+      ]);
+    }
     preferredCharacterEditLocationRef.current = "timeline";
     applySelection({ type: "character", id: characterId });
     setEditingCharacterId(characterId);
@@ -3311,10 +3337,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         assetUrl: null,
       }],
     };
-    commitProject({
+    const nextProject = {
       ...currentProject,
       gongcheAnnotations: [...currentProject.gongcheAnnotations, nextBlock],
-    });
+    };
+    commitProjectWithLifecycle(currentProject, nextProject, [{
+      entityType: "gongche-block",
+      entityId: nextBlock.id,
+      trackId: parentTrackId,
+    }]);
     applySelection({ type: "gongche-block", id: nextBlock.id });
   }
 
@@ -3838,15 +3869,39 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         cancelCustomTextEdit();
       }
       const lifecycleTargets: AnnotationLifecycleTarget[] = [
+        ...Array.from(characterIds, (entityId): AnnotationLifecycleTarget => ({
+          entityType: "character",
+          entityId,
+        })),
         ...timelineSelection.flatMap((item) => item.type === "custom-block"
           ? [{ entityType: "custom-block" as const, trackId: item.trackId, entityId: item.id }]
           : []),
         ...timelineSelection.flatMap((item) => item.type === "attached-point"
           ? [{ entityType: "attached-point" as const, trackId: item.trackId, entityId: item.id }]
           : []),
+        ...currentProject.gongcheAnnotations.flatMap((item): AnnotationLifecycleTarget[] =>
+          gongcheParentKeys.has(getGongcheParentKey(item.parentTrackId, item.parentBlockId))
+            ? [{ entityType: "gongche-block", entityId: item.id, trackId: item.parentTrackId }]
+            : []),
       ];
-      // 混合多选会由完整差异门禁自动回退快照；这里只集中声明已迁移的叶实体候选。
-      commitProjectWithLifecycle(currentProject, nextProject, lifecycleTargets);
+      const deletedLineIds = Array.from(affectedLineIds).filter((lineId) =>
+        !nextProject.subtitleLines.some((line) => line.id === lineId));
+      lifecycleTargets.push(...deletedLineIds.map((entityId): AnnotationLifecycleTarget => ({
+        entityType: "sentence",
+        entityId,
+      })));
+      const survivingLineIds = Array.from(affectedLineIds).filter((lineId) =>
+        nextProject.subtitleLines.some((line) => line.id === lineId));
+      // 混入未迁移 action/板眼时，事务完整差异门禁会拒绝局部事实并保留原 snapshot operation。
+      commitProjectWithTransaction(currentProject, nextProject, {
+        contentTargets: survivingLineIds.map((entityId) => ({
+          entityType: "sentence" as const,
+          entityId,
+          field: "text" as const,
+        })),
+        timingTargets: survivingLineIds.map((entityId) => ({ entityType: "sentence" as const, entityId })),
+        lifecycleTargets,
+      });
       applySelection(null);
       return;
     }
@@ -3866,7 +3921,26 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           item.parentTrackId !== "character-track" || item.parentBlockId !== selectedItem.id,
         ),
       }, currentCharacter.lineId);
-      commitProject(nextProject);
+      const removedGongche = currentProject.gongcheAnnotations.filter((item) =>
+        item.parentTrackId === "character-track" && item.parentBlockId === selectedItem.id);
+      const lineStillExists = nextProject.subtitleLines.some((line) => line.id === currentCharacter.lineId);
+      commitProjectWithTransaction(currentProject, nextProject, {
+        contentTargets: lineStillExists
+          ? [{ entityType: "sentence", entityId: currentCharacter.lineId, field: "text" }]
+          : [],
+        timingTargets: lineStillExists
+          ? [{ entityType: "sentence", entityId: currentCharacter.lineId }]
+          : [],
+        lifecycleTargets: [
+          { entityType: "character", entityId: selectedItem.id },
+          ...(lineStillExists ? [] : [{ entityType: "sentence" as const, entityId: currentCharacter.lineId }]),
+          ...removedGongche.map((item): AnnotationLifecycleTarget => ({
+            entityType: "gongche-block",
+            entityId: item.id,
+            trackId: item.parentTrackId,
+          })),
+        ],
+      });
       if (editingCharacterId === selectedItem.id) {
         cancelCharacterTextEdit();
       }
@@ -3894,11 +3968,21 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             : track,
         ) as CustomTrack[],
       };
-      commitProjectWithLifecycle(currentProject, nextProject, [{
-        entityType: "custom-block",
-        entityId: selectedItem.id,
-        trackId: selectedItem.trackId,
-      }]);
+      const removedGongche = currentProject.gongcheAnnotations.filter((item) =>
+        item.parentTrackId === selectedItem.trackId && item.parentBlockId === selectedItem.id);
+      const lifecycleTargets: AnnotationLifecycleTarget[] = [
+        { entityType: "custom-block", entityId: selectedItem.id, trackId: selectedItem.trackId },
+        ...removedGongche.map((item): AnnotationLifecycleTarget => ({
+          entityType: "gongche-block",
+          entityId: item.id,
+          trackId: item.parentTrackId,
+        })),
+      ];
+      if (removedGongche.length > 0) {
+        commitProjectWithTransaction(currentProject, nextProject, { lifecycleTargets });
+      } else {
+        commitProjectWithLifecycle(currentProject, nextProject, lifecycleTargets);
+      }
       if (
         editingCustomTextBlock?.trackId === selectedItem.trackId &&
         editingCustomTextBlock.id === selectedItem.id
@@ -3908,10 +3992,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       applySelection(null);
     }
     if (selectedItem.type === "gongche-block") {
-      commitProject({
+      const currentBlock = currentProject.gongcheAnnotations.find((item) => item.id === selectedItem.id);
+      if (!currentBlock) return;
+      const nextProject = {
         ...currentProject,
         gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.id !== selectedItem.id),
-      });
+      };
+      commitProjectWithLifecycle(currentProject, nextProject, [{
+        entityType: "gongche-block",
+        entityId: selectedItem.id,
+        trackId: currentBlock.parentTrackId,
+      }]);
       applySelection(null);
     }
     if (selectedItem.type === "attached-point") {

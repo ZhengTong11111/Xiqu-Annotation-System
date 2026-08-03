@@ -3,13 +3,16 @@ export const ANNOTATION_COMMAND_ENVELOPE_VERSION = 1 as const;
 export const TIMELINE_TIMING_UPDATE_COMMAND = "timeline.items.timing.update" as const;
 export const ANNOTATION_CONTENT_UPDATE_COMMAND = "annotation.items.content.update" as const;
 export const ANNOTATION_LIFECYCLE_UPDATE_COMMAND = "annotation.items.lifecycle.update" as const;
+export const ANNOTATION_TRANSACTION_APPLY_COMMAND = "annotation.transaction.apply" as const;
 // 所有持久化边界复用这一份领域 action 表；新增命令时不能让草稿/API 各维护一套名单。
 export const ANNOTATION_DOMAIN_COMMAND_TYPES = [
   TIMELINE_TIMING_UPDATE_COMMAND,
   ANNOTATION_CONTENT_UPDATE_COMMAND,
   ANNOTATION_LIFECYCLE_UPDATE_COMMAND,
+  ANNOTATION_TRANSACTION_APPLY_COMMAND,
 ] as const;
 export const MAX_ANNOTATION_COMMAND_ITEMS = 500;
+export const MAX_ANNOTATION_TRANSACTION_COMMANDS = 20;
 // 保留既有 timing 常量名作为公开合同别名，调用方无需因命令联合扩展而迁移。
 export const MAX_TIMELINE_COMMAND_ITEMS = MAX_ANNOTATION_COMMAND_ITEMS;
 export const MAX_ANNOTATION_CONTENT_LENGTH = 2_000;
@@ -102,14 +105,67 @@ export type AttachedPointLifecycleSnapshot = {
   label: string;
 };
 
+export type SentenceLifecycleSnapshot = {
+  id: string;
+  text: string;
+  startTime: number;
+  endTime: number;
+};
+
+export type CharacterToneLifecycleSnapshot = {
+  toneClass: "yin_ping" | "yang_ping" | "yin_shang" | "yang_shang" | "yin_qu" | "yang_qu" | "yin_ru" | "yang_ru";
+  yxlzShangSubtype: "yin_shang" | "yang_shang" | "yinyang_tongyong" | null;
+};
+
+export type CharacterLifecycleSnapshot = {
+  id: string;
+  lineId: string;
+  char: string;
+  startTime: number;
+  endTime: number;
+  singingStyle: string;
+  tone: CharacterToneLifecycleSnapshot | null;
+};
+
+export type GongcheSymbolLifecycleSnapshot = {
+  id: string;
+  label: string;
+  notation: string | null;
+  rawText: string | null;
+  parenthesized: boolean;
+  startTime: number;
+  endTime: number;
+  assetUrl: string | null;
+};
+
+export type GongcheBlockLifecycleSnapshot = {
+  id: string;
+  parentTrackId: string;
+  parentBlockId: string;
+  startTime: number;
+  endTime: number;
+  symbols: GongcheSymbolLifecycleSnapshot[];
+};
+
 export type AnnotationLifecycleState<TEntity> = {
   entity: TEntity;
   position: AnnotationLifecyclePosition;
 };
 
 export type AnnotationLifecycleUpdateItem =
+  | GlobalLifecycleUpdateItem<"sentence", SentenceLifecycleSnapshot>
+  | GlobalLifecycleUpdateItem<"character", CharacterLifecycleSnapshot>
   | LifecycleUpdateItem<"custom-block", CustomBlockLifecycleSnapshot>
-  | LifecycleUpdateItem<"attached-point", AttachedPointLifecycleSnapshot>;
+  | LifecycleUpdateItem<"attached-point", AttachedPointLifecycleSnapshot>
+  | LifecycleUpdateItem<"gongche-block", GongcheBlockLifecycleSnapshot>;
+
+type GlobalLifecycleUpdateItem<TEntityType extends string, TSnapshot> = {
+  entityType: TEntityType;
+  entityId: string;
+  trackId?: never;
+  before: AnnotationLifecycleState<TSnapshot> | null;
+  after: AnnotationLifecycleState<TSnapshot> | null;
+};
 
 type LifecycleUpdateItem<TEntityType extends string, TSnapshot> = {
   entityType: TEntityType;
@@ -124,10 +180,21 @@ export type AnnotationItemsLifecycleUpdateCommand = {
   items: AnnotationLifecycleUpdateItem[];
 };
 
-export type AnnotationDomainCommand =
+export type AnnotationTransactionChildCommand =
   | TimelineItemsTimingUpdateCommand
   | AnnotationItemsContentUpdateCommand
   | AnnotationItemsLifecycleUpdateCommand;
+
+export type AnnotationTransactionApplyCommand = {
+  type: typeof ANNOTATION_TRANSACTION_APPLY_COMMAND;
+  commands: AnnotationTransactionChildCommand[];
+};
+
+export type AnnotationDomainCommand =
+  | TimelineItemsTimingUpdateCommand
+  | AnnotationItemsContentUpdateCommand
+  | AnnotationItemsLifecycleUpdateCommand
+  | AnnotationTransactionApplyCommand;
 
 export type TimelineTimingCommandEnvelope = {
   version: typeof ANNOTATION_COMMAND_ENVELOPE_VERSION;
@@ -144,10 +211,16 @@ export type AnnotationLifecycleCommandEnvelope = {
   command: AnnotationItemsLifecycleUpdateCommand;
 };
 
+export type AnnotationTransactionCommandEnvelope = {
+  version: typeof ANNOTATION_COMMAND_ENVELOPE_VERSION;
+  command: AnnotationTransactionApplyCommand;
+};
+
 export type AnnotationCommandEnvelope =
   | TimelineTimingCommandEnvelope
   | AnnotationContentCommandEnvelope
-  | AnnotationLifecycleCommandEnvelope;
+  | AnnotationLifecycleCommandEnvelope
+  | AnnotationTransactionCommandEnvelope;
 
 // 调用者提供的当前时间快照与命令目标使用同一稳定身份，不把 ProjectData 结构泄漏到 shared。
 export type TimelineTimingActual = Pick<
@@ -342,11 +415,72 @@ export function parseAnnotationLifecycleCommandEnvelope(
     targets.add(key);
     items.push(item);
   }
+  if (getAnnotationChildCommandItemCost({ type: ANNOTATION_LIFECYCLE_UPDATE_COMMAND, items }) >
+    MAX_ANNOTATION_COMMAND_ITEMS) return null;
   if (!validateLifecycleCollectionFacts(items)) return null;
   return {
     version: ANNOTATION_COMMAND_ENVELOPE_VERSION,
     command: { type: ANNOTATION_LIFECYCLE_UPDATE_COMMAND, items },
   };
+}
+
+// 原子事务只组合已经通过严格单域 parser 的叶命令；禁止递归事务，避免产生两套嵌套语义。
+export function buildAnnotationTransactionEnvelope(
+  envelopes: readonly (
+    | TimelineTimingCommandEnvelope
+    | AnnotationContentCommandEnvelope
+    | AnnotationLifecycleCommandEnvelope
+  )[],
+): AnnotationTransactionCommandEnvelope | null {
+  if (envelopes.length === 0 || envelopes.length > MAX_ANNOTATION_TRANSACTION_COMMANDS) return null;
+  return parseAnnotationTransactionCommandEnvelope({
+    version: ANNOTATION_COMMAND_ENVELOPE_VERSION,
+    command: {
+      type: ANNOTATION_TRANSACTION_APPLY_COMMAND,
+      commands: envelopes.map((envelope) => structuredClone(envelope.command)),
+    },
+  });
+}
+
+// transaction 的 unknown 输入逐项回送现有 parser，并额外限制总实体数，防止小命令绕过批量上限。
+export function parseAnnotationTransactionCommandEnvelope(
+  value: unknown,
+): AnnotationTransactionCommandEnvelope | null {
+  if (!isExactRecord(value, ["version", "command"]) ||
+    value.version !== ANNOTATION_COMMAND_ENVELOPE_VERSION ||
+    !isExactRecord(value.command, ["type", "commands"]) ||
+    value.command.type !== ANNOTATION_TRANSACTION_APPLY_COMMAND ||
+    !Array.isArray(value.command.commands) ||
+    value.command.commands.length === 0 ||
+    value.command.commands.length > MAX_ANNOTATION_TRANSACTION_COMMANDS) return null;
+
+  const commands: AnnotationTransactionChildCommand[] = [];
+  let totalItems = 0;
+  for (const rawCommand of value.command.commands) {
+    if (!isRecord(rawCommand)) return null;
+    const childEnvelope = parseLeafAnnotationCommandEnvelope({
+      version: ANNOTATION_COMMAND_ENVELOPE_VERSION,
+      command: rawCommand,
+    });
+    if (!childEnvelope) return null;
+    totalItems += getAnnotationChildCommandItemCost(childEnvelope.command);
+    if (totalItems > MAX_ANNOTATION_COMMAND_ITEMS) return null;
+    commands.push(structuredClone(childEnvelope.command));
+  }
+  return {
+    version: ANNOTATION_COMMAND_ENVELOPE_VERSION,
+    command: { type: ANNOTATION_TRANSACTION_APPLY_COMMAND, commands },
+  };
+}
+
+// 工尺块内的符号也是持久化实体；把它们计入总预算，避免少量外层 item 携带超大嵌套负载。
+function getAnnotationChildCommandItemCost(command: AnnotationTransactionChildCommand) {
+  if (command.type !== ANNOTATION_LIFECYCLE_UPDATE_COMMAND) return command.items.length;
+  return command.items.reduce((total, item) => {
+    if (item.entityType !== "gongche-block") return total + 1;
+    const state = item.before ?? item.after;
+    return total + 1 + (state?.entity.symbols.length ?? 0);
+  }, 0);
 }
 
 // 通用入口先读取判别字段，再交给单域 parser；未知命令不能落入某个宽松默认分支。
@@ -361,6 +495,22 @@ export function parseAnnotationCommandEnvelope(value: unknown): AnnotationComman
   if (value.command.type === ANNOTATION_LIFECYCLE_UPDATE_COMMAND) {
     return parseAnnotationLifecycleCommandEnvelope(value);
   }
+  if (value.command.type === ANNOTATION_TRANSACTION_APPLY_COMMAND) {
+    return parseAnnotationTransactionCommandEnvelope(value);
+  }
+  return null;
+}
+
+// 事务 parser 使用不含 transaction 的私有入口，从结构上阻断递归事务。
+function parseLeafAnnotationCommandEnvelope(value: unknown):
+  | TimelineTimingCommandEnvelope
+  | AnnotationContentCommandEnvelope
+  | AnnotationLifecycleCommandEnvelope
+  | null {
+  if (!isRecord(value) || !isRecord(value.command)) return null;
+  if (value.command.type === TIMELINE_TIMING_UPDATE_COMMAND) return parseTimelineTimingCommandEnvelope(value);
+  if (value.command.type === ANNOTATION_CONTENT_UPDATE_COMMAND) return parseAnnotationContentCommandEnvelope(value);
+  if (value.command.type === ANNOTATION_LIFECYCLE_UPDATE_COMMAND) return parseAnnotationLifecycleCommandEnvelope(value);
   return null;
 }
 
@@ -384,7 +534,19 @@ export function invertAnnotationCommandEnvelope(
         after: item.before,
     })));
   }
-  return buildAnnotationLifecycleUpdateEnvelope(envelope.command.items.map(invertLifecycleItem));
+  if (envelope.command.type === ANNOTATION_LIFECYCLE_UPDATE_COMMAND) {
+    return buildAnnotationLifecycleUpdateEnvelope(envelope.command.items.map(invertLifecycleItem));
+  }
+  const inverseChildren = [...envelope.command.commands]
+    .reverse()
+    .map((command) => invertAnnotationCommandEnvelope({
+      version: ANNOTATION_COMMAND_ENVELOPE_VERSION,
+      command,
+    }));
+  if (inverseChildren.some((child) => !child || child.command.type === ANNOTATION_TRANSACTION_APPLY_COMMAND)) return null;
+  return buildAnnotationTransactionEnvelope(inverseChildren as Array<
+    TimelineTimingCommandEnvelope | AnnotationContentCommandEnvelope | AnnotationLifecycleCommandEnvelope
+  >);
 }
 
 // 执行前一次性检查全部目标；返回 ready 之前调用者不得修改项目，确保批量命令原子应用。
@@ -555,7 +717,7 @@ export function getAnnotationContentTargetKey(
 export function getAnnotationLifecycleTargetKey(
   item: Pick<AnnotationLifecycleUpdateItem, "entityType" | "entityId" | "trackId">,
 ) {
-  return `${item.entityType}:${item.trackId}:${item.entityId}`;
+  return `${item.entityType}:${item.trackId ?? ""}:${item.entityId}`;
 }
 
 // 逐项解析按 entity/field 配对决定 trackId 是否必需，禁止借内容命令改任意字段。
@@ -583,41 +745,75 @@ function parseContentUpdateItem(value: unknown): AnnotationContentUpdateItem | n
   return null;
 }
 
-// 生命周期单项采用固定六字段，before/after 只能一侧非空，禁止借 create/delete 协议做实体更新。
+// 生命周期按全局/轨道作用域接受固定字段；before/after 只能一侧非空，禁止借 create/delete 协议做实体更新。
 function parseLifecycleItem(value: unknown): AnnotationLifecycleUpdateItem | null {
-  if (!isExactRecord(value, ["entityType", "entityId", "trackId", "before", "after"]) ||
-    !isSafeId(value.entityId) ||
-    !isSafeId(value.trackId) ||
-    (value.entityType !== "custom-block" && value.entityType !== "attached-point") ||
+  if (!isRecord(value) || !isSafeId(value.entityId) ||
     (value.before === null) === (value.after === null)) return null;
 
-  if (value.entityType === "custom-block") {
-    const before = parseLifecycleState(value.before, parseCustomBlockLifecycleSnapshot);
-    const after = parseLifecycleState(value.after, parseCustomBlockLifecycleSnapshot);
-    if ((value.before !== null && !before) || (value.after !== null && !after)) return null;
-    const state = before ?? after;
-    if (!state || state.entity.id !== value.entityId) return null;
-    return {
-      entityType: "custom-block",
-      entityId: value.entityId,
-      trackId: value.trackId,
-      before,
-      after,
-    };
+  const isGlobal = value.entityType === "sentence" || value.entityType === "character";
+  const isScoped = value.entityType === "custom-block" || value.entityType === "attached-point" ||
+    value.entityType === "gongche-block";
+  const keys = isGlobal
+    ? ["entityType", "entityId", "before", "after"]
+    : ["entityType", "entityId", "trackId", "before", "after"];
+  if ((!isGlobal && !isScoped) || !isExactRecord(value, keys) || (isScoped && !isSafeId(value.trackId))) return null;
+
+  if (value.entityType === "sentence") {
+    return parseTypedLifecycleItem(value, "sentence", parseSentenceLifecycleSnapshot);
+  }
+  if (value.entityType === "character") {
+    return parseTypedLifecycleItem(value, "character", parseCharacterLifecycleSnapshot);
   }
 
-  const before = parseLifecycleState(value.before, parseAttachedPointLifecycleSnapshot);
-  const after = parseLifecycleState(value.after, parseAttachedPointLifecycleSnapshot);
+  if (value.entityType === "custom-block") {
+    return parseTypedScopedLifecycleItem(value, "custom-block", parseCustomBlockLifecycleSnapshot);
+  }
+  if (value.entityType === "attached-point") {
+    return parseTypedScopedLifecycleItem(value, "attached-point", parseAttachedPointLifecycleSnapshot);
+  }
+  const item = parseTypedScopedLifecycleItem(value, "gongche-block", parseGongcheBlockLifecycleSnapshot);
+  const state = item?.before ?? item?.after;
+  return item && state?.entity.parentTrackId === item.trackId ? item : null;
+}
+
+function parseTypedLifecycleItem<TEntityType extends "sentence" | "character", TSnapshot extends { id: string }>(
+  value: Record<string, unknown>,
+  entityType: TEntityType,
+  parseSnapshot: (snapshot: unknown) => TSnapshot | null,
+): Extract<AnnotationLifecycleUpdateItem, { entityType: TEntityType }> | null {
+  const before = parseLifecycleState(value.before, parseSnapshot);
+  const after = parseLifecycleState(value.after, parseSnapshot);
   if ((value.before !== null && !before) || (value.after !== null && !after)) return null;
   const state = before ?? after;
   if (!state || state.entity.id !== value.entityId) return null;
   return {
-    entityType: "attached-point",
-    entityId: value.entityId,
-    trackId: value.trackId,
+    entityType,
+    entityId: value.entityId as string,
     before,
     after,
-  };
+  } as Extract<AnnotationLifecycleUpdateItem, { entityType: TEntityType }>;
+}
+
+function parseTypedScopedLifecycleItem<
+  TEntityType extends "custom-block" | "attached-point" | "gongche-block",
+  TSnapshot extends { id: string },
+>(
+  value: Record<string, unknown>,
+  entityType: TEntityType,
+  parseSnapshot: (snapshot: unknown) => TSnapshot | null,
+): Extract<AnnotationLifecycleUpdateItem, { entityType: TEntityType }> | null {
+  const before = parseLifecycleState(value.before, parseSnapshot);
+  const after = parseLifecycleState(value.after, parseSnapshot);
+  if ((value.before !== null && !before) || (value.after !== null && !after)) return null;
+  const state = before ?? after;
+  if (!state || state.entity.id !== value.entityId) return null;
+  return {
+    entityType,
+    entityId: value.entityId as string,
+    trackId: value.trackId as string,
+    before,
+    after,
+  } as Extract<AnnotationLifecycleUpdateItem, { entityType: TEntityType }>;
 }
 
 // null 是合法的不存在状态；非 null 状态必须同时通过实体和位置 parser。
@@ -713,11 +909,91 @@ function parseAttachedPointLifecycleSnapshot(value: unknown): AttachedPointLifec
   return { id: value.id, time: value.time, label: value.label };
 }
 
+function parseSentenceLifecycleSnapshot(value: unknown): SentenceLifecycleSnapshot | null {
+  if (!isExactRecord(value, ["id", "text", "startTime", "endTime"]) ||
+    !isSafeId(value.id) ||
+    typeof value.text !== "string" ||
+    value.text.length > MAX_ANNOTATION_CONTENT_LENGTH ||
+    !isNonNegativeFiniteNumber(value.startTime) ||
+    !isNonNegativeFiniteNumber(value.endTime) || value.endTime < value.startTime) return null;
+  return { id: value.id, text: value.text, startTime: value.startTime, endTime: value.endTime };
+}
+
+function parseCharacterLifecycleSnapshot(value: unknown): CharacterLifecycleSnapshot | null {
+  if (!isExactRecord(value, ["id", "lineId", "char", "startTime", "endTime", "singingStyle", "tone"]) ||
+    !isSafeId(value.id) || !isSafeId(value.lineId) ||
+    typeof value.char !== "string" || value.char.length > MAX_ANNOTATION_CONTENT_LENGTH ||
+    typeof value.singingStyle !== "string" || value.singingStyle.length > MAX_ANNOTATION_CONTENT_LENGTH ||
+    !isNonNegativeFiniteNumber(value.startTime) ||
+    !isNonNegativeFiniteNumber(value.endTime) || value.endTime < value.startTime) return null;
+  const tone = parseCharacterToneLifecycleSnapshot(value.tone);
+  if (value.tone !== null && !tone) return null;
+  return {
+    id: value.id,
+    lineId: value.lineId,
+    char: value.char,
+    startTime: value.startTime,
+    endTime: value.endTime,
+    singingStyle: value.singingStyle,
+    tone,
+  };
+}
+
+const TONE_CLASS_SET = new Set([
+  "yin_ping", "yang_ping", "yin_shang", "yang_shang",
+  "yin_qu", "yang_qu", "yin_ru", "yang_ru",
+]);
+const SHANG_SUBTYPE_SET = new Set(["yin_shang", "yang_shang", "yinyang_tongyong"]);
+
+function parseCharacterToneLifecycleSnapshot(value: unknown): CharacterToneLifecycleSnapshot | null {
+  if (value === null) return null;
+  if (!isExactRecord(value, ["toneClass", "yxlzShangSubtype"]) ||
+    typeof value.toneClass !== "string" || !TONE_CLASS_SET.has(value.toneClass) ||
+    (value.yxlzShangSubtype !== null &&
+      (typeof value.yxlzShangSubtype !== "string" || !SHANG_SUBTYPE_SET.has(value.yxlzShangSubtype)))) return null;
+  const isShang = value.toneClass === "yin_shang" || value.toneClass === "yang_shang";
+  if (!isShang && value.yxlzShangSubtype !== null) return null;
+  return value as CharacterToneLifecycleSnapshot;
+}
+
+function parseGongcheBlockLifecycleSnapshot(value: unknown): GongcheBlockLifecycleSnapshot | null {
+  if (!isExactRecord(value, ["id", "parentTrackId", "parentBlockId", "startTime", "endTime", "symbols"]) ||
+    !isSafeId(value.id) || !isSafeId(value.parentTrackId) || !isSafeId(value.parentBlockId) ||
+    !isNonNegativeFiniteNumber(value.startTime) ||
+    !isNonNegativeFiniteNumber(value.endTime) || value.endTime < value.startTime ||
+    !Array.isArray(value.symbols) || value.symbols.length > MAX_ANNOTATION_COMMAND_ITEMS) return null;
+  const symbols = value.symbols.map(parseGongcheSymbolLifecycleSnapshot);
+  if (symbols.some((symbol) => !symbol)) return null;
+  const completeSymbols = symbols as GongcheSymbolLifecycleSnapshot[];
+  if (new Set(completeSymbols.map((symbol) => symbol.id)).size !== completeSymbols.length) return null;
+  return {
+    id: value.id,
+    parentTrackId: value.parentTrackId,
+    parentBlockId: value.parentBlockId,
+    startTime: value.startTime,
+    endTime: value.endTime,
+    symbols: completeSymbols,
+  };
+}
+
+function parseGongcheSymbolLifecycleSnapshot(value: unknown): GongcheSymbolLifecycleSnapshot | null {
+  if (!isExactRecord(value, [
+    "id", "label", "notation", "rawText", "parenthesized", "startTime", "endTime", "assetUrl",
+  ]) || !isSafeId(value.id) ||
+    typeof value.label !== "string" || value.label.length > MAX_ANNOTATION_CONTENT_LENGTH ||
+    !isNullableBoundedString(value.notation) || !isNullableBoundedString(value.rawText) ||
+    typeof value.parenthesized !== "boolean" ||
+    !isNonNegativeFiniteNumber(value.startTime) ||
+    !isNonNegativeFiniteNumber(value.endTime) || value.endTime < value.startTime ||
+    !isNullableBoundedString(value.assetUrl)) return null;
+  return value as GongcheSymbolLifecycleSnapshot;
+}
+
 // 同一父集合的状态必须声明一致长度和唯一索引；长度变化必须等于创建数减删除数。
 function validateLifecycleCollectionFacts(items: readonly AnnotationLifecycleUpdateItem[]) {
   const groups = new Map<string, AnnotationLifecycleUpdateItem[]>();
   for (const item of items) {
-    const key = `${item.entityType}:${item.trackId}`;
+    const key = getAnnotationLifecycleCollectionKey(item);
     const group = groups.get(key) ?? [];
     group.push(item);
     groups.set(key, group);
@@ -738,6 +1014,14 @@ function validateLifecycleCollectionFacts(items: readonly AnnotationLifecycleUpd
     if (afterLength === undefined && beforeLength !== undefined && beforeLength < beforeStates.length) return false;
   }
   return true;
+}
+
+// 句、逐字和工尺块分别存放在项目级数组；工尺 trackId 是引用作用域，不是物理子集合。
+function getAnnotationLifecycleCollectionKey(item: AnnotationLifecycleUpdateItem) {
+  if (item.entityType === "custom-block" || item.entityType === "attached-point") {
+    return `${item.entityType}:${item.trackId}`;
+  }
+  return item.entityType;
 }
 
 // 单项解析同时执行 track scope 与时间范围约束，点状实体必须使用零长度区间。
@@ -796,6 +1080,23 @@ function cloneTimingItem(item: TimelineTimingUpdateItem): TimelineTimingUpdateIt
 
 // 生命周期 builder 深复制嵌套位置和 laneIds，防止调用者后续修改实体快照污染已记录命令。
 function cloneLifecycleItem(item: AnnotationLifecycleUpdateItem): AnnotationLifecycleUpdateItem {
+  if (item.entityType === "sentence") {
+    return { ...item, before: cloneFlatLifecycleState(item.before), after: cloneFlatLifecycleState(item.after) };
+  }
+  if (item.entityType === "character") {
+    const cloneState = (
+      state: AnnotationLifecycleState<CharacterLifecycleSnapshot> | null,
+    ): AnnotationLifecycleState<CharacterLifecycleSnapshot> | null => state === null
+      ? null
+      : {
+          entity: {
+            ...state.entity,
+            tone: state.entity.tone ? { ...state.entity.tone } : null,
+          },
+          position: { ...state.position },
+        };
+    return { ...item, before: cloneState(item.before), after: cloneState(item.after) };
+  }
   if (item.entityType === "custom-block") {
     const cloneState = (
       state: AnnotationLifecycleState<CustomBlockLifecycleSnapshot> | null,
@@ -814,6 +1115,20 @@ function cloneLifecycleItem(item: AnnotationLifecycleUpdateItem): AnnotationLife
         };
     return { ...item, before: cloneState(item.before), after: cloneState(item.after) };
   }
+  if (item.entityType === "gongche-block") {
+    const cloneState = (
+      state: AnnotationLifecycleState<GongcheBlockLifecycleSnapshot> | null,
+    ): AnnotationLifecycleState<GongcheBlockLifecycleSnapshot> | null => state === null
+      ? null
+      : {
+          entity: {
+            ...state.entity,
+            symbols: state.entity.symbols.map((symbol) => ({ ...symbol })),
+          },
+          position: { ...state.position },
+        };
+    return { ...item, before: cloneState(item.before), after: cloneState(item.after) };
+  }
   const cloneState = (
     state: AnnotationLifecycleState<AttachedPointLifecycleSnapshot> | null,
   ): AnnotationLifecycleState<AttachedPointLifecycleSnapshot> | null => state === null
@@ -822,11 +1137,20 @@ function cloneLifecycleItem(item: AnnotationLifecycleUpdateItem): AnnotationLife
   return { ...item, before: cloneState(item.before), after: cloneState(item.after) };
 }
 
+function cloneFlatLifecycleState<TEntity extends { id: string }>(
+  state: AnnotationLifecycleState<TEntity> | null,
+): AnnotationLifecycleState<TEntity> | null {
+  return state === null ? null : { entity: { ...state.entity }, position: { ...state.position } };
+}
+
 // 判别联合必须在 helper 内逐类交换，避免 TypeScript 把两种实体快照错误扩成可交叉联合。
 function invertLifecycleItem(item: AnnotationLifecycleUpdateItem): AnnotationLifecycleUpdateItem {
+  if (item.entityType === "sentence") return { ...item, before: item.after, after: item.before };
+  if (item.entityType === "character") return { ...item, before: item.after, after: item.before };
   if (item.entityType === "custom-block") {
     return { ...item, before: item.after, after: item.before };
   }
+  if (item.entityType === "gongche-block") return { ...item, before: item.after, after: item.before };
   return { ...item, before: item.after, after: item.before };
 }
 
@@ -876,6 +1200,10 @@ function isSafeId(value: unknown): value is string {
 
 function isNonNegativeFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isNullableBoundedString(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && value.length <= MAX_ANNOTATION_CONTENT_LENGTH);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

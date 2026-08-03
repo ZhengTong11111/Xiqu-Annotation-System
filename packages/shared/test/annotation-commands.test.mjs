@@ -3,10 +3,12 @@ import test from "node:test";
 import {
   ANNOTATION_CONTENT_UPDATE_COMMAND,
   ANNOTATION_LIFECYCLE_UPDATE_COMMAND,
+  ANNOTATION_TRANSACTION_APPLY_COMMAND,
   assessAnnotationContentExecution,
   assessAnnotationLifecycleExecution,
   buildAnnotationContentUpdateEnvelope,
   buildAnnotationLifecycleUpdateEnvelope,
+  buildAnnotationTransactionEnvelope,
   MAX_ANNOTATION_CONTENT_LENGTH,
   ANNOTATION_COMMAND_ENVELOPE_VERSION,
   assessTimelineTimingExecution,
@@ -15,8 +17,91 @@ import {
   invertAnnotationCommandEnvelope,
   MAX_TIMELINE_COMMAND_ITEMS,
   parseAnnotationCommandEnvelope,
+  parseAnnotationTransactionCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
 } from "../dist/index.js";
+
+test("原子事务严格组合叶命令并按逆序生成 inverse", () => {
+  const content = buildAnnotationContentUpdateEnvelope([{
+    entityType: "sentence",
+    entityId: "line-transaction",
+    field: "text",
+    before: "甲",
+    after: "甲乙",
+  }]);
+  const lifecycle = buildAnnotationLifecycleUpdateEnvelope([{
+    entityType: "character",
+    entityId: "char-transaction",
+    before: null,
+    after: {
+      entity: {
+        id: "char-transaction",
+        lineId: "line-transaction",
+        char: "乙",
+        startTime: 2,
+        endTime: 3,
+        singingStyle: "普通唱",
+        tone: null,
+      },
+      position: {
+        index: 1,
+        collectionLength: 2,
+        previousEntityId: "char-existing",
+        nextEntityId: null,
+      },
+    },
+  }]);
+  assert.ok(content && lifecycle);
+  const transaction = buildAnnotationTransactionEnvelope([content, lifecycle]);
+  assert.ok(transaction);
+  assert.equal(transaction.command.type, ANNOTATION_TRANSACTION_APPLY_COMMAND);
+  assert.equal(isValidAnnotationOperationPayload(ANNOTATION_TRANSACTION_APPLY_COMMAND, transaction), true);
+  const inverse = invertAnnotationCommandEnvelope(transaction);
+  assert.equal(inverse?.command.type, ANNOTATION_TRANSACTION_APPLY_COMMAND);
+  assert.deepEqual(
+    inverse?.command.commands.map((command) => command.type),
+    [ANNOTATION_LIFECYCLE_UPDATE_COMMAND, ANNOTATION_CONTENT_UPDATE_COMMAND],
+  );
+  assert.deepEqual(invertAnnotationCommandEnvelope(inverse), transaction);
+});
+
+test("事务拒绝递归、额外字段和超出总实体上限的输入", () => {
+  const leaf = buildAnnotationContentUpdateEnvelope([{
+    entityType: "character",
+    entityId: "char-leaf",
+    field: "char",
+    before: "甲",
+    after: "乙",
+  }]);
+  assert.ok(leaf);
+  const valid = buildAnnotationTransactionEnvelope([leaf]);
+  assert.ok(valid);
+  assert.equal(parseAnnotationTransactionCommandEnvelope({
+    ...valid,
+    command: { ...valid.command, extra: true },
+  }), null);
+  assert.equal(parseAnnotationTransactionCommandEnvelope({
+    version: 1,
+    command: { type: ANNOTATION_TRANSACTION_APPLY_COMMAND, commands: [valid.command] },
+  }), null);
+  const oversizedLeaf = {
+    type: ANNOTATION_CONTENT_UPDATE_COMMAND,
+    items: Array.from({ length: MAX_TIMELINE_COMMAND_ITEMS }, (_, index) => ({
+      entityType: "character",
+      entityId: `char-bulk-${index}`,
+      field: "char",
+      before: "甲",
+      after: "乙",
+    })),
+  };
+  assert.equal(parseAnnotationTransactionCommandEnvelope({
+    version: 1,
+    command: {
+      type: ANNOTATION_TRANSACTION_APPLY_COMMAND,
+      commands: [oversizedLeaf, leaf.command],
+    },
+  }), null);
+});
 
 // 生命周期夹具显式携带集合位置，测试创建、删除和 inverse 是否保持同一稳定顺序事实。
 function customBlockState(id, index, collectionLength, previousEntityId, nextEntityId) {

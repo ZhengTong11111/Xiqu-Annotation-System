@@ -2908,13 +2908,44 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(dataOf(lifecycleOperation.json()).sequence, 8);
       assert.equal(dataOf(lifecycleOperation.json()).replayability, "domain_command");
 
+      // 事务 action 只包装严格叶命令；服务端按一个 operation 接受并等待完整 payload 保存时绑定 revision。
+      const transactionOperation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+        payload: {
+          clientOperationId: "op-transaction-domain-command",
+          baseRevision: latestRevision,
+          localRevision: 33,
+          action: "annotation.transaction.apply",
+          payload: {
+            version: 1,
+            command: {
+              type: "annotation.transaction.apply",
+              commands: [{
+                type: "annotation.items.content.update",
+                items: [{
+                  entityType: "sentence",
+                  entityId: "line-transaction-api",
+                  field: "text",
+                  before: "甲",
+                  after: "甲乙",
+                }],
+              }],
+            },
+          },
+        },
+      });
+      assert.equal(transactionOperation.statusCode, 200, transactionOperation.body);
+      assert.equal(dataOf(transactionOperation.json()).sequence, 9);
+      assert.equal(dataOf(transactionOperation.json()).replayability, "domain_command");
+
       const invalidLifecycleOperation = await jsonRequest(app, adminToken, {
         method: "POST",
         url: `/api/annotation-files/${annotationFileId}/operations`,
         payload: {
           clientOperationId: "op-lifecycle-invalid",
           baseRevision: latestRevision,
-          localRevision: 33,
+          localRevision: 34,
           action: "annotation.items.lifecycle.update",
           payload: {
             version: 1,

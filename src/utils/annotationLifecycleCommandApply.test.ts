@@ -197,3 +197,79 @@ test("builder 对合同外变化和工尺级联删除安全回退 snapshot", () 
     trackId: "lifecycle-action-track",
   }]), null);
 });
+
+test("句与首字可同批创建，缺少句引用的逐字创建会被拒绝", () => {
+  const base = createProject();
+  const next = structuredClone(base);
+  next.subtitleLines.push({ id: "line-created", text: "新", startTime: 9, endTime: 10 });
+  next.characterAnnotations.push({
+    id: "char-created",
+    lineId: "line-created",
+    char: "新",
+    startTime: 9,
+    endTime: 10,
+    singingStyle: "普通唱",
+    tone: { toneClass: "yang_shang", yxlzShangSubtype: "yinyang_tongyong" },
+  });
+  const envelope = buildProjectAnnotationLifecycleCommand(base, next, [
+    { entityType: "sentence", entityId: "line-created" },
+    { entityType: "character", entityId: "char-created" },
+  ]);
+  assert.ok(envelope);
+  const applied = applyAnnotationLifecycleCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status === "applied") assert.deepEqual(applied.project, next);
+
+  const orphaned = structuredClone(base);
+  orphaned.characterAnnotations.push({
+    id: "char-orphaned",
+    lineId: "line-missing",
+    char: "孤",
+    startTime: 11,
+    endTime: 12,
+    singingStyle: "普通唱",
+    tone: null,
+  });
+  assert.equal(buildProjectAnnotationLifecycleCommand(base, orphaned, [{
+    entityType: "character",
+    entityId: "char-orphaned",
+  }]), null);
+});
+
+test("工尺块生命周期保留完整符号并验证父块引用", () => {
+  const base = createProject();
+  const next = structuredClone(base);
+  next.gongcheAnnotations.push({
+    id: "gongche-created",
+    parentTrackId: "lifecycle-action-track",
+    parentBlockId: "block-a",
+    startTime: 1,
+    endTime: 2,
+    symbols: [{
+      id: "symbol-created",
+      label: "上",
+      notation: "1/",
+      rawText: "上1/",
+      parenthesized: true,
+      startTime: 1,
+      endTime: 2,
+      assetUrl: null,
+    }],
+  });
+  const envelope = buildProjectAnnotationLifecycleCommand(base, next, [{
+    entityType: "gongche-block",
+    entityId: "gongche-created",
+    trackId: "lifecycle-action-track",
+  }]);
+  assert.ok(envelope);
+  const applied = applyAnnotationLifecycleCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status !== "applied") return;
+  assert.deepEqual(applied.project, next);
+  const restored = applyAnnotationLifecycleCommandToProject(
+    applied.project,
+    invertAnnotationCommandEnvelope(envelope),
+  );
+  assert.equal(restored.status, "applied");
+  if (restored.status === "applied") assert.deepEqual(restored.project, base);
+});

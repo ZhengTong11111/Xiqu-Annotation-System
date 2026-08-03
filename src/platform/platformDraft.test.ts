@@ -204,6 +204,42 @@ test("平台草稿完整往返版本化 lifecycle command", () => {
   );
 });
 
+// 事务必须作为一个 pending operation 往返，不能在 IndexedDB 中被拆成失去原子性的多个记录。
+test("平台草稿完整往返原子 transaction command", () => {
+  const recoveryState = createRecoveryState();
+  recoveryState.pendingOperations = [{
+    ...recoveryState.pendingOperations[0],
+    type: "annotation.transaction.apply",
+    commandEnvelope: {
+      version: 1,
+      command: {
+        type: "annotation.transaction.apply",
+        commands: [{
+          type: "annotation.items.content.update",
+          items: [{
+            entityType: "sentence",
+            entityId: "line-transaction",
+            field: "text",
+            before: "甲",
+            after: "甲乙",
+          }],
+        }],
+      },
+    },
+  }];
+  const record = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState,
+  });
+  const normalized = normalizePlatformDraftRecord(record, {
+    userId: "user-1",
+    annotationFileId: "file-1",
+  });
+  assert.deepEqual(normalized?.pendingOperations[0].commandEnvelope, recoveryState.pendingOperations[0].commandEnvelope);
+});
+
 // 草稿只可由原账号打开原文件；损坏 operation、越界 revision 和假项目均 fail closed。
 test("平台草稿 unknown 边界拒绝身份与结构损坏", () => {
   const record = buildPlatformDraftRecord({

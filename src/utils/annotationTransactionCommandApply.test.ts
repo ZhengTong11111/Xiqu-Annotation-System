@@ -1,0 +1,219 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { invertAnnotationCommandEnvelope } from "@xiqu/shared";
+import { mockProject } from "../mockData";
+import type { ProjectData } from "../types";
+import { applyAnnotationTransactionCommandToProject } from "./annotationTransactionCommandApply";
+import { buildProjectAnnotationTransactionCommand } from "./annotationTransactionCommand";
+
+function createProject(): ProjectData {
+  const project = structuredClone(mockProject);
+  project.subtitleLines = [{ id: "line-a", text: "甲", startTime: 1, endTime: 2 }];
+  project.characterAnnotations = [{
+    id: "char-a",
+    lineId: "line-a",
+    char: "甲",
+    startTime: 1,
+    endTime: 2,
+    singingStyle: "普通唱",
+    tone: null,
+  }];
+  project.gongcheAnnotations = [{
+    id: "gongche-a",
+    parentTrackId: "character-track",
+    parentBlockId: "char-a",
+    startTime: 1,
+    endTime: 2,
+    symbols: [{
+      id: "symbol-a",
+      label: "合",
+      notation: "",
+      rawText: "合",
+      parenthesized: false,
+      startTime: 1,
+      endTime: 2,
+      assetUrl: null,
+    }],
+  }];
+  return project;
+}
+
+test("已有句新增逐字可原子同步句内容和边界并完整反向", () => {
+  const base = createProject();
+  const next = structuredClone(base);
+  next.characterAnnotations.push({
+    id: "char-b",
+    lineId: "line-a",
+    char: "乙",
+    startTime: 2,
+    endTime: 3,
+    singingStyle: "普通唱",
+    tone: null,
+  });
+  next.subtitleLines[0] = { ...next.subtitleLines[0], text: "甲乙", endTime: 3 };
+  const envelope = buildProjectAnnotationTransactionCommand(base, next, {
+    contentTargets: [{ entityType: "sentence", entityId: "line-a", field: "text" }],
+    timingTargets: [{ entityType: "sentence", entityId: "line-a" }],
+    lifecycleTargets: [{ entityType: "character", entityId: "char-b" }],
+  });
+  assert.ok(envelope);
+  const applied = applyAnnotationTransactionCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status !== "applied") return;
+  assert.deepEqual(applied.project, next);
+  const restored = applyAnnotationTransactionCommandToProject(
+    applied.project,
+    invertAnnotationCommandEnvelope(envelope),
+  );
+  assert.equal(restored.status, "applied");
+  if (restored.status === "applied") assert.deepEqual(restored.project, base);
+});
+
+test("新句与首个逐字可在同一生命周期批次创建和删除", () => {
+  const base = createProject();
+  const next = structuredClone(base);
+  next.subtitleLines.push({ id: "line-b", text: "新", startTime: 4, endTime: 5 });
+  next.characterAnnotations.push({
+    id: "char-new",
+    lineId: "line-b",
+    char: "新",
+    startTime: 4,
+    endTime: 5,
+    singingStyle: "普通唱",
+    tone: { toneClass: "yin_ping" },
+  });
+  const envelope = buildProjectAnnotationTransactionCommand(base, next, {
+    lifecycleTargets: [
+      { entityType: "sentence", entityId: "line-b" },
+      { entityType: "character", entityId: "char-new" },
+    ],
+  });
+  assert.ok(envelope);
+  const applied = applyAnnotationTransactionCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status === "applied") assert.deepEqual(applied.project, next);
+});
+
+test("删除逐字和关联工尺时句同步属于同一原子事务", () => {
+  const base = createProject();
+  base.subtitleLines[0] = { id: "line-a", text: "甲乙", startTime: 1, endTime: 3 };
+  base.characterAnnotations.push({
+    id: "char-b",
+    lineId: "line-a",
+    char: "乙",
+    startTime: 2,
+    endTime: 3,
+    singingStyle: "普通唱",
+    tone: null,
+  });
+  const next = structuredClone(base);
+  next.characterAnnotations = next.characterAnnotations.filter((item) => item.id !== "char-a");
+  next.gongcheAnnotations = [];
+  next.subtitleLines[0] = { id: "line-a", text: "乙", startTime: 2, endTime: 3 };
+  const envelope = buildProjectAnnotationTransactionCommand(base, next, {
+    contentTargets: [{ entityType: "sentence", entityId: "line-a", field: "text" }],
+    timingTargets: [{ entityType: "sentence", entityId: "line-a" }],
+    lifecycleTargets: [
+      { entityType: "character", entityId: "char-a" },
+      { entityType: "gongche-block", entityId: "gongche-a", trackId: "character-track" },
+    ],
+  });
+  assert.ok(envelope);
+  const applied = applyAnnotationTransactionCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status === "applied") assert.deepEqual(applied.project, next);
+});
+
+test("删除最后一个逐字时句与工尺一同删除且 inverse 恢复完整符号", () => {
+  const base = createProject();
+  const next = structuredClone(base);
+  next.subtitleLines = [];
+  next.characterAnnotations = [];
+  next.gongcheAnnotations = [];
+  const envelope = buildProjectAnnotationTransactionCommand(base, next, {
+    lifecycleTargets: [
+      { entityType: "sentence", entityId: "line-a" },
+      { entityType: "character", entityId: "char-a" },
+      { entityType: "gongche-block", entityId: "gongche-a", trackId: "character-track" },
+    ],
+  });
+  assert.ok(envelope);
+  const applied = applyAnnotationTransactionCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status !== "applied") return;
+  const restored = applyAnnotationTransactionCommandToProject(
+    applied.project,
+    invertAnnotationCommandEnvelope(envelope),
+  );
+  assert.equal(restored.status, "applied");
+  if (restored.status === "applied") assert.deepEqual(restored.project, base);
+});
+
+test("自定义父块与关联工尺可同批删除且不留下孤儿引用", () => {
+  const base = createProject();
+  base.customTracks.push({
+    id: "transaction-track",
+    name: "事务轨",
+    trackType: "action",
+    typeOptions: ["动作"],
+    blocks: [{ id: "transaction-block", startTime: 4, endTime: 5, type: "动作" }],
+    attachedPointTracks: [],
+  });
+  base.gongcheAnnotations.push({
+    id: "transaction-gongche",
+    parentTrackId: "transaction-track",
+    parentBlockId: "transaction-block",
+    startTime: 4,
+    endTime: 5,
+    symbols: [{
+      id: "transaction-symbol",
+      label: "尺",
+      notation: "",
+      rawText: "尺",
+      parenthesized: false,
+      startTime: 4,
+      endTime: 5,
+      assetUrl: null,
+    }],
+  });
+  const next = structuredClone(base);
+  next.customTracks[next.customTracks.length - 1].blocks = [];
+  next.gongcheAnnotations = next.gongcheAnnotations.filter((block) => block.id !== "transaction-gongche");
+  const envelope = buildProjectAnnotationTransactionCommand(base, next, {
+    lifecycleTargets: [
+      { entityType: "custom-block", entityId: "transaction-block", trackId: "transaction-track" },
+      { entityType: "gongche-block", entityId: "transaction-gongche", trackId: "transaction-track" },
+    ],
+  });
+  assert.ok(envelope);
+  const applied = applyAnnotationTransactionCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status === "applied") assert.deepEqual(applied.project, next);
+});
+
+test("事务任一子命令前置条件失败时不泄漏前面步骤", () => {
+  const base = createProject();
+  const next = structuredClone(base);
+  next.characterAnnotations.push({
+    id: "char-b",
+    lineId: "line-a",
+    char: "乙",
+    startTime: 2,
+    endTime: 3,
+    singingStyle: "普通唱",
+    tone: null,
+  });
+  next.subtitleLines[0] = { ...next.subtitleLines[0], text: "甲乙", endTime: 3 };
+  const envelope = buildProjectAnnotationTransactionCommand(base, next, {
+    contentTargets: [{ entityType: "sentence", entityId: "line-a", field: "text" }],
+    timingTargets: [{ entityType: "sentence", entityId: "line-a" }],
+    lifecycleTargets: [{ entityType: "character", entityId: "char-b" }],
+  });
+  assert.ok(envelope);
+  const conflicted = structuredClone(base);
+  conflicted.subtitleLines[0].endTime = 2.5;
+  const snapshot = structuredClone(conflicted);
+  const result = applyAnnotationTransactionCommandToProject(conflicted, envelope);
+  assert.equal(result.status, "blocked");
+  assert.deepEqual(conflicted, snapshot);
+});

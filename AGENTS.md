@@ -26,10 +26,10 @@ Main currently contains all major recent feature lines that matter for context:
 - platform login/resource-explorer UI, local editor entry, media upload, project/folder/file management, JSON import, revision-checked server save, recovery snapshots, and per-resource account permissions
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - backend audit logs and annotation operation logs for the first platform-governance layer
-- version 1 timing, stable content-update, and first leaf-entity lifecycle domain commands with strict shared validation,
+- version 1 timing, stable content-update, lifecycle, and dependency-transaction domain commands with strict shared validation,
   draft persistence, inverse/precondition semantics, all-or-nothing ProjectData adapters, server logging, and clean-client
-  HTTP replay; lifecycle currently covers custom blocks without Gongche cascades plus attached points, while server-side
-  application is not implemented yet
+  HTTP replay; lifecycle covers sentences, characters, custom blocks, attached points, and complete Gongche blocks, while
+  transactions atomically bind sentence synchronization and parent/Gongche cascades. Server-side application is not implemented yet
 - per-file operation acceptance sequence plus snapshot-committed operation facts and separate bounded feeds; clean web
   sessions now perform bounded HTTP catch-up, atomically replay complete mixed domain-command chains, and fall back to the
   authoritative snapshot for incomplete or non-replayable evidence
@@ -267,13 +267,20 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - all-or-nothing ProjectData adapter for `annotation.items.content.update`; resolves all current values and checks every
     before precondition before reusing the single immutable content writer
 - `src/utils/annotationLifecycleCommand.ts`
-  - authoritative ProjectData resolver, complete-next builder gate, canonical custom-block/attached-point snapshots, and
+  - authoritative ProjectData resolver, complete-next builder gate, canonical sentence/character/custom-block/attached-point/
+    Gongche snapshots, and
     grouped collection reconstruction for `annotation.items.lifecycle.update`
   - collection position is a correctness fact, not presentation metadata; builder/apply must preserve index, length, and
-    neighboring stable ids, and must return null for Gongche cascades or any other undeclared project difference
+    neighboring stable ids; global Gongche storage must not be grouped by its reference track id
 - `src/utils/annotationLifecycleCommandApply.ts`
   - all-or-nothing lifecycle adapter; uniquely resolves parent containers, checks full before state, and only then rebuilds
     every affected collection
+- `src/utils/annotationTransactionCommand.ts`
+  - builds `annotation.transaction.apply` from authoritative base/next projects and explicit content/timing/lifecycle targets
+  - must reconstruct the complete next project through the replay adapter; UI code never hand-authors child before/after values
+- `src/utils/annotationTransactionCommandApply.ts`
+  - applies validated leaf commands only to a local ProjectData variable and publishes no partial project when a child blocks
+  - transaction inverse reverses child order; recursive transactions are forbidden by the shared parser
 - `src/utils/projectValueEquality.ts`
   - shared reference-first deep equality used by command builders to prove that one envelope reconstructs the complete next
     ProjectData; do not add another JSON-stringify or target-only equality path
@@ -281,7 +288,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - generic ProjectData command dispatcher used by clean catch-up; it only discriminates validated command types and must
     not duplicate a domain parser, precondition, or apply implementation
 - `packages/shared/src/annotationCommands.ts`
-  - authoritative timing/content/lifecycle annotation-command DTOs, deterministic builders/inverse, strict discriminated unknown
+  - authoritative timing/content/lifecycle/transaction annotation-command DTOs, deterministic builders/inverse, strict discriminated unknown
     parsers, all-target precondition assessment, target keys, limits, and API action/payload allowlist shared by web,
     IndexedDB recovery, and Fastify
   - the server currently validates and logs these commands but does not apply them to `AnnotationFile.payload`
@@ -422,6 +429,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:timeline-timing-command-apply`
 - `npm run test:annotation-content-command`
 - `npm run test:annotation-lifecycle-command`
+- `npm run test:annotation-transaction-command`
 - `npm run test:platform-operations`
 - `npm run test:platform-auto-save`
 - `npm run test:platform-auto-save-runtime`

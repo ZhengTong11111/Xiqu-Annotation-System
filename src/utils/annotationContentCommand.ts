@@ -20,6 +20,18 @@ export function buildProjectAnnotationContentCommand(
   nextProject: ProjectData,
   targets: readonly AnnotationContentTarget[],
 ): AnnotationContentCommandEnvelope | null {
+  const envelope = buildProjectAnnotationContentEnvelope(baseProject, nextProject, targets);
+  if (!envelope) return null;
+  const reconstructedProject = applyAnnotationContentItems(baseProject, envelope.command.items);
+  return areProjectValuesEqual(reconstructedProject, nextProject) ? envelope : null;
+}
+
+// 依赖事务复用同一 before/after 提取器；完整项目覆盖证明由 transaction builder 统一执行。
+export function buildProjectAnnotationContentEnvelope(
+  baseProject: ProjectData,
+  nextProject: ProjectData,
+  targets: readonly AnnotationContentTarget[],
+): AnnotationContentCommandEnvelope | null {
   const uniqueTargets = new Map<string, AnnotationContentTarget>();
   for (const target of targets) uniqueTargets.set(getAnnotationContentTargetKey(target), target);
   const items: AnnotationContentUpdateItem[] = [];
@@ -30,11 +42,7 @@ export function buildProjectAnnotationContentCommand(
     items.push({ ...target, before, after } as AnnotationContentUpdateItem);
   }
   const envelope = buildAnnotationContentUpdateEnvelope(items);
-  if (!envelope) return null;
-
-  // builder 必须证明命令可以完整重建 next；若同一次编辑还改变了时间或结构，就回退 snapshot operation。
-  const reconstructedProject = applyAnnotationContentItems(baseProject, envelope.command.items);
-  return areProjectValuesEqual(reconstructedProject, nextProject) ? envelope : null;
+  return envelope;
 }
 
 // 每类稳定实体只在这一处解释内容字段，UI 和 apply 不各自猜测路径。

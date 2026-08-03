@@ -8,6 +8,7 @@ import { mockProject } from "../mockData";
 import type { ProjectData } from "../types";
 import { buildProjectAnnotationContentCommand } from "../utils/annotationContentCommand";
 import { buildProjectAnnotationLifecycleCommand } from "../utils/annotationLifecycleCommand";
+import { buildProjectAnnotationTransactionCommand } from "../utils/annotationTransactionCommand";
 import { buildProjectTimelineTimingCommand } from "../utils/timelineTimingCommand";
 import { catchUpCommittedAnnotationOperations } from "./platformOperationCatchUp";
 
@@ -57,6 +58,29 @@ function createAttachedPoint(base: ProjectData) {
     trackId: pointTrack.id,
   }]);
   if (!envelope) throw new Error("未能建立生命周期命令。 ");
+  return { next, envelope };
+}
+
+// 事务夹具同时创建句与逐字，验证 committed feed 把整个依赖闭包视为一个 revision 事实。
+function createSentenceWithCharacter(base: ProjectData) {
+  const next = structuredClone(base);
+  next.subtitleLines.push({ id: "catch-up-line", text: "新", startTime: 8, endTime: 9 });
+  next.characterAnnotations.push({
+    id: "catch-up-character",
+    lineId: "catch-up-line",
+    char: "新",
+    startTime: 8,
+    endTime: 9,
+    singingStyle: "普通唱",
+    tone: null,
+  });
+  const envelope = buildProjectAnnotationTransactionCommand(base, next, {
+    lifecycleTargets: [
+      { entityType: "sentence", entityId: "catch-up-line" },
+      { entityType: "character", entityId: "catch-up-character" },
+    ],
+  });
+  if (!envelope) throw new Error("未能建立事务命令。 ");
   return { next, envelope };
 }
 
@@ -112,26 +136,28 @@ function createPageReader(pages: AnnotationCommittedOperationPage[]) {
   };
 }
 
-test("clean 客户端顺序重放跨页 timing/content/lifecycle 连续 revision", async () => {
+test("clean 客户端顺序重放跨页 timing/content/lifecycle/transaction 连续 revision", async () => {
   const base = createCatchUpProject();
   const first = createCharacterMove(base, 0.1);
   const second = createCharacterTextUpdate(first.next, "新");
   const third = createAttachedPoint(second.next);
+  const fourth = createSentenceWithCharacter(third.next);
   const reader = createPageReader([
     {
       items: [createOperation(1, 1, first.envelope)],
       nextCursor: "cursor-1",
       hasMore: true,
-      currentRevision: 3,
+      currentRevision: 4,
     },
     {
       items: [
         createOperation(2, 2, second.envelope, { action: "annotation.items.content.update" }),
         createOperation(3, 3, third.envelope, { action: "annotation.items.lifecycle.update" }),
+        createOperation(4, 4, fourth.envelope, { action: "annotation.transaction.apply" }),
       ],
-      nextCursor: "cursor-3",
+      nextCursor: "cursor-4",
       hasMore: false,
-      currentRevision: 3,
+      currentRevision: 4,
     },
   ]);
   const result = await catchUpCommittedAnnotationOperations({
@@ -143,15 +169,19 @@ test("clean 客户端顺序重放跨页 timing/content/lifecycle 连续 revision
   });
   assert.equal(result.status, "applied");
   if (result.status !== "applied") return;
-  assert.equal(result.revision, 3);
-  assert.equal(result.cursor, "cursor-3");
-  assert.equal(result.operationCount, 3);
+  assert.equal(result.revision, 4);
+  assert.equal(result.cursor, "cursor-4");
+  assert.equal(result.operationCount, 4);
   assert.equal(
     result.project.characterAnnotations[0].startTime,
     second.next.characterAnnotations[0].startTime,
   );
   assert.equal(result.project.characterAnnotations[0].char, "新");
   assert.equal(result.project.builtinTracks[0].attachedPointTracks[0].points[0].id, "catch-up-point");
+  assert.equal(
+    result.project.characterAnnotations[result.project.characterAnnotations.length - 1]?.id,
+    "catch-up-character",
+  );
   assert.deepEqual(reader.calls, ["snapshot-0", "cursor-1"]);
 });
 
