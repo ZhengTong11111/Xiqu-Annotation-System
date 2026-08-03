@@ -12,6 +12,11 @@ import {
   buildProjectAnnotationLifecycleEnvelope,
   type AnnotationLifecycleTarget,
 } from "./annotationLifecycleCommand";
+import {
+  buildProjectAnnotationStateEnvelope,
+  resolveProjectAnnotationState,
+  type AnnotationStateTarget,
+} from "./annotationStateCommand";
 import { applyAnnotationTransactionCommandToProject } from "./annotationTransactionCommandApply";
 import { areProjectValuesEqual } from "./projectValueEquality";
 import {
@@ -23,6 +28,7 @@ import {
 export type AnnotationTransactionPlan = {
   contentTargets?: readonly AnnotationContentTarget[];
   timingTargets?: readonly TimelineTimingTarget[];
+  stateTargets?: readonly AnnotationStateTarget[];
   lifecycleTargets?: readonly AnnotationLifecycleTarget[];
 };
 
@@ -49,6 +55,15 @@ export function buildProjectAnnotationTransactionCommand(
     children.push(envelope);
   }
 
+  const stateTargets = selectChangedStateTargets(baseProject, nextProject, plan.stateTargets ?? []);
+  if (!stateTargets) return null;
+  if (stateTargets.length > 0) {
+    const envelope = buildProjectAnnotationStateEnvelope(baseProject, nextProject, stateTargets);
+    if (!envelope) return null;
+    children.push(envelope);
+  }
+
+  // 先断开板眼的失效引用，再删除 symbol/block；最终 lifecycle 引用校验因此只观察一致结果。
   if ((plan.lifecycleTargets?.length ?? 0) > 0) {
     const envelope = buildProjectAnnotationLifecycleEnvelope(
       baseProject,
@@ -92,6 +107,21 @@ function selectChangedTimingTargets(
     const after = resolveProjectTimelineTiming(nextProject, target);
     if (!before || !after) return null;
     if (before.startTime !== after.startTime || before.endTime !== after.endTime) changed.push(target);
+  }
+  return changed;
+}
+
+function selectChangedStateTargets(
+  baseProject: ProjectData,
+  nextProject: ProjectData,
+  targets: readonly AnnotationStateTarget[],
+) {
+  const changed: AnnotationStateTarget[] = [];
+  for (const target of targets) {
+    const before = resolveProjectAnnotationState(baseProject, target);
+    const after = resolveProjectAnnotationState(nextProject, target);
+    if (!before || !after) return null;
+    if (!areProjectValuesEqual(before, after)) changed.push(target);
   }
   return changed;
 }

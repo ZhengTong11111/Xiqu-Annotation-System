@@ -8,6 +8,7 @@ import { mockProject } from "../mockData";
 import type { ProjectData } from "../types";
 import { buildProjectAnnotationContentCommand } from "../utils/annotationContentCommand";
 import { buildProjectAnnotationLifecycleCommand } from "../utils/annotationLifecycleCommand";
+import { buildProjectAnnotationStateCommand } from "../utils/annotationStateCommand";
 import { buildProjectAnnotationTransactionCommand } from "../utils/annotationTransactionCommand";
 import { buildProjectTimelineTimingCommand } from "../utils/timelineTimingCommand";
 import { catchUpCommittedAnnotationOperations } from "./platformOperationCatchUp";
@@ -203,6 +204,55 @@ test("无新 revision 返回 up_to_date 并保留 snapshot cursor", async () => 
     revision: 3,
     cursor: "snapshot-3",
   });
+});
+
+test("committed feed 可重放复合实体 state 命令", async () => {
+  const base = createCatchUpProject();
+  const character = base.characterAnnotations[0];
+  if (!character) throw new Error("catch-up 夹具缺少逐字标注。");
+  base.gongcheAnnotations = [{
+    id: "catch-up-gongche",
+    parentTrackId: "character-track",
+    parentBlockId: character.id,
+    startTime: 1,
+    endTime: 2,
+    symbols: [{
+      id: "catch-up-symbol",
+      label: "上",
+      notation: "",
+      rawText: "上",
+      parenthesized: false,
+      startTime: 1,
+      endTime: 2,
+      assetUrl: null,
+    }],
+  }];
+  const next = structuredClone(base);
+  next.gongcheAnnotations[0].symbols[0] = {
+    ...next.gongcheAnnotations[0].symbols[0],
+    label: "尺",
+    rawText: "尺",
+  };
+  const envelope = buildProjectAnnotationStateCommand(base, next, [{
+    entityType: "gongche-symbol",
+    entityId: "catch-up-symbol",
+    trackId: "catch-up-gongche",
+  }]);
+  assert.ok(envelope);
+  const result = await catchUpCommittedAnnotationOperations({
+    annotationFileId: FILE_ID,
+    project: base,
+    knownRevision: 0,
+    cursor: "snapshot-0",
+    listPage: async () => ({
+      items: [createOperation(1, 1, envelope, { action: "annotation.items.state.update" })],
+      nextCursor: "cursor-state",
+      hasMore: false,
+      currentRevision: 1,
+    }),
+  });
+  assert.equal(result.status, "applied");
+  if (result.status === "applied") assert.deepEqual(result.project, next);
 });
 
 test("revision 缺口和不可重放 operation 明确降级快照", async () => {

@@ -3370,3 +3370,89 @@ ProjectData builder、adapter 与编辑器接线：
 - 下一轮 R5a4b3 应先审计工尺 symbol 内部编辑和板眼复合实体的真实 App 写路径、父子引用、derived review
   元数据及 inverse 边界，再决定扩展现有 lifecycle/transaction 还是增加更合适的领域命令；必须继续复用
   完整差异门禁和原子 transaction，不能为板眼建立第二套追赶或保存协议。
+
+## 2026-08-04：R5a4b3 工尺符号与板眼复合实体命令
+
+计划与实际范围：
+
+- 本轮先按 roadmap 和 R5a4b2 的遗留边界重写 `CLAUDE_WORK.md`，只处理工尺 symbol、板眼 mark/section
+  三类复合实体以及它们之间的引用，不提前把轨道结构、递归分叉、整轨删除或批量导入伪装成普通 CRUD。
+  实际实现与计划一致：补齐稳定身份、完整状态替换、实体创建删除、板眼断链事务、草稿/API/catch-up
+  往返，并保留无法由完整领域命令证明的写路径为 legacy snapshot。
+- 这三类实体不能只更新一个展示字段。工尺 symbol 包含时间和演唱记号等耦合状态；板眼 mark 同时包含
+  区段、工尺块、单/多 symbol 引用和人工复核元数据。因此新增 `annotation.items.state.update`，保存同一
+  稳定实体的完整 before/after 快照；创建、删除和集合位置仍由 lifecycle 表达，避免把更新伪装为删后重建。
+- 本轮没有引入新依赖，没有建立第二套网络协议、草稿格式或服务端 payload writer。服务端继续严格校验、
+  接受和记录领域命令，权威项目内容仍由 revision-checked snapshot save 提交。
+
+共享合同、稳定身份与原子适配：
+
+- shared 命令合同新增 state envelope、严格 unknown parser、确定性 builder/inverse、全目标 before 前置检查、
+  action allowlist 和总实体预算；transaction 叶命令扩展为 content、timing、state、lifecycle。工尺 symbol
+  的协议 scope 是父 Gongche block id，板眼 mark/section 是项目级集合，三类 after 都必须保持相同实体 id。
+- target key 从冒号拼接改为 JSON 元组。协议允许合法 id 含冒号，旧拼接会让不同 `(entityType, trackId,
+  entityId)` 组合碰撞并被误判重复；新键同时用于 timing/content/state/lifecycle 的排序和前置条件匹配，且
+  不进入持久化格式，因此无需数据迁移。
+- `annotationCompositeSnapshots.ts` 成为 Gongche symbol 与板眼实体规范快照的唯一转换层；state 和 lifecycle
+  不再各自维护一份字段复制。`annotationStateCommand.ts` 负责权威目标解析、完整 next 重建门禁和不可变
+  写入，`annotationStateCommandApply.ts` 先解析并核对全部 before，再统一写入和验证最终引用，任一失败都
+  不返回半成品。
+- transaction 按 content → timing → state → lifecycle 执行。删除被板眼引用的工尺 symbol/block 时，先用
+  state 清除失效引用、设置 orphaned，再由 lifecycle 删除实体；inverse 自动逆序，先恢复工尺实体，再恢复
+  板眼链接。state 子命令不支持引用同一事务稍后才创建的实体，这是当前删除/断链场景的有意边界，而非
+  一个隐藏的宽松执行路径。
+
+引用完整性、工尺编辑与真实 App 接线：
+
+- 新 `banyanReferenceIntegrity.ts` 集中验证 sectionId、Gongche block id、单 symbol id 和多 symbol id；删除
+  工尺数据时保留板眼研究记录，只清除失效强引用并标记 orphaned。没有在 App、state adapter 和 lifecycle
+  adapter 中复制三套引用规则。
+- 新 `gongcheSymbols.ts` 统一快速输入、添加、删除与时间重分配。快速输入按索引复用既有 symbol id；添加
+  只为新增项分配 id，删除只移除目标 symbol；其余 symbol 的附加元数据不会因重新分配时间而被整体重建。
+  Inspector 已移除旧的本地分配 helper，改用这一稳定身份实现。
+- App 增加带 state 目标的提交入口。工尺内部编辑记录 timing/state/lifecycle transaction；板眼非时间字段
+  使用 state，纯时间编辑继续复用 timing；板眼自动生成在完整状态/生命周期事务可以重建 next 时写领域
+  命令，否则明确回退 legacy snapshot。手工创建板眼区段与 mark、删除单个/多个 mark 均已接 lifecycle。
+- 删除字符、自定义块、工尺块或工尺 symbol 时先统一修复板眼引用，并把变化的 mark 声明为 state 目标。
+  整轨删除和整段工尺导入仍属于后续受控批量路径，但提交前也经过同一引用修复，保证 legacy snapshot
+  本身不会保存悬空强引用。
+
+实现过程中发现并修复的问题：
+
+- 初版 target key 使用冒号拼接，测试含冒号 id 后发现潜在碰撞；已改为结构化元组键，并为共享 parser 和
+  ProjectData state apply 各增加回归。
+- 初版 state apply 只检查 before 后替换快照，没有验证最终板眼引用；现统一调用引用门禁，坏 after 返回
+  `result_invalid`。这与真正的 `target_missing` 前置失败分开，避免日志和调试信息误导。
+- 初版命令预算只计算外层 mark item，遗漏 `linkedGongcheSymbolIds` 数组；现 lifecycle/state 成本都会展开
+  链接数组，Gongche block 也继续展开 symbols，防止以嵌套数据绕过 500 项限制。
+- App 接线的一次范围过宽补丁误改了邻近函数的局部变量名，并在 custom track 删除路径产生重复声明；
+  TypeScript 构建和逐段回读当轮即发现并删除，没有保留兼容分支或僵尸变量。
+- 手工板眼创建最初缺少规范快照要求的 `orphaned: false`；已在创建源头补齐，而不是放宽 parser 接受不完整
+  实体。工尺/板眼引用修复也没有删除 mark，以免丢失需要人工复核的学术记录。
+
+测试、构建与运行验收：
+
+- shared command 16/16；lifecycle adapter 9/9；state/composite adapter 5/5；transaction adapter 7/7。
+  覆盖完整状态 apply/inverse、before 冲突、坏引用、冒号 id、symbol 稳定身份、板眼引用修复、symbol 与
+  section/mark 生命周期，以及“先断链再删除、inverse 先恢复实体再恢复链接”的原子事务。
+- 平台 operation 4/4、draft 15/15、operation catch-up/runtime/document gate 12/12；IndexedDB 草稿可严格
+  往返 state envelope，clean committed feed 可回放复合实体 state 命令。
+- `npm run test:api` 在真实 PostgreSQL `api_test` schema 上 90/90：合法 state operation 进入连续 sequence
+  并标为 `domain_command`，坏 state 请求返回 400；资源、ACL、revision、恢复、确认、上传、审计、维护、
+  备份和对象存储全套同步回归。仅保留既有 node-postgres pg 9 弃用提示。
+- `npm run build` 通过 Prisma generation、shared、document-model、Web 与 API；Web 转换 2058 个模块，主
+  chunk 868.03 kB / gzip 262.01 kB，只保留既有大包提示。`git diff --check` 通过；仓库仍无一般 lint/full-test
+  聚合脚本。
+- 本轮没有调用浏览器自动化，也没有视觉 UI 改动；纯函数、API 和构建通过不冒充人工交互验收。提交前用
+  当前工作树重启 Fastify，并以 `/api/health/ready` 再确认数据库和对象存储依赖。
+
+文档、自审与下一步：
+
+- README、state architecture、roadmap 与 AGENTS 已同步 state 命令、复合实体所有权、稳定 symbol id、引用
+  修复策略、mixed catch-up 和专项测试命令。本 Development Log 同时记录了计划、实际实现、问题、验证与
+  安全回退；`CLAUDE_WORK.md` 仍只保留当前一轮工作，不积累历史日志。
+- 自审未发现第二套 parser、重复引用验证、部分发布的 transaction 或需要保留的旧 symbol 分配 helper。
+  轨道结构、递归分叉、批量导入和大范围修复仍是明确的 legacy/受控操作边界，没有为了提高命令覆盖率而
+  放宽完整 next 门禁。
+- 下一轮 R5a4c 先设计显式锁、受控事务、操作预算和冲突恢复，再选择一个真实结构写路径落地；不能直接
+  把大范围结构变化塞进普通 state/lifecycle 命令，也不能在服务端形成第二套 ProjectData 解释器。

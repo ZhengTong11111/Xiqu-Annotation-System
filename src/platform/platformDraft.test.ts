@@ -204,6 +204,45 @@ test("平台草稿完整往返版本化 lifecycle command", () => {
   );
 });
 
+// 复合实体 state 命令必须保持完整快照，不能在 IndexedDB 往返时退化成 legacy 摘要。
+test("平台草稿完整往返版本化 state command", () => {
+  const recoveryState = createRecoveryState();
+  recoveryState.pendingOperations = [{
+    ...recoveryState.pendingOperations[0],
+    type: "annotation.items.state.update",
+    commandEnvelope: {
+      version: 1,
+      command: {
+        type: "annotation.items.state.update",
+        items: [{
+          entityType: "gongche-symbol",
+          entityId: "symbol-draft",
+          trackId: "gongche-draft",
+          before: {
+            id: "symbol-draft", label: "上", notation: null, rawText: "上", parenthesized: false,
+            startTime: 1, endTime: 2, assetUrl: null,
+          },
+          after: {
+            id: "symbol-draft", label: "尺", notation: "4/", rawText: "尺4/", parenthesized: false,
+            startTime: 1, endTime: 2, assetUrl: null,
+          },
+        }],
+      },
+    },
+  }];
+  const record = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState,
+  });
+  const normalized = normalizePlatformDraftRecord(record, {
+    userId: "user-1",
+    annotationFileId: "file-1",
+  });
+  assert.deepEqual(normalized?.pendingOperations[0].commandEnvelope, recoveryState.pendingOperations[0].commandEnvelope);
+});
+
 // 事务必须作为一个 pending operation 往返，不能在 IndexedDB 中被拆成失去原子性的多个记录。
 test("平台草稿完整往返原子 transaction command", () => {
   const recoveryState = createRecoveryState();

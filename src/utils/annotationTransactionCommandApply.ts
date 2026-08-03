@@ -1,6 +1,7 @@
 import {
   ANNOTATION_CONTENT_UPDATE_COMMAND,
   ANNOTATION_LIFECYCLE_UPDATE_COMMAND,
+  ANNOTATION_STATE_UPDATE_COMMAND,
   parseAnnotationTransactionCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
   type AnnotationTransactionCommandEnvelope,
@@ -8,6 +9,7 @@ import {
 import type { ProjectData } from "../types";
 import { applyAnnotationContentCommandToProject } from "./annotationContentCommandApply";
 import { applyAnnotationLifecycleCommandToProject } from "./annotationLifecycleCommandApply";
+import { applyAnnotationStateCommandToProject } from "./annotationStateCommandApply";
 import { applyTimelineTimingCommandToProject } from "./timelineTimingCommandApply";
 
 export type AnnotationTransactionCommandApplyResult =
@@ -31,7 +33,9 @@ export function applyAnnotationTransactionCommandToProject(
         ? applyAnnotationContentCommandToProject(currentProject, childEnvelope)
         : command.type === ANNOTATION_LIFECYCLE_UPDATE_COMMAND
           ? applyAnnotationLifecycleCommandToProject(currentProject, childEnvelope)
-          : assertNever(command);
+          : command.type === ANNOTATION_STATE_UPDATE_COMMAND
+            ? applyAnnotationStateCommandToProject(currentProject, childEnvelope)
+            : assertNever(command);
     if (result.status !== "applied") return { status: "blocked", childIndex };
     currentProject = result.project;
   }

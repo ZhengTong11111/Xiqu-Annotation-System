@@ -2939,13 +2939,78 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(dataOf(transactionOperation.json()).sequence, 9);
       assert.equal(dataOf(transactionOperation.json()).replayability, "domain_command");
 
+      // 复合状态命令与其他领域命令共用幂等接收链；服务端严格校验完整 before/after 快照。
+      const stateOperation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+        payload: {
+          clientOperationId: "op-state-domain-command",
+          baseRevision: latestRevision,
+          localRevision: 34,
+          action: "annotation.items.state.update",
+          payload: {
+            version: 1,
+            command: {
+              type: "annotation.items.state.update",
+              items: [{
+                entityType: "gongche-symbol",
+                entityId: "symbol-state-api",
+                trackId: "gongche-state-api",
+                before: {
+                  id: "symbol-state-api", label: "上", notation: null, rawText: "上", parenthesized: false,
+                  startTime: 1, endTime: 2, assetUrl: null,
+                },
+                after: {
+                  id: "symbol-state-api", label: "尺", notation: "4/", rawText: "尺4/", parenthesized: false,
+                  startTime: 1, endTime: 2, assetUrl: null,
+                },
+              }],
+            },
+          },
+        },
+      });
+      assert.equal(stateOperation.statusCode, 200, stateOperation.body);
+      assert.equal(dataOf(stateOperation.json()).sequence, 10);
+      assert.equal(dataOf(stateOperation.json()).replayability, "domain_command");
+
+      const invalidStateOperation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+        payload: {
+          clientOperationId: "op-state-invalid",
+          baseRevision: latestRevision,
+          localRevision: 35,
+          action: "annotation.items.state.update",
+          payload: {
+            version: 1,
+            command: {
+              type: "annotation.items.state.update",
+              items: [{
+                entityType: "gongche-symbol",
+                entityId: "symbol-state-api",
+                trackId: "gongche-state-api",
+                before: {
+                  id: "symbol-state-api", label: "上", notation: null, rawText: "上", parenthesized: false,
+                  startTime: 1, endTime: 2, assetUrl: null,
+                },
+                after: {
+                  id: "different-symbol", label: "尺", notation: null, rawText: "尺", parenthesized: false,
+                  startTime: 1, endTime: 2, assetUrl: null,
+                },
+              }],
+            },
+          },
+        },
+      });
+      assert.equal(invalidStateOperation.statusCode, 400);
+
       const invalidLifecycleOperation = await jsonRequest(app, adminToken, {
         method: "POST",
         url: `/api/annotation-files/${annotationFileId}/operations`,
         payload: {
           clientOperationId: "op-lifecycle-invalid",
           baseRevision: latestRevision,
-          localRevision: 34,
+          localRevision: 36,
           action: "annotation.items.lifecycle.update",
           payload: {
             version: 1,

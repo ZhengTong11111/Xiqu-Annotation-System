@@ -27,6 +27,11 @@ import {
 } from "../utils/banyan";
 import { flattenBranchLanes, getTrackBranchSummary } from "../utils/project";
 import {
+  createDefaultGongcheSymbol,
+  reconcileGongcheSymbolLabels,
+  redistributeGongcheSymbolSequence,
+} from "../utils/gongcheSymbols";
+import {
   DEFAULT_TRACK_COLORS,
   getBranchLaneColor,
   normalizeHexColor,
@@ -1481,8 +1486,8 @@ export function InspectorPanel({
         return;
       }
       onGongcheBlockUpdate(block.id, {
-        symbols: distributeGongcheSymbols(
-          block.symbols.filter((symbol) => symbol.id !== symbolId).map((symbol) => symbol.label),
+        symbols: redistributeGongcheSymbolSequence(
+          block.symbols.filter((symbol) => symbol.id !== symbolId),
           block.startTime,
           block.endTime,
         ),
@@ -1490,8 +1495,8 @@ export function InspectorPanel({
     };
     const addSymbol = () => {
       onGongcheBlockUpdate(block.id, {
-        symbols: distributeGongcheSymbols(
-          [...block.symbols.map((symbol) => symbol.label), "合"],
+        symbols: redistributeGongcheSymbolSequence(
+          [...block.symbols, createDefaultGongcheSymbol(block.startTime, block.endTime)],
           block.startTime,
           block.endTime,
         ),
@@ -1528,7 +1533,8 @@ export function InspectorPanel({
             value={symbolsText}
             onChange={(event) =>
               onGongcheBlockUpdate(block.id, {
-                symbols: distributeGongcheSymbols(
+                symbols: reconcileGongcheSymbolLabels(
+                  block.symbols,
                   Array.from(event.target.value).filter((char) => char.trim().length > 0),
                   block.startTime,
                   block.endTime,
@@ -1894,23 +1900,6 @@ function findGongcheInspectorParent(
         endTime: parentBlock.endTime,
       }
     : null;
-}
-
-function distributeGongcheSymbols(labels: string[], startTime: number, endTime: number): GongcheSymbol[] {
-  const normalizedLabels = labels.map((label) => label.trim()).filter(Boolean);
-  const safeLabels = normalizedLabels.length > 0 ? normalizedLabels : ["合"];
-  const duration = Math.max(endTime - startTime, 0.001);
-  const step = duration / safeLabels.length;
-  return safeLabels.map((label, index) => ({
-    id: `gongche-symbol-${crypto.randomUUID()}`,
-    label,
-    notation: "",
-    rawText: label,
-    parenthesized: false,
-    startTime: startTime + step * index,
-    endTime: index === safeLabels.length - 1 ? endTime : startTime + step * (index + 1),
-    assetUrl: null,
-  }));
 }
 
 function buildTypeOptionKeys(typeOptions: string[]) {

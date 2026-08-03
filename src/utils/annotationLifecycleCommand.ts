@@ -5,9 +5,12 @@ import {
   type AnnotationLifecycleState,
   type AnnotationLifecycleUpdateItem,
   type AttachedPointLifecycleSnapshot,
+  type BanyanMarkStateSnapshot,
+  type BanyanSectionStateSnapshot,
   type CharacterLifecycleSnapshot,
   type CustomBlockLifecycleSnapshot,
   type GongcheBlockLifecycleSnapshot,
+  type GongcheSymbolLifecycleSnapshot,
   type SentenceLifecycleSnapshot,
 } from "@xiqu/shared";
 import type {
@@ -16,10 +19,20 @@ import type {
   CharacterAnnotation,
   CustomTrack,
   GongcheAnnotation,
+  GongcheSymbol,
   ProjectData,
   SubtitleLine,
 } from "../types";
 import { areProjectValuesEqual } from "./projectValueEquality";
+import {
+  createBanyanMarkSnapshot,
+  createBanyanSectionSnapshot,
+  createGongcheSymbolSnapshot,
+  restoreBanyanMarkSnapshot,
+  restoreBanyanSectionSnapshot,
+  restoreGongcheSymbolSnapshot,
+} from "./annotationCompositeSnapshots";
+import { validateBanyanGongcheReferences } from "./banyanReferenceIntegrity";
 
 export type AnnotationLifecycleTarget = Pick<
   AnnotationLifecycleUpdateItem,
@@ -29,9 +42,12 @@ export type AnnotationLifecycleTarget = Pick<
 type LifecycleSnapshot =
   | SentenceLifecycleSnapshot
   | CharacterLifecycleSnapshot
+  | BanyanSectionStateSnapshot
+  | BanyanMarkStateSnapshot
   | CustomBlockLifecycleSnapshot
   | AttachedPointLifecycleSnapshot
-  | GongcheBlockLifecycleSnapshot;
+  | GongcheBlockLifecycleSnapshot
+  | GongcheSymbolLifecycleSnapshot;
 
 type ResolvedLifecycleTarget<TSnapshot extends LifecycleSnapshot = LifecycleSnapshot> = {
   parentExists: boolean;
@@ -83,6 +99,12 @@ export function resolveProjectAnnotationLifecycleTarget(
   if (target.entityType === "character") {
     return resolveCollectionTarget(project.characterAnnotations, target.entityId, createCharacterSnapshot);
   }
+  if (target.entityType === "banyan-section") {
+    return resolveCollectionTarget(project.banyanSections, target.entityId, createBanyanSectionSnapshot);
+  }
+  if (target.entityType === "banyan-mark") {
+    return resolveCollectionTarget(project.banyanMarks, target.entityId, createBanyanMarkSnapshot);
+  }
   if (target.entityType === "gongche-block") {
     const resolved = resolveCollectionTarget(project.gongcheAnnotations, target.entityId, createGongcheBlockSnapshot);
     if (resolved.current && resolved.current.entity.parentTrackId !== target.trackId) {
@@ -94,6 +116,13 @@ export function resolveProjectAnnotationLifecycleTarget(
     const tracks = project.customTracks.filter((track) => track.id === target.trackId);
     if (tracks.length !== 1) return { parentExists: false, ambiguous: tracks.length > 1, current: null };
     return resolveCollectionTarget(tracks[0].blocks, target.entityId, createCustomBlockSnapshot);
+  }
+  if (target.entityType === "gongche-symbol") {
+    const parentBlocks = project.gongcheAnnotations.filter((block) => block.id === target.trackId);
+    if (parentBlocks.length !== 1) {
+      return { parentExists: false, ambiguous: parentBlocks.length > 1, current: null };
+    }
+    return resolveCollectionTarget(parentBlocks[0].symbols, target.entityId, createGongcheSymbolSnapshot);
   }
 
   const pointTracks = [...project.builtinTracks, ...project.customTracks]
@@ -112,7 +141,10 @@ export function applyAnnotationLifecycleItems(
 ): ProjectData | null {
   const sentenceItems = filterLifecycleItems(items, "sentence");
   const characterItems = filterLifecycleItems(items, "character");
+  const banyanSectionItems = filterLifecycleItems(items, "banyan-section");
+  const banyanMarkItems = filterLifecycleItems(items, "banyan-mark");
   const gongcheItems = filterLifecycleItems(items, "gongche-block");
+  const gongcheSymbolGroups = groupScopedLifecycleItems(items, "gongche-symbol");
   const customGroups = groupScopedLifecycleItems(items, "custom-block");
   const pointGroups = groupScopedLifecycleItems(items, "attached-point");
 
@@ -122,10 +154,35 @@ export function applyAnnotationLifecycleItems(
   const characterAnnotations = characterItems.length === 0
     ? project.characterAnnotations
     : rebuildLifecycleCollection(project.characterAnnotations, characterItems, restoreCharacterSnapshot);
-  const gongcheAnnotations = gongcheItems.length === 0
+  const rebuiltGongcheBlocks = gongcheItems.length === 0
     ? project.gongcheAnnotations
     : rebuildLifecycleCollection(project.gongcheAnnotations, gongcheItems, restoreGongcheBlockSnapshot);
-  if (!subtitleLines || !characterAnnotations || !gongcheAnnotations) return null;
+  const banyanSections = banyanSectionItems.length === 0
+    ? project.banyanSections
+    : rebuildLifecycleCollection(project.banyanSections, banyanSectionItems, (state) =>
+        restoreBanyanSectionSnapshot(state.entity));
+  const banyanMarks = banyanMarkItems.length === 0
+    ? project.banyanMarks
+    : rebuildLifecycleCollection(project.banyanMarks, banyanMarkItems, (state) =>
+        restoreBanyanMarkSnapshot(state.entity));
+  if (!subtitleLines || !characterAnnotations || !rebuiltGongcheBlocks || !banyanSections || !banyanMarks) return null;
+
+  // symbol 的 trackId 是父 Gongche block id；先完成块级 lifecycle，再在最终父集合内重建嵌套符号。
+  const nextGongcheSymbols = new Map<string, GongcheSymbol[]>();
+  for (const [blockId, group] of gongcheSymbolGroups) {
+    const blocks = rebuiltGongcheBlocks.filter((block) => block.id === blockId);
+    if (blocks.length !== 1) return null;
+    const rebuilt = rebuildLifecycleCollection(blocks[0].symbols, group, (state) =>
+      restoreGongcheSymbolSnapshot(state.entity));
+    if (!rebuilt) return null;
+    nextGongcheSymbols.set(blockId, rebuilt);
+  }
+  const gongcheAnnotations = nextGongcheSymbols.size === 0
+    ? rebuiltGongcheBlocks
+    : rebuiltGongcheBlocks.map((block) => ({
+        ...block,
+        symbols: nextGongcheSymbols.get(block.id) ?? block.symbols,
+      }));
 
   const nextCustomBlocks = new Map<string, CustomTrack["blocks"]>();
   for (const [trackId, group] of customGroups) {
@@ -159,6 +216,8 @@ export function applyAnnotationLifecycleItems(
     subtitleLines,
     characterAnnotations,
     gongcheAnnotations,
+    banyanSections,
+    banyanMarks,
     builtinTracks: nextPointCollections.size === 0
       ? project.builtinTracks
       : project.builtinTracks.map((track) => ({
@@ -190,6 +249,16 @@ function createLifecycleItem(
       before: before as AnnotationLifecycleState<CharacterLifecycleSnapshot> | null,
       after: after as AnnotationLifecycleState<CharacterLifecycleSnapshot> | null };
   }
+  if (target.entityType === "banyan-section") {
+    return { entityType: "banyan-section", entityId: target.entityId,
+      before: before as AnnotationLifecycleState<BanyanSectionStateSnapshot> | null,
+      after: after as AnnotationLifecycleState<BanyanSectionStateSnapshot> | null };
+  }
+  if (target.entityType === "banyan-mark") {
+    return { entityType: "banyan-mark", entityId: target.entityId,
+      before: before as AnnotationLifecycleState<BanyanMarkStateSnapshot> | null,
+      after: after as AnnotationLifecycleState<BanyanMarkStateSnapshot> | null };
+  }
   if (!target.trackId) return null;
   if (target.entityType === "custom-block") {
     return { entityType: "custom-block", entityId: target.entityId, trackId: target.trackId,
@@ -200,6 +269,11 @@ function createLifecycleItem(
     return { entityType: "gongche-block", entityId: target.entityId, trackId: target.trackId,
       before: before as AnnotationLifecycleState<GongcheBlockLifecycleSnapshot> | null,
       after: after as AnnotationLifecycleState<GongcheBlockLifecycleSnapshot> | null };
+  }
+  if (target.entityType === "gongche-symbol") {
+    return { entityType: "gongche-symbol", entityId: target.entityId, trackId: target.trackId,
+      before: before as AnnotationLifecycleState<GongcheSymbolLifecycleSnapshot> | null,
+      after: after as AnnotationLifecycleState<GongcheSymbolLifecycleSnapshot> | null };
   }
   return { entityType: "attached-point", entityId: target.entityId, trackId: target.trackId,
     before: before as AnnotationLifecycleState<AttachedPointLifecycleSnapshot> | null,
@@ -277,16 +351,7 @@ function createGongcheBlockSnapshot(block: GongcheAnnotation): GongcheBlockLifec
     parentBlockId: block.parentBlockId,
     startTime: block.startTime,
     endTime: block.endTime,
-    symbols: block.symbols.map((symbol) => ({
-      id: symbol.id,
-      label: symbol.label,
-      notation: symbol.notation ?? null,
-      rawText: symbol.rawText ?? null,
-      parenthesized: symbol.parenthesized ?? false,
-      startTime: symbol.startTime,
-      endTime: symbol.endTime,
-      assetUrl: symbol.assetUrl ?? null,
-    })),
+    symbols: block.symbols.map(createGongcheSymbolSnapshot),
   };
 }
 
@@ -335,16 +400,7 @@ function restoreGongcheBlockSnapshot(
     parentBlockId: snapshot.parentBlockId,
     startTime: snapshot.startTime,
     endTime: snapshot.endTime,
-    symbols: snapshot.symbols.map((symbol) => ({
-      id: symbol.id,
-      label: symbol.label,
-      notation: symbol.notation ?? "",
-      rawText: symbol.rawText ?? symbol.label,
-      parenthesized: symbol.parenthesized,
-      startTime: symbol.startTime,
-      endTime: symbol.endTime,
-      assetUrl: symbol.assetUrl,
-    })),
+    symbols: snapshot.symbols.map(restoreGongcheSymbolSnapshot),
   };
 }
 
@@ -393,7 +449,7 @@ function filterLifecycleItems<TEntityType extends AnnotationLifecycleUpdateItem[
     item.entityType === entityType);
 }
 
-// 只有真正位于子集合中的实体按 trackId 分组；工尺块始终重建项目级 gongcheAnnotations 数组。
+// 只有真正位于子集合中的实体按 trackId 分组；符号以父工尺块为作用域，工尺块本身仍是项目级集合。
 function groupScopedLifecycleItems(
   items: readonly AnnotationLifecycleUpdateItem[],
   entityType: "custom-block",
@@ -404,14 +460,19 @@ function groupScopedLifecycleItems(
 ): Map<string, Extract<AnnotationLifecycleUpdateItem, { entityType: "attached-point" }>[]>;
 function groupScopedLifecycleItems(
   items: readonly AnnotationLifecycleUpdateItem[],
-  entityType: "custom-block" | "attached-point",
+  entityType: "gongche-symbol",
+): Map<string, Extract<AnnotationLifecycleUpdateItem, { entityType: "gongche-symbol" }>[]>;
+function groupScopedLifecycleItems(
+  items: readonly AnnotationLifecycleUpdateItem[],
+  entityType: "custom-block" | "attached-point" | "gongche-symbol",
 ) {
   type ScopedItem = Extract<AnnotationLifecycleUpdateItem, {
-    entityType: "custom-block" | "attached-point";
+    entityType: "custom-block" | "attached-point" | "gongche-symbol";
   }>;
   const groups = new Map<string, ScopedItem[]>();
   for (const item of items) {
-    if ((item.entityType !== "custom-block" && item.entityType !== "attached-point") ||
+    if ((item.entityType !== "custom-block" && item.entityType !== "attached-point" &&
+      item.entityType !== "gongche-symbol") ||
       item.entityType !== entityType) continue;
     const group = groups.get(item.trackId) ?? [];
     group.push(item);
@@ -431,11 +492,15 @@ function validateLifecycleReferences(project: ProjectData) {
   if (gongcheIds.size !== project.gongcheAnnotations.length) return false;
   const characterIds = new Set(project.characterAnnotations.map((character) => character.id));
   const customTracks = new Map(project.customTracks.map((track) => [track.id, track]));
-  return project.gongcheAnnotations.every((block) => {
+  const gongcheValid = project.gongcheAnnotations.every((block) => {
+    if (new Set(block.symbols.map((symbol) => symbol.id)).size !== block.symbols.length) return false;
     if (block.parentTrackId === "character-track") return characterIds.has(block.parentBlockId);
     const track = customTracks.get(block.parentTrackId);
     return Boolean(track?.blocks.some((candidate) => candidate.id === block.parentBlockId));
   });
+  if (!gongcheValid) return false;
+
+  return validateBanyanGongcheReferences(project);
 }
 
 type PointTrackOccurrence = { pointTrack: AttachedPointTrack };

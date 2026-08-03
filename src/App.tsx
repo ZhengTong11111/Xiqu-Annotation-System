@@ -94,6 +94,10 @@ import {
   type AnnotationLifecycleTarget,
 } from "./utils/annotationLifecycleCommand";
 import {
+  buildProjectAnnotationStateCommand,
+  type AnnotationStateTarget,
+} from "./utils/annotationStateCommand";
+import {
   buildProjectAnnotationTransactionCommand,
   type AnnotationTransactionPlan,
 } from "./utils/annotationTransactionCommand";
@@ -135,6 +139,7 @@ import {
   formatSentenceCharacterAlignmentSummary,
 } from "./utils/sentenceCharacterAlignment";
 import { generateBanyanMarksFromGongche, getBanyanSubtypeLabel } from "./utils/banyan";
+import { repairBanyanGongcheReferences } from "./utils/banyanReferenceIntegrity";
 import {
   PROJECT_FILE_VERSION,
   getManualVideoImportMessageLines,
@@ -1994,6 +1999,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
   }
 
+  // 板眼和工尺符号的耦合字段使用完整状态命令，不能拆成彼此独立的字符串 operation。
+  function commitProjectWithState(
+    baseProject: ProjectData,
+    nextProject: ProjectData,
+    targets: readonly AnnotationStateTarget[],
+  ) {
+    const commandEnvelope = buildProjectAnnotationStateCommand(baseProject, nextProject, targets);
+    commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
+  }
+
   // 句同步和工尺级联必须作为一个 operation 提交；builder 证明不了完整闭包时安全回退快照。
   function commitProjectWithTransaction(
     baseProject: ProjectData,
@@ -3130,7 +3145,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
 
-    const nextProject = trackId === "character-track"
+    const projectWithoutTrack = trackId === "character-track"
       ? {
           ...currentProject,
           builtinTracks: currentProject.builtinTracks.filter((track) => track.id !== trackId),
@@ -3145,6 +3160,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           actionAnnotations: currentProject.actionAnnotations.filter((item) => item.trackId !== trackId),
           gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
         };
+    // 整轨删除仍使用快照历史，但保存前必须清除板眼到已删除工尺块的强引用。
+    const nextProject = repairBanyanGongcheReferences(projectWithoutTrack).project;
 
     if (trackId === "character-track") {
       cancelCharacterTextEdit();
@@ -3373,25 +3390,58 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ...currentBlock,
       ...changes,
     }, parentBlock);
-    const nextProject = {
+    let nextProject = {
       ...currentProject,
       gongcheAnnotations: currentProject.gongcheAnnotations.map((item) =>
         item.id === id ? nextBlock : item,
       ),
     };
     if (recordHistory) {
-      const isTimingOnly = Object.keys(changes).every((key) =>
-        key === "startTime" || key === "endTime",
-      );
-      // 工尺块符号编辑仍是 snapshot；仅块时间变化进入首批 timing command。
-      const commandEnvelope = isTimingOnly
-        ? buildProjectTimelineTimingCommand(baseProject, nextProject, [{
-            entityType: "gongche-block",
-            entityId: id,
-            trackId: currentBlock.parentTrackId,
-          }])
-        : null;
-      commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
+      const baseBlock = baseProject.gongcheAnnotations.find((item) => item.id === id);
+      if (!baseBlock) {
+        commitProject(nextProject, baseProject);
+        return;
+      }
+      const baseSymbolIds = new Set(baseBlock.symbols.map((symbol) => symbol.id));
+      const nextSymbolIds = new Set(nextBlock.symbols.map((symbol) => symbol.id));
+      const deletedSymbols = baseBlock.symbols.filter((symbol) => !nextSymbolIds.has(symbol.id));
+      const createdSymbols = nextBlock.symbols.filter((symbol) => !baseSymbolIds.has(symbol.id));
+      const survivingSymbols = nextBlock.symbols.filter((symbol) => baseSymbolIds.has(symbol.id));
+
+      // 删除 symbol 时先修复板眼引用；state 子命令会在 lifecycle 删除前断开强引用。
+      const repaired = deletedSymbols.length > 0 ? repairBanyanGongcheReferences(nextProject) : null;
+      if (repaired) nextProject = repaired.project;
+      const lifecycleTargets: AnnotationLifecycleTarget[] = [
+        ...deletedSymbols.map((symbol) => ({
+          entityType: "gongche-symbol" as const,
+          entityId: symbol.id,
+          trackId: id,
+        })),
+        ...createdSymbols.map((symbol) => ({
+          entityType: "gongche-symbol" as const,
+          entityId: symbol.id,
+          trackId: id,
+        })),
+      ];
+      const stateTargets: AnnotationStateTarget[] = [
+        ...survivingSymbols.map((symbol) => ({
+          entityType: "gongche-symbol" as const,
+          entityId: symbol.id,
+          trackId: id,
+        })),
+        ...(repaired?.changedMarkIds ?? []).map((entityId) => ({
+          entityType: "banyan-mark" as const,
+          entityId,
+        })),
+      ];
+      const blockTimingChanged = baseBlock.startTime !== nextBlock.startTime || baseBlock.endTime !== nextBlock.endTime;
+      commitProjectWithTransaction(baseProject, nextProject, {
+        timingTargets: blockTimingChanged
+          ? [{ entityType: "gongche-block", entityId: id, trackId: currentBlock.parentTrackId }]
+          : [],
+        stateTargets,
+        lifecycleTargets,
+      });
     } else {
       applyProjectWithoutHistory(nextProject);
     }
@@ -3440,7 +3490,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
     if (importedBlocks.length > 0) {
       const importedKeys = new Set(importedBlocks.map((block) => getGongcheParentKey(block.parentTrackId, block.parentBlockId)));
-      commitProject({
+      const importedProject = {
         ...currentProject,
         gongcheAnnotations: [
           ...currentProject.gongcheAnnotations.filter((block) =>
@@ -3448,7 +3498,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           ),
           ...importedBlocks,
         ],
-      });
+      };
+      // 批量导入可能替换原符号 id；保留板眼记录并把已失效关联转为待复核孤立状态。
+      commitProject(repairBanyanGongcheReferences(importedProject).project);
     }
 
     return {
@@ -3460,8 +3512,35 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function generateBanyanFromGongche() {
-    const result = generateBanyanMarksFromGongche(projectRef.current);
-    commitProject(result.project);
+    const currentProject = projectRef.current;
+    const result = generateBanyanMarksFromGongche(currentProject);
+    const currentSectionIds = new Set(currentProject.banyanSections.map((section) => section.id));
+    const currentMarkIds = new Set(currentProject.banyanMarks.map((mark) => mark.id));
+    const nextSectionIds = new Set(result.project.banyanSections.map((section) => section.id));
+    const nextMarkIds = new Set(result.project.banyanMarks.map((mark) => mark.id));
+    const lifecycleTargets: AnnotationLifecycleTarget[] = [
+      ...currentProject.banyanSections
+        .filter((section) => !nextSectionIds.has(section.id))
+        .map((section) => ({ entityType: "banyan-section" as const, entityId: section.id })),
+      ...result.project.banyanSections
+        .filter((section) => !currentSectionIds.has(section.id))
+        .map((section) => ({ entityType: "banyan-section" as const, entityId: section.id })),
+      ...currentProject.banyanMarks
+        .filter((mark) => !nextMarkIds.has(mark.id))
+        .map((mark) => ({ entityType: "banyan-mark" as const, entityId: mark.id })),
+      ...result.project.banyanMarks
+        .filter((mark) => !currentMarkIds.has(mark.id))
+        .map((mark) => ({ entityType: "banyan-mark" as const, entityId: mark.id })),
+    ];
+    const stateTargets: AnnotationStateTarget[] = [
+      ...result.project.banyanSections
+        .filter((section) => currentSectionIds.has(section.id))
+        .map((section) => ({ entityType: "banyan-section" as const, entityId: section.id })),
+      ...result.project.banyanMarks
+        .filter((mark) => currentMarkIds.has(mark.id))
+        .map((mark) => ({ entityType: "banyan-mark" as const, entityId: mark.id })),
+    ];
+    commitProjectWithTransaction(currentProject, result.project, { stateTargets, lifecycleTargets });
     return result.stats;
   }
 
@@ -3495,7 +3574,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             entityId: id,
           }])
         : null;
-      commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
+      if (commandEnvelope) commitProject(nextProject, baseProject, { commandEnvelope });
+      else commitProjectWithState(baseProject, nextProject, [{ entityType: "banyan-mark", entityId: id }]);
     } else {
       applyProjectWithoutHistory(nextProject);
     }
@@ -3544,12 +3624,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       confidence: "manual",
       manualOffset: 0,
       durationHint: null,
+      orphaned: false,
       comment: "",
     };
-    commitProject({
+    const nextProject = {
       ...currentProject,
       banyanSections: section ? currentProject.banyanSections : [...currentProject.banyanSections, nextSection],
       banyanMarks: [...currentProject.banyanMarks, nextMark].sort((left, right) => left.time - right.time),
+    };
+    commitProjectWithTransaction(currentProject, nextProject, {
+      lifecycleTargets: [
+        ...(section ? [] : [{ entityType: "banyan-section" as const, entityId: nextSection.id }]),
+        { entityType: "banyan-mark", entityId: nextMark.id },
+      ],
     });
     applySelection({ type: "banyan-mark", id: nextMark.id });
   }
@@ -3831,7 +3918,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           .map((item) => item.lineId),
       );
 
-      const nextProject = syncSubtitleLines(
+      let nextProject = syncSubtitleLines(
         {
           ...currentProject,
           characterAnnotations: currentProject.characterAnnotations.filter((item) => !characterIds.has(item.id)),
@@ -3858,6 +3945,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         },
         Array.from(affectedLineIds),
       );
+      const repairedBanyan = repairBanyanGongcheReferences(nextProject);
+      nextProject = repairedBanyan.project;
 
       if (editingCharacterId && characterIds.has(editingCharacterId)) {
         cancelCharacterTextEdit();
@@ -3883,6 +3972,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           gongcheParentKeys.has(getGongcheParentKey(item.parentTrackId, item.parentBlockId))
             ? [{ entityType: "gongche-block", entityId: item.id, trackId: item.parentTrackId }]
             : []),
+        ...Array.from(banyanMarkIds, (entityId): AnnotationLifecycleTarget => ({
+          entityType: "banyan-mark",
+          entityId,
+        })),
       ];
       const deletedLineIds = Array.from(affectedLineIds).filter((lineId) =>
         !nextProject.subtitleLines.some((line) => line.id === lineId));
@@ -3900,6 +3993,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           field: "text" as const,
         })),
         timingTargets: survivingLineIds.map((entityId) => ({ entityType: "sentence" as const, entityId })),
+        stateTargets: repairedBanyan.changedMarkIds.map((entityId) => ({
+          entityType: "banyan-mark" as const,
+          entityId,
+        })),
         lifecycleTargets,
       });
       applySelection(null);
@@ -3914,7 +4011,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (!currentCharacter) {
         return;
       }
-      const nextProject = syncSubtitleLine({
+      let nextProject = syncSubtitleLine({
         ...currentProject,
         characterAnnotations: currentProject.characterAnnotations.filter((item) => item.id !== selectedItem.id),
         gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) =>
@@ -3923,6 +4020,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       }, currentCharacter.lineId);
       const removedGongche = currentProject.gongcheAnnotations.filter((item) =>
         item.parentTrackId === "character-track" && item.parentBlockId === selectedItem.id);
+      const repairedBanyan = repairBanyanGongcheReferences(nextProject);
+      nextProject = repairedBanyan.project;
       const lineStillExists = nextProject.subtitleLines.some((line) => line.id === currentCharacter.lineId);
       commitProjectWithTransaction(currentProject, nextProject, {
         contentTargets: lineStillExists
@@ -3931,6 +4030,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         timingTargets: lineStillExists
           ? [{ entityType: "sentence", entityId: currentCharacter.lineId }]
           : [],
+        stateTargets: repairedBanyan.changedMarkIds.map((entityId) => ({
+          entityType: "banyan-mark" as const,
+          entityId,
+        })),
         lifecycleTargets: [
           { entityType: "character", entityId: selectedItem.id },
           ...(lineStillExists ? [] : [{ entityType: "sentence" as const, entityId: currentCharacter.lineId }]),
@@ -3954,7 +4057,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       applySelection(null);
     }
     if (selectedItem.type === "custom-block") {
-      const nextProject: ProjectData = {
+      let nextProject: ProjectData = {
         ...currentProject,
         gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) =>
           item.parentTrackId !== selectedItem.trackId || item.parentBlockId !== selectedItem.id,
@@ -3970,6 +4073,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       };
       const removedGongche = currentProject.gongcheAnnotations.filter((item) =>
         item.parentTrackId === selectedItem.trackId && item.parentBlockId === selectedItem.id);
+      const repairedBanyan = repairBanyanGongcheReferences(nextProject);
+      nextProject = repairedBanyan.project;
       const lifecycleTargets: AnnotationLifecycleTarget[] = [
         { entityType: "custom-block", entityId: selectedItem.id, trackId: selectedItem.trackId },
         ...removedGongche.map((item): AnnotationLifecycleTarget => ({
@@ -3979,7 +4084,13 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         })),
       ];
       if (removedGongche.length > 0) {
-        commitProjectWithTransaction(currentProject, nextProject, { lifecycleTargets });
+        commitProjectWithTransaction(currentProject, nextProject, {
+          stateTargets: repairedBanyan.changedMarkIds.map((entityId) => ({
+            entityType: "banyan-mark" as const,
+            entityId,
+          })),
+          lifecycleTargets,
+        });
       } else {
         commitProjectWithLifecycle(currentProject, nextProject, lifecycleTargets);
       }
@@ -3994,15 +4105,23 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (selectedItem.type === "gongche-block") {
       const currentBlock = currentProject.gongcheAnnotations.find((item) => item.id === selectedItem.id);
       if (!currentBlock) return;
-      const nextProject = {
+      let nextProject = {
         ...currentProject,
         gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.id !== selectedItem.id),
       };
-      commitProjectWithLifecycle(currentProject, nextProject, [{
-        entityType: "gongche-block",
-        entityId: selectedItem.id,
-        trackId: currentBlock.parentTrackId,
-      }]);
+      const repairedBanyan = repairBanyanGongcheReferences(nextProject);
+      nextProject = repairedBanyan.project;
+      commitProjectWithTransaction(currentProject, nextProject, {
+        stateTargets: repairedBanyan.changedMarkIds.map((entityId) => ({
+          entityType: "banyan-mark" as const,
+          entityId,
+        })),
+        lifecycleTargets: [{
+          entityType: "gongche-block",
+          entityId: selectedItem.id,
+          trackId: currentBlock.parentTrackId,
+        }],
+      });
       applySelection(null);
     }
     if (selectedItem.type === "attached-point") {
@@ -4023,10 +4142,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       applySelection(null);
     }
     if (selectedItem.type === "banyan-mark") {
-      commitProject({
+      const nextProject = {
         ...currentProject,
         banyanMarks: currentProject.banyanMarks.filter((item) => item.id !== selectedItem.id),
-      });
+      };
+      commitProjectWithLifecycle(currentProject, nextProject, [{
+        entityType: "banyan-mark",
+        entityId: selectedItem.id,
+      }]);
       applySelection({ type: "banyan-track" });
     }
     if (selectedItem.type === "attached-point-track") {
@@ -4616,12 +4739,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!confirmed) {
       return;
     }
-    const nextProject = {
+    const projectWithoutTrack = {
       ...currentProject,
       activeTrackOrder: currentProject.activeTrackOrder.filter((id) => id !== trackId),
       customTracks: currentProject.customTracks.filter((item) => item.id !== trackId) as CustomTrack[],
       gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
     };
+    // 自定义轨删除会连带删除其工尺附属块，因此同样执行统一引用修复。
+    const nextProject = repairBanyanGongcheReferences(projectWithoutTrack).project;
     if (editingCustomTextBlock?.trackId === trackId) {
       cancelCustomTextEdit();
     }

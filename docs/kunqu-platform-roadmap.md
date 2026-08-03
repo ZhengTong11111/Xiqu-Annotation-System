@@ -28,7 +28,9 @@ opaque 续读游标和有界 operation feed。R5a3a 已把保存声明的 operat
 绑定，并建立独立 committed feed 与快照 cursor；R5a3b 已完成 clean-only HTTP catch-up、原子领域命令
 重放与权威快照降级。R5a4a 已完成逐字/句/动作/自定义块/附属点的稳定内容命令、严格全项目差异门禁、
 草稿往返和混合 timing/content 追赶。R5a4b1 已完成自定义块/附属点叶实体创建删除；R5a4b2 已完成逐字/
-句/工尺块生命周期、句同步与父块工尺级联原子事务；下一步 R5a4b3 处理工尺符号内部编辑和板眼复合实体；
+句/工尺块生命周期、句同步与父块工尺级联原子事务；R5a4b3 已完成工尺符号稳定身份、内部增删改、板眼
+复合状态、删除断链和 state/lifecycle 原子事务；下一步进入 R5a4c，先为轨道结构、递归分叉、批量导入
+和大范围修复确定显式锁与受控事务边界；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -438,9 +440,12 @@ opaque 续读游标和有界 operation feed。R5a3a 已把保存声明的 operat
     `annotation.transaction.apply`，逆序 inverse、局部顺序 apply 与完整 next 门禁把句文本/边界同步、最后
     一个字删除句、逐字/自定义父块工尺级联封装为一个 operation/revision。草稿、API 与 clean catch-up 已
     复用通用 parser/dispatcher；服务端仍只记录命令，不直接 apply payload。
-  - R5a4b3：工尺符号内部增删改、板眼标记/区段等复合实体，先固定工尺符号与板眼引用的删除/孤儿策略，
-    再开放命令；不得把它们伪装成整个 Gongche block 的删除重建。
-  - 轨道结构、递归分叉、批量导入和大范围修复仍单独设计锁/受控事务命令，不纳入普通实体 CRUD。
+  - R5a4b3 已完成：新增严格 `annotation.items.state.update`，复用完整快照覆盖 Gongche symbol、Banyan mark/
+    section；lifecycle 同步扩展三类实体。工尺快速编辑按索引保留稳定 symbol id；删除 symbol/block 时保留
+    板眼研究记录、清除失效链接并标记 orphaned，再由 state → lifecycle transaction 原子提交。所有 after
+    均通过统一板眼/工尺引用门禁，草稿、API 与 clean catch-up 已可验证和重放 state。
+- R5a4c 待推进：轨道结构、递归分叉、批量导入和大范围修复不纳入普通实体 CRUD，先设计资源级/轨道级
+  显式锁、受控事务、操作预算和冲突恢复，再选择首个真实写路径实现。
 - WebSocket 会话、presence、光标/选区与连接状态。
 - 服务端 operation 排序、确认、重放和权限复核。
 - 先针对块级编辑实现协作，再评估 OT/CRDT；不直接合并任意完整快照。

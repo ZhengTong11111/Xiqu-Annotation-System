@@ -1,6 +1,7 @@
 import {
   ANNOTATION_CONTENT_UPDATE_COMMAND,
   ANNOTATION_LIFECYCLE_UPDATE_COMMAND,
+  ANNOTATION_STATE_UPDATE_COMMAND,
   ANNOTATION_TRANSACTION_APPLY_COMMAND,
   parseAnnotationCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
@@ -8,6 +9,7 @@ import {
 import type { ProjectData } from "../types";
 import { applyAnnotationContentCommandToProject } from "./annotationContentCommandApply";
 import { applyAnnotationLifecycleCommandToProject } from "./annotationLifecycleCommandApply";
+import { applyAnnotationStateCommandToProject } from "./annotationStateCommandApply";
 import { applyAnnotationTransactionCommandToProject } from "./annotationTransactionCommandApply";
 import { applyTimelineTimingCommandToProject } from "./timelineTimingCommandApply";
 
@@ -23,6 +25,9 @@ export function applyAnnotationCommandToProject(project: ProjectData, value: unk
   }
   if (envelope.command.type === ANNOTATION_LIFECYCLE_UPDATE_COMMAND) {
     return applyAnnotationLifecycleCommandToProject(project, envelope);
+  }
+  if (envelope.command.type === ANNOTATION_STATE_UPDATE_COMMAND) {
+    return applyAnnotationStateCommandToProject(project, envelope);
   }
   if (envelope.command.type === ANNOTATION_TRANSACTION_APPLY_COMMAND) {
     return applyAnnotationTransactionCommandToProject(project, envelope);

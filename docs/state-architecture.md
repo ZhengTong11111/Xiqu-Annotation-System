@@ -108,6 +108,9 @@ R5a4b1 再加入 `annotation.items.lifecycle.update`，首批覆盖 custom-block
 R5a4b2 扩到 sentence、character 和完整 Gongche block，并用 `annotation.transaction.apply` 原子组合句同步
 和父子级联。旧 `actionAnnotations` 是导入兼容字段，不再扩展新协议。
 
+R5a4b3 新增 `annotation.items.state.update`，用于稳定实体仍存在但多个耦合字段需要整体替换的 Gongche
+symbol、Banyan mark 和 Banyan section；同轮 lifecycle 也支持这三类实体的创建删除。
+
 命令由本次 undo 的真实 `baseProject` 和最终 `nextProject` 提取。连续拖动仍只在 pointer-up 形成一条
 operation；若目标缺失、id 不满足协议、超过 500 项，或同一次编辑还修改了文本/类型/结构等合同外字段，
 调用点安全回退到 legacy `project.commit`，不能记录半个事实或让交互抛错。
@@ -224,19 +227,20 @@ shared parser 严格限制 custom-block 与 attached-point 两类当前实体，
 `buildProjectAnnotationLifecycleCommand()` 与内容 builder 一样，会用 replay 的同一写入器重建完整 next 并
 递归比较整个 ProjectData。自定义块删除若还级联移除工尺块、混合多选还删除字符/板眼，或存在其他合同外
 变化，builder 返回 null 并保留 legacy snapshot。App 当前接入自定义文字/动作块创建、无工尺级联删除、
-附属点创建/删除和只含这些目标的多选删除。草稿、API replayability 与 clean catch-up 通过通用 parser/
-dispatcher 接受 timing/content/lifecycle 混合 revision 链。
+附属点创建/删除和只含这些目标的多选删除。后续 R5a4b2/R5a4b3 又扩展了句、逐字、工尺和板眼实体；
+草稿、API replayability 与 clean catch-up 现在通过通用 parser/dispatcher 接受
+timing/content/state/lifecycle/transaction 混合 revision 链。
 
 旧 `actionAnnotations` 已在导入归一化时迁移为 custom action block 并清空。本阶段没有为了“覆盖动作创建”
 给该兼容数组继续增加生命周期协议。下一阶段应处理逐字/句与自定义块工尺依赖闭包，而不是恢复旧模型。
 
-后续领域命令继续处理工尺符号内部编辑、板眼复合实体和必要的轨道元数据变更。
+后续领域命令继续处理必要的轨道元数据、递归分叉和受控批量变更。
 
 批量导入、轨道结构和递归分叉变更可能需要更高层事务命令，不能强拆成没有原子边界的小操作。
 
 ### 4.7 R5a4b2 逐字、句与工尺依赖事务
 
-`annotation.transaction.apply` 只允许顺序包含 timing/content/lifecycle 三种已严格校验的叶命令，禁止递归
+`annotation.transaction.apply` 只允许顺序包含 timing/content/state/lifecycle 四种已严格校验的叶命令，禁止递归
 事务、空事务和超出总实体预算的嵌套负载。inverse 逆序排列子命令并逐一反向；ProjectData adapter 只在
 局部变量上顺序执行，任一子命令 invalid 或 before 冲突便丢弃局部结果。因此一个 committed revision 不会
 暴露“逐字已删除但句或工尺尚未同步”的中间态。
@@ -250,6 +254,22 @@ App 已迁移已有句加字、新句首字、删字同步句、删末字同步�
 块创建删除。transaction builder 仍用 replay adapter 从 base 重建完整 next；混合板眼、旧 action、分句重排
 或其他未声明变化时返回 null 并保留 legacy snapshot。草稿、API replayability 和 clean catch-up 都把事务
 作为一个 operation/revision 事实，服务端仍不直接 apply 到权威 payload。
+
+### 4.8 R5a4b3 工尺符号与板眼复合状态
+
+`annotation.items.state.update` 保存同一稳定实体的完整 before/after 快照，不承担创建、删除、换父集合或
+集合重排。Gongche symbol 以父 Gongche block id 作为协议 scope；Banyan mark/section 位于项目级集合。
+shared parser 严格验证字段、枚举、时间、链接数组、no-op、重复目标和总预算，target key 使用 JSON 元组，
+避免允许冒号的合法 id 在字符串拼接时碰撞。
+
+state 与 lifecycle 共用规范快照转换和同一板眼/工尺引用门禁。任何 mark.sectionId、linked Gongche block 或
+symbol 指向最终项目外部时，ProjectData adapter 返回 `result_invalid`，不发布半成品。删除 Gongche block/
+symbol 不删除研究记录，而是清除失效链接并设置 orphaned；正向事务按 state → lifecycle 先断链后删除，
+inverse 逆序先恢复实体再恢复链接。
+
+Inspector 快速输入按索引复用已有 symbol id，仅新增尾项生成新 id；添加/删除及时间重分配保留未删除实体
+的元数据。整段工尺导入、整轨删除等仍可使用 legacy 快照，但提交前必须经过同一引用修复。自动板眼生成
+只有在状态/生命周期事务能重建完整 next 时才写领域命令，否则安全回退快照。
 
 ## 5. 浏览器草稿与离线恢复边界
 

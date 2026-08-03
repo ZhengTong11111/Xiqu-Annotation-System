@@ -3,11 +3,14 @@ import test from "node:test";
 import {
   ANNOTATION_CONTENT_UPDATE_COMMAND,
   ANNOTATION_LIFECYCLE_UPDATE_COMMAND,
+  ANNOTATION_STATE_UPDATE_COMMAND,
   ANNOTATION_TRANSACTION_APPLY_COMMAND,
   assessAnnotationContentExecution,
   assessAnnotationLifecycleExecution,
+  assessAnnotationStateExecution,
   buildAnnotationContentUpdateEnvelope,
   buildAnnotationLifecycleUpdateEnvelope,
+  buildAnnotationStateUpdateEnvelope,
   buildAnnotationTransactionEnvelope,
   MAX_ANNOTATION_CONTENT_LENGTH,
   ANNOTATION_COMMAND_ENVELOPE_VERSION,
@@ -20,6 +23,19 @@ import {
   parseAnnotationTransactionCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
 } from "../dist/index.js";
+
+function gongcheSymbolState(id, label, startTime = 1, endTime = 2) {
+  return {
+    id,
+    label,
+    notation: null,
+    rawText: label,
+    parenthesized: false,
+    startTime,
+    endTime,
+    assetUrl: null,
+  };
+}
 
 test("原子事务严格组合叶命令并按逆序生成 inverse", () => {
   const content = buildAnnotationContentUpdateEnvelope([{
@@ -101,6 +117,81 @@ test("事务拒绝递归、额外字段和超出总实体上限的输入", () =>
       commands: [oversizedLeaf, leaf.command],
     },
   }), null);
+});
+
+test("完整状态命令严格更新复合叶实体并可确定性反向", () => {
+  const before = gongcheSymbolState("symbol:one", "上");
+  const after = { ...before, label: "尺", rawText: "尺4/", notation: "4/" };
+  const envelope = buildAnnotationStateUpdateEnvelope([{
+    entityType: "gongche-symbol",
+    entityId: "symbol:one",
+    trackId: "block:one",
+    before,
+    after,
+  }]);
+  assert.ok(envelope);
+  assert.equal(envelope.command.type, ANNOTATION_STATE_UPDATE_COMMAND);
+  assert.equal(isValidAnnotationOperationPayload(ANNOTATION_STATE_UPDATE_COMMAND, envelope), true);
+  assert.equal(assessAnnotationStateExecution(envelope, [{
+    entityType: "gongche-symbol",
+    entityId: "symbol:one",
+    trackId: "block:one",
+    current: before,
+  }]).status, "ready");
+  assert.deepEqual(invertAnnotationCommandEnvelope(invertAnnotationCommandEnvelope(envelope)), envelope);
+
+  const blocked = assessAnnotationStateExecution(envelope, [{
+    entityType: "gongche-symbol",
+    entityId: "symbol:one",
+    trackId: "block:one",
+    current: { ...before, label: "已被他人修改" },
+  }]);
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.status === "blocked" ? blocked.issues[0]?.code : null, "before_mismatch");
+});
+
+test("状态目标使用结构化键，含冒号的父 id 与实体 id 不会误判重复", () => {
+  const first = gongcheSymbolState("c", "上");
+  const second = gongcheSymbolState("b:c", "尺");
+  const envelope = buildAnnotationStateUpdateEnvelope([
+    {
+      entityType: "gongche-symbol",
+      entityId: "c",
+      trackId: "a:b",
+      before: first,
+      after: { ...first, label: "工", rawText: "工" },
+    },
+    {
+      entityType: "gongche-symbol",
+      entityId: "b:c",
+      trackId: "a",
+      before: second,
+      after: { ...second, label: "合", rawText: "合" },
+    },
+  ]);
+  assert.ok(envelope);
+  assert.equal(envelope.command.items.length, 2);
+});
+
+test("状态命令拒绝 no-op、快照 id 漂移与宽松字段", () => {
+  const before = gongcheSymbolState("symbol-state", "上");
+  const valid = {
+    entityType: "gongche-symbol",
+    entityId: "symbol-state",
+    trackId: "block-state",
+    before,
+    after: { ...before, label: "尺", rawText: "尺" },
+  };
+  assert.ok(buildAnnotationStateUpdateEnvelope([valid]));
+  assert.equal(buildAnnotationStateUpdateEnvelope([{ ...valid, after: before }]), null);
+  assert.equal(buildAnnotationStateUpdateEnvelope([{
+    ...valid,
+    after: { ...valid.after, id: "different-id" },
+  }]), null);
+  assert.equal(buildAnnotationStateUpdateEnvelope([{
+    ...valid,
+    after: { ...valid.after, extra: true },
+  }]), null);
 });
 
 // 生命周期夹具显式携带集合位置，测试创建、删除和 inverse 是否保持同一稳定顺序事实。
@@ -347,7 +438,7 @@ test("领域命令前置条件返回可解释的 all-or-nothing 结果", () => {
   assert.equal(blocked.status, "blocked");
   assert.deepEqual(blocked.status === "blocked" ? blocked.issues : [], [{
     code: "target_missing",
-    targetKey: "banyan-mark::mark-missing",
+    targetKey: '["banyan-mark",null,"mark-missing"]',
     expected: { startTime: 4, endTime: 4 },
   }]);
 
@@ -437,7 +528,7 @@ test("领域命令解析严格拒绝坏输入", () => {
   }
 });
 
-// API allowlist 保留四类渐进迁移操作，但未知 action 与 action/envelope 不一致必须拒绝。
+// API allowlist 保留渐进迁移操作，但未知 action 与 action/envelope 不一致必须拒绝。
 test("operation action 与领域 envelope 必须一致", () => {
   const envelope = buildTimelineTimingUpdateEnvelope([{
     entityType: "action",

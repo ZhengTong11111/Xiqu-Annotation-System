@@ -217,3 +217,50 @@ test("事务任一子命令前置条件失败时不泄漏前面步骤", () => {
   assert.equal(result.status, "blocked");
   assert.deepEqual(conflicted, snapshot);
 });
+
+test("删除被板眼引用的工尺符号时先原子断链再执行生命周期删除", () => {
+  const base = createProject();
+  base.banyanMarks = [{
+    id: "transaction-mark",
+    sectionId: null,
+    time: 1,
+    estimatedTime: 1,
+    sourceSymbol: "1",
+    role: "ban",
+    subtype: "mainBan",
+    segment: "main",
+    beatIndex: null,
+    cycleIndex: null,
+    attachment: "on_note",
+    linkedGongcheAnnotationId: "gongche-a",
+    linkedGongcheSymbolId: "symbol-a",
+    linkedGongcheSymbolIds: ["symbol-a"],
+    confidence: "auto",
+    durationHint: null,
+    orphaned: false,
+  }];
+  const next = structuredClone(base);
+  next.gongcheAnnotations[0].symbols = [];
+  next.banyanMarks[0] = {
+    ...next.banyanMarks[0],
+    linkedGongcheSymbolId: null,
+    linkedGongcheSymbolIds: [],
+    orphaned: true,
+  };
+  const envelope = buildProjectAnnotationTransactionCommand(base, next, {
+    stateTargets: [{ entityType: "banyan-mark", entityId: "transaction-mark" }],
+    lifecycleTargets: [{ entityType: "gongche-symbol", entityId: "symbol-a", trackId: "gongche-a" }],
+  });
+  assert.ok(envelope);
+  assert.deepEqual(envelope.command.commands.map((command) => command.type), [
+    "annotation.items.state.update",
+    "annotation.items.lifecycle.update",
+  ]);
+  const applied = applyAnnotationTransactionCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status !== "applied") return;
+  assert.deepEqual(applied.project, next);
+  const restored = applyAnnotationTransactionCommandToProject(applied.project, invertAnnotationCommandEnvelope(envelope));
+  assert.equal(restored.status, "applied");
+  if (restored.status === "applied") assert.deepEqual(restored.project, base);
+});

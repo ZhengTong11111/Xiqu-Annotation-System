@@ -273,3 +273,87 @@ test("工尺块生命周期保留完整符号并验证父块引用", () => {
   assert.equal(restored.status, "applied");
   if (restored.status === "applied") assert.deepEqual(restored.project, base);
 });
+
+test("工尺符号可在既有块内独立创建删除并保持集合位置", () => {
+  const base = createProject();
+  base.gongcheAnnotations.push({
+    id: "gongche-symbol-parent",
+    parentTrackId: "lifecycle-action-track",
+    parentBlockId: "block-a",
+    startTime: 1,
+    endTime: 2,
+    symbols: [{
+      id: "symbol-first",
+      label: "上",
+      notation: "",
+      rawText: "上",
+      parenthesized: false,
+      startTime: 1,
+      endTime: 1.5,
+      assetUrl: null,
+    }],
+  });
+  const next = structuredClone(base);
+  next.gongcheAnnotations[0].symbols.push({
+    id: "symbol-second",
+    label: "尺",
+    notation: "2/",
+    rawText: "尺2/",
+    parenthesized: false,
+    startTime: 1.5,
+    endTime: 2,
+    assetUrl: null,
+  });
+  const envelope = buildProjectAnnotationLifecycleCommand(base, next, [{
+    entityType: "gongche-symbol",
+    entityId: "symbol-second",
+    trackId: "gongche-symbol-parent",
+  }]);
+  assert.ok(envelope);
+  const applied = applyAnnotationLifecycleCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status !== "applied") return;
+  assert.deepEqual(applied.project, next);
+  const restored = applyAnnotationLifecycleCommandToProject(applied.project, invertAnnotationCommandEnvelope(envelope));
+  assert.equal(restored.status, "applied");
+  if (restored.status === "applied") assert.deepEqual(restored.project, base);
+});
+
+test("板眼区段与引用它的板眼可在同一生命周期批次创建", () => {
+  const base = createProject();
+  const next = structuredClone(base);
+  next.banyanSections.push({
+    id: "section-created",
+    name: "新板眼段",
+    startTime: 6,
+    endTime: 8,
+    cycleType: "yi_ban_yi_yan",
+    freeRhythm: false,
+  });
+  next.banyanMarks.push({
+    id: "mark-created",
+    sectionId: "section-created",
+    time: 6,
+    estimatedTime: 6,
+    sourceSymbol: "",
+    role: "ban",
+    subtype: "mainBan",
+    segment: "main",
+    beatIndex: null,
+    cycleIndex: null,
+    attachment: "unknown",
+    linkedGongcheAnnotationId: null,
+    linkedGongcheSymbolId: null,
+    confidence: "manual",
+    durationHint: null,
+    orphaned: false,
+  });
+  const envelope = buildProjectAnnotationLifecycleCommand(base, next, [
+    { entityType: "banyan-section", entityId: "section-created" },
+    { entityType: "banyan-mark", entityId: "mark-created" },
+  ]);
+  assert.ok(envelope);
+  const applied = applyAnnotationLifecycleCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status === "applied") assert.deepEqual(applied.project, next);
+});
