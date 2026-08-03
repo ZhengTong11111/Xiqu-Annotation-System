@@ -3175,12 +3175,9 @@ test("平台资源 API 集成测试", async (suite) => {
             command: {
               type: "annotation.track.structure.transaction.apply",
               commands: [{
-                type: "annotation.track.structure.update",
-                items: [{
-                  trackId: "custom-track-one",
-                  before: structureBefore,
-                  after: { ...structureBefore, name: "结构事务改名" },
-                }],
+                type: "annotation.track.order.update",
+                before: ["character-track", "custom-track-one"],
+                after: ["custom-track-one", "character-track"],
               }],
             },
           },
@@ -3274,12 +3271,9 @@ test("平台资源 API 集成测试", async (suite) => {
             command: {
               type: "annotation.track.structure.transaction.apply",
               commands: [{
-                type: "annotation.track.structure.update",
-                items: [{
-                  trackId: "custom-track-one",
-                  before: structureBefore,
-                  after: { ...structureBefore, name: "结构事务改名" },
-                }],
+                type: "annotation.track.order.update",
+                before: ["character-track", "custom-track-one"],
+                after: ["custom-track-one", "character-track"],
               }],
             },
           },

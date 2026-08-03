@@ -29,11 +29,20 @@ import {
   type CustomTrackLifecycleTarget,
 } from "./trackStructureLifecycleCommand";
 import { applyTrackStructureTransactionCommandToProject } from "./trackStructureTransactionCommandApply";
+import {
+  buildProjectAttachedPointTrackStructureEnvelope,
+  buildProjectBuiltinTrackStructureEnvelope,
+  buildProjectTrackOrderEnvelope,
+  type AttachedPointTrackStructureTarget,
+} from "./trackConfigurationCommand";
 
 export type TrackStructureTransactionPlan = {
   customTrackLifecycleTargets?: readonly CustomTrackLifecycleTarget[];
   attachedPointTrackLifecycleTargets?: readonly AttachedPointTrackLifecycleTarget[];
   customTrackStructureIds?: readonly string[];
+  includeTrackOrder?: boolean;
+  builtinTrackStructureIds?: readonly string[];
+  attachedPointTrackStructureTargets?: readonly AttachedPointTrackStructureTarget[];
   contentTargets?: readonly AnnotationContentTarget[];
   lifecycleTargets?: readonly AnnotationLifecycleTarget[];
   stateTargets?: readonly AnnotationStateTarget[];
@@ -94,6 +103,31 @@ export function buildProjectTrackStructureTransactionCommand(
       nextProject,
       plan.customTrackStructureIds ?? [],
     );
+    if (!envelope) return null;
+    commands.push(envelope);
+  }
+
+  // 稳定配置 leaf 不承担生命周期；它们与内容级联并列进入同一结构事务，再由完整 next 门禁防漏报。
+  if ((plan.builtinTrackStructureIds?.length ?? 0) > 0) {
+    const envelope = buildProjectBuiltinTrackStructureEnvelope(
+      baseProject,
+      nextProject,
+      plan.builtinTrackStructureIds ?? [],
+    );
+    if (!envelope) return null;
+    commands.push(envelope);
+  }
+  if ((plan.attachedPointTrackStructureTargets?.length ?? 0) > 0) {
+    const envelope = buildProjectAttachedPointTrackStructureEnvelope(
+      baseProject,
+      nextProject,
+      plan.attachedPointTrackStructureTargets ?? [],
+    );
+    if (!envelope) return null;
+    commands.push(envelope);
+  }
+  if (plan.includeTrackOrder) {
+    const envelope = buildProjectTrackOrderEnvelope(baseProject, nextProject);
     if (!envelope) return null;
     commands.push(envelope);
   }

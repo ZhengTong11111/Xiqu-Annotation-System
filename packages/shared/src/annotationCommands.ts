@@ -18,6 +18,21 @@ import {
   type CustomTrackLifecycleCommandEnvelope,
   type TrackStructureLifecycleChildCommand,
 } from "./trackStructureLifecycleCommands.js";
+import {
+  ATTACHED_POINT_TRACK_STRUCTURE_UPDATE_COMMAND,
+  BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND,
+  getTrackConfigurationCommandCost,
+  invertTrackConfigurationCommandEnvelope,
+  parseAttachedPointTrackStructureCommandEnvelope,
+  parseBuiltinTrackStructureCommandEnvelope,
+  parseTrackOrderCommandEnvelope,
+  TRACK_ORDER_UPDATE_COMMAND,
+  type AttachedPointTrackStructureCommandEnvelope,
+  type BuiltinTrackStructureCommandEnvelope,
+  type TrackConfigurationChildCommand,
+  type TrackConfigurationCommandEnvelope,
+  type TrackOrderCommandEnvelope,
+} from "./trackConfigurationCommands.js";
 
 // 本模块定义前后端共享的首版标注领域命令；任何网络或 IndexedDB unknown 输入都必须从这里校验。
 export const ANNOTATION_COMMAND_ENVELOPE_VERSION = 1 as const;
@@ -86,7 +101,7 @@ export type TimelineItemsTimingUpdateCommand = {
 // 内容字段按实体类型固定，避免客户端用任意 field 字符串改写未纳入协议的结构数据。
 export type AnnotationContentUpdateItem =
   | ContentUpdateItem<"sentence", "text">
-  | ContentUpdateItem<"character", "char">
+  | ContentUpdateItem<"character", "char" | "singingStyle">
   | ContentUpdateItem<"action", "label", string>
   | ContentUpdateItem<"custom-block", "text" | "type", string>
   | ContentUpdateItem<"attached-point", "label", string>;
@@ -297,7 +312,8 @@ export type AnnotationTransactionApplyCommand = {
 export type TrackStructureTransactionChildCommand =
   | AnnotationTransactionChildCommand
   | CustomTrackStructureUpdateCommand
-  | TrackStructureLifecycleChildCommand;
+  | TrackStructureLifecycleChildCommand
+  | TrackConfigurationChildCommand;
 
 export type TrackStructureTransactionApplyCommand = {
   type: typeof TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND;
@@ -659,6 +675,7 @@ export function buildTrackStructureTransactionEnvelope(
     | CustomTrackStructureCommandEnvelope
     | CustomTrackLifecycleCommandEnvelope
     | AttachedPointTrackLifecycleCommandEnvelope
+    | TrackConfigurationCommandEnvelope
   )[],
 ): TrackStructureTransactionCommandEnvelope | null {
   if (envelopes.length === 0 || envelopes.length > MAX_ANNOTATION_TRANSACTION_COMMANDS) return null;
@@ -726,6 +743,9 @@ function parseTrackStructureTransactionChild(rawCommand: unknown):
   | CustomTrackStructureCommandEnvelope
   | CustomTrackLifecycleCommandEnvelope
   | AttachedPointTrackLifecycleCommandEnvelope
+  | TrackOrderCommandEnvelope
+  | BuiltinTrackStructureCommandEnvelope
+  | AttachedPointTrackStructureCommandEnvelope
   | null {
   const ordinary = parseLeafAnnotationCommandEnvelope({
     version: ANNOTATION_COMMAND_ENVELOPE_VERSION,
@@ -743,13 +763,25 @@ function parseTrackStructureTransactionChild(rawCommand: unknown):
   if (rawCommand.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND) {
     return parseAttachedPointTrackLifecycleCommandEnvelope(envelope);
   }
+  if (rawCommand.type === TRACK_ORDER_UPDATE_COMMAND) {
+    return parseTrackOrderCommandEnvelope(envelope);
+  }
+  if (rawCommand.type === BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND) {
+    return parseBuiltinTrackStructureCommandEnvelope(envelope);
+  }
+  if (rawCommand.type === ATTACHED_POINT_TRACK_STRUCTURE_UPDATE_COMMAND) {
+    return parseAttachedPointTrackStructureCommandEnvelope(envelope);
+  }
   return null;
 }
 
 function isTrackStructureChildCommand(command: TrackStructureTransactionChildCommand) {
   return command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND ||
     command.type === CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND ||
-    command.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND;
+    command.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND ||
+    command.type === TRACK_ORDER_UPDATE_COMMAND ||
+    command.type === BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND ||
+    command.type === ATTACHED_POINT_TRACK_STRUCTURE_UPDATE_COMMAND;
 }
 
 function getTrackStructureTransactionChildCost(command: TrackStructureTransactionChildCommand) {
@@ -764,6 +796,11 @@ function getTrackStructureTransactionChildCost(command: TrackStructureTransactio
   }
   if (command.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND) {
     return command.items.reduce((total, item) => total + getAttachedPointTrackLifecycleItemCost(item), 0);
+  }
+  if (command.type === TRACK_ORDER_UPDATE_COMMAND ||
+    command.type === BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND ||
+    command.type === ATTACHED_POINT_TRACK_STRUCTURE_UPDATE_COMMAND) {
+    return getTrackConfigurationCommandCost(command);
   }
   return getAnnotationChildCommandItemCost(command);
 }
@@ -847,7 +884,8 @@ export function invertAnnotationCommandEnvelope(
     return buildTrackStructureTransactionEnvelope(inverseChildren as Array<
       TimelineTimingCommandEnvelope | AnnotationContentCommandEnvelope | AnnotationLifecycleCommandEnvelope |
       AnnotationStateCommandEnvelope | CustomTrackStructureCommandEnvelope |
-      CustomTrackLifecycleCommandEnvelope | AttachedPointTrackLifecycleCommandEnvelope
+      CustomTrackLifecycleCommandEnvelope | AttachedPointTrackLifecycleCommandEnvelope |
+      TrackConfigurationCommandEnvelope
     >);
   }
   const inverseChildren = [...envelope.command.commands]
@@ -869,6 +907,14 @@ function invertTrackStructureTransactionChild(
   if (command.type === CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND ||
     command.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND) {
     return invertTrackStructureLifecycleCommandEnvelope({
+      version: ANNOTATION_COMMAND_ENVELOPE_VERSION,
+      command,
+    });
+  }
+  if (command.type === TRACK_ORDER_UPDATE_COMMAND ||
+    command.type === BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND ||
+    command.type === ATTACHED_POINT_TRACK_STRUCTURE_UPDATE_COMMAND) {
+    return invertTrackConfigurationCommandEnvelope({
       version: ANNOTATION_COMMAND_ENVELOPE_VERSION,
       command,
     });
@@ -1119,7 +1165,7 @@ function parseContentUpdateItem(value: unknown): AnnotationContentUpdateItem | n
     value.after.length > MAX_ANNOTATION_CONTENT_LENGTH) return null;
   const globalValid =
     (value.entityType === "sentence" && value.field === "text") ||
-    (value.entityType === "character" && value.field === "char");
+    (value.entityType === "character" && (value.field === "char" || value.field === "singingStyle"));
   const scopedValid =
     (value.entityType === "action" && value.field === "label") ||
     (value.entityType === "custom-block" && (value.field === "text" || value.field === "type")) ||

@@ -54,7 +54,9 @@ export function resolveProjectAnnotationContent(
     return project.subtitleLines.find((item) => item.id === target.entityId)?.text ?? null;
   }
   if (target.entityType === "character") {
-    return project.characterAnnotations.find((item) => item.id === target.entityId)?.char ?? null;
+    const character = project.characterAnnotations.find((item) => item.id === target.entityId);
+    if (!character) return null;
+    return target.field === "singingStyle" ? character.singingStyle : character.char;
   }
   if (target.entityType === "action") {
     return project.actionAnnotations.find((item) =>
@@ -92,11 +94,18 @@ export function applyAnnotationContentItems(
           const text = updates.sentences.get(item.id);
           return text === undefined ? item : { ...item, text };
         }),
-    characterAnnotations: updates.characters.size === 0
+    characterAnnotations: updates.characterChars.size === 0 && updates.characterSingingStyles.size === 0
       ? project.characterAnnotations
       : project.characterAnnotations.map((item) => {
-          const char = updates.characters.get(item.id);
-          return char === undefined ? item : { ...item, char };
+          const char = updates.characterChars.get(item.id);
+          const singingStyle = updates.characterSingingStyles.get(item.id);
+          return char === undefined && singingStyle === undefined
+            ? item
+            : {
+                ...item,
+                ...(char === undefined ? {} : { char }),
+                ...(singingStyle === undefined ? {} : { singingStyle }),
+              };
         }),
     actionAnnotations: updates.actions.size === 0
       ? project.actionAnnotations
@@ -161,7 +170,8 @@ function applyPointLabels<T extends { id: string; points: Array<{ id: string; la
 function groupAnnotationContentUpdates(items: readonly AnnotationContentUpdateItem[]) {
   const groups = {
     sentences: new Map<string, string>(),
-    characters: new Map<string, string>(),
+    characterChars: new Map<string, string>(),
+    characterSingingStyles: new Map<string, string>(),
     actions: new Map<string, string>(),
     customBlockText: new Map<string, string>(),
     customBlockType: new Map<string, string>(),
@@ -169,7 +179,10 @@ function groupAnnotationContentUpdates(items: readonly AnnotationContentUpdateIt
   };
   for (const item of items) {
     if (item.entityType === "sentence") groups.sentences.set(item.entityId, item.after);
-    else if (item.entityType === "character") groups.characters.set(item.entityId, item.after);
+    else if (item.entityType === "character") {
+      if (item.field === "singingStyle") groups.characterSingingStyles.set(item.entityId, item.after);
+      else groups.characterChars.set(item.entityId, item.after);
+    }
     else if (item.entityType === "action") {
       groups.actions.set(getScopedEntityKey(item.trackId, item.entityId), item.after);
     } else if (item.entityType === "custom-block") {

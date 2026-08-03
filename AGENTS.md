@@ -325,6 +325,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - the only ProjectData builder/apply path for `annotation.track.structure.transaction.apply`
   - orders parent creation/deletion around content/lifecycle/state children, proves the complete next project by replay, and
     publishes no partial result when any child or final reference/container invariant fails
+- `src/utils/trackConfigurationCommand.ts` + `src/utils/trackConfigurationCommandApply.ts`
+  - canonical ProjectData snapshot/build/apply path for existing top-level track order, builtin-track configuration, and
+    attached-point-track configuration leaves
+  - configuration snapshots never contain characters, points, or other owned entities; content cascades must be explicit
+    transaction children, and point-track ids must resolve uniquely across every parent track
 - `src/utils/annotationCommandApply.ts`
   - generic ProjectData command dispatcher used by clean catch-up; it only discriminates validated command types and must
     not duplicate a domain parser, precondition, or apply implementation
@@ -335,6 +340,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - `annotation.track.structure.transaction.apply` is the only top-level container allowed to combine structure leaves with
     ordinary domain leaves; it requires one structure child, forbids recursion, and shares one 20-command/500-entity budget
   - `isAnnotationMutationLeaseRequiredCommandType()` is the sole App/API lease discriminator for structure operation types
+  - character content targets distinguish `char` and `singingStyle`; do not rewrite singing-style cascades as character-text
+    changes or hide them inside a configuration snapshot
   - the server currently validates and logs these commands but does not apply them to `AnnotationFile.payload`
 - `packages/shared/src/customTrackStructureCommands.ts`
   - strict top-level structure DTO/parser/builder/inverse; it is excluded from `annotation.transaction.apply` because every
@@ -344,6 +351,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `packages/shared/src/trackStructureLifecycleCommands.ts`
   - strict structure-only leaf DTOs for custom-track and attached-point-track lifecycle; these leaves are legal only inside
     the top-level structure transaction and are not standalone operation actions
+- `packages/shared/src/trackConfigurationCommands.ts`
+  - strict transaction-only leaves for track order and existing builtin/attached-point-track configuration
+  - order updates preserve the exact id set; configuration updates preserve identity/parent scope, reject no-ops and duplicate
+    targets, and share the structure transaction's 500-entity budget
 - `apps/api/src/`
   - Fastify backend: auth, resource routes, resource ACL evaluation, annotation-file revision saves, Prisma mapping,
     and replaceable local/S3 object storage

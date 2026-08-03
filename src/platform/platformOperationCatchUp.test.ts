@@ -324,6 +324,40 @@ test("committed feed 可原子重放 typeOptions 与块类型结构事务", asyn
   if (result.status === "applied") assert.deepEqual(result.project, next);
 });
 
+test("committed feed 可原子重放内建 options 与逐字唱法联动", async () => {
+  const base = createCatchUpProject();
+  const oldStyle = base.characterAnnotations[0].singingStyle;
+  base.builtinTracks[0].options = [oldStyle];
+  const next = structuredClone(base);
+  next.builtinTracks[0].options = ["远端唱法"];
+  next.characterAnnotations[0].singingStyle = "远端唱法";
+  const envelope = buildProjectTrackStructureTransactionCommand(base, next, {
+    builtinTrackStructureIds: ["character-track"],
+    contentTargets: [{
+      entityType: "character",
+      entityId: base.characterAnnotations[0].id,
+      field: "singingStyle",
+    }],
+  });
+  assert.ok(envelope);
+  const result = await catchUpCommittedAnnotationOperations({
+    annotationFileId: FILE_ID,
+    project: base,
+    knownRevision: 0,
+    cursor: "snapshot-0",
+    listPage: async () => ({
+      items: [createOperation(1, 1, envelope, {
+        action: "annotation.track.structure.transaction.apply",
+      })],
+      nextCursor: "cursor-builtin-configuration",
+      hasMore: false,
+      currentRevision: 1,
+    }),
+  });
+  assert.equal(result.status, "applied");
+  if (result.status === "applied") assert.deepEqual(result.project, next);
+});
+
 test("revision 缺口和不可重放 operation 明确降级快照", async () => {
   const move = createCharacterMove(mockProject, 0.1);
   for (const expected of [

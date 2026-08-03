@@ -9,7 +9,7 @@ import {
 } from "./annotationContentCommand";
 import { applyAnnotationContentCommandToProject } from "./annotationContentCommandApply";
 
-// 夹具加入动作和附属点，使一次命令覆盖五类首批稳定内容实体。
+// 夹具加入动作和附属点，使一次命令覆盖首批稳定内容实体及逐字唱法字段。
 function createProject(): ProjectData {
   const project = structuredClone(mockProject);
   project.customTracks.push({
@@ -47,6 +47,7 @@ function getTargets(project: ProjectData): AnnotationContentTarget[] {
   return [
     { entityType: "sentence", entityId: project.subtitleLines[0].id, field: "text" },
     { entityType: "character", entityId: project.characterAnnotations[0].id, field: "char" },
+    { entityType: "character", entityId: project.characterAnnotations[0].id, field: "singingStyle" },
     {
       entityType: "action",
       entityId: "content-action-1",
@@ -74,12 +75,13 @@ function getTargets(project: ProjectData): AnnotationContentTarget[] {
   ];
 }
 
-test("内容命令原子应用五类实体并可反向恢复", () => {
+test("内容命令原子应用六类字段并可反向恢复", () => {
   const base = createProject();
   const original = structuredClone(base);
   const next = structuredClone(base);
   next.subtitleLines[0].text = "新句";
   next.characterAnnotations[0].char = "新";
+  next.characterAnnotations[0].singingStyle = "新唱法";
   next.actionAnnotations[0].label = "新动作";
   const customTrack = next.customTracks.find((track) => track.id === "content-text-track");
   const customBlock = customTrack?.blocks.find((block) => block.id === "content-text-block");
@@ -104,13 +106,14 @@ test("内容命令原子应用五类实体并可反向恢复", () => {
   assert.equal(restored.status, "applied");
   if (restored.status !== "applied") return;
   assert.equal(restored.project.characterAnnotations[0].char, base.characterAnnotations[0].char);
+  assert.equal(restored.project.characterAnnotations[0].singingStyle, base.characterAnnotations[0].singingStyle);
 });
 
 test("内容命令任一错轨或 before 冲突时保持输入不变", () => {
   const base = createProject();
   const next = structuredClone(base);
   next.actionAnnotations[0].label = "新动作";
-  const envelope = buildProjectAnnotationContentCommand(base, next, [getTargets(base)[2]]);
+  const envelope = buildProjectAnnotationContentCommand(base, next, [getTargets(base)[3]]);
   assert.ok(envelope);
   const wrongTrack = structuredClone(envelope);
   wrongTrack.command.items[0].trackId = "wrong-track";

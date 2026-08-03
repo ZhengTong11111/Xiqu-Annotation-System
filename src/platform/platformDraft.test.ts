@@ -196,6 +196,31 @@ test("平台草稿完整往返租约保护的结构事务", () => {
   assert.deepEqual(normalized?.pendingOperations[0].commandEnvelope, commandEnvelope);
 });
 
+test("平台草稿完整往返轨道顺序结构事务", () => {
+  const recoveryState = createRecoveryState();
+  const currentProject = structuredClone(recoveryState.savedProject);
+  currentProject.activeTrackOrder = [...currentProject.activeTrackOrder].reverse();
+  const commandEnvelope = buildProjectTrackStructureTransactionCommand(
+    recoveryState.savedProject,
+    currentProject,
+    { includeTrackOrder: true },
+  );
+  assert.ok(commandEnvelope);
+  recoveryState.currentProject = currentProject;
+  recoveryState.pendingOperations = [{
+    ...recoveryState.pendingOperations[0],
+    type: "annotation.track.structure.transaction.apply",
+    commandEnvelope,
+  }];
+  const normalized = normalizePlatformDraftRecord(buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState,
+  }), { userId: "user-1", annotationFileId: "file-1" });
+  assert.deepEqual(normalized?.pendingOperations[0].commandEnvelope, commandEnvelope);
+});
+
 // 内容命令与 timing 共用草稿边界；刷新后仍须保留字段、track scope 与 before/after。
 test("平台草稿完整往返版本化 content command", () => {
   const recoveryState = createRecoveryState();

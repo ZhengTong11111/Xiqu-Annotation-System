@@ -5,6 +5,8 @@ import {
   ANNOTATION_LIFECYCLE_UPDATE_COMMAND,
   ANNOTATION_STATE_UPDATE_COMMAND,
   ANNOTATION_TRANSACTION_APPLY_COMMAND,
+  ATTACHED_POINT_TRACK_STRUCTURE_UPDATE_COMMAND,
+  BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND,
   CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
   TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND,
   assessAnnotationContentExecution,
@@ -15,6 +17,9 @@ import {
   buildAnnotationStateUpdateEnvelope,
   buildAnnotationTransactionEnvelope,
   buildCustomTrackStructureUpdateEnvelope,
+  buildAttachedPointTrackStructureUpdateEnvelope,
+  buildBuiltinTrackStructureUpdateEnvelope,
+  buildTrackOrderUpdateEnvelope,
   buildTrackStructureTransactionEnvelope,
   MAX_ANNOTATION_CONTENT_LENGTH,
   ANNOTATION_COMMAND_ENVELOPE_VERSION,
@@ -28,6 +33,7 @@ import {
   parseAnnotationTransactionCommandEnvelope,
   parseCustomTrackStructureCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
+  TRACK_ORDER_UPDATE_COMMAND,
 } from "../dist/index.js";
 
 function customTrackStructureSnapshot(overrides = {}) {
@@ -83,6 +89,91 @@ test("自定义轨道结构命令严格保存递归分叉并可反向", () => {
   assert.equal(envelope.command.type, CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND);
   assert.equal(isValidAnnotationOperationPayload(CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND, envelope), true);
   assert.deepEqual(invertAnnotationCommandEnvelope(invertAnnotationCommandEnvelope(envelope)), envelope);
+});
+
+test("轨道顺序和两类既有配置 leaf 可进入结构事务并完整反向", () => {
+  const order = buildTrackOrderUpdateEnvelope(["character-track", "custom-one"], ["custom-one", "character-track"]);
+  const builtinBefore = {
+    id: "character-track",
+    trackType: "character",
+    name: "逐字",
+    options: ["唱"],
+    attachedPointTracksExpanded: false,
+    snapToWaveformKeypoints: false,
+    autoSetLoopRangeOnSelect: null,
+  };
+  const builtin = buildBuiltinTrackStructureUpdateEnvelope([{
+    trackId: "character-track",
+    before: builtinBefore,
+    after: { ...builtinBefore, name: "逐字文字轨" },
+  }]);
+  const pointBefore = {
+    id: "point-track",
+    name: "呼吸",
+    typeOptions: ["呼吸"],
+    snapToWaveformKeypoints: false,
+    snapToParentBoundaries: true,
+    autoSetLoopRangeOnSelect: null,
+  };
+  const point = buildAttachedPointTrackStructureUpdateEnvelope([{
+    parentTrackType: "builtin",
+    parentTrackId: "character-track",
+    pointTrackId: "point-track",
+    before: pointBefore,
+    after: { ...pointBefore, typeOptions: ["气口"] },
+  }]);
+  assert.ok(order && builtin && point);
+  assert.equal(order.command.type, TRACK_ORDER_UPDATE_COMMAND);
+  assert.equal(builtin.command.type, BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND);
+  assert.equal(point.command.type, ATTACHED_POINT_TRACK_STRUCTURE_UPDATE_COMMAND);
+  const transaction = buildTrackStructureTransactionEnvelope([order, builtin, point]);
+  assert.ok(transaction);
+  assert.deepEqual(invertAnnotationCommandEnvelope(invertAnnotationCommandEnvelope(transaction)), transaction);
+});
+
+test("配置 leaf 拒绝顺序集合变化、父作用域变化、重复目标和宽松字段", () => {
+  assert.equal(buildTrackOrderUpdateEnvelope(["track-a", "track-b"], ["track-a", "track-c"]), null);
+  assert.equal(buildTrackOrderUpdateEnvelope(["track-a", "track-a"], ["track-a", "track-a"]), null);
+  const point = {
+    id: "point-track",
+    name: "点轨",
+    typeOptions: ["标记"],
+    snapToWaveformKeypoints: null,
+    snapToParentBoundaries: null,
+    autoSetLoopRangeOnSelect: null,
+  };
+  assert.equal(buildAttachedPointTrackStructureUpdateEnvelope([{
+    parentTrackType: "builtin",
+    parentTrackId: "character-track",
+    pointTrackId: "point-track",
+    before: point,
+    after: { ...point, id: "other-point", name: "新点轨" },
+  }]), null);
+  assert.equal(buildAttachedPointTrackStructureUpdateEnvelope([{
+    parentTrackType: "builtin",
+    parentTrackId: "character-track",
+    pointTrackId: "point-track",
+    before: point,
+    after: { ...point, name: "新点轨" },
+  }, {
+    parentTrackType: "custom",
+    parentTrackId: "custom-track",
+    pointTrackId: "point-track",
+    before: point,
+    after: { ...point, name: "另一个新点轨" },
+  }]), null);
+  assert.equal(parseAnnotationCommandEnvelope({
+    version: 1,
+    command: {
+      type: TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND,
+      commands: [{
+        type: TRACK_ORDER_UPDATE_COMMAND,
+        before: ["track-a", "track-b"],
+        after: ["track-b", "track-a"],
+        unexpected: true,
+      }],
+    },
+  }), null);
 });
 
 test("轨道结构命令拒绝悬空 lane、父节点错位、块父引用和宽松字段", () => {

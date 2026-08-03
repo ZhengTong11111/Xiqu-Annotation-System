@@ -133,9 +133,9 @@ operation；若目标缺失、id 不满足协议、超过 500 项，或同一次
 
 - version 1 时间、稳定内容、生命周期、状态、依赖事务、既有自定义轨道结构命令和有界结构事务可严格验证、持久化和幂等重放请求，但服务端尚未
   apply 到 payload。
-- 自定义轨道结构 history 的 undo/redo 已分别记录 inverse/正向领域命令；整条自定义轨、附属点轨生命周期
-  和自定义类型选项内容联动也已进入结构事务。四声/唱腔修改、分句合句、内建轨结构、附属点轨类型联动和
-  批量导入仍有 legacy 摘要，不可领域重放。
+- 自定义轨道结构 history 的 undo/redo 已分别记录 inverse/正向领域命令；整条自定义轨、附属点轨生命周期、
+  自定义类型选项内容联动、既有内建轨/点轨配置和顶层轨道排序也已进入结构事务。逐字唱法已是稳定 content
+  字段；四声、分句合句、内建轨生命周期和批量导入仍有 legacy 摘要，不可领域重放。
 - 它不会修改 annotation file payload。
 - 它不能作为恢复完整项目的唯一来源。
 - 不应把完整 before/after `ProjectData` 复制进每一条 operation。
@@ -286,7 +286,7 @@ Inspector 快速输入按索引复用已有 symbol id，仅新增尾项生成新
 的元数据。整段工尺导入、内建轨删除等仍可使用 legacy 快照，但提交前必须经过同一引用修复。自动板眼生成
 只有在状态/生命周期事务能重建完整 next 时才写领域命令，否则安全回退快照。
 
-### 4.9 R5a4c1-R5a4c3 结构性变更租约与有界结构事务
+### 4.9 R5a4c1-R5a4c4a 结构性变更租约与有界结构事务
 
 轨道结构、递归分叉、批量导入和大范围修复仍不属于普通实体命令。服务端新增按 annotation file 唯一的
 短时独占租约，绑定 holder、purpose、base revision、创建/过期时间；客户端只得到一次性明文 token，
@@ -315,9 +315,16 @@ operation commit 成功后，才在同一事务删除租约。恢复快照同样
 redo 保存并重发原命令；legacy 历史仍走原有 project.undo/project.redo。当前受控 UI 覆盖轨道名称/颜色、
 显示开关、纯 typeOptions 增加与排序、递归 lane 新增/删除/改名/改色、显示模式和 block branchScope。
 R5a4c3 又覆盖整条自定义轨创建/删除、内建或自定义父轨的附属点轨创建/删除，以及会同步修改 block.type 的
-自定义 typeOptions 重命名/删除。结构事务的 ProjectData apply 只在全部子命令和最终引用/容器完整性通过后
-发布结果；自定义轨必须在 `customTracks` 与 `activeTrackOrder` 中唯一对应，点轨 id 跨父轨唯一。轨道排序、
-内建轨结构、附属点轨 typeOptions 与批量导入仍留给 R5a4c4。
+自定义 typeOptions 重命名/删除。R5a4c4a 新增只能嵌入顶层结构事务的 order、builtin-track config 和
+attached-point-track config 三类结构叶命令，覆盖既有顶层轨道重排、内建逐字轨配置、附属点轨配置以及
+typeOptions 与逐字 `singingStyle`/点 `label` 的原子联动。逐字唱法复用 content command，但拥有独立 target
+key，不再与字面文本混为一个字段。
+
+结构事务的 ProjectData apply 只在全部子命令和最终引用/容器完整性通过后发布结果；自定义轨必须在
+`customTracks` 与 `activeTrackOrder` 中唯一对应，点轨 id 跨父轨唯一。配置 builder 从真实 base/next 提取
+before/after，并通过完整 next 深比较拒绝漏报的内容级联；等待租约期间所有 updater 都必须回到最新
+`projectRef` 重新计算，不能提交网络等待前捕获的 options。内建轨生命周期和批量导入/修复仍留给
+R5a4c4b：前者需要完整拥有实体闭包，后者需要明确降级到权威 snapshot，不能扩大有界命令预算。
 
 ## 5. 浏览器草稿与离线恢复边界
 

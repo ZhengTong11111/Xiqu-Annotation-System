@@ -2,11 +2,14 @@ import {
   ANNOTATION_CONTENT_UPDATE_COMMAND,
   ANNOTATION_LIFECYCLE_UPDATE_COMMAND,
   ANNOTATION_STATE_UPDATE_COMMAND,
+  ATTACHED_POINT_TRACK_STRUCTURE_UPDATE_COMMAND,
   ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND,
   CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND,
   CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
+  BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND,
   parseTrackStructureTransactionCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
+  TRACK_ORDER_UPDATE_COMMAND,
   type TrackStructureTransactionCommandEnvelope,
 } from "@xiqu/shared";
 import type { ProjectData } from "../types";
@@ -20,6 +23,7 @@ import {
   applyTrackStructureLifecycleCommandToProject,
   validateTrackContainerIntegrity,
 } from "./trackStructureLifecycleCommandApply";
+import { applyTrackConfigurationCommandToProject } from "./trackConfigurationCommandApply";
 
 export type TrackStructureTransactionApplyResult =
   | { status: "invalid_command" }
@@ -49,6 +53,10 @@ export function applyTrackStructureTransactionCommandToProject(
               : command.type === CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND ||
                   command.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND
                 ? applyTrackStructureLifecycleCommandToProject(currentProject, childEnvelope)
+                : command.type === TRACK_ORDER_UPDATE_COMMAND ||
+                    command.type === BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND ||
+                    command.type === ATTACHED_POINT_TRACK_STRUCTURE_UPDATE_COMMAND
+                  ? applyTrackConfigurationCommandToProject(currentProject, childEnvelope)
                 : assertNever(command);
     if (result.status !== "applied") return { status: "blocked", childIndex };
     currentProject = result.project;

@@ -3731,3 +3731,97 @@ ProjectData builder、adapter 与编辑器接线：
 - 下一轮 R5a4c4 应先盘点所有剩余 legacy 结构入口，再按风险拆分：轨道重排、内建轨配置/生命周期、附属点
   轨 typeOptions 与 point label 联动，以及批量导入/修复。小而稳定的结构编辑可继续扩展有界命令；超预算
   批量操作应使用显式受控流程，不能靠扩大 500 实体上限或静默 legacy 降级解决。
+
+## 2026-08-04：R5a4c4a 既有轨道配置与顺序的有界结构事务
+
+### 本轮任务书与实际边界
+
+- 本轮从 commit `1e20c20` 开始。Codex 先审计 R5a4c3 后仍走 legacy 的轨道写入口，并把被 gitignore 的
+  `CLAUDE_WORK.md` 整体改写为 R5a4c4a 当前任务：既有顶层轨道排序、既有内建逐字轨配置、既有附属点轨
+  配置，以及两类 typeOptions 与逐字唱法/点标签的联动。任务文件没有保留上一轮日志，计划与实际偏差由
+  本 Development Log 记录。
+- roadmap 在实现前将 R5a4c4 拆成两个依赖闭包。R5a4c4a 只处理规模有界、可严格重放的既有配置；内建轨
+  创建/删除需要保存逐字、附属点轨、工尺等完整拥有实体，批量导入/句字修复/工尺生成可能突破 500 项，
+  因此明确留给 R5a4c4b 的生命周期命令或受控权威快照流程。本轮没有通过放宽 parser 或静默 legacy 降级
+  来伪造覆盖率。
+- 本轮没有新增依赖或 Prisma migration。现有 TypeScript/shared 命令合同和结构租约已足够表达配置更新；
+  开发数据库仍为 12 条 migration。
+
+### 共享协议与 ProjectData 适配器
+
+- 新增 `packages/shared/src/trackConfigurationCommands.ts`，定义三个只能作为
+  `annotation.track.structure.transaction.apply` child 存在的严格 leaf：
+  `annotation.track.order.update`、`annotation.builtin-track.structure.update` 和
+  `annotation.attached-point-track.structure.update`。它们不进入顶层 action allowlist，因此服务端仍能从
+  顶层结构事务明确要求 mutation lease，普通 transaction 不能偷藏结构写入。
+- 轨道顺序命令保存完整 before/after `activeTrackOrder`，两侧必须是同一组无重复稳定 id，拒绝空命令和
+  集合增删。内建轨配置快照只保存 id/type/name/options、附属点展开、波形吸附和选中同步循环开关；附属
+  点轨快照只保存父作用域、id/name/typeOptions、两类吸附与自动循环开关。字符、点和其他拥有实体不进入
+  配置快照，所有内容级联必须显式成为事务 child。
+- 三类 parser 执行精确 key、安全 id、有界字符串、身份/父作用域不变、重复目标、no-op 和成本检查；同一
+  point track id 即使写在不同父轨下也会拒绝，避免 apply 时出现跨父寻址歧义。inverse 交换 before/after
+  后重新走相同校验，成本继续计入结构事务统一的 20 child/500 实体上限。
+- 新增 `trackConfigurationCommand.ts` 和 `trackConfigurationCommandApply.ts`，作为 ProjectData 配置快照、
+  resolver 和原子 apply 的唯一实现。apply 先检查全部 before 和容器身份，任一目标缺失、漂移或跨父重复
+  都不发布半成品；轨道重排还会复核当前顶层轨道 id 集合，而不是只替换数组。
+- `TrackStructureTransactionPlan` 增加 order、builtin config 和 point config 目标。builder 先生成配置/内容
+  leaf，再用统一 apply 重建完整 next 并做 reference-first 深比较；漏报 `singingStyle` 或 point label 时
+  builder 返回 null。逐字 `singingStyle` 被纳入已有 `annotation.items.content.update`，与 `char` 使用不同
+  target key，没有新建重复的唱法协议。
+
+### 编辑器写路径与僵尸代码清理
+
+- App 删除旧的 `updateBuiltinTrack()` 和 `updateAttachedPointTrack()`，改为
+  `updateBuiltinTrackStructure()` 与 `updateAttachedPointTrackStructure()`。两个高层 updater 都复用
+  `runTrackStructureMutation()`：平台模式先 acquire/reuse 租约，再以最新 `projectRef` 重算；本地模式走
+  同一命令构造但不请求服务端。builder 失败会显示结构错误并保持项目不变，不再退回 legacy commit。
+- 已迁移轨道头上下移动和拖拽排序；内建轨/附属点轨改名、波形吸附、父边界吸附、自动循环和点轨展开；
+  两类 typeOptions 的增加、移动和拖拽排序；typeOptions 改名/删除与所有命中逐字唱法或点标签的原子级联。
+  右键菜单中的逐字、自定义块、附属点“新建类型”也接入相应结构事务；若类型已存在，则只提交普通内容
+  修改，不生成假的 no-op 结构事实。直接修改逐字唱法现在同样生成 content command。
+- 自审确认 `actionAnnotations` 的旧内建动作兼容数据不属于当前唯一 BuiltinTrackId `character-track`，其右键
+  类型入口仍保持 legacy；内建轨创建/删除及大范围导入也按 R5a4c4b 边界保留。被新 helper 完全替代的旧
+  updater 已删除，未保留同一功能的第二套写路径。
+
+### 自我审查中发现并修复的问题
+
+- 第一次迁移只覆盖 Inspector，遗漏三个右键“新建类型”入口和直接逐字 `singingStyle` 编辑。最终逐一检索
+  `commitProject()` 调用并补齐，避免同一个用户动作因入口不同产生 domain/legacy 两种事实。
+- 租约 acquire 是异步的；初版 updater 在请求前捕获 track/options，等待期间的普通编辑可能被旧配置覆盖。
+  最终 builtin updater 的字符级联和 point updater 的 options 都在串行门禁取得租约后，从最新 base project
+  重新解析。轨道重排也重新计算最新顺序，而不是使用点击时捕获的数组。
+- 初版 point config parser 只拒绝相同 parent 下的重复目标，同一个 pointTrackId 可伪装成两个父作用域。
+  最终增加全命令 pointTrackId 唯一校验，并在 ProjectData resolver/apply 继续要求全项目唯一。
+- 自审没有发现配置快照夹带字符/点内容、普通 transaction 接受结构 child、builder 失败后继续 commit，或
+  被删除 helper 的残留调用。轨道顺序集合检查和 complete-next 门禁共同阻止结构生命周期混入本轮 update。
+
+### 测试、构建与运行状态
+
+- `npm run test:annotation-commands`：21/21；覆盖三类结构 leaf、精确 key、no-op、重复 id、顺序集合漂移、
+  父作用域变化、预算、inverse，以及逐字 `singingStyle` 内容目标。
+- `npm run test:annotation-content-command`：3/3；`npm run test:custom-track-structure-command`：13/13；
+  `npm run test:annotation-transaction-command`：7/7。配置/唱法 apply、结构事务组合、完整 next 门禁、inverse
+  和原有普通事务边界均通过。
+- `npm run test:platform-drafts`：19/19；`npm run test:platform-operation-catch-up`：15/15；
+  `npm run test:platform-operations`：4/4；`npm run test:annotation-mutation-lease`：3/3。新命令可在 IndexedDB
+  往返、clean 会话原子追赶，并继续使用顶层结构租约判别。
+- `npm run test:api`：91/91。PostgreSQL 集成中的结构事务正向样例已改为新的 track-order leaf，证明严格
+  parser、无租约拒绝、持锁 operation 接受和 revision save 绑定均未回归；仍只有既有 node-postgres pg 9
+  弃用提示。
+- `npm run build` 通过 Prisma generation、shared、document-model、Web 和 API。Vite 转换 2071 个模块，CSS
+  120.45 kB / gzip 22.25 kB，主 JS 915.69 kB / gzip 272.78 kB；仅保留既有超过 500 kB 的 chunk 提示。
+  `git diff --check` 通过。
+- 使用当前工作树重新执行 `npm run dev:api`（PID 47618）；predev 再次构建 shared/document-model 后，
+  `GET /api/health/ready` 返回 HTTP 200，数据库探针约 5.41 ms、对象存储约 2.37 ms。旧 API 进程已先停止，
+  没有留下两个服务争用 4317 端口。
+- 本轮没有视觉布局变化，按任务书未调用浏览器自动化。人工验收顺序：轨道头上下移动与拖拽；逐字轨改名/
+  开关；内建类型增加/排序/改名/删除及逐字唱法级联；内建与自定义父轨的点轨配置及标签级联；右键新建
+  类型；结构 undo/redo；平台第二账号租约竞争、保存释放和失锁后项目不变。
+
+### 文档与下一轮
+
+- README、state architecture、AGENTS 和 roadmap 已同步真实合同和完成边界；本日志记录了任务书、实现、
+  漏项修复、僵尸代码清理、测试数量和构建体积。`CLAUDE_WORK.md` 仍只保存本轮任务，不作为历史日志。
+- 下一轮 R5a4c4b 先审计内建轨创建/删除的完整拥有实体和所有批量入口，再分别设计：有界内建轨 lifecycle
+  命令，以及明确持租约、不可 clean replay、要求 snapshot 降级的受控批量事实。不能让批量快照冒充普通
+  领域 leaf，也不能让 clean catch-up 对不完整证据做部分重放。

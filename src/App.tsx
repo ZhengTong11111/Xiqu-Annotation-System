@@ -1779,6 +1779,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       );
       const changedKeys = Object.keys(changes);
       const isCharacterTextOnly = changedKeys.length === 1 && changedKeys[0] === "char";
+      const isSingingStyleOnly = changedKeys.length === 1 && changedKeys[0] === "singingStyle";
       // 逐字文本会同步句文本，因此 content 命令同时包含 character 与其 sentence 两个稳定目标。
       const commandEnvelope = isTimingOnly && currentCharacter
         ? buildProjectTimelineTimingCommand(baseProject, synchronizedProject, [
@@ -1794,6 +1795,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           ? buildProjectAnnotationContentCommand(baseProject, synchronizedProject, [
               { entityType: "character", entityId: id, field: "char" },
               { entityType: "sentence", entityId: currentCharacter.lineId, field: "text" },
+            ])
+        : isSingingStyleOnly && currentCharacter
+          ? buildProjectAnnotationContentCommand(baseProject, synchronizedProject, [
+              { entityType: "character", entityId: id, field: "singingStyle" },
             ])
         : null;
       commitProject(synchronizedProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
@@ -1974,23 +1979,46 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     );
   }
 
-  function updateBuiltinTrack(
+  // 既有内建轨配置必须经结构事务和租约提交，不能再落入无法 clean replay 的 snapshot operation。
+  async function updateBuiltinTrackStructure(
     trackId: BuiltinTrackId,
     updater: (track: BuiltinTrack) => BuiltinTrack,
-    recordHistory = true,
+    updateCharacters?: (
+      characters: CharacterAnnotation[],
+      beforeTrack: BuiltinTrack,
+      afterTrack: BuiltinTrack,
+    ) => CharacterAnnotation[],
   ) {
-    const currentProject = projectRef.current;
-    const nextProject = {
-      ...currentProject,
-      builtinTracks: currentProject.builtinTracks.map((track) =>
-        track.id === trackId ? updater(track) : track,
-      ),
+    const buildNextProject = (baseProject: ProjectData): ProjectData => {
+      const beforeTrack = baseProject.builtinTracks.find((track) => track.id === trackId);
+      if (!beforeTrack) return baseProject;
+      const afterTrack = updater(beforeTrack);
+      const nextProject = {
+        ...baseProject,
+        builtinTracks: baseProject.builtinTracks.map((track) =>
+          track.id === trackId ? afterTrack : track,
+        ),
+      };
+      if (!updateCharacters || trackId !== "character-track") return nextProject;
+      return {
+        ...nextProject,
+        characterAnnotations: updateCharacters(baseProject.characterAnnotations, beforeTrack, afterTrack),
+      };
     };
-    if (recordHistory) {
-      commitProject(nextProject);
-    } else {
-      applyProjectWithoutHistory(nextProject);
-    }
+    return runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => {
+        const nextCharacters = new Map(nextProject.characterAnnotations.map((item) => [item.id, item]));
+        return buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          builtinTrackStructureIds: [trackId],
+          // options 改名/删除会级联逐字唱法；纯配置修改在这里自然得到空 content 列表。
+          contentTargets: baseProject.characterAnnotations.flatMap((item) =>
+            nextCharacters.get(item.id)?.singingStyle !== item.singingStyle
+              ? [{ entityType: "character" as const, entityId: item.id, field: "singingStyle" as const }]
+              : []),
+        });
+      },
+    );
   }
 
   function findPointTrackLocation(projectToSearch: ProjectData, pointTrackId: string): PointTrackLocation | null {
@@ -2043,16 +2071,35 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     };
   }
 
-  function updateAttachedPointTrack(
+  // 点轨配置以“父轨类型 + 父轨 id + 点轨 id”寻址，避免递归轨道出现同名时误改其他集合。
+  async function updateAttachedPointTrackStructure(
     pointTrackId: string,
     updater: (pointTrack: AttachedPointTrack) => AttachedPointTrack,
-    recordHistory = true,
   ) {
-    const currentProject = projectRef.current;
-    const nextProject = buildProjectWithUpdatedAttachedPointTrack(currentProject, pointTrackId, updater);
-    if (!nextProject) return;
-    if (recordHistory) commitProject(nextProject);
-    else applyProjectWithoutHistory(nextProject);
+    const buildNextProject = (baseProject: ProjectData): ProjectData =>
+      buildProjectWithUpdatedAttachedPointTrack(baseProject, pointTrackId, updater) ?? baseProject;
+    return runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => {
+        const location = findPointTrackLocation(baseProject, pointTrackId);
+        const nextLocation = findPointTrackLocation(nextProject, pointTrackId);
+        if (!location || !nextLocation) return null;
+        const nextPoints = new Map(nextLocation.pointTrack.points.map((point) => [point.id, point]));
+        return buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          attachedPointTrackStructureTargets: [{
+            pointTrackId,
+            parentTrackId: location.parentTrack.id,
+            parentTrackType: location.parentType,
+          }],
+          // 点轨类型改名/删除只为真正变化的既有点生成 content child，点生命周期不属于本 updater。
+          contentTargets: location.pointTrack.points.flatMap((point) =>
+            nextPoints.get(point.id)?.label !== point.label
+              ? [{ entityType: "attached-point" as const, entityId: point.id, trackId: pointTrackId,
+                  field: "label" as const }]
+              : []),
+        });
+      },
+    );
   }
 
   // 创建/删除调用点只声明候选实体；完整差异门禁证明命令覆盖 next 后才写领域 envelope，否则保留快照。
@@ -2193,7 +2240,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   function toggleAttachedPointTracks(parentTrackId: string) {
     const currentProject = projectRef.current;
     if (currentProject.builtinTracks.some((track) => track.id === parentTrackId)) {
-      updateBuiltinTrack(parentTrackId as BuiltinTrackId, (track) => ({
+      void updateBuiltinTrackStructure(parentTrackId as BuiltinTrackId, (track) => ({
         ...track,
         attachedPointTracksExpanded: !track.attachedPointTracksExpanded,
       }));
@@ -2208,41 +2255,41 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function moveTrack(trackId: string, direction: "up" | "down") {
-    const currentProject = projectRef.current;
-    const currentIndex = currentProject.activeTrackOrder.findIndex((id) => id === trackId);
-    if (currentIndex === -1) {
-      return;
-    }
-    const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
-    if (targetIndex < 0 || targetIndex >= currentProject.activeTrackOrder.length) {
-      return;
-    }
-    const nextOrder = [...currentProject.activeTrackOrder];
-    const [movedId] = nextOrder.splice(currentIndex, 1);
-    nextOrder.splice(targetIndex, 0, movedId);
-    commitProject({
-      ...currentProject,
-      activeTrackOrder: nextOrder,
-    });
+    // acquire 可能等待网络，因此顺序变换必须对拿锁后的最新 base 重算，不能闭包捕获旧数组。
+    void runTrackStructureMutation(
+      (baseProject) => {
+        const currentIndex = baseProject.activeTrackOrder.findIndex((id) => id === trackId);
+        const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+        if (currentIndex < 0 || targetIndex < 0 || targetIndex >= baseProject.activeTrackOrder.length) {
+          return baseProject;
+        }
+        const nextOrder = [...baseProject.activeTrackOrder];
+        const [movedId] = nextOrder.splice(currentIndex, 1);
+        nextOrder.splice(targetIndex, 0, movedId);
+        return { ...baseProject, activeTrackOrder: nextOrder };
+      },
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        includeTrackOrder: true,
+      }),
+    );
   }
 
   function reorderTrack(trackId: string, insertionIndex: number) {
-    const currentProject = projectRef.current;
-    const currentIndex = currentProject.activeTrackOrder.findIndex((id) => id === trackId);
-    if (currentIndex === -1) {
-      return;
-    }
-    const nextOrder = [...currentProject.activeTrackOrder];
-    const [movedId] = nextOrder.splice(currentIndex, 1);
-    const normalizedInsertionIndex = Math.max(0, Math.min(insertionIndex, nextOrder.length));
-    if (normalizedInsertionIndex === currentIndex) {
-      return;
-    }
-    nextOrder.splice(normalizedInsertionIndex, 0, movedId);
-    commitProject({
-      ...currentProject,
-      activeTrackOrder: nextOrder,
-    });
+    void runTrackStructureMutation(
+      (baseProject) => {
+        const currentIndex = baseProject.activeTrackOrder.findIndex((id) => id === trackId);
+        if (currentIndex < 0) return baseProject;
+        const nextOrder = [...baseProject.activeTrackOrder];
+        const [movedId] = nextOrder.splice(currentIndex, 1);
+        const targetIndex = Math.max(0, Math.min(insertionIndex, nextOrder.length));
+        if (targetIndex === currentIndex) return baseProject;
+        nextOrder.splice(targetIndex, 0, movedId);
+        return { ...baseProject, activeTrackOrder: nextOrder };
+      },
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        includeTrackOrder: true,
+      }),
+    );
   }
 
   function updateCustomBlock(
@@ -2432,16 +2479,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (!character || !track) {
         return;
       }
-      const nextOptions = appendUniqueTypeOption(track.options ?? [], nextType);
-      commitProject({
-        ...currentProject,
-        builtinTracks: currentProject.builtinTracks.map((item) =>
-          item.id === "character-track" ? { ...item, options: nextOptions } : item,
-        ),
-        characterAnnotations: currentProject.characterAnnotations.map((item) =>
-          item.id === character.id ? { ...item, singingStyle: nextType } : item,
-        ),
-      });
+      if ((track.options ?? []).includes(nextType)) {
+        applyCharacterSingingStyle(character.id, nextType);
+      } else {
+        void updateBuiltinTrackStructure("character-track", (currentTrack) => ({
+          ...currentTrack,
+          options: appendUniqueTypeOption(currentTrack.options ?? [], nextType),
+        }), (characters) => characters.map((item) =>
+          item.id === character.id ? { ...item, singingStyle: nextType } : item));
+      }
       setBlockContextMenu(null);
       return;
     }
@@ -2472,20 +2518,27 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (!targetTrack) {
         return;
       }
-      commitProject({
-        ...currentProject,
-        customTracks: currentProject.customTracks.map((track) =>
-          track.id === targetTrack.id
+      if (targetTrack.typeOptions.includes(nextType)) {
+        applyCustomBlockType(targetTrack.id, customBlockMenu.id, nextType);
+      } else {
+        const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+          ...baseProject,
+          customTracks: baseProject.customTracks.map((track) => track.id === targetTrack.id
             ? {
                 ...track,
                 typeOptions: appendUniqueTypeOption(track.typeOptions, nextType),
                 blocks: track.blocks.map((block) =>
-                  block.id === customBlockMenu.id ? { ...block, type: nextType } : block,
-                ) as CustomTrack["blocks"],
+                  block.id === customBlockMenu.id ? { ...block, type: nextType } : block) as CustomTrack["blocks"],
               } as CustomTrack
-            : track,
-        ),
-      });
+            : track) as CustomTrack[],
+        });
+        void runTrackStructureMutation(buildNextProject, (baseProject, nextProject) =>
+          buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+            customTrackStructureIds: [targetTrack.id],
+            contentTargets: [{ entityType: "custom-block", entityId: customBlockMenu.id,
+              trackId: targetTrack.id, field: "type" }],
+          }));
+      }
       setBlockContextMenu(null);
       return;
     }
@@ -2496,35 +2549,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (!location) {
         return;
       }
-      const updateTrackList = (pointTracks: AttachedPointTrack[]) =>
-        pointTracks.map((pointTrack) =>
-          pointTrack.id === pointMenu.trackId
-            ? {
-                ...pointTrack,
-                typeOptions: appendUniqueTypeOption(pointTrack.typeOptions, nextType),
-                points: pointTrack.points.map((point) =>
-                  point.id === pointMenu.id ? { ...point, label: nextType } : point,
-                ),
-              }
-            : pointTrack,
-        );
-      commitProject({
-        ...currentProject,
-        builtinTracks: location.parentType === "builtin"
-          ? currentProject.builtinTracks.map((track) =>
-              track.id === location.parentTrack.id
-                ? { ...track, attachedPointTracks: updateTrackList(track.attachedPointTracks) }
-                : track,
-            )
-          : currentProject.builtinTracks,
-        customTracks: location.parentType === "custom"
-          ? currentProject.customTracks.map((track) =>
-              track.id === location.parentTrack.id
-                ? { ...track, attachedPointTracks: updateTrackList(track.attachedPointTracks) } as CustomTrack
-                : track,
-            )
-          : currentProject.customTracks,
-      });
+      if (location.pointTrack.typeOptions.includes(nextType)) {
+        applyAttachedPointLabel(pointMenu.trackId, pointMenu.id, nextType);
+      } else {
+        void updateAttachedPointTrackStructure(pointMenu.trackId, (pointTrack) => ({
+          ...pointTrack,
+          typeOptions: appendUniqueTypeOption(pointTrack.typeOptions, nextType),
+          points: pointTrack.points.map((point) =>
+            point.id === pointMenu.id ? { ...point, label: nextType } : point),
+        }));
+      }
       setBlockContextMenu(null);
     }
   }
@@ -4342,7 +4376,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function renameBuiltinTrack(trackId: BuiltinTrackId, name: string) {
     const normalizedName = name.trimStart();
-    updateBuiltinTrack(trackId, (track) => ({
+    void updateBuiltinTrackStructure(trackId, (track) => ({
       ...track,
       name: normalizedName.length > 0 ? normalizedName : track.name,
     }));
@@ -4350,7 +4384,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function renameAttachedPointTrack(pointTrackId: string, name: string) {
     const normalizedName = name.trimStart();
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => ({
       ...pointTrack,
       name: normalizedName.length > 0 ? normalizedName : pointTrack.name,
     }));
@@ -4473,7 +4507,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   function updateTrackWaveformSnap(trackId: string, enabled: boolean) {
     const builtinTrack = projectRef.current.builtinTracks.find((track) => track.id === trackId);
     if (builtinTrack) {
-      updateBuiltinTrack(trackId as BuiltinTrackId, (track) => ({
+      void updateBuiltinTrackStructure(trackId as BuiltinTrackId, (track) => ({
         ...track,
         snapToWaveformKeypoints: enabled,
       }));
@@ -4489,7 +4523,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
 
-    updateAttachedPointTrack(trackId, (pointTrack) => ({
+    void updateAttachedPointTrackStructure(trackId, (pointTrack) => ({
       ...pointTrack,
       snapToWaveformKeypoints: enabled,
     }));
@@ -4498,7 +4532,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   function updateTrackAutoLoopRange(trackId: string, enabled: boolean) {
     const builtinTrack = projectRef.current.builtinTracks.find((track) => track.id === trackId);
     if (builtinTrack) {
-      updateBuiltinTrack(trackId as BuiltinTrackId, (track) => ({
+      void updateBuiltinTrackStructure(trackId as BuiltinTrackId, (track) => ({
         ...track,
         autoSetLoopRangeOnSelect: enabled,
       }));
@@ -4514,14 +4548,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
 
-    updateAttachedPointTrack(trackId, (pointTrack) => ({
+    void updateAttachedPointTrackStructure(trackId, (pointTrack) => ({
       ...pointTrack,
       autoSetLoopRangeOnSelect: enabled,
     }));
   }
 
   function updateAttachedPointTrackParentSnap(pointTrackId: string, enabled: boolean) {
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => ({
       ...pointTrack,
       snapToParentBoundaries: enabled,
     }));
@@ -4580,56 +4614,39 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function updateBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number, value: string) {
     const normalizedValue = value.trimStart();
-    const currentProject = projectRef.current;
-    const targetTrack = currentProject.builtinTracks.find((track) => track.id === trackId);
+    const targetTrack = projectRef.current.builtinTracks.find((track) => track.id === trackId);
     if (!targetTrack?.options || index < 0 || index >= targetTrack.options.length) {
       return;
     }
-    const previousValue = targetTrack.options[index];
-    const nextValue = normalizedValue.length > 0 ? normalizedValue : previousValue;
-    const nextOptions = targetTrack.options.map((option, optionIndex) =>
-      optionIndex === index ? nextValue : option,
-    );
-    const nextProject: ProjectData = {
-      ...currentProject,
-      builtinTracks: currentProject.builtinTracks.map((track) =>
-        track.id === trackId ? { ...track, options: nextOptions } : track,
-      ),
-      characterAnnotations: trackId === "character-track"
-        ? currentProject.characterAnnotations.map((item) =>
-            item.singingStyle === previousValue ? { ...item, singingStyle: nextValue } : item
-          )
-        : currentProject.characterAnnotations,
-      actionAnnotations: trackId !== "character-track"
-        ? currentProject.actionAnnotations.map((item) =>
-            item.trackId === trackId && item.label === previousValue ? { ...item, label: nextValue } : item
-          )
-        : currentProject.actionAnnotations,
-    };
-    commitProject(nextProject);
+    const nextValue = normalizedValue.length > 0 ? normalizedValue : targetTrack.options[index];
+    void updateBuiltinTrackStructure(trackId, (track) => ({
+      ...track,
+      options: (track.options ?? []).map((option, optionIndex) =>
+        optionIndex === index ? nextValue : option),
+    }), (characters, beforeTrack, afterTrack) => {
+      const before = beforeTrack.options?.[index];
+      const after = afterTrack.options?.[index];
+      return before === undefined || after === undefined
+        ? characters
+        : characters.map((item) => item.singingStyle === before ? { ...item, singingStyle: after } : item);
+    });
   }
 
   function updateAttachedPointTrackTypeOption(pointTrackId: string, index: number, value: string) {
-    const currentProject = projectRef.current;
-    const location = findPointTrackLocation(currentProject, pointTrackId);
+    const location = findPointTrackLocation(projectRef.current, pointTrackId);
     if (!location || index < 0 || index >= location.pointTrack.typeOptions.length) {
       return;
     }
-    const previousValue = location.pointTrack.typeOptions[index];
     const normalizedValue = value.trimStart();
-    const nextValue = normalizedValue.length > 0 ? normalizedValue : previousValue;
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => {
-      const nextTypeOptions = pointTrack.typeOptions.map((option, optionIndex) =>
-        optionIndex === index ? nextValue : option,
-      );
-      return {
+    const nextValue = normalizedValue.length > 0 ? normalizedValue : location.pointTrack.typeOptions[index];
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => ({
+        // updater 在持锁后的最新点轨上读取旧类型，避免 acquire 等待期间闭包值过期。
         ...pointTrack,
-        typeOptions: nextTypeOptions,
+        typeOptions: pointTrack.typeOptions.map((option, optionIndex) =>
+          optionIndex === index ? nextValue : option),
         points: pointTrack.points.map((point) =>
-          point.label === previousValue ? { ...point, label: nextValue } : point,
-        ),
-      };
-    });
+          point.label === pointTrack.typeOptions[index] ? { ...point, label: nextValue } : point),
+      }));
   }
 
   function addCustomTrackTypeOption(trackId: string) {
@@ -4640,14 +4657,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function addBuiltinTrackTypeOption(trackId: BuiltinTrackId) {
-    updateBuiltinTrack(trackId, (track) => ({
+    void updateBuiltinTrackStructure(trackId, (track) => ({
       ...track,
       options: [...(track.options ?? []), getNextCustomTrackTypeOptionName(track.options ?? [])],
     }));
   }
 
   function addAttachedPointTrackTypeOption(pointTrackId: string) {
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => ({
       ...pointTrack,
       typeOptions: [...pointTrack.typeOptions, getNextCustomTrackTypeOptionName(pointTrack.typeOptions)],
     }));
@@ -4670,7 +4687,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function moveBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number, direction: "up" | "down") {
-    updateBuiltinTrack(trackId, (track) => {
+    void updateBuiltinTrackStructure(trackId, (track) => {
       const options = [...(track.options ?? [])];
       const targetIndex = direction === "up" ? index - 1 : index + 1;
       if (targetIndex < 0 || targetIndex >= options.length) {
@@ -4686,7 +4703,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function moveAttachedPointTrackTypeOption(pointTrackId: string, index: number, direction: "up" | "down") {
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => {
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => {
       const targetIndex = direction === "up" ? index - 1 : index + 1;
       if (targetIndex < 0 || targetIndex >= pointTrack.typeOptions.length) {
         return pointTrack;
@@ -4726,7 +4743,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function reorderBuiltinTrackTypeOption(trackId: BuiltinTrackId, fromIndex: number, insertionIndex: number) {
-    updateBuiltinTrack(trackId, (track) => {
+    void updateBuiltinTrackStructure(trackId, (track) => {
       const options = [...(track.options ?? [])];
       if (
         fromIndex < 0 ||
@@ -4750,7 +4767,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function reorderAttachedPointTrackTypeOption(pointTrackId: string, fromIndex: number, insertionIndex: number) {
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => {
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => {
       if (
         fromIndex < 0 ||
         fromIndex >= pointTrack.typeOptions.length ||
@@ -4809,36 +4826,25 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function removeBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number) {
-    const currentProject = projectRef.current;
-    const targetTrack = currentProject.builtinTracks.find((track) => track.id === trackId);
+    const targetTrack = projectRef.current.builtinTracks.find((track) => track.id === trackId);
     const options = targetTrack?.options ?? [];
     if (options.length <= 1 || index < 0 || index >= options.length) {
       return;
     }
-    const removedValue = options[index];
-    const nextOptions = options.filter((_, optionIndex) => optionIndex !== index);
-    const fallbackOption = nextOptions[0] ?? "类型 1";
-    commitProject({
-      ...currentProject,
-      builtinTracks: currentProject.builtinTracks.map((track) =>
-        track.id === trackId ? { ...track, options: nextOptions } : track,
-      ),
-      characterAnnotations: trackId === "character-track"
-        ? currentProject.characterAnnotations.map((item) =>
-            item.singingStyle === removedValue ? { ...item, singingStyle: fallbackOption } : item
-          )
-        : currentProject.characterAnnotations,
-      actionAnnotations: trackId !== "character-track"
-        ? currentProject.actionAnnotations.map((item) =>
-            item.trackId === trackId && item.label === removedValue ? { ...item, label: fallbackOption } : item
-          )
-        : currentProject.actionAnnotations,
+    void updateBuiltinTrackStructure(trackId, (track) => ({
+      ...track,
+      options: (track.options ?? []).filter((_, optionIndex) => optionIndex !== index),
+    }), (characters, beforeTrack, afterTrack) => {
+      const before = beforeTrack.options?.[index];
+      const after = afterTrack.options?.[0] ?? "类型 1";
+      return before === undefined
+        ? characters
+        : characters.map((item) => item.singingStyle === before ? { ...item, singingStyle: after } : item);
     });
   }
 
   function removeAttachedPointTrackTypeOption(pointTrackId: string, index: number) {
-    const currentProject = projectRef.current;
-    const location = findPointTrackLocation(currentProject, pointTrackId);
+    const location = findPointTrackLocation(projectRef.current, pointTrackId);
     if (!location) {
       return;
     }
@@ -4846,16 +4852,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (options.length <= 1 || index < 0 || index >= options.length) {
       return;
     }
-    const removedValue = options[index];
-    const nextTypeOptions = options.filter((_, optionIndex) => optionIndex !== index);
-    const fallbackOption = nextTypeOptions[0] ?? "标记 1";
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
-      ...pointTrack,
-      typeOptions: nextTypeOptions,
-      points: pointTrack.points.map((point) =>
-        point.label === removedValue ? { ...point, label: fallbackOption } : point,
-      ),
-    }));
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => {
+      const removedValue = pointTrack.typeOptions[index];
+      if (removedValue === undefined || pointTrack.typeOptions.length <= 1) return pointTrack;
+      const nextTypeOptions = pointTrack.typeOptions.filter((_, optionIndex) => optionIndex !== index);
+      const fallbackOption = nextTypeOptions[0] ?? "标记 1";
+      return {
+        ...pointTrack,
+        typeOptions: nextTypeOptions,
+        points: pointTrack.points.map((point) =>
+          point.label === removedValue ? { ...point, label: fallbackOption } : point),
+      };
+    });
   }
 
   function deleteCustomTrack(trackId: string) {
