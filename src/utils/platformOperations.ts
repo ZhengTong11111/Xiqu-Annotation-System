@@ -7,7 +7,6 @@ import type { ProjectDocumentOperation } from "../state/projectDocumentState";
 // 当前服务器 snapshot 仍由 /save 保存整份 payload，operation log 只是审计和未来协同同步的地基。
 // 如果每条 operation 都存完整 beforeProject/afterProject，一次普通编辑就会把整份项目写进数据库，很快膨胀。
 type ServerOperationPayload = {
-  localOperationId: string;
   localCreatedAt: number;
   type: ProjectDocumentOperation["type"];
   historyAction: ProjectDocumentOperation["action"];
@@ -25,7 +24,6 @@ export function buildServerOperationRequest(
   serverBaseRevision: number,
 ): CreateAnnotationOperationRequest {
   const payload: ServerOperationPayload = {
-    localOperationId: operation.id,
     localCreatedAt: operation.createdAt,
     type: operation.type,
     historyAction: operation.action,
@@ -38,6 +36,8 @@ export function buildServerOperationRequest(
     payload.changedTrackIds = diffTrackSnapTrackIds(operation);
   }
   return {
+    // 本地稳定 id 是服务端一等幂等键；网络响应丢失后的重试不会再插入重复 operation。
+    clientOperationId: operation.id,
     baseRevision: serverBaseRevision,
     localRevision: operation.localRevision,
     // 服务端 action 字段用 operation.type（如 "project.commit"）；

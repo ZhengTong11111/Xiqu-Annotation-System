@@ -29,6 +29,7 @@ import type { ResourceService } from "./resourceService.js";
 import { MAX_BATCH_RESOURCE_SELECTION } from "./resourceSelection.js";
 import type { ObjectStorage } from "./objectStorage.js";
 import type { SystemDiagnosticsService } from "./systemDiagnosticsService.js";
+import { isValidClientOperationId } from "./annotationOperationIdempotency.js";
 
 const RESOURCE_TYPES = new Set<ResourceType>([
   "folder",
@@ -850,6 +851,7 @@ export function registerApiRoutes(
   app.post<{
     Params: { resourceId: string };
     Body: {
+      clientOperationId?: unknown;
       baseRevision?: unknown;
       localRevision?: unknown;
       action?: unknown;
@@ -858,6 +860,7 @@ export function registerApiRoutes(
   }>("/api/annotation-files/:resourceId/operations", async (request) => {
     const body = requireObject(request.body);
     if (
+      !isValidClientOperationId(body.clientOperationId) ||
       !Number.isInteger(body.baseRevision) ||
       Number(body.baseRevision) < 0 ||
       (body.localRevision !== undefined &&
@@ -873,6 +876,7 @@ export function registerApiRoutes(
       await getCurrentUser(repository, request),
       request.params.resourceId,
       {
+        clientOperationId: body.clientOperationId,
         baseRevision: Number(body.baseRevision),
         localRevision: body.localRevision === null ||
           body.localRevision === undefined

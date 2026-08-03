@@ -19,7 +19,8 @@ liveness/readiness、低基数 Prometheus 指标和管理员容量/一致性诊�
 告警基线，R3g1 已完成独立 S3-compatible 命名空间中的 manifest-last 远端一致备份创建与流式校验，
 R3g2a 已完成远端包单次流式物化和真实 PostgreSQL/对象目录隔离恢复演练，R3g2b1 已完成 manifest-aware
 远端包检查、保留计划、稳定 token 和确认清理；R3g2b2a 已补齐无残留能力验收命令、最小 IAM 模板和
-部署检查表。R3 下一切片是在真实生产 MinIO/AWS 环境执行 R3g2b2 验收；`pg_trgm` 仍作为
+部署检查表。真实生产 MinIO/AWS 的 R3g2b2 等待目标环境，本地开发转入 R4a operation 幂等接收基础；
+`pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
 ## 1. 产品目标
@@ -355,6 +356,9 @@ R3g2a 已完成远端包单次流式物化和真实 PostgreSQL/对象目录隔�
 
 ### R4：自动保存、离线队列与恢复同步
 
+- R4a 已完成：把本地 operation id 提升为服务端一等幂等键，建立请求指纹、数据库唯一约束、并发
+  单行接收和 revision 推进后的安全重放；这是持久离线队列与自动保存的前置，不会直接应用 operation
+  payload 或替代完整 revision save。
 - 定义自动保存节流、保存中继续编辑和页面关闭策略。
 - pending operations 持久化到 IndexedDB，不能只留在 React 内存。
 - 为客户端 operation 增加服务端幂等键，刷新重试不重复落日志。

@@ -225,8 +225,10 @@ Range。重要平台修改完成后应同时运行相关专项测试和完整构
 - 恢复快照是事故恢复安全网，不作为普通文件或“发布版本”展示。
 - 本地 JSON 的 `PROJECT_FILE_VERSION` 与平台 revision 是两个独立层次。
 
-当前 operation log 只记录编辑摘要，完整标注内容仍由 revision-checked 文件保存接口写入；
-实时多人同步尚未实现。
+当前 operation log 只记录编辑摘要，完整标注内容仍由 revision-checked 文件保存接口写入。每个客户端
+operation 使用 `(标注文件、账号、clientOperationId)` 服务端唯一作用域和请求指纹：响应丢失后的完全
+相同重试返回原记录，同 key 异内容明确冲突，不会重复落日志。该幂等基础不等于自动保存；浏览器持久化
+离线队列和实时多人同步尚未实现。
 
 ## 界面总览
 
@@ -1151,8 +1153,8 @@ Prometheus 指标、管理员诊断面板、跨实例维护写入静默边界，
 
 ### 2. 尚未实现实时多人协作
 
-已有 pending operations、operation log、revision 冲突和同步状态基础，但 WebSocket、presence、
-实时 operation 合并和离线自动恢复尚未实现。多人同时保存同一 revision 时，后到者会收到
+已有 pending operations、幂等 operation log、revision 冲突和同步状态基础，但 WebSocket、presence、
+实时 operation 合并、IndexedDB 队列和离线自动恢复尚未实现。多人同时保存同一 revision 时，后到者会收到
 冲突提示。
 
 ### 3. 本地视频需要重新关联

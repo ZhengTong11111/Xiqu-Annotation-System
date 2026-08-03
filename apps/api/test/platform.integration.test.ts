@@ -2544,6 +2544,7 @@ test("平台资源 API 集成测试", async (suite) => {
         method: "POST",
         url: `/api/annotation-files/${annotationFileId}/operations`,
         payload: {
+          clientOperationId: "op-stale-revision",
           baseRevision: 1,
           localRevision: 2,
           action: "character.updateText",
@@ -2557,6 +2558,114 @@ test("平台资源 API 集成测试", async (suite) => {
         }),
         0,
       );
+
+      // 首次 operation 使用当前 revision；相同请求重放必须返回同一服务端 id，不能重复落行。
+      const currentFile = await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: annotationFileId },
+      });
+      const replayRequest = {
+        clientOperationId: "op-idempotent-replay",
+        baseRevision: currentFile.revision,
+        localRevision: 10,
+        action: "project.commit",
+        payload: { historyAction: "edit", entityIds: ["char-1"] },
+      };
+      const firstOperation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+        payload: replayRequest,
+      });
+      const replayedOperation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+        payload: replayRequest,
+      });
+      assert.equal(firstOperation.statusCode, 200, firstOperation.body);
+      assert.equal(replayedOperation.statusCode, 200, replayedOperation.body);
+      assert.equal(dataOf(firstOperation.json()).id, dataOf(replayedOperation.json()).id);
+      assert.equal(dataOf(firstOperation.json()).clientOperationId, replayRequest.clientOperationId);
+      assert.equal(await prisma.annotationOperation.count({
+        where: { annotationFileId },
+      }), 1);
+
+      // 完整保存推进服务器 revision 后，已接受 operation 的迟到重放仍返回原事实。
+      const revisionAdvance = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${annotationFileId}`,
+        payload: {
+          baseRevision: currentFile.revision,
+          payload: currentFile.payload,
+        },
+      });
+      assert.equal(revisionAdvance.statusCode, 200, revisionAdvance.body);
+      const replayAfterSave = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+        payload: replayRequest,
+      });
+      assert.equal(replayAfterSave.statusCode, 200, replayAfterSave.body);
+      assert.equal(dataOf(replayAfterSave.json()).id, dataOf(firstOperation.json()).id);
+
+      // 同 key 但 payload 不同属于幂等冲突；新 key 使用旧 revision 则仍是普通 revision 冲突。
+      const mismatchedReplay = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+        payload: { ...replayRequest, payload: { historyAction: "undo" } },
+      });
+      assert.equal(mismatchedReplay.statusCode, 409);
+      const mismatchError = (mismatchedReplay.json() as JsonObject).error as JsonObject;
+      assert.equal((mismatchError.details as JsonObject).code, "idempotency_conflict");
+      const staleNewKey = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+        payload: { ...replayRequest, clientOperationId: "op-new-but-stale" },
+      });
+      assert.equal(staleNewKey.statusCode, 409);
+
+      // 数据库唯一约束让两个并发相同请求收敛为一行并返回相同 id。
+      const latestRevision = Number(dataOf(revisionAdvance.json()).revision);
+      const concurrentRequest = {
+        ...replayRequest,
+        clientOperationId: "op-concurrent-replay",
+        baseRevision: latestRevision,
+        localRevision: 11,
+      };
+      const [concurrentLeft, concurrentRight] = await Promise.all([
+        jsonRequest(app, adminToken, {
+          method: "POST",
+          url: `/api/annotation-files/${annotationFileId}/operations`,
+          payload: concurrentRequest,
+        }),
+        jsonRequest(app, adminToken, {
+          method: "POST",
+          url: `/api/annotation-files/${annotationFileId}/operations`,
+          payload: concurrentRequest,
+        }),
+      ]);
+      assert.equal(concurrentLeft.statusCode, 200, concurrentLeft.body);
+      assert.equal(concurrentRight.statusCode, 200, concurrentRight.body);
+      assert.equal(dataOf(concurrentLeft.json()).id, dataOf(concurrentRight.json()).id);
+
+      // 幂等作用域包含 actor；给学生临时 write 后，相同 client key 生成其自己的 operation。
+      await prisma.resourcePermission.update({
+        where: {
+          resourceId_userId: {
+            resourceId: annotationFileId,
+            userId: "user-student",
+          },
+        },
+        data: { capabilities: ["read", "copy", "write"] },
+      });
+      const studentOperation = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/operations`,
+        payload: concurrentRequest,
+      });
+      assert.equal(studentOperation.statusCode, 200, studentOperation.body);
+      assert.notEqual(dataOf(studentOperation.json()).id, dataOf(concurrentLeft.json()).id);
+      assert.equal(await prisma.annotationOperation.count({
+        where: { annotationFileId },
+      }), 3);
 
       const invalidJob = await jsonRequest(app, adminToken, {
         method: "POST",

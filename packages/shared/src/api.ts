@@ -253,6 +253,7 @@ export type SetPlatformMaintenanceRequest = {
 };
 
 export type CreateAnnotationOperationRequest = {
+  clientOperationId: string;
   baseRevision: number;
   localRevision?: number | null;
   action: string;

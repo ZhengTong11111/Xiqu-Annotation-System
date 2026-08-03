@@ -311,6 +311,7 @@ export type AnnotationOperationRecord = {
   id: string;
   annotationFileId: string;
   actorUserId: string;
+  clientOperationId: string;
   baseRevision: number;
   localRevision?: number | null;
   action: string;

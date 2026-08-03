@@ -245,6 +245,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - cursors bind view/parent/search/type/sort/direction but never carry permission facts; API still evaluates ACL per request
 - `apps/api/src/resourceCopy.ts`
   - pure recursive-copy planning, topological ordering, id allocation, and internal media-reference remapping
+- `apps/api/src/annotationOperationIdempotency.ts`
+  - pure bounded client-operation-id validation and stable JSON/SHA-256 request fingerprinting
+  - idempotency scope is `(annotationFileId, actorUserId, clientOperationId)`; an exact accepted replay returns the original
+    row before current-revision rejection, while the same key with a different fingerprint is a 409 conflict
 - `apps/api/src/backup/`
   - versioned local/remote full-backup, offline/streamed verification, PostgreSQL tool runner, maintenance operator CLI,
     and isolated local/remote restore-drill modules
@@ -645,7 +649,8 @@ Current backend capabilities:
 - atomic batch trash with parent/descendant selection collapsing; the legacy single-item endpoint delegates to the same core
 - audit-log table plus a generic browser/filter/export API for login, upload, resource mutations, permission changes,
   annotation saves, review facts, maintenance, and recovery operations
-- annotation operation-log table and API for recording client-submitted edit operations before future autosave/collaboration work
+- annotation operation-log table and API with per-file/per-actor client idempotency, immutable request fingerprints, and
+  concurrent single-row acceptance before future autosave/collaboration work
 - confirmed annotation ranges backed by PostgreSQL, with all/domain/persisted-track scopes, immutable revision binding,
   additive revocation facts, list/create/revoke APIs, and same-transaction audit summaries
 - placeholder processing-job API for future pitch, spectrogram, Gongche render, pose, transcode, and export services
@@ -737,7 +742,9 @@ Important backend caveats:
   distribution/review should build on resource copy, ACL, file comparison, and a separate confirmed-annotation layer
 - confirmed-range review is implemented end to end; entity-level confirmation, comments/signatures, automatic
   carry-forward across revisions, and real-time collaboration are not implemented
-- annotation operations currently only record operation metadata/payload and do not mutate annotation-file payloads; full payloads are still written by the annotation-file save route
+- annotation operations currently only record operation metadata/payload and do not mutate annotation-file payloads; full
+  payloads are still written by the annotation-file save route. Idempotent acceptance must not be described as autosave,
+  offline persistence, operation replay into document state, or real-time collaboration
 - audit logs intentionally store summary `detail` objects, not full annotation payloads or uploaded file contents
 - global audit queries are admin-only. A non-admin query must be scoped to one resource and requires effective
   `manage_permissions`; ordinary `read` access is insufficient.

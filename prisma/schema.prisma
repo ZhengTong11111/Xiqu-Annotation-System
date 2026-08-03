@@ -384,20 +384,23 @@ model PlatformRuntimeState {
 }
 
 model AnnotationOperation {
-  id               String                    @id @default(uuid())
-  annotationFileId String                    @map("annotation_file_id")
-  actorUserId      String                    @map("actor_user_id")
-  baseRevision     Int                       @map("base_revision")
-  localRevision    Int?                      @map("local_revision")
-  action           String
-  payload          Json
-  status           AnnotationOperationStatus @default(accepted)
-  createdAt        DateTime                  @default(now()) @map("created_at")
+  id                String                    @id @default(uuid())
+  annotationFileId  String                    @map("annotation_file_id")
+  actorUserId       String                    @map("actor_user_id")
+  clientOperationId String                    @map("client_operation_id")
+  requestHash       String                    @map("request_hash")
+  baseRevision      Int                       @map("base_revision")
+  localRevision     Int?                      @map("local_revision")
+  action            String
+  payload           Json
+  status            AnnotationOperationStatus @default(accepted)
+  createdAt         DateTime                  @default(now()) @map("created_at")
 
   annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
   actor         User           @relation("AnnotationOperationActor", fields: [actorUserId], references: [id])
 
   @@index([annotationFileId, createdAt])
   @@index([actorUserId, createdAt])
+  @@unique([annotationFileId, actorUserId, clientOperationId])
   @@map("annotation_operations")
 }

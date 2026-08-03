@@ -22,6 +22,7 @@ import {
 import { ResourceAccessService } from "./resourceAccess.js";
 import { toFile, toPublicUser } from "./repositoryMappers.js";
 import { ensurePlatformSeedData } from "./repositorySeed.js";
+import { createAnnotationOperationRequestHash } from "./annotationOperationIdempotency.js";
 
 export class PrismaPlatformRepository {
   constructor(
@@ -183,7 +184,30 @@ export class PrismaPlatformRepository {
     input: CreateAnnotationOperationRequest,
   ) {
     await this.access.assertCapability(user, annotationFileId, "write");
+    const requestHash = createAnnotationOperationRequestHash({
+      baseRevision: input.baseRevision,
+      localRevision: input.localRevision ?? null,
+      action: input.action,
+      payload: input.payload,
+    });
     const row = await this.prisma.$transaction(async (transaction) => {
+      const uniqueWhere = {
+        annotationFileId_actorUserId_clientOperationId: {
+          annotationFileId,
+          actorUserId: user.id,
+          clientOperationId: input.clientOperationId,
+        },
+      } as const;
+
+      // 已接受请求的重放必须先于 revision 检查；完整保存推进 revision 后，旧响应的安全重试仍应返回原行。
+      const existing = await transaction.annotationOperation.findUnique({
+        where: uniqueWhere,
+      });
+      if (existing) {
+        assertIdempotentOperationMatch(existing.requestHash, requestHash);
+        return existing;
+      }
+
       // 与完整 payload 保存锁定同一行，避免刚确认 baseRevision 后另一个事务先推进 revision。
       await transaction.$queryRaw`
         SELECT resource_id
@@ -203,10 +227,16 @@ export class PrismaPlatformRepository {
           receivedRevision: input.baseRevision,
         });
       }
-      return transaction.annotationOperation.create({
-        data: {
+      // upsert 让并发相同 key 在数据库唯一约束下收敛为一行；返回后仍核对 hash，拒绝同 key 异内容。
+      const accepted = await transaction.annotationOperation.upsert({
+        where: uniqueWhere,
+        // 对唯一键做无语义赋值，使 Prisma 生成数据库原子 upsert；空 update 在并发下可能退化为先查后插。
+        update: { clientOperationId: input.clientOperationId },
+        create: {
           annotationFileId,
           actorUserId: user.id,
+          clientOperationId: input.clientOperationId,
+          requestHash,
           baseRevision: input.baseRevision,
           localRevision: input.localRevision ?? null,
           action: input.action,
@@ -214,6 +244,8 @@ export class PrismaPlatformRepository {
           status: "accepted",
         },
       });
+      assertIdempotentOperationMatch(accepted.requestHash, requestHash);
+      return accepted;
     });
     return this.mapOperation(row);
   }
@@ -253,6 +285,7 @@ export class PrismaPlatformRepository {
     id: string;
     annotationFileId: string;
     actorUserId: string;
+    clientOperationId: string;
     baseRevision: number;
     localRevision: number | null;
     action: string;
@@ -264,6 +297,7 @@ export class PrismaPlatformRepository {
       id: row.id,
       annotationFileId: row.annotationFileId,
       actorUserId: row.actorUserId,
+      clientOperationId: row.clientOperationId,
       baseRevision: row.baseRevision,
       localRevision: row.localRevision,
       action: row.action,
@@ -271,5 +305,17 @@ export class PrismaPlatformRepository {
       status: row.status,
       createdAt: row.createdAt.toISOString(),
     };
+  }
+}
+
+// 同一幂等 key 只能代表一个不可变请求；冲突响应不回显服务端 hash 或客户端 payload。
+function assertIdempotentOperationMatch(
+  storedRequestHash: string,
+  receivedRequestHash: string,
+) {
+  if (storedRequestHash !== receivedRequestHash) {
+    throw conflict("客户端操作编号已用于另一项请求。", {
+      code: "idempotency_conflict",
+    });
   }
 }

@@ -2263,3 +2263,84 @@ Codex 直接实施，没有委托 Claude Code、DeepSeek、GLM 或其他代理�
   大于 500 kB 提醒。`git diff --check` 与 IAM JSON 语法检查通过，未新增依赖或 lockfile 变化。
 - 最终全文检索确认命令只有一个 CLI 调度入口、服务只有一个 `ObjectStorage` 编排路径；没有遗留临时
   smoke 文件、SeaweedFS 进程、测试 bucket、旧探针或僵尸逻辑。文档没有把 R3g2b2a 写成生产验收完成。
+
+## 2026-08-03：R4a 标注 operation 服务端幂等接收基础
+
+本轮从 R3g2b2a commit `331b57f` 和干净工作树开始。真实 R3g2b2 仍需要尚未提供的生产 MinIO/AWS、
+TLS、网络和 IAM 环境；roadmap 允许可靠性基础持续加强时进入 R4，且 R4 的幂等/离线基础是 R5 实时
+协作硬前置。因此先审计 Prisma `AnnotationOperation`、operation GET/POST、完整 revision save、客户端
+`useProjectDocumentState()`、`submitPendingOperations()` 和现有 API 集成测试，再把被忽略的
+`CLAUDE_WORK.md` 整体替换为 R4a 任务书。本轮由 Codex 直接实施，没有委托 Claude Code、DeepSeek、
+GLM 或其他代理。
+
+审计发现的真实漏洞：
+
+- 本地 `ProjectDocumentOperation.id` 已稳定生成，但只被塞进 payload 的 `localOperationId`；共享请求、
+  数据库列和唯一索引都不知道它是幂等键。
+- 保存顺序是逐条 POST operation 摘要，再 PUT 完整 payload。如果服务端已插入 operation、但响应在网络
+  中丢失，客户端 callback 尚未把它标成 submitted，下一次保存会再次插入相同行。
+- React `submitted` 状态只减少同一页面内“后续完整保存失败”的重复提交，刷新后完全丢失；它不能替代
+  服务端幂等。若简单加 unique 却仍先检查 current revision，完整保存推进 revision 后的迟到安全重放
+  又会被错误拒绝。
+
+数据合同、迁移与纯逻辑：
+
+- `CreateAnnotationOperationRequest` 新增必填 `clientOperationId`；record 返回该 id 供客户端确认，但绝不
+  返回内部 `requestHash`。客户端 builder 把本地 operation id 放入一等字段，并从摘要 payload 删除重复
+  `localOperationId` 和对应旧注释。
+- `AnnotationOperation` 新增 `client_operation_id`、`request_hash`，唯一作用域为
+  `(annotation_file_id, actor_user_id, client_operation_id)`。不同账号可独立复用同一 client key，不能读取
+  或占用彼此幂等空间。
+- 第 9 个 migration `20260803080000_annotation_operation_idempotency` 先加 nullable 列，把历史行确定性
+  回填为 `legacy:<server-id>` 和 64 位零 hash，再设 NOT NULL/复合 unique；没有修改 baseline 或删除历史。
+- 新纯模块验证 1–128 位安全 ASCII client id；稳定 JSON 递归排序对象 key、保留数组顺序，拒绝非有限数、
+  非 JSON 实例和循环引用。SHA-256 指纹绑定 base/local revision、action 和 payload；文件/账号由唯一
+  作用域绑定。没有为短小纯函数引入依赖。
+
+事务与并发语义：
+
+- POST 仍先复核当前账号 write 权限。事务先按唯一作用域查已有记录：hash 相同直接返回原 operation，
+  因此文件 revision 后续推进也不影响已接受请求的迟到重放；hash 不同返回带稳定
+  `idempotency_conflict` detail 的 409，不回显 payload/hash。
+- 只有新 key 才按原锁顺序 `FOR SHARE` annotation 行、检查文件存在和 `baseRevision === current`。过期
+  revision 的新 key 仍 409，不能借幂等 API 绕过乐观锁。
+- 首次实现使用 `upsert({ update: {} })`。第一次 API 全套中 migration 成功，但并发相同请求有一个返回
+  500：Prisma 的空 update 没有稳定收敛到数据库原子 conflict-update 路径，仍可能先查后插。没有用宽泛
+  P2002 catch 掩盖未知唯一冲突；改为对 `clientOperationId` 唯一键自身做无语义 update，促使原子 upsert，
+  返回后再次核对 requestHash。第二次并发测试两个请求均 200、id 相同、数据库只有一行。
+- 幂等重放不新增审计事实、不改变 status/createdAt、不推进 annotation revision。operation 仍只是未来
+  同步与审计地基，不会将摘要应用到 `AnnotationFile.payload`，也没有假装实现自动保存。
+
+测试、失败与验证：
+
+- 客户端 builder 专项 1/1；服务端纯 helper 3/3，覆盖现有 op-UUID、安全字符边界、对象 key 稳定排序、
+  数组顺序、循环/NaN 拒绝和全部指纹字段。组合命令最后直接调用 `tsc` 时 zsh 报 command not found，
+  原因是编译器只在 npm 本地 PATH；改用 `npm exec -- tsc` 后严格类型检查通过，代码未因此修改。
+- 首次 `test:api` 应用第 9 个 migration 成功，85 项中 83 通过、平台总 suite 因并发 upsert 500 计为第二
+  个失败；按上述原子 no-op update 修复后重跑 85/85。
+- API 场景覆盖：缺/坏 client id、旧 revision 新 key 拒绝、首次/相同重放同 id/count=1、完整保存推进
+  revision 后旧请求仍可重放、同 key 异 payload 返回稳定 409、Promise.all 并发同 id，以及临时赋予学生
+  write 后相同 client key 生成另一 actor 的独立行。
+
+自我审查与边界：
+
+- 现有 fallback `op-<timestamp>-<random>` 与 UUID id 都符合新字符合同；legacy migration id 不与真实
+  `op-*` 冲突。upsert 的无语义 update 不修改 hash、payload、status 或时间。
+- 重放仍位于 write 权限检查之后：账号失去权限不能借旧幂等 key读取记录。资源隐藏/回收等访问边界也
+  继续由服务端 capability fail closed。
+- R4a 没有持久化浏览器 pending payload/base revision，没有自动保存计时、重试退避、页面关闭保护或
+  409 比较决策。下一轮应先设计 IndexedDB envelope/version/容量/文件隔离和恢复提示，再接自动调度；
+  不能把整份 ProjectData 塞入每条 operation 或直接跳到 WebSocket。
+
+最终回归与开发环境落地：
+
+- `npm run test:platform-operations` 1/1、幂等纯 helper 3/3、`npm run test:api` 85/85、`npm run build`
+  全部通过。完整构建覆盖 Prisma generation、shared、document-model、web 和 API；只保留既有 Vite 主
+  chunk >500 kB 提醒和 pg 9 前置弃用提示。
+- `git diff --check` 通过；全文检索确认旧 `localOperationId` 只剩“断言其不存在”的回归测试，
+  `requestHash` 仅存在 Prisma schema/migration/repository 内，没有进入共享 DTO、浏览器或日志。
+- `npm run db:deploy` 将第 9 个 migration 成功应用到开发库 public schema，`prisma migrate status` 显示
+  9 个 migration 全部最新。为避免旧 API 进程在新 NOT NULL schema 上写入失败，正常终止 PID 10007，
+  用当前代码重启为 PID 19329；`/api/health/ready` 返回 ready，database/storage 均为 ok。
+- API 当前继续运行在 `http://127.0.0.1:4317`。本轮没有修改前端布局，不需要浏览器视觉验收；真正的
+  用户可见离线恢复流程留给后续 R4b。
