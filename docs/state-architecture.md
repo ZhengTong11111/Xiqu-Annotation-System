@@ -2,7 +2,7 @@
 
 本文档说明编辑器本地状态、平台 annotation file 和未来同步层之间的当前边界。
 
-最后更新：2026-08-03
+最后更新：2026-08-04
 
 ## 1. 三个层次
 
@@ -111,15 +111,21 @@ R5a4b2 扩到 sentence、character 和完整 Gongche block，并用 `annotation.
 R5a4b3 新增 `annotation.items.state.update`，用于稳定实体仍存在但多个耦合字段需要整体替换的 Gongche
 symbol、Banyan mark 和 Banyan section；同轮 lifecycle 也支持这三类实体的创建删除。
 
+R5a4c2 新增顶层 `annotation.track.structure.update`，只更新已经存在的自定义文字/动作轨。一个 item 保存
+轨道元数据、完整递归分叉树和该轨全部块的分叉归属，但不包含块时间、文本、类型或附属点内容。before/
+after 必须保持轨道类型与 block 身份集合不变；lane 父子位置、block 父引用、循环、悬空 scope、排序和总
+预算均由 shared parser fail closed。它不能嵌入普通 transaction，以免需要独占租约的结构写入被隐藏。
+
 命令由本次 undo 的真实 `baseProject` 和最终 `nextProject` 提取。连续拖动仍只在 pointer-up 形成一条
 operation；若目标缺失、id 不满足协议、超过 500 项，或同一次编辑还修改了文本/类型/结构等合同外字段，
 调用点安全回退到 legacy `project.commit`，不能记录半个事实或让交互抛错。
 
 当前 operation 是“领域命令与摘要并存”的渐进阶段：
 
-- version 1 时间、稳定内容、生命周期和依赖事务命令可严格验证、持久化和幂等重放请求，但服务端尚未
+- version 1 时间、稳定内容、生命周期、状态、依赖事务和既有自定义轨道结构命令可严格验证、持久化和幂等重放请求，但服务端尚未
   apply 到 payload。
-- 四声/唱腔修改、工尺符号内部编辑、分句合句、分叉结构、导入和 undo/redo 仍是摘要，不可领域重放。
+- 自定义轨道结构 history 的 undo/redo 已分别记录 inverse/正向领域命令；四声/唱腔修改、分句合句、整轨
+  生命周期、附属点轨生命周期和批量导入仍有 legacy 摘要，不可领域重放。
 - 它不会修改 annotation file payload。
 - 它不能作为恢复完整项目的唯一来源。
 - 不应把完整 before/after `ProjectData` 复制进每一条 operation。
@@ -234,9 +240,8 @@ timing/content/state/lifecycle/transaction 混合 revision 链。
 旧 `actionAnnotations` 已在导入归一化时迁移为 custom action block 并清空。本阶段没有为了“覆盖动作创建”
 给该兼容数组继续增加生命周期协议。下一阶段应处理逐字/句与自定义块工尺依赖闭包，而不是恢复旧模型。
 
-后续领域命令继续处理必要的轨道元数据、递归分叉和受控批量变更。
-
-批量导入、轨道结构和递归分叉变更可能需要更高层事务命令，不能强拆成没有原子边界的小操作。
+R5a4c2 已处理既有自定义轨道的元数据、递归分叉和块归属。整轨/附属点轨生命周期、会级联改块类型的
+typeOptions 编辑和批量导入仍需要各自有界事务，不能强拆成没有原子边界的小操作。
 
 ### 4.7 R5a4b2 逐字、句与工尺依赖事务
 
@@ -271,7 +276,7 @@ Inspector 快速输入按索引复用已有 symbol id，仅新增尾项生成新
 的元数据。整段工尺导入、整轨删除等仍可使用 legacy 快照，但提交前必须经过同一引用修复。自动板眼生成
 只有在状态/生命周期事务能重建完整 next 时才写领域命令，否则安全回退快照。
 
-### 4.9 R5a4c1 结构性变更租约
+### 4.9 R5a4c1-R5a4c2 结构性变更租约与首个结构命令
 
 轨道结构、递归分叉、批量导入和大范围修复仍不属于普通实体命令。服务端新增按 annotation file 唯一的
 短时独占租约，绑定 holder、purpose、base revision、创建/过期时间；客户端只得到一次性明文 token，
@@ -282,10 +287,22 @@ PostgreSQL 仅保存 SHA-256。默认 TTL 为 60 秒，续期总计不超过 5 �
 operation、snapshot save、snapshot restore 和租约 acquire/renew/release 全部复用该顺序；权限撤销和资源树移动
 不能再从 operation 的事务外 ACL 检查间隙穿过。
 
-没有有效租约时旧写入完全不变。有有效租约时，同账号另一个标签页也必须提交匹配 token；账号、摘要、
+没有有效租约时普通写入完全不变；`annotation.track.structure.update` 则无论数据库是否已有租约都必须
+先取得锁。有有效租约时，同账号另一个标签页也必须提交匹配 token；账号、摘要、
 base revision 或有效期任一不符均返回可解释 409。operation 接受不释放租约；只有完整 payload revision 与
-operation commit 成功后，才在同一事务删除租约。恢复快照同样受 guard 保护并在成功时释放。R5a4c1 只建立
-后端与 client 合同，尚未让编辑器自动 acquire/renew；首个轨道结构 UI 接线属于 R5a4c2。
+operation commit 成功后，才在同一事务删除租约。恢复快照同样受 guard 保护并在成功时释放。
+
+编辑器的文件会话 runtime 只在内存保存 token，并负责 acquire single-flight、续期 timer、临时网络失败重试、
+文件切换失效和 best-effort release。结构 updater 先预览 no-op，再以串行门禁取得租约，最后基于最新
+`projectRef` 重算并提交；这样等待网络期间的普通编辑不会被旧闭包覆盖，连续点击也不会重复创建 lane。
+保存事务给全部 pending operation 和完整 snapshot 使用同一顶层 token；若恢复草稿中的结构命令已经失锁，
+保存前会重新 acquire。成功保存调用 `markCommitted()` 只清客户端内存，因为服务端已原子删锁；失败则
+保留 token、pending operation 和 IndexedDB 草稿。
+
+`HistoryEntry` 可保存产生该边界的 command envelope。结构 undo 在弹出历史前先取得租约并记录 inverse，
+redo 保存并重发原命令；legacy 历史仍走原有 project.undo/project.redo。当前受控 UI 覆盖轨道名称/颜色、
+显示开关、纯 typeOptions 增加与排序、递归 lane 新增/删除/改名/改色、显示模式和 block branchScope。
+整轨创建/删除、附属点轨生命周期、会同步改 block.type 的 typeOptions 操作及批量导入仍保留后续切片。
 
 ## 5. 浏览器草稿与离线恢复边界
 

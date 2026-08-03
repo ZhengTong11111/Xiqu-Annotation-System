@@ -3129,14 +3129,36 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(renewed.statusCode, 200, renewed.body);
       assert.equal(String(dataOf(renewed.json()).token), leaseToken);
 
+      const structureBefore = {
+        id: "custom-track-one",
+        trackType: "action",
+        name: "动作轨",
+        color: null,
+        typeOptions: ["动作"],
+        attachedPointTracksExpanded: null,
+        snapToWaveformKeypoints: null,
+        autoSetLoopRangeOnSelect: null,
+        branching: null,
+        blocks: [],
+      };
       const acceptedOperation = await jsonRequest(app, adminToken, {
         method: "POST",
         url: `/api/annotation-files/${fileId}/operations`,
         payload: {
           clientOperationId: "lease-op-accepted",
           baseRevision: 1,
-          action: "project.commit",
-          payload: { historyAction: "track-structure" },
+          action: "annotation.track.structure.update",
+          payload: {
+            version: 1,
+            command: {
+              type: "annotation.track.structure.update",
+              items: [{
+                trackId: "custom-track-one",
+                before: structureBefore,
+                after: { ...structureBefore, name: "动作轨（已改名）" },
+              }],
+            },
+          },
           mutationLeaseToken: leaseToken,
         },
       });
@@ -3177,6 +3199,44 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(saved.statusCode, 200, saved.body);
       assert.equal(dataOf(saved.json()).revision, 2);
       assert.equal(await prisma.annotationMutationLease.count({ where: { annotationFileId: fileId } }), 0);
+
+      // 普通内容操作在没有活动租约时保持旧行为；结构命令则必须主动取得租约，不能偷偷降级为普通写入。
+      const normalOperationWithoutLease = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/operations`,
+        payload: {
+          clientOperationId: "lease-normal-operation-without-token",
+          baseRevision: 2,
+          action: "project.commit",
+          payload: { historyAction: "ordinary-content" },
+        },
+      });
+      assert.equal(normalOperationWithoutLease.statusCode, 200, normalOperationWithoutLease.body);
+      const structureOperationWithoutLease = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/operations`,
+        payload: {
+          clientOperationId: "lease-structure-operation-without-token",
+          baseRevision: 2,
+          action: "annotation.track.structure.update",
+          payload: {
+            version: 1,
+            command: {
+              type: "annotation.track.structure.update",
+              items: [{
+                trackId: "custom-track-one",
+                before: structureBefore,
+                after: { ...structureBefore, name: "动作轨（已改名）" },
+              }],
+            },
+          },
+        },
+      });
+      assert.equal(structureOperationWithoutLease.statusCode, 409, structureOperationWithoutLease.body);
+      assert.equal(
+        (errorOf(structureOperationWithoutLease.json()).details as JsonObject).code,
+        "annotation_mutation_lease_required",
+      );
 
       const secondLease = await jsonRequest(app, adminToken, {
         method: "POST",

@@ -16,6 +16,7 @@ export async function assertAnnotationMutationLeaseForWrite(
   actorUserId: string,
   baseRevision: number,
   token: string | undefined,
+  required = false,
   now = new Date(),
 ): Promise<AnnotationMutationLeaseWriteGuard> {
   const lease = await transaction.annotationMutationLease.findUnique({
@@ -27,6 +28,11 @@ export async function assertAnnotationMutationLeaseForWrite(
         code: "annotation_mutation_lease_expired",
       });
     }
+    if (required) {
+      throw conflict("该结构性变更必须先取得文件租约。", {
+        code: "annotation_mutation_lease_required",
+      });
+    }
     return { leaseWasUsed: false };
   }
   if (isAnnotationMutationLeaseExpired(lease.expiresAt, now)) {
@@ -34,6 +40,11 @@ export async function assertAnnotationMutationLeaseForWrite(
     if (token) {
       throw conflict("结构变更租约已过期，请重新取得租约。", {
         code: "annotation_mutation_lease_expired",
+      });
+    }
+    if (required) {
+      throw conflict("该结构性变更必须重新取得文件租约。", {
+        code: "annotation_mutation_lease_required",
       });
     }
     return { leaseWasUsed: false };

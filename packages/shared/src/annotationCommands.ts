@@ -1,3 +1,11 @@
+import {
+  CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
+  invertCustomTrackStructureCommandEnvelope,
+  parseCustomTrackStructureCommandEnvelope,
+  type CustomTrackStructureCommandEnvelope,
+  type CustomTrackStructureUpdateCommand,
+} from "./customTrackStructureCommands.js";
+
 // 本模块定义前后端共享的首版标注领域命令；任何网络或 IndexedDB unknown 输入都必须从这里校验。
 export const ANNOTATION_COMMAND_ENVELOPE_VERSION = 1 as const;
 export const TIMELINE_TIMING_UPDATE_COMMAND = "timeline.items.timing.update" as const;
@@ -12,6 +20,7 @@ export const ANNOTATION_DOMAIN_COMMAND_TYPES = [
   ANNOTATION_LIFECYCLE_UPDATE_COMMAND,
   ANNOTATION_STATE_UPDATE_COMMAND,
   ANNOTATION_TRANSACTION_APPLY_COMMAND,
+  CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
 ] as const;
 export const MAX_ANNOTATION_COMMAND_ITEMS = 500;
 export const MAX_ANNOTATION_TRANSACTION_COMMANDS = 20;
@@ -268,6 +277,7 @@ export type AnnotationDomainCommand =
   | AnnotationItemsContentUpdateCommand
   | AnnotationItemsLifecycleUpdateCommand
   | AnnotationItemsStateUpdateCommand
+  | CustomTrackStructureUpdateCommand
   | AnnotationTransactionApplyCommand;
 
 export type TimelineTimingCommandEnvelope = {
@@ -300,6 +310,7 @@ export type AnnotationCommandEnvelope =
   | AnnotationContentCommandEnvelope
   | AnnotationLifecycleCommandEnvelope
   | AnnotationStateCommandEnvelope
+  | CustomTrackStructureCommandEnvelope
   | AnnotationTransactionCommandEnvelope;
 
 // 调用者提供的当前时间快照与命令目标使用同一稳定身份，不把 ProjectData 结构泄漏到 shared。
@@ -631,6 +642,9 @@ export function parseAnnotationCommandEnvelope(value: unknown): AnnotationComman
   if (value.command.type === ANNOTATION_STATE_UPDATE_COMMAND) {
     return parseAnnotationStateCommandEnvelope(value);
   }
+  if (value.command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND) {
+    return parseCustomTrackStructureCommandEnvelope(value);
+  }
   if (value.command.type === ANNOTATION_TRANSACTION_APPLY_COMMAND) {
     return parseAnnotationTransactionCommandEnvelope(value);
   }
@@ -677,6 +691,9 @@ export function invertAnnotationCommandEnvelope(
   }
   if (envelope.command.type === ANNOTATION_STATE_UPDATE_COMMAND) {
     return buildAnnotationStateUpdateEnvelope(envelope.command.items.map(invertStateItem));
+  }
+  if (envelope.command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND) {
+    return invertCustomTrackStructureCommandEnvelope(envelope);
   }
   const inverseChildren = [...envelope.command.commands]
     .reverse()

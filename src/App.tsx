@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND } from "@xiqu/shared";
 import "./index.css";
+import { PlatformApiError } from "./api/platformClient";
 import { AppShell } from "./components/AppShell";
 import { FloatingPanelWindow } from "./components/FloatingPanelWindow";
 import { InspectorPanel } from "./components/InspectorPanel";
@@ -35,9 +37,10 @@ import { usePlatformOperationCatchUp } from "./platform/usePlatformOperationCatc
 import { useAnnotationConfirmations } from "./platform/useAnnotationConfirmations";
 import { usePlatformAutoSave } from "./platform/usePlatformAutoSave";
 import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
+import { usePlatformMutationLease } from "./platform/usePlatformMutationLease";
+import type { PlatformMutationLeaseViewState } from "./platform/platformMutationLeaseRuntime";
 import {
   type HistoryAction,
-  type HistoryEntry,
   useProjectDocumentState,
 } from "./state/projectDocumentState";
 import type {
@@ -89,6 +92,8 @@ import {
   type PlatformSaveOutcome,
 } from "./utils/platformOperations";
 import { buildProjectAnnotationContentCommand } from "./utils/annotationContentCommand";
+import { buildProjectCustomTrackStructureCommand } from "./utils/customTrackStructureCommand";
+import { areProjectValuesEqual } from "./utils/projectValueEquality";
 import {
   buildProjectAnnotationLifecycleCommand,
   type AnnotationLifecycleTarget,
@@ -520,6 +525,21 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       });
     },
   });
+  // 结构编辑 token 只存在于文件会话级 runtime；丢锁时保留本地草稿并阻断自动盲重试。
+  const mutationLease = usePlatformMutationLease({
+    client: editorSession?.client ?? null,
+    annotationFileId: editorSession?.annotationFileId ?? null,
+    baseRevision: remoteBaseRevision,
+    enabled: Boolean(editorSession?.canWrite),
+    onLeaseLost: (error) => {
+      const message = error instanceof Error ? error.message : "结构编辑租约已失效。";
+      setSyncStatus("error", { errorMessage: `结构编辑锁失效：${message}；本地草稿仍已保留。` });
+      window.alert(`结构编辑锁已经失效：${message}\n本地草稿仍已保留，保存时会重新尝试取得编辑锁。`);
+    },
+  });
+  const mutationLeaseLabel = editorSession
+    ? getMutationLeaseStatusLabel(mutationLease.state, Boolean(mutationLease.getToken()))
+    : undefined;
   // 自动保存只调度可写平台会话；待确认整合暂停，避免运行时草稿未经二次确认进入服务器。
   usePlatformAutoSave({
     enabled: Boolean(editorSession?.canWrite),
@@ -614,6 +634,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const waveformRequestIdRef = useRef(0);
   const spectrogramRequestIdRef = useRef(0);
   const serverSaveInFlightRef = useRef(false);
+  // acquire 需要等待网络；这一门禁避免连续点击在同一租约下重复创建分叉或重复执行历史操作。
+  const structureMutationInFlightRef = useRef(false);
   // clean 平台会话低频追赶已提交 revision；行内编辑、保存、拖拽和整合期间必须暂停。
   usePlatformOperationCatchUp({
     enabled: Boolean(editorSession),
@@ -1908,6 +1930,46 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
   }
 
+  // 平台结构写入先取得数据库租约；本地模式复用同一纯 updater，但不会产生网络请求。
+  async function updateCustomTrackStructure(
+    trackId: string,
+    updater: (track: CustomTrack) => CustomTrack,
+  ) {
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
+      customTracks: baseProject.customTracks.map((track) =>
+        track.id === trackId ? updater(track) : track,
+      ) as CustomTrack[],
+    });
+    const previewBase = projectRef.current;
+    if (areProjectValuesEqual(previewBase, buildNextProject(previewBase))) return false;
+    if (structureMutationInFlightRef.current) return false;
+
+    structureMutationInFlightRef.current = true;
+    const hadLease = Boolean(mutationLease.getToken());
+    try {
+      if (editorSession) {
+        await mutationLease.acquire("track_structure");
+      }
+
+      // acquire 期间仍可能发生普通本地编辑；取得租约后必须基于最新 projectRef 重算，不能覆盖新变化。
+      const baseProject = projectRef.current;
+      const nextProject = buildNextProject(baseProject);
+      if (areProjectValuesEqual(baseProject, nextProject)) {
+        if (editorSession && !hadLease) await mutationLease.release().catch(() => undefined);
+        return false;
+      }
+      const commandEnvelope = buildProjectCustomTrackStructureCommand(baseProject, nextProject, [trackId]);
+      commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
+      return true;
+    } catch (error) {
+      window.alert(formatMutationLeaseError(error));
+      return false;
+    } finally {
+      structureMutationInFlightRef.current = false;
+    }
+  }
+
   function updateBuiltinTrack(
     trackId: BuiltinTrackId,
     updater: (track: BuiltinTrack) => BuiltinTrack,
@@ -2114,7 +2176,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
     if (currentProject.customTracks.some((track) => track.id === parentTrackId)) {
-      updateCustomTrack(parentTrackId, (track) => ({
+      void updateCustomTrackStructure(parentTrackId, (track) => ({
         ...track,
         attachedPointTracksExpanded: !track.attachedPointTracksExpanded,
       }) as CustomTrack);
@@ -2171,6 +2233,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     },
     recordHistory = true,
   ) {
+    const changedKeys = Object.keys(changes);
+    if (recordHistory && changedKeys.length === 1 && changedKeys[0] === "branchScope") {
+      void updateCustomTrackStructure(trackId, (track) => ({
+        ...track,
+        blocks: track.blocks.map((block) =>
+          block.id === blockId ? { ...block, branchScope: changes.branchScope } : block,
+        ) as CustomTrack["blocks"],
+      }) as CustomTrack);
+      return;
+    }
     const currentProject = projectRef.current;
     const baseProject = transientProjectRef.current ?? currentProject;
     const currentBlock = findCustomBlock(currentProject.customTracks, trackId, blockId);
@@ -2192,12 +2264,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ) as CustomTrack[],
     }, timingParentsBefore);
     if (recordHistory) {
-      const isTimingOnly = Object.keys(changes).every((key) =>
+      const isTimingOnly = changedKeys.every((key) =>
         key === "startTime" || key === "endTime",
       );
-      const contentField = Object.keys(changes).length === 1 && changes.text !== undefined
+      const contentField = changedKeys.length === 1 && changes.text !== undefined
         ? "text"
-        : Object.keys(changes).length === 1 && changes.type !== undefined
+        : changedKeys.length === 1 && changes.type !== undefined
           ? "type"
           : null;
       // 自定义块 timing 与内容使用不同领域命令；分叉归属等结构变化仍回退 snapshot。
@@ -4220,7 +4292,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function renameCustomTrack(trackId: string, name: string) {
     const normalizedName = name.trimStart();
-    updateCustomTrack(trackId, (track) => ({
+    void updateCustomTrackStructure(trackId, (track) => ({
       ...track,
       name: normalizedName.length > 0 ? normalizedName : track.name,
     }) as CustomTrack);
@@ -4231,7 +4303,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!normalizedColor) {
       return;
     }
-    updateCustomTrack(trackId, (track) => ({
+    void updateCustomTrackStructure(trackId, (track) => ({
       ...track,
       color: normalizedColor,
     }) as CustomTrack);
@@ -4254,7 +4326,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function setCustomTrackBranchingEnabled(trackId: string, enabled: boolean) {
-    updateCustomTrack(trackId, (track) => ({
+    void updateCustomTrackStructure(trackId, (track) => ({
       ...track,
       branching: {
         ...(track.branching ?? createDefaultTrackBranching()),
@@ -4264,7 +4336,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function setCustomTrackBranchDisplayMode(trackId: string, displayMode: TrackBranchDisplayMode) {
-    updateCustomTrack(trackId, (track) => ({
+    void updateCustomTrackStructure(trackId, (track) => ({
       ...track,
       branching: {
         ...(track.branching ?? createDefaultTrackBranching()),
@@ -4286,16 +4358,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!name) {
       return;
     }
-    updateCustomTrack(trackId, (currentTrack) => {
+    const laneColor = getBranchLaneColor(resolveCustomTrackColor(track), currentBranching.lanes, parentLaneId);
+    const nextLane = createBranchLane(name, parentLaneId, laneColor);
+    void updateCustomTrackStructure(trackId, (currentTrack) => {
       const branching = currentTrack.branching ?? createDefaultTrackBranching();
-      const parentColor = resolveCustomTrackColor(currentTrack);
-      const laneColor = getBranchLaneColor(parentColor, branching.lanes, parentLaneId);
       return {
         ...currentTrack,
         branching: {
           ...branching,
           enabled: true,
-          lanes: addBranchLane(branching.lanes, parentLaneId, createBranchLane(name, parentLaneId, laneColor)),
+          lanes: addBranchLane(branching.lanes, parentLaneId, nextLane),
         },
       } as CustomTrack;
     });
@@ -4306,7 +4378,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!normalizedColor) {
       return;
     }
-    updateCustomTrack(trackId, (track) => {
+    void updateCustomTrackStructure(trackId, (track) => {
       if (!track.branching) {
         return track;
       }
@@ -4322,7 +4394,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function renameCustomTrackBranchLane(trackId: string, laneId: string, name: string) {
     const normalizedName = name.trimStart();
-    updateCustomTrack(trackId, (track) => {
+    void updateCustomTrackStructure(trackId, (track) => {
       if (!track.branching || normalizedName.length === 0) {
         return track;
       }
@@ -4337,7 +4409,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function deleteCustomTrackBranchLane(trackId: string, laneId: string) {
-    updateCustomTrack(trackId, (track) => {
+    void updateCustomTrackStructure(trackId, (track) => {
       if (!track.branching) {
         return track;
       }
@@ -4379,7 +4451,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
     const customTrack = projectRef.current.customTracks.find((track) => track.id === trackId);
     if (customTrack) {
-      updateCustomTrack(trackId, (track) => ({
+      void updateCustomTrackStructure(trackId, (track) => ({
         ...track,
         snapToWaveformKeypoints: enabled,
       }) as CustomTrack);
@@ -4404,7 +4476,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
     const customTrack = projectRef.current.customTracks.find((track) => track.id === trackId);
     if (customTrack) {
-      updateCustomTrack(trackId, (track) => ({
+      void updateCustomTrackStructure(trackId, (track) => ({
         ...track,
         autoSetLoopRangeOnSelect: enabled,
       }) as CustomTrack);
@@ -4513,7 +4585,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function addCustomTrackTypeOption(trackId: string) {
-    updateCustomTrack(trackId, (track) => ({
+    void updateCustomTrackStructure(trackId, (track) => ({
       ...track,
       typeOptions: [...track.typeOptions, getNextCustomTrackTypeOptionName(track.typeOptions)],
     }) as CustomTrack);
@@ -4534,7 +4606,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function moveCustomTrackTypeOption(trackId: string, index: number, direction: "up" | "down") {
-    updateCustomTrack(trackId, (track) => {
+    void updateCustomTrackStructure(trackId, (track) => {
       const targetIndex = direction === "up" ? index - 1 : index + 1;
       if (targetIndex < 0 || targetIndex >= track.typeOptions.length) {
         return track;
@@ -4582,7 +4654,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function reorderCustomTrackTypeOption(trackId: string, fromIndex: number, insertionIndex: number) {
-    updateCustomTrack(trackId, (track) => {
+    void updateCustomTrackStructure(trackId, (track) => {
       if (
         fromIndex < 0 ||
         fromIndex >= track.typeOptions.length ||
@@ -4800,16 +4872,43 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function undo() {
-    undoProject((previousEntry: HistoryEntry) => {
-      if (!requiresUndoConfirmation(previousEntry.action)) {
-        return true;
-      }
-      return window.confirm(getUndoConfirmationMessage(previousEntry.action));
-    });
+    const previousEntry = undoStack[undoStack.length - 1];
+    if (!previousEntry) return;
+    if (requiresUndoConfirmation(previousEntry.action) &&
+      !window.confirm(getUndoConfirmationMessage(previousEntry.action))) return;
+    if (previousEntry.commandEnvelope?.command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND) {
+      void runHistoryMutationWithStructureLease(() => undoProject(() => true));
+      return;
+    }
+    undoProject(() => true);
   }
 
   function redo() {
+    const nextEntry = redoStack[redoStack.length - 1];
+    if (nextEntry?.commandEnvelope?.command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND) {
+      void runHistoryMutationWithStructureLease(redoProject);
+      return;
+    }
     redoProject();
+  }
+
+  async function runHistoryMutationWithStructureLease(mutation: () => boolean) {
+    if (structureMutationInFlightRef.current) return;
+    structureMutationInFlightRef.current = true;
+    const hadLease = Boolean(mutationLease.getToken());
+    try {
+      if (editorSession) {
+        await mutationLease.acquire("track_structure");
+      }
+      const changed = mutation();
+      if (!changed && editorSession && !hadLease) {
+        await mutationLease.release().catch(() => undefined);
+      }
+    } catch (error) {
+      window.alert(formatMutationLeaseError(error));
+    } finally {
+      structureMutationInFlightRef.current = false;
+    }
   }
 
   async function importSrtFile(file: File) {
@@ -5082,6 +5181,13 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     setSyncStatus("saving");
     const submittedOperationIds: string[] = [];
     try {
+      // 续期失效后结构命令仍保留在草稿中；保存前按真实 pending 事实补取租约，形成可恢复闭环。
+      const requiresStructureLease = pendingOperationsRef.current.some(
+        (operation) => operation.commandEnvelope?.command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
+      );
+      if (requiresStructureLease && !mutationLease.getToken()) {
+        await mutationLease.acquire("track_structure");
+      }
       // 1. 先把本地 pending operations 作为服务端 operation log 写入。
       //    用 pendingOperationsRef 而非 state：commitCharacterTextEdit 等同步提交的编辑
       //    会立即更新 ref，但 state 要等下一次渲染，闭包里的 pendingOperations 可能漏掉它们。
@@ -5099,6 +5205,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       // 那些新编辑不能混入本次 snapshot，也不能在成功后被误标为已保存。
       const projectSnapshot = projectRef.current;
       const trackSnapSnapshot = trackSnapEnabledRef.current;
+      const mutationLeaseToken = mutationLease.getToken();
       if (pendingSnapshot.length > 0) {
         await submitPendingOperations(
           editorSession.client,
@@ -5106,6 +5213,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           pendingSnapshot,
           remoteBaseRevision,
           (operationId) => submittedOperationIds.push(operationId),
+          mutationLeaseToken,
         );
       }
       // 2. 保存完整 ProjectData；服务端在覆盖前自动留一份隐藏恢复快照。
@@ -5115,8 +5223,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         payload: projectToSave,
         // covered ids 包含此前 POST 成功但 PUT 失败的 submitted operation，使重试仍能原子绑定快照。
         clientOperationIds: coveredOperationIds,
+        ...(mutationLeaseToken ? { mutationLeaseToken } : {}),
       });
       // 3. 成功后更新 baseRevision 并确认本地 pending operations（清空 pending、标 acknowledged）。
+      if (mutationLeaseToken) mutationLease.markCommitted();
       setRemoteBaseRevision(savedFile.revision);
       setRemoteOperationCursor(savedFile.operationCursor);
       editorSession.onAnnotationFileSaved(savedFile);
@@ -5487,6 +5597,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           savedRevision={syncState.savedRevision}
           pendingOperationCount={pendingOperations.length}
           accessLabel={editorSession?.accessLabel}
+          mutationLeaseLabel={mutationLeaseLabel}
           videoFileInputRef={videoFileInputRef}
           srtFileInputRef={srtFileInputRef}
           projectFileInputRef={projectFileInputRef}
@@ -8607,6 +8718,36 @@ function isEditableKeyboardTarget(target: EventTarget | null) {
     return true;
   }
   return ["INPUT", "SELECT", "TEXTAREA"].includes(element.tagName);
+}
+
+// 租约竞争优先展示服务端提供的持有者和失效时间；未知错误仍保留原始诊断，不从中文字符串猜状态。
+function formatMutationLeaseError(error: unknown) {
+  if (!(error instanceof PlatformApiError) || !error.details ||
+    typeof error.details !== "object" || Array.isArray(error.details)) {
+    return error instanceof Error ? error.message : "无法取得结构编辑锁，请稍后重试。";
+  }
+  const details = error.details as Record<string, unknown>;
+  const holder = details.holder && typeof details.holder === "object" && !Array.isArray(details.holder)
+    ? details.holder as Record<string, unknown>
+    : null;
+  const holderName = typeof holder?.displayName === "string" ? holder.displayName : null;
+  const expiresAt = typeof details.expiresAt === "string" ? new Date(details.expiresAt) : null;
+  const expiryLabel = expiresAt && Number.isFinite(expiresAt.getTime())
+    ? expiresAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    : null;
+  return [
+    error.message,
+    holderName ? `当前持有者：${holderName}` : null,
+    expiryLabel ? `预计失效：${expiryLabel}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+// 顶部只呈现短状态，不显示 token 或把租约误写成项目同步状态。
+function getMutationLeaseStatusLabel(state: PlatformMutationLeaseViewState, hasValidToken: boolean) {
+  if (state.status === "acquiring") return "正在取得结构编辑锁";
+  if (state.status === "active") return "结构编辑锁";
+  if (state.status === "error") return hasValidToken ? "结构锁续期重试中" : "结构编辑锁异常";
+  return undefined;
 }
 
 function App() {

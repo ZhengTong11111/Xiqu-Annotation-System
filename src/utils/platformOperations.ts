@@ -22,6 +22,7 @@ type ServerOperationPayload = {
 export function buildServerOperationRequest(
   operation: ProjectDocumentOperation,
   serverBaseRevision: number,
+  mutationLeaseToken?: string,
 ): CreateAnnotationOperationRequest {
   // 已迁移操作保留稳定目标和 before/after，服务端会校验 action 与 envelope 一致。
   if (operation.commandEnvelope) {
@@ -31,6 +32,7 @@ export function buildServerOperationRequest(
       localRevision: operation.localRevision,
       action: operation.commandEnvelope.command.type,
       payload: operation.commandEnvelope,
+      ...(mutationLeaseToken ? { mutationLeaseToken } : {}),
     };
   }
   const payload: ServerOperationPayload = {
@@ -54,6 +56,7 @@ export function buildServerOperationRequest(
     // 更细的 historyAction（edit/import-srt 等）放 payload 里。
     action: operation.type,
     payload,
+    ...(mutationLeaseToken ? { mutationLeaseToken } : {}),
   };
 }
 
@@ -69,6 +72,7 @@ export async function submitPendingOperations(
   pendingOperations: ProjectDocumentOperation[],
   serverBaseRevision: number,
   onSubmitted?: (operationId: string) => void,
+  mutationLeaseToken?: string,
 ) {
   const submittedOperationIds: string[] = [];
   for (const operation of pendingOperations) {
@@ -77,7 +81,7 @@ export async function submitPendingOperations(
     }
     await client.createAnnotationOperation(
       annotationFileId,
-      buildServerOperationRequest(operation, serverBaseRevision),
+      buildServerOperationRequest(operation, serverBaseRevision, mutationLeaseToken),
     );
     submittedOperationIds.push(operation.id);
     // 逐条回调，让调用方即使在后续 operation 失败时，也能知道哪些已经写入服务端。
@@ -107,6 +111,14 @@ export function describeServerSaveError(error: unknown): Exclude<
 > {
   if (error instanceof PlatformApiError) {
     if (error.status === 409) {
+      const detailCode = getPlatformErrorDetailCode(error.details);
+      if (detailCode?.startsWith("annotation_mutation_lease_")) {
+        return {
+          status: "error",
+          retryable: false,
+          message: `${error.message} 本地草稿仍已保留，请重新取得结构编辑锁后再保存。`,
+        };
+      }
       return {
         status: "conflict",
         retryable: false,
@@ -146,4 +158,10 @@ export function describeServerSaveError(error: unknown): Exclude<
     retryable: false,
     message: "保存到服务器失败。",
   };
+}
+
+function getPlatformErrorDetailCode(details: unknown) {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return null;
+  const code = (details as Record<string, unknown>).code;
+  return typeof code === "string" ? code : null;
 }

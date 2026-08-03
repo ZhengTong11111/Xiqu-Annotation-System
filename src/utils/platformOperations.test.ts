@@ -84,13 +84,19 @@ test("平台 operation 请求完整保留领域命令 envelope", () => {
     summary: { hasProjectChange: true, hasTrackSnapChange: false },
   };
 
-  assert.deepEqual(buildServerOperationRequest(operation, 12), {
+  assert.deepEqual(buildServerOperationRequest(operation, 12, "xiqu_lease_test"), {
     clientOperationId: "op-domain-command",
     baseRevision: 12,
     localRevision: 6,
     action: "timeline.items.timing.update",
     payload: commandEnvelope,
+    mutationLeaseToken: "xiqu_lease_test",
   });
+  assert.equal(
+    JSON.stringify(buildServerOperationRequest(operation, 12, "xiqu_lease_test").payload)
+      .includes("xiqu_lease_test"),
+    false,
+  );
 });
 
 // 自动保存只重试瞬时服务故障；revision/权限等确定业务错误必须停下等待用户处理。
@@ -108,6 +114,15 @@ test("服务器保存错误分类区分冲突、可重试与确定错误", () =>
   assert.equal(describeServerSaveError(
     new PlatformApiError(403, "forbidden", "禁止", null),
   ).retryable, false);
+  assert.deepEqual(describeServerSaveError(
+    new PlatformApiError(409, "conflict", "结构编辑租约已失效", {
+      code: "annotation_mutation_lease_expired",
+    }),
+  ), {
+    status: "error",
+    retryable: false,
+    message: "结构编辑租约已失效 本地草稿仍已保留，请重新取得结构编辑锁后再保存。",
+  });
   assert.equal(describeServerSaveError(new TypeError("Failed to fetch")).retryable, true);
   assert.equal(describeServerSaveError(new Error("程序错误")).retryable, false);
 });

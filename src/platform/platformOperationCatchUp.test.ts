@@ -10,6 +10,7 @@ import { buildProjectAnnotationContentCommand } from "../utils/annotationContent
 import { buildProjectAnnotationLifecycleCommand } from "../utils/annotationLifecycleCommand";
 import { buildProjectAnnotationStateCommand } from "../utils/annotationStateCommand";
 import { buildProjectAnnotationTransactionCommand } from "../utils/annotationTransactionCommand";
+import { buildProjectCustomTrackStructureCommand } from "../utils/customTrackStructureCommand";
 import { buildProjectTimelineTimingCommand } from "../utils/timelineTimingCommand";
 import { catchUpCommittedAnnotationOperations } from "./platformOperationCatchUp";
 
@@ -247,6 +248,37 @@ test("committed feed 可重放复合实体 state 命令", async () => {
     listPage: async () => ({
       items: [createOperation(1, 1, envelope, { action: "annotation.items.state.update" })],
       nextCursor: "cursor-state",
+      hasMore: false,
+      currentRevision: 1,
+    }),
+  });
+  assert.equal(result.status, "applied");
+  if (result.status === "applied") assert.deepEqual(result.project, next);
+});
+
+test("committed feed 可重放自定义轨道结构命令", async () => {
+  const base = createCatchUpProject();
+  const next = structuredClone(base);
+  next.customTracks[0].name = "远端结构改名";
+  next.customTracks[0].branching = {
+    enabled: true,
+    displayMode: "merged",
+    lanes: [{ id: "lane-catch-up", name: "分支", parentId: null, children: [] }],
+  };
+  const envelope = buildProjectCustomTrackStructureCommand(
+    base,
+    next,
+    [next.customTracks[0].id],
+  );
+  assert.ok(envelope);
+  const result = await catchUpCommittedAnnotationOperations({
+    annotationFileId: FILE_ID,
+    project: base,
+    knownRevision: 0,
+    cursor: "snapshot-0",
+    listPage: async () => ({
+      items: [createOperation(1, 1, envelope, { action: "annotation.track.structure.update" })],
+      nextCursor: "cursor-structure",
       hasMore: false,
       currentRevision: 1,
     }),

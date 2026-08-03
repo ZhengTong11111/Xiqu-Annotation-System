@@ -3528,3 +3528,102 @@ ProjectData builder、adapter 与编辑器接线：
   被新 helper 取代后仍存活的旧锁函数。
 - 下一轮 R5a4c2 应先定义有界轨道结构命令，选择自定义轨道元数据和递归分叉作为首条真实路径，建立编辑器
   acquire → renew → operation/save → release/失败恢复；整轨删除、批量导入与大范围修复继续分轮处理。
+
+## 2026-08-04：R5a4c2 自定义轨道结构命令与编辑器租约闭环
+
+### 本轮计划与边界
+
+- 本轮开始前先把 `CLAUDE_WORK.md` 整体替换为 R5a4c2 当前任务，没有保留上一轮日志。目标不是把所有
+  `updateCustomTrack()` 强行改名，而是选择“已经存在的自定义文字/动作轨”作为第一条真实结构协作路径：
+  轨道元数据、递归分叉树以及块的分叉归属必须形成可校验、可 inverse、可 catch-up 的领域命令，并在本地
+  mutation 之前取得 R5a4c1 的数据库租约。
+- 明确排除整轨创建/删除、附属点轨创建/删除、会同步修改 block.type 的类型选项改名/删除、整段导入和批量
+  修复。这些操作跨生命周期或内容领域，不能为了提高覆盖率塞入一个只更新既有轨道结构的宽松命令。
+- 本轮没有新增数据库 migration，也没有引入新依赖。现有 TypeScript、React hook、shared workspace 和
+  PostgreSQL 租约 API 已足够；依赖策略仍以减少自研复杂度为准，而不是为了形式引包。
+
+### 共享命令与 ProjectData 适配器
+
+- 新增顶层 `annotation.track.structure.update`。每个 item 保存一个既有轨道的 before/after 结构快照：稳定
+  track id/type、name、color、typeOptions、附属点展开/波形吸附/自动循环开关、完整递归 branching，以及
+  该轨全部 block 的 branchScope/branchGroupId/branchParentBlockId。块文字、类型、时间和附属点内容不进入
+  该快照。
+- 该命令显式不允许成为 `annotation.transaction.apply` 子命令。原因不是 parser 限制方便，而是结构命令
+  必须让 API 在 action 层看见并强制租约，不能藏在普通复合事务内部绕过写入门禁。
+- shared unknown parser 只接受精确 key，并验证安全 id、文本/颜色/数组预算、递归深度、整树 lane id 唯一、
+  parentId 与嵌套位置一致、branchScope 只引用现存 lane、scope id 稳定排序、block id 集合在 before/after
+  不变、block 父引用不悬空/不自指/不成环。预算按 before/after 较大结构计一次，整个命令最多 500 个结构
+  单元；inverse 只交换 before/after 并重新走同一 parser。
+- 新增 `customTrackStructureCommand.ts` 和 apply adapter。builder 从真实 base/next ProjectData 生成快照，
+  再用命令 apply 重建完整项目并执行 reference-first 深比较；任何块内容、时间、附属点或其他合同外变化都
+  使 builder 返回 null。apply 先核对全部 before，再一次性写 after，任一目标缺失或漂移均不发布半成品。
+- 通用 `annotationCommandApply.ts`、IndexedDB 草稿 parser、API action/payload allowlist 和 clean catch-up 只
+  增加显式 command 分派，没有复制第二套 parser 或项目迁移逻辑。
+
+### 编辑器写路径、历史与租约运行时
+
+- 新增纯 `platformMutationLeaseRuntime.ts` 和薄 React adapter。token 只存在 runtime 闭包；runtime 管理 acquire
+  single-flight、续期 timer、续期 single-flight、临时网络失败快速重试、临近失效清锁、generation 防迟到
+  响应、显式 release、dispose best-effort release，以及服务端成功提交后的本地 `markCommitted()`。
+- App 新增结构 updater：先做 no-op 预览，再通过串行门禁防止 acquire 等待期间连续点击重复创建 lane；平台
+  会话取得租约后必须基于最新 `projectRef` 重算，避免网络等待期间普通编辑被旧闭包覆盖。本地 JSON 模式走
+  同一个 updater，但不请求 API且保持同步交互。
+- 已迁移轨道名称/颜色、附属点展开、波形吸附、选块自动循环、纯 typeOptions 新增/上下移动/拖拽排序、
+  branching 启停与 merged/expanded、递归 lane 新增/改名/改色/删除，以及 block branchScope。删除 lane 时
+  仍保留既有产品语义：标注内容不删除，失去全部 lane 的块回根轨。
+- `HistoryEntry` 现在可保存正向 command envelope。结构 undo 在弹出历史前先 acquire，并记录 inverse；redo
+  复用原 envelope，同一文件已持锁时不重复 acquire。legacy 历史仍记录 project.undo/project.redo，没有把
+  旧快照错误解释成结构事实。
+- 保存事务给本轮所有 pending operation 与完整 snapshot 使用同一顶层 mutationLeaseToken。token 不进入
+  command payload、operation 指纹、ProjectData、localStorage、IndexedDB 或日志。若续期已真正失效或浏览器
+  草稿恢复后只剩 pending 结构命令，保存前会按 pending 事实重新 acquire，不要求用户再伪造一次结构修改。
+  成功保存后服务端已原子删锁，客户端只清内存；operation/PUT 失败继续保留租约、pending 和草稿。
+- 顶部同步状态旁增加克制的结构锁状态：正在获取、已持有、续期重试或异常。竞争错误优先显示服务端返回
+  的持有者与预计失效时间；真正丢锁会明确提示本地草稿仍在。本轮未新增大面板，也没有把租约状态混入
+  ProjectData 或同步状态枚举。
+
+### 服务端门禁与自审修复
+
+- `assertAnnotationMutationLeaseForWrite()` 增加显式 `required` 参数。repository 仅在 operation action 为
+  `annotation.track.structure.update` 时传 true，因此结构命令在数据库没有租约记录时也返回稳定
+  `annotation_mutation_lease_required`；普通 domain/legacy operation 无租约仍按原行为接受。有活动租约时，
+  operation/save/restore 继续复用 R5a4c1 的账号/token/base revision/有效期校验。
+- 自审发现初版合同只检查 block 父引用是否存在，两个 block 仍可能互指成环；同时 before/after 可替换 block
+  身份，laneIds 顺序也未规范。最终 parser 增加循环检测、完整身份集合一致性和稳定排序，避免未来客户端对
+  同一合法命令产生不同解释。
+- 自审发现仅有 acquire single-flight 不能阻止两个 UI 回调等待同一 promise 后各执行一次，因此 App 增加
+  结构 mutation 串行门禁；这不是用按钮节流掩盖后端竞态，而是保证一次用户结构意图只生成一个本地历史。
+- 自审还发现续期真正失效后 pending 结构 operation 会保留，但旧实现没有无副作用的重新取锁入口。保存前
+  补取租约后，恢复草稿、PUT 失败重试和短时断网都能继续完成，而不必要求用户再改一次轨道。
+- 未发现第二套 ProjectData parser/apply、明文 token 持久化、timer 放在 React 组件、结构命令嵌入普通事务、
+  或被新 helper 替代后仍活跃的旧租约运行时。`updateCustomTrack()` 仍有调用并非僵尸代码，它服务本轮明确
+  排除的 typeOptions 内容级联和附属点轨生命周期。
+
+### 测试、构建与运行验证
+
+- shared command 18/18：包含合法递归树、inverse/action、悬空/错父 lane、坏 block 父引用、额外字段、
+  block 身份漂移、父引用环和未排序 scope。ProjectData 结构 adapter 3/3：覆盖元数据/递归 lane/块归属、
+  inverse、before 冲突、合同外内容变化和删除 lane 回根。
+- 租约 runtime 4/4：acquire single-flight、定时续期、commit 只清内存、显式 release、dispose、迟到 acquire、
+  临时续期失败保留有效 token以及临近过期丢锁。platform operation 4/4：token 只在请求顶层，领域 envelope
+  不含 token，租约 409 与 revision conflict 分类不同。
+- 浏览器草稿/历史 17/17：新增结构命令 IndexedDB 完整往返，以及 commit → undo inverse → redo 正向命令。
+  operation catch-up 13/13：新增 committed 结构命令重放，并继续覆盖分页、revision gap、坏页、legacy 降级、
+  前置失败不泄漏半成品和 runtime stale response。
+- PostgreSQL API 全套 91/91。租约集成用例现同时证明：普通 operation 无锁可写；结构 operation 无现存租约
+  仍被 409 拒绝；正确租约下结构 command 可接受并由完整保存原子绑定/release。其余上传、ACL、快照、审计、
+  备份、监控和资源树测试无回归。仍只有既有 node-postgres pg 9 弃用提示。
+- `npm run build` 通过 Prisma generation、shared、document-model、Web 与 API。Web 转换 2063 模块，主 JS
+  884.32 kB / gzip 266.70 kB，仅保留既有大 chunk 提示；`git diff --check` 通过。
+- 本轮无 migration，开发库仍为 12 条。使用当前工作树重启 Fastify（PID 38300），
+  `GET /api/health/ready` 返回 HTTP 200，数据库探针约 5.36 ms、对象存储约 1.18 ms。
+- 按计划未调用浏览器自动化；本轮 UI 变化只有顶部短状态与既有 Inspector 操作接线，类型检查和生产构建已
+  覆盖。人工验证应依次检查本地模式同步改名、平台首次结构编辑取锁、第二账号竞争、续期状态、保存解锁、
+  结构 undo/redo，以及整轨/附属点轨等未迁移路径仍保持原功能。
+
+### 后续切片
+
+- R5a4c3 应先处理整条自定义轨道和附属点轨的生命周期，以及会同步修改块 type 的 typeOptions 改名/删除。
+  这些变化需要组合结构与实体内容/生命周期，不能扩大当前 update 命令的语义；批量导入和批量修复继续单列。
+- 服务端仍只验证、排序和持久化领域命令，不直接 apply 到权威 payload。WebSocket/presence 和服务端命令执行
+  继续依赖领域覆盖率与冲突语义稳定后再推进。

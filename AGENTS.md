@@ -28,6 +28,9 @@ Main currently contains all major recent feature lines that matter for context:
 - backend audit logs and annotation operation logs for the first platform-governance layer
 - database-backed short-lived annotation mutation leases for structural/bulk writes; ordinary operation/save/restore stays
   unchanged without a lease, while an active lease requires its one-time token and is released only by a successful revision write
+- existing custom-track metadata, recursive branch trees, and block branch ownership now use the strict top-level
+  `annotation.track.structure.update` command; platform edits acquire/renew a file lease before local commit, and structural
+  undo/redo retain inverse/forward command envelopes
 - version 1 timing, stable content-update, lifecycle, composite-state, and dependency-transaction domain commands with strict shared validation,
   draft persistence, inverse/precondition semantics, all-or-nothing ProjectData adapters, server logging, and clean-client
   HTTP replay; lifecycle covers sentences, characters, custom blocks, attached points, Gongche blocks/symbols, and Banyan
@@ -74,6 +77,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/usePlatformAutoSave.ts`
   - thin React facts/callback adapter around one `PlatformAutoSaveRuntime`
   - Strict Effects cleanup must dispose and clear the runtime ref so the second setup creates a live instance
+- `src/platform/platformMutationLeaseRuntime.ts`
+  - memory-only acquire/renew/retry/release coordinator for one annotation-file revision; plaintext tokens must never enter
+    React-persisted state, ProjectData, IndexedDB, logs, or command payloads
+  - temporary renewal failure may retain an unexpired token, but near-expiry failure clears it and reports lease loss
+- `src/platform/usePlatformMutationLease.ts`
+  - thin file-session React adapter; changing file/revision disposes the old runtime and invalidates late responses
 - `src/platform/platformOperationCatchUp.ts`
   - pure bounded committed-feed reader, revision-continuity validator, and all-or-nothing known-command replay planner
   - malformed pages, revision gaps, legacy operations, pagination overflow, and precondition failures require a snapshot
@@ -206,7 +215,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/state/projectDocumentState.ts`
   - authoritative local document/history/sync-state hook
   - owns undo/redo stacks, pending operations, revision counters, dirty/saved status
-  - completed timing edits may carry a validated versioned command envelope; unported edits remain legacy operations
+  - migrated edits may carry a validated versioned command envelope; history retains the forward envelope so undo records
+    its inverse and redo records the original command; unported edits remain legacy operations
 - `src/components/Timeline.tsx`
   - heaviest file
   - owns zoom, ruler scrubbing, snapping, marquee selection, drag/resize, creation flows, waveform guides, spectrogram lane rendering, loop range interaction, Gongche lane rendering, attached point editing
@@ -299,6 +309,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/utils/projectValueEquality.ts`
   - shared reference-first deep equality used by command builders to prove that one envelope reconstructs the complete next
     ProjectData; do not add another JSON-stringify or target-only equality path
+- `src/utils/customTrackStructureCommand.ts` + `src/utils/customTrackStructureCommandApply.ts`
+  - the only ProjectData snapshot/builder/apply path for `annotation.track.structure.update`
+  - the command updates existing custom tracks only; its complete-next equality gate must reject block content, timing,
+    lifecycle, attached-point, or other out-of-contract changes
 - `src/utils/annotationCommandApply.ts`
   - generic ProjectData command dispatcher used by clean catch-up; it only discriminates validated command types and must
     not duplicate a domain parser, precondition, or apply implementation
@@ -307,6 +321,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     parsers, all-target precondition assessment, target keys, limits, and API action/payload allowlist shared by web,
     IndexedDB recovery, and Fastify
   - the server currently validates and logs these commands but does not apply them to `AnnotationFile.payload`
+- `packages/shared/src/customTrackStructureCommands.ts`
+  - strict top-level structure DTO/parser/builder/inverse; it is excluded from `annotation.transaction.apply` because every
+    newly accepted structure operation requires a file mutation lease
+  - before/after keep track type and block identities stable; recursive lane identity/parentage, block-parent cycles,
+    branch-scope references, ordering, no-op, and the 500-item budget fail closed
 - `apps/api/src/`
   - Fastify backend: auth, resource routes, resource ACL evaluation, annotation-file revision saves, Prisma mapping,
     and replaceable local/S3 object storage
@@ -342,6 +361,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - pure lease purpose/token/hash/expiry policy; plaintext lease tokens must never enter PostgreSQL, audit details, logs, or payloads
 - `apps/api/src/annotationMutationLeaseStore.ts`
   - shared active-lease write guard for operation/save/restore; an active lease requires holder, token, and base revision to match
+  - `annotation.track.structure.update` passes `required=true`, so it is rejected without a lease even when no lease row
+    exists; ordinary domain and legacy commands preserve the no-lease path
 - `apps/api/src/storage.ts`
   - local filesystem adapter for `ObjectStorage`, including staging, checksum/size/header capture, atomic publish, safe
     listing, and idempotent deletion; business services must not depend on `LocalObjectStorage` directly
@@ -453,11 +474,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:annotation-content-command`
 - `npm run test:annotation-lifecycle-command`
 - `npm run test:annotation-state-command`
+- `npm run test:custom-track-structure-command`
 - `npm run test:annotation-mutation-lease`
 - `npm run test:annotation-transaction-command`
 - `npm run test:platform-operations`
 - `npm run test:platform-auto-save`
 - `npm run test:platform-auto-save-runtime`
+- `npm run test:platform-mutation-lease-runtime`
 - `npm run test:platform-operation-catch-up`
 - `npm run test:platform-drafts`
 - `npm run test:resource-pagination`

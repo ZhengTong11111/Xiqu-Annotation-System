@@ -30,8 +30,9 @@ opaque 续读游标和有界 operation feed。R5a3a 已把保存声明的 operat
 草稿往返和混合 timing/content 追赶。R5a4b1 已完成自定义块/附属点叶实体创建删除；R5a4b2 已完成逐字/
 句/工尺块生命周期、句同步与父块工尺级联原子事务；R5a4b3 已完成工尺符号稳定身份、内部增删改、板眼
 复合状态、删除断链和 state/lifecycle 原子事务；R5a4c1 已建立标注文件级短时独占租约、事务内活动文件/
-ACL 复核，以及 operation/save/restore 的统一写入门禁；下一步 R5a4c2 将首个自定义轨道结构路径接入
-acquire/renew/controlled save/release；
+ACL 复核，以及 operation/save/restore 的统一写入门禁；R5a4c2 已把既有自定义轨道元数据、递归分叉树与
+块分叉归属接入严格结构命令、编辑器 acquire/renew、受控保存、历史 inverse 和失锁恢复；下一步应在
+R5a4c3 为整轨与附属点轨生命周期设计结构事务，并收口剩余 legacy 结构入口；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -448,9 +449,15 @@ acquire/renew/controlled save/release；
 - R5a4c1 已完成：新增 PostgreSQL `AnnotationMutationLease`，按文件唯一绑定 holder、purpose、base revision、
   60 秒 TTL 和 5 分钟最长生命周期；明文 token 只返回客户端。统一写锁 helper 让 operation、save、restore
   和租约 mutation 共享资源树锁、活动祖先检查、事务内 ACL 与文件行锁；有效租约存在时所有内容写入必须
-  带匹配 token，成功 revision 写入原子释放。API/client 和审计已接入，编辑器 UI 尚未启用租约。
-- R5a4c2 待推进：先选择自定义轨道元数据与递归分叉结构作为首个受控 UI 路径，设计有界结构命令、续期/
-  取消/冲突提示和保存失败恢复；整轨删除、批量导入与大范围修复继续留在后续切片。
+  带匹配 token，成功 revision 写入原子释放。API/client 和审计已接入。
+- R5a4c2 已完成：新增顶层 `annotation.track.structure.update`，以完整 before/after 结构快照覆盖既有自定义
+  轨道元数据、递归 lane 树和全部块分叉归属；shared parser 限制身份、父子引用、循环、稳定排序、预算和
+  no-op，ProjectData adapter 以完整 next 门禁证明无合同外变化。平台 UI 在本地 mutation 前取得租约，定时
+  续期，operation/save 只在请求顶层携带 token；成功保存清本地凭据，失锁后的 pending 结构命令会在保存前
+  重新取锁。结构 history 保存 envelope，undo/redo 分别提交 inverse/正向命令并复用同一租约。无租约结构
+  operation 即使数据库不存在活动租约也会 409，普通命令保持旧行为。
+- R5a4c3 待推进：为整条自定义轨道创建/删除、附属点轨生命周期和会同步修改块类型的 typeOptions 操作设计
+  有界结构事务；之后再单独处理批量导入/修复。不得把这些复合变化伪装成当前只更新既有轨道的结构命令。
 - WebSocket 会话、presence、光标/选区与连接状态。
 - 服务端 operation 排序、确认、重放和权限复核。
 - 先针对块级编辑实现协作，再评估 OT/CRDT；不直接合并任意完整快照。

@@ -5,6 +5,7 @@ import {
   ANNOTATION_LIFECYCLE_UPDATE_COMMAND,
   ANNOTATION_STATE_UPDATE_COMMAND,
   ANNOTATION_TRANSACTION_APPLY_COMMAND,
+  CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
   assessAnnotationContentExecution,
   assessAnnotationLifecycleExecution,
   assessAnnotationStateExecution,
@@ -12,6 +13,7 @@ import {
   buildAnnotationLifecycleUpdateEnvelope,
   buildAnnotationStateUpdateEnvelope,
   buildAnnotationTransactionEnvelope,
+  buildCustomTrackStructureUpdateEnvelope,
   MAX_ANNOTATION_CONTENT_LENGTH,
   ANNOTATION_COMMAND_ENVELOPE_VERSION,
   assessTimelineTimingExecution,
@@ -21,8 +23,127 @@ import {
   MAX_TIMELINE_COMMAND_ITEMS,
   parseAnnotationCommandEnvelope,
   parseAnnotationTransactionCommandEnvelope,
+  parseCustomTrackStructureCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
 } from "../dist/index.js";
+
+function customTrackStructureSnapshot(overrides = {}) {
+  return {
+    id: "track-structure",
+    trackType: "text",
+    name: "身段",
+    color: "#6366f1",
+    typeOptions: ["默认"],
+    attachedPointTracksExpanded: null,
+    snapToWaveformKeypoints: true,
+    autoSetLoopRangeOnSelect: null,
+    branching: {
+      enabled: true,
+      rootLabel: "全轨",
+      displayMode: "merged",
+      lanes: [{
+        id: "lane-left",
+        name: "左手",
+        parentId: null,
+        color: "#8b5cf6",
+        children: [{
+          id: "lane-fan",
+          name: "扇",
+          parentId: "lane-left",
+          color: null,
+          children: [],
+        }],
+      }],
+    },
+    blocks: [{
+      id: "block-one",
+      branchScope: { mode: "lanes", laneIds: ["lane-fan"] },
+      branchGroupId: null,
+      branchParentBlockId: null,
+    }],
+    ...overrides,
+  };
+}
+
+test("自定义轨道结构命令严格保存递归分叉并可反向", () => {
+  const before = customTrackStructureSnapshot();
+  const after = customTrackStructureSnapshot({
+    name: "双手",
+    branching: { ...before.branching, displayMode: "expanded" },
+  });
+  const envelope = buildCustomTrackStructureUpdateEnvelope([{
+    trackId: "track-structure",
+    before,
+    after,
+  }]);
+  assert.ok(envelope);
+  assert.equal(envelope.command.type, CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND);
+  assert.equal(isValidAnnotationOperationPayload(CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND, envelope), true);
+  assert.deepEqual(invertAnnotationCommandEnvelope(invertAnnotationCommandEnvelope(envelope)), envelope);
+});
+
+test("轨道结构命令拒绝悬空 lane、父节点错位、块父引用和宽松字段", () => {
+  const before = customTrackStructureSnapshot();
+  const after = customTrackStructureSnapshot({ name: "新名称" });
+  const valid = { version: 1, command: { type: CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND, items: [{
+    trackId: "track-structure", before, after,
+  }] } };
+  assert.ok(parseCustomTrackStructureCommandEnvelope(valid));
+  const invalidAfterValues = [
+    { ...after, extra: true },
+    { ...after, blocks: [{ ...after.blocks[0], branchScope: { mode: "lanes", laneIds: ["missing"] } }] },
+    { ...after, blocks: [{ ...after.blocks[0], branchParentBlockId: "missing-block" }] },
+    { ...after, branching: {
+      ...after.branching,
+      lanes: [{ ...after.branching.lanes[0], parentId: "wrong-parent" }],
+    } },
+    { ...after, blocks: [{ ...after.blocks[0], id: "block-replaced" }] },
+    { ...after, blocks: [
+      { ...after.blocks[0], branchParentBlockId: "block-two" },
+      {
+        ...after.blocks[0],
+        id: "block-two",
+        branchParentBlockId: "block-one",
+      },
+    ] },
+    { ...after, branching: {
+      ...after.branching,
+      lanes: [
+        ...after.branching.lanes,
+        { id: "lane-alpha", name: "甲", parentId: null, color: null, children: [] },
+      ],
+    }, blocks: [{
+      ...after.blocks[0],
+      branchScope: { mode: "lanes", laneIds: ["lane-fan", "lane-alpha"] },
+    }] },
+  ];
+  for (const invalidAfter of invalidAfterValues) {
+    assert.equal(parseCustomTrackStructureCommandEnvelope({
+      ...valid,
+      command: { ...valid.command, items: [{ trackId: "track-structure", before, after: invalidAfter }] },
+    }), null);
+  }
+  const cycleBefore = customTrackStructureSnapshot({
+    blocks: [
+      before.blocks[0],
+      { ...before.blocks[0], id: "block-two" },
+    ],
+  });
+  const cycleAfter = customTrackStructureSnapshot({
+    name: "循环父子引用",
+    blocks: [
+      { ...before.blocks[0], branchParentBlockId: "block-two" },
+      { ...before.blocks[0], id: "block-two", branchParentBlockId: "block-one" },
+    ],
+  });
+  assert.equal(parseCustomTrackStructureCommandEnvelope({
+    ...valid,
+    command: {
+      ...valid.command,
+      items: [{ trackId: "track-structure", before: cycleBefore, after: cycleAfter }],
+    },
+  }), null);
+});
 
 function gongcheSymbolState(id, label, startTime = 1, endTime = 2) {
   return {

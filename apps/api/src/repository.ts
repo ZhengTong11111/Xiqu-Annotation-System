@@ -6,6 +6,7 @@ import {
   type ProcessingJobType as DbProcessingJobType,
 } from "@prisma/client";
 import {
+  CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
   parseAnnotationCommandEnvelope,
   type AnnotationCommittedOperationPage,
   type AnnotationOperationPage,
@@ -336,6 +337,7 @@ export class PrismaPlatformRepository {
         user.id,
         input.baseRevision,
         input.mutationLeaseToken,
+        input.action === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
       );
       // 文件行计数器是唯一序号分配源，不能用 max(sequence)+1 产生并发重复。
       const sequenceState = await transaction.annotationFile.update({

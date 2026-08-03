@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  AnnotationCommandEnvelope,
-  AnnotationDomainCommand,
-  LegacyAnnotationOperationAction,
+import {
+  invertAnnotationCommandEnvelope,
+  type AnnotationCommandEnvelope,
+  type AnnotationDomainCommand,
+  type LegacyAnnotationOperationAction,
 } from "@xiqu/shared";
 import type { ProjectData } from "../types";
 
@@ -17,6 +18,8 @@ export type HistoryAction =
 export type HistoryEntry = {
   project: ProjectData;
   action: HistoryAction;
+  // 保存产生该历史边界的正向命令；undo 使用 inverse，redo 重新使用原命令。
+  commandEnvelope?: AnnotationCommandEnvelope;
 };
 
 export type ProjectSyncStatus =
@@ -323,7 +326,11 @@ export function useProjectDocumentState({
     }
     applyUndoStackState([
       ...undoStackRef.current.slice(-(historyLimit - 1)),
-      { project: baseProject, action },
+      {
+        project: baseProject,
+        action,
+        ...(options.commandEnvelope ? { commandEnvelope: options.commandEnvelope } : {}),
+      },
     ]);
     applyRedoStackState([]);
     transientProjectRef.current = null;
@@ -491,13 +498,21 @@ export function useProjectDocumentState({
       return false;
     }
     const currentProject = projectRef.current;
-    applyRedoStackState([...redoStackRef.current, { project: currentProject, action: previousEntry.action }]);
+    applyRedoStackState([...redoStackRef.current, {
+      project: currentProject,
+      action: previousEntry.action,
+      ...(previousEntry.commandEnvelope ? { commandEnvelope: previousEntry.commandEnvelope } : {}),
+    }]);
     applyUndoStackState(currentUndoStack.slice(0, -1));
     applyProjectState(previousEntry.project);
+    const inverseEnvelope = previousEntry.commandEnvelope
+      ? invertAnnotationCommandEnvelope(previousEntry.commandEnvelope)
+      : null;
     recordOperation({
-      type: "project.undo",
+      type: inverseEnvelope?.command.type ?? "project.undo",
       action: previousEntry.action,
       baseRevision: localRevisionRef.current,
+      ...(inverseEnvelope ? { commandEnvelope: inverseEnvelope } : {}),
       summary: {
         hasProjectChange: true,
         hasTrackSnapChange: false,
@@ -516,13 +531,18 @@ export function useProjectDocumentState({
       return false;
     }
     const currentProject = projectRef.current;
-    applyUndoStackState([...undoStackRef.current, { project: currentProject, action: nextEntry.action }]);
+    applyUndoStackState([...undoStackRef.current, {
+      project: currentProject,
+      action: nextEntry.action,
+      ...(nextEntry.commandEnvelope ? { commandEnvelope: nextEntry.commandEnvelope } : {}),
+    }]);
     applyRedoStackState(currentRedoStack.slice(0, -1));
     applyProjectState(nextEntry.project);
     recordOperation({
-      type: "project.redo",
+      type: nextEntry.commandEnvelope?.command.type ?? "project.redo",
       action: nextEntry.action,
       baseRevision: localRevisionRef.current,
+      ...(nextEntry.commandEnvelope ? { commandEnvelope: nextEntry.commandEnvelope } : {}),
       summary: {
         hasProjectChange: true,
         hasTrackSnapChange: false,

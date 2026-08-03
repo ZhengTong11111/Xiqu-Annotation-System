@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mockProject } from "../mockData";
 import type { ProjectDocumentRecoveryState } from "../state/projectDocumentState";
+import { buildProjectCustomTrackStructureCommand } from "../utils/customTrackStructureCommand";
 import {
   assessPlatformDraftCompatibility,
   buildPlatformDraftRecord,
@@ -120,6 +121,35 @@ test("平台草稿完整往返版本化 timing command", () => {
       },
     }],
   }, { userId: "user-1", annotationFileId: "file-1" }), null);
+});
+
+test("平台草稿完整往返自定义轨道结构命令", () => {
+  const recoveryState = createRecoveryState();
+  const currentProject = structuredClone(recoveryState.savedProject);
+  currentProject.customTracks[0].name = "草稿中的结构改名";
+  const commandEnvelope = buildProjectCustomTrackStructureCommand(
+    recoveryState.savedProject,
+    currentProject,
+    [currentProject.customTracks[0].id],
+  );
+  assert.ok(commandEnvelope);
+  recoveryState.currentProject = currentProject;
+  recoveryState.pendingOperations = [{
+    ...recoveryState.pendingOperations[0],
+    type: "annotation.track.structure.update",
+    commandEnvelope,
+  }];
+  const record = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState,
+  });
+  const normalized = normalizePlatformDraftRecord(record, {
+    userId: "user-1",
+    annotationFileId: "file-1",
+  });
+  assert.deepEqual(normalized?.pendingOperations[0].commandEnvelope, commandEnvelope);
 });
 
 // 内容命令与 timing 共用草稿边界；刷新后仍须保留字段、track scope 与 before/after。
