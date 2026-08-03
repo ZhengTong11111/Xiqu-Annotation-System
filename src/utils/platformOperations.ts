@@ -76,40 +76,64 @@ export async function submitPendingOperations(
   return submittedOperationIds;
 }
 
-// 把服务器保存过程中的错误归类为对用户有意义的同步状态。
+export type PlatformSaveOutcome =
+  | { status: "saved" }
+  | {
+      status: "skipped";
+      reason: "not-platform" | "read-only" | "clean" | "busy";
+    }
+  | { status: "offline"; retryable: true; message: string }
+  | { status: "conflict"; retryable: false; message: string }
+  | { status: "error"; retryable: boolean; message: string };
+
+// 把服务器保存过程中的错误归类为对用户有意义、且可供自动调度器判断的同步结果。
 // - 409：服务器工作区 revision 已变化，需要刷新或处理冲突，不应继续保存。
 // - 离线：浏览器判定 navigator.onLine === false，保存未到达服务器。
-// - 其他 API 错误（含 403/500 等）或网络异常归为 error。
+// - 408/429/5xx 与 fetch TypeError 可退避重试；确定的 4xx 与未知程序错误不盲重试。
 // 调用方据此 setSyncStatus，不要在失败时调用 markProjectAsSaved。
-export function describeServerSaveError(error: unknown): {
-  status: "conflict" | "offline" | "error";
-  message: string;
-} {
+export function describeServerSaveError(error: unknown): Exclude<
+  PlatformSaveOutcome,
+  { status: "saved" | "skipped" }
+> {
   if (error instanceof PlatformApiError) {
     if (error.status === 409) {
       return {
         status: "conflict",
+        retryable: false,
         message: "服务器工作区已有更新，请刷新后处理冲突。",
       };
     }
     if (error.status === 403) {
       return {
         status: "error",
+        retryable: false,
         message: "当前账号没有保存权限。",
       };
     }
-    return { status: "error", message: error.message };
+    return {
+      status: "error",
+      retryable: error.status === 408 || error.status === 429 || error.status >= 500,
+      message: error.message,
+    };
   }
   // 非 PlatformApiError 通常是 fetch 失败（TypeError: Failed to fetch）等网络层错误。
   const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
   if (isOffline) {
     return {
       status: "offline",
+      retryable: true,
       message: "网络离线，服务器保存未完成。",
     };
   }
-  if (error instanceof Error) {
-    return { status: "error", message: error.message };
+  if (error instanceof TypeError) {
+    return { status: "error", retryable: true, message: error.message };
   }
-  return { status: "error", message: "保存到服务器失败。" };
+  if (error instanceof Error) {
+    return { status: "error", retryable: false, message: error.message };
+  }
+  return {
+    status: "error",
+    retryable: false,
+    message: "保存到服务器失败。",
+  };
 }

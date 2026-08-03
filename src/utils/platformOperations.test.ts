@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { PlatformApiError } from "../api/platformClient";
 import type { ProjectDocumentOperation } from "../state/projectDocumentState";
-import { buildServerOperationRequest } from "./platformOperations";
+import {
+  buildServerOperationRequest,
+  describeServerSaveError,
+} from "./platformOperations";
 
 // 客户端 builder 把本地 operation id 提升为一等幂等键，不再在摘要 payload 里重复保存。
 test("平台 operation 请求使用本地稳定 id 作为 clientOperationId", () => {
@@ -52,4 +56,23 @@ test("平台 operation 请求直接使用持久化的吸附变化摘要", () => 
     hasTrackSnapBeforeAfter: true,
     changedTrackIds: ["character-track", "custom-1"],
   });
+});
+
+// 自动保存只重试瞬时服务故障；revision/权限等确定业务错误必须停下等待用户处理。
+test("服务器保存错误分类区分冲突、可重试与确定错误", () => {
+  assert.deepEqual(describeServerSaveError(
+    new PlatformApiError(409, "revision_conflict", "冲突", null),
+  ), {
+    status: "conflict",
+    retryable: false,
+    message: "服务器工作区已有更新，请刷新后处理冲突。",
+  });
+  assert.equal(describeServerSaveError(
+    new PlatformApiError(503, "unavailable", "暂不可用", null),
+  ).retryable, true);
+  assert.equal(describeServerSaveError(
+    new PlatformApiError(403, "forbidden", "禁止", null),
+  ).retryable, false);
+  assert.equal(describeServerSaveError(new TypeError("Failed to fetch")).retryable, true);
+  assert.equal(describeServerSaveError(new Error("程序错误")).retryable, false);
 });

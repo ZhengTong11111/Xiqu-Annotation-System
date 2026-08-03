@@ -83,6 +83,19 @@ JSON 导入导出，也可以作为平台 `AnnotationFile.payload` 保存。
 `clientOperationId`，服务端在“标注文件 + 账号 + clientOperationId”作用域内按请求指纹幂等接收；
 响应丢失或完整保存推进 revision 后，完全相同请求仍可安全重放。
 
+### 3.1 R4c1 自动保存调度
+
+- `platformAutoSavePolicy.ts` 只根据 enabled/dirty/online/suspended/status/in-flight 与 idle/retry dueAt
+  返回禁用、阻断、等待或立即保存，不读取 ProjectData，也不执行网络请求。
+- `usePlatformAutoSave()` 只拥有一个 timer 和一个 in-flight 请求。新 local revision 重置空闲窗口；
+  保存中继续编辑不会重入，请求结束后仍 dirty 才安排下一窗口。
+- 自动保存和手动保存调用同一 `saveProjectToServer()` 事务并消费结构化 outcome。自动模式不打断尚未
+  提交的文本输入，也不弹阻塞 alert；手动模式可提交当前输入并立即显示错误。
+- offline 不发请求；online 恢复后重试。网络层、408、429、5xx 使用 2 秒起步、60 秒封顶的指数退避；
+  409 进入 conflict，确定 4xx/程序错误进入不可自动重试 error。
+- pending merge draft 暂停自动保存。页面卸载不启动 fetch/beacon，因为它无法维持 operation、payload、
+  revision 与权限事务；dirty beforeunload 提示和 IndexedDB envelope 负责本地恢复。
+
 ## 4. Operation log 的当前边界
 
 当前 operation payload 是摘要，不是可重放的领域增量：
@@ -123,8 +136,8 @@ R4b1 已为可写平台会话建立 version 1 IndexedDB envelope：
 - 编辑器显示运行时草稿期间，持久化 hook 暂停全部 put/delete：二次确认后形成一次可撤销 dirty commit，
   再以最新服务器 revision 覆盖旧 envelope；明确取消后 clean 状态删除旧草稿；未确认就离开则继续保留。
 
-这仍不是自动保存：当前没有后台保存调度、联网重试退避或页面关闭时的服务器保存策略。下一步 R4c
-应在上述显式冲突边界之上接入自动保存；任何流程都不得自动覆盖远端。
+R4c1 已提供服务器自动保存与联网退避，但 409 目前只停在 conflict 状态。下一步 R4c2 应在上述显式
+冲突边界之上接入最新服务器文件比较与继续同步；任何流程都不得自动覆盖远端。
 
 ## 6. 实时协作方向
 
@@ -154,6 +167,7 @@ R4b1 已为可写平台会话建立 version 1 IndexedDB envelope：
 - 保存期间新增编辑仍为 dirty。
 - operation 已提交但 payload 保存失败时可重试且不丢内容。
 - stale base revision 返回 conflict，不调用 `markProjectAsSaved()`。
+- 自动保存只有一个 timer/请求；网络故障退避，409/确定 4xx 不盲重试，pending merge 必须暂停。
 - read-only session 无法通过 commit、transient update、undo/redo 绕过。
 - 本地 JSON 保存/导入与平台保存互不污染。
 - IndexedDB 草稿按账号/文件隔离，且不含 token、Blob 或每 operation 完整项目快照。

@@ -28,6 +28,7 @@ import {
 } from "./platform/PlatformWorkspace";
 import { prepareProjectForServer } from "./platform/platformProjectPayload";
 import { useAnnotationConfirmations } from "./platform/useAnnotationConfirmations";
+import { usePlatformAutoSave } from "./platform/usePlatformAutoSave";
 import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
 import {
   type HistoryAction,
@@ -80,6 +81,7 @@ import {
 import {
   describeServerSaveError,
   submitPendingOperations,
+  type PlatformSaveOutcome,
 } from "./utils/platformOperations";
 import { findAdjacentNavigableBlock } from "./utils/timelineNavigation";
 import {
@@ -474,6 +476,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         errorMessage: `本地恢复草稿写入失败：${message}`,
       });
     },
+  });
+  // 自动保存只调度可写平台会话；待确认整合暂停，避免运行时草稿未经二次确认进入服务器。
+  usePlatformAutoSave({
+    enabled: Boolean(editorSession?.canWrite),
+    dirty: hasUnsavedChanges,
+    suspended: pendingAnnotationMergeDraft !== null,
+    localRevision: syncState.localRevision,
+    syncStatus: syncState.status,
+    save: () => saveProjectToServer({ source: "auto" }),
   });
   // 平台确认事实独立于项目文档历史；本地会话传入 null，因此不会请求或展示服务端治理状态。
   const annotationConfirmations = useAnnotationConfirmations({
@@ -4464,25 +4475,33 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     markProjectAsSaved(projectToSave, trackSnapEnabledRef.current);
   }
 
-  async function saveProjectToServer(): Promise<boolean> {
+  async function saveProjectToServer(options: {
+    source: "manual" | "auto";
+  } = { source: "manual" }): Promise<PlatformSaveOutcome> {
+    const interactive = options.source === "manual";
     if (!editorSession) {
-      window.alert("当前不是平台工作区。请从项目库打开工作区后再保存。");
-      return false;
+      if (interactive) window.alert("当前不是平台工作区。请从项目库打开工作区后再保存。");
+      return { status: "skipped", reason: "not-platform" };
     }
     // 标注文件只读：无 write 权限时不发起保存请求。
     if (!editorSession.canWrite) {
-      window.alert("当前标注文件为只读状态，你只能查看和导航，不能保存。");
-      return false;
+      if (interactive) window.alert("当前标注文件为只读状态，你只能查看和导航，不能保存。");
+      return { status: "skipped", reason: "read-only" };
     }
     if (serverSaveInFlightRef.current) {
-      window.alert("正在保存到服务器，请等待本次保存完成。");
-      return false;
+      if (interactive) window.alert("正在保存到服务器，请等待本次保存完成。");
+      return { status: "skipped", reason: "busy" };
     }
-    if (editingCharacterId) {
+    // 手动保存会先提交当前输入框；自动保存不打断输入法或尚未确认的文字编辑会话。
+    const hadInlineEditor = interactive && Boolean(editingCharacterId || editingCustomTextBlock);
+    if (interactive && editingCharacterId) {
       commitCharacterTextEdit(editingCharacterId);
     }
-    if (editingCustomTextBlock) {
+    if (interactive && editingCustomTextBlock) {
       commitCustomTextEdit(editingCustomTextBlock.trackId, editingCustomTextBlock.id);
+    }
+    if (!hasUnsavedChanges && !hadInlineEditor) {
+      return { status: "skipped", reason: "clean" };
     }
 
     serverSaveInFlightRef.current = true;
@@ -4530,7 +4549,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       });
       // 保存推进服务器 revision 后刷新确认事实，使旧记录立即呈现为 stale；刷新失败不反转已成功保存。
       void annotationConfirmations.refresh();
-      return true;
+      return { status: "saved" };
     } catch (error) {
       if (submittedOperationIds.length > 0) {
         markOperationsAsSubmitted(submittedOperationIds);
@@ -4540,8 +4559,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       const classified = describeServerSaveError(error);
       setSyncStatus(classified.status, { errorMessage: classified.message });
       console.error("保存到服务器失败:", error);
-      window.alert(classified.message);
-      return false;
+      if (interactive) window.alert(classified.message);
+      return classified;
     } finally {
       serverSaveInFlightRef.current = false;
     }
@@ -4933,7 +4952,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             void saveProjectFile();
           }}
           onSaveProjectToServer={editorSession?.canWrite ? () => {
-            void saveProjectToServer();
+            void saveProjectToServer({ source: "manual" });
           } : undefined}
           onExportTrack={handleExport}
           onUndo={undo}

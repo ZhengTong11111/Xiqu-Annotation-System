@@ -29,6 +29,7 @@ Main currently contains all major recent feature lines that matter for context:
 - project document state architecture (`src/state/projectDocumentState.ts`)
 - versioned browser recovery drafts for writable platform files, isolated by account/file and recoverable only against
   the same server revision
+- writable platform-file autosave with idle scheduling, single-flight snapshots, online recovery, and bounded retry
 - recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
 
 If starting a new conversation, assume the repo is already beyond the earlier simple waveform-only stage.
@@ -53,6 +54,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/usePlatformDraftPersistence.ts`
   - serialized/debounced draft writes, editor-unmount final capture, and clean-state deletion for writable sessions
   - must suspend all put/delete while any runtime merge draft is awaiting the editor's second confirmation
+- `src/platform/platformAutoSavePolicy.ts`
+  - pure idle/retry/block decision and bounded exponential-backoff constants for server autosave
+- `src/platform/usePlatformAutoSave.ts`
+  - single-timer/single-flight server-save scheduler for writable platform sessions
+  - it never owns payload, operation acknowledgement, revision mutation, IndexedDB, or conflict overwrite behavior
 - `src/platform/PlatformDraftRecoveryDialog.tsx`
   - explicit same-revision recovery, stale comparison entry, and read-only export-or-discard decision before opening editor
 - `src/platform/PlatformDraftConflictDialog.tsx`
@@ -214,6 +220,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/utils/tone.ts`
   - 《韵学骊珠》four-tone (yin/yang × ping/shang/qu/ru) label mapping, validity checks, and sentence-level tone summary helpers
   - used by Inspector (character tone editor + derived sentence preview), Timeline (in-block tone label), and `projectFile.ts` (tone normalization)
+- `src/utils/platformOperations.ts`
+  - stable operation request builder plus structured manual/automatic server-save outcomes
+  - retryable save failures are limited to offline/network/408/429/5xx; conflict and deterministic 4xx must stop autosave
 - `apps/api/src/`
   - Fastify backend: auth, resource routes, resource ACL evaluation, annotation-file revision saves, Prisma mapping,
     and replaceable local/S3 object storage
@@ -337,6 +346,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:annotation-confirmations`
 - `npm run test:annotation-confirmation-view`
 - `npm run test:platform-operations`
+- `npm run test:platform-auto-save`
 - `npm run test:platform-drafts`
 - `npm run test:resource-pagination`
 - `npm run test:resource-page-state`

@@ -2516,3 +2516,86 @@ DeepSeek 或其他代理。本轮目标不是把 stale 草稿整份覆盖到服�
   React + IndexedDB 生命周期仍需按上述人工顺序验收。R4c 应在现有显式冲突边界之上实现自动保存节流、
   保存中继续编辑、在线恢复和指数退避；不能把 R4b2 的运行时草稿误当作已保存事实，也不能提前进入
   WebSocket/presence。
+
+## 2026-08-03：R4c1 自动保存调度、保存中继续编辑与在线退避
+
+本轮在提交 R4b2 commit `0642d4b` 后立即开始。Codex 重新审计 `useProjectDocumentState()`、
+`saveProjectToServer()`、幂等 operation 提交、revision save、IndexedDB 草稿和 beforeunload，而不是照着
+roadmap 的旧一句话直接堆 timer；随后把被忽略的 `CLAUDE_WORK.md` 整体替换为 R4c1 当前任务书。工作由
+Codex 直接完成，没有调用 Claude Code、GLM、DeepSeek 或其他代理，也没有引入新依赖。
+
+审计结论与范围调整：
+
+- 现有状态层已经正确表达 saved/dirty/saving/offline/conflict/error，并能在保存期间继续编辑：保存开始
+  固定 project、track snap、covered operation ids 和 local revision，成功只推进该固定 baseline，期间
+  新 operation 继续 pending/dirty。因此本轮不重写 document state，也不创建第二套保存队列。
+- 原保存函数直接弹窗并返回 boolean，只适合菜单命令。现在定义 `PlatformSaveOutcome` 联合类型，明确
+  saved、四种 skipped、offline、conflict 和带 retryable 的 error；manual/auto 共用同一 operation +
+  payload + revision 事务。手动模式仍提交当前输入框并显示错误，自动模式不打断输入法/未确认文字，也
+  不弹阻塞 alert。
+- R4c1 只解决调度、保存中继续编辑、在线恢复和退避。自动保存遇到 409 会 fail closed 并停在 conflict；
+  它不会在后台自动采用本地、覆盖服务器或刷新丢失内容。把该状态接入 R4b2 结构化比较留给 R4c2。
+
+纯策略与调度器：
+
+- 新增 `platformAutoSavePolicy.ts`，集中定义 3 秒空闲窗口、2 秒退避基数和 60 秒上限。纯函数根据
+  enabled/dirty/suspended/online/sync status/in-flight、idle/retry dueAt 返回 disabled、blocked、waiting
+  或 save-now；它不读取 ProjectData、不持有 timer，也不发请求。
+- 退避采用确定性 `2s, 4s, 8s ... 60s`，没有引入随机 jitter。当前单浏览器会话优先保证可复现测试与
+  清晰诊断；若生产观测显示大量客户端同时 online 形成惊群，再加入可注入、可测试的受控 jitter。
+- 新增 `usePlatformAutoSave()`，只拥有一个 timer 与一个 in-flight 请求。保存 callback 存在 ref 中，避免
+  App 每次 render 的函数身份重置计时；新 local revision 重排 idle，retry timer 和 idle timer 不并存。
+  offline 不请求，project state 的 online 事件恢复 dirty 后立即重试。pending merge draft 完全暂停。
+- 保存期间组件 facts 可以继续变化；single-flight 锁阻止重入，请求完成后若最新文档仍 dirty，再进入
+  下一空闲窗口。卸载会清 timer，并允许已发请求自然完成，但不会让迟到结果继续安排已销毁会话。
+
+错误分类、页面关闭与删除的旧逻辑：
+
+- `describeServerSaveError()` 现在同时给同步 UI 与调度器返回 retryable：浏览器明确 offline 为 offline；
+  fetch `TypeError`、HTTP 408/429/5xx 可退避；409 是不可重试 conflict；403 和其他确定 4xx、未知程序错误
+  是不可自动重试 error。失败仍不调用 `markProjectAsSaved()`。
+- 删除旧 boolean 成功/失败返回和自动路径无条件 alert 的假设；菜单与自动 hook 都只调用一份
+  `saveProjectToServer({ source })`。`serverSaveInFlightRef` 继续是请求级唯一互斥，不新增平行锁。
+- dirty `beforeunload` 继续保留，但页面卸载不启动 fetch/sendBeacon。服务器保存要求 operation、payload、
+  revision、权限和响应确认，Beacon 无法满足事务；R4b1 IndexedDB envelope 仍是关闭/崩溃的本地兜底。
+
+实现过程中的自审修正：
+
+- 第一版 hook 曾用 effect generation 同时取消 timer 和标记请求结果过期。自审发现：保存期间新编辑会
+  让 effect cleanup 增加 generation，随后请求 finally 也被忽略，可能使 `inFlightRef` 永久为 true。提交
+  前已删除这一错误耦合，改为 timer 由 effect cleanup 管理、请求锁无条件在 finally 释放、仅以
+  `mountedRef` 禁止卸载后 rerender。没有留下 generation 僵尸路径。
+- 自审还收紧了不可重试错误：新 local revision 或 online 事件只重置普通退避，不清除 403 等
+  `retryBlocked`；用户必须手动重试、权限恢复并成功保存，或重新打开会话。409 更不会因继续本地编辑而
+  自动解除。随后又检查了手动保存入口：手动 403 不会把 outcome 回传给自动 hook，因此纯策略进一步
+  规定“error 且没有明确 retryDueAt”一律阻断；只有自动请求已登记退避截止时间时才允许后台继续尝试。
+
+测试、构建与运行状态：
+
+- `npm run test:platform-auto-save` 4/4：覆盖禁用/clean/pending merge、idle/retry 到点、offline/conflict/
+  non-retryable/in-flight 阻断，以及指数退避增长和封顶。
+- `npm run test:platform-operations` 3/3：除稳定 operation id/摘要外，新增 409、503、403、fetch TypeError
+  与普通 Error 的 retryable 分类回归。
+- `npm run test:platform-drafts` 9/9：确认自动调度接入没有破坏 IndexedDB 隔离、原子恢复、stale 整合和
+  pending merge 持久化暂停。
+- `npm run test:api` 85/85：无 schema/API 合同变化，revision 并发、恢复快照、ACL、确认范围、上传、
+  审计、备份和维护边界继续通过；只保留既有 pg 9 前置弃用提示。
+- `npm run build` 完整通过 Prisma generation、shared、document-model、web 和 API；Vite 只保留既有主
+  chunk 超过 500 kB 提醒。`git diff --check` 通过；运行中的 `/api/health/ready` 返回 ready，database 和
+  storage 均为 ok。
+
+浏览器验收边界与人工顺序：
+
+- R4b1 的 Browser 会话仍受其错误 `data:` 页安全策略限制，并明确禁止绕过或换用其他浏览器表面。本轮
+  没有违反该限制，也没有把 policy 测试或 TypeScript 构建冒充成真实浏览器自动保存验收。
+- 人工验收应依次：打开可写文件并修改，顶部先显示本地更改，约 3 秒后显示保存中再回已保存；保存中
+  继续修改，第一次完成后仍显示 dirty 并再次自动保存；断网修改应显示离线待同步且服务器 revision 不
+  变，恢复网络后自动推进；用 5xx/网络中断观察有界重试且无 alert 风暴；用第二会话推进 revision 后，
+  自动保存应停在“存在远端冲突”且不得覆盖。pending merge 确认条存在时不应自动保存。
+
+后续边界：
+
+- R4c1 没有把 retry timer 写入 ProjectData/IndexedDB/localStorage，也没有新增 UI 框架、后台 worker、
+  WebSocket 或 operation 增量应用。自动保存成功仍会触发既有恢复快照与确认范围 freshness 刷新。
+- R4c2 应让 conflict 状态提供“读取最新服务器并比较”的明确入口，复用 R4b2 diff/plan/apply 和编辑器
+  二次确认，同时保留当前 dirty 草稿；不应通过页面刷新、清空 IndexedDB 或自动覆盖来解除冲突。
