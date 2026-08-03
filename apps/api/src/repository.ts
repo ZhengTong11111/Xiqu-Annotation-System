@@ -6,7 +6,8 @@ import {
   type ProcessingJobType as DbProcessingJobType,
 } from "@prisma/client";
 import {
-  isAnnotationMutationLeaseRequiredCommandType,
+  getAnnotationMutationLeasePurposeForCommand,
+  isReplayableAnnotationCommandEnvelope,
   parseAnnotationCommandEnvelope,
   type AnnotationCommittedOperationPage,
   type AnnotationOperationPage,
@@ -337,7 +338,7 @@ export class PrismaPlatformRepository {
         user.id,
         input.baseRevision,
         input.mutationLeaseToken,
-        isAnnotationMutationLeaseRequiredCommandType(input.action),
+        getAnnotationMutationLeasePurposeForCommand(input.payload) !== null,
       );
       // 文件行计数器是唯一序号分配源，不能用 max(sequence)+1 产生并发重复。
       const sequenceState = await transaction.annotationFile.update({
@@ -424,7 +425,8 @@ export class PrismaPlatformRepository {
       commitState: row.committedRevision === null ? "accepted" : "committed",
       committedRevision: row.committedRevision,
       committedAt: row.committedAt?.toISOString() ?? null,
-      replayability: parseAnnotationCommandEnvelope(row.payload)?.command.type === row.action
+      replayability: parseAnnotationCommandEnvelope(row.payload)?.command.type === row.action &&
+        isReplayableAnnotationCommandEnvelope(row.payload)
         ? "domain_command"
         : "requires_snapshot",
       createdAt: row.createdAt.toISOString(),

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { buildProjectSnapshotBoundaryEnvelope } from "@xiqu/shared";
 import { mockProject } from "../mockData";
 import type { ProjectDocumentRecoveryState } from "../state/projectDocumentState";
 import { buildProjectCustomTrackStructureCommand } from "../utils/customTrackStructureCommand";
@@ -122,6 +123,29 @@ test("平台草稿完整往返版本化 timing command", () => {
       },
     }],
   }, { userId: "user-1", annotationFileId: "file-1" }), null);
+});
+
+test("平台草稿保留快照边界但不复制完整项目前后态", () => {
+  const recoveryState = createRecoveryState();
+  const commandEnvelope = buildProjectSnapshotBoundaryEnvelope(
+    "draft-import-boundary",
+    "import_project",
+  );
+  assert.ok(commandEnvelope);
+  recoveryState.pendingOperations = [{
+    ...recoveryState.pendingOperations[0],
+    type: commandEnvelope.command.type,
+    commandEnvelope,
+  }];
+  const normalized = normalizePlatformDraftRecord(buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState,
+  }), { userId: "user-1", annotationFileId: "file-1" });
+  assert.deepEqual(normalized?.pendingOperations[0].commandEnvelope, commandEnvelope);
+  assert.equal("beforeProject" in (normalized?.pendingOperations[0] ?? {}), false);
+  assert.equal("afterProject" in (normalized?.pendingOperations[0] ?? {}), false);
 });
 
 test("平台草稿完整往返自定义轨道结构命令", () => {

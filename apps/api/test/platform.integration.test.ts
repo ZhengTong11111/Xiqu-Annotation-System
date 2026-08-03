@@ -3285,12 +3285,46 @@ test("平台资源 API 集成测试", async (suite) => {
         "annotation_mutation_lease_required",
       );
 
+      const snapshotBoundaryPayload = {
+        version: 1,
+        command: {
+          type: "annotation.project.snapshot.boundary",
+          boundaryId: "api-boundary-repair-one",
+          kind: "repair_sentence_character_track",
+          direction: "forward",
+        },
+      };
+      const boundaryWithoutLease = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/operations`,
+        payload: {
+          clientOperationId: "lease-snapshot-boundary-without-token",
+          baseRevision: 2,
+          action: "annotation.project.snapshot.boundary",
+          payload: snapshotBoundaryPayload,
+        },
+      });
+      assert.equal(boundaryWithoutLease.statusCode, 409, boundaryWithoutLease.body);
+
       const secondLease = await jsonRequest(app, adminToken, {
         method: "POST",
         url: `/api/annotation-files/${fileId}/mutation-lease`,
         payload: { baseRevision: 2, purpose: "bulk_repair" },
       });
       const secondToken = String(dataOf(secondLease.json()).token);
+      const acceptedBoundary = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/operations`,
+        payload: {
+          clientOperationId: "lease-snapshot-boundary-accepted",
+          baseRevision: 2,
+          action: "annotation.project.snapshot.boundary",
+          payload: snapshotBoundaryPayload,
+          mutationLeaseToken: secondToken,
+        },
+      });
+      assert.equal(acceptedBoundary.statusCode, 200, acceptedBoundary.body);
+      assert.equal(dataOf(acceptedBoundary.json()).replayability, "requires_snapshot");
       const recoverySnapshot = await prisma.annotationRecoverySnapshot.findFirstOrThrow({
         where: { annotationFileId: fileId, revision: 1 },
       });

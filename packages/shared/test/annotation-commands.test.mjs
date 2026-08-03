@@ -6,6 +6,7 @@ import {
   ANNOTATION_STATE_UPDATE_COMMAND,
   ANNOTATION_TRANSACTION_APPLY_COMMAND,
   ATTACHED_POINT_TRACK_STRUCTURE_UPDATE_COMMAND,
+  BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND,
   BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND,
   CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
   TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND,
@@ -19,6 +20,8 @@ import {
   buildCustomTrackStructureUpdateEnvelope,
   buildAttachedPointTrackStructureUpdateEnvelope,
   buildBuiltinTrackStructureUpdateEnvelope,
+  buildBuiltinTrackLifecycleUpdateEnvelope,
+  buildProjectSnapshotBoundaryEnvelope,
   buildTrackOrderUpdateEnvelope,
   buildTrackStructureTransactionEnvelope,
   MAX_ANNOTATION_CONTENT_LENGTH,
@@ -28,12 +31,15 @@ import {
   isValidAnnotationOperationPayload,
   invertAnnotationCommandEnvelope,
   isAnnotationMutationLeaseRequiredCommandType,
+  getAnnotationMutationLeasePurposeForCommand,
+  isReplayableAnnotationCommandEnvelope,
   MAX_TIMELINE_COMMAND_ITEMS,
   parseAnnotationCommandEnvelope,
   parseAnnotationTransactionCommandEnvelope,
   parseCustomTrackStructureCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
   TRACK_ORDER_UPDATE_COMMAND,
+  PROJECT_SNAPSHOT_BOUNDARY_COMMAND,
 } from "../dist/index.js";
 
 function customTrackStructureSnapshot(overrides = {}) {
@@ -129,6 +135,63 @@ test("轨道顺序和两类既有配置 leaf 可进入结构事务并完整反�
   const transaction = buildTrackStructureTransactionEnvelope([order, builtin, point]);
   assert.ok(transaction);
   assert.deepEqual(invertAnnotationCommandEnvelope(invertAnnotationCommandEnvelope(transaction)), transaction);
+});
+
+test("内建轨生命周期 leaf 保存完整拥有子树并可确定反向", () => {
+  const state = {
+    entity: {
+      id: "character-track",
+      name: "逐字文字轨",
+      trackType: "character",
+      options: ["唱", "念"],
+      attachedPointTracks: [{
+        id: "breath-track",
+        name: "呼吸",
+        typeOptions: ["呼吸"],
+        points: [{ id: "breath-one", time: 1.5, label: "呼吸" }],
+        snapToWaveformKeypoints: false,
+        snapToParentBoundaries: true,
+        autoSetLoopRangeOnSelect: null,
+      }],
+      attachedPointTracksExpanded: true,
+      snapToWaveformKeypoints: false,
+      autoSetLoopRangeOnSelect: null,
+    },
+    builtinTrackPosition: {
+      index: 0,
+      collectionLength: 1,
+      previousEntityId: null,
+      nextEntityId: null,
+    },
+    activeTrackPosition: {
+      index: 0,
+      collectionLength: 1,
+      previousEntityId: null,
+      nextEntityId: null,
+    },
+  };
+  const envelope = buildBuiltinTrackLifecycleUpdateEnvelope([{
+    trackId: "character-track",
+    before: null,
+    after: state,
+  }]);
+  assert.ok(envelope);
+  assert.equal(envelope.command.type, BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND);
+  const transaction = buildTrackStructureTransactionEnvelope([envelope]);
+  assert.ok(transaction);
+  assert.deepEqual(invertAnnotationCommandEnvelope(invertAnnotationCommandEnvelope(transaction)), transaction);
+});
+
+test("快照边界是严格受租约事实但不可由 operation feed 重放", () => {
+  const envelope = buildProjectSnapshotBoundaryEnvelope("boundary-import-one", "import_project");
+  assert.ok(envelope);
+  assert.equal(envelope.command.type, PROJECT_SNAPSHOT_BOUNDARY_COMMAND);
+  assert.equal(getAnnotationMutationLeasePurposeForCommand(envelope), "bulk_import");
+  assert.equal(isAnnotationMutationLeaseRequiredCommandType(envelope.command.type), true);
+  assert.equal(isReplayableAnnotationCommandEnvelope(envelope), false);
+  assert.equal(isValidAnnotationOperationPayload(PROJECT_SNAPSHOT_BOUNDARY_COMMAND, envelope), true);
+  assert.deepEqual(invertAnnotationCommandEnvelope(invertAnnotationCommandEnvelope(envelope)), envelope);
+  assert.equal(buildProjectSnapshotBoundaryEnvelope("bad/id", "import_project"), null);
 });
 
 test("配置 leaf 拒绝顺序集合变化、父作用域变化、重复目标和宽松字段", () => {

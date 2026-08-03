@@ -108,14 +108,14 @@ type InspectorPanelProps = {
   onImportGongcheText: (
     parentTrackId: string,
     sourceText: string,
-  ) => { parsed: number; imported: number; updated: number; unmatched: number };
-  onGenerateBanyanFromGongche: () => {
+  ) => Promise<{ parsed: number; imported: number; updated: number; unmatched: number } | null>;
+  onGenerateBanyanFromGongche: () => Promise<{
     created: number;
     updated: number;
     preserved: number;
     orphaned: number;
     sectionCreated: boolean;
-  };
+  } | null>;
   onBanyanGridVisibleChange: (visible: boolean) => void;
   onBanyanTrackVisibleChange: (visible: boolean) => void;
   onBanyanMarkUpdate: (id: string, changes: Partial<BanyanMark>) => void;
@@ -240,6 +240,8 @@ export function InspectorPanel({
   const [gongcheImportDraft, setGongcheImportDraft] = useState("");
   const [gongcheImportResult, setGongcheImportResult] = useState<string | null>(null);
   const [banyanGenerateResult, setBanyanGenerateResult] = useState<string | null>(null);
+  const [gongcheImportPending, setGongcheImportPending] = useState(false);
+  const [banyanGeneratePending, setBanyanGeneratePending] = useState(false);
   const [typeOptionDrafts, setTypeOptionDrafts] = useState<string[]>([]);
   const [isTrackNameComposing, setIsTrackNameComposing] = useState(false);
   const [composingOptionIndexes, setComposingOptionIndexes] = useState<Record<number, boolean>>({});
@@ -592,15 +594,22 @@ export function InspectorPanel({
               <button
                 type="button"
                 className="banyan-primary-button"
-                onClick={() => {
-                  const result = onGenerateBanyanFromGongche();
-                  setBanyanGenerateResult(
-                    `新增 ${result.created}，更新 ${result.updated}，保留手动 ${result.preserved}，失去来源 ${result.orphaned}`,
-                  );
+                onClick={async () => {
+                  setBanyanGeneratePending(true);
+                  try {
+                    const result = await onGenerateBanyanFromGongche();
+                    if (result) {
+                      setBanyanGenerateResult(
+                        `新增 ${result.created}，更新 ${result.updated}，保留手动 ${result.preserved}，失去来源 ${result.orphaned}`,
+                      );
+                    }
+                  } finally {
+                    setBanyanGeneratePending(false);
+                  }
                 }}
-                disabled={gongcheAnnotations.length === 0}
+                disabled={gongcheAnnotations.length === 0 || banyanGeneratePending}
               >
-                生成 / 重新生成
+                {banyanGeneratePending ? "生成中..." : "生成 / 重新生成"}
               </button>
             </div>
             {banyanGenerateResult ? (
@@ -1165,15 +1174,22 @@ export function InspectorPanel({
               <div className="gongche-import-actions">
                 <button
                   type="button"
-                  onClick={() => {
-                    const result = onImportGongcheText(track.id, gongcheImportDraft);
-                    setGongcheImportResult(
-                      `解析 ${result.parsed} 条，导入 ${result.imported} 条，更新 ${result.updated} 条，未匹配 ${result.unmatched} 条。`,
-                    );
+                  onClick={async () => {
+                    setGongcheImportPending(true);
+                    try {
+                      const result = await onImportGongcheText(track.id, gongcheImportDraft);
+                      if (result) {
+                        setGongcheImportResult(
+                          `解析 ${result.parsed} 条，导入 ${result.imported} 条，更新 ${result.updated} 条，未匹配 ${result.unmatched} 条。`,
+                        );
+                      }
+                    } finally {
+                      setGongcheImportPending(false);
+                    }
                   }}
-                  disabled={!gongcheImportDraft.trim()}
+                  disabled={!gongcheImportDraft.trim() || gongcheImportPending}
                 >
-                  导入到工尺谱附属轨
+                  {gongcheImportPending ? "导入中..." : "导入到工尺谱附属轨"}
                 </button>
                 <button
                   type="button"

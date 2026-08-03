@@ -1,18 +1,23 @@
 import {
   buildAttachedPointTrackLifecycleUpdateEnvelope,
+  buildBuiltinTrackLifecycleUpdateEnvelope,
   buildCustomTrackLifecycleUpdateEnvelope,
   type AttachedPointTrackLifecycleCommandEnvelope,
   type AttachedPointTrackLifecycleContext,
   type AttachedPointTrackSnapshot,
+  type BuiltinTrackLifecycleCommandEnvelope,
+  type BuiltinTrackLifecycleSnapshot,
+  type BuiltinTrackLifecycleState,
   type CustomTrackLifecycleCommandEnvelope,
   type CustomTrackLifecycleSnapshot,
   type CustomTrackLifecycleState,
   type TrackStructureCollectionPosition,
 } from "@xiqu/shared";
-import type { AttachedPointTrack, CustomTrack, ProjectData } from "../types";
+import type { AttachedPointTrack, BuiltinTrack, CustomTrack, ProjectData } from "../types";
 import { createCustomTrackStructureSnapshot } from "./customTrackStructureCommand";
 
 export type CustomTrackLifecycleTarget = { trackId: string };
+export type BuiltinTrackLifecycleTarget = { trackId: string };
 
 export type AttachedPointTrackLifecycleTarget = {
   pointTrackId: string;
@@ -66,6 +71,23 @@ export function buildProjectAttachedPointTrackLifecycleEnvelope(
   return buildAttachedPointTrackLifecycleUpdateEnvelope(items);
 }
 
+export function buildProjectBuiltinTrackLifecycleEnvelope(
+  baseProject: ProjectData,
+  nextProject: ProjectData,
+  targets: readonly BuiltinTrackLifecycleTarget[],
+): BuiltinTrackLifecycleCommandEnvelope | null {
+  const items = [];
+  for (const target of new Map(targets.map((item) => [item.trackId, item])).values()) {
+    const before = resolveBuiltinTrackLifecycleState(baseProject, target.trackId);
+    const after = resolveBuiltinTrackLifecycleState(nextProject, target.trackId);
+    // 内建轨也必须同时且唯一存在于实体集合与活动顺序；畸形容器不能被解释成正常创建/删除。
+    if (!matchesResolvedBuiltinTrackPresence(baseProject, target.trackId, before) ||
+      !matchesResolvedBuiltinTrackPresence(nextProject, target.trackId, after)) return null;
+    items.push({ trackId: target.trackId, before, after });
+  }
+  return buildBuiltinTrackLifecycleUpdateEnvelope(items);
+}
+
 export function resolveCustomTrackLifecycleState(
   project: ProjectData,
   trackId: string,
@@ -106,6 +128,25 @@ export function resolveAttachedPointTrackLifecycleContext(
   };
 }
 
+export function resolveBuiltinTrackLifecycleState(
+  project: ProjectData,
+  trackId: string,
+): BuiltinTrackLifecycleState | null {
+  const trackIndexes = findIndexes(project.builtinTracks, trackId);
+  const activeIndexes = findStringIndexes(project.activeTrackOrder, trackId);
+  if (trackIndexes.length === 0 && activeIndexes.length === 0) return null;
+  if (trackIndexes.length !== 1 || activeIndexes.length !== 1) return null;
+  const trackIndex = trackIndexes[0];
+  const activeIndex = activeIndexes[0];
+  const entity = createBuiltinTrackLifecycleSnapshot(project.builtinTracks[trackIndex]);
+  if (!entity) return null;
+  return {
+    entity,
+    builtinTrackPosition: createCollectionPosition(project.builtinTracks, trackIndex),
+    activeTrackPosition: createStringCollectionPosition(project.activeTrackOrder, activeIndex),
+  };
+}
+
 // 整轨 lifecycle 快照保存其拥有子树；根级工尺/板眼仍由结构事务中的独立命令表达。
 export function createCustomTrackLifecycleSnapshot(track: CustomTrack): CustomTrackLifecycleSnapshot {
   return {
@@ -129,6 +170,22 @@ export function createAttachedPointTrackSnapshot(track: AttachedPointTrack): Att
     points: track.points.map((point) => ({ ...point })),
     snapToWaveformKeypoints: track.snapToWaveformKeypoints ?? null,
     snapToParentBoundaries: track.snapToParentBoundaries ?? null,
+    autoSetLoopRangeOnSelect: track.autoSetLoopRangeOnSelect ?? null,
+  };
+}
+
+// 内建轨 lifecycle 只拥有轨道配置和附属点子树；逐字/动作/工尺由有依赖顺序的普通 lifecycle child 表达。
+export function createBuiltinTrackLifecycleSnapshot(track: BuiltinTrack): BuiltinTrackLifecycleSnapshot | null {
+  // 当前文件合同只有逐字内建轨；历史畸形的 action 内建轨不能被伪装成可重放生命周期命令。
+  if (track.id !== "character-track" || track.type !== "character") return null;
+  return {
+    id: track.id,
+    name: track.name,
+    trackType: track.type,
+    options: track.options ? [...track.options] : null,
+    attachedPointTracks: track.attachedPointTracks.map(createAttachedPointTrackSnapshot),
+    attachedPointTracksExpanded: track.attachedPointTracksExpanded ?? null,
+    snapToWaveformKeypoints: track.snapToWaveformKeypoints ?? null,
     autoSetLoopRangeOnSelect: track.autoSetLoopRangeOnSelect ?? null,
   };
 }
@@ -171,6 +228,18 @@ function matchesResolvedCustomTrackPresence(
   resolved: CustomTrackLifecycleState | null,
 ) {
   const trackCount = project.customTracks.filter((track) => track.id === trackId).length;
+  const orderCount = project.activeTrackOrder.filter((id) => id === trackId).length;
+  return resolved === null
+    ? trackCount === 0 && orderCount === 0
+    : trackCount === 1 && orderCount === 1;
+}
+
+function matchesResolvedBuiltinTrackPresence(
+  project: ProjectData,
+  trackId: string,
+  resolved: BuiltinTrackLifecycleState | null,
+) {
+  const trackCount = project.builtinTracks.filter((track) => track.id === trackId).length;
   const orderCount = project.activeTrackOrder.filter((id) => id === trackId).length;
   return resolved === null
     ? trackCount === 0 && orderCount === 0

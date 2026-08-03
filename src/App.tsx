@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  isAnnotationMutationLeaseRequiredCommandType,
+  buildProjectSnapshotBoundaryEnvelope,
+  getAnnotationMutationLeasePurposeForCommand,
   type AnnotationCommandEnvelope,
+  type AnnotationMutationPurpose,
+  type ProjectSnapshotBoundaryKind,
 } from "@xiqu/shared";
 import "./index.css";
 import { PlatformApiError } from "./api/platformClient";
@@ -640,8 +643,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const waveformRequestIdRef = useRef(0);
   const spectrogramRequestIdRef = useRef(0);
   const serverSaveInFlightRef = useRef(false);
-  // acquire 需要等待网络；这一门禁避免连续点击在同一租约下重复创建分叉或重复执行历史操作。
-  const structureMutationInFlightRef = useRef(false);
+  // acquire 需要等待网络；这一门禁串行化结构、批量导入和批量修复，避免连续点击重复提交。
+  const exclusiveMutationInFlightRef = useRef(false);
   // clean 平台会话低频追赶已提交 revision；行内编辑、保存、拖拽和整合期间必须暂停。
   usePlatformOperationCatchUp({
     enabled: Boolean(editorSession),
@@ -1504,15 +1507,23 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   // 选择性整合只在用户于目标编辑器再次确认时写入本地历史，并严格形成一个可撤销操作。
-  function applyPendingAnnotationMergeDraft() {
+  async function applyPendingAnnotationMergeDraft() {
     const draft = pendingAnnotationMergeDraft;
     if (!draft) return;
     if (!projectsEqual(projectRef.current, draft.baseProject)) {
       window.alert("目标文件在草稿准备后已被编辑。请取消本草稿并重新比较，避免覆盖当前改动。");
       return;
     }
-    commitProject(draft.mergedProject, draft.baseProject, { action: "merge-project" });
-    setPendingAnnotationMergeDraft(null);
+    let staleAfterLease = false;
+    const committed = await runControlledSnapshotMutation("merge_project", (baseProject) => {
+      staleAfterLease = !projectsEqual(baseProject, draft.baseProject);
+      return staleAfterLease ? baseProject : draft.mergedProject;
+    });
+    if (staleAfterLease) {
+      window.alert("取得整合锁后目标文件已发生变化。请取消本草稿并重新比较。");
+      return;
+    }
+    if (committed) setPendingAnnotationMergeDraft(null);
   }
 
   // 浏览器草稿整合的取消意味着明确放弃本地恢复内容；普通文件整合仍保持原有无副作用取消。
@@ -1922,22 +1933,24 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     cancelCharacterTextEdit();
   }
 
-  // 所有受租约保护的结构写入共用这一串行入口，避免 UI 调用点各自处理 acquire、重算和失败降级。
-  async function runTrackStructureMutation(
+  // 所有受租约保护的写入共用这一串行入口；拿到租约后必须基于最新项目重新计算结果。
+  async function runExclusiveProjectMutation(
+    purpose: AnnotationMutationPurpose,
     buildNextProject: (baseProject: ProjectData) => ProjectData,
     buildCommand: (
       baseProject: ProjectData,
       nextProject: ProjectData,
     ) => AnnotationCommandEnvelope | null,
+    historyAction: HistoryAction = "edit",
   ) {
     const previewBase = projectRef.current;
     if (areProjectValuesEqual(previewBase, buildNextProject(previewBase))) return false;
-    if (structureMutationInFlightRef.current) return false;
+    if (exclusiveMutationInFlightRef.current) return false;
 
-    structureMutationInFlightRef.current = true;
+    exclusiveMutationInFlightRef.current = true;
     const hadLease = Boolean(mutationLease.getToken());
     try {
-      if (editorSession) await mutationLease.acquire("track_structure");
+      if (editorSession) await mutationLease.acquire(purpose);
       // acquire 期间普通内容编辑仍可发生；拿锁后必须基于最新项目重建，不能覆盖这段时间的新内容。
       const baseProject = projectRef.current;
       const nextProject = buildNextProject(baseProject);
@@ -1948,17 +1961,43 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       const commandEnvelope = buildCommand(baseProject, nextProject);
       if (!commandEnvelope) {
         if (editorSession && !hadLease) await mutationLease.release().catch(() => undefined);
-        window.alert("本次结构变更无法形成完整且有界的协作命令，项目未被修改。请拆分操作后重试。");
+        window.alert("本次变更无法形成完整且有界的协作命令，项目未被修改。请拆分操作后重试。");
         return false;
       }
-      commitProject(nextProject, baseProject, { commandEnvelope });
+      commitProject(nextProject, baseProject, { commandEnvelope, action: historyAction });
       return true;
     } catch (error) {
       window.alert(formatMutationLeaseError(error));
       return false;
     } finally {
-      structureMutationInFlightRef.current = false;
+      exclusiveMutationInFlightRef.current = false;
     }
+  }
+
+  // 结构写入继续保留语义清晰的薄封装，避免普通调用点感知租约 purpose。
+  function runTrackStructureMutation(
+    buildNextProject: (baseProject: ProjectData) => ProjectData,
+    buildCommand: (baseProject: ProjectData, nextProject: ProjectData) => AnnotationCommandEnvelope | null,
+  ) {
+    return runExclusiveProjectMutation("track_structure", buildNextProject, buildCommand);
+  }
+
+  // 无法安全拆成有界增量的批量操作只记录严格边界；同 revision 的完整保存仍是唯一内容权威。
+  function runControlledSnapshotMutation(
+    kind: ProjectSnapshotBoundaryKind,
+    buildNextProject: (baseProject: ProjectData) => ProjectData,
+  ) {
+    const commandEnvelope = buildProjectSnapshotBoundaryEnvelope(crypto.randomUUID(), kind);
+    const purpose = commandEnvelope
+      ? getAnnotationMutationLeasePurposeForCommand(commandEnvelope)
+      : null;
+    if (!commandEnvelope || !purpose) return Promise.resolve(false);
+    return runExclusiveProjectMutation(
+      purpose,
+      buildNextProject,
+      () => commandEnvelope,
+      getSnapshotBoundaryHistoryAction(kind),
+    );
   }
 
   // 平台结构写入先取得数据库租约；本地模式复用同一纯 updater，但不会产生网络请求。
@@ -3234,15 +3273,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function addBuiltinTrack(trackId: BuiltinTrackId) {
-    const currentProject = projectRef.current;
-    if (currentProject.builtinTracks.some((track) => track.id === trackId)) {
-      return;
-    }
-    commitProject({
-      ...currentProject,
-      builtinTracks: [...currentProject.builtinTracks, getBuiltinTrackDefinition(trackId)],
-      activeTrackOrder: [...currentProject.activeTrackOrder, trackId],
-    });
+    void runTrackStructureMutation(
+      (baseProject) => baseProject.builtinTracks.some((track) => track.id === trackId)
+        ? baseProject
+        : {
+            ...baseProject,
+            builtinTracks: [...baseProject.builtinTracks, getBuiltinTrackDefinition(trackId)],
+            activeTrackOrder: [...baseProject.activeTrackOrder, trackId],
+          },
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        builtinTrackLifecycleTargets: [{ trackId }],
+      }),
+    );
   }
 
   function deleteBuiltinTrack(trackId: BuiltinTrackId) {
@@ -3275,62 +3317,57 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
 
-    const projectWithoutTrack = trackId === "character-track"
-      ? {
-          ...currentProject,
-          builtinTracks: currentProject.builtinTracks.filter((track) => track.id !== trackId),
-          activeTrackOrder: currentProject.activeTrackOrder.filter((id) => id !== trackId),
-          characterAnnotations: [],
-          gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
-        }
-      : {
-          ...currentProject,
-          builtinTracks: currentProject.builtinTracks.filter((track) => track.id !== trackId),
-          activeTrackOrder: currentProject.activeTrackOrder.filter((id) => id !== trackId),
-          actionAnnotations: currentProject.actionAnnotations.filter((item) => item.trackId !== trackId),
-          gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
-        };
-    // 整轨删除仍使用快照历史，但保存前必须清除板眼到已删除工尺块的强引用。
-    const nextProject = repairBanyanGongcheReferences(projectWithoutTrack).project;
-
-    if (trackId === "character-track") {
-      cancelCharacterTextEdit();
-      if (
-        selectedItem?.type === "character" ||
-        selectedItem?.type === "gongche-block" ||
-        selectedItem?.type === "gongche-track" ||
-        (selectedItem?.type === "builtin-track" && selectedItem.id === trackId) ||
-        (selectedItem?.type === "attached-point-track" && selectedItem.parentTrackId === trackId) ||
-        (selectedItem?.type === "attached-point" && selectedItem.parentTrackId === trackId)
-      ) {
-        applySelection(null);
-      } else {
-        setSelectedTimelineItems((current) => current.filter((item) => item.type !== "character"));
-      }
-    } else {
-      if (
-        (selectedItem?.type === "builtin-track" && selectedItem.id === trackId) ||
-        (selectedItem?.type === "attached-point-track" && selectedItem.parentTrackId === trackId) ||
-        (selectedItem?.type === "attached-point" && selectedItem.parentTrackId === trackId)
-      ) {
-        applySelection(null);
-      } else if (selectedItem?.type === "action" && selectedItem.id) {
-        const selectedAction = currentProject.actionAnnotations.find((item) => item.id === selectedItem.id);
-        if (selectedAction?.trackId === trackId) {
-          applySelection(null);
-        } else {
-          setSelectedTimelineItems((current) =>
-            current.filter((item) => item.type !== "action" || currentProject.actionAnnotations.find((action) => action.id === item.id)?.trackId !== trackId),
-          );
-        }
-      } else {
-        setSelectedTimelineItems((current) =>
-          current.filter((item) => item.type !== "action" || currentProject.actionAnnotations.find((action) => action.id === item.id)?.trackId !== trackId),
-        );
-      }
-    }
-
-    commitProject(nextProject);
+    const buildNextProject = (baseProject: ProjectData) => {
+      if (!baseProject.builtinTracks.some((track) => track.id === trackId)) return baseProject;
+      const projectWithoutTrack = {
+        ...baseProject,
+        builtinTracks: baseProject.builtinTracks.filter((track) => track.id !== trackId),
+        activeTrackOrder: baseProject.activeTrackOrder.filter((id) => id !== trackId),
+        characterAnnotations: trackId === "character-track" ? [] : baseProject.characterAnnotations,
+        actionAnnotations: trackId === "character-track"
+          ? baseProject.actionAnnotations
+          : baseProject.actionAnnotations.filter((item) => item.trackId !== trackId),
+        gongcheAnnotations: baseProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
+      };
+      return repairBanyanGongcheReferences(projectWithoutTrack).project;
+    };
+    const overflowBoundary = buildProjectSnapshotBoundaryEnvelope(
+      crypto.randomUUID(),
+      "builtin_track_lifecycle_overflow",
+    );
+    if (!overflowBoundary) return;
+    void runExclusiveProjectMutation(
+      "bulk_repair",
+      buildNextProject,
+      (baseProject, nextProject) => {
+        const repairResult = repairBanyanGongcheReferences({
+          ...baseProject,
+          gongcheAnnotations: baseProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
+        });
+        const gongcheTargets = baseProject.gongcheAnnotations
+          .filter((item) => item.parentTrackId === trackId)
+          .map((item) => ({ entityType: "gongche-block" as const, entityId: item.id, trackId }));
+        const ownedTargets: AnnotationLifecycleTarget[] = baseProject.characterAnnotations.map((item) => ({
+          entityType: "character" as const,
+          entityId: item.id,
+        }));
+        return buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          builtinTrackLifecycleTargets: [{ trackId }],
+          stateTargets: repairResult.changedMarkIds.map((entityId) => ({
+            entityType: "banyan-mark" as const,
+            entityId,
+          })),
+          lifecycleTargetGroups: [gongcheTargets, ownedTargets],
+        }) ?? overflowBoundary;
+      },
+    ).then((committed) => {
+      if (!committed) return;
+      // 只有项目真正提交后才清理 UI 选择，租约失败不能让界面先丢失当前上下文。
+      if (trackId === "character-track") cancelCharacterTextEdit();
+      applySelection(null);
+      setSelectedTimelineItems((items) => items.filter((item) =>
+        trackId === "character-track" ? item.type !== "character" : item.type !== "action"));
+    });
   }
 
   function addCustomTrack(trackType: CustomTrackType) {
@@ -3598,57 +3635,60 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     updateGongcheBlock(id, changes, true);
   }
 
-  function importGongcheText(parentTrackId: string, sourceText: string) {
-    const currentProject = projectRef.current;
+  async function importGongcheText(parentTrackId: string, sourceText: string) {
     const parsedEntries = parseGongcheSourceText(sourceText);
-    const parentBlocks = getOrderedGongcheParentBlocks(currentProject, parentTrackId);
-    const alignedPairs = alignGongcheEntriesToParentBlocks(parsedEntries, parentBlocks);
-    const importedBlocks: GongcheAnnotation[] = [];
-    let updated = 0;
-
-    for (const pair of alignedPairs) {
-      const entry = parsedEntries[pair.entryIndex];
-      const parentBlock = parentBlocks[pair.parentIndex];
-      const existingBlock = currentProject.gongcheAnnotations.find((item) =>
-        item.parentTrackId === parentTrackId && item.parentBlockId === parentBlock.parentBlockId,
-      );
-      if (existingBlock) {
-        updated += 1;
+    // 预览与取得租约后的重算共用同一个纯准备器；无匹配结果时仍向用户返回解析统计。
+    const prepareImport = (baseProject: ProjectData) => {
+      const parentBlocks = getOrderedGongcheParentBlocks(baseProject, parentTrackId);
+      const alignedPairs = alignGongcheEntriesToParentBlocks(parsedEntries, parentBlocks);
+      const importedBlocks: GongcheAnnotation[] = [];
+      let updated = 0;
+      for (const pair of alignedPairs) {
+        const entry = parsedEntries[pair.entryIndex];
+        const parentBlock = parentBlocks[pair.parentIndex];
+        const existingBlock = baseProject.gongcheAnnotations.find((item) =>
+          item.parentTrackId === parentTrackId && item.parentBlockId === parentBlock.parentBlockId,
+        );
+        if (existingBlock) updated += 1;
+        importedBlocks.push({
+          id: existingBlock?.id ?? `gongche-${crypto.randomUUID()}`,
+          parentTrackId,
+          parentBlockId: parentBlock.parentBlockId,
+          startTime: parentBlock.startTime,
+          endTime: parentBlock.endTime,
+          symbols: distributeParsedGongcheSymbols(entry.symbols, parentBlock.startTime, parentBlock.endTime),
+        });
       }
-      importedBlocks.push({
-        id: existingBlock?.id ?? `gongche-${crypto.randomUUID()}`,
-        parentTrackId,
-        parentBlockId: parentBlock.parentBlockId,
-        startTime: parentBlock.startTime,
-        endTime: parentBlock.endTime,
-        symbols: distributeParsedGongcheSymbols(entry.symbols, parentBlock.startTime, parentBlock.endTime),
-      });
-    }
-
-    if (importedBlocks.length > 0) {
-      const importedKeys = new Set(importedBlocks.map((block) => getGongcheParentKey(block.parentTrackId, block.parentBlockId)));
-      const importedProject = {
-        ...currentProject,
+      const stats = {
+        parsed: parsedEntries.length,
+        imported: importedBlocks.length - updated,
+        updated,
+        unmatched: parsedEntries.length - importedBlocks.length,
+      };
+      if (importedBlocks.length === 0) return { project: baseProject, stats };
+      const importedKeys = new Set(importedBlocks.map((block) =>
+        getGongcheParentKey(block.parentTrackId, block.parentBlockId)));
+      // 批量替换可能生成新符号 id；保留板眼记录并把失效强引用转为待复核孤立状态。
+      const project = repairBanyanGongcheReferences({
+        ...baseProject,
         gongcheAnnotations: [
-          ...currentProject.gongcheAnnotations.filter((block) =>
-            !importedKeys.has(getGongcheParentKey(block.parentTrackId, block.parentBlockId)),
-          ),
+          ...baseProject.gongcheAnnotations.filter((block) =>
+            !importedKeys.has(getGongcheParentKey(block.parentTrackId, block.parentBlockId))),
           ...importedBlocks,
         ],
-      };
-      // 批量导入可能替换原符号 id；保留板眼记录并把已失效关联转为待复核孤立状态。
-      commitProject(repairBanyanGongcheReferences(importedProject).project);
-    }
-
-    return {
-      parsed: parsedEntries.length,
-      imported: importedBlocks.length - updated,
-      updated,
-      unmatched: parsedEntries.length - importedBlocks.length,
+      }).project;
+      return { project, stats };
     };
+    let committedResult = prepareImport(projectRef.current);
+    if (areProjectValuesEqual(projectRef.current, committedResult.project)) return committedResult.stats;
+    const committed = await runControlledSnapshotMutation("import_gongche", (baseProject) => {
+      committedResult = prepareImport(baseProject);
+      return committedResult.project;
+    });
+    return committed ? committedResult.stats : null;
   }
 
-  function generateBanyanFromGongche() {
+  async function generateBanyanFromGongche() {
     const currentProject = projectRef.current;
     const result = generateBanyanMarksFromGongche(currentProject);
     const currentSectionIds = new Set(currentProject.banyanSections.map((section) => section.id));
@@ -3677,8 +3717,25 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         .filter((mark) => currentMarkIds.has(mark.id))
         .map((mark) => ({ entityType: "banyan-mark" as const, entityId: mark.id })),
     ];
-    commitProjectWithTransaction(currentProject, result.project, { stateTargets, lifecycleTargets });
-    return result.stats;
+    const commandEnvelope = buildProjectAnnotationTransactionCommand(
+      currentProject,
+      result.project,
+      { stateTargets, lifecycleTargets },
+    );
+    if (commandEnvelope) {
+      commitProject(result.project, currentProject, { commandEnvelope });
+      return result.stats;
+    }
+    if (areProjectValuesEqual(currentProject, result.project)) return result.stats;
+
+    // 超出普通事务预算时才进入批量修复边界；拿锁后重新生成，避免覆盖等待期间的新工尺内容。
+    let committedStats = result.stats;
+    const committed = await runControlledSnapshotMutation("generate_banyan", (baseProject) => {
+      const latestResult = generateBanyanMarksFromGongche(baseProject);
+      committedStats = latestResult.stats;
+      return latestResult.project;
+    });
+    return committed ? committedStats : null;
   }
 
   function updateBanyanMark(id: string, changes: Partial<BanyanMark>, recordHistory = true) {
@@ -4975,8 +5032,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!previousEntry) return;
     if (requiresUndoConfirmation(previousEntry.action) &&
       !window.confirm(getUndoConfirmationMessage(previousEntry.action))) return;
-    if (isAnnotationMutationLeaseRequiredCommandType(previousEntry.commandEnvelope?.command.type)) {
-      void runHistoryMutationWithStructureLease(() => undoProject(() => true));
+    const purpose = getAnnotationMutationLeasePurposeForCommand(previousEntry.commandEnvelope);
+    if (purpose) {
+      void runHistoryMutationWithLease(purpose, () => undoProject(() => true));
       return;
     }
     undoProject(() => true);
@@ -4984,20 +5042,24 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function redo() {
     const nextEntry = redoStack[redoStack.length - 1];
-    if (isAnnotationMutationLeaseRequiredCommandType(nextEntry?.commandEnvelope?.command.type)) {
-      void runHistoryMutationWithStructureLease(redoProject);
+    const purpose = getAnnotationMutationLeasePurposeForCommand(nextEntry?.commandEnvelope);
+    if (purpose) {
+      void runHistoryMutationWithLease(purpose, redoProject);
       return;
     }
     redoProject();
   }
 
-  async function runHistoryMutationWithStructureLease(mutation: () => boolean) {
-    if (structureMutationInFlightRef.current) return;
-    structureMutationInFlightRef.current = true;
+  async function runHistoryMutationWithLease(
+    purpose: AnnotationMutationPurpose,
+    mutation: () => boolean,
+  ) {
+    if (exclusiveMutationInFlightRef.current) return;
+    exclusiveMutationInFlightRef.current = true;
     const hadLease = Boolean(mutationLease.getToken());
     try {
       if (editorSession) {
-        await mutationLease.acquire("track_structure");
+        await mutationLease.acquire(purpose);
       }
       const changed = mutation();
       if (!changed && editorSession && !hadLease) {
@@ -5006,15 +5068,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     } catch (error) {
       window.alert(formatMutationLeaseError(error));
     } finally {
-      structureMutationInFlightRef.current = false;
+      exclusiveMutationInFlightRef.current = false;
     }
   }
 
   async function importSrtFile(file: File) {
     const text = await file.text();
     const lines = parseSrt(text);
-    const nextProject = buildProjectFromLines(lines, projectRef.current.video);
-    commitProject(nextProject, undefined, { action: "import-srt" });
+    const committed = await runControlledSnapshotMutation(
+      "import_srt",
+      (baseProject) => buildProjectFromLines(lines, baseProject.video),
+    );
+    if (!committed) return;
     applySelection(lines[0] ? { type: "line", id: lines[0].id } : null);
     if (lines[0]) {
       seekTo(lines[0].startTime);
@@ -5058,7 +5123,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         hydratedProject,
         normalized.uiState?.trackSnapEnabled,
       );
-      commitProject(hydratedProject, undefined, { action: "import-project" });
+      const committed = areProjectValuesEqual(projectRef.current, hydratedProject)
+        ? true
+        : await runControlledSnapshotMutation("import_project", () => hydratedProject);
+      if (!committed) return;
       applyTrackSnapEnabledState(normalizedTrackSnapEnabled);
       setZoom(normalized.uiState?.zoom ?? 20);
       setPlaybackRate(normalized.uiState?.playbackRate ?? 1);
@@ -5080,7 +5148,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           getProjectDuration(hydratedProject),
         ),
       );
-      markProjectAsSaved(hydratedProject, normalizedTrackSnapEnabled);
+      // 本地打开 JSON 可视为新的干净工作副本；平台文件必须等待真正的服务器保存后才能变为 clean。
+      if (!editorSession) markProjectAsSaved(hydratedProject, normalizedTrackSnapEnabled);
       setCurrentProjectFileName(getNormalizedProjectFileName(file.name));
       if (shouldManuallyImportVideo) {
         setManualVideoRelinkPrompt(hydratedProject.video);
@@ -5145,12 +5214,25 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
 
-    commitProject(repairResult.project, undefined, { action: "repair-sentence-character-track" });
-    const firstCreatedCharacter = repairResult.createdCharacters[0];
-    applySelection({ type: "character", id: firstCreatedCharacter.id });
-    setLineFocusRequest({ lineId: firstCreatedCharacter.lineId, requestId: Date.now() });
-    seekTo(firstCreatedCharacter.startTime);
-    window.alert(`已创建 ${repairResult.createdCharacters.length} 个整句文字块。`);
+    let committedRepairResult = repairResult;
+    void runControlledSnapshotMutation(
+      "repair_sentence_character_track",
+      (baseProject) => {
+        committedRepairResult = createSentenceCharacterRepairs(
+          baseProject,
+          analyzeSentenceCharacterAlignment(baseProject),
+        );
+        return committedRepairResult.project;
+      },
+    ).then((committed) => {
+      if (!committed) return;
+      const firstCreatedCharacter = committedRepairResult.createdCharacters[0];
+      if (!firstCreatedCharacter) return;
+      applySelection({ type: "character", id: firstCreatedCharacter.id });
+      setLineFocusRequest({ lineId: firstCreatedCharacter.lineId, requestId: Date.now() });
+      seekTo(firstCreatedCharacter.startTime);
+      window.alert(`已创建 ${committedRepairResult.createdCharacters.length} 个整句文字块。`);
+    });
   }
 
   async function importAndMergeProjectFile(file: File) {
@@ -5195,7 +5277,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     });
   }
 
-  function applyImportMerge() {
+  async function applyImportMerge() {
     const pendingState = pendingImportMergeState;
     if (!pendingState) {
       return;
@@ -5212,9 +5294,23 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         return;
       }
     }
-    const nextProject = applyPreparedImportMerge(currentProject, pendingState.sourceProject, prepared.plans);
-    commitProject(nextProject, undefined, { action: "merge-project" });
-    setPendingImportMergeState(null);
+    let skippedAfterLease = false;
+    const committed = await runControlledSnapshotMutation(
+      "merge_project",
+      (baseProject) => {
+        // acquire 期间目标轨道可能被普通编辑；提交时必须重新归一化目标，不能沿用弹窗确认前的旧计划。
+        const latestPrepared = prepareImportMerge(baseProject, pendingState.sourceProject, pendingState.rows);
+        skippedAfterLease = latestPrepared.skippedAll;
+        return skippedAfterLease
+          ? baseProject
+          : applyPreparedImportMerge(baseProject, pendingState.sourceProject, latestPrepared.plans);
+      },
+    );
+    if (skippedAfterLease) {
+      window.alert("取得整合锁后，当前设置已没有可导入的轨道内容。请重新检查整合目标。");
+      return;
+    }
+    if (committed) setPendingImportMergeState(null);
   }
 
   async function saveProjectFile() {
@@ -5281,13 +5377,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const submittedOperationIds: string[] = [];
     try {
       // 续期失效后结构命令仍保留在草稿中；保存前按真实 pending 事实补取租约，形成可恢复闭环。
-      const requiresStructureLease = pendingOperationsRef.current.some(
-        (operation) => isAnnotationMutationLeaseRequiredCommandType(
-          operation.commandEnvelope?.command.type,
-        ),
-      );
-      if (requiresStructureLease && !mutationLease.getToken()) {
-        await mutationLease.acquire("track_structure");
+      const requiredLeasePurpose = pendingOperationsRef.current
+        .map((operation) => getAnnotationMutationLeasePurposeForCommand(operation.commandEnvelope))
+        .find((purpose): purpose is AnnotationMutationPurpose => purpose !== null);
+      if (requiredLeasePurpose && !mutationLease.getToken()) {
+        await mutationLease.acquire(requiredLeasePurpose);
       }
       // 1. 先把本地 pending operations 作为服务端 operation log 写入。
       //    用 pendingOperationsRef 而非 state：commitCharacterTextEdit 等同步提交的编辑
@@ -8342,6 +8436,15 @@ function getTrackSnapStateSignature(trackSnapState: Record<string, boolean>) {
 
 function requiresUndoConfirmation(action: HistoryAction) {
   return action === "import-video" || action === "import-srt" || action === "import-project" || action === "merge-project";
+}
+
+// 快照边界 kind 是持久化语义；历史 action 只负责维持用户熟悉的撤销提示与本地操作说明。
+function getSnapshotBoundaryHistoryAction(kind: ProjectSnapshotBoundaryKind): HistoryAction {
+  if (kind === "import_srt") return "import-srt";
+  if (kind === "import_project") return "import-project";
+  if (kind === "merge_project") return "merge-project";
+  if (kind === "repair_sentence_character_track") return "repair-sentence-character-track";
+  return "edit";
 }
 
 function getUndoConfirmationMessage(action: HistoryAction) {

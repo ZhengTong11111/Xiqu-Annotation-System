@@ -7,6 +7,7 @@ import {
 export const CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND = "annotation.custom-track.lifecycle.update" as const;
 export const ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND =
   "annotation.attached-point-track.lifecycle.update" as const;
+export const BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND = "annotation.builtin-track.lifecycle.update" as const;
 
 const MAX_STRUCTURE_ENTITIES = 500;
 const MAX_TEXT_LENGTH = 2_000;
@@ -100,13 +101,48 @@ export type AttachedPointTrackLifecycleCommandEnvelope = {
   command: AttachedPointTrackLifecycleUpdateCommand;
 };
 
+export type BuiltinTrackLifecycleSnapshot = {
+  id: "character-track";
+  name: string;
+  trackType: "character";
+  options: string[] | null;
+  attachedPointTracks: AttachedPointTrackSnapshot[];
+  attachedPointTracksExpanded: boolean | null;
+  snapToWaveformKeypoints: boolean | null;
+  autoSetLoopRangeOnSelect: boolean | null;
+};
+
+export type BuiltinTrackLifecycleState = {
+  entity: BuiltinTrackLifecycleSnapshot;
+  builtinTrackPosition: TrackStructureCollectionPosition;
+  activeTrackPosition: TrackStructureCollectionPosition;
+};
+
+export type BuiltinTrackLifecycleUpdateItem = {
+  trackId: string;
+  before: BuiltinTrackLifecycleState | null;
+  after: BuiltinTrackLifecycleState | null;
+};
+
+export type BuiltinTrackLifecycleUpdateCommand = {
+  type: typeof BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND;
+  items: BuiltinTrackLifecycleUpdateItem[];
+};
+
+export type BuiltinTrackLifecycleCommandEnvelope = {
+  version: 1;
+  command: BuiltinTrackLifecycleUpdateCommand;
+};
+
 export type TrackStructureLifecycleChildCommand =
   | CustomTrackLifecycleUpdateCommand
-  | AttachedPointTrackLifecycleUpdateCommand;
+  | AttachedPointTrackLifecycleUpdateCommand
+  | BuiltinTrackLifecycleUpdateCommand;
 
 export type TrackStructureLifecycleCommandEnvelope =
   | CustomTrackLifecycleCommandEnvelope
-  | AttachedPointTrackLifecycleCommandEnvelope;
+  | AttachedPointTrackLifecycleCommandEnvelope
+  | BuiltinTrackLifecycleCommandEnvelope;
 
 // builder 一律回送严格 parser；调用方不能构造 parser 自己无法接受的内存特例。
 export function buildCustomTrackLifecycleUpdateEnvelope(
@@ -179,6 +215,41 @@ export function parseAttachedPointTrackLifecycleCommandEnvelope(
   return { version: 1, command: { type: ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND, items } };
 }
 
+export function buildBuiltinTrackLifecycleUpdateEnvelope(
+  items: readonly BuiltinTrackLifecycleUpdateItem[],
+): BuiltinTrackLifecycleCommandEnvelope | null {
+  return parseBuiltinTrackLifecycleCommandEnvelope({
+    version: 1,
+    command: {
+      type: BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND,
+      items: [...items]
+        .map((item) => structuredClone(item))
+        .sort((left, right) => compareIds(left.trackId, right.trackId)),
+    },
+  });
+}
+
+export function parseBuiltinTrackLifecycleCommandEnvelope(
+  value: unknown,
+): BuiltinTrackLifecycleCommandEnvelope | null {
+  if (!isExactRecord(value, ["version", "command"]) || value.version !== 1 ||
+    !isExactRecord(value.command, ["type", "items"]) ||
+    value.command.type !== BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND ||
+    !Array.isArray(value.command.items) || value.command.items.length === 0) return null;
+  const items: BuiltinTrackLifecycleUpdateItem[] = [];
+  const ids = new Set<string>();
+  let totalCost = 0;
+  for (const rawItem of value.command.items) {
+    const item = parseBuiltinTrackLifecycleItem(rawItem);
+    if (!item || ids.has(item.trackId)) return null;
+    ids.add(item.trackId);
+    totalCost += getBuiltinTrackLifecycleItemCost(item);
+    if (totalCost > MAX_STRUCTURE_ENTITIES) return null;
+    items.push(item);
+  }
+  return { version: 1, command: { type: BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND, items } };
+}
+
 export function invertTrackStructureLifecycleCommandEnvelope(
   value: unknown,
 ): TrackStructureLifecycleCommandEnvelope | null {
@@ -191,9 +262,17 @@ export function invertTrackStructureLifecycleCommandEnvelope(
     })));
   }
   const point = parseAttachedPointTrackLifecycleCommandEnvelope(value);
-  return point
-    ? buildAttachedPointTrackLifecycleUpdateEnvelope(point.command.items.map((item) => ({
+  if (point) {
+    return buildAttachedPointTrackLifecycleUpdateEnvelope(point.command.items.map((item) => ({
         ...item,
+        before: item.after,
+        after: item.before,
+      })));
+  }
+  const builtin = parseBuiltinTrackLifecycleCommandEnvelope(value);
+  return builtin
+    ? buildBuiltinTrackLifecycleUpdateEnvelope(builtin.command.items.map((item) => ({
+        trackId: item.trackId,
         before: item.after,
         after: item.before,
       })))
@@ -213,12 +292,24 @@ export function getAttachedPointTrackLifecycleItemCost(item: AttachedPointTrackL
   return snapshot ? 1 + snapshot.points.length : MAX_STRUCTURE_ENTITIES + 1;
 }
 
+export function getBuiltinTrackLifecycleItemCost(item: BuiltinTrackLifecycleUpdateItem) {
+  const snapshot = item.before?.entity ?? item.after?.entity;
+  return snapshot
+    ? 1 + snapshot.attachedPointTracks.reduce((total, track) => total + 1 + track.points.length, 0)
+    : MAX_STRUCTURE_ENTITIES + 1;
+}
+
 export function getTrackStructureLifecycleTargetKey(
-  item: CustomTrackLifecycleUpdateItem | AttachedPointTrackLifecycleUpdateItem,
+  item: CustomTrackLifecycleUpdateItem | AttachedPointTrackLifecycleUpdateItem | BuiltinTrackLifecycleUpdateItem,
 ) {
-  return "trackId" in item
-    ? JSON.stringify([CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND, item.trackId])
-    : JSON.stringify([ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND, item.parentTrackId, item.pointTrackId]);
+  if ("pointTrackId" in item) {
+    return JSON.stringify([ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND, item.parentTrackId, item.pointTrackId]);
+  }
+  const state = item.before ?? item.after;
+  const type = state && "structure" in state.entity
+    ? CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND
+    : BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND;
+  return JSON.stringify([type, item.trackId]);
 }
 
 function parseCustomTrackLifecycleItem(value: unknown): CustomTrackLifecycleUpdateItem | null {
@@ -295,6 +386,53 @@ function parseAttachedPointTrackLifecycleContext(value: unknown): AttachedPointT
         parentAttachedPointTracksExpanded: value.parentAttachedPointTracksExpanded,
       }
     : null;
+}
+
+function parseBuiltinTrackLifecycleItem(value: unknown): BuiltinTrackLifecycleUpdateItem | null {
+  if (!isExactRecord(value, ["trackId", "before", "after"]) || !isSafeId(value.trackId) ||
+    (value.before === null) === (value.after === null)) return null;
+  const before = parseBuiltinTrackLifecycleState(value.before);
+  const after = parseBuiltinTrackLifecycleState(value.after);
+  if ((value.before !== null && !before) || (value.after !== null && !after)) return null;
+  const state = before ?? after;
+  return state?.entity.id === value.trackId ? { trackId: value.trackId, before, after } : null;
+}
+
+function parseBuiltinTrackLifecycleState(value: unknown): BuiltinTrackLifecycleState | null {
+  if (value === null || !isExactRecord(value, ["entity", "builtinTrackPosition", "activeTrackPosition"])) return null;
+  const entity = parseBuiltinTrackLifecycleSnapshot(value.entity);
+  const builtinTrackPosition = parseCollectionPosition(value.builtinTrackPosition);
+  const activeTrackPosition = parseCollectionPosition(value.activeTrackPosition);
+  return entity && builtinTrackPosition && activeTrackPosition
+    ? { entity, builtinTrackPosition, activeTrackPosition }
+    : null;
+}
+
+function parseBuiltinTrackLifecycleSnapshot(value: unknown): BuiltinTrackLifecycleSnapshot | null {
+  if (!isExactRecord(value, [
+    "id", "name", "trackType", "options", "attachedPointTracks", "attachedPointTracksExpanded",
+    "snapToWaveformKeypoints", "autoSetLoopRangeOnSelect",
+  ]) || value.id !== "character-track" || typeof value.name !== "string" || value.name.length > MAX_TEXT_LENGTH ||
+    value.trackType !== "character" ||
+    !(value.options === null || Array.isArray(value.options)) ||
+    (Array.isArray(value.options) && (value.options.length > MAX_STRUCTURE_ENTITIES ||
+      value.options.some((option) => typeof option !== "string" || option.length > MAX_TEXT_LENGTH))) ||
+    !Array.isArray(value.attachedPointTracks) || !isNullableBoolean(value.attachedPointTracksExpanded) ||
+    !isNullableBoolean(value.snapToWaveformKeypoints) ||
+    !isNullableBoolean(value.autoSetLoopRangeOnSelect)) return null;
+  const attachedPointTracks = value.attachedPointTracks.map(parseAttachedPointTrackSnapshot);
+  if (attachedPointTracks.some((track) => !track) ||
+    hasDuplicateIds(attachedPointTracks as AttachedPointTrackSnapshot[])) return null;
+  return {
+    id: value.id,
+    name: value.name,
+    trackType: value.trackType,
+    options: value.options === null ? null : [...value.options] as string[],
+    attachedPointTracks: attachedPointTracks as AttachedPointTrackSnapshot[],
+    attachedPointTracksExpanded: value.attachedPointTracksExpanded,
+    snapToWaveformKeypoints: value.snapToWaveformKeypoints,
+    autoSetLoopRangeOnSelect: value.autoSetLoopRangeOnSelect,
+  };
 }
 
 function parseAttachedPointTrackSnapshot(value: unknown): AttachedPointTrackSnapshot | null {

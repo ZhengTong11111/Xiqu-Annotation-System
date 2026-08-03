@@ -34,7 +34,8 @@ ACL 复核，以及 operation/save/restore 的统一写入门禁；R5a4c2 已把
 块分叉归属接入严格结构命令、编辑器 acquire/renew、受控保存、历史 inverse 和失锁恢复；R5a4c3 已完成
 有界结构事务、自定义轨整轨生命周期、内建/自定义父轨的附属点轨生命周期，以及自定义 typeOptions 与块
 type 的原子联动；R5a4c4a 已完成既有顶层轨道排序、既有内建轨配置、既有附属点轨配置，以及各自
-typeOptions 与逐字唱法/点标签的原子联动；下一步推进 R5a4c4b 的内建轨生命周期与批量受控快照流程；
+typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建轨生命周期和批量受控快照边界，下一步
+进入 R5b1 的认证 WebSocket 文件会话与连接状态底座；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -470,10 +471,20 @@ typeOptions 与逐字唱法/点标签的原子联动；下一步推进 R5a4c4b �
     typeOptions 重命名/删除必须与受影响逐字 `singingStyle` 原子联动，附属点轨 typeOptions 重命名/删除
     必须与受影响 point label 原子联动。轨道头移动/拖拽、Inspector 配置以及右键快速新建类型均复用结构
     事务、完整 next 反证和 mutation lease；直接逐字唱法修改也已进入稳定 content command。
-  - R5a4c4b 待推进：内建轨创建/删除需要保存拥有逐字、附属点轨、工尺等完整依赖闭包；批量导入、句字修复
-    和工尺批量生成则设计显式持租约的权威快照流程，并让 clean catch-up 明确降级到 snapshot。不得扩大
-    500 实体预算或把超预算变化静默标成可重放领域事实。
-- WebSocket 会话、presence、光标/选区与连接状态。
+  - R5a4c4b 已完成：内建轨创建/删除使用严格生命周期 leaf，并把逐字、工尺与板眼断链按依赖顺序组合；
+    超出有界预算时改走受控权威快照，不伪装成可重放事务。导入 SRT/项目、整合导入、句字修复、工尺批量
+    导入和超预算生成使用显式 `bulk_import`/`bulk_repair` 租约保护的 `annotation.project.snapshot.boundary`；
+    operation 只保存严格小型意图，不保存完整 ProjectData。该边界可进入草稿、历史和 API 日志，但明确不可
+    由 committed feed 重放，clean catch-up 必须读取权威 snapshot。平台覆盖导入在真实服务器保存前保持 dirty。
+- R5b 按“先会话、再通知、后 presence/协作写入”分阶段推进，不能让 WebSocket 成为绕过现有 HTTP 权限、
+  revision、operation 幂等或 mutation lease 的第二条写路径：
+  - R5b1 待推进：建立短时一次性连接票据、认证 WebSocket 文件会话、文件切换/重连/下线生命周期、连接状态
+    UI 和有界心跳。首轮只发布服务端权威的 revision/operation invalidation 事件，客户端仍通过既有 HTTP
+    committed feed 或 snapshot 追赶；不在 socket payload 中传完整 ProjectData，也不直接提交编辑命令。
+  - R5b2 待推进：在 R5b1 会话稳定后接入跨实例事件分发、presence、光标/选区和在线成员视图，并明确慢消费、
+    断线和权限撤销语义。
+  - R5b3 待推进：评估并接入领域 operation 的实时提交/确认；继续复用现有幂等键、文件 sequence、revision
+    绑定、租约和 HTTP 恢复路径，再决定块级 OT/CRDT 或混合策略。
 - 服务端 operation 排序、确认、重放和权限复核。
 - 先针对块级编辑实现协作，再评估 OT/CRDT；不直接合并任意完整快照。
 - 轨道结构、批量导入和复杂分叉变更采用显式锁或受控事务。

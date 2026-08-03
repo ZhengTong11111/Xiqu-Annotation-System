@@ -8,13 +8,17 @@ import {
 } from "./customTrackStructureCommands.js";
 import {
   ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND,
+  BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND,
   CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND,
   getAttachedPointTrackLifecycleItemCost,
+  getBuiltinTrackLifecycleItemCost,
   getCustomTrackLifecycleItemCost,
   invertTrackStructureLifecycleCommandEnvelope,
   parseAttachedPointTrackLifecycleCommandEnvelope,
+  parseBuiltinTrackLifecycleCommandEnvelope,
   parseCustomTrackLifecycleCommandEnvelope,
   type AttachedPointTrackLifecycleCommandEnvelope,
+  type BuiltinTrackLifecycleCommandEnvelope,
   type CustomTrackLifecycleCommandEnvelope,
   type TrackStructureLifecycleChildCommand,
 } from "./trackStructureLifecycleCommands.js";
@@ -33,6 +37,13 @@ import {
   type TrackConfigurationCommandEnvelope,
   type TrackOrderCommandEnvelope,
 } from "./trackConfigurationCommands.js";
+import {
+  invertProjectSnapshotBoundaryEnvelope,
+  parseProjectSnapshotBoundaryEnvelope,
+  PROJECT_SNAPSHOT_BOUNDARY_COMMAND,
+  type ProjectSnapshotBoundaryCommand,
+  type ProjectSnapshotBoundaryCommandEnvelope,
+} from "./projectSnapshotBoundaryCommands.js";
 
 // 本模块定义前后端共享的首版标注领域命令；任何网络或 IndexedDB unknown 输入都必须从这里校验。
 export const ANNOTATION_COMMAND_ENVELOPE_VERSION = 1 as const;
@@ -52,6 +63,7 @@ export const ANNOTATION_DOMAIN_COMMAND_TYPES = [
   ANNOTATION_TRANSACTION_APPLY_COMMAND,
   CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
   TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND,
+  PROJECT_SNAPSHOT_BOUNDARY_COMMAND,
 ] as const;
 export const MAX_ANNOTATION_COMMAND_ITEMS = 500;
 export const MAX_ANNOTATION_TRANSACTION_COMMANDS = 20;
@@ -60,10 +72,38 @@ export const MAX_TIMELINE_COMMAND_ITEMS = MAX_ANNOTATION_COMMAND_ITEMS;
 export const MAX_ANNOTATION_CONTENT_LENGTH = 2_000;
 export const TIMELINE_TIMING_COMPARISON_EPSILON = 0.0005;
 
-// 所有客户端与服务端共用这一判别，避免新增结构 action 后某条写路径忘记强制 mutation lease。
+// purpose resolver 是 App 保存/历史与 API 门禁的唯一语义来源；快照边界需要读取 kind，不能只看 type。
+export function getAnnotationMutationLeasePurposeForCommand(
+  value: unknown,
+): "track_structure" | "bulk_import" | "bulk_repair" | null {
+  const type = typeof value === "string"
+    ? value
+    : isRecord(value) && isRecord(value.command) ? value.command.type : null;
+  if (type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND || type === TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND) {
+    return "track_structure";
+  }
+  if (type !== PROJECT_SNAPSHOT_BOUNDARY_COMMAND) return null;
+  const envelope = parseProjectSnapshotBoundaryEnvelope(value);
+  if (!envelope) return null;
+  return envelope.command.kind === "import_srt" ||
+    envelope.command.kind === "import_project" ||
+    envelope.command.kind === "merge_project" ||
+    envelope.command.kind === "import_gongche"
+    ? "bulk_import"
+    : "bulk_repair";
+}
+
+// 保留按 type 判断的兼容 helper；需要区分快照 purpose 的新调用点必须传完整 envelope 给上面的 resolver。
 export function isAnnotationMutationLeaseRequiredCommandType(value: unknown): boolean {
   return value === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND ||
-    value === TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND;
+    value === TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND ||
+    value === PROJECT_SNAPSHOT_BOUNDARY_COMMAND;
+}
+
+// 快照边界是合法领域事实，但不携带 ProjectData 差异；operation feed 必须回退到权威快照。
+export function isReplayableAnnotationCommandEnvelope(value: unknown): boolean {
+  const envelope = parseAnnotationCommandEnvelope(value);
+  return Boolean(envelope && envelope.command.type !== PROJECT_SNAPSHOT_BOUNDARY_COMMAND);
 }
 
 // 首批协作目标覆盖已有时间轴可拖拽实体；后续新增类型必须同步扩 validator 与 apply 语义。
@@ -327,7 +367,8 @@ export type AnnotationDomainCommand =
   | AnnotationItemsStateUpdateCommand
   | CustomTrackStructureUpdateCommand
   | TrackStructureTransactionApplyCommand
-  | AnnotationTransactionApplyCommand;
+  | AnnotationTransactionApplyCommand
+  | ProjectSnapshotBoundaryCommand;
 
 export type TimelineTimingCommandEnvelope = {
   version: typeof ANNOTATION_COMMAND_ENVELOPE_VERSION;
@@ -366,7 +407,8 @@ export type AnnotationCommandEnvelope =
   | AnnotationStateCommandEnvelope
   | CustomTrackStructureCommandEnvelope
   | TrackStructureTransactionCommandEnvelope
-  | AnnotationTransactionCommandEnvelope;
+  | AnnotationTransactionCommandEnvelope
+  | ProjectSnapshotBoundaryCommandEnvelope;
 
 // 调用者提供的当前时间快照与命令目标使用同一稳定身份，不把 ProjectData 结构泄漏到 shared。
 export type TimelineTimingActual = Pick<
@@ -675,6 +717,7 @@ export function buildTrackStructureTransactionEnvelope(
     | CustomTrackStructureCommandEnvelope
     | CustomTrackLifecycleCommandEnvelope
     | AttachedPointTrackLifecycleCommandEnvelope
+    | BuiltinTrackLifecycleCommandEnvelope
     | TrackConfigurationCommandEnvelope
   )[],
 ): TrackStructureTransactionCommandEnvelope | null {
@@ -743,6 +786,7 @@ function parseTrackStructureTransactionChild(rawCommand: unknown):
   | CustomTrackStructureCommandEnvelope
   | CustomTrackLifecycleCommandEnvelope
   | AttachedPointTrackLifecycleCommandEnvelope
+  | BuiltinTrackLifecycleCommandEnvelope
   | TrackOrderCommandEnvelope
   | BuiltinTrackStructureCommandEnvelope
   | AttachedPointTrackStructureCommandEnvelope
@@ -763,6 +807,9 @@ function parseTrackStructureTransactionChild(rawCommand: unknown):
   if (rawCommand.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND) {
     return parseAttachedPointTrackLifecycleCommandEnvelope(envelope);
   }
+  if (rawCommand.type === BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND) {
+    return parseBuiltinTrackLifecycleCommandEnvelope(envelope);
+  }
   if (rawCommand.type === TRACK_ORDER_UPDATE_COMMAND) {
     return parseTrackOrderCommandEnvelope(envelope);
   }
@@ -779,6 +826,7 @@ function isTrackStructureChildCommand(command: TrackStructureTransactionChildCom
   return command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND ||
     command.type === CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND ||
     command.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND ||
+    command.type === BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND ||
     command.type === TRACK_ORDER_UPDATE_COMMAND ||
     command.type === BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND ||
     command.type === ATTACHED_POINT_TRACK_STRUCTURE_UPDATE_COMMAND;
@@ -796,6 +844,9 @@ function getTrackStructureTransactionChildCost(command: TrackStructureTransactio
   }
   if (command.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND) {
     return command.items.reduce((total, item) => total + getAttachedPointTrackLifecycleItemCost(item), 0);
+  }
+  if (command.type === BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND) {
+    return command.items.reduce((total, item) => total + getBuiltinTrackLifecycleItemCost(item), 0);
   }
   if (command.type === TRACK_ORDER_UPDATE_COMMAND ||
     command.type === BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND ||
@@ -825,6 +876,9 @@ export function parseAnnotationCommandEnvelope(value: unknown): AnnotationComman
   }
   if (value.command.type === TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND) {
     return parseTrackStructureTransactionCommandEnvelope(value);
+  }
+  if (value.command.type === PROJECT_SNAPSHOT_BOUNDARY_COMMAND) {
+    return parseProjectSnapshotBoundaryEnvelope(value);
   }
   if (value.command.type === ANNOTATION_TRANSACTION_APPLY_COMMAND) {
     return parseAnnotationTransactionCommandEnvelope(value);
@@ -885,8 +939,12 @@ export function invertAnnotationCommandEnvelope(
       TimelineTimingCommandEnvelope | AnnotationContentCommandEnvelope | AnnotationLifecycleCommandEnvelope |
       AnnotationStateCommandEnvelope | CustomTrackStructureCommandEnvelope |
       CustomTrackLifecycleCommandEnvelope | AttachedPointTrackLifecycleCommandEnvelope |
+      BuiltinTrackLifecycleCommandEnvelope |
       TrackConfigurationCommandEnvelope
     >);
+  }
+  if (envelope.command.type === PROJECT_SNAPSHOT_BOUNDARY_COMMAND) {
+    return invertProjectSnapshotBoundaryEnvelope(envelope);
   }
   const inverseChildren = [...envelope.command.commands]
     .reverse()
@@ -905,7 +963,8 @@ function invertTrackStructureTransactionChild(
   command: TrackStructureTransactionChildCommand,
 ) {
   if (command.type === CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND ||
-    command.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND) {
+    command.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND ||
+    command.type === BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND) {
     return invertTrackStructureLifecycleCommandEnvelope({
       version: ANNOTATION_COMMAND_ENVELOPE_VERSION,
       command,

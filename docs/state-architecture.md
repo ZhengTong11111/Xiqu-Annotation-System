@@ -124,6 +124,17 @@ content/lifecycle/state/timing 叶命令的顶层容器，必须包含至少一�
 板眼 state 断链、工尺 lifecycle 删除、轨道 lifecycle 删除的顺序形成一条原子事实；自定义 typeOptions
 重命名/删除可把结构快照与命中块 type 的 content 更新组合在同一事实中。
 
+R5a4c4b 又新增内建轨生命周期 leaf。非空快照保存完整 `BuiltinTrack`（含附属点轨/点）以及它在
+`builtinTracks`、`activeTrackOrder` 中的精确位置；逐字、工尺和板眼修复仍作为有依赖顺序的普通
+lifecycle/state 子命令显式组合，不在轨道快照中重复保存。当前唯一合法内建轨身份是
+`character-track` / `character`，unknown 输入不能借生命周期命令创建任意内建轨类型。
+
+无法安全压缩到 500 实体预算的批量导入、修复和内建轨超量删除使用
+`annotation.project.snapshot.boundary`。该 envelope 只保存稳定 boundary id、受控 kind 和方向，不保存
+`ProjectData`；它是合法、受 mutation lease 保护但**不可 committed-feed 重放**的领域事实。草稿与历史可
+保存该小型边界，undo/redo 通过 inverse 继续取得对应的 `bulk_import` 或 `bulk_repair` 租约；clean catch-up
+遇到边界必须舍弃局部重放结果并读取权威 snapshot。
+
 命令由本次 undo 的真实 `baseProject` 和最终 `nextProject` 提取。连续拖动仍只在 pointer-up 形成一条
 operation；若目标缺失、id 不满足协议、超过 500 项，或同一次编辑还修改了合同外字段，普通实体调用点可
 保留 legacy `project.commit`；受租约保护的结构调用点则必须阻止提交并显示错误，不能把无法证明完整的
@@ -133,9 +144,10 @@ operation；若目标缺失、id 不满足协议、超过 500 项，或同一次
 
 - version 1 时间、稳定内容、生命周期、状态、依赖事务、既有自定义轨道结构命令和有界结构事务可严格验证、持久化和幂等重放请求，但服务端尚未
   apply 到 payload。
-- 自定义轨道结构 history 的 undo/redo 已分别记录 inverse/正向领域命令；整条自定义轨、附属点轨生命周期、
-  自定义类型选项内容联动、既有内建轨/点轨配置和顶层轨道排序也已进入结构事务。逐字唱法已是稳定 content
-  字段；四声、分句合句、内建轨生命周期和批量导入仍有 legacy 摘要，不可领域重放。
+- 自定义轨道结构 history 的 undo/redo 已分别记录 inverse/正向领域命令；整条自定义轨、内建逐字轨、附属
+  点轨生命周期，自定义类型选项内容联动、既有内建轨/点轨配置和顶层轨道排序也已进入结构事务。逐字唱法
+  已是稳定 content 字段；批量导入/修复使用不可重放的受控快照边界。四声、分句合句等剩余编辑仍有 legacy
+  摘要，不可领域重放。
 - 它不会修改 annotation file payload。
 - 它不能作为恢复完整项目的唯一来源。
 - 不应把完整 before/after `ProjectData` 复制进每一条 operation。
@@ -286,7 +298,7 @@ Inspector 快速输入按索引复用已有 symbol id，仅新增尾项生成新
 的元数据。整段工尺导入、内建轨删除等仍可使用 legacy 快照，但提交前必须经过同一引用修复。自动板眼生成
 只有在状态/生命周期事务能重建完整 next 时才写领域命令，否则安全回退快照。
 
-### 4.9 R5a4c1-R5a4c4a 结构性变更租约与有界结构事务
+### 4.9 R5a4c1-R5a4c4b 结构性变更租约、有界事务与快照边界
 
 轨道结构、递归分叉、批量导入和大范围修复仍不属于普通实体命令。服务端新增按 annotation file 唯一的
 短时独占租约，绑定 holder、purpose、base revision、创建/过期时间；客户端只得到一次性明文 token，
@@ -298,9 +310,10 @@ operation、snapshot save、snapshot restore 和租约 acquire/renew/release 全
 不能再从 operation 的事务外 ACL 检查间隙穿过。
 
 没有有效租约时普通写入完全不变；`annotation.track.structure.update` 与
-`annotation.track.structure.transaction.apply` 则无论数据库是否已有租约都必须先取得锁。shared 的
-`isAnnotationMutationLeaseRequiredCommandType()` 是 App 保存/历史和 API repository 的唯一判别源，避免
-新增结构 action 后漏掉某条门禁。有有效租约时，同账号另一个标签页也必须提交匹配 token；账号、摘要、
+`annotation.track.structure.transaction.apply` 和 `annotation.project.snapshot.boundary` 则无论数据库是否
+已有租约都必须先取得锁。shared 的 `getAnnotationMutationLeasePurposeForCommand()` 是 App 保存/历史和 API
+repository 的唯一语义判别源；它把结构写入映射为 `track_structure`，导入映射为 `bulk_import`，修复/生成
+映射为 `bulk_repair`。有有效租约时，同账号另一个标签页也必须提交匹配 token；账号、摘要、
 base revision 或有效期任一不符均返回可解释 409。operation 接受不释放租约；只有完整 payload revision 与
 operation commit 成功后，才在同一事务删除租约。恢复快照同样受 guard 保护并在成功时释放。
 
@@ -317,14 +330,16 @@ redo 保存并重发原命令；legacy 历史仍走原有 project.undo/project.r
 R5a4c3 又覆盖整条自定义轨创建/删除、内建或自定义父轨的附属点轨创建/删除，以及会同步修改 block.type 的
 自定义 typeOptions 重命名/删除。R5a4c4a 新增只能嵌入顶层结构事务的 order、builtin-track config 和
 attached-point-track config 三类结构叶命令，覆盖既有顶层轨道重排、内建逐字轨配置、附属点轨配置以及
-typeOptions 与逐字 `singingStyle`/点 `label` 的原子联动。逐字唱法复用 content command，但拥有独立 target
-key，不再与字面文本混为一个字段。
+typeOptions 与逐字 `singingStyle`/点 `label` 的原子联动。R5a4c4b 再覆盖内建逐字轨创建/删除；逐字与工尺
+生命周期、板眼断链和内建轨容器变化按依赖顺序进入同一结构事务，超预算时才进入 `bulk_repair` 快照边界。
+逐字唱法复用 content command，但拥有独立 target key，不再与字面文本混为一个字段。
 
 结构事务的 ProjectData apply 只在全部子命令和最终引用/容器完整性通过后发布结果；自定义轨必须在
 `customTracks` 与 `activeTrackOrder` 中唯一对应，点轨 id 跨父轨唯一。配置 builder 从真实 base/next 提取
 before/after，并通过完整 next 深比较拒绝漏报的内容级联；等待租约期间所有 updater 都必须回到最新
-`projectRef` 重新计算，不能提交网络等待前捕获的 options。内建轨生命周期和批量导入/修复仍留给
-R5a4c4b：前者需要完整拥有实体闭包，后者需要明确降级到权威 snapshot，不能扩大有界命令预算。
+`projectRef` 重新计算，不能提交网络等待前捕获的 options。批量入口同样经过统一串行门禁；文件解析可以在
+锁前完成，但真正的 next project 必须在锁后重建。平台覆盖导入不得在服务器 revision 保存前调用
+`markProjectAsSaved()`，否则自动保存和冲突恢复会把未上传内容误判为 clean。
 
 ## 5. 浏览器草稿与离线恢复边界
 

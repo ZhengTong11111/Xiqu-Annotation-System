@@ -31,9 +31,12 @@ Main currently contains all major recent feature lines that matter for context:
 - existing custom-track metadata, recursive branch trees, and block branch ownership now use the strict top-level
   `annotation.track.structure.update` command; platform edits acquire/renew a file lease before local commit, and structural
   undo/redo retain inverse/forward command envelopes
-- custom-track and attached-point-track creation/deletion plus custom type-option/block-type coupling now use the bounded
+- custom-track, builtin character-track, and attached-point-track creation/deletion plus custom type-option/block-type coupling now use the bounded
   `annotation.track.structure.transaction.apply`; it composes strict structure/content/lifecycle/state leaves, requires the
   same mutation lease, and is replayable by drafts/history/clean HTTP catch-up
+- bulk imports/repairs and over-budget builtin-track deletion use the strict non-replayable
+  `annotation.project.snapshot.boundary`; the boundary contains no ProjectData, requires a purpose-specific mutation lease,
+  survives drafts/history, and forces clean catch-up to fetch the authoritative snapshot
 - version 1 timing, stable content-update, lifecycle, composite-state, and dependency-transaction domain commands with strict shared validation,
   draft persistence, inverse/precondition semantics, all-or-nothing ProjectData adapters, server logging, and clean-client
   HTTP replay; lifecycle covers sentences, characters, custom blocks, attached points, Gongche blocks/symbols, and Banyan
@@ -54,6 +57,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/App.tsx`
   - main orchestrator
   - wires together project state, playback state, import/export, clipboard, selection, context menu, loop range, spectrogram settings, detached windows, and inspector actions
+  - all lease-protected local mutations pass through one exclusive coordinator; next ProjectData must be rebuilt from the latest
+    `projectRef` after lease acquisition. Bounded structure uses `track_structure`; controlled snapshot boundaries use
+    `bulk_import` or `bulk_repair`. Platform imports remain dirty until a real server revision save succeeds.
 - `src/platform/PlatformWorkspace.tsx`
   - platform login/resource-explorer/editor switch and local editor entry
   - owns the single authoritative annotation-file open path; ordinary opens and comparison navigation both refetch
@@ -317,10 +323,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - the command updates existing custom tracks only; its complete-next equality gate must reject block content, timing,
     lifecycle, attached-point, or other out-of-contract changes
 - `src/utils/trackStructureLifecycleCommand.ts` + `src/utils/trackStructureLifecycleCommandApply.ts`
-  - canonical full-owned-subtree snapshots and exact collection-position apply path for custom-track and attached-point-track
-    creation/deletion leaves
+  - canonical full-owned-subtree snapshots and exact collection-position apply path for custom-track, builtin character-track,
+    and attached-point-track creation/deletion leaves
   - custom tracks must occur exactly once in both `customTracks` and `activeTrackOrder`; attached point-track ids are global
-    across parents. Malformed absence must never be reinterpreted as a valid creation.
+    across parents; every top-level track must occur exactly once in `activeTrackOrder`. Malformed absence must never be
+    reinterpreted as a valid creation.
 - `src/utils/trackStructureTransactionCommand.ts` + `src/utils/trackStructureTransactionCommandApply.ts`
   - the only ProjectData builder/apply path for `annotation.track.structure.transaction.apply`
   - orders parent creation/deletion around content/lifecycle/state children, proves the complete next project by replay, and
@@ -333,13 +340,16 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/utils/annotationCommandApply.ts`
   - generic ProjectData command dispatcher used by clean catch-up; it only discriminates validated command types and must
     not duplicate a domain parser, precondition, or apply implementation
+  - snapshot boundaries return `snapshot_required`; they are valid operation facts but never mutate a local ProjectData
 - `packages/shared/src/annotationCommands.ts`
   - authoritative timing/content/state/lifecycle/transaction annotation-command DTOs, deterministic builders/inverse, strict discriminated unknown
     parsers, all-target precondition assessment, target keys, limits, and API action/payload allowlist shared by web,
     IndexedDB recovery, and Fastify
   - `annotation.track.structure.transaction.apply` is the only top-level container allowed to combine structure leaves with
     ordinary domain leaves; it requires one structure child, forbids recursion, and shares one 20-command/500-entity budget
-  - `isAnnotationMutationLeaseRequiredCommandType()` is the sole App/API lease discriminator for structure operation types
+  - `getAnnotationMutationLeasePurposeForCommand()` is the sole App/API semantic lease resolver. Callers that need a purpose
+    must pass the full envelope because snapshot-boundary kind distinguishes `bulk_import` from `bulk_repair`; the boolean
+    type helper exists only for compatibility.
   - character content targets distinguish `char` and `singingStyle`; do not rewrite singing-style cascades as character-text
     changes or hide them inside a configuration snapshot
   - the server currently validates and logs these commands but does not apply them to `AnnotationFile.payload`
@@ -349,8 +359,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - before/after keep track type and block identities stable; recursive lane identity/parentage, block-parent cycles,
     branch-scope references, ordering, no-op, and the 500-item budget fail closed
 - `packages/shared/src/trackStructureLifecycleCommands.ts`
-  - strict structure-only leaf DTOs for custom-track and attached-point-track lifecycle; these leaves are legal only inside
-    the top-level structure transaction and are not standalone operation actions
+  - strict structure-only leaf DTOs for custom-track, builtin character-track, and attached-point-track lifecycle; these leaves
+    are legal only inside the top-level structure transaction and are not standalone operation actions
+- `packages/shared/src/projectSnapshotBoundaryCommands.ts`
+  - strict small intent envelope for approved bulk import/repair boundaries; it stores id/kind/direction only, never ProjectData
+  - inverse flips direction, but the command is deliberately non-replayable. API acceptance/logging and browser drafts are valid;
+    committed-feed catch-up must fetch the authoritative snapshot instead of calling a ProjectData apply adapter.
 - `packages/shared/src/trackConfigurationCommands.ts`
   - strict transaction-only leaves for track order and existing builtin/attached-point-track configuration
   - order updates preserve the exact id set; configuration updates preserve identity/parent scope, reject no-ops and duplicate

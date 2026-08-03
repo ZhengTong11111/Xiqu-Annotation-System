@@ -4,6 +4,7 @@ import {
   ANNOTATION_STATE_UPDATE_COMMAND,
   ANNOTATION_TRANSACTION_APPLY_COMMAND,
   CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
+  PROJECT_SNAPSHOT_BOUNDARY_COMMAND,
   TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND,
   parseAnnotationCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
@@ -38,6 +39,10 @@ export function applyAnnotationCommandToProject(project: ProjectData, value: unk
   }
   if (envelope.command.type === TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND) {
     return applyTrackStructureTransactionCommandToProject(project, envelope);
+  }
+  if (envelope.command.type === PROJECT_SNAPSHOT_BOUNDARY_COMMAND) {
+    // 边界命令只证明一次受租约保护的全量变更发生过；实际内容必须来自同 revision 的完整快照。
+    return { status: "snapshot_required" as const, envelope };
   }
   if (envelope.command.type === ANNOTATION_TRANSACTION_APPLY_COMMAND) {
     return applyAnnotationTransactionCommandToProject(project, envelope);

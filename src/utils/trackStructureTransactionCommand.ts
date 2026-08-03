@@ -22,10 +22,13 @@ import { buildProjectCustomTrackStructureEnvelope } from "./customTrackStructure
 import { areProjectValuesEqual } from "./projectValueEquality";
 import {
   buildProjectAttachedPointTrackLifecycleEnvelope,
+  buildProjectBuiltinTrackLifecycleEnvelope,
   buildProjectCustomTrackLifecycleEnvelope,
   resolveAttachedPointTrackLifecycleContext,
+  resolveBuiltinTrackLifecycleState,
   resolveCustomTrackLifecycleState,
   type AttachedPointTrackLifecycleTarget,
+  type BuiltinTrackLifecycleTarget,
   type CustomTrackLifecycleTarget,
 } from "./trackStructureLifecycleCommand";
 import { applyTrackStructureTransactionCommandToProject } from "./trackStructureTransactionCommandApply";
@@ -37,6 +40,7 @@ import {
 } from "./trackConfigurationCommand";
 
 export type TrackStructureTransactionPlan = {
+  builtinTrackLifecycleTargets?: readonly BuiltinTrackLifecycleTarget[];
   customTrackLifecycleTargets?: readonly CustomTrackLifecycleTarget[];
   attachedPointTrackLifecycleTargets?: readonly AttachedPointTrackLifecycleTarget[];
   customTrackStructureIds?: readonly string[];
@@ -45,6 +49,7 @@ export type TrackStructureTransactionPlan = {
   attachedPointTrackStructureTargets?: readonly AttachedPointTrackStructureTarget[];
   contentTargets?: readonly AnnotationContentTarget[];
   lifecycleTargets?: readonly AnnotationLifecycleTarget[];
+  lifecycleTargetGroups?: readonly (readonly AnnotationLifecycleTarget[])[];
   stateTargets?: readonly AnnotationStateTarget[];
 };
 
@@ -55,13 +60,20 @@ export function buildProjectTrackStructureTransactionCommand(
   plan: TrackStructureTransactionPlan,
 ): TrackStructureTransactionCommandEnvelope | null {
   const commands = [];
+  const builtinLifecycle = classifyBuiltinTrackLifecycleTargets(baseProject, nextProject,
+    plan.builtinTrackLifecycleTargets ?? []);
   const customLifecycle = classifyCustomTrackLifecycleTargets(baseProject, nextProject,
     plan.customTrackLifecycleTargets ?? []);
   const pointLifecycle = classifyPointTrackLifecycleTargets(baseProject, nextProject,
     plan.attachedPointTrackLifecycleTargets ?? []);
-  if (!customLifecycle || !pointLifecycle) return null;
+  if (!builtinLifecycle || !customLifecycle || !pointLifecycle) return null;
 
   // 创建父容器必须先于所有引用它的子实体；删除则相反，因此 lifecycle 被拆成前后两个阶段。
+  if (builtinLifecycle.creations.length > 0) {
+    const envelope = buildProjectBuiltinTrackLifecycleEnvelope(baseProject, nextProject, builtinLifecycle.creations);
+    if (!envelope) return null;
+    commands.push(envelope);
+  }
   if (customLifecycle.creations.length > 0) {
     const envelope = buildProjectCustomTrackLifecycleEnvelope(baseProject, nextProject, customLifecycle.creations);
     if (!envelope) return null;
@@ -81,12 +93,16 @@ export function buildProjectTrackStructureTransactionCommand(
     commands.push(envelope);
   }
 
-  const lifecycleTargets = selectChangedLifecycleTargets(baseProject, nextProject, plan.lifecycleTargets ?? []);
-  if (!lifecycleTargets) return null;
-  if (lifecycleTargets.length > 0) {
-    const envelope = buildProjectAnnotationLifecycleEnvelope(baseProject, nextProject, lifecycleTargets);
-    if (!envelope) return null;
-    commands.push(envelope);
+  const lifecycleGroups = normalizeLifecycleTargetGroups(plan);
+  if (!lifecycleGroups) return null;
+  for (const lifecycleGroup of lifecycleGroups) {
+    const lifecycleTargets = selectChangedLifecycleTargets(baseProject, nextProject, lifecycleGroup);
+    if (!lifecycleTargets) return null;
+    if (lifecycleTargets.length > 0) {
+      const envelope = buildProjectAnnotationLifecycleEnvelope(baseProject, nextProject, lifecycleTargets);
+      if (!envelope) return null;
+      commands.push(envelope);
+    }
   }
 
   const contentTargets = selectChangedContentTargets(baseProject, nextProject, plan.contentTargets ?? []);
@@ -142,11 +158,49 @@ export function buildProjectTrackStructureTransactionCommand(
     if (!envelope) return null;
     commands.push(envelope);
   }
+  if (builtinLifecycle.deletions.length > 0) {
+    const envelope = buildProjectBuiltinTrackLifecycleEnvelope(baseProject, nextProject, builtinLifecycle.deletions);
+    if (!envelope) return null;
+    commands.push(envelope);
+  }
 
   const envelope = buildTrackStructureTransactionEnvelope(commands);
   if (!envelope) return null;
   const applied = applyTrackStructureTransactionCommandToProject(baseProject, envelope);
   return applied.status === "applied" && areProjectValuesEqual(applied.project, nextProject) ? envelope : null;
+}
+
+function classifyBuiltinTrackLifecycleTargets(
+  baseProject: ProjectData,
+  nextProject: ProjectData,
+  targets: readonly BuiltinTrackLifecycleTarget[],
+) {
+  const creations: BuiltinTrackLifecycleTarget[] = [];
+  const deletions: BuiltinTrackLifecycleTarget[] = [];
+  for (const target of new Map(targets.map((item) => [item.trackId, item])).values()) {
+    const before = resolveBuiltinTrackLifecycleState(baseProject, target.trackId);
+    const after = resolveBuiltinTrackLifecycleState(nextProject, target.trackId);
+    if ((before === null) === (after === null)) return null;
+    (before ? deletions : creations).push(target);
+  }
+  return { creations, deletions };
+}
+
+// 删除内建轨时，工尺块必须先于逐字块删除；显式分组保留调用方声明的依赖顺序。
+function normalizeLifecycleTargetGroups(plan: TrackStructureTransactionPlan) {
+  const groups = [
+    ...(plan.lifecycleTargetGroups ?? []),
+    ...(plan.lifecycleTargets ? [plan.lifecycleTargets] : []),
+  ].filter((group) => group.length > 0);
+  const seen = new Set<string>();
+  for (const group of groups) {
+    for (const target of group) {
+      const key = JSON.stringify([target.entityType, target.trackId ?? null, target.entityId]);
+      if (seen.has(key)) return null;
+      seen.add(key);
+    }
+  }
+  return groups;
 }
 
 function classifyCustomTrackLifecycleTargets(

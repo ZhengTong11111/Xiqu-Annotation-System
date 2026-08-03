@@ -4,6 +4,7 @@ import {
   ANNOTATION_STATE_UPDATE_COMMAND,
   ATTACHED_POINT_TRACK_STRUCTURE_UPDATE_COMMAND,
   ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND,
+  BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND,
   CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND,
   CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
   BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND,
@@ -50,8 +51,9 @@ export function applyTrackStructureTransactionCommandToProject(
             ? applyAnnotationStateCommandToProject(currentProject, childEnvelope)
             : command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND
               ? applyCustomTrackStructureCommandToProject(currentProject, childEnvelope)
-              : command.type === CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND ||
-                  command.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND
+            : command.type === CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND ||
+                  command.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND ||
+                  command.type === BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND
                 ? applyTrackStructureLifecycleCommandToProject(currentProject, childEnvelope)
                 : command.type === TRACK_ORDER_UPDATE_COMMAND ||
                     command.type === BUILTIN_TRACK_STRUCTURE_UPDATE_COMMAND ||

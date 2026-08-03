@@ -1,26 +1,32 @@
 import {
   getTrackStructureLifecycleTargetKey,
   parseAttachedPointTrackLifecycleCommandEnvelope,
+  parseBuiltinTrackLifecycleCommandEnvelope,
   parseCustomTrackLifecycleCommandEnvelope,
   type AttachedPointTrackLifecycleCommandEnvelope,
   type AttachedPointTrackLifecycleUpdateItem,
   type AttachedPointTrackSnapshot,
+  type BuiltinTrackLifecycleCommandEnvelope,
+  type BuiltinTrackLifecycleSnapshot,
+  type BuiltinTrackLifecycleUpdateItem,
   type CustomTrackStructureBranchLane,
   type CustomTrackLifecycleCommandEnvelope,
   type CustomTrackLifecycleSnapshot,
   type CustomTrackLifecycleUpdateItem,
   type TrackStructureCollectionPosition,
 } from "@xiqu/shared";
-import type { AttachedPointTrack, BranchLane, CustomTrack, ProjectData } from "../types";
+import type { AttachedPointTrack, BranchLane, BuiltinTrack, CustomTrack, ProjectData } from "../types";
 import { areProjectValuesEqual } from "./projectValueEquality";
 import {
   resolveAttachedPointTrackLifecycleContext,
+  resolveBuiltinTrackLifecycleState,
   resolveCustomTrackLifecycleState,
 } from "./trackStructureLifecycleCommand";
 
 type StructureLifecycleEnvelope =
   | CustomTrackLifecycleCommandEnvelope
-  | AttachedPointTrackLifecycleCommandEnvelope;
+  | AttachedPointTrackLifecycleCommandEnvelope
+  | BuiltinTrackLifecycleCommandEnvelope;
 
 export type TrackStructureLifecycleApplyResult =
   | { status: "invalid_command" }
@@ -35,7 +41,51 @@ export function applyTrackStructureLifecycleCommandToProject(
   if (customEnvelope) return applyCustomTrackLifecycle(project, customEnvelope);
   const pointEnvelope = parseAttachedPointTrackLifecycleCommandEnvelope(value);
   if (pointEnvelope) return applyAttachedPointTrackLifecycle(project, pointEnvelope);
+  const builtinEnvelope = parseBuiltinTrackLifecycleCommandEnvelope(value);
+  if (builtinEnvelope) return applyBuiltinTrackLifecycle(project, builtinEnvelope);
   return { status: "invalid_command" };
+}
+
+function applyBuiltinTrackLifecycle(
+  project: ProjectData,
+  envelope: BuiltinTrackLifecycleCommandEnvelope,
+): TrackStructureLifecycleApplyResult {
+  const issues = [];
+  for (const item of envelope.command.items) {
+    const current = resolveBuiltinTrackLifecycleState(project, item.trackId);
+    const idOccursInBuiltinTracks = project.builtinTracks.some((track) => track.id === item.trackId);
+    const idOccursInActiveOrder = project.activeTrackOrder.includes(item.trackId);
+    const invalidAbsentState = item.before === null && (idOccursInBuiltinTracks || idOccursInActiveOrder);
+    if (invalidAbsentState || !areProjectValuesEqual(current, item.before)) {
+      issues.push({
+        code: current === null && item.before !== null ? "target_missing" as const : "before_mismatch" as const,
+        targetKey: getTrackStructureLifecycleTargetKey(item),
+      });
+    }
+  }
+  if (issues.length > 0) return { status: "blocked", issues };
+
+  // 内建轨实体与活动排序必须作为一个原子容器变化恢复，避免删除后留下不可见的幽灵排序项。
+  const builtinTracks = rebuildCollection(
+    project.builtinTracks,
+    envelope.command.items,
+    (item) => item.before,
+    (item) => item.after,
+    (state) => restoreBuiltinTrackSnapshot(state.entity),
+    (state) => state.entity.id,
+  );
+  const activeTrackOrder = rebuildStringCollection(
+    project.activeTrackOrder,
+    envelope.command.items,
+    (item) => item.before?.activeTrackPosition ?? null,
+    (item) => item.after?.activeTrackPosition ?? null,
+    (item) => item.trackId,
+  );
+  if (!builtinTracks || !activeTrackOrder) return blockedResult(envelope.command.items);
+  const nextProject = { ...project, builtinTracks: builtinTracks as BuiltinTrack[], activeTrackOrder };
+  return validateTrackContainerIntegrity(nextProject)
+    ? { status: "applied", project: nextProject, envelope }
+    : blockedResult(envelope.command.items);
 }
 
 function applyCustomTrackLifecycle(
@@ -155,10 +205,11 @@ export function validateTrackContainerIntegrity(project: ProjectData) {
   const customTrackIds = project.customTracks.map((track) => track.id);
   const allTrackIds = [...builtinTrackIds, ...customTrackIds];
   if (new Set(allTrackIds).size !== allTrackIds.length ||
-    new Set(project.activeTrackOrder).size !== project.activeTrackOrder.length) return false;
+    new Set(project.activeTrackOrder).size !== project.activeTrackOrder.length ||
+    project.activeTrackOrder.length !== allTrackIds.length) return false;
 
-  // 每条自定义轨必须在活动排序中恰好出现一次；否则创建、删除及 inverse 无法恢复同一个逻辑位置。
-  if (customTrackIds.some((trackId) =>
+  // 每条可编辑轨必须在活动排序中恰好出现一次；否则创建、删除及 inverse 无法恢复同一个逻辑位置。
+  if (allTrackIds.some((trackId) =>
     project.activeTrackOrder.filter((activeId) => activeId === trackId).length !== 1)) return false;
 
   const allTracks = [...project.builtinTracks, ...project.customTracks];
@@ -213,9 +264,7 @@ function rebuildCollection<
   const finalLength = current.length - deletedIds.size + creations.length;
   const result: Array<TEntity | undefined> = Array(finalLength);
   for (const state of creations) {
-    const position = "customTrackPosition" in state
-      ? (state as TState & { customTrackPosition: TrackStructureCollectionPosition }).customTrackPosition
-      : state.position;
+    const position = getLifecycleCollectionPosition(state);
     if (!position || position.collectionLength !== finalLength || result[position.index]) return null;
     result[position.index] = restore(state);
   }
@@ -226,9 +275,7 @@ function rebuildCollection<
   if (remainingIndex !== remaining.length || result.some((entity) => !entity)) return null;
   const complete = result as TEntity[];
   for (const state of creations) {
-    const position = "customTrackPosition" in state
-      ? (state as TState & { customTrackPosition: TrackStructureCollectionPosition }).customTrackPosition
-      : state.position!;
+    const position = getLifecycleCollectionPosition(state)!;
     const entity = restore(state);
     if (complete[position.index]?.id !== entity.id ||
       (complete[position.index - 1]?.id ?? null) !== position.previousEntityId ||
@@ -237,12 +284,25 @@ function rebuildCollection<
   return complete;
 }
 
-function rebuildStringCollection(
+// 三类 lifecycle state 的集合位置字段不同；统一收口后，重建算法不再依赖不安全的调用方分支。
+function getLifecycleCollectionPosition<TState extends { position?: TrackStructureCollectionPosition }>(
+  state: TState,
+) {
+  if ("customTrackPosition" in state) {
+    return (state as TState & { customTrackPosition: TrackStructureCollectionPosition }).customTrackPosition;
+  }
+  if ("builtinTrackPosition" in state) {
+    return (state as TState & { builtinTrackPosition: TrackStructureCollectionPosition }).builtinTrackPosition;
+  }
+  return state.position;
+}
+
+function rebuildStringCollection<TItem>(
   current: readonly string[],
-  items: readonly CustomTrackLifecycleUpdateItem[],
-  beforeOf: (item: CustomTrackLifecycleUpdateItem) => TrackStructureCollectionPosition | null,
-  afterOf: (item: CustomTrackLifecycleUpdateItem) => TrackStructureCollectionPosition | null,
-  idOf: (item: CustomTrackLifecycleUpdateItem) => string,
+  items: readonly TItem[],
+  beforeOf: (item: TItem) => TrackStructureCollectionPosition | null,
+  afterOf: (item: TItem) => TrackStructureCollectionPosition | null,
+  idOf: (item: TItem) => string,
 ): string[] | null {
   const deletedIds = new Set(items.flatMap((item) => beforeOf(item) && !afterOf(item) ? [idOf(item)] : []));
   const remaining = current.filter((id) => !deletedIds.has(id));
@@ -327,6 +387,25 @@ function restoreAttachedPointTrackSnapshot(snapshot: AttachedPointTrackSnapshot)
   };
 }
 
+function restoreBuiltinTrackSnapshot(snapshot: BuiltinTrackLifecycleSnapshot): BuiltinTrack {
+  return {
+    id: snapshot.id as BuiltinTrack["id"],
+    name: snapshot.name,
+    type: snapshot.trackType,
+    ...(snapshot.options === null ? {} : { options: [...snapshot.options] }),
+    attachedPointTracks: snapshot.attachedPointTracks.map(restoreAttachedPointTrackSnapshot),
+    ...(snapshot.attachedPointTracksExpanded === null
+      ? {}
+      : { attachedPointTracksExpanded: snapshot.attachedPointTracksExpanded }),
+    ...(snapshot.snapToWaveformKeypoints === null
+      ? {}
+      : { snapToWaveformKeypoints: snapshot.snapToWaveformKeypoints }),
+    ...(snapshot.autoSetLoopRangeOnSelect === null
+      ? {}
+      : { autoSetLoopRangeOnSelect: snapshot.autoSetLoopRangeOnSelect }),
+  };
+}
+
 function restoreBranchLane(lane: CustomTrackStructureBranchLane): BranchLane {
   return {
     id: lane.id,
@@ -338,7 +417,11 @@ function restoreBranchLane(lane: CustomTrackStructureBranchLane): BranchLane {
 }
 
 function blockedResult(
-  items: readonly (CustomTrackLifecycleUpdateItem | AttachedPointTrackLifecycleUpdateItem)[],
+  items: readonly (
+    CustomTrackLifecycleUpdateItem |
+    AttachedPointTrackLifecycleUpdateItem |
+    BuiltinTrackLifecycleUpdateItem
+  )[],
 ): TrackStructureLifecycleApplyResult {
   return {
     status: "blocked",

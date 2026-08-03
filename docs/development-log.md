@@ -3825,3 +3825,102 @@ ProjectData builder、adapter 与编辑器接线：
 - 下一轮 R5a4c4b 先审计内建轨创建/删除的完整拥有实体和所有批量入口，再分别设计：有界内建轨 lifecycle
   命令，以及明确持租约、不可 clean replay、要求 snapshot 降级的受控批量事实。不能让批量快照冒充普通
   领域 leaf，也不能让 clean catch-up 对不完整证据做部分重放。
+
+## 2026-08-04：R5a4c4b 内建轨生命周期与受控权威快照边界
+
+### 本轮任务书、阶段校正与实施边界
+
+- 用户在继续活动 goal 时确认的名称仍沿用了较早的“R2.3c2”，但 roadmap、Git 基线和本日志都表明该阶段
+  已完成；本轮实际连续阶段为 R5a4c4b。Codex 没有重复实现旧比较功能，而是先把被 gitignore 的
+  `CLAUDE_WORK.md` 整体重写为当前任务书，再按“单轮计划 → 实现 → 自审 → 测试 → 文档 → commit”执行。
+- 基线 commit 为 `8b6ff1a`。本轮只处理当前唯一内建逐字轨的创建/删除、明确批准的批量导入/修复边界、
+  历史/保存租约语义和 clean catch-up 降级；没有开始 WebSocket、presence、服务端 ProjectData apply、
+  四声/分句命令迁移，也没有扩大 20 子命令/500 实体预算。
+- 用户再次明确要求详细维护 **Development Log**。因此本条同时记录任务书、真实实现、自审修复、浏览器
+  工具边界、测试数字、构建警告和下一轮入口；`CLAUDE_WORK.md` 仍只保留当前/下一轮任务，不承担历史日志。
+
+### 严格内建轨生命周期与依赖事务
+
+- `trackStructureLifecycleCommands.ts` 新增只能嵌入结构事务的
+  `annotation.builtin-track.lifecycle.update`。一个非空快照保存完整 `BuiltinTrack`（包括附属点轨与点）以及
+  `builtinTracks`、`activeTrackOrder` 两个集合的精确 index/length/相邻锚点；逐字、工尺和板眼数据不在轨道
+  快照中复制，继续作为已有 lifecycle/state 子命令显式列出。
+- shared parser 限制当前唯一稳定身份 `character-track` 与 `trackType: character`，并验证精确 keys、安全 id、
+  点轨/点唯一性、时间、字符串和成本。创建/删除必须恰有一侧为空，inverse 只交换 before/after 后重新校验；
+  leaf 不在顶层 operation action allowlist 中，不能绕过结构租约独立提交。
+- ProjectData snapshot/apply 增加内建轨解析与重建。容器最终门禁现在要求所有 builtin/custom 顶层轨道 id
+  唯一，并与 `activeTrackOrder` 做数量相等且一一对应；未知幽灵排序 id、漏排、重复点轨/点和重复自定义块
+  都 fail closed。
+- 结构事务 builder 新增内建轨 lifecycle target 和有顺序的 lifecycle target groups。删除逐字轨按“板眼状态
+  断链 → 工尺删除 → 逐字删除 → 内建轨删除”应用，inverse 自动反序恢复；创建则保证父轨先于拥有实体出现。
+  任一 child 或最终引用/容器检查失败都不会发布半成品。
+- App 的内建轨新增/删除改走结构事务。删除超出有界预算时不再伪装成可重放结构命令，而是进入本轮
+  `builtin_track_lifecycle_overflow` 受控快照边界。文字编辑态和 selection 只在 mutation 真正提交后清理，
+  租约失败不会先破坏 UI 上下文。
+
+### 受控快照边界、租约与保存语义
+
+- 新增 `annotation.project.snapshot.boundary`：只保存版本、稳定 boundary id、受控 kind 和
+  `forward/inverse`，不保存完整或局部 ProjectData。kind 覆盖 SRT/项目/整合/工尺导入、句字修复、板眼生成
+  和内建轨超量删除；unknown key、坏 id、坏 kind/方向均由 shared parser 拒绝。
+- `getAnnotationMutationLeasePurposeForCommand()` 成为 App 与 API 的完整 envelope 语义源：结构事务映射
+  `track_structure`，导入类边界映射 `bulk_import`，修复/生成/超量删除映射 `bulk_repair`。旧 boolean helper
+  只保留兼容，不再让需要 purpose 的调用点靠 type 猜测。
+- 边界是合法领域事实，因此可进入 operation、IndexedDB 草稿和 history；它没有 ProjectData 差异，明确被
+  `isReplayableAnnotationCommandEnvelope()` 判为不可重放。通用 apply 返回 `snapshot_required`，API committed
+  记录写入 `requires_snapshot`，clean catch-up 看到它会放弃整条局部链并读取权威 snapshot。
+- App 把原结构门禁扩为通用 `runExclusiveProjectMutation()`：预览 no-op、single-flight、按 purpose 取得或
+  复用文件租约、锁后从最新 `projectRef` 重建 next、构造严格 command、再 commit。结构写入和受控快照分别
+  用薄封装调用，没有保留第二套 acquire/commit 流程。
+- 已迁移 SRT 导入、覆盖项目导入、导入整合、普通文件比较整合草稿、句字补齐、整段工尺导入，以及板眼
+  生成超预算 fallback。板眼生成仍优先使用可重放普通事务，只有完整命令无法形成时才进入 `bulk_repair`。
+- 平台文件覆盖导入不再调用 `markProjectAsSaved()`；未写入服务器的新内容保持 dirty，继续参与浏览器草稿、
+  自动保存和 revision 冲突保护。本地 JSON 打开仍可成为新的 clean 本地工作副本。
+- undo/redo 根据 history 中完整 envelope 推导 purpose；边界 inverse/redo 与结构命令一样先取得文件租约。
+  保存前扫描 pending operations 并按首个受保护事实补取租约，operation 请求仍只在顶层携带 token。
+
+### 自我审查、竞态修复与僵尸代码
+
+- 自审发现导入整合在弹窗确认前生成 plans，取得租约后却直接把旧 plans 套到最新 ProjectData；等待期间若
+  轨道发生普通编辑，目标归一化可能已经陈旧。最终改为两次 prepare：弹窗使用预览 plans，锁内基于最新
+  base 重新归一化并生成 plans；最新状态变成 skipped-all 时保持项目不变并要求用户重新检查。
+- 工尺导入原实现把解析、对齐、随机 id 和 commit 混在一个函数里。现在用纯准备器同时服务预览和锁后重算，
+  无可导入结果仍返回统计；板眼引用修复仍在最终 ProjectData 上执行。Inspector 对工尺导入和板眼生成使用
+  async pending 状态，重复点击期间按钮禁用并显示明确文案。
+- 通用串行 ref 和历史 helper 从只描述 structure 的旧名字改为 exclusive/lease 语义；被替代的重复门禁与按
+  command type 猜 purpose 的调用已清理。没有引入新的状态库、事务库或第三方依赖，现有 shared/React/runtime
+  已能表达本轮边界。
+- 代码中的新增复杂块补充了中文“为什么”注释，重点解释依赖顺序、锁后重算、不可重放边界和平台导入
+  dirty 语义；没有把临时浏览器诊断输出留在工作树。
+
+### 测试、构建与浏览器验收
+
+- `npm run test:annotation-commands`：23/23。覆盖 builtin lifecycle parser/snapshot/cost/inverse，以及 snapshot
+  boundary 的 kind、方向、purpose、inverse 和不可重放判别。
+- `npm run test:custom-track-structure-command`：16/16。覆盖内建逐字轨创建、带附属点轨删除、精确位置、
+  依赖顺序、完整 inverse、超预算拒绝和既有自定义结构回归。
+- `npm run test:platform-drafts`：20/20；边界在草稿往返时不复制每条 operation 的项目前后态。
+  `npm run test:platform-operation-catch-up`：15/15；快照边界与其他不完整证据统一降级权威 snapshot。
+  `npm run test:platform-operations`：4/4。
+- `npm run test:api`：91/91。真实 PostgreSQL 集成增加 boundary 无租约 409、正确 bulk lease 接受、完整
+  snapshot revision 绑定和原子释放；资源树、ACL、上传、快照、审计、备份、监控、维护无回归。仍只有既有
+  node-postgres pg 9 弃用提示，开发库仍为 12 条 migration。
+- `npm run build` 通过 Prisma generation、shared、document-model、Web 和 API。Vite 转换 2072 个模块，CSS
+  120.45 kB / gzip 22.25 kB，主 JS 923.73 kB / gzip 274.50 kB；仅保留既有超过 500 kB 的 chunk 提示。
+  `git diff --check` 通过。
+- 停止旧 Fastify PID 47618 后，以当前工作树重新执行 `npm run dev:api`（PID 53402）；predev 再次构建
+  shared/document-model，`GET /api/health/ready` 返回 HTTP 200，数据库探针约 7.87 ms、对象存储约 1.33 ms。
+- 使用 in-app Browser 打开当前 Vite 工作树：平台资源管理器完成账号验证，本地标注工作台、视频、时间轴、
+  波形/频谱与 Inspector 正常渲染，控制台无 warn/error；可见的“新增文字轨”操作实际成功。尝试用语义
+  locator 点击内建轨删除时，目标位于时间轴内部滚动区的离屏位置并被悬浮轨覆盖，浏览器驱动没有触发真实
+  按钮事件；纯命令回归已证明示例项目删除、apply 和 inverse 正常。本轮不把这次受工具限制的操作写成完整
+  UI 验收，人工复核仍应在可见位置检查删除、撤销和重做。
+
+### 文档与下一阶段
+
+- README、state architecture、AGENTS 和 roadmap 已同步内建轨生命周期、快照边界、purpose resolver、平台
+  导入 dirty 规则及模块职责；没有截图或数据格式变化，不需要替换 README 截图。
+- R5a 的 HTTP operation、领域覆盖、租约和 snapshot 降级底座至此闭环。下一轮拆为 R5b1：先建立一次性
+  连接票据、认证 WebSocket 文件会话、心跳/重连/文件切换和连接状态 UI，只广播 revision/operation
+  invalidation，客户端继续复用既有 HTTP catch-up/snapshot。首轮不能让 socket 成为第二条写入、ACL、
+  revision 或租约通道；presence、跨实例分发和实时 command submit 继续留给后续切片。

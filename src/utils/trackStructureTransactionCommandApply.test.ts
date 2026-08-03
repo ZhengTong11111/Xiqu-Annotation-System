@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   invertAnnotationCommandEnvelope,
+  ANNOTATION_LIFECYCLE_UPDATE_COMMAND,
+  BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND,
   isAnnotationMutationLeaseRequiredCommandType,
   parseAnnotationCommandEnvelope,
   TRACK_STRUCTURE_TRANSACTION_APPLY_COMMAND,
@@ -48,6 +50,101 @@ test("自定义轨创建可精确恢复 customTracks 与 activeTrackOrder 位置
   const restored = applyTrackStructureTransactionCommandToProject(applied.project, inverse);
   assert.equal(restored.status, "applied");
   if (restored.status === "applied") assert.deepEqual(restored.project, base);
+});
+
+test("内建逐字轨删除按状态、工尺、逐字、容器顺序执行并可完整反向", () => {
+  const base = createProject();
+  base.gongcheAnnotations = [];
+  base.banyanMarks = [];
+  base.banyanSections = [];
+  base.builtinTracks[0].attachedPointTracks = [{
+    id: "builtin-owned-point-track",
+    name: "呼吸",
+    typeOptions: ["呼吸"],
+    points: [{ id: "builtin-owned-point", time: 1, label: "呼吸" }],
+  }];
+  const next = {
+    ...base,
+    builtinTracks: [],
+    activeTrackOrder: base.activeTrackOrder.filter((id) => id !== "character-track"),
+    characterAnnotations: [],
+  };
+  const envelope = buildProjectTrackStructureTransactionCommand(base, next, {
+    builtinTrackLifecycleTargets: [{ trackId: "character-track" }],
+    lifecycleTargetGroups: [
+      [],
+      base.characterAnnotations.map((item) => ({ entityType: "character" as const, entityId: item.id })),
+    ],
+  });
+  assert.ok(envelope);
+  assert.deepEqual(envelope.command.commands.map((command) => command.type), [
+    ANNOTATION_LIFECYCLE_UPDATE_COMMAND,
+    BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND,
+  ]);
+  const applied = applyTrackStructureTransactionCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status !== "applied") return;
+  assert.deepEqual(applied.project, next);
+  const restored = applyTrackStructureTransactionCommandToProject(
+    applied.project,
+    invertAnnotationCommandEnvelope(envelope),
+  );
+  assert.equal(restored.status, "applied");
+  if (restored.status === "applied") assert.deepEqual(restored.project, base);
+});
+
+test("内建逐字轨创建恢复实体与活动顺序的精确位置", () => {
+  const next = createProject();
+  next.gongcheAnnotations = [];
+  next.banyanMarks = [];
+  next.banyanSections = [];
+  next.characterAnnotations = [];
+  const base = {
+    ...next,
+    builtinTracks: [],
+    activeTrackOrder: next.activeTrackOrder.filter((id) => id !== "character-track"),
+  };
+  const envelope = buildProjectTrackStructureTransactionCommand(base, next, {
+    builtinTrackLifecycleTargets: [{ trackId: "character-track" }],
+  });
+  assert.ok(envelope);
+  const applied = applyTrackStructureTransactionCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status !== "applied") return;
+  assert.deepEqual(applied.project, next);
+  const restored = applyTrackStructureTransactionCommandToProject(
+    applied.project,
+    invertAnnotationCommandEnvelope(envelope),
+  );
+  assert.equal(restored.status, "applied");
+  if (restored.status === "applied") assert.deepEqual(restored.project, base);
+});
+
+test("内建轨生命周期超出拥有子树预算时拒绝构造有界事务", () => {
+  const base = createProject();
+  base.builtinTracks[0].attachedPointTracks = [{
+    id: "oversized-point-track",
+    name: "超大点轨",
+    typeOptions: ["点"],
+    points: Array.from({ length: 500 }, (_, index) => ({
+      id: `oversized-point-${index}`,
+      time: index,
+      label: "点",
+    })),
+  }];
+  const next = {
+    ...base,
+    builtinTracks: [],
+    activeTrackOrder: base.activeTrackOrder.filter((id) => id !== "character-track"),
+    characterAnnotations: [],
+  };
+  assert.equal(buildProjectTrackStructureTransactionCommand(base, next, {
+    builtinTrackLifecycleTargets: [{ trackId: "character-track" }],
+    lifecycleTargets: base.characterAnnotations.map((item) => ({
+      entityType: "character" as const,
+      entityId: item.id,
+    })),
+  }), null);
 });
 
 test("内建轨附属点轨创建同时恢复父轨展开状态和点轨顺序", () => {
