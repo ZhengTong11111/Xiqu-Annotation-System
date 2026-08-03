@@ -48,28 +48,35 @@ export function assertSeparatedDirectories(storageRoot: string, outputRoot: stri
 export async function assertPhysicallySeparatedDirectories(
   storageRoot: string,
   outputRoot: string,
+  errorMessage = "备份输出目录与对象存储目录必须彼此分离。 ",
 ) {
   const [storage, output] = await Promise.all([
     resolvePhysicalPath(storageRoot),
     resolvePhysicalPath(outputRoot),
   ]);
-  assertSeparatedDirectories(storage, output);
+  try {
+    assertSeparatedDirectories(storage, output);
+  } catch {
+    throw new Error(errorMessage);
+  }
 }
 
 // 恢复对象目录必须为空且不与源目录/备份目录重叠，禁止覆盖现有资产。
 export async function assertSafeRestoreStorage(
   targetStorage: string,
-  sourceStorage: string,
+  sourceStorage: string | undefined,
   backupDirectory: string,
 ) {
   const [target, source, backup] = await Promise.all([
     resolvePhysicalPath(targetStorage),
-    resolvePhysicalPath(sourceStorage),
+    sourceStorage ? resolvePhysicalPath(sourceStorage) : Promise.resolve(null),
     resolvePhysicalPath(backupDirectory),
   ]);
   if (
-    target === source || target === backup || isInside(source, target) ||
-    isInside(target, source) || isInside(backup, target) || isInside(target, backup)
+    target === backup || isInside(backup, target) || isInside(target, backup) ||
+    (source !== null && (
+      target === source || isInside(source, target) || isInside(target, source)
+    ))
   ) {
     throw new Error("恢复对象目录不能与源存储或备份目录重叠。 ");
   }

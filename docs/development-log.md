@@ -2044,3 +2044,74 @@ DeepSeek、GLM 或其他代理。用户明确要求 Development Log 不只写最
 - R3g2 应先建立远端包读取/物化到隔离恢复工作区的安全合同，再复用现有 PostgreSQL/object 一致性恢复
   检查；同时定义无 manifest/超过宽限期失败包与已提交包的保留清理，最后在目标 MinIO/AWS bucket 和
   经审查的 IAM 权限上做 smoke。生产凭据链未审查前仍保持显式 access key/secret fail closed。
+
+## 2026-08-03：R3g2a 远端备份单次物化与隔离恢复演练
+
+本轮开始时用户确认了“R2.3c2”，但实际仓库的 roadmap 与开发日志表明 R2.3c2 早已完成，当前提交
+`45984cf` 已处于 R3g1。没有为了迎合旧编号重做选择性整合 UI，而是先核对分支、最近提交、roadmap、
+本地恢复和远端备份代码，再把本机忽略的 `CLAUDE_WORK.md` 整体重写为 R3g2a 当前任务书。任务书明确
+文件范围、安全合同、失败补偿、测试矩阵、真实演练顺序和 Development Log 要求；本轮实现、审查、
+测试和文档均由 Codex 直接完成，没有委托 Claude Code、DeepSeek、GLM 或其他代理。
+
+架构审计与方案：
+
+- 现有 `runRestoreDrill()` 已经正确处理本地包离线验证、不同名称空数据库、对象目录原子发布、migration
+  history、维护状态、数据库摘要和对象内容检查。因此远端恢复没有另写一套 PostgreSQL/object 恢复，
+  只新增“远端包安全物化 + 生命周期清理”编排。
+- 不能先调用 `verifyRemoteBackup()` 把全部 payload 读一遍，再重新下载一遍恢复。最终合同是：manifest
+  读取一次；database dump 和每个对象各打开一次网络流，在落盘时同步计算 size/SHA-256；形成标准本地
+  包后，现有本地 verifier 再读本地磁盘。这保留传输校验与落盘复核两层保证，但没有双倍网络流量。
+- 本机只剩约 6 GiB，仓库 `data/` 约 4.2 GiB。真实恢复使用一个小型隔离 source，而非复制用户的大型
+  MP4；数据库 dump 仍来自真实当前 PostgreSQL，因而恢复检查不是伪造 JSON 或 mock happy path。
+
+实现与代码清理：
+
+- 新 `remoteBackupPackage.ts` 集中 8 MiB manifest 限制、backup id、manifest 解析、payload key 映射和
+  精确对象集合检查。`remoteBackupVerifier.ts` 删除原有重复 manifest/key/list helper，继续逐项汇总
+  摘要错误；物化器和 verifier 不再维护两套远端包格式知识。
+- 新 `remoteBackupMaterializer.ts` 先确认对象集合，再在普通非 symlink 工作根下创建唯一 staging。
+  每个远端流经摘要 Transform 直接写 `wx` 文件，路径继续通过 `resolveInsideRoot()`；payload 全部通过后
+  才写本地 manifest。任何读取、摘要、路径、中止或写盘错误都会删除完整临时包；清理失败使用
+  `AggregateError` 与主错误一起返回。
+- 新 `remoteRestoreDrillService.ts` 只把物化结果交给 `runRestoreDrill()`，并在成功或失败出口清理。自审
+  发现第一版把“成功后清理失败”也落入通用 catch，可能进行第二次清理；最终拆成失败补偿与成功清理
+  两个明确出口，删除含混重试语义。
+- `RestoreDrillOptions.sourceStorageRoot` 改为可选：线上 source 为 local 时仍进行真实物理根重叠检查；
+  source 为 S3 时不伪造路径，但目标仍必须与物化包互不包含。现有本地 CLI 继续通过
+  `requireLocalSnapshotRoot()` 传必填根，没有削弱本地快照能力收窄。
+- 最终自审又补上恢复工作根的物理路径隔离：它不能进入线上 local 对象根，也不能包含/位于目标对象
+  目录中；检查沿着真实祖先解析 symlink，并在开始远端下载前 fail closed。对象 list 失败则保留已解析
+  manifest 并给出独立诊断，verifier 仍可继续检查 payload，不能误报成“缺少 manifest”。
+- CLI 新增 `backup:restore-remote-drill`，使用独立 `XIQU_BACKUP_S3_*`，支持 backup id、工作根、隔离
+  数据库、对象目录和报告。该分支位于数据库装配前，只读取线上存储 descriptor，不误连业务 Prisma。
+
+专项测试和真实协议：
+
+- 内存 ObjectStorage 增加真实 read 事件和故障点。`test:backup` 最终 19/19，新增证明 manifest、dump、
+  对象各只打开一个远端流，本地包可离线复核；同时覆盖中途读取失败零半包、清理 AggregateError，以及
+  恢复在同库安全检查失败后仍清除物化目录、工作根与目标目录重叠拒绝。
+- `test:s3-storage` 3/3，真实 SeaweedFS HTTP 协议的远端发布用同一个 backup id 物化为标准本地包并通过
+  verifier；测试后删除临时包。没有引入新依赖，现有 Node stream/crypto/fs 与 ObjectStorage 端口足够
+  清晰，也没有保留另一套 S3 下载实现。
+- 第一次真实演练脚本尚未启动就被命令执行器拒绝，因为退出清理使用 `rm -rf`；没有创建数据库、启动
+  SeaweedFS 或改变维护状态。改成仅对随机 `/tmp` 根使用 `find -delete` 后重跑。
+- 第二次运行到隔离库准备时，应用账号 `xiqu` 因无 `CREATEDB` 权限而失败。没有给应用账号提权；这是
+  正确生产边界。最终由本机 PostgreSQL 管理员仅创建/删除、并把隔离库 owner 设为 `xiqu`，实际恢复仍
+  使用受限应用账号。
+- 最终真实 smoke 使用 SeaweedFS 隔离 bucket/prefix、PostgreSQL 16.14、真实当前数据库 dump、一个
+  18-byte 左右测试对象和新库 `xiqu_remote_restore_smoke`。创建得到远端包
+  `xiqu-backup-2026-08-03T02-38-56-599Z-7c53f822`；隔离 source 与数据库真实 FileObject 不同，manifest
+  如实记录 2 missing + 1 orphan。新 CLI 恢复报告四项全部通过：migration history、maintenance=true、
+  database summary、object storage。恢复工作根条目数为 0，恢复对象数 1，源库 maintenance=false。
+  退出时删除隔离数据库、报告、对象目录、物化目录和 SeaweedFS 卷；没有保留 smoke 凭据或绝对路径。
+
+完整回归、自审和边界：
+
+- `npm run test:backup` 19/19、`npm run test:s3-storage` 3/3、API 全套 73/73、`npm run build` 和
+  `git diff --check` 通过。完整构建覆盖 Prisma generation、shared、document-model、web 和 API；仍只有
+  既有 Vite 主 chunk >500 kB 提醒和 pg 9 前置弃用提示。
+- 新逻辑块均有中文功能注释；没有引入 `any`、新依赖、第二套 manifest 或第二套恢复器。恢复目标仍须
+  不同名称空库、空对象目录和安全报告路径，恢复库仍 fail closed 保持维护状态。
+- R3g2a 完成的是明确 backup id 的人工隔离恢复演练，不是生产自动恢复。尚无未完成包/已提交包保留
+  清理、调度、增量、加密、跨区域复制或生产 IAM/default credential-chain 验收。下一轮 R3g2b 应先设计
+  有宽限期、dry-run、显式确认和 manifest commit-marker 感知的远端清理，再做目标部署桶权限 smoke。

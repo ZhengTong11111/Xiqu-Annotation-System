@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -19,6 +19,12 @@ import {
 import { publishRemoteBackupPackage } from "../src/backup/remoteBackupService.js";
 import { assertSeparatedStorageNamespaces } from "../src/backup/remoteBackupStorageFactory.js";
 import { verifyRemoteBackup } from "../src/backup/remoteBackupVerifier.js";
+import {
+  materializeRemoteBackup,
+  removeMaterializedRemoteBackup,
+} from "../src/backup/remoteBackupMaterializer.js";
+import { verifyBackupDirectory } from "../src/backup/backupVerifier.js";
+import { runRemoteRestoreDrill } from "../src/backup/remoteRestoreDrillService.js";
 
 const BACKUP_ID = "xiqu-backup-2026-08-03T00-00-00-000Z-test1234";
 
@@ -28,6 +34,7 @@ class MemoryObjectStorage implements ObjectStorage {
   readonly events: string[] = [];
   failPromoteKey: string | null = null;
   failDeleteKey: string | null = null;
+  failReadKey: string | null = null;
 
   constructor(private readonly location: string) {}
 
@@ -75,6 +82,8 @@ class MemoryObjectStorage implements ObjectStorage {
   }
 
   async getObjectStream(storageKey: string, range?: ObjectReadRange) {
+    this.events.push(`read:${storageKey}`);
+    if (this.failReadKey === storageKey) throw new Error("测试远端读取失败");
     const content = this.objects.get(storageKey);
     if (!content) throw new Error(`对象不存在：${storageKey}`);
     const selected = range ? content.subarray(range.start, range.end + 1) : content;
@@ -241,6 +250,109 @@ test("远端 manifest 超过内存上限时在 JSON 解析前被拒绝", async (
   const verification = await verifyRemoteBackup(target, BACKUP_ID);
   assert.equal(verification.valid, false);
   assert.match(verification.errors.join("\n"), /超过允许大小/);
+});
+
+test("远端包单次下载后形成可离线复核的本地包", async () => {
+  const fixture = await createPublishedFixture();
+  const workRoot = await mkdtemp(path.join(os.tmpdir(), "xiqu-remote-materialize-"));
+  try {
+    await publishRemoteBackupPackage(fixture.options);
+    fixture.target.events.length = 0;
+    const materialized = await materializeRemoteBackup({
+      storage: fixture.target,
+      backupId: BACKUP_ID,
+      workRoot,
+    });
+    const verification = await verifyBackupDirectory(materialized.directory);
+    assert.equal(verification.valid, true);
+
+    // manifest 与每个 payload 都只能打开一次远端流；本地二次复核不会产生额外网络读取。
+    const readEvents = fixture.target.events.filter((event) => event.startsWith("read:"));
+    assert.deepEqual(readEvents.sort(), [
+      `read:${remoteBackupKeys.database(BACKUP_ID)}`,
+      `read:${remoteBackupKeys.manifest(BACKUP_ID)}`,
+      `read:${remoteBackupKeys.object(BACKUP_ID, "media/test.mp4")}`,
+    ].sort());
+    await removeMaterializedRemoteBackup(materialized.directory);
+    assert.deepEqual(await readdir(workRoot), []);
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+    await rm(workRoot, { recursive: true, force: true });
+  }
+});
+
+test("远端物化中途失败会删除完整临时包", async () => {
+  const fixture = await createPublishedFixture();
+  const workRoot = await mkdtemp(path.join(os.tmpdir(), "xiqu-remote-materialize-fail-"));
+  try {
+    await publishRemoteBackupPackage(fixture.options);
+    fixture.target.failReadKey = remoteBackupKeys.object(BACKUP_ID, "media/test.mp4");
+    await assert.rejects(
+      materializeRemoteBackup({ storage: fixture.target, backupId: BACKUP_ID, workRoot }),
+      /测试远端读取失败/,
+    );
+    assert.deepEqual(await readdir(workRoot), []);
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+    await rm(workRoot, { recursive: true, force: true });
+  }
+});
+
+test("物化清理失败时保留主错误和清理错误", async () => {
+  const primaryError = new Error("恢复主流程失败");
+  await assert.rejects(
+    removeMaterializedRemoteBackup("\0", primaryError),
+    (error: unknown) => {
+      assert.equal(error instanceof AggregateError, true);
+      assert.equal((error as AggregateError).errors[0], primaryError);
+      assert.match((error as Error).message, /临时物化备份无法清理/);
+      return true;
+    },
+  );
+});
+
+test("远端恢复在安全检查失败后仍清理临时物化包", async () => {
+  const fixture = await createPublishedFixture();
+  const workRoot = await mkdtemp(path.join(os.tmpdir(), "xiqu-remote-restore-fail-"));
+  const targetStorage = `${workRoot}-target-storage`;
+  try {
+    await publishRemoteBackupPackage(fixture.options);
+    await assert.rejects(
+      runRemoteRestoreDrill({
+        backupStorage: fixture.target,
+        backupId: BACKUP_ID,
+        workRoot,
+        targetDatabaseUrl:
+          "postgresql://xiqu:secret@localhost:54329/xiqu_platform?schema=public",
+        targetStorageRoot: targetStorage,
+      }),
+      /不能与备份源数据库相同/,
+    );
+    assert.deepEqual(await readdir(workRoot), []);
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+    await rm(workRoot, { recursive: true, force: true });
+    await rm(targetStorage, { recursive: true, force: true });
+  }
+});
+
+test("远端恢复工作根拒绝包含恢复对象目录", async () => {
+  const workRoot = await mkdtemp(path.join(os.tmpdir(), "xiqu-remote-restore-overlap-"));
+  try {
+    await assert.rejects(
+      runRemoteRestoreDrill({
+        backupStorage: new MemoryObjectStorage("memory/backups"),
+        backupId: BACKUP_ID,
+        workRoot,
+        targetDatabaseUrl:
+          "postgresql://xiqu:secret@localhost:54329/xiqu_restore_target?schema=public",
+        targetStorageRoot: path.join(workRoot, "target-storage"),
+      }),
+      /工作根必须与恢复对象目录彼此分离/,
+    );
+  } finally {
+    await rm(workRoot, { recursive: true, force: true });
+  }
 });
 
 test("发布失败且补偿删除失败时聚合报告两类错误", async () => {

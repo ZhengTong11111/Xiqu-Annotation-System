@@ -11,6 +11,7 @@ import { verifyBackupDirectory } from "./backupVerifier.js";
 import { createRemotePlatformBackup } from "./remoteBackupService.js";
 import { createRemoteBackupStorageFromEnvironment } from "./remoteBackupStorageFactory.js";
 import { verifyRemoteBackup } from "./remoteBackupVerifier.js";
+import { runRemoteRestoreDrill } from "./remoteRestoreDrillService.js";
 
 const DEFAULT_DATABASE_URL =
   "postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public";
@@ -32,6 +33,16 @@ const COMMAND_OPTIONS: Record<string, { values: string[]; flags: string[] }> = {
   "backup:verify-remote": { values: ["backup-id"], flags: [] },
   "backup:restore-drill": {
     values: ["backup", "target-database-url", "target-storage", "report"],
+    flags: [],
+  },
+  "backup:restore-remote-drill": {
+    values: [
+      "backup-id",
+      "target-database-url",
+      "target-storage",
+      "work-root",
+      "report",
+    ],
     flags: [],
   },
 };
@@ -98,6 +109,33 @@ async function runCommand(
       signal,
     });
     printJson({ passed: result.report.passed, reportPath: result.reportPath, checks: result.report.checks });
+    return;
+  }
+  // 远端恢复先物化到隔离工作区；这里只读取线上存储描述，不连接业务数据库或复制线上对象。
+  if (command === "backup:restore-remote-drill") {
+    const targetDatabaseUrl = values.get("target-database-url") ??
+      process.env.XIQU_RESTORE_DATABASE_URL;
+    if (!targetDatabaseUrl) {
+      throw new Error("请通过 XIQU_RESTORE_DATABASE_URL 或 --target-database-url 指定隔离数据库。 ");
+    }
+    const sourceDescriptor = createObjectStorageFromEnvironment().describeBackend();
+    const result = await runRemoteRestoreDrill({
+      backupStorage: createRemoteBackupStorageFromEnvironment(),
+      backupId: requireValue(values, "backup-id"),
+      workRoot: values.get("work-root") ?? "./data/remote-restore-work",
+      sourceStorageRoot: sourceDescriptor.kind === "local"
+        ? sourceDescriptor.rootDirectory
+        : undefined,
+      targetDatabaseUrl,
+      targetStorageRoot: requireValue(values, "target-storage"),
+      reportPath: values.get("report"),
+      signal,
+    });
+    printJson({
+      passed: result.report.passed,
+      reportPath: result.reportPath,
+      checks: result.report.checks,
+    });
     return;
   }
 

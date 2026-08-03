@@ -28,7 +28,7 @@ import {
 
 export type RestoreDrillOptions = {
   backupDirectory: string;
-  sourceStorageRoot: string;
+  sourceStorageRoot?: string;
   targetDatabaseUrl: string;
   targetStorageRoot: string;
   reportPath?: string;

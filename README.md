@@ -1090,7 +1090,19 @@ npm run backup:restore-drill -- \
   --backup ./data/backups/xiqu-backup-... \
   --target-storage /tmp/xiqu-restore-storage \
   --report /tmp/xiqu-restore-report.json
+
+# 远端包使用同一个 XIQU_BACKUP_S3_* 目标；工作目录只保存恢复期间的受控临时包。
+npm run backup:restore-remote-drill -- \
+  --backup-id xiqu-backup-... \
+  --work-root ./data/remote-restore-work \
+  --target-storage /tmp/xiqu-remote-restore-storage \
+  --report /tmp/xiqu-remote-restore-report.json
 ```
+
+远端恢复不会先完整校验一遍远端包再重新下载。命令只读取一次 manifest，并把 dump 和每个对象各通过
+一个网络流写入唯一临时目录，同时复算大小与 SHA-256；形成完整本地包后，再由原有离线 verifier 从
+本地磁盘复核并进入唯一恢复链路。成功、失败或中止都会清理临时包，清理失败会与主错误一并报告。
+目标对象目录不能与线上本地存储、临时包重叠；线上对象存储为 S3 时不会伪造本地路径。
 
 恢复库会保留备份时的 `maintenance=true`，这是防止误接流量的安全设计。人工检查完成并准备正式切换
 后，必须让 CLI 指向恢复库，再明确执行 `maintenance:disable`。若备份进程被 `SIGKILL` 或恢复写入失败，
@@ -1102,8 +1114,8 @@ npm run maintenance:disable -- --operator admin
 
 不得把备份输出放进对象存储目录，不得把恢复演练指向当前数据库或 `postgres/template` 系统库，也不要
 在未执行 `backup:verify` 的情况下手工解包恢复。manifest 会如实记录源数据已有的 missing/orphan 警告，
-备份命令不会擅自清理这些资产。本地目录恢复演练当前仍只接受本地备份目录；远端包已经可以创建和
-流式校验，但远端恢复演练、保留策略和生产 IAM/真实生产 bucket 验收仍在后续阶段。不能把远端位置
+备份命令不会擅自清理这些资产。本地目录和 S3-compatible 远端包都已支持隔离恢复演练；尚未实现的
+是未完成包/已提交包保留清理、生产 IAM/真实生产 bucket 验收、调度、增量与加密。不能把远端位置
 伪装成本地目录，也不能把运行时 S3 prefix 与备份 prefix 配成相同或互相包含。
 
 ## 当前限制与注意事项

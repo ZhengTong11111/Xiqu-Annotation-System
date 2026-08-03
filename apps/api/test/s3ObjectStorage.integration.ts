@@ -16,6 +16,11 @@ import { StorageSizeLimitError } from "../src/objectStorage.js";
 import { S3ObjectStorage } from "../src/s3ObjectStorage.js";
 import { publishRemoteBackupPackage } from "../src/backup/remoteBackupService.js";
 import { verifyRemoteBackup } from "../src/backup/remoteBackupVerifier.js";
+import {
+  materializeRemoteBackup,
+  removeMaterializedRemoteBackup,
+} from "../src/backup/remoteBackupMaterializer.js";
+import { verifyBackupDirectory } from "../src/backup/backupVerifier.js";
 
 const TEST_ACCESS_KEY = "S3RVER";
 const TEST_SECRET_KEY = "S3RVER";
@@ -160,6 +165,15 @@ test("S3 隔离命名空间可发布并校验远端备份包", async () => {
         object.storageKey === `${backupId}/manifest.json`),
       true,
     );
+
+    // 同一真实 S3 协议包能够物化为标准本地包，后续恢复无需了解 S3 SDK。
+    const materialized = await materializeRemoteBackup({
+      storage: backupStorage,
+      backupId,
+      workRoot: workDirectory,
+    });
+    assert.equal((await verifyBackupDirectory(materialized.directory)).valid, true);
+    await removeMaterializedRemoteBackup(materialized.directory);
   } finally {
     await rm(workDirectory, { recursive: true, force: true });
   }

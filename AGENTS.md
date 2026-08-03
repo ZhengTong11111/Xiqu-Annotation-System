@@ -247,13 +247,18 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - pure recursive-copy planning, topological ordering, id allocation, and internal media-reference remapping
 - `apps/api/src/backup/`
   - versioned local/remote full-backup, offline/streamed verification, PostgreSQL tool runner, maintenance operator CLI,
-    and isolated local restore-drill modules
+    and isolated local/remote restore-drill modules
   - `backupService.ts` owns the maintenance window and staging-to-final publication; `restoreDrillService.ts` may only
     target a different empty database and isolated storage directory
   - `remoteBackupService.ts` owns manifest-last remote publication and reverse-order compensation; final payload objects
     are not a committed backup until `manifest.json` is promoted and streamed verification succeeds
   - `remoteBackupVerifier.ts` validates one explicit backup id without loading package payloads into memory;
     `remoteBackupStorageFactory.ts` requires an independent non-empty `XIQU_BACKUP_S3_PREFIX`
+  - `remoteBackupPackage.ts` is the shared manifest/key/exact-object-set read contract for verification and restore;
+    do not duplicate its package-index rules in another remote consumer
+  - `remoteBackupMaterializer.ts` downloads each remote payload once into a unique temporary local package while
+    checking size/SHA-256; `remoteRestoreDrillService.ts` only owns cleanup and delegates recovery to the single
+    `restoreDrillService.ts` implementation
   - native PostgreSQL commands receive credentials through `PG*` environment variables, never shell-concatenated argv
 - `packages/shared/src/`
   - API/platform DTOs and shared contract types used by web and API
@@ -301,6 +306,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:audit-log`
 - `npm run test:maintenance`
 - `npm run test:backup`
+- `npm run backup:create-remote`
+- `npm run backup:verify-remote`
+- `npm run backup:restore-remote-drill`
 - `npm run test:recovery-preview`
 - `npm run test:annotation-diff`
 - `npm run test:annotation-diff-timeline`
@@ -691,12 +699,16 @@ Important backend caveats:
 - media copy creates a new media resource that reuses the immutable `FileObject`; copies do not consume quota again.
   Aged orphan inspection/cleanup exists, but user-facing permanent deletion and physical duplication remain future work.
 - real-time collaborative editing is not implemented yet
-- local directory backup/restore and S3-compatible manifest-last remote backup create/verify are implemented. There is
-  still no scheduler, encryption, incremental chain, remote restore drill, retention cleanup, production IAM/default
+- local directory backup/restore and S3-compatible manifest-last remote backup create/verify/isolated restore are
+  implemented. There is still no scheduler, encryption, incremental chain, retention cleanup, production IAM/default
   credential-chain review, or production bucket acceptance. The local directory snapshot command remains local-only.
 - remote backup targets use an independent `XIQU_BACKUP_S3_*` configuration and a required non-empty prefix. The source
   and target namespaces must not be equal or contain one another. `manifest.json` is the only commit marker; payloads
   under a prefix without it are incomplete and must never be offered for restore.
+- remote restore materializes one explicit committed package into a unique local work directory. Manifest and every
+  payload are opened once over the network while payloads are written and hashed; the existing local verifier then
+  rechecks on-disk bytes before the sole restore implementation runs. Success, failure, and cancellation must remove
+  the materialized package, and cleanup failures must not be swallowed.
 - business storage consumers must depend on `ObjectStorage` or a narrow `Pick` of required methods. The concrete local
   adapter is confined to the factory, adapter tests, and the explicitly local restore-drill target. S3/MinIO must be
   implemented as a real adapter with integration tests, not as a path shim. `getObjectStream()` is asynchronous so
@@ -753,6 +765,9 @@ Important backend caveats:
   absolute paths. Existing missing binaries and disk orphans remain explicit warnings and are not auto-cleaned
 - restore drill must first pass offline verification, then target a different-named database with no user tables and an
   absent/empty isolated storage directory. It must never target the source/current database or PostgreSQL system DBs
+- remote restore must not call full remote verification and then download the package a second time. Shared remote
+  package indexing performs manifest/object-set checks, materialization performs one streamed download, and the local
+  verifier provides the separate post-download disk check.
 - restored databases intentionally retain the captured `maintenance=true`; an operator must inspect the report and
   explicitly disable maintenance before routing traffic to a recovered database
 - `maintenance:disable` loads an active global-admin operator directly from PostgreSQL and continues using the existing

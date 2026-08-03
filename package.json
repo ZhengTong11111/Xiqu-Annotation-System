@@ -59,6 +59,7 @@
     "backup:verify": "tsx apps/api/src/backup/cli.ts backup:verify",
     "backup:verify-remote": "tsx apps/api/src/backup/cli.ts backup:verify-remote",
     "backup:restore-drill": "tsx apps/api/src/backup/cli.ts backup:restore-drill",
+    "backup:restore-remote-drill": "tsx apps/api/src/backup/cli.ts backup:restore-remote-drill",
     "preview": "vite preview"
   },
   "dependencies": {
