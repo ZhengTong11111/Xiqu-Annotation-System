@@ -20,15 +20,25 @@ export function createObjectStorageFromEnvironment(
 }
 
 // S3 配置在 client 构造前一次校验，错误只指出字段名，不回显任何凭据值。
-function parseS3Options(environment: NodeJS.ProcessEnv): S3ObjectStorageOptions {
-  const bucket = requireEnvironmentValue(environment, "XIQU_S3_BUCKET");
-  const region = requireEnvironmentValue(environment, "XIQU_S3_REGION");
-  const accessKeyId = requireEnvironmentValue(environment, "XIQU_S3_ACCESS_KEY_ID");
-  const secretAccessKey = requireEnvironmentValue(environment, "XIQU_S3_SECRET_ACCESS_KEY");
+// 同一解析器支持线上和备份变量组，调用方可额外要求非空 prefix，避免复制两套安全校验。
+export function parseS3Options(
+  environment: NodeJS.ProcessEnv,
+  variablePrefix = "XIQU_S3",
+  requirePrefix = false,
+): S3ObjectStorageOptions {
+  const variable = (suffix: string) => `${variablePrefix}_${suffix}`;
+  const bucket = requireEnvironmentValue(environment, variable("BUCKET"));
+  const region = requireEnvironmentValue(environment, variable("REGION"));
+  const accessKeyId = requireEnvironmentValue(environment, variable("ACCESS_KEY_ID"));
+  const secretAccessKey = requireEnvironmentValue(environment, variable("SECRET_ACCESS_KEY"));
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) {
-    throw new Error("XIQU_S3_BUCKET 不是有效的 S3 bucket 名称。");
+    throw new Error(`${variable("BUCKET")} 不是有效的 S3 bucket 名称。`);
   }
-  const endpoint = parseOptionalEndpoint(environment.XIQU_S3_ENDPOINT);
+  const endpoint = parseOptionalEndpoint(environment[variable("ENDPOINT")], variable("ENDPOINT"));
+  const prefix = environment[variable("PREFIX")]?.trim() || undefined;
+  if (requirePrefix && !prefix) {
+    throw new Error(`缺少对象存储配置 ${variable("PREFIX")}。`);
+  }
   return {
     endpoint,
     region,
@@ -36,11 +46,11 @@ function parseS3Options(environment: NodeJS.ProcessEnv): S3ObjectStorageOptions 
     accessKeyId,
     secretAccessKey,
     forcePathStyle: parseBoolean(
-      environment.XIQU_S3_FORCE_PATH_STYLE,
+      environment[variable("FORCE_PATH_STYLE")],
       endpoint !== undefined,
-      "XIQU_S3_FORCE_PATH_STYLE",
+      variable("FORCE_PATH_STYLE"),
     ),
-    prefix: environment.XIQU_S3_PREFIX?.trim() || undefined,
+    prefix,
   };
 }
 
@@ -52,18 +62,18 @@ function requireEnvironmentValue(environment: NodeJS.ProcessEnv, name: string) {
 }
 
 // 自托管 endpoint 只接受无凭据的 HTTP(S) URL，秘密必须使用专用环境变量传入。
-function parseOptionalEndpoint(rawValue: string | undefined) {
+function parseOptionalEndpoint(rawValue: string | undefined, name: string) {
   const value = rawValue?.trim();
   if (!value) return undefined;
   let endpoint: URL;
   try {
     endpoint = new URL(value);
   } catch {
-    throw new Error("XIQU_S3_ENDPOINT 不是有效 URL。");
+    throw new Error(`${name} 不是有效 URL。`);
   }
   if (!(["http:", "https:"] as string[]).includes(endpoint.protocol) ||
     endpoint.username || endpoint.password) {
-    throw new Error("XIQU_S3_ENDPOINT 必须是无内嵌凭据的 HTTP(S) URL。");
+    throw new Error(`${name} 必须是无内嵌凭据的 HTTP(S) URL。`);
   }
   return endpoint.toString().replace(/\/$/, "");
 }

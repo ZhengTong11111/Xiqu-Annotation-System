@@ -16,8 +16,9 @@ liveness/readiness、低基数 Prometheus 指标和管理员容量/一致性诊�
 维护模式与写入静默边界；R3d2b 已完成 PostgreSQL 与对象目录一致备份、manifest/checksum 离线校验、
 隔离恢复演练和无浏览器 session 的运维恢复 CLI。R3e1/R3e2 已建立对象存储端口和真实 S3-compatible
 适配器，R3f1 已完成通用审计日志浏览、筛选和安全导出，R3f2 已建立标准 Prometheus/Alertmanager 外部
-告警基线。R3 下一切片转向远端对象备份/生产桶验收；`pg_trgm` 仍作为数据库级部署能力留到运维基线
-显式预置。
+告警基线，R3g1 已完成独立 S3-compatible 命名空间中的 manifest-last 远端一致备份创建与流式校验。
+R3 下一切片转向远端恢复演练、未完成包保留/清理与生产桶验收；`pg_trgm` 仍作为数据库级部署能力留到
+运维基线显式预置。
 
 ## 1. 产品目标
 
@@ -281,12 +282,12 @@ liveness/readiness、低基数 Prometheus 指标和管理员容量/一致性诊�
 - R3e1 已完成：新增稳定 `ObjectStorage` 端口、本地适配器和唯一环境工厂；API 装配、上传、下载 Range、
   readiness、对象生命周期、系统诊断及备份编排只依赖端口或最小能力切片。未知后端配置在启动阶段
   fail closed；本地一致备份通过判别能力显式取得受控根目录，远端描述不能伪造路径。恢复对象校验改为
-  对对象流计算摘要。当前尚未实现真实 S3/MinIO 适配器，远端备份策略也未确定。
+  对对象流计算摘要。该阶段只建立端口，后续 R3e2/R3g1 已分别补上真实 S3 适配器与远端备份创建/校验。
 - R3e2 已完成：使用官方 AWS SDK v3 实现 S3-compatible 适配器，统一异步对象流合同；支持流式限额/
   SHA-256/header、multipart staged 上传、server-side copy 发布、Range、Head、分页 List、Delete、bucket
   readiness、prefix 隔离和严格环境配置。协议测试以 Apache-2.0 SeaweedFS 4.40 真实 HTTP 服务验证完整
-  生命周期；未把有高危旧依赖的 s3rver 留入仓库。生产 MinIO/AWS bucket smoke、远端对象备份/恢复和
-  IAM 默认凭据链仍待部署阶段完成。
+  生命周期；未把有高危旧依赖的 s3rver 留入仓库。R3g1 后已具备远端备份创建/校验，生产 MinIO/AWS
+  bucket smoke、远端恢复和 IAM 默认凭据链仍待部署阶段完成。
 - 服务端分页、排序和基础名称搜索已完成；标签、负责人、媒体类型和时间范围等高级过滤留待独立切片。
 - 标签、负责人、媒体类型、更新时间等索引。
 - 分片/断点续传与大于 2 GB 资产仍待 BigInt DTO/数据库整体迁移；基础上传校验、配额和孤儿生命周期
@@ -299,8 +300,13 @@ liveness/readiness、低基数 Prometheus 指标和管理员容量/一致性诊�
   资源级管理者只能查询具有 `manage_permissions` 的指定资源。查询使用绑定筛选指纹的稳定 keyset
   cursor，关联账号/资源批量补齐且删除后仍有回退摘要。服务端按同一筛选条件分批读取并导出公式安全
   CSV，单次上限 10,000 条，前端不会把已加载页面伪装成完整导出。
-- 对象存储端口、本地与 S3-compatible 适配器及真实协议集成测试已完成；下一步为远端对象一致备份/
-  恢复策略和生产桶 smoke。
+- R3g1 已完成：新增独立 `XIQU_BACKUP_S3_*` 目标和非空 prefix，拒绝与线上对象命名空间相同或互相包含；
+  维护静默窗口内把 PostgreSQL custom dump 与源对象逐项流式 staged/promote，最后发布 `manifest.json`
+  作为唯一完成标志。失败按逆序清理 final/staged，远端 verifier 以明确 backup id 流式复算 size/SHA-256
+  并拒绝缺失、额外或篡改对象。本地备份/恢复合同未被削弱，真实 SeaweedFS 协议及隔离 source CLI
+  create/verify smoke 已通过。
+- 对象存储端口、本地/S3-compatible 适配器、本地恢复与远端创建/校验已完成；下一步为 R3g2 远端恢复
+  演练、未完成包/保留清理和真实生产 MinIO/AWS bucket/IAM smoke。
 
 完成标准：大量资源下仍可用，故障可定位，数据库和对象可恢复。
 

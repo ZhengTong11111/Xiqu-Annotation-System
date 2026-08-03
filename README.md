@@ -1047,6 +1047,29 @@ npm run backup:create -- --operator admin --output ./data/backups \
 npm run backup:verify -- --backup ./data/backups/xiqu-backup-...
 ```
 
+S3-compatible 远端备份使用独立 `XIQU_BACKUP_S3_*` 配置，不能与线上对象存储共享或嵌套 prefix。
+远端没有目录原子改名，因此命令先流式发布 dump 和对象，最后发布 `manifest.json` 作为唯一完成标志；
+缺少 manifest 的 prefix 不是有效备份。示例配置见 `.env.example`：
+
+```bash
+export XIQU_BACKUP_S3_ENDPOINT=https://backup-object.example
+export XIQU_BACKUP_S3_REGION=us-east-1
+export XIQU_BACKUP_S3_BUCKET=xiqu-backups
+export XIQU_BACKUP_S3_ACCESS_KEY_ID=replace-me
+export XIQU_BACKUP_S3_SECRET_ACCESS_KEY=replace-me
+export XIQU_BACKUP_S3_FORCE_PATH_STYLE=true
+export XIQU_BACKUP_S3_PREFIX=platform-backups
+
+npm run backup:create-remote -- --operator admin \
+  --reason "每周远端一致备份" --work-root ./data/remote-backup-work
+npm run backup:verify-remote -- --backup-id xiqu-backup-...
+```
+
+`backup:create-remote` 仍会在受控本地工作目录生成 PostgreSQL dump，但媒体和 dump 都以流方式上传，
+不会把完整包载入内存。失败会反向清理本轮已发布对象，并按本地备份相同规则恢复维护状态；若补偿失败，
+CLI 会同时报告原始错误和残留清理错误。manifest 中的 missing/orphan warning 是源数据事实，不等于
+远端包校验失败。
+
 备份包结构固定为：
 
 ```text
@@ -1079,8 +1102,9 @@ npm run maintenance:disable -- --operator admin
 
 不得把备份输出放进对象存储目录，不得把恢复演练指向当前数据库或 `postgres/template` 系统库，也不要
 在未执行 `backup:verify` 的情况下手工解包恢复。manifest 会如实记录源数据已有的 missing/orphan 警告，
-备份命令不会擅自清理这些资产。业务服务通过统一对象存储端口工作，但当前一致备份和恢复演练仍只支持
-`local` 后端；未来接入 S3/MinIO 时必须先提供对应的快照/导出策略，不能把远端位置伪装成本地目录。
+备份命令不会擅自清理这些资产。本地目录恢复演练当前仍只接受本地备份目录；远端包已经可以创建和
+流式校验，但远端恢复演练、保留策略和生产 IAM/真实生产 bucket 验收仍在后续阶段。不能把远端位置
+伪装成本地目录，也不能把运行时 S3 prefix 与备份 prefix 配成相同或互相包含。
 
 ## 当前限制与注意事项
 
@@ -1089,8 +1113,9 @@ npm run maintenance:disable -- --operator admin
 账号、资源树、带签名/配额/补偿的媒体上传、标注文件保存、恢复快照和逐文件权限已经接入
 Fastify/Prisma/PostgreSQL，并由一组可部署 migration 维护。当前已有 liveness/readiness、低基数
 Prometheus 指标、管理员诊断面板、跨实例维护写入静默边界，以及带 manifest/checksum 的 PostgreSQL
-与本地对象目录一致备份和隔离恢复演练。S3-compatible 运行适配器已完成，但远端对象备份/恢复、真实
-生产桶 smoke、HTTPS、反向代理、限流和外部告警接入仍未完成。维护状态持久化在 PostgreSQL，API 重启不会自动解除；管理员应在维护
+与本地对象目录一致备份和隔离恢复演练。S3-compatible 运行适配器和 manifest-last 远端备份创建/校验
+已经完成，但远端恢复演练、保留清理、真实生产桶/IAM、HTTPS、反向代理和限流仍未完成。维护状态
+持久化在 PostgreSQL，API 重启不会自动解除；管理员应在维护
 任务完成后从诊断面板或本机 CLI 明确恢复写入。
 
 ### 2. 尚未实现实时多人协作

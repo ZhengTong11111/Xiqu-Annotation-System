@@ -246,10 +246,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/resourceCopy.ts`
   - pure recursive-copy planning, topological ordering, id allocation, and internal media-reference remapping
 - `apps/api/src/backup/`
-  - versioned local full-backup, offline verification, PostgreSQL tool runner, maintenance operator CLI, and isolated
-    restore-drill modules
+  - versioned local/remote full-backup, offline/streamed verification, PostgreSQL tool runner, maintenance operator CLI,
+    and isolated local restore-drill modules
   - `backupService.ts` owns the maintenance window and staging-to-final publication; `restoreDrillService.ts` may only
     target a different empty database and isolated storage directory
+  - `remoteBackupService.ts` owns manifest-last remote publication and reverse-order compensation; final payload objects
+    are not a committed backup until `manifest.json` is promoted and streamed verification succeeds
+  - `remoteBackupVerifier.ts` validates one explicit backup id without loading package payloads into memory;
+    `remoteBackupStorageFactory.ts` requires an independent non-empty `XIQU_BACKUP_S3_PREFIX`
   - native PostgreSQL commands receive credentials through `PG*` environment variables, never shell-concatenated argv
 - `packages/shared/src/`
   - API/platform DTOs and shared contract types used by web and API
@@ -687,9 +691,12 @@ Important backend caveats:
 - media copy creates a new media resource that reuses the immutable `FileObject`; copies do not consume quota again.
   Aged orphan inspection/cleanup exists, but user-facing permanent deletion and physical duplication remain future work.
 - real-time collaborative editing is not implemented yet
-- current backups are local full backups only: no scheduler, encryption, incremental chain, remote replication, or
-  S3-native backup/restore strategy is implemented yet. Runtime S3-compatible storage support does not make the local
-  directory snapshot command valid for remote buckets.
+- local directory backup/restore and S3-compatible manifest-last remote backup create/verify are implemented. There is
+  still no scheduler, encryption, incremental chain, remote restore drill, retention cleanup, production IAM/default
+  credential-chain review, or production bucket acceptance. The local directory snapshot command remains local-only.
+- remote backup targets use an independent `XIQU_BACKUP_S3_*` configuration and a required non-empty prefix. The source
+  and target namespaces must not be equal or contain one another. `manifest.json` is the only commit marker; payloads
+  under a prefix without it are incomplete and must never be offered for restore.
 - business storage consumers must depend on `ObjectStorage` or a narrow `Pick` of required methods. The concrete local
   adapter is confined to the factory, adapter tests, and the explicitly local restore-drill target. S3/MinIO must be
   implemented as a real adapter with integration tests, not as a path shim. `getObjectStream()` is asynchronous so

@@ -205,7 +205,7 @@ async function copyStorageTree(
 }
 
 // 已有缺失对象和磁盘孤儿作为 warning 原样保留；备份任务不擅自清理开发库。
-function buildConsistencyWarnings(
+export function buildConsistencyWarnings(
   summary: BackupDatabaseSummary,
   objects: BackupObjectEntry[],
 ) {

@@ -1961,3 +1961,86 @@ DeepSeek、GLM 或其他代理。用户明确要求 Development Log 不只写最
   secret、receiver、Grafana dashboard 和值班策略属于部署环境配置。
 - R3 下一轮应审计并设计 S3-native 一致备份/恢复和目标生产 bucket smoke。运行时 S3 adapter、Prometheus
   告警与本地全量备份都已存在，但三者相加不等于远端灾备已经完成。
+
+## 2026-08-03：R3g1 远端一致备份包发布与流式校验
+
+本轮从已提交的 R3f2 基线开始，先精读 `ObjectStorage`、本地 backup/restore、manifest/verifier、S3
+适配器、CLI 和 roadmap，再整体重写被忽略的 `CLAUDE_WORK.md`。全部实现、测试、真实 smoke、自审和
+文档维护由 Codex 直接完成，没有委托 Claude Code、DeepSeek、GLM 或其他代理。
+
+架构审计与边界决定：
+
+- 现有本地备份的安全性来自真实目录分离、拒绝 symlink、文件/目录 fsync、staging 离线校验和同文件
+  系统原子 rename。S3 没有等价目录 rename，因而没有删除 `requireLocalSnapshotRoot()`，也没有让远端
+  descriptor 伪造路径。旧 `backup:create`、`backup:verify` 和本地隔离 restore drill 语义保持不变。
+- 远端采用 manifest-last 提交协议：在唯一 backup id 下先流式发布 `database.dump` 和
+  `objects/<storageKey>`，最后才 promote `manifest.json`。没有 manifest 的 prefix 一律是不完整产物，
+  verifier 不会因发现 payload 而猜测它可恢复。
+- 备份目标使用独立 `XIQU_BACKUP_S3_*` 变量组和必填非空 prefix。若线上 source 与 backup target 是同一
+  provider，且 location 相同或任一 namespace 包含另一个，命令在进入维护前 fail closed，避免递归把
+  备份自身再次纳入源对象列表。secret 不进入 descriptor、manifest、CLI JSON 或文档真实值。
+- PostgreSQL custom dump 仍写受控本地临时文件，再以 ReadStream 上传；源对象始终通过
+  `ObjectStorage.getObjectStream()` 传输。没有引入 zip/tar 或把整包读入内存，也没有建立第二种 manifest
+  版本。远端恢复演练、保留策略、调度与生产 IAM 留给 R3g2，未被包装成“已完成灾备”。
+
+实现内容：
+
+- `backupManifest.ts` 新增唯一 `serializeBackupManifest()` 与 `parseBackupManifestText()`；本地文件读取和
+  远端对象读取共享同一 unknown JSON 运行时校验、稳定排序和格式版本边界。`buildConsistencyWarnings()`
+  导出复用，远端仍诚实记录数据库 missing、source orphan、大小和 checksum 差异。
+- 新 `remoteBackupPaths.ts` 集中生成/校验单段 backup id，并映射 database、objects 和 manifest key；
+  相对路径继续复用现有 traversal/反斜杠/绝对路径守卫。
+- `objectStorageFactory.ts` 把 S3 环境解析泛化为带变量前缀的单一 helper；线上仍用 `XIQU_S3_*`，新
+  `remoteBackupStorageFactory.ts` 使用 `XIQU_BACKUP_S3_*` 并要求 prefix。没有复制两份 endpoint、bucket、
+  布尔值和凭据输入校验。
+- 新 `remoteBackupService.ts` 负责预检、维护窗口、pg_dump、稳定排序的源对象复制、manifest-last、发布
+  后 verifier 和失败补偿。每个 final key 在 promote 前登记；即使 server-side copy 已成功但 staged
+  删除失败，外层也会删除 final。自审后又在 `uploadAndPromote()` 内幂等重试 staged 删除，补偿失败用
+  `AggregateError` 同时保留原始错误和清理错误。工作目录移到维护成功后创建，维护启用失败不会留下
+  空临时目录；普通失败仍恢复写入，显式 keep 语义与本地备份相同。
+- 新 `remoteBackupVerifier.ts` 只接受明确 backup id，给 manifest 8 MiB 聚合上限，列举该 id 的精确声明
+  集合，并对 dump/每个对象逐项流式复算 size/SHA-256。单个对象错误不会阻断其他诊断；额外 final 或
+  `.upload-*` 对象也会作为未声明污染报错。
+- CLI 新增 `backup:create-remote` 与不连接数据库的 `backup:verify-remote`，输出只含 backup id、manifest
+  key、创建时间、对象数和 warning。`.env.example`、README、AGENTS 和 roadmap 同步了配置、命令、
+  manifest commit marker 及未完成边界。
+
+测试基础设施、自审与修复：
+
+- 新内存 `ObjectStorage` 状态机测试真实消费 Readable 并计算 SHA-256，覆盖专用配置、namespace 重叠、
+  backup id 穿越、manifest-last、成功 verifier、篡改/额外对象、无 manifest 和“final 已形成后 promote
+  报错”清理。`test:backup` 最终 12/12。
+- S3 协议测试新增隔离 `platform-source`/`platform-backups` prefix 的远端包发布和校验。最初每个 test
+  独立启动/停止 SeaweedFS，默认并发时进程偶尔只完成一两个 case 且无测试汇总；这不是可接受的通过。
+  改为文件级单一 SeaweedFS fixture、串行三个场景、统一关闭后，`test:s3-storage` 稳定 3/3，约 9 秒，
+  实际覆盖 multipart、server-side copy、list、stream read、prefix 隔离和 verifier。
+- 自审发现 promote 可能在 copy 已形成 final 后因 staged 删除失败而抛错。第一版只登记 final 补偿，会
+  留 staged；现已在局部重试 staged delete，测试从“无 final”加强为“整个 backup id 下零残留”。
+- 自审还发现临时 work directory 原先在维护开启前创建；若 `setMaintenance(true)` 失败会留下空目录。
+  已将 mkdtemp 移入维护成功后的 try，并在 finally 聚合临时目录清理错误，没有保留旧路径。
+
+真实命令验收与环境事实：
+
+- 首次用当前完整本地 source 对临时 SeaweedFS 执行 CLI，测试服务 `volume.max=5` 被默认卷占满，130 KiB
+  dump 无法取得 bucket collection 卷并返回 S3 500。提高到 50 后 dump 与若干源对象开始上传，但当前
+  source 包含大型 MP4，20 MiB 测试卷很快再次耗尽。服务日志确认发布器反向删除了已完成的 dump、
+  `.DS_Store`、首个视频及失败 staged；远端 prefix 列表无 final 残留，两次维护状态均恢复 false。
+  这两次是测试存储容量失败，不被记录成业务通过，也没有继续复制用户大型资产消耗磁盘。
+- 最终使用隔离 `/tmp/xiqu-r3g1-small-source`（一个小 probe 对象）、真实当前 PostgreSQL、PostgreSQL
+  16.14 工具和新的 SeaweedFS bucket/prefix 运行 `backup:create-remote`。命令成功生成
+  `xiqu-backup-2026-08-03T02-09-18-506Z-4e27251a`，对象数 1；真实数据库中两个 FileObject 不在隔离 source，
+  probe 不在数据库，故 manifest 如实输出 2 条 missing 和 1 条 orphan warning。
+- 随后对同一 id 执行 `backup:verify-remote`，返回 `valid=true`、errors 为空、createdAt 与创建输出一致；
+  `maintenance:status` 为 false。该 smoke 覆盖了真实 CLI 参数解析、operator、维护排空、pg_dump、本地
+  source 流、S3 staged/promote、manifest-last 和远端 verifier，但不冒充生产 MinIO/AWS/IAM 验收。
+- API 全套最终 68/68，包含旧认证、资源树、ACL、上传/Range、恢复快照、确认范围、维护、审计、指标、
+  本地备份与新远端备份测试。`npm run build` 通过 Prisma generation、shared、document-model、web 和
+  API；仍只有既有 Vite 主 chunk >500 kB 提醒和 pg 9 前置弃用提示。`git diff --check` 在提交前复核。
+
+完成边界与下一步：
+
+- R3g1 已提供可创建、可校验、失败可补偿的 S3-compatible 远端全量备份包；它不是远端恢复、增量备份、
+  加密、跨区域复制、定时调度或长期保留系统。
+- R3g2 应先建立远端包读取/物化到隔离恢复工作区的安全合同，再复用现有 PostgreSQL/object 一致性恢复
+  检查；同时定义无 manifest/超过宽限期失败包与已提交包的保留清理，最后在目标 MinIO/AWS bucket 和
+  经审查的 IAM 权限上做 smoke。生产凭据链未审查前仍保持显式 access key/secret fail closed。

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,82 +14,154 @@ import {
 } from "@aws-sdk/client-s3";
 import { StorageSizeLimitError } from "../src/objectStorage.js";
 import { S3ObjectStorage } from "../src/s3ObjectStorage.js";
+import { publishRemoteBackupPackage } from "../src/backup/remoteBackupService.js";
+import { verifyRemoteBackup } from "../src/backup/remoteBackupVerifier.js";
 
 const TEST_ACCESS_KEY = "S3RVER";
 const TEST_SECRET_KEY = "S3RVER";
 const TEST_REGION = "us-east-1";
 const TEST_BUCKET = "xiqu-storage-test";
 
+// 文件级夹具由 before/after 管理，测试用例只操作各自隔离的逻辑 prefix。
+let sharedFixture: Awaited<ReturnType<typeof createS3Fixture>>;
+
+// 整个协议文件只启动一个 SeaweedFS，避免反复 SIGTERM 子进程造成测试运行器提前结束。
+test.before(async () => {
+  sharedFixture = await createS3Fixture();
+});
+
+// 所有场景结束后统一释放 SDK、服务进程和临时卷目录。
+test.after(async () => {
+  await sharedFixture.close();
+});
+
 // S3 协议夹具在随机端口和临时目录运行，每个测试进程结束时完整关闭并清理。
 test("S3 适配器完成 staged、promote、Range、list 与 delete 全生命周期", async () => {
-  const fixture = await createS3Fixture();
-  try {
-    const content = Buffer.from("0123456789-昆曲", "utf8");
-    const staged = await runProtocolStep("upload staged object", () =>
-      fixture.storage.putStagedObject(
-        "2026-08-03/test.mp4",
-        Readable.from([content]),
-        1024,
-      ), fixture.readLog);
-    assert.equal(staged.size, content.length);
-    assert.deepEqual(Buffer.from(staged.header), content);
-    assert.equal((await runProtocolStep("list staged object", () =>
-      fixture.storage.listStoredObjects())).length, 1);
-    assert.equal(await runProtocolStep("head staged object", () =>
-      fixture.storage.objectExists(staged.stagedStorageKey)), true);
+  const fixture = sharedFixture;
+  const content = Buffer.from("0123456789-昆曲", "utf8");
+  const staged = await runProtocolStep("upload staged object", () =>
+    fixture.storage.putStagedObject(
+      "2026-08-03/test.mp4",
+      Readable.from([content]),
+      1024,
+    ), fixture.readLog);
+  assert.equal(staged.size, content.length);
+  assert.deepEqual(Buffer.from(staged.header), content);
+  assert.equal((await runProtocolStep("list staged object", () =>
+    fixture.storage.listStoredObjects())).length, 1);
+  assert.equal(await runProtocolStep("head staged object", () =>
+    fixture.storage.objectExists(staged.stagedStorageKey)), true);
 
-    await runProtocolStep("promote staged object", () =>
-      fixture.storage.promoteStagedObject(staged));
-    assert.equal(await fixture.storage.objectExists(staged.stagedStorageKey), false);
-    assert.equal(await fixture.storage.objectExists(staged.finalStorageKey), true);
-    assert.equal(
-      (await streamToBuffer(await fixture.storage.getObjectStream(staged.finalStorageKey))).toString("utf8"),
-      content.toString("utf8"),
-    );
-    assert.equal(
-      (await streamToBuffer(await fixture.storage.getObjectStream(
-        staged.finalStorageKey,
-        { start: 2, end: 5 },
-      ))).toString("utf8"),
-      "2345",
-    );
+  await runProtocolStep("promote staged object", () =>
+    fixture.storage.promoteStagedObject(staged));
+  assert.equal(await fixture.storage.objectExists(staged.stagedStorageKey), false);
+  assert.equal(await fixture.storage.objectExists(staged.finalStorageKey), true);
+  assert.equal(
+    (await streamToBuffer(await fixture.storage.getObjectStream(staged.finalStorageKey))).toString("utf8"),
+    content.toString("utf8"),
+  );
+  assert.equal(
+    (await streamToBuffer(await fixture.storage.getObjectStream(
+      staged.finalStorageKey,
+      { start: 2, end: 5 },
+    ))).toString("utf8"),
+    "2345",
+  );
 
-    // prefix 外对象不属于本适配器命名空间，生命周期列表不得越界返回。
-    await fixture.client.send(new PutObjectCommand({
-      Bucket: TEST_BUCKET,
-      Key: "outside/object.bin",
-      Body: Buffer.from("outside"),
-    }));
-    const listed = await fixture.storage.listStoredObjects();
-    assert.deepEqual(listed.map((object) => object.storageKey), [staged.finalStorageKey]);
-    await fixture.storage.deleteObject(staged.finalStorageKey);
-    assert.equal(await fixture.storage.objectExists(staged.finalStorageKey), false);
-  } finally {
-    await fixture.close();
-  }
+  // prefix 外对象不属于本适配器命名空间，生命周期列表不得越界返回。
+  await fixture.client.send(new PutObjectCommand({
+    Bucket: TEST_BUCKET,
+    Key: "outside/object.bin",
+    Body: Buffer.from("outside"),
+  }));
+  const listed = await fixture.storage.listStoredObjects();
+  assert.deepEqual(listed.map((object) => object.storageKey), [staged.finalStorageKey]);
+  await fixture.storage.deleteObject(staged.finalStorageKey);
+  assert.equal(await fixture.storage.objectExists(staged.finalStorageKey), false);
 });
 
 // 超限必须传播统一业务错误，并清除 staged/final；缺失 bucket 的 readiness 也必须真实失败。
 test("S3 适配器超限失败不留对象且 readiness 反映 bucket 状态", async () => {
-  const fixture = await createS3Fixture();
+  const fixture = sharedFixture;
+  await assert.rejects(
+    fixture.storage.putStagedObject(
+      "2026-08-03/too-large.mp4",
+      Readable.from([Buffer.from("123456")]),
+      3,
+    ),
+    StorageSizeLimitError,
+  );
+  assert.deepEqual(await fixture.storage.listStoredObjects(), []);
+  await fixture.storage.checkReadiness();
+  const missingBucketStorage = new S3ObjectStorage({
+    ...fixture.options,
+    bucket: "missing-bucket",
+  });
+  await assert.rejects(missingBucketStorage.checkReadiness());
+});
+
+// 远端备份协议在两个隔离 prefix 间真实传输，manifest-last 与 verifier 不依赖内存替身。
+test("S3 隔离命名空间可发布并校验远端备份包", async () => {
+  const fixture = sharedFixture;
+  const workDirectory = await mkdtemp(path.join(tmpdir(), "xiqu-s3-backup-work-"));
   try {
-    await assert.rejects(
-      fixture.storage.putStagedObject(
-        "2026-08-03/too-large.mp4",
-        Readable.from([Buffer.from("123456")]),
-        3,
-      ),
-      StorageSizeLimitError,
+    const sourceStorage = new S3ObjectStorage({ ...fixture.options, prefix: "platform-source" });
+    const backupStorage = new S3ObjectStorage({ ...fixture.options, prefix: "platform-backups" });
+    const media = Buffer.from("remote-media-content");
+    const sourceObject = await sourceStorage.putStagedObject(
+      "media/test.mp4",
+      Readable.from([media]),
+      media.length,
     );
-    assert.deepEqual(await fixture.storage.listStoredObjects(), []);
-    await fixture.storage.checkReadiness();
-    const missingBucketStorage = new S3ObjectStorage({
-      ...fixture.options,
-      bucket: "missing-bucket",
+    await sourceStorage.promoteStagedObject(sourceObject);
+    const dumpPath = path.join(workDirectory, "database.dump");
+    await writeFile(dumpPath, "remote-database-dump");
+    const backupId = "xiqu-backup-2026-08-03T00-00-00-000Z-protocol";
+
+    const result = await publishRemoteBackupPackage({
+      databaseSummary: {
+        resourceCount: 1,
+        annotationFileCount: 0,
+        mediaFileCount: 1,
+        fileObjectCount: 1,
+        fileObjects: [{
+          storageKey: "media/test.mp4",
+          size: media.length,
+          checksum: sourceObject.checksum,
+        }],
+      },
+      operator: {
+        id: "admin-id",
+        accountName: "admin",
+        displayName: "系统管理员",
+        roles: ["super_admin"],
+      },
+      sourceStorage,
+      backupStorage,
+      backupId,
+      dumpPath,
+      databaseIdentity: {
+        host: "localhost",
+        port: 54329,
+        database: "xiqu_platform",
+        schema: "public",
+      },
+      postgresToolVersion: "pg_dump (PostgreSQL) 16.14",
+      maintenanceReason: "S3 协议测试",
     });
-    await assert.rejects(missingBucketStorage.checkReadiness());
+    assert.equal(result.manifest.objects.count, 1);
+    assert.equal((await verifyRemoteBackup(backupStorage, backupId)).valid, true);
+    assert.deepEqual(
+      (await sourceStorage.listStoredObjects()).map((object) => object.storageKey),
+      ["media/test.mp4"],
+    );
+    assert.equal(
+      (await backupStorage.listStoredObjects()).some((object) =>
+        object.storageKey === `${backupId}/manifest.json`),
+      true,
+    );
   } finally {
-    await fixture.close();
+    await rm(workDirectory, { recursive: true, force: true });
   }
 });
 

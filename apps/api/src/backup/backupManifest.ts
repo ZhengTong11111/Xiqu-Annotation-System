@@ -38,7 +38,7 @@ export async function writeBackupManifest(directory: string, manifest: BackupMan
   const final = path.join(directory, BACKUP_MANIFEST_FILE);
   const handle = await open(temporary, "wx");
   try {
-    await handle.writeFile(`${JSON.stringify(normalizeBackupManifest(manifest), null, 2)}\n`, "utf8");
+    await handle.writeFile(serializeBackupManifest(manifest), "utf8");
     await handle.sync();
   } finally {
     await handle.close();
@@ -50,6 +50,17 @@ export async function writeBackupManifest(directory: string, manifest: BackupMan
 // 外部备份包一律按 unknown 读取并完成运行时校验，TypeScript 类型不能充当恢复安全边界。
 export async function readBackupManifest(directory: string) {
   const text = await readFile(path.join(directory, BACKUP_MANIFEST_FILE), "utf8");
+  return parseBackupManifestText(text);
+}
+
+// 本地与远端备份共享同一稳定序列化出口，避免两种介质产生内容不同的 manifest。
+export function serializeBackupManifest(manifest: BackupManifest) {
+  validateBackupManifest(manifest);
+  return `${JSON.stringify(normalizeBackupManifest(manifest), null, 2)}\n`;
+}
+
+// 远端读取和本地目录读取都必须从 unknown JSON 进入同一个运行时校验边界。
+export function parseBackupManifestText(text: string) {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);

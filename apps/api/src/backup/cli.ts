@@ -8,6 +8,9 @@ import { createPlatformBackup } from "./backupService.js";
 import { loadMaintenanceOperator } from "./maintenanceOperator.js";
 import { runRestoreDrill } from "./restoreDrillService.js";
 import { verifyBackupDirectory } from "./backupVerifier.js";
+import { createRemotePlatformBackup } from "./remoteBackupService.js";
+import { createRemoteBackupStorageFromEnvironment } from "./remoteBackupStorageFactory.js";
+import { verifyRemoteBackup } from "./remoteBackupVerifier.js";
 
 const DEFAULT_DATABASE_URL =
   "postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public";
@@ -22,6 +25,11 @@ const COMMAND_OPTIONS: Record<string, { values: string[]; flags: string[] }> = {
     flags: ["keep-maintenance-on-failure"],
   },
   "backup:verify": { values: ["backup"], flags: [] },
+  "backup:create-remote": {
+    values: ["operator", "work-root", "reason"],
+    flags: ["keep-maintenance-on-failure"],
+  },
+  "backup:verify-remote": { values: ["backup-id"], flags: [] },
   "backup:restore-drill": {
     values: ["backup", "target-database-url", "target-storage", "report"],
     flags: [],
@@ -58,6 +66,20 @@ async function runCommand(
     const result = await verifyBackupDirectory(backup);
     printJson({ valid: result.valid, errors: result.errors, createdAt: result.manifest?.createdAt ?? null });
     if (!result.valid) throw new Error("备份校验未通过。 ");
+    return;
+  }
+  // 远端校验是纯对象存储操作，不能为了读取 manifest 误连业务数据库。
+  if (command === "backup:verify-remote") {
+    const result = await verifyRemoteBackup(
+      createRemoteBackupStorageFromEnvironment(),
+      requireValue(values, "backup-id"),
+    );
+    printJson({
+      valid: result.valid,
+      errors: result.errors,
+      createdAt: result.manifest?.createdAt ?? null,
+    });
+    if (!result.valid) throw new Error("远端备份校验未通过。 ");
     return;
   }
   if (command === "backup:restore-drill") {
@@ -118,6 +140,30 @@ async function runCommand(
       });
       printJson({
         directory: path.relative(process.cwd(), result.directory),
+        createdAt: result.manifest.createdAt,
+        objectCount: result.manifest.objects.count,
+        warningCount: result.manifest.warnings.length,
+        warnings: result.manifest.warnings,
+      });
+      return;
+    }
+    // 远端创建复用当前数据库和线上对象源，但目标由独立 XIQU_BACKUP_S3_* 配置提供。
+    if (command === "backup:create-remote") {
+      const result = await createRemotePlatformBackup({
+        prisma,
+        maintenance,
+        operator,
+        databaseUrl,
+        sourceStorage: createObjectStorageFromEnvironment(),
+        backupStorage: createRemoteBackupStorageFromEnvironment(),
+        workRoot: values.get("work-root") ?? "./data/remote-backup-work",
+        maintenanceReason: values.get("reason") ?? "创建平台远端一致备份",
+        keepMaintenanceOnFailure: flags.has("keep-maintenance-on-failure"),
+        signal,
+      });
+      printJson({
+        backupId: result.backupId,
+        manifestKey: result.manifestKey,
         createdAt: result.manifest.createdAt,
         objectCount: result.manifest.objects.count,
         warningCount: result.manifest.warnings.length,
