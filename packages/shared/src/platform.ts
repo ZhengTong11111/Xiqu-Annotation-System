@@ -131,6 +131,7 @@ export type AnnotationFile<TPayload = unknown> = {
   resource: ResourceEntry;
   payload: TPayload;
   revision: number;
+  operationCursor: string;
   mediaResourceId?: string | null;
   lastEditor: UserReference;
   lastSavedAt: string;
@@ -318,6 +319,9 @@ export type AnnotationOperationRecord = {
   action: string;
   payload: unknown;
   status: "accepted" | "rejected" | "superseded";
+  commitState: "accepted" | "committed";
+  committedRevision: number | null;
+  committedAt: string | null;
   replayability: "domain_command" | "requires_snapshot";
   createdAt: string;
 };
@@ -327,4 +331,9 @@ export type AnnotationOperationPage = {
   items: AnnotationOperationRecord[];
   nextCursor: string | null;
   hasMore: boolean;
+};
+
+// 已提交 feed 额外返回权威文件 revision，客户端可发现没有 operation 的 snapshot 推进。
+export type AnnotationCommittedOperationPage = AnnotationOperationPage & {
+  currentRevision: number;
 };

@@ -24,8 +24,8 @@ R4b1 浏览器草稿持久化/同 revision 恢复、R4b2 stale 草稿结构化�
 R4c2 保存冲突可视化续接、R4c3 可测试自动保存生命周期协调与异常收口；R4 工程闭环已完成。R5a1 已
 建立首批 version 1 时间轴领域命令、严格前后端校验、草稿往返和成熟拖拽提交接入；R5a2a 已完成纯
 precondition/inverse/all-or-nothing ProjectData apply；R5a2b 已完成服务端单文件 sequence、权限复核、
-opaque 续读游标和有界 operation feed。下一步 R5a3 建立 operation 与权威快照 revision 的明确确认状态，
-并完成 HTTP catch-up 的客户端协调；
+opaque 续读游标和有界 operation feed。R5a3a 已把保存声明的 operation 与新 payload revision 在同一事务
+绑定，并建立独立 committed feed 与快照 cursor。下一步 R5a3b 完成 HTTP catch-up 客户端协调；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -412,9 +412,16 @@ opaque 续读游标和有界 operation feed。下一步 R5a3 建立 operation �
   cursor、100/200 默认与上限、升序有界读取，并在每次读取时重新检查 read capability。可解析领域命令
   标为 `domain_command`，legacy 摘要标为 `requires_snapshot`。该 cursor 只表示客户端已观察到哪里，
   sequence 只表示日志接收顺序；二者都不证明对应完整 payload 已保存。
-- R5a3：为 operation 增加与权威 annotation-file revision 对齐的提交/确认事实，明确“已接收命令但完整
-  快照尚未保存”的恢复策略；实现可停止、可换文件且能处理 `requires_snapshot` 的 HTTP catch-up
-  coordinator。先用确定性测试闭环，不把 WebSocket、presence 和服务端 apply 混入同一步。
+- R5a3a 已完成：operation 的 nullable `committedRevision/committedAt` 只在完整 payload 保存事务中绑定；
+  保存请求显式声明当前账号本次快照覆盖的 client operation ids，缺失、跨账号、异 base 或已提交项使
+  payload/revision/operation 整体回滚。历史日志保持未提交，不猜测回填。独立 committed feed 按
+  `(committedRevision, acceptanceSequence)` 升序续读，跳过未提交空洞；AnnotationFile 返回对应当前
+  payload revision 的 opaque snapshot cursor。未被一次保存声明的旧-base operation 永久保持 accepted，
+  不能被后续 revision 自动认领。
+- R5a3b：实现可停止、可换文件、single-flight 的 HTTP catch-up coordinator。它以打开文件返回的 snapshot
+  cursor 为起点，拉完有界 committed pages；遇到 `requires_snapshot`、revision 无 operation 推进、分页
+  不完整、前置条件失败或本地 dirty/pending 时必须转入明确的快照刷新/冲突路径，不能静默 apply。
+  只在全页领域命令可验证且本地 clean 时评估使用 R5a2a adapter；先以纯状态机测试闭环，不混入 WebSocket。
 - 后续把宽泛 `project.commit` 逐步替换为文本、创建删除和轨道结构等稳定 id 领域命令。
 - WebSocket 会话、presence、光标/选区与连接状态。
 - 服务端 operation 排序、确认、重放和权限复核。

@@ -66,6 +66,7 @@ import {
   normalizeResourceQuery,
   type NormalizedResourceQuery,
 } from "./resourcePagination.js";
+import { encodeAnnotationSnapshotOperationCursor } from "./annotationCommittedOperationPagination.js";
 import { toPublicUser } from "./repositoryMappers.js";
 
 const resourceInclude = {
@@ -457,6 +458,37 @@ export class ResourceService {
         });
       }
 
+      // 本次完整 payload 覆盖的 operation 必须全部属于当前文件、账号和 base revision。
+      // 先完整验证再写快照，任何缺失或重复都不能形成部分 committed 事实。
+      const operationIds = [...new Set(input.clientOperationIds)];
+      if (operationIds.length !== input.clientOperationIds.length || operationIds.length > 500) {
+        throw badRequest("保存关联的 operation 编号重复或超过 500 项。");
+      }
+      const operations = operationIds.length > 0
+        ? await transaction.annotationOperation.findMany({
+            where: {
+              annotationFileId: resourceId,
+              actorUserId: user.id,
+              clientOperationId: { in: operationIds },
+            },
+            select: {
+              clientOperationId: true,
+              baseRevision: true,
+              committedRevision: true,
+            },
+          })
+        : [];
+      if (
+        operations.length !== operationIds.length ||
+        operations.some((operation) =>
+          operation.baseRevision !== input.baseRevision ||
+          operation.committedRevision !== null)
+      ) {
+        throw conflict("保存关联的 operation 不存在、版本不一致或已经提交。", {
+          code: "operation_commit_conflict",
+        });
+      }
+
       // 保存前把旧内容写入恢复快照；它只通过标注文件 Inspector 受控查看，不是业务“版本”。
       await transaction.annotationRecoverySnapshot.upsert({
         where: {
@@ -477,6 +509,8 @@ export class ResourceService {
 
       // revision 必须参与 UPDATE 条件。即使两个请求同时读到同一 revision，
       // 也只能有一个请求真正取得写入权，另一个事务会整体回滚。
+      const targetRevision = input.baseRevision + 1;
+      const committedAt = new Date();
       const updated = await transaction.annotationFile.updateMany({
         where: { resourceId, revision: input.baseRevision },
         data: {
@@ -496,6 +530,27 @@ export class ResourceService {
           receivedRevision: input.baseRevision,
         });
       }
+      // operation 与新 payload revision 在同一事务绑定；保存回滚时 committed 字段也必须回滚。
+      if (operationIds.length > 0) {
+        const committed = await transaction.annotationOperation.updateMany({
+          where: {
+            annotationFileId: resourceId,
+            actorUserId: user.id,
+            clientOperationId: { in: operationIds },
+            baseRevision: input.baseRevision,
+            committedRevision: null,
+          },
+          data: {
+            committedRevision: targetRevision,
+            committedAt,
+          },
+        });
+        if (committed.count !== operationIds.length) {
+          throw conflict("保存期间 operation 状态发生变化，请刷新后重试。", {
+            code: "operation_commit_race",
+          });
+        }
+      }
       await transaction.resourceEntry.update({
         where: { id: resourceId },
         data: { updatedAt: new Date() },
@@ -507,7 +562,10 @@ export class ResourceService {
           action: "annotation_file_save",
           actorUserId: user.id,
           resourceId,
-          detail: { revision: current.revision + 1 },
+          detail: {
+            revision: targetRevision,
+            operationCount: operationIds.length,
+          },
         },
       });
     });
@@ -1555,6 +1613,7 @@ export class ResourceService {
       ),
       payload: file.payload as TPayload,
       revision: file.revision,
+      operationCursor: encodeAnnotationSnapshotOperationCursor(resource.id, file.revision),
       mediaResourceId: file.mediaResourceId,
       lastEditor: toPublicUser(file.lastEditor),
       lastSavedAt: file.lastSavedAt.toISOString(),

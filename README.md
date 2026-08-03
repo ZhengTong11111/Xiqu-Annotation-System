@@ -244,6 +244,13 @@ revision 复核和序号分配；不同文件仍可并行写入。读取接口�
 这里的 sequence/cursor 只表示日志的接收顺序与客户端的已观察位置，不代表相应完整项目 payload 已经保存；
 权威内容仍以 annotation file revision 和快照保存结果为准。
 
+完整保存现在会携带该快照覆盖的 client operation ids。服务端在同一数据库事务中验证这些操作属于当前
+文件、账号和 base revision，随后写恢复快照、推进 payload revision，并给这些 operation 设置
+`committedRevision/committedAt`；任一项不匹配都会整体回滚。全部已接收日志与已进入权威快照的日志使用
+两条独立 feed：后者按 `(committedRevision, sequence)` 续读，可以安全跳过已接收但从未保存的 sequence
+空洞。每个 AnnotationFile 响应还带有与当前 payload revision 对齐的 opaque operation cursor，供后续
+客户端追赶使用；当前版本尚未自动轮询或远端 apply。
+
 可写平台文件在停止编辑约 3 秒后会自动保存：保存开始时固定项目、吸附状态和 operation 集合，保存中
 继续产生的新编辑仍保持 dirty，并在下一空闲窗口再次保存。离线时不发请求；恢复在线后重新同步；网络
 故障、408、429 和 5xx 按 2 秒起步、最长 60 秒的指数退避重试。409 冲突和确定的权限/资源错误不会盲目

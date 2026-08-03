@@ -396,12 +396,15 @@ model AnnotationOperation {
   action            String
   payload           Json
   status            AnnotationOperationStatus @default(accepted)
+  committedRevision Int?                      @map("committed_revision")
+  committedAt       DateTime?                 @map("committed_at")
   createdAt         DateTime                  @default(now()) @map("created_at")
 
   annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
   actor         User           @relation("AnnotationOperationActor", fields: [actorUserId], references: [id])
 
   @@index([annotationFileId, createdAt])
+  @@index([annotationFileId, committedRevision, sequence])
   @@index([actorUserId, createdAt])
   @@unique([annotationFileId, sequence])
   @@unique([annotationFileId, actorUserId, clientOperationId])

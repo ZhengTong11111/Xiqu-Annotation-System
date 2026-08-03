@@ -144,6 +144,7 @@ function annotationFile(
     },
     payload,
     revision,
+    operationCursor: `cursor-${revision}`,
     lastEditor: user,
     lastSavedAt: "2026-08-02T00:00:00.000Z",
   };

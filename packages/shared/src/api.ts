@@ -5,6 +5,7 @@ import type {
   AnnotationFile,
   AnnotationOperationRecord,
   AnnotationOperationPage,
+  AnnotationCommittedOperationPage,
   AnnotationRecoverySnapshotDetail,
   AnnotationRecoverySnapshotSummary,
   AuditActionName,
@@ -119,6 +120,7 @@ export type CopyResourceRequest = {
 export type SaveAnnotationFileRequest<TPayload = unknown> = {
   baseRevision: number;
   payload: TPayload;
+  clientOperationIds: string[];
 };
 
 // 恢复历史内容仍然是一次乐观锁写入，只需提交调用方看到的当前 revision。
@@ -266,6 +268,8 @@ export type ListAnnotationOperationsOptions = {
   limit?: number;
 };
 
+export type ListCommittedAnnotationOperationsOptions = ListAnnotationOperationsOptions;
+
 export type ListAuditLogsOptions = {
   resourceId?: string;
   actorUserId?: string;
@@ -358,6 +362,7 @@ export type PlatformApiContract<TPayload = unknown> = {
   };
   listAuditLogs: { response: AuditLogPage };
   listAnnotationOperations: { response: AnnotationOperationPage };
+  listCommittedAnnotationOperations: { response: AnnotationCommittedOperationPage };
   createAnnotationOperation: {
     request: CreateAnnotationOperationRequest;
     response: AnnotationOperationRecord;

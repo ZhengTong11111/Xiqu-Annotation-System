@@ -5,12 +5,14 @@ import {
   type PrismaClient,
   type ProcessingJobType as DbProcessingJobType,
 } from "@prisma/client";
-import type {
-  AnnotationOperationPage,
-  AnnotationOperationRecord,
-  CreateAnnotationOperationRequest,
-  CreateProcessingJobRequest,
-  ProcessingJob,
+import {
+  parseAnnotationCommandEnvelope,
+  type AnnotationCommittedOperationPage,
+  type AnnotationOperationPage,
+  type AnnotationOperationRecord,
+  type CreateAnnotationOperationRequest,
+  type CreateProcessingJobRequest,
+  type ProcessingJob,
 } from "@xiqu/shared";
 import { hashToken, verifyPassword } from "./auth.js";
 import type { ApiUser } from "./domain.js";
@@ -30,7 +32,11 @@ import {
   encodeAnnotationOperationCursor,
   normalizeAnnotationOperationPage,
 } from "./annotationOperationPagination.js";
-import { parseAnnotationCommandEnvelope } from "@xiqu/shared";
+import {
+  AnnotationCommittedOperationCursorError,
+  encodeAnnotationCommittedOperationCursor,
+  normalizeAnnotationCommittedOperationPage,
+} from "./annotationCommittedOperationPagination.js";
 
 export class PrismaPlatformRepository {
   constructor(
@@ -206,6 +212,69 @@ export class PrismaPlatformRepository {
     };
   }
 
+  // 已提交 feed 只暴露与完整 payload revision 原子绑定的 operation，并按保存顺序稳定续读。
+  async listCommittedAnnotationOperations(
+    user: ApiUser,
+    annotationFileId: string,
+    options: { cursor?: unknown; limit?: unknown } = {},
+  ): Promise<AnnotationCommittedOperationPage> {
+    await this.access.assertCapability(user, annotationFileId, "read");
+    let page;
+    try {
+      page = normalizeAnnotationCommittedOperationPage({ annotationFileId, ...options });
+    } catch (error) {
+      if (error instanceof AnnotationCommittedOperationCursorError) throw badRequest(error.message);
+      throw error;
+    }
+
+    // committedRevision 先决定快照顺序，sequence 只负责同一次保存内的稳定次序。
+    const rows = await this.prisma.annotationOperation.findMany({
+      where: {
+        annotationFileId,
+        committedRevision: { not: null },
+        OR: [
+          { committedRevision: { gt: page.afterCommittedRevision } },
+          {
+            committedRevision: page.afterCommittedRevision,
+            sequence: { gt: page.afterSequence },
+          },
+        ],
+      },
+      orderBy: [
+        { committedRevision: "asc" },
+        { sequence: "asc" },
+      ],
+      take: page.limit + 1,
+    });
+    const hasMore = rows.length > page.limit;
+    const visibleRows = rows.slice(0, page.limit);
+    const lastRow = visibleRows.length > 0
+      ? visibleRows[visibleRows.length - 1]
+      : undefined;
+    if (lastRow && lastRow.committedRevision === null) {
+      throw new Error("已提交 operation 查询返回了空 committedRevision。");
+    }
+
+    // 文件 revision 在 operation 查询后读取，响应不会声称落后于本页已经返回的提交事实。
+    const file = await this.prisma.annotationFile.findUnique({
+      where: { resourceId: annotationFileId },
+      select: { revision: true },
+    });
+    if (!file) throw notFound("标注文件不存在。");
+    return {
+      items: visibleRows.map(this.mapOperation),
+      nextCursor: lastRow && lastRow.committedRevision !== null
+        ? encodeAnnotationCommittedOperationCursor(
+            annotationFileId,
+            lastRow.committedRevision,
+            lastRow.sequence,
+          )
+        : page.sourceCursor,
+      hasMore,
+      currentRevision: file.revision,
+    };
+  }
+
   async createAnnotationOperation(
     user: ApiUser,
     annotationFileId: string,
@@ -330,6 +399,8 @@ export class PrismaPlatformRepository {
     action: string;
     payload: Prisma.JsonValue;
     status: "accepted" | "rejected" | "superseded";
+    committedRevision: number | null;
+    committedAt: Date | null;
     createdAt: Date;
   }): AnnotationOperationRecord {
     return {
@@ -343,6 +414,9 @@ export class PrismaPlatformRepository {
       action: row.action,
       payload: row.payload,
       status: row.status,
+      commitState: row.committedRevision === null ? "accepted" : "committed",
+      committedRevision: row.committedRevision,
+      committedAt: row.committedAt?.toISOString() ?? null,
       replayability: parseAnnotationCommandEnvelope(row.payload) &&
         row.action === "timeline.items.timing.update"
         ? "domain_command"

@@ -146,6 +146,23 @@ file revision 才是**权威完整 payload 的保存版本**。当前服务端�
 operation 已分配 sequence 不等于对应快照已经保存。R5a3 必须先建立 operation 与 snapshot revision 的
 确认事实及 HTTP catch-up 协调，再接实时传输。
 
+### 4.3 R5a3a operation 与 snapshot 的原子提交事实
+
+`AnnotationOperation.committedRevision/committedAt` 只有在完整 payload 保存事务成功时才写入。客户端 PUT
+发送保存开始时固定的全部 `clientOperationIds`，包括前一次 POST 成功但 PUT 失败后仍为 submitted 的项；
+服务端要求它们全部属于当前文件、当前 actor、当前 base revision 且尚未提交。恢复快照、payload revision、
+operation 绑定和保存审计同成同败。空数组允许无 operation 的系统保存；历史 operation 无法证明属于哪次
+快照，迁移后保持 null。
+
+R5a2b acceptance feed 与 R5a3a committed feed 不能共用 cursor：前者按接收 sequence，后者只读取非空
+committedRevision，并按 `(committedRevision, sequence)`。因此一个旧-base accepted operation 可以永久留在
+日志中，却不会阻塞后续 revision 的已提交续读。`AnnotationFile.operationCursor` 是服务器为当前 payload
+revision 生成的 committed-feed 起点；它跳过该 revision 的全部操作。committed page 同时返回服务器当前
+revision，后续协调器据此识别“revision 推进但没有 operation”的快照刷新场景。
+
+R5a3a 仍不自动 apply 远端命令。下一步 coordinator 只有在本地 clean、页完整、全部 operation 可领域重放、
+revision 连续且 R5a2a precondition 通过时，才可评估原子应用；其他情况必须读取权威快照或进入冲突流程。
+
 后续领域命令逐步引入：
 
 - `character.updateText`

@@ -171,6 +171,7 @@ function annotationFile(
       },
     },
     revision,
+    operationCursor: `cursor-${revision}`,
     payload,
     lastEditor: user,
     lastSavedAt: now,

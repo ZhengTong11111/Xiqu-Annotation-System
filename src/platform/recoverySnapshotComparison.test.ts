@@ -28,6 +28,7 @@ function fixture(payload: unknown, snapshotRevision = 2, currentRevision = 5) {
     resource: {} as AnnotationFile<unknown>["resource"],
     payload,
     revision: currentRevision,
+    operationCursor: `cursor-${currentRevision}`,
     lastEditor: user,
     lastSavedAt: "2026-08-02T01:00:00.000Z",
   };

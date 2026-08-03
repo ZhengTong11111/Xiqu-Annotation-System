@@ -1,6 +1,7 @@
 import type {
   AnnotationConfirmationList,
   AnnotationConfirmationRecord,
+  AnnotationCommittedOperationPage,
   AnnotationFile,
   AnnotationOperationPage,
   AnnotationOperationRecord,
@@ -379,6 +380,19 @@ export class PlatformClient {
     if (options.limit !== undefined) query.set("limit", String(options.limit));
     return this.request<AnnotationOperationPage>(
       `/annotation-files/${annotationFileId}/operations${query.size > 0 ? `?${query}` : ""}`,
+    );
+  }
+
+  // 已提交 feed 与全部接收日志使用独立路由和 cursor，防止两种排序边界被混用。
+  listCommittedAnnotationOperations(
+    annotationFileId: string,
+    options: { cursor?: string; limit?: number } = {},
+  ) {
+    const query = new URLSearchParams();
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    return this.request<AnnotationCommittedOperationPage>(
+      `/annotation-files/${annotationFileId}/committed-operations${query.size > 0 ? `?${query}` : ""}`,
     );
   }
 

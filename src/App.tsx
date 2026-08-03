@@ -4720,6 +4720,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       const savedFile = await editorSession.client.saveAnnotationFile<ProjectData>(editorSession.annotationFileId, {
         baseRevision: remoteBaseRevision,
         payload: projectToSave,
+        // covered ids 包含此前 POST 成功但 PUT 失败的 submitted operation，使重试仍能原子绑定快照。
+        clientOperationIds: coveredOperationIds,
       });
       // 3. 成功后更新 baseRevision 并确认本地 pending operations（清空 pending、标 acknowledged）。
       setRemoteBaseRevision(savedFile.revision);

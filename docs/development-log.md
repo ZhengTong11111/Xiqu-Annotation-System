@@ -2950,3 +2950,78 @@ R5a2b 当前任务书。本轮由 Codex 直接实现，没有调用 Claude Code�
 - 本轮没有服务端 apply、客户端 catch-up、operation 与保存 revision 的绑定、WebSocket、presence、OT
   或 CRDT。下一轮 R5a3 必须先解决“日志已接收但完整快照保存失败/尚未发生”的明确状态，再让客户端
   消费 operation feed；不能仅凭 sequence 乐观宣称远端内容已持久化。
+
+## 2026-08-03：R5a3a operation 与权威快照 revision 原子绑定
+
+本轮在 R5a2b commit `a9785cf` 后自动续接活动 goal。Codex 先检查干净工作树、活动 goal、roadmap、App
+唯一平台保存事务、`submitPendingOperations()`、shared save DTO、`ResourceService.saveAnnotationFile()`、
+operation schema 和 R5a2b feed，再整体重写被 gitignore 的 `CLAUDE_WORK.md`。审计发现不能直接实现 HTTP
+轮询/apply：现有顺序是先 POST operation、再 PUT 完整 payload，PUT 失败会留下有 sequence 的日志行，
+但无法证明它进入了任何权威 snapshot。于是把 R5a3 拆为本轮 R5a3a 提交事实和下一轮 R5a3b 客户端
+catch-up coordinator。本轮由 Codex 直接实现，没有调用其他代理，也没有新增依赖；PostgreSQL 事务、
+Prisma 和 Node base64url 足以清晰表达该边界。
+
+数据模型与保存事务：
+
+- `AnnotationOperation` 新增 nullable `committedRevision`、`committedAt`，以及
+  `(annotationFileId, committedRevision, sequence)` 索引。migration 对历史 operation 保持 null：旧日志
+  没有证据表明进入哪一个历史 payload，不能为了得到连续图表而猜测回填。
+- `SaveAnnotationFileRequest` 增加 `clientOperationIds`。App 在保存开始时固定 pending snapshot，并在 PUT
+  中发送全部 covered 本地 id；这里既包含本轮刚 POST 成功的项，也包含此前 PUT 失败后已标 submitted、
+  本轮不会再次 POST 的项。成功后仍只 acknowledge 本次固定集合；保存期间新编辑继续 dirty。
+- Router 接受最多 500 个、满足既有幂等键安全字符集且不重复的 id。早期无 operation 的原始内部请求在
+  runtime 边界仍等价为空数组，正式 TypeScript client 合同则要求显式字段；空数组支持恢复/系统类无操作
+  payload 保存，不会伪造 operation。
+- `ResourceService.saveAnnotationFile()` 在既有资源树/annotation-file 内容锁内，先复核 base revision，再
+  一次读取当前 actor 声明的全部 operation，要求数量一致、base 一致且 committedRevision 为空。随后恢复
+  快照、完整 payload revision、operation commit 字段和审计日志在同一 Prisma transaction 内写入；绑定
+  update 数量不一致会抛 409 并整体回滚。保存审计只增加 revision 与 operationCount，不写 payload/命令。
+- 未被某次保存声明的旧-base operation 永久保持 accepted。后续 revision 不会自动认领它；这是防止其他
+  actor 或失败编辑被错算进快照的必要边界，后续治理可做过期诊断，但不能后台猜测提交。
+
+双 feed 与快照 cursor：
+
+- R5a2b acceptance feed 保持按文件接收 sequence，用于诊断全部日志。新增独立 committed feed，只返回
+  committedRevision 非空行，并按 `(committedRevision ASC, sequence ASC)` 分页。两者不共用 cursor。
+- committed cursor version 1 精确绑定文件、保存 revision 与同 revision sequence，默认/上限仍为 100/200；
+  坏 base64/JSON、额外字段、未知版本、跨文件、负数/越界整数和坏 limit fail closed。快照 cursor 使用当前
+  revision 加数据库 Int 最大 sequence，表示“该完整 payload 已经包含到此 revision，不应再重放”。
+- 每个 `AnnotationFile` 响应新增 `operationCursor`；committed page 额外返回 `currentRevision`。因此下一轮
+  可识别三类情况：有 committed commands、出现 `requires_snapshot`，或 revision 已推进但没有 operation。
+  operation 查询先执行、文件 revision 后读取，避免响应声称的 revision 落后于已经返回的提交事实；若
+  两次查询间发生新保存，客户端最多走保守快照刷新，不会静默漏 apply。
+- operation record 增加 `commitState`、`committedRevision/At`。replayability 规则不变：合法时间命令为
+  `domain_command`，legacy/历史损坏值为 `requires_snapshot`。本轮 PlatformClient 只暴露 committed API，
+  没有 timer、远端 apply、WebSocket 或 UI 状态。
+
+测试、构建与实现中的修正：
+
+- 新增 committed cursor 纯测试 2 项，覆盖默认起点、同 revision 页尾、snapshot 起点、跨文件、坏格式、
+  未知版本、limit 边界和数据库 Int 上限；加入独立 npm script 与 AGENTS 命令表。
+- API 集成新增独立标注文件场景：POST 后为 accepted/null；保存只提交声明的 A，未声明 sequence 2 保持
+  orphan；revision 1 cursor 可读 A、revision 2 cursor 跳过 A；orphan 不能在 base 2 被认领且失败保存不改
+  payload/revision；sequence 3 legacy 提交到 revision 3 后，committed feed 能越过 sequence 2 空洞并标记
+  requires_snapshot；管理员不能绑定学生 operation；缺失 id 失败后同 operation 可在同 base 重试成功；
+  一项一页稳定得到 A/C/student/retry，坏 cursor 400，截断继承后的无 read 为 403。
+- `npm run test:api` 在隔离 `api_test` PostgreSQL schema 真实应用第 11 个 migration，最终 90/90。revision、
+  operation、ACL、恢复、确认、上传、审计、维护、备份和对象存储回归全部通过，只保留既有 pg 9 前置
+  弃用提示。
+- 第一次完整构建发现三个测试夹具仍手写旧 `AnnotationFile` 且缺少 operationCursor。没有把新字段改成
+  optional 来掩盖问题，而是给 merge preparation、draft conflict、recovery snapshot comparison 夹具补上
+  明确 cursor。随后 `npm run build` 通过 Prisma generation、shared、document-model、web 和 API；Vite
+  只保留既有主 chunk 超过 500 kB 提醒。
+- 提交前受影响专项 35/35：committed cursor 2、merge preparation 4、autosave policy 4、autosave runtime 8、
+  platform draft 6、draft conflict 3、recovery comparison 4、platform operation 4；`git diff --check` 通过。
+  运行中的旧 API 实例 readiness 仍为 ready，database 8.93 ms、storage 2.61 ms；它没有热加载本轮代码，
+  新 migration/事务行为以 `api_test` 真实执行结果为准，下一轮运行验收前需部署 main schema 并重启。
+
+文档与下一步边界：
+
+- README 解释原子绑定和双 feed；state architecture 新增 R5a3a 事实边界；roadmap 标记 R5a3a 完成并
+  细化 R5a3b；AGENTS 增加 committed cursor 与 ResourceService 事务所有权。本节同时记录计划、实际实现、
+  测试和未完成项，不把 `CLAUDE_WORK.md` 当历史日志。
+- 既有 Browser 会话仍明确禁止从错误 `data:` 页导航、读取或切换替代表面。本轮无新 UI，遵守限制，未
+  把 Node/API 测试冒充浏览器验收。
+- R5a3b 必须先实现纯 catch-up 状态机：文件切换/dispose、single-flight、分页耗尽、dirty/pending 阻断、
+  requires_snapshot、revision gap 和 precondition failure 都要有确定结果。只有 clean 且完整的领域命令页
+  才可评估 R5a2a apply；仍不在同一轮引入 WebSocket/presence/OT/CRDT。

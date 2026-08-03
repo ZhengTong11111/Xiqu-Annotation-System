@@ -447,7 +447,7 @@ export function registerApiRoutes(
 
   app.put<{
     Params: { resourceId: string };
-    Body: { baseRevision?: unknown; payload?: unknown };
+    Body: { baseRevision?: unknown; payload?: unknown; clientOperationIds?: unknown };
   }>("/api/annotation-files/:resourceId", async (request) => {
     const body = requireObject(request.body);
     if (!Number.isInteger(body.baseRevision) || Number(body.baseRevision) < 1) {
@@ -460,6 +460,7 @@ export function registerApiRoutes(
       {
         baseRevision: Number(body.baseRevision),
         payload: body.payload ?? {},
+        clientOperationIds: parseSaveClientOperationIds(body.clientOperationIds),
       },
     );
     return saved;
@@ -853,6 +854,19 @@ export function registerApiRoutes(
       ),
   );
 
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { cursor?: unknown; limit?: unknown };
+  }>(
+    "/api/annotation-files/:resourceId/committed-operations",
+    async (request) =>
+      repository.listCommittedAnnotationOperations(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        { cursor: request.query.cursor, limit: request.query.limit },
+      ),
+  );
+
   app.post<{
     Params: { resourceId: string };
     Body: {
@@ -1028,6 +1042,23 @@ function parseUniqueStringArray(
     throw badRequest(`${label} 必须包含 ${minimum}–${maximum} 个不同资源。`);
   }
   return normalized;
+}
+
+// 保存事务只接受当前账号的稳定 operation 幂等键；重复项不能被静默去重后形成含糊确认数量。
+function parseSaveClientOperationIds(value: unknown) {
+  // 早期内部调用没有 operation 时等价为空数组；正式 PlatformClient 始终显式发送该字段。
+  if (value === undefined) return [];
+  if (
+    !Array.isArray(value) ||
+    value.length > 500 ||
+    value.some((item) => !isValidClientOperationId(item))
+  ) {
+    throw badRequest("clientOperationIds 必须是最多 500 个有效操作编号组成的数组。");
+  }
+  if (new Set(value).size !== value.length) {
+    throw badRequest("clientOperationIds 不能包含重复操作编号。");
+  }
+  return value as string[];
 }
 
 function parseOptionalSetValue<T extends string>(

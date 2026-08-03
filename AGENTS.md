@@ -29,6 +29,8 @@ Main currently contains all major recent feature lines that matter for context:
 - version 1 timeline timing domain commands with strict shared validation, draft persistence, and server logging;
   shared precondition/inverse semantics and a pure ProjectData apply adapter exist, but server-side application/replay
   is not implemented yet
+- per-file operation acceptance sequence plus snapshot-committed operation facts and separate bounded feeds; the web
+  client exposes the committed API but automatic catch-up/application is not implemented yet
 - project document state architecture (`src/state/projectDocumentState.ts`)
 - versioned browser recovery drafts for writable platform files, isolated by account/file and recoverable only against
   the same server revision
@@ -274,6 +276,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - combines global admin bypass, ownership, direct grants, and nearest inherited folder grants
 - `apps/api/src/resourceService.ts`
   - resource-tree mutations, copy/move/trash behavior, annotation-file save/recovery, and confirmed-range governance
+  - annotation save atomically binds the current actor's declared client operation ids to the new payload revision;
+    missing, foreign, stale-base, or already-committed ids must roll back payload, revision, snapshots, and audit together
 - `apps/api/src/storage.ts`
   - local filesystem adapter for `ObjectStorage`, including staging, checksum/size/header capture, atomic publish, safe
     listing, and idempotent deletion; business services must not depend on `LocalObjectStorage` directly
@@ -312,6 +316,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - pure bounded operation-feed limit and opaque file-bound cursor validation
   - sequence is a per-annotation-file log acceptance order and cursor is an observed-read position; neither proves that
     the corresponding full annotation payload has been persisted at a newer revision
+- `apps/api/src/annotationCommittedOperationPagination.ts`
+  - pure cursor for committed operation order `(committedRevision, acceptanceSequence)` and snapshot-revision starting points
+  - acceptance and committed feeds intentionally use different cursors; never filter nullable committed rows behind an
+    acceptance-sequence cursor because a sequence hole may become permanent
 - `apps/api/src/backup/`
   - versioned local/remote full-backup, offline/streamed verification, PostgreSQL tool runner, maintenance operator CLI,
     and isolated local/remote restore-drill modules
@@ -404,6 +412,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:annotation-merge-plan`
 - `npm run test:annotation-merge-selection`
 - `npm run test:annotation-operation-pagination`
+- `npm run test:annotation-committed-operation-pagination`
 - `npm run test:resource-comparison`
 - `npm run build:web`
 - `npm run build:api`

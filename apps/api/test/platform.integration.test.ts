@@ -2849,6 +2849,260 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.ok(auditLogs.every(({ detail }) =>
         !detail || !("payload" in (detail as JsonObject))));
     });
+
+    await suite.test("operation 与快照 revision 原子绑定并按提交顺序续读", async () => {
+      // 独立文件避免前一组 acceptance-feed 测试的历史行影响 committed 游标断言。
+      const createdFileResponse = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "operation-commit-test.json",
+          payload: { marker: "revision-1" },
+        },
+      });
+      assert.equal(createdFileResponse.statusCode, 200, createdFileResponse.body);
+      const createdFile = dataOf(createdFileResponse.json());
+      const commitFileId = String((createdFile.resource as JsonObject).id);
+      const revisionOneCursor = String(createdFile.operationCursor);
+
+      const timingEnvelope = {
+        version: 1,
+        command: {
+          type: "timeline.items.timing.update",
+          items: [{
+            entityType: "character",
+            entityId: "commit-char-1",
+            before: { startTime: 1, endTime: 2 },
+            after: { startTime: 2, endTime: 3 },
+          }],
+        },
+      };
+      const createOperation = (token: string, clientOperationId: string, baseRevision: number, legacy = false) =>
+        jsonRequest(app, token, {
+          method: "POST",
+          url: `/api/annotation-files/${commitFileId}/operations`,
+          payload: {
+            clientOperationId,
+            baseRevision,
+            localRevision: baseRevision + 10,
+            action: legacy ? "project.commit" : "timeline.items.timing.update",
+            payload: legacy ? { historyAction: "edit" } : timingEnvelope,
+          },
+        });
+
+      // POST 只表示日志接收；没有成功保存前不得伪装成 committed。
+      const operationA = await createOperation(adminToken, "commit-op-a", 1);
+      const orphanOperation = await createOperation(adminToken, "commit-op-orphan", 1);
+      assert.equal(operationA.statusCode, 200, operationA.body);
+      assert.equal(orphanOperation.statusCode, 200, orphanOperation.body);
+      assert.equal(dataOf(operationA.json()).commitState, "accepted");
+      assert.equal(dataOf(operationA.json()).committedRevision, null);
+
+      // 保存只绑定明确声明的 A；同 base 的未声明 operation 保持 accepted，形成合法 sequence 空洞。
+      const revisionTwoSave = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${commitFileId}`,
+        payload: {
+          baseRevision: 1,
+          payload: { marker: "revision-2" },
+          clientOperationIds: ["commit-op-a"],
+        },
+      });
+      assert.equal(revisionTwoSave.statusCode, 200, revisionTwoSave.body);
+      assert.equal(dataOf(revisionTwoSave.json()).revision, 2);
+      const storedA = await prisma.annotationOperation.findFirstOrThrow({
+        where: { annotationFileId: commitFileId, clientOperationId: "commit-op-a" },
+      });
+      const storedOrphan = await prisma.annotationOperation.findFirstOrThrow({
+        where: { annotationFileId: commitFileId, clientOperationId: "commit-op-orphan" },
+      });
+      assert.equal(storedA.committedRevision, 2);
+      assert.ok(storedA.committedAt);
+      assert.equal(storedOrphan.committedRevision, null);
+
+      // 从 revision 1 的快照 cursor 可读到 A；revision 2 cursor 则应跳过已包含在 payload 中的 A。
+      const fromRevisionOne = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${commitFileId}/committed-operations?cursor=${encodeURIComponent(revisionOneCursor)}`,
+      });
+      assert.equal(fromRevisionOne.statusCode, 200, fromRevisionOne.body);
+      assert.deepEqual(
+        (dataOf(fromRevisionOne.json()).items as JsonObject[]).map((item) => item.clientOperationId),
+        ["commit-op-a"],
+      );
+      const revisionTwoCursor = String(dataOf(revisionTwoSave.json()).operationCursor);
+      const afterRevisionTwo = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${commitFileId}/committed-operations?cursor=${encodeURIComponent(revisionTwoCursor)}`,
+      });
+      assert.deepEqual(dataOf(afterRevisionTwo.json()).items, []);
+      assert.equal(dataOf(afterRevisionTwo.json()).currentRevision, 2);
+
+      // 旧 base 的 orphan 不能被塞进新 revision；失败事务也不能改写 payload 或 revision。
+      const staleOrphanSave = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${commitFileId}`,
+        payload: {
+          baseRevision: 2,
+          payload: { marker: "must-not-save" },
+          clientOperationIds: ["commit-op-orphan"],
+        },
+      });
+      assert.equal(staleOrphanSave.statusCode, 409);
+      const afterStaleSave = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${commitFileId}`,
+      });
+      assert.equal(dataOf(afterStaleSave.json()).revision, 2);
+      assert.equal((dataOf(afterStaleSave.json()).payload as JsonObject).marker, "revision-2");
+
+      // sequence 3 的 legacy operation 提交到 revision 3；committed feed 必须越过未提交的 sequence 2。
+      const operationC = await createOperation(adminToken, "commit-op-c", 2, true);
+      assert.equal(operationC.statusCode, 200, operationC.body);
+      const revisionThreeSave = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${commitFileId}`,
+        payload: {
+          baseRevision: 2,
+          payload: { marker: "revision-3" },
+          clientOperationIds: ["commit-op-c"],
+        },
+      });
+      assert.equal(revisionThreeSave.statusCode, 200, revisionThreeSave.body);
+      const afterA = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${commitFileId}/committed-operations?cursor=${encodeURIComponent(String(dataOf(fromRevisionOne.json()).nextCursor))}`,
+      });
+      const afterAItems = dataOf(afterA.json()).items as JsonObject[];
+      assert.deepEqual(afterAItems.map((item) => item.clientOperationId), ["commit-op-c"]);
+      assert.equal(afterAItems[0]?.replayability, "requires_snapshot");
+      assert.equal(afterAItems[0]?.committedRevision, 3);
+
+      // 账号作用域属于绑定合同：管理员不能把学生的 operation 声明为自己的保存依据。
+      await prisma.resourcePermission.upsert({
+        where: {
+          resourceId_userId: {
+            resourceId: commitFileId,
+            userId: "user-student",
+          },
+        },
+        update: { capabilities: ["read", "write"] },
+        create: {
+          resourceId: commitFileId,
+          userId: "user-student",
+          capabilities: ["read", "write"],
+          createdBy: "user-admin",
+        },
+      });
+      const studentOperation = await createOperation(studentToken, "commit-op-student", 3);
+      assert.equal(studentOperation.statusCode, 200, studentOperation.body);
+      const foreignBinding = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${commitFileId}`,
+        payload: {
+          baseRevision: 3,
+          payload: { marker: "must-not-bind-foreign" },
+          clientOperationIds: ["commit-op-student"],
+        },
+      });
+      assert.equal(foreignBinding.statusCode, 409);
+      const studentSave = await jsonRequest(app, studentToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${commitFileId}`,
+        payload: {
+          baseRevision: 3,
+          payload: { marker: "revision-4" },
+          clientOperationIds: ["commit-op-student"],
+        },
+      });
+      assert.equal(studentSave.statusCode, 200, studentSave.body);
+
+      // 声明缺失 id 的保存整体失败；相同 operation 随后用同一 base 可成功重试绑定。
+      const retryOperation = await createOperation(adminToken, "commit-op-retry", 4);
+      assert.equal(retryOperation.statusCode, 200, retryOperation.body);
+      const failedRetrySave = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${commitFileId}`,
+        payload: {
+          baseRevision: 4,
+          payload: { marker: "must-rollback" },
+          clientOperationIds: ["commit-op-retry", "commit-op-missing"],
+        },
+      });
+      assert.equal(failedRetrySave.statusCode, 409);
+      const retryRowBefore = await prisma.annotationOperation.findFirstOrThrow({
+        where: { annotationFileId: commitFileId, clientOperationId: "commit-op-retry" },
+      });
+      assert.equal(retryRowBefore.committedRevision, null);
+      const successfulRetrySave = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${commitFileId}`,
+        payload: {
+          baseRevision: 4,
+          payload: { marker: "revision-5" },
+          clientOperationIds: ["commit-op-retry"],
+        },
+      });
+      assert.equal(successfulRetrySave.statusCode, 200, successfulRetrySave.body);
+
+      // 一项一页按 `(committedRevision, sequence)` 读取 A/C/student/retry，未提交 orphan 永远不混入。
+      const committedIds: string[] = [];
+      let cursor: string | null = null;
+      let hasMore = true;
+      while (hasMore) {
+        const page = await jsonRequest(app, adminToken, {
+          method: "GET",
+          url: `/api/annotation-files/${commitFileId}/committed-operations?limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+        });
+        assert.equal(page.statusCode, 200, page.body);
+        const pageData = dataOf(page.json());
+        committedIds.push(...(pageData.items as JsonObject[]).map((item) => String(item.clientOperationId)));
+        cursor = pageData.nextCursor === null ? null : String(pageData.nextCursor);
+        hasMore = Boolean(pageData.hasMore);
+      }
+      assert.deepEqual(committedIds, [
+        "commit-op-a",
+        "commit-op-c",
+        "commit-op-student",
+        "commit-op-retry",
+      ]);
+
+      // 输入与 ACL 继续 fail closed；关闭继承后学生不能读取 committed feed。
+      const duplicateIds = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${commitFileId}`,
+        payload: {
+          baseRevision: 5,
+          payload: {},
+          clientOperationIds: ["same-id", "same-id"],
+        },
+      });
+      assert.equal(duplicateIds.statusCode, 400);
+      const badCursor = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${commitFileId}/committed-operations?cursor=bad-cursor`,
+      });
+      assert.equal(badCursor.statusCode, 400);
+      await prisma.resourcePermission.update({
+        where: {
+          resourceId_userId: {
+            resourceId: commitFileId,
+            userId: "user-student",
+          },
+        },
+        data: { capabilities: [] },
+      });
+      await prisma.resourceEntry.update({
+        where: { id: commitFileId },
+        data: { breakPermissionInheritance: true },
+      });
+      const forbiddenFeed = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${commitFileId}/committed-operations`,
+      });
+      assert.equal(forbiddenFeed.statusCode, 403);
+    });
   } finally {
     await app.close();
     await prisma.$disconnect();
