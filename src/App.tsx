@@ -26,7 +26,12 @@ import {
   PlatformWorkspace,
   type PlatformEditorSession,
 } from "./platform/PlatformWorkspace";
-import { prepareProjectForServer } from "./platform/platformProjectPayload";
+import {
+  hydrateProjectForClient,
+  prepareProjectForServer,
+} from "./platform/platformProjectPayload";
+import { catchUpCommittedAnnotationOperations } from "./platform/platformOperationCatchUp";
+import { usePlatformOperationCatchUp } from "./platform/usePlatformOperationCatchUp";
 import { useAnnotationConfirmations } from "./platform/useAnnotationConfirmations";
 import { usePlatformAutoSave } from "./platform/usePlatformAutoSave";
 import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
@@ -447,6 +452,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     applyTrackSnapEnabledState,
     markOperationsAsSubmitted,
     markProjectAsSaved,
+    replaceCleanProjectFromRemote,
     undoProject,
     redoProject,
     setSyncStatus,
@@ -460,6 +466,13 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     initialRecoveryState: editorSession?.initialRecoveryState,
   });
   const [remoteBaseRevision, setRemoteBaseRevision] = useState(editorSession?.baseRevision ?? 0);
+  const [remoteOperationCursor, setRemoteOperationCursor] = useState(
+    editorSession?.operationCursor ?? "",
+  );
+  const remoteBaseRevisionRef = useRef(remoteBaseRevision);
+  const remoteOperationCursorRef = useRef(remoteOperationCursor);
+  remoteBaseRevisionRef.current = remoteBaseRevision;
+  remoteOperationCursorRef.current = remoteOperationCursor;
   const [saveConflictReviewBusy, setSaveConflictReviewBusy] = useState(false);
   const [saveConflictReviewError, setSaveConflictReviewError] = useState<string | null>(null);
   // 冲突解除后清理旧交接错误，下一次独立冲突不能显示上一次请求的诊断。
@@ -587,6 +600,73 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const waveformRequestIdRef = useRef(0);
   const spectrogramRequestIdRef = useRef(0);
   const serverSaveInFlightRef = useRef(false);
+  // clean 平台会话低频追赶已提交 revision；行内编辑、保存、拖拽和整合期间必须暂停。
+  usePlatformOperationCatchUp({
+    enabled: Boolean(editorSession),
+    blocked:
+      hasUnsavedChanges ||
+      pendingOperations.length > 0 ||
+      transientProjectRef.current !== null ||
+      pendingAnnotationMergeDraft !== null ||
+      editingCharacterId !== null ||
+      editingCustomTextBlock !== null ||
+      syncState.status !== "saved" ||
+      serverSaveInFlightRef.current,
+    online: typeof navigator === "undefined" || navigator.onLine !== false,
+    sessionKey: editorSession?.annotationFileId ?? "local",
+    knownRevision: remoteBaseRevision,
+    cursor: remoteOperationCursor,
+    check: async (facts) => {
+      if (!editorSession) {
+        return {
+          status: "up_to_date",
+          revision: facts.knownRevision,
+          cursor: facts.cursor,
+        };
+      }
+      return catchUpCommittedAnnotationOperations({
+        annotationFileId: editorSession.annotationFileId,
+        project: projectRef.current,
+        knownRevision: facts.knownRevision,
+        cursor: facts.cursor,
+        listPage: (annotationFileId, options) =>
+          editorSession.client.listCommittedAnnotationOperations(annotationFileId, options),
+      });
+    },
+    apply: async (result, requestFacts) => {
+      if (!editorSession || result.status === "up_to_date") return;
+
+      if (result.status === "applied") {
+        // 命令结果仍需通过 document clean 门禁；请求期间发生编辑时直接丢弃，不尝试自动 rebase。
+        if (!replaceCleanProjectFromRemote(result.project)) return;
+        setRemoteBaseRevision(result.revision);
+        setRemoteOperationCursor(result.cursor);
+        editorSession.onRemoteRevisionAdvanced(result.revision, result.cursor);
+        void annotationConfirmations.refresh();
+        return;
+      }
+
+      // 证据不足时重取权威 payload；await 前后的会话、revision、cursor 与 clean 状态必须仍完全一致。
+      const latestFile = await editorSession.client.getAnnotationFile<ProjectData>(
+        editorSession.annotationFileId,
+      );
+      if (
+        remoteBaseRevisionRef.current !== requestFacts.knownRevision ||
+        remoteOperationCursorRef.current !== requestFacts.cursor ||
+        latestFile.revision < requestFacts.knownRevision
+      ) return;
+      const latestProject = hydrateProjectForClient(latestFile.payload, editorSession.client);
+      if (!replaceCleanProjectFromRemote(latestProject)) return;
+      setRemoteBaseRevision(latestFile.revision);
+      setRemoteOperationCursor(latestFile.operationCursor);
+      editorSession.onAnnotationFileSaved(latestFile);
+      void annotationConfirmations.refresh();
+    },
+    // 网络失败只保留当前 snapshot/cursor 等待下轮；不能把 clean 文档伪装成保存错误或冲突。
+    onError: (error) => {
+      console.warn("平台远端操作追赶失败，将在稍后重试。", error);
+    },
+  });
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
   const blockContextMenuRef = useRef<HTMLDivElement>(null);
   const [blockContextMenuPosition, setBlockContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
@@ -4725,6 +4805,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       });
       // 3. 成功后更新 baseRevision 并确认本地 pending operations（清空 pending、标 acknowledged）。
       setRemoteBaseRevision(savedFile.revision);
+      setRemoteOperationCursor(savedFile.operationCursor);
       editorSession.onAnnotationFileSaved(savedFile);
       markProjectAsSaved(projectSnapshot, trackSnapSnapshot, {
         acknowledgedOperationIds: coveredOperationIds,

@@ -29,8 +29,9 @@ Main currently contains all major recent feature lines that matter for context:
 - version 1 timeline timing domain commands with strict shared validation, draft persistence, and server logging;
   shared precondition/inverse semantics and a pure ProjectData apply adapter exist, but server-side application/replay
   is not implemented yet
-- per-file operation acceptance sequence plus snapshot-committed operation facts and separate bounded feeds; the web
-  client exposes the committed API but automatic catch-up/application is not implemented yet
+- per-file operation acceptance sequence plus snapshot-committed operation facts and separate bounded feeds; clean web
+  sessions now perform bounded HTTP catch-up, atomically replay complete timing-command chains, and fall back to the
+  authoritative snapshot for incomplete or non-replayable evidence
 - project document state architecture (`src/state/projectDocumentState.ts`)
 - versioned browser recovery drafts for writable platform files, isolated by account/file and recoverable only against
   the same server revision
@@ -69,6 +70,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/usePlatformAutoSave.ts`
   - thin React facts/callback adapter around one `PlatformAutoSaveRuntime`
   - Strict Effects cleanup must dispose and clear the runtime ref so the second setup creates a live instance
+- `src/platform/platformOperationCatchUp.ts`
+  - pure bounded committed-feed reader, revision-continuity validator, and all-or-nothing timing-command replay planner
+  - malformed pages, revision gaps, legacy operations, pagination overflow, and precondition failures require a snapshot
+- `src/platform/platformOperationCatchUpRuntime.ts`
+  - owns the HTTP catch-up timer, single-flight request, retry delay, session generation, and disposal behavior
+  - a stale file response must never apply or recreate a timer for a later editor session
+- `src/platform/usePlatformOperationCatchUp.ts`
+  - thin React facts/callback adapter; App owns snapshot hydration and document replacement gating
 - `src/platform/PlatformDraftRecoveryDialog.tsx`
   - explicit same-revision recovery, stale comparison entry, and read-only export-or-discard decision before opening editor
 - `src/platform/PlatformDraftConflictDialog.tsx`
@@ -389,6 +398,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:platform-operations`
 - `npm run test:platform-auto-save`
 - `npm run test:platform-auto-save-runtime`
+- `npm run test:platform-operation-catch-up`
 - `npm run test:platform-drafts`
 - `npm run test:resource-pagination`
 - `npm run test:resource-page-state`
@@ -845,9 +855,9 @@ Important backend caveats:
   distribution/review should build on resource copy, ACL, file comparison, and a separate confirmed-annotation layer
 - confirmed-range review is implemented end to end; entity-level confirmation, comments/signatures, automatic
   carry-forward across revisions, and real-time collaboration are not implemented
-- annotation operations currently only record operation metadata/payload and do not mutate annotation-file payloads; full
-  payloads are still written by the annotation-file save route. Idempotent acceptance must not be described as autosave,
-  offline persistence, operation replay into document state, or real-time collaboration
+- annotation operations do not mutate server annotation-file payloads; full payloads are still written by the save route.
+  Clean web sessions may replay a complete committed timing-command chain locally, but idempotent acceptance alone must
+  not be described as autosave, offline persistence, a committed snapshot, or real-time collaboration
 - audit logs intentionally store summary `detail` objects, not full annotation payloads or uploaded file contents
 - global audit queries are admin-only. A non-admin query must be scoped to one resource and requires effective
   `manage_permissions`; ordinary `read` access is insufficient.

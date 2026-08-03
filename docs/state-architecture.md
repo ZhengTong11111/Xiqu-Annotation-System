@@ -160,8 +160,26 @@ committedRevision，并按 `(committedRevision, sequence)`。因此一个旧-bas
 revision 生成的 committed-feed 起点；它跳过该 revision 的全部操作。committed page 同时返回服务器当前
 revision，后续协调器据此识别“revision 推进但没有 operation”的快照刷新场景。
 
-R5a3a 仍不自动 apply 远端命令。下一步 coordinator 只有在本地 clean、页完整、全部 operation 可领域重放、
-revision 连续且 R5a2a precondition 通过时，才可评估原子应用；其他情况必须读取权威快照或进入冲突流程。
+### 4.4 R5a3b clean-only HTTP catch-up
+
+平台编辑器从 `AnnotationFile.operationCursor` 和 payload revision 启动独立 catch-up 运行时。运行时每个
+文件只持有一个 timer 和一个在途请求；文件切换、React Strict Effects 清理和 dispose 都使旧 generation
+失效。网络失败保留 cursor 并短退避，不能把 clean 文档改成保存冲突。
+
+纯 coordinator 按 committed revision、acceptance sequence 验证全部页：cursor 必须前进，记录必须属于
+当前文件并处于 committed/accepted 状态，从已知 revision 到服务器 currentRevision 不得缺号。只有所有
+operation 都是 versioned timing command，且在局部 `ProjectData` 上逐条通过 before precondition，才返回
+一个原子 applied 项目；任何 legacy、坏页、revision gap、分页预算耗尽或前置失败都只返回
+`requires_snapshot`，不泄漏已经应用了一半的局部值。
+
+document state 的 `replaceCleanProjectFromRemote()` 是最终写入门禁：current 与 saved 必须相等，pending
+为空、没有 transient，sync status 必须为 saved。成功后 current/saved 同时推进并清空旧 undo/redo；不会
+生成本地 history、operation 或 dirty。App 还会在行内文字编辑、待确认整合和保存期间暂停运行时。快照
+降级复用 `hydrateProjectForClient()` 这一条迁移路径，并在 GET 返回后再次复核文件 revision/cursor 和
+document clean 状态。
+
+这不是自动 rebase：dirty 内容永远优先保留，协调器等待保存成功或人工解决冲突。它也不替代 WebSocket、
+presence、服务端命令执行或后续更广的领域命令覆盖。
 
 后续领域命令逐步引入：
 

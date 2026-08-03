@@ -248,8 +248,10 @@ revision 复核和序号分配；不同文件仍可并行写入。读取接口�
 文件、账号和 base revision，随后写恢复快照、推进 payload revision，并给这些 operation 设置
 `committedRevision/committedAt`；任一项不匹配都会整体回滚。全部已接收日志与已进入权威快照的日志使用
 两条独立 feed：后者按 `(committedRevision, sequence)` 续读，可以安全跳过已接收但从未保存的 sequence
-空洞。每个 AnnotationFile 响应还带有与当前 payload revision 对齐的 opaque operation cursor，供后续
-客户端追赶使用；当前版本尚未自动轮询或远端 apply。
+空洞。每个 AnnotationFile 响应还带有与当前 payload revision 对齐的 opaque operation cursor。平台编辑器
+在本地完全 clean 时会每 5 秒有界读取 committed feed：连续且全部可重放的时间命令先在局部项目中完整
+验证，再一次性替换 clean 基线；revision 缺口、旧式 operation、分页预算耗尽或命令前置失败会改为重读
+权威完整快照。行内文字、拖拽临时态、pending operation、保存、冲突和待确认整合都会暂停追赶。
 
 可写平台文件在停止编辑约 3 秒后会自动保存：保存开始时固定项目、吸附状态和 operation 集合，保存中
 继续产生的新编辑仍保持 dirty，并在下一空闲窗口再次保存。离线时不发请求；恢复在线后重新同步；网络
@@ -258,7 +260,8 @@ revision 复核和序号分配；不同文件仍可并行写入。读取接口�
 固定当前编辑，再读取服务器最新文件并进入结构化比较；确认整合回到编辑器后，自动保存从最新 revision
 继续。手动保存仍可立即触发相同事务。页面关闭不能可靠等待服务器响应，因此 dirty 提示与 IndexedDB
 草稿继续作为本地兜底。自动保存的 timer、single-flight、在线恢复和退避由独立运行时协调；保存合同外
-异常会停止后台重试并保留 dirty 内容，不会形成未处理异常或保存风暴。实时多人同步尚未实现。
+异常会停止后台重试并保留 dirty 内容，不会形成未处理异常或保存风暴。当前追赶仍是 HTTP clean-only
+同步，不包含 WebSocket、在线成员或 dirty 自动 rebase。
 
 ## 界面总览
 
@@ -1184,13 +1187,14 @@ Prometheus 指标、管理员诊断面板、跨实例维护写入静默边界，
 ### 2. 尚未实现实时多人协作
 
 已有 pending operations、幂等 operation log、首批 version 1 时间轴领域命令、revision 冲突、同步状态和
-浏览器 IndexedDB 恢复草稿。领域命令现阶段只用于可验证记录与后续协作协议地基，服务器尚未以命令
-排序重放或直接修改 payload。
+浏览器 IndexedDB 恢复草稿。clean 平台会话已经能消费与权威 revision 绑定的 committed operation：完整
+连续的时间命令本地原子重放，其余情况刷新完整快照。服务器仍不会以命令直接修改 payload，浏览器也
+不会在 dirty 状态自动 rebase。
 同 revision 草稿可在重新打开时恢复；stale 草稿可按稳定实体与服务器当前文件比较并选择性整合，但仍
 必须经过编辑器确认和普通 revision save。平台编辑器已有空闲自动保存、保存中继续编辑、在线恢复和
 有界退避；自动保存遇到 409 会停在 conflict，用户可从冲突栏显式进入本地草稿与服务器最新文件的
 选择性整合。自动保存运行时已有确定性生命周期测试，覆盖 single-flight、保存中继续编辑、离线恢复、
-退避、冲突阻断、合同外异常和卸载迟到响应。WebSocket、presence 和实时 operation 合并仍未实现；多人
+退避、冲突阻断、合同外异常和卸载迟到响应。WebSocket、presence、远端光标和实时 dirty operation 合并仍未实现；多人
 同时保存同一 revision 时，后到者不会覆盖前者。
 
 ### 3. 本地视频需要重新关联

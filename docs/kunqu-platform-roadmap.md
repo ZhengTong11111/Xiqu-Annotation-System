@@ -25,7 +25,8 @@ R4c2 保存冲突可视化续接、R4c3 可测试自动保存生命周期协调�
 建立首批 version 1 时间轴领域命令、严格前后端校验、草稿往返和成熟拖拽提交接入；R5a2a 已完成纯
 precondition/inverse/all-or-nothing ProjectData apply；R5a2b 已完成服务端单文件 sequence、权限复核、
 opaque 续读游标和有界 operation feed。R5a3a 已把保存声明的 operation 与新 payload revision 在同一事务
-绑定，并建立独立 committed feed 与快照 cursor。下一步 R5a3b 完成 HTTP catch-up 客户端协调；
+绑定，并建立独立 committed feed 与快照 cursor；R5a3b 已完成 clean-only HTTP catch-up、原子时间命令
+重放与权威快照降级。下一步 R5a4a 扩展稳定领域命令对文本/标签内容更新的覆盖；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -418,11 +419,14 @@ opaque 续读游标和有界 operation feed。R5a3a 已把保存声明的 operat
   `(committedRevision, acceptanceSequence)` 升序续读，跳过未提交空洞；AnnotationFile 返回对应当前
   payload revision 的 opaque snapshot cursor。未被一次保存声明的旧-base operation 永久保持 accepted，
   不能被后续 revision 自动认领。
-- R5a3b：实现可停止、可换文件、single-flight 的 HTTP catch-up coordinator。它以打开文件返回的 snapshot
-  cursor 为起点，拉完有界 committed pages；遇到 `requires_snapshot`、revision 无 operation 推进、分页
-  不完整、前置条件失败或本地 dirty/pending 时必须转入明确的快照刷新/冲突路径，不能静默 apply。
-  只在全页领域命令可验证且本地 clean 时评估使用 R5a2a adapter；先以纯状态机测试闭环，不混入 WebSocket。
-- 后续把宽泛 `project.commit` 逐步替换为文本、创建删除和轨道结构等稳定 id 领域命令。
+- R5a3b 已完成：可停止、可换文件、single-flight 的 HTTP catch-up coordinator 从 snapshot cursor 有界读取
+  committed pages。完整连续的领域时间命令只在局部项目全部通过前置条件后一次替换 clean 基线；legacy、
+  revision gap、分页预算、坏页和前置失败统一重取权威快照。dirty/pending/transient/行内编辑/保存/冲突/
+  待确认整合均暂停，文件切换和 dispose 的迟到响应失效；远端替换不写 undo、operation 或 dirty。
+- R5a4a：把逐字/句/动作/自定义块的文本、标签与类型更新收敛为稳定 id 的 versioned 内容命令，建立
+  严格 before/after、全量 precondition、inverse 和 ProjectData all-or-nothing adapter；结构创建删除仍
+  保持 snapshot fallback，避免一轮同时扩展两种语义。
+- R5a4b：再覆盖实体创建/删除及必要依赖闭包；轨道结构、递归分叉和批量导入需单独设计锁/事务命令。
 - WebSocket 会话、presence、光标/选区与连接状态。
 - 服务端 operation 排序、确认、重放和权限复核。
 - 先针对块级编辑实现协作，再评估 OT/CRDT；不直接合并任意完整快照。

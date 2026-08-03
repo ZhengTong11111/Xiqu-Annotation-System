@@ -45,8 +45,10 @@ export type PlatformEditorSession = {
   annotationFileName: string;
   projectTitle: string;
   baseRevision: number;
+  operationCursor: string;
   initialProject: ProjectData;
   onAnnotationFileSaved: (file: AnnotationFile<ProjectData>) => void;
+  onRemoteRevisionAdvanced: (revision: number, operationCursor: string) => void;
   canWrite: boolean;
   canReview: boolean;
   currentUserId: string;
@@ -174,6 +176,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       annotationFileName: input.file.resource.name,
       projectTitle: parent?.name ?? "平台标注项目",
       baseRevision: input.file.revision,
+      operationCursor: input.file.operationCursor,
       initialProject: input.initialProject,
       canWrite: input.file.resource.permission.capabilities.includes("write"),
       canReview: input.file.resource.permission.capabilities.includes("review"),
@@ -195,8 +198,15 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
           ? {
               ...current,
               baseRevision: saved.revision,
+              operationCursor: saved.operationCursor,
               annotationFileName: saved.resource.name,
             }
+          : current);
+      },
+      // operation 重放已经验证出权威 revision/cursor，无需为更新会话元数据再下载一次完整 payload。
+      onRemoteRevisionAdvanced: (revision, operationCursor) => {
+        setEditorSession((current) => current
+          ? { ...current, baseRevision: revision, operationCursor }
           : current);
       },
       // 编辑器只负责先 flush 当前草稿；Workspace 再权威重读两侧并决定展示哪一种恢复流程。

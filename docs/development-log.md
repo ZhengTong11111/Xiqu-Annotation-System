@@ -3025,3 +3025,79 @@ Prisma 和 Node base64url 足以清晰表达该边界。
 - R5a3b 必须先实现纯 catch-up 状态机：文件切换/dispose、single-flight、分页耗尽、dirty/pending 阻断、
   requires_snapshot、revision gap 和 precondition failure 都要有确定结果。只有 clean 且完整的领域命令页
   才可评估 R5a2a apply；仍不在同一轮引入 WebSocket/presence/OT/CRDT。
+
+## 2026-08-03：R5a3b clean-only HTTP operation catch-up
+
+本轮由用户确认开始 R5a3c2（当前 roadmap 中的有效编号为 R5a3b）并特别提醒必须写 Development Log。
+Codex 沿活动 goal 的逐轮流程，先读取干净工作树、R5a3a commit `51a4e1b`、roadmap、被忽略的
+`CLAUDE_WORK.md`、PlatformWorkspace 会话构造、App 唯一保存事务、document state、PlatformClient、
+committed feed DTO 与 R5a2a ProjectData adapter，再把 `CLAUDE_WORK.md` 完整改写成当前任务。计划明确把
+纯 feed 判定、timer/single-flight 运行时、薄 React hook、document clean 门禁和 App 快照降级分开；没有
+调用其他 agent，也没有新增依赖，现有 React、TypeScript 和 PlatformClient 已足以表达该协调边界。
+
+纯追赶与运行时：
+
+- 新增 `platformOperationCatchUp.ts`。一次检查从打开文件给出的 snapshot cursor 开始，每页最多 200、
+  最多 10 页；逐页验证文件 id、committed/accepted 状态、安全整数、revision/sequence 严格顺序、cursor
+  前进和服务器 revision 单调性。调用方不能把坏页修补成看似连续的数据。
+- coordinator 要求 `knownRevision + 1 .. currentRevision` 每个 revision 都至少有 committed operation。
+  无 operation 保存、查询间竞态造成的缺号、legacy/坏命令、分页预算耗尽和 before precondition 失败都返回
+  `requires_snapshot`。网络 reject 则交给运行时重试，不和语义降级混为一类。
+- 全部 operation 都是 timing domain command 时，先在局部 project 上按 committed revision/sequence 顺序
+  调用 R5a2a adapter；直到最后一条成功才返回新 ProjectData。测试专门构造“第一条可 apply、第二条 before
+  mismatch”，确认 coordinator 只返回快照要求，输入项目及任何半成品都不外泄。
+- 新增 `platformOperationCatchUpRuntime.ts`，集中拥有一个 timer、一个在途 check/apply、session generation、
+  dispose 和 2 秒网络重试。clean 会话首次立即检查，稳定后每 5 秒检查；blocked/offline 不留隐藏 timer。
+  文件、revision 或 cursor 在请求中改变时，旧 generation 的结果被丢弃，并立即检查新会话。
+- 自审发现最初的 generation 只在文件身份变化时递增：若请求期间先变 dirty、后又 clean，迟到响应会被
+  忽略但新会话要多等一个完整周期。实现随后把“从 eligible 进入 blocked/offline”也作为 generation
+  失效事件；旧 flight 结束后对最新 clean facts 立即重新检查。
+- `usePlatformOperationCatchUp.ts` 仅以 refs 转发最新 check/apply/error callback，并兼容 React 18 Strict
+  Effects setup-cleanup-setup；没有把 timer 或网络状态塞回 App。
+
+文档状态与 App 接线：
+
+- `useProjectDocumentState()` 新增 `replaceCleanProjectFromRemote()`。最终替换前再次要求 current/saved 相等、
+  pending 为空、transient 为空且 sync status 为 saved；成功时 current/saved 一起推进并清空旧 undo/redo，
+  保留本地 track-snap 偏好，不生成 history、operation 或 dirty。纯资格 helper 有独立组合测试。
+- `syncStateRef` 在 `setSyncStatus()` 与远端替换中同步更新。该修正覆盖同一事件循环内“保存已经开始但 React
+  尚未重渲染”的窄窗口；不能只依赖下一 render 才更新的 state 作为最终覆盖门禁。
+- `PlatformEditorSession` 现在携带 operationCursor。普通保存通过现有 `onAnnotationFileSaved()` 同步 revision、
+  cursor 和文件名；领域命令追赶使用新增的元数据推进回调，只更新 revision/cursor。
+- 第一版命令追赶成功后为了构造完整 `AnnotationFile` 又执行一次 GET。自审确认这是错误的双重读取：本地
+  已替换后 GET 失败会造成元数据不同步，也可能读到比已 apply 命令更晚的 revision。提交前将其删除，命令
+  路径只提交已经验证的 revision/cursor；完整 GET 只用于明确的 `requires_snapshot`。
+- App 用 session cursor 初始化 `remoteOperationCursor`，普通保存成功也更新它。clean-only 阻断范围覆盖
+  dirty、pending、transient、待确认 merge、行内逐字/自定义文字编辑、saving/conflict/error 和实际保存
+  flight；只读 clean 文件也可以追赶，因为 read 权限不应意味着永远停留在旧快照。
+- 快照降级统一调用现有 `getAnnotationFile()` 与 `hydrateProjectForClient()`，没有复制第二条 JSON migration
+  路径。GET 返回后再次核对请求 revision/cursor，并由 document gate 复核 clean；等待期间发生的编辑优先
+  保留，响应被丢弃，不做隐式 rebase。远端推进后刷新 confirmation facts，使旧 revision 确认及时变 stale。
+- 网络失败只写开发者 warning 并等待短退避，不把 clean 文档标成保存 error/conflict。当前尚无远端同步
+  toast 或在线成员 UI；这是 HTTP 追赶地基，不冒充实时协作。
+
+测试、构建与修正：
+
+- 新增 `test:platform-operation-catch-up`，共 11 项：跨页连续 revision 顺序重放、up-to-date、revision gap、
+  requires_snapshot、前置失败无半成品、坏顺序/跨文件/不前进 cursor、分页预算、首次立即检查、周期与
+  single-flight、blocked/offline 恢复、文件切换/dispose 迟到响应、网络短退避和 document clean 门禁。
+- 第一次专项 10/10 通过，但 Web build 发现当前 TS target 不提供 `Array.prototype.at()`。实现改回明确的
+  `operations[operations.length - 1]`，没有为了一个调用提高整个项目 lib target；随后专项扩为 11/11，
+  Web build 通过。
+- 受影响回归通过：catch-up 11/11、auto-save runtime 8/8、platform operation 4/4、platform draft/recovery
+  11/11、annotation confirmation view 5/5，共 39 项。完整 API 回归在隔离 `api_test` PostgreSQL schema
+  验证 11 个 migration，90/90 通过；只保留既有 node-postgres pg 9 弃用提示。
+- 完整 `npm run build` 通过 Prisma generation、shared、document-model、Web 2045 个模块转换和 API 类型
+  构建；仅保留既有主 chunk 824.81 kB / gzip 252.28 kB 提醒。`git diff --check` 通过。运行中的旧 API
+  readiness 为 ready，database 5.32 ms、storage 2.60 ms；它没有热加载本轮 Web 代码，R5a3b 的行为以纯
+  客户端专项和 API committed-feed 全套回归为准。
+- 既有 Browser 会话仍明确禁止从错误 `data:` 页导航、读取或切换替代表面。本轮没有新 UI，未绕过限制，
+  也未把 Node/API 测试描述成浏览器验收。
+
+文档和下一步：
+
+- README 说明 clean-only HTTP 追赶与暂停边界；state architecture 增加 R5a3b 的纯协调器、document gate
+  和快照降级；AGENTS 增加三个新模块所有权与专项命令；roadmap 标记 R5a3b 完成。
+- 下一轮 R5a4a 先扩展稳定 id 的文本/标签/类型内容更新命令，复用严格 before/after、precondition、inverse
+  和 all-or-nothing ProjectData adapter。创建/删除、轨道结构、递归分叉、WebSocket、presence、OT/CRDT
+  继续分阶段处理，不能在一轮里混成无法审查的大命令协议。

@@ -102,6 +102,26 @@ type MarkProjectSavedOptions = {
   savedLocalRevision?: number;
 };
 
+type RemoteProjectReplacementFacts = {
+  hasDocumentChanges: boolean;
+  pendingOperationCount: number;
+  hasTransientProject: boolean;
+  syncStatus: ProjectSyncStatus;
+};
+
+// 远端替换资格是独立纯规则，便于覆盖 dirty、pending、transient 与同步状态的全部组合。
+export function canReplaceProjectFromRemote({
+  hasDocumentChanges,
+  pendingOperationCount,
+  hasTransientProject,
+  syncStatus,
+}: RemoteProjectReplacementFacts): boolean {
+  return !hasDocumentChanges &&
+    pendingOperationCount === 0 &&
+    !hasTransientProject &&
+    syncStatus === "saved";
+}
+
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_OPERATION_LOG_LIMIT = 500;
 
@@ -167,6 +187,7 @@ export function useProjectDocumentState({
   const savedRevisionRef = useRef(initialSavedRevision);
   const operationLogRef = useRef<ProjectDocumentOperation[]>(initialPendingOperations);
   const pendingOperationsRef = useRef<ProjectDocumentOperation[]>(initialPendingOperations);
+  const syncStateRef = useRef(syncState);
   const areProjectsEqualRef = useRef(areProjectsEqual);
   const areTrackSnapStatesEqualRef = useRef(areTrackSnapStatesEqual);
   const readOnlyRef = useRef(readOnly);
@@ -174,6 +195,7 @@ export function useProjectDocumentState({
   areProjectsEqualRef.current = areProjectsEqual;
   areTrackSnapStatesEqualRef.current = areTrackSnapStatesEqual;
   readOnlyRef.current = readOnly;
+  syncStateRef.current = syncState;
 
   const computeHasUnsavedChanges = useCallback((
     nextProject = projectRef.current,
@@ -420,6 +442,34 @@ export function useProjectDocumentState({
     }));
   }
 
+  // 远端追赶只能替换完全 clean 的基线；旧 undo/redo 指向过期快照，成功推进后必须一并清除。
+  function replaceCleanProjectFromRemote(nextProject: ProjectData): boolean {
+    const currentStatus = syncStateRef.current.status;
+    const canReplace = canReplaceProjectFromRemote({
+      hasDocumentChanges: computeHasUnsavedChanges(),
+      pendingOperationCount: pendingOperationsRef.current.length,
+      hasTransientProject: transientProjectRef.current !== null,
+      syncStatus: currentStatus,
+    });
+    if (!canReplace) return false;
+
+    projectRef.current = nextProject;
+    savedProjectRef.current = nextProject;
+    setProject(nextProject);
+    applyUndoStackState([]);
+    applyRedoStackState([]);
+    setHasUnsavedChanges(false);
+    const nextSyncState: ProjectSyncState = {
+      ...syncStateRef.current,
+      status: "saved",
+      pendingOperationCount: 0,
+      errorMessage: null,
+    };
+    syncStateRef.current = nextSyncState;
+    setSyncState(nextSyncState);
+    return true;
+  }
+
   function undoProject(shouldUndo?: (entry: HistoryEntry) => boolean) {
     if (readOnlyRef.current) {
       return false;
@@ -485,15 +535,17 @@ export function useProjectDocumentState({
     status: ProjectSyncStatus,
     updates: Partial<Omit<ProjectSyncState, "status">> = {},
   ) {
-    setSyncState((current) => ({
-      ...current,
+    const nextSyncState: ProjectSyncState = {
+      ...syncStateRef.current,
       ...updates,
       status,
       lastSyncAttemptAt:
         status === "saving" || status === "error" || status === "offline"
           ? Date.now()
-          : current.lastSyncAttemptAt,
-    }));
+          : syncStateRef.current.lastSyncAttemptAt,
+    };
+    syncStateRef.current = nextSyncState;
+    setSyncState(nextSyncState);
   }
 
   // IndexedDB 层只通过这一条快照接口读取 document 状态，避免 App 直接拼接内部 refs 与 revision。
@@ -530,6 +582,7 @@ export function useProjectDocumentState({
     applyTrackSnapEnabledState,
     markOperationsAsSubmitted,
     markProjectAsSaved,
+    replaceCleanProjectFromRemote,
     undoProject,
     redoProject,
     setSyncStatus,
