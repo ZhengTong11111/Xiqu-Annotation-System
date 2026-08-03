@@ -2540,6 +2540,40 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(badOperation.statusCode, 400);
 
+      // 未知 action、损坏领域 envelope 和 legacy action 夹带 envelope 均在写库前 fail closed。
+      const validTimingEnvelope = {
+        version: 1,
+        command: {
+          type: "timeline.items.timing.update",
+          items: [{
+            entityType: "character",
+            entityId: "char-1",
+            before: { startTime: 1, endTime: 2 },
+            after: { startTime: 2, endTime: 3 },
+          }],
+        },
+      };
+      for (const invalidPayload of [
+        { action: "unknown.action", payload: validTimingEnvelope },
+        {
+          action: "timeline.items.timing.update",
+          payload: { ...validTimingEnvelope, version: 2 },
+        },
+        { action: "project.commit", payload: validTimingEnvelope },
+      ]) {
+        const invalidOperation = await jsonRequest(app, adminToken, {
+          method: "POST",
+          url: `/api/annotation-files/${annotationFileId}/operations`,
+          payload: {
+            clientOperationId: `op-invalid-${invalidPayload.action}`,
+            baseRevision: 1,
+            localRevision: 2,
+            ...invalidPayload,
+          },
+        });
+        assert.equal(invalidOperation.statusCode, 400);
+      }
+
       const staleOperation = await jsonRequest(app, adminToken, {
         method: "POST",
         url: `/api/annotation-files/${annotationFileId}/operations`,
@@ -2547,8 +2581,8 @@ test("平台资源 API 集成测试", async (suite) => {
           clientOperationId: "op-stale-revision",
           baseRevision: 1,
           localRevision: 2,
-          action: "character.updateText",
-          payload: { entityId: "char-1" },
+          action: "project.commit",
+          payload: { historyAction: "edit" },
         },
       });
       assert.equal(staleOperation.statusCode, 409);
@@ -2567,8 +2601,8 @@ test("平台资源 API 集成测试", async (suite) => {
         clientOperationId: "op-idempotent-replay",
         baseRevision: currentFile.revision,
         localRevision: 10,
-        action: "project.commit",
-        payload: { historyAction: "edit", entityIds: ["char-1"] },
+        action: "timeline.items.timing.update",
+        payload: validTimingEnvelope,
       };
       const firstOperation = await jsonRequest(app, adminToken, {
         method: "POST",
@@ -2610,7 +2644,19 @@ test("平台资源 API 集成测试", async (suite) => {
       const mismatchedReplay = await jsonRequest(app, adminToken, {
         method: "POST",
         url: `/api/annotation-files/${annotationFileId}/operations`,
-        payload: { ...replayRequest, payload: { historyAction: "undo" } },
+        payload: {
+          ...replayRequest,
+          payload: {
+            ...replayRequest.payload,
+            command: {
+              ...replayRequest.payload.command,
+              items: [{
+                ...replayRequest.payload.command.items[0],
+                after: { startTime: 3, endTime: 4 },
+              }],
+            },
+          },
+        },
       });
       assert.equal(mismatchedReplay.statusCode, 409);
       const mismatchError = (mismatchedReplay.json() as JsonObject).error as JsonObject;

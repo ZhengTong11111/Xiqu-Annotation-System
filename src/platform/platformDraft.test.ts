@@ -78,6 +78,50 @@ test("构建并恢复平台草稿不会持久化会话 URL", () => {
   assert.equal(recovered.localRevision, 3);
 });
 
+// 刷新恢复必须保留领域命令的版本、目标和 before/after，才能继续复用同一个幂等 operation。
+test("平台草稿完整往返版本化 timing command", () => {
+  const recoveryState = createRecoveryState();
+  recoveryState.pendingOperations = [{
+    ...recoveryState.pendingOperations[0],
+    type: "timeline.items.timing.update",
+    commandEnvelope: {
+      version: 1,
+      command: {
+        type: "timeline.items.timing.update",
+        items: [{
+          entityType: "character",
+          entityId: "char-1",
+          before: { startTime: 1, endTime: 2 },
+          after: { startTime: 2, endTime: 3 },
+        }],
+      },
+    },
+  }];
+  const record = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState,
+  });
+  const normalized = normalizePlatformDraftRecord(record, {
+    userId: "user-1",
+    annotationFileId: "file-1",
+  });
+
+  assert.deepEqual(normalized?.pendingOperations[0].commandEnvelope,
+    recoveryState.pendingOperations[0].commandEnvelope);
+  assert.equal(normalizePlatformDraftRecord({
+    ...record,
+    pendingOperations: [{
+      ...record.pendingOperations[0],
+      commandEnvelope: {
+        ...record.pendingOperations[0].commandEnvelope,
+        unexpected: true,
+      },
+    }],
+  }, { userId: "user-1", annotationFileId: "file-1" }), null);
+});
+
 // 草稿只可由原账号打开原文件；损坏 operation、越界 revision 和假项目均 fail closed。
 test("平台草稿 unknown 边界拒绝身份与结构损坏", () => {
   const record = buildPlatformDraftRecord({

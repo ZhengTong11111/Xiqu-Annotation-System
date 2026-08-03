@@ -58,6 +58,41 @@ test("平台 operation 请求直接使用持久化的吸附变化摘要", () => 
   });
 });
 
+// 已迁移 timing operation 直接发送版本化 envelope，不能退化成丢失目标的 legacy 摘要。
+test("平台 operation 请求完整保留领域命令 envelope", () => {
+  const commandEnvelope = {
+    version: 1 as const,
+    command: {
+      type: "timeline.items.timing.update" as const,
+      items: [{
+        entityType: "character" as const,
+        entityId: "char-1",
+        before: { startTime: 1, endTime: 2 },
+        after: { startTime: 2, endTime: 3 },
+      }],
+    },
+  };
+  const operation: ProjectDocumentOperation = {
+    id: "op-domain-command",
+    type: commandEnvelope.command.type,
+    action: "edit",
+    localRevision: 6,
+    baseRevision: 5,
+    createdAt: 1_785_700_000_200,
+    syncState: "pending",
+    commandEnvelope,
+    summary: { hasProjectChange: true, hasTrackSnapChange: false },
+  };
+
+  assert.deepEqual(buildServerOperationRequest(operation, 12), {
+    clientOperationId: "op-domain-command",
+    baseRevision: 12,
+    localRevision: 6,
+    action: "timeline.items.timing.update",
+    payload: commandEnvelope,
+  });
+});
+
 // 自动保存只重试瞬时服务故障；revision/权限等确定业务错误必须停下等待用户处理。
 test("服务器保存错误分类区分冲突、可重试与确定错误", () => {
   assert.deepEqual(describeServerSaveError(

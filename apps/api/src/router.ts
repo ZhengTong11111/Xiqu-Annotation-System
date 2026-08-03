@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   ANNOTATION_CONFIRMATION_DOMAINS,
   AUDIT_ACTIONS,
+  isValidAnnotationOperationPayload,
   RESOURCE_CAPABILITIES,
   type AnnotationConfirmationDomain,
   type AnnotationConfirmationScope,
@@ -859,6 +860,7 @@ export function registerApiRoutes(
     };
   }>("/api/annotation-files/:resourceId/operations", async (request) => {
     const body = requireObject(request.body);
+    // operation 入库前同时校验 revision 元数据和共享 action/envelope 合同，未知命令不得进入审计事实。
     if (
       !isValidClientOperationId(body.clientOperationId) ||
       !Number.isInteger(body.baseRevision) ||
@@ -868,7 +870,8 @@ export function registerApiRoutes(
         (!Number.isInteger(body.localRevision) ||
           Number(body.localRevision) < 0)) ||
       typeof body.action !== "string" ||
-      !body.action.trim()
+      !body.action.trim() ||
+      !isValidAnnotationOperationPayload(body.action, body.payload ?? {})
     ) {
       throw badRequest("标注操作参数不正确。");
     }

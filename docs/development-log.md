@@ -2723,3 +2723,96 @@ online 恢复、dispose 和异常 Promise 仍耦合在 React hook 内。随后�
   应显示同步失败、保持 dirty 且不形成请求风暴。生产上线前还需真实跨设备、弱网和浏览器关闭场景验收。
 - R4 工程闭环通过最终回归后，下一轮进入 R5 前置：先稳定块级领域命令与协作权限/排序合同，不直接把
   任意完整 `ProjectData` 快照塞进 WebSocket，也不提前绑定 OT/CRDT。
+
+## 2026-08-03：R5a1 第一批可验证时间轴领域命令
+
+本轮从 R4c3 commit `e72c131` 和干净工作树开始。Codex 先审计 `useProjectDocumentState()` 的 transient
+拖动基线、App 各时间编辑入口、IndexedDB 草稿 parser、服务器 operation 请求、API 幂等接收与 R5 roadmap，
+再将被 gitignore 的 `CLAUDE_WORK.md` 整体替换为 R5a1 当前任务书。实现、测试、自审和文档由 Codex 直接
+完成，没有调用 Claude Code、GLM、DeepSeek 或其他代理，也没有新增依赖；有限的纯数据合同使用现有
+TypeScript 足以表达，引入 schema 库反而会制造本轮不需要的运行时和 bundle 成本。
+
+共享协议与边界：
+
+- 新增 `packages/shared/src/annotationCommands.ts`，定义 version 1 `timeline.items.timing.update` envelope。
+  每项保存 entity type、稳定 entity id、必要时 track id，以及 before/after 时间；sentence、character、
+  action、custom-block、attached-point、gongche-block、banyan-mark 构成首批实体集合。打点和板眼统一编码
+  为 `startTime === endTime`，不为点状实体再造第二种时间结构。
+- unknown parser 要求 envelope/command/item/timing 使用精确字段，拒绝未知版本/类型、空命令、超过 500
+  项、重复目标、坏 id、NaN/Infinity、负数、倒置区间、点实体非零区间和 no-op。稳定 target key 同时用于
+  去重与排序；排序采用明确的代码点比较，不依赖客户端 locale。
+- builder 复制输入、删除 no-op 并稳定排序。自审发现第一版对超过 500 项或旧文件中不符合新 id 约束的
+  目标会抛异常，这会让一次合法时间轴 pointer-up 崩溃；提交前改为返回 `null`，调用层安全保留 legacy
+  snapshot operation。协议无法表达的旧数据不会阻止用户继续标注，也不会被伪造成半个领域命令。
+- shared allowlist 继续接受 `project.commit/project.undo/project.redo/track-snap.update`，领域 action 则
+  必须和 envelope command type 完全一致。第二次自审发现 legacy action 原本可夹带一个合法 envelope，
+  现已明确拒绝带 `version` 或 `command` 外形的 legacy payload；未知 action 和损坏 envelope 同样在路由
+  写库前 fail closed。
+
+本地 document、草稿与服务器接入：
+
+- `ProjectDocumentOperation` 可选保存 `commandEnvelope`，operation type 扩为 legacy 与已知领域命令联合。
+  `commitProject()` 第三个参数改为明确 options，可同时指定 history action 或 envelope；所有 import、merge、
+  repair 等显式 history 调用已迁移到 options 形状，未迁移编辑仍按原样记录 `project.commit`。
+- 新增 `timelineTimingCommand.ts`，从同一次 undo 的真实 `baseProject` 与最终 `nextProject` 统一解析时间。
+  这点对拖动很关键：live frame 已通过 `applyProjectWithoutHistory()` 改写 `projectRef.current`，pointer-up
+  不能把当前画面误当 before。helper 覆盖嵌套自定义块、附属点、工尺和板眼，并集中收集文字父块派生的
+  工尺目标；目标缺失即返回 `null`，不把创建/删除错记成 timing update。
+- App 首批迁移成熟的单逐字、句块、动作、自定义块、工尺块、板眼点以及多选批量时间提交。逐字变化会
+  同步记录句界和对应工尺块；句块移动会记录句、其逐字与工尺；自定义文字块记录自身与工尺。文本、
+  四声、类型、分叉归属、工尺符号、板眼类型、创建删除、导入和轨道结构继续走 snapshot，避免一条命令
+  只描述实际修改的一部分。undo/redo 仍是 legacy，尚未伪造 inverse command。
+- `platformDraft.ts` 对领域 operation 要求 envelope 存在、合法且 type 一致；legacy operation 禁止夹带
+  envelope。恢复和克隆保留稳定 operation id、版本、目标及 before/after，不保存额外完整项目副本。
+- `platformOperations.ts` 对领域 operation 直接发送完整 envelope；legacy 路径继续发送紧凑摘要。Fastify
+  router 复用 shared allowlist/validator，repository、数据库 schema、请求指纹和 `(file, actor, client id)`
+  幂等作用域不变。服务器当前只验证并记录，仍由后续 revision-checked PUT 保存完整 payload；本轮没有
+  实现 command apply、服务端排序游标、WebSocket、presence、OT 或 CRDT。
+
+实现过程中的清理与审查：
+
+- `commitProject()` 参数收口期间逐一更新了显式 history action 调用，没有保留 string/options 两套重载。
+  一次机械补丁曾把工尺命令片段误插入 `updateCustomTrack()`；在测试前通过行级审计删除，并复核所有
+  `baseProject` 声明只存在于预期时间路径，没有留下重复变量或僵尸分支。
+- 多选命令使用选择目标加受影响句和派生工尺目标；同一目标由 shared key 去重。合并显示、分叉布局、
+  吸附、实时预览和现有 history 数量均未改变；仍是每次完成拖动产生一次 undo 和一次 operation。
+- API 旧集成测试曾用未知 `character.updateText` 测 stale revision。新 allowlist 会更早返回 400，因此将
+  stale 用例改为合法 `project.commit`，并把现有幂等主路径升级为合法 timing envelope。测试语义现在分别
+  明确覆盖“协议坏输入 400”和“合法操作旧 revision 409”，不再依赖无效 action 偶然穿过路由。
+
+测试、构建与运行状态：
+
+- `npm run test:annotation-commands` 4/4：覆盖构建/解析往返、输入不可变、确定排序、no-op/超限/旧坏 id
+  安全回退、精确结构、点语义、重复目标及 action/envelope allowlist。
+- 新增 `npm run test:timeline-timing-command`，3/3 覆盖七类实体的 base/next 时间提取、嵌套点轨、目标去重、
+  缺失/无变化回退和工尺父块并集过滤。
+- `npm run test:platform-operations` 4/4，新增领域 envelope 原样发送；legacy 摘要和保存错误分类继续通过。
+- `npm run test:platform-drafts` 11/11，新增 versioned timing command 的 IndexedDB record 往返和损坏
+  envelope fail closed；stale 草稿整合、仓库隔离和 document 原子恢复无回归。
+- `npm run test:api` 85/85：真实 `api_test` PostgreSQL migration 后，合法领域命令首次写入、同请求重放、
+  同 key 异命令 409、revision 推进后迟到重放、并发单行和不同账号隔离全部通过；未知 action、坏版本、
+  legacy 夹带 envelope 均为 400。只保留既有 pg 9 前置弃用提示。
+- `npm run test:platform-auto-save` 4/4、`npm run test:platform-auto-save-runtime` 8/8，确认新增 operation
+  envelope 未破坏 R4 的 idle、single-flight、离线恢复、退避、冲突阻断和卸载边界。
+- 首次完整构建发现新增测试夹具仍使用旧式板眼 subtype 且误写附属点 options 字段；运行时测试因不做
+  完整项目类型检查没有暴露它。按当前 `BanyanMark`/`AttachedPointTrack` 类型修正夹具后，`npm run build`
+  完整通过 Prisma generation、shared、document-model、web 与 API。Vite 只保留既有主 chunk 超过 500 kB
+  提醒；`git diff --check` 通过。
+- 运行中的 `/api/health/ready` 返回 ready，database 11.5 ms、storage 2.38 ms，均为 ok。
+
+浏览器验收边界与人工顺序：
+
+- 既有 Browser 会话仍受错误 `data:` 页安全策略限制，并明确禁止导航、读取、绕过或切换其他浏览器
+  表面。本轮遵守限制，没有把 Node 测试冒充 UI 验收。
+- 人工验证顺序：平台打开可写测试文件；分别拖拽和缩放逐字、动作、自定义文字/动作、工尺块、板眼点；
+  多选移动混合块和附属打点；确认每次只有一条 undo、撤销恢复原位置、自动保存后重开位置一致；再编辑
+  文本/类型/四声/分叉归属并确认仍能保存。使用旧导入文件和超过 500 个多选目标时不得崩溃，应回退
+  snapshot。断网刷新后恢复草稿，再在线保存，领域 operation id 和 envelope 不应丢失或重复。
+
+后续边界：
+
+- R5a1 只证明命令可稳定表达、验证、离线保存和幂等记录，不等于服务端已经能重放。R5a2 应先实现纯
+  apply/precondition/inverse 或明确拒绝结果，并定义单文件服务端顺序号、ack cursor、权限复核和有界读取；
+  这些在 HTTP/确定性测试闭环后，才适合接 WebSocket presence 与实时传输。
+- 后续命令应按文本、创建删除和轨道结构分批设计。批量导入、递归分叉与跨实体操作必须保留显式事务
+  边界，不能为了减少 `project.commit` 数量而拆成失去原子性的细碎命令。

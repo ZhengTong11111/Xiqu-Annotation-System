@@ -2,7 +2,7 @@ import { PlatformApiError, type PlatformClient } from "../api/platformClient";
 import type { CreateAnnotationOperationRequest } from "@xiqu/shared";
 import type { ProjectDocumentOperation } from "../state/projectDocumentState";
 
-// 服务端 operation log 的 payload 摘要形状。
+// legacy operation log 的 payload 摘要形状；领域命令直接发送 shared versioned envelope。
 // 这里刻意只上传 operation 摘要，不上传完整 ProjectData：
 // 当前服务器 snapshot 仍由 /save 保存整份 payload，operation log 只是审计和未来协同同步的地基。
 // 如果每条 operation 都存完整 beforeProject/afterProject，一次普通编辑就会把整份项目写进数据库，很快膨胀。
@@ -23,6 +23,16 @@ export function buildServerOperationRequest(
   operation: ProjectDocumentOperation,
   serverBaseRevision: number,
 ): CreateAnnotationOperationRequest {
+  // 已迁移操作保留稳定目标和 before/after，服务端会校验 action 与 envelope 一致。
+  if (operation.commandEnvelope) {
+    return {
+      clientOperationId: operation.id,
+      baseRevision: serverBaseRevision,
+      localRevision: operation.localRevision,
+      action: operation.commandEnvelope.command.type,
+      payload: operation.commandEnvelope,
+    };
+  }
   const payload: ServerOperationPayload = {
     localCreatedAt: operation.createdAt,
     type: operation.type,

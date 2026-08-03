@@ -26,6 +26,8 @@ Main currently contains all major recent feature lines that matter for context:
 - platform login/resource-explorer UI, local editor entry, media upload, project/folder/file management, JSON import, revision-checked server save, recovery snapshots, and per-resource account permissions
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - backend audit logs and annotation operation logs for the first platform-governance layer
+- version 1 timeline timing domain commands with strict shared validation, draft persistence, and server logging;
+  server-side command application/replay is not implemented yet
 - project document state architecture (`src/state/projectDocumentState.ts`)
 - versioned browser recovery drafts for writable platform files, isolated by account/file and recoverable only against
   the same server revision
@@ -188,6 +190,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/state/projectDocumentState.ts`
   - authoritative local document/history/sync-state hook
   - owns undo/redo stacks, pending operations, revision counters, dirty/saved status
+  - completed timing edits may carry a validated versioned command envelope; unported edits remain legacy operations
 - `src/components/Timeline.tsx`
   - heaviest file
   - owns zoom, ruler scrubbing, snapping, marquee selection, drag/resize, creation flows, waveform guides, spectrogram lane rendering, loop range interaction, Gongche lane rendering, attached point editing
@@ -227,7 +230,16 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - used by Inspector (character tone editor + derived sentence preview), Timeline (in-block tone label), and `projectFile.ts` (tone normalization)
 - `src/utils/platformOperations.ts`
   - stable operation request builder plus structured manual/automatic server-save outcomes
+  - sends migrated domain envelopes intact; it must never reduce them back to boolean legacy summaries
   - retryable save failures are limited to offline/network/408/429/5xx; conflict and deterministic 4xx must stop autosave
+- `src/utils/timelineTimingCommand.ts`
+  - pure extraction of version 1 timing commands from the true undo base project and final project
+  - centralizes timing lookup for nested track entities and derived Gongche targets; unsupported edits return `null` so
+    the caller can retain the legacy snapshot operation without recording a partial domain fact
+- `packages/shared/src/annotationCommands.ts`
+  - authoritative versioned annotation-command DTO, deterministic builder, strict unknown parser, target keys, limits,
+    and API action/payload allowlist shared by web, IndexedDB recovery, and Fastify
+  - the server currently validates and logs these commands but does not apply them to `AnnotationFile.payload`
 - `apps/api/src/`
   - Fastify backend: auth, resource routes, resource ACL evaluation, annotation-file revision saves, Prisma mapping,
     and replaceable local/S3 object storage
@@ -350,6 +362,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:permissions`
 - `npm run test:annotation-confirmations`
 - `npm run test:annotation-confirmation-view`
+- `npm run test:annotation-commands`
+- `npm run test:timeline-timing-command`
 - `npm run test:platform-operations`
 - `npm run test:platform-auto-save`
 - `npm run test:platform-auto-save-runtime`

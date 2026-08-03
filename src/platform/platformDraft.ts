@@ -4,6 +4,11 @@ import type {
   ProjectDocumentOperationType,
   ProjectDocumentRecoveryState,
 } from "../state/projectDocumentState";
+import {
+  LEGACY_ANNOTATION_OPERATION_ACTIONS,
+  parseAnnotationCommandEnvelope,
+  TIMELINE_TIMING_UPDATE_COMMAND,
+} from "@xiqu/shared";
 import type { ProjectData } from "../types";
 import {
   getPersistableProjectData,
@@ -39,10 +44,8 @@ export type PlatformDraftCompatibility =
   | { status: "revision-conflict"; draft: PlatformDraftRecord };
 
 const OPERATION_TYPES = new Set<ProjectDocumentOperationType>([
-  "project.commit",
-  "project.undo",
-  "project.redo",
-  "track-snap.update",
+  ...LEGACY_ANNOTATION_OPERATION_ACTIONS,
+  TIMELINE_TIMING_UPDATE_COMMAND,
 ]);
 const HISTORY_ACTIONS = new Set<ProjectDocumentOperation["action"]>([
   "edit",
@@ -185,6 +188,15 @@ function normalizeOperation(value: unknown): ProjectDocumentOperation | null {
   const changedTrackIds = value.summary.changedTrackIds;
   if (changedTrackIds !== undefined &&
     (!Array.isArray(changedTrackIds) || changedTrackIds.some((id) => typeof id !== "string"))) return null;
+  const commandEnvelope = value.commandEnvelope === undefined
+    ? null
+    : parseAnnotationCommandEnvelope(value.commandEnvelope);
+  if (value.commandEnvelope !== undefined && !commandEnvelope) return null;
+  // 领域 operation 必须携带同类型 envelope；legacy operation 不能夹带命令伪装成另一种语义。
+  const isDomainOperation = value.type === TIMELINE_TIMING_UPDATE_COMMAND;
+  if (isDomainOperation
+    ? commandEnvelope?.command.type !== value.type
+    : commandEnvelope !== null) return null;
   // operation 类型和摘要必须一致，防止损坏草稿伪造含糊的服务器审计事实。
   if (value.type === "track-snap.update"
     ? !value.summary.hasTrackSnapChange || value.summary.hasProjectChange
@@ -197,6 +209,7 @@ function normalizeOperation(value: unknown): ProjectDocumentOperation | null {
     baseRevision: value.baseRevision,
     createdAt: value.createdAt,
     syncState: value.syncState,
+    ...(commandEnvelope ? { commandEnvelope } : {}),
     summary: {
       hasProjectChange: value.summary.hasProjectChange,
       hasTrackSnapChange: value.summary.hasTrackSnapChange,
@@ -207,8 +220,12 @@ function normalizeOperation(value: unknown): ProjectDocumentOperation | null {
 
 // operation 克隆只复制紧凑标量和数组，不与 React state 共享可变引用。
 function cloneOperation(operation: ProjectDocumentOperation): ProjectDocumentOperation {
+  const commandEnvelope = operation.commandEnvelope
+    ? parseAnnotationCommandEnvelope(operation.commandEnvelope)
+    : null;
   return {
     ...operation,
+    ...(commandEnvelope ? { commandEnvelope } : {}),
     summary: {
       ...operation.summary,
       ...(operation.summary.changedTrackIds

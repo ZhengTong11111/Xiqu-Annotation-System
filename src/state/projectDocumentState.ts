@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type {
+  AnnotationCommandEnvelope,
+  AnnotationDomainCommand,
+  LegacyAnnotationOperationAction,
+} from "@xiqu/shared";
 import type { ProjectData } from "../types";
 
 export type HistoryAction =
@@ -23,10 +28,8 @@ export type ProjectSyncStatus =
   | "error";
 
 export type ProjectDocumentOperationType =
-  | "project.commit"
-  | "project.undo"
-  | "project.redo"
-  | "track-snap.update";
+  | LegacyAnnotationOperationAction
+  | AnnotationDomainCommand["type"];
 
 export type ProjectDocumentOperation = {
   id: string;
@@ -36,6 +39,7 @@ export type ProjectDocumentOperation = {
   baseRevision: number;
   createdAt: number;
   syncState: "pending" | "submitted" | "acknowledged";
+  commandEnvelope?: AnnotationCommandEnvelope;
   // 操作只保留服务端审计需要的紧凑摘要；完整项目由当前草稿快照单份保存，不能在每条操作中重复。
   summary: {
     hasProjectChange: boolean;
@@ -85,6 +89,12 @@ type ProjectDocumentStateOptions = {
 
 type TrackSnapUpdateOptions = {
   recordOperation?: boolean;
+};
+
+// history action 与可选领域命令通过一个 options 边界进入提交，避免继续扩展位置参数。
+type CommitProjectOptions = {
+  action?: HistoryAction;
+  commandEnvelope?: AnnotationCommandEnvelope;
 };
 
 type MarkProjectSavedOptions = {
@@ -276,8 +286,10 @@ export function useProjectDocumentState({
   function commitProject(
     nextProject: ProjectData,
     baseProject = transientProjectRef.current ?? projectRef.current,
-    action: HistoryAction = "edit",
+    options: CommitProjectOptions = {},
   ) {
+    // 未提供领域命令的调用点仍生成 legacy project.commit；渐进迁移期间不能猜测操作语义。
+    const action = options.action ?? "edit";
     if (readOnlyRef.current) {
       transientProjectRef.current = null;
       return;
@@ -295,9 +307,10 @@ export function useProjectDocumentState({
     transientProjectRef.current = null;
     applyProjectState(nextProject);
     recordOperation({
-      type: "project.commit",
+      type: options.commandEnvelope?.command.type ?? "project.commit",
       action,
       baseRevision: localRevisionRef.current,
+      ...(options.commandEnvelope ? { commandEnvelope: options.commandEnvelope } : {}),
       summary: {
         hasProjectChange: true,
         hasTrackSnapChange: false,

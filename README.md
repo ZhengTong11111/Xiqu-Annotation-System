@@ -225,8 +225,11 @@ Range。重要平台修改完成后应同时运行相关专项测试和完整构
 - 恢复快照是事故恢复安全网，不作为普通文件或“发布版本”展示。
 - 本地 JSON 的 `PROJECT_FILE_VERSION` 与平台 revision 是两个独立层次。
 
-当前 operation log 只记录编辑摘要，完整标注内容仍由 revision-checked 文件保存接口写入。每个客户端
-operation 使用 `(标注文件、账号、clientOperationId)` 服务端唯一作用域和请求指纹：响应丢失后的完全
+operation log 已开始从编辑摘要渐进迁移为版本化领域命令。时间轴句块、逐字块、动作块、自定义块、
+附属打点、工尺块和板眼点的纯时间调整可记录 `timeline.items.timing.update` version 1 envelope，包含稳定
+目标及 before/after 时间；文本、类型、创建删除、导入和轨道结构等尚未迁移的编辑仍记录 legacy 摘要。
+服务器当前只严格校验并保存命令，不用它直接改写完整标注内容；权威内容仍由 revision-checked 文件保存
+接口写入。每个客户端 operation 使用 `(标注文件、账号、clientOperationId)` 服务端唯一作用域和请求指纹：响应丢失后的完全
 相同重试返回原记录，同 key 异内容明确冲突，不会重复落日志。可写平台文件还会把一份经过脱敏的本地
 恢复草稿保存到 IndexedDB：草稿按账号与文件隔离，刷新后只有服务器 revision 未变化时才允许显式恢复；
 只读草稿只能导出或丢弃；服务器已推进的 stale 草稿可与最新服务器文件做结构化比较，按实体选择本地
@@ -1165,7 +1168,9 @@ Prometheus 指标、管理员诊断面板、跨实例维护写入静默边界，
 
 ### 2. 尚未实现实时多人协作
 
-已有 pending operations、幂等 operation log、revision 冲突、同步状态和浏览器 IndexedDB 恢复草稿。
+已有 pending operations、幂等 operation log、首批 version 1 时间轴领域命令、revision 冲突、同步状态和
+浏览器 IndexedDB 恢复草稿。领域命令现阶段只用于可验证记录与后续协作协议地基，服务器尚未以命令
+排序重放或直接修改 payload。
 同 revision 草稿可在重新打开时恢复；stale 草稿可按稳定实体与服务器当前文件比较并选择性整合，但仍
 必须经过编辑器确认和普通 revision save。平台编辑器已有空闲自动保存、保存中继续编辑、在线恢复和
 有界退避；自动保存遇到 409 会停在 conflict，用户可从冲突栏显式进入本地草稿与服务器最新文件的

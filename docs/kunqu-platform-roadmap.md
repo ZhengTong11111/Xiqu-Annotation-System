@@ -21,8 +21,9 @@ R3g2a 已完成远端包单次流式物化和真实 PostgreSQL/对象目录隔�
 远端包检查、保留计划、稳定 token 和确认清理；R3g2b2a 已补齐无残留能力验收命令、最小 IAM 模板和
 部署检查表。真实生产 MinIO/AWS 的 R3g2b2 等待目标环境；本地开发已完成 R4a operation 幂等接收、
 R4b1 浏览器草稿持久化/同 revision 恢复、R4b2 stale 草稿结构化整合、R4c1 自动保存调度/在线退避和
-R4c2 保存冲突可视化续接、R4c3 可测试自动保存生命周期协调与异常收口；R4 工程闭环已完成，下一步
-进入 R5 领域命令与实时协作前置设计；
+R4c2 保存冲突可视化续接、R4c3 可测试自动保存生命周期协调与异常收口；R4 工程闭环已完成。R5a1 已
+建立首批 version 1 时间轴领域命令、严格前后端校验、草稿往返和成熟拖拽提交接入；下一步进入 R5a2
+命令 apply/precondition 与服务端排序确认合同；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -395,7 +396,15 @@ R4c2 保存冲突可视化续接、R4c3 可测试自动保存生命周期协调�
 
 ### R5：实时多人协作
 
-- 把宽泛 `project.commit` 逐步替换为稳定 id 的领域命令。
+- R5a1 已完成：新增 `timeline.items.timing.update` version 1 envelope，覆盖句、逐字、动作、自定义块、
+  附属打点、工尺块和板眼点的 before/after；逐字/句/自定义文字块的派生句界与工尺时间同命令记录。
+  shared parser 严格限制版本、字段、实体、id、时间、重复项和 500 项上限；草稿恢复、平台请求和 API
+  复用同一合同。纯时间拖拽/缩放从真实 transient base 与最终项目提取命令，合同外变更和不可表达旧 id
+  安全回退 `project.commit`。服务端目前只验证和记录，不 apply payload，也没有启动 WebSocket。
+- R5a2：为 versioned command 建立纯 apply/precondition/inverse 或明确拒绝结果，定义服务器单文件顺序号、
+  acknowledged cursor、按权限复核和有界重放读取合同；先用 HTTP 与确定性测试闭环，不把实时传输和
+  领域应用混成一个不可审查步骤。
+- 后续把宽泛 `project.commit` 逐步替换为文本、创建删除和轨道结构等稳定 id 领域命令。
 - WebSocket 会话、presence、光标/选区与连接状态。
 - 服务端 operation 排序、确认、重放和权限复核。
 - 先针对块级编辑实现协作，再评估 OT/CRDT；不直接合并任意完整快照。

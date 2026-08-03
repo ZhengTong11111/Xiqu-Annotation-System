@@ -85,6 +85,11 @@ import {
 } from "./utils/platformOperations";
 import { findAdjacentNavigableBlock } from "./utils/timelineNavigation";
 import {
+  buildProjectTimelineTimingCommand,
+  getGongcheTimingTargetsForParents,
+  type TimelineTimingTarget,
+} from "./utils/timelineTimingCommand";
+import {
   addBranchLane,
   createBranchLane,
   createDefaultTrackBranching,
@@ -436,6 +441,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     pendingOperations,
     pendingOperationsRef,
     syncState,
+    transientProjectRef,
     applyProjectWithoutHistory,
     commitProject,
     applyTrackSnapEnabledState,
@@ -1383,7 +1389,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       window.alert("目标文件在草稿准备后已被编辑。请取消本草稿并重新比较，避免覆盖当前改动。");
       return;
     }
-    commitProject(draft.mergedProject, draft.baseProject, "merge-project");
+    commitProject(draft.mergedProject, draft.baseProject, { action: "merge-project" });
     setPendingAnnotationMergeDraft(null);
   }
 
@@ -1625,6 +1631,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function updateCharacter(id: string, changes: Partial<CharacterAnnotation>, recordHistory = true) {
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
     const currentCharacter = currentProject.characterAnnotations.find((item) => item.id === id);
     const timingParentBefore = currentCharacter &&
       (changes.startTime !== undefined || changes.endTime !== undefined)
@@ -1645,7 +1652,22 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         ? syncSubtitleLine(nextProject, currentCharacter.lineId)
         : nextProject;
     if (recordHistory) {
-      commitProject(synchronizedProject);
+      const isTimingOnly = Object.keys(changes).every((key) =>
+        key === "startTime" || key === "endTime",
+      );
+      // 逐字 timing 提交同时记录派生句界和工尺块；文本/四声等编辑继续使用受控 snapshot commit。
+      const commandEnvelope = isTimingOnly && currentCharacter
+        ? buildProjectTimelineTimingCommand(baseProject, synchronizedProject, [
+            { entityType: "character", entityId: id },
+            { entityType: "sentence", entityId: currentCharacter.lineId },
+            ...getGongcheTimingTargetsForParents(
+              [baseProject, synchronizedProject],
+              "character-track",
+              [id],
+            ),
+          ])
+        : null;
+      commitProject(synchronizedProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
       applyProjectWithoutHistory(synchronizedProject);
     }
@@ -1657,6 +1679,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     recordHistory = true,
   ) {
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
     const currentLine = currentProject.subtitleLines.find((line) => line.id === id);
     if (!currentLine) {
       return;
@@ -1694,7 +1717,27 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       : shiftedProject;
 
     if (recordHistory) {
-      commitProject(synchronizedProject);
+      const characterIds = baseProject.characterAnnotations
+        .filter((item) => item.lineId === id)
+        .map((item) => item.id);
+      // 句块移动会级联逐字和工尺时间，全部目标必须共享同一 before/after 命令。
+      const commandEnvelope = buildProjectTimelineTimingCommand(
+        baseProject,
+        synchronizedProject,
+        [
+          { entityType: "sentence", entityId: id },
+          ...characterIds.map((entityId): TimelineTimingTarget => ({
+            entityType: "character",
+            entityId,
+          })),
+          ...getGongcheTimingTargetsForParents(
+            [baseProject, synchronizedProject],
+            "character-track",
+            characterIds,
+          ),
+        ],
+      );
+      commitProject(synchronizedProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
       applyProjectWithoutHistory(synchronizedProject);
     }
@@ -1976,6 +2019,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     recordHistory = true,
   ) {
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
     const currentBlock = findCustomBlock(currentProject.customTracks, trackId, blockId);
     const timingParentsBefore = currentBlock &&
       (changes.startTime !== undefined || changes.endTime !== undefined)
@@ -1995,7 +2039,21 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ) as CustomTrack[],
     }, timingParentsBefore);
     if (recordHistory) {
-      commitProject(nextProject);
+      const isTimingOnly = Object.keys(changes).every((key) =>
+        key === "startTime" || key === "endTime",
+      );
+      // 自定义块 timing 与其派生工尺块构成一个命令；内容、类型和分叉归属不混入 timing 语义。
+      const commandEnvelope = isTimingOnly && currentBlock
+        ? buildProjectTimelineTimingCommand(baseProject, nextProject, [
+            { entityType: "custom-block", entityId: blockId, trackId },
+            ...getGongcheTimingTargetsForParents(
+              [baseProject, nextProject],
+              trackId,
+              [blockId],
+            ),
+          ])
+        : null;
+      commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
       applyProjectWithoutHistory(nextProject);
     }
@@ -2037,6 +2095,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function updateAction(id: string, changes: Partial<ActionAnnotation>, recordHistory = true) {
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
+    const currentAction = currentProject.actionAnnotations.find((item) => item.id === id);
     const nextProject = {
       ...currentProject,
       actionAnnotations: currentProject.actionAnnotations.map((item) =>
@@ -2044,7 +2104,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ),
     };
     if (recordHistory) {
-      commitProject(nextProject);
+      const isTimingOnly = Object.keys(changes).every((key) =>
+        key === "startTime" || key === "endTime",
+      );
+      // 旧动作轨纯时间变化进入 timing command，标签或轨道身份变化仍保留 snapshot 语义。
+      const commandEnvelope = isTimingOnly && currentAction
+        ? buildProjectTimelineTimingCommand(baseProject, nextProject, [{
+            entityType: "action",
+            entityId: id,
+            trackId: currentAction.trackId,
+          }])
+        : null;
+      commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
       applyProjectWithoutHistory(nextProject);
     }
@@ -2568,6 +2639,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
 
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
     const timingParentsBefore = new Map<string, GongcheParentBlock>();
     const characterUpdates = new Map(
       items
@@ -2701,7 +2773,57 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       : nextProject;
 
     if (recordHistory) {
-      commitProject(synchronizedProject);
+      // 多选移动按真实选择目标构造批量命令，并补齐句级边界与派生工尺时间。
+      const directTargets = items.flatMap((item): TimelineTimingTarget[] => {
+        if (item.type === "character") {
+          return [{ entityType: "character", entityId: item.id }];
+        }
+        if (item.type === "action") {
+          const action = baseProject.actionAnnotations.find((candidate) => candidate.id === item.id);
+          return action
+            ? [{ entityType: "action", entityId: item.id, trackId: action.trackId }]
+            : [];
+        }
+        if (item.type === "custom-block") {
+          return [{ entityType: "custom-block", entityId: item.id, trackId: item.trackId }];
+        }
+        if (item.type === "attached-point") {
+          return [{ entityType: "attached-point", entityId: item.id, trackId: item.trackId }];
+        }
+        return [{ entityType: "banyan-mark", entityId: item.id }];
+      });
+      const customGongcheTargets = new Map<string, TimelineTimingTarget>();
+      for (const item of customBlockUpdates.values()) {
+        for (const target of getGongcheTimingTargetsForParents(
+          [baseProject, synchronizedProject],
+          item.trackId,
+          [item.id],
+        )) {
+          customGongcheTargets.set(`${target.trackId}:${target.entityId}`, target);
+        }
+      }
+      const commandEnvelope = buildProjectTimelineTimingCommand(
+        baseProject,
+        synchronizedProject,
+        [
+          ...directTargets,
+          ...Array.from(affectedLineIds, (entityId): TimelineTimingTarget => ({
+            entityType: "sentence",
+            entityId,
+          })),
+          ...getGongcheTimingTargetsForParents(
+            [baseProject, synchronizedProject],
+            "character-track",
+            [...characterUpdates.keys()],
+          ),
+          ...customGongcheTargets.values(),
+        ],
+      );
+      commitProject(
+        synchronizedProject,
+        baseProject,
+        commandEnvelope ? { commandEnvelope } : {},
+      );
     } else {
       applyProjectWithoutHistory(synchronizedProject);
     }
@@ -3053,6 +3175,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     recordHistory = true,
   ) {
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
     const currentBlock = currentProject.gongcheAnnotations.find((item) => item.id === id);
     if (!currentBlock) {
       return;
@@ -3069,7 +3192,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ),
     };
     if (recordHistory) {
-      commitProject(nextProject);
+      const isTimingOnly = Object.keys(changes).every((key) =>
+        key === "startTime" || key === "endTime",
+      );
+      // 工尺块符号编辑仍是 snapshot；仅块时间变化进入首批 timing command。
+      const commandEnvelope = isTimingOnly
+        ? buildProjectTimelineTimingCommand(baseProject, nextProject, [{
+            entityType: "gongche-block",
+            entityId: id,
+            trackId: currentBlock.parentTrackId,
+          }])
+        : null;
+      commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
       applyProjectWithoutHistory(nextProject);
     }
@@ -3145,6 +3279,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function updateBanyanMark(id: string, changes: Partial<BanyanMark>, recordHistory = true) {
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
     const currentMark = currentProject.banyanMarks.find((item) => item.id === id);
     if (!currentMark) {
       return;
@@ -3164,7 +3299,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       banyanMarks: currentProject.banyanMarks.map((item) => item.id === id ? nextMark : item),
     };
     if (recordHistory) {
-      commitProject(nextProject);
+      const isTimingOnly = Object.keys(changes).every((key) => key === "time");
+      // 板眼位置以零长度时间区间记录；类型、来源和人工审校字段变化不伪装成移动命令。
+      const commandEnvelope = isTimingOnly
+        ? buildProjectTimelineTimingCommand(baseProject, nextProject, [{
+            entityType: "banyan-mark",
+            entityId: id,
+          }])
+        : null;
+      commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
       applyProjectWithoutHistory(nextProject);
     }
@@ -4280,7 +4423,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const text = await file.text();
     const lines = parseSrt(text);
     const nextProject = buildProjectFromLines(lines, projectRef.current.video);
-    commitProject(nextProject, undefined, "import-srt");
+    commitProject(nextProject, undefined, { action: "import-srt" });
     applySelection(lines[0] ? { type: "line", id: lines[0].id } : null);
     if (lines[0]) {
       seekTo(lines[0].startTime);
@@ -4304,7 +4447,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         filePath: null,
         requiresManualImport: false,
       },
-    }, undefined, "import-video");
+    }, undefined, { action: "import-video" });
   }
 
   async function importProjectFile(file: File) {
@@ -4324,7 +4467,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         hydratedProject,
         normalized.uiState?.trackSnapEnabled,
       );
-      commitProject(hydratedProject, undefined, "import-project");
+      commitProject(hydratedProject, undefined, { action: "import-project" });
       applyTrackSnapEnabledState(normalizedTrackSnapEnabled);
       setZoom(normalized.uiState?.zoom ?? 20);
       setPlaybackRate(normalized.uiState?.playbackRate ?? 1);
@@ -4411,7 +4554,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
 
-    commitProject(repairResult.project, undefined, "repair-sentence-character-track");
+    commitProject(repairResult.project, undefined, { action: "repair-sentence-character-track" });
     const firstCreatedCharacter = repairResult.createdCharacters[0];
     applySelection({ type: "character", id: firstCreatedCharacter.id });
     setLineFocusRequest({ lineId: firstCreatedCharacter.lineId, requestId: Date.now() });
@@ -4479,7 +4622,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       }
     }
     const nextProject = applyPreparedImportMerge(currentProject, pendingState.sourceProject, prepared.plans);
-    commitProject(nextProject, undefined, "merge-project");
+    commitProject(nextProject, undefined, { action: "merge-project" });
     setPendingImportMergeState(null);
   }
 

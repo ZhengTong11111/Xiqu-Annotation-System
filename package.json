@@ -27,6 +27,8 @@
     "test:annotation-confirmations": "npm run build:shared && npm run build:document-model && node --test packages/document-model/test/annotation-confirmations.test.mjs",
     "test:annotation-confirmation-view": "npm run build:shared && npm run build:document-model && node --import tsx --test src/platform/annotationConfirmationView.test.ts",
     "test:platform-operations": "npm run build:shared && node --import tsx --test src/utils/platformOperations.test.ts",
+    "test:annotation-commands": "npm run build:shared && node --test packages/shared/test/annotation-commands.test.mjs",
+    "test:timeline-timing-command": "npm run build:shared && node --import tsx --test src/utils/timelineTimingCommand.test.ts",
     "test:platform-auto-save": "node --import tsx --test src/platform/platformAutoSavePolicy.test.ts",
     "test:platform-auto-save-runtime": "node --import tsx --test src/platform/platformAutoSaveRuntime.test.ts",
     "test:platform-drafts": "node --import tsx --test src/platform/platformDraft.test.ts src/platform/platformDraftConflict.test.ts src/platform/platformDraftStore.test.ts src/state/projectDocumentRecovery.test.tsx",

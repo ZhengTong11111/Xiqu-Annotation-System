@@ -71,7 +71,8 @@ JSON 导入导出，也可以作为平台 `AnnotationFile.payload` 保存。
 ## 3. 当前平台保存流程
 
 1. 固定 project、UI state、pending operation id 和服务器 base revision 快照。
-2. 将尚未 submitted 的 operation 摘要顺序写入服务端 operation log。
+2. 将尚未 submitted 的 operation 顺序写入服务端 operation log：已迁移的纯时间编辑发送 versioned
+   domain command，其他编辑发送 legacy 摘要。
 3. 调用 annotation-file save API 写入固定完整 payload。
 4. 成功后更新 remote revision，并只确认本次覆盖的 operation ids。
 5. 失败时保留本地 pending operations：
@@ -98,16 +99,24 @@ JSON 导入导出，也可以作为平台 `AnnotationFile.payload` 保存。
 
 ## 4. Operation log 的当前边界
 
-当前 operation payload 是摘要，不是可重放的领域增量：
+R5a1 建立了首批 version 1 `timeline.items.timing.update` envelope。一个命令可原子记录 sentence、
+character、action、custom-block、attached-point、gongche-block 和 banyan-mark 的稳定目标与 before/after；
+点状实体使用零长度区间。逐字/句块/自定义文字块移动所引起的句界和工尺派生时间也必须进入同一命令。
 
-- 它用于审计、同步实验和后续协议设计。
+命令由本次 undo 的真实 `baseProject` 和最终 `nextProject` 提取。连续拖动仍只在 pointer-up 形成一条
+operation；若目标缺失、id 不满足协议、超过 500 项，或同一次编辑还修改了文本/类型/结构等合同外字段，
+调用点安全回退到 legacy `project.commit`，不能记录半个事实或让交互抛错。
+
+当前 operation 是“领域命令与摘要并存”的渐进阶段：
+
+- version 1 时间命令可严格验证、持久化和幂等重放请求，但服务端尚未 apply 到 payload。
+- 文本、类型、创建删除、分叉结构、导入和 undo/redo 仍是摘要，不可领域重放。
 - 它不会修改 annotation file payload。
 - 它不能作为恢复完整项目的唯一来源。
 - 不应把完整 before/after `ProjectData` 复制进每一条 operation。
 
-真正协作前，应逐步引入稳定 id 的领域命令，例如：
+下一步应先建立命令的纯 apply/precondition、服务端顺序与确认合同，再逐步引入：
 
-- `character.updateTiming`
 - `character.updateText`
 - `block.create`
 - `block.delete`
