@@ -6,7 +6,7 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AnnotationFile, ResourceEntry } from "@xiqu/shared";
 import type { ProjectData } from "../types";
 import {
@@ -18,38 +18,15 @@ import {
   type AnnotationDiffGroup,
   type AnnotationDiffResult,
 } from "./annotationDiff";
-import { AnnotationMergePlanPanel } from "./AnnotationMergePlanPanel";
+import { AnnotationMergeDiffReview } from "./AnnotationMergeDiffReview";
 import type {
   AnnotationComparisonFocus,
   AnnotationComparisonSide,
 } from "./annotationComparisonNavigation";
-import {
-  buildAnnotationMergePlan,
-  type AnnotationMergeDirection,
-} from "./annotationMergePlan";
-import {
-  getAnnotationMergePlanFingerprint,
-  getAnnotationMergePreparationState,
-  normalizeMergeConflictResolutions,
-  setMergeConflictResolution,
-  type AnnotationMergeConflictResolutions,
-} from "./annotationMergeConflict";
 import type {
   AnnotationMergePreparationRequest,
   AnnotationMergePreparationResult,
 } from "./annotationMergeDraft";
-import {
-  getMergeGroupSelectionState,
-  isMergeEntrySelectable,
-  normalizeMergeSelection,
-  setMergeEntrySelection,
-  setMergeGroupSelection,
-} from "./annotationMergeSelection";
-import {
-  AnnotationDiffReview,
-  type AnnotationDiffReviewEntry,
-} from "./AnnotationDiffReview";
-import { getAnnotationDiffEntryKey } from "./annotationDiffTimeline";
 import { formatResourceDate } from "./ResourceItem";
 
 // 双侧请求状态与变化标签集中定义，避免组件分支使用不一致的状态文本。
@@ -262,22 +239,33 @@ export function AnnotationComparisonDialog(props: {
                     </button>
                   </ComparisonState>
                 ) : comparison ? (
-                  <ComparisonResult
+                  <AnnotationMergeDiffReview
                     key={`${orderedFiles[0].id}:${left.file?.revision ?? 0}:${orderedFiles[1].id}:${right.file?.revision ?? 0}`}
                     comparison={comparison}
                     expandedDomains={expandedDomains}
-                    files={orderedFiles}
                     openingSide={openingSide}
-                    leftRevision={left.file!.revision}
-                    rightRevision={right.file!.revision}
+                    leftName={orderedFiles[0].name}
+                    rightName={orderedFiles[1].name}
+                    allowedDirections={["left-to-right", "right-to-left"]}
                     onToggleDomain={toggleDomain}
                     onExpandDomain={expandDomain}
-                    onOpenFileAtTime={async (resource, focus, side) => {
-                      setOpeningSide(side);
-                      const opened = await props.onOpenFileAtTime(resource, focus);
-                      if (!opened) setOpeningSide(null);
-                    }}
-                    onPrepareMerge={props.onPrepareMerge}
+                    sideActions={(["left", "right"] as const).map((side, index) => ({
+                      side,
+                      label: `打开${side === "left" ? "左" : "右"}侧`,
+                      unavailableTitle: `${side === "left" ? "左" : "右"}侧没有可定位时间范围`,
+                      onOpen: async (focus) => {
+                        setOpeningSide(side);
+                        const opened = await props.onOpenFileAtTime(orderedFiles[index], focus);
+                        if (!opened) setOpeningSide(null);
+                      },
+                    }))}
+                    onPrepare={(intent) => props.onPrepareMerge({
+                      leftResourceId: orderedFiles[0].id,
+                      rightResourceId: orderedFiles[1].id,
+                      leftRevision: left.file!.revision,
+                      rightRevision: right.file!.revision,
+                      ...intent,
+                    })}
                   />
                 ) : (
                   <ComparisonState icon={<AlertTriangle size={18} />} error>
@@ -316,217 +304,6 @@ function ComparisonSideHeader(props: {
       ) : null}
     </article>
   );
-}
-
-// 结果总览先给出全局计数，再按固定研究领域展开差异条目。
-function ComparisonResult(props: {
-  comparison: LoadedComparisonModel;
-  files: [ResourceEntry, ResourceEntry];
-  openingSide: AnnotationComparisonSide | null;
-  leftRevision: number;
-  rightRevision: number;
-  expandedDomains: Set<string>;
-  onToggleDomain: (domain: string) => void;
-  onExpandDomain: (domain: string) => void;
-  onOpenFileAtTime: (
-    resource: ResourceEntry,
-    focus: AnnotationComparisonFocus,
-    side: AnnotationComparisonSide,
-  ) => Promise<void>;
-  onPrepareMerge: (
-    request: AnnotationMergePreparationRequest,
-  ) => Promise<AnnotationMergePreparationResult>;
-}) {
-  const diff = props.comparison.diff;
-  const [mergeDirection, setMergeDirection] = useState<AnnotationMergeDirection>(
-    "left-to-right",
-  );
-  const [mergeSelectedEntryKeys, setMergeSelectedEntryKeys] = useState<Set<string>>(
-    new Set(),
-  );
-  const [conflictResolutions, setConflictResolutions] =
-    useState<AnnotationMergeConflictResolutions>({});
-  const [preparingMerge, setPreparingMerge] = useState(false);
-  const [preparationError, setPreparationError] = useState<string | null>(null);
-  const mergePlan = useMemo(() => buildAnnotationMergePlan({
-    leftProject: props.comparison.leftProject,
-    rightProject: props.comparison.rightProject,
-    diff,
-    direction: mergeDirection,
-    selectedEntryKeys: [...mergeSelectedEntryKeys],
-  }), [diff, mergeDirection, mergeSelectedEntryKeys, props.comparison]);
-  const preparationState = useMemo(() => getAnnotationMergePreparationState(
-    mergePlan,
-    conflictResolutions,
-  ), [conflictResolutions, mergePlan]);
-
-  // 选择或方向改变会生成新计划；只保留仍属于当前冲突集合的人工决定。
-  useEffect(() => {
-    setConflictResolutions((current) =>
-      normalizeMergeConflictResolutions(mergePlan, current));
-    setPreparationError(null);
-  }, [mergePlan]);
-
-  // 准备请求携带屏幕预检指纹，平台层会以最新 revision 重建并逐项核对后才打开编辑器。
-  const prepareMerge = async () => {
-    if (!preparationState.canPrepare || preparingMerge) return;
-    setPreparingMerge(true);
-    setPreparationError(null);
-    const result = await props.onPrepareMerge({
-      leftResourceId: props.files[0].id,
-      rightResourceId: props.files[1].id,
-      leftRevision: props.leftRevision,
-      rightRevision: props.rightRevision,
-      direction: mergeDirection,
-      selectedEntryKeys: [...mergeSelectedEntryKeys].sort(),
-      conflictResolutions,
-      planFingerprint: getAnnotationMergePlanFingerprint(mergePlan),
-    });
-    if (!result.ok) {
-      setPreparationError(result.message);
-      setPreparingMerge(false);
-    }
-  };
-
-  return (
-    <AnnotationDiffReview
-      diff={diff}
-      expandedDomains={props.expandedDomains}
-      openingSide={props.openingSide}
-      onToggleDomain={props.onToggleDomain}
-      onExpandDomain={props.onExpandDomain}
-      sideActions={[
-        {
-          side: "left",
-          label: "打开左侧",
-          unavailableTitle: "左侧没有可定位时间范围",
-          onOpen: (focus) => props.onOpenFileAtTime(props.files[0], focus, "left"),
-        },
-        {
-          side: "right",
-          label: "打开右侧",
-          unavailableTitle: "右侧没有可定位时间范围",
-          onOpen: (focus) => props.onOpenFileAtTime(props.files[1], focus, "right"),
-        },
-      ]}
-      beforeGroups={<AnnotationMergePlanPanel
-        direction={mergeDirection}
-        leftFileName={props.files[0].name}
-        rightFileName={props.files[1].name}
-        selectedEntryCount={mergeSelectedEntryKeys.size}
-        plan={mergePlan}
-        conflictResolutions={conflictResolutions}
-        preparationState={preparationState}
-        preparing={preparingMerge}
-        preparationError={preparationError}
-        onDirectionChange={(direction) => {
-          // 方向切换保留双侧修改项，但清除新来源侧不存在的单侧实体。
-          setMergeDirection(direction);
-          setPreparationError(null);
-          setMergeSelectedEntryKeys((current) =>
-            normalizeMergeSelection(diff, direction, current));
-        }}
-        onClearSelection={() => setMergeSelectedEntryKeys(new Set())}
-        onResolveConflict={(entryKey, resolution) => {
-          setConflictResolutions((current) =>
-            setMergeConflictResolution(current, entryKey, resolution));
-          setPreparationError(null);
-        }}
-        onPrepare={() => void prepareMerge()}
-      />}
-      renderGroupControl={(group) => (
-        <MergeGroupCheckbox
-          state={getMergeGroupSelectionState(
-            mergeSelectedEntryKeys,
-            group,
-            mergeDirection,
-          )}
-          label={`${group.label}整合选择`}
-          onChange={(selected) => setMergeSelectedEntryKeys((current) =>
-            setMergeGroupSelection(current, group, mergeDirection, selected))}
-        />
-      )}
-      renderEntryControl={(entry) => (
-        <MergeEntryCheckbox
-          entry={entry}
-          direction={mergeDirection}
-          selected={mergeSelectedEntryKeys.has(getAnnotationDiffEntryKey(entry))}
-          onChange={(selected) => setMergeSelectedEntryKeys((current) =>
-            setMergeEntrySelection(current, getAnnotationDiffEntryKey(entry), selected))}
-        />
-      )}
-    />
-  );
-}
-
-// 单项整合复选框只存在于普通文件比较包装层，快照复用共享视图时不会得到该控件。
-function MergeEntryCheckbox(props: {
-  entry: AnnotationDiffReviewEntry;
-  direction: AnnotationMergeDirection;
-  selected: boolean;
-  onChange: (selected: boolean) => void;
-}) {
-  const mergeSelectable = isMergeEntrySelectable(props.entry, props.direction);
-  return (
-    <label
-      className="annotation-comparison-merge-checkbox"
-      title={mergeSelectable
-        ? "加入选择性整合预检"
-        : getMergeDisabledReason(props.entry, props.direction)}
-    >
-      <input
-        type="checkbox"
-        checked={props.selected}
-        disabled={!mergeSelectable}
-        aria-label={`${props.entry.label || props.entry.identity}加入整合预检`}
-        onChange={(event) => props.onChange(event.currentTarget.checked)}
-      />
-    </label>
-  );
-}
-
-// 原生 checkbox 的 indeterminate 只能通过 DOM 属性设置，独立组件避免每个分组复制 ref 逻辑。
-function MergeGroupCheckbox(props: {
-  state: ReturnType<typeof getMergeGroupSelectionState>;
-  label: string;
-  onChange: (selected: boolean) => void;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (inputRef.current) {
-      inputRef.current.indeterminate = props.state.indeterminate;
-    }
-  }, [props.state.indeterminate]);
-  return (
-    <label
-      className="annotation-comparison-group-selection"
-      title={props.state.selectableCount > 0
-        ? "选择或取消该领域全部可整合差异"
-        : "该领域没有当前方向可整合的差异"}
-    >
-      <input
-        ref={inputRef}
-        type="checkbox"
-        checked={props.state.checked}
-        disabled={props.state.selectableCount === 0}
-        aria-label={props.label}
-        onChange={(event) => props.onChange(event.currentTarget.checked)}
-      />
-      <span>{props.state.selectedCount}/{props.state.selectableCount}</span>
-    </label>
-  );
-}
-
-// 禁用原因按业务方向解释，避免用户只能看到一个没有语义的灰色 checkbox。
-function getMergeDisabledReason(
-  entry: AnnotationDiffGroup["entries"][number],
-  direction: AnnotationMergeDirection,
-) {
-  if (entry.domain === "project") return "项目与媒体设置不能作为局部实体整合";
-  if (entry.changeType === "unchanged") return "未变化实体只会在需要时作为自动依赖";
-  return direction === "left-to-right"
-    ? "该实体只存在于右侧，左侧没有可整合来源"
-    : "该实体只存在于左侧，右侧没有可整合来源";
 }
 
 // 状态区复用加载、失败和空结果布局，避免三套近似 JSX 漂移。

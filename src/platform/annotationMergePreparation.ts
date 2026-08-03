@@ -111,6 +111,7 @@ export function prepareAnnotationMergeDraft(input: {
       draft: {
         // 浏览器原生方法必须通过宿主对象调用，不能把 randomUUID 脱离 crypto 后直接执行。
         id: input.createDraftId ? input.createDraftId() : crypto.randomUUID(),
+        sourceKind: "resource-file",
         sourceFileName: sourceFile.resource.name,
         targetFileName: targetFile.resource.name,
         baseProject: input.hydrateProject(targetProject),

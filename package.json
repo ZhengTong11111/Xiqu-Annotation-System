@@ -27,7 +27,7 @@
     "test:annotation-confirmations": "npm run build:shared && npm run build:document-model && node --test packages/document-model/test/annotation-confirmations.test.mjs",
     "test:annotation-confirmation-view": "npm run build:shared && npm run build:document-model && node --import tsx --test src/platform/annotationConfirmationView.test.ts",
     "test:platform-operations": "npm run build:shared && node --import tsx --test src/utils/platformOperations.test.ts",
-    "test:platform-drafts": "node --import tsx --test src/platform/platformDraft.test.ts src/platform/platformDraftStore.test.ts src/state/projectDocumentRecovery.test.tsx",
+    "test:platform-drafts": "node --import tsx --test src/platform/platformDraft.test.ts src/platform/platformDraftConflict.test.ts src/platform/platformDraftStore.test.ts src/state/projectDocumentRecovery.test.tsx",
     "test:resource-pagination": "npm run build:shared && node --import tsx --test apps/api/test/resourcePagination.test.ts",
     "test:resource-page-state": "node --import tsx --test src/platform/resourcePageState.test.ts",
     "test:resource-column-pages": "node --import tsx --test src/platform/resourceColumnPageState.test.ts src/platform/resourceDestinationPaging.test.ts",

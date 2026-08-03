@@ -2431,3 +2431,88 @@ revision 下显式恢复”，不把 IndexedDB 草稿宣传成服务器自动保
 - R4b1 遇到 stale revision 会 fail closed，并提供 JSON 数据保险，但尚不能结构化审阅/整合 stale 草稿；
   R4b2 应复用现有 `annotationDiff`/merge planner 建立“本地草稿 vs 服务器当前文件”的明确决策。之后
   R4c 才加入服务器自动保存节流、在线恢复和退避。WebSocket/presence 继续留在 R5。
+
+## 2026-08-03：R4b2 stale 浏览器草稿结构化比较与安全整合
+
+本轮从 R4b1 commit `49cae65` 和干净工作树开始。Codex 先审计普通文件比较、选择性整合、平台唯一
+文件打开入口、IndexedDB 草稿仓库和编辑器 document state，再把被忽略的 `CLAUDE_WORK.md` 整体替换
+为 R4b2 当前任务书。实现、测试、自审和文档均由 Codex 直接完成，没有调用 Claude Code、GLM、
+DeepSeek 或其他代理。本轮目标不是把 stale 草稿整份覆盖到服务器，而是让用户能按稳定实体审阅本地
+改动，并在最新服务器内容之上安全形成一份尚未保存、可撤销的编辑器草稿。
+
+共享审阅层与删除的旧逻辑：
+
+- 原 `AnnotationComparisonDialog.tsx` 同时承担双资源读取、左右交换、方向、实体选择、依赖计划、冲突
+  决策和准备状态。为避免 stale 草稿复制第二套算法，新建 `AnnotationMergeDiffReview.tsx`，集中拥有
+  direction、selection、plan、conflict resolution 和 preparation state；外层只传入同一次规范化产生的
+  diff/leftProject/rightProject，并接收排序后的选择、冲突决定和 plan fingerprint。
+- 普通文件比较继续允许双向整合；草稿比较只开放 `left-to-right`。原对话框内单项/分组 checkbox、禁用
+  原因和计划状态已删除，没有保留并行旧实现。`AnnotationMergePlanPanel` 只增加受限方向输入，不学习
+  IndexedDB、资源 id 或保存行为。
+- 新建 `PlatformDraftConflictDialog.tsx`，固定“本地浏览器草稿在左、服务器当前文件在右”。草稿不是
+  `ResourceEntry`，因此不会伪造资源路径、侧边打开命令或可写文件身份；界面明确说明准备不会直接覆盖
+  服务器。
+
+权威复核与纯领域边界：
+
+- `platformDraftConflict.ts` 是无 React、网络、存储和保存副作用的准备器。用户点击准备后，Workspace
+  同时重新读取最新 `AnnotationFile` 与当前账号/文件的 IndexedDB envelope，再核对 user/file identity、
+  草稿 `updatedAt`、草稿基准 revision、服务器 revision 和最新 write capability。
+- 准备器重新运行唯一 `buildAnnotationDiff()` 迁移路径，拒绝重复稳定 id；随后规范化当前左到右选择，
+  禁止把已经失效的条目静默裁掉，重建依赖计划并核对 plan fingerprint。所有 replace conflict 都必须
+  经过显式“采用来源/保留目标”决定；结构 issue 或应用完整性失败均不会产出半成品。
+- 成功结果复用既有 `AnnotationMergeDraft`，但新增 `sourceKind` 区分普通资源整合与浏览器草稿整合。
+  `baseProject` 始终是权威服务器当前项目，`mergedProject` 仅包含明确选择、本地依赖闭包和冲突决定；
+  纯准备器不删除 IndexedDB、不写 operation/audit、不修改 ProjectData 输入，也不保存服务器。
+
+编辑器二次确认与草稿生命周期：
+
+- Workspace 仍通过唯一 `enterPlatformEditor()` 构造会话。成功准备只打开服务器目标文件和运行时 merge
+  draft；编辑器确认前，项目历史、dirty 状态和服务器 revision 均未变化。
+- `usePlatformDraftPersistence()` 增加显式 `suspended`，并把 put/delete/none 判定抽为可测试纯函数。只要
+  runtime merge draft 待确认，就暂停全部草稿写入与清理；此时退出编辑器不会因初始 clean 状态误删
+  原 stale envelope。
+- 用户确认时，既有 `commitProject(merged, base, "merge-project")` 只形成一次可撤销 dirty 操作，然后
+  persistence 以最新服务器 revision 覆盖旧 stale envelope。用户点击“放弃本地草稿整合”时必须再次
+  确认旧草稿将清除；确认取消后目标仍 clean，恢复持久化并删除 envelope。普通文件整合取消不增加该
+  草稿语义。
+- pending merge draft 仍是纯运行时状态，不进入 ProjectData、项目 JSON、IndexedDB、localStorage、
+  operation log 或 audit log。最终服务器写入仍只能由用户执行普通 revision-checked 保存。
+
+失败、修正与测试：
+
+- 新增 stale 准备器测试第一次失败并非实现错误，而是测试把合并后句级数组预期写成“服务器独有在
+  本地新增之前”；正式应用按时间稳定排序，实际为 shared、local-only、server-only。测试改为领域模型
+  的真实稳定时间顺序，没有修改生产排序去迎合断言。
+- `npm run test:platform-drafts` 9/9：覆盖草稿脱敏/归一化、同 revision 判定、IndexedDB 隔离、首次原子
+  恢复、stale 选择性准备、草稿/服务器/权限变化阻断、旧选择和旧指纹阻断，以及 suspended/dirty/clean
+  三种持久化决策。
+- merge 回归全部通过：`test:annotation-diff` 10/10、`test:annotation-merge-plan` 11/11、
+  `test:annotation-merge-selection` 5/5、`test:annotation-merge-conflict` 1/1、
+  `test:annotation-merge-apply` 4/4、`test:annotation-merge-preparation` 4/4。普通双文件整合仍使用同一套
+  纯 helper 和双向 UI。
+- `npm run test:api` 85/85；本轮无 schema/API 合同变化，仍验证资源 ACL、revision save、确认范围、
+  快照、上传、对象生命周期、审计、备份和维护边界。仅输出既有 pg 9 前置弃用提示。
+- `npm run build` 完整通过 Prisma generation、shared、document-model、web 和 API；Vite 仅保留既有
+  主 chunk 超过 500 kB 提醒。`git diff --check` 通过；运行中的 API `/api/health/ready` 返回 ready，
+  PostgreSQL 和本地对象存储均为 ok。
+
+浏览器验收边界与人工顺序：
+
+- R4b1 尝试 Browser 时，在 Vite 启动前形成 `ERR_CONNECTION_REFUSED` 的 `data:` 错误页；该浏览器运行时
+  随后明确以安全策略禁止从错误页导航、刷新或读取，也禁止绕过或换用另一浏览器表面。本轮遵守该限制，
+  没有再次尝试规避，也没有把 TypeScript 构建冒充成真实视觉点击验收。
+- 人工验收应依次：以 rN 打开并编辑形成草稿但不保存；另一会话把服务器推进到 rN+1；重新打开看到
+  revision conflict；进入固定方向比较；选择本地新增和冲突项；准备后确认服务器内容尚未变化；退出后
+  再开确认旧草稿仍在；重新准备并在编辑器应用，确认只出现一次可撤销 dirty 操作；普通保存成功后再开
+  文件不应提示旧草稿。只读账号仍只能导出/丢弃。
+
+自我审查与下一阶段：
+
+- 全文检索确认普通比较中的旧 selection/group checkbox 和禁用 helper 已删除；`AnnotationMergeDraft`
+  只有普通资源与 stale 草稿两个正式构造入口，均显式设置 `sourceKind`。没有新增依赖、第二套项目迁移、
+  直接服务器覆盖或僵尸保存路径。
+- 当前 hook 仅把“待确认整合时暂停、确认后 dirty 写入、取消后 clean 删除”的决策做了纯函数测试；完整
+  React + IndexedDB 生命周期仍需按上述人工顺序验收。R4c 应在现有显式冲突边界之上实现自动保存节流、
+  保存中继续编辑、在线恢复和指数退避；不能把 R4b2 的运行时草稿误当作已保存事实，也不能提前进入
+  WebSocket/presence。

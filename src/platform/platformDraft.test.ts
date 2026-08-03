@@ -8,6 +8,7 @@ import {
   normalizePlatformDraftRecord,
   toProjectDocumentRecoveryState,
 } from "./platformDraft";
+import { getPlatformDraftPersistenceAction } from "./usePlatformDraftPersistence";
 
 // 测试夹具包含 dirty 项目与稳定 operation id，用来验证刷新后仍能继续幂等提交。
 function createRecoveryState(): ProjectDocumentRecoveryState {
@@ -108,4 +109,27 @@ test("只有相同服务器 revision 的草稿可直接恢复", () => {
   assert.equal(assessPlatformDraftCompatibility(record, 7).status, "recoverable");
   assert.equal(assessPlatformDraftCompatibility(record, 8).status, "revision-conflict");
   assert.equal(record.remoteBaseRevision, 7);
+});
+
+// 待确认整合暂停整个草稿生命周期；确认或取消后才根据 dirty 状态覆盖或删除。
+test("草稿持久化决策区分暂停、写入与删除", () => {
+  const base = {
+    enabled: true,
+    suspended: false,
+    userId: "user-1",
+    annotationFileId: "file-1",
+  };
+  assert.equal(getPlatformDraftPersistenceAction({
+    ...base,
+    suspended: true,
+    hasUnsavedChanges: false,
+  }), "none");
+  assert.equal(getPlatformDraftPersistenceAction({
+    ...base,
+    hasUnsavedChanges: true,
+  }), "put");
+  assert.equal(getPlatformDraftPersistenceAction({
+    ...base,
+    hasUnsavedChanges: false,
+  }), "delete");
 });

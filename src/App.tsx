@@ -420,6 +420,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const isReadOnly = Boolean(
     editorSession && !editorSession.canWrite,
   );
+  const [pendingAnnotationMergeDraft, setPendingAnnotationMergeDraft] = useState(
+    editorSession?.pendingMergeDraft ?? null,
+  );
   const {
     project,
     projectRef,
@@ -457,6 +460,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   // 浏览器草稿仅服务平台可写会话；本地 JSON 和只读文件继续走各自原有保存边界。
   usePlatformDraftPersistence({
     enabled: Boolean(editorSession?.canWrite),
+    // 待确认整合还没有进入文档历史；草稿来源若是浏览器恢复数据，此时必须保持原 envelope 不动。
+    suspended: pendingAnnotationMergeDraft !== null,
     userId: editorSession?.currentUserId ?? null,
     annotationFileId: editorSession?.annotationFileId ?? null,
     remoteBaseRevision,
@@ -517,9 +522,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [timelineClipboard, setTimelineClipboard] = useState<TimelineClipboard | null>(null);
   const [pendingPasteState, setPendingPasteState] = useState<PendingPasteState | null>(null);
   const [pendingImportMergeState, setPendingImportMergeState] = useState<PendingImportMergeState | null>(null);
-  const [pendingAnnotationMergeDraft, setPendingAnnotationMergeDraft] = useState(
-    editorSession?.pendingMergeDraft ?? null,
-  );
   const [zoom, setZoom] = useState(20);
   const [loopPlaybackRange, setLoopPlaybackRange] = useState<{ start: number; end: number } | null>(null);
   const [loopPlaybackEnabled, setLoopPlaybackEnabled] = useState(false);
@@ -1355,6 +1357,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
     commitProject(draft.mergedProject, draft.baseProject, "merge-project");
+    setPendingAnnotationMergeDraft(null);
+  }
+
+  // 浏览器草稿整合的取消意味着明确放弃本地恢复内容；普通文件整合仍保持原有无副作用取消。
+  function cancelPendingAnnotationMergeDraft() {
+    const draft = pendingAnnotationMergeDraft;
+    if (!draft) return;
+    if (
+      draft.sourceKind === "browser-draft" &&
+      !window.confirm("放弃这次本地草稿整合后，浏览器中的旧草稿将被清除。是否继续？")
+    ) {
+      return;
+    }
     setPendingAnnotationMergeDraft(null);
   }
 
@@ -4950,9 +4965,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           <em>应用后形成一次可撤销编辑，不会自动保存到服务器。</em>
           <button
             type="button"
-            onClick={() => setPendingAnnotationMergeDraft(null)}
+            onClick={cancelPendingAnnotationMergeDraft}
           >
-            取消
+            {pendingAnnotationMergeDraft.sourceKind === "browser-draft"
+              ? "放弃本地草稿整合"
+              : "取消"}
           </button>
           <button
             type="button"

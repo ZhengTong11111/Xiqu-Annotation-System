@@ -10,6 +10,7 @@ const DRAFT_WRITE_DELAY_MS = 700;
 
 type PlatformDraftPersistenceOptions = {
   enabled: boolean;
+  suspended: boolean;
   userId: string | null;
   annotationFileId: string | null;
   remoteBaseRevision: number;
@@ -20,6 +21,19 @@ type PlatformDraftPersistenceOptions = {
   onPersistenceError: (message: string) => void;
   store?: PlatformDraftStore;
 };
+
+export type PlatformDraftPersistenceAction = "none" | "put" | "delete";
+
+// 生命周期决策保持为纯函数，待确认整合暂停时不得误写或删除原恢复草稿。
+export function getPlatformDraftPersistenceAction(input: Pick<
+  PlatformDraftPersistenceOptions,
+  "enabled" | "suspended" | "userId" | "annotationFileId" | "hasUnsavedChanges"
+>): PlatformDraftPersistenceAction {
+  if (input.suspended || !input.enabled || !input.userId || !input.annotationFileId) {
+    return "none";
+  }
+  return input.hasUnsavedChanges ? "put" : "delete";
+}
 
 // 平台草稿采用短节流持续写入；页面关闭只依赖已经完成的写入，不把异步 IndexedDB 任务拖到 unload。
 export function usePlatformDraftPersistence(options: PlatformDraftPersistenceOptions) {
@@ -65,13 +79,14 @@ export function usePlatformDraftPersistence(options: PlatformDraftPersistenceOpt
   };
 
   useEffect(() => {
-    if (!options.enabled || !options.userId || !options.annotationFileId) return;
+    const action = getPlatformDraftPersistenceAction(options);
+    if (action === "none" || !options.userId || !options.annotationFileId) return;
     const store = options.store ?? platformDraftStore;
     const userId = options.userId;
     const annotationFileId = options.annotationFileId;
 
     // clean 只可能来自初始服务器文件或确认成功的完整保存，此时应清除已经被服务器覆盖的草稿。
-    if (!options.hasUnsavedChanges) {
+    if (action === "delete") {
       enqueue(() => store.delete(userId, annotationFileId));
       return;
     }
@@ -89,6 +104,7 @@ export function usePlatformDraftPersistence(options: PlatformDraftPersistenceOpt
     options.localRevision,
     options.pendingOperationSignature,
     options.remoteBaseRevision,
+    options.suspended,
     options.store,
     options.userId,
   ]);
@@ -96,7 +112,7 @@ export function usePlatformDraftPersistence(options: PlatformDraftPersistenceOpt
   useEffect(() => () => {
     const latest = latestOptionsRef.current;
     // 返回资源管理器会卸载编辑器；立即排入最后草稿，不能因 debounce timer 被清理而漏掉最近编辑。
-    if (latest.enabled && latest.hasUnsavedChanges) {
+    if (getPlatformDraftPersistenceAction(latest) === "put") {
       enqueueDraftWrite(latest);
     }
   }, []);

@@ -114,10 +114,17 @@ R4b1 已为可写平台会话建立 version 1 IndexedDB envelope：
   `normalizeImportedProjectFile()`。
 - dirty 编辑短延迟覆盖同一 envelope；离开编辑器时立即排入最后快照；完整保存确认 clean 后删除草稿。
 - 打开文件时必须先读取服务器最新 payload、revision 和权限。同 revision 草稿可由用户显式恢复；
-  stale 或只读草稿禁止直接恢复，只允许导出或明确丢弃。损坏记录不能进入 document state。
+  只读草稿禁止直接恢复，只允许导出或明确丢弃。损坏记录不能进入 document state。
+- stale 草稿固定作为结构化比较左侧，服务器当前文件固定作为右侧。用户只能把明确选择的本地实体整合
+  到服务器基线；依赖闭包、重复稳定 id、结构问题和每个内容冲突都复用普通文件整合的纯领域 helper。
+- 准备整合时必须同时重读 IndexedDB 草稿和服务器文件，并核对草稿更新时间、两侧 revision、write
+  capability、选择集合、冲突决定与计划指纹。成功只产生运行时 `AnnotationMergeDraft`，不写项目 JSON、
+  IndexedDB、审计日志、operation 日志或服务器。
+- 编辑器显示运行时草稿期间，持久化 hook 暂停全部 put/delete：二次确认后形成一次可撤销 dirty commit，
+  再以最新服务器 revision 覆盖旧 envelope；明确取消后 clean 状态删除旧草稿；未确认就离开则继续保留。
 
-这仍不是自动保存：当前没有后台保存调度、联网重试退避或 stale 草稿合并。下一步应先为 stale 草稿
-复用结构化 diff/merge 建立明确冲突决策，再接自动保存；任何流程都不得自动覆盖远端。
+这仍不是自动保存：当前没有后台保存调度、联网重试退避或页面关闭时的服务器保存策略。下一步 R4c
+应在上述显式冲突边界之上接入自动保存；任何流程都不得自动覆盖远端。
 
 ## 6. 实时协作方向
 
@@ -150,5 +157,6 @@ R4b1 已为可写平台会话建立 version 1 IndexedDB envelope：
 - read-only session 无法通过 commit、transient update、undo/redo 绕过。
 - 本地 JSON 保存/导入与平台保存互不污染。
 - IndexedDB 草稿按账号/文件隔离，且不含 token、Blob 或每 operation 完整项目快照。
-- 同 revision 才能恢复；stale/read-only/损坏草稿不能进入可写 document state。
+- 同 revision 才能直接恢复；stale 草稿只能经固定方向结构化整合，read-only/损坏草稿不能进入可写
+  document state。
 - `npm run build` 通过；平台保存改动还应有 API 集成测试。

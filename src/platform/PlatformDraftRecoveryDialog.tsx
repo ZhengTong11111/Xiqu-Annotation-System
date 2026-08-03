@@ -14,6 +14,7 @@ export function PlatformDraftRecoveryDialog(props: {
   busy: boolean;
   onCancel: () => void;
   onRecover: () => void;
+  onCompareConflict: () => void;
   onDiscardAndOpen: () => void;
 }) {
   const canRecover = props.mode === "recoverable";
@@ -78,6 +79,11 @@ export function PlatformDraftRecoveryDialog(props: {
               导出草稿 JSON
             </button>
             <div>
+              {props.mode === "revision-conflict" ? (
+                <button type="button" disabled={props.busy} onClick={props.onCompareConflict}>
+                  比较并整合草稿
+                </button>
+              ) : null}
               <button type="button" disabled={props.busy} onClick={props.onDiscardAndOpen}>
                 {props.busy ? "正在处理…" : "丢弃草稿并打开服务器版本"}
               </button>

@@ -37,6 +37,7 @@ const DOMAIN_LABELS: Record<AnnotationDiffDomain, string> = {
 // 预检面板只展示纯计划结果，不拥有 payload、依赖推断或任何保存命令。
 export function AnnotationMergePlanPanel(props: {
   direction: AnnotationMergeDirection;
+  allowedDirections?: readonly AnnotationMergeDirection[];
   leftFileName: string;
   rightFileName: string;
   selectedEntryCount: number;
@@ -53,6 +54,7 @@ export function AnnotationMergePlanPanel(props: {
   ) => void;
   onPrepare: () => void;
 }) {
+  const allowedDirections = props.allowedDirections ?? ["left-to-right", "right-to-left"];
   const [visibleItemLimit, setVisibleItemLimit] = useState(INITIAL_VISIBLE_ITEMS);
   const visibleItems = useMemo(() =>
     props.plan.items
@@ -86,22 +88,26 @@ export function AnnotationMergePlanPanel(props: {
 
       {/* 分段控件同时写明来源和目标文件，箭头不作为唯一方向提示。 */}
       <div className="annotation-merge-direction" role="group" aria-label="整合方向">
-        <DirectionButton
-          selected={props.direction === "left-to-right"}
-          sideLabel="左侧"
-          commandLabel="整合到右侧"
-          sourceName={props.leftFileName}
-          targetName={props.rightFileName}
-          onClick={() => props.onDirectionChange("left-to-right")}
-        />
-        <DirectionButton
-          selected={props.direction === "right-to-left"}
-          sideLabel="右侧"
-          commandLabel="整合到左侧"
-          sourceName={props.rightFileName}
-          targetName={props.leftFileName}
-          onClick={() => props.onDirectionChange("right-to-left")}
-        />
+        {allowedDirections.includes("left-to-right") ? (
+          <DirectionButton
+            selected={props.direction === "left-to-right"}
+            sideLabel="左侧"
+            commandLabel="整合到右侧"
+            sourceName={props.leftFileName}
+            targetName={props.rightFileName}
+            onClick={() => props.onDirectionChange("left-to-right")}
+          />
+        ) : null}
+        {allowedDirections.includes("right-to-left") ? (
+          <DirectionButton
+            selected={props.direction === "right-to-left"}
+            sideLabel="右侧"
+            commandLabel="整合到左侧"
+            sourceName={props.rightFileName}
+            targetName={props.leftFileName}
+            onClick={() => props.onDirectionChange("right-to-left")}
+          />
+        ) : null}
       </div>
 
       {props.selectedEntryCount === 0 ? (
@@ -120,7 +126,7 @@ export function AnnotationMergePlanPanel(props: {
             <span className="action-equal"><strong>{props.plan.counts.alreadyEqual}</strong> 目标已相同</span>
           </div>
 
-          {/* 结构 issue 会阻断后续应用，但本阶段不渲染任何执行按钮。 */}
+          {/* 结构 issue 会阻断准备按钮，不能让半成品项目进入目标编辑器。 */}
           {props.plan.issues.length > 0 ? (
             <div className="annotation-merge-issues" role="alert">
               <strong><AlertTriangle size={14} /> 发现 {props.plan.issues.length} 个结构问题</strong>

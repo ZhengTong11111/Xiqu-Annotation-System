@@ -52,8 +52,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - `idb`-backed IndexedDB repository keyed by encoded account id and annotation-file id
 - `src/platform/usePlatformDraftPersistence.ts`
   - serialized/debounced draft writes, editor-unmount final capture, and clean-state deletion for writable sessions
+  - must suspend all put/delete while any runtime merge draft is awaiting the editor's second confirmation
 - `src/platform/PlatformDraftRecoveryDialog.tsx`
-  - explicit same-revision recovery and stale/read-only export-or-discard decision before opening the editor
+  - explicit same-revision recovery, stale comparison entry, and read-only export-or-discard decision before opening editor
+- `src/platform/PlatformDraftConflictDialog.tsx`
+  - fixed local-draft-left/server-current-right structured review; it cannot treat the browser draft as a resource file
+- `src/platform/platformDraftConflict.ts`
+  - pure authoritative reread validation and fixed-direction stale-draft merge preparation
+  - rejects changed draft/server identities, revisions, permissions, selections, conflicts, or plan fingerprints
 - `src/platform/ResourceExplorer.tsx`
   - desktop-style three-pane resource manager
   - owns folder navigation, view switching, selection, keyboard actions, import/upload, and the resource Inspector
@@ -100,8 +106,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/AnnotationComparisonDialog.tsx`
   - owns parallel side-isolated reads, stale-response protection, left/right swapping, ordinary-file open commands, and
     composition of the shared read-only diff review
-  - owns selective-merge selection and explicit conflict decisions, but never writes a file from the dialog
+  - delegates selective-merge selection and explicit conflict decisions to the shared merge review, and never writes a file
   - comparison must not instantiate a second editable Timeline inside the dialog
+- `src/platform/AnnotationMergeDiffReview.tsx`
+  - shared direction/selection/dependency-plan/conflict-decision UI for ordinary-file and stale-browser-draft integration
+  - receives a prepared diff model and emits user intent only; it must not read resources, IndexedDB, or editor state
 - `src/platform/RecoverySnapshotComparisonDialog.tsx`
   - composes the shared read-only diff review with fixed snapshot-left/current-right metadata
   - only the current-file side can open in the editor; there is no swap or selective-merge surface

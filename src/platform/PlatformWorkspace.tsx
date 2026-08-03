@@ -20,6 +20,7 @@ import type {
 } from "./annotationMergeDraft";
 import { prepareAnnotationMergeDraft } from "./annotationMergePreparation";
 import { ResourceExplorer } from "./ResourceExplorer";
+import { PlatformDraftConflictDialog } from "./PlatformDraftConflictDialog";
 import { hydrateProjectForClient } from "./platformProjectPayload";
 import {
   assessPlatformDraftCompatibility,
@@ -28,6 +29,11 @@ import {
   type PlatformDraftRecord,
 } from "./platformDraft";
 import { platformDraftStore } from "./platformDraftStore";
+import {
+  preparePlatformDraftConflict,
+  type PlatformDraftConflictPreparationRequest,
+} from "./platformDraftConflict";
+import type { AnnotationMergeReviewIntent } from "./AnnotationMergeDiffReview";
 import {
   PlatformDraftRecoveryDialog,
   type PlatformDraftRecoveryMode,
@@ -93,6 +99,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     useState<LocalEditorSession | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingDraftOpen, setPendingDraftOpen] = useState<PendingDraftOpen | null>(null);
+  const [draftConflictVisible, setDraftConflictVisible] = useState(false);
   const [draftDecisionBusy, setDraftDecisionBusy] = useState(false);
 
   const client = useMemo(() => new PlatformClient({
@@ -200,6 +207,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     file: AnnotationFile<ProjectData>;
     initialProject: ProjectData;
     initialFocus?: AnnotationComparisonFocus;
+    pendingMergeDraft?: AnnotationMergeDraft;
     initialRecoveryState?: ProjectDocumentRecoveryState;
   }) => {
     await enterPlatformEditor(input);
@@ -207,6 +215,57 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       console.warn("记录最近打开失败", markError);
     });
   }, [client, enterPlatformEditor]);
+
+  // stale 草稿准备前重新读取两侧权威状态；旧屏幕选择不能在 revision 或草稿变化后继续应用。
+  const preparePendingDraftConflict = useCallback(async (
+    intent: AnnotationMergeReviewIntent,
+  ): Promise<AnnotationMergePreparationResult> => {
+    const pending = pendingDraftOpen;
+    if (!pending || pending.mode !== "revision-conflict" || !user) {
+      return { ok: false, message: "草稿比较会话已失效，请重新打开文件。" };
+    }
+    try {
+      const [latestFile, rawDraft] = await Promise.all([
+        client.getAnnotationFile<unknown>(pending.file.resource.id),
+        platformDraftStore.get(user.id, pending.file.resource.id),
+      ]);
+      const latestDraft = normalizePlatformDraftRecord(rawDraft, {
+        userId: user.id,
+        annotationFileId: pending.file.resource.id,
+      });
+      if (!latestDraft) {
+        return { ok: false, message: "浏览器草稿已被删除、损坏或替换，请关闭后重新打开文件。" };
+      }
+      const request: PlatformDraftConflictPreparationRequest = {
+        userId: user.id,
+        annotationFileId: pending.file.resource.id,
+        draftUpdatedAt: pending.draft.updatedAt,
+        draftRemoteBaseRevision: pending.draft.remoteBaseRevision,
+        serverRevision: pending.file.revision,
+        selectedEntryKeys: intent.selectedEntryKeys,
+        conflictResolutions: intent.conflictResolutions,
+        planFingerprint: intent.planFingerprint,
+      };
+      const prepared = preparePlatformDraftConflict({
+        localDraft: latestDraft,
+        serverFile: latestFile,
+        request,
+        hydrateProject: (project) => hydrateProjectForClient(project, client),
+      });
+      if (!prepared.ok) return prepared;
+      const targetFile = prepared.value.targetFile as AnnotationFile<ProjectData>;
+      await enterPlatformFileAndMarkOpened({
+        file: targetFile,
+        initialProject: prepared.value.draft.baseProject,
+        pendingMergeDraft: prepared.value.draft,
+      });
+      setDraftConflictVisible(false);
+      setPendingDraftOpen(null);
+      return { ok: true };
+    } catch (nextError) {
+      return { ok: false, message: describeError(nextError) };
+    }
+  }, [client, enterPlatformFileAndMarkOpened, pendingDraftOpen, user]);
 
   // 平台文件只有这一条打开路径：每次重新读取最新内容、revision 与权限，再建立隔离的编辑器会话。
   const openPlatformAnnotationFile = useCallback(async (
@@ -237,6 +296,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       }
       if (draft) {
         const compatibility = assessPlatformDraftCompatibility(draft, file.revision);
+        setDraftConflictVisible(false);
         setPendingDraftOpen({
           file,
           serverProject,
@@ -276,6 +336,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         initialRecoveryState: recoveryState,
       });
       setPendingDraftOpen(null);
+      setDraftConflictVisible(false);
     } catch (nextError) {
       const message = describeError(nextError);
       setError(message);
@@ -298,6 +359,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         initialFocus: pending.initialFocus,
       });
       setPendingDraftOpen(null);
+      setDraftConflictVisible(false);
     } catch (nextError) {
       const message = describeError(nextError);
       setError(message);
@@ -409,21 +471,33 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
           setAccessToken(null);
           setUser(null);
           setPendingDraftOpen(null);
+          setDraftConflictVisible(false);
           setView("login");
         }}
         onOpenLocalJson={openLocal}
         onOpenAnnotationFile={openPlatformAnnotationFile}
         onPrepareAnnotationMerge={prepareAnnotationMerge}
       />
-      {pendingDraftOpen ? (
+      {pendingDraftOpen && draftConflictVisible ? (
+        <PlatformDraftConflictDialog
+          file={pendingDraftOpen.file}
+          draft={pendingDraftOpen.draft}
+          onBack={() => setDraftConflictVisible(false)}
+          onPrepare={preparePendingDraftConflict}
+        />
+      ) : pendingDraftOpen ? (
         <PlatformDraftRecoveryDialog
           fileName={pendingDraftOpen.file.resource.name}
           remoteRevision={pendingDraftOpen.file.revision}
           draft={pendingDraftOpen.draft}
           mode={pendingDraftOpen.mode}
           busy={draftDecisionBusy}
-          onCancel={() => setPendingDraftOpen(null)}
+          onCancel={() => {
+            setPendingDraftOpen(null);
+            setDraftConflictVisible(false);
+          }}
           onRecover={() => void recoverPendingDraft()}
+          onCompareConflict={() => setDraftConflictVisible(true)}
           onDiscardAndOpen={() => void discardPendingDraftAndOpen()}
         />
       ) : null}

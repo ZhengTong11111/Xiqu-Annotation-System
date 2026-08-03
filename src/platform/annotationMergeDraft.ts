@@ -19,6 +19,7 @@ export type AnnotationMergePreparationRequest = {
 // 草稿只存在于当前编辑器会话；它不是保存版本，也不会自动写入服务端。
 export type AnnotationMergeDraft = {
   id: string;
+  sourceKind: "resource-file" | "browser-draft";
   sourceFileName: string;
   targetFileName: string;
   baseProject: ProjectData;
