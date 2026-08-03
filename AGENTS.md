@@ -227,7 +227,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/healthService.ts`
   - liveness/readiness dependency probes; readiness stays lightweight and does not recursively scan storage
 - `apps/api/src/observability.ts`
-  - per-app Prometheus Registry, normalized HTTP metrics, upload/cleanup outcomes, and metrics-token validation
+  - per-app Prometheus Registry, normalized HTTP and operational Gauges, upload/cleanup outcomes, and metrics-token validation
+- `apps/api/src/operationalMetricsCollector.ts`
+  - bounded, in-flight-shared readiness/capacity/job collection executed only after `/metrics` authorization
+  - failures set the collection-success Gauge without replacing the last real capacity/job snapshot with false zeros
 - `apps/api/src/maintenanceCoordinator.ts`
   - persistent global maintenance mode and cross-instance PostgreSQL shared/exclusive advisory write gate
   - uses a dedicated pg Pool so request-lifetime permits cannot exhaust Prisma's business-query connections
@@ -261,6 +264,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - PostgreSQL schema for users, sessions, resource entries, projects, annotation/media files, resource permissions/user state, recovery snapshots, confirmed ranges, processing jobs, audit logs, and annotation operations
 - `docs/`
   - roadmap, architecture notes, and curated screenshots; keep this updated for long-running platform/backend work
+- `deploy/monitoring/`
+  - vendor-neutral Prometheus scrape/rule and Alertmanager example configuration
+  - real metrics tokens, receiver URLs, TLS material, and deployment secrets never belong in this directory
 - `src/types.ts`
   - all shared project/data/UI selection types
 - `src/mockData.ts`
@@ -325,6 +331,11 @@ Backend local defaults:
 - `/metrics` is disabled unless `XIQU_METRICS_TOKEN` is configured; it uses a separate Bearer credential rather than
   a browser session. Metric labels must remain low-cardinality and must never include user/resource ids, filenames,
   query strings, storage keys, or error messages
+- operational metric scrapes share one bounded in-flight collection per API instance. Dependency-unavailable is a
+  successfully collected fault, while collector exceptions/timeouts set `xiqu_operational_metrics_collection_success=0`
+  and retain the previous real Gauge values rather than inventing zero usage.
+- external notification grouping, inhibition, silence, retry, and webhook/email delivery belong to Prometheus/
+  Alertmanager. Do not create a second application scheduler/delivery-state database for the same responsibility.
 - `.env` and `data/` are intentionally ignored
 - `prisma/migrations/20260801000000_resource_tree_baseline` is the committed resource-tree baseline;
   use `db:deploy` for a fresh/current database and reserve `db:push` for disposable local schema experiments

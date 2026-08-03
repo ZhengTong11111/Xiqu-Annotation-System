@@ -1,0 +1,65 @@
+# 规则只引用低基数平台指标；用户、资源和对象路径不得进入告警标签。
+groups:
+  - name: xiqu-platform
+    rules:
+      - alert: XiquApiDown
+        expr: up{job="xiqu-api"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: 戏曲标注平台 API 无法抓取
+      - alert: XiquMetricsCollectionFailed
+        expr: xiqu_operational_metrics_collection_success == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 平台运维指标采集持续失败
+      - alert: XiquDependencyUnavailable
+        expr: xiqu_dependency_available == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: 平台依赖不可用
+          description: "{{ $labels.dependency }} 依赖持续不可用。"
+      - alert: XiquHighErrorRate
+        expr: (sum(rate(xiqu_http_requests_total{status_code=~"5.."}[5m])) / sum(rate(xiqu_http_requests_total[5m])) > 0.05) and sum(increase(xiqu_http_requests_total[5m])) >= 20
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 平台 API 错误率过高
+      - alert: XiquHighLatency
+        expr: histogram_quantile(0.95, sum by (le) (rate(xiqu_http_request_duration_seconds_bucket[5m]))) > 2.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 平台 API P95 延迟过高
+      - alert: XiquStorageCapacity
+        expr: xiqu_platform_storage_quota_bytes > 0 and (xiqu_platform_storage_used_bytes / xiqu_platform_storage_quota_bytes) > 0.80 and (xiqu_platform_storage_used_bytes / xiqu_platform_storage_quota_bytes) <= 0.95
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: 平台存储容量超过 80%
+      - alert: XiquStorageCapacity
+        expr: xiqu_platform_storage_quota_bytes > 0 and (xiqu_platform_storage_used_bytes / xiqu_platform_storage_quota_bytes) > 0.95
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: 平台存储容量超过 95%
+      - alert: XiquFailedJobs
+        expr: xiqu_processing_jobs{status="failed"} > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 平台存在失败的后台任务
+      - alert: XiquJobBacklog
+        expr: xiqu_processing_jobs{status="queued"} > 20
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 平台后台任务出现积压
+      - alert: XiquUploadCompensationFailure
+        expr: increase(xiqu_media_upload_compensation_failures_total[10m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: 媒体上传补偿删除失败

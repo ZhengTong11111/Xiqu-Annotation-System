@@ -76,6 +76,10 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(metrics.statusCode, 200);
       assert.match(metrics.body, /xiqu_http_requests_total/);
+      assert.match(metrics.body, /xiqu_dependency_available\{dependency="database"\} 1/);
+      assert.match(metrics.body, /xiqu_dependency_available\{dependency="storage"\} 1/);
+      assert.match(metrics.body, /xiqu_platform_storage_quota_bytes 200/);
+      assert.match(metrics.body, /xiqu_operational_metrics_collection_success 1/);
 
       // 显式 null 必须覆盖环境变量并关闭指标入口，便于内嵌或测试实例采用最小暴露面。
       const metricsDisabledApp = await buildApiApp({

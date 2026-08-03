@@ -3,9 +3,15 @@ import type { FastifyInstance } from "fastify";
 import {
   collectDefaultMetrics,
   Counter,
+  Gauge,
   Histogram,
   Registry,
 } from "prom-client";
+import {
+  OPERATIONAL_DEPENDENCIES,
+  OPERATIONAL_JOB_STATUSES,
+  type OperationalMetricsSnapshot,
+} from "./operationalMetricsCollector.js";
 
 export type UploadMetricResult =
   | "success"
@@ -27,6 +33,12 @@ export class ApiObservability {
   private readonly compensationFailures: Counter;
   private readonly storageCleanup: Counter;
   private readonly storageCleanupDeleted: Counter;
+  private readonly dependencyAvailable: Gauge;
+  private readonly platformStorageUsedBytes: Gauge;
+  private readonly platformStorageQuotaBytes: Gauge;
+  private readonly processingJobs: Gauge;
+  private readonly operationalCollectionSuccess: Gauge;
+  private readonly operationalCollectionTimestamp: Gauge;
 
   constructor() {
     // 默认进程指标与平台业务指标注册到同一个实例级 Registry，便于一次抓取和测试隔离。
@@ -73,6 +85,39 @@ export class ApiObservability {
       labelNames: ["kind"],
       registers: [this.registry],
     });
+    // 运维 Gauge 仅使用固定 label，供 Prometheus/Alertmanager 判断依赖、容量和任务状态。
+    this.dependencyAvailable = new Gauge({
+      name: "xiqu_dependency_available",
+      help: "Whether each required API dependency is currently available.",
+      labelNames: ["dependency"],
+      registers: [this.registry],
+    });
+    this.platformStorageUsedBytes = new Gauge({
+      name: "xiqu_platform_storage_used_bytes",
+      help: "Logical bytes used by unique platform file objects.",
+      registers: [this.registry],
+    });
+    this.platformStorageQuotaBytes = new Gauge({
+      name: "xiqu_platform_storage_quota_bytes",
+      help: "Configured logical platform storage quota in bytes.",
+      registers: [this.registry],
+    });
+    this.processingJobs = new Gauge({
+      name: "xiqu_processing_jobs",
+      help: "Current processing jobs by stable status.",
+      labelNames: ["status"],
+      registers: [this.registry],
+    });
+    this.operationalCollectionSuccess = new Gauge({
+      name: "xiqu_operational_metrics_collection_success",
+      help: "Whether the latest operational metric collection succeeded.",
+      registers: [this.registry],
+    });
+    this.operationalCollectionTimestamp = new Gauge({
+      name: "xiqu_operational_metrics_collection_timestamp_seconds",
+      help: "Unix time of the latest successful operational metric collection.",
+      registers: [this.registry],
+    });
   }
 
   // Fastify 的 routeOptions.url 是规范化模板；404 固定为 unknown，禁止 URL id 进入标签。
@@ -114,6 +159,30 @@ export class ApiObservability {
         deletedFileObjectCount,
       );
     }
+  }
+
+  // 成功 snapshot 一次覆盖所有固定类别，避免任务归零后仍残留旧 Gauge 数值。
+  recordOperationalSnapshot(snapshot: OperationalMetricsSnapshot) {
+    for (const dependency of OPERATIONAL_DEPENDENCIES) {
+      this.dependencyAvailable.set(
+        { dependency },
+        snapshot.dependencies[dependency],
+      );
+    }
+    this.platformStorageUsedBytes.set(snapshot.platformStorageUsedBytes);
+    this.platformStorageQuotaBytes.set(snapshot.platformStorageQuotaBytes);
+    for (const status of OPERATIONAL_JOB_STATUSES) {
+      this.processingJobs.set({ status }, snapshot.jobs[status]);
+    }
+    this.operationalCollectionSuccess.set(1);
+    this.operationalCollectionTimestamp.set(
+      snapshot.collectedAt.getTime() / 1_000,
+    );
+  }
+
+  // 采集失败只标记失败，不把上一次真实容量和任务值伪造为零。
+  recordOperationalCollectionFailure() {
+    this.operationalCollectionSuccess.set(0);
   }
 }
 

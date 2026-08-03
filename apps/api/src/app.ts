@@ -19,6 +19,10 @@ import { MediaUploadService } from "./mediaUploadService.js";
 import { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
 import { ObjectLifecycleService } from "./objectLifecycleService.js";
 import { ApiObservability } from "./observability.js";
+import {
+  loadOperationalMetricsTimeout,
+  OperationalMetricsCollector,
+} from "./operationalMetricsCollector.js";
 import { HealthService } from "./healthService.js";
 import { SystemDiagnosticsService } from "./systemDiagnosticsService.js";
 import { loadUploadPolicy, type UploadPolicy } from "./uploadPolicy.js";
@@ -31,6 +35,7 @@ export type BuildApiAppOptions = {
   seed?: boolean;
   uploadPolicy?: Partial<UploadPolicy>;
   metricsToken?: string | null;
+  operationalMetricsTimeoutMs?: number;
 };
 
 /**
@@ -52,6 +57,15 @@ export async function buildApiApp(
   const uploadPolicy = loadUploadPolicy(options.uploadPolicy);
   const observability = new ApiObservability();
   const health = new HealthService(options.prisma, storage);
+  // 外部监控采集使用有限只读聚合，并与管理员诊断的重型对象审计保持分离。
+  const operationalMetrics = new OperationalMetricsCollector(
+    options.prisma,
+    health,
+    uploadPolicy.platformQuotaBytes,
+    options.operationalMetricsTimeoutMs ?? loadOperationalMetricsTimeout(
+      process.env.XIQU_OPERATIONAL_METRICS_TIMEOUT_MS,
+    ),
+  );
   const maintenance = new MaintenanceCoordinator(
     options.prisma,
     options.maintenancePool,
@@ -161,6 +175,7 @@ export async function buildApiApp(
     maintenance,
     diagnostics,
     observability,
+    operationalMetrics,
     options.metricsToken === undefined
       ? process.env.XIQU_METRICS_TOKEN ?? null
       : options.metricsToken,

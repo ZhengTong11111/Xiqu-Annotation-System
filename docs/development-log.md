@@ -1892,3 +1892,72 @@ DeepSeek、GLM 或其他代理。用户明确要求 Development Log 不只写最
   篡改归档。CSV 仍是有界人工导出；日志保留期限、归档介质、外部告警和生产审计访问策略尚未完成。
 - 下一轮应在实际代码与部署约束上重新审计 R3：优先建立可测试的外部告警出口，或设计 S3-native
   一致备份/恢复与目标生产桶 smoke。不能因为运行时已支持 S3，就把本地目录快照命令直接套到远端。
+
+## 2026-08-03：R3f2 外部告警部署基线与可告警平台指标
+
+本轮在 R3f1 commit `c7c40f2` 后继续逐轮流程：审计 roadmap、现有 `ApiObservability`、健康检查、系统
+诊断和服务器装配，整体重写本机忽略的 `CLAUDE_WORK.md`，再实现、测试、真实抓取、自审并维护文档。
+全部工作由 Codex 直接完成，没有委托 Claude Code、DeepSeek、GLM 或其他代理。
+
+架构审计与取舍：
+
+- 管理员诊断已经会计算稳定 code 的容量、依赖、孤儿和任务告警，但它只在管理员打开 Dialog 时运行，
+  不能作为无人值守监控源。现有 `/metrics` 已有规范化 HTTP、上传、清理和 Node 进程指标，却没有依赖
+  可用性、平台容量与任务存量，Prometheus 只能知道进程是否可抓取，不能区分 PostgreSQL/S3 故障。
+- 没有在每个 API 实例增加 setInterval + webhook。多实例会重复通知，随后还要自建 leader、分组、静默、
+  抑制、重试和投递历史，这会重复 Alertmanager 的成熟职责。最终边界是 API 只提供低基数事实指标，
+  Prometheus 计算规则，Alertmanager 负责通知生命周期。
+- 孤儿/缺失二进制检查需要枚举对象与数据库关系，不适合每 30 秒 scrape。它仍保留在管理员诊断与显式
+  清理中；外部规则本轮覆盖轻量 readiness、容量、请求、任务与补偿失败，不把重型审计偷偷放入指标端点。
+
+应用指标实现：
+
+- 新 `OperationalMetricsCollector` 并行执行 `HealthService.getReadiness()`、唯一 FileObject size aggregate
+  和 ProcessingJob groupBy，补齐 queued/running/succeeded/failed 四个固定状态。依赖 unavailable 是成功
+  采集到的故障事实，分别输出 0；查询异常或超时则由调用方记录 collection-success=0。
+- 重叠 `/metrics` 抓取共享一个 in-flight Promise。第一次实现审查时发现若把 timeout 直接包在保存的
+  Promise 上，超时会提前清除 in-flight，底层查询尚未结束时下一次抓取可能启动第二份；最终改为保存
+  原始采集 Promise，每个调用方单独等待超时，只有底层真实收敛才释放引用。
+- `ApiObservability` 新增 dependency、platform used/quota、processing jobs、collection success/timestamp
+  Gauge。成功 snapshot 覆盖所有固定类别，任务归零不会残留旧值；采集失败只把 success 设为 0，不将
+  上一次真实容量/任务伪造成 0。所有 label 都是固定 dependency/status，没有账号、资源、文件名、路径、
+  endpoint、bucket 或错误文本。
+- `/metrics` 先完成独立 Bearer 校验，再触发采集。未配置仍 404，坏 token 仍 401；采集失败写结构化
+  warning 并继续返回合法 Prometheus exposition。`XIQU_OPERATIONAL_METRICS_TIMEOUT_MS` 默认 5000，
+  只接受 1-60000 的整数，坏配置启动即失败。
+
+标准监控配置与依赖：
+
+- 新 `deploy/monitoring/prometheus.yml` 使用 credentials file 读取 token，并加载 `xiqu-alerts.yml`；仓库
+  不包含真实 token。规则覆盖 API down、指标采集失败、database/storage unavailable、5xx 比率（同时
+  要求 5 分钟至少 20 次请求）、P95 延迟、容量 80/95%、失败/积压任务和上传补偿失败。
+- 容量 warning 表达式显式限制 <=95%，与 critical 互斥；Alertmanager 示例仍配置同 alertname 的
+  critical 抑制 warning。示例包含分组、等待、重复间隔、resolved 通知和 `.invalid` webhook，占位 URL
+  必须由部署私有配置替换。
+- 引入仅测试使用的 `yaml` 2.9.0：ISC、Node >=14.6、职责单一且 TypeScript 支持成熟。它真正解析三份
+  配置，替代脆弱的手写正则/缩进判断，不进入生产运行 bundle。同步提交 package 与 lockfile。官方 npm
+  生产依赖审计为 7 项既有问题（0 critical、2 high、5 moderate），新 YAML 是 dev dependency，未用
+  `audit fix --force` 跨 Prisma/Vite 大版本冒险升级。
+
+测试、真实抓取与限制：
+
+- `test:observability` 10/10：覆盖 Registry 隔离、低基数 route、token、上传/清理、readiness、完整
+  operational snapshot、失败保留真实 Gauge、重叠/超时复用、环境边界，以及三份 YAML 的结构和必需
+  告警。首次跑 API 全套时，测试 Promise executor 内赋值被 TypeScript 收窄成 never；改为明确 definite
+  assignment 后通过，没有为测试放宽生产类型。
+- API 全套 61/61 通过；集成测试验证有 token 的真实 `/metrics` 包含 database/storage=1、平台配额、
+  collection success=1，显式 null 仍关闭端点。`npm run build` 与 `git diff --check` 通过，仍只有既有
+  Vite 主 chunk >500 kB 提醒和 pg 9 前置弃用提示。
+- 用临时 `XIQU_METRICS_TOKEN=r3f2-local-proof` 启动最新 API：无凭据返回 401；有凭据实际抓到
+  database=1、storage=1、used=36、quota=214748364800、四类 jobs=0、collection success=1 和时间戳。
+  随后停止临时进程并恢复普通无 token 开发 API；readiness 正常，维护模式未被改变。
+- 本机没有 `promtool`，因此没有声称执行官方 PromQL/config 二进制校验；普通测试通过真实 YAML parser
+  验证结构，并在部署 README 明确要求目标 Prometheus 版本启动前执行 `promtool check config/rules`。
+  本轮也没有安装 Docker/Prometheus/Alertmanager 或向外部 webhook 发送测试通知。
+
+完成边界与下一步：
+
+- R3f2 完成的是标准、可部署、供应商中立的外部告警基线，不是生产监控集群托管。真实网络、TLS、
+  secret、receiver、Grafana dashboard 和值班策略属于部署环境配置。
+- R3 下一轮应审计并设计 S3-native 一致备份/恢复和目标生产 bucket smoke。运行时 S3 adapter、Prometheus
+  告警与本地全量备份都已存在，但三者相加不等于远端灾备已经完成。

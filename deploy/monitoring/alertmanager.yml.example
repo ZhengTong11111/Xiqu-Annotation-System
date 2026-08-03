@@ -1,0 +1,21 @@
+# 本文件只作结构示例；真实 receiver URL 和凭据必须由部署私有配置提供。
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: xiqu-operations
+  group_by: [alertname, service, environment]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+inhibit_rules:
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: [alertname, service, environment]
+
+receivers:
+  - name: xiqu-operations
+    webhook_configs:
+      - url: https://replace-with-alert-receiver.invalid/xiqu-alerts
+        send_resolved: true

@@ -19,6 +19,7 @@ import type { HealthService } from "./healthService.js";
 import type { MediaUploadService } from "./mediaUploadService.js";
 import type { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
 import type { ObjectLifecycleService } from "./objectLifecycleService.js";
+import type { OperationalMetricsCollector } from "./operationalMetricsCollector.js";
 import {
   type ApiObservability,
   isValidMetricsToken,
@@ -80,6 +81,7 @@ export function registerApiRoutes(
   maintenance: MaintenanceCoordinator,
   diagnostics: SystemDiagnosticsService,
   observability: ApiObservability,
+  operationalMetrics: OperationalMetricsCollector,
   metricsToken: string | null,
 ) {
   // liveness 不访问外部依赖；readiness 与兼容 health 在依赖失败时明确返回 503。
@@ -119,6 +121,15 @@ export function registerApiRoutes(
     if (!metricsToken) return reply.status(404).send();
     if (!isValidMetricsToken(metricsToken, request.headers.authorization)) {
       throw unauthorized("监控凭据无效。");
+    }
+    // 授权后才执行依赖采集；失败通过 Gauge 暴露，端点仍返回可解析的 Prometheus 文本。
+    try {
+      observability.recordOperationalSnapshot(
+        await operationalMetrics.collect(),
+      );
+    } catch (error) {
+      observability.recordOperationalCollectionFailure();
+      request.log.warn({ err: error }, "Operational metrics collection failed");
     }
     reply.header("Content-Type", observability.registry.contentType);
     return observability.registry.metrics();

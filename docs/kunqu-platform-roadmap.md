@@ -15,8 +15,9 @@ ACL 后填页、目录查询索引、三视图增量消费与虚拟渲染。R3c 
 liveness/readiness、低基数 Prometheus 指标和管理员容量/一致性诊断；R3d2a 已建立跨 API 实例持久化的
 维护模式与写入静默边界；R3d2b 已完成 PostgreSQL 与对象目录一致备份、manifest/checksum 离线校验、
 隔离恢复演练和无浏览器 session 的运维恢复 CLI。R3e1/R3e2 已建立对象存储端口和真实 S3-compatible
-适配器，R3f1 已完成通用审计日志浏览、筛选和安全导出。R3 下一切片转向外部运维告警与远端对象备份/
-生产桶验收；`pg_trgm` 仍作为数据库级部署能力留到运维基线显式预置。
+适配器，R3f1 已完成通用审计日志浏览、筛选和安全导出，R3f2 已建立标准 Prometheus/Alertmanager 外部
+告警基线。R3 下一切片转向远端对象备份/生产桶验收；`pg_trgm` 仍作为数据库级部署能力留到运维基线
+显式预置。
 
 ## 1. 产品目标
 
@@ -290,7 +291,10 @@ liveness/readiness、低基数 Prometheus 指标和管理员容量/一致性诊�
 - 标签、负责人、媒体类型、更新时间等索引。
 - 分片/断点续传与大于 2 GB 资产仍待 BigInt DTO/数据库整体迁移；基础上传校验、配额和孤儿生命周期
   已完成。
-- PostgreSQL migration、维护静默和一致备份恢复演练已建立；外部告警接入仍待完成。
+- R3f2 已完成：`/metrics` 在鉴权后按请求采集数据库/对象存储可用性、平台逻辑容量与固定后台任务状态，
+  重叠 scrape 复用 in-flight，超时/异常以 collection-success Gauge 表达且不伪造零值。仓库提供可解析
+  测试的 Prometheus scrape/rule 和 Alertmanager 分组/抑制/webhook 示例，覆盖 API、依赖、错误率、延迟、
+  容量、任务和上传补偿失败；真实 secret 与 receiver 仍由部署私有配置管理。
 - R3f1 已完成：全局管理员可在独立窗口按 action、操作者、目标账号、资源和带时区时间范围查询审计；
   资源级管理者只能查询具有 `manage_permissions` 的指定资源。查询使用绑定筛选指纹的稳定 keyset
   cursor，关联账号/资源批量补齐且删除后仍有回退摘要。服务端按同一筛选条件分批读取并导出公式安全
