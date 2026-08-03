@@ -27,7 +27,8 @@ Main currently contains all major recent feature lines that matter for context:
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - backend audit logs and annotation operation logs for the first platform-governance layer
 - version 1 timeline timing domain commands with strict shared validation, draft persistence, and server logging;
-  server-side command application/replay is not implemented yet
+  shared precondition/inverse semantics and a pure ProjectData apply adapter exist, but server-side application/replay
+  is not implemented yet
 - project document state architecture (`src/state/projectDocumentState.ts`)
 - versioned browser recovery drafts for writable platform files, isolated by account/file and recoverable only against
   the same server revision
@@ -234,11 +235,19 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - retryable save failures are limited to offline/network/408/429/5xx; conflict and deterministic 4xx must stop autosave
 - `src/utils/timelineTimingCommand.ts`
   - pure extraction of version 1 timing commands from the true undo base project and final project
-  - centralizes timing lookup for nested track entities and derived Gongche targets; unsupported edits return `null` so
+  - centralizes timing lookup for both extraction and apply across nested track entities and derived Gongche targets;
+    unsupported edits return `null` so
     the caller can retain the legacy snapshot operation without recording a partial domain fact
+- `src/utils/timelineTimingCommandApply.ts`
+  - the only current ProjectData adapter for version 1 timing commands
+  - resolves every target and checks all before values before immutable apply; never rerun sentence/Gongche synchronization
+    because derived targets are already explicit command items
+  - Banyan timing apply also maintains manualOffset/manual confidence; inverse currently guarantees timing restoration,
+    not byte-identical restoration of that derived review metadata
 - `packages/shared/src/annotationCommands.ts`
-  - authoritative versioned annotation-command DTO, deterministic builder, strict unknown parser, target keys, limits,
-    and API action/payload allowlist shared by web, IndexedDB recovery, and Fastify
+  - authoritative versioned annotation-command DTO, deterministic builder/inverse, strict unknown parser, all-target
+    precondition assessment, target keys, limits, and API action/payload allowlist shared by web, IndexedDB recovery,
+    and Fastify
   - the server currently validates and logs these commands but does not apply them to `AnnotationFile.payload`
 - `apps/api/src/`
   - Fastify backend: auth, resource routes, resource ACL evaluation, annotation-file revision saves, Prisma mapping,
@@ -364,6 +373,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:annotation-confirmation-view`
 - `npm run test:annotation-commands`
 - `npm run test:timeline-timing-command`
+- `npm run test:timeline-timing-command-apply`
 - `npm run test:platform-operations`
 - `npm run test:platform-auto-save`
 - `npm run test:platform-auto-save-runtime`

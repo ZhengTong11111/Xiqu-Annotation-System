@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ANNOTATION_COMMAND_ENVELOPE_VERSION,
+  assessTimelineTimingExecution,
   buildTimelineTimingUpdateEnvelope,
   isValidAnnotationOperationPayload,
+  invertAnnotationCommandEnvelope,
   MAX_TIMELINE_COMMAND_ITEMS,
   parseAnnotationCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
@@ -39,6 +41,69 @@ test("时间轴领域命令可稳定构建和解析", () => {
   // builder 返回独立副本，调用者后改原始数组不会篡改已排队 operation。
   source[0].after.startTime = 99;
   assert.equal(envelope.command.items[0].after.startTime, 4);
+});
+
+// inverse 交换 before/after 且不修改原 envelope，双重 inverse 回到同一规范命令。
+test("领域命令可确定性反向并保持输入不可变", () => {
+  const envelope = buildTimelineTimingUpdateEnvelope([{
+    entityType: "character",
+    entityId: "char-inverse",
+    before: { startTime: 1, endTime: 2 },
+    after: { startTime: 3, endTime: 4 },
+  }]);
+  assert.ok(envelope);
+  const snapshot = structuredClone(envelope);
+  const inverse = invertAnnotationCommandEnvelope(envelope);
+  assert.deepEqual(inverse?.command.items[0].before, { startTime: 3, endTime: 4 });
+  assert.deepEqual(invertAnnotationCommandEnvelope(inverse), envelope);
+  assert.deepEqual(envelope, snapshot);
+  assert.equal(invertAnnotationCommandEnvelope({ version: 99 }), null);
+});
+
+// 前置条件穷举缺失与冲突目标；半毫秒内浮点误差仍视为同一时间事实。
+test("领域命令前置条件返回可解释的 all-or-nothing 结果", () => {
+  const envelope = buildTimelineTimingUpdateEnvelope([
+    {
+      entityType: "character",
+      entityId: "char-ready",
+      before: { startTime: 1, endTime: 2 },
+      after: { startTime: 2, endTime: 3 },
+    },
+    {
+      entityType: "banyan-mark",
+      entityId: "mark-missing",
+      before: { startTime: 4, endTime: 4 },
+      after: { startTime: 5, endTime: 5 },
+    },
+  ]);
+  assert.ok(envelope);
+  const blocked = assessTimelineTimingExecution(envelope, [{
+    entityType: "character",
+    entityId: "char-ready",
+    current: { startTime: 1.0004, endTime: 2.0004 },
+  }]);
+  assert.equal(blocked.status, "blocked");
+  assert.deepEqual(blocked.status === "blocked" ? blocked.issues : [], [{
+    code: "target_missing",
+    targetKey: "banyan-mark::mark-missing",
+    expected: { startTime: 4, endTime: 4 },
+  }]);
+
+  const mismatch = assessTimelineTimingExecution(envelope, [
+    {
+      entityType: "character",
+      entityId: "char-ready",
+      current: { startTime: 1.001, endTime: 2 },
+    },
+    {
+      entityType: "banyan-mark",
+      entityId: "mark-missing",
+      current: { startTime: 4, endTime: 4 },
+    },
+  ]);
+  assert.equal(mismatch.status, "blocked");
+  assert.equal(mismatch.status === "blocked" ? mismatch.issues[0]?.code : null, "before_mismatch");
+  assert.deepEqual(assessTimelineTimingExecution({ bad: true }, []), { status: "invalid_command" });
 });
 
 // no-op 被剔除；全部无变化时不生成空 operation。

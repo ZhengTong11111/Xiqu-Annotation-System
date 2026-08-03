@@ -2816,3 +2816,72 @@ TypeScript 足以表达，引入 schema 库反而会制造本轮不需要的运�
   这些在 HTTP/确定性测试闭环后，才适合接 WebSocket presence 与实时传输。
 - 后续命令应按文本、创建删除和轨道结构分批设计。批量导入、递归分叉与跨实体操作必须保留显式事务
   边界，不能为了减少 `project.commit` 数量而拆成失去原子性的细碎命令。
+
+## 2026-08-03：R5a2a 时间命令前置条件、反向命令与 ProjectData 原子应用
+
+本轮在 R5a1 commit `5acfd5d` 后立即开始。Codex 先检查干净工作树、R5 roadmap、现有
+`AnnotationOperation` schema/repository、API DTO、幂等指纹和 `timelineTimingCommand` resolver，再重写
+gitignore 中的 `CLAUDE_WORK.md`。审计结论是不能先给数据库日志增加 sequence 然后再猜命令如何执行：
+服务端尚无统一 precondition/apply 语义，`ProjectData` 仍属于 Web 模型。于是把 R5a2 拆为本轮 R5a2a
+纯执行合同和下一轮 R5a2b 服务端排序/确认/有界读取。本轮由 Codex 直接实现，没有委派其他代理，也
+没有引入依赖。
+
+shared 执行合同：
+
+- `annotationCommands.ts` 新增 `invertAnnotationCommandEnvelope()`，严格解析后交换全部 before/after，再经
+  builder 复制、校验和确定排序；无效 unknown 返回 `null`，不修改输入。
+- 新增 `assessTimelineTimingExecution()` 和穷举结果：invalid_command、ready，或带 issues 的 blocked。
+  issue 明确区分 target_missing 与 before_mismatch，并返回稳定 target key、expected 和 actual，未来 API
+  409/UI 不必解析自由文本。调用者提供当前目标时间快照，shared 不 import ProjectData/React/Prisma。
+- 前置比较使用统一 `TIMELINE_TIMING_COMPARISON_EPSILON = 0.0005`，允许半毫秒浮点运算误差；builder 的
+  no-op 仍精确比较，不能吞掉真实细微调整。重复 actual target 被视为含糊缺失，不随机采用某一项。
+- assessment 总是遍历完整命令并汇总问题；调用者只有收到 ready 才能写入，因此后项失败不会留下前项
+  已更新的半完成结果。
+
+ProjectData adapter 与旧逻辑清理：
+
+- `resolveProjectTimelineTiming()` 从提取 helper 的私有函数提升为唯一只读 resolver，builder 与 apply 共用
+  sentence、character、action、custom-block、attached-point、gongche-block、banyan-mark 的同一寻址。
+  action/custom/point/gongche 必须同时匹配 track id。补充 `assertNever`，以后扩 command union 时 TypeScript
+  会强迫 resolver 和 apply 分组同步扩展，不能把未知实体静默当成板眼。
+- 新增 `timelineTimingCommandApply.ts`。入口先 parse，再为每项解析 actual，一次运行 shared assessment；
+  blocked/invalid 不返回新项目。ready 后按七类 map 分组，对相关 ProjectData 集合做不可变更新；输入项目、
+  未涉及集合顺序和文字/标签/符号等非时间字段保持不变。
+- 自定义轨同时承载 blocks 与 attached point tracks，adapter 在一次轨道映射中处理两类更新，不建立互相
+  覆盖的双路径。句界和工尺派生目标已经是命令显式项，apply 不调用现有同步 helper，避免二次位移。
+- 板眼时间应用同时重算 `manualOffset = time - estimatedTime` 并设 `confidence = manual`，与编辑器现有人工
+  拖动语义一致。inverse 可恢复全部目标时间；由于 version 1 命令没有记录旧 confidence/manualOffset，
+  它不承诺整个 BanyanMark 字节级恢复。文档和 AGENTS 已明确该边界，没有伪称完整 undo。
+- 本轮没有把 adapter 接入 App 正常编辑、undo/redo 或服务器。成熟本地编辑仍直接生成最终 ProjectData；
+  adapter 是远端命令接入前的可测试执行边界，不增加隐藏 UI 或第二套时间同步。
+
+测试与自审修正：
+
+- shared 测试由 4 项增至 6 项，新增 inverse 双重往返/输入不可变、invalid inverse、ready 容差、缺失和
+  mismatch 可解释结果。现有 builder/严格 parser/API allowlist 回归继续通过。
+- 新增 `test:timeline-timing-command-apply` 3 项：一次命令覆盖七类实体，断言 apply 后目标时间与 next 一致、
+  输入不变、标签等字段保留、板眼派生字段一致；inverse 后目标时间回到 base；后项缺失、before 冲突、
+  错误 track 和损坏命令均不产生部分结果。
+- 第一版 adapter 为取得 parsed envelope 借用了“空 actual assessment”，虽然行为正确但语义绕弯；自审后
+  改为直接调用 shared parser，再单独 assessment。另把自定义轨 helper 的 readonly 强制 cast 清除，使用
+  实际可变数组类型，不留掩盖类型问题的断言。
+- 初次 `build:web` 发现测试使用当前 TS target 不支持的 `Array.at()`；改为明确末项索引。随后加入
+  exhaustive entity guard，避免 future union 扩展形成僵尸 fallback。
+- 专项执行结果：`test:annotation-commands` 6/6、`test:timeline-timing-command` 3/3、
+  `test:timeline-timing-command-apply` 3/3，`build:web` 通过，只保留既有主 chunk 大小提醒。
+- `test:platform-operations` 4/4、`test:platform-drafts` 11/11、`test:platform-auto-save` 4/4、
+  `test:platform-auto-save-runtime` 8/8，确认 inverse/apply 纯函数没有改变 operation 请求、IndexedDB、
+  自动保存、冲突或卸载生命周期。
+- `npm run test:api` 85/85；本轮无 schema/API 行为变化，真实 `api_test` PostgreSQL 上的 revision、operation
+  幂等、ACL、上传、恢复、审计、维护和备份继续通过，只保留既有 pg 9 前置弃用提示。
+- `npm run build` 完整通过 Prisma generation、shared、document-model、web 与 API；Vite 只保留既有主
+  chunk 超过 500 kB 提醒。`git diff --check` 通过；`/api/health/ready` 返回 ready，database 1.24 ms、
+  storage 0.85 ms，均为 ok。
+
+浏览器与下一步：
+
+- 既有 Browser 运行时仍明确禁止从错误 `data:` 页导航、读取或换用替代表面。本轮没有新增 UI，继续遵守
+  限制；纯函数测试不能冒充实际多端协作验收。
+- R5a2b 应基于现有 `AnnotationOperation` 幂等表设计单文件稳定 sequence、ack cursor 和 bounded replay
+  page。必须保留每请求 write 权限复核、旧幂等重放先于当前 revision 拒绝的语义，并决定服务端怎样复用
+  ProjectData adapter，而不是从 API 反向 import Web 源码。WebSocket/presence 仍在其后。

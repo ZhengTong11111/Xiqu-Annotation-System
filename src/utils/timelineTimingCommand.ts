@@ -48,8 +48,8 @@ export function buildProjectTimelineTimingCommand(
   }
   const items: TimelineTimingUpdateItem[] = [];
   for (const target of uniqueTargets.values()) {
-    const before = resolveProjectTiming(baseProject, target);
-    const after = resolveProjectTiming(nextProject, target);
+    const before = resolveProjectTimelineTiming(baseProject, target);
+    const after = resolveProjectTimelineTiming(nextProject, target);
     // 创建/删除或身份错配不是 timing.update，调用点必须回退到受控 snapshot commit。
     if (!before || !after) return null;
     items.push({ ...target, before, after });
@@ -58,7 +58,7 @@ export function buildProjectTimelineTimingCommand(
 }
 
 // 每种时间轴实体只在这里解释其时间字段；UI 和 operation 序列化不能各自猜测。
-function resolveProjectTiming(project: ProjectData, target: TimelineTimingTarget) {
+export function resolveProjectTimelineTiming(project: ProjectData, target: TimelineTimingTarget) {
   if (target.entityType === "sentence") {
     const line = project.subtitleLines.find((item) => item.id === target.entityId);
     return line ? { startTime: line.startTime, endTime: line.endTime } : null;
@@ -91,6 +91,14 @@ function resolveProjectTiming(project: ProjectData, target: TimelineTimingTarget
     );
     return block ? { startTime: block.startTime, endTime: block.endTime } : null;
   }
-  const mark = project.banyanMarks.find((item) => item.id === target.entityId);
-  return mark ? { startTime: mark.time, endTime: mark.time } : null;
+  if (target.entityType === "banyan-mark") {
+    const mark = project.banyanMarks.find((item) => item.id === target.entityId);
+    return mark ? { startTime: mark.time, endTime: mark.time } : null;
+  }
+  return assertNever(target.entityType);
+}
+
+// 新增实体类型时强制同步扩展 ProjectData resolver，不能静默落入错误集合。
+function assertNever(value: never): never {
+  throw new Error(`未处理的时间轴实体类型：${String(value)}`);
 }

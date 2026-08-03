@@ -115,7 +115,21 @@ operation；若目标缺失、id 不满足协议、超过 500 项，或同一次
 - 它不能作为恢复完整项目的唯一来源。
 - 不应把完整 before/after `ProjectData` 复制进每一条 operation。
 
-下一步应先建立命令的纯 apply/precondition、服务端顺序与确认合同，再逐步引入：
+### 4.1 R5a2a 命令执行语义
+
+领域命令执行固定经过 `parse -> resolve actual -> assess all preconditions -> immutable apply`：
+
+1. shared parser 先规范化 envelope；无效输入直接 `invalid_command`。
+2. ProjectData adapter 按稳定目标解析当前时间，轨道内实体必须同时命中 track id。
+3. shared assessment 一次检查全部 before；半毫秒内浮点差异允许通过，缺失或冲突返回稳定 target key、
+   expected 和 actual。任一问题都会阻断整个命令。
+4. 只有 `ready` 才按实体集合不可变写入 after。命令已包含句界/工尺派生变化，apply 不再运行同步 helper。
+5. inverse 交换所有 before/after 并重新校验，可恢复目标时间。板眼 apply 还会维护 manualOffset 与 manual
+   confidence；这些派生审校字段目前不属于 inverse payload，所以 inverse 保证时间恢复而非完整对象字节相同。
+
+该纯 adapter 当前用于合同证明和未来远端接入测试，尚未替换成熟的本地直接编辑或 undo/redo 路径。
+
+下一步应复用已完成的纯 apply/precondition 建立服务端顺序与确认合同，再逐步引入：
 
 - `character.updateText`
 - `block.create`
