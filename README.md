@@ -1060,6 +1060,9 @@ export XIQU_BACKUP_S3_SECRET_ACCESS_KEY=replace-me
 export XIQU_BACKUP_S3_FORCE_PATH_STYLE=true
 export XIQU_BACKUP_S3_PREFIX=platform-backups
 
+# 部署到真实目标前先验证最小 IAM、写入、复制发布、读取、Range、列举和无残留删除。
+npm run backup:check-remote-capabilities
+
 npm run backup:create-remote -- --operator admin \
   --reason "每周远端一致备份" --work-root ./data/remote-backup-work
 npm run backup:verify-remote -- --backup-id xiqu-backup-...
@@ -1079,6 +1082,12 @@ CLI 会同时报告原始错误和残留清理错误。manifest 中的 missing/o
 对象 key/size/modifiedAt、分类和候选集合的 SHA-256 plan token。`cleanup` 会重新扫描，token 不同则零删除
 并要求重新检查。完整包先删除 `manifest.json`，再删除 payload；manifest 删除失败时不会触碰该包其他
 对象。坏 manifest、声明/实际集合不一致和未知顶层对象只报告，当前不会自动删除。
+
+生产 MinIO/AWS 的最小权限模板、TLS/path-style 检查、凭据边界和完整验收顺序见
+[`deploy/object-storage/README.md`](deploy/object-storage/README.md)。能力检查只在随机
+`.acceptance/<uuid>/` 下写入小型探针，覆盖 staged 上传、HEAD/LIST、server-side copy、完整/Range GET
+和 DELETE，并在成功或失败出口幂等清理。SeaweedFS 或本机 HTTP 测试只证明工具链可运行，不能替代
+目标生产环境的 TLS、网络、IAM、真实备份和隔离恢复验收。
 
 备份包结构固定为：
 

@@ -25,6 +25,7 @@ import { verifyBackupDirectory } from "../src/backup/backupVerifier.js";
 import { serializeBackupManifest } from "../src/backup/backupManifest.js";
 import { RemoteBackupLifecycleService } from "../src/backup/remoteBackupLifecycle.js";
 import { remoteBackupKeys } from "../src/backup/remoteBackupPaths.js";
+import { checkRemoteStorageCapabilities } from "../src/backup/remoteStorageCapabilityCheck.js";
 
 const TEST_ACCESS_KEY = "S3RVER";
 const TEST_SECRET_KEY = "S3RVER";
@@ -107,6 +108,20 @@ test("S3 适配器超限失败不留对象且 readiness 反映 bucket 状态", a
     bucket: "missing-bucket",
   });
   await assert.rejects(missingBucketStorage.checkReadiness());
+});
+
+// 部署验收服务通过真实 S3-compatible 协议覆盖发布、读取、Range、列举与无残留清理。
+test("S3 远端能力检查完成全协议后不改变 prefix 对象集合", async () => {
+  const storage = new S3ObjectStorage({
+    ...sharedFixture.options,
+    prefix: "platform-capability-check",
+  });
+  const before = await storage.listStoredObjects();
+  const report = await checkRemoteStorageCapabilities(storage);
+  const after = await storage.listStoredObjects();
+  assert.equal(report.passed, true);
+  assert.equal(report.cleaned, true);
+  assert.deepEqual(after, before);
 });
 
 // 远端备份协议在两个隔离 prefix 间真实传输，manifest-last 与 verifier 不依赖内存替身。

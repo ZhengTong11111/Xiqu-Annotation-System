@@ -18,7 +18,8 @@ liveness/readiness、低基数 Prometheus 指标和管理员容量/一致性诊�
 适配器，R3f1 已完成通用审计日志浏览、筛选和安全导出，R3f2 已建立标准 Prometheus/Alertmanager 外部
 告警基线，R3g1 已完成独立 S3-compatible 命名空间中的 manifest-last 远端一致备份创建与流式校验，
 R3g2a 已完成远端包单次流式物化和真实 PostgreSQL/对象目录隔离恢复演练，R3g2b1 已完成 manifest-aware
-远端包检查、保留计划、稳定 token 和确认清理。R3 下一切片转向生产桶/IAM 验收；`pg_trgm` 仍作为
+远端包检查、保留计划、稳定 token 和确认清理；R3g2b2a 已补齐无残留能力验收命令、最小 IAM 模板和
+部署检查表。R3 下一切片是在真实生产 MinIO/AWS 环境执行 R3g2b2 验收；`pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
 ## 1. 产品目标
@@ -314,8 +315,13 @@ R3g2a 已完成远端包单次流式物化和真实 PostgreSQL/对象目录隔�
   享有宽限，结构完整包按 manifest 时间、保留天数和至少最新 N 个生成计划。计划 token 绑定全部对象
   事实与策略，确认清理前重新扫描；完整包 manifest-first，坏 manifest/不一致/未知对象只报告。真实
   SeaweedFS CLI inspect -> token -> cleanup -> verify smoke 已通过。
+- R3g2b2a 已完成：新增不连接数据库、只访问独立备份 prefix 的无残留能力检查，真实覆盖 readiness、
+  staged upload、HEAD/LIST、server-side copy、完整/Range GET 和 DELETE；失败出口聚合补偿错误。仓库同时
+  提供由当前 SDK 调用推导的 bucket/prefix 最小 IAM 模板，以及 TLS、网络、凭据和生产验收检查表。
+  SeaweedFS 服务测试与真实 CLI smoke 均证明运行前后 prefix 对象集合一致，但不冒充生产验收。
 - 对象存储端口、本地/S3-compatible 适配器、本地/远端隔离恢复与远端保留清理已完成；下一步为 R3g2b2
-  真实生产 MinIO/AWS bucket、TLS/网络和最小 IAM 权限 smoke，并明确默认凭据链策略。
+  在真实生产 MinIO/AWS bucket 执行能力检查、真实备份/校验/隔离恢复、生命周期 dry-run/清理，并归档
+  脱敏报告；同时人工核对 TLS/网络/最小 IAM 和凭据轮换。默认凭据链仍未启用，工作负载身份需独立评审。
 
 完成标准：大量资源下仍可用，故障可定位，数据库和对象可恢复。
 

@@ -263,7 +263,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     stable plan tokens, and manifest-first confirmed cleanup; malformed/inconsistent/unrecognized objects are
     report-only and must not silently become deletion candidates
   - `remoteBackupRetentionPolicy.ts` is the only parser for environment and CLI retention values
+  - `remoteStorageCapabilityCheck.ts` owns the no-database, no-residue backup-target acceptance probe across readiness,
+    staged upload, HEAD/LIST, server-side publish, full/range reads, and deletion; it must use the `ObjectStorage` port
+    and aggregate cleanup failures instead of creating a second S3 client path
   - native PostgreSQL commands receive credentials through `PG*` environment variables, never shell-concatenated argv
+- `deploy/object-storage/`
+  - production backup-target least-privilege policy template and MinIO/AWS acceptance checklist
+  - local SeaweedFS passing is protocol/tool validation only; never mark R3g2b2 production acceptance complete until the
+    command, real backup/verify/restore, TLS/network checks, and IAM review run in the target environment
 - `packages/shared/src/`
   - API/platform DTOs and shared contract types used by web and API
 - `packages/document-model/src/`
@@ -310,6 +317,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:audit-log`
 - `npm run test:maintenance`
 - `npm run test:backup`
+- `npm run backup:check-remote-capabilities`
 - `npm run backup:create-remote`
 - `npm run backup:verify-remote`
 - `npm run backup:restore-remote-drill`

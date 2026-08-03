@@ -14,6 +14,7 @@ import { verifyRemoteBackup } from "./remoteBackupVerifier.js";
 import { runRemoteRestoreDrill } from "./remoteRestoreDrillService.js";
 import { RemoteBackupLifecycleService } from "./remoteBackupLifecycle.js";
 import { resolveRemoteBackupRetentionPolicy } from "./remoteBackupRetentionPolicy.js";
+import { checkRemoteStorageCapabilities } from "./remoteStorageCapabilityCheck.js";
 
 const DEFAULT_DATABASE_URL =
   "postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public";
@@ -60,6 +61,7 @@ const COMMAND_OPTIONS: Record<string, { values: string[]; flags: string[] }> = {
     ],
     flags: ["confirm"],
   },
+  "backup:check-remote-capabilities": { values: [], flags: [] },
 };
 
 const abortController = new AbortController();
@@ -106,6 +108,13 @@ async function runCommand(
       createdAt: result.manifest?.createdAt ?? null,
     });
     if (!result.valid) throw new Error("远端备份校验未通过。 ");
+    return;
+  }
+  // 能力验收只在独立备份目标创建小型探针，并在返回前清理，不接触数据库或线上对象命名空间。
+  if (command === "backup:check-remote-capabilities") {
+    printJson(await checkRemoteStorageCapabilities(
+      createRemoteBackupStorageFromEnvironment(),
+    ));
     return;
   }
   if (command === "backup:restore-drill") {

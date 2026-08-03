@@ -2183,3 +2183,83 @@ DeepSeek、GLM 或其他代理。用户明确要求 Development Log 不只写最
 - R3g2b1 仍不是生产灾备验收。下一轮 R3g2b2 需要真实目标 MinIO/AWS bucket、TLS/网络路径、最小 IAM
   policy（create/verify/restore/list/delete 所需动作分离）、凭据轮换和默认 credential-chain 决策；若当前
   开发环境没有这类外部资源，应先产出可执行验收工具/文档，不能伪造生产通过。
+
+## 2026-08-03：R3g2b2a 远端对象存储验收工具与最小权限部署契约
+
+本轮从已提交且工作树干净的 R3g2b1 commit `e72289b` 开始。先核对分支、roadmap、`deploy/`、
+`S3ObjectStorage` 的全部命令、远端备份 storage factory、CLI 参数白名单和现有 SeaweedFS 协议测试。
+审计确认仓库此前只有 monitoring 部署资料，没有对象存储 IAM 模板或目标环境验收命令；roadmap 也把
+真实 MinIO/AWS、TLS、网络和权限 smoke 留给 R3g2b2。当前开发环境没有生产 bucket、域名或 IAM 凭据，
+因此没有伪造“生产通过”，而是把本轮明确拆成 R3g2b2a 工具/部署契约，真实 R3g2b2 继续保持未完成。
+被忽略的 `CLAUDE_WORK.md` 已整体替换为本轮任务书，旧 R3g2b1 日志没有继续留在当前任务文件。本轮由
+Codex 直接实施，没有委托 Claude Code、DeepSeek、GLM 或其他代理。
+
+能力探针设计与实现：
+
+- 新 `remoteStorageCapabilityCheck.ts` 只依赖既有 `ObjectStorage`，没有创建第二个 AWS SDK client、环境
+  解析器或数据库连接。探针使用随机 `.acceptance/<uuid>/probe.bin`；该根不符合正式 backup-id，因此
+  即使异常中断也不会被 lifecycle 错认成已提交备份包。
+- 固定小型内容在 staged upload 时验证 final key、size 和 SHA-256；随后分别执行 staged HEAD、完整
+  prefix LIST、server-side copy publish、staged 消失/final 存在、完整 GET、闭区间 Range GET、final
+  DELETE，以及 HEAD/LIST 无残留检查。读取 helper 对字节数设置严格上限，异常服务不能借探针持续灌流。
+- 正常路径删除后仍进入统一补偿阶段，再对 staged/final 两个可能 key 幂等删除。一个删除失败不会阻止
+  另一个；业务错误与全部清理错误通过 `AggregateError` 一起报告。成功 JSON 只含固定 format/version、
+  起止时间、安全 backend descriptor、8 个能力项和 `passed/cleaned=true`，不含随机 key、正文或凭据。
+- 如果 `putStagedObject()` 在返回 staged key 前失败，服务无法也不应猜测适配器内部 UUID；这依赖端口
+  的上传失败补偿合同。当前 S3 adapter 已 abort multipart、等待 upload promise 并幂等删除 staged。
+- CLI 新增 `backup:check-remote-capabilities`，位于 Prisma 装配前，只使用强制非空 prefix 的
+  `XIQU_BACKUP_S3_*` factory。没有接触业务数据库、维护状态、线上 `XIQU_S3_*` 或远端备份保留计划。
+
+最小权限与部署资料：
+
+- 新 `deploy/object-storage/backup-target-policy.json` 把 bucket 级 `ListBucket`/
+  `ListBucketMultipartUploads` 限定到部署者替换的备份 prefix，对象 ARN 只覆盖该 prefix；对象动作仅有
+  Get/Put/Delete、AbortMultipartUpload 和 ListMultipartUploadParts，没有使用 `s3:*`。
+- 权限不是凭印象罗列：`HeadBucket` 与 `ListObjectsV2` 对应 ListBucket；SDK multipart 对应 Put/Abort/
+  list parts；`CopyObject` 没有独立 IAM action，而依赖源 GetObject 与目标 PutObject；HEAD/完整与 Range
+  GET 对应 GetObject。SSE-KMS 权限留给具体 key 的独立安全评审，不把 KMS 通配塞入通用模板。
+- `deploy/object-storage/README.md` 记录运行时/备份命名空间隔离、AWS 与 MinIO path-style 差异、生产 TLS、
+  显式凭据现状、模板替换方式、验收命令和生产记录清单。默认凭据链仍刻意关闭；IAM role/Web Identity/
+  工作负载身份需要单独设计刷新和失效生命周期，不能在本轮悄悄启用。
+- 根 README、`.env.example`、AGENTS 和 roadmap 同步。roadmap 只将 R3g2b2a 标为完成，并明确下一轮要在
+  真实目标执行能力检查、真实备份/校验/恢复、生命周期清理，以及人工 TLS/网络/IAM/轮换核对。
+
+测试失败、修复与真实协议验证：
+
+- 首次 `test:backup` 在 TypeScript 阶段失败：测试把 `Error` 直接传给只接受字符串的 `assert.match`。
+  改为匹配 `error.message`，业务代码未改。
+- 第二次专项运行 27/28：失败测试错误地要求失败路径至少有 3 次公开 `deleteObject` 调用。真实 S3
+  promote 内部确实调用 delete，但 `ObjectStorage` 端口只承诺发布语义，不要求替身也从公开方法自调用。
+  测试改为精确断言补偿阶段两个 key 的 2 次删除，避免把 adapter 实现细节写进服务合同。
+- 最终 `test:backup` 28/28。新增内存测试覆盖完整调用顺序、8 项报告、成功零对象、读取失败后双 key
+  补偿，以及业务失败和两个清理失败同时保留；报告序列化中不含测试秘密。
+- `test:s3-storage` 5/5。新增真实 SeaweedFS prefix 场景执行整个验收服务，并比较运行前后对象集合完全
+  相同；既有 staged/promote/Range/list/delete、超限清理、远端包发布物化与生命周期测试继续通过。
+- 第一次真实 npm CLI smoke 尚未进入应用：临时 SeaweedFS `-dir` 子目录未预建，服务启动即报告
+  `no such file or directory`；trap 已终止进程并删除临时根，没有创建 bucket 或运行探针。脚本补上
+  `mkdir -p` 后重跑。
+- 第二次 CLI smoke 使用 8 个随机端口、临时 SeaweedFS 卷、隔离 bucket
+  `xiqu-capability-smoke` 和 prefix `platform-backups`。`npm run --silent backup:check-remote-capabilities`
+  返回 format/version 1、`passed=true`、`cleaned=true`、8 项检查；随后官方 SDK ListObjectsV2 确认 prefix
+  `remainingObjects=0`。临时服务、卷和报告在退出 trap 中删除。本地 endpoint 为 HTTP，只证明命令、
+  环境装配和 S3-compatible 协议闭环，不形成生产 TLS/IAM 结论。
+
+自我审查与剩余边界：
+
+- 新文件、类型组、函数、循环、失败补偿和业务条件均有中文功能注释；没有 `any`、新依赖、第二套 S3
+  factory 或可序列化秘密。IAM JSON 是带 `${...}` 占位符的有效模板，文档明确要求部署后检查占位符已
+  替换，不能原样冒充实际策略。
+- 探针正常路径在补偿前已用 HEAD/LIST 验证空根；补偿重复删除利用 S3 幂等性。若删除权限或服务异常，
+  命令以非零退出并聚合清理故障，运维必须人工检查 `.acceptance/`，不能继续宣称验收通过。
+- R3g2b2 仍受外部环境阻塞：没有真实生产 MinIO/AWS bucket、受信任 TLS、网络路径和 IAM 主体。本轮不
+  能验证 bucket versioning/object lock/KMS/跨区域规则，也没有启用默认凭据链。下一轮必须在目标环境
+  保存脱敏能力报告，并完成真实 backup create/verify/isolated restore 和 lifecycle dry-run/cleanup。
+
+最终回归与提交前审查：
+
+- `npm run test:backup` 最终 28/28，`npm run test:s3-storage` 5/5，`npm run test:api` 82/82；API 测试真实
+  应用 8 个 migration 到隔离 `api_test` schema，既有 pg 9 前置弃用提示没有冒充本轮回归。
+- `npm run build` 通过 Prisma generation、shared、document-model、web 和 API；只保留既有 Vite 主 chunk
+  大于 500 kB 提醒。`git diff --check` 与 IAM JSON 语法检查通过，未新增依赖或 lockfile 变化。
+- 最终全文检索确认命令只有一个 CLI 调度入口、服务只有一个 `ObjectStorage` 编排路径；没有遗留临时
+  smoke 文件、SeaweedFS 进程、测试 bucket、旧探针或僵尸逻辑。文档没有把 R3g2b2a 写成生产验收完成。
