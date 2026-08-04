@@ -45,7 +45,8 @@ R5b3a1、R5b3a2a/a2b/a2c 与 R5b3a3a/a3b 已完成共享持久类型、完整纯
 ProjectData parser、有序原子命令批次合同和服务端原子数据库提交；R5b3b1 已完成客户端完整命令链审计、
 原子批次 planner、严格响应/错误策略、single-flight 重试 runtime 和 document saved baseline 部分确认；
 R5b3b2 已完成 App、自动保存、IndexedDB 恢复状态、mutation lease 和冲突状态的真实接线，可重放编辑现已
-直接原子提交并逐批确认，旧/不可重放边界才走有界完整快照；下一步进入 R5b3c 的真实多账号并发与冲突策略；
+直接原子提交并逐批确认，旧/不可重放边界才走有界完整快照；R5b3c1 已建立共享本地命令链审计、纯
+all-or-nothing 冲突重放判定和真实双账号并发矩阵；下一步进入 R5b3c2 的 App 冲突决策接线与用户确认；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -569,9 +570,20 @@ R5b3b2 已完成 App、自动保存、IndexedDB 恢复状态、mutation lease �
         revision 15→16 和 operation 8→9，一次原子审计、无额外 PUT revision，租约归零。
       WebSocket 仍只负责 revision/presence/activity 提示；clean 客户端继续用 committed feed，dirty 客户端不得
       被远端 payload 静默覆盖。
-    - R5b3c 待推进：在真实多账号并发测试后确定块级冲突策略。优先采用稳定实体 + before precondition +
-      revision 的可解释乐观并发；只有证明确需同字段并发合并时才引入 OT/CRDT。结构、批量和递归分叉继续
-      使用租约/受控事务，并补齐拒绝、重取、人工比较与恢复路径。
+    - R5b3c 按“纯判定与真实证据 -> App 重基线与用户确认”分轮推进，不能让 409 处理在没有完整本地链证明时
+      静默覆盖 dirty 文档：
+      - R5b3c1 已完成：抽出正常提交与冲突判定共用的 pending command chain 审计，统一检查 legacy barrier、
+        operation 身份、local revision 连续性、严格 envelope、before precondition 和 current project 完整解释。
+        新纯 rebase planner 先在原 saved baseline 证明本地链，再在最新服务器 ProjectData 上按序试运行同一批
+        envelope；全部成功才返回完整 rebased project、原 operation id/envelope 与租约用途，任一目标缺失或
+        before mismatch 都返回有界且无正文的机器摘要，不泄漏前序局部结果。真实 Fastify/PostgreSQL 双账号
+        测试证明：双方从 revision N 读取，A 提交后 B 的旧 base 409 且零数据库副作用；无交集 B 命令可用同一
+        id/envelope 在 N+1 重提至 N+2；同目标旧基线不重提；撤权后即使内容可重放仍由服务端 403。现有人工
+        草稿比较继续保留，本轮尚未接入 App 自动/确认重基线。
+      - R5b3c2 待推进：把纯判定接入现有 409 冲突交接。必须先串行 flush 同一 IndexedDB 草稿并权威重取文件；
+        可重放结果经明确用户确认后，原子替换 saved/current baseline、保留 pending 身份并以最新 revision 重提；
+        同目标冲突、legacy barrier、权限变化、最新文件再变化或计划指纹失效继续进入既有结构化人工比较。
+        完成前不得把 WebSocket activity/presence 当可靠 operation 通道，也不引入 OT/CRDT。
 - R5 完成前增加可部署候选门禁：提供至少一个单服务器 PostgreSQL + Fastify + Web + 本地或 S3-compatible
   对象存储的可重复部署方案，提交 `docs/server-deployment.md`，覆盖 Node/PostgreSQL 版本、迁移、环境变量、
   反向代理/TLS、持久目录、进程启动、健康检查、备份恢复和升级回滚。它是可供试用的部署基线，不等同于

@@ -1,34 +1,25 @@
 import {
   MAX_ATOMIC_ANNOTATION_COMMAND_OPERATIONS,
   getAnnotationMutationLeasePurposeForCommand,
-  isReplayableAnnotationCommandEnvelope,
-  parseAnnotationCommandEnvelope,
   type AnnotationMutationPurpose,
   type CommitAnnotationCommandBatchRequest,
 } from "@xiqu/shared";
-import {
-  applyAnnotationCommandToProject,
-  areProjectValuesEqual,
-} from "@xiqu/document-model";
 import type {
   ProjectDocumentOperation,
 } from "../state/projectDocumentState";
 import type { ProjectData } from "../types";
 import { normalizeTrackSnapEnabledForProject } from "../utils/project";
+import {
+  auditPendingAnnotationCommandChain,
+  type PendingCommandChainBarrierReason,
+  type PendingCommandChainInvalidReason,
+} from "./platformPendingCommandChain";
 
-export type AtomicCommandLegacyBarrierReason =
-  | "legacy_submitted_operation"
-  | "legacy_operation"
-  | "snapshot_boundary"
-  | "track_snap_operation";
+export type AtomicCommandLegacyBarrierReason = PendingCommandChainBarrierReason;
 
 export type AtomicCommandBlockedReason =
   | "invalid_server_revision"
-  | "invalid_operation"
-  | "duplicate_operation_id"
-  | "non_contiguous_local_revision"
-  | "command_precondition_failed"
-  | "local_chain_mismatch";
+  | PendingCommandChainInvalidReason;
 
 export type AtomicCommandPlan = {
   request: CommitAnnotationCommandBatchRequest;
@@ -77,64 +68,25 @@ export function planAtomicAnnotationCommandBatch(input: PlanInput): AtomicComman
   }
 
   const maxBatchSize = normalizeBatchSize(input.maxBatchSize);
-  const operationIds = new Set<string>();
-  let auditProject = input.savedProject;
-  let acknowledgedProject: ProjectData | null = null;
-  let previousLocalRevision = input.savedLocalRevision;
-
-  for (const [operationIndex, operation] of input.pendingOperations.entries()) {
-    const barrier = getLegacyBarrier(operation);
-    if (barrier) {
-      return {
-        status: "legacy_required",
-        reason: barrier,
-        operationId: operation.id,
-        operationIndex,
-      };
-    }
-    if (operation.syncState !== "pending") {
-      return blocked("invalid_operation", operation, operationIndex);
-    }
-    if (operationIds.has(operation.id)) {
-      return blocked("duplicate_operation_id", operation, operationIndex);
-    }
-    operationIds.add(operation.id);
-    if (
-      operation.baseRevision !== previousLocalRevision ||
-      operation.localRevision !== previousLocalRevision + 1
-    ) {
-      return blocked("non_contiguous_local_revision", operation, operationIndex);
-    }
-    previousLocalRevision = operation.localRevision;
-
-    const envelope = parseAnnotationCommandEnvelope(operation.commandEnvelope);
-    if (
-      !envelope ||
-      envelope.command.type !== operation.type ||
-      !operation.summary.hasProjectChange ||
-      operation.summary.hasTrackSnapChange
-    ) {
-      return blocked("invalid_operation", operation, operationIndex);
-    }
-    const applied = applyAnnotationCommandToProject(auditProject, envelope);
-    if (applied.status !== "applied") {
-      return {
-        ...blocked("command_precondition_failed", operation, operationIndex),
-        issues: "issues" in applied ? applied.issues : applied.status,
-      };
-    }
-    auditProject = applied.project;
-    if (operationIndex === Math.min(maxBatchSize, input.pendingOperations.length) - 1) {
-      acknowledgedProject = auditProject;
-    }
+  const audit = auditPendingAnnotationCommandChain({
+    savedProject: input.savedProject,
+    currentProject: input.currentProject,
+    savedLocalRevision: input.savedLocalRevision,
+    pendingOperations: input.pendingOperations,
+    captureAfterCount: maxBatchSize,
+  });
+  if (audit.status === "manual_review_required") {
+    return { ...audit, status: "legacy_required" };
   }
-
-  // 当前项目必须能被整条 pending command chain 完整解释；合同外变化只能回退到完整快照保存。
-  if (!areProjectValuesEqual(auditProject, input.currentProject)) {
-    return { status: "blocked", reason: "local_chain_mismatch" };
+  if (audit.status === "invalid_local_chain") {
+    return { ...audit, status: "blocked" };
+  }
+  if (audit.status !== "ready") {
+    return { status: "blocked", reason: "invalid_operation" };
   }
 
   const batchOperations = input.pendingOperations.slice(0, maxBatchSize);
+  const acknowledgedProject = audit.capturedProject;
   if (!acknowledgedProject || batchOperations.length === 0) {
     return { status: "blocked", reason: "invalid_operation" };
   }
@@ -167,18 +119,6 @@ export function planAtomicAnnotationCommandBatch(input: PlanInput): AtomicComman
   };
 }
 
-function getLegacyBarrier(
-  operation: ProjectDocumentOperation,
-): AtomicCommandLegacyBarrierReason | null {
-  if (operation.syncState === "submitted") return "legacy_submitted_operation";
-  if (operation.type === "track-snap.update" || operation.action === "track-snap") {
-    return "track_snap_operation";
-  }
-  if (!operation.commandEnvelope) return "legacy_operation";
-  if (!isReplayableAnnotationCommandEnvelope(operation.commandEnvelope)) return "snapshot_boundary";
-  return null;
-}
-
 function resolveRequiredLeasePurpose(
   operations: readonly ProjectDocumentOperation[],
 ): AnnotationMutationPurpose | null {
@@ -196,19 +136,6 @@ function normalizeBatchSize(value: number | undefined) {
     MAX_ATOMIC_ANNOTATION_COMMAND_OPERATIONS,
     Math.floor(value),
   ));
-}
-
-function blocked(
-  reason: AtomicCommandBlockedReason,
-  operation: ProjectDocumentOperation,
-  operationIndex: number,
-) {
-  return {
-    status: "blocked" as const,
-    reason,
-    operationId: operation.id,
-    operationIndex,
-  };
 }
 
 function isDatabaseInteger(value: number) {

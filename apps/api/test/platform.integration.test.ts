@@ -4496,6 +4496,203 @@ test("平台资源 API 集成测试", async (suite) => {
       }), operationsBeforeBlocked);
     });
 
+    await suite.test("双账号旧基线冲突、无交集重提与撤权均保持原子边界", async () => {
+      const created = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "atomic-two-account-rebase.json",
+          payload: createAtomicCommandProject(),
+        },
+      });
+      assert.equal(created.statusCode, 200, created.body);
+      const fileId = String((dataOf(created.json()).resource as JsonObject).id);
+      const grant = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${fileId}/permissions/user-student`,
+        payload: { capabilities: ["read", "write"], inheritToChildren: false },
+      });
+      assert.equal(grant.statusCode, 200, grant.body);
+
+      // 两个账号必须确实从同一 revision/payload 起步，不能用测试内变量冒充真实读取。
+      const [adminRead, studentRead] = await Promise.all([
+        jsonRequest(app, adminToken, {
+          method: "GET",
+          url: `/api/annotation-files/${fileId}`,
+        }),
+        jsonRequest(app, studentToken, {
+          method: "GET",
+          url: `/api/annotation-files/${fileId}`,
+        }),
+      ]);
+      assert.equal(adminRead.statusCode, 200, adminRead.body);
+      assert.equal(studentRead.statusCode, 200, studentRead.body);
+      assert.equal(dataOf(adminRead.json()).revision, 1);
+      assert.equal(dataOf(studentRead.json()).revision, 1);
+      assert.deepEqual(dataOf(adminRead.json()).payload, dataOf(studentRead.json()).payload);
+
+      const adminEnvelope = buildTimelineTimingUpdateEnvelope([{
+        entityType: "character",
+        entityId: "atomic-char-1",
+        before: { startTime: 1, endTime: 2 },
+        after: { startTime: 1.25, endTime: 2.25 },
+      }]);
+      const studentEnvelope = buildTimelineTimingUpdateEnvelope([{
+        entityType: "character",
+        entityId: "atomic-char-2",
+        before: { startTime: 2, endTime: 3 },
+        after: { startTime: 2.5, endTime: 3.5 },
+      }]);
+      assert.ok(adminEnvelope && studentEnvelope);
+      const adminCommit = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: {
+          baseRevision: 1,
+          operations: [{
+            clientOperationId: "two-account-admin-a",
+            localRevision: 1,
+            action: adminEnvelope.command.type,
+            payload: adminEnvelope,
+          }],
+        },
+      });
+      assert.equal(adminCommit.statusCode, 200, adminCommit.body);
+      assert.equal(dataOf(adminCommit.json()).committedRevision, 2);
+
+      const factsAfterAdmin = await readAnnotationCommitFacts(prisma, fileId);
+      const staleStudentCommit = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: {
+          baseRevision: 1,
+          operations: [{
+            clientOperationId: "two-account-student-b",
+            localRevision: 1,
+            action: studentEnvelope.command.type,
+            payload: studentEnvelope,
+          }],
+        },
+      });
+      assert.equal(staleStudentCommit.statusCode, 409, staleStudentCommit.body);
+      assert.equal(
+        (errorOf(staleStudentCommit.json()).details as JsonObject).code,
+        "annotation_command_batch_revision_conflict",
+      );
+      assert.deepEqual(
+        await readAnnotationCommitFacts(prisma, fileId),
+        factsAfterAdmin,
+        "旧 revision 冲突不能写 operation、快照、审计或推进 revision",
+      );
+
+      // Web 纯 rebase planner 已证明无交集 envelope 可重放；服务端仍以最新 revision 和原 operation id 权威提交。
+      const latestForStudent = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${fileId}`,
+      });
+      assert.equal(dataOf(latestForStudent.json()).revision, 2);
+      const rebasedStudentCommit = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: {
+          baseRevision: 2,
+          operations: [{
+            clientOperationId: "two-account-student-b",
+            localRevision: 1,
+            action: studentEnvelope.command.type,
+            payload: studentEnvelope,
+          }],
+        },
+      });
+      assert.equal(rebasedStudentCommit.statusCode, 200, rebasedStudentCommit.body);
+      assert.equal(dataOf(rebasedStudentCommit.json()).committedRevision, 3);
+      const storedAfterRebase = await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: fileId },
+      });
+      const rebasedProject = storedAfterRebase.payload as ReturnType<typeof createAtomicCommandProject>;
+      assert.equal(rebasedProject.characterAnnotations[0]?.startTime, 1.25);
+      assert.equal(rebasedProject.characterAnnotations[1]?.startTime, 2.5);
+
+      // 同目标旧基线仍只能得到 revision conflict；客户端纯判定发现 before mismatch 后不会发第二次写。
+      const sameTargetEnvelope = buildTimelineTimingUpdateEnvelope([{
+        entityType: "character",
+        entityId: "atomic-char-1",
+        before: { startTime: 1.25, endTime: 2.25 },
+        after: { startTime: 4, endTime: 5 },
+      }]);
+      const winningEnvelope = buildTimelineTimingUpdateEnvelope([{
+        entityType: "character",
+        entityId: "atomic-char-1",
+        before: { startTime: 1.25, endTime: 2.25 },
+        after: { startTime: 5, endTime: 6 },
+      }]);
+      assert.ok(sameTargetEnvelope && winningEnvelope);
+      const winningCommit = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: {
+          baseRevision: 3,
+          operations: [{
+            clientOperationId: "two-account-admin-conflict",
+            action: winningEnvelope.command.type,
+            payload: winningEnvelope,
+          }],
+        },
+      });
+      assert.equal(winningCommit.statusCode, 200, winningCommit.body);
+      const factsBeforeSameTarget = await readAnnotationCommitFacts(prisma, fileId);
+      const staleSameTarget = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: {
+          baseRevision: 3,
+          operations: [{
+            clientOperationId: "two-account-student-conflict",
+            action: sameTargetEnvelope.command.type,
+            payload: sameTargetEnvelope,
+          }],
+        },
+      });
+      assert.equal(staleSameTarget.statusCode, 409, staleSameTarget.body);
+      assert.deepEqual(await readAnnotationCommitFacts(prisma, fileId), factsBeforeSameTarget);
+
+      // 本地可重放判定从来不是授权证明；撤权后即使 envelope 内容无冲突，服务端仍必须拒绝且零副作用。
+      const revokedEnvelope = buildTimelineTimingUpdateEnvelope([{
+        entityType: "character",
+        entityId: "atomic-char-2",
+        before: { startTime: 2.5, endTime: 3.5 },
+        after: { startTime: 3, endTime: 4 },
+      }]);
+      assert.ok(revokedEnvelope);
+      const revoke = await jsonRequest(app, adminToken, {
+        method: "DELETE",
+        url: `/api/resources/${fileId}/permissions/user-student`,
+      });
+      assert.equal(revoke.statusCode, 200, revoke.body);
+      const breakInheritance = await jsonRequest(app, adminToken, {
+        method: "PATCH",
+        url: `/api/resources/${fileId}/permission-inheritance`,
+        payload: { breakPermissionInheritance: true },
+      });
+      assert.equal(breakInheritance.statusCode, 200, breakInheritance.body);
+      const factsBeforeForbidden = await readAnnotationCommitFacts(prisma, fileId);
+      const forbidden = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: {
+          baseRevision: 4,
+          operations: [{
+            clientOperationId: "two-account-student-revoked",
+            action: revokedEnvelope.command.type,
+            payload: revokedEnvelope,
+          }],
+        },
+      });
+      assert.equal(forbidden.statusCode, 403, forbidden.body);
+      assert.deepEqual(await readAnnotationCommitFacts(prisma, fileId), factsBeforeForbidden);
+    });
+
     await suite.test("原子领域命令批次拒绝畸形文档并串行化同 revision 并发", async () => {
       const malformed = await jsonRequest(app, adminToken, {
         method: "POST",
@@ -4733,6 +4930,30 @@ function dataOf(value: unknown): JsonObject {
   return data as JsonObject;
 }
 
+type TestPrisma = ReturnType<typeof createTestPrisma>["prisma"];
+
+// 冲突矩阵统一读取四类提交事实，避免只检查 HTTP 状态而漏掉事务中的半写入。
+async function readAnnotationCommitFacts(prisma: TestPrisma, annotationFileId: string) {
+  const [file, operationCount, snapshotCount, saveAuditCount] = await Promise.all([
+    prisma.annotationFile.findUniqueOrThrow({ where: { resourceId: annotationFileId } }),
+    prisma.annotationOperation.count({ where: { annotationFileId } }),
+    prisma.annotationRecoverySnapshot.count({ where: { annotationFileId } }),
+    prisma.auditLog.count({
+      where: {
+        resourceId: annotationFileId,
+        action: "annotation_file_save",
+        detail: { path: ["commitMode"], equals: "domain_command_batch" },
+      },
+    }),
+  ]);
+  return {
+    revision: file.revision,
+    operationCount,
+    snapshotCount,
+    saveAuditCount,
+  };
+}
+
 // 原子命令集成测试只保留最小当前格式，但所有必填领域集合都存在，避免测试绕过生产 schema。
 function createAtomicCommandProject(): ProjectData {
   return {
@@ -4749,6 +4970,13 @@ function createAtomicCommandProject(): ProjectData {
       char: "那",
       startTime: 1,
       endTime: 2,
+      singingStyle: "唱",
+    }, {
+      id: "atomic-char-2",
+      lineId: "atomic-line-1",
+      char: "一",
+      startTime: 2,
+      endTime: 3,
       singingStyle: "唱",
     }],
     gongcheAnnotations: [],

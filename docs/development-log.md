@@ -4754,3 +4754,65 @@ ProjectData builder、adapter 与编辑器接线：
 - 下一轮 R5b3c 应先建立可重复的真实双账号并发矩阵，再决定可解释的块级冲突策略。默认继续使用稳定实体、
   before precondition、revision、committed catch-up 和现有比较/恢复；结构与递归分叉保持租约。没有证据证明
   同字段并发必须自动合并前，不引入 OT/CRDT。
+
+## 2026-08-04：R5b3c1 多账号乐观并发重放判定与真实冲突矩阵
+
+### 计划、代码核对与实际范围
+
+- 用户确认开始 R5b3c1，并再次提醒必须维护 **Development Log**。Codex 先重写被忽略的 `CLAUDE_WORK.md`，
+  核对 roadmap、R5b3b2 原子保存、现有 409 草稿比较、clean committed-feed、document recovery state、共享
+  dispatcher 和 API 原子提交事务。确认本轮只建立纯判定核心和真实双账号证据，不同时修改 App dirty baseline、
+  冲突弹窗或 WebSocket，避免把算法建立与可见保存状态机重写混在一轮。
+- 代码审查发现 `platformAtomicCommandPlan.ts` 已有正确但私有的整条 pending chain 审计；若直接新增 rebase
+  循环，会形成两套 operation id/local revision/barrier/envelope/precondition 规则。现抽出
+  `platformPendingCommandChain.ts` 作为唯一纯审计层，normal atomic planner 与 conflict planner 都消费它。
+  抽取后删除 planner 中原有 Set/loop/barrier/blocked helper，没有保留近似僵尸实现。
+- 新增 `platformConflictRebase.ts`。它严格检查新旧数据库 revision，先从原 saved ProjectData 重放本地链并验证
+  current ProjectData 可被完整解释，再从最新 server ProjectData 按原顺序试运行同一 parsed envelope。成功
+  返回完整 rebased project、原 client operation id/local revision/envelope 和首个所需租约用途；任一失败立即
+  丢弃中间项目，只返回 operation id/index/type 及最多 20 个 `{code,targetKey}`。该摘要不含 before/after
+  正文、轨道名、分叉名、项目 payload 或 token。
+- `package.json` 新增 `test:platform-conflict-rebase`，没有引入依赖、Prisma migration、JSON/IndexedDB schema、
+  新 API 或 UI。现有固定方向 stale-draft 比较仍是所有自动判定失败时的人工恢复入口。
+
+### 真实双账号矩阵与失败过程
+
+- Fastify/Prisma 集成套件新增真实 `admin` 与 `student` 场景：管理员创建当前格式文件并直接授予学生 read/write，
+  两个账号都通过 GET 读取 revision 1 和同一 payload。管理员修改 `atomic-char-1` 提交至 revision 2；学生针对
+  不同 `atomic-char-2` 的原 operation id/envelope 先以旧 base 1 提交，确定收到
+  `annotation_command_batch_revision_conflict`。测试同时快照比较 revision、operation 数、recovery snapshot 数
+  和 `domain_command_batch` 保存审计数，证明 409 没有留下半事务。
+- 学生重新读取 revision 2 后，以同一 client operation id/envelope 和新 base 2 重提，成功到 revision 3，最终
+  payload 同时保存管理员和学生两处时间修改。随后管理员先赢得同目标更新，学生旧 base 再次 409，测试不做
+  第二次同目标重提；这与纯 planner 的 before mismatch 用例共同证明同目标不会被自动合并。删除学生直接授权
+  并截断继承后，即使另一个 envelope 内容可重放，服务端仍返回 403，四类提交事实继续不变，说明客户端
+  `rebase_ready` 从来不是授权证明。
+- 新纯测试首次运行 5/8：两个断言误把 shared target key 猜成冒号字符串，但权威格式实际为稳定 JSON tuple；
+  snapshot fixture 又传入了不存在的 `bulk_import` kind，使 builder 正确返回 null 并被识别为 legacy。修复方式
+  是让测试遵循 shared 权威合同（JSON tuple 与 `import_project`），没有为迁就测试改生产格式或放宽 parser。
+  修正后专项为 8/8；最终自审补上空 pending chain 用例并删除审计结果中无人消费的 `finalProject` 字段，避免
+  留下看似可用但没有所有者的出口，最终专项为 9/9。
+
+### 自审、验证与明确未完成项
+
+- 自审确认两次 replay 都调用 `@xiqu/document-model` 唯一 `applyAnnotationCommandToProject()`；没有复制任何
+  领域 resolver/writer/precondition。冲突失败 union 不包含 `rebasedProject`，第二条命令失败测试证明第一条
+  已应用的局部结果不会泄漏；101 项链测试证明重放判定不受网络单批 100 项上限误伤。输入深比较证明 helper
+  不修改 saved/current/latest project 或 operation 数组。
+- 最终验证：`test:platform-conflict-rebase` 9/9；`test:platform-atomic-submit` 23/23；shared 原子批次合同 5/5；
+  committed catch-up 17/17；平台草稿/恢复 23/23；真实 PostgreSQL/Fastify API 123/123（新增一项双账号矩阵，
+  通过现有 14 条 migration）。API 仍只有仓库既有 pg 9 `client.query()` 前置弃用提示。
+- `npm run build` 通过 Prisma generate、shared、document-model、Web 和 API。Vite 转换 2098 个模块，CSS
+  124.92 kB / gzip 22.99 kB，主 JS 957.91 kB / gzip 283.90 kB；保留既有大 chunk 提醒。`git diff --check`
+  与源码扫描通过，新增边界没有 `any`、TODO/FIXME、正文 console 日志或第二套 parser/apply。无新增依赖。
+- 本轮故意没有接 App 自动 rebase，但仍使用真实浏览器和本地 PostgreSQL/API 回归了现有 409 人工恢复路径：
+  创建当前格式双字符测试文件，先新增动作轨并自动保存到 revision 2，再修改第一个字符并保存到 revision 3；
+  随后浏览器保留第一个字符的新 dirty 修改，另一账号/API 同时修改第二个字符并提交到 revision 4。浏览器原子
+  提交确定收到 409，界面显示“存在远端冲突”，进入“比较本地草稿与服务器文件”后正确固定为草稿 r3 在左、
+  服务器 r4 在右，并同时列出本地第一个字符与远端第二个字符两处结构化差异和选择性整合入口。这不是自动
+  rebase 验收，而是证明新增纯 planner 没有破坏既有草稿 flush、权威重取和人工比较退路。
+- 验收后已通过界面丢弃测试浏览器草稿并把临时标注文件移入回收站。控制台保留一次本轮主动制造的
+  `annotation_command_batch_revision_conflict` 错误记录；更早的实时连接、租约和 track-snap 日志来自同一长期
+  开发标签页的既有排查，不是本轮新增异常。下一轮 R5b3c2 才能在权威重取最新文件、再次核对草稿身份、
+  revision、权限和计划指纹后展示可重放判定；经明确用户确认才可原子替换 document baseline 并用原 id/
+  envelope、新 base revision 重提。任何同目标冲突、legacy barrier、最新 revision 再变化或撤权继续人工处理。

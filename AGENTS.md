@@ -111,9 +111,18 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - owns the HTTP catch-up timer, single-flight request, retry delay, session generation, and disposal behavior
   - a stale file response must never apply or recreate a timer for a later editor session
 - `src/platform/platformAtomicCommandPlan.ts`
-  - pure full-chain audit and bounded next-batch planner for the atomic command endpoint
-  - legacy/submitted/snapshot/track-snap operations are compatibility barriers; never skip one or submit a prefix when a later
-    command is blocked or the replayed chain does not equal the current project
+  - pure bounded next-batch planner for the atomic command endpoint; full-chain proof is delegated to the shared pending-chain audit
+  - never submit a prefix when a later command is blocked or the replayed chain does not equal the current project
+- `src/platform/platformPendingCommandChain.ts`
+  - the single pure local pending-chain audit used by normal atomic save and conflict rebase planning
+  - owns legacy/submitted/snapshot/track-snap barriers, operation identity, local-revision continuity, envelope validation,
+    precondition replay, and final current-project equality; do not fork these rules into another save/conflict path
+- `src/platform/platformConflictRebase.ts`
+  - pure all-or-nothing optimistic rebase decision after a revision conflict; first proves the local chain against its saved
+    baseline, then applies the same envelopes to the latest authoritative server project
+  - `rebase_ready` is not authorization or persistence: the caller must still use the latest revision, current ACL, the original
+    operation ids/envelopes, and any required mutation lease. Conflict summaries are bounded code/target facts and must never
+    include annotation text, track names, project payloads, tokens, or a partially applied project
 - `src/platform/platformAtomicSubmitPolicy.ts`
   - strict command-batch acknowledgement validation and atomic-endpoint-specific HTTP/network classification
   - lease failures and the exact old-payload migration code are separate deterministic errors; neither is a generic revision conflict

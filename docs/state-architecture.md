@@ -451,6 +451,16 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
 - 编辑器项目相等性必须每次从当前值计算，不能用 ProjectData 对象身份缓存序列化签名：导入 normalization 可能
   在首次比较后修改同一对象。`areEditorProjectsEqual()` 忽略不可持久化媒体细节但不缓存对象签名；该规则直接
   决定原子确认后的 dirty/clean，不得退回 WeakMap 项目签名缓存。
+- R5b3c1 把 pending 命令链审计从网络批次 planner 抽成 `platformPendingCommandChain`，正常保存与冲突处理共用
+  operation id、local revision、barrier、envelope、precondition 和完整 current-project 反证。冲突 rebase 不是
+  修改命令的 before/after，也不是文本合并：先在原 saved project 重放整条链证明本地状态可信，再在权威最新
+  server project 上试运行同一 envelope 序列。只有全部成功才返回一个完整 rebased project；任一命令失败都只
+  返回失败 operation 的稳定 id/index/type 及最多 20 个 `{code,targetKey}`，不返回前序局部项目或正文。
+- `rebase_ready` 只是内容前置条件判定，不是授权或提交证明。真正重提仍必须使用最新 server revision、原
+  client operation id/envelope、当前 ACL 和所需 mutation lease；服务端可能因撤权、revision 再推进或租约变化
+  拒绝。legacy、track-snap、snapshot boundary、旧 submitted、本地链缺口和合同外 ProjectData 变化永远不能
+  自动 rebase，继续进入现有固定方向草稿比较/人工恢复。R5b3c1 只建立纯判定与双账号数据库证据，App 的用户
+  确认、document baseline 替换和二次提交属于 R5b3c2。
 
 - R5b1/R5b2a 的 WebSocket 与跨实例通知已经落地；revision 消息只负责经过认证的文件失效提示，不传完整 payload，也不提交
   operation。`session.ready` 或 `annotation.revision.advanced` 观察到更高 revision 时，只调用现有 catch-up
