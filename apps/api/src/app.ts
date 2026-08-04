@@ -44,6 +44,7 @@ import { createPostgresEventTransport } from "./postgresCoalescedEventBus.js";
 import { createAnnotationRemoteActivityChannel } from "./annotationRemoteActivityEventEnvelope.js";
 import { PostgresAnnotationRemoteActivityEventBus } from "./postgresAnnotationRemoteActivityEventBus.js";
 import { AnnotationCommandCommitService } from "./annotationCommandCommitService.js";
+import type { ApiCorsOriginPolicy } from "./serverConfig.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -56,6 +57,7 @@ export type BuildApiAppOptions = {
   uploadPolicy?: Partial<UploadPolicy>;
   metricsToken?: string | null;
   operationalMetricsTimeoutMs?: number;
+  corsOrigin?: ApiCorsOriginPolicy;
 };
 
 /**
@@ -155,17 +157,20 @@ export async function buildApiApp(
     uploadPolicy,
   );
 
-  await app.register(cors, {
-    origin: true,
-    credentials: true,
-    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    // 审计 CSV 下载需要读取服务端给出的文件名、条数和截断状态。
-    exposedHeaders: [
-      "Content-Disposition",
-      "X-Audit-Export-Count",
-      "X-Audit-Export-Truncated",
-    ],
-  });
+  // 同源生产部署无需 CORS；只有经过启动配置严格校验的跨源策略才注册响应头。
+  if (options.corsOrigin !== false) {
+    await app.register(cors, {
+      origin: options.corsOrigin ?? true,
+      credentials: true,
+      methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      // 审计 CSV 下载需要读取服务端给出的文件名、条数和截断状态。
+      exposedHeaders: [
+        "Content-Disposition",
+        "X-Audit-Export-Count",
+        "X-Audit-Export-Truncated",
+      ],
+    });
+  }
   await app.register(multipart, {
     limits: { fileSize: uploadPolicy.maxUploadBytes, files: 1 },
   });

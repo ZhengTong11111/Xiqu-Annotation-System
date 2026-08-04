@@ -25,6 +25,8 @@ Main currently contains all major recent feature lines that matter for context:
 - Banyan beat/eye parsing, track display, editing, and global vertical guide rendering
 - platform login/resource-explorer UI, local editor entry, media upload, project/folder/file management, JSON import, revision-checked server save, recovery snapshots, and per-resource account permissions
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
+- R5 controlled single-server deployment candidate with fail-closed production configuration, same-origin `/api`, one-time
+  administrator bootstrap, systemd/Nginx templates, read-only smoke checks, and `docs/server-deployment.md`
 - backend audit logs and annotation operation logs for the first platform-governance layer
 - authenticated file WebSockets plus schema-isolated PostgreSQL LISTEN/NOTIFY revision invalidations across API instances;
   these are lossy wake-up hints, while HTTP committed-feed/snapshot catch-up remains authoritative
@@ -443,6 +445,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/`
   - Fastify backend: auth, resource routes, resource ACL evaluation, annotation-file revision saves, Prisma mapping,
     and replaceable local/S3 object storage
+- `apps/api/src/serverConfig.ts`
+  - API 生产启动配置的唯一解析边界；生产默认只监听 loopback、禁用开发 seed 和 CORS，并要求显式数据库
+  - 新增安全相关环境变量时必须在这里严格 fail closed，同时更新专项测试、环境模板和部署说明
+- `apps/api/src/bootstrapAdmin.ts` + `apps/api/src/bootstrapAdminArguments.ts` + `apps/api/src/bootstrapAdminCli.ts`
+  - 空数据库首位 `super_admin` 的一次性创建边界；事务 advisory lock 防止并发创建
+  - 密码只从 stdin 读取，不能进入 argv、环境模板、日志或审计详情；已有管理员后必须永久拒绝 bootstrap
 - `apps/api/src/database.ts`
   - shared PrismaPg connection factory plus dedicated maintenance and collaboration `pg` pools
   - explicitly aligns Prisma schema and PostgreSQL `search_path`; tests and CLIs must use this composition root instead
@@ -608,6 +616,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - production backup-target least-privilege policy template and MinIO/AWS acceptance checklist
   - local SeaweedFS passing is protocol/tool validation only; never mark R3g2b2 production acceptance complete until the
     command, real backup/verify/restore, TLS/network checks, and IAM review run in the target environment
+- `deploy/single-server/`
+  - R5 受控单服务器候选的环境、systemd 与 Nginx/TLS 模板；操作步骤只在 `docs/server-deployment.md` 维护
+  - 模板不能包含真实域名、密码、metrics token、TLS 私钥或对象存储凭据
+- `scripts/deploymentCheck.mjs` + `scripts/checkDeployment.mjs`
+  - 无凭据、只读的部署 smoke check；统一验证 Web 入口、API liveness 与依赖 readiness
+  - 不能把登录写入、迁移或破坏性恢复塞进 smoke check；这些步骤属于部署清单和人工验收
 - `packages/shared/src/`
   - API/platform DTOs and shared contract types used by web and API
 - `packages/document-model/src/`
@@ -649,6 +663,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     recovery snapshots, confirmed ranges, short-lived collaboration presence, processing jobs, audit logs, and operations
 - `docs/`
   - roadmap, architecture notes, and curated screenshots; keep this updated for long-running platform/backend work
+- `docs/server-deployment.md`
+  - R5 单服务器候选的唯一部署手册，覆盖迁移、首管理员、持久目录、TLS、健康检查、备份、升级和回滚
+  - 它不是 R7 生产认证；目标环境 IAM、防火墙、告警、续期、容量和灾难恢复结果必须另行验收
 - `deploy/monitoring/`
   - vendor-neutral Prometheus scrape/rule and Alertmanager example configuration
   - real metrics tokens, receiver URLs, TLS material, and deployment secrets never belong in this directory
@@ -1017,13 +1034,14 @@ Even though this is still local-first, the hook already tracks document-sync con
 - pending operation count
 - operation log
 
-Writable platform sessions additionally persist one sanitized, versioned IndexedDB recovery envelope. Refresh recovery
-is explicit and same-revision only; stale-draft comparison, network retry/backoff, and server autosave remain R4 work.
-
-This means future remote sync/collaboration work should extend the existing document-state layer rather than bypass it inside `App.tsx`.
+Writable platform sessions persist one sanitized, versioned IndexedDB recovery envelope. Same-revision recovery、stale
+draft structured integration、network retry/backoff、server autosave、clean committed-feed catch-up and explicit 409
+rebase decisions are implemented. Future sync work must continue through this document-state/command boundary rather
+than bypassing it inside `App.tsx` or introducing a second WebSocket write path.
 
 ## Platform / Backend Status
-The platform backend is no longer just a mock, but it is still an early development platform:
+The platform backend is a real PostgreSQL/Fastify platform with an R5 controlled single-server deployment candidate;
+it has not completed the separate R7 public-production acceptance:
 - Fastify server entry: `apps/api/src/server.ts`
 - routes: `apps/api/src/router.ts`
 - repository queries: `apps/api/src/repository.ts`
@@ -1031,10 +1049,13 @@ The platform backend is no longer just a mock, but it is still an early developm
 - resource and annotation-file mutations: `apps/api/src/resourceService.ts`
 - Prisma row-to-DTO conversion: `apps/api/src/repositoryMappers.ts`
 - development seed accounts/resource tree: `apps/api/src/repositorySeed.ts`
+- production runtime policy: `apps/api/src/serverConfig.ts`
+- one-time first administrator bootstrap: `apps/api/src/bootstrapAdminCli.ts`
 - object storage port/factory: `apps/api/src/objectStorage.ts`, `apps/api/src/objectStorageFactory.ts`
 - local/S3 adapters: `apps/api/src/storage.ts`, `apps/api/src/s3ObjectStorage.ts`
 - shared API types: `packages/shared/src/`
 - resource-capability helpers: `packages/document-model/src/`
+- deployment templates and guide: `deploy/single-server/`, `docs/server-deployment.md`
 
 Current backend capabilities:
 - login/session tokens with scrypt password hashing and sha256 token hashes
@@ -1181,8 +1202,11 @@ Important backend caveats:
   expired browser sessions do not strand a deployment in maintenance.
 - API route handlers should perform runtime validation before Prisma writes; invalid revision/action/limit inputs should return `400`, stale annotation-file revisions should return `409`
 - browser platform writes use `PATCH` and `DELETE`; keep both methods in the Fastify CORS allow-list when changing server bootstrap
-- the API is currently for local/dev use; production deployment hardening, migrations, rate limits, and secure file serving are future work
-- platform client currently targets `http://localhost:4317/api` in `src/platform/PlatformWorkspace.tsx`
+- the API has an R5 controlled single-server deployment baseline, committed migrations, protected media serving, upload and
+  collaboration rate limits, health/metrics, backup, and recovery; R7 public-production IAM, network, capacity, DR, and
+  long-term security acceptance remain future target-environment work
+- the browser platform client always targets same-origin `/api`; Vite proxies it in development and Nginx proxies it in
+  deployment. Do not reintroduce an absolute visitor-local API URL into `PlatformWorkspace.tsx`
 - frontend read-only state is enforced centrally by `useProjectDocumentState({ readOnly })`; UI disabling is not the security boundary, and permission lookup failures must fail closed
 - permission core regression tests run with `npm run test:permissions`
 - if backend contracts change, update `packages/shared`, API repository/routes, `src/api/platformClient.ts`, and `docs/kunqu-platform-roadmap.md` together
@@ -1549,6 +1573,10 @@ Current docs:
 - `docs/development-log.md`
   - committed cross-agent development log for important completed changes, validation, and residual risks
   - use it for what actually changed; keep `docs/kunqu-platform-roadmap.md` focused on architecture direction and phase planning
+- `docs/server-deployment.md`
+  - R5 controlled single-server deployment guide and operator checklist
+  - update it whenever production startup policy, environment variables, migrations, process management, proxy/TLS,
+    health checks, backup, upgrade, or rollback behavior changes
 - `docs/screenshots/`
   - curated screenshots for README/docs; avoid dumping transient screenshots here
 - `CLAUDE_WORK.md`

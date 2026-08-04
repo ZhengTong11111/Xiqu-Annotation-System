@@ -115,10 +115,8 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   const [draftDecisionBusy, setDraftDecisionBusy] = useState(false);
   const [draftDecisionError, setDraftDecisionError] = useState<string | null>(null);
 
-  const client = useMemo(() => new PlatformClient({
-    baseUrl: "http://localhost:4317/api",
-    accessToken,
-  }), [accessToken]);
+  // 平台统一使用同源 /api；开发环境由 Vite 代理，部署环境由 Nginx 代理，浏览器不再依赖访问者本机端口。
+  const client = useMemo(() => new PlatformClient({ accessToken }), [accessToken]);
 
   useEffect(() => {
     if (!accessToken || view === "login") return;

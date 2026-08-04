@@ -2,7 +2,7 @@
 
 这是一个面向戏曲研究、表演分析、唱词校勘和多轨时间标注的昆曲多模态数据平台。它由桌面式资源管理器、账号与逐文件权限后端，以及现有精细时间轴编辑器组成。它不是普通字幕编辑器，而是把视频、句级字幕、逐字时间、唱腔标签、动作轨、附属打点、音频波形、人声频谱图和工尺谱附属轨放在同一套研究工作流中管理和编辑的专业工具。
 
-当前版本同时支持“不登录的本地 JSON 编辑”和“PostgreSQL + Fastify 平台资源管理”两种模式。平台模式已经支持项目/文件夹/标注文件/媒体文件、服务器保存、恢复快照、逐资源账号权限，以及认证后可跨 API 实例分发的单文件 revision 实时通知、在线成员列表、远端播放头、鼠标时间和匿名选区摘要预览；实时编辑命令合并、批量授权和完整服务器部署能力仍在继续建设。工尺谱传统字形渲染可用于研究预览，但正式发布前仍需要处理字体授权和替换问题。
+当前版本同时支持“不登录的本地 JSON 编辑”和“PostgreSQL + Fastify 平台资源管理”两种模式。平台模式已经支持项目/文件夹/标注文件/媒体文件、服务器保存、恢复快照、逐资源账号权限，以及认证后可跨 API 实例分发的单文件 revision 实时通知、在线成员列表、远端播放头、鼠标时间和匿名选区摘要预览；R5 已提供受控试用的单服务器部署候选，完整公网生产验收仍属于 R7。工尺谱传统字形渲染可用于研究预览，但正式发布前仍需要处理字体授权和替换问题。
 
 ![《寻梦》示例项目工作台总览](docs/screenshots/xunmeng-with-video-overview.png)
 
@@ -131,6 +131,9 @@ credentials file/secret 挂载，真实 receiver URL 不得提交仓库。规则
 Prisma migration；`db:push` 仅适合一次性的本地 schema 实验。`db:push --force-reset` 会清空
 目标数据库，只能在核对 `DATABASE_URL` 且明确不保留数据时使用。
 
+生产环境不会创建上述开发账号。单服务器部署、一次性首管理员创建、systemd、Nginx/TLS、备份恢复、
+升级与回滚见 [`docs/server-deployment.md`](docs/server-deployment.md)。
+
 ### 4. 生产构建与权限测试
 
 ```bash
@@ -140,6 +143,7 @@ npm run test:uploads
 npm run test:observability
 npm run test:maintenance
 npm run test:audit-log
+npm run test:deployment
 npm run test:api
 ```
 
@@ -1201,13 +1205,14 @@ npm run maintenance:disable -- --operator admin
 
 ## 当前限制与注意事项
 
-### 1. 平台后端已经可用，但不是生产部署版本
+### 1. 已有单服务器部署候选，但尚未完成 R7 生产验收
 
 账号、资源树、带签名/配额/补偿的媒体上传、标注文件保存、恢复快照和逐文件权限已经接入
 Fastify/Prisma/PostgreSQL，并由一组可部署 migration 维护。当前已有 liveness/readiness、低基数
 Prometheus 指标、管理员诊断面板、跨实例维护写入静默边界，以及带 manifest/checksum 的 PostgreSQL
 与本地对象目录一致备份和隔离恢复演练。S3-compatible 运行适配器、manifest-last 远端备份、隔离恢复
-和保留清理已经完成，但真实生产桶/IAM、HTTPS、反向代理和限流仍未完成。维护状态
+和保留清理已经完成，并已提供同源 Nginx/TLS、systemd、生产环境边界、首管理员 bootstrap 与部署 smoke
+check 模板。真实生产桶/IAM、TLS 续期、主机防火墙、容量和长期灾难恢复仍需在目标环境验收。维护状态
 持久化在 PostgreSQL，API 重启不会自动解除；管理员应在维护
 任务完成后从诊断面板或本机 CLI 明确恢复写入。
 

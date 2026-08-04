@@ -4886,3 +4886,75 @@ ProjectData builder、adapter 与编辑器接线：
   备份恢复能力与缺口，再建立一个可重复的单服务器 PostgreSQL + Fastify + Web 部署方案和
   `docs/server-deployment.md`。它只形成可供试用的部署基线，不提前宣称 R7 的公网安全、真实云 IAM、跨区容灾
   或长期生产验收。
+
+## 2026-08-04：R5 可部署候选门禁与单服务器运维基线
+
+### 实际阶段核对与本轮范围
+
+- 用户确认“开始 R2.3c2”时，Codex 先核对 roadmap、源码和最近提交，确认 R2.3c2 早已完成，当前真实基线是
+  R5b3c2。没有按过时阶段名重复实现选择性整合，而是遵循既定目标进入 R5 最后一项可部署候选门禁。
+- 本轮完全重写本机忽略的 `CLAUDE_WORK.md`，只保留当前任务：单服务器 Node.js 22、PostgreSQL 16、Fastify、
+  Web 与本地/S3-compatible 对象存储；同源 `/api`；生产配置 fail closed；首次管理员；systemd/Nginx/TLS；
+  迁移、健康检查、备份恢复、升级回滚与验收。明确不把这轮描述成 R7 公网生产认证，也不实现 Kubernetes、
+  自动证书、云 IAM、跨区容灾或任务队列。
+- 审计发现原生产入口无条件 `seed: true`、浏览器写死访问者机器的 `localhost:4317`、生产默认广泛 CORS，且
+  新数据库在禁用开发 seed 后没有安全创建首管理员的路径。这些都属于真实部署阻断项，因此纳入本轮实现；
+  没有用文档规避代码缺口。
+
+### 生产启动、同源边界与首管理员
+
+- 新增 `serverConfig.ts` 作为 API 运行配置唯一解析边界。开发环境保留现有便捷默认值；生产环境要求显式
+  `DATABASE_URL`，默认 `HOST=127.0.0.1`、关闭开发 seed、关闭 CORS。端口、监听 IP、严格布尔值和有限
+  HTTP(S) origin 均在创建数据库连接前验证，空值、通配符、路径、凭据或拼写错误直接终止启动。
+- `buildApiApp()` 只在配置允许时注册 CORS；同源生产不发送 CORS 响应头。前端平台客户端统一使用 `/api`，
+  Vite 开发服务器代理普通 HTTP 与 WebSocket 到本机 API，Nginx 生产代理保持同一路径。删除了误提交的
+  `vite.config.js`/`.d.ts` 生成物，避免其抢先遮蔽 TypeScript 配置。
+- API 关闭流程改为即使 Fastify hook 失败也继续逐项释放 Prisma、业务池、维护池和协作池；多个关闭错误会
+  聚合报告。启动失败只输出稳定诊断，不把可能含数据库或对象存储凭据的 Error 对象和堆栈写入 journald。
+- 新增一次性首管理员 bootstrap。纯业务边界严格验证账号、显示名和密码；Prisma 适配器在 Serializable
+  事务内取得 PostgreSQL advisory lock，只有不存在活跃 admin/super_admin 且账号名未占用时才创建
+  `super_admin`。CLI 密码只从 stdin 输入，拒绝密码 argv、未知参数和过大输入，避免 shell history、进程列表
+  和环境模板泄密。已有管理员后该入口明确拒绝再次增权。
+
+### 部署资产、smoke check 与真实问题修复
+
+- 新增 `deploy/single-server/`：生产环境模板、受限 systemd 单元和同源 Nginx HTTPS/WebSocket 配置。环境模板
+  不含真实密码、域名、token 或 TLS 材料；本地持久目录位于 release 之外，S3 配置继续复用既有唯一对象存储
+  factory。
+- 新增无凭据、只读 `deploy:check`：要求显式纯 origin，验证 Node.js 22、Web HTML 根节点、Fastify data
+  envelope、liveness 服务身份和 readiness 依赖状态；它不登录、不写数据库，也不冒充完整业务验收。
+- 第一次真实 smoke 使用 npm 常见的 `--base-url=value` 写法时，参数解析器只支持空格形式而失败；补齐两种
+  标准长参数语法并增加回归。第二次 smoke 收到 SPA HTML 而不是 API JSON，排查发现 Vite 优先加载仓库中
+  过时的生成 `vite.config.js`，导致 `.ts` 代理配置根本未生效；删除生成物、重启开发服务器后，同源 Web/API/
+  WebSocket 入口恢复。这个问题不是通过新增备用 URL 绕过，而是移除了真正的僵尸配置。
+- 生产坏配置负向演练最初把完整 Error 对象输出到终端，可能把连接串带入日志；随后改为稳定中文消息并复测
+  缺数据库、坏 seed、通配 CORS 和越界端口均以状态 1 在监听前退出。
+
+### 数据库、浏览器与运维文档验收
+
+- 在一次性隔离 PostgreSQL schema 执行现有 14 条 migration 和首管理员创建。第一次验证脚本直接构造
+  PrismaPg，绕过仓库 `database.ts` 的 `search_path` 对齐，因而查错 schema；这次失败揭示了真实的组合根
+  约束。改为复用 `createPrismaConnection()` 后，成功创建并读取 `first.admin` 的 `super_admin` 角色，退出
+  trap 随后删除临时 schema，复查无残留。另在现有开发库确认已有管理员时 bootstrap 会安全拒绝。
+- 以 `NODE_ENV=production` 在临时 4318 端口启动编译后 API，readiness 为 ready；带恶意 Origin 的请求没有
+  `Access-Control-Allow-Origin`。开发同源 smoke 通过首页、liveness 和 readiness。
+- 浏览器使用真实本地 PostgreSQL/Fastify 与示例标注文件完成资源管理器进入、打开平台标注文件、观察
+  “实时已连接 · 可编辑 · 已保存”并返回资源管理器；浏览器控制台无 warning/error。浏览器只用于用户可见
+  路径验收，没有将浏览器状态当成自动化测试替代品。
+- 新增 `docs/server-deployment.md` 作为唯一详细部署手册，覆盖拓扑、不变量、系统用户/目录、PostgreSQL 与
+  `pg_trgm` 预置、release 构建、环境变量、本地/S3 对象存储、migration、首管理员、systemd、Nginx/TLS、
+  smoke 与人工验收、一致备份和隔离恢复、升级、失败回滚、最终清单及明确限制。README、roadmap 和
+  AGENTS 同步更新，旧的“R5 门禁尚未开始”和“R4 草稿/自动保存仍是未来工作”表述已删除。
+
+### 测试、自审与剩余边界
+
+- `npm run test:deployment` 最终 16/16：5 项部署 smoke 纯测试、5 项首管理员/CLI 测试、6 项生产配置测试。
+  `npm run test:api` 134/134，通过 14 条 migration，仅保留依赖 `pg` 9 的既有弃用提醒。`npm run build:api`、
+  `npm run build:web` 与完整 `npm run build` 均通过；Vite 仍报告既有主 chunk 超过 500 kB 提醒。
+- `git diff --check` 通过。源码与模板扫描没有发现新增 `any`、TODO/FIXME、真实 secret、第二套数据库连接、
+  第二套对象存储客户端或生产 seed 旁路。本轮没有新增 npm 依赖；Node 标准库、现有 Fastify CORS、Prisma、
+  pg 和部署系统工具已能清晰完成需求，避免为了少量解析/探测再增加运行时包。
+- R5 至此达到“多账号协作不静默覆盖、冲突可解释、可在受控单服务器重复部署试用”的完成标准，并按用户
+  目标暂停继续扩展。尚未完成且不得误报为已完成的 R7 工作包括：真实公网主机防火墙与 TLS 自动续期、真实
+  MinIO/AWS 最小 IAM 验收、外部告警接收、自动备份调度与加密、跨区容灾、容量压测、RTO/RPO 和长期安全
+  审计；这些必须在实际目标环境记录证据。
