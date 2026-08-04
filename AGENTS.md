@@ -313,14 +313,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/utils/annotationContentCommandApply.ts`
   - Web compatibility re-export for the shared all-or-nothing content adapter
 - `src/utils/annotationLifecycleCommand.ts`
-  - authoritative ProjectData resolver, complete-next builder gate, canonical sentence/character/custom-block/attached-point/
-    Gongche snapshots, and
-    grouped collection reconstruction for `annotation.items.lifecycle.update`
-  - collection position is a correctness fact, not presentation metadata; builder/apply must preserve index, length, and
-    neighboring stable ids; global Gongche storage must not be grouped by its reference track id
+  - Web compatibility re-export for the shared lifecycle resolver/builder/writer
 - `src/utils/annotationLifecycleCommandApply.ts`
-  - all-or-nothing lifecycle adapter; uniquely resolves parent containers, checks full before state, and only then rebuilds
-    every affected collection
+  - Web compatibility re-export for the shared all-or-nothing lifecycle adapter
 - `src/utils/annotationStateCommand.ts`
   - Web compatibility re-export for the shared Gongche/Banyan state resolver/builder/writer
 - `src/utils/annotationStateCommandApply.ts`
@@ -332,11 +327,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/utils/gongcheSymbols.ts`
   - stable-id-preserving Gongche quick-input/add/remove redistribution helpers; UI code must not regenerate all symbol ids on every edit
 - `src/utils/annotationTransactionCommand.ts`
-  - builds `annotation.transaction.apply` from authoritative base/next projects and explicit content/timing/state/lifecycle targets
-  - must reconstruct the complete next project through the replay adapter; UI code never hand-authors child before/after values
+  - Web compatibility re-export for the shared annotation transaction builder
 - `src/utils/annotationTransactionCommandApply.ts`
-  - applies validated leaf commands only to a local ProjectData variable and publishes no partial project when a child blocks
-  - transaction inverse reverses child order; recursive transactions are forbidden by the shared parser
+  - Web compatibility re-export for the shared annotation transaction apply adapter
 - `src/utils/projectValueEquality.ts`
   - Web compatibility re-export for document-model's reference-first deep equality
 - `src/utils/customTrackStructureCommand.ts` + `src/utils/customTrackStructureCommandApply.ts`
@@ -572,6 +565,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - shared snapshot conversion, cross-entity reference validation/repair, and complete-project equality foundations
   - lifecycle and structure modules may consume the narrow Web compatibility exports until their R5b3a2 migration, but no
     second function implementation may be added under `src/utils`
+- `packages/document-model/src/annotationLifecycleCommand*.ts` + `annotationTransactionCommand*.ts`
+  - R5b3a2b canonical lifecycle collection-position resolver/writer and ordinary annotation transaction builder/apply
+  - preserve parent existence, unique identity, exact collection position, final cross-entity references, and local-only
+    transaction staging; a blocked child must never publish an earlier child's partial ProjectData
 - `packages/document-model/src/annotationConfirmations.ts`
   - pure normalization, validation, lifecycle/freshness, overlap, persisted-track, and review-decision helpers for
     confirmed annotation ranges

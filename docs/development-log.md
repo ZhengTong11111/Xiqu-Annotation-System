@@ -4469,3 +4469,34 @@ ProjectData builder、adapter 与编辑器接线：
   工尺父子关系、板眼断链、事务逆序 inverse 和任一子命令失败不泄漏半成品。
 - a2b 完成后才进入 a2c 轨道结构/configuration/总 dispatcher；服务端原子领域命令提交仍属于后续 R5b3a3，
   本轮没有把“共享纯函数可导入”误称为“API 已经实时 apply”。
+
+## 2026-08-04：R5b3a2b 生命周期与普通标注事务共享执行核心
+
+### 本轮计划与边界
+
+- Codex 以 commit `c66fb73` 为基线核对 lifecycle/transaction 四个模块共 759 行。该闭包只依赖 shared DTO、
+  a2a 已共享的 timing/content/state/equality/复合快照/引用完整性和 `ProjectData`，不依赖 React、DOM 或轨道
+  结构实现，因此可以独立迁移。`CLAUDE_WORK.md` 被整体改写为 a2b 任务书，重点门禁为集合位置、父子引用、
+  工尺/板眼断链和事务中途失败不泄漏半成品。
+
+### 实际迁移
+
+- `annotationLifecycleCommand`/Apply 和 `annotationTransactionCommand`/Apply 四个唯一实现移动到
+  `packages/document-model/src`。包内直接引用 `projectData.js` 与 a2a 共享模块，NodeNext 相对 import 统一补
+  `.js`；没有改动实体 snapshot、collection index/length/neighbor、父容器解析、precondition、最终引用校验、
+  子命令顺序或完整 next equality gate。
+- `src/utils` 四个旧文件删除函数体，只显式 re-export 对应函数和类型，并用中文注释说明兼容边界。源码扫描
+  确认 lifecycle builder/writer/apply 和 transaction builder/apply 五个代表函数各只有 document-model 一份；
+  无宽泛 package re-export、Web/API 反向依赖或第二套事务分派。
+
+### 验证、自审与下一阶段
+
+- `build:document-model` 通过；专项/组合共 54 项通过：lifecycle 9/9、annotation transaction 7/7、state 5/5、
+  custom-track/track-structure 16/16、operation catch-up 17/17。结构组合测试证明尚未迁移的轨道事务仍能经窄
+  wrapper 消费共享 lifecycle/transaction，而不改变删除顺序或反向恢复。
+- `test:api` 119/119，仍只有既有 pg 9 前置弃用提示；`npm run build` 通过 Prisma、shared、document-model、
+  Web 和 API。Vite 转换 2092 个模块，CSS 124.92 kB / gzip 22.99 kB，主 JS 943.48 kB / gzip 281.00 kB，
+  只有既有大 chunk 提醒。`git diff --check`、唯一实现、反向依赖和宽泛 wrapper 扫描通过。
+- 本轮没有改 UI、协议、ProjectData、JSON、数据库或 operation/save 行为。下一轮 a2c 迁移 custom-track
+  structure、track lifecycle/configuration、structure transaction 和通用 dispatcher；完成后 API 才真正拥有
+  一个可调用的完整共享命令入口，但服务端原子提交仍需 R5b3a3 单独实现。

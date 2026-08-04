@@ -12,3 +12,8 @@ export * from "./annotationCompositeSnapshots.js";
 export * from "./banyanReferenceIntegrity.js";
 export * from "./annotationStateCommand.js";
 export * from "./annotationStateCommandApply.js";
+// 生命周期与普通标注事务建立在第一批共享叶命令之上，任一子命令失败都不发布局部项目。
+export * from "./annotationLifecycleCommand.js";
+export * from "./annotationLifecycleCommandApply.js";
+export * from "./annotationTransactionCommand.js";
+export * from "./annotationTransactionCommandApply.js";
