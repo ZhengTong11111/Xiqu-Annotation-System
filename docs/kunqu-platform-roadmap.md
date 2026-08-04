@@ -41,8 +41,8 @@ typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建�
 R5b2b2a 已完成严格协议、双端限流、跨实例瞬时通道、断线/stale 清理和 Timeline 远端播放头预览；
 R5b2b2b 已把该通道收敛为播放头、鼠标时间与匿名选区摘要的统一最新快照，并补齐隐私开关、递归轨道
 选区汇总和精确时间叠加；R5b3 已按共享领域模型、服务端原子命令提交、客户端确认和并发冲突收敛拆分，
-R5b3a1 已完成服务端可复用的持久 `ProjectData` 类型边界；下一步推进 R5b3a2，把 Web 中现有纯命令
-apply engine 迁入 `packages/document-model`，供浏览器 catch-up 与 API 共用唯一实现；
+R5b3a1 已完成服务端可复用的持久 `ProjectData` 类型边界；R5b3a2a 已把 timing/content/state 第一批纯命令
+执行核心迁入 `packages/document-model`；下一步推进 R5b3a2b 的 lifecycle 与 annotation transaction；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -521,9 +521,15 @@ apply engine 迁入 `packages/document-model`，供浏览器 catch-up 与 API �
       运行时选择、波形/频谱和派生视图类型；通过兼容 re-export 保持现有导入稳定，不改变 JSON 文件格式、
       migration、命令 envelope 或编辑行为。十个现有 apply 入口已直接依赖共享类型，且专项领域测试、
       operation catch-up、API 119 项和完整构建通过。该边界使 API 后续可以类型安全地调用同一套纯 apply engine。
-    - R5b3a2 待推进：把当前位于 `src/utils` 的命令 resolver、precondition、immutable writer、事务 dispatcher
-      迁入 `packages/document-model`，Web catch-up 与 API 共用唯一 apply 实现；迁移必须逐领域保持现有专项测试，
-      删除 Web-only 平行实现和兼容僵尸路径。
+    - R5b3a2 按依赖闭包迁移当前位于 `src/utils` 的纯命令 resolver、precondition adapter、immutable writer
+      和 dispatcher。Web catch-up 与 API 最终共用唯一 apply 实现；每个子阶段都删除原实现，只保留窄兼容出口：
+      - R5b3a2a 已完成：迁移 `projectValueEquality`、timing、content、Gongche/Banyan 复合快照、引用完整性
+        和 state 的纯 builder/resolver/writer/apply。Web 旧路径只保留窄 re-export；54 项领域/组合/catch-up、
+        API 119 项和完整构建通过，源码扫描确认每个函数体只有共享包一份。
+      - R5b3a2b 待推进：迁移 lifecycle、annotation transaction 及其依赖闭包，继续保证集合位置、父子引用、
+        工尺/板眼断链和 all-or-nothing 事务语义。
+      - R5b3a2c 待推进：迁移自定义轨结构、轨道 lifecycle/configuration、结构事务和通用命令 dispatcher，
+        删除 Web-only 平行实现，最终让 API 可从 document-model 一个公开入口调用完整 apply engine。
     - R5b3a3 待推进：新增服务端原子领域命令提交。在同一数据库事务内锁文件、复核 ACL/租约/base revision、
       解析并 apply 命令、保存恢复快照、更新 payload/revision、写入并绑定 operation、审计和提交后 revision
       通知；幂等重放返回原确认，任一前置失败不得留下 accepted-but-uncommitted 行或部分 payload。

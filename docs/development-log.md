@@ -4421,3 +4421,51 @@ ProjectData builder、adapter 与编辑器接线：
 - 下一轮 R5b3a2 应按依赖图把纯命令 apply engine 迁入 `packages/document-model`，让 Web catch-up 与未来 API
   原子提交使用唯一实现。必须逐领域迁移并复用现有测试，不能通过复制 1600 余行实现建立第二套服务端逻辑；
   React 事件、历史提取、UI builder 和项目文件 normalization 继续留在 Web。
+
+## 2026-08-04：R5b3a2a timing/content/state 第一批共享命令执行核心
+
+### 依赖审计、阶段拆分与即时任务书
+
+- Codex 在 R5b3a1 commit `20a0d03` 后重新检查 20 个命令 resolver/apply/transaction 文件，共计约 2881 行。
+  审计发现 timing、content 和 state 可以连同项目 equality、工尺/板眼复合快照及引用完整性形成独立闭包；
+  lifecycle 依赖更多集合位置和父子快照，轨道结构又依赖 lifecycle/content/state/timing，不能安全一次迁完。
+- Roadmap 因此把 R5b3a2 细分为 a2a（timing/content/state）、a2b（lifecycle/annotation transaction）和
+  a2c（轨道结构/configuration/总 dispatcher）。gitignore 中的 `CLAUDE_WORK.md` 也整体改写为 a2a 当前任务，
+  明确禁止复制实现、宽泛 re-export、反向依赖 Web 或无测试大搬迁。
+
+### 唯一实现迁移与兼容边界
+
+- 使用保留历史的文件移动，把 `projectValueEquality`、`timelineTimingCommand`/Apply、
+  `annotationContentCommand`/Apply、`annotationCompositeSnapshots`、`banyanReferenceIntegrity` 和
+  `annotationStateCommand`/Apply 九个模块迁入 `packages/document-model/src`。内部类型改为引用
+  `projectData.js`，NodeNext 相对依赖显式使用 `.js`；业务函数、导出名、命令 parser、before precondition、
+  immutable writer、完整 next equality gate 和跨实体引用规则没有变化。
+- `packages/document-model/src/index.ts` 公开导出第一批执行核心。旧 `src/utils` 同名文件删除全部函数体，只
+  保留逐模块显式、窄范围 re-export 和中文边界注释；没有用 `export * from "@xiqu/document-model"` 把整个
+  package 意外暴露为任意旧模块。
+- 未迁移的 lifecycle、annotation transaction、track structure/configuration 和 App 继续使用旧 import 路径，
+  但实际执行已经穿过 wrapper 到共享函数。源码 symbol 扫描确认 13 个代表性 builder/resolver/writer/apply
+  函数均只在 document-model 出现一次；共享包没有 `src/`、React、DOM、Prisma 或 Fastify 反向 import。
+
+### 自动化验证、自审和已知偏差
+
+- `npm run build:document-model` 首轮通过。专项与组合测试共 54 项通过：timing builder 3/3、timing apply 3/3、
+  content 3/3、state/composite 5/5、annotation transaction 7/7、custom-track/track-structure 16/16、platform
+  operation catch-up 17/17。后四组证明未迁移模块和 Web catch-up 能通过兼容出口继续组合共享实现。
+- `npm run test:api` 119/119，通过 14 条 migration 检查和真实 PostgreSQL/Fastify 集成；仍只有仓库既有的
+  pg 9 `client.query()` 前置弃用提示。最终 `npm run build` 通过 Prisma generate、shared、document-model、
+  Web 和 API；Vite 转换 2089 个模块，CSS 124.92 kB / gzip 22.99 kB，主 JS 943.48 kB / gzip 280.96 kB，
+  只有既有大 chunk 提醒。
+- 迁移后 Vite 模块数比 a1 多 9，是九个 Web 兼容出口与共享实现形成的模块图，不是双函数实现；主 bundle
+  原始大小未增长，gzip 只出现构建哈希/模块边界级微小变化。本轮没有 UI、协议、数据库或用户行为变化，
+  因而没有用浏览器视觉测试替代更有效的领域/组合测试。
+- `git diff --check`、函数体唯一性、反向依赖和宽泛 wrapper 扫描通过。没有修改 shared command DTO、
+  `ProjectData`、JSON version、API route、operation/save 事务或 activity 通道。
+
+### 下一阶段
+
+- R5b3a2b 迁移 annotation lifecycle 的 528 行 resolver/builder/writer、lifecycle apply 和 annotation transaction
+  apply，并把复合快照/引用完整性直接改为包内依赖。必须重点保持集合 position、跨父作用域唯一性、句/逐字/
+  工尺父子关系、板眼断链、事务逆序 inverse 和任一子命令失败不泄漏半成品。
+- a2b 完成后才进入 a2c 轨道结构/configuration/总 dispatcher；服务端原子领域命令提交仍属于后续 R5b3a3，
+  本轮没有把“共享纯函数可导入”误称为“API 已经实时 apply”。

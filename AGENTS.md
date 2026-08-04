@@ -305,24 +305,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - sends migrated domain envelopes intact; it must never reduce them back to boolean legacy summaries
   - retryable save failures are limited to offline/network/408/429/5xx; conflict and deterministic 4xx must stop autosave
 - `src/utils/timelineTimingCommand.ts`
-  - pure extraction of version 1 timing commands from the true undo base project and final project
-  - centralizes timing lookup for both extraction and apply across nested track entities and derived Gongche targets;
-    unsupported edits return `null` so
-    the caller can retain the legacy snapshot operation without recording a partial domain fact
+  - Web compatibility re-export for the shared timing resolver/builder in `packages/document-model`
 - `src/utils/timelineTimingCommandApply.ts`
-  - the only current ProjectData adapter for version 1 timing commands
-  - resolves every target and checks all before values before immutable apply; never rerun sentence/Gongche synchronization
-    because derived targets are already explicit command items
-  - Banyan timing apply also maintains manualOffset/manual confidence; inverse currently guarantees timing restoration,
-    not byte-identical restoration of that derived review metadata
+  - Web compatibility re-export for the shared timing apply adapter; do not add another Web implementation
 - `src/utils/annotationContentCommand.ts`
-  - authoritative ProjectData resolver, builder, complete-next reconstruction gate, and validated-item immutable writer for
-    stable sentence/character/action/custom-block/attached-point content fields
-  - builder must apply its own envelope to the base and compare the complete project; target-only equality is insufficient
-    because it could omit timing, structure, or derived changes from the operation fact
+  - Web compatibility re-export for the shared content resolver/builder/writer
 - `src/utils/annotationContentCommandApply.ts`
-  - all-or-nothing ProjectData adapter for `annotation.items.content.update`; resolves all current values and checks every
-    before precondition before reusing the single immutable content writer
+  - Web compatibility re-export for the shared all-or-nothing content adapter
 - `src/utils/annotationLifecycleCommand.ts`
   - authoritative ProjectData resolver, complete-next builder gate, canonical sentence/character/custom-block/attached-point/
     Gongche snapshots, and
@@ -333,15 +322,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - all-or-nothing lifecycle adapter; uniquely resolves parent containers, checks full before state, and only then rebuilds
     every affected collection
 - `src/utils/annotationStateCommand.ts`
-  - authoritative resolver, complete-next builder gate, and immutable full-state writer for Gongche symbols and Banyan marks/sections
-  - Gongche symbol `trackId` is the parent Gongche block id; it is a persisted collection scope, not a visual timeline track id
+  - Web compatibility re-export for the shared Gongche/Banyan state resolver/builder/writer
 - `src/utils/annotationStateCommandApply.ts`
-  - all-or-nothing adapter for `annotation.items.state.update`; checks every complete before snapshot and rejects invalid final references
+  - Web compatibility re-export for the shared all-or-nothing state adapter
 - `src/utils/annotationCompositeSnapshots.ts`
-  - canonical Gongche-symbol and Banyan mark/section snapshot conversion shared by lifecycle and state commands
+  - Web compatibility re-export for shared Gongche-symbol and Banyan snapshot conversion
 - `src/utils/banyanReferenceIntegrity.ts`
-  - the single final-state validator and deletion repair policy for Banyan → section/Gongche/symbol references
-  - deleting Gongche data preserves marks, removes dangling ids, and marks affected records orphaned
+  - Web compatibility re-export for the shared Banyan reference validator/repair policy
 - `src/utils/gongcheSymbols.ts`
   - stable-id-preserving Gongche quick-input/add/remove redistribution helpers; UI code must not regenerate all symbol ids on every edit
 - `src/utils/annotationTransactionCommand.ts`
@@ -351,8 +338,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - applies validated leaf commands only to a local ProjectData variable and publishes no partial project when a child blocks
   - transaction inverse reverses child order; recursive transactions are forbidden by the shared parser
 - `src/utils/projectValueEquality.ts`
-  - shared reference-first deep equality used by command builders to prove that one envelope reconstructs the complete next
-    ProjectData; do not add another JSON-stringify or target-only equality path
+  - Web compatibility re-export for document-model's reference-first deep equality
 - `src/utils/customTrackStructureCommand.ts` + `src/utils/customTrackStructureCommandApply.ts`
   - the only ProjectData snapshot/builder/apply path for `annotation.track.structure.update`
   - the command updates existing custom tracks only; its complete-next equality gate must reject block content, timing,
@@ -577,7 +563,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `packages/document-model/src/projectData.ts`
   - the only definition of persisted `ProjectData`, `SavedProjectFile`, tracks, recursive branches, and annotation entities
   - platform revision/ACL/session, waveform/spectrogram caches, Inspector state, and Timeline selection must never enter it
-  - R5b3a1 has moved the type boundary only; pure command resolvers/writers still live under `src/utils` until R5b3a2
+  - R5b3a1 established this type boundary; R5b3a2 migrates pure command execution into the same package by dependency slice
+- `packages/document-model/src/timelineTimingCommand*.ts` + `annotationContentCommand*.ts` + `annotationStateCommand*.ts`
+  - R5b3a2a shared pure resolver/builder/writer/apply core for timing, stable content, and Gongche/Banyan full state
+  - timing apply keeps derived target semantics explicit; content/state builders still prove complete-next reconstruction
+    instead of comparing only declared targets
+- `packages/document-model/src/annotationCompositeSnapshots.ts` + `banyanReferenceIntegrity.ts` + `projectValueEquality.ts`
+  - shared snapshot conversion, cross-entity reference validation/repair, and complete-project equality foundations
+  - lifecycle and structure modules may consume the narrow Web compatibility exports until their R5b3a2 migration, but no
+    second function implementation may be added under `src/utils`
 - `packages/document-model/src/annotationConfirmations.ts`
   - pure normalization, validation, lifecycle/freshness, overlap, persisted-track, and review-decision helpers for
     confirmed annotation ranges

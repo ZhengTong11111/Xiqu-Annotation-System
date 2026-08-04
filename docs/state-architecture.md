@@ -405,8 +405,12 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
   sequence 排序，不修改 `AnnotationFile.payload`；只有随后完整 payload 保存事务才会保存恢复快照、推进
   revision 并绑定声明的 operation。accepted operation 可能永远不提交，因此不能广播给远端当成权威事实。
 - R5b3a1 已把持久文档类型迁入 `packages/document-model`，并让现有 ProjectData apply 入口直接依赖该共享
-  类型。R5b3a2 仍需把 resolver/precondition/immutable writer/dispatcher 的实际实现迁入共享包；在此之前
-  API 仍不能建立第二套服务端 apply，WebSocket activity bus 也仍不得承载可靠 operation。
+  类型。R5b3a2a 又迁入了 timing、content、Gongche/Banyan state 的 resolver、完整 next builder、immutable
+  writer、precondition adapter，以及它们共用的复合快照、引用完整性和项目 equality。`src/utils` 同名文件
+  只保留窄兼容导出，Web catch-up 与未来 API 会调用同一函数体。
+- Lifecycle、annotation transaction、轨道结构/configuration 和通用 dispatcher 仍在 Web `src/utils`，需要在
+  R5b3a2b/a2c 继续迁移。在完整 dispatcher 共享前，API 仍不能建立第二套服务端 apply，WebSocket activity bus
+  也仍不得承载可靠 operation。
 
 - R5b1/R5b2a 的 WebSocket 与跨实例通知已经落地；revision 消息只负责经过认证的文件失效提示，不传完整 payload，也不提交
   operation。`session.ready` 或 `annotation.revision.advanced` 观察到更高 revision 时，只调用现有 catch-up
