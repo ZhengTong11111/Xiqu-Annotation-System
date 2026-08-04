@@ -148,6 +148,20 @@ export function buildTimelineTrackDefinitions(
   });
 }
 
+// 轨道增删会派生出吸附开关 key；该规范化结果既用于初始化，也用于原子确认时推进 UI 保存基线。
+export function normalizeTrackSnapEnabledForProject(
+  project: ProjectData,
+  trackSnapEnabled?: Record<string, boolean>,
+) {
+  return Object.fromEntries(
+    buildTimelineTrackDefinitions(
+      project.builtinTracks,
+      project.customTracks,
+      project.activeTrackOrder,
+    ).map((track) => [track.id, trackSnapEnabled?.[track.id] ?? true]),
+  );
+}
+
 export function getGongcheTrackId(parentTrackId: string) {
   return `gongche:${parentTrackId}`;
 }

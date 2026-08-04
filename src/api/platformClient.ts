@@ -467,7 +467,7 @@ export class PlatformClient {
     );
   }
 
-  // 原子领域命令入口供后续可靠 submit/ack 流程使用；本轮不替换现有完整快照保存。
+  // 编辑器优先通过该入口原子提交可重放命令；完整快照仅保留给显式 legacy/migration 边界。
   commitAnnotationCommandBatch(
     annotationFileId: string,
     request: CommitAnnotationCommandBatchRequest,

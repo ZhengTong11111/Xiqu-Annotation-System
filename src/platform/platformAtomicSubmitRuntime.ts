@@ -28,7 +28,7 @@ type RuntimeDependencies = {
     plan: AtomicCommandPlan,
     response: CommitAnnotationCommandBatchResponse,
   ) => AtomicCommitApplyResult | Promise<AtomicCommitApplyResult>;
-  onFailure: (failure: AtomicSubmitErrorClassification) => void;
+  onFailure: (failure: AtomicSubmitErrorClassification, willRetry: boolean) => void;
   onProtocolError: (reason: string) => void;
 };
 
@@ -119,8 +119,9 @@ export function createPlatformAtomicSubmitRuntime(
       .catch((error: unknown) => {
         if (disposed || requestGeneration !== generation || facts?.sessionKey !== requestSessionKey) return;
         const failure = classifyAtomicSubmitError(error, facts.online);
-        dependencies.onFailure(failure);
-        if (failure.retryable && retryAttempt < MAX_ATOMIC_SUBMIT_RETRY_ATTEMPTS) {
+        const willRetry = failure.retryable && retryAttempt < MAX_ATOMIC_SUBMIT_RETRY_ATTEMPTS;
+        dependencies.onFailure(failure, willRetry);
+        if (willRetry) {
           scheduleRetry(plan);
         } else {
           retryPlan = null;

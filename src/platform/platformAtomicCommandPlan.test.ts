@@ -40,6 +40,7 @@ function plan(currentProject: ProjectData, operations: ProjectDocumentOperation[
     currentProject,
     serverRevision: 7,
     savedLocalRevision: 0,
+    savedTrackSnapEnabled: { "character-track": false },
     pendingOperations: operations,
     maxBatchSize,
   });
@@ -55,6 +56,7 @@ test("完整审计有序命令链后生成首批与确认基线", () => {
   assert.equal(result.plan.remainingCount, 1);
   assert.equal(result.plan.acknowledgedProject.subtitleLines[0].text, "命令-1");
   assert.equal(result.plan.request.baseRevision, 7);
+  assert.equal(result.plan.acknowledgedTrackSnapEnabled["character-track"], false);
   assert.deepEqual(chain.operations, original);
 });
 
@@ -72,6 +74,7 @@ test("101 项按 100 项切批，但后续命令仍参与完整链审计", () =>
     currentProject: chain.currentProject,
     serverRevision: 8,
     savedLocalRevision: 100,
+    savedTrackSnapEnabled: result.plan.acknowledgedTrackSnapEnabled,
     pendingOperations: chain.operations.slice(100),
   });
   assert.equal(second.status, "ready");

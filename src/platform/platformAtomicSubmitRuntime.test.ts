@@ -56,6 +56,7 @@ const PLAN = {
   }] },
   operationIds: ["op-1"],
   acknowledgedProject: {} as AtomicCommandPlan["acknowledgedProject"],
+  acknowledgedTrackSnapEnabled: {},
   remainingCount: 0,
   expectedSavedLocalRevision: 0,
   acknowledgedLocalRevision: 1,
@@ -104,7 +105,7 @@ test("同一批保持 single-flight，成功后不重复提交", async () => {
 test("retryable 失败复用同一 plan，409 停止自动重试", async () => {
   const clock = new FakeClock();
   const seenPlans: AtomicCommandPlan[] = [];
-  const failures: string[] = [];
+  const failures: Array<{ status: string; willRetry: boolean }> = [];
   let call = 0;
   const runtime = createPlatformAtomicSubmitRuntime({
     setTimer: clock.setTimer,
@@ -116,13 +117,16 @@ test("retryable 失败复用同一 plan，409 停止自动重试", async () => {
       throw new PlatformApiError(409, "conflict", "revision", null);
     },
     onCommitted: () => ({ status: "applied" }),
-    onFailure: (failure) => failures.push(failure.status),
+    onFailure: (failure, willRetry) => failures.push({ status: failure.status, willRetry }),
     onProtocolError: () => undefined,
   });
   runtime.update({ enabled: true, online: true, sessionKey: "file-1", plan: PLAN });
   await clock.advanceBy(0);
   await clock.advanceBy(1_000);
-  assert.deepEqual(failures, ["retryable", "conflict"]);
+  assert.deepEqual(failures, [
+    { status: "retryable", willRetry: true },
+    { status: "conflict", willRetry: false },
+  ]);
   assert.equal(seenPlans[0], seenPlans[1]);
   await clock.advanceBy(60_000);
   assert.equal(seenPlans.length, 2);

@@ -20,6 +20,7 @@ export type PlatformMutationLeaseRuntime = {
   acquire: (purpose: AnnotationMutationPurpose) => Promise<string>;
   getToken: () => string | undefined;
   markCommitted: () => void;
+  updateBaseRevision: (baseRevision: number) => void;
   release: () => Promise<void>;
   dispose: () => void;
 };
@@ -46,6 +47,7 @@ export function createPlatformMutationLeaseRuntime(
   let timerId: number | null = null;
   let disposed = false;
   let generation = 0;
+  let baseRevision = dependencies.baseRevision;
 
   function clearTimer() {
     if (timerId === null) return;
@@ -72,10 +74,23 @@ export function createPlatformMutationLeaseRuntime(
     }, delay);
   }
 
+  function scheduleExpiryLoss(token: string, expiresAt: string) {
+    clearTimer();
+    const delay = Math.max(0, Date.parse(expiresAt) - dependencies.now());
+    timerId = dependencies.setTimer(() => {
+      timerId = null;
+      if (disposed || lease?.token !== token) return;
+      const error = new Error("结构编辑租约已达到最长持有时间，请重新取得编辑锁。");
+      clearLocalLease({ status: "error", message: error.message });
+      dependencies.onLeaseLost(error);
+    }, delay);
+  }
+
   async function renewLease() {
     if (!lease || disposed || renewPromise) return renewPromise ?? Promise.resolve();
     const requestGeneration = generation;
     const token = lease.token;
+    const previousExpiresAt = Date.parse(lease.expiresAt);
     renewPromise = dependencies.renew(token)
       .then((renewed) => {
         if (disposed || requestGeneration !== generation || lease?.token !== token) return;
@@ -85,7 +100,13 @@ export function createPlatformMutationLeaseRuntime(
           purpose: renewed.purpose,
           expiresAt: renewed.expiresAt,
         });
-        scheduleRenewal();
+        const renewedExpiresAt = Date.parse(renewed.expiresAt);
+        if (renewedExpiresAt <= previousExpiresAt) {
+          // 服务端的绝对持有上限会返回相同 expiresAt；此时不能按 0ms 忙循环续期。
+          scheduleExpiryLoss(token, renewed.expiresAt);
+        } else {
+          scheduleRenewal();
+        }
       })
       .catch((error: unknown) => {
         if (disposed || requestGeneration !== generation || lease?.token !== token) return;
@@ -115,7 +136,7 @@ export function createPlatformMutationLeaseRuntime(
       if (acquirePromise) return acquirePromise;
       const requestGeneration = generation;
       dependencies.onStateChange({ status: "acquiring" });
-      acquirePromise = dependencies.acquire(purpose, dependencies.baseRevision)
+      acquirePromise = dependencies.acquire(purpose, baseRevision)
         .then((grant) => {
           if (disposed || requestGeneration !== generation) {
             void dependencies.release(grant.token).catch(() => undefined);
@@ -150,6 +171,17 @@ export function createPlatformMutationLeaseRuntime(
     markCommitted() {
       generation += 1;
       clearLocalLease();
+    },
+
+    // 原子批次提交会同步推进服务器 revision；下一批申请租约必须立即使用新基线，不能等待 React effect。
+    updateBaseRevision(nextBaseRevision) {
+      if (disposed || nextBaseRevision === baseRevision) return;
+      const previousLease = lease;
+      baseRevision = nextBaseRevision;
+      generation += 1;
+      clearLocalLease();
+      // 外部 revision 推进时旧 token 已不再适用于新基线；若服务器尚未消费则做 best-effort 释放。
+      if (previousLease) void dependencies.release(previousLease.token).catch(() => undefined);
     },
 
     async release() {

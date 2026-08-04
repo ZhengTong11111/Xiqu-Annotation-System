@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  MAX_ATOMIC_ANNOTATION_COMMAND_OPERATIONS,
   buildProjectSnapshotBoundaryEnvelope,
   getAnnotationMutationLeasePurposeForCommand,
   type AnnotationCommandEnvelope,
@@ -46,6 +47,12 @@ import { useAnnotationConfirmations } from "./platform/useAnnotationConfirmation
 import { usePlatformAutoSave } from "./platform/usePlatformAutoSave";
 import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
 import { usePlatformMutationLease } from "./platform/usePlatformMutationLease";
+import { planAtomicAnnotationCommandBatch } from "./platform/platformAtomicCommandPlan";
+import { usePlatformAtomicCommandSubmit } from "./platform/usePlatformAtomicCommandSubmit";
+import {
+  isMutationLeaseSubmitFailure,
+  requiresLegacySnapshotMigration,
+} from "./platform/platformAtomicSubmitPolicy";
 import type { PlatformMutationLeaseViewState } from "./platform/platformMutationLeaseRuntime";
 import {
   type HistoryAction,
@@ -93,10 +100,11 @@ import {
   getBranchLaneTrackParts,
   getProjectDuration,
   getNextCustomTrackTypeOptionName,
+  normalizeTrackSnapEnabledForProject,
 } from "./utils/project";
 import {
   describeServerSaveError,
-  submitPendingOperations,
+  submitLegacyPendingOperations,
   type PlatformSaveOutcome,
 } from "./utils/platformOperations";
 import { buildProjectAnnotationContentCommand } from "./utils/annotationContentCommand";
@@ -105,6 +113,7 @@ import {
   buildProjectTrackStructureTransactionCommand,
 } from "./utils/trackStructureTransactionCommand";
 import { areProjectValuesEqual } from "./utils/projectValueEquality";
+import { areEditorProjectsEqual } from "./utils/editorProjectEquality";
 import {
   buildProjectAnnotationLifecycleCommand,
   type AnnotationLifecycleTarget,
@@ -443,7 +452,6 @@ const CONTEXT_MENU_VIEWPORT_MARGIN = 12;
 const IMPORT_MERGE_SKIP = "__skip__";
 const IMPORT_MERGE_NEW = "__new__";
 const POINT_PASTE_CONFLICT_EPSILON = 0.015;
-const comparableProjectSignatureCache = new WeakMap<ProjectData, string>();
 const trackSnapSignatureCache = new WeakMap<Record<string, boolean>, string>();
 const WAVEFORM_KEYPOINT_MIN_SPACING_SECONDS = 0.06;
 const WAVEFORM_KEYPOINT_MAX_COUNT = 1600;
@@ -474,7 +482,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     redoStack,
     hasUnsavedChanges,
     pendingOperations,
-    pendingOperationsRef,
     syncState,
     transientProjectRef,
     applyProjectWithoutHistory,
@@ -482,6 +489,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     applyTrackSnapEnabledState,
     markOperationsAsSubmitted,
     markProjectAsSaved,
+    acknowledgeAtomicCommandBatch,
     replaceCleanProjectFromRemote,
     undoProject,
     redoProject,
@@ -564,6 +572,46 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const mutationLeaseLabel = editorSession
     ? getMutationLeaseStatusLabel(mutationLease.state, Boolean(mutationLease.getToken()))
     : undefined;
+  // 平台确认事实独立于项目文档历史；本地会话传入 null，因此不会请求或展示服务端治理状态。
+  const annotationConfirmations = useAnnotationConfirmations({
+    client: editorSession?.client ?? null,
+    annotationFileId: editorSession?.annotationFileId ?? null,
+  });
+  const atomicCommandSubmit = usePlatformAtomicCommandSubmit({
+    client: editorSession?.client ?? null,
+    annotationFileId: editorSession?.annotationFileId ?? null,
+    sessionKey: editorSession
+      ? `${editorSession.currentUserId}:${editorSession.annotationFileId}`
+      : "local",
+    online: browserOnline,
+    applyCommitted: (plan, response) => {
+      const acknowledgement = acknowledgeAtomicCommandBatch({
+        operationIds: plan.operationIds,
+        acknowledgedProject: plan.acknowledgedProject,
+        acknowledgedTrackSnapEnabled: plan.acknowledgedTrackSnapEnabled,
+        serverBaseRevision: plan.request.baseRevision,
+        committedRevision: response.committedRevision,
+        expectedSavedLocalRevision: plan.expectedSavedLocalRevision,
+        acknowledgedLocalRevision: plan.acknowledgedLocalRevision,
+      });
+      if (acknowledgement.status === "rejected") return acknowledgement;
+
+      // document state 与平台会话必须同步推进；ref 先更新，避免同一 tick 的下一批仍读取旧 revision。
+      remoteBaseRevisionRef.current = response.committedRevision;
+      remoteOperationCursorRef.current = response.operationCursor;
+      setRemoteBaseRevision(response.committedRevision);
+      setRemoteOperationCursor(response.operationCursor);
+      editorSession?.onRemoteRevisionAdvanced(response.committedRevision, response.operationCursor);
+      if (plan.request.mutationLeaseToken) mutationLease.markCommitted();
+      mutationLease.advanceBaseRevision(response.committedRevision);
+      void annotationConfirmations.refresh();
+      return { status: "applied" };
+    },
+    onRetryableFailure: (failure) => {
+      // runtime 仍在使用同一批 operation IDs 退避，文档保持 saving 而不是启动第二个自动保存事务。
+      setSyncStatus("saving", { errorMessage: failure.message });
+    },
+  });
   // 自动保存只调度可写平台会话；待确认整合暂停，避免运行时草稿未经二次确认进入服务器。
   usePlatformAutoSave({
     enabled: Boolean(editorSession?.canWrite),
@@ -571,6 +619,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     suspended: pendingAnnotationMergeDraft !== null,
     localRevision: syncState.localRevision,
     syncStatus: syncState.status,
+    online: browserOnline,
     save: () => saveProjectToServer({ source: "auto" }),
     // 保存命令原则上返回结构化 outcome；合同外异常必须显式阻断并保留 dirty 状态供人工处理。
     onUnexpectedError: (error) => {
@@ -578,11 +627,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       console.error("自动保存运行时异常", error);
       setSyncStatus("error", { errorMessage: `自动保存异常：${message}` });
     },
-  });
-  // 平台确认事实独立于项目文档历史；本地会话传入 null，因此不会请求或展示服务端治理状态。
-  const annotationConfirmations = useAnnotationConfirmations({
-    client: editorSession?.client ?? null,
-    annotationFileId: editorSession?.annotationFileId ?? null,
   });
   const [confirmationTimelineVisible, setConfirmationTimelineVisible] = useState(true);
   const [confirmationFocusRange, setConfirmationFocusRange] = useState<{
@@ -1591,7 +1635,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }, [blockContextMenu]);
 
   function projectsEqual(left: ProjectData, right: ProjectData) {
-    return serializeComparableProject(left) === serializeComparableProject(right);
+    return areEditorProjectsEqual(left, right);
   }
 
   // 选择性整合只在用户于目标编辑器再次确认时写入本地历史，并严格形成一个可撤销操作。
@@ -5207,7 +5251,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       const normalized = normalizeImportedProjectFile(parsed);
       const hydratedProject = normalized.project;
       const shouldManuallyImportVideo = shouldPromptForManualVideoImport(hydratedProject.video);
-      const normalizedTrackSnapEnabled = getNormalizedTrackSnapEnabled(
+      const normalizedTrackSnapEnabled = normalizeTrackSnapEnabledForProject(
         hydratedProject,
         normalized.uiState?.trackSnapEnabled,
       );
@@ -5462,70 +5506,126 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
     serverSaveInFlightRef.current = true;
     setSyncStatus("saving");
-    const submittedOperationIds: string[] = [];
     try {
-      // 续期失效后结构命令仍保留在草稿中；保存前按真实 pending 事实补取租约，形成可恢复闭环。
-      const requiredLeasePurpose = pendingOperationsRef.current
-        .map((operation) => getAnnotationMutationLeasePurposeForCommand(operation.commandEnvelope))
-        .find((purpose): purpose is AnnotationMutationPurpose => purpose !== null);
-      if (requiredLeasePurpose && !mutationLease.getToken()) {
-        await mutationLease.acquire(requiredLeasePurpose);
+      // 保存事务先冻结项目与 pending 链。网络等待期间产生的新编辑不会混入本次批次，
+      // 仍由 document state 保留为 dirty，并在本次结束后进入下一轮自动保存。
+      const frozenRecoveryState = getRecoveryState();
+      const frozenTargetProject = frozenRecoveryState.currentProject;
+      let batchSavedProject = frozenRecoveryState.savedProject;
+      let batchSavedTrackSnapEnabled = frozenRecoveryState.savedTrackSnapEnabled;
+      let batchSavedLocalRevision = frozenRecoveryState.savedRevision;
+      let remainingFrozenOperations = frozenRecoveryState.pendingOperations;
+
+      if (remainingFrozenOperations.length === 0) {
+        const hasUnrepresentedChanges =
+          !projectsEqual(frozenRecoveryState.currentProject, frozenRecoveryState.savedProject) ||
+          !trackSnapStatesEqual(
+            frozenRecoveryState.currentTrackSnapEnabled,
+            frozenRecoveryState.savedTrackSnapEnabled,
+          );
+        return hasUnrepresentedChanges
+          ? saveLegacyProjectSnapshot(editorSession, options.source, frozenRecoveryState)
+          : { status: "saved" };
       }
-      // 1. 先把本地 pending operations 作为服务端 operation log 写入。
-      //    用 pendingOperationsRef 而非 state：commitCharacterTextEdit 等同步提交的编辑
-      //    会立即更新 ref，但 state 要等下一次渲染，闭包里的 pendingOperations 可能漏掉它们。
-      //    所有 operation 共用当前 remoteBaseRevision（snapshot 还没写，revision 不变）。
-      //    只发摘要 payload，不发完整 ProjectData，避免 operation log 膨胀。
-      const pendingSnapshot = pendingOperationsRef.current;
-      const coveredOperationIds = pendingSnapshot.map((operation) => operation.id);
-      const savedLocalRevision = pendingSnapshot.length > 0
-        ? pendingSnapshot.reduce(
-            (maxRevision, operation) => Math.max(maxRevision, operation.localRevision),
-            syncState.savedRevision,
-          )
-        : syncState.localRevision;
-      // 保存开始时固定项目和吸附状态快照。保存期间用户可能继续编辑；
-      // 那些新编辑不能混入本次 snapshot，也不能在成功后被误标为已保存。
-      const projectSnapshot = projectRef.current;
-      const trackSnapSnapshot = trackSnapEnabledRef.current;
-      const mutationLeaseToken = mutationLease.getToken();
-      if (pendingSnapshot.length > 0) {
-        await submitPendingOperations(
-          editorSession.client,
-          editorSession.annotationFileId,
-          pendingSnapshot,
-          remoteBaseRevision,
-          (operationId) => submittedOperationIds.push(operationId),
-          mutationLeaseToken,
-        );
+
+      while (remainingFrozenOperations.length > 0) {
+        let planResult = planAtomicAnnotationCommandBatch({
+          savedProject: batchSavedProject,
+          currentProject: frozenTargetProject,
+          serverRevision: remoteBaseRevisionRef.current,
+          savedLocalRevision: batchSavedLocalRevision,
+          savedTrackSnapEnabled: batchSavedTrackSnapEnabled,
+          pendingOperations: remainingFrozenOperations,
+          // 结构编辑通常在 commitProject 前已经取得租约；首轮 planner 必须携带现有 token。
+          // 若此刻尚无 token，下面仍会按 requiredLeasePurpose acquire 后重新规划。
+          mutationLeaseToken: mutationLease.getToken(),
+          maxBatchSize: Math.min(
+            MAX_ATOMIC_ANNOTATION_COMMAND_OPERATIONS,
+            remainingFrozenOperations.length,
+          ),
+        });
+
+        if (planResult.status === "no_operations") {
+          return { status: "saved" };
+        }
+        if (planResult.status === "legacy_required") {
+          return saveLegacyProjectSnapshot(editorSession, options.source, frozenRecoveryState);
+        }
+        if (planResult.status === "blocked") {
+          const message = `本地命令链无法安全提交（${planResult.reason}），请保留草稿并进入冲突检查。`;
+          setSyncStatus("error", { errorMessage: message });
+          if (interactive) window.alert(message);
+          return { status: "error", retryable: false, message };
+        }
+
+        if (planResult.plan.requiredLeasePurpose && !mutationLease.getToken()) {
+          await mutationLease.acquire(planResult.plan.requiredLeasePurpose);
+          // acquire 期间用户仍可编辑，但本事务必须重新审计同一冻结链，不能把后来编辑混入请求。
+          planResult = planAtomicAnnotationCommandBatch({
+            savedProject: batchSavedProject,
+            currentProject: frozenTargetProject,
+            serverRevision: remoteBaseRevisionRef.current,
+            savedLocalRevision: batchSavedLocalRevision,
+            savedTrackSnapEnabled: batchSavedTrackSnapEnabled,
+            pendingOperations: remainingFrozenOperations,
+            mutationLeaseToken: mutationLease.getToken(),
+            maxBatchSize: Math.min(
+              MAX_ATOMIC_ANNOTATION_COMMAND_OPERATIONS,
+              remainingFrozenOperations.length,
+            ),
+          });
+          if (planResult.status !== "ready") {
+            if (planResult.status === "legacy_required") {
+              return saveLegacyProjectSnapshot(editorSession, options.source, frozenRecoveryState);
+            }
+            const message = `取得结构编辑锁后命令链已变化（${planResult.status}），请重新保存。`;
+            setSyncStatus("error", { errorMessage: message });
+            return { status: "error", retryable: false, message };
+          }
+        }
+
+        const result = await atomicCommandSubmit.submit(planResult.plan);
+        if (result.status === "committed") {
+          batchSavedProject = planResult.plan.acknowledgedProject;
+          batchSavedTrackSnapEnabled = planResult.plan.acknowledgedTrackSnapEnabled;
+          batchSavedLocalRevision = planResult.plan.acknowledgedLocalRevision;
+          remainingFrozenOperations = remainingFrozenOperations.slice(planResult.plan.operationIds.length);
+          continue;
+        }
+        if (result.status === "failed") {
+          const failure = result.failure;
+          // 仅记录稳定分类，不输出命令 payload 或租约 token，便于定位确定性 API 拒绝。
+          console.error(
+            `原子命令提交失败 [${failure.status}/${failure.code ?? "no-code"}]：${failure.message}`,
+          );
+          if (requiresLegacySnapshotMigration(failure)) {
+            // 浏览器已经迁移、服务器仍保存旧格式的导入文件无法直接重放领域命令。
+            // 仅在服务端明确返回该代码时，以同一 revision 和租约执行一次完整快照迁移。
+            return saveLegacyProjectSnapshot(editorSession, options.source, frozenRecoveryState);
+          }
+          if (isMutationLeaseSubmitFailure(failure)) {
+            // 服务端已证明当前 token 不能继续使用；先清本地状态并尽力释放，下一次保存才能重新 acquire。
+            await mutationLease.release().catch(() => undefined);
+          }
+          const outcome: PlatformSaveOutcome = failure.status === "offline"
+            ? { status: "offline", retryable: true, message: failure.message }
+            : failure.status === "conflict"
+              ? { status: "conflict", retryable: false, message: failure.message }
+              : { status: "error", retryable: failure.retryable, message: failure.message };
+          setSyncStatus(outcome.status, { errorMessage: outcome.message });
+          if (interactive) window.alert(outcome.message);
+          return outcome;
+        }
+        if (result.status === "protocol_error") {
+          const message = `服务器原子确认合同异常：${result.reason}`;
+          setSyncStatus("error", { errorMessage: message });
+          if (interactive) window.alert(message);
+          return { status: "error", retryable: false, message };
+        }
+        return { status: "skipped", reason: "busy" };
       }
-      // 2. 保存完整 ProjectData；服务端在覆盖前自动留一份隐藏恢复快照。
-      const projectToSave = prepareProjectForServer(getPersistableProjectData(projectSnapshot));
-      const savedFile = await editorSession.client.saveAnnotationFile<ProjectData>(editorSession.annotationFileId, {
-        baseRevision: remoteBaseRevision,
-        payload: projectToSave,
-        // covered ids 包含此前 POST 成功但 PUT 失败的 submitted operation，使重试仍能原子绑定快照。
-        clientOperationIds: coveredOperationIds,
-        ...(mutationLeaseToken ? { mutationLeaseToken } : {}),
-      });
-      // 3. 成功后更新 baseRevision 并确认本地 pending operations（清空 pending、标 acknowledged）。
-      if (mutationLeaseToken) mutationLease.markCommitted();
-      setRemoteBaseRevision(savedFile.revision);
-      setRemoteOperationCursor(savedFile.operationCursor);
-      editorSession.onAnnotationFileSaved(savedFile);
-      markProjectAsSaved(projectSnapshot, trackSnapSnapshot, {
-        acknowledgedOperationIds: coveredOperationIds,
-        savedLocalRevision,
-      });
-      // 保存推进服务器 revision 后刷新确认事实，使旧记录立即呈现为 stale；刷新失败不反转已成功保存。
-      void annotationConfirmations.refresh();
       return { status: "saved" };
     } catch (error) {
-      if (submittedOperationIds.length > 0) {
-        markOperationsAsSubmitted(submittedOperationIds);
-      }
-      // 失败时不调用 markProjectAsSaved，保留 pending operations 供重试。
-      // 已写入服务端 operation log 的条目标为 submitted，重试保存时会跳过，避免重复写 operation rows。
       const classified = describeServerSaveError(error);
       setSyncStatus(classified.status, { errorMessage: classified.message });
       console.error("保存到服务器失败:", error);
@@ -5533,6 +5633,67 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return classified;
     } finally {
       serverSaveInFlightRef.current = false;
+    }
+  }
+
+  // 只有 planner 明确识别出的旧语义才能走完整快照；该兼容通道不能吞掉原子命令 precondition 错误。
+  async function saveLegacyProjectSnapshot(
+    session: PlatformEditorSession,
+    source: "manual" | "auto",
+    frozenRecoveryState = getRecoveryState(),
+  ): Promise<PlatformSaveOutcome> {
+    const submittedOperationIds: string[] = [];
+    const pendingSnapshot = frozenRecoveryState.pendingOperations;
+    const coveredOperationIds = pendingSnapshot.map((operation) => operation.id);
+    const savedLocalRevision = pendingSnapshot.length > 0
+      ? Math.max(...pendingSnapshot.map((operation) => operation.localRevision))
+      : frozenRecoveryState.localRevision;
+    const projectSnapshot = frozenRecoveryState.currentProject;
+    const trackSnapSnapshot = frozenRecoveryState.currentTrackSnapEnabled;
+    const requiredLeasePurpose = pendingSnapshot
+      .map((operation) => getAnnotationMutationLeasePurposeForCommand(operation.commandEnvelope))
+      .find((purpose): purpose is AnnotationMutationPurpose => purpose !== null);
+    try {
+      if (requiredLeasePurpose && !mutationLease.getToken()) {
+        await mutationLease.acquire(requiredLeasePurpose);
+      }
+      const mutationLeaseToken = mutationLease.getToken();
+      if (pendingSnapshot.length > 0) {
+        await submitLegacyPendingOperations(
+          session.client,
+          session.annotationFileId,
+          pendingSnapshot,
+          remoteBaseRevisionRef.current,
+          (operationId) => submittedOperationIds.push(operationId),
+          mutationLeaseToken,
+        );
+      }
+      const savedFile = await session.client.saveAnnotationFile<ProjectData>(session.annotationFileId, {
+        baseRevision: remoteBaseRevisionRef.current,
+        payload: prepareProjectForServer(getPersistableProjectData(projectSnapshot)),
+        clientOperationIds: coveredOperationIds,
+        ...(mutationLeaseToken ? { mutationLeaseToken } : {}),
+      });
+      if (mutationLeaseToken) mutationLease.markCommitted();
+      mutationLease.advanceBaseRevision(savedFile.revision);
+      remoteBaseRevisionRef.current = savedFile.revision;
+      remoteOperationCursorRef.current = savedFile.operationCursor;
+      setRemoteBaseRevision(savedFile.revision);
+      setRemoteOperationCursor(savedFile.operationCursor);
+      session.onAnnotationFileSaved(savedFile);
+      markProjectAsSaved(projectSnapshot, trackSnapSnapshot, {
+        acknowledgedOperationIds: coveredOperationIds,
+        savedLocalRevision,
+      });
+      void annotationConfirmations.refresh();
+      return { status: "saved" };
+    } catch (error) {
+      if (submittedOperationIds.length > 0) markOperationsAsSubmitted(submittedOperationIds);
+      const classified = describeServerSaveError(error);
+      setSyncStatus(classified.status, { errorMessage: classified.message });
+      console.error("兼容快照保存失败:", error);
+      if (source === "manual") window.alert(classified.message);
+      return classified;
     }
   }
 
@@ -8472,45 +8633,6 @@ function downloadBlob(content: string, fileName: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
-function serializeComparableProject(project: ProjectData) {
-  const cached = comparableProjectSignatureCache.get(project);
-  if (cached) {
-    return cached;
-  }
-  const signature = JSON.stringify(getComparableProjectSnapshot(project));
-  comparableProjectSignatureCache.set(project, signature);
-  return signature;
-}
-
-function getComparableProjectSnapshot(project: ProjectData) {
-  const serializableProject = project;
-  return {
-    ...serializableProject,
-    video: {
-      source: serializableProject.video.source,
-      name: serializableProject.video.name,
-      filePath: serializableProject.video.filePath ?? null,
-      requiresManualImport: Boolean(serializableProject.video.requiresManualImport),
-      token: getComparableVideoToken(serializableProject.video),
-    },
-  };
-}
-
-function getComparableVideoToken(video: ProjectData["video"]) {
-  const url = video.url ?? "";
-  const filePath = video.filePath ?? "";
-  const importMode = video.requiresManualImport ? "manual" : "direct";
-  if (!url) {
-    return `${video.source}|${video.name ?? ""}|${importMode}|${filePath}`;
-  }
-  if (video.source === "embedded") {
-    const head = url.slice(0, 48);
-    const tail = url.slice(-48);
-    return `${video.source}|${video.name ?? ""}|${importMode}|${filePath}|${url.length}|${head}|${tail}`;
-  }
-  return `${video.source}|${video.name ?? ""}|${importMode}|${filePath}|${url}`;
-}
-
 function trackSnapStatesEqual(
   left: Record<string, boolean>,
   right: Record<string, boolean>,
@@ -8844,19 +8966,7 @@ function normalizeCharacterCreationRequest(startTime: number, explicitEndTime?: 
 }
 
 function getDefaultTrackSnapEnabled(project: ProjectData) {
-  return Object.fromEntries(
-    buildTimelineTrackDefinitions(project.builtinTracks, project.customTracks, project.activeTrackOrder).map((track) => [track.id, true]),
-  );
-}
-
-function getNormalizedTrackSnapEnabled(
-  project: ProjectData,
-  trackSnapEnabled?: Record<string, boolean>,
-) {
-  const nextDefinitions = buildTimelineTrackDefinitions(project.builtinTracks, project.customTracks, project.activeTrackOrder);
-  return Object.fromEntries(
-    nextDefinitions.map((track) => [track.id, trackSnapEnabled?.[track.id] ?? true]),
-  );
+  return normalizeTrackSnapEnabledForProject(project);
 }
 
 function clampTime(time: number, maxDuration: number) {

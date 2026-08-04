@@ -4678,3 +4678,79 @@ ProjectData builder、adapter 与编辑器接线：
   保存，按批取得/释放结构租约，成功后只部分确认、不额外 PUT，legacy barrier 才走完整快照兼容路径；409、
   offline、协议错误、草稿 flush 和 dirty 会话冲突必须有明确状态与人工恢复入口，完成后再删除新会话中无调用
   者的旧逐条 operation 提交路径。
+
+## 2026-08-04：R5b3b2 编辑器原子保存、自动保存与结构租约接线
+
+### 本轮计划与真实实现边界
+
+- 用户确认开始 R5b3b2，并再次明确要求维护 **Development Log**。Codex 先核对 roadmap、当前任务单、App 旧
+  保存事务、document state、自动保存、IndexedDB 草稿、mutation lease、冲突交接与 R5b3b1 planner/runtime，
+  确认本轮目标是把真实平台编辑器迁到原子批次；WebSocket 仍只提供 revision/presence/activity 提示，clean
+  catch-up 仍通过 committed HTTP feed 或权威快照恢复，dirty 文件不会被远端静默覆盖。
+- `saveProjectToServer()` 现在先冻结一份 `ProjectDocumentRecoveryState`。可重放 pending chain 由 planner
+  完整审计后按共享上限最多 100 项循环提交；每批成功只确认精确 pending 前缀、saved ProjectData、派生的
+  track-snap baseline、saved local revision、remote revision 和 committed cursor，不再对同一内容追加完整
+  payload PUT。请求期间继续产生的新编辑不会混入 frozen plan，仍作为下一轮 dirty/pending 自动保存。
+- 新增 `PlatformAtomicCommandSubmitCoordinator` 和薄 React adapter。coordinator 把既有 retry runtime 包成一次
+  可等待事务，同一文件会话只允许一个 plan；可重试网络错误保留同一 Promise 和 operation IDs，确定失败才
+  返回，账号/文件切换明确取消旧等待且迟到响应不能确认新文档。自动保存 hook 改为消费 App 的显式 online
+  fact，手动保存与自动保存复用同一高层入口。
+- legacy、track-snap、snapshot boundary、旧 `submitted` operation 统一进入改名后的
+  `saveLegacyProjectSnapshot()` / `submitLegacyPendingOperations()`。该通道保留旧草稿可能已 POST、尚未 PUT 的
+  恢复语义。planner blocked、precondition/local-chain mismatch、revision/lease 冲突、协议损坏和确定 4xx 都
+  fail closed；只有服务端精确返回 `annotation_payload_invalid`，证明数据库仍是旧 payload 时，才允许以同一
+  revision/租约做一次完整快照迁移，不能把一般 409 借机覆盖掉。
+
+### 浏览器排查发现的真实故障与自审修复
+
+- 首次使用历史测试文件验证时，服务器 payload 只有旧测试标记，不满足当前严格 ProjectData schema；原子入口
+  正确返回 `annotation_payload_invalid`。补上精确 migration fallback 后，旧文件会先迁为当前 payload，并按旧
+  完整保存合同留下恢复快照；除此代码以外的 409 不进入该分支。
+- 结构编辑已经在本地 commit 前取得租约，但 App 首次 planner 没有传入已有 token，只在 planner 返回 purpose
+  后才考虑 acquire；结果已有租约反而被遗漏，服务器返回 `annotation_mutation_lease_required`。现首轮规划始终
+  读取 runtime 当前 token，确实缺失时才 acquire 并对同一冻结链重新规划。
+- 服务端为租约设置绝对持有上限。续期到上限后 expiresAt 不再前进，旧 runtime 把“距续期点 0ms”解释为立即
+  再续，形成请求忙循环。现比较续期前后 expiresAt：不前进时只安排真实到期 timer，到期后清 token 并报告
+  丢锁。批次提交消费 token 后，runtime 同步原位推进 base revision，下一结构批次使用新 revision 重新申请，
+  不等待 React effect 卸载重建。
+- 原子请求和服务器 revision 已成功，但界面一度显示 `dirty · 0 items` 并随后多发一次完整快照。第一层原因是
+  结构命令改变了轨道集合，saved track-snap 基线没有随 acknowledged project 规范化；planner 现在显式返回
+  `acknowledgedTrackSnapEnabled`，document state 与 ProjectData 在同一确认中推进。更深层根因是旧项目比较器
+  用 WeakMap 按对象身份缓存序列化签名；导入规范化在首次比较后修改同一对象时，缓存继续声称旧内容相等或
+  不等。现抽出纯 `areEditorProjectsEqual()`，每次比较当前值并保留媒体运行时忽略规则，删除项目签名缓存并
+  增加“首次比较后修改同一项目仍能发现差异”的回归测试。定位用顶层领域扫描在确认根因后已删除。
+- App 的原子最终错误日志只记录稳定 status/code/message，不输出 command payload、项目正文或租约 token。
+  document state 保留一个仅输出项目/吸附布尔匹配结果的不变量警告，用于发现未来出现“无 pending 但仍 dirty”
+  的保存基线漂移。
+- 最终自审发现服务器返回租约过期/无效/用途不匹配后，runtime 可能继续持有坏 token，使下一次手动保存重复同一
+  确定失败。现增加统一租约失败识别：保持文档 dirty/error，不回退完整快照，同时清除并 best-effort 释放本
+  账号 token；下一次显式保存可按新 revision/purpose 重新 acquire。策略测试同时证明 revision 冲突不会误入。
+- 排查期间本机一度出现 `ENOSPC`。只清理可再生成的 VS Code ShipIt 缓存，释放约 1.5 GB；没有删除仓库 `data/`、
+  PostgreSQL 数据、对象存储或用户标注。旧 API 进程也曾让新路由表现为 404，重启当前 API 后确认并非代码路由
+  缺失。这些过程保留在日志中，避免把环境故障误写成业务实现。
+
+### 浏览器、数据库、测试与构建验收
+
+- 在真实平台页面打开集成测试标注文件并进行结构编辑“新增动作轨”。干净基线为 revision 15、operation 8；
+  自动保存后 UI 显示“可编辑 · 已保存”，数据库精确变为 revision 16、operation 9，最新审计为
+  `commitMode=domain_command_batch`、`operationCount=1`、`mutationLeaseReleased=true`。继续等待后没有 revision
+  17，活动租约为 0，浏览器控制台没有新增 warning/error。这证明结构编辑只走一次原子批次，没有随后完整
+  PUT，也没有遗留租约。测试过程对集成测试数据产生的 revision 属于本地数据库状态，不是源码夹具修改。
+- 专项回归最终通过：原子 planner/policy/runtime/coordinator/document/equality 23/23，mutation lease runtime
+  6/6，自动保存 policy/runtime 12/12，平台 operation 4/4，IndexedDB 草稿/恢复 23/23，clean operation
+  catch-up 17/17，共 85 项；shared 原子批次合同另行通过 5/5。真实 PostgreSQL/Fastify `npm run test:api`
+  122/122，通过 14 条 migration；仍只有仓库既有 pg 9 `client.query()` 前置弃用提示。
+- `npm run build` 通过 Prisma generate、shared、document-model、Web 和 API。Vite 转换 2097 个模块，CSS
+  124.92 kB / gzip 22.99 kB，主 JS 957.18 kB / gzip 283.73 kB；保留既有大 chunk 提醒。未新增依赖、Prisma
+  migration、JSON schema、第二套 command apply/parser 或可靠 WebSocket operation 通道；`git diff --check`
+  通过。
+
+### 剩余边界与下一轮
+
+- legacy/track-snap/snapshot boundary/旧 submitted 与旧 payload migration 仍需要完整快照兼容入口，所以旧
+  operation POST helper 不能只因主路径切换就删除。浏览器已验证当前格式结构命令原子保存和旧 payload 首次
+  迁移；离线、幂等重试、文件切换和 legacy 路径由纯 runtime/集成测试覆盖，但本轮未在浏览器手工制造真实
+  网络断开、双账号 409 和旧 submitted 草稿。
+- 下一轮 R5b3c 应先建立可重复的真实双账号并发矩阵，再决定可解释的块级冲突策略。默认继续使用稳定实体、
+  before precondition、revision、committed catch-up 和现有比较/恢复；结构与递归分叉保持租约。没有证据证明
+  同字段并发必须自动合并前，不引入 OT/CRDT。

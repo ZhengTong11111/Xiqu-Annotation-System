@@ -110,6 +110,81 @@ test("显式 release 清除本地 token 并把同一个凭据交还服务端", a
   assert.deepEqual(released, ["xiqu_lease_cancel"]);
 });
 
+test("提交后可同步推进 revision，并用新基线申请下一批结构租约", async () => {
+  const acquiredBaseRevisions: number[] = [];
+  let tokenIndex = 0;
+  const runtime = createPlatformMutationLeaseRuntime({
+    baseRevision: 3,
+    now: () => 1_000,
+    setTimer: () => 1,
+    clearTimer: () => undefined,
+    acquire: async (_purpose, baseRevision) => {
+      acquiredBaseRevisions.push(baseRevision);
+      tokenIndex += 1;
+      return grant(`xiqu_lease_batch_${tokenIndex}`, 61_000);
+    },
+    renew: async (token) => grant(token, 101_000),
+    release: async () => undefined,
+    onStateChange: () => undefined,
+    onLeaseLost: () => undefined,
+  });
+
+  await runtime.acquire("track_structure");
+  // 第一批提交已在服务端消费 token；本地先确认消费，再同步推进下一批的 revision 基线。
+  runtime.markCommitted();
+  runtime.updateBaseRevision(4);
+  await runtime.acquire("track_structure");
+
+  assert.deepEqual(acquiredBaseRevisions, [3, 4]);
+  runtime.dispose();
+});
+
+test("服务端达到绝对上限时不忙循环续期，并在真实到期后报告丢锁", async () => {
+  let now = 1_000;
+  let nextTimerId = 1;
+  let renewCount = 0;
+  let lostCount = 0;
+  const timers = new Map<number, { callback: () => void; delayMs: number }>();
+  const runtime = createPlatformMutationLeaseRuntime({
+    baseRevision: 3,
+    now: () => now,
+    setTimer: (callback, delayMs) => {
+      const id = nextTimerId++;
+      timers.set(id, { callback, delayMs });
+      return id;
+    },
+    clearTimer: (id) => timers.delete(id),
+    acquire: async () => grant("xiqu_lease_capped", 30_000),
+    renew: async () => {
+      renewCount += 1;
+      return grant("xiqu_lease_capped", 30_000);
+    },
+    release: async () => undefined,
+    onStateChange: () => undefined,
+    onLeaseLost: () => {
+      lostCount += 1;
+    },
+  });
+
+  await runtime.acquire("track_structure");
+  const renewalEntry = [...timers.entries()][0];
+  assert.ok(renewalEntry);
+  now = 10_000;
+  timers.delete(renewalEntry[0]);
+  renewalEntry[1].callback();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(renewCount, 1);
+  const expiry = [...timers.values()][0];
+  assert.ok(expiry);
+  assert.equal(expiry.delayMs, 20_000);
+  now = 30_000;
+  expiry.callback();
+  assert.equal(lostCount, 1);
+  assert.equal(runtime.getToken(), undefined);
+  runtime.dispose();
+});
+
 test("续期短暂失败保留有效 token，接近过期时才上报租约丢失", async () => {
   let now = 1_000;
   const timers = new Map<number, () => void>();

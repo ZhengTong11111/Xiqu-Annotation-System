@@ -15,7 +15,7 @@ type UsePlatformMutationLeaseOptions = {
   onLeaseLost: (error: unknown) => void;
 };
 
-// React adapter 只负责按文件/revision 建立运行时；明文 token 仅保存在 runtime 闭包和 ref 中。
+// React adapter 按文件建立运行时并原位推进 revision；明文 token 仅保存在 runtime 闭包和 ref 中。
 export function usePlatformMutationLease(options: UsePlatformMutationLeaseOptions) {
   const [state, setState] = useState<PlatformMutationLeaseViewState>({ status: "idle" });
   const runtimeRef = useRef<PlatformMutationLeaseRuntime | null>(null);
@@ -48,7 +48,12 @@ export function usePlatformMutationLease(options: UsePlatformMutationLeaseOption
       runtime.dispose();
       if (runtimeRef.current === runtime) runtimeRef.current = null;
     };
-  }, [options.annotationFileId, options.baseRevision, options.client, options.enabled]);
+  }, [options.annotationFileId, options.client, options.enabled]);
+
+  // revision 变化只推进现有会话基线；避免每批提交后依赖一次异步卸载/重建才能申请下一把锁。
+  useEffect(() => {
+    runtimeRef.current?.updateBaseRevision(options.baseRevision);
+  }, [options.baseRevision]);
 
   const acquire = useCallback(async (purpose: AnnotationMutationPurpose) => {
     if (!options.enabled) return undefined;
@@ -62,6 +67,10 @@ export function usePlatformMutationLease(options: UsePlatformMutationLeaseOption
     acquire,
     getToken: useCallback(() => runtimeRef.current?.getToken(), []),
     markCommitted: useCallback(() => runtimeRef.current?.markCommitted(), []),
+    advanceBaseRevision: useCallback(
+      (baseRevision: number) => runtimeRef.current?.updateBaseRevision(baseRevision),
+      [],
+    ),
     release: useCallback(() => runtimeRef.current?.release() ?? Promise.resolve(), []),
   };
 }

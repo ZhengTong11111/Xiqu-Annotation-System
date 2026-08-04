@@ -66,7 +66,7 @@ export function buildServerOperationRequest(
 // 并发提交会让错误定位变乱；顺序提交便于定位是哪一条失败。
 // 若某条 operation 提交遇到 409（说明服务器 snapshot 已被别的会话更新），
 // 直接抛出，由调用方进入 conflict 状态，不再继续提交后续 operation。
-export async function submitPendingOperations(
+export async function submitLegacyPendingOperations(
   client: PlatformClient,
   annotationFileId: string,
   pendingOperations: ProjectDocumentOperation[],

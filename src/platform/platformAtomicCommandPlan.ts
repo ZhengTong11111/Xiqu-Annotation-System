@@ -14,6 +14,7 @@ import type {
   ProjectDocumentOperation,
 } from "../state/projectDocumentState";
 import type { ProjectData } from "../types";
+import { normalizeTrackSnapEnabledForProject } from "../utils/project";
 
 export type AtomicCommandLegacyBarrierReason =
   | "legacy_submitted_operation"
@@ -33,6 +34,7 @@ export type AtomicCommandPlan = {
   request: CommitAnnotationCommandBatchRequest;
   operationIds: string[];
   acknowledgedProject: ProjectData;
+  acknowledgedTrackSnapEnabled: Record<string, boolean>;
   remainingCount: number;
   expectedSavedLocalRevision: number;
   acknowledgedLocalRevision: number;
@@ -61,6 +63,7 @@ type PlanInput = {
   currentProject: ProjectData;
   serverRevision: number;
   savedLocalRevision: number;
+  savedTrackSnapEnabled: Record<string, boolean>;
   pendingOperations: readonly ProjectDocumentOperation[];
   mutationLeaseToken?: string;
   maxBatchSize?: number;
@@ -151,6 +154,11 @@ export function planAtomicAnnotationCommandBatch(input: PlanInput): AtomicComman
       request,
       operationIds: batchOperations.map((operation) => operation.id),
       acknowledgedProject,
+      // 结构命令产生的新/删轨 key 是项目变化的派生事实，必须随同一批 saved baseline 一起推进。
+      acknowledgedTrackSnapEnabled: normalizeTrackSnapEnabledForProject(
+        acknowledgedProject,
+        input.savedTrackSnapEnabled,
+      ),
       remainingCount: input.pendingOperations.length - batchOperations.length,
       expectedSavedLocalRevision: input.savedLocalRevision,
       acknowledgedLocalRevision: batchOperations[batchOperations.length - 1].localRevision,

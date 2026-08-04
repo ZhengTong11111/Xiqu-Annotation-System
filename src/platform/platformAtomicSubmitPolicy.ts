@@ -72,6 +72,13 @@ export function classifyAtomicSubmitError(
   if (error instanceof PlatformApiError) {
     const code = getDetailCode(error.details) ?? error.code ?? null;
     if (error.status === 409) {
+      if (code?.startsWith("annotation_mutation_lease_")) {
+        return { status: "error", retryable: false, code, message: error.message };
+      }
+      if (code === "annotation_payload_invalid") {
+        // 旧导入文件可能已在浏览器中迁移，但服务器仍保存旧 payload；这不是并发冲突。
+        return { status: "error", retryable: false, code, message: error.message };
+      }
       return { status: "conflict", retryable: false, code, message: error.message };
     }
     if (error.status === 408 || error.status === 429 || error.status >= 500) {
@@ -88,6 +95,21 @@ export function classifyAtomicSubmitError(
     code: null,
     message: error instanceof Error ? error.message : "原子命令提交失败。",
   };
+}
+
+// 只有服务器明确证明当前 payload 不是可重放格式时，客户端才允许退回一次完整快照迁移。
+// revision、租约或命令前置条件冲突都不能借此路径覆盖远端内容。
+export function requiresLegacySnapshotMigration(
+  failure: AtomicSubmitErrorClassification,
+) {
+  return failure.code === "annotation_payload_invalid";
+}
+
+// 租约拒绝意味着客户端持有的 token 已不可继续写入；调用方应清除本地凭据后再由用户重试取得新锁。
+export function isMutationLeaseSubmitFailure(
+  failure: AtomicSubmitErrorClassification,
+) {
+  return failure.code?.startsWith("annotation_mutation_lease_") === true;
 }
 
 export function getAtomicSubmitRetryDelay(attempt: number) {

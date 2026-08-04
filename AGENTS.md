@@ -48,9 +48,10 @@ Main currently contains all major recent feature lines that matter for context:
   draft persistence, inverse/precondition semantics, all-or-nothing ProjectData adapters, atomic server command-batch apply, and clean-client
   HTTP replay; lifecycle covers sentences, characters, custom blocks, attached points, Gongche blocks/symbols, and Banyan
   marks/sections; state atomically replaces coupled Gongche/Banyan snapshots, while transactions bind sentence synchronization,
-  parent/Gongche cascades, and Banyan-reference repair. The editor still uses the old accept-then-full-save path until R5b3b2
-- client atomic-command planning/runtime and partial document acknowledgement are implemented: the planner audits the full
-  pending command chain before slicing a batch, while App wiring and replacement of the old save path remain R5b3b2 work
+  parent/Gongche cascades, and Banyan-reference repair. Replayable editor saves now use atomic server command batches;
+  full-snapshot save remains only for explicit legacy, snapshot, track-snap, submitted-draft, and old-payload migration boundaries
+- client atomic-command planning/runtime, App/autosave wiring, partial document acknowledgement, mutation-lease handoff, and
+  browser-recovery baseline advancement are implemented; each frozen pending chain is fully audited before bounded batch slicing
 - per-file operation acceptance sequence plus snapshot-committed operation facts and separate bounded feeds; clean web
   sessions now perform bounded HTTP catch-up, atomically replay complete mixed domain-command chains, and fall back to the
   authoritative snapshot for incomplete or non-replayable evidence
@@ -96,11 +97,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - thin React facts/callback adapter around one `PlatformAutoSaveRuntime`
   - Strict Effects cleanup must dispose and clear the runtime ref so the second setup creates a live instance
 - `src/platform/platformMutationLeaseRuntime.ts`
-  - memory-only acquire/renew/retry/release coordinator for one annotation-file revision; plaintext tokens must never enter
+  - memory-only acquire/renew/retry/release coordinator for one annotation-file session; plaintext tokens must never enter
     React-persisted state, ProjectData, IndexedDB, logs, or command payloads
   - temporary renewal failure may retain an unexpired token, but near-expiry failure clears it and reports lease loss
+  - committed/catch-up revisions advance the existing runtime in place; a non-forward renewal at the server absolute cap must
+    schedule real expiry loss instead of a zero-delay renewal loop
 - `src/platform/usePlatformMutationLease.ts`
-  - thin file-session React adapter; changing file/revision disposes the old runtime and invalidates late responses
+  - thin file-session React adapter; changing file disposes the old runtime, while revision changes update its acquisition baseline
 - `src/platform/platformOperationCatchUp.ts`
   - pure bounded committed-feed reader, revision-continuity validator, and all-or-nothing known-command replay planner
   - malformed pages, revision gaps, legacy operations, pagination overflow, and precondition failures require a snapshot
@@ -113,9 +116,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     command is blocked or the replayed chain does not equal the current project
 - `src/platform/platformAtomicSubmitPolicy.ts`
   - strict command-batch acknowledgement validation and atomic-endpoint-specific HTTP/network classification
+  - lease failures and the exact old-payload migration code are separate deterministic errors; neither is a generic revision conflict
 - `src/platform/platformAtomicSubmitRuntime.ts`
   - frozen-plan single-flight transport lifecycle with same-ID retries, online recovery, protocol blocking, and session disposal
   - it does not own ProjectData, React state, access tokens, mutation leases, or IndexedDB
+- `src/platform/platformAtomicCommandSubmitCoordinator.ts`
+  - awaited transaction facade over the atomic submit runtime; one file session permits one frozen plan and one completion Promise
+  - session switches return `cancelled`, retryable failures keep the same call alive, and final failures never create a second request
+- `src/platform/usePlatformAtomicCommandSubmit.ts`
+  - thin React adapter supplying current client/session/online/apply callbacks to the testable coordinator
 - `src/platform/usePlatformOperationCatchUp.ts`
   - thin React facts/callback adapter; App owns snapshot hydration and document replacement gating
 - `src/platform/platformCollaborationRuntime.ts`
@@ -270,8 +279,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - owns undo/redo stacks, pending operations, revision counters, dirty/saved status
   - migrated edits may carry a validated versioned command envelope; history retains the forward envelope so undo records
     its inverse and redo records the original command; unported edits remain legacy operations
-  - `acknowledgeAtomicCommandBatch()` may advance only the exact pending prefix and saved/remote baseline; later current state,
-    operations, and history remain local and dirty
+  - `acknowledgeAtomicCommandBatch()` may advance only the exact pending prefix plus saved ProjectData/track-snap/remote baseline;
+    later current state, operations, and history remain local and dirty
 - `src/components/Timeline.tsx`
   - heaviest file
   - owns zoom, ruler scrubbing, snapping, marquee selection, drag/resize, creation flows, waveform guides, spectrogram lane rendering, loop range interaction, Gongche lane rendering, attached point editing
@@ -317,6 +326,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - stable operation request builder plus structured manual/automatic server-save outcomes
   - sends migrated domain envelopes intact; it must never reduce them back to boolean legacy summaries
   - retryable save failures are limited to offline/network/408/429/5xx; conflict and deterministic 4xx must stop autosave
+- `src/utils/editorProjectEquality.ts`
+  - pure editor-level ProjectData equality that ignores non-persisted media runtime details without caching mutable object signatures
 - `src/utils/timelineTimingCommand.ts`
   - Web compatibility re-export for the shared timing resolver/builder in `packages/document-model`
 - `src/utils/timelineTimingCommandApply.ts`

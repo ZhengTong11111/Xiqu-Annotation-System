@@ -44,7 +44,8 @@ R5b2b2b 已把该通道收敛为播放头、鼠标时间与匿名选区摘要的
 R5b3a1、R5b3a2a/a2b/a2c 与 R5b3a3a/a3b 已完成共享持久类型、完整纯命令 dispatcher、当前格式运行时
 ProjectData parser、有序原子命令批次合同和服务端原子数据库提交；R5b3b1 已完成客户端完整命令链审计、
 原子批次 planner、严格响应/错误策略、single-flight 重试 runtime 和 document saved baseline 部分确认；
-下一步进入 R5b3b2 的 App/自动保存/租约/冲突 UI 真实接线；
+R5b3b2 已完成 App、自动保存、IndexedDB 恢复状态、mutation lease 和冲突状态的真实接线，可重放编辑现已
+直接原子提交并逐批确认，旧/不可重放边界才走有界完整快照；下一步进入 R5b3c 的真实多账号并发与冲突策略；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -557,9 +558,15 @@ ProjectData parser、有序原子命令批次合同和服务端原子数据库�
         base 和 committed 事实；single-flight runtime 冻结同批 ID，处理有界退避、online 恢复、协议错误阻断、
         文件 generation 与迟到响应。document state 可只确认 pending 有序前缀并推进 saved/remote baseline，同时
         保留后续 current project、pending 和 undo/redo；pending 即使把正文撤回 saved 值也继续保持 dirty。
-      - R5b3b2 待推进：把 planner/runtime 接入 App、自动保存、IndexedDB 草稿、mutation lease 和冲突 UI；原子
-        成功不再额外 PUT 完整 payload，确定 409 进入可解释冲突，网络/离线按同批幂等重试。清理不再使用的
-        per-operation 新会话路径，但保留旧草稿/不可重放编辑的有界完整保存兼容入口。
+      - R5b3b2 已完成：App 保存事务冻结当前恢复状态，可重放 pending chain 按最多 100 项的原子批次提交，
+        每批只推进 document saved project、派生吸附基线、local/remote revision 和 committed cursor，不再额外
+        PUT 同一完整 payload；请求期间的新编辑保留为下一轮 dirty。薄 React adapter 与可测试 coordinator
+        复用同批 operation IDs 做 single-flight/有界网络重试，文件切换取消旧等待；自动保存显式消费 online
+        facts。结构命令携带现有租约或按 planner purpose 获取，提交后同步消费 token 并原位推进下一批 base
+        revision；服务端绝对租约上限不会触发 0ms 续期忙循环。legacy、track-snap、snapshot boundary、旧
+        submitted operation，以及服务器明确返回的旧 payload migration 继续走单一完整快照兼容入口；revision、
+        lease、precondition、协议和确定 4xx 均 fail closed，不借快照覆盖远端。浏览器真实结构编辑验证只产生
+        revision 15→16 和 operation 8→9，一次原子审计、无额外 PUT revision，租约归零。
       WebSocket 仍只负责 revision/presence/activity 提示；clean 客户端继续用 committed feed，dirty 客户端不得
       被远端 payload 静默覆盖。
     - R5b3c 待推进：在真实多账号并发测试后确定块级冲突策略。优先采用稳定实体 + before precondition +

@@ -5,6 +5,8 @@ import { PlatformApiError } from "../api/platformClient";
 import type { AtomicCommandPlan } from "./platformAtomicCommandPlan";
 import {
   classifyAtomicSubmitError,
+  isMutationLeaseSubmitFailure,
+  requiresLegacySnapshotMigration,
   validateAtomicSubmitResponse,
 } from "./platformAtomicSubmitPolicy";
 
@@ -20,6 +22,7 @@ const PLAN = {
   },
   operationIds: ["op-1"],
   acknowledgedProject: {} as AtomicCommandPlan["acknowledgedProject"],
+  acknowledgedTrackSnapEnabled: {},
   remainingCount: 0,
   expectedSavedLocalRevision: 1,
   acknowledgedLocalRevision: 2,
@@ -71,12 +74,39 @@ test("网络、冲突和确定错误使用原子提交专用分类", () => {
   const conflict = new PlatformApiError(409, "conflict", "revision", {
     code: "annotation_command_batch_revision_conflict",
   });
-  assert.deepEqual(classifyAtomicSubmitError(conflict, true), {
+  const revisionConflict = classifyAtomicSubmitError(conflict, true);
+  assert.deepEqual(revisionConflict, {
     status: "conflict",
     retryable: false,
     code: "annotation_command_batch_revision_conflict",
     message: "revision",
   });
+  const expiredLease = new PlatformApiError(409, "conflict", "lease expired", {
+    code: "annotation_mutation_lease_expired",
+  });
+  assert.deepEqual(classifyAtomicSubmitError(expiredLease, true), {
+    status: "error",
+    retryable: false,
+    code: "annotation_mutation_lease_expired",
+    message: "lease expired",
+  });
+  const legacyPayload = classifyAtomicSubmitError(new PlatformApiError(
+    409,
+    "conflict",
+    "payload migration required",
+    { code: "annotation_payload_invalid" },
+  ), true);
+  assert.deepEqual(legacyPayload, {
+    status: "error",
+    retryable: false,
+    code: "annotation_payload_invalid",
+    message: "payload migration required",
+  });
+  assert.equal(requiresLegacySnapshotMigration(legacyPayload), true);
+  assert.equal(requiresLegacySnapshotMigration(revisionConflict), false);
+  assert.equal(requiresLegacySnapshotMigration(classifyAtomicSubmitError(expiredLease, true)), false);
+  assert.equal(isMutationLeaseSubmitFailure(classifyAtomicSubmitError(expiredLease, true)), true);
+  assert.equal(isMutationLeaseSubmitFailure(revisionConflict), false);
   assert.equal(classifyAtomicSubmitError(new PlatformApiError(503, "internal_error", "busy", null), true).retryable, true);
   assert.equal(classifyAtomicSubmitError(new PlatformApiError(403, "forbidden", "no", null), true).retryable, false);
 });

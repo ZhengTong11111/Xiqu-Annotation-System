@@ -12,6 +12,7 @@ type PlatformAutoSaveOptions = {
   suspended: boolean;
   localRevision: number;
   syncStatus: ProjectSyncStatus;
+  online: boolean;
   save: () => Promise<PlatformSaveOutcome>;
   onUnexpectedError: (error: unknown) => void;
 };
@@ -47,9 +48,16 @@ export function usePlatformAutoSave(options: PlatformAutoSaveOptions) {
       suspended: options.suspended,
       localRevision: options.localRevision,
       syncStatus: options.syncStatus,
-      online: typeof navigator === "undefined" || navigator.onLine !== false,
+      online: options.online,
     });
-  }, [options.dirty, options.enabled, options.localRevision, options.suspended, options.syncStatus]);
+  }, [
+    options.dirty,
+    options.enabled,
+    options.localRevision,
+    options.online,
+    options.suspended,
+    options.syncStatus,
+  ]);
 
   // 卸载时销毁并置空；这同时兼容 React 18 开发态的 Strict Effects setup-cleanup-setup 顺序。
   useEffect(() => () => {

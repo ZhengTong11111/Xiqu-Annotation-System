@@ -420,9 +420,8 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
   PostgreSQL 事务内把同一 base revision 的有序可重放命令链应用到严格当前格式 `ProjectData`，并同步写入
   恢复快照、单次 revision、按序 committed operation、资源时间、审计与租约释放；事务提交后才发布 revision
   提示。完全重试必须与原批次的完整 ID 集合、请求指纹及 sequence 顺序一致，不能把子集或 accepted legacy
-  行伪装成确认。现有编辑器尚未切换该入口，仍由旧 operation POST + payload PUT 保存；R5b3b 将负责可靠
-  submit/ack/reject、离线重试和冲突状态迁移。
-- R5b3b1 已建立客户端可靠提交核心，但尚未接入 App。`platformAtomicCommandPlan` 会先用共享
+  行伪装成确认。
+- R5b3b1 建立客户端可靠提交核心。`platformAtomicCommandPlan` 会先用共享
   `applyAnnotationCommandToProject()` 审计完整 pending chain，并确认最终结果等于当前 ProjectData；只有完整链
   可解释时才截取首批最多 100 项。后续命令 precondition 失败、合同外本地变化、legacy、snapshot、track-snap
   或旧 `submitted` operation 都不会产生“可提交的半批”。
@@ -434,8 +433,24 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
   remote base 和 committed revision。成功只把 saved project/local/remote baseline 推进到该批结果，标记对应
   operation acknowledged，保留后续 current project、pending、undo/redo；最后一批确认后才可 clean。pending
   operation 本身属于 dirty 事实，即使正反命令使正文值暂时等于 saved project，也不能提前自动保存为 clean。
-- R5b3b2 才负责把上述核心接入 App、现有自动保存、mutation lease、IndexedDB flush 与冲突交接。在该轮完成前，
-  用户保存仍走旧 operation POST + 完整 payload PUT；不得因为核心模块存在就删除兼容通道或宣称端到端迁移完成。
+- R5b3b2 已把上述核心接入 App、自动保存、mutation lease、IndexedDB 恢复事实与冲突状态。一次保存先冻结
+  `ProjectDocumentRecoveryState`：可重放链按最多 100 项循环规划，每批由 `PlatformAtomicCommandSubmitCoordinator`
+  等待同一 frozen plan 的 single-flight/有界重试；成功只调用 `acknowledgeAtomicCommandBatch()`，推进 saved
+  ProjectData、由该项目派生的 track-snap baseline、local/remote revision 与 committed cursor。网络等待期间产生的
+  编辑不进入旧请求，仍保留为 dirty/pending；最后一批且项目/吸附均一致时才 clean，随后草稿持久层按现有队列
+  删除恢复 envelope。
+- 原子路径只对 planner `ready` 开放。legacy、track-snap、snapshot boundary、旧 `submitted` operation 与服务器
+  明确返回 `annotation_payload_invalid` 的旧 payload 迁移，统一进入有 revision/lease 门禁的完整快照兼容函数；
+  planner blocked、命令前置失败、revision/lease 409、协议损坏和确定 4xx 都不能借此 PUT 覆盖服务器。兼容函数
+  保留旧 operation POST 的 submitted 恢复语义，因此 `submitLegacyPendingOperations()` 不能在该边界消失前删除。
+- 结构批次优先使用编辑发生时已取得的租约；缺失时按 planner purpose 获取。服务器每次成功批次都会消费租约，
+  客户端立即 `markCommitted()` 并在同一 tick 原位推进 runtime base revision，下一结构批次重新申请。服务端达到
+  绝对持有上限并返回不前进的 expiresAt 时，runtime 只等待真实到期并上报失锁，禁止 0ms 续期忙循环。
+  原子提交若明确返回租约过期、无效、缺失或用途不匹配，App 会清除并 best-effort 释放本账号旧 token；该失败
+  仍保持 dirty/error，不自动改走完整快照，下一次显式保存才重新 acquire。
+- 编辑器项目相等性必须每次从当前值计算，不能用 ProjectData 对象身份缓存序列化签名：导入 normalization 可能
+  在首次比较后修改同一对象。`areEditorProjectsEqual()` 忽略不可持久化媒体细节但不缓存对象签名；该规则直接
+  决定原子确认后的 dirty/clean，不得退回 WeakMap 项目签名缓存。
 
 - R5b1/R5b2a 的 WebSocket 与跨实例通知已经落地；revision 消息只负责经过认证的文件失效提示，不传完整 payload，也不提交
   operation。`session.ready` 或 `annotation.revision.advanced` 观察到更高 revision 时，只调用现有 catch-up

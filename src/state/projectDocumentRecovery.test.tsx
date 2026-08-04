@@ -166,6 +166,7 @@ test("原子确认只推进 pending 前缀并保留后续本地项目", () => {
   const result = state.acknowledgeAtomicCommandBatch({
     operationIds: ["op-1"],
     acknowledgedProject: firstProject,
+    acknowledgedTrackSnapEnabled: {},
     serverBaseRevision: 5,
     committedRevision: 6,
     expectedSavedLocalRevision: 0,
@@ -187,6 +188,7 @@ test("原子确认只推进 pending 前缀并保留后续本地项目", () => {
   const rejected = state.acknowledgeAtomicCommandBatch({
     operationIds: ["op-missing"],
     acknowledgedProject: currentProject,
+    acknowledgedTrackSnapEnabled: {},
     serverBaseRevision: 6,
     committedRevision: 7,
     expectedSavedLocalRevision: 1,
@@ -198,6 +200,7 @@ test("原子确认只推进 pending 前缀并保留后续本地项目", () => {
   const finalResult = state.acknowledgeAtomicCommandBatch({
     operationIds: ["op-2"],
     acknowledgedProject: currentProject,
+    acknowledgedTrackSnapEnabled: {},
     serverBaseRevision: 6,
     committedRevision: 7,
     expectedSavedLocalRevision: 1,
@@ -232,6 +235,7 @@ test("原子确认拒绝旧 remote revision 且不修改 pending", () => {
   const result = state.acknowledgeAtomicCommandBatch({
     operationIds: ["op-stale"],
     acknowledgedProject: recoveryState.currentProject,
+    acknowledgedTrackSnapEnabled: {},
     serverBaseRevision: 8,
     committedRevision: 9,
     expectedSavedLocalRevision: 0,

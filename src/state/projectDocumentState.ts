@@ -108,6 +108,7 @@ type MarkProjectSavedOptions = {
 export type AtomicCommandAcknowledgement = {
   operationIds: string[];
   acknowledgedProject: ProjectData;
+  acknowledgedTrackSnapEnabled: Record<string, boolean>;
   serverBaseRevision: number;
   committedRevision: number;
   expectedSavedLocalRevision: number;
@@ -516,6 +517,7 @@ export function useProjectDocumentState({
     const acknowledgedIds = new Set(acknowledgement.operationIds);
     const savedAt = Date.now();
     savedProjectRef.current = acknowledgement.acknowledgedProject;
+    savedTrackSnapEnabledRef.current = acknowledgement.acknowledgedTrackSnapEnabled;
     savedRevisionRef.current = acknowledgement.acknowledgedLocalRevision;
     pendingOperationsRef.current = pendingOperationsRef.current.slice(prefix.length);
     operationLogRef.current = operationLogRef.current.map((operation) =>
@@ -526,7 +528,23 @@ export function useProjectDocumentState({
     setOperationLog(operationLogRef.current);
     setPendingOperations(pendingOperationsRef.current);
 
-    const remainsDirty = computeHasUnsavedChanges(projectRef.current, trackSnapEnabledRef.current);
+    const projectMatchesSaved = areProjectsEqualRef.current(
+      savedProjectRef.current,
+      projectRef.current,
+    );
+    const trackSnapMatchesSaved = areTrackSnapStatesEqualRef.current(
+      savedTrackSnapEnabledRef.current,
+      trackSnapEnabledRef.current,
+    );
+    const remainsDirty = !projectMatchesSaved ||
+      !trackSnapMatchesSaved ||
+      pendingOperationsRef.current.length > 0;
+    if (remainsDirty && pendingOperationsRef.current.length === 0) {
+      // 原子确认后若没有 pending 仍为 dirty，说明某个本地基线漂移；只记录布尔事实，不泄露项目内容。
+      console.warn(
+        `原子确认后仍存在未表示差异：project=${projectMatchesSaved}, trackSnap=${trackSnapMatchesSaved}`,
+      );
+    }
     setHasUnsavedChanges(remainsDirty);
     const nextSyncState: ProjectSyncState = {
       ...syncStateRef.current,
