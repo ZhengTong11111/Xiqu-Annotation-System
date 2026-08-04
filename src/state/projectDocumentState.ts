@@ -105,6 +105,34 @@ type MarkProjectSavedOptions = {
   savedLocalRevision?: number;
 };
 
+export type AtomicCommandAcknowledgement = {
+  operationIds: string[];
+  acknowledgedProject: ProjectData;
+  serverBaseRevision: number;
+  committedRevision: number;
+  expectedSavedLocalRevision: number;
+  acknowledgedLocalRevision: number;
+};
+
+export type AtomicCommandAcknowledgementResult =
+  | {
+      status: "applied";
+      remainingOperationCount: number;
+      remoteRevision: number;
+      savedLocalRevision: number;
+      remainsDirty: boolean;
+    }
+  | {
+      status: "rejected";
+      reason:
+        | "empty_batch"
+        | "invalid_revision"
+        | "stale_remote_revision"
+        | "stale_saved_revision"
+        | "operation_prefix_mismatch"
+        | "operation_revision_mismatch";
+    };
+
 type RemoteProjectReplacementFacts = {
   hasDocumentChanges: boolean;
   pendingOperationCount: number;
@@ -154,7 +182,8 @@ export function useProjectDocumentState({
   const initialLocalRevision = initialRecoveryState?.localRevision ?? 0;
   const initialSavedRevision = initialRecoveryState?.savedRevision ?? 0;
   const initialHasUnsavedChanges = !areProjectsEqual(initialSavedProject, initialCurrentProject) ||
-    !areTrackSnapStatesEqual(initialSavedTrackSnapEnabled, initialCurrentTrackSnapEnabled);
+    !areTrackSnapStatesEqual(initialSavedTrackSnapEnabled, initialCurrentTrackSnapEnabled) ||
+    initialPendingOperations.length > 0;
 
   const [project, setProject] = useState<ProjectData>(initialCurrentProject);
   const [trackSnapEnabled, setTrackSnapEnabled] = useState(initialCurrentTrackSnapEnabled);
@@ -205,7 +234,9 @@ export function useProjectDocumentState({
     nextTrackSnapState = trackSnapEnabledRef.current,
   ) => (
     !areProjectsEqualRef.current(savedProjectRef.current, nextProject) ||
-    !areTrackSnapStatesEqualRef.current(savedTrackSnapEnabledRef.current, nextTrackSnapState)
+    !areTrackSnapStatesEqualRef.current(savedTrackSnapEnabledRef.current, nextTrackSnapState) ||
+    // 一组正向/反向命令可能让正文暂时回到 saved 值，但未确认的服务器事实仍然必须保持 dirty。
+    pendingOperationsRef.current.length > 0
   ), []);
 
   useEffect(() => {
@@ -449,6 +480,75 @@ export function useProjectDocumentState({
     }));
   }
 
+  // 原子确认只推进已提交前缀的基线；当前项目、后续 pending 和 undo/redo 必须原样保留。
+  function acknowledgeAtomicCommandBatch(
+    acknowledgement: AtomicCommandAcknowledgement,
+  ): AtomicCommandAcknowledgementResult {
+    if (acknowledgement.operationIds.length === 0) {
+      return { status: "rejected", reason: "empty_batch" };
+    }
+    if (acknowledgement.committedRevision !== acknowledgement.serverBaseRevision + 1) {
+      return { status: "rejected", reason: "invalid_revision" };
+    }
+    if (
+      syncStateRef.current.remoteRevision !== null &&
+      syncStateRef.current.remoteRevision !== acknowledgement.serverBaseRevision
+    ) {
+      return { status: "rejected", reason: "stale_remote_revision" };
+    }
+    if (savedRevisionRef.current !== acknowledgement.expectedSavedLocalRevision) {
+      return { status: "rejected", reason: "stale_saved_revision" };
+    }
+
+    const prefix = pendingOperationsRef.current.slice(0, acknowledgement.operationIds.length);
+    if (
+      prefix.length !== acknowledgement.operationIds.length ||
+      prefix.some((operation, index) =>
+        operation.id !== acknowledgement.operationIds[index] || operation.syncState !== "pending")
+    ) {
+      return { status: "rejected", reason: "operation_prefix_mismatch" };
+    }
+    const finalOperation = prefix[prefix.length - 1];
+    if (finalOperation.localRevision !== acknowledgement.acknowledgedLocalRevision) {
+      return { status: "rejected", reason: "operation_revision_mismatch" };
+    }
+
+    const acknowledgedIds = new Set(acknowledgement.operationIds);
+    const savedAt = Date.now();
+    savedProjectRef.current = acknowledgement.acknowledgedProject;
+    savedRevisionRef.current = acknowledgement.acknowledgedLocalRevision;
+    pendingOperationsRef.current = pendingOperationsRef.current.slice(prefix.length);
+    operationLogRef.current = operationLogRef.current.map((operation) =>
+      acknowledgedIds.has(operation.id)
+        ? { ...operation, syncState: "acknowledged" }
+        : operation,
+    );
+    setOperationLog(operationLogRef.current);
+    setPendingOperations(pendingOperationsRef.current);
+
+    const remainsDirty = computeHasUnsavedChanges(projectRef.current, trackSnapEnabledRef.current);
+    setHasUnsavedChanges(remainsDirty);
+    const nextSyncState: ProjectSyncState = {
+      ...syncStateRef.current,
+      status: remainsDirty ? "dirty" : "saved",
+      localRevision: localRevisionRef.current,
+      savedRevision: savedRevisionRef.current,
+      remoteRevision: acknowledgement.committedRevision,
+      pendingOperationCount: pendingOperationsRef.current.length,
+      lastSavedAt: savedAt,
+      errorMessage: null,
+    };
+    syncStateRef.current = nextSyncState;
+    setSyncState(nextSyncState);
+    return {
+      status: "applied",
+      remainingOperationCount: pendingOperationsRef.current.length,
+      remoteRevision: acknowledgement.committedRevision,
+      savedLocalRevision: savedRevisionRef.current,
+      remainsDirty,
+    };
+  }
+
   // 远端追赶只能替换完全 clean 的基线；旧 undo/redo 指向过期快照，成功推进后必须一并清除。
   function replaceCleanProjectFromRemote(nextProject: ProjectData): boolean {
     const currentStatus = syncStateRef.current.status;
@@ -602,6 +702,7 @@ export function useProjectDocumentState({
     applyTrackSnapEnabledState,
     markOperationsAsSubmitted,
     markProjectAsSaved,
+    acknowledgeAtomicCommandBatch,
     replaceCleanProjectFromRemote,
     undoProject,
     redoProject,

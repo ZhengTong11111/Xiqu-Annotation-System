@@ -42,8 +42,9 @@ R5b2b2a 已完成严格协议、双端限流、跨实例瞬时通道、断线/st
 R5b2b2b 已把该通道收敛为播放头、鼠标时间与匿名选区摘要的统一最新快照，并补齐隐私开关、递归轨道
 选区汇总和精确时间叠加；R5b3 已按共享领域模型、服务端原子命令提交、客户端确认和并发冲突收敛拆分，
 R5b3a1、R5b3a2a/a2b/a2c 与 R5b3a3a/a3b 已完成共享持久类型、完整纯命令 dispatcher、当前格式运行时
-ProjectData parser、有序原子命令批次合同和服务端原子数据库提交；下一步进入 R5b3b 客户端可靠
-submit/ack/reject 迁移；
+ProjectData parser、有序原子命令批次合同和服务端原子数据库提交；R5b3b1 已完成客户端完整命令链审计、
+原子批次 planner、严格响应/错误策略、single-flight 重试 runtime 和 document saved baseline 部分确认；
+下一步进入 R5b3b2 的 App/自动保存/租约/冲突 UI 真实接线；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -550,10 +551,12 @@ submit/ack/reject 迁移；
         operation POST + 完整 payload PUT 在 R5b3b 客户端迁移完成前仍是明确兼容通道。
     - R5b3b 按客户端状态核心与 App/自动保存接线分两轮推进，不能在一个 React 回调中同时重写 transport、
       saved baseline 和离线恢复：
-      - R5b3b1 待推进：建立纯原子提交 planner/runtime 与部分确认文档状态。只把从当前 saved baseline 可顺序
-        重放并与目标项目一致的 command chain 送入新入口；每批最多 100 项。明确区分尚未发送、请求中、已确认、
-        可重试和确定拒绝，精确响应/响应丢失后的幂等重试只确认对应 ID，并能把 saved baseline 按已确认链前移。
-        legacy、snapshot boundary、track-snap 以及旧草稿中的 accepted/submitted 行继续选择旧完整保存通道。
+      - R5b3b1 已完成：新增纯原子批次 planner，先从 saved baseline 审计整条 pending command chain 与当前
+        ProjectData 一致，再按共享上限切首批 100 项，避免后续命令失败却提交前半批；legacy、snapshot boundary、
+        track-snap 和旧 `submitted` 行形成机器可读兼容 barrier。专用响应/错误策略严格核对 revision、ID、顺序、
+        base 和 committed 事实；single-flight runtime 冻结同批 ID，处理有界退避、online 恢复、协议错误阻断、
+        文件 generation 与迟到响应。document state 可只确认 pending 有序前缀并推进 saved/remote baseline，同时
+        保留后续 current project、pending 和 undo/redo；pending 即使把正文撤回 saved 值也继续保持 dirty。
       - R5b3b2 待推进：把 planner/runtime 接入 App、自动保存、IndexedDB 草稿、mutation lease 和冲突 UI；原子
         成功不再额外 PUT 完整 payload，确定 409 进入可解释冲突，网络/离线按同批幂等重试。清理不再使用的
         per-operation 新会话路径，但保留旧草稿/不可重放编辑的有界完整保存兼容入口。

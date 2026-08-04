@@ -45,6 +45,7 @@
     "test:annotation-transaction-command": "npm run build:shared && node --import tsx --test src/utils/annotationTransactionCommandApply.test.ts",
     "test:platform-auto-save": "node --import tsx --test src/platform/platformAutoSavePolicy.test.ts",
     "test:platform-auto-save-runtime": "node --import tsx --test src/platform/platformAutoSaveRuntime.test.ts",
+    "test:platform-atomic-submit": "npm run build:shared && npm run build:document-model && node --import tsx --test src/platform/platformAtomicCommandPlan.test.ts src/platform/platformAtomicSubmitPolicy.test.ts src/platform/platformAtomicSubmitRuntime.test.ts src/state/projectDocumentRecovery.test.tsx",
     "test:platform-mutation-lease-runtime": "npm run build:shared && node --import tsx --test src/platform/platformMutationLeaseRuntime.test.ts",
     "test:platform-operation-catch-up": "npm run build:shared && node --import tsx --test src/platform/platformOperationCatchUp.test.ts src/platform/platformOperationCatchUpRuntime.test.ts src/state/projectDocumentRemote.test.ts",
     "test:platform-drafts": "node --import tsx --test src/platform/platformDraft.test.ts src/platform/platformDraftConflict.test.ts src/platform/platformDraftStore.test.ts src/state/projectDocumentRecovery.test.tsx",

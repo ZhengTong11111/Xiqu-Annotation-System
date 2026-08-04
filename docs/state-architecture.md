@@ -422,6 +422,20 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
   提示。完全重试必须与原批次的完整 ID 集合、请求指纹及 sequence 顺序一致，不能把子集或 accepted legacy
   行伪装成确认。现有编辑器尚未切换该入口，仍由旧 operation POST + payload PUT 保存；R5b3b 将负责可靠
   submit/ack/reject、离线重试和冲突状态迁移。
+- R5b3b1 已建立客户端可靠提交核心，但尚未接入 App。`platformAtomicCommandPlan` 会先用共享
+  `applyAnnotationCommandToProject()` 审计完整 pending chain，并确认最终结果等于当前 ProjectData；只有完整链
+  可解释时才截取首批最多 100 项。后续命令 precondition 失败、合同外本地变化、legacy、snapshot、track-snap
+  或旧 `submitted` operation 都不会产生“可提交的半批”。
+- `platformAtomicSubmitPolicy` 把成功响应当作不可信网络输入，严格核对 `base + 1` revision、operation 数量、
+  ID/顺序、base/local revision、action 和 committed 事实；409 与确定 4xx 停止，408/429/5xx、离线和 fetch
+  网络错误保留同一 request/id 重试。`platformAtomicSubmitRuntime` 只管理 frozen plan、single-flight、退避、
+  online 恢复和 session generation，不读取 React 项目状态、不写 IndexedDB，也不自行拼下一批。
+- `acknowledgeAtomicCommandBatch()` 只接受当前 pending 列表的精确有序前缀，并核对 frozen saved local revision、
+  remote base 和 committed revision。成功只把 saved project/local/remote baseline 推进到该批结果，标记对应
+  operation acknowledged，保留后续 current project、pending、undo/redo；最后一批确认后才可 clean。pending
+  operation 本身属于 dirty 事实，即使正反命令使正文值暂时等于 saved project，也不能提前自动保存为 clean。
+- R5b3b2 才负责把上述核心接入 App、现有自动保存、mutation lease、IndexedDB flush 与冲突交接。在该轮完成前，
+  用户保存仍走旧 operation POST + 完整 payload PUT；不得因为核心模块存在就删除兼容通道或宣称端到端迁移完成。
 
 - R5b1/R5b2a 的 WebSocket 与跨实例通知已经落地；revision 消息只负责经过认证的文件失效提示，不传完整 payload，也不提交
   operation。`session.ready` 或 `annotation.revision.advanced` 观察到更高 revision 时，只调用现有 catch-up

@@ -123,3 +123,145 @@ test("结构命令随历史边界保存，undo 记录 inverse，redo 恢复原�
     assert.equal(redoEnvelope.command.items[0].after.name, "历史命令测试轨");
   }
 });
+
+test("原子确认只推进 pending 前缀并保留后续本地项目", () => {
+  const firstProject = structuredClone(mockProject);
+  firstProject.subtitleLines[0].text = "第一批";
+  const currentProject = structuredClone(firstProject);
+  currentProject.subtitleLines[0].text = "第二批";
+  const recoveryState: ProjectDocumentRecoveryState = {
+    currentProject,
+    savedProject: mockProject,
+    currentTrackSnapEnabled: {},
+    savedTrackSnapEnabled: {},
+    pendingOperations: [1, 2].map((revision) => ({
+      id: `op-${revision}`,
+      type: "project.commit" as const,
+      action: "edit" as const,
+      localRevision: revision,
+      baseRevision: revision - 1,
+      createdAt: 1_785_700_000_000 + revision,
+      syncState: "pending" as const,
+      summary: { hasProjectChange: true, hasTrackSnapChange: false },
+    })),
+    localRevision: 2,
+    savedRevision: 0,
+    lastChangedAt: 1_785_700_000_002,
+    lastSavedAt: null,
+  };
+  let captured: ReturnType<typeof useProjectDocumentState> | null = null;
+  function Harness() {
+    captured = useProjectDocumentState({
+      initialProject: mockProject,
+      initialTrackSnapEnabled: {},
+      areProjectsEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+      areTrackSnapStatesEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+      initialRecoveryState: recoveryState,
+    });
+    return React.createElement("span", null, "ack");
+  }
+  renderToString(React.createElement(Harness));
+  const state = captured as unknown as ReturnType<typeof useProjectDocumentState>;
+  state.setSyncStatus("dirty", { remoteRevision: 5 });
+  const result = state.acknowledgeAtomicCommandBatch({
+    operationIds: ["op-1"],
+    acknowledgedProject: firstProject,
+    serverBaseRevision: 5,
+    committedRevision: 6,
+    expectedSavedLocalRevision: 0,
+    acknowledgedLocalRevision: 1,
+  });
+  assert.deepEqual(result, {
+    status: "applied",
+    remainingOperationCount: 1,
+    remoteRevision: 6,
+    savedLocalRevision: 1,
+    remainsDirty: true,
+  });
+  const after = state.getRecoveryState();
+  assert.equal(after.savedProject.subtitleLines[0].text, "第一批");
+  assert.equal(after.currentProject.subtitleLines[0].text, "第二批");
+  assert.equal(after.savedRevision, 1);
+  assert.deepEqual(after.pendingOperations.map((operation) => operation.id), ["op-2"]);
+
+  const rejected = state.acknowledgeAtomicCommandBatch({
+    operationIds: ["op-missing"],
+    acknowledgedProject: currentProject,
+    serverBaseRevision: 6,
+    committedRevision: 7,
+    expectedSavedLocalRevision: 1,
+    acknowledgedLocalRevision: 2,
+  });
+  assert.deepEqual(rejected, { status: "rejected", reason: "operation_prefix_mismatch" });
+  assert.deepEqual(state.getRecoveryState().pendingOperations.map((operation) => operation.id), ["op-2"]);
+
+  const finalResult = state.acknowledgeAtomicCommandBatch({
+    operationIds: ["op-2"],
+    acknowledgedProject: currentProject,
+    serverBaseRevision: 6,
+    committedRevision: 7,
+    expectedSavedLocalRevision: 1,
+    acknowledgedLocalRevision: 2,
+  });
+  assert.deepEqual(finalResult, {
+    status: "applied",
+    remainingOperationCount: 0,
+    remoteRevision: 7,
+    savedLocalRevision: 2,
+    remainsDirty: false,
+  });
+  assert.deepEqual(state.getRecoveryState().pendingOperations, []);
+});
+
+test("原子确认拒绝旧 remote revision 且不修改 pending", () => {
+  const recoveryState = createAtomicRecoveryStateForRejection();
+  let captured: ReturnType<typeof useProjectDocumentState> | null = null;
+  function Harness() {
+    captured = useProjectDocumentState({
+      initialProject: mockProject,
+      initialTrackSnapEnabled: {},
+      areProjectsEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+      areTrackSnapStatesEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+      initialRecoveryState: recoveryState,
+    });
+    return React.createElement("span", null, "stale-ack");
+  }
+  renderToString(React.createElement(Harness));
+  const state = captured as unknown as ReturnType<typeof useProjectDocumentState>;
+  state.setSyncStatus("dirty", { remoteRevision: 9 });
+  const result = state.acknowledgeAtomicCommandBatch({
+    operationIds: ["op-stale"],
+    acknowledgedProject: recoveryState.currentProject,
+    serverBaseRevision: 8,
+    committedRevision: 9,
+    expectedSavedLocalRevision: 0,
+    acknowledgedLocalRevision: 1,
+  });
+  assert.deepEqual(result, { status: "rejected", reason: "stale_remote_revision" });
+  assert.deepEqual(state.getRecoveryState().pendingOperations.map((operation) => operation.id), ["op-stale"]);
+});
+
+function createAtomicRecoveryStateForRejection(): ProjectDocumentRecoveryState {
+  const currentProject = structuredClone(mockProject);
+  currentProject.subtitleLines[0].text = "待确认";
+  return {
+    currentProject,
+    savedProject: mockProject,
+    currentTrackSnapEnabled: {},
+    savedTrackSnapEnabled: {},
+    pendingOperations: [{
+      id: "op-stale",
+      type: "project.commit",
+      action: "edit",
+      localRevision: 1,
+      baseRevision: 0,
+      createdAt: 1_785_700_000_000,
+      syncState: "pending",
+      summary: { hasProjectChange: true, hasTrackSnapChange: false },
+    }],
+    localRevision: 1,
+    savedRevision: 0,
+    lastChangedAt: 1_785_700_000_000,
+    lastSavedAt: null,
+  };
+}

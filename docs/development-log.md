@@ -4613,3 +4613,68 @@ ProjectData builder、adapter 与编辑器接线：
 - R5b3a3 至此形成真实服务端原子提交能力，但当前用户编辑仍走旧两步兼容通道，所以不能宣称端到端可靠
   submit 已完成。下一轮 R5b3b 必须把浏览器 pending operation 状态迁为明确 submit/ack/reject，并处理超时
   幂等重试、离线恢复、结构租约续期、自动保存职责收缩和 dirty 客户端冲突；WebSocket 继续只做失效提示。
+
+## 2026-08-04：R5b3b1 客户端原子提交规划、运行时与部分确认核心
+
+### 本轮计划与实际边界
+
+- 用户确认开始当前 roadmap 小轮，并再次明确 Development Log 必须持续维护。Codex 以 `f13af6f` 为基线
+  重读 roadmap、被 gitignore 的 `CLAUDE_WORK.md`、document state、旧保存事务、自动保存、IndexedDB 草稿、
+  服务端批次合同与新 API，确认本轮对应 R5b3b1：只建立可测试的客户端可靠提交核心，不在同一轮改写
+  `App.tsx`、自动保存接线、租约取得、冲突 UI 或删除旧兼容通道。
+- 审计确认旧保存会先逐条 POST operation 并把本地状态改成 `submitted`，随后才 PUT 完整 payload；因此旧草稿
+  中的 `submitted` 是“可能已被旧入口接受、但未必提交 payload”的特殊事实，不能降回 pending 后送新原子
+  endpoint。草稿 parser 本轮保持 schema version 1，并新增回归证明该状态往返不变。
+
+### 完整链 planner、响应策略与运行时
+
+- 新增 `platformAtomicCommandPlan.ts`。planner 从 saved ProjectData 开始，按 pending 顺序复用 document-model
+  唯一 `applyAnnotationCommandToProject()` 执行整条命令链，并要求最终结果与 current ProjectData 深度相等；
+  只有完整链通过后才按 shared 的 100 项上限截取首批并返回 acknowledgedProject。这样 101 项可分两批，
+  但第 101 项仍参与首轮审计；第二条前置失败时不会错误提交第一条半批。
+- planner 对 legacy、track-snap、snapshot boundary 和旧 `submitted` 返回机器可读 `legacy_required` barrier；
+  重复 ID、local revision 非递增、type/envelope 不一致、命令 blocked 与合同外本地变化 fail closed。结构命令
+  同时返回该批要求的 mutation lease purpose，但本轮不负责网络取得 token。
+- 新增 `platformAtomicSubmitPolicy.ts`，严格核对成功响应的 `base + 1` revision、非空 cursor、operation 数量、
+  ID/顺序、base/local revision、action、committed 状态与 committed revision。离线、fetch `TypeError`、408、
+  429 和 5xx 可重试；409 是确定冲突，其他确定 4xx/协议损坏停止自动提交。该策略没有套用旧完整保存文案，
+  避免把租约、precondition 或批次幂等冲突误判为普通网络故障。
+- 新增 `platformAtomicSubmitRuntime.ts`。runtime 冻结完整 plan/request，以 operation ID + base revision 标识同批，
+  保证 single-flight、最多五次有界退避、online 恢复、成功同批去重、协议错误阻断、手动唤醒和文件 generation
+  迟到响应失效。它不持有 access token、全局 ProjectData、React setter、mutation lease 或 IndexedDB；成功后
+  要求调用方重新规划下一批，不能拿旧 acknowledgedProject 自行拼接。
+
+### Document state、自审修复与兼容性
+
+- `projectDocumentState.ts` 新增 `acknowledgeAtomicCommandBatch()`。它核对非空批次、`base + 1`、当前 remote
+  revision、冻结的 saved local revision、pending 精确有序前缀和末项 local revision；任一 stale/乱序/重复
+  确认都不修改 refs/state。成功只推进 saved project、saved local revision 和 remote revision，移除对应
+  pending、把 operation log 标成 acknowledged，保留后续 current project、pending、undo/redo 并返回结构化结果。
+- 自审发现既有 dirty 判定只比较 ProjectData/吸附状态。当一组正反命令让正文回到 saved 值但 operation 尚未
+  确认时，自动保存可能误判 clean。现把 pending operation 纳入初始与持续 dirty 判定；部分确认后仍有 pending
+  就保持 dirty，最后一批确认且正文一致后才 saved。该修复属于新原子确认正确性，不改变本地 JSON 格式。
+- runtime 首版只在显式 `requestSubmit()` 或 online 恢复时运行；自审后补成 eligible plan 初次/变化时零延迟
+  调度，并增加 blocked plan key，防止协议错误或确定失败在 `finally` 中立即忙重试。请求期间切文件会使旧响应
+  失效，新会话可在旧 flight 结束后自动启动；dispose 清 timer 且不应用迟到确认。
+- 最终审查再收紧本地链完整性：每项 `baseRevision` 必须等于前项 local revision，且 `localRevision` 必须严格
+  加一，避免缺失本地 operation 被误判为完整链。runtime plan key 不记录租约 token 明文，但区分是否已取得
+  token，使结构批次从无租约 409 转为有租约计划时能够解除旧阻断；非有限测试批量上限也回退共享默认值。
+- 本轮没有新增依赖、Prisma migration、ProjectData/JSON schema、WebSocket 消息、API 事务或可见 UI。旧
+  `submitPendingOperations()`、旧 operation POST、完整 payload PUT 与 `markProjectAsSaved()` 明确保留给 R5b3b2
+  兼容接线；源码检查未发现第二套 dispatcher、`any`、宽泛 catch 吞错或把 runtime 状态写入草稿。
+
+### 验证结果与下一步
+
+- 新 `npm run test:platform-atomic-submit` 最终 18/18：完整链、101 项分批、barrier、后续 precondition 失败、
+  本地 mismatch、type/envelope、响应协议、错误分类、single-flight、同批 retry、409 停止、文件切换、dispose、
+  协议损坏、离线恢复、租约计划解锁、revision 缺口、部分/最终确认和 stale remote revision 全部覆盖。
+- 相关回归：平台草稿 22/22、自动保存 policy 4/4、自动保存 runtime 8/8、旧 platform operations 4/4、
+  committed catch-up 17/17、shared command-batch 5/5。真实 PostgreSQL/Fastify API 122/122 通过 14 条 migration，
+  仍只有仓库既有 pg 9 `client.query()` 前置弃用提示。
+- `npm run build` 通过 Prisma generate、shared、document-model、Web 和 API。Vite 转换 2091 个模块，CSS
+  124.92 kB / gzip 22.99 kB，主 JS 945.17 kB / gzip 280.38 kB；只保留既有大 chunk 提醒。`git diff --check`
+  通过。本轮无 App/UI 接线，因此没有用浏览器点击伪装端到端验收。
+- R5b3b1 至此完成，但平台用户实际保存仍走旧通道。下一轮 R5b3b2 必须把 planner/runtime 接入 App 与自动
+  保存，按批取得/释放结构租约，成功后只部分确认、不额外 PUT，legacy barrier 才走完整快照兼容路径；409、
+  offline、协议错误、草稿 flush 和 dirty 会话冲突必须有明确状态与人工恢复入口，完成后再删除新会话中无调用
+  者的旧逐条 operation 提交路径。

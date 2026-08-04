@@ -48,7 +48,9 @@ Main currently contains all major recent feature lines that matter for context:
   draft persistence, inverse/precondition semantics, all-or-nothing ProjectData adapters, atomic server command-batch apply, and clean-client
   HTTP replay; lifecycle covers sentences, characters, custom blocks, attached points, Gongche blocks/symbols, and Banyan
   marks/sections; state atomically replaces coupled Gongche/Banyan snapshots, while transactions bind sentence synchronization,
-  parent/Gongche cascades, and Banyan-reference repair. The editor still uses the old accept-then-full-save path until R5b3b
+  parent/Gongche cascades, and Banyan-reference repair. The editor still uses the old accept-then-full-save path until R5b3b2
+- client atomic-command planning/runtime and partial document acknowledgement are implemented: the planner audits the full
+  pending command chain before slicing a batch, while App wiring and replacement of the old save path remain R5b3b2 work
 - per-file operation acceptance sequence plus snapshot-committed operation facts and separate bounded feeds; clean web
   sessions now perform bounded HTTP catch-up, atomically replay complete mixed domain-command chains, and fall back to the
   authoritative snapshot for incomplete or non-replayable evidence
@@ -105,6 +107,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/platformOperationCatchUpRuntime.ts`
   - owns the HTTP catch-up timer, single-flight request, retry delay, session generation, and disposal behavior
   - a stale file response must never apply or recreate a timer for a later editor session
+- `src/platform/platformAtomicCommandPlan.ts`
+  - pure full-chain audit and bounded next-batch planner for the atomic command endpoint
+  - legacy/submitted/snapshot/track-snap operations are compatibility barriers; never skip one or submit a prefix when a later
+    command is blocked or the replayed chain does not equal the current project
+- `src/platform/platformAtomicSubmitPolicy.ts`
+  - strict command-batch acknowledgement validation and atomic-endpoint-specific HTTP/network classification
+- `src/platform/platformAtomicSubmitRuntime.ts`
+  - frozen-plan single-flight transport lifecycle with same-ID retries, online recovery, protocol blocking, and session disposal
+  - it does not own ProjectData, React state, access tokens, mutation leases, or IndexedDB
 - `src/platform/usePlatformOperationCatchUp.ts`
   - thin React facts/callback adapter; App owns snapshot hydration and document replacement gating
 - `src/platform/platformCollaborationRuntime.ts`
@@ -259,6 +270,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - owns undo/redo stacks, pending operations, revision counters, dirty/saved status
   - migrated edits may carry a validated versioned command envelope; history retains the forward envelope so undo records
     its inverse and redo records the original command; unported edits remain legacy operations
+  - `acknowledgeAtomicCommandBatch()` may advance only the exact pending prefix and saved/remote baseline; later current state,
+    operations, and history remain local and dirty
 - `src/components/Timeline.tsx`
   - heaviest file
   - owns zoom, ruler scrubbing, snapping, marquee selection, drag/resize, creation flows, waveform guides, spectrogram lane rendering, loop range interaction, Gongche lane rendering, attached point editing
@@ -641,6 +654,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:platform-operations`
 - `npm run test:platform-auto-save`
 - `npm run test:platform-auto-save-runtime`
+- `npm run test:platform-atomic-submit`
 - `npm run test:platform-mutation-lease-runtime`
 - `npm run test:platform-operation-catch-up`
 - `npm run test:annotation-collaboration`

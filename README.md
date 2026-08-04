@@ -1310,4 +1310,6 @@ npm run test:annotation-collaboration
 - `src/App.tsx` 仍是主要编排层。
 - `src/components/Timeline.tsx` 是最复杂的交互面。
 - `src/state/projectDocumentState.ts` 是后续数据库保存、版本恢复、远端同步、多人协作的基础。
+- 客户端已具备原子命令批次的完整链审计、同批幂等重试和 saved baseline 部分确认核心；当前 App 尚未完成
+  接线，平台实际保存仍保留旧完整快照兼容通道，不能提前删除。
 - 不要绕过现有状态层直接在组件局部实现第二套项目状态。

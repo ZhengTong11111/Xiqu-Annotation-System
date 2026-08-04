@@ -81,6 +81,26 @@ test("构建并恢复平台草稿不会持久化会话 URL", () => {
   assert.equal(recovered.localRevision, 3);
 });
 
+// 旧接口已接受但尚未绑定 snapshot 的 submitted 行不能降级回 pending，否则会被新原子入口重复接管。
+test("平台草稿保留旧 submitted operation 的兼容边界", () => {
+  const recoveryState = createRecoveryState();
+  recoveryState.pendingOperations[0] = {
+    ...recoveryState.pendingOperations[0],
+    syncState: "submitted",
+  };
+  const record = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState,
+  });
+  const normalized = normalizePlatformDraftRecord(record, {
+    userId: "user-1",
+    annotationFileId: "file-1",
+  });
+  assert.equal(normalized?.pendingOperations[0].syncState, "submitted");
+});
+
 // 刷新恢复必须保留领域命令的版本、目标和 before/after，才能继续复用同一个幂等 operation。
 test("平台草稿完整往返版本化 timing command", () => {
   const recoveryState = createRecoveryState();
