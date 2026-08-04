@@ -49,6 +49,10 @@ type FakeEventMap = {
 class FakeSocket implements PlatformCollaborationSocket {
   readonly listeners = new Map<keyof FakeEventMap, Array<(event: never) => void>>();
   closed: { code?: number; reason?: string } | null = null;
+  readonly OPEN = 1;
+  readyState = 1;
+  bufferedAmount = 0;
+  readonly sent: string[] = [];
 
   addEventListener<TType extends keyof FakeEventMap>(
     type: TType,
@@ -61,6 +65,11 @@ class FakeSocket implements PlatformCollaborationSocket {
 
   close(code?: number, reason?: string) {
     this.closed = { code, reason };
+    this.readyState = 3;
+  }
+
+  send(data: string) {
+    this.sent.push(data);
   }
 
   emit<TType extends keyof FakeEventMap>(type: TType, event: FakeEventMap[TType]) {
@@ -85,6 +94,7 @@ function createHarness(options: { permanentTicketError?: boolean } = {}) {
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
     random: () => 0.5,
+    now: () => clock.now,
     requestTicket: async () => {
       ticketRequests += 1;
       if (options.permanentTicketError) throw Object.assign(new Error("forbidden"), { permanent: true });
@@ -179,6 +189,46 @@ test("session.ready 后接收 presence，提前到达则按协议失败", async 
   assert.equal(last(rejected.statuses), "error");
   accepted.runtime.dispose();
   rejected.runtime.dispose();
+});
+
+test("播放头在 ready 后首发，并以 8Hz trailing 合并和 keepalive 续期", async () => {
+  const harness = createHarness();
+  harness.runtime.update(FACTS);
+  harness.runtime.updatePlayhead({ time: 1, playing: false });
+  await flushPromises();
+  const socket = harness.sockets[0];
+  assert.deepEqual(socket.sent, []);
+  socket.emit("open", new Event("open"));
+  socket.emit("message", { data: readyMessage() });
+  assert.equal(JSON.parse(socket.sent[0]!).time, 1);
+
+  harness.runtime.updatePlayhead({ time: 2, playing: true });
+  harness.runtime.updatePlayhead({ time: 3, playing: true });
+  await harness.clock.advanceBy(124);
+  assert.equal(socket.sent.length, 1);
+  await harness.clock.advanceBy(1);
+  assert.equal(JSON.parse(socket.sent[1]!).time, 3);
+  await harness.clock.advanceBy(2_000);
+  assert.equal(JSON.parse(socket.sent[socket.sent.length - 1]!).time, 3);
+  harness.runtime.dispose();
+});
+
+test("发送缓冲过高时丢弃过期帧，恢复后发送最新候选", async () => {
+  const harness = createHarness();
+  harness.runtime.update(FACTS);
+  await flushPromises();
+  const socket = harness.sockets[0];
+  socket.emit("open", new Event("open"));
+  socket.emit("message", { data: readyMessage() });
+  socket.bufferedAmount = 300 * 1_024;
+  harness.runtime.updatePlayhead({ time: 4, playing: false });
+  await harness.clock.advanceBy(0);
+  assert.equal(socket.sent.length, 0);
+  socket.bufferedAmount = 0;
+  harness.runtime.updatePlayhead({ time: 5, playing: false });
+  await harness.clock.advanceBy(0);
+  assert.equal(JSON.parse(socket.sent[0]!).time, 5);
+  harness.runtime.dispose();
 });
 
 test("异常关闭使用退避和新票据重连，永久票据错误停止重试", async () => {

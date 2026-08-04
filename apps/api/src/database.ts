@@ -20,11 +20,12 @@ export function createPrismaConnection(databaseUrl: string) {
     options: `-c search_path=${schema}`,
     max: 20,
   });
-  // LISTEN 会长期独占连接；协作通知使用独立小池，不能挤占 Prisma 查询或维护模式 advisory permit。
+  // 三条 LISTEN 会长期独占连接；额外容量供 NOTIFY、重连交叠和同进程受控 app 装配使用。
+  // 该池仍与 Prisma 查询及维护 advisory permit 隔离，避免协作流量反压业务事务。
   const collaborationPool = new pg.Pool({
     connectionString: databaseUrl,
     options: `-c search_path=${schema}`,
-    max: 4,
+    max: 8,
   });
   const prisma = new PrismaClient({
     adapter: new PrismaPg(pool, { schema }),

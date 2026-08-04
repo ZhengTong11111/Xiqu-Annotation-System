@@ -1,10 +1,13 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import {
+  ANNOTATION_COLLABORATION_CLIENT_MESSAGE_MAX_BYTES,
   ANNOTATION_COLLABORATION_HEARTBEAT_MS,
   ANNOTATION_COLLABORATION_PROTOCOL_VERSION,
   ANNOTATION_COLLABORATION_TICKET_PROTOCOL_PREFIX,
   ANNOTATION_COLLABORATION_WEBSOCKET_PROTOCOL,
   type AnnotationCollaborationServerMessage,
+  parseAnnotationCollaborationClientMessage,
 } from "@xiqu/shared";
 import { HttpError } from "./errors.js";
 import type { PrismaPlatformRepository } from "./repository.js";
@@ -17,10 +20,15 @@ import type {
 } from "./annotationPresenceService.js";
 import type { AnnotationPresenceCoordinator } from "./annotationPresenceCoordinator.js";
 import type { AnnotationPresenceInvalidationPublisher } from "./postgresAnnotationPresenceEventBus.js";
+import type { AnnotationRemoteActivityPublisher } from "./postgresAnnotationRemoteActivityEventBus.js";
+import { createAnnotationRemoteActivityRateLimiter } from "./annotationRemoteActivityRateLimiter.js";
+import type { ApiObservability } from "./observability.js";
 
 const AUTHENTICATION_CLOSE_CODE = 4401;
 const AUTHORIZATION_CLOSE_CODE = 4403;
 const PROTOCOL_CLOSE_CODE = 4400;
+const REMOTE_ACTIVITY_MAX_BUFFERED_BYTES = 512 * 1_024;
+type WebSocketRawData = Buffer | ArrayBuffer | Buffer[];
 
 export function registerAnnotationCollaborationRoutes(
   app: FastifyInstance,
@@ -30,6 +38,8 @@ export function registerAnnotationCollaborationRoutes(
   presence: AnnotationPresenceService,
   presenceCoordinator: AnnotationPresenceCoordinator,
   presenceEvents: AnnotationPresenceInvalidationPublisher,
+  remoteActivityEvents: AnnotationRemoteActivityPublisher,
+  observability: ApiObservability,
 ) {
   const activeFinalizers = new Set<() => Promise<void>>();
   const activeSetups = new Set<Promise<void>>();
@@ -54,6 +64,11 @@ export function registerAnnotationCollaborationRoutes(
       let authorizationCheckInFlight = false;
       let presenceHandle: AnnotationPresenceHandle | null = null;
       let finalizePromise: Promise<void> | null = null;
+      const activitySessionId = randomUUID();
+      const activityRateLimiter = createAnnotationRemoteActivityRateLimiter();
+      let sessionIdentity: { annotationFileId: string; userId: string } | null = null;
+      let lastClientSequence = 0;
+      let hasPublishedActivity = false;
 
       // close/error/撤权/app shutdown 共用一个异步 finalize，确保 presence 最多删除和发布一次。
       const finalize = () => {
@@ -65,6 +80,20 @@ export function registerAnnotationCollaborationRoutes(
         unregister = null;
         const handle = presenceHandle;
         presenceHandle = null;
+        const activityIdentity = sessionIdentity;
+        sessionIdentity = null;
+        if (activityIdentity && hasPublishedActivity) {
+          // clear 使用更高 sequence，并通过 tombstone 阻止跨实例迟到帧重新显示幽灵播放头。
+          remoteActivityEvents.publishRemoteActivity({
+            annotationFileId: activityIdentity.annotationFileId,
+            activitySessionId,
+            userId: activityIdentity.userId,
+            sequence: lastClientSequence + 1,
+            observedAt: new Date().toISOString(),
+            playhead: null,
+          });
+          hasPublishedActivity = false;
+        }
         finalizePromise = (handle
           ? presence.leave(handle)
               .then((deleted) => {
@@ -88,9 +117,53 @@ export function registerAnnotationCollaborationRoutes(
       socket.on("pong", () => {
         alive = true;
       });
-      // R5b2b1 仍不接受客户端业务消息；下一阶段只会开放严格有界的 presence.update。
-      socket.on("message", () => {
-        closeAndFinalize(PROTOCOL_CLOSE_CODE, "client_messages_not_supported");
+      socket.on("message", (rawData: WebSocketRawData, isBinary: boolean) => {
+        if (!sessionIdentity || isBinary) {
+          observability.recordAnnotationRemoteActivityClientMessage("invalid");
+          closeAndFinalize(PROTOCOL_CLOSE_CODE, "invalid_client_message");
+          return;
+        }
+        const byteLength = rawDataByteLength(rawData);
+        if (byteLength > ANNOTATION_COLLABORATION_CLIENT_MESSAGE_MAX_BYTES) {
+          observability.recordAnnotationRemoteActivityClientMessage("invalid");
+          closeAndFinalize(PROTOCOL_CLOSE_CODE, "client_message_too_large");
+          return;
+        }
+        const text = rawDataToText(rawData);
+        let decoded: unknown;
+        try {
+          decoded = JSON.parse(text);
+        } catch {
+          observability.recordAnnotationRemoteActivityClientMessage("invalid");
+          closeAndFinalize(PROTOCOL_CLOSE_CODE, "invalid_client_message");
+          return;
+        }
+        const message = parseAnnotationCollaborationClientMessage(decoded);
+        if (!message) {
+          observability.recordAnnotationRemoteActivityClientMessage("invalid");
+          closeAndFinalize(PROTOCOL_CLOSE_CODE, "invalid_client_message");
+          return;
+        }
+        if (message.sequence <= lastClientSequence) {
+          observability.recordAnnotationRemoteActivityClientMessage("duplicate");
+          return;
+        }
+        // 即使该帧随后被限流，也推进已观察 sequence，避免旧帧绕过限流后重新被接受。
+        lastClientSequence = message.sequence;
+        if (!activityRateLimiter.accept(Date.now())) {
+          observability.recordAnnotationRemoteActivityClientMessage("rate_limited");
+          return;
+        }
+        hasPublishedActivity = true;
+        observability.recordAnnotationRemoteActivityClientMessage("accepted");
+        remoteActivityEvents.publishRemoteActivity({
+          annotationFileId: sessionIdentity.annotationFileId,
+          activitySessionId,
+          userId: sessionIdentity.userId,
+          sequence: message.sequence,
+          observedAt: new Date().toISOString(),
+          playhead: { time: message.time, playing: message.playing },
+        });
       });
 
       let setupPromise: Promise<void>;
@@ -109,6 +182,10 @@ export function registerAnnotationCollaborationRoutes(
             return;
           }
           presenceHandle = joinedPresence;
+          sessionIdentity = {
+            annotationFileId: session.annotationFileId,
+            userId: session.user.id,
+          };
           sendMessage(socket, {
             version: ANNOTATION_COLLABORATION_PROTOCOL_VERSION,
             type: "session.ready",
@@ -119,8 +196,15 @@ export function registerAnnotationCollaborationRoutes(
           });
           let deliveryQueue = Promise.resolve();
           unregister = hub.subscribe(session.annotationFileId, {
+            activitySessionId,
             // 已建立的长连接也必须响应撤权；发送前复核，不能把票据消费时的权限永久缓存。
             send: (message) => {
+              // 活动帧是有 TTL 的只读提示，沿用会话心跳授权；避免拖动时每帧查询数据库。
+              if (message.type === "presence.playhead.changed") {
+                if (socket.bufferedAmount > REMOTE_ACTIVITY_MAX_BUFFERED_BYTES) return;
+                sendMessage(socket, message);
+                return;
+              }
               // 同一连接串行复核与发送，避免连续保存时较晚 revision 越过较早 revision。
               deliveryQueue = deliveryQueue
                 .then(async () => {
@@ -190,6 +274,19 @@ export function registerAnnotationCollaborationRoutes(
       activeSetups.clear();
     },
   };
+}
+
+function rawDataToText(rawData: WebSocketRawData) {
+  if (Array.isArray(rawData)) return Buffer.concat(rawData).toString("utf8");
+  if (rawData instanceof ArrayBuffer) return Buffer.from(rawData).toString("utf8");
+  return rawData.toString("utf8");
+}
+
+function rawDataByteLength(rawData: WebSocketRawData) {
+  if (Array.isArray(rawData)) {
+    return rawData.reduce((total, chunk) => total + chunk.byteLength, 0);
+  }
+  return rawData.byteLength;
 }
 
 // 子协议头不会进入默认 URL 访问日志；稳定协议名与唯一票据项都必须存在。

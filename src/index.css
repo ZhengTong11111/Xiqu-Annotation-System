@@ -5128,6 +5128,7 @@ select {
   --timeline-layer-fixed-controls: 70;
   --timeline-layer-selection: 80;
   --timeline-layer-transient-guide: 82;
+  --timeline-layer-remote-playhead: 86;
   --timeline-layer-time-guide: 90;
   /* 固定顶部由 ruler + loop + 可选确认栏组成，所有悬浮层共同引用，避免插入栏后发生纵向错位。 */
   --timeline-fixed-base-height: 46px;
@@ -7557,6 +7558,43 @@ select {
   box-shadow: 0 0 0 1px rgba(255,255,255,0.5);
   z-index: var(--timeline-layer-time-guide);
   pointer-events: none;
+}
+
+/* 远端播放头与时间轴使用同一 left 坐标；仅线宽通过 translate 居中，绝不做时间像素补偿。 */
+.remote-playhead {
+  position: absolute;
+  inset-block: 0;
+  width: 2px;
+  pointer-events: none;
+  transform: translateX(-50%);
+  z-index: var(--timeline-layer-remote-playhead);
+  background: color-mix(in srgb, var(--remote-playhead-color) 76%, transparent);
+}
+
+.remote-playhead.paused {
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--remote-playhead-color) 0 5px,
+    transparent 5px 9px
+  );
+}
+
+.remote-playhead > span {
+  position: sticky;
+  top: calc(6px + var(--remote-playhead-label-row) * 22px);
+  display: inline-block;
+  max-width: 120px;
+  margin-left: 5px;
+  padding: 2px 6px;
+  overflow: hidden;
+  color: white;
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--remote-playhead-color);
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 18%);
 }
 
 .playhead.playhead-sticky-overlay {

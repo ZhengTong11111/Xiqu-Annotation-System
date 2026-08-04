@@ -30,6 +30,8 @@ Main currently contains all major recent feature lines that matter for context:
   these are lossy wake-up hints, while HTTP committed-feed/snapshot catch-up remains authoritative
 - database-backed 60-second collaboration presence with cross-instance invalidation, same-account multi-window aggregation,
   revoke/disconnect cleanup, bounded member snapshots, and a compact current-file online-member UI
+- remote playhead preview over a separate transient collaboration channel, with strict protocol parsing, browser/server
+  rate limits, cross-instance fan-out, disconnect/stale cleanup, same-account aggregation, and exact Timeline coordinates
 - database-backed short-lived annotation mutation leases for structural/bulk writes; ordinary operation/save/restore stays
   unchanged without a lease, while an active lease requires its one-time token and is released only by a successful revision write
 - existing custom-track metadata, recursive branch trees, and block branch ownership now use the strict top-level
@@ -106,12 +108,17 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - thin React facts/callback adapter; App owns snapshot hydration and document replacement gating
 - `src/platform/platformCollaborationRuntime.ts`
   - owns one collaboration ticket request, WebSocket, handshake timeout, retry timer, generation, and connection status
-  - waits for strict `session.ready`; revision messages only wake HTTP catch-up, while presence snapshots remain runtime-only
+  - waits for strict `session.ready`; revision messages only wake HTTP catch-up, while presence and playhead remain runtime-only
+  - owns playhead ready-before-send, 8 Hz trailing coalescing, 2-second keepalive, browser backpressure, and activity timers;
+    file switch/offline/dispose must clear every activity generation and timer
   - permanent protocol/authorization failures halt until the file, online state, or session changes
 - `src/platform/usePlatformCollaborationSession.ts`
   - thin browser/React adapter around the collaboration runtime
-  - clears stale members on disconnect/file switch; local editor sessions must remain disabled and Strict Effects cleanup
-    must dispose and clear the runtime ref
+  - clears stale members and playheads on disconnect/file switch; owns the single stale-prune timer only while the remote
+    registry is nonempty; local editor sessions stay disabled and Strict Effects cleanup disposes the runtime
+- `src/platform/remotePlayheadRegistry.ts`
+  - connection-level strict sequence/clear/stale registry plus same-account latest-window aggregation and stable colors
+  - hides the current account, requires a current presence member, and caps mounted remote playhead views at 32
 - `src/platform/collaborationPresenceView.ts` + `src/components/CollaborationPresenceMenu.tsx`
   - pure current-user-first member view plus the compact top-bar member popover
   - online membership is informational only; it must never grant permissions or alter save/sync state
@@ -471,9 +478,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - plaintext tickets travel in a WebSocket subprotocol header, never in the upgrade URL or normal access logs
   - consumption and every established-session recheck use current account activity, current roles, ACL, and active-tree state
 - `apps/api/src/annotationCollaborationHub.ts`
-  - process-local WebSocket fan-out only; cross-instance transport belongs to the revision/presence event buses
+  - process-local WebSocket fan-out only; cross-instance transport belongs to the revision/presence/activity event buses
   - rejects duplicate/backward revisions and duplicate member structures; clearing the last subscriber also clears the
     presence fingerprint so a reconnect always receives its first authoritative snapshot
+  - remote activity is sequence-monotonic per connection, excludes the source session, and retains bounded clear
+    watermarks so a delayed frame cannot resurrect a disconnected playhead
 - `apps/api/src/annotationRevisionEventEnvelope.ts`
   - strict, exact-key, size-bounded cross-instance revision-event parser and schema-derived PostgreSQL channel name
   - events carry only source instance, annotation-file id, committed revision, and committed-feed cursor; never payloads,
@@ -494,18 +503,23 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/annotationPresenceEventEnvelope.ts` + `apps/api/src/postgresAnnotationPresenceEventBus.ts`
   - strict schema-isolated file-id-only invalidation protocol and PostgreSQL wrapper
   - NOTIFY must never contain member identities; every receiving instance rereads PostgreSQL before WebSocket delivery
+- `apps/api/src/annotationRemoteActivityEventEnvelope.ts` + `apps/api/src/postgresAnnotationRemoteActivityEventBus.ts`
+  - strict <=1500-byte transient activity envelope and schema-isolated local-first PostgreSQL wrapper
+  - coalesces by annotation file plus activity session at the highest sequence; carries no annotation content, ACL, token,
+    display name, snapshot, operation, or audit fact
+- `apps/api/src/annotationRemoteActivityRateLimiter.ts`
+  - per-connection token bucket for high-frequency client activity; rate-limited sequences still advance the observed
+    watermark so a later lower sequence cannot be accepted
 - `apps/api/src/annotationCollaborationRoutes.ts`
   - owns socket authentication, heartbeat/ACL rechecks, presence join/renew/leave, subscriber registration, and shutdown cleanup
   - server-initiated closes must finalize presence immediately rather than waiting for the peer close handshake; shutdown waits
     in-flight ticket/join setup before Prisma closes
-  - owns a bounded same-file-coalescing publish queue, dedicated listener lifecycle, bounded reconnect, graceful close,
-    and low-cardinality metrics; initial listener failure must fail API startup
-  - PostgreSQL NOTIFY is deliberately lossy and non-authoritative. HTTP committed-feed/snapshot catch-up remains the
-    correctness path whenever events are missed, duplicated, reordered, or delayed
-- `apps/api/src/annotationCollaborationRoutes.ts`
-  - authenticated notification-only WebSocket route with strict ready/revision messages, native heartbeat, serialized sends,
-    and stable authorization/protocol close codes
-  - client business messages are rejected; HTTP remains the only operation/save/snapshot path
+  - accepts only the strict bounded playhead client message after `session.ready`; malformed, binary, oversized, or
+    pre-ready messages fail closed, while slow-consumer playhead frames may be dropped without affecting document correctness
+  - client activity never becomes a save/operation path. HTTP remains the only annotation mutation and persistence path
+- `apps/api/src/database.ts`
+  - collaboration pool must accommodate three persistent LISTEN clients (revision, presence, activity), asynchronous NOTIFY,
+    reconnect overlap, and controlled multi-app integration tests; do not reduce its max below the documented capacity audit
 - `apps/api/src/requestAuthentication.ts`
   - shared HTTP Bearer parser; protected-media query-token compatibility remains explicit at its existing call site
 - `apps/api/src/annotationFileActivity.ts`

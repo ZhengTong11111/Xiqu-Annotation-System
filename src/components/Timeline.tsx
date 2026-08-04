@@ -34,6 +34,7 @@ import {
   resolveCustomTrackColor,
 } from "../utils/trackColors";
 import { getCharacterToneLabel, isValidCharacterToneInfo } from "../utils/tone";
+import type { RemotePlayheadView } from "../platform/remotePlayheadRegistry";
 
 type TimelineProps = {
   subtitleLines: SubtitleLine[];
@@ -55,6 +56,7 @@ type TimelineProps = {
   isSpectrogramLoading: boolean;
   spectrogramSettings: SpectrogramSettings;
   currentTime: number;
+  remotePlayheads: RemotePlayheadView[];
   loopPlaybackRange: { start: number; end: number } | null;
   loopPlaybackEnabled: boolean;
   confirmationRanges: TimelineConfirmationRange[];
@@ -517,6 +519,7 @@ export function Timeline({
   isSpectrogramLoading,
   spectrogramSettings,
   currentTime,
+  remotePlayheads,
   loopPlaybackRange,
   loopPlaybackEnabled,
   confirmationRanges,
@@ -3431,6 +3434,21 @@ export function Timeline({
               }}
             />
           ) : null}
+
+          {remotePlayheads.map((remotePlayhead, index) => (
+            <div
+              key={remotePlayhead.userId}
+              className={`remote-playhead ${remotePlayhead.playing ? "playing" : "paused"}`}
+              style={{
+                left: getCanvasX(remotePlayhead.time, zoom),
+                "--remote-playhead-color": remotePlayhead.color,
+                "--remote-playhead-label-row": index % 4,
+              } as CSSProperties}
+              aria-hidden="true"
+            >
+              <span>{remotePlayhead.displayName}</span>
+            </div>
+          ))}
 
           {previewGuideTime !== null ? (
             <div

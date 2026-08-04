@@ -87,6 +87,22 @@ test("跨实例 presence bus 指标不暴露成员或文件身份", async () => 
   assert.doesNotMatch(metrics, /annotationFileId|sourceInstanceId|accountName/);
 });
 
+test("远端活动指标只记录固定结果类别", async () => {
+  const observability = new ApiObservability();
+  observability.setAnnotationRemoteActivityBusConnected(true);
+  observability.setAnnotationRemoteActivityBusPendingSessions(2);
+  observability.recordAnnotationRemoteActivityBusPublish("coalesced");
+  observability.recordAnnotationRemoteActivityBusInbound("accepted");
+  observability.recordAnnotationRemoteActivityBusReconnect();
+  observability.recordAnnotationRemoteActivityClientMessage("rate_limited");
+  const metrics = await observability.registry.metrics();
+  assert.match(metrics, /xiqu_annotation_remote_activity_bus_connected 1/);
+  assert.match(metrics, /xiqu_annotation_remote_activity_bus_pending_sessions 2/);
+  assert.match(metrics, /remote_activity_bus_publish_total\{result="coalesced"\} 1/);
+  assert.match(metrics, /remote_activity_client_messages_total\{result="rate_limited"\} 1/);
+  assert.doesNotMatch(metrics, /annotationFileId|activitySessionId|accountName/);
+});
+
 test("对象存储故障只降低 readiness，不影响进程 liveness", async () => {
   const health = new HealthService(
     {

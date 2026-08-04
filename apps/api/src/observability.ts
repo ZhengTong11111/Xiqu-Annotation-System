@@ -60,6 +60,12 @@ export class ApiObservability {
   private readonly annotationPresenceBusPublishes: Counter;
   private readonly annotationPresenceBusInbound: Counter;
   private readonly annotationPresenceBusReconnects: Counter;
+  private readonly annotationRemoteActivityBusConnected: Gauge;
+  private readonly annotationRemoteActivityBusPendingSessions: Gauge;
+  private readonly annotationRemoteActivityBusPublishes: Counter;
+  private readonly annotationRemoteActivityBusInbound: Counter;
+  private readonly annotationRemoteActivityBusReconnects: Counter;
+  private readonly annotationRemoteActivityClientMessages: Counter;
 
   constructor() {
     // 默认进程指标与平台业务指标注册到同一个实例级 Registry，便于一次抓取和测试隔离。
@@ -195,6 +201,40 @@ export class ApiObservability {
       help: "PostgreSQL presence LISTEN reconnect attempts.",
       registers: [this.registry],
     });
+    // 播放头活动是可丢失高频提示；独立指标避免与 revision/presence 的可靠性语义混淆。
+    this.annotationRemoteActivityBusConnected = new Gauge({
+      name: "xiqu_annotation_remote_activity_bus_connected",
+      help: "Whether this API instance has an active PostgreSQL remote activity LISTEN connection.",
+      registers: [this.registry],
+    });
+    this.annotationRemoteActivityBusPendingSessions = new Gauge({
+      name: "xiqu_annotation_remote_activity_bus_pending_sessions",
+      help: "Connection sessions waiting for a coalesced remote activity notification.",
+      registers: [this.registry],
+    });
+    this.annotationRemoteActivityBusPublishes = new Counter({
+      name: "xiqu_annotation_remote_activity_bus_publish_total",
+      help: "Remote activity publish queue outcomes.",
+      labelNames: ["result"],
+      registers: [this.registry],
+    });
+    this.annotationRemoteActivityBusInbound = new Counter({
+      name: "xiqu_annotation_remote_activity_bus_inbound_total",
+      help: "Remote activity delivery outcomes.",
+      labelNames: ["result"],
+      registers: [this.registry],
+    });
+    this.annotationRemoteActivityBusReconnects = new Counter({
+      name: "xiqu_annotation_remote_activity_bus_reconnect_total",
+      help: "PostgreSQL remote activity LISTEN reconnect attempts.",
+      registers: [this.registry],
+    });
+    this.annotationRemoteActivityClientMessages = new Counter({
+      name: "xiqu_annotation_remote_activity_client_messages_total",
+      help: "Inbound playhead messages by bounded outcome.",
+      labelNames: ["result"],
+      registers: [this.registry],
+    });
   }
 
   // Fastify 的 routeOptions.url 是规范化模板；404 固定为 unknown，禁止 URL id 进入标签。
@@ -300,6 +340,32 @@ export class ApiObservability {
 
   recordAnnotationPresenceBusReconnect() {
     this.annotationPresenceBusReconnects.inc();
+  }
+
+  setAnnotationRemoteActivityBusConnected(connected: boolean) {
+    this.annotationRemoteActivityBusConnected.set(connected ? 1 : 0);
+  }
+
+  setAnnotationRemoteActivityBusPendingSessions(count: number) {
+    this.annotationRemoteActivityBusPendingSessions.set(count);
+  }
+
+  recordAnnotationRemoteActivityBusPublish(result: AnnotationRevisionBusPublishResult) {
+    this.annotationRemoteActivityBusPublishes.inc({ result });
+  }
+
+  recordAnnotationRemoteActivityBusInbound(result: AnnotationRevisionBusInboundResult) {
+    this.annotationRemoteActivityBusInbound.inc({ result });
+  }
+
+  recordAnnotationRemoteActivityBusReconnect() {
+    this.annotationRemoteActivityBusReconnects.inc();
+  }
+
+  recordAnnotationRemoteActivityClientMessage(
+    result: "accepted" | "duplicate" | "rate_limited" | "invalid",
+  ) {
+    this.annotationRemoteActivityClientMessages.inc({ result });
   }
 }
 

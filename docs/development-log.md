@@ -4187,3 +4187,92 @@ ProjectData builder、adapter 与编辑器接线：
 - 下一轮 R5b2b2 应在当前稳定会话上定义严格有界、节流的远端播放头/光标/选区摘要，明确隐私、慢消费、
   文件切换、generation 和 stale 清理语义，再实现 Timeline 只读叠加；不得在该轮传输标注正文或绕过 HTTP
   写入事务。
+
+## 2026-08-04：R5b2b2a 跨实例远端播放头实时预览
+
+### 本轮任务书与阶段边界
+
+- 本轮基线为 R5b2b1 commit `67f8287`。Codex 先核对 roadmap、现有 presence/notification 代码和实际测试，
+  再将 gitignore 的 `CLAUDE_WORK.md` 重写为只包含 R5b2b2a 的详细任务书。原 R5b2b2 被拆为两轮：本轮只做
+  远端播放头，R5b2b2b 才增加鼠标时间与选区摘要，避免同时引入多种高频状态后无法定位性能或协议问题。
+- 用户特别要求持续维护 **Development Log**。本节记录的不只是最终代码，也包括本轮计划拆分、自审修复、
+  PostgreSQL 连接池阻塞的定位过程、真实浏览器证据和已知边界。`CLAUDE_WORK.md` 仍是即用即改的当前任务书，
+  不承担历史记录职责。
+- 播放头是瞬时协作状态，只包含时间与播放/暂停；它不进入 `ProjectData`、revision、IndexedDB 草稿、恢复
+  快照、operation log 或治理审计，也不成为第二条保存通道。本轮没有实现远端鼠标、选区、标注正文广播、
+  dirty operation 合并、OT 或 CRDT。
+
+### 严格协议、服务端限流与跨实例瞬时通道
+
+- shared version 1 协议新增 exact-key `presence.playhead.update` 和 `presence.playhead.changed`。客户端消息固定为
+  `sequence/time/playing`，服务端消息绑定文件、连接 session、账号、单调 sequence 与 server timestamp，并
+  支持显式 `playhead: null` clear。时间、序列、字符串、ISO 时间和消息字节均有上限；未知字段、二进制、
+  ready 前消息和超过 1024 字节的客户端帧会以稳定协议错误关闭。
+- `AnnotationRemoteActivityRateLimiter` 使用每连接 token bucket，默认每秒 8 次、burst 4。自审发现初版只在
+  限流通过后推进 sequence：攻击端可以先发送被限流的高 sequence，再让较低 sequence 获准。最终 observed
+  watermark 在限流判断前推进，clear 又高于全部已观察序列，因此被丢弃帧不会造成乱序复活。
+- 新增第三条 schema-isolated PostgreSQL activity channel，复用通用 `PostgresCoalescedEventBus`，按文件和
+  activity session 合并到最高 sequence。envelope 最大 1500 字节，不含显示名、ACL、token、标注正文、
+  operation 或持久历史。发布 local-first；NOTIFY 失败只损失瞬时远端预览，不影响保存和内容正确性。
+- Hub 对每连接 activity sequence 单调去重，排除发送源，并在连接 clear 后保留有界 sequence tombstone，
+  防止网络迟到帧重新显示已经断开的播放头。服务端 outbound `bufferedAmount` 超过 512 KiB 时直接丢瞬时帧；
+  close、撤权和 shutdown 共用 clear/finalize 路径。
+- 指标新增 activity bus 连接/队列/发布/入站/重连，以及客户端 accepted/duplicate/rate_limited/invalid 结果；
+  labels 都是固定低基数枚举，不包含文件、账号、消息正文或错误文本。
+
+### 浏览器运行时、注册表与 Timeline 精确叠加
+
+- 浏览器 collaboration runtime 在 `session.ready` 之前不发送播放头；变化最多 8 Hz trailing coalescing，
+  静止时每 2 秒保活。浏览器 outbound `bufferedAmount` 超过 256 KiB 时保留最新候选而不堆积旧帧；文件切换、
+  离线、重连 generation、dispose 和 close 会清理 activity timer 与候选状态。
+- `remotePlayheadRegistry` 以连接 session 保存最后 sequence，处理 clear 和 6 秒 stale 回收，再按账号选择最近
+  活动窗口。视图隐藏当前账号、过滤已经不在权威 presence 的成员，并限制最多挂载 32 个远端播放头；颜色
+  由账号 id 稳定生成。React hook 只在注册表非空时维持一个全局回收 timer，避免空闲编辑器永久每秒唤醒。
+- Timeline 叠加层只读且 `pointer-events: none`，活动状态为实线、暂停为虚线，标签最多错开四行。纵线严格使用
+  现有 `trackHeaderWidth + time * zoom`；`translateX(-50%)` 只让 2 px 笔画围绕数学坐标居中，不修改时间。
+  远端层位于波形、频谱和块之上，本地预览线/播放头之下，不参与吸附、选择、拖动或撤销历史。普通与独立
+  弹窗 Timeline 共享同一整理后列表。
+
+### 自我审查、阻塞定位与僵尸逻辑清理
+
+- 自审把 WebSocket RawData 的字节长度检查提前到 buffer 拼接之前，避免超大分片先形成额外内存峰值；清理了
+  旧 `client_messages_not_supported` 分支和重复的“notification-only route”文档，不保留第二套协议解析或
+  event-bus 实现。
+- 第一次完整 API 测试在约 310 秒后人工终止：当时 50 项已通过、9 项被取消。PostgreSQL 连接检查显示第一
+  个 Fastify 实例占用 revision/presence/activity 三个持久 LISTEN，第二个实例只建立 revision listener 后就
+  停住。原因不是测试超时，而是共享 collaboration pool 的 `max=4` 无法同时容纳三类 listener、NOTIFY 查询、
+  重连余量和集成测试受控的双实例组合。
+- 最终把唯一 collaboration pool 容量从 4 调整为 8，并在组合根说明容量依据；没有为测试建立旁路 pool，
+  也没有让 activity 复用业务 Prisma 连接。修复后相关平台集成 28/28 通过，随后完整 API 119/119 通过。
+- 没有新增运行时依赖，没有产生新的数据库表或 migration，也没有把瞬时状态写入日志、快照或文件。新增逻辑
+  分别收敛在 shared protocol、服务端 envelope/rate limiter/event bus、浏览器 runtime/registry 和 Timeline
+  只读渲染层中，未把高频协调逻辑塞入 App 或 React 组件。
+
+### 测试、构建与真实浏览器验收
+
+- `npm run test:annotation-collaboration`：18/18，覆盖 shared 严格消息、hub source exclusion/sequence/clear、
+  浏览器 ready/throttle/keepalive/backpressure、registry sequence/stale/同账号聚合，以及既有连接生命周期。
+- `npm run test:annotation-presence`：4/4；`npm run test:annotation-revision-event-bus`：8/8；
+  `npm run test:platform-auto-save-runtime`：8/8；`npm run test:platform-operation-catch-up`：17/17，既有成员、
+  revision、自动保存和 HTTP 权威追赶无回归。
+- `npm run test:api`：119/119。真实 PostgreSQL/Fastify 集成覆盖跨实例播放头、发送源排除、断线 clear，以及
+  malformed JSON、binary、oversize fail-closed；保留仓库既有 concurrent resource-create 路径的一条 pg 9
+  前置弃用提示，本轮新代码不再触发连接池阻塞。
+- `npm run test:observability`：13/13；activity 指标只有固定结果类别。最终 `npm run build` 完整通过 Prisma
+  generation、shared、document-model、Web 与 API。Web 转换 2078 个模块，CSS 123.44 kB / gzip 22.78 kB，
+  主 JS 937.19 kB / gzip 279.25 kB；只有既有超过 500 kB 的 chunk 提示。
+- 第一次执行最终完整构建时，系统盘只剩 115 MiB，shared 输出阶段报 `ENOSPC`。只清理了可重新生成的
+  npm cache，没有删除 `data/`、上传对象、备份、源码或用户文件；释放到约 1.5 GiB 后，同一完整构建通过。
+  这属于本机环境容量问题而非 TypeScript 失败，但系统盘仍接近满载，后续长时间开发需要继续关注空间。
+- 当前 API 运行于 4317（PID 75522），readiness 返回 200，数据库与对象存储均为 ok。in-app Browser 以管理员
+  打开《寻梦》服务器标注文件，另以真实学生账号 WebSocket 加入：成员数从 1 变 2，Timeline 显示“学生账号”
+  远端线。20 px/s、22.2 秒时 `left=608px`，严格等于 `164 + 22.2 * 20`；两次放大到 30 px/s 后
+  `left=830px`，严格等于 `164 + 22.2 * 30`。终止学生连接后 0.8 秒内远端线归零、成员数回到 1。
+
+### 已知边界与下一阶段
+
+- PostgreSQL NOTIFY 和播放头帧都故意允许丢失；这是可覆盖的瞬时 UI，不是可靠消息队列。内容正确性仍由
+  HTTP committed feed、revision 连续性检查和权威 snapshot 保证。
+- 本轮没有远端鼠标时间、选区摘要、递归轨道选择可视化和隐私裁剪 UI，也没有实时编辑命令提交。下一轮
+  R5b2b2b 应复用已验证的 activity channel，但单独定义 pointer 采样、选择摘要上限、显示密度和隐藏策略；
+  不得扩大消息为标注正文或绕过现有 operation/save/lease 事务。

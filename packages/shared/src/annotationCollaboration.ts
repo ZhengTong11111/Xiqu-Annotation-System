@@ -3,6 +3,8 @@ export const ANNOTATION_COLLABORATION_PROTOCOL_VERSION = 1 as const;
 export const ANNOTATION_COLLABORATION_HEARTBEAT_MS = 20_000;
 export const ANNOTATION_COLLABORATION_WEBSOCKET_PROTOCOL = "xiqu-collaboration-v1";
 export const ANNOTATION_COLLABORATION_TICKET_PROTOCOL_PREFIX = "xiqu-ticket.";
+export const ANNOTATION_COLLABORATION_CLIENT_MESSAGE_MAX_BYTES = 1_024;
+export const ANNOTATION_REMOTE_PLAYHEAD_MAX_SECONDS = 604_800;
 
 export type AnnotationCollaborationTicket = {
   ticket: string;
@@ -43,10 +45,32 @@ export type AnnotationPresenceSnapshotMessage = {
   members: AnnotationPresenceMember[];
 };
 
+export type AnnotationPlayheadUpdateMessage = {
+  version: typeof ANNOTATION_COLLABORATION_PROTOCOL_VERSION;
+  type: "presence.playhead.update";
+  sequence: number;
+  time: number;
+  playing: boolean;
+};
+
+export type AnnotationCollaborationClientMessage = AnnotationPlayheadUpdateMessage;
+
+export type AnnotationRemotePlayheadMessage = {
+  version: typeof ANNOTATION_COLLABORATION_PROTOCOL_VERSION;
+  type: "presence.playhead.changed";
+  annotationFileId: string;
+  activitySessionId: string;
+  userId: string;
+  sequence: number;
+  observedAt: string;
+  playhead: { time: number; playing: boolean } | null;
+};
+
 export type AnnotationCollaborationServerMessage =
   | AnnotationCollaborationSessionReadyMessage
   | AnnotationRevisionAdvancedMessage
-  | AnnotationPresenceSnapshotMessage;
+  | AnnotationPresenceSnapshotMessage
+  | AnnotationRemotePlayheadMessage;
 
 const MESSAGE_KEYS = {
   "session.ready": [
@@ -71,7 +95,22 @@ const MESSAGE_KEYS = {
     "generatedAt",
     "members",
   ],
+  "presence.playhead.changed": [
+    "version",
+    "type",
+    "annotationFileId",
+    "activitySessionId",
+    "userId",
+    "sequence",
+    "observedAt",
+    "playhead",
+  ],
 } as const;
+
+const CLIENT_MESSAGE_KEYS = {
+  "presence.playhead.update": ["version", "type", "sequence", "time", "playing"],
+} as const;
+const PLAYHEAD_KEYS = ["time", "playing"] as const;
 
 const PRESENCE_MEMBER_KEYS = [
   "userId",
@@ -93,11 +132,34 @@ export function parseAnnotationCollaborationServerMessage(
   if (
     input.type !== "session.ready" &&
     input.type !== "annotation.revision.advanced" &&
-    input.type !== "presence.snapshot"
+    input.type !== "presence.snapshot" &&
+    input.type !== "presence.playhead.changed"
   ) {
     return null;
   }
   if (!hasExactKeys(input, MESSAGE_KEYS[input.type])) return null;
+  if (input.type === "presence.playhead.changed") {
+    if (
+      !isStableId(input.annotationFileId) ||
+      !isStableId(input.activitySessionId) ||
+      !isStableId(input.userId) ||
+      !isSafePositiveInteger(input.sequence) ||
+      !isIsoTimestamp(input.observedAt) ||
+      (input.playhead !== null && !isValidPlayhead(input.playhead))
+    ) return null;
+    return {
+      version: ANNOTATION_COLLABORATION_PROTOCOL_VERSION,
+      type: input.type,
+      annotationFileId: input.annotationFileId,
+      activitySessionId: input.activitySessionId,
+      userId: input.userId,
+      sequence: input.sequence,
+      observedAt: input.observedAt,
+      playhead: input.playhead === null
+        ? null
+        : { time: input.playhead.time, playing: input.playhead.playing },
+    };
+  }
   if (input.type === "presence.snapshot") {
     if (
       !isStableId(input.annotationFileId) ||
@@ -164,6 +226,35 @@ export function parseAnnotationCollaborationServerMessage(
   };
 }
 
+// 客户端业务帧使用独立 parser，避免服务端消息合同被误当作可接受的上行命令。
+export function parseAnnotationCollaborationClientMessage(
+  input: unknown,
+): AnnotationCollaborationClientMessage | null {
+  if (
+    !isRecord(input) ||
+    input.version !== ANNOTATION_COLLABORATION_PROTOCOL_VERSION ||
+    input.type !== "presence.playhead.update" ||
+    !hasExactKeys(input, CLIENT_MESSAGE_KEYS[input.type]) ||
+    !isSafePositiveInteger(input.sequence) ||
+    !isFiniteNumberInRange(input.time, 0, ANNOTATION_REMOTE_PLAYHEAD_MAX_SECONDS) ||
+    typeof input.playing !== "boolean"
+  ) return null;
+  return {
+    version: ANNOTATION_COLLABORATION_PROTOCOL_VERSION,
+    type: input.type,
+    sequence: input.sequence,
+    time: input.time,
+    playing: input.playing,
+  };
+}
+
+function isValidPlayhead(value: unknown): value is { time: number; playing: boolean } {
+  return isRecord(value) &&
+    hasExactKeys(value, PLAYHEAD_KEYS) &&
+    isFiniteNumberInRange(value.time, 0, ANNOTATION_REMOTE_PLAYHEAD_MAX_SECONDS) &&
+    typeof value.playing === "boolean";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -194,6 +285,14 @@ function isBoundedString(
 
 function isPositiveInteger(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) > 0;
+}
+
+function isSafePositiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function isFiniteNumberInRange(value: unknown, minimum: number, maximum: number): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= maximum;
 }
 
 function isIntegerInRange(

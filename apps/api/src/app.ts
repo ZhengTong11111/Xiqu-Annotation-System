@@ -41,6 +41,8 @@ import { AnnotationPresenceCoordinator } from "./annotationPresenceCoordinator.j
 import { createAnnotationPresenceChannel } from "./annotationPresenceEventEnvelope.js";
 import { PostgresAnnotationPresenceEventBus } from "./postgresAnnotationPresenceEventBus.js";
 import { createPostgresEventTransport } from "./postgresCoalescedEventBus.js";
+import { createAnnotationRemoteActivityChannel } from "./annotationRemoteActivityEventEnvelope.js";
+import { PostgresAnnotationRemoteActivityEventBus } from "./postgresAnnotationRemoteActivityEventBus.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -96,6 +98,13 @@ export async function buildApiApp(
     transport: createPostgresEventTransport(options.collaborationPool),
     channel: createAnnotationPresenceChannel(options.databaseSchema),
     deliver: (event) => presenceCoordinator.requestRefresh(event.annotationFileId),
+    observability,
+    logger: app.log,
+  });
+  const remoteActivityEvents = new PostgresAnnotationRemoteActivityEventBus({
+    transport: createPostgresEventTransport(options.collaborationPool),
+    channel: createAnnotationRemoteActivityChannel(options.databaseSchema),
+    deliver: (event) => collaborationHub.deliverRemoteActivity(event),
     observability,
     logger: app.log,
   });
@@ -239,11 +248,14 @@ export async function buildApiApp(
     annotationPresence,
     presenceCoordinator,
     presenceEvents,
+    remoteActivityEvents,
+    observability,
   );
   app.addHook("onClose", async () => {
     // 先关闭 socket 并删除在线行，再停止跨实例发布；异常退出仍由数据库 TTL 兜底。
     collaborationHub.closeAll();
     await collaborationRoutes.close();
+    await remoteActivityEvents.close();
     await presenceEvents.close();
     await collaborationEvents.close();
     await presenceCoordinator.close();
@@ -253,6 +265,7 @@ export async function buildApiApp(
     // 初次 LISTEN 失败必须阻止应用启动；运行期断线由 event bus 自己有界重连。
     await collaborationEvents.start();
     await presenceEvents.start();
+    await remoteActivityEvents.start();
   } catch (error) {
     await app.close();
     throw error;

@@ -1159,6 +1159,64 @@ test("平台资源 API 集成测试", async (suite) => {
       roleSocket.close();
     });
 
+    await suite.test("协作播放头对坏 JSON、二进制和超大帧 fail closed", async () => {
+      const created = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "协作播放头协议边界.json",
+          payload: { marker: "activity-protocol" },
+        },
+      });
+      const fileId = String((dataOf(created.json()).resource as JsonObject).id);
+
+      const openAndSend = async (payload: string | Buffer, binary = false) => {
+        const issued = await jsonRequest(app, adminToken, {
+          method: "POST",
+          url: `/api/annotation-files/${fileId}/collaboration-ticket`,
+        });
+        const ticket = dataOf(issued.json());
+        let resolveClosed!: (code: number) => void;
+        const closed = new Promise<number>((resolve) => {
+          resolveClosed = resolve;
+        });
+        const socket = await app.injectWS(
+          String(ticket.websocketPath),
+          { headers: collaborationWsHeaders(String(ticket.ticket)) },
+          {
+            onInit: (openedSocket) => {
+              openedSocket.on("message", (raw: unknown) => {
+                const message = JSON.parse(String(raw)) as JsonObject;
+                if (message.type !== "session.ready") return;
+                openedSocket.send(payload, binary ? { binary: true } : undefined);
+              });
+              openedSocket.once("close", resolveClosed);
+            },
+          },
+        );
+        assert.equal(await withTimeout(closed, "等待非法播放头帧关闭超时"), 4400);
+        socket.terminate();
+      };
+
+      await openAndSend("not-json");
+      await openAndSend(Buffer.from(JSON.stringify({
+        version: 1,
+        type: "presence.playhead.update",
+        sequence: 1,
+        time: 1,
+        playing: false,
+      })), true);
+      await openAndSend(JSON.stringify({
+        version: 1,
+        type: "presence.playhead.update",
+        sequence: 1,
+        time: 1,
+        playing: false,
+        padding: "x".repeat(2_000),
+      }));
+    });
+
     await suite.test("不同 API 实例通过 PostgreSQL 转发保存与恢复 revision", async () => {
       const secondConnections = createTestPrisma();
       const secondApp = await buildApiApp({
@@ -1339,6 +1397,22 @@ test("平台资源 API 集成测试", async (suite) => {
           "等待学生收到双账号 presence 快照超时",
         );
 
+        const beforeRemotePlayhead = adminObserver.mark();
+        firstStudentSocket.send(JSON.stringify({
+          version: 1,
+          type: "presence.playhead.update",
+          sequence: 1,
+          time: 12.5,
+          playing: true,
+        }));
+        const remotePlayhead = await adminObserver.waitFor(
+          (message) => message.type === "presence.playhead.changed" &&
+            (message.playhead as JsonObject | null)?.time === 12.5,
+          beforeRemotePlayhead,
+          "等待跨实例远端播放头超时",
+        );
+        assert.equal(remotePlayhead.userId, "user-student");
+
         const beforeSecondTab = adminObserver.mark();
         const secondStudentObserver = createSocketMessageObserver();
         const secondStudentSocket = await openPresenceSocket(
@@ -1373,6 +1447,11 @@ test("平台资源 API 集成测试", async (suite) => {
 
         const beforeStudentLeave = adminObserver.mark();
         firstStudentSocket.terminate();
+        await adminObserver.waitFor(
+          (message) => message.type === "presence.playhead.changed" && message.playhead === null,
+          beforeStudentLeave,
+          "等待远端播放头 clear 超时",
+        );
         await adminObserver.waitFor(
           (message) => {
             const members = presenceMembers(message);

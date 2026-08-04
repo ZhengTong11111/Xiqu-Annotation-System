@@ -1,6 +1,7 @@
 import type {
   AnnotationCollaborationServerMessage,
   AnnotationPresenceMember,
+  AnnotationRemotePlayheadMessage,
   AnnotationRevisionAdvancedMessage,
 } from "@xiqu/shared";
 
@@ -16,6 +17,7 @@ export type AnnotationRevisionPublisher = {
 export type AnnotationRevisionDeliveryResult = "accepted" | "duplicate";
 
 export type AnnotationCollaborationSubscriber = {
+  activitySessionId?: string;
   send: (event: AnnotationCollaborationServerMessage) => void;
   close: (code: number, reason: string) => void;
 };
@@ -24,6 +26,7 @@ export class AnnotationCollaborationHub {
   private readonly subscribers = new Map<string, Set<AnnotationCollaborationSubscriber>>();
   private readonly latestRevision = new Map<string, number>();
   private readonly latestPresenceFingerprint = new Map<string, string>();
+  private readonly latestActivitySequence = new Map<string, number>();
 
   subscribe(annotationFileId: string, subscriber: AnnotationCollaborationSubscriber) {
     const fileSubscribers = this.subscribers.get(annotationFileId) ??
@@ -99,6 +102,31 @@ export class AnnotationCollaborationHub {
     return "accepted";
   }
 
+  deliverRemoteActivity(
+    event: Omit<AnnotationRemotePlayheadMessage, "version" | "type">,
+  ): AnnotationRevisionDeliveryResult {
+    const eventKey = `${event.annotationFileId}\u0000${event.activitySessionId}`;
+    const previousSequence = this.latestActivitySequence.get(eventKey) ?? 0;
+    if (event.sequence <= previousSequence) return "duplicate";
+    this.latestActivitySequence.set(eventKey, event.sequence);
+    // clear 也保留 sequence tombstone，防止跨实例乱序的旧播放头重新复活。
+    trimOldestEntries(this.latestActivitySequence, 10_000);
+    const message: AnnotationRemotePlayheadMessage = {
+      version: 1,
+      type: "presence.playhead.changed",
+      ...event,
+    };
+    for (const subscriber of this.subscribers.get(event.annotationFileId) ?? []) {
+      if (subscriber.activitySessionId === event.activitySessionId) continue;
+      try {
+        subscriber.send(message);
+      } catch {
+        subscriber.close(1011, "remote_activity_delivery_failed");
+      }
+    }
+    return "accepted";
+  }
+
   closeAll() {
     for (const subscribers of this.subscribers.values()) {
       for (const subscriber of subscribers) subscriber.close(1001, "server_shutdown");
@@ -106,5 +134,14 @@ export class AnnotationCollaborationHub {
     this.subscribers.clear();
     this.latestRevision.clear();
     this.latestPresenceFingerprint.clear();
+    this.latestActivitySequence.clear();
+  }
+}
+
+function trimOldestEntries(values: Map<string, number>, maximum: number) {
+  while (values.size > maximum) {
+    const oldest = values.keys().next().value;
+    if (typeof oldest !== "string") return;
+    values.delete(oldest);
   }
 }

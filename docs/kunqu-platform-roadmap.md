@@ -38,7 +38,8 @@ typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建�
 已完成短时一次性票据、认证 WebSocket 文件会话、权限重验、连接生命周期与 revision 通知；R5b2a
 已通过 PostgreSQL LISTEN/NOTIFY 完成跨 API 实例的有界 revision 事件分发、重连和可观测性；R5b2b1
 已完成数据库短生命周期 presence、跨实例成员失效通知、同账号多窗口聚合、撤权/断线清理和在线成员 UI，
-下一步进入 R5b2b2 的远端播放头、光标与选区摘要；
+R5b2b2a 已完成严格协议、双端限流、跨实例瞬时通道、断线/stale 清理和 Timeline 远端播放头预览；下一步
+由 R5b2b2b 增加鼠标时间与选区摘要；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -151,7 +152,7 @@ typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建�
 - 可写平台文件已有按账号/文件隔离的 IndexedDB 草稿、刷新后同 revision 显式恢复，以及 stale 草稿对
   最新服务器文件的固定方向结构化比较、依赖闭包、逐项冲突决策和编辑器二次确认；已有空闲自动保存、
   保存中继续编辑、在线恢复、有界退避和 409 显式比较续接，生命周期由确定性 runtime 测试覆盖。
-- 已有跨实例在线成员 presence，但没有远端播放头/光标/选区、实时领域 operation 排序/重放或多人即时
+- 已有跨实例在线成员 presence 和远端播放头预览，但没有远端鼠标/选区、实时领域 operation 排序/重放或多人即时
   合并；现有比较整合是显式文件/草稿冲突处理，不是实时协作协议。
 - 后端任务仍是占位模型，没有独立 worker、队列和结果资产管理。
 - 迁移、本地/S3 对象存储、备份恢复、监控和维护门禁已有工程实现；真实生产 bucket/IAM、TLS、反向代理、
@@ -500,8 +501,12 @@ typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建�
       expire、同账号多 tab 聚合、200 账号/1000 session 有界容量、在线成员视图、断线清空、撤权清理和
       低基数指标。Presence 不写入 ProjectData、恢复快照、operation log 或治理审计，异常退出由 60 秒 TTL
       和周期失效重读兜底。
-    - R5b2b2 后续推进：在稳定 presence session 上增加严格有界、节流的 playhead、光标和选区摘要，以及
-      Timeline 只读叠加层；明确慢消费、隐私、文件切换和 stale generation 语义，不传标注正文。
+    - R5b2b2a 已完成：在稳定 presence session 上建立严格有界的播放头协议、浏览器 8 Hz 节流/2 秒保活、
+      服务端 token bucket 限流、独立 schema-isolated transient PostgreSQL event bus、慢消费者丢帧、断线
+      clear、6 秒 stale 回收、同账号多窗口最近活动聚合和 Timeline 只读叠加层。播放头严格复用 Timeline
+      时间坐标，不参与吸附或编辑；该状态不写 ProjectData、revision、快照、operation 或审计历史。
+    - R5b2b2b 后续推进：复用 R5b2b2a 已验证的瞬时状态通道，增加 Timeline 鼠标时间和选择范围摘要；届时
+      单独处理 pointer 采样、递归轨道选择摘要、隐私裁剪和叠加层密度，仍不传标注正文或稳定实体内容。
   - R5b3 待推进：评估并接入领域 operation 的实时提交/确认；继续复用现有幂等键、文件 sequence、revision
     绑定、租约和 HTTP 恢复路径，再决定块级 OT/CRDT 或混合策略。
 - 服务端 operation 排序、确认、重放和权限复核。

@@ -731,10 +731,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     annotationFileId: editorSession?.annotationFileId ?? null,
     enabled: Boolean(editorSession),
     online: browserOnline,
+    currentUserId: editorSession?.currentUserId ?? null,
     onMessage: (message) => {
       // ready 也可能观察到打开文件后、socket 建立前发生的新 revision；两类消息统一只唤醒 HTTP 追赶。
       if (
-        message.type !== "presence.snapshot" &&
+        (message.type === "session.ready" || message.type === "annotation.revision.advanced") &&
         message.annotationFileId === editorSession?.annotationFileId &&
         message.revision > remoteBaseRevisionRef.current
       ) {
@@ -745,6 +746,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       console.warn("平台实时通知连接异常；HTTP 轮询仍会继续同步。", error);
     },
   });
+  // 远端播放头只是当前协作会话的瞬时预览，不进入 ProjectData、撤销历史或恢复草稿。
+  useEffect(() => {
+    collaborationSession.updatePlayhead({ time: currentTime, playing: isPlaying });
+  }, [collaborationSession.updatePlayhead, currentTime, isPlaying]);
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
   const blockContextMenuRef = useRef<HTMLDivElement>(null);
   const [blockContextMenuPosition, setBlockContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
@@ -5605,6 +5610,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         isSpectrogramLoading={isSpectrogramLoading}
         spectrogramSettings={spectrogramSettings}
         currentTime={currentTime}
+        remotePlayheads={collaborationSession.remotePlayheads}
         loopPlaybackRange={loopPlaybackRange}
         loopPlaybackEnabled={loopPlaybackEnabled}
         confirmationRanges={editorSession && confirmationTimelineVisible
