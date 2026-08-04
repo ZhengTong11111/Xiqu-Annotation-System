@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-
-const CLIENT_OPERATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+// 旧 operation 路由与原子批次共用 shared 幂等 id 合同；保留旧导出名避免调用点产生无意义迁移。
+export {
+  isValidAnnotationClientOperationId as isValidClientOperationId,
+} from "@xiqu/shared";
 
 // 请求指纹只覆盖会影响 operation 语义的客户端字段，文件和账号由数据库唯一作用域隔离。
 export type AnnotationOperationFingerprintInput = {
@@ -9,11 +11,6 @@ export type AnnotationOperationFingerprintInput = {
   action: string;
   payload: unknown;
 };
-
-// 客户端幂等键使用保守可打印字符集，既兼容现有 op-UUID，也避免日志和索引中的控制字符。
-export function isValidClientOperationId(value: unknown): value is string {
-  return typeof value === "string" && CLIENT_OPERATION_ID_PATTERN.test(value);
-}
 
 // SHA-256 绑定规范化请求；hash 只保存在服务端，API 冲突响应不回显 payload 或指纹。
 export function createAnnotationOperationRequestHash(

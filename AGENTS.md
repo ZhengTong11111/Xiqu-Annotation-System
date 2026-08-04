@@ -333,27 +333,27 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/utils/projectValueEquality.ts`
   - Web compatibility re-export for document-model's reference-first deep equality
 - `src/utils/customTrackStructureCommand.ts` + `src/utils/customTrackStructureCommandApply.ts`
-  - the only ProjectData snapshot/builder/apply path for `annotation.track.structure.update`
+  - Web compatibility re-exports for document-model's canonical ProjectData snapshot/builder/apply path
   - the command updates existing custom tracks only; its complete-next equality gate must reject block content, timing,
     lifecycle, attached-point, or other out-of-contract changes
 - `src/utils/trackStructureLifecycleCommand.ts` + `src/utils/trackStructureLifecycleCommandApply.ts`
-  - canonical full-owned-subtree snapshots and exact collection-position apply path for custom-track, builtin character-track,
-    and attached-point-track creation/deletion leaves
+  - Web compatibility re-exports for canonical full-owned-subtree snapshots and exact collection-position apply for
+    custom-track, builtin character-track, and attached-point-track creation/deletion leaves
   - custom tracks must occur exactly once in both `customTracks` and `activeTrackOrder`; attached point-track ids are global
     across parents; every top-level track must occur exactly once in `activeTrackOrder`. Malformed absence must never be
     reinterpreted as a valid creation.
 - `src/utils/trackStructureTransactionCommand.ts` + `src/utils/trackStructureTransactionCommandApply.ts`
-  - the only ProjectData builder/apply path for `annotation.track.structure.transaction.apply`
+  - Web compatibility re-exports for the canonical ProjectData builder/apply path
   - orders parent creation/deletion around content/lifecycle/state children, proves the complete next project by replay, and
     publishes no partial result when any child or final reference/container invariant fails
 - `src/utils/trackConfigurationCommand.ts` + `src/utils/trackConfigurationCommandApply.ts`
-  - canonical ProjectData snapshot/build/apply path for existing top-level track order, builtin-track configuration, and
-    attached-point-track configuration leaves
+  - Web compatibility re-exports for canonical top-level track order, builtin-track configuration, and
+    attached-point-track configuration snapshot/build/apply
   - configuration snapshots never contain characters, points, or other owned entities; content cascades must be explicit
     transaction children, and point-track ids must resolve uniquely across every parent track
 - `src/utils/annotationCommandApply.ts`
-  - generic ProjectData command dispatcher used by clean catch-up; it only discriminates validated command types and must
-    not duplicate a domain parser, precondition, or apply implementation
+  - Web compatibility re-export for the generic document-model dispatcher used by clean catch-up; it only discriminates
+    validated command types and must not duplicate a domain parser, precondition, or apply implementation
   - snapshot boundaries return `snapshot_required`; they are valid operation facts but never mutate a local ProjectData
 - `packages/shared/src/annotationCommands.ts`
   - authoritative timing/content/state/lifecycle/transaction annotation-command DTOs, deterministic builders/inverse, strict discriminated unknown
@@ -367,6 +367,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - character content targets distinguish `char` and `singingStyle`; do not rewrite singing-style cascades as character-text
     changes or hide them inside a configuration snapshot
   - the server currently validates and logs these commands but does not apply them to `AnnotationFile.payload`
+- `packages/shared/src/annotationCommandCommit.ts`
+  - authoritative ordered atomic-command batch request parser, count limit, replayable-envelope gate, and shared client
+    operation id validator
+  - array order is semantic because later commands may depend on earlier after values; legacy summaries and snapshot
+    boundaries are intentionally rejected and remain full-payload save cases
 - `packages/shared/src/annotationCollaboration.ts`
   - authoritative strict WebSocket protocol for session/revision/presence and complete transient Timeline activity snapshots
   - activity contains nullable playhead, pointer, and anonymized selection-summary fields; exact-key parsing, bounded
@@ -556,15 +561,21 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `packages/document-model/src/projectData.ts`
   - the only definition of persisted `ProjectData`, `SavedProjectFile`, tracks, recursive branches, and annotation entities
   - platform revision/ACL/session, waveform/spectrogram caches, Inspector state, and Timeline selection must never enter it
-  - R5b3a1 established this type boundary; R5b3a2 migrates pure command execution into the same package by dependency slice
+  - R5b3a1 established this type boundary; R5b3a2 moved the complete pure command execution engine into the same package
+- `packages/document-model/src/projectDataSchema.ts`
+  - strict current-format runtime parser exposed only through `@xiqu/document-model/project-data-schema`
+  - unknown database JSON must pass this boundary before authoritative command apply; it never performs legacy migration,
+    default filling, unknown-key stripping, media hydration, or semantic repair
+  - the Zod dependency must stay off the document-model root barrel so Web consumers that do not parse server JSON do not
+    pay its bundle cost
 - `packages/document-model/src/timelineTimingCommand*.ts` + `annotationContentCommand*.ts` + `annotationStateCommand*.ts`
   - R5b3a2a shared pure resolver/builder/writer/apply core for timing, stable content, and Gongche/Banyan full state
   - timing apply keeps derived target semantics explicit; content/state builders still prove complete-next reconstruction
     instead of comparing only declared targets
 - `packages/document-model/src/annotationCompositeSnapshots.ts` + `banyanReferenceIntegrity.ts` + `projectValueEquality.ts`
   - shared snapshot conversion, cross-entity reference validation/repair, and complete-project equality foundations
-  - lifecycle and structure modules may consume the narrow Web compatibility exports until their R5b3a2 migration, but no
-    second function implementation may be added under `src/utils`
+  - lifecycle and structure modules now consume the package implementation directly; no second function implementation may
+    be added under `src/utils`
 - `packages/document-model/src/annotationLifecycleCommand*.ts` + `annotationTransactionCommand*.ts`
   - R5b3a2b canonical lifecycle collection-position resolver/writer and ordinary annotation transaction builder/apply
   - preserve parent existence, unique identity, exact collection position, final cross-entity references, and local-only
@@ -606,8 +617,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:api`
 - `npm run test:permissions`
 - `npm run test:annotation-confirmations`
+- `npm run test:project-data-schema`
 - `npm run test:annotation-confirmation-view`
 - `npm run test:annotation-commands`
+- `npm run test:annotation-command-commit`
 - `npm run test:timeline-timing-command`
 - `npm run test:timeline-timing-command-apply`
 - `npm run test:annotation-content-command`

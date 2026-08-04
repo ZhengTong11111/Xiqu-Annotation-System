@@ -7,6 +7,7 @@ import type {
 import {
   ANNOTATION_DOMAIN_COMMAND_TYPES,
   LEGACY_ANNOTATION_OPERATION_ACTIONS,
+  isValidAnnotationClientOperationId,
   parseAnnotationCommandEnvelope,
 } from "@xiqu/shared";
 import type { ProjectData } from "../types";
@@ -57,7 +58,6 @@ const HISTORY_ACTIONS = new Set<ProjectDocumentOperation["action"]>([
   "repair-sentence-character-track",
   "track-snap",
 ]);
-const CLIENT_OPERATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 // 草稿主键使用转义后的稳定身份，不依赖账号名称、文件名称或可轮换的访问 token。
 export function getPlatformDraftKey(userId: string, annotationFileId: string) {
@@ -179,7 +179,7 @@ export function toProjectDocumentRecoveryState(
 
 // 精简 operation 仍进行逐字段校验，防止损坏草稿把任意对象带入同步请求。
 function normalizeOperation(value: unknown): ProjectDocumentOperation | null {
-  if (!isRecord(value) || typeof value.id !== "string" || !CLIENT_OPERATION_ID_PATTERN.test(value.id)) return null;
+  if (!isRecord(value) || !isValidAnnotationClientOperationId(value.id)) return null;
   if (!OPERATION_TYPES.has(value.type as ProjectDocumentOperationType) ||
     !HISTORY_ACTIONS.has(value.action as HistoryAction | "track-snap")) return null;
   if (!isNonNegativeInteger(value.localRevision) || !isNonNegativeInteger(value.baseRevision)) return null;

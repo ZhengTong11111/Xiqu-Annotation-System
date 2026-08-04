@@ -23,6 +23,10 @@ import type {
   ResourceType,
   SortDirection,
 } from "./platform.js";
+import type {
+  CommitAnnotationCommandBatchRequest,
+  CommitAnnotationCommandBatchResponse,
+} from "./annotationCommandCommit.js";
 
 export type ApiErrorCode =
   | "bad_request"
@@ -411,5 +415,9 @@ export type PlatformApiContract<TPayload = unknown> = {
   createAnnotationOperation: {
     request: CreateAnnotationOperationRequest;
     response: AnnotationOperationRecord;
+  };
+  commitAnnotationCommandBatch: {
+    request: CommitAnnotationCommandBatchRequest;
+    response: CommitAnnotationCommandBatchResponse;
   };
 };

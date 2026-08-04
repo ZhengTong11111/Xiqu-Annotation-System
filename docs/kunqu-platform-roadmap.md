@@ -41,7 +41,8 @@ typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建�
 R5b2b2a 已完成严格协议、双端限流、跨实例瞬时通道、断线/stale 清理和 Timeline 远端播放头预览；
 R5b2b2b 已把该通道收敛为播放头、鼠标时间与匿名选区摘要的统一最新快照，并补齐隐私开关、递归轨道
 选区汇总和精确时间叠加；R5b3 已按共享领域模型、服务端原子命令提交、客户端确认和并发冲突收敛拆分，
-R5b3a1 与 R5b3a2a/a2b/a2c 已完成共享持久类型和完整纯命令 dispatcher；下一步进入 R5b3a3 服务端原子命令提交；
+R5b3a1、R5b3a2a/a2b/a2c 与 R5b3a3a 已完成共享持久类型、完整纯命令 dispatcher、当前格式运行时
+ProjectData parser 和有序原子命令批次合同；下一步进入 R5b3a3b 服务端原子数据库提交；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -531,9 +532,19 @@ R5b3a1 与 R5b3a2a/a2b/a2c 已完成共享持久类型和完整纯命令 dispatc
       - R5b3a2c 已完成：迁移自定义轨结构、轨道 lifecycle/configuration、结构事务和通用命令 dispatcher；
         Web 旧路径只保留窄出口，49 项结构/组合/catch-up、API 119 项和完整构建通过。API 现可从
         document-model 一个公开入口调用完整纯 apply engine，但尚未接入数据库写事务。
-    - R5b3a3 待推进：新增服务端原子领域命令提交。在同一数据库事务内锁文件、复核 ACL/租约/base revision、
-      解析并 apply 命令、保存恢复快照、更新 payload/revision、写入并绑定 operation、审计和提交后 revision
-      通知；幂等重放返回原确认，任一前置失败不得留下 accepted-but-uncommitted 行或部分 payload。
+    - R5b3a3 按运行时文档边界与数据库事务分两轮推进。现有数据库 `AnnotationFile.payload` 是 unknown JSON，
+      不能因为 TypeScript 已共享 `ProjectData` 就在 API 中直接断言后调用 apply；一次本地保存也可能包含同一
+      base revision 上有顺序依赖的多条命令，服务端必须把整条命令链作为一个 revision 原子提交：
+      - R5b3a3a 已完成：在 `packages/document-model` 建立当前格式 `ProjectData` 的严格运行时 parser，拒绝
+        缺字段、非法 union、非有限时间和畸形递归分叉；同时在 shared 定义有序命令批次 request/response、
+        数量与唯一 client id 合同。parser 只验证当前持久格式，不复制 Web 的旧 JSON migration，也不静默
+        补字段或删除未知数据。Zod 通过独立 package subpath 暴露，未进入 Web 根 bundle；新旧 operation、
+        IndexedDB 草稿和未来原子入口共用同一个 client id validator。
+      - R5b3a3b 待推进：新增服务端原子领域命令批次提交。在同一数据库事务内锁文件、复核 ACL/租约/base
+        revision、严格解析当前 payload、按请求顺序 apply 全部可重放命令、保存恢复快照、更新 payload/revision、
+        写入并绑定 operation、审计和提交后 revision 通知；幂等重放返回原确认，任一前置失败不得留下
+        accepted-but-uncommitted 行、中间命令结果或部分 payload。旧 operation POST + 完整 payload PUT 在
+        R5b3b 客户端迁移完成前保持明确的兼容通道，不能和新原子入口共用含糊语义。
     - R5b3b 待推进：编辑器把可表达领域命令接入可靠 HTTP 提交与明确 ack/reject 状态，WebSocket 仍只负责
       revision/presence/activity 提示；提交超时、离线和断线通过幂等键重试，clean 客户端继续用 committed feed，
       dirty 客户端不得被远端 payload 静默覆盖。

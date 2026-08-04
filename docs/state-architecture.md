@@ -411,6 +411,11 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
 - R5b3a2b/a2c 已继续迁入 lifecycle、普通事务、轨道结构/configuration、拥有子树生命周期、结构事务和
   通用 dispatcher；`src/utils` 同名文件只剩窄出口。API 已可调用完整共享纯 apply engine，但仍须由 R5b3a3
   建立原子数据库提交边界；WebSocket activity bus 仍不得承载可靠 operation。
+- R5b3a3a 已增加 `@xiqu/document-model/project-data-schema` 独立运行时入口。数据库 unknown JSON 必须先由
+  `parseCurrentProjectData()` 严格验证当前格式，服务端才可调用 dispatcher；该 parser 不迁移旧文件、不补
+  默认值、不剥离未知字段。Shared 的有序批次合同把同一 base revision 上的命令链保留为一次原子提交单位，
+  legacy 摘要与 snapshot boundary 继续要求完整 payload 保存。Zod 不从 document-model 根 barrel 导出，避免
+  未使用 schema 的浏览器主包承担运行时校验依赖。
 
 - R5b1/R5b2a 的 WebSocket 与跨实例通知已经落地；revision 消息只负责经过认证的文件失效提示，不传完整 payload，也不提交
   operation。`session.ready` 或 `annotation.revision.advanced` 观察到更高 revision 时，只调用现有 catch-up

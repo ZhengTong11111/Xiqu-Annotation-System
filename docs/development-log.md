@@ -4514,3 +4514,51 @@ ProjectData builder、adapter 与编辑器接线：
   pg 9 前置弃用提示。`git diff --check` 与唯一实现扫描通过。
 - R5b3a2 至此完成。下一轮 R5b3a3 必须在服务端同一事务内完成 ACL/租约/base revision、命令 apply、快照、
   payload/revision、operation 绑定、审计和提交后通知；共享纯函数可用不代表服务端已实时提交。
+
+## 2026-08-04：R5b3a3a 当前 ProjectData 运行时边界与原子命令批次合同
+
+### 实际状态审计与阶段拆分
+
+- Codex 以 `eb9b1b8` 为基线重新检查 operation acceptance、完整 payload save、committed feed、mutation lease、
+  `ProjectData` 类型和共享 dispatcher，并把已忽略的 `CLAUDE_WORK.md` 整体重写为 a3a 当前任务。审计确认
+  PostgreSQL 的 `AnnotationFile.payload` 仍是 unknown JSON；TypeScript 类型共享不能证明数据库内容满足当前
+  模型，直接断言后 apply 会把缺字段或畸形递归结构带入权威事务。
+- 审计也确认本地一次保存可包含同一 server base revision 上有顺序依赖的多条命令。逐条推进 revision 会暴露
+  本地事务中间状态并使后续命令的 before 失效，因此 R5b3a3 明确拆成 a3a 运行时文档/批次合同和 a3b 数据库
+  原子提交；旧 operation POST + payload PUT 只在 R5b3b 客户端迁移前保留为兼容通道。
+
+### 严格当前格式 parser 与依赖边界
+
+- `packages/document-model/src/projectDataSchema.ts` 使用 MIT `zod@4.4.3` 建立当前 `ProjectData` 的严格运行时
+  schema，覆盖视频、句/字、四声、工尺、板眼、动作、内建轨、自定义文字/动作轨、附属点轨、递归分叉和
+  active order。它拒绝缺字段、未知键、非法 union、非有限数字、倒置区间、非法四声细分、递归 parentId
+  错位、重复 lane、块对幽灵 lane 的引用、超过 64 层和循环对象；成功时不修改输入。
+- 选择 Zod 是为了让 strict object、discriminated union、递归 lazy schema、错误路径与 TypeScript 类型保持
+  一个可审查边界，避免手写数百个松散 `typeof` 分支。parser 不复用 Web 的 921 行旧文件 migration，不填
+  默认值、不 hydration 媒体 URL、不修复引用，也不静默剥离未知字段。
+- 首轮从 document-model 根 barrel 导出 schema 后，完整构建显示 Web 主 JS 从约 943.48 kB / gzip 280.06 kB
+  增至 1,020.89 kB / gzip 300.69 kB。自审随即改为独立
+  `@xiqu/document-model/project-data-schema` package subpath 并从根出口删除；最终完整构建为 2091 模块、
+  943.51 kB / gzip 280.04 kB，证明服务端运行时依赖没有污染编辑器主包。
+
+### 有序批次合同与重复逻辑清理
+
+- `packages/shared/src/annotationCommandCommit.ts` 新增最多 100 项的有序批次 request/response 和 unknown parser。
+  一个批次只有一个 base revision，可带租约 token；每项保留 client id、local revision、action 和严格 envelope。
+  parser 保留数组顺序，拒绝空/超限、重复 id、非安全整数 revision、额外字段、action/type 不一致、legacy 摘要
+  和 snapshot boundary，后两者继续要求完整 payload。
+- client operation id 的 128 字符保守字符集从 API 私有模块迁到 shared；旧 API 导出名保留窄兼容 alias，
+  IndexedDB 草稿也删除了第三份正则并消费同一 validator。没有新 Prisma schema、API route、Web 保存行为或
+  JSON version，本轮不能被描述成服务端原子提交已经完成。
+
+### 验证、代码审查与下一轮
+
+- 新 parser 5/5；新批次合同 5/5；既有 operation idempotency 3/3、shared annotation commands 23/23、轨道
+  结构组合 16/16、committed catch-up 17/17 均通过。`npm run test:api` 119/119，通过 14 条 migration 和真实
+  PostgreSQL/Fastify 集成；仍只有仓库既有 pg 9 `client.query()` 前置弃用提示。
+- `npm run build` 首次及修正 subpath 后的 Web/API 类型构建均通过；最终完整构建也再次通过。源码审查
+  未发现 `any`、反向框架依赖、第二套 parser 或宽泛错误吞噬；`git diff --check` 通过。该轮无可见 UI，因而
+  没有用浏览器点击替代直接合同测试。
+- 下一轮 R5b3a3b 使用独立 schema subpath 和批次 parser，在一笔 PostgreSQL 事务中完成锁/ACL/租约、payload
+  parse、顺序 apply、恢复快照、单 revision、按序 committed operation、审计、租约释放和提交后通知；必须
+  覆盖幂等重放、并发、precondition 拒绝、畸形 payload、legacy accepted 行及全事务回滚。
