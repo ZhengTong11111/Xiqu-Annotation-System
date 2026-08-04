@@ -15,7 +15,7 @@ test("远端活动 envelope 严格往返且不接受额外身份字段", () => {
     userId: "user-1",
     sequence: 4,
     observedAt: "2026-08-04T00:00:00.000Z",
-    playhead: { time: 12.5, playing: true },
+    activity: { playhead: { time: 12.5, playing: true }, pointer: null, selection: null },
   };
   assert.deepEqual(
     parseSerializedAnnotationRemoteActivityEventEnvelope(
@@ -27,7 +27,7 @@ test("远端活动 envelope 严格往返且不接受额外身份字段", () => {
     sourceInstanceId: "instance-1",
     message: {
       version: 1,
-      type: "presence.playhead.changed",
+      type: "presence.timeline_activity.changed",
       ...event,
       displayName: "不应传输",
     },
@@ -88,7 +88,7 @@ test("活动总线本机先投递，并按文件与连接合并待发帧", async
     activitySessionId: "session-1",
     userId: "user-1",
     observedAt: "2026-08-04T00:00:00.000Z",
-    playhead: { time: 1, playing: true },
+    activity: { playhead: { time: 1, playing: true }, pointer: null, selection: null },
   };
   bus.publishRemoteActivity({ ...base, sequence: 1 });
   bus.publishRemoteActivity({ ...base, sequence: 2 });

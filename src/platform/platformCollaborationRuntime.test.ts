@@ -200,16 +200,16 @@ test("播放头在 ready 后首发，并以 8Hz trailing 合并和 keepalive 续
   assert.deepEqual(socket.sent, []);
   socket.emit("open", new Event("open"));
   socket.emit("message", { data: readyMessage() });
-  assert.equal(JSON.parse(socket.sent[0]!).time, 1);
+  assert.equal(JSON.parse(socket.sent[0]!).activity.playhead.time, 1);
 
   harness.runtime.updatePlayhead({ time: 2, playing: true });
   harness.runtime.updatePlayhead({ time: 3, playing: true });
   await harness.clock.advanceBy(124);
   assert.equal(socket.sent.length, 1);
   await harness.clock.advanceBy(1);
-  assert.equal(JSON.parse(socket.sent[1]!).time, 3);
+  assert.equal(JSON.parse(socket.sent[1]!).activity.playhead.time, 3);
   await harness.clock.advanceBy(2_000);
-  assert.equal(JSON.parse(socket.sent[socket.sent.length - 1]!).time, 3);
+  assert.equal(JSON.parse(socket.sent[socket.sent.length - 1]!).activity.playhead.time, 3);
   harness.runtime.dispose();
 });
 
@@ -227,7 +227,39 @@ test("发送缓冲过高时丢弃过期帧，恢复后发送最新候选", async
   socket.bufferedAmount = 0;
   harness.runtime.updatePlayhead({ time: 5, playing: false });
   await harness.clock.advanceBy(0);
-  assert.equal(JSON.parse(socket.sent[0]!).time, 5);
+  assert.equal(JSON.parse(socket.sent[0]!).activity.playhead.time, 5);
+  harness.runtime.dispose();
+});
+
+test("播放头、鼠标与选区在同一发送窗口合并为完整 activity 快照", async () => {
+  const harness = createHarness();
+  harness.runtime.update(FACTS);
+  harness.runtime.updatePlayhead({ time: 1, playing: true });
+  harness.runtime.updatePointer({ time: 2 });
+  harness.runtime.updateSelection({
+    start: 1,
+    end: 3,
+    itemCount: 2,
+    laneCount: 1,
+    kinds: ["character"],
+  });
+  await flushPromises();
+  const socket = harness.sockets[0];
+  socket.emit("open", new Event("open"));
+  socket.emit("message", { data: readyMessage() });
+  assert.deepEqual(JSON.parse(socket.sent[0]!).activity, {
+    playhead: { time: 1, playing: true },
+    pointer: { time: 2 },
+    selection: { start: 1, end: 3, itemCount: 2, laneCount: 1, kinds: ["character"] },
+  });
+  harness.runtime.updatePointer(null);
+  harness.runtime.updateSelection(null);
+  await harness.clock.advanceBy(125);
+  assert.deepEqual(JSON.parse(socket.sent[1]!).activity, {
+    playhead: { time: 1, playing: true },
+    pointer: null,
+    selection: null,
+  });
   harness.runtime.dispose();
 });
 
@@ -259,6 +291,15 @@ test("文件切换关闭旧 socket，旧文件迟到消息不能进入新会话"
   harness.runtime.update(FACTS);
   await flushPromises();
   const oldSocket = harness.sockets[0];
+  harness.runtime.updatePlayhead({ time: 11, playing: true });
+  harness.runtime.updatePointer({ time: 12 });
+  harness.runtime.updateSelection({
+    start: 10,
+    end: 13,
+    itemCount: 2,
+    laneCount: 1,
+    kinds: ["action"],
+  });
   harness.runtime.update({ ...FACTS, sessionKey: "file-2" });
   await flushPromises();
   assert.equal(oldSocket.closed?.reason, "session_replaced");
@@ -268,6 +309,8 @@ test("文件切换关闭旧 socket，旧文件迟到消息不能进入新会话"
   current.emit("open", new Event("open"));
   current.emit("message", { data: readyMessage("file-2") });
   assert.equal(last(harness.statuses), "connected");
+  // 新文件尚未上报自身状态时保持空白，不能把旧文件的瞬时活动发送出去。
+  assert.deepEqual(current.sent, []);
   harness.runtime.dispose();
 });
 

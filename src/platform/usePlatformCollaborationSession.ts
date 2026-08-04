@@ -12,12 +12,13 @@ import {
   type PlatformCollaborationStatus,
 } from "./platformCollaborationRuntime";
 import {
-  applyRemotePlayheadMessage,
-  buildRemotePlayheadView,
-  pruneRemotePlayheadRegistry,
-  type RemotePlayheadRegistry,
-  type RemotePlayheadView,
-} from "./remotePlayheadRegistry";
+  applyRemoteTimelineActivityMessage,
+  buildRemoteTimelineActivityView,
+  pruneRemoteTimelineActivityRegistry,
+  type RemoteTimelineActivityRegistry,
+  type RemoteTimelineActivityView,
+} from "./remoteTimelineActivityRegistry";
+import type { AnnotationTimelineActivity } from "@xiqu/shared";
 
 type UsePlatformCollaborationSessionOptions = {
   client: PlatformClient | null;
@@ -35,12 +36,14 @@ export function usePlatformCollaborationSession(
 ): {
   status: PlatformCollaborationStatus;
   members: AnnotationPresenceMember[];
-  remotePlayheads: RemotePlayheadView[];
+  remoteActivities: RemoteTimelineActivityView[];
   updatePlayhead: (playhead: { time: number; playing: boolean }) => void;
+  updatePointer: (pointer: { time: number } | null) => void;
+  updateSelection: (selection: AnnotationTimelineActivity["selection"]) => void;
 } {
   const [status, setStatus] = useState<PlatformCollaborationStatus>("disabled");
   const [members, setMembers] = useState<AnnotationPresenceMember[]>([]);
-  const [remoteRegistry, setRemoteRegistry] = useState<RemotePlayheadRegistry>(new Map());
+  const [remoteRegistry, setRemoteRegistry] = useState<RemoteTimelineActivityRegistry>(new Map());
   const [viewClockMs, setViewClockMs] = useState(() => Date.now());
   const clientRef = useRef(options.client);
   const messageRef = useRef(options.onMessage);
@@ -84,8 +87,8 @@ export function usePlatformCollaborationSession(
       },
       onMessage: (message) => {
         if (message.type === "presence.snapshot") setMembers(message.members);
-        if (message.type === "presence.playhead.changed") {
-          setRemoteRegistry((current) => applyRemotePlayheadMessage(current, message, Date.now()));
+        if (message.type === "presence.timeline_activity.changed") {
+          setRemoteRegistry((current) => applyRemoteTimelineActivityMessage(current, message, Date.now()));
           setViewClockMs(Date.now());
         }
         messageRef.current(message);
@@ -110,7 +113,7 @@ export function usePlatformCollaborationSession(
     const timerId = window.setInterval(() => {
       const nextNow = Date.now();
       setViewClockMs(nextNow);
-      setRemoteRegistry((current) => pruneRemotePlayheadRegistry(current, nextNow));
+      setRemoteRegistry((current) => pruneRemoteTimelineActivityRegistry(current, nextNow));
     }, 1_000);
     return () => window.clearInterval(timerId);
   }, [remoteRegistry.size, status]);
@@ -121,13 +124,19 @@ export function usePlatformCollaborationSession(
     runtimeRef.current = null;
   }, []);
 
-  const remotePlayheads = useMemo(
-    () => buildRemotePlayheadView(remoteRegistry, members, options.currentUserId, viewClockMs),
+  const remoteActivities = useMemo(
+    () => buildRemoteTimelineActivityView(remoteRegistry, members, options.currentUserId, viewClockMs),
     [members, options.currentUserId, remoteRegistry, viewClockMs],
   );
   const updatePlayhead = useCallback((playhead: { time: number; playing: boolean }) => {
     runtimeRef.current?.updatePlayhead(playhead);
   }, []);
+  const updatePointer = useCallback((pointer: { time: number } | null) => {
+    runtimeRef.current?.updatePointer(pointer);
+  }, []);
+  const updateSelection = useCallback((selection: AnnotationTimelineActivity["selection"]) => {
+    runtimeRef.current?.updateSelection(selection);
+  }, []);
 
-  return { status, members, remotePlayheads, updatePlayhead };
+  return { status, members, remoteActivities, updatePlayhead, updatePointer, updateSelection };
 }

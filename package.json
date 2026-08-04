@@ -28,7 +28,7 @@
     "test:annotation-confirmation-view": "npm run build:shared && npm run build:document-model && node --import tsx --test src/platform/annotationConfirmationView.test.ts",
     "test:platform-operations": "npm run build:shared && node --import tsx --test src/utils/platformOperations.test.ts",
     "test:annotation-commands": "npm run build:shared && node --test packages/shared/test/annotation-commands.test.mjs",
-    "test:annotation-collaboration": "npm run build:shared && node --test packages/shared/test/annotation-collaboration.test.mjs && node --import tsx --test src/platform/platformCollaborationRuntime.test.ts src/platform/collaborationPresenceView.test.ts src/platform/remotePlayheadRegistry.test.ts apps/api/test/annotationCollaborationHub.test.ts apps/api/test/annotationRemoteActivity.test.ts",
+    "test:annotation-collaboration": "npm run build:shared && node --test packages/shared/test/annotation-collaboration.test.mjs && node --import tsx --test src/platform/platformCollaborationRuntime.test.ts src/platform/collaborationPresenceView.test.ts src/platform/remoteTimelineActivityRegistry.test.ts src/platform/timelineSelectionSummary.test.ts apps/api/test/annotationCollaborationHub.test.ts apps/api/test/annotationRemoteActivity.test.ts",
     "test:annotation-presence": "node --import tsx --test apps/api/test/annotationPresenceEventEnvelope.test.ts apps/api/test/annotationPresenceCoordinator.test.ts",
     "test:annotation-revision-event-bus": "node --import tsx --test apps/api/test/annotationRevisionEventEnvelope.test.ts apps/api/test/postgresAnnotationRevisionEventBus.test.ts",
     "test:annotation-operation-pagination": "npm run build:shared && node --import tsx --test apps/api/test/annotationOperationPagination.test.ts",

@@ -1,4 +1,13 @@
-import { type CSSProperties, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   ActionAnnotation,
   AttachedPointAnnotation,
@@ -34,7 +43,7 @@ import {
   resolveCustomTrackColor,
 } from "../utils/trackColors";
 import { getCharacterToneLabel, isValidCharacterToneInfo } from "../utils/tone";
-import type { RemotePlayheadView } from "../platform/remotePlayheadRegistry";
+import type { RemoteTimelineActivityView } from "../platform/remoteTimelineActivityRegistry";
 
 type TimelineProps = {
   subtitleLines: SubtitleLine[];
@@ -56,7 +65,9 @@ type TimelineProps = {
   isSpectrogramLoading: boolean;
   spectrogramSettings: SpectrogramSettings;
   currentTime: number;
-  remotePlayheads: RemotePlayheadView[];
+  remoteActivities: RemoteTimelineActivityView[];
+  pointerSourceId: string;
+  onTransientPointerTimeChange: (sourceId: string, time: number | null) => void;
   loopPlaybackRange: { start: number; end: number } | null;
   loopPlaybackEnabled: boolean;
   confirmationRanges: TimelineConfirmationRange[];
@@ -519,7 +530,9 @@ export function Timeline({
   isSpectrogramLoading,
   spectrogramSettings,
   currentTime,
-  remotePlayheads,
+  remoteActivities,
+  pointerSourceId,
+  onTransientPointerTimeChange,
   loopPlaybackRange,
   loopPlaybackEnabled,
   confirmationRanges,
@@ -641,6 +654,8 @@ export function Timeline({
   const [hoveredBlock, setHoveredBlock] = useState<HoveredBlockState>(null);
   const [activeSnapIndicator, setActiveSnapIndicator] = useState<ActiveSnapIndicator>(null);
   const [previewGuideTime, setPreviewGuideTime] = useState<number | null>(null);
+  const transientPointerFrameRef = useRef<number | null>(null);
+  const pendingTransientPointerTimeRef = useRef<number | null>(null);
   const [draggedPointPreview, setDraggedPointPreview] = useState<{
     id: string;
     trackId: string;
@@ -671,6 +686,24 @@ export function Timeline({
   } | null>(null);
   const moveTrackHighlightTimerRef = useRef<number | null>(null);
   const selectionAnchorRef = useRef<TimelineSelectionItem | null>(selectedTimelineItems[0] ?? null);
+
+  // Timeline 只上报时间语义；网络节流由 collaboration runtime 统一负责。
+  const queueTransientPointerTime = useCallback((time: number | null) => {
+    pendingTransientPointerTimeRef.current = time;
+    if (transientPointerFrameRef.current !== null) return;
+    transientPointerFrameRef.current = requestAnimationFrame(() => {
+      transientPointerFrameRef.current = null;
+      onTransientPointerTimeChange(pointerSourceId, pendingTransientPointerTimeRef.current);
+    });
+  }, [onTransientPointerTimeChange, pointerSourceId]);
+
+  useEffect(() => () => {
+    if (transientPointerFrameRef.current !== null) {
+      cancelAnimationFrame(transientPointerFrameRef.current);
+      transientPointerFrameRef.current = null;
+    }
+    onTransientPointerTimeChange(pointerSourceId, null);
+  }, [onTransientPointerTimeChange, pointerSourceId]);
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
   // 确认栏按重叠层数自适应高度；无记录时仍保留一条紧凑栏，供平台用户识别该治理层。
   const confirmationLaneCount = confirmationRangesVisible
@@ -2401,6 +2434,21 @@ export function Timeline({
       <div
         className="timeline-scroll"
         ref={scrollRef}
+        onPointerMove={(event) => {
+          const container = scrollRef.current;
+          if (!container) return;
+          const viewportOffset = event.clientX - container.getBoundingClientRect().left;
+          if (viewportOffset < TRACK_LABEL_WIDTH) {
+            queueTransientPointerTime(null);
+            return;
+          }
+          queueTransientPointerTime(Math.min(
+            duration,
+            getCanvasTimeFromViewportOffset(container, viewportOffset, zoom),
+          ));
+        }}
+        onPointerLeave={() => queueTransientPointerTime(null)}
+        onPointerCancel={() => queueTransientPointerTime(null)}
         onWheel={(event) => {
           const isPinchZoom = event.ctrlKey && !event.metaKey;
           const isModifierZoom = event.altKey && !event.metaKey && !event.ctrlKey;
@@ -3435,20 +3483,54 @@ export function Timeline({
             />
           ) : null}
 
-          {remotePlayheads.map((remotePlayhead, index) => (
-            <div
-              key={remotePlayhead.userId}
-              className={`remote-playhead ${remotePlayhead.playing ? "playing" : "paused"}`}
-              style={{
-                left: getCanvasX(remotePlayhead.time, zoom),
-                "--remote-playhead-color": remotePlayhead.color,
-                "--remote-playhead-label-row": index % 4,
-              } as CSSProperties}
-              aria-hidden="true"
-            >
-              <span>{remotePlayhead.displayName}</span>
-            </div>
-          ))}
+          {/* 远端提示只读叠加；三类元素都使用 Timeline 的同一时间坐标，不参与任何命中或编辑。 */}
+          {remoteActivities.map((remoteActivity, index) => {
+            const { playhead, pointer, selection } = remoteActivity.activity;
+            return (
+              <Fragment key={remoteActivity.userId}>
+                {remoteActivity.showSelection && selection ? (
+                  <div
+                    className="remote-selection-range"
+                    style={{
+                      left: getCanvasX(selection.start, zoom),
+                      width: Math.max(2, (selection.end - selection.start) * zoom),
+                      "--remote-activity-color": remoteActivity.color,
+                      "--remote-activity-label-row": index % 4,
+                    } as CSSProperties}
+                    aria-hidden="true"
+                  >
+                    <span>{remoteActivity.displayName} · {selection.itemCount} 项 · {selection.laneCount} 轨</span>
+                  </div>
+                ) : null}
+                {pointer ? (
+                  <div
+                    className="remote-pointer-guide"
+                    style={{
+                      left: getCanvasX(pointer.time, zoom),
+                      "--remote-activity-color": remoteActivity.color,
+                      "--remote-activity-label-row": index % 4,
+                    } as CSSProperties}
+                    aria-hidden="true"
+                  >
+                    <span>{remoteActivity.displayName}</span>
+                  </div>
+                ) : null}
+                {playhead ? (
+                  <div
+                    className={`remote-playhead ${playhead.playing ? "playing" : "paused"}`}
+                    style={{
+                      left: getCanvasX(playhead.time, zoom),
+                      "--remote-playhead-color": remoteActivity.color,
+                      "--remote-playhead-label-row": index % 4,
+                    } as CSSProperties}
+                    aria-hidden="true"
+                  >
+                    <span>{remoteActivity.displayName}</span>
+                  </div>
+                ) : null}
+              </Fragment>
+            );
+          })}
 
           {previewGuideTime !== null ? (
             <div

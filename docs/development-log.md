@@ -4276,3 +4276,93 @@ ProjectData builder、adapter 与编辑器接线：
 - 本轮没有远端鼠标时间、选区摘要、递归轨道选择可视化和隐私裁剪 UI，也没有实时编辑命令提交。下一轮
   R5b2b2b 应复用已验证的 activity channel，但单独定义 pointer 采样、选择摘要上限、显示密度和隐藏策略；
   不得扩大消息为标注正文或绕过现有 operation/save/lease 事务。
+
+## 2026-08-04：R5b2b2b 统一远端播放头、鼠标时间与匿名选区摘要
+
+### 本轮任务书、执行方式与阶段边界
+
+- 本轮基线为 R5b2b2a commit `7027672`。Codex 先依据实际代码和 roadmap，把 gitignore 中的
+  `CLAUDE_WORK.md` 重写为只包含 R5b2b2b 的详细任务书，再按“协议 → 服务端 → 纯摘要/注册表 → 浏览器运行时
+  → Timeline → 测试/浏览器 → 文档/日志 → 提交”的顺序实施。没有调用其他代理，也没有让即时任务书承担
+  历史日志职责。
+- 用户再次明确要求维护 **Development Log**。本节因此同时记录需求边界、直接实现、自我审查修复、真实
+  双账号坐标证据和自动化控制限制，而不只列最终文件。
+- 本轮只扩展可丢失的协作提示：播放头、鼠标时间和匿名选区摘要。没有广播实体 id、标注正文、轨道名、
+  分叉名或用户输入；没有提交领域 operation，没有修改 `ProjectData`、revision、保存事务、恢复草稿、恢复
+  快照、operation log、治理审计或 mutation lease。
+
+### 统一严格协议与跨实例服务端通道
+
+- shared 协议把原 `presence.playhead.update/changed` 收敛为 exact-key
+  `presence.timeline_activity.update/changed`。一个 sequence 对应一个完整
+  `{playhead, pointer, selection}` 最新快照，三个字段均可为空，但客户端业务帧至少有一项非空；服务端
+  `activity: null` 专用于连接 clear。解析器统一限制时间、整数计数、固定研究域类别、类别唯一稳定顺序和
+  嵌套字段，并在验证后深拷贝数组与对象，调用方不能继续持有不可信输入引用。
+- 选区摘要类别只允许逐字、动作、自定义块、附属点和板眼五类。摘要只携带真实起止时间、有效项目数、
+  可视 lane 数和类别；客户端消息仍受 1024 字节上限，跨实例 envelope 仍受 1500 字节上限。
+- Fastify route、hub 和 PostgreSQL activity envelope/bus 复用 R5b2b2a 已验证的 source exclusion、连接级
+  sequence、被限流帧水位推进、token bucket、慢消费者丢帧、跨实例 coalescing 和断线 tombstone，不建立
+  pointer/selection 的第二套队列或 listener。统一帧仍只是一条丢失可容忍的实时提示，HTTP
+  committed-feed/snapshot 继续是内容恢复的唯一权威路径。
+
+### 浏览器摘要、完整快照调度与隐私边界
+
+- 新增纯 `timelineSelectionSummary`：从当前 `TimelineSelectionItem` 重新查找项目中的真实实体时间，忽略已经
+  删除的 stale selection，递归分叉块按本次可视 `branchLaneId` 计数；输出中没有任何实体 id、正文、label、
+  track id、轨道名或分叉名。相关测试明确断言摘要不可泄漏这些字段。
+- `platformCollaborationRuntime` 现在只维护一个完整 activity 候选，共用 125 ms trailing 发送窗口、2 秒
+  keepalive、256 KiB 浏览器背压和单调 sequence。播放头、鼠标和选区在同一窗口内变化时只发送最后一份完整
+  快照，避免接收端把三个不同时间点的局部 patch 误组装。
+- 自我审查发现换文件时旧完整快照可能比 React 新状态更早抵达新 socket。最终在 session key 变化时清空
+  播放头、鼠标和选区候选，并新增回归测试；同一文件离线重连仍保留调用方最新事实。运行时内部残留的
+  `playheadTimer`/`sendLatestPlayhead` 等误导命名也全部改为 activity 语义，没有留下旧协议并行路径。
+- `remoteTimelineActivityRegistry` 替换旧播放头专用注册表：仍以连接 session 处理 sequence/clear/6 秒 stale，
+  再按账号选择最近的完整快照。只显示仍在权威 presence 中的其他账号，最多 32 个远端账号；前 12 个绘制
+  选区 band，超出者仍可显示播放头/鼠标，避免密集半透明区域遮挡时间轴。
+- 在线成员弹层新增两个独立开关：本地隐藏全部远端提示不会销毁注册表，重新开启可立即恢复；停止共享只
+  清除自己的鼠标与选区摘要，播放头仍保持协作预览。普通 Timeline 与独立窗口通过 source ownership 协调，
+  旧窗口迟到的 pointer leave 不会清除新窗口刚上报的位置；窗口 blur、页面 hidden 和组件卸载都会清 pointer。
+
+### Timeline 精确坐标与显示层级
+
+- Timeline 根滚动容器只把鼠标横坐标转换为时间语义，先排除固定轨道头，再复用现有
+  `getCanvasTimeFromViewportOffset()`；局部 `requestAnimationFrame` 只合并 DOM 高频事件，网络 8 Hz 节流仍
+  唯一归运行时负责。普通/独立 Timeline 共用同一回调和远端活动列表。
+- 远端播放头、鼠标点线和选区 band 都直接使用 `trackHeaderWidth + time * zoom`。1/2 px 线条仅用
+  `translateX(-50%)` 使笔画围绕数学坐标居中，绝不增加时间补偿。选区最小 2 px 只改善零长度点状选择可见性，
+  不修改其精确 left；三个 overlay 均 `pointer-events: none`，位于波形/频谱/块之上、本地预览线和本地播放头
+  之下，不参与吸附、命中、拖动、选择或撤销历史。
+- CSS 继续使用既有低饱和工作台风格：远端播放头实线/暂停虚线，鼠标为细点线，选区为轻量透明 band；标签
+  有界错行并只显示成员名、项目数和轨道数，不展示标注内容。
+
+### 测试、构建与真实浏览器验收
+
+- `npm run test:annotation-collaboration`：21/21。覆盖统一协议 exact-key/越界/泄漏拒绝、hub 跨实例
+  sequence/clear/source exclusion、runtime ready/8 Hz/keepalive/backpressure/完整快照合并/换文件清空、
+  registry 同账号聚合/stale/显示上限，以及选区摘要隐私和 stale item。
+- `npm run test:api`：119/119；真实 PostgreSQL/Fastify 集成把跨实例帧扩展为播放头 12.5 秒、鼠标 13 秒、
+  10–14 秒选区，并继续覆盖 malformed/binary/oversize、来源排除和断线 clear。保留仓库既有并发资源创建
+  测试的一条 pg 9 前置弃用提示，本轮协作逻辑没有新增数据库阻塞或测试旁路。
+- `npm run test:observability` 13/13、`npm run test:annotation-presence` 4/4、
+  `npm run test:annotation-revision-event-bus` 8/8、`npm run test:platform-auto-save-runtime` 8/8、
+  `npm run test:platform-operation-catch-up` 17/17，既有成员、revision、自动保存和权威 HTTP 追赶无回归。
+  最终 `npm run build` 完整通过 Prisma generation、shared、document-model、Web 与 API；Vite 转换 2079 个
+  模块，CSS 124.92 kB / gzip 22.99 kB，主 JS 943.48 kB / gzip 280.85 kB，只有既有超过 500 kB 的 chunk
+  提示。`git diff --check` 与旧协议/注册表引用扫描也通过。
+- 当前工作树 API 运行于 4317（PID 79014）。in-app Browser 以管理员打开 `annotation-xunmeng-demo`，另用
+  真实学生账号一次性票据建立当前协议 WebSocket。30 px/s 时，学生 22.2 秒播放头 `left=830px`、24.5 秒
+  鼠标 `left=899px`、18–27 秒选区 `left=704px,width=270px`，分别严格等于 164 px 轨道头加时间乘缩放；
+  标签只显示“学生账号”和“4 项 · 2 轨”。在线菜单显示管理员与学生两名成员，并渲染两个隐私复选项；
+  关闭学生 socket 后 0.9 秒内成员回到 1，播放头、鼠标和选区 DOM 均归零，clear 没有遗留幽灵提示。
+- Codex Browser 控制层本轮无法可靠合成该原生 checkbox 的点击：locator 点击会关闭 popover 而不改变受控
+  值，因此没有把自动化工具缺陷冒充产品缺陷，也没有为测试工具改写组件。开关的数据流、清除语义和完整
+  构建已核对；真实远端活动接收、视觉层级和两种缩放下的坐标则由浏览器完成验收。
+
+### 已知边界与下一阶段
+
+- Activity 帧故意允许丢失，不提供历史、可靠投递或内容一致性。用户隐藏远端提示只影响显示，不节省服务端
+  接收成本；当前最多 32 个账号、12 个选区 band 是保守 DOM 密度边界，未来真实课堂压测后再调整。
+- 本轮没有把 selection kind 翻译成界面正文，也没有显示远端正在编辑的稳定实体，避免形成隐私泄漏和假锁。
+- 下一轮进入 R5b3：必须先审计现有 operation acceptance、committed binding、mutation lease、HTTP catch-up
+  和 dirty 阻断边界，再设计实时 operation 的 submit/ack/reject 顺序与冲突策略。不得直接把可丢失 activity
+  bus 当作 operation 可靠队列，也不得在尚未确定服务端 apply/authoritative ordering 前承诺 OT/CRDT。

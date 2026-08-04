@@ -413,16 +413,21 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
 - Presence 的 LISTEN/NOTIFY 只发送文件 id 级失效提示，不携带成员身份；接收实例在本地有订阅者时才
   single-flight 重读数据库，并把严格有界的 `presence.snapshot` 发送给浏览器。断线、重连和文件切换会
   清空旧成员列表，在线状态不能授予权限、改变保存结果或进入恢复草稿。
-- R5b2b2a 的远端播放头是另一类纯运行时状态。浏览器只发送严格 `{sequence,time,playing}`，最多 8 Hz，
-  静止时每 2 秒保活；服务端按连接再次限流，并通过独立 schema 隔离的 PostgreSQL transient activity
-  channel 跨实例转发。断线 clear 与浏览器 6 秒 stale 回收共同避免残留，慢消费者可以丢帧，因为下一帧
-  总能覆盖旧状态。
-- `platformCollaborationRuntime` 只负责节流、保活、背压和连接 generation；
-  `remotePlayheadRegistry` 负责连接级 sequence、clear、stale、同账号多窗口聚合和 32 账号显示上限；
-  Timeline 只消费整理后的只读列表。播放头直接复用 `trackHeaderWidth + time * zoom`，不能通过视觉补偿修改
-  时间坐标，也不能参与吸附、选择、撤销或历史。
-- 远端播放头不得进入 `ProjectData`、revision、浏览器恢复草稿、恢复快照、operation log 或治理审计。
-  后续可在同一瞬时通道增加严格节流的鼠标时间和选区摘要，但 operation 传输仍不得替代持久化事务。
+- R5b2b2 的远端活动是另一类纯运行时状态。浏览器发送严格完整的
+  `{sequence, activity:{playhead,pointer,selection}}` 最新快照，最多 8 Hz，静止时每 2 秒保活；服务端按连接
+  再次限流，并通过独立 schema 隔离的 PostgreSQL transient activity channel 跨实例转发。断线 clear 与
+  浏览器 6 秒 stale 回收共同避免残留，慢消费者可以丢帧，因为下一帧总能覆盖旧状态。
+- `platformCollaborationRuntime` 只维护一个完整 activity 候选及一套节流/保活/背压/generation；播放头、鼠标
+  和选区不能建立三套并行队列。文件 session key 变化时清空完整候选，同文件离线重连则保留调用方最后事实。
+  `remoteTimelineActivityRegistry` 负责连接级 sequence、clear、stale、同账号多窗口最新完整快照聚合和 32 账号
+  显示上限；选区最多为前 12 个活跃账号绘制。
+- `timelineSelectionSummary` 从当前有效选择解析真实时间和可视 lane，只输出起止时间、项目数、轨道数和固定
+  研究域类别；实体 id、正文、轨道/分叉名称不得进入协议。Timeline 只消费整理后的只读列表，播放头、鼠标和
+  选区边界直接复用 `trackHeaderWidth + time * zoom`，不能通过视觉补偿修改时间坐标，也不能参与吸附、选择、
+  撤销或历史。普通窗口与独立 Timeline 用 source ownership 避免旧窗口迟到 leave 清除新窗口鼠标位置。
+- 远端活动不得进入 `ProjectData`、revision、浏览器恢复草稿、恢复快照、operation log 或治理审计。在线成员
+  菜单的显示开关只影响本地渲染，共享开关只清除鼠标和选区，播放头仍可预览；operation 传输不得借用该
+  可丢失通道替代持久化事务。
 - 服务端必须排序、鉴权、幂等确认和重放 operation。
 - 客户端需要 optimistic apply、ack、reject 和 rebase。
 - 普通块级命令与轨道结构/批量导入采用不同冲突策略。

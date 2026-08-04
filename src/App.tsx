@@ -41,6 +41,7 @@ import {
 import { catchUpCommittedAnnotationOperations } from "./platform/platformOperationCatchUp";
 import { usePlatformOperationCatchUp } from "./platform/usePlatformOperationCatchUp";
 import { usePlatformCollaborationSession } from "./platform/usePlatformCollaborationSession";
+import { buildTimelineSelectionSummary } from "./platform/timelineSelectionSummary";
 import { useAnnotationConfirmations } from "./platform/useAnnotationConfirmations";
 import { usePlatformAutoSave } from "./platform/usePlatformAutoSave";
 import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
@@ -599,6 +600,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     id: "line-1",
   });
   const [selectedTimelineItems, setSelectedTimelineItems] = useState<TimelineSelectionItem[]>([]);
+  // 显示与共享分离：用户可以只隐藏本机提示，也可以停止发布隐私更高的鼠标/选区摘要。
+  const [showRemoteCollaborationHints, setShowRemoteCollaborationHints] = useState(true);
+  const [sharePointerAndSelection, setSharePointerAndSelection] = useState(true);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [previewTime, setPreviewTime] = useState<number | null>(null);
@@ -746,10 +750,56 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       console.warn("平台实时通知连接异常；HTTP 轮询仍会继续同步。", error);
     },
   });
-  // 远端播放头只是当前协作会话的瞬时预览，不进入 ProjectData、撤销历史或恢复草稿。
+  // 播放头、鼠标和选区摘要只是当前协作会话的瞬时预览，不进入 ProjectData、撤销历史或恢复草稿。
   useEffect(() => {
     collaborationSession.updatePlayhead({ time: currentTime, playing: isPlaying });
   }, [collaborationSession.updatePlayhead, currentTime, isPlaying]);
+  const collaborationSelectionSummary = useMemo(
+    () => buildTimelineSelectionSummary(project, selectedTimelineItems),
+    [project, selectedTimelineItems],
+  );
+  useEffect(() => {
+    collaborationSession.updateSelection(
+      sharePointerAndSelection ? collaborationSelectionSummary : null,
+    );
+  }, [collaborationSelectionSummary, collaborationSession.updateSelection, sharePointerAndSelection]);
+  const collaborationPointerSourceRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (sharePointerAndSelection) return;
+    collaborationPointerSourceRef.current = null;
+    collaborationSession.updatePointer(null);
+  }, [collaborationSession.updatePointer, sharePointerAndSelection]);
+  const updateCollaborationPointer = useCallback((sourceId: string, time: number | null) => {
+    if (!sharePointerAndSelection) {
+      collaborationPointerSourceRef.current = null;
+      collaborationSession.updatePointer(null);
+      return;
+    }
+    if (time !== null) {
+      collaborationPointerSourceRef.current = sourceId;
+      collaborationSession.updatePointer({ time });
+      return;
+    }
+    // 独立窗口接管鼠标后，旧 Timeline 迟到的 leave 不能清除新窗口位置。
+    if (collaborationPointerSourceRef.current !== sourceId) return;
+    collaborationPointerSourceRef.current = null;
+    collaborationSession.updatePointer(null);
+  }, [collaborationSession.updatePointer, sharePointerAndSelection]);
+  useEffect(() => {
+    const clearPointer = () => {
+      collaborationPointerSourceRef.current = null;
+      collaborationSession.updatePointer(null);
+    };
+    const clearHiddenPointer = () => {
+      if (document.hidden) clearPointer();
+    };
+    window.addEventListener("blur", clearPointer);
+    document.addEventListener("visibilitychange", clearHiddenPointer);
+    return () => {
+      window.removeEventListener("blur", clearPointer);
+      document.removeEventListener("visibilitychange", clearHiddenPointer);
+    };
+  }, [collaborationSession.updatePointer]);
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
   const blockContextMenuRef = useRef<HTMLDivElement>(null);
   const [blockContextMenuPosition, setBlockContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
@@ -5610,7 +5660,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         isSpectrogramLoading={isSpectrogramLoading}
         spectrogramSettings={spectrogramSettings}
         currentTime={currentTime}
-        remotePlayheads={collaborationSession.remotePlayheads}
+        remoteActivities={showRemoteCollaborationHints ? collaborationSession.remoteActivities : []}
+        pointerSourceId={detached ? "detached-timeline" : "main-timeline"}
+        onTransientPointerTimeChange={updateCollaborationPointer}
         loopPlaybackRange={loopPlaybackRange}
         loopPlaybackEnabled={loopPlaybackEnabled}
         confirmationRanges={editorSession && confirmationTimelineVisible
@@ -5835,6 +5887,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           collaborationStatus={editorSession ? collaborationSession.status : undefined}
           collaborationPresenceMembers={collaborationSession.members}
           currentPlatformUserId={editorSession?.currentUserId}
+          showRemoteCollaborationHints={showRemoteCollaborationHints}
+          sharePointerAndSelection={sharePointerAndSelection}
+          onShowRemoteCollaborationHintsChange={setShowRemoteCollaborationHints}
+          onSharePointerAndSelectionChange={setSharePointerAndSelection}
           videoFileInputRef={videoFileInputRef}
           srtFileInputRef={srtFileInputRef}
           projectFileInputRef={projectFileInputRef}

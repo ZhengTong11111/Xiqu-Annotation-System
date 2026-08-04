@@ -90,7 +90,7 @@ export function registerAnnotationCollaborationRoutes(
             userId: activityIdentity.userId,
             sequence: lastClientSequence + 1,
             observedAt: new Date().toISOString(),
-            playhead: null,
+            activity: null,
           });
           hasPublishedActivity = false;
         }
@@ -162,7 +162,7 @@ export function registerAnnotationCollaborationRoutes(
           userId: sessionIdentity.userId,
           sequence: message.sequence,
           observedAt: new Date().toISOString(),
-          playhead: { time: message.time, playing: message.playing },
+          activity: message.activity,
         });
       });
 
@@ -200,7 +200,7 @@ export function registerAnnotationCollaborationRoutes(
             // 已建立的长连接也必须响应撤权；发送前复核，不能把票据消费时的权限永久缓存。
             send: (message) => {
               // 活动帧是有 TTL 的只读提示，沿用会话心跳授权；避免拖动时每帧查询数据库。
-              if (message.type === "presence.playhead.changed") {
+              if (message.type === "presence.timeline_activity.changed") {
                 if (socket.bufferedAmount > REMOTE_ACTIVITY_MAX_BUFFERED_BYTES) return;
                 sendMessage(socket, message);
                 return;

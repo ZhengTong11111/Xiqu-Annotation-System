@@ -2,7 +2,8 @@ import {
   parseAnnotationCollaborationServerMessage,
   type AnnotationCollaborationServerMessage,
   type AnnotationCollaborationTicket,
-  type AnnotationPlayheadUpdateMessage,
+  type AnnotationTimelineActivity,
+  type AnnotationTimelineActivityUpdateMessage,
 } from "@xiqu/shared";
 
 export type PlatformCollaborationStatus =
@@ -57,6 +58,8 @@ type RuntimeDependencies = {
 export type PlatformCollaborationRuntime = {
   update: (facts: PlatformCollaborationFacts) => void;
   updatePlayhead: (playhead: { time: number; playing: boolean }) => void;
+  updatePointer: (pointer: { time: number } | null) => void;
+  updateSelection: (selection: AnnotationTimelineActivity["selection"]) => void;
   dispose: () => void;
 };
 
@@ -64,9 +67,9 @@ const CONNECT_TIMEOUT_MS = 10_000;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const PERMANENT_CLOSE_CODES = new Set([4400, 4403]);
-const PLAYHEAD_SEND_INTERVAL_MS = 125;
-const PLAYHEAD_KEEPALIVE_MS = 2_000;
-const PLAYHEAD_MAX_BUFFERED_BYTES = 256 * 1_024;
+const ACTIVITY_SEND_INTERVAL_MS = 125;
+const ACTIVITY_KEEPALIVE_MS = 2_000;
+const ACTIVITY_MAX_BUFFERED_BYTES = 256 * 1_024;
 
 // 运行时独占 ticket、socket、重连 timer 与 generation；React 只更新事实，不直接操纵连接。
 export function createPlatformCollaborationRuntime(
@@ -81,11 +84,11 @@ export function createPlatformCollaborationRuntime(
   let halted = false;
   let status: PlatformCollaborationStatus = "disabled";
   let sessionReady = false;
-  let playheadTimerId: number | null = null;
-  let playheadKeepaliveTimerId: number | null = null;
-  let latestPlayhead: { time: number; playing: boolean } | null = null;
-  let lastPlayheadSentAt = Number.NEGATIVE_INFINITY;
-  let playheadSequence = 0;
+  let activityTimerId: number | null = null;
+  let activityKeepaliveTimerId: number | null = null;
+  let latestActivity = createEmptyTimelineActivity();
+  let lastActivitySentAt = Number.NEGATIVE_INFINITY;
+  let activitySequence = 0;
   const now = dependencies.now ?? Date.now;
 
   function setStatus(nextStatus: PlatformCollaborationStatus) {
@@ -103,39 +106,38 @@ export function createPlatformCollaborationRuntime(
   function closeSocket() {
     const current = socket;
     socket = null;
-    clearPlayheadTimers();
+    clearActivityTimers();
     sessionReady = false;
-    playheadSequence = 0;
-    lastPlayheadSentAt = Number.NEGATIVE_INFINITY;
+    activitySequence = 0;
+    lastActivitySentAt = Number.NEGATIVE_INFINITY;
     current?.close(1000, "session_replaced");
   }
 
-  function clearPlayheadTimers() {
-    if (playheadTimerId !== null) dependencies.clearTimer(playheadTimerId);
-    if (playheadKeepaliveTimerId !== null) dependencies.clearTimer(playheadKeepaliveTimerId);
-    playheadTimerId = null;
-    playheadKeepaliveTimerId = null;
+  function clearActivityTimers() {
+    if (activityTimerId !== null) dependencies.clearTimer(activityTimerId);
+    if (activityKeepaliveTimerId !== null) dependencies.clearTimer(activityKeepaliveTimerId);
+    activityTimerId = null;
+    activityKeepaliveTimerId = null;
   }
 
-  function sendLatestPlayhead() {
+  function sendLatestActivity() {
     const currentSocket = socket;
     if (
-      !sessionReady || !latestPlayhead || !currentSocket ||
+      !sessionReady || !hasTimelineActivity(latestActivity) || !currentSocket ||
       currentSocket.readyState !== currentSocket.OPEN
     ) return false;
     // transient 帧允许丢弃；浏览器发送缓冲过高时保留最新候选，避免积压过期播放位置。
-    if (currentSocket.bufferedAmount > PLAYHEAD_MAX_BUFFERED_BYTES) return false;
-    playheadSequence += 1;
-    const message: AnnotationPlayheadUpdateMessage = {
+    if (currentSocket.bufferedAmount > ACTIVITY_MAX_BUFFERED_BYTES) return false;
+    activitySequence += 1;
+    const message: AnnotationTimelineActivityUpdateMessage = {
       version: 1,
-      type: "presence.playhead.update",
-      sequence: playheadSequence,
-      time: latestPlayhead.time,
-      playing: latestPlayhead.playing,
+      type: "presence.timeline_activity.update",
+      sequence: activitySequence,
+      activity: cloneTimelineActivity(latestActivity),
     };
     try {
       currentSocket.send(JSON.stringify(message));
-      lastPlayheadSentAt = now();
+      lastActivitySentAt = now();
       return true;
     } catch (error) {
       dependencies.onError(error);
@@ -143,23 +145,23 @@ export function createPlatformCollaborationRuntime(
     }
   }
 
-  function schedulePlayheadSend() {
-    if (!sessionReady || playheadTimerId !== null) return;
-    const delay = Math.max(0, PLAYHEAD_SEND_INTERVAL_MS - (now() - lastPlayheadSentAt));
-    playheadTimerId = dependencies.setTimer(() => {
-      playheadTimerId = null;
-      sendLatestPlayhead();
+  function scheduleActivitySend() {
+    if (!sessionReady || activityTimerId !== null) return;
+    const delay = Math.max(0, ACTIVITY_SEND_INTERVAL_MS - (now() - lastActivitySentAt));
+    activityTimerId = dependencies.setTimer(() => {
+      activityTimerId = null;
+      sendLatestActivity();
     }, delay);
   }
 
-  function schedulePlayheadKeepalive() {
-    if (!sessionReady || playheadKeepaliveTimerId !== null) return;
-    playheadKeepaliveTimerId = dependencies.setTimer(() => {
-      playheadKeepaliveTimerId = null;
+  function scheduleActivityKeepalive() {
+    if (!sessionReady || activityKeepaliveTimerId !== null) return;
+    activityKeepaliveTimerId = dependencies.setTimer(() => {
+      activityKeepaliveTimerId = null;
       if (!sessionReady) return;
-      sendLatestPlayhead();
-      schedulePlayheadKeepalive();
-    }, PLAYHEAD_KEEPALIVE_MS);
+      sendLatestActivity();
+      scheduleActivityKeepalive();
+    }, ACTIVITY_KEEPALIVE_MS);
   }
 
   function isEligible(value: PlatformCollaborationFacts | null) {
@@ -261,8 +263,8 @@ export function createPlatformCollaborationRuntime(
             clearTimer();
             reconnectAttempt = 0;
             setStatus("connected");
-            sendLatestPlayhead();
-            schedulePlayheadKeepalive();
+            sendLatestActivity();
+            scheduleActivityKeepalive();
           } else if (!ready) {
             failProtocol("协作服务在会话就绪前发送了业务通知。");
             return;
@@ -276,7 +278,7 @@ export function createPlatformCollaborationRuntime(
           if (connectionClosed) return;
           connectionClosed = true;
           clearTimer();
-          clearPlayheadTimers();
+          clearActivityTimers();
           sessionReady = false;
           if (socket === nextSocket) socket = null;
           if (disposed || generation !== requestGeneration || !isEligible(facts)) return;
@@ -314,6 +316,11 @@ export function createPlatformCollaborationRuntime(
       const sessionChanged = !facts || facts.sessionKey !== nextFacts.sessionKey;
       const becameOffline = Boolean(facts?.online && !nextFacts.online);
       const becameEligible = !isEligible(facts) && isEligible(nextFacts);
+      if (sessionChanged) {
+        // 播放头、鼠标和选区都只属于当前文件；换文件时不能把旧快照带进新会话。
+        // 同一文件的离线重连不清空，网络恢复后仍可发送调用方维护的最新状态。
+        latestActivity = createEmptyTimelineActivity();
+      }
       facts = nextFacts;
       if (sessionChanged || becameOffline || !nextFacts.enabled) {
         generation += 1;
@@ -335,8 +342,23 @@ export function createPlatformCollaborationRuntime(
 
     updatePlayhead(playhead) {
       if (disposed || !Number.isFinite(playhead.time) || playhead.time < 0) return;
-      latestPlayhead = { time: playhead.time, playing: playhead.playing };
-      schedulePlayheadSend();
+      latestActivity = { ...latestActivity, playhead: { ...playhead } };
+      scheduleActivitySend();
+    },
+
+    updatePointer(pointer) {
+      if (disposed || (pointer && (!Number.isFinite(pointer.time) || pointer.time < 0))) return;
+      latestActivity = { ...latestActivity, pointer: pointer ? { ...pointer } : null };
+      scheduleActivitySend();
+    },
+
+    updateSelection(selection) {
+      if (disposed) return;
+      latestActivity = {
+        ...latestActivity,
+        selection: selection ? { ...selection, kinds: [...selection.kinds] } : null,
+      };
+      scheduleActivitySend();
     },
 
     dispose() {
@@ -347,6 +369,24 @@ export function createPlatformCollaborationRuntime(
       closeSocket();
       setStatus("disabled");
     },
+  };
+}
+
+function hasTimelineActivity(activity: AnnotationTimelineActivity) {
+  return activity.playhead !== null || activity.pointer !== null || activity.selection !== null;
+}
+
+function createEmptyTimelineActivity(): AnnotationTimelineActivity {
+  return { playhead: null, pointer: null, selection: null };
+}
+
+function cloneTimelineActivity(activity: AnnotationTimelineActivity): AnnotationTimelineActivity {
+  return {
+    playhead: activity.playhead ? { ...activity.playhead } : null,
+    pointer: activity.pointer ? { ...activity.pointer } : null,
+    selection: activity.selection
+      ? { ...activity.selection, kinds: [...activity.selection.kinds] }
+      : null,
   };
 }
 

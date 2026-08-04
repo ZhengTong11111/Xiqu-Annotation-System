@@ -1,7 +1,7 @@
 import type {
   AnnotationCollaborationServerMessage,
   AnnotationPresenceMember,
-  AnnotationRemotePlayheadMessage,
+  AnnotationRemoteTimelineActivityMessage,
   AnnotationRevisionAdvancedMessage,
 } from "@xiqu/shared";
 
@@ -103,7 +103,7 @@ export class AnnotationCollaborationHub {
   }
 
   deliverRemoteActivity(
-    event: Omit<AnnotationRemotePlayheadMessage, "version" | "type">,
+    event: Omit<AnnotationRemoteTimelineActivityMessage, "version" | "type">,
   ): AnnotationRevisionDeliveryResult {
     const eventKey = `${event.annotationFileId}\u0000${event.activitySessionId}`;
     const previousSequence = this.latestActivitySequence.get(eventKey) ?? 0;
@@ -111,9 +111,9 @@ export class AnnotationCollaborationHub {
     this.latestActivitySequence.set(eventKey, event.sequence);
     // clear 也保留 sequence tombstone，防止跨实例乱序的旧播放头重新复活。
     trimOldestEntries(this.latestActivitySequence, 10_000);
-    const message: AnnotationRemotePlayheadMessage = {
+    const message: AnnotationRemoteTimelineActivityMessage = {
       version: 1,
-      type: "presence.playhead.changed",
+      type: "presence.timeline_activity.changed",
       ...event,
     };
     for (const subscriber of this.subscribers.get(event.annotationFileId) ?? []) {

@@ -41,68 +41,75 @@ test("解析严格的协作会话与 revision 通知", () => {
   assert.deepEqual(parseAnnotationCollaborationServerMessage(presence), presence);
 });
 
-test("严格解析播放头上行与远端播放头通知", () => {
+test("严格解析播放头、鼠标与选区的完整活动快照", () => {
   const update = {
     version: 1,
-    type: "presence.playhead.update",
+    type: "presence.timeline_activity.update",
     sequence: 3,
-    time: 12.345,
-    playing: true,
+    activity: {
+      playhead: { time: 12.345, playing: true },
+      pointer: { time: 13 },
+      selection: { start: 10, end: 14, itemCount: 3, laneCount: 2, kinds: ["character", "action"] },
+    },
   };
   assert.deepEqual(parseAnnotationCollaborationClientMessage(update), update);
   const changed = {
     version: 1,
-    type: "presence.playhead.changed",
+    type: "presence.timeline_activity.changed",
     annotationFileId: "annotation-file-1",
     activitySessionId: "activity-session-1",
     userId: "user-1",
     sequence: 3,
     observedAt: "2026-08-04T00:00:00.000Z",
-    playhead: { time: 12.345, playing: true },
+    activity: update.activity,
   };
   assert.deepEqual(parseAnnotationCollaborationServerMessage(changed), changed);
-  assert.deepEqual(parseAnnotationCollaborationServerMessage({ ...changed, playhead: null }), {
+  assert.deepEqual(parseAnnotationCollaborationServerMessage({ ...changed, activity: null }), {
     ...changed,
-    playhead: null,
+    activity: null,
   });
 });
 
-test("拒绝损坏或越界的播放头消息", () => {
+test("拒绝损坏、泄漏字段或越界的活动消息", () => {
   const update = {
     version: 1,
-    type: "presence.playhead.update",
+    type: "presence.timeline_activity.update",
     sequence: 1,
-    time: 1,
-    playing: false,
+    activity: {
+      playhead: { time: 1, playing: false },
+      pointer: null,
+      selection: null,
+    },
   };
   for (const value of [
     { ...update, sequence: 0 },
     { ...update, sequence: 1.5 },
     { ...update, sequence: Number.MAX_SAFE_INTEGER + 1 },
-    { ...update, time: -1 },
-    { ...update, time: Number.NaN },
-    { ...update, time: Number.POSITIVE_INFINITY },
-    { ...update, time: 604_801 },
-    { ...update, playing: "yes" },
+    { ...update, activity: { ...update.activity, playhead: { time: -1, playing: false } } },
+    { ...update, activity: { playhead: null, pointer: null, selection: null } },
+    { ...update, activity: { ...update.activity, pointer: { time: 1, x: 2 } } },
+    { ...update, activity: { ...update.activity, selection: { start: 2, end: 1, itemCount: 1, laneCount: 1, kinds: ["character"] } } },
+    { ...update, activity: { ...update.activity, selection: { start: 1, end: 2, itemCount: 1, laneCount: 1, kinds: ["action", "character"] } } },
+    { ...update, activity: { ...update.activity, selection: { start: 1, end: 2, itemCount: 1, laneCount: 1, kinds: ["character", "character"] } } },
     { ...update, extra: true },
   ]) assert.equal(parseAnnotationCollaborationClientMessage(value), null);
 
   const changed = {
     version: 1,
-    type: "presence.playhead.changed",
+    type: "presence.timeline_activity.changed",
     annotationFileId: "file-1",
     activitySessionId: "session-1",
     userId: "user-1",
     sequence: 1,
     observedAt: "2026-08-04T00:00:00.000Z",
-    playhead: { time: 1, playing: false },
+    activity: update.activity,
   };
   for (const value of [
     { ...changed, activitySessionId: "" },
     { ...changed, sequence: 0 },
     { ...changed, observedAt: "bad" },
-    { ...changed, playhead: { time: -1, playing: false } },
-    { ...changed, playhead: { time: 1, playing: false, extra: true } },
+    { ...changed, activity: { ...update.activity, playhead: { time: -1, playing: false } } },
+    { ...changed, activity: { ...update.activity, playhead: { time: 1, playing: false, extra: true } } },
   ]) assert.equal(parseAnnotationCollaborationServerMessage(value), null);
 });
 

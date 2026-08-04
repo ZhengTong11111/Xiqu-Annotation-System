@@ -6,12 +6,20 @@ import { buildCollaborationPresenceView } from "../platform/collaborationPresenc
 type CollaborationPresenceMenuProps = {
   members: AnnotationPresenceMember[];
   currentUserId?: string;
+  showRemoteCollaborationHints: boolean;
+  sharePointerAndSelection: boolean;
+  onShowRemoteCollaborationHintsChange?: (visible: boolean) => void;
+  onSharePointerAndSelectionChange?: (enabled: boolean) => void;
 };
 
 /** 在线成员入口只展示同文件最小身份信息，不承担权限编辑或文档同步状态。 */
 export function CollaborationPresenceMenu({
   members,
   currentUserId,
+  showRemoteCollaborationHints,
+  sharePointerAndSelection,
+  onShowRemoteCollaborationHintsChange,
+  onSharePointerAndSelectionChange,
 }: CollaborationPresenceMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -72,6 +80,25 @@ export function CollaborationPresenceMenu({
           )) : (
             <div className="collaboration-presence-empty">正在获取在线成员…</div>
           )}
+          {/* 两个开关分别控制本地呈现和对外共享，不能把隐藏 UI 误当成退出协作会话。 */}
+          <div className="collaboration-presence-options">
+            <label>
+              <input
+                type="checkbox"
+                checked={showRemoteCollaborationHints}
+                onChange={(event) => onShowRemoteCollaborationHintsChange?.(event.target.checked)}
+              />
+              <span>显示远端播放头、鼠标与选区</span>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={sharePointerAndSelection}
+                onChange={(event) => onSharePointerAndSelectionChange?.(event.target.checked)}
+              />
+              <span>共享我的鼠标与选区摘要</span>
+            </label>
+          </div>
           <div className="collaboration-presence-note">在线状态不会改变文件权限或保存结果。</div>
         </div>
       ) : null}

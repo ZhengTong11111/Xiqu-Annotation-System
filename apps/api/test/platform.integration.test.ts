@@ -1202,17 +1202,15 @@ test("平台资源 API 集成测试", async (suite) => {
       await openAndSend("not-json");
       await openAndSend(Buffer.from(JSON.stringify({
         version: 1,
-        type: "presence.playhead.update",
+        type: "presence.timeline_activity.update",
         sequence: 1,
-        time: 1,
-        playing: false,
+        activity: { playhead: { time: 1, playing: false }, pointer: null, selection: null },
       })), true);
       await openAndSend(JSON.stringify({
         version: 1,
-        type: "presence.playhead.update",
+        type: "presence.timeline_activity.update",
         sequence: 1,
-        time: 1,
-        playing: false,
+        activity: { playhead: { time: 1, playing: false }, pointer: null, selection: null },
         padding: "x".repeat(2_000),
       }));
     });
@@ -1397,21 +1395,24 @@ test("平台资源 API 集成测试", async (suite) => {
           "等待学生收到双账号 presence 快照超时",
         );
 
-        const beforeRemotePlayhead = adminObserver.mark();
+        const beforeRemoteActivity = adminObserver.mark();
         firstStudentSocket.send(JSON.stringify({
           version: 1,
-          type: "presence.playhead.update",
+          type: "presence.timeline_activity.update",
           sequence: 1,
-          time: 12.5,
-          playing: true,
+          activity: {
+            playhead: { time: 12.5, playing: true },
+            pointer: { time: 13 },
+            selection: { start: 10, end: 14, itemCount: 2, laneCount: 1, kinds: ["character"] },
+          },
         }));
-        const remotePlayhead = await adminObserver.waitFor(
-          (message) => message.type === "presence.playhead.changed" &&
-            (message.playhead as JsonObject | null)?.time === 12.5,
-          beforeRemotePlayhead,
-          "等待跨实例远端播放头超时",
+        const remoteActivity = await adminObserver.waitFor(
+          (message) => message.type === "presence.timeline_activity.changed" &&
+            ((message.activity as JsonObject | null)?.playhead as JsonObject | null)?.time === 12.5,
+          beforeRemoteActivity,
+          "等待跨实例远端时间轴活动超时",
         );
-        assert.equal(remotePlayhead.userId, "user-student");
+        assert.equal(remoteActivity.userId, "user-student");
 
         const beforeSecondTab = adminObserver.mark();
         const secondStudentObserver = createSocketMessageObserver();
@@ -1448,7 +1449,7 @@ test("平台资源 API 集成测试", async (suite) => {
         const beforeStudentLeave = adminObserver.mark();
         firstStudentSocket.terminate();
         await adminObserver.waitFor(
-          (message) => message.type === "presence.playhead.changed" && message.playhead === null,
+          (message) => message.type === "presence.timeline_activity.changed" && message.activity === null,
           beforeStudentLeave,
           "等待远端播放头 clear 超时",
         );

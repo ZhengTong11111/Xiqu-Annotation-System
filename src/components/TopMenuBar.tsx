@@ -28,6 +28,10 @@ type TopMenuBarProps = {
   collaborationStatus?: PlatformCollaborationStatus;
   collaborationPresenceMembers?: AnnotationPresenceMember[];
   currentPlatformUserId?: string;
+  showRemoteCollaborationHints?: boolean;
+  sharePointerAndSelection?: boolean;
+  onShowRemoteCollaborationHintsChange?: (visible: boolean) => void;
+  onSharePointerAndSelectionChange?: (enabled: boolean) => void;
   videoFileInputRef: RefObject<HTMLInputElement>;
   srtFileInputRef: RefObject<HTMLInputElement>;
   projectFileInputRef: RefObject<HTMLInputElement>;
@@ -77,6 +81,10 @@ export function TopMenuBar({
   collaborationStatus,
   collaborationPresenceMembers = [],
   currentPlatformUserId,
+  showRemoteCollaborationHints = true,
+  sharePointerAndSelection = true,
+  onShowRemoteCollaborationHintsChange,
+  onSharePointerAndSelectionChange,
   videoFileInputRef,
   srtFileInputRef,
   projectFileInputRef,
@@ -334,6 +342,10 @@ export function TopMenuBar({
           <CollaborationPresenceMenu
             members={collaborationPresenceMembers}
             currentUserId={currentPlatformUserId}
+            showRemoteCollaborationHints={showRemoteCollaborationHints}
+            sharePointerAndSelection={sharePointerAndSelection}
+            onShowRemoteCollaborationHintsChange={onShowRemoteCollaborationHintsChange}
+            onSharePointerAndSelectionChange={onSharePointerAndSelectionChange}
           />
         ) : null}
         {collaborationStatus ? (

@@ -30,8 +30,9 @@ Main currently contains all major recent feature lines that matter for context:
   these are lossy wake-up hints, while HTTP committed-feed/snapshot catch-up remains authoritative
 - database-backed 60-second collaboration presence with cross-instance invalidation, same-account multi-window aggregation,
   revoke/disconnect cleanup, bounded member snapshots, and a compact current-file online-member UI
-- remote playhead preview over a separate transient collaboration channel, with strict protocol parsing, browser/server
-  rate limits, cross-instance fan-out, disconnect/stale cleanup, same-account aggregation, and exact Timeline coordinates
+- remote playhead, pointer-time, and anonymized selection-summary previews over one transient collaboration channel, with
+  strict complete-snapshot parsing, browser/server rate limits, cross-instance fan-out, privacy controls,
+  disconnect/stale cleanup, same-account aggregation, and exact Timeline coordinates
 - database-backed short-lived annotation mutation leases for structural/bulk writes; ordinary operation/save/restore stays
   unchanged without a lease, while an active lease requires its one-time token and is released only by a successful revision write
 - existing custom-track metadata, recursive branch trees, and block branch ownership now use the strict top-level
@@ -108,20 +109,30 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - thin React facts/callback adapter; App owns snapshot hydration and document replacement gating
 - `src/platform/platformCollaborationRuntime.ts`
   - owns one collaboration ticket request, WebSocket, handshake timeout, retry timer, generation, and connection status
-  - waits for strict `session.ready`; revision messages only wake HTTP catch-up, while presence and playhead remain runtime-only
-  - owns playhead ready-before-send, 8 Hz trailing coalescing, 2-second keepalive, browser backpressure, and activity timers;
-    file switch/offline/dispose must clear every activity generation and timer
+  - waits for strict `session.ready`; revision messages only wake HTTP catch-up, while presence and timeline activity remain
+    runtime-only
+  - owns one complete playhead/pointer/selection candidate, ready-before-send, 8 Hz trailing coalescing, 2-second keepalive,
+    browser backpressure, and activity timers; do not fork separate queues for the three activity fields
+  - file session changes clear the complete candidate; same-file reconnect may retain the latest facts, while
+    offline/dispose must clear every timer and connection generation
   - permanent protocol/authorization failures halt until the file, online state, or session changes
 - `src/platform/usePlatformCollaborationSession.ts`
   - thin browser/React adapter around the collaboration runtime
-  - clears stale members and playheads on disconnect/file switch; owns the single stale-prune timer only while the remote
-    registry is nonempty; local editor sessions stay disabled and Strict Effects cleanup disposes the runtime
-- `src/platform/remotePlayheadRegistry.ts`
-  - connection-level strict sequence/clear/stale registry plus same-account latest-window aggregation and stable colors
-  - hides the current account, requires a current presence member, and caps mounted remote playhead views at 32
+  - clears stale members and remote activities on disconnect/file switch; owns the single stale-prune timer only while the
+    remote registry is nonempty; local editor sessions stay disabled and Strict Effects cleanup disposes the runtime
+- `src/platform/remoteTimelineActivityRegistry.ts`
+  - connection-level strict sequence/clear/stale registry plus same-account latest-complete-snapshot aggregation and stable
+    colors
+  - hides the current account, requires a current presence member, caps mounted remote views at 32, and caps selection bands
+    at 12 without dropping the associated playhead or pointer
+- `src/platform/timelineSelectionSummary.ts`
+  - converts valid current Timeline selections into an anonymized time/count/lane/domain summary
+  - must never expose entity ids, annotation text, labels, track names, or branch names; stale selection items are ignored
 - `src/platform/collaborationPresenceView.ts` + `src/components/CollaborationPresenceMenu.tsx`
   - pure current-user-first member view plus the compact top-bar member popover
   - online membership is informational only; it must never grant permissions or alter save/sync state
+  - owns local display and pointer/selection-sharing controls; hiding hints must not destroy the registry, and disabling
+    sharing clears only pointer/selection while preserving playhead preview
 - `src/platform/PlatformDraftRecoveryDialog.tsx`
   - explicit same-revision recovery, stale comparison entry, and read-only export-or-discard decision before opening editor
 - `src/platform/PlatformDraftConflictDialog.tsx`
@@ -251,6 +262,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/components/Timeline.tsx`
   - heaviest file
   - owns zoom, ruler scrubbing, snapping, marquee selection, drag/resize, creation flows, waveform guides, spectrogram lane rendering, loop range interaction, Gongche lane rendering, attached point editing
+  - publishes only exact pointer time to the collaboration callback and renders remote playhead/pointer/selection hints as
+    read-only `pointer-events: none` overlays using the same `trackHeaderWidth + time * zoom` coordinate as local timing
 - `src/components/VideoPlayer.tsx`
   - playback sync, preview-frame behavior, native controls auto-hide, detached-panel button
 - `src/components/InspectorPanel.tsx`
@@ -375,6 +388,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - character content targets distinguish `char` and `singingStyle`; do not rewrite singing-style cascades as character-text
     changes or hide them inside a configuration snapshot
   - the server currently validates and logs these commands but does not apply them to `AnnotationFile.payload`
+- `packages/shared/src/annotationCollaboration.ts`
+  - authoritative strict WebSocket protocol for session/revision/presence and complete transient Timeline activity snapshots
+  - activity contains nullable playhead, pointer, and anonymized selection-summary fields; exact-key parsing, bounded
+    times/counts/kinds, stable kind ordering, and defensive nested cloning are shared by browser and Fastify
 - `packages/shared/src/customTrackStructureCommands.ts`
   - strict top-level structure DTO/parser/builder/inverse; it is excluded from `annotation.transaction.apply` because every
     newly accepted structure operation requires a file mutation lease
@@ -482,7 +499,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - rejects duplicate/backward revisions and duplicate member structures; clearing the last subscriber also clears the
     presence fingerprint so a reconnect always receives its first authoritative snapshot
   - remote activity is sequence-monotonic per connection, excludes the source session, and retains bounded clear
-    watermarks so a delayed frame cannot resurrect a disconnected playhead
+    watermarks so a delayed frame cannot resurrect disconnected playhead/pointer/selection activity
 - `apps/api/src/annotationRevisionEventEnvelope.ts`
   - strict, exact-key, size-bounded cross-instance revision-event parser and schema-derived PostgreSQL channel name
   - events carry only source instance, annotation-file id, committed revision, and committed-feed cursor; never payloads,
@@ -506,7 +523,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/annotationRemoteActivityEventEnvelope.ts` + `apps/api/src/postgresAnnotationRemoteActivityEventBus.ts`
   - strict <=1500-byte transient activity envelope and schema-isolated local-first PostgreSQL wrapper
   - coalesces by annotation file plus activity session at the highest sequence; carries no annotation content, ACL, token,
-    display name, snapshot, operation, or audit fact
+    display name, entity id, track name, snapshot, operation, or audit fact
 - `apps/api/src/annotationRemoteActivityRateLimiter.ts`
   - per-connection token bucket for high-frequency client activity; rate-limited sequences still advance the observed
     watermark so a later lower sequence cannot be accepted
@@ -514,8 +531,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - owns socket authentication, heartbeat/ACL rechecks, presence join/renew/leave, subscriber registration, and shutdown cleanup
   - server-initiated closes must finalize presence immediately rather than waiting for the peer close handshake; shutdown waits
     in-flight ticket/join setup before Prisma closes
-  - accepts only the strict bounded playhead client message after `session.ready`; malformed, binary, oversized, or
-    pre-ready messages fail closed, while slow-consumer playhead frames may be dropped without affecting document correctness
+  - accepts only the strict bounded complete timeline-activity client message after `session.ready`; malformed, binary,
+    oversized, or pre-ready messages fail closed, while slow-consumer activity frames may be dropped without affecting
+    document correctness
   - client activity never becomes a save/operation path. HTTP remains the only annotation mutation and persistence path
 - `apps/api/src/database.ts`
   - collaboration pool must accommodate three persistent LISTEN clients (revision, presence, activity), asynchronous NOTIFY,

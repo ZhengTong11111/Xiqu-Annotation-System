@@ -1,6 +1,6 @@
 import {
   parseAnnotationCollaborationServerMessage,
-  type AnnotationRemotePlayheadMessage,
+  type AnnotationRemoteTimelineActivityMessage,
 } from "@xiqu/shared";
 import { createSchemaIsolatedCollaborationChannel } from "./postgresCollaborationChannel.js";
 
@@ -8,13 +8,13 @@ const MAX_EVENT_BYTES = 1_500;
 const ENVELOPE_KEYS = ["sourceInstanceId", "message"] as const;
 
 export type AnnotationRemoteActivityEvent = Omit<
-  AnnotationRemotePlayheadMessage,
+  AnnotationRemoteTimelineActivityMessage,
   "version" | "type"
 >;
 
 type AnnotationRemoteActivityEventEnvelope = {
   sourceInstanceId: string;
-  message: AnnotationRemotePlayheadMessage;
+  message: AnnotationRemoteTimelineActivityMessage;
 };
 
 export function createAnnotationRemoteActivityChannel(schema: string) {
@@ -30,7 +30,7 @@ export function serializeAnnotationRemoteActivityEventEnvelope(
     sourceInstanceId,
     message: {
       version: 1,
-      type: "presence.playhead.changed",
+      type: "presence.timeline_activity.changed",
       ...event,
     },
   } satisfies AnnotationRemoteActivityEventEnvelope);
@@ -50,7 +50,7 @@ export function parseSerializedAnnotationRemoteActivityEventEnvelope(
       return null;
     }
     const message = parseAnnotationCollaborationServerMessage(input.message);
-    if (!message || message.type !== "presence.playhead.changed") return null;
+    if (!message || message.type !== "presence.timeline_activity.changed") return null;
     const { version: _version, type: _type, ...event } = message;
     return event;
   } catch {

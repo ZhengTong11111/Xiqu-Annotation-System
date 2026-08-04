@@ -402,6 +402,30 @@ select {
   padding: 8px 6px;
 }
 
+.collaboration-presence-options {
+  display: grid;
+  gap: 7px;
+  padding: 9px 6px;
+  border-top: 1px solid #eef2f7;
+}
+
+.collaboration-presence-options label {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  color: #334155;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.collaboration-presence-options input {
+  width: 14px;
+  height: 14px;
+  margin: 1px 0 0;
+}
+
 .collaboration-presence-note {
   border-top: 1px solid #eef2f7;
 }
@@ -5128,6 +5152,7 @@ select {
   --timeline-layer-fixed-controls: 70;
   --timeline-layer-selection: 80;
   --timeline-layer-transient-guide: 82;
+  --timeline-layer-remote-selection: 84;
   --timeline-layer-remote-playhead: 86;
   --timeline-layer-time-guide: 90;
   /* 固定顶部由 ruler + loop + 可选确认栏组成，所有悬浮层共同引用，避免插入栏后发生纵向错位。 */
@@ -7595,6 +7620,59 @@ select {
   background: var(--remote-playhead-color);
   border-radius: 4px;
   box-shadow: 0 1px 3px rgb(15 23 42 / 18%);
+}
+
+/* 远端鼠标线与播放头共用精确时间坐标，但用更轻的点线区分本地 preview guide。 */
+.remote-pointer-guide {
+  position: absolute;
+  inset-block: 0;
+  width: 1px;
+  pointer-events: none;
+  transform: translateX(-50%);
+  z-index: var(--timeline-layer-remote-playhead);
+  background: repeating-linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--remote-activity-color) 68%, transparent) 0 3px,
+    transparent 3px 7px
+  );
+}
+
+.remote-pointer-guide > span,
+.remote-selection-range > span {
+  position: sticky;
+  top: calc(8px + var(--remote-activity-label-row) * 20px);
+  display: inline-block;
+  max-width: 150px;
+  padding: 1px 5px;
+  overflow: hidden;
+  color: white;
+  font-size: 10px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--remote-activity-color);
+  border-radius: 3px;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 14%);
+}
+
+.remote-pointer-guide > span {
+  margin-left: 4px;
+}
+
+/* 选区 band 只表达匿名时间范围；最小视觉宽度不改变精确 left 时间边界。 */
+.remote-selection-range {
+  position: absolute;
+  top: var(--timeline-fixed-deck-top);
+  bottom: 0;
+  min-width: 2px;
+  pointer-events: none;
+  z-index: var(--timeline-layer-remote-selection);
+  background: color-mix(in srgb, var(--remote-activity-color) 9%, transparent);
+  border-inline: 1px solid color-mix(in srgb, var(--remote-activity-color) 42%, transparent);
+}
+
+.remote-selection-range > span {
+  margin-left: 3px;
 }
 
 .playhead.playhead-sticky-overlay {

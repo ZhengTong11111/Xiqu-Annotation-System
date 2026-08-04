@@ -45,32 +45,51 @@ export type AnnotationPresenceSnapshotMessage = {
   members: AnnotationPresenceMember[];
 };
 
-export type AnnotationPlayheadUpdateMessage = {
-  version: typeof ANNOTATION_COLLABORATION_PROTOCOL_VERSION;
-  type: "presence.playhead.update";
-  sequence: number;
-  time: number;
-  playing: boolean;
+export type AnnotationSelectionSummaryKind =
+  | "character"
+  | "action"
+  | "custom_block"
+  | "attached_point"
+  | "banyan_mark";
+
+// 三类提示共用一个完整最新快照，避免接收端把不同发送时刻的局部 patch 误组装。
+export type AnnotationTimelineActivity = {
+  playhead: { time: number; playing: boolean } | null;
+  pointer: { time: number } | null;
+  selection: {
+    start: number;
+    end: number;
+    itemCount: number;
+    laneCount: number;
+    kinds: AnnotationSelectionSummaryKind[];
+  } | null;
 };
 
-export type AnnotationCollaborationClientMessage = AnnotationPlayheadUpdateMessage;
-
-export type AnnotationRemotePlayheadMessage = {
+export type AnnotationTimelineActivityUpdateMessage = {
   version: typeof ANNOTATION_COLLABORATION_PROTOCOL_VERSION;
-  type: "presence.playhead.changed";
+  type: "presence.timeline_activity.update";
+  sequence: number;
+  activity: AnnotationTimelineActivity;
+};
+
+export type AnnotationCollaborationClientMessage = AnnotationTimelineActivityUpdateMessage;
+
+export type AnnotationRemoteTimelineActivityMessage = {
+  version: typeof ANNOTATION_COLLABORATION_PROTOCOL_VERSION;
+  type: "presence.timeline_activity.changed";
   annotationFileId: string;
   activitySessionId: string;
   userId: string;
   sequence: number;
   observedAt: string;
-  playhead: { time: number; playing: boolean } | null;
+  activity: AnnotationTimelineActivity | null;
 };
 
 export type AnnotationCollaborationServerMessage =
   | AnnotationCollaborationSessionReadyMessage
   | AnnotationRevisionAdvancedMessage
   | AnnotationPresenceSnapshotMessage
-  | AnnotationRemotePlayheadMessage;
+  | AnnotationRemoteTimelineActivityMessage;
 
 const MESSAGE_KEYS = {
   "session.ready": [
@@ -95,7 +114,7 @@ const MESSAGE_KEYS = {
     "generatedAt",
     "members",
   ],
-  "presence.playhead.changed": [
+  "presence.timeline_activity.changed": [
     "version",
     "type",
     "annotationFileId",
@@ -103,14 +122,24 @@ const MESSAGE_KEYS = {
     "userId",
     "sequence",
     "observedAt",
-    "playhead",
+    "activity",
   ],
 } as const;
 
 const CLIENT_MESSAGE_KEYS = {
-  "presence.playhead.update": ["version", "type", "sequence", "time", "playing"],
+  "presence.timeline_activity.update": ["version", "type", "sequence", "activity"],
 } as const;
 const PLAYHEAD_KEYS = ["time", "playing"] as const;
+const POINTER_KEYS = ["time"] as const;
+const ACTIVITY_KEYS = ["playhead", "pointer", "selection"] as const;
+const SELECTION_KEYS = ["start", "end", "itemCount", "laneCount", "kinds"] as const;
+const SELECTION_KIND_ORDER: AnnotationSelectionSummaryKind[] = [
+  "character",
+  "action",
+  "custom_block",
+  "attached_point",
+  "banyan_mark",
+];
 
 const PRESENCE_MEMBER_KEYS = [
   "userId",
@@ -133,19 +162,19 @@ export function parseAnnotationCollaborationServerMessage(
     input.type !== "session.ready" &&
     input.type !== "annotation.revision.advanced" &&
     input.type !== "presence.snapshot" &&
-    input.type !== "presence.playhead.changed"
+    input.type !== "presence.timeline_activity.changed"
   ) {
     return null;
   }
   if (!hasExactKeys(input, MESSAGE_KEYS[input.type])) return null;
-  if (input.type === "presence.playhead.changed") {
+  if (input.type === "presence.timeline_activity.changed") {
     if (
       !isStableId(input.annotationFileId) ||
       !isStableId(input.activitySessionId) ||
       !isStableId(input.userId) ||
       !isSafePositiveInteger(input.sequence) ||
       !isIsoTimestamp(input.observedAt) ||
-      (input.playhead !== null && !isValidPlayhead(input.playhead))
+      (input.activity !== null && !isValidTimelineActivity(input.activity))
     ) return null;
     return {
       version: ANNOTATION_COLLABORATION_PROTOCOL_VERSION,
@@ -155,9 +184,7 @@ export function parseAnnotationCollaborationServerMessage(
       userId: input.userId,
       sequence: input.sequence,
       observedAt: input.observedAt,
-      playhead: input.playhead === null
-        ? null
-        : { time: input.playhead.time, playing: input.playhead.playing },
+      activity: input.activity === null ? null : cloneTimelineActivity(input.activity),
     };
   }
   if (input.type === "presence.snapshot") {
@@ -233,19 +260,36 @@ export function parseAnnotationCollaborationClientMessage(
   if (
     !isRecord(input) ||
     input.version !== ANNOTATION_COLLABORATION_PROTOCOL_VERSION ||
-    input.type !== "presence.playhead.update" ||
+    input.type !== "presence.timeline_activity.update" ||
     !hasExactKeys(input, CLIENT_MESSAGE_KEYS[input.type]) ||
     !isSafePositiveInteger(input.sequence) ||
-    !isFiniteNumberInRange(input.time, 0, ANNOTATION_REMOTE_PLAYHEAD_MAX_SECONDS) ||
-    typeof input.playing !== "boolean"
+    !isValidTimelineActivity(input.activity)
   ) return null;
   return {
     version: ANNOTATION_COLLABORATION_PROTOCOL_VERSION,
     type: input.type,
     sequence: input.sequence,
-    time: input.time,
-    playing: input.playing,
+    activity: cloneTimelineActivity(input.activity),
   };
+}
+
+// Activity 是不可信嵌套对象；校验后仍创建全新对象，避免调用方持有输入引用。
+function cloneTimelineActivity(activity: AnnotationTimelineActivity): AnnotationTimelineActivity {
+  return {
+    playhead: activity.playhead ? { ...activity.playhead } : null,
+    pointer: activity.pointer ? { ...activity.pointer } : null,
+    selection: activity.selection
+      ? { ...activity.selection, kinds: [...activity.selection.kinds] }
+      : null,
+  };
+}
+
+function isValidTimelineActivity(value: unknown): value is AnnotationTimelineActivity {
+  if (!isRecord(value) || !hasExactKeys(value, ACTIVITY_KEYS)) return false;
+  if (value.playhead !== null && !isValidPlayhead(value.playhead)) return false;
+  if (value.pointer !== null && !isValidPointer(value.pointer)) return false;
+  if (value.selection !== null && !isValidSelectionSummary(value.selection)) return false;
+  return value.playhead !== null || value.pointer !== null || value.selection !== null;
 }
 
 function isValidPlayhead(value: unknown): value is { time: number; playing: boolean } {
@@ -253,6 +297,33 @@ function isValidPlayhead(value: unknown): value is { time: number; playing: bool
     hasExactKeys(value, PLAYHEAD_KEYS) &&
     isFiniteNumberInRange(value.time, 0, ANNOTATION_REMOTE_PLAYHEAD_MAX_SECONDS) &&
     typeof value.playing === "boolean";
+}
+
+function isValidPointer(value: unknown): value is { time: number } {
+  return isRecord(value) && hasExactKeys(value, POINTER_KEYS) &&
+    isFiniteNumberInRange(value.time, 0, ANNOTATION_REMOTE_PLAYHEAD_MAX_SECONDS);
+}
+
+function isValidSelectionSummary(
+  value: unknown,
+): value is NonNullable<AnnotationTimelineActivity["selection"]> {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, SELECTION_KEYS) ||
+    !isFiniteNumberInRange(value.start, 0, ANNOTATION_REMOTE_PLAYHEAD_MAX_SECONDS) ||
+    !isFiniteNumberInRange(value.end, value.start, ANNOTATION_REMOTE_PLAYHEAD_MAX_SECONDS) ||
+    !isIntegerInRange(value.itemCount, 1, 10_000) ||
+    !isIntegerInRange(value.laneCount, 1, 1_000) ||
+    !Array.isArray(value.kinds) ||
+    value.kinds.length < 1 ||
+    value.kinds.length > SELECTION_KIND_ORDER.length
+  ) return false;
+  const kinds = value.kinds;
+  return kinds.every((kind, index) =>
+    SELECTION_KIND_ORDER.includes(kind as AnnotationSelectionSummaryKind) &&
+    (index === 0 || SELECTION_KIND_ORDER.indexOf(kinds[index - 1] as AnnotationSelectionSummaryKind) <
+      SELECTION_KIND_ORDER.indexOf(kind as AnnotationSelectionSummaryKind))
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
