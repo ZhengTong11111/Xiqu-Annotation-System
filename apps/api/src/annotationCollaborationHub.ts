@@ -1,4 +1,8 @@
-import type { AnnotationRevisionAdvancedMessage } from "@xiqu/shared";
+import type {
+  AnnotationCollaborationServerMessage,
+  AnnotationPresenceMember,
+  AnnotationRevisionAdvancedMessage,
+} from "@xiqu/shared";
 
 export type AnnotationRevisionEvent = Omit<
   AnnotationRevisionAdvancedMessage,
@@ -11,17 +15,19 @@ export type AnnotationRevisionPublisher = {
 
 export type AnnotationRevisionDeliveryResult = "accepted" | "duplicate";
 
-type Subscriber = {
-  send: (event: AnnotationRevisionAdvancedMessage) => void;
+export type AnnotationCollaborationSubscriber = {
+  send: (event: AnnotationCollaborationServerMessage) => void;
   close: (code: number, reason: string) => void;
 };
 
 export class AnnotationCollaborationHub {
-  private readonly subscribers = new Map<string, Set<Subscriber>>();
+  private readonly subscribers = new Map<string, Set<AnnotationCollaborationSubscriber>>();
   private readonly latestRevision = new Map<string, number>();
+  private readonly latestPresenceFingerprint = new Map<string, string>();
 
-  subscribe(annotationFileId: string, subscriber: Subscriber) {
-    const fileSubscribers = this.subscribers.get(annotationFileId) ?? new Set<Subscriber>();
+  subscribe(annotationFileId: string, subscriber: AnnotationCollaborationSubscriber) {
+    const fileSubscribers = this.subscribers.get(annotationFileId) ??
+      new Set<AnnotationCollaborationSubscriber>();
     fileSubscribers.add(subscriber);
     this.subscribers.set(annotationFileId, fileSubscribers);
     let active = true;
@@ -29,8 +35,17 @@ export class AnnotationCollaborationHub {
       if (!active) return;
       active = false;
       fileSubscribers.delete(subscriber);
-      if (!fileSubscribers.size) this.subscribers.delete(annotationFileId);
+      if (!fileSubscribers.size) {
+        this.subscribers.delete(annotationFileId);
+        // 最后一个本地订阅者离开后，旧 fingerprint 不再代表下一批会话已经收到首帧。
+        // 清除它可保证相同成员结构的快速重连仍会收到权威 presence snapshot。
+        this.latestPresenceFingerprint.delete(annotationFileId);
+      }
     };
+  }
+
+  hasSubscribers(annotationFileId: string) {
+    return Boolean(this.subscribers.get(annotationFileId)?.size);
   }
 
   deliverRevisionAdvanced(event: AnnotationRevisionEvent): AnnotationRevisionDeliveryResult {
@@ -53,11 +68,43 @@ export class AnnotationCollaborationHub {
     return "accepted";
   }
 
+  deliverPresenceSnapshot(
+    annotationFileId: string,
+    members: AnnotationPresenceMember[],
+    generatedAt = new Date().toISOString(),
+  ): AnnotationRevisionDeliveryResult {
+    // lastSeenAt 会在 heartbeat 时变化，但成员身份未变；fingerprint 只描述 UI 可见的成员结构。
+    const fingerprint = JSON.stringify(members.map((member) => [
+      member.userId,
+      member.accountName,
+      member.displayName,
+      member.connectionCount,
+    ]));
+    if (this.latestPresenceFingerprint.get(annotationFileId) === fingerprint) return "duplicate";
+    this.latestPresenceFingerprint.set(annotationFileId, fingerprint);
+    const message: AnnotationCollaborationServerMessage = {
+      version: 1,
+      type: "presence.snapshot",
+      annotationFileId,
+      generatedAt,
+      members,
+    };
+    for (const subscriber of this.subscribers.get(annotationFileId) ?? []) {
+      try {
+        subscriber.send(message);
+      } catch {
+        subscriber.close(1011, "presence_delivery_failed");
+      }
+    }
+    return "accepted";
+  }
+
   closeAll() {
     for (const subscribers of this.subscribers.values()) {
       for (const subscriber of subscribers) subscriber.close(1001, "server_shutdown");
     }
     this.subscribers.clear();
     this.latestRevision.clear();
+    this.latestPresenceFingerprint.clear();
   }
 }

@@ -396,7 +396,7 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
 
 实时协作不能合并任意完整 `ProjectData`：
 
-- R5b1/R5b2a 的 WebSocket 与跨实例通知已经落地，但当前只负责经过认证的文件 revision 失效通知，不传完整 payload，也不提交
+- R5b1/R5b2a 的 WebSocket 与跨实例通知已经落地；revision 消息只负责经过认证的文件失效提示，不传完整 payload，也不提交
   operation。`session.ready` 或 `annotation.revision.advanced` 观察到更高 revision 时，只调用现有 catch-up
   runtime 的 `requestCheck()`；dirty、保存中、冲突或行内编辑期间仍保留一次唤醒，直到 clean 后才走 HTTP。
 - HTTP committed feed 与权威 snapshot 仍是唯一远端内容来源。WebSocket 断线、丢事件或重复事件不会改变
@@ -407,7 +407,13 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
 - 保存/恢复事务提交后先 fan-out 当前进程，再经 schema 隔离的 PostgreSQL LISTEN/NOTIFY 发送有界
   file id/revision/cursor。每个实例使用独立小型连接池和可重连 listener；hub 对自回环、重复和乱序 revision
   单调去重。NOTIFY 不是持久队列，listener 断线期间仍由周期 HTTP catch-up 补齐，不能从事件推断内容已应用。
-- 后续 WebSocket 可负责 presence 和 operation 传输，但仍不得替代持久化事务。
+- R5b2b1 的 presence 与 `ProjectData`、revision 和 operation 状态完全分离。每个已认证文件连接在 PostgreSQL
+  保存一条 60 秒短生命周期 session，心跳只续期未过期行；断线、撤权和服务关闭会立即删除，异常退出由
+  TTL 兜底。同账号多窗口在服务器快照中聚合为一个成员和 `connectionCount`。
+- Presence 的 LISTEN/NOTIFY 只发送文件 id 级失效提示，不携带成员身份；接收实例在本地有订阅者时才
+  single-flight 重读数据库，并把严格有界的 `presence.snapshot` 发送给浏览器。断线、重连和文件切换会
+  清空旧成员列表，在线状态不能授予权限、改变保存结果或进入恢复草稿。
+- 后续 WebSocket 可增加严格节流的远端播放头、光标、选区和 operation 传输，但仍不得替代持久化事务。
 - 服务端必须排序、鉴权、幂等确认和重放 operation。
 - 客户端需要 optimistic apply、ack、reject 和 rebase。
 - 普通块级命令与轨道结构/批量导入采用不同冲突策略。

@@ -3,6 +3,7 @@ import {
   ANNOTATION_COLLABORATION_TICKET_PROTOCOL_PREFIX,
   ANNOTATION_COLLABORATION_WEBSOCKET_PROTOCOL,
   type AnnotationCollaborationServerMessage,
+  type AnnotationPresenceMember,
 } from "@xiqu/shared";
 import { PlatformApiError, type PlatformClient } from "../api/platformClient";
 import {
@@ -23,8 +24,9 @@ type UsePlatformCollaborationSessionOptions = {
 // React hook 只适配平台客户端与浏览器 WebSocket；重连、超时和迟到回调由纯运行时统一管理。
 export function usePlatformCollaborationSession(
   options: UsePlatformCollaborationSessionOptions,
-): PlatformCollaborationStatus {
+): { status: PlatformCollaborationStatus; members: AnnotationPresenceMember[] } {
   const [status, setStatus] = useState<PlatformCollaborationStatus>("disabled");
+  const [members, setMembers] = useState<AnnotationPresenceMember[]>([]);
   const clientRef = useRef(options.client);
   const messageRef = useRef(options.onMessage);
   const errorRef = useRef(options.onError);
@@ -33,6 +35,7 @@ export function usePlatformCollaborationSession(
   messageRef.current = options.onMessage;
   errorRef.current = options.onError;
 
+  // 每个 React 会话只创建一个纯运行时，依赖通过 ref 获取最新平台客户端和回调。
   function ensureRuntime() {
     if (runtimeRef.current) return runtimeRef.current;
     runtimeRef.current = createPlatformCollaborationRuntime({
@@ -58,13 +61,21 @@ export function usePlatformCollaborationSession(
       },
       isPermanentTicketError: (error) =>
         error instanceof PlatformApiError && [401, 403, 404].includes(error.status),
-      onStatusChange: setStatus,
-      onMessage: (message) => messageRef.current(message),
+      onStatusChange: (nextStatus) => {
+        setStatus(nextStatus);
+        // 断线、换文件或重连时旧快照不再可信，宁可暂时显示空列表也不能保留幽灵在线成员。
+        if (nextStatus !== "connected") setMembers([]);
+      },
+      onMessage: (message) => {
+        if (message.type === "presence.snapshot") setMembers(message.members);
+        messageRef.current(message);
+      },
       onError: (error) => errorRef.current(error),
     });
     return runtimeRef.current;
   }
 
+  // 平台文件、联网或启用事实变化时更新同一运行时；文件切换由 generation 隔离迟到消息。
   useEffect(() => {
     ensureRuntime().update({
       enabled: options.enabled,
@@ -79,5 +90,5 @@ export function usePlatformCollaborationSession(
     runtimeRef.current = null;
   }, []);
 
-  return status;
+  return { status, members };
 }

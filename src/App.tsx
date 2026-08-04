@@ -726,7 +726,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       console.warn("平台远端操作追赶失败，将在稍后重试。", error);
     },
   });
-  const collaborationStatus = usePlatformCollaborationSession({
+  const collaborationSession = usePlatformCollaborationSession({
     client: editorSession?.client ?? null,
     annotationFileId: editorSession?.annotationFileId ?? null,
     enabled: Boolean(editorSession),
@@ -734,6 +734,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     onMessage: (message) => {
       // ready 也可能观察到打开文件后、socket 建立前发生的新 revision；两类消息统一只唤醒 HTTP 追赶。
       if (
+        message.type !== "presence.snapshot" &&
         message.annotationFileId === editorSession?.annotationFileId &&
         message.revision > remoteBaseRevisionRef.current
       ) {
@@ -5825,7 +5826,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           pendingOperationCount={pendingOperations.length}
           accessLabel={editorSession?.accessLabel}
           mutationLeaseLabel={mutationLeaseLabel}
-          collaborationStatus={editorSession ? collaborationStatus : undefined}
+          collaborationStatus={editorSession ? collaborationSession.status : undefined}
+          collaborationPresenceMembers={collaborationSession.members}
+          currentPlatformUserId={editorSession?.currentUserId}
           videoFileInputRef={videoFileInputRef}
           srtFileInputRef={srtFileInputRef}
           projectFileInputRef={projectFileInputRef}

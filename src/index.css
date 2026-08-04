@@ -296,6 +296,116 @@ select {
   gap: 4px;
 }
 
+/* 在线成员弹层保持顶部状态栏的紧凑布局，并为长名单提供独立滚动区域。 */
+.collaboration-presence-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.collaboration-presence-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.collaboration-presence-trigger:hover {
+  color: #ffffff;
+}
+
+.collaboration-presence-popover {
+  position: absolute;
+  z-index: 180;
+  top: calc(100% + 12px);
+  right: 0;
+  width: 280px;
+  max-height: min(420px, calc(100vh - 80px));
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #1e293b;
+  background: #ffffff;
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.2);
+}
+
+.collaboration-presence-heading {
+  padding: 4px 6px 8px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.collaboration-presence-member {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 7px 6px;
+  border-top: 1px solid #eef2f7;
+}
+
+.collaboration-presence-avatar {
+  display: grid;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  color: #1d4ed8;
+  background: #dbeafe;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.collaboration-presence-identity {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.collaboration-presence-identity strong,
+.collaboration-presence-identity span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collaboration-presence-identity strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.collaboration-presence-identity strong small {
+  color: #2563eb;
+  font-size: 11px;
+}
+
+.collaboration-presence-identity > span,
+.collaboration-presence-empty,
+.collaboration-presence-note {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.collaboration-presence-empty,
+.collaboration-presence-note {
+  padding: 8px 6px;
+}
+
+.collaboration-presence-note {
+  border-top: 1px solid #eef2f7;
+}
+
 .collaboration-status-dot {
   width: 6px;
   height: 6px;

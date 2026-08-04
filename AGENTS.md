@@ -28,6 +28,8 @@ Main currently contains all major recent feature lines that matter for context:
 - backend audit logs and annotation operation logs for the first platform-governance layer
 - authenticated file WebSockets plus schema-isolated PostgreSQL LISTEN/NOTIFY revision invalidations across API instances;
   these are lossy wake-up hints, while HTTP committed-feed/snapshot catch-up remains authoritative
+- database-backed 60-second collaboration presence with cross-instance invalidation, same-account multi-window aggregation,
+  revoke/disconnect cleanup, bounded member snapshots, and a compact current-file online-member UI
 - database-backed short-lived annotation mutation leases for structural/bulk writes; ordinary operation/save/restore stays
   unchanged without a lease, while an active lease requires its one-time token and is released only by a successful revision write
 - existing custom-track metadata, recursive branch trees, and block branch ownership now use the strict top-level
@@ -104,11 +106,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - thin React facts/callback adapter; App owns snapshot hydration and document replacement gating
 - `src/platform/platformCollaborationRuntime.ts`
   - owns one collaboration ticket request, WebSocket, handshake timeout, retry timer, generation, and connection status
-  - waits for strict `session.ready`; revision messages only wake HTTP catch-up and never apply project payloads
+  - waits for strict `session.ready`; revision messages only wake HTTP catch-up, while presence snapshots remain runtime-only
   - permanent protocol/authorization failures halt until the file, online state, or session changes
 - `src/platform/usePlatformCollaborationSession.ts`
   - thin browser/React adapter around the collaboration runtime
-  - local editor sessions must remain disabled; Strict Effects cleanup must dispose and clear the runtime ref
+  - clears stale members on disconnect/file switch; local editor sessions must remain disabled and Strict Effects cleanup
+    must dispose and clear the runtime ref
+- `src/platform/collaborationPresenceView.ts` + `src/components/CollaborationPresenceMenu.tsx`
+  - pure current-user-first member view plus the compact top-bar member popover
+  - online membership is informational only; it must never grant permissions or alter save/sync state
 - `src/platform/PlatformDraftRecoveryDialog.tsx`
   - explicit same-revision recovery, stale comparison entry, and read-only export-or-discard decision before opening editor
 - `src/platform/PlatformDraftConflictDialog.tsx`
@@ -465,14 +471,33 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - plaintext tickets travel in a WebSocket subprotocol header, never in the upgrade URL or normal access logs
   - consumption and every established-session recheck use current account activity, current roles, ACL, and active-tree state
 - `apps/api/src/annotationCollaborationHub.ts`
-  - process-local monotonic WebSocket fan-out only; cross-instance transport belongs to the revision event bus
-  - rejects duplicate/backward revisions, including the publishing instance's PostgreSQL self-notification
+  - process-local WebSocket fan-out only; cross-instance transport belongs to the revision/presence event buses
+  - rejects duplicate/backward revisions and duplicate member structures; clearing the last subscriber also clears the
+    presence fingerprint so a reconnect always receives its first authoritative snapshot
 - `apps/api/src/annotationRevisionEventEnvelope.ts`
   - strict, exact-key, size-bounded cross-instance revision-event parser and schema-derived PostgreSQL channel name
   - events carry only source instance, annotation-file id, committed revision, and committed-feed cursor; never payloads,
     users, tickets, access tokens, filenames, or operation bodies
 - `apps/api/src/postgresAnnotationRevisionEventBus.ts`
   - local-first revision publisher plus PostgreSQL LISTEN/NOTIFY cross-instance transport
+  - only defines revision coalescing/protocol/metrics; shared queue and listener behavior belongs to the generic bus
+- `apps/api/src/postgresCoalescedEventBus.ts`
+  - generic bounded local-first PostgreSQL LISTEN/NOTIFY core with per-key coalescing and runtime reconnect
+  - business wrappers own strict envelopes and labels; do not fork another connection/queue implementation
+- `apps/api/src/annotationPresenceService.ts`
+  - authoritative join/renew/leave/list service for 60-second PostgreSQL presence sessions
+  - serializes per-file joins, enforces bounded file/user/member counts, aggregates tabs by account, and never persists
+    presence into ProjectData, snapshots, operation logs, or audit logs
+- `apps/api/src/annotationPresenceCoordinator.ts`
+  - converts lossy file-level invalidations into single-flight authoritative member reads only when local subscribers exist
+  - an invalidation during a read schedules exactly one follow-up pass; periodic refresh removes expired crash residue
+- `apps/api/src/annotationPresenceEventEnvelope.ts` + `apps/api/src/postgresAnnotationPresenceEventBus.ts`
+  - strict schema-isolated file-id-only invalidation protocol and PostgreSQL wrapper
+  - NOTIFY must never contain member identities; every receiving instance rereads PostgreSQL before WebSocket delivery
+- `apps/api/src/annotationCollaborationRoutes.ts`
+  - owns socket authentication, heartbeat/ACL rechecks, presence join/renew/leave, subscriber registration, and shutdown cleanup
+  - server-initiated closes must finalize presence immediately rather than waiting for the peer close handshake; shutdown waits
+    in-flight ticket/join setup before Prisma closes
   - owns a bounded same-file-coalescing publish queue, dedicated listener lifecycle, bounded reconnect, graceful close,
     and low-cardinality metrics; initial listener failure must fail API startup
   - PostgreSQL NOTIFY is deliberately lossy and non-authoritative. HTTP committed-feed/snapshot catch-up remains the
@@ -521,7 +546,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - contains no Prisma, API, React, payload mutation, or global-role lookup; backend and platform UI must reuse
     this contract instead of duplicating scope or freshness rules
 - `prisma/schema.prisma`
-  - PostgreSQL schema for users, sessions, resource entries, projects, annotation/media files, resource permissions/user state, recovery snapshots, confirmed ranges, processing jobs, audit logs, and annotation operations
+  - PostgreSQL schema for users, sessions, resource entries, projects, annotation/media files, resource permissions/user state,
+    recovery snapshots, confirmed ranges, short-lived collaboration presence, processing jobs, audit logs, and operations
 - `docs/`
   - roadmap, architecture notes, and curated screenshots; keep this updated for long-running platform/backend work
 - `deploy/monitoring/`
@@ -563,6 +589,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:platform-mutation-lease-runtime`
 - `npm run test:platform-operation-catch-up`
 - `npm run test:annotation-collaboration`
+- `npm run test:annotation-presence`
 - `npm run test:annotation-revision-event-bus`
 - `npm run test:platform-drafts`
 - `npm run test:resource-pagination`

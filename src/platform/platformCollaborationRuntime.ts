@@ -188,7 +188,7 @@ export function createPlatformCollaborationRuntime(
             reconnectAttempt = 0;
             setStatus("connected");
           } else if (!ready) {
-            failProtocol("协作服务在会话就绪前发送了 revision 通知。");
+            failProtocol("协作服务在会话就绪前发送了业务通知。");
             return;
           }
           dependencies.onMessage(message);

@@ -55,6 +55,11 @@ export class ApiObservability {
   private readonly annotationRevisionBusPublishes: Counter;
   private readonly annotationRevisionBusInbound: Counter;
   private readonly annotationRevisionBusReconnects: Counter;
+  private readonly annotationPresenceBusConnected: Gauge;
+  private readonly annotationPresenceBusPendingFiles: Gauge;
+  private readonly annotationPresenceBusPublishes: Counter;
+  private readonly annotationPresenceBusInbound: Counter;
+  private readonly annotationPresenceBusReconnects: Counter;
 
   constructor() {
     // 默认进程指标与平台业务指标注册到同一个实例级 Registry，便于一次抓取和测试隔离。
@@ -162,6 +167,34 @@ export class ApiObservability {
       help: "PostgreSQL LISTEN reconnect attempts scheduled by this API instance.",
       registers: [this.registry],
     });
+    // Presence 使用独立 channel；固定结果标签避免成员或文件身份形成高基数时序。
+    this.annotationPresenceBusConnected = new Gauge({
+      name: "xiqu_annotation_presence_bus_connected",
+      help: "Whether this API instance has an active PostgreSQL presence LISTEN connection.",
+      registers: [this.registry],
+    });
+    this.annotationPresenceBusPendingFiles = new Gauge({
+      name: "xiqu_annotation_presence_bus_pending_files",
+      help: "Annotation files waiting for a coalesced presence invalidation.",
+      registers: [this.registry],
+    });
+    this.annotationPresenceBusPublishes = new Counter({
+      name: "xiqu_annotation_presence_bus_publish_total",
+      help: "Presence invalidation publish queue outcomes.",
+      labelNames: ["result"],
+      registers: [this.registry],
+    });
+    this.annotationPresenceBusInbound = new Counter({
+      name: "xiqu_annotation_presence_bus_inbound_total",
+      help: "Presence invalidation delivery outcomes.",
+      labelNames: ["result"],
+      registers: [this.registry],
+    });
+    this.annotationPresenceBusReconnects = new Counter({
+      name: "xiqu_annotation_presence_bus_reconnect_total",
+      help: "PostgreSQL presence LISTEN reconnect attempts.",
+      registers: [this.registry],
+    });
   }
 
   // Fastify 的 routeOptions.url 是规范化模板；404 固定为 unknown，禁止 URL id 进入标签。
@@ -247,6 +280,26 @@ export class ApiObservability {
 
   recordAnnotationRevisionBusReconnect() {
     this.annotationRevisionBusReconnects.inc();
+  }
+
+  setAnnotationPresenceBusConnected(connected: boolean) {
+    this.annotationPresenceBusConnected.set(connected ? 1 : 0);
+  }
+
+  setAnnotationPresenceBusPendingFiles(count: number) {
+    this.annotationPresenceBusPendingFiles.set(count);
+  }
+
+  recordAnnotationPresenceBusPublish(result: AnnotationRevisionBusPublishResult) {
+    this.annotationPresenceBusPublishes.inc({ result });
+  }
+
+  recordAnnotationPresenceBusInbound(result: AnnotationRevisionBusInboundResult) {
+    this.annotationPresenceBusInbound.inc({ result });
+  }
+
+  recordAnnotationPresenceBusReconnect() {
+    this.annotationPresenceBusReconnects.inc();
   }
 }
 

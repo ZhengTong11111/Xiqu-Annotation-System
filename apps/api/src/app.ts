@@ -36,6 +36,11 @@ import {
   createPostgresAnnotationRevisionTransport,
   PostgresAnnotationRevisionEventBus,
 } from "./postgresAnnotationRevisionEventBus.js";
+import { AnnotationPresenceService } from "./annotationPresenceService.js";
+import { AnnotationPresenceCoordinator } from "./annotationPresenceCoordinator.js";
+import { createAnnotationPresenceChannel } from "./annotationPresenceEventEnvelope.js";
+import { PostgresAnnotationPresenceEventBus } from "./postgresAnnotationPresenceEventBus.js";
+import { createPostgresEventTransport } from "./postgresCoalescedEventBus.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -78,6 +83,19 @@ export async function buildApiApp(
     transport: createPostgresAnnotationRevisionTransport(options.collaborationPool),
     channel: createAnnotationRevisionChannel(options.databaseSchema),
     deliver: (event) => collaborationHub.deliverRevisionAdvanced(event),
+    observability,
+    logger: app.log,
+  });
+  const annotationPresence = new AnnotationPresenceService(options.prisma, access);
+  const presenceCoordinator = new AnnotationPresenceCoordinator(
+    annotationPresence,
+    collaborationHub,
+    app.log,
+  );
+  const presenceEvents = new PostgresAnnotationPresenceEventBus({
+    transport: createPostgresEventTransport(options.collaborationPool),
+    channel: createAnnotationPresenceChannel(options.databaseSchema),
+    deliver: (event) => presenceCoordinator.requestRefresh(event.annotationFileId),
     observability,
     logger: app.log,
   });
@@ -213,20 +231,28 @@ export async function buildApiApp(
       ? process.env.XIQU_METRICS_TOKEN ?? null
       : options.metricsToken,
   );
-  registerAnnotationCollaborationRoutes(
+  const collaborationRoutes = registerAnnotationCollaborationRoutes(
     app,
     repository,
     collaborationTickets,
     collaborationHub,
+    annotationPresence,
+    presenceCoordinator,
+    presenceEvents,
   );
   app.addHook("onClose", async () => {
-    await collaborationEvents.close();
+    // 先关闭 socket 并删除在线行，再停止跨实例发布；异常退出仍由数据库 TTL 兜底。
     collaborationHub.closeAll();
+    await collaborationRoutes.close();
+    await presenceEvents.close();
+    await collaborationEvents.close();
+    await presenceCoordinator.close();
   });
   if (options.seed) await repository.ensureSeedData();
   try {
     // 初次 LISTEN 失败必须阻止应用启动；运行期断线由 event bus 自己有界重连。
     await collaborationEvents.start();
+    await presenceEvents.start();
   } catch (error) {
     await app.close();
     throw error;

@@ -11,6 +11,12 @@ import type { PrismaPlatformRepository } from "./repository.js";
 import { getCurrentUser } from "./requestAuthentication.js";
 import type { AnnotationCollaborationTicketService } from "./annotationCollaborationTicketService.js";
 import type { AnnotationCollaborationHub } from "./annotationCollaborationHub.js";
+import type {
+  AnnotationPresenceHandle,
+  AnnotationPresenceService,
+} from "./annotationPresenceService.js";
+import type { AnnotationPresenceCoordinator } from "./annotationPresenceCoordinator.js";
+import type { AnnotationPresenceInvalidationPublisher } from "./postgresAnnotationPresenceEventBus.js";
 
 const AUTHENTICATION_CLOSE_CODE = 4401;
 const AUTHORIZATION_CLOSE_CODE = 4403;
@@ -21,7 +27,12 @@ export function registerAnnotationCollaborationRoutes(
   repository: PrismaPlatformRepository,
   tickets: AnnotationCollaborationTicketService,
   hub: AnnotationCollaborationHub,
+  presence: AnnotationPresenceService,
+  presenceCoordinator: AnnotationPresenceCoordinator,
+  presenceEvents: AnnotationPresenceInvalidationPublisher,
 ) {
+  const activeFinalizers = new Set<() => Promise<void>>();
+  const activeSetups = new Set<Promise<void>>();
   app.post<{ Params: { resourceId: string } }>(
     "/api/annotation-files/:resourceId/collaboration-ticket",
     async (request) => tickets.issue(
@@ -41,32 +52,63 @@ export function registerAnnotationCollaborationRoutes(
       let heartbeat: NodeJS.Timeout | null = null;
       let closed = false;
       let authorizationCheckInFlight = false;
+      let presenceHandle: AnnotationPresenceHandle | null = null;
+      let finalizePromise: Promise<void> | null = null;
 
-      // 消费票据期间也先安装全部事件处理器，避免客户端提早关闭时留下订阅或 timer。
-      const cleanup = () => {
-        if (closed) return;
+      // close/error/撤权/app shutdown 共用一个异步 finalize，确保 presence 最多删除和发布一次。
+      const finalize = () => {
+        if (finalizePromise) return finalizePromise;
         closed = true;
         if (heartbeat) clearInterval(heartbeat);
         heartbeat = null;
         unregister?.();
         unregister = null;
+        const handle = presenceHandle;
+        presenceHandle = null;
+        finalizePromise = (handle
+          ? presence.leave(handle)
+              .then((deleted) => {
+                if (deleted) presenceEvents.publishPresenceChanged(handle.annotationFileId);
+              })
+              .catch((error: unknown) => {
+                request.log.error(error, "annotation presence leave failed");
+              })
+          : Promise.resolve())
+          .finally(() => activeFinalizers.delete(finalize));
+        return finalizePromise;
       };
-      socket.on("close", cleanup);
-      socket.on("error", cleanup);
+      const closeAndFinalize = (code: number, reason: string) => {
+        socket.close(code, reason);
+        // 服务端主动终止不能依赖对端完成 close handshake；已知失效路径立即收回数据库 presence。
+        void finalize();
+      };
+      activeFinalizers.add(finalize);
+      socket.on("close", () => void finalize());
+      socket.on("error", () => void finalize());
       socket.on("pong", () => {
         alive = true;
       });
-      // R5b1 不接受客户端业务消息；写入必须继续通过已有 HTTP API。
+      // R5b2b1 仍不接受客户端业务消息；下一阶段只会开放严格有界的 presence.update。
       socket.on("message", () => {
-        socket.close(PROTOCOL_CLOSE_CODE, "client_messages_not_supported");
+        closeAndFinalize(PROTOCOL_CLOSE_CODE, "client_messages_not_supported");
       });
 
-      void tickets.consume(
+      let setupPromise: Promise<void>;
+      setupPromise = tickets.consume(
         getTicketFromSubprotocolHeader(request.headers["sec-websocket-protocol"]),
         request.params.resourceId,
       )
-        .then((session) => {
+        .then(async (session) => {
           if (closed || socket.readyState !== socket.OPEN) return;
+          const joinedPresence = await presence.join(session.user, session.annotationFileId);
+          if (closed || socket.readyState !== socket.OPEN) {
+            // join 等待期间浏览器可能已经关闭；立即删除新行，不等待 TTL 回收。
+            if (await presence.leave(joinedPresence)) {
+              presenceEvents.publishPresenceChanged(joinedPresence.annotationFileId);
+            }
+            return;
+          }
+          presenceHandle = joinedPresence;
           sendMessage(socket, {
             version: ANNOTATION_COLLABORATION_PROTOCOL_VERSION,
             type: "session.ready",
@@ -86,26 +128,37 @@ export function registerAnnotationCollaborationRoutes(
                   await tickets.assertReadable(session.user, session.annotationFileId);
                   sendMessage(socket, message);
                 })
-                .catch(() => socket.close(AUTHORIZATION_CLOSE_CODE, "permission_revoked"));
+                .catch(() => closeAndFinalize(AUTHORIZATION_CLOSE_CODE, "permission_revoked"));
             },
-            close: (code, reason) => socket.close(code, reason),
+            close: closeAndFinalize,
           });
+          // 先注册 subscriber 再发布，当前连接和其他实例都会从数据库读取同一成员快照。
+          presenceEvents.publishPresenceChanged(session.annotationFileId);
           // 原生 ping/pong 只检查连接活性，不混入应用层 revision 协议。
           heartbeat = setInterval(() => {
             if (!alive && !authorizationCheckInFlight) {
               socket.terminate();
-              cleanup();
+              void finalize();
               return;
             }
             if (authorizationCheckInFlight) return;
             authorizationCheckInFlight = true;
             void tickets.assertReadable(session.user, session.annotationFileId)
-              .then(() => {
+              .then(async () => {
                 if (closed || socket.readyState !== socket.OPEN) return;
+                const handle = presenceHandle;
+                if (!handle || !await presence.renew(handle)) {
+                  closeAndFinalize(AUTHENTICATION_CLOSE_CODE, "presence_expired");
+                  return;
+                }
+                // 每文件每 20 秒最多广播一次，用数据库重读清掉异常退出后已过期的其他 session。
+                if (presenceCoordinator.claimPeriodicInvalidation(session.annotationFileId)) {
+                  presenceEvents.publishPresenceChanged(session.annotationFileId);
+                }
                 alive = false;
                 socket.ping();
               })
-              .catch(() => socket.close(AUTHORIZATION_CLOSE_CODE, "permission_revoked"))
+              .catch(() => closeAndFinalize(AUTHORIZATION_CLOSE_CODE, "permission_revoked"))
               .finally(() => {
                 authorizationCheckInFlight = false;
               });
@@ -120,10 +173,23 @@ export function registerAnnotationCollaborationRoutes(
               ? AUTHENTICATION_CLOSE_CODE
               : 1011;
           if (closeCode === 1011) request.log.error(error);
-          socket.close(closeCode, closeCode === 1011 ? "session_failed" : "ticket_rejected");
-        });
+          closeAndFinalize(closeCode, closeCode === 1011 ? "session_failed" : "ticket_rejected");
+        })
+        .finally(() => activeSetups.delete(setupPromise));
+      // app shutdown 还要等待票据消费/join 的迟到结果完成补偿，不能先断开 Prisma。
+      activeSetups.add(setupPromise);
     },
   );
+
+  return {
+    async close() {
+      // Hub 会先请求 socket close；这里直接调用所有 finalizer，保证 Fastify 关闭前尽量删除在线行。
+      await Promise.allSettled([...activeFinalizers].map((finalize) => finalize()));
+      await Promise.allSettled([...activeSetups]);
+      activeFinalizers.clear();
+      activeSetups.clear();
+    },
+  };
 }
 
 // 子协议头不会进入默认 URL 访问日志；稳定协议名与唯一票据项都必须存在。

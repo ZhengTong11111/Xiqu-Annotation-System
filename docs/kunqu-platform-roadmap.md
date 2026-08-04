@@ -36,8 +36,9 @@ ACL 复核，以及 operation/save/restore 的统一写入门禁；R5a4c2 已把
 type 的原子联动；R5a4c4a 已完成既有顶层轨道排序、既有内建轨配置、既有附属点轨配置，以及各自
 typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建轨生命周期和批量受控快照边界。R5b1
 已完成短时一次性票据、认证 WebSocket 文件会话、权限重验、连接生命周期与 revision 通知；R5b2a
-已通过 PostgreSQL LISTEN/NOTIFY 完成跨 API 实例的有界 revision 事件分发、重连和可观测性，下一步进入
-R5b2b 的短生命周期 presence、远端光标与选区；
+已通过 PostgreSQL LISTEN/NOTIFY 完成跨 API 实例的有界 revision 事件分发、重连和可观测性；R5b2b1
+已完成数据库短生命周期 presence、跨实例成员失效通知、同账号多窗口聚合、撤权/断线清理和在线成员 UI，
+下一步进入 R5b2b2 的远端播放头、光标与选区摘要；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -150,8 +151,8 @@ R5b2b 的短生命周期 presence、远端光标与选区；
 - 可写平台文件已有按账号/文件隔离的 IndexedDB 草稿、刷新后同 revision 显式恢复，以及 stale 草稿对
   最新服务器文件的固定方向结构化比较、依赖闭包、逐项冲突决策和编辑器二次确认；已有空闲自动保存、
   保存中继续编辑、在线恢复、有界退避和 409 显式比较续接，生命周期由确定性 runtime 测试覆盖。
-- 没有 WebSocket presence、实时领域 operation 排序/重放或多人即时合并；现有比较整合是显式文件/草稿
-  冲突处理，不是实时协作协议。
+- 已有跨实例在线成员 presence，但没有远端播放头/光标/选区、实时领域 operation 排序/重放或多人即时
+  合并；现有比较整合是显式文件/草稿冲突处理，不是实时协作协议。
 - 后端任务仍是占位模型，没有独立 worker、队列和结果资产管理。
 - 迁移、本地/S3 对象存储、备份恢复、监控和维护门禁已有工程实现；真实生产 bucket/IAM、TLS、反向代理、
   限流和跨设备演练仍属于部署加固缺口。
@@ -493,8 +494,14 @@ R5b2b 的短生命周期 presence、远端光标与选区；
     失败会阻止启动，运行时断线使用有界退避重连；hub 对自回环、重复与乱序 revision 做单调去重。专项测试及
     两个真实 Fastify 实例的 PostgreSQL 集成测试覆盖跨实例保存与恢复通知。NOTIFY 仍是可丢失提示，不是持久
     队列；周期 HTTP committed-feed/snapshot catch-up 始终是权威恢复路径。
-  - R5b2b 待推进：在跨实例通知稳定后增加短生命周期 presence、光标/选区和在线成员视图，并明确节流、慢消费、
-    文件切换、断线、撤权和隐私语义；presence 不写入 ProjectData、恢复快照或 operation log。
+  - R5b2b 按可独立验证的状态层拆分，不能在在线身份、TTL 和撤权清理尚未稳定时直接广播高频鼠标事件：
+    - R5b2b1 已完成：使用 PostgreSQL 短生命周期 session 保存跨实例可恢复的在线成员事实，LISTEN/NOTIFY
+      只广播文件级 presence invalidation，接收实例重新读取数据库权威成员快照；已建立 join/renew/leave/
+      expire、同账号多 tab 聚合、200 账号/1000 session 有界容量、在线成员视图、断线清空、撤权清理和
+      低基数指标。Presence 不写入 ProjectData、恢复快照、operation log 或治理审计，异常退出由 60 秒 TTL
+      和周期失效重读兜底。
+    - R5b2b2 后续推进：在稳定 presence session 上增加严格有界、节流的 playhead、光标和选区摘要，以及
+      Timeline 只读叠加层；明确慢消费、隐私、文件切换和 stale generation 语义，不传标注正文。
   - R5b3 待推进：评估并接入领域 operation 的实时提交/确认；继续复用现有幂等键、文件 sequence、revision
     绑定、租约和 HTTP 恢复路径，再决定块级 OT/CRDT 或混合策略。
 - 服务端 operation 排序、确认、重放和权限复核。

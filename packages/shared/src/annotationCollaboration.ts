@@ -27,9 +27,26 @@ export type AnnotationRevisionAdvancedMessage = {
   operationCursor: string;
 };
 
+export type AnnotationPresenceMember = {
+  userId: string;
+  accountName: string;
+  displayName: string;
+  connectionCount: number;
+  lastSeenAt: string;
+};
+
+export type AnnotationPresenceSnapshotMessage = {
+  version: typeof ANNOTATION_COLLABORATION_PROTOCOL_VERSION;
+  type: "presence.snapshot";
+  annotationFileId: string;
+  generatedAt: string;
+  members: AnnotationPresenceMember[];
+};
+
 export type AnnotationCollaborationServerMessage =
   | AnnotationCollaborationSessionReadyMessage
-  | AnnotationRevisionAdvancedMessage;
+  | AnnotationRevisionAdvancedMessage
+  | AnnotationPresenceSnapshotMessage;
 
 const MESSAGE_KEYS = {
   "session.ready": [
@@ -47,7 +64,24 @@ const MESSAGE_KEYS = {
     "revision",
     "operationCursor",
   ],
+  "presence.snapshot": [
+    "version",
+    "type",
+    "annotationFileId",
+    "generatedAt",
+    "members",
+  ],
 } as const;
+
+const PRESENCE_MEMBER_KEYS = [
+  "userId",
+  "accountName",
+  "displayName",
+  "connectionCount",
+  "lastSeenAt",
+] as const;
+const MAX_PRESENCE_MEMBERS = 200;
+const MAX_CONNECTIONS_PER_MEMBER = 100;
 
 // WebSocket 是不可信输入边界；严格 parser 防止未知协议消息进入同步状态机。
 export function parseAnnotationCollaborationServerMessage(
@@ -56,10 +90,51 @@ export function parseAnnotationCollaborationServerMessage(
   if (!isRecord(input) || input.version !== ANNOTATION_COLLABORATION_PROTOCOL_VERSION) {
     return null;
   }
-  if (input.type !== "session.ready" && input.type !== "annotation.revision.advanced") {
+  if (
+    input.type !== "session.ready" &&
+    input.type !== "annotation.revision.advanced" &&
+    input.type !== "presence.snapshot"
+  ) {
     return null;
   }
   if (!hasExactKeys(input, MESSAGE_KEYS[input.type])) return null;
+  if (input.type === "presence.snapshot") {
+    if (
+      !isStableId(input.annotationFileId) ||
+      !isIsoTimestamp(input.generatedAt) ||
+      !Array.isArray(input.members) ||
+      input.members.length > MAX_PRESENCE_MEMBERS
+    ) return null;
+    const members: AnnotationPresenceMember[] = [];
+    const userIds = new Set<string>();
+    for (const member of input.members) {
+      if (
+        !isRecord(member) ||
+        !hasExactKeys(member, PRESENCE_MEMBER_KEYS) ||
+        !isStableId(member.userId) ||
+        !isBoundedString(member.accountName, 1, 200) ||
+        !isBoundedString(member.displayName, 1, 200) ||
+        !isIntegerInRange(member.connectionCount, 1, MAX_CONNECTIONS_PER_MEMBER) ||
+        !isIsoTimestamp(member.lastSeenAt) ||
+        userIds.has(member.userId)
+      ) return null;
+      userIds.add(member.userId);
+      members.push({
+        userId: member.userId,
+        accountName: member.accountName,
+        displayName: member.displayName,
+        connectionCount: member.connectionCount,
+        lastSeenAt: member.lastSeenAt,
+      });
+    }
+    return {
+      version: ANNOTATION_COLLABORATION_PROTOCOL_VERSION,
+      type: input.type,
+      annotationFileId: input.annotationFileId,
+      generatedAt: input.generatedAt,
+      members,
+    };
+  }
   if (
     !isStableId(input.annotationFileId) ||
     !isPositiveInteger(input.revision) ||
@@ -127,4 +202,10 @@ function isIntegerInRange(
   maximum: number,
 ): value is number {
   return Number.isInteger(value) && Number(value) >= minimum && Number(value) <= maximum;
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  if (!isBoundedString(value, 20, 40)) return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
 }

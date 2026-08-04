@@ -131,6 +131,22 @@ function readyMessage(fileId = "file-1", revision = 1) {
   });
 }
 
+function presenceMessage(fileId = "file-1") {
+  return JSON.stringify({
+    version: 1,
+    type: "presence.snapshot",
+    annotationFileId: fileId,
+    generatedAt: "2026-08-04T00:00:00.000Z",
+    members: [{
+      userId: "user-1",
+      accountName: "student",
+      displayName: "学生账号",
+      connectionCount: 1,
+      lastSeenAt: "2026-08-04T00:00:00.000Z",
+    }],
+  });
+}
+
 test("取得一次性票据后等待 session.ready 才进入 connected", async () => {
   const harness = createHarness();
   harness.runtime.update(FACTS);
@@ -143,6 +159,26 @@ test("取得一次性票据后等待 session.ready 才进入 connected", async (
   assert.equal(last(harness.statuses), "connected");
   assert.deepEqual(harness.messages, ["session.ready"]);
   harness.runtime.dispose();
+});
+
+test("session.ready 后接收 presence，提前到达则按协议失败", async () => {
+  const accepted = createHarness();
+  accepted.runtime.update(FACTS);
+  await flushPromises();
+  accepted.sockets[0].emit("open", new Event("open"));
+  accepted.sockets[0].emit("message", { data: readyMessage() });
+  accepted.sockets[0].emit("message", { data: presenceMessage() });
+  assert.deepEqual(accepted.messages, ["session.ready", "presence.snapshot"]);
+
+  const rejected = createHarness();
+  rejected.runtime.update(FACTS);
+  await flushPromises();
+  rejected.sockets[0].emit("open", new Event("open"));
+  rejected.sockets[0].emit("message", { data: presenceMessage() });
+  assert.equal(rejected.sockets[0].closed?.code, 4400);
+  assert.equal(last(rejected.statuses), "error");
+  accepted.runtime.dispose();
+  rejected.runtime.dispose();
 });
 
 test("异常关闭使用退避和新票据重连，永久票据错误停止重试", async () => {

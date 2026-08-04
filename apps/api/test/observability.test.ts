@@ -72,6 +72,21 @@ test("跨实例 revision bus 指标只使用固定低基数类别", async () => 
   assert.doesNotMatch(metrics, /annotationFileId|sourceInstanceId|accountName/);
 });
 
+test("跨实例 presence bus 指标不暴露成员或文件身份", async () => {
+  const observability = new ApiObservability();
+  observability.setAnnotationPresenceBusConnected(true);
+  observability.setAnnotationPresenceBusPendingFiles(1);
+  observability.recordAnnotationPresenceBusPublish("queued");
+  observability.recordAnnotationPresenceBusInbound("accepted");
+  observability.recordAnnotationPresenceBusReconnect();
+  const metrics = await observability.registry.metrics();
+  assert.match(metrics, /xiqu_annotation_presence_bus_connected 1/);
+  assert.match(metrics, /xiqu_annotation_presence_bus_pending_files 1/);
+  assert.match(metrics, /presence_bus_publish_total\{result="queued"\} 1/);
+  assert.match(metrics, /presence_bus_inbound_total\{result="accepted"\} 1/);
+  assert.doesNotMatch(metrics, /annotationFileId|sourceInstanceId|accountName/);
+});
+
 test("对象存储故障只降低 readiness，不影响进程 liveness", async () => {
   const health = new HealthService(
     {

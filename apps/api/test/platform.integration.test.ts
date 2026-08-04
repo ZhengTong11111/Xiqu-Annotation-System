@@ -1032,6 +1032,12 @@ test("平台资源 API 集成测试", async (suite) => {
         await withTimeout(activeRevoked, "等待既有连接响应撤权超时"),
         4403,
       );
+      await waitForCondition(
+        async () => await prisma.annotationCollaborationPresence.count({
+          where: { annotationFileId: collaborationFileId, userId: "user-student" },
+        }) === 0,
+        "等待撤权连接清理 presence 超时",
+      );
       socket.close();
       revokedSocket.close();
 
@@ -1141,6 +1147,15 @@ test("平台资源 API 集成测试", async (suite) => {
         await withTimeout(roleRevoked, "等待既有连接响应角色撤销超时"),
         4403,
       );
+      await waitForCondition(
+        async () => await prisma.annotationCollaborationPresence.count({
+          where: {
+            annotationFileId: collaborationFileId,
+            userId: "user-collaboration-role-only",
+          },
+        }) === 0,
+        "等待角色撤销连接清理 presence 超时",
+      );
       roleSocket.close();
     });
 
@@ -1245,6 +1260,215 @@ test("平台资源 API 集成测试", async (suite) => {
         await secondConnections.maintenancePool.end();
         await secondConnections.collaborationPool.end();
       }
+    });
+
+    await suite.test("不同 API 实例共享在线成员并聚合同账号多窗口", async () => {
+      const secondConnections = createTestPrisma();
+      const secondApp = await buildApiApp({
+        prisma: secondConnections.prisma,
+        maintenancePool: secondConnections.maintenancePool,
+        collaborationPool: secondConnections.collaborationPool,
+        databaseSchema: secondConnections.schema,
+        storage,
+        logger: false,
+        seed: false,
+        metricsToken: null,
+      });
+      await secondApp.ready();
+      const sockets: Array<Awaited<ReturnType<typeof app.injectWS>>> = [];
+      try {
+        const created = await jsonRequest(app, adminToken, {
+          method: "POST",
+          url: "/api/annotation-files",
+          payload: {
+            parentId: projectId,
+            name: "跨实例在线成员.json",
+            payload: { marker: "presence" },
+          },
+        });
+        const fileId = String((dataOf(created.json()).resource as JsonObject).id);
+        await jsonRequest(app, adminToken, {
+          method: "PUT",
+          url: `/api/resources/${fileId}/permissions/user-student`,
+          payload: { capabilities: ["read"], inheritToChildren: false },
+        });
+
+        const openPresenceSocket = async (
+          targetApp: FastifyInstance,
+          token: string,
+          observer: ReturnType<typeof createSocketMessageObserver>,
+        ) => {
+          const issued = await jsonRequest(targetApp, token, {
+            method: "POST",
+            url: `/api/annotation-files/${fileId}/collaboration-ticket`,
+          });
+          assert.equal(issued.statusCode, 200, issued.body);
+          const ticket = dataOf(issued.json());
+          const socket = await targetApp.injectWS(
+            String(ticket.websocketPath),
+            { headers: collaborationWsHeaders(String(ticket.ticket)) },
+            { onInit: (openedSocket) => openedSocket.on("message", observer.onMessage) },
+          );
+          sockets.push(socket);
+          await observer.waitFor(
+            (message) => message.type === "session.ready",
+            0,
+            "等待 presence session.ready 超时",
+          );
+          return socket;
+        };
+
+        const adminObserver = createSocketMessageObserver();
+        const adminSocket = await openPresenceSocket(app, adminToken, adminObserver);
+        await adminObserver.waitFor(
+          (message) => presenceMembers(message)?.length === 1,
+          0,
+          "等待管理员单人 presence 快照超时",
+        );
+
+        const studentObserver = createSocketMessageObserver();
+        const firstStudentSocket = await openPresenceSocket(secondApp, studentToken, studentObserver);
+        await adminObserver.waitFor(
+          (message) => presenceMembers(message)?.length === 2,
+          0,
+          "等待跨实例双账号 presence 快照超时",
+        );
+        await studentObserver.waitFor(
+          (message) => presenceMembers(message)?.length === 2,
+          0,
+          "等待学生收到双账号 presence 快照超时",
+        );
+
+        const beforeSecondTab = adminObserver.mark();
+        const secondStudentObserver = createSocketMessageObserver();
+        const secondStudentSocket = await openPresenceSocket(
+          secondApp,
+          studentToken,
+          secondStudentObserver,
+        );
+        await adminObserver.waitFor(
+          (message) => presenceMembers(message)?.some((member) =>
+            member.userId === "user-student" && member.connectionCount === 2
+          ) === true,
+          beforeSecondTab,
+          "等待同账号多窗口聚合超时",
+        );
+
+        const beforeSecondTabClose = adminObserver.mark();
+        // injectWS 的内存双工流不保证 close handshake 推进；terminate 可确定性模拟浏览器异常离开。
+        secondStudentSocket.terminate();
+        await waitForCondition(
+          async () => await prisma.annotationCollaborationPresence.count({
+            where: { annotationFileId: fileId, userId: "user-student" },
+          }) === 1,
+          "等待第二窗口 presence 行删除超时",
+        );
+        await adminObserver.waitFor(
+          (message) => presenceMembers(message)?.some((member) =>
+            member.userId === "user-student" && member.connectionCount === 1
+          ) === true,
+          beforeSecondTabClose,
+          "等待第二窗口离开后的 presence 快照超时",
+        );
+
+        const beforeStudentLeave = adminObserver.mark();
+        firstStudentSocket.terminate();
+        await adminObserver.waitFor(
+          (message) => {
+            const members = presenceMembers(message);
+            return members?.length === 1 && members[0]?.userId === "user-admin";
+          },
+          beforeStudentLeave,
+          "等待学生完全离开后的 presence 快照超时",
+        );
+        adminSocket.terminate();
+        await waitForCondition(
+          async () => await prisma.annotationCollaborationPresence.count({
+            where: { annotationFileId: fileId },
+          }) === 0,
+          "等待 presence 行清理超时",
+        );
+      } finally {
+        for (const socket of sockets) socket.terminate();
+        await secondApp.close();
+        await secondConnections.prisma.$disconnect();
+        await secondConnections.pool.end();
+        await secondConnections.maintenancePool.end();
+        await secondConnections.collaborationPool.end();
+      }
+    });
+
+    await suite.test("过期 presence 不会被迟到连接复活并由后续 join 有界清理", async () => {
+      const created = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "在线成员过期清理.json",
+          payload: { marker: "presence-expiry" },
+        },
+      });
+      const fileId = String((dataOf(created.json()).resource as JsonObject).id);
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${fileId}/permissions/user-student`,
+        payload: { capabilities: ["read"], inheritToChildren: false },
+      });
+
+      const openSocket = async (
+        token: string,
+        observer: ReturnType<typeof createSocketMessageObserver>,
+      ) => {
+        const issued = await jsonRequest(app, token, {
+          method: "POST",
+          url: `/api/annotation-files/${fileId}/collaboration-ticket`,
+        });
+        const ticket = dataOf(issued.json());
+        const socket = await app.injectWS(
+          String(ticket.websocketPath),
+          { headers: collaborationWsHeaders(String(ticket.ticket)) },
+          { onInit: (openedSocket) => openedSocket.on("message", observer.onMessage) },
+        );
+        await observer.waitFor(
+          (message) => message.type === "session.ready",
+          0,
+          "等待过期清理测试 session.ready 超时",
+        );
+        return socket;
+      };
+
+      const studentObserver = createSocketMessageObserver();
+      const studentSocket = await openSocket(studentToken, studentObserver);
+      const studentPresence = await prisma.annotationCollaborationPresence.findFirstOrThrow({
+        where: { annotationFileId: fileId, userId: "user-student" },
+      });
+      await prisma.annotationCollaborationPresence.update({
+        where: { id: studentPresence.id },
+        data: { expiresAt: new Date(Date.now() - 1_000) },
+      });
+
+      const adminObserver = createSocketMessageObserver();
+      const adminSocket = await openSocket(adminToken, adminObserver);
+      await adminObserver.waitFor(
+        (message) => {
+          const members = presenceMembers(message);
+          return members?.length === 1 && members[0]?.userId === "user-admin";
+        },
+        0,
+        "等待过期 presence 从权威快照消失超时",
+      );
+      assert.equal(await prisma.annotationCollaborationPresence.count({
+        where: { annotationFileId: fileId, userId: "user-student" },
+      }), 0);
+
+      studentSocket.terminate();
+      adminSocket.terminate();
+      await waitForCondition(
+        async () => await prisma.annotationCollaborationPresence.count({
+          where: { annotationFileId: fileId },
+        }) === 0,
+        "等待过期清理测试 presence 收口超时",
+      );
     });
 
     await suite.test("项目递归复制复用媒体对象并重映射内部引用", async () => {
@@ -4056,6 +4280,56 @@ async function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> 
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+}
+
+function createSocketMessageObserver() {
+  const messages: JsonObject[] = [];
+  const waiters = new Set<{
+    predicate: (message: JsonObject) => boolean;
+    afterIndex: number;
+    resolve: (message: JsonObject) => void;
+  }>();
+  return {
+    onMessage(payload: unknown) {
+      const message = JSON.parse(String(payload)) as JsonObject;
+      messages.push(message);
+      const messageIndex = messages.length - 1;
+      for (const waiter of [...waiters]) {
+        if (messageIndex >= waiter.afterIndex && waiter.predicate(message)) {
+          waiters.delete(waiter);
+          waiter.resolve(message);
+        }
+      }
+    },
+    mark: () => messages.length,
+    waitFor(
+      predicate: (message: JsonObject) => boolean,
+      afterIndex: number,
+      timeoutMessage: string,
+    ) {
+      const existing = messages.slice(afterIndex).find(predicate);
+      if (existing) return Promise.resolve(existing);
+      return withTimeout(new Promise<JsonObject>((resolve) => {
+        waiters.add({ predicate, afterIndex, resolve });
+      }), timeoutMessage);
+    },
+  };
+}
+
+function presenceMembers(message: JsonObject) {
+  if (message.type !== "presence.snapshot" || !Array.isArray(message.members)) return null;
+  return message.members as Array<JsonObject & { userId: string; connectionCount: number }>;
+}
+
+async function waitForCondition(
+  predicate: () => Promise<boolean>,
+  message: string,
+) {
+  const deadline = Date.now() + 5_000;
+  while (!await predicate()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
 

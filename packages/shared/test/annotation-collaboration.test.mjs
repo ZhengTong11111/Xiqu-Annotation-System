@@ -24,9 +24,30 @@ test("解析严格的协作会话与 revision 通知", () => {
     operationCursor: "cursor-4",
   };
   assert.deepEqual(parseAnnotationCollaborationServerMessage(advanced), advanced);
+  const presence = {
+    version: 1,
+    type: "presence.snapshot",
+    annotationFileId: "annotation-file-1",
+    generatedAt: "2026-08-04T00:00:00.000Z",
+    members: [{
+      userId: "user-1",
+      accountName: "student",
+      displayName: "学生账号",
+      connectionCount: 2,
+      lastSeenAt: "2026-08-04T00:00:00.000Z",
+    }],
+  };
+  assert.deepEqual(parseAnnotationCollaborationServerMessage(presence), presence);
 });
 
 test("拒绝未知版本、额外字段和损坏的同步位置", () => {
+  const validMember = {
+    userId: "user-1",
+    accountName: "student",
+    displayName: "学生账号",
+    connectionCount: 1,
+    lastSeenAt: "2026-08-04T00:00:00.000Z",
+  };
   const invalid = [
     null,
     [],
@@ -43,6 +64,47 @@ test("拒绝未知版本、额外字段和损坏的同步位置", () => {
       annotationFileId: "annotation-file-1",
       revision: -1,
       operationCursor: "cursor",
+    },
+    {
+      version: 1,
+      type: "presence.snapshot",
+      annotationFileId: "annotation-file-1",
+      generatedAt: "not-a-time",
+      members: [],
+    },
+    {
+      version: 1,
+      type: "presence.snapshot",
+      annotationFileId: "annotation-file-1",
+      generatedAt: "2026-08-04T00:00:00.000Z",
+      members: [
+        validMember,
+        validMember,
+      ],
+    },
+    {
+      version: 1,
+      type: "presence.snapshot",
+      annotationFileId: "annotation-file-1",
+      generatedAt: "2026-08-04T00:00:00.000Z",
+      members: [{ ...validMember, connectionCount: 0 }],
+    },
+    {
+      version: 1,
+      type: "presence.snapshot",
+      annotationFileId: "annotation-file-1",
+      generatedAt: "2026-08-04T00:00:00.000Z",
+      members: [{ ...validMember, unexpected: true }],
+    },
+    {
+      version: 1,
+      type: "presence.snapshot",
+      annotationFileId: "annotation-file-1",
+      generatedAt: "2026-08-04T00:00:00.000Z",
+      members: Array.from({ length: 201 }, (_, index) => ({
+        ...validMember,
+        userId: `user-${index}`,
+      })),
     },
   ];
   for (const value of invalid) {

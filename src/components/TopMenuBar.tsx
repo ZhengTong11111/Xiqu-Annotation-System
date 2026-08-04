@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, RefObject } from "react";
 import type { ProjectSyncStatus } from "../state/projectDocumentState";
 import type { PlatformCollaborationStatus } from "../platform/platformCollaborationRuntime";
+import type { AnnotationPresenceMember } from "@xiqu/shared";
+import { CollaborationPresenceMenu } from "./CollaborationPresenceMenu";
 
 export type TopMenuPlatformNavigation = {
   label: string;
@@ -24,6 +26,8 @@ type TopMenuBarProps = {
   accessLabel?: string;
   mutationLeaseLabel?: string;
   collaborationStatus?: PlatformCollaborationStatus;
+  collaborationPresenceMembers?: AnnotationPresenceMember[];
+  currentPlatformUserId?: string;
   videoFileInputRef: RefObject<HTMLInputElement>;
   srtFileInputRef: RefObject<HTMLInputElement>;
   projectFileInputRef: RefObject<HTMLInputElement>;
@@ -71,6 +75,8 @@ export function TopMenuBar({
   accessLabel,
   mutationLeaseLabel,
   collaborationStatus,
+  collaborationPresenceMembers = [],
+  currentPlatformUserId,
   videoFileInputRef,
   srtFileInputRef,
   projectFileInputRef,
@@ -324,10 +330,16 @@ export function TopMenuBar({
         ))}
       </nav>
       <div className={`top-menu-status sync-status sync-status-${syncStatus}`}>
+        {collaborationStatus === "connected" ? (
+          <CollaborationPresenceMenu
+            members={collaborationPresenceMembers}
+            currentUserId={currentPlatformUserId}
+          />
+        ) : null}
         {collaborationStatus ? (
           <span
             className={`collaboration-status collaboration-status-${collaborationStatus}`}
-            title="实时连接只负责远端 revision 通知，标注保存状态以后方文案为准。"
+            title="实时连接负责远端修订提示和在线成员状态，标注保存结果仍以后方文案为准。"
           >
             <span className="collaboration-status-dot" aria-hidden="true" />
             {getCollaborationStatusLabel(collaborationStatus)}

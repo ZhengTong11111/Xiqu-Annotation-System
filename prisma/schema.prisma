@@ -135,6 +135,7 @@ model User {
   annotationOperations      AnnotationOperation[]       @relation("AnnotationOperationActor")
   annotationMutationLeases  AnnotationMutationLease[]   @relation("AnnotationMutationLeaseHolder")
   annotationCollaborationTickets AnnotationCollaborationTicket[] @relation("AnnotationCollaborationTicketUser")
+  annotationCollaborationPresences AnnotationCollaborationPresence[] @relation("AnnotationCollaborationPresenceUser")
 
   @@map("users")
 }
@@ -239,6 +240,7 @@ model AnnotationFile {
   operations        AnnotationOperation[]
   mutationLease     AnnotationMutationLease?
   collaborationTickets AnnotationCollaborationTicket[]
+  collaborationPresences AnnotationCollaborationPresence[]
 
   @@index([mediaResourceId])
   @@index([lastEditedBy])
@@ -280,6 +282,24 @@ model AnnotationCollaborationTicket {
   @@index([userId, expiresAt])
   @@index([expiresAt])
   @@map("annotation_collaboration_tickets")
+}
+
+// Presence 只保存短生命周期在线事实，不属于标注 payload、恢复快照、operation 或审计历史。
+model AnnotationCollaborationPresence {
+  id               String   @id @default(uuid())
+  annotationFileId String   @map("annotation_file_id")
+  userId           String   @map("user_id")
+  connectedAt      DateTime @default(now()) @map("connected_at")
+  lastSeenAt       DateTime @default(now()) @map("last_seen_at")
+  expiresAt        DateTime @map("expires_at")
+
+  annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
+  user           User           @relation("AnnotationCollaborationPresenceUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([annotationFileId, expiresAt])
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+  @@map("annotation_collaboration_presences")
 }
 
 // 确认记录保存独立研究审核事实；撤销只补充字段，不删除原始确认。

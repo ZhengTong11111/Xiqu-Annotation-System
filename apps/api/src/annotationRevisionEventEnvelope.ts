@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import type { AnnotationRevisionEvent } from "./annotationCollaborationHub.js";
+import { createSchemaIsolatedCollaborationChannel } from "./postgresCollaborationChannel.js";
 
 const EVENT_VERSION = 1 as const;
 const EVENT_TYPE = "annotation.revision.advanced" as const;
@@ -28,11 +28,7 @@ const EVENT_KEYS = [
  * PostgreSQL 标识符最长 63 字节；使用摘要既避免超长 schema 截断碰撞，也避免把外部字符串拼入 LISTEN SQL。
  */
 export function createAnnotationRevisionChannel(schema: string) {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
-    throw new Error(`无法为非法 PostgreSQL schema“${schema}”创建协作通知 channel。`);
-  }
-  const digest = createHash("sha256").update(schema).digest("hex").slice(0, 16);
-  return `xiqu_annotation_revision_${digest}`;
+  return createSchemaIsolatedCollaborationChannel("revision", schema);
 }
 
 /**

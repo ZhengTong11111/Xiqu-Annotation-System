@@ -4088,3 +4088,102 @@ ProjectData builder、adapter 与编辑器接线：
 - PostgreSQL NOTIFY 天生可丢失，也不提供持久消费确认；当前实现故意不把它包装成可靠消息队列。浏览器周期
   HTTP catch-up、revision 连续性校验和 snapshot 降级仍负责最终正确性。下一轮 R5b2b 才开始短生命周期
   presence、远端光标/选区和在线成员 UI，并需先明确节流、隐私、撤权、慢消费、断线和文件切换语义。
+
+## 2026-08-04：R5b2b1 跨实例在线成员 Presence
+
+### 本轮任务书、阶段拆分与事实边界
+
+- 本轮基线为 R5b2a commit `ed592d0`。Codex 先核对 roadmap、实际代码和上一轮 Development Log，再把
+  gitignore 的 `CLAUDE_WORK.md` 整体重写为 R5b2b1 当前任务书；用户沿用的旧阶段称呼没有覆盖仓库已经
+  推进到 R5b2 的事实。本轮由 Codex 直接实现、自审和验证，没有调用 Claude Code、GLM、DeepSeek 或
+  其他代理。
+- R5b2b 被拆成两轮：本轮只建立在线身份、TTL、跨实例失效重读、同账号多窗口聚合和成员 UI；远端播放头、
+  光标、选区和高频客户端消息全部留到 R5b2b2。Presence 只是短生命周期运行时事实，不写入 `ProjectData`、
+  平台标注 payload、浏览器恢复草稿、恢复快照、operation log 或治理审计，也不能改变 ACL 和保存结果。
+- 没有引入 Redis、Kafka 或完整协作框架。平台已有 PostgreSQL 和 R5b2a 的 LISTEN/NOTIFY 运行基础，因此先
+  抽取通用有界 coalesced event-bus 核心，再用独立 schema-isolated channel 承载文件级 presence
+  invalidation。NOTIFY 不携带账号或成员名单，接收实例必须重新读取 PostgreSQL 权威快照。
+
+### 数据库 Presence、跨实例协调与连接生命周期
+
+- Prisma 第 14 条 migration 新增 `AnnotationCollaborationPresence`：每个 WebSocket/tab 一行，绑定标注文件、
+  账号、连接/最后活跃/过期时间，并对文件+过期、账号+过期及全局过期建立索引和级联删除。TTL 固定为
+  60 秒；心跳只续期尚未过期的行，迟到心跳不能把已经失效的连接复活。
+- `AnnotationPresenceService` 在同一标注文件行锁内重新检查 read capability、活动资源树和连接容量，再创建
+  session。当前上限为每文件 1000 个 session、每账号每文件 100 个窗口、聚合后 200 个账号；新账号达到
+  成员上限时显式拒绝，已有账号仍可增加窗口。过期行按 200 条有界惰性清理，成员快照按账号聚合
+  `connectionCount` 和最新 `lastSeenAt`。
+- `PostgresCoalescedEventBus` 从 revision bus 中抽出 LISTEN 生命周期、重连、local-first 投递、按 key 合并、
+  有界队列和发布失败降级。Revision 和 presence 只保留各自严格 envelope、合并规则和低基数指标映射，
+  没有留下两套平行连接/队列实现。Presence envelope 最大 1000 字节，只携带来源实例和标注文件 id。
+- `AnnotationPresenceCoordinator` 仅在本实例确有该文件订阅者时读取成员。每文件查询 single-flight；查询期间
+  再收到任意次数失效只追加一轮补读，最终快照不会停在查询期间的旧状态。心跳每文件每 20 秒最多触发一次
+  周期失效，用于让其他实例重读并清理异常退出后已经过 TTL 的残留。
+- `AnnotationCollaborationRoutes` 在票据消费后 join，先发送 `session.ready`，再订阅 hub 并发布 presence
+  invalidation。正常 close/error、心跳失活、撤权、角色变化和应用关闭共用幂等 finalizer；服务器主动关闭
+  时立即删除 presence，不依赖浏览器完成 close handshake。应用关闭还会等待票据消费/join 的 in-flight
+  setup，避免迟到 join 在 Prisma 关闭后留下未补偿行。
+- Hub 对 revision 保持单调去重，对 presence 只按成员身份、显示名和窗口数去重，heartbeat 引起的
+  `lastSeenAt` 变化不会形成 UI 广播风暴；最后一个本地订阅者离开时清理 fingerprint，保证相同成员结构的
+  快速重连仍能收到首个权威快照。
+
+### 浏览器协议、在线成员 UI 与状态隔离
+
+- shared version 1 协议新增严格 `presence.snapshot`，限制 200 个成员、每成员 100 个窗口、唯一用户 id、
+  exact keys、稳定字符串和 ISO 时间。未知类型、额外字段、重复用户、零窗口、越界名单和 ready 前业务消息
+  都会被拒绝；R5b2b1 仍拒绝全部客户端业务消息。
+- 浏览器 collaboration runtime 在 `session.ready` 后接受 revision 或 presence；presence 不会触发 HTTP
+  operation catch-up。React hook 在断线、重连、离线或文件切换时立即清空旧成员，避免把上一文件或上一代
+  socket 的名单显示为当前事实。
+- 顶部菜单只在平台实时连接成功时显示紧凑“n 人在线”入口；成员面板自己优先、名称稳定排序，并显示同账号
+  多窗口数量。面板明确说明在线状态不改变权限或保存结果；本地免登录编辑器不建立 presence，也不会显示
+  伪造成员。
+
+### 自我审查中发现并修复的问题
+
+- 初版 join 在 Prisma interactive transaction 的同一 pg 连接上用 `Promise.all` 并发执行两个 count，未来
+  pg 9 不再支持。最终改为顺序查询并补中文原因注释；完整 API 测试仍会在既有“并发创建两个资源”测试中
+  输出一条相同上游弃用警告，但 trace 不再指向 presence 事务，本轮不把它掩盖成已解决。
+- 初版成员上限只依赖输出截断，数据库可能接受第 201 个账号而浏览器静默看不到。最终在持文件行锁的 join
+  事务内对新账号显式检查聚合成员上限，数据库事实与协议容量保持一致。
+- 初版 hub 保留上一批订阅者的成员 fingerprint；最后一个订阅者离开后，快速重连若成员结构相同可能收不到
+  首帧。最终在移除最后一个订阅者时同步清理 fingerprint，并新增回归测试。
+- 初版服务端主动撤权关闭仅调用 `socket.close()`，presence 删除依赖对端 close handshake，Fastify 注入测试
+  会超时且真实慢客户端也可能延迟清理。最终所有主动关闭共用 `closeAndFinalize()`，ACL 和角色撤销测试都
+  直接断言数据库 presence 行已经删除。
+- 第二轮自审发现应用关闭可能在票据/join setup 尚未结束时先关闭 Prisma。最终追踪所有 setup promise，
+  shutdown 在 finalizer 后继续等待迟到 join 的即时补偿。Coordinator 也收窄为 `listActive` reader port，测试
+  不再伪造完整 service。
+- 抽取通用 PostgreSQL event-bus 后删除 revision bus 内重复的传输、队列和重连逻辑；没有遗留第二个 pool、
+  第二套 channel 拼接、成员身份 NOTIFY、调试日志或对旧 API 的并行调用。
+
+### 测试、构建与真实运行验收
+
+- `npm run test:annotation-presence`：4/4，覆盖严格 envelope/channel、无订阅者不查询、查询中失效追加一轮和
+  最终最新快照。
+- `npm run test:annotation-collaboration`：共享协议、浏览器 runtime、成员 view 和 hub 共 10 项通过；覆盖
+  presence ready 前拒绝、断线/文件切换清空、成员结构去重、快速重连首帧和既有 revision 生命周期。
+- `npm run test:annotation-revision-event-bus`：8/8；通用 bus 抽取后原有 local-first、合并、溢出、初连失败、
+  运行时重连、发布降级和关闭行为无回归。`npm run test:observability`：12/12，presence 指标不包含账号、
+  文件 id 或错误文本等高基数/敏感标签。
+- `npm run test:api`：113/113。真实 PostgreSQL/Fastify 集成覆盖两个 API 实例共享成员、同账号多 tab 聚合、
+  过期行不被迟到连接复活、正常离开、直接 ACL 撤销和全局角色撤销清理；资源、保存、恢复、上传、审计、
+  备份、维护和既有跨实例 revision 均无回归。保留一条上述既有 node-postgres pg 9 前置弃用提示。
+- `npm run build` 通过 Prisma generation、shared、document-model、Web 和 API；Vite 转换 2077 个模块，CSS
+  122.70 kB / gzip 22.62 kB，主 JS 933.35 kB / gzip 277.90 kB；只有既有超过 500 kB 的 chunk 提示。
+  `git diff --check` 通过。
+- 当前工作树 API（PID 69881）运行于 4317，`GET /api/health/ready` 返回 200，数据库与本地对象存储探针均
+  为 ok。使用 in-app Browser 登录平台并打开《寻梦》服务器标注文件，顶部显示“实时已连接”和“1 人在线”；
+  第二浏览器窗口打开同一文件后，第一窗口显示“系统管理员 · admin · 2 个窗口”，关闭第二窗口后立即回到
+  单窗口。浏览器控制台无 warn/error。
+
+### 文档、已知边界与下一轮
+
+- README、state architecture、AGENTS 和 roadmap 已同步 R5b2b1 的事实边界、模块所有权、测试命令和完成
+  状态；本 Development Log 按用户要求记录任务书、直接实现、自审修复、僵尸逻辑清理、测试数字和浏览器
+  证据。`CLAUDE_WORK.md` 仍只作为下一轮即时任务书，不承担历史日志职责。
+- Presence 是数据库短生命周期状态，不保证永久历史，也不能解决同时编辑冲突。NOTIFY 丢失时，连接心跳的
+  周期失效和 TTL 会最终纠正成员列表；内容正确性仍完全依赖 HTTP revision、committed feed 和 snapshot。
+- 下一轮 R5b2b2 应在当前稳定会话上定义严格有界、节流的远端播放头/光标/选区摘要，明确隐私、慢消费、
+  文件切换、generation 和 stale 清理语义，再实现 Timeline 只读叠加；不得在该轮传输标注正文或绕过 HTTP
+  写入事务。
