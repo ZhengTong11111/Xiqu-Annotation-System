@@ -46,7 +46,8 @@ ProjectData parser、有序原子命令批次合同和服务端原子数据库�
 原子批次 planner、严格响应/错误策略、single-flight 重试 runtime 和 document saved baseline 部分确认；
 R5b3b2 已完成 App、自动保存、IndexedDB 恢复状态、mutation lease 和冲突状态的真实接线，可重放编辑现已
 直接原子提交并逐批确认，旧/不可重放边界才走有界完整快照；R5b3c1 已建立共享本地命令链审计、纯
-all-or-nothing 冲突重放判定和真实双账号并发矩阵；下一步进入 R5b3c2 的 App 冲突决策接线与用户确认；
+all-or-nothing 冲突重放判定和真实双账号并发矩阵；R5b3c2 已完成显式 App 冲突决策、二次权威核验、
+crash-safe 草稿 checkpoint、基线替换和原 operation 重提接线；下一步进入 R5 可部署候选门禁；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -580,10 +581,14 @@ all-or-nothing 冲突重放判定和真实双账号并发矩阵；下一步进�
         测试证明：双方从 revision N 读取，A 提交后 B 的旧 base 409 且零数据库副作用；无交集 B 命令可用同一
         id/envelope 在 N+1 重提至 N+2；同目标旧基线不重提；撤权后即使内容可重放仍由服务端 403。现有人工
         草稿比较继续保留，本轮尚未接入 App 自动/确认重基线。
-      - R5b3c2 待推进：把纯判定接入现有 409 冲突交接。必须先串行 flush 同一 IndexedDB 草稿并权威重取文件；
-        可重放结果经明确用户确认后，原子替换 saved/current baseline、保留 pending 身份并以最新 revision 重提；
-        同目标冲突、legacy barrier、权限变化、最新文件再变化或计划指纹失效继续进入既有结构化人工比较。
-        完成前不得把 WebSocket activity/presence 当可靠 operation 通道，也不引入 OT/CRDT。
+      - R5b3c2 已完成：409 交接先通过既有串行 IndexedDB 队列 flush，再权威重取文件与草稿，并以单一状态机
+        区分恢复、确认重放和人工比较。轻量 proposal 只暴露 revision、operation 数量和租约用途；用户确认后
+        再次读取两侧并复核身份、revision、写权限、planner 结果和计划指纹。全部通过后，最新服务器 ProjectData
+        成为 saved baseline，完整重放结果成为 current ProjectData，原 operation id/local revision/envelope
+        保持不变；Workspace 先以最新 remote revision 写入 crash-safe checkpoint，再经唯一编辑器打开路径恢复，
+        后续由普通自动保存走现有原子接口重提。同目标冲突、legacy/track-snap/snapshot barrier、revision 再变、
+        撤权或指纹变化继续进入既有结构化人工比较。WebSocket 仍只承担失效提示/presence/activity，未引入
+        OT/CRDT。
 - R5 完成前增加可部署候选门禁：提供至少一个单服务器 PostgreSQL + Fastify + Web + 本地或 S3-compatible
   对象存储的可重复部署方案，提交 `docs/server-deployment.md`，覆盖 Node/PostgreSQL 版本、迁移、环境变量、
   反向代理/TLS、持久目录、进程启动、健康检查、备份恢复和升级回滚。它是可供试用的部署基线，不等同于

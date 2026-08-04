@@ -4816,3 +4816,73 @@ ProjectData builder、adapter 与编辑器接线：
   开发标签页的既有排查，不是本轮新增异常。下一轮 R5b3c2 才能在权威重取最新文件、再次核对草稿身份、
   revision、权限和计划指纹后展示可重放判定；经明确用户确认才可原子替换 document baseline 并用原 id/
   envelope、新 base revision 重提。任何同目标冲突、legacy barrier、最新 revision 再变化或撤权继续人工处理。
+
+## 2026-08-04：R5b3c2 显式冲突重放确认、二次权威核验与安全重提
+
+### 本轮计划与架构边界
+
+- 用户确认开始 R5b3c2，并再次明确要求维护 **Development Log**。Codex 以 R5b3c1 commit `a52dc76` 为基线，
+  先把被忽略的 `CLAUDE_WORK.md` 整体改写为本轮唯一任务书：409 后串行 flush IndexedDB、权威读取最新文件和
+  草稿、生成轻量 proposal、明确用户确认、二次权威读取和指纹复核、crash-safe checkpoint、经既有编辑器入口
+  恢复，再由普通自动保存重提。任务书明确同目标、legacy/track-snap/snapshot、撤权、revision 再变化和指纹
+  漂移必须回到人工比较；不改 WebSocket 语义、不引入 OT/CRDT、不建立第二套保存入口。
+- 新增 `platformConflictRebasePreparation.ts`，把 UI 前后的判定收敛为一个纯边界。初次 proposal 只含账号/文件、
+  草稿时间和 remote base、服务器 revision、operation id/local revision/action/envelope version、租约用途及稳定
+  指纹，不携带标注正文、before/after、项目 payload 或 token。用户确认后，准备器重新核对账号/文件身份、草稿
+  时间与基准、服务器 identity/revision、当前 write capability、纯 planner 结果及指纹；任一变化返回机器原因和
+  用户可见说明，不返回半份 recovery state。
+- 准备成功时，以最新服务器 ProjectData 作为 `savedProject`、以完整 all-or-nothing 重放结果作为
+  `currentProject`，保留原 client operation id、local revision、command envelope、本地 revision 和时间事实。
+  Workspace 先将该状态写入以最新 remote revision 为基准的 IndexedDB checkpoint，写入成功后才通过唯一
+  `enterPlatformFileAndMarkOpened()` 路径重建编辑器；之后由现有原子自动保存、ACL、revision 和 mutation lease
+  规则重提，没有直接在对话框中写服务器。
+- `PlatformWorkspace` 删除 `draftConflictVisible` 双 boolean 组合，`PendingDraftOpen.dialog` 明确区分
+  `recovery`、`rebase`、`manual`。普通文件打开和 App 409 交接都使用同一 `buildPendingDraftOpen()`；人工比较
+  可以返回已有 proposal，没有 proposal 的同目标/legacy 情况返回普通恢复说明。新增 Radix
+  `PlatformConflictRebaseDialog` 只展示 revision、operation 数和租约用途，并始终保留“改用人工比较”。
+
+### 自审发现与修复
+
+- 首轮接线后自审发现一个会让所有 proposal 在确认时伪失效的生命周期竞态：App 的 `flushNow()` 已写入最新
+  草稿，离开 dirty 编辑器时 unmount final capture 又会写一份内容完全相同、但 `updatedAt` 更新的草稿；proposal
+  正确绑定草稿时间，因此第二次读取会误判为真实编辑。现增加 `arePlatformDraftContentsEqual()`，只忽略
+  `updatedAt`，其余项目、operation、revision、吸附和时间事实全部深比较；同内容 final capture 跳过 put，任何
+  真实变化仍写入并使旧 proposal 失效。新增回归同时证明项目正文变化不会被误去重。
+- 初次 `build:web` 失败是新测试 `AnnotationFile` fixture 缺少当前 shared DTO 已要求的
+  `owner.accountName`、`lastEditor.accountName` 和 permission `source`；修复夹具使其遵循现有合同，没有放宽生产
+  类型。浏览器测试数据准备第一次使用 tsx 顶层 await，在当前 CJS 执行边界失败；改为 async IIFE 后成功。
+  两次失败均属于测试/工具调用修正，没有留下替代脚本或生产兼容分支。
+- 源码扫描确认本轮没有新增 `any`、TODO/FIXME、第二套 rebase planner、并行 IndexedDB 写路径或旧
+  `draftConflictVisible`。CSS 只为新事实卡、二次核验说明和错误提示增加窄样式；按钮文案由“比较并处理冲突”
+  改为“检查并处理冲突”，因为入口现在可能先提供安全重放，而不是必然直接进入 diff。
+
+### 浏览器与数据库验收
+
+- 在真实本地 PostgreSQL/Fastify/平台页面创建当前格式测试文件。浏览器以 revision 1 保留“春”的本地唱法修改，
+  API 先后对两个不同句子写入远端修改并推进到 revision 3。自动保存收到 409 后，显式处理入口展示新重放对话框：
+  本地基准 r1、服务器 r2、1 项 pending、无需结构租约。进入人工比较后可返回同一 proposal，证明两条退路不是
+  相互覆盖的临时 modal 状态。
+- 在 proposal 已显示后，API 再把服务器推进一版。点击确认时二次权威核验确定显示“服务器文件已产生新修订，
+  请重新检查后再重放”，没有生成 recovery state、没有写服务器。取消并重新打开后，新 proposal 显示当前 r3；
+  确认后编辑器恢复，普通自动保存将原 operation 提交至 revision 4。API 验证最终 payload 同时保留两处远端
+  句级文字和本地“念白式”；committed feed 只有一条该本地命令，`baseRevision=3`、`committedRevision=4`，
+  client operation id 与冲突前一致，证明没有制造新身份或额外完整快照 revision。
+- 追加尝试用浏览器工具制造同字段竞态，但调度时远端 revision 已先被 clean catch-up 应用，本地随后生成的命令
+  正确以远端新值为 `before` 并普通提交；因此这不是同目标并发样本，不能宣称人工 fallback 的浏览器竞态验收。
+  本日志保留这次未命中时序的事实。同目标禁止自动 rebase 仍由 preparation 纯测试、R5b3c1 planner 测试和真实
+  双账号 API 矩阵证明。测试文件及追加演练产生的本地数据库 revisions 最终已移入回收站，不属于源码夹具。
+
+### 测试、构建与下一轮
+
+- 专项最终通过：conflict rebase planner 9/9，二次准备器 6/6，原子提交 planner/policy/runtime/coordinator/
+  document/equality 23/23，IndexedDB 草稿/恢复 24/24，自动保存 policy 4/4、runtime 8/8，committed catch-up
+  17/17，共 91 项。真实 PostgreSQL/Fastify `npm run test:api` 123/123，通过现有 14 条 migration，仍只有仓库
+  既有 pg 9 `client.query()` 前置弃用提示。
+- `npm run build` 通过 Prisma generate、shared、document-model、Web 和 API。Vite 转换 2101 个模块，CSS
+  125.30 kB / gzip 23.08 kB，主 JS 966.60 kB / gzip 286.13 kB；保留既有大 chunk 提醒。`git diff --check`
+  通过。本轮没有新增依赖、Prisma migration、API 路由、JSON/IndexedDB schema 或可靠 WebSocket operation
+  通道。
+- R5b3c2 至此完成。下一小轮进入 roadmap 明确的 R5 可部署候选门禁：先盘点现有启动/迁移/对象存储/健康检查/
+  备份恢复能力与缺口，再建立一个可重复的单服务器 PostgreSQL + Fastify + Web 部署方案和
+  `docs/server-deployment.md`。它只形成可供试用的部署基线，不提前宣称 R7 的公网安全、真实云 IAM、跨区容灾
+  或长期生产验收。

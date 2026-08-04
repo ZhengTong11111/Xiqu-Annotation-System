@@ -20,6 +20,7 @@ import type {
 } from "./annotationMergeDraft";
 import { prepareAnnotationMergeDraft } from "./annotationMergePreparation";
 import { ResourceExplorer } from "./ResourceExplorer";
+import { PlatformConflictRebaseDialog } from "./PlatformConflictRebaseDialog";
 import { PlatformDraftConflictDialog } from "./PlatformDraftConflictDialog";
 import { hydrateProjectForClient } from "./platformProjectPayload";
 import {
@@ -33,6 +34,11 @@ import {
   preparePlatformDraftConflict,
   type PlatformDraftConflictPreparationRequest,
 } from "./platformDraftConflict";
+import {
+  buildPlatformConflictRebaseProposal,
+  preparePlatformConflictRebase,
+  type PlatformConflictRebaseProposal,
+} from "./platformConflictRebasePreparation";
 import type { AnnotationMergeReviewIntent } from "./AnnotationMergeDiffReview";
 import {
   PlatformDraftRecoveryDialog,
@@ -86,6 +92,8 @@ type PendingDraftOpen = {
   initialFocus?: AnnotationComparisonFocus;
   draft: PlatformDraftRecord;
   mode: PlatformDraftRecoveryMode;
+  dialog: "recovery" | "rebase" | "manual";
+  rebaseProposal?: PlatformConflictRebaseProposal;
 };
 
 const TOKEN_KEY = "xiqu-platform-dev-token";
@@ -104,8 +112,8 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     useState<LocalEditorSession | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingDraftOpen, setPendingDraftOpen] = useState<PendingDraftOpen | null>(null);
-  const [draftConflictVisible, setDraftConflictVisible] = useState(false);
   const [draftDecisionBusy, setDraftDecisionBusy] = useState(false);
+  const [draftDecisionError, setDraftDecisionError] = useState<string | null>(null);
 
   const client = useMemo(() => new PlatformClient({
     baseUrl: "http://localhost:4317/api",
@@ -135,6 +143,33 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       setError(describeError(nextError));
     }
   }
+
+  // 所有 stale draft 入口共用同一分流：可恢复、可确认重放和人工比较不会再由两个 boolean 临时拼接。
+  const buildPendingDraftOpen = useCallback((input: {
+    file: AnnotationFile<ProjectData>;
+    serverProject: ProjectData;
+    draft: PlatformDraftRecord;
+    initialFocus?: AnnotationComparisonFocus;
+  }): PendingDraftOpen => {
+    if (!user) throw new Error("登录会话尚未恢复，请刷新后重试。");
+    const compatibility = assessPlatformDraftCompatibility(input.draft, input.file.revision);
+    const mode: PlatformDraftRecoveryMode = input.file.resource.permission.capabilities.includes("write")
+      ? compatibility.status
+      : "read-only";
+    if (mode !== "revision-conflict") {
+      return { ...input, mode, dialog: "recovery" };
+    }
+
+    const rebase = buildPlatformConflictRebaseProposal({
+      userId: user.id,
+      draft: input.draft,
+      serverFile: input.file,
+      latestServerProject: input.serverProject,
+    });
+    return rebase.status === "ready"
+      ? { ...input, mode, dialog: "rebase", rebaseProposal: rebase.proposal }
+      : { ...input, mode, dialog: "manual" };
+  }, [user]);
 
   function openLocal(project: ProjectData, title: string) {
     setLocalSession({
@@ -227,20 +262,13 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
             };
           }
           const serverProject = hydrateProjectForClient(latestFile.payload, client);
-          const compatibility = assessPlatformDraftCompatibility(draft, latestFile.revision);
-          const mode: PlatformDraftRecoveryMode =
-            !latestFile.resource.permission.capabilities.includes("write")
-              ? "read-only"
-              : compatibility.status;
-
           // 两侧都读取成功后才切换视图，失败不能让用户离开仍含 dirty 内容的编辑器。
-          setPendingDraftOpen({
+          setPendingDraftOpen(buildPendingDraftOpen({
             file: latestFile,
             serverProject,
             draft,
-            mode,
-          });
-          setDraftConflictVisible(mode === "revision-conflict");
+          }));
+          setDraftDecisionError(null);
           setEditorSession(null);
           setView("explorer");
           return { ok: true };
@@ -252,7 +280,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setEditorSession(next);
     setLocalSession(null);
     setView("editor");
-  }, [client, user]);
+  }, [buildPendingDraftOpen, client, user]);
 
   // 文件真正进入编辑器后再记录最近打开；恢复对话框取消时不能留下虚假的访问记录。
   const enterPlatformFileAndMarkOpened = useCallback(async (input: {
@@ -311,8 +339,8 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         initialProject: prepared.value.draft.baseProject,
         pendingMergeDraft: prepared.value.draft,
       });
-      setDraftConflictVisible(false);
       setPendingDraftOpen(null);
+      setDraftDecisionError(null);
       return { ok: true };
     } catch (nextError) {
       return { ok: false, message: describeError(nextError) };
@@ -347,17 +375,13 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         return true;
       }
       if (draft) {
-        const compatibility = assessPlatformDraftCompatibility(draft, file.revision);
-        setDraftConflictVisible(false);
-        setPendingDraftOpen({
+        setPendingDraftOpen(buildPendingDraftOpen({
           file,
           serverProject,
           initialFocus,
           draft,
-          mode: !file.resource.permission.capabilities.includes("write")
-            ? "read-only"
-            : compatibility.status,
-        });
+        }));
+        setDraftDecisionError(null);
         return true;
       }
       await enterPlatformFileAndMarkOpened({ file, initialProject: serverProject, initialFocus });
@@ -369,12 +393,17 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       window.alert(message);
       return false;
     }
-  }, [client, enterPlatformFileAndMarkOpened, user]);
+  }, [buildPendingDraftOpen, client, enterPlatformFileAndMarkOpened, user]);
 
   // 同 revision 草稿恢复保留本地 operation id/revision；媒体 URL 在恢复时重新按当前会话生成。
   const recoverPendingDraft = useCallback(async () => {
     const pending = pendingDraftOpen;
-    if (!pending || pending.mode !== "recoverable" || draftDecisionBusy) return;
+    if (
+      !pending ||
+      pending.dialog !== "recovery" ||
+      pending.mode !== "recoverable" ||
+      draftDecisionBusy
+    ) return;
     setDraftDecisionBusy(true);
     try {
       const recoveryState = toProjectDocumentRecoveryState(
@@ -388,7 +417,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         initialRecoveryState: recoveryState,
       });
       setPendingDraftOpen(null);
-      setDraftConflictVisible(false);
+      setDraftDecisionError(null);
     } catch (nextError) {
       const message = describeError(nextError);
       setError(message);
@@ -397,6 +426,61 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       setDraftDecisionBusy(false);
     }
   }, [client, draftDecisionBusy, enterPlatformFileAndMarkOpened, pendingDraftOpen]);
+
+  // 明确确认后再次权威读取并重算；只有 crash-safe 草稿写入成功，才允许新编辑器接管 rebased recovery state。
+  const confirmPendingConflictRebase = useCallback(async () => {
+    const pending = pendingDraftOpen;
+    if (
+      !pending ||
+      pending.dialog !== "rebase" ||
+      !pending.rebaseProposal ||
+      !user ||
+      draftDecisionBusy
+    ) return;
+    setDraftDecisionBusy(true);
+    setDraftDecisionError(null);
+    try {
+      const [latestFile, rawDraft] = await Promise.all([
+        client.getAnnotationFile<ProjectData>(pending.file.resource.id),
+        platformDraftStore.get(user.id, pending.file.resource.id),
+      ]);
+      const latestDraft = normalizePlatformDraftRecord(rawDraft, {
+        userId: user.id,
+        annotationFileId: pending.file.resource.id,
+      });
+      if (!latestDraft) {
+        setDraftDecisionError("浏览器草稿已被删除、损坏或替换，请取消后重新打开文件。");
+        return;
+      }
+      const latestServerProject = hydrateProjectForClient(latestFile.payload, client);
+      const prepared = preparePlatformConflictRebase({
+        userId: user.id,
+        draft: latestDraft,
+        serverFile: latestFile,
+        latestServerProject,
+        proposal: pending.rebaseProposal,
+      });
+      if (prepared.status !== "ready") {
+        setDraftDecisionError(prepared.message);
+        return;
+      }
+
+      // 此时旧编辑器已卸载，不再有 debounce/unmount 队列竞争；先持久化新基线可保证页面崩溃后仍可恢复。
+      await platformDraftStore.put(prepared.draftRecord);
+      await enterPlatformFileAndMarkOpened({
+        file: prepared.targetFile,
+        initialProject: prepared.recoveryState.currentProject,
+        initialFocus: pending.initialFocus,
+        initialRecoveryState: prepared.recoveryState,
+      });
+      setPendingDraftOpen(null);
+      setDraftDecisionError(null);
+    } catch (nextError) {
+      setDraftDecisionError(describeError(nextError));
+    } finally {
+      setDraftDecisionBusy(false);
+    }
+  }, [client, draftDecisionBusy, enterPlatformFileAndMarkOpened, pendingDraftOpen, user]);
 
   // 丢弃是显式不可逆决策：先删除 IndexedDB 草稿成功，再打开最新服务器内容。
   const discardPendingDraftAndOpen = useCallback(async () => {
@@ -411,7 +495,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         initialFocus: pending.initialFocus,
       });
       setPendingDraftOpen(null);
-      setDraftConflictVisible(false);
+      setDraftDecisionError(null);
     } catch (nextError) {
       const message = describeError(nextError);
       setError(message);
@@ -523,19 +607,41 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
           setAccessToken(null);
           setUser(null);
           setPendingDraftOpen(null);
-          setDraftConflictVisible(false);
+          setDraftDecisionError(null);
           setView("login");
         }}
         onOpenLocalJson={openLocal}
         onOpenAnnotationFile={openPlatformAnnotationFile}
         onPrepareAnnotationMerge={prepareAnnotationMerge}
       />
-      {pendingDraftOpen && draftConflictVisible ? (
+      {pendingDraftOpen?.dialog === "manual" ? (
         <PlatformDraftConflictDialog
           file={pendingDraftOpen.file}
           draft={pendingDraftOpen.draft}
-          onBack={() => setDraftConflictVisible(false)}
+          onBack={() => {
+            // 从 proposal 主动进入人工比较时返回 proposal；自动 fallback 则返回普通恢复说明。
+            setPendingDraftOpen((current) => current
+              ? { ...current, dialog: current.rebaseProposal ? "rebase" : "recovery" }
+              : current);
+            setDraftDecisionError(null);
+          }}
           onPrepare={preparePendingDraftConflict}
+        />
+      ) : pendingDraftOpen?.dialog === "rebase" && pendingDraftOpen.rebaseProposal ? (
+        <PlatformConflictRebaseDialog
+          fileName={pendingDraftOpen.file.resource.name}
+          proposal={pendingDraftOpen.rebaseProposal}
+          busy={draftDecisionBusy}
+          error={draftDecisionError}
+          onCancel={() => {
+            setPendingDraftOpen(null);
+            setDraftDecisionError(null);
+          }}
+          onManualReview={() => {
+            setPendingDraftOpen((current) => current ? { ...current, dialog: "manual" } : current);
+            setDraftDecisionError(null);
+          }}
+          onConfirm={() => void confirmPendingConflictRebase()}
         />
       ) : pendingDraftOpen ? (
         <PlatformDraftRecoveryDialog
@@ -546,10 +652,13 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
           busy={draftDecisionBusy}
           onCancel={() => {
             setPendingDraftOpen(null);
-            setDraftConflictVisible(false);
+            setDraftDecisionError(null);
           }}
           onRecover={() => void recoverPendingDraft()}
-          onCompareConflict={() => setDraftConflictVisible(true)}
+          onCompareConflict={() => {
+            setPendingDraftOpen((current) => current ? { ...current, dialog: "manual" } : current);
+            setDraftDecisionError(null);
+          }}
           onDiscardAndOpen={() => void discardPendingDraftAndOpen()}
         />
       ) : null}

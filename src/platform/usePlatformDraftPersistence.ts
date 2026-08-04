@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { ProjectDocumentRecoveryState } from "../state/projectDocumentState";
 import {
+  arePlatformDraftContentsEqual,
   buildPlatformDraftRecord,
   normalizePlatformDraftRecord,
 } from "./platformDraft";
@@ -106,6 +107,8 @@ export function usePlatformDraftPersistence(options: PlatformDraftPersistenceOpt
         recoveryState: getRecoveryStateRef.current(),
         createdAt: existing?.createdAt,
       });
+      // flush 与紧随其后的卸载捕获可能读取同一状态；内容去重保留首次写入时间，真实后续编辑仍会形成新记录。
+      if (existing && arePlatformDraftContentsEqual(existing, record)) return;
       await store.put(record);
     });
   };

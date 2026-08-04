@@ -2215,6 +2215,13 @@ select {
   border-color: #e4c98d;
 }
 
+/* 可重放状态使用克制的成功提示，不把尚未提交的本地修改伪装成已经保存。 */
+.platform-draft-recovery-message.rebase-ready {
+  color: #245b4a;
+  background: #f4fbf8;
+  border-color: #a9d2c3;
+}
+
 .platform-draft-recovery-message > div {
   flex: 1;
   min-width: 0;
@@ -2247,6 +2254,26 @@ select {
   margin: 0;
   color: #34445a;
   font-size: 12px;
+}
+
+/* 二次复核说明和失败消息留在事实卡内部，避免错误把底部主操作挤出可视区域。 */
+.platform-conflict-rebase-note,
+.platform-conflict-rebase-error {
+  margin: 14px 0 0;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.platform-conflict-rebase-note {
+  color: #627287;
+}
+
+.platform-conflict-rebase-error {
+  padding: 8px 10px;
+  color: #8a2d2d;
+  background: #fff2f2;
+  border: 1px solid #e5b9b9;
+  border-radius: 5px;
 }
 
 .resource-recovery-dialog-header {

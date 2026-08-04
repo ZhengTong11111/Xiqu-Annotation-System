@@ -76,18 +76,23 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     the latest payload, revision, and permissions before creating one `PlatformEditorSession`
   - resolves browser recovery drafts before editor construction; selective merge must not bypass an unresolved draft
   - editor save-conflict handoff refetches the latest file and flushed IndexedDB draft before leaving the dirty editor
+  - revision-conflict drafts are routed through one explicit state machine: recoverable/read-only recovery, confirmed
+    optimistic rebase, or the existing fixed-direction manual comparison; do not recreate this with independent booleans
 - `src/platform/platformProjectPayload.ts`
   - single platform client/server payload boundary for adding current protected media URLs and removing them before save
 - `src/platform/platformDraft.ts`
   - versioned, unknown-input-validated browser draft envelope and recovery compatibility rules
   - persists one sanitized project pair plus compact operations; it never stores access tokens, Blob URLs, or
     per-operation project snapshots
+  - content equality intentionally ignores only `updatedAt`; the persistence queue must not rewrite an otherwise identical
+    envelope during conflict handoff because proposal validation binds the last meaningful draft timestamp
 - `src/platform/platformDraftStore.ts`
   - `idb`-backed IndexedDB repository keyed by encoded account id and annotation-file id
 - `src/platform/usePlatformDraftPersistence.ts`
   - serialized/debounced draft writes, editor-unmount final capture, and clean-state deletion for writable sessions
   - must suspend all put/delete while any runtime merge draft is awaiting the editor's second confirmation
   - `flushNow()` must use the same task queue as debounce/unmount writes; conflict UI must never issue a parallel store put
+  - duplicate-content writes are skipped, while any real project/operation/revision change still creates a new draft timestamp
 - `src/platform/platformAutoSavePolicy.ts`
   - pure idle/retry/block decision and bounded exponential-backoff constants for server autosave
 - `src/platform/platformAutoSaveRuntime.ts`
@@ -123,6 +128,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - `rebase_ready` is not authorization or persistence: the caller must still use the latest revision, current ACL, the original
     operation ids/envelopes, and any required mutation lease. Conflict summaries are bounded code/target facts and must never
     include annotation text, track names, project payloads, tokens, or a partially applied project
+- `src/platform/platformConflictRebasePreparation.ts`
+  - the only two-phase browser rebase preparation boundary: builds a lightweight proposal, then rechecks draft identity/content,
+    latest file identity/revision, current write capability, planner result, and plan fingerprint after explicit confirmation
+  - successful preparation uses latest server ProjectData as saved baseline, the complete replay result as current ProjectData,
+    and preserves original operation ids/local revisions/envelopes; it also builds the crash-safe IndexedDB checkpoint that must
+    be written before the existing editor-open path is re-entered
+- `src/platform/PlatformConflictRebaseDialog.tsx`
+  - explicit user confirmation surface for a proven rebase proposal; displays only revisions, operation count, and lease purpose
+  - always retains manual comparison as a peer fallback and never performs network reads, IndexedDB writes, or document mutation
 - `src/platform/platformAtomicSubmitPolicy.ts`
   - strict command-batch acknowledgement validation and atomic-endpoint-specific HTTP/network classification
   - lease failures and the exact old-payload migration code are separate deterministic errors; neither is a generic revision conflict

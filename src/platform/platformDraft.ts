@@ -10,6 +10,7 @@ import {
   isValidAnnotationClientOperationId,
   parseAnnotationCommandEnvelope,
 } from "@xiqu/shared";
+import { areProjectValuesEqual } from "@xiqu/document-model";
 import type { ProjectData } from "../types";
 import {
   getPersistableProjectData,
@@ -95,6 +96,16 @@ export function buildPlatformDraftRecord(input: {
     createdAt: input.createdAt ?? now,
     updatedAt: now,
   };
+}
+
+// 显式 flush 后的编辑器卸载会再请求一次最终捕获；内容完全相同时保留原 updatedAt，避免伪造草稿漂移。
+export function arePlatformDraftContentsEqual(
+  left: PlatformDraftRecord,
+  right: PlatformDraftRecord,
+): boolean {
+  const { updatedAt: _leftUpdatedAt, ...leftContent } = left;
+  const { updatedAt: _rightUpdatedAt, ...rightContent } = right;
+  return areProjectValuesEqual(leftContent, rightContent);
 }
 
 // IndexedDB 返回值属于 unknown 边界；这里同时验证身份、数值和 operation，再复用项目唯一迁移入口。

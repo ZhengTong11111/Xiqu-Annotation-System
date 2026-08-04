@@ -6124,7 +6124,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             disabled={saveConflictReviewBusy}
             onClick={() => void openSaveConflictReview()}
           >
-            {saveConflictReviewBusy ? "正在读取最新文件…" : "比较并处理冲突"}
+            {saveConflictReviewBusy ? "正在读取最新文件…" : "检查并处理冲突"}
           </button>
         </section>
       ) : null}

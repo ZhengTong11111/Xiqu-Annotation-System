@@ -6,6 +6,7 @@ import type { ProjectDocumentRecoveryState } from "../state/projectDocumentState
 import { buildProjectCustomTrackStructureCommand } from "../utils/customTrackStructureCommand";
 import { buildProjectTrackStructureTransactionCommand } from "../utils/trackStructureTransactionCommand";
 import {
+  arePlatformDraftContentsEqual,
   assessPlatformDraftCompatibility,
   buildPlatformDraftRecord,
   normalizePlatformDraftRecord,
@@ -79,6 +80,40 @@ test("构建并恢复平台草稿不会持久化会话 URL", () => {
   assert.equal(recovered.currentProject.video.url, "fresh-protected-url");
   assert.equal(recovered.pendingOperations[0].id, "op-recoverable");
   assert.equal(recovered.localRevision, 3);
+});
+
+// 显式 flush 与卸载最终捕获的内容相同时不能只因时间戳变化就制造一次假的草稿更新。
+test("平台草稿内容比较忽略 updatedAt，但保留所有恢复语义", () => {
+  const recoveryState = createRecoveryState();
+  const first = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState,
+    createdAt: 1_785_700_000_000,
+    now: 1_785_700_100_000,
+  });
+  const duplicate = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState,
+    createdAt: first.createdAt,
+    now: first.updatedAt + 1,
+  });
+  assert.equal(arePlatformDraftContentsEqual(first, duplicate), true);
+
+  const changedState = structuredClone(recoveryState);
+  changedState.currentProject.subtitleLines[0]!.text = "卸载前的新编辑";
+  const changed = buildPlatformDraftRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 7,
+    recoveryState: changedState,
+    createdAt: first.createdAt,
+    now: first.updatedAt + 1,
+  });
+  assert.equal(arePlatformDraftContentsEqual(first, changed), false);
 });
 
 // 旧接口已接受但尚未绑定 snapshot 的 submitted 行不能降级回 pending，否则会被新原子入口重复接管。

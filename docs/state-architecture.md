@@ -461,6 +461,17 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
   拒绝。legacy、track-snap、snapshot boundary、旧 submitted、本地链缺口和合同外 ProjectData 变化永远不能
   自动 rebase，继续进入现有固定方向草稿比较/人工恢复。R5b3c1 只建立纯判定与双账号数据库证据，App 的用户
   确认、document baseline 替换和二次提交属于 R5b3c2。
+- R5b3c2 已把上述判定接入真实 409 交接。Workspace 不再用两个 boolean 拼接恢复/比较状态，而是统一区分
+  `recovery`、`rebase`、`manual`。冲突发生后先经草稿队列 `flushNow()`，再读取权威文件和 IndexedDB 草稿；
+  proposal 只绑定账号/文件、草稿时间与基准、服务器 revision、operation 稳定元数据、租约用途和计划指纹，
+  不携带正文或 before/after。用户确认后必须再次读取两侧并重跑同一纯 planner，任何身份、revision、权限、
+  草稿内容或指纹变化都 fail closed。
+- 二次核验成功时，document recovery state 以最新服务器 ProjectData 为 `savedProject`，以 all-or-nothing 重放
+  结果为 `currentProject`，完整保留原 operation id、local revision、command envelope 和本地 revision 事实。
+  Workspace 必须先把该状态写成以最新 remote revision 为基准的 crash-safe IndexedDB checkpoint，再通过唯一
+  editor-open path 重建编辑器；普通自动保存随后使用现有原子提交、ACL、revision 与 mutation lease 规则重提。
+  为防止 editor unmount 重写同内容草稿并让 proposal 时间戳伪失效，草稿持久层会跳过仅 `updatedAt` 不同的
+  重复写入；真实项目、operation、revision 或吸附状态变化仍必须写入并使旧 proposal 失效。
 
 - R5b1/R5b2a 的 WebSocket 与跨实例通知已经落地；revision 消息只负责经过认证的文件失效提示，不传完整 payload，也不提交
   operation。`session.ready` 或 `annotation.revision.advanced` 观察到更高 revision 时，只调用现有 catch-up
