@@ -41,8 +41,7 @@ typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建�
 R5b2b2a 已完成严格协议、双端限流、跨实例瞬时通道、断线/stale 清理和 Timeline 远端播放头预览；
 R5b2b2b 已把该通道收敛为播放头、鼠标时间与匿名选区摘要的统一最新快照，并补齐隐私开关、递归轨道
 选区汇总和精确时间叠加；R5b3 已按共享领域模型、服务端原子命令提交、客户端确认和并发冲突收敛拆分，
-R5b3a1 已完成服务端可复用的持久 `ProjectData` 类型边界；R5b3a2a/a2b 已把 timing/content/state、lifecycle
-和普通 annotation transaction 迁入 `packages/document-model`；下一步推进 R5b3a2c 的轨道结构与总 dispatcher；
+R5b3a1 与 R5b3a2a/a2b/a2c 已完成共享持久类型和完整纯命令 dispatcher；下一步进入 R5b3a3 服务端原子命令提交；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -529,8 +528,9 @@ R5b3a1 已完成服务端可复用的持久 `ProjectData` 类型边界；R5b3a2a
       - R5b3a2b 已完成：迁移 lifecycle、annotation transaction 及其依赖闭包；Web 旧路径只保留窄出口，
         54 项生命周期/事务/结构组合/catch-up、API 119 项和完整构建继续证明集合位置、父子引用、工尺/板眼
         断链和 all-or-nothing 事务语义。
-      - R5b3a2c 待推进：迁移自定义轨结构、轨道 lifecycle/configuration、结构事务和通用命令 dispatcher，
-        删除 Web-only 平行实现，最终让 API 可从 document-model 一个公开入口调用完整 apply engine。
+      - R5b3a2c 已完成：迁移自定义轨结构、轨道 lifecycle/configuration、结构事务和通用命令 dispatcher；
+        Web 旧路径只保留窄出口，49 项结构/组合/catch-up、API 119 项和完整构建通过。API 现可从
+        document-model 一个公开入口调用完整纯 apply engine，但尚未接入数据库写事务。
     - R5b3a3 待推进：新增服务端原子领域命令提交。在同一数据库事务内锁文件、复核 ACL/租约/base revision、
       解析并 apply 命令、保存恢复快照、更新 payload/revision、写入并绑定 operation、审计和提交后 revision
       通知；幂等重放返回原确认，任一前置失败不得留下 accepted-but-uncommitted 行或部分 payload。

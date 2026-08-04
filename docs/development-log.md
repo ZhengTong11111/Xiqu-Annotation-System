@@ -4500,3 +4500,17 @@ ProjectData builder、adapter 与编辑器接线：
 - 本轮没有改 UI、协议、ProjectData、JSON、数据库或 operation/save 行为。下一轮 a2c 迁移 custom-track
   structure、track lifecycle/configuration、structure transaction 和通用 dispatcher；完成后 API 才真正拥有
   一个可调用的完整共享命令入口，但服务端原子提交仍需 R5b3a3 单独实现。
+
+## 2026-08-04：R5b3a2c 轨道结构与完整共享命令 dispatcher
+
+- Codex 以 `932c071` 为基线审计剩余九个纯模块共 1592 行，并重写 `CLAUDE_WORK.md`。迁移覆盖自定义分叉
+  结构、轨道配置、custom/builtin/attached-point 拥有子树生命周期、结构事务和通用 dispatcher；不修改租约、
+  API 写事务、DTO、JSON、数据库或 UI。
+- 九个唯一实现移动到 `packages/document-model/src`，包内直接引用 a2a/a2b 共享命令；旧 `src/utils` 删除函数
+  体，只保留显式窄 re-export 和中文边界注释。代表性结构 builder/apply 与 dispatcher 各只有一份，无宽泛
+  wrapper 或 Web/API 反向依赖。
+- 结构/生命周期/普通事务/catch-up 组合 49 项通过（16+9+7+17）；`test:api` 119/119；完整 build 通过，
+  Vite 2090 模块，CSS 124.92 kB / gzip 22.99 kB，主 JS 943.48 kB / gzip 280.06 kB，仅有既有大 chunk 和
+  pg 9 前置弃用提示。`git diff --check` 与唯一实现扫描通过。
+- R5b3a2 至此完成。下一轮 R5b3a3 必须在服务端同一事务内完成 ACL/租约/base revision、命令 apply、快照、
+  payload/revision、operation 绑定、审计和提交后通知；共享纯函数可用不代表服务端已实时提交。

@@ -408,10 +408,9 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
   类型。R5b3a2a 又迁入了 timing、content、Gongche/Banyan state 的 resolver、完整 next builder、immutable
   writer、precondition adapter，以及它们共用的复合快照、引用完整性和项目 equality。`src/utils` 同名文件
   只保留窄兼容导出，Web catch-up 与未来 API 会调用同一函数体。
-- R5b3a2b 已进一步迁入 lifecycle 的集合位置/父容器 resolver、writer、三态 apply，以及普通 annotation
-  transaction 的完整 next builder 和局部 all-or-nothing apply；旧 Web 文件只做窄出口。轨道结构、
-  configuration 与通用 dispatcher 仍在 Web `src/utils`，尚待 a2c。在完整 dispatcher 共享前，API 仍不能
-  建立第二套服务端 apply，WebSocket activity bus 也仍不得承载可靠 operation。
+- R5b3a2b/a2c 已继续迁入 lifecycle、普通事务、轨道结构/configuration、拥有子树生命周期、结构事务和
+  通用 dispatcher；`src/utils` 同名文件只剩窄出口。API 已可调用完整共享纯 apply engine，但仍须由 R5b3a3
+  建立原子数据库提交边界；WebSocket activity bus 仍不得承载可靠 operation。
 
 - R5b1/R5b2a 的 WebSocket 与跨实例通知已经落地；revision 消息只负责经过认证的文件失效提示，不传完整 payload，也不提交
   operation。`session.ready` 或 `annotation.revision.advanced` 观察到更高 revision 时，只调用现有 catch-up

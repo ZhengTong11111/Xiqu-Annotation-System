@@ -569,6 +569,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - R5b3a2b canonical lifecycle collection-position resolver/writer and ordinary annotation transaction builder/apply
   - preserve parent existence, unique identity, exact collection position, final cross-entity references, and local-only
     transaction staging; a blocked child must never publish an earlier child's partial ProjectData
+- `packages/document-model/src/customTrackStructureCommand*.ts` + `track*Command*.ts` + `annotationCommandApply.ts`
+  - R5b3a2c canonical recursive-track structure, configuration, owned-subtree lifecycle, structure transaction, and generic
+    dispatcher implementation; snapshot boundaries remain valid but non-replayable and return `snapshot_required`
 - `packages/document-model/src/annotationConfirmations.ts`
   - pure normalization, validation, lifecycle/freshness, overlap, persisted-track, and review-decision helpers for
     confirmed annotation ranges

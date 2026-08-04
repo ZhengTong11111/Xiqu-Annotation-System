@@ -17,3 +17,13 @@ export * from "./annotationLifecycleCommand.js";
 export * from "./annotationLifecycleCommandApply.js";
 export * from "./annotationTransactionCommand.js";
 export * from "./annotationTransactionCommandApply.js";
+// 轨道结构、配置、拥有子树事务和通用 dispatcher 完成纯命令执行核心的共享化。
+export * from "./customTrackStructureCommand.js";
+export * from "./customTrackStructureCommandApply.js";
+export * from "./trackConfigurationCommand.js";
+export * from "./trackConfigurationCommandApply.js";
+export * from "./trackStructureLifecycleCommand.js";
+export * from "./trackStructureLifecycleCommandApply.js";
+export * from "./trackStructureTransactionCommand.js";
+export * from "./trackStructureTransactionCommandApply.js";
+export * from "./annotationCommandApply.js";
