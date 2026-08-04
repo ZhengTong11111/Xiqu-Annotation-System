@@ -26,6 +26,8 @@ Main currently contains all major recent feature lines that matter for context:
 - platform login/resource-explorer UI, local editor entry, media upload, project/folder/file management, JSON import, revision-checked server save, recovery snapshots, and per-resource account permissions
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - backend audit logs and annotation operation logs for the first platform-governance layer
+- authenticated file WebSockets plus schema-isolated PostgreSQL LISTEN/NOTIFY revision invalidations across API instances;
+  these are lossy wake-up hints, while HTTP committed-feed/snapshot catch-up remains authoritative
 - database-backed short-lived annotation mutation leases for structural/bulk writes; ordinary operation/save/restore stays
   unchanged without a lease, while an active lease requires its one-time token and is released only by a successful revision write
 - existing custom-track metadata, recursive branch trees, and block branch ownership now use the strict top-level
@@ -380,8 +382,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - Fastify backend: auth, resource routes, resource ACL evaluation, annotation-file revision saves, Prisma mapping,
     and replaceable local/S3 object storage
 - `apps/api/src/database.ts`
-  - shared PrismaPg connection factory
-  - explicitly aligns Prisma schema and PostgreSQL `search_path`; do not construct a second adapter path in tests
+  - shared PrismaPg connection factory plus dedicated maintenance and collaboration `pg` pools
+  - explicitly aligns Prisma schema and PostgreSQL `search_path`; tests and CLIs must use this composition root instead
+    of constructing a second adapter path
+  - collaboration LISTEN/NOTIFY connections must never reuse Prisma business-query or maintenance advisory-lock pools
 - `apps/api/src/auditLogQuery.ts`
   - pure audit filter normalization, query-bound cursor encoding, Prisma where construction, and formula-safe CSV serialization
 - `apps/api/src/auditLogService.ts`
@@ -425,7 +429,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/healthService.ts`
   - liveness/readiness dependency probes; readiness stays lightweight and does not recursively scan storage
 - `apps/api/src/observability.ts`
-  - per-app Prometheus Registry, normalized HTTP and operational Gauges, upload/cleanup outcomes, and metrics-token validation
+  - per-app Prometheus Registry, normalized HTTP and operational Gauges, upload/cleanup outcomes, collaboration event-bus
+    connection/queue/result metrics, and metrics-token validation
 - `apps/api/src/operationalMetricsCollector.ts`
   - bounded, in-flight-shared readiness/capacity/job collection executed only after `/metrics` authorization
   - failures set the collection-success Gauge without replacing the last real capacity/job snapshot with false zeros
@@ -460,8 +465,18 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - plaintext tickets travel in a WebSocket subprotocol header, never in the upgrade URL or normal access logs
   - consumption and every established-session recheck use current account activity, current roles, ACL, and active-tree state
 - `apps/api/src/annotationCollaborationHub.ts`
-  - process-local monotonic revision notification hub; it is not a cross-instance event bus
-  - save/restore publish only after commit and must use the exact revision returned by the write transaction
+  - process-local monotonic WebSocket fan-out only; cross-instance transport belongs to the revision event bus
+  - rejects duplicate/backward revisions, including the publishing instance's PostgreSQL self-notification
+- `apps/api/src/annotationRevisionEventEnvelope.ts`
+  - strict, exact-key, size-bounded cross-instance revision-event parser and schema-derived PostgreSQL channel name
+  - events carry only source instance, annotation-file id, committed revision, and committed-feed cursor; never payloads,
+    users, tickets, access tokens, filenames, or operation bodies
+- `apps/api/src/postgresAnnotationRevisionEventBus.ts`
+  - local-first revision publisher plus PostgreSQL LISTEN/NOTIFY cross-instance transport
+  - owns a bounded same-file-coalescing publish queue, dedicated listener lifecycle, bounded reconnect, graceful close,
+    and low-cardinality metrics; initial listener failure must fail API startup
+  - PostgreSQL NOTIFY is deliberately lossy and non-authoritative. HTTP committed-feed/snapshot catch-up remains the
+    correctness path whenever events are missed, duplicated, reordered, or delayed
 - `apps/api/src/annotationCollaborationRoutes.ts`
   - authenticated notification-only WebSocket route with strict ready/revision messages, native heartbeat, serialized sends,
     and stable authorization/protocol close codes
@@ -548,6 +563,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run test:platform-mutation-lease-runtime`
 - `npm run test:platform-operation-catch-up`
 - `npm run test:annotation-collaboration`
+- `npm run test:annotation-revision-event-bus`
 - `npm run test:platform-drafts`
 - `npm run test:resource-pagination`
 - `npm run test:resource-page-state`
@@ -603,6 +619,8 @@ Backend local defaults:
 - operational metric scrapes share one bounded in-flight collection per API instance. Dependency-unavailable is a
   successfully collected fault, while collector exceptions/timeouts set `xiqu_operational_metrics_collection_success=0`
   and retain the previous real Gauge values rather than inventing zero usage.
+- each API instance owns a small dedicated PostgreSQL collaboration pool. The schema-derived LISTEN/NOTIFY channel carries
+  only bounded revision invalidations; it is not a durable queue and must never replace HTTP catch-up or revision checks.
 - external notification grouping, inhibition, silence, retry, and webhook/email delivery belong to Prometheus/
   Alertmanager. Do not create a second application scheduler/delivery-state database for the same responsibility.
 - `.env` and `data/` are intentionally ignored

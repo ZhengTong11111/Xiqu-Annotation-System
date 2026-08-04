@@ -10,7 +10,7 @@ import {
 } from "./testEnvironment.js";
 
 test("维护独占锁等待在途写许可并跨 coordinator 持久生效", async () => {
-  const { prisma, pool, maintenancePool } = createTestPrisma();
+  const { prisma, pool, maintenancePool, collaborationPool } = createTestPrisma();
   await truncateTestDatabase(prisma);
   const access = new ResourceAccessService(prisma);
   const repository = new PrismaPlatformRepository(prisma, access);
@@ -81,5 +81,6 @@ test("维护独占锁等待在途写许可并跨 coordinator 持久生效", asyn
     await prisma.$disconnect();
     await pool.end();
     await maintenancePool.end();
+    await collaborationPool.end();
   }
 });

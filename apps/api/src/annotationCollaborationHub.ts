@@ -9,12 +9,14 @@ export type AnnotationRevisionPublisher = {
   publishRevisionAdvanced: (event: AnnotationRevisionEvent) => void;
 };
 
+export type AnnotationRevisionDeliveryResult = "accepted" | "duplicate";
+
 type Subscriber = {
   send: (event: AnnotationRevisionAdvancedMessage) => void;
   close: (code: number, reason: string) => void;
 };
 
-export class AnnotationCollaborationHub implements AnnotationRevisionPublisher {
+export class AnnotationCollaborationHub {
   private readonly subscribers = new Map<string, Set<Subscriber>>();
   private readonly latestRevision = new Map<string, number>();
 
@@ -31,9 +33,9 @@ export class AnnotationCollaborationHub implements AnnotationRevisionPublisher {
     };
   }
 
-  publishRevisionAdvanced(event: AnnotationRevisionEvent) {
+  deliverRevisionAdvanced(event: AnnotationRevisionEvent): AnnotationRevisionDeliveryResult {
     const previous = this.latestRevision.get(event.annotationFileId) ?? 0;
-    if (event.revision <= previous) return;
+    if (event.revision <= previous) return "duplicate";
     this.latestRevision.set(event.annotationFileId, event.revision);
     const message: AnnotationRevisionAdvancedMessage = {
       version: 1,
@@ -48,6 +50,7 @@ export class AnnotationCollaborationHub implements AnnotationRevisionPublisher {
         subscriber.close(1011, "revision_delivery_failed");
       }
     }
+    return "accepted";
   }
 
   closeAll() {

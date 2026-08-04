@@ -29,6 +29,7 @@
     "test:platform-operations": "npm run build:shared && node --import tsx --test src/utils/platformOperations.test.ts",
     "test:annotation-commands": "npm run build:shared && node --test packages/shared/test/annotation-commands.test.mjs",
     "test:annotation-collaboration": "npm run build:shared && node --test packages/shared/test/annotation-collaboration.test.mjs && node --import tsx --test src/platform/platformCollaborationRuntime.test.ts apps/api/test/annotationCollaborationHub.test.ts",
+    "test:annotation-revision-event-bus": "node --import tsx --test apps/api/test/annotationRevisionEventEnvelope.test.ts apps/api/test/postgresAnnotationRevisionEventBus.test.ts",
     "test:annotation-operation-pagination": "npm run build:shared && node --import tsx --test apps/api/test/annotationOperationPagination.test.ts",
     "test:annotation-committed-operation-pagination": "npm run build:shared && node --import tsx --test apps/api/test/annotationCommittedOperationPagination.test.ts",
     "test:timeline-timing-command": "npm run build:shared && node --import tsx --test src/utils/timelineTimingCommand.test.ts",

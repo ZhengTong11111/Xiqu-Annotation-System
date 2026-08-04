@@ -4015,3 +4015,76 @@ ProjectData builder、adapter 与编辑器接线：
 - R5b1 不保证跨 API 实例事件抵达：另一个实例提交后，本实例客户端最终仍可依靠周期 HTTP catch-up 正确
   恢复，但不会立即被内存 hub 唤醒。下一轮 R5b2a 应先抽象并实现跨实例 revision event bus、重连与指标，
   仍保持 HTTP 权威恢复；完成后再进入 R5b2b presence/光标/选区。
+
+## 2026-08-04：R5b2a 跨 API 实例 revision 事件分发
+
+### 本轮任务书、架构选择与边界
+
+- 本轮基线为 R5b1 commit `9b12a9a`。Codex 先核对 roadmap、真实代码和上一轮 Development Log，再把被
+  gitignore 的 `CLAUDE_WORK.md` 整体重写为 R5b2a 当前任务书；没有沿用过时的 R2.3c2 名称，也没有把任务书
+  当作长期日志。本轮由 Codex 直接实现和审查，没有调用 Claude Code、GLM、DeepSeek 或其他代理。
+- 目标仅是让“浏览器 WebSocket 在实例 A、保存/恢复请求在实例 B”时仍能立即收到 revision 失效提示。
+  WebSocket 继续不传完整 `ProjectData`、不提交 operation、不做 dirty rebase；HTTP committed feed 与权威
+  snapshot 仍是内容和恢复的唯一事实来源。presence、远端光标/选区、在线成员和实时 operation 提交明确不在
+  本轮范围。
+- 选择 PostgreSQL LISTEN/NOTIFY，而不是在当前规模下提前引入 Redis、Kafka 或新的消息依赖。平台已经依赖
+  PostgreSQL，这个方案能复用现有部署边界并保持事件延迟较低；代价是通知不持久、listener 断线时可能丢失，
+  因此设计上只把它当作 wake-up signal，不能把“收到事件”等同于“已经取得或应用标注内容”。
+
+### 严格事件合同、跨实例总线与连接所有权
+
+- `annotationRevisionEventEnvelope.ts` 新增 server-only version 1 envelope：只包含事件类型、来源实例 id、
+  标注文件 id、已提交 revision 和 committed-feed cursor。解析要求 exact keys、稳定 id、正 revision、有效
+  cursor 和 7000-byte 上限；事件不携带账号、权限、文件名、票据、token、operation body 或标注 payload。
+  PostgreSQL channel 根据实际 schema 哈希生成，避免同一数据库中的开发、测试和其他租户 schema 互相串扰。
+- `PostgresAnnotationRevisionEventBus` 先把事务后事件送入当前实例 hub，再异步调用 `pg_notify`。这保证
+  PostgreSQL 发布临时失败不会让本实例用户失去提示，更不能反向使已经成功提交的保存/恢复请求失败。待发布
+  事件按 annotation file 合并为最高 revision，文件队列上限为 1000；溢出时明确丢弃最旧待发布文件并计数，
+  而不是形成无限内存增长或隐藏背压。
+- listener 初始 LISTEN 失败会阻止 Fastify 启动，避免服务在误以为跨实例通知可用的状态下上线；运行期连接
+  错误使用 generation 和有界指数退避加 jitter 重连。关闭流程先停止新发布、清 timer、关闭 listener，再由
+  Fastify 关闭进程内 hub。每个 API 实例使用专用小型 collaboration pool，不占用 Prisma 业务查询连接，也不
+  复用 maintenance advisory-lock pool；备份 CLI 和恢复演练会显式关闭自己不使用的 collaboration pool。
+- 进程内 `AnnotationCollaborationHub` 已收敛成单调 fan-out：它返回 accepted/duplicate，并对 PostgreSQL
+  自回环、重复和乱序 revision 去重。`ResourceService` 继续只在保存或恢复事务成功提交后发布，并使用事务
+  返回的精确 revision/cursor；没有恢复锁外重读或第二条写入路径。
+
+### 可观测性、自我审查与僵尸逻辑清理
+
+- Prometheus 新增低基数指标：event-bus 连接状态、待发布文件数、发布 queued/coalesced/dropped/failed、
+  入站 accepted/duplicate/invalid 和重连次数。labels 只描述固定结果，不包含 file/user/schema/channel/error，
+  防止高基数或敏感信息进入指标。开发环境没有配置 `XIQU_METRICS_TOKEN` 时 `/metrics` 继续按既有合同关闭。
+- 自审发现第一次 listener 连接失败发生在 `connectInFlight` 尚未清空时，重连请求可能被 single-flight 吞掉。
+  最终增加 retry-after-attempt 状态，只在当前尝试完成并清空 single-flight 后排定下一次连接；专项测试覆盖。
+- 第二次自审发现 listener close 的异步 rejection 可能成为未处理 Promise。最终显式 catch、记录并在 finally
+  排定重连或结束清理。跨实例 publish 失败测试同时确认：本实例已经收到事件、调用方不抛同步异常、失败计数
+  增加，保存语义不受通知设施影响。
+- 删除了 hub 旧 publisher 职责和“单进程 hub 直接由 ResourceService 发布”的重复接线；应用只有一个 event
+  bus 组合根，没有为测试复制第二套数据库 URL/search_path 解析。没有新增运行时依赖，也没有遗留调试日志、
+  第二个 S3/Prisma 客户端路径或未使用的旧 publisher。
+
+### 测试、构建与真实运行验收
+
+- `npm run test:annotation-revision-event-bus`：8/8。覆盖严格 envelope/channel、同文件合并、跨实例入站、
+  自回环去重、发布失败本地优先、初连失败、运行时断线重连和优雅关闭。
+- `npm run test:annotation-collaboration`：8/8；原有票据、hub、浏览器连接 runtime、坏协议、离线、文件切换和
+  dispose 行为无回归。`npm run test:observability`：11/11；新指标保持低基数且禁用端点语义不变。
+- `npm run test:api`：104/104。集成测试真实创建两个独立 Prisma/Fastify 应用及两组 collaboration pools：
+  WebSocket 连接实例 A，实例 B 完成普通保存和快照恢复，实例 A 分别收到 revision 2、3；同时覆盖资源、ACL、
+  上传、恢复、审计、备份、维护和既有协作会话。只保留仓库既有 node-postgres pg 9 弃用提示。
+- `npx tsc -p apps/api/tsconfig.test.json --noEmit` 通过。`npm run build` 通过 Prisma generation、shared、
+  document-model、Web 和 API；Vite 转换 2075 个模块，CSS 121.08 kB / gzip 22.35 kB，主 JS 929.81 kB /
+  gzip 276.69 kB；只有既有超过 500 kB 的 chunk 提示。`git diff --check` 通过。
+- 当前工作树 API 在 4317 端口运行（PID 63908）；`/api/health/ready` 返回 HTTP 200，数据库探针约 3.86 ms、
+  本地对象存储约 1.04 ms。开发环境未设置 metrics token，`/metrics` 返回 404 属于预期，指标内容由集成测试
+  验证。in-app Browser 登录平台并打开《寻梦》服务器标注文件，顶部显示“实时已连接”，编辑器、时间轴和
+  确认范围面板正常；Fastify 日志中的 upgrade URL 仍只有 `/collaboration` 路径，不含一次性票据。
+
+### 文档、已知限制与下一阶段
+
+- README、state architecture、AGENTS 和 roadmap 已同步跨实例通知合同、专用连接池、模块职责、测试命令和
+  R5b2a 完成状态；本 Development Log 按用户要求记录任务书、架构取舍、自审修复、僵尸逻辑清理、测试数字、
+  真实运行和下一步边界。没有数据文件格式或视觉布局变化，不需要更新 README 截图。
+- PostgreSQL NOTIFY 天生可丢失，也不提供持久消费确认；当前实现故意不把它包装成可靠消息队列。浏览器周期
+  HTTP catch-up、revision 连续性校验和 snapshot 降级仍负责最终正确性。下一轮 R5b2b 才开始短生命周期
+  presence、远端光标/选区和在线成员 UI，并需先明确节流、隐私、撤权、慢消费、断线和文件切换语义。

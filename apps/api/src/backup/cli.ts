@@ -189,7 +189,7 @@ async function runCommand(
   }
 
   const databaseUrl = process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL;
-  const { prisma, pool, maintenancePool } = createPrismaConnection(databaseUrl);
+  const { prisma, pool, maintenancePool, collaborationPool } = createPrismaConnection(databaseUrl);
   try {
     const access = new ResourceAccessService(prisma);
     const maintenance = new MaintenanceCoordinator(prisma, maintenancePool, access);
@@ -263,6 +263,7 @@ async function runCommand(
     await prisma.$disconnect();
     await pool.end();
     await maintenancePool.end();
+    await collaborationPool.end();
   }
 }
 

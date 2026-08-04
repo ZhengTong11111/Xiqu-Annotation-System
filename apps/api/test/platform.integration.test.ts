@@ -28,12 +28,14 @@ type JsonObject = Record<string, unknown>;
 
 test("平台资源 API 集成测试", async (suite) => {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "xiqu-api-test-"));
-  const { prisma, pool, maintenancePool } = createTestPrisma();
+  const { prisma, pool, maintenancePool, collaborationPool, schema } = createTestPrisma();
   await truncateTestDatabase(prisma);
   const storage = new LocalObjectStorage(storageRoot);
   const app = await buildApiApp({
     prisma,
     maintenancePool,
+    collaborationPool,
+    databaseSchema: schema,
     storage,
     logger: false,
     seed: true,
@@ -90,6 +92,8 @@ test("平台资源 API 集成测试", async (suite) => {
       const metricsDisabledApp = await buildApiApp({
         prisma,
         maintenancePool,
+        collaborationPool,
+        databaseSchema: schema,
         storage,
         logger: false,
         seed: false,
@@ -1138,6 +1142,109 @@ test("平台资源 API 集成测试", async (suite) => {
         4403,
       );
       roleSocket.close();
+    });
+
+    await suite.test("不同 API 实例通过 PostgreSQL 转发保存与恢复 revision", async () => {
+      const secondConnections = createTestPrisma();
+      const secondApp = await buildApiApp({
+        prisma: secondConnections.prisma,
+        maintenancePool: secondConnections.maintenancePool,
+        collaborationPool: secondConnections.collaborationPool,
+        databaseSchema: secondConnections.schema,
+        storage,
+        logger: false,
+        seed: false,
+        uploadPolicy: {
+          maxUploadBytes: 64,
+          userQuotaBytes: 80,
+          platformQuotaBytes: 200,
+          orphanGraceMs: 1_000,
+        },
+        metricsToken: null,
+      });
+      await secondApp.ready();
+      let socket: Awaited<ReturnType<typeof app.injectWS>> | null = null;
+      try {
+        const created = await jsonRequest(app, adminToken, {
+          method: "POST",
+          url: "/api/annotation-files",
+          payload: {
+            parentId: projectId,
+            name: "跨实例 revision 通知.json",
+            payload: { marker: "cross-instance-base" },
+          },
+        });
+        const fileId = String((dataOf(created.json()).resource as JsonObject).id);
+        const issued = await jsonRequest(app, adminToken, {
+          method: "POST",
+          url: `/api/annotation-files/${fileId}/collaboration-ticket`,
+        });
+        const ticket = dataOf(issued.json());
+        let resolveReady!: () => void;
+        let resolveRevisionTwo!: (message: JsonObject) => void;
+        let resolveRevisionThree!: (message: JsonObject) => void;
+        const ready = new Promise<void>((resolve) => {
+          resolveReady = resolve;
+        });
+        const revisionTwo = new Promise<JsonObject>((resolve) => {
+          resolveRevisionTwo = resolve;
+        });
+        const revisionThree = new Promise<JsonObject>((resolve) => {
+          resolveRevisionThree = resolve;
+        });
+        socket = await app.injectWS(
+          String(ticket.websocketPath),
+          { headers: collaborationWsHeaders(String(ticket.ticket)) },
+          {
+            onInit: (openedSocket) => {
+              openedSocket.on("message", (payload: unknown) => {
+                const message = JSON.parse(String(payload)) as JsonObject;
+                if (message.type === "session.ready") resolveReady();
+                if (message.type === "annotation.revision.advanced" && message.revision === 2) {
+                  resolveRevisionTwo(message);
+                }
+                if (message.type === "annotation.revision.advanced" && message.revision === 3) {
+                  resolveRevisionThree(message);
+                }
+              });
+            },
+          },
+        );
+        await withTimeout(ready, "等待跨实例测试 session.ready 超时");
+
+        // 保存请求落到第二个 Fastify 实例，连接在第一个实例的浏览器仍应立即收到 revision 2。
+        const saved = await jsonRequest(secondApp, adminToken, {
+          method: "PUT",
+          url: `/api/annotation-files/${fileId}`,
+          payload: { baseRevision: 1, payload: { marker: "saved-by-instance-b" } },
+        });
+        assert.equal(saved.statusCode, 200, saved.body);
+        const savedEvent = await withTimeout(revisionTwo, "等待跨实例保存 revision 超时");
+        assert.equal(savedEvent.annotationFileId, fileId);
+        assert.equal(savedEvent.revision, 2);
+
+        const sourceSnapshot = await secondConnections.prisma.annotationRecoverySnapshot
+          .findFirstOrThrow({ where: { annotationFileId: fileId, revision: 1 } });
+        const restored = await jsonRequest(secondApp, adminToken, {
+          method: "POST",
+          url: `/api/annotation-files/${fileId}/recovery-snapshots/${sourceSnapshot.id}/restore`,
+          payload: { baseRevision: 2 },
+        });
+        assert.equal(restored.statusCode, 200, restored.body);
+        const restoredEvent = await withTimeout(
+          revisionThree,
+          "等待跨实例恢复 revision 超时",
+        );
+        assert.equal(restoredEvent.annotationFileId, fileId);
+        assert.equal(restoredEvent.revision, 3);
+      } finally {
+        socket?.close();
+        await secondApp.close();
+        await secondConnections.prisma.$disconnect();
+        await secondConnections.pool.end();
+        await secondConnections.maintenancePool.end();
+        await secondConnections.collaborationPool.end();
+      }
     });
 
     await suite.test("项目递归复制复用媒体对象并重映射内部引用", async () => {
@@ -3888,6 +3995,7 @@ test("平台资源 API 集成测试", async (suite) => {
     await prisma.$disconnect();
     await pool.end();
     await maintenancePool.end();
+    await collaborationPool.end();
     await rm(storageRoot, { recursive: true, force: true });
   }
 });

@@ -31,10 +31,17 @@ import { loadUploadPolicy, type UploadPolicy } from "./uploadPolicy.js";
 import { AnnotationCollaborationTicketService } from "./annotationCollaborationTicketService.js";
 import { AnnotationCollaborationHub } from "./annotationCollaborationHub.js";
 import { registerAnnotationCollaborationRoutes } from "./annotationCollaborationRoutes.js";
+import { createAnnotationRevisionChannel } from "./annotationRevisionEventEnvelope.js";
+import {
+  createPostgresAnnotationRevisionTransport,
+  PostgresAnnotationRevisionEventBus,
+} from "./postgresAnnotationRevisionEventBus.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
   maintenancePool: Pool;
+  collaborationPool: Pool;
+  databaseSchema: string;
   storage?: ObjectStorage;
   logger?: FastifyServerOptions["logger"] | FastifyBaseLogger;
   seed?: boolean;
@@ -58,11 +65,23 @@ export async function buildApiApp(
   const auditLogs = new AuditLogService(options.prisma, access);
   const collaborationHub = new AnnotationCollaborationHub();
   const collaborationTickets = new AnnotationCollaborationTicketService(options.prisma, access);
-  const resources = new ResourceService(options.prisma, access, collaborationHub);
   // 生产默认只通过工厂装配一次；测试可注入 typed adapter，不读取宿主环境。
   const storage = options.storage ?? createObjectStorageFromEnvironment();
   const uploadPolicy = loadUploadPolicy(options.uploadPolicy);
   const observability = new ApiObservability();
+  const app = Fastify({
+    logger: options.logger ?? { level: process.env.LOG_LEVEL ?? "info" },
+    bodyLimit: uploadPolicy.maxUploadBytes + 1024 * 1024,
+  });
+  // 跨实例总线只发布有损 revision 提示；ResourceService 不感知 PostgreSQL 或 WebSocket 实现。
+  const collaborationEvents = new PostgresAnnotationRevisionEventBus({
+    transport: createPostgresAnnotationRevisionTransport(options.collaborationPool),
+    channel: createAnnotationRevisionChannel(options.databaseSchema),
+    deliver: (event) => collaborationHub.deliverRevisionAdvanced(event),
+    observability,
+    logger: app.log,
+  });
+  const resources = new ResourceService(options.prisma, access, collaborationEvents);
   const health = new HealthService(options.prisma, storage);
   // 外部监控采集使用有限只读聚合，并与管理员诊断的重型对象审计保持分离。
   const operationalMetrics = new OperationalMetricsCollector(
@@ -90,10 +109,6 @@ export async function buildApiApp(
     storage,
     uploadPolicy,
   );
-  const app = Fastify({
-    logger: options.logger ?? { level: process.env.LOG_LEVEL ?? "info" },
-    bodyLimit: uploadPolicy.maxUploadBytes + 1024 * 1024,
-  });
   observability.registerHttpHooks(app);
   maintenance.registerRequestGate(app);
   const diagnostics = new SystemDiagnosticsService(
@@ -205,9 +220,17 @@ export async function buildApiApp(
     collaborationHub,
   );
   app.addHook("onClose", async () => {
+    await collaborationEvents.close();
     collaborationHub.closeAll();
   });
   if (options.seed) await repository.ensureSeedData();
+  try {
+    // 初次 LISTEN 失败必须阻止应用启动；运行期断线由 event bus 自己有界重连。
+    await collaborationEvents.start();
+  } catch (error) {
+    await app.close();
+    throw error;
+  }
   return app;
 }
 

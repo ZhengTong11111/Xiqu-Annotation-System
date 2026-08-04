@@ -35,8 +35,9 @@ ACL 复核，以及 operation/save/restore 的统一写入门禁；R5a4c2 已把
 有界结构事务、自定义轨整轨生命周期、内建/自定义父轨的附属点轨生命周期，以及自定义 typeOptions 与块
 type 的原子联动；R5a4c4a 已完成既有顶层轨道排序、既有内建轨配置、既有附属点轨配置，以及各自
 typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建轨生命周期和批量受控快照边界。R5b1
-已完成短时一次性票据、认证 WebSocket 文件会话、权限重验、连接生命周期与 revision 通知；下一步进入
-R5b2a 的跨实例事件分发，随后再建设 presence 与远端选区；
+已完成短时一次性票据、认证 WebSocket 文件会话、权限重验、连接生命周期与 revision 通知；R5b2a
+已通过 PostgreSQL LISTEN/NOTIFY 完成跨 API 实例的有界 revision 事件分发、重连和可观测性，下一步进入
+R5b2b 的短生命周期 presence、远端光标与选区；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -485,10 +486,13 @@ R5b2a 的跨实例事件分发，随后再建设 presence 与远端选区；
     严格校验协议、活动资源、账号、当前角色与 ACL，并通过心跳和每次发送前复核响应停用、撤权或移入回收站。
     服务端只发布 `session.ready` 与单调 `annotation.revision.advanced`，客户端仅用它唤醒已有 clean-only HTTP
     committed feed/snapshot 追赶。文件切换、离线、超时、退避重连、Strict Effects 清理和紧凑连接状态 UI 已有
-    确定性测试；本阶段 hub 仍是单进程内存实现。
-  - R5b2a 待推进：把 revision 事件从单进程 hub 提升为跨 API 实例分发。优先评估 PostgreSQL LISTEN/NOTIFY
-    或可替换 event-bus port，要求事件只携带有界文件 id/revision/cursor，支持重复/乱序去重、实例重连、优雅
-    关闭和可观测性；HTTP catch-up 仍是丢消息后的权威恢复路径。
+    确定性测试；进程内 hub 只负责本实例 WebSocket fan-out，不再承担跨实例传输。
+  - R5b2a 已完成：新增严格有界的 revision 事件 envelope 和可替换 event-bus 边界；生产组合使用 schema
+    隔离的 PostgreSQL LISTEN/NOTIFY、独立小型连接池和独立 listener。保存/恢复事务提交后先通知本实例，再
+    异步发布跨实例事件；同文件待发布事件按最高 revision 合并，队列有上限和明确丢弃指标。listener 初次连接
+    失败会阻止启动，运行时断线使用有界退避重连；hub 对自回环、重复与乱序 revision 做单调去重。专项测试及
+    两个真实 Fastify 实例的 PostgreSQL 集成测试覆盖跨实例保存与恢复通知。NOTIFY 仍是可丢失提示，不是持久
+    队列；周期 HTTP committed-feed/snapshot catch-up 始终是权威恢复路径。
   - R5b2b 待推进：在跨实例通知稳定后增加短生命周期 presence、光标/选区和在线成员视图，并明确节流、慢消费、
     文件切换、断线、撤权和隐私语义；presence 不写入 ProjectData、恢复快照或 operation log。
   - R5b3 待推进：评估并接入领域 operation 的实时提交/确认；继续复用现有幂等键、文件 sequence、revision

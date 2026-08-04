@@ -20,10 +20,16 @@ export function createPrismaConnection(databaseUrl: string) {
     options: `-c search_path=${schema}`,
     max: 20,
   });
+  // LISTEN 会长期独占连接；协作通知使用独立小池，不能挤占 Prisma 查询或维护模式 advisory permit。
+  const collaborationPool = new pg.Pool({
+    connectionString: databaseUrl,
+    options: `-c search_path=${schema}`,
+    max: 4,
+  });
   const prisma = new PrismaClient({
     adapter: new PrismaPg(pool, { schema }),
   });
-  return { prisma, pool, maintenancePool, schema };
+  return { prisma, pool, maintenancePool, collaborationPool, schema };
 }
 
 export function parseDatabaseSchema(databaseUrl: string) {

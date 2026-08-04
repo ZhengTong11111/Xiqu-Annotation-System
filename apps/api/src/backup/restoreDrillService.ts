@@ -77,7 +77,9 @@ export async function runRestoreDrill(options: RestoreDrillOptions) {
   await restoreObjectsAtomically(options, manifest.objects.entries);
 
   const checks: RestoreDrillReport["checks"] = [];
-  const { prisma, pool, maintenancePool } = createPrismaConnection(options.targetDatabaseUrl);
+  const { prisma, pool, maintenancePool, collaborationPool } = createPrismaConnection(
+    options.targetDatabaseUrl,
+  );
   try {
     // 恢复库必须包含 migration history 和运行状态表，证明不是只恢复了部分业务表。
     const migrationTable = await prisma.$queryRaw<Array<{ exists: boolean }>>`
@@ -114,6 +116,7 @@ export async function runRestoreDrill(options: RestoreDrillOptions) {
     await prisma.$disconnect();
     await pool.end();
     await maintenancePool.end();
+    await collaborationPool.end();
   }
 
   const report: RestoreDrillReport = {

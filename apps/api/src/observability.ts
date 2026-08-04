@@ -23,6 +23,17 @@ export type UploadMetricResult =
   | "conflict"
   | "internal";
 
+export type AnnotationRevisionBusPublishResult =
+  | "queued"
+  | "coalesced"
+  | "dropped"
+  | "failed";
+
+export type AnnotationRevisionBusInboundResult =
+  | "accepted"
+  | "duplicate"
+  | "invalid";
+
 // 每个 Fastify 实例拥有独立 Registry，集成测试可反复构建 app 而不会发生指标重名。
 export class ApiObservability {
   readonly registry = new Registry();
@@ -39,6 +50,11 @@ export class ApiObservability {
   private readonly processingJobs: Gauge;
   private readonly operationalCollectionSuccess: Gauge;
   private readonly operationalCollectionTimestamp: Gauge;
+  private readonly annotationRevisionBusConnected: Gauge;
+  private readonly annotationRevisionBusPendingFiles: Gauge;
+  private readonly annotationRevisionBusPublishes: Counter;
+  private readonly annotationRevisionBusInbound: Counter;
+  private readonly annotationRevisionBusReconnects: Counter;
 
   constructor() {
     // 默认进程指标与平台业务指标注册到同一个实例级 Registry，便于一次抓取和测试隔离。
@@ -118,6 +134,34 @@ export class ApiObservability {
       help: "Unix time of the latest successful operational metric collection.",
       registers: [this.registry],
     });
+    // 协作通知指标只使用固定结果标签，禁止文件 id、账号或实例 id 形成高基数时序。
+    this.annotationRevisionBusConnected = new Gauge({
+      name: "xiqu_annotation_revision_bus_connected",
+      help: "Whether this API instance currently has an active PostgreSQL LISTEN connection.",
+      registers: [this.registry],
+    });
+    this.annotationRevisionBusPendingFiles = new Gauge({
+      name: "xiqu_annotation_revision_bus_pending_files",
+      help: "Annotation files currently waiting for a coalesced PostgreSQL revision notification.",
+      registers: [this.registry],
+    });
+    this.annotationRevisionBusPublishes = new Counter({
+      name: "xiqu_annotation_revision_bus_publish_total",
+      help: "Revision notification publish queue outcomes.",
+      labelNames: ["result"],
+      registers: [this.registry],
+    });
+    this.annotationRevisionBusInbound = new Counter({
+      name: "xiqu_annotation_revision_bus_inbound_total",
+      help: "Local and PostgreSQL revision notification delivery outcomes.",
+      labelNames: ["result"],
+      registers: [this.registry],
+    });
+    this.annotationRevisionBusReconnects = new Counter({
+      name: "xiqu_annotation_revision_bus_reconnect_total",
+      help: "PostgreSQL LISTEN reconnect attempts scheduled by this API instance.",
+      registers: [this.registry],
+    });
   }
 
   // Fastify 的 routeOptions.url 是规范化模板；404 固定为 unknown，禁止 URL id 进入标签。
@@ -183,6 +227,26 @@ export class ApiObservability {
   // 采集失败只标记失败，不把上一次真实容量和任务值伪造为零。
   recordOperationalCollectionFailure() {
     this.operationalCollectionSuccess.set(0);
+  }
+
+  setAnnotationRevisionBusConnected(connected: boolean) {
+    this.annotationRevisionBusConnected.set(connected ? 1 : 0);
+  }
+
+  setAnnotationRevisionBusPendingFiles(count: number) {
+    this.annotationRevisionBusPendingFiles.set(count);
+  }
+
+  recordAnnotationRevisionBusPublish(result: AnnotationRevisionBusPublishResult) {
+    this.annotationRevisionBusPublishes.inc({ result });
+  }
+
+  recordAnnotationRevisionBusInbound(result: AnnotationRevisionBusInboundResult) {
+    this.annotationRevisionBusInbound.inc({ result });
+  }
+
+  recordAnnotationRevisionBusReconnect() {
+    this.annotationRevisionBusReconnects.inc();
   }
 }
 

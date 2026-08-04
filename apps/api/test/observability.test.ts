@@ -53,6 +53,25 @@ test("上传和清理指标只接受稳定类别与计数", async () => {
   assert.match(metrics, /kind="binary"\} 2/);
 });
 
+test("跨实例 revision bus 指标只使用固定低基数类别", async () => {
+  const observability = new ApiObservability();
+  observability.setAnnotationRevisionBusConnected(true);
+  observability.setAnnotationRevisionBusPendingFiles(2);
+  observability.recordAnnotationRevisionBusPublish("queued");
+  observability.recordAnnotationRevisionBusPublish("coalesced");
+  observability.recordAnnotationRevisionBusInbound("accepted");
+  observability.recordAnnotationRevisionBusInbound("invalid");
+  observability.recordAnnotationRevisionBusReconnect();
+  const metrics = await observability.registry.metrics();
+  assert.match(metrics, /xiqu_annotation_revision_bus_connected 1/);
+  assert.match(metrics, /xiqu_annotation_revision_bus_pending_files 2/);
+  assert.match(metrics, /publish_total\{result="queued"\} 1/);
+  assert.match(metrics, /publish_total\{result="coalesced"\} 1/);
+  assert.match(metrics, /inbound_total\{result="accepted"\} 1/);
+  assert.match(metrics, /xiqu_annotation_revision_bus_reconnect_total 1/);
+  assert.doesNotMatch(metrics, /annotationFileId|sourceInstanceId|accountName/);
+});
+
 test("对象存储故障只降低 readiness，不影响进程 liveness", async () => {
   const health = new HealthService(
     {

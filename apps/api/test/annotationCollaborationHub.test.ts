@@ -14,25 +14,25 @@ test("协作 hub 按文件隔离并拒绝倒退或重复 revision", () => {
     send: (message) => right.push(message.revision),
     close: () => undefined,
   });
-  hub.publishRevisionAdvanced({
+  assert.equal(hub.deliverRevisionAdvanced({
     annotationFileId: "file-left",
     revision: 2,
     operationCursor: "cursor-left-2",
-  });
-  hub.publishRevisionAdvanced({
+  }), "accepted");
+  assert.equal(hub.deliverRevisionAdvanced({
     annotationFileId: "file-left",
     revision: 2,
     operationCursor: "duplicate",
-  });
-  hub.publishRevisionAdvanced({
+  }), "duplicate");
+  assert.equal(hub.deliverRevisionAdvanced({
     annotationFileId: "file-right",
     revision: 4,
     operationCursor: "cursor-right-4",
-  });
+  }), "accepted");
   assert.deepEqual(left, [2]);
   assert.deepEqual(right, [4]);
   unsubscribe();
-  hub.publishRevisionAdvanced({
+  hub.deliverRevisionAdvanced({
     annotationFileId: "file-left",
     revision: 3,
     operationCursor: "cursor-left-3",
