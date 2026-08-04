@@ -9,7 +9,7 @@ import {
   type BuiltinTrackStructureSnapshot,
   type TrackConfigurationCommandEnvelope,
 } from "@xiqu/shared";
-import type { AttachedPointTrack, BuiltinTrack, CustomTrack, ProjectData } from "../types";
+import type { AttachedPointTrack, BuiltinTrack, CustomTrack, ProjectData } from "@xiqu/document-model";
 import {
   resolveAttachedPointTrackStructureSnapshot,
   resolveBuiltinTrackStructureSnapshot,

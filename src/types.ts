@@ -1,253 +1,58 @@
-export type SingingStyle = string;
+import type {
+  BranchScope,
+  BuiltinTrackId,
+  CustomTrackType,
+  TrackBranching,
+} from "@xiqu/document-model";
 
-// 《韵学骊珠》四声阴阳体系。
-// 主系统是四声分阴阳共八类（ToneClass）；上声在原书另有 阴上/阳上/阴阳通用 三层，
-// 因此额外用 YxlzShangSubtype 保留原书层级，避免“阴阳通用”被简单当作普通阳上。
-export type ToneBase = "ping" | "shang" | "qu" | "ru";
-export type ToneYinYang = "yin" | "yang";
-export type ToneClass =
-  | "yin_ping"
-  | "yang_ping"
-  | "yin_shang"
-  | "yang_shang"
-  | "yin_qu"
-  | "yang_qu"
-  | "yin_ru"
-  | "yang_ru";
-// 仅上声使用：原书把上声细分为阴上、阳上、阴阳通用三类。
-// 阴阳通用在八类系统中落到 yang_shang，但靠此字段保留原书层级。
-export type YxlzShangSubtype = "yin_shang" | "yang_shang" | "yinyang_tongyong";
+// 兼容现有 Web 导入路径：持久化领域类型的唯一实现位于 document-model，本文件不再复制定义。
+export type {
+  ActionAnnotation,
+  AttachedPointAnnotation,
+  AttachedPointTrack,
+  BanyanAttachment,
+  BanyanConfidence,
+  BanyanCycleType,
+  BanyanMark,
+  BanyanRole,
+  BanyanSection,
+  BanyanSegment,
+  BanyanSubtype,
+  BranchLane,
+  BranchScope,
+  BuiltinTrack,
+  BuiltinTrackId,
+  BuiltinTrackType,
+  CharacterAnnotation,
+  CharacterToneInfo,
+  CustomActionTrack,
+  CustomActionTrackBlock,
+  CustomTextTrack,
+  CustomTextTrackBlock,
+  CustomTrack,
+  CustomTrackType,
+  GongcheAnnotation,
+  GongcheSymbol,
+  ProjectData,
+  ProjectVideo,
+  SavedProjectFile,
+  SingingStyle,
+  SubtitleLine,
+  ToneBase,
+  ToneClass,
+  ToneYinYang,
+  TrackBranchDisplayMode,
+  TrackBranching,
+  YxlzShangSubtype,
+} from "@xiqu/document-model";
 
-export type CharacterToneInfo = {
-  // 四声阴阳八类，是逐字四声信息的主存储字段。
-  toneClass: ToneClass;
-  // 仅上声有意义：保留原书 阴上/阳上/阴阳通用 层级。
-  // 非 上声 不应设置此字段；导入时若残留会被丢弃。
-  yxlzShangSubtype?: YxlzShangSubtype;
-};
-
-export type BuiltinTrackId = "character-track";
-export type CustomTrackType = "text" | "action";
-export type BuiltinTrackType = "character" | "action";
-
-// 分叉归属刻意用“根轨/多个分支”表达，而不是单一 branchId：
-// 有些标注块属于整条轨道，有些标注块可能由多个下层分叉共同拥有。
-export type BranchScope =
-  | {
-      mode: "root";
-    }
-  | {
-      mode: "lanes";
-      laneIds: string[];
-    };
-
-// BranchLane 是递归树节点。parentId 便于扁平化渲染和未来局部展开，
-// children 保留完整层级关系，支持“手 -> 扇 -> 扇面”等继续细分。
-export type BranchLane = {
-  id: string;
-  name: string;
-  parentId: string | null;
-  color?: string;
-  children?: BranchLane[];
-};
-
-export type TrackBranchDisplayMode = "merged" | "expanded";
-
-export type TrackBranching = {
-  enabled: boolean;
-  rootLabel?: string;
-  displayMode: TrackBranchDisplayMode;
-  lanes: BranchLane[];
-};
-
+// Inspector 聚焦请求只服务当前 React 会话，不属于可保存项目内容。
 export type InspectorFocusRequest = {
   target: "track-branching" | "block-branch-scope";
   requestId: number;
 };
 
-export type AttachedPointAnnotation = {
-  id: string;
-  time: number;
-  label: string;
-};
-
-export type AttachedPointTrack = {
-  id: string;
-  name: string;
-  typeOptions: string[];
-  points: AttachedPointAnnotation[];
-  snapToWaveformKeypoints?: boolean;
-  snapToParentBoundaries?: boolean;
-  autoSetLoopRangeOnSelect?: boolean;
-};
-
-export type SubtitleLine = {
-  id: string;
-  text: string;
-  startTime: number;
-  endTime: number;
-};
-
-export type CharacterAnnotation = {
-  id: string;
-  lineId: string;
-  char: string;
-  startTime: number;
-  endTime: number;
-  singingStyle: SingingStyle;
-  // 四声信息挂在逐字块上；句级字幕的四声预览由本字段派生，不再重复存储。
-  // null 表示未标注；导入旧文件无此字段时统一归一化为 null。
-  tone?: CharacterToneInfo | null;
-};
-
-export type GongcheSymbol = {
-  id: string;
-  label: string;
-  notation?: string;
-  rawText?: string;
-  parenthesized?: boolean;
-  startTime: number;
-  endTime: number;
-  assetUrl?: string | null;
-};
-
-export type GongcheAnnotation = {
-  id: string;
-  parentTrackId: string;
-  parentBlockId: string;
-  startTime: number;
-  endTime: number;
-  symbols: GongcheSymbol[];
-};
-
-export type BanyanCycleType =
-  | "sanban"
-  | "liushuiban"
-  | "yi_ban_yi_yan"
-  | "yi_ban_yi_yan_zeng"
-  | "yi_ban_san_yan"
-  | "yi_ban_san_yan_zeng"
-  | "custom";
-
-export type BanyanRole = "ban" | "yan" | "auxiliary";
-
-export type BanyanSubtype =
-  | "mainBan"
-  | "headBan"
-  | "waistBan"
-  | "bottomBan"
-  | "zengBan"
-  | "waistZengBan"
-  | "middleEye"
-  | "smallEye"
-  | "sideHeadTailEye"
-  | "sideMiddleEye"
-  | "phraseBoundary"
-  | "unknown";
-
-export type BanyanSegment = "main" | "zeng" | "free" | "unknown";
-
-export type BanyanAttachment = "on_note" | "in_between" | "at_phrase_end" | "unknown";
-
-export type BanyanConfidence = "auto" | "reviewed" | "manual";
-
-export type BanyanSection = {
-  id: string;
-  name: string;
-  startTime: number;
-  endTime: number;
-  cycleType: BanyanCycleType;
-  freeRhythm: boolean;
-  beatCount?: number;
-  hasZengBan?: boolean;
-  source?: string;
-  comment?: string;
-};
-
-export type BanyanMark = {
-  id: string;
-  sectionId?: string | null;
-  time: number;
-  estimatedTime: number;
-  sourceSymbol: string;
-  sourceTokenIndex?: number;
-  sourceKey?: string;
-  role: BanyanRole;
-  subtype: BanyanSubtype;
-  segment: BanyanSegment;
-  beatIndex?: number | null;
-  cycleIndex?: number | null;
-  strength?: "strong" | "medium" | "weak" | "unknown";
-  attachment: BanyanAttachment;
-  linkedGongcheAnnotationId?: string | null;
-  linkedGongcheSymbolId?: string | null;
-  linkedGongcheSymbolIds?: string[];
-  confidence: BanyanConfidence;
-  manualOffset?: number;
-  durationHint?: string | null;
-  orphaned?: boolean;
-  comment?: string;
-};
-
-export type ActionAnnotation = {
-  id: string;
-  trackId: string;
-  label: string;
-  startTime: number;
-  endTime: number;
-};
-
-export type CustomTextTrackBlock = {
-  id: string;
-  startTime: number;
-  endTime: number;
-  text: string;
-  type: string;
-  branchScope?: BranchScope;
-  branchGroupId?: string;
-  branchParentBlockId?: string;
-};
-
-export type CustomActionTrackBlock = {
-  id: string;
-  startTime: number;
-  endTime: number;
-  type: string;
-  branchScope?: BranchScope;
-  branchGroupId?: string;
-  branchParentBlockId?: string;
-};
-
-export type CustomTextTrack = {
-  id: string;
-  name: string;
-  trackType: "text";
-  color?: string;
-  typeOptions: string[];
-  blocks: CustomTextTrackBlock[];
-  attachedPointTracks: AttachedPointTrack[];
-  branching?: TrackBranching;
-  attachedPointTracksExpanded?: boolean;
-  snapToWaveformKeypoints?: boolean;
-  autoSetLoopRangeOnSelect?: boolean;
-};
-
-export type CustomActionTrack = {
-  id: string;
-  name: string;
-  trackType: "action";
-  color?: string;
-  typeOptions: string[];
-  blocks: CustomActionTrackBlock[];
-  attachedPointTracks: AttachedPointTrack[];
-  branching?: TrackBranching;
-  attachedPointTracksExpanded?: boolean;
-  snapToWaveformKeypoints?: boolean;
-  autoSetLoopRangeOnSelect?: boolean;
-};
-
-export type CustomTrack = CustomTextTrack | CustomActionTrack;
-
+// 时间轴派生模型把持久块补充为可直接渲染的轨道上下文，但不回写项目文件。
 export type ResolvedCustomTrackBlock = {
   id: string;
   trackId: string;
@@ -259,17 +64,6 @@ export type ResolvedCustomTrackBlock = {
   branchScope?: BranchScope;
   branchGroupId?: string;
   branchParentBlockId?: string;
-};
-
-export type BuiltinTrack = {
-  id: BuiltinTrackId;
-  name: string;
-  type: BuiltinTrackType;
-  options?: string[];
-  attachedPointTracks: AttachedPointTrack[];
-  attachedPointTracksExpanded?: boolean;
-  snapToWaveformKeypoints?: boolean;
-  autoSetLoopRangeOnSelect?: boolean;
 };
 
 export type TrackDefinition = {
@@ -291,43 +85,7 @@ export type TrackDefinition = {
   color?: string;
 };
 
-export type ProjectVideo = {
-  url: string;
-  name: string | null;
-  source: "url" | "embedded";
-  filePath?: string | null;
-  requiresManualImport?: boolean;
-};
-
-export type ProjectData = {
-  video: ProjectVideo;
-  subtitleLines: SubtitleLine[];
-  characterAnnotations: CharacterAnnotation[];
-  gongcheAnnotations: GongcheAnnotation[];
-  banyanSections: BanyanSection[];
-  banyanMarks: BanyanMark[];
-  actionAnnotations: ActionAnnotation[];
-  builtinTracks: BuiltinTrack[];
-  customTracks: CustomTrack[];
-  activeTrackOrder: string[];
-};
-
-export type SavedProjectFile = {
-  version: 1 | 2 | 3 | 4 | 5;
-  project: ProjectData;
-  uiState?: {
-    zoom?: number;
-    currentTime?: number;
-    playbackRate?: number;
-    trackSnapEnabled?: Record<string, boolean>;
-    loopPlaybackEnabled?: boolean;
-    loopPlaybackRange?: {
-      start: number;
-      end: number;
-    } | null;
-  };
-};
-
+// 波形与频谱数据是浏览器分析缓存，体积大且可重算，不能进入 ProjectData 或平台 payload。
 export type WaveformData = {
   samples: Float32Array;
   sampleRate: number;
@@ -336,9 +94,7 @@ export type WaveformData = {
 };
 
 export type SpectrogramFrequencyScale = "linear" | "log" | "mel";
-
 export type SpectrogramFrequencyPreset = "full-vocal" | "vocal-2000" | "vocal-1500";
-
 export type SpectrogramAnalysisPreset = "time-detail" | "frequency-detail";
 
 export type SpectrogramSettings = {
@@ -385,6 +141,7 @@ export type SpectrogramData = {
   pitchFrames?: PitchFrame[];
 };
 
+// 选择类型只描述当前编辑器交互；分叉 lane 上下文尤其不能持久化回块的 branchScope。
 export type SelectedItem =
   | { type: "line"; id: string }
   | { type: "character"; id: string }
@@ -398,43 +155,17 @@ export type SelectedItem =
   | { type: "banyan-mark"; id: string }
   | { type: "waveform-track" }
   | { type: "spectrogram-track" }
-  | {
-      type: "custom-block";
-      id: string;
-      trackId: string;
-      // 展开分叉时，同一个共有块可能出现在多个派生轨道上；该字段只记录本次选择的可视 lane。
-      // 它属于运行时选择上下文，不写入项目文件，也不改变块自身的 branchScope。
-      branchLaneId?: string;
-    }
+  | { type: "custom-block"; id: string; trackId: string; branchLaneId?: string }
   | { type: "gongche-block"; id: string }
   | { type: "attached-point"; id: string; trackId: string; parentTrackId: string }
   | null;
 
 export type TimelineSelectionItem =
-  | {
-      type: "character";
-      id: string;
-    }
-  | {
-      type: "action";
-      id: string;
-    }
-  | {
-      type: "attached-point";
-      id: string;
-      trackId: string;
-      parentTrackId: string;
-    }
-  | {
-      type: "custom-block";
-      id: string;
-      trackId: string;
-      branchLaneId?: string;
-    }
-  | {
-      type: "banyan-mark";
-      id: string;
-    };
+  | { type: "character"; id: string }
+  | { type: "action"; id: string }
+  | { type: "attached-point"; id: string; trackId: string; parentTrackId: string }
+  | { type: "custom-block"; id: string; trackId: string; branchLaneId?: string }
+  | { type: "banyan-mark"; id: string };
 
 export type TimelineBatchMoveItem = TimelineSelectionItem & {
   startTime: number;

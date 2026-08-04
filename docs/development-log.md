@@ -4366,3 +4366,58 @@ ProjectData builder、adapter 与编辑器接线：
 - 下一轮进入 R5b3：必须先审计现有 operation acceptance、committed binding、mutation lease、HTTP catch-up
   和 dirty 阻断边界，再设计实时 operation 的 submit/ack/reject 顺序与冲突策略。不得直接把可丢失 activity
   bus 当作 operation 可靠队列，也不得在尚未确定服务端 apply/authoritative ordering 前承诺 OT/CRDT。
+
+## 2026-08-04：R5b3a1 服务端可复用的持久 ProjectData 类型边界
+
+### 本轮任务书与 operation 写路径审计
+
+- Codex 以 commit `c022278` 为基线，先读取 roadmap、`AGENTS.md`、状态架构、operation repository、
+  `resourceService.saveAnnotationFile()`、浏览器保存事务和 committed-feed catch-up，再把 gitignore 中的
+  `CLAUDE_WORK.md` 整体改写为只包含 R5b3a1 的详细任务书。本轮没有委派给其他 agent，也没有把上一轮
+  activity 任务日志留在即时任务书中。
+- 审计确认当前 operation POST 只在文件锁内完成幂等键复查、base revision/ACL/必要租约校验、单文件
+  acceptance sequence 分配和 accepted 行写入；它不修改 `AnnotationFile.payload`。浏览器随后 PUT 完整
+  `ProjectData` 时，服务端才在同一事务中保存恢复快照、推进 payload/revision、绑定当前 actor 声明的
+  operation，并在提交后发布 revision 通知。
+- 因此 accepted operation 可能因离线、关闭、409 或租约失效而永远不提交，不能直接通过 WebSocket 或
+  可丢失 activity bus 广播并让其他客户端应用。R5b3 被进一步拆成共享模型、共享 apply engine、服务端原子
+  命令提交、客户端 ack/reject 和并发冲突阶段；R5 完成前另增加单服务器可部署候选与详细部署文档门禁。
+
+### 共享持久类型与 Web 运行时边界
+
+- 新增 `packages/document-model/src/projectData.ts`，原样迁入当前持久 `ProjectData` 所需的四声、递归分叉、
+  附属点、句/逐字、工尺、板眼、动作、自定义轨、内建轨、视频和本地 `SavedProjectFile` 类型。字段名、
+  optional/null 语义、union 字面量和文件 version 均未改变；模块按领域职责加入中文注释，不含 normalization、
+  React、DOM、Prisma、Fastify 或平台治理状态。
+- `packages/document-model/src/index.ts` 从公开入口导出持久类型。`src/types.ts` 删除了重复定义，通过明确的
+  type re-export 保持现有 Web import 兼容，只继续定义 Inspector 聚焦、派生 `TrackDefinition`、波形/频谱
+  缓存和 Timeline 选择等运行时类型。没有使用 `export *` 把 permissions/confirmations 等无关合同混入
+  Web 综合类型出口。
+- 十个现有命令 apply 入口改为直接从 `@xiqu/document-model` 导入 `ProjectData` 和所需轨道实体类型，明确
+  R5b3a2 的迁移方向；本轮只改 type import，不移动 resolver/writer，不修改 parser、precondition、事务顺序、
+  immutable apply 或通用 dispatcher 行为。
+- 自审扫描确认源码中只剩一个 `ProjectData` 定义，document-model 没有反向 import `src/` 或 UI/API 框架，
+  十个 apply 入口没有残留 `../types`。本轮没有提升 `PROJECT_FILE_VERSION`，没有修改 projectFile migration、
+  平台 payload sanitize、shared command DTO、Prisma schema、API 路由、UI 或运行方式；因此 README 的用户功能
+  说明无需制造一条无行为变化的更新。
+
+### 测试、构建与偏差记录
+
+- `npm run build:document-model` 和 `npm run build:web` 首轮即通过。Web production build 转换 2080 个模块，
+  CSS 124.92 kB / gzip 22.99 kB，主 JS 943.48 kB / gzip 280.85 kB；只有既有超过 500 kB 的 chunk 提醒。
+- 命令专项测试全部通过：timeline timing apply 3/3、content 3/3、lifecycle 9/9、state/composite 5/5、
+  annotation transaction 7/7、custom-track/track-structure 16/16，共 43 项；platform operation catch-up 17/17，
+  合计 60 项，证明类型来源改变未影响原子 apply、inverse、引用完整性和远端 committed replay。
+- `npm run test:api` 119/119，通过共享/document-model 构建、test TypeScript、14 条 migration 检查和真实
+  PostgreSQL/Fastify 集成。保留仓库既有的一条 pg 9 `client.query()` 并发调用前置弃用提示，本轮没有新增
+  数据库警告或测试旁路。
+- 最终 `npm run build` 通过 Prisma generate、shared、document-model、Web 和 API。由于本轮没有任何可见 UI、
+  网络合同或运行时逻辑变化，未把浏览器点击冒充有效验收；现有领域测试和全量编译是更直接的回归证据。
+
+### 已知边界与下一阶段
+
+- R5b3a1 只解决共享类型所有权。命令 resolver、builder、precondition adapter、immutable writer 和事务
+  dispatcher 仍位于 `src/utils`，API 当前仍只验证/记录 operation，不能直接 apply 到 payload。
+- 下一轮 R5b3a2 应按依赖图把纯命令 apply engine 迁入 `packages/document-model`，让 Web catch-up 与未来 API
+  原子提交使用唯一实现。必须逐领域迁移并复用现有测试，不能通过复制 1600 余行实现建立第二套服务端逻辑；
+  React 事件、历史提取、UI builder 和项目文件 normalization 继续留在 Web。

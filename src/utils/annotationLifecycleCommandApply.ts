@@ -6,7 +6,7 @@ import {
   type AnnotationLifecycleCommandEnvelope,
   type AnnotationLifecyclePreconditionIssue,
 } from "@xiqu/shared";
-import type { ProjectData } from "../types";
+import type { ProjectData } from "@xiqu/document-model";
 import {
   applyAnnotationLifecycleItems,
   resolveProjectAnnotationLifecycleTarget,

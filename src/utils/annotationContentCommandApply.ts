@@ -5,7 +5,7 @@ import {
   type AnnotationContentActual,
   type AnnotationContentPreconditionIssue,
 } from "@xiqu/shared";
-import type { ProjectData } from "../types";
+import type { ProjectData } from "@xiqu/document-model";
 import {
   applyAnnotationContentItems,
   resolveProjectAnnotationContent,

@@ -15,7 +15,7 @@ import {
   type CustomTrackLifecycleUpdateItem,
   type TrackStructureCollectionPosition,
 } from "@xiqu/shared";
-import type { AttachedPointTrack, BranchLane, BuiltinTrack, CustomTrack, ProjectData } from "../types";
+import type { AttachedPointTrack, BranchLane, BuiltinTrack, CustomTrack, ProjectData } from "@xiqu/document-model";
 import { areProjectValuesEqual } from "./projectValueEquality";
 import {
   resolveAttachedPointTrackLifecycleContext,

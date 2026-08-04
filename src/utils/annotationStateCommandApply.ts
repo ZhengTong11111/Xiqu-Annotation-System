@@ -6,7 +6,7 @@ import {
   type AnnotationStateCommandEnvelope,
   type AnnotationStatePreconditionIssue,
 } from "@xiqu/shared";
-import type { ProjectData } from "../types";
+import type { ProjectData } from "@xiqu/document-model";
 import {
   applyAnnotationStateItems,
   resolveProjectAnnotationState,

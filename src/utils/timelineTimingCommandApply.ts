@@ -6,7 +6,7 @@ import {
   type TimelineTimingPreconditionIssue,
   type TimelineTimingUpdateItem,
 } from "@xiqu/shared";
-import type { CustomTrack, ProjectData } from "../types";
+import type { CustomTrack, ProjectData } from "@xiqu/document-model";
 import {
   resolveProjectTimelineTiming,
   type TimelineTimingTarget,

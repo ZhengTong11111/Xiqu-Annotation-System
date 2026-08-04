@@ -571,7 +571,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `packages/shared/src/`
   - API/platform DTOs and shared contract types used by web and API
 - `packages/document-model/src/`
-  - pure resource-capability helpers and annotation-confirmation contract logic with regression tests
+  - pure persisted annotation-document types, resource-capability helpers, and annotation-confirmation contract logic
+  - must not import React, DOM, Prisma, Fastify, or Web-owned `src/`; this package is the shared pure domain boundary for
+    browser and API code
+- `packages/document-model/src/projectData.ts`
+  - the only definition of persisted `ProjectData`, `SavedProjectFile`, tracks, recursive branches, and annotation entities
+  - platform revision/ACL/session, waveform/spectrogram caches, Inspector state, and Timeline selection must never enter it
+  - R5b3a1 has moved the type boundary only; pure command resolvers/writers still live under `src/utils` until R5b3a2
 - `packages/document-model/src/annotationConfirmations.ts`
   - pure normalization, validation, lifecycle/freshness, overlap, persisted-track, and review-decision helpers for
     confirmed annotation ranges
@@ -586,7 +592,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - vendor-neutral Prometheus scrape/rule and Alertmanager example configuration
   - real metrics tokens, receiver URLs, TLS material, and deployment secrets never belong in this directory
 - `src/types.ts`
-  - all shared project/data/UI selection types
+  - Web runtime types for derived track views, audio-analysis caches, Inspector focus, and editor selection
+  - compatibility type re-exports point to `@xiqu/document-model`; do not recreate persisted project types here
 - `src/mockData.ts`
   - runnable demo dataset
 - `examples_insights/`

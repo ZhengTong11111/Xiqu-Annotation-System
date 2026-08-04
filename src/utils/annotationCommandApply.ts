@@ -9,7 +9,7 @@ import {
   parseAnnotationCommandEnvelope,
   TIMELINE_TIMING_UPDATE_COMMAND,
 } from "@xiqu/shared";
-import type { ProjectData } from "../types";
+import type { ProjectData } from "@xiqu/document-model";
 import { applyAnnotationContentCommandToProject } from "./annotationContentCommandApply";
 import { applyAnnotationLifecycleCommandToProject } from "./annotationLifecycleCommandApply";
 import { applyAnnotationStateCommandToProject } from "./annotationStateCommandApply";

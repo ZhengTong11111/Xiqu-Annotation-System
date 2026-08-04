@@ -13,7 +13,7 @@ import {
   TRACK_ORDER_UPDATE_COMMAND,
   type TrackStructureTransactionCommandEnvelope,
 } from "@xiqu/shared";
-import type { ProjectData } from "../types";
+import type { ProjectData } from "@xiqu/document-model";
 import { applyAnnotationContentCommandToProject } from "./annotationContentCommandApply";
 import { applyAnnotationLifecycleCommandToProject } from "./annotationLifecycleCommandApply";
 import { validateProjectAnnotationReferences } from "./annotationLifecycleCommand";

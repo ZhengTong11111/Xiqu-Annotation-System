@@ -40,7 +40,9 @@ typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建�
 已完成数据库短生命周期 presence、跨实例成员失效通知、同账号多窗口聚合、撤权/断线清理和在线成员 UI，
 R5b2b2a 已完成严格协议、双端限流、跨实例瞬时通道、断线/stale 清理和 Timeline 远端播放头预览；
 R5b2b2b 已把该通道收敛为播放头、鼠标时间与匿名选区摘要的统一最新快照，并补齐隐私开关、递归轨道
-选区汇总和精确时间叠加；下一步进入 R5b3，评估并接入领域 operation 的实时提交、确认和冲突策略；
+选区汇总和精确时间叠加；R5b3 已按共享领域模型、服务端原子命令提交、客户端确认和并发冲突收敛拆分，
+R5b3a1 已完成服务端可复用的持久 `ProjectData` 类型边界；下一步推进 R5b3a2，把 Web 中现有纯命令
+apply engine 迁入 `packages/document-model`，供浏览器 catch-up 与 API 共用唯一实现；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -512,8 +514,29 @@ R5b2b2b 已把该通道收敛为播放头、鼠标时间与匿名选区摘要的
       轨道名或分叉名；递归分叉选择按真实可视 lane 计数。普通/独立 Timeline 共用精确时间坐标叠加，最多
       显示 32 个远端账号和前 12 个选区 band；用户可独立关闭远端提示或停止共享自己的鼠标与选区，播放头
       仍保持协作预览。换文件会清空完整瞬时活动，避免把上一文件状态带入新会话。
-  - R5b3 待推进：评估并接入领域 operation 的实时提交/确认；继续复用现有幂等键、文件 sequence、revision
-    绑定、租约和 HTTP 恢复路径，再决定块级 OT/CRDT 或混合策略。
+  - R5b3 按“共享纯模型 -> 服务端权威 apply -> 客户端确认 -> 并发冲突”拆分。现有 operation POST 只在当前
+    revision 上验收并排序，完整 payload 保存时才与新 revision 原子绑定；accepted operation 不是已提交内容，
+    不得直接通过 WebSocket 广播并让远端应用：
+    - R5b3a1 已完成：把持久化 `ProjectData` 及嵌套实体类型迁入 `packages/document-model`，Web 只保留
+      运行时选择、波形/频谱和派生视图类型；通过兼容 re-export 保持现有导入稳定，不改变 JSON 文件格式、
+      migration、命令 envelope 或编辑行为。十个现有 apply 入口已直接依赖共享类型，且专项领域测试、
+      operation catch-up、API 119 项和完整构建通过。该边界使 API 后续可以类型安全地调用同一套纯 apply engine。
+    - R5b3a2 待推进：把当前位于 `src/utils` 的命令 resolver、precondition、immutable writer、事务 dispatcher
+      迁入 `packages/document-model`，Web catch-up 与 API 共用唯一 apply 实现；迁移必须逐领域保持现有专项测试，
+      删除 Web-only 平行实现和兼容僵尸路径。
+    - R5b3a3 待推进：新增服务端原子领域命令提交。在同一数据库事务内锁文件、复核 ACL/租约/base revision、
+      解析并 apply 命令、保存恢复快照、更新 payload/revision、写入并绑定 operation、审计和提交后 revision
+      通知；幂等重放返回原确认，任一前置失败不得留下 accepted-but-uncommitted 行或部分 payload。
+    - R5b3b 待推进：编辑器把可表达领域命令接入可靠 HTTP 提交与明确 ack/reject 状态，WebSocket 仍只负责
+      revision/presence/activity 提示；提交超时、离线和断线通过幂等键重试，clean 客户端继续用 committed feed，
+      dirty 客户端不得被远端 payload 静默覆盖。
+    - R5b3c 待推进：在真实多账号并发测试后确定块级冲突策略。优先采用稳定实体 + before precondition +
+      revision 的可解释乐观并发；只有证明确需同字段并发合并时才引入 OT/CRDT。结构、批量和递归分叉继续
+      使用租约/受控事务，并补齐拒绝、重取、人工比较与恢复路径。
+- R5 完成前增加可部署候选门禁：提供至少一个单服务器 PostgreSQL + Fastify + Web + 本地或 S3-compatible
+  对象存储的可重复部署方案，提交 `docs/server-deployment.md`，覆盖 Node/PostgreSQL 版本、迁移、环境变量、
+  反向代理/TLS、持久目录、进程启动、健康检查、备份恢复和升级回滚。它是可供试用的部署基线，不等同于
+  R7 的公网安全、真实云 IAM、跨区容灾和长期生产验收。
 - 服务端 operation 排序、确认、重放和权限复核。
 - 先针对块级编辑实现协作，再评估 OT/CRDT；不直接合并任意完整快照。
 - 轨道结构、批量导入和复杂分叉变更采用显式锁或受控事务。

@@ -11,6 +11,11 @@
 `ProjectData` 是时间轴标注内容，与平台账号、资源 ACL、服务器 revision 分离。它可以通过本地
 JSON 导入导出，也可以作为平台 `AnnotationFile.payload` 保存。
 
+R5b3a1 起，持久化 `ProjectData`、`SavedProjectFile`、轨道/递归分叉和标注实体的唯一 TypeScript 定义位于
+`packages/document-model/src/projectData.ts`。`src/types.ts` 只通过 type re-export 兼容既有 Web import，并
+继续拥有 Inspector 聚焦、派生轨道、波形/频谱缓存和 Timeline 选择等运行时类型。共享 document-model 不得
+依赖 React、DOM、Prisma 或 Fastify；平台 revision、ACL、session 和协作 presence/activity 也不得进入该模型。
+
 ### 1.2 客户端文档状态
 
 `src/state/projectDocumentState.ts` 的 `useProjectDocumentState()` 是编辑器内的权威状态边界：
@@ -395,6 +400,13 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
 ## 6. 实时协作方向
 
 实时协作不能合并任意完整 `ProjectData`：
+
+- R5b3 开始前的写路径审计确认：operation POST 只完成幂等验收、base revision/租约检查和单文件 acceptance
+  sequence 排序，不修改 `AnnotationFile.payload`；只有随后完整 payload 保存事务才会保存恢复快照、推进
+  revision 并绑定声明的 operation。accepted operation 可能永远不提交，因此不能广播给远端当成权威事实。
+- R5b3a1 已把持久文档类型迁入 `packages/document-model`，并让现有 ProjectData apply 入口直接依赖该共享
+  类型。R5b3a2 仍需把 resolver/precondition/immutable writer/dispatcher 的实际实现迁入共享包；在此之前
+  API 仍不能建立第二套服务端 apply，WebSocket activity bus 也仍不得承载可靠 operation。
 
 - R5b1/R5b2a 的 WebSocket 与跨实例通知已经落地；revision 消息只负责经过认证的文件失效提示，不传完整 payload，也不提交
   operation。`session.ready` 或 `annotation.revision.advanced` 观察到更高 revision 时，只调用现有 catch-up

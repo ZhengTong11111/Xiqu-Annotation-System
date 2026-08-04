@@ -3,7 +3,7 @@ import {
   parseCustomTrackStructureCommandEnvelope,
   type CustomTrackStructureCommandEnvelope,
 } from "@xiqu/shared";
-import type { ProjectData } from "../types";
+import type { ProjectData } from "@xiqu/document-model";
 import { areProjectValuesEqual } from "./projectValueEquality";
 import {
   applyCustomTrackStructureItems,
