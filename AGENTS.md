@@ -45,10 +45,10 @@ Main currently contains all major recent feature lines that matter for context:
   `annotation.project.snapshot.boundary`; the boundary contains no ProjectData, requires a purpose-specific mutation lease,
   survives drafts/history, and forces clean catch-up to fetch the authoritative snapshot
 - version 1 timing, stable content-update, lifecycle, composite-state, and dependency-transaction domain commands with strict shared validation,
-  draft persistence, inverse/precondition semantics, all-or-nothing ProjectData adapters, server logging, and clean-client
+  draft persistence, inverse/precondition semantics, all-or-nothing ProjectData adapters, atomic server command-batch apply, and clean-client
   HTTP replay; lifecycle covers sentences, characters, custom blocks, attached points, Gongche blocks/symbols, and Banyan
   marks/sections; state atomically replaces coupled Gongche/Banyan snapshots, while transactions bind sentence synchronization,
-  parent/Gongche cascades, and Banyan-reference repair. Server-side application is not implemented yet
+  parent/Gongche cascades, and Banyan-reference repair. The editor still uses the old accept-then-full-save path until R5b3b
 - per-file operation acceptance sequence plus snapshot-committed operation facts and separate bounded feeds; clean web
   sessions now perform bounded HTTP catch-up, atomically replay complete mixed domain-command chains, and fall back to the
   authoritative snapshot for incomplete or non-replayable evidence
@@ -366,7 +366,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     type helper exists only for compatibility.
   - character content targets distinguish `char` and `singingStyle`; do not rewrite singing-style cascades as character-text
     changes or hide them inside a configuration snapshot
-  - the server currently validates and logs these commands but does not apply them to `AnnotationFile.payload`
+  - the atomic command-batch route now applies replayable envelopes to `AnnotationFile.payload`; the existing editor still
+    uses the legacy accept-then-full-save path until R5b3b migrates submit/ack/reject state
 - `packages/shared/src/annotationCommandCommit.ts`
   - authoritative ordered atomic-command batch request parser, count limit, replayable-envelope gate, and shared client
     operation id validator
@@ -466,6 +467,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - pure bounded client-operation-id validation and stable JSON/SHA-256 request fingerprinting
   - idempotency scope is `(annotationFileId, actorUserId, clientOperationId)`; an exact accepted replay returns the original
     row before current-revision rejection, while the same key with a different fingerprint is a 409 conflict
+- `apps/api/src/annotationCommandCommitService.ts`
+  - authoritative atomic commit boundary for ordered replayable annotation-command batches
+  - locks the active file, rechecks ACL/base revision/lease purpose, strictly parses current `ProjectData`, applies the whole
+    chain, and atomically writes snapshot, one revision, committed operations, audit, and lease release
+  - exact retries must match the complete original actor/base/committed-revision sequence; subsets, reordering, partial
+    legacy rows, or hash mismatches must never be reported as a successful replay
+- `apps/api/src/annotationOperationRecord.ts`
+  - single database-row to shared operation-record mapper for accepted feed, committed feed, and atomic commit responses
 - `apps/api/src/annotationOperationPagination.ts`
   - pure bounded operation-feed limit and opaque file-bound cursor validation
   - sequence is a per-annotation-file log acceptance order and cursor is an observed-read position; neither proves that

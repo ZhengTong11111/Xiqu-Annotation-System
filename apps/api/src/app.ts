@@ -43,6 +43,7 @@ import { PostgresAnnotationPresenceEventBus } from "./postgresAnnotationPresence
 import { createPostgresEventTransport } from "./postgresCoalescedEventBus.js";
 import { createAnnotationRemoteActivityChannel } from "./annotationRemoteActivityEventEnvelope.js";
 import { PostgresAnnotationRemoteActivityEventBus } from "./postgresAnnotationRemoteActivityEventBus.js";
+import { AnnotationCommandCommitService } from "./annotationCommandCommitService.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -109,6 +110,12 @@ export async function buildApiApp(
     logger: app.log,
   });
   const resources = new ResourceService(options.prisma, access, collaborationEvents);
+  // 原子领域命令拥有独立事务服务，但与完整保存共用同一个跨实例 revision 发布器。
+  const annotationCommandCommits = new AnnotationCommandCommitService(
+    options.prisma,
+    access,
+    collaborationEvents,
+  );
   const health = new HealthService(options.prisma, storage);
   // 外部监控采集使用有限只读聚合，并与管理员诊断的重型对象审计保持分离。
   const operationalMetrics = new OperationalMetricsCollector(
@@ -228,6 +235,7 @@ export async function buildApiApp(
     repository,
     auditLogs,
     resources,
+    annotationCommandCommits,
     storage,
     mediaUploads,
     objectLifecycle,

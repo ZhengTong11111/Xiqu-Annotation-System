@@ -4562,3 +4562,54 @@ ProjectData builder、adapter 与编辑器接线：
 - 下一轮 R5b3a3b 使用独立 schema subpath 和批次 parser，在一笔 PostgreSQL 事务中完成锁/ACL/租约、payload
   parse、顺序 apply、恢复快照、单 revision、按序 committed operation、审计、租约释放和提交后通知；必须
   覆盖幂等重放、并发、precondition 拒绝、畸形 payload、legacy accepted 行及全事务回滚。
+
+## 2026-08-04：R5b3a3b 服务端原子领域命令批次提交
+
+### 本轮计划、实际边界与模块拆分
+
+- 用户确认开始本轮并再次明确要求维护 **Development Log**。Codex 先以 `e87f2b2` 为基线核对 roadmap、
+  `CLAUDE_WORK.md`、旧 operation acceptance、完整 payload save、committed feed、mutation lease 与共享
+  dispatcher，确认本轮只建立服务端原子写入口，不提前改 App 的保存状态机。
+- 新增独立 `AnnotationCommandCommitService`，没有继续膨胀约 1800 行的 `ResourceService`。新
+  `POST /api/annotation-files/:resourceId/command-batches` 只接收 shared 严格 parser 已确认的可重放命令链；
+  `PlatformClient` 增加 typed 调用，但编辑器尚未使用它。旧 operation POST + 完整 payload PUT 明确保留到
+  R5b3b，避免同一轮同时改服务端事务与浏览器离线/自动保存状态机。
+- 服务事务采用固定顺序：锁活动资源和文件并复核 ACL；检查完整幂等重放；核对 base revision 与租约用途；
+  严格解析数据库 unknown payload；在局部 `ProjectData` 上按请求顺序 apply；JSON round-trip 后再次严格
+  解析；保存旧 payload 恢复快照；只推进一次 revision 和 operation sequence；逐行写同一 committed revision；
+  更新时间、写单条保存审计、释放结构租约；提交后才发布跨实例 revision/cursor。任一阶段失败由 PostgreSQL
+  事务回滚，不会留下 accepted operation 或前序命令的中间项目。
+
+### 自我审查发现与修复
+
+- 开始时上一条截断补丁已经抽出了 operation mapper 和幂等 hash helper，但两个 feed 仍引用已删除的实例
+  mapper。Codex 先修复该机械残留并通过 API 类型检查，再继续新服务；accepted feed、committed feed 和
+  原子响应现在共用唯一 `mapAnnotationOperationRecord()`。
+- 首版幂等逻辑只证明“请求中的所有 ID 都存在”，无法区分原三项批次与其前两项子集。自审后增加同一
+  `(文件、账号、base revision、committed revision)` 完整序列回查，要求 ID 集合与 sequence 顺序完全一致；
+  子集、乱序、部分旧行和混合 committed 状态均返回 409。相同 key 不同 payload 仍优先返回稳定指纹冲突，
+  不回显 hash 或正文。
+- mutation lease guard 从布尔 required 升级为明确 expected purpose。结构命令只能使用
+  `track_structure` 租约，不能拿 `bulk_import`/`bulk_repair` token 冒充；校验顺序先确认持有人、base 和 token，
+  再返回用途不匹配，避免无效凭据探测租约细节。旧 operation 路径也复用这一修正。
+- Shared 批次 parser 原先允许 `Number.MAX_SAFE_INTEGER` 范围内的 revision/localRevision，但 Prisma 字段是
+  PostgreSQL `Int`。本轮把边界收紧到 `2_147_483_647`，旧 operation 路由同步拒绝越界输入；服务还显式阻止
+  revision/sequence 溢出，避免确定性坏请求退化为内部数据库错误。
+- 没有新增 Prisma 表、迁移、第二套命令 dispatcher、快照 migration 或 WebSocket 可靠消息通道；复杂事务段
+  均增加中文注释。`CLAUDE_WORK.md` 仍只作为被 gitignore 的当前任务书，不承担本日志职责。
+
+### 测试、构建与剩余边界
+
+- 新增三组真实 PostgreSQL/Fastify 集成场景：两条前后依赖命令只推进一个 revision；精确重试不重复快照、
+  operation 或审计；不同 hash、乱序、子集和部分 ID 拒绝；第二条 precondition 失败时第一条不泄漏；畸形
+  当前 payload 拒绝；同 base 并发只能一个成功；结构命令无租约/错用途拒绝、正确租约提交后原子释放；
+  legacy 批次在路由边界返回 400。
+- shared 批次合同 5/5、当前 ProjectData parser 5/5、共享命令 23/23、clean catch-up 17/17、平台草稿 20/20
+  以及旧平台 operation 4/4、租约工具 3/3、committed cursor 2/2 通过。API 最终测试为 122/122，并通过
+  14 条 migration 和真实 PostgreSQL 事务；仍只有仓库既有 pg 9
+  `client.query()` 前置弃用提示。最终 `npm run build` 通过 Prisma generate、shared、document-model、Web 与
+  API；Vite 转换 2091 个模块，CSS 124.92 kB / gzip 22.99 kB，主 JS 943.63 kB / gzip 280.06 kB，只有既有
+  大 chunk 提醒，新增服务端 schema/事务没有进入 Web 主 bundle。
+- R5b3a3 至此形成真实服务端原子提交能力，但当前用户编辑仍走旧两步兼容通道，所以不能宣称端到端可靠
+  submit 已完成。下一轮 R5b3b 必须把浏览器 pending operation 状态迁为明确 submit/ack/reject，并处理超时
+  幂等重试、离线恢复、结构租约续期、自动保存职责收缩和 dirty 客户端冲突；WebSocket 继续只做失效提示。

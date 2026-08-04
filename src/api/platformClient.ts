@@ -8,6 +8,8 @@ import type {
   AnnotationMutationLeaseSummary,
   AnnotationOperationPage,
   AnnotationOperationRecord,
+  CommitAnnotationCommandBatchRequest,
+  CommitAnnotationCommandBatchResponse,
   AnnotationRecoverySnapshotDetail,
   AnnotationRecoverySnapshotSummary,
   AuditLogPage,
@@ -461,6 +463,17 @@ export class PlatformClient {
   ) {
     return this.request<AnnotationOperationRecord>(
       `/annotation-files/${annotationFileId}/operations`,
+      { method: "POST", body: request },
+    );
+  }
+
+  // 原子领域命令入口供后续可靠 submit/ack 流程使用；本轮不替换现有完整快照保存。
+  commitAnnotationCommandBatch(
+    annotationFileId: string,
+    request: CommitAnnotationCommandBatchRequest,
+  ) {
+    return this.request<CommitAnnotationCommandBatchResponse>(
+      `/annotation-files/${annotationFileId}/command-batches`,
       { method: "POST", body: request },
     );
   }

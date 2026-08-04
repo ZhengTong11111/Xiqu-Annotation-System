@@ -41,8 +41,9 @@ typeOptions 与逐字唱法/点标签的原子联动；R5a4c4b 已完成内建�
 R5b2b2a 已完成严格协议、双端限流、跨实例瞬时通道、断线/stale 清理和 Timeline 远端播放头预览；
 R5b2b2b 已把该通道收敛为播放头、鼠标时间与匿名选区摘要的统一最新快照，并补齐隐私开关、递归轨道
 选区汇总和精确时间叠加；R5b3 已按共享领域模型、服务端原子命令提交、客户端确认和并发冲突收敛拆分，
-R5b3a1、R5b3a2a/a2b/a2c 与 R5b3a3a 已完成共享持久类型、完整纯命令 dispatcher、当前格式运行时
-ProjectData parser 和有序原子命令批次合同；下一步进入 R5b3a3b 服务端原子数据库提交；
+R5b3a1、R5b3a2a/a2b/a2c 与 R5b3a3a/a3b 已完成共享持久类型、完整纯命令 dispatcher、当前格式运行时
+ProjectData parser、有序原子命令批次合同和服务端原子数据库提交；下一步进入 R5b3b 客户端可靠
+submit/ack/reject 迁移；
 `pg_trgm` 仍作为
 数据库级部署能力留到运维基线显式预置。
 
@@ -419,8 +420,8 @@ ProjectData parser 和有序原子命令批次合同；下一步进入 R5b3a3b �
   附属打点、工尺块和板眼点的 before/after；逐字/句/自定义文字块的派生句界与工尺时间同命令记录。
   shared parser 严格限制版本、字段、实体、id、时间、重复项和 500 项上限；草稿恢复、平台请求和 API
   复用同一合同。纯时间拖拽/缩放从真实 transient base 与最终项目提取命令，合同外变更和不可表达旧 id
-  安全回退 `project.commit`。服务端目前仍只验证和记录命令、不直接 apply payload；R5b1 后建立的 WebSocket
-  只通知 revision 推进，不改变这条持久化边界。
+  安全回退 `project.commit`。该阶段的旧 operation 接口只验证和记录命令、不直接 apply payload；R5b3a3b
+  已另建原子 command-batch 入口，编辑器将在 R5b3b 迁移。WebSocket 仍只通知 revision 推进。
 - R5a2a 已完成：shared 提供半毫秒容差的全量 before 前置检查、可解释 target_missing/before_mismatch
   和确定 inverse；Web 唯一 ProjectData adapter 覆盖七类实体，先检查全部目标再不可变写入，板眼同步
   manualOffset/confidence，错误 track/缺失/冲突均不产生部分项目。命令已显式包含的句界/工尺派生时间
@@ -452,7 +453,8 @@ ProjectData parser 和有序原子命令批次合同；下一步进入 R5b3a3b �
   - R5a4b2 已完成：lifecycle 扩展 sentence、character 与完整 Gongche block/symbol 快照；新增禁止递归的
     `annotation.transaction.apply`，逆序 inverse、局部顺序 apply 与完整 next 门禁把句文本/边界同步、最后
     一个字删除句、逐字/自定义父块工尺级联封装为一个 operation/revision。草稿、API 与 clean catch-up 已
-    复用通用 parser/dispatcher；服务端仍只记录命令，不直接 apply payload。
+    复用通用 parser/dispatcher；这里描述的是编辑器仍在使用的旧 operation + 完整保存兼容路径，原子批次
+    服务端入口已在 R5b3a3b 落地。
   - R5a4b3 已完成：新增严格 `annotation.items.state.update`，复用完整快照覆盖 Gongche symbol、Banyan mark/
     section；lifecycle 同步扩展三类实体。工尺快速编辑按索引保留稳定 symbol id；删除 symbol/block 时保留
     板眼研究记录、清除失效链接并标记 orphaned，再由 state → lifecycle transaction 原子提交。所有 after
@@ -540,14 +542,23 @@ ProjectData parser 和有序原子命令批次合同；下一步进入 R5b3a3b �
         数量与唯一 client id 合同。parser 只验证当前持久格式，不复制 Web 的旧 JSON migration，也不静默
         补字段或删除未知数据。Zod 通过独立 package subpath 暴露，未进入 Web 根 bundle；新旧 operation、
         IndexedDB 草稿和未来原子入口共用同一个 client id validator。
-      - R5b3a3b 待推进：新增服务端原子领域命令批次提交。在同一数据库事务内锁文件、复核 ACL/租约/base
-        revision、严格解析当前 payload、按请求顺序 apply 全部可重放命令、保存恢复快照、更新 payload/revision、
-        写入并绑定 operation、审计和提交后 revision 通知；幂等重放返回原确认，任一前置失败不得留下
-        accepted-but-uncommitted 行、中间命令结果或部分 payload。旧 operation POST + 完整 payload PUT 在
-        R5b3b 客户端迁移完成前保持明确的兼容通道，不能和新原子入口共用含糊语义。
-    - R5b3b 待推进：编辑器把可表达领域命令接入可靠 HTTP 提交与明确 ack/reject 状态，WebSocket 仍只负责
-      revision/presence/activity 提示；提交超时、离线和断线通过幂等键重试，clean 客户端继续用 committed feed，
-      dirty 客户端不得被远端 payload 静默覆盖。
+      - R5b3a3b 已完成：新增 `POST /api/annotation-files/:resourceId/command-batches` 和独立原子提交服务。
+        同一数据库事务内完成活动文件锁、事务内 ACL、租约用途/base revision、当前 payload 严格解析、按请求
+        顺序 apply、旧 payload 恢复快照、单 revision、按序 committed operation、资源时间、审计和结构租约
+        释放，提交后才发布 revision/cursor。完全相同批次可返回原确认；子集、乱序、部分已存在、不同指纹、
+        畸形 payload、前置失败和并发旧 revision 均 fail closed，不留下 accepted 行或中间 ProjectData。旧
+        operation POST + 完整 payload PUT 在 R5b3b 客户端迁移完成前仍是明确兼容通道。
+    - R5b3b 按客户端状态核心与 App/自动保存接线分两轮推进，不能在一个 React 回调中同时重写 transport、
+      saved baseline 和离线恢复：
+      - R5b3b1 待推进：建立纯原子提交 planner/runtime 与部分确认文档状态。只把从当前 saved baseline 可顺序
+        重放并与目标项目一致的 command chain 送入新入口；每批最多 100 项。明确区分尚未发送、请求中、已确认、
+        可重试和确定拒绝，精确响应/响应丢失后的幂等重试只确认对应 ID，并能把 saved baseline 按已确认链前移。
+        legacy、snapshot boundary、track-snap 以及旧草稿中的 accepted/submitted 行继续选择旧完整保存通道。
+      - R5b3b2 待推进：把 planner/runtime 接入 App、自动保存、IndexedDB 草稿、mutation lease 和冲突 UI；原子
+        成功不再额外 PUT 完整 payload，确定 409 进入可解释冲突，网络/离线按同批幂等重试。清理不再使用的
+        per-operation 新会话路径，但保留旧草稿/不可重放编辑的有界完整保存兼容入口。
+      WebSocket 仍只负责 revision/presence/activity 提示；clean 客户端继续用 committed feed，dirty 客户端不得
+      被远端 payload 静默覆盖。
     - R5b3c 待推进：在真实多账号并发测试后确定块级冲突策略。优先采用稳定实体 + before precondition +
       revision 的可解释乐观并发；只有证明确需同字段并发合并时才引入 OT/CRDT。结构、批量和递归分叉继续
       使用租约/受控事务，并补齐拒绝、重取、人工比较与恢复路径。

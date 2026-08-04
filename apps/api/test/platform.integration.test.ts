@@ -13,8 +13,13 @@ import path from "node:path";
 import test from "node:test";
 import type { FastifyInstance, InjectOptions } from "fastify";
 import {
+  buildProjectCustomTrackStructureCommand,
+  type ProjectData,
+} from "@xiqu/document-model";
+import {
   ANNOTATION_COLLABORATION_TICKET_PROTOCOL_PREFIX,
   ANNOTATION_COLLABORATION_WEBSOCKET_PROTOCOL,
+  buildTimelineTimingUpdateEnvelope,
 } from "@xiqu/shared";
 import { buildApiApp } from "../src/app.js";
 import { hashToken } from "../src/auth.js";
@@ -4294,6 +4299,386 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(forbiddenFeed.statusCode, 403);
     });
+
+    await suite.test("原子领域命令批次按序应用、幂等确认并在失败时完整回滚", async () => {
+      const project = createAtomicCommandProject();
+      const created = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "atomic-command-commit.json",
+          payload: project,
+        },
+      });
+      assert.equal(created.statusCode, 200, created.body);
+      const fileId = String((dataOf(created.json()).resource as JsonObject).id);
+      const firstEnvelope = buildTimelineTimingUpdateEnvelope([{
+        entityType: "character",
+        entityId: "atomic-char-1",
+        before: { startTime: 1, endTime: 2 },
+        after: { startTime: 2, endTime: 3 },
+      }]);
+      const dependentEnvelope = buildTimelineTimingUpdateEnvelope([{
+        entityType: "character",
+        entityId: "atomic-char-1",
+        before: { startTime: 2, endTime: 3 },
+        after: { startTime: 3, endTime: 4 },
+      }]);
+      assert.ok(firstEnvelope && dependentEnvelope);
+      const request = {
+        baseRevision: 1,
+        operations: [{
+          clientOperationId: "atomic-op-1",
+          localRevision: 11,
+          action: firstEnvelope.command.type,
+          payload: firstEnvelope,
+        }, {
+          clientOperationId: "atomic-op-2",
+          localRevision: 12,
+          action: dependentEnvelope.command.type,
+          payload: dependentEnvelope,
+        }],
+      };
+
+      const committed = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: request,
+      });
+      assert.equal(committed.statusCode, 200, committed.body);
+      const committedData = dataOf(committed.json());
+      assert.equal(committedData.committedRevision, 2);
+      const committedOperations = committedData.operations as JsonObject[];
+      assert.deepEqual(
+        committedOperations.map((operation) => operation.clientOperationId),
+        ["atomic-op-1", "atomic-op-2"],
+      );
+      assert.deepEqual(
+        committedOperations.map((operation) => operation.committedRevision),
+        [2, 2],
+      );
+      assert.ok(Number(committedOperations[0]?.sequence) < Number(committedOperations[1]?.sequence));
+
+      const storedAfterCommit = await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: fileId },
+      });
+      const storedProject = storedAfterCommit.payload as ReturnType<typeof createAtomicCommandProject>;
+      assert.equal(storedAfterCommit.revision, 2);
+      assert.equal(storedProject.characterAnnotations[0]?.startTime, 3);
+      assert.equal(storedProject.characterAnnotations[0]?.endTime, 4);
+      assert.equal(await prisma.annotationRecoverySnapshot.count({
+        where: { annotationFileId: fileId, revision: 1 },
+      }), 1);
+      assert.equal(await prisma.auditLog.count({
+        where: {
+          resourceId: fileId,
+          action: "annotation_file_save",
+          detail: { path: ["commitMode"], equals: "domain_command_batch" },
+        },
+      }), 1);
+
+      // 完全相同的网络重试返回原确认，不能再次推进 revision、创建快照或写审计。
+      const replayed = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: request,
+      });
+      assert.equal(replayed.statusCode, 200, replayed.body);
+      assert.deepEqual(
+        (dataOf(replayed.json()).operations as JsonObject[]).map((operation) => operation.id),
+        committedOperations.map((operation) => operation.id),
+      );
+      assert.equal((await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: fileId },
+      })).revision, 2);
+      assert.equal(await prisma.auditLog.count({
+        where: { resourceId: fileId, action: "annotation_file_save" },
+      }), 1);
+
+      const changedIdempotentRequest = structuredClone(request);
+      changedIdempotentRequest.operations[0]!.payload.command.items[0]!.after.startTime = 2.25;
+      const changedReplay = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: changedIdempotentRequest,
+      });
+      assert.equal(changedReplay.statusCode, 409);
+      assert.equal(
+        (errorOf(changedReplay.json()).details as JsonObject).code,
+        "idempotency_conflict",
+      );
+
+      const reorderedReplay = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: { ...request, operations: [...request.operations].reverse() },
+      });
+      assert.equal(reorderedReplay.statusCode, 409);
+      assert.equal(
+        (errorOf(reorderedReplay.json()).details as JsonObject).code,
+        "annotation_command_batch_replay_ambiguous",
+      );
+      const subsetReplay = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: { baseRevision: 1, operations: [request.operations[0]] },
+      });
+      assert.equal(subsetReplay.statusCode, 409);
+      assert.equal(
+        (errorOf(subsetReplay.json()).details as JsonObject).code,
+        "annotation_command_batch_replay_ambiguous",
+      );
+      const partialReplay = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: {
+          baseRevision: 1,
+          operations: [request.operations[0], {
+            ...request.operations[1],
+            clientOperationId: "atomic-op-new",
+          }],
+        },
+      });
+      assert.equal(partialReplay.statusCode, 409);
+      assert.equal(
+        (errorOf(partialReplay.json()).details as JsonObject).code,
+        "annotation_command_batch_partial_replay",
+      );
+
+      const validBeforeBlocked = buildTimelineTimingUpdateEnvelope([{
+        entityType: "character",
+        entityId: "atomic-char-1",
+        before: { startTime: 3, endTime: 4 },
+        after: { startTime: 4, endTime: 5 },
+      }]);
+      const blockedSecond = buildTimelineTimingUpdateEnvelope([{
+        entityType: "character",
+        entityId: "atomic-char-1",
+        before: { startTime: 99, endTime: 100 },
+        after: { startTime: 100, endTime: 101 },
+      }]);
+      assert.ok(validBeforeBlocked && blockedSecond);
+      const operationsBeforeBlocked = await prisma.annotationOperation.count({
+        where: { annotationFileId: fileId },
+      });
+      const blocked = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: {
+          baseRevision: 2,
+          operations: [{
+            clientOperationId: "atomic-blocked-1",
+            action: validBeforeBlocked.command.type,
+            payload: validBeforeBlocked,
+          }, {
+            clientOperationId: "atomic-blocked-2",
+            action: blockedSecond.command.type,
+            payload: blockedSecond,
+          }],
+        },
+      });
+      assert.equal(blocked.statusCode, 409, blocked.body);
+      const blockedDetails = errorOf(blocked.json()).details as JsonObject;
+      assert.equal(blockedDetails.code, "annotation_command_precondition_failed");
+      assert.equal(blockedDetails.operationIndex, 1);
+      const storedAfterBlocked = await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: fileId },
+      });
+      assert.equal(storedAfterBlocked.revision, 2);
+      assert.equal(
+        (storedAfterBlocked.payload as ReturnType<typeof createAtomicCommandProject>)
+          .characterAnnotations[0]?.startTime,
+        3,
+      );
+      assert.equal(await prisma.annotationOperation.count({
+        where: { annotationFileId: fileId },
+      }), operationsBeforeBlocked);
+    });
+
+    await suite.test("原子领域命令批次拒绝畸形文档并串行化同 revision 并发", async () => {
+      const malformed = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "atomic-malformed.json",
+          payload: { marker: "legacy" },
+        },
+      });
+      const malformedId = String((dataOf(malformed.json()).resource as JsonObject).id);
+      const envelope = buildTimelineTimingUpdateEnvelope([{
+        entityType: "character",
+        entityId: "atomic-char-1",
+        before: { startTime: 1, endTime: 2 },
+        after: { startTime: 2, endTime: 3 },
+      }]);
+      assert.ok(envelope);
+      const malformedCommit = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${malformedId}/command-batches`,
+        payload: {
+          baseRevision: 1,
+          operations: [{
+            clientOperationId: "atomic-malformed-op",
+            action: envelope.command.type,
+            payload: envelope,
+          }],
+        },
+      });
+      assert.equal(malformedCommit.statusCode, 409, malformedCommit.body);
+      assert.equal(
+        (errorOf(malformedCommit.json()).details as JsonObject).code,
+        "annotation_payload_invalid",
+      );
+      assert.equal(await prisma.annotationOperation.count({
+        where: { annotationFileId: malformedId },
+      }), 0);
+
+      const concurrent = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "atomic-concurrent.json",
+          payload: createAtomicCommandProject(),
+        },
+      });
+      const concurrentId = String((dataOf(concurrent.json()).resource as JsonObject).id);
+      const makeRequest = (clientOperationId: string) => jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${concurrentId}/command-batches`,
+        payload: {
+          baseRevision: 1,
+          operations: [{
+            clientOperationId,
+            action: envelope.command.type,
+            payload: envelope,
+          }],
+        },
+      });
+      const responses = await Promise.all([
+        makeRequest("atomic-concurrent-a"),
+        makeRequest("atomic-concurrent-b"),
+      ]);
+      assert.deepEqual(
+        responses.map((response) => response.statusCode).sort(),
+        [200, 409],
+      );
+      assert.equal((await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: concurrentId },
+      })).revision, 2);
+      assert.equal(await prisma.annotationOperation.count({
+        where: { annotationFileId: concurrentId },
+      }), 1);
+    });
+
+    await suite.test("原子结构命令要求用途匹配的租约并在提交后释放", async () => {
+      const project = createAtomicCommandProject();
+      const nextProject = structuredClone(project);
+      nextProject.customTracks[0]!.name = "已重命名轨道";
+      const envelope = buildProjectCustomTrackStructureCommand(
+        project,
+        nextProject,
+        ["atomic-custom-track"],
+      );
+      assert.ok(envelope);
+      const created = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "atomic-structure-command.json",
+          payload: project,
+        },
+      });
+      const fileId = String((dataOf(created.json()).resource as JsonObject).id);
+      const operation = {
+        clientOperationId: "atomic-structure-op",
+        action: envelope.command.type,
+        payload: envelope,
+      };
+
+      const withoutLease = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: { baseRevision: 1, operations: [operation] },
+      });
+      assert.equal(withoutLease.statusCode, 409);
+      assert.equal(
+        (errorOf(withoutLease.json()).details as JsonObject).code,
+        "annotation_mutation_lease_required",
+      );
+
+      const wrongLease = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/mutation-lease`,
+        payload: { baseRevision: 1, purpose: "bulk_import" },
+      });
+      const wrongToken = String(dataOf(wrongLease.json()).token);
+      const wrongPurpose = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: {
+          baseRevision: 1,
+          mutationLeaseToken: wrongToken,
+          operations: [operation],
+        },
+      });
+      assert.equal(wrongPurpose.statusCode, 409);
+      assert.equal(
+        (errorOf(wrongPurpose.json()).details as JsonObject).code,
+        "annotation_mutation_lease_purpose_mismatch",
+      );
+      await jsonRequest(app, adminToken, {
+        method: "DELETE",
+        url: `/api/annotation-files/${fileId}/mutation-lease`,
+        payload: { token: wrongToken },
+      });
+
+      const matchingLease = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/mutation-lease`,
+        payload: { baseRevision: 1, purpose: "track_structure" },
+      });
+      const matchingToken = String(dataOf(matchingLease.json()).token);
+      const committed = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: {
+          baseRevision: 1,
+          mutationLeaseToken: matchingToken,
+          operations: [operation],
+        },
+      });
+      assert.equal(committed.statusCode, 200, committed.body);
+      assert.equal(await prisma.annotationMutationLease.count({
+        where: { annotationFileId: fileId },
+      }), 0);
+      const stored = await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: fileId },
+      });
+      assert.equal(
+        (stored.payload as ReturnType<typeof createAtomicCommandProject>)
+          .customTracks[0]?.name,
+        "已重命名轨道",
+      );
+
+      // snapshot/legacy action 不属于可重放批次，必须在路由 parser 阶段返回 400。
+      const legacy = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/command-batches`,
+        payload: {
+          baseRevision: 2,
+          operations: [{
+            clientOperationId: "atomic-legacy-op",
+            action: "project.commit",
+            payload: { historyAction: "edit" },
+          }],
+        },
+      });
+      assert.equal(legacy.statusCode, 400);
+    });
   } finally {
     await app.close();
     await prisma.$disconnect();
@@ -4346,6 +4731,47 @@ function dataOf(value: unknown): JsonObject {
   const data = (value as { data: unknown }).data;
   assert.ok(data && typeof data === "object" && !Array.isArray(data));
   return data as JsonObject;
+}
+
+// 原子命令集成测试只保留最小当前格式，但所有必填领域集合都存在，避免测试绕过生产 schema。
+function createAtomicCommandProject(): ProjectData {
+  return {
+    video: { url: "", name: null, source: "url" as const },
+    subtitleLines: [{
+      id: "atomic-line-1",
+      text: "那",
+      startTime: 1,
+      endTime: 4,
+    }],
+    characterAnnotations: [{
+      id: "atomic-char-1",
+      lineId: "atomic-line-1",
+      char: "那",
+      startTime: 1,
+      endTime: 2,
+      singingStyle: "唱",
+    }],
+    gongcheAnnotations: [],
+    banyanSections: [],
+    banyanMarks: [],
+    actionAnnotations: [],
+    builtinTracks: [{
+      id: "character-track" as const,
+      name: "逐字文字轨",
+      type: "character" as const,
+      options: ["唱", "念"],
+      attachedPointTracks: [],
+    }],
+    customTracks: [{
+      id: "atomic-custom-track",
+      name: "测试轨道",
+      trackType: "text" as const,
+      typeOptions: ["动作"],
+      blocks: [],
+      attachedPointTracks: [],
+    }],
+    activeTrackOrder: ["character-track", "atomic-custom-track"],
+  };
 }
 
 async function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {

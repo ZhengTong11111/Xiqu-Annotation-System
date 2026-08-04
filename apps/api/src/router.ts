@@ -3,6 +3,7 @@ import {
   ANNOTATION_CONFIRMATION_DOMAINS,
   AUDIT_ACTIONS,
   isValidAnnotationOperationPayload,
+  parseAnnotationCommandBatchRequest,
   RESOURCE_CAPABILITIES,
   type AnnotationConfirmationDomain,
   type AnnotationConfirmationScope,
@@ -27,6 +28,7 @@ import {
 } from "./observability.js";
 import type { PrismaPlatformRepository } from "./repository.js";
 import type { ResourceService } from "./resourceService.js";
+import type { AnnotationCommandCommitService } from "./annotationCommandCommitService.js";
 import { MAX_BATCH_RESOURCE_SELECTION } from "./resourceSelection.js";
 import type { ObjectStorage } from "./objectStorage.js";
 import type { SystemDiagnosticsService } from "./systemDiagnosticsService.js";
@@ -81,6 +83,7 @@ export function registerApiRoutes(
   repository: PrismaPlatformRepository,
   auditLogs: AuditLogService,
   resources: ResourceService,
+  annotationCommandCommits: AnnotationCommandCommitService,
   storage: Pick<ObjectStorage, "getObjectStream">,
   mediaUploads: MediaUploadService,
   objectLifecycle: ObjectLifecycleService,
@@ -944,10 +947,12 @@ export function registerApiRoutes(
       !isValidClientOperationId(body.clientOperationId) ||
       !Number.isInteger(body.baseRevision) ||
       Number(body.baseRevision) < 0 ||
+      Number(body.baseRevision) > 2_147_483_647 ||
       (body.localRevision !== undefined &&
         body.localRevision !== null &&
         (!Number.isInteger(body.localRevision) ||
-          Number(body.localRevision) < 0)) ||
+          Number(body.localRevision) < 0 ||
+          Number(body.localRevision) > 2_147_483_647)) ||
       typeof body.action !== "string" ||
       !body.action.trim() ||
       !isValidAnnotationOperationPayload(body.action, body.payload ?? {})
@@ -968,6 +973,33 @@ export function registerApiRoutes(
         payload: body.payload ?? {},
         mutationLeaseToken: parseOptionalMutationLeaseToken(body.mutationLeaseToken),
       },
+    );
+  });
+
+  app.post<{
+    Params: { resourceId: string };
+    Body: unknown;
+  }>("/api/annotation-files/:resourceId/command-batches", async (request) => {
+    // shared parser 同时约束批次数量、命令 envelope、action 对应关系和幂等 id；路由不复制领域规则。
+    const parsed = parseAnnotationCommandBatchRequest(request.body);
+    if (!parsed.success) {
+      throw badRequest("原子标注命令批次参数不正确。", {
+        code: "invalid_annotation_command_batch",
+        issues: parsed.issues.slice(0, 20),
+      });
+    }
+    if (
+      parsed.data.mutationLeaseToken !== undefined &&
+      !isValidAnnotationMutationLeaseToken(parsed.data.mutationLeaseToken)
+    ) {
+      throw badRequest("结构变更租约凭据格式不正确。", {
+        code: "invalid_annotation_mutation_lease_token",
+      });
+    }
+    return annotationCommandCommits.commitBatch(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      parsed.data,
     );
   });
 }

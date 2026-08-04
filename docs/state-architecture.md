@@ -416,6 +416,12 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
   默认值、不剥离未知字段。Shared 的有序批次合同把同一 base revision 上的命令链保留为一次原子提交单位，
   legacy 摘要与 snapshot boundary 继续要求完整 payload 保存。Zod 不从 document-model 根 barrel 导出，避免
   未使用 schema 的浏览器主包承担运行时校验依赖。
+- R5b3a3b 已增加独立 `AnnotationCommandCommitService` 和原子 command-batch HTTP 入口。服务端现在能在一次
+  PostgreSQL 事务内把同一 base revision 的有序可重放命令链应用到严格当前格式 `ProjectData`，并同步写入
+  恢复快照、单次 revision、按序 committed operation、资源时间、审计与租约释放；事务提交后才发布 revision
+  提示。完全重试必须与原批次的完整 ID 集合、请求指纹及 sequence 顺序一致，不能把子集或 accepted legacy
+  行伪装成确认。现有编辑器尚未切换该入口，仍由旧 operation POST + payload PUT 保存；R5b3b 将负责可靠
+  submit/ack/reject、离线重试和冲突状态迁移。
 
 - R5b1/R5b2a 的 WebSocket 与跨实例通知已经落地；revision 消息只负责经过认证的文件失效提示，不传完整 payload，也不提交
   operation。`session.ready` 或 `annotation.revision.advanced` 观察到更高 revision 时，只调用现有 catch-up

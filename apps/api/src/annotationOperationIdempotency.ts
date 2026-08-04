@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { conflict } from "./errors.js";
 // 旧 operation 路由与原子批次共用 shared 幂等 id 合同；保留旧导出名避免调用点产生无意义迁移。
 export {
   isValidAnnotationClientOperationId as isValidClientOperationId,
@@ -24,6 +25,18 @@ export function createAnnotationOperationRequestHash(
       payload: input.payload,
     }))
     .digest("hex");
+}
+
+// 同一幂等 key 只能代表一个不可变请求；冲突响应不回显服务端 hash 或客户端 payload。
+export function assertIdempotentOperationMatch(
+  storedRequestHash: string,
+  receivedRequestHash: string,
+) {
+  if (storedRequestHash !== receivedRequestHash) {
+    throw conflict("客户端操作编号已用于另一项请求。", {
+      code: "idempotency_conflict",
+    });
+  }
 }
 
 // 稳定 JSON 递归排序对象 key，但保留数组顺序；非 JSON 值 fail closed，不能产生含糊指纹。

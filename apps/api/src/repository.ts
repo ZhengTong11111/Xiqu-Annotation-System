@@ -7,11 +7,8 @@ import {
 } from "@prisma/client";
 import {
   getAnnotationMutationLeasePurposeForCommand,
-  isReplayableAnnotationCommandEnvelope,
-  parseAnnotationCommandEnvelope,
   type AnnotationCommittedOperationPage,
   type AnnotationOperationPage,
-  type AnnotationOperationRecord,
   type CreateAnnotationOperationRequest,
   type CreateProcessingJobRequest,
   type ProcessingJob,
@@ -28,7 +25,10 @@ import {
 import { ResourceAccessService } from "./resourceAccess.js";
 import { toFile, toPublicUser } from "./repositoryMappers.js";
 import { ensurePlatformSeedData } from "./repositorySeed.js";
-import { createAnnotationOperationRequestHash } from "./annotationOperationIdempotency.js";
+import {
+  assertIdempotentOperationMatch,
+  createAnnotationOperationRequestHash,
+} from "./annotationOperationIdempotency.js";
 import {
   AnnotationOperationCursorError,
   encodeAnnotationOperationCursor,
@@ -41,6 +41,7 @@ import {
 } from "./annotationCommittedOperationPagination.js";
 import { assertAnnotationMutationLeaseForWrite } from "./annotationMutationLeaseStore.js";
 import { lockActiveAnnotationFileForWrite } from "./annotationFileWriteLock.js";
+import { mapAnnotationOperationRecord } from "./annotationOperationRecord.js";
 
 export class PrismaPlatformRepository {
   constructor(
@@ -207,7 +208,7 @@ export class PrismaPlatformRepository {
       ? visibleRows[visibleRows.length - 1]?.sequence
       : undefined;
     return {
-      items: visibleRows.map(this.mapOperation),
+      items: visibleRows.map(mapAnnotationOperationRecord),
       // 空页保留调用方已有 cursor，后续轮询不会倒退到文件开头。
       nextCursor: lastSequence === undefined
         ? page.sourceCursor
@@ -266,7 +267,7 @@ export class PrismaPlatformRepository {
     });
     if (!file) throw notFound("标注文件不存在。");
     return {
-      items: visibleRows.map(this.mapOperation),
+      items: visibleRows.map(mapAnnotationOperationRecord),
       nextCursor: lastRow && lastRow.committedRevision !== null
         ? encodeAnnotationCommittedOperationCursor(
             annotationFileId,
@@ -338,7 +339,7 @@ export class PrismaPlatformRepository {
         user.id,
         input.baseRevision,
         input.mutationLeaseToken,
-        getAnnotationMutationLeasePurposeForCommand(input.payload) !== null,
+        getAnnotationMutationLeasePurposeForCommand(input.payload),
       );
       // 文件行计数器是唯一序号分配源，不能用 max(sequence)+1 产生并发重复。
       const sequenceState = await transaction.annotationFile.update({
@@ -362,7 +363,7 @@ export class PrismaPlatformRepository {
         },
       });
     });
-    return this.mapOperation(row);
+    return mapAnnotationOperationRecord(row);
   }
 
   async writeAuditLog(input: {
@@ -396,52 +397,4 @@ export class PrismaPlatformRepository {
     }
   }
 
-  private mapOperation(row: {
-    id: string;
-    annotationFileId: string;
-    actorUserId: string;
-    clientOperationId: string;
-    sequence: number;
-    baseRevision: number;
-    localRevision: number | null;
-    action: string;
-    payload: Prisma.JsonValue;
-    status: "accepted" | "rejected" | "superseded";
-    committedRevision: number | null;
-    committedAt: Date | null;
-    createdAt: Date;
-  }): AnnotationOperationRecord {
-    return {
-      id: row.id,
-      annotationFileId: row.annotationFileId,
-      actorUserId: row.actorUserId,
-      clientOperationId: row.clientOperationId,
-      sequence: row.sequence,
-      baseRevision: row.baseRevision,
-      localRevision: row.localRevision,
-      action: row.action,
-      payload: row.payload,
-      status: row.status,
-      commitState: row.committedRevision === null ? "accepted" : "committed",
-      committedRevision: row.committedRevision,
-      committedAt: row.committedAt?.toISOString() ?? null,
-      replayability: parseAnnotationCommandEnvelope(row.payload)?.command.type === row.action &&
-        isReplayableAnnotationCommandEnvelope(row.payload)
-        ? "domain_command"
-        : "requires_snapshot",
-      createdAt: row.createdAt.toISOString(),
-    };
-  }
-}
-
-// 同一幂等 key 只能代表一个不可变请求；冲突响应不回显服务端 hash 或客户端 payload。
-function assertIdempotentOperationMatch(
-  storedRequestHash: string,
-  receivedRequestHash: string,
-) {
-  if (storedRequestHash !== receivedRequestHash) {
-    throw conflict("客户端操作编号已用于另一项请求。", {
-      code: "idempotency_conflict",
-    });
-  }
 }

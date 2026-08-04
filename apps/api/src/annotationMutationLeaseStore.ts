@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import type { AnnotationMutationPurpose } from "@xiqu/shared";
 import { conflict } from "./errors.js";
 import {
   isAnnotationMutationLeaseExpired,
@@ -16,7 +17,7 @@ export async function assertAnnotationMutationLeaseForWrite(
   actorUserId: string,
   baseRevision: number,
   token: string | undefined,
-  required = false,
+  requiredPurpose: AnnotationMutationPurpose | null = null,
   now = new Date(),
 ): Promise<AnnotationMutationLeaseWriteGuard> {
   const lease = await transaction.annotationMutationLease.findUnique({
@@ -28,7 +29,7 @@ export async function assertAnnotationMutationLeaseForWrite(
         code: "annotation_mutation_lease_expired",
       });
     }
-    if (required) {
+    if (requiredPurpose) {
       throw conflict("该结构性变更必须先取得文件租约。", {
         code: "annotation_mutation_lease_required",
       });
@@ -42,7 +43,7 @@ export async function assertAnnotationMutationLeaseForWrite(
         code: "annotation_mutation_lease_expired",
       });
     }
-    if (required) {
+    if (requiredPurpose) {
       throw conflict("该结构性变更必须重新取得文件租约。", {
         code: "annotation_mutation_lease_required",
       });
@@ -64,6 +65,14 @@ export async function assertAnnotationMutationLeaseForWrite(
   ) {
     throw conflict("结构变更租约与当前账号、版本或凭据不匹配。", {
       code: "annotation_mutation_lease_invalid",
+    });
+  }
+  // 先验证持有人与凭据，再比较用途，避免无效 token 借错误详情探测租约语义。
+  if (requiredPurpose && lease.purpose !== requiredPurpose) {
+    throw conflict("结构变更租约用途与当前命令不匹配。", {
+      code: "annotation_mutation_lease_purpose_mismatch",
+      expectedPurpose: requiredPurpose,
+      receivedPurpose: lease.purpose,
     });
   }
   return { leaseWasUsed: true };

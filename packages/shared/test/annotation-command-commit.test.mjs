@@ -71,6 +71,14 @@ test("原子命令批次拒绝非法 revision、local revision 和额外字段",
     operations: [operation("op-1")],
   }).success, false);
   assert.equal(parseAnnotationCommandBatchRequest({
+    baseRevision: 2_147_483_648,
+    operations: [operation("op-db-overflow")],
+  }).success, false);
+  assert.equal(parseAnnotationCommandBatchRequest({
+    baseRevision: 1,
+    operations: [{ ...operation("op-local-overflow"), localRevision: 2_147_483_648 }],
+  }).success, false);
+  assert.equal(parseAnnotationCommandBatchRequest({
     baseRevision: 1,
     operations: [{ ...operation("op-1"), localRevision: -1 }],
   }).success, false);

@@ -8,6 +8,7 @@ import type { AnnotationOperationRecord } from "./platform.js";
 
 export const MAX_ATOMIC_ANNOTATION_COMMAND_OPERATIONS = 100;
 const CLIENT_OPERATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const MAX_DATABASE_INTEGER = 2_147_483_647;
 
 export type AtomicAnnotationCommandOperation = {
   clientOperationId: string;
@@ -134,7 +135,9 @@ function parseAtomicOperation(value: unknown): AtomicAnnotationCommandOperation 
 }
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  // revision、localRevision 和 sequence 最终落入 PostgreSQL Int，合同在路由前即拒绝越界值。
+  return typeof value === "number" && Number.isSafeInteger(value) &&
+    value >= 0 && value <= MAX_DATABASE_INTEGER;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
