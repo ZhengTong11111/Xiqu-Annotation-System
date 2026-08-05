@@ -124,6 +124,8 @@ function createDatabaseSummary(content: Buffer) {
       size: content.length,
       checksum: createHash("sha256").update(content).digest("hex"),
     }],
+    derivedObjectCount: 0,
+    derivedObjects: [],
   };
 }
 

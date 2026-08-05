@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 import type { FastifyInstance, InjectOptions } from "fastify";
 import {
@@ -48,6 +49,13 @@ const fakeAliyunVodProvider: AliyunVodProvider = {
       status: "Normal",
       playAuth: "integration-temporary-play-auth",
       expiresAt: new Date("2030-01-01T00:15:00.000Z"),
+    }),
+    createAnalysisAudioStream: async () => ({
+      url: "https://vod.example.test/audio.mp3?temporary=1",
+      expiresAt: new Date("2030-01-01T00:15:00.000Z"),
+      format: "mp3",
+      duration: 321.5,
+      bitrate: 128,
     }),
   },
 };
@@ -586,6 +594,226 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(createDetail.sourceType, "aliyun_vod");
       assert.equal(createDetail.videoId, undefined);
       assert.equal(createDetail.playAuth, undefined);
+    });
+
+    await suite.test("分析音频支持自动来源、强制上传音频、VOD 覆盖和权限复核", async () => {
+      const vod = await prisma.mediaFile.findFirstOrThrow({
+        where: { sourceType: "aliyun_vod", aliyunVodVideoId: "00cf8df6907871f1b31f5017e1f80102" },
+      });
+      const audioUpload = await multipartUpload(
+        app,
+        adminToken,
+        projectId,
+        "analysis-override.wav",
+        "audio/wav",
+        minimalWav(),
+      );
+      assert.equal(audioUpload.statusCode, 200, audioUpload.body);
+      const audioResourceId = String(dataOf(audioUpload.json()).id);
+      const videoUpload = await multipartUpload(
+        app,
+        adminToken,
+        projectId,
+        "analysis-invalid-video.mp4",
+        "video/mp4",
+        minimalMp4(),
+      );
+      assert.equal(videoUpload.statusCode, 200, videoUpload.body);
+      const videoResourceId = String(dataOf(videoUpload.json()).id);
+
+      const annotation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "分析音频来源.json",
+          payload: { marker: "analysis-audio" },
+          mediaResourceId: vod.resourceId,
+        },
+      });
+      assert.equal(annotation.statusCode, 200, annotation.body);
+      const fileId = String((dataOf(annotation.json()).resource as JsonObject).id);
+
+      const automatic = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${fileId}/media-analysis`,
+      });
+      assert.equal(automatic.statusCode, 200, automatic.body);
+      assert.equal((dataOf(automatic.json()).setting as JsonObject).mode, "auto");
+      const automaticSource = dataOf(automatic.json()).resolvedSource as JsonObject;
+      assert.equal(automaticSource.status, "ready");
+      assert.equal(automaticSource.sourceType, "aliyun_vod");
+      assert.equal(automaticSource.videoId, undefined);
+      assert.equal(automaticSource.playAuth, undefined);
+
+      const explicitVod = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${fileId}/analysis-audio`,
+        payload: {
+          mode: "media_override",
+          overrideMediaResourceId: vod.resourceId,
+        },
+      });
+      assert.equal(explicitVod.statusCode, 200, explicitVod.body);
+      assert.equal((dataOf(explicitVod.json()).setting as JsonObject).mode, "media_override");
+      assert.equal(
+        (dataOf(explicitVod.json()).resolvedSource as JsonObject).sourceType,
+        "aliyun_vod",
+      );
+
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${fileId}/analysis-audio`,
+        payload: { mode: "auto" },
+      });
+
+      const firstRun = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/media-analysis`,
+        payload: {},
+      });
+      assert.equal(firstRun.statusCode, 200, firstRun.body);
+      assert.equal(dataOf(firstRun.json()).status, "queued");
+      assert.equal(await prisma.processingJob.count({
+        where: { analysisRunId: String(dataOf(firstRun.json()).id) },
+      }), 1);
+      const analysisAssetKey = storage.createStorageKey("xqa");
+      const stagedAnalysisAsset = await storage.putStagedObject(
+        analysisAssetKey,
+        Readable.from([Buffer.from("analysis-tile")]),
+        64,
+      );
+      await storage.promoteStagedObject(stagedAnalysisAsset);
+      await prisma.mediaAnalysisRun.update({
+        where: { id: String(dataOf(firstRun.json()).id) },
+        data: { status: "succeeded", progress: 1 },
+      });
+      const storedAsset = await prisma.mediaAnalysisAsset.create({
+        data: {
+          runId: String(dataOf(firstRun.json()).id),
+          kind: "waveform",
+          preset: "default",
+          level: 0,
+          tileIndex: 0,
+          startTime: 0,
+          endTime: 30,
+          mimeType: "application/vnd.xiqu.waveform-tile",
+          size: stagedAnalysisAsset.size,
+          checksum: stagedAnalysisAsset.checksum,
+          storageKey: stagedAnalysisAsset.finalStorageKey,
+        },
+      });
+      const assetList = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${fileId}/media-analysis/assets?${new URLSearchParams({
+          runId: String(dataOf(firstRun.json()).id),
+          kind: "waveform",
+          preset: "default",
+          level: "0",
+          startTime: "0",
+          endTime: "10",
+        })}`,
+      });
+      assert.equal(assetList.statusCode, 200, assetList.body);
+      const listedAsset = (dataOf(assetList.json()).assets as JsonObject[])[0];
+      assert.equal(listedAsset.id, storedAsset.id);
+      assert.equal(listedAsset.storageKey, undefined);
+      assert.equal(listedAsset.checksum, undefined);
+      const assetContent = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${fileId}/media-analysis/assets/${storedAsset.id}`,
+      });
+      assert.equal(assetContent.statusCode, 200, assetContent.body);
+      assert.equal(assetContent.body, "analysis-tile");
+
+      const override = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${fileId}/analysis-audio`,
+        payload: {
+          mode: "media_override",
+          overrideMediaResourceId: audioResourceId,
+          offsetSeconds: 0.25,
+        },
+      });
+      assert.equal(override.statusCode, 200, override.body);
+      const overrideSource = dataOf(override.json()).resolvedSource as JsonObject;
+      assert.equal(overrideSource.status, "ready");
+      assert.equal(overrideSource.sourceType, "uploaded");
+      assert.equal(overrideSource.mediaKind, "audio");
+      assert.equal(overrideSource.offsetSeconds, 0.25);
+      assert.equal(dataOf(override.json()).currentRun, null);
+
+      const invalidVideoOverride = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${fileId}/analysis-audio`,
+        payload: {
+          mode: "media_override",
+          overrideMediaResourceId: videoResourceId,
+        },
+      });
+      assert.equal(invalidVideoOverride.statusCode, 400);
+
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${fileId}/permissions/user-student`,
+        payload: { capabilities: ["read", "write"], inheritToChildren: false },
+      });
+      const studentAssetRead = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${fileId}/media-analysis/assets/${storedAsset.id}`,
+      });
+      assert.equal(studentAssetRead.statusCode, 200, studentAssetRead.body);
+      const forbiddenStatus = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${fileId}/media-analysis`,
+      });
+      assert.equal(forbiddenStatus.statusCode, 200, forbiddenStatus.body);
+      assert.equal(
+        (dataOf(forbiddenStatus.json()).resolvedSource as JsonObject).code,
+        "analysis_audio_forbidden",
+      );
+      const forbiddenStart = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/media-analysis`,
+        payload: {},
+      });
+      assert.equal(forbiddenStart.statusCode, 403);
+      assert.equal(errorOf(forbiddenStart.json()).code, "analysis_audio_forbidden");
+
+      const contradictoryAuto = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${fileId}/analysis-audio`,
+        payload: { mode: "auto", overrideMediaResourceId: audioResourceId },
+      });
+      assert.equal(contradictoryAuto.statusCode, 400);
+      const restoredAuto = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${fileId}/analysis-audio`,
+        payload: { mode: "auto", offsetSeconds: 0 },
+      });
+      assert.equal(restoredAuto.statusCode, 200, restoredAuto.body);
+      assert.equal((dataOf(restoredAuto.json()).setting as JsonObject).mode, "auto");
+      assert.equal(
+        (dataOf(restoredAuto.json()).resolvedSource as JsonObject).mediaResourceId,
+        vod.resourceId,
+      );
+
+      const analysisAuditDetails = (await prisma.auditLog.findMany({
+        where: {
+          resourceId: fileId,
+          action: { in: ["annotation_analysis_audio_update", "media_analysis_create"] },
+        },
+        select: { detail: true },
+      })).map(({ detail }) => JSON.stringify(detail));
+      assert.ok(analysisAuditDetails.every((detail) =>
+        !detail.includes("playAuth") && !detail.includes("storageKey")));
+      // 专项夹具不占用后续上传/配额用例的共享容量。
+      await prisma.resourceEntry.deleteMany({
+        where: { id: { in: [audioResourceId, videoResourceId] } },
+      });
+      await prisma.fileObject.deleteMany({
+        where: { ownerUserId: "user-admin", mediaFiles: { none: {} } },
+      });
     });
 
     await suite.test("维护模式排空写入并保留管理员恢复通道", async () => {
@@ -3424,6 +3652,27 @@ test("平台资源 API 集成测试", async (suite) => {
           },
         },
       });
+      const referencedAnalysisAsset = await prisma.mediaAnalysisAsset.findFirstOrThrow({
+        orderBy: { createdAt: "asc" },
+      });
+      const referencedAnalysisPath = path.join(storageRoot, referencedAnalysisAsset.storageKey);
+      await utimes(referencedAnalysisPath, oldDate, oldDate);
+      const missingAnalysisAsset = await prisma.mediaAnalysisAsset.create({
+        data: {
+          runId: referencedAnalysisAsset.runId,
+          kind: "waveform",
+          preset: "lifecycle-missing",
+          level: 0,
+          tileIndex: 0,
+          startTime: 0,
+          endTime: 1,
+          mimeType: "application/vnd.xiqu.waveform-tile",
+          size: 24n,
+          checksum: "0".repeat(64),
+          storageKey: "orphan/missing-analysis.xqa",
+          createdAt: oldDate,
+        },
+      });
 
       const denied = await jsonRequest(app, teacherToken, {
         method: "GET",
@@ -3445,6 +3694,12 @@ test("平台资源 API 集成测试", async (suite) => {
         item.category === "unreferenced_file" && item.fileId === unreferenced.id));
       assert.ok(items.some((item) =>
         item.category === "missing_binary" && item.fileId === missing.id));
+      assert.ok(items.some((item) =>
+        item.category === "missing_binary" &&
+        item.analysisAssetId === missingAnalysisAsset.id));
+      assert.equal(items.some((item) =>
+        item.category === "orphan_binary" &&
+        item.storageKey === referencedAnalysisAsset.storageKey), false);
 
       const missingConfirm = await jsonRequest(app, adminToken, {
         method: "POST",
@@ -3466,6 +3721,7 @@ test("平台资源 API 集成测试", async (suite) => {
       await assert.rejects(access(path.join(storageRoot, "orphan/old.mp4")));
       await assert.rejects(access(path.join(storageRoot, "orphan/unreferenced.mp4")));
       await access(path.join(storageRoot, "orphan/fresh.mp4.upload-test"));
+      await access(referencedAnalysisPath);
       assert.equal(await prisma.auditLog.count({
         where: { action: "storage_orphan_cleanup" },
       }), 1);
@@ -4113,22 +4369,6 @@ test("平台资源 API 集成测试", async (suite) => {
         },
       });
       assert.equal(invalidLifecycleOperation.statusCode, 400);
-
-      const invalidJob = await jsonRequest(app, adminToken, {
-        method: "POST",
-        url: "/api/processing-jobs",
-        payload: { type: "unknown_job", inputFileIds: [] },
-      });
-      assert.equal(invalidJob.statusCode, 400);
-      const missingInput = await jsonRequest(app, adminToken, {
-        method: "POST",
-        url: "/api/processing-jobs",
-        payload: {
-          type: "pitch_extraction",
-          inputFileIds: ["missing-file"],
-        },
-      });
-      assert.equal(missingInput.statusCode, 404);
 
       const auditLogs = await prisma.auditLog.findMany();
       assert.ok(auditLogs.length > 0);
@@ -5536,4 +5776,22 @@ function minimalMp4() {
     Buffer.alloc(4),
     Buffer.from("isomiso2"),
   ]);
+}
+
+// 44 字节 PCM WAV 头足以通过上传签名校验，分析 worker 测试会使用独立的真实音频夹具。
+function minimalWav() {
+  const buffer = Buffer.alloc(44);
+  buffer.write("RIFF", 0);
+  buffer.writeUInt32LE(36, 4);
+  buffer.write("WAVEfmt ", 8);
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(16_000, 24);
+  buffer.writeUInt32LE(32_000, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write("data", 36);
+  buffer.writeUInt32LE(0, 40);
+  return buffer;
 }

@@ -200,21 +200,30 @@ bootstrap；同名普通账号也不会被静默提权。后续账号与权限�
 
 ```bash
 sudo cp deploy/single-server/xiqu-api.service /etc/systemd/system/xiqu-api.service
+sudo cp deploy/single-server/xiqu-analysis-worker.service \
+  /etc/systemd/system/xiqu-analysis-worker.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now xiqu-api
+sudo systemctl enable --now xiqu-api xiqu-analysis-worker
 sudo systemctl status xiqu-api
+sudo systemctl status xiqu-analysis-worker
 ```
 
 服务只允许写 `/var/lib/xiqu-platform`，日志进入 journald：
 
 ```bash
 sudo journalctl -u xiqu-api -f
+sudo journalctl -u xiqu-analysis-worker -f
 curl --fail http://127.0.0.1:4317/api/health/live
 curl --fail http://127.0.0.1:4317/api/health/ready
 ```
 
 readiness 只有在 PostgreSQL 与对象存储同时可用时才返回 200。liveness 成功但 readiness 为 503 时，不要
 反复重启进程，应检查响应中的数据库/存储组件状态和 journald。
+
+analysis worker 是独立进程：API 只创建任务和流式读取资产，不在请求内运行 FFmpeg。生产主机必须安装
+FFmpeg，并通过 `XIQU_FFMPEG_PATH` 固定绝对路径。worker 收到 SIGTERM 会清理当前半成品并把任务重新排队；
+systemd 的 `TimeoutStopSec` 应覆盖该清理时间。API 正常但 worker 未运行时，播放和标注仍可用，分析任务会
+停留在“排队中”。
 
 ## 8. 外部媒体与 Nginx/TLS
 
@@ -229,7 +238,8 @@ XIQU_ALIYUN_VOD_REGION=cn-shanghai
 
 凭据由 `@alicloud/credentials` 默认凭据链读取。生产优先使用实例角色或工作负载身份；必须使用长期
 AccessKey 时，应通过权限为 `600` 的环境文件或 secret 管理器注入，并限制为读取媒资信息和签发播放
-凭据所需的最小权限。AccessKey、Secret、playauth 和临时播放 URL 不得进入数据库、标注 JSON、日志、
+凭据及纯音频转码地址所需的最小权限，至少覆盖 `GetVideoInfo`、`GetVideoPlayAuth` 和 `GetPlayInfo`。
+AccessKey、Secret、playauth 和临时播放 URL 不得进入数据库、标注 JSON、日志、
 浏览器草稿或仓库。启用后还应人工验证无权限媒资、已停用媒资和凭据过期场景均返回明确错误。
 
 编辑器使用固定版本 2.38.3 的阿里云官方 Web 播放器资源：
@@ -244,6 +254,12 @@ https://g.alicdn.com/apsara-media-box/imp-web-player/2.38.3/skins/default/alipla
 原位显示并允许重试。短时 playauth 只驻留页面内存，到期前由播放器单飞刷新；禁止让 Nginx、Service Worker
 或浏览器缓存播放会话 API 响应。服务器上传媒体与本地计算机媒体入口始终保留，不得把 VOD 配置作为平台
 启动的必需条件。
+
+VOD 后台分析通过 `GetPlayInfo(Formats=mp3, StreamType=audio)` 选择 HTTPS 纯音频转码，临时 URL 只进入
+worker 内存和 FFmpeg argv，不缓存完整视频。部署验收可使用样例 VOD ID
+`00cf8df6907871f1b31f5017e1f80102`，但必须由账号所有者确认媒资归属和可用性；空 playauth 或 fake gateway
+不算真实验收。若云端音频接口卡顿，用户可以在编辑器中强制改用已上传的 WAV/FLAC/MP3，自动来源恢复后
+也可显式切回。
 
 ### 8.2 Nginx 与 TLS
 
@@ -291,9 +307,11 @@ npm run deploy:check -- \
 1. 以首位管理员登录。
 2. 创建项目/文件夹，上传一个测试媒体和标注 JSON。
 3. 打开编辑器，确认媒体 Range seeking、WebSocket 连接和保存状态。
-4. 新建第二账号，设置资源权限，验证只读/可写边界。
-5. 检查系统诊断、审计日志与 `/metrics`（携带独立 Bearer token）。
-6. 删除测试资源并确认回收站、恢复与对象容量状态符合预期。
+4. 启动一次上传媒体分析，确认任务从 queued/running 到 succeeded，时间轴按窗显示波形、频谱与 F0。
+5. 若启用 VOD，分别验证播放短时凭据、纯音频分析、强制上传音频覆盖和恢复自动来源。
+6. 新建第二账号，设置资源权限，验证只读/可写边界及分析资产读取权限。
+7. 检查系统诊断、审计日志与 `/metrics`（携带独立 Bearer token）。
+8. 删除测试资源并确认回收站、恢复与对象容量状态符合预期。
 
 ## 10. 备份与恢复演练
 

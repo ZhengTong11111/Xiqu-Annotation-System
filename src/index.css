@@ -6628,6 +6628,44 @@ select {
   line-height: 1.2;
 }
 
+.spectrogram-analysis-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.spectrogram-analysis-source-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.52);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #334155;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.spectrogram-analysis-source-actions button:hover:not(:disabled) {
+  border-color: rgba(15, 108, 189, 0.42);
+  color: #0f4f86;
+}
+
+.spectrogram-analysis-source-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.spectrogram-setting-error {
+  margin: 0;
+  color: #b42318;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .spectrogram-toggle-row {
   position: relative;
   display: flex;

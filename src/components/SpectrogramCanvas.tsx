@@ -4,6 +4,7 @@ import type {
   SpectrogramData,
   SpectrogramFrequencyScale,
 } from "../types";
+import { intersectTimedMediaRange } from "../utils/mediaAnalysisRange";
 
 type SpectrogramCanvasProps = {
   data: SpectrogramData;
@@ -64,35 +65,54 @@ export function SpectrogramCanvas({
     () => buildAxisLabels(frequencyScale, safeMinFrequency, safeMaxFrequency),
     [frequencyScale, safeMaxFrequency, safeMinFrequency],
   );
+  // 资产窗口可因 sourceOffset 与时间轴只部分重叠；画布必须收缩到交集，避免复制首帧或末帧填满空白。
+  const dataRange = useMemo(
+    () => intersectTimedMediaRange(
+      visibleStartTime,
+      visibleEndTime,
+      data.timeOffset ?? 0,
+      data.duration,
+    ),
+    [data.duration, data.timeOffset, visibleEndTime, visibleStartTime],
+  );
+  const fullVisibleDuration = Math.max(visibleEndTime - visibleStartTime, 0.001);
+  const renderLeft = dataRange
+    ? left + ((dataRange.startTime - visibleStartTime) / fullVisibleDuration) * width
+    : left;
+  const renderWidth = dataRange
+    ? ((dataRange.endTime - dataRange.startTime) / fullVisibleDuration) * width
+    : 0;
   const tiles = useMemo(
-    () =>
-      buildSpectrogramTiles(
-        visibleStartTime,
-        visibleEndTime,
-        activeVisibleStartTime,
-        activeVisibleEndTime,
-        width,
-        interactionPreview,
-        data.hopLength / data.sampleRate,
-      ),
+    () => dataRange
+      ? buildSpectrogramTiles(
+          dataRange.startTime,
+          dataRange.endTime,
+          Math.max(activeVisibleStartTime, dataRange.startTime),
+          Math.min(activeVisibleEndTime, dataRange.endTime),
+          renderWidth,
+          interactionPreview,
+          data.hopLength / data.sampleRate,
+        )
+      : [],
     [
       activeVisibleEndTime,
       activeVisibleStartTime,
+      dataRange,
       interactionPreview,
       data.hopLength,
       data.sampleRate,
-      visibleEndTime,
-      visibleStartTime,
-      width,
+      renderWidth,
     ],
   );
+
+  if (!dataRange) return null;
 
   return (
     <div
       className="spectrogram-render-layer"
       style={{
-        left,
-        width,
+        left: renderLeft,
+        width: renderWidth,
         height,
       }}
     >
@@ -347,6 +367,7 @@ function renderSpectrogramTile(
   const imageData = context.createImageData(width, height);
   const visibleDuration = Math.max(endTime - startTime, 0.001);
   const maxFrameIndex = data.frameCount - 1;
+  const timeOffset = data.timeOffset ?? 0;
   const frameCenterOffset = data.fftSize / 2 / data.sampleRate;
   const binIndexesByRow = new Uint16Array(height);
   for (let y = 0; y < height; y += 1) {
@@ -367,7 +388,7 @@ function renderSpectrogramTile(
       0,
       Math.min(
         maxFrameIndex,
-        Math.round(((time - frameCenterOffset) * data.sampleRate) / data.hopLength),
+        Math.round((((time - timeOffset) - frameCenterOffset) * data.sampleRate) / data.hopLength),
       ),
     );
 
@@ -406,13 +427,14 @@ function renderDiscreteFrameSpectrogramTile(
   const visibleDuration = Math.max(endTime - startTime, 0.001);
   const frameDuration = data.hopLength / data.sampleRate;
   const frameCenterOffset = data.fftSize / 2 / data.sampleRate;
+  const timeOffset = data.timeOffset ?? 0;
   const firstFrameIndex = Math.max(
     0,
-    Math.floor(((startTime - frameCenterOffset) * data.sampleRate) / data.hopLength) - 2,
+    Math.floor((((startTime - timeOffset) - frameCenterOffset) * data.sampleRate) / data.hopLength) - 2,
   );
   const lastFrameIndex = Math.min(
     data.frameCount - 1,
-    Math.ceil(((endTime - frameCenterOffset) * data.sampleRate) / data.hopLength) + 2,
+    Math.ceil((((endTime - timeOffset) - frameCenterOffset) * data.sampleRate) / data.hopLength) + 2,
   );
   const binIndexesByRow = new Uint16Array(height);
 
@@ -428,7 +450,9 @@ function renderDiscreteFrameSpectrogramTile(
   }
 
   for (let frameIndex = firstFrameIndex; frameIndex <= lastFrameIndex; frameIndex += 1) {
-    const centerTime = (frameIndex * data.hopLength) / data.sampleRate + frameCenterOffset;
+    const centerTime = timeOffset
+      + (frameIndex * data.hopLength) / data.sampleRate
+      + frameCenterOffset;
     const frameStartTime = centerTime - frameDuration / 2;
     const frameEndTime = centerTime + frameDuration / 2;
     const startX = Math.max(

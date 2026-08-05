@@ -3,7 +3,6 @@ import {
   type AuditAction,
   type Prisma,
   type PrismaClient,
-  type ProcessingJobType as DbProcessingJobType,
 } from "@prisma/client";
 import {
   canBrowseAccountDirectory,
@@ -11,8 +10,6 @@ import {
   type AnnotationCommittedOperationPage,
   type AnnotationOperationPage,
   type CreateAnnotationOperationRequest,
-  type CreateProcessingJobRequest,
-  type ProcessingJob,
 } from "@xiqu/shared";
 import { hashToken, verifyPassword } from "./auth.js";
 import type { ApiUser } from "./domain.js";
@@ -144,45 +141,6 @@ export class PrismaPlatformRepository {
       if (!canDownload) throw forbidden("当前账号不能读取该文件。");
     }
     return toFile(file);
-  }
-
-  async createProcessingJob(
-    user: ApiUser,
-    input: CreateProcessingJobRequest,
-  ): Promise<ProcessingJob> {
-    if (input.resourceId) {
-      await this.access.assertCapability(user, input.resourceId, "write");
-    }
-    for (const fileId of input.inputFileIds) {
-      await this.getFileForRead(user, fileId);
-    }
-    const row = await this.prisma.processingJob.create({
-      data: {
-        type: input.type as DbProcessingJobType,
-        resourceId: input.resourceId ?? null,
-        inputFileIds: input.inputFileIds,
-        createdBy: user.id,
-      },
-    });
-    await this.writeAuditLog({
-      action: "job_create",
-      actorUserId: user.id,
-      resourceId: input.resourceId ?? null,
-      detail: { type: input.type, inputFileIds: input.inputFileIds },
-    });
-    return {
-      id: row.id,
-      type: row.type,
-      status: row.status,
-      resourceId: row.resourceId,
-      inputFileIds: row.inputFileIds,
-      createdBy: row.createdBy,
-      progress: row.progress,
-      errorMessage: row.errorMessage,
-      result: row.result,
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString(),
-    };
   }
 
   async listAnnotationOperations(

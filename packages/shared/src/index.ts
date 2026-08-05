@@ -8,3 +8,5 @@ export * from "./trackStructureLifecycleCommands.js";
 export * from "./trackConfigurationCommands.js";
 export * from "./projectSnapshotBoundaryCommands.js";
 export * from "./annotationCollaboration.js";
+export * from "./mediaAnalysisComputation.js";
+export * from "./mediaAnalysisTileCodec.js";

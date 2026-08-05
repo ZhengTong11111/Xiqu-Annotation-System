@@ -74,6 +74,11 @@ Main currently contains all major recent feature lines that matter for context:
   dialog, while protected runtime URLs stay outside ProjectData
 - App now uses one media playback controller for native local/uploaded media and Aliyun VOD; Aliplayer is loaded from a fixed
   official CDN, short-lived playauth stays memory-only, and late seek/session events cannot revive a replaced source
+- platform waveform, spectrogram, and F0 now use database-backed analysis runs plus object-storage tiles produced by an
+  independent PostgreSQL-claim worker; uploaded inputs stream through FFmpeg stdin, while VOD analysis uses a temporary
+  pure-audio URL that must never enter persistence or logs
+- analysis audio defaults to the bound uploaded/VOD media but can always be overridden with a readable server audio/VOD
+  resource and restored to auto; these settings and assets are platform state, never ProjectData or undo/history state
 - recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
 
 If starting a new conversation, assume the repo is already beyond the earlier simple waveform-only stage.
@@ -105,6 +110,29 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - the only Aliyun VOD SDK boundary; uses the official SDK and default credential chain behind an injectable gateway
   - normalizes provider failures to bounded categories and must never expose SDK errors, credentials, playauth, temporary URLs,
     signed covers, or raw provider responses to persistence/logging layers
+  - analysis audio selection uses `GetPlayInfo` for HTTPS mp3 audio only; its temporary URL is worker-memory-only
+- `apps/api/src/mediaAnalysisJobService.ts`
+  - the only API business boundary for analysis-audio settings, ACL revalidation, source fingerprints, run/job reuse,
+    status DTOs, tile descriptors, and protected asset reads
+  - the algorithm config hash must include every parameter that changes persisted tile timing or values
+- `apps/api/src/mediaAnalysisWorkerService.ts` + `apps/api/src/mediaAnalysisWorkerRuntime.ts`
+  - independent database claim/heartbeat/stale-recovery worker; normal shutdown removes partial assets and requeues the job
+  - staged/final object compensation failures must become stable failed states and must never be silently swallowed
+- `apps/api/src/mediaAnalysisFfmpeg.ts` + `apps/api/src/mediaAnalysisComputation.ts`
+  - shell-free FFmpeg streaming to 16 kHz mono PCM and fixed 30-second tile production
+  - waveform bucket widths and spectrogram hop lengths must exactly divide a full tile; otherwise concatenated browser views
+    accumulate time drift. Keep shared config fingerprints and frontend level selection synchronized
+- `packages/shared/src/mediaAnalysisComputation.ts` + `packages/shared/src/mediaAnalysisTileCodec.ts`
+  - shared bounded STFT/YIN computation and little-endian binary tile codec used by server and local browser worker
+- `src/platform/usePlatformMediaAnalysis.ts`
+  - platform-only status polling, source mutations, viewport/zoom asset selection, request cancellation, generation isolation,
+    strict tile continuity checks, source offset conversion, and bounded byte cache
+  - polling must continue even when one response has an unchanged `updatedAt`; status requests stay single-flight
+- `src/utils/localMediaAnalysis.ts`
+  - browser-only local media fallback with a 256 MiB pre/post-download cap; platform uploaded/VOD URLs must never call it
+- `apps/api/src/objectLifecycleService.ts` + `apps/api/src/backup/backupService.ts`
+  - both FileObject and MediaAnalysisAsset storage keys are authoritative references; lifecycle cleanup and backup warnings
+    must not classify analysis tiles as orphan binaries
 - `src/platform/platformMediaPlaybackSource.ts`
   - the only conversion from platform media DTO plus local runtime URL to native/VOD/unavailable playback source
   - VOD source construction must defer the no-store session request; never retain playauth in React/project state
@@ -1733,9 +1761,15 @@ Current media behavior:
 - local computer media, uploaded server media, and Aliyun VOD must remain three independent selectable workflows
 
 Audio pipeline:
-- video is fetched and decoded to build `WaveformData`
-- waveform keypoints are onset-like heuristics
-- spectrogram derives from waveform audio, not a second independent decode pipeline
+- platform files never fetch and decode a complete uploaded/VOD video in the browser for analysis; the independent analysis
+  worker streams uploaded objects or a short-lived VOD audio URL through FFmpeg and publishes ACL-protected waveform,
+  spectrogram, and F0 tiles
+- platform Timeline requests only the current viewport's tiles through `usePlatformMediaAnalysis`; source changes and file
+  switches must cancel or invalidate stale requests, and the byte cache stays bounded
+- local computer media remains a browser-only fallback with a 256 MiB cap; it may decode the selected local Blob and reuse
+  the shared bounded STFT/YIN implementation, but protected platform URLs must never enter that path
+- waveform keypoints remain onset-like heuristics for local analysis; platform waveform assets currently store min/max/RMS
+  levels and do not fabricate keypoints
 
 ## Clipboard / Paste Model
 Timeline clipboard is more than simple browser copy:

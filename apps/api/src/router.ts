@@ -9,7 +9,6 @@ import {
   type AnnotationConfirmationScope,
   type AuditActionName,
   type PlatformRole,
-  type ProcessingJobType,
   type ResourceCapability,
   type ResourceListView,
   type ResourceSortField,
@@ -21,6 +20,7 @@ import type { AccountAdminService } from "./accountAdminService.js";
 import { badRequest, unauthorized } from "./errors.js";
 import type { HealthService } from "./healthService.js";
 import type { MediaUploadService } from "./mediaUploadService.js";
+import type { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
 import type { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
 import type { ObjectLifecycleService } from "./objectLifecycleService.js";
 import type { OperationalMetricsCollector } from "./operationalMetricsCollector.js";
@@ -67,16 +67,6 @@ const CAPABILITIES = new Set<ResourceCapability>(RESOURCE_CAPABILITIES);
 const CONFIRMATION_DOMAINS = new Set<AnnotationConfirmationDomain>(
   ANNOTATION_CONFIRMATION_DOMAINS,
 );
-const PROCESSING_JOB_TYPES = new Set<ProcessingJobType>([
-  "pitch_extraction",
-  "spectrogram_generation",
-  "staff_notation_render",
-  "gongche_render",
-  "pose_estimation",
-  "video_transcode",
-  "audio_extract",
-  "annotation_export",
-]);
 // 路由运行时校验复用 shared 动作清单，未知 action 在进入 Prisma 前返回 400。
 const AUDIT_ACTION_NAMES = new Set<AuditActionName>(AUDIT_ACTIONS);
 
@@ -86,6 +76,7 @@ export function registerApiRoutes(
   accounts: AccountAdminService,
   auditLogs: AuditLogService,
   resources: ResourceService,
+  mediaAnalysis: MediaAnalysisJobService,
   annotationCommandCommits: AnnotationCommandCommitService,
   storage: Pick<ObjectStorage, "getObjectStream">,
   mediaUploads: MediaUploadService,
@@ -320,6 +311,91 @@ export function registerApiRoutes(
       );
     },
   );
+
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/annotation-files/:resourceId/media-analysis",
+    async (request) => mediaAnalysis.getStatus(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+    ),
+  );
+
+  app.put<{ Params: { resourceId: string }; Body: unknown }>(
+    "/api/annotation-files/:resourceId/analysis-audio",
+    async (request) => {
+      const body = requireObject(request.body);
+      return mediaAnalysis.updateAnalysisAudio(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        {
+          mode: body.mode as "auto" | "media_override",
+          overrideMediaResourceId: optionalStringOrNull(body.overrideMediaResourceId),
+          offsetSeconds: body.offsetSeconds as number | undefined,
+        },
+      );
+    },
+  );
+
+  app.post<{ Params: { resourceId: string }; Body: unknown }>(
+    "/api/annotation-files/:resourceId/media-analysis",
+    async (request) => {
+      const body = request.body === undefined ? {} : requireObject(request.body);
+      if (body.force !== undefined && typeof body.force !== "boolean") {
+        throw badRequest("force 必须是布尔值。");
+      }
+      return mediaAnalysis.createAnalysis(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        { force: body.force as boolean | undefined },
+      );
+    },
+  );
+
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: {
+      runId?: string;
+      kind?: string;
+      preset?: string;
+      level?: string;
+      startTime?: string;
+      endTime?: string;
+    };
+  }>("/api/annotation-files/:resourceId/media-analysis/assets", async (request) => {
+    const kind = normalizedString(request.query.kind);
+    if (kind !== "waveform" && kind !== "spectrogram" && kind !== "pitch") {
+      throw badRequest("分析资产种类不正确。");
+    }
+    return mediaAnalysis.listAssets(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      {
+        runId: requireString(request.query.runId, "runId"),
+        kind,
+        preset: requireString(request.query.preset, "preset"),
+        level: request.query.level === undefined
+          ? undefined
+          : Number(request.query.level),
+        startTime: Number(request.query.startTime),
+        endTime: Number(request.query.endTime),
+      },
+    );
+  });
+
+  app.get<{
+    Params: { resourceId: string; assetId: string };
+  }>("/api/annotation-files/:resourceId/media-analysis/assets/:assetId", async (request, reply) => {
+    const asset = await mediaAnalysis.getAssetForRead(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      request.params.assetId,
+    );
+    reply.header("Content-Type", asset.mimeType);
+    reply.header("Content-Length", asset.size);
+    reply.header("ETag", `\"sha256-${asset.checksum}\"`);
+    reply.header("Cache-Control", "private, max-age=300");
+    return reply.send(await storage.getObjectStream(asset.storageKey));
+  });
 
   // 最近打开从 GET 副作用中拆出，确保维护模式可以放行真正只读的标注文件读取。
   app.post<{ Params: { resourceId: string } }>(
@@ -954,28 +1030,6 @@ export function registerApiRoutes(
     }
     reply.header("Content-Length", file.size);
     return reply.send(await storage.getObjectStream(file.storageKey));
-  });
-
-  app.post<{
-    Body: { type?: unknown; inputFileIds?: unknown; resourceId?: unknown };
-  }>("/api/processing-jobs", async (request) => {
-    const body = requireObject(request.body);
-    if (
-      typeof body.type !== "string" ||
-      !PROCESSING_JOB_TYPES.has(body.type as ProcessingJobType) ||
-      !Array.isArray(body.inputFileIds) ||
-      body.inputFileIds.some((id) => typeof id !== "string")
-    ) {
-      throw badRequest("处理任务参数不正确。");
-    }
-    return repository.createProcessingJob(
-      await getCurrentUser(repository, request),
-      {
-        type: body.type as ProcessingJobType,
-        inputFileIds: body.inputFileIds as string[],
-        resourceId: optionalStringOrNull(body.resourceId),
-      },
-    );
   });
 
   app.get<{

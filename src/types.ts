@@ -91,6 +91,7 @@ export type WaveformData = {
   sampleRate: number;
   duration: number;
   keypoints: number[];
+  timeOffset?: number;
 };
 
 export type SpectrogramFrequencyScale = "linear" | "log" | "mel";
@@ -131,6 +132,7 @@ export type SpectrogramData = {
   frequencyBinCount: number;
   sampleRate: number;
   duration: number;
+  timeOffset?: number;
   hopLength: number;
   fftSize: number;
   minFrequency: number;

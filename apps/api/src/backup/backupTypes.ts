@@ -26,12 +26,22 @@ export type BackupDatabaseFileObject = {
   checksum: string | null;
 };
 
+// 派生分析资产虽可重算，但其数据库行与对象必须作为同一次备份的一致性事实一起校验。
+export type BackupDatabaseDerivedObject = {
+  storageKey: string;
+  size: number;
+  checksum: string;
+};
+
 export type BackupDatabaseSummary = {
   resourceCount: number;
   annotationFileCount: number;
   mediaFileCount: number;
   fileObjectCount: number;
   fileObjects: BackupDatabaseFileObject[];
+  // 可选字段使 R3h4 之前生成的 version 1 manifest 仍可读取。
+  derivedObjectCount?: number;
+  derivedObjects?: BackupDatabaseDerivedObject[];
 };
 
 export type BackupObjectEntry = BackupFileDigest & {

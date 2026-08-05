@@ -1,6 +1,7 @@
 import CredentialPackage from "@alicloud/credentials";
 import OpenApi from "@alicloud/openapi-client";
 import VodPackage, {
+  GetPlayInfoRequest,
   GetVideoInfoRequest,
   GetVideoPlayAuthRequest,
 } from "@alicloud/vod20170321";
@@ -27,9 +28,19 @@ export type AliyunVodPlaybackCredential = {
   expiresAt: Date;
 };
 
+// 纯音频播放地址只允许在 analysis worker 内存中短暂存在，不能映射到公开 DTO 或数据库。
+export type AliyunVodAnalysisAudioStream = {
+  url: string;
+  expiresAt: Date;
+  format: "mp3";
+  duration: number | null;
+  bitrate: number | null;
+};
+
 export interface AliyunVodGateway {
   inspectVideo(videoId: string): Promise<AliyunVodMediaMetadata>;
   createPlaybackCredential(videoId: string): Promise<AliyunVodPlaybackCredential>;
+  createAnalysisAudioStream(videoId: string): Promise<AliyunVodAnalysisAudioStream>;
 }
 
 export type AliyunVodProvider = {
@@ -70,7 +81,10 @@ export function createAliyunVodProvider(region: string): AliyunVodProvider {
 }
 
 export class AliyunVodSdkGateway implements AliyunVodGateway {
-  constructor(private readonly client: Pick<VodSdkClient, "getVideoInfo" | "getVideoPlayAuth">) {}
+  constructor(private readonly client: Pick<
+    VodSdkClient,
+    "getVideoInfo" | "getVideoPlayAuth" | "getPlayInfo"
+  >) {}
 
   async inspectVideo(videoId: string): Promise<AliyunVodMediaMetadata> {
     try {
@@ -132,6 +146,88 @@ export class AliyunVodSdkGateway implements AliyunVodGateway {
       throw normalizeAliyunVodError(error);
     }
   }
+
+  async createAnalysisAudioStream(videoId: string): Promise<AliyunVodAnalysisAudioStream> {
+    const requestedAt = Date.now();
+    try {
+      const response = await this.client.getPlayInfo(new GetPlayInfoRequest({
+        videoId,
+        formats: "mp3",
+        streamType: "audio",
+        outputType: "cdn",
+        authTimeout: PLAY_AUTH_TIMEOUT_SECONDS,
+        resultType: "Multiple",
+      }));
+      const videoBase = response.body?.videoBase;
+      const returnedVideoId = requiredString(videoBase?.videoId);
+      const status = requiredString(videoBase?.status);
+      if (returnedVideoId !== videoId || status !== "Normal") {
+        throw new AliyunVodGatewayError(
+          "invalid_response",
+          optionalString(response.body?.requestId),
+        );
+      }
+      const selected = selectAliyunVodAnalysisAudio(
+        response.body?.playInfoList?.playInfo ?? [],
+      );
+      if (!selected) {
+        throw new AliyunVodGatewayError(
+          "not_found",
+          optionalString(response.body?.requestId),
+        );
+      }
+      return {
+        ...selected,
+        expiresAt: new Date(
+          requestedAt +
+          (PLAY_AUTH_TIMEOUT_SECONDS - PLAY_AUTH_CLOCK_SAFETY_SECONDS) * 1_000,
+        ),
+      };
+    } catch (error) {
+      throw normalizeAliyunVodError(error);
+    }
+  }
+}
+
+type AliyunVodPlayInfoCandidate = {
+  playURL?: unknown;
+  format?: unknown;
+  streamType?: unknown;
+  status?: unknown;
+  duration?: unknown;
+  bitrate?: unknown;
+};
+
+/**
+ * 只接受正常的 HTTPS mp3 纯音频流；排序规则固定为较高码率优先，再按 URL 稳定排序。
+ * 供应商返回的视频流、明文 HTTP、畸形数值和未知状态都不能进入 FFmpeg argv。
+ */
+export function selectAliyunVodAnalysisAudio(
+  candidates: AliyunVodPlayInfoCandidate[],
+): Omit<AliyunVodAnalysisAudioStream, "expiresAt"> | null {
+  const normalized = candidates.flatMap((candidate) => {
+    const url = requiredString(candidate.playURL);
+    const format = requiredString(candidate.format)?.toLowerCase();
+    const streamType = requiredString(candidate.streamType)?.toLowerCase();
+    const status = requiredString(candidate.status);
+    if (
+      !url ||
+      !isSecureHttpUrl(url) ||
+      format !== "mp3" ||
+      streamType !== "audio" ||
+      status !== "Normal"
+    ) return [];
+    return [{
+      url,
+      format: "mp3" as const,
+      duration: optionalNumericString(candidate.duration),
+      bitrate: optionalNumericString(candidate.bitrate),
+    }];
+  });
+  normalized.sort((left, right) =>
+    (right.bitrate ?? -1) - (left.bitrate ?? -1) ||
+    left.url.localeCompare(right.url));
+  return normalized[0] ?? null;
 }
 
 // SDK 可选字段统一在边界收窄，业务层不再处理空白字符串或 undefined。
@@ -149,6 +245,20 @@ function optionalNonNegativeNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? value
     : null;
+}
+
+function optionalNumericString(value: unknown) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function isSecureHttpUrl(value: string) {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 // 供应商错误只按稳定 code 分类，原始对象和潜在敏感字段不作为 cause 保留。

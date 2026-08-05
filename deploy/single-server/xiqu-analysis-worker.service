@@ -1,0 +1,29 @@
+[Unit]
+Description=Xiqu Annotation Platform Media Analysis Worker
+After=network-online.target postgresql.service xiqu-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xiqu
+Group=xiqu
+WorkingDirectory=/opt/xiqu/current
+EnvironmentFile=/etc/xiqu-platform/xiqu-platform.env
+ExecStartPre=/usr/bin/test -r /opt/xiqu/current/dist/api/analysisWorkerCli.js
+ExecStartPre=/usr/bin/test -x /usr/bin/ffmpeg
+ExecStart=/usr/bin/node /opt/xiqu/current/dist/api/analysisWorkerCli.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=90s
+KillSignal=SIGTERM
+
+# Worker 只需要对象存储持久目录；临时 FFmpeg 管道由 PrivateTmp 隔离。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/xiqu-platform
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

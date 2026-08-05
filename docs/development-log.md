@@ -5361,3 +5361,55 @@ operation、审计详情或协作消息。
   始终可以强制选择服务器上传音频、固定 VOD 音频或恢复自动选择，关系只进入平台媒体/派生资产层。
 - R3h4：以后台流式解码、版本化 manifest、多分辨率波形、频谱瓦片和 F0 资产取代浏览器完整视频下载与
   整段 PCM 常驻；真实云端 playauth、凭据刷新、限流和非 Normal 媒资继续列为部署 smoke 缺口。
+
+## 2026-08-05：R3h4 分析音频来源、后台流式计算与按窗派生资产
+
+### 已完成
+
+- 新增 `AnnotationAnalysisAudioSetting`、`MediaAnalysisRun`、`MediaAnalysisAsset`，并扩展
+  `ProcessingJob` 的 claim、心跳、尝试次数和稳定错误字段。数据库 check/unique/FK 约束保护来源模式、
+  时间坐标、进度、资产唯一性和同一 run 只存在一个活动任务；分析设置、任务和资产均留在平台层，不进入
+  `ProjectData`、草稿、撤销栈或协作 operation。
+- 建立自动与强制分析音频来源。uploaded 视频/音频直接读取对象流，VOD 使用同 vid 的 HTTPS mp3 纯音频
+  转码；用户始终可以强制选择有 `read + download` 权限的服务器音频或 VOD，并恢复自动来源。设置和任务
+  创建均重新校验标注文件及媒体 ACL，临时 URL、playauth、凭据和供应商原始响应不落库、不进 DTO/日志。
+- 增加独立 analysis worker。PostgreSQL 原子 claim、心跳、陈旧任务恢复和 SIGTERM 回队列构成可恢复执行
+  边界；FFmpeg 使用 `shell: false`，uploaded 对象经 stdin 流入，VOD 临时 URL 只传给 worker 子进程。PCM
+  固定为 16 kHz 单声道并按 30 秒释放，不缓存完整视频，也不保留整段 PCM。
+- 每个瓦片生成四级波形 min/max/RMS、`time-detail`/`frequency-detail` 两档频谱和 voiced-only F0。
+  波形桶宽固定为 64/256/1000/4000，频谱 hop 固定为 128/480；这些参数都整除 30 秒采样数，并进入
+  config hash，避免跨瓦片累计时间漂移或新旧资产误复用。频谱使用统一 dBFS 标尺，避免逐瓦片峰值归一化
+  产生亮度接缝。
+- 前端新增平台分析 hook：状态请求单飞、任务轮询、文件 generation 隔离、可视窗/缩放选择、AbortController、
+  连续瓦片校验和 48 项字节缓存。Timeline 只组装当前窗口附近的波形/频谱/F0；平台媒体不再进入浏览器完整
+  下载分析路径。波形和频谱先求时间窗与资产范围的交集，正负音频偏移不会把首尾数据复制到空白区域。本地
+  计算机媒体仍可用共享算法，但增加 256 MiB 下载前后上限和明确错误。
+- 波形/频谱设置面板增加来源摘要、任务状态、选择分析音频、恢复自动和开始/重算；JSON 导入、服务器媒体、
+  VOD 和本地媒体三条入口继续并存。通用但没有真实消费方的裸 `createProcessingJob` API/客户端已删除。
+- 对象发布采用 staged -> promote -> database fact，发布或数据库写入失败均补偿；清理失败落为
+  `analysis_cleanup_failed`。对象生命周期、备份 manifest、恢复演练同时把 `MediaAnalysisAsset.storageKey`
+  视为正式引用，旧 version 1 manifest 缺少派生对象摘要时仍可读取。
+- 部署模板增加独立 systemd worker、`XIQU_FFMPEG_PATH` 和 FFmpeg/阿里云最小权限说明。阿里云 SDK 继续使用
+  既有官方依赖，没有为队列另引入 Redis/BullMQ，也没有把大体积 FFmpeg 二进制打进 npm 依赖。
+
+### 审查与验证
+
+- `npm run test:media-analysis` 16/16：覆盖 VOD 纯音频筛选、30 秒共同边界、统一 dBFS、stdin/URL FFmpeg、
+  PCM 分块、worker claim/陈旧恢复、对象补偿、前端连续瓦片、缺号拒绝和非零音频偏移的真实范围裁剪。
+- `npm run test:api` 160/160：PostgreSQL 隔离 schema 下覆盖分析设置、ACL、任务/资产、生命周期，并回归账号、
+  资源、上传/Range、协作、命令保存、恢复和治理接口。
+- `npm run test:backup` 28/28，`npm run test:deployment` 18/18，`npm run build` 通过；构建仅保留既有 Vite
+  主 chunk 超过 500 kB 提醒。
+- 应用内浏览器使用 356.6 MB、1494.4 秒的《寻梦》上传视频完成全片分析，run 生成 350 项资产；实际显示
+  波形和频谱，F0 开关可启用。另以 62.6 KB WAV 强制覆盖并恢复自动来源。冷加载后视频首帧、播放状态和
+  分析图层均正常，先前“正在准备媒体”仅发生在 Vite HMR 中。
+- 对样例 VOD ID `00cf8df6907871f1b31f5017e1f80102` 已通过官方 SDK 发起真实请求；本机默认凭据链为空，
+  因而只得到脱敏后的 `temporarily_unavailable`。fake gateway 仅证明协议和错误边界，不作为真实云端验收。
+
+### 待推进
+
+- 在目标阿里云凭据环境中，以最小权限身份为该 VOD ID 完成 `GetVideoInfo`、`GetVideoPlayAuth`、`GetPlayInfo`
+  smoke，验证真实播放、过期前刷新、纯音频分析、无权限/非 Normal/限流错误和日志脱敏；不得把 AccessKey、
+  Secret、playauth 或临时 URL 写入仓库、数据库、截图或开发日志。
+- 生产部署时安装并固定受支持的 FFmpeg，启用并监控 analysis worker；真实 S3/VOD 环境还应核对长任务心跳、
+  SIGTERM 回队列、对象补偿和供应商卡顿时强制 uploaded audio 的体验。

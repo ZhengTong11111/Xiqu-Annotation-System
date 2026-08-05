@@ -22,23 +22,38 @@ export class ObjectLifecycleService {
   async inspect(user: ApiUser, now = new Date()): Promise<StorageOrphanReport> {
     this.assertAdministrator(user);
     const cutoff = new Date(now.getTime() - this.policy.orphanGraceMs);
-    const [diskObjects, files] = await Promise.all([
+    const [diskObjects, files, analysisAssets] = await Promise.all([
       this.storage.listStoredObjects(),
       this.prisma.fileObject.findMany({
         include: { _count: { select: { mediaFiles: true } } },
       }),
+      this.prisma.mediaAnalysisAsset.findMany({
+        select: {
+          id: true,
+          storageKey: true,
+          size: true,
+          kind: true,
+          preset: true,
+          level: true,
+          tileIndex: true,
+          createdAt: true,
+        },
+      }),
     ]);
     const filesByKey = new Map(files.map((file) => [file.storageKey, file]));
+    const analysisAssetsByKey = new Map(
+      analysisAssets.map((asset) => [asset.storageKey, asset]),
+    );
     const diskKeys = new Set(diskObjects
       .filter((object) => !object.staged)
       .map((object) => object.storageKey));
     const summaries: StorageOrphanSummary[] = [];
 
-    // 磁盘扫描区分过期暂存和没有 FileObject 的最终对象，宽限期内对象只报告而不允许 cleanup。
+    // 最终对象可能由原始 FileObject 或派生分析资产引用；两类引用都必须阻止孤儿清理。
     for (const object of diskObjects) {
       const category = object.staged
         ? "staged_binary"
-        : filesByKey.has(object.storageKey)
+        : filesByKey.has(object.storageKey) || analysisAssetsByKey.has(object.storageKey)
           ? null
           : "orphan_binary";
       if (!category) continue;
@@ -74,6 +89,20 @@ export class ObjectLifecycleService {
           cleanupEligible: false,
         });
       }
+    }
+
+    // 分析资产是可再生数据，但数据库事实仍需诚实报告缺失对象，不能把缺失悄悄当成正常缓存淘汰。
+    for (const asset of analysisAssets) {
+      if (diskKeys.has(asset.storageKey)) continue;
+      summaries.push({
+        category: "missing_binary",
+        analysisAssetId: asset.id,
+        name: `${asset.kind}/${asset.preset}/L${asset.level}/T${asset.tileIndex}`,
+        storageKey: asset.storageKey,
+        size: Number(asset.size),
+        createdAt: asset.createdAt.toISOString(),
+        cleanupEligible: false,
+      });
     }
     return {
       generatedAt: now.toISOString(),

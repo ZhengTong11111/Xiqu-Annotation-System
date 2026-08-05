@@ -196,6 +196,8 @@ function compareDatabaseSummary(
   expected: BackupDatabaseSummary,
   actual: BackupDatabaseSummary,
 ) {
+  const expectedDerived = expected.derivedObjects ?? [];
+  const actualDerived = actual.derivedObjects ?? [];
   const passed = expected.resourceCount === actual.resourceCount &&
     expected.annotationFileCount === actual.annotationFileCount &&
     expected.mediaFileCount === actual.mediaFileCount &&
@@ -205,11 +207,18 @@ function compareDatabaseSummary(
       const restored = actual.fileObjects[index];
       return restored?.storageKey === file.storageKey && restored.size === file.size &&
         restored.checksum === file.checksum;
+    }) &&
+    (expected.derivedObjectCount ?? 0) === (actual.derivedObjectCount ?? 0) &&
+    expectedDerived.length === actualDerived.length &&
+    expectedDerived.every((asset, index) => {
+      const restored = actualDerived[index];
+      return restored?.storageKey === asset.storageKey && restored.size === asset.size &&
+        restored.checksum === asset.checksum;
     });
   return {
     name: "database-summary",
     passed,
-    detail: passed ? "数据库计数与 FileObject 摘要一致。" : "恢复后的数据库摘要与 manifest 不一致。",
+    detail: passed ? "数据库计数、FileObject 与派生对象摘要一致。" : "恢复后的数据库摘要与 manifest 不一致。",
   };
 }
 
@@ -234,9 +243,13 @@ async function compareRestoredObjects(
       failures.push(`对象内容不一致 ${object.storageKey}`);
     }
   }
-  const databaseMissingCount = database.fileObjects
+  const referencedObjects = [
+    ...database.fileObjects,
+    ...(database.derivedObjects ?? []),
+  ];
+  const databaseMissingCount = referencedObjects
     .filter((file) => !expectedByKey.has(file.storageKey)).length;
-  const databaseKeys = new Set(database.fileObjects.map((file) => file.storageKey));
+  const databaseKeys = new Set(referencedObjects.map((file) => file.storageKey));
   const orphanCount = expectedObjects.filter((object) => !databaseKeys.has(object.storageKey)).length;
   return {
     name: "object-storage",

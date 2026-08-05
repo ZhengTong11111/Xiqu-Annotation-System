@@ -20,6 +20,12 @@ export function normalizeBackupManifest(manifest: BackupManifest): BackupManifes
         ...manifest.database.summary,
         fileObjects: [...manifest.database.summary.fileObjects]
           .sort((left, right) => left.storageKey.localeCompare(right.storageKey)),
+        ...(manifest.database.summary.derivedObjects
+          ? {
+              derivedObjects: [...manifest.database.summary.derivedObjects]
+                .sort((left, right) => left.storageKey.localeCompare(right.storageKey)),
+            }
+          : {}),
       },
     },
     objects: {
@@ -118,7 +124,7 @@ export function validateBackupManifest(value: unknown): asserts value is BackupM
   }
 }
 
-// 数据库摘要验证计数、FileObject 明细、checksum 和 storageKey 唯一性。
+// 数据库摘要验证原始文件与派生对象的计数、checksum 和跨集合 storageKey 唯一性。
 function validateDatabaseSummary(value: unknown) {
   if (!isRecord(value) || !isNonNegativeInteger(value.resourceCount) ||
     !isNonNegativeInteger(value.annotationFileCount) ||
@@ -135,6 +141,28 @@ function validateDatabaseSummary(value: unknown) {
     assertSafeRelativePath(file.storageKey, "FileObject storageKey");
     if (keys.has(file.storageKey)) throw new Error(`FileObject storageKey 重复：“${file.storageKey}”。`);
     keys.add(file.storageKey);
+  }
+  const hasDerivedSummary = value.derivedObjectCount !== undefined || value.derivedObjects !== undefined;
+  if (!hasDerivedSummary) return;
+  if (
+    !isNonNegativeInteger(value.derivedObjectCount) ||
+    !Array.isArray(value.derivedObjects) ||
+    value.derivedObjectCount !== value.derivedObjects.length
+  ) {
+    throw new Error("备份 manifest 的派生对象摘要无效。 ");
+  }
+  for (const asset of value.derivedObjects) {
+    if (
+      !isRecord(asset) ||
+      !isNonEmptyString(asset.storageKey) ||
+      !isNonNegativeInteger(asset.size) ||
+      !isSha256(asset.checksum)
+    ) {
+      throw new Error("备份 manifest 的派生对象摘要无效。 ");
+    }
+    assertSafeRelativePath(asset.storageKey, "派生对象 storageKey");
+    if (keys.has(asset.storageKey)) throw new Error(`数据库对象 storageKey 重复：“${asset.storageKey}”。`);
+    keys.add(asset.storageKey);
   }
 }
 

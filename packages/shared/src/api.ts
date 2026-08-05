@@ -12,8 +12,6 @@ import type {
   AuditLogPage,
   ManagedAccount,
   PlatformUser,
-  ProcessingJob,
-  ProcessingJobType,
   ResourceCapability,
   ResourceEntry,
   ResourceListPage,
@@ -23,6 +21,11 @@ import type {
   ResourceSortField,
   ResourceType,
   MediaKind,
+  AnalysisAudioMode,
+  AnnotationMediaAnalysisStatus,
+  MediaAnalysisRun,
+  MediaAnalysisAssetDescriptor,
+  MediaAnalysisAssetKind,
   SortDirection,
 } from "./platform.js";
 import type {
@@ -43,6 +46,10 @@ export type ApiErrorCode =
   | "maintenance_mode"
   | "external_media_unavailable"
   | "external_service_unavailable"
+  | "analysis_source_missing"
+  | "analysis_audio_forbidden"
+  | "analysis_tool_unavailable"
+  | "analysis_failed"
   | "internal_error";
 
 export type ApiErrorBody = {
@@ -138,6 +145,30 @@ export type AliyunVodPlaybackSession = {
 };
 
 export type UpdateAnnotationMediaRequest = { mediaResourceId: string | null };
+
+export type UpdateAnalysisAudioRequest = {
+  mode: AnalysisAudioMode;
+  overrideMediaResourceId?: string | null;
+  offsetSeconds?: number;
+};
+
+export type CreateMediaAnalysisRequest = {
+  force?: boolean;
+};
+
+export type ListMediaAnalysisAssetsOptions = {
+  runId: string;
+  kind: MediaAnalysisAssetKind;
+  preset: string;
+  level?: number;
+  startTime: number;
+  endTime: number;
+};
+
+export type MediaAnalysisAssetList = {
+  runId: string;
+  assets: MediaAnalysisAssetDescriptor[];
+};
 
 export type UpdateResourceRequest = {
   name?: string;
@@ -246,6 +277,7 @@ export type StorageOrphanCategory =
 export type StorageOrphanSummary = {
   category: StorageOrphanCategory;
   fileId?: string;
+  analysisAssetId?: string;
   name?: string;
   storageKey: string;
   size: number;
@@ -370,12 +402,6 @@ export type ListAuditLogsOptions = {
   limit?: number;
 };
 
-export type CreateProcessingJobRequest = {
-  type: ProcessingJobType;
-  inputFileIds: string[];
-  resourceId?: string | null;
-};
-
 export type PlatformApiContract<TPayload = unknown> = {
   login: { request: LoginRequest; response: LoginResponse };
   me: { response: PlatformUser };
@@ -458,10 +484,16 @@ export type PlatformApiContract<TPayload = unknown> = {
     request: UpdateResourceInheritanceRequest;
     response: ResourceEntry;
   };
-  createProcessingJob: {
-    request: CreateProcessingJobRequest;
-    response: ProcessingJob;
+  getAnnotationMediaAnalysis: { response: AnnotationMediaAnalysisStatus };
+  updateAnalysisAudio: {
+    request: UpdateAnalysisAudioRequest;
+    response: AnnotationMediaAnalysisStatus;
   };
+  createMediaAnalysis: {
+    request: CreateMediaAnalysisRequest;
+    response: MediaAnalysisRun;
+  };
+  listMediaAnalysisAssets: { response: MediaAnalysisAssetList };
   listAuditLogs: { response: AuditLogPage };
   listAnnotationOperations: { response: AnnotationOperationPage };
   listCommittedAnnotationOperations: { response: AnnotationCommittedOperationPage };

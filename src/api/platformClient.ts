@@ -24,7 +24,7 @@ import type {
   CreateAliyunVodMediaRequest,
   CreateAnnotationFileRequest,
   CreateAnnotationOperationRequest,
-  CreateProcessingJobRequest,
+  CreateMediaAnalysisRequest,
   CreateResourceRequest,
   ListAuditLogsOptions,
   ListResourcesOptions,
@@ -41,7 +41,10 @@ import type {
   MoveResourceRequest,
   PlatformUser,
   PlatformMaintenanceStatus,
-  ProcessingJob,
+  AnnotationMediaAnalysisStatus,
+  MediaAnalysisRun,
+  MediaAnalysisAssetList,
+  ListMediaAnalysisAssetsOptions,
   ResourceEntry,
   ResourceListPage,
   ResourcePermissionMatrixRow,
@@ -58,6 +61,7 @@ import type {
   UpdateResourceInheritanceRequest,
   UpdateResourceRequest,
   UpdateAnnotationMediaRequest,
+  UpdateAnalysisAudioRequest,
   UpsertResourcePermissionRequest,
 } from "@xiqu/shared";
 
@@ -246,6 +250,52 @@ export class PlatformClient {
       method: "PATCH",
       body: request,
     });
+  }
+
+  getAnnotationMediaAnalysis(resourceId: string) {
+    return this.request<AnnotationMediaAnalysisStatus>(
+      `/annotation-files/${resourceId}/media-analysis`,
+    );
+  }
+
+  updateAnalysisAudio(resourceId: string, request: UpdateAnalysisAudioRequest) {
+    return this.request<AnnotationMediaAnalysisStatus>(
+      `/annotation-files/${resourceId}/analysis-audio`,
+      { method: "PUT", body: request },
+    );
+  }
+
+  createMediaAnalysis(resourceId: string, request: CreateMediaAnalysisRequest = {}) {
+    return this.request<MediaAnalysisRun>(
+      `/annotation-files/${resourceId}/media-analysis`,
+      { method: "POST", body: request },
+    );
+  }
+
+  listMediaAnalysisAssets(resourceId: string, options: ListMediaAnalysisAssetsOptions) {
+    const params = new URLSearchParams({
+      runId: options.runId,
+      kind: options.kind,
+      preset: options.preset,
+      startTime: String(options.startTime),
+      endTime: String(options.endTime),
+    });
+    if (options.level !== undefined) params.set("level", String(options.level));
+    return this.request<MediaAnalysisAssetList>(
+      `/annotation-files/${resourceId}/media-analysis/assets?${params}`,
+    );
+  }
+
+  async getMediaAnalysisAsset(resourceId: string, assetId: string, signal?: AbortSignal) {
+    const headers = new Headers();
+    if (this.accessToken) headers.set("authorization", `Bearer ${this.accessToken}`);
+    const response = await fetch(
+      `${this.baseUrl}/annotation-files/${encodeURIComponent(resourceId)}`
+        + `/media-analysis/assets/${encodeURIComponent(assetId)}`,
+      { headers, signal },
+    );
+    if (!response.ok) await unwrapResponse<never>(response);
+    return new Uint8Array(await response.arrayBuffer());
   }
 
   saveAnnotationFile<TPayload>(
@@ -473,13 +523,6 @@ export class PlatformClient {
       ? `?access_token=${encodeURIComponent(this.accessToken)}`
       : "";
     return `${this.baseUrl}/resources/${encodeURIComponent(resourceId)}/download${tokenQuery}`;
-  }
-
-  createProcessingJob(request: CreateProcessingJobRequest) {
-    return this.request<ProcessingJob>("/processing-jobs", {
-      method: "POST",
-      body: request,
-    });
   }
 
   // 审计列表只消费服务端 opaque cursor，客户端不推导页码或自行重排记录。

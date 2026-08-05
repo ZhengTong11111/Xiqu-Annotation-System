@@ -33,6 +33,8 @@ export const AUDIT_ACTION_LABELS: Record<AuditActionName, string> = {
   resource_inheritance_update: "更新权限继承",
   annotation_media_bind: "关联标注媒体",
   annotation_media_unbind: "解除标注媒体",
+  annotation_analysis_audio_update: "更新分析音频来源",
+  media_analysis_create: "创建媒体分析",
   job_create: "创建后台任务",
   permission_denied: "权限拒绝",
   storage_orphan_cleanup: "清理孤儿对象",

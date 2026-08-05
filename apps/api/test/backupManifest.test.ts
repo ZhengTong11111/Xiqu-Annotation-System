@@ -40,6 +40,8 @@ async function createBackupFixture() {
         mediaFileCount: 1,
         fileObjectCount: 1,
         fileObjects: [{ storageKey: "2026-08-03/media.bin", size: object.size, checksum: object.sha256 }],
+        derivedObjectCount: 0,
+        derivedObjects: [],
       },
     },
     objects: {

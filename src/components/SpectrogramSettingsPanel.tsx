@@ -1,9 +1,11 @@
+import type { AnnotationMediaAnalysisStatus } from "@xiqu/shared";
 import type {
   SpectrogramAnalysisPreset,
   SpectrogramFrequencyPreset,
   SpectrogramFrequencyScale,
   SpectrogramSettings,
 } from "../types";
+import { FolderOpen, RefreshCw, RotateCcw } from "lucide-react";
 import {
   spectrogramAnalysisPresets,
   spectrogramFrequencyPresets,
@@ -16,8 +18,19 @@ type SpectrogramSettingsPanelProps = {
   waveformVisible: boolean;
   isLoading: boolean;
   hasData: boolean;
+  analysisError?: string | null;
   onSettingsChange: (settings: SpectrogramSettings) => void;
   onWaveformVisibleChange: (visible: boolean) => void;
+  platformAnalysis?: {
+    status: AnnotationMediaAnalysisStatus | null;
+    canWrite: boolean;
+    loading: boolean;
+    mutationPending: boolean;
+    error: string | null;
+    onChooseSource: () => void;
+    onRestoreAutomatic: () => void;
+    onStartAnalysis: (force: boolean) => void;
+  };
 };
 
 export function SpectrogramSettingsPanel({
@@ -27,8 +40,10 @@ export function SpectrogramSettingsPanel({
   waveformVisible,
   isLoading,
   hasData,
+  analysisError,
   onSettingsChange,
   onWaveformVisibleChange,
+  platformAnalysis,
 }: SpectrogramSettingsPanelProps) {
   function updateSetting<K extends keyof SpectrogramSettings>(
     key: K,
@@ -70,6 +85,8 @@ export function SpectrogramSettingsPanel({
     (typeof spectrogramAnalysisPresets)[SpectrogramAnalysisPreset],
   ]>;
   const activeAnalysisPreset = spectrogramAnalysisPresets[settings.analysisPreset];
+  const analysisRunActive = platformAnalysis?.status?.currentRun?.status === "queued" ||
+    platformAnalysis?.status?.currentRun?.status === "running";
 
   return (
     <section className="panel spectrogram-settings-panel">
@@ -81,6 +98,62 @@ export function SpectrogramSettingsPanel({
       </div>
 
       <div className="spectrogram-settings-body">
+        {analysisError ? (
+          <p className="spectrogram-setting-error" role="alert">{analysisError}</p>
+        ) : null}
+        {platformAnalysis ? (
+          <div className="spectrogram-setting-group">
+            <div className="spectrogram-setting-heading">
+              <strong>分析音频来源</strong>
+              <span>{describeAnalysisSource(platformAnalysis.status)}</span>
+            </div>
+            <div className="spectrogram-static-row">
+              <span>{describeAnalysisRun(platformAnalysis.status, platformAnalysis.loading)}</span>
+            </div>
+            {platformAnalysis.error ? (
+              <p className="spectrogram-setting-error" role="alert">{platformAnalysis.error}</p>
+            ) : null}
+            <div className="spectrogram-analysis-source-actions">
+              <button
+                type="button"
+                disabled={!platformAnalysis.canWrite || platformAnalysis.mutationPending}
+                onClick={platformAnalysis.onChooseSource}
+              >
+                <FolderOpen size={15} />选择分析音频
+              </button>
+              {platformAnalysis.status?.setting.mode === "media_override" ? (
+                <button
+                  type="button"
+                  disabled={!platformAnalysis.canWrite || platformAnalysis.mutationPending}
+                  onClick={platformAnalysis.onRestoreAutomatic}
+                >
+                  <RotateCcw size={15} />恢复自动
+                </button>
+              ) : null}
+              <button
+                type="button"
+                disabled={
+                  !platformAnalysis.canWrite ||
+                  platformAnalysis.mutationPending ||
+                  analysisRunActive
+                }
+                onClick={() => platformAnalysis.onStartAnalysis(
+                  platformAnalysis.status?.currentRun?.status === "succeeded" ||
+                  platformAnalysis.status?.currentRun?.status === "failed",
+                )}
+              >
+                <RefreshCw size={15} />
+                {platformAnalysis.status?.currentRun?.status === "queued"
+                  ? "排队中"
+                  : platformAnalysis.status?.currentRun?.status === "running"
+                    ? "分析中"
+                    : platformAnalysis.status?.currentRun?.status === "succeeded"
+                      ? "重新分析"
+                      : "开始分析"}
+              </button>
+            </div>
+          </div>
+        ) : null}
         <div className="spectrogram-setting-group">
           <div className="spectrogram-setting-heading">
             <strong>波形图</strong>
@@ -189,6 +262,30 @@ export function SpectrogramSettingsPanel({
       </div>
     </section>
   );
+}
+
+function describeAnalysisSource(status: AnnotationMediaAnalysisStatus | null) {
+  if (!status) return "正在读取";
+  if (status.resolvedSource.status === "ready") {
+    const prefix = status.setting.mode === "auto" ? "自动" : "强制";
+    return `${prefix} · ${status.resolvedSource.mediaName}`;
+  }
+  if (status.resolvedSource.code === "analysis_audio_forbidden") return "来源无读取权限";
+  if (status.resolvedSource.code === "analysis_source_invalid") return "来源已失效";
+  return "尚未关联来源";
+}
+
+function describeAnalysisRun(
+  status: AnnotationMediaAnalysisStatus | null,
+  loading: boolean,
+) {
+  if (loading && !status) return "正在读取分析状态";
+  const run = status?.currentRun;
+  if (!run) return "尚未生成波形、频谱和 F0";
+  if (run.status === "queued") return "已进入后台分析队列";
+  if (run.status === "running") return `后台分析中 · ${Math.round(run.progress * 100)}%`;
+  if (run.status === "failed") return `分析失败 · ${run.errorCode ?? "analysis_failed"}`;
+  return `分析完成 · ${run.duration?.toFixed(1) ?? "?"} 秒`;
 }
 
 export type ToggleRowProps = {

@@ -11,6 +11,10 @@ export type ApiErrorCode =
   | "maintenance_mode"
   | "external_media_unavailable"
   | "external_service_unavailable"
+  | "analysis_source_missing"
+  | "analysis_audio_forbidden"
+  | "analysis_tool_unavailable"
+  | "analysis_failed"
   | "internal_error";
 
 export class HttpError extends Error {
@@ -84,4 +88,12 @@ export function externalServiceUnavailable(
   details: unknown = undefined,
 ) {
   return new HttpError(503, "external_service_unavailable", message, details);
+}
+
+export function analysisSourceMissing(message: string, details: unknown = undefined) {
+  return new HttpError(409, "analysis_source_missing", message, details);
+}
+
+export function analysisAudioForbidden(message: string, details: unknown = undefined) {
+  return new HttpError(403, "analysis_audio_forbidden", message, details);
 }

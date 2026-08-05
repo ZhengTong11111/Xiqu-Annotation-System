@@ -175,6 +175,72 @@ export type AnnotationMediaReference =
       region: string;
     });
 
+export type AnalysisAudioMode = "auto" | "media_override";
+export type MediaAnalysisAssetKind = "waveform" | "spectrogram" | "pitch";
+
+export type AnalysisAudioSetting = {
+  mode: AnalysisAudioMode;
+  overrideMediaResourceId: string | null;
+  offsetSeconds: number;
+  updatedAt: string | null;
+};
+
+export type ResolvedAnalysisAudioSource =
+  | {
+      status: "ready";
+      mode: AnalysisAudioMode;
+      mediaResourceId: string;
+      mediaName: string;
+      sourceType: MediaSourceType;
+      mediaKind: MediaKind;
+      duration: number | null;
+      offsetSeconds: number;
+    }
+  | {
+      status: "unavailable";
+      mode: AnalysisAudioMode;
+      code:
+        | "analysis_source_missing"
+        | "analysis_audio_forbidden"
+        | "analysis_source_invalid";
+      offsetSeconds: number;
+    };
+
+export type MediaAnalysisAssetDescriptor = {
+  id: string;
+  kind: MediaAnalysisAssetKind;
+  preset: string;
+  level: number;
+  tileIndex: number;
+  startTime: number;
+  endTime: number;
+  mimeType: string;
+  size: number;
+};
+
+export type MediaAnalysisRun = {
+  id: string;
+  status: ProcessingJobStatus;
+  progress: number;
+  errorCode: string | null;
+  sourceMediaResourceId: string;
+  sourceMode: AnalysisAudioMode;
+  sourceOffsetSeconds: number;
+  algorithmVersion: string;
+  duration: number | null;
+  sampleRate: number | null;
+  assetCounts: Partial<Record<MediaAnalysisAssetKind, number>>;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
+export type AnnotationMediaAnalysisStatus = {
+  setting: AnalysisAudioSetting;
+  resolvedSource: ResolvedAnalysisAudioSource;
+  currentRun: MediaAnalysisRun | null;
+};
+
 // 恢复快照摘要用于历史列表，刻意不携带大体积标注 payload。
 export type AnnotationRecoverySnapshotSummary = {
   id: string;
@@ -269,7 +335,8 @@ export type ProcessingJobType =
   | "pose_estimation"
   | "video_transcode"
   | "audio_extract"
-  | "annotation_export";
+  | "annotation_export"
+  | "media_analysis";
 
 export type ProcessingJobStatus =
   | "queued"
@@ -320,6 +387,8 @@ export const AUDIT_ACTIONS = [
   "resource_inheritance_update",
   "annotation_media_bind",
   "annotation_media_unbind",
+  "annotation_analysis_audio_update",
+  "media_analysis_create",
   "job_create",
   "permission_denied",
   "storage_orphan_cleanup",

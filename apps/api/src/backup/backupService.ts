@@ -147,11 +147,15 @@ export async function createPlatformBackup(options: CreateBackupOptions) {
 
 // 数据库摘要采用稳定排序，并只包含恢复一致性需要的文件元数据和计数。
 export async function readDatabaseSummary(prisma: PrismaClient): Promise<BackupDatabaseSummary> {
-  const [resourceCount, annotationFileCount, mediaFileCount, fileObjects] = await Promise.all([
+  const [resourceCount, annotationFileCount, mediaFileCount, fileObjects, derivedObjects] = await Promise.all([
     prisma.resourceEntry.count(),
     prisma.annotationFile.count(),
     prisma.mediaFile.count(),
     prisma.fileObject.findMany({
+      select: { storageKey: true, size: true, checksum: true },
+      orderBy: { storageKey: "asc" },
+    }),
+    prisma.mediaAnalysisAsset.findMany({
       select: { storageKey: true, size: true, checksum: true },
       orderBy: { storageKey: "asc" },
     }),
@@ -162,12 +166,19 @@ export async function readDatabaseSummary(prisma: PrismaClient): Promise<BackupD
     size: Number(file.size),
     checksum: file.checksum,
   }));
+  const derivedObjectDigests = derivedObjects.map((asset) => ({
+    storageKey: asset.storageKey,
+    size: Number(asset.size),
+    checksum: asset.checksum,
+  }));
   return {
     resourceCount,
     annotationFileCount,
     mediaFileCount,
     fileObjectCount: fileObjectDigests.length,
     fileObjects: fileObjectDigests,
+    derivedObjectCount: derivedObjectDigests.length,
+    derivedObjects: derivedObjectDigests,
   };
 }
 
@@ -217,8 +228,12 @@ export function buildConsistencyWarnings(
 ) {
   const warnings: string[] = [];
   const objectByKey = new Map(objects.map((entry) => [entry.storageKey, entry]));
-  const databaseKeys = new Set(summary.fileObjects.map((file) => file.storageKey));
-  for (const file of summary.fileObjects) {
+  const referencedObjects = [
+    ...summary.fileObjects,
+    ...(summary.derivedObjects ?? []),
+  ];
+  const databaseKeys = new Set(referencedObjects.map((file) => file.storageKey));
+  for (const file of referencedObjects) {
     const object = objectByKey.get(file.storageKey);
     if (!object) {
       warnings.push(`数据库对象缺少磁盘文件：${file.storageKey}`);

@@ -51,6 +51,10 @@ import { useAnnotationConfirmations } from "./platform/useAnnotationConfirmation
 import { usePlatformAutoSave } from "./platform/usePlatformAutoSave";
 import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
 import { usePlatformMutationLease } from "./platform/usePlatformMutationLease";
+import {
+  type PlatformAnalysisViewport,
+  usePlatformMediaAnalysis,
+} from "./platform/usePlatformMediaAnalysis";
 import { planAtomicAnnotationCommandBatch } from "./platform/platformAtomicCommandPlan";
 import { usePlatformAtomicCommandSubmit } from "./platform/usePlatformAtomicCommandSubmit";
 import { planPlatformConflictRebase } from "./platform/platformConflictRebase";
@@ -164,6 +168,7 @@ import {
   buildSpectrogramData,
   defaultSpectrogramSettings,
 } from "./utils/spectrogram";
+import { buildLocalWaveformData } from "./utils/localMediaAnalysis";
 import {
   analyzeSentenceCharacterAlignment,
   createSentenceCharacterRepairs,
@@ -459,10 +464,6 @@ const IMPORT_MERGE_SKIP = "__skip__";
 const IMPORT_MERGE_NEW = "__new__";
 const POINT_PASTE_CONFLICT_EPSILON = 0.015;
 const trackSnapSignatureCache = new WeakMap<Record<string, boolean>, string>();
-const WAVEFORM_KEYPOINT_MIN_SPACING_SECONDS = 0.06;
-const WAVEFORM_KEYPOINT_MAX_COUNT = 1600;
-const WAVEFORM_KEYPOINT_FRAME_DURATION_SECONDS = 0.012;
-
 type EditorWorkbenchProps = {
   editorSession: PlatformEditorSession | null;
   localEditorSession?: LocalEditorSession | null;
@@ -665,6 +666,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [previewTime, setPreviewTime] = useState<number | null>(null);
   const [waveformData, setWaveformData] = useState<WaveformData | null>(null);
   const [isWaveformLoading, setIsWaveformLoading] = useState(false);
+  const [localAnalysisError, setLocalAnalysisError] = useState<string | null>(null);
   const [spectrogramData, setSpectrogramData] = useState<SpectrogramData | null>(null);
   const [isSpectrogramLoading, setIsSpectrogramLoading] = useState(false);
   const [spectrogramSettings, setSpectrogramSettings] = useState<SpectrogramSettings>(
@@ -732,6 +734,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [isSplitPanelCollapsed, setIsSplitPanelCollapsed] = useState(false);
   const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
   const [serverMediaDialogOpen, setServerMediaDialogOpen] = useState(false);
+  const [analysisAudioDialogOpen, setAnalysisAudioDialogOpen] = useState(false);
+  const [analysisViewport, setAnalysisViewport] = useState<PlatformAnalysisViewport | null>(null);
   const [serverMediaBindingBusy, setServerMediaBindingBusy] = useState(false);
   const [currentProjectFileName, setCurrentProjectFileName] = useState<string | null>(null);
   const [previewDetachedWindow, setPreviewDetachedWindow] = useState<Window | null>(null);
@@ -741,6 +745,22 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const videoRef = useRef<MediaPlaybackController>(null);
   const platformMedia = editorSession?.media;
   const platformClient = editorSession?.client;
+  const platformMediaAnalysis = usePlatformMediaAnalysis({
+    client: platformClient ?? null,
+    annotationFileId: editorSession?.annotationFileId ?? null,
+    enabled: Boolean(editorSession),
+    canWrite: Boolean(editorSession?.canWrite),
+    viewport: analysisViewport,
+    spectrogramVisible: spectrogramSettings.visible,
+    analysisPreset: spectrogramSettings.analysisPreset,
+    showPitch: spectrogramSettings.showPitchContour,
+  });
+  const displayedWaveformData = editorSession
+    ? platformMediaAnalysis.waveformData
+    : waveformData;
+  const displayedSpectrogramData = editorSession
+    ? platformMediaAnalysis.spectrogramData
+    : spectrogramData;
   const playbackSource = useMemo(() => buildPlatformMediaPlaybackSource({
     media: platformMedia,
     nativeUrl: project.video.url,
@@ -1266,9 +1286,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const requestId = waveformRequestIdRef.current + 1;
     waveformRequestIdRef.current = requestId;
 
-    if (!videoUrl) {
+    if (editorSession || !videoUrl) {
       setWaveformData(null);
       setSpectrogramData(null);
+      setLocalAnalysisError(null);
       setIsWaveformLoading(false);
       setIsSpectrogramLoading(false);
       return;
@@ -1276,20 +1297,25 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
     let cancelled = false;
     setIsWaveformLoading(true);
+    setLocalAnalysisError(null);
     setSpectrogramData(null);
 
-    void buildWaveformData(videoUrl)
+    const abortController = new AbortController();
+    void buildLocalWaveformData(videoUrl, abortController.signal)
       .then((nextWaveformData) => {
         if (cancelled || waveformRequestIdRef.current !== requestId) {
           return;
         }
         setWaveformData(nextWaveformData);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (cancelled || waveformRequestIdRef.current !== requestId) {
           return;
         }
         setWaveformData(null);
+        setLocalAnalysisError(
+          error instanceof Error ? error.message : "无法分析本机媒体中的音频。",
+        );
       })
       .finally(() => {
         if (cancelled || waveformRequestIdRef.current !== requestId) {
@@ -1300,14 +1326,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
     return () => {
       cancelled = true;
+      abortController.abort();
     };
-  }, [project.video.url]);
+  }, [editorSession, project.video.url]);
 
   useEffect(() => {
     const requestId = spectrogramRequestIdRef.current + 1;
     spectrogramRequestIdRef.current = requestId;
 
-    if (!spectrogramSettings.visible || !waveformData) {
+    if (editorSession || !spectrogramSettings.visible || !waveformData) {
       setSpectrogramData(null);
       setIsSpectrogramLoading(false);
       return;
@@ -1362,6 +1389,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       abortController.abort();
     };
   }, [
+    editorSession,
     spectrogramData,
     spectrogramSettings.analysisPreset,
     spectrogramSettings.showPitchContour,
@@ -5980,10 +6008,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         customTracks={project.customTracks}
         trackDefinitions={timelineTrackDefinitions}
         missingBuiltinTracks={missingBuiltinTracks}
-        waveformData={waveformData}
-        isWaveformLoading={isWaveformLoading}
-        spectrogramData={spectrogramData}
-        isSpectrogramLoading={isSpectrogramLoading}
+        waveformData={displayedWaveformData}
+        isWaveformLoading={editorSession
+          ? platformMediaAnalysis.statusLoading || platformMediaAnalysis.assetsLoading
+          : isWaveformLoading}
+        spectrogramData={displayedSpectrogramData}
+        isSpectrogramLoading={editorSession
+          ? platformMediaAnalysis.statusLoading || platformMediaAnalysis.assetsLoading
+          : isSpectrogramLoading}
         spectrogramSettings={spectrogramSettings}
         currentTime={currentTime}
         remoteActivities={showRemoteCollaborationHints ? collaborationSession.remoteActivities : []}
@@ -6015,6 +6047,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         onFocusRangeHandled={handleFocusRangeHandled}
         getProjectSnapshot={() => projectRef.current}
         onZoomChange={setZoom}
+        onViewportTimeRangeChange={(nextViewport) => {
+          if (!editorSession) return;
+          setAnalysisViewport((current) => current &&
+            current.startTime === nextViewport.startTime &&
+            current.endTime === nextViewport.endTime &&
+            current.zoom === nextViewport.zoom
+            ? current
+            : nextViewport);
+        }}
         onToggleTrackSnap={(trackId) => {
           applyTrackSnapEnabledState({
             ...trackSnapEnabledRef.current,
@@ -6342,6 +6383,27 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           onConfirm={updateServerMediaBinding}
         />
       ) : null}
+      {editorSession ? (
+        <AnnotationMediaBindingDialog
+          client={editorSession.client}
+          parentId={editorSession.parentId}
+          open={analysisAudioDialogOpen}
+          busy={platformMediaAnalysis.mutationPending}
+          pickerMode="analysis-audio"
+          title="选择分析音频"
+          description="上传音频将完全绕过 VOD；也可固定另一项 VOD 媒资"
+          onOpenChange={setAnalysisAudioDialogOpen}
+          onConfirm={async (mediaResourceId) => {
+            if (!mediaResourceId) return;
+            const updated = await platformMediaAnalysis.updateSource({
+              mode: "media_override",
+              overrideMediaResourceId: mediaResourceId,
+              offsetSeconds: platformMediaAnalysis.status?.setting.offsetSeconds ?? 0,
+            });
+            if (updated) setAnalysisAudioDialogOpen(false);
+          }}
+        />
+      ) : null}
       <ResizableSplitLayout
         orientation="horizontal"
         initialPrimarySize={0.74}
@@ -6548,13 +6610,35 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                       {selectedItem?.type === "waveform-track" || selectedItem?.type === "spectrogram-track" ? (
                         <SpectrogramSettingsPanel
                           settings={spectrogramSettings}
-                          isWaveformLoading={isWaveformLoading}
-                          hasWaveformData={Boolean(waveformData)}
+                          isWaveformLoading={editorSession
+                            ? platformMediaAnalysis.statusLoading || platformMediaAnalysis.assetsLoading
+                            : isWaveformLoading}
+                          hasWaveformData={Boolean(displayedWaveformData)}
                           waveformVisible={waveformVisible}
-                          isLoading={isSpectrogramLoading}
-                          hasData={Boolean(spectrogramData)}
+                          isLoading={editorSession
+                            ? platformMediaAnalysis.statusLoading || platformMediaAnalysis.assetsLoading
+                            : isSpectrogramLoading}
+                          hasData={Boolean(displayedSpectrogramData)}
+                          analysisError={editorSession ? null : localAnalysisError}
                           onSettingsChange={setSpectrogramSettings}
                           onWaveformVisibleChange={setWaveformVisible}
+                          platformAnalysis={editorSession ? {
+                            status: platformMediaAnalysis.status,
+                            canWrite: editorSession.canWrite,
+                            loading: platformMediaAnalysis.statusLoading,
+                            mutationPending: platformMediaAnalysis.mutationPending,
+                            error: platformMediaAnalysis.error,
+                            onChooseSource: () => setAnalysisAudioDialogOpen(true),
+                            onRestoreAutomatic: () => {
+                              void platformMediaAnalysis.updateSource({
+                                mode: "auto",
+                                offsetSeconds: 0,
+                              });
+                            },
+                            onStartAnalysis: (force) => {
+                              void platformMediaAnalysis.startAnalysis(force);
+                            },
+                          } : undefined}
                         />
                       ) : (
                         <InspectorPanel
@@ -9186,128 +9270,6 @@ function doesRangePlaybackIntentMatch(
 ) {
   return Math.abs(intent.rangeStart - range.start) <= 0.000001 &&
     Math.abs(intent.rangeEnd - range.end) <= 0.000001;
-}
-
-async function buildWaveformData(videoUrl: string): Promise<WaveformData | null> {
-  const AudioContextCtor = window.AudioContext || (window as typeof window & {
-    webkitAudioContext?: typeof AudioContext;
-  }).webkitAudioContext;
-
-  if (!AudioContextCtor) {
-    return null;
-  }
-
-  const response = await fetch(videoUrl);
-  const buffer = await response.arrayBuffer();
-  const audioContext = new AudioContextCtor();
-
-  try {
-    const audioBuffer = await audioContext.decodeAudioData(buffer.slice(0));
-    const mixedChannel = mixAudioBufferChannels(audioBuffer);
-    return {
-      samples: mixedChannel,
-      sampleRate: audioBuffer.sampleRate,
-      duration: audioBuffer.duration,
-      keypoints: detectWaveformKeypoints(mixedChannel, audioBuffer.sampleRate, audioBuffer.duration),
-    };
-  } finally {
-    void audioContext.close();
-  }
-}
-
-function mixAudioBufferChannels(audioBuffer: AudioBuffer) {
-  const length = audioBuffer.length;
-  const mixed = new Float32Array(length);
-
-  for (let channelIndex = 0; channelIndex < audioBuffer.numberOfChannels; channelIndex += 1) {
-    const channelData = audioBuffer.getChannelData(channelIndex);
-    for (let sampleIndex = 0; sampleIndex < length; sampleIndex += 1) {
-      mixed[sampleIndex] += channelData[sampleIndex] / audioBuffer.numberOfChannels;
-    }
-  }
-
-  return mixed;
-}
-
-function detectWaveformKeypoints(
-  samples: Float32Array,
-  sampleRate: number,
-  duration: number,
-) {
-  if (samples.length === 0 || sampleRate <= 0 || duration <= 0) {
-    return [];
-  }
-
-  const frameSize = Math.max(64, Math.round(sampleRate * WAVEFORM_KEYPOINT_FRAME_DURATION_SECONDS));
-  const hopSize = Math.max(32, Math.round(frameSize / 2));
-  const envelopeLength = Math.max(1, Math.ceil(samples.length / hopSize));
-  const envelope = new Float32Array(envelopeLength);
-
-  for (let frameIndex = 0; frameIndex < envelopeLength; frameIndex += 1) {
-    const start = frameIndex * hopSize;
-    const end = Math.min(samples.length, start + frameSize);
-    let rmsSum = 0;
-    let peak = 0;
-    for (let sampleIndex = start; sampleIndex < end; sampleIndex += 1) {
-      const value = samples[sampleIndex] ?? 0;
-      const absValue = Math.abs(value);
-      peak = Math.max(peak, absValue);
-      rmsSum += value * value;
-    }
-    const count = Math.max(1, end - start);
-    const rms = Math.sqrt(rmsSum / count);
-    envelope[frameIndex] = peak * 0.55 + rms * 0.85;
-  }
-
-  const smoothed = new Float32Array(envelopeLength);
-  for (let index = 0; index < envelopeLength; index += 1) {
-    const previous = envelope[Math.max(0, index - 1)] ?? envelope[index] ?? 0;
-    const current = envelope[index] ?? 0;
-    const next = envelope[Math.min(envelopeLength - 1, index + 1)] ?? current;
-    smoothed[index] = previous * 0.25 + current * 0.5 + next * 0.25;
-  }
-
-  let averageLevel = 0;
-  const positiveDiffs: number[] = [];
-  for (let index = 0; index < smoothed.length; index += 1) {
-    averageLevel += smoothed[index] ?? 0;
-    if (index === 0) {
-      continue;
-    }
-    const diff = (smoothed[index] ?? 0) - (smoothed[index - 1] ?? 0);
-    if (diff > 0) {
-      positiveDiffs.push(diff);
-    }
-  }
-  averageLevel /= Math.max(smoothed.length, 1);
-  const averagePositiveDiff = positiveDiffs.length > 0
-    ? positiveDiffs.reduce((sum, value) => sum + value, 0) / positiveDiffs.length
-    : 0;
-  const onsetThreshold = Math.max(averagePositiveDiff * 1.8, averageLevel * 0.18, 0.01);
-  const levelThreshold = Math.max(averageLevel * 0.6, 0.025);
-  const keypoints: number[] = [];
-
-  for (let index = 1; index < smoothed.length - 1; index += 1) {
-    const current = smoothed[index] ?? 0;
-    const previous = smoothed[index - 1] ?? 0;
-    const next = smoothed[index + 1] ?? 0;
-    const diff = current - previous;
-    if (current < levelThreshold || diff < onsetThreshold || current < next) {
-      continue;
-    }
-
-    const time = Math.min(duration, (index * hopSize) / sampleRate);
-    const previousTime = keypoints[keypoints.length - 1];
-    if (previousTime !== undefined && time - previousTime < WAVEFORM_KEYPOINT_MIN_SPACING_SECONDS) {
-      continue;
-    }
-    keypoints.push(time);
-    if (keypoints.length >= WAVEFORM_KEYPOINT_MAX_COUNT) {
-      break;
-    }
-  }
-
-  return keypoints;
 }
 
 function isEditableKeyboardTarget(target: EventTarget | null) {

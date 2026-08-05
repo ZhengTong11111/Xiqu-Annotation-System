@@ -29,6 +29,9 @@ type Props = {
   open: boolean;
   busy?: boolean;
   allowUnbound?: boolean;
+  pickerMode?: "annotation-media" | "analysis-audio";
+  title?: string;
+  description?: string;
   onOpenChange: (open: boolean) => void;
   onConfirm: (mediaResourceId: string | null) => Promise<void> | void;
 };
@@ -50,6 +53,7 @@ const EMPTY_DIRECTORY: DirectoryState = {
 // 导入、Inspector 和平台编辑器共用同一媒体选择器。目录导航只消费资源树 API；
 // 媒体绑定与权限真相仍由后端 updateAnnotationMedia 命令统一复核。
 export function AnnotationMediaBindingDialog(props: Props) {
+  const pickerMode = props.pickerMode ?? "annotation-media";
   const [folderId, setFolderId] = useState<string | null>(props.parentId);
   const [query, setQuery] = useState("");
   const [directory, setDirectory] = useState<DirectoryState>(EMPTY_DIRECTORY);
@@ -73,7 +77,7 @@ export function AnnotationMediaBindingDialog(props: Props) {
   const selectedCanBind = selectedId === null
     ? Boolean(props.allowUnbound)
     : selectedItem
-      ? canBindMedia(selectedItem)
+      ? canBindMedia(selectedItem, pickerMode)
       : props.current?.resourceId === selectedId;
   const canUpload = Boolean(
     folderId && directory.current?.permission.capabilities.includes("create_child"),
@@ -110,7 +114,11 @@ export function AnnotationMediaBindingDialog(props: Props) {
     setDirectory(EMPTY_DIRECTORY);
 
     void Promise.all([
-      collectResourcePickerItems(fetchPickerPage, null, isMediaPickerItem),
+      collectResourcePickerItems(
+        fetchPickerPage,
+        null,
+        (resource) => isMediaPickerItem(resource, pickerMode),
+      ),
       folderId ? props.client.getResource(folderId) : Promise.resolve(null),
     ]).then(([page, current]) => {
       // 用户快速切目录或搜索时，迟到响应不能把路径和列表退回旧位置。
@@ -131,7 +139,7 @@ export function AnnotationMediaBindingDialog(props: Props) {
     return () => {
       if (requestId === requestIdRef.current) requestIdRef.current += 1;
     };
-  }, [fetchPickerPage, folderId, props.client, props.open, refreshRevision]);
+  }, [fetchPickerPage, folderId, pickerMode, props.client, props.open, refreshRevision]);
 
   async function loadMore() {
     const cursor = directory.nextCursor;
@@ -140,7 +148,11 @@ export function AnnotationMediaBindingDialog(props: Props) {
     setLoadingMore(true);
     setError(null);
     try {
-      const page = await collectResourcePickerItems(fetchPickerPage, cursor, isMediaPickerItem);
+      const page = await collectResourcePickerItems(
+        fetchPickerPage,
+        cursor,
+        (resource) => isMediaPickerItem(resource, pickerMode),
+      );
       if (requestId !== requestIdRef.current) return;
       setDirectory((current) => {
         const seen = new Set(current.items.map(({ id }) => id));
@@ -209,7 +221,7 @@ export function AnnotationMediaBindingDialog(props: Props) {
       <Dialog.Overlay className="system-diagnostics-backdrop" />
       <Dialog.Content className="annotation-media-dialog">
         <header className="system-diagnostics-header">
-          <div><Film size={20} /><div><Dialog.Title>关联视频或音频</Dialog.Title><Dialog.Description>从有权访问的服务器目录选择媒体，关系独立保存</Dialog.Description></div></div>
+          <div><Film size={20} /><div><Dialog.Title>{props.title ?? "关联视频或音频"}</Dialog.Title><Dialog.Description>{props.description ?? "从有权访问的服务器目录选择媒体，关系独立保存"}</Dialog.Description></div></div>
           <div className="system-diagnostics-header-actions">
             <button type="button" title="刷新当前目录" disabled={interactionBusy} onClick={() => setRefreshRevision((value) => value + 1)}><RefreshCw size={16} /></button>
             <Dialog.Close asChild><button type="button" title="关闭" disabled={interactionBusy}><X size={17} /></button></Dialog.Close>
@@ -268,7 +280,7 @@ export function AnnotationMediaBindingDialog(props: Props) {
                 <strong>{item.name}</strong><span>打开目录</span><ChevronRight className="annotation-media-enter-icon" size={16} />
               </button>;
             }
-            const permitted = canBindMedia(item);
+            const permitted = canBindMedia(item, pickerMode);
             return <button
               key={item.id}
               type="button"
@@ -294,7 +306,7 @@ export function AnnotationMediaBindingDialog(props: Props) {
 
         <footer className="annotation-media-actions">
           <span>{folderId ? `上传位置：${directory.current?.name ?? "正在读取"}` : "进入项目或文件夹后可上传媒体"}</span>
-          <input ref={inputRef} hidden type="file" accept="video/*,audio/*" onChange={(event) => void upload(event.target.files?.[0])} />
+          <input ref={inputRef} hidden type="file" accept={pickerMode === "analysis-audio" ? "audio/*" : "video/*,audio/*"} onChange={(event) => void upload(event.target.files?.[0])} />
           <button type="button" disabled={!canUpload || interactionBusy} title={canUpload ? "上传到当前目录" : "当前目录不可上传"} onClick={() => inputRef.current?.click()}><Upload size={15} />{uploading ? "上传中" : "上传新媒体"}</button>
           <button type="button" disabled={!canUpload || interactionBusy} title={canUpload ? "在当前目录创建 VOD 资源" : "当前目录不可创建"} onClick={() => setVodDialogOpen(true)}><Cloud size={15} />接入 VOD</button>
           <button type="button" className="platform-primary-button" disabled={!selectedCanBind || interactionBusy} onClick={() => void confirmSelection()}>{props.busy || confirming ? "保存中" : "确认关联"}</button>
@@ -315,15 +327,35 @@ export function AnnotationMediaBindingDialog(props: Props) {
   </Dialog.Root>;
 }
 
-function isMediaPickerItem(resource: ResourceEntry) {
-  return isResourceContainer(resource) || resource.type === "media_file";
+function isMediaPickerItem(
+  resource: ResourceEntry,
+  mode: NonNullable<Props["pickerMode"]>,
+) {
+  return isResourceContainer(resource) || canUseMediaForMode(resource, mode);
 }
 
-function canBindMedia(resource: ResourceEntry) {
+function canBindMedia(
+  resource: ResourceEntry,
+  mode: NonNullable<Props["pickerMode"]>,
+) {
   const capabilities = resource.permission.capabilities;
   return resource.type === "media_file" &&
     capabilities.includes("read") && capabilities.includes("download") &&
-    Boolean(resource.mediaKind === "video" || resource.mediaKind === "audio");
+    canUseMediaForMode(resource, mode);
+}
+
+function canUseMediaForMode(
+  resource: ResourceEntry,
+  mode: NonNullable<Props["pickerMode"]>,
+) {
+  if (resource.type !== "media_file") return false;
+  if (mode === "annotation-media") {
+    return resource.mediaKind === "video" || resource.mediaKind === "audio";
+  }
+  // 强制上传来源只接受纯音频；VOD 可使用同 vid 的纯音频转码，因此视频媒资仍可选择。
+  return resource.mediaSourceType === "aliyun_vod"
+    ? resource.mediaKind === "video" || resource.mediaKind === "audio"
+    : resource.mediaKind === "audio";
 }
 
 // 当前绑定与目录资源分别使用严格来源标签，VOD 不显示伪造大小或 MIME。

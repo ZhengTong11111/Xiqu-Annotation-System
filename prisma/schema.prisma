@@ -53,6 +53,7 @@ enum ProcessingJobType {
   video_transcode
   audio_extract
   annotation_export
+  media_analysis
 }
 
 enum ProcessingJobStatus {
@@ -60,6 +61,17 @@ enum ProcessingJobStatus {
   running
   succeeded
   failed
+}
+
+enum AnalysisAudioMode {
+  auto
+  media_override
+}
+
+enum MediaAnalysisAssetKind {
+  waveform
+  spectrogram
+  pitch
 }
 
 enum AuditAction {
@@ -90,6 +102,8 @@ enum AuditAction {
   resource_inheritance_update
   annotation_media_bind
   annotation_media_unbind
+  annotation_analysis_audio_update
+  media_analysis_create
   job_create
   permission_denied
   storage_orphan_cleanup
@@ -135,22 +149,24 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  roles                     UserRole[]
-  sessions                  Session[]
-  ownedFiles                FileObject[]                @relation("FileOwner")
-  ownedResources            ResourceEntry[]             @relation("ResourceOwner")
-  resourcePermissions       ResourcePermission[]        @relation("PermissionSubject")
-  grantedResourcePermissions ResourcePermission[]       @relation("PermissionGrantor")
-  resourceStates            ResourceUserState[]
-  editedAnnotationFiles     AnnotationFile[]            @relation("AnnotationLastEditor")
-  recoverySnapshots         AnnotationRecoverySnapshot[] @relation("RecoverySnapshotCreator")
-  createdConfirmations      AnnotationConfirmation[]      @relation("AnnotationConfirmationCreator")
-  revokedConfirmations      AnnotationConfirmation[]      @relation("AnnotationConfirmationRevoker")
-  jobs                      ProcessingJob[]             @relation("JobCreator")
-  auditLogs                 AuditLog[]                   @relation("AuditActor")
-  annotationOperations      AnnotationOperation[]       @relation("AnnotationOperationActor")
-  annotationMutationLeases  AnnotationMutationLease[]   @relation("AnnotationMutationLeaseHolder")
-  annotationCollaborationTickets AnnotationCollaborationTicket[] @relation("AnnotationCollaborationTicketUser")
+  roles                            UserRole[]
+  sessions                         Session[]
+  ownedFiles                       FileObject[]                      @relation("FileOwner")
+  ownedResources                   ResourceEntry[]                   @relation("ResourceOwner")
+  resourcePermissions              ResourcePermission[]              @relation("PermissionSubject")
+  grantedResourcePermissions       ResourcePermission[]              @relation("PermissionGrantor")
+  resourceStates                   ResourceUserState[]
+  editedAnnotationFiles            AnnotationFile[]                  @relation("AnnotationLastEditor")
+  recoverySnapshots                AnnotationRecoverySnapshot[]      @relation("RecoverySnapshotCreator")
+  createdConfirmations             AnnotationConfirmation[]          @relation("AnnotationConfirmationCreator")
+  revokedConfirmations             AnnotationConfirmation[]          @relation("AnnotationConfirmationRevoker")
+  jobs                             ProcessingJob[]                   @relation("JobCreator")
+  updatedAnalysisAudioSettings     AnnotationAnalysisAudioSetting[]  @relation("AnalysisAudioSettingUpdater")
+  createdMediaAnalysisRuns         MediaAnalysisRun[]                @relation("MediaAnalysisRunCreator")
+  auditLogs                        AuditLog[]                        @relation("AuditActor")
+  annotationOperations             AnnotationOperation[]             @relation("AnnotationOperationActor")
+  annotationMutationLeases         AnnotationMutationLease[]         @relation("AnnotationMutationLeaseHolder")
+  annotationCollaborationTickets   AnnotationCollaborationTicket[]   @relation("AnnotationCollaborationTicketUser")
   annotationCollaborationPresences AnnotationCollaborationPresence[] @relation("AnnotationCollaborationPresenceUser")
 
   @@map("users")
@@ -213,16 +229,16 @@ model ResourceEntry {
   createdAt                  DateTime     @default(now()) @map("created_at")
   updatedAt                  DateTime     @updatedAt @map("updated_at")
 
-  parent            ResourceEntry?       @relation("ResourceTree", fields: [parentId], references: [id], onDelete: Cascade)
-  children          ResourceEntry[]      @relation("ResourceTree")
-  owner             User                 @relation("ResourceOwner", fields: [ownerUserId], references: [id])
-  projectMetadata   ProjectMetadata?
-  annotationFile    AnnotationFile?
-  mediaFile         MediaFile?
-  permissions       ResourcePermission[]
-  userStates        ResourceUserState[]
-  processingJobs    ProcessingJob[]
-  auditLogs         AuditLog[]
+  parent          ResourceEntry?       @relation("ResourceTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children        ResourceEntry[]      @relation("ResourceTree")
+  owner           User                 @relation("ResourceOwner", fields: [ownerUserId], references: [id])
+  projectMetadata ProjectMetadata?
+  annotationFile  AnnotationFile?
+  mediaFile       MediaFile?
+  permissions     ResourcePermission[]
+  userStates      ResourceUserState[]
+  processingJobs  ProcessingJob[]
+  auditLogs       AuditLog[]
 
   @@index([parentId, type])
   @@index([parentId, trashedAt, archivedAt, name, id], map: "resource_entries_directory_name_idx")
@@ -242,23 +258,25 @@ model ProjectMetadata {
 }
 
 model AnnotationFile {
-  resourceId      String   @id @map("resource_id")
-  payload         Json
-  revision        Int      @default(1)
-  mediaResourceId String?  @map("media_resource_id")
-  lastEditedBy    String   @map("last_edited_by")
-  lastSavedAt     DateTime @default(now()) @map("last_saved_at")
-  lastOperationSequence Int @default(0) @map("last_operation_sequence")
+  resourceId            String   @id @map("resource_id")
+  payload               Json
+  revision              Int      @default(1)
+  mediaResourceId       String?  @map("media_resource_id")
+  lastEditedBy          String   @map("last_edited_by")
+  lastSavedAt           DateTime @default(now()) @map("last_saved_at")
+  lastOperationSequence Int      @default(0) @map("last_operation_sequence")
 
-  resource          ResourceEntry               @relation(fields: [resourceId], references: [id], onDelete: Cascade)
-  mediaResource     MediaFile?                  @relation("AnnotationMediaResource", fields: [mediaResourceId], references: [resourceId], onDelete: SetNull)
-  lastEditor        User                        @relation("AnnotationLastEditor", fields: [lastEditedBy], references: [id])
-  recoverySnapshots AnnotationRecoverySnapshot[]
-  confirmations     AnnotationConfirmation[]
-  operations        AnnotationOperation[]
-  mutationLease     AnnotationMutationLease?
-  collaborationTickets AnnotationCollaborationTicket[]
+  resource               ResourceEntry                     @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  mediaResource          MediaFile?                        @relation("AnnotationMediaResource", fields: [mediaResourceId], references: [resourceId], onDelete: SetNull)
+  lastEditor             User                              @relation("AnnotationLastEditor", fields: [lastEditedBy], references: [id])
+  recoverySnapshots      AnnotationRecoverySnapshot[]
+  confirmations          AnnotationConfirmation[]
+  operations             AnnotationOperation[]
+  mutationLease          AnnotationMutationLease?
+  collaborationTickets   AnnotationCollaborationTicket[]
   collaborationPresences AnnotationCollaborationPresence[]
+  analysisAudioSetting   AnnotationAnalysisAudioSetting?
+  mediaAnalysisRuns      MediaAnalysisRun[]
 
   @@index([mediaResourceId])
   @@index([lastEditedBy])
@@ -367,25 +385,104 @@ model AnnotationRecoverySnapshot {
 }
 
 model MediaFile {
-  resourceId         String          @id @map("resource_id")
-  sourceType         MediaSourceType @default(uploaded) @map("source_type")
-  mediaKind          MediaKind       @map("media_kind")
-  fileId             String?         @map("file_id")
-  mimeType           String?         @map("mime_type")
+  resourceId       String          @id @map("resource_id")
+  sourceType       MediaSourceType @default(uploaded) @map("source_type")
+  mediaKind        MediaKind       @map("media_kind")
+  fileId           String?         @map("file_id")
+  mimeType         String?         @map("mime_type")
   // uploaded 的 size 与 FileObject.size 一致使用 BigInt；VOD 不伪造本平台对象大小。
-  size               BigInt?
-  duration           Float?
-  aliyunVodVideoId   String?         @map("aliyun_vod_video_id")
-  aliyunVodRegion    String?         @map("aliyun_vod_region")
+  size             BigInt?
+  duration         Float?
+  aliyunVodVideoId String?         @map("aliyun_vod_video_id")
+  aliyunVodRegion  String?         @map("aliyun_vod_region")
 
-  resource ResourceEntry @relation(fields: [resourceId], references: [id], onDelete: Cascade)
-  file     FileObject?   @relation(fields: [fileId], references: [id], onDelete: Cascade)
-  linkedAnnotationFiles AnnotationFile[] @relation("AnnotationMediaResource")
+  resource               ResourceEntry                    @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  file                   FileObject?                      @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  linkedAnnotationFiles  AnnotationFile[]                 @relation("AnnotationMediaResource")
+  analysisAudioOverrides AnnotationAnalysisAudioSetting[] @relation("AnalysisAudioOverrideMedia")
+  mediaAnalysisRuns      MediaAnalysisRun[]               @relation("MediaAnalysisSource")
 
   @@index([fileId])
   @@index([sourceType])
   @@index([aliyunVodRegion, aliyunVodVideoId])
   @@map("media_files")
+}
+
+// 分析音频来源属于平台文件设置，不进入 ProjectData、草稿、撤销栈或协作 operation。
+model AnnotationAnalysisAudioSetting {
+  annotationFileId        String            @id @map("annotation_file_id")
+  mode                    AnalysisAudioMode @default(auto)
+  overrideMediaResourceId String?           @map("override_media_resource_id")
+  offsetSeconds           Float             @default(0) @map("offset_seconds")
+  updatedBy               String            @map("updated_by")
+  validatedAt             DateTime          @default(now()) @map("validated_at")
+  updatedAt               DateTime          @updatedAt @map("updated_at")
+
+  annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
+  overrideMedia  MediaFile?     @relation("AnalysisAudioOverrideMedia", fields: [overrideMediaResourceId], references: [resourceId], onDelete: Cascade)
+  updater        User           @relation("AnalysisAudioSettingUpdater", fields: [updatedBy], references: [id], onDelete: Restrict)
+
+  @@index([overrideMediaResourceId])
+  @@index([updatedBy])
+  @@map("annotation_analysis_audio_settings")
+}
+
+// 一次 run 固定来源指纹和算法配置；重试复用 run，但绝不保存 PCM 或供应商临时地址。
+model MediaAnalysisRun {
+  id                    String              @id @default(uuid())
+  annotationFileId      String              @map("annotation_file_id")
+  sourceMediaResourceId String              @map("source_media_resource_id")
+  sourceMode            AnalysisAudioMode   @map("source_mode")
+  sourceFingerprint     String              @map("source_fingerprint")
+  sourceOffsetSeconds   Float               @default(0) @map("source_offset_seconds")
+  algorithmVersion      String              @map("algorithm_version")
+  configHash            String              @map("config_hash")
+  config                Json
+  status                ProcessingJobStatus @default(queued)
+  progress              Float               @default(0)
+  errorCode             String?             @map("error_code")
+  duration              Float?
+  sampleRate            Int?                @map("sample_rate")
+  manifest              Json?
+  createdBy             String              @map("created_by")
+  createdAt             DateTime            @default(now()) @map("created_at")
+  updatedAt             DateTime            @updatedAt @map("updated_at")
+  completedAt           DateTime?           @map("completed_at")
+
+  annotationFile AnnotationFile       @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
+  sourceMedia    MediaFile            @relation("MediaAnalysisSource", fields: [sourceMediaResourceId], references: [resourceId], onDelete: Cascade)
+  creator        User                 @relation("MediaAnalysisRunCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  assets         MediaAnalysisAsset[]
+  jobs           ProcessingJob[]
+
+  @@unique([annotationFileId, sourceFingerprint, algorithmVersion, configHash])
+  @@index([annotationFileId, createdAt])
+  @@index([sourceMediaResourceId])
+  @@index([status])
+  @@map("media_analysis_runs")
+}
+
+// 大型分析结果按种类、预设、层级和时间瓦片保存；公开 API 只暴露 asset id，不暴露 storageKey。
+model MediaAnalysisAsset {
+  id         String                 @id @default(uuid())
+  runId      String                 @map("run_id")
+  kind       MediaAnalysisAssetKind
+  preset     String
+  level      Int                    @default(0)
+  tileIndex  Int                    @map("tile_index")
+  startTime  Float                  @map("start_time")
+  endTime    Float                  @map("end_time")
+  mimeType   String                 @map("mime_type")
+  size       BigInt
+  checksum   String
+  storageKey String                 @unique @map("storage_key")
+  createdAt  DateTime               @default(now()) @map("created_at")
+
+  run MediaAnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, kind, preset, level, tileIndex])
+  @@index([runId, kind, preset, level, startTime])
+  @@map("media_analysis_assets")
 }
 
 // 不使用“拒绝”记录：有效权限由管理员/所有者特权、直接授权和未被截断的祖先授权合并得到。
@@ -425,23 +522,33 @@ model ResourceUserState {
 }
 
 model ProcessingJob {
-  id           String              @id @default(uuid())
-  type         ProcessingJobType
-  status       ProcessingJobStatus @default(queued)
-  resourceId   String?             @map("resource_id")
-  inputFileIds String[]            @default([]) @map("input_file_ids")
-  createdBy    String              @map("created_by")
-  progress     Float               @default(0)
-  errorMessage String?             @map("error_message")
-  result       Json?
-  createdAt    DateTime            @default(now()) @map("created_at")
-  updatedAt    DateTime            @updatedAt @map("updated_at")
+  id            String              @id @default(uuid())
+  type          ProcessingJobType
+  status        ProcessingJobStatus @default(queued)
+  resourceId    String?             @map("resource_id")
+  inputFileIds  String[]            @default([]) @map("input_file_ids")
+  createdBy     String              @map("created_by")
+  progress      Float               @default(0)
+  errorMessage  String?             @map("error_message")
+  result        Json?
+  analysisRunId String?             @map("analysis_run_id")
+  attemptCount  Int                 @default(0) @map("attempt_count")
+  claimedBy     String?             @map("claimed_by")
+  claimedAt     DateTime?           @map("claimed_at")
+  heartbeatAt   DateTime?           @map("heartbeat_at")
+  finishedAt    DateTime?           @map("finished_at")
+  errorCode     String?             @map("error_code")
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @updatedAt @map("updated_at")
 
-  resource ResourceEntry? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
-  creator  User           @relation("JobCreator", fields: [createdBy], references: [id])
+  resource    ResourceEntry?    @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  creator     User              @relation("JobCreator", fields: [createdBy], references: [id])
+  analysisRun MediaAnalysisRun? @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
 
   @@index([resourceId])
   @@index([status])
+  @@index([analysisRunId])
+  @@index([status, createdAt])
   @@map("processing_jobs")
 }
 
@@ -470,12 +577,12 @@ model AuditLog {
 
 // 单行运行状态跨 API 实例持久化；维护锁本身由 PostgreSQL advisory lock 协调。
 model PlatformRuntimeState {
-  id                     String   @id
-  maintenanceMode        Boolean  @default(false) @map("maintenance_mode")
-  maintenanceReason      String?  @map("maintenance_reason")
-  maintenanceStartedAt   DateTime? @map("maintenance_started_at")
-  maintenanceStartedBy   String?  @map("maintenance_started_by")
-  updatedAt              DateTime @updatedAt @map("updated_at")
+  id                   String    @id
+  maintenanceMode      Boolean   @default(false) @map("maintenance_mode")
+  maintenanceReason    String?   @map("maintenance_reason")
+  maintenanceStartedAt DateTime? @map("maintenance_started_at")
+  maintenanceStartedBy String?   @map("maintenance_started_by")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
   @@map("platform_runtime_state")
 }
@@ -497,12 +604,12 @@ model AnnotationOperation {
   createdAt         DateTime                  @default(now()) @map("created_at")
 
   annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
-  actor         User           @relation("AnnotationOperationActor", fields: [actorUserId], references: [id])
+  actor          User           @relation("AnnotationOperationActor", fields: [actorUserId], references: [id])
 
+  @@unique([annotationFileId, sequence])
+  @@unique([annotationFileId, actorUserId, clientOperationId])
   @@index([annotationFileId, createdAt])
   @@index([annotationFileId, committedRevision, sequence])
   @@index([actorUserId, createdAt])
-  @@unique([annotationFileId, sequence])
-  @@unique([annotationFileId, actorUserId, clientOperationId])
   @@map("annotation_operations")
 }

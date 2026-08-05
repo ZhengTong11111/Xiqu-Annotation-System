@@ -47,6 +47,7 @@ import { AnnotationCommandCommitService } from "./annotationCommandCommitService
 import type { ApiCorsOriginPolicy } from "./serverConfig.js";
 import { AccountAdminService } from "./accountAdminService.js";
 import type { AliyunVodProvider } from "./aliyunVodGateway.js";
+import { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -121,6 +122,7 @@ export async function buildApiApp(
     collaborationEvents,
     options.aliyunVod ?? null,
   );
+  const mediaAnalysis = new MediaAnalysisJobService(options.prisma, access);
   // 原子领域命令拥有独立事务服务，但与完整保存共用同一个跨实例 revision 发布器。
   const annotationCommandCommits = new AnnotationCommandCommitService(
     options.prisma,
@@ -250,6 +252,7 @@ export async function buildApiApp(
     accounts,
     auditLogs,
     resources,
+    mediaAnalysis,
     annotationCommandCommits,
     storage,
     mediaUploads,

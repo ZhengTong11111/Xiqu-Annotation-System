@@ -36,6 +36,7 @@ import { SpectrogramCanvas } from "./SpectrogramCanvas";
 import { clampRange, getParentTrackIdFromGongcheTrackId } from "../utils/project";
 import { getBranchLaneCount } from "../utils/trackBranching";
 import { getSpectrogramFrequencyRange } from "../utils/spectrogram";
+import { intersectTimedMediaRange } from "../utils/mediaAnalysisRange";
 import { getBanyanMarkDisplayLabel, getBanyanSubtypeLabel } from "../utils/banyan";
 import {
   getColorCssVariables,
@@ -88,6 +89,7 @@ type TimelineProps = {
   editingCustomTextBlock: { trackId: string; id: string } | null;
   editingCustomTextValue: string;
   onZoomChange: (zoom: number) => void;
+  onViewportTimeRangeChange?: (range: { startTime: number; endTime: number; zoom: number }) => void;
   onToggleTrackSnap: (trackId: string) => void;
   onLoopPlaybackRangeChange: (range: { start: number; end: number } | null) => void;
   onLoopPlaybackEnabledChange: (enabled: boolean) => void;
@@ -554,6 +556,7 @@ export function Timeline({
   editingCustomTextBlock,
   editingCustomTextValue,
   onZoomChange,
+  onViewportTimeRangeChange,
   onToggleTrackSnap,
   onLoopPlaybackRangeChange,
   onLoopPlaybackEnabledChange,
@@ -816,7 +819,15 @@ export function Timeline({
     );
     const visibleStartTime = Math.max(0, laneViewportStart / zoom);
     const visibleEndTime = Math.min(duration, (laneViewportStart + laneViewportWidth) / zoom);
-    const visibleDuration = Math.max(visibleEndTime - visibleStartTime, 0.001);
+    // 平台瓦片可能带正负分析音频偏移；只绘制真实数据交集，不能把首尾采样夹取到空白时间。
+    const dataRange = intersectTimedMediaRange(
+      visibleStartTime,
+      visibleEndTime,
+      waveformData.timeOffset ?? 0,
+      waveformData.duration,
+    );
+    if (!dataRange) return null;
+    const visibleDuration = dataRange.endTime - dataRange.startTime;
     const renderWidth = Math.max(
       240,
       Math.min(Math.ceil(visibleDuration * zoom), Math.min(WAVEFORM_MAX_WIDTH, Math.ceil(laneViewportWidth))),
@@ -824,15 +835,15 @@ export function Timeline({
 
     const points = buildWaveformEnvelope(
       waveformData,
-      visibleStartTime,
-      visibleEndTime,
+      dataRange.startTime,
+      dataRange.endTime,
       renderWidth,
       waveformViewHeight,
     );
 
     return {
       ...points,
-      left: visibleStartTime * zoom,
+      left: dataRange.startTime * zoom,
       width: Math.max(visibleDuration * zoom, 1),
     };
   }, [duration, viewportState, waveformData, waveformViewHeight, zoom]);
@@ -878,6 +889,13 @@ export function Timeline({
       width: Math.max(renderDuration * zoom, 1),
     };
   }, [duration, viewportState.scrollLeft, viewportState.width, zoom]);
+  useEffect(() => {
+    onViewportTimeRangeChange?.({
+      startTime: spectrogramViewport.activeStartTime,
+      endTime: spectrogramViewport.activeEndTime,
+      zoom,
+    });
+  }, [onViewportTimeRangeChange, spectrogramViewport.activeEndTime, spectrogramViewport.activeStartTime, zoom]);
   const selectedTimelineKeySet = useMemo(
     () => new Set(selectedTimelineItems.map((item) => getTimelineSelectionKey(item.type, item.id, getSelectionItemTrackId(item)))),
     [selectedTimelineItems],
@@ -2994,7 +3012,7 @@ export function Timeline({
                   ) : (
                     <div className="spectrogram-empty">
                       {isSpectrogramLoading
-                        ? "正在使用 n_fft=4096 / hop=512 / Hann 计算 dB 频谱..."
+                        ? "正在使用 n_fft=4096 / hop=480 / Hann 计算 dB 频谱..."
                         : "开启视频音频后可显示人声频谱图"}
                     </div>
                   )}
@@ -6783,10 +6801,17 @@ function buildWaveformEnvelope(
   viewWidth: number,
   viewHeight: number,
 ) {
-  const sampleStart = Math.max(0, Math.floor(startTime * waveformData.sampleRate));
+  const timeOffset = waveformData.timeOffset ?? 0;
+  const sampleStart = Math.max(
+    0,
+    Math.floor((startTime - timeOffset) * waveformData.sampleRate),
+  );
   const sampleEnd = Math.min(
     waveformData.samples.length,
-    Math.max(sampleStart + 1, Math.ceil(endTime * waveformData.sampleRate)),
+    Math.max(
+      sampleStart + 1,
+      Math.ceil((endTime - timeOffset) * waveformData.sampleRate),
+    ),
   );
   const visibleLength = Math.max(sampleEnd - sampleStart, 1);
   const bucketCount = Math.max(64, Math.min(WAVEFORM_MAX_BUCKETS, Math.ceil(viewWidth)));

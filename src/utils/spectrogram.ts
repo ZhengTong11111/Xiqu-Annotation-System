@@ -56,9 +56,9 @@ export const spectrogramAnalysisPresets: Record<
   "frequency-detail": {
     analysisPreset: "frequency-detail",
     label: "频率细节",
-    description: "n_fft=4096, hop=512，频率更细但时间上更平滑。",
+    description: "n_fft=4096, hop=480，频率更细且与 30 秒平台瓦片严格对齐。",
     fftSize: 4096,
-    hopLength: 512,
+    hopLength: 480,
     windowType: "hann",
     minFrequency: 50,
     maxFrequency: 8000,
