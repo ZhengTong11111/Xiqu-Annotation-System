@@ -156,12 +156,18 @@ export async function readDatabaseSummary(prisma: PrismaClient): Promise<BackupD
       orderBy: { storageKey: "asc" },
     }),
   ]);
+  // 读边界：DB size 为 BigInt，manifest 只存 JSON number，这里统一转换。
+  const fileObjectDigests = fileObjects.map((file) => ({
+    storageKey: file.storageKey,
+    size: Number(file.size),
+    checksum: file.checksum,
+  }));
   return {
     resourceCount,
     annotationFileCount,
     mediaFileCount,
-    fileObjectCount: fileObjects.length,
-    fileObjects,
+    fileObjectCount: fileObjectDigests.length,
+    fileObjects: fileObjectDigests,
   };
 }
 

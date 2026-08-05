@@ -3056,7 +3056,8 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       const fileId = media.fileId;
       assert.equal(media.file.mimeType, "video/mp4");
-      assert.equal(media.file.size, content.length);
+      // size 列已迁 BigInt，直接读 Prisma 得到 bigint，转回 number 再比较。
+      assert.equal(Number(media.file.size), content.length);
       assert.equal(await prisma.fileObject.count(), initialFileCount + 1);
 
       // 旧两段式入口必须消失，防止浏览器或第三方继续制造无资源引用的 FileObject。
@@ -3254,7 +3255,7 @@ test("平台资源 API 集成测试", async (suite) => {
         data: {
           name: "unreferenced.mp4",
           mimeType: "video/mp4",
-          size: 24,
+          size: 24n,
           storageKey: "orphan/unreferenced.mp4",
           ownerUserId: admin.id,
           createdAt: oldDate,
@@ -3264,7 +3265,7 @@ test("平台资源 API 集成测试", async (suite) => {
         data: {
           name: "missing.mp4",
           mimeType: "video/mp4",
-          size: 24,
+          size: 24n,
           storageKey: "orphan/missing.mp4",
           ownerUserId: admin.id,
           createdAt: oldDate,
@@ -3277,7 +3278,7 @@ test("平台资源 API 集成测试", async (suite) => {
           name: "缺失二进制.mp4",
           ownerUserId: admin.id,
           mediaFile: {
-            create: { fileId: missing.id, mimeType: "video/mp4", size: 24 },
+            create: { fileId: missing.id, mimeType: "video/mp4", size: 24n },
           },
         },
       });

@@ -111,9 +111,10 @@ export class SystemDiagnosticsService {
     const finalObjects = diskObjects.filter((object) => !object.staged);
     const stagedObjects = diskObjects.filter((object) => object.staged);
     const capacity = {
-      platformUsedBytes: platformUsage._sum.size ?? 0,
+      // _sum.size 现为 bigint（列已迁 BigInt），转回 number 进入诊断 JSON。
+      platformUsedBytes: Number(platformUsage._sum.size ?? 0n),
       platformQuotaBytes: this.policy.platformQuotaBytes,
-      accountUsedBytes: accountUsage._sum.size ?? 0,
+      accountUsedBytes: Number(accountUsage._sum.size ?? 0n),
       accountQuotaBytes: this.policy.userQuotaBytes,
     };
     const cleanupEligibleCount = orphanReport.items.filter(

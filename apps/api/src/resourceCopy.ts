@@ -17,7 +17,8 @@ export type CopySourceNode = {
   mediaFile: {
     fileId: string;
     mimeType: string;
-    size: number;
+    // 源 DB size 为 BigInt，复制时直接透传到目标 create，不进入 JSON 响应。
+    size: bigint;
     duration: number | null;
   } | null;
 };

@@ -5175,3 +5175,38 @@ ProjectData builder、adapter 与编辑器接线：
   拥有 `download` 的账号显示或启用；浏览器通过现有受保护 token URL 让原生下载器边接收边落盘。
 - 服务端把 `download` 与 `read` 分开校验：能够浏览或打开资源不再意味着可以直接调用导出路由。新增集成
   回归覆盖标注 JSON 内容、无下载权 403、教师媒体下载、中文/普通文件名响应头及容器资源 400。
+
+## 2026-08-05：媒体文件 size 迁移 BigInt，移除 2 GiB 单文件硬上限
+
+### 背景
+
+- 单媒体文件此前被硬性限制在 2 GiB 以内，根因不是产品需求而是数据库实现细节：`FileObject.size` 与
+  `MediaFile.size` 在 Prisma 中为 `Int`（PostgreSQL Int4 上限约 2.147 GB），`uploadPolicy.ts` 用
+  `MAX_DATABASE_FILE_BYTES = 2_000_000_000` 在启动时拒绝更大的 `XIQU_MAX_UPLOAD_BYTES`。
+
+### 实现
+
+- `prisma/schema.prisma` 将 `FileObject.size`、`MediaFile.size` 由 `Int` 改为 `BigInt`；新增迁移
+  `20260805120000_file_size_bigint`，用 `USING "size"::bigint` 把两列原地升格。线格式仍为 JSON `number`，
+  BigInt↔number 转换集中在应用 mapper 边界：写边界 `BigInt(input.size)`（`commitUploadedMedia` 两次 create），
+  读边界 `Number(...)`（`toFile`、`mapResource`、`mapAnnotationFile`、`DownloadableResource`、
+  `systemDiagnosticsService`、`operationalMetricsCollector`、`objectLifecycleService` 孤儿摘要、备份 manifest
+  构建）。复制路径源已是 bigint，直接透传到目标 create。
+- 删除 `MAX_DATABASE_FILE_BYTES` 常量及其启动校验（为 Int 列存在的临时护栏，迁移后为僵尸代码）。`XIQU_MAX_UPLOAD_BYTES`
+  不再默认 1 GiB：未显式设置时默认等于用户配额——单文件不可能超过账号配额（上传时配额检查会拒绝），故以配额作为
+  单文件上限，避免又一道人为天花板。显式设置时仍受 `readPositiveInteger` 的 safe-integer 约束（上限约 9 PiB）。未
+  引入全局 `BigInt.prototype.toJSON` 补丁，未改线格式或前端。
+- 审计 `media_upload` detail 的 `size` 仍写入 `input.size`（number），JsonValue 可接受；配额算术已有的
+  `Number(... ?? 0n)` 模式不变。
+
+### 验证与残留风险
+
+- `db:generate` 后完整 `npm run build`（shared/document-model/web/api）通过，仅保留既有 Vite 主 chunk 超
+  500 kB 提醒。`test:uploads` 4/4、`test:api` 139/139（迁移在隔离 `api_test` schema 执行）、`test:observability`
+  13/13、`test:backup` 28/28 全部通过。`uploadPolicy.test.ts` 改为断言 5 GiB 策略被接受且配额关系仍校验。
+- 残留：`XIQU_MAX_UPLOAD_BYTES` 默认已改为等于用户配额（不再 1 GiB），运营方仍可以 `db:deploy` 部署新迁移并在
+  需要时显式设置更紧的单文件上限。超过 2 GiB 的部署侧依赖已在模板中显式化：`deploy/single-server/nginx.conf.example`
+  的 `client_max_body_size` 加注必须与 `XIQU_MAX_UPLOAD_BYTES` 对齐且可超过 2 GiB，`/api/` 的
+  `proxy_read_timeout`/`proxy_send_timeout` 由 75s 放宽到 300s 以适配大文件与空闲协作 WebSocket；
+  `xiqu-platform.env.example` 的 `XIQU_MAX_UPLOAD_BYTES` 同样加注。`number` 在 2^53 以下精确，单文件到 9 PiB
+  仍安全，远超当前平台配额；若未来平台总容量接近该量级需重新评估线格式（改 string 或引入 BigInt JSON 约定）。

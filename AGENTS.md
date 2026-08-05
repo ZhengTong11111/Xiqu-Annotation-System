@@ -534,6 +534,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     listing, and idempotent deletion; business services must not depend on `LocalObjectStorage` directly
 - `apps/api/src/uploadPolicy.ts`
   - centralized upload limits, filename rules, and binary-signature media validation
+  - single-file size is no longer capped at the Int4 2 GiB bound: `FileObject.size`/`MediaFile.size` are `BigInt`,
+    and `XIQU_MAX_UPLOAD_BYTES` (a safe-integer env value) plus user/platform quotas are the only ceilings
 - `apps/api/src/mediaUploadService.ts`
   - single-command media upload across storage staging, quota transaction, publish, and compensation
 - `apps/api/src/objectLifecycleService.ts`
@@ -798,8 +800,11 @@ Backend local defaults:
 - local full backups default to `./data/backups`; `XIQU_PG_BIN_DIR` may point to PostgreSQL 16 client tools when they
   are not on `PATH`
 - runtime Node.js must be 22 or newer because the media-signature dependency and backend toolchain require it
-- upload defaults are `XIQU_MAX_UPLOAD_BYTES=1 GiB`, `XIQU_USER_STORAGE_QUOTA_BYTES=20 GiB`,
-  `XIQU_PLATFORM_STORAGE_QUOTA_BYTES=200 GiB`, and `XIQU_ORPHAN_GRACE_MS=24h`; invalid values fail startup
+- upload defaults are `XIQU_USER_STORAGE_QUOTA_BYTES=20 GiB`,
+  `XIQU_PLATFORM_STORAGE_QUOTA_BYTES=200 GiB`, and `XIQU_ORPHAN_GRACE_MS=24h`. `XIQU_MAX_UPLOAD_BYTES` no longer
+  defaults to 1 GiB: when unset it equals the user storage quota (a single file cannot exceed the account quota
+  anyway, so the quota is the per-file ceiling). `FileObject.size`/`MediaFile.size` are `BigInt`, so any of these
+  may be set above 2 GiB; invalid values fail startup
 - `/api/health/live` is dependency-free liveness; `/api/health/ready` and compatibility `/api/health` check
   PostgreSQL and storage-root readiness and return 503 when unavailable
 - `/metrics` is disabled unless `XIQU_METRICS_TOKEN` is configured; it uses a separate Bearer credential rather than
@@ -1317,8 +1322,11 @@ Important backend caveats:
 - media upload is one command: validate target `create_child` before consuming the stream, stage and validate the binary,
   atomically publish it, then under platform/user quota locks create FileObject, media resource and audit in one database
   transaction. Never restore the removed browser-visible bare FileObject endpoint.
-- storage quota counts each immutable FileObject once, regardless of how many media resources reuse it. The current
-  per-file ceiling must stay below PostgreSQL integer range until FileObject/MediaFile/shared DTOs migrate together.
+- storage quota counts each immutable FileObject once, regardless of how many media resources reuse it.
+  `FileObject.size` / `MediaFile.size` are `BigInt`, so the per-file ceiling is no longer bounded by the
+  PostgreSQL Int4 range; single-file size is governed by `XIQU_MAX_UPLOAD_BYTES` and the user/platform quotas.
+  The wire format stays JSON `number`; BigInt↔number conversion happens only at the Prisma mapper boundary
+  (`Number()` on read, `BigInt()` on write) — never introduce a global `BigInt.prototype.toJSON` patch.
 - filesystem and PostgreSQL cannot share a transaction. A failure before database commit deletes staged/final binary;
   a crash between publish and commit leaves an aged disk orphan discoverable by lifecycle audit. After database commit,
   DTO mapping failure must not delete the now-referenced binary.

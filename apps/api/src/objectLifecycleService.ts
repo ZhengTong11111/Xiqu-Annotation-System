@@ -59,7 +59,7 @@ export class ObjectLifecycleService {
           fileId: file.id,
           name: file.name,
           storageKey: file.storageKey,
-          size: file.size,
+          size: Number(file.size),
           createdAt: file.createdAt.toISOString(),
           cleanupEligible: file.createdAt < cutoff,
         });
@@ -69,7 +69,7 @@ export class ObjectLifecycleService {
           fileId: file.id,
           name: file.name,
           storageKey: file.storageKey,
-          size: file.size,
+          size: Number(file.size),
           createdAt: file.createdAt.toISOString(),
           cleanupEligible: false,
         });

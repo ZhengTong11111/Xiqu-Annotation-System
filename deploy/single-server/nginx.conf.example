@@ -21,6 +21,8 @@ server {
 
     root /opt/xiqu/current/dist;
     index index.html;
+    # 必须与 XIQU_MAX_UPLOAD_BYTES 对齐；FileObject.size 已迁 BigInt，该值可设为超过 2 GiB。
+    # 调大单文件上限时，这里必须同步调大，否则 Nginx 会先于 Fastify 返回 413。
     client_max_body_size 1024m;
 
     # /api 必须先于 SPA fallback；同一入口同时承载普通 HTTP 和认证 WebSocket upgrade。
@@ -33,8 +35,9 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
-        proxy_read_timeout 75s;
-        proxy_send_timeout 75s;
+        # 大媒体上传与协作 WebSocket 都走该 location；放宽读/写间隔，避免慢速大文件或空闲 WS 被提前断开。
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
         proxy_request_buffering off;
     }
 

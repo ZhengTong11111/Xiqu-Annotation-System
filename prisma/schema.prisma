@@ -174,7 +174,8 @@ model FileObject {
   id          String   @id @default(uuid())
   name        String
   mimeType    String   @map("mime_type")
-  size        Int
+  // size 使用 BigInt 以支持超过 2 GiB 的单文件；线格式仍为 JSON number，在 mapper 边界转换。
+  size        BigInt
   storageKey  String   @unique @map("storage_key")
   checksum    String?
   ownerUserId String   @map("owner_user_id")
@@ -358,7 +359,8 @@ model MediaFile {
   resourceId String  @id @map("resource_id")
   fileId     String  @map("file_id")
   mimeType   String  @map("mime_type")
-  size       Int
+  // size 与 FileObject.size 一致使用 BigInt，支持超过 2 GiB 的单文件。
+  size       BigInt
   duration   Float?
 
   resource ResourceEntry @relation(fields: [resourceId], references: [id], onDelete: Cascade)

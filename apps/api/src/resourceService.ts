@@ -407,11 +407,12 @@ export class ResourceService {
         });
       }
 
+      // 写边界：input.size 是 number（来自暂存流计数），列已迁 BigInt，需显式转换。
       const file = await transaction.fileObject.create({
         data: {
           name,
           mimeType: input.mimeType,
-          size: input.size,
+          size: BigInt(input.size),
           storageKey: input.storageKey,
           checksum: input.checksum,
           ownerUserId: user.id,
@@ -427,7 +428,7 @@ export class ResourceService {
             create: {
               fileId: file.id,
               mimeType: input.mimeType,
-              size: input.size,
+              size: BigInt(input.size),
             },
           },
         },
@@ -498,7 +499,7 @@ export class ResourceService {
         kind: "media",
         fileName: resource.name,
         mimeType: resource.mediaFile.mimeType,
-        size: resource.mediaFile.size,
+        size: Number(resource.mediaFile.size),
         storageKey: resource.mediaFile.file.storageKey,
       };
     }
@@ -1872,7 +1873,8 @@ export class ResourceService {
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
       childCount: row._count.children,
-      size: row.mediaFile?.size ?? null,
+      // 读边界：DB size 为 BigInt，转回 number 进入 JSON DTO。
+      size: row.mediaFile?.size != null ? Number(row.mediaFile.size) : null,
       mimeType: row.mediaFile?.mimeType ?? null,
       revision: row.annotationFile?.revision ?? null,
       favorite: state?.favorite ?? false,
@@ -1890,7 +1892,7 @@ export class ResourceService {
       mediaResource?: {
         resourceId: string;
         mimeType: string;
-        size: number;
+        size: bigint;
         resource: { name: string };
         file: { id: string };
       } | null;
@@ -1919,7 +1921,7 @@ export class ResourceService {
             fileId: file.mediaResource.file.id,
             name: file.mediaResource.resource.name,
             mimeType: file.mediaResource.mimeType,
-            size: file.mediaResource.size,
+            size: Number(file.mediaResource.size),
           }
         : null,
       lastEditor: toPublicUser(file.lastEditor),

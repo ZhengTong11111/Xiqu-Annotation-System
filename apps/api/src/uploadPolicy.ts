@@ -3,7 +3,6 @@ import { fileTypeFromBuffer } from "file-type";
 import { badRequest, unsupportedMedia } from "./errors.js";
 
 const GIB = 1024 * 1024 * 1024;
-const MAX_DATABASE_FILE_BYTES = 2_000_000_000;
 
 export type UploadPolicy = {
   maxUploadBytes: number;
@@ -53,18 +52,24 @@ const ALLOWED_MEDIA_MIME_TYPES = new Set([
 ]);
 
 // 环境配置在应用启动时一次性校验，错误配置应阻止服务启动而不是悄悄回退。
+//
+// 单文件大小已无 Int 列硬上限：FileObject.size / MediaFile.size 已迁移为 BigInt。
+// XIQU_MAX_UPLOAD_BYTES 不再默认 1 GiB：未显式设置时默认等于用户配额——单个文件不可能超过
+// 账号配额（上传时配额检查会拒绝），因此以配额作为单文件上限，避免又一道人为天花板。
+// 显式设置时仍受 readPositiveInteger 强制 safe-integer（上限约 9 PiB）。
 export function loadUploadPolicy(
   overrides: Partial<UploadPolicy> = {},
 ): UploadPolicy {
+  const userQuotaBytes = overrides.userQuotaBytes ?? readPositiveInteger(
+    "XIQU_USER_STORAGE_QUOTA_BYTES",
+    20 * GIB,
+  );
   const policy = {
     maxUploadBytes: overrides.maxUploadBytes ?? readPositiveInteger(
       "XIQU_MAX_UPLOAD_BYTES",
-      GIB,
+      userQuotaBytes,
     ),
-    userQuotaBytes: overrides.userQuotaBytes ?? readPositiveInteger(
-      "XIQU_USER_STORAGE_QUOTA_BYTES",
-      20 * GIB,
-    ),
+    userQuotaBytes,
     platformQuotaBytes: overrides.platformQuotaBytes ?? readPositiveInteger(
       "XIQU_PLATFORM_STORAGE_QUOTA_BYTES",
       200 * GIB,
@@ -74,11 +79,6 @@ export function loadUploadPolicy(
       24 * 60 * 60 * 1000,
     ),
   };
-  if (policy.maxUploadBytes > MAX_DATABASE_FILE_BYTES) {
-    throw new Error(
-      `XIQU_MAX_UPLOAD_BYTES 不能超过 ${MAX_DATABASE_FILE_BYTES}；当前数据库 size 尚未迁移为 BigInt。`,
-    );
-  }
   if (policy.userQuotaBytes > policy.platformQuotaBytes) {
     throw new Error("用户存储配额不能大于平台存储配额。");
   }

@@ -88,7 +88,8 @@ export class OperationalMetricsCollector {
         database: health.components?.database.status === "ok" ? 1 : 0,
         storage: health.components?.storage.status === "ok" ? 1 : 0,
       },
-      platformStorageUsedBytes: storageUsage._sum.size ?? 0,
+      // _sum.size 现为 bigint（列已迁 BigInt），转回 number 进入 metrics JSON。
+      platformStorageUsedBytes: Number(storageUsage._sum.size ?? 0n),
       platformStorageQuotaBytes: this.platformStorageQuotaBytes,
       jobs,
     };
