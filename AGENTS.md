@@ -73,7 +73,9 @@ Main currently contains all major recent feature lines that matter for context:
 - annotation files use a real database foreign key to media resources; JSON import and the Inspector share one media-binding
   dialog, while protected runtime URLs stay outside ProjectData
 - App now uses one media playback controller for native local/uploaded media and Aliyun VOD; Aliplayer is loaded from a fixed
-  official CDN, short-lived playauth stays memory-only, and late seek/session events cannot revive a replaced source
+  official CDN, short-lived playauth stays memory-only, and late seek/session events cannot revive a replaced source. Modern
+  Web Aliplayer also requires a deployment-provided `domain + key` License; it is public browser configuration, distinct from
+  AccessKey/Secret, and must flow through the strict no-store playback-session DTO rather than frontend hardcoding
 - platform waveform, spectrogram, and F0 now use database-backed analysis runs plus object-storage tiles produced by an
   independent PostgreSQL-claim worker; uploaded inputs stream through FFmpeg stdin, while VOD analysis uses a temporary
   pure-audio URL that must never enter persistence or logs
@@ -417,6 +419,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - narrow HTMLMediaElement adapter with deterministic seeked/error/timeout/dispose settlement
 - `src/media/aliplayerSdk.ts` + `src/media/aliyunVodPlaybackBackend.ts`
   - fixed official Aliplayer 2.38.3 CDN loader and the only VOD player adapter
+  - every real session must include the server-validated Web License `domain + key` and pass it through the SDK `license`
+    option; missing License is a deployment error, never a reason to downgrade the SDK or reuse a stale PlayAuth
   - short-lived sessions stay memory-only; refresh is single-flight, obtains new credentials before replacing the old player,
     and generation checks reject late provider events after source switch/dispose
 - `src/components/InspectorPanel.tsx`

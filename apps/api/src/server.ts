@@ -83,6 +83,7 @@ async function startApiServer() {
       aliyunVod: runtimeConfig.aliyunVod.enabled
         ? createAliyunVodProvider(runtimeConfig.aliyunVod.region)
         : null,
+      aliyunVodWebPlayerLicense: runtimeConfig.aliyunVod.webPlayerLicense,
     });
     await app.listen({ port: runtimeConfig.port, host: runtimeConfig.host });
     app.log.info(

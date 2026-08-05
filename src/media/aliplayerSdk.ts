@@ -1,3 +1,4 @@
+// 固定已回归的官方版本，避免 CDN 的隐式升级改变播放器行为。
 const ALIPLAYER_VERSION = "2.38.3";
 const ALIPLAYER_SCRIPT_URL = `https://g.alicdn.com/apsara-media-box/imp-web-player/${ALIPLAYER_VERSION}/aliplayer-min.js`;
 const ALIPLAYER_STYLE_URL = `https://g.alicdn.com/apsara-media-box/imp-web-player/${ALIPLAYER_VERSION}/skins/default/aliplayer-min.css`;
@@ -31,6 +32,10 @@ export type AliplayerOptions = {
   isLive: boolean;
   controlBarVisibility: "hover";
   useH5Prism: boolean;
+  license: {
+    domain: string;
+    key: string;
+  };
 };
 
 export type AliplayerConstructor = new (

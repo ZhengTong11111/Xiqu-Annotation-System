@@ -115,7 +115,10 @@ API: http://127.0.0.1:4317/
 `XIQU_ALIYUN_VOD_REGION=cn-shanghai`，并通过阿里云官方默认凭据链提供最小权限身份。数据库只保存
 VOD ID、区域、媒体种类和时长等稳定信息，不保存 AccessKey、Secret、playauth 或临时播放地址。编辑器
 使用统一播放控制器，在原生本机/服务器媒体与 Aliplayer VOD 后端之间保持同一套跳转、循环、预览和倍率
-行为；Aliplayer 2.38.3 从固定阿里云官方 CDN 按需加载，短时播放凭据只保存在当前页面内存。
+行为；Aliplayer 2.38.3 从固定阿里云官方 CDN 按需加载，短时播放凭据只保存在当前页面内存。新版 Web
+播放器还必须成对配置 `XIQU_ALIYUN_VOD_WEB_LICENSE_DOMAIN` 与 `XIQU_ALIYUN_VOD_WEB_LICENSE_KEY`；
+前者只填阿里云控制台 Web 应用登记的域名，不含协议、端口或路径。Web License 会发送给浏览器，不得用
+AccessKey/Secret 代替，也不要把账号专属值硬编码进前端源码。
 
 后端提供 `/api/health/live` 与 `/api/health/ready`，前者只检查进程存活，后者检查 PostgreSQL 和对象
 目录。全局管理员可从资源工作区顶部打开“系统诊断”，查看容量、资源、任务、对象一致性与近期运维

@@ -161,17 +161,28 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     let factory: AliplayerConstructor;
     let session: AliyunVodPlaybackSession;
     try {
-      [factory, session] = await Promise.all([
+      // SDK 与播放会话并行加载；若二者同时失败，优先展示服务端已经收敛的业务错误。
+      const [factoryResult, sessionResult] = await Promise.allSettled([
         this.loadFactory(),
         this.options.loadSession(),
       ]);
-      this.validateSession(session);
-    } catch {
-      if (!this.disposed && requestGeneration === this.generation) {
-        this.lastPreparationError = new Error("无法准备阿里云 VOD 播放会话。");
-        this.options.events.onError("无法准备阿里云 VOD 播放会话，请稍后重试。");
+      if (sessionResult.status === "rejected") throw sessionResult.reason;
+      if (factoryResult.status === "rejected") {
+        throw new Error("无法加载阿里云 VOD 播放器，请检查网络后重试。");
       }
-      throw new Error("无法准备阿里云 VOD 播放会话。");
+      factory = factoryResult.value;
+      session = sessionResult.value;
+      this.validateSession(session);
+    } catch (error) {
+      if (!this.disposed && requestGeneration === this.generation) {
+        // 播放会话错误已由平台 API 收敛；SDK 加载错误在上方替换为固定文案，避免泄露底层细节。
+        const message = error instanceof Error
+          ? error.message
+          : "无法准备阿里云 VOD 播放会话。";
+        this.lastPreparationError = new Error(message);
+        this.options.events.onError(message);
+      }
+      throw this.lastPreparationError ?? new Error("无法准备阿里云 VOD 播放会话。");
     }
     if (this.disposed || requestGeneration !== this.generation) return;
 
@@ -211,6 +222,8 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
         isLive: false,
         controlBarVisibility: "hover",
         useH5Prism: true,
+        // Web Aliplayer 2.29.1+ 强制校验 domain/key；二者来自受控服务配置，不由项目 JSON 提供。
+        license: session.webPlayerLicense,
       };
       try {
         const player = new factory(playerOptions, (readyPlayer) => {
@@ -330,6 +343,8 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
       session.videoId !== this.options.expectedVideoId ||
       !session.playAuth ||
       !session.expiresAt ||
+      !session.webPlayerLicense?.domain ||
+      !session.webPlayerLicense?.key ||
       !Number.isFinite(Date.parse(session.expiresAt)) ||
       Date.parse(session.expiresAt) <= this.now()
     ) {

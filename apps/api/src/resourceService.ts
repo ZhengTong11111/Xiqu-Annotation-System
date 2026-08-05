@@ -17,6 +17,7 @@ import type {
   AnnotationRecoverySnapshotDetail,
   AnnotationRecoverySnapshotSummary,
   AliyunVodPlaybackSession,
+  AliyunVodWebPlayerLicense,
   BatchMoveResourcesRequest,
   BatchMoveResourcesResponse,
   BatchTrashResourcesRequest,
@@ -186,6 +187,7 @@ export class ResourceService {
       publishRevisionAdvanced: () => undefined,
     },
     private readonly aliyunVod: AliyunVodProvider | null = null,
+    private readonly aliyunVodWebPlayerLicense: AliyunVodWebPlayerLicense | null = null,
   ) {}
 
   async listResources(
@@ -450,6 +452,11 @@ export class ResourceService {
       throw badRequest("服务器上传媒体继续使用受保护下载地址播放。");
     }
     const provider = this.requireAliyunVodProvider();
+    if (!this.aliyunVodWebPlayerLicense) {
+      throw externalServiceUnavailable(
+        "当前服务未配置阿里云 Web 播放器 License，请联系管理员。",
+      );
+    }
     if (
       !media.mediaFile.aliyunVodVideoId ||
       !media.mediaFile.aliyunVodRegion ||
@@ -475,6 +482,7 @@ export class ResourceService {
       region: media.mediaFile.aliyunVodRegion,
       playAuth: credential.playAuth,
       expiresAt: credential.expiresAt.toISOString(),
+      webPlayerLicense: this.aliyunVodWebPlayerLicense,
     };
   }
 

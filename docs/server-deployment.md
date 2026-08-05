@@ -234,6 +234,8 @@ systemd 的 `TimeoutStopSec` 应覆盖该清理时间。API 正常但 worker 未
 ```bash
 XIQU_ALIYUN_VOD_ENABLED=true
 XIQU_ALIYUN_VOD_REGION=cn-shanghai
+XIQU_ALIYUN_VOD_WEB_LICENSE_DOMAIN=annotation.example.org
+XIQU_ALIYUN_VOD_WEB_LICENSE_KEY=replace-with-web-license-key
 ```
 
 凭据由 `@alicloud/credentials` 默认凭据链读取。生产优先使用实例角色或工作负载身份；必须使用长期
@@ -241,6 +243,18 @@ AccessKey 时，应通过权限为 `600` 的环境文件或 secret 管理器注�
 凭据及纯音频转码地址所需的最小权限，至少覆盖 `GetVideoInfo`、`GetVideoPlayAuth` 和 `GetPlayInfo`。
 AccessKey、Secret、playauth 和临时播放 URL 不得进入数据库、标注 JSON、日志、
 浏览器草稿或仓库。启用后还应人工验证无权限媒资、已停用媒资和凭据过期场景均返回明确错误。
+
+Web 播放器 License 与服务端 AccessKey 是两套独立凭据。先按阿里云官方的
+[管理 License](https://help.aliyun.com/zh/vod/developer-reference/license-authorization-and-management) 指引，在
+点播控制台“SDK 管理 -> 我的授权”中创建 Web 应用、填写不含协议/端口/路径或通配符且被控制台接受的域名，
+再绑定播放器 License；将控制台显示的同一域名和 License Key 分别写入上面的两个环境变量。两项缺一时 API
+会在签发 PlayAuth 前明确拒绝播放会话。初始化参数应与官方
+[快速接入 Web 播放器](https://help.aliyun.com/zh/vod/developer-reference/integration) 示例一致。
+
+本地调试同样需要有效 License，页面 hostname 必须落在授权域名范围内；不要自行假定 `127.0.0.1` 可以作为
+控制台授权域名。若控制台不接受本机 IP，应使用受控测试域名解析到本机进行验收，不能通过关闭校验或降级
+SDK 绕过。License Key 会按官方要求发送给浏览器，虽然不是 AccessKey 一类服务端秘密，仍应由部署配置统一
+管理，避免账号专属值进入前端源码。
 
 编辑器使用固定版本 2.38.3 的阿里云官方 Web 播放器资源：
 

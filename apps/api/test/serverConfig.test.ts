@@ -9,7 +9,11 @@ test("开发环境保留本机默认值，便于直接启动", () => {
   assert.match(config.databaseUrl, /localhost:54329/);
   assert.equal(config.seedDevelopmentData, true);
   assert.equal(config.corsOrigin, true);
-  assert.deepEqual(config.aliyunVod, { enabled: false, region: null });
+  assert.deepEqual(config.aliyunVod, {
+    enabled: false,
+    region: null,
+    webPlayerLicense: null,
+  });
 });
 
 test("生产环境默认禁用开发种子和跨源访问", () => {
@@ -20,7 +24,11 @@ test("生产环境默认禁用开发种子和跨源访问", () => {
   assert.equal(config.seedDevelopmentData, false);
   assert.equal(config.corsOrigin, false);
   assert.equal(config.host, "127.0.0.1");
-  assert.deepEqual(config.aliyunVod, { enabled: false, region: null });
+  assert.deepEqual(config.aliyunVod, {
+    enabled: false,
+    region: null,
+    webPlayerLicense: null,
+  });
 });
 
 test("阿里云 VOD 必须显式启用并提供有效区域", () => {
@@ -31,6 +39,7 @@ test("阿里云 VOD 必须显式启用并提供有效区域", () => {
   assert.deepEqual(config.aliyunVod, {
     enabled: true,
     region: "cn-shanghai",
+    webPlayerLicense: null,
   });
   assert.throws(
     () => loadApiServerRuntimeConfig({ XIQU_ALIYUN_VOD_ENABLED: "true" }),
@@ -43,6 +52,43 @@ test("阿里云 VOD 必须显式启用并提供有效区域", () => {
     }),
     /XIQU_ALIYUN_VOD_REGION/,
   );
+});
+
+test("阿里云 Web 播放器 License 必须成对配置并规范化域名", () => {
+  const config = loadApiServerRuntimeConfig({
+    XIQU_ALIYUN_VOD_ENABLED: "true",
+    XIQU_ALIYUN_VOD_REGION: "cn-shanghai",
+    XIQU_ALIYUN_VOD_WEB_LICENSE_DOMAIN: " Example.COM ",
+    XIQU_ALIYUN_VOD_WEB_LICENSE_KEY: " test-license-key ",
+  });
+  assert.deepEqual(config.aliyunVod, {
+    enabled: true,
+    region: "cn-shanghai",
+    webPlayerLicense: {
+      domain: "example.com",
+      key: "test-license-key",
+    },
+  });
+
+  assert.throws(
+    () => loadApiServerRuntimeConfig({
+      XIQU_ALIYUN_VOD_ENABLED: "true",
+      XIQU_ALIYUN_VOD_REGION: "cn-shanghai",
+      XIQU_ALIYUN_VOD_WEB_LICENSE_KEY: "test-license-key",
+    }),
+    /必须同时设置/,
+  );
+  for (const domain of ["https://example.com", "example.com:5173", "*.example.com"]) {
+    assert.throws(
+      () => loadApiServerRuntimeConfig({
+        XIQU_ALIYUN_VOD_ENABLED: "true",
+        XIQU_ALIYUN_VOD_REGION: "cn-shanghai",
+        XIQU_ALIYUN_VOD_WEB_LICENSE_DOMAIN: domain,
+        XIQU_ALIYUN_VOD_WEB_LICENSE_KEY: "test-license-key",
+      }),
+      /WEB_LICENSE_DOMAIN/,
+    );
+  }
 });
 
 test("显式生产配置会规范化、去重有限 origin", () => {

@@ -38,6 +38,10 @@ test("VOD 来源只保存稳定引用并延迟请求短时会话", async () => {
         region: "cn-shanghai",
         playAuth: "temporary-secret",
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        webPlayerLicense: {
+          domain: "example.test",
+          key: "test-web-license-key",
+        },
       };
     },
   });

@@ -5413,3 +5413,47 @@ operation、审计详情或协作消息。
   Secret、playauth 或临时 URL 写入仓库、数据库、截图或开发日志。
 - 生产部署时安装并固定受支持的 FFmpeg，启用并监控 analysis worker；真实 S3/VOD 环境还应核对长任务心跳、
   SIGTERM 回队列、对象补偿和供应商卡顿时强制 uploaded audio 的体验。
+
+## 2026-08-05：R3h 真实阿里云 VOD 音频验收与 Web License 修正
+
+### 已完成
+
+- 使用最小权限阿里云身份对样例 VOD ID 完成真实 `GetVideoInfo`、`GetVideoPlayAuth` 与 `GetPlayInfo` 请求。
+  媒资状态为 Normal，时长约 1494.4 秒；生成 MP3 转码后，纯音频接口返回 Normal、HTTPS、约 128 kbps 的
+  MP3 流。供应商响应、PlayAuth 和临时 URL 均未写入日志或文档。
+- 从编辑器“音频轨道设置”使用自动 VOD 来源启动真实任务。analysis worker 流式解码 1494.413 秒、16 kHz
+  单声道音频并成功生成 350 项资产：四级波形各 50 片、两档频谱各 50 片、F0 50 片。浏览器已显示完整
+  波形和频谱，F0 开关可正常启用。
+- 对对象目录和数据库做了脱敏审计：本轮只新增 350 个派生瓦片，未生成 MP3/MP4/m3u8 缓存；run config、
+  manifest、job、audit 和 annotation payload 均未出现 PlayAuth、AccessKey ID 或临时音频 URL。历史标注中
+  仍有一个普通 HTTP URL，不含凭据词或 AccessKey 形状，不属于本轮泄漏。
+- 浏览器明确复现 Aliplayer `4036 LICENSE ERROR`。2.38.3 与控制台示例使用的 2.35.4 都报告“未配置
+  License”，证明 SDK 降级无效；试验改动已撤销，继续固定 2.38.3。
+- 复核阿里云官方“快速接入 Web 播放器”和“管理 License”文档：初始化必须传入与控制台 Web 应用完全一致的
+  `domain + License Key`；新购 Web 标准版 License 支持 2.29.1 及以上，2.38.3 满足版本要求。控制台登记值
+  是不含协议、端口、路径或通配符的 Web 域名；本地 IP 是否可登记由控制台决定，代码和文档不再作肯定假设。
+- 补齐 Web 播放器 License 配置链路：API 以成对环境变量校验 `domain + key`，临时播放会话返回严格 DTO，
+  播放器初始化显式传入 `license`。缺配置时服务端在签发 PlayAuth 前返回明确错误，避免 4036 后继续触发
+  无意义的 seek 超时。账号专属值不进入前端源码。
+- 收紧播放准备错误边界：服务端播放会话错误继续向用户展示明确部署原因，播放器 SDK/CDN 加载异常统一为
+  固定中文文案；SDK 与播放会话仍并行加载，并在同时失败时优先展示可操作的服务端业务错误。
+- 增加官方 SDK 在生产 NodeNext/ESM 下可构造的回归测试，避免测试 fake gateway 掩盖 CJS/ESM 默认导入错误。
+
+### 审查与验证
+
+- `test:media-playback` 17/17，通过 License 透传、缺失拒绝、SDK 错误收敛及既有 seek/play/pause/刷新回归。
+- `serverConfig` 与 VOD gateway 专项 14/14，通过成对配置、域名规范化、错误域名拒绝和生产 SDK 构造。
+- `test:media-analysis` 17/17、完整 `test:api` 163/163、`test:deployment` 13/13 和生产 `build` 均通过；
+  构建只保留既有 Vite 主 chunk 超过 500 kB 提醒。首次完整构建发现平台播放来源测试夹具仍使用旧 DTO，
+  补齐 Web License 后重跑通过，`git diff --check` 通过。
+- 当前浏览器播放错误不是 PlayAuth 过期、视频转码中或 CDN URL 鉴权：服务端每次实时签发 PlayAuth，媒资
+  为 Normal，播放器控制台给出的确定原因是缺少 Web License。
+
+### 待推进
+
+- 在阿里云点播控制台“SDK 管理 -> 我的授权”创建/确认 Web 应用，登记实际部署域名并绑定播放器 License；
+  将控制台的 domain 与 License Key 写入受保护运行环境。AccessKey 不能替代 Web License。
+- 配置后重启 API，冷加载浏览器完成真实播放、暂停、精确 seek、P 临时循环、持久循环、倍率、独立窗口及
+  PlayAuth 到期前单飞刷新验收，再运行完整 API/构建/部署测试并提交本轮修改。
+- 临时长期 AccessKey 在验收结束后必须由账号所有者立即禁用/删除，并改用 RAM 角色、实例角色或其他
+  短时凭据方案。

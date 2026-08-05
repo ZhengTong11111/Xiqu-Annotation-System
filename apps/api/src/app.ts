@@ -2,7 +2,10 @@ import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
 import type { PrismaClient } from "@prisma/client";
-import { ANNOTATION_COLLABORATION_WEBSOCKET_PROTOCOL } from "@xiqu/shared";
+import {
+  ANNOTATION_COLLABORATION_WEBSOCKET_PROTOCOL,
+  type AliyunVodWebPlayerLicense,
+} from "@xiqu/shared";
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyInstance,
@@ -62,6 +65,7 @@ export type BuildApiAppOptions = {
   operationalMetricsTimeoutMs?: number;
   corsOrigin?: ApiCorsOriginPolicy;
   aliyunVod?: AliyunVodProvider | null;
+  aliyunVodWebPlayerLicense?: AliyunVodWebPlayerLicense | null;
 };
 
 /**
@@ -121,6 +125,7 @@ export async function buildApiApp(
     access,
     collaborationEvents,
     options.aliyunVod ?? null,
+    options.aliyunVodWebPlayerLicense ?? null,
   );
   const mediaAnalysis = new MediaAnalysisJobService(options.prisma, access);
   // 原子领域命令拥有独立事务服务，但与完整保存共用同一个跨实例 revision 发布器。

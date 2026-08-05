@@ -53,6 +53,10 @@ function createSession(playAuth: string): AliyunVodPlaybackSession {
     region: "cn-shanghai",
     playAuth,
     expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+    webPlayerLicense: {
+      domain: "example.test",
+      key: "test-web-license-key",
+    },
   };
 }
 
@@ -82,6 +86,10 @@ test("VOD 后端映射 ready、seek、play、pause 和倍率", async () => {
   assert.deepEqual(readyDurations, [90]);
   assert.equal(backend.getSnapshot().currentTime, 12);
   assert.equal(player?.speed, 1.5);
+  assert.deepEqual(player?.options.license, {
+    domain: "example.test",
+    key: "test-web-license-key",
+  });
   assert.deepEqual(playing, [true, false]);
   backend.dispose();
   assert.equal(player?.disposed, true);
@@ -137,7 +145,7 @@ test("VOD 刷新失败后保留旧实例并允许继续执行播放命令", asyn
   await backend.play();
   const originalPlayer = FakeAliplayer.instances[0];
 
-  await assert.rejects(backend.refreshSession(), /无法准备/);
+  await assert.rejects(backend.refreshSession(), /供应商临时不可用/);
   await backend.play();
 
   assert.equal(FakeAliplayer.instances.length, 1);
@@ -160,7 +168,55 @@ test("VOD 后端拒绝与当前资源不匹配的短时会话", async () => {
       onError: (message) => errors.push(message),
     },
   });
-  await assert.rejects(backend.play(), /无法准备/);
+  await assert.rejects(backend.play(), /播放会话与当前媒体不匹配/);
   assert.equal(errors.length, 1);
+  backend.dispose();
+});
+
+test("VOD 后端在构造播放器前拒绝缺少 Web License 的会话", async () => {
+  FakeAliplayer.instances = [];
+  const backend = new AliyunVodPlaybackBackend({
+    containerId: "player-license-missing",
+    expectedVideoId: "vod-1",
+    loadSession: async () => ({
+      ...createSession("auth-without-license"),
+      webPlayerLicense: undefined,
+    } as unknown as AliyunVodPlaybackSession),
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onError: () => undefined,
+    },
+  });
+
+  await assert.rejects(backend.play(), /播放会话/);
+  assert.equal(FakeAliplayer.instances.length, 0);
+  backend.dispose();
+});
+
+test("VOD 后端不向界面暴露播放器 SDK 加载错误细节", async () => {
+  const errors: string[] = [];
+  const backend = new AliyunVodPlaybackBackend({
+    containerId: "player-sdk-failure",
+    expectedVideoId: "vod-1",
+    loadSession: async () => createSession("auth-sdk-failure"),
+    loadFactory: async () => {
+      throw new Error("https://cdn.example.test/player.js?private-detail=1");
+    },
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onError: (message) => errors.push(message),
+    },
+  });
+
+  await assert.rejects(
+    backend.play(),
+    /无法加载阿里云 VOD 播放器，请检查网络后重试/,
+  );
+  assert.deepEqual(errors, ["无法加载阿里云 VOD 播放器，请检查网络后重试\u3002"]);
   backend.dispose();
 });

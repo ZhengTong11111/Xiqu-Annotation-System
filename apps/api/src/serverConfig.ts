@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import type { AliyunVodWebPlayerLicense } from "@xiqu/shared";
 
 const DEFAULT_DEVELOPMENT_DATABASE_URL =
   "postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public";
@@ -7,8 +8,12 @@ const DEFAULT_API_PORT = 4317;
 export type ApiCorsOriginPolicy = true | false | string[];
 
 export type AliyunVodRuntimeConfig =
-  | { enabled: false; region: null }
-  | { enabled: true; region: string };
+  | { enabled: false; region: null; webPlayerLicense: null }
+  | {
+      enabled: true;
+      region: string;
+      webPlayerLicense: AliyunVodWebPlayerLicense | null;
+    };
 
 export type ApiServerRuntimeConfig = {
   port: number;
@@ -51,13 +56,49 @@ function parseAliyunVodConfig(
     environment.XIQU_ALIYUN_VOD_ENABLED,
     false,
   );
-  if (!enabled) return { enabled: false, region: null };
+  if (!enabled) return { enabled: false, region: null, webPlayerLicense: null };
 
   const region = environment.XIQU_ALIYUN_VOD_REGION?.trim() ?? "";
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)+$/.test(region) || region.length > 64) {
     throw new Error("启用阿里云 VOD 时必须提供有效的 XIQU_ALIYUN_VOD_REGION。");
   }
-  return { enabled: true, region };
+  return {
+    enabled: true,
+    region,
+    webPlayerLicense: parseAliyunVodWebPlayerLicense(environment),
+  };
+}
+
+/**
+ * Web License 会发送给浏览器，不属于 AccessKey 一类服务端秘密；但仍由部署配置统一提供，
+ * 避免账号专属授权信息被硬编码进前端包。domain/key 必须成对出现，缺一项时启动即失败。
+ */
+function parseAliyunVodWebPlayerLicense(
+  environment: NodeJS.ProcessEnv,
+): AliyunVodWebPlayerLicense | null {
+  const rawDomain = environment.XIQU_ALIYUN_VOD_WEB_LICENSE_DOMAIN;
+  const rawKey = environment.XIQU_ALIYUN_VOD_WEB_LICENSE_KEY;
+  if (rawDomain === undefined && rawKey === undefined) return null;
+  if (rawDomain === undefined || rawKey === undefined) {
+    throw new Error(
+      "XIQU_ALIYUN_VOD_WEB_LICENSE_DOMAIN 与 XIQU_ALIYUN_VOD_WEB_LICENSE_KEY 必须同时设置。",
+    );
+  }
+
+  const domain = rawDomain.trim().toLowerCase();
+  const key = rawKey.trim();
+  const isHostname = domain === "localhost" ||
+    isIP(domain) !== 0 ||
+    /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(domain);
+  if (!isHostname) {
+    throw new Error(
+      "XIQU_ALIYUN_VOD_WEB_LICENSE_DOMAIN 只能填写不含协议、端口、路径或通配符的域名/IP。",
+    );
+  }
+  if (!key || key.length > 2_048 || /\s/.test(key)) {
+    throw new Error("XIQU_ALIYUN_VOD_WEB_LICENSE_KEY 格式不正确。");
+  }
+  return { domain, key };
 }
 
 // 生产默认只监听 loopback；需要容器或内网监听时必须显式给出 IP，不能依赖含糊 DNS 名称。

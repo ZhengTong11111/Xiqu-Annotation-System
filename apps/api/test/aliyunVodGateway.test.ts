@@ -3,8 +3,16 @@ import test from "node:test";
 import {
   AliyunVodGatewayError,
   AliyunVodSdkGateway,
+  createAliyunVodProvider,
   selectAliyunVodAnalysisAudio,
 } from "../src/aliyunVodGateway.js";
+
+test("生产 VOD provider 使用官方 SDK 默认导出并能完成运行时构造", () => {
+  // 模拟网关测试不会执行 SDK 构造路径；这里专门防止 CJS/ESM 默认导入层级再次写错。
+  const provider = createAliyunVodProvider("cn-shanghai");
+  assert.equal(provider.region, "cn-shanghai");
+  assert.ok(provider.gateway instanceof AliyunVodSdkGateway);
+});
 
 test("VOD 网关规范化媒资元数据且不返回供应商原始响应", async () => {
   const gateway = new AliyunVodSdkGateway({

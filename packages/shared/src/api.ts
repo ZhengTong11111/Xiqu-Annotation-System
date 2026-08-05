@@ -135,6 +135,11 @@ export type CreateAliyunVodMediaRequest = {
   videoId: string;
 };
 
+export type AliyunVodWebPlayerLicense = {
+  domain: string;
+  key: string;
+};
+
 export type AliyunVodPlaybackSession = {
   sourceType: "aliyun_vod";
   mediaKind: MediaKind;
@@ -142,6 +147,7 @@ export type AliyunVodPlaybackSession = {
   region: string;
   playAuth: string;
   expiresAt: string;
+  webPlayerLicense: AliyunVodWebPlayerLicense;
 };
 
 export type UpdateAnnotationMediaRequest = { mediaResourceId: string | null };

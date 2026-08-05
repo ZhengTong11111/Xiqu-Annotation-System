@@ -81,6 +81,10 @@ test("平台资源 API 集成测试", async (suite) => {
     },
     metricsToken: "integration-metrics-token",
     aliyunVod: fakeAliyunVodProvider,
+    aliyunVodWebPlayerLicense: {
+      domain: "example.test",
+      key: "integration-web-license-key",
+    },
   });
   await app.ready();
 
@@ -558,6 +562,10 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(playback.statusCode, 200, playback.body);
       assert.equal(playback.headers["cache-control"], "no-store");
       assert.equal(dataOf(playback.json()).playAuth, "integration-temporary-play-auth");
+      assert.deepEqual(dataOf(playback.json()).webPlayerLicense, {
+        domain: "example.test",
+        key: "integration-web-license-key",
+      });
       const deniedPlayback = await jsonRequest(app, studentToken, {
         method: "POST",
         url: `/api/media-files/${vodResourceId}/playback-session`,
