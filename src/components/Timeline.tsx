@@ -1,4 +1,13 @@
-import { type CSSProperties, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   ActionAnnotation,
   AttachedPointAnnotation,
@@ -34,8 +43,10 @@ import {
   resolveCustomTrackColor,
 } from "../utils/trackColors";
 import { getCharacterToneLabel, isValidCharacterToneInfo } from "../utils/tone";
+import type { RemoteTimelineActivityView } from "../platform/remoteTimelineActivityRegistry";
 
 type TimelineProps = {
+  editingBlockedReason?: string;
   subtitleLines: SubtitleLine[];
   builtinTracks: BuiltinTrack[];
   characterAnnotations: CharacterAnnotation[];
@@ -55,8 +66,13 @@ type TimelineProps = {
   isSpectrogramLoading: boolean;
   spectrogramSettings: SpectrogramSettings;
   currentTime: number;
+  remoteActivities: RemoteTimelineActivityView[];
+  pointerSourceId: string;
+  onTransientPointerTimeChange: (sourceId: string, time: number | null) => void;
   loopPlaybackRange: { start: number; end: number } | null;
   loopPlaybackEnabled: boolean;
+  confirmationRanges: TimelineConfirmationRange[];
+  confirmationRangesVisible: boolean;
   isDetached?: boolean;
   selectedItem: SelectedItem;
   selectedTimelineItems: TimelineSelectionItem[];
@@ -75,6 +91,7 @@ type TimelineProps = {
   onToggleTrackSnap: (trackId: string) => void;
   onLoopPlaybackRangeChange: (range: { start: number; end: number } | null) => void;
   onLoopPlaybackEnabledChange: (enabled: boolean) => void;
+  onSelectConfirmationRange: (range: TimelineConfirmationRange) => void;
   onToggleDetached?: () => void;
   onSeek: (time: number) => void;
   onPreviewFrame: (time: number | null) => void;
@@ -145,6 +162,17 @@ type TimelineProps = {
   onBatchMoveChange: (items: TimelineBatchMoveItem[]) => void;
   onBatchMoveCommit: (items: TimelineBatchMoveItem[]) => void;
   onCreateAction: (trackId: string, startTime: number, endTime: number) => void;
+};
+
+// 确认栏只消费时间轴渲染字段，避免通用 Timeline 依赖平台 API 或治理权限模型。
+export type TimelineConfirmationRange = {
+  id: string;
+  startTime: number;
+  endTime: number;
+  label: string;
+  lane: number;
+  lifecycle: "active" | "revoked";
+  freshness: "current" | "stale";
 };
 
 type DragState =
@@ -484,6 +512,7 @@ type LoopRangeDragState =
     };
 
 export function Timeline({
+  editingBlockedReason,
   subtitleLines,
   builtinTracks,
   characterAnnotations,
@@ -503,8 +532,13 @@ export function Timeline({
   isSpectrogramLoading,
   spectrogramSettings,
   currentTime,
+  remoteActivities,
+  pointerSourceId,
+  onTransientPointerTimeChange,
   loopPlaybackRange,
   loopPlaybackEnabled,
+  confirmationRanges,
+  confirmationRangesVisible,
   isDetached = false,
   selectedItem,
   selectedTimelineItems,
@@ -523,6 +557,7 @@ export function Timeline({
   onToggleTrackSnap,
   onLoopPlaybackRangeChange,
   onLoopPlaybackEnabledChange,
+  onSelectConfirmationRange,
   onToggleDetached,
   onSeek,
   onPreviewFrame,
@@ -621,6 +656,8 @@ export function Timeline({
   const [hoveredBlock, setHoveredBlock] = useState<HoveredBlockState>(null);
   const [activeSnapIndicator, setActiveSnapIndicator] = useState<ActiveSnapIndicator>(null);
   const [previewGuideTime, setPreviewGuideTime] = useState<number | null>(null);
+  const transientPointerFrameRef = useRef<number | null>(null);
+  const pendingTransientPointerTimeRef = useRef<number | null>(null);
   const [draggedPointPreview, setDraggedPointPreview] = useState<{
     id: string;
     trackId: string;
@@ -651,7 +688,32 @@ export function Timeline({
   } | null>(null);
   const moveTrackHighlightTimerRef = useRef<number | null>(null);
   const selectionAnchorRef = useRef<TimelineSelectionItem | null>(selectedTimelineItems[0] ?? null);
+
+  // Timeline 只上报时间语义；网络节流由 collaboration runtime 统一负责。
+  const queueTransientPointerTime = useCallback((time: number | null) => {
+    pendingTransientPointerTimeRef.current = time;
+    if (transientPointerFrameRef.current !== null) return;
+    transientPointerFrameRef.current = requestAnimationFrame(() => {
+      transientPointerFrameRef.current = null;
+      onTransientPointerTimeChange(pointerSourceId, pendingTransientPointerTimeRef.current);
+    });
+  }, [onTransientPointerTimeChange, pointerSourceId]);
+
+  useEffect(() => () => {
+    if (transientPointerFrameRef.current !== null) {
+      cancelAnimationFrame(transientPointerFrameRef.current);
+      transientPointerFrameRef.current = null;
+    }
+    onTransientPointerTimeChange(pointerSourceId, null);
+  }, [onTransientPointerTimeChange, pointerSourceId]);
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
+  // 确认栏按重叠层数自适应高度；无记录时仍保留一条紧凑栏，供平台用户识别该治理层。
+  const confirmationLaneCount = confirmationRangesVisible
+    ? Math.max(1, ...confirmationRanges.map((range) => range.lane + 1))
+    : 0;
+  const confirmationLaneHeight = confirmationLaneCount > 0
+    ? confirmationLaneCount * 18 + 4
+    : 0;
   const defaultTrackBlockMetrics = getTrackBlockMetrics(trackHeight);
   const trackBlockHeight = defaultTrackBlockMetrics.height;
   const trackBlockTop = defaultTrackBlockMetrics.top;
@@ -905,8 +967,16 @@ export function Timeline({
         "--track-block-height": `${trackBlockHeight}px`,
         "--track-block-top": `${trackBlockTop}px`,
         "--waveform-track-height": `${waveformTrackHeight}px`,
+        "--confirmation-lane-height": `${confirmationLaneHeight}px`,
       } as CSSProperties),
-    [timelineWidth, trackBlockHeight, trackBlockTop, trackHeight, waveformTrackHeight],
+    [
+      confirmationLaneHeight,
+      timelineWidth,
+      trackBlockHeight,
+      trackBlockTop,
+      trackHeight,
+      waveformTrackHeight,
+    ],
   );
 
   useEffect(() => {
@@ -2291,7 +2361,7 @@ export function Timeline({
   }, [duration, zoom]);
 
   return (
-    <section className="panel timeline-panel">
+    <section className="panel timeline-panel" aria-busy={Boolean(editingBlockedReason)}>
       <div className="panel-header timeline-panel-header">
         <div className="timeline-header-copy">
           <h2>多轨时间轴</h2>
@@ -2300,14 +2370,14 @@ export function Timeline({
         <div className="timeline-header-actions">
           <div className="timeline-track-actions">
             {missingBuiltinTracks.map((track) => (
-              <button key={track.id} type="button" onClick={() => onAddBuiltinTrack(track.id)}>
+              <button key={track.id} type="button" disabled={Boolean(editingBlockedReason)} onClick={() => onAddBuiltinTrack(track.id)}>
                 + 逐字轨
               </button>
             ))}
-            <button type="button" onClick={() => onAddCustomTrack("text")}>
+            <button type="button" disabled={Boolean(editingBlockedReason)} onClick={() => onAddCustomTrack("text")}>
               + 文字轨
             </button>
-            <button type="button" onClick={() => onAddCustomTrack("action")}>
+            <button type="button" disabled={Boolean(editingBlockedReason)} onClick={() => onAddCustomTrack("action")}>
               + 动作轨
             </button>
             <button type="button" onClick={() => onSelectItem({ type: "banyan-track" })}>
@@ -2363,9 +2433,30 @@ export function Timeline({
           ) : null}
         </div>
       </div>
-      <div
-        className="timeline-scroll"
-        ref={scrollRef}
+      <div className="timeline-scroll-shell">
+        {editingBlockedReason ? (
+          <div className="timeline-edit-gate" role="status">
+            <span>{editingBlockedReason}</span>
+          </div>
+        ) : null}
+        <div
+          className="timeline-scroll"
+          ref={scrollRef}
+        onPointerMove={(event) => {
+          const container = scrollRef.current;
+          if (!container) return;
+          const viewportOffset = event.clientX - container.getBoundingClientRect().left;
+          if (viewportOffset < TRACK_LABEL_WIDTH) {
+            queueTransientPointerTime(null);
+            return;
+          }
+          queueTransientPointerTime(Math.min(
+            duration,
+            getCanvasTimeFromViewportOffset(container, viewportOffset, zoom),
+          ));
+        }}
+        onPointerLeave={() => queueTransientPointerTime(null)}
+        onPointerCancel={() => queueTransientPointerTime(null)}
         onWheel={(event) => {
           const isPinchZoom = event.ctrlKey && !event.metaKey;
           const isModifierZoom = event.altKey && !event.metaKey && !event.ctrlKey;
@@ -2375,8 +2466,8 @@ export function Timeline({
           event.preventDefault();
           handleZoomAroundPointer(event);
         }}
-      >
-        <div className="timeline-canvas" style={timelineCanvasStyle}>
+        >
+          <div className="timeline-canvas" style={timelineCanvasStyle}>
           <div
             className="timeline-ruler"
             onPointerDown={(event) => {
@@ -2585,6 +2676,39 @@ export function Timeline({
               </div>
             ) : null}
           </div>
+
+          {confirmationRangesVisible ? (
+            <div
+              className="timeline-confirmation-lane"
+              style={{ height: confirmationLaneHeight }}
+            >
+              <span className="timeline-confirmation-lane-label">确认范围</span>
+              {confirmationRanges.map((range) => (
+                <button
+                  key={range.id}
+                  type="button"
+                  className={[
+                    "timeline-confirmation-chip",
+                    range.lifecycle,
+                    range.freshness,
+                  ].join(" ")}
+                  style={{
+                    left: getCanvasX(range.startTime, zoom),
+                    top: range.lane * 18 + 2,
+                    width: Math.max((range.endTime - range.startTime) * zoom, 4),
+                  }}
+                  title={`${range.label} · ${range.startTime.toFixed(3)}-${range.endTime.toFixed(3)} 秒`}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onSelectConfirmationRange(range);
+                  }}
+                >
+                  <span>{range.label}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
 
           {renderBanyanGridLines()}
 
@@ -3367,6 +3491,55 @@ export function Timeline({
             />
           ) : null}
 
+          {/* 远端提示只读叠加；三类元素都使用 Timeline 的同一时间坐标，不参与任何命中或编辑。 */}
+          {remoteActivities.map((remoteActivity, index) => {
+            const { playhead, pointer, selection } = remoteActivity.activity;
+            return (
+              <Fragment key={remoteActivity.userId}>
+                {remoteActivity.showSelection && selection ? (
+                  <div
+                    className="remote-selection-range"
+                    style={{
+                      left: getCanvasX(selection.start, zoom),
+                      width: Math.max(2, (selection.end - selection.start) * zoom),
+                      "--remote-activity-color": remoteActivity.color,
+                      "--remote-activity-label-row": index % 4,
+                    } as CSSProperties}
+                    aria-hidden="true"
+                  >
+                    <span>{remoteActivity.displayName} · {selection.itemCount} 项 · {selection.laneCount} 轨</span>
+                  </div>
+                ) : null}
+                {pointer ? (
+                  <div
+                    className="remote-pointer-guide"
+                    style={{
+                      left: getCanvasX(pointer.time, zoom),
+                      "--remote-activity-color": remoteActivity.color,
+                      "--remote-activity-label-row": index % 4,
+                    } as CSSProperties}
+                    aria-hidden="true"
+                  >
+                    <span>{remoteActivity.displayName}</span>
+                  </div>
+                ) : null}
+                {playhead ? (
+                  <div
+                    className={`remote-playhead ${playhead.playing ? "playing" : "paused"}`}
+                    style={{
+                      left: getCanvasX(playhead.time, zoom),
+                      "--remote-playhead-color": remoteActivity.color,
+                      "--remote-playhead-label-row": index % 4,
+                    } as CSSProperties}
+                    aria-hidden="true"
+                  >
+                    <span>{remoteActivity.displayName}</span>
+                  </div>
+                ) : null}
+              </Fragment>
+            );
+          })}
+
           {previewGuideTime !== null ? (
             <div
               className="timeline-preview-guide"
@@ -3382,6 +3555,7 @@ export function Timeline({
           ) : null}
 
           <div className="playhead" style={{ left: getCanvasX(currentTime, zoom) }} />
+          </div>
         </div>
       </div>
     </section>

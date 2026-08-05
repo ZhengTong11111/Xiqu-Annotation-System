@@ -1,0 +1,3 @@
+// 轨道拥有子树的生命周期快照已共享，旧路径只保留窄兼容出口。
+export { buildProjectAttachedPointTrackLifecycleEnvelope, buildProjectBuiltinTrackLifecycleEnvelope, buildProjectCustomTrackLifecycleEnvelope, createAttachedPointTrackSnapshot, createBuiltinTrackLifecycleSnapshot, createCustomTrackLifecycleSnapshot, resolveAttachedPointTrackLifecycleContext, resolveBuiltinTrackLifecycleState, resolveCustomTrackLifecycleState } from "@xiqu/document-model";
+export type { AttachedPointTrackLifecycleTarget, BuiltinTrackLifecycleTarget, CustomTrackLifecycleTarget } from "@xiqu/document-model";

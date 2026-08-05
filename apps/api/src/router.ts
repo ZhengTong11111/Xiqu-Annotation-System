@@ -1,6 +1,14 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import {
+  ANNOTATION_CONFIRMATION_DOMAINS,
+  AUDIT_ACTIONS,
+  isValidAnnotationOperationPayload,
+  parseAnnotationCommandBatchRequest,
   RESOURCE_CAPABILITIES,
+  type AnnotationConfirmationDomain,
+  type AnnotationConfirmationScope,
+  type AuditActionName,
+  type PlatformRole,
   type ProcessingJobType,
   type ResourceCapability,
   type ResourceListView,
@@ -8,11 +16,30 @@ import {
   type ResourceType,
   type SortDirection,
 } from "@xiqu/shared";
-import { Readable } from "node:stream";
-import { badRequest } from "./errors.js";
+import type { AuditLogService } from "./auditLogService.js";
+import type { AccountAdminService } from "./accountAdminService.js";
+import { badRequest, unauthorized } from "./errors.js";
+import type { HealthService } from "./healthService.js";
+import type { MediaUploadService } from "./mediaUploadService.js";
+import type { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
+import type { ObjectLifecycleService } from "./objectLifecycleService.js";
+import type { OperationalMetricsCollector } from "./operationalMetricsCollector.js";
+import {
+  type ApiObservability,
+  isValidMetricsToken,
+} from "./observability.js";
 import type { PrismaPlatformRepository } from "./repository.js";
 import type { ResourceService } from "./resourceService.js";
-import type { LocalObjectStorage } from "./storage.js";
+import type { AnnotationCommandCommitService } from "./annotationCommandCommitService.js";
+import { MAX_BATCH_RESOURCE_SELECTION } from "./resourceSelection.js";
+import type { ObjectStorage } from "./objectStorage.js";
+import type { SystemDiagnosticsService } from "./systemDiagnosticsService.js";
+import { isValidClientOperationId } from "./annotationOperationIdempotency.js";
+import {
+  isValidAnnotationMutationLeaseToken,
+  parseAnnotationMutationPurpose,
+} from "./annotationMutationLease.js";
+import { getCurrentUser } from "./requestAuthentication.js";
 
 const RESOURCE_TYPES = new Set<ResourceType>([
   "folder",
@@ -37,6 +64,9 @@ const RESOURCE_SORT_FIELDS = new Set<ResourceSortField>([
 ]);
 const SORT_DIRECTIONS = new Set<SortDirection>(["asc", "desc"]);
 const CAPABILITIES = new Set<ResourceCapability>(RESOURCE_CAPABILITIES);
+const CONFIRMATION_DOMAINS = new Set<AnnotationConfirmationDomain>(
+  ANNOTATION_CONFIRMATION_DOMAINS,
+);
 const PROCESSING_JOB_TYPES = new Set<ProcessingJobType>([
   "pitch_extraction",
   "spectrogram_generation",
@@ -47,18 +77,76 @@ const PROCESSING_JOB_TYPES = new Set<ProcessingJobType>([
   "audio_extract",
   "annotation_export",
 ]);
+// 路由运行时校验复用 shared 动作清单，未知 action 在进入 Prisma 前返回 400。
+const AUDIT_ACTION_NAMES = new Set<AuditActionName>(AUDIT_ACTIONS);
 
 export function registerApiRoutes(
   app: FastifyInstance,
   repository: PrismaPlatformRepository,
+  accounts: AccountAdminService,
+  auditLogs: AuditLogService,
   resources: ResourceService,
-  storage: LocalObjectStorage,
+  annotationCommandCommits: AnnotationCommandCommitService,
+  storage: Pick<ObjectStorage, "getObjectStream">,
+  mediaUploads: MediaUploadService,
+  objectLifecycle: ObjectLifecycleService,
+  health: HealthService,
+  maintenance: MaintenanceCoordinator,
+  diagnostics: SystemDiagnosticsService,
+  observability: ApiObservability,
+  operationalMetrics: OperationalMetricsCollector,
+  metricsToken: string | null,
 ) {
-  app.get("/api/health", async () => ({
-    status: "ok",
-    service: "xiqu-platform-api",
-    time: new Date().toISOString(),
-  }));
+  // liveness 不访问外部依赖；readiness 与兼容 health 在依赖失败时明确返回 503。
+  app.get("/api/health/live", async () => health.getLiveness());
+  app.get("/api/health/ready", async (_request, reply) => {
+    const result = await health.getReadiness();
+    if (result.status === "unavailable") reply.status(503);
+    return result;
+  });
+  app.get("/api/health", async (_request, reply) => {
+    const result = await health.getReadiness();
+    if (result.status === "unavailable") reply.status(503);
+    return result;
+  });
+
+  // 维护状态读取和切换均要求全局管理员；POST 是唯一可绕过维护 gate 的恢复通道。
+  app.get("/api/admin/maintenance", async (request) =>
+    maintenance.getStatus(await getCurrentUser(repository, request)));
+  app.post<{
+    Body: { enabled?: unknown; reason?: unknown };
+  }>("/api/admin/maintenance", async (request) => {
+    if (typeof request.body?.enabled !== "boolean") {
+      throw badRequest("维护状态需要有效的 enabled 参数。");
+    }
+    const reason = normalizedString(
+      typeof request.body.reason === "string" ? request.body.reason : undefined,
+    );
+    // 业务层统一维护原因必填和长度约束，供 HTTP 与后续运维 CLI 共用同一不变量。
+    return maintenance.setMaintenance(
+      await getCurrentUser(repository, request),
+      { enabled: request.body.enabled, reason: reason ?? null },
+    );
+  });
+
+  // Prometheus 凭据与用户 session 分离；未配置时关闭入口，避免开发默认意外暴露进程指标。
+  app.get("/metrics", async (request, reply) => {
+    if (!metricsToken) return reply.status(404).send();
+    if (!isValidMetricsToken(metricsToken, request.headers.authorization)) {
+      throw unauthorized("监控凭据无效。");
+    }
+    // 授权后才执行依赖采集；失败通过 Gauge 暴露，端点仍返回可解析的 Prometheus 文本。
+    try {
+      observability.recordOperationalSnapshot(
+        await operationalMetrics.collect(),
+      );
+    } catch (error) {
+      observability.recordOperationalCollectionFailure();
+      request.log.warn({ err: error }, "Operational metrics collection failed");
+    }
+    reply.header("Content-Type", observability.registry.contentType);
+    return observability.registry.metrics();
+  });
 
   app.post<{ Body: { accountName?: string; password?: string } }>(
     "/api/auth/login",
@@ -77,6 +165,70 @@ export function registerApiRoutes(
       await getCurrentUser(repository, request),
       normalizedString(request.query.query),
     ));
+
+  app.get<{
+    Querystring: { query?: string; cursor?: string; limit?: string };
+  }>("/api/admin/accounts", async (request) => accounts.listAccounts(
+    await getCurrentUser(repository, request),
+    {
+      query: normalizedString(request.query.query),
+      cursor: normalizedString(request.query.cursor),
+      limit: request.query.limit === undefined ? undefined : Number(request.query.limit),
+    },
+  ));
+
+  app.post<{ Body: unknown }>("/api/admin/accounts", async (request) => {
+    const body = requireObject(request.body);
+    return accounts.createAccount(await getCurrentUser(repository, request), {
+      accountName: requireString(body.accountName, "账号名"),
+      displayName: requireString(body.displayName, "显示名称"),
+      password: requireString(body.password, "密码"),
+      roles: parsePlatformRoles(body.roles),
+    });
+  });
+
+  app.patch<{ Params: { userId: string }; Body: unknown }>(
+    "/api/admin/accounts/:userId",
+    async (request) => {
+      const body = requireObject(request.body);
+      return accounts.updateAccount(
+        await getCurrentUser(repository, request),
+        request.params.userId,
+        {
+          ...(body.displayName !== undefined
+            ? { displayName: requireString(body.displayName, "显示名称") }
+            : {}),
+          ...(body.roles !== undefined ? { roles: parsePlatformRoles(body.roles) } : {}),
+          ...(body.isActive !== undefined
+            ? { isActive: requireBoolean(body.isActive, "账号状态") }
+            : {}),
+        },
+      );
+    },
+  );
+
+  app.post<{ Params: { userId: string }; Body: unknown }>(
+    "/api/admin/accounts/:userId/reset-password",
+    async (request) => {
+      const body = requireObject(request.body);
+      await accounts.resetPassword(
+        await getCurrentUser(repository, request),
+        request.params.userId,
+        requireString(body.password, "新密码"),
+      );
+      return { ok: true };
+    },
+  );
+
+  app.post<{ Body: unknown }>("/api/auth/change-password", async (request) => {
+    const body = requireObject(request.body);
+    await accounts.changeOwnPassword(
+      await getCurrentUser(repository, request),
+      requireString(body.currentPassword, "当前密码"),
+      requireString(body.newPassword, "新密码"),
+    );
+    return { ok: true };
+  });
 
   app.get<{
     Querystring: {
@@ -129,6 +281,56 @@ export function registerApiRoutes(
         await getCurrentUser(repository, request),
         request.params.resourceId,
       ),
+  );
+
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { access_token?: string };
+  }>("/api/resources/:resourceId/download", async (request, reply) => {
+    const user = await getCurrentUser(
+      repository,
+      request,
+      request.query.access_token ?? null,
+    );
+    const download = await resources.getDownloadableResource(
+      user,
+      request.params.resourceId,
+    );
+    reply.header("Content-Type", download.mimeType);
+    reply.header(
+      "Content-Disposition",
+      buildAttachmentContentDisposition(download.fileName),
+    );
+    if (download.kind === "annotation") {
+      reply.header("Content-Length", Buffer.byteLength(download.content, "utf8"));
+      return reply.send(download.content);
+    }
+    reply.header("Content-Length", download.size);
+    return reply.send(await storage.getObjectStream(download.storageKey));
+  });
+
+  app.patch<{ Params: { resourceId: string }; Body: unknown }>(
+    "/api/annotation-files/:resourceId/media",
+    async (request) => {
+      const body = requireObject(request.body);
+      return resources.updateAnnotationMedia(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        { mediaResourceId: optionalStringOrNull(body.mediaResourceId) ?? null },
+      );
+    },
+  );
+
+  // 最近打开从 GET 副作用中拆出，确保维护模式可以放行真正只读的标注文件读取。
+  app.post<{ Params: { resourceId: string } }>(
+    "/api/resources/:resourceId/opened",
+    async (request, reply) => {
+      await resources.markResourceOpened(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+      );
+      return reply.status(204).send();
+    },
   );
 
   app.post<{
@@ -192,20 +394,60 @@ export function registerApiRoutes(
   });
 
   app.post<{
+    Body: { resourceIds?: unknown; parentId?: unknown };
+  }>("/api/resources/move-batch", async (request) => {
+    const body = requireObject(request.body);
+    const resourceIds = parseUniqueStringArray(
+      body.resourceIds,
+      "resourceIds",
+      1,
+      MAX_BATCH_RESOURCE_SELECTION,
+    );
+    const user = await getCurrentUser(repository, request);
+    const result = await resources.moveResources(user, {
+      resourceIds,
+      parentId: optionalStringOrNull(body.parentId) ?? null,
+    });
+    for (const resource of result.moved) {
+      await repository.writeAuditLog({
+        action: "resource_move",
+        actorUserId: user.id,
+        resourceId: resource.id,
+        detail: {
+          parentId: resource.parentId,
+          batchSize: resourceIds.length,
+          collapsedSelectionCount: result.collapsedDescendantIds.length,
+        },
+      });
+    }
+    return result;
+  });
+
+  app.post<{
     Params: { resourceId: string };
     Body: { parentId?: unknown };
   }>("/api/resources/:resourceId/move", async (request) => {
     const body = requireObject(request.body);
     const user = await getCurrentUser(repository, request);
-    const updated = await resources.moveResource(user, request.params.resourceId, {
+    // 单项接口保留兼容性，但与批量移动共享同一个事务核心，避免两套权限和循环规则漂移。
+    const result = await resources.moveResources(user, {
+      resourceIds: [request.params.resourceId],
       parentId: optionalStringOrNull(body.parentId) ?? null,
     });
-    await repository.writeAuditLog({
-      action: "resource_move",
-      actorUserId: user.id,
-      resourceId: updated.id,
-      detail: { parentId: updated.parentId },
-    });
+    const updated = result.moved[0] ?? result.unchanged[0];
+    if (!updated) throw badRequest("待移动资源不存在。");
+    if (result.moved.length) {
+      await repository.writeAuditLog({
+        action: "resource_move",
+        actorUserId: user.id,
+        resourceId: updated.id,
+        detail: {
+          parentId: updated.parentId,
+          batchSize: 1,
+          collapsedSelectionCount: 0,
+        },
+      });
+    }
     return updated;
   });
 
@@ -228,35 +470,61 @@ export function registerApiRoutes(
     await repository.writeAuditLog({
       action: "resource_copy",
       actorUserId: user.id,
-      resourceId: copied.id,
-      detail: { sourceResourceId: request.params.resourceId },
+      resourceId: copied.resource.id,
+      detail: {
+        sourceResourceId: request.params.resourceId,
+        copiedNodeCount: copied.summary.copiedNodeCount,
+        copiedAnnotationCount: copied.summary.copiedAnnotationCount,
+        reusedFileObjectCount: copied.summary.reusedFileObjectCount,
+      },
     });
-    return copied;
+    return copied.resource;
   });
 
-  for (const [suffix, trashed, action] of [
-    ["trash", true, "resource_trash"],
-    ["restore", false, "resource_restore"],
-  ] as const) {
-    app.post<{ Params: { resourceId: string } }>(
-      `/api/resources/:resourceId/${suffix}`,
-      async (request) => {
-        const user = await getCurrentUser(repository, request);
-        const updated = await resources.setTrashed(
-          user,
-          request.params.resourceId,
-          trashed,
-        );
-        await repository.writeAuditLog({
-          action,
-          actorUserId: user.id,
-          resourceId: updated.id,
-          detail: {},
-        });
-        return updated;
-      },
-    );
-  }
+  app.post<{ Body: { resourceIds?: unknown } }>(
+    "/api/resources/trash-batch",
+    async (request) => {
+      const body = requireObject(request.body);
+      const resourceIds = parseUniqueStringArray(
+        body.resourceIds,
+        "resourceIds",
+        1,
+        MAX_BATCH_RESOURCE_SELECTION,
+      );
+      const user = await getCurrentUser(repository, request);
+      return resources.trashResources(user, { resourceIds });
+    },
+  );
+
+  app.post<{ Params: { resourceId: string } }>(
+    "/api/resources/:resourceId/trash",
+    async (request) => {
+      const user = await getCurrentUser(repository, request);
+      // 单项接口保留兼容性，但删除事务和审计只由批量核心实现一次。
+      const result = await resources.trashResources(user, {
+        resourceIds: [request.params.resourceId],
+      });
+      return result.trashed[0]!;
+    },
+  );
+
+  app.post<{ Params: { resourceId: string } }>(
+    "/api/resources/:resourceId/restore",
+    async (request) => {
+      const user = await getCurrentUser(repository, request);
+      const restored = await resources.restoreResource(
+        user,
+        request.params.resourceId,
+      );
+      await repository.writeAuditLog({
+        action: "resource_restore",
+        actorUserId: user.id,
+        resourceId: restored.id,
+        detail: {},
+      });
+      return restored;
+    },
+  );
 
   app.post<{
     Body: {
@@ -290,9 +558,60 @@ export function registerApiRoutes(
       ),
   );
 
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/annotation-files/:resourceId/mutation-lease",
+    async (request) => resources.getAnnotationMutationLease(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+    ),
+  );
+
+  app.post<{
+    Params: { resourceId: string };
+    Body: { baseRevision?: unknown; purpose?: unknown };
+  }>("/api/annotation-files/:resourceId/mutation-lease", async (request) => {
+    const body = requireObject(request.body);
+    const purpose = parseAnnotationMutationPurpose(body.purpose);
+    if (!Number.isInteger(body.baseRevision) || Number(body.baseRevision) < 1 || !purpose) {
+      throw badRequest("结构变更租约的 baseRevision 或 purpose 无效。");
+    }
+    return resources.acquireAnnotationMutationLease(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      { baseRevision: Number(body.baseRevision), purpose },
+    );
+  });
+
+  app.patch<{
+    Params: { resourceId: string };
+    Body: { token?: unknown };
+  }>("/api/annotation-files/:resourceId/mutation-lease", async (request) => {
+    const body = requireObject(request.body);
+    if (!isValidAnnotationMutationLeaseToken(body.token)) throw badRequest("结构变更租约 token 无效。");
+    return resources.renewAnnotationMutationLease(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      body.token,
+    );
+  });
+
+  app.delete<{
+    Params: { resourceId: string };
+    Body: { token?: unknown };
+  }>("/api/annotation-files/:resourceId/mutation-lease", async (request, reply) => {
+    const body = requireObject(request.body);
+    if (!isValidAnnotationMutationLeaseToken(body.token)) throw badRequest("结构变更租约 token 无效。");
+    await resources.releaseAnnotationMutationLease(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      body.token,
+    );
+    return reply.status(204).send();
+  });
+
   app.put<{
     Params: { resourceId: string };
-    Body: { baseRevision?: unknown; payload?: unknown };
+    Body: { baseRevision?: unknown; payload?: unknown; clientOperationIds?: unknown; mutationLeaseToken?: unknown };
   }>("/api/annotation-files/:resourceId", async (request) => {
     const body = requireObject(request.body);
     if (!Number.isInteger(body.baseRevision) || Number(body.baseRevision) < 1) {
@@ -305,14 +624,10 @@ export function registerApiRoutes(
       {
         baseRevision: Number(body.baseRevision),
         payload: body.payload ?? {},
+        clientOperationIds: parseSaveClientOperationIds(body.clientOperationIds),
+        mutationLeaseToken: parseOptionalMutationLeaseToken(body.mutationLeaseToken),
       },
     );
-    await repository.writeAuditLog({
-      action: "annotation_file_save",
-      actorUserId: user.id,
-      resourceId: saved.resource.id,
-      detail: { revision: saved.revision },
-    });
     return saved;
   });
 
@@ -323,6 +638,111 @@ export function registerApiRoutes(
         await getCurrentUser(repository, request),
         request.params.resourceId,
       ),
+  );
+
+  // 完整快照按需读取，路由中的 resourceId 参与归属校验而不是只凭 snapshotId 查询。
+  app.get<{ Params: { resourceId: string; snapshotId: string } }>(
+    "/api/annotation-files/:resourceId/recovery-snapshots/:snapshotId",
+    async (request) =>
+      resources.getRecoverySnapshot(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        request.params.snapshotId,
+      ),
+  );
+
+  // 恢复请求必须携带当前 revision；服务端把历史内容写成新 revision，而不是回退计数器。
+  app.post<{
+    Params: { resourceId: string; snapshotId: string };
+    Body: { baseRevision?: unknown; mutationLeaseToken?: unknown };
+  }>(
+    "/api/annotation-files/:resourceId/recovery-snapshots/:snapshotId/restore",
+    async (request) => {
+      const body = requireObject(request.body);
+      if (
+        !Number.isInteger(body.baseRevision) ||
+        Number(body.baseRevision) < 1
+      ) {
+        throw badRequest("baseRevision 必须是正整数。");
+      }
+      return resources.restoreAnnotationRecoverySnapshot(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        request.params.snapshotId,
+        {
+          baseRevision: Number(body.baseRevision),
+          mutationLeaseToken: parseOptionalMutationLeaseToken(body.mutationLeaseToken),
+        },
+      );
+    },
+  );
+
+  // 确认列表属于标注文件治理元数据；读取权限由服务层按文件逐项执行。
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/annotation-files/:resourceId/confirmations",
+    async (request) =>
+      resources.listAnnotationConfirmations(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+      ),
+  );
+
+  // 创建请求在路由边界解析 unknown，revision、轨道存在性和 review 权限仍由事务服务校验。
+  app.post<{
+    Params: { resourceId: string };
+    Body: {
+      confirmedRevision?: unknown;
+      scope?: unknown;
+      note?: unknown;
+    };
+  }>("/api/annotation-files/:resourceId/confirmations", async (request) => {
+    const body = requireObject(request.body);
+    if (
+      !Number.isInteger(body.confirmedRevision) ||
+      Number(body.confirmedRevision) < 1
+    ) {
+      throw badRequest("confirmedRevision 必须是正整数。");
+    }
+    if (
+      body.note !== undefined &&
+      body.note !== null &&
+      typeof body.note !== "string"
+    ) {
+      throw badRequest("审核备注必须是字符串或 null。");
+    }
+    return resources.createAnnotationConfirmation(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      {
+        confirmedRevision: Number(body.confirmedRevision),
+        scope: parseAnnotationConfirmationScope(body.scope),
+        note: body.note as string | null | undefined,
+      },
+    );
+  });
+
+  // 撤销使用独立命令而非删除，历史事实与审计记录因此能够长期保留。
+  app.post<{
+    Params: { resourceId: string; confirmationId: string };
+    Body: { reason?: unknown };
+  }>(
+    "/api/annotation-files/:resourceId/confirmations/:confirmationId/revoke",
+    async (request) => {
+      const body = requireObject(request.body);
+      if (
+        body.reason !== undefined &&
+        body.reason !== null &&
+        typeof body.reason !== "string"
+      ) {
+        throw badRequest("撤销原因必须是字符串或 null。");
+      }
+      return resources.revokeAnnotationConfirmation(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        request.params.confirmationId,
+        body.reason as string | null | undefined,
+      );
+    },
   );
 
   app.get<{ Params: { resourceId: string } }>(
@@ -419,42 +839,60 @@ export function registerApiRoutes(
     return updated;
   });
 
-  app.post("/api/files/upload", async (request) => {
+  app.post<{
+    Querystring: { parentId?: string; name?: string };
+  }>("/api/media-files/upload", async (request) => {
+    if (!request.query.parentId || !request.query.name) {
+      throw badRequest("媒体上传需要目标目录和文件名。");
+    }
     const user = await getCurrentUser(repository, request);
+    // request.file 只解析 multipart 并交出流；服务会在真正消费流和落盘前完成权限预检。
     const file = await request.file();
     if (!file) throw badRequest("请选择需要上传的文件。");
-    const storageKey = storage.createStorageKey(file.filename);
-    const stored = await storage.putObject(
-      storageKey,
-      Readable.from(file.file),
+    return mediaUploads.upload(
+      user,
+      {
+        parentId: request.query.parentId,
+        name: request.query.name,
+        stream: file.file,
+        wasTruncated: () => file.file.truncated,
+      },
+      request.log,
     );
-    return {
-      file: await repository.createUploadedFile(user, {
-        name: file.filename,
-        mimeType: file.mimetype,
-        size: stored.size,
-        storageKey: stored.storageKey,
-        checksum: stored.checksum,
-      }),
-    };
   });
 
-  app.post<{
-    Body: { parentId?: unknown; fileId?: unknown; name?: unknown };
-  }>("/api/media-files", async (request) => {
-    const body = requireObject(request.body);
-    if (typeof body.parentId !== "string" || typeof body.fileId !== "string") {
-      throw badRequest("媒体文件需要 parentId 和 fileId。");
-    }
-    return resources.importMediaFile(
+  // 对象审计为管理员运维接口；GET 永不删除，cleanup 必须显式确认。
+  app.get("/api/admin/storage/orphans", async (request) =>
+    objectLifecycle.inspect(
       await getCurrentUser(repository, request),
-      {
-        parentId: body.parentId,
-        fileId: body.fileId,
-        name: typeof body.name === "string" ? body.name : undefined,
-      },
-    );
-  });
+    ));
+
+  app.post<{ Body: { confirm?: unknown } }>(
+    "/api/admin/storage/orphans/cleanup",
+    async (request) => {
+      if (request.body?.confirm !== true) {
+        throw badRequest("清理对象存储需要显式确认。");
+      }
+      try {
+        const result = await objectLifecycle.cleanup(
+          await getCurrentUser(repository, request),
+        );
+        observability.recordStorageCleanup(
+          "success",
+          result.deletedBinaryCount,
+          result.deletedFileObjectCount,
+        );
+        return result;
+      } catch (error) {
+        observability.recordStorageCleanup("failure");
+        throw error;
+      }
+    },
+  );
+
+  // 系统级容量和对象一致性只对全局管理员开放，资源级 ACL 不会放大为系统诊断权限。
+  app.get("/api/admin/diagnostics", async (request) =>
+    diagnostics.getDiagnostics(await getCurrentUser(repository, request)));
 
   app.get<{
     Params: { fileId: string };
@@ -469,17 +907,22 @@ export function registerApiRoutes(
     const range = parseRange(request.headers.range, file.size);
     reply.header("Accept-Ranges", "bytes");
     reply.header("Content-Type", file.mimeType);
-    if (range) {
+    if (range.kind === "invalid") {
+      reply.status(416);
+      reply.header("Content-Range", `bytes */${file.size}`);
+      return reply.send();
+    }
+    if (range.kind === "range") {
       reply.status(206);
       reply.header(
         "Content-Range",
         `bytes ${range.start}-${range.end}/${file.size}`,
       );
       reply.header("Content-Length", range.end - range.start + 1);
-      return reply.send(storage.getObjectStream(file.storageKey, range));
+      return reply.send(await storage.getObjectStream(file.storageKey, range));
     }
     reply.header("Content-Length", file.size);
-    return reply.send(storage.getObjectStream(file.storageKey));
+    return reply.send(await storage.getObjectStream(file.storageKey));
   });
 
   app.post<{
@@ -505,45 +948,119 @@ export function registerApiRoutes(
   });
 
   app.get<{
-    Querystring: { resourceId?: string; actorUserId?: string; limit?: string };
-  }>("/api/audit-logs", async (request) =>
-    repository.listAuditLogs(
+    Querystring: {
+      resourceId?: string;
+      actorUserId?: string;
+      targetUserId?: string;
+      action?: string;
+      createdFrom?: string;
+      createdTo?: string;
+      cursor?: string;
+      limit?: string;
+    };
+  }>("/api/audit-logs", async (request) => {
+    // action 使用共享枚举做运行时收窄，未知值不能穿过类型断言进入 Prisma。
+    const action = parseOptionalAuditAction(request.query.action);
+    return auditLogs.listAuditLogs(
       await getCurrentUser(repository, request),
       {
         resourceId: normalizedString(request.query.resourceId),
         actorUserId: normalizedString(request.query.actorUserId),
+        targetUserId: normalizedString(request.query.targetUserId),
+        action,
+        createdFrom: normalizedString(request.query.createdFrom),
+        createdTo: normalizedString(request.query.createdTo),
+        cursor: normalizedString(request.query.cursor),
         limit: parseOptionalInteger(request.query.limit, "limit", 1, 200),
       },
-    ));
+    );
+  });
 
-  app.get<{ Params: { resourceId: string } }>(
+  app.get<{
+    Querystring: {
+      resourceId?: string;
+      actorUserId?: string;
+      targetUserId?: string;
+      action?: string;
+      createdFrom?: string;
+      createdTo?: string;
+    };
+  }>("/api/audit-logs/export", async (request, reply) => {
+    // 导出不接收 cursor/limit，始终由服务端按当前筛选执行有界完整扫描。
+    const result = await auditLogs.exportAuditLogs(
+      await getCurrentUser(repository, request),
+      {
+        resourceId: normalizedString(request.query.resourceId),
+        actorUserId: normalizedString(request.query.actorUserId),
+        targetUserId: normalizedString(request.query.targetUserId),
+        action: parseOptionalAuditAction(request.query.action),
+        createdFrom: normalizedString(request.query.createdFrom),
+        createdTo: normalizedString(request.query.createdTo),
+      },
+    );
+    const timestamp = new Date().toISOString().replaceAll(/[-:]/g, "").slice(0, 15);
+    reply.header("Content-Type", "text/csv; charset=utf-8");
+    reply.header(
+      "Content-Disposition",
+      `attachment; filename="xiqu-audit-${timestamp}.csv"`,
+    );
+    reply.header("X-Audit-Export-Count", String(result.exportedCount));
+    reply.header("X-Audit-Export-Truncated", String(result.truncated));
+    return result.csv;
+  });
+
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { cursor?: unknown; limit?: unknown };
+  }>(
     "/api/annotation-files/:resourceId/operations",
     async (request) =>
       repository.listAnnotationOperations(
         await getCurrentUser(repository, request),
         request.params.resourceId,
+        { cursor: request.query.cursor, limit: request.query.limit },
+      ),
+  );
+
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { cursor?: unknown; limit?: unknown };
+  }>(
+    "/api/annotation-files/:resourceId/committed-operations",
+    async (request) =>
+      repository.listCommittedAnnotationOperations(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        { cursor: request.query.cursor, limit: request.query.limit },
       ),
   );
 
   app.post<{
     Params: { resourceId: string };
     Body: {
+      clientOperationId?: unknown;
       baseRevision?: unknown;
       localRevision?: unknown;
       action?: unknown;
       payload?: unknown;
+      mutationLeaseToken?: unknown;
     };
   }>("/api/annotation-files/:resourceId/operations", async (request) => {
     const body = requireObject(request.body);
+    // operation 入库前同时校验 revision 元数据和共享 action/envelope 合同，未知命令不得进入审计事实。
     if (
+      !isValidClientOperationId(body.clientOperationId) ||
       !Number.isInteger(body.baseRevision) ||
       Number(body.baseRevision) < 0 ||
+      Number(body.baseRevision) > 2_147_483_647 ||
       (body.localRevision !== undefined &&
         body.localRevision !== null &&
         (!Number.isInteger(body.localRevision) ||
-          Number(body.localRevision) < 0)) ||
+          Number(body.localRevision) < 0 ||
+          Number(body.localRevision) > 2_147_483_647)) ||
       typeof body.action !== "string" ||
-      !body.action.trim()
+      !body.action.trim() ||
+      !isValidAnnotationOperationPayload(body.action, body.payload ?? {})
     ) {
       throw badRequest("标注操作参数不正确。");
     }
@@ -551,6 +1068,7 @@ export function registerApiRoutes(
       await getCurrentUser(repository, request),
       request.params.resourceId,
       {
+        clientOperationId: body.clientOperationId,
         baseRevision: Number(body.baseRevision),
         localRevision: body.localRevision === null ||
           body.localRevision === undefined
@@ -558,21 +1076,37 @@ export function registerApiRoutes(
           : Number(body.localRevision),
         action: body.action,
         payload: body.payload ?? {},
+        mutationLeaseToken: parseOptionalMutationLeaseToken(body.mutationLeaseToken),
       },
     );
   });
-}
 
-async function getCurrentUser(
-  repository: PrismaPlatformRepository,
-  request: FastifyRequest,
-  queryToken: string | null = null,
-) {
-  const header = request.headers.authorization;
-  const token = header?.startsWith("Bearer ")
-    ? header.slice("Bearer ".length)
-    : queryToken;
-  return repository.getUserByToken(token);
+  app.post<{
+    Params: { resourceId: string };
+    Body: unknown;
+  }>("/api/annotation-files/:resourceId/command-batches", async (request) => {
+    // shared parser 同时约束批次数量、命令 envelope、action 对应关系和幂等 id；路由不复制领域规则。
+    const parsed = parseAnnotationCommandBatchRequest(request.body);
+    if (!parsed.success) {
+      throw badRequest("原子标注命令批次参数不正确。", {
+        code: "invalid_annotation_command_batch",
+        issues: parsed.issues.slice(0, 20),
+      });
+    }
+    if (
+      parsed.data.mutationLeaseToken !== undefined &&
+      !isValidAnnotationMutationLeaseToken(parsed.data.mutationLeaseToken)
+    ) {
+      throw badRequest("结构变更租约凭据格式不正确。", {
+        code: "invalid_annotation_mutation_lease_token",
+      });
+    }
+    return annotationCommandCommits.commitBatch(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      parsed.data,
+    );
+  });
 }
 
 function requireObject(value: unknown): Record<string, unknown> {
@@ -582,8 +1116,43 @@ function requireObject(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function requireString(value: unknown, label: string) {
+  if (typeof value !== "string") throw badRequest(`${label}必须是字符串。`);
+  return value;
+}
+
+function requireBoolean(value: unknown, label: string) {
+  if (typeof value !== "boolean") throw badRequest(`${label}必须是布尔值。`);
+  return value;
+}
+
+function parsePlatformRoles(value: unknown): PlatformRole[] {
+  const allowed = new Set<PlatformRole>([
+    "super_admin",
+    "admin",
+    "teacher",
+    "annotator",
+    "reviewer",
+    "service",
+  ]);
+  if (!Array.isArray(value) || value.some((role) => typeof role !== "string" || !allowed.has(role as PlatformRole))) {
+    throw badRequest("账号角色列表无效。");
+  }
+  return value as PlatformRole[];
+}
+
 function normalizedString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+// 可选审计动作只接受共享合同中的稳定值，空字符串等同于未筛选。
+function parseOptionalAuditAction(value: unknown): AuditActionName | undefined {
+  const normalized = normalizedString(value);
+  if (!normalized) return undefined;
+  if (!AUDIT_ACTION_NAMES.has(normalized as AuditActionName)) {
+    throw badRequest("审计动作筛选值无效。");
+  }
+  return normalized as AuditActionName;
 }
 
 function optionalStringOrNull(value: unknown): string | null | undefined {
@@ -591,6 +1160,12 @@ function optionalStringOrNull(value: unknown): string | null | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string") throw badRequest("字段必须是字符串或 null。");
   return value.trim() || null;
+}
+
+function parseOptionalMutationLeaseToken(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (!isValidAnnotationMutationLeaseToken(value)) throw badRequest("结构变更租约 token 无效。");
+  return value;
 }
 
 function optionalDateStringOrNull(
@@ -619,6 +1194,91 @@ function parseCapabilities(value: unknown): ResourceCapability[] {
   return [...new Set(value as ResourceCapability[])];
 }
 
+// 作用域解析只接受三种互斥目标形状；更细的去重、长度与时间规则交给共享领域校验器。
+function parseAnnotationConfirmationScope(
+  value: unknown,
+): AnnotationConfirmationScope {
+  const scope = requireObject(value);
+  if (
+    typeof scope.startTime !== "number" ||
+    typeof scope.endTime !== "number"
+  ) {
+    throw badRequest("审核时间范围必须使用数字秒数。");
+  }
+  const targets = requireObject(scope.targets);
+  if (targets.mode === "all") {
+    return {
+      startTime: scope.startTime,
+      endTime: scope.endTime,
+      targets: { mode: "all" },
+    };
+  }
+  if (
+    targets.mode === "domains" &&
+    Array.isArray(targets.domains) &&
+    targets.domains.every((domain) =>
+      typeof domain === "string" &&
+      CONFIRMATION_DOMAINS.has(domain as AnnotationConfirmationDomain))
+  ) {
+    return {
+      startTime: scope.startTime,
+      endTime: scope.endTime,
+      targets: {
+        mode: "domains",
+        domains: targets.domains as AnnotationConfirmationDomain[],
+      },
+    };
+  }
+  if (
+    targets.mode === "tracks" &&
+    Array.isArray(targets.trackIds) &&
+    targets.trackIds.every((trackId) => typeof trackId === "string")
+  ) {
+    return {
+      startTime: scope.startTime,
+      endTime: scope.endTime,
+      targets: { mode: "tracks", trackIds: targets.trackIds as string[] },
+    };
+  }
+  throw badRequest("审核目标必须是 all、有效领域列表或轨道标识列表。");
+}
+
+function parseUniqueStringArray(
+  value: unknown,
+  label: string,
+  minimum: number,
+  maximum: number,
+) {
+  if (
+    !Array.isArray(value) ||
+    value.some((item) => typeof item !== "string" || !item.trim())
+  ) {
+    throw badRequest(`${label} 必须是非空字符串数组。`);
+  }
+  const normalized = [...new Set(value.map((item) => item.trim()))];
+  if (normalized.length < minimum || normalized.length > maximum) {
+    throw badRequest(`${label} 必须包含 ${minimum}–${maximum} 个不同资源。`);
+  }
+  return normalized;
+}
+
+// 保存事务只接受当前账号的稳定 operation 幂等键；重复项不能被静默去重后形成含糊确认数量。
+function parseSaveClientOperationIds(value: unknown) {
+  // 早期内部调用没有 operation 时等价为空数组；正式 PlatformClient 始终显式发送该字段。
+  if (value === undefined) return [];
+  if (
+    !Array.isArray(value) ||
+    value.length > 500 ||
+    value.some((item) => !isValidClientOperationId(item))
+  ) {
+    throw badRequest("clientOperationIds 必须是最多 500 个有效操作编号组成的数组。");
+  }
+  if (new Set(value).size !== value.length) {
+    throw badRequest("clientOperationIds 不能包含重复操作编号。");
+  }
+  return value as string[];
+}
+
 function parseOptionalSetValue<T extends string>(
   value: unknown,
   set: Set<T>,
@@ -645,18 +1305,55 @@ function parseOptionalInteger(
   return parsed;
 }
 
-function parseRange(header: string | undefined, size: number) {
-  if (!header) return null;
+type ParsedRange =
+  | { kind: "none" }
+  | { kind: "invalid" }
+  | { kind: "range"; start: number; end: number };
+
+// 同时提供 ASCII fallback 与 RFC 5987 UTF-8 文件名，保证中文资源名在主流浏览器中正确显示。
+function buildAttachmentContentDisposition(fileName: string) {
+  const asciiFallback = fileName
+    .replace(/[\x00-\x1f\x7f"\\/]/g, "_")
+    .replace(/[^\x20-\x7e]/g, "_")
+    .trim() || "download";
+  const encoded = encodeURIComponent(fileName)
+    .replace(/[!'()*]/g, (character) =>
+      `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
+}
+
+function parseRange(header: string | undefined, size: number): ParsedRange {
+  if (!header) return { kind: "none" };
   const match = /^bytes=(\d*)-(\d*)$/.exec(header);
-  if (!match) return null;
-  const start = match[1] ? Number(match[1]) : 0;
-  const end = match[2] ? Number(match[2]) : size - 1;
+  if (!match || (!match[1] && !match[2]) || size <= 0) {
+    return { kind: "invalid" };
+  }
+
+  // `bytes=-N` 表示最后 N 个字节，不是从 0 到 N；单独处理可避免视频尾部 seek 错位。
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isInteger(suffixLength) || suffixLength <= 0) {
+      return { kind: "invalid" };
+    }
+    return {
+      kind: "range",
+      start: Math.max(size - suffixLength, 0),
+      end: size - 1,
+    };
+  }
+
+  const start = Number(match[1]);
+  const requestedEnd = match[2] ? Number(match[2]) : size - 1;
   if (
     !Number.isInteger(start) ||
-    !Number.isInteger(end) ||
+    !Number.isInteger(requestedEnd) ||
     start < 0 ||
-    end < start ||
+    requestedEnd < start ||
     start >= size
-  ) return null;
-  return { start, end: Math.min(end, size - 1) };
+  ) return { kind: "invalid" };
+  return {
+    kind: "range",
+    start,
+    end: Math.min(requestedEnd, size - 1),
+  };
 }

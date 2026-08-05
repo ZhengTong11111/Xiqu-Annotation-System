@@ -1,203 +1,241 @@
-# 平台权限模型
+# 平台资源权限模型
 
-本文档定义平台权限系统的一致语义，供 shared/document-model、API repository 和前端共享使用。模型采用 RBAC 角色能力 + ABAC 项目/文档/轨道/时间范围的方式。
+本文档定义当前 `ResourceEntry + ResourcePermission` 权限语义。服务端实现以
+`packages/shared/src/platformRolePolicy.ts` 和 `apps/api/src/resourceAccess.ts` 为准；前端
+不得维护第二套鉴权算法。
 
-## 1. 角色与全局能力
+最后更新：2026-08-05
 
-### 1.1 角色定义
+## 1. 权限边界
+
+权限对象是资源树节点：
+
+- `folder`
+- `project`
+- `annotation_file`
+- `media_file`
+
+每条 `ResourcePermission` 表示一个资源对一个账号的**直接授权**。项目和文件夹可把授权继承
+给后代；一个资源可以停止继承祖先授权。
+
+当前不包含：
+
+- Course / Assignment 成员角色。
+- Workspace / Fork / 发布版本权限。
+- 标注内容的轨道范围或时间范围授权。
+- 显式 deny。
+
+未来若增加轨道/时间范围限制，它必须是 `annotation_file` 内部的独立内容策略，不能改变本
+文档定义的资源可见性和文件操作能力。
+
+## 2. 平台角色
 
 ```ts
 type PlatformRole =
-  | "super_admin" | "admin"       // 全局管理与编辑，绕过普通 grant
-  | "teacher" | "ta"              // 仅通过 project owner / manage grant 拥有管理能力
-  | "annotator" | "reviewer"     // 仅通过 grant 获得能力
-  | "service";                    // 后端任务（无交互权限）
+  | "super_admin"
+  | "admin"
+  | "teacher"
+  | "annotator"
+  | "reviewer"
+  | "service";
 ```
 
-### 1.2 角色能力
+- `super_admin`：对所有资源拥有完整能力，并独占账号创建、角色/状态调整和他人密码重置。
+- `admin`：对所有资源、审计、诊断和运维拥有完整能力，但不能管理账号。
+- `teacher`：自动对所有资源取得 `read + download`，不会自动取得内容编辑、审核、创建或权限管理能力。
+- `annotator` / `reviewer` / `service`：不因角色名称自动获得资源能力，依赖 ownership 或有效 ACL。
 
-| 角色 | 全局绕过 grant | 默认行为 |
-|---|---|---|
-| super_admin / admin | 是 | 可 view/edit/manage 所有项目/文档，无需 grant |
-| teacher / ta | **否** | 与 annotator 同等；仅通过 project owner 或 manage grant 获得管理能力 |
-| annotator / reviewer / service | 否 | 仅通过 grant |
+一个账号可以同时拥有多个角色。后续 teacher/annotator 附属关系会在独立关系模型中设计；当前没有根据
+附属关系隐式发放 ACL，也不得用前端分组模拟服务端授权。
 
-开发 seed 会给助教账号显式的示例文档 `manage` grant；这只是示例数据，不是角色级全局放行。教师/助教访问其他项目时仍必须是项目 owner，或持有有效的 project/document grant。
-
-### 1.3 项目 owner 隐式能力
-
-项目 owner 对其拥有的项目及其下所有文档自动享有 `view/edit/manage` 能力，等价于 `source: "owner"`。后端在判断时不依赖 grant 行，直接按 `project.ownerUserId` 识别。
-
-## 2. 动作语义
-
-### 2.1 PermissionAction
+## 3. 资源能力
 
 ```ts
-type PermissionAction =
-  | "view"    // 查看文档内容、播放、缩放、Inspector 只读查看
-  | "edit"    // 编辑标注块（创建/修改/移动/删除），保存 snapshot
-  | "comment" // 预留
-  | "submit"  // 预留
-  | "review"  // 预留
-  | "merge"   // 预留
-  | "confirm" // 预留
-  | "manage"; // 管理 grant、创建/恢复版本、轨道结构修改、删除文档
+type ResourceCapability =
+  | "read"
+  | "write"
+  | "review"
+  | "create_child"
+  | "copy"
+  | "move"
+  | "delete"
+  | "download"
+  | "manage_permissions";
 ```
 
-**隐含关系**（由解析函数负责推导，不在 grant actions 里重复存储）：
-- `manage` 隐含 `edit` 和 `view`。
-- `edit` 隐含 `view`。
-- 不存在其他隐含关系。
-
-**版本恢复**：要求 `manage`。原因：恢复版本按整份旧 snapshot 写成新 revision，本质是覆盖当前文档，不应被 scoped edit 绕过范围校验。
-
-**创建/修改/撤销 grant**：要求 `manage`。
-
-## 3. Scope 语义
-
-### 3.1 字段缺省含义
-
-| 字段 | 缺省/空 | 含义 |
-|---|---|---|
-| projectId | 未指定或等于文档所属 project | 限定对应项目 |
-| documentId | 未指定或等于文档 | 限定对应文档 |
-| timeRange | 未指定或 `null` | 文档全部时间 |
-| trackScope.trackIds | 未指定或空数组 `[]` | 文档全部保存轨道 |
-| expiresAt | 未指定或 `null` | 没有过期时间 |
-
-### 3.2 范围校验规则
-
-- `startTime >= 0`，`endTime > startTime`，均为有限数。
-- `trackIds` 中每个元素是非空字符串，去重。
-- grant 的 `projectId` 必须与该 grant 指向的文档的 `projectId` 一致；不能把 A 项目的 projectId 和 B 项目的 documentId 组合保存在一条 grant 中。
-- 多条 grant 的访问范围取**并集**：同一项修改可以由相邻时间段 grant 共同覆盖；共有分叉块涉及的每个 lane 也可以分别由不同 grant 覆盖。
-- `expiresAt` 在每次鉴权时检查（已过期 grant 等同于不存在）。
-
-### 3.3 一次修改的范围
-
-一次修改的范围取决于修改了什么：
-
-| 操作 | 涉及时间范围 |
+| 能力 | 语义 |
 |---|---|
-| 新建块 | 新块 `[startTime, endTime]` |
-| 删除块 | 旧块 `[startTime, endTime]` |
-| 移动块 | 旧范围与新范围的并集 |
-| 缩放块边缘 | 旧范围与新范围的并集 |
-| 修改文字/类型/metadata | 该块当前范围 |
-| 修改工尺谱符号时间 | 该符号及所在工尺谱块的范围 |
-| 修改附属打点时间 | 旧、新点时间的并集 |
-| 修改板眼 mark 时间 | 旧、新点时间的并集 |
+| `read` | 查看资源元数据；对标注文件可打开 payload，对文件夹/项目可进入 |
+| `write` | 修改资源内容；对标注文件可 revision save |
+| `review` | 创建确定标注范围等审核治理事实；不等于内容编辑 |
+| `create_child` | 在容器中创建、上传、导入或粘贴子资源 |
+| `copy` | 复制资源；仍需对目标容器拥有 `create_child` |
+| `move` | 移动资源；仍需对目标容器拥有 `create_child` |
+| `delete` | 移入回收站或执行允许的删除操作 |
+| `download` | 下载媒体或导出受管文件内容 |
+| `manage_permissions` | 查看和修改该资源上的直接 ACL 与继承设置 |
 
-**保守规则**：一项修改涉及的完整时间范围必须被至少一条有效 grant 覆盖，不能按块中心点或首尾平均判断。
+能力没有 `manage -> write -> read` 之类的隐式层级。调用方必须检查操作实际需要的全部能力，
+避免把一个管理权限错误地解释成所有数据权限。
 
-## 4. 轨道 ID 模型
+## 4. 完整权限来源
 
-权限系统按「持久化逻辑轨道 ID」判断归属，不使用 `buildTimelineTrackDefinitions()` 生成的 UI 派生 lane。
+以下主体拥有资源的全部能力：
 
-| 数据 | 权限 ID |
-|---|---|
-| 内建逐字轨 | `character-track` |
-| 自定义文字/动作轨 | 自定义轨道 id |
-| 分叉子轨（recursive branch lane） | 父轨 id（`customTrack.id`）或稳定 branch lane id（`{{trackId}}#branch:{{laneId}}`） |
-| 工尺谱附属轨 | 跟随父文字轨 id 授权 |
-| 附属打点轨 | 跟随父轨 id 或自身稳定 id（`{{parentTrackId}}#point:{{pointTrackId}}`） |
-| 句级字幕 | 与逐字轨共用 `character-track` |
-| 板眼 | 独立 `banyan` 或需要 `manage` 的结构修改 |
-| 轨道结构变更 | 需要 `manage`，不按单个轨道 id 判断 |
+1. `super_admin` / `admin`。
+2. 资源自身的 `ownerUserId`。
+3. 该资源任一祖先 `folder` / `project` 的 owner。
 
-**多 lane 共享块**（`branchScope.mode === "lanes"` 且 `laneIds.length > 1`）：授权范围需覆盖**所有**归属 lane id，不能只命中一个就允许修改。
+ownership 不依赖 ACL 行，不能被删除 grant 或 `breakPermissionInheritance` 降权。
 
-## 5. 结构性修改
+祖先 owner 规则让项目 owner 可以管理项目内部文件，同时避免给每个后代生成重复 grant。
 
-以下操作默认要求 `manage`。`manage` 也受自己的轨道/时间 scope 约束；只有 owner、管理员或无轨道/时间限制的 manage grant 才能管理整份文档：
+`teacher` 的 `read + download` 是角色自动浏览基线，权限来源标记为 `role`。直接授权和继承授权可在此
+基础上增加能力；角色基线不会被空 grant 抵消，也不会提升为 owner/admin 全权。
 
-- 新建、删除、重命名、重排轨道
-- 修改轨道类型或 trackType
-- 修改递归分叉树结构（branchLane 增删改）
-- 修改 branchScope 归属（将块从某个 lane 移到另一个）
-- 修改项目视频 URL 或全局元数据
-- 大范围导入/替换项目（import merge）
-- `activeTrackOrder` 的修改（改变时间轴中轨道的可见顺序）
-- 修改 unknown payload 字段（旧文件不识别字段发生变化，保守拒绝）
+## 5. 直接授权与继承
 
-**实现提示**：在 mutation 提取阶段，对上述操作设 `requiresManage: true`，由权限校验统一拦截。
+### 5.1 直接授权
 
-## 6. 有效权限摘要
+直接授权属于一个确定的 `resourceEntryId + userId`，包括：
 
-`resolveEffectiveDocumentPermission` 的返回结构：
+- `capabilities[]`
+- `inheritToChildren`
+- `expiresAt`
+- 创建者和时间信息
 
-```ts
-type EffectiveDocumentPermission = {
-  canView: boolean;
-  canEdit: boolean;                    // 至少可以编辑部分范围
-  canManage: boolean;                  // 可以管理 grant / 恢复版本 / 修改结构
-  isUnrestrictedEditor: boolean;      // 整文档任何轨道、任意时间均可编辑
-  isUnrestrictedManager: boolean;     // 可管理整份文档
-  isUnrestrictedViewer: boolean;
-  source: "admin" | "owner" | "grant" | "none";
-  editScopes: MergedScope[];          // 合并后可编辑的范围
-  viewScopes: MergedScope[];          // 合并后可查看的范围
-  manageScopes: MergedScope[];        // 合并后可管理的范围
-};
-```
+同一资源同一账号应只有一条直接授权记录。更新采用 upsert 或显式删除，不应产生语义重叠的
+重复行。
 
-`MergedScope` 是对多条 grant 按时间范围和轨道范围合并后的紧凑表示，供前端展示"你可以编辑 XX 轨道的 XX 到 XX 秒"和"当前文档整文档只读"判断。
+### 5.2 继承
 
-前端的只读限制是体验层保护，真正的安全边界仍在服务端。服务器文档打开时若有效权限查询失败，编辑器必须拒绝进入而不是回退到可编辑状态；无 `edit` 权限时，项目状态层会拒绝 commit、临时拖动写入、吸附设置修改、undo 和 redo。
+从当前资源向根遍历祖先：
 
-### 6.1 当前局部 view 的协议边界
+- 当前资源直接授权始终参与计算。
+- 祖先授权只有 `inheritToChildren=true` 才能传给后代。
+- 直接和继承能力取并集。
+- 过期授权等同于不存在。
+- 遇到当前节点或向上路径中的 `breakPermissionInheritance=true` 后，不再继续读取更远祖先。
 
-当前标注文档仍以整份 snapshot 作为读取与保存单位。因此：
+`breakPermissionInheritance` 不删除任何 ACL 行，也不影响 owner/admin 权限。
 
-- track/time `view` scope 当前用于判断用户是否可以进入文档，并通过 `viewScopes` 告知前端授权范围。
-- API 暂不裁剪 snapshot payload。若只返回局部 payload，scoped editor 随后保存整份 snapshot 时会把未返回内容误判为删除。
-- 保存安全由 `editScopes` 的旧/新 snapshot mutation diff 保证；范围外修改会被拒绝。
-- 真正的局部内容隐藏必须与服务端 fragment 或 operation/delta 协议一起实现，并在合并时保留客户端未加载的内容。
+### 5.3 没有显式 deny
 
-在该协议落地前，不要把 `viewScopes` 描述为严格的数据脱敏能力，也不要在 API 层直接删除不可见轨道或时间段。
+当前模型不能用一条空 grant 抵消祖先能力。若某文件需要独立授权：
 
-## 7. 保存差异校验（mutation scope check）
+1. 对该文件启用 `breakPermissionInheritance`。
+2. 给需要访问的账号添加直接授权。
 
-### 7.1 流程
+未来若引入 deny，必须重新定义优先级、继承、批量操作和可解释性，不能通过空数组暗中模拟。
 
-```
-旧 snapshot payload → 新请求 payload → collectProjectMutations()
-  → authorizeProjectMutations(mutations, effectivePermission)
-  → 全部通过 → 创建 snapshot
-  → 任一越权 → 403 permission_scope_violation，不写 snapshot，不推进 revision
-```
+## 6. 操作授权矩阵
 
-### 7.2 ProjectMutation
+| 操作 | 源资源 | 目标/父资源 |
+|---|---|---|
+| 列表/详情/打开 | `read` | 容器列表还需按每个子项可见性过滤 |
+| 新建文件夹/项目 | 无 | 父容器 `create_child` |
+| 导入标注 JSON | 无 | 父容器 `create_child` |
+| 上传媒体 | 无 | 父容器 `create_child` |
+| 重命名 | `write` | 无 |
+| 复制 | `read + copy` | 目标容器 `create_child` |
+| 移动 | `move` | 目标容器 `create_child` |
+| 移入回收站 | `delete` | 无 |
+| 恢复 | 按 API 的恢复能力检查 | 原/新父容器必须合法且名称不冲突 |
+| 下载媒体 | `read + download` | 无 |
+| 保存标注文件 | `read + write` | 无，另需正确 `baseRevision` |
+| 查看直接 ACL | `manage_permissions` | 无 |
+| 修改 ACL/继承 | `manage_permissions` | 被授予能力不能超出授权者可委派范围 |
 
-```ts
-type ProjectMutation = {
-  kind: string;              // "character.create", "custom-block.move", "track.structure" 等
-  action: "create" | "update" | "delete" | "move" | "structure";
-  trackIds: string[];        // 涉及的持久化轨道 id
-  timeRange?: { startTime: number; endTime: number };
-  requiresManage: boolean;
-  entityId?: string;
-  summary?: string;          // 人类可读的简短摘要
-};
-```
+列表接口不能先返回全部资源再由前端隐藏。服务端必须过滤不可见资源、面包屑和统计数字，避免
+通过名称、数量或层级泄露信息。
 
-### 7.3 错误响应
+## 7. 复制、移动与删除语义
 
-越权时返回带有 `code: "permission_scope_violation"` 的 403，包含违规摘要（最多前若干条）和总数，但不返回完整旧/新 payload。
+### 7.1 标注文件复制
 
-## 8. 审计
+- 创建新的 `ResourceEntry + AnnotationFile`。
+- 复制当前 payload，revision 从 1 开始。
+- 复制者成为新文件 owner。
+- 不复制源文件的直接 ACL。
+- 新文件从目标目录重新继承权限。
+- 关联媒体建立引用，不重复复制二进制。
 
-新增 `AuditAction`：`permission_grant_create`、`permission_grant_update`、`permission_grant_revoke`、`permission_denied`。
+### 7.2 移动
 
-`permission_denied` 的 detail 只包含：documentId、被拒绝 mutation 的数量/类型/范围摘要、操作用户 id。**不**保存完整 snapshot 或完整 mutation payload。
+- 拒绝把资源移动到自身或任一后代。
+- 校验目标是可容纳子项的容器。
+- 校验目标 `create_child` 和源 `move`。
+- 保留源资源直接 ACL。
+- 移动后根据新祖先重新计算继承 ACL。
+- 名称冲突必须由服务端返回可解释错误。
 
-全局审计查询只允许 `super_admin/admin`。其他账号必须指定可管理的项目，或自己具有整文档 manage 权限的文档；受限 manager 不能读取整份文档审计，因为当前审计行没有足以逐条执行轨道/时间裁剪的信息。
+### 7.3 删除与恢复
 
-## 9. 平台资源可见性
+- 默认软删除，不立即物理删除数据库行或对象。
+- 已删除父节点的子树不能从普通列表穿透显示。
+- 恢复必须处理父节点仍在回收站、父节点不存在和名称冲突。
+- 永久删除、保留期限和对象清理策略尚未定稿，不得由前端私自实现。
 
-- 只有 `super_admin/admin` 可以全局列出文件、媒体、项目和审计日志。
-- teacher/TA 与普通账号一样，通过资源所有权或有效 project/document grant 获得可见性。
-- `FileObject.ownerUserId` 记录上传者；授权项目引用的主媒体文件也可被项目成员读取。
-- `MediaAsset.ownerUserId` 记录媒体创建者。旧媒体若没有 owner，仍可通过主文件所有权或可见项目访问。
-- 文档级 grant 只应暴露对应文档，项目摘要的 `documentCount` 也必须按当前用户可见文档计算。
-- 创建项目前必须校验当前用户有权使用所选媒体资产。
+## 8. 标注文件保存
+
+权限与并发是两道独立检查：
+
+1. 当前账号对 annotation file 有 `read + write`。
+2. 请求 `baseRevision` 等于数据库当前 revision。
+
+保存事务必须：
+
+1. 锁定并重新读取目标 annotation file。
+2. 在事务内复核 revision。
+3. 把旧 payload 写入 `AnnotationRecoverySnapshot`。
+4. 条件更新新 payload、revision、编辑者和保存时间。
+5. revision 竞争时只允许一个请求成功，其余返回 `409`。
+
+无权限返回 `403`；坏输入返回 `400`；不得把这些情况包装成 `500`。
+
+## 9. ACL 管理约束
+
+- 只有有效 `manage_permissions` 主体可查看和修改直接授权。
+- API 接收的账号、能力、日期和资源 id 必须做运行时校验。
+- 普通 manager 不能授予自己没有的能力；admin/owner 的完整权限不由 ACL 行表达。
+- 修改或删除 grant 后必须重新查询有效权限，不得只相信前端本地矩阵。
+- 权限查询失败时前端必须 fail closed，不能回退到可编辑。
+- 每次 grant upsert/delete 和继承开关变化应写 audit log，但 detail 不保存资源 payload。
+
+## 10. 前端展示规则
+
+Inspector 应区分：
+
+- 直接授权。
+- 继承来源。
+- owner/admin 完整权限。
+- 最终有效能力。
+- 是否已截断继承。
+- 授权是否过期。
+
+禁用控件必须说明原因，但不代替后端校验。打开标注编辑器时，服务端返回只读能力则
+`useProjectDocumentState({ readOnly: true })` 必须阻止 commit、临时写入、undo/redo 等修改路径。
+
+## 11. 测试最低矩阵
+
+- super_admin 独占账号治理，admin 调账号 API 为 403。
+- super_admin/admin 全局资源完整权限。
+- teacher 全局 `read + download`，但 write/review/create_child/manage_permissions 为 403。
+- 资源 owner 与祖先项目/文件夹 owner 完整权限。
+- 直接 grant。
+- 多层祖先继承与 `inheritToChildren=false`。
+- `breakPermissionInheritance`。
+- 多条能力并集与 expiresAt。
+- 无权限列表不可见、详情/媒体读取/保存为 403。
+- grant 管理越权拒绝。
+- move 后继承来源变化、直接 ACL 保留。
+- copy 后 owner 变化、直接 ACL 不复制。
+- stale save 409 且不产生错误快照。
+
+纯函数测试之外，以上关键路径需要 API + PostgreSQL 集成测试。
+
+## 12. 已撤销模型
+
+此前的 `PermissionGrant`、`view/edit/manage` action、ProjectMember、轨道/时间 scope、snapshot
+mutation diff 和 Assignment 来源 grant 已从当前运行时移除。它们只存在于 Git 和
+`docs/development-log.md` 的历史记录中，不是兼容目标。

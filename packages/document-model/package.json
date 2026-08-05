@@ -9,9 +9,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./project-data-schema": {
+      "types": "./dist/projectDataSchema.d.ts",
+      "import": "./dist/projectDataSchema.js"
     }
   },
   "dependencies": {
-    "@xiqu/shared": "0.1.0"
+    "@xiqu/shared": "0.1.0",
+    "zod": "^4.4.3"
   }
 }

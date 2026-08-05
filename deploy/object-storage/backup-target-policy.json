@@ -1,0 +1,34 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListOnlyTheBackupNamespace",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:ListBucketMultipartUploads"
+      ],
+      "Resource": "arn:aws:s3:::${XIQU_BACKUP_BUCKET}",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "${XIQU_BACKUP_PREFIX}",
+            "${XIQU_BACKUP_PREFIX}/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ReadWriteDeleteBackupObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Resource": "arn:aws:s3:::${XIQU_BACKUP_BUCKET}/${XIQU_BACKUP_PREFIX}/*"
+    }
+  ]
+}

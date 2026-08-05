@@ -1,35 +1,74 @@
 import type {
+  AnnotationConfirmationList,
+  AnnotationCollaborationTicket,
+  AnnotationConfirmationRecord,
+  AnnotationCommittedOperationPage,
   AnnotationFile,
+  AnnotationMutationLeaseGrant,
+  AnnotationMutationLeaseSummary,
+  AnnotationOperationPage,
   AnnotationOperationRecord,
-  AnnotationRecoverySnapshot,
-  AuditLogEntry,
+  CommitAnnotationCommandBatchRequest,
+  CommitAnnotationCommandBatchResponse,
+  AnnotationRecoverySnapshotDetail,
+  AnnotationRecoverySnapshotSummary,
+  AuditLogPage,
+  BatchMoveResourcesRequest,
+  BatchMoveResourcesResponse,
+  BatchTrashResourcesRequest,
+  BatchTrashResourcesResponse,
   CopyResourceRequest,
+  AcquireAnnotationMutationLeaseRequest,
+  CreateAnnotationConfirmationRequest,
   CreateAnnotationFileRequest,
   CreateAnnotationOperationRequest,
   CreateProcessingJobRequest,
   CreateResourceRequest,
-  ImportMediaFileRequest,
   ListAuditLogsOptions,
   ListResourcesOptions,
   LoginRequest,
   LoginResponse,
+  ManagedAccount,
+  ManagedAccountPage,
+  ListManagedAccountsOptions,
+  CreateManagedAccountRequest,
+  UpdateManagedAccountRequest,
+  ResetManagedAccountPasswordRequest,
+  ChangeOwnPasswordRequest,
   MoveResourceRequest,
   PlatformUser,
+  PlatformMaintenanceStatus,
   ProcessingJob,
   ResourceEntry,
   ResourceListPage,
   ResourcePermissionMatrixRow,
   ResourcePermissionRecord,
+  RevokeAnnotationConfirmationRequest,
+  RestoreAnnotationRecoverySnapshotRequest,
+  RenewAnnotationMutationLeaseRequest,
+  ReleaseAnnotationMutationLeaseRequest,
   SaveAnnotationFileRequest,
+  SetPlatformMaintenanceRequest,
+  StorageOrphanCleanupResult,
+  StorageOrphanReport,
+  SystemDiagnostics,
   UpdateResourceInheritanceRequest,
   UpdateResourceRequest,
+  UpdateAnnotationMediaRequest,
   UpsertResourcePermissionRequest,
-  UploadFileResponse,
 } from "@xiqu/shared";
 
 export type PlatformClientOptions = {
   baseUrl?: string;
   accessToken?: string | null;
+};
+
+// 审计下载保留服务端元数据，界面可以明确提示导出条数和上限截断。
+export type AuditLogExportResult = {
+  blob: Blob;
+  filename: string;
+  exportedCount: number;
+  truncated: boolean;
 };
 
 export class PlatformApiError extends Error {
@@ -81,6 +120,38 @@ export class PlatformClient {
     );
   }
 
+  listManagedAccounts(options: ListManagedAccountsOptions = {}) {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(options)) {
+      if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
+    }
+    return this.request<ManagedAccountPage>(
+      params.size ? `/admin/accounts?${params}` : "/admin/accounts",
+    );
+  }
+
+  createManagedAccount(request: CreateManagedAccountRequest) {
+    return this.request<ManagedAccount>("/admin/accounts", { method: "POST", body: request });
+  }
+
+  updateManagedAccount(userId: string, request: UpdateManagedAccountRequest) {
+    return this.request<ManagedAccount>(`/admin/accounts/${userId}`, {
+      method: "PATCH",
+      body: request,
+    });
+  }
+
+  resetManagedAccountPassword(userId: string, request: ResetManagedAccountPasswordRequest) {
+    return this.request<{ ok: true }>(`/admin/accounts/${userId}/reset-password`, {
+      method: "POST",
+      body: request,
+    });
+  }
+
+  changeOwnPassword(request: ChangeOwnPasswordRequest) {
+    return this.request<{ ok: true }>("/auth/change-password", { method: "POST", body: request });
+  }
+
   listResources(options: ListResourcesOptions = {}) {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(options)) {
@@ -95,6 +166,13 @@ export class PlatformClient {
 
   getResource(resourceId: string) {
     return this.request<ResourceEntry>(`/resources/${resourceId}`);
+  }
+
+  // 最近打开是可失败的辅助写入，不再混入标注文件 GET 的数据读取语义。
+  markResourceOpened(resourceId: string) {
+    return this.request<void>(`/resources/${resourceId}/opened`, {
+      method: "POST",
+    });
   }
 
   createResource(request: CreateResourceRequest) {
@@ -118,16 +196,24 @@ export class PlatformClient {
     });
   }
 
-  copyResource(resourceId: string, request: CopyResourceRequest) {
-    return this.request<ResourceEntry>(`/resources/${resourceId}/copy`, {
+  moveResources(request: BatchMoveResourcesRequest) {
+    return this.request<BatchMoveResourcesResponse>("/resources/move-batch", {
       method: "POST",
       body: request,
     });
   }
 
-  trashResource(resourceId: string) {
-    return this.request<ResourceEntry>(`/resources/${resourceId}/trash`, {
+  trashResources(request: BatchTrashResourcesRequest) {
+    return this.request<BatchTrashResourcesResponse>("/resources/trash-batch", {
       method: "POST",
+      body: request,
+    });
+  }
+
+  copyResource(resourceId: string, request: CopyResourceRequest) {
+    return this.request<ResourceEntry>(`/resources/${resourceId}/copy`, {
+      method: "POST",
+      body: request,
     });
   }
 
@@ -152,6 +238,13 @@ export class PlatformClient {
     );
   }
 
+  updateAnnotationMedia<TPayload>(resourceId: string, request: UpdateAnnotationMediaRequest) {
+    return this.request<AnnotationFile<TPayload>>(`/annotation-files/${resourceId}/media`, {
+      method: "PATCH",
+      body: request,
+    });
+  }
+
   saveAnnotationFile<TPayload>(
     resourceId: string,
     request: SaveAnnotationFileRequest<TPayload>,
@@ -162,9 +255,112 @@ export class PlatformClient {
     );
   }
 
-  listRecoverySnapshots<TPayload>(resourceId: string) {
-    return this.request<AnnotationRecoverySnapshot<TPayload>[]>(
+  // WebSocket 只使用短时一次性票据；URL 只保留资源路径，明文凭据由 hook 放入子协议头。
+  issueAnnotationCollaborationTicket(resourceId: string) {
+    return this.request<AnnotationCollaborationTicket>(
+      `/annotation-files/${resourceId}/collaboration-ticket`,
+      { method: "POST" },
+    );
+  }
+
+  createAnnotationCollaborationWebSocketUrl(
+    ticket: AnnotationCollaborationTicket,
+  ) {
+    const apiBase = new URL(this.baseUrl, window.location.href);
+    const endpoint = new URL(ticket.websocketPath, apiBase.origin);
+    endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
+    return endpoint.toString();
+  }
+
+  getAnnotationMutationLease(resourceId: string) {
+    return this.request<AnnotationMutationLeaseSummary | null>(
+      `/annotation-files/${resourceId}/mutation-lease`,
+    );
+  }
+
+  acquireAnnotationMutationLease(
+    resourceId: string,
+    request: AcquireAnnotationMutationLeaseRequest,
+  ) {
+    return this.request<AnnotationMutationLeaseGrant>(
+      `/annotation-files/${resourceId}/mutation-lease`,
+      { method: "POST", body: request },
+    );
+  }
+
+  renewAnnotationMutationLease(
+    resourceId: string,
+    request: RenewAnnotationMutationLeaseRequest,
+  ) {
+    return this.request<AnnotationMutationLeaseGrant>(
+      `/annotation-files/${resourceId}/mutation-lease`,
+      { method: "PATCH", body: request },
+    );
+  }
+
+  releaseAnnotationMutationLease(
+    resourceId: string,
+    request: ReleaseAnnotationMutationLeaseRequest,
+  ) {
+    return this.request<void>(
+      `/annotation-files/${resourceId}/mutation-lease`,
+      { method: "DELETE", body: request },
+    );
+  }
+
+  // 历史列表只读取轻量摘要，避免在展开 Inspector 时下载多份完整标注。
+  listRecoverySnapshots(resourceId: string) {
+    return this.request<AnnotationRecoverySnapshotSummary[]>(
       `/annotation-files/${resourceId}/recovery-snapshots`,
+    );
+  }
+
+  // 完整 payload 仅在用户主动打开某条只读预览时按需请求。
+  getRecoverySnapshot<TPayload>(resourceId: string, snapshotId: string) {
+    return this.request<AnnotationRecoverySnapshotDetail<TPayload>>(
+      `/annotation-files/${resourceId}/recovery-snapshots/${snapshotId}`,
+    );
+  }
+
+  // 恢复由专用 mutation 完成，客户端不能把历史 payload 取回后绕过服务端保护直接保存。
+  restoreAnnotationRecoverySnapshot<TPayload>(
+    resourceId: string,
+    snapshotId: string,
+    request: RestoreAnnotationRecoverySnapshotRequest,
+  ) {
+    return this.request<AnnotationFile<TPayload>>(
+      `/annotation-files/${resourceId}/recovery-snapshots/${snapshotId}/restore`,
+      { method: "POST", body: request },
+    );
+  }
+
+  // 确认列表只包含范围与治理元数据，不会把当前标注 payload 再下载一份。
+  listAnnotationConfirmations(resourceId: string) {
+    return this.request<AnnotationConfirmationList>(
+      `/annotation-files/${resourceId}/confirmations`,
+    );
+  }
+
+  // 创建确认绑定调用方正在审核的 revision，过期 revision 由服务端以 409 拒绝。
+  createAnnotationConfirmation(
+    resourceId: string,
+    request: CreateAnnotationConfirmationRequest,
+  ) {
+    return this.request<AnnotationConfirmationRecord>(
+      `/annotation-files/${resourceId}/confirmations`,
+      { method: "POST", body: request },
+    );
+  }
+
+  // 撤销保留原确认事实；客户端不暴露删除确认记录的接口。
+  revokeAnnotationConfirmation(
+    resourceId: string,
+    confirmationId: string,
+    request: RevokeAnnotationConfirmationRequest = {},
+  ) {
+    return this.request<AnnotationConfirmationRecord>(
+      `/annotation-files/${resourceId}/confirmations/${confirmationId}/revoke`,
+      { method: "POST", body: request },
     );
   }
 
@@ -202,14 +398,41 @@ export class PlatformClient {
     );
   }
 
-  async uploadFile(file: File) {
+  // 媒体二进制与资源节点通过一个服务端命令创建，避免浏览器中断后留下裸 FileObject。
+  async uploadMedia(parentId: string, file: File, name = file.name) {
     const body = new FormData();
     body.set("file", file);
-    return this.requestMultipart<UploadFileResponse>("/files/upload", body);
+    const query = new URLSearchParams({ parentId, name });
+    return this.requestMultipart<ResourceEntry>(
+      `/media-files/upload?${query.toString()}`,
+      body,
+    );
   }
 
-  importMediaFile(request: ImportMediaFileRequest) {
-    return this.request<ResourceEntry>("/media-files", {
+  // 对象生命周期接口只供后续管理员运维界面使用，当前客户端先提供类型安全调用边界。
+  inspectStorageOrphans() {
+    return this.request<StorageOrphanReport>("/admin/storage/orphans");
+  }
+
+  cleanupStorageOrphans() {
+    return this.request<StorageOrphanCleanupResult>(
+      "/admin/storage/orphans/cleanup",
+      { method: "POST", body: { confirm: true } },
+    );
+  }
+
+  // 系统诊断由服务端完成权限和告警聚合，浏览器不自行扫描资源或推导容量阈值。
+  getSystemDiagnostics() {
+    return this.request<SystemDiagnostics>("/admin/diagnostics");
+  }
+
+  // 维护切换使用专用管理员命令；该命令是维护期间唯一允许的 mutation 恢复通道。
+  getPlatformMaintenance() {
+    return this.request<PlatformMaintenanceStatus>("/admin/maintenance");
+  }
+
+  setPlatformMaintenance(request: SetPlatformMaintenanceRequest) {
+    return this.request<PlatformMaintenanceStatus>("/admin/maintenance", {
       method: "POST",
       body: request,
     });
@@ -222,6 +445,14 @@ export class PlatformClient {
     return `${this.baseUrl}/files/${encodeURIComponent(fileId)}/content${tokenQuery}`;
   }
 
+  // 资源下载交给浏览器原生流处理，避免大型视频先完整进入 JavaScript Blob 内存。
+  getResourceDownloadUrl(resourceId: string) {
+    const tokenQuery = this.accessToken
+      ? `?access_token=${encodeURIComponent(this.accessToken)}`
+      : "";
+    return `${this.baseUrl}/resources/${encodeURIComponent(resourceId)}/download${tokenQuery}`;
+  }
+
   createProcessingJob(request: CreateProcessingJobRequest) {
     return this.request<ProcessingJob>("/processing-jobs", {
       method: "POST",
@@ -229,19 +460,55 @@ export class PlatformClient {
     });
   }
 
+  // 审计列表只消费服务端 opaque cursor，客户端不推导页码或自行重排记录。
   listAuditLogs(options: ListAuditLogsOptions = {}) {
-    const params = new URLSearchParams();
-    if (options.resourceId) params.set("resourceId", options.resourceId);
-    if (options.actorUserId) params.set("actorUserId", options.actorUserId);
-    if (options.limit !== undefined) params.set("limit", String(options.limit));
-    return this.request<AuditLogEntry[]>(
+    const params = buildAuditLogQuery(options);
+    return this.request<AuditLogPage>(
       params.size ? `/audit-logs?${params}` : "/audit-logs",
     );
   }
 
-  listAnnotationOperations(annotationFileId: string) {
-    return this.request<AnnotationOperationRecord[]>(
-      `/annotation-files/${annotationFileId}/operations`,
+  // CSV 由服务端按同一筛选和授权生成；浏览器只接收文件，不拼接已加载的页面。
+  async exportAuditLogs(
+    options: Omit<ListAuditLogsOptions, "cursor" | "limit"> = {},
+  ): Promise<AuditLogExportResult> {
+    const params = buildAuditLogQuery(options);
+    const headers = new Headers();
+    if (this.accessToken) {
+      headers.set("authorization", `Bearer ${this.accessToken}`);
+    }
+    const response = await fetch(
+      `${this.baseUrl}/audit-logs/export${params.size ? `?${params}` : ""}`,
+      { headers },
+    );
+    if (!response.ok) await unwrapResponse<never>(response);
+    return {
+      blob: await response.blob(),
+      filename: parseDownloadFilename(response.headers.get("content-disposition")),
+      exportedCount: Number(response.headers.get("x-audit-export-count") ?? 0),
+      truncated: response.headers.get("x-audit-export-truncated") === "true",
+    };
+  }
+
+  listAnnotationOperations(annotationFileId: string, options: { cursor?: string; limit?: number } = {}) {
+    const query = new URLSearchParams();
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    return this.request<AnnotationOperationPage>(
+      `/annotation-files/${annotationFileId}/operations${query.size > 0 ? `?${query}` : ""}`,
+    );
+  }
+
+  // 已提交 feed 与全部接收日志使用独立路由和 cursor，防止两种排序边界被混用。
+  listCommittedAnnotationOperations(
+    annotationFileId: string,
+    options: { cursor?: string; limit?: number } = {},
+  ) {
+    const query = new URLSearchParams();
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    return this.request<AnnotationCommittedOperationPage>(
+      `/annotation-files/${annotationFileId}/committed-operations${query.size > 0 ? `?${query}` : ""}`,
     );
   }
 
@@ -251,6 +518,17 @@ export class PlatformClient {
   ) {
     return this.request<AnnotationOperationRecord>(
       `/annotation-files/${annotationFileId}/operations`,
+      { method: "POST", body: request },
+    );
+  }
+
+  // 编辑器优先通过该入口原子提交可重放命令；完整快照仅保留给显式 legacy/migration 边界。
+  commitAnnotationCommandBatch(
+    annotationFileId: string,
+    request: CommitAnnotationCommandBatchRequest,
+  ) {
+    return this.request<CommitAnnotationCommandBatchResponse>(
+      `/annotation-files/${annotationFileId}/command-batches`,
       { method: "POST", body: request },
     );
   }
@@ -288,6 +566,23 @@ export class PlatformClient {
     });
     return unwrapResponse<TData>(response);
   }
+}
+
+// 列表与导出共用 query 序列化，undefined/null/空字符串不会形成伪筛选。
+function buildAuditLogQuery(options: ListAuditLogsOptions): URLSearchParams {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
+  }
+  return params;
+}
+
+// 服务端文件名只接受安全 basename；跨域未暴露响应头时使用稳定默认名。
+function parseDownloadFilename(contentDisposition: string | null): string {
+  const match = contentDisposition?.match(/filename="([^"\\/]+)"/i);
+  return match?.[1] ?? "xiqu-audit.csv";
 }
 
 async function unwrapResponse<TData>(response: Response) {

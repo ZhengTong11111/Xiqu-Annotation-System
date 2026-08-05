@@ -1,0 +1,28 @@
+[Unit]
+Description=Xiqu Annotation Platform API
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xiqu
+Group=xiqu
+WorkingDirectory=/opt/xiqu/current
+EnvironmentFile=/etc/xiqu-platform/xiqu-platform.env
+ExecStartPre=/usr/bin/test -r /opt/xiqu/current/dist/api/server.js
+ExecStart=/usr/bin/node /opt/xiqu/current/dist/api/server.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+# API 只写独立持久目录；release、系统目录和用户家目录保持只读或不可见。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/xiqu-platform
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

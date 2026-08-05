@@ -1,0 +1,26 @@
+# 抓取凭据通过挂载文件注入，仓库配置不得包含真实 metrics token。
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+rule_files:
+  - /etc/prometheus/xiqu-alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # 生产部署按实际容器网络修改 target，并保留稳定 job/service/environment 标签。
+  - job_name: xiqu-api
+    metrics_path: /metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/xiqu_metrics_token
+    static_configs:
+      - targets: ["host.docker.internal:4317"]
+        labels:
+          service: xiqu-platform-api
+          environment: production

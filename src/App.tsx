@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  MAX_ATOMIC_ANNOTATION_COMMAND_OPERATIONS,
+  buildProjectSnapshotBoundaryEnvelope,
+  getAnnotationMutationLeasePurposeForCommand,
+  type AnnotationCommandEnvelope,
+  type AnnotationMutationPurpose,
+  type ProjectSnapshotBoundaryKind,
+} from "@xiqu/shared";
 import "./index.css";
+import { PlatformApiError } from "./api/platformClient";
 import { AppShell } from "./components/AppShell";
 import { FloatingPanelWindow } from "./components/FloatingPanelWindow";
 import { InspectorPanel } from "./components/InspectorPanel";
@@ -13,15 +22,42 @@ import { TimelinePanel } from "./components/TimelinePanel";
 import { TopMenuBar, type TopMenuPlatformNavigation } from "./components/TopMenuBar";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { mockProject } from "./mockData";
+import { AnnotationConfirmationPanel } from "./platform/AnnotationConfirmationPanel";
+import {
+  buildAnnotationConfirmationViewRecords,
+  canShowAnnotationConfirmationRevoke,
+  getAnnotationConfirmationCreateBlocker,
+  getAnnotationConfirmationTrackOptions,
+  layoutAnnotationConfirmationTimelineItems,
+} from "./platform/annotationConfirmationView";
 import {
   type LocalEditorSession,
   PlatformWorkspace,
-  prepareProjectForServer,
   type PlatformEditorSession,
 } from "./platform/PlatformWorkspace";
 import {
+  hydrateProjectForClient,
+  prepareProjectForServer,
+} from "./platform/platformProjectPayload";
+import { catchUpCommittedAnnotationOperations } from "./platform/platformOperationCatchUp";
+import { usePlatformOperationCatchUp } from "./platform/usePlatformOperationCatchUp";
+import { usePlatformCollaborationSession } from "./platform/usePlatformCollaborationSession";
+import { buildTimelineSelectionSummary } from "./platform/timelineSelectionSummary";
+import { useAnnotationConfirmations } from "./platform/useAnnotationConfirmations";
+import { usePlatformAutoSave } from "./platform/usePlatformAutoSave";
+import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
+import { usePlatformMutationLease } from "./platform/usePlatformMutationLease";
+import { planAtomicAnnotationCommandBatch } from "./platform/platformAtomicCommandPlan";
+import { usePlatformAtomicCommandSubmit } from "./platform/usePlatformAtomicCommandSubmit";
+import { planPlatformConflictRebase } from "./platform/platformConflictRebase";
+import { shouldBlockEditingForRemoteCatchUp } from "./platform/platformRemoteEditGate";
+import {
+  isMutationLeaseSubmitFailure,
+  requiresLegacySnapshotMigration,
+} from "./platform/platformAtomicSubmitPolicy";
+import type { PlatformMutationLeaseViewState } from "./platform/platformMutationLeaseRuntime";
+import {
   type HistoryAction,
-  type HistoryEntry,
   useProjectDocumentState,
 } from "./state/projectDocumentState";
 import type {
@@ -66,12 +102,38 @@ import {
   getBranchLaneTrackParts,
   getProjectDuration,
   getNextCustomTrackTypeOptionName,
+  normalizeTrackSnapEnabledForProject,
 } from "./utils/project";
 import {
   describeServerSaveError,
-  submitPendingOperations,
+  submitLegacyPendingOperations,
+  type PlatformSaveOutcome,
 } from "./utils/platformOperations";
+import { buildProjectAnnotationContentCommand } from "./utils/annotationContentCommand";
+import { buildProjectCustomTrackStructureCommand } from "./utils/customTrackStructureCommand";
+import {
+  buildProjectTrackStructureTransactionCommand,
+} from "./utils/trackStructureTransactionCommand";
+import { areProjectValuesEqual } from "./utils/projectValueEquality";
+import { areEditorProjectsEqual } from "./utils/editorProjectEquality";
+import {
+  buildProjectAnnotationLifecycleCommand,
+  type AnnotationLifecycleTarget,
+} from "./utils/annotationLifecycleCommand";
+import {
+  buildProjectAnnotationStateCommand,
+  type AnnotationStateTarget,
+} from "./utils/annotationStateCommand";
+import {
+  buildProjectAnnotationTransactionCommand,
+  type AnnotationTransactionPlan,
+} from "./utils/annotationTransactionCommand";
 import { findAdjacentNavigableBlock } from "./utils/timelineNavigation";
+import {
+  buildProjectTimelineTimingCommand,
+  getGongcheTimingTargetsForParents,
+  type TimelineTimingTarget,
+} from "./utils/timelineTimingCommand";
 import {
   addBranchLane,
   createBranchLane,
@@ -104,6 +166,7 @@ import {
   formatSentenceCharacterAlignmentSummary,
 } from "./utils/sentenceCharacterAlignment";
 import { generateBanyanMarksFromGongche, getBanyanSubtypeLabel } from "./utils/banyan";
+import { repairBanyanGongcheReferences } from "./utils/banyanReferenceIntegrity";
 import {
   PROJECT_FILE_VERSION,
   getManualVideoImportMessageLines,
@@ -391,7 +454,6 @@ const CONTEXT_MENU_VIEWPORT_MARGIN = 12;
 const IMPORT_MERGE_SKIP = "__skip__";
 const IMPORT_MERGE_NEW = "__new__";
 const POINT_PASTE_CONFLICT_EPSILON = 0.015;
-const comparableProjectSignatureCache = new WeakMap<ProjectData, string>();
 const trackSnapSignatureCache = new WeakMap<Record<string, boolean>, string>();
 const WAVEFORM_KEYPOINT_MIN_SPACING_SECONDS = 0.06;
 const WAVEFORM_KEYPOINT_MAX_COUNT = 1600;
@@ -405,8 +467,13 @@ type EditorWorkbenchProps = {
 
 function EditorWorkbench({ editorSession, localEditorSession, platformNavigation }: EditorWorkbenchProps) {
   const initialProject = editorSession?.initialProject ?? localEditorSession?.initialProject ?? mockProject;
+  const initialProjectDuration = getProjectDuration(initialProject);
+  const initialPlatformFocus = editorSession?.initialFocus;
   const isReadOnly = Boolean(
     editorSession && !editorSession.canWrite,
+  );
+  const [pendingAnnotationMergeDraft, setPendingAnnotationMergeDraft] = useState(
+    editorSession?.pendingMergeDraft ?? null,
   );
   const {
     project,
@@ -417,31 +484,178 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     redoStack,
     hasUnsavedChanges,
     pendingOperations,
-    pendingOperationsRef,
     syncState,
+    transientProjectRef,
     applyProjectWithoutHistory,
     commitProject,
     applyTrackSnapEnabledState,
     markOperationsAsSubmitted,
     markProjectAsSaved,
+    acknowledgeAtomicCommandBatch,
+    replaceCleanProjectFromRemote,
+    rebasePendingProjectFromRemote,
     undoProject,
     redoProject,
     setSyncStatus,
+    getRecoveryState,
   } = useProjectDocumentState({
     initialProject,
     initialTrackSnapEnabled: getDefaultTrackSnapEnabled(initialProject),
     areProjectsEqual: projectsEqual,
     areTrackSnapStatesEqual: trackSnapStatesEqual,
     readOnly: isReadOnly,
+    initialRecoveryState: editorSession?.initialRecoveryState,
   });
   const [remoteBaseRevision, setRemoteBaseRevision] = useState(editorSession?.baseRevision ?? 0);
-  const [currentTime, setCurrentTime] = useState(12.4);
+  const [remoteOperationCursor, setRemoteOperationCursor] = useState(
+    editorSession?.operationCursor ?? "",
+  );
+  // observed 表示协作通道已经告知的最高服务器版本；remoteBaseRevision 只表示已进入本地 ProjectData 的版本。
+  const [observedRemoteRevision, setObservedRemoteRevision] = useState(
+    editorSession?.baseRevision ?? 0,
+  );
+  const remoteBaseRevisionRef = useRef(remoteBaseRevision);
+  const remoteOperationCursorRef = useRef(remoteOperationCursor);
+  remoteBaseRevisionRef.current = remoteBaseRevision;
+  remoteOperationCursorRef.current = remoteOperationCursor;
+  const [saveConflictReviewBusy, setSaveConflictReviewBusy] = useState(false);
+  const [saveConflictReviewError, setSaveConflictReviewError] = useState<string | null>(null);
+  const [browserOnline, setBrowserOnline] = useState(
+    () => typeof navigator === "undefined" || navigator.onLine !== false,
+  );
+  // 连接传输需要独立响应 online/offline；不能依赖文档 dirty 状态是否恰好触发一次重渲染。
+  useEffect(() => {
+    const update = () => setBrowserOnline(navigator.onLine !== false);
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, []);
+  // 冲突解除后清理旧交接错误，下一次独立冲突不能显示上一次请求的诊断。
+  useEffect(() => {
+    if (syncState.status !== "conflict") {
+      setSaveConflictReviewBusy(false);
+      setSaveConflictReviewError(null);
+    }
+  }, [syncState.status]);
+  // operation 同步状态变化也要触发草稿重写，保证刷新后不会重复提交已进入服务器日志的条目。
+  const pendingOperationSignature = useMemo(
+    () => pendingOperations.map((operation) => `${operation.id}:${operation.syncState}`).join("|"),
+    [pendingOperations],
+  );
+  // 浏览器草稿仅服务平台可写会话；本地 JSON 和只读文件继续走各自原有保存边界。
+  const { flushNow: flushPlatformDraftNow } = usePlatformDraftPersistence({
+    enabled: Boolean(editorSession?.canWrite),
+    // 待确认整合还没有进入文档历史；草稿来源若是浏览器恢复数据，此时必须保持原 envelope 不动。
+    suspended: pendingAnnotationMergeDraft !== null,
+    userId: editorSession?.currentUserId ?? null,
+    annotationFileId: editorSession?.annotationFileId ?? null,
+    remoteBaseRevision,
+    hasUnsavedChanges,
+    localRevision: syncState.localRevision,
+    pendingOperationSignature,
+    getRecoveryState,
+    onPersistenceError: (message) => {
+      // 冲突交接 flush 失败时保留 conflict 主状态，用户仍需看到并可重试处理入口。
+      setSyncStatus(syncState.status === "conflict" ? "conflict" : "error", {
+        errorMessage: `本地恢复草稿写入失败：${message}`,
+      });
+    },
+  });
+  // 结构编辑 token 只存在于文件会话级 runtime；丢锁时保留本地草稿并阻断自动盲重试。
+  const mutationLease = usePlatformMutationLease({
+    client: editorSession?.client ?? null,
+    annotationFileId: editorSession?.annotationFileId ?? null,
+    baseRevision: remoteBaseRevision,
+    enabled: Boolean(editorSession?.canWrite),
+    onLeaseLost: (error) => {
+      const message = error instanceof Error ? error.message : "结构编辑租约已失效。";
+      setSyncStatus("error", { errorMessage: `结构编辑锁失效：${message}；本地草稿仍已保留。` });
+      window.alert(`结构编辑锁已经失效：${message}\n本地草稿仍已保留，保存时会重新尝试取得编辑锁。`);
+    },
+  });
+  const mutationLeaseLabel = editorSession
+    ? getMutationLeaseStatusLabel(mutationLease.state, Boolean(mutationLease.getToken()))
+    : undefined;
+  // 平台确认事实独立于项目文档历史；本地会话传入 null，因此不会请求或展示服务端治理状态。
+  const annotationConfirmations = useAnnotationConfirmations({
+    client: editorSession?.client ?? null,
+    annotationFileId: editorSession?.annotationFileId ?? null,
+  });
+  const atomicCommandSubmit = usePlatformAtomicCommandSubmit({
+    client: editorSession?.client ?? null,
+    annotationFileId: editorSession?.annotationFileId ?? null,
+    sessionKey: editorSession
+      ? `${editorSession.currentUserId}:${editorSession.annotationFileId}`
+      : "local",
+    online: browserOnline,
+    applyCommitted: (plan, response) => {
+      const acknowledgement = acknowledgeAtomicCommandBatch({
+        operationIds: plan.operationIds,
+        expectedServerBaseProject: plan.serverBaseProject,
+        acknowledgedProject: plan.acknowledgedProject,
+        acknowledgedTrackSnapEnabled: plan.acknowledgedTrackSnapEnabled,
+        serverBaseRevision: plan.request.baseRevision,
+        committedRevision: response.committedRevision,
+        expectedSavedLocalRevision: plan.expectedSavedLocalRevision,
+        acknowledgedLocalRevision: plan.acknowledgedLocalRevision,
+      });
+      if (acknowledgement.status === "rejected") return acknowledgement;
+
+      // document state 与平台会话必须同步推进；ref 先更新，避免同一 tick 的下一批仍读取旧 revision。
+      remoteBaseRevisionRef.current = response.committedRevision;
+      remoteOperationCursorRef.current = response.operationCursor;
+      setRemoteBaseRevision(response.committedRevision);
+      setObservedRemoteRevision((current) => Math.max(current, response.committedRevision));
+      setRemoteOperationCursor(response.operationCursor);
+      editorSession?.onRemoteRevisionAdvanced(response.committedRevision, response.operationCursor);
+      if (plan.request.mutationLeaseToken) mutationLease.markCommitted();
+      mutationLease.advanceBaseRevision(response.committedRevision);
+      void annotationConfirmations.refresh();
+      return { status: "applied" };
+    },
+    onRetryableFailure: (failure) => {
+      // runtime 仍在使用同一批 operation IDs 退避，文档保持 saving 而不是启动第二个自动保存事务。
+      setSyncStatus("saving", { errorMessage: failure.message });
+    },
+  });
+  // 自动保存只调度可写平台会话；待确认整合暂停，避免运行时草稿未经二次确认进入服务器。
+  usePlatformAutoSave({
+    enabled: Boolean(editorSession?.canWrite),
+    dirty: hasUnsavedChanges,
+    suspended: pendingAnnotationMergeDraft !== null,
+    localRevision: syncState.localRevision,
+    syncStatus: syncState.status,
+    online: browserOnline,
+    save: () => saveProjectToServer({ source: "auto" }),
+    // 保存命令原则上返回结构化 outcome；合同外异常必须显式阻断并保留 dirty 状态供人工处理。
+    onUnexpectedError: (error) => {
+      const message = error instanceof Error ? error.message : "未知自动保存错误";
+      console.error("自动保存运行时异常", error);
+      setSyncStatus("error", { errorMessage: `自动保存异常：${message}` });
+    },
+  });
+  const [confirmationTimelineVisible, setConfirmationTimelineVisible] = useState(true);
+  const [confirmationFocusRange, setConfirmationFocusRange] = useState<{
+    requestId: number;
+    start: number;
+    end: number;
+  } | null>(null);
+  // 比较入口传入的时间是一次性会话起点；普通打开继续保持原有演示时间，不污染项目数据。
+  const [currentTime, setCurrentTime] = useState(() => initialPlatformFocus
+    ? clampTime(initialPlatformFocus.time, initialProjectDuration)
+    : 12.4);
   const [duration, setDuration] = useState(getProjectDuration(initialProject));
   const [selectedItem, setSelectedItem] = useState<SelectedItem>({
     type: "line",
     id: "line-1",
   });
   const [selectedTimelineItems, setSelectedTimelineItems] = useState<TimelineSelectionItem[]>([]);
+  // 显示与共享分离：用户可以只隐藏本机提示，也可以停止发布隐私更高的鼠标/选区摘要。
+  const [showRemoteCollaborationHints, setShowRemoteCollaborationHints] = useState(true);
+  const [sharePointerAndSelection, setSharePointerAndSelection] = useState(true);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [previewTime, setPreviewTime] = useState<number | null>(null);
@@ -464,6 +678,35 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   } | null>(null);
   const [editingCustomTextValue, setEditingCustomTextValue] = useState("");
   const [blockContextMenu, setBlockContextMenu] = useState<TimelineContextMenu | null>(null);
+  const remoteCatchUpBlocksEditing = shouldBlockEditingForRemoteCatchUp({
+    observedRemoteRevision,
+    appliedRemoteRevision: remoteBaseRevision,
+    hasUnsavedChanges,
+    pendingOperationCount: pendingOperations.length,
+    hasTransientEdit: transientProjectRef.current !== null,
+    hasInlineEdit: editingCharacterId !== null || editingCustomTextBlock !== null,
+    hasPendingMergeDraft: pendingAnnotationMergeDraft !== null,
+    syncStatus: syncState.status,
+  });
+  const remoteCatchUpBlockReason = remoteCatchUpBlocksEditing
+    ? `正在接收其他账号的修改（服务器 v${observedRemoteRevision}）`
+    : undefined;
+
+  // 门禁只阻止尚未开始的新写操作；关闭旧右键菜单并拦截写快捷键，播放、缩放和复制仍可使用。
+  useEffect(() => {
+    if (!remoteCatchUpBlocksEditing) return;
+    setBlockContextMenu(null);
+    const blockMutationShortcut = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      const isMutationShortcut = event.key === "Delete" || event.key === "Backspace" ||
+        ((event.metaKey || event.ctrlKey) && ["x", "v", "z", "y"].includes(key));
+      if (!isMutationShortcut) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", blockMutationShortcut, true);
+    return () => window.removeEventListener("keydown", blockMutationShortcut, true);
+  }, [remoteCatchUpBlocksEditing]);
   const [inspectorFocusRequest, setInspectorFocusRequest] = useState<InspectorFocusRequest | null>(null);
   const [timelineClipboard, setTimelineClipboard] = useState<TimelineClipboard | null>(null);
   const [pendingPasteState, setPendingPasteState] = useState<PendingPasteState | null>(null);
@@ -472,6 +715,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [loopPlaybackRange, setLoopPlaybackRange] = useState<{ start: number; end: number } | null>(null);
   const [loopPlaybackEnabled, setLoopPlaybackEnabled] = useState(false);
   const [lineFocusRequest, setLineFocusRequest] = useState<LineFocusRequest | null>(null);
+  // 平台初始焦点只供 Timeline 首次挂载消费，清理后用户滚动不会被再次拉回。
+  const [initialPlatformFocusRange, setInitialPlatformFocusRange] = useState(() =>
+    initialPlatformFocus
+      ? {
+          requestId: 1,
+          start: clampTime(initialPlatformFocus.start - 1.5, initialProjectDuration),
+          end: clampTime(initialPlatformFocus.end + 1.5, initialProjectDuration),
+        }
+      : null);
   const [isSubtitlePanelCollapsed, setIsSubtitlePanelCollapsed] = useState(false);
   const [isSplitPanelCollapsed, setIsSplitPanelCollapsed] = useState(false);
   const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
@@ -491,6 +743,149 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const waveformRequestIdRef = useRef(0);
   const spectrogramRequestIdRef = useRef(0);
   const serverSaveInFlightRef = useRef(false);
+  // acquire 需要等待网络；这一门禁串行化结构、批量导入和批量修复，避免连续点击重复提交。
+  const exclusiveMutationInFlightRef = useRef(false);
+  // clean 平台会话低频追赶已提交 revision；行内编辑、保存、拖拽和整合期间必须暂停。
+  const requestPlatformCatchUp = usePlatformOperationCatchUp({
+    enabled: Boolean(editorSession),
+    blocked:
+      hasUnsavedChanges ||
+      pendingOperations.length > 0 ||
+      transientProjectRef.current !== null ||
+      pendingAnnotationMergeDraft !== null ||
+      editingCharacterId !== null ||
+      editingCustomTextBlock !== null ||
+      syncState.status !== "saved" ||
+      serverSaveInFlightRef.current,
+    online: browserOnline,
+    sessionKey: editorSession?.annotationFileId ?? "local",
+    knownRevision: remoteBaseRevision,
+    cursor: remoteOperationCursor,
+    check: async (facts) => {
+      if (!editorSession) {
+        return {
+          status: "up_to_date",
+          revision: facts.knownRevision,
+          cursor: facts.cursor,
+        };
+      }
+      return catchUpCommittedAnnotationOperations({
+        annotationFileId: editorSession.annotationFileId,
+        project: projectRef.current,
+        knownRevision: facts.knownRevision,
+        cursor: facts.cursor,
+        listPage: (annotationFileId, options) =>
+          editorSession.client.listCommittedAnnotationOperations(annotationFileId, options),
+      });
+    },
+    apply: async (result, requestFacts) => {
+      if (!editorSession || result.status === "up_to_date") return;
+
+      if (result.status === "applied") {
+        // 命令结果仍需通过 document clean 门禁；请求期间发生编辑时直接丢弃，不尝试自动 rebase。
+        if (!replaceCleanProjectFromRemote(result.project, result.revision)) return;
+        setObservedRemoteRevision((current) => Math.max(current, result.revision));
+        setRemoteBaseRevision(result.revision);
+        setRemoteOperationCursor(result.cursor);
+        editorSession.onRemoteRevisionAdvanced(result.revision, result.cursor);
+        void annotationConfirmations.refresh();
+        return;
+      }
+
+      // 证据不足时重取权威 payload；await 前后的会话、revision、cursor 与 clean 状态必须仍完全一致。
+      const latestFile = await editorSession.client.getAnnotationFile<ProjectData>(
+        editorSession.annotationFileId,
+      );
+      if (
+        remoteBaseRevisionRef.current !== requestFacts.knownRevision ||
+        remoteOperationCursorRef.current !== requestFacts.cursor ||
+        latestFile.revision < requestFacts.knownRevision
+      ) return;
+      const latestProject = hydrateProjectForClient(latestFile.payload, editorSession.client, latestFile.media);
+      if (!replaceCleanProjectFromRemote(latestProject, latestFile.revision)) return;
+      setObservedRemoteRevision((current) => Math.max(current, latestFile.revision));
+      setRemoteBaseRevision(latestFile.revision);
+      setRemoteOperationCursor(latestFile.operationCursor);
+      editorSession.onAnnotationFileSaved(latestFile);
+      void annotationConfirmations.refresh();
+    },
+    // 网络失败只保留当前 snapshot/cursor 等待下轮；不能把 clean 文档伪装成保存错误或冲突。
+    onError: (error) => {
+      console.warn("平台远端操作追赶失败，将在稍后重试。", error);
+    },
+  });
+  const collaborationSession = usePlatformCollaborationSession({
+    client: editorSession?.client ?? null,
+    annotationFileId: editorSession?.annotationFileId ?? null,
+    enabled: Boolean(editorSession),
+    online: browserOnline,
+    currentUserId: editorSession?.currentUserId ?? null,
+    onMessage: (message) => {
+      // ready 也可能观察到打开文件后、socket 建立前发生的新 revision；两类消息统一只唤醒 HTTP 追赶。
+      if (
+        (message.type === "session.ready" || message.type === "annotation.revision.advanced") &&
+        message.annotationFileId === editorSession?.annotationFileId &&
+        (message.type === "session.ready" || message.revision > remoteBaseRevisionRef.current)
+      ) {
+        setObservedRemoteRevision((current) => Math.max(current, message.revision));
+        // ready/reconnect 总是触发一次权威 HTTP 检查；即使 revision 数值相同，cursor 也可能已推进。
+        requestPlatformCatchUp();
+      }
+    },
+    onError: (error) => {
+      console.warn("平台实时通知连接异常；HTTP 轮询仍会继续同步。", error);
+    },
+  });
+  // 播放头、鼠标和选区摘要只是当前协作会话的瞬时预览，不进入 ProjectData、撤销历史或恢复草稿。
+  useEffect(() => {
+    collaborationSession.updatePlayhead({ time: currentTime, playing: isPlaying });
+  }, [collaborationSession.updatePlayhead, currentTime, isPlaying]);
+  const collaborationSelectionSummary = useMemo(
+    () => buildTimelineSelectionSummary(project, selectedTimelineItems),
+    [project, selectedTimelineItems],
+  );
+  useEffect(() => {
+    collaborationSession.updateSelection(
+      sharePointerAndSelection ? collaborationSelectionSummary : null,
+    );
+  }, [collaborationSelectionSummary, collaborationSession.updateSelection, sharePointerAndSelection]);
+  const collaborationPointerSourceRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (sharePointerAndSelection) return;
+    collaborationPointerSourceRef.current = null;
+    collaborationSession.updatePointer(null);
+  }, [collaborationSession.updatePointer, sharePointerAndSelection]);
+  const updateCollaborationPointer = useCallback((sourceId: string, time: number | null) => {
+    if (!sharePointerAndSelection) {
+      collaborationPointerSourceRef.current = null;
+      collaborationSession.updatePointer(null);
+      return;
+    }
+    if (time !== null) {
+      collaborationPointerSourceRef.current = sourceId;
+      collaborationSession.updatePointer({ time });
+      return;
+    }
+    // 独立窗口接管鼠标后，旧 Timeline 迟到的 leave 不能清除新窗口位置。
+    if (collaborationPointerSourceRef.current !== sourceId) return;
+    collaborationPointerSourceRef.current = null;
+    collaborationSession.updatePointer(null);
+  }, [collaborationSession.updatePointer, sharePointerAndSelection]);
+  useEffect(() => {
+    const clearPointer = () => {
+      collaborationPointerSourceRef.current = null;
+      collaborationSession.updatePointer(null);
+    };
+    const clearHiddenPointer = () => {
+      if (document.hidden) clearPointer();
+    };
+    window.addEventListener("blur", clearPointer);
+    document.addEventListener("visibilitychange", clearHiddenPointer);
+    return () => {
+      window.removeEventListener("blur", clearPointer);
+      document.removeEventListener("visibilitychange", clearHiddenPointer);
+    };
+  }, [collaborationSession.updatePointer]);
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
   const blockContextMenuRef = useRef<HTMLDivElement>(null);
   const [blockContextMenuPosition, setBlockContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
@@ -499,6 +894,50 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     () => buildTimelineTrackDefinitions(project.builtinTracks, project.customTracks, project.activeTrackOrder),
     [project.activeTrackOrder, project.builtinTracks, project.customTracks],
   );
+  // 确认轨道选项只从当前项目真实持久轨道生成，不复用包含派生伪轨的 Timeline definitions。
+  const confirmationTrackOptions = useMemo(
+    () => getAnnotationConfirmationTrackOptions(project),
+    [project.builtinTracks, project.customTracks],
+  );
+  const confirmationViewRecords = useMemo(
+    () => buildAnnotationConfirmationViewRecords(
+      annotationConfirmations.data?.confirmations ?? [],
+      annotationConfirmations.data?.currentRevision ?? remoteBaseRevision,
+      confirmationTrackOptions,
+    ),
+    [
+      annotationConfirmations.data,
+      confirmationTrackOptions,
+      remoteBaseRevision,
+    ],
+  );
+  const confirmationTimelineItems = useMemo(
+    () => layoutAnnotationConfirmationTimelineItems(
+      confirmationViewRecords.filter((record) => record.lifecycle === "active"),
+    ),
+    [confirmationViewRecords],
+  );
+  // Timeline 只接收渲染所需的扁平只读字段，不依赖平台 API 记录结构或权限判断。
+  const confirmationTimelineRanges = useMemo(
+    () => confirmationTimelineItems.map((item) => ({
+      id: item.record.id,
+      startTime: item.record.scope.startTime,
+      endTime: item.record.scope.endTime,
+      label: item.targetLabel,
+      lane: item.lane,
+      lifecycle: item.lifecycle,
+      freshness: item.freshness,
+    })),
+    [confirmationTimelineItems],
+  );
+  const confirmationCreateBlocker = getAnnotationConfirmationCreateBlocker({
+    canReview: editorSession?.canReview ?? false,
+    hasRange: Boolean(loopPlaybackRange),
+    hasUnsavedChanges,
+    editorRevision: remoteBaseRevision,
+    serverRevision: annotationConfirmations.data?.currentRevision ?? null,
+    loading: annotationConfirmations.loading,
+  });
   const customBlocks = useMemo(
     () => flattenCustomTrackBlocks(project.customTracks),
     [project.customTracks],
@@ -677,8 +1116,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       : null;
 
   const focusRange = useMemo(() => {
+    if (confirmationFocusRange) {
+      return confirmationFocusRange;
+    }
     if (!lineFocusRequest) {
-      return null;
+      return initialPlatformFocusRange;
     }
     const line = project.subtitleLines.find((item) => item.id === lineFocusRequest.lineId);
     if (!line) {
@@ -689,7 +1131,21 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       start: Math.max(0, line.startTime - 1.5),
       end: line.endTime + 1.5,
     };
-  }, [lineFocusRequest, project.subtitleLines]);
+  }, [confirmationFocusRange, initialPlatformFocusRange, lineFocusRequest, project.subtitleLines]);
+
+  // Timeline 回报已接收后按来源清理请求；用户触发句级定位时一并淘汰尚未消费的启动焦点。
+  const handleFocusRangeHandled = useCallback(() => {
+    if (confirmationFocusRange) {
+      setConfirmationFocusRange(null);
+      return;
+    }
+    if (lineFocusRequest) {
+      setLineFocusRequest(null);
+      setInitialPlatformFocusRange(null);
+      return;
+    }
+    setInitialPlatformFocusRange(null);
+  }, [confirmationFocusRange, lineFocusRequest]);
 
   useEffect(() => {
     setDuration(
@@ -1221,7 +1677,62 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }, [blockContextMenu]);
 
   function projectsEqual(left: ProjectData, right: ProjectData) {
-    return serializeComparableProject(left) === serializeComparableProject(right);
+    return areEditorProjectsEqual(left, right);
+  }
+
+  // 选择性整合只在用户于目标编辑器再次确认时写入本地历史，并严格形成一个可撤销操作。
+  async function applyPendingAnnotationMergeDraft() {
+    const draft = pendingAnnotationMergeDraft;
+    if (!draft) return;
+    if (!projectsEqual(projectRef.current, draft.baseProject)) {
+      window.alert("目标文件在草稿准备后已被编辑。请取消本草稿并重新比较，避免覆盖当前改动。");
+      return;
+    }
+    let staleAfterLease = false;
+    const committed = await runControlledSnapshotMutation("merge_project", (baseProject) => {
+      staleAfterLease = !projectsEqual(baseProject, draft.baseProject);
+      return staleAfterLease ? baseProject : draft.mergedProject;
+    });
+    if (staleAfterLease) {
+      window.alert("取得整合锁后目标文件已发生变化。请取消本草稿并重新比较。");
+      return;
+    }
+    if (committed) setPendingAnnotationMergeDraft(null);
+  }
+
+  // 浏览器草稿整合的取消意味着明确放弃本地恢复内容；普通文件整合仍保持原有无副作用取消。
+  function cancelPendingAnnotationMergeDraft() {
+    const draft = pendingAnnotationMergeDraft;
+    if (!draft) return;
+    if (
+      draft.sourceKind === "browser-draft" &&
+      !window.confirm("放弃这次本地草稿整合后，浏览器中的旧草稿将被清除。是否继续？")
+    ) {
+      return;
+    }
+    setPendingAnnotationMergeDraft(null);
+  }
+
+  // 409 处理先沿草稿串行队列固定当前文档，再由 Workspace 重读服务器并打开既有结构化比较。
+  async function openSaveConflictReview() {
+    if (
+      !editorSession ||
+      syncState.status !== "conflict" ||
+      saveConflictReviewBusy
+    ) return;
+    setSaveConflictReviewBusy(true);
+    setSaveConflictReviewError(null);
+    try {
+      const flushed = await flushPlatformDraftNow();
+      if (!flushed.ok) {
+        setSaveConflictReviewError(flushed.message);
+        return;
+      }
+      const opened = await editorSession.openSaveConflictReview();
+      if (!opened.ok) setSaveConflictReviewError(opened.message);
+    } finally {
+      setSaveConflictReviewBusy(false);
+    }
   }
 
   function seekTo(time: number) {
@@ -1427,6 +1938,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function updateCharacter(id: string, changes: Partial<CharacterAnnotation>, recordHistory = true) {
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
     const currentCharacter = currentProject.characterAnnotations.find((item) => item.id === id);
     const timingParentBefore = currentCharacter &&
       (changes.startTime !== undefined || changes.endTime !== undefined)
@@ -1447,7 +1959,34 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         ? syncSubtitleLine(nextProject, currentCharacter.lineId)
         : nextProject;
     if (recordHistory) {
-      commitProject(synchronizedProject);
+      const isTimingOnly = Object.keys(changes).every((key) =>
+        key === "startTime" || key === "endTime",
+      );
+      const changedKeys = Object.keys(changes);
+      const isCharacterTextOnly = changedKeys.length === 1 && changedKeys[0] === "char";
+      const isSingingStyleOnly = changedKeys.length === 1 && changedKeys[0] === "singingStyle";
+      // 逐字文本会同步句文本，因此 content 命令同时包含 character 与其 sentence 两个稳定目标。
+      const commandEnvelope = isTimingOnly && currentCharacter
+        ? buildProjectTimelineTimingCommand(baseProject, synchronizedProject, [
+            { entityType: "character", entityId: id },
+            { entityType: "sentence", entityId: currentCharacter.lineId },
+            ...getGongcheTimingTargetsForParents(
+              [baseProject, synchronizedProject],
+              "character-track",
+              [id],
+            ),
+          ])
+        : isCharacterTextOnly && currentCharacter
+          ? buildProjectAnnotationContentCommand(baseProject, synchronizedProject, [
+              { entityType: "character", entityId: id, field: "char" },
+              { entityType: "sentence", entityId: currentCharacter.lineId, field: "text" },
+            ])
+        : isSingingStyleOnly && currentCharacter
+          ? buildProjectAnnotationContentCommand(baseProject, synchronizedProject, [
+              { entityType: "character", entityId: id, field: "singingStyle" },
+            ])
+        : null;
+      commitProject(synchronizedProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
       applyProjectWithoutHistory(synchronizedProject);
     }
@@ -1459,6 +1998,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     recordHistory = true,
   ) {
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
     const currentLine = currentProject.subtitleLines.find((line) => line.id === id);
     if (!currentLine) {
       return;
@@ -1496,7 +2036,27 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       : shiftedProject;
 
     if (recordHistory) {
-      commitProject(synchronizedProject);
+      const characterIds = baseProject.characterAnnotations
+        .filter((item) => item.lineId === id)
+        .map((item) => item.id);
+      // 句块移动会级联逐字和工尺时间，全部目标必须共享同一 before/after 命令。
+      const commandEnvelope = buildProjectTimelineTimingCommand(
+        baseProject,
+        synchronizedProject,
+        [
+          { entityType: "sentence", entityId: id },
+          ...characterIds.map((entityId): TimelineTimingTarget => ({
+            entityType: "character",
+            entityId,
+          })),
+          ...getGongcheTimingTargetsForParents(
+            [baseProject, synchronizedProject],
+            "character-track",
+            characterIds,
+          ),
+        ],
+      );
+      commitProject(synchronizedProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
       applyProjectWithoutHistory(synchronizedProject);
     }
@@ -1547,42 +2107,131 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     cancelCharacterTextEdit();
   }
 
-  function updateCustomTrack(
-    trackId: string,
-    updater: (track: CustomTrack) => CustomTrack,
-    recordHistory = true,
+  // 所有受租约保护的写入共用这一串行入口；拿到租约后必须基于最新项目重新计算结果。
+  async function runExclusiveProjectMutation(
+    purpose: AnnotationMutationPurpose,
+    buildNextProject: (baseProject: ProjectData) => ProjectData,
+    buildCommand: (
+      baseProject: ProjectData,
+      nextProject: ProjectData,
+    ) => AnnotationCommandEnvelope | null,
+    historyAction: HistoryAction = "edit",
   ) {
-    const currentProject = projectRef.current;
-    const nextProject = {
-      ...currentProject,
-      customTracks: currentProject.customTracks.map((track) =>
-        track.id === trackId ? updater(track) : track,
-      ) as CustomTrack[],
-    };
-    if (recordHistory) {
-      commitProject(nextProject);
-    } else {
-      applyProjectWithoutHistory(nextProject);
+    const previewBase = projectRef.current;
+    if (areProjectValuesEqual(previewBase, buildNextProject(previewBase))) return false;
+    if (exclusiveMutationInFlightRef.current) return false;
+
+    exclusiveMutationInFlightRef.current = true;
+    const hadLease = Boolean(mutationLease.getToken());
+    try {
+      if (editorSession) await mutationLease.acquire(purpose);
+      // acquire 期间普通内容编辑仍可发生；拿锁后必须基于最新项目重建，不能覆盖这段时间的新内容。
+      const baseProject = projectRef.current;
+      const nextProject = buildNextProject(baseProject);
+      if (areProjectValuesEqual(baseProject, nextProject)) {
+        if (editorSession && !hadLease) await mutationLease.release().catch(() => undefined);
+        return false;
+      }
+      const commandEnvelope = buildCommand(baseProject, nextProject);
+      if (!commandEnvelope) {
+        if (editorSession && !hadLease) await mutationLease.release().catch(() => undefined);
+        window.alert("本次变更无法形成完整且有界的协作命令，项目未被修改。请拆分操作后重试。");
+        return false;
+      }
+      commitProject(nextProject, baseProject, { commandEnvelope, action: historyAction });
+      return true;
+    } catch (error) {
+      window.alert(formatMutationLeaseError(error));
+      return false;
+    } finally {
+      exclusiveMutationInFlightRef.current = false;
     }
   }
 
-  function updateBuiltinTrack(
+  // 结构写入继续保留语义清晰的薄封装，避免普通调用点感知租约 purpose。
+  function runTrackStructureMutation(
+    buildNextProject: (baseProject: ProjectData) => ProjectData,
+    buildCommand: (baseProject: ProjectData, nextProject: ProjectData) => AnnotationCommandEnvelope | null,
+  ) {
+    return runExclusiveProjectMutation("track_structure", buildNextProject, buildCommand);
+  }
+
+  // 无法安全拆成有界增量的批量操作只记录严格边界；同 revision 的完整保存仍是唯一内容权威。
+  function runControlledSnapshotMutation(
+    kind: ProjectSnapshotBoundaryKind,
+    buildNextProject: (baseProject: ProjectData) => ProjectData,
+  ) {
+    const commandEnvelope = buildProjectSnapshotBoundaryEnvelope(crypto.randomUUID(), kind);
+    const purpose = commandEnvelope
+      ? getAnnotationMutationLeasePurposeForCommand(commandEnvelope)
+      : null;
+    if (!commandEnvelope || !purpose) return Promise.resolve(false);
+    return runExclusiveProjectMutation(
+      purpose,
+      buildNextProject,
+      () => commandEnvelope,
+      getSnapshotBoundaryHistoryAction(kind),
+    );
+  }
+
+  // 平台结构写入先取得数据库租约；本地模式复用同一纯 updater，但不会产生网络请求。
+  async function updateCustomTrackStructure(
+    trackId: string,
+    updater: (track: CustomTrack) => CustomTrack,
+  ) {
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
+      customTracks: baseProject.customTracks.map((track) =>
+        track.id === trackId ? updater(track) : track,
+      ) as CustomTrack[],
+    });
+    return runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) =>
+        buildProjectCustomTrackStructureCommand(baseProject, nextProject, [trackId]),
+    );
+  }
+
+  // 既有内建轨配置必须经结构事务和租约提交，不能再落入无法 clean replay 的 snapshot operation。
+  async function updateBuiltinTrackStructure(
     trackId: BuiltinTrackId,
     updater: (track: BuiltinTrack) => BuiltinTrack,
-    recordHistory = true,
+    updateCharacters?: (
+      characters: CharacterAnnotation[],
+      beforeTrack: BuiltinTrack,
+      afterTrack: BuiltinTrack,
+    ) => CharacterAnnotation[],
   ) {
-    const currentProject = projectRef.current;
-    const nextProject = {
-      ...currentProject,
-      builtinTracks: currentProject.builtinTracks.map((track) =>
-        track.id === trackId ? updater(track) : track,
-      ),
+    const buildNextProject = (baseProject: ProjectData): ProjectData => {
+      const beforeTrack = baseProject.builtinTracks.find((track) => track.id === trackId);
+      if (!beforeTrack) return baseProject;
+      const afterTrack = updater(beforeTrack);
+      const nextProject = {
+        ...baseProject,
+        builtinTracks: baseProject.builtinTracks.map((track) =>
+          track.id === trackId ? afterTrack : track,
+        ),
+      };
+      if (!updateCharacters || trackId !== "character-track") return nextProject;
+      return {
+        ...nextProject,
+        characterAnnotations: updateCharacters(baseProject.characterAnnotations, beforeTrack, afterTrack),
+      };
     };
-    if (recordHistory) {
-      commitProject(nextProject);
-    } else {
-      applyProjectWithoutHistory(nextProject);
-    }
+    return runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => {
+        const nextCharacters = new Map(nextProject.characterAnnotations.map((item) => [item.id, item]));
+        return buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          builtinTrackStructureIds: [trackId],
+          // options 改名/删除会级联逐字唱法；纯配置修改在这里自然得到空 content 列表。
+          contentTargets: baseProject.characterAnnotations.flatMap((item) =>
+            nextCharacters.get(item.id)?.singingStyle !== item.singingStyle
+              ? [{ entityType: "character" as const, entityId: item.id, field: "singingStyle" as const }]
+              : []),
+        });
+      },
+    );
   }
 
   function findPointTrackLocation(projectToSearch: ProjectData, pointTrackId: string): PointTrackLocation | null {
@@ -1609,39 +2258,91 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     return null;
   }
 
-  function updateAttachedPointTrack(
+  // 所有附属点轨修改先生成完整 nextProject；调用者再决定 transient、history 或领域命令语义。
+  function buildProjectWithUpdatedAttachedPointTrack(
+    projectToUpdate: ProjectData,
     pointTrackId: string,
     updater: (pointTrack: AttachedPointTrack) => AttachedPointTrack,
-    recordHistory = true,
-  ) {
-    const currentProject = projectRef.current;
-    const location = findPointTrackLocation(currentProject, pointTrackId);
-    if (!location) {
-      return;
-    }
-    const updateTrackList = (attachedPointTracks: AttachedPointTrack[]) =>
-      attachedPointTracks.map((pointTrack) =>
-        pointTrack.id === pointTrackId ? updater(pointTrack) : pointTrack,
-      );
-    if (location.parentType === "builtin") {
-      updateBuiltinTrack(
-        location.parentTrack.id,
-        (track) => ({
-          ...track,
-          attachedPointTracks: updateTrackList(track.attachedPointTracks ?? []),
-        }),
-        recordHistory,
-      );
-      return;
-    }
-    updateCustomTrack(
-      location.parentTrack.id,
-      (track) => ({
-        ...track,
-        attachedPointTracks: updateTrackList(track.attachedPointTracks ?? []),
-      }) as CustomTrack,
-      recordHistory,
+  ): ProjectData | null {
+    const location = findPointTrackLocation(projectToUpdate, pointTrackId);
+    if (!location) return null;
+    const updateTrackList = (tracks: AttachedPointTrack[]) => tracks.map((pointTrack) =>
+      pointTrack.id === pointTrackId ? updater(pointTrack) : pointTrack,
     );
+    return {
+      ...projectToUpdate,
+      builtinTracks: location.parentType === "builtin"
+        ? projectToUpdate.builtinTracks.map((track) => track.id === location.parentTrack.id
+          ? { ...track, attachedPointTracks: updateTrackList(track.attachedPointTracks ?? []) }
+          : track)
+        : projectToUpdate.builtinTracks,
+      customTracks: location.parentType === "custom"
+        ? projectToUpdate.customTracks.map((track) => track.id === location.parentTrack.id
+          ? { ...track, attachedPointTracks: updateTrackList(track.attachedPointTracks ?? []) } as CustomTrack
+          : track)
+        : projectToUpdate.customTracks,
+    };
+  }
+
+  // 点轨配置以“父轨类型 + 父轨 id + 点轨 id”寻址，避免递归轨道出现同名时误改其他集合。
+  async function updateAttachedPointTrackStructure(
+    pointTrackId: string,
+    updater: (pointTrack: AttachedPointTrack) => AttachedPointTrack,
+  ) {
+    const buildNextProject = (baseProject: ProjectData): ProjectData =>
+      buildProjectWithUpdatedAttachedPointTrack(baseProject, pointTrackId, updater) ?? baseProject;
+    return runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => {
+        const location = findPointTrackLocation(baseProject, pointTrackId);
+        const nextLocation = findPointTrackLocation(nextProject, pointTrackId);
+        if (!location || !nextLocation) return null;
+        const nextPoints = new Map(nextLocation.pointTrack.points.map((point) => [point.id, point]));
+        return buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          attachedPointTrackStructureTargets: [{
+            pointTrackId,
+            parentTrackId: location.parentTrack.id,
+            parentTrackType: location.parentType,
+          }],
+          // 点轨类型改名/删除只为真正变化的既有点生成 content child，点生命周期不属于本 updater。
+          contentTargets: location.pointTrack.points.flatMap((point) =>
+            nextPoints.get(point.id)?.label !== point.label
+              ? [{ entityType: "attached-point" as const, entityId: point.id, trackId: pointTrackId,
+                  field: "label" as const }]
+              : []),
+        });
+      },
+    );
+  }
+
+  // 创建/删除调用点只声明候选实体；完整差异门禁证明命令覆盖 next 后才写领域 envelope，否则保留快照。
+  function commitProjectWithLifecycle(
+    baseProject: ProjectData,
+    nextProject: ProjectData,
+    targets: readonly AnnotationLifecycleTarget[],
+  ) {
+    const commandEnvelope = buildProjectAnnotationLifecycleCommand(baseProject, nextProject, targets);
+    commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
+  }
+
+  // 板眼和工尺符号的耦合字段使用完整状态命令，不能拆成彼此独立的字符串 operation。
+  function commitProjectWithState(
+    baseProject: ProjectData,
+    nextProject: ProjectData,
+    targets: readonly AnnotationStateTarget[],
+  ) {
+    const commandEnvelope = buildProjectAnnotationStateCommand(baseProject, nextProject, targets);
+    commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
+  }
+
+  // 句同步和工尺级联必须作为一个 operation 提交；builder 证明不了完整闭包时安全回退快照。
+  function commitProjectWithTransaction(
+    baseProject: ProjectData,
+    nextProject: ProjectData,
+    plan: AnnotationTransactionPlan,
+  ) {
+    const commandEnvelope = buildProjectAnnotationTransactionCommand(baseProject, nextProject, plan);
+    commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
   }
 
   function updateAttachedPoint(
@@ -1650,7 +2351,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     changes: Partial<AttachedPointAnnotation>,
     recordHistory = true,
   ) {
-    updateAttachedPointTrack(
+    const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
+    const nextProject = buildProjectWithUpdatedAttachedPointTrack(
+      currentProject,
       pointTrackId,
       (pointTrack) => ({
         ...pointTrack,
@@ -1658,8 +2362,24 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           point.id === pointId ? { ...point, ...changes } : point,
         ),
       }),
-      recordHistory,
     );
+    if (!nextProject) return;
+    if (!recordHistory) {
+      applyProjectWithoutHistory(nextProject);
+      return;
+    }
+    const changedKeys = Object.keys(changes);
+    const isLabelOnly = changedKeys.length === 1 && changedKeys[0] === "label";
+    // 本轮只迁移附属点 label；尚未接入命令的时间或复合字段继续安全记录 legacy snapshot operation。
+    const commandEnvelope = isLabelOnly
+      ? buildProjectAnnotationContentCommand(baseProject, nextProject, [{
+          entityType: "attached-point",
+          entityId: pointId,
+          trackId: pointTrackId,
+          field: "label",
+        }])
+      : null;
+    commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
   }
 
   function changeAttachedPoint(
@@ -1679,13 +2399,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function addAttachedPointTrack(parentTrackId: string) {
-    const currentProject = projectRef.current;
-    const builtinParent = currentProject.builtinTracks.find((track) => track.id === parentTrackId);
-    const customParent = currentProject.customTracks.find((track) => track.id === parentTrackId);
+    const previewProject = projectRef.current;
+    const builtinParent = previewProject.builtinTracks.find((track) => track.id === parentTrackId);
+    const customParent = previewProject.customTracks.find((track) => track.id === parentTrackId);
     if (!builtinParent && !customParent) {
       return;
     }
     const parentTrack = builtinParent ?? customParent;
+    const parentTrackType = builtinParent ? "builtin" as const : "custom" as const;
     const nextPointTrack: AttachedPointTrack = {
       id: `point-track-${crypto.randomUUID()}`,
       name: getDefaultAttachedPointTrackName(parentTrack?.attachedPointTracks ?? []),
@@ -1694,33 +2415,52 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       snapToWaveformKeypoints: false,
       snapToParentBoundaries: true,
     };
-    if (builtinParent) {
-      updateBuiltinTrack(parentTrackId as BuiltinTrackId, (track) => ({
-        ...track,
-        attachedPointTracksExpanded: true,
-        attachedPointTracks: [...(track.attachedPointTracks ?? []), nextPointTrack],
-      }));
-    } else if (customParent) {
-      updateCustomTrack(parentTrackId, (track) => ({
-        ...track,
-        attachedPointTracksExpanded: true,
-        attachedPointTracks: [...(track.attachedPointTracks ?? []), nextPointTrack],
-      }) as CustomTrack);
-    }
-    applySelection({ type: "attached-point-track", id: nextPointTrack.id, parentTrackId });
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
+      builtinTracks: parentTrackType === "builtin"
+        ? baseProject.builtinTracks.map((track) => track.id === parentTrackId
+          ? {
+              ...track,
+              attachedPointTracksExpanded: true,
+              attachedPointTracks: [...track.attachedPointTracks, nextPointTrack],
+            }
+          : track)
+        : baseProject.builtinTracks,
+      customTracks: parentTrackType === "custom"
+        ? baseProject.customTracks.map((track) => track.id === parentTrackId
+          ? {
+              ...track,
+              attachedPointTracksExpanded: true,
+              attachedPointTracks: [...track.attachedPointTracks, nextPointTrack],
+            } as CustomTrack
+          : track) as CustomTrack[]
+        : baseProject.customTracks,
+    });
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        attachedPointTrackLifecycleTargets: [{
+          pointTrackId: nextPointTrack.id,
+          parentTrackId,
+          parentTrackType,
+        }],
+      }),
+    ).then((committed) => {
+      if (committed) applySelection({ type: "attached-point-track", id: nextPointTrack.id, parentTrackId });
+    });
   }
 
   function toggleAttachedPointTracks(parentTrackId: string) {
     const currentProject = projectRef.current;
     if (currentProject.builtinTracks.some((track) => track.id === parentTrackId)) {
-      updateBuiltinTrack(parentTrackId as BuiltinTrackId, (track) => ({
+      void updateBuiltinTrackStructure(parentTrackId as BuiltinTrackId, (track) => ({
         ...track,
         attachedPointTracksExpanded: !track.attachedPointTracksExpanded,
       }));
       return;
     }
     if (currentProject.customTracks.some((track) => track.id === parentTrackId)) {
-      updateCustomTrack(parentTrackId, (track) => ({
+      void updateCustomTrackStructure(parentTrackId, (track) => ({
         ...track,
         attachedPointTracksExpanded: !track.attachedPointTracksExpanded,
       }) as CustomTrack);
@@ -1728,41 +2468,41 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function moveTrack(trackId: string, direction: "up" | "down") {
-    const currentProject = projectRef.current;
-    const currentIndex = currentProject.activeTrackOrder.findIndex((id) => id === trackId);
-    if (currentIndex === -1) {
-      return;
-    }
-    const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
-    if (targetIndex < 0 || targetIndex >= currentProject.activeTrackOrder.length) {
-      return;
-    }
-    const nextOrder = [...currentProject.activeTrackOrder];
-    const [movedId] = nextOrder.splice(currentIndex, 1);
-    nextOrder.splice(targetIndex, 0, movedId);
-    commitProject({
-      ...currentProject,
-      activeTrackOrder: nextOrder,
-    });
+    // acquire 可能等待网络，因此顺序变换必须对拿锁后的最新 base 重算，不能闭包捕获旧数组。
+    void runTrackStructureMutation(
+      (baseProject) => {
+        const currentIndex = baseProject.activeTrackOrder.findIndex((id) => id === trackId);
+        const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+        if (currentIndex < 0 || targetIndex < 0 || targetIndex >= baseProject.activeTrackOrder.length) {
+          return baseProject;
+        }
+        const nextOrder = [...baseProject.activeTrackOrder];
+        const [movedId] = nextOrder.splice(currentIndex, 1);
+        nextOrder.splice(targetIndex, 0, movedId);
+        return { ...baseProject, activeTrackOrder: nextOrder };
+      },
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        includeTrackOrder: true,
+      }),
+    );
   }
 
   function reorderTrack(trackId: string, insertionIndex: number) {
-    const currentProject = projectRef.current;
-    const currentIndex = currentProject.activeTrackOrder.findIndex((id) => id === trackId);
-    if (currentIndex === -1) {
-      return;
-    }
-    const nextOrder = [...currentProject.activeTrackOrder];
-    const [movedId] = nextOrder.splice(currentIndex, 1);
-    const normalizedInsertionIndex = Math.max(0, Math.min(insertionIndex, nextOrder.length));
-    if (normalizedInsertionIndex === currentIndex) {
-      return;
-    }
-    nextOrder.splice(normalizedInsertionIndex, 0, movedId);
-    commitProject({
-      ...currentProject,
-      activeTrackOrder: nextOrder,
-    });
+    void runTrackStructureMutation(
+      (baseProject) => {
+        const currentIndex = baseProject.activeTrackOrder.findIndex((id) => id === trackId);
+        if (currentIndex < 0) return baseProject;
+        const nextOrder = [...baseProject.activeTrackOrder];
+        const [movedId] = nextOrder.splice(currentIndex, 1);
+        const targetIndex = Math.max(0, Math.min(insertionIndex, nextOrder.length));
+        if (targetIndex === currentIndex) return baseProject;
+        nextOrder.splice(targetIndex, 0, movedId);
+        return { ...baseProject, activeTrackOrder: nextOrder };
+      },
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        includeTrackOrder: true,
+      }),
+    );
   }
 
   function updateCustomBlock(
@@ -1777,7 +2517,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     },
     recordHistory = true,
   ) {
+    const changedKeys = Object.keys(changes);
+    if (recordHistory && changedKeys.length === 1 && changedKeys[0] === "branchScope") {
+      void updateCustomTrackStructure(trackId, (track) => ({
+        ...track,
+        blocks: track.blocks.map((block) =>
+          block.id === blockId ? { ...block, branchScope: changes.branchScope } : block,
+        ) as CustomTrack["blocks"],
+      }) as CustomTrack);
+      return;
+    }
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
     const currentBlock = findCustomBlock(currentProject.customTracks, trackId, blockId);
     const timingParentsBefore = currentBlock &&
       (changes.startTime !== undefined || changes.endTime !== undefined)
@@ -1797,7 +2548,33 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ) as CustomTrack[],
     }, timingParentsBefore);
     if (recordHistory) {
-      commitProject(nextProject);
+      const isTimingOnly = changedKeys.every((key) =>
+        key === "startTime" || key === "endTime",
+      );
+      const contentField = changedKeys.length === 1 && changes.text !== undefined
+        ? "text"
+        : changedKeys.length === 1 && changes.type !== undefined
+          ? "type"
+          : null;
+      // 自定义块 timing 与内容使用不同领域命令；分叉归属等结构变化仍回退 snapshot。
+      const commandEnvelope = isTimingOnly && currentBlock
+        ? buildProjectTimelineTimingCommand(baseProject, nextProject, [
+            { entityType: "custom-block", entityId: blockId, trackId },
+            ...getGongcheTimingTargetsForParents(
+              [baseProject, nextProject],
+              trackId,
+              [blockId],
+            ),
+          ])
+        : contentField && currentBlock
+          ? buildProjectAnnotationContentCommand(baseProject, nextProject, [{
+              entityType: "custom-block",
+              entityId: blockId,
+              trackId,
+              field: contentField,
+            }])
+        : null;
+      commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
       applyProjectWithoutHistory(nextProject);
     }
@@ -1839,6 +2616,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function updateAction(id: string, changes: Partial<ActionAnnotation>, recordHistory = true) {
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
+    const currentAction = currentProject.actionAnnotations.find((item) => item.id === id);
     const nextProject = {
       ...currentProject,
       actionAnnotations: currentProject.actionAnnotations.map((item) =>
@@ -1846,7 +2625,27 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ),
     };
     if (recordHistory) {
-      commitProject(nextProject);
+      const isTimingOnly = Object.keys(changes).every((key) =>
+        key === "startTime" || key === "endTime",
+      );
+      const changedKeys = Object.keys(changes);
+      const isLabelOnly = changedKeys.length === 1 && changedKeys[0] === "label";
+      // 旧动作轨纯时间和标签分别进入各自命令；轨道身份等结构变化仍保留 snapshot 语义。
+      const commandEnvelope = isTimingOnly && currentAction
+        ? buildProjectTimelineTimingCommand(baseProject, nextProject, [{
+            entityType: "action",
+            entityId: id,
+            trackId: currentAction.trackId,
+          }])
+        : isLabelOnly && currentAction
+          ? buildProjectAnnotationContentCommand(baseProject, nextProject, [{
+              entityType: "action",
+              entityId: id,
+              trackId: currentAction.trackId,
+              field: "label",
+            }])
+        : null;
+      commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
       applyProjectWithoutHistory(nextProject);
     }
@@ -1893,16 +2692,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (!character || !track) {
         return;
       }
-      const nextOptions = appendUniqueTypeOption(track.options ?? [], nextType);
-      commitProject({
-        ...currentProject,
-        builtinTracks: currentProject.builtinTracks.map((item) =>
-          item.id === "character-track" ? { ...item, options: nextOptions } : item,
-        ),
-        characterAnnotations: currentProject.characterAnnotations.map((item) =>
-          item.id === character.id ? { ...item, singingStyle: nextType } : item,
-        ),
-      });
+      if ((track.options ?? []).includes(nextType)) {
+        applyCharacterSingingStyle(character.id, nextType);
+      } else {
+        void updateBuiltinTrackStructure("character-track", (currentTrack) => ({
+          ...currentTrack,
+          options: appendUniqueTypeOption(currentTrack.options ?? [], nextType),
+        }), (characters) => characters.map((item) =>
+          item.id === character.id ? { ...item, singingStyle: nextType } : item));
+      }
       setBlockContextMenu(null);
       return;
     }
@@ -1933,20 +2731,27 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (!targetTrack) {
         return;
       }
-      commitProject({
-        ...currentProject,
-        customTracks: currentProject.customTracks.map((track) =>
-          track.id === targetTrack.id
+      if (targetTrack.typeOptions.includes(nextType)) {
+        applyCustomBlockType(targetTrack.id, customBlockMenu.id, nextType);
+      } else {
+        const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+          ...baseProject,
+          customTracks: baseProject.customTracks.map((track) => track.id === targetTrack.id
             ? {
                 ...track,
                 typeOptions: appendUniqueTypeOption(track.typeOptions, nextType),
                 blocks: track.blocks.map((block) =>
-                  block.id === customBlockMenu.id ? { ...block, type: nextType } : block,
-                ) as CustomTrack["blocks"],
+                  block.id === customBlockMenu.id ? { ...block, type: nextType } : block) as CustomTrack["blocks"],
               } as CustomTrack
-            : track,
-        ),
-      });
+            : track) as CustomTrack[],
+        });
+        void runTrackStructureMutation(buildNextProject, (baseProject, nextProject) =>
+          buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+            customTrackStructureIds: [targetTrack.id],
+            contentTargets: [{ entityType: "custom-block", entityId: customBlockMenu.id,
+              trackId: targetTrack.id, field: "type" }],
+          }));
+      }
       setBlockContextMenu(null);
       return;
     }
@@ -1957,35 +2762,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (!location) {
         return;
       }
-      const updateTrackList = (pointTracks: AttachedPointTrack[]) =>
-        pointTracks.map((pointTrack) =>
-          pointTrack.id === pointMenu.trackId
-            ? {
-                ...pointTrack,
-                typeOptions: appendUniqueTypeOption(pointTrack.typeOptions, nextType),
-                points: pointTrack.points.map((point) =>
-                  point.id === pointMenu.id ? { ...point, label: nextType } : point,
-                ),
-              }
-            : pointTrack,
-        );
-      commitProject({
-        ...currentProject,
-        builtinTracks: location.parentType === "builtin"
-          ? currentProject.builtinTracks.map((track) =>
-              track.id === location.parentTrack.id
-                ? { ...track, attachedPointTracks: updateTrackList(track.attachedPointTracks) }
-                : track,
-            )
-          : currentProject.builtinTracks,
-        customTracks: location.parentType === "custom"
-          ? currentProject.customTracks.map((track) =>
-              track.id === location.parentTrack.id
-                ? { ...track, attachedPointTracks: updateTrackList(track.attachedPointTracks) } as CustomTrack
-                : track,
-            )
-          : currentProject.customTracks,
-      });
+      if (location.pointTrack.typeOptions.includes(nextType)) {
+        applyAttachedPointLabel(pointMenu.trackId, pointMenu.id, nextType);
+      } else {
+        void updateAttachedPointTrackStructure(pointMenu.trackId, (pointTrack) => ({
+          ...pointTrack,
+          typeOptions: appendUniqueTypeOption(pointTrack.typeOptions, nextType),
+          points: pointTrack.points.map((point) =>
+            point.id === pointMenu.id ? { ...point, label: nextType } : point),
+        }));
+      }
       setBlockContextMenu(null);
     }
   }
@@ -2370,6 +3156,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
 
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
     const timingParentsBefore = new Map<string, GongcheParentBlock>();
     const characterUpdates = new Map(
       items
@@ -2503,7 +3290,57 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       : nextProject;
 
     if (recordHistory) {
-      commitProject(synchronizedProject);
+      // 多选移动按真实选择目标构造批量命令，并补齐句级边界与派生工尺时间。
+      const directTargets = items.flatMap((item): TimelineTimingTarget[] => {
+        if (item.type === "character") {
+          return [{ entityType: "character", entityId: item.id }];
+        }
+        if (item.type === "action") {
+          const action = baseProject.actionAnnotations.find((candidate) => candidate.id === item.id);
+          return action
+            ? [{ entityType: "action", entityId: item.id, trackId: action.trackId }]
+            : [];
+        }
+        if (item.type === "custom-block") {
+          return [{ entityType: "custom-block", entityId: item.id, trackId: item.trackId }];
+        }
+        if (item.type === "attached-point") {
+          return [{ entityType: "attached-point", entityId: item.id, trackId: item.trackId }];
+        }
+        return [{ entityType: "banyan-mark", entityId: item.id }];
+      });
+      const customGongcheTargets = new Map<string, TimelineTimingTarget>();
+      for (const item of customBlockUpdates.values()) {
+        for (const target of getGongcheTimingTargetsForParents(
+          [baseProject, synchronizedProject],
+          item.trackId,
+          [item.id],
+        )) {
+          customGongcheTargets.set(`${target.trackId}:${target.entityId}`, target);
+        }
+      }
+      const commandEnvelope = buildProjectTimelineTimingCommand(
+        baseProject,
+        synchronizedProject,
+        [
+          ...directTargets,
+          ...Array.from(affectedLineIds, (entityId): TimelineTimingTarget => ({
+            entityType: "sentence",
+            entityId,
+          })),
+          ...getGongcheTimingTargetsForParents(
+            [baseProject, synchronizedProject],
+            "character-track",
+            [...characterUpdates.keys()],
+          ),
+          ...customGongcheTargets.values(),
+        ],
+      );
+      commitProject(
+        synchronizedProject,
+        baseProject,
+        commandEnvelope ? { commandEnvelope } : {},
+      );
     } else {
       applyProjectWithoutHistory(synchronizedProject);
     }
@@ -2568,7 +3405,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       };
     }
 
-    commitProject(nextProject);
+    if (target) {
+      commitProjectWithTransaction(currentProject, nextProject, {
+        contentTargets: [{ entityType: "sentence", entityId: target.line.id, field: "text" }],
+        timingTargets: [{ entityType: "sentence", entityId: target.line.id }],
+        lifecycleTargets: [{ entityType: "character", entityId: characterId }],
+      });
+    } else {
+      const createdLine = nextProject.characterAnnotations.find((item) => item.id === characterId)?.lineId;
+      commitProjectWithLifecycle(currentProject, nextProject, [
+        ...(createdLine ? [{ entityType: "sentence" as const, entityId: createdLine }] : []),
+        { entityType: "character", entityId: characterId },
+      ]);
+    }
     preferredCharacterEditLocationRef.current = "timeline";
     applySelection({ type: "character", id: characterId });
     setEditingCharacterId(characterId);
@@ -2598,15 +3447,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function addBuiltinTrack(trackId: BuiltinTrackId) {
-    const currentProject = projectRef.current;
-    if (currentProject.builtinTracks.some((track) => track.id === trackId)) {
-      return;
-    }
-    commitProject({
-      ...currentProject,
-      builtinTracks: [...currentProject.builtinTracks, getBuiltinTrackDefinition(trackId)],
-      activeTrackOrder: [...currentProject.activeTrackOrder, trackId],
-    });
+    void runTrackStructureMutation(
+      (baseProject) => baseProject.builtinTracks.some((track) => track.id === trackId)
+        ? baseProject
+        : {
+            ...baseProject,
+            builtinTracks: [...baseProject.builtinTracks, getBuiltinTrackDefinition(trackId)],
+            activeTrackOrder: [...baseProject.activeTrackOrder, trackId],
+          },
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        builtinTrackLifecycleTargets: [{ trackId }],
+      }),
+    );
   }
 
   function deleteBuiltinTrack(trackId: BuiltinTrackId) {
@@ -2639,69 +3491,66 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
 
-    const nextProject = trackId === "character-track"
-      ? {
-          ...currentProject,
-          builtinTracks: currentProject.builtinTracks.filter((track) => track.id !== trackId),
-          activeTrackOrder: currentProject.activeTrackOrder.filter((id) => id !== trackId),
-          characterAnnotations: [],
-          gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
-        }
-      : {
-          ...currentProject,
-          builtinTracks: currentProject.builtinTracks.filter((track) => track.id !== trackId),
-          activeTrackOrder: currentProject.activeTrackOrder.filter((id) => id !== trackId),
-          actionAnnotations: currentProject.actionAnnotations.filter((item) => item.trackId !== trackId),
-          gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
-        };
-
-    if (trackId === "character-track") {
-      cancelCharacterTextEdit();
-      if (
-        selectedItem?.type === "character" ||
-        selectedItem?.type === "gongche-block" ||
-        selectedItem?.type === "gongche-track" ||
-        (selectedItem?.type === "builtin-track" && selectedItem.id === trackId) ||
-        (selectedItem?.type === "attached-point-track" && selectedItem.parentTrackId === trackId) ||
-        (selectedItem?.type === "attached-point" && selectedItem.parentTrackId === trackId)
-      ) {
-        applySelection(null);
-      } else {
-        setSelectedTimelineItems((current) => current.filter((item) => item.type !== "character"));
-      }
-    } else {
-      if (
-        (selectedItem?.type === "builtin-track" && selectedItem.id === trackId) ||
-        (selectedItem?.type === "attached-point-track" && selectedItem.parentTrackId === trackId) ||
-        (selectedItem?.type === "attached-point" && selectedItem.parentTrackId === trackId)
-      ) {
-        applySelection(null);
-      } else if (selectedItem?.type === "action" && selectedItem.id) {
-        const selectedAction = currentProject.actionAnnotations.find((item) => item.id === selectedItem.id);
-        if (selectedAction?.trackId === trackId) {
-          applySelection(null);
-        } else {
-          setSelectedTimelineItems((current) =>
-            current.filter((item) => item.type !== "action" || currentProject.actionAnnotations.find((action) => action.id === item.id)?.trackId !== trackId),
-          );
-        }
-      } else {
-        setSelectedTimelineItems((current) =>
-          current.filter((item) => item.type !== "action" || currentProject.actionAnnotations.find((action) => action.id === item.id)?.trackId !== trackId),
-        );
-      }
-    }
-
-    commitProject(nextProject);
+    const buildNextProject = (baseProject: ProjectData) => {
+      if (!baseProject.builtinTracks.some((track) => track.id === trackId)) return baseProject;
+      const projectWithoutTrack = {
+        ...baseProject,
+        builtinTracks: baseProject.builtinTracks.filter((track) => track.id !== trackId),
+        activeTrackOrder: baseProject.activeTrackOrder.filter((id) => id !== trackId),
+        characterAnnotations: trackId === "character-track" ? [] : baseProject.characterAnnotations,
+        actionAnnotations: trackId === "character-track"
+          ? baseProject.actionAnnotations
+          : baseProject.actionAnnotations.filter((item) => item.trackId !== trackId),
+        gongcheAnnotations: baseProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
+      };
+      return repairBanyanGongcheReferences(projectWithoutTrack).project;
+    };
+    const overflowBoundary = buildProjectSnapshotBoundaryEnvelope(
+      crypto.randomUUID(),
+      "builtin_track_lifecycle_overflow",
+    );
+    if (!overflowBoundary) return;
+    void runExclusiveProjectMutation(
+      "bulk_repair",
+      buildNextProject,
+      (baseProject, nextProject) => {
+        const repairResult = repairBanyanGongcheReferences({
+          ...baseProject,
+          gongcheAnnotations: baseProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
+        });
+        const gongcheTargets = baseProject.gongcheAnnotations
+          .filter((item) => item.parentTrackId === trackId)
+          .map((item) => ({ entityType: "gongche-block" as const, entityId: item.id, trackId }));
+        const ownedTargets: AnnotationLifecycleTarget[] = baseProject.characterAnnotations.map((item) => ({
+          entityType: "character" as const,
+          entityId: item.id,
+        }));
+        return buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          builtinTrackLifecycleTargets: [{ trackId }],
+          stateTargets: repairResult.changedMarkIds.map((entityId) => ({
+            entityType: "banyan-mark" as const,
+            entityId,
+          })),
+          lifecycleTargetGroups: [gongcheTargets, ownedTargets],
+        }) ?? overflowBoundary;
+      },
+    ).then((committed) => {
+      if (!committed) return;
+      // 只有项目真正提交后才清理 UI 选择，租约失败不能让界面先丢失当前上下文。
+      if (trackId === "character-track") cancelCharacterTextEdit();
+      applySelection(null);
+      setSelectedTimelineItems((items) => items.filter((item) =>
+        trackId === "character-track" ? item.type !== "character" : item.type !== "action"));
+    });
   }
 
   function addCustomTrack(trackType: CustomTrackType) {
-    const currentProject = projectRef.current;
-    const color = getNextTrackColor(currentProject.customTracks);
+    const previewProject = projectRef.current;
+    const color = getNextTrackColor(previewProject.customTracks);
     const nextTrack: CustomTrack = trackType === "text"
       ? {
           id: `custom-track-${crypto.randomUUID()}`,
-          name: getDefaultCustomTrackName(currentProject.customTracks, trackType),
+          name: getDefaultCustomTrackName(previewProject.customTracks, trackType),
           trackType,
           color,
           typeOptions: getDefaultCustomTrackTypeOptions(),
@@ -2711,7 +3560,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         }
       : {
           id: `custom-track-${crypto.randomUUID()}`,
-          name: getDefaultCustomTrackName(currentProject.customTracks, trackType),
+          name: getDefaultCustomTrackName(previewProject.customTracks, trackType),
           trackType,
           color,
           typeOptions: getDefaultCustomTrackTypeOptions(),
@@ -2721,12 +3570,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         snapToWaveformKeypoints: false,
       };
 
-    commitProject({
-      ...currentProject,
-      customTracks: [...currentProject.customTracks, nextTrack] as CustomTrack[],
-      activeTrackOrder: [...currentProject.activeTrackOrder, nextTrack.id],
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
+      customTracks: [...baseProject.customTracks, nextTrack] as CustomTrack[],
+      activeTrackOrder: [...baseProject.activeTrackOrder, nextTrack.id],
     });
-    applySelection({ type: "custom-track", id: nextTrack.id });
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        customTrackLifecycleTargets: [{ trackId: nextTrack.id }],
+      }),
+    ).then((committed) => {
+      if (committed) applySelection({ type: "custom-track", id: nextTrack.id });
+    });
   }
 
   function createAttachedPoint(pointTrackId: string, time: number) {
@@ -2740,10 +3596,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       time: Math.max(0, time),
       label: location.pointTrack.typeOptions[0] ?? "标记 1",
     };
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
+    const nextProject = buildProjectWithUpdatedAttachedPointTrack(currentProject, pointTrackId, (pointTrack) => ({
       ...pointTrack,
       points: [...pointTrack.points, nextPoint].sort((left, right) => left.time - right.time),
     }));
+    if (!nextProject) return;
+    commitProjectWithLifecycle(currentProject, nextProject, [{
+      entityType: "attached-point",
+      entityId: nextPoint.id,
+      trackId: pointTrackId,
+    }]);
     applySelection({
       type: "attached-point",
       id: nextPoint.id,
@@ -2768,6 +3630,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ? safeStartTime + DEFAULT_ACTION_DURATION
       : Math.max(safeStartTime + MIN_CHARACTER_DURATION, explicitEndTime);
     const defaultType = targetTrack.typeOptions[0] ?? "类型 1";
+    // undefined 可选字段不进入实体对象，确保命令重建和 JSON 往返使用同一规范结构。
     const nextBlock = targetTrack.trackType === "text"
       ? {
           id: `custom-block-${crypto.randomUUID()}`,
@@ -2775,17 +3638,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           endTime,
           text: DEFAULT_CUSTOM_TEXT,
           type: defaultType,
-          branchScope,
+          ...(branchScope ? { branchScope } : {}),
         }
       : {
           id: `custom-block-${crypto.randomUUID()}`,
           startTime: safeStartTime,
           endTime,
           type: defaultType,
-          branchScope,
+          ...(branchScope ? { branchScope } : {}),
         };
 
-    commitProject({
+    const nextProject: ProjectData = {
       ...currentProject,
       customTracks: currentProject.customTracks.map((track) =>
         track.id === trackId
@@ -2795,7 +3658,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             }
           : track,
       ) as CustomTrack[],
-    });
+    };
+    commitProjectWithLifecycle(currentProject, nextProject, [{
+      entityType: "custom-block",
+      entityId: nextBlock.id,
+      trackId,
+    }]);
 
     applySelection({ type: "custom-block", trackId, id: nextBlock.id });
     if (targetTrack.trackType === "text") {
@@ -2834,10 +3702,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         assetUrl: null,
       }],
     };
-    commitProject({
+    const nextProject = {
       ...currentProject,
       gongcheAnnotations: [...currentProject.gongcheAnnotations, nextBlock],
-    });
+    };
+    commitProjectWithLifecycle(currentProject, nextProject, [{
+      entityType: "gongche-block",
+      entityId: nextBlock.id,
+      trackId: parentTrackId,
+    }]);
     applySelection({ type: "gongche-block", id: nextBlock.id });
   }
 
@@ -2855,6 +3728,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     recordHistory = true,
   ) {
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
     const currentBlock = currentProject.gongcheAnnotations.find((item) => item.id === id);
     if (!currentBlock) {
       return;
@@ -2864,14 +3738,58 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ...currentBlock,
       ...changes,
     }, parentBlock);
-    const nextProject = {
+    let nextProject = {
       ...currentProject,
       gongcheAnnotations: currentProject.gongcheAnnotations.map((item) =>
         item.id === id ? nextBlock : item,
       ),
     };
     if (recordHistory) {
-      commitProject(nextProject);
+      const baseBlock = baseProject.gongcheAnnotations.find((item) => item.id === id);
+      if (!baseBlock) {
+        commitProject(nextProject, baseProject);
+        return;
+      }
+      const baseSymbolIds = new Set(baseBlock.symbols.map((symbol) => symbol.id));
+      const nextSymbolIds = new Set(nextBlock.symbols.map((symbol) => symbol.id));
+      const deletedSymbols = baseBlock.symbols.filter((symbol) => !nextSymbolIds.has(symbol.id));
+      const createdSymbols = nextBlock.symbols.filter((symbol) => !baseSymbolIds.has(symbol.id));
+      const survivingSymbols = nextBlock.symbols.filter((symbol) => baseSymbolIds.has(symbol.id));
+
+      // 删除 symbol 时先修复板眼引用；state 子命令会在 lifecycle 删除前断开强引用。
+      const repaired = deletedSymbols.length > 0 ? repairBanyanGongcheReferences(nextProject) : null;
+      if (repaired) nextProject = repaired.project;
+      const lifecycleTargets: AnnotationLifecycleTarget[] = [
+        ...deletedSymbols.map((symbol) => ({
+          entityType: "gongche-symbol" as const,
+          entityId: symbol.id,
+          trackId: id,
+        })),
+        ...createdSymbols.map((symbol) => ({
+          entityType: "gongche-symbol" as const,
+          entityId: symbol.id,
+          trackId: id,
+        })),
+      ];
+      const stateTargets: AnnotationStateTarget[] = [
+        ...survivingSymbols.map((symbol) => ({
+          entityType: "gongche-symbol" as const,
+          entityId: symbol.id,
+          trackId: id,
+        })),
+        ...(repaired?.changedMarkIds ?? []).map((entityId) => ({
+          entityType: "banyan-mark" as const,
+          entityId,
+        })),
+      ];
+      const blockTimingChanged = baseBlock.startTime !== nextBlock.startTime || baseBlock.endTime !== nextBlock.endTime;
+      commitProjectWithTransaction(baseProject, nextProject, {
+        timingTargets: blockTimingChanged
+          ? [{ entityType: "gongche-block", entityId: id, trackId: currentBlock.parentTrackId }]
+          : [],
+        stateTargets,
+        lifecycleTargets,
+      });
     } else {
       applyProjectWithoutHistory(nextProject);
     }
@@ -2891,62 +3809,112 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     updateGongcheBlock(id, changes, true);
   }
 
-  function importGongcheText(parentTrackId: string, sourceText: string) {
-    const currentProject = projectRef.current;
+  async function importGongcheText(parentTrackId: string, sourceText: string) {
     const parsedEntries = parseGongcheSourceText(sourceText);
-    const parentBlocks = getOrderedGongcheParentBlocks(currentProject, parentTrackId);
-    const alignedPairs = alignGongcheEntriesToParentBlocks(parsedEntries, parentBlocks);
-    const importedBlocks: GongcheAnnotation[] = [];
-    let updated = 0;
-
-    for (const pair of alignedPairs) {
-      const entry = parsedEntries[pair.entryIndex];
-      const parentBlock = parentBlocks[pair.parentIndex];
-      const existingBlock = currentProject.gongcheAnnotations.find((item) =>
-        item.parentTrackId === parentTrackId && item.parentBlockId === parentBlock.parentBlockId,
-      );
-      if (existingBlock) {
-        updated += 1;
+    // 预览与取得租约后的重算共用同一个纯准备器；无匹配结果时仍向用户返回解析统计。
+    const prepareImport = (baseProject: ProjectData) => {
+      const parentBlocks = getOrderedGongcheParentBlocks(baseProject, parentTrackId);
+      const alignedPairs = alignGongcheEntriesToParentBlocks(parsedEntries, parentBlocks);
+      const importedBlocks: GongcheAnnotation[] = [];
+      let updated = 0;
+      for (const pair of alignedPairs) {
+        const entry = parsedEntries[pair.entryIndex];
+        const parentBlock = parentBlocks[pair.parentIndex];
+        const existingBlock = baseProject.gongcheAnnotations.find((item) =>
+          item.parentTrackId === parentTrackId && item.parentBlockId === parentBlock.parentBlockId,
+        );
+        if (existingBlock) updated += 1;
+        importedBlocks.push({
+          id: existingBlock?.id ?? `gongche-${crypto.randomUUID()}`,
+          parentTrackId,
+          parentBlockId: parentBlock.parentBlockId,
+          startTime: parentBlock.startTime,
+          endTime: parentBlock.endTime,
+          symbols: distributeParsedGongcheSymbols(entry.symbols, parentBlock.startTime, parentBlock.endTime),
+        });
       }
-      importedBlocks.push({
-        id: existingBlock?.id ?? `gongche-${crypto.randomUUID()}`,
-        parentTrackId,
-        parentBlockId: parentBlock.parentBlockId,
-        startTime: parentBlock.startTime,
-        endTime: parentBlock.endTime,
-        symbols: distributeParsedGongcheSymbols(entry.symbols, parentBlock.startTime, parentBlock.endTime),
-      });
-    }
-
-    if (importedBlocks.length > 0) {
-      const importedKeys = new Set(importedBlocks.map((block) => getGongcheParentKey(block.parentTrackId, block.parentBlockId)));
-      commitProject({
-        ...currentProject,
+      const stats = {
+        parsed: parsedEntries.length,
+        imported: importedBlocks.length - updated,
+        updated,
+        unmatched: parsedEntries.length - importedBlocks.length,
+      };
+      if (importedBlocks.length === 0) return { project: baseProject, stats };
+      const importedKeys = new Set(importedBlocks.map((block) =>
+        getGongcheParentKey(block.parentTrackId, block.parentBlockId)));
+      // 批量替换可能生成新符号 id；保留板眼记录并把失效强引用转为待复核孤立状态。
+      const project = repairBanyanGongcheReferences({
+        ...baseProject,
         gongcheAnnotations: [
-          ...currentProject.gongcheAnnotations.filter((block) =>
-            !importedKeys.has(getGongcheParentKey(block.parentTrackId, block.parentBlockId)),
-          ),
+          ...baseProject.gongcheAnnotations.filter((block) =>
+            !importedKeys.has(getGongcheParentKey(block.parentTrackId, block.parentBlockId))),
           ...importedBlocks,
         ],
-      });
-    }
-
-    return {
-      parsed: parsedEntries.length,
-      imported: importedBlocks.length - updated,
-      updated,
-      unmatched: parsedEntries.length - importedBlocks.length,
+      }).project;
+      return { project, stats };
     };
+    let committedResult = prepareImport(projectRef.current);
+    if (areProjectValuesEqual(projectRef.current, committedResult.project)) return committedResult.stats;
+    const committed = await runControlledSnapshotMutation("import_gongche", (baseProject) => {
+      committedResult = prepareImport(baseProject);
+      return committedResult.project;
+    });
+    return committed ? committedResult.stats : null;
   }
 
-  function generateBanyanFromGongche() {
-    const result = generateBanyanMarksFromGongche(projectRef.current);
-    commitProject(result.project);
-    return result.stats;
+  async function generateBanyanFromGongche() {
+    const currentProject = projectRef.current;
+    const result = generateBanyanMarksFromGongche(currentProject);
+    const currentSectionIds = new Set(currentProject.banyanSections.map((section) => section.id));
+    const currentMarkIds = new Set(currentProject.banyanMarks.map((mark) => mark.id));
+    const nextSectionIds = new Set(result.project.banyanSections.map((section) => section.id));
+    const nextMarkIds = new Set(result.project.banyanMarks.map((mark) => mark.id));
+    const lifecycleTargets: AnnotationLifecycleTarget[] = [
+      ...currentProject.banyanSections
+        .filter((section) => !nextSectionIds.has(section.id))
+        .map((section) => ({ entityType: "banyan-section" as const, entityId: section.id })),
+      ...result.project.banyanSections
+        .filter((section) => !currentSectionIds.has(section.id))
+        .map((section) => ({ entityType: "banyan-section" as const, entityId: section.id })),
+      ...currentProject.banyanMarks
+        .filter((mark) => !nextMarkIds.has(mark.id))
+        .map((mark) => ({ entityType: "banyan-mark" as const, entityId: mark.id })),
+      ...result.project.banyanMarks
+        .filter((mark) => !currentMarkIds.has(mark.id))
+        .map((mark) => ({ entityType: "banyan-mark" as const, entityId: mark.id })),
+    ];
+    const stateTargets: AnnotationStateTarget[] = [
+      ...result.project.banyanSections
+        .filter((section) => currentSectionIds.has(section.id))
+        .map((section) => ({ entityType: "banyan-section" as const, entityId: section.id })),
+      ...result.project.banyanMarks
+        .filter((mark) => currentMarkIds.has(mark.id))
+        .map((mark) => ({ entityType: "banyan-mark" as const, entityId: mark.id })),
+    ];
+    const commandEnvelope = buildProjectAnnotationTransactionCommand(
+      currentProject,
+      result.project,
+      { stateTargets, lifecycleTargets },
+    );
+    if (commandEnvelope) {
+      commitProject(result.project, currentProject, { commandEnvelope });
+      return result.stats;
+    }
+    if (areProjectValuesEqual(currentProject, result.project)) return result.stats;
+
+    // 超出普通事务预算时才进入批量修复边界；拿锁后重新生成，避免覆盖等待期间的新工尺内容。
+    let committedStats = result.stats;
+    const committed = await runControlledSnapshotMutation("generate_banyan", (baseProject) => {
+      const latestResult = generateBanyanMarksFromGongche(baseProject);
+      committedStats = latestResult.stats;
+      return latestResult.project;
+    });
+    return committed ? committedStats : null;
   }
 
   function updateBanyanMark(id: string, changes: Partial<BanyanMark>, recordHistory = true) {
     const currentProject = projectRef.current;
+    const baseProject = transientProjectRef.current ?? currentProject;
     const currentMark = currentProject.banyanMarks.find((item) => item.id === id);
     if (!currentMark) {
       return;
@@ -2966,7 +3934,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       banyanMarks: currentProject.banyanMarks.map((item) => item.id === id ? nextMark : item),
     };
     if (recordHistory) {
-      commitProject(nextProject);
+      const isTimingOnly = Object.keys(changes).every((key) => key === "time");
+      // 板眼位置以零长度时间区间记录；类型、来源和人工审校字段变化不伪装成移动命令。
+      const commandEnvelope = isTimingOnly
+        ? buildProjectTimelineTimingCommand(baseProject, nextProject, [{
+            entityType: "banyan-mark",
+            entityId: id,
+          }])
+        : null;
+      if (commandEnvelope) commitProject(nextProject, baseProject, { commandEnvelope });
+      else commitProjectWithState(baseProject, nextProject, [{ entityType: "banyan-mark", entityId: id }]);
     } else {
       applyProjectWithoutHistory(nextProject);
     }
@@ -3015,12 +3992,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       confidence: "manual",
       manualOffset: 0,
       durationHint: null,
+      orphaned: false,
       comment: "",
     };
-    commitProject({
+    const nextProject = {
       ...currentProject,
       banyanSections: section ? currentProject.banyanSections : [...currentProject.banyanSections, nextSection],
       banyanMarks: [...currentProject.banyanMarks, nextMark].sort((left, right) => left.time - right.time),
+    };
+    commitProjectWithTransaction(currentProject, nextProject, {
+      lifecycleTargets: [
+        ...(section ? [] : [{ entityType: "banyan-section" as const, entityId: nextSection.id }]),
+        { entityType: "banyan-mark", entityId: nextMark.id },
+      ],
     });
     applySelection({ type: "banyan-mark", id: nextMark.id });
   }
@@ -3302,7 +4286,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           .map((item) => item.lineId),
       );
 
-      const nextProject = syncSubtitleLines(
+      let nextProject = syncSubtitleLines(
         {
           ...currentProject,
           characterAnnotations: currentProject.characterAnnotations.filter((item) => !characterIds.has(item.id)),
@@ -3329,6 +4313,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         },
         Array.from(affectedLineIds),
       );
+      const repairedBanyan = repairBanyanGongcheReferences(nextProject);
+      nextProject = repairedBanyan.project;
 
       if (editingCharacterId && characterIds.has(editingCharacterId)) {
         cancelCharacterTextEdit();
@@ -3339,7 +4325,48 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ) {
         cancelCustomTextEdit();
       }
-      commitProject(nextProject);
+      const lifecycleTargets: AnnotationLifecycleTarget[] = [
+        ...Array.from(characterIds, (entityId): AnnotationLifecycleTarget => ({
+          entityType: "character",
+          entityId,
+        })),
+        ...timelineSelection.flatMap((item) => item.type === "custom-block"
+          ? [{ entityType: "custom-block" as const, trackId: item.trackId, entityId: item.id }]
+          : []),
+        ...timelineSelection.flatMap((item) => item.type === "attached-point"
+          ? [{ entityType: "attached-point" as const, trackId: item.trackId, entityId: item.id }]
+          : []),
+        ...currentProject.gongcheAnnotations.flatMap((item): AnnotationLifecycleTarget[] =>
+          gongcheParentKeys.has(getGongcheParentKey(item.parentTrackId, item.parentBlockId))
+            ? [{ entityType: "gongche-block", entityId: item.id, trackId: item.parentTrackId }]
+            : []),
+        ...Array.from(banyanMarkIds, (entityId): AnnotationLifecycleTarget => ({
+          entityType: "banyan-mark",
+          entityId,
+        })),
+      ];
+      const deletedLineIds = Array.from(affectedLineIds).filter((lineId) =>
+        !nextProject.subtitleLines.some((line) => line.id === lineId));
+      lifecycleTargets.push(...deletedLineIds.map((entityId): AnnotationLifecycleTarget => ({
+        entityType: "sentence",
+        entityId,
+      })));
+      const survivingLineIds = Array.from(affectedLineIds).filter((lineId) =>
+        nextProject.subtitleLines.some((line) => line.id === lineId));
+      // 混入未迁移 action/板眼时，事务完整差异门禁会拒绝局部事实并保留原 snapshot operation。
+      commitProjectWithTransaction(currentProject, nextProject, {
+        contentTargets: survivingLineIds.map((entityId) => ({
+          entityType: "sentence" as const,
+          entityId,
+          field: "text" as const,
+        })),
+        timingTargets: survivingLineIds.map((entityId) => ({ entityType: "sentence" as const, entityId })),
+        stateTargets: repairedBanyan.changedMarkIds.map((entityId) => ({
+          entityType: "banyan-mark" as const,
+          entityId,
+        })),
+        lifecycleTargets,
+      });
       applySelection(null);
       return;
     }
@@ -3352,14 +4379,39 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (!currentCharacter) {
         return;
       }
-      const nextProject = syncSubtitleLine({
+      let nextProject = syncSubtitleLine({
         ...currentProject,
         characterAnnotations: currentProject.characterAnnotations.filter((item) => item.id !== selectedItem.id),
         gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) =>
           item.parentTrackId !== "character-track" || item.parentBlockId !== selectedItem.id,
         ),
       }, currentCharacter.lineId);
-      commitProject(nextProject);
+      const removedGongche = currentProject.gongcheAnnotations.filter((item) =>
+        item.parentTrackId === "character-track" && item.parentBlockId === selectedItem.id);
+      const repairedBanyan = repairBanyanGongcheReferences(nextProject);
+      nextProject = repairedBanyan.project;
+      const lineStillExists = nextProject.subtitleLines.some((line) => line.id === currentCharacter.lineId);
+      commitProjectWithTransaction(currentProject, nextProject, {
+        contentTargets: lineStillExists
+          ? [{ entityType: "sentence", entityId: currentCharacter.lineId, field: "text" }]
+          : [],
+        timingTargets: lineStillExists
+          ? [{ entityType: "sentence", entityId: currentCharacter.lineId }]
+          : [],
+        stateTargets: repairedBanyan.changedMarkIds.map((entityId) => ({
+          entityType: "banyan-mark" as const,
+          entityId,
+        })),
+        lifecycleTargets: [
+          { entityType: "character", entityId: selectedItem.id },
+          ...(lineStillExists ? [] : [{ entityType: "sentence" as const, entityId: currentCharacter.lineId }]),
+          ...removedGongche.map((item): AnnotationLifecycleTarget => ({
+            entityType: "gongche-block",
+            entityId: item.id,
+            trackId: item.parentTrackId,
+          })),
+        ],
+      });
       if (editingCharacterId === selectedItem.id) {
         cancelCharacterTextEdit();
       }
@@ -3373,7 +4425,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       applySelection(null);
     }
     if (selectedItem.type === "custom-block") {
-      commitProject({
+      let nextProject: ProjectData = {
         ...currentProject,
         gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) =>
           item.parentTrackId !== selectedItem.trackId || item.parentBlockId !== selectedItem.id,
@@ -3386,7 +4438,30 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               }
             : track,
         ) as CustomTrack[],
-      });
+      };
+      const removedGongche = currentProject.gongcheAnnotations.filter((item) =>
+        item.parentTrackId === selectedItem.trackId && item.parentBlockId === selectedItem.id);
+      const repairedBanyan = repairBanyanGongcheReferences(nextProject);
+      nextProject = repairedBanyan.project;
+      const lifecycleTargets: AnnotationLifecycleTarget[] = [
+        { entityType: "custom-block", entityId: selectedItem.id, trackId: selectedItem.trackId },
+        ...removedGongche.map((item): AnnotationLifecycleTarget => ({
+          entityType: "gongche-block",
+          entityId: item.id,
+          trackId: item.parentTrackId,
+        })),
+      ];
+      if (removedGongche.length > 0) {
+        commitProjectWithTransaction(currentProject, nextProject, {
+          stateTargets: repairedBanyan.changedMarkIds.map((entityId) => ({
+            entityType: "banyan-mark" as const,
+            entityId,
+          })),
+          lifecycleTargets,
+        });
+      } else {
+        commitProjectWithLifecycle(currentProject, nextProject, lifecycleTargets);
+      }
       if (
         editingCustomTextBlock?.trackId === selectedItem.trackId &&
         editingCustomTextBlock.id === selectedItem.id
@@ -3396,9 +4471,24 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       applySelection(null);
     }
     if (selectedItem.type === "gongche-block") {
-      commitProject({
+      const currentBlock = currentProject.gongcheAnnotations.find((item) => item.id === selectedItem.id);
+      if (!currentBlock) return;
+      let nextProject = {
         ...currentProject,
         gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.id !== selectedItem.id),
+      };
+      const repairedBanyan = repairBanyanGongcheReferences(nextProject);
+      nextProject = repairedBanyan.project;
+      commitProjectWithTransaction(currentProject, nextProject, {
+        stateTargets: repairedBanyan.changedMarkIds.map((entityId) => ({
+          entityType: "banyan-mark" as const,
+          entityId,
+        })),
+        lifecycleTargets: [{
+          entityType: "gongche-block",
+          entityId: selectedItem.id,
+          trackId: currentBlock.parentTrackId,
+        }],
       });
       applySelection(null);
     }
@@ -3407,17 +4497,27 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (!location) {
         return;
       }
-      updateAttachedPointTrack(selectedItem.trackId, (pointTrack) => ({
+      const nextProject = buildProjectWithUpdatedAttachedPointTrack(currentProject, selectedItem.trackId, (pointTrack) => ({
         ...pointTrack,
         points: pointTrack.points.filter((point) => point.id !== selectedItem.id),
       }));
+      if (!nextProject) return;
+      commitProjectWithLifecycle(currentProject, nextProject, [{
+        entityType: "attached-point",
+        entityId: selectedItem.id,
+        trackId: selectedItem.trackId,
+      }]);
       applySelection(null);
     }
     if (selectedItem.type === "banyan-mark") {
-      commitProject({
+      const nextProject = {
         ...currentProject,
         banyanMarks: currentProject.banyanMarks.filter((item) => item.id !== selectedItem.id),
-      });
+      };
+      commitProjectWithLifecycle(currentProject, nextProject, [{
+        entityType: "banyan-mark",
+        entityId: selectedItem.id,
+      }]);
       applySelection({ type: "banyan-track" });
     }
     if (selectedItem.type === "attached-point-track") {
@@ -3488,7 +4588,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function renameCustomTrack(trackId: string, name: string) {
     const normalizedName = name.trimStart();
-    updateCustomTrack(trackId, (track) => ({
+    void updateCustomTrackStructure(trackId, (track) => ({
       ...track,
       name: normalizedName.length > 0 ? normalizedName : track.name,
     }) as CustomTrack);
@@ -3499,7 +4599,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!normalizedColor) {
       return;
     }
-    updateCustomTrack(trackId, (track) => ({
+    void updateCustomTrackStructure(trackId, (track) => ({
       ...track,
       color: normalizedColor,
     }) as CustomTrack);
@@ -3507,7 +4607,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function renameBuiltinTrack(trackId: BuiltinTrackId, name: string) {
     const normalizedName = name.trimStart();
-    updateBuiltinTrack(trackId, (track) => ({
+    void updateBuiltinTrackStructure(trackId, (track) => ({
       ...track,
       name: normalizedName.length > 0 ? normalizedName : track.name,
     }));
@@ -3515,14 +4615,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function renameAttachedPointTrack(pointTrackId: string, name: string) {
     const normalizedName = name.trimStart();
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => ({
       ...pointTrack,
       name: normalizedName.length > 0 ? normalizedName : pointTrack.name,
     }));
   }
 
   function setCustomTrackBranchingEnabled(trackId: string, enabled: boolean) {
-    updateCustomTrack(trackId, (track) => ({
+    void updateCustomTrackStructure(trackId, (track) => ({
       ...track,
       branching: {
         ...(track.branching ?? createDefaultTrackBranching()),
@@ -3532,7 +4632,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function setCustomTrackBranchDisplayMode(trackId: string, displayMode: TrackBranchDisplayMode) {
-    updateCustomTrack(trackId, (track) => ({
+    void updateCustomTrackStructure(trackId, (track) => ({
       ...track,
       branching: {
         ...(track.branching ?? createDefaultTrackBranching()),
@@ -3554,16 +4654,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!name) {
       return;
     }
-    updateCustomTrack(trackId, (currentTrack) => {
+    const laneColor = getBranchLaneColor(resolveCustomTrackColor(track), currentBranching.lanes, parentLaneId);
+    const nextLane = createBranchLane(name, parentLaneId, laneColor);
+    void updateCustomTrackStructure(trackId, (currentTrack) => {
       const branching = currentTrack.branching ?? createDefaultTrackBranching();
-      const parentColor = resolveCustomTrackColor(currentTrack);
-      const laneColor = getBranchLaneColor(parentColor, branching.lanes, parentLaneId);
       return {
         ...currentTrack,
         branching: {
           ...branching,
           enabled: true,
-          lanes: addBranchLane(branching.lanes, parentLaneId, createBranchLane(name, parentLaneId, laneColor)),
+          lanes: addBranchLane(branching.lanes, parentLaneId, nextLane),
         },
       } as CustomTrack;
     });
@@ -3574,7 +4674,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!normalizedColor) {
       return;
     }
-    updateCustomTrack(trackId, (track) => {
+    void updateCustomTrackStructure(trackId, (track) => {
       if (!track.branching) {
         return track;
       }
@@ -3590,7 +4690,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function renameCustomTrackBranchLane(trackId: string, laneId: string, name: string) {
     const normalizedName = name.trimStart();
-    updateCustomTrack(trackId, (track) => {
+    void updateCustomTrackStructure(trackId, (track) => {
       if (!track.branching || normalizedName.length === 0) {
         return track;
       }
@@ -3605,7 +4705,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function deleteCustomTrackBranchLane(trackId: string, laneId: string) {
-    updateCustomTrack(trackId, (track) => {
+    void updateCustomTrackStructure(trackId, (track) => {
       if (!track.branching) {
         return track;
       }
@@ -3638,7 +4738,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   function updateTrackWaveformSnap(trackId: string, enabled: boolean) {
     const builtinTrack = projectRef.current.builtinTracks.find((track) => track.id === trackId);
     if (builtinTrack) {
-      updateBuiltinTrack(trackId as BuiltinTrackId, (track) => ({
+      void updateBuiltinTrackStructure(trackId as BuiltinTrackId, (track) => ({
         ...track,
         snapToWaveformKeypoints: enabled,
       }));
@@ -3647,14 +4747,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
     const customTrack = projectRef.current.customTracks.find((track) => track.id === trackId);
     if (customTrack) {
-      updateCustomTrack(trackId, (track) => ({
+      void updateCustomTrackStructure(trackId, (track) => ({
         ...track,
         snapToWaveformKeypoints: enabled,
       }) as CustomTrack);
       return;
     }
 
-    updateAttachedPointTrack(trackId, (pointTrack) => ({
+    void updateAttachedPointTrackStructure(trackId, (pointTrack) => ({
       ...pointTrack,
       snapToWaveformKeypoints: enabled,
     }));
@@ -3663,7 +4763,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   function updateTrackAutoLoopRange(trackId: string, enabled: boolean) {
     const builtinTrack = projectRef.current.builtinTracks.find((track) => track.id === trackId);
     if (builtinTrack) {
-      updateBuiltinTrack(trackId as BuiltinTrackId, (track) => ({
+      void updateBuiltinTrackStructure(trackId as BuiltinTrackId, (track) => ({
         ...track,
         autoSetLoopRangeOnSelect: enabled,
       }));
@@ -3672,21 +4772,21 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
     const customTrack = projectRef.current.customTracks.find((track) => track.id === trackId);
     if (customTrack) {
-      updateCustomTrack(trackId, (track) => ({
+      void updateCustomTrackStructure(trackId, (track) => ({
         ...track,
         autoSetLoopRangeOnSelect: enabled,
       }) as CustomTrack);
       return;
     }
 
-    updateAttachedPointTrack(trackId, (pointTrack) => ({
+    void updateAttachedPointTrackStructure(trackId, (pointTrack) => ({
       ...pointTrack,
       autoSetLoopRangeOnSelect: enabled,
     }));
   }
 
   function updateAttachedPointTrackParentSnap(pointTrackId: string, enabled: boolean) {
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => ({
       ...pointTrack,
       snapToParentBoundaries: enabled,
     }));
@@ -3710,99 +4810,99 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function updateCustomTrackTypeOption(trackId: string, index: number, value: string) {
     const normalizedValue = value.trimStart();
-    updateCustomTrack(trackId, (track) => {
-      const previousValue = track.typeOptions[index];
-      const nextValue = normalizedValue.length > 0 ? normalizedValue : previousValue;
-      const nextTypeOptions = track.typeOptions.map((option, optionIndex) =>
-        optionIndex === index ? nextValue : option,
-      );
-      return {
-        ...track,
-        typeOptions: nextTypeOptions,
-        blocks: track.blocks.map((block) =>
-          block.type === previousValue ? { ...block, type: nextValue } : block,
-        ) as CustomTrack["blocks"],
-      } as CustomTrack;
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
+      customTracks: baseProject.customTracks.map((track) => {
+        const previousValue = track.id === trackId ? track.typeOptions[index] : undefined;
+        if (track.id !== trackId || previousValue === undefined) return track;
+        const nextValue = normalizedValue.length > 0 ? normalizedValue : previousValue;
+        return {
+          ...track,
+          typeOptions: track.typeOptions.map((option, optionIndex) =>
+            optionIndex === index ? nextValue : option),
+          blocks: track.blocks.map((block) =>
+            block.type === previousValue ? { ...block, type: nextValue } : block,
+          ) as CustomTrack["blocks"],
+        } as CustomTrack;
+      }) as CustomTrack[],
     });
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => {
+        const baseTrack = baseProject.customTracks.find((track) => track.id === trackId);
+        const nextTrack = nextProject.customTracks.find((track) => track.id === trackId);
+        if (!baseTrack || !nextTrack) return null;
+        return buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          customTrackStructureIds: [trackId],
+          contentTargets: baseTrack.blocks.flatMap((block) =>
+            nextTrack.blocks.find((candidate) => candidate.id === block.id)?.type !== block.type
+              ? [{ entityType: "custom-block" as const, entityId: block.id, trackId, field: "type" as const }]
+              : []),
+        });
+      },
+    );
   }
 
   function updateBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number, value: string) {
     const normalizedValue = value.trimStart();
-    const currentProject = projectRef.current;
-    const targetTrack = currentProject.builtinTracks.find((track) => track.id === trackId);
+    const targetTrack = projectRef.current.builtinTracks.find((track) => track.id === trackId);
     if (!targetTrack?.options || index < 0 || index >= targetTrack.options.length) {
       return;
     }
-    const previousValue = targetTrack.options[index];
-    const nextValue = normalizedValue.length > 0 ? normalizedValue : previousValue;
-    const nextOptions = targetTrack.options.map((option, optionIndex) =>
-      optionIndex === index ? nextValue : option,
-    );
-    const nextProject: ProjectData = {
-      ...currentProject,
-      builtinTracks: currentProject.builtinTracks.map((track) =>
-        track.id === trackId ? { ...track, options: nextOptions } : track,
-      ),
-      characterAnnotations: trackId === "character-track"
-        ? currentProject.characterAnnotations.map((item) =>
-            item.singingStyle === previousValue ? { ...item, singingStyle: nextValue } : item
-          )
-        : currentProject.characterAnnotations,
-      actionAnnotations: trackId !== "character-track"
-        ? currentProject.actionAnnotations.map((item) =>
-            item.trackId === trackId && item.label === previousValue ? { ...item, label: nextValue } : item
-          )
-        : currentProject.actionAnnotations,
-    };
-    commitProject(nextProject);
-  }
-
-  function updateAttachedPointTrackTypeOption(pointTrackId: string, index: number, value: string) {
-    const currentProject = projectRef.current;
-    const location = findPointTrackLocation(currentProject, pointTrackId);
-    if (!location || index < 0 || index >= location.pointTrack.typeOptions.length) {
-      return;
-    }
-    const previousValue = location.pointTrack.typeOptions[index];
-    const normalizedValue = value.trimStart();
-    const nextValue = normalizedValue.length > 0 ? normalizedValue : previousValue;
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => {
-      const nextTypeOptions = pointTrack.typeOptions.map((option, optionIndex) =>
-        optionIndex === index ? nextValue : option,
-      );
-      return {
-        ...pointTrack,
-        typeOptions: nextTypeOptions,
-        points: pointTrack.points.map((point) =>
-          point.label === previousValue ? { ...point, label: nextValue } : point,
-        ),
-      };
+    const nextValue = normalizedValue.length > 0 ? normalizedValue : targetTrack.options[index];
+    void updateBuiltinTrackStructure(trackId, (track) => ({
+      ...track,
+      options: (track.options ?? []).map((option, optionIndex) =>
+        optionIndex === index ? nextValue : option),
+    }), (characters, beforeTrack, afterTrack) => {
+      const before = beforeTrack.options?.[index];
+      const after = afterTrack.options?.[index];
+      return before === undefined || after === undefined
+        ? characters
+        : characters.map((item) => item.singingStyle === before ? { ...item, singingStyle: after } : item);
     });
   }
 
+  function updateAttachedPointTrackTypeOption(pointTrackId: string, index: number, value: string) {
+    const location = findPointTrackLocation(projectRef.current, pointTrackId);
+    if (!location || index < 0 || index >= location.pointTrack.typeOptions.length) {
+      return;
+    }
+    const normalizedValue = value.trimStart();
+    const nextValue = normalizedValue.length > 0 ? normalizedValue : location.pointTrack.typeOptions[index];
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => ({
+        // updater 在持锁后的最新点轨上读取旧类型，避免 acquire 等待期间闭包值过期。
+        ...pointTrack,
+        typeOptions: pointTrack.typeOptions.map((option, optionIndex) =>
+          optionIndex === index ? nextValue : option),
+        points: pointTrack.points.map((point) =>
+          point.label === pointTrack.typeOptions[index] ? { ...point, label: nextValue } : point),
+      }));
+  }
+
   function addCustomTrackTypeOption(trackId: string) {
-    updateCustomTrack(trackId, (track) => ({
+    void updateCustomTrackStructure(trackId, (track) => ({
       ...track,
       typeOptions: [...track.typeOptions, getNextCustomTrackTypeOptionName(track.typeOptions)],
     }) as CustomTrack);
   }
 
   function addBuiltinTrackTypeOption(trackId: BuiltinTrackId) {
-    updateBuiltinTrack(trackId, (track) => ({
+    void updateBuiltinTrackStructure(trackId, (track) => ({
       ...track,
       options: [...(track.options ?? []), getNextCustomTrackTypeOptionName(track.options ?? [])],
     }));
   }
 
   function addAttachedPointTrackTypeOption(pointTrackId: string) {
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => ({
       ...pointTrack,
       typeOptions: [...pointTrack.typeOptions, getNextCustomTrackTypeOptionName(pointTrack.typeOptions)],
     }));
   }
 
   function moveCustomTrackTypeOption(trackId: string, index: number, direction: "up" | "down") {
-    updateCustomTrack(trackId, (track) => {
+    void updateCustomTrackStructure(trackId, (track) => {
       const targetIndex = direction === "up" ? index - 1 : index + 1;
       if (targetIndex < 0 || targetIndex >= track.typeOptions.length) {
         return track;
@@ -3818,7 +4918,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function moveBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number, direction: "up" | "down") {
-    updateBuiltinTrack(trackId, (track) => {
+    void updateBuiltinTrackStructure(trackId, (track) => {
       const options = [...(track.options ?? [])];
       const targetIndex = direction === "up" ? index - 1 : index + 1;
       if (targetIndex < 0 || targetIndex >= options.length) {
@@ -3834,7 +4934,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function moveAttachedPointTrackTypeOption(pointTrackId: string, index: number, direction: "up" | "down") {
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => {
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => {
       const targetIndex = direction === "up" ? index - 1 : index + 1;
       if (targetIndex < 0 || targetIndex >= pointTrack.typeOptions.length) {
         return pointTrack;
@@ -3850,7 +4950,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function reorderCustomTrackTypeOption(trackId: string, fromIndex: number, insertionIndex: number) {
-    updateCustomTrack(trackId, (track) => {
+    void updateCustomTrackStructure(trackId, (track) => {
       if (
         fromIndex < 0 ||
         fromIndex >= track.typeOptions.length ||
@@ -3874,7 +4974,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function reorderBuiltinTrackTypeOption(trackId: BuiltinTrackId, fromIndex: number, insertionIndex: number) {
-    updateBuiltinTrack(trackId, (track) => {
+    void updateBuiltinTrackStructure(trackId, (track) => {
       const options = [...(track.options ?? [])];
       if (
         fromIndex < 0 ||
@@ -3898,7 +4998,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function reorderAttachedPointTrackTypeOption(pointTrackId: string, fromIndex: number, insertionIndex: number) {
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => {
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => {
       if (
         fromIndex < 0 ||
         fromIndex >= pointTrack.typeOptions.length ||
@@ -3922,54 +5022,60 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function removeCustomTrackTypeOption(trackId: string, index: number) {
-    updateCustomTrack(trackId, (track) => {
-      if (track.typeOptions.length <= 1) {
-        return track;
-      }
-      const removedValue = track.typeOptions[index];
-      const nextTypeOptions = track.typeOptions.filter((_, optionIndex) => optionIndex !== index);
-      const fallbackType = nextTypeOptions[0] ?? "类型 1";
-      return {
-        ...track,
-        typeOptions: nextTypeOptions,
-        blocks: track.blocks.map((block) =>
-          block.type === removedValue ? { ...block, type: fallbackType } : block,
-        ) as CustomTrack["blocks"],
-      } as CustomTrack;
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
+      customTracks: baseProject.customTracks.map((track) => {
+        if (track.id !== trackId || track.typeOptions.length <= 1 ||
+          index < 0 || index >= track.typeOptions.length) return track;
+        const removedValue = track.typeOptions[index];
+        const nextTypeOptions = track.typeOptions.filter((_, optionIndex) => optionIndex !== index);
+        const fallbackType = nextTypeOptions[0] ?? "类型 1";
+        return {
+          ...track,
+          typeOptions: nextTypeOptions,
+          blocks: track.blocks.map((block) =>
+            block.type === removedValue ? { ...block, type: fallbackType } : block,
+          ) as CustomTrack["blocks"],
+        } as CustomTrack;
+      }) as CustomTrack[],
     });
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => {
+        const baseTrack = baseProject.customTracks.find((track) => track.id === trackId);
+        const nextTrack = nextProject.customTracks.find((track) => track.id === trackId);
+        if (!baseTrack || !nextTrack) return null;
+        return buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          customTrackStructureIds: [trackId],
+          contentTargets: baseTrack.blocks.flatMap((block) =>
+            nextTrack.blocks.find((candidate) => candidate.id === block.id)?.type !== block.type
+              ? [{ entityType: "custom-block" as const, entityId: block.id, trackId, field: "type" as const }]
+              : []),
+        });
+      },
+    );
   }
 
   function removeBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number) {
-    const currentProject = projectRef.current;
-    const targetTrack = currentProject.builtinTracks.find((track) => track.id === trackId);
+    const targetTrack = projectRef.current.builtinTracks.find((track) => track.id === trackId);
     const options = targetTrack?.options ?? [];
     if (options.length <= 1 || index < 0 || index >= options.length) {
       return;
     }
-    const removedValue = options[index];
-    const nextOptions = options.filter((_, optionIndex) => optionIndex !== index);
-    const fallbackOption = nextOptions[0] ?? "类型 1";
-    commitProject({
-      ...currentProject,
-      builtinTracks: currentProject.builtinTracks.map((track) =>
-        track.id === trackId ? { ...track, options: nextOptions } : track,
-      ),
-      characterAnnotations: trackId === "character-track"
-        ? currentProject.characterAnnotations.map((item) =>
-            item.singingStyle === removedValue ? { ...item, singingStyle: fallbackOption } : item
-          )
-        : currentProject.characterAnnotations,
-      actionAnnotations: trackId !== "character-track"
-        ? currentProject.actionAnnotations.map((item) =>
-            item.trackId === trackId && item.label === removedValue ? { ...item, label: fallbackOption } : item
-          )
-        : currentProject.actionAnnotations,
+    void updateBuiltinTrackStructure(trackId, (track) => ({
+      ...track,
+      options: (track.options ?? []).filter((_, optionIndex) => optionIndex !== index),
+    }), (characters, beforeTrack, afterTrack) => {
+      const before = beforeTrack.options?.[index];
+      const after = afterTrack.options?.[0] ?? "类型 1";
+      return before === undefined
+        ? characters
+        : characters.map((item) => item.singingStyle === before ? { ...item, singingStyle: after } : item);
     });
   }
 
   function removeAttachedPointTrackTypeOption(pointTrackId: string, index: number) {
-    const currentProject = projectRef.current;
-    const location = findPointTrackLocation(currentProject, pointTrackId);
+    const location = findPointTrackLocation(projectRef.current, pointTrackId);
     if (!location) {
       return;
     }
@@ -3977,16 +5083,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (options.length <= 1 || index < 0 || index >= options.length) {
       return;
     }
-    const removedValue = options[index];
-    const nextTypeOptions = options.filter((_, optionIndex) => optionIndex !== index);
-    const fallbackOption = nextTypeOptions[0] ?? "标记 1";
-    updateAttachedPointTrack(pointTrackId, (pointTrack) => ({
-      ...pointTrack,
-      typeOptions: nextTypeOptions,
-      points: pointTrack.points.map((point) =>
-        point.label === removedValue ? { ...point, label: fallbackOption } : point,
-      ),
-    }));
+    void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => {
+      const removedValue = pointTrack.typeOptions[index];
+      if (removedValue === undefined || pointTrack.typeOptions.length <= 1) return pointTrack;
+      const nextTypeOptions = pointTrack.typeOptions.filter((_, optionIndex) => optionIndex !== index);
+      const fallbackOption = nextTypeOptions[0] ?? "标记 1";
+      return {
+        ...pointTrack,
+        typeOptions: nextTypeOptions,
+        points: pointTrack.points.map((point) =>
+          point.label === removedValue ? { ...point, label: fallbackOption } : point),
+      };
+    });
   }
 
   function deleteCustomTrack(trackId: string) {
@@ -4007,27 +5115,43 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!confirmed) {
       return;
     }
-    const nextProject = {
-      ...currentProject,
-      activeTrackOrder: currentProject.activeTrackOrder.filter((id) => id !== trackId),
-      customTracks: currentProject.customTracks.filter((item) => item.id !== trackId) as CustomTrack[],
-      gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
+    const buildNextProject = (baseProject: ProjectData): ProjectData => {
+      const projectWithoutTrack = {
+        ...baseProject,
+        activeTrackOrder: baseProject.activeTrackOrder.filter((id) => id !== trackId),
+        customTracks: baseProject.customTracks.filter((item) => item.id !== trackId) as CustomTrack[],
+        gongcheAnnotations: baseProject.gongcheAnnotations.filter((item) => item.parentTrackId !== trackId),
+      };
+      // 删除拥有者后，板眼记录保留但必须先断开指向已删除工尺的强引用。
+      return repairBanyanGongcheReferences(projectWithoutTrack).project;
     };
-    if (editingCustomTextBlock?.trackId === trackId) {
-      cancelCustomTextEdit();
-    }
-    commitProject(nextProject);
-    if (
-      (selectedItem?.type === "custom-track" && selectedItem.id === trackId) ||
-      (selectedItem?.type === "custom-block" && selectedItem.trackId === trackId) ||
-      (selectedItem?.type === "gongche-track" && selectedItem.parentTrackId === trackId) ||
-      (selectedItem?.type === "gongche-block" &&
-        currentProject.gongcheAnnotations.some((item) => item.id === selectedItem.id && item.parentTrackId === trackId)) ||
-      (selectedItem?.type === "attached-point-track" && selectedItem.parentTrackId === trackId) ||
-      (selectedItem?.type === "attached-point" && selectedItem.parentTrackId === trackId)
-    ) {
-      applySelection(null);
-    }
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        customTrackLifecycleTargets: [{ trackId }],
+        lifecycleTargets: baseProject.gongcheAnnotations
+          .filter((item) => item.parentTrackId === trackId)
+          .map((item) => ({ entityType: "gongche-block" as const, entityId: item.id, trackId })),
+        stateTargets: baseProject.banyanMarks.flatMap((mark) => {
+          const nextMark = nextProject.banyanMarks.find((candidate) => candidate.id === mark.id);
+          return nextMark && !areProjectValuesEqual(mark, nextMark)
+            ? [{ entityType: "banyan-mark" as const, entityId: mark.id }]
+            : [];
+        }),
+      }),
+    ).then((committed) => {
+      if (!committed) return;
+      if (editingCustomTextBlock?.trackId === trackId) cancelCustomTextEdit();
+      if (
+        (selectedItem?.type === "custom-track" && selectedItem.id === trackId) ||
+        (selectedItem?.type === "custom-block" && selectedItem.trackId === trackId) ||
+        (selectedItem?.type === "gongche-track" && selectedItem.parentTrackId === trackId) ||
+        (selectedItem?.type === "gongche-block" &&
+          currentProject.gongcheAnnotations.some((item) => item.id === selectedItem.id && item.parentTrackId === trackId)) ||
+        (selectedItem?.type === "attached-point-track" && selectedItem.parentTrackId === trackId) ||
+        (selectedItem?.type === "attached-point" && selectedItem.parentTrackId === trackId)
+      ) applySelection(null);
+    });
   }
 
   function deleteAttachedPointTrack(pointTrackId: string) {
@@ -4046,43 +5170,90 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (!confirmed) {
       return;
     }
-    if (location.parentType === "builtin") {
-      updateBuiltinTrack(location.parentTrack.id, (track) => ({
-        ...track,
-        attachedPointTracks: (track.attachedPointTracks ?? []).filter((pointTrack) => pointTrack.id !== pointTrackId),
-      }));
-    } else {
-      updateCustomTrack(location.parentTrack.id, (track) => ({
-        ...track,
-        attachedPointTracks: (track.attachedPointTracks ?? []).filter((pointTrack) => pointTrack.id !== pointTrackId),
-      }) as CustomTrack);
-    }
-    if (
-      (selectedItem?.type === "attached-point-track" && selectedItem.id === pointTrackId) ||
-      (selectedItem?.type === "attached-point" && selectedItem.trackId === pointTrackId)
-    ) {
-      applySelection(null);
-    }
-  }
-
-  function undo() {
-    undoProject((previousEntry: HistoryEntry) => {
-      if (!requiresUndoConfirmation(previousEntry.action)) {
-        return true;
-      }
-      return window.confirm(getUndoConfirmationMessage(previousEntry.action));
+    const parentTrackId = location.parentTrack.id;
+    const parentTrackType = location.parentType;
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
+      builtinTracks: parentTrackType === "builtin"
+        ? baseProject.builtinTracks.map((track) => track.id === parentTrackId
+          ? { ...track, attachedPointTracks: track.attachedPointTracks.filter((item) => item.id !== pointTrackId) }
+          : track)
+        : baseProject.builtinTracks,
+      customTracks: parentTrackType === "custom"
+        ? baseProject.customTracks.map((track) => track.id === parentTrackId
+          ? ({
+              ...track,
+              attachedPointTracks: track.attachedPointTracks.filter((item) => item.id !== pointTrackId),
+            } as CustomTrack)
+          : track) as CustomTrack[]
+        : baseProject.customTracks,
+    });
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        attachedPointTrackLifecycleTargets: [{ pointTrackId, parentTrackId, parentTrackType }],
+      }),
+    ).then((committed) => {
+      if (committed && (
+        (selectedItem?.type === "attached-point-track" && selectedItem.id === pointTrackId) ||
+        (selectedItem?.type === "attached-point" && selectedItem.trackId === pointTrackId)
+      )) applySelection(null);
     });
   }
 
+  function undo() {
+    const previousEntry = undoStack[undoStack.length - 1];
+    if (!previousEntry) return;
+    if (requiresUndoConfirmation(previousEntry.action) &&
+      !window.confirm(getUndoConfirmationMessage(previousEntry.action))) return;
+    const purpose = getAnnotationMutationLeasePurposeForCommand(previousEntry.commandEnvelope);
+    if (purpose) {
+      void runHistoryMutationWithLease(purpose, () => undoProject(() => true));
+      return;
+    }
+    undoProject(() => true);
+  }
+
   function redo() {
+    const nextEntry = redoStack[redoStack.length - 1];
+    const purpose = getAnnotationMutationLeasePurposeForCommand(nextEntry?.commandEnvelope);
+    if (purpose) {
+      void runHistoryMutationWithLease(purpose, redoProject);
+      return;
+    }
     redoProject();
+  }
+
+  async function runHistoryMutationWithLease(
+    purpose: AnnotationMutationPurpose,
+    mutation: () => boolean,
+  ) {
+    if (exclusiveMutationInFlightRef.current) return;
+    exclusiveMutationInFlightRef.current = true;
+    const hadLease = Boolean(mutationLease.getToken());
+    try {
+      if (editorSession) {
+        await mutationLease.acquire(purpose);
+      }
+      const changed = mutation();
+      if (!changed && editorSession && !hadLease) {
+        await mutationLease.release().catch(() => undefined);
+      }
+    } catch (error) {
+      window.alert(formatMutationLeaseError(error));
+    } finally {
+      exclusiveMutationInFlightRef.current = false;
+    }
   }
 
   async function importSrtFile(file: File) {
     const text = await file.text();
     const lines = parseSrt(text);
-    const nextProject = buildProjectFromLines(lines, projectRef.current.video);
-    commitProject(nextProject, undefined, "import-srt");
+    const committed = await runControlledSnapshotMutation(
+      "import_srt",
+      (baseProject) => buildProjectFromLines(lines, baseProject.video),
+    );
+    if (!committed) return;
     applySelection(lines[0] ? { type: "line", id: lines[0].id } : null);
     if (lines[0]) {
       seekTo(lines[0].startTime);
@@ -4106,7 +5277,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         filePath: null,
         requiresManualImport: false,
       },
-    }, undefined, "import-video");
+    }, undefined, { action: "import-video" });
   }
 
   async function importProjectFile(file: File) {
@@ -4122,11 +5293,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       const normalized = normalizeImportedProjectFile(parsed);
       const hydratedProject = normalized.project;
       const shouldManuallyImportVideo = shouldPromptForManualVideoImport(hydratedProject.video);
-      const normalizedTrackSnapEnabled = getNormalizedTrackSnapEnabled(
+      const normalizedTrackSnapEnabled = normalizeTrackSnapEnabledForProject(
         hydratedProject,
         normalized.uiState?.trackSnapEnabled,
       );
-      commitProject(hydratedProject, undefined, "import-project");
+      const committed = areProjectValuesEqual(projectRef.current, hydratedProject)
+        ? true
+        : await runControlledSnapshotMutation("import_project", () => hydratedProject);
+      if (!committed) return;
       applyTrackSnapEnabledState(normalizedTrackSnapEnabled);
       setZoom(normalized.uiState?.zoom ?? 20);
       setPlaybackRate(normalized.uiState?.playbackRate ?? 1);
@@ -4148,7 +5322,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           getProjectDuration(hydratedProject),
         ),
       );
-      markProjectAsSaved(hydratedProject, normalizedTrackSnapEnabled);
+      // 本地打开 JSON 可视为新的干净工作副本；平台文件必须等待真正的服务器保存后才能变为 clean。
+      if (!editorSession) markProjectAsSaved(hydratedProject, normalizedTrackSnapEnabled);
       setCurrentProjectFileName(getNormalizedProjectFileName(file.name));
       if (shouldManuallyImportVideo) {
         setManualVideoRelinkPrompt(hydratedProject.video);
@@ -4213,12 +5388,25 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
 
-    commitProject(repairResult.project, undefined, "repair-sentence-character-track");
-    const firstCreatedCharacter = repairResult.createdCharacters[0];
-    applySelection({ type: "character", id: firstCreatedCharacter.id });
-    setLineFocusRequest({ lineId: firstCreatedCharacter.lineId, requestId: Date.now() });
-    seekTo(firstCreatedCharacter.startTime);
-    window.alert(`已创建 ${repairResult.createdCharacters.length} 个整句文字块。`);
+    let committedRepairResult = repairResult;
+    void runControlledSnapshotMutation(
+      "repair_sentence_character_track",
+      (baseProject) => {
+        committedRepairResult = createSentenceCharacterRepairs(
+          baseProject,
+          analyzeSentenceCharacterAlignment(baseProject),
+        );
+        return committedRepairResult.project;
+      },
+    ).then((committed) => {
+      if (!committed) return;
+      const firstCreatedCharacter = committedRepairResult.createdCharacters[0];
+      if (!firstCreatedCharacter) return;
+      applySelection({ type: "character", id: firstCreatedCharacter.id });
+      setLineFocusRequest({ lineId: firstCreatedCharacter.lineId, requestId: Date.now() });
+      seekTo(firstCreatedCharacter.startTime);
+      window.alert(`已创建 ${committedRepairResult.createdCharacters.length} 个整句文字块。`);
+    });
   }
 
   async function importAndMergeProjectFile(file: File) {
@@ -4263,7 +5451,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     });
   }
 
-  function applyImportMerge() {
+  async function applyImportMerge() {
     const pendingState = pendingImportMergeState;
     if (!pendingState) {
       return;
@@ -4280,9 +5468,23 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         return;
       }
     }
-    const nextProject = applyPreparedImportMerge(currentProject, pendingState.sourceProject, prepared.plans);
-    commitProject(nextProject, undefined, "merge-project");
-    setPendingImportMergeState(null);
+    let skippedAfterLease = false;
+    const committed = await runControlledSnapshotMutation(
+      "merge_project",
+      (baseProject) => {
+        // acquire 期间目标轨道可能被普通编辑；提交时必须重新归一化目标，不能沿用弹窗确认前的旧计划。
+        const latestPrepared = prepareImportMerge(baseProject, pendingState.sourceProject, pendingState.rows);
+        skippedAfterLease = latestPrepared.skippedAll;
+        return skippedAfterLease
+          ? baseProject
+          : applyPreparedImportMerge(baseProject, pendingState.sourceProject, latestPrepared.plans);
+      },
+    );
+    if (skippedAfterLease) {
+      window.alert("取得整合锁后，当前设置已没有可导入的轨道内容。请重新检查整合目标。");
+      return;
+    }
+    if (committed) setPendingImportMergeState(null);
   }
 
   async function saveProjectFile() {
@@ -4315,84 +5517,289 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     markProjectAsSaved(projectToSave, trackSnapEnabledRef.current);
   }
 
-  async function saveProjectToServer(): Promise<boolean> {
+  async function saveProjectToServer(options: {
+    source: "manual" | "auto";
+  } = { source: "manual" }): Promise<PlatformSaveOutcome> {
+    const interactive = options.source === "manual";
     if (!editorSession) {
-      window.alert("当前不是平台工作区。请从项目库打开工作区后再保存。");
-      return false;
+      if (interactive) window.alert("当前不是平台工作区。请从项目库打开工作区后再保存。");
+      return { status: "skipped", reason: "not-platform" };
     }
     // 标注文件只读：无 write 权限时不发起保存请求。
     if (!editorSession.canWrite) {
-      window.alert("当前标注文件为只读状态，你只能查看和导航，不能保存。");
-      return false;
+      if (interactive) window.alert("当前标注文件为只读状态，你只能查看和导航，不能保存。");
+      return { status: "skipped", reason: "read-only" };
     }
     if (serverSaveInFlightRef.current) {
-      window.alert("正在保存到服务器，请等待本次保存完成。");
-      return false;
+      if (interactive) window.alert("正在保存到服务器，请等待本次保存完成。");
+      return { status: "skipped", reason: "busy" };
     }
-    if (editingCharacterId) {
+    // 手动保存会先提交当前输入框；自动保存不打断输入法或尚未确认的文字编辑会话。
+    const hadInlineEditor = interactive && Boolean(editingCharacterId || editingCustomTextBlock);
+    if (interactive && editingCharacterId) {
       commitCharacterTextEdit(editingCharacterId);
     }
-    if (editingCustomTextBlock) {
+    if (interactive && editingCustomTextBlock) {
       commitCustomTextEdit(editingCustomTextBlock.trackId, editingCustomTextBlock.id);
+    }
+    if (!hasUnsavedChanges && !hadInlineEditor) {
+      return { status: "skipped", reason: "clean" };
     }
 
     serverSaveInFlightRef.current = true;
     setSyncStatus("saving");
-    const submittedOperationIds: string[] = [];
     try {
-      // 1. 先把本地 pending operations 作为服务端 operation log 写入。
-      //    用 pendingOperationsRef 而非 state：commitCharacterTextEdit 等同步提交的编辑
-      //    会立即更新 ref，但 state 要等下一次渲染，闭包里的 pendingOperations 可能漏掉它们。
-      //    所有 operation 共用当前 remoteBaseRevision（snapshot 还没写，revision 不变）。
-      //    只发摘要 payload，不发完整 ProjectData，避免 operation log 膨胀。
-      const pendingSnapshot = pendingOperationsRef.current;
-      const coveredOperationIds = pendingSnapshot.map((operation) => operation.id);
-      const savedLocalRevision = pendingSnapshot.length > 0
-        ? pendingSnapshot.reduce(
-            (maxRevision, operation) => Math.max(maxRevision, operation.localRevision),
-            syncState.savedRevision,
-          )
-        : syncState.localRevision;
-      // 保存开始时固定项目和吸附状态快照。保存期间用户可能继续编辑；
-      // 那些新编辑不能混入本次 snapshot，也不能在成功后被误标为已保存。
-      const projectSnapshot = projectRef.current;
-      const trackSnapSnapshot = trackSnapEnabledRef.current;
+      // 保存事务先冻结项目与 pending 链。网络等待期间产生的新编辑不会混入本次批次，
+      // 仍由 document state 保留为 dirty，并在本次结束后进入下一轮自动保存。
+      const frozenRecoveryState = getRecoveryState();
+      const frozenTargetProject = frozenRecoveryState.currentProject;
+      let batchSavedProject = frozenRecoveryState.savedProject;
+      let batchSavedTrackSnapEnabled = frozenRecoveryState.savedTrackSnapEnabled;
+      let batchSavedLocalRevision = frozenRecoveryState.savedRevision;
+      let remainingFrozenOperations = frozenRecoveryState.pendingOperations;
+
+      if (remainingFrozenOperations.length === 0) {
+        const hasUnrepresentedChanges =
+          !projectsEqual(frozenRecoveryState.currentProject, frozenRecoveryState.savedProject) ||
+          !trackSnapStatesEqual(
+            frozenRecoveryState.currentTrackSnapEnabled,
+            frozenRecoveryState.savedTrackSnapEnabled,
+          );
+        return hasUnrepresentedChanges
+          ? saveLegacyProjectSnapshot(editorSession, options.source, frozenRecoveryState)
+          : { status: "saved" };
+      }
+
+      while (remainingFrozenOperations.length > 0) {
+        let planResult = planAtomicAnnotationCommandBatch({
+          savedProject: batchSavedProject,
+          currentProject: frozenTargetProject,
+          serverRevision: remoteBaseRevisionRef.current,
+          savedLocalRevision: batchSavedLocalRevision,
+          savedTrackSnapEnabled: batchSavedTrackSnapEnabled,
+          pendingOperations: remainingFrozenOperations,
+          // 结构编辑通常在 commitProject 前已经取得租约；首轮 planner 必须携带现有 token。
+          // 若此刻尚无 token，下面仍会按 requiredLeasePurpose acquire 后重新规划。
+          mutationLeaseToken: mutationLease.getToken(),
+          maxBatchSize: Math.min(
+            MAX_ATOMIC_ANNOTATION_COMMAND_OPERATIONS,
+            remainingFrozenOperations.length,
+          ),
+        });
+
+        if (planResult.status === "no_operations") {
+          return { status: "saved" };
+        }
+        if (planResult.status === "legacy_required") {
+          return saveLegacyProjectSnapshot(editorSession, options.source, frozenRecoveryState);
+        }
+        if (planResult.status === "blocked") {
+          const message = `本地命令链无法安全提交（${planResult.reason}），请保留草稿并进入冲突检查。`;
+          setSyncStatus("error", { errorMessage: message });
+          if (interactive) window.alert(message);
+          return { status: "error", retryable: false, message };
+        }
+
+        if (planResult.plan.requiredLeasePurpose && !mutationLease.getToken()) {
+          await mutationLease.acquire(planResult.plan.requiredLeasePurpose);
+          // acquire 期间用户仍可编辑，但本事务必须重新审计同一冻结链，不能把后来编辑混入请求。
+          planResult = planAtomicAnnotationCommandBatch({
+            savedProject: batchSavedProject,
+            currentProject: frozenTargetProject,
+            serverRevision: remoteBaseRevisionRef.current,
+            savedLocalRevision: batchSavedLocalRevision,
+            savedTrackSnapEnabled: batchSavedTrackSnapEnabled,
+            pendingOperations: remainingFrozenOperations,
+            mutationLeaseToken: mutationLease.getToken(),
+            maxBatchSize: Math.min(
+              MAX_ATOMIC_ANNOTATION_COMMAND_OPERATIONS,
+              remainingFrozenOperations.length,
+            ),
+          });
+          if (planResult.status !== "ready") {
+            if (planResult.status === "legacy_required") {
+              return saveLegacyProjectSnapshot(editorSession, options.source, frozenRecoveryState);
+            }
+            const message = `取得结构编辑锁后命令链已变化（${planResult.status}），请重新保存。`;
+            setSyncStatus("error", { errorMessage: message });
+            return { status: "error", retryable: false, message };
+          }
+        }
+
+        const result = await atomicCommandSubmit.submit(planResult.plan);
+        if (result.status === "committed") {
+          batchSavedProject = planResult.plan.acknowledgedProject;
+          batchSavedTrackSnapEnabled = planResult.plan.acknowledgedTrackSnapEnabled;
+          batchSavedLocalRevision = planResult.plan.acknowledgedLocalRevision;
+          remainingFrozenOperations = remainingFrozenOperations.slice(planResult.plan.operationIds.length);
+          continue;
+        }
+        if (result.status === "failed") {
+          const failure = result.failure;
+          // 仅记录稳定分类，不输出命令 payload 或租约 token，便于定位确定性 API 拒绝。
+          console.error(
+            `原子命令提交失败 [${failure.status}/${failure.code ?? "no-code"}]：${failure.message}`,
+          );
+          if (requiresLegacySnapshotMigration(failure)) {
+            // 浏览器已经迁移、服务器仍保存旧格式的导入文件无法直接重放领域命令。
+            // 仅在服务端明确返回该代码时，以同一 revision 和租约执行一次完整快照迁移。
+            return saveLegacyProjectSnapshot(editorSession, options.source, frozenRecoveryState);
+          }
+          if (isMutationLeaseSubmitFailure(failure)) {
+            // 服务端已证明当前 token 不能继续使用；先清本地状态并尽力释放，下一次保存才能重新 acquire。
+            await mutationLease.release().catch(() => undefined);
+          }
+          if (failure.status === "conflict") {
+            const rebase = await tryAutomaticConcurrentRebase(editorSession);
+            if (rebase.status === "applied") {
+              const message = "已协调其他账号的并发修改，正在基于最新版本重新保存。";
+              if (interactive) window.alert(message);
+              return { status: "rebased", message };
+            }
+          }
+          const outcome: PlatformSaveOutcome = failure.status === "offline"
+            ? { status: "offline", retryable: true, message: failure.message }
+            : failure.status === "conflict"
+              ? { status: "conflict", retryable: false, message: failure.message }
+              : { status: "error", retryable: failure.retryable, message: failure.message };
+          setSyncStatus(outcome.status, { errorMessage: outcome.message });
+          if (interactive) window.alert(outcome.message);
+          return outcome;
+        }
+        if (result.status === "protocol_error") {
+          const message = `服务器原子确认合同异常：${result.reason}`;
+          setSyncStatus("error", { errorMessage: message });
+          if (interactive) window.alert(message);
+          return { status: "error", retryable: false, message };
+        }
+        return { status: "skipped", reason: "busy" };
+      }
+      return { status: "saved" };
+    } catch (error) {
+      const classified = describeServerSaveError(error);
+      setSyncStatus(classified.status, { errorMessage: classified.message });
+      console.error("保存到服务器失败:", error);
+      if (interactive) window.alert(classified.message);
+      return classified;
+    } finally {
+      serverSaveInFlightRef.current = false;
+    }
+  }
+
+  // 409 后先严格重放；同一 timing/content 目标冲突时，再基于最新服务器值协调并重建命令。
+  // lifecycle、结构、legacy、snapshot、track-snap 或请求期间新增编辑仍停在显式冲突检查。
+  async function tryAutomaticConcurrentRebase(
+    session: PlatformEditorSession,
+  ): Promise<{ status: "applied" } | { status: "unavailable"; reason: string }> {
+    const expectedRemoteRevision = remoteBaseRevisionRef.current;
+    const localState = getRecoveryState();
+    const latestFile = await session.client.getAnnotationFile<ProjectData>(session.annotationFileId);
+    if (latestFile.revision <= expectedRemoteRevision) {
+      return { status: "unavailable", reason: "server_revision_not_newer" };
+    }
+    const latestServerProject = hydrateProjectForClient(latestFile.payload, session.client, latestFile.media);
+    const plan = planPlatformConflictRebase({
+      baseRevision: expectedRemoteRevision,
+      latestRevision: latestFile.revision,
+      savedProject: localState.savedProject,
+      currentProject: localState.currentProject,
+      latestServerProject,
+      savedLocalRevision: localState.savedRevision,
+      pendingOperations: localState.pendingOperations,
+      allowConcurrentValueResolution: true,
+    });
+    if (plan.status !== "rebase_ready") {
+      return { status: "unavailable", reason: plan.status };
+    }
+
+    // 结构命令的旧租约绑定旧 revision；先释放，重提时由普通保存路径按最新基线重新取得。
+    if (plan.requiredLeasePurpose) {
+      await mutationLease.release().catch(() => undefined);
+    }
+    const applied = rebasePendingProjectFromRemote({
+      expectedCurrentProject: localState.currentProject,
+      expectedSavedProject: localState.savedProject,
+      expectedLocalRevision: localState.localRevision,
+      expectedSavedRevision: localState.savedRevision,
+      latestServerProject,
+      rebasedCurrentProject: plan.rebasedProject,
+      rebasedPendingOperations: plan.rebasedPendingOperations,
+      remoteRevision: latestFile.revision,
+    });
+    if (applied.status !== "applied") {
+      return { status: "unavailable", reason: applied.reason };
+    }
+
+    remoteBaseRevisionRef.current = latestFile.revision;
+    remoteOperationCursorRef.current = latestFile.operationCursor;
+    setRemoteBaseRevision(latestFile.revision);
+    setObservedRemoteRevision((current) => Math.max(current, latestFile.revision));
+    setRemoteOperationCursor(latestFile.operationCursor);
+    session.onRemoteRevisionAdvanced(latestFile.revision, latestFile.operationCursor);
+    mutationLease.advanceBaseRevision(latestFile.revision);
+    void annotationConfirmations.refresh();
+    return { status: "applied" };
+  }
+
+  // 只有 planner 明确识别出的旧语义才能走完整快照；该兼容通道不能吞掉原子命令 precondition 错误。
+  async function saveLegacyProjectSnapshot(
+    session: PlatformEditorSession,
+    source: "manual" | "auto",
+    frozenRecoveryState = getRecoveryState(),
+  ): Promise<PlatformSaveOutcome> {
+    const submittedOperationIds: string[] = [];
+    const pendingSnapshot = frozenRecoveryState.pendingOperations;
+    const coveredOperationIds = pendingSnapshot.map((operation) => operation.id);
+    const savedLocalRevision = pendingSnapshot.length > 0
+      ? Math.max(...pendingSnapshot.map((operation) => operation.localRevision))
+      : frozenRecoveryState.localRevision;
+    const projectSnapshot = frozenRecoveryState.currentProject;
+    const trackSnapSnapshot = frozenRecoveryState.currentTrackSnapEnabled;
+    const requiredLeasePurpose = pendingSnapshot
+      .map((operation) => getAnnotationMutationLeasePurposeForCommand(operation.commandEnvelope))
+      .find((purpose): purpose is AnnotationMutationPurpose => purpose !== null);
+    try {
+      if (requiredLeasePurpose && !mutationLease.getToken()) {
+        await mutationLease.acquire(requiredLeasePurpose);
+      }
+      const mutationLeaseToken = mutationLease.getToken();
       if (pendingSnapshot.length > 0) {
-        await submitPendingOperations(
-          editorSession.client,
-          editorSession.annotationFileId,
+        await submitLegacyPendingOperations(
+          session.client,
+          session.annotationFileId,
           pendingSnapshot,
-          remoteBaseRevision,
+          remoteBaseRevisionRef.current,
           (operationId) => submittedOperationIds.push(operationId),
+          mutationLeaseToken,
         );
       }
-      // 2. 保存完整 ProjectData；服务端在覆盖前自动留一份隐藏恢复快照。
-      const projectToSave = prepareProjectForServer(getPersistableProjectData(projectSnapshot));
-      const savedFile = await editorSession.client.saveAnnotationFile<ProjectData>(editorSession.annotationFileId, {
-        baseRevision: remoteBaseRevision,
-        payload: projectToSave,
+      const savedFile = await session.client.saveAnnotationFile<ProjectData>(session.annotationFileId, {
+        baseRevision: remoteBaseRevisionRef.current,
+        payload: prepareProjectForServer(getPersistableProjectData(projectSnapshot)),
+        clientOperationIds: coveredOperationIds,
+        ...(mutationLeaseToken ? { mutationLeaseToken } : {}),
       });
-      // 3. 成功后更新 baseRevision 并确认本地 pending operations（清空 pending、标 acknowledged）。
+      if (mutationLeaseToken) mutationLease.markCommitted();
+      mutationLease.advanceBaseRevision(savedFile.revision);
+      remoteBaseRevisionRef.current = savedFile.revision;
+      remoteOperationCursorRef.current = savedFile.operationCursor;
       setRemoteBaseRevision(savedFile.revision);
-      editorSession.onAnnotationFileSaved(savedFile);
+      setObservedRemoteRevision((current) => Math.max(current, savedFile.revision));
+      setRemoteOperationCursor(savedFile.operationCursor);
+      session.onAnnotationFileSaved(savedFile);
       markProjectAsSaved(projectSnapshot, trackSnapSnapshot, {
         acknowledgedOperationIds: coveredOperationIds,
         savedLocalRevision,
       });
-      return true;
+      void annotationConfirmations.refresh();
+      return { status: "saved" };
     } catch (error) {
-      if (submittedOperationIds.length > 0) {
-        markOperationsAsSubmitted(submittedOperationIds);
-      }
-      // 失败时不调用 markProjectAsSaved，保留 pending operations 供重试。
-      // 已写入服务端 operation log 的条目标为 submitted，重试保存时会跳过，避免重复写 operation rows。
+      if (submittedOperationIds.length > 0) markOperationsAsSubmitted(submittedOperationIds);
       const classified = describeServerSaveError(error);
       setSyncStatus(classified.status, { errorMessage: classified.message });
-      console.error("保存到服务器失败:", error);
-      window.alert(classified.message);
-      return false;
-    } finally {
-      serverSaveInFlightRef.current = false;
+      console.error("兼容快照保存失败:", error);
+      if (source === "manual") window.alert(classified.message);
+      return classified;
     }
   }
 
@@ -4501,6 +5908,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   function renderTimelineWorkspace(detached: boolean) {
     return (
       <Timeline
+        editingBlockedReason={remoteCatchUpBlockReason}
         subtitleLines={project.subtitleLines}
         builtinTracks={project.builtinTracks}
         characterAnnotations={project.characterAnnotations}
@@ -4520,8 +5928,25 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         isSpectrogramLoading={isSpectrogramLoading}
         spectrogramSettings={spectrogramSettings}
         currentTime={currentTime}
+        remoteActivities={showRemoteCollaborationHints ? collaborationSession.remoteActivities : []}
+        pointerSourceId={detached ? "detached-timeline" : "main-timeline"}
+        onTransientPointerTimeChange={updateCollaborationPointer}
         loopPlaybackRange={loopPlaybackRange}
         loopPlaybackEnabled={loopPlaybackEnabled}
+        confirmationRanges={editorSession && confirmationTimelineVisible
+          ? confirmationTimelineRanges
+          : []}
+        confirmationRangesVisible={Boolean(editorSession && confirmationTimelineVisible)}
+        onSelectConfirmationRange={(range) => {
+          seekTo(range.startTime);
+          setLineFocusRequest(null);
+          setInitialPlatformFocusRange(null);
+          setConfirmationFocusRange({
+            requestId: Date.now(),
+            start: range.startTime,
+            end: range.endTime,
+          });
+        }}
         isDetached={detached}
         selectedItem={selectedItem}
         selectedTimelineItems={selectedTimelineItems}
@@ -4529,7 +5954,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         zoom={zoom}
         duration={duration}
         focusRange={focusRange}
-        onFocusRangeHandled={() => setLineFocusRequest(null)}
+        onFocusRangeHandled={handleFocusRangeHandled}
         getProjectSnapshot={() => projectRef.current}
         onZoomChange={setZoom}
         onToggleTrackSnap={(trackId) => {
@@ -4724,8 +6149,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           syncStatus={syncState.status}
           localRevision={syncState.localRevision}
           savedRevision={syncState.savedRevision}
+          remoteRevision={editorSession ? remoteBaseRevision : undefined}
+          observedRemoteRevision={editorSession ? observedRemoteRevision : undefined}
+          editingBlockedReason={remoteCatchUpBlockReason}
           pendingOperationCount={pendingOperations.length}
           accessLabel={editorSession?.accessLabel}
+          mutationLeaseLabel={mutationLeaseLabel}
+          collaborationStatus={editorSession ? collaborationSession.status : undefined}
+          collaborationPresenceMembers={collaborationSession.members}
+          currentPlatformUserId={editorSession?.currentUserId}
+          showRemoteCollaborationHints={showRemoteCollaborationHints}
+          sharePointerAndSelection={sharePointerAndSelection}
+          onShowRemoteCollaborationHintsChange={setShowRemoteCollaborationHints}
+          onSharePointerAndSelectionChange={setSharePointerAndSelection}
           videoFileInputRef={videoFileInputRef}
           srtFileInputRef={srtFileInputRef}
           projectFileInputRef={projectFileInputRef}
@@ -4768,7 +6204,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             void saveProjectFile();
           }}
           onSaveProjectToServer={editorSession?.canWrite ? () => {
-            void saveProjectToServer();
+            void saveProjectToServer({ source: "manual" });
           } : undefined}
           onExportTrack={handleExport}
           onUndo={undo}
@@ -4785,6 +6221,53 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         />
       )}
     >
+      {/* 保存冲突不自动打断编辑；用户明确触发后才固定草稿并进入服务器比较。 */}
+      {editorSession && syncState.status === "conflict" && !pendingAnnotationMergeDraft ? (
+        <section className="platform-save-conflict-bar" role="alert">
+          <span>
+            <strong>服务器文件已有新版本</strong>
+            <small>当前本地编辑仍安全保留，处理前不会覆盖服务器。</small>
+          </span>
+          {saveConflictReviewError ? <em>{saveConflictReviewError}</em> : null}
+          <button
+            type="button"
+            disabled={saveConflictReviewBusy}
+            onClick={() => void openSaveConflictReview()}
+          >
+            {saveConflictReviewBusy ? "正在读取最新文件…" : "检查并处理冲突"}
+          </button>
+        </section>
+      ) : null}
+      {/* 整合草稿确认栏属于编辑会话而非保存版本；取消不改历史，应用后仍需用户正常保存。 */}
+      {pendingAnnotationMergeDraft ? (
+        <section className="annotation-merge-draft-bar" role="status">
+          <span>
+            <strong>待应用的选择性整合</strong>
+            <small>
+              {pendingAnnotationMergeDraft.sourceFileName} → {pendingAnnotationMergeDraft.targetFileName}
+              · 新增 {pendingAnnotationMergeDraft.summary.added}
+              · 替换 {pendingAnnotationMergeDraft.summary.replaced}
+              · 保留目标 {pendingAnnotationMergeDraft.summary.keptTarget}
+            </small>
+          </span>
+          <em>应用后形成一次可撤销编辑，不会自动保存到服务器。</em>
+          <button
+            type="button"
+            onClick={cancelPendingAnnotationMergeDraft}
+          >
+            {pendingAnnotationMergeDraft.sourceKind === "browser-draft"
+              ? "放弃本地草稿整合"
+              : "取消"}
+          </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={applyPendingAnnotationMergeDraft}
+          >
+            应用到当前文档
+          </button>
+        </section>
+      ) : null}
       <ResizableSplitLayout
         orientation="horizontal"
         initialPrimarySize={0.74}
@@ -4938,90 +6421,142 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                   </section>
                 )}
                 secondary={(
-                  selectedItem?.type === "waveform-track" || selectedItem?.type === "spectrogram-track" ? (
-                    <SpectrogramSettingsPanel
-                      settings={spectrogramSettings}
-                      isWaveformLoading={isWaveformLoading}
-                      hasWaveformData={Boolean(waveformData)}
-                      waveformVisible={waveformVisible}
-                      isLoading={isSpectrogramLoading}
-                      hasData={Boolean(spectrogramData)}
-                      onSettingsChange={setSpectrogramSettings}
-                      onWaveformVisibleChange={setWaveformVisible}
-                    />
-                  ) : (
-                    <InspectorPanel
-                      selectedItem={selectedItem}
-                      subtitleLines={project.subtitleLines}
-                      characterAnnotations={project.characterAnnotations}
-                      gongcheAnnotations={project.gongcheAnnotations}
-                      banyanSections={project.banyanSections}
-                      banyanMarks={project.banyanMarks}
-                      banyanGridVisible={banyanGridVisible}
-                      banyanTrackVisible={banyanTrackVisible}
-                      actionAnnotations={project.actionAnnotations}
-                      builtinTracks={project.builtinTracks}
-                      customTracks={project.customTracks}
-                      trackDefinitions={timelineTrackDefinitions}
-                      trackSnapEnabled={trackSnapEnabled}
-                      onCharacterUpdate={updateCharacter}
-                      onCreateGongcheBlock={createGongcheBlock}
-                      onGongcheBlockUpdate={(id, changes) => updateGongcheBlock(id, changes)}
-                      onImportGongcheText={importGongcheText}
-                      onGenerateBanyanFromGongche={generateBanyanFromGongche}
-                      onBanyanGridVisibleChange={setBanyanGridVisible}
-                      onBanyanTrackVisibleChange={setBanyanTrackVisible}
-                      onBanyanMarkUpdate={(id, changes) => updateBanyanMark(id, changes)}
-                      onActionUpdate={updateAction}
-                      onAttachedPointUpdate={commitAttachedPoint}
-                      onTrackWaveformSnapChange={updateTrackWaveformSnap}
-                      onTrackAutoLoopRangeChange={updateTrackAutoLoopRange}
-                      onAttachedPointTrackParentSnapChange={updateAttachedPointTrackParentSnap}
-                      onSelectParentTrack={(trackId) =>
-                        applySelection(
-                          activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
-                            ? { type: "builtin-track", id: trackId as BuiltinTrackId }
-                            : { type: "custom-track", id: trackId },
-                        )
-                      }
-                      onBuiltinTrackRename={renameBuiltinTrack}
-                      onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
-                      onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
-                      onMoveBuiltinTrackTypeOption={moveBuiltinTrackTypeOption}
-                      onReorderBuiltinTrackTypeOption={reorderBuiltinTrackTypeOption}
-                      onRemoveBuiltinTrackTypeOption={removeBuiltinTrackTypeOption}
-                      onDeleteBuiltinTrack={deleteBuiltinTrack}
-                      onAddAttachedPointTrack={addAttachedPointTrack}
-                      onToggleAttachedPointTracks={toggleAttachedPointTracks}
-                      onSelectAttachedPointTrack={(trackId, parentTrackId) =>
-                        applySelection({ type: "attached-point-track", id: trackId, parentTrackId })
-                      }
-                      onAttachedPointTrackRename={renameAttachedPointTrack}
-                      onAttachedPointTrackTypeOptionChange={updateAttachedPointTrackTypeOption}
-                      onAddAttachedPointTrackTypeOption={addAttachedPointTrackTypeOption}
-                      onMoveAttachedPointTrackTypeOption={moveAttachedPointTrackTypeOption}
-                      onReorderAttachedPointTrackTypeOption={reorderAttachedPointTrackTypeOption}
-                      onRemoveAttachedPointTrackTypeOption={removeAttachedPointTrackTypeOption}
-                      onDeleteAttachedPointTrack={deleteAttachedPointTrack}
-                      onCustomTrackRename={renameCustomTrack}
-                      onCustomTrackColorChange={updateCustomTrackColor}
-                      onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
-                      onAddCustomTrackTypeOption={addCustomTrackTypeOption}
-                      onMoveCustomTrackTypeOption={moveCustomTrackTypeOption}
-                      onReorderCustomTrackTypeOption={reorderCustomTrackTypeOption}
-                      onRemoveCustomTrackTypeOption={removeCustomTrackTypeOption}
-                      onDeleteCustomTrack={deleteCustomTrack}
-                      onCustomTrackBranchingEnabledChange={setCustomTrackBranchingEnabled}
-                      onCustomTrackBranchDisplayModeChange={setCustomTrackBranchDisplayMode}
-                      onAddCustomTrackBranchLane={addCustomTrackBranchLane}
-                      onCustomTrackBranchLaneRename={renameCustomTrackBranchLane}
-                      onCustomTrackBranchLaneColorChange={updateCustomTrackBranchLaneColor}
-                      onDeleteCustomTrackBranchLane={deleteCustomTrackBranchLane}
-                      inspectorFocusRequest={inspectorFocusRequest}
-                      onCustomBlockUpdate={updateCustomBlock}
-                      onDeleteSelected={deleteSelected}
-                    />
-                  )
+                  <div className="editor-inspector-stack">
+                    {editorSession ? (
+                      <AnnotationConfirmationPanel
+                        records={confirmationViewRecords}
+                        currentRevision={annotationConfirmations.data?.currentRevision ?? null}
+                        editorRevision={remoteBaseRevision}
+                        range={loopPlaybackRange}
+                        trackOptions={confirmationTrackOptions}
+                        canReview={editorSession.canReview}
+                        createBlocker={confirmationCreateBlocker}
+                        loading={annotationConfirmations.loading}
+                        mutationPending={annotationConfirmations.mutationPending}
+                        error={annotationConfirmations.error}
+                        timelineVisible={confirmationTimelineVisible}
+                        onTimelineVisibleChange={setConfirmationTimelineVisible}
+                        onRefresh={annotationConfirmations.refresh}
+                        onCreate={({ scope, note }) => annotationConfirmations.create({
+                          confirmedRevision: remoteBaseRevision,
+                          scope,
+                          note,
+                        })}
+                        onRevoke={(record, reason) => annotationConfirmations.revoke(
+                          record.record.id,
+                          { reason },
+                        )}
+                        canRevoke={(record) => canShowAnnotationConfirmationRevoke({
+                          record,
+                          canReview: editorSession.canReview,
+                          currentUserId: editorSession.currentUserId,
+                          currentUserRoles: editorSession.currentUserRoles,
+                          hasOwnerAuthority: editorSession.canRevokeAnyConfirmation,
+                        })}
+                        onNavigate={(record) => {
+                          seekTo(record.record.scope.startTime);
+                          setLineFocusRequest(null);
+                          setInitialPlatformFocusRange(null);
+                          setConfirmationFocusRange({
+                            requestId: Date.now(),
+                            start: record.record.scope.startTime,
+                            end: record.record.scope.endTime,
+                          });
+                        }}
+                      />
+                    ) : null}
+                    <div className="editor-inspector-content">
+                      {remoteCatchUpBlockReason ? (
+                        <div className="editor-inspector-edit-gate" role="status">
+                          <span>{remoteCatchUpBlockReason}</span>
+                        </div>
+                      ) : null}
+                      {selectedItem?.type === "waveform-track" || selectedItem?.type === "spectrogram-track" ? (
+                        <SpectrogramSettingsPanel
+                          settings={spectrogramSettings}
+                          isWaveformLoading={isWaveformLoading}
+                          hasWaveformData={Boolean(waveformData)}
+                          waveformVisible={waveformVisible}
+                          isLoading={isSpectrogramLoading}
+                          hasData={Boolean(spectrogramData)}
+                          onSettingsChange={setSpectrogramSettings}
+                          onWaveformVisibleChange={setWaveformVisible}
+                        />
+                      ) : (
+                        <InspectorPanel
+                          selectedItem={selectedItem}
+                          subtitleLines={project.subtitleLines}
+                          characterAnnotations={project.characterAnnotations}
+                          gongcheAnnotations={project.gongcheAnnotations}
+                          banyanSections={project.banyanSections}
+                          banyanMarks={project.banyanMarks}
+                          banyanGridVisible={banyanGridVisible}
+                          banyanTrackVisible={banyanTrackVisible}
+                          actionAnnotations={project.actionAnnotations}
+                          builtinTracks={project.builtinTracks}
+                          customTracks={project.customTracks}
+                          trackDefinitions={timelineTrackDefinitions}
+                          trackSnapEnabled={trackSnapEnabled}
+                          onCharacterUpdate={updateCharacter}
+                          onCreateGongcheBlock={createGongcheBlock}
+                          onGongcheBlockUpdate={(id, changes) => updateGongcheBlock(id, changes)}
+                          onImportGongcheText={importGongcheText}
+                          onGenerateBanyanFromGongche={generateBanyanFromGongche}
+                          onBanyanGridVisibleChange={setBanyanGridVisible}
+                          onBanyanTrackVisibleChange={setBanyanTrackVisible}
+                          onBanyanMarkUpdate={(id, changes) => updateBanyanMark(id, changes)}
+                          onActionUpdate={updateAction}
+                          onAttachedPointUpdate={commitAttachedPoint}
+                          onTrackWaveformSnapChange={updateTrackWaveformSnap}
+                          onTrackAutoLoopRangeChange={updateTrackAutoLoopRange}
+                          onAttachedPointTrackParentSnapChange={updateAttachedPointTrackParentSnap}
+                          onSelectParentTrack={(trackId) =>
+                            applySelection(
+                              activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
+                                ? { type: "builtin-track", id: trackId as BuiltinTrackId }
+                                : { type: "custom-track", id: trackId },
+                            )
+                          }
+                          onBuiltinTrackRename={renameBuiltinTrack}
+                          onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
+                          onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
+                          onMoveBuiltinTrackTypeOption={moveBuiltinTrackTypeOption}
+                          onReorderBuiltinTrackTypeOption={reorderBuiltinTrackTypeOption}
+                          onRemoveBuiltinTrackTypeOption={removeBuiltinTrackTypeOption}
+                          onDeleteBuiltinTrack={deleteBuiltinTrack}
+                          onAddAttachedPointTrack={addAttachedPointTrack}
+                          onToggleAttachedPointTracks={toggleAttachedPointTracks}
+                          onSelectAttachedPointTrack={(trackId, parentTrackId) =>
+                            applySelection({ type: "attached-point-track", id: trackId, parentTrackId })
+                          }
+                          onAttachedPointTrackRename={renameAttachedPointTrack}
+                          onAttachedPointTrackTypeOptionChange={updateAttachedPointTrackTypeOption}
+                          onAddAttachedPointTrackTypeOption={addAttachedPointTrackTypeOption}
+                          onMoveAttachedPointTrackTypeOption={moveAttachedPointTrackTypeOption}
+                          onReorderAttachedPointTrackTypeOption={reorderAttachedPointTrackTypeOption}
+                          onRemoveAttachedPointTrackTypeOption={removeAttachedPointTrackTypeOption}
+                          onDeleteAttachedPointTrack={deleteAttachedPointTrack}
+                          onCustomTrackRename={renameCustomTrack}
+                          onCustomTrackColorChange={updateCustomTrackColor}
+                          onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
+                          onAddCustomTrackTypeOption={addCustomTrackTypeOption}
+                          onMoveCustomTrackTypeOption={moveCustomTrackTypeOption}
+                          onReorderCustomTrackTypeOption={reorderCustomTrackTypeOption}
+                          onRemoveCustomTrackTypeOption={removeCustomTrackTypeOption}
+                          onDeleteCustomTrack={deleteCustomTrack}
+                          onCustomTrackBranchingEnabledChange={setCustomTrackBranchingEnabled}
+                          onCustomTrackBranchDisplayModeChange={setCustomTrackBranchDisplayMode}
+                          onAddCustomTrackBranchLane={addCustomTrackBranchLane}
+                          onCustomTrackBranchLaneRename={renameCustomTrackBranchLane}
+                          onCustomTrackBranchLaneColorChange={updateCustomTrackBranchLaneColor}
+                          onDeleteCustomTrackBranchLane={deleteCustomTrackBranchLane}
+                          inspectorFocusRequest={inspectorFocusRequest}
+                          onCustomBlockUpdate={updateCustomBlock}
+                          onDeleteSelected={deleteSelected}
+                        />
+                      )}
+                    </div>
+                  </div>
                 )}
               />
             )}
@@ -7213,45 +8748,6 @@ function downloadBlob(content: string, fileName: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
-function serializeComparableProject(project: ProjectData) {
-  const cached = comparableProjectSignatureCache.get(project);
-  if (cached) {
-    return cached;
-  }
-  const signature = JSON.stringify(getComparableProjectSnapshot(project));
-  comparableProjectSignatureCache.set(project, signature);
-  return signature;
-}
-
-function getComparableProjectSnapshot(project: ProjectData) {
-  const serializableProject = project;
-  return {
-    ...serializableProject,
-    video: {
-      source: serializableProject.video.source,
-      name: serializableProject.video.name,
-      filePath: serializableProject.video.filePath ?? null,
-      requiresManualImport: Boolean(serializableProject.video.requiresManualImport),
-      token: getComparableVideoToken(serializableProject.video),
-    },
-  };
-}
-
-function getComparableVideoToken(video: ProjectData["video"]) {
-  const url = video.url ?? "";
-  const filePath = video.filePath ?? "";
-  const importMode = video.requiresManualImport ? "manual" : "direct";
-  if (!url) {
-    return `${video.source}|${video.name ?? ""}|${importMode}|${filePath}`;
-  }
-  if (video.source === "embedded") {
-    const head = url.slice(0, 48);
-    const tail = url.slice(-48);
-    return `${video.source}|${video.name ?? ""}|${importMode}|${filePath}|${url.length}|${head}|${tail}`;
-  }
-  return `${video.source}|${video.name ?? ""}|${importMode}|${filePath}|${url}`;
-}
-
 function trackSnapStatesEqual(
   left: Record<string, boolean>,
   right: Record<string, boolean>,
@@ -7275,6 +8771,15 @@ function getTrackSnapStateSignature(trackSnapState: Record<string, boolean>) {
 
 function requiresUndoConfirmation(action: HistoryAction) {
   return action === "import-video" || action === "import-srt" || action === "import-project" || action === "merge-project";
+}
+
+// 快照边界 kind 是持久化语义；历史 action 只负责维持用户熟悉的撤销提示与本地操作说明。
+function getSnapshotBoundaryHistoryAction(kind: ProjectSnapshotBoundaryKind): HistoryAction {
+  if (kind === "import_srt") return "import-srt";
+  if (kind === "import_project") return "import-project";
+  if (kind === "merge_project") return "merge-project";
+  if (kind === "repair_sentence_character_track") return "repair-sentence-character-track";
+  return "edit";
 }
 
 function getUndoConfirmationMessage(action: HistoryAction) {
@@ -7576,19 +9081,7 @@ function normalizeCharacterCreationRequest(startTime: number, explicitEndTime?: 
 }
 
 function getDefaultTrackSnapEnabled(project: ProjectData) {
-  return Object.fromEntries(
-    buildTimelineTrackDefinitions(project.builtinTracks, project.customTracks, project.activeTrackOrder).map((track) => [track.id, true]),
-  );
-}
-
-function getNormalizedTrackSnapEnabled(
-  project: ProjectData,
-  trackSnapEnabled?: Record<string, boolean>,
-) {
-  const nextDefinitions = buildTimelineTrackDefinitions(project.builtinTracks, project.customTracks, project.activeTrackOrder);
-  return Object.fromEntries(
-    nextDefinitions.map((track) => [track.id, trackSnapEnabled?.[track.id] ?? true]),
-  );
+  return normalizeTrackSnapEnabledForProject(project);
 }
 
 function clampTime(time: number, maxDuration: number) {
@@ -7752,6 +9245,36 @@ function isEditableKeyboardTarget(target: EventTarget | null) {
     return true;
   }
   return ["INPUT", "SELECT", "TEXTAREA"].includes(element.tagName);
+}
+
+// 租约竞争优先展示服务端提供的持有者和失效时间；未知错误仍保留原始诊断，不从中文字符串猜状态。
+function formatMutationLeaseError(error: unknown) {
+  if (!(error instanceof PlatformApiError) || !error.details ||
+    typeof error.details !== "object" || Array.isArray(error.details)) {
+    return error instanceof Error ? error.message : "无法取得结构编辑锁，请稍后重试。";
+  }
+  const details = error.details as Record<string, unknown>;
+  const holder = details.holder && typeof details.holder === "object" && !Array.isArray(details.holder)
+    ? details.holder as Record<string, unknown>
+    : null;
+  const holderName = typeof holder?.displayName === "string" ? holder.displayName : null;
+  const expiresAt = typeof details.expiresAt === "string" ? new Date(details.expiresAt) : null;
+  const expiryLabel = expiresAt && Number.isFinite(expiresAt.getTime())
+    ? expiresAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    : null;
+  return [
+    error.message,
+    holderName ? `当前持有者：${holderName}` : null,
+    expiryLabel ? `预计失效：${expiryLabel}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+// 顶部只呈现短状态，不显示 token 或把租约误写成项目同步状态。
+function getMutationLeaseStatusLabel(state: PlatformMutationLeaseViewState, hasValidToken: boolean) {
+  if (state.status === "acquiring") return "正在取得结构编辑锁";
+  if (state.status === "active") return "结构编辑锁";
+  if (state.status === "error") return hasValidToken ? "结构锁续期重试中" : "结构编辑锁异常";
+  return undefined;
 }
 
 function App() {

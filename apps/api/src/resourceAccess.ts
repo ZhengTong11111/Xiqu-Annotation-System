@@ -1,8 +1,11 @@
 import type {
+  Prisma,
   PrismaClient,
   ResourceCapability as DbResourceCapability,
 } from "@prisma/client";
 import {
+  getAutomaticResourceCapabilities,
+  hasFullPlatformResourceAccess,
   RESOURCE_CAPABILITIES,
   type EffectiveResourcePermission,
   type ResourceCapability,
@@ -15,15 +18,37 @@ const ALL_CAPABILITIES = [...RESOURCE_CAPABILITIES];
 export class ResourceAccessService {
   constructor(private readonly prisma: PrismaClient) {}
 
-  isGlobalAdmin(user: ApiUser) {
-    return user.roles.includes("super_admin") || user.roles.includes("admin");
+  hasFullResourceAccess(user: ApiUser) {
+    return hasFullPlatformResourceAccess(user.roles);
+  }
+
+  // 撤销他人审核记录需要真实管理权威；逐级 owner 与全局管理员都可管理其资源子树。
+  async hasOwnerAuthority(
+    user: ApiUser,
+    resourceId: string,
+    database: PrismaClient | Prisma.TransactionClient = this.prisma,
+  ) {
+    if (this.hasFullResourceAccess(user)) return true;
+    let currentId: string | null = resourceId;
+    while (currentId) {
+      const resource: { ownerUserId: string; parentId: string | null } | null =
+        await database.resourceEntry.findUnique({
+          where: { id: currentId },
+          select: { ownerUserId: true, parentId: true },
+        });
+      if (!resource) return false;
+      if (resource.ownerUserId === user.id) return true;
+      currentId = resource.parentId;
+    }
+    return false;
   }
 
   async getEffectivePermission(
     user: ApiUser,
     resourceId: string,
+    database: PrismaClient | Prisma.TransactionClient = this.prisma,
   ): Promise<EffectiveResourcePermission> {
-    const resource = await this.prisma.resourceEntry.findUnique({
+    const resource = await database.resourceEntry.findUnique({
       where: { id: resourceId },
       select: {
         id: true,
@@ -34,7 +59,7 @@ export class ResourceAccessService {
       },
     });
     if (!resource) throw notFound("资源不存在。");
-    if (this.isGlobalAdmin(user)) {
+    if (this.hasFullResourceAccess(user)) {
       return this.fullPermission("admin", false);
     }
     if (resource.ownerUserId === user.id) {
@@ -42,9 +67,11 @@ export class ResourceAccessService {
     }
 
     const now = new Date();
-    const capabilities = new Set<ResourceCapability>();
+    // 角色自动能力只是 ACL 的只读基线；直接授权与继承授权仍可在此基础上显式增加能力。
+    const roleCapabilities = getAutomaticResourceCapabilities(user.roles);
+    const capabilities = new Set<ResourceCapability>(roleCapabilities);
     const inheritedFrom: EffectiveResourcePermission["inheritedFrom"] = [];
-    const direct = await this.prisma.resourcePermission.findUnique({
+    const direct = await database.resourcePermission.findUnique({
       where: { resourceId_userId: { resourceId, userId: user.id } },
     });
     if (direct && (!direct.expiresAt || direct.expiresAt > now)) {
@@ -56,7 +83,7 @@ export class ResourceAccessService {
     if (!resource.breakPermissionInheritance) {
       let parentId = resource.parentId;
       while (parentId) {
-        const parent = await this.prisma.resourceEntry.findUnique({
+        const parent = await database.resourceEntry.findUnique({
           where: { id: parentId },
           select: {
             id: true,
@@ -99,7 +126,9 @@ export class ResourceAccessService {
         ? "direct"
         : inheritedFrom.length
           ? "inherited"
-          : "none",
+          : roleCapabilities.length
+            ? "role"
+            : "none",
       capabilities: values,
       inheritedFrom,
       isOwner: false,
@@ -111,8 +140,13 @@ export class ResourceAccessService {
     user: ApiUser,
     resourceId: string,
     capability: ResourceCapability,
+    database: PrismaClient | Prisma.TransactionClient = this.prisma,
   ) {
-    const permission = await this.getEffectivePermission(user, resourceId);
+    const permission = await this.getEffectivePermission(
+      user,
+      resourceId,
+      database,
+    );
     if (!permission.capabilities.includes(capability)) {
       throw forbidden(`当前账号缺少“${capability}”权限。`);
     }

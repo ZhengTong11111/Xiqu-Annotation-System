@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, RefObject } from "react";
 import type { ProjectSyncStatus } from "../state/projectDocumentState";
+import type { PlatformCollaborationStatus } from "../platform/platformCollaborationRuntime";
+import type { AnnotationPresenceMember } from "@xiqu/shared";
+import { CollaborationPresenceMenu } from "./CollaborationPresenceMenu";
 
 export type TopMenuPlatformNavigation = {
   label: string;
@@ -19,8 +22,19 @@ type TopMenuBarProps = {
   syncStatus: ProjectSyncStatus;
   localRevision: number;
   savedRevision: number;
+  remoteRevision?: number;
+  observedRemoteRevision?: number;
+  editingBlockedReason?: string;
   pendingOperationCount: number;
   accessLabel?: string;
+  mutationLeaseLabel?: string;
+  collaborationStatus?: PlatformCollaborationStatus;
+  collaborationPresenceMembers?: AnnotationPresenceMember[];
+  currentPlatformUserId?: string;
+  showRemoteCollaborationHints?: boolean;
+  sharePointerAndSelection?: boolean;
+  onShowRemoteCollaborationHintsChange?: (visible: boolean) => void;
+  onSharePointerAndSelectionChange?: (enabled: boolean) => void;
   videoFileInputRef: RefObject<HTMLInputElement>;
   srtFileInputRef: RefObject<HTMLInputElement>;
   projectFileInputRef: RefObject<HTMLInputElement>;
@@ -64,8 +78,19 @@ export function TopMenuBar({
   syncStatus,
   localRevision,
   savedRevision,
+  remoteRevision,
+  observedRemoteRevision,
+  editingBlockedReason,
   pendingOperationCount,
   accessLabel,
+  mutationLeaseLabel,
+  collaborationStatus,
+  collaborationPresenceMembers = [],
+  currentPlatformUserId,
+  showRemoteCollaborationHints = true,
+  sharePointerAndSelection = true,
+  onShowRemoteCollaborationHintsChange,
+  onSharePointerAndSelectionChange,
   videoFileInputRef,
   srtFileInputRef,
   projectFileInputRef,
@@ -101,6 +126,8 @@ export function TopMenuBar({
     localRevision,
     savedRevision,
     pendingOperationCount,
+    remoteRevision,
+    observedRemoteRevision,
   );
 
   useEffect(() => {
@@ -176,16 +203,16 @@ export function TopMenuBar({
               <div className="top-menu-dropdown" role="menu" aria-label={item}>
                 {item === "文件" ? (
                   <>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(videoFileInputRef)}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(videoFileInputRef)} disabled={Boolean(editingBlockedReason)}>
                       导入视频
                     </button>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(srtFileInputRef)}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(srtFileInputRef)} disabled={Boolean(editingBlockedReason)}>
                       导入句级 SRT
                     </button>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(projectFileInputRef)}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(projectFileInputRef)} disabled={Boolean(editingBlockedReason)}>
                       导入项目
                     </button>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(mergeProjectFileInputRef)}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(mergeProjectFileInputRef)} disabled={Boolean(editingBlockedReason)}>
                       导入并整合标注
                     </button>
                     <div className="top-menu-divider" />
@@ -215,14 +242,14 @@ export function TopMenuBar({
                 ) : null}
                 {item === "编辑" ? (
                   <>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onUndo)} disabled={!canUndo}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onUndo)} disabled={!canUndo || Boolean(editingBlockedReason)}>
                       撤销
                     </button>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onRedo)} disabled={!canRedo}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onRedo)} disabled={!canRedo || Boolean(editingBlockedReason)}>
                       重做
                     </button>
                     <div className="top-menu-divider" />
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onRepairSentenceCharacterTrack)}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onRepairSentenceCharacterTrack)} disabled={Boolean(editingBlockedReason)}>
                       检查句级/逐字文字轨
                     </button>
                   </>
@@ -319,7 +346,28 @@ export function TopMenuBar({
         ))}
       </nav>
       <div className={`top-menu-status sync-status sync-status-${syncStatus}`}>
+        {collaborationStatus === "connected" ? (
+          <CollaborationPresenceMenu
+            members={collaborationPresenceMembers}
+            currentUserId={currentPlatformUserId}
+            showRemoteCollaborationHints={showRemoteCollaborationHints}
+            sharePointerAndSelection={sharePointerAndSelection}
+            onShowRemoteCollaborationHintsChange={onShowRemoteCollaborationHintsChange}
+            onSharePointerAndSelectionChange={onSharePointerAndSelectionChange}
+          />
+        ) : null}
+        {collaborationStatus ? (
+          <span
+            className={`collaboration-status collaboration-status-${collaborationStatus}`}
+            title="实时连接负责远端修订提示和在线成员状态，标注保存结果仍以后方文案为准。"
+          >
+            <span className="collaboration-status-dot" aria-hidden="true" />
+            {getCollaborationStatusLabel(collaborationStatus)}
+          </span>
+        ) : null}
+        {collaborationStatus ? " · " : ""}
         {accessLabel ? `${accessLabel} · ` : ""}
+        {mutationLeaseLabel ? `${mutationLeaseLabel} · ` : ""}
         {syncStatusLabel}
       </div>
       <input ref={videoFileInputRef} type="file" accept="video/*" onChange={onVideoFileChange} />
@@ -330,17 +378,40 @@ export function TopMenuBar({
   );
 }
 
+function getCollaborationStatusLabel(status: PlatformCollaborationStatus) {
+  if (status === "connected") return "实时已连接";
+  if (status === "connecting") return "实时连接中";
+  if (status === "reconnecting") return "实时重连中";
+  if (status === "offline") return "实时离线";
+  if (status === "error") return "实时连接异常";
+  return "实时未启用";
+}
+
 function getSyncStatusLabel(
   status: ProjectSyncStatus,
   localRevision: number,
   savedRevision: number,
   pendingOperationCount: number,
+  remoteRevision?: number,
+  observedRemoteRevision?: number,
 ) {
+  if (
+    status === "saved" &&
+    remoteRevision !== undefined &&
+    observedRemoteRevision !== undefined &&
+    observedRemoteRevision > remoteRevision
+  ) {
+    return `正在同步服务器 v${observedRemoteRevision}`;
+  }
   if (status === "saved") {
-    return `已保存 · r${savedRevision}`;
+    return remoteRevision === undefined
+      ? `已保存 · r${savedRevision}`
+      : `已同步 · 服务器 v${remoteRevision}`;
   }
   if (status === "saving") {
-    return `保存中 · r${localRevision}`;
+    return remoteRevision === undefined
+      ? `保存中 · r${localRevision}`
+      : `保存中 · 基于服务器 v${remoteRevision}`;
   }
   if (status === "offline") {
     return `离线待同步 · ${pendingOperationCount} 项`;

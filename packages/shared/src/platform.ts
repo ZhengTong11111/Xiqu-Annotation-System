@@ -2,7 +2,6 @@ export type PlatformRole =
   | "super_admin"
   | "admin"
   | "teacher"
-  | "ta"
   | "annotator"
   | "reviewer"
   | "service";
@@ -12,6 +11,17 @@ export type PlatformUser = {
   displayName: string;
   accountName: string;
   roles: PlatformRole[];
+};
+
+export type ManagedAccount = PlatformUser & {
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ManagedAccountPage = {
+  items: ManagedAccount[];
+  nextCursor: string | null;
 };
 
 export type UserReference = Pick<
@@ -28,6 +38,7 @@ export type ResourceType =
 export type ResourceCapability =
   | "read"
   | "write"
+  | "review"
   | "create_child"
   | "copy"
   | "move"
@@ -38,6 +49,7 @@ export type ResourceCapability =
 export const RESOURCE_CAPABILITIES: readonly ResourceCapability[] = [
   "read",
   "write",
+  "review",
   "create_child",
   "copy",
   "move",
@@ -49,6 +61,7 @@ export const RESOURCE_CAPABILITIES: readonly ResourceCapability[] = [
 export type ResourcePermissionSource =
   | "admin"
   | "owner"
+  | "role"
   | "direct"
   | "inherited"
   | "none";
@@ -122,36 +135,112 @@ export type SortDirection = "asc" | "desc";
 export type ResourceListPage = {
   items: ResourceEntry[];
   breadcrumbs: ResourceBreadcrumb[];
-  nextCursor?: string | null;
+  nextCursor: string | null;
 };
 
 export type AnnotationFile<TPayload = unknown> = {
   resource: ResourceEntry;
   payload: TPayload;
   revision: number;
+  operationCursor: string;
   mediaResourceId?: string | null;
+  media?: AnnotationMediaReference | null;
   lastEditor: UserReference;
   lastSavedAt: string;
 };
 
-export type AnnotationRecoverySnapshot<TPayload = unknown> = {
+export type AnnotationMediaReference = {
+  resourceId: string;
+  fileId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+};
+
+// 恢复快照摘要用于历史列表，刻意不携带大体积标注 payload。
+export type AnnotationRecoverySnapshotSummary = {
   id: string;
   annotationFileId: string;
   revision: number;
-  payload: TPayload;
   creator: UserReference;
   reason?: string | null;
   createdAt: string;
 };
 
-export type StoredFileObject = {
+// 恢复快照详情只在用户主动预览单条历史时返回完整 payload。
+export type AnnotationRecoverySnapshotDetail<TPayload = unknown> =
+  AnnotationRecoverySnapshotSummary & {
+    payload: TPayload;
+  };
+
+// 已确认标注范围使用稳定保存领域，不引用时间轴的派生伪轨或当前 UI 折叠状态。
+export const ANNOTATION_CONFIRMATION_DOMAINS = [
+  "subtitle_lines",
+  "character_annotations",
+  "gongche_annotations",
+  "banyan_sections",
+  "banyan_marks",
+  "custom_tracks",
+  "custom_blocks",
+  "attached_points",
+] as const;
+
+export type AnnotationConfirmationDomain =
+  (typeof ANNOTATION_CONFIRMATION_DOMAINS)[number];
+
+// 作用域三种模式保持互斥，避免 domains 与 tracks 的交集/并集语义在客户端和服务端发生分歧。
+export type AnnotationConfirmationTargets =
+  | {
+      mode: "all";
+    }
+  | {
+      mode: "domains";
+      domains: AnnotationConfirmationDomain[];
+    }
+  | {
+      mode: "tracks";
+      trackIds: string[];
+    };
+
+// 时间范围采用 [startTime, endTime) 半开区间；零时长点事件不属于本合同。
+export type AnnotationConfirmationScope = {
+  startTime: number;
+  endTime: number;
+  targets: AnnotationConfirmationTargets;
+};
+
+export type AnnotationConfirmationDraft = {
+  annotationFileId: string;
+  confirmedRevision: number;
+  scope: AnnotationConfirmationScope;
+  note?: string | null;
+};
+
+// 撤销字段作为判别联合成组出现，保留审核事实而不是原地删除记录。
+export type AnnotationConfirmationRecord = AnnotationConfirmationDraft & {
   id: string;
-  name: string;
-  mimeType: string;
-  size: number;
-  storageKey: string;
-  checksum?: string | null;
+  createdBy: UserReference;
   createdAt: string;
+} & (
+  | {
+      revokedAt?: null;
+      revokedBy?: null;
+      revokeReason?: null;
+    }
+  | {
+      revokedAt: string;
+      revokedBy: UserReference;
+      revokeReason?: string | null;
+    }
+);
+
+export type AnnotationConfirmationLifecycle = "active" | "revoked";
+export type AnnotationConfirmationFreshness = "current" | "stale";
+
+// 列表携带服务器当前 revision，调用方据此用纯 helper 判断每条确认是否已过期。
+export type AnnotationConfirmationList = {
+  currentRevision: number;
+  confirmations: AnnotationConfirmationRecord[];
 };
 
 export type ProcessingJobType =
@@ -184,25 +273,96 @@ export type ProcessingJob = {
   updatedAt: string;
 };
 
+// 审计动作列表同时供 API 运行时校验和管理界面筛选使用，避免前后端维护两份漂移枚举。
+export const AUDIT_ACTIONS = [
+  "auth_login",
+  "account_create",
+  "account_update",
+  "account_password_reset",
+  "account_password_change",
+  "file_upload",
+  "media_upload",
+  "resource_create",
+  "resource_update",
+  "resource_copy",
+  "resource_move",
+  "resource_trash",
+  "resource_restore",
+  "resource_delete",
+  "annotation_file_save",
+  "annotation_mutation_lease_acquire",
+  "annotation_mutation_lease_renew",
+  "annotation_mutation_lease_release",
+  "annotation_snapshot_restore",
+  "annotation_confirmation_create",
+  "annotation_confirmation_revoke",
+  "resource_permission_upsert",
+  "resource_permission_remove",
+  "resource_inheritance_update",
+  "annotation_media_bind",
+  "annotation_media_unbind",
+  "job_create",
+  "permission_denied",
+  "storage_orphan_cleanup",
+  "maintenance_enable",
+  "maintenance_disable",
+] as const;
+
+export type AuditActionName = typeof AUDIT_ACTIONS[number];
+
+// 审计资源摘要只携带浏览所需身份，不展开资源树、权限或文件 payload。
+export type AuditResourceReference = {
+  id: string;
+  name: string;
+  type: ResourceType;
+};
+
 export type AuditLogEntry = {
   id: string;
-  action: string;
+  action: AuditActionName;
   actorUserId?: string | null;
   resourceId?: string | null;
   fileId?: string | null;
   targetUserId?: string | null;
   detail?: unknown;
   createdAt: string;
+  actor?: UserReference | null;
+  resource?: AuditResourceReference | null;
+  targetUser?: UserReference | null;
+};
+
+// 审计列表以 opaque cursor 增量读取，调用方不能从 items 数量猜测是否还有下一页。
+export type AuditLogPage = {
+  items: AuditLogEntry[];
+  nextCursor: string | null;
 };
 
 export type AnnotationOperationRecord = {
   id: string;
   annotationFileId: string;
   actorUserId: string;
+  clientOperationId: string;
+  sequence: number;
   baseRevision: number;
   localRevision?: number | null;
   action: string;
   payload: unknown;
   status: "accepted" | "rejected" | "superseded";
+  commitState: "accepted" | "committed";
+  committedRevision: number | null;
+  committedAt: string | null;
+  replayability: "domain_command" | "requires_snapshot";
   createdAt: string;
+};
+
+// operation feed 始终按文件内 sequence 升序；nextCursor 也是客户端已观察事实的确认位置。
+export type AnnotationOperationPage = {
+  items: AnnotationOperationRecord[];
+  nextCursor: string | null;
+  hasMore: boolean;
+};
+
+// 已提交 feed 额外返回权威文件 revision，客户端可发现没有 operation 的 snapshot 推进。
+export type AnnotationCommittedOperationPage = AnnotationOperationPage & {
+  currentRevision: number;
 };

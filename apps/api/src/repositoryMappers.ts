@@ -1,4 +1,4 @@
-import type { PlatformUser, StoredFileObject } from "@xiqu/shared";
+import type { PlatformUser } from "@xiqu/shared";
 
 export function toPublicUser(user: {
   id: string;
@@ -14,6 +14,7 @@ export function toPublicUser(user: {
   };
 }
 
+// 文件读取服务需要存储元数据，但该内部形状不再作为浏览器裸上传合同公开。
 export function toFile(file: {
   id: string;
   name: string;
@@ -22,7 +23,7 @@ export function toFile(file: {
   storageKey: string;
   checksum: string | null;
   createdAt: Date;
-}): StoredFileObject {
+}) {
   return {
     id: file.id,
     name: file.name,

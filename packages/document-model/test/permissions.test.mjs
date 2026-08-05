@@ -19,8 +19,9 @@ const grant = (overrides = {}) => ({
 test("管理员与所有者始终拥有完整资源权限", () => {
   const admin = resolveResourcePermission({ isAdmin: true });
   const owner = resolveResourcePermission({ isOwner: true });
-  assert.equal(admin.capabilities.length, 8);
-  assert.equal(owner.capabilities.length, 8);
+  // 完整权限不再依赖易过期的固定数量；管理员、所有者必须拥有同一能力集并包含独立审核能力。
+  assert.deepEqual(owner.capabilities, admin.capabilities);
+  assert.ok(admin.capabilities.includes("review"));
   assert.equal(owner.isOwner, true);
   assert.equal(owner.canManagePermissions, true);
 });

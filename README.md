@@ -2,7 +2,7 @@
 
 这是一个面向戏曲研究、表演分析、唱词校勘和多轨时间标注的昆曲多模态数据平台。它由桌面式资源管理器、账号与逐文件权限后端，以及现有精细时间轴编辑器组成。它不是普通字幕编辑器，而是把视频、句级字幕、逐字时间、唱腔标签、动作轨、附属打点、音频波形、人声频谱图和工尺谱附属轨放在同一套研究工作流中管理和编辑的专业工具。
 
-当前版本同时支持“不登录的本地 JSON 编辑”和“PostgreSQL + Fastify 平台资源管理”两种模式。平台模式已经支持项目/文件夹/标注文件/媒体文件、服务器保存、恢复快照和逐资源账号权限；实时多人协作、批量授权和完整服务器部署能力仍在继续建设。工尺谱传统字形渲染可用于研究预览，但正式发布前仍需要处理字体授权和替换问题。
+当前版本同时支持“不登录的本地 JSON 编辑”和“PostgreSQL + Fastify 平台资源管理”两种模式。平台模式已经支持项目/文件夹/标注文件/媒体文件、服务器保存、恢复快照、逐资源账号权限，以及认证后可跨 API 实例分发的单文件 revision 实时通知、在线成员列表、远端播放头、鼠标时间和匿名选区摘要预览；R5 已提供受控试用的单服务器部署候选，完整公网生产验收仍属于 R7。工尺谱传统字形渲染可用于研究预览，但正式发布前仍需要处理字体授权和替换问题。
 
 ![《寻梦》示例项目工作台总览](docs/screenshots/xunmeng-with-video-overview.png)
 
@@ -79,14 +79,14 @@ PostgreSQL 或 API，适合单机整理、演示和紧急离线标注。
 
 ### 3. 启动完整平台
 
-完整平台需要 PostgreSQL、API 和 Web 三部分。仓库提供 PostgreSQL 16 的 Docker Compose
+完整平台需要 Node.js 22+、PostgreSQL、API 和 Web 三部分。仓库提供 PostgreSQL 16 的 Docker Compose
 配置：
 
 ```bash
 docker compose up -d postgres
 cp .env.example .env
 npm run db:generate
-npm run db:push
+npm run db:deploy
 ```
 
 分别启动后端和前端：
@@ -106,18 +106,50 @@ Web: http://127.0.0.1:5173/
 API: http://127.0.0.1:4317/
 ```
 
-开发种子账号为 `admin / admin123`。首次启动或 Prisma schema 变化后执行 `npm run db:push`；
-`db:push --force-reset` 会清空本地开发数据库，只应在明确不保留数据时使用。
+媒体上传默认限制为单文件 1 GiB、每个账号 20 GiB、平台 200 GiB；可通过
+`XIQU_MAX_UPLOAD_BYTES`、`XIQU_USER_STORAGE_QUOTA_BYTES`、
+`XIQU_PLATFORM_STORAGE_QUOTA_BYTES` 和 `XIQU_ORPHAN_GRACE_MS` 调整。服务端会检查真实媒体签名，
+浏览器文件选择器显示的类型并不是安全边界。
+
+后端提供 `/api/health/live` 与 `/api/health/ready`，前者只检查进程存活，后者检查 PostgreSQL 和对象
+目录。全局管理员可从资源工作区顶部打开“系统诊断”，查看容量、资源、任务、对象一致性与近期运维
+事件，并可在执行备份或维护前进入全局维护模式：平台会等待在途写入完成，继续允许读取，并以 503
+拒绝新的编辑、上传和资源变更。Prometheus `/metrics` 默认关闭；仅配置 `XIQU_METRICS_TOKEN` 后启用，
+并要求对应 Bearer token。指标除规范化 HTTP、上传和进程数据外，还包含数据库/对象存储可用性、平台
+逻辑容量、后台任务状态和采集成功状态；标签不会携带账号、资源、文件名或存储路径。
+
+`deploy/monitoring/` 提供 Prometheus 抓取、平台告警规则和 Alertmanager webhook 示例。真实 token 应以
+credentials file/secret 挂载，真实 receiver URL 不得提交仓库。规则覆盖 API/依赖不可用、采集失败、
+5xx、P95 延迟、容量 80%/95%、失败或积压任务和上传补偿失败，详见该目录 README。
+
+全局管理员还可以从同一工具栏打开“审计日志”。该窗口支持按操作类型、操作者、目标账号、资源和
+时间范围筛选，以稳定游标逐页加载，并由服务端导出与当前筛选条件一致的 CSV。单次导出最多
+10,000 条，CSV 会防护电子表格公式注入；资源级管理者只能查询自己具有“管理权限”能力的资源，不能
+借此读取平台全局日志。
+
+开发种子账号为 `admin / admin123`。全新数据库应通过 `npm run db:deploy` 应用已提交的
+Prisma migration；`db:push` 仅适合一次性的本地 schema 实验。`db:push --force-reset` 会清空
+目标数据库，只能在核对 `DATABASE_URL` 且明确不保留数据时使用。
+
+生产环境不会创建上述开发账号。单服务器部署、一次性首管理员创建、systemd、Nginx/TLS、备份恢复、
+升级与回滚见 [`docs/server-deployment.md`](docs/server-deployment.md)。
 
 ### 4. 生产构建与权限测试
 
 ```bash
 npm run build
 npm run test:permissions
+npm run test:uploads
+npm run test:observability
+npm run test:maintenance
+npm run test:audit-log
+npm run test:deployment
+npm run test:api
 ```
 
-当前没有通用 lint/全量测试脚本；`test:permissions` 覆盖资源权限核心，重要修改完成后至少应
-同时运行上述两条命令。
+当前没有通用 lint 或完整 UI 自动化套件；`test:permissions` 覆盖纯权限核心，`test:api` 使用
+独立 `api_test` PostgreSQL schema 和临时对象存储验证资源、ACL、revision、恢复快照与媒体
+Range。重要平台修改完成后应同时运行相关专项测试和完整构建。
 
 ## 平台资源管理与逐文件权限
 
@@ -139,8 +171,33 @@ npm run test:permissions
 ```
 
 项目不是另一套平行的“课程”或“工作区”。双击项目/文件夹进入下一级，双击标注文件进入
-现有时间轴编辑器。当前支持新建项目和文件夹、导入标注 JSON、上传媒体、复制标注文件、
-重命名、收藏和移入回收站。移动 API 已具备，专业的目标选择器和拖拽移动仍在完善。
+现有时间轴编辑器。当前支持新建项目和文件夹、导入标注 JSON、上传媒体、复制资源、重命名、
+收藏、批量移动、拖拽移动、移入回收站和恢复。列表、网格与 Finder 式分栏模式共用同一套选择、
+右键菜单和资源操作。
+
+### 比较两个标注文件
+
+在同一资源视图中使用 `Command/Ctrl` 选择两个可读取的标注文件后，可点击工具栏的比较图标，或
+右键所选文件并选择“比较标注文件”。比较窗口会按句级字幕、逐字与四声、工尺谱、板眼、自定义
+轨道/块和附属打点显示新增、删除、修改与未变数量，并可交换左右文件。
+
+比较是只读操作，不会保存文件、创建恢复快照或改变 revision。无法迁移的旧数据会明确标出发生在
+左侧还是右侧；若文件内存在重复实体 id，也会提示先修复数据质量。时间差异概览会在同一时间尺度上
+绘制左右文件的差异分布，可按研究领域和新增/删除/修改筛选；点击结构化差异行会高亮对应时间范围，
+点击概览标记会展开并定位到对应条目。无时间范围的项目设置等差异仍会单独计数，不会被概览隐藏。
+选择有时间范围的差异后，可以分别打开左侧或右侧标注文件；编辑器会把播放头定位到该侧真实范围的
+开始时间，并只在首次打开时把时间轴滚动到附近。新增或删除实体不存在的一侧、以及没有时间范围的
+项目设置差异会禁用对应命令，不会伪造 0 秒定位。打开时仍会重新读取文件的最新 revision 和账号
+权限，只读文件继续以只读模式进入。
+
+比较窗口已提供选择性整合预检。先明确“左侧整合到右侧”或“右侧整合到左侧”，再通过每条差异前的
+复选框或领域级复选框选择实体。预检会自动补齐句级、父文字块、轨道、工尺谱、板眼区段和附属点
+定义等强引用，并区分用户选择、自动依赖、新增、目标冲突、目标已相同和坏引用。时间概览筛选、领域
+折叠和差异条目导航不会清除整合选择；切换方向只会裁剪新来源侧不存在的实体。
+
+当前预检仍严格只读，不会修改任一文件、保存 revision 或创建恢复快照，也没有“应用”按钮。冲突
+取舍、应用前重新读取目标 revision/权限，以及在目标编辑器中形成一次可撤销提交，会在后续独立阶段
+完成。
 
 ### 逐文件账号权限
 
@@ -172,8 +229,70 @@ npm run test:permissions
 - 恢复快照是事故恢复安全网，不作为普通文件或“发布版本”展示。
 - 本地 JSON 的 `PROJECT_FILE_VERSION` 与平台 revision 是两个独立层次。
 
-当前 operation log 只记录编辑摘要，完整标注内容仍由 revision-checked 文件保存接口写入；
-实时多人同步尚未实现。
+轨道结构、递归分叉和批量导入等大范围操作现在已有服务端短时独占租约底座。租约按标注文件绑定账号、
+用途与基线 revision，数据库只保存一次性 token 的 SHA-256 摘要；有效租约存在时，operation、完整保存和
+快照恢复都必须携带匹配 token。成功保存/恢复会在同一事务释放租约，失败不会提前解锁。自定义轨道重命名、
+颜色、显示开关、类型选项排序、递归分叉树和块分叉归属已经接入 `annotation.track.structure.update`：平台
+编辑器先取得并续期租约，再提交领域命令和完整快照；顶部会显示结构锁状态，续期失效时保留浏览器草稿，
+下次保存会重新取锁。整条自定义轨创建/删除、内建或自定义父轨上的附属点轨创建/删除，以及会同步修改块
+类型的自定义类型选项编辑，已经通过 `annotation.track.structure.transaction.apply` 组合成一笔有界结构
+事实；整轨删除会同时原子处理工尺删除和板眼断链。既有顶层轨道排序、内建逐字轨配置、附属点轨配置，
+以及类型选项改名/删除与逐字唱法或点标签的联动也已进入同一结构事务；右键快速新建类型走相同合同。
+内建逐字轨创建/删除也已进入严格结构生命周期：逐字、工尺、板眼断链和轨道容器变化按依赖顺序原子组合，
+超出 500 实体预算时改走受控权威快照边界。SRT/项目/整合/工尺导入、句字修复和超量板眼生成会取得
+`bulk_import` 或 `bulk_repair` 租约，并只在 operation 中记录小型 `annotation.project.snapshot.boundary`；
+完整标注内容仍由 revision-checked 文件保存负责，clean 客户端看到该边界会重新读取服务器快照。普通无
+租约编辑行为不变。
+
+operation log 已开始从编辑摘要渐进迁移为版本化领域命令。时间轴句块、逐字块、动作块、自定义块、
+附属打点、工尺块和板眼点的纯时间调整可记录 `timeline.items.timing.update` version 1 envelope；逐字与
+派生句文本、动作标签、自定义块文字/类型和附属点标签可记录 `annotation.items.content.update`；当前格式
+真实使用的句、逐字、自定义文字/动作块、附属点和工尺块创建/删除可记录
+`annotation.items.lifecycle.update`。生命周期命令保存完整实体、父集合和原/新集合位置，inverse 可以恢复
+原顺序；工尺符号、板眼点和板眼区段的多字段耦合修改使用 `annotation.items.state.update` 完整状态命令。
+逐字与句同步、父块/工尺级联以及工尺删除前的板眼断链通过 `annotation.transaction.apply` 把多个严格叶命令封装成一个
+原子 revision 事实。自定义轨道元数据、递归分叉和块分叉归属使用独立结构命令；整轨与附属点轨生命周期、
+类型选项与块类型联动使用有界结构事务；轨道排序、既有内建轨/附属点轨配置和各自的类型内容联动也使用
+严格结构叶命令。它们的 undo 记录 inverse，redo 复用正向命令并同样先取得租约。逐字 `singingStyle`
+已经作为稳定内容字段进入 content command；批量导入/修复记录不可重放的受控快照边界，而不是 legacy
+完整项目副本。四声、分句合句和其余未迁移编辑仍记录 legacy 摘要。
+客户端纯函数现可检查全部 before 前置条件、原子应用命令并生成反向命令；目标缺失或时间冲突会返回可
+解释结果而不会部分修改项目。服务器新增了有序领域命令批次入口，可在同一数据库事务中严格解析当前
+`ProjectData`、顺序应用命令，并一次写入恢复快照、payload/revision、committed operation 和审计；当前编辑器
+尚未切换该入口，仍继续使用 revision-checked 的旧 operation POST + 完整 payload PUT 兼容流程。每个客户端
+operation 使用 `(标注文件、账号、clientOperationId)` 服务端唯一作用域和请求指纹：响应丢失后的完全
+相同重试返回原记录，同 key 异内容明确冲突，不会重复落日志。可写平台文件还会把一份经过脱敏的本地
+恢复草稿保存到 IndexedDB：草稿按账号与文件隔离，刷新后只有服务器 revision 未变化时才允许显式恢复；
+只读草稿只能导出或丢弃；服务器已推进的 stale 草稿可与最新服务器文件做结构化比较，按实体选择本地
+改动、补齐依赖并逐项处理冲突。准备整合时会重新读取两侧权威数据，随后仍需在编辑器中二次确认，
+不会直接覆盖服务器。正常保存成功后自动清除恢复草稿。
+
+每个标注文件现在还拥有独立、连续的 operation `sequence`。服务端在同一文件的排他锁内完成幂等复查、
+revision 复核和序号分配；不同文件仍可并行写入。读取接口按 sequence 升序返回有界 page，opaque cursor
+绑定文件与协议版本，坏游标或跨文件游标会被拒绝，并且每次读取都会重新检查资源读取权限。可严格解析的
+已知 timing/content/lifecycle/state/transaction 命令标记为 `domain_command`，旧式摘要标记为 `requires_snapshot`，后者禁止被客户端
+误当作可执行命令。
+这里的 sequence/cursor 只表示日志的接收顺序与客户端的已观察位置，不代表相应完整项目 payload 已经保存；
+权威内容仍以 annotation file revision 和快照保存结果为准。
+
+完整保存现在会携带该快照覆盖的 client operation ids。服务端在同一数据库事务中验证这些操作属于当前
+文件、账号和 base revision，随后写恢复快照、推进 payload revision，并给这些 operation 设置
+`committedRevision/committedAt`；任一项不匹配都会整体回滚。全部已接收日志与已进入权威快照的日志使用
+两条独立 feed：后者按 `(committedRevision, sequence)` 续读，可以安全跳过已接收但从未保存的 sequence
+空洞。每个 AnnotationFile 响应还带有与当前 payload revision 对齐的 opaque operation cursor。平台编辑器
+在本地完全 clean 时会每 5 秒有界读取 committed feed：连续且全部可重放的 timing/content/lifecycle/state/transaction 命令先在局部项目中完整
+验证，再一次性替换 clean 基线；revision 缺口、旧式 operation、分页预算耗尽或命令前置失败会改为重读
+权威完整快照。行内文字、拖拽临时态、pending operation、保存、冲突和待确认整合都会暂停追赶。
+
+可写平台文件在停止编辑约 3 秒后会自动保存：保存开始时固定项目、吸附状态和 operation 集合，保存中
+继续产生的新编辑仍保持 dirty，并在下一空闲窗口再次保存。离线时不发请求；恢复在线后重新同步；网络
+故障、408、429 和 5xx 按 2 秒起步、最长 60 秒的指数退避重试。409 冲突和确定的权限/资源错误不会盲目
+重试，也不会静默覆盖服务器。发生 409 时，编辑器显示“比较并处理冲突”：点击后会先沿草稿写入队列
+固定当前编辑，再读取服务器最新文件并进入结构化比较；确认整合回到编辑器后，自动保存从最新 revision
+继续。手动保存仍可立即触发相同事务。页面关闭不能可靠等待服务器响应，因此 dirty 提示与 IndexedDB
+草稿继续作为本地兜底。自动保存的 timer、single-flight、在线恢复和退避由独立运行时协调；保存合同外
+异常会停止后台重试并保留 dirty 内容，不会形成未处理异常或保存风暴。当前追赶仍是 HTTP clean-only
+同步，不包含 WebSocket、在线成员或 dirty 自动 rebase。
 
 ## 界面总览
 
@@ -922,7 +1041,7 @@ npm install
 docker compose up -d postgres
 cp .env.example .env
 npm run db:generate
-npm run db:push
+npm run db:deploy
 ```
 
 ### 启动前端与 API
@@ -934,11 +1053,40 @@ npm run dev:api
 
 这两条命令应在两个终端中分别运行。若只测试本地标注模式，可以只运行 `npm run dev:web`。
 
+### 选择对象存储后端
+
+开发环境默认使用本地目录，不配置 backend 也等同于 `local`：
+
+```bash
+export XIQU_OBJECT_STORAGE_BACKEND=local
+export XIQU_STORAGE_ROOT=./data/storage
+```
+
+服务器可切换到 S3-compatible 对象存储。自托管 MinIO、SeaweedFS 等通常需要 endpoint 与 path-style；
+直接连接 AWS S3 时可以省略 endpoint，并按部署方式设置 `XIQU_S3_FORCE_PATH_STYLE=false`：
+
+```bash
+export XIQU_OBJECT_STORAGE_BACKEND=s3
+export XIQU_S3_ENDPOINT=http://127.0.0.1:8333
+export XIQU_S3_REGION=us-east-1
+export XIQU_S3_BUCKET=xiqu-assets
+export XIQU_S3_ACCESS_KEY_ID=replace-me
+export XIQU_S3_SECRET_ACCESS_KEY=replace-me
+export XIQU_S3_FORCE_PATH_STYLE=true
+export XIQU_S3_PREFIX=platform
+```
+
+当前适配器要求显式成对凭据，尚未开放宿主 IAM 默认凭据链。空白、缺项、坏布尔值和未知 backend 会在
+启动时失败，不会静默回退本地。S3 上传使用临时 key + server-side copy 发布，下载支持单段 Range；
+`npm run test:s3-storage` 需要 PATH 中存在 Apache-2.0 的 SeaweedFS `weed` 命令，用真实 S3 HTTP 协议
+验证 staged、promote、Range、prefix、列举、删除和 readiness。
+
 ### 构建
 
 ```bash
 npm run build
 npm run test:permissions
+npm run test:api
 ```
 
 ### 预览生产构建
@@ -947,19 +1095,158 @@ npm run test:permissions
 npm run preview
 ```
 
+### 平台维护、备份与隔离恢复演练
+
+平台备份不是简单并行复制数据库和媒体目录。`backup:create` 会先进入跨实例维护模式，等待在途写入
+排空，再依次生成 PostgreSQL custom dump、复制整个受控对象根、计算每个文件的 SHA-256、写入
+`manifest.json` 并执行离线复核；只有全部成功后才把 staging 原子发布为 final 备份目录。
+
+```bash
+# PostgreSQL 客户端不在 PATH 时，指向包含 pg_dump / pg_restore 的目录。
+export XIQU_PG_BIN_DIR=/path/to/postgresql/bin
+# 当前生产适配器为 local；未配置时也默认 local，未知值会拒绝启动。
+export XIQU_OBJECT_STORAGE_BACKEND=local
+
+npm run maintenance:status -- --operator admin
+npm run backup:create -- --operator admin --output ./data/backups \
+  --reason "每周离线备份"
+npm run backup:verify -- --backup ./data/backups/xiqu-backup-...
+```
+
+S3-compatible 远端备份使用独立 `XIQU_BACKUP_S3_*` 配置，不能与线上对象存储共享或嵌套 prefix。
+远端没有目录原子改名，因此命令先流式发布 dump 和对象，最后发布 `manifest.json` 作为唯一完成标志；
+缺少 manifest 的 prefix 不是有效备份。示例配置见 `.env.example`：
+
+```bash
+export XIQU_BACKUP_S3_ENDPOINT=https://backup-object.example
+export XIQU_BACKUP_S3_REGION=us-east-1
+export XIQU_BACKUP_S3_BUCKET=xiqu-backups
+export XIQU_BACKUP_S3_ACCESS_KEY_ID=replace-me
+export XIQU_BACKUP_S3_SECRET_ACCESS_KEY=replace-me
+export XIQU_BACKUP_S3_FORCE_PATH_STYLE=true
+export XIQU_BACKUP_S3_PREFIX=platform-backups
+
+# 部署到真实目标前先验证最小 IAM、写入、复制发布、读取、Range、列举和无残留删除。
+npm run backup:check-remote-capabilities
+
+npm run backup:create-remote -- --operator admin \
+  --reason "每周远端一致备份" --work-root ./data/remote-backup-work
+npm run backup:verify-remote -- --backup-id xiqu-backup-...
+
+# 先只读检查；确认输出与策略后，使用同一次计划的 token 执行清理。
+npm run backup:inspect-remote
+npm run backup:cleanup-remote -- --plan-token PLAN_TOKEN_FROM_INSPECT --confirm
+```
+
+`backup:create-remote` 仍会在受控本地工作目录生成 PostgreSQL dump，但媒体和 dump 都以流方式上传，
+不会把完整包载入内存。失败会反向清理本轮已发布对象，并按本地备份相同规则恢复维护状态；若补偿失败，
+CLI 会同时报告原始错误和残留清理错误。manifest 中的 missing/orphan warning 是源数据事实，不等于
+远端包校验失败。
+
+远端生命周期默认给无 manifest 的未完成包 24 小时宽限，完整包保留 30 天并始终至少保留最新 3 个；
+可通过 `.env.example` 中三个 `XIQU_REMOTE_BACKUP_*` 策略变量调整。`inspect` 只读扫描并生成绑定策略、
+对象 key/size/modifiedAt、分类和候选集合的 SHA-256 plan token。`cleanup` 会重新扫描，token 不同则零删除
+并要求重新检查。完整包先删除 `manifest.json`，再删除 payload；manifest 删除失败时不会触碰该包其他
+对象。坏 manifest、声明/实际集合不一致和未知顶层对象只报告，当前不会自动删除。
+
+生产 MinIO/AWS 的最小权限模板、TLS/path-style 检查、凭据边界和完整验收顺序见
+[`deploy/object-storage/README.md`](deploy/object-storage/README.md)。能力检查只在随机
+`.acceptance/<uuid>/` 下写入小型探针，覆盖 staged 上传、HEAD/LIST、server-side copy、完整/Range GET
+和 DELETE，并在成功或失败出口幂等清理。SeaweedFS 或本机 HTTP 测试只证明工具链可运行，不能替代
+目标生产环境的 TLS、网络、IAM、真实备份和隔离恢复验收。
+
+备份包结构固定为：
+
+```text
+xiqu-backup-.../
+├── manifest.json
+├── database.dump
+└── objects/
+    └── <原 storageKey>
+```
+
+恢复演练必须使用**与源名称不同、没有任何用户表的隔离数据库**和不存在或为空的隔离对象目录。
+应用账号通常没有 `CREATE DATABASE`；请由数据库运维账号预先创建并把 owner 设置为应用账号。连接串
+包含密码时推荐通过环境变量传入，避免写入 shell history：
+
+```bash
+export XIQU_RESTORE_DATABASE_URL='postgresql://xiqu:***@localhost:54329/xiqu_restore_drill?schema=public'
+npm run backup:restore-drill -- \
+  --backup ./data/backups/xiqu-backup-... \
+  --target-storage /tmp/xiqu-restore-storage \
+  --report /tmp/xiqu-restore-report.json
+
+# 远端包使用同一个 XIQU_BACKUP_S3_* 目标；工作目录只保存恢复期间的受控临时包。
+npm run backup:restore-remote-drill -- \
+  --backup-id xiqu-backup-... \
+  --work-root ./data/remote-restore-work \
+  --target-storage /tmp/xiqu-remote-restore-storage \
+  --report /tmp/xiqu-remote-restore-report.json
+```
+
+远端恢复不会先完整校验一遍远端包再重新下载。命令只读取一次 manifest，并把 dump 和每个对象各通过
+一个网络流写入唯一临时目录，同时复算大小与 SHA-256；形成完整本地包后，再由原有离线 verifier 从
+本地磁盘复核并进入唯一恢复链路。成功、失败或中止都会清理临时包，清理失败会与主错误一并报告。
+目标对象目录不能与线上本地存储、临时包重叠；线上对象存储为 S3 时不会伪造本地路径。
+
+恢复库会保留备份时的 `maintenance=true`，这是防止误接流量的安全设计。人工检查完成并准备正式切换
+后，必须让 CLI 指向恢复库，再明确执行 `maintenance:disable`。若备份进程被 `SIGKILL` 或恢复写入失败，
+源平台也可能继续处于持久维护状态；请检查状态并使用下列本机恢复通道，不需要浏览器 session：
+
+```bash
+npm run maintenance:disable -- --operator admin
+```
+
+不得把备份输出放进对象存储目录，不得把恢复演练指向当前数据库或 `postgres/template` 系统库，也不要
+在未执行 `backup:verify` 的情况下手工解包恢复。manifest 会如实记录源数据已有的 missing/orphan 警告，
+备份命令不会擅自清理这些资产。本地目录和 S3-compatible 远端包都已支持隔离恢复演练与保留清理；
+尚未实现的是生产 IAM/真实生产 bucket 验收、调度、增量与加密。不能把远端位置
+伪装成本地目录，也不能把运行时 S3 prefix 与备份 prefix 配成相同或互相包含。
+
 ## 当前限制与注意事项
 
-### 1. 平台后端已经可用，但不是生产部署版本
+### 1. 已有单服务器部署候选，但尚未完成 R7 生产验收
 
-账号、资源树、媒体上传、标注文件保存、恢复快照和逐文件权限已经接入
-Fastify/Prisma/PostgreSQL。生产部署所需的数据库迁移、HTTPS、反向代理、限流、备份、对象存储
-迁移和运维监控仍未完成。
+账号、资源树、带签名/配额/补偿的媒体上传、标注文件保存、恢复快照和逐文件权限已经接入
+Fastify/Prisma/PostgreSQL，并由一组可部署 migration 维护。当前已有 liveness/readiness、低基数
+Prometheus 指标、管理员诊断面板、跨实例维护写入静默边界，以及带 manifest/checksum 的 PostgreSQL
+与本地对象目录一致备份和隔离恢复演练。S3-compatible 运行适配器、manifest-last 远端备份、隔离恢复
+和保留清理已经完成，并已提供同源 Nginx/TLS、systemd、生产环境边界、首管理员 bootstrap 与部署 smoke
+check 模板。真实生产桶/IAM、TLS 续期、主机防火墙、容量和长期灾难恢复仍需在目标环境验收。维护状态
+持久化在 PostgreSQL，API 重启不会自动解除；管理员应在维护
+任务完成后从诊断面板或本机 CLI 明确恢复写入。
 
-### 2. 尚未实现实时多人协作
+### 2. 实时通知已接入，完整多人协作尚未实现
 
-已有 pending operations、operation log、revision 冲突和同步状态基础，但 WebSocket、presence、
-实时 operation 合并和离线自动恢复尚未实现。多人同时保存同一 revision 时，后到者会收到
-冲突提示。
+已有 pending operations、幂等 operation log、version 1 时间、稳定内容、实体生命周期、复合状态、依赖事务与有界结构事务命令、revision 冲突、同步状态和
+浏览器 IndexedDB 恢复草稿。clean 平台会话已经能消费与权威 revision 绑定的 committed operation：完整
+连续的 timing/content/lifecycle/state/transaction 命令本地原子重放，其余情况刷新完整快照。服务器仍不会以命令直接修改 payload，浏览器也
+不会在 dirty 状态自动 rebase。
+同 revision 草稿可在重新打开时恢复；stale 草稿可按稳定实体与服务器当前文件比较并选择性整合，但仍
+必须经过编辑器确认和普通 revision save。平台编辑器已有空闲自动保存、保存中继续编辑、在线恢复和
+有界退避；自动保存遇到 409 会停在 conflict，用户可从冲突栏显式进入本地草稿与服务器最新文件的
+选择性整合。自动保存运行时已有确定性生命周期测试，覆盖 single-flight、保存中继续编辑、离线恢复、
+退避、冲突阻断、合同外异常和卸载迟到响应。平台文件现在会通过短时一次性票据建立认证 WebSocket，并在
+服务器 revision 推进时立即唤醒既有 HTTP 追赶；连接状态与保存状态分别显示。WebSocket 不传完整标注内容，
+也不成为第二条保存通道。API 实例通过 schema 隔离的 PostgreSQL LISTEN/NOTIFY 转发有界 revision 事件，
+因此浏览器连接与保存请求落在不同实例时仍能及时收到提示；通知重复、乱序或短时丢失继续由进程内单调去重
+和周期 HTTP catch-up 兜底。标注文件会话还会以数据库短生命周期 presence 聚合当前在线账号；同一账号的
+多个窗口显示为一个成员并标注窗口数，跨 API 实例通过文件级失效通知重新读取数据库成员快照。断线、撤权
+和服务关闭会主动清理，异常退出由 60 秒 TTL 兜底。在线成员状态不会授予权限，也不进入标注 JSON、恢复
+快照、operation log 或治理审计。
+
+同一标注文件的已认证会话现在会以独立瞬时通道广播一个完整的“播放头 + 鼠标时间 + 匿名选区摘要”最新
+快照：浏览器最多每秒发送 8 次变化，静止时每 2 秒保活；服务端再次限流，并通过第三条 schema 隔离的
+PostgreSQL LISTEN/NOTIFY 通道跨实例转发。选区摘要只包含起止时间、项目数、可视轨道数和固定研究域类别，
+不会发送实体 id、标注正文、轨道名或分叉名。慢消费者会丢弃瞬时帧，断线会发送 clear，浏览器超过 6 秒
+未收到更新也会回收旧活动；换文件时会清空上一文件的完整快照。
+
+同账号多窗口按最近完整活动窗口合并，Timeline 只渲染其他账号，最多显示 32 个远端账号，并只为前 12 个
+活跃账号绘制选区 band。播放头和鼠标纵线、选区起止边界都直接使用现有
+`trackHeaderWidth + time * zoom` 时间坐标，不参与吸附、选择、拖动或保存。在线成员菜单可单独关闭所有远端
+提示，也可停止共享自己的鼠标与选区摘要；后一个开关不关闭播放头协作预览。该通道不传标注正文，也不进入
+ProjectData、revision、恢复草稿、快照、operation log 或治理审计。实时 dirty operation 合并尚未实现；
+多人同时保存同一 revision 时，后到者不会覆盖前者。
 
 ### 3. 本地视频需要重新关联
 
@@ -971,11 +1258,15 @@ Fastify/Prisma/PostgreSQL。生产部署所需的数据库迁移、HTTPS、反�
 
 ### 5. 测试体系仍不完整
 
-目前没有通用 lint 和完整 UI 自动化套件。资源权限核心已有专门测试；修改后至少运行：
+目前没有通用 lint 和完整 UI 自动化套件。资源权限核心和平台 API 已有专门测试；修改后至少运行：
 
 ```bash
 npm run build
 npm run test:permissions
+npm run test:api
+npm run test:annotation-revision-event-bus
+npm run test:annotation-presence
+npm run test:annotation-collaboration
 ```
 
 并手动检查：
@@ -1024,4 +1315,6 @@ npm run test:permissions
 - `src/App.tsx` 仍是主要编排层。
 - `src/components/Timeline.tsx` 是最复杂的交互面。
 - `src/state/projectDocumentState.ts` 是后续数据库保存、版本恢复、远端同步、多人协作的基础。
+- 客户端已具备原子命令批次的完整链审计、同批幂等重试和 saved baseline 部分确认核心；当前 App 尚未完成
+  接线，平台实际保存仍保留旧完整快照兼容通道，不能提前删除。
 - 不要绕过现有状态层直接在组件局部实现第二套项目状态。
