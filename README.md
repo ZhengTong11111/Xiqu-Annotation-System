@@ -99,6 +99,13 @@ npm run dev:api
 npm run dev:web
 ```
 
+`dev:api` 与 `dev:analysis-worker` 会通过 Node.js 22 内建的 `--env-file-if-exists` 自动读取仓库根目录
+中被 Git 忽略的 `.env`；无需手动 `source`。生产 `start:*` 仍由 systemd/容器注入受保护环境变量，不读取
+工作目录中的开发文件。
+
+修改 `.env` 后必须重启对应的 API 或分析 worker，Vite 热更新不会刷新服务端环境变量。不要绕过 npm 脚本
+直接执行 `tsx apps/api/src/server.ts`，否则本地 VOD、对象存储等配置不会按仓库约定加载。
+
 默认地址：
 
 ```text
@@ -119,6 +126,11 @@ VOD ID、区域、媒体种类和时长等稳定信息，不保存 AccessKey、S
 播放器还必须成对配置 `XIQU_ALIYUN_VOD_WEB_LICENSE_DOMAIN` 与 `XIQU_ALIYUN_VOD_WEB_LICENSE_KEY`；
 前者只填阿里云控制台 Web 应用登记的域名，不含协议、端口或路径。Web License 会发送给浏览器，不得用
 AccessKey/Secret 代替，也不要把账号专属值硬编码进前端源码。
+
+本地调试页面的 hostname 必须与 License 登记域名一致。例如登记为 `localhost` 时，应使用
+`http://localhost:5173/`，不能改用 `http://127.0.0.1:5173/`。AccessKey 只允许由 API/worker 通过阿里云
+默认凭据链读取；Web License 只解决播放器授权，两者不能互换。完成 `.env` 配置后重启 `npm run dev:api`，
+涉及波形、频谱或 F0 分析时也重启 `npm run dev:analysis-worker`。
 
 后端提供 `/api/health/live` 与 `/api/health/ready`，前者只检查进程存活，后者检查 PostgreSQL 和对象
 目录。全局管理员可从资源工作区顶部打开“系统诊断”，查看容量、资源、任务、对象一致性与近期运维

@@ -5435,6 +5435,9 @@ operation、审计详情或协作消息。
 - 补齐 Web 播放器 License 配置链路：API 以成对环境变量校验 `domain + key`，临时播放会话返回严格 DTO，
   播放器初始化显式传入 `license`。缺配置时服务端在签发 PlayAuth 前返回明确错误，避免 4036 后继续触发
   无意义的 seek 超时。账号专属值不进入前端源码。
+- 真实 License 首次重启暴露开发启动契约缺陷：README 要求创建根目录 `.env`，但 `dev:api` 与
+  `dev:analysis-worker` 原先都未读取它，新进程会静默退回“VOD 未启用”。两个脚本现统一使用 Node.js 22
+  内建 `--env-file-if-exists=.env`，不增加依赖；生产 `start:*` 仍只接受部署环境显式注入。
 - 收紧播放准备错误边界：服务端播放会话错误继续向用户展示明确部署原因，播放器 SDK/CDN 加载异常统一为
   固定中文文案；SDK 与播放会话仍并行加载，并在同时失败时优先展示可操作的服务端业务错误。
 - 增加官方 SDK 在生产 NodeNext/ESM 下可构造的回归测试，避免测试 fake gateway 掩盖 CJS/ESM 默认导入错误。
@@ -5447,13 +5450,19 @@ operation、审计详情或协作消息。
   构建只保留既有 Vite 主 chunk 超过 500 kB 提醒。首次完整构建发现平台播放来源测试夹具仍使用旧 DTO，
   补齐 Web License 后重跑通过，`git diff --check` 通过。
 - 当前浏览器播放错误不是 PlayAuth 过期、视频转码中或 CDN URL 鉴权：服务端每次实时签发 PlayAuth，媒资
-  为 Normal，播放器控制台给出的确定原因是缺少 Web License。
+  为 Normal，播放器控制台给出的确定原因是缺少 Web License。补齐控制台授权后，播放会话由 503 恢复为
+  200，DTO 同时携带实时 PlayAuth 与 Web License，用户已在 `http://localhost:5173/` 人工确认《寻梦》样例
+  VOD 正常播放；编辑器继续显示约 1494.4 秒时长和既有波形、频谱分析资产。
+- 真实配置重启时确认 `dev:api` 与 `dev:analysis-worker` 原脚本不读取仓库根 `.env`。现改为 Node.js 22 内建
+  `--env-file-if-exists=.env`，并增加部署脚本回归；不新增 dotenv 依赖。仅确认敏感变量存在与格式，不在
+  命令输出、开发日志或提交中记录真实值。
+- 阶段收尾重新执行播放器 17/17、媒体分析 17/17、完整 API 163/163、部署脚本 7/7、服务配置/首管理员
+  13/13、生产构建与 `git diff --check`，全部通过；构建只保留既有主 chunk 超过 500 kB 提醒。敏感值反查
+  Git 跟踪文件为零匹配，根 `.env` 权限为 `600` 且继续被忽略。
 
 ### 待推进
 
-- 在阿里云点播控制台“SDK 管理 -> 我的授权”创建/确认 Web 应用，登记实际部署域名并绑定播放器 License；
-  将控制台的 domain 与 License Key 写入受保护运行环境。AccessKey 不能替代 Web License。
-- 配置后重启 API，冷加载浏览器完成真实播放、暂停、精确 seek、P 临时循环、持久循环、倍率、独立窗口及
-  PlayAuth 到期前单飞刷新验收，再运行完整 API/构建/部署测试并提交本轮修改。
+- 在实际生产域名重新登记并验收 Web License，长时间运行覆盖 PlayAuth 到期前单飞刷新，同时复验暂停、
+  精确 seek、P 临时循环、持久循环、倍率和独立窗口；本地“正常播放”人工 smoke 不替代生产域名验收。
 - 临时长期 AccessKey 在验收结束后必须由账号所有者立即禁用/删除，并改用 RAM 角色、实例角色或其他
   短时凭据方案。

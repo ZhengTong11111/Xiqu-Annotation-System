@@ -41,6 +41,19 @@ test("运行时版本检查拒绝 Node 22 以下版本", () => {
   assert.throws(() => assertSupportedNodeVersion("20.19.0"), /Node.js 22/);
 });
 
+// 本地开发命令必须消费 README 要求创建的 .env，避免 API 与 worker 静默退回默认配置。
+test("本地后端开发命令统一读取根目录环境文件", async () => {
+  const packageJson = JSON.parse(await readFile(
+    new URL("../package.json", import.meta.url),
+    "utf8",
+  ));
+  for (const scriptName of ["dev:api", "dev:analysis-worker"]) {
+    const script = packageJson.scripts?.[scriptName];
+    assert.equal(typeof script, "string");
+    assert.match(script, /node --env-file-if-exists=\.env --import tsx/);
+  }
+});
+
 test("健康响应必须使用平台 envelope、服务名和预期状态", () => {
   assert.doesNotThrow(() => validateHealthPayload({
     data: { status: "ready", service: "xiqu-platform-api" },

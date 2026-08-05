@@ -26,6 +26,8 @@ Main currently contains all major recent feature lines that matter for context:
 - platform login/resource-explorer UI, local editor entry, media upload, project/folder/file management, JSON import, revision-checked server save, recovery snapshots, and per-resource account permissions
 - permission-gated native streaming downloads for media resources and authoritative JSON downloads for annotation resources, exposed through the shared resource context menu and Inspector
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
+- local `dev:api` and `dev:analysis-worker` commands load the ignored root `.env` through Node 22
+  `--env-file-if-exists`; production `start:*` continues to require an explicit systemd/container environment
 - R5 controlled single-server deployment candidate with fail-closed production configuration, same-origin `/api`, one-time
   administrator bootstrap, systemd/Nginx templates, read-only smoke checks, and `docs/server-deployment.md`
 - backend audit logs and annotation operation logs for the first platform-governance layer
@@ -796,6 +798,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `npm run dev`
 - `npm run dev:web`
 - `npm run dev:api`
+- `npm run dev:analysis-worker`
 - `npm run db:generate`
 - `npm run db:push`
 - `npm run db:migrate`
@@ -1763,6 +1766,22 @@ Current media behavior:
 - native and VOD playback sync is requestAnimationFrame-driven from the same snapshot contract while playing
 - preview mode pauses/resumes around ordered edge-preview seeks; later pause/play/seek commands always supersede older async work
 - local computer media, uploaded server media, and Aliyun VOD must remain three independent selectable workflows
+
+Aliyun VOD startup and credential rules:
+- root `.env` is a local-development input only, must remain Git-ignored, and should have mode `600`; never print its real
+  AccessKey, Secret, Web License key, playauth, or temporary media URLs into tool output, tests, screenshots, docs, or logs
+- always start development API/worker through `npm run dev:api` and `npm run dev:analysis-worker`; both scripts use Node 22
+  `--env-file-if-exists=.env`. Direct `tsx apps/api/src/server.ts`/`analysisWorkerCli.ts` execution bypasses this contract
+- changing `.env` requires restarting the affected API/worker process. Vite HMR cannot update server credentials or provider
+  configuration, and a process started before the change must be treated as stale
+- VOD enable/region and Web License `domain + key` are server configuration. The License domain must equal the browser
+  hostname registered in the Aliyun console: a `localhost` authorization requires opening `http://localhost:...`, not
+  `http://127.0.0.1:...`; never include scheme, port, path, or wildcard in the configured domain
+- server AccessKey/default-credential-chain identity authorizes VOD API calls; Web License authorizes Aliplayer in the browser.
+  They are independent and must never substitute for each other. License data may cross the short-lived playback-session DTO
+  only because the SDK requires it, but account-specific values still must not be hard-coded into frontend source
+- production `start:*` does not read repository `.env`; systemd/container/secret management must inject configuration explicitly.
+  VOD remains optional, and missing VOD configuration must never disable local-computer or uploaded-server media workflows
 
 Audio pipeline:
 - platform files never fetch and decode a complete uploaded/VOD video in the browser for analysis; the independent analysis
