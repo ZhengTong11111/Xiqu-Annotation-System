@@ -5237,3 +5237,38 @@ ProjectData builder、adapter 与编辑器接线：
 - `test:s3-storage` 使用真实 SeaweedFS S3-compatible HTTP 协议验证既有 staged/promote/Range/list/delete、
   能力探针、远端备份和生命周期路径，5/5 通过。真实 5 GB 数据传输未纳入常规测试，以命令级测试避免
   CI 制造巨型临时对象；生产部署仍应以目标 S3 服务执行一次大文件验收。
+
+## 2026-08-05：R3h1 跨目录服务器媒体选择闭环
+
+### 实现
+
+- 将 JSON 导入和 Inspector 原本只读取直接父目录前 200 个媒体的窗口，改为可浏览资源根、项目和文件夹的
+  共用媒体选择器。选择器复用现有资源列表 API、权限 DTO、Radix Dialog 和服务端 cursor，提供上级、
+  面包屑、进入目录、当前目录搜索、加载更多、刷新、当前关联展示、明确解绑和上传到当前目录。
+- 抽出 `resourcePickerPaging.ts`，以有限页预算跳过纯无关资源页并保留 cursor；移动目标选择器改为复用同一
+  helper，删除重复的分页循环。选择器不会为了寻找媒体偷偷抓取完整目录。
+- 平台编辑器“文件”菜单新增“关联服务器媒体”，并保留“导入本地视频”。编辑会话持有权威 parent/media
+  DTO；改绑只允许发生在完全 clean、无保存/冲突/远端 revision 缺口的状态，通过
+  `replaceCleanProjectFromRemote()` 原子刷新运行时媒体，不产生 undo、history 或 pending operation。
+- 新增纯策略 `platformMediaBindingPolicy.ts`，集中媒体改绑门禁，供后续 uploaded/VOD 来源共用。显式解绑
+  现在会清除旧 payload 中残留的 `platform-file:` 路径；只有缺省旧 DTO 才走历史迁移 fallback。
+- 上传响应可在列表刷新前直接成为有效选择；上传/确认期间统一阻止关闭，失败保留目录、搜索和选择，并只在
+  对话框原位显示一份错误。根级标注文件也能打开选择器，但必须进入有 `create_child` 权限的容器后才能上传。
+- 未新增依赖：现有 Radix、Lucide、资源 API 和分页模型足以完成本轮，额外引入文件浏览组件会重复现有 ACL、
+  cursor 和桌面样式语义。
+
+### 审查与验证
+
+- `test:resource-column-pages` 6/6，通过选择器跳页、去重、面包屑和有限预算 cursor 回归。
+- `test:platform-drafts` 32/32，通过 clean 门禁、显式解绑、权威媒体 DTO 和旧路径兼容回归。
+- `test:api` 144/144，通过 PostgreSQL 隔离 schema 下的媒体绑定/改绑/解绑、跨资源权限、上传、Range、
+  账号、资源、恢复、协作及运维全套集成测试；仅输出既有 `pg` 9.0 弃用预告。
+- `npm run build` 通过 Prisma generation、shared、document-model、Web 和 API；仍只有既有 Vite 主 chunk
+  超过 500 kB 提醒。`git diff --check` 通过。
+- 应用内浏览器实际验证了 Inspector 与编辑器两处入口、从《寻梦》项目返回资源根、进入其他项目、目录内
+  搜索空结果、当前媒体展示、上传目标提示和本地视频入口保留；桌面截图显示窗口无遮挡、列表/页脚未溢出，
+  项目控制台无 warning/error。浏览器宿主曾输出一次自身 Statsig 网络告警，不属于本应用日志。
+
+下一步：R3h2 建立 uploaded/aliyun_vod 严格来源模型与安全播放会话 API；本地计算机媒体、服务器上传媒体
+和 VOD 三条工作流必须并存，不把 AccessKey、Secret、playauth 或临时播放地址写入数据库、标注 JSON、草稿、
+operation、审计详情或协作消息。

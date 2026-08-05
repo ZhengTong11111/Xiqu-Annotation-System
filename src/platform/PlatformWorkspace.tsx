@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import type {
   AnnotationFile,
+  AnnotationMediaReference,
   PlatformRole,
   PlatformUser,
   ResourceEntry,
@@ -49,6 +50,8 @@ export type PlatformEditorSession = {
   client: PlatformClient;
   annotationFileId: string;
   annotationFileName: string;
+  parentId: string | null;
+  media: AnnotationMediaReference | null;
   projectTitle: string;
   baseRevision: number;
   operationCursor: string;
@@ -207,6 +210,8 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       client,
       annotationFileId: input.file.resource.id,
       annotationFileName: input.file.resource.name,
+      parentId: input.file.resource.parentId ?? null,
+      media: input.file.media ?? null,
       projectTitle: parent?.name ?? "平台标注项目",
       baseRevision: input.file.revision,
       operationCursor: input.file.operationCursor,
@@ -233,6 +238,8 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
               baseRevision: saved.revision,
               operationCursor: saved.operationCursor,
               annotationFileName: saved.resource.name,
+              parentId: saved.resource.parentId ?? null,
+              media: saved.media ?? null,
             }
           : current);
       },

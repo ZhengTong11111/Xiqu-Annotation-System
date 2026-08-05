@@ -23,6 +23,8 @@ import { TopMenuBar, type TopMenuPlatformNavigation } from "./components/TopMenu
 import { VideoPlayer } from "./components/VideoPlayer";
 import { mockProject } from "./mockData";
 import { AnnotationConfirmationPanel } from "./platform/AnnotationConfirmationPanel";
+import { AnnotationMediaBindingDialog } from "./platform/AnnotationMediaBindingDialog";
+import { getPlatformMediaBindingBlockReason } from "./platform/platformMediaBindingPolicy";
 import {
   buildAnnotationConfirmationViewRecords,
   canShowAnnotationConfirmationRevoke,
@@ -727,6 +729,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [isSubtitlePanelCollapsed, setIsSubtitlePanelCollapsed] = useState(false);
   const [isSplitPanelCollapsed, setIsSplitPanelCollapsed] = useState(false);
   const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
+  const [serverMediaDialogOpen, setServerMediaDialogOpen] = useState(false);
+  const [serverMediaBindingBusy, setServerMediaBindingBusy] = useState(false);
   const [currentProjectFileName, setCurrentProjectFileName] = useState<string | null>(null);
   const [previewDetachedWindow, setPreviewDetachedWindow] = useState<Window | null>(null);
   const [timelineDetachedWindow, setTimelineDetachedWindow] = useState<Window | null>(null);
@@ -745,6 +749,22 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const serverSaveInFlightRef = useRef(false);
   // acquire 需要等待网络；这一门禁串行化结构、批量导入和批量修复，避免连续点击重复提交。
   const exclusiveMutationInFlightRef = useRef(false);
+  // 媒体改绑会替换平台注入的运行时 URL，因此只允许在文档完全 clean 时执行；
+  // 本地文件导入仍走原有编辑命令和撤销历史，不受这条平台治理门禁影响。
+  const serverMediaBindingDisabledReason = editorSession
+    ? getPlatformMediaBindingBlockReason({
+        canWrite: editorSession.canWrite,
+        hasUnsavedChanges,
+        pendingOperationCount: pendingOperations.length,
+        hasTransientEdit: transientProjectRef.current !== null,
+        hasInlineEdit: editingCharacterId !== null || editingCustomTextBlock !== null,
+        hasPendingMergeDraft: pendingAnnotationMergeDraft !== null,
+        syncStatus: syncState.status,
+        saveInFlight: serverSaveInFlightRef.current,
+        appliedRemoteRevision: remoteBaseRevision,
+        observedRemoteRevision,
+      })
+    : undefined;
   // clean 平台会话低频追赶已提交 revision；行内编辑、保存、拖拽和整合期间必须暂停。
   const requestPlatformCatchUp = usePlatformOperationCatchUp({
     enabled: Boolean(editorSession),
@@ -756,7 +776,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       editingCharacterId !== null ||
       editingCustomTextBlock !== null ||
       syncState.status !== "saved" ||
-      serverSaveInFlightRef.current,
+      serverSaveInFlightRef.current ||
+      serverMediaBindingBusy,
     online: browserOnline,
     sessionKey: editorSession?.annotationFileId ?? "local",
     knownRevision: remoteBaseRevision,
@@ -5487,6 +5508,65 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (committed) setPendingImportMergeState(null);
   }
 
+  async function updateServerMediaBinding(mediaResourceId: string | null) {
+    const session = editorSession;
+    if (!session) throw new Error("当前不是平台标注文件，无法关联服务器媒体。");
+    const blockedReason = getPlatformMediaBindingBlockReason({
+      canWrite: session.canWrite,
+      hasUnsavedChanges,
+      pendingOperationCount: pendingOperations.length,
+      hasTransientEdit: transientProjectRef.current !== null,
+      hasInlineEdit: editingCharacterId !== null || editingCustomTextBlock !== null,
+      hasPendingMergeDraft: pendingAnnotationMergeDraft !== null,
+      syncStatus: syncState.status,
+      saveInFlight: serverSaveInFlightRef.current,
+      appliedRemoteRevision: remoteBaseRevisionRef.current,
+      observedRemoteRevision,
+    });
+    if (blockedReason) throw new Error(blockedReason);
+
+    setServerMediaBindingBusy(true);
+    try {
+      let authoritativeFile = await session.client.updateAnnotationMedia<ProjectData>(
+        session.annotationFileId,
+        { mediaResourceId },
+      );
+      let nextProject = hydrateProjectForClient(
+        authoritativeFile.payload,
+        session.client,
+        authoritativeFile.media,
+      );
+      // 关联关系独立存于数据库，不应制造文档命令、撤销记录或 dirty 状态。
+      // 用服务器回包中的权威 payload/revision 原子替换 clean 基线，避免保留旧媒体 URL。
+      if (!replaceCleanProjectFromRemote(nextProject, authoritativeFile.revision)) {
+        // 请求发出前已经在途的 clean catch-up 仍可能先落地。只权威重读并重试一次；
+        // 如果期间出现本地 dirty/transient 状态，document gate 会继续拒绝覆盖。
+        authoritativeFile = await session.client.getAnnotationFile<ProjectData>(session.annotationFileId);
+        nextProject = hydrateProjectForClient(
+          authoritativeFile.payload,
+          session.client,
+          authoritativeFile.media,
+        );
+        if (!replaceCleanProjectFromRemote(nextProject, authoritativeFile.revision)) {
+          throw new Error("媒体关系已保存，但编辑器状态在请求期间发生变化。请关闭窗口并重新打开文件。");
+        }
+      }
+      remoteBaseRevisionRef.current = authoritativeFile.revision;
+      remoteOperationCursorRef.current = authoritativeFile.operationCursor;
+      setRemoteBaseRevision(authoritativeFile.revision);
+      setObservedRemoteRevision((current) => Math.max(current, authoritativeFile.revision));
+      setRemoteOperationCursor(authoritativeFile.operationCursor);
+      mutationLease.advanceBaseRevision(authoritativeFile.revision);
+      session.onAnnotationFileSaved(authoritativeFile);
+      setIsPlaying(false);
+      setPreviewTime(null);
+      setCurrentTime(0);
+      setServerMediaDialogOpen(false);
+    } finally {
+      setServerMediaBindingBusy(false);
+    }
+  }
+
   async function saveProjectFile() {
     if (editingCharacterId) {
       commitCharacterTextEdit(editingCharacterId);
@@ -6206,6 +6286,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           onSaveProjectToServer={editorSession?.canWrite ? () => {
             void saveProjectToServer({ source: "manual" });
           } : undefined}
+          onOpenServerMediaBinding={editorSession ? () => setServerMediaDialogOpen(true) : undefined}
+          serverMediaBindingDisabledReason={serverMediaBindingDisabledReason}
           onExportTrack={handleExport}
           onUndo={undo}
           onRedo={redo}
@@ -6267,6 +6349,20 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             应用到当前文档
           </button>
         </section>
+      ) : null}
+      {editorSession ? (
+        <AnnotationMediaBindingDialog
+          client={editorSession.client}
+          parentId={editorSession.parentId}
+          current={editorSession.media}
+          open={serverMediaDialogOpen}
+          busy={serverMediaBindingBusy}
+          allowUnbound
+          onOpenChange={(open) => {
+            if (!serverMediaBindingBusy) setServerMediaDialogOpen(open);
+          }}
+          onConfirm={updateServerMediaBinding}
+        />
       ) : null}
       <ResizableSplitLayout
         orientation="horizontal"

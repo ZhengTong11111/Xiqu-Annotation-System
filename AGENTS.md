@@ -83,6 +83,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - all lease-protected local mutations pass through one exclusive coordinator; next ProjectData must be rebuilt from the latest
     `projectRef` after lease acquisition. Bounded structure uses `track_structure`; controlled snapshot boundaries use
     `bulk_import` or `bulk_repair`. Platform imports remain dirty until a real server revision save succeeds.
+  - platform media rebinding is not a document mutation: it is allowed only at a clean document boundary and must use
+    `replaceCleanProjectFromRemote()` so it never creates undo/history/pending operations or persists protected URLs
 - `src/platform/PlatformWorkspace.tsx`
   - platform login/resource-explorer/editor switch and local editor entry
   - owns the single authoritative annotation-file open path; ordinary opens and comparison navigation both refetch
@@ -94,6 +96,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/platformProjectPayload.ts`
   - single platform client/server payload boundary for adding current protected media URLs and removing them before save
   - the `AnnotationFile.media` DTO is authoritative for new platform sessions; historical payload paths are migration fallback only
+  - an explicit `media: null` must clear a stale `platform-file:` path; only an omitted media DTO may use the historical fallback
+- `src/platform/platformMediaBindingPolicy.ts`
+  - pure clean-session gate shared by current uploaded-media binding and future platform media sources
+  - dirty/pending/transient/inline/merge/conflict/offline/error/remote-gap sessions must not replace the runtime media
 - `src/platform/platformDraft.ts`
   - versioned, unknown-input-validated browser draft envelope and recovery compatibility rules
   - persists one sanitized project pair plus compact operations; it never stores access tokens, Blob URLs, or
@@ -224,8 +230,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - global account lifecycle/role administration and all-user self-service password change
   - neither component edits resource ACL; password values must never enter audit details, logs, saved project state, or browser drafts
 - `src/platform/AnnotationMediaBindingDialog.tsx`
-  - shared JSON-import/Inspector picker for existing media, new upload, explicit unbind, and later rebinding
+  - shared JSON-import/Inspector/editor picker for root/project/folder navigation, bounded pagination, current-directory search,
+    existing media, new upload, explicit unbind, and later rebinding
   - selection is only intent; the API must recheck annotation write plus media read/download and active media type
+- `src/platform/resourcePickerPaging.ts`
+  - generic bounded filtered-page collector for resource pickers; it may skip a limited number of irrelevant pages while
+    preserving the server cursor and must never turn a picker into a hidden full-directory fetch
 - `src/platform/AuditLogDialog.tsx`
   - standalone global-admin audit browser with draft/applied filters, stable incremental loading, and server-side CSV export
   - resource-scoped non-admin access is supported by the API contract but is not a substitute for the Inspector permission UI

@@ -45,6 +45,8 @@ type TopMenuBarProps = {
   onMergeProjectFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onSaveProject: () => void;
   onSaveProjectToServer?: () => void;
+  onOpenServerMediaBinding?: () => void;
+  serverMediaBindingDisabledReason?: string;
   onExportTrack: (kind: "character" | "singing") => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -101,6 +103,8 @@ export function TopMenuBar({
   onMergeProjectFileChange,
   onSaveProject,
   onSaveProjectToServer,
+  onOpenServerMediaBinding,
+  serverMediaBindingDisabledReason,
   onExportTrack,
   onUndo,
   onRedo,
@@ -204,8 +208,19 @@ export function TopMenuBar({
                 {item === "文件" ? (
                   <>
                     <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(videoFileInputRef)} disabled={Boolean(editingBlockedReason)}>
-                      导入视频
+                      导入本地视频
                     </button>
+                    {onOpenServerMediaBinding ? (
+                      <button
+                        type="button"
+                        className="top-menu-dropdown-item"
+                        title={serverMediaBindingDisabledReason ?? "从平台资源库关联视频或音频"}
+                        disabled={Boolean(serverMediaBindingDisabledReason)}
+                        onClick={() => handleAction(onOpenServerMediaBinding)}
+                      >
+                        关联服务器媒体
+                      </button>
+                    ) : null}
                     <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(srtFileInputRef)} disabled={Boolean(editingBlockedReason)}>
                       导入句级 SRT
                     </button>

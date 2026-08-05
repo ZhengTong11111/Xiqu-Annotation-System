@@ -26,6 +26,18 @@ export function hydrateProjectForClient(
     };
   }
   const fileId = getPlatformFileId(project.video.filePath);
+  // 新平台响应中的显式 null 是权威“未绑定”状态；不能让旧 payload 内残留的迁移路径重新关联媒体。
+  if (media === null && fileId) {
+    return {
+      ...project,
+      video: {
+        ...project.video,
+        url: "",
+        filePath: null,
+        requiresManualImport: true,
+      },
+    };
+  }
   if (!fileId) return project;
   return {
     ...project,

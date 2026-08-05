@@ -1145,7 +1145,8 @@ export function ResourceExplorer(props: {
               setPendingJsonImport(null);
               await refreshCurrentView();
             } catch (nextError) {
-              setError(describeError(nextError));
+              // 对话框保留当前目录与媒体选择，并在原位呈现失败原因。
+              throw nextError;
             }
           }}
         />
@@ -1338,7 +1339,13 @@ function ResourceInspector(props: {
       {!props.readOnly && props.resource.type === "annotation_file" ? (
         <>
           <div className="resource-inspector-section-heading">
-            <div><strong>关联媒体</strong><span>{annotationFile?.media?.name ?? "尚未关联视频或音频"}</span></div>
+            <div>
+              <strong>关联媒体</strong>
+              <span>
+                {annotationFile?.media?.name ?? "尚未关联视频或音频"}
+                {!props.resource.permission.capabilities.includes("write") ? " · 只读，无法修改" : ""}
+              </span>
+            </div>
             {props.resource.permission.capabilities.includes("write") ? <button type="button" onClick={() => setMediaDialogOpen(true)}>设置</button> : null}
           </div>
           <ResourceRecoveryHistory
@@ -1351,33 +1358,32 @@ function ResourceInspector(props: {
               focus,
             )}
           />
-          {props.resource.parentId ? (
-            <AnnotationMediaBindingDialog
-              client={props.client}
-              parentId={props.resource.parentId}
-              current={annotationFile?.media ?? null}
-              open={mediaDialogOpen}
-              busy={mediaBusy}
-              allowUnbound
-              onOpenChange={setMediaDialogOpen}
-              onConfirm={async (mediaResourceId) => {
-                setMediaBusy(true);
-                try {
-                  const file = await props.client.updateAnnotationMedia<ProjectData>(
-                    props.resource!.id,
-                    { mediaResourceId },
-                  );
-                  setAnnotationFile(file);
-                  setMediaDialogOpen(false);
-                  await props.onChanged();
-                } catch (error) {
-                  props.onError(describeError(error));
-                } finally {
-                  setMediaBusy(false);
-                }
-              }}
-            />
-          ) : null}
+          <AnnotationMediaBindingDialog
+            client={props.client}
+            parentId={props.resource.parentId ?? null}
+            current={annotationFile?.media ?? null}
+            open={mediaDialogOpen}
+            busy={mediaBusy}
+            allowUnbound
+            onOpenChange={setMediaDialogOpen}
+            onConfirm={async (mediaResourceId) => {
+              setMediaBusy(true);
+              try {
+                const file = await props.client.updateAnnotationMedia<ProjectData>(
+                  props.resource!.id,
+                  { mediaResourceId },
+                );
+                setAnnotationFile(file);
+                setMediaDialogOpen(false);
+                await props.onChanged();
+              } catch (error) {
+                // 失败由选择器原位展示，避免 Inspector 同时留下第二份过期错误横幅。
+                throw error;
+              } finally {
+                setMediaBusy(false);
+              }
+            }}
+          />
         </>
       ) : null}
       <div className="resource-inspector-section-heading">
