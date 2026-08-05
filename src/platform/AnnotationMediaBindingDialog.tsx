@@ -2,6 +2,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import {
   ArrowLeft,
   ChevronRight,
+  Cloud,
   Film,
   Folder,
   FolderOpen,
@@ -19,6 +20,7 @@ import type {
 import type { PlatformClient } from "../api/platformClient";
 import { isResourceContainer } from "./resourceColumnModel";
 import { collectResourcePickerItems } from "./resourcePickerPaging";
+import { AliyunVodMediaDialog } from "./AliyunVodMediaDialog";
 
 type Props = {
   client: PlatformClient;
@@ -52,7 +54,8 @@ export function AnnotationMediaBindingDialog(props: Props) {
   const [query, setQuery] = useState("");
   const [directory, setDirectory] = useState<DirectoryState>(EMPTY_DIRECTORY);
   const [selectedId, setSelectedId] = useState<string | null>(props.current?.resourceId ?? null);
-  const [uploadedSelection, setUploadedSelection] = useState<ResourceEntry | null>(null);
+  const [createdSelection, setCreatedSelection] = useState<ResourceEntry | null>(null);
+  const [vodDialogOpen, setVodDialogOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -64,8 +67,8 @@ export function AnnotationMediaBindingDialog(props: Props) {
 
   const selectedItem = useMemo(
     () => directory.items.find(({ id }) => id === selectedId) ??
-      (uploadedSelection?.id === selectedId ? uploadedSelection : null),
-    [directory.items, selectedId, uploadedSelection],
+      (createdSelection?.id === selectedId ? createdSelection : null),
+    [createdSelection, directory.items, selectedId],
   );
   const selectedCanBind = selectedId === null
     ? Boolean(props.allowUnbound)
@@ -93,7 +96,8 @@ export function AnnotationMediaBindingDialog(props: Props) {
     setFolderId(props.parentId);
     setQuery("");
     setSelectedId(props.current?.resourceId ?? null);
-    setUploadedSelection(null);
+    setCreatedSelection(null);
+    setVodDialogOpen(false);
     setError(null);
   }, [props.current?.resourceId, props.open, props.parentId]);
 
@@ -169,7 +173,7 @@ export function AnnotationMediaBindingDialog(props: Props) {
     try {
       const resource = await props.client.uploadMedia(folderId, file, file.name);
       // 上传响应已经携带完整权限信息；列表刷新完成前也应允许立即确认刚上传的媒体。
-      setUploadedSelection(resource);
+      setCreatedSelection(resource);
       setSelectedId(resource.id);
       setRefreshRevision((value) => value + 1);
     } catch (nextError) {
@@ -245,7 +249,7 @@ export function AnnotationMediaBindingDialog(props: Props) {
           <div className="annotation-media-current">
             <span>当前关联</span>
             <strong>{props.current.name}</strong>
-            <small>{formatBytes(props.current.size)} · {props.current.mimeType}</small>
+            <small>{describeMediaReference(props.current)}</small>
           </div>
         ) : null}
 
@@ -272,11 +276,11 @@ export function AnnotationMediaBindingDialog(props: Props) {
               disabled={!permitted || interactionBusy}
               title={permitted ? "选择此媒体" : "需要读取和下载权限"}
               onClick={() => {
-                setUploadedSelection(null);
+                setCreatedSelection(null);
                 setSelectedId(item.id);
               }}
             >
-              <Film size={19} /><strong>{item.name}</strong><span>{formatBytes(item.size ?? 0)} · {item.mimeType ?? "未知媒体类型"}</span>
+              <Film size={19} /><strong>{item.name}</strong><span>{describeMediaResource(item)}</span>
             </button>;
           })}
           {directory.nextCursor ? (
@@ -292,8 +296,20 @@ export function AnnotationMediaBindingDialog(props: Props) {
           <span>{folderId ? `上传位置：${directory.current?.name ?? "正在读取"}` : "进入项目或文件夹后可上传媒体"}</span>
           <input ref={inputRef} hidden type="file" accept="video/*,audio/*" onChange={(event) => void upload(event.target.files?.[0])} />
           <button type="button" disabled={!canUpload || interactionBusy} title={canUpload ? "上传到当前目录" : "当前目录不可上传"} onClick={() => inputRef.current?.click()}><Upload size={15} />{uploading ? "上传中" : "上传新媒体"}</button>
+          <button type="button" disabled={!canUpload || interactionBusy} title={canUpload ? "在当前目录创建 VOD 资源" : "当前目录不可创建"} onClick={() => setVodDialogOpen(true)}><Cloud size={15} />接入 VOD</button>
           <button type="button" className="platform-primary-button" disabled={!selectedCanBind || interactionBusy} onClick={() => void confirmSelection()}>{props.busy || confirming ? "保存中" : "确认关联"}</button>
         </footer>
+        <AliyunVodMediaDialog
+          client={props.client}
+          parentId={folderId}
+          open={vodDialogOpen}
+          onOpenChange={setVodDialogOpen}
+          onCreated={(resource) => {
+            setCreatedSelection(resource);
+            setSelectedId(resource.id);
+            setRefreshRevision((value) => value + 1);
+          }}
+        />
       </Dialog.Content>
     </Dialog.Portal>
   </Dialog.Root>;
@@ -307,7 +323,34 @@ function canBindMedia(resource: ResourceEntry) {
   const capabilities = resource.permission.capabilities;
   return resource.type === "media_file" &&
     capabilities.includes("read") && capabilities.includes("download") &&
-    Boolean(resource.mimeType?.startsWith("video/") || resource.mimeType?.startsWith("audio/"));
+    Boolean(resource.mediaKind === "video" || resource.mediaKind === "audio");
+}
+
+// 当前绑定与目录资源分别使用严格来源标签，VOD 不显示伪造大小或 MIME。
+function describeMediaReference(media: AnnotationMediaReference) {
+  if (media.sourceType === "aliyun_vod") {
+    return `阿里云 VOD · ${media.mediaKind === "video" ? "视频" : "音频"} · ${formatDuration(media.duration)}`;
+  }
+  return `${formatBytes(media.size)} · ${media.mimeType}`;
+}
+
+function describeMediaResource(media: ResourceEntry) {
+  if (media.mediaSourceType === "aliyun_vod") {
+    return `阿里云 VOD · ${media.mediaKind === "audio" ? "音频" : "视频"} · ${formatDuration(media.duration ?? null)}`;
+  }
+  return `${formatBytes(media.size ?? 0)} · ${media.mimeType ?? "未知媒体类型"}`;
+}
+
+// 供应商时长缺失时保留明确状态，避免把未知时长误写成 0:00。
+function formatDuration(value: number | null) {
+  if (value === null || !Number.isFinite(value)) return "时长未知";
+  const totalSeconds = Math.max(0, Math.round(value));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 function formatBytes(value: number) {

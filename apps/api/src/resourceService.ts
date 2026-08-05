@@ -10,20 +10,24 @@ import type {
   AnnotationConfirmationList,
   AnnotationConfirmationRecord,
   AnnotationFile,
+  AnnotationMediaReference,
   AnnotationMutationLeaseGrant,
   AnnotationMutationLeaseSummary,
   AnnotationMutationPurpose,
   AnnotationRecoverySnapshotDetail,
   AnnotationRecoverySnapshotSummary,
+  AliyunVodPlaybackSession,
   BatchMoveResourcesRequest,
   BatchMoveResourcesResponse,
   BatchTrashResourcesRequest,
   BatchTrashResourcesResponse,
   CopyResourceRequest,
+  CreateAliyunVodMediaRequest,
   CreateAnnotationFileRequest,
   CreateResourceRequest,
   EffectiveResourcePermission,
   ListResourcesOptions,
+  MediaProviderCapabilities,
   ResourceCapability,
   ResourceEntry,
   ResourceListPage,
@@ -46,10 +50,17 @@ import type { ApiUser } from "./domain.js";
 import {
   badRequest,
   conflict,
+  externalMediaUnavailable,
+  externalServiceUnavailable,
   forbidden,
   notFound,
   storageQuotaExceeded,
+  unsupportedMedia,
 } from "./errors.js";
+import {
+  AliyunVodGatewayError,
+  type AliyunVodProvider,
+} from "./aliyunVodGateway.js";
 import { ResourceAccessService } from "./resourceAccess.js";
 import {
   buildResourceCopyPlan,
@@ -174,6 +185,7 @@ export class ResourceService {
     private readonly revisionPublisher: AnnotationRevisionPublisher = {
       publishRevisionAdvanced: () => undefined,
     },
+    private readonly aliyunVod: AliyunVodProvider | null = null,
   ) {}
 
   async listResources(
@@ -336,6 +348,136 @@ export class ResourceService {
     );
   }
 
+  // 能力查询只暴露可公开 region，不触发凭据解析或远端请求。
+  getMediaProviderCapabilities(): MediaProviderCapabilities {
+    return {
+      aliyunVod: this.aliyunVod
+        ? { enabled: true, region: this.aliyunVod.region }
+        : { enabled: false, region: null },
+    };
+  }
+
+  // VOD 创建先在事务外验证远端媒资，再在锁内重检目录与命名空间。
+  async createAliyunVodMedia(
+    user: ApiUser,
+    input: CreateAliyunVodMediaRequest,
+  ): Promise<ResourceEntry> {
+    const provider = this.requireAliyunVodProvider();
+    await this.assertContainer(input.parentId);
+    await this.access.assertCapability(user, input.parentId, "create_child");
+    const name = this.validateName(input.name);
+    const videoId = validateAliyunVodVideoId(input.videoId);
+
+    // 云端读取不能占用数据库事务；最终写入时会重新验证目录、ACL 和同名冲突。
+    const metadata = await this.callAliyunVod(
+      () => provider.gateway.inspectVideo(videoId),
+      "无法验证阿里云 VOD 媒资，请稍后重试。",
+    );
+    if (metadata.status !== "Normal") {
+      throw externalMediaUnavailable("阿里云 VOD 媒资当前不可用。", {
+        status: metadata.status,
+      });
+    }
+
+    const created = await this.prisma.$transaction(async (transaction) => {
+      await this.lockParentNamespaces(transaction, [input.parentId]);
+      await this.assertContainer(input.parentId, transaction);
+      await this.access.assertCapability(
+        user,
+        input.parentId,
+        "create_child",
+        transaction,
+      );
+      await this.assertNameAvailable(transaction, input.parentId, name);
+      const resource = await transaction.resourceEntry.create({
+        data: {
+          parentId: input.parentId,
+          type: "media_file",
+          name,
+          ownerUserId: user.id,
+          mediaFile: {
+            create: {
+              sourceType: "aliyun_vod",
+              mediaKind: metadata.mediaKind,
+              duration: metadata.duration,
+              aliyunVodVideoId: metadata.videoId,
+              aliyunVodRegion: provider.region,
+            },
+          },
+        },
+        include: resourceInclude,
+      });
+      await transaction.auditLog.create({
+        data: {
+          action: "aliyun_vod_media_create",
+          actorUserId: user.id,
+          resourceId: resource.id,
+          detail: {
+            sourceType: "aliyun_vod",
+            region: provider.region,
+            mediaKind: metadata.mediaKind,
+            duration: metadata.duration,
+          },
+        },
+      });
+      return resource;
+    });
+    return this.mapResource(
+      user,
+      created,
+      await this.access.getEffectivePermission(user, created.id),
+    );
+  }
+
+  // 播放会话每次重新校验 ACL 与资源状态，临时凭据只存在于本次响应。
+  async createAliyunVodPlaybackSession(
+    user: ApiUser,
+    resourceId: string,
+  ): Promise<AliyunVodPlaybackSession> {
+    await this.access.assertCapability(user, resourceId, "read");
+    await this.access.assertCapability(user, resourceId, "download");
+    const media = await this.prisma.resourceEntry.findUnique({
+      where: { id: resourceId },
+      include: { mediaFile: true },
+    });
+    if (!media?.mediaFile || media.type !== "media_file") {
+      throw notFound("媒体资源不存在。");
+    }
+    if (media.trashedAt || media.archivedAt) {
+      throw externalMediaUnavailable("请先恢复或取消归档该媒体资源。");
+    }
+    if (media.mediaFile.sourceType !== "aliyun_vod") {
+      throw badRequest("服务器上传媒体继续使用受保护下载地址播放。");
+    }
+    const provider = this.requireAliyunVodProvider();
+    if (
+      !media.mediaFile.aliyunVodVideoId ||
+      !media.mediaFile.aliyunVodRegion ||
+      media.mediaFile.aliyunVodRegion !== provider.region
+    ) {
+      throw externalServiceUnavailable("当前服务未配置该 VOD 媒资所在区域。");
+    }
+    const credential = await this.callAliyunVod(
+      () => provider.gateway.createPlaybackCredential(
+        media.mediaFile!.aliyunVodVideoId!,
+      ),
+      "暂时无法创建阿里云 VOD 播放会话，请稍后重试。",
+    );
+    if (credential.status !== "Normal") {
+      throw externalMediaUnavailable("阿里云 VOD 媒资当前不可播放。", {
+        status: credential.status,
+      });
+    }
+    return {
+      sourceType: "aliyun_vod",
+      mediaKind: media.mediaFile.mediaKind,
+      videoId: credential.videoId,
+      region: media.mediaFile.aliyunVodRegion,
+      playAuth: credential.playAuth,
+      expiresAt: credential.expiresAt.toISOString(),
+    };
+  }
+
   // 上传流开始前先拒绝无效目录和无权限请求，避免为必然失败的命令写入大文件。
   async prepareMediaUpload(user: ApiUser, parentId: string, name: string) {
     this.validateName(name);
@@ -426,6 +568,8 @@ export class ResourceService {
           ownerUserId: user.id,
           mediaFile: {
             create: {
+              sourceType: "uploaded",
+              mediaKind: mediaKindFromMimeType(input.mimeType),
               fileId: file.id,
               mimeType: input.mimeType,
               size: BigInt(input.size),
@@ -495,6 +639,14 @@ export class ResourceService {
     if (resource.trashedAt) throw badRequest("请先恢复回收站中的资源，再执行下载。");
 
     if (resource.type === "media_file" && resource.mediaFile) {
+      if (
+        resource.mediaFile.sourceType !== "uploaded" ||
+        !resource.mediaFile.file ||
+        resource.mediaFile.mimeType === null ||
+        resource.mediaFile.size === null
+      ) {
+        throw unsupportedMedia("阿里云 VOD 是外部媒资，不能通过平台下载原文件。");
+      }
       return {
         kind: "media",
         fileName: resource.name,
@@ -1496,10 +1648,14 @@ export class ResourceService {
             mediaFile: node.type === "media_file" && node.mediaFile
               ? {
                   create: {
+                    sourceType: node.mediaFile.sourceType,
+                    mediaKind: node.mediaFile.mediaKind,
                     fileId: node.mediaFile.fileId,
                     mimeType: node.mediaFile.mimeType,
                     size: node.mediaFile.size,
                     duration: node.mediaFile.duration,
+                    aliyunVodVideoId: node.mediaFile.aliyunVodVideoId,
+                    aliyunVodRegion: node.mediaFile.aliyunVodRegion,
                   },
                 }
               : undefined,
@@ -1876,6 +2032,9 @@ export class ResourceService {
       // 读边界：DB size 为 BigInt，转回 number 进入 JSON DTO。
       size: row.mediaFile?.size != null ? Number(row.mediaFile.size) : null,
       mimeType: row.mediaFile?.mimeType ?? null,
+      mediaSourceType: row.mediaFile?.sourceType ?? null,
+      mediaKind: row.mediaFile?.mediaKind ?? null,
+      duration: row.mediaFile?.duration ?? null,
       revision: row.annotationFile?.revision ?? null,
       favorite: state?.favorite ?? false,
       permission,
@@ -1891,10 +2050,15 @@ export class ResourceService {
       mediaResourceId: string | null;
       mediaResource?: {
         resourceId: string;
-        mimeType: string;
-        size: bigint;
+        sourceType: "uploaded" | "aliyun_vod";
+        mediaKind: "video" | "audio";
+        mimeType: string | null;
+        size: bigint | null;
+        duration: number | null;
+        aliyunVodVideoId: string | null;
+        aliyunVodRegion: string | null;
         resource: { name: string };
-        file: { id: string };
+        file: { id: string } | null;
       } | null;
       lastSavedAt: Date;
       lastEditor: {
@@ -1916,13 +2080,7 @@ export class ResourceService {
       operationCursor: encodeAnnotationSnapshotOperationCursor(resource.id, file.revision),
       mediaResourceId: file.mediaResourceId,
       media: file.mediaResource
-        ? {
-            resourceId: file.mediaResource.resourceId,
-            fileId: file.mediaResource.file.id,
-            name: file.mediaResource.resource.name,
-            mimeType: file.mediaResource.mimeType,
-            size: Number(file.mediaResource.size),
-          }
+        ? mapAnnotationMediaReference(file.mediaResource)
         : null,
       lastEditor: toPublicUser(file.lastEditor),
       lastSavedAt: file.lastSavedAt.toISOString(),
@@ -1946,7 +2104,7 @@ export class ResourceService {
     if (!media?.mediaFile || media.type !== "media_file" || media.trashedAt || media.archivedAt) {
       throw badRequest("所选资源不是可用的媒体文件。");
     }
-    if (!media.mediaFile.mimeType.startsWith("video/") && !media.mediaFile.mimeType.startsWith("audio/")) {
+    if (media.mediaFile.mediaKind !== "video" && media.mediaFile.mediaKind !== "audio") {
       throw badRequest("标注文件只能关联视频或音频媒体。");
     }
   }
@@ -2068,8 +2226,39 @@ export class ResourceService {
     return items;
   }
 
-  private async assertContainer(resourceId: string) {
-    const row = await this.prisma.resourceEntry.findUnique({
+  private requireAliyunVodProvider() {
+    if (!this.aliyunVod) {
+      throw externalServiceUnavailable("服务器尚未启用阿里云 VOD。");
+    }
+    return this.aliyunVod;
+  }
+
+  private async callAliyunVod<TResult>(
+    operation: () => Promise<TResult>,
+    fallbackMessage: string,
+  ): Promise<TResult> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!(error instanceof AliyunVodGatewayError)) {
+        throw externalServiceUnavailable(fallbackMessage);
+      }
+      const details = error.requestId ? { requestId: error.requestId } : undefined;
+      if (error.category === "not_found") {
+        throw externalMediaUnavailable("未找到指定的阿里云 VOD 媒资。", details);
+      }
+      if (error.category === "permission_denied") {
+        throw externalServiceUnavailable("服务器没有访问阿里云 VOD 媒资的权限。", details);
+      }
+      throw externalServiceUnavailable(fallbackMessage, details);
+    }
+  }
+
+  private async assertContainer(
+    resourceId: string,
+    database: PrismaClient | Prisma.TransactionClient = this.prisma,
+  ) {
+    const row = await database.resourceEntry.findUnique({
       where: { id: resourceId },
     });
     if (!row) throw notFound("目标目录不存在。");
@@ -2165,10 +2354,14 @@ export class ResourceService {
         },
         mediaFile: {
           select: {
+            sourceType: true,
+            mediaKind: true,
             fileId: true,
             mimeType: true,
             size: true,
             duration: true,
+            aliyunVodVideoId: true,
+            aliyunVodRegion: true,
           },
         },
       },
@@ -2330,6 +2523,64 @@ export class ResourceService {
     }
     return false;
   }
+}
+
+// VOD ID 仅接受供应商稳定标识所需字符，拒绝 URL、查询参数和控制字符。
+function validateAliyunVodVideoId(value: string) {
+  const videoId = value.trim();
+  if (!/^[A-Za-z0-9_-]{6,128}$/.test(videoId)) {
+    throw badRequest("阿里云 VOD ID 格式不正确。");
+  }
+  return videoId;
+}
+
+// 上传媒体只从服务端已验证的 MIME 推导种类，不信任浏览器扩展名。
+function mediaKindFromMimeType(mimeType: string): "video" | "audio" {
+  if (mimeType.startsWith("video/")) return "video";
+  if (mimeType.startsWith("audio/")) return "audio";
+  throw badRequest("媒体 MIME 必须是视频或音频类型。");
+}
+
+// 数据库 nullable 字段在 DTO 边界重新收窄为严格判别联合，脏行直接失败。
+function mapAnnotationMediaReference(media: {
+  resourceId: string;
+  sourceType: "uploaded" | "aliyun_vod";
+  mediaKind: "video" | "audio";
+  mimeType: string | null;
+  size: bigint | null;
+  duration: number | null;
+  aliyunVodVideoId: string | null;
+  aliyunVodRegion: string | null;
+  resource: { name: string };
+  file: { id: string } | null;
+}): AnnotationMediaReference {
+  const common = {
+    resourceId: media.resourceId,
+    name: media.resource.name,
+    mediaKind: media.mediaKind,
+    duration: media.duration,
+  };
+  if (media.sourceType === "uploaded") {
+    if (!media.file || media.mimeType === null || media.size === null) {
+      throw new Error("uploaded 媒体缺少 FileObject 元数据。");
+    }
+    return {
+      ...common,
+      sourceType: "uploaded",
+      fileId: media.file.id,
+      mimeType: media.mimeType,
+      size: Number(media.size),
+    };
+  }
+  if (!media.aliyunVodVideoId || !media.aliyunVodRegion) {
+    throw new Error("aliyun_vod 媒体缺少稳定供应商身份。");
+  }
+  return {
+    ...common,
+    sourceType: "aliyun_vod",
+    videoId: media.aliyunVodVideoId,
+    region: media.aliyunVodRegion,
+  };
 }
 
 function sameStringSets(left: string[], right: string[]) {

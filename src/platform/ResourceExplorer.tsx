@@ -2,6 +2,7 @@ import {
   Archive,
   ChevronRight,
   ClipboardPaste,
+  Cloud,
   Clock3,
   Download,
   FileJson2,
@@ -65,6 +66,7 @@ import type {
 import { ResourceColumnBrowser } from "./ResourceColumnBrowser";
 import { ResourceDestinationPicker } from "./ResourceDestinationPicker";
 import {
+  canDirectlyDownloadResource,
   formatResourceDate,
   ResourceIcon,
   resourceTypeLabel,
@@ -83,6 +85,7 @@ import { useResourceColumns } from "./useResourceColumns";
 import { appendResourceListPage } from "./resourcePageState";
 import { getComparableAnnotationFiles } from "./resourceComparison";
 import { AnnotationMediaBindingDialog } from "./AnnotationMediaBindingDialog";
+import { AliyunVodMediaDialog } from "./AliyunVodMediaDialog";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { downloadFromUrl } from "./browserDownload";
 
@@ -154,6 +157,7 @@ export function ResourceExplorer(props: {
   const [auditLogOpen, setAuditLogOpen] = useState(false);
   const [accountManagementOpen, setAccountManagementOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [vodDialogOpen, setVodDialogOpen] = useState(false);
   const [pendingJsonImport, setPendingJsonImport] = useState<{
     parentId: string;
     fileName: string;
@@ -779,10 +783,7 @@ export function ResourceExplorer(props: {
     void trashResources(resources);
   };
   const downloadResource = (resource: ResourceEntry) => {
-    if (
-      (resource.type !== "annotation_file" && resource.type !== "media_file") ||
-      !resource.permission.capabilities.includes("download")
-    ) return;
+    if (!canDirectlyDownloadResource(resource)) return;
     const fallbackName = resource.type === "annotation_file" &&
       !resource.name.toLowerCase().endsWith(".json")
       ? `${resource.name}.json`
@@ -953,6 +954,14 @@ export function ResourceExplorer(props: {
                   </button>
                   <button
                     type="button"
+                    disabled={!locationParentId}
+                    onClick={() => setVodDialogOpen(true)}
+                    title="接入阿里云 VOD"
+                  >
+                    <Cloud size={16} />
+                  </button>
+                  <button
+                    type="button"
                     disabled={!locationParentId || !clipboard.length || isPasting}
                     onClick={() => void pasteClipboard()}
                     title={locationParentId
@@ -1103,6 +1112,18 @@ export function ResourceExplorer(props: {
       </section>
       <input ref={jsonInputRef} hidden type="file" accept="application/json,.json" onChange={(event) => void importJson(event)} />
       <input ref={mediaInputRef} hidden type="file" accept="video/*,audio/*" onChange={(event) => void uploadMedia(event)} />
+      <AliyunVodMediaDialog
+        client={props.client}
+        parentId={locationParentId}
+        open={vodDialogOpen}
+        onOpenChange={setVodDialogOpen}
+        onCreated={(resource) => {
+          // 新建成功后刷新当前目录并选中资源，让用户能立即查看来源和权限详情。
+          setSelectedIds([resource.id]);
+          setAnchorId(resource.id);
+          void refreshCurrentView();
+        }}
+      />
       {movingResources.length && props.user ? (
         <ResourceDestinationPicker
           client={props.client}
@@ -1300,7 +1321,7 @@ function ResourceInspector(props: {
       <div className="resource-inspector-preview"><ResourceIcon resource={props.resource} size={38} /></div>
       <h2>{props.resource.name}</h2>
       <dl>
-        <dt>类型</dt><dd>{resourceTypeLabel(props.resource.type)}</dd>
+        <dt>类型</dt><dd>{resourceTypeLabel(props.resource)}</dd>
         <dt>所有者</dt><dd>{props.resource.owner.displayName}</dd>
         <dt>创建</dt><dd>{formatResourceDate(props.resource.createdAt)}</dd>
         <dt>修改</dt><dd>{formatResourceDate(props.resource.updatedAt)}</dd>
@@ -1318,9 +1339,7 @@ function ResourceInspector(props: {
             <Heart size={16} fill={props.resource.favorite ? "currentColor" : "none"} />
             {props.resource.favorite ? "已收藏" : "添加收藏"}
           </button>
-          {(props.resource.type === "annotation_file" ||
-          props.resource.type === "media_file") &&
-          props.resource.permission.capabilities.includes("download") ? (
+          {canDirectlyDownloadResource(props.resource) ? (
             <button
               type="button"
               className="resource-inspector-action-button"
@@ -1335,6 +1354,18 @@ function ResourceInspector(props: {
           回收站资源仅显示基本信息；恢复后可编辑收藏和账号权限。
         </div>
       )}
+      {props.resource.type === "media_file" ? (
+        <div className="resource-inspector-section-heading">
+          <div>
+            <strong>媒体来源</strong>
+            <span>
+              {props.resource.mediaSourceType === "aliyun_vod"
+                ? "阿里云 VOD · 播放时临时签发凭据"
+                : "服务器上传 · 可作为强制分析音频来源"}
+            </span>
+          </div>
+        </div>
+      ) : null}
       {/* 活动标注文件在详情栏中独立展示只读恢复历史，不与业务版本或普通资源混排。 */}
       {!props.readOnly && props.resource.type === "annotation_file" ? (
         <>

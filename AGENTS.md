@@ -96,6 +96,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/platformProjectPayload.ts`
   - single platform client/server payload boundary for adding current protected media URLs and removing them before save
   - the `AnnotationFile.media` DTO is authoritative for new platform sessions; historical payload paths are migration fallback only
+  - uploaded media hydrate a protected platform object URL; aliyun_vod media retain only stable identity until the playback
+    adapter requests a short-lived session. Never manufacture a URL from a VOD id or send VOD through full browser fetch/decode
+- `apps/api/src/aliyunVodGateway.ts`
+  - the only Aliyun VOD SDK boundary; uses the official SDK and default credential chain behind an injectable gateway
+  - normalizes provider failures to bounded categories and must never expose SDK errors, credentials, playauth, temporary URLs,
+    signed covers, or raw provider responses to persistence/logging layers
   - an explicit `media: null` must clear a stale `platform-file:` path; only an omitted media DTO may use the historical fallback
 - `src/platform/platformMediaBindingPolicy.ts`
   - pure clean-session gate shared by current uploaded-media binding and future platform media sources
@@ -226,6 +232,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - owns folder navigation, view switching, selection, keyboard actions, import/upload/download, and the resource Inspector
   - the Inspector is the canonical UI for editing each account's direct permissions on the selected resource
   - file downloads must use the protected resource download route; never rebuild annotation JSON from an already-open editor or buffer large media into a browser Blob
+  - uploaded media and aliyun_vod are distinct sources: VOD may be bound/copied/moved/authorized but has no platform original-file
+    download. Local computer media, uploaded server media, and VOD entry points must remain available as separate workflows
+  - future analysis-audio selection belongs to platform media/derived-asset state, never `ProjectData`. Automatic embedded/uploaded/
+    same-vid VOD audio remains the default, but users must always be able to force a readable uploaded server audio resource,
+    even while automatic VOD audio works, so analysis can completely bypass a slow provider; restoring automatic selection is explicit
 - `src/platform/AccountManagementDialog.tsx` + `src/platform/ChangePasswordDialog.tsx`
   - global account lifecycle/role administration and all-user self-service password change
   - neither component edits resource ACL; password values must never enter audit details, logs, saved project state, or browser drafts

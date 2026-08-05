@@ -46,6 +46,7 @@ import { PostgresAnnotationRemoteActivityEventBus } from "./postgresAnnotationRe
 import { AnnotationCommandCommitService } from "./annotationCommandCommitService.js";
 import type { ApiCorsOriginPolicy } from "./serverConfig.js";
 import { AccountAdminService } from "./accountAdminService.js";
+import type { AliyunVodProvider } from "./aliyunVodGateway.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -59,6 +60,7 @@ export type BuildApiAppOptions = {
   metricsToken?: string | null;
   operationalMetricsTimeoutMs?: number;
   corsOrigin?: ApiCorsOriginPolicy;
+  aliyunVod?: AliyunVodProvider | null;
 };
 
 /**
@@ -113,7 +115,12 @@ export async function buildApiApp(
     observability,
     logger: app.log,
   });
-  const resources = new ResourceService(options.prisma, access, collaborationEvents);
+  const resources = new ResourceService(
+    options.prisma,
+    access,
+    collaborationEvents,
+    options.aliyunVod ?? null,
+  );
   // 原子领域命令拥有独立事务服务，但与完整保存共用同一个跨实例 revision 发布器。
   const annotationCommandCommits = new AnnotationCommandCommitService(
     options.prisma,

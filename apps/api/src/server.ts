@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { buildApiApp } from "./app.js";
 import { createPrismaConnection } from "./database.js";
 import { loadApiServerRuntimeConfig } from "./serverConfig.js";
+import { createAliyunVodProvider } from "./aliyunVodGateway.js";
 
 /**
  * 生产入口先完成全部配置校验，再创建数据库连接和监听端口。
@@ -79,6 +80,9 @@ async function startApiServer() {
       databaseSchema: connection.schema,
       seed: runtimeConfig.seedDevelopmentData,
       corsOrigin: runtimeConfig.corsOrigin,
+      aliyunVod: runtimeConfig.aliyunVod.enabled
+        ? createAliyunVodProvider(runtimeConfig.aliyunVod.region)
+        : null,
     });
     await app.listen({ port: runtimeConfig.port, host: runtimeConfig.host });
     app.log.info(

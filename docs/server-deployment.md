@@ -216,7 +216,26 @@ curl --fail http://127.0.0.1:4317/api/health/ready
 readiness 只有在 PostgreSQL 与对象存储同时可用时才返回 200。liveness 成功但 readiness 为 503 时，不要
 反复重启进程，应检查响应中的数据库/存储组件状态和 journald。
 
-## 8. Nginx 与 TLS
+## 8. 外部媒体与 Nginx/TLS
+
+### 8.1 可选阿里云 VOD
+
+阿里云 VOD 默认关闭。需要启用时，在受保护的服务环境中设置：
+
+```bash
+XIQU_ALIYUN_VOD_ENABLED=true
+XIQU_ALIYUN_VOD_REGION=cn-shanghai
+```
+
+凭据由 `@alicloud/credentials` 默认凭据链读取。生产优先使用实例角色或工作负载身份；必须使用长期
+AccessKey 时，应通过权限为 `600` 的环境文件或 secret 管理器注入，并限制为读取媒资信息和签发播放
+凭据所需的最小权限。AccessKey、Secret、playauth 和临时播放 URL 不得进入数据库、标注 JSON、日志、
+浏览器草稿或仓库。启用后还应人工验证无权限媒资、已停用媒资和凭据过期场景均返回明确错误。
+
+R3h2 只提供 VOD 资源与短时播放会话合同；编辑器播放适配属于 R3h3。服务器上传媒体与本地计算机媒体
+入口始终保留，不得把 VOD 配置作为平台启动的必需条件。
+
+### 8.2 Nginx 与 TLS
 
 先取得目标域名证书，再复制模板并替换 `annotation.example.org` 和证书路径：
 

@@ -861,6 +861,37 @@ export function registerApiRoutes(
     );
   });
 
+  // 供应商能力、VOD 创建和临时播放会话共用登录鉴权，但各自保留业务权限复核。
+  app.get("/api/media-providers", async (request) => {
+    await getCurrentUser(repository, request);
+    return resources.getMediaProviderCapabilities();
+  });
+
+  app.post<{ Body: unknown }>("/api/media-files/aliyun-vod", async (request) => {
+    const body = requireObject(request.body);
+    return resources.createAliyunVodMedia(
+      await getCurrentUser(repository, request),
+      {
+        parentId: requireString(body.parentId, "目标目录"),
+        name: requireString(body.name, "资源名称"),
+        videoId: requireString(body.videoId, "阿里云 VOD ID"),
+      },
+    );
+  });
+
+  app.post<{ Params: { resourceId: string } }>(
+    "/api/media-files/:resourceId/playback-session",
+    async (request, reply) => {
+      const session = await resources.createAliyunVodPlaybackSession(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+      );
+      // playauth 只允许当前响应短暂存在，代理/CDN/浏览器不得缓存。
+      reply.header("Cache-Control", "no-store");
+      return session;
+    },
+  );
+
   // 对象审计为管理员运维接口；GET 永不删除，cleanup 必须显式确认。
   app.get("/api/admin/storage/orphans", async (request) =>
     objectLifecycle.inspect(

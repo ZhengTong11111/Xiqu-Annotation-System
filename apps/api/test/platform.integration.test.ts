@@ -22,6 +22,7 @@ import {
   buildTimelineTimingUpdateEnvelope,
 } from "@xiqu/shared";
 import { buildApiApp } from "../src/app.js";
+import type { AliyunVodProvider } from "../src/aliyunVodGateway.js";
 import { hashToken } from "../src/auth.js";
 import { LocalObjectStorage } from "../src/storage.js";
 import {
@@ -30,6 +31,26 @@ import {
 } from "./testEnvironment.js";
 
 type JsonObject = Record<string, unknown>;
+
+// 集成测试只注入稳定的供应商合同，不读取宿主机阿里云凭据，也不访问公网。
+const fakeAliyunVodProvider: AliyunVodProvider = {
+  region: "cn-shanghai",
+  gateway: {
+    inspectVideo: async (videoId) => ({
+      videoId,
+      title: "VOD 集成测试媒资",
+      status: "Normal",
+      mediaKind: "video",
+      duration: 321.5,
+    }),
+    createPlaybackCredential: async (videoId) => ({
+      videoId,
+      status: "Normal",
+      playAuth: "integration-temporary-play-auth",
+      expiresAt: new Date("2030-01-01T00:15:00.000Z"),
+    }),
+  },
+};
 
 test("平台资源 API 集成测试", async (suite) => {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "xiqu-api-test-"));
@@ -51,6 +72,7 @@ test("平台资源 API 集成测试", async (suite) => {
       orphanGraceMs: 1_000,
     },
     metricsToken: "integration-metrics-token",
+    aliyunVod: fakeAliyunVodProvider,
   });
   await app.ready();
 
@@ -453,6 +475,117 @@ test("平台资源 API 集成测试", async (suite) => {
       await prisma.fileObject.deleteMany({
         where: { ownerUserId: "user-admin", mediaFiles: { none: {} } },
       });
+    });
+
+    await suite.test("阿里云 VOD 资源保存稳定身份、按需签发播放会话且不伪装下载", async () => {
+      const providers = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/media-providers",
+      });
+      assert.equal(providers.statusCode, 200, providers.body);
+      assert.deepEqual(dataOf(providers.json()).aliyunVod, {
+        enabled: true,
+        region: "cn-shanghai",
+      });
+
+      const created = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/media-files/aliyun-vod",
+        payload: {
+          parentId: projectId,
+          name: "寻梦 VOD",
+          videoId: "00cf8df6907871f1b31f5017e1f80102",
+        },
+      });
+      assert.equal(created.statusCode, 200, created.body);
+      const vodResource = dataOf(created.json());
+      const vodResourceId = String(vodResource.id);
+      assert.equal(vodResource.mediaSourceType, "aliyun_vod");
+      assert.equal(vodResource.mediaKind, "video");
+      assert.equal(vodResource.duration, 321.5);
+      assert.equal(vodResource.fileId, undefined);
+
+      const duplicate = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/media-files/aliyun-vod",
+        payload: {
+          parentId: projectId,
+          name: "寻梦 VOD",
+          videoId: "another_video_123",
+        },
+      });
+      assert.equal(duplicate.statusCode, 409);
+      const deniedCreate = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: "/api/media-files/aliyun-vod",
+        payload: {
+          parentId: projectId,
+          name: "无权创建 VOD",
+          videoId: "student_video_123",
+        },
+      });
+      assert.equal(deniedCreate.statusCode, 403);
+
+      const annotation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "VOD 媒体绑定.json",
+          payload: { marker: "vod-binding" },
+          mediaResourceId: vodResourceId,
+        },
+      });
+      assert.equal(annotation.statusCode, 200, annotation.body);
+      const media = dataOf(annotation.json()).media as JsonObject;
+      assert.equal(media.sourceType, "aliyun_vod");
+      assert.equal(media.videoId, "00cf8df6907871f1b31f5017e1f80102");
+      assert.equal(media.region, "cn-shanghai");
+      assert.equal(media.playAuth, undefined);
+
+      const playback = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/media-files/${vodResourceId}/playback-session`,
+      });
+      assert.equal(playback.statusCode, 200, playback.body);
+      assert.equal(playback.headers["cache-control"], "no-store");
+      assert.equal(dataOf(playback.json()).playAuth, "integration-temporary-play-auth");
+      const deniedPlayback = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/media-files/${vodResourceId}/playback-session`,
+      });
+      assert.equal(deniedPlayback.statusCode, 403);
+
+      const download = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/resources/${vodResourceId}/download`,
+      });
+      assert.equal(download.statusCode, 400);
+
+      const copied = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${vodResourceId}/copy`,
+        payload: { parentId: childFolderId },
+      });
+      assert.equal(copied.statusCode, 200, copied.body);
+      const copiedResourceId = String(dataOf(copied.json()).id);
+      const copiedMedia = await prisma.mediaFile.findUniqueOrThrow({
+        where: { resourceId: copiedResourceId },
+      });
+      assert.equal(copiedMedia.sourceType, "aliyun_vod");
+      assert.equal(copiedMedia.fileId, null);
+      assert.equal(copiedMedia.aliyunVodVideoId, "00cf8df6907871f1b31f5017e1f80102");
+      const copyAudit = await prisma.auditLog.findFirstOrThrow({
+        where: { action: "resource_copy", resourceId: copiedResourceId },
+      });
+      assert.equal((copyAudit.detail as JsonObject).reusedFileObjectCount, 0);
+      const createAudit = await prisma.auditLog.findFirstOrThrow({
+        where: { action: "aliyun_vod_media_create", resourceId: vodResourceId },
+      });
+      const createDetail = createAudit.detail as JsonObject;
+      assert.equal(createDetail.sourceType, "aliyun_vod");
+      assert.equal(createDetail.videoId, undefined);
+      assert.equal(createDetail.playAuth, undefined);
     });
 
     await suite.test("维护模式排空写入并保留管理员恢复通道", async () => {
@@ -1837,6 +1970,7 @@ test("平台资源 API 集成测试", async (suite) => {
         where: { resourceId: sourceMediaId },
       });
       const sourceFileId = sourceMedia.fileId;
+      assert.ok(sourceFileId, "服务器上传媒体必须关联 FileObject");
       const sourceAnnotationResponse = await jsonRequest(app, adminToken, {
         method: "POST",
         url: "/api/annotation-files",
@@ -3055,6 +3189,8 @@ test("平台资源 API 集成测试", async (suite) => {
         include: { file: true },
       });
       const fileId = media.fileId;
+      assert.ok(fileId, "服务器上传媒体必须关联 FileObject");
+      assert.ok(media.file, "服务器上传媒体必须能读取 FileObject 关系");
       assert.equal(media.file.mimeType, "video/mp4");
       // size 列已迁 BigInt，直接读 Prisma 得到 bigint，转回 number 再比较。
       assert.equal(Number(media.file.size), content.length);
@@ -3278,7 +3414,13 @@ test("平台资源 API 集成测试", async (suite) => {
           name: "缺失二进制.mp4",
           ownerUserId: admin.id,
           mediaFile: {
-            create: { fileId: missing.id, mimeType: "video/mp4", size: 24n },
+            create: {
+              sourceType: "uploaded",
+              mediaKind: "video",
+              fileId: missing.id,
+              mimeType: "video/mp4",
+              size: 24n,
+            },
           },
         },
       });

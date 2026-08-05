@@ -4,6 +4,7 @@ const PREVIEW_SEEK_EPSILON = 1 / 90;
 
 type VideoPlayerProps = {
   videoUrl: string;
+  unavailableMessage?: string | null;
   playbackRate: number;
   currentTime: number;
   previewTime: number | null;
@@ -19,6 +20,7 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
   (
     {
       videoUrl,
+      unavailableMessage = null,
       playbackRate,
       currentTime,
       previewTime,
@@ -210,7 +212,13 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
             }
           }}
         >
-          <video
+          {unavailableMessage ? (
+            // 外部媒体适配未就绪时给出明确状态，不把空 URL 当作本地文件缺失。
+            <div className="video-unavailable-state" role="status">
+              <strong>媒体暂不可播放</strong>
+              <span>{unavailableMessage}</span>
+            </div>
+          ) : <video
             ref={videoRef}
             className="video-element"
             controls={showNativeControls}
@@ -262,7 +270,7 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
                 onTimeUpdate(event.currentTarget.currentTime);
               }
             }}
-          />
+          />}
         </div>
         <div className="video-meta">
           <span>当前时间 {currentTime.toFixed(3)}s</span>

@@ -5272,3 +5272,56 @@ ProjectData builder、adapter 与编辑器接线：
 下一步：R3h2 建立 uploaded/aliyun_vod 严格来源模型与安全播放会话 API；本地计算机媒体、服务器上传媒体
 和 VOD 三条工作流必须并存，不把 AccessKey、Secret、playauth 或临时播放地址写入数据库、标注 JSON、草稿、
 operation、审计详情或协作消息。
+
+## 2026-08-05：R3h2 媒体来源抽象与阿里云 VOD 安全边界
+
+### 已完成
+
+- `MediaFile` 改为数据库约束保护的 uploaded/aliyun_vod 判别来源，并显式保存 video/audio 种类。uploaded
+  必须关联 `FileObject + MIME + size`，VOD 必须只包含 `vid + region` 且没有平台对象；迁移从既有 MIME
+  推导媒体种类，遇到异常旧数据会失败而不是静默写入错误分类。
+- 共享 `AnnotationMediaReference` 改为严格判别联合。uploaded 继续生成当前账号的受保护对象 URL；VOD
+  只向编辑会话传递稳定身份，绝不把 vid 拼成 URL 或送入浏览器完整 fetch/decode。资源 DTO 同步提供来源、
+  种类与时长，列表和 Inspector 能区分“视频/音频”与“VOD 视频/VOD 音频”。
+- 引入阿里云官方 `@alicloud/vod20170321` 3.11.3、`@alicloud/openapi-client` 0.4.15 和
+  `@alicloud/credentials` 2.4.5，均采用 Apache-2.0。官方 SDK 替代自写签名协议并经可注入
+  `AliyunVodGateway` 隔离；凭据只走默认凭据链，供应商异常被压缩为有限类别，原始 SDK Error、AccessKey、
+  Secret 和响应不会向业务层传播。
+- 新增显式 VOD provider 配置、能力查询、媒资验证/创建和短时播放会话 API。播放凭据响应使用
+  `Cache-Control: no-store`，数据库、审计和资源 DTO 均不保存 playauth；审计创建记录也刻意不写 vid。
+- 复制 uploaded 继续复用不可变 FileObject；复制 VOD 只复制稳定远端引用且对象复用计数保持 0。VOD
+  删除不操作阿里云远端，平台原文件下载返回稳定不支持错误；上传媒体下载、Range、容量和对象生命周期
+  保持原逻辑。
+- 资源管理器和跨目录媒体选择器共用 VOD 创建对话框，并同时保留本机导入、服务器上传与 VOD 三条入口。
+  VOD 未启用时原位解释且不影响其他媒体。VOD 在 R3h3 播放适配完成前进入明确的只读过渡状态，不呈现空
+  黑屏或误触发本地重关联。
+
+### 已确认的后续约束
+
+- R3h4 不会把播放视频完整缓存到浏览器再计算波形/频谱。uploaded 视频由后台从对象流分块提取，VOD
+  自动使用同 vid 的纯音频转码流，本机视频继续默认使用内嵌音轨。
+- 用户必须始终能强制选择一条有权限的服务器上传 WAV/FLAC/MP3 作为分析音频，使波形、频谱和 F0 完全
+  绕过可能卡顿的阿里云接口。该入口在自动来源正常时也可见，不是失败后的隐藏兜底；用户还可固定 VOD
+  音频来源或显式恢复自动选择。关系属于平台媒体/派生资产层，不写入 `ProjectData`。
+
+### 审查与验证
+
+- migration 在 `api_test` 与开发 `public` schema 均通过 `prisma migrate deploy`。SDK mapper、短时凭据
+  安全余量、错误收敛、provider 配置和两类 payload hydration 专项测试 14/14 通过。
+- `npm run test:api` 首轮发现测试误把复制 API 的 ResourceEntry 回包当成统计回包；业务复制已成功，修正为
+  核对既有审计统计合同后，完整 API 149/149、其中平台集成 36/36 通过。覆盖 VOD 创建、同名冲突、权限
+  拒绝、绑定、短时会话、无原文件下载、复制引用/对象计数、审计脱敏，以及旧 uploaded 上传/Range/复制/
+  解绑回归。
+- 完整 `npm run build` 通过 Prisma generation、shared、document-model、Web 和 API；仅保留既有 Vite 主
+  chunk 超过 500 kB 提醒。`git diff --check` 通过。
+- 应用内浏览器验证资源工具栏和统一媒体选择器同时显示上传/VOD 入口，provider disabled 界面无溢出，
+  临时 VOD 资源显示为“阿里云 VOD · 视频 · 时长”，绑定后编辑器展示明确 R3h3 过渡状态。随后已解绑并
+  删除临时资源；应用控制台无 warning/error。
+
+### 待推进
+
+- R3h3：把 App/VideoPlayer 的原生 DOM 控制收敛为统一播放器接口，并使用受控加载的 Aliplayer 适配
+  VOD 短时会话，严格回归 seeking、边界预览、循环、快捷键与分离窗口时间语义。
+- R3h4：实现平台分析音频来源选择、强制服务器上传音频、后台流式解码，以及版本化波形/频谱/F0 资产。
+- 真实阿里云账号 smoke 尚未执行；需要目标部署的最小权限身份和样例 vid 后再验证真实 playauth、过期刷新、
+  非 Normal 媒资与供应商限流。当前 fake gateway 与 disabled-provider 浏览器路径均已完成。

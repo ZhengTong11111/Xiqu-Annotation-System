@@ -94,6 +94,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@alicloud/credentials": "^2.4.5",
+    "@alicloud/openapi-client": "^0.4.15",
+    "@alicloud/vod20170321": "^3.11.3",
     "@atlaskit/pragmatic-drag-and-drop": "^2.0.1",
     "@aws-sdk/client-s3": "^3.1101.0",
     "@aws-sdk/lib-storage": "^3.1101.0",

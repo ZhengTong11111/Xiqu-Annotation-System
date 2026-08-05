@@ -5972,6 +5972,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       <VideoPlayer
         ref={videoRef}
         videoUrl={project.video.url}
+        unavailableMessage={editorSession?.media?.sourceType === "aliyun_vod"
+          ? "阿里云 VOD 已关联；统一播放控制器将在 R3h3 启用。"
+          : null}
         playbackRate={playbackRate}
         currentTime={currentTime}
         previewTime={previewTime}

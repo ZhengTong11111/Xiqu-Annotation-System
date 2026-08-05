@@ -12,6 +12,7 @@ import type {
   CommitAnnotationCommandBatchResponse,
   AnnotationRecoverySnapshotDetail,
   AnnotationRecoverySnapshotSummary,
+  AliyunVodPlaybackSession,
   AuditLogPage,
   BatchMoveResourcesRequest,
   BatchMoveResourcesResponse,
@@ -20,6 +21,7 @@ import type {
   CopyResourceRequest,
   AcquireAnnotationMutationLeaseRequest,
   CreateAnnotationConfirmationRequest,
+  CreateAliyunVodMediaRequest,
   CreateAnnotationFileRequest,
   CreateAnnotationOperationRequest,
   CreateProcessingJobRequest,
@@ -30,6 +32,7 @@ import type {
   LoginResponse,
   ManagedAccount,
   ManagedAccountPage,
+  MediaProviderCapabilities,
   ListManagedAccountsOptions,
   CreateManagedAccountRequest,
   UpdateManagedAccountRequest,
@@ -406,6 +409,25 @@ export class PlatformClient {
     return this.requestMultipart<ResourceEntry>(
       `/media-files/upload?${query.toString()}`,
       body,
+    );
+  }
+
+  // VOD 客户端只传稳定资源身份；播放凭据通过独立 no-store 会话按需获取。
+  getMediaProviderCapabilities() {
+    return this.request<MediaProviderCapabilities>("/media-providers");
+  }
+
+  createAliyunVodMedia(request: CreateAliyunVodMediaRequest) {
+    return this.request<ResourceEntry>("/media-files/aliyun-vod", {
+      method: "POST",
+      body: request,
+    });
+  }
+
+  createAliyunVodPlaybackSession(resourceId: string) {
+    return this.request<AliyunVodPlaybackSession>(
+      `/media-files/${resourceId}/playback-session`,
+      { method: "POST" },
     );
   }
 

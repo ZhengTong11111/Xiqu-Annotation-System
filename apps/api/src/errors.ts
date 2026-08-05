@@ -9,6 +9,8 @@ export type ApiErrorCode =
   | "storage_quota_exceeded"
   | "permission_scope_violation"
   | "maintenance_mode"
+  | "external_media_unavailable"
+  | "external_service_unavailable"
   | "internal_error";
 
 export class HttpError extends Error {
@@ -67,4 +69,19 @@ export function storageQuotaExceeded(
 // 维护状态拒绝新写入但保留读取，503 表示调用方可在维护结束后安全重试。
 export function maintenanceMode(message: string, details: unknown = undefined) {
   return new HttpError(503, "maintenance_mode", message, details);
+}
+
+// 外部媒资不可用与供应商服务故障分开编码，便于客户端区分换资源和稍后重试。
+export function externalMediaUnavailable(
+  message: string,
+  details: unknown = undefined,
+) {
+  return new HttpError(409, "external_media_unavailable", message, details);
+}
+
+export function externalServiceUnavailable(
+  message: string,
+  details: unknown = undefined,
+) {
+  return new HttpError(503, "external_service_unavailable", message, details);
 }

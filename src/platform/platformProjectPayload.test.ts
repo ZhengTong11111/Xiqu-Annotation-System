@@ -11,6 +11,9 @@ const client = {
 test("平台媒体 DTO 覆盖 payload 中的历史视频信息", () => {
   const project = hydrateProjectForClient(mockProject, client, {
     resourceId: "media-resource",
+    sourceType: "uploaded",
+    mediaKind: "video",
+    duration: null,
     fileId: "media-file",
     name: "服务器视频.mp4",
     mimeType: "video/mp4",
@@ -19,6 +22,22 @@ test("平台媒体 DTO 覆盖 payload 中的历史视频信息", () => {
   assert.equal(project.video.name, "服务器视频.mp4");
   assert.equal(project.video.url, "/api/files/media-file/content");
   assert.equal(project.video.filePath, "platform-file:media-file");
+  assert.equal(project.video.requiresManualImport, false);
+});
+
+test("VOD 媒体只注入稳定显示信息，不制造可抓取的假 URL", () => {
+  const project = hydrateProjectForClient(mockProject, client, {
+    resourceId: "vod-resource",
+    sourceType: "aliyun_vod",
+    mediaKind: "video",
+    duration: 367.25,
+    name: "阿里云寻梦样例",
+    videoId: "00cf8df6907871f1b31f5017e1f80102",
+    region: "cn-shanghai",
+  });
+  assert.equal(project.video.name, "阿里云寻梦样例");
+  assert.equal(project.video.url, "");
+  assert.equal(project.video.filePath, null);
   assert.equal(project.video.requiresManualImport, false);
 });
 

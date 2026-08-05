@@ -12,7 +12,7 @@ export function hydrateProjectForClient(
   media?: AnnotationMediaReference | null,
 ): ProjectData {
   const project = normalizeImportedProjectFile(payload).project;
-  if (media) {
+  if (media?.sourceType === "uploaded") {
     return {
       ...project,
       video: {
@@ -21,6 +21,20 @@ export function hydrateProjectForClient(
         url: client.getFileContentUrl(media.fileId),
         source: "url",
         filePath: `${PLATFORM_FILE_PATH_PREFIX}${media.fileId}`,
+        requiresManualImport: false,
+      },
+    };
+  }
+  if (media?.sourceType === "aliyun_vod") {
+    return {
+      ...project,
+      video: {
+        ...project.video,
+        name: media.name,
+        // R3h3 将通过短时会话和统一播放器注入运行时控制器；这里不能制造假 URL 触发完整 fetch。
+        url: "",
+        source: "url",
+        filePath: null,
         requiresManualImport: false,
       },
     };

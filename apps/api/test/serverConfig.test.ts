@@ -9,6 +9,7 @@ test("开发环境保留本机默认值，便于直接启动", () => {
   assert.match(config.databaseUrl, /localhost:54329/);
   assert.equal(config.seedDevelopmentData, true);
   assert.equal(config.corsOrigin, true);
+  assert.deepEqual(config.aliyunVod, { enabled: false, region: null });
 });
 
 test("生产环境默认禁用开发种子和跨源访问", () => {
@@ -19,6 +20,29 @@ test("生产环境默认禁用开发种子和跨源访问", () => {
   assert.equal(config.seedDevelopmentData, false);
   assert.equal(config.corsOrigin, false);
   assert.equal(config.host, "127.0.0.1");
+  assert.deepEqual(config.aliyunVod, { enabled: false, region: null });
+});
+
+test("阿里云 VOD 必须显式启用并提供有效区域", () => {
+  const config = loadApiServerRuntimeConfig({
+    XIQU_ALIYUN_VOD_ENABLED: "true",
+    XIQU_ALIYUN_VOD_REGION: "cn-shanghai",
+  });
+  assert.deepEqual(config.aliyunVod, {
+    enabled: true,
+    region: "cn-shanghai",
+  });
+  assert.throws(
+    () => loadApiServerRuntimeConfig({ XIQU_ALIYUN_VOD_ENABLED: "true" }),
+    /XIQU_ALIYUN_VOD_REGION/,
+  );
+  assert.throws(
+    () => loadApiServerRuntimeConfig({
+      XIQU_ALIYUN_VOD_ENABLED: "true",
+      XIQU_ALIYUN_VOD_REGION: "Shanghai",
+    }),
+    /XIQU_ALIYUN_VOD_REGION/,
+  );
 });
 
 test("显式生产配置会规范化、去重有限 origin", () => {

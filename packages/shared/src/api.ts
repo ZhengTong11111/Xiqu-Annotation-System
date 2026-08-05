@@ -22,6 +22,7 @@ import type {
   ResourcePermissionRecord,
   ResourceSortField,
   ResourceType,
+  MediaKind,
   SortDirection,
 } from "./platform.js";
 import type {
@@ -40,6 +41,8 @@ export type ApiErrorCode =
   | "unsupported_media"
   | "storage_quota_exceeded"
   | "maintenance_mode"
+  | "external_media_unavailable"
+  | "external_service_unavailable"
   | "internal_error";
 
 export type ApiErrorBody = {
@@ -110,6 +113,28 @@ export type CreateAnnotationFileRequest<TPayload = unknown> = {
   name: string;
   payload: TPayload;
   mediaResourceId?: string | null;
+};
+
+export type MediaProviderCapabilities = {
+  aliyunVod: {
+    enabled: boolean;
+    region: string | null;
+  };
+};
+
+export type CreateAliyunVodMediaRequest = {
+  parentId: string;
+  name: string;
+  videoId: string;
+};
+
+export type AliyunVodPlaybackSession = {
+  sourceType: "aliyun_vod";
+  mediaKind: MediaKind;
+  videoId: string;
+  region: string;
+  playAuth: string;
+  expiresAt: string;
 };
 
 export type UpdateAnnotationMediaRequest = { mediaResourceId: string | null };

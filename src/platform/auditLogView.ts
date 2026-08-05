@@ -13,6 +13,7 @@ export const AUDIT_ACTION_LABELS: Record<AuditActionName, string> = {
   account_password_change: "账号修改密码",
   file_upload: "文件上传",
   media_upload: "媒体上传",
+  aliyun_vod_media_create: "接入阿里云 VOD",
   resource_create: "新建资源",
   resource_update: "更新资源",
   resource_copy: "复制资源",

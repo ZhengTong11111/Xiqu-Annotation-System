@@ -6,12 +6,17 @@ const DEFAULT_API_PORT = 4317;
 
 export type ApiCorsOriginPolicy = true | false | string[];
 
+export type AliyunVodRuntimeConfig =
+  | { enabled: false; region: null }
+  | { enabled: true; region: string };
+
 export type ApiServerRuntimeConfig = {
   port: number;
   host: string;
   databaseUrl: string;
   seedDevelopmentData: boolean;
   corsOrigin: ApiCorsOriginPolicy;
+  aliyunVod: AliyunVodRuntimeConfig;
 };
 
 /**
@@ -33,7 +38,26 @@ export function loadApiServerRuntimeConfig(
       !production,
     ),
     corsOrigin: parseCorsOrigins(environment.XIQU_CORS_ORIGINS, production),
+    aliyunVod: parseAliyunVodConfig(environment),
   };
+}
+
+// VOD 是否启用必须显式声明；region 是可公开配置，凭据则完全交给阿里云默认凭据链。
+function parseAliyunVodConfig(
+  environment: NodeJS.ProcessEnv,
+): AliyunVodRuntimeConfig {
+  const enabled = parseStrictBoolean(
+    "XIQU_ALIYUN_VOD_ENABLED",
+    environment.XIQU_ALIYUN_VOD_ENABLED,
+    false,
+  );
+  if (!enabled) return { enabled: false, region: null };
+
+  const region = environment.XIQU_ALIYUN_VOD_REGION?.trim() ?? "";
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)+$/.test(region) || region.length > 64) {
+    throw new Error("启用阿里云 VOD 时必须提供有效的 XIQU_ALIYUN_VOD_REGION。");
+  }
+  return { enabled: true, region };
 }
 
 // 生产默认只监听 loopback；需要容器或内网监听时必须显式给出 IP，不能依赖含糊 DNS 名称。

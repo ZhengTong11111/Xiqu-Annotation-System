@@ -22,6 +22,16 @@ enum ResourceType {
   media_file
 }
 
+enum MediaSourceType {
+  uploaded
+  aliyun_vod
+}
+
+enum MediaKind {
+  video
+  audio
+}
+
 enum ResourceCapability {
   read
   write
@@ -60,6 +70,7 @@ enum AuditAction {
   account_password_change
   file_upload
   media_upload
+  aliyun_vod_media_create
   resource_create
   resource_update
   resource_copy
@@ -356,18 +367,24 @@ model AnnotationRecoverySnapshot {
 }
 
 model MediaFile {
-  resourceId String  @id @map("resource_id")
-  fileId     String  @map("file_id")
-  mimeType   String  @map("mime_type")
-  // size 与 FileObject.size 一致使用 BigInt，支持超过 2 GiB 的单文件。
-  size       BigInt
-  duration   Float?
+  resourceId         String          @id @map("resource_id")
+  sourceType         MediaSourceType @default(uploaded) @map("source_type")
+  mediaKind          MediaKind       @map("media_kind")
+  fileId             String?         @map("file_id")
+  mimeType           String?         @map("mime_type")
+  // uploaded 的 size 与 FileObject.size 一致使用 BigInt；VOD 不伪造本平台对象大小。
+  size               BigInt?
+  duration           Float?
+  aliyunVodVideoId   String?         @map("aliyun_vod_video_id")
+  aliyunVodRegion    String?         @map("aliyun_vod_region")
 
   resource ResourceEntry @relation(fields: [resourceId], references: [id], onDelete: Cascade)
-  file     FileObject    @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  file     FileObject?   @relation(fields: [fileId], references: [id], onDelete: Cascade)
   linkedAnnotationFiles AnnotationFile[] @relation("AnnotationMediaResource")
 
   @@index([fileId])
+  @@index([sourceType])
+  @@index([aliyunVodRegion, aliyunVodVideoId])
   @@map("media_files")
 }
 

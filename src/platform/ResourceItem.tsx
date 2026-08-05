@@ -123,7 +123,7 @@ export function ResourceItem(props: {
               <ResourceIcon resource={props.resource} size={18} />
               <strong>{props.resource.name}</strong>
             </span>
-            <span>{resourceTypeLabel(props.resource.type)}</span>
+            <span>{resourceTypeLabel(props.resource)}</span>
             <span>{formatResourceDate(props.resource.updatedAt)}</span>
             <span>{props.resource.owner.displayName}</span>
             <span>{formatResourceSize(props.resource.size)}</span>
@@ -189,7 +189,11 @@ function ResourceContextMenu(props: {
               {props.resource.type === "annotation_file" ||
               props.resource.type === "media_file" ? (
                 <ContextMenu.Item
-                  disabled={!capabilities.includes("download")}
+                  disabled={!canDirectlyDownloadResource(props.resource)}
+                  title={props.resource.type === "media_file" &&
+                    props.resource.mediaSourceType === "aliyun_vod"
+                    ? "阿里云 VOD 不提供平台原文件下载"
+                    : undefined}
                   onSelect={() => props.onDownload(props.resource)}
                 >
                   <Download size={15} /> 下载
@@ -231,13 +235,25 @@ export function ResourceIcon(props: { resource: ResourceEntry; size: number }) {
   return <FileJson2 size={props.size} className="annotation-icon" />;
 }
 
-export function resourceTypeLabel(type: ResourceEntry["type"]) {
+export function resourceTypeLabel(resource: ResourceEntry) {
+  if (resource.type === "media_file") {
+    const kind = resource.mediaKind === "audio" ? "音频" : "视频";
+    return resource.mediaSourceType === "aliyun_vod"
+      ? `VOD ${kind}`
+      : kind;
+  }
   return {
     folder: "文件夹",
     project: "项目",
     annotation_file: "标注文件",
-    media_file: "媒体文件",
-  }[type];
+  }[resource.type];
+}
+
+// 外部 VOD 的 download 权限仍用于授权播放，但它没有平台可直接下载的原始对象。
+export function canDirectlyDownloadResource(resource: ResourceEntry) {
+  return resource.permission.capabilities.includes("download") &&
+    (resource.type === "annotation_file" ||
+      (resource.type === "media_file" && resource.mediaSourceType !== "aliyun_vod"));
 }
 
 export function formatResourceDate(value: string) {

@@ -92,6 +92,9 @@ export type ResourceEntry = {
   childCount: number;
   size?: number | null;
   mimeType?: string | null;
+  mediaSourceType?: MediaSourceType | null;
+  mediaKind?: MediaKind | null;
+  duration?: number | null;
   revision?: number | null;
   favorite: boolean;
   permission: EffectiveResourcePermission;
@@ -132,6 +135,9 @@ export type ResourceListView =
 export type ResourceSortField = "name" | "createdAt" | "updatedAt" | "size";
 export type SortDirection = "asc" | "desc";
 
+export type MediaSourceType = "uploaded" | "aliyun_vod";
+export type MediaKind = "video" | "audio";
+
 export type ResourceListPage = {
   items: ResourceEntry[];
   breadcrumbs: ResourceBreadcrumb[];
@@ -149,13 +155,25 @@ export type AnnotationFile<TPayload = unknown> = {
   lastSavedAt: string;
 };
 
-export type AnnotationMediaReference = {
+type AnnotationMediaReferenceBase = {
   resourceId: string;
-  fileId: string;
   name: string;
-  mimeType: string;
-  size: number;
+  mediaKind: MediaKind;
+  duration: number | null;
 };
+
+export type AnnotationMediaReference =
+  | (AnnotationMediaReferenceBase & {
+      sourceType: "uploaded";
+      fileId: string;
+      mimeType: string;
+      size: number;
+    })
+  | (AnnotationMediaReferenceBase & {
+      sourceType: "aliyun_vod";
+      videoId: string;
+      region: string;
+    });
 
 // 恢复快照摘要用于历史列表，刻意不携带大体积标注 payload。
 export type AnnotationRecoverySnapshotSummary = {
@@ -282,6 +300,7 @@ export const AUDIT_ACTIONS = [
   "account_password_change",
   "file_upload",
   "media_upload",
+  "aliyun_vod_media_create",
   "resource_create",
   "resource_update",
   "resource_copy",

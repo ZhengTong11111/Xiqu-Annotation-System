@@ -15,11 +15,15 @@ export type CopySourceNode = {
     mediaResourceId: string | null;
   } | null;
   mediaFile: {
-    fileId: string;
-    mimeType: string;
+    sourceType: "uploaded" | "aliyun_vod";
+    mediaKind: "video" | "audio";
+    fileId: string | null;
+    mimeType: string | null;
     // 源 DB size 为 BigInt，复制时直接透传到目标 create，不进入 JSON 响应。
-    size: bigint;
+    size: bigint | null;
     duration: number | null;
+    aliyunVodVideoId: string | null;
+    aliyunVodRegion: string | null;
   } | null;
 };
 
@@ -116,7 +120,8 @@ export function buildResourceCopyPlan(input: {
     copiedAnnotationCount: plans.filter((node) =>
       node.type === "annotation_file").length,
     reusedFileObjectCount: plans.filter((node) =>
-      node.type === "media_file").length,
+      node.type === "media_file" &&
+      node.mediaFile?.sourceType === "uploaded").length,
   };
 }
 
@@ -126,5 +131,27 @@ function assertSpecializedRow(node: CopySourceNode) {
   }
   if (node.type === "media_file" && !node.mediaFile) {
     throw new Error(`媒体资源 ${node.id} 缺少 MediaFile 数据。`);
+  }
+  if (node.mediaFile?.sourceType === "uploaded") {
+    if (
+      !node.mediaFile.fileId ||
+      node.mediaFile.mimeType === null ||
+      node.mediaFile.size === null ||
+      node.mediaFile.aliyunVodVideoId !== null ||
+      node.mediaFile.aliyunVodRegion !== null
+    ) {
+      throw new Error(`上传媒体资源 ${node.id} 的来源字段不完整。`);
+    }
+  }
+  if (node.mediaFile?.sourceType === "aliyun_vod") {
+    if (
+      node.mediaFile.fileId !== null ||
+      node.mediaFile.mimeType !== null ||
+      node.mediaFile.size !== null ||
+      !node.mediaFile.aliyunVodVideoId ||
+      !node.mediaFile.aliyunVodRegion
+    ) {
+      throw new Error(`VOD 媒体资源 ${node.id} 的来源字段不完整。`);
+    }
   }
 }
