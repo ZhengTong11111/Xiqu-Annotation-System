@@ -72,6 +72,8 @@ Main currently contains all major recent feature lines that matter for context:
   per-resource ACL remains a separate Inspector concern
 - annotation files use a real database foreign key to media resources; JSON import and the Inspector share one media-binding
   dialog, while protected runtime URLs stay outside ProjectData
+- App now uses one media playback controller for native local/uploaded media and Aliyun VOD; Aliplayer is loaded from a fixed
+  official CDN, short-lived playauth stays memory-only, and late seek/session events cannot revive a replaced source
 - recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
 
 If starting a new conversation, assume the repo is already beyond the earlier simple waveform-only stage.
@@ -98,11 +100,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - the `AnnotationFile.media` DTO is authoritative for new platform sessions; historical payload paths are migration fallback only
   - uploaded media hydrate a protected platform object URL; aliyun_vod media retain only stable identity until the playback
     adapter requests a short-lived session. Never manufacture a URL from a VOD id or send VOD through full browser fetch/decode
+  - an explicit `media: null` must clear a stale `platform-file:` path; only an omitted media DTO may use the historical fallback
 - `apps/api/src/aliyunVodGateway.ts`
   - the only Aliyun VOD SDK boundary; uses the official SDK and default credential chain behind an injectable gateway
   - normalizes provider failures to bounded categories and must never expose SDK errors, credentials, playauth, temporary URLs,
     signed covers, or raw provider responses to persistence/logging layers
-  - an explicit `media: null` must clear a stale `platform-file:` path; only an omitted media DTO may use the historical fallback
+- `src/platform/platformMediaPlaybackSource.ts`
+  - the only conversion from platform media DTO plus local runtime URL to native/VOD/unavailable playback source
+  - VOD source construction must defer the no-store session request; never retain playauth in React/project state
 - `src/platform/platformMediaBindingPolicy.ts`
   - pure clean-session gate shared by current uploaded-media binding and future platform media sources
   - dirty/pending/transient/inline/merge/conflict/offline/error/remote-gap sessions must not replace the runtime media
@@ -375,7 +380,17 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - publishes only exact pointer time to the collaboration callback and renders remote playhead/pointer/selection hints as
     read-only `pointer-events: none` overlays using the same `trackHeaderWidth + time * zoom` coordinate as local timing
 - `src/components/VideoPlayer.tsx`
-  - playback sync, preview-frame behavior, native controls auto-hide, detached-panel button
+  - owns backend mount/unmount, playback sync, preview-frame behavior, native controls auto-hide, VOD loading/error UI, and
+    detached-panel button; exposes `MediaPlaybackController`, never an HTML media element
+- `src/media/mediaPlaybackController.ts`
+  - App-facing playback contract and latest-command ordering; all App media commands must pass through this boundary
+  - expected source-switch/preview cancellation is not a user error, while play/seek failures are contained by the player UI
+- `src/media/nativeMediaPlaybackBackend.ts`
+  - narrow HTMLMediaElement adapter with deterministic seeked/error/timeout/dispose settlement
+- `src/media/aliplayerSdk.ts` + `src/media/aliyunVodPlaybackBackend.ts`
+  - fixed official Aliplayer 2.38.3 CDN loader and the only VOD player adapter
+  - short-lived sessions stay memory-only; refresh is single-flight, obtains new credentials before replacing the old player,
+    and generation checks reject late provider events after source switch/dispose
 - `src/components/InspectorPanel.tsx`
   - canonical editor for selected items, tracks, attached point tracks, spectrogram settings entry, Gongche editing entry points
 - `src/components/SpectrogramCanvas.tsx`
@@ -1712,8 +1727,10 @@ Documentation rules:
 Current media behavior:
 - `VideoPlayer.tsx` starts at 50% volume
 - native controls auto-hide when pointer leaves video
-- playback sync is requestAnimationFrame-driven while playing
-- preview mode pauses/resumes around edge-preview seeks
+- App uses only `MediaPlaybackController`; direct HTMLVideoElement or Aliplayer access outside the backends is prohibited
+- native and VOD playback sync is requestAnimationFrame-driven from the same snapshot contract while playing
+- preview mode pauses/resumes around ordered edge-preview seeks; later pause/play/seek commands always supersede older async work
+- local computer media, uploaded server media, and Aliyun VOD must remain three independent selectable workflows
 
 Audio pipeline:
 - video is fetched and decoded to build `WaveformData`

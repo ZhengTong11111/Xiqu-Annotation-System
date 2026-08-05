@@ -5325,3 +5325,39 @@ operation、审计详情或协作消息。
 - R3h4：实现平台分析音频来源选择、强制服务器上传音频、后台流式解码，以及版本化波形/频谱/F0 资产。
 - 真实阿里云账号 smoke 尚未执行；需要目标部署的最小权限身份和样例 vid 后再验证真实 playauth、过期刷新、
   非 Normal 媒资与供应商限流。当前 fake gateway 与 disabled-provider 浏览器路径均已完成。
+
+## 2026-08-05：R3h3 原生媒体与阿里云 VOD 统一播放控制器
+
+### 已完成
+
+- 新增 App 只依赖的 `MediaPlaybackController`，以同步快照和 `seek/play/pause/setPlaybackRate` 取代对
+  `HTMLVideoElement` 的直接属性、事件与 `seeked` 临时监听。P、Tab、空格、持久/临时循环、普通跳转、
+  单次范围终点和本地视频切换均复用同一命令顺序；后发命令使旧异步操作失效。
+- 将原生媒体封装为窄后端，所有 seek 在目标已到达、`seeked`、媒体错误、超时或来源销毁时确定结算；
+  页面仍保留 50% 初始音量、hover controls、元数据、requestAnimationFrame 播放头和独立窗口布局。
+- 新增 Aliplayer 后端，严格映射 ready/timeupdate/seeked/play/pause/ended/error，统一倍率和预览语义。
+  短时 playauth 仅驻留实例内存；到期前/供应商错误触发单飞刷新，先取得新会话再替换旧实例，并用 generation
+  阻止迟到回调复活。快速预览替换、来源切换和 dispose 被视为正常取消，不显示假错误。
+- Aliplayer 2.38.3 使用固定 `g.alicdn.com` 官方 JS/CSS 的受控单例 loader。未安装约 7 MB、无 TypeScript
+  类型且 npm 元数据未声明许可证的 `aliyun-aliplayer` 包；本地只声明实际使用的窄类型，不复制第三方源码。
+- 抽出平台播放来源纯边界：本机 Blob URL 与 uploaded 受保护 URL 走 native，VOD 只保留 resourceId/vid 并
+  延迟请求 no-store 会话，未绑定媒体进入明确 unavailable 状态。三条用户工作流均保留。
+
+### 审查与验证
+
+- 新增 `test:media-playback`，15/15 通过，覆盖 latest-command 顺序、原生 seek/error/dispose、SDK 已有全局/
+  并发去重/失败重试、VOD ready/seek/rate/play/pause、刷新单飞、刷新失败保留旧实例、会话身份验证和三类
+  来源判别。
+- 完整 `npm run test:api` 149/149、平台集成 36/36 通过；完整 `npm run build` 通过 Prisma generation、
+  shared、document-model、Web 与 API，`git diff --check` 通过。仅保留既有 `pg` 9.0 弃用预告和 Vite 主
+  chunk 超过 500 kB 提醒。
+- 应用内浏览器用全新标签页验证本地原生示例视频成功加载，统一播放器能播放/暂停，加载遮罩严格覆盖画面
+  且元数据完成后消失，工作台布局无溢出，新页面控制台无 warning/error。真实阿里云账号 smoke 尚待目标
+  凭据，不能以 fake 测试冒充完成。
+
+### 待推进
+
+- R3h4：建立分析音频自动来源与显式覆盖。自动选择本机/上传视频内嵌音轨或同 vid VOD 纯音频转码；用户
+  始终可以强制选择服务器上传音频、固定 VOD 音频或恢复自动选择，关系只进入平台媒体/派生资产层。
+- R3h4：以后台流式解码、版本化 manifest、多分辨率波形、频谱瓦片和 F0 资产取代浏览器完整视频下载与
+  整段 PCM 常驻；真实云端 playauth、凭据刷新、限流和非 Normal 媒资继续列为部署 smoke 缺口。

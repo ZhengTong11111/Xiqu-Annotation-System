@@ -21,10 +21,12 @@ import { Timeline } from "./components/Timeline";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { TopMenuBar, type TopMenuPlatformNavigation } from "./components/TopMenuBar";
 import { VideoPlayer } from "./components/VideoPlayer";
+import type { MediaPlaybackController } from "./media/mediaPlaybackController";
 import { mockProject } from "./mockData";
 import { AnnotationConfirmationPanel } from "./platform/AnnotationConfirmationPanel";
 import { AnnotationMediaBindingDialog } from "./platform/AnnotationMediaBindingDialog";
 import { getPlatformMediaBindingBlockReason } from "./platform/platformMediaBindingPolicy";
+import { buildPlatformMediaPlaybackSource } from "./platform/platformMediaPlaybackSource";
 import {
   buildAnnotationConfirmationViewRecords,
   canShowAnnotationConfirmationRevoke,
@@ -736,7 +738,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [timelineDetachedWindow, setTimelineDetachedWindow] = useState<Window | null>(null);
   const isPreviewDetached = Boolean(previewDetachedWindow && !previewDetachedWindow.closed);
   const isTimelineDetached = Boolean(timelineDetachedWindow && !timelineDetachedWindow.closed);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoRef = useRef<MediaPlaybackController>(null);
+  const platformMedia = editorSession?.media;
+  const platformClient = editorSession?.client;
+  const playbackSource = useMemo(() => buildPlatformMediaPlaybackSource({
+    media: platformMedia,
+    nativeUrl: project.video.url,
+    requiresManualImport: Boolean(project.video.requiresManualImport),
+    loadAliyunVodSession: (resourceId) => {
+      if (!platformClient) return Promise.reject(new Error("平台媒体会话已结束。"));
+      return platformClient.createAliyunVodPlaybackSession(resourceId);
+    },
+  }), [platformClient, platformMedia, project.video.requiresManualImport, project.video.url]);
   // 临时范围播放意图，统一表达 P 临时持续循环和 Tab 单次范围播放两种运行时行为，
   // 避免多个含义重叠的布尔 ref 互相覆盖。null 表示无临时意图（仅持久循环或普通播放）。
   const rangePlaybackIntentRef = useRef<RangePlaybackIntent | null>(null);
@@ -1171,23 +1184,20 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   useEffect(() => {
     setDuration(
       Math.max(
-        videoRef.current?.duration || 0,
+        videoRef.current?.getSnapshot().duration || 0,
         getProjectDuration(project),
       ),
     );
   }, [project]);
 
   useEffect(() => {
-    if (!videoRef.current) {
-      return;
-    }
-    videoRef.current.playbackRate = playbackRate;
+    videoRef.current?.setPlaybackRate(playbackRate);
   }, [playbackRate]);
 
   useEffect(() => {
-    const video = videoRef.current;
+    const player = videoRef.current;
     const intent = rangePlaybackIntentRef.current;
-    if (previewTime !== null || !loopPlaybackRange || !video) {
+    if (previewTime !== null || !loopPlaybackRange || !player) {
       return;
     }
     if (loopPlaybackRange.end - loopPlaybackRange.start <= 0.001) {
@@ -1200,7 +1210,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (!doesRangePlaybackIntentMatch(intent, loopPlaybackRange)) {
         return;
       }
-      if (currentTime < intent.playbackEnd - loopEndThreshold && !video.ended) {
+      if (currentTime < intent.playbackEnd - loopEndThreshold && !player.getSnapshot().ended) {
         return;
       }
       // 单次范围播放到终点：校正到 end、暂停、清除意图、恢复进入前的持久循环设置，不跳回起点。
@@ -1221,7 +1231,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
     const nextTime = clampTime(loopPlaybackRange.start, duration);
-    videoRef.current.currentTime = nextTime;
+    void player.seek(nextTime);
     setCurrentTime(nextTime);
   }, [currentTime, duration, isPlaying, loopPlaybackEnabled, loopPlaybackRange, playbackRate, previewTime]);
 
@@ -1760,53 +1770,45 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const safeTime = Math.max(0, Math.min(time, duration));
     setPreviewTime(null);
     setCurrentTime(safeTime);
-    if (videoRef.current) {
-      videoRef.current.currentTime = safeTime;
-    }
+    void videoRef.current?.seek(safeTime);
   }
 
   function togglePlay() {
-    if (!videoRef.current) {
-      return;
-    }
-    const video = videoRef.current;
+    const player = videoRef.current;
+    const snapshot = player?.getSnapshot();
+    if (!player || !snapshot?.ready) return;
     const needsLoopStartSeek =
-      video.paused &&
+      snapshot.paused &&
       loopPlaybackEnabled &&
       loopPlaybackRange &&
       (currentTime < loopPlaybackRange.start || currentTime > loopPlaybackRange.end);
     if (previewTime !== null) {
-      video.currentTime = currentTime;
       setPreviewTime(null);
+      // 预览组件会执行唯一一次正式播放头恢复 seek；这里先声明播放意图，避免两次异步 seek 互相取消。
+      void player.play();
+      return;
     }
     if (needsLoopStartSeek && loopPlaybackRange) {
       const nextTime = clampTime(loopPlaybackRange.start, duration);
       setCurrentTime(nextTime);
-      if (Math.abs(video.currentTime - nextTime) > 0.001) {
-        const handleSeeked = () => {
-          video.removeEventListener("seeked", handleSeeked);
-          void video.play();
-        };
-        video.addEventListener("seeked", handleSeeked);
-        video.currentTime = nextTime;
-        return;
-      }
+      void player.seek(nextTime, { playAfterSeek: true });
+      return;
     }
-    if (video.paused) {
-      void video.play();
+    if (snapshot.paused) {
+      void player.play();
     } else {
-      video.pause();
+      player.pause();
     }
   }
 
   function playLoopFromRangeStart() {
-    if (!videoRef.current || !loopPlaybackRange) {
+    const player = videoRef.current;
+    if (!player?.getSnapshot().ready || !loopPlaybackRange) {
       return;
     }
     if (loopPlaybackRange.end - loopPlaybackRange.start <= 0.001) {
       return;
     }
-    const video = videoRef.current;
     const nextTime = clampTime(loopPlaybackRange.start, duration);
     setPreviewTime(null);
     // P 取消任何单次播放意图，切换为持续循环。持久循环已开时不标临时（空格走普通暂停），
@@ -1820,33 +1822,22 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         };
     setLoopPlaybackEnabled(true);
     setCurrentTime(nextTime);
-
-    const playAfterSeek = () => {
-      video.removeEventListener("seeked", playAfterSeek);
-      void video.play();
-    };
-
-    if (Math.abs(video.currentTime - nextTime) > 0.001) {
-      video.addEventListener("seeked", playAfterSeek);
-      video.currentTime = nextTime;
-      return;
-    }
-
-    void video.play();
+    void player.seek(nextTime, { playAfterSeek: true });
   }
 
   // Tab：从循环范围起点播放一遍，到终点暂停不跳回。
   // 无论当前播放头在哪、是否在播放，都重新跳到范围起点开始单次播放。
   function playLoopRangeOnce() {
-    if (!videoRef.current || !loopPlaybackRange) {
+    const player = videoRef.current;
+    const snapshot = player?.getSnapshot();
+    if (!player || !snapshot?.ready || !loopPlaybackRange) {
       return;
     }
     if (loopPlaybackRange.end - loopPlaybackRange.start <= 0.001) {
       return;
     }
-    const video = videoRef.current;
-    const mediaDuration = Number.isFinite(video.duration) && video.duration > 0
-      ? video.duration
+    const mediaDuration = Number.isFinite(snapshot.duration) && snapshot.duration > 0
+      ? snapshot.duration
       : duration;
     const nextTime = clampTime(loopPlaybackRange.start, mediaDuration);
     const playbackEnd = clampTime(loopPlaybackRange.end, mediaDuration);
@@ -1870,19 +1861,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       playbackEnd,
     };
     setCurrentTime(nextTime);
-
-    const playAfterSeek = () => {
-      video.removeEventListener("seeked", playAfterSeek);
-      void video.play();
-    };
-
-    if (Math.abs(video.currentTime - nextTime) > 0.001) {
-      video.addEventListener("seeked", playAfterSeek);
-      video.currentTime = nextTime;
-      return;
-    }
-
-    void video.play();
+    void player.seek(nextTime, { playAfterSeek: true });
   }
 
   // 空格时处理临时范围播放意图。
@@ -1894,7 +1873,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (intent?.mode === "temporary-continuous-loop") {
       cancelRangePlaybackIntent();
       setPreviewTime(null);
-      if (videoRef.current?.paused) {
+      if (videoRef.current?.getSnapshot().paused) {
         void videoRef.current.play();
       }
       return true;
@@ -1916,11 +1895,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function finishOneShotRangePlayback(intent: Extract<RangePlaybackIntent, { mode: "play-range-once" }>) {
-    const video = videoRef.current;
+    const player = videoRef.current;
     rangePlaybackIntentRef.current = null;
-    if (video) {
-      video.currentTime = intent.playbackEnd;
-      video.pause();
+    if (player) {
+      // 先使任何旧的“跳转后播放”命令失效，再把媒体校正到单次范围终点。
+      player.pause();
+      void player.seek(intent.playbackEnd);
     }
     setCurrentTime(intent.playbackEnd);
     setLoopPlaybackEnabled(intent.restoreLoopEnabled);
@@ -5283,9 +5263,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   async function handleVideoImport(file: File) {
     const playbackUrl = URL.createObjectURL(file);
-    if (videoRef.current) {
-      videoRef.current.pause();
-    }
+    videoRef.current?.pause();
     setPreviewTime(null);
     setIsPlaying(false);
     setCurrentTime(0);
@@ -5971,10 +5949,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     return (
       <VideoPlayer
         ref={videoRef}
-        videoUrl={project.video.url}
-        unavailableMessage={editorSession?.media?.sourceType === "aliyun_vod"
-          ? "阿里云 VOD 已关联；统一播放控制器将在 R3h3 启用。"
-          : null}
+        source={playbackSource}
         playbackRate={playbackRate}
         currentTime={currentTime}
         previewTime={previewTime}

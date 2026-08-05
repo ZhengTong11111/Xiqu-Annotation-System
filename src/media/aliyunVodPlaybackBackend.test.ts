@@ -1,0 +1,166 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { AliyunVodPlaybackSession } from "@xiqu/shared";
+import {
+  type AliplayerConstructor,
+  type AliplayerEventHandler,
+  type AliplayerInstance,
+  type AliplayerOptions,
+} from "./aliplayerSdk";
+import { AliyunVodPlaybackBackend } from "./aliyunVodPlaybackBackend";
+
+class FakeAliplayer implements AliplayerInstance {
+  static instances: FakeAliplayer[] = [];
+  currentTime = 0;
+  duration = 90;
+  paused = true;
+  ended = false;
+  speed = 1;
+  disposed = false;
+  private handlers = new Map<string, Set<AliplayerEventHandler>>();
+
+  constructor(
+    readonly options: AliplayerOptions,
+    ready?: (player: AliplayerInstance) => void,
+  ) {
+    FakeAliplayer.instances.push(this);
+    queueMicrotask(() => ready?.(this));
+  }
+
+  on(event: string, handler: AliplayerEventHandler) {
+    const handlers = this.handlers.get(event) ?? new Set<AliplayerEventHandler>();
+    handlers.add(handler);
+    this.handlers.set(event, handlers);
+  }
+  play() { this.paused = false; this.emit("play"); }
+  pause() { this.paused = true; this.emit("pause"); }
+  seek(time: number) { this.currentTime = time; this.emit("seeked"); }
+  getCurrentTime() { return this.currentTime; }
+  getDuration() { return this.duration; }
+  getStatus() { return this.paused ? "pause" : "playing"; }
+  setSpeed(rate: number) { this.speed = rate; }
+  dispose() { this.disposed = true; }
+  emit(event: string) {
+    for (const handler of [...(this.handlers.get(event) ?? [])]) handler();
+  }
+}
+
+function createSession(playAuth: string): AliyunVodPlaybackSession {
+  return {
+    sourceType: "aliyun_vod",
+    mediaKind: "video",
+    videoId: "vod-1",
+    region: "cn-shanghai",
+    playAuth,
+    expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+  };
+}
+
+test("VOD 后端映射 ready、seek、play、pause 和倍率", async () => {
+  FakeAliplayer.instances = [];
+  const readyDurations: number[] = [];
+  const playing: boolean[] = [];
+  const backend = new AliyunVodPlaybackBackend({
+    containerId: "player",
+    expectedVideoId: "vod-1",
+    loadSession: async () => createSession("auth-1"),
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: (snapshot) => readyDurations.push(snapshot.duration),
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: (value) => playing.push(value),
+      onError: () => undefined,
+    },
+  });
+
+  backend.setPlaybackRate(1.5);
+  await backend.seek(12);
+  await backend.play();
+  backend.pause();
+
+  const player = FakeAliplayer.instances[0];
+  assert.deepEqual(readyDurations, [90]);
+  assert.equal(backend.getSnapshot().currentTime, 12);
+  assert.equal(player?.speed, 1.5);
+  assert.deepEqual(playing, [true, false]);
+  backend.dispose();
+  assert.equal(player?.disposed, true);
+});
+
+test("VOD 会话刷新单飞并恢复时间与播放状态", async () => {
+  FakeAliplayer.instances = [];
+  let sessionCount = 0;
+  const backend = new AliyunVodPlaybackBackend({
+    containerId: "player-refresh",
+    expectedVideoId: "vod-1",
+    loadSession: async () => createSession(`auth-${++sessionCount}`),
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onError: () => undefined,
+    },
+  });
+  await backend.seek(8);
+  await backend.play();
+
+  await Promise.all([backend.refreshSession(), backend.refreshSession()]);
+
+  assert.equal(sessionCount, 2);
+  assert.equal(FakeAliplayer.instances.length, 2);
+  assert.equal(backend.getSnapshot().currentTime, 8);
+  assert.equal(backend.getSnapshot().paused, false);
+  backend.dispose();
+});
+
+test("VOD 刷新失败后保留旧实例并允许继续执行播放命令", async () => {
+  FakeAliplayer.instances = [];
+  let sessionCount = 0;
+  const errors: string[] = [];
+  const backend = new AliyunVodPlaybackBackend({
+    containerId: "player-refresh-failure",
+    expectedVideoId: "vod-1",
+    loadSession: async () => {
+      sessionCount += 1;
+      if (sessionCount > 1) throw new Error("供应商临时不可用");
+      return createSession("auth-initial");
+    },
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onError: (message) => errors.push(message),
+    },
+  });
+  await backend.play();
+  const originalPlayer = FakeAliplayer.instances[0];
+
+  await assert.rejects(backend.refreshSession(), /无法准备/);
+  await backend.play();
+
+  assert.equal(FakeAliplayer.instances.length, 1);
+  assert.equal(originalPlayer?.disposed, false);
+  assert.equal(errors.length, 1);
+  backend.dispose();
+});
+
+test("VOD 后端拒绝与当前资源不匹配的短时会话", async () => {
+  const errors: string[] = [];
+  const backend = new AliyunVodPlaybackBackend({
+    containerId: "player-invalid",
+    expectedVideoId: "vod-expected",
+    loadSession: async () => createSession("auth-invalid"),
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onError: (message) => errors.push(message),
+    },
+  });
+  await assert.rejects(backend.play(), /无法准备/);
+  assert.equal(errors.length, 1);
+  backend.dispose();
+});

@@ -1,10 +1,26 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useId,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { AliyunVodPlaybackBackend } from "../media/aliyunVodPlaybackBackend";
+import {
+  LatestMediaPlaybackCommand,
+  createSafeMediaPlaybackController,
+  type MediaPlaybackBackend,
+  type MediaPlaybackController,
+  type MediaPlaybackSource,
+} from "../media/mediaPlaybackController";
+import { NativeMediaPlaybackBackend } from "../media/nativeMediaPlaybackBackend";
 
 const PREVIEW_SEEK_EPSILON = 1 / 90;
 
 type VideoPlayerProps = {
-  videoUrl: string;
-  unavailableMessage?: string | null;
+  source: MediaPlaybackSource;
   playbackRate: number;
   currentTime: number;
   previewTime: number | null;
@@ -16,11 +32,15 @@ type VideoPlayerProps = {
   onPlayStateChange: (playing: boolean) => void;
 };
 
-export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
+type PlaybackViewState =
+  | { status: "loading"; message: string }
+  | { status: "ready"; message: null }
+  | { status: "error"; message: string };
+
+export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>(
   (
     {
-      videoUrl,
-      unavailableMessage = null,
+      source,
       playbackRate,
       currentTime,
       previewTime,
@@ -33,154 +53,181 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
     },
     ref,
   ) => {
-    const videoRef = useRef<HTMLVideoElement>(null);
+    const nativeVideoRef = useRef<HTMLVideoElement>(null);
+    const backendRef = useRef<MediaPlaybackBackend | null>(null);
     const animationFrameRef = useRef<number | null>(null);
+    const previewSeekFrameRef = useRef<number | null>(null);
+    const pendingPreviewTimeRef = useRef<number | null>(null);
     const currentTimeRef = useRef(currentTime);
     const isPreviewingRef = useRef(false);
     const resumeAfterPreviewRef = useRef(false);
-    const previewSeekFrameRef = useRef<number | null>(null);
-    const pendingPreviewTimeRef = useRef<number | null>(null);
+    const callbacksRef = useRef({ onLoadedMetadata, onTimeUpdate, onPlayStateChange });
+    const commandRef = useRef<LatestMediaPlaybackCommand | null>(null);
+    const controllerRef = useRef<MediaPlaybackController | null>(null);
     const [showNativeControls, setShowNativeControls] = useState(false);
+    const [retryGeneration, setRetryGeneration] = useState(0);
+    const [viewState, setViewState] = useState<PlaybackViewState>(() => getInitialViewState(source));
+    const reactId = useId();
+    const vodContainerId = useRef(`xiqu-vod-${reactId.replace(/[^a-zA-Z0-9_-]/g, "")}`);
 
-    useImperativeHandle(ref, () => videoRef.current as HTMLVideoElement);
+    // 控制器对象在组件生命周期内保持稳定，后端则可随媒体来源安全替换。
+    if (!commandRef.current) {
+      commandRef.current = new LatestMediaPlaybackCommand(() => backendRef.current);
+    }
+    if (!controllerRef.current) {
+      controllerRef.current = createSafeMediaPlaybackController(
+        commandRef.current,
+        (message) => setViewState({ status: "error", message }),
+      );
+    }
+    useImperativeHandle(ref, () => controllerRef.current as MediaPlaybackController, []);
 
-    useEffect(() => {
-      currentTimeRef.current = currentTime;
-    }, [currentTime]);
-
-    useEffect(() => {
-      const video = videoRef.current;
-      if (!video || previewTime !== null || isPreviewingRef.current) {
-        return;
-      }
-      if (video.readyState < 1) {
-        return;
-      }
-      if (Math.abs(video.currentTime - currentTime) < 0.05) {
-        return;
-      }
-      if (!video.paused && !video.ended) {
-        return;
-      }
-      try {
-        video.currentTime = currentTime;
-      } catch {
-        // Ignore transient media seek errors until metadata is stable.
-      }
-    }, [currentTime, previewTime, videoUrl]);
-
-    useEffect(() => {
-      if (!videoRef.current) {
-        return;
-      }
-      videoRef.current.volume = 0.5;
-    }, []);
-
-    useEffect(() => {
-      const video = videoRef.current;
-      if (!video) {
-        return;
-      }
-
-      stopFrameSync();
-      if (previewSeekFrameRef.current !== null) {
-        cancelAnimationFrame(previewSeekFrameRef.current);
-        previewSeekFrameRef.current = null;
-      }
-      pendingPreviewTimeRef.current = null;
-      isPreviewingRef.current = false;
-      resumeAfterPreviewRef.current = false;
-    }, [videoUrl]);
-
-    useEffect(() => {
-      return () => {
-        if (animationFrameRef.current !== null) {
-          cancelAnimationFrame(animationFrameRef.current);
-        }
-        if (previewSeekFrameRef.current !== null) {
-          cancelAnimationFrame(previewSeekFrameRef.current);
-        }
-      };
-    }, []);
+    currentTimeRef.current = currentTime;
+    callbacksRef.current = { onLoadedMetadata, onTimeUpdate, onPlayStateChange };
 
     function stopFrameSync() {
-      if (animationFrameRef.current !== null) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
+      if (animationFrameRef.current === null) return;
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
     }
 
+    // 原生 video 与 Aliplayer 都通过 backend snapshot 驱动同一高频播放头同步。
     function startFrameSync() {
       stopFrameSync();
-
       const syncCurrentTime = () => {
-        if (!videoRef.current) {
+        const snapshot = commandRef.current?.getSnapshot();
+        if (!snapshot) {
           animationFrameRef.current = null;
           return;
         }
-        onTimeUpdate(videoRef.current.currentTime);
-        if (!videoRef.current.paused && !videoRef.current.ended) {
+        if (!isPreviewingRef.current) callbacksRef.current.onTimeUpdate(snapshot.currentTime);
+        if (!snapshot.paused && !snapshot.ended) {
           animationFrameRef.current = requestAnimationFrame(syncCurrentTime);
         } else {
           animationFrameRef.current = null;
         }
       };
-
       animationFrameRef.current = requestAnimationFrame(syncCurrentTime);
     }
 
-    useEffect(() => {
-      const video = videoRef.current;
-      if (!video) {
-        return;
-      }
+    useLayoutEffect(() => {
+      const command = commandRef.current as LatestMediaPlaybackCommand;
+      command.invalidate();
+      backendRef.current?.dispose();
+      backendRef.current = null;
+      stopFrameSync();
+      cancelPreviewFrame(previewSeekFrameRef);
+      pendingPreviewTimeRef.current = null;
+      isPreviewingRef.current = false;
+      resumeAfterPreviewRef.current = false;
+      setViewState(getInitialViewState(source));
 
-      if (previewTime === null) {
-        if (!isPreviewingRef.current) {
+      // 所有来源共用同一清理函数；Strict Effects、来源切换和 unavailable 卸载都不会留下帧或 backend。
+      const cleanup = () => {
+        command.invalidate();
+        const backend = backendRef.current;
+        backendRef.current = null;
+        backend?.dispose();
+        stopFrameSync();
+        cancelPreviewFrame(previewSeekFrameRef);
+      };
+      if (source.type === "unavailable") return cleanup;
+
+      const events = {
+        onReady: (snapshot: ReturnType<MediaPlaybackBackend["getSnapshot"]>) => {
+          setViewState({ status: "ready", message: null });
+          callbacksRef.current.onLoadedMetadata(snapshot.duration);
+          const initialTime = Math.min(currentTimeRef.current, snapshot.duration || currentTimeRef.current);
+          if (Math.abs(snapshot.currentTime - initialTime) > 0.001) {
+            void command.seek(initialTime);
+          }
+        },
+        onTimeUpdate: (snapshot: ReturnType<MediaPlaybackBackend["getSnapshot"]>) => {
+          if (!isPreviewingRef.current) callbacksRef.current.onTimeUpdate(snapshot.currentTime);
+        },
+        onPlayStateChange: (playing: boolean) => {
+          callbacksRef.current.onPlayStateChange(playing);
+          if (playing) startFrameSync();
+          else stopFrameSync();
+        },
+        onError: (message: string) => setViewState({ status: "error", message }),
+      };
+
+      if (source.type === "native") {
+        const media = nativeVideoRef.current;
+        if (!media) {
+          setViewState({ status: "error", message: "原生媒体元素初始化失败。" });
           return;
         }
+        const backend = new NativeMediaPlaybackBackend(media);
+        backend.setPlaybackRate(playbackRate);
+        backendRef.current = backend;
+      } else {
+        const backend = new AliyunVodPlaybackBackend({
+          containerId: vodContainerId.current,
+          expectedVideoId: source.expectedVideoId,
+          loadSession: source.loadSession,
+          events,
+        });
+        backend.setPlaybackRate(playbackRate);
+        backendRef.current = backend;
+      }
+
+      return cleanup;
+    }, [source, retryGeneration]);
+
+    // 倍率变化只经过统一控制器，不再由 App 直接写 HTMLVideoElement。
+    useEffect(() => {
+      controllerRef.current?.setPlaybackRate(playbackRate);
+    }, [playbackRate]);
+
+    // 外部时间变化仅在暂停状态同步媒体；播放中的时间回报不能反向制造 seek。
+    useEffect(() => {
+      if (previewTime !== null || isPreviewingRef.current) return;
+      const controller = controllerRef.current;
+      const snapshot = controller?.getSnapshot();
+      if (!controller || !snapshot?.ready || (!snapshot.paused && !snapshot.ended)) return;
+      if (Math.abs(snapshot.currentTime - currentTime) < 0.05) return;
+      void controller.seek(currentTime);
+    }, [currentTime, previewTime, source]);
+
+    // 边界预览暂停真实播放、合并同一帧内的移动，并在结束时恢复正式播放头和原播放状态。
+    useEffect(() => {
+      const controller = controllerRef.current;
+      if (!controller) return;
+      if (previewTime === null) {
+        if (!isPreviewingRef.current) return;
         pendingPreviewTimeRef.current = null;
-        if (previewSeekFrameRef.current !== null) {
-          cancelAnimationFrame(previewSeekFrameRef.current);
-          previewSeekFrameRef.current = null;
-        }
+        cancelPreviewFrame(previewSeekFrameRef);
         isPreviewingRef.current = false;
-        const resumePlayback = resumeAfterPreviewRef.current;
+        // 外部播放命令可能在预览结束前到达；当前 backend 已在播放时也必须维持该最新意图。
+        const resumePlayback = resumeAfterPreviewRef.current || !controller.getSnapshot().paused;
         resumeAfterPreviewRef.current = false;
-        if (Math.abs(video.currentTime - currentTimeRef.current) > 0.001) {
-          video.currentTime = currentTimeRef.current;
-        }
-        if (resumePlayback) {
-          void video.play();
-        }
+        void controller.seek(currentTimeRef.current, { playAfterSeek: resumePlayback });
         return;
       }
 
       if (!isPreviewingRef.current) {
-        resumeAfterPreviewRef.current = !video.paused && !video.ended;
-        if (resumeAfterPreviewRef.current) {
-          video.pause();
-        }
+        const snapshot = controller.getSnapshot();
+        resumeAfterPreviewRef.current = !snapshot.paused && !snapshot.ended;
+        if (resumeAfterPreviewRef.current) controller.pause();
         isPreviewingRef.current = true;
       }
-
       pendingPreviewTimeRef.current = previewTime;
-      if (previewSeekFrameRef.current !== null) {
-        return;
-      }
+      if (previewSeekFrameRef.current !== null) return;
       previewSeekFrameRef.current = requestAnimationFrame(() => {
         previewSeekFrameRef.current = null;
-        if (!videoRef.current || pendingPreviewTimeRef.current === null) {
-          return;
-        }
         const nextPreviewTime = pendingPreviewTimeRef.current;
         pendingPreviewTimeRef.current = null;
-        if (Math.abs(videoRef.current.currentTime - nextPreviewTime) < PREVIEW_SEEK_EPSILON) {
-          return;
-        }
-        videoRef.current.currentTime = nextPreviewTime;
+        if (nextPreviewTime === null) return;
+        const snapshot = controller.getSnapshot();
+        if (Math.abs(snapshot.currentTime - nextPreviewTime) < PREVIEW_SEEK_EPSILON) return;
+        void controller.seek(nextPreviewTime);
       });
     }, [previewTime]);
+
+    const unavailable = source.type === "unavailable";
+    const showStatus = unavailable || viewState.status !== "ready";
 
     return (
       <section className="panel video-panel">
@@ -212,65 +259,78 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
             }
           }}
         >
-          {unavailableMessage ? (
-            // 外部媒体适配未就绪时给出明确状态，不把空 URL 当作本地文件缺失。
-            <div className="video-unavailable-state" role="status">
-              <strong>媒体暂不可播放</strong>
-              <span>{unavailableMessage}</span>
-            </div>
-          ) : <video
-            ref={videoRef}
-            className="video-element"
-            controls={showNativeControls}
-            src={videoUrl}
-            preload="metadata"
-            onLoadedMetadata={(event) => {
-              const video = event.currentTarget;
-              const safeTime = Math.max(0, Math.min(currentTimeRef.current, Number.isFinite(video.duration) ? video.duration : currentTimeRef.current));
-              if (Math.abs(video.currentTime - safeTime) > 0.001) {
-                try {
-                  video.currentTime = safeTime;
-                } catch {
-                  // Ignore seek failures before the browser fully settles the media element.
+          {source.type === "native" ? (
+            <video
+              key={`${source.url}:${retryGeneration}`}
+              ref={nativeVideoRef}
+              className="video-element"
+              controls={showNativeControls}
+              src={source.url}
+              preload="metadata"
+              onLoadedMetadata={(event) => {
+                const backend = backendRef.current;
+                if (!backend) return;
+                event.currentTarget.volume = 0.5;
+                const snapshot = backend.getSnapshot();
+                setViewState({ status: "ready", message: null });
+                callbacksRef.current.onLoadedMetadata(snapshot.duration);
+                const safeTime = Math.min(currentTimeRef.current, snapshot.duration || currentTimeRef.current);
+                if (Math.abs(snapshot.currentTime - safeTime) > 0.001) {
+                  void commandRef.current?.seek(safeTime);
                 }
-              }
-              onLoadedMetadata(video.duration);
-              onTimeUpdate(safeTime);
-            }}
-            onTimeUpdate={(event) => {
-              if (!isPreviewingRef.current) {
-                onTimeUpdate(event.currentTarget.currentTime);
-              }
-            }}
-            onPlay={() => {
-              onPlayStateChange(true);
-              startFrameSync();
-            }}
-            onPause={() => {
-              onPlayStateChange(false);
-              stopFrameSync();
-            }}
-            onSeeking={(event) => {
-              if (!isPreviewingRef.current) {
-                onTimeUpdate(event.currentTarget.currentTime);
-              }
-            }}
-            onSeeked={(event) => {
-              if (!isPreviewingRef.current) {
-                onTimeUpdate(event.currentTarget.currentTime);
-              }
-            }}
-            onEnded={(event) => {
-              onPlayStateChange(false);
-              stopFrameSync();
-              onTimeUpdate(event.currentTarget.currentTime);
-            }}
-            onRateChange={(event) => {
-              if (!isPreviewingRef.current) {
-                onTimeUpdate(event.currentTarget.currentTime);
-              }
-            }}
-          />}
+              }}
+              onTimeUpdate={() => {
+                const snapshot = backendRef.current?.getSnapshot();
+                if (snapshot && !isPreviewingRef.current) {
+                  callbacksRef.current.onTimeUpdate(snapshot.currentTime);
+                }
+              }}
+              onPlay={() => {
+                callbacksRef.current.onPlayStateChange(true);
+                startFrameSync();
+              }}
+              onPause={() => {
+                callbacksRef.current.onPlayStateChange(false);
+                stopFrameSync();
+              }}
+              onSeeking={() => {
+                const snapshot = backendRef.current?.getSnapshot();
+                if (snapshot && !isPreviewingRef.current) {
+                  callbacksRef.current.onTimeUpdate(snapshot.currentTime);
+                }
+              }}
+              onSeeked={() => {
+                const snapshot = backendRef.current?.getSnapshot();
+                if (snapshot && !isPreviewingRef.current) {
+                  callbacksRef.current.onTimeUpdate(snapshot.currentTime);
+                }
+              }}
+              onEnded={() => {
+                const snapshot = backendRef.current?.getSnapshot();
+                callbacksRef.current.onPlayStateChange(false);
+                stopFrameSync();
+                if (snapshot) callbacksRef.current.onTimeUpdate(snapshot.currentTime);
+              }}
+              onError={() => setViewState({
+                status: "error",
+                message: "无法读取当前本地或服务器媒体，请检查文件与访问权限。",
+              })}
+            />
+          ) : null}
+          {source.type === "aliyun_vod" ? (
+            <div id={vodContainerId.current} className="video-element vod-player-element" />
+          ) : null}
+          {showStatus ? (
+            <div className="video-unavailable-state video-playback-status" role="status">
+              <strong>{viewState.status === "loading" ? "正在准备媒体" : "媒体暂不可播放"}</strong>
+              <span>{unavailable ? source.message : viewState.message}</span>
+              {!unavailable && viewState.status === "error" ? (
+                <button type="button" className="secondary-button" onClick={() => setRetryGeneration((value) => value + 1)}>
+                  重试
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <div className="video-meta">
           <span>当前时间 {currentTime.toFixed(3)}s</span>
@@ -283,3 +343,18 @@ export const VideoPlayer = forwardRef<HTMLVideoElement, VideoPlayerProps>(
 );
 
 VideoPlayer.displayName = "VideoPlayer";
+
+// 不可用来源不进入“加载中”，其原因由上游资源绑定状态直接给出。
+function getInitialViewState(source: MediaPlaybackSource): PlaybackViewState {
+  if (source.type === "unavailable") return { status: "error", message: source.message };
+  return {
+    status: "loading",
+    message: source.type === "aliyun_vod" ? "正在获取临时播放凭据。" : "正在读取媒体元数据。",
+  };
+}
+
+function cancelPreviewFrame(frameRef: { current: number | null }) {
+  if (frameRef.current === null) return;
+  cancelAnimationFrame(frameRef.current);
+  frameRef.current = null;
+}

@@ -232,8 +232,18 @@ AccessKey 时，应通过权限为 `600` 的环境文件或 secret 管理器注�
 凭据所需的最小权限。AccessKey、Secret、playauth 和临时播放 URL 不得进入数据库、标注 JSON、日志、
 浏览器草稿或仓库。启用后还应人工验证无权限媒资、已停用媒资和凭据过期场景均返回明确错误。
 
-R3h2 只提供 VOD 资源与短时播放会话合同；编辑器播放适配属于 R3h3。服务器上传媒体与本地计算机媒体
-入口始终保留，不得把 VOD 配置作为平台启动的必需条件。
+编辑器使用固定版本 2.38.3 的阿里云官方 Web 播放器资源：
+
+```text
+https://g.alicdn.com/apsara-media-box/imp-web-player/2.38.3/aliplayer-min.js
+https://g.alicdn.com/apsara-media-box/imp-web-player/2.38.3/skins/default/aliplayer-min.css
+```
+
+部署网络必须允许浏览器访问该域名；若自行增加 Content Security Policy，需要把 `g.alicdn.com` 精确加入
+`script-src` 与 `style-src`，不要放开任意脚本域。SDK 加载失败、供应商未配置和播放会话失败都会在播放器
+原位显示并允许重试。短时 playauth 只驻留页面内存，到期前由播放器单飞刷新；禁止让 Nginx、Service Worker
+或浏览器缓存播放会话 API 响应。服务器上传媒体与本地计算机媒体入口始终保留，不得把 VOD 配置作为平台
+启动的必需条件。
 
 ### 8.2 Nginx 与 TLS
 
