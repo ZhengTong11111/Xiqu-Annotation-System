@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   assertSupportedNodeVersion,
@@ -99,4 +100,23 @@ test("readiness 非 2xx 时部署检查整体失败", async () => {
     () => runDeploymentCheck({ baseUrl: "https://annotation.example.org", fetchImplementation }),
     /readiness 返回 HTTP 503/,
   );
+});
+
+// 单服务器模板必须提供一致的应用层和代理层上限，防止大文件在 Nginx 提前收到 413。
+test("单服务器环境与 Nginx 模板使用相同上传上限", async () => {
+  const [environment, nginx] = await Promise.all([
+    readFile(new URL("../deploy/single-server/xiqu-platform.env.example", import.meta.url), "utf8"),
+    readFile(new URL("../deploy/single-server/nginx.conf.example", import.meta.url), "utf8"),
+  ]);
+  const environmentBytes = Number(
+    environment.match(/^XIQU_MAX_UPLOAD_BYTES=(\d+)$/m)?.[1],
+  );
+  const nginxMatch = nginx.match(/client_max_body_size\s+(\d+)([mg]);/i);
+  assert.ok(Number.isSafeInteger(environmentBytes) && environmentBytes > 0);
+  assert.ok(nginxMatch);
+  const nginxUnitBytes = nginxMatch[2]?.toLowerCase() === "g"
+    ? 1024 * 1024 * 1024
+    : 1024 * 1024;
+  const nginxBytes = Number(nginxMatch[1]) * nginxUnitBytes;
+  assert.equal(nginxBytes, environmentBytes);
 });

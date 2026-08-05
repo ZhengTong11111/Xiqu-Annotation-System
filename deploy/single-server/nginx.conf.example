@@ -21,9 +21,9 @@ server {
 
     root /opt/xiqu/current/dist;
     index index.html;
-    # 必须与 XIQU_MAX_UPLOAD_BYTES 对齐；FileObject.size 已迁 BigInt，该值可设为超过 2 GiB。
-    # 调大单文件上限时，这里必须同步调大，否则 Nginx 会先于 Fastify 返回 413。
-    client_max_body_size 1024m;
+    # 与 env.example 的默认 20 GiB 单文件/账号配额对齐；否则 Nginx 会先于 Fastify 返回 413。
+    # 调整 XIQU_MAX_UPLOAD_BYTES 时必须同步修改这里，生产上线前还要按真实存储容量复核。
+    client_max_body_size 20g;
 
     # /api 必须先于 SPA fallback；同一入口同时承载普通 HTTP 和认证 WebSocket upgrade。
     location /api/ {

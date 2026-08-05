@@ -2,12 +2,16 @@ import { createHash, randomUUID } from "node:crypto";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
   S3Client,
+  UploadPartCopyCommand,
   paginateListObjectsV2,
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
@@ -21,6 +25,47 @@ import {
 
 const MEDIA_HEADER_BYTES = 8_192;
 const MIN_MULTIPART_PART_SIZE = 5 * 1024 * 1024;
+const MIB = 1024 * 1024;
+// S3 协议文档的 5 GB / 5 TB 上限采用十进制字节；这里不能用更大的 GiB/TiB 冒充安全边界。
+const S3_SINGLE_COPY_MAX_BYTES = 5_000_000_000;
+const S3_MAX_OBJECT_BYTES = 5_000_000_000_000;
+const S3_MULTIPART_COPY_TARGET_PART_BYTES = 512 * MIB;
+const S3_MULTIPART_MAX_PARTS = 10_000;
+const S3_MULTIPART_COPY_CONCURRENCY = 4;
+
+export type S3MultipartCopyPart = {
+  partNumber: number;
+  start: number;
+  end: number;
+};
+
+// 大对象发布不能使用单次 CopyObject。该纯规划器生成连续、无重叠且不超过 10,000 段的闭区间，
+// 既便于独立验证边界，也避免复制执行过程中临时改变分片大小。
+export function planS3MultipartCopyParts(size: number): S3MultipartCopyPart[] {
+  if (!Number.isSafeInteger(size) || size <= 0) {
+    throw new Error("S3 multipart copy 的对象大小必须是正安全整数。");
+  }
+  if (size > S3_MAX_OBJECT_BYTES) {
+    throw new Error("S3 对象不能超过 5 TB。");
+  }
+
+  const minimumPartBytes = Math.ceil(size / S3_MULTIPART_MAX_PARTS);
+  const roundedMinimumPartBytes = Math.ceil(minimumPartBytes / MIB) * MIB;
+  const partBytes = Math.max(
+    S3_MULTIPART_COPY_TARGET_PART_BYTES,
+    roundedMinimumPartBytes,
+  );
+  const parts: S3MultipartCopyPart[] = [];
+  for (let start = 0, partNumber = 1; start < size; partNumber += 1) {
+    const end = Math.min(start + partBytes, size) - 1;
+    parts.push({ partNumber, start, end });
+    start = end + 1;
+  }
+  if (parts.length > S3_MULTIPART_MAX_PARTS) {
+    throw new Error("S3 multipart copy 分片数量超过 10,000。");
+  }
+  return parts;
+}
 
 // S3 配置只包含适配器运行所需字段；凭据永远不进入后端描述、日志或业务 DTO。
 export type S3ObjectStorageOptions = {
@@ -38,9 +83,13 @@ export class S3ObjectStorage implements ObjectStorage {
   private readonly client: S3Client;
   private readonly prefix: string;
 
-  constructor(private readonly options: S3ObjectStorageOptions) {
+  constructor(
+    private readonly options: S3ObjectStorageOptions,
+    client?: S3Client,
+  ) {
     this.prefix = normalizePrefix(options.prefix);
-    this.client = new S3Client({
+    // 测试可注入官方客户端形状的 sender，以验证 multipart 命令和失败补偿；生产仍由这里统一装配凭据。
+    this.client = client ?? new S3Client({
       endpoint: options.endpoint,
       region: options.region,
       forcePathStyle: options.forcePathStyle,
@@ -140,16 +189,112 @@ export class S3ObjectStorage implements ObjectStorage {
     };
   }
 
-  // S3 没有 rename；server-side copy 完整成功后再删 staged，final 不会暴露半对象。
+  // S3 没有 rename；小对象使用原子 CopyObject，大对象必须使用 multipart copy。
+  // 两条路径都只在正式对象完整发布后删除 staged，数据库不会引用半对象。
   async promoteStagedObject(staged: StagedBinary) {
     const finalKey = this.toRemoteKey(staged.finalStorageKey);
     const stagedKey = this.toRemoteKey(staged.stagedStorageKey);
-    await this.client.send(new CopyObjectCommand({
+    const copySource = encodeCopySource(this.options.bucket, stagedKey);
+    if (staged.size <= S3_SINGLE_COPY_MAX_BYTES) {
+      await this.client.send(new CopyObjectCommand({
+        Bucket: this.options.bucket,
+        Key: finalKey,
+        CopySource: copySource,
+      }));
+    } else {
+      await this.promoteWithMultipartCopy(
+        finalKey,
+        copySource,
+        planS3MultipartCopyParts(staged.size),
+      );
+    }
+    await this.deleteObject(staged.stagedStorageKey);
+  }
+
+  // 分片复制使用有限并发，避免大对象一次创建数千个请求。任何分片或 complete 失败时，
+  // 必须等待已启动请求收束后 abort，防止服务端遗留不可见但持续占用容量的 multipart upload。
+  private async promoteWithMultipartCopy(
+    finalKey: string,
+    copySource: string,
+    parts: readonly S3MultipartCopyPart[],
+  ) {
+    const created = await this.client.send(new CreateMultipartUploadCommand({
       Bucket: this.options.bucket,
       Key: finalKey,
-      CopySource: encodeCopySource(this.options.bucket, stagedKey),
     }));
-    await this.deleteObject(staged.stagedStorageKey);
+    const uploadId = created.UploadId;
+    if (!uploadId) {
+      throw new Error("S3 multipart copy 未返回 upload id。");
+    }
+
+    try {
+      const completedParts = await this.copyMultipartParts(
+        finalKey,
+        copySource,
+        uploadId,
+        parts,
+      );
+      await this.client.send(new CompleteMultipartUploadCommand({
+        Bucket: this.options.bucket,
+        Key: finalKey,
+        UploadId: uploadId,
+        MultipartUpload: { Parts: completedParts },
+      }));
+    } catch (error) {
+      try {
+        await this.client.send(new AbortMultipartUploadCommand({
+          Bucket: this.options.bucket,
+          Key: finalKey,
+          UploadId: uploadId,
+        }));
+      } catch (abortError) {
+        throw new AggregateError(
+          [error, abortError],
+          "S3 multipart copy 失败，且中止 multipart upload 也失败。",
+        );
+      }
+      throw error;
+    }
+  }
+
+  // worker 从共享索引领取任务，保持结果按 PartNumber 排序；首个错误出现后不再领取新分片，
+  // 但仍等待其他在途请求完成，随后由调用方统一执行 abort。
+  private async copyMultipartParts(
+    finalKey: string,
+    copySource: string,
+    uploadId: string,
+    parts: readonly S3MultipartCopyPart[],
+  ) {
+    const completed = new Array<{ ETag: string; PartNumber: number }>(parts.length);
+    let nextIndex = 0;
+    let firstError: unknown = null;
+    const workerCount = Math.min(S3_MULTIPART_COPY_CONCURRENCY, parts.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (firstError === null && nextIndex < parts.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const part = parts[index]!;
+        try {
+          const result = await this.client.send(new UploadPartCopyCommand({
+            Bucket: this.options.bucket,
+            Key: finalKey,
+            UploadId: uploadId,
+            PartNumber: part.partNumber,
+            CopySource: copySource,
+            CopySourceRange: `bytes=${part.start}-${part.end}`,
+          }));
+          const eTag = result.CopyPartResult?.ETag;
+          if (!eTag) {
+            throw new Error(`S3 multipart copy 第 ${part.partNumber} 段缺少 ETag。`);
+          }
+          completed[index] = { ETag: eTag, PartNumber: part.partNumber };
+        } catch (error) {
+          firstError = error;
+        }
+      }
+    }));
+    if (firstError !== null) throw firstError;
+    return completed;
   }
 
   // 远端响应建立后才返回 Node Readable，使认证/网络/404 在 Fastify 发送响应头前失败。

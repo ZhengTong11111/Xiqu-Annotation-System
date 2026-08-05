@@ -233,7 +233,9 @@ Nginx 必须：
 - 保留 `Upgrade`/`Connection`，否则协作 WebSocket 会失败。
 - `client_max_body_size` 不低于 `XIQU_MAX_UPLOAD_BYTES`，同时仍由 Fastify 执行业务上限与签名检查。
   `FileObject.size`/`MediaFile.size` 已迁移为 `BigInt`，`XIQU_MAX_UPLOAD_BYTES` 可设为超过 2 GiB；
-  此时 Nginx 的 `client_max_body_size` 与上游/代理超时也必须相应调大。
+  此时 Nginx 的 `client_max_body_size` 与上游/代理超时也必须相应调大。仓库模板的两项默认值均为
+  20 GiB；不要只修改环境变量而遗漏 Nginx。S3-compatible 后端对超过 5 GB 的 staged 对象会使用
+  multipart copy 完成发布，超过 S3 5 TB 对象上限则明确拒绝。
 - 不对 `index.html` 长期缓存；带哈希的 `/assets/` 才使用 immutable 缓存。
 - 只开放 80/443；4317 仅监听服务器网络栈并由防火墙限制本机访问。
 

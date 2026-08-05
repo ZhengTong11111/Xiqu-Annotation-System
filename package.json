@@ -59,7 +59,7 @@
     "test:observability": "npm run build:shared && node --import tsx --test apps/api/test/observability.test.ts apps/api/test/monitoringConfig.test.ts",
     "test:maintenance": "npm run build:shared && tsc -p apps/api/tsconfig.test.json && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/maintenanceCoordinator.test.ts",
     "test:backup": "npm run build:shared && tsc -p apps/api/tsconfig.test.json && node --import tsx --test apps/api/test/backupManifest.test.ts apps/api/test/remoteBackup.test.ts apps/api/test/remoteBackupLifecycle.test.ts apps/api/test/remoteStorageCapabilityCheck.test.ts",
-    "test:object-storage": "node --import tsx --test apps/api/test/storage.test.ts apps/api/test/objectStorageFactory.test.ts",
+    "test:object-storage": "node --import tsx --test apps/api/test/storage.test.ts apps/api/test/objectStorageFactory.test.ts apps/api/test/s3MultipartCopy.test.ts",
     "test:deployment": "node --test scripts/deploymentCheck.test.mjs && node --import tsx --test apps/api/test/serverConfig.test.ts apps/api/test/bootstrapAdmin.test.ts",
     "test:s3-storage": "node --import tsx --test --test-concurrency=1 apps/api/test/s3ObjectStorage.integration.ts",
     "test:audit-log": "npm run build:shared && node --import tsx --test apps/api/test/auditLogQuery.test.ts src/platform/auditLogView.test.ts",

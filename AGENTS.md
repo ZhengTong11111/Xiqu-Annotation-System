@@ -510,8 +510,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - the only production environment composition root for local/S3 object storage; undefined defaults to `local`, while
     blank, unknown, or incomplete backends fail closed
 - `apps/api/src/s3ObjectStorage.ts`
-  - AWS SDK v3 adapter for S3-compatible staged multipart upload, server-side-copy publish, Range reads, paginated
-    listing, deletion, readiness, and prefix isolation
+  - AWS SDK v3 adapter for S3-compatible staged multipart upload, size-aware publish, Range reads, paginated listing,
+    deletion, readiness, and prefix isolation
+  - publish uses single `CopyObject` only through the decimal 5 GB boundary; larger objects use bounded-concurrency
+    multipart copy with contiguous ranges, ordered completion, abort-on-failure, and a 5 TB fail-closed object ceiling
 - `apps/api/src/resourceAccess.ts`
   - authoritative server-side resource capability resolution
   - combines global admin bypass, ownership, direct grants, and nearest inherited folder grants
@@ -1327,6 +1329,10 @@ Important backend caveats:
   PostgreSQL Int4 range; single-file size is governed by `XIQU_MAX_UPLOAD_BYTES` and the user/platform quotas.
   The wire format stays JSON `number`; BigInt↔number conversion happens only at the Prisma mapper boundary
   (`Number()` on read, `BigInt()` on write) — never introduce a global `BigInt.prototype.toJSON` patch.
+- S3 staged promotion must not send objects larger than 5 GB through one `CopyObject`. Keep multipart-copy planning
+  contiguous and below 10,000 parts, preserve bounded request concurrency, abort failed sessions only after in-flight
+  parts settle, and delete the staged object only after complete succeeds. The single-server Nginx
+  `client_max_body_size` and `XIQU_MAX_UPLOAD_BYTES` examples must remain aligned.
 - filesystem and PostgreSQL cannot share a transaction. A failure before database commit deletes staged/final binary;
   a crash between publish and commit leaves an aged disk orphan discoverable by lifecycle audit. After database commit,
   DTO mapping failure must not delete the now-referenced binary.

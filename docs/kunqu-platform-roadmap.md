@@ -336,7 +336,7 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
   fail closed；本地一致备份通过判别能力显式取得受控根目录，远端描述不能伪造路径。恢复对象校验改为
   对对象流计算摘要。该阶段只建立端口，后续 R3e2/R3g1 已分别补上真实 S3 适配器与远端备份创建/校验。
 - R3e2 已完成：使用官方 AWS SDK v3 实现 S3-compatible 适配器，统一异步对象流合同；支持流式限额/
-  SHA-256/header、multipart staged 上传、server-side copy 发布、Range、Head、分页 List、Delete、bucket
+  SHA-256/header、multipart staged 上传、按对象大小选择单次或 multipart copy 发布、Range、Head、分页 List、Delete、bucket
   readiness、prefix 隔离和严格环境配置。协议测试以 Apache-2.0 SeaweedFS 4.40 真实 HTTP 服务验证完整
   生命周期；未把有高危旧依赖的 s3rver 留入仓库。R3g1 后已具备远端备份创建/校验，生产 MinIO/AWS
   bucket smoke 和 IAM 默认凭据链仍待部署阶段完成；R3g2a 已补齐 S3-compatible 远端隔离恢复演练。
@@ -344,7 +344,8 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
 - 标签、负责人、媒体类型、更新时间等索引。
 - `FileObject.size` 与 `MediaFile.size` 已由 `Int` 迁移为 `BigInt`，单文件不再受 Int4 的 2 GiB 上限约束；
   线格式仍为 JSON number，BigInt↔number 转换集中在应用 mapper 边界。单文件上限现由
-  `XIQU_MAX_UPLOAD_BYTES` 与用户/平台配额共同约束；分片/断点续传与多部分上传仍待独立切片。
+  `XIQU_MAX_UPLOAD_BYTES` 与用户/平台配额共同约束。S3 发布已补齐超过 5 GB 的有限并发 multipart copy；
+  浏览器直传、断点续传和可恢复上传会话仍待独立切片。
 - R3f2 已完成：`/metrics` 在鉴权后按请求采集数据库/对象存储可用性、平台逻辑容量与固定后台任务状态，
   重叠 scrape 复用 in-flight，超时/异常以 collection-success Gauge 表达且不伪造零值。仓库提供可解析
   测试的 Prometheus scrape/rule 和 Alertmanager 分组/抑制/webhook 示例，覆盖 API、依赖、错误率、延迟、

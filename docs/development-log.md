@@ -5210,3 +5210,30 @@ ProjectData builder、adapter 与编辑器接线：
   `proxy_read_timeout`/`proxy_send_timeout` 由 75s 放宽到 300s 以适配大文件与空闲协作 WebSocket；
   `xiqu-platform.env.example` 的 `XIQU_MAX_UPLOAD_BYTES` 同样加注。`number` 在 2^53 以下精确，单文件到 9 PiB
   仍安全，远超当前平台配额；若未来平台总容量接近该量级需重新评估线格式（改 string 或引入 BigInt JSON 约定）。
+
+## 2026-08-05：修复大文件 S3 发布与默认反向代理上限
+
+### 审查发现
+
+- BigInt 迁移虽然移除了数据库 Int4 上限，但 S3 适配器仍对所有 staged 对象调用单次 `CopyObject`；标准
+  S3 单次复制最多支持 5 GB，因此超过该边界的文件会在完成耗时上传后才在发布阶段失败。
+- 应用与环境模板默认单文件上限已是 20 GiB，而 Nginx 模板仍为 `client_max_body_size 1024m`；按模板部署
+  会在反向代理层继续拒绝超过 1 GiB 的请求。
+
+### 修复
+
+- `S3ObjectStorage.promoteStagedObject()` 现在按大小选择发布协议：不超过 5 GB 保留单次 `CopyObject`；
+  更大的对象先规划连续闭区间，再使用 `CreateMultipartUpload`、有限并发 `UploadPartCopy` 和有序
+  `CompleteMultipartUpload` 完成发布。规划会动态增大 part size，保证 5 TB 上限内不超过 10,000 part。
+- 任一分片或 complete 失败都会等待已启动请求收束并执行 `AbortMultipartUpload`；abort 也失败时使用
+  `AggregateError` 同时保留两个错误。只有完整发布成功后才删除 staged 对象，上层补偿语义保持不变。
+- 单服务器 Nginx 模板改为 `client_max_body_size 20g`，环境模板显式设置
+  `XIQU_MAX_UPLOAD_BYTES=21474836480`，两侧默认值与用户配额一致；部署文档强调修改时必须同步。
+
+### 验证
+
+- 新增分片规划和命令编排测试，覆盖 20 GiB 连续区间、5 TB/10,000 part 边界、成功 complete 后删除
+  staged，以及分片失败 abort 且保留 staged。`build:api` 与 `test:object-storage` 10/10 通过。
+- `test:s3-storage` 使用真实 SeaweedFS S3-compatible HTTP 协议验证既有 staged/promote/Range/list/delete、
+  能力探针、远端备份和生命周期路径，5/5 通过。真实 5 GB 数据传输未纳入常规测试，以命令级测试避免
+  CI 制造巨型临时对象；生产部署仍应以目标 S3 服务执行一次大文件验收。
