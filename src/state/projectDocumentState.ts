@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   invertAnnotationCommandEnvelope,
+  parseAnnotationCommandEnvelope,
   type AnnotationCommandEnvelope,
   type AnnotationDomainCommand,
   type LegacyAnnotationOperationAction,
@@ -107,6 +108,7 @@ type MarkProjectSavedOptions = {
 
 export type AtomicCommandAcknowledgement = {
   operationIds: string[];
+  expectedServerBaseProject: ProjectData;
   acknowledgedProject: ProjectData;
   acknowledgedTrackSnapEnabled: Record<string, boolean>;
   serverBaseRevision: number;
@@ -134,6 +136,31 @@ export type AtomicCommandAcknowledgementResult =
         | "operation_revision_mismatch";
     };
 
+export type PendingCommandRebaseRequest = {
+  expectedCurrentProject: ProjectData;
+  expectedSavedProject: ProjectData;
+  expectedLocalRevision: number;
+  expectedSavedRevision: number;
+  latestServerProject: ProjectData;
+  rebasedCurrentProject: ProjectData;
+  rebasedPendingOperations: ProjectDocumentOperation[];
+  remoteRevision: number;
+};
+
+export type PendingCommandRebaseResult =
+  | { status: "applied" }
+  | {
+      status: "rejected";
+      reason:
+        | "invalid_revision"
+        | "document_changed"
+        | "baseline_changed"
+        | "local_revision_changed"
+        | "operation_chain_changed"
+        | "transient_edit_active"
+        | "no_pending_operations";
+    };
+
 type RemoteProjectReplacementFacts = {
   hasDocumentChanges: boolean;
   pendingOperationCount: number;
@@ -156,6 +183,35 @@ export function canReplaceProjectFromRemote({
 
 const DEFAULT_HISTORY_LIMIT = 50;
 const DEFAULT_OPERATION_LOG_LIMIT = 500;
+
+// 冲突恢复只能改写命令的 before/after，不能借机替换操作身份、顺序或审计摘要。
+function isValidRebasedOperationChain(
+  current: readonly ProjectDocumentOperation[],
+  rebased: readonly ProjectDocumentOperation[],
+): boolean {
+  if (current.length !== rebased.length) return false;
+  return current.every((operation, index) => {
+    const next = rebased[index];
+    const envelope = parseAnnotationCommandEnvelope(next?.commandEnvelope);
+    return Boolean(
+      next &&
+      envelope &&
+      operation.id === next.id &&
+      operation.type === next.type &&
+      operation.action === next.action &&
+      operation.localRevision === next.localRevision &&
+      operation.baseRevision === next.baseRevision &&
+      operation.createdAt === next.createdAt &&
+      operation.syncState === "pending" &&
+      next.syncState === "pending" &&
+      envelope.command.type === next.type &&
+      operation.summary.hasProjectChange === next.summary.hasProjectChange &&
+      operation.summary.hasTrackSnapChange === next.summary.hasTrackSnapChange &&
+      JSON.stringify(operation.summary.changedTrackIds ?? []) ===
+        JSON.stringify(next.summary.changedTrackIds ?? []),
+    );
+  });
+}
 
 function createOperationId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -491,11 +547,20 @@ export function useProjectDocumentState({
     if (acknowledgement.committedRevision !== acknowledgement.serverBaseRevision + 1) {
       return { status: "rejected", reason: "invalid_revision" };
     }
-    if (
-      syncStateRef.current.remoteRevision !== null &&
-      syncStateRef.current.remoteRevision !== acknowledgement.serverBaseRevision
-    ) {
-      return { status: "rejected", reason: "stale_remote_revision" };
+    const documentRemoteRevision = syncStateRef.current.remoteRevision;
+    if (documentRemoteRevision !== null && documentRemoteRevision !== acknowledgement.serverBaseRevision) {
+      // 已经应用到更高 revision 时，这一定是迟到响应，不能回退文档基线。
+      if (documentRemoteRevision > acknowledgement.serverBaseRevision) {
+        return { status: "rejected", reason: "stale_remote_revision" };
+      }
+      // 旧页面可能只推进了 ProjectData、漏推进 revision 元数据。只有 saved 项目与冻结的服务器基线完全
+      // 一致时才允许补齐该元数据；否则客户端可能真的漏了远端内容，必须继续 fail closed。
+      if (!areProjectsEqualRef.current(
+        savedProjectRef.current,
+        acknowledgement.expectedServerBaseProject,
+      )) {
+        return { status: "rejected", reason: "stale_remote_revision" };
+      }
     }
     if (savedRevisionRef.current !== acknowledgement.expectedSavedLocalRevision) {
       return { status: "rejected", reason: "stale_saved_revision" };
@@ -567,9 +632,16 @@ export function useProjectDocumentState({
     };
   }
 
-  // 远端追赶只能替换完全 clean 的基线；旧 undo/redo 指向过期快照，成功推进后必须一并清除。
-  function replaceCleanProjectFromRemote(nextProject: ProjectData): boolean {
+  // 远端追赶只能替换完全 clean 的基线；项目和服务器 revision 必须在同一状态边界内推进。
+  // 如果只更新 App 外层 revision，下一次服务器虽然提交成功，本地确认器仍会拿旧 revision 误判成功响应。
+  function replaceCleanProjectFromRemote(
+    nextProject: ProjectData,
+    remoteRevision: number,
+  ): boolean {
+    if (!Number.isSafeInteger(remoteRevision) || remoteRevision < 0) return false;
     const currentStatus = syncStateRef.current.status;
+    const currentRemoteRevision = syncStateRef.current.remoteRevision;
+    if (currentRemoteRevision !== null && remoteRevision < currentRemoteRevision) return false;
     const canReplace = canReplaceProjectFromRemote({
       hasDocumentChanges: computeHasUnsavedChanges(),
       pendingOperationCount: pendingOperationsRef.current.length,
@@ -587,12 +659,74 @@ export function useProjectDocumentState({
     const nextSyncState: ProjectSyncState = {
       ...syncStateRef.current,
       status: "saved",
+      remoteRevision,
       pendingOperationCount: 0,
+      errorMessage: null,
+    };
+    // ref 先推进，保证远端追赶结束后立即发生的本地编辑/保存也读取到新基线。
+    syncStateRef.current = nextSyncState;
+    setSyncState(nextSyncState);
+    return true;
+  }
+
+  // 并发协调只替换服务器基线、当前项目和已验证 envelope，保留原 operation id/local revision。
+  // 请求发出后的任何新编辑、基线推进或临时拖拽都会使门禁失败，避免用迟到结果覆盖本地状态。
+  function rebasePendingProjectFromRemote(
+    request: PendingCommandRebaseRequest,
+  ): PendingCommandRebaseResult {
+    if (!Number.isSafeInteger(request.remoteRevision) || request.remoteRevision < 0) {
+      return { status: "rejected", reason: "invalid_revision" };
+    }
+    if (transientProjectRef.current !== null) {
+      return { status: "rejected", reason: "transient_edit_active" };
+    }
+    if (pendingOperationsRef.current.length === 0) {
+      return { status: "rejected", reason: "no_pending_operations" };
+    }
+    if (!areProjectsEqualRef.current(projectRef.current, request.expectedCurrentProject)) {
+      return { status: "rejected", reason: "document_changed" };
+    }
+    if (!areProjectsEqualRef.current(savedProjectRef.current, request.expectedSavedProject)) {
+      return { status: "rejected", reason: "baseline_changed" };
+    }
+    if (
+      localRevisionRef.current !== request.expectedLocalRevision ||
+      savedRevisionRef.current !== request.expectedSavedRevision
+    ) {
+      return { status: "rejected", reason: "local_revision_changed" };
+    }
+    if (!isValidRebasedOperationChain(
+      pendingOperationsRef.current,
+      request.rebasedPendingOperations,
+    )) {
+      return { status: "rejected", reason: "operation_chain_changed" };
+    }
+
+    // 409 已证明旧 envelope 没有落库；此时可安全保留 operation id，并仅替换经过协调的新命令。
+    const replacements = new Map(request.rebasedPendingOperations.map((operation) => [operation.id, operation]));
+    pendingOperationsRef.current = request.rebasedPendingOperations;
+    operationLogRef.current = operationLogRef.current.map((operation) =>
+      replacements.get(operation.id) ?? operation,
+    );
+    setPendingOperations(pendingOperationsRef.current);
+    setOperationLog(operationLogRef.current);
+    projectRef.current = request.rebasedCurrentProject;
+    savedProjectRef.current = request.latestServerProject;
+    setProject(request.rebasedCurrentProject);
+    // 旧 history 快照基于远端旧版本；保留它会让 undo 把已经追入的他人修改一起撤销。
+    applyUndoStackState([]);
+    applyRedoStackState([]);
+    setHasUnsavedChanges(true);
+    const nextSyncState: ProjectSyncState = {
+      ...syncStateRef.current,
+      status: "dirty",
+      remoteRevision: request.remoteRevision,
+      pendingOperationCount: pendingOperationsRef.current.length,
       errorMessage: null,
     };
     syncStateRef.current = nextSyncState;
     setSyncState(nextSyncState);
-    return true;
+    return { status: "applied" };
   }
 
   function undoProject(shouldUndo?: (entry: HistoryEntry) => boolean) {
@@ -722,6 +856,7 @@ export function useProjectDocumentState({
     markProjectAsSaved,
     acknowledgeAtomicCommandBatch,
     replaceCleanProjectFromRemote,
+    rebasePendingProjectFromRemote,
     undoProject,
     redoProject,
     setSyncStatus,

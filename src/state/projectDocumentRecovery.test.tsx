@@ -4,6 +4,7 @@ import React from "react";
 import { renderToString } from "react-dom/server";
 import { CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND } from "@xiqu/shared";
 import { mockProject } from "../mockData";
+import { buildProjectAnnotationContentCommand } from "../utils/annotationContentCommand";
 import { buildProjectCustomTrackStructureCommand } from "../utils/customTrackStructureCommand";
 import {
   useProjectDocumentState,
@@ -165,6 +166,7 @@ test("原子确认只推进 pending 前缀并保留后续本地项目", () => {
   state.setSyncStatus("dirty", { remoteRevision: 5 });
   const result = state.acknowledgeAtomicCommandBatch({
     operationIds: ["op-1"],
+    expectedServerBaseProject: mockProject,
     acknowledgedProject: firstProject,
     acknowledgedTrackSnapEnabled: {},
     serverBaseRevision: 5,
@@ -187,6 +189,7 @@ test("原子确认只推进 pending 前缀并保留后续本地项目", () => {
 
   const rejected = state.acknowledgeAtomicCommandBatch({
     operationIds: ["op-missing"],
+    expectedServerBaseProject: firstProject,
     acknowledgedProject: currentProject,
     acknowledgedTrackSnapEnabled: {},
     serverBaseRevision: 6,
@@ -199,6 +202,7 @@ test("原子确认只推进 pending 前缀并保留后续本地项目", () => {
 
   const finalResult = state.acknowledgeAtomicCommandBatch({
     operationIds: ["op-2"],
+    expectedServerBaseProject: firstProject,
     acknowledgedProject: currentProject,
     acknowledgedTrackSnapEnabled: {},
     serverBaseRevision: 6,
@@ -234,6 +238,7 @@ test("原子确认拒绝旧 remote revision 且不修改 pending", () => {
   state.setSyncStatus("dirty", { remoteRevision: 9 });
   const result = state.acknowledgeAtomicCommandBatch({
     operationIds: ["op-stale"],
+    expectedServerBaseProject: recoveryState.savedProject,
     acknowledgedProject: recoveryState.currentProject,
     acknowledgedTrackSnapEnabled: {},
     serverBaseRevision: 8,
@@ -245,9 +250,206 @@ test("原子确认拒绝旧 remote revision 且不修改 pending", () => {
   assert.deepEqual(state.getRecoveryState().pendingOperations.map((operation) => operation.id), ["op-stale"]);
 });
 
+test("远端追赶同时推进文档 revision，后续本地保存不会误判成功响应", () => {
+  let captured: ReturnType<typeof useProjectDocumentState> | null = null;
+  function Harness() {
+    captured = useProjectDocumentState({
+      initialProject: mockProject,
+      initialTrackSnapEnabled: {},
+      areProjectsEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+      areTrackSnapStatesEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+    });
+    return React.createElement("span", null, "remote-then-local");
+  }
+  renderToString(React.createElement(Harness));
+  const state = captured as unknown as ReturnType<typeof useProjectDocumentState>;
+
+  // 模拟 ta 先接收 admin 的 v36，再基于该版本产生自己的本地命令。
+  const remoteProject = structuredClone(mockProject);
+  remoteProject.subtitleLines[1].text = "远端已提交内容";
+  assert.equal(state.replaceCleanProjectFromRemote(remoteProject, 36), true);
+
+  const localProject = structuredClone(remoteProject);
+  localProject.subtitleLines[0].text = "本地后续内容";
+  const commandEnvelope = buildProjectAnnotationContentCommand(
+    remoteProject,
+    localProject,
+    [{ entityType: "sentence", entityId: localProject.subtitleLines[0].id, field: "text" }],
+  );
+  assert.ok(commandEnvelope);
+  state.commitProject(localProject, remoteProject, { commandEnvelope });
+  const pendingOperation = state.getRecoveryState().pendingOperations[0];
+  assert.ok(pendingOperation);
+
+  // 服务器已经把该操作提交为 v37；本地必须接受确认并清空 pending，而不是报 stale_remote_revision。
+  const acknowledgement = state.acknowledgeAtomicCommandBatch({
+    operationIds: [pendingOperation.id],
+    expectedServerBaseProject: remoteProject,
+    acknowledgedProject: localProject,
+    acknowledgedTrackSnapEnabled: {},
+    serverBaseRevision: 36,
+    committedRevision: 37,
+    expectedSavedLocalRevision: 0,
+    acknowledgedLocalRevision: pendingOperation.localRevision,
+  });
+  assert.deepEqual(acknowledgement, {
+    status: "applied",
+    remainingOperationCount: 0,
+    remoteRevision: 37,
+    savedLocalRevision: pendingOperation.localRevision,
+    remainsDirty: false,
+  });
+  assert.deepEqual(state.getRecoveryState().pendingOperations, []);
+});
+
+test("服务器已提交时可修复仅 revision 落后的旧会话，但基线不一致仍拒绝", () => {
+  let captured: ReturnType<typeof useProjectDocumentState> | null = null;
+  function Harness() {
+    captured = useProjectDocumentState({
+      initialProject: mockProject,
+      initialTrackSnapEnabled: {},
+      areProjectsEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+      areTrackSnapStatesEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+    });
+    return React.createElement("span", null, "revision-repair");
+  }
+  renderToString(React.createElement(Harness));
+  const state = captured as unknown as ReturnType<typeof useProjectDocumentState>;
+  const remoteProject = structuredClone(mockProject);
+  remoteProject.subtitleLines[1].text = "已追入的远端内容";
+  assert.equal(state.replaceCleanProjectFromRemote(remoteProject, 40), true);
+
+  const localProject = structuredClone(remoteProject);
+  localProject.subtitleLines[0].text = "旧标签页本地内容";
+  const commandEnvelope = buildProjectAnnotationContentCommand(
+    remoteProject,
+    localProject,
+    [{ entityType: "sentence", entityId: localProject.subtitleLines[0].id, field: "text" }],
+  );
+  assert.ok(commandEnvelope);
+  state.commitProject(localProject, remoteProject, { commandEnvelope });
+  const pendingOperation = state.getRecoveryState().pendingOperations[0];
+  assert.ok(pendingOperation);
+  // 模拟修复前已经形成的状态：项目是 v40，但 document-owned revision 仍停在 v39。
+  state.setSyncStatus("dirty", { remoteRevision: 39 });
+
+  const repaired = state.acknowledgeAtomicCommandBatch({
+    operationIds: [pendingOperation.id],
+    expectedServerBaseProject: remoteProject,
+    acknowledgedProject: localProject,
+    acknowledgedTrackSnapEnabled: {},
+    serverBaseRevision: 40,
+    committedRevision: 41,
+    expectedSavedLocalRevision: 0,
+    acknowledgedLocalRevision: pendingOperation.localRevision,
+  });
+  assert.equal(repaired.status, "applied");
+
+  // 若冻结计划的服务器基线与本地 saved 项目不同，同样的低 revision 不能被借机放行。
+  const secondLocalProject = structuredClone(localProject);
+  secondLocalProject.subtitleLines[0].text = "第二次本地内容";
+  const secondEnvelope = buildProjectAnnotationContentCommand(
+    localProject,
+    secondLocalProject,
+    [{ entityType: "sentence", entityId: secondLocalProject.subtitleLines[0].id, field: "text" }],
+  );
+  assert.ok(secondEnvelope);
+  state.commitProject(secondLocalProject, localProject, { commandEnvelope: secondEnvelope });
+  const secondPending = state.getRecoveryState().pendingOperations[0];
+  assert.ok(secondPending);
+  state.setSyncStatus("dirty", { remoteRevision: 40 });
+  const wrongBaseProject = structuredClone(localProject);
+  wrongBaseProject.subtitleLines[1].text = "本地并未应用的远端内容";
+  const rejected = state.acknowledgeAtomicCommandBatch({
+    operationIds: [secondPending.id],
+    expectedServerBaseProject: wrongBaseProject,
+    acknowledgedProject: secondLocalProject,
+    acknowledgedTrackSnapEnabled: {},
+    serverBaseRevision: 41,
+    committedRevision: 42,
+    expectedSavedLocalRevision: pendingOperation.localRevision,
+    acknowledgedLocalRevision: secondPending.localRevision,
+  });
+  assert.deepEqual(rejected, { status: "rejected", reason: "stale_remote_revision" });
+});
+
+test("并发重基线保留 pending 身份并拒绝请求期间的新编辑", () => {
+  const recoveryState = createAtomicRecoveryStateForRejection();
+  let captured: ReturnType<typeof useProjectDocumentState> | null = null;
+  function Harness() {
+    captured = useProjectDocumentState({
+      initialProject: mockProject,
+      initialTrackSnapEnabled: {},
+      areProjectsEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+      areTrackSnapStatesEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+      initialRecoveryState: recoveryState,
+    });
+    return React.createElement("span", null, "rebase");
+  }
+  renderToString(React.createElement(Harness));
+  const state = captured as unknown as ReturnType<typeof useProjectDocumentState>;
+  const latestServerProject = structuredClone(mockProject);
+  latestServerProject.subtitleLines[0].text = "远端同句修改";
+  latestServerProject.subtitleLines[1].text = "远端其他句修改";
+  const rebasedCurrentProject = structuredClone(latestServerProject);
+  rebasedCurrentProject.subtitleLines[0].text = "待确认";
+  const rebasedEnvelope = buildProjectAnnotationContentCommand(
+    latestServerProject,
+    rebasedCurrentProject,
+    [{ entityType: "sentence", entityId: "line-1", field: "text" }],
+  );
+  assert.ok(rebasedEnvelope);
+  const rebasedPendingOperations = recoveryState.pendingOperations.map((operation) => ({
+    ...operation,
+    type: rebasedEnvelope.command.type,
+    commandEnvelope: rebasedEnvelope,
+  }));
+
+  const applied = state.rebasePendingProjectFromRemote({
+    expectedCurrentProject: recoveryState.currentProject,
+    expectedSavedProject: recoveryState.savedProject,
+    expectedLocalRevision: 1,
+    expectedSavedRevision: 0,
+    latestServerProject,
+    rebasedCurrentProject,
+    rebasedPendingOperations,
+    remoteRevision: 10,
+  });
+  assert.deepEqual(applied, { status: "applied" });
+  const after = state.getRecoveryState();
+  assert.equal(after.currentProject.subtitleLines[0].text, "待确认");
+  assert.equal(after.currentProject.subtitleLines[1].text, "远端其他句修改");
+  assert.equal(after.savedProject.subtitleLines[0].text, "远端同句修改");
+  assert.equal(after.savedProject.subtitleLines[1].text, "远端其他句修改");
+  assert.deepEqual(after.pendingOperations.map((operation) => operation.id), ["op-stale"]);
+  const pendingEnvelope = after.pendingOperations[0]?.commandEnvelope;
+  assert.equal(pendingEnvelope?.command.type, "annotation.items.content.update");
+  if (pendingEnvelope?.command.type === "annotation.items.content.update") {
+    assert.equal(pendingEnvelope.command.items[0]?.before, "远端同句修改");
+  }
+
+  const stale = state.rebasePendingProjectFromRemote({
+    expectedCurrentProject: recoveryState.currentProject,
+    expectedSavedProject: recoveryState.savedProject,
+    expectedLocalRevision: 1,
+    expectedSavedRevision: 0,
+    latestServerProject,
+    rebasedCurrentProject,
+    rebasedPendingOperations,
+    remoteRevision: 11,
+  });
+  assert.deepEqual(stale, { status: "rejected", reason: "document_changed" });
+});
+
 function createAtomicRecoveryStateForRejection(): ProjectDocumentRecoveryState {
   const currentProject = structuredClone(mockProject);
   currentProject.subtitleLines[0].text = "待确认";
+  const commandEnvelope = buildProjectAnnotationContentCommand(mockProject, currentProject, [{
+    entityType: "sentence",
+    entityId: currentProject.subtitleLines[0].id,
+    field: "text",
+  }]);
+  if (!commandEnvelope) throw new Error("测试夹具无法构造内容命令。");
   return {
     currentProject,
     savedProject: mockProject,
@@ -255,12 +457,13 @@ function createAtomicRecoveryStateForRejection(): ProjectDocumentRecoveryState {
     savedTrackSnapEnabled: {},
     pendingOperations: [{
       id: "op-stale",
-      type: "project.commit",
+      type: commandEnvelope.command.type,
       action: "edit",
       localRevision: 1,
       baseRevision: 0,
       createdAt: 1_785_700_000_000,
       syncState: "pending",
+      commandEnvelope,
       summary: { hasProjectChange: true, hasTrackSnapChange: false },
     }],
     localRevision: 1,

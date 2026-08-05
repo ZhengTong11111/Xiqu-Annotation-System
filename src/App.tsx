@@ -49,6 +49,8 @@ import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersiste
 import { usePlatformMutationLease } from "./platform/usePlatformMutationLease";
 import { planAtomicAnnotationCommandBatch } from "./platform/platformAtomicCommandPlan";
 import { usePlatformAtomicCommandSubmit } from "./platform/usePlatformAtomicCommandSubmit";
+import { planPlatformConflictRebase } from "./platform/platformConflictRebase";
+import { shouldBlockEditingForRemoteCatchUp } from "./platform/platformRemoteEditGate";
 import {
   isMutationLeaseSubmitFailure,
   requiresLegacySnapshotMigration,
@@ -491,6 +493,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     markProjectAsSaved,
     acknowledgeAtomicCommandBatch,
     replaceCleanProjectFromRemote,
+    rebasePendingProjectFromRemote,
     undoProject,
     redoProject,
     setSyncStatus,
@@ -506,6 +509,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [remoteBaseRevision, setRemoteBaseRevision] = useState(editorSession?.baseRevision ?? 0);
   const [remoteOperationCursor, setRemoteOperationCursor] = useState(
     editorSession?.operationCursor ?? "",
+  );
+  // observed 表示协作通道已经告知的最高服务器版本；remoteBaseRevision 只表示已进入本地 ProjectData 的版本。
+  const [observedRemoteRevision, setObservedRemoteRevision] = useState(
+    editorSession?.baseRevision ?? 0,
   );
   const remoteBaseRevisionRef = useRef(remoteBaseRevision);
   const remoteOperationCursorRef = useRef(remoteOperationCursor);
@@ -587,6 +594,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     applyCommitted: (plan, response) => {
       const acknowledgement = acknowledgeAtomicCommandBatch({
         operationIds: plan.operationIds,
+        expectedServerBaseProject: plan.serverBaseProject,
         acknowledgedProject: plan.acknowledgedProject,
         acknowledgedTrackSnapEnabled: plan.acknowledgedTrackSnapEnabled,
         serverBaseRevision: plan.request.baseRevision,
@@ -600,6 +608,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       remoteBaseRevisionRef.current = response.committedRevision;
       remoteOperationCursorRef.current = response.operationCursor;
       setRemoteBaseRevision(response.committedRevision);
+      setObservedRemoteRevision((current) => Math.max(current, response.committedRevision));
       setRemoteOperationCursor(response.operationCursor);
       editorSession?.onRemoteRevisionAdvanced(response.committedRevision, response.operationCursor);
       if (plan.request.mutationLeaseToken) mutationLease.markCommitted();
@@ -669,6 +678,35 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   } | null>(null);
   const [editingCustomTextValue, setEditingCustomTextValue] = useState("");
   const [blockContextMenu, setBlockContextMenu] = useState<TimelineContextMenu | null>(null);
+  const remoteCatchUpBlocksEditing = shouldBlockEditingForRemoteCatchUp({
+    observedRemoteRevision,
+    appliedRemoteRevision: remoteBaseRevision,
+    hasUnsavedChanges,
+    pendingOperationCount: pendingOperations.length,
+    hasTransientEdit: transientProjectRef.current !== null,
+    hasInlineEdit: editingCharacterId !== null || editingCustomTextBlock !== null,
+    hasPendingMergeDraft: pendingAnnotationMergeDraft !== null,
+    syncStatus: syncState.status,
+  });
+  const remoteCatchUpBlockReason = remoteCatchUpBlocksEditing
+    ? `正在接收其他账号的修改（服务器 v${observedRemoteRevision}）`
+    : undefined;
+
+  // 门禁只阻止尚未开始的新写操作；关闭旧右键菜单并拦截写快捷键，播放、缩放和复制仍可使用。
+  useEffect(() => {
+    if (!remoteCatchUpBlocksEditing) return;
+    setBlockContextMenu(null);
+    const blockMutationShortcut = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      const isMutationShortcut = event.key === "Delete" || event.key === "Backspace" ||
+        ((event.metaKey || event.ctrlKey) && ["x", "v", "z", "y"].includes(key));
+      if (!isMutationShortcut) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", blockMutationShortcut, true);
+    return () => window.removeEventListener("keydown", blockMutationShortcut, true);
+  }, [remoteCatchUpBlocksEditing]);
   const [inspectorFocusRequest, setInspectorFocusRequest] = useState<InspectorFocusRequest | null>(null);
   const [timelineClipboard, setTimelineClipboard] = useState<TimelineClipboard | null>(null);
   const [pendingPasteState, setPendingPasteState] = useState<PendingPasteState | null>(null);
@@ -745,7 +783,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
       if (result.status === "applied") {
         // 命令结果仍需通过 document clean 门禁；请求期间发生编辑时直接丢弃，不尝试自动 rebase。
-        if (!replaceCleanProjectFromRemote(result.project)) return;
+        if (!replaceCleanProjectFromRemote(result.project, result.revision)) return;
+        setObservedRemoteRevision((current) => Math.max(current, result.revision));
         setRemoteBaseRevision(result.revision);
         setRemoteOperationCursor(result.cursor);
         editorSession.onRemoteRevisionAdvanced(result.revision, result.cursor);
@@ -762,8 +801,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         remoteOperationCursorRef.current !== requestFacts.cursor ||
         latestFile.revision < requestFacts.knownRevision
       ) return;
-      const latestProject = hydrateProjectForClient(latestFile.payload, editorSession.client);
-      if (!replaceCleanProjectFromRemote(latestProject)) return;
+      const latestProject = hydrateProjectForClient(latestFile.payload, editorSession.client, latestFile.media);
+      if (!replaceCleanProjectFromRemote(latestProject, latestFile.revision)) return;
+      setObservedRemoteRevision((current) => Math.max(current, latestFile.revision));
       setRemoteBaseRevision(latestFile.revision);
       setRemoteOperationCursor(latestFile.operationCursor);
       editorSession.onAnnotationFileSaved(latestFile);
@@ -785,8 +825,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (
         (message.type === "session.ready" || message.type === "annotation.revision.advanced") &&
         message.annotationFileId === editorSession?.annotationFileId &&
-        message.revision > remoteBaseRevisionRef.current
+        (message.type === "session.ready" || message.revision > remoteBaseRevisionRef.current)
       ) {
+        setObservedRemoteRevision((current) => Math.max(current, message.revision));
+        // ready/reconnect 总是触发一次权威 HTTP 检查；即使 revision 数值相同，cursor 也可能已推进。
         requestPlatformCatchUp();
       }
     },
@@ -5607,6 +5649,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             // 服务端已证明当前 token 不能继续使用；先清本地状态并尽力释放，下一次保存才能重新 acquire。
             await mutationLease.release().catch(() => undefined);
           }
+          if (failure.status === "conflict") {
+            const rebase = await tryAutomaticConcurrentRebase(editorSession);
+            if (rebase.status === "applied") {
+              const message = "已协调其他账号的并发修改，正在基于最新版本重新保存。";
+              if (interactive) window.alert(message);
+              return { status: "rebased", message };
+            }
+          }
           const outcome: PlatformSaveOutcome = failure.status === "offline"
             ? { status: "offline", retryable: true, message: failure.message }
             : failure.status === "conflict"
@@ -5634,6 +5684,61 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     } finally {
       serverSaveInFlightRef.current = false;
     }
+  }
+
+  // 409 后先严格重放；同一 timing/content 目标冲突时，再基于最新服务器值协调并重建命令。
+  // lifecycle、结构、legacy、snapshot、track-snap 或请求期间新增编辑仍停在显式冲突检查。
+  async function tryAutomaticConcurrentRebase(
+    session: PlatformEditorSession,
+  ): Promise<{ status: "applied" } | { status: "unavailable"; reason: string }> {
+    const expectedRemoteRevision = remoteBaseRevisionRef.current;
+    const localState = getRecoveryState();
+    const latestFile = await session.client.getAnnotationFile<ProjectData>(session.annotationFileId);
+    if (latestFile.revision <= expectedRemoteRevision) {
+      return { status: "unavailable", reason: "server_revision_not_newer" };
+    }
+    const latestServerProject = hydrateProjectForClient(latestFile.payload, session.client, latestFile.media);
+    const plan = planPlatformConflictRebase({
+      baseRevision: expectedRemoteRevision,
+      latestRevision: latestFile.revision,
+      savedProject: localState.savedProject,
+      currentProject: localState.currentProject,
+      latestServerProject,
+      savedLocalRevision: localState.savedRevision,
+      pendingOperations: localState.pendingOperations,
+      allowConcurrentValueResolution: true,
+    });
+    if (plan.status !== "rebase_ready") {
+      return { status: "unavailable", reason: plan.status };
+    }
+
+    // 结构命令的旧租约绑定旧 revision；先释放，重提时由普通保存路径按最新基线重新取得。
+    if (plan.requiredLeasePurpose) {
+      await mutationLease.release().catch(() => undefined);
+    }
+    const applied = rebasePendingProjectFromRemote({
+      expectedCurrentProject: localState.currentProject,
+      expectedSavedProject: localState.savedProject,
+      expectedLocalRevision: localState.localRevision,
+      expectedSavedRevision: localState.savedRevision,
+      latestServerProject,
+      rebasedCurrentProject: plan.rebasedProject,
+      rebasedPendingOperations: plan.rebasedPendingOperations,
+      remoteRevision: latestFile.revision,
+    });
+    if (applied.status !== "applied") {
+      return { status: "unavailable", reason: applied.reason };
+    }
+
+    remoteBaseRevisionRef.current = latestFile.revision;
+    remoteOperationCursorRef.current = latestFile.operationCursor;
+    setRemoteBaseRevision(latestFile.revision);
+    setObservedRemoteRevision((current) => Math.max(current, latestFile.revision));
+    setRemoteOperationCursor(latestFile.operationCursor);
+    session.onRemoteRevisionAdvanced(latestFile.revision, latestFile.operationCursor);
+    mutationLease.advanceBaseRevision(latestFile.revision);
+    void annotationConfirmations.refresh();
+    return { status: "applied" };
   }
 
   // 只有 planner 明确识别出的旧语义才能走完整快照；该兼容通道不能吞掉原子命令 precondition 错误。
@@ -5679,6 +5784,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       remoteBaseRevisionRef.current = savedFile.revision;
       remoteOperationCursorRef.current = savedFile.operationCursor;
       setRemoteBaseRevision(savedFile.revision);
+      setObservedRemoteRevision((current) => Math.max(current, savedFile.revision));
       setRemoteOperationCursor(savedFile.operationCursor);
       session.onAnnotationFileSaved(savedFile);
       markProjectAsSaved(projectSnapshot, trackSnapSnapshot, {
@@ -5802,6 +5908,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   function renderTimelineWorkspace(detached: boolean) {
     return (
       <Timeline
+        editingBlockedReason={remoteCatchUpBlockReason}
         subtitleLines={project.subtitleLines}
         builtinTracks={project.builtinTracks}
         characterAnnotations={project.characterAnnotations}
@@ -6042,6 +6149,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           syncStatus={syncState.status}
           localRevision={syncState.localRevision}
           savedRevision={syncState.savedRevision}
+          remoteRevision={editorSession ? remoteBaseRevision : undefined}
+          observedRemoteRevision={editorSession ? observedRemoteRevision : undefined}
+          editingBlockedReason={remoteCatchUpBlockReason}
           pendingOperationCount={pendingOperations.length}
           accessLabel={editorSession?.accessLabel}
           mutationLeaseLabel={mutationLeaseLabel}
@@ -6356,6 +6466,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                       />
                     ) : null}
                     <div className="editor-inspector-content">
+                      {remoteCatchUpBlockReason ? (
+                        <div className="editor-inspector-edit-gate" role="status">
+                          <span>{remoteCatchUpBlockReason}</span>
+                        </div>
+                      ) : null}
                       {selectedItem?.type === "waveform-track" || selectedItem?.type === "spectrogram-track" ? (
                         <SpectrogramSettingsPanel
                           settings={spectrogramSettings}

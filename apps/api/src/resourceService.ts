@@ -32,6 +32,7 @@ import type {
   RestoreAnnotationRecoverySnapshotRequest,
   SaveAnnotationFileRequest,
   UpdateResourceRequest,
+  UpdateAnnotationMediaRequest,
   UpsertResourcePermissionRequest,
 } from "@xiqu/shared";
 import {
@@ -117,6 +118,22 @@ export type CopyResourceResult = {
     reusedFileObjectCount: number;
   };
 };
+
+// 下载描述只携带路由发送响应所需的数据；对象存储流仍由路由层按需打开，避免服务层持有 HTTP 响应。
+export type DownloadableResource =
+  | {
+      kind: "media";
+      fileName: string;
+      mimeType: string;
+      size: number;
+      storageKey: string;
+    }
+  | {
+      kind: "annotation";
+      fileName: string;
+      mimeType: "application/json; charset=utf-8";
+      content: string;
+    };
 
 const MAX_CONFIRMATION_REVOKE_REASON_LENGTH = 1_000;
 
@@ -242,7 +259,7 @@ export class ResourceService {
     if (input.parentId) {
       await this.assertContainer(input.parentId);
       await this.access.assertCapability(user, input.parentId, "create_child");
-    } else if (!this.access.isGlobalAdmin(user)) {
+    } else if (!this.access.hasFullResourceAccess(user)) {
       throw forbidden("只有管理员可以在资源根目录创建项目或文件夹。");
     }
     const name = this.validateName(input.name);
@@ -279,6 +296,9 @@ export class ResourceService {
     const name = this.validateName(input.name);
     const resource = await this.prisma.$transaction(async (transaction) => {
       await this.lockParentNamespaces(transaction, [input.parentId]);
+      if (input.mediaResourceId) {
+        await this.assertMediaResourceForBinding(user, input.mediaResourceId, transaction);
+      }
       await this.assertNameAvailable(
         transaction,
         input.parentId,
@@ -301,7 +321,10 @@ export class ResourceService {
         include: {
           ...resourceInclude,
           annotationFile: {
-            include: { lastEditor: { include: { roles: true } } },
+            include: {
+              lastEditor: { include: { roles: true } },
+              mediaResource: { include: { resource: true, file: true } },
+            },
           },
         },
       });
@@ -439,7 +462,10 @@ export class ResourceService {
       include: {
         ...resourceInclude,
         annotationFile: {
-          include: { lastEditor: { include: { roles: true } } },
+          include: {
+            lastEditor: { include: { roles: true } },
+            mediaResource: { include: { resource: true, file: true } },
+          },
         },
       },
     });
@@ -449,6 +475,86 @@ export class ResourceService {
       resource,
       resource.annotationFile,
     );
+  }
+
+  async getDownloadableResource(
+    user: ApiUser,
+    resourceId: string,
+  ): Promise<DownloadableResource> {
+    // 下载是独立于 read 的显式能力；能够在界面中看到资源不代表可以导出原始内容。
+    await this.access.assertCapability(user, resourceId, "download");
+    const resource = await this.prisma.resourceEntry.findUnique({
+      where: { id: resourceId },
+      include: {
+        annotationFile: true,
+        mediaFile: { include: { file: true } },
+      },
+    });
+    if (!resource) throw notFound("资源不存在。");
+    if (resource.trashedAt) throw badRequest("请先恢复回收站中的资源，再执行下载。");
+
+    if (resource.type === "media_file" && resource.mediaFile) {
+      return {
+        kind: "media",
+        fileName: resource.name,
+        mimeType: resource.mediaFile.mimeType,
+        size: resource.mediaFile.size,
+        storageKey: resource.mediaFile.file.storageKey,
+      };
+    }
+    if (resource.type === "annotation_file" && resource.annotationFile) {
+      // 标注文件导出权威 payload，不把运行时媒体 URL、访问 token 或浏览器草稿写入文件。
+      const fileName = resource.name.toLowerCase().endsWith(".json")
+        ? resource.name
+        : `${resource.name}.json`;
+      return {
+        kind: "annotation",
+        fileName,
+        mimeType: "application/json; charset=utf-8",
+        content: `${JSON.stringify(resource.annotationFile.payload, null, 2)}\n`,
+      };
+    }
+    throw badRequest("项目和文件夹暂不支持直接下载，请选择媒体或标注文件。");
+  }
+
+  async updateAnnotationMedia<TPayload>(
+    user: ApiUser,
+    resourceId: string,
+    input: UpdateAnnotationMediaRequest,
+  ): Promise<AnnotationFile<TPayload>> {
+    await this.access.assertCapability(user, resourceId, "write");
+    await this.prisma.$transaction(async (transaction) => {
+      await lockActiveAnnotationFileForWrite(transaction, this.access, user, resourceId);
+      if (input.mediaResourceId) {
+        await this.assertMediaResourceForBinding(user, input.mediaResourceId, transaction);
+      }
+      const current = await transaction.annotationFile.findUnique({
+        where: { resourceId },
+        select: { mediaResourceId: true },
+      });
+      if (!current) throw notFound("标注文件不存在。");
+      if (current.mediaResourceId === input.mediaResourceId) return;
+      await transaction.annotationFile.update({
+        where: { resourceId },
+        data: { mediaResourceId: input.mediaResourceId },
+      });
+      await transaction.resourceEntry.update({
+        where: { id: resourceId },
+        data: { updatedAt: new Date() },
+      });
+      await transaction.auditLog.create({
+        data: {
+          action: input.mediaResourceId ? "annotation_media_bind" : "annotation_media_unbind",
+          actorUserId: user.id,
+          resourceId,
+          detail: {
+            previousMediaResourceId: current.mediaResourceId,
+            nextMediaResourceId: input.mediaResourceId,
+          },
+        },
+      });
+    });
+    return this.getAnnotationFile<TPayload>(user, resourceId);
   }
 
   // 最近打开是独立的非关键写命令；读取标注 payload 本身保持纯 GET，维护期间仍可只读查看。
@@ -1150,7 +1256,7 @@ export class ResourceService {
     if (input.parentId) {
       await this.assertContainer(input.parentId);
       await this.access.assertCapability(user, input.parentId, "create_child");
-    } else if (!this.access.isGlobalAdmin(user)) {
+    } else if (!this.access.hasFullResourceAccess(user)) {
       throw forbidden("只有管理员可以把资源移动到根目录。");
     }
     const moved = await this.prisma.$transaction(async (transaction) => {
@@ -1616,7 +1722,7 @@ export class ResourceService {
     }
     const capabilities = [...new Set(input.capabilities)];
     if (
-      !this.access.isGlobalAdmin(actor) &&
+      !this.access.hasFullResourceAccess(actor) &&
       capabilities.some((capability) =>
         !actorPermission.capabilities.includes(capability))
     ) {
@@ -1781,6 +1887,13 @@ export class ResourceService {
       payload: Prisma.JsonValue;
       revision: number;
       mediaResourceId: string | null;
+      mediaResource?: {
+        resourceId: string;
+        mimeType: string;
+        size: number;
+        resource: { name: string };
+        file: { id: string };
+      } | null;
       lastSavedAt: Date;
       lastEditor: {
         id: string;
@@ -1800,9 +1913,40 @@ export class ResourceService {
       revision: file.revision,
       operationCursor: encodeAnnotationSnapshotOperationCursor(resource.id, file.revision),
       mediaResourceId: file.mediaResourceId,
+      media: file.mediaResource
+        ? {
+            resourceId: file.mediaResource.resourceId,
+            fileId: file.mediaResource.file.id,
+            name: file.mediaResource.resource.name,
+            mimeType: file.mediaResource.mimeType,
+            size: file.mediaResource.size,
+          }
+        : null,
       lastEditor: toPublicUser(file.lastEditor),
       lastSavedAt: file.lastSavedAt.toISOString(),
     };
+  }
+
+  // 媒体绑定同时要求可见与可下载，避免通过标注关系绕过受保护二进制的读取权限。
+  private async assertMediaResourceForBinding(
+    user: ApiUser,
+    mediaResourceId: string,
+    database: PrismaClient | Prisma.TransactionClient,
+  ) {
+    const permission = await this.access.getEffectivePermission(user, mediaResourceId, database);
+    if (!permission.capabilities.includes("read") || !permission.capabilities.includes("download")) {
+      throw forbidden("当前账号不能读取或下载所选媒体。");
+    }
+    const media = await database.resourceEntry.findUnique({
+      where: { id: mediaResourceId },
+      include: { mediaFile: true },
+    });
+    if (!media?.mediaFile || media.type !== "media_file" || media.trashedAt || media.archivedAt) {
+      throw badRequest("所选资源不是可用的媒体文件。");
+    }
+    if (!media.mediaFile.mimeType.startsWith("video/") && !media.mediaFile.mimeType.startsWith("audio/")) {
+      throw badRequest("标注文件只能关联视频或音频媒体。");
+    }
   }
 
   // 确认创建输入映射集中处理互斥目标字段，数据库 CHECK 继续作为第二层保护。

@@ -150,6 +150,20 @@ test("可重试错误使用有界指数退避", async () => {
   harness.runtime.dispose();
 });
 
+// 409 自动协调只更新本地/远端基线，重建后的命令尚未提交；运行时必须再次触发保存完成闭环。
+test("并发协调重基线后继续提交重建命令", async () => {
+  const outcomes: PlatformSaveOutcome[] = [
+    { status: "rebased", message: "已重放到最新版本" },
+    { status: "saved" },
+  ];
+  const harness = createHarness(async () => outcomes.shift() ?? { status: "saved" });
+  harness.runtime.update(DIRTY_FACTS);
+  await harness.clock.advanceBy(3_000);
+  assert.equal(harness.getSaveCount(), 2);
+  assert.equal(harness.clock.pendingCount(), 1);
+  harness.runtime.dispose();
+});
+
 // offline 不建立请求；恢复在线后 dirty 会话无需再等待完整 idle 窗口。
 test("离线恢复后立即重新保存", async () => {
   const harness = createHarness(async () => ({ status: "saved" }));

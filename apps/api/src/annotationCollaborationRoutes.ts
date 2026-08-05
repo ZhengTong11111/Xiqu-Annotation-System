@@ -69,6 +69,8 @@ export function registerAnnotationCollaborationRoutes(
       let sessionIdentity: { annotationFileId: string; userId: string } | null = null;
       let lastClientSequence = 0;
       let hasPublishedActivity = false;
+      let sessionReadySent = false;
+      const bufferedServerMessages: AnnotationCollaborationServerMessage[] = [];
 
       // close/error/撤权/app shutdown 共用一个异步 finalize，确保 presence 最多删除和发布一次。
       const finalize = () => {
@@ -186,19 +188,17 @@ export function registerAnnotationCollaborationRoutes(
             annotationFileId: session.annotationFileId,
             userId: session.user.id,
           };
-          sendMessage(socket, {
-            version: ANNOTATION_COLLABORATION_PROTOCOL_VERSION,
-            type: "session.ready",
-            annotationFileId: session.annotationFileId,
-            revision: session.revision,
-            operationCursor: session.operationCursor,
-            heartbeatIntervalMs: ANNOTATION_COLLABORATION_HEARTBEAT_MS,
-          });
           let deliveryQueue = Promise.resolve();
           unregister = hub.subscribe(session.annotationFileId, {
             activitySessionId,
             // 已建立的长连接也必须响应撤权；发送前复核，不能把票据消费时的权限永久缓存。
             send: (message) => {
+              // subscriber 必须先于第二次同步头读取注册。ready 发出前到达的 revision 先缓冲，
+              // 避免“票据读取旧 revision -> 别人保存 -> 本连接才订阅”的永久漏通知窗口。
+              if (!sessionReadySent) {
+                bufferedServerMessages.push(message);
+                return;
+              }
               // 活动帧是有 TTL 的只读提示，沿用会话心跳授权；避免拖动时每帧查询数据库。
               if (message.type === "presence.timeline_activity.changed") {
                 if (socket.bufferedAmount > REMOTE_ACTIVITY_MAX_BUFFERED_BYTES) return;
@@ -216,6 +216,30 @@ export function registerAnnotationCollaborationRoutes(
             },
             close: closeAndFinalize,
           });
+          const currentHead = await tickets.readCurrentHead(
+            session.user,
+            session.annotationFileId,
+          );
+          if (closed || socket.readyState !== socket.OPEN) return;
+          sendMessage(socket, {
+            version: ANNOTATION_COLLABORATION_PROTOCOL_VERSION,
+            type: "session.ready",
+            annotationFileId: session.annotationFileId,
+            revision: currentHead.revision,
+            operationCursor: currentHead.operationCursor,
+            heartbeatIntervalMs: ANNOTATION_COLLABORATION_HEARTBEAT_MS,
+          });
+          sessionReadySent = true;
+          // ready 已包含读取时刻之前的 revision。只补发更晚 revision；presence/activity
+          // 使用随后发布的完整快照，避免把建连期间的过期瞬时状态重复送给客户端。
+          for (const message of bufferedServerMessages.splice(0)) {
+            if (
+              message.type === "annotation.revision.advanced" &&
+              message.revision > currentHead.revision
+            ) {
+              sendMessage(socket, message);
+            }
+          }
           // 先注册 subscriber 再发布，当前连接和其他实例都会从数据库读取同一成员快照。
           presenceEvents.publishPresenceChanged(session.annotationFileId);
           // 原生 ping/pong 只检查连接活性，不混入应用层 revision 协议。

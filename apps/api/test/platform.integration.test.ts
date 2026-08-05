@@ -56,7 +56,7 @@ test("平台资源 API 集成测试", async (suite) => {
 
   let adminToken = "";
   let studentToken = "";
-  let taToken = "";
+  let teacherToken = "";
   let projectId = "";
   let childFolderId = "";
   let annotationFileId = "";
@@ -122,7 +122,7 @@ test("平台资源 API 集成测试", async (suite) => {
       adminToken = adminLogin.accessToken;
       assert.equal(adminLogin.user.accountName, "admin");
       studentToken = (await login(app, "student", "student123")).accessToken;
-      taToken = (await login(app, "ta", "ta123")).accessToken;
+      teacherToken = (await login(app, "ta", "ta123")).accessToken;
 
       const invalid = await app.inject({
         method: "POST",
@@ -155,6 +155,129 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.ok(Array.isArray(diagnosticData.alerts));
     });
 
+    await suite.test("账号生命周期仅由系统管理员治理并立即撤销失效会话", async () => {
+      const forbiddenList = await jsonRequest(app, teacherToken, {
+        method: "GET",
+        url: "/api/admin/accounts",
+      });
+      assert.equal(forbiddenList.statusCode, 403);
+
+      // admin 保留资源与运维全权，但不能枚举或修改账号；该边界必须由 API 而非前端隐藏保证。
+      const resourceAdmin = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/admin/accounts",
+        payload: {
+          accountName: "integration_admin",
+          displayName: "集成测试管理员",
+          password: "adminRolePass123",
+          roles: ["admin"],
+        },
+      });
+      assert.equal(resourceAdmin.statusCode, 200, resourceAdmin.body);
+      const resourceAdminLogin = await login(app, "integration_admin", "adminRolePass123");
+      assert.equal((await jsonRequest(app, resourceAdminLogin.accessToken, {
+        method: "GET",
+        url: "/api/admin/accounts",
+      })).statusCode, 403);
+      assert.equal((await jsonRequest(app, resourceAdminLogin.accessToken, {
+        method: "GET",
+        url: "/api/admin/diagnostics",
+      })).statusCode, 200);
+
+      const teacherDirectory = await jsonRequest(app, teacherToken, {
+        method: "GET",
+        url: "/api/users",
+      });
+      assert.equal(teacherDirectory.statusCode, 200, teacherDirectory.body);
+
+      const created = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/admin/accounts",
+        payload: {
+          accountName: "integration_editor",
+          displayName: "集成测试标注员",
+          password: "editorPass123",
+          roles: ["annotator"],
+        },
+      });
+      assert.equal(created.statusCode, 200, created.body);
+      const createdAccount = dataOf(created.json());
+      const accountId = String(createdAccount.id);
+      assert.deepEqual(createdAccount.roles, ["annotator"]);
+
+      const updated = await jsonRequest(app, adminToken, {
+        method: "PATCH",
+        url: `/api/admin/accounts/${accountId}`,
+        payload: { displayName: "集成测试审核员", roles: ["annotator", "reviewer"] },
+      });
+      assert.equal(updated.statusCode, 200, updated.body);
+      assert.equal(dataOf(updated.json()).displayName, "集成测试审核员");
+      assert.deepEqual(
+        [...dataOf(updated.json()).roles as string[]].sort(),
+        ["annotator", "reviewer"],
+      );
+
+      const initialLogin = await login(app, "integration_editor", "editorPass123");
+      const reset = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/admin/accounts/${accountId}/reset-password`,
+        payload: { password: "replacementPass456" },
+      });
+      assert.equal(reset.statusCode, 200, reset.body);
+      const revokedSession = await jsonRequest(app, initialLogin.accessToken, {
+        method: "GET",
+        url: "/api/auth/me",
+      });
+      assert.equal(revokedSession.statusCode, 401, "重置密码必须立即撤销旧会话");
+      const replacementLogin = await login(app, "integration_editor", "replacementPass456");
+      const ownPasswordChange = await jsonRequest(app, replacementLogin.accessToken, {
+        method: "POST",
+        url: "/api/auth/change-password",
+        payload: {
+          currentPassword: "replacementPass456",
+          newPassword: "selfChangedPass789",
+        },
+      });
+      assert.equal(ownPasswordChange.statusCode, 200, ownPasswordChange.body);
+      const changedSession = await jsonRequest(app, replacementLogin.accessToken, {
+        method: "GET",
+        url: "/api/auth/me",
+      });
+      assert.equal(changedSession.statusCode, 401);
+      await login(app, "integration_editor", "selfChangedPass789");
+
+      const deactivate = await jsonRequest(app, adminToken, {
+        method: "PATCH",
+        url: `/api/admin/accounts/${accountId}`,
+        payload: { isActive: false },
+      });
+      assert.equal(deactivate.statusCode, 200, deactivate.body);
+      const inactiveLogin = await app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        payload: { accountName: "integration_editor", password: "selfChangedPass789" },
+      });
+      assert.equal(inactiveLogin.statusCode, 401);
+
+      const adminAccount = await prisma.user.findUniqueOrThrow({
+        where: { accountName: "admin" },
+      });
+      const selfDeactivate = await jsonRequest(app, adminToken, {
+        method: "PATCH",
+        url: `/api/admin/accounts/${adminAccount.id}`,
+        payload: { isActive: false },
+      });
+      assert.equal(selfDeactivate.statusCode, 409, "当前管理员不能停用自己");
+      assert.equal(await prisma.auditLog.count({
+        where: { targetUserId: accountId, action: { in: [
+          "account_create",
+          "account_update",
+          "account_password_reset",
+          "account_password_change",
+        ] } },
+      }), 5);
+    });
+
     await suite.test("资源创建、名称校验和层级循环保护", async () => {
       const project = await jsonRequest(app, adminToken, {
         method: "POST",
@@ -163,6 +286,31 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(project.statusCode, 200, project.body);
       projectId = String(dataOf(project.json()).id);
+
+      // teacher 自动看到全部资源并可下载，但不能因此编辑内容、创建子项或管理 ACL。
+      const teacherRead = await jsonRequest(app, teacherToken, {
+        method: "GET",
+        url: `/api/resources/${projectId}`,
+      });
+      assert.equal(teacherRead.statusCode, 200, teacherRead.body);
+      const teacherPermission = dataOf(teacherRead.json()).permission as JsonObject;
+      assert.equal(teacherPermission.source, "role");
+      assert.deepEqual(teacherPermission.capabilities, ["read", "download"]);
+      assert.equal((await jsonRequest(app, teacherToken, {
+        method: "PATCH",
+        url: `/api/resources/${projectId}`,
+        payload: { name: "教师不应改名" },
+      })).statusCode, 403);
+      assert.equal((await jsonRequest(app, teacherToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: projectId, type: "folder", name: "教师不应创建" },
+      })).statusCode, 403);
+      assert.equal((await jsonRequest(app, teacherToken, {
+        method: "PUT",
+        url: `/api/resources/${projectId}/permissions/user-student`,
+        payload: { capabilities: ["read"] },
+      })).statusCode, 403);
 
       const child = await jsonRequest(app, adminToken, {
         method: "POST",
@@ -215,6 +363,96 @@ test("平台资源 API 集成测试", async (suite) => {
         [200, 409],
         "并发创建同名资源时只能有一个成功",
       );
+    });
+
+    await suite.test("标注文件媒体关系可绑定、改绑、解绑并受资源权限约束", async () => {
+      const firstUpload = await multipartUpload(
+        app,
+        adminToken,
+        projectId,
+        "binding-a.mp4",
+        "video/mp4",
+        minimalMp4(),
+      );
+      const secondUpload = await multipartUpload(
+        app,
+        adminToken,
+        projectId,
+        "binding-b.mp4",
+        "video/mp4",
+        minimalMp4(),
+      );
+      assert.equal(firstUpload.statusCode, 200, firstUpload.body);
+      assert.equal(secondUpload.statusCode, 200, secondUpload.body);
+      const firstMediaId = String(dataOf(firstUpload.json()).id);
+      const secondMediaId = String(dataOf(secondUpload.json()).id);
+
+      const created = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "媒体绑定合同.json",
+          payload: { marker: "media-binding" },
+          mediaResourceId: firstMediaId,
+        },
+      });
+      assert.equal(created.statusCode, 200, created.body);
+      const annotationId = String((dataOf(created.json()).resource as JsonObject).id);
+      assert.equal((dataOf(created.json()).media as JsonObject).resourceId, firstMediaId);
+
+      const rebound = await jsonRequest(app, adminToken, {
+        method: "PATCH",
+        url: `/api/annotation-files/${annotationId}/media`,
+        payload: { mediaResourceId: secondMediaId },
+      });
+      assert.equal(rebound.statusCode, 200, rebound.body);
+      assert.equal((dataOf(rebound.json()).media as JsonObject).resourceId, secondMediaId);
+
+      const unbound = await jsonRequest(app, adminToken, {
+        method: "PATCH",
+        url: `/api/annotation-files/${annotationId}/media`,
+        payload: { mediaResourceId: null },
+      });
+      assert.equal(unbound.statusCode, 200, unbound.body);
+      assert.equal(dataOf(unbound.json()).media, null);
+
+      // 只有标注写权限不能借关联动作绕过媒体下载权限。
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${annotationId}/permissions/user-student`,
+        payload: { capabilities: ["read", "write"], inheritToChildren: false },
+      });
+      const deniedBinding = await jsonRequest(app, studentToken, {
+        method: "PATCH",
+        url: `/api/annotation-files/${annotationId}/media`,
+        payload: { mediaResourceId: firstMediaId },
+      });
+      assert.equal(deniedBinding.statusCode, 403);
+
+      const reboundBeforeDelete = await jsonRequest(app, adminToken, {
+        method: "PATCH",
+        url: `/api/annotation-files/${annotationId}/media`,
+        payload: { mediaResourceId: firstMediaId },
+      });
+      assert.equal(reboundBeforeDelete.statusCode, 200, reboundBeforeDelete.body);
+      // 外键以媒体资源为目标；媒体资源被删除时必须自动解绑，不能留下打不开的悬空字符串。
+      await prisma.resourceEntry.delete({ where: { id: firstMediaId } });
+      const storedAfterMediaDelete = await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: annotationId },
+      });
+      assert.equal(storedAfterMediaDelete.mediaResourceId, null);
+      assert.equal(await prisma.auditLog.count({
+        where: { resourceId: annotationId, action: { in: [
+          "annotation_media_bind",
+          "annotation_media_unbind",
+        ] } },
+      }), 3);
+      // 本用例在配额测试之前运行；清除专用媒体及确定孤儿对象，避免测试夹具之间共享容量。
+      await prisma.resourceEntry.delete({ where: { id: secondMediaId } });
+      await prisma.fileObject.deleteMany({
+        where: { ownerUserId: "user-admin", mediaFiles: { none: {} } },
+      });
     });
 
     await suite.test("维护模式排空写入并保留管理员恢复通道", async () => {
@@ -1638,6 +1876,27 @@ test("平台资源 API 集成测试", async (suite) => {
         },
       });
 
+      // 标注导出必须返回当前权威 payload，并独立检查 download，而不是把 read 当作下载权限。
+      const annotationDownload = await app.inject({
+        method: "GET",
+        url: `/api/resources/${sourceAnnotationId}/download`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      assert.equal(annotationDownload.statusCode, 200, annotationDownload.body);
+      assert.match(
+        String(annotationDownload.headers["content-disposition"]),
+        /attachment;.*filename\*=UTF-8''/,
+      );
+      assert.deepEqual(JSON.parse(annotationDownload.body), {
+        marker: "recursive-source-saved",
+      });
+      const annotationDownloadDenied = await app.inject({
+        method: "GET",
+        url: `/api/resources/${sourceAnnotationId}/download`,
+        headers: { authorization: `Bearer ${studentToken}` },
+      });
+      assert.equal(annotationDownloadDenied.statusCode, 403);
+
       const copiedResponse = await jsonRequest(app, studentToken, {
         method: "POST",
         url: `/api/resources/${sourceProjectId}/copy`,
@@ -2110,7 +2369,7 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(readableEmptyList.statusCode, 200);
 
-      // 学生和助教分别取得逐资源 review；角色名称本身不绕过资源 ACL。
+      // 学生和教师分别取得逐资源 review；角色名称本身不绕过资源 ACL。
       for (const userId of ["user-student", "user-ta"]) {
         const grant = await jsonRequest(app, adminToken, {
           method: "PUT",
@@ -2231,7 +2490,7 @@ test("平台资源 API 集成测试", async (suite) => {
 
       // 其他 reviewer 不能撤销学生记录；创建者撤销幂等且只写一条撤销审计。
       const trackConfirmationId = String(trackConfirmation.id);
-      const deniedOtherReviewer = await jsonRequest(app, taToken, {
+      const deniedOtherReviewer = await jsonRequest(app, teacherToken, {
         method: "POST",
         url: `/api/annotation-files/${confirmationFileId}/confirmations/${trackConfirmationId}/revoke`,
         payload: { reason: "非创建者尝试撤销" },
@@ -2850,12 +3109,34 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(invalidRange.statusCode, 416);
 
-      const denied = await app.inject({
+      // 教师的全局浏览能力包含下载媒体原件，但不包含向目标目录上传或创建资源。
+      const teacherDownload = await app.inject({
         method: "GET",
         url: `/api/files/${fileId}/content`,
-        headers: { authorization: `Bearer ${taToken}` },
+        headers: { authorization: `Bearer ${teacherToken}` },
       });
-      assert.equal(denied.statusCode, 403);
+      assert.equal(teacherDownload.statusCode, 200);
+      assert.deepEqual(teacherDownload.rawPayload, content);
+
+      // 资源管理器下载路由按资源 id 流式返回媒体，并支持按钮使用的一次性查询参数鉴权。
+      const mediaResourceDownload = await app.inject({
+        method: "GET",
+        url: `/api/resources/${mediaResourceId}/download?access_token=${encodeURIComponent(teacherToken)}`,
+      });
+      assert.equal(mediaResourceDownload.statusCode, 200);
+      assert.equal(mediaResourceDownload.headers["content-type"], "video/mp4");
+      assert.match(
+        String(mediaResourceDownload.headers["content-disposition"]),
+        /attachment;.*filename\*=UTF-8''sample\.mp4/,
+      );
+      assert.deepEqual(mediaResourceDownload.rawPayload, content);
+
+      const containerDownload = await app.inject({
+        method: "GET",
+        url: `/api/resources/${projectId}/download`,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      assert.equal(containerDownload.statusCode, 400);
 
       const storedPath = path.join(storageRoot, media.file.storageKey);
       assert.deepEqual(await readFile(storedPath), content);
@@ -3001,7 +3282,7 @@ test("平台资源 API 集成测试", async (suite) => {
         },
       });
 
-      const denied = await jsonRequest(app, taToken, {
+      const denied = await jsonRequest(app, teacherToken, {
         method: "GET",
         url: "/api/admin/storage/orphans",
       });

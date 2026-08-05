@@ -215,10 +215,19 @@ operation 都是已知 versioned command，且在局部 `ProjectData` 上逐条�
 `requires_snapshot`，不泄漏已经应用了一半的局部值。
 
 document state 的 `replaceCleanProjectFromRemote()` 是最终写入门禁：current 与 saved 必须相等，pending
-为空、没有 transient，sync status 必须为 saved。成功后 current/saved 同时推进并清空旧 undo/redo；不会
-生成本地 history、operation 或 dirty。App 还会在行内文字编辑、待确认整合和保存期间暂停运行时。快照
-降级复用 `hydrateProjectForClient()` 这一条迁移路径，并在 GET 返回后再次复核文件 revision/cursor 和
-document clean 状态。
+为空、没有 transient，sync status 必须为 saved。成功后 current/saved、document-owned remote revision
+必须在同一个调用内推进，并清空旧 undo/redo；不会生成本地 history、operation 或 dirty。这里不能只更新
+App 外层的 revision/cursor：下一次本地提交的成功确认会用 `syncState.remoteRevision` 复核 base revision，
+两层漂移会把服务器已经提交的 200 响应误判为 `stale_remote_revision`，继而令 dirty/error 客户端停止接收
+后续远端修改。App 还会在行内文字编辑、待确认整合和保存期间暂停运行时。快照降级复用
+`hydrateProjectForClient()` 这一条迁移路径，并在 GET 返回后再次复核文件 revision/cursor 和 document clean
+状态。
+
+原子成功确认另有一个有界自愈规则：若 document-owned revision 低于请求 base，但服务器已用同一 operation id
+返回完整 committed 确认，客户端仍不能仅凭数字较低就放行。planner 会在内存中冻结该批的 server-base
+ProjectData；只有它与 document 当前 saved baseline 完全相等时，才能判定为“项目已追入、仅 revision 元数据
+漏推进”，并补齐 revision 后正常确认。document revision 已高于请求 base，或 saved baseline 与冻结基线不同，
+仍拒绝为 `stale_remote_revision`，避免迟到响应回退状态或掩盖真正漏掉的远端内容。
 
 这不是自动 rebase：dirty 内容永远优先保留，协调器等待保存成功或人工解决冲突。它也不替代 WebSocket、
 presence、服务端命令执行或后续更广的领域命令覆盖。
@@ -472,6 +481,17 @@ R4c1 已提供服务器自动保存与联网退避，R4c2 再把 409 conflict �
   editor-open path 重建编辑器；普通自动保存随后使用现有原子提交、ACL、revision 与 mutation lease 规则重提。
   为防止 editor unmount 重写同内容草稿并让 proposal 时间戳伪失效，草稿持久层会跳过仅 `updatedAt` 不同的
   重复写入；真实项目、operation、revision 或吸附状态变化仍必须写入并使旧 proposal 失效。
+
+- 普通在线保存收到确定的 revision 409 后，可启用值级协调；这与旧草稿确认路径严格分开。planner 仍先在旧
+  saved baseline 完整审计 pending chain，再逐条作用于最新服务器项目：严格 apply 成功的命令保持原 envelope；
+  timing 冲突按 start/end 两条边分别判断，本端未修改的边保留最新服务器值，本端修改的边采用后完成恢复端的
+  绝对 `after` 值。这样不同边界仍可组合，同一边界或整体拖动不会累计基于旧位置的 delta。内容冲突把 `before`
+  重写为最新字符串并保留本端 `after`。事务只允许其中 timing/content 子命令转换，其他冲突使整个事务失败。
+- document hook 接收协调后的完整 pending chain 时，必须再次核对 current/saved ProjectData、local/saved
+  revision、operation 数量/顺序/id/action/audit summary 和 envelope type。通过后才同时替换 saved baseline、
+  current project 与 pending envelope；operation id、local revision 和创建时间不变，旧 undo/redo 清空。
+  `rebased` 仍表示“尚未提交”，自动保存必须立即再次调用原子接口。生命周期、结构、快照边界、权限失败和
+  旧浏览器草稿不得使用该 later-client-wins 路径。
 
 - R5b1/R5b2a 的 WebSocket 与跨实例通知已经落地；revision 消息只负责经过认证的文件失效提示，不传完整 payload，也不提交
   operation。`session.ready` 或 `annotation.revision.advanced` 观察到更高 revision 时，只调用现有 catch-up

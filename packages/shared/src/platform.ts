@@ -2,7 +2,6 @@ export type PlatformRole =
   | "super_admin"
   | "admin"
   | "teacher"
-  | "ta"
   | "annotator"
   | "reviewer"
   | "service";
@@ -12,6 +11,17 @@ export type PlatformUser = {
   displayName: string;
   accountName: string;
   roles: PlatformRole[];
+};
+
+export type ManagedAccount = PlatformUser & {
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ManagedAccountPage = {
+  items: ManagedAccount[];
+  nextCursor: string | null;
 };
 
 export type UserReference = Pick<
@@ -51,6 +61,7 @@ export const RESOURCE_CAPABILITIES: readonly ResourceCapability[] = [
 export type ResourcePermissionSource =
   | "admin"
   | "owner"
+  | "role"
   | "direct"
   | "inherited"
   | "none";
@@ -133,8 +144,17 @@ export type AnnotationFile<TPayload = unknown> = {
   revision: number;
   operationCursor: string;
   mediaResourceId?: string | null;
+  media?: AnnotationMediaReference | null;
   lastEditor: UserReference;
   lastSavedAt: string;
+};
+
+export type AnnotationMediaReference = {
+  resourceId: string;
+  fileId: string;
+  name: string;
+  mimeType: string;
+  size: number;
 };
 
 // 恢复快照摘要用于历史列表，刻意不携带大体积标注 payload。
@@ -256,6 +276,10 @@ export type ProcessingJob = {
 // 审计动作列表同时供 API 运行时校验和管理界面筛选使用，避免前后端维护两份漂移枚举。
 export const AUDIT_ACTIONS = [
   "auth_login",
+  "account_create",
+  "account_update",
+  "account_password_reset",
+  "account_password_change",
   "file_upload",
   "media_upload",
   "resource_create",
@@ -275,6 +299,8 @@ export const AUDIT_ACTIONS = [
   "resource_permission_upsert",
   "resource_permission_remove",
   "resource_inheritance_update",
+  "annotation_media_bind",
+  "annotation_media_unbind",
   "job_create",
   "permission_denied",
   "storage_orphan_cleanup",

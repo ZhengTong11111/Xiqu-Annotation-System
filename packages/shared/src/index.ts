@@ -1,4 +1,5 @@
 export * from "./platform.js";
+export * from "./platformRolePolicy.js";
 export * from "./api.js";
 export * from "./annotationCommands.js";
 export * from "./annotationCommandCommit.js";

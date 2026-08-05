@@ -59,6 +59,13 @@ export function createPlatformAutoSaveRuntime(
 
   // 正常 outcome 只改变调度状态；服务器 revision、dirty baseline 与 operation 确认仍由唯一保存事务负责。
   function applySaveOutcome(outcome: PlatformSaveOutcome) {
+    if (outcome.status === "rebased") {
+      // 409 后的重基线尚未把本地命令写入服务器；保持 dirty 并立即重提，避免用户看到数秒“同步失败”空窗。
+      retryAttempt = 0;
+      retryDueAt = null;
+      idleDueAt = dependencies.now();
+      return;
+    }
     if (outcome.status === "offline") {
       retryDueAt = null;
       return;

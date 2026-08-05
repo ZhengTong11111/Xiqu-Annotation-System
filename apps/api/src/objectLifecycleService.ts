@@ -129,7 +129,7 @@ export class ObjectLifecycleService {
   }
 
   private assertAdministrator(user: ApiUser) {
-    if (!this.access.isGlobalAdmin(user)) {
+    if (!this.access.hasFullResourceAccess(user)) {
       throw forbidden("只有管理员可以审计和清理对象存储。");
     }
   }

@@ -130,7 +130,7 @@ export class AuditLogService {
       );
       return;
     }
-    if (!this.access.isGlobalAdmin(user)) {
+    if (!this.access.hasFullResourceAccess(user)) {
       throw forbidden("非管理员查询审计日志时必须指定资源。");
     }
   }

@@ -1,3 +1,4 @@
+import type { AnnotationMediaReference } from "@xiqu/shared";
 import type { PlatformClient } from "../api/platformClient";
 import type { ProjectData } from "../types";
 import { normalizeImportedProjectFile } from "../utils/projectFile";
@@ -8,8 +9,22 @@ const PLATFORM_FILE_PATH_PREFIX = "platform-file:";
 export function hydrateProjectForClient(
   payload: unknown,
   client: PlatformClient,
+  media?: AnnotationMediaReference | null,
 ): ProjectData {
   const project = normalizeImportedProjectFile(payload).project;
+  if (media) {
+    return {
+      ...project,
+      video: {
+        ...project.video,
+        name: media.name,
+        url: client.getFileContentUrl(media.fileId),
+        source: "url",
+        filePath: `${PLATFORM_FILE_PATH_PREFIX}${media.fileId}`,
+        requiresManualImport: false,
+      },
+    };
+  }
   const fileId = getPlatformFileId(project.video.filePath);
   if (!fileId) return project;
   return {

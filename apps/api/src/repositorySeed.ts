@@ -23,9 +23,9 @@ const seedUsers: Array<{
   {
     id: "user-ta",
     accountName: "ta",
-    displayName: "助教账号",
+    displayName: "教师账号",
     password: "ta123",
-    roles: ["ta"],
+    roles: ["teacher"],
   },
   {
     id: "user-student",

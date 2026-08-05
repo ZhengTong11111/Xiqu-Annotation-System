@@ -10,7 +10,6 @@ enum PlatformRole {
   super_admin
   admin
   teacher
-  ta
   annotator
   reviewer
   service
@@ -55,6 +54,10 @@ enum ProcessingJobStatus {
 
 enum AuditAction {
   auth_login
+  account_create
+  account_update
+  account_password_reset
+  account_password_change
   file_upload
   media_upload
   resource_create
@@ -74,6 +77,8 @@ enum AuditAction {
   resource_permission_upsert
   resource_permission_remove
   resource_inheritance_update
+  annotation_media_bind
+  annotation_media_unbind
   job_create
   permission_denied
   storage_orphan_cleanup
@@ -234,6 +239,7 @@ model AnnotationFile {
   lastOperationSequence Int @default(0) @map("last_operation_sequence")
 
   resource          ResourceEntry               @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  mediaResource     MediaFile?                  @relation("AnnotationMediaResource", fields: [mediaResourceId], references: [resourceId], onDelete: SetNull)
   lastEditor        User                        @relation("AnnotationLastEditor", fields: [lastEditedBy], references: [id])
   recoverySnapshots AnnotationRecoverySnapshot[]
   confirmations     AnnotationConfirmation[]
@@ -357,6 +363,7 @@ model MediaFile {
 
   resource ResourceEntry @relation(fields: [resourceId], references: [id], onDelete: Cascade)
   file     FileObject    @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  linkedAnnotationFiles AnnotationFile[] @relation("AnnotationMediaResource")
 
   @@index([fileId])
   @@map("media_files")

@@ -6,6 +6,7 @@ import {
   type ProcessingJobType as DbProcessingJobType,
 } from "@prisma/client";
 import {
+  canBrowseAccountDirectory,
   getAnnotationMutationLeasePurposeForCommand,
   type AnnotationCommittedOperationPage,
   type AnnotationOperationPage,
@@ -98,8 +99,8 @@ export class PrismaPlatformRepository {
   }
 
   async listDirectoryUsers(user: ApiUser, query?: string) {
-    if (!this.access.isGlobalAdmin(user) && !user.roles.includes("ta")) {
-      throw forbidden("只有管理员和助教可以浏览账号目录。");
+    if (!canBrowseAccountDirectory(user.roles)) {
+      throw forbidden("只有系统管理员、管理员和教师可以浏览账号目录。");
     }
     const rows = await this.prisma.user.findMany({
       where: {
@@ -126,7 +127,7 @@ export class PrismaPlatformRepository {
       include: { mediaFiles: true },
     });
     if (!file) throw notFound("文件不存在。");
-    if (file.ownerUserId !== user.id && !this.access.isGlobalAdmin(user)) {
+    if (file.ownerUserId !== user.id && !this.access.hasFullResourceAccess(user)) {
       let canDownload = false;
       // 一个不可变 FileObject 可以被多个媒体资源复用；只要账号能下载其中任一资源，就能读取
       // 同一物理对象。这里不能再依赖历史上的单数 mediaFile 关系。

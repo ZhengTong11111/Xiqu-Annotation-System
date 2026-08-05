@@ -4,6 +4,8 @@ import type {
   ResourceCapability as DbResourceCapability,
 } from "@prisma/client";
 import {
+  getAutomaticResourceCapabilities,
+  hasFullPlatformResourceAccess,
   RESOURCE_CAPABILITIES,
   type EffectiveResourcePermission,
   type ResourceCapability,
@@ -16,8 +18,8 @@ const ALL_CAPABILITIES = [...RESOURCE_CAPABILITIES];
 export class ResourceAccessService {
   constructor(private readonly prisma: PrismaClient) {}
 
-  isGlobalAdmin(user: ApiUser) {
-    return user.roles.includes("super_admin") || user.roles.includes("admin");
+  hasFullResourceAccess(user: ApiUser) {
+    return hasFullPlatformResourceAccess(user.roles);
   }
 
   // 撤销他人审核记录需要真实管理权威；逐级 owner 与全局管理员都可管理其资源子树。
@@ -26,7 +28,7 @@ export class ResourceAccessService {
     resourceId: string,
     database: PrismaClient | Prisma.TransactionClient = this.prisma,
   ) {
-    if (this.isGlobalAdmin(user)) return true;
+    if (this.hasFullResourceAccess(user)) return true;
     let currentId: string | null = resourceId;
     while (currentId) {
       const resource: { ownerUserId: string; parentId: string | null } | null =
@@ -57,7 +59,7 @@ export class ResourceAccessService {
       },
     });
     if (!resource) throw notFound("资源不存在。");
-    if (this.isGlobalAdmin(user)) {
+    if (this.hasFullResourceAccess(user)) {
       return this.fullPermission("admin", false);
     }
     if (resource.ownerUserId === user.id) {
@@ -65,7 +67,9 @@ export class ResourceAccessService {
     }
 
     const now = new Date();
-    const capabilities = new Set<ResourceCapability>();
+    // 角色自动能力只是 ACL 的只读基线；直接授权与继承授权仍可在此基础上显式增加能力。
+    const roleCapabilities = getAutomaticResourceCapabilities(user.roles);
+    const capabilities = new Set<ResourceCapability>(roleCapabilities);
     const inheritedFrom: EffectiveResourcePermission["inheritedFrom"] = [];
     const direct = await database.resourcePermission.findUnique({
       where: { resourceId_userId: { resourceId, userId: user.id } },
@@ -122,7 +126,9 @@ export class ResourceAccessService {
         ? "direct"
         : inheritedFrom.length
           ? "inherited"
-          : "none",
+          : roleCapabilities.length
+            ? "role"
+            : "none",
       capabilities: values,
       inheritedFrom,
       isOwner: false,

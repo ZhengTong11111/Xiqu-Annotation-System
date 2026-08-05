@@ -109,6 +109,20 @@ export class AnnotationCollaborationTicketService {
     await assertActiveAnnotationFile(this.prisma, annotationFileId);
   }
 
+  // WebSocket 订阅建立后必须重新读取一次权威同步头，不能继续使用票据消费时的旧 revision。
+  // 该方法同时复核当前账号与文件状态，供建连窗口和后续需要一致性检查的入口复用。
+  async readCurrentHead(user: ApiUser, annotationFileId: string) {
+    await this.assertReadable(user, annotationFileId);
+    const file = await assertActiveAnnotationFile(this.prisma, annotationFileId);
+    return {
+      revision: file.revision,
+      operationCursor: encodeAnnotationSnapshotOperationCursor(
+        annotationFileId,
+        file.revision,
+      ),
+    };
+  }
+
   private async cleanupExpiredTickets() {
     const expired = await this.prisma.annotationCollaborationTicket.findMany({
       where: {

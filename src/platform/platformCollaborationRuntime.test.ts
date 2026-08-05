@@ -286,6 +286,19 @@ test("异常关闭使用退避和新票据重连，永久票据错误停止重�
   denied.runtime.dispose();
 });
 
+test("认证失效关闭当前会话后停止重连", async () => {
+  const harness = createHarness();
+  harness.runtime.update(FACTS);
+  await flushPromises();
+  harness.sockets[0].emit("open", new Event("open"));
+  harness.sockets[0].emit("message", { data: readyMessage() });
+  harness.sockets[0].emit("close", { code: 4401 });
+  assert.equal(last(harness.statuses), "error");
+  await harness.clock.advanceBy(60_000);
+  assert.equal(harness.getTicketRequests(), 1);
+  harness.runtime.dispose();
+});
+
 test("文件切换关闭旧 socket，旧文件迟到消息不能进入新会话", async () => {
   const harness = createHarness();
   harness.runtime.update(FACTS);

@@ -2,6 +2,7 @@ import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
   ChevronRight,
   Copy,
+  Download,
   FileJson2,
   Files,
   FileVideo2,
@@ -39,6 +40,7 @@ export function ResourceItem(props: {
   onRename: (resource: ResourceEntry) => void;
   onCopy: (resource: ResourceEntry) => void;
   onMove: (resource: ResourceEntry) => void;
+  onDownload: (resource: ResourceEntry) => void;
   onRestore: (resource: ResourceEntry) => void;
   onTrash: (resource: ResourceEntry) => void;
   onCompare: (resource: ResourceEntry) => void;
@@ -142,6 +144,7 @@ function ResourceContextMenu(props: {
   onRename: (resource: ResourceEntry) => void;
   onCopy: (resource: ResourceEntry) => void;
   onMove: (resource: ResourceEntry) => void;
+  onDownload: (resource: ResourceEntry) => void;
   onRestore: (resource: ResourceEntry) => void;
   onTrash: (resource: ResourceEntry) => void;
   onCompare: (resource: ResourceEntry) => void;
@@ -183,6 +186,15 @@ function ResourceContextMenu(props: {
               >
                 <FolderInput size={15} /> 移动到…
               </ContextMenu.Item>
+              {props.resource.type === "annotation_file" ||
+              props.resource.type === "media_file" ? (
+                <ContextMenu.Item
+                  disabled={!capabilities.includes("download")}
+                  onSelect={() => props.onDownload(props.resource)}
+                >
+                  <Download size={15} /> 下载
+                </ContextMenu.Item>
+              ) : null}
               <ContextMenu.Item
                 disabled={!capabilities.includes("write")}
                 onSelect={() => props.onRename(props.resource)}

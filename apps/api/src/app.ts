@@ -45,6 +45,7 @@ import { createAnnotationRemoteActivityChannel } from "./annotationRemoteActivit
 import { PostgresAnnotationRemoteActivityEventBus } from "./postgresAnnotationRemoteActivityEventBus.js";
 import { AnnotationCommandCommitService } from "./annotationCommandCommitService.js";
 import type { ApiCorsOriginPolicy } from "./serverConfig.js";
+import { AccountAdminService } from "./accountAdminService.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -73,6 +74,7 @@ export async function buildApiApp(
   const repository = new PrismaPlatformRepository(options.prisma, access);
   // 审计读取拥有独立授权、分页和导出边界，不把治理查询重新塞回通用资源仓储。
   const auditLogs = new AuditLogService(options.prisma, access);
+  const accounts = new AccountAdminService(options.prisma);
   const collaborationHub = new AnnotationCollaborationHub();
   const collaborationTickets = new AnnotationCollaborationTicketService(options.prisma, access);
   // 生产默认只通过工厂装配一次；测试可注入 typed adapter，不读取宿主环境。
@@ -238,6 +240,7 @@ export async function buildApiApp(
   registerApiRoutes(
     app,
     repository,
+    accounts,
     auditLogs,
     resources,
     annotationCommandCommits,

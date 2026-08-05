@@ -27,3 +27,5 @@ export * from "./trackStructureLifecycleCommandApply.js";
 export * from "./trackStructureTransactionCommand.js";
 export * from "./trackStructureTransactionCommandApply.js";
 export * from "./annotationCommandApply.js";
+// 并发冲突转换与普通严格 apply 分离，只有确认 409 后的客户端恢复流程可以调用。
+export * from "./annotationCommandConflictResolution.js";

@@ -22,6 +22,9 @@ type TopMenuBarProps = {
   syncStatus: ProjectSyncStatus;
   localRevision: number;
   savedRevision: number;
+  remoteRevision?: number;
+  observedRemoteRevision?: number;
+  editingBlockedReason?: string;
   pendingOperationCount: number;
   accessLabel?: string;
   mutationLeaseLabel?: string;
@@ -75,6 +78,9 @@ export function TopMenuBar({
   syncStatus,
   localRevision,
   savedRevision,
+  remoteRevision,
+  observedRemoteRevision,
+  editingBlockedReason,
   pendingOperationCount,
   accessLabel,
   mutationLeaseLabel,
@@ -120,6 +126,8 @@ export function TopMenuBar({
     localRevision,
     savedRevision,
     pendingOperationCount,
+    remoteRevision,
+    observedRemoteRevision,
   );
 
   useEffect(() => {
@@ -195,16 +203,16 @@ export function TopMenuBar({
               <div className="top-menu-dropdown" role="menu" aria-label={item}>
                 {item === "文件" ? (
                   <>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(videoFileInputRef)}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(videoFileInputRef)} disabled={Boolean(editingBlockedReason)}>
                       导入视频
                     </button>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(srtFileInputRef)}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(srtFileInputRef)} disabled={Boolean(editingBlockedReason)}>
                       导入句级 SRT
                     </button>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(projectFileInputRef)}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(projectFileInputRef)} disabled={Boolean(editingBlockedReason)}>
                       导入项目
                     </button>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(mergeProjectFileInputRef)}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(mergeProjectFileInputRef)} disabled={Boolean(editingBlockedReason)}>
                       导入并整合标注
                     </button>
                     <div className="top-menu-divider" />
@@ -234,14 +242,14 @@ export function TopMenuBar({
                 ) : null}
                 {item === "编辑" ? (
                   <>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onUndo)} disabled={!canUndo}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onUndo)} disabled={!canUndo || Boolean(editingBlockedReason)}>
                       撤销
                     </button>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onRedo)} disabled={!canRedo}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onRedo)} disabled={!canRedo || Boolean(editingBlockedReason)}>
                       重做
                     </button>
                     <div className="top-menu-divider" />
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onRepairSentenceCharacterTrack)}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onRepairSentenceCharacterTrack)} disabled={Boolean(editingBlockedReason)}>
                       检查句级/逐字文字轨
                     </button>
                   </>
@@ -384,12 +392,26 @@ function getSyncStatusLabel(
   localRevision: number,
   savedRevision: number,
   pendingOperationCount: number,
+  remoteRevision?: number,
+  observedRemoteRevision?: number,
 ) {
+  if (
+    status === "saved" &&
+    remoteRevision !== undefined &&
+    observedRemoteRevision !== undefined &&
+    observedRemoteRevision > remoteRevision
+  ) {
+    return `正在同步服务器 v${observedRemoteRevision}`;
+  }
   if (status === "saved") {
-    return `已保存 · r${savedRevision}`;
+    return remoteRevision === undefined
+      ? `已保存 · r${savedRevision}`
+      : `已同步 · 服务器 v${remoteRevision}`;
   }
   if (status === "saving") {
-    return `保存中 · r${localRevision}`;
+    return remoteRevision === undefined
+      ? `保存中 · r${localRevision}`
+      : `保存中 · 基于服务器 v${remoteRevision}`;
   }
   if (status === "offline") {
     return `离线待同步 · ${pendingOperationCount} 项`;

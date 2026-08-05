@@ -259,7 +259,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
               message: "最新浏览器草稿不存在或已损坏，请留在编辑器后重试。",
             };
           }
-          const serverProject = hydrateProjectForClient(latestFile.payload, client);
+          const serverProject = hydrateProjectForClient(latestFile.payload, client, latestFile.media);
           // 两侧都读取成功后才切换视图，失败不能让用户离开仍含 dirty 内容的编辑器。
           setPendingDraftOpen(buildPendingDraftOpen({
             file: latestFile,
@@ -328,7 +328,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         localDraft: latestDraft,
         serverFile: latestFile,
         request,
-        hydrateProject: (project) => hydrateProjectForClient(project, client),
+        hydrateProject: (project) => hydrateProjectForClient(project, client, pending.file.media),
       });
       if (!prepared.ok) return prepared;
       const targetFile = prepared.value.targetFile as AnnotationFile<ProjectData>;
@@ -353,7 +353,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setError(null);
     try {
       const file = await client.getAnnotationFile<ProjectData>(resource.id);
-      const serverProject = hydrateProjectForClient(file.payload, client);
+      const serverProject = hydrateProjectForClient(file.payload, client, file.media);
       // 草稿严格按当前登录账号和文件读取；未知或损坏数据不能通过类型断言进入编辑器。
       if (!user) throw new Error("登录会话尚未恢复，请刷新后重试。");
       const rawDraft = await platformDraftStore.get(user.id, resource.id);
@@ -406,7 +406,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     try {
       const recoveryState = toProjectDocumentRecoveryState(
         pending.draft,
-        (project) => hydrateProjectForClient(project, client),
+        (project) => hydrateProjectForClient(project, client, pending.file.media),
       );
       await enterPlatformFileAndMarkOpened({
         file: pending.file,
@@ -450,7 +450,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         setDraftDecisionError("浏览器草稿已被删除、损坏或替换，请取消后重新打开文件。");
         return;
       }
-      const latestServerProject = hydrateProjectForClient(latestFile.payload, client);
+      const latestServerProject = hydrateProjectForClient(latestFile.payload, client, latestFile.media);
       const prepared = preparePlatformConflictRebase({
         userId: user.id,
         draft: latestDraft,
@@ -537,8 +537,19 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       }
       await enterPlatformEditor({
         file: typedTargetFile,
-        initialProject: prepared.value.draft.baseProject,
-        pendingMergeDraft: prepared.value.draft,
+        initialProject: hydrateProjectForClient(
+          prepared.value.draft.baseProject,
+          client,
+          typedTargetFile.media,
+        ),
+        pendingMergeDraft: {
+          ...prepared.value.draft,
+          baseProject: hydrateProjectForClient(
+            prepared.value.draft.baseProject,
+            client,
+            typedTargetFile.media,
+          ),
+        },
       });
       return { ok: true };
     } catch (nextError) {

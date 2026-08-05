@@ -92,6 +92,7 @@ export async function submitLegacyPendingOperations(
 
 export type PlatformSaveOutcome =
   | { status: "saved" }
+  | { status: "rebased"; message: string }
   | {
       status: "skipped";
       reason: "not-platform" | "read-only" | "clean" | "busy";
@@ -107,7 +108,7 @@ export type PlatformSaveOutcome =
 // 调用方据此 setSyncStatus，不要在失败时调用 markProjectAsSaved。
 export function describeServerSaveError(error: unknown): Exclude<
   PlatformSaveOutcome,
-  { status: "saved" | "skipped" }
+  { status: "saved" | "rebased" | "skipped" }
 > {
   if (error instanceof PlatformApiError) {
     if (error.status === 409) {

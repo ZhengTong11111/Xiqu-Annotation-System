@@ -24,6 +24,8 @@ export type AtomicCommandBlockedReason =
 export type AtomicCommandPlan = {
   request: CommitAnnotationCommandBatchRequest;
   operationIds: string[];
+  // 仅保存在当前浏览器内存中，用于成功响应后的基线一致性证明；不会进入 API 请求或持久化草稿。
+  serverBaseProject: ProjectData;
   acknowledgedProject: ProjectData;
   acknowledgedTrackSnapEnabled: Record<string, boolean>;
   remainingCount: number;
@@ -105,6 +107,7 @@ export function planAtomicAnnotationCommandBatch(input: PlanInput): AtomicComman
     plan: {
       request,
       operationIds: batchOperations.map((operation) => operation.id),
+      serverBaseProject: input.savedProject,
       acknowledgedProject,
       // 结构命令产生的新/删轨 key 是项目变化的派生事实，必须随同一批 saved baseline 一起推进。
       acknowledgedTrackSnapEnabled: normalizeTrackSnapEnabledForProject(

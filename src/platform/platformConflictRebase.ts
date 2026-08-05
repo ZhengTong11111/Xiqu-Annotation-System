@@ -4,7 +4,10 @@ import {
   type AnnotationMutationPurpose,
   type AtomicAnnotationCommandOperation,
 } from "@xiqu/shared";
-import { applyAnnotationCommandToProject } from "@xiqu/document-model";
+import {
+  applyAnnotationCommandToProject,
+  resolveConcurrentAnnotationCommandConflict,
+} from "@xiqu/document-model";
 import type { ProjectDocumentOperation } from "../state/projectDocumentState";
 import type { ProjectData } from "../types";
 import {
@@ -27,6 +30,7 @@ export type PlatformConflictRebaseResult =
       latestRevision: number;
       rebasedProject: ProjectData;
       operations: AtomicAnnotationCommandOperation[];
+      rebasedPendingOperations: ProjectDocumentOperation[];
       requiredLeasePurpose: AnnotationMutationPurpose | null;
     }
   | {
@@ -61,6 +65,8 @@ type PlatformConflictRebaseInput = {
   latestServerProject: ProjectData;
   savedLocalRevision: number;
   pendingOperations: readonly ProjectDocumentOperation[];
+  // 仅实时 409 恢复开启；浏览器旧草稿可能对应“请求成功但响应丢失”，不得再次改写后重放。
+  allowConcurrentValueResolution?: boolean;
 };
 
 // 冲突重放分两步：先在原 saved baseline 上证明本地命令链没有缺口，再在最新服务器项目上试运行。
@@ -99,26 +105,40 @@ export function planPlatformConflictRebase(
 
   let rebasedProject = input.latestServerProject;
   const operations: AtomicAnnotationCommandOperation[] = [];
+  const rebasedPendingOperations: ProjectDocumentOperation[] = [];
   let requiredLeasePurpose: AnnotationMutationPurpose | null = null;
   for (const [operationIndex, { operation, envelope }] of audit.operations.entries()) {
-    const applied = applyAnnotationCommandToProject(rebasedProject, envelope);
-    if (applied.status !== "applied") {
+    const strictResult = applyAnnotationCommandToProject(rebasedProject, envelope);
+    const resolved = strictResult.status === "applied"
+      ? { status: "resolved" as const, project: strictResult.project, envelope: strictResult.envelope }
+      : input.allowConcurrentValueResolution
+        ? resolveConcurrentAnnotationCommandConflict(rebasedProject, envelope)
+        : null;
+    if (!resolved || resolved.status !== "resolved") {
       return {
         status: "command_conflict",
         operationId: operation.id,
         operationIndex,
         commandType: envelope.command.type,
-        issues: sanitizeApplyIssues(applied),
+        issues: resolved
+          ? [{ code: resolved.reason }]
+          : sanitizeApplyIssues(strictResult),
       };
     }
-    rebasedProject = applied.project;
+    rebasedProject = resolved.project;
+    const rebasedOperation: ProjectDocumentOperation = {
+      ...operation,
+      type: resolved.envelope.command.type,
+      commandEnvelope: resolved.envelope,
+    };
+    rebasedPendingOperations.push(rebasedOperation);
     operations.push({
       clientOperationId: operation.id,
       localRevision: operation.localRevision,
-      action: envelope.command.type,
-      payload: envelope,
+      action: resolved.envelope.command.type,
+      payload: resolved.envelope,
     });
-    requiredLeasePurpose ??= getAnnotationMutationLeasePurposeForCommand(envelope);
+    requiredLeasePurpose ??= getAnnotationMutationLeasePurposeForCommand(resolved.envelope);
   }
 
   return {
@@ -127,15 +147,16 @@ export function planPlatformConflictRebase(
     latestRevision: input.latestRevision,
     rebasedProject,
     operations,
+    rebasedPendingOperations,
     requiredLeasePurpose,
   };
 }
 
 // 对 UI/日志只暴露有界的机器事实，不能把 before/after 正文或完整命令带入冲突详情。
-function sanitizeApplyIssues(result: Exclude<
-  ReturnType<typeof applyAnnotationCommandToProject>,
-  { status: "applied" }
->): ConflictRebaseIssue[] {
+function sanitizeApplyIssues(
+  result: ReturnType<typeof applyAnnotationCommandToProject>,
+): ConflictRebaseIssue[] {
+  if (result.status === "applied") return [{ code: "unexpected_applied_result" }];
   if (!("issues" in result) || !Array.isArray(result.issues)) {
     return [{ code: result.status }];
   }

@@ -10,6 +10,7 @@ import type {
   AnnotationRecoverySnapshotSummary,
   AuditActionName,
   AuditLogPage,
+  ManagedAccount,
   PlatformUser,
   ProcessingJob,
   ProcessingJobType,
@@ -61,6 +62,31 @@ export type LoginResponse = {
   accessToken: string;
 };
 
+export type ListManagedAccountsOptions = {
+  query?: string;
+  cursor?: string;
+  limit?: number;
+};
+
+export type CreateManagedAccountRequest = {
+  accountName: string;
+  displayName: string;
+  password: string;
+  roles: ManagedAccount["roles"];
+};
+
+export type UpdateManagedAccountRequest = {
+  displayName?: string;
+  roles?: ManagedAccount["roles"];
+  isActive?: boolean;
+};
+
+export type ResetManagedAccountPasswordRequest = { password: string };
+export type ChangeOwnPasswordRequest = {
+  currentPassword: string;
+  newPassword: string;
+};
+
 export type ListResourcesOptions = {
   parentId?: string | null;
   view?: ResourceListView;
@@ -85,6 +111,8 @@ export type CreateAnnotationFileRequest<TPayload = unknown> = {
   payload: TPayload;
   mediaResourceId?: string | null;
 };
+
+export type UpdateAnnotationMediaRequest = { mediaResourceId: string | null };
 
 export type UpdateResourceRequest = {
   name?: string;

@@ -28,6 +28,7 @@ export type ResourceVirtualCollectionProps = {
   onRename: (resource: ResourceEntry) => void;
   onCopy: (resource: ResourceEntry) => void;
   onMove: (resource: ResourceEntry) => void;
+  onDownload: (resource: ResourceEntry) => void;
   interactionDisabled: boolean;
   draggedResourceIds: string[];
   onDragStart: (resourceIds: string[]) => void;
@@ -243,6 +244,7 @@ function resourceItemProps(
     onRename: props.onRename,
     onCopy: props.onCopy,
     onMove: props.onMove,
+    onDownload: props.onDownload,
     onRestore: props.onRestore,
     onTrash: props.onTrash,
     onCompare: props.onCompare,

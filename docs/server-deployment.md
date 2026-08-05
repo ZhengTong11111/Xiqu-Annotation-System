@@ -188,7 +188,7 @@ printf '%s' "$XIQU_BOOTSTRAP_PASSWORD" | sudo -u xiqu bash -c '
 unset XIQU_BOOTSTRAP_PASSWORD
 ```
 
-CLI 在 PostgreSQL 事务锁内检查管理员状态。数据库一旦已有活跃 `admin` 或 `super_admin`，它会拒绝再次
+CLI 在 PostgreSQL 事务锁内检查系统管理员状态。数据库一旦已有活跃 `super_admin`，它会拒绝再次
 bootstrap；同名普通账号也不会被静默提权。后续账号与权限必须走正式平台治理流程。
 
 绝不能在生产环境把 `XIQU_SEED_DEVELOPMENT_DATA` 改为 `true`。该选项会创建公开开发口令与演示资源，只供

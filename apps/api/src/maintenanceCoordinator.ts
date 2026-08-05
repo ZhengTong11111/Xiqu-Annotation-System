@@ -208,7 +208,7 @@ export class MaintenanceCoordinator {
   }
 
   private assertAdministrator(user: ApiUser) {
-    if (!this.access.isGlobalAdmin(user)) {
+    if (!this.access.hasFullResourceAccess(user)) {
       throw forbidden("只有管理员可以切换平台维护状态。");
     }
   }

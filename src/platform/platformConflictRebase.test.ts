@@ -5,6 +5,7 @@ import { mockProject } from "../mockData";
 import type { ProjectDocumentOperation } from "../state/projectDocumentState";
 import type { ProjectData } from "../types";
 import { buildProjectAnnotationContentCommand } from "../utils/annotationContentCommand";
+import { buildProjectTimelineTimingCommand } from "../utils/timelineTimingCommand";
 import { planPlatformConflictRebase } from "./platformConflictRebase";
 
 type Chain = {
@@ -50,6 +51,7 @@ function plan(chain: Chain, latestServerProject: ProjectData, overrides: Partial
   baseRevision: number;
   latestRevision: number;
   savedLocalRevision: number;
+  allowConcurrentValueResolution: boolean;
 }> = {}) {
   return planPlatformConflictRebase({
     baseRevision: overrides.baseRevision ?? 7,
@@ -59,6 +61,7 @@ function plan(chain: Chain, latestServerProject: ProjectData, overrides: Partial
     latestServerProject,
     savedLocalRevision: overrides.savedLocalRevision ?? 0,
     pendingOperations: chain.operations,
+    allowConcurrentValueResolution: overrides.allowConcurrentValueResolution,
   });
 }
 
@@ -93,6 +96,105 @@ test("同字段修改返回有界机器冲突摘要，不泄漏正文", () => {
     targetKey: '["sentence",null,"line-1","text"]',
   }]);
   assert.doesNotMatch(JSON.stringify(result), /本地正文|远端正文/);
+});
+
+test("实时 409 恢复可让后提交端的同字段内容成为当前版本", () => {
+  const chain = buildSentenceChain([{ lineId: "line-1", text: "本地正文" }]);
+  const latest = structuredClone(chain.savedProject);
+  latest.subtitleLines.find((line) => line.id === "line-1")!.text = "远端正文";
+
+  const result = plan(chain, latest, { allowConcurrentValueResolution: true });
+  assert.equal(result.status, "rebase_ready");
+  if (result.status !== "rebase_ready") return;
+  assert.equal(result.rebasedProject.subtitleLines.find((line) => line.id === "line-1")?.text, "本地正文");
+  const payload = result.operations[0]?.payload;
+  assert.equal(payload?.command.type, "annotation.items.content.update");
+  if (payload?.command.type !== "annotation.items.content.update") return;
+  assert.equal(payload.command.items[0]?.before, "远端正文");
+  assert.equal(payload.command.items[0]?.after, "本地正文");
+  assert.deepEqual(result.rebasedPendingOperations.map((operation) => operation.id), ["rebase-op-1"]);
+  assert.equal(result.rebasedPendingOperations[0]?.commandEnvelope, payload);
+});
+
+function buildTimingChain(
+  edit: (line: ProjectData["subtitleLines"][number]) => void,
+): Chain {
+  const savedProject = structuredClone(mockProject);
+  const currentProject = structuredClone(savedProject);
+  const localLine = currentProject.subtitleLines.find((line) => line.id === "line-1")!;
+  edit(localLine);
+  const envelope = buildProjectTimelineTimingCommand(savedProject, currentProject, [{
+    entityType: "sentence",
+    entityId: "line-1",
+  }]);
+  assert.ok(envelope);
+  return {
+    savedProject,
+    currentProject,
+    operations: [{
+      id: "timing-op-1",
+      type: envelope.command.type,
+      action: "edit",
+      localRevision: 1,
+      baseRevision: 0,
+      createdAt: 1_785_800_000_000,
+      syncState: "pending",
+      commandEnvelope: envelope,
+      summary: { hasProjectChange: true, hasTrackSnapChange: false },
+    }],
+  };
+}
+
+test("实时 409 恢复对同一时间边界采用后提交端的绝对目标值", () => {
+  const chain = buildTimingChain((line) => {
+    line.startTime += 1;
+  });
+  const original = chain.savedProject.subtitleLines.find((line) => line.id === "line-1")!;
+  const latest = structuredClone(chain.savedProject);
+  const remoteLine = latest.subtitleLines.find((line) => line.id === "line-1")!;
+  remoteLine.startTime += 2;
+
+  const result = plan(chain, latest, { allowConcurrentValueResolution: true });
+  assert.equal(result.status, "rebase_ready");
+  if (result.status !== "rebase_ready") return;
+  const merged = result.rebasedProject.subtitleLines.find((line) => line.id === "line-1")!;
+  assert.equal(merged.startTime, original.startTime + 1);
+  assert.equal(merged.endTime, original.endTime);
+});
+
+test("实时 409 恢复仍会组合双方对不同时间边界的修改", () => {
+  const chain = buildTimingChain((line) => {
+    line.endTime += 2;
+  });
+  const original = chain.savedProject.subtitleLines.find((line) => line.id === "line-1")!;
+  const latest = structuredClone(chain.savedProject);
+  latest.subtitleLines.find((line) => line.id === "line-1")!.startTime += 1;
+
+  const result = plan(chain, latest, { allowConcurrentValueResolution: true });
+  assert.equal(result.status, "rebase_ready");
+  if (result.status !== "rebase_ready") return;
+  const merged = result.rebasedProject.subtitleLines.find((line) => line.id === "line-1")!;
+  assert.equal(merged.startTime, original.startTime + 1);
+  assert.equal(merged.endTime, original.endTime + 2);
+});
+
+test("实时 409 恢复对整体拖动保留后提交端完整区间而不累计位移", () => {
+  const chain = buildTimingChain((line) => {
+    line.startTime += 1;
+    line.endTime += 1;
+  });
+  const original = chain.savedProject.subtitleLines.find((line) => line.id === "line-1")!;
+  const latest = structuredClone(chain.savedProject);
+  const remoteLine = latest.subtitleLines.find((line) => line.id === "line-1")!;
+  remoteLine.startTime += 2;
+  remoteLine.endTime += 2;
+
+  const result = plan(chain, latest, { allowConcurrentValueResolution: true });
+  assert.equal(result.status, "rebase_ready");
+  if (result.status !== "rebase_ready") return;
+  const merged = result.rebasedProject.subtitleLines.find((line) => line.id === "line-1")!;
+  assert.equal(merged.startTime, original.startTime + 1);
+  assert.equal(merged.endTime, original.endTime + 1);
 });
 
 test("目标被远端删除时返回 target_missing", () => {

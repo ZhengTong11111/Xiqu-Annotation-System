@@ -23,6 +23,7 @@ export function ResourceColumnBrowser(props: {
   onRename: (resource: ResourceEntry) => void;
   onCopy: (resource: ResourceEntry) => void;
   onMove: (resource: ResourceEntry) => void;
+  onDownload: (resource: ResourceEntry) => void;
   onRestore: (resource: ResourceEntry) => void;
   onTrash: (resource: ResourceEntry) => void;
   onCompare: (resource: ResourceEntry) => void;
@@ -176,6 +177,7 @@ function VirtualColumnItems(props: Parameters<typeof ResourceColumnBrowser>[0] &
                 onRename={props.onRename}
                 onCopy={props.onCopy}
                 onMove={props.onMove}
+                onDownload={props.onDownload}
                 onRestore={props.onRestore}
                 onTrash={props.onTrash}
                 onCompare={props.onCompare}

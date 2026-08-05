@@ -66,7 +66,8 @@ export type PlatformCollaborationRuntime = {
 const CONNECT_TIMEOUT_MS = 10_000;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
-const PERMANENT_CLOSE_CODES = new Set([4400, 4403]);
+// 4401 表示当前登录会话已失效；继续申请票据只会形成无限重连，应等待账号或文件会话变化。
+const PERMANENT_CLOSE_CODES = new Set([4400, 4401, 4403]);
 const ACTIVITY_SEND_INTERVAL_MS = 125;
 const ACTIVITY_KEEPALIVE_MS = 2_000;
 const ACTIVITY_MAX_BUFFERED_BYTES = 256 * 1_024;

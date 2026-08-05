@@ -21,6 +21,7 @@ const PLAN = {
     }],
   },
   operationIds: ["op-1"],
+  serverBaseProject: {} as AtomicCommandPlan["serverBaseProject"],
   acknowledgedProject: {} as AtomicCommandPlan["acknowledgedProject"],
   acknowledgedTrackSnapEnabled: {},
   remainingCount: 0,

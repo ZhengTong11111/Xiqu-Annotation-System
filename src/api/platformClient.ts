@@ -28,6 +28,13 @@ import type {
   ListResourcesOptions,
   LoginRequest,
   LoginResponse,
+  ManagedAccount,
+  ManagedAccountPage,
+  ListManagedAccountsOptions,
+  CreateManagedAccountRequest,
+  UpdateManagedAccountRequest,
+  ResetManagedAccountPasswordRequest,
+  ChangeOwnPasswordRequest,
   MoveResourceRequest,
   PlatformUser,
   PlatformMaintenanceStatus,
@@ -47,6 +54,7 @@ import type {
   SystemDiagnostics,
   UpdateResourceInheritanceRequest,
   UpdateResourceRequest,
+  UpdateAnnotationMediaRequest,
   UpsertResourcePermissionRequest,
 } from "@xiqu/shared";
 
@@ -110,6 +118,38 @@ export class PlatformClient {
     return this.request<PlatformUser[]>(
       params.size ? `/users?${params}` : "/users",
     );
+  }
+
+  listManagedAccounts(options: ListManagedAccountsOptions = {}) {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(options)) {
+      if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
+    }
+    return this.request<ManagedAccountPage>(
+      params.size ? `/admin/accounts?${params}` : "/admin/accounts",
+    );
+  }
+
+  createManagedAccount(request: CreateManagedAccountRequest) {
+    return this.request<ManagedAccount>("/admin/accounts", { method: "POST", body: request });
+  }
+
+  updateManagedAccount(userId: string, request: UpdateManagedAccountRequest) {
+    return this.request<ManagedAccount>(`/admin/accounts/${userId}`, {
+      method: "PATCH",
+      body: request,
+    });
+  }
+
+  resetManagedAccountPassword(userId: string, request: ResetManagedAccountPasswordRequest) {
+    return this.request<{ ok: true }>(`/admin/accounts/${userId}/reset-password`, {
+      method: "POST",
+      body: request,
+    });
+  }
+
+  changeOwnPassword(request: ChangeOwnPasswordRequest) {
+    return this.request<{ ok: true }>("/auth/change-password", { method: "POST", body: request });
   }
 
   listResources(options: ListResourcesOptions = {}) {
@@ -196,6 +236,13 @@ export class PlatformClient {
     return this.request<AnnotationFile<TPayload>>(
       `/annotation-files/${resourceId}`,
     );
+  }
+
+  updateAnnotationMedia<TPayload>(resourceId: string, request: UpdateAnnotationMediaRequest) {
+    return this.request<AnnotationFile<TPayload>>(`/annotation-files/${resourceId}/media`, {
+      method: "PATCH",
+      body: request,
+    });
   }
 
   saveAnnotationFile<TPayload>(
@@ -396,6 +443,14 @@ export class PlatformClient {
       ? `?access_token=${encodeURIComponent(this.accessToken)}`
       : "";
     return `${this.baseUrl}/files/${encodeURIComponent(fileId)}/content${tokenQuery}`;
+  }
+
+  // 资源下载交给浏览器原生流处理，避免大型视频先完整进入 JavaScript Blob 内存。
+  getResourceDownloadUrl(resourceId: string) {
+    const tokenQuery = this.accessToken
+      ? `?access_token=${encodeURIComponent(this.accessToken)}`
+      : "";
+    return `${this.baseUrl}/resources/${encodeURIComponent(resourceId)}/download${tokenQuery}`;
   }
 
   createProcessingJob(request: CreateProcessingJobRequest) {

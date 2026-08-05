@@ -7,7 +7,10 @@ Workspace/Fork、完成版本和项目发布版本模型仅在 `docs/development
 最后更新：2026-08-04
 
 当前开发基线：R1-R4 工程闭环与 R5 实时多人协作、原子领域命令提交、显式并发冲突处理及
-单服务器可部署候选门禁均已完成。按照本轮目标，R5 完成后暂停继续扩展功能；R6/R7 保留为后续路线。
+单服务器可部署候选门禁均已完成。平台现已补齐管理员账号生命周期、所有账号自助改密、标注文件与
+媒体资源的数据库外键绑定，以及双账号 revision 竞争后的无冲突命令自动重放。clean 客户端现分别记录
+“协作通道已观察 revision”和“已进入本地 ProjectData 的 revision”，两者存在缺口时暂停开始新写操作，
+待权威 HTTP catch-up 完成后恢复，避免从已知过时快照制造本可避免的同目标冲突；R6/R7 保留为后续路线。
 
 当前阶段：R2 已完成恢复、文件比较、选择性整合和确认范围审核闭环；R3a/R3b 已完成稳定资源分页、
 ACL 后填页、目录查询索引、三视图增量消费与虚拟渲染。R3c 已把媒体上传收敛为单一业务命令，建立
@@ -47,7 +50,9 @@ ProjectData parser、有序原子命令批次合同和服务端原子数据库�
 R5b3b2 已完成 App、自动保存、IndexedDB 恢复状态、mutation lease 和冲突状态的真实接线，可重放编辑现已
 直接原子提交并逐批确认，旧/不可重放边界才走有界完整快照；R5b3c1 已建立共享本地命令链审计、纯
 all-or-nothing 冲突重放判定和真实双账号并发矩阵；R5b3c2 已完成显式 App 冲突决策、二次权威核验、
-crash-safe 草稿 checkpoint、基线替换和原 operation 重提接线。R5 可部署候选门禁已完成：生产入口采用
+crash-safe 草稿 checkpoint、基线替换和原 operation 重提接线。后续可靠性修复又把同一安全 rebase 规则接入
+在线 409 自动处理：无冲突命令保留原身份并立即重提，同目标冲突仍进入既有人工流程；WebSocket 建连窗口
+通过“先订阅、再读权威 head、再发送 ready”消除漏 revision。R5 可部署候选门禁已完成：生产入口采用
 fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提供 systemd、Nginx/TLS、部署 smoke、
 迁移、备份恢复、升级回滚和人工验收说明。`pg_trgm` 仍作为数据库级部署能力由运维基线显式预置。
 
@@ -74,7 +79,8 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
   不变量；当前差异主要是类型、图标/导航语义及可选 `ProjectMetadata`，项目不是独立存储卷。
 - `all_projects` 是资源管理器根目录，只列出 `parentId = null` 的顶层项目。嵌套项目只在实际父容器
   下出现；最近、收藏、共享、归档和回收站才是跨目录虚拟视图。
-- `AnnotationFile` 保存可变 `payload`、整数 `revision`、关联媒体和最近保存信息。
+- `AnnotationFile` 保存可变 `payload`、整数 `revision`、媒体资源外键和最近保存信息；关联媒体摘要由
+  API 独立返回，受保护 URL 不进入 `ProjectData`。
 - 保存必须携带 `baseRevision`；过期写入返回 `409`，不得静默覆盖。
 - 覆盖 payload 前创建 `AnnotationRecoverySnapshot`。恢复快照是内部历史，不是普通文件或
   用户发布版本。
@@ -91,8 +97,13 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
   `manage_permissions`。
 - 项目/文件夹授权可继承给后代；资源可用 `breakPermissionInheritance` 截断祖先授权。
 - 直接授权与继承授权取并集，当前没有显式 deny。
-- `super_admin`、`admin`、资源 owner，以及祖先项目/文件夹 owner 拥有完整权限。
+- `super_admin`、`admin`、资源 owner，以及祖先项目/文件夹 owner 拥有完整资源权限；只有 `super_admin`
+  可以管理账号。`teacher` 自动取得所有资源的 `read + download`，内容编辑、审核和权限管理仍需显式 ACL。
 - API 是安全边界；前端隐藏或禁用控件只改善体验。
+- 系统管理员通过独立账号管理界面创建、停用/恢复账号、调整平台角色和重置密码；普通账号可修改自己
+  的密码。停用和密码变化会撤销旧会话，账号不做破坏性硬删除。
+- 原 `ta` 角色已迁移并合并为 `teacher`。未来 teacher/annotator 附属关系和可调整自动权限需要单独的数据
+  模型与审计合同，本轮只保留集中角色策略入口，不提前引入关系表或隐式 ACL。
 - 当前 ACL 是资源级权限。旧“轨道/时间范围 grant”不属于现行模型；若未来确有需要，应作为
   标注文件内部的第二层规则单独设计，不能复活已删除的数据模型。
 
@@ -123,17 +134,21 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
   草稿，用户确认后形成一次可撤销本地提交，不自动保存服务器。
 - 标注编辑器通过 `useProjectDocumentState()` 管理历史、dirty 状态、本地 revision、pending
   operations 和同步状态。
-- 服务端 operation log 当前只记录操作摘要，不驱动 `AnnotationFile.payload`；完整 payload 仍由
-  revision save API 写入。
+- 可重放领域 operation 由原子命令批次在同一事务中推进 `AnnotationFile.payload`、revision、恢复快照、
+  committed operation 和审计；只有旧格式、受控批量边界等明确不可重放场景继续使用完整快照保存。
 
 ### 2.4 已完成能力
 
 - PostgreSQL 用户、角色、会话与密码哈希。
+- 系统管理员账号生命周期、平台角色、停用/恢复、密码重置和所有账号自助改密；敏感操作撤销既有会话并写审计。
 - 资源树的创建、读取、重命名、移动、软删除、恢复、收藏和最近打开。
 - 单命令媒体上传、真实媒体签名校验、用户/平台容量锁、失败补偿、受保护读取及 MP4 Range seeking。
 - 管理员对象存储 dry-run/显式 cleanup API，可识别过期暂存、磁盘孤儿、无引用 FileObject 和缺失
   二进制；缺失二进制只报告，不自动删除数据库元数据。
 - 标注 JSON 导入、四类资源统一复制/粘贴、打开编辑和 revision 保存。
+- 媒体文件和标注文件已提供统一资源下载命令：媒体使用对象存储流式响应，标注导出当前权威 JSON；入口位于
+  资源右键菜单和 Inspector，并由服务端独立校验 `download`。项目/文件夹打包仍保留为后续异步归档能力。
+- 标注 JSON 导入时可选择/上传媒体或明确暂不关联；Inspector 可改绑/解绑，数据库外键在媒体删除时自动置空。
 - 两个普通标注文件的只读结构化比较、左右交换、单侧读取/迁移错误隔离与重复实体 id 警告。
 - 普通标注文件的实体选择、依赖闭包、逐项冲突决策、陈旧计划拒绝和目标编辑器单次可撤销整合。
 - 恢复快照与当前服务器 revision 的固定方向只读结构化比较、时间概览和当前文件定位。
@@ -160,8 +175,10 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
 - 可写平台文件已有按账号/文件隔离的 IndexedDB 草稿、刷新后同 revision 显式恢复，以及 stale 草稿对
   最新服务器文件的固定方向结构化比较、依赖闭包、逐项冲突决策和编辑器二次确认；已有空闲自动保存、
   保存中继续编辑、在线恢复、有界退避和 409 显式比较续接，生命周期由确定性 runtime 测试覆盖。
-- 已有跨实例在线成员 presence，以及远端播放头、鼠标时间和匿名选区摘要预览，但没有实时领域 operation
-  提交/确认或多人即时合并；现有比较整合是显式文件/草稿冲突处理，不是实时协作协议。
+- 已有跨实例在线成员 presence、远端播放头/鼠标时间/匿名选区摘要，以及 HTTP 原子领域 operation 提交和
+  committed-feed 追赶。WebSocket 仍只发送有损 revision 唤醒：建连时先订阅再权威读取 head，clean 会话据此
+  追赶；双账号同 revision 竞争时，无交集命令自动重放并立即重提，同目标修改继续显式冲突审阅。当前仍不是
+  OT/CRDT，也不承诺同一实体的无提示即时合并。
 - 后端任务仍是占位模型，没有独立 worker、队列和结果资产管理。
 - 迁移、本地/S3 对象存储、备份恢复、监控和维护门禁已有工程实现；真实生产 bucket/IAM、TLS、反向代理、
   限流和跨设备演练仍属于部署加固缺口。
@@ -589,6 +606,13 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
         后续由普通自动保存走现有原子接口重提。同目标冲突、legacy/track-snap/snapshot barrier、revision 再变、
         撤权或指纹变化继续进入既有结构化人工比较。WebSocket 仍只承担失效提示/presence/activity，未引入
         OT/CRDT。
+      - R5 完成后的可靠性维护已把同一套纯 rebase 证明接入普通在线原子保存：两个可写客户端从同一 revision
+        编辑不同实体时直接重放；编辑同一时间目标时按 start/end 分边协调，本端未修改的边保留服务器最新值，
+        本端修改的边采用后完成冲突恢复一端的绝对目标值；编辑同一稳定内容字段也采用后恢复端版本。重建命令
+        保留 operation id，并在最新 revision 上立即重提；
+        lifecycle、结构、旧命令、快照边界、撤权或请求期间又发生本地编辑仍停在显式冲突流程。浏览器旧草稿不
+        启用值级转换，避免“服务端已提交但响应丢失”时重复应用。WebSocket 建连继续先订阅、再二次读取权威
+        revision/cursor，消除票据 head 与订阅之间的漏通知窗口。
 - R5 可部署候选门禁已完成：单服务器 PostgreSQL + Fastify + Web + 本地或 S3-compatible 对象存储方案
   统一记录于 `docs/server-deployment.md`；仓库提供生产环境模板、systemd、Nginx/TLS、同源开发代理、
   首管理员 bootstrap 和无凭据只读 smoke check。真实隔离 schema 已验证 14 条 migration 与首次管理员创建，
@@ -597,8 +621,18 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
   presence 和瞬时 activity，不成为第二条持久写路径。
 - 块级、内容、生命周期、工尺/板眼复合状态和递归轨道结构已进入严格命令或受控快照边界；结构修改继续
   使用显式短时租约，批量导入继续使用可审计快照边界。
-- 协作保存与 operation、恢复快照、审计和 crash-safe 浏览器草稿已经联动；无交集冲突可经用户确认安全
-  重放，同目标或证据不完整时进入人工结构化比较，不静默覆盖。
+- 协作保存与 operation、恢复快照、审计和 crash-safe 浏览器草稿已经联动；普通在线保存可在完整证明后自动
+  重放无交集修改，并协调 timing/content 同目标冲突。结构、生命周期、旧草稿或证据不完整时仍进入人工结构化
+  比较，不把高风险冲突降级成整份 JSON 覆盖。
+- collaboration revision 通知只表示“服务器有更新”，不等于该 payload 已经进入本地编辑状态。clean 客户端
+  在 observed revision 高于 applied revision 时必须暂时禁止新写操作并立即追赶；已经开始的编辑不被中断，
+  仍由命令 precondition 和显式冲突流程裁决。
+- clean catch-up 应用远端结果时，current/saved ProjectData、document-owned remote revision、App revision 与
+  committed cursor 必须共同推进。该维护约束已通过“接收远端 vN 后立即本地保存至 vN+1”的回归覆盖，防止
+  服务器已提交而客户端误报确认失败并阻断后续追赶。
+- 对修复前已打开的旧会话，成功确认只允许在“document revision 落后且 frozen server-base ProjectData 与当前
+  saved baseline 完全相同”时自愈；revision 超前或项目基线不一致继续 fail closed。该规则支持同 operation id
+  幂等重试恢复，不引入整份 payload 覆盖。
 
 完成标准：已达到。多账号可同时编辑而不静默覆盖，冲突与恢复过程可解释，并形成受控单服务器试用候选。
 R5 完成不代表 R7 公网生产验收；真实云 IAM、TLS 续期、外部告警、长期备份调度、跨区容灾与安全审计仍需

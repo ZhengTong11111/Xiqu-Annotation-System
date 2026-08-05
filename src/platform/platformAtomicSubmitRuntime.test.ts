@@ -55,6 +55,7 @@ const PLAN = {
     payload: { version: 1, command: { type: "annotation.items.content.update", items: [] } },
   }] },
   operationIds: ["op-1"],
+  serverBaseProject: {} as AtomicCommandPlan["serverBaseProject"],
   acknowledgedProject: {} as AtomicCommandPlan["acknowledgedProject"],
   acknowledgedTrackSnapEnabled: {},
   remainingCount: 0,

@@ -31,7 +31,7 @@ export type BootstrapAdministratorStore = {
 
 /**
  * 只为全新数据库创建首位系统管理员。
- * 一旦存在活跃 admin/super_admin，该入口永久拒绝继续增权，后续账号治理必须走平台正式管理能力。
+ * 一旦存在活跃 super_admin，该入口永久拒绝继续增权，后续账号治理必须走平台正式管理能力。
  */
 export async function bootstrapInitialAdministrator(
   store: BootstrapAdministratorStore,
@@ -91,7 +91,7 @@ export function createPrismaBootstrapAdministratorStore(
       return operation({
         hasActiveAdministrator: async () => Boolean(await transaction.userRole.findFirst({
           where: {
-            role: { in: [PlatformRole.super_admin, PlatformRole.admin] },
+            role: PlatformRole.super_admin,
             user: { isActive: true },
           },
           select: { id: true },

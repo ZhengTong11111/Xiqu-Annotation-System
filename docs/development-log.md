@@ -4958,3 +4958,220 @@ ProjectData builder、adapter 与编辑器接线：
   目标暂停继续扩展。尚未完成且不得误报为已完成的 R7 工作包括：真实公网主机防火墙与 TLS 自动续期、真实
   MinIO/AWS 最小 IAM 验收、外部告警接收、自动备份调度与加密、跨区容灾、容量压测、RTO/RPO 和长期安全
   审计；这些必须在实际目标环境记录证据。
+
+## 2026-08-04：账号治理、权威媒体绑定与双账号同步可靠性修复
+
+### 任务与排查事实
+
+- 用户指出平台缺少正式账号管理、视频与项目/标注关系不清晰，并报告管理员与助教双开同一标注文件时出现
+  “同步失败”：最初表现为管理员编辑助教可见、助教编辑管理员不可见，继续测试后管理员也曾失败。本轮先把
+  被忽略的 `CLAUDE_WORK.md` 改写成唯一任务书，再按账号、媒体和协作三条边界实施，没有复活旧课程/作业、
+  Workspace/Fork 或整份 JSON 静默覆盖模型。
+- 直接读取开发 PostgreSQL 中标注文件 `d1043064-1aed-455b-bfb6-53c4b4de8c2d` 的 operation 与 save audit：
+  文件最终为 revision 16，最后编辑者为助教；管理员有 9 条 accepted operation，助教有 7 条。最近 r13-r16
+  严格按管理员、助教、管理员、助教交替成功，证明失败不按角色方向发生。唯一 `committedRevision = null`
+  的记录是管理员在 2026-08-03 旧 operation + snapshot 流程留下的 r1 历史操作，与本轮助教失败无关。
+- 根因分为两层：clean 客户端可通过 committed feed 追赶，但两个客户端均有本地 pending 时都会以同一服务器
+  revision 提交，先到者成功、后到者得到 409；旧在线流程只把它停在“同步失败”，没有把已经实现的安全纯
+  rebase planner 接入普通在线保存。另有真实 WebSocket 建连竞态：票据携带旧 head，presence join 后才订阅
+  hub，中间一次提交可能既不在旧 ready 中也没有通知。顶部“已保存 · r0”又显示浏览器本地 history revision，
+  即使服务器已到 v16 仍造成未同步错觉。
+
+### 实现
+
+- `annotationCollaborationRoutes.ts` 改为先注册文件 subscriber，再通过 ticket service 二次复核读权限并读取当前
+  revision/cursor，随后发送 `session.ready`；ready 前到达的 revision 暂存，只补发晚于权威 head 的通知。
+  客户端在每次 ready 后都唤醒 HTTP catch-up，4400/4401/4403 均视为当前身份/协议事实下的永久错误，不再用
+  旧票据持续重连。WebSocket 仍只是有损唤醒，payload 追赶继续以 HTTP feed/snapshot 为权威。
+- 普通原子保存收到 revision 409 后，读取最新 `AnnotationFile`，复用既有 `planPlatformConflictRebase()` 对完整
+  pending chain 做 all-or-nothing 证明。只有领域命令身份、local revision、saved/current 项目和 precondition
+  全部稳定且与远端修改无冲突时，document state 才替换服务器基线和重放结果；原 operation id/envelope 保留，
+  旧 undo/redo 因基于过时远端快照而清除。自动保存 runtime 对 `rebased` 立即重提，不再额外等待 idle 周期。
+  legacy、snapshot、track-snap、请求期间新编辑或同目标冲突仍进入已有人工比较，权限继续由服务器复核。
+- 顶部平台同步状态新增服务器 revision：平台文件显示“已同步 · 服务器 vN”或“保存中 · 基于服务器 vN”；
+  本地工具仍显示本地 rN，避免混淆两套 revision。
+- 新增 `AccountAdminService` 和共享 `ManagedAccount` 合同。全局管理员可分页/搜索、创建、调整显示名/角色、
+  停用/恢复和重置密码；当前管理员与最后一个活动管理员受保护，停用/重置撤销 session，不提供硬删除。
+  所有账号可从资源管理器顶部修改自己的密码，成功后因旧 session 已撤销而立即退出。账号创建、更新、重置
+  和自助改密写入不含密码/摘要的审计。账号 UI 使用明确的左侧选择与右侧编辑，不与逐资源 ACL 混合。
+- `AnnotationFile.mediaResourceId` 由历史自由字符串收敛为指向 `MediaFile.resourceId` 的 Prisma 关系和数据库
+  外键，媒体删除时 `SET NULL`。API 返回媒体资源/file id、名称、MIME 与大小摘要；绑定要求标注 write 以及
+  媒体 read/download，改绑/解绑写审计。导入 JSON 后进入统一媒体选择器，可选择当前目录媒体、上传新媒体或
+  明确暂不关联；Inspector 可查看、更换和解除。编辑器以 DTO 生成受保护 URL，保存前仍剥离 token URL，媒体
+  关系不写入 `ProjectData`。
+- 新增 migration `20260804140000_account_and_media_governance`，扩展审计枚举、清理无法指向媒体资源的旧值并
+  建立外键。没有新增 npm 依赖；现有 Radix Dialog、Lucide、Prisma 和协作 runtime 足以保持代码边界清晰。
+
+### 自审、测试与修复
+
+- 新增平台集成矩阵覆盖：助教不能调用账号管理；管理员创建/改角色/重置/停用；重置与自助改密撤销旧会话；
+  当前管理员不能停用自己；媒体创建时绑定、改绑、解绑、无媒体权限拒绝及媒体删除自动置空。既有双账号测试
+  继续证明同 revision 竞争只有一个成功、旧请求零副作用、无交集命令可用原 operation id 在新 revision 重提、
+  撤权后仍拒绝。document 与 auto-save 测试新增基线替换门禁和 `rebased` 立即重提。
+- 首次完整平台集成测试中，新增媒体合同测试提前上传了两个 24-byte MP4，污染后续 80-byte 用户配额夹具，
+  使旧上传测试以 usedBytes=72 拒绝第三个文件。没有放宽生产配额；测试在断言外键后删除专用媒体和确定孤儿
+  FileObject，恢复用例隔离，随后全部通过。
+- `npm run test:api` 全部通过，包括 34 个真实 PostgreSQL/Fastify 平台集成子场景；仍只有既有 pg 9
+  `client.query()` 前置弃用提醒。`test:annotation-collaboration` 22/22、conflict rebase 9/9、原子提交相关
+  24/24、auto-save runtime 9/9；shared/document-model/Web/API 构建通过。Vite 仍保留既有主 chunk 大于
+  500 kB 提醒。
+- 源码自审修正账号分页错误分类：只有游标确实不存在才返回输入错误，数据库连接/查询异常不再被吞掉。
+  账号窗口无错误提示时的 grid 行数、媒体选择器滚动/视口约束和自助改密短表单均补齐。新逻辑使用中文注释，
+  未增加第二套身份、媒体或冲突状态机。
+- 最终浏览器复测先暴露了一项启动环境问题：Vite 默认只监听 IPv6 `localhost`，而既有验收标签页使用
+  `127.0.0.1:5173`，旧页面可见但新 `/api` 请求显示 `Failed to fetch`。这不是账号或协作回归；以
+  `vite --host 0.0.0.0` 重启后，同源健康检查、管理员登录、资源管理器、账号管理窗口和编辑器服务器 v16
+  状态均恢复。API 继续监听 `4317`，前端监听 `5173`。
+
+## 2026-08-04：同块先后编辑的远端追赶门禁
+
+### 现场记录与根因边界
+
+- 用户继续报告管理员与助教先后编辑同一个块时偶发“同步失败”。重新读取真实开发库后，文件已经从 v20
+  推进到 v24：v21 助教修改第一句，v22 管理员修改其他句，v23 管理员再次修改第一句，v24 助教继续修改
+  第一句。四条 operation 均为 accepted，且 v23/v24 的 `before` 精确等于上一账号提交的 `after`；API
+  日志中的对应 command-batch 请求均返回 200。由此确认最近测试的服务端权限、命令 apply 和数据库提交链
+  正常，也说明 operation 表只能证明成功提交，不能记录事务前已拒绝的请求或客户端确认展示状态。
+- 进一步检查发现仍有一个客户端竞态：WebSocket 已通知更高 revision 后，权威 HTTP committed-feed 请求可能
+  尚在 flight 或等待下一次合并唤醒。此时页面仍是 clean/saved，但 `ProjectData` 还是旧 revision；用户若在
+  这个短窗口开始新拖动，就会生成基于已知过时值的命令。修改同目标时安全 rebase 必须拒绝，因此本机也可能
+  短暂表现为冲突；真实网络延迟只会扩大这个窗口。不能用 last-writer-wins 掩盖问题。
+
+### 修复与验证
+
+- 新增纯 `platformRemoteEditGate`，明确拆分 collaboration 已观察 revision 与本地已应用 revision。只有客户端
+  完全 clean、没有 pending/transient/inline/merge draft 且 observed 高于 applied 时，时间轴、Inspector、
+  新增轨道按钮、导入/修复/撤销重做菜单和写快捷键暂时进入“正在接收其他账号修改”门禁；HTTP catch-up
+  应用后自动解除。已开始的拖动或行内输入不被半途截断，真实并发继续由 command precondition、409 rebase
+  和人工冲突流程裁决。
+- 顶部状态改为在缺口期间显示目标服务器 revision；本账号原子提交、自动 rebase 和兼容快照提交也同步推进
+  observed revision，避免显示状态倒退。Timeline 新增独立 shell 只负责短时交互门禁，没有改变时间坐标、
+  拖拽、吸附或持久化命令逻辑。
+- `test:platform-operation-catch-up` 19/19，包含 clean stale 门禁与“已开始编辑不截断”回归；协作专项 22/22，
+  conflict rebase 9/9，Web TypeScript/Vite 构建通过，`git diff --check` 通过。Vite 仍只有既有主 chunk 超过
+  500 kB 提醒。本轮没有新增依赖、数据库 migration、API 写路径或新的冲突合并策略。
+
+## 2026-08-04：同目标实时并发协调与自动重提
+
+### 问题复现与策略
+
+- 用户进一步确认：两个客户端先后编辑同一块已经成功，但若双方都从同一旧 revision 开始、在收到对方更新前
+  编辑同一块，后提交端仍收到 409 并停在同步失败。这个 409 是服务器严格 `before` 前置条件的正确保护；问题
+  在于客户端只会重放无交集命令，没有在权威拒绝后协调同一目标。
+- 没有改成整份 JSON 覆盖，也没有放宽 API 原子校验。实时保存必须先收到确定的 revision 409，再读取最新文件
+  并完整审计本地 pending chain。时间块使用 start/end 两条边的相对 delta 重放，因此双方整体拖动量会相加、
+  左右边界的独立缩放可以同时保留；同一文本/标签字段没有通用无损合并语义，采用后完成冲突恢复的一端版本。
+  删除、生命周期、状态、轨道结构、批量边界和证据不完整的事务仍然 fail closed。
+
+### 实现
+
+- 新增 document-model `annotationCommandConflictResolution`，与普通严格 dispatcher 分离。它只转换 timing、
+  content 以及仅含可安全转换叶命令的 annotation transaction；任一目标丢失、时间反转或高风险子命令冲突时
+  丢弃全部临时结果。旧浏览器草稿路径默认不启用该模块，避免一次“服务器已提交但响应丢失”的 operation 被
+  改写后重复应用。
+- `platformConflictRebase` 增加显式 live-resolution 开关。严格重放失败后才调用值级协调，并返回既供网络提交
+  使用的原子 operation，也返回改写后的 pending operation。operation id、action、local revision 和审计摘要
+  保持不变，只有经过 parser/adapter 再验证的 envelope 被替换。
+- document state 在接收重基线前重新检查项目、基线、revision、pending 数量/顺序/身份/type 和审计摘要；通过
+  后原子替换 saved/current ProjectData 与 pending envelope，清空绑定旧服务器快照的 undo/redo。自动保存对
+  `rebased` 继续立即重提，所以用户不会在协调完成后再次停留一个 idle 周期。顶部交互文案由“无冲突修改”改为
+  “并发修改”，与真实策略一致。
+
+### 验证与剩余边界
+
+- 新增回归证明：默认 planner 仍拒绝同字段冲突；live 409 模式把内容命令重建为“远端当前值 -> 本端值”；双方
+  对同一句块分别移动 1 秒和 2 秒后得到累计 3 秒；document state 确认保留 operation id 且 pending envelope
+  的 `before` 已更新为权威值。
+- `test:platform-conflict-rebase` 11/11、`test:platform-atomic-submit` 24/24、
+  `test:platform-operation-catch-up` 19/19、`test:platform-auto-save-runtime` 9/9；shared、document-model、Web、
+  API 构建及 `git diff --check` 通过。Vite 仍只有既有主 chunk 超过 500 kB 提醒。本轮没有新增依赖、数据库
+  migration 或 WebSocket 写通道。
+- 若同一内容操作的目标值已被另一端写成完全相同值，当前严格命令合同会把重建结果识别为 no-op；这类情况不
+  会覆盖数据，但仍可能进入现有显式恢复。后续若要彻底消除该提示，应设计“服务器已满足本端意图”的可审计
+  operation 确认语义，而不是伪造无变化命令。
+
+## 2026-08-04：远端追赶 revision 双状态漂移修复
+
+### 现场证据与根因
+
+- 用户再次报告 admin 显示同步失败，且 ta 看不到 admin 的最新编辑。真实数据库证明 admin 的 timing operation
+  已在 14:23:30 从 base revision 36 成功提交为 revision 37，状态为 accepted；admin 随后的 committed-feed
+  游标也已到 revision 37 / sequence 38。因此不是权限拒绝、数据库丢写或网络请求未到达。
+- 追查发现 clean catch-up 只更新了 App 的 `remoteBaseRevision` 和 cursor，document hook 的
+  `syncState.remoteRevision` 仍停在追赶前版本。接收端随后本地保存时，服务器会正常提交，但
+  `acknowledgeAtomicCommandBatch()` 以内部旧 revision 校验本次 base revision，遂把成功响应拒绝为
+  `stale_remote_revision`。客户端因此保持 dirty/error，catch-up 又按设计暂停，表现为两端后续互相看不到。
+  该路径与账号角色无关，所以 admin 与 ta 都可能在“先接收、再编辑”后触发。
+
+### 修复与验证
+
+- `replaceCleanProjectFromRemote()` 现在显式接收并校验远端 revision，在同一文档状态边界内推进 current/saved
+  ProjectData、`syncStateRef.remoteRevision` 和 React sync state；App 的 committed replay 与 snapshot fallback
+  均传入对应权威 revision。ref 先于 state 推进，覆盖追赶完成后立即发生本地编辑的时序。
+- 新增回归精确模拟“clean 客户端接收 v36 -> 产生本地内容命令 -> 服务器确认 v37”，确认成功响应不再被误判、
+  pending 清空且文档回到 saved。`test:platform-atomic-submit` 26/26、operation catch-up 19/19、conflict rebase
+  11/11、Web TypeScript/Vite 构建通过；Vite 仍只有既有主 chunk 超过 500 kB 提醒。
+- 第一处修复完成后，用户继续在未重载的 ta 旧标签页复现。数据库再次证明 ta 的 operation 已于 15:18:20
+  从 v40 成功提交为 v41，随后 admin 又把文件推进到 v43；这确认旧页面保留的污染状态仍会误报，而不是出现
+  第二种服务端失败。
+- 为使旧标签页也可恢复，原子 plan 增加仅驻留内存的 `serverBaseProject`。成功响应遇到 document revision
+  低于请求 base 时，只有当前 saved ProjectData 与这份冻结基线完全相同才补齐 revision 并确认；document
+  revision 已超前或基线不一致仍拒绝。这样用户再次保存时可用同 operation id 获取幂等确认、清空 pending，
+  随后继续追赶 v42/v43；刷新页面也可直接从最新权威快照重建。该逻辑不删除恢复草稿、不重复应用 operation，
+  也不把低 revision 当作无条件放行依据。
+
+## 2026-08-05：同一时间边界冲突改为后提交绝对值
+
+### 现场证据与语义修正
+
+- 用户让 admin 与 ta 基于尚未互相追赶的状态同时拖动同一开始边界。数据库 operation 53 记录 ta 把边界从
+  `42.3137s` 移到 `45.9746s`；紧随其后的 operation 54 记录 admin 又从 `45.9746s` 移到 `49.6355s`。两段位移
+  都是约 `+3.6609s`，证明旧值级 resolver 把 admin 基于旧位置的 delta 加到了 ta 已提交的绝对位置上。
+- 这不是权限、WebSocket、时间轴坐标或数据库丢写问题，而是旧“移动量可交换”假设不符合人工标注语义。同一
+  边界的两个编辑代表两个候选最终位置，不应累计；“靠后”定义为后到服务器并完成 409 恢复的提交，避免依赖
+  客户端墙上时钟。
+
+### 实现与边界
+
+- timing 冲突现在逐边处理：本端未修改的 start/end 保留权威服务器值，本端修改的边采用本端命令中的绝对
+  `after`。因此同一边界采用后恢复端结果，整体拖动采用后恢复端完整区间，而一端改 start、另一端改 end 时
+  仍可保留两项修改。组合后若出现负时间或 end 小于 start，继续 fail closed 到显式冲突流程。
+- 严格 before 校验、409 后完整 pending-chain 审计、原 operation id、原子重提、ACL/租约复核、clean HTTP
+  catch-up 和 WebSocket 唤醒职责均未改变；这次没有退回到“同目标一律拒绝并发”，也没有引入整份 JSON 覆盖。
+- `test:platform-conflict-rebase` 新增同边界、不同边界和整体拖动三类回归并通过 13/13。其余原子提交、远端
+  catch-up 与 Web 构建在本轮完整验证中继续执行。
+
+## 2026-08-05：平台角色分权与助教角色合并
+
+### 权限语义
+
+- `super_admin` 继续拥有全部平台能力，并成为唯一可调用账号列表、创建、角色/状态调整和他人密码重置 API
+  的角色。`admin` 保留全资源、根目录、ACL、全局审计、诊断、维护和对象生命周期能力，但账号治理 API 与
+  前端入口均移除；服务端集成测试证明普通 admin 查询账号返回 403、读取系统诊断仍返回 200。
+- 删除 `ta` 平台角色并迁移为 `teacher`。迁移先处理同时拥有 teacher/ta 的唯一约束，再原地转换角色并替换
+  PostgreSQL 枚举；账号、会话、资源 ownership、直接 ACL 和审计身份不变。开发账号名 `ta` 暂时保留为登录
+  夹具，但其平台角色和显示身份已经是 teacher。
+- teacher 的角色自动能力集中定义为全资源 `read + download`，权限来源为 `role`。它不会自动获得 `write`、
+  `review`、`create_child` 或 `manage_permissions`；显式 ACL 和 ownership 仍可增加能力。教师继承原助教的只读
+  账号目录浏览能力。未来师生附属关系只预留集中策略边界，本轮未创建关系表或隐式授权。
+
+### 实现与验证
+
+- 新增共享 `platformRolePolicy`，统一账号治理、全资源管理、教师自动浏览和账号目录判断。后端
+  `ResourceAccessService` 不再用单个 `isGlobalAdmin` 混淆账号与资源语义；前端资源管理器也分别控制账号管理、
+  审计和诊断入口。权限模型、roadmap、部署说明与 AGENTS 已同步更新。
+- 新迁移 `20260805110000_merge_ta_role_into_teacher` 已在开发库和隔离 `api_test` schema 成功执行。角色策略与
+  bootstrap 测试 8/8、完整 API/PostgreSQL 测试 139/139、shared/API/Web 类型检查和 Web 生产构建通过；仅保留
+  既有 Vite 主 chunk 超过 500 kB 提醒。
+
+## 2026-08-05：资源下载权限闭环
+
+### 实现
+
+- 新增统一 `/api/resources/:resourceId/download`：媒体文件从对象存储原生流式返回，避免大型视频进入浏览器
+  Blob 内存；标注文件导出数据库当前 revision 对应的权威 payload，并使用 UTF-8 `Content-Disposition` 保留
+  中文文件名。项目和文件夹不会伪装成同步下载，后续应通过有界异步 ZIP 归档任务实现。
+- 资源管理器的三种视图共用右键“下载”命令，Inspector 同时提供明确下载按钮。入口仅对媒体/标注文件及
+  拥有 `download` 的账号显示或启用；浏览器通过现有受保护 token URL 让原生下载器边接收边落盘。
+- 服务端把 `download` 与 `read` 分开校验：能够浏览或打开资源不再意味着可以直接调用导出路由。新增集成
+  回归覆盖标注 JSON 内容、无下载权 403、教师媒体下载、中文/普通文件名响应头及容器资源 400。

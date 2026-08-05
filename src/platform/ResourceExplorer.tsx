@@ -3,6 +3,7 @@ import {
   ChevronRight,
   ClipboardPaste,
   Clock3,
+  Download,
   FileJson2,
   Files,
   Folder,
@@ -11,6 +12,7 @@ import {
   Grid2X2,
   HardDrive,
   Heart,
+  KeyRound,
   List,
   LogOut,
   MoreHorizontal,
@@ -24,6 +26,7 @@ import {
   ScrollText,
   Trash2,
   Upload,
+  Users,
 } from "lucide-react";
 import {
   useCallback,
@@ -33,7 +36,10 @@ import {
 } from "react";
 import type { ChangeEvent, MouseEvent } from "react";
 import {
+  canManagePlatformAccounts,
+  hasFullPlatformResourceAccess,
   RESOURCE_CAPABILITIES,
+  type AnnotationFile,
   type PlatformUser,
   type ResourceCapability,
   type ResourceEntry,
@@ -66,6 +72,7 @@ import {
 import { ResourceVirtualCollection } from "./ResourceVirtualCollection";
 import { ResourceRecoveryHistory } from "./ResourceRecoveryHistory";
 import { SystemDiagnosticsDialog } from "./SystemDiagnosticsDialog";
+import { AccountManagementDialog } from "./AccountManagementDialog";
 import { copyResourcesSequentially } from "./resourceClipboard";
 import {
   registerResourceDropTarget,
@@ -75,6 +82,9 @@ import { isResourceContainer } from "./resourceColumnModel";
 import { useResourceColumns } from "./useResourceColumns";
 import { appendResourceListPage } from "./resourcePageState";
 import { getComparableAnnotationFiles } from "./resourceComparison";
+import { AnnotationMediaBindingDialog } from "./AnnotationMediaBindingDialog";
+import { ChangePasswordDialog } from "./ChangePasswordDialog";
+import { downloadFromUrl } from "./browserDownload";
 
 type ExplorerMode = "list" | "grid" | "column";
 
@@ -142,6 +152,13 @@ export function ResourceExplorer(props: {
   const [error, setError] = useState<string | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [auditLogOpen, setAuditLogOpen] = useState(false);
+  const [accountManagementOpen, setAccountManagementOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [pendingJsonImport, setPendingJsonImport] = useState<{
+    parentId: string;
+    fileName: string;
+    project: ProjectData;
+  } | null>(null);
   const [movingResources, setMovingResources] = useState<ResourceEntry[]>([]);
   const [comparisonFiles, setComparisonFiles] = useState<
     [ResourceEntry, ResourceEntry] | null
@@ -175,8 +192,13 @@ export function ResourceExplorer(props: {
   const locationParentId = mode === "column"
     ? columnBrowser.locationParentId
     : folderId;
-  const isGlobalAdmin = props.user?.roles.some((role) =>
-    role === "super_admin" || role === "admin") ?? false;
+  // 账号治理与资源/运维全权是两条不同边界：管理员仍可管理资源，但只有系统管理员可管理账号。
+  const hasFullResourceAccess = props.user
+    ? hasFullPlatformResourceAccess(props.user.roles)
+    : false;
+  const canManageAccounts = props.user
+    ? canManagePlatformAccounts(props.user.roles)
+    : false;
   // 首次读取替换列表，下一页读取保留既有资源；request id 防止旧查询响应串入新目录。
   const loadPage = useCallback(async (cursor: string | null = null) => {
     const requestId = ++pageRequestIdRef.current;
@@ -676,12 +698,8 @@ export function ResourceExplorer(props: {
       }
       if (!locationParentId) throw new Error("请先进入项目或文件夹。");
       const project = normalizeImportedProjectFile(parsed).project;
-      await props.client.createAnnotationFile({
-        parentId: locationParentId,
-        name: file.name,
-        payload: prepareProjectForServer(project),
-      });
-      await refreshCurrentView();
+      // JSON 正文解析成功后必须显式选择媒体；关系由数据库保存，不再猜测本机绝对路径。
+      setPendingJsonImport({ parentId: locationParentId, fileName: file.name, project });
     } catch (nextError) {
       setError(describeError(nextError));
     }
@@ -760,6 +778,17 @@ export function ResourceExplorer(props: {
       : [resource];
     void trashResources(resources);
   };
+  const downloadResource = (resource: ResourceEntry) => {
+    if (
+      (resource.type !== "annotation_file" && resource.type !== "media_file") ||
+      !resource.permission.capabilities.includes("download")
+    ) return;
+    const fallbackName = resource.type === "annotation_file" &&
+      !resource.name.toLowerCase().endsWith(".json")
+      ? `${resource.name}.json`
+      : resource.name;
+    downloadFromUrl(props.client.getResourceDownloadUrl(resource.id), fallbackName);
+  };
 
   return (
     <main className="resource-explorer-shell">
@@ -782,7 +811,23 @@ export function ResourceExplorer(props: {
         </div>
         <div className="resource-account">
           <span>{props.user?.displayName ?? "正在验证账号"}</span>
-          {isGlobalAdmin ? (
+          <button
+            type="button"
+            title="修改我的密码"
+            onClick={() => setChangePasswordOpen(true)}
+          >
+            <KeyRound size={17} />
+          </button>
+          {canManageAccounts ? (
+            <button
+              type="button"
+              title="账号管理"
+              onClick={() => setAccountManagementOpen(true)}
+            >
+              <Users size={17} />
+            </button>
+          ) : null}
+          {hasFullResourceAccess ? (
             <>
               {/* 全局审计与系统诊断使用独立窗口，避免健康指标和业务日志混成一个超长面板。 */}
               <button
@@ -985,6 +1030,7 @@ export function ResourceExplorer(props: {
               onRename={renameSelectedResource}
               onCopy={(resource) => setClipboard([resource])}
               onMove={openMovePicker}
+              onDownload={downloadResource}
               onRestore={(resource) => void restoreResources([resource])}
               onTrash={trashFromContext}
               canCompareSelection={Boolean(comparableFiles)}
@@ -1028,6 +1074,7 @@ export function ResourceExplorer(props: {
                 onRename={renameSelectedResource}
                 onCopy={(resource) => setClipboard([resource])}
                 onMove={openMovePicker}
+                onDownload={downloadResource}
                 interactionDisabled={interactionDisabled}
                 draggedResourceIds={draggedResourceIds}
                 onDragStart={handleResourceDragStart}
@@ -1051,6 +1098,7 @@ export function ResourceExplorer(props: {
           onChanged={() => refreshCurrentView()}
           onError={setError}
           onOpenAnnotationFile={props.onOpenAnnotationFile}
+          onDownload={downloadResource}
         />
       </section>
       <input ref={jsonInputRef} hidden type="file" accept="application/json,.json" onChange={(event) => void importJson(event)} />
@@ -1078,8 +1126,46 @@ export function ResourceExplorer(props: {
         onPrepareMerge={props.onPrepareAnnotationMerge}
         onClose={() => setComparisonFiles(null)}
       />
-      {/* 系统诊断是全局管理员工具，不依赖当前资源选择，也不会挤占右侧资源 Inspector。 */}
-      {isGlobalAdmin ? (
+      {pendingJsonImport ? (
+        <AnnotationMediaBindingDialog
+          client={props.client}
+          parentId={pendingJsonImport.parentId}
+          current={null}
+          open
+          allowUnbound
+          onOpenChange={(open) => { if (!open) setPendingJsonImport(null); }}
+          onConfirm={async (mediaResourceId) => {
+            try {
+              await props.client.createAnnotationFile({
+                parentId: pendingJsonImport.parentId,
+                name: pendingJsonImport.fileName,
+                payload: prepareProjectForServer(pendingJsonImport.project),
+                mediaResourceId,
+              });
+              setPendingJsonImport(null);
+              await refreshCurrentView();
+            } catch (nextError) {
+              setError(describeError(nextError));
+            }
+          }}
+        />
+      ) : null}
+      <ChangePasswordDialog
+        client={props.client}
+        open={changePasswordOpen}
+        onOpenChange={setChangePasswordOpen}
+        onChanged={props.onLogout}
+      />
+      {canManageAccounts ? (
+        <AccountManagementDialog
+          client={props.client}
+          currentUserId={props.user?.id ?? ""}
+          open={accountManagementOpen}
+          onOpenChange={setAccountManagementOpen}
+        />
+      ) : null}
+      {/* 审计与系统诊断属于全资源管理员工具，不依赖当前资源选择，也不会挤占右侧 Inspector。 */}
+      {hasFullResourceAccess ? (
         <>
           {/* 审计窗口独立持有分页和筛选状态，不依赖当前资源选择。 */}
           <AuditLogDialog
@@ -1161,9 +1247,13 @@ function ResourceInspector(props: {
     resource: ResourceEntry,
     initialFocus?: AnnotationComparisonFocus,
   ) => Promise<boolean>;
+  onDownload: (resource: ResourceEntry) => void;
 }) {
   const [matrix, setMatrix] = useState<ResourcePermissionMatrixRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [annotationFile, setAnnotationFile] = useState<AnnotationFile<ProjectData> | null>(null);
+  const [mediaDialogOpen, setMediaDialogOpen] = useState(false);
+  const [mediaBusy, setMediaBusy] = useState(false);
   const canManage = !props.readOnly &&
     (props.resource?.permission.canManagePermissions ?? false);
 
@@ -1183,6 +1273,18 @@ function ResourceInspector(props: {
   }, [canManage, props.client, props.onError, props.resource]);
 
   useEffect(() => void load(), [load]);
+
+  useEffect(() => {
+    let active = true;
+    if (props.resource?.type !== "annotation_file" || props.readOnly) {
+      setAnnotationFile(null);
+      return () => { active = false; };
+    }
+    void props.client.getAnnotationFile<ProjectData>(props.resource.id)
+      .then((file) => { if (active) setAnnotationFile(file); })
+      .catch((error) => { if (active) props.onError(describeError(error)); });
+    return () => { active = false; };
+  }, [props.client, props.onError, props.readOnly, props.resource]);
 
   if (!props.resource) {
     return (
@@ -1204,16 +1306,29 @@ function ResourceInspector(props: {
         {props.resource.revision ? <><dt>修订</dt><dd>{props.resource.revision}</dd></> : null}
       </dl>
       {!props.readOnly ? (
-        <button
-          type="button"
-          className="resource-favorite-button"
-          onClick={() => void props.client.updateResource(props.resource!.id, {
-            favorite: !props.resource!.favorite,
-          }).then(props.onChanged).catch((error) => props.onError(describeError(error)))}
-        >
-          <Heart size={16} fill={props.resource.favorite ? "currentColor" : "none"} />
-          {props.resource.favorite ? "已收藏" : "添加收藏"}
-        </button>
+        <div className="resource-inspector-actions">
+          <button
+            type="button"
+            className="resource-inspector-action-button"
+            onClick={() => void props.client.updateResource(props.resource!.id, {
+              favorite: !props.resource!.favorite,
+            }).then(props.onChanged).catch((error) => props.onError(describeError(error)))}
+          >
+            <Heart size={16} fill={props.resource.favorite ? "currentColor" : "none"} />
+            {props.resource.favorite ? "已收藏" : "添加收藏"}
+          </button>
+          {(props.resource.type === "annotation_file" ||
+          props.resource.type === "media_file") &&
+          props.resource.permission.capabilities.includes("download") ? (
+            <button
+              type="button"
+              className="resource-inspector-action-button"
+              onClick={() => props.onDownload(props.resource!)}
+            >
+              <Download size={16} /> 下载
+            </button>
+          ) : null}
+        </div>
       ) : (
         <div className="resource-permission-readonly">
           回收站资源仅显示基本信息；恢复后可编辑收藏和账号权限。
@@ -1221,16 +1336,49 @@ function ResourceInspector(props: {
       )}
       {/* 活动标注文件在详情栏中独立展示只读恢复历史，不与业务版本或普通资源混排。 */}
       {!props.readOnly && props.resource.type === "annotation_file" ? (
-        <ResourceRecoveryHistory
-          key={props.resource.id}
-          client={props.client}
-          resource={props.resource}
-          onRestored={() => props.onChanged()}
-          onOpenCurrentAtTime={(focus) => props.onOpenAnnotationFile(
-            props.resource!,
-            focus,
-          )}
-        />
+        <>
+          <div className="resource-inspector-section-heading">
+            <div><strong>关联媒体</strong><span>{annotationFile?.media?.name ?? "尚未关联视频或音频"}</span></div>
+            {props.resource.permission.capabilities.includes("write") ? <button type="button" onClick={() => setMediaDialogOpen(true)}>设置</button> : null}
+          </div>
+          <ResourceRecoveryHistory
+            key={props.resource.id}
+            client={props.client}
+            resource={props.resource}
+            onRestored={() => props.onChanged()}
+            onOpenCurrentAtTime={(focus) => props.onOpenAnnotationFile(
+              props.resource!,
+              focus,
+            )}
+          />
+          {props.resource.parentId ? (
+            <AnnotationMediaBindingDialog
+              client={props.client}
+              parentId={props.resource.parentId}
+              current={annotationFile?.media ?? null}
+              open={mediaDialogOpen}
+              busy={mediaBusy}
+              allowUnbound
+              onOpenChange={setMediaDialogOpen}
+              onConfirm={async (mediaResourceId) => {
+                setMediaBusy(true);
+                try {
+                  const file = await props.client.updateAnnotationMedia<ProjectData>(
+                    props.resource!.id,
+                    { mediaResourceId },
+                  );
+                  setAnnotationFile(file);
+                  setMediaDialogOpen(false);
+                  await props.onChanged();
+                } catch (error) {
+                  props.onError(describeError(error));
+                } finally {
+                  setMediaBusy(false);
+                }
+              }}
+            />
+          ) : null}
+        </>
       ) : null}
       <div className="resource-inspector-section-heading">
         <div><strong>账号权限</strong><span>当前选中资源的逐账号授权</span></div>

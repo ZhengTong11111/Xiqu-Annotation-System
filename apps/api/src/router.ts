@@ -8,6 +8,7 @@ import {
   type AnnotationConfirmationDomain,
   type AnnotationConfirmationScope,
   type AuditActionName,
+  type PlatformRole,
   type ProcessingJobType,
   type ResourceCapability,
   type ResourceListView,
@@ -16,6 +17,7 @@ import {
   type SortDirection,
 } from "@xiqu/shared";
 import type { AuditLogService } from "./auditLogService.js";
+import type { AccountAdminService } from "./accountAdminService.js";
 import { badRequest, unauthorized } from "./errors.js";
 import type { HealthService } from "./healthService.js";
 import type { MediaUploadService } from "./mediaUploadService.js";
@@ -81,6 +83,7 @@ const AUDIT_ACTION_NAMES = new Set<AuditActionName>(AUDIT_ACTIONS);
 export function registerApiRoutes(
   app: FastifyInstance,
   repository: PrismaPlatformRepository,
+  accounts: AccountAdminService,
   auditLogs: AuditLogService,
   resources: ResourceService,
   annotationCommandCommits: AnnotationCommandCommitService,
@@ -164,6 +167,70 @@ export function registerApiRoutes(
     ));
 
   app.get<{
+    Querystring: { query?: string; cursor?: string; limit?: string };
+  }>("/api/admin/accounts", async (request) => accounts.listAccounts(
+    await getCurrentUser(repository, request),
+    {
+      query: normalizedString(request.query.query),
+      cursor: normalizedString(request.query.cursor),
+      limit: request.query.limit === undefined ? undefined : Number(request.query.limit),
+    },
+  ));
+
+  app.post<{ Body: unknown }>("/api/admin/accounts", async (request) => {
+    const body = requireObject(request.body);
+    return accounts.createAccount(await getCurrentUser(repository, request), {
+      accountName: requireString(body.accountName, "账号名"),
+      displayName: requireString(body.displayName, "显示名称"),
+      password: requireString(body.password, "密码"),
+      roles: parsePlatformRoles(body.roles),
+    });
+  });
+
+  app.patch<{ Params: { userId: string }; Body: unknown }>(
+    "/api/admin/accounts/:userId",
+    async (request) => {
+      const body = requireObject(request.body);
+      return accounts.updateAccount(
+        await getCurrentUser(repository, request),
+        request.params.userId,
+        {
+          ...(body.displayName !== undefined
+            ? { displayName: requireString(body.displayName, "显示名称") }
+            : {}),
+          ...(body.roles !== undefined ? { roles: parsePlatformRoles(body.roles) } : {}),
+          ...(body.isActive !== undefined
+            ? { isActive: requireBoolean(body.isActive, "账号状态") }
+            : {}),
+        },
+      );
+    },
+  );
+
+  app.post<{ Params: { userId: string }; Body: unknown }>(
+    "/api/admin/accounts/:userId/reset-password",
+    async (request) => {
+      const body = requireObject(request.body);
+      await accounts.resetPassword(
+        await getCurrentUser(repository, request),
+        request.params.userId,
+        requireString(body.password, "新密码"),
+      );
+      return { ok: true };
+    },
+  );
+
+  app.post<{ Body: unknown }>("/api/auth/change-password", async (request) => {
+    const body = requireObject(request.body);
+    await accounts.changeOwnPassword(
+      await getCurrentUser(repository, request),
+      requireString(body.currentPassword, "当前密码"),
+      requireString(body.newPassword, "新密码"),
+    );
+    return { ok: true };
+  });
+
+  app.get<{
     Querystring: {
       parentId?: string;
       view?: string;
@@ -214,6 +281,44 @@ export function registerApiRoutes(
         await getCurrentUser(repository, request),
         request.params.resourceId,
       ),
+  );
+
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { access_token?: string };
+  }>("/api/resources/:resourceId/download", async (request, reply) => {
+    const user = await getCurrentUser(
+      repository,
+      request,
+      request.query.access_token ?? null,
+    );
+    const download = await resources.getDownloadableResource(
+      user,
+      request.params.resourceId,
+    );
+    reply.header("Content-Type", download.mimeType);
+    reply.header(
+      "Content-Disposition",
+      buildAttachmentContentDisposition(download.fileName),
+    );
+    if (download.kind === "annotation") {
+      reply.header("Content-Length", Buffer.byteLength(download.content, "utf8"));
+      return reply.send(download.content);
+    }
+    reply.header("Content-Length", download.size);
+    return reply.send(await storage.getObjectStream(download.storageKey));
+  });
+
+  app.patch<{ Params: { resourceId: string }; Body: unknown }>(
+    "/api/annotation-files/:resourceId/media",
+    async (request) => {
+      const body = requireObject(request.body);
+      return resources.updateAnnotationMedia(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        { mediaResourceId: optionalStringOrNull(body.mediaResourceId) ?? null },
+      );
+    },
   );
 
   // 最近打开从 GET 副作用中拆出，确保维护模式可以放行真正只读的标注文件读取。
@@ -1011,6 +1116,31 @@ function requireObject(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function requireString(value: unknown, label: string) {
+  if (typeof value !== "string") throw badRequest(`${label}必须是字符串。`);
+  return value;
+}
+
+function requireBoolean(value: unknown, label: string) {
+  if (typeof value !== "boolean") throw badRequest(`${label}必须是布尔值。`);
+  return value;
+}
+
+function parsePlatformRoles(value: unknown): PlatformRole[] {
+  const allowed = new Set<PlatformRole>([
+    "super_admin",
+    "admin",
+    "teacher",
+    "annotator",
+    "reviewer",
+    "service",
+  ]);
+  if (!Array.isArray(value) || value.some((role) => typeof role !== "string" || !allowed.has(role as PlatformRole))) {
+    throw badRequest("账号角色列表无效。");
+  }
+  return value as PlatformRole[];
+}
+
 function normalizedString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -1179,6 +1309,18 @@ type ParsedRange =
   | { kind: "none" }
   | { kind: "invalid" }
   | { kind: "range"; start: number; end: number };
+
+// 同时提供 ASCII fallback 与 RFC 5987 UTF-8 文件名，保证中文资源名在主流浏览器中正确显示。
+function buildAttachmentContentDisposition(fileName: string) {
+  const asciiFallback = fileName
+    .replace(/[\x00-\x1f\x7f"\\/]/g, "_")
+    .replace(/[^\x20-\x7e]/g, "_")
+    .trim() || "download";
+  const encoded = encodeURIComponent(fileName)
+    .replace(/[!'()*]/g, (character) =>
+      `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
+}
 
 function parseRange(header: string | undefined, size: number): ParsedRange {
   if (!header) return { kind: "none" };

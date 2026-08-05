@@ -46,6 +46,7 @@ import { getCharacterToneLabel, isValidCharacterToneInfo } from "../utils/tone";
 import type { RemoteTimelineActivityView } from "../platform/remoteTimelineActivityRegistry";
 
 type TimelineProps = {
+  editingBlockedReason?: string;
   subtitleLines: SubtitleLine[];
   builtinTracks: BuiltinTrack[];
   characterAnnotations: CharacterAnnotation[];
@@ -511,6 +512,7 @@ type LoopRangeDragState =
     };
 
 export function Timeline({
+  editingBlockedReason,
   subtitleLines,
   builtinTracks,
   characterAnnotations,
@@ -2359,7 +2361,7 @@ export function Timeline({
   }, [duration, zoom]);
 
   return (
-    <section className="panel timeline-panel">
+    <section className="panel timeline-panel" aria-busy={Boolean(editingBlockedReason)}>
       <div className="panel-header timeline-panel-header">
         <div className="timeline-header-copy">
           <h2>多轨时间轴</h2>
@@ -2368,14 +2370,14 @@ export function Timeline({
         <div className="timeline-header-actions">
           <div className="timeline-track-actions">
             {missingBuiltinTracks.map((track) => (
-              <button key={track.id} type="button" onClick={() => onAddBuiltinTrack(track.id)}>
+              <button key={track.id} type="button" disabled={Boolean(editingBlockedReason)} onClick={() => onAddBuiltinTrack(track.id)}>
                 + 逐字轨
               </button>
             ))}
-            <button type="button" onClick={() => onAddCustomTrack("text")}>
+            <button type="button" disabled={Boolean(editingBlockedReason)} onClick={() => onAddCustomTrack("text")}>
               + 文字轨
             </button>
-            <button type="button" onClick={() => onAddCustomTrack("action")}>
+            <button type="button" disabled={Boolean(editingBlockedReason)} onClick={() => onAddCustomTrack("action")}>
               + 动作轨
             </button>
             <button type="button" onClick={() => onSelectItem({ type: "banyan-track" })}>
@@ -2431,9 +2433,15 @@ export function Timeline({
           ) : null}
         </div>
       </div>
-      <div
-        className="timeline-scroll"
-        ref={scrollRef}
+      <div className="timeline-scroll-shell">
+        {editingBlockedReason ? (
+          <div className="timeline-edit-gate" role="status">
+            <span>{editingBlockedReason}</span>
+          </div>
+        ) : null}
+        <div
+          className="timeline-scroll"
+          ref={scrollRef}
         onPointerMove={(event) => {
           const container = scrollRef.current;
           if (!container) return;
@@ -2458,8 +2466,8 @@ export function Timeline({
           event.preventDefault();
           handleZoomAroundPointer(event);
         }}
-      >
-        <div className="timeline-canvas" style={timelineCanvasStyle}>
+        >
+          <div className="timeline-canvas" style={timelineCanvasStyle}>
           <div
             className="timeline-ruler"
             onPointerDown={(event) => {
@@ -3547,6 +3555,7 @@ export function Timeline({
           ) : null}
 
           <div className="playhead" style={{ left: getCanvasX(currentTime, zoom) }} />
+          </div>
         </div>
       </div>
     </section>

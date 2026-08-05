@@ -7,6 +7,10 @@ import type {
 // 中文动作标签是审计 UI 的唯一翻译表；未知未来动作由调用方回退原始值。
 export const AUDIT_ACTION_LABELS: Record<AuditActionName, string> = {
   auth_login: "账号登录",
+  account_create: "创建账号",
+  account_update: "更新账号",
+  account_password_reset: "管理员重置密码",
+  account_password_change: "账号修改密码",
   file_upload: "文件上传",
   media_upload: "媒体上传",
   resource_create: "新建资源",
@@ -26,6 +30,8 @@ export const AUDIT_ACTION_LABELS: Record<AuditActionName, string> = {
   resource_permission_upsert: "更新资源权限",
   resource_permission_remove: "移除资源权限",
   resource_inheritance_update: "更新权限继承",
+  annotation_media_bind: "关联标注媒体",
+  annotation_media_unbind: "解除标注媒体",
   job_create: "创建后台任务",
   permission_denied: "权限拒绝",
   storage_orphan_cleanup: "清理孤儿对象",

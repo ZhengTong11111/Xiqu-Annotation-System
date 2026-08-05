@@ -1,10 +1,10 @@
 # 平台资源权限模型
 
 本文档定义当前 `ResourceEntry + ResourcePermission` 权限语义。服务端实现以
-`packages/document-model/src/permissions.ts` 和 `apps/api/src/resourceAccess.ts` 为准；前端
+`packages/shared/src/platformRolePolicy.ts` 和 `apps/api/src/resourceAccess.ts` 为准；前端
 不得维护第二套鉴权算法。
 
-最后更新：2026-08-01
+最后更新：2026-08-05
 
 ## 1. 权限边界
 
@@ -35,18 +35,18 @@ type PlatformRole =
   | "super_admin"
   | "admin"
   | "teacher"
-  | "ta"
   | "annotator"
   | "reviewer"
   | "service";
 ```
 
-- `super_admin` / `admin`：对所有资源拥有完整能力。
-- 其他交互账号：不因平台角色自动获得资源权限，依赖 ownership 或有效 ACL。
-- `service`：用于受控后端任务。它可以绕过用户可见性，但不能引用不存在的资源，也不能绕过
-  任务类型和输入校验。
+- `super_admin`：对所有资源拥有完整能力，并独占账号创建、角色/状态调整和他人密码重置。
+- `admin`：对所有资源、审计、诊断和运维拥有完整能力，但不能管理账号。
+- `teacher`：自动对所有资源取得 `read + download`，不会自动取得内容编辑、审核、创建或权限管理能力。
+- `annotator` / `reviewer` / `service`：不因角色名称自动获得资源能力，依赖 ownership 或有效 ACL。
 
-教师、助教只是账号职责标签，不是全局管理员。
+一个账号可以同时拥有多个角色。后续 teacher/annotator 附属关系会在独立关系模型中设计；当前没有根据
+附属关系隐式发放 ACL，也不得用前端分组模拟服务端授权。
 
 ## 3. 资源能力
 
@@ -54,6 +54,7 @@ type PlatformRole =
 type ResourceCapability =
   | "read"
   | "write"
+  | "review"
   | "create_child"
   | "copy"
   | "move"
@@ -66,6 +67,7 @@ type ResourceCapability =
 |---|---|
 | `read` | 查看资源元数据；对标注文件可打开 payload，对文件夹/项目可进入 |
 | `write` | 修改资源内容；对标注文件可 revision save |
+| `review` | 创建确定标注范围等审核治理事实；不等于内容编辑 |
 | `create_child` | 在容器中创建、上传、导入或粘贴子资源 |
 | `copy` | 复制资源；仍需对目标容器拥有 `create_child` |
 | `move` | 移动资源；仍需对目标容器拥有 `create_child` |
@@ -87,6 +89,9 @@ type ResourceCapability =
 ownership 不依赖 ACL 行，不能被删除 grant 或 `breakPermissionInheritance` 降权。
 
 祖先 owner 规则让项目 owner 可以管理项目内部文件，同时避免给每个后代生成重复 grant。
+
+`teacher` 的 `read + download` 是角色自动浏览基线，权限来源标记为 `role`。直接授权和继承授权可在此
+基础上增加能力；角色基线不会被空 grant 抵消，也不会提升为 owner/admin 全权。
 
 ## 5. 直接授权与继承
 
@@ -213,7 +218,9 @@ Inspector 应区分：
 
 ## 11. 测试最低矩阵
 
-- admin 全局完整权限。
+- super_admin 独占账号治理，admin 调账号 API 为 403。
+- super_admin/admin 全局资源完整权限。
+- teacher 全局 `read + download`，但 write/review/create_child/manage_permissions 为 403。
 - 资源 owner 与祖先项目/文件夹 owner 完整权限。
 - 直接 grant。
 - 多层祖先继承与 `inheritToChildren=false`。

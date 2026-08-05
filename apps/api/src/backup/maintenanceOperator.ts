@@ -17,7 +17,7 @@ export async function loadMaintenanceOperator(
     throw new Error(`运维操作者“${accountName}”不存在或已停用。`);
   }
   const user = toPublicUser(row);
-  if (!access.isGlobalAdmin(user)) {
+  if (!access.hasFullResourceAccess(user)) {
     throw new Error(`运维操作者“${accountName}”不是全局管理员。`);
   }
   return user;

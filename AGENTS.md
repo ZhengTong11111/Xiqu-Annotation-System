@@ -24,6 +24,7 @@ Main currently contains all major recent feature lines that matter for context:
 - Gongche glyph preview is currently marked finished for research/demo use, but the glyph font must be replaced or licensed before release
 - Banyan beat/eye parsing, track display, editing, and global vertical guide rendering
 - platform login/resource-explorer UI, local editor entry, media upload, project/folder/file management, JSON import, revision-checked server save, recovery snapshots, and per-resource account permissions
+- permission-gated native streaming downloads for media resources and authoritative JSON downloads for annotation resources, exposed through the shared resource context menu and Inspector
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - R5 controlled single-server deployment candidate with fail-closed production configuration, same-origin `/api`, one-time
   administrator bootstrap, systemd/Nginx templates, read-only smoke checks, and `docs/server-deployment.md`
@@ -54,6 +55,11 @@ Main currently contains all major recent feature lines that matter for context:
   full-snapshot save remains only for explicit legacy, snapshot, track-snap, submitted-draft, and old-payload migration boundaries
 - client atomic-command planning/runtime, App/autosave wiring, partial document acknowledgement, mutation-lease handoff, and
   browser-recovery baseline advancement are implemented; each frozen pending chain is fully audited before bounded batch slicing
+- ordinary online 409 conflicts reuse the same complete pending-chain audit and all-or-nothing rebase planner; disjoint commands
+  replay unchanged; same-target timing conflicts preserve authoritative values on untouched edges and use the later recovered
+  client's absolute target on locally changed edges, while same-field content commands use the later recovered client value.
+  Rebuilt commands keep their operation ids and are immediately resubmitted against the latest server revision;
+  lifecycle, structure, legacy, snapshot, track-snap, lease, permission, or request-drift cases remain explicit conflicts
 - per-file operation acceptance sequence plus snapshot-committed operation facts and separate bounded feeds; clean web
   sessions now perform bounded HTTP catch-up, atomically replay complete mixed domain-command chains, and fall back to the
   authoritative snapshot for incomplete or non-replayable evidence
@@ -61,6 +67,11 @@ Main currently contains all major recent feature lines that matter for context:
 - versioned browser recovery drafts for writable platform files, isolated by account/file and recoverable only against
   the same server revision
 - writable platform-file autosave with idle scheduling, single-flight snapshots, online recovery, and bounded retry
+- super-admin-only account lifecycle UI/API plus self-service password change; ordinary admins retain full resource/operations
+  access but cannot manage accounts. Deactivation and password changes revoke sessions, account records are retained, and
+  per-resource ACL remains a separate Inspector concern
+- annotation files use a real database foreign key to media resources; JSON import and the Inspector share one media-binding
+  dialog, while protected runtime URLs stay outside ProjectData
 - recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
 
 If starting a new conversation, assume the repo is already beyond the earlier simple waveform-only stage.
@@ -82,6 +93,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     optimistic rebase, or the existing fixed-direction manual comparison; do not recreate this with independent booleans
 - `src/platform/platformProjectPayload.ts`
   - single platform client/server payload boundary for adding current protected media URLs and removing them before save
+  - the `AnnotationFile.media` DTO is authoritative for new platform sessions; historical payload paths are migration fallback only
 - `src/platform/platformDraft.ts`
   - versioned, unknown-input-validated browser draft envelope and recovery compatibility rules
   - persists one sanitized project pair plus compact operations; it never stores access tokens, Blob URLs, or
@@ -100,6 +112,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/platformAutoSaveRuntime.ts`
   - testable timer, single-flight, online-resume, retry, disposal, and unexpected-save-error coordinator
   - consumes policy decisions and save outcomes; it never owns project payloads, revisions, operations, or IndexedDB
+  - `rebased` means the command is not committed yet and must be resubmitted immediately; it is not equivalent to `saved`
 - `src/platform/usePlatformAutoSave.ts`
   - thin React facts/callback adapter around one `PlatformAutoSaveRuntime`
   - Strict Effects cleanup must dispose and clear the runtime ref so the second setup creates a live instance
@@ -117,6 +130,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/platformOperationCatchUpRuntime.ts`
   - owns the HTTP catch-up timer, single-flight request, retry delay, session generation, and disposal behavior
   - a stale file response must never apply or recreate a timer for a later editor session
+- `src/platform/platformRemoteEditGate.ts`
+  - separates the highest server revision observed through collaboration from the revision already applied to local
+    `ProjectData`; while a clean client is between those revisions, new mutating gestures/menus/shortcuts must be blocked
+  - this gate must never interrupt a transient or inline edit already in progress; HTTP committed-feed/snapshot catch-up remains
+    the only way to clear a clean-client gap, while edits already in flight are resolved only after a definitive server 409
 - `src/platform/platformAtomicCommandPlan.ts`
   - pure bounded next-batch planner for the atomic command endpoint; full-chain proof is delegated to the shared pending-chain audit
   - never submit a prefix when a later command is blocked or the replayed chain does not equal the current project
@@ -127,9 +145,21 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/platformConflictRebase.ts`
   - pure all-or-nothing optimistic rebase decision after a revision conflict; first proves the local chain against its saved
     baseline, then applies the same envelopes to the latest authoritative server project
-  - `rebase_ready` is not authorization or persistence: the caller must still use the latest revision, current ACL, the original
-    operation ids/envelopes, and any required mutation lease. Conflict summaries are bounded code/target facts and must never
-    include annotation text, track names, project payloads, tokens, or a partially applied project
+  - live 409 handling may opt into document-model conflict resolution: timing keeps the authoritative value for each untouched
+    edge and uses the later recovered client's absolute target for each locally changed edge, while stable content rewrites
+    `before` to the authoritative value and keeps the local `after`; structure,
+    lifecycle and unsupported transaction conflicts still fail closed
+  - `rebase_ready` is not authorization or persistence: the caller must still use the latest revision, current ACL, original
+    operation ids, rebuilt pending envelopes, and any required mutation lease. Conflict summaries are bounded code/target facts
+    and must never include annotation text, track names, project payloads, tokens, or a partially applied project
+- `packages/document-model/src/annotationCommandConflictResolution.ts`
+  - the only value-level resolver for a definitive live revision conflict; ordinary apply/catch-up remains strict
+  - timing resolves start/end independently: an untouched edge preserves the authoritative server value, while a locally changed
+    edge uses the later recovered client's absolute target. Opposite-edge resizes still compose, but same-edge drags and whole-block
+    moves never add stale deltas. Content uses later-recovered-client wins because arbitrary text has no safe generic merge.
+    Transaction resolution remains all-or-nothing
+  - stale browser-draft preparation must not call this resolver: an old draft can represent a committed request whose response was
+    lost, so rewriting and resubmitting it could apply an edit twice
 - `src/platform/platformConflictRebasePreparation.ts`
   - the only two-phase browser rebase preparation boundary: builds a lightweight proposal, then rechecks draft identity/content,
     latest file identity/revision, current write capability, planner result, and plan fingerprint after explicit confirmation
@@ -160,7 +190,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     browser backpressure, and activity timers; do not fork separate queues for the three activity fields
   - file session changes clear the complete candidate; same-file reconnect may retain the latest facts, while
     offline/dispose must clear every timer and connection generation
-  - permanent protocol/authorization failures halt until the file, online state, or session changes
+  - permanent protocol/authentication/authorization failures (4400/4401/4403) halt until the file, online state, or session changes
 - `src/platform/usePlatformCollaborationSession.ts`
   - thin browser/React adapter around the collaboration runtime
   - clears stale members and remote activities on disconnect/file switch; owns the single stale-prune timer only while the
@@ -187,8 +217,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - rejects changed draft/server identities, revisions, permissions, selections, conflicts, or plan fingerprints
 - `src/platform/ResourceExplorer.tsx`
   - desktop-style three-pane resource manager
-  - owns folder navigation, view switching, selection, keyboard actions, import/upload, and the resource Inspector
+  - owns folder navigation, view switching, selection, keyboard actions, import/upload/download, and the resource Inspector
   - the Inspector is the canonical UI for editing each account's direct permissions on the selected resource
+  - file downloads must use the protected resource download route; never rebuild annotation JSON from an already-open editor or buffer large media into a browser Blob
+- `src/platform/AccountManagementDialog.tsx` + `src/platform/ChangePasswordDialog.tsx`
+  - global account lifecycle/role administration and all-user self-service password change
+  - neither component edits resource ACL; password values must never enter audit details, logs, saved project state, or browser drafts
+- `src/platform/AnnotationMediaBindingDialog.tsx`
+  - shared JSON-import/Inspector picker for existing media, new upload, explicit unbind, and later rebinding
+  - selection is only intent; the API must recheck annotation write plus media read/download and active media type
 - `src/platform/AuditLogDialog.tsx`
   - standalone global-admin audit browser with draft/applied filters, stable incremental loading, and server-side CSV export
   - resource-scoped non-admin access is supported by the API contract but is not a substitute for the Inspector permission UI
@@ -302,6 +339,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/state/projectDocumentState.ts`
   - authoritative local document/history/sync-state hook
   - owns undo/redo stacks, pending operations, revision counters, dirty/saved status
+  - clean remote replacement must atomically advance current/saved `ProjectData` and the document-owned remote revision;
+    App-level revision/cursor state alone is insufficient, because the next successful local acknowledgement validates against
+    `syncState.remoteRevision`
+  - an acknowledged response may repair a lower document-owned revision only when the frozen plan's server-base ProjectData
+    exactly equals the current saved baseline; a higher revision or base mismatch remains a hard rejection
   - migrated edits may carry a validated versioned command envelope; history retains the forward envelope so undo records
     its inverse and redo records the original command; unported edits remain legacy operations
   - `acknowledgeAtomicCommandBatch()` may advance only the exact pending prefix plus saved ProjectData/track-snap/remote baseline;
@@ -1039,6 +1081,14 @@ draft structured integration、network retry/backoff、server autosave、clean c
 rebase decisions are implemented. Future sync work must continue through this document-state/command boundary rather
 than bypassing it inside `App.tsx` or introducing a second WebSocket write path.
 
+For online revision conflicts, App may automatically use the pure rebase planner only after auditing the complete local pending
+chain. Disjoint commands replay unchanged; a definitive live 409 may rebuild same-target timing/content commands using the
+document-model resolver described above. The document hook revalidates project/revision/operation identity, replaces pending
+envelopes without changing operation ids, clears history snapshots tied to the old remote baseline, and autosave immediately
+resubmits. Do not extend this later-client-wins rule to lifecycle, structure, bulk boundaries, stale browser drafts, or permission
+failures. The collaboration WebSocket subscribes before rereading the authoritative file head and sending `session.ready`; it is
+still only a lossy wake-up channel, never the source of committed project content.
+
 ## Platform / Backend Status
 The platform backend is a real PostgreSQL/Fastify platform with an R5 controlled single-server deployment candidate;
 it has not completed the separate R7 public-production acceptance:
@@ -1047,6 +1097,9 @@ it has not completed the separate R7 public-production acceptance:
 - repository queries: `apps/api/src/repository.ts`
 - resource permission evaluation: `apps/api/src/resourceAccess.ts`
 - resource and annotation-file mutations: `apps/api/src/resourceService.ts`
+- account lifecycle administration: `apps/api/src/accountAdminService.ts`
+- authenticated collaboration handshake: `apps/api/src/annotationCollaborationRoutes.ts` and
+  `apps/api/src/annotationCollaborationTicketService.ts`
 - Prisma row-to-DTO conversion: `apps/api/src/repositoryMappers.ts`
 - development seed accounts/resource tree: `apps/api/src/repositorySeed.ts`
 - production runtime policy: `apps/api/src/serverConfig.ts`
@@ -1060,6 +1113,8 @@ it has not completed the separate R7 public-production acceptance:
 Current backend capabilities:
 - login/session tokens with scrypt password hashing and sha256 token hashes
 - users/roles/sessions in PostgreSQL
+- global-admin account creation, role/status updates and password reset, plus self-service password change; deactivation and
+  password mutation revoke existing sessions, and the platform protects the current/last active global administrator
 - media upload through one multipart business command; the former bare FileObject upload/import pair is removed
 - server-side signature/extension validation via `file-type`, streaming size limits, checksum capture,
   platform/user quota locks, and compensating deletion when the metadata transaction fails
@@ -1072,6 +1127,7 @@ Current backend capabilities:
   scans, and ACL-after-query page filling
 - atomic batch move with parent/descendant selection collapsing; the legacy single-item endpoint delegates to the same core
 - mutable annotation files with integer revision and `baseRevision` conflict checking
+- annotation-to-media foreign-key binding with active media/type/ACL checks, auditable bind/unbind, and `ON DELETE SET NULL`
 - hidden recovery snapshots created automatically before an annotation-file payload is replaced
 - recovery-snapshot restore writes historical payload as a new monotonically increasing revision; current payload
   protection, annotation update, and audit entry commit in one transaction
@@ -1080,21 +1136,27 @@ Current backend capabilities:
 - atomic batch trash with parent/descendant selection collapsing; the legacy single-item endpoint delegates to the same core
 - audit-log table plus a generic browser/filter/export API for login, upload, resource mutations, permission changes,
   annotation saves, review facts, maintenance, and recovery operations
-- annotation operation-log table and API with per-file/per-actor client idempotency, immutable request fingerprints, and
-  concurrent single-row acceptance before future autosave/collaboration work
+- annotation operation-log and committed-feed APIs with per-file/per-actor client idempotency, immutable request fingerprints,
+  atomic payload/revision application for replayable domain batches, and snapshot fallback for explicit non-replayable boundaries
 - confirmed annotation ranges backed by PostgreSQL, with all/domain/persisted-track scopes, immutable revision binding,
   additive revocation facts, list/create/revoke APIs, and same-transaction audit summaries
 - placeholder processing-job API for future pitch, spectrogram, Gongche render, pose, transcode, and export services
 - per-resource ACL:
   - capabilities are `read`, `write`, `review`, `create_child`, `copy`, `move`, `delete`, `download`, and
     `manage_permissions`
-  - `super_admin` / `admin`, the resource owner, and the owner of an ancestor project/folder receive full effective access
+  - `super_admin` / `admin`, the resource owner, and the owner of an ancestor project/folder receive full effective resource access
+  - only `super_admin` can manage account lifecycle and platform roles; `admin` must receive 403 from account-management APIs
+  - `teacher` automatically receives global `read + download`, but not `write`, `review`, `create_child`, or
+    `manage_permissions`; the former `ta` role is migrated to `teacher`
   - direct grants belong to one resource and one account
   - folder/project grants inherit to descendants unless a descendant sets `breakPermissionInheritance`
   - there is no explicit deny rule; a direct grant augments inherited capabilities
   - only users with effective `manage_permissions` may edit grants
   - authorization is enforced by the API; disabled frontend controls are only an affordance
-  - permission core lives in `packages/document-model` plus `resourceAccess.ts`; do not create a second UI-only implementation
+  - `download` is checked independently from `read`; media streams and authoritative annotation JSON both use
+    `/api/resources/:resourceId/download`, while projects/folders require a future bounded archive job
+  - role defaults live in `packages/shared/src/platformRolePolicy.ts`, while effective ACL evaluation lives in
+    `resourceAccess.ts`; do not create a second UI-only implementation
 
 Confirmed-annotation contract status:
 - R2.5c completes the platform-editor workflow on top of the R2.5b database/API: a dedicated Inspector section lists

@@ -40,7 +40,7 @@ export class SystemDiagnosticsService {
   ) {}
 
   async getDiagnostics(user: ApiUser): Promise<SystemDiagnostics> {
-    if (!this.access.isGlobalAdmin(user)) {
+    if (!this.access.hasFullResourceAccess(user)) {
       throw forbidden("只有管理员可以查看系统诊断。");
     }
 
