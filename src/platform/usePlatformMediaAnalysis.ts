@@ -10,19 +10,34 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PlatformClient } from "../api/platformClient";
 import type { SpectrogramAnalysisPreset, SpectrogramData, WaveformData } from "../types";
 import {
+  abortPlatformAnalysisBatches,
+  buildAdjacentPlatformAnalysisWindows,
   buildPlatformAnalysisRequestWindow,
+  cancelPlatformAnalysisBatchesOutsideRetainedAssets,
   partitionMediaAnalysisAssetBatches,
   PlatformMediaAnalysisAssetCache,
+  selectContiguousLoadedAnalysisAssets,
+  type PlatformAnalysisRequestWindow,
+  type PlatformMediaAnalysisBatchRegistry,
   type PlatformAnalysisViewport,
 } from "./platformMediaAnalysisLoading";
+import {
+  platformMediaAnalysisPersistentCache,
+  type PlatformMediaAnalysisPersistentCache,
+} from "./platformMediaAnalysisCache";
 
 const STATUS_POLL_INTERVAL_MS = 2_000;
-const VIEWPORT_LOAD_DEBOUNCE_MS = 120;
+const VIEWPORT_LOAD_DEBOUNCE_MS = 180;
+const MAX_CONCURRENT_ASSET_BATCHES = 2;
+const PROGRESSIVE_BATCH_BYTES = 8 * 1024 * 1024;
+const BACKGROUND_BATCH_BYTES = 16 * 1024 * 1024;
+const COMPLETE_LIST_WINDOW_SECONDS = 30 * 180;
 
 export type { PlatformAnalysisViewport } from "./platformMediaAnalysisLoading";
 
 type Options = {
   client: PlatformClient | null;
+  currentUserId: string | null;
   annotationFileId: string | null;
   enabled: boolean;
   canWrite: boolean;
@@ -43,21 +58,35 @@ export function usePlatformMediaAnalysis(options: Options) {
   const [statusLoading, setStatusLoading] = useState(false);
   const [assetsLoading, setAssetsLoading] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
+  const [preloadPending, setPreloadPending] = useState(false);
+  const [preloadProgress, setPreloadProgress] = useState<{ completed: number; total: number } | null>(null);
+  const [preloadError, setPreloadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const generationRef = useRef(0);
   const cacheRef = useRef(new PlatformMediaAnalysisAssetCache());
   const inFlightAssetsRef = useRef(new Map<string, Promise<Uint8Array>>());
+  const batchRegistryRef = useRef<PlatformMediaAnalysisBatchRegistry>(new Map());
   const assetSessionAbortControllerRef = useRef(new AbortController());
+  const preloadAbortControllerRef = useRef<AbortController | null>(null);
+  const preloadAssetIdsRef = useRef(new Set<string>());
   const assetSessionKeyRef = useRef<string | null>(null);
   const viewportLoadIdRef = useRef(0);
   const statusRefreshInFlightRef = useRef<Promise<AnnotationMediaAnalysisStatus | null> | null>(null);
 
   const resetAssetSession = useCallback(() => {
+    abortPlatformAnalysisBatches(batchRegistryRef.current);
     assetSessionAbortControllerRef.current.abort();
+    preloadAbortControllerRef.current?.abort();
+    preloadAbortControllerRef.current = null;
+    preloadAssetIdsRef.current.clear();
     assetSessionAbortControllerRef.current = new AbortController();
     inFlightAssetsRef.current.clear();
+    batchRegistryRef.current.clear();
     cacheRef.current.clear();
     viewportLoadIdRef.current += 1;
+    setPreloadProgress(null);
+    setPreloadPending(false);
+    setPreloadError(null);
   }, []);
 
   const refresh = useCallback(() => {
@@ -97,7 +126,7 @@ export function usePlatformMediaAnalysis(options: Options) {
     setSpectrogramData(null);
     setError(null);
     if (options.enabled) void refresh();
-  }, [options.annotationFileId, options.enabled, refresh, resetAssetSession]);
+  }, [options.annotationFileId, options.currentUserId, options.enabled, refresh, resetAssetSession]);
 
   useEffect(() => {
     if (status?.currentRun?.status !== "queued" && status?.currentRun?.status !== "running") {
@@ -110,7 +139,7 @@ export function usePlatformMediaAnalysis(options: Options) {
 
   const currentRun = status?.currentRun;
   const assetSessionKey = currentRun
-    ? `${options.annotationFileId ?? ""}:${currentRun.id}:${currentRun.completedAt ?? "pending"}`
+    ? `${options.currentUserId ?? ""}:${options.annotationFileId ?? ""}:${currentRun.id}:${currentRun.completedAt ?? "pending"}`
     : null;
   useEffect(() => {
     if (assetSessionKeyRef.current === assetSessionKey) return;
@@ -126,11 +155,13 @@ export function usePlatformMediaAnalysis(options: Options) {
 
   useEffect(() => {
     const client = options.client;
+    const currentUserId = options.currentUserId;
     const annotationFileId = options.annotationFileId;
     const run = status?.currentRun;
     if (
       !options.enabled ||
       !client ||
+      !currentUserId ||
       !annotationFileId ||
       !requestWindow ||
       run?.status !== "succeeded"
@@ -150,84 +181,84 @@ export function usePlatformMediaAnalysis(options: Options) {
     const timer = window.setTimeout(() => {
       if (cancelled) return;
       setAssetsLoading(true);
-      void Promise.all([
-        client.listMediaAnalysisAssets(annotationFileId, {
-          runId: run.id,
-          kind: "waveform",
-          preset: "default",
-          level: requestWindow.waveformLevel,
-          startTime: requestWindow.startTime,
-          endTime: requestWindow.endTime,
-        }, listAbortController.signal),
-        options.spectrogramVisible
-          ? client.listMediaAnalysisAssets(annotationFileId, {
-              runId: run.id,
-              kind: "spectrogram",
-              preset: options.analysisPreset,
-              level: 0,
-              startTime: requestWindow.startTime,
-              endTime: requestWindow.endTime,
-            }, listAbortController.signal)
-          : Promise.resolve({ runId: run.id, assets: [] }),
-        options.spectrogramVisible && options.showPitch
-          ? client.listMediaAnalysisAssets(annotationFileId, {
-              runId: run.id,
-              kind: "pitch",
-              preset: "yin-v1",
-              level: 0,
-              startTime: requestWindow.startTime,
-              endTime: requestWindow.endTime,
-            }, listAbortController.signal)
-          : Promise.resolve({ runId: run.id, assets: [] }),
-      ]).then(async ([waveform, spectrogram, pitch]) => {
-        const descriptors = [
-          ...waveform.assets,
-          ...spectrogram.assets,
-          ...pitch.assets,
-        ];
-        const bytes = await loadAnalysisAssets({
+      void loadVisibleAnalysisWindow({
+        client,
+        currentUserId,
+        annotationFileId,
+        runId: run.id,
+        sourceOffset,
+        requestWindow,
+        spectrogramVisible: options.spectrogramVisible,
+        analysisPreset: options.analysisPreset,
+        showPitch: options.showPitch,
+        listSignal: listAbortController.signal,
+        assetSignal: assetSessionAbortControllerRef.current.signal,
+        cache: cacheRef.current,
+        inFlight: inFlightAssetsRef.current,
+        batchRegistry: batchRegistryRef.current,
+        protectedAssetIds: preloadAssetIdsRef.current,
+        isCurrent: () => !cancelled &&
+          generation === generationRef.current &&
+          viewportLoadIdRef.current === viewportLoadId,
+        onWaveform: setWaveformData,
+        onSpectrogram: setSpectrogramData,
+      }).then(() => {
+        if (
+          cancelled ||
+          generation !== generationRef.current ||
+          viewportLoadIdRef.current !== viewportLoadId
+        ) return;
+        setError(null);
+        // 当前区域完全可用后才低优先级预取相邻窗口；快速滚动不会为每个中间位置启动预取。
+        void prefetchAdjacentAnalysisWindows({
+          client,
+          currentUserId,
           annotationFileId,
           runId: run.id,
-          descriptors,
-          client,
+          requestWindow,
+          spectrogramVisible: options.spectrogramVisible,
+          analysisPreset: options.analysisPreset,
+          showPitch: options.showPitch,
+          listSignal: listAbortController.signal,
+          assetSignal: assetSessionAbortControllerRef.current.signal,
           cache: cacheRef.current,
           inFlight: inFlightAssetsRef.current,
-          signal: assetSessionAbortControllerRef.current.signal,
+          batchRegistry: batchRegistryRef.current,
+          isCurrent: () => !cancelled &&
+            generation === generationRef.current &&
+            viewportLoadIdRef.current === viewportLoadId,
+        }).catch((prefetchError) => {
+          if (!isAbortError(prefetchError)) {
+            console.warn("相邻分析窗口预取失败", prefetchError);
+          }
         });
-        if (cancelled || generation !== generationRef.current) return;
-        setWaveformData(assemblePlatformWaveform(waveform.assets, bytes, sourceOffset));
-        setSpectrogramData(options.spectrogramVisible
-          ? assemblePlatformSpectrogram(
-              spectrogram.assets,
-              pitch.assets,
-              bytes,
-              options.analysisPreset,
-              sourceOffset,
-            )
-          : null);
-        setError(null);
       }).catch((nextError: unknown) => {
-        if (cancelled || generation !== generationRef.current) return;
+        if (cancelled || generation !== generationRef.current || isAbortError(nextError)) return;
         setError(describeError(nextError));
       }).finally(() => {
         if (
           !cancelled &&
           generation === generationRef.current &&
           viewportLoadIdRef.current === viewportLoadId
-        ) {
-          setAssetsLoading(false);
-        }
+        ) setAssetsLoading(false);
       });
     }, VIEWPORT_LOAD_DEBOUNCE_MS);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
       listAbortController.abort();
+      // 新视口进入防抖等待时，立即终止旧可视/相邻批次；主动预加载资产仍由保护集合保留。
+      // 这样快速拖过长距离不会在等待 descriptor 返回期间继续下载中间窗口。
+      cancelPlatformAnalysisBatchesOutsideRetainedAssets(
+        batchRegistryRef.current,
+        preloadAssetIdsRef.current,
+      );
     };
   }, [
     options.analysisPreset,
     options.annotationFileId,
     options.client,
+    options.currentUserId,
     options.enabled,
     options.showPitch,
     options.spectrogramVisible,
@@ -236,6 +267,12 @@ export function usePlatformMediaAnalysis(options: Options) {
     requestWindow?.waveformLevel,
     currentRun,
   ]);
+
+  useEffect(() => {
+    // 预加载绑定的是波形层级、频谱预设和 F0 开关；这些设置变化后，旧任务的结果不再代表当前配置。
+    // 取消只影响预加载自己的控制器，已落入内存/IndexedDB 的资产仍可按新配置自然复用。
+    preloadAbortControllerRef.current?.abort();
+  }, [options.analysisPreset, options.showPitch, options.spectrogramVisible, requestWindow?.waveformLevel]);
 
   const updateSource = useCallback(async (request: UpdateAnalysisAudioRequest) => {
     if (!options.client || !options.annotationFileId || !options.canWrite) return false;
@@ -288,6 +325,99 @@ export function usePlatformMediaAnalysis(options: Options) {
     }
   }, [options.annotationFileId, options.canWrite, options.client]);
 
+  const startPreload = useCallback(async () => {
+    const client = options.client;
+    const currentUserId = options.currentUserId;
+    const annotationFileId = options.annotationFileId;
+    const run = status?.currentRun;
+    if (
+      !client ||
+      !currentUserId ||
+      !annotationFileId ||
+      run?.status !== "succeeded" ||
+      !run.duration ||
+      run.duration <= 0 ||
+      preloadAbortControllerRef.current
+    ) return false;
+
+    const generation = generationRef.current;
+    const controller = new AbortController();
+    preloadAbortControllerRef.current = controller;
+    setPreloadPending(true);
+    setPreloadProgress({ completed: 0, total: 0 });
+    setPreloadError(null);
+    const completedAssetIds = new Set<string>();
+    try {
+      const lists = await listCompleteAnalysisAssets({
+        client,
+        annotationFileId,
+        runId: run.id,
+        duration: run.duration,
+        waveformLevel: requestWindow?.waveformLevel ?? 3,
+        spectrogramVisible: options.spectrogramVisible,
+        analysisPreset: options.analysisPreset,
+        showPitch: options.showPitch,
+        listSignal: controller.signal,
+      });
+      if (generation !== generationRef.current || controller.signal.aborted) return false;
+      const descriptors = [...lists.waveform, ...lists.spectrogram, ...lists.pitch];
+      preloadAssetIdsRef.current = new Set(descriptors.map(({ id }) => id));
+      setPreloadProgress({ completed: 0, total: descriptors.length });
+      await loadAnalysisAssets({
+        currentUserId,
+        annotationFileId,
+        runId: run.id,
+        descriptors,
+        client,
+        cache: cacheRef.current,
+        persistentCache: platformMediaAnalysisPersistentCache,
+        inFlight: inFlightAssetsRef.current,
+        batchRegistry: batchRegistryRef.current,
+        signal: controller.signal,
+        maxConcurrentBatches: 1,
+        maxBatchBytes: BACKGROUND_BATCH_BYTES,
+        onPersistentCacheError: reportPersistentCacheError,
+        onBatchLoaded: (batch, batchBytes) => {
+          if (generation !== generationRef.current || controller.signal.aborted) return;
+          for (const descriptor of batch) {
+            if (batchBytes.has(descriptor.id)) completedAssetIds.add(descriptor.id);
+          }
+          setPreloadProgress({
+            completed: completedAssetIds.size,
+            total: descriptors.length,
+          });
+        },
+      });
+      if (generation !== generationRef.current || controller.signal.aborted) return false;
+      setPreloadProgress({ completed: descriptors.length, total: descriptors.length });
+      return true;
+    } catch (preloadFailure) {
+      if (!controller.signal.aborted && generation === generationRef.current) {
+        setPreloadError(describeError(preloadFailure));
+      }
+      return false;
+    } finally {
+      if (preloadAbortControllerRef.current === controller) {
+        preloadAbortControllerRef.current = null;
+        preloadAssetIdsRef.current.clear();
+        setPreloadPending(false);
+      }
+    }
+  }, [
+    options.analysisPreset,
+    options.annotationFileId,
+    options.client,
+    options.currentUserId,
+    options.showPitch,
+    options.spectrogramVisible,
+    requestWindow?.waveformLevel,
+    status?.currentRun,
+  ]);
+
+  const cancelPreload = useCallback(() => {
+    preloadAbortControllerRef.current?.abort();
+  }, []);
+
   return {
     status,
     waveformData,
@@ -295,26 +425,261 @@ export function usePlatformMediaAnalysis(options: Options) {
     statusLoading,
     assetsLoading,
     mutationPending,
+    preloadPending,
+    preloadProgress,
+    preloadError,
     error,
     refresh,
     updateSource,
     startAnalysis,
+    startPreload,
+    cancelPreload,
   };
 }
 
+type AnalysisWindowAssetLists = {
+  waveform: MediaAnalysisAssetDescriptor[];
+  spectrogram: MediaAnalysisAssetDescriptor[];
+  pitch: MediaAnalysisAssetDescriptor[];
+};
+
+type AnalysisWindowReadContext = {
+  client: Pick<PlatformClient, "listMediaAnalysisAssets" | "getMediaAnalysisAssetBatch">;
+  currentUserId: string;
+  annotationFileId: string;
+  runId: string;
+  requestWindow: PlatformAnalysisRequestWindow;
+  spectrogramVisible: boolean;
+  analysisPreset: SpectrogramAnalysisPreset;
+  showPitch: boolean;
+  listSignal: AbortSignal;
+  assetSignal: AbortSignal;
+  cache: PlatformMediaAnalysisAssetCache;
+  inFlight: Map<string, Promise<Uint8Array>>;
+  batchRegistry: PlatformMediaAnalysisBatchRegistry;
+  isCurrent: () => boolean;
+};
+
+type VisibleAnalysisWindowContext = AnalysisWindowReadContext & {
+  sourceOffset: number;
+  protectedAssetIds: ReadonlySet<string>;
+  onWaveform: (data: WaveformData | null) => void;
+  onSpectrogram: (data: SpectrogramData | null) => void;
+};
+
+/**
+ * 当前窗口只做一次 descriptor 汇总，再以波形、频谱、F0 的稳定顺序渐进下载。
+ * 所有回调都复核 isCurrent，旧窗口即使晚到也不能覆盖用户最终停留位置。
+ */
+async function loadVisibleAnalysisWindow(context: VisibleAnalysisWindowContext) {
+  const lists = await listAnalysisWindowAssets(context);
+  if (!context.isCurrent()) return;
+  const descriptors = [
+    ...lists.waveform,
+    ...lists.spectrogram,
+    ...lists.pitch,
+  ];
+  const retainedAssetIds = new Set([
+    ...descriptors.map(({ id }) => id),
+    ...context.protectedAssetIds,
+  ]);
+  cancelPlatformAnalysisBatchesOutsideRetainedAssets(context.batchRegistry, retainedAssetIds);
+
+  const loadedBytes = new Map<string, Uint8Array>();
+  const commitProgress = (_batch: readonly MediaAnalysisAssetDescriptor[], batchBytes: ReadonlyMap<string, Uint8Array>) => {
+    if (!context.isCurrent()) return;
+    for (const [assetId, value] of batchBytes) loadedBytes.set(assetId, value);
+
+    const waveformPrefix = selectContiguousLoadedAnalysisAssets(lists.waveform, loadedBytes);
+    if (waveformPrefix.length > 0) {
+      context.onWaveform(assemblePlatformWaveform(
+        waveformPrefix,
+        loadedBytes,
+        context.sourceOffset,
+      ));
+    }
+    if (!context.spectrogramVisible) {
+      context.onSpectrogram(null);
+      return;
+    }
+    const spectrogramPrefix = selectContiguousLoadedAnalysisAssets(
+      lists.spectrogram,
+      loadedBytes,
+    );
+    if (spectrogramPrefix.length === 0) return;
+    const pitchPrefix = selectContiguousLoadedAnalysisAssets(lists.pitch, loadedBytes);
+    context.onSpectrogram(assemblePlatformSpectrogram(
+      spectrogramPrefix,
+      pitchPrefix,
+      loadedBytes,
+      context.analysisPreset,
+      context.sourceOffset,
+    ));
+  };
+
+  const bytes = await loadAnalysisAssets({
+    currentUserId: context.currentUserId,
+    annotationFileId: context.annotationFileId,
+    runId: context.runId,
+    descriptors,
+    client: context.client,
+    cache: context.cache,
+    persistentCache: platformMediaAnalysisPersistentCache,
+    inFlight: context.inFlight,
+    batchRegistry: context.batchRegistry,
+    signal: context.assetSignal,
+    maxConcurrentBatches: MAX_CONCURRENT_ASSET_BATCHES,
+    maxBatchBytes: PROGRESSIVE_BATCH_BYTES,
+    onBatchLoaded: commitProgress,
+    onPersistentCacheError: reportPersistentCacheError,
+  });
+  if (!context.isCurrent()) return;
+  commitProgress(descriptors, bytes);
+}
+
+/**
+ * 相邻窗口预取在当前窗口完成后串行执行，每次只放行一个网络批次。
+ * 它不修改显示状态；新视口到来时会由可视请求取消不再相交的旧批次。
+ */
+async function prefetchAdjacentAnalysisWindows(context: AnalysisWindowReadContext) {
+  for (const requestWindow of buildAdjacentPlatformAnalysisWindows(context.requestWindow)) {
+    if (!context.isCurrent()) return;
+    const lists = await listAnalysisWindowAssets({ ...context, requestWindow });
+    if (!context.isCurrent()) return;
+    const descriptors = [...lists.waveform, ...lists.spectrogram, ...lists.pitch];
+    await loadAnalysisAssets({
+      currentUserId: context.currentUserId,
+      annotationFileId: context.annotationFileId,
+      runId: context.runId,
+      descriptors,
+      client: context.client,
+      cache: context.cache,
+      persistentCache: platformMediaAnalysisPersistentCache,
+      inFlight: context.inFlight,
+      batchRegistry: context.batchRegistry,
+      signal: context.assetSignal,
+      maxConcurrentBatches: 1,
+      maxBatchBytes: BACKGROUND_BATCH_BYTES,
+      onPersistentCacheError: reportPersistentCacheError,
+    });
+  }
+}
+
+/** 三类 descriptor 查询保持同一窗口和 run，调用方只处理完整快照。 */
+async function listAnalysisWindowAssets(context: {
+  client: Pick<PlatformClient, "listMediaAnalysisAssets">;
+  annotationFileId: string;
+  runId: string;
+  requestWindow: PlatformAnalysisRequestWindow;
+  spectrogramVisible: boolean;
+  analysisPreset: SpectrogramAnalysisPreset;
+  showPitch: boolean;
+  listSignal: AbortSignal;
+}) {
+  const [waveform, spectrogram, pitch] = await Promise.all([
+    context.client.listMediaAnalysisAssets(context.annotationFileId, {
+      runId: context.runId,
+      kind: "waveform",
+      preset: "default",
+      level: context.requestWindow.waveformLevel,
+      startTime: context.requestWindow.startTime,
+      endTime: context.requestWindow.endTime,
+    }, context.listSignal),
+    context.spectrogramVisible
+      ? context.client.listMediaAnalysisAssets(context.annotationFileId, {
+          runId: context.runId,
+          kind: "spectrogram",
+          preset: context.analysisPreset,
+          level: 0,
+          startTime: context.requestWindow.startTime,
+          endTime: context.requestWindow.endTime,
+        }, context.listSignal)
+      : Promise.resolve({ runId: context.runId, assets: [] }),
+    context.spectrogramVisible && context.showPitch
+      ? context.client.listMediaAnalysisAssets(context.annotationFileId, {
+          runId: context.runId,
+          kind: "pitch",
+          preset: "yin-v1",
+          level: 0,
+          startTime: context.requestWindow.startTime,
+          endTime: context.requestWindow.endTime,
+        }, context.listSignal)
+      : Promise.resolve({ runId: context.runId, assets: [] }),
+  ]);
+  return {
+    waveform: waveform.assets,
+    spectrogram: spectrogram.assets,
+    pitch: pitch.assets,
+  } satisfies AnalysisWindowAssetLists;
+}
+
+/**
+ * 完整预加载按最多 180 个 30 秒瓦片分段列目录，避开服务端单次 200 条上限。
+ * 结果按 asset id 去重，边界重合或未来 tile 时长变化也不会形成重复下载。
+ */
+async function listCompleteAnalysisAssets(context: {
+  client: Pick<PlatformClient, "listMediaAnalysisAssets">;
+  annotationFileId: string;
+  runId: string;
+  duration: number;
+  waveformLevel: number;
+  spectrogramVisible: boolean;
+  analysisPreset: SpectrogramAnalysisPreset;
+  showPitch: boolean;
+  listSignal: AbortSignal;
+}) {
+  const aggregate: AnalysisWindowAssetLists = {
+    waveform: [],
+    spectrogram: [],
+    pitch: [],
+  };
+  for (let startTime = 0; startTime < context.duration; startTime += COMPLETE_LIST_WINDOW_SECONDS) {
+    const lists = await listAnalysisWindowAssets({
+      ...context,
+      requestWindow: {
+        startTime,
+        endTime: Math.min(context.duration, startTime + COMPLETE_LIST_WINDOW_SECONDS),
+        waveformLevel: context.waveformLevel,
+      },
+    });
+    aggregate.waveform.push(...lists.waveform);
+    aggregate.spectrogram.push(...lists.spectrogram);
+    aggregate.pitch.push(...lists.pitch);
+  }
+  return {
+    waveform: deduplicateAssetDescriptors(aggregate.waveform),
+    spectrogram: deduplicateAssetDescriptors(aggregate.spectrogram),
+    pitch: deduplicateAssetDescriptors(aggregate.pitch),
+  } satisfies AnalysisWindowAssetLists;
+}
+
+function deduplicateAssetDescriptors(descriptors: MediaAnalysisAssetDescriptor[]) {
+  return [...new Map(descriptors.map((descriptor) => [descriptor.id, descriptor])).values()];
+}
+
 type LoadAnalysisAssetsOptions = {
+  currentUserId: string;
   annotationFileId: string;
   runId: string;
   descriptors: MediaAnalysisAssetDescriptor[];
   client: Pick<PlatformClient, "getMediaAnalysisAssetBatch">;
   cache: PlatformMediaAnalysisAssetCache;
+  persistentCache?: PlatformMediaAnalysisPersistentCache;
   inFlight: Map<string, Promise<Uint8Array>>;
+  batchRegistry?: PlatformMediaAnalysisBatchRegistry;
   signal: AbortSignal;
+  maxConcurrentBatches?: number;
+  maxBatchBytes?: number;
+  onBatchLoaded?: (
+    descriptors: readonly MediaAnalysisAssetDescriptor[],
+    bytes: ReadonlyMap<string, Uint8Array>,
+  ) => void;
+  onPersistentCacheError?: (error: unknown) => void;
 };
 
 /**
- * 当前窗口先复用已完成缓存和 session 级进行中请求，再把真正缺失项按预算批量读取。
- * 视口卸载不会取消这些共享 Promise；文件/run 切换会通过 session signal 一次性中止。
+ * 加载顺序固定为内存、IndexedDB、进行中请求、网络；网络批次使用共享 registry 和有界 worker。
+ * 每批完成立即回调，调用方可渐进绘制，不需要等待当前窗口全部字节。
  */
 export async function loadAnalysisAssets(options: LoadAnalysisAssetsOptions) {
   const descriptorIds = new Set(options.descriptors.map(({ id }) => id));
@@ -322,13 +687,16 @@ export async function loadAnalysisAssets(options: LoadAnalysisAssetsOptions) {
     throw new Error("媒体分析资产列表包含重复项目。");
   }
   const bytes = new Map<string, Uint8Array>();
+  const memoryHits = new Map<string, Uint8Array>();
   const pending: Promise<void>[] = [];
   const missing: MediaAnalysisAssetDescriptor[] = [];
+  const persistentCandidates: MediaAnalysisAssetDescriptor[] = [];
 
   for (const descriptor of options.descriptors) {
     const cached = options.cache.get(descriptor.id);
     if (cached) {
       bytes.set(descriptor.id, cached);
+      memoryHits.set(descriptor.id, cached);
       continue;
     }
     const existing = options.inFlight.get(descriptor.id);
@@ -338,48 +706,144 @@ export async function loadAnalysisAssets(options: LoadAnalysisAssetsOptions) {
       }));
       continue;
     }
-    missing.push(descriptor);
+    if (options.persistentCache) persistentCandidates.push(descriptor);
+    else missing.push(descriptor);
+  }
+  if (memoryHits.size > 0) {
+    options.onBatchLoaded?.(
+      options.descriptors.filter(({ id }) => memoryHits.has(id)),
+      memoryHits,
+    );
   }
 
-  for (const batch of partitionMediaAnalysisAssetBatches(missing)) {
-    const batchPromise = options.client.getMediaAnalysisAssetBatch(
-      options.annotationFileId,
-      { runId: options.runId, assetIds: batch.map(({ id }) => id) },
-      options.signal,
-    ).then((response) => {
-      const decoded = decodeMediaAnalysisTileBatch(response);
-      if (
-        decoded.size !== batch.length ||
-        batch.some(({ id }) => !decoded.has(id))
-      ) {
-        throw new Error("媒体分析批次响应与请求不一致。");
-      }
-      return decoded;
-    });
-
-    for (const descriptor of batch) {
-      const assetPromise = batchPromise.then((decoded) => {
-        const value = decoded.get(descriptor.id);
-        if (!value || value.byteLength !== descriptor.size) {
-          throw new Error("媒体分析瓦片大小与清单不一致。");
+  if (persistentCandidates.length > 0 && options.persistentCache) {
+    const persistentHits = new Map<string, Uint8Array>();
+    try {
+      const stored = await options.persistentCache.getMany(
+        persistentCandidates.map((descriptor) =>
+          buildPersistentCacheIdentity(options, descriptor)),
+      );
+      for (const descriptor of persistentCandidates) {
+        const value = stored.get(descriptor.id);
+        if (!value) {
+          missing.push(descriptor);
+          continue;
         }
         options.cache.set(descriptor.id, value);
-        return value;
-      });
-      options.inFlight.set(descriptor.id, assetPromise);
-      pending.push(assetPromise.then((value) => {
         bytes.set(descriptor.id, value);
-      }).finally(() => {
-        if (options.inFlight.get(descriptor.id) === assetPromise) {
-          options.inFlight.delete(descriptor.id);
-        }
-      }));
+        persistentHits.set(descriptor.id, value);
+      }
+    } catch (persistentError) {
+      // 浏览器 quota/隐私模式故障只能降级到网络，不能阻断当前编辑器。
+      options.onPersistentCacheError?.(persistentError);
+      missing.push(...persistentCandidates);
+    }
+    if (persistentHits.size > 0) {
+      options.onBatchLoaded?.(
+        persistentCandidates.filter(({ id }) => persistentHits.has(id)),
+        persistentHits,
+      );
     }
   }
 
-  await Promise.all(pending);
+  const batches = partitionMediaAnalysisAssetBatches(missing, {
+    maxBytes: options.maxBatchBytes,
+  });
+  let nextBatchIndex = 0;
+  const batchRegistry = options.batchRegistry ?? new Map();
+  const workerCount = Math.min(
+    Math.max(1, options.maxConcurrentBatches ?? MAX_CONCURRENT_ASSET_BATCHES),
+    batches.length,
+  );
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextBatchIndex < batches.length) {
+      const batch = batches[nextBatchIndex];
+      nextBatchIndex += 1;
+      await loadAnalysisAssetBatch(options, batch, bytes, batchRegistry);
+    }
+  });
+
+  await Promise.all([...pending, ...workers]);
   options.signal.throwIfAborted();
   return bytes;
+}
+
+/** 单批注册独立 AbortController；session signal 和快速跳转都可以终止同一底层 fetch。 */
+async function loadAnalysisAssetBatch(
+  options: LoadAnalysisAssetsOptions,
+  batch: MediaAnalysisAssetDescriptor[],
+  output: Map<string, Uint8Array>,
+  registry: PlatformMediaAnalysisBatchRegistry,
+) {
+  const registryKey = Symbol("media-analysis-batch");
+  const controller = new AbortController();
+  const abortFromSession = () => controller.abort(options.signal.reason);
+  if (options.signal.aborted) abortFromSession();
+  else options.signal.addEventListener("abort", abortFromSession, { once: true });
+  registry.set(registryKey, {
+    controller,
+    assetIds: new Set(batch.map(({ id }) => id)),
+  });
+
+  const batchPromise = options.client.getMediaAnalysisAssetBatch(
+    options.annotationFileId,
+    { runId: options.runId, assetIds: batch.map(({ id }) => id) },
+    controller.signal,
+  ).then((response) => {
+    const decoded = decodeMediaAnalysisTileBatch(response);
+    if (
+      decoded.size !== batch.length ||
+      batch.some(({ id }) => !decoded.has(id))
+    ) throw new Error("媒体分析批次响应与请求不一致。");
+    return decoded;
+  });
+
+  const resolvedBatch = new Map<string, Uint8Array>();
+  const assetPromises = batch.map((descriptor) => {
+    const assetPromise = batchPromise.then((decoded) => {
+      const value = decoded.get(descriptor.id);
+      if (!value || value.byteLength !== descriptor.size) {
+        throw new Error("媒体分析瓦片大小与清单不一致。");
+      }
+      options.cache.set(descriptor.id, value);
+      output.set(descriptor.id, value);
+      resolvedBatch.set(descriptor.id, value);
+      return value;
+    });
+    options.inFlight.set(descriptor.id, assetPromise);
+    return assetPromise.finally(() => {
+      if (options.inFlight.get(descriptor.id) === assetPromise) {
+        options.inFlight.delete(descriptor.id);
+      }
+    });
+  });
+
+  try {
+    await Promise.all(assetPromises);
+    if (options.persistentCache) {
+      void options.persistentCache.putMany(batch.map((descriptor) => ({
+        identity: buildPersistentCacheIdentity(options, descriptor),
+        bytes: resolvedBatch.get(descriptor.id)!,
+      }))).catch((persistentError) => options.onPersistentCacheError?.(persistentError));
+    }
+    options.onBatchLoaded?.(batch, resolvedBatch);
+  } finally {
+    options.signal.removeEventListener("abort", abortFromSession);
+    if (registry.get(registryKey)?.controller === controller) registry.delete(registryKey);
+  }
+}
+
+function buildPersistentCacheIdentity(
+  options: Pick<LoadAnalysisAssetsOptions, "currentUserId" | "annotationFileId" | "runId">,
+  descriptor: MediaAnalysisAssetDescriptor,
+) {
+  return {
+    userId: options.currentUserId,
+    annotationFileId: options.annotationFileId,
+    runId: options.runId,
+    assetId: descriptor.id,
+    size: descriptor.size,
+  };
 }
 
 export function assemblePlatformWaveform(
@@ -552,4 +1016,16 @@ function concatenateBytes(chunks: Uint8Array[]) {
 
 function describeError(error: unknown) {
   return error instanceof Error ? error.message : "读取媒体分析失败。";
+}
+
+/** Abort 是视口切换和任务取消的正常控制流，不应显示为加载失败。 */
+function isAbortError(error: unknown) {
+  return error instanceof DOMException
+    ? error.name === "AbortError"
+    : error instanceof Error && error.name === "AbortError";
+}
+
+/** 持久缓存只是性能层；失败需要留开发日志，但不能覆盖可继续使用的网络结果。 */
+function reportPersistentCacheError(error: unknown) {
+  console.warn("媒体分析 IndexedDB 缓存不可用，已降级为网络读取", error);
 }

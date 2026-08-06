@@ -144,13 +144,21 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/usePlatformMediaAnalysis.ts`
   - platform-only status polling, source mutations, 30-second-quantized viewport selection, debounced descriptor reads,
     session-scoped in-flight batch reuse, generation isolation, strict tile continuity checks, source offset conversion,
-    and count-plus-byte bounded LRU cache
-  - viewport changes may cancel descriptor lists but must not cancel reusable tile batches; only file/run/source switches abort
-    the asset session. Keep the previous timed data while the next window loads so Timeline range intersection prevents flashes
+    progressive waveform/spectrogram assembly, bounded memory cache, and IndexedDB second-level cache
+  - when a new viewport enters the debounce window, immediately cancel old visible/adjacent batches outside the active
+    preload set; after the new descriptor snapshot arrives, cancel batches outside the latest viewport plus preload set.
+    Shared batches with any retained asset remain reusable. Changing waveform level, spectrogram preset, visibility, or F0
+    cancels the old preload task; file/run/source switches abort the whole asset session.
+    Keep the previous timed data while the next window loads so Timeline range intersection prevents flashes
   - polling must continue even when one response has an unchanged `updatedAt`; status requests stay single-flight
 - `src/platform/platformMediaAnalysisLoading.ts`
-  - pure request-window quantization, batch partitioning, and bounded LRU policy; shared 48-asset/32 MiB transport limits must
-    stay synchronized with the batch codec, while the browser cache additionally enforces its own total byte budget
+  - pure request-window quantization, adjacent-window prefetch, batch partitioning, progressive contiguous-prefix selection,
+    stale-batch cancellation, and bounded LRU policy; shared 48-asset/32 MiB transport limits must stay synchronized with the
+    batch codec, while progressive foreground batches may use a smaller local budget
+- `src/platform/platformMediaAnalysisCache.ts`
+  - existing `idb` dependency-backed second-level analysis cache; records are keyed by encoded account/file/run/asset/size,
+    contain only binary analysis bytes, and use bounded metadata-driven LRU cleanup. Quota/private-mode failures are an
+    optimization downgrade, never an authorization bypass or document error
 - `src/utils/localMediaAnalysis.ts`
   - browser-only local media fallback; user-selected `blob:` media retains full local decode behavior, while non-Blob URLs use
     a 256 MiB pre/post-download cap. Platform uploaded/VOD URLs must never call it
@@ -1862,9 +1870,10 @@ Audio pipeline:
 - platform files never fetch and decode a complete uploaded/VOD video in the browser for analysis; the independent analysis
   worker streams uploaded objects or a short-lived VOD audio URL through FFmpeg and publishes ACL-protected waveform,
   spectrogram, and F0 tiles
-- platform Timeline requests only the current viewport's tiles through `usePlatformMediaAnalysis`; source changes and file
-  switches must cancel or invalidate stale requests, and the byte cache stays bounded. Pixel-level scrolling is quantized to
-  30-second server tiles; one bounded binary batch carries missing waveform/spectrogram/F0 assets after one ACL check
+- platform Timeline requests the current viewport first through `usePlatformMediaAnalysis`, then performs bounded adjacent-window
+  prefetch and offers user-triggered full preloading of the current analysis configuration. Source changes and file switches
+  must cancel or invalidate stale requests, and both memory/IndexedDB caches stay bounded. Pixel-level scrolling is quantized
+  to 30-second server tiles; one bounded binary batch carries missing waveform/spectrogram/F0 assets after one ACL check
 - local computer media remains a browser-only fallback; a user-selected `blob:` may use the browser's full decode capacity,
   while non-Blob URLs retain the 256 MiB download cap. It may reuse the shared bounded STFT/YIN implementation, but protected
   platform uploaded/VOD URLs must never enter that path

@@ -5,7 +5,7 @@ import type {
   SpectrogramFrequencyScale,
   SpectrogramSettings,
 } from "../types";
-import { FolderOpen, RefreshCw, RotateCcw } from "lucide-react";
+import { Download, FolderOpen, RefreshCw, RotateCcw, X } from "lucide-react";
 import {
   spectrogramAnalysisPresets,
   spectrogramFrequencyPresets,
@@ -30,6 +30,11 @@ type SpectrogramSettingsPanelProps = {
     onChooseSource: () => void;
     onRestoreAutomatic: () => void;
     onStartAnalysis: (force: boolean) => void;
+    preloadPending: boolean;
+    preloadProgress: { completed: number; total: number } | null;
+    preloadError: string | null;
+    onStartPreload: () => void;
+    onCancelPreload: () => void;
   };
 };
 
@@ -113,6 +118,19 @@ export function SpectrogramSettingsPanel({
             {platformAnalysis.error ? (
               <p className="spectrogram-setting-error" role="alert">{platformAnalysis.error}</p>
             ) : null}
+            {platformAnalysis.preloadError ? (
+              <p className="spectrogram-setting-error" role="alert">
+                {platformAnalysis.preloadError}
+              </p>
+            ) : null}
+            {platformAnalysis.preloadProgress?.total ? (
+              <div className="spectrogram-static-row" role="status">
+                <span>
+                  分析缓存 {platformAnalysis.preloadProgress.completed}/
+                  {platformAnalysis.preloadProgress.total}
+                </span>
+              </div>
+            ) : null}
             <div className="spectrogram-analysis-source-actions">
               <button
                 type="button"
@@ -149,7 +167,17 @@ export function SpectrogramSettingsPanel({
                     ? "分析中"
                     : platformAnalysis.status?.currentRun?.status === "succeeded"
                       ? "重新分析"
-                      : "开始分析"}
+                    : "开始分析"}
+              </button>
+              <button
+                type="button"
+                disabled={platformAnalysis.status?.currentRun?.status !== "succeeded"}
+                onClick={platformAnalysis.preloadPending
+                  ? platformAnalysis.onCancelPreload
+                  : platformAnalysis.onStartPreload}
+              >
+                {platformAnalysis.preloadPending ? <X size={15} /> : <Download size={15} />}
+                {platformAnalysis.preloadPending ? "停止预加载" : "预加载分析数据"}
               </button>
             </div>
           </div>

@@ -831,6 +831,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const platformClient = editorSession?.client;
   const platformMediaAnalysis = usePlatformMediaAnalysis({
     client: platformClient ?? null,
+    currentUserId: editorSession?.currentUserId ?? null,
     annotationFileId: editorSession?.annotationFileId ?? null,
     enabled: Boolean(editorSession),
     canWrite: Boolean(editorSession?.canWrite),
@@ -6945,6 +6946,13 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                         onStartAnalysis: (force) => {
                           void platformMediaAnalysis.startAnalysis(force);
                         },
+                        preloadPending: platformMediaAnalysis.preloadPending,
+                        preloadProgress: platformMediaAnalysis.preloadProgress,
+                        preloadError: platformMediaAnalysis.preloadError,
+                        onStartPreload: () => {
+                          void platformMediaAnalysis.startPreload();
+                        },
+                        onCancelPreload: platformMediaAnalysis.cancelPreload,
                       } : undefined}
                     />
                   ) : (

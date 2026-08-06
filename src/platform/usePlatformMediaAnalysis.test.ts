@@ -125,6 +125,7 @@ test("相同资产的并发窗口复用一个批量请求并共同写入缓存",
   const inFlight = new Map<string, Promise<Uint8Array>>();
   const controller = new AbortController();
   const options = {
+    currentUserId: "user-1",
     annotationFileId: "file-1",
     runId: "run-1",
     descriptors: [descriptor],
@@ -145,6 +146,49 @@ test("相同资产的并发窗口复用一个批量请求并共同写入缓存",
   assert.deepEqual([...cache.get(descriptor.id) ?? []], [...assetBytes]);
 });
 
+test("不同分析序列按有界并发逐批回调", async () => {
+  const descriptors: MediaAnalysisAssetDescriptor[] = [
+    descriptorForSeries("wave", "waveform", "default"),
+    descriptorForSeries("spectrogram", "spectrogram", "time-detail"),
+    descriptorForSeries("pitch", "pitch", "yin-v1"),
+  ];
+  let activeRequests = 0;
+  let maximumActiveRequests = 0;
+  const completedBatches: string[][] = [];
+  const client = {
+    async getMediaAnalysisAssetBatch(
+      _resourceId: string,
+      request: { assetIds: string[] },
+    ) {
+      activeRequests += 1;
+      maximumActiveRequests = Math.max(maximumActiveRequests, activeRequests);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      activeRequests -= 1;
+      return buildBatchResponseForAssets(
+        request.assetIds.map((id) => ({ id, bytes: Uint8Array.of(id.length) })),
+      );
+    },
+  };
+  const result = await loadAnalysisAssets({
+    currentUserId: "user-1",
+    annotationFileId: "file-1",
+    runId: "run-1",
+    descriptors,
+    client,
+    cache: new PlatformMediaAnalysisAssetCache(),
+    inFlight: new Map(),
+    batchRegistry: new Map(),
+    signal: new AbortController().signal,
+    maxConcurrentBatches: 2,
+    onBatchLoaded(batch) {
+      completedBatches.push(batch.map(({ id }) => id));
+    },
+  });
+  assert.equal(maximumActiveRequests, 2);
+  assert.equal(result.size, 3);
+  assert.deepEqual(completedBatches.flat().sort(), ["pitch", "spectrogram", "wave"]);
+});
+
 function sine(sampleRate: number, duration: number, frequency: number) {
   return Float32Array.from(
     { length: Math.round(sampleRate * duration) },
@@ -153,9 +197,40 @@ function sine(sampleRate: number, duration: number, frequency: number) {
 }
 
 function buildBatchResponse(id: string, bytes: Uint8Array) {
-  const header = encodeMediaAnalysisTileBatchHeader([{ id, byteLength: bytes.byteLength }]);
-  const response = new Uint8Array(header.byteLength + bytes.byteLength);
+  return buildBatchResponseForAssets([{ id, bytes }]);
+}
+
+function buildBatchResponseForAssets(assets: Array<{ id: string; bytes: Uint8Array }>) {
+  const header = encodeMediaAnalysisTileBatchHeader(assets.map(({ id, bytes }) => ({
+    id,
+    byteLength: bytes.byteLength,
+  })));
+  const response = new Uint8Array(
+    header.byteLength + assets.reduce((sum, asset) => sum + asset.bytes.byteLength, 0),
+  );
   response.set(header, 0);
-  response.set(bytes, header.byteLength);
+  let offset = header.byteLength;
+  for (const asset of assets) {
+    response.set(asset.bytes, offset);
+    offset += asset.bytes.byteLength;
+  }
   return response;
+}
+
+function descriptorForSeries(
+  id: string,
+  kind: MediaAnalysisAssetDescriptor["kind"],
+  preset: string,
+): MediaAnalysisAssetDescriptor {
+  return {
+    id,
+    kind,
+    preset,
+    level: 0,
+    tileIndex: 0,
+    startTime: 0,
+    endTime: 30,
+    mimeType: `application/vnd.xiqu.${kind}-tile`,
+    size: 1,
+  };
 }

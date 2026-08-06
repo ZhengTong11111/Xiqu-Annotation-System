@@ -5,9 +5,13 @@ import {
   type MediaAnalysisAssetDescriptor,
 } from "@xiqu/shared";
 import {
+  buildAdjacentPlatformAnalysisWindows,
   buildPlatformAnalysisRequestWindow,
+  cancelPlatformAnalysisBatchesOutsideRetainedAssets,
   partitionMediaAnalysisAssetBatches,
   PlatformMediaAnalysisAssetCache,
+  selectContiguousLoadedAnalysisAssets,
+  type PlatformMediaAnalysisBatchRegistry,
 } from "./platformMediaAnalysisLoading";
 
 test("分析请求窗口按 30 秒边界量化并保留来源偏移", () => {
@@ -36,6 +40,72 @@ test("分析资产批次同时遵守数量和总字节边界", () => {
       descriptor("large-b", 20 * 1024 * 1024),
     ]).map((batch) => batch.length),
     [1, 1],
+  );
+  assert.deepEqual(
+    partitionMediaAnalysisAssetBatches([
+      descriptor("small-a", 4),
+      descriptor("small-b", 4),
+      descriptor("small-c", 4),
+    ], { maxBytes: 8 }).map((batch) => batch.length),
+    [2, 1],
+  );
+});
+
+test("不同分析序列拆成独立批次让轻量波形先完成", () => {
+  const waveform = descriptor("waveform", 1);
+  const spectrogram = { ...descriptor("spectrogram", 1), kind: "spectrogram" as const };
+  const pitch = { ...descriptor("pitch", 1), kind: "pitch" as const, preset: "yin-v1" };
+  assert.deepEqual(
+    partitionMediaAnalysisAssetBatches([waveform, spectrogram, pitch])
+      .map((batch) => batch.map(({ id }) => id)),
+    [["waveform"], ["spectrogram"], ["pitch"]],
+  );
+});
+
+test("相邻预取窗口不重复当前范围且不会越过零点", () => {
+  assert.deepEqual(
+    buildAdjacentPlatformAnalysisWindows({ startTime: 60, endTime: 180, waveformLevel: 2 }),
+    [
+      { startTime: 0, endTime: 60, waveformLevel: 2 },
+      { startTime: 180, endTime: 300, waveformLevel: 2 },
+    ],
+  );
+});
+
+test("快速跳转只取消与保留资产集合完全无交集的批次", () => {
+  const retainedController = new AbortController();
+  const obsoleteController = new AbortController();
+  const registry: PlatformMediaAnalysisBatchRegistry = new Map([
+    [Symbol("retained"), {
+      controller: retainedController,
+      assetIds: new Set(["shared", "old"]),
+    }],
+    [Symbol("obsolete"), {
+      controller: obsoleteController,
+      assetIds: new Set(["obsolete"]),
+    }],
+  ]);
+  assert.equal(cancelPlatformAnalysisBatchesOutsideRetainedAssets(registry, new Set(["shared"])), 1);
+  assert.equal(retainedController.signal.aborted, false);
+  assert.equal(obsoleteController.signal.aborted, true);
+});
+
+test("渐进显示只选择从窗口起点开始的连续已加载前缀", () => {
+  const descriptors = [0, 1, 2].map((tileIndex) => ({
+    ...descriptor(`asset-${tileIndex}`, 1),
+    tileIndex,
+    startTime: tileIndex * 30,
+    endTime: (tileIndex + 1) * 30,
+  }));
+  assert.deepEqual(
+    selectContiguousLoadedAnalysisAssets(
+      descriptors,
+      new Map([
+        ["asset-0", Uint8Array.of(0)],
+        ["asset-2", Uint8Array.of(2)],
+      ]),
+    ).map(({ id }) => id),
+    ["asset-0"],
   );
 });
 
