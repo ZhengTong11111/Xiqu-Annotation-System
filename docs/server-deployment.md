@@ -191,6 +191,12 @@ sudo -u xiqu bash -c '
 '
 ```
 
+如果 release 按生产权限由 `root:root` 持有，而 Prisma 7 首次运行需要在 release 内补齐 engines 缓存，
+上述服务用户命令可能因无权写 `node_modules` 而失败。此时保持维护模式不变，改由 root 仅执行同一个
+`npm run db:deploy`，不要给 `xiqu` 放开整个 release 的写权限，也不要以 root 启动 systemd 服务；迁移完成后
+API 与 analysis worker 仍必须以 `xiqu` 运行。后续可通过构建机预热并验证 Prisma engines 消除这一步的首次
+写入，但不能把运行时 release 改成可写共享目录。
+
 全新数据库默认没有任何账号。使用一次性 bootstrap CLI 创建首位管理员；密码只经 stdin 传入，不出现在
 argv、仓库或环境文件：
 

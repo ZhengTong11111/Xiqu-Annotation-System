@@ -5986,11 +5986,23 @@ operation、审计详情或协作消息。
 - `npm run build:web`、完整 `npm run build` 与最终 `git diff --check` 均通过；Web 只保留既有主 chunk 超过
   500 kB 提醒。
 
-### 待推进
+### 部署状态
 
-- 当前生产服务器尚未部署这一 release，也尚未把 gzip 配置合入真实 Nginx 站点。部署后需用真实《寻梦》VOD
-  在 Network 面板比较：新区域一次窗口的 batch 数量、是否仍有大量 cancelled 单瓦片请求、Content-Encoding、
-  transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦片是否复活。
+- 2026-08-06 已部署到生产服务器 `101.201.76.10`，release 为
+  `/opt/xiqu/releases/20260806T090600Z-0696319`，对应提交 `0696319`。
+- 部署前停止 `xiqu-analysis-worker`，由旧 release 创建并校验一致备份
+  `xiqu-backup-2026-08-06T09-03-37-703Z-c6319dfd`；备份包含 350 个对象，warning 为 0，manifest 校验通过。
+- 备份校验后进入维护模式，完成 release 上传、完整产物门禁、`prisma migrate deploy`、API 原子切换和
+  Nginx 配置 reload。真实站点新增独立配置片段
+  `/etc/nginx/conf.d/xiqu-platform-analysis-gzip.conf`，保留原有域名、代理与安全规则。
+- 新 release 的 API、首页、liveness、readiness 均通过公网 HTTP smoke；分析 worker 重新启动并 active；
+  最终维护状态为关闭，API 与 worker 的发布后日志未发现 error/fatal/uncaught/crash。
+- 本次 `db:deploy` 的第一次服务用户执行因 Prisma 7 尝试写 root-owned release 内的 engines 缓存而失败，
+  数据库未被修改；随后改由 root 仅执行迁移工具成功确认“20 migrations found / No pending migrations”。
+  systemd 服务仍继续以 `xiqu` 运行，未放宽 release 目录权限。
+
+待人工验收：使用真实《寻梦》VOD 在 Network 面板比较新区域首次加载的 batch 数量、`Content-Encoding`、
+transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦片是否复活。该项不能用健康检查代替。
 - 本轮没有增加 public CDN、S3 预签名直读、无限缓存或全片预下载。若生产验收后对象存储 TTFB 仍占主要部分，
   下一步应先增加低基数 Server-Timing/指标区分 ACL、Prisma 与 storage，再决定是否设计短时、权限绑定的对象
   直读；不能仅凭 localhost 对比绕开服务端 ACL。
