@@ -5896,13 +5896,16 @@ operation、审计详情或协作消息。
 - 首位管理员已创建并通过登录验证；仍需立即在平台内把临时密码改为唯一强密码，并确认改密会撤销旧 session。
 - 当前仅为公网 IP 的 HTTP smoke。域名确定后需配置 DNS、可信 TLS 与自动续期，再把 Nginx 从临时 HTTP 配置
   切换到正式同源 HTTPS；安全组仍需最终确认 22 仅允许运维公网 IP、80/443 对外、3389/4317/5432 禁止公网。
-- 阿里云 VOD 当前在生产环境保持关闭。正式启用时 ECS 实例角色只授予 `GetVideoInfo`、`GetVideoPlayAuth`、
-  `GetPlayInfo`，VOD region 仍是 `cn-shanghai`；必须先为最终浏览器 hostname 配置 Web License，再将
-  `domain + key` 写入受保护服务环境。localhost License 不能复用到生产域名，长期 AccessKey 不进入服务器
-  环境或仓库。
-- 首管理员创建后仍需完成人工闭环：登录、创建资源、上传与 Range、打开/保存、第二账号 ACL 与实时协作、
-  回收站/恢复、审计、metrics，以及 uploaded 媒体分析。域名与 VOD 启用后再验证样例 VOD 播放、纯音频分析、
-  强制上传音频覆盖和恢复自动来源。
+- 阿里云 VOD 已在公网 IP smoke 阶段启用：region 固定为媒资实际所在的 `cn-shanghai`，Web License domain
+  使用当前公网 IP，License Key 只保存在 `root:xiqu`、`0640` 的生产环境文件。ECS 实例角色通过默认凭据链
+  实际完成样例媒资的 `GetVideoInfo`、`GetVideoPlayAuth` 与 `GetPlayInfo`；返回状态 Normal、时长 1494.413 秒，
+  短时 PlayAuth 和 HTTPS mp3 纯音频地址均有效，验证过程未输出凭据或临时 URL。最终域名确定后仍须在阿里云
+  重新授权该 hostname，并同步替换生产 Web License domain/key；localhost 或公网 IP License 不能冒充正式域名
+  授权，长期 AccessKey 不进入服务器环境或仓库。
+- 首管理员创建后仍需完成人工闭环：改掉临时密码、创建资源、上传与 Range、打开/保存、第二账号 ACL 与实时
+  协作、回收站/恢复、审计、metrics，以及 uploaded 媒体分析。VOD 服务端三项真实 API 已通过，但仍需在编辑器
+  中创建/关联样例 VOD，人工验证 Aliplayer 播放、纯音频分析、强制上传音频覆盖和恢复自动来源；切换最终域名
+  和 HTTPS 后还要重新执行同一浏览器闭环。
 - 首次一致备份及隔离恢复演练已经通过。后续每次重要升级仍须创建新的匹配备份并按运维策略定期演练；依赖
   安装报告的安全告警应在仓库分支中审查并通过锁文件、测试和构建处理，不能在生产服务器直接运行
   `npm audit fix --force`。
