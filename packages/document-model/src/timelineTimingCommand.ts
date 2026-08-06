@@ -6,6 +6,7 @@ import {
   type TimelineTimingUpdateItem,
 } from "@xiqu/shared";
 import type { ProjectData } from "./projectData.js";
+import type { AnnotationStateTarget } from "./annotationStateCommand.js";
 
 // UI 调用点只描述目标身份，before/after 必须由纯 helper 从两份项目中权威读取。
 export type TimelineTimingTarget = {
@@ -14,15 +15,22 @@ export type TimelineTimingTarget = {
   trackId?: string;
 };
 
-// 文字父块移动会同步工尺块；把派生块纳入同一命令，未来重放不会只移动父块而遗漏工尺时间。
-export function getGongcheTimingTargetsForParents(
-  projects: readonly ProjectData[],
+type GongcheParentTimingTransactionTargets = {
+  timingTargets: TimelineTimingTarget[];
+  stateTargets: Array<Extract<AnnotationStateTarget, { entityType: "gongche-symbol" }>>;
+};
+
+// 文字父块移动会按比例同步工尺块及其内部符号。两类目标必须进入同一 transaction，
+// 否则命令重放只能恢复外层块边界，无法解释当前 ProjectData 中已经移动的符号时间。
+export function getGongcheTransactionTargetsForParents(
+  baseProject: ProjectData,
+  nextProject: ProjectData,
   parentTrackId: string,
   parentBlockIds: readonly string[],
-): TimelineTimingTarget[] {
+): GongcheParentTimingTransactionTargets {
   const parentIdSet = new Set(parentBlockIds);
-  const targets = new Map<string, TimelineTimingTarget>();
-  for (const project of projects) {
+  const timingTargets = new Map<string, TimelineTimingTarget>();
+  for (const project of [baseProject, nextProject]) {
     for (const block of project.gongcheAnnotations) {
       if (block.parentTrackId !== parentTrackId || !parentIdSet.has(block.parentBlockId)) continue;
       const target: TimelineTimingTarget = {
@@ -30,14 +38,44 @@ export function getGongcheTimingTargetsForParents(
         entityId: block.id,
         trackId: parentTrackId,
       };
-      targets.set(getTimelineTimingTargetKey(target), target);
+      timingTargets.set(getTimelineTimingTargetKey(target), target);
     }
   }
-  return [...targets.values()];
+
+  const stateTargets = new Map<
+    string,
+    Extract<AnnotationStateTarget, { entityType: "gongche-symbol" }>
+  >();
+  for (const target of timingTargets.values()) {
+    const baseBlock = baseProject.gongcheAnnotations.find((block) =>
+      block.id === target.entityId && block.parentTrackId === target.trackId,
+    );
+    const nextBlock = nextProject.gongcheAnnotations.find((block) =>
+      block.id === target.entityId && block.parentTrackId === target.trackId,
+    );
+    // 父块时间编辑不负责工尺生命周期；只收集前后都存在的稳定 symbol，创建/删除继续走 lifecycle。
+    if (!baseBlock || !nextBlock) continue;
+    const nextSymbolIds = new Set(nextBlock.symbols.map((symbol) => symbol.id));
+    for (const symbol of baseBlock.symbols) {
+      if (!nextSymbolIds.has(symbol.id)) continue;
+      const stateTarget: Extract<AnnotationStateTarget, { entityType: "gongche-symbol" }> = {
+        entityType: "gongche-symbol",
+        entityId: symbol.id,
+        trackId: baseBlock.id,
+      };
+      stateTargets.set(`${baseBlock.id}:${symbol.id}`, stateTarget);
+    }
+  }
+
+  return {
+    timingTargets: [...timingTargets.values()],
+    stateTargets: [...stateTargets.values()],
+  };
 }
 
-// 从同一次 history 的真实 base/next 项目提取 before/after，避免 pointer-up 使用已被 transient 改写的旧值。
-export function buildProjectTimelineTimingCommand(
+// 事务叶级 builder 只从同一次 history 的真实 base/next 提取 before/after，不单独证明完整 ProjectData。
+// UI 必须调用 timelineTimingCommandBuilder 中的安全 builder；本函数只供高层 transaction 组合子命令。
+export function buildProjectTimelineTimingEnvelope(
   baseProject: ProjectData,
   nextProject: ProjectData,
   targets: readonly TimelineTimingTarget[],

@@ -203,8 +203,8 @@ test("冲突与不可重试错误阻断后续自动保存", async () => {
   errorHarness.runtime.dispose();
 });
 
-// suspend 必须取消可见 timer；解除后 dirty 会话继续沿原 idle 截止时间求值。
-test("待确认整合暂停并安全恢复自动保存", async () => {
+// 整合确认或 transient 拖拽共用 suspend；必须取消 timer，解除后再保存已经形成 operation 的状态。
+test("未形成可重放历史的编辑暂停并安全恢复自动保存", async () => {
   const harness = createHarness(async () => ({ status: "saved" }));
   harness.runtime.update(DIRTY_FACTS);
   harness.runtime.update({ ...DIRTY_FACTS, suspended: true });

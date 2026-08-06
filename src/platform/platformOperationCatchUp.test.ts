@@ -13,9 +13,47 @@ import { buildProjectAnnotationTransactionCommand } from "../utils/annotationTra
 import { buildProjectCustomTrackStructureCommand } from "../utils/customTrackStructureCommand";
 import { buildProjectTrackStructureTransactionCommand } from "../utils/trackStructureTransactionCommand";
 import { buildProjectTimelineTimingCommand } from "../utils/timelineTimingCommand";
-import { catchUpCommittedAnnotationOperations } from "./platformOperationCatchUp";
+import {
+  canAttemptPlatformOperationCatchUp,
+  catchUpCommittedAnnotationOperations,
+} from "./platformOperationCatchUp";
 
 const FILE_ID = "annotation-file-catch-up";
+
+const CLEAN_CATCH_UP_FACTS = {
+  hasUnsavedChanges: false,
+  pendingOperationCount: 0,
+  hasTransientEdit: false,
+  hasInlineEdit: false,
+  hasPendingMergeDraft: false,
+  syncStatus: "saved" as const,
+  saveInFlight: false,
+  mediaBindingBusy: false,
+};
+
+test("完全 clean 的 saved/error 会话可追赶，其他状态或本地工作一律暂停", () => {
+  assert.equal(canAttemptPlatformOperationCatchUp(CLEAN_CATCH_UP_FACTS), true);
+  assert.equal(canAttemptPlatformOperationCatchUp({
+    ...CLEAN_CATCH_UP_FACTS,
+    syncStatus: "error",
+  }), true);
+
+  for (const facts of [
+    { ...CLEAN_CATCH_UP_FACTS, hasUnsavedChanges: true },
+    { ...CLEAN_CATCH_UP_FACTS, pendingOperationCount: 1 },
+    { ...CLEAN_CATCH_UP_FACTS, hasTransientEdit: true },
+    { ...CLEAN_CATCH_UP_FACTS, hasInlineEdit: true },
+    { ...CLEAN_CATCH_UP_FACTS, hasPendingMergeDraft: true },
+    { ...CLEAN_CATCH_UP_FACTS, saveInFlight: true },
+    { ...CLEAN_CATCH_UP_FACTS, mediaBindingBusy: true },
+    { ...CLEAN_CATCH_UP_FACTS, syncStatus: "dirty" as const },
+    { ...CLEAN_CATCH_UP_FACTS, syncStatus: "saving" as const },
+    { ...CLEAN_CATCH_UP_FACTS, syncStatus: "offline" as const },
+    { ...CLEAN_CATCH_UP_FACTS, syncStatus: "conflict" as const },
+  ]) {
+    assert.equal(canAttemptPlatformOperationCatchUp(facts), false);
+  }
+});
 
 // 测试命令只移动一个稳定逐字实体，方便组合连续 revision 与 before mismatch 场景。
 function createCharacterMove(

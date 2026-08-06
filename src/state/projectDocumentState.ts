@@ -168,7 +168,8 @@ type RemoteProjectReplacementFacts = {
   syncStatus: ProjectSyncStatus;
 };
 
-// 远端替换资格是独立纯规则，便于覆盖 dirty、pending、transient 与同步状态的全部组合。
+// 远端替换资格是独立纯规则。完全 clean 的 error 会话允许由权威服务器状态自愈；
+// 任何文档、操作或拖拽状态仍然存在时继续 fail closed，避免错误恢复覆盖本地草稿。
 export function canReplaceProjectFromRemote({
   hasDocumentChanges,
   pendingOperationCount,
@@ -178,7 +179,7 @@ export function canReplaceProjectFromRemote({
   return !hasDocumentChanges &&
     pendingOperationCount === 0 &&
     !hasTransientProject &&
-    syncStatus === "saved";
+    (syncStatus === "saved" || syncStatus === "error");
 }
 
 const DEFAULT_HISTORY_LIMIT = 50;

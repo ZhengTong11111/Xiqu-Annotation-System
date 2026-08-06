@@ -376,6 +376,7 @@ export const AUDIT_ACTIONS = [
   "resource_restore",
   "resource_delete",
   "annotation_file_save",
+  "annotation_client_sync_failure",
   "annotation_mutation_lease_acquire",
   "annotation_mutation_lease_renew",
   "annotation_mutation_lease_release",
@@ -397,6 +398,61 @@ export const AUDIT_ACTIONS = [
 ] as const;
 
 export type AuditActionName = typeof AUDIT_ACTIONS[number];
+
+export type AnnotationClientSyncFailureCategory =
+  | "atomic_plan"
+  | "atomic_protocol"
+  | "draft_persistence"
+  | "mutation_lease"
+  | "auto_save_runtime"
+  | "server_save"
+  | "unknown";
+
+export type AnnotationClientSyncFailureOperation = {
+  operationId: string;
+  action: string;
+  commandType: string;
+  baseRevision: number;
+  localRevision: number;
+  createdAt: string;
+  targets: string[];
+  // 调试阶段保留有界命令 envelope；凭据、鉴权值和 URL 必须在客户端与服务端双重脱敏。
+  commandPayload?: unknown;
+};
+
+export type AnnotationClientSyncFailureMismatch = {
+  path: string;
+  savedValue: unknown;
+  replayedValue: unknown;
+  currentValue: unknown;
+};
+
+// 调试报告允许保留标注正文、before/after 和完整命令 envelope；鉴权凭据仍必须双重脱敏。
+export type AnnotationClientSyncFailureReport = {
+  schemaVersion: 1;
+  clientRuntimeId: string;
+  clientOccurredAt: string;
+  category: AnnotationClientSyncFailureCategory;
+  reason: string;
+  errorMessage: string;
+  localRevision: number;
+  savedLocalRevision: number;
+  documentRemoteRevision: number | null;
+  appRemoteRevision: number;
+  observedRemoteRevision: number;
+  pendingOperationCount: number;
+  hasUnsavedChanges: boolean;
+  saveInFlight: boolean;
+  online: boolean;
+  mismatchFields: string[];
+  mismatchDetails: AnnotationClientSyncFailureMismatch[];
+  pendingOperations: AnnotationClientSyncFailureOperation[];
+  pendingOperationsTruncated: boolean;
+};
+
+export type AnnotationClientSyncFailureReportResult = {
+  recorded: boolean;
+};
 
 // 审计资源摘要只携带浏览所需身份，不展开资源树、权限或文件 payload。
 export type AuditResourceReference = {

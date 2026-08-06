@@ -2,6 +2,8 @@ import type {
   AnnotationConfirmationDraft,
   AnnotationConfirmationList,
   AnnotationConfirmationRecord,
+  AnnotationClientSyncFailureReport,
+  AnnotationClientSyncFailureReportResult,
   AnnotationFile,
   AnnotationOperationRecord,
   AnnotationOperationPage,
@@ -510,5 +512,9 @@ export type PlatformApiContract<TPayload = unknown> = {
   commitAnnotationCommandBatch: {
     request: CommitAnnotationCommandBatchRequest;
     response: CommitAnnotationCommandBatchResponse;
+  };
+  reportAnnotationClientSyncFailure: {
+    request: AnnotationClientSyncFailureReport;
+    response: AnnotationClientSyncFailureReportResult;
   };
 };

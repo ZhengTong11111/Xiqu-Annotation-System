@@ -95,7 +95,7 @@ export type PlatformSaveOutcome =
   | { status: "rebased"; message: string }
   | {
       status: "skipped";
-      reason: "not-platform" | "read-only" | "clean" | "busy";
+      reason: "not-platform" | "read-only" | "clean" | "busy" | "transient-edit";
     }
   | { status: "offline"; retryable: true; message: string }
   | { status: "conflict"; retryable: false; message: string }

@@ -6,6 +6,7 @@ export * from "./projectData.js";
 export * from "./projectValueEquality.js";
 export * from "./timelineTimingCommand.js";
 export * from "./timelineTimingCommandApply.js";
+export * from "./timelineTimingCommandBuilder.js";
 export * from "./annotationContentCommand.js";
 export * from "./annotationContentCommandApply.js";
 export * from "./annotationCompositeSnapshots.js";

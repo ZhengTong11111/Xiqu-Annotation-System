@@ -28,6 +28,16 @@ export type AuditedPendingCommand = {
   envelope: AnnotationCommandEnvelope;
 };
 
+export type PendingCommandChainMismatchDetail = {
+  path: string;
+  savedValue: unknown;
+  replayedValue: unknown;
+  currentValue: unknown;
+};
+
+const MAX_MISMATCH_DETAILS = 64;
+const MISSING_VALUE = "[MISSING]";
+
 export type PendingCommandChainAuditResult =
   | { status: "ready"; operations: AuditedPendingCommand[]; capturedProject: ProjectData | null }
   | { status: "no_operations" }
@@ -119,7 +129,19 @@ export function auditPendingAnnotationCommandChain(
 
   // 命令链之外的可持久项目变化无法被服务端逐条重放，必须停在人工/快照边界而不是漏存。
   if (!areProjectValuesEqual(auditProject, input.currentProject)) {
-    return { status: "invalid_local_chain", reason: "local_chain_mismatch" };
+    return {
+      status: "invalid_local_chain",
+      reason: "local_chain_mismatch",
+      issues: {
+        // UI 错误提示仍只展示 reason；详细值仅进入受限调试审计，用来定位没有生成命令的编辑入口。
+        mismatchedTopLevelFields: getMismatchedTopLevelFields(auditProject, input.currentProject),
+        mismatchDetails: collectProjectMismatchDetails(
+          input.savedProject,
+          auditProject,
+          input.currentProject,
+        ),
+      },
+    };
   }
 
   return {
@@ -127,6 +149,94 @@ export function auditPendingAnnotationCommandChain(
     operations: auditedOperations,
     capturedProject,
   };
+}
+
+// 从命令重放结果和真实编辑器状态中寻找最早的叶子差异，同时带上保存基线的同路径值。
+// 数组长度单独记录，避免为了一个增删项把整条大型标注数组写进审计日志。
+function collectProjectMismatchDetails(
+  savedProject: ProjectData,
+  replayedProject: ProjectData,
+  currentProject: ProjectData,
+): PendingCommandChainMismatchDetail[] {
+  const details: PendingCommandChainMismatchDetail[] = [];
+  collectValueMismatchDetails(savedProject, replayedProject, currentProject, "", details);
+  return details;
+}
+
+function collectValueMismatchDetails(
+  savedValue: unknown,
+  replayedValue: unknown,
+  currentValue: unknown,
+  path: string,
+  details: PendingCommandChainMismatchDetail[],
+) {
+  if (details.length >= MAX_MISMATCH_DETAILS || areProjectValuesEqual(replayedValue, currentValue)) return;
+
+  if (Array.isArray(replayedValue) && Array.isArray(currentValue)) {
+    if (replayedValue.length !== currentValue.length) {
+      details.push({
+        path: `${path}/length`,
+        savedValue: Array.isArray(savedValue) ? savedValue.length : MISSING_VALUE,
+        replayedValue: replayedValue.length,
+        currentValue: currentValue.length,
+      });
+    }
+    const maximumLength = Math.max(replayedValue.length, currentValue.length);
+    for (let index = 0; index < maximumLength && details.length < MAX_MISMATCH_DETAILS; index += 1) {
+      collectValueMismatchDetails(
+        Array.isArray(savedValue) && index < savedValue.length ? savedValue[index] : MISSING_VALUE,
+        index < replayedValue.length ? replayedValue[index] : MISSING_VALUE,
+        index < currentValue.length ? currentValue[index] : MISSING_VALUE,
+        `${path}/${index}`,
+        details,
+      );
+    }
+    return;
+  }
+
+  if (isPlainRecord(replayedValue) && isPlainRecord(currentValue)) {
+    const keys = [...new Set([...Object.keys(replayedValue), ...Object.keys(currentValue)])].sort();
+    const savedRecord = isPlainRecord(savedValue) ? savedValue : null;
+    for (const key of keys) {
+      if (details.length >= MAX_MISMATCH_DETAILS) return;
+      collectValueMismatchDetails(
+        savedRecord && Object.prototype.hasOwnProperty.call(savedRecord, key)
+          ? savedRecord[key]
+          : MISSING_VALUE,
+        Object.prototype.hasOwnProperty.call(replayedValue, key) ? replayedValue[key] : MISSING_VALUE,
+        Object.prototype.hasOwnProperty.call(currentValue, key) ? currentValue[key] : MISSING_VALUE,
+        `${path}/${escapeJsonPointerSegment(key)}`,
+        details,
+      );
+    }
+    return;
+  }
+
+  details.push({
+    path: path || "/",
+    savedValue,
+    replayedValue,
+    currentValue,
+  });
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function escapeJsonPointerSegment(value: string) {
+  return value.replace(/~/g, "~0").replace(/\//g, "~1");
+}
+
+function getMismatchedTopLevelFields(left: ProjectData, right: ProjectData): string[] {
+  const fields = new Set([...Object.keys(left), ...Object.keys(right)]);
+  return [...fields]
+    .filter((field) => !areProjectValuesEqual(
+      (left as unknown as Record<string, unknown>)[field],
+      (right as unknown as Record<string, unknown>)[field],
+    ))
+    .sort()
+    .slice(0, 32);
 }
 
 function getPendingCommandBarrier(

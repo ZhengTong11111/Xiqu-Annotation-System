@@ -7,6 +7,9 @@ import {
   RESOURCE_CAPABILITIES,
   type AnnotationConfirmationDomain,
   type AnnotationConfirmationScope,
+  type AnnotationClientSyncFailureCategory,
+  type AnnotationClientSyncFailureOperation,
+  type AnnotationClientSyncFailureReport,
   type AuditActionName,
   type PlatformRole,
   type ResourceCapability,
@@ -69,6 +72,15 @@ const CONFIRMATION_DOMAINS = new Set<AnnotationConfirmationDomain>(
 );
 // 路由运行时校验复用 shared 动作清单，未知 action 在进入 Prisma 前返回 400。
 const AUDIT_ACTION_NAMES = new Set<AuditActionName>(AUDIT_ACTIONS);
+const ANNOTATION_SYNC_FAILURE_CATEGORIES = new Set<AnnotationClientSyncFailureCategory>([
+  "atomic_plan",
+  "atomic_protocol",
+  "draft_persistence",
+  "mutation_lease",
+  "auto_save_runtime",
+  "server_save",
+  "unknown",
+]);
 
 export function registerApiRoutes(
   app: FastifyInstance,
@@ -1192,6 +1204,16 @@ export function registerApiRoutes(
       parsed.data,
     );
   });
+
+  app.post<{
+    Params: { resourceId: string };
+    Body: unknown;
+  }>("/api/annotation-files/:resourceId/sync-failures", async (request) =>
+    resources.recordAnnotationClientSyncFailure(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      parseAnnotationClientSyncFailureReport(request.body),
+    ));
 }
 
 function requireObject(value: unknown): Record<string, unknown> {
@@ -1228,6 +1250,157 @@ function parsePlatformRoles(value: unknown): PlatformRole[] {
 
 function normalizedString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+const MAX_SYNC_FAILURE_REPORT_BYTES = 256 * 1024;
+
+// 诊断接口只接受有界白名单结构，并对调试 payload 再脱敏一次；浏览器不能直接向 audit detail 注入任意 JSON。
+function parseAnnotationClientSyncFailureReport(value: unknown): AnnotationClientSyncFailureReport {
+  const serialized = JSON.stringify(value);
+  if (!serialized || serialized.length > MAX_SYNC_FAILURE_REPORT_BYTES) {
+    throw badRequest("客户端同步诊断超过大小限制。");
+  }
+  const input = requireObject(value);
+  if (input.schemaVersion !== 1) throw badRequest("客户端同步诊断版本无效。");
+  const category = parseBoundedDiagnosticEnum(
+    input.category,
+    ANNOTATION_SYNC_FAILURE_CATEGORIES,
+    "同步失败分类",
+  );
+  const pendingOperations = parseSyncFailureOperations(input.pendingOperations);
+  return {
+    schemaVersion: 1,
+    clientRuntimeId: parseDiagnosticString(input.clientRuntimeId, "客户端运行标识", 128),
+    clientOccurredAt: parseDiagnosticDate(input.clientOccurredAt, "客户端失败时间"),
+    category,
+    reason: parseDiagnosticString(input.reason, "同步失败原因", 160),
+    // 兼容修复前已打开的页面：旧报告没有 errorMessage 时至少保留稳定 reason，不能让诊断请求反向失败。
+    errorMessage: parseDiagnosticString(
+      input.errorMessage ?? input.reason,
+      "同步失败消息",
+      4_000,
+    ),
+    localRevision: parseDiagnosticInteger(input.localRevision, "本地 revision"),
+    savedLocalRevision: parseDiagnosticInteger(input.savedLocalRevision, "已保存本地 revision"),
+    documentRemoteRevision: input.documentRemoteRevision === null
+      ? null
+      : parseDiagnosticInteger(input.documentRemoteRevision, "文档远端 revision"),
+    appRemoteRevision: parseDiagnosticInteger(input.appRemoteRevision, "应用远端 revision"),
+    observedRemoteRevision: parseDiagnosticInteger(input.observedRemoteRevision, "已观察远端 revision"),
+    pendingOperationCount: parseDiagnosticInteger(input.pendingOperationCount, "pending 数量"),
+    hasUnsavedChanges: parseDiagnosticBoolean(input.hasUnsavedChanges, "未保存状态"),
+    saveInFlight: parseDiagnosticBoolean(input.saveInFlight, "保存进行状态"),
+    online: parseDiagnosticBoolean(input.online, "在线状态"),
+    mismatchFields: parseDiagnosticStringArray(input.mismatchFields, "不一致字段", 32, 128),
+    mismatchDetails: parseSyncFailureMismatchDetails(input.mismatchDetails),
+    pendingOperations,
+    pendingOperationsTruncated: parseDiagnosticBoolean(
+      input.pendingOperationsTruncated,
+      "pending 截断状态",
+    ),
+  };
+}
+
+function parseSyncFailureMismatchDetails(
+  value: unknown,
+): AnnotationClientSyncFailureReport["mismatchDetails"] {
+  if (!Array.isArray(value) || value.length > 64) throw badRequest("同步诊断差异数量无效。");
+  return value.map((item, index) => {
+    const detail = requireObject(item);
+    return {
+      path: parseDiagnosticString(detail.path, `第 ${index + 1} 条差异路径`, 512),
+      savedValue: sanitizeServerDiagnosticValue(detail.savedValue),
+      replayedValue: sanitizeServerDiagnosticValue(detail.replayedValue),
+      currentValue: sanitizeServerDiagnosticValue(detail.currentValue),
+    };
+  });
+}
+
+function parseSyncFailureOperations(value: unknown): AnnotationClientSyncFailureOperation[] {
+  if (!Array.isArray(value) || value.length > 20) throw badRequest("同步诊断 pending 命令数量无效。");
+  return value.map((item, index) => {
+    const operation = requireObject(item);
+    return {
+      operationId: parseDiagnosticString(operation.operationId, `第 ${index + 1} 条 operationId`, 160),
+      action: parseDiagnosticString(operation.action, `第 ${index + 1} 条 action`, 160),
+      commandType: parseDiagnosticString(operation.commandType, `第 ${index + 1} 条命令类型`, 160),
+      baseRevision: parseDiagnosticInteger(operation.baseRevision, `第 ${index + 1} 条 baseRevision`),
+      localRevision: parseDiagnosticInteger(operation.localRevision, `第 ${index + 1} 条 localRevision`),
+      createdAt: parseDiagnosticDate(operation.createdAt, `第 ${index + 1} 条创建时间`),
+      targets: parseDiagnosticStringArray(operation.targets, `第 ${index + 1} 条目标`, 32, 320),
+      ...(operation.commandPayload === undefined
+        ? {}
+        : { commandPayload: sanitizeServerDiagnosticValue(operation.commandPayload) }),
+    };
+  });
+}
+
+function parseDiagnosticString(value: unknown, label: string, maximum: number) {
+  if (typeof value !== "string" || !value.trim() || value.length > maximum || /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(value)) {
+    throw badRequest(`${label}无效。`);
+  }
+  return sanitizeDiagnosticString(value.trim());
+}
+
+function parseDiagnosticDate(value: unknown, label: string) {
+  const normalized = parseDiagnosticString(value, label, 64);
+  if (Number.isNaN(Date.parse(normalized))) throw badRequest(`${label}无效。`);
+  return new Date(normalized).toISOString();
+}
+
+function parseDiagnosticInteger(value: unknown, label: string) {
+  if (!Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > 2_147_483_647) {
+    throw badRequest(`${label}无效。`);
+  }
+  return Number(value);
+}
+
+function parseDiagnosticBoolean(value: unknown, label: string) {
+  if (typeof value !== "boolean") throw badRequest(`${label}无效。`);
+  return value;
+}
+
+function parseDiagnosticStringArray(
+  value: unknown,
+  label: string,
+  maximumItems: number,
+  maximumLength: number,
+) {
+  if (!Array.isArray(value) || value.length > maximumItems) throw badRequest(`${label}无效。`);
+  return value.map((item) => parseDiagnosticString(item, label, maximumLength));
+}
+
+function parseBoundedDiagnosticEnum<T extends string>(
+  value: unknown,
+  allowed: Set<T>,
+  label: string,
+): T {
+  if (typeof value !== "string" || !allowed.has(value as T)) throw badRequest(`${label}无效。`);
+  return value as T;
+}
+
+function sanitizeServerDiagnosticValue(value: unknown, depth = 0): unknown {
+  if (depth > 12) return "[TRUNCATED_DEPTH]";
+  if (typeof value === "string") return sanitizeDiagnosticString(value);
+  if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
+  if (Array.isArray(value)) return value.slice(0, 200).map((item) => sanitizeServerDiagnosticValue(item, depth + 1));
+  if (!value || typeof value !== "object") return String(value);
+  const output: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value).slice(0, 200)) {
+    output[key] = /(token|secret|password|authorization|playauth|access.?key|credential|url)/i.test(key)
+      ? "[REDACTED]"
+      : sanitizeServerDiagnosticValue(item, depth + 1);
+  }
+  return output;
+}
+
+function sanitizeDiagnosticString(value: string) {
+  return value
+    .replace(/https?:\/\/\S+/gi, "[REDACTED_URL]")
+    .replace(/\bbearer\s+[^\s,;]+/gi, "[REDACTED_CREDENTIAL]")
+    .replace(/\bLTAI[A-Za-z0-9]{12,}\b/g, "[REDACTED_ACCESS_KEY_ID]")
+    .replace(/\b(?:access.?key.?secret|playauth|authorization)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
+    .slice(0, 4_000);
 }
 
 // 可选审计动作只接受共享合同中的稳定值，空字符串等同于未筛选。

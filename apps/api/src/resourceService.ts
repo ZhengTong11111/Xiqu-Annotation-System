@@ -9,6 +9,8 @@ import type {
   AnnotationConfirmationDraft,
   AnnotationConfirmationList,
   AnnotationConfirmationRecord,
+  AnnotationClientSyncFailureReport,
+  AnnotationClientSyncFailureReportResult,
   AnnotationFile,
   AnnotationMediaReference,
   AnnotationMutationLeaseGrant,
@@ -628,6 +630,41 @@ export class ResourceService {
       resource,
       resource.annotationFile,
     );
+  }
+
+  // 客户端同步失败进入既有审计链，方便按账号、文件和时间回查；两秒限频避免错误渲染循环刷爆日志。
+  async recordAnnotationClientSyncFailure(
+    user: ApiUser,
+    resourceId: string,
+    report: AnnotationClientSyncFailureReport,
+  ): Promise<AnnotationClientSyncFailureReportResult> {
+    await this.access.assertCapability(user, resourceId, "read");
+    const annotationFile = await this.prisma.annotationFile.findUnique({
+      where: { resourceId },
+      select: { resourceId: true },
+    });
+    if (!annotationFile) throw notFound("标注文件不存在。");
+
+    const recent = await this.prisma.auditLog.findFirst({
+      where: {
+        action: "annotation_client_sync_failure",
+        actorUserId: user.id,
+        resourceId,
+        createdAt: { gte: new Date(Date.now() - 2_000) },
+      },
+      select: { id: true },
+    });
+    if (recent) return { recorded: false };
+
+    await this.prisma.auditLog.create({
+      data: {
+        action: "annotation_client_sync_failure",
+        actorUserId: user.id,
+        resourceId,
+        detail: report as unknown as Prisma.InputJsonValue,
+      },
+    });
+    return { recorded: true };
   }
 
   async getDownloadableResource(

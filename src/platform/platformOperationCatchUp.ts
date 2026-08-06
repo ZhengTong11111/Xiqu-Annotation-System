@@ -3,6 +3,7 @@ import type {
   AnnotationOperationRecord,
 } from "@xiqu/shared";
 import type { ProjectData } from "../types";
+import type { ProjectSyncStatus } from "../state/projectDocumentState";
 import { applyAnnotationCommandToProject } from "../utils/annotationCommandApply";
 
 export const PLATFORM_CATCH_UP_PAGE_SIZE = 200;
@@ -45,6 +46,33 @@ type CatchUpInput = {
   ) => Promise<AnnotationCommittedOperationPage>;
   maxPages?: number;
 };
+
+export type PlatformOperationCatchUpEligibilityFacts = {
+  hasUnsavedChanges: boolean;
+  pendingOperationCount: number;
+  hasTransientEdit: boolean;
+  hasInlineEdit: boolean;
+  hasPendingMergeDraft: boolean;
+  syncStatus: ProjectSyncStatus;
+  saveInFlight: boolean;
+  mediaBindingBusy: boolean;
+};
+
+// 同步错误不应把完全干净的客户端永久锁死；此处集中定义权威追赶资格，防止 UI 与状态机各自维护条件。
+// 只要仍有任何本地修改或交互上下文，就继续 fail closed，绝不以远端结果覆盖浏览器中的未提交工作。
+export function canAttemptPlatformOperationCatchUp(
+  facts: PlatformOperationCatchUpEligibilityFacts,
+): boolean {
+  const canRecoverFromStatus = facts.syncStatus === "saved" || facts.syncStatus === "error";
+  return canRecoverFromStatus &&
+    !facts.hasUnsavedChanges &&
+    facts.pendingOperationCount === 0 &&
+    !facts.hasTransientEdit &&
+    !facts.hasInlineEdit &&
+    !facts.hasPendingMergeDraft &&
+    !facts.saveInFlight &&
+    !facts.mediaBindingBusy;
+}
 
 // committed feed 先完整验证并在局部项目上顺序重放；只有整个 revision 链闭合后才向调用方交付新项目。
 export async function catchUpCommittedAnnotationOperations({

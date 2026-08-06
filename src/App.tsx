@@ -10,6 +10,7 @@ import {
 import "./index.css";
 import { PlatformApiError } from "./api/platformClient";
 import { AppShell } from "./components/AppShell";
+import { EditorSidebarLayout } from "./components/EditorSidebarLayout";
 import { FloatingPanelWindow } from "./components/FloatingPanelWindow";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { LeftWorkspace } from "./components/LeftWorkspace";
@@ -43,7 +44,10 @@ import {
   hydrateProjectForClient,
   prepareProjectForServer,
 } from "./platform/platformProjectPayload";
-import { catchUpCommittedAnnotationOperations } from "./platform/platformOperationCatchUp";
+import {
+  canAttemptPlatformOperationCatchUp,
+  catchUpCommittedAnnotationOperations,
+} from "./platform/platformOperationCatchUp";
 import { usePlatformOperationCatchUp } from "./platform/usePlatformOperationCatchUp";
 import { usePlatformCollaborationSession } from "./platform/usePlatformCollaborationSession";
 import { buildTimelineSelectionSummary } from "./platform/timelineSelectionSummary";
@@ -59,6 +63,11 @@ import { planAtomicAnnotationCommandBatch } from "./platform/platformAtomicComma
 import { usePlatformAtomicCommandSubmit } from "./platform/usePlatformAtomicCommandSubmit";
 import { planPlatformConflictRebase } from "./platform/platformConflictRebase";
 import { shouldBlockEditingForRemoteCatchUp } from "./platform/platformRemoteEditGate";
+import {
+  buildAnnotationClientSyncFailureReport,
+  getSyncFailureMismatchFields,
+  getSyncFailureMismatchDetails,
+} from "./platform/platformSyncFailureDiagnostic";
 import {
   isMutationLeaseSubmitFailure,
   requiresLegacySnapshotMigration,
@@ -139,7 +148,7 @@ import {
 import { findAdjacentNavigableBlock } from "./utils/timelineNavigation";
 import {
   buildProjectTimelineTimingCommand,
-  getGongcheTimingTargetsForParents,
+  getGongcheTransactionTargetsForParents,
   type TimelineTimingTarget,
 } from "./utils/timelineTimingCommand";
 import {
@@ -470,6 +479,8 @@ type EditorWorkbenchProps = {
   platformNavigation?: TopMenuPlatformNavigation;
 };
 
+type AnnotationConfirmationPanelPlacement = "docked" | "hidden" | "detached";
+
 function EditorWorkbench({ editorSession, localEditorSession, platformNavigation }: EditorWorkbenchProps) {
   const initialProject = editorSession?.initialProject ?? localEditorSession?.initialProject ?? mockProject;
   const initialProjectDuration = getProjectDuration(initialProject);
@@ -511,6 +522,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     readOnly: isReadOnly,
     initialRecoveryState: editorSession?.initialRecoveryState,
   });
+  // transient 只代表拖拽/缩放预览，pointer-up 生成领域命令前不得进入自动保存或浏览器恢复草稿。
+  const hasTransientDocumentEdit = transientProjectRef.current !== null;
   const [remoteBaseRevision, setRemoteBaseRevision] = useState(editorSession?.baseRevision ?? 0);
   const [remoteOperationCursor, setRemoteOperationCursor] = useState(
     editorSession?.operationCursor ?? "",
@@ -553,8 +566,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   // 浏览器草稿仅服务平台可写会话；本地 JSON 和只读文件继续走各自原有保存边界。
   const { flushNow: flushPlatformDraftNow } = usePlatformDraftPersistence({
     enabled: Boolean(editorSession?.canWrite),
-    // 待确认整合还没有进入文档历史；草稿来源若是浏览器恢复数据，此时必须保持原 envelope 不动。
-    suspended: pendingAnnotationMergeDraft !== null,
+    // 待确认整合和 transient 预览都尚未形成可重放历史，不能写入恢复草稿。
+    suspended: pendingAnnotationMergeDraft !== null || hasTransientDocumentEdit,
     userId: editorSession?.currentUserId ?? null,
     annotationFileId: editorSession?.annotationFileId ?? null,
     remoteBaseRevision,
@@ -626,11 +639,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       setSyncStatus("saving", { errorMessage: failure.message });
     },
   });
-  // 自动保存只调度可写平台会话；待确认整合暂停，避免运行时草稿未经二次确认进入服务器。
+  // 自动保存只调度已经形成领域命令的可写会话；整合确认和 transient 预览期间必须暂停。
   usePlatformAutoSave({
     enabled: Boolean(editorSession?.canWrite),
     dirty: hasUnsavedChanges,
-    suspended: pendingAnnotationMergeDraft !== null,
+    suspended: pendingAnnotationMergeDraft !== null || hasTransientDocumentEdit,
     localRevision: syncState.localRevision,
     syncStatus: syncState.status,
     online: browserOnline,
@@ -732,6 +745,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       : null);
   const [isSubtitlePanelCollapsed, setIsSubtitlePanelCollapsed] = useState(false);
   const [isSplitPanelCollapsed, setIsSplitPanelCollapsed] = useState(false);
+  const [isConfirmationPanelCollapsed, setIsConfirmationPanelCollapsed] = useState(false);
+  const [confirmationPanelPlacement, setConfirmationPanelPlacement] =
+    useState<AnnotationConfirmationPanelPlacement>("docked");
   const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
   const [serverMediaDialogOpen, setServerMediaDialogOpen] = useState(false);
   const [analysisAudioDialogOpen, setAnalysisAudioDialogOpen] = useState(false);
@@ -740,8 +756,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [currentProjectFileName, setCurrentProjectFileName] = useState<string | null>(null);
   const [previewDetachedWindow, setPreviewDetachedWindow] = useState<Window | null>(null);
   const [timelineDetachedWindow, setTimelineDetachedWindow] = useState<Window | null>(null);
+  const [confirmationDetachedWindow, setConfirmationDetachedWindow] = useState<Window | null>(null);
   const isPreviewDetached = Boolean(previewDetachedWindow && !previewDetachedWindow.closed);
   const isTimelineDetached = Boolean(timelineDetachedWindow && !timelineDetachedWindow.closed);
+  const isConfirmationDetached = confirmationPanelPlacement === "detached" &&
+    Boolean(confirmationDetachedWindow && !confirmationDetachedWindow.closed);
   const videoRef = useRef<MediaPlaybackController>(null);
   const platformMedia = editorSession?.media;
   const platformClient = editorSession?.client;
@@ -780,6 +799,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const waveformRequestIdRef = useRef(0);
   const spectrogramRequestIdRef = useRef(0);
   const serverSaveInFlightRef = useRef(false);
+  const serverSaveCompletionRef = useRef<Promise<void> | null>(null);
+  const resolveServerSaveCompletionRef = useRef<(() => void) | null>(null);
+  // ref 负责同步阻止重复提交，state 负责让追赶与媒体门禁在保存结束后重新计算。
+  // 仅修改 ref 不会触发渲染，失败会话可能因此永久停留在“保存中不可追赶”的旧判断中。
+  const [serverSaveInFlight, setServerSaveInFlight] = useState(false);
+  const syncFailureRuntimeIdRef = useRef(
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `editor-${Date.now().toString(36)}`,
+  );
+  const syncFailureMismatchFieldsRef = useRef<string[]>([]);
+  const syncFailureMismatchDetailsRef = useRef<ReturnType<typeof getSyncFailureMismatchDetails>>([]);
+  const lastReportedSyncFailureRef = useRef<string | null>(null);
   // acquire 需要等待网络；这一门禁串行化结构、批量导入和批量修复，避免连续点击重复提交。
   const exclusiveMutationInFlightRef = useRef(false);
   // 媒体改绑会替换平台注入的运行时 URL，因此只允许在文档完全 clean 时执行；
@@ -793,24 +825,92 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         hasInlineEdit: editingCharacterId !== null || editingCustomTextBlock !== null,
         hasPendingMergeDraft: pendingAnnotationMergeDraft !== null,
         syncStatus: syncState.status,
-        saveInFlight: serverSaveInFlightRef.current,
+        saveInFlight: serverSaveInFlight,
         appliedRemoteRevision: remoteBaseRevision,
         observedRemoteRevision,
       })
     : undefined;
+  const canAttemptRemoteCatchUp = canAttemptPlatformOperationCatchUp({
+    hasUnsavedChanges,
+    pendingOperationCount: pendingOperations.length,
+    hasTransientEdit: transientProjectRef.current !== null,
+    hasInlineEdit: editingCharacterId !== null || editingCustomTextBlock !== null,
+    hasPendingMergeDraft: pendingAnnotationMergeDraft !== null,
+    syncStatus: syncState.status,
+    saveInFlight: serverSaveInFlight,
+    mediaBindingBusy: serverMediaBindingBusy,
+  });
+
+  // 每个 error 状态只上报一次有界诊断；失败上报不反向改变文档状态，也不会形成新的同步错误循环。
+  useEffect(() => {
+    if (!editorSession || syncState.status !== "error" || !syncState.errorMessage) {
+      if (syncState.status !== "error") {
+        lastReportedSyncFailureRef.current = null;
+        syncFailureMismatchFieldsRef.current = [];
+        syncFailureMismatchDetailsRef.current = [];
+      }
+      return;
+    }
+    const report = buildAnnotationClientSyncFailureReport({
+      clientRuntimeId: syncFailureRuntimeIdRef.current,
+      errorMessage: syncState.errorMessage,
+      syncState,
+      appRemoteRevision: remoteBaseRevision,
+      observedRemoteRevision,
+      hasUnsavedChanges,
+      saveInFlight: serverSaveInFlight,
+      online: browserOnline,
+      pendingOperations,
+      mismatchFields: syncFailureMismatchFieldsRef.current,
+      mismatchDetails: syncFailureMismatchDetailsRef.current,
+    });
+    const signature = JSON.stringify({
+      fileId: editorSession.annotationFileId,
+      category: report.category,
+      reason: report.reason,
+    });
+    if (lastReportedSyncFailureRef.current === signature) return;
+    lastReportedSyncFailureRef.current = signature;
+    let cancelled = false;
+    let retryTimer: number | null = null;
+    const submitDiagnostic = async (attempt: number) => {
+      try {
+        await editorSession.client.reportAnnotationClientSyncFailure(
+          editorSession.annotationFileId,
+          report,
+        );
+      } catch (error) {
+        if (cancelled) return;
+        if (attempt < 2) {
+          // API 重启或短暂离线时保留同一份失败快照，不能在重试时读取已经变化的文档状态。
+          retryTimer = window.setTimeout(() => void submitDiagnostic(attempt + 1), 2_000 * (attempt + 1));
+          return;
+        }
+        lastReportedSyncFailureRef.current = null;
+        // 诊断通道不可用时仅写控制台，不能覆盖真正的同步失败原因。
+        console.warn("客户端同步失败诊断未能写入服务端审计日志。", error);
+      }
+    };
+    void submitDiagnostic(0);
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
+  }, [
+    browserOnline,
+    editorSession,
+    hasUnsavedChanges,
+    observedRemoteRevision,
+    pendingOperations,
+    remoteBaseRevision,
+    serverSaveInFlight,
+    syncState,
+  ]);
   // clean 平台会话低频追赶已提交 revision；行内编辑、保存、拖拽和整合期间必须暂停。
+  // 完全没有本地修改的 error 会话也允许追赶，以修复服务端已提交但客户端确认链异常后的永久卡死。
   const requestPlatformCatchUp = usePlatformOperationCatchUp({
     enabled: Boolean(editorSession),
-    blocked:
-      hasUnsavedChanges ||
-      pendingOperations.length > 0 ||
-      transientProjectRef.current !== null ||
-      pendingAnnotationMergeDraft !== null ||
-      editingCharacterId !== null ||
-      editingCustomTextBlock !== null ||
-      syncState.status !== "saved" ||
-      serverSaveInFlightRef.current ||
-      serverMediaBindingBusy,
+    blocked: !canAttemptRemoteCatchUp,
     online: browserOnline,
     sessionKey: editorSession?.annotationFileId ?? "local",
     knownRevision: remoteBaseRevision,
@@ -1560,6 +1660,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     setIsSplitPanelCollapsed((current) => !current);
   }
 
+  function toggleConfirmationPanelCollapsed() {
+    setIsConfirmationPanelCollapsed((current) => !current);
+  }
+
   function requestInspectorFocus(target: InspectorFocusRequest["target"]) {
     setInspectorFocusRequest({
       target,
@@ -1994,22 +2098,30 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       const changedKeys = Object.keys(changes);
       const isCharacterTextOnly = changedKeys.length === 1 && changedKeys[0] === "char";
       const isSingingStyleOnly = changedKeys.length === 1 && changedKeys[0] === "singingStyle";
-      // 逐字文本会同步句文本，因此 content 命令同时包含 character 与其 sentence 两个稳定目标。
-      const commandEnvelope = isTimingOnly && currentCharacter
-        ? buildProjectTimelineTimingCommand(baseProject, synchronizedProject, [
+      if (isTimingOnly && currentCharacter) {
+        const gongcheTargets = getGongcheTransactionTargetsForParents(
+          baseProject,
+          synchronizedProject,
+          "character-track",
+          [id],
+        );
+        // 逐字边界会级联句边界、工尺块和内部符号，必须由一个事务完整解释最终项目。
+        commitProjectWithTransaction(baseProject, synchronizedProject, {
+          timingTargets: [
             { entityType: "character", entityId: id },
             { entityType: "sentence", entityId: currentCharacter.lineId },
-            ...getGongcheTimingTargetsForParents(
-              [baseProject, synchronizedProject],
-              "character-track",
-              [id],
-            ),
+            ...gongcheTargets.timingTargets,
+          ],
+          stateTargets: gongcheTargets.stateTargets,
+        });
+        return;
+      }
+      // 逐字文本会同步句文本，因此 content 命令同时包含 character 与其 sentence 两个稳定目标。
+      const commandEnvelope = isCharacterTextOnly && currentCharacter
+        ? buildProjectAnnotationContentCommand(baseProject, synchronizedProject, [
+            { entityType: "character", entityId: id, field: "char" },
+            { entityType: "sentence", entityId: currentCharacter.lineId, field: "text" },
           ])
-        : isCharacterTextOnly && currentCharacter
-          ? buildProjectAnnotationContentCommand(baseProject, synchronizedProject, [
-              { entityType: "character", entityId: id, field: "char" },
-              { entityType: "sentence", entityId: currentCharacter.lineId, field: "text" },
-            ])
         : isSingingStyleOnly && currentCharacter
           ? buildProjectAnnotationContentCommand(baseProject, synchronizedProject, [
               { entityType: "character", entityId: id, field: "singingStyle" },
@@ -2068,24 +2180,24 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       const characterIds = baseProject.characterAnnotations
         .filter((item) => item.lineId === id)
         .map((item) => item.id);
-      // 句块移动会级联逐字和工尺时间，全部目标必须共享同一 before/after 命令。
-      const commandEnvelope = buildProjectTimelineTimingCommand(
+      const gongcheTargets = getGongcheTransactionTargetsForParents(
         baseProject,
         synchronizedProject,
-        [
+        "character-track",
+        characterIds,
+      );
+      // 句块移动会级联逐字、工尺块和工尺符号，全部变化由同一事务原子提交。
+      commitProjectWithTransaction(baseProject, synchronizedProject, {
+        timingTargets: [
           { entityType: "sentence", entityId: id },
           ...characterIds.map((entityId): TimelineTimingTarget => ({
             entityType: "character",
             entityId,
           })),
-          ...getGongcheTimingTargetsForParents(
-            [baseProject, synchronizedProject],
-            "character-track",
-            characterIds,
-          ),
+          ...gongcheTargets.timingTargets,
         ],
-      );
-      commitProject(synchronizedProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
+        stateTargets: gongcheTargets.stateTargets,
+      });
     } else {
       applyProjectWithoutHistory(synchronizedProject);
     }
@@ -2136,6 +2248,31 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     cancelCharacterTextEdit();
   }
 
+  // 保存和结构写入共用一个内存屏障：保存先开始时结构写入等待；结构写入先开始时保存入口直接让出。
+  // 这样租约不会在一批尚未携带 token 的普通命令已经出发后才被创建。
+  async function waitForActiveServerSave() {
+    const completion = serverSaveCompletionRef.current;
+    if (completion) await completion;
+  }
+
+  function beginServerSaveCompletion() {
+    let resolveCompletion: (() => void) | null = null;
+    const completion = new Promise<void>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    serverSaveCompletionRef.current = completion;
+    resolveServerSaveCompletionRef.current = resolveCompletion;
+    return completion;
+  }
+
+  function finishServerSaveCompletion(completion: Promise<void>) {
+    if (serverSaveCompletionRef.current !== completion) return;
+    const resolveCompletion = resolveServerSaveCompletionRef.current;
+    serverSaveCompletionRef.current = null;
+    resolveServerSaveCompletionRef.current = null;
+    resolveCompletion?.();
+  }
+
   // 所有受租约保护的写入共用这一串行入口；拿到租约后必须基于最新项目重新计算结果。
   async function runExclusiveProjectMutation(
     purpose: AnnotationMutationPurpose,
@@ -2151,8 +2288,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (exclusiveMutationInFlightRef.current) return false;
 
     exclusiveMutationInFlightRef.current = true;
-    const hadLease = Boolean(mutationLease.getToken());
     try {
+      // 已经发出的普通保存先完成；exclusive 标志已同步置位，因此等待期间不会再启动第二批保存。
+      await waitForActiveServerSave();
+      // 等待中的保存可能刚刚消费旧租约，必须在等待结束后判断本次 acquire 是否新建了租约。
+      const hadLease = Boolean(mutationLease.getToken());
       if (editorSession) await mutationLease.acquire(purpose);
       // acquire 期间普通内容编辑仍可发生；拿锁后必须基于最新项目重建，不能覆盖这段时间的新内容。
       const baseProject = projectRef.current;
@@ -2585,23 +2725,31 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         : changedKeys.length === 1 && changes.type !== undefined
           ? "type"
           : null;
-      // 自定义块 timing 与内容使用不同领域命令；分叉归属等结构变化仍回退 snapshot。
-      const commandEnvelope = isTimingOnly && currentBlock
-        ? buildProjectTimelineTimingCommand(baseProject, nextProject, [
+      if (isTimingOnly && currentBlock) {
+        const gongcheTargets = getGongcheTransactionTargetsForParents(
+          baseProject,
+          nextProject,
+          trackId,
+          [blockId],
+        );
+        // 自定义父块与工尺子树共用原子事务，递归分支归属仍由独立结构命令负责。
+        commitProjectWithTransaction(baseProject, nextProject, {
+          timingTargets: [
             { entityType: "custom-block", entityId: blockId, trackId },
-            ...getGongcheTimingTargetsForParents(
-              [baseProject, nextProject],
-              trackId,
-              [blockId],
-            ),
-          ])
-        : contentField && currentBlock
-          ? buildProjectAnnotationContentCommand(baseProject, nextProject, [{
-              entityType: "custom-block",
-              entityId: blockId,
-              trackId,
-              field: contentField,
-            }])
+            ...gongcheTargets.timingTargets,
+          ],
+          stateTargets: gongcheTargets.stateTargets,
+        });
+        return;
+      }
+      // 自定义块 timing 与内容使用不同领域命令；分叉归属等结构变化仍回退 snapshot。
+      const commandEnvelope = contentField && currentBlock
+        ? buildProjectAnnotationContentCommand(baseProject, nextProject, [{
+            entityType: "custom-block",
+            entityId: blockId,
+            trackId,
+            field: contentField,
+          }])
         : null;
       commitProject(nextProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
@@ -3338,38 +3486,45 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         }
         return [{ entityType: "banyan-mark", entityId: item.id }];
       });
-      const customGongcheTargets = new Map<string, TimelineTimingTarget>();
-      for (const item of customBlockUpdates.values()) {
-        for (const target of getGongcheTimingTargetsForParents(
-          [baseProject, synchronizedProject],
-          item.trackId,
-          [item.id],
-        )) {
-          customGongcheTargets.set(`${target.trackId}:${target.entityId}`, target);
+      const gongcheTimingTargets = new Map<string, TimelineTimingTarget>();
+      const gongcheStateTargets = new Map<string, AnnotationStateTarget>();
+      const gongcheTargetGroups = [
+        ...Array.from(customBlockUpdates.values(), (item) =>
+          getGongcheTransactionTargetsForParents(
+            baseProject,
+            synchronizedProject,
+            item.trackId,
+            [item.id],
+          )),
+        getGongcheTransactionTargetsForParents(
+          baseProject,
+          synchronizedProject,
+          "character-track",
+          [...characterUpdates.keys()],
+        ),
+      ];
+      // 所有父轨级联目标在这里统一去重，避免字符轨与多个自定义轨分别维护两套合并逻辑。
+      for (const targets of gongcheTargetGroups) {
+        for (const target of targets.timingTargets) {
+          gongcheTimingTargets.set(`${target.trackId}:${target.entityId}`, target);
+        }
+        for (const target of targets.stateTargets) {
+          gongcheStateTargets.set(`${target.trackId}:${target.entityId}`, target);
         }
       }
-      const commandEnvelope = buildProjectTimelineTimingCommand(
-        baseProject,
-        synchronizedProject,
-        [
+
+      // 多选可能同时跨多个父轨道；Map 去重后把所有外层 timing 和符号 state 放入一个事务。
+      commitProjectWithTransaction(baseProject, synchronizedProject, {
+        timingTargets: [
           ...directTargets,
           ...Array.from(affectedLineIds, (entityId): TimelineTimingTarget => ({
             entityType: "sentence",
             entityId,
           })),
-          ...getGongcheTimingTargetsForParents(
-            [baseProject, synchronizedProject],
-            "character-track",
-            [...characterUpdates.keys()],
-          ),
-          ...customGongcheTargets.values(),
+          ...gongcheTimingTargets.values(),
         ],
-      );
-      commitProject(
-        synchronizedProject,
-        baseProject,
-        commandEnvelope ? { commandEnvelope } : {},
-      );
+        stateTargets: [...gongcheStateTargets.values()],
+      });
     } else {
       applyProjectWithoutHistory(synchronizedProject);
     }
@@ -5259,8 +5414,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   ) {
     if (exclusiveMutationInFlightRef.current) return;
     exclusiveMutationInFlightRef.current = true;
-    const hadLease = Boolean(mutationLease.getToken());
     try {
+      await waitForActiveServerSave();
+      const hadLease = Boolean(mutationLease.getToken());
       if (editorSession) {
         await mutationLease.acquire(purpose);
       }
@@ -5616,6 +5772,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (interactive) window.alert("当前标注文件为只读状态，你只能查看和导航，不能保存。");
       return { status: "skipped", reason: "read-only" };
     }
+    // 结构命令可能正在等待租约；此时启动普通保存会形成“无 token 请求先出发、租约随后生效”的竞态。
+    if (exclusiveMutationInFlightRef.current) {
+      if (interactive) window.alert("结构编辑正在完成，请稍后再保存。");
+      return { status: "skipped", reason: "busy" };
+    }
+    // 自动保存 timer 可能与 pointer-up 落在相邻帧；同步 ref 门禁保证预览状态不会早于 operation 被冻结。
+    if (transientProjectRef.current !== null) {
+      if (interactive) window.alert("当前拖拽尚未结束，请松开鼠标后再保存。");
+      return { status: "skipped", reason: "transient-edit" };
+    }
     if (serverSaveInFlightRef.current) {
       if (interactive) window.alert("正在保存到服务器，请等待本次保存完成。");
       return { status: "skipped", reason: "busy" };
@@ -5633,6 +5799,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
 
     serverSaveInFlightRef.current = true;
+    const saveCompletion = beginServerSaveCompletion();
+    setServerSaveInFlight(true);
+    syncFailureMismatchFieldsRef.current = [];
+    syncFailureMismatchDetailsRef.current = [];
     setSyncStatus("saving");
     try {
       // 保存事务先冻结项目与 pending 链。网络等待期间产生的新编辑不会混入本次批次，
@@ -5680,6 +5850,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           return saveLegacyProjectSnapshot(editorSession, options.source, frozenRecoveryState);
         }
         if (planResult.status === "blocked") {
+          syncFailureMismatchFieldsRef.current = getSyncFailureMismatchFields(planResult.issues);
+          syncFailureMismatchDetailsRef.current = getSyncFailureMismatchDetails(planResult.issues);
           const message = `本地命令链无法安全提交（${planResult.reason}），请保留草稿并进入冲突检查。`;
           setSyncStatus("error", { errorMessage: message });
           if (interactive) window.alert(message);
@@ -5743,11 +5915,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               return { status: "rebased", message };
             }
           }
+          // 诊断和顶部提示保留稳定服务端错误码，下一次失败无需依赖控制台才能判断租约/协议原因。
+          const failureMessage = failure.code
+            ? `${failure.message}（${failure.code}）`
+            : failure.message;
           const outcome: PlatformSaveOutcome = failure.status === "offline"
-            ? { status: "offline", retryable: true, message: failure.message }
+            ? { status: "offline", retryable: true, message: failureMessage }
             : failure.status === "conflict"
-              ? { status: "conflict", retryable: false, message: failure.message }
-              : { status: "error", retryable: failure.retryable, message: failure.message };
+              ? { status: "conflict", retryable: false, message: failureMessage }
+              : { status: "error", retryable: failure.retryable, message: failureMessage };
           setSyncStatus(outcome.status, { errorMessage: outcome.message });
           if (interactive) window.alert(outcome.message);
           return outcome;
@@ -5769,6 +5945,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return classified;
     } finally {
       serverSaveInFlightRef.current = false;
+      finishServerSaveCompletion(saveCompletion);
+      // 必须通过 state 唤醒一次渲染，使 clean error 会话重新获得权威 HTTP 追赶资格。
+      setServerSaveInFlight(false);
     }
   }
 
@@ -5951,6 +6130,31 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     });
   }
 
+  function closeConfirmationDetachedWindow(
+    nextPlacement: Exclude<AnnotationConfirmationPanelPlacement, "detached"> = "docked",
+  ) {
+    setConfirmationDetachedWindow((currentWindow) => {
+      if (currentWindow && !currentWindow.closed) {
+        currentWindow.close();
+      }
+      return null;
+    });
+    setConfirmationPanelPlacement(nextPlacement);
+  }
+
+  // “标注确认面板”菜单只控制右栏停靠；若当前在独立窗口，点击会明确收回右栏。
+  function toggleConfirmationPanelDocked() {
+    if (confirmationPanelPlacement === "docked") {
+      setConfirmationPanelPlacement("hidden");
+      return;
+    }
+    if (confirmationPanelPlacement === "detached") {
+      closeConfirmationDetachedWindow("docked");
+      return;
+    }
+    setConfirmationPanelPlacement("docked");
+  }
+
   function togglePreviewDetachedWindow() {
     if (previewDetachedWindow && !previewDetachedWindow.closed) {
       closePreviewDetachedWindow();
@@ -5970,6 +6174,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const popup = openDetachedWindow("多轨时间轴", "xiqu-timeline-window", 1180, 620, 120, 120);
     if (popup) {
       setTimelineDetachedWindow(popup);
+    }
+  }
+
+  function toggleConfirmationDetachedWindow() {
+    if (isConfirmationDetached) {
+      closeConfirmationDetachedWindow("docked");
+      return;
+    }
+    const popup = openDetachedWindow("标注确认", "xiqu-confirmation-window", 520, 760, 160, 100);
+    if (popup) {
+      setConfirmationDetachedWindow(popup);
+      setConfirmationPanelPlacement("detached");
     }
   }
 
@@ -6234,6 +6450,57 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     );
   }
 
+  // 停靠面板和独立窗口共享同一套审核数据与命令；只有容器、折叠能力和对话框 Portal 目标不同。
+  function renderAnnotationConfirmationWorkspace(detached: boolean) {
+    if (!editorSession) return null;
+    return (
+      <AnnotationConfirmationPanel
+        records={confirmationViewRecords}
+        currentRevision={annotationConfirmations.data?.currentRevision ?? null}
+        editorRevision={remoteBaseRevision}
+        range={loopPlaybackRange}
+        trackOptions={confirmationTrackOptions}
+        canReview={editorSession.canReview}
+        createBlocker={confirmationCreateBlocker}
+        loading={annotationConfirmations.loading}
+        mutationPending={annotationConfirmations.mutationPending}
+        error={annotationConfirmations.error}
+        timelineVisible={confirmationTimelineVisible}
+        collapsed={detached ? false : isConfirmationPanelCollapsed}
+        onToggleCollapse={detached ? undefined : toggleConfirmationPanelCollapsed}
+        portalContainer={detached ? confirmationDetachedWindow?.document.body : undefined}
+        onTimelineVisibleChange={setConfirmationTimelineVisible}
+        onRefresh={annotationConfirmations.refresh}
+        onCreate={({ scope, note }) => annotationConfirmations.create({
+          confirmedRevision: remoteBaseRevision,
+          scope,
+          note,
+        })}
+        onRevoke={(record, reason) => annotationConfirmations.revoke(
+          record.record.id,
+          { reason },
+        )}
+        canRevoke={(record) => canShowAnnotationConfirmationRevoke({
+          record,
+          canReview: editorSession.canReview,
+          currentUserId: editorSession.currentUserId,
+          currentUserRoles: editorSession.currentUserRoles,
+          hasOwnerAuthority: editorSession.canRevokeAnyConfirmation,
+        })}
+        onNavigate={(record) => {
+          seekTo(record.record.scope.startTime);
+          setLineFocusRequest(null);
+          setInitialPlatformFocusRange(null);
+          setConfirmationFocusRange({
+            requestId: Date.now(),
+            start: record.record.scope.startTime,
+            end: record.record.scope.endTime,
+          });
+        }}
+      />
+    );
+  }
+
   return (
     <AppShell
       menuBar={(
@@ -6246,6 +6513,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           canUndo={undoStack.length > 0}
           canRedo={redoStack.length > 0}
           syncStatus={syncState.status}
+          syncErrorMessage={syncState.errorMessage}
           localRevision={syncState.localRevision}
           savedRevision={syncState.savedRevision}
           remoteRevision={editorSession ? remoteBaseRevision : undefined}
@@ -6315,10 +6583,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           banyanTrackVisible={banyanTrackVisible}
           banyanGridVisible={banyanGridVisible}
           spectrogramVisible={spectrogramSettings.visible}
+          annotationConfirmationPlacement={editorSession ? confirmationPanelPlacement : undefined}
           onWaveformVisibleChange={setWaveformVisible}
           onBanyanTrackVisibleChange={setBanyanTrackVisible}
           onBanyanGridVisibleChange={setBanyanGridVisible}
           onSpectrogramVisibleChange={(visible) => setSpectrogramSettings((prev) => ({ ...prev, visible }))}
+          onToggleAnnotationConfirmationPanel={editorSession
+            ? toggleConfirmationPanelDocked
+            : undefined}
+          onToggleAnnotationConfirmationDetached={editorSession
+            ? toggleConfirmationDetachedWindow
+            : undefined}
         />
       )}
     >
@@ -6430,18 +6705,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           />
         )}
         secondary={(
-          <ResizableSplitLayout
-            orientation="vertical"
-            initialPrimarySize={0.34}
-            minPrimarySize={180}
-            minSecondarySize={280}
-            storageKey="layout:sidebar-workspace"
-            className="sidebar-shell"
-            primaryClassName="workspace-pane sidebar-pane"
-            secondaryClassName="workspace-pane sidebar-pane"
-            collapsedPrimary={isSubtitlePanelCollapsed}
-            collapsedSize={42}
-            primary={(
+          <EditorSidebarLayout
+            subtitleCollapsed={isSubtitlePanelCollapsed}
+            splitCollapsed={isSplitPanelCollapsed}
+            confirmationCollapsed={isConfirmationPanelCollapsed}
+            subtitlePanel={(
               <SubtitleList
                 subtitleLines={project.subtitleLines}
                 currentTime={currentTime}
@@ -6458,265 +6726,211 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                 }}
               />
             )}
-            secondary={(
-              <ResizableSplitLayout
-                orientation="vertical"
-                initialPrimarySize={0.4}
-                minPrimarySize={150}
-                minSecondarySize={220}
-                storageKey="layout:sidebar-detail"
-                className="sidebar-stack"
-                primaryClassName="workspace-pane sidebar-pane"
-                secondaryClassName="workspace-pane sidebar-pane"
-                collapsedPrimary={isSplitPanelCollapsed}
-                collapsedSize={42}
-                primary={(
-                  <section className={["panel", "split-panel", isSplitPanelCollapsed ? "is-collapsed" : ""].join(" ")}>
-                    <div className="panel-header">
-                      <h2>当前句逐字拆分</h2>
-                      <div className="panel-header-actions">
-                        {!isSplitPanelCollapsed ? <span>{activeCharacters.length} 字</span> : null}
-                        <button
-                          type="button"
-                          className="panel-collapse-button"
-                          title={isSplitPanelCollapsed ? "展开面板" : "最小化面板"}
-                          aria-label={isSplitPanelCollapsed ? "展开面板" : "最小化面板"}
-                          onClick={toggleSplitPanelCollapsed}
-                        >
-                          {isSplitPanelCollapsed ? "▸" : "—"}
-                        </button>
-                      </div>
-                    </div>
-                    {!isSplitPanelCollapsed ? (
-                      <div className="character-grid">
-                      {activeCharacters.map((item) => {
-                        const isEditing = editingCharacterId === item.id && editingCharacterLocation === "split-panel";
-                        const className = [
-                          "character-chip",
-                          selectedItem?.type === "character" && selectedItem.id === item.id ? "selected" : "",
-                          currentTime >= item.startTime && currentTime <= item.endTime ? "active" : "",
-                          isEditing ? "editing" : "",
-                        ].join(" ");
-
-                        if (isEditing) {
-                          return (
-                            <div key={item.id} className={className}>
-                              <input
-                                className="character-chip-input"
-                                value={editingCharacterValue}
-                                autoFocus
-                                onChange={(event) => setEditingCharacterValue(event.target.value)}
-                                onBlur={() => commitCharacterTextEdit(item.id)}
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter") {
-                                    event.preventDefault();
-                                    commitCharacterTextEdit(item.id);
-                                  }
-                                  if (event.key === "Escape") {
-                                    event.preventDefault();
-                                    cancelCharacterTextEdit();
-                                  }
-                                }}
-                              />
-                              <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
-                            </div>
-                          );
-                        }
-
-                        return (
-                          <button
-                            key={item.id}
-                            className={className}
-                            onClick={() => {
-                              preferredCharacterEditLocationRef.current = "split-panel";
-                              applySelection({ type: "character", id: item.id });
-                            }}
-                            onDoubleClick={() => startCharacterTextEdit(item.id, "split-panel")}
-                            onContextMenu={(event) => {
-                              event.preventDefault();
-                              preferredCharacterEditLocationRef.current = "split-panel";
-                              applySelection({ type: "character", id: item.id });
-                              setBlockContextMenu({
-                                type: "character",
-                                id: item.id,
-                                trackId: "character-track",
-                                time: item.startTime,
-                                x: event.clientX,
-                                y: event.clientY,
-                              });
-                              updateTimelinePasteTarget("character-track", item.startTime);
-                            }}
-                          >
-                            <span>{item.char}</span>
-                            <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
-                          </button>
-                        );
-                      })}
-                      </div>
-                    ) : null}
-                  </section>
-                )}
-                secondary={(
-                  <div className="editor-inspector-stack">
-                    {editorSession ? (
-                      <AnnotationConfirmationPanel
-                        records={confirmationViewRecords}
-                        currentRevision={annotationConfirmations.data?.currentRevision ?? null}
-                        editorRevision={remoteBaseRevision}
-                        range={loopPlaybackRange}
-                        trackOptions={confirmationTrackOptions}
-                        canReview={editorSession.canReview}
-                        createBlocker={confirmationCreateBlocker}
-                        loading={annotationConfirmations.loading}
-                        mutationPending={annotationConfirmations.mutationPending}
-                        error={annotationConfirmations.error}
-                        timelineVisible={confirmationTimelineVisible}
-                        onTimelineVisibleChange={setConfirmationTimelineVisible}
-                        onRefresh={annotationConfirmations.refresh}
-                        onCreate={({ scope, note }) => annotationConfirmations.create({
-                          confirmedRevision: remoteBaseRevision,
-                          scope,
-                          note,
-                        })}
-                        onRevoke={(record, reason) => annotationConfirmations.revoke(
-                          record.record.id,
-                          { reason },
-                        )}
-                        canRevoke={(record) => canShowAnnotationConfirmationRevoke({
-                          record,
-                          canReview: editorSession.canReview,
-                          currentUserId: editorSession.currentUserId,
-                          currentUserRoles: editorSession.currentUserRoles,
-                          hasOwnerAuthority: editorSession.canRevokeAnyConfirmation,
-                        })}
-                        onNavigate={(record) => {
-                          seekTo(record.record.scope.startTime);
-                          setLineFocusRequest(null);
-                          setInitialPlatformFocusRange(null);
-                          setConfirmationFocusRange({
-                            requestId: Date.now(),
-                            start: record.record.scope.startTime,
-                            end: record.record.scope.endTime,
-                          });
-                        }}
-                      />
-                    ) : null}
-                    <div className="editor-inspector-content">
-                      {remoteCatchUpBlockReason ? (
-                        <div className="editor-inspector-edit-gate" role="status">
-                          <span>{remoteCatchUpBlockReason}</span>
-                        </div>
-                      ) : null}
-                      {selectedItem?.type === "waveform-track" || selectedItem?.type === "spectrogram-track" ? (
-                        <SpectrogramSettingsPanel
-                          settings={spectrogramSettings}
-                          isWaveformLoading={editorSession
-                            ? platformMediaAnalysis.statusLoading || platformMediaAnalysis.assetsLoading
-                            : isWaveformLoading}
-                          hasWaveformData={Boolean(displayedWaveformData)}
-                          waveformVisible={waveformVisible}
-                          isLoading={editorSession
-                            ? platformMediaAnalysis.statusLoading || platformMediaAnalysis.assetsLoading
-                            : isSpectrogramLoading}
-                          hasData={Boolean(displayedSpectrogramData)}
-                          analysisError={editorSession ? null : localAnalysisError}
-                          onSettingsChange={setSpectrogramSettings}
-                          onWaveformVisibleChange={setWaveformVisible}
-                          platformAnalysis={editorSession ? {
-                            status: platformMediaAnalysis.status,
-                            canWrite: editorSession.canWrite,
-                            loading: platformMediaAnalysis.statusLoading,
-                            mutationPending: platformMediaAnalysis.mutationPending,
-                            error: platformMediaAnalysis.error,
-                            onChooseSource: () => setAnalysisAudioDialogOpen(true),
-                            onRestoreAutomatic: () => {
-                              void platformMediaAnalysis.updateSource({
-                                mode: "auto",
-                                offsetSeconds: 0,
-                              });
-                            },
-                            onStartAnalysis: (force) => {
-                              void platformMediaAnalysis.startAnalysis(force);
-                            },
-                          } : undefined}
-                        />
-                      ) : (
-                        <InspectorPanel
-                          selectedItem={selectedItem}
-                          subtitleLines={project.subtitleLines}
-                          characterAnnotations={project.characterAnnotations}
-                          gongcheAnnotations={project.gongcheAnnotations}
-                          banyanSections={project.banyanSections}
-                          banyanMarks={project.banyanMarks}
-                          banyanGridVisible={banyanGridVisible}
-                          banyanTrackVisible={banyanTrackVisible}
-                          actionAnnotations={project.actionAnnotations}
-                          builtinTracks={project.builtinTracks}
-                          customTracks={project.customTracks}
-                          trackDefinitions={timelineTrackDefinitions}
-                          trackSnapEnabled={trackSnapEnabled}
-                          onCharacterUpdate={updateCharacter}
-                          onCreateGongcheBlock={createGongcheBlock}
-                          onGongcheBlockUpdate={(id, changes) => updateGongcheBlock(id, changes)}
-                          onImportGongcheText={importGongcheText}
-                          onGenerateBanyanFromGongche={generateBanyanFromGongche}
-                          onBanyanGridVisibleChange={setBanyanGridVisible}
-                          onBanyanTrackVisibleChange={setBanyanTrackVisible}
-                          onBanyanMarkUpdate={(id, changes) => updateBanyanMark(id, changes)}
-                          onActionUpdate={updateAction}
-                          onAttachedPointUpdate={commitAttachedPoint}
-                          onTrackWaveformSnapChange={updateTrackWaveformSnap}
-                          onTrackAutoLoopRangeChange={updateTrackAutoLoopRange}
-                          onAttachedPointTrackParentSnapChange={updateAttachedPointTrackParentSnap}
-                          onSelectParentTrack={(trackId) =>
-                            applySelection(
-                              activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
-                                ? { type: "builtin-track", id: trackId as BuiltinTrackId }
-                                : { type: "custom-track", id: trackId },
-                            )
-                          }
-                          onBuiltinTrackRename={renameBuiltinTrack}
-                          onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
-                          onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
-                          onMoveBuiltinTrackTypeOption={moveBuiltinTrackTypeOption}
-                          onReorderBuiltinTrackTypeOption={reorderBuiltinTrackTypeOption}
-                          onRemoveBuiltinTrackTypeOption={removeBuiltinTrackTypeOption}
-                          onDeleteBuiltinTrack={deleteBuiltinTrack}
-                          onAddAttachedPointTrack={addAttachedPointTrack}
-                          onToggleAttachedPointTracks={toggleAttachedPointTracks}
-                          onSelectAttachedPointTrack={(trackId, parentTrackId) =>
-                            applySelection({ type: "attached-point-track", id: trackId, parentTrackId })
-                          }
-                          onAttachedPointTrackRename={renameAttachedPointTrack}
-                          onAttachedPointTrackTypeOptionChange={updateAttachedPointTrackTypeOption}
-                          onAddAttachedPointTrackTypeOption={addAttachedPointTrackTypeOption}
-                          onMoveAttachedPointTrackTypeOption={moveAttachedPointTrackTypeOption}
-                          onReorderAttachedPointTrackTypeOption={reorderAttachedPointTrackTypeOption}
-                          onRemoveAttachedPointTrackTypeOption={removeAttachedPointTrackTypeOption}
-                          onDeleteAttachedPointTrack={deleteAttachedPointTrack}
-                          onCustomTrackRename={renameCustomTrack}
-                          onCustomTrackColorChange={updateCustomTrackColor}
-                          onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
-                          onAddCustomTrackTypeOption={addCustomTrackTypeOption}
-                          onMoveCustomTrackTypeOption={moveCustomTrackTypeOption}
-                          onReorderCustomTrackTypeOption={reorderCustomTrackTypeOption}
-                          onRemoveCustomTrackTypeOption={removeCustomTrackTypeOption}
-                          onDeleteCustomTrack={deleteCustomTrack}
-                          onCustomTrackBranchingEnabledChange={setCustomTrackBranchingEnabled}
-                          onCustomTrackBranchDisplayModeChange={setCustomTrackBranchDisplayMode}
-                          onAddCustomTrackBranchLane={addCustomTrackBranchLane}
-                          onCustomTrackBranchLaneRename={renameCustomTrackBranchLane}
-                          onCustomTrackBranchLaneColorChange={updateCustomTrackBranchLaneColor}
-                          onDeleteCustomTrackBranchLane={deleteCustomTrackBranchLane}
-                          inspectorFocusRequest={inspectorFocusRequest}
-                          onCustomBlockUpdate={updateCustomBlock}
-                          onDeleteSelected={deleteSelected}
-                        />
-                      )}
-                    </div>
+            splitPanel={(
+              <section className={["panel", "split-panel", isSplitPanelCollapsed ? "is-collapsed" : ""].join(" ")}>
+                <div className="panel-header">
+                  <h2>当前句逐字拆分</h2>
+                  <div className="panel-header-actions">
+                    {!isSplitPanelCollapsed ? <span>{activeCharacters.length} 字</span> : null}
+                    <button
+                      type="button"
+                      className="panel-collapse-button"
+                      title={isSplitPanelCollapsed ? "展开面板" : "最小化面板"}
+                      aria-label={isSplitPanelCollapsed ? "展开面板" : "最小化面板"}
+                      onClick={toggleSplitPanelCollapsed}
+                    >
+                      {isSplitPanelCollapsed ? "▸" : "—"}
+                    </button>
                   </div>
-                )}
-              />
+                </div>
+                {!isSplitPanelCollapsed ? (
+                  <div className="character-grid">
+                    {activeCharacters.map((item) => {
+                      const isEditing = editingCharacterId === item.id && editingCharacterLocation === "split-panel";
+                      const className = [
+                        "character-chip",
+                        selectedItem?.type === "character" && selectedItem.id === item.id ? "selected" : "",
+                        currentTime >= item.startTime && currentTime <= item.endTime ? "active" : "",
+                        isEditing ? "editing" : "",
+                      ].join(" ");
+
+                      if (isEditing) {
+                        return (
+                          <div key={item.id} className={className}>
+                            <input
+                              className="character-chip-input"
+                              value={editingCharacterValue}
+                              autoFocus
+                              onChange={(event) => setEditingCharacterValue(event.target.value)}
+                              onBlur={() => commitCharacterTextEdit(item.id)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  commitCharacterTextEdit(item.id);
+                                }
+                                if (event.key === "Escape") {
+                                  event.preventDefault();
+                                  cancelCharacterTextEdit();
+                                }
+                              }}
+                            />
+                            <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <button
+                          key={item.id}
+                          className={className}
+                          onClick={() => {
+                            preferredCharacterEditLocationRef.current = "split-panel";
+                            applySelection({ type: "character", id: item.id });
+                          }}
+                          onDoubleClick={() => startCharacterTextEdit(item.id, "split-panel")}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            preferredCharacterEditLocationRef.current = "split-panel";
+                            applySelection({ type: "character", id: item.id });
+                            setBlockContextMenu({
+                              type: "character",
+                              id: item.id,
+                              trackId: "character-track",
+                              time: item.startTime,
+                              x: event.clientX,
+                              y: event.clientY,
+                            });
+                            updateTimelinePasteTarget("character-track", item.startTime);
+                          }}
+                        >
+                          <span>{item.char}</span>
+                          <small>{item.startTime.toFixed(2)} - {item.endTime.toFixed(2)}</small>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </section>
+            )}
+            confirmationPanel={editorSession && confirmationPanelPlacement === "docked"
+              ? renderAnnotationConfirmationWorkspace(false)
+              : null}
+            inspectorPanel={(
+              <div className="editor-inspector-stack">
+                <div className="editor-inspector-content">
+                  {remoteCatchUpBlockReason ? (
+                    <div className="editor-inspector-edit-gate" role="status">
+                      <span>{remoteCatchUpBlockReason}</span>
+                    </div>
+                  ) : null}
+                  {selectedItem?.type === "waveform-track" || selectedItem?.type === "spectrogram-track" ? (
+                    <SpectrogramSettingsPanel
+                      settings={spectrogramSettings}
+                      isWaveformLoading={editorSession
+                        ? platformMediaAnalysis.statusLoading || platformMediaAnalysis.assetsLoading
+                        : isWaveformLoading}
+                      hasWaveformData={Boolean(displayedWaveformData)}
+                      waveformVisible={waveformVisible}
+                      isLoading={editorSession
+                        ? platformMediaAnalysis.statusLoading || platformMediaAnalysis.assetsLoading
+                        : isSpectrogramLoading}
+                      hasData={Boolean(displayedSpectrogramData)}
+                      analysisError={editorSession ? null : localAnalysisError}
+                      onSettingsChange={setSpectrogramSettings}
+                      onWaveformVisibleChange={setWaveformVisible}
+                      platformAnalysis={editorSession ? {
+                        status: platformMediaAnalysis.status,
+                        canWrite: editorSession.canWrite,
+                        loading: platformMediaAnalysis.statusLoading,
+                        mutationPending: platformMediaAnalysis.mutationPending,
+                        error: platformMediaAnalysis.error,
+                        onChooseSource: () => setAnalysisAudioDialogOpen(true),
+                        onRestoreAutomatic: () => {
+                          void platformMediaAnalysis.updateSource({
+                            mode: "auto",
+                            offsetSeconds: 0,
+                          });
+                        },
+                        onStartAnalysis: (force) => {
+                          void platformMediaAnalysis.startAnalysis(force);
+                        },
+                      } : undefined}
+                    />
+                  ) : (
+                    <InspectorPanel
+                      selectedItem={selectedItem}
+                      subtitleLines={project.subtitleLines}
+                      characterAnnotations={project.characterAnnotations}
+                      gongcheAnnotations={project.gongcheAnnotations}
+                      banyanSections={project.banyanSections}
+                      banyanMarks={project.banyanMarks}
+                      banyanGridVisible={banyanGridVisible}
+                      banyanTrackVisible={banyanTrackVisible}
+                      actionAnnotations={project.actionAnnotations}
+                      builtinTracks={project.builtinTracks}
+                      customTracks={project.customTracks}
+                      trackDefinitions={timelineTrackDefinitions}
+                      trackSnapEnabled={trackSnapEnabled}
+                      onCharacterUpdate={updateCharacter}
+                      onCreateGongcheBlock={createGongcheBlock}
+                      onGongcheBlockUpdate={(id, changes) => updateGongcheBlock(id, changes)}
+                      onImportGongcheText={importGongcheText}
+                      onGenerateBanyanFromGongche={generateBanyanFromGongche}
+                      onBanyanGridVisibleChange={setBanyanGridVisible}
+                      onBanyanTrackVisibleChange={setBanyanTrackVisible}
+                      onBanyanMarkUpdate={(id, changes) => updateBanyanMark(id, changes)}
+                      onActionUpdate={updateAction}
+                      onAttachedPointUpdate={commitAttachedPoint}
+                      onTrackWaveformSnapChange={updateTrackWaveformSnap}
+                      onTrackAutoLoopRangeChange={updateTrackAutoLoopRange}
+                      onAttachedPointTrackParentSnapChange={updateAttachedPointTrackParentSnap}
+                      onSelectParentTrack={(trackId) =>
+                        applySelection(
+                          activeBuiltinTrackIds.has(trackId as BuiltinTrackId)
+                            ? { type: "builtin-track", id: trackId as BuiltinTrackId }
+                            : { type: "custom-track", id: trackId },
+                        )
+                      }
+                      onBuiltinTrackRename={renameBuiltinTrack}
+                      onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
+                      onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
+                      onMoveBuiltinTrackTypeOption={moveBuiltinTrackTypeOption}
+                      onReorderBuiltinTrackTypeOption={reorderBuiltinTrackTypeOption}
+                      onRemoveBuiltinTrackTypeOption={removeBuiltinTrackTypeOption}
+                      onDeleteBuiltinTrack={deleteBuiltinTrack}
+                      onAddAttachedPointTrack={addAttachedPointTrack}
+                      onToggleAttachedPointTracks={toggleAttachedPointTracks}
+                      onSelectAttachedPointTrack={(trackId, parentTrackId) =>
+                        applySelection({ type: "attached-point-track", id: trackId, parentTrackId })
+                      }
+                      onAttachedPointTrackRename={renameAttachedPointTrack}
+                      onAttachedPointTrackTypeOptionChange={updateAttachedPointTrackTypeOption}
+                      onAddAttachedPointTrackTypeOption={addAttachedPointTrackTypeOption}
+                      onMoveAttachedPointTrackTypeOption={moveAttachedPointTrackTypeOption}
+                      onReorderAttachedPointTrackTypeOption={reorderAttachedPointTrackTypeOption}
+                      onRemoveAttachedPointTrackTypeOption={removeAttachedPointTrackTypeOption}
+                      onDeleteAttachedPointTrack={deleteAttachedPointTrack}
+                      onCustomTrackRename={renameCustomTrack}
+                      onCustomTrackColorChange={updateCustomTrackColor}
+                      onCustomTrackTypeOptionChange={updateCustomTrackTypeOption}
+                      onAddCustomTrackTypeOption={addCustomTrackTypeOption}
+                      onMoveCustomTrackTypeOption={moveCustomTrackTypeOption}
+                      onReorderCustomTrackTypeOption={reorderCustomTrackTypeOption}
+                      onRemoveCustomTrackTypeOption={removeCustomTrackTypeOption}
+                      onDeleteCustomTrack={deleteCustomTrack}
+                      onCustomTrackBranchingEnabledChange={setCustomTrackBranchingEnabled}
+                      onCustomTrackBranchDisplayModeChange={setCustomTrackBranchDisplayMode}
+                      onAddCustomTrackBranchLane={addCustomTrackBranchLane}
+                      onCustomTrackBranchLaneRename={renameCustomTrackBranchLane}
+                      onCustomTrackBranchLaneColorChange={updateCustomTrackBranchLaneColor}
+                      onDeleteCustomTrackBranchLane={deleteCustomTrackBranchLane}
+                      inspectorFocusRequest={inspectorFocusRequest}
+                      onCustomBlockUpdate={updateCustomBlock}
+                      onDeleteSelected={deleteSelected}
+                    />
+                  )}
+                </div>
+              </div>
             )}
           />
         )}
@@ -6740,6 +6954,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             onGlobalKeyDown={handleGlobalKeyDown}
           >
             {renderTimelineWorkspace(true)}
+          </FloatingPanelWindow>
+        ) : null}
+        {isConfirmationDetached && confirmationDetachedWindow ? (
+          <FloatingPanelWindow
+            title="标注确认"
+            targetWindow={confirmationDetachedWindow}
+            onClose={() => closeConfirmationDetachedWindow("docked")}
+            onGlobalKeyDown={handleGlobalKeyDown}
+          >
+            {renderAnnotationConfirmationWorkspace(true)}
           </FloatingPanelWindow>
         ) : null}
       </div>

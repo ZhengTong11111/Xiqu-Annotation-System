@@ -561,14 +561,17 @@ function normalizeCustomBlockBranchFields(
   branchParentBlockId?: string;
 } {
   const branchScope = normalizeBranchScope(source.branchScope, validLaneIds);
+  const branchGroupId = typeof source.branchGroupId === "string" && source.branchGroupId.trim()
+    ? source.branchGroupId
+    : null;
+  const branchParentBlockId = typeof source.branchParentBlockId === "string" && source.branchParentBlockId.trim()
+    ? source.branchParentBlockId
+    : null;
+  // 可选字段无值时直接省略，避免浏览器态出现 JSON 无法表达的“存在但为 undefined”的伪差异。
   return {
-    branchScope,
-    branchGroupId: typeof source.branchGroupId === "string" && source.branchGroupId.trim()
-      ? source.branchGroupId
-      : undefined,
-    branchParentBlockId: typeof source.branchParentBlockId === "string" && source.branchParentBlockId.trim()
-      ? source.branchParentBlockId
-      : undefined,
+    ...(branchScope ? { branchScope } : {}),
+    ...(branchGroupId ? { branchGroupId } : {}),
+    ...(branchParentBlockId ? { branchParentBlockId } : {}),
   };
 }
 

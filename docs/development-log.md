@@ -5470,3 +5470,209 @@ operation、审计详情或协作消息。
   精确 seek、P 临时循环、持久循环、倍率和独立窗口；本地“正常播放”人工 smoke 不替代生产域名验收。
 - 临时长期 AccessKey 在验收结束后必须由账号所有者立即禁用/删除，并改用 RAM 角色、实例角色或其他
   短时凭据方案。
+
+## 2026-08-06：标注确认四栏布局与独立窗口
+
+### 已完成
+
+- 新增 `EditorSidebarLayout`，把右侧工作区明确拆为句级字幕、当前句逐字拆分、标注确认和属性 Inspector
+  四个同级叶面板。三层可调整布局分别使用版本化存储键，避免旧三栏比例污染；标注确认隐藏或弹出时
+  不保留空白区域，属性 Inspector 自动接管剩余高度。
+- 标注确认标题、记录数、折叠按钮、面板背景和滚动方式统一到既有句级字幕/逐字拆分样式。删除旧的
+  特殊盾牌标题、内部展开状态、`max-height: 48%` 和 Inspector 内嵌高度耦合，不再维护两套折叠语义。
+- “视图”菜单新增清晰的“右侧标注确认”和“在独立窗口显示”入口。面板状态统一为
+  `docked | hidden | detached`：隐藏只影响右栏，弹出时主窗口不重复渲染，收回或关闭窗口后恢复右栏。
+- 独立窗口继续复用已有 `FloatingPanelWindow`，与停靠面板共享同一确认数据和命令；撤销确认使用的
+  Radix Portal 显式落到独立窗口文档，避免遮罩和对话框出现在主窗口。
+
+### 审查与验证
+
+- `npx tsc -p tsconfig.app.json --noEmit --incremental false`、`test:annotation-confirmation-view` 5/5、完整
+  `npm run build` 和 `git diff --check` 通过；构建仅保留既有 Vite 主 chunk 超过 500 kB 提醒。
+- 在 `http://localhost:5173/` 打开《寻梦》平台示例完成真实浏览器验收。四个叶面板实测高度依次为
+  150/137/129/144px，边界互不覆盖；标注确认可折叠、隐藏、弹出和收回，隐藏时 DOM 中不再存在确认区，
+  属性 Inspector 正确扩展。视图菜单状态与实际位置一致，浏览器控制台未出现本轮新增错误。
+
+### 待推进
+
+- 本轮不改变确认记录 API、审核权限、时间轴确认范围或 `ProjectData`。生产桌面浏览器仍应在后续发布
+  smoke 中复验原生 popup 的跨屏位置、关闭收回和独立窗口内撤销确认对话框；应用内浏览器宿主不提供
+  独立顶层窗口列表，不能替代真实桌面窗口管理验收。
+
+## 2026-08-06：clean error 协作追赶自愈
+
+### 已完成
+
+- 对真实双账号失败现场核对数据库、operation 和 audit：标注文件服务端已从 v59 连续提交到 v61，sequence
+  65/66 均为 `ta` 接受并提交的逐字边界命令；`admin` 页面仍停在 v59，实时连接保持在线但显示“同步失败”。
+  因此本次不是权限拒绝、数据库丢写或 WebSocket 断线，而是客户端没有消费已提交 revision。
+- 定位第一层状态机死锁：catch-up 过去只接受 `saved`，任何 `error` 都永久暂停；远端编辑门禁却也只保护
+  `saved`，导致 clean error 客户端既不能追赶，又可继续从旧快照开始编辑。现抽取统一资格规则，允许完全
+  clean 的 saved/error 会话追赶；有 dirty、pending、拖拽、行内编辑、整合草稿、保存或媒体改绑时仍拒绝覆盖。
+- 定位现场热更新后仍未追赶的第二层时序：保存锁只用 ref 表示，`finally` 清锁不会触发 React 重渲染，最后
+  一次失败渲染会永久保留“save in flight”资格。现保留 ref 防止同步重入，并增加 state 驱动门禁重算；保存
+  结束必然触发一次新渲染。clean error 的远端替换会清除错误并恢复 `saved`，dirty error 继续保留浏览器草稿。
+- 顶部“同步失败”增加具体 `errorMessage` 悬浮提示，后续现场可区分原子确认、草稿持久化、租约和网络错误，
+  不再只留下一个无法诊断的总括文案。
+
+### 审查与验证
+
+- `test:platform-operation-catch-up` 20/20，覆盖 clean error 追赶资格、dirty error 拒绝替换和 revision gap 编辑门禁。
+- `test:platform-atomic-submit` 26/26、`test:platform-auto-save-runtime` 9/9 与 TypeScript 检查通过；完整生产构建在
+  本条记录后继续执行。Chrome 扩展在读取热更新后的旧 admin 页面时中断连接，因此自动化浏览器未伪报成功；
+  该页面仍需人工确认从 v59 收敛到当前服务端 revision。
+
+### 待推进
+
+- 用 admin/teacher 两个真实会话再次交错编辑同一块，确认成功提交、409 协调、clean error 自愈和下一次本地
+  编辑均能连续工作；若再次进入 error，优先读取顶部状态的悬浮详情并保留对应 operation/revision 时间点。
+
+## 2026-08-06：客户端同步失败持久诊断
+
+### 已完成
+
+- 核对最近一次 admin 单账号案例：v69 的 5 条 timing 命令已完整提交并写入保存审计；随后出现的
+  `local_chain_mismatch` 发生在下一次保存的本地 planner 阶段，尚未向 API 创建 operation，不属于协作冲突。
+- 新增 `annotation_client_sync_failure` 审计动作、严格上报 DTO、文件 read 权限复核和两秒服务端限频。日志记录
+  客户端/文档/服务器 revision、失败与命令创建时间、dirty/online/save-in-flight、pending 命令身份、目标和
+  有界 command envelope；正文和 before/after 可用于本阶段调试，凭据、鉴权值和 URL 在两端强制脱敏。
+- pending chain 审计在 `local_chain_mismatch` 时补充不一致的 ProjectData 顶层字段，并进一步记录最多 64 条
+  JSON Pointer 叶子差异及其 saved/命令重放后/current 三态值；下一次失败可直接定位具体逐字、句、块或轨道
+  配置的漏命令入口。诊断上报短暂失败会使用冻结报告重试两次，不改变真实同步状态。
+- 调试期明确保留标注正文、命令 before/after 和有界完整 command envelope；UUID、operation ID 和实体 ID 不再被
+  泛化的“长字符串”规则误脱敏。Authorization、Bearer、AccessKey、PlayAuth、token、Secret 和 URL 仍禁止落盘。
+- 应用迁移 `20260806010000_annotation_client_sync_failure_audit`，API 已重新启动于 4317。
+
+### 验证
+
+- Web 与 API TypeScript 检查通过；planner 与诊断专项测试 7/7 通过。按用户要求未重复执行完整生产构建。
+
+### 待推进
+
+- 当前错误页面的旧 pending chain 形成于修复前，不会被热更新悄悄改写；先保留 IndexedDB 草稿，按显式恢复/
+  比较流程处理，再用新会话复验相同操作。本轮已按审计详情修复具体漏命令入口，没有把
+  `local_chain_mismatch` 降级为整份快照覆盖。
+
+## 2026-08-06：父块级联工尺符号的原子命令修复
+
+### 已完成
+
+- 查询首条 `annotation_client_sync_failure` 真实审计：admin 在文件 v69 基线上有 6 条本地 timing operation，
+  mismatch 精确落在 `gongcheAnnotations[0].symbols[0..1].startTime/endTime`。saved 与 replayed 相同、current
+  已按父逐字边界缩放，证明问题发生在请求发出前，不是权限、网络、WebSocket 或服务器提交失败。
+- 根因是父块同步会按比例更新 Gongche block 及全部 symbols，但旧 `getGongcheTimingTargetsForParents()` 只收集
+  外层 block。现用 `getGongcheTransactionTargetsForParents()` 统一收集 block timing 与前后都存在的 symbol
+  state 目标；创建/删除 symbol 仍由 lifecycle 负责，职责没有混入时间更新。
+- 单字拖动、整句拖动、自定义父块拖动和跨轨多选移动四条入口改为
+  `annotation.transaction.apply`，把文字/句/工尺块 timing 与工尺 symbol state 原子提交。直接工尺编辑原有
+  transaction、板眼 timing 的确定性 `manualOffset/confidence` 重建及删除引用修复保持不变。
+- timing API 拆为叶级 `buildProjectTimelineTimingEnvelope()` 与独立安全
+  `buildProjectTimelineTimingCommand()`：前者仅供高层 transaction 组合，后者必须把命令应用到 base 后证明
+  完整 ProjectData 等于 next。由此任何新的派生字段漏声明都会立即返回 null，不再产生僵尸 pending command。
+- 收尾删除 Web 兼容层未使用的过渡类型导出，取消领域内部返回类型的意外公共导出，并把多选路径中字符轨/
+  自定义轨两段重复 Map 合并收为一次目标组遍历；旧 Gongche timing helper 已零引用、零残留。叶级 envelope
+  builder 补充中文边界注释，明确禁止 UI 绕过完整 ProjectData 重放证明。
+
+### 审查与验证
+
+- 新增与现场同构的双 symbol 父块缩放回归，验证 transaction 子命令顺序为 timing -> state，正向重放逐字段
+  等于 next，inverse 完整恢复 base；新增独立 timing builder 拒绝遗漏 symbol state 的回归。
+- timing、transaction、atomic planner、HTTP catch-up 与 409 conflict rebase 组合专项 45/45 通过；Web/API
+  TypeScript 检查和 `git diff --check` 通过。完整 `npm run build` 通过 Prisma generation、shared、
+  document-model、Web 与 API，仅保留既有 Vite 主 chunk 超过 500 kB 提醒。扫描其余派生写入后，板眼、引用
+  修复、生命周期和内容命令均已有完整重建门禁，未发现第二处同类漏命令。
+
+### 待推进
+
+- 当前修复前页面仍持有旧的不完整 6-operation 链，不能在原地伪造新 envelope。通过草稿恢复/比较保存必要
+  修改后，新开编辑会话依次人工复验单字边界、整句、自定义父块及多选移动，并确认服务器 revision 正常递增、
+  另一账号可追赶且不再生成新的 `annotation_client_sync_failure`。
+
+## 2026-08-06：拖拽预览与自动保存相邻帧竞态修复
+
+### 已完成
+
+- 核对最新真实失败审计 `6f2c74d4-ad70-4aa2-a202-65ed008cfea4`：admin 在文件 v70 上拖动逐字公共边界时，
+  saved 与 pending 命令重放结果均为 `65.39458414874343`，但 transient current 已预览到 `65.48`。失败发生于
+  `01:37:49.812Z`，对应 pointer-up operation 创建于约 72ms 后，证明自动保存 timer 抢在领域命令生成前冻结
+  了预览项目；这不是 Gongche 修复回归、协作 409、权限拒绝或服务器丢写。
+- `a7cb459a-b81c-4242-bdf2-01089a92d6c1` 是同一 error 状态在后续本地 revision 变化后重复上报的诊断，不是
+  第二次保存尝试。诊断去重现按文件、失败类别和原因稳定识别一个 error 状态；真正重新保存会先进入 saving，
+  清除旧签名后仍可记录新的独立失败。
+- 自动保存与 IndexedDB 恢复草稿现同时在 transient 拖拽期间暂停，避免未形成可重放历史的视觉预览进入任一
+  持久化通道。服务器保存入口另以 `transientProjectRef.current` 做同步硬门禁，覆盖 React 尚未重渲染、旧 timer
+  与 pointer-up 落在相邻帧的窗口；松手完成单次 commit 后，普通自动保存按既有 dirty/pending 规则恢复。
+- 没有放宽 pending chain 完整性证明，也没有回退到整份快照覆盖。修复前已经进入 error 的旧页面仍按草稿恢复/
+  比较边界处理；热更新不会伪造缺失 operation。
+
+### 审查与验证
+
+- 前端 TypeScript 检查通过；自动保存 policy/runtime、平台草稿与同步失败诊断专项 30/30 通过。
+- Web/API TypeScript 检查、完整生产构建与 `git diff --check` 均通过；构建只保留项目既有的 Vite 主 chunk
+  超过 500 kB 提醒。
+
+### 待推进
+
+- 刷新或重新打开文件取得 clean 会话，再复验短拖、长拖和触摸板松手；每次 pointer-up 应先形成 operation，
+  随后服务器 revision 递增，且不再出现新的 `local_chain_mismatch`。若仍失败，以新的独立审计 ID 和时间线继续
+  诊断，不能把修复前重复上报记录误认为新回归。
+
+## 2026-08-06：结构租约申请与普通自动保存竞态修复
+
+### 已完成
+
+- 核对修复后新审计 `acbfe726-8416-47b0-b829-689325957a06`：失败类别已不再是
+  `local_chain_mismatch`。服务端 v79 与 operation sequence 123 均已成功提交；本地后续 4 条命令包含两个
+  自定义块创建、类型内容修改和一条轨道结构事务，但失败批次未创建任何 operation。
+- 审计时序显示结构租约于 `01:50:04.870Z` 在 v79 创建，随后于 `01:50:04.985Z` 被客户端释放，失败报告于
+  `01:50:05.052Z` 写入。结合 3 秒自动保存窗口可确定：普通 pending 批次在租约 acquire 尚未完成时已冻结为
+  无 token 请求，服务端随后看见活动租约并正确 fail closed；这不是命令重放不完整、协作覆盖或数据库丢写。
+- 保存与租约结构写入现使用双向内存屏障。结构写入先同步占用 exclusive 门禁，再等待可能已在途的保存完成，
+  之后按最新项目/revision 申请租约；保存入口发现 acquire/commit 中的结构写入时返回 busy，由自动保存按既有
+  idle 规则重排。保存已经先开始时，结构写入保留用户动作并等待，不以“请重试”丢弃操作。
+- 同步失败 DTO 新增有界脱敏 `errorMessage`；服务端兼容修复前旧页面缺少该字段的报告。原子提交错误在顶部提示
+  和审计中保留稳定错误码，`annotation_mutation_lease_*` 统一归入 `mutation_lease`，后续无需依赖开发者控制台
+  才能区分 required、expired、invalid、purpose mismatch。
+- 复核“本轮没有错误日志”的现场后确认并非漏上报：审计 `b7086678-bb2a-46ab-8ac8-79b84120d29c` 于
+  `01:55:37.967Z` 记录了 `mutation_lease`、local revision 46 和 5 条 pending。它对应 `01:50:08.717Z`
+  创建、续期至五分钟绝对上限后失效的结构租约；旧诊断合同只保存 category/reason，没有 `errorMessage`，因此
+  审计看起来像“没有原因”。API 重启后新报告会同时保存真实有界消息和稳定错误码。
+
+### 审查与验证
+
+- mutation lease、自动保存 policy/runtime、原子提交 runtime/coordinator 与同步诊断专项 30/30 通过。
+- shared 构建、Web/API TypeScript 检查、完整生产构建和 `git diff --check` 通过；构建只保留项目既有的 Vite
+  主 chunk 超过 500 kB 提醒。
+- API 已用新诊断合同重新启动于 `127.0.0.1:4317`；health 返回 ready，数据库与对象存储均为 ok。
+
+### 待推进
+
+- 当前页面保留了失败前的 4 条 pending 命令和修复后再次取得的旧租约。刷新/重开按浏览器草稿恢复后，复验
+  “连续创建块并新建类型”以及恰好跨过 3 秒自动保存窗口的结构操作；成功时应整批提交到 v80 或更高 revision，
+  且后续审计若失败必须包含具体 `errorMessage` 与稳定错误码。
+
+## 2026-08-06：无分叉轨道启用分叉的 JSON 等价修复
+
+### 已完成
+
+- 现场服务器文件已正常同步至 v82、operation sequence 134。“肢体动作轨”包含一个动作块且尚无 branching；
+  用户四次启用分叉都取得并立即释放 `track_structure` 租约，未创建 operation，证明租约协调正常，失败稳定发生
+  在客户端结构 builder 的完整重放证明。
+- 直接使用数据库 JSON 可成功构建命令，而浏览器归一化项目会稳定失败。最小复现确认旧归一化器为无归属块创建
+  `branchScope/branchGroupId/branchParentBlockId: undefined` 自有键；结构快照按 JSON 语义恢复为缺失键。两者持久化
+  内容完全相同，但旧深比较把键集合差异判为合同外变化并错误返回 null。
+- `areProjectValuesEqual()` 现只在普通对象上忽略值为 `undefined` 的键，保持 `null`、数组长度/位置和具体值严格；
+  这与 ProjectData 的 JSON 持久化边界一致，不会掩盖真实领域变化。自定义块归一化器也改为无值时直接省略三个
+  可选分叉字段，新打开会话不再制造这种伪差异，当前旧会话则由共享等价规则立即兼容。
+
+### 审查与验证
+
+- 新增“无分叉轨道带 undefined 兼容键仍可启用分叉”回归，以及对象 undefined/缺失等价、null 与数组继续严格
+  的边界测试。结构命令、结构事务、atomic planner 和 HTTP catch-up 组合 36/36 通过。
+- Web TypeScript 检查、完整生产构建与 `git diff --check` 通过；构建只保留项目既有的 Vite 主 chunk 超过
+  500 kB 提醒。
+
+### 待推进
+
+- 前端重启后在 v82 clean 会话再次为“肢体动作轨”启用分叉并新建一条分支；应形成一条结构 operation、保存至
+  v83 或更高版本，并在重新打开文件后保留 branching。随后复验已有分叉轨的新增递归子分支与块归属修改。

@@ -4,7 +4,7 @@ import { mockProject } from "../mockData";
 import type { ProjectData } from "../types";
 import {
   buildProjectTimelineTimingCommand,
-  getGongcheTimingTargetsForParents,
+  getGongcheTransactionTargetsForParents,
   type TimelineTimingTarget,
 } from "./timelineTimingCommand";
 
@@ -83,7 +83,12 @@ test("项目 timing helper 提取嵌套实体并稳定去重", () => {
     startTime: nextProject.gongcheAnnotations[0].startTime + 1,
     endTime: nextProject.gongcheAnnotations[0].endTime + 1,
   };
-  nextProject.banyanMarks[0] = { ...nextProject.banyanMarks[0], time: 14 };
+  nextProject.banyanMarks[0] = {
+    ...nextProject.banyanMarks[0],
+    time: 14,
+    manualOffset: 2,
+    confidence: "manual",
+  };
 
   const targets: TimelineTimingTarget[] = [
     { entityType: "sentence", entityId: line.id },
@@ -123,11 +128,46 @@ test("项目 timing helper 对缺失目标和无变化返回 null", () => {
   }]), null);
 });
 
-// 工尺派生目标从 base/next 并集收集，保证同步前后存在的同一块只产生一个命令目标。
-test("工尺父块 helper 按父轨道和父块过滤并去重", () => {
+test("独立 timing builder 拒绝遗漏工尺符号派生变化的目标集合", () => {
   const baseProject = createTimingProject();
+  baseProject.gongcheAnnotations[0].symbols = [{
+    id: "gongche-symbol-command-1",
+    label: "合",
+    notation: "",
+    rawText: "合",
+    parenthesized: false,
+    startTime: baseProject.gongcheAnnotations[0].startTime,
+    endTime: baseProject.gongcheAnnotations[0].endTime,
+    assetUrl: null,
+  }];
+  const nextProject = structuredClone(baseProject);
+  nextProject.gongcheAnnotations[0].endTime -= 0.25;
+  nextProject.gongcheAnnotations[0].symbols[0].endTime -= 0.25;
+
+  // 只声明外层 block 无法完整解释 symbol 变化，必须拒绝生成可重放命令。
+  assert.equal(buildProjectTimelineTimingCommand(baseProject, nextProject, [{
+    entityType: "gongche-block",
+    entityId: "gongche-command-1",
+    trackId: "character-track",
+  }]), null);
+});
+
+// 工尺派生目标同时覆盖外层 timing 和内部 symbol state，保证父块级联可被事务完整重放。
+test("工尺父块 helper 按父轨道收集块与符号目标并去重", () => {
+  const baseProject = createTimingProject();
+  baseProject.gongcheAnnotations[0].symbols = [{
+    id: "gongche-symbol-command-1",
+    label: "合",
+    notation: "",
+    rawText: "合",
+    parenthesized: false,
+    startTime: baseProject.gongcheAnnotations[0].startTime,
+    endTime: baseProject.gongcheAnnotations[0].endTime,
+    assetUrl: null,
+  }];
   const nextProject = structuredClone(baseProject);
   const characterId = baseProject.characterAnnotations[0].id;
+  nextProject.gongcheAnnotations[0].symbols[0].startTime += 0.25;
   nextProject.gongcheAnnotations.push({
     id: "gongche-unrelated",
     parentTrackId: "character-track",
@@ -136,13 +176,21 @@ test("工尺父块 helper 按父轨道和父块过滤并去重", () => {
     endTime: 2,
     symbols: [],
   });
-  assert.deepEqual(getGongcheTimingTargetsForParents(
-    [baseProject, nextProject],
+  assert.deepEqual(getGongcheTransactionTargetsForParents(
+    baseProject,
+    nextProject,
     "character-track",
     [characterId],
-  ), [{
-    entityType: "gongche-block",
-    entityId: "gongche-command-1",
-    trackId: "character-track",
-  }]);
+  ), {
+    timingTargets: [{
+      entityType: "gongche-block",
+      entityId: "gongche-command-1",
+      trackId: "character-track",
+    }],
+    stateTargets: [{
+      entityType: "gongche-symbol",
+      entityId: "gongche-symbol-command-1",
+      trackId: "gongche-command-1",
+    }],
+  });
 });

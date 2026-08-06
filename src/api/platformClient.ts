@@ -3,6 +3,8 @@ import type {
   AnnotationCollaborationTicket,
   AnnotationConfirmationRecord,
   AnnotationCommittedOperationPage,
+  AnnotationClientSyncFailureReport,
+  AnnotationClientSyncFailureReportResult,
   AnnotationFile,
   AnnotationMutationLeaseGrant,
   AnnotationMutationLeaseSummary,
@@ -595,6 +597,17 @@ export class PlatformClient {
     return this.request<CommitAnnotationCommandBatchResponse>(
       `/annotation-files/${annotationFileId}/command-batches`,
       { method: "POST", body: request },
+    );
+  }
+
+  // 同步失败诊断发送有界命令与项目差异；服务端会再次校验、脱敏、限频并写入审计日志。
+  reportAnnotationClientSyncFailure(
+    annotationFileId: string,
+    report: AnnotationClientSyncFailureReport,
+  ) {
+    return this.request<AnnotationClientSyncFailureReportResult>(
+      `/annotation-files/${annotationFileId}/sync-failures`,
+      { method: "POST", body: report },
     );
   }
 

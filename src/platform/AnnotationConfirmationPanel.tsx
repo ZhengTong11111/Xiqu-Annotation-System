@@ -1,11 +1,8 @@
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import {
   CheckCircle2,
-  ChevronDown,
-  ChevronRight,
   History,
   RefreshCw,
-  ShieldCheck,
   Undo2,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -40,6 +37,9 @@ type AnnotationConfirmationPanelProps = {
   mutationPending: boolean;
   error: string | null;
   timelineVisible: boolean;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  portalContainer?: HTMLElement;
   onTimelineVisibleChange: (visible: boolean) => void;
   onRefresh: () => Promise<boolean>;
   onCreate: (input: {
@@ -58,7 +58,6 @@ type AnnotationConfirmationPanelProps = {
 export function AnnotationConfirmationPanel(
   props: AnnotationConfirmationPanelProps,
 ) {
-  const [expanded, setExpanded] = useState(true);
   const [historyMode, setHistoryMode] = useState<"active" | "all">("active");
   const [targetMode, setTargetMode] = useState<TargetMode>("all");
   const [selectedDomains, setSelectedDomains] = useState<AnnotationConfirmationDomain[]>([
@@ -157,41 +156,51 @@ export function AnnotationConfirmationPanel(
   }
 
   return (
-    <section className="annotation-confirmation-panel" aria-label="标注确认">
-      <div className="annotation-confirmation-heading">
-        <button
-          type="button"
-          className="annotation-confirmation-expand"
-          onClick={() => setExpanded((current) => !current)}
-          aria-expanded={expanded}
-        >
-          {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-          <ShieldCheck size={16} />
-          <strong>标注确认</strong>
-        </button>
+    <section
+      className={["panel", "annotation-confirmation-panel", props.collapsed ? "is-collapsed" : ""].join(" ")}
+      aria-label="标注确认"
+    >
+      <div className="panel-header annotation-confirmation-heading">
+        <h2>标注确认</h2>
         <div className="annotation-confirmation-heading-actions">
-          <label title="在时间轴显示确认范围">
-            <input
-              type="checkbox"
-              checked={props.timelineVisible}
-              onChange={(event) => props.onTimelineVisibleChange(event.target.checked)}
-            />
-            时间轴
-          </label>
-          <button
-            type="button"
-            className="icon-button"
-            title="刷新确认记录"
-            aria-label="刷新确认记录"
-            disabled={props.loading || props.mutationPending}
-            onClick={() => void props.onRefresh()}
-          >
-            <RefreshCw size={15} />
-          </button>
+          {!props.collapsed ? (
+            <>
+              <span>{props.records.length} 条</span>
+              <label title="在时间轴显示确认范围">
+                <input
+                  type="checkbox"
+                  checked={props.timelineVisible}
+                  onChange={(event) => props.onTimelineVisibleChange(event.target.checked)}
+                />
+                时间轴
+              </label>
+              <button
+                type="button"
+                className="icon-button"
+                title="刷新确认记录"
+                aria-label="刷新确认记录"
+                disabled={props.loading || props.mutationPending}
+                onClick={() => void props.onRefresh()}
+              >
+                <RefreshCw size={15} />
+              </button>
+            </>
+          ) : null}
+          {props.onToggleCollapse ? (
+            <button
+              type="button"
+              className="panel-collapse-button"
+              title={props.collapsed ? "展开面板" : "最小化面板"}
+              aria-label={props.collapsed ? "展开面板" : "最小化面板"}
+              onClick={props.onToggleCollapse}
+            >
+              {props.collapsed ? "▸" : "—"}
+            </button>
+          ) : null}
         </div>
       </div>
 
-      {expanded ? (
+      {!props.collapsed ? (
         <div className="annotation-confirmation-body">
           <div className="annotation-confirmation-status-row">
             <span>服务器修订 {props.currentRevision ?? "-"}</span>
@@ -367,7 +376,7 @@ export function AnnotationConfirmationPanel(
           }
         }}
       >
-        <AlertDialog.Portal>
+        <AlertDialog.Portal container={props.portalContainer}>
           <AlertDialog.Overlay className="resource-alert-backdrop" />
           <AlertDialog.Content className="annotation-confirmation-revoke-dialog">
             <AlertDialog.Title>撤销确认记录</AlertDialog.Title>

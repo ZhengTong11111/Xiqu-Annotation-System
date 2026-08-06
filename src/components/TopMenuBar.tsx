@@ -20,6 +20,7 @@ type TopMenuBarProps = {
   canUndo: boolean;
   canRedo: boolean;
   syncStatus: ProjectSyncStatus;
+  syncErrorMessage?: string | null;
   localRevision: number;
   savedRevision: number;
   remoteRevision?: number;
@@ -60,10 +61,13 @@ type TopMenuBarProps = {
   banyanTrackVisible: boolean;
   banyanGridVisible: boolean;
   spectrogramVisible: boolean;
+  annotationConfirmationPlacement?: "docked" | "hidden" | "detached";
   onWaveformVisibleChange: (visible: boolean) => void;
   onBanyanTrackVisibleChange: (visible: boolean) => void;
   onBanyanGridVisibleChange: (visible: boolean) => void;
   onSpectrogramVisibleChange: (visible: boolean) => void;
+  onToggleAnnotationConfirmationPanel?: () => void;
+  onToggleAnnotationConfirmationDetached?: () => void;
 };
 
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5];
@@ -78,6 +82,7 @@ export function TopMenuBar({
   canUndo,
   canRedo,
   syncStatus,
+  syncErrorMessage,
   localRevision,
   savedRevision,
   remoteRevision,
@@ -118,10 +123,13 @@ export function TopMenuBar({
   banyanTrackVisible,
   banyanGridVisible,
   spectrogramVisible,
+  annotationConfirmationPlacement,
   onWaveformVisibleChange,
   onBanyanTrackVisibleChange,
   onBanyanGridVisibleChange,
   onSpectrogramVisibleChange,
+  onToggleAnnotationConfirmationPanel,
+  onToggleAnnotationConfirmationDetached,
 }: TopMenuBarProps) {
   const [openMenu, setOpenMenu] = useState<(typeof menuOrder)[number] | null>(null);
   const menuBarRef = useRef<HTMLElement>(null);
@@ -335,6 +343,35 @@ export function TopMenuBar({
                     >
                       {spectrogramVisible ? "✓ 人声频谱图" : "人声频谱图"}
                     </button>
+                    {annotationConfirmationPlacement &&
+                    onToggleAnnotationConfirmationPanel &&
+                    onToggleAnnotationConfirmationDetached ? (
+                      <>
+                        <div className="top-menu-divider" />
+                        <button
+                          type="button"
+                          className={`top-menu-dropdown-item ${
+                            annotationConfirmationPlacement === "docked" ? "active-option" : ""
+                          }`}
+                          onClick={() => handleAction(onToggleAnnotationConfirmationPanel)}
+                        >
+                          {annotationConfirmationPlacement === "docked"
+                            ? "✓ 右侧标注确认"
+                            : "右侧标注确认"}
+                        </button>
+                        <button
+                          type="button"
+                          className={`top-menu-dropdown-item ${
+                            annotationConfirmationPlacement === "detached" ? "active-option" : ""
+                          }`}
+                          onClick={() => handleAction(onToggleAnnotationConfirmationDetached)}
+                        >
+                          {annotationConfirmationPlacement === "detached"
+                            ? "收回右侧栏"
+                            : "在独立窗口显示"}
+                        </button>
+                      </>
+                    ) : null}
                     <div className="top-menu-divider" />
                     <button
                       type="button"
@@ -383,7 +420,9 @@ export function TopMenuBar({
         {collaborationStatus ? " · " : ""}
         {accessLabel ? `${accessLabel} · ` : ""}
         {mutationLeaseLabel ? `${mutationLeaseLabel} · ` : ""}
-        {syncStatusLabel}
+        <span title={syncStatus === "error" ? syncErrorMessage ?? undefined : undefined}>
+          {syncStatusLabel}
+        </span>
       </div>
       <input ref={videoFileInputRef} type="file" accept="video/*" onChange={onVideoFileChange} />
       <input ref={srtFileInputRef} type="file" accept=".srt" onChange={onSrtFileChange} />

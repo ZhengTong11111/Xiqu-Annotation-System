@@ -22,6 +22,7 @@ export const AUDIT_ACTION_LABELS: Record<AuditActionName, string> = {
   resource_restore: "恢复资源",
   resource_delete: "删除资源",
   annotation_file_save: "保存标注",
+  annotation_client_sync_failure: "客户端同步失败",
   annotation_mutation_lease_acquire: "取得结构变更租约",
   annotation_mutation_lease_renew: "续期结构变更租约",
   annotation_mutation_lease_release: "释放结构变更租约",

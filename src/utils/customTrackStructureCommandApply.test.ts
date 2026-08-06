@@ -86,3 +86,30 @@ test("删除分叉时块归属回根，不会留下已经消失的 lane 引用",
   assert.equal(applied.status, "applied");
   if (applied.status === "applied") assert.deepEqual(applied.project, next);
 });
+
+test("无分叉轨道即使带有 undefined 兼容键也可启用分叉", () => {
+  const base = structuredClone(mockProject);
+  const track = base.customTracks[0];
+  delete track.branching;
+  for (const block of track.blocks) {
+    // 历史浏览器归一化曾制造这些键；它们在 JSON 中都等价于缺失，不能阻断结构命令。
+    block.branchScope = undefined;
+    block.branchGroupId = undefined;
+    block.branchParentBlockId = undefined;
+  }
+  const next = structuredClone(base);
+  next.customTracks[0].branching = {
+    enabled: true,
+    rootLabel: "全轨",
+    displayMode: "merged",
+    lanes: [],
+  };
+  const envelope = buildProjectCustomTrackStructureCommand(base, next, [track.id]);
+  assert.ok(envelope);
+  const applied = applyCustomTrackStructureCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status === "applied") assert.deepEqual(
+    JSON.parse(JSON.stringify(applied.project)),
+    JSON.parse(JSON.stringify(next)),
+  );
+});

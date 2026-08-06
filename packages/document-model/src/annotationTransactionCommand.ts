@@ -20,7 +20,7 @@ import {
 import { applyAnnotationTransactionCommandToProject } from "./annotationTransactionCommandApply.js";
 import { areProjectValuesEqual } from "./projectValueEquality.js";
 import {
-  buildProjectTimelineTimingCommand,
+  buildProjectTimelineTimingEnvelope,
   resolveProjectTimelineTiming,
   type TimelineTimingTarget,
 } from "./timelineTimingCommand.js";
@@ -50,7 +50,7 @@ export function buildProjectAnnotationTransactionCommand(
   const timingTargets = selectChangedTimingTargets(baseProject, nextProject, plan.timingTargets ?? []);
   if (!timingTargets) return null;
   if (timingTargets.length > 0) {
-    const envelope = buildProjectTimelineTimingCommand(baseProject, nextProject, timingTargets);
+    const envelope = buildProjectTimelineTimingEnvelope(baseProject, nextProject, timingTargets);
     if (!envelope) return null;
     children.push(envelope);
   }

@@ -47,7 +47,7 @@ export function createPlatformDraftTaskQueue(
   };
 }
 
-// 生命周期决策保持为纯函数，待确认整合暂停时不得误写或删除原恢复草稿。
+// 生命周期决策保持为纯函数；待确认整合或 transient 编辑暂停时不得误写或删除原恢复草稿。
 export function getPlatformDraftPersistenceAction(input: Pick<
   PlatformDraftPersistenceOptions,
   "enabled" | "suspended" | "userId" | "annotationFileId" | "hasUnsavedChanges"

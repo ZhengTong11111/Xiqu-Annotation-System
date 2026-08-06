@@ -91,6 +91,7 @@ enum AuditAction {
   resource_restore
   resource_delete
   annotation_file_save
+  annotation_client_sync_failure
   annotation_mutation_lease_acquire
   annotation_mutation_lease_renew
   annotation_mutation_lease_release

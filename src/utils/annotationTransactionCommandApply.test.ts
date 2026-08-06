@@ -5,6 +5,7 @@ import { mockProject } from "../mockData";
 import type { ProjectData } from "../types";
 import { applyAnnotationTransactionCommandToProject } from "./annotationTransactionCommandApply";
 import { buildProjectAnnotationTransactionCommand } from "./annotationTransactionCommand";
+import { getGongcheTransactionTargetsForParents } from "./timelineTimingCommand";
 
 function createProject(): ProjectData {
   const project = structuredClone(mockProject);
@@ -57,6 +58,65 @@ test("已有句新增逐字可原子同步句内容和边界并完整反向", ()
     lifecycleTargets: [{ entityType: "character", entityId: "char-b" }],
   });
   assert.ok(envelope);
+  const applied = applyAnnotationTransactionCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status !== "applied") return;
+  assert.deepEqual(applied.project, next);
+  const restored = applyAnnotationTransactionCommandToProject(
+    applied.project,
+    invertAnnotationCommandEnvelope(envelope),
+  );
+  assert.equal(restored.status, "applied");
+  if (restored.status === "applied") assert.deepEqual(restored.project, base);
+});
+
+test("父文字块缩放时工尺块与全部符号可原子重放并反向恢复", () => {
+  const base = createProject();
+  base.subtitleLines[0].endTime = 3;
+  base.characterAnnotations[0].endTime = 3;
+  base.gongcheAnnotations[0] = {
+    ...base.gongcheAnnotations[0],
+    endTime: 3,
+    symbols: [
+      { ...base.gongcheAnnotations[0].symbols[0], endTime: 2 },
+      {
+        ...base.gongcheAnnotations[0].symbols[0],
+        id: "symbol-b",
+        label: "尺",
+        rawText: "尺",
+        startTime: 2,
+        endTime: 3,
+      },
+    ],
+  };
+  const next = structuredClone(base);
+  next.subtitleLines[0].endTime = 2.5;
+  next.characterAnnotations[0].endTime = 2.5;
+  next.gongcheAnnotations[0].endTime = 2.5;
+  next.gongcheAnnotations[0].symbols[0].endTime = 1.75;
+  next.gongcheAnnotations[0].symbols[1].startTime = 1.75;
+  next.gongcheAnnotations[0].symbols[1].endTime = 2.5;
+
+  const gongcheTargets = getGongcheTransactionTargetsForParents(
+    base,
+    next,
+    "character-track",
+    ["char-a"],
+  );
+  const envelope = buildProjectAnnotationTransactionCommand(base, next, {
+    timingTargets: [
+      { entityType: "sentence", entityId: "line-a" },
+      { entityType: "character", entityId: "char-a" },
+      ...gongcheTargets.timingTargets,
+    ],
+    stateTargets: gongcheTargets.stateTargets,
+  });
+  assert.ok(envelope);
+  assert.deepEqual(envelope.command.commands.map((command) => command.type), [
+    "timeline.items.timing.update",
+    "annotation.items.state.update",
+  ]);
+
   const applied = applyAnnotationTransactionCommandToProject(base, envelope);
   assert.equal(applied.status, "applied");
   if (applied.status !== "applied") return;

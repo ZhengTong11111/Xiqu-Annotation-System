@@ -4525,7 +4525,8 @@ select {
 
 .subtitle-panel,
 .inspector-panel,
-.split-panel {
+.split-panel,
+.annotation-confirmation-panel {
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -4535,13 +4536,15 @@ select {
 
 .subtitle-panel.is-collapsed,
 .inspector-panel.is-collapsed,
-.split-panel.is-collapsed {
+.split-panel.is-collapsed,
+.annotation-confirmation-panel.is-collapsed {
   padding-bottom: 0;
 }
 
 .subtitle-panel.is-collapsed .panel-header,
 .inspector-panel.is-collapsed .panel-header,
-.split-panel.is-collapsed .panel-header {
+.split-panel.is-collapsed .panel-header,
+.annotation-confirmation-panel.is-collapsed .panel-header {
   min-height: 40px;
   height: 100%;
   padding: 0 8px;
@@ -4550,7 +4553,8 @@ select {
 
 .subtitle-panel .panel-header,
 .split-panel .panel-header,
-.inspector-panel .panel-header {
+.inspector-panel .panel-header,
+.annotation-confirmation-panel .panel-header {
   flex: 0 0 auto;
 }
 
@@ -4664,7 +4668,7 @@ select {
   padding-left: 8px;
 }
 
-/* 平台治理面板和通用 Inspector 共用右侧空间，但各自保留独立滚动和职责边界。 */
+/* Inspector 是右栏最后一个独立面板；治理面板由外层四栏布局管理，不再侵占其内部高度。 */
 .editor-inspector-stack {
   display: flex;
   flex-direction: column;
@@ -4713,27 +4717,13 @@ select {
 }
 
 .annotation-confirmation-panel {
-  flex: 0 1 auto;
-  max-height: 48%;
-  min-height: 38px;
-  display: flex;
-  flex-direction: column;
-  border-bottom: 1px solid rgba(188, 198, 211, 0.88);
-  background: rgba(244, 247, 250, 0.97);
-  color: var(--ink);
+  width: 100%;
 }
 
 .annotation-confirmation-heading {
   flex: 0 0 auto;
-  min-height: 38px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 5px 8px;
 }
 
-.annotation-confirmation-expand,
 .annotation-confirmation-heading-actions,
 .annotation-confirmation-heading-actions label,
 .annotation-confirmation-history-heading > span,
@@ -4741,15 +4731,6 @@ select {
 .annotation-confirmation-revoke {
   display: inline-flex;
   align-items: center;
-}
-
-.annotation-confirmation-expand {
-  min-width: 0;
-  gap: 5px;
-  padding: 3px 4px;
-  border: 0;
-  background: transparent;
-  color: #334155;
 }
 
 .annotation-confirmation-heading-actions {
@@ -4783,7 +4764,7 @@ select {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 0 8px 8px;
+  padding: 8px;
   overscroll-behavior: contain;
 }
 

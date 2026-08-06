@@ -94,8 +94,17 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - all lease-protected local mutations pass through one exclusive coordinator; next ProjectData must be rebuilt from the latest
     `projectRef` after lease acquisition. Bounded structure uses `track_structure`; controlled snapshot boundaries use
     `bulk_import` or `bulk_repair`. Platform imports remain dirty until a real server revision save succeeds.
+  - the exclusive mutation coordinator and server save are a two-way barrier: a lease mutation waits for an already-running save,
+    while save synchronously yields to an acquiring/committing lease mutation. Never allow an ordinary unleased batch to leave
+    while a structure lease is being acquired, because the server will correctly reject it once that lease becomes active.
   - platform media rebinding is not a document mutation: it is allowed only at a clean document boundary and must use
     `replaceCleanProjectFromRemote()` so it never creates undo/history/pending operations or persists protected URLs
+- `src/components/EditorSidebarLayout.tsx`
+  - owns the editor sidebar's four peer regions: sentence subtitles, current-sentence character split, annotation confirmation,
+    and the content Inspector; each visible boundary uses its own persisted `ResizableSplitLayout`
+  - annotation confirmation placement is an App-level `docked | hidden | detached` view concern. Hidden/detached modes must
+    remove the docked region entirely so the Inspector receives the released space; never reintroduce confirmation inside
+    `.editor-inspector-stack` or couple its height to the selected-item Inspector
 - `src/platform/PlatformWorkspace.tsx`
   - platform login/resource-explorer/editor switch and local editor entry
   - owns the single authoritative annotation-file open path; ordinary opens and comparison navigation both refetch
@@ -176,6 +185,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/platformOperationCatchUp.ts`
   - pure bounded committed-feed reader, revision-continuity validator, and all-or-nothing known-command replay planner
   - malformed pages, revision gaps, legacy operations, pagination overflow, and precondition failures require a snapshot
+  - catch-up eligibility treats a completely clean `error` session like `saved`, so an acknowledgement/runtime error cannot
+    permanently stop authoritative recovery; any dirty, pending, transient, inline, merge, save, or media-binding fact still
+    blocks replacement and preserves the browser draft
+- `src/platform/platformSyncFailureDiagnostic.ts`
+  - builds the bounded client report written as `annotation_client_sync_failure` audit rows when document sync enters `error`
+  - reports local/server revisions, timestamps, mismatch domains, pending operation identities/targets, bounded command
+    envelopes, and leaf-level saved/replayed/current mismatch values for debugging; annotation text and command before/after
+    are intentionally retained, while authorization values, PlayAuth, AccessKeys, tokens, and URLs are always redacted on
+    both client and server even in development
 - `src/platform/platformOperationCatchUpRuntime.ts`
   - owns the HTTP catch-up timer, single-flight request, retry delay, session generation, and disposal behavior
   - a stale file response must never apply or recreate a timer for a later editor session
@@ -184,6 +202,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     `ProjectData`; while a clean client is between those revisions, new mutating gestures/menus/shortcuts must be blocked
   - this gate must never interrupt a transient or inline edit already in progress; HTTP committed-feed/snapshot catch-up remains
     the only way to clear a clean-client gap, while edits already in flight are resolved only after a definitive server 409
+  - a clean `error` session with an observed/applied revision gap remains edit-blocked until catch-up succeeds; error status must
+    not become a bypass around the stale-snapshot gate
 - `src/platform/platformAtomicCommandPlan.ts`
   - pure bounded next-batch planner for the atomic command endpoint; full-chain proof is delegated to the shared pending-chain audit
   - never submit a prefix when a later command is blocked or the replayed chain does not equal the current project
@@ -296,6 +316,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/AnnotationConfirmationPanel.tsx`
   - platform-editor governance panel for browsing, creating, navigating to, and revoking confirmed annotation ranges
   - uses the existing loop range as an explicit review range; it must not edit `ProjectData` or replace the content Inspector
+  - docked and detached rendering share one data/mutation path. Detached Radix dialogs must portal into the detached document;
+    the detached copy stays expanded while the docked copy may use the standard sidebar collapse control
 - `src/platform/useAnnotationConfirmations.ts`
   - authoritative client-side list/create/revoke lifecycle for one open annotation file
   - rejects stale async responses across file switches and refreshes after mutations instead of optimistically inventing facts
@@ -466,7 +488,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/utils/editorProjectEquality.ts`
   - pure editor-level ProjectData equality that ignores non-persisted media runtime details without caching mutable object signatures
 - `src/utils/timelineTimingCommand.ts`
-  - Web compatibility re-export for the shared timing resolver/builder in `packages/document-model`
+  - Web compatibility re-export for the shared validated timing builder, resolver, and Gongche transaction-target collector
 - `src/utils/timelineTimingCommandApply.ts`
   - Web compatibility re-export for the shared timing apply adapter; do not add another Web implementation
 - `src/utils/annotationContentCommand.ts`
@@ -756,8 +778,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     pay its bundle cost
 - `packages/document-model/src/timelineTimingCommand*.ts` + `annotationContentCommand*.ts` + `annotationStateCommand*.ts`
   - R5b3a2a shared pure resolver/builder/writer/apply core for timing, stable content, and Gongche/Banyan full state
-  - timing apply keeps derived target semantics explicit; content/state builders still prove complete-next reconstruction
-    instead of comparing only declared targets
+  - standalone timing/content/state builders must prove complete-next reconstruction instead of comparing only declared targets;
+    annotation transactions use leaf envelope builders and perform the complete proof after all children are applied
+  - parent character/sentence/custom-block timing that remaps Gongche must use
+    `getGongcheTransactionTargetsForParents()` and include both block timing and surviving symbol state targets
 - `packages/document-model/src/annotationCompositeSnapshots.ts` + `banyanReferenceIntegrity.ts` + `projectValueEquality.ts`
   - shared snapshot conversion, cross-entity reference validation/repair, and complete-project equality foundations
   - lifecycle and structure modules now consume the package implementation directly; no second function implementation may
@@ -1110,9 +1134,19 @@ Dragging should remain:
 - transient during movement
 - single commit on completion
 
+The transient project is visual interaction state, not a persistable document revision. Until pointer-up has produced the
+single replayable operation, both server autosave and IndexedDB recovery-draft writes must remain suspended. The server-save
+entry point must also synchronously inspect `transientProjectRef.current`; React suspension facts alone cannot close the
+timer/pointer-up race between adjacent frames.
+
 ### Critical state rule
 Hot interaction paths depend on `projectRef.current`, not just render-state closures.
 If changing drag, selection, clipboard, import merge, or undo logic, assume stale closure bugs are a real risk.
+
+`ProjectData` equality follows its JSON persistence boundary for object properties: an absent optional key and an own key
+whose value is `undefined` are equivalent, while `null`, array positions, and all concrete values remain strict. Normalizers
+should omit empty optional keys instead of manufacturing `key: undefined`; command builders must keep using the shared
+`areProjectValuesEqual()` proof rather than ad hoc stringify comparisons.
 
 ### Platform editor startup focus
 - `PlatformEditorSession.initialFocus` is an optional one-shot navigation command, currently produced by annotation

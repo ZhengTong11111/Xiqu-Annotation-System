@@ -4,7 +4,7 @@
 Workspace/Fork、完成版本和项目发布版本模型仅在 `docs/development-log.md` 中作为历史记录保留，
 不得据此继续实现。
 
-最后更新：2026-08-05
+最后更新：2026-08-06
 
 当前开发基线：R1-R4 工程闭环与 R5 实时多人协作、原子领域命令提交、显式并发冲突处理及
 单服务器可部署候选门禁均已完成。平台现已补齐管理员账号生命周期、所有账号自助改密、标注文件与
@@ -313,7 +313,9 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
   作用域的确认，浏览 current/stale/revoked 历史并经二次确认撤销；保存后刷新服务器事实。时间轴在
   loop 与 top deck 之间增加精确、只读、可隐藏的重叠分层确认栏，点击按原始时间 seek/focus，不参与
   吸附或编辑。dirty、列表加载、缺少 `review`、无范围及 revision 不一致均阻断创建；本地模式不加载
-  或展示治理 UI，服务端仍是权限与状态真相。
+  或展示治理 UI，服务端仍是权限与状态真相。右侧工作区现按句级字幕、逐字拆分、标注确认和属性
+  Inspector 四个同级区域独立调整高度；“视图”菜单可隐藏右侧确认区或将其移入独立窗口，释放的空间
+  由 Inspector 接管，三种显示状态不改变确认数据、审核权限或时间轴确认栏状态。
 
 完成标准：误操作可恢复，研究者能比较和选择性整合不同文件。
 
@@ -733,6 +735,25 @@ VOD 共用精确媒体时钟；长视频波形、频谱和 F0 不再依赖浏览
 - clean catch-up 应用远端结果时，current/saved ProjectData、document-owned remote revision、App revision 与
   committed cursor 必须共同推进。该维护约束已通过“接收远端 vN 后立即本地保存至 vN+1”的回归覆盖，防止
   服务器已提交而客户端误报确认失败并阻断后续追赶。
+- clean `error` 会话现可继续执行权威 committed-feed/snapshot 追赶，并在 observed revision 高于 applied revision
+  时保持新编辑门禁；只要存在 dirty、pending、拖拽、行内编辑或整合草稿，就继续 fail closed。保存 in-flight
+  同时使用同步 ref 与 React state：前者阻止同 tick 重入，后者保证 `finally` 后追赶资格一定重新计算。
+- 拖拽中的 transient ProjectData 只承担画面预览；pointer-up 生成一条可重放领域命令前，服务器自动保存与
+  IndexedDB 恢复草稿必须同时暂停，保存入口还需同步检查 transient ref，防止 timer 与 pointer-up 相邻帧竞态
+  把未被命令解释的预览值冻结为待保存项目。
+- 普通服务器保存与租约结构写入使用双向串行屏障：结构写入先开始时保存让出，保存已在途时结构写入等待保存
+  完成后再按最新 revision 申请租约。禁止“无 token 普通批次先冻结、结构租约随后生效”的交叉窗口；服务端
+  对活动租约阻止无 token 写入的 fail-closed 规则保持不变。
+- 领域命令完整重放证明按持久化 JSON 语义比较对象可选键：缺失与 `undefined` 等价，但 `null`、数组位置和具体
+  值保持严格。项目归一化器同时停止制造空的分叉归属键，避免旧浏览器态的不可序列化形状误阻断轨道结构命令。
+- 客户端同步进入 `error` 时现写入限频审计动作 `annotation_client_sync_failure`：包含服务器/本地 revision、失败
+  时间、dirty/pending/save-in-flight 事实、pending 命令目标与有界调试 envelope。`local_chain_mismatch` 额外报告
+  不同的顶层域和最多 64 条 saved/replayed/current 叶子差异；调试 payload 可保留正文、before/after、UUID 和
+  实体身份，但凭据和 URL 始终双重脱敏。
+- 一次真实诊断已定位父文字块时间缩放只声明 Gongche block、却在当前项目中同时重映射内部 symbols 的漏命令。
+  单字、整句、自定义父块和多选移动现统一提交 timing + Gongche symbol state 原子事务；独立 timing builder
+  也增加完整 ProjectData 重放证明，未来遗漏任一派生字段会在本地构建命令时 fail closed，而不是生成不完整
+  pending chain 后等到保存阶段才报 `local_chain_mismatch`。
 - 对修复前已打开的旧会话，成功确认只允许在“document revision 落后且 frozen server-base ProjectData 与当前
   saved baseline 完全相同”时自愈；revision 超前或项目基线不一致继续 fail closed。该规则支持同 operation id
   幂等重试恢复，不引入整份 payload 覆盖。

@@ -17,7 +17,8 @@ export function shouldBlockEditingForRemoteCatchUp(
   facts: PlatformRemoteEditGateFacts,
 ) {
   if (facts.observedRemoteRevision <= facts.appliedRemoteRevision) return false;
-  if (facts.syncStatus !== "saved") return false;
+  // clean error 会话仍可通过权威 HTTP 追赶自愈；追赶落地前必须和 saved 会话一样阻止从旧快照开始新编辑。
+  if (facts.syncStatus !== "saved" && facts.syncStatus !== "error") return false;
   if (facts.hasUnsavedChanges || facts.pendingOperationCount > 0) return false;
   if (facts.hasTransientEdit || facts.hasInlineEdit || facts.hasPendingMergeDraft) return false;
   return true;

@@ -118,7 +118,17 @@ test("后续命令前置失败与合同外本地变化都不能返回半批", ()
   const unexplained = structuredClone(chain.currentProject);
   unexplained.activeTrackOrder = [...unexplained.activeTrackOrder].reverse();
   const mismatch = plan(unexplained, chain.operations);
-  assert.deepEqual(mismatch, { status: "blocked", reason: "local_chain_mismatch" });
+  assert.equal(mismatch.status, "blocked");
+  if (mismatch.status !== "blocked") return;
+  assert.equal(mismatch.reason, "local_chain_mismatch");
+  assert.deepEqual(
+    (mismatch.issues as { mismatchedTopLevelFields: string[] }).mismatchedTopLevelFields,
+    ["activeTrackOrder"],
+  );
+  assert.ok(
+    (mismatch.issues as { mismatchDetails: Array<{ path: string }> }).mismatchDetails
+      .some((detail) => detail.path.startsWith("/activeTrackOrder/")),
+  );
 });
 
 test("operation 类型与 envelope 不一致时 fail closed", () => {

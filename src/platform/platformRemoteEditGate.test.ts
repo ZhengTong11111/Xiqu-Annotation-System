@@ -17,6 +17,10 @@ test("干净客户端得知更高 revision 后阻止从旧快照开始新编辑"
   assert.equal(shouldBlockEditingForRemoteCatchUp(CLEAN_FACTS), true);
   assert.equal(shouldBlockEditingForRemoteCatchUp({
     ...CLEAN_FACTS,
+    syncStatus: "error",
+  }), true);
+  assert.equal(shouldBlockEditingForRemoteCatchUp({
+    ...CLEAN_FACTS,
     appliedRemoteRevision: 18,
   }), false);
 });
@@ -28,6 +32,8 @@ test("已经开始的本地编辑不被远端通知半途截断", () => {
     { ...CLEAN_FACTS, hasTransientEdit: true },
     { ...CLEAN_FACTS, hasInlineEdit: true },
     { ...CLEAN_FACTS, hasPendingMergeDraft: true },
+    { ...CLEAN_FACTS, hasUnsavedChanges: true, syncStatus: "error" as const },
+    { ...CLEAN_FACTS, pendingOperationCount: 1, syncStatus: "error" as const },
   ]) {
     assert.equal(shouldBlockEditingForRemoteCatchUp(facts), false);
   }
