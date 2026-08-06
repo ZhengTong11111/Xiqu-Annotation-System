@@ -70,6 +70,46 @@ test("生产维护与备份命令只调用编译后 CLI", async () => {
   }
 });
 
+// Prisma 7 配置和 npm workspace 产物都是生产运行时依赖，部署清单缺项会导致 migration 或服务启动失败。
+test("单服务器 release 清单包含 Prisma 配置与 workspace 构建产物", async () => {
+  const deploymentGuide = await readFile(
+    new URL("../docs/server-deployment.md", import.meta.url),
+    "utf8",
+  );
+  const releaseCopyCommand = deploymentGuide.match(
+    /sudo cp -a ([\s\S]*?)\s+"\/opt\/xiqu\/releases\/\$RELEASE_ID\/"/u,
+  )?.[1];
+  assert.equal(typeof releaseCopyCommand, "string");
+  for (const requiredPath of [
+    "package.json",
+    "package-lock.json",
+    "prisma.config.ts",
+    "prisma",
+    "packages",
+    "dist",
+    "node_modules",
+  ]) {
+    assert.match(releaseCopyCommand, new RegExp(`(?:^|\\s)${requiredPath.replace(".", "\\.")}(?:\\s|$)`));
+  }
+});
+
+// 对象恢复通过同级 staging 原子发布，手册必须先提供服务账号可写的专用父目录。
+test("恢复演练示例为原子 staging 提供可写父目录", async () => {
+  const deploymentGuide = await readFile(
+    new URL("../docs/server-deployment.md", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    deploymentGuide,
+    /install -d -o xiqu -g xiqu -m 750 \/var\/lib\/xiqu-platform\/restore-drill\n/u,
+  );
+  assert.match(
+    deploymentGuide,
+    /--target-storage \/var\/lib\/xiqu-platform\/restore-drill\/storage/u,
+  );
+  assert.doesNotMatch(deploymentGuide, /--target-storage \/var\/lib\/xiqu-platform\/restore-drill-storage/u);
+});
+
 test("健康响应必须使用平台 envelope、服务名和预期状态", () => {
   assert.doesNotThrow(() => validateHealthPayload({
     data: { status: "ready", service: "xiqu-platform-api" },

@@ -771,6 +771,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     通过 PostgreSQL + 对象存储一致备份/恢复或全新初始化部署，绝不能把 `git pull` 当作数据迁移
   - 首次部署和升级都应从已审查 commit/tag 构建不可变 release，再原子切换 `/opt/xiqu/current`；不要在
     正在运行的 release 目录直接 `git pull`、重新构建或覆盖持久数据
+  - production release must include `prisma.config.ts` and built `packages/shared`/`packages/document-model` in
+    addition to `prisma`, `dist`, and `node_modules`: Prisma 7 migration reads the root config, while npm workspace
+    links under `node_modules/@xiqu` resolve back into `packages/`. Verify these paths before starting systemd services
+  - local restore drills publish through a sibling staging directory; place `target-storage` below a dedicated parent
+    writable by `xiqu`, not directly below a root-owned persistent-data directory. A failed drill may already have restored
+    the isolated database before object publication, so recreate only that isolated target before retrying
 - `scripts/deploymentCheck.mjs` + `scripts/checkDeployment.mjs`
   - 无凭据、只读的部署 smoke check；统一验证 Web 入口、API liveness 与依赖 readiness
   - 不能把登录写入、迁移或破坏性恢复塞进 smoke check；这些步骤属于部署清单和人工验收

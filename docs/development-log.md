@@ -5851,3 +5851,58 @@ operation、审计详情或协作消息。
 - 登录页不再把 `admin` 和开发密码写入账号、密码输入框，也不再在页面底部直接展示开发凭据。浏览器标准
   `autocomplete` 行为继续保留，用户仍可使用自己的密码管理器。
 - 本轮没有删除仅供本地开发数据库使用的 seed 账号，也没有修改 API 测试夹具或生产首管理员 bootstrap。
+
+## 2026-08-06：阿里云 ECS 首次空生产实例部署
+
+### 已完成
+
+- 按单服务器手册在阿里云 ECS 华北 2（北京）部署经过审查的 `main` commit
+  `9c3887cdcd6f0696921dc8ef0141534b7a307c2d`。生产 release 为
+  `/opt/xiqu/releases/20260806T064255Z-9c3887c`，`/opt/xiqu/current` 指向该不可变目录；没有在运行目录
+  直接 `git pull`，也没有复制开发机的 `.env`、PostgreSQL、`data/`、媒体或分析资产。
+- 主机基线为 Ubuntu 24.04、Node.js 22.23.2、PostgreSQL 16、Nginx 1.24 和 FFmpeg 6.1。40 GiB 系统盘承载
+  系统和 release；独立 100 GiB ext4 数据盘按 UUID 挂载到 `/var/lib/xiqu-platform`，承载 `storage` 与
+  `backups`。数据盘已取消随实例释放，`mount -a` 验证通过。
+- 创建无登录 `xiqu` 服务账号及固定目录权限；生产环境文件为 `root:xiqu`、`0640`，数据库密码与 metrics
+  token 均在服务器内随机生成且未回显。对象存储当前使用空的本地数据盘目录，开发 seed 明确关闭。
+- 新建空的 `xiqu_platform` 业务库和 `xiqu_restore_drill` 隔离恢复演练库，预置 `pg_trgm`，成功应用 20 个
+  已提交 migration。数据库和对象目录均未导入本机实验数据。
+- 安装并启用 `xiqu-api` 与 `xiqu-analysis-worker` systemd 服务；两者均为 active。PostgreSQL 只监听
+  `127.0.0.1:5432`，Fastify 只监听 `127.0.0.1:4317`，Nginx 通过 80 端口同源提供静态 Web、`/api` 与
+  WebSocket upgrade。公网 IP 阶段的 `deploy:check` 已确认首页、liveness、readiness 均为 HTTP 200，
+  readiness 中数据库与本地对象存储均为 ok。
+- 通过一次性 stdin bootstrap 创建 `platform.admin` 首位 `super_admin`，并以真实登录 API 验证账号角色和
+  access token 签发成功，未输出 token。临时凭据只用于首次登录，必须立即通过自助改密替换。
+- 停止 analysis worker 后创建首次一致基线备份
+  `xiqu-backup-2026-08-06T06-57-24-266Z-6399bebf`；manifest 校验通过，对象数 0、warning 0。随后恢复到
+  独立 `xiqu_restore_drill` 数据库和 `restore-drill/storage`，migration history、维护状态、数据库摘要和
+  对象存储四项检查全部通过，报告保存在数据盘受控目录；生产 worker 已恢复 active。
+
+### 真实部署发现与修复
+
+- 首次 migration 发现 release 复制清单漏掉 `prisma.config.ts`，Prisma 7 因缺少 datasource 配置拒绝
+  `migrate deploy`；此时尚未创建业务表。补入配置后 20 个 migration 全部成功。
+- 首次 systemd 启动发现 npm workspace 的 `node_modules/@xiqu/shared` 与 `@xiqu/document-model` 是指向
+  `packages/*` 的符号链接，而旧清单没有发布 `packages/`，导致 API/worker 明确以
+  `ERR_MODULE_NOT_FOUND` 退出。停止重启循环并补入已构建 workspace 产物后，两项服务与健康检查恢复正常。
+- 部署手册现把 `prisma.config.ts`、`packages/` 纳入 release，并增加启动前文件门禁；部署专项测试固定该清单，
+  `AGENTS.md` 同步记录这一生产不变量。不能通过在生产即时编译源码或改成非 workspace 安装来掩盖缺项。
+- 首次恢复演练按旧手册把目标直接放在 root-owned 持久目录下；数据库已恢复后，对象原子发布需要创建同级
+  staging，因父目录不可写而以 EACCES 停止。该失败只涉及隔离目标，生产备份保持有效。重建空演练库并把
+  storage 放入 `xiqu` 所有的专用父目录后恢复通过；手册、专项测试和 `AGENTS.md` 已固定该权限边界。
+
+### 待完成
+
+- 首位管理员已创建并通过登录验证；仍需立即在平台内把临时密码改为唯一强密码，并确认改密会撤销旧 session。
+- 当前仅为公网 IP 的 HTTP smoke。域名确定后需配置 DNS、可信 TLS 与自动续期，再把 Nginx 从临时 HTTP 配置
+  切换到正式同源 HTTPS；安全组仍需最终确认 22 仅允许运维公网 IP、80/443 对外、3389/4317/5432 禁止公网。
+- 阿里云 VOD 当前在生产环境保持关闭。正式启用时 ECS 实例角色只授予 `GetVideoInfo`、`GetVideoPlayAuth`、
+  `GetPlayInfo`，VOD region 仍是 `cn-shanghai`；必须先为最终浏览器 hostname 配置 Web License，再将
+  `domain + key` 写入受保护服务环境。localhost License 不能复用到生产域名，长期 AccessKey 不进入服务器
+  环境或仓库。
+- 首管理员创建后仍需完成人工闭环：登录、创建资源、上传与 Range、打开/保存、第二账号 ACL 与实时协作、
+  回收站/恢复、审计、metrics，以及 uploaded 媒体分析。域名与 VOD 启用后再验证样例 VOD 播放、纯音频分析、
+  强制上传音频覆盖和恢复自动来源。
+- 首次一致备份及隔离恢复演练已经通过。后续每次重要升级仍须创建新的匹配备份并按运维策略定期演练；依赖
+  安装报告的安全告警应在仓库分支中审查并通过锁文件、测试和构建处理，不能在生产服务器直接运行
+  `npm audit fix --force`。

@@ -120,13 +120,25 @@ dist/
 ```bash
 RELEASE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD)"
 sudo mkdir "/opt/xiqu/releases/$RELEASE_ID"
-sudo cp -a package.json package-lock.json prisma dist node_modules "/opt/xiqu/releases/$RELEASE_ID/"
+sudo cp -a package.json package-lock.json prisma.config.ts prisma packages dist node_modules \
+  "/opt/xiqu/releases/$RELEASE_ID/"
 sudo chown -R root:root "/opt/xiqu/releases/$RELEASE_ID"
 sudo ln -sfn "/opt/xiqu/releases/$RELEASE_ID" /opt/xiqu/current
 ```
 
-候选基线保留完整 `node_modules`，优先保证 Prisma/原生依赖与已验收构建一致。后续可以建立 CI artifact，
-但不能只复制 `dist/` 而遗漏生产运行依赖、Prisma schema 或 migration。
+候选基线保留完整 `node_modules`，优先保证 Prisma/原生依赖与已验收构建一致。`prisma.config.ts` 是
+Prisma 7 执行 `migrate deploy` 的运行时配置；`node_modules/@xiqu/*` 是指向 `packages/*` 的 workspace
+符号链接，因此 release 还必须包含已构建的 `packages/shared/dist` 与 `packages/document-model/dist`。
+复制后应在启动服务前明确检查这三项，不能只凭 `dist/api/server.js` 存在就判定产物完整：
+
+```bash
+test -r "/opt/xiqu/releases/$RELEASE_ID/prisma.config.ts"
+test -r "/opt/xiqu/releases/$RELEASE_ID/packages/shared/dist/index.js"
+test -r "/opt/xiqu/releases/$RELEASE_ID/packages/document-model/dist/index.js"
+```
+
+后续可以建立 CI artifact，但不能只复制 `dist/` 而遗漏生产运行依赖、workspace 构建产物、Prisma schema、
+配置或 migration。
 
 ## 5. 生产环境文件
 
@@ -383,7 +395,8 @@ sudo systemctl start xiqu-analysis-worker
 恢复目标必须是不同的空数据库和空对象目录：
 
 ```bash
-sudo install -d -o xiqu -g xiqu -m 750 /var/lib/xiqu-platform/restore-drill-storage
+sudo install -d -o xiqu -g xiqu -m 750 /var/lib/xiqu-platform/restore-drill
+sudo install -d -o xiqu -g xiqu -m 750 /var/lib/xiqu-platform/restore-drill/storage
 sudo -u xiqu bash -c '
   set -a
   source /etc/xiqu-platform/xiqu-platform.env
@@ -392,13 +405,15 @@ sudo -u xiqu bash -c '
   npm run backup:restore-drill -- \
     --backup /var/lib/xiqu-platform/backups/xiqu-backup-... \
     --target-database-url "postgresql://xiqu_app:***@127.0.0.1:5432/xiqu_restore_drill?schema=public" \
-    --target-storage /var/lib/xiqu-platform/restore-drill-storage \
-    --report /var/lib/xiqu-platform/restore-drill-report.json
+    --target-storage /var/lib/xiqu-platform/restore-drill/storage \
+    --report /var/lib/xiqu-platform/restore-drill/report.json
 '
 ```
 
 连接串含密码时优先使用仅当前进程可见的环境变量，不写 shell history。恢复库会保留备份时的维护状态；
-确认演练结果后再对恢复库显式解除。不要把演练目标指向业务库或业务对象目录。
+确认演练结果后再对恢复库显式解除。恢复实现会在 `target-storage` 同级创建 staging 目录，再原子替换已确认
+为空的目标；所以该目标必须位于 `xiqu` 可写的专用父目录中。只把目标目录本身设为 `xiqu` 所有、却把父目录
+留为不可写，会在数据库恢复后、对象发布前失败。不要把演练目标指向业务库或业务对象目录。
 
 S3-compatible 远端备份、manifest-last 发布、流式校验、保留清理和远端恢复演练使用 README 已有命令及
 `deploy/object-storage/` 的目标环境检查表。
