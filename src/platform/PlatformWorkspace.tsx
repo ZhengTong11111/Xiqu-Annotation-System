@@ -104,8 +104,8 @@ const TOKEN_KEY = "xiqu-platform-dev-token";
 export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   const [view, setView] = useState<PlatformView>(() =>
     window.localStorage.getItem(TOKEN_KEY) ? "explorer" : "login");
-  const [accountName, setAccountName] = useState("admin");
-  const [password, setPassword] = useState("admin123");
+  const [accountName, setAccountName] = useState("");
+  const [password, setPassword] = useState("");
   const [accessToken, setAccessToken] = useState<string | null>(() =>
     window.localStorage.getItem(TOKEN_KEY));
   const [user, setUser] = useState<PlatformUser | null>(null);
@@ -601,7 +601,6 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
           >
             不登录，进入本地标注工具
           </button>
-          <small>开发账号：admin / admin123</small>
         </form>
       </main>
     );
