@@ -12,6 +12,10 @@ import type {
   ResolvedAnalysisAudioSource,
   UpdateAnalysisAudioRequest,
 } from "@xiqu/shared";
+import {
+  MAX_MEDIA_ANALYSIS_BATCH_ASSETS,
+  MAX_MEDIA_ANALYSIS_BATCH_BYTES,
+} from "@xiqu/shared";
 import type { ApiUser } from "./domain.js";
 import {
   analysisAudioForbidden,
@@ -320,6 +324,55 @@ export class MediaAnalysisJobService {
       size: Number(asset.size),
       checksum: asset.checksum,
     };
+  }
+
+  /**
+   * 批量读取只做一次文件 ACL 校验，但每个资产仍必须属于当前文件的同一个已完成 run。
+   * 缺失、跨文件和跨 run 统一返回“批次不存在”，避免借接口探测其他资源的资产 ID。
+   */
+  async getAssetsForBatchRead(
+    user: ApiUser,
+    annotationFileId: string,
+    runId: string,
+    assetIds: readonly string[],
+  ) {
+    await this.assertActiveAnnotationFile(user, annotationFileId, "read");
+    if (
+      !runId.trim() ||
+      assetIds.length === 0 ||
+      assetIds.length > MAX_MEDIA_ANALYSIS_BATCH_ASSETS ||
+      assetIds.some((id) => !id.trim() || id !== id.trim() || id.length > 128) ||
+      new Set(assetIds).size !== assetIds.length
+    ) {
+      throw badRequest("媒体分析批量读取参数不正确。");
+    }
+
+    const rows = await this.prisma.mediaAnalysisAsset.findMany({
+      where: {
+        id: { in: [...assetIds] },
+        runId,
+        run: { annotationFileId, status: "succeeded" },
+      },
+      select: {
+        id: true,
+        storageKey: true,
+        size: true,
+      },
+    });
+    if (rows.length !== assetIds.length) {
+      throw notFound("媒体分析批次不存在。");
+    }
+
+    const rowsById = new Map(rows.map((row) => [row.id, row]));
+    const ordered = assetIds.map((id) => rowsById.get(id));
+    if (ordered.some((row) => !row)) {
+      throw notFound("媒体分析批次不存在。");
+    }
+    const totalBytes = ordered.reduce((sum, row) => sum + Number(row?.size ?? 0), 0);
+    if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_MEDIA_ANALYSIS_BATCH_BYTES) {
+      throw badRequest("媒体分析批次总大小超过上限。");
+    }
+    return ordered as Array<NonNullable<(typeof ordered)[number]>>;
   }
 
   private async resolveAnalysisContext(

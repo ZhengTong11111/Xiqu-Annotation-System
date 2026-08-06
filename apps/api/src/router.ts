@@ -1,8 +1,11 @@
 import type { FastifyInstance } from "fastify";
+import { Readable } from "node:stream";
 import {
   ANNOTATION_CONFIRMATION_DOMAINS,
   AUDIT_ACTIONS,
+  encodeMediaAnalysisTileBatchHeader,
   isValidAnnotationOperationPayload,
+  MAX_MEDIA_ANALYSIS_BATCH_ASSETS,
   parseAnnotationCommandBatchRequest,
   RESOURCE_CAPABILITIES,
   type AnnotationConfirmationDomain,
@@ -407,6 +410,43 @@ export function registerApiRoutes(
     reply.header("ETag", `\"sha256-${asset.checksum}\"`);
     reply.header("Cache-Control", "private, max-age=300");
     return reply.send(await storage.getObjectStream(asset.storageKey));
+  });
+
+  // 批量端点减少远程窗口的 HTTP/ACL 扇出，仍由业务服务统一复核整批归属。
+  app.post<{
+    Params: { resourceId: string };
+    Body: unknown;
+  }>("/api/annotation-files/:resourceId/media-analysis/assets/batch", async (request, reply) => {
+    const body = requireObject(request.body);
+    const runId = requireString(body.runId, "runId").trim();
+    const assetIds = parseMediaAnalysisAssetIds(body.assetIds);
+    const assets = await mediaAnalysis.getAssetsForBatchRead(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      runId,
+      assetIds,
+    );
+    const header = encodeMediaAnalysisTileBatchHeader(assets.map((asset) => ({
+      id: asset.id,
+      byteLength: Number(asset.size),
+    })));
+    const contentLength = header.byteLength + assets.reduce(
+      (sum, asset) => sum + Number(asset.size),
+      0,
+    );
+
+    // 先发送有界 manifest，再逐项透传对象流；API 不为整个批次分配第二份大 Buffer。
+    const stream = Readable.from((async function* () {
+      yield Buffer.from(header);
+      for (const asset of assets) {
+        const assetStream = await storage.getObjectStream(asset.storageKey);
+        for await (const chunk of assetStream) yield chunk;
+      }
+    })());
+    reply.header("Content-Type", "application/vnd.xiqu.media-analysis-batch");
+    reply.header("Content-Length", contentLength);
+    reply.header("Cache-Control", "private, max-age=300");
+    return reply.send(stream);
   });
 
   // 最近打开从 GET 副作用中拆出，确保维护模式可以放行真正只读的标注文件读取。
@@ -1516,6 +1556,23 @@ function parseUniqueStringArray(
   const normalized = [...new Set(value.map((item) => item.trim()))];
   if (normalized.length < minimum || normalized.length > maximum) {
     throw badRequest(`${label} 必须包含 ${minimum}–${maximum} 个不同资源。`);
+  }
+  return normalized;
+}
+
+/** 分析批次中的顺序决定响应分段顺序，重复项不能像普通资源选择一样被静默去重。 */
+function parseMediaAnalysisAssetIds(value: unknown) {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > MAX_MEDIA_ANALYSIS_BATCH_ASSETS ||
+    value.some((item) => typeof item !== "string" || !item.trim() || item.length > 128)
+  ) {
+    throw badRequest("assetIds 必须是有界的非空资产 ID 数组。");
+  }
+  const normalized = value.map((item) => item.trim()) as string[];
+  if (new Set(normalized).size !== normalized.length) {
+    throw badRequest("assetIds 不能包含重复资产 ID。");
   }
   return normalized;
 }

@@ -178,6 +178,12 @@ export type MediaAnalysisAssetList = {
   assets: MediaAnalysisAssetDescriptor[];
 };
 
+// 二进制批量响应沿用 descriptor 中的权威大小；请求只传稳定身份，不回传 storageKey。
+export type ReadMediaAnalysisAssetBatchRequest = {
+  runId: string;
+  assetIds: string[];
+};
+
 export type UpdateResourceRequest = {
   name?: string;
   archived?: boolean;
@@ -502,6 +508,10 @@ export type PlatformApiContract<TPayload = unknown> = {
     response: MediaAnalysisRun;
   };
   listMediaAnalysisAssets: { response: MediaAnalysisAssetList };
+  readMediaAnalysisAssetBatch: {
+    request: ReadMediaAnalysisAssetBatchRequest;
+    response: Uint8Array;
+  };
   listAuditLogs: { response: AuditLogPage };
   listAnnotationOperations: { response: AnnotationOperationPage };
   listCommittedAnnotationOperations: { response: AnnotationCommittedOperationPage };

@@ -39,6 +39,7 @@ import type {
   CreateManagedAccountRequest,
   UpdateManagedAccountRequest,
   ResetManagedAccountPasswordRequest,
+  ReadMediaAnalysisAssetBatchRequest,
   ChangeOwnPasswordRequest,
   MoveResourceRequest,
   PlatformUser,
@@ -274,7 +275,11 @@ export class PlatformClient {
     );
   }
 
-  listMediaAnalysisAssets(resourceId: string, options: ListMediaAnalysisAssetsOptions) {
+  listMediaAnalysisAssets(
+    resourceId: string,
+    options: ListMediaAnalysisAssetsOptions,
+    signal?: AbortSignal,
+  ) {
     const params = new URLSearchParams({
       runId: options.runId,
       kind: options.kind,
@@ -285,16 +290,27 @@ export class PlatformClient {
     if (options.level !== undefined) params.set("level", String(options.level));
     return this.request<MediaAnalysisAssetList>(
       `/annotation-files/${resourceId}/media-analysis/assets?${params}`,
+      { signal },
     );
   }
 
-  async getMediaAnalysisAsset(resourceId: string, assetId: string, signal?: AbortSignal) {
-    const headers = new Headers();
+  /** 获取一个有界二进制批次；浏览器解压后由 shared codec 再验证每个瓦片。 */
+  async getMediaAnalysisAssetBatch(
+    resourceId: string,
+    request: ReadMediaAnalysisAssetBatchRequest,
+    signal?: AbortSignal,
+  ) {
+    const headers = new Headers({ "content-type": "application/json" });
     if (this.accessToken) headers.set("authorization", `Bearer ${this.accessToken}`);
     const response = await fetch(
       `${this.baseUrl}/annotation-files/${encodeURIComponent(resourceId)}`
-        + `/media-analysis/assets/${encodeURIComponent(assetId)}`,
-      { headers, signal },
+        + "/media-analysis/assets/batch",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(request),
+        signal,
+      },
     );
     if (!response.ok) await unwrapResponse<never>(response);
     return new Uint8Array(await response.arrayBuffer());
@@ -617,6 +633,7 @@ export class PlatformClient {
       method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
       body?: unknown;
       skipAuth?: boolean;
+      signal?: AbortSignal;
     } = {},
   ) {
     const headers = new Headers();
@@ -628,6 +645,7 @@ export class PlatformClient {
       method: options.method ?? "GET",
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: options.signal,
     });
     return unwrapResponse<TData>(response);
   }

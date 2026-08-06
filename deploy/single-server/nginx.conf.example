@@ -25,6 +25,17 @@ server {
     # 调整 XIQU_MAX_UPLOAD_BYTES 时必须同步修改这里，生产上线前还要按真实存储容量复核。
     client_max_body_size 20g;
 
+    # 分析瓦片是结构化二进制，真实频谱通常仍有可观压缩空间；由 Nginx 流式压缩，API 无需缓冲整批响应。
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_comp_level 4;
+    gzip_types
+        application/vnd.xiqu.waveform-tile
+        application/vnd.xiqu.spectrogram-tile
+        application/vnd.xiqu.pitch-tile
+        application/vnd.xiqu.media-analysis-batch;
+
     # /api 必须先于 SPA fallback；同一入口同时承载普通 HTTP 和认证 WebSocket upgrade。
     location /api/ {
         proxy_pass http://127.0.0.1:4317;

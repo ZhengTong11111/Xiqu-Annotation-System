@@ -189,3 +189,20 @@ test("单服务器环境与 Nginx 模板使用相同上传上限", async () => {
   const nginxBytes = Number(nginxMatch[1]) * nginxUnitBytes;
   assert.equal(nginxBytes, environmentBytes);
 });
+
+// 冷加载加速依赖代理层对单瓦片和批量响应流式压缩，不能只在开发服务器中偶然生效。
+test("单服务器 Nginx 模板压缩全部媒体分析 MIME", async () => {
+  const nginx = await readFile(
+    new URL("../deploy/single-server/nginx.conf.example", import.meta.url),
+    "utf8",
+  );
+  assert.match(nginx, /gzip\s+on;/u);
+  for (const mimeType of [
+    "application/vnd.xiqu.waveform-tile",
+    "application/vnd.xiqu.spectrogram-tile",
+    "application/vnd.xiqu.pitch-tile",
+    "application/vnd.xiqu.media-analysis-batch",
+  ]) {
+    assert.match(nginx, new RegExp(mimeType.replaceAll(".", "\\."), "u"));
+  }
+});

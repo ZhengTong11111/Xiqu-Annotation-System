@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { MediaAnalysisAssetDescriptor } from "@xiqu/shared";
+import {
+  encodeMediaAnalysisTileBatchHeader,
+  type MediaAnalysisAssetDescriptor,
+} from "@xiqu/shared";
 import { computeMediaAnalysisAssets } from "../../apps/api/src/mediaAnalysisComputation.js";
 import {
   assemblePlatformSpectrogram,
   assemblePlatformWaveform,
+  loadAnalysisAssets,
 } from "./usePlatformMediaAnalysis.js";
 import { intersectTimedMediaRange } from "../utils/mediaAnalysisRange.js";
+import { PlatformMediaAnalysisAssetCache } from "./platformMediaAnalysisLoading.js";
 
 test("分析资产时间交集保留偏移空白且拒绝完全不相交范围", () => {
   assert.deepEqual(intersectTimedMediaRange(0, 20, 5, 10), {
@@ -94,9 +99,63 @@ test("平台瓦片组装拒绝缺号，避免把后段分析压缩到错误时�
   );
 });
 
+test("相同资产的并发窗口复用一个批量请求并共同写入缓存", async () => {
+  const assetBytes = Uint8Array.from([7, 8, 9]);
+  const descriptor: MediaAnalysisAssetDescriptor = {
+    id: "shared-asset",
+    kind: "waveform",
+    preset: "default",
+    level: 0,
+    tileIndex: 0,
+    startTime: 0,
+    endTime: 30,
+    mimeType: "application/vnd.xiqu.waveform-tile",
+    size: assetBytes.byteLength,
+  };
+  const batch = buildBatchResponse(descriptor.id, assetBytes);
+  let requestCount = 0;
+  const client = {
+    async getMediaAnalysisAssetBatch() {
+      requestCount += 1;
+      await Promise.resolve();
+      return batch;
+    },
+  };
+  const cache = new PlatformMediaAnalysisAssetCache();
+  const inFlight = new Map<string, Promise<Uint8Array>>();
+  const controller = new AbortController();
+  const options = {
+    annotationFileId: "file-1",
+    runId: "run-1",
+    descriptors: [descriptor],
+    client,
+    cache,
+    inFlight,
+    signal: controller.signal,
+  };
+
+  const [first, second] = await Promise.all([
+    loadAnalysisAssets(options),
+    loadAnalysisAssets(options),
+  ]);
+  assert.equal(requestCount, 1);
+  assert.deepEqual([...first.get(descriptor.id) ?? []], [...assetBytes]);
+  assert.deepEqual([...second.get(descriptor.id) ?? []], [...assetBytes]);
+  assert.equal(inFlight.size, 0);
+  assert.deepEqual([...cache.get(descriptor.id) ?? []], [...assetBytes]);
+});
+
 function sine(sampleRate: number, duration: number, frequency: number) {
   return Float32Array.from(
     { length: Math.round(sampleRate * duration) },
     (_, index) => Math.sin((2 * Math.PI * frequency * index) / sampleRate) * 0.5,
   );
+}
+
+function buildBatchResponse(id: string, bytes: Uint8Array) {
+  const header = encodeMediaAnalysisTileBatchHeader([{ id, byteLength: bytes.byteLength }]);
+  const response = new Uint8Array(header.byteLength + bytes.byteLength);
+  response.set(header, 0);
+  response.set(bytes, header.byteLength);
+  return response;
 }

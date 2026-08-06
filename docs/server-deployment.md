@@ -309,6 +309,11 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
+R3h5 起，模板中的 `gzip_types` 还负责压缩波形、频谱、F0 单瓦片和批量瓦片响应。升级已有服务器时不能只
+替换 Web/API release 而遗漏 Nginx 配置；应先对比现有站点文件，保留真实域名、证书和安全策略，再合入四个
+`application/vnd.xiqu.*` MIME，执行 `nginx -t` 后 reload。授权资产仍必须保持 private，不能在代理或 CDN
+改成 public/immutable 缓存。
+
 Nginx 必须：
 
 - 在 SPA fallback 之前代理 `/api/`。

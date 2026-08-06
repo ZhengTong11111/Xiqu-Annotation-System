@@ -5938,3 +5938,59 @@ operation、审计详情或协作消息。
 - 本轮不把本地长媒体迁移到平台 worker，也不修改生产 VOD、上传媒体或分析瓦片配置。若后续需要让超长本机
   文件在低内存设备上稳定分析，应另行设计流式本地解码或显式上传任务，不能重新把平台受保护 URL 送入浏览器
   全量解码。
+
+## 2026-08-06：R3h5 平台分析瓦片冷加载加速
+
+### 问题定位
+
+- 用户在 localhost 浏览已完成的《寻梦》VOD 波形/频谱时加载很快，但通过生产服务器首次滚动到未访问区域会
+  等待，返回已缓存区域则立即显示。链路审查确认 VOD 和 FFmpeg 没有重新运行：时间轴读取的是对象存储中已生成
+  的 30 秒分析瓦片。
+- 旧 `usePlatformMediaAnalysis` 在 Timeline 每个 animation frame 的可见范围变化后，重发波形、频谱、F0
+  三个 descriptor 列表，再为每个瓦片单独发送 HTTP。常见窗口产生 9-15 个请求，每个二进制请求重复认证、
+  ACL、Prisma 和对象读取；视口变化还会 abort 已开始但对相邻窗口仍有价值的下载。
+- 数据库已有 `(runId, kind, preset, level, startTime)` 索引，问题不需要新 migration。现有 5 分钟 private
+  浏览器缓存解释了“回看很快”，但不能解决新区域冷加载和取消浪费。
+
+### 已完成
+
+- 新增共享严格 batch codec：8 字节 magic、版本化小型 JSON manifest 和连续原始瓦片段。服务端可只编码 header
+  后流式透传对象；浏览器严格拒绝空/重复/超量 ID、坏长度、截断、尾随数据和未知版本。传输固定为最多 48 项、
+  32 MiB，不使用 Base64 JSON，也不引入 ZIP/TAR 依赖。
+- `MediaAnalysisJobService` 增加一次 ACL 后的批量归属校验：全部 ID 必须属于当前标注文件的同一个 succeeded
+  run；缺失、跨 run、跨文件统一失败，不泄露外部资产。新 batch route 使用 Node `Readable` 异步生成器先发
+  manifest，再逐项读取 `ObjectStorage`，API 不拼接整批 Buffer；旧单瓦片 GET 继续作为兼容/诊断接口。
+- 前端把滚动范围量化到服务端真实 30 秒边界，并在 120 ms 连续滚动期间防抖 descriptor 请求。同一 file/run
+  session 使用 asset-id in-flight Promise 池：视口变化只取消列表请求，已开始批量下载继续完成并供新窗口复用；
+  文件、run、分析来源切换才整体 Abort，旧 session 不能复活。
+- 缺失瓦片按共享数量/字节预算切批，批量响应拆回现有组装函数。加载下一窗口时保留上一窗口的定时数据，
+  Timeline 继续通过时间交集决定是否绘制，不再主动闪空。缓存从“48 个、按首次插入淘汰”升级为真实 LRU，
+  同时限制 96 项和 64 MiB，cache hit 会刷新热度，超大单项不会挤掉整个窗口。
+- 删除已经没有调用方的逐瓦片 `PlatformClient` 包装，避免前端重新分叉；服务端兼容 route 和测试仍保留。
+- 单服务器 Nginx 模板为 waveform/spectrogram/pitch/batch 四种 MIME 启用 level 4 流式 gzip，并由部署测试固定。
+  API private 缓存没有改成 public/immutable；升级已有服务器必须合并真实站点配置并 `nginx -t` 后 reload。
+
+### 依赖评估
+
+- 本轮没有新增 npm 依赖。共享仓库已有二进制 codec 模式，浏览器已有 Fetch/AbortController，Node 已有
+  Readable，生产已有 Nginx；引入归档库会增加压缩/解包和服务端缓冲语义，通用请求库也不能替代 file/run
+  generation 与 in-flight 去重状态机，因此不会减少代码或提高稳定性。HTTP 压缩由 Nginx 成熟实现承担。
+
+### 验证
+
+- `npm run test:media-analysis`：21/21 通过，覆盖 batch codec、真实 30 秒瓦片、FFmpeg、worker、窗口量化、
+  批次预算、LRU、source offset、连续性和并发窗口只发一次 batch。
+- `npm run test:api`：163/163 通过。Fastify/Prisma/本地对象存储集成覆盖批量顺序、原始字节、缺失项、重复项、
+  无权限拒绝和既有单瓦片读取；只出现项目既有的 pg client query 弃用提示。
+- `npm run test:deployment`：24/24 通过，新增断言确认四种分析 MIME 均进入 Nginx gzip_types。
+- `npm run build:web`、完整 `npm run build` 与最终 `git diff --check` 均通过；Web 只保留既有主 chunk 超过
+  500 kB 提醒。
+
+### 待推进
+
+- 当前生产服务器尚未部署这一 release，也尚未把 gzip 配置合入真实 Nginx 站点。部署后需用真实《寻梦》VOD
+  在 Network 面板比较：新区域一次窗口的 batch 数量、是否仍有大量 cancelled 单瓦片请求、Content-Encoding、
+  transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦片是否复活。
+- 本轮没有增加 public CDN、S3 预签名直读、无限缓存或全片预下载。若生产验收后对象存储 TTFB 仍占主要部分，
+  下一步应先增加低基数 Server-Timing/指标区分 ACL、Prisma 与 storage，再决定是否设计短时、权限绑定的对象
+  直读；不能仅凭 localhost 对比绕开服务端 ACL。

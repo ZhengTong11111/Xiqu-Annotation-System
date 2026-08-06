@@ -21,6 +21,7 @@ import {
   ANNOTATION_COLLABORATION_TICKET_PROTOCOL_PREFIX,
   ANNOTATION_COLLABORATION_WEBSOCKET_PROTOCOL,
   buildTimelineTimingUpdateEnvelope,
+  decodeMediaAnalysisTileBatch,
 } from "@xiqu/shared";
 import { buildApiApp } from "../src/app.js";
 import type { AliyunVodProvider } from "../src/aliyunVodGateway.js";
@@ -711,6 +712,28 @@ test("平台资源 API 集成测试", async (suite) => {
           storageKey: stagedAnalysisAsset.finalStorageKey,
         },
       });
+      const secondAnalysisAssetKey = storage.createStorageKey("xqa");
+      const secondStagedAnalysisAsset = await storage.putStagedObject(
+        secondAnalysisAssetKey,
+        Readable.from([Buffer.from("second-tile")]),
+        64,
+      );
+      await storage.promoteStagedObject(secondStagedAnalysisAsset);
+      const secondStoredAsset = await prisma.mediaAnalysisAsset.create({
+        data: {
+          runId: String(dataOf(firstRun.json()).id),
+          kind: "waveform",
+          preset: "default",
+          level: 0,
+          tileIndex: 1,
+          startTime: 30,
+          endTime: 60,
+          mimeType: "application/vnd.xiqu.waveform-tile",
+          size: secondStagedAnalysisAsset.size,
+          checksum: secondStagedAnalysisAsset.checksum,
+          storageKey: secondStagedAnalysisAsset.finalStorageKey,
+        },
+      });
       const assetList = await jsonRequest(app, adminToken, {
         method: "GET",
         url: `/api/annotation-files/${fileId}/media-analysis/assets?${new URLSearchParams({
@@ -733,6 +756,50 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(assetContent.statusCode, 200, assetContent.body);
       assert.equal(assetContent.body, "analysis-tile");
+      const assetBatch = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/media-analysis/assets/batch`,
+        payload: {
+          runId: String(dataOf(firstRun.json()).id),
+          assetIds: [secondStoredAsset.id, storedAsset.id],
+        },
+      });
+      assert.equal(assetBatch.statusCode, 200, assetBatch.body);
+      assert.match(String(assetBatch.headers["content-type"]), /media-analysis-batch/);
+      const decodedBatch = decodeMediaAnalysisTileBatch(new Uint8Array(assetBatch.rawPayload));
+      assert.deepEqual([...decodedBatch.keys()], [secondStoredAsset.id, storedAsset.id]);
+      assert.equal(Buffer.from(decodedBatch.get(secondStoredAsset.id) ?? []).toString(), "second-tile");
+      assert.equal(Buffer.from(decodedBatch.get(storedAsset.id) ?? []).toString(), "analysis-tile");
+
+      const missingAssetBatch = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/media-analysis/assets/batch`,
+        payload: {
+          runId: String(dataOf(firstRun.json()).id),
+          assetIds: [storedAsset.id, "missing-asset"],
+        },
+      });
+      assert.equal(missingAssetBatch.statusCode, 404);
+
+      const duplicateAssetBatch = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/media-analysis/assets/batch`,
+        payload: {
+          runId: String(dataOf(firstRun.json()).id),
+          assetIds: [storedAsset.id, storedAsset.id],
+        },
+      });
+      assert.equal(duplicateAssetBatch.statusCode, 400);
+
+      const forbiddenAssetBatch = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/media-analysis/assets/batch`,
+        payload: {
+          runId: String(dataOf(firstRun.json()).id),
+          assetIds: [storedAsset.id],
+        },
+      });
+      assert.equal(forbiddenAssetBatch.statusCode, 403);
 
       const override = await jsonRequest(app, adminToken, {
         method: "PUT",

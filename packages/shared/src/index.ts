@@ -10,3 +10,4 @@ export * from "./projectSnapshotBoundaryCommands.js";
 export * from "./annotationCollaboration.js";
 export * from "./mediaAnalysisComputation.js";
 export * from "./mediaAnalysisTileCodec.js";
+export * from "./mediaAnalysisTileBatchCodec.js";

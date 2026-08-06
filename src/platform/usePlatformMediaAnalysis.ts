@@ -1,6 +1,7 @@
 import {
   decodeFloat32LittleEndian,
   decodeMediaAnalysisTile,
+  decodeMediaAnalysisTileBatch,
   type AnnotationMediaAnalysisStatus,
   type MediaAnalysisAssetDescriptor,
   type UpdateAnalysisAudioRequest,
@@ -8,17 +9,17 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PlatformClient } from "../api/platformClient";
 import type { SpectrogramAnalysisPreset, SpectrogramData, WaveformData } from "../types";
+import {
+  buildPlatformAnalysisRequestWindow,
+  partitionMediaAnalysisAssetBatches,
+  PlatformMediaAnalysisAssetCache,
+  type PlatformAnalysisViewport,
+} from "./platformMediaAnalysisLoading";
 
 const STATUS_POLL_INTERVAL_MS = 2_000;
-const MAX_CACHED_ASSETS = 48;
-// 必须与服务端资产层级一致；四个桶宽均精确整除 30 秒分析瓦片。
-const WAVEFORM_SAMPLES_PER_BUCKET = [64, 256, 1000, 4000] as const;
+const VIEWPORT_LOAD_DEBOUNCE_MS = 120;
 
-export type PlatformAnalysisViewport = {
-  startTime: number;
-  endTime: number;
-  zoom: number;
-};
+export type { PlatformAnalysisViewport } from "./platformMediaAnalysisLoading";
 
 type Options = {
   client: PlatformClient | null;
@@ -44,8 +45,20 @@ export function usePlatformMediaAnalysis(options: Options) {
   const [mutationPending, setMutationPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const generationRef = useRef(0);
-  const cacheRef = useRef(new Map<string, Uint8Array>());
+  const cacheRef = useRef(new PlatformMediaAnalysisAssetCache());
+  const inFlightAssetsRef = useRef(new Map<string, Promise<Uint8Array>>());
+  const assetSessionAbortControllerRef = useRef(new AbortController());
+  const assetSessionKeyRef = useRef<string | null>(null);
+  const viewportLoadIdRef = useRef(0);
   const statusRefreshInFlightRef = useRef<Promise<AnnotationMediaAnalysisStatus | null> | null>(null);
+
+  const resetAssetSession = useCallback(() => {
+    assetSessionAbortControllerRef.current.abort();
+    assetSessionAbortControllerRef.current = new AbortController();
+    inFlightAssetsRef.current.clear();
+    cacheRef.current.clear();
+    viewportLoadIdRef.current += 1;
+  }, []);
 
   const refresh = useCallback(() => {
     if (!options.enabled || !options.client || !options.annotationFileId) return null;
@@ -77,13 +90,14 @@ export function usePlatformMediaAnalysis(options: Options) {
   useEffect(() => {
     generationRef.current += 1;
     statusRefreshInFlightRef.current = null;
-    cacheRef.current.clear();
+    assetSessionKeyRef.current = null;
+    resetAssetSession();
     setStatus(null);
     setWaveformData(null);
     setSpectrogramData(null);
     setError(null);
     if (options.enabled) void refresh();
-  }, [options.annotationFileId, options.enabled, refresh]);
+  }, [options.annotationFileId, options.enabled, refresh, resetAssetSession]);
 
   useEffect(() => {
     if (status?.currentRun?.status !== "queued" && status?.currentRun?.status !== "running") {
@@ -94,16 +108,31 @@ export function usePlatformMediaAnalysis(options: Options) {
     return () => window.clearInterval(timer);
   }, [refresh, status?.currentRun?.status]);
 
+  const currentRun = status?.currentRun;
+  const assetSessionKey = currentRun
+    ? `${options.annotationFileId ?? ""}:${currentRun.id}:${currentRun.completedAt ?? "pending"}`
+    : null;
+  useEffect(() => {
+    if (assetSessionKeyRef.current === assetSessionKey) return;
+    assetSessionKeyRef.current = assetSessionKey;
+    resetAssetSession();
+    setWaveformData(null);
+    setSpectrogramData(null);
+  }, [assetSessionKey, resetAssetSession]);
+
+  const requestWindow = options.viewport && currentRun
+    ? buildPlatformAnalysisRequestWindow(options.viewport, currentRun.sourceOffsetSeconds)
+    : null;
+
   useEffect(() => {
     const client = options.client;
     const annotationFileId = options.annotationFileId;
     const run = status?.currentRun;
-    const viewport = options.viewport;
     if (
       !options.enabled ||
       !client ||
       !annotationFileId ||
-      !viewport ||
+      !requestWindow ||
       run?.status !== "succeeded"
     ) {
       setWaveformData(null);
@@ -113,89 +142,88 @@ export function usePlatformMediaAnalysis(options: Options) {
     }
 
     const generation = generationRef.current;
-    const abortController = new AbortController();
-    // sourceOffsetSeconds 表示“音频 0 秒落在标注时间轴的哪一秒”；查询资产前需换回音频局部时间。
+    const viewportLoadId = viewportLoadIdRef.current + 1;
+    viewportLoadIdRef.current = viewportLoadId;
+    const listAbortController = new AbortController();
+    let cancelled = false;
     const sourceOffset = run.sourceOffsetSeconds;
-    // Timeline 的频谱 Canvas 会在可见窗两侧额外渲染约 55%；缩得很小时固定 30 秒不足以覆盖预渲染区。
-    const viewportDuration = Math.max(0.001, viewport.endTime - viewport.startTime);
-    const requestPadding = Math.max(30, viewportDuration * 0.6);
-    const startTime = Math.max(0, viewport.startTime - requestPadding - sourceOffset);
-    const endTime = Math.max(
-      startTime + 0.001,
-      viewport.endTime + requestPadding - sourceOffset,
-    );
-    const waveformLevel = chooseWaveformLevel(viewport.zoom);
-    setAssetsLoading(true);
-
-    void Promise.all([
-      client.listMediaAnalysisAssets(annotationFileId, {
-        runId: run.id,
-        kind: "waveform",
-        preset: "default",
-        level: waveformLevel,
-        startTime,
-        endTime,
-      }),
-      options.spectrogramVisible
-        ? client.listMediaAnalysisAssets(annotationFileId, {
-            runId: run.id,
-            kind: "spectrogram",
-            preset: options.analysisPreset,
-            level: 0,
-            startTime,
-            endTime,
-          })
-        : Promise.resolve({ runId: run.id, assets: [] }),
-      options.spectrogramVisible && options.showPitch
-        ? client.listMediaAnalysisAssets(annotationFileId, {
-            runId: run.id,
-            kind: "pitch",
-            preset: "yin-v1",
-            level: 0,
-            startTime,
-            endTime,
-          })
-        : Promise.resolve({ runId: run.id, assets: [] }),
-    ]).then(async ([waveform, spectrogram, pitch]) => {
-      const descriptors = [
-        ...waveform.assets,
-        ...spectrogram.assets,
-        ...pitch.assets,
-      ];
-      const bytes = new Map<string, Uint8Array>();
-      await Promise.all(descriptors.map(async (asset) => {
-        const cached = cacheRef.current.get(asset.id);
-        const value = cached ?? await client.getMediaAnalysisAsset(
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
+      setAssetsLoading(true);
+      void Promise.all([
+        client.listMediaAnalysisAssets(annotationFileId, {
+          runId: run.id,
+          kind: "waveform",
+          preset: "default",
+          level: requestWindow.waveformLevel,
+          startTime: requestWindow.startTime,
+          endTime: requestWindow.endTime,
+        }, listAbortController.signal),
+        options.spectrogramVisible
+          ? client.listMediaAnalysisAssets(annotationFileId, {
+              runId: run.id,
+              kind: "spectrogram",
+              preset: options.analysisPreset,
+              level: 0,
+              startTime: requestWindow.startTime,
+              endTime: requestWindow.endTime,
+            }, listAbortController.signal)
+          : Promise.resolve({ runId: run.id, assets: [] }),
+        options.spectrogramVisible && options.showPitch
+          ? client.listMediaAnalysisAssets(annotationFileId, {
+              runId: run.id,
+              kind: "pitch",
+              preset: "yin-v1",
+              level: 0,
+              startTime: requestWindow.startTime,
+              endTime: requestWindow.endTime,
+            }, listAbortController.signal)
+          : Promise.resolve({ runId: run.id, assets: [] }),
+      ]).then(async ([waveform, spectrogram, pitch]) => {
+        const descriptors = [
+          ...waveform.assets,
+          ...spectrogram.assets,
+          ...pitch.assets,
+        ];
+        const bytes = await loadAnalysisAssets({
           annotationFileId,
-          asset.id,
-          abortController.signal,
-        );
-        bytes.set(asset.id, value);
-        if (!cached) rememberAsset(cacheRef.current, asset.id, value);
-      }));
-      if (abortController.signal.aborted || generation !== generationRef.current) return;
-      setWaveformData(assemblePlatformWaveform(waveform.assets, bytes, sourceOffset));
-      setSpectrogramData(options.spectrogramVisible
-        ? assemblePlatformSpectrogram(
-            spectrogram.assets,
-            pitch.assets,
-            bytes,
-            options.analysisPreset,
-            sourceOffset,
-          )
-        : null);
-      setError(null);
-    }).catch((nextError: unknown) => {
-      if (abortController.signal.aborted || generation !== generationRef.current) return;
-      setWaveformData(null);
-      setSpectrogramData(null);
-      setError(describeError(nextError));
-    }).finally(() => {
-      if (!abortController.signal.aborted && generation === generationRef.current) {
-        setAssetsLoading(false);
-      }
-    });
-    return () => abortController.abort();
+          runId: run.id,
+          descriptors,
+          client,
+          cache: cacheRef.current,
+          inFlight: inFlightAssetsRef.current,
+          signal: assetSessionAbortControllerRef.current.signal,
+        });
+        if (cancelled || generation !== generationRef.current) return;
+        setWaveformData(assemblePlatformWaveform(waveform.assets, bytes, sourceOffset));
+        setSpectrogramData(options.spectrogramVisible
+          ? assemblePlatformSpectrogram(
+              spectrogram.assets,
+              pitch.assets,
+              bytes,
+              options.analysisPreset,
+              sourceOffset,
+            )
+          : null);
+        setError(null);
+      }).catch((nextError: unknown) => {
+        if (cancelled || generation !== generationRef.current) return;
+        setError(describeError(nextError));
+      }).finally(() => {
+        if (
+          !cancelled &&
+          generation === generationRef.current &&
+          viewportLoadIdRef.current === viewportLoadId
+        ) {
+          setAssetsLoading(false);
+        }
+      });
+    }, VIEWPORT_LOAD_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      listAbortController.abort();
+    };
   }, [
     options.analysisPreset,
     options.annotationFileId,
@@ -203,8 +231,10 @@ export function usePlatformMediaAnalysis(options: Options) {
     options.enabled,
     options.showPitch,
     options.spectrogramVisible,
-    options.viewport,
-    status?.currentRun,
+    requestWindow?.endTime,
+    requestWindow?.startTime,
+    requestWindow?.waveformLevel,
+    currentRun,
   ]);
 
   const updateSource = useCallback(async (request: UpdateAnalysisAudioRequest) => {
@@ -217,7 +247,8 @@ export function usePlatformMediaAnalysis(options: Options) {
       if (generation !== generationRef.current) return false;
       generationRef.current += 1;
       statusRefreshInFlightRef.current = null;
-      cacheRef.current.clear();
+      assetSessionKeyRef.current = null;
+      resetAssetSession();
       setStatus(next);
       setWaveformData(null);
       setSpectrogramData(null);
@@ -231,7 +262,7 @@ export function usePlatformMediaAnalysis(options: Options) {
     } finally {
       if (generation === generationRef.current) setMutationPending(false);
     }
-  }, [options.annotationFileId, options.canWrite, options.client]);
+  }, [options.annotationFileId, options.canWrite, options.client, resetAssetSession]);
 
   const startAnalysis = useCallback(async (force = false) => {
     if (!options.client || !options.annotationFileId || !options.canWrite) return false;
@@ -271,18 +302,84 @@ export function usePlatformMediaAnalysis(options: Options) {
   };
 }
 
-function chooseWaveformLevel(zoom: number) {
-  let bestLevel = 0;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (let level = 0; level < WAVEFORM_SAMPLES_PER_BUCKET.length; level += 1) {
-    const cssWidth = (WAVEFORM_SAMPLES_PER_BUCKET[level] / 16_000) * zoom;
-    const distance = Math.abs(Math.log2(Math.max(cssWidth, 0.001)));
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestLevel = level;
+type LoadAnalysisAssetsOptions = {
+  annotationFileId: string;
+  runId: string;
+  descriptors: MediaAnalysisAssetDescriptor[];
+  client: Pick<PlatformClient, "getMediaAnalysisAssetBatch">;
+  cache: PlatformMediaAnalysisAssetCache;
+  inFlight: Map<string, Promise<Uint8Array>>;
+  signal: AbortSignal;
+};
+
+/**
+ * 当前窗口先复用已完成缓存和 session 级进行中请求，再把真正缺失项按预算批量读取。
+ * 视口卸载不会取消这些共享 Promise；文件/run 切换会通过 session signal 一次性中止。
+ */
+export async function loadAnalysisAssets(options: LoadAnalysisAssetsOptions) {
+  const descriptorIds = new Set(options.descriptors.map(({ id }) => id));
+  if (descriptorIds.size !== options.descriptors.length) {
+    throw new Error("媒体分析资产列表包含重复项目。");
+  }
+  const bytes = new Map<string, Uint8Array>();
+  const pending: Promise<void>[] = [];
+  const missing: MediaAnalysisAssetDescriptor[] = [];
+
+  for (const descriptor of options.descriptors) {
+    const cached = options.cache.get(descriptor.id);
+    if (cached) {
+      bytes.set(descriptor.id, cached);
+      continue;
+    }
+    const existing = options.inFlight.get(descriptor.id);
+    if (existing) {
+      pending.push(existing.then((value) => {
+        bytes.set(descriptor.id, value);
+      }));
+      continue;
+    }
+    missing.push(descriptor);
+  }
+
+  for (const batch of partitionMediaAnalysisAssetBatches(missing)) {
+    const batchPromise = options.client.getMediaAnalysisAssetBatch(
+      options.annotationFileId,
+      { runId: options.runId, assetIds: batch.map(({ id }) => id) },
+      options.signal,
+    ).then((response) => {
+      const decoded = decodeMediaAnalysisTileBatch(response);
+      if (
+        decoded.size !== batch.length ||
+        batch.some(({ id }) => !decoded.has(id))
+      ) {
+        throw new Error("媒体分析批次响应与请求不一致。");
+      }
+      return decoded;
+    });
+
+    for (const descriptor of batch) {
+      const assetPromise = batchPromise.then((decoded) => {
+        const value = decoded.get(descriptor.id);
+        if (!value || value.byteLength !== descriptor.size) {
+          throw new Error("媒体分析瓦片大小与清单不一致。");
+        }
+        options.cache.set(descriptor.id, value);
+        return value;
+      });
+      options.inFlight.set(descriptor.id, assetPromise);
+      pending.push(assetPromise.then((value) => {
+        bytes.set(descriptor.id, value);
+      }).finally(() => {
+        if (options.inFlight.get(descriptor.id) === assetPromise) {
+          options.inFlight.delete(descriptor.id);
+        }
+      }));
     }
   }
-  return bestLevel;
+
+  await Promise.all(pending);
+  options.signal.throwIfAborted();
+  return bytes;
 }
 
 export function assemblePlatformWaveform(
@@ -451,16 +548,6 @@ function concatenateBytes(chunks: Uint8Array[]) {
     offset += chunk.byteLength;
   }
   return output;
-}
-
-function rememberAsset(cache: Map<string, Uint8Array>, id: string, value: Uint8Array) {
-  cache.delete(id);
-  cache.set(id, value);
-  while (cache.size > MAX_CACHED_ASSETS) {
-    const oldest = cache.keys().next().value as string | undefined;
-    if (!oldest) break;
-    cache.delete(oldest);
-  }
 }
 
 function describeError(error: unknown) {

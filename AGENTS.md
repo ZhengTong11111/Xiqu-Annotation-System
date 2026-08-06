@@ -127,6 +127,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/mediaAnalysisJobService.ts`
   - the only API business boundary for analysis-audio settings, ACL revalidation, source fingerprints, run/job reuse,
     status DTOs, tile descriptors, and protected asset reads
+  - batch tile reads revalidate annotation read capability once, then require every bounded asset id to belong to the same
+    succeeded run and file; missing/cross-run/cross-file ids fail as one batch without leaking foreign asset existence
   - the algorithm config hash must include every parameter that changes persisted tile timing or values
 - `apps/api/src/mediaAnalysisWorkerService.ts` + `apps/api/src/mediaAnalysisWorkerRuntime.ts`
   - independent database claim/heartbeat/stale-recovery worker; normal shutdown removes partial assets and requeues the job
@@ -135,12 +137,20 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - shell-free FFmpeg streaming to 16 kHz mono PCM and fixed 30-second tile production
   - waveform bucket widths and spectrogram hop lengths must exactly divide a full tile; otherwise concatenated browser views
     accumulate time drift. Keep shared config fingerprints and frontend level selection synchronized
-- `packages/shared/src/mediaAnalysisComputation.ts` + `packages/shared/src/mediaAnalysisTileCodec.ts`
-  - shared bounded STFT/YIN computation and little-endian binary tile codec used by server and local browser worker
+- `packages/shared/src/mediaAnalysisComputation.ts` + `packages/shared/src/mediaAnalysisTileCodec.ts` +
+  `packages/shared/src/mediaAnalysisTileBatchCodec.ts`
+  - shared bounded STFT/YIN computation, little-endian tile codec, and strict bounded batch envelope. Batch responses stream
+    one manifest header plus raw tile sections; never replace them with Base64 JSON or an API-side whole-batch Buffer
 - `src/platform/usePlatformMediaAnalysis.ts`
-  - platform-only status polling, source mutations, viewport/zoom asset selection, request cancellation, generation isolation,
-    strict tile continuity checks, source offset conversion, and bounded byte cache
+  - platform-only status polling, source mutations, 30-second-quantized viewport selection, debounced descriptor reads,
+    session-scoped in-flight batch reuse, generation isolation, strict tile continuity checks, source offset conversion,
+    and count-plus-byte bounded LRU cache
+  - viewport changes may cancel descriptor lists but must not cancel reusable tile batches; only file/run/source switches abort
+    the asset session. Keep the previous timed data while the next window loads so Timeline range intersection prevents flashes
   - polling must continue even when one response has an unchanged `updatedAt`; status requests stay single-flight
+- `src/platform/platformMediaAnalysisLoading.ts`
+  - pure request-window quantization, batch partitioning, and bounded LRU policy; shared 48-asset/32 MiB transport limits must
+    stay synchronized with the batch codec, while the browser cache additionally enforces its own total byte budget
 - `src/utils/localMediaAnalysis.ts`
   - browser-only local media fallback; user-selected `blob:` media retains full local decode behavior, while non-Blob URLs use
     a 256 MiB pre/post-download cap. Platform uploaded/VOD URLs must never call it
@@ -1853,7 +1863,8 @@ Audio pipeline:
   worker streams uploaded objects or a short-lived VOD audio URL through FFmpeg and publishes ACL-protected waveform,
   spectrogram, and F0 tiles
 - platform Timeline requests only the current viewport's tiles through `usePlatformMediaAnalysis`; source changes and file
-  switches must cancel or invalidate stale requests, and the byte cache stays bounded
+  switches must cancel or invalidate stale requests, and the byte cache stays bounded. Pixel-level scrolling is quantized to
+  30-second server tiles; one bounded binary batch carries missing waveform/spectrogram/F0 assets after one ACL check
 - local computer media remains a browser-only fallback; a user-selected `blob:` may use the browser's full decode capacity,
   while non-Blob URLs retain the 256 MiB download cap. It may reuse the shared bounded STFT/YIN implementation, but protected
   platform uploaded/VOD URLs must never enter that path
