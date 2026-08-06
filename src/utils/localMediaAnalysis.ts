@@ -6,7 +6,23 @@ const WAVEFORM_KEYPOINT_MAX_COUNT = 1600;
 const WAVEFORM_KEYPOINT_FRAME_DURATION_SECONDS = 0.012;
 
 /**
- * 本机编辑模式的小文件回退：只读取 Blob/本机 URL，并在完整下载前后分别检查上限。
+ * 判断媒体大小是否应被浏览器回退路径拒绝。
+ * 当前本地入口中的 `blob:` 来自用户主动选择的本机文件，沿用原有完整解码能力；其他 URL 仍需限制下载体积，
+ * 防止本地项目误把远程长媒体拉入浏览器。平台 uploaded/VOD 媒体不会调用此模块。
+ */
+export function shouldRejectLocalMediaAnalysisSize(mediaUrl: string, byteLength: number) {
+  return !mediaUrl.startsWith("blob:") && byteLength > MAX_LOCAL_BROWSER_ANALYSIS_BYTES;
+}
+
+/** 非本机 Blob 的远程回退分析在下载前后共用同一条体积保护。 */
+function assertLocalMediaAnalysisSize(mediaUrl: string, byteLength: number) {
+  if (shouldRejectLocalMediaAnalysisSize(mediaUrl, byteLength)) {
+    throw new Error("远程媒体超过浏览器分析上限，请改用平台后台分析或选择本机媒体。");
+  }
+}
+
+/**
+ * 本机编辑模式的浏览器分析：用户选择的 Blob 沿用原有完整解码能力，远程 URL 保留体积保护。
  * 平台 uploaded/VOD 媒体不得调用这里，它们统一走服务端分块分析资产。
  */
 export async function buildLocalWaveformData(
@@ -21,13 +37,11 @@ export async function buildLocalWaveformData(
   const response = await fetch(mediaUrl, { signal });
   if (!response.ok) throw new Error(`无法读取本机媒体（HTTP ${response.status}）。`);
   const declaredSize = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declaredSize) && declaredSize > MAX_LOCAL_BROWSER_ANALYSIS_BYTES) {
-    throw new Error("本机媒体超过浏览器分析上限，请改用平台后台分析或选择较小音频。");
+  if (Number.isFinite(declaredSize)) {
+    assertLocalMediaAnalysisSize(mediaUrl, declaredSize);
   }
   const mediaBlob = await response.blob();
-  if (mediaBlob.size > MAX_LOCAL_BROWSER_ANALYSIS_BYTES) {
-    throw new Error("本机媒体超过浏览器分析上限，请改用平台后台分析或选择较小音频。");
-  }
+  assertLocalMediaAnalysisSize(mediaUrl, mediaBlob.size);
   signal?.throwIfAborted();
   const buffer = await mediaBlob.arrayBuffer();
   const audioContext = new AudioContextCtor();

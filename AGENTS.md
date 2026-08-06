@@ -142,7 +142,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     strict tile continuity checks, source offset conversion, and bounded byte cache
   - polling must continue even when one response has an unchanged `updatedAt`; status requests stay single-flight
 - `src/utils/localMediaAnalysis.ts`
-  - browser-only local media fallback with a 256 MiB pre/post-download cap; platform uploaded/VOD URLs must never call it
+  - browser-only local media fallback; user-selected `blob:` media retains full local decode behavior, while non-Blob URLs use
+    a 256 MiB pre/post-download cap. Platform uploaded/VOD URLs must never call it
 - `apps/api/src/objectLifecycleService.ts` + `apps/api/src/backup/backupService.ts`
   - both FileObject and MediaAnalysisAsset storage keys are authoritative references; lifecycle cleanup and backup warnings
     must not classify analysis tiles as orphan binaries
@@ -1853,8 +1854,9 @@ Audio pipeline:
   spectrogram, and F0 tiles
 - platform Timeline requests only the current viewport's tiles through `usePlatformMediaAnalysis`; source changes and file
   switches must cancel or invalidate stale requests, and the byte cache stays bounded
-- local computer media remains a browser-only fallback with a 256 MiB cap; it may decode the selected local Blob and reuse
-  the shared bounded STFT/YIN implementation, but protected platform URLs must never enter that path
+- local computer media remains a browser-only fallback; a user-selected `blob:` may use the browser's full decode capacity,
+  while non-Blob URLs retain the 256 MiB download cap. It may reuse the shared bounded STFT/YIN implementation, but protected
+  platform uploaded/VOD URLs must never enter that path
 - waveform keypoints remain onset-like heuristics for local analysis; platform waveform assets currently store min/max/RMS
   levels and do not fabricate keypoints
 
