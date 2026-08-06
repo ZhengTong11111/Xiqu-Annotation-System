@@ -115,6 +115,7 @@ const CAPABILITY_LABELS: Record<ResourceCapability, string> = {
 export function ResourceExplorer(props: {
   client: PlatformClient;
   user: PlatformUser | null;
+  initialFolderId: string | null;
   onLogout: () => void;
   onOpenLocalJson: (project: ProjectData, title: string) => void;
   onOpenAnnotationFile: (
@@ -126,7 +127,8 @@ export function ResourceExplorer(props: {
   ) => Promise<AnnotationMergePreparationResult>;
 }) {
   const [rootView, setRootView] = useState<ResourceListView>("all_projects");
-  const [folderId, setFolderId] = useState<string | null>(null);
+  // 从编辑器返回时直接读取文件所在目录，避免组件重新挂载后退回“所有项目”根视图。
+  const [folderId, setFolderId] = useState<string | null>(props.initialFolderId);
   const [page, setPage] = useState<ResourceListPage>({
     items: [],
     breadcrumbs: [],

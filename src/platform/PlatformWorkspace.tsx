@@ -117,6 +117,8 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   const [pendingDraftOpen, setPendingDraftOpen] = useState<PendingDraftOpen | null>(null);
   const [draftDecisionBusy, setDraftDecisionBusy] = useState(false);
   const [draftDecisionError, setDraftDecisionError] = useState<string | null>(null);
+  // 资源管理器在编辑器打开期间会卸载，因此由 Workspace 保留最近打开文件的真实父目录。
+  const [explorerReturnFolderId, setExplorerReturnFolderId] = useState<string | null>(null);
 
   // 平台统一使用同源 /api；开发环境由 Vite 代理，部署环境由 Nginx 代理，浏览器不再依赖访问者本机端口。
   const client = useMemo(() => new PlatformClient({ accessToken }), [accessToken]);
@@ -282,6 +284,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         }
       },
     };
+    setExplorerReturnFolderId(input.file.resource.parentId ?? null);
     setEditorSession(next);
     setLocalSession(null);
     setView("editor");
@@ -618,10 +621,12 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       <ResourceExplorer
         client={client}
         user={user}
+        initialFolderId={explorerReturnFolderId}
         onLogout={() => {
           window.localStorage.removeItem(TOKEN_KEY);
           setAccessToken(null);
           setUser(null);
+          setExplorerReturnFolderId(null);
           setPendingDraftOpen(null);
           setDraftDecisionError(null);
           setView("login");
