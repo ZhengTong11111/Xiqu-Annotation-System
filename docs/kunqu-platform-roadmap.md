@@ -349,6 +349,9 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
   GET/HEAD 继续可读而 mutation 返回 503。锁连接使用独立连接池避免与 Prisma 业务查询自锁；请求中断
   也会幂等释放。标注文件 GET 的“最近打开”副作用已拆为独立 POST，因此只读边界是真实的。管理员
   诊断面板提供受控原因输入、风险说明和恢复入口；状态和审计跨 API 重启持久化。
+  2026-08-06 的 R3h7 生产升级发现旧 API 仍有少量已完成请求遗留共享 advisory permit，导致维护独占锁
+  长时间等待；本次通过先停止 API 安全释放连接后完成备份。R3d2a 后续需补充可复现测试、所有 Fastify
+  终止路径的统一释放出口和锁等待诊断，不能把“部署时先停 API”固化为正常行为。
 - R3d2b 已完成：新增版本化 `manifest.json + database.dump + objects/` 全量备份包；备份在持久维护静默
   窗口内执行 PostgreSQL 16 custom dump 与对象流式复制，为 dump 和每个对象记录 SHA-256/size，并在
   staging 离线校验、fsync 后原子发布。CLI 可独立查询/切换维护、创建/验证备份和向不同名称的空数据库
@@ -505,14 +508,16 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   28 项、完整 API 163 项、部署 24 项、完整构建均通过。待使用真实《寻梦》VOD 观察快速拖动时的 batch 数量、
   cancelled 请求、首波形时间、IndexedDB 命中和预加载对编辑体验的影响。
 
-- **R3h7：分析瓦片客户端调度与 10 秒粒度（代码已完成，待提交和生产验收）。** 在不改变 ProjectData、ACL、
+- **R3h7：分析瓦片客户端调度与 10 秒粒度（已部署，待生产浏览器验收）。** 在不改变 ProjectData、ACL、
   对象存储合同和三种媒体来源的前提下，客户端把请求 padding 收紧为每侧可视区 25% 且最多 90 秒；相邻预取
   改为按最近移动方向只取一个可视区，并在视口稳定 800ms 后启动。前台批次由 8 MiB 降为 2 MiB，渐进组装优先
   覆盖当前可视区的连续已加载段；批次 registry 记录源时间范围，快速跳转时取消远离视口且没有主动预加载保护
   的批次。新分析 run 的服务端瓦片改为 10 秒，frequency-detail 的 hopLength 同步改为 400，run DTO 返回实际
   粒度，旧 run 通过 manifest/config 继续按 30 秒读取。5 秒暂不采用，因为现有波形层级不能整除 5 秒采样数。
-  本轮没有修改不安全的 immutable 缓存头，也没有重复已有 Nginx gzip；专项媒体分析测试和 Web/API 构建已通过，仍需
-  真实服务器用《寻梦》VOD重算一次并验收 Network、波形首帧、快速拖动取消、旧 run 兼容和 IndexedDB 命中。
+  本轮没有修改不安全的 immutable 缓存头，也没有重复已有 Nginx gzip；专项媒体分析测试和 Web/API 构建已通过。
+  2026-08-06 已将 `22f3bc1` 部署到生产 release `20260806T153313Z-22f3bc1`，只读部署检查、API/worker
+  健康与维护恢复均通过；仍需用《寻梦》VOD 重算一次并验收 Network、波形首帧、快速拖动取消、旧 run 兼容和
+  IndexedDB 命中。
 - **R3h8：服务端分析 bundle/Range 读取（后续设计）。** 在不放宽 ACL 的前提下，把同一 run/kind/level 的小瓦片组织为不可变
   bundle，并设计带 manifest、offset、checksum 的权限绑定读取；在 R3h6 的真实指标证明对象存储 TTFB 仍是主要瓶颈
   后再实施，不能提前引入对象迁移和新的缓存授权语义。

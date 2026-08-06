@@ -6076,7 +6076,7 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 若 Network 指标确认对象存储 TTFB 仍是主要瓶颈，下一阶段再按 R3h7 设计 `Server-Timing` 和 immutable analysis
   bundle/Range 读取；不能绕过 ACL 直接开放对象或下载完整视频/临时音频。
 
-## 2026-08-06：R3h7 客户端调度与 10 秒分析瓦片（代码完成，待部署验收）
+## 2026-08-06：R3h7 客户端调度与 10 秒分析瓦片（已部署，待生产浏览器验收）
 
 本轮根据 `CLAUDE_WORK.md` 对当前线上滚动体验进行代码审查，并结合实际调用链重新评估了“把分析瓦片从 30 秒
 缩短为 5/10 秒”的建议。结论是 10 秒适合当前格式，5 秒暂不采用：现有波形层级 `64/256/1000/4000`
@@ -6104,7 +6104,29 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 
 待推进：
 
-- 尚未部署本轮 release，也尚未使用真实《寻梦》VOD 重算 10 秒 run。生产验收需要观察下载量、波形/频谱首帧、快速
+- 本轮 release 已部署，但尚未使用真实《寻梦》VOD 重算 10 秒 run。生产验收需要观察下载量、波形/频谱首帧、快速
   拖动时的取消、停止滚动 800ms 后的预取、旧 30 秒 run 兼容和 IndexedDB 命中。
 - 服务端仍按单瓦片对象读取；只有在真实 Network 指标确认 TTFB/对象读取占主要耗时后，才进入 R3h8 的
   `Server-Timing`、manifest、bundle/Range 设计。不得未经测量迁移线上对象或绕过 ACL。
+
+### R3h7 生产发布与待验收项
+
+- 2026-08-06 将提交 `22f3bc1` 部署到服务器 `101.201.76.10`，新 release 为
+  `/opt/xiqu/releases/20260806T153313Z-22f3bc1`。发布包只包含当前构建产物、Prisma、workspace 包、部署脚本和
+  与锁文件一致的运行依赖；没有上传本机 `.env`、`data/`、数据库、本机媒体或 VOD 凭据。
+- 发布前重新执行 `npm run test:media-analysis`，31 项全部通过；`npm run build` 完整通过，只有既有 Vite 主
+  chunk 超过 500 kB 的非阻断提示。新旧提交之间没有 `package-lock.json`、Prisma migration 或部署脚本变化，
+  因此候选 release 使用服务器上同一锁文件对应的已验收 `node_modules` 独立副本，并覆盖本次重新构建的 Web/API、
+  shared/document-model 与运行元数据。
+- 发布前停止 `xiqu-analysis-worker`。旧 API 存在 6 个已空闲约 5 小时但仍持有维护共享 advisory permit 的连接，
+  本轮 `backup:create` 因此长期等待独占锁；确认阻塞关系后停止旧 API，释放遗留连接，让同一个备份进程继续完成，
+  未并行创建第二份备份。该现象表明 R3d2a 请求终止路径仍有锁释放缺口，已加入 roadmap；后续需用回归测试定位，
+  不能把停止 API 当作正常维护流程或静默忽略。
+- 本次一致备份为 `xiqu-backup-2026-08-06T15-29-01-114Z-f7258614`，`backup:verify` 返回 `valid=true`、0 项
+  error。随后由 `platform.admin` 开启维护模式；新 release 的 Prisma 检查找到 20 条 migration 且无待执行项。
+- 原子切换 `/opt/xiqu/current` 后启动新 API；公网 `deploy:check` 在维护状态下确认 Web 首页、liveness、readiness
+  均为 HTTP 200。之后解除维护并启动新 worker，最终 API/worker 均为 `active`、维护状态为 `enabled=false`，
+  database/storage readiness 均为 ok，发布后 journald 未出现 error、fatal、uncaught、crash 或 failed。
+- 待用户在真实《寻梦》VOD 上人工验收：新建分析应生成 10 秒瓦片；波形应优先首帧；频谱按当前可视区渐进显示；
+  快速跳转应取消远端批次；停止约 800ms 后才启动方向预取；旧 30 秒 run 和刷新后的 IndexedDB 命中仍应正常。
+  本轮健康检查不替代这些浏览器体验与 Network 指标验收。
