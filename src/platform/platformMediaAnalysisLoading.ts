@@ -4,7 +4,7 @@ import {
   type MediaAnalysisAssetDescriptor,
 } from "@xiqu/shared";
 
-export const DEFAULT_ANALYSIS_TILE_DURATION_SECONDS = 30;
+export const LEGACY_ANALYSIS_TILE_DURATION_SECONDS = 30;
 const DEFAULT_MAX_CACHE_ASSETS = 96;
 const DEFAULT_MAX_CACHE_BYTES = 64 * 1024 * 1024;
 const WAVEFORM_SAMPLES_PER_BUCKET = [64, 256, 1000, 4000] as const;
@@ -38,12 +38,12 @@ export type PlatformAnalysisViewport = {
 export function buildPlatformAnalysisRequestWindow(
   viewport: PlatformAnalysisViewport,
   sourceOffsetSeconds: number,
-  tileDurationSeconds = DEFAULT_ANALYSIS_TILE_DURATION_SECONDS,
+  tileDurationSeconds = LEGACY_ANALYSIS_TILE_DURATION_SECONDS,
 ): PlatformAnalysisRequestWindow {
   // 服务端 DTO 是权威来源，但前端仍对旧版本/异常响应做有界回退，避免零值导致除零和无穷请求。
   const safeTileDuration = Number.isFinite(tileDurationSeconds) && tileDurationSeconds > 0
     ? tileDurationSeconds
-    : DEFAULT_ANALYSIS_TILE_DURATION_SECONDS;
+    : LEGACY_ANALYSIS_TILE_DURATION_SECONDS;
   const viewportDuration = Math.max(0.001, viewport.endTime - viewport.startTime);
   // 只保留一小段滚动缓冲：足以吸收短距离移动，又不会把一次请求扩成数倍可视区。
   const requestPadding = Math.min(
