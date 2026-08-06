@@ -112,6 +112,7 @@ export function createPlatformMediaAnalysisPersistentCache(
       identity,
       key: getPlatformMediaAnalysisCacheKey(identity),
     }));
+    // 批量读取二进制，命中后只更新轻量元数据；不把分析内容复制进日志或其他持久状态。
     const records = await Promise.all(keyed.map(({ key }) =>
       database.get(ASSET_STORE_NAME, key)));
     const hits = new Map<string, Uint8Array>();

@@ -325,6 +325,10 @@ export function usePlatformMediaAnalysis(options: Options) {
     }
   }, [options.annotationFileId, options.canWrite, options.client]);
 
+  /**
+   * 用户主动预加载当前分析配置；它与可视窗口共用缓存和在途请求，但使用独立控制器，
+   * 因而既不会阻塞当前播放，也可以在设置变化或用户点击停止时安全退出。
+   */
   const startPreload = useCallback(async () => {
     const client = options.client;
     const currentUserId = options.currentUserId;
@@ -486,6 +490,7 @@ async function loadVisibleAnalysisWindow(context: VisibleAnalysisWindowContext) 
   cancelPlatformAnalysisBatchesOutsideRetainedAssets(context.batchRegistry, retainedAssetIds);
 
   const loadedBytes = new Map<string, Uint8Array>();
+  // 每次只把当前已经到达的字节合并进局部快照；局部快照避免把后台预取资产误绘制到当前窗口。
   const commitProgress = (_batch: readonly MediaAnalysisAssetDescriptor[], batchBytes: ReadonlyMap<string, Uint8Array>) => {
     if (!context.isCurrent()) return;
     for (const [assetId, value] of batchBytes) loadedBytes.set(assetId, value);
@@ -746,6 +751,7 @@ export async function loadAnalysisAssets(options: LoadAnalysisAssetsOptions) {
     }
   }
 
+  // 先消费缓存和共享在途请求，再把真正缺失的资产切成有界批次，避免一次宽视口占满网络连接。
   const batches = partitionMediaAnalysisAssetBatches(missing, {
     maxBytes: options.maxBatchBytes,
   });
