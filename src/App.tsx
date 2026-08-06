@@ -26,7 +26,15 @@ import type { MediaPlaybackController } from "./media/mediaPlaybackController";
 import { mockProject } from "./mockData";
 import { AnnotationConfirmationPanel } from "./platform/AnnotationConfirmationPanel";
 import { AnnotationMediaBindingDialog } from "./platform/AnnotationMediaBindingDialog";
+import {
+  PlatformMaintenanceSaveWarningDialog,
+  type MaintenanceDraftSaveState,
+} from "./platform/PlatformMaintenanceSaveWarningDialog";
 import { getPlatformMediaBindingBlockReason } from "./platform/platformMediaBindingPolicy";
+import {
+  isPlatformMaintenanceError,
+  PLATFORM_MAINTENANCE_ERROR_CODE,
+} from "./platform/platformMaintenanceSaveWarning";
 import { buildPlatformMediaPlaybackSource } from "./platform/platformMediaPlaybackSource";
 import {
   buildAnnotationConfirmationViewRecords,
@@ -541,6 +549,13 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [browserOnline, setBrowserOnline] = useState(
     () => typeof navigator === "undefined" || navigator.onLine !== false,
   );
+  const [maintenanceSaveBlocked, setMaintenanceSaveBlocked] = useState(false);
+  const [maintenanceWarningOpen, setMaintenanceWarningOpen] = useState(false);
+  const [maintenanceDraftState, setMaintenanceDraftState] = useState<MaintenanceDraftSaveState>({
+    status: "saving",
+  });
+  const maintenanceWarningSuppressedRef = useRef(false);
+  const lastMaintenanceDraftRevisionRef = useRef<number | null>(null);
   // 连接传输需要独立响应 online/offline；不能依赖文档 dirty 状态是否恰好触发一次重渲染。
   useEffect(() => {
     const update = () => setBrowserOnline(navigator.onLine !== false);
@@ -582,6 +597,55 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       });
     },
   });
+  // 每次完整编辑形成新 revision 后都立即刷新本地草稿；弹窗抑制只影响提示，不影响继续保全草稿。
+  const preserveDraftAfterMaintenanceBlock = useCallback(async () => {
+    const localRevision = getRecoveryState().localRevision;
+    // revision effect 与稍后的自动保存拒绝可能命中同一次编辑；只落一次草稿、只弹一次提示。
+    if (lastMaintenanceDraftRevisionRef.current === localRevision) return;
+    lastMaintenanceDraftRevisionRef.current = localRevision;
+    setMaintenanceSaveBlocked(true);
+    setMaintenanceDraftState({ status: "saving" });
+    if (!maintenanceWarningSuppressedRef.current) setMaintenanceWarningOpen(true);
+
+    const result = await flushPlatformDraftNow();
+    setMaintenanceDraftState(result.ok
+      ? { status: "saved" }
+      : { status: "failed", message: result.message });
+  }, [flushPlatformDraftNow, getRecoveryState]);
+
+  // 首次维护拒绝后，所有编辑类型都通过 localRevision 进入同一提示路径，无需污染各轨道事件处理器。
+  useEffect(() => {
+    if (
+      !maintenanceSaveBlocked ||
+      !editorSession?.canWrite ||
+      !hasUnsavedChanges ||
+      lastMaintenanceDraftRevisionRef.current === syncState.localRevision
+    ) {
+      return;
+    }
+    void preserveDraftAfterMaintenanceBlock();
+  }, [
+    editorSession?.canWrite,
+    hasUnsavedChanges,
+    maintenanceSaveBlocked,
+    preserveDraftAfterMaintenanceBlock,
+    syncState.localRevision,
+  ]);
+
+  // 该偏好严格限定在一次文件打开会话；文件身份变化时恢复默认提醒行为。
+  useEffect(() => {
+    maintenanceWarningSuppressedRef.current = false;
+    lastMaintenanceDraftRevisionRef.current = null;
+    setMaintenanceSaveBlocked(false);
+    setMaintenanceWarningOpen(false);
+    setMaintenanceDraftState({ status: "saving" });
+  }, [editorSession?.annotationFileId]);
+  // 只有服务器真实确认提交后才能解除维护阻断；本地草稿成功不能冒充维护已经结束。
+  const clearMaintenanceBlockAfterServerCommit = useCallback(() => {
+    lastMaintenanceDraftRevisionRef.current = null;
+    setMaintenanceSaveBlocked(false);
+    setMaintenanceWarningOpen(false);
+  }, []);
   // 结构编辑 token 只存在于文件会话级 runtime；丢锁时保留本地草稿并阻断自动盲重试。
   const mutationLease = usePlatformMutationLease({
     client: editorSession?.client ?? null,
@@ -623,6 +687,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (acknowledgement.status === "rejected") return acknowledgement;
 
       // document state 与平台会话必须同步推进；ref 先更新，避免同一 tick 的下一批仍读取旧 revision。
+      clearMaintenanceBlockAfterServerCommit();
       remoteBaseRevisionRef.current = response.committedRevision;
       remoteOperationCursorRef.current = response.operationCursor;
       setRemoteBaseRevision(response.committedRevision);
@@ -841,9 +906,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     mediaBindingBusy: serverMediaBindingBusy,
   });
 
-  // 每个 error 状态只上报一次有界诊断；失败上报不反向改变文档状态，也不会形成新的同步错误循环。
+  // 每个异常 error 状态只上报一次有界诊断；维护拒绝属于预期门禁，不应反向制造诊断写入重试。
   useEffect(() => {
-    if (!editorSession || syncState.status !== "error" || !syncState.errorMessage) {
+    if (
+      !editorSession ||
+      maintenanceSaveBlocked ||
+      syncState.status !== "error" ||
+      !syncState.errorMessage
+    ) {
       if (syncState.status !== "error") {
         lastReportedSyncFailureRef.current = null;
         syncFailureMismatchFieldsRef.current = [];
@@ -900,6 +970,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     browserOnline,
     editorSession,
     hasUnsavedChanges,
+    maintenanceSaveBlocked,
     observedRemoteRevision,
     pendingOperations,
     remoteBaseRevision,
@@ -5907,6 +5978,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             // 服务端已证明当前 token 不能继续使用；先清本地状态并尽力释放，下一次保存才能重新 acquire。
             await mutationLease.release().catch(() => undefined);
           }
+          const isMaintenanceFailure = failure.code === PLATFORM_MAINTENANCE_ERROR_CODE;
+          if (isMaintenanceFailure) {
+            await preserveDraftAfterMaintenanceBlock();
+          }
           if (failure.status === "conflict") {
             const rebase = await tryAutomaticConcurrentRebase(editorSession);
             if (rebase.status === "applied") {
@@ -5925,7 +6000,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               ? { status: "conflict", retryable: false, message: failureMessage }
               : { status: "error", retryable: failure.retryable, message: failureMessage };
           setSyncStatus(outcome.status, { errorMessage: outcome.message });
-          if (interactive) window.alert(outcome.message);
+          if (interactive && !isMaintenanceFailure) window.alert(outcome.message);
           return outcome;
         }
         if (result.status === "protocol_error") {
@@ -5939,9 +6014,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return { status: "saved" };
     } catch (error) {
       const classified = describeServerSaveError(error);
+      const isMaintenanceFailure = isPlatformMaintenanceError(error);
+      if (isMaintenanceFailure) await preserveDraftAfterMaintenanceBlock();
       setSyncStatus(classified.status, { errorMessage: classified.message });
       console.error("保存到服务器失败:", error);
-      if (interactive) window.alert(classified.message);
+      if (interactive && !isMaintenanceFailure) window.alert(classified.message);
       return classified;
     } finally {
       serverSaveInFlightRef.current = false;
@@ -6056,14 +6133,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         acknowledgedOperationIds: coveredOperationIds,
         savedLocalRevision,
       });
+      clearMaintenanceBlockAfterServerCommit();
       void annotationConfirmations.refresh();
       return { status: "saved" };
     } catch (error) {
       if (submittedOperationIds.length > 0) markOperationsAsSubmitted(submittedOperationIds);
       const classified = describeServerSaveError(error);
+      const isMaintenanceFailure = isPlatformMaintenanceError(error);
+      if (isMaintenanceFailure) await preserveDraftAfterMaintenanceBlock();
       setSyncStatus(classified.status, { errorMessage: classified.message });
       console.error("兼容快照保存失败:", error);
-      if (source === "manual") window.alert(classified.message);
+      if (source === "manual" && !isMaintenanceFailure) window.alert(classified.message);
       return classified;
     }
   }
@@ -6613,6 +6693,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             {saveConflictReviewBusy ? "正在读取最新文件…" : "检查并处理冲突"}
           </button>
         </section>
+      ) : null}
+      {editorSession ? (
+        <PlatformMaintenanceSaveWarningDialog
+          open={maintenanceWarningOpen}
+          draftState={maintenanceDraftState}
+          onClose={() => setMaintenanceWarningOpen(false)}
+          onSuppressForSession={() => {
+            maintenanceWarningSuppressedRef.current = true;
+            setMaintenanceWarningOpen(false);
+          }}
+        />
       ) : null}
       {/* 整合草稿确认栏属于编辑会话而非保存版本；取消不改历史，应用后仍需用户正常保存。 */}
       {pendingAnnotationMergeDraft ? (

@@ -2909,6 +2909,114 @@ select {
   border-color: #a84045;
 }
 
+/* 维护提示沿用资源管理器的克制弹窗层级，但独立表达“服务器未保存、浏览器草稿已保留”。 */
+.platform-maintenance-save-warning {
+  position: fixed;
+  z-index: 12003;
+  top: 50%;
+  left: 50%;
+  width: min(470px, calc(100vw - 32px));
+  overflow: hidden;
+  color: #29384d;
+  background: #f8fafc;
+  border: 1px solid #c5cfdb;
+  border-radius: 8px;
+  box-shadow: 0 24px 64px rgb(16 27 42 / 28%);
+  outline: none;
+  transform: translate(-50%, -50%);
+}
+
+.platform-maintenance-save-warning > header {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 16px;
+  background: #fff8e9;
+  border-bottom: 1px solid #e5d7bb;
+}
+
+.platform-maintenance-save-warning > header > svg {
+  flex: 0 0 auto;
+  color: #a7681a;
+}
+
+.platform-maintenance-save-warning > header > span {
+  display: grid;
+  gap: 4px;
+}
+
+.platform-maintenance-save-warning h2,
+.platform-maintenance-save-warning p {
+  margin: 0;
+}
+
+.platform-maintenance-save-warning h2 {
+  font-size: 15px;
+}
+
+.platform-maintenance-save-warning header p,
+.platform-maintenance-save-warning > p {
+  color: #746955;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.platform-maintenance-save-warning > p {
+  padding: 0 16px 14px;
+}
+
+.platform-maintenance-draft-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 14px 16px 10px;
+  padding: 10px;
+  color: #4e6279;
+  background: #eef4f8;
+  border: 1px solid #cfdae4;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.platform-maintenance-draft-state > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.platform-maintenance-draft-state.is-failed {
+  color: #98363b;
+  background: #fff0f1;
+  border-color: #e6c3c5;
+}
+
+.platform-maintenance-save-warning > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #eef2f7;
+  border-top: 1px solid #d2dae5;
+}
+
+.platform-maintenance-save-warning footer button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 12px;
+  color: #425168;
+  background: #fff;
+  border: 1px solid #c7d1de;
+  border-radius: 5px;
+}
+
+.platform-maintenance-save-warning footer button.primary {
+  color: #fff;
+  background: #276ba8;
+  border-color: #276ba8;
+}
+
 .resource-recovery-summary dl {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

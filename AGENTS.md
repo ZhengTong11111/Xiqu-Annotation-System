@@ -146,6 +146,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/objectLifecycleService.ts` + `apps/api/src/backup/backupService.ts`
   - both FileObject and MediaAnalysisAsset storage keys are authoritative references; lifecycle cleanup and backup warnings
     must not classify analysis tiles as orphan binaries
+  - future permanent Trash deletion must start from each trashed logical root and purge its complete descendant subtree;
+    descendants usually inherit Trash state and need not carry `trashedAt`, so never implement this as a flat
+    `DELETE WHERE trashed_at IS NOT NULL`. Use the root timestamp for retention, lock/revalidate the tree and permissions,
+    retain audit facts, and perform post-commit reference-checked object/analysis-asset cleanup with compensation. This rule
+    also covers resources placed in Trash before permanent deletion exists.
 - `src/platform/platformMediaPlaybackSource.ts`
   - the only conversion from platform media DTO plus local runtime URL to native/VOD/unavailable playback source
   - VOD source construction must defer the no-store session request; never retain playauth in React/project state
@@ -287,6 +292,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/ResourceExplorer.tsx`
   - desktop-style three-pane resource manager
   - owns folder navigation, view switching, selection, keyboard actions, import/upload/download, and the resource Inspector
+  - blank annotation creation uses `createEmptyProjectData()` and the real annotation-file API, then enters through
+    `PlatformWorkspace`'s single authoritative open path; it must not use `mockProject`, bypass revision/ACL initialization,
+    or require media binding before the first editor session
   - the Inspector is the canonical UI for editing each account's direct permissions on the selected resource
   - file downloads must use the protected resource download route; never rebuild annotation JSON from an already-open editor or buffer large media into a browser Blob
   - uploaded media and aliyun_vod are distinct sources: VOD may be bound/copied/moved/authorized but has no platform original-file
@@ -757,6 +765,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `deploy/single-server/`
   - R5 受控单服务器候选的环境、systemd 与 Nginx/TLS 模板；操作步骤只在 `docs/server-deployment.md` 维护
   - 模板不能包含真实域名、密码、metrics token、TLS 私钥或对象存储凭据
+  - 首次正式生产部署默认使用空 PostgreSQL 数据库和空对象存储，运行 migration 后创建正式首管理员；本机
+    debug 数据、开发 seed、`.env` 和 `data/` 只有在用户另行明确批准数据迁移时才允许进入生产
+  - GitHub 只分发代码、migration 和模板；账号、资源树、标注 payload、媒体对象、分析瓦片和运行环境必须
+    通过 PostgreSQL + 对象存储一致备份/恢复或全新初始化部署，绝不能把 `git pull` 当作数据迁移
+  - 首次部署和升级都应从已审查 commit/tag 构建不可变 release，再原子切换 `/opt/xiqu/current`；不要在
+    正在运行的 release 目录直接 `git pull`、重新构建或覆盖持久数据
 - `scripts/deploymentCheck.mjs` + `scripts/checkDeployment.mjs`
   - 无凭据、只读的部署 smoke check；统一验证 Web 入口、API liveness 与依赖 readiness
   - 不能把登录写入、迁移或破坏性恢复塞进 smoke check；这些步骤属于部署清单和人工验收
@@ -806,6 +820,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `docs/server-deployment.md`
   - R5 单服务器候选的唯一部署手册，覆盖迁移、首管理员、持久目录、TLS、健康检查、备份、升级和回滚
   - 它不是 R7 生产认证；目标环境 IAM、防火墙、告警、续期、容量和灾难恢复结果必须另行验收
+  - 接手部署前先核对本地 HEAD、远端目标 commit 与干净工作区；部署完成后把 release commit、migration、
+    备份 id、环境变更和人工验收结果记录到受控运维记录，不在仓库日志中写入任何真实凭据
 - `deploy/monitoring/`
   - vendor-neutral Prometheus scrape/rule and Alertmanager example configuration
   - real metrics tokens, receiver URLs, TLS material, and deployment secrets never belong in this directory
@@ -1374,6 +1390,14 @@ Important backend caveats:
 - maintenance mode intentionally blocks login and all ordinary mutations. The browser diagnostic panel can restore
   through its authenticated bypass endpoint; `maintenance:disable` is also a controlled local CLI recovery path, so
   expired browser sessions do not strand a deployment in maintenance.
+- the current maintenance gate governs HTTP mutations only. The independent media-analysis worker does not yet acquire
+  its permit or observe a drain phase, so operators must stop `xiqu-analysis-worker` before a consistent production backup,
+  migration, or release cutover and restart it only after verification. Do not describe current maintenance as globally
+  quiescent until the R7a worker-drain protocol is implemented and tested.
+- the current editor recognizes a server `maintenance_mode` save rejection as non-retryable for that command chain, immediately
+  checkpoints the latest writable file draft to IndexedDB, and warns again after each later local revision unless the user
+  suppresses reminders for that one open-file session. Suppression must never stop draft persistence, survive a file reopen, or
+  claim that the browser draft reached the server. This is a temporary R5 safety net, not the future public R7a drain protocol.
 - API route handlers should perform runtime validation before Prisma writes; invalid revision/action/limit inputs should return `400`, stale annotation-file revisions should return `409`
 - browser platform writes use `PATCH` and `DELETE`; keep both methods in the Fastify CORS allow-list when changing server bootstrap
 - the API has an R5 controlled single-server deployment baseline, committed migrations, protected media serving, upload and

@@ -111,6 +111,13 @@ test("服务器保存错误分类区分冲突、可重试与确定错误", () =>
   assert.equal(describeServerSaveError(
     new PlatformApiError(503, "unavailable", "暂不可用", null),
   ).retryable, true);
+  assert.deepEqual(describeServerSaveError(
+    new PlatformApiError(503, "maintenance_mode", "维护中", null),
+  ), {
+    status: "error",
+    retryable: false,
+    message: "服务器正在维护，当前修改暂时无法自动保存到服务器；本地恢复草稿将继续保留。",
+  });
   assert.equal(describeServerSaveError(
     new PlatformApiError(403, "forbidden", "禁止", null),
   ).retryable, false);

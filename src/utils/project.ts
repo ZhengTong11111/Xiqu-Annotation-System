@@ -47,6 +47,29 @@ export function getDefaultBuiltinTracks(): BuiltinTrack[] {
   }));
 }
 
+// 新建空白标注工程必须返回彼此隔离的可编辑对象，不能复用示例数据或共享轨道数组。
+export function createEmptyProjectData(): ProjectData {
+  const builtinTracks = getDefaultBuiltinTracks();
+  return {
+    video: {
+      url: "",
+      name: null,
+      source: "url",
+      filePath: null,
+      requiresManualImport: false,
+    },
+    subtitleLines: [],
+    characterAnnotations: [],
+    gongcheAnnotations: [],
+    banyanSections: [],
+    banyanMarks: [],
+    actionAnnotations: [],
+    builtinTracks,
+    customTracks: [],
+    activeTrackOrder: builtinTracks.map((track) => track.id),
+  };
+}
+
 export function getBuiltinTrackDefinition(trackId: BuiltinTrackId): BuiltinTrack {
   const track = defaultBuiltinTracks.find((item) => item.id === trackId);
   if (!track) {
@@ -277,17 +300,12 @@ export function buildProjectFromLines(
   subtitleLines: SubtitleLine[],
   video: ProjectData["video"],
 ): ProjectData {
+  const emptyProject = createEmptyProjectData();
   return {
+    ...emptyProject,
     video,
     subtitleLines,
     characterAnnotations: subtitleLines.flatMap(splitLineIntoCharacters),
-    gongcheAnnotations: [],
-    banyanSections: [],
-    banyanMarks: [],
-    actionAnnotations: [],
-    builtinTracks: getDefaultBuiltinTracks(),
-    customTracks: [],
-    activeTrackOrder: getDefaultBuiltinTracks().map((track) => track.id),
   };
 }
 

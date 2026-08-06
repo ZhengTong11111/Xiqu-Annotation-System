@@ -5692,3 +5692,156 @@ operation、审计详情或协作消息。
 
 - 浏览器已实测从“示例项目：昆曲《寻梦》”普通目录打开标注文件并返回，正确落到原项目目录，面包屑和
   同目录资源均正常加载。后续可继续抽查“最近打开”和比较结果入口；二者共用同一权威文件打开路径。
+
+## 2026-08-06：当前单服务器部署交接复核
+
+### 当前可部署状态
+
+- 本轮审查开始时 `main` 工作区干净，HEAD 与 GitHub `origin/main` 均为
+  `72d455be9b8976e14b6e7c2b90600691648c7d11`。接手 Agent 可以从 GitHub 获取代码，但应 checkout 经过
+  审查的 commit/tag、构建不可变 release 并切换 `/opt/xiqu/current`，不能在运行目录直接 `git pull`。
+- 当前定位仍是 R5“受控单服务器部署候选”：适合研究团队和课堂内测，不等同于 R7 公网生产认证。唯一
+  详细操作手册是 `docs/server-deployment.md`；`deploy/single-server/` 只保存环境、systemd 和 Nginx 模板，
+  不另维护第二套容易漂移的命令说明。
+- 本轮重新执行 `npm run test:deployment`，部署参数、只读 smoke、环境/Nginx 上传上限、生产运维 CLI 边界、
+  首管理员 CLI 和生产 fail-closed 配置共 21/21 通过；`npm run build` 完成 Prisma Client、shared、
+  document-model、Web 与
+  API 生产构建。对本机同源入口执行 `deploy:check`，Web 首页、API liveness 和 readiness 均返回 HTTP 200。
+  仅保留既有 Vite 主 chunk 超过 500 kB 提醒。
+
+### GitHub、数据与秘密边界
+
+- GitHub 只同步源码、Prisma migration、部署模板和文档；它不会同步 `.env`、PostgreSQL 账号/权限/资源树/
+  标注 payload、`data/` 或对象存储中的上传媒体、恢复快照及波形/频谱/F0 瓦片。全新部署应运行 migration
+  并通过一次性 CLI 创建正式 `super_admin`；继承本机现有平台数据则必须迁移 PostgreSQL 与对象存储的一致
+  备份，不能只复制仓库或只恢复其中一侧。
+- 生产环境文件按手册设置为 `root:xiqu`、`chmod 640`，使 systemd 的 `xiqu` 服务账号可读且其他账号不可读；
+  本轮同步修正环境模板中误写的 `chmod 600` 注释。数据库、对象目录、备份、TLS 和环境文件必须位于 release
+  目录之外。
+- VOD 生产部署必须使用目标正式域名对应的 Web License，并通过实例角色、工作负载身份或受保护环境注入
+  最小权限阿里云身份。任何曾出现在对话、终端输出或其他非秘密渠道的长期 AccessKey 均视为已暴露，正式
+  部署前必须删除或轮换；真实密钥、License key、playauth 和临时媒体 URL 不得写入 Git 或开发日志。
+
+### 目标服务器仍需完成
+
+- 按 `docs/server-deployment.md` 在目标 Linux 主机安装 Node.js 22、PostgreSQL 16、Nginx、Git 和 FFmpeg，
+  创建服务账号与持久目录，选择并验收本地或 S3-compatible 对象存储，执行 `prisma migrate deploy` 和首位
+  管理员 bootstrap，安装 API/analysis-worker systemd 单元，并配置同源 Nginx、WebSocket、TLS 与防火墙。
+- 在正式域名运行 `npm run deploy:check` 后，仍须人工闭环登录、上传/Range、打开/保存、双账号 ACL 与实时
+  协作、VOD 播放、纯音频后台分析、强制上传音频覆盖、审计、metrics、回收站和恢复。
+- 公网发布前还需在目标环境完成 TLS 自动续期及失败告警、真实 S3/MinIO IAM、外部监控接收、自动备份调度/
+  加密、隔离恢复演练、容量与弱网压测、安全审计和工尺谱字体授权；仓库测试不能替代这些生产证据。
+
+### 已确认的数据部署决策与后续迁移
+
+- 用户明确确认本次服务器部署不得同步本机实验/debug 数据。目标服务器必须使用空 PostgreSQL 数据库与空对象
+  存储，运行 migration 后创建全新的正式 `super_admin`；本机 `.env`、开发 seed、数据库、`data/`、媒体及
+  分析资产均不得复制到生产。该门禁已同步到 `AGENTS.md` 与唯一部署手册。
+- 后续正式服务器之间迁移可以复用现有维护窗口一致备份：备份同时覆盖 PostgreSQL、上传对象、恢复快照和
+  波形/频谱/F0 资产，并提供 manifest、SHA-256、离线校验、空目标恢复和恢复后数据库/对象摘要核对。目标应先
+  恢复到候选数据库和候选对象目录，验收后再切换配置/DNS并显式解除维护，不能原地覆盖运行中的生产数据。
+- 现有能力足以支持本地对象存储服务器之间的受控迁移，但生产接管仍需人工运维确认；跨新 S3 bucket 的直接
+  restore/cutover 尚未自动化。正式恢复/切换 CLI 已作为未来开发写入 roadmap，要求空目标门禁、manifest
+  校验、失败补偿和原子发布；roadmap 不记录本次空库部署实例，避免把部署决策与长期能力规划混为一谈。
+
+## 2026-08-06：升级维护体验与滚动发布远期规划
+
+### 现状审查
+
+- 当前 `PlatformRuntimeState` 已持久保存二值维护状态和原因；管理员诊断页可切换维护，PostgreSQL 独占
+  advisory lock 会等待已获许可的 HTTP 写请求响应完成，再令后续 mutation 返回稳定 503。GET/HEAD 与协作
+  读会话仍可用，CLI 可在浏览器 session 失效时解除维护。
+- 现有能力还不是用户可感知的安全发布流程：状态读取仅限管理员，登录 POST 在维护中被拦截，普通登录页、
+  资源管理器和编辑器没有全局公告；开启维护会立即阻止尚未发送的本地修改，自动保存只把 503 当作通用重试，
+  无法区分“服务器已保存”和“仅有 IndexedDB 草稿”。因此不能只增加一条 warning 就宣称编辑已安全收口。
+- 发现独立 media-analysis worker 直接写 PostgreSQL 与对象存储，当前不经过 HTTP maintenance gate，也未读取
+  drain 状态。其 SIGTERM 已能清理半成品并重新排队，但在接入统一协议前，一致备份、migration 和 release
+  切换必须先停止 worker。该临时运维门禁已同步到 AGENTS 与唯一部署手册。
+
+### 规划结论
+
+- 该能力已明确归入 R7 远期 backlog，不是当前 R6a 或下一轮立即开发任务，因此不改写当前
+  `CLAUDE_WORK.md`。现阶段只采用部署手册中的人工通知、确认已同步、停止 worker、维护门禁和恢复验收流程。
+- 面向用户统一称为“升级维护”而非“开发模式”，避免暗示生产开启 debug 能力。R7a 先实现
+  `normal/announced/draining/active` 两阶段公告与安全收口，只允许 `super_admin` 操作；所有页面读取脱敏
+  状态，编辑器在 draining 阻止新动作、完成当前命令、依次 flush 服务器和浏览器草稿，并对已同步与仅本机
+  保存作严格区分。active 复用现有强门禁，恢复后先 catch-up 再放开编辑。
+- R7a 同时要求 worker 停止 claim、当前任务完成或安全回队列，并覆盖多账号、断网、冲突、旧客户端、API/
+  worker 重启和维护恢复测试。第一版可用倒计时和本地状态提示；连接级 drain ack 作为后续增强，强制维护
+  必须显示未响应/未同步风险。
+- R7b 再建设不可变 CI artifact、双 API 实例 readiness 摘流、WebSocket 排空、前端版本检测、兼容 migration
+  和自动回滚。破坏性 migration 与对象迁移仍使用显式维护窗口，不追求不可信的绝对零停机。本轮只更新规划
+  与当前运维说明，没有修改 schema、API 或前端状态。
+
+### 部署命令阻断修复
+
+- 自审 release 清单时发现生产只复制 `package.json/package-lock.json/prisma/dist/node_modules`，但全部
+  maintenance/backup npm scripts 仍调用 `tsx apps/api/src/backup/cli.ts`；真实服务器没有 `apps/` 源码时，文档
+  中的维护、备份和恢复命令都会立即失败。现统一改为 `node dist/api/backup/cli.js`，复用 `build:api` 已生成且
+  随 release 发布的 CLI，不通过复制源码或在生产即时编译规避问题。
+- 部署专项测试新增运维 scripts 边界，逐项禁止 `tsx` 和 `apps/api/src`，防止未来再次产生只在开发工作树可用
+  的伪部署命令。
+- 完整构建后以本机 `admin` 操作者真实运行编译产物 `npm run maintenance:status -- --operator admin`，命令成功
+  读取维护状态且未依赖 `apps/` 源码；本次只读验证没有切换维护状态。
+
+## 2026-08-06：维护期间的文件会话级本地草稿提醒
+
+### 已完成
+
+- 在不提前实现 R7a 公共维护公告和 drain 协议的前提下，为当前平台编辑器补充一个最小安全提示。原子命令与
+  兼容快照保存现在都会严格识别服务端 `maintenance_mode`；该错误属于确定性写门禁，不再按普通 503 进行网络
+  退避重试，也不再发送必然被维护门禁拒绝的“客户端同步失败”诊断。
+- 文件首次遭到维护拒绝时，编辑器立即通过既有串行 IndexedDB 队列写入最新恢复草稿，并显示 Radix
+  AlertDialog。文案明确区分“服务器未自动保存”和“本机浏览器草稿已保存”；草稿失败时要求用户不要关闭或
+  刷新页面，不能把失败状态伪报为已经保留。
+- 一旦当前文件会话确认处于维护阻断，后续拖拽、文字、结构、撤销/重做等只要形成新的本地 revision，就共用
+  同一入口再次刷新草稿并提示。同一次 revision 会去重，避免 revision effect 与稍后的保存拒绝弹出两次。
+- 用户可选择“关闭”或“本文件本次不再提醒”。前者只关闭本次弹窗，下一次编辑仍提示；后者只写入当前编辑器
+  组件内存，返回资源管理器、关闭文件或重新打开文件后恢复提醒。无论是否抑制提示，后续本地草稿仍继续写入。
+- 维护解除后，只有服务器真实确认原子命令或兼容快照保存成功，当前会话才清除维护阻断；本地草稿写入成功
+  不会被误当作服务器恢复。这样下一次正常编辑不会继续显示过期维护提示。
+- 新弹窗替代维护场景下的原生 `window.alert`，但其他同步错误仍保持原有提示和诊断行为。该功能不改变数据库、
+  ProjectData、服务器 revision、协作命令或维护角色权限，也不代表 R7a 已经完成。
+
+### 验证
+
+- `npm run test:platform-drafts`：33/33 通过，覆盖草稿身份隔离、串行写入、失败恢复和文档 pending operation。
+- 原子提交 runtime/coordinator、错误分类和旧保存边界专项测试：15/15 通过；新增断言确认
+  `maintenance_mode` 为不可自动重试错误，普通瞬时 503 仍可重试。
+- `npm run build` 与 `git diff --check` 通过；Web 构建只保留既有主 chunk 超过 500 kB 提醒。
+- 按用户要求未操作浏览器和未实际切换本机维护状态。人工验收应依次验证：开启维护后完成一次拖拽并等待
+  自动保存、确认弹窗显示本地草稿结果、关闭后再次编辑会重现、选择“不再提醒”后当前文件不再弹出、重新打开
+  同一文件后恢复提醒，最后解除维护并手动保存或重新打开文件完成恢复同步。
+
+### 待推进
+
+- R7a 仍按远期 roadmap 实现公开维护状态、登录页/资源管理器公告、客户端 draining、worker 排空确认和维护
+  恢复后的权威 revision catch-up；本轮文件会话提示不能替代这些平台级能力。
+
+## 2026-08-06：空白标注工程入口与历史回收站清理约束
+
+### 已完成
+
+- 新增独立的 `createEmptyProjectData()` 工厂。空白工程不再借用包含演示视频和标注内容的 `mockProject`，只初始化
+  一个内建逐字文字轨以及互相隔离的空数组；句级 SRT 建项也复用该工厂，避免默认轨道构造逻辑分叉。
+- 资源管理器在项目或文件夹内增加“新建空白标注工程”入口。用户命名后直接调用既有标注文件 API，保存无媒体
+  的权威 `ProjectData`，刷新并选中新文件，再通过 `PlatformWorkspace` 唯一打开路径读取最新 revision、权限和
+  草稿后进入编辑器。创建期间有单次请求门禁，打开取消或失败不会删除已经创建的文件。
+- 空白文件不强制弹出媒体选择器；进入编辑器后仍可按现有流程关联本机媒体、服务器媒体或阿里云 VOD。
+- roadmap 与 `AGENTS.md` 补充未来永久删除约束：功能上线前已经进入回收站的资源同样可清理，但必须从带
+  `trashedAt` 的逻辑根递归处理整棵子树，以根时间计算保留期，并在数据库提交后按共享 `FileObject` 引用及
+  媒体分析资产引用执行可补偿的对象清理；禁止按非空 `trashedAt` 平铺删除。
+
+### 验证
+
+- `src/utils/project.test.ts` 覆盖空白内容、唯一内建轨道、规范化无漂移，以及多次创建之间没有共享可变引用。
+- `node --import tsx --test src/utils/project.test.ts`：2/2 通过。
+- `npm run build` 与 `git diff --check` 通过；Web 构建只保留既有主 chunk 超过 500 kB 提醒。
+- 按用户要求本轮未操作浏览器。人工验收顺序：进入任一有新建权限的项目或文件夹，点击工具栏“新建空白
+  标注工程”，输入名称并确认，验证立即进入编辑器；确认时间轴只有空的逐字文字轨、媒体未绑定，然后返回
+  原目录确认文件存在，并分别尝试后续关联本机媒体、服务器媒体或 VOD。
+
+### 待推进
+
+- 回收站永久删除、保留期限、对象生命周期补偿和审计保留仍属于后续 R1 工作；本轮只固化兼容旧回收站内容的
+  正确设计边界，没有增加任何不可逆删除 API 或界面按钮。

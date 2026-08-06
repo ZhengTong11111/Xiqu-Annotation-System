@@ -2,6 +2,10 @@ import type {
   CommitAnnotationCommandBatchResponse,
 } from "@xiqu/shared";
 import { PlatformApiError } from "../api/platformClient";
+import {
+  PLATFORM_MAINTENANCE_ERROR_CODE,
+  PLATFORM_MAINTENANCE_SAVE_ERROR_MESSAGE,
+} from "./platformMaintenanceSaveWarning";
 import type { AtomicCommandPlan } from "./platformAtomicCommandPlan";
 
 export type AtomicSubmitErrorClassification =
@@ -71,6 +75,15 @@ export function classifyAtomicSubmitError(
   }
   if (error instanceof PlatformApiError) {
     const code = getDetailCode(error.details) ?? error.code ?? null;
+    // 维护是确定性的写门禁；继续退避重发只会制造同步噪声，应保留本地命令等待恢复。
+    if (code === PLATFORM_MAINTENANCE_ERROR_CODE) {
+      return {
+        status: "error",
+        retryable: false,
+        code,
+        message: PLATFORM_MAINTENANCE_SAVE_ERROR_MESSAGE,
+      };
+    }
     if (error.status === 409) {
       if (code?.startsWith("annotation_mutation_lease_")) {
         return { status: "error", retryable: false, code, message: error.message };

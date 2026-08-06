@@ -85,6 +85,13 @@ CREATE DATABASE xiqu_restore_drill OWNER xiqu_app;
 
 恢复演练库必须与业务库名称不同，执行演练前必须为空。
 
+### 3.1 首次正式部署的数据边界
+
+首次正式生产部署默认使用新建的空数据库和空对象存储，只执行已提交 migration，并通过一次性 bootstrap
+创建正式首管理员。不得复制开发机 `.env`、`data/`，也不得导入本机 debug PostgreSQL 数据、开发 seed
+账号或测试对象。本机与生产是两个独立平台实例；只有运维负责人另行批准的数据迁移才允许使用第 10 节的
+一致备份/恢复流程。
+
 ## 4. 构建并发布 release
 
 在受控构建机或服务器上从明确提交构建，不复制开发机 `dist/` 的未知状态：
@@ -225,6 +232,10 @@ FFmpeg，并通过 `XIQU_FFMPEG_PATH` 固定绝对路径。worker 收到 SIGTERM
 systemd 的 `TimeoutStopSec` 应覆盖该清理时间。API 正常但 worker 未运行时，播放和标注仍可用，分析任务会
 停留在“排队中”。
 
+当前维护 advisory gate 只覆盖 HTTP mutation，analysis worker 尚未接入未来的 drain/permit 协议。执行一致
+备份、数据库 migration 或 release 切换前必须先停止 `xiqu-analysis-worker` 并等待 systemd 停机完成；其
+SIGTERM 路径会删除本轮半成品并把任务安全放回队列。不能只在管理员页面开启维护后就假定后台写入已经静默。
+
 ## 8. 外部媒体与 Nginx/TLS
 
 ### 8.1 可选阿里云 VOD
@@ -334,6 +345,11 @@ npm run deploy:check -- \
 本地一致备份必须在维护窗口内同时覆盖 PostgreSQL 与整个对象根：
 
 ```bash
+sudo systemctl stop xiqu-analysis-worker
+sudo systemctl is-active xiqu-analysis-worker # 预期为 inactive
+```
+
+```bash
 sudo -u xiqu bash -c '
   set -a
   source /etc/xiqu-platform/xiqu-platform.env
@@ -353,6 +369,13 @@ sudo -u xiqu bash -c '
   cd /opt/xiqu/current
   npm run backup:verify -- --backup /var/lib/xiqu-platform/backups/xiqu-backup-...
 '
+```
+
+若本次只创建备份而不继续升级，验证成功后重新启动 worker；若随后部署新 release，则保持停止直到新版本
+API、migration 和 smoke 均通过：
+
+```bash
+sudo systemctl start xiqu-analysis-worker
 ```
 
 ### 10.2 隔离恢复演练
@@ -380,19 +403,38 @@ sudo -u xiqu bash -c '
 S3-compatible 远端备份、manifest-last 发布、流式校验、保留清理和远端恢复演练使用 README 已有命令及
 `deploy/object-storage/` 的目标环境检查表。
 
+### 10.3 服务器间迁移
+
+未来从一台正式服务器迁往另一台时，必须把 PostgreSQL 和对象存储视为一个不可拆分的数据集。现有工具已能
+在维护窗口创建包含数据库 dump、上传对象、恢复快照及波形/频谱/F0 派生资产的一致备份，生成 manifest 与
+SHA-256，并在空数据库和空对象目录执行隔离恢复及摘要复核。
+
+推荐迁移顺序：源服务器进入维护并创建/校验备份；将备份包安全传至目标服务器；在目标使用不同名称的空候选
+数据库和空候选对象目录运行 `backup:restore-drill`；检查报告、登录、ACL、媒体 Range、标注 revision、分析
+资产和审计；停止目标服务后把已验证候选设为正式 `DATABASE_URL`/`XIQU_STORAGE_ROOT`，确认维护状态后显式
+恢复写入，最后切换 DNS。不要向正在运行或已有数据的目标数据库/对象目录原地覆盖。
+
+这已经能稳定支持“本地对象存储 -> 新服务器本地对象存储”的受控迁移，但还不是一键生产切换：恢复命令
+故意要求隔离空目标并保留维护状态，最终接管仍需运维确认。若运行对象存储迁移到新的 S3-compatible bucket，
+当前工具可创建/校验远端备份并物化隔离恢复，但尚无直接向生产 S3 prefix 发布恢复结果的命令；应在 R7 补齐
+带 manifest 校验、空目标门禁和原子接管语义的生产 restore/cutover CLI，完成前必须制定并演练供应商级对象
+复制与逐项校验方案。
+
 ## 11. 升级流程
 
 每次升级按固定顺序执行：
 
-1. 记录当前 `readlink -f /opt/xiqu/current` 和 Git commit。
-2. 查看 release notes、Prisma migration 和环境变量变化。
-3. 创建并验证一致备份；重要升级完成一次隔离恢复演练。
-4. 构建新的不可变 release，但先不要切换 `current`。
-5. 通过 CLI 进入维护模式，等待在途写入排空。
-6. 使用**新 release** 执行 `npm run db:deploy`。
-7. 原子切换 `/opt/xiqu/current`，重启 API，`nginx -t` 后 reload。
-8. 运行 `deploy:check` 和人工登录/打开/保存验证。
-9. 验收通过后解除维护模式；保留上一 release 与对应备份。
+1. 记录当前 `readlink -f /opt/xiqu/current` 和 Git commit，提前通知用户暂停编辑并确认页面显示已同步。
+2. 查看 release notes、Prisma migration 和环境变量变化，构建新的不可变 release，但先不要切换 `current`。
+3. 停止 analysis worker 并等待其安全退出；创建并验证一致备份，重要升级完成一次隔离恢复演练。
+4. 通过 CLI 进入维护模式，等待在途 HTTP 写入排空。当前版本没有自动客户端 drain，管理员还应确认活跃用户
+   已停止编辑；维护开启后的本机草稿不会自动等同于服务器已保存。
+5. 使用 **新 release** 执行 `npm run db:deploy`。
+6. 原子切换 `/opt/xiqu/current`，重启 API；若代理配置变化，再执行 `nginx -t` 后 reload。
+7. 在维护状态下运行无写入的 `deploy:check`，检查首页、liveness、readiness 和只读资源；此时不能把登录或
+   保存失败误判为新版本故障。
+8. 使用 CLI 解除维护，随后启动新 release 的 analysis worker 并检查队列状态。
+9. 完成人工登录、打开、保存、协作和媒体分析闭环；通知用户刷新，保留上一 release 与对应备份。
 
 示例：
 
@@ -400,9 +442,28 @@ S3-compatible 远端备份、manifest-last 发布、流式校验、保留清理�
 OLD_RELEASE="$(readlink -f /opt/xiqu/current)"
 NEW_RELEASE=/opt/xiqu/releases/<new-release-id>
 
+# 切换前由旧 release 进入维护；命令会等待在途 HTTP 写入结束。
+sudo -u xiqu bash -c '
+  set -a
+  source /etc/xiqu-platform/xiqu-platform.env
+  set +a
+  cd /opt/xiqu/current
+  npm run maintenance:enable -- --operator platform.admin --reason "部署新版本"
+'
+
 sudo ln -sfn "$NEW_RELEASE" /opt/xiqu/current
 sudo systemctl restart xiqu-api
 npm run deploy:check -- --base-url=https://annotation.example.org
+
+# 只读检查通过后由新 release 恢复写入，再启动 worker。
+sudo -u xiqu bash -c '
+  set -a
+  source /etc/xiqu-platform/xiqu-platform.env
+  set +a
+  cd /opt/xiqu/current
+  npm run maintenance:disable -- --operator platform.admin
+'
+sudo systemctl start xiqu-analysis-worker
 ```
 
 ## 12. 失败回滚

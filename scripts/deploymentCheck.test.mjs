@@ -54,6 +54,22 @@ test("本地后端开发命令统一读取根目录环境文件", async () => {
   }
 });
 
+// 生产 release 不复制 apps/ TypeScript 源码，所有运维命令必须只依赖已验收的 dist 产物。
+test("生产维护与备份命令只调用编译后 CLI", async () => {
+  const packageJson = JSON.parse(await readFile(
+    new URL("../package.json", import.meta.url),
+    "utf8",
+  ));
+  const operationScripts = Object.entries(packageJson.scripts ?? {})
+    .filter(([name]) => name.startsWith("maintenance:") || name.startsWith("backup:"));
+  assert.ok(operationScripts.length > 0);
+  for (const [name, script] of operationScripts) {
+    assert.equal(typeof script, "string", `${name} 必须是可执行脚本`);
+    assert.match(script, /^node dist\/api\/backup\/cli\.js\s/u, `${name} 不能依赖生产 release 外的源码`);
+    assert.doesNotMatch(script, /\btsx\b|apps\/api\/src/u);
+  }
+});
+
 test("健康响应必须使用平台 envelope、服务名和预期状态", () => {
   assert.doesNotThrow(() => validateHealthPayload({
     data: { status: "ready", service: "xiqu-platform-api" },

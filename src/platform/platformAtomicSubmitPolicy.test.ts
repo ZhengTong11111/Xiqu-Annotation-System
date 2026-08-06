@@ -109,5 +109,14 @@ test("网络、冲突和确定错误使用原子提交专用分类", () => {
   assert.equal(isMutationLeaseSubmitFailure(classifyAtomicSubmitError(expiredLease, true)), true);
   assert.equal(isMutationLeaseSubmitFailure(revisionConflict), false);
   assert.equal(classifyAtomicSubmitError(new PlatformApiError(503, "internal_error", "busy", null), true).retryable, true);
+  assert.deepEqual(
+    classifyAtomicSubmitError(new PlatformApiError(503, "maintenance_mode", "维护中", null), true),
+    {
+      status: "error",
+      retryable: false,
+      code: "maintenance_mode",
+      message: "服务器正在维护，当前修改暂时无法自动保存到服务器；本地恢复草稿将继续保留。",
+    },
+  );
   assert.equal(classifyAtomicSubmitError(new PlatformApiError(403, "forbidden", "no", null), true).retryable, false);
 });

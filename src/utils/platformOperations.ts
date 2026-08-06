@@ -1,4 +1,8 @@
 import { PlatformApiError, type PlatformClient } from "../api/platformClient";
+import {
+  isPlatformMaintenanceError,
+  PLATFORM_MAINTENANCE_SAVE_ERROR_MESSAGE,
+} from "../platform/platformMaintenanceSaveWarning";
 import type { CreateAnnotationOperationRequest } from "@xiqu/shared";
 import type { ProjectDocumentOperation } from "../state/projectDocumentState";
 
@@ -111,6 +115,14 @@ export function describeServerSaveError(error: unknown): Exclude<
   { status: "saved" | "rebased" | "skipped" }
 > {
   if (error instanceof PlatformApiError) {
+    // 维护期间请求不会通过重试自行成功；明确停下并依赖浏览器恢复草稿保留用户修改。
+    if (isPlatformMaintenanceError(error)) {
+      return {
+        status: "error",
+        retryable: false,
+        message: PLATFORM_MAINTENANCE_SAVE_ERROR_MESSAGE,
+      };
+    }
     if (error.status === 409) {
       const detailCode = getPlatformErrorDetailCode(error.details);
       if (detailCode?.startsWith("annotation_mutation_lease_")) {

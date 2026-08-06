@@ -6,6 +6,7 @@ import {
   Clock3,
   Download,
   FileJson2,
+  FilePlus2,
   Files,
   Folder,
   FolderInput,
@@ -51,6 +52,7 @@ import {
 import type { PlatformClient } from "../api/platformClient";
 import { mockProject } from "../mockData";
 import type { ProjectData } from "../types";
+import { createEmptyProjectData } from "../utils/project";
 import {
   isProjectFileLike,
   normalizeImportedProjectFile,
@@ -149,6 +151,7 @@ export function ResourceExplorer(props: {
   const [isPasting, setIsPasting] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
   const [isTrashing, setIsTrashing] = useState(false);
+  const [isCreatingBlankAnnotation, setIsCreatingBlankAnnotation] = useState(false);
   const [isMovingResources, setIsMovingResources] = useState(false);
   const [draggedResourceIds, setDraggedResourceIds] = useState<string[]>([]);
   const [breadcrumbResources, setBreadcrumbResources] = useState<
@@ -175,6 +178,7 @@ export function ResourceExplorer(props: {
   const pasteInFlightRef = useRef(false);
   const moveInFlightRef = useRef(false);
   const trashInFlightRef = useRef(false);
+  const createBlankAnnotationInFlightRef = useRef(false);
   const breadcrumbRequestIdRef = useRef(0);
   const pendingColumnSelectionRef = useRef<number | null>(null);
   const pageRequestIdRef = useRef(0);
@@ -693,6 +697,48 @@ export function ResourceExplorer(props: {
     }
   }
 
+  async function createBlankAnnotationProject() {
+    if (!locationParentId) {
+      setError("请先进入项目或文件夹，再新建空白标注工程。");
+      return;
+    }
+    if (createBlankAnnotationInFlightRef.current) return;
+
+    const inputName = window.prompt(
+      "空白标注工程名称：",
+      "未命名标注.annotation.json",
+    );
+    const name = inputName?.trim();
+    if (!name) return;
+
+    createBlankAnnotationInFlightRef.current = true;
+    setIsCreatingBlankAnnotation(true);
+    setError(null);
+    try {
+      // 空白工程仍走平台标注文件接口，使 revision、ACL、恢复草稿和后续自动保存从创建时就保持一致。
+      const created = await props.client.createAnnotationFile<ProjectData>({
+        parentId: locationParentId,
+        name,
+        payload: prepareProjectForServer(createEmptyProjectData()),
+        mediaResourceId: null,
+      });
+      await refreshCurrentView();
+      setSelectedIds([created.resource.id]);
+      setAnchorId(created.resource.id);
+
+      // 复用平台唯一打开路径，重新读取权威 revision 与权限后再建立编辑器会话。
+      const opened = await props.onOpenAnnotationFile(created.resource);
+      if (!opened) {
+        setError("空白标注工程已创建，但未进入编辑器。可在当前目录中重新打开。");
+      }
+    } catch (nextError) {
+      setError(describeError(nextError));
+    } finally {
+      createBlankAnnotationInFlightRef.current = false;
+      setIsCreatingBlankAnnotation(false);
+    }
+  }
+
   async function importJson(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -760,6 +806,7 @@ export function ResourceExplorer(props: {
     : page.breadcrumbs;
   const interactionDisabled = isTrashView ||
     isLoading ||
+    isCreatingBlankAnnotation ||
     isPasting ||
     isRestoring ||
     isMovingResources ||
@@ -947,6 +994,14 @@ export function ResourceExplorer(props: {
                   </button>
                   <button type="button" disabled={!locationParentId} onClick={() => void createContainer("folder")} title="新建文件夹">
                     <Folder size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!locationParentId || isCreatingBlankAnnotation}
+                    onClick={() => void createBlankAnnotationProject()}
+                    title={locationParentId ? "新建空白标注工程" : "请先进入项目或文件夹"}
+                  >
+                    <FilePlus2 size={16} />
                   </button>
                   <button type="button" disabled={!locationParentId} onClick={() => jsonInputRef.current?.click()} title="导入标注 JSON">
                     <FileJson2 size={16} />
