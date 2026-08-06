@@ -6052,3 +6052,26 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   storage，再决定是否实施，不能未经测量迁移线上对象。
 - 生产浏览器需使用真实《寻梦》VOD 快速拖动很长距离后停下，观察最终窗口是否只保留必要 batch、旧无关请求是否取消、
   波形是否先于频谱出现、刷新后 IndexedDB 是否命中、预加载是否不影响编辑和播放。健康检查不能替代这项体验验收。
+
+### R3h6 生产发布
+
+- 2026-08-06 已将 R3h6 注释审查后的提交 `5a4db87` 部署到生产服务器 `101.201.76.10`，release 为
+  `/opt/xiqu/releases/20260806T101921Z-5a4db87`；本机 `.env`、`data/`、数据库和对象存储均未上传。
+- 发布前停止 `xiqu-analysis-worker`，从旧 release 创建一致备份
+  `xiqu-backup-2026-08-06T10-21-50-657Z-d732be55`；备份包含 350 个对象、0 个 warning，随后使用旧 release
+  的 `backup:verify` 校验通过。数据盘和现有生产对象未被清理或迁移。
+- 备份校验后由 `platform.admin` 开启维护模式；新 release 通过 `prisma.config.ts`、20 条 migration、
+  `packages/shared/dist`、`packages/document-model/dist`、API/worker/Web 产物门禁。`prisma migrate deploy` 返回
+  `20 migrations found / No pending migrations to apply`，没有 schema 变更。
+- `/opt/xiqu/current` 原子切换到新 release 后重启 API。第一次立即 curl 早于 Node 完成监听而失败，随后重试成功；
+  这是探测时序问题，不是服务启动错误。新 API liveness/readiness 均通过，readiness 中 database/storage 为 ok。
+- 新 release 在维护状态下通过公网只读 `npm run deploy:check -- --base-url=http://101.201.76.10`；之后关闭维护模式并
+  启动 analysis worker，最终 API/worker 均为 `active`，维护状态为 `enabled=false`。发布后 API/worker journald 未发现
+  error、fatal、uncaught 或 crash；Nginx 配置和 VOD 环境本轮没有修改。
+
+### 发布后待人工验收
+
+- 仍需在浏览器用真实《寻梦》VOD 检查波形首帧、快速横向拖动时旧 batch 取消、相邻预取、IndexedDB 命中和主动预加载；
+  本次健康检查不能替代这些前端体验测试。
+- 若 Network 指标确认对象存储 TTFB 仍是主要瓶颈，下一阶段再按 R3h7 设计 `Server-Timing` 和 immutable analysis
+  bundle/Range 读取；不能绕过 ACL 直接开放对象或下载完整视频/临时音频。
