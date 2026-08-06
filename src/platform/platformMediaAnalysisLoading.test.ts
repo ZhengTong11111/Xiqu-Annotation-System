@@ -7,21 +7,36 @@ import {
 import {
   buildAdjacentPlatformAnalysisWindows,
   buildPlatformAnalysisRequestWindow,
-  cancelPlatformAnalysisBatchesOutsideRetainedAssets,
+  cancelPlatformAnalysisBatchesOutsideViewport,
   partitionMediaAnalysisAssetBatches,
   PlatformMediaAnalysisAssetCache,
   selectContiguousLoadedAnalysisAssets,
+  selectContiguousLoadedAnalysisAssetsAroundVisible,
   type PlatformMediaAnalysisBatchRegistry,
 } from "./platformMediaAnalysisLoading";
 
-test("分析请求窗口按 30 秒边界量化并保留来源偏移", () => {
+test("默认 30 秒 run 的分析请求窗口按边界量化并保留来源偏移", () => {
   assert.deepEqual(
     buildPlatformAnalysisRequestWindow({ startTime: 95, endTime: 145, zoom: 20 }, 5),
-    { startTime: 60, endTime: 180, waveformLevel: 2 },
+    { startTime: 60, endTime: 180, waveformLevel: 2, tileDurationSeconds: 30 },
   );
   assert.deepEqual(
     buildPlatformAnalysisRequestWindow({ startTime: 96, endTime: 146, zoom: 20 }, 5),
-    { startTime: 60, endTime: 180, waveformLevel: 2 },
+    { startTime: 60, endTime: 180, waveformLevel: 2, tileDurationSeconds: 30 },
+  );
+});
+
+test("分析请求窗口支持 10 秒 run 的边界", () => {
+  assert.deepEqual(
+    buildPlatformAnalysisRequestWindow({ startTime: 95, endTime: 145, zoom: 20 }, 5, 10),
+    { startTime: 70, endTime: 160, waveformLevel: 2, tileDurationSeconds: 10 },
+  );
+});
+
+test("分析请求窗口的缓冲按可视区比例限制，并设置单侧上限", () => {
+  assert.deepEqual(
+    buildPlatformAnalysisRequestWindow({ startTime: 300, endTime: 500, zoom: 20 }, 0),
+    { startTime: 240, endTime: 570, waveformLevel: 2, tileDurationSeconds: 30 },
   );
 });
 
@@ -62,32 +77,64 @@ test("不同分析序列拆成独立批次让轻量波形先完成", () => {
   );
 });
 
-test("相邻预取窗口不重复当前范围且不会越过零点", () => {
+test("相邻预取窗口只读取一个可视区，并支持按方向读取", () => {
   assert.deepEqual(
-    buildAdjacentPlatformAnalysisWindows({ startTime: 60, endTime: 180, waveformLevel: 2 }),
+    buildAdjacentPlatformAnalysisWindows(
+      { startTime: 60, endTime: 180, waveformLevel: 2, tileDurationSeconds: 30 },
+      50,
+    ),
     [
-      { startTime: 0, endTime: 60, waveformLevel: 2 },
-      { startTime: 180, endTime: 300, waveformLevel: 2 },
+      { startTime: 180, endTime: 230, waveformLevel: 2, tileDurationSeconds: 30 },
+    ],
+  );
+  assert.deepEqual(
+    buildAdjacentPlatformAnalysisWindows(
+      { startTime: 60, endTime: 180, waveformLevel: 2, tileDurationSeconds: 30 },
+      50,
+      "backward",
+    ),
+    [
+      { startTime: 10, endTime: 60, waveformLevel: 2, tileDurationSeconds: 30 },
     ],
   );
 });
 
-test("快速跳转只取消与保留资产集合完全无交集的批次", () => {
+test("快速跳转只取消远离视口且没有保护资产的批次", () => {
   const retainedController = new AbortController();
   const obsoleteController = new AbortController();
+  const nearbyController = new AbortController();
   const registry: PlatformMediaAnalysisBatchRegistry = new Map([
     [Symbol("retained"), {
       controller: retainedController,
       assetIds: new Set(["shared", "old"]),
+      minStartTime: 0,
+      maxEndTime: 30,
     }],
     [Symbol("obsolete"), {
       controller: obsoleteController,
       assetIds: new Set(["obsolete"]),
+      minStartTime: 0,
+      maxEndTime: 30,
+    }],
+    [Symbol("nearby"), {
+      controller: nearbyController,
+      assetIds: new Set(["nearby"]),
+      minStartTime: 90,
+      maxEndTime: 120,
     }],
   ]);
-  assert.equal(cancelPlatformAnalysisBatchesOutsideRetainedAssets(registry, new Set(["shared"])), 1);
+  assert.equal(
+    cancelPlatformAnalysisBatchesOutsideViewport(
+      registry,
+      { startTime: 100, endTime: 120 },
+      new Set(["shared"]),
+      30,
+    ),
+    1,
+  );
   assert.equal(retainedController.signal.aborted, false);
   assert.equal(obsoleteController.signal.aborted, true);
+  assert.equal(nearbyController.signal.aborted, false);
 });
 
 test("渐进显示只选择从窗口起点开始的连续已加载前缀", () => {
@@ -106,6 +153,28 @@ test("渐进显示只选择从窗口起点开始的连续已加载前缀", () =>
       ]),
     ).map(({ id }) => id),
     ["asset-0"],
+  );
+});
+
+test("渐进显示优先选择覆盖可视区的连续段", () => {
+  const descriptors = [0, 1, 2, 3].map((tileIndex) => ({
+    ...descriptor(`visible-${tileIndex}`, 1),
+    tileIndex,
+    startTime: tileIndex * 30,
+    endTime: (tileIndex + 1) * 30,
+  }));
+  assert.deepEqual(
+    selectContiguousLoadedAnalysisAssetsAroundVisible(
+      descriptors,
+      new Map([
+        ["visible-0", Uint8Array.of(0)],
+        ["visible-2", Uint8Array.of(2)],
+        ["visible-3", Uint8Array.of(3)],
+      ]),
+      60,
+      90,
+    ).map(({ id }) => id),
+    ["visible-2", "visible-3"],
   );
 });
 

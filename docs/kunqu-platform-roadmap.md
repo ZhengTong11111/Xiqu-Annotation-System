@@ -505,7 +505,15 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   28 项、完整 API 163 项、部署 24 项、完整构建均通过。待使用真实《寻梦》VOD 观察快速拖动时的 batch 数量、
   cancelled 请求、首波形时间、IndexedDB 命中和预加载对编辑体验的影响。
 
-  R3h7 再评估服务端分析 bundle/Range 读取：在不放宽 ACL 的前提下，把同一 run/kind/level 的小瓦片组织为不可变
+- **R3h7：分析瓦片客户端调度与 10 秒粒度（代码已完成，待提交和生产验收）。** 在不改变 ProjectData、ACL、
+  对象存储合同和三种媒体来源的前提下，客户端把请求 padding 收紧为每侧可视区 25% 且最多 90 秒；相邻预取
+  改为按最近移动方向只取一个可视区，并在视口稳定 800ms 后启动。前台批次由 8 MiB 降为 2 MiB，渐进组装优先
+  覆盖当前可视区的连续已加载段；批次 registry 记录源时间范围，快速跳转时取消远离视口且没有主动预加载保护
+  的批次。新分析 run 的服务端瓦片改为 10 秒，frequency-detail 的 hopLength 同步改为 400，run DTO 返回实际
+  粒度，旧 run 通过 manifest/config 继续按 30 秒读取。5 秒暂不采用，因为现有波形层级不能整除 5 秒采样数。
+  本轮没有修改不安全的 immutable 缓存头，也没有重复已有 Nginx gzip；专项媒体分析测试和 Web/API 构建已通过，仍需
+  真实服务器用《寻梦》VOD重算一次并验收 Network、波形首帧、快速拖动取消、旧 run 兼容和 IndexedDB 命中。
+- **R3h8：服务端分析 bundle/Range 读取（后续设计）。** 在不放宽 ACL 的前提下，把同一 run/kind/level 的小瓦片组织为不可变
   bundle，并设计带 manifest、offset、checksum 的权限绑定读取；在 R3h6 的真实指标证明对象存储 TTFB 仍是主要瓶颈
   后再实施，不能提前引入对象迁移和新的缓存授权语义。
 

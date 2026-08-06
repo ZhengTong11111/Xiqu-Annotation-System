@@ -683,6 +683,7 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(firstRun.statusCode, 200, firstRun.body);
       assert.equal(dataOf(firstRun.json()).status, "queued");
+      assert.equal(dataOf(firstRun.json()).tileDurationSeconds, 10);
       assert.equal(await prisma.processingJob.count({
         where: { analysisRunId: String(dataOf(firstRun.json()).id) },
       }), 1);
@@ -705,7 +706,7 @@ test("平台资源 API 集成测试", async (suite) => {
           level: 0,
           tileIndex: 0,
           startTime: 0,
-          endTime: 30,
+          endTime: 10,
           mimeType: "application/vnd.xiqu.waveform-tile",
           size: stagedAnalysisAsset.size,
           checksum: stagedAnalysisAsset.checksum,
@@ -726,8 +727,8 @@ test("平台资源 API 集成测试", async (suite) => {
           preset: "default",
           level: 0,
           tileIndex: 1,
-          startTime: 30,
-          endTime: 60,
+          startTime: 10,
+          endTime: 20,
           mimeType: "application/vnd.xiqu.waveform-tile",
           size: secondStagedAnalysisAsset.size,
           checksum: secondStagedAnalysisAsset.checksum,

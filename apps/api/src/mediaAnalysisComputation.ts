@@ -7,8 +7,8 @@ import {
   type MediaAnalysisSpectrogramConfig,
 } from "@xiqu/shared";
 
-export const MEDIA_ANALYSIS_TILE_DURATION_SECONDS = 30;
-// 每个层级都整除 30 秒 * 16 kHz，客户端跨瓦片拼接时不会累积桶宽误差。
+export const MEDIA_ANALYSIS_TILE_DURATION_SECONDS = 10;
+// 每个层级都整除 10 秒 * 16 kHz，客户端跨瓦片拼接时不会累积桶宽误差。
 export const MEDIA_ANALYSIS_WAVEFORM_LEVELS = [64, 256, 1000, 4000] as const;
 export const MEDIA_ANALYSIS_SPECTROGRAM_PRESETS = {
   "time-detail": {
@@ -24,8 +24,8 @@ export const MEDIA_ANALYSIS_SPECTROGRAM_PRESETS = {
   "frequency-detail": {
     analysisPreset: "frequency-detail",
     fftSize: 4096,
-    // 480 个采样点正好把 30 秒瓦片分成 1000 帧，避免每块半帧误差累积为时间漂移。
-    hopLength: 480,
+    // 400 个采样点正好把 10 秒瓦片分成 400 帧，避免每块半帧误差累积为时间漂移。
+    hopLength: 400,
     minFrequency: 50,
     maxFrequency: 8000,
     dynamicRangeDb: 85,
@@ -46,7 +46,7 @@ export type ComputedMediaAnalysisAsset = {
 };
 
 /**
- * 将任意 FFmpeg stdout 分片收敛为固定 30 秒 PCM 瓦片。
+ * 将任意 FFmpeg stdout 分片收敛为固定 10 秒 PCM 瓦片。
  * pending 上限始终小于“一瓦片 + 一个 stdout chunk”，不会随媒体时长增长。
  */
 export class MediaAnalysisPcmTileAccumulator {

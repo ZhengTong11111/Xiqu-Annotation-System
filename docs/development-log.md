@@ -6075,3 +6075,36 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   本次健康检查不能替代这些前端体验测试。
 - 若 Network 指标确认对象存储 TTFB 仍是主要瓶颈，下一阶段再按 R3h7 设计 `Server-Timing` 和 immutable analysis
   bundle/Range 读取；不能绕过 ACL 直接开放对象或下载完整视频/临时音频。
+
+## 2026-08-06：R3h7 客户端调度与 10 秒分析瓦片（代码完成，待部署验收）
+
+本轮根据 `CLAUDE_WORK.md` 对当前线上滚动体验进行代码审查，并结合实际调用链重新评估了“把分析瓦片从 30 秒
+缩短为 5/10 秒”的建议。结论是 10 秒适合当前格式，5 秒暂不采用：现有波形层级 `64/256/1000/4000`
+在 10 秒、16 kHz 下都能整除，而 256 samples/bucket 在 5 秒下不能整除；强行使用 5 秒会引入新的桶宽
+或时间边界误差。
+
+已完成：
+
+- 将新媒体分析 run 的服务端瓦片默认粒度改为 10 秒；frequency-detail 频谱的 `hopLength` 从 480 调为 400，
+  使 10 秒瓦片严格产生整数帧。分析配置 hash 随配置变化，旧 30 秒 run 不会被错误复用。
+- 在 `MediaAnalysisRun` DTO 中返回 `tileDurationSeconds`。服务端读取时按 `manifest -> config -> 当前默认值`
+  回退，旧 run 仍按自己的 30 秒粒度被前端量化和拼接；不需要数据库 schema 迁移。
+- 将客户端请求窗 padding 改为每侧可视区 25%、单侧最多 90 秒；相邻预取改为沿最近移动方向读取一个可视区，
+  并在可视区稳定 800ms 后才启动。前台批次从 8 MiB 降为 2 MiB。
+- 渐进绘制新增可视区优先的连续资产段选择；批次 registry 记录源时间范围，快速跳转时只取消整体远离当前视口、
+  且不含主动预加载保护资产的批次。旧的仅按资产集合取消 helper 已清理，避免两套取消规则竞争。
+- 未修改 `ProjectData`、ACL、数据库表结构、对象存储接口、VOD/服务器媒体/本机媒体来源；未采用不安全的
+  `immutable` 分析缓存头，也未重复已有 Nginx gzip 配置；没有新增 npm 依赖。
+
+验证：
+
+- `npm run test:media-analysis`：31 项通过，包含共享 batch codec、VOD 网关、FFmpeg、worker、对象补偿、IndexedDB
+  缓存、10 秒计算边界、30/10 秒请求窗、渐进可视段和远距离批次取消。
+- `npm run build:web`、`npm run build:api`、`git diff --check` 通过；Vite 仍只有既有主 chunk 超过 500 kB 的提示。
+
+待推进：
+
+- 尚未部署本轮 release，也尚未使用真实《寻梦》VOD 重算 10 秒 run。生产验收需要观察下载量、波形/频谱首帧、快速
+  拖动时的取消、停止滚动 800ms 后的预取、旧 30 秒 run 兼容和 IndexedDB 命中。
+- 服务端仍按单瓦片对象读取；只有在真实 Network 指标确认 TTFB/对象读取占主要耗时后，才进入 R3h8 的
+  `Server-Timing`、manifest、bundle/Range 设计。不得未经测量迁移线上对象或绕过 ACL。

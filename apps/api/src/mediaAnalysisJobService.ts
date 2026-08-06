@@ -42,6 +42,16 @@ export const MEDIA_ANALYSIS_CONFIG = {
 } as const;
 const MEDIA_ANALYSIS_CONFIG_HASH = stableHash(MEDIA_ANALYSIS_CONFIG);
 
+/** 旧 run 的 manifest 可能没有合法粒度，读取时回退到当前默认值。 */
+function readTileDurationSeconds(manifest: unknown, config: unknown) {
+  for (const candidate of [manifest, config]) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const value = (candidate as { tileDurationSeconds?: unknown }).tileDurationSeconds;
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  }
+  return MEDIA_ANALYSIS_TILE_DURATION_SECONDS;
+}
+
 type AnalysisMediaRow = {
   resourceId: string;
   sourceType: "uploaded" | "aliyun_vod";
@@ -118,15 +128,14 @@ export class MediaAnalysisJobService {
     await this.assertActiveAnnotationFile(user, annotationFileId, "read");
     const context = await this.resolveAnalysisContext(user, annotationFileId);
     const currentRun = context.source.status === "ready"
-      ? await this.prisma.mediaAnalysisRun.findUnique({
+      ? await this.prisma.mediaAnalysisRun.findFirst({
           where: {
-            annotationFileId_sourceFingerprint_algorithmVersion_configHash: {
-              annotationFileId,
-              sourceFingerprint: context.source.value.fingerprint,
-              algorithmVersion: MEDIA_ANALYSIS_ALGORITHM_VERSION,
-              configHash: MEDIA_ANALYSIS_CONFIG_HASH,
-            },
+            annotationFileId,
+            sourceFingerprint: context.source.value.fingerprint,
+            algorithmVersion: MEDIA_ANALYSIS_ALGORITHM_VERSION,
           },
+          // 同一来源的最新 run 作为当前展示对象；每个 run DTO 自带粒度，历史 30 秒 run 不会被误拼成 10 秒。
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         })
       : null;
     return {
@@ -497,6 +506,8 @@ export class MediaAnalysisJobService {
     sourceMode: AnalysisAudioMode;
     sourceOffsetSeconds: number;
     algorithmVersion: string;
+    manifest: unknown;
+    config: unknown;
     duration: number | null;
     sampleRate: number | null;
     createdAt: Date;
@@ -519,6 +530,7 @@ export class MediaAnalysisJobService {
       sourceMode: run.sourceMode,
       sourceOffsetSeconds: run.sourceOffsetSeconds,
       algorithmVersion: run.algorithmVersion,
+      tileDurationSeconds: readTileDurationSeconds(run.manifest, run.config),
       duration: run.duration,
       sampleRate: run.sampleRate,
       assetCounts,

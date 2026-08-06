@@ -134,15 +134,16 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - independent database claim/heartbeat/stale-recovery worker; normal shutdown removes partial assets and requeues the job
   - staged/final object compensation failures must become stable failed states and must never be silently swallowed
 - `apps/api/src/mediaAnalysisFfmpeg.ts` + `apps/api/src/mediaAnalysisComputation.ts`
-  - shell-free FFmpeg streaming to 16 kHz mono PCM and fixed 30-second tile production
+  - shell-free FFmpeg streaming to 16 kHz mono PCM and versioned fixed-duration tile production; new runs currently use
+    10-second tiles, while historical runs expose their original duration through manifest/config
   - waveform bucket widths and spectrogram hop lengths must exactly divide a full tile; otherwise concatenated browser views
-    accumulate time drift. Keep shared config fingerprints and frontend level selection synchronized
+    accumulate time drift. Keep shared config fingerprints, run DTO tile duration, and frontend level selection synchronized
 - `packages/shared/src/mediaAnalysisComputation.ts` + `packages/shared/src/mediaAnalysisTileCodec.ts` +
   `packages/shared/src/mediaAnalysisTileBatchCodec.ts`
   - shared bounded STFT/YIN computation, little-endian tile codec, and strict bounded batch envelope. Batch responses stream
     one manifest header plus raw tile sections; never replace them with Base64 JSON or an API-side whole-batch Buffer
 - `src/platform/usePlatformMediaAnalysis.ts`
-  - platform-only status polling, source mutations, 30-second-quantized viewport selection, debounced descriptor reads,
+  - platform-only status polling, source mutations, run-duration-quantized viewport selection, debounced descriptor reads,
     session-scoped in-flight batch reuse, generation isolation, strict tile continuity checks, source offset conversion,
     progressive waveform/spectrogram assembly, bounded memory cache, and IndexedDB second-level cache
   - when a new viewport enters the debounce window, immediately cancel old visible/adjacent batches outside the active
@@ -1873,7 +1874,8 @@ Audio pipeline:
 - platform Timeline requests the current viewport first through `usePlatformMediaAnalysis`, then performs bounded adjacent-window
   prefetch and offers user-triggered full preloading of the current analysis configuration. Source changes and file switches
   must cancel or invalidate stale requests, and both memory/IndexedDB caches stay bounded. Pixel-level scrolling is quantized
-  to 30-second server tiles; one bounded binary batch carries missing waveform/spectrogram/F0 assets after one ACL check
+  to the current run's server tile duration (new runs use 10 seconds; historical runs keep their manifest/config duration);
+  one bounded binary batch carries missing waveform/spectrogram/F0 assets after one ACL check
 - local computer media remains a browser-only fallback; a user-selected `blob:` may use the browser's full decode capacity,
   while non-Blob URLs retain the 256 MiB download cap. It may reuse the shared bounded STFT/YIN implementation, but protected
   platform uploaded/VOD URLs must never enter that path

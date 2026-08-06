@@ -6,6 +6,7 @@ import {
 } from "@xiqu/shared";
 import {
   computeMediaAnalysisAssets,
+  MEDIA_ANALYSIS_TILE_DURATION_SECONDS,
   MediaAnalysisPcmTileAccumulator,
 } from "../src/mediaAnalysisComputation.js";
 
@@ -16,7 +17,7 @@ test("媒体分析瓦片包含波形层级、两种频谱和 voiced-only 音高"
   assert.equal(assets.filter(({ kind }) => kind === "waveform").length, 4);
   assert.equal(assets.filter(({ kind }) => kind === "spectrogram").length, 2);
   assert.equal(assets.filter(({ kind }) => kind === "pitch").length, 1);
-  assert.ok(assets.every(({ startTime }) => startTime === 60));
+  assert.ok(assets.every(({ startTime }) => startTime === 20));
 
   const waveform = assets.find(({ kind, level }) => kind === "waveform" && level === 0);
   assert.ok(waveform);
@@ -46,20 +47,30 @@ test("媒体分析瓦片包含波形层级、两种频谱和 voiced-only 音高"
   );
 });
 
-test("完整 30 秒瓦片的波形桶和频谱帧严格落在共同时间边界", () => {
+test("完整分析瓦片的波形桶和频谱帧严格落在共同时间边界", () => {
   const sampleRate = 16_000;
-  const assets = computeMediaAnalysisAssets(new Float32Array(sampleRate * 30), sampleRate, 1);
+  const assets = computeMediaAnalysisAssets(
+    new Float32Array(sampleRate * MEDIA_ANALYSIS_TILE_DURATION_SECONDS),
+    sampleRate,
+    1,
+  );
   for (const asset of assets) {
     const decoded = decodeMediaAnalysisTile(asset.bytes);
     if (asset.kind === "waveform") {
       const bucketCount = Number(decoded.header.bucketCount);
       const samplesPerBucket = Number(decoded.header.samplesPerBucket);
-      assert.equal(bucketCount * samplesPerBucket, sampleRate * 30);
+      assert.equal(
+        bucketCount * samplesPerBucket,
+        sampleRate * MEDIA_ANALYSIS_TILE_DURATION_SECONDS,
+      );
     }
     if (asset.kind === "spectrogram") {
       const frameCount = Number(decoded.header.frameCount);
       const hopLength = Number(decoded.header.hopLength);
-      assert.equal(frameCount * hopLength, sampleRate * 30);
+      assert.equal(
+        frameCount * hopLength,
+        sampleRate * MEDIA_ANALYSIS_TILE_DURATION_SECONDS,
+      );
     }
   }
 });
@@ -73,10 +84,12 @@ test("PCM 累积器跨 stdout 分片严格切成固定时长并保留尾块", as
   await accumulator.push(Float32Array.from({ length: 70 }, (_, index) => index + 4));
   await accumulator.finish();
   assert.deepEqual(tiles, [
-    { index: 0, length: 60, first: 1 },
-    { index: 1, length: 13, first: 61 },
+    { index: 0, length: 20, first: 1 },
+    { index: 1, length: 20, first: 21 },
+    { index: 2, length: 20, first: 41 },
+    { index: 3, length: 13, first: 61 },
   ]);
-  assert.equal(accumulator.processedTileCount, 2);
+  assert.equal(accumulator.processedTileCount, 4);
 });
 
 test("频谱瓦片使用统一 dBFS 标尺而不是按瓦片峰值重新归一化", () => {

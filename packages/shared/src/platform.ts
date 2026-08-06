@@ -227,6 +227,8 @@ export type MediaAnalysisRun = {
   sourceMode: AnalysisAudioMode;
   sourceOffsetSeconds: number;
   algorithmVersion: string;
+  /** 本次 run 的分析瓦片时长；客户端据此兼容不同历史分析粒度。 */
+  tileDurationSeconds: number;
   duration: number | null;
   sampleRate: number | null;
   assetCounts: Partial<Record<MediaAnalysisAssetKind, number>>;

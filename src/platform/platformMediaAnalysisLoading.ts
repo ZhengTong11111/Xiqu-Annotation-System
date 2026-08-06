@@ -4,7 +4,7 @@ import {
   type MediaAnalysisAssetDescriptor,
 } from "@xiqu/shared";
 
-const ANALYSIS_TILE_DURATION_SECONDS = 30;
+export const DEFAULT_ANALYSIS_TILE_DURATION_SECONDS = 30;
 const DEFAULT_MAX_CACHE_ASSETS = 96;
 const DEFAULT_MAX_CACHE_BYTES = 64 * 1024 * 1024;
 const WAVEFORM_SAMPLES_PER_BUCKET = [64, 256, 1000, 4000] as const;
@@ -12,6 +12,9 @@ const WAVEFORM_SAMPLES_PER_BUCKET = [64, 256, 1000, 4000] as const;
 export type PlatformMediaAnalysisBatchRequest = {
   assetIds: ReadonlySet<string>;
   controller: AbortController;
+  /** 批次内资产的源时间范围，用于快速跳转时取消远离视口的混合批次。 */
+  minStartTime: number;
+  maxEndTime: number;
 };
 
 export type PlatformMediaAnalysisBatchRegistry = Map<symbol, PlatformMediaAnalysisBatchRequest>;
@@ -20,6 +23,7 @@ export type PlatformAnalysisRequestWindow = {
   startTime: number;
   endTime: number;
   waveformLevel: number;
+  tileDurationSeconds: number;
 };
 
 export type PlatformAnalysisViewport = {
@@ -29,14 +33,23 @@ export type PlatformAnalysisViewport = {
 };
 
 /**
- * 把连续像素滚动量化到服务端真实 30 秒瓦片边界；只要所需瓦片集合不变，就不重新读取三个 descriptor 列表。
+ * 把连续像素滚动量化到当前 run 的真实瓦片边界；只要所需瓦片集合不变，就不重新读取三个 descriptor 列表。
  */
 export function buildPlatformAnalysisRequestWindow(
   viewport: PlatformAnalysisViewport,
   sourceOffsetSeconds: number,
+  tileDurationSeconds = DEFAULT_ANALYSIS_TILE_DURATION_SECONDS,
 ): PlatformAnalysisRequestWindow {
+  // 服务端 DTO 是权威来源，但前端仍对旧版本/异常响应做有界回退，避免零值导致除零和无穷请求。
+  const safeTileDuration = Number.isFinite(tileDurationSeconds) && tileDurationSeconds > 0
+    ? tileDurationSeconds
+    : DEFAULT_ANALYSIS_TILE_DURATION_SECONDS;
   const viewportDuration = Math.max(0.001, viewport.endTime - viewport.startTime);
-  const requestPadding = Math.max(ANALYSIS_TILE_DURATION_SECONDS, viewportDuration * 0.6);
+  // 只保留一小段滚动缓冲：足以吸收短距离移动，又不会把一次请求扩成数倍可视区。
+  const requestPadding = Math.min(
+    Math.max(safeTileDuration, viewportDuration * 0.25),
+    90,
+  );
   const rawStart = Math.max(
     0,
     viewport.startTime - requestPadding - sourceOffsetSeconds,
@@ -46,49 +59,62 @@ export function buildPlatformAnalysisRequestWindow(
     viewport.endTime + requestPadding - sourceOffsetSeconds,
   );
   return {
-    startTime: Math.floor(rawStart / ANALYSIS_TILE_DURATION_SECONDS) * ANALYSIS_TILE_DURATION_SECONDS,
+    startTime: Math.floor(rawStart / safeTileDuration) * safeTileDuration,
     endTime: Math.max(
-      ANALYSIS_TILE_DURATION_SECONDS,
-      Math.ceil(rawEnd / ANALYSIS_TILE_DURATION_SECONDS) * ANALYSIS_TILE_DURATION_SECONDS,
+      safeTileDuration,
+      Math.ceil(rawEnd / safeTileDuration) * safeTileDuration,
     ),
     waveformLevel: chooseWaveformLevel(viewport.zoom),
+    tileDurationSeconds: safeTileDuration,
   };
 }
 
 /**
- * 相邻预取沿用当前窗口跨度和波形层级；前段越过 0 时省略，避免生成与当前窗口重复的无效请求。
+ * 相邻预取只覆盖一个可视区大小的窗口，并优先沿用户最近的移动方向读取。
+ * 预取不是显示必需数据，因此不能再按含 padding 的请求窗成倍扩张下载量。
  */
 export function buildAdjacentPlatformAnalysisWindows(
   current: PlatformAnalysisRequestWindow,
+  visibleDuration = current.endTime - current.startTime,
+  direction: "forward" | "backward" = "forward",
 ) {
-  const duration = current.endTime - current.startTime;
+  const duration = Math.max(current.tileDurationSeconds, visibleDuration);
   const windows: PlatformAnalysisRequestWindow[] = [];
-  if (current.startTime > 0) {
+  if (direction === "backward" && current.startTime > 0) {
     windows.push({
       startTime: Math.max(0, current.startTime - duration),
       endTime: current.startTime,
       waveformLevel: current.waveformLevel,
+      tileDurationSeconds: current.tileDurationSeconds,
+    });
+  } else {
+    windows.push({
+      startTime: current.endTime,
+      endTime: current.endTime + duration,
+      waveformLevel: current.waveformLevel,
+      tileDurationSeconds: current.tileDurationSeconds,
     });
   }
-  windows.push({
-    startTime: current.endTime,
-    endTime: current.endTime + duration,
-    waveformLevel: current.waveformLevel,
-  });
   return windows;
 }
 
 /**
- * 快速跳转后只取消与保留资产集合完全不相交的批次。
- * 含有任一仍需要资产的共享批次必须继续，避免取消后立即重发同一对象。
+ * 快速跳转时取消整体远离当前视口的批次。
+ * 混合批次只要仍包含保护资产就保留，避免把即将复用的共享请求取消后再次发送。
  */
-export function cancelPlatformAnalysisBatchesOutsideRetainedAssets(
+export function cancelPlatformAnalysisBatchesOutsideViewport(
   registry: PlatformMediaAnalysisBatchRegistry,
+  viewport: { startTime: number; endTime: number },
   retainedAssetIds: ReadonlySet<string>,
+  marginSeconds = 60,
 ) {
+  const margin = Math.max(0, marginSeconds);
+  const lowerBound = viewport.startTime - margin;
+  const upperBound = viewport.endTime + margin;
   let cancelled = 0;
   for (const request of registry.values()) {
     if ([...request.assetIds].some((assetId) => retainedAssetIds.has(assetId))) continue;
+    if (request.maxEndTime >= lowerBound && request.minStartTime <= upperBound) continue;
     request.controller.abort();
     cancelled += 1;
   }
@@ -101,7 +127,7 @@ export function abortPlatformAnalysisBatches(registry: PlatformMediaAnalysisBatc
 }
 
 /**
- * 渐进绘制只能使用从当前窗口第一块开始的连续已加载前缀，不能跳过缺块后压缩后段时间。
+ * 渐进绘制只能使用连续已加载的时间段，不能跳过缺块后压缩后段时间。
  */
 export function selectContiguousLoadedAnalysisAssets(
   descriptors: readonly MediaAnalysisAssetDescriptor[],
@@ -121,6 +147,47 @@ export function selectContiguousLoadedAnalysisAssets(
     prefix.push(descriptor);
   }
   return prefix;
+}
+
+/**
+ * 优先返回覆盖当前可视区的连续时间段，让用户先看到眼前内容；左右 padding 可以稍后补齐。
+ * 若可视区还没有任何已加载瓦片，则回退到窗口前缀，保持旧数据能尽快显示。
+ */
+export function selectContiguousLoadedAnalysisAssetsAroundVisible(
+  descriptors: readonly MediaAnalysisAssetDescriptor[],
+  loadedBytes: ReadonlyMap<string, Uint8Array>,
+  visibleStartTime: number,
+  visibleEndTime = visibleStartTime,
+) {
+  const sorted = [...descriptors].sort((left, right) => left.tileIndex - right.tileIndex);
+  if (sorted.length === 0) return [];
+  const visibleEnd = Math.max(visibleStartTime, visibleEndTime);
+  const anchor = sorted.findIndex((descriptor) =>
+    loadedBytes.has(descriptor.id) &&
+    descriptor.endTime > visibleStartTime &&
+    descriptor.startTime < visibleEnd,
+  );
+  if (anchor < 0) return selectContiguousLoadedAnalysisAssets(sorted, loadedBytes);
+
+  let start = anchor;
+  while (start > 0 && isContiguousAnalysisAssetPair(sorted[start - 1], sorted[start]) &&
+    loadedBytes.has(sorted[start - 1].id)) {
+    start -= 1;
+  }
+  let end = anchor;
+  while (end < sorted.length - 1 && isContiguousAnalysisAssetPair(sorted[end], sorted[end + 1]) &&
+    loadedBytes.has(sorted[end + 1].id)) {
+    end += 1;
+  }
+  return sorted.slice(start, end + 1);
+}
+
+function isContiguousAnalysisAssetPair(
+  previous: MediaAnalysisAssetDescriptor,
+  next: MediaAnalysisAssetDescriptor,
+) {
+  return next.tileIndex === previous.tileIndex + 1 &&
+    Math.abs(next.startTime - previous.endTime) <= 0.001;
 }
 
 /** 按共享数量/字节预算切分请求，避免一个宽视口形成无界响应。 */

@@ -13,10 +13,10 @@ import {
   abortPlatformAnalysisBatches,
   buildAdjacentPlatformAnalysisWindows,
   buildPlatformAnalysisRequestWindow,
-  cancelPlatformAnalysisBatchesOutsideRetainedAssets,
+  cancelPlatformAnalysisBatchesOutsideViewport,
   partitionMediaAnalysisAssetBatches,
   PlatformMediaAnalysisAssetCache,
-  selectContiguousLoadedAnalysisAssets,
+  selectContiguousLoadedAnalysisAssetsAroundVisible,
   type PlatformAnalysisRequestWindow,
   type PlatformMediaAnalysisBatchRegistry,
   type PlatformAnalysisViewport,
@@ -27,9 +27,11 @@ import {
 } from "./platformMediaAnalysisCache";
 
 const STATUS_POLL_INTERVAL_MS = 2_000;
-const VIEWPORT_LOAD_DEBOUNCE_MS = 180;
+const VIEWPORT_LOAD_DEBOUNCE_MS = 250;
+const VIEWPORT_SETTLE_PREFETCH_MS = 800;
+const ANALYSIS_BATCH_CANCEL_MARGIN_SECONDS = 60;
 const MAX_CONCURRENT_ASSET_BATCHES = 2;
-const PROGRESSIVE_BATCH_BYTES = 8 * 1024 * 1024;
+const PROGRESSIVE_BATCH_BYTES = 2 * 1024 * 1024;
 const BACKGROUND_BATCH_BYTES = 16 * 1024 * 1024;
 const COMPLETE_LIST_WINDOW_SECONDS = 30 * 180;
 
@@ -71,6 +73,7 @@ export function usePlatformMediaAnalysis(options: Options) {
   const preloadAssetIdsRef = useRef(new Set<string>());
   const assetSessionKeyRef = useRef<string | null>(null);
   const viewportLoadIdRef = useRef(0);
+  const previousViewportStartRef = useRef<number | null>(null);
   const statusRefreshInFlightRef = useRef<Promise<AnnotationMediaAnalysisStatus | null> | null>(null);
 
   const resetAssetSession = useCallback(() => {
@@ -79,6 +82,7 @@ export function usePlatformMediaAnalysis(options: Options) {
     preloadAbortControllerRef.current?.abort();
     preloadAbortControllerRef.current = null;
     preloadAssetIdsRef.current.clear();
+    previousViewportStartRef.current = null;
     assetSessionAbortControllerRef.current = new AbortController();
     inFlightAssetsRef.current.clear();
     batchRegistryRef.current.clear();
@@ -150,7 +154,11 @@ export function usePlatformMediaAnalysis(options: Options) {
   }, [assetSessionKey, resetAssetSession]);
 
   const requestWindow = options.viewport && currentRun
-    ? buildPlatformAnalysisRequestWindow(options.viewport, currentRun.sourceOffsetSeconds)
+    ? buildPlatformAnalysisRequestWindow(
+        options.viewport,
+        currentRun.sourceOffsetSeconds,
+        currentRun.tileDurationSeconds,
+      )
     : null;
 
   useEffect(() => {
@@ -177,7 +185,30 @@ export function usePlatformMediaAnalysis(options: Options) {
     viewportLoadIdRef.current = viewportLoadId;
     const listAbortController = new AbortController();
     let cancelled = false;
+    let prefetchTimer: number | null = null;
     const sourceOffset = run.sourceOffsetSeconds;
+    const viewportStartTime = options.viewport?.startTime ?? 0;
+    const viewportEndTime = options.viewport?.endTime ?? viewportStartTime;
+    const visibleSourceRange = {
+      startTime: Math.max(0, viewportStartTime - sourceOffset),
+      endTime: Math.max(
+        Math.max(0, viewportStartTime - sourceOffset),
+        viewportEndTime - sourceOffset,
+      ),
+    };
+    const previousViewportStart = previousViewportStartRef.current;
+    const prefetchDirection = previousViewportStart !== null &&
+      requestWindow.startTime < previousViewportStart
+      ? "backward"
+      : "forward";
+    previousViewportStartRef.current = requestWindow.startTime;
+    // 新视口建立时按时间范围清理旧批次；主动预加载资产由保护集合保留。
+    cancelPlatformAnalysisBatchesOutsideViewport(
+      batchRegistryRef.current,
+      visibleSourceRange,
+      preloadAssetIdsRef.current,
+      ANALYSIS_BATCH_CANCEL_MARGIN_SECONDS,
+    );
     const timer = window.setTimeout(() => {
       if (cancelled) return;
       setAssetsLoading(true);
@@ -188,6 +219,9 @@ export function usePlatformMediaAnalysis(options: Options) {
         runId: run.id,
         sourceOffset,
         requestWindow,
+        visibleStartTime: visibleSourceRange.startTime,
+        visibleEndTime: visibleSourceRange.endTime,
+        prefetchDirection,
         spectrogramVisible: options.spectrogramVisible,
         analysisPreset: options.analysisPreset,
         showPitch: options.showPitch,
@@ -209,29 +243,35 @@ export function usePlatformMediaAnalysis(options: Options) {
           viewportLoadIdRef.current !== viewportLoadId
         ) return;
         setError(null);
-        // 当前区域完全可用后才低优先级预取相邻窗口；快速滚动不会为每个中间位置启动预取。
-        void prefetchAdjacentAnalysisWindows({
-          client,
-          currentUserId,
-          annotationFileId,
-          runId: run.id,
-          requestWindow,
-          spectrogramVisible: options.spectrogramVisible,
-          analysisPreset: options.analysisPreset,
-          showPitch: options.showPitch,
-          listSignal: listAbortController.signal,
-          assetSignal: assetSessionAbortControllerRef.current.signal,
-          cache: cacheRef.current,
-          inFlight: inFlightAssetsRef.current,
-          batchRegistry: batchRegistryRef.current,
-          isCurrent: () => !cancelled &&
-            generation === generationRef.current &&
-            viewportLoadIdRef.current === viewportLoadId,
-        }).catch((prefetchError) => {
-          if (!isAbortError(prefetchError)) {
-            console.warn("相邻分析窗口预取失败", prefetchError);
-          }
-        });
+        // 可视区稳定后再预取，避免用户快速拖动时反复启动和取消低优先级请求。
+        prefetchTimer = window.setTimeout(() => {
+          if (cancelled) return;
+          void prefetchAdjacentAnalysisWindows({
+            client,
+            currentUserId,
+            annotationFileId,
+            runId: run.id,
+            requestWindow,
+            visibleStartTime: visibleSourceRange.startTime,
+            visibleEndTime: visibleSourceRange.endTime,
+            prefetchDirection,
+            spectrogramVisible: options.spectrogramVisible,
+            analysisPreset: options.analysisPreset,
+            showPitch: options.showPitch,
+            listSignal: listAbortController.signal,
+            assetSignal: assetSessionAbortControllerRef.current.signal,
+            cache: cacheRef.current,
+            inFlight: inFlightAssetsRef.current,
+            batchRegistry: batchRegistryRef.current,
+            isCurrent: () => !cancelled &&
+              generation === generationRef.current &&
+              viewportLoadIdRef.current === viewportLoadId,
+          }).catch((prefetchError) => {
+            if (!isAbortError(prefetchError)) {
+              console.warn("相邻分析窗口预取失败", prefetchError);
+            }
+          });
+        }, VIEWPORT_SETTLE_PREFETCH_MS);
       }).catch((nextError: unknown) => {
         if (cancelled || generation !== generationRef.current || isAbortError(nextError)) return;
         setError(describeError(nextError));
@@ -246,13 +286,8 @@ export function usePlatformMediaAnalysis(options: Options) {
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      if (prefetchTimer !== null) window.clearTimeout(prefetchTimer);
       listAbortController.abort();
-      // 新视口进入防抖等待时，立即终止旧可视/相邻批次；主动预加载资产仍由保护集合保留。
-      // 这样快速拖过长距离不会在等待 descriptor 返回期间继续下载中间窗口。
-      cancelPlatformAnalysisBatchesOutsideRetainedAssets(
-        batchRegistryRef.current,
-        preloadAssetIdsRef.current,
-      );
     };
   }, [
     options.analysisPreset,
@@ -265,7 +300,9 @@ export function usePlatformMediaAnalysis(options: Options) {
     requestWindow?.endTime,
     requestWindow?.startTime,
     requestWindow?.waveformLevel,
-    currentRun,
+    currentRun?.id,
+    currentRun?.sourceOffsetSeconds,
+    currentRun?.status,
   ]);
 
   useEffect(() => {
@@ -357,6 +394,7 @@ export function usePlatformMediaAnalysis(options: Options) {
         annotationFileId,
         runId: run.id,
         duration: run.duration,
+        tileDurationSeconds: run.tileDurationSeconds,
         waveformLevel: requestWindow?.waveformLevel ?? 3,
         spectrogramVisible: options.spectrogramVisible,
         analysisPreset: options.analysisPreset,
@@ -453,6 +491,9 @@ type AnalysisWindowReadContext = {
   annotationFileId: string;
   runId: string;
   requestWindow: PlatformAnalysisRequestWindow;
+  visibleStartTime: number;
+  visibleEndTime: number;
+  prefetchDirection: "forward" | "backward";
   spectrogramVisible: boolean;
   analysisPreset: SpectrogramAnalysisPreset;
   showPitch: boolean;
@@ -487,7 +528,12 @@ async function loadVisibleAnalysisWindow(context: VisibleAnalysisWindowContext) 
     ...descriptors.map(({ id }) => id),
     ...context.protectedAssetIds,
   ]);
-  cancelPlatformAnalysisBatchesOutsideRetainedAssets(context.batchRegistry, retainedAssetIds);
+  cancelPlatformAnalysisBatchesOutsideViewport(
+    context.batchRegistry,
+    { startTime: context.visibleStartTime, endTime: context.visibleEndTime },
+    retainedAssetIds,
+    ANALYSIS_BATCH_CANCEL_MARGIN_SECONDS,
+  );
 
   const loadedBytes = new Map<string, Uint8Array>();
   // 每次只把当前已经到达的字节合并进局部快照；局部快照避免把后台预取资产误绘制到当前窗口。
@@ -495,7 +541,12 @@ async function loadVisibleAnalysisWindow(context: VisibleAnalysisWindowContext) 
     if (!context.isCurrent()) return;
     for (const [assetId, value] of batchBytes) loadedBytes.set(assetId, value);
 
-    const waveformPrefix = selectContiguousLoadedAnalysisAssets(lists.waveform, loadedBytes);
+    const waveformPrefix = selectContiguousLoadedAnalysisAssetsAroundVisible(
+      lists.waveform,
+      loadedBytes,
+      context.visibleStartTime,
+      context.visibleEndTime,
+    );
     if (waveformPrefix.length > 0) {
       context.onWaveform(assemblePlatformWaveform(
         waveformPrefix,
@@ -507,12 +558,19 @@ async function loadVisibleAnalysisWindow(context: VisibleAnalysisWindowContext) 
       context.onSpectrogram(null);
       return;
     }
-    const spectrogramPrefix = selectContiguousLoadedAnalysisAssets(
+    const spectrogramPrefix = selectContiguousLoadedAnalysisAssetsAroundVisible(
       lists.spectrogram,
       loadedBytes,
+      context.visibleStartTime,
+      context.visibleEndTime,
     );
     if (spectrogramPrefix.length === 0) return;
-    const pitchPrefix = selectContiguousLoadedAnalysisAssets(lists.pitch, loadedBytes);
+    const pitchPrefix = selectContiguousLoadedAnalysisAssetsAroundVisible(
+      lists.pitch,
+      loadedBytes,
+      context.visibleStartTime,
+      context.visibleEndTime,
+    );
     context.onSpectrogram(assemblePlatformSpectrogram(
       spectrogramPrefix,
       pitchPrefix,
@@ -547,7 +605,12 @@ async function loadVisibleAnalysisWindow(context: VisibleAnalysisWindowContext) 
  * 它不修改显示状态；新视口到来时会由可视请求取消不再相交的旧批次。
  */
 async function prefetchAdjacentAnalysisWindows(context: AnalysisWindowReadContext) {
-  for (const requestWindow of buildAdjacentPlatformAnalysisWindows(context.requestWindow)) {
+  const visibleDuration = Math.max(0.001, context.visibleEndTime - context.visibleStartTime);
+  for (const requestWindow of buildAdjacentPlatformAnalysisWindows(
+    context.requestWindow,
+    visibleDuration,
+    context.prefetchDirection,
+  )) {
     if (!context.isCurrent()) return;
     const lists = await listAnalysisWindowAssets({ ...context, requestWindow });
     if (!context.isCurrent()) return;
@@ -619,7 +682,7 @@ async function listAnalysisWindowAssets(context: {
 }
 
 /**
- * 完整预加载按最多 180 个 30 秒瓦片分段列目录，避开服务端单次 200 条上限。
+ * 完整预加载按有界时间窗口分段列目录，避开服务端单次 200 条上限。
  * 结果按 asset id 去重，边界重合或未来 tile 时长变化也不会形成重复下载。
  */
 async function listCompleteAnalysisAssets(context: {
@@ -627,6 +690,7 @@ async function listCompleteAnalysisAssets(context: {
   annotationFileId: string;
   runId: string;
   duration: number;
+  tileDurationSeconds: number;
   waveformLevel: number;
   spectrogramVisible: boolean;
   analysisPreset: SpectrogramAnalysisPreset;
@@ -645,6 +709,7 @@ async function listCompleteAnalysisAssets(context: {
         startTime,
         endTime: Math.min(context.duration, startTime + COMPLETE_LIST_WINDOW_SECONDS),
         waveformLevel: context.waveformLevel,
+        tileDurationSeconds: context.tileDurationSeconds,
       },
     });
     aggregate.waveform.push(...lists.waveform);
@@ -789,6 +854,8 @@ async function loadAnalysisAssetBatch(
   registry.set(registryKey, {
     controller,
     assetIds: new Set(batch.map(({ id }) => id)),
+    minStartTime: Math.min(...batch.map(({ startTime }) => startTime)),
+    maxEndTime: Math.max(...batch.map(({ endTime }) => endTime)),
   });
 
   const batchPromise = options.client.getMediaAnalysisAssetBatch(
