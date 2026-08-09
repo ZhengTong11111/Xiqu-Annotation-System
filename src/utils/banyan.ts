@@ -5,6 +5,7 @@ import type {
   ProjectData,
 } from "../types";
 import { getProjectDuration } from "./project";
+import { createRuntimeUuid } from "./runtimeUuid";
 
 export type GenerateBanyanMarksResult = {
   project: ProjectData;
@@ -47,7 +48,7 @@ export function generateBanyanMarksFromGongche(project: ProjectData): GenerateBa
       stats.created += 1;
       nextMarks.push({
         ...candidate,
-        id: `banyan-mark-${crypto.randomUUID()}`,
+        id: `banyan-mark-${createRuntimeUuid()}`,
         sectionId,
         confidence: "auto",
         manualOffset: 0,
@@ -296,7 +297,7 @@ function ensureBanyanSection(
     getProjectDuration(project),
   );
   const section: BanyanSection = {
-    id: `banyan-section-${crypto.randomUUID()}`,
+    id: `banyan-section-${createRuntimeUuid()}`,
     name: "板眼区段",
     startTime,
     endTime,

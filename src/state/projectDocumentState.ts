@@ -7,6 +7,7 @@ import {
   type LegacyAnnotationOperationAction,
 } from "@xiqu/shared";
 import type { ProjectData } from "../types";
+import { createRuntimeUuid } from "../utils/runtimeUuid";
 
 export type HistoryAction =
   | "edit"
@@ -215,10 +216,7 @@ function isValidRebasedOperationChain(
 }
 
 function createOperationId() {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `op-${crypto.randomUUID()}`;
-  }
-  return `op-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `op-${createRuntimeUuid()}`;
 }
 
 export function useProjectDocumentState({

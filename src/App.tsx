@@ -187,6 +187,7 @@ import {
   defaultSpectrogramSettings,
 } from "./utils/spectrogram";
 import { buildLocalWaveformData } from "./utils/localMediaAnalysis";
+import { createRuntimeUuid } from "./utils/runtimeUuid";
 import {
   analyzeSentenceCharacterAlignment,
   createSentenceCharacterRepairs,
@@ -871,11 +872,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   // ref 负责同步阻止重复提交，state 负责让追赶与媒体门禁在保存结束后重新计算。
   // 仅修改 ref 不会触发渲染，失败会话可能因此永久停留在“保存中不可追赶”的旧判断中。
   const [serverSaveInFlight, setServerSaveInFlight] = useState(false);
-  const syncFailureRuntimeIdRef = useRef(
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `editor-${Date.now().toString(36)}`,
-  );
+  const syncFailureRuntimeIdRef = useRef(createRuntimeUuid());
   const syncFailureMismatchFieldsRef = useRef<string[]>([]);
   const syncFailureMismatchDetailsRef = useRef<ReturnType<typeof getSyncFailureMismatchDetails>>([]);
   const lastReportedSyncFailureRef = useRef<string | null>(null);
@@ -2466,7 +2463,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     kind: ProjectSnapshotBoundaryKind,
     buildNextProject: (baseProject: ProjectData) => ProjectData,
   ) {
-    const commandEnvelope = buildProjectSnapshotBoundaryEnvelope(crypto.randomUUID(), kind);
+    const commandEnvelope = buildProjectSnapshotBoundaryEnvelope(createRuntimeUuid(), kind);
     const purpose = commandEnvelope
       ? getAnnotationMutationLeasePurposeForCommand(commandEnvelope)
       : null;
@@ -2713,7 +2710,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const parentTrack = builtinParent ?? customParent;
     const parentTrackType = builtinParent ? "builtin" as const : "custom" as const;
     const nextPointTrack: AttachedPointTrack = {
-      id: `point-track-${crypto.randomUUID()}`,
+      id: `point-track-${createRuntimeUuid()}`,
       name: getDefaultAttachedPointTrackName(parentTrack?.attachedPointTracks ?? []),
       typeOptions: getDefaultAttachedPointTypeOptions(),
       points: [],
@@ -3286,14 +3283,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ),
     );
     const newLineIdMap = new Map(
-      sourceLineIds.map((sourceLineId) => [sourceLineId, `line-${crypto.randomUUID()}`]),
+      sourceLineIds.map((sourceLineId) => [sourceLineId, `line-${createRuntimeUuid()}`]),
     );
 
     const insertedCharacters = safeItems.flatMap((item) =>
       item.type === "character"
         ? [{
-            id: `char-${crypto.randomUUID()}`,
-            lineId: newLineIdMap.get(item.sourceLineId) ?? `line-${crypto.randomUUID()}`,
+            id: `char-${createRuntimeUuid()}`,
+            lineId: newLineIdMap.get(item.sourceLineId) ?? `line-${createRuntimeUuid()}`,
             char: item.char,
             startTime: item.startTime,
             endTime: item.endTime,
@@ -3305,7 +3302,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const insertedActions = safeItems.flatMap((item) =>
       item.type === "action"
         ? [{
-            id: `${item.targetTrackId}-${crypto.randomUUID()}`,
+            id: `${item.targetTrackId}-${createRuntimeUuid()}`,
             trackId: item.targetTrackId,
             label: item.label,
             startTime: item.startTime,
@@ -3320,7 +3317,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       }
       const points = insertedPointsByTrack.get(item.targetTrackId) ?? [];
       points.push({
-        id: `point-${crypto.randomUUID()}`,
+        id: `point-${createRuntimeUuid()}`,
         time: item.time,
         label: item.label,
       });
@@ -3330,7 +3327,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       item.type === "banyan-mark"
         ? [{
             ...item.mark,
-            id: `banyan-mark-${crypto.randomUUID()}`,
+            id: `banyan-mark-${createRuntimeUuid()}`,
             time: item.time,
             estimatedTime: item.time,
             manualOffset: 0,
@@ -3354,14 +3351,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       blocks.push(
         item.trackType === "text"
           ? {
-              id: `custom-block-${crypto.randomUUID()}`,
+              id: `custom-block-${createRuntimeUuid()}`,
               startTime: item.startTime,
               endTime: item.endTime,
               text: item.text ?? DEFAULT_CUSTOM_TEXT,
               type: item.blockType,
             }
           : {
-              id: `custom-block-${crypto.randomUUID()}`,
+              id: `custom-block-${createRuntimeUuid()}`,
               startTime: item.startTime,
               endTime: item.endTime,
               type: item.blockType,
@@ -3689,7 +3686,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
     const normalizedTime = Math.max(0, time);
     const requestedRange = normalizeCharacterCreationRequest(normalizedTime, explicitEndTime);
-    const characterId = `char-${crypto.randomUUID()}`;
+    const characterId = `char-${createRuntimeUuid()}`;
     const char = "新";
     logAnnotationCreationDiagnostic("character-request-received", {
       entityId: characterId,
@@ -3717,7 +3714,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           ],
         }, target.line.id);
       }
-      const lineId = `line-${crypto.randomUUID()}`;
+      const lineId = `line-${createRuntimeUuid()}`;
       return {
         ...baseProject,
         subtitleLines: sortSubtitleLines([
@@ -3788,7 +3785,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const safeEndTime = explicitEndTime !== undefined
       ? Math.max(safeStartTime, explicitEndTime)
       : safeStartTime + DEFAULT_ACTION_DURATION;
-    const actionId = `${trackId}-${crypto.randomUUID()}`;
+    const actionId = `${trackId}-${createRuntimeUuid()}`;
     logAnnotationCreationDiagnostic("builtin-action-request-received", {
       entityId: actionId,
       trackId,
@@ -3883,7 +3880,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return repairBanyanGongcheReferences(projectWithoutTrack).project;
     };
     const overflowBoundary = buildProjectSnapshotBoundaryEnvelope(
-      crypto.randomUUID(),
+      createRuntimeUuid(),
       "builtin_track_lifecycle_overflow",
     );
     if (!overflowBoundary) return;
@@ -3926,7 +3923,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const color = getNextTrackColor(previewProject.customTracks);
     const nextTrack: CustomTrack = trackType === "text"
       ? {
-          id: `custom-track-${crypto.randomUUID()}`,
+          id: `custom-track-${createRuntimeUuid()}`,
           name: getDefaultCustomTrackName(previewProject.customTracks, trackType),
           trackType,
           color,
@@ -3936,7 +3933,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           attachedPointTracksExpanded: false,
         }
       : {
-          id: `custom-track-${crypto.randomUUID()}`,
+          id: `custom-track-${createRuntimeUuid()}`,
           name: getDefaultCustomTrackName(previewProject.customTracks, trackType),
           trackType,
           color,
@@ -3969,7 +3966,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
     const nextPoint: AttachedPointAnnotation = {
-      id: `point-${crypto.randomUUID()}`,
+      id: `point-${createRuntimeUuid()}`,
       time: Math.max(0, time),
       label: location.pointTrack.typeOptions[0] ?? "标记 1",
     };
@@ -4029,7 +4026,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     // undefined 可选字段不进入实体对象，确保命令重建和 JSON 往返使用同一规范结构。
     const nextBlock = targetTrack.trackType === "text"
       ? {
-          id: `custom-block-${crypto.randomUUID()}`,
+          id: `custom-block-${createRuntimeUuid()}`,
           startTime: safeStartTime,
           endTime,
           text: DEFAULT_CUSTOM_TEXT,
@@ -4037,7 +4034,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           ...(branchScope ? { branchScope } : {}),
         }
       : {
-          id: `custom-block-${crypto.randomUUID()}`,
+          id: `custom-block-${createRuntimeUuid()}`,
           startTime: safeStartTime,
           endTime,
           type: defaultType,
@@ -4095,13 +4092,13 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
     const nextBlock: GongcheAnnotation = {
-      id: `gongche-${crypto.randomUUID()}`,
+      id: `gongche-${createRuntimeUuid()}`,
       parentTrackId,
       parentBlockId,
       startTime: parentBlock.startTime,
       endTime: parentBlock.endTime,
       symbols: [{
-        id: `gongche-symbol-${crypto.randomUUID()}`,
+        id: `gongche-symbol-${createRuntimeUuid()}`,
         label: "合",
         notation: "",
         rawText: "合",
@@ -4237,7 +4234,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         );
         if (existingBlock) updated += 1;
         importedBlocks.push({
-          id: existingBlock?.id ?? `gongche-${crypto.randomUUID()}`,
+          id: existingBlock?.id ?? `gongche-${createRuntimeUuid()}`,
           parentTrackId,
           parentBlockId: parentBlock.parentBlockId,
           startTime: parentBlock.startTime,
@@ -4376,7 +4373,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       currentProject.banyanSections[0] ??
       null;
     const nextSection = section ?? {
-      id: `banyan-section-${crypto.randomUUID()}`,
+      id: `banyan-section-${createRuntimeUuid()}`,
       name: "板眼区段",
       startTime: safeTime,
       endTime: Math.max(safeTime + 1, getProjectDuration(currentProject)),
@@ -4387,7 +4384,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       source: "manual",
     };
     const nextMark: BanyanMark = {
-      id: `banyan-mark-${crypto.randomUUID()}`,
+      id: `banyan-mark-${createRuntimeUuid()}`,
       sectionId: nextSection.id,
       time: safeTime,
       estimatedTime: safeTime,
@@ -4447,7 +4444,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       const sliceDuration = (currentCharacter.endTime - currentCharacter.startTime) / splitCharacters.length;
       const splitAnnotations = splitCharacters.map((char, index) => ({
         ...currentCharacter,
-        id: index === 0 ? currentCharacter.id : `char-${crypto.randomUUID()}`,
+        id: index === 0 ? currentCharacter.id : `char-${createRuntimeUuid()}`,
         char,
         startTime: currentCharacter.startTime + sliceDuration * index,
         endTime: index === splitCharacters.length - 1
@@ -4494,7 +4491,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         return;
       }
       const movedCharacters = new Set(lineCharacters.slice(0, characterIndex).map((item) => item.id));
-      const newLineId = `line-${crypto.randomUUID()}`;
+      const newLineId = `line-${createRuntimeUuid()}`;
       const splitProject = syncSubtitleLines(
         {
           ...currentProject,
@@ -4521,7 +4518,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return;
     }
     const movedCharacters = new Set(lineCharacters.slice(characterIndex + 1).map((item) => item.id));
-    const newLineId = `line-${crypto.randomUUID()}`;
+    const newLineId = `line-${createRuntimeUuid()}`;
     const splitProject = syncSubtitleLines(
       {
         ...currentProject,
@@ -4611,7 +4608,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       }
     }
 
-    const newLineId = `line-${crypto.randomUUID()}`;
+    const newLineId = `line-${createRuntimeUuid()}`;
     const nextProject = buildProjectWithMergedCharacterLine(
       currentProject,
       mergeContext.rangeCharacters,
@@ -8415,7 +8412,7 @@ function ensureBuiltinTrackForMerge(project: ProjectData, sourceTrack: BuiltinTr
 }
 
 function createCustomTrackForMerge(project: ProjectData, sourceTrack: CustomTrack) {
-  const trackId = `custom-track-${crypto.randomUUID()}`;
+  const trackId = `custom-track-${createRuntimeUuid()}`;
   const color = normalizeHexColor(sourceTrack.color) ?? getNextTrackColor(project.customTracks);
   const nextTrack: CustomTrack = sourceTrack.trackType === "text"
     ? {
@@ -8450,7 +8447,7 @@ function createAttachedPointTrackForMerge(
   parentTrackId: string,
   sourceTrack: AttachedPointTrack,
 ) {
-  const trackId = `point-track-${crypto.randomUUID()}`;
+  const trackId = `point-track-${createRuntimeUuid()}`;
   const nextTrack: AttachedPointTrack = {
     id: trackId,
     name: sourceTrack.name,
@@ -8483,7 +8480,7 @@ function mergeBuiltinTrackFromImport(
     const oldLineIds = project.characterAnnotations.map((item) => item.lineId);
     const incomingCharacters = sourceCharacters.map((item) => ({
       ...item,
-      id: `char-${crypto.randomUUID()}`,
+      id: `char-${createRuntimeUuid()}`,
     }));
     const nonDuplicateCharacters = incomingCharacters.filter((item) =>
       !project.characterAnnotations.some((existing) => areCharactersEquivalent(item, existing)));
@@ -8499,7 +8496,7 @@ function mergeBuiltinTrackFromImport(
   const sourceActions = sourceProject.actionAnnotations.filter((item) => item.trackId === sourceTrack.id);
   const incomingActions = sourceActions.map((item) => ({
     ...item,
-    id: `${targetTrackId}-${crypto.randomUUID()}`,
+    id: `${targetTrackId}-${createRuntimeUuid()}`,
     trackId: targetTrackId,
   }));
   const nonDuplicateActions = incomingActions.filter((item) =>
@@ -8526,7 +8523,7 @@ function mergeCustomTrackFromImport(
     }
     const incomingBlocks = sourceTrack.blocks.map((block) => ({
       ...block,
-      id: `custom-block-${crypto.randomUUID()}`,
+      id: `custom-block-${createRuntimeUuid()}`,
     }));
     const nonDuplicateBlocks = incomingBlocks.filter((block) =>
       !track.blocks.some((existing) => areCustomBlocksEquivalent(block, existing, track.trackType)));
@@ -8557,7 +8554,7 @@ function mergeAttachedPointTrackFromImport(
       }
       const incomingPoints = sourceTrack.points.map((point) => ({
         ...point,
-        id: `point-${crypto.randomUUID()}`,
+        id: `point-${createRuntimeUuid()}`,
       }));
       const nonDuplicatePoints = incomingPoints.filter((point) =>
         !track.points.some((existing) => areAttachedPointsEquivalent(point, existing)));
@@ -9128,7 +9125,7 @@ function distributeParsedGongcheSymbols(
   const duration = Math.max(endTime - startTime, 0.001);
   const step = duration / safeSymbols.length;
   return safeSymbols.map((symbol, index) => ({
-    id: `gongche-symbol-${crypto.randomUUID()}`,
+    id: `gongche-symbol-${createRuntimeUuid()}`,
     label: symbol.label,
     notation: symbol.notation,
     rawText: symbol.rawText,
@@ -9316,7 +9313,7 @@ function normalizeGongcheSymbols(
   blockEndTime: number,
 ): GongcheSymbol[] {
   const fallback: GongcheSymbol[] = [{
-    id: `gongche-symbol-${crypto.randomUUID()}`,
+    id: `gongche-symbol-${createRuntimeUuid()}`,
     label: "合",
     notation: "",
     rawText: "合",
@@ -9526,7 +9523,7 @@ function buildProjectWithMergedCharacterLine(
     const remainingSegments = splitCharactersByOriginalContinuity(remainingCharacters, originalIndexByCharacterId);
 
     remainingSegments.forEach((segment, segmentIndex) => {
-      const targetLineId = segmentIndex === 0 ? lineId : `line-${crypto.randomUUID()}`;
+      const targetLineId = segmentIndex === 0 ? lineId : `line-${createRuntimeUuid()}`;
       for (const character of segment) {
         lineIdReassignments.set(character.id, targetLineId);
       }

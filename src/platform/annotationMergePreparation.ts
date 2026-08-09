@@ -1,5 +1,6 @@
 import type { AnnotationFile } from "@xiqu/shared";
 import type { ProjectData } from "../types";
+import { createRuntimeUuid } from "../utils/runtimeUuid";
 import { buildAnnotationDiff } from "./annotationDiff";
 import { applyAnnotationMergePlan } from "./annotationMergeApply";
 import {
@@ -109,8 +110,8 @@ export function prepareAnnotationMergeDraft(input: {
     value: {
       targetFile,
       draft: {
-        // 浏览器原生方法必须通过宿主对象调用，不能把 randomUUID 脱离 crypto 后直接执行。
-        id: input.createDraftId ? input.createDraftId() : crypto.randomUUID(),
+        // HTTP IP 部署没有原生 randomUUID；草稿身份必须与编辑器实体共用兼容入口。
+        id: input.createDraftId ? input.createDraftId() : createRuntimeUuid(),
         sourceKind: "resource-file",
         sourceFileName: sourceFile.resource.name,
         targetFileName: targetFile.resource.name,

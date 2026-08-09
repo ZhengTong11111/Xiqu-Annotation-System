@@ -1,4 +1,5 @@
 import type { GongcheSymbol } from "../types";
+import { createRuntimeUuid } from "./runtimeUuid";
 
 // 快速输入按索引复用已有符号身份；只有新增尾项生成新 id，避免每次键入破坏板眼稳定引用。
 export function reconcileGongcheSymbolLabels(
@@ -14,7 +15,7 @@ export function reconcileGongcheSymbolLabels(
     const notation = current?.notation ?? "";
     const parenthesized = current?.parenthesized ?? false;
     return {
-      id: current?.id ?? `gongche-symbol-${crypto.randomUUID()}`,
+      id: current?.id ?? `gongche-symbol-${createRuntimeUuid()}`,
       label,
       notation,
       rawText: `${parenthesized ? `（${label}）` : label}${notation}`,
@@ -34,7 +35,7 @@ export function redistributeGongcheSymbolSequence(
   endTime: number,
 ): GongcheSymbol[] {
   const safeSymbols = symbols.length > 0 ? symbols : [{
-    id: `gongche-symbol-${crypto.randomUUID()}`,
+    id: `gongche-symbol-${createRuntimeUuid()}`,
     label: "合",
     notation: "",
     rawText: "合",
@@ -54,7 +55,7 @@ export function redistributeGongcheSymbolSequence(
 
 export function createDefaultGongcheSymbol(startTime: number, endTime: number): GongcheSymbol {
   return {
-    id: `gongche-symbol-${crypto.randomUUID()}`,
+    id: `gongche-symbol-${createRuntimeUuid()}`,
     label: "合",
     notation: "",
     rawText: "合",

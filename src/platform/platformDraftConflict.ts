@@ -1,5 +1,6 @@
 import type { AnnotationFile } from "@xiqu/shared";
 import type { ProjectData } from "../types";
+import { createRuntimeUuid } from "../utils/runtimeUuid";
 import { buildAnnotationDiff } from "./annotationDiff";
 import { applyAnnotationMergePlan } from "./annotationMergeApply";
 import {
@@ -113,7 +114,7 @@ export function preparePlatformDraftConflict(input: {
     value: {
       targetFile: serverFile,
       draft: {
-        id: input.createDraftId ? input.createDraftId() : crypto.randomUUID(),
+        id: input.createDraftId ? input.createDraftId() : createRuntimeUuid(),
         sourceKind: "browser-draft",
         sourceFileName: `${serverFile.resource.name} 的本地草稿`,
         targetFileName: serverFile.resource.name,

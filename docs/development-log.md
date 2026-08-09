@@ -6309,3 +6309,32 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 切换后的只读检查：公网首页返回 `index-CJneMR4c.js`，`/api/health/ready` 返回 `status=ready`，API 与
   analysis worker 均为 `active`，维护状态为 `enabled=false`。这一轮尚未宣称新建块已修复，必须等待浏览器产生
   诊断阶段证据后再做业务修改。
+
+## 2026-08-09：HTTP 生产环境创建实体 UUID 兼容修复（待生产人工复测）
+
+### 明确根因
+
+- 生产浏览器复现日志依次到达 `timeline-create-drag-start` 和 `timeline-create-dispatch`，但没有进入 App 的
+  `custom-block-request-received`；随后控制台给出确定异常：`Uncaught TypeError: crypto.randomUUID is not a function`。
+- 当前生产入口是 `http://101.201.76.10`。Chrome 只把 HTTPS 和 localhost 视为安全上下文；因此 localhost
+  可直接调用 `crypto.randomUUID()`，HTTP IP 页面不可用。旧块编辑不创建新实体 ID，所以不受影响；新建块、轨道、
+  分叉、工尺、板眼、导入重编号和部分草稿路径都可能在调用点同步抛错，API 自然收不到租约或命令批次请求。
+
+### 修复
+
+- 新增 `src/utils/runtimeUuid.ts` 作为唯一前端运行时 UUID 边界：安全上下文优先使用原生 `randomUUID()`；HTTP
+  非安全上下文使用可用的 `crypto.getRandomValues()` 生成符合 RFC 4122 version 4/variant 的 UUID；只有极旧环境
+  连 Web Crypto 都没有时才使用时间、页面内序号和随机量的实体身份兜底，该结果不得用于凭据或鉴权。
+- 清理所有前端生产代码中的直接 `crypto.randomUUID()`：覆盖 App 创建/导入辅助逻辑、递归分叉、板眼、工尺、
+  文档 operation id、选择性整合草稿和冲突草稿。服务端继续使用 Node `node:crypto.randomUUID`，不受浏览器安全
+  上下文影响，也没有被改成弱兜底。
+- `AGENTS.md` 已加入这一跨模块约束，后续新增浏览器实体必须复用 helper，不能重新散落时间戳或直接原生调用。
+
+### 自动验证与待验收
+
+- 新增 runtime UUID 3 项测试：原生路径、只有 `getRandomValues` 的 HTTP 非安全上下文路径、无 Web Crypto 的格式与
+  连续唯一性，全部通过。
+- `npm run test:custom-track-structure-command` 19/19、`npm run test:platform-atomic-submit` 26/26；`npm run build`
+  完整通过，Web 新产物为 `index-D2uHIcGr.js`，仅保留既有主 chunk 体积提示。
+- 待部署后在生产 HTTP IP 强制刷新，创建自定义文字块、逐字块和动作块各一次；确认控制台不再出现
+  `crypto.randomUUID` 异常，诊断链到达 `*-local-commit-complete`，Network 出现租约与命令批次，顶部最终回到已同步。

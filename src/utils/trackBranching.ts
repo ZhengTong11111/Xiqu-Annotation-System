@@ -4,6 +4,7 @@ import type {
   TrackBranchDisplayMode,
   TrackBranching,
 } from "../types";
+import { createRuntimeUuid } from "./runtimeUuid";
 
 export function createDefaultTrackBranching(): TrackBranching {
   return {
@@ -17,7 +18,7 @@ export function createDefaultTrackBranching(): TrackBranching {
 
 export function createBranchLane(name: string, parentId: string | null = null, color?: string): BranchLane {
   return {
-    id: `branch-lane-${crypto.randomUUID()}`,
+    id: `branch-lane-${createRuntimeUuid()}`,
     name,
     parentId,
     color,

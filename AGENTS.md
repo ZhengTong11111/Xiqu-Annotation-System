@@ -92,6 +92,10 @@ Main currently contains all major recent feature lines that matter for context:
 - analysis audio defaults to the bound uploaded/VOD media but can always be overridden with a readable server audio/VOD
   resource and restored to auto; these settings and assets are platform state, never ProjectData or undo/history state
 - recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
+- browser-created stable ids use `src/utils/runtimeUuid.ts`; production may temporarily run on an HTTP IP where
+  `crypto.randomUUID()` is unavailable, so frontend code must never call it directly. The helper prefers native UUID,
+  falls back to `crypto.getRandomValues()` UUID v4, and reserves the non-crypto fallback only for old-browser identity,
+  never credentials or authorization values
 
 If starting a new conversation, assume the repo is already beyond the earlier simple waveform-only stage.
 
@@ -171,6 +175,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/utils/localMediaAnalysis.ts`
   - browser-only local media fallback; user-selected `blob:` media retains full local decode behavior, while non-Blob URLs use
     a 256 MiB pre/post-download cap. Platform uploaded/VOD URLs must never call it
+- `src/utils/runtimeUuid.ts`
+  - the only frontend runtime UUID boundary for annotation entities, tracks, branches, drafts, and operation ids
+  - HTTP IP deployments are not secure contexts in Chrome and do not expose `crypto.randomUUID()`; use this helper rather
+    than adding local timestamp/random fallbacks. Generated ids are stable identities only and must never become secrets
 - `apps/api/src/objectLifecycleService.ts` + `apps/api/src/backup/backupService.ts`
   - both FileObject and MediaAnalysisAsset storage keys are authoritative references; lifecycle cleanup and backup warnings
     must not classify analysis tiles as orphan binaries
