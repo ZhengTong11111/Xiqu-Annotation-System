@@ -28,6 +28,8 @@ Main currently contains all major recent feature lines that matter for context:
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - local `dev:api` and `dev:analysis-worker` commands load the ignored root `.env` through Node 22
   `--env-file-if-exists`; production `start:*` continues to require an explicit systemd/container environment
+- 修改 `packages/shared` 或 `packages/document-model` 后，必须重新执行对应 build 并重启已运行的 `dev:api`；Vite
+  热更新不会刷新 API 进程已经加载的 workspace `dist` parser，不能用旧 API 产物验证新的命令合同
 - R5 controlled single-server deployment candidate with fail-closed production configuration, same-origin `/api`, one-time
   administrator bootstrap, systemd/Nginx templates, read-only smoke checks, and `docs/server-deployment.md`
 - backend audit logs and annotation operation logs for the first platform-governance layer
@@ -43,6 +45,9 @@ Main currently contains all major recent feature lines that matter for context:
 - existing custom-track metadata, recursive branch trees, and block branch ownership now use the strict top-level
   `annotation.track.structure.update` command; platform edits acquire/renew a file lease before local commit, and structural
   undo/redo retain inverse/forward command envelopes
+- 结构新建入口发生历史 `local_chain_mismatch` 时，保存器会在相同服务器 revision、写权限和结构租约约束下执行一次
+  完整快照恢复；远端 revision 变化仍必须进入冲突流程。结构事务调试日志只能记录 purpose、revision、命令类型和
+  数量等定位事实，不得记录 token、AccessKey、PlayAuth、媒体 URL 或完整 ProjectData
 - custom-track, builtin character-track, attached-point-track, builtin action-block, custom-block, attached-point, and Gongche-block
   creation/deletion plus custom type-option/block-type coupling now use the bounded
   `annotation.track.structure.transaction.apply`; ordinary lifecycle leaves that create/delete annotation entities count as

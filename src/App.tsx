@@ -83,6 +83,7 @@ import {
 import type { PlatformMutationLeaseViewState } from "./platform/platformMutationLeaseRuntime";
 import {
   type HistoryAction,
+  type ProjectDocumentRecoveryState,
   useProjectDocumentState,
 } from "./state/projectDocumentState";
 import type {
@@ -2365,6 +2366,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       await waitForActiveServerSave();
       // 等待中的保存可能刚刚消费旧租约，必须在等待结束后判断本次 acquire 是否新建了租约。
       const hadLease = Boolean(mutationLease.getToken());
+      // 结构写入只记录定位事实，不记录项目内容、临时媒体 URL 或租约凭据，方便区分“未发请求”和“服务端拒绝”。
+      console.info("开始结构编辑事务。", {
+        purpose,
+        platformFile: Boolean(editorSession),
+        remoteRevision: remoteBaseRevisionRef.current,
+        observedRemoteRevision,
+        hadLease,
+      });
       if (editorSession) await mutationLease.acquire(purpose);
       // acquire 期间普通内容编辑仍可发生；拿锁后必须基于最新项目重建，不能覆盖这段时间的新内容。
       const baseProject = projectRef.current;
@@ -2375,13 +2384,31 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       }
       const commandEnvelope = buildCommand(baseProject, nextProject);
       if (!commandEnvelope) {
+        // builder 无法证明完整差异时不修改项目；这类失败必须能从控制台看出发生在请求之前。
+        console.warn("结构编辑事务未能生成完整命令。", {
+          purpose,
+          remoteRevision: remoteBaseRevisionRef.current,
+          pendingOperationCount: pendingOperations.length,
+        });
         if (editorSession && !hadLease) await mutationLease.release().catch(() => undefined);
         window.alert("本次变更无法形成完整且有界的协作命令，项目未被修改。请拆分操作后重试。");
         return false;
       }
+      // 命令进入 document state 后才由自动保存器发往 API；此处不把 token 或完整 payload 写入日志。
+      console.info("结构编辑事务已写入本地命令队列。", {
+        purpose,
+        commandType: commandEnvelope.command.type,
+        remoteRevision: remoteBaseRevisionRef.current,
+      });
       commitProject(nextProject, baseProject, { commandEnvelope, action: historyAction });
       return true;
     } catch (error) {
+      // 只保留稳定错误分类和 message；错误对象可能包含服务端 details，不能直接序列化到诊断日志。
+      console.error("结构编辑事务失败，未完成本地提交。", {
+        purpose,
+        remoteRevision: remoteBaseRevisionRef.current,
+        errorMessage: error instanceof Error ? error.message : "未知结构编辑错误",
+      });
       window.alert(formatMutationLeaseError(error));
       return false;
     } finally {
@@ -5946,6 +5973,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       let batchSavedLocalRevision = frozenRecoveryState.savedRevision;
       let remainingFrozenOperations = frozenRecoveryState.pendingOperations;
 
+      // 原子批次可能已经确认了前面的 operation，后续批次才发现命令链损坏。
+      // 快照恢复必须只覆盖“尚未确认的后缀”，否则会把已提交 operation 再次带入 PUT，
+      // 服务端会按 committedRevision 拒绝整次恢复，造成恢复路径自身再次同步失败。
+      const getRemainingRecoveryState = (): ProjectDocumentRecoveryState => ({
+        ...frozenRecoveryState,
+        savedProject: batchSavedProject,
+        savedTrackSnapEnabled: batchSavedTrackSnapEnabled,
+        savedRevision: batchSavedLocalRevision,
+        pendingOperations: remainingFrozenOperations,
+      });
+
       if (remainingFrozenOperations.length === 0) {
         const hasUnrepresentedChanges =
           !projectsEqual(frozenRecoveryState.currentProject, frozenRecoveryState.savedProject) ||
@@ -5979,11 +6017,23 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           return { status: "saved" };
         }
         if (planResult.status === "legacy_required") {
-          return saveLegacyProjectSnapshot(editorSession, options.source, frozenRecoveryState);
+          return saveLegacyProjectSnapshot(editorSession, options.source, getRemainingRecoveryState());
         }
         if (planResult.status === "blocked") {
           syncFailureMismatchFieldsRef.current = getSyncFailureMismatchFields(planResult.issues);
           syncFailureMismatchDetailsRef.current = getSyncFailureMismatchDetails(planResult.issues);
+          if (planResult.reason === "local_chain_mismatch") {
+            // 旧版本或历史失败恢复留下的本地命令链可能已经无法从 savedProject 重放到当前项目。
+            // 继续把新操作追加到这条坏链只会让每次创建块都失败；这里转入一次完整快照恢复，
+            // 仍使用同一 server revision、同一结构租约和服务端乐观锁，不会绕过并发保护。
+            console.warn("检测到本地命令链与当前项目不一致，尝试受约束的完整快照恢复。", {
+              purpose: "pending-command-chain-recovery",
+              remoteRevision: remoteBaseRevisionRef.current,
+              pendingOperationCount: remainingFrozenOperations.length,
+              mismatchFields: syncFailureMismatchFieldsRef.current,
+            });
+            return saveLegacyProjectSnapshot(editorSession, options.source, getRemainingRecoveryState());
+          }
           const message = `本地命令链无法安全提交（${planResult.reason}），请保留草稿并进入冲突检查。`;
           setSyncStatus("error", { errorMessage: message });
           if (interactive) window.alert(message);
@@ -6008,7 +6058,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           });
           if (planResult.status !== "ready") {
             if (planResult.status === "legacy_required") {
-              return saveLegacyProjectSnapshot(editorSession, options.source, frozenRecoveryState);
+              return saveLegacyProjectSnapshot(editorSession, options.source, getRemainingRecoveryState());
             }
             const message = `取得结构编辑锁后命令链已变化（${planResult.status}），请重新保存。`;
             setSyncStatus("error", { errorMessage: message });
@@ -6033,7 +6083,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           if (requiresLegacySnapshotMigration(failure)) {
             // 浏览器已经迁移、服务器仍保存旧格式的导入文件无法直接重放领域命令。
             // 仅在服务端明确返回该代码时，以同一 revision 和租约执行一次完整快照迁移。
-            return saveLegacyProjectSnapshot(editorSession, options.source, frozenRecoveryState);
+            return saveLegacyProjectSnapshot(editorSession, options.source, getRemainingRecoveryState());
           }
           if (isMutationLeaseSubmitFailure(failure)) {
             // 服务端已证明当前 token 不能继续使用；先清本地状态并尽力释放，下一次保存才能重新 acquire。

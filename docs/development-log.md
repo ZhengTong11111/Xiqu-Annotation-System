@@ -6,7 +6,7 @@
 > `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
 > 回写或删除历史记录。
 
-## 2026-08-09：云端新建文字块/动作块失败修复（代码完成，待生产发布）
+## 2026-08-09：云端新建文字块/动作块失败修复（首轮已部署，运行时恢复补强）
 
 本轮 Codex 先审查了前序代理已经放入工作区的结构事务迁移，再定位用户报告的现象：本机编辑器可以新建文字块、
 动作块，生产文件旧块编辑正常，但新增块无法提交。没有在生产文件上执行未经确认的新建或删除测试。
@@ -6182,3 +6182,42 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 待用户在真实《寻梦》VOD 上人工验收：新建分析应生成 10 秒瓦片；波形应优先首帧；频谱按当前可视区渐进显示；
   快速跳转应取消远端批次；停止约 800ms 后才启动方向预取；旧 30 秒 run 和刷新后的 IndexedDB 命中仍应正常。
   本轮健康检查不替代这些浏览器体验与 Network 指标验收。
+
+## 2026-08-09：新建块同步失败的运行时恢复补强（本地已验证，生产待人工复测）
+
+### 排查结论与修复
+
+- 用户再次反馈 localhost 新建块时显示“结构编辑锁 · 同步失败”，生产端也没有出现新的创建请求。
+  复核生产 journald 后确认，失败发生在客户端原子提交前的本地命令链审计/状态门禁阶段，并非数据库事务或服务端
+  `annotation.track.structure.transaction.apply` 解析失败；此前生产已经有多次该命令批次返回 HTTP 200 的记录。
+- 发现本机 `dev:api` 进程早于本轮 shared/document-model 构建启动，可能继续加载旧的 `dist` 命令 parser。已重新执行
+  `npm run build:shared && npm run build:document-model`，重启本机 API，并确认
+  `http://127.0.0.1:4317/api/health/live` 返回 `status=ok`。后续修改 shared/document-model 后必须重启
+  `dev:api`，Vite 热更新不能替代 API 进程重载。
+- App 的结构事务入口新增不含凭据、媒体 URL、完整项目和租约 token 的中文诊断日志，记录 purpose、服务器 revision、
+  是否已有租约、命令类型和本地 pending 数量，以便明确区分“未调用 API”“租约失败”和“批次提交失败”。
+- 对历史浏览器草稿造成的 `local_chain_mismatch` 增加一次受约束的完整快照恢复：仍需当前账号写权限、当前服务器
+  revision 和结构编辑租约，服务器 revision 已变化时仍按原有 409 冲突流程处理，不绕过并发保护。恢复成功后会一次性
+  确认当前完整项目与 pending operation，避免坏链永久阻塞后续新建块。
+- 原子命令按上限切成多批时，前一批可能已经成功推进服务器和本地 saved baseline，后一批才遇到旧坏链或迁移边界。
+  快照恢复现只携带尚未确认的 operation 后缀，并以已确认前缀推进后的项目、本地 revision 和轨道吸附状态为基线；
+  不再重复提交已经确认的 operation，也不会因旧 committed revision 让恢复路径自身再次失败。
+
+### 自动验证
+
+- `npm run test:platform-atomic-submit`：26 项通过。
+- `npm run test:platform-operation-catch-up`：20 项通过。
+- `npm run test:custom-track-structure-command`：19 项通过。
+- `npm run test:annotation-transaction-command`：8 项通过。
+- `npm run test:platform-drafts`：33 项通过。
+- `npm run test:api`：163 项通过。
+- `npm run build:web`、`npm run build:api` 与 `git diff --check` 通过；Vite 仅保留既有主 chunk 体积提示。
+- 已重新构建 shared/document-model 并重启本机 API，`http://127.0.0.1:4317/api/health/ready` 返回
+  `service=xiqu-platform-api, status=ready`。本轮运行时恢复补强尚未发布到生产。
+
+### 本轮待验证
+
+- 重新打开同一标注文件后新建逐字块、内建动作块和自定义文字/动作块，确认结构事务日志出现、随后原子批次或受约束
+  快照保存成功，顶部回到“已同步”。
+- 生产端清理旧浏览器页面后重新加载当前 release，再验证新建块；若仍无 `mutation-lease`/`command-batches` 请求，
+  优先查看浏览器控制台中的结构事务日志和 `annotation_client_sync_failure` 审计事实，不要先修改数据库。
