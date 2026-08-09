@@ -19,11 +19,11 @@ Workspace/Fork、完成版本和项目发布版本模型仅在 `docs/development
 通过 `annotation.track.structure.transaction.apply`，和逐字、句、工尺块、自定义块、附属点共用同一个租约、原子
 提交、草稿恢复、undo/redo 与 clean catch-up 链。此前结构事务的 shared parser 只把专用 track leaf 计作“结构子命令”，
 漏掉了普通 lifecycle leaf，导致仅新建实体的事务在客户端 builder 阶段返回 `null`；该门禁已修正并加入回归测试。
-本轮代码已完成本地专项测试与完整构建，生产发布和真实云端新建块验收需在 Git 提交后按部署门禁完成。
+本轮代码已完成本地专项测试与完整构建，并已随生产 release `20260809T041816Z-371c782` 发布。
 随后生产发布日志确认旧块命令批次可正常返回 200；新一轮排查又补齐了客户端 `local_chain_mismatch` 的受约束
 完整快照恢复和结构事务诊断日志。该恢复只用于历史坏链自愈，仍受当前服务器 revision、写权限和结构租约保护；
-Vite 热更新不能替代 shared/document-model 构建后对本机 API 的重启。新建逐字、内建动作和自定义块仍需浏览器
-重新打开文件后人工验收，不能仅以数据库模拟代替。
+Vite 热更新不能替代 shared/document-model 构建后对本机 API 的重启。生产只读 smoke 已通过；新建逐字、
+内建动作和自定义块仍需浏览器重新打开文件后人工验收，不能仅以数据库模拟代替。
 
 R3h1-R3h4 已于 2026-08-05 完成代码、上传媒体真实浏览器、专项测试、完整 API 测试和生产构建验收。
 真实阿里云 VOD 样例现已通过 `GetVideoInfo`、`GetVideoPlayAuth` 和 `GetPlayInfo`，并用 MP3 纯音频流完成

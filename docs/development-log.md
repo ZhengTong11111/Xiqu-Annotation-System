@@ -6183,7 +6183,7 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   快速跳转应取消远端批次；停止约 800ms 后才启动方向预取；旧 30 秒 run 和刷新后的 IndexedDB 命中仍应正常。
   本轮健康检查不替代这些浏览器体验与 Network 指标验收。
 
-## 2026-08-09：新建块同步失败的运行时恢复补强（本地已验证，生产待人工复测）
+## 2026-08-09：新建块同步失败的运行时恢复补强（已部署，待生产人工复测）
 
 ### 排查结论与修复
 
@@ -6213,7 +6213,20 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - `npm run test:api`：163 项通过。
 - `npm run build:web`、`npm run build:api` 与 `git diff --check` 通过；Vite 仅保留既有主 chunk 体积提示。
 - 已重新构建 shared/document-model 并重启本机 API，`http://127.0.0.1:4317/api/health/ready` 返回
-  `service=xiqu-platform-api, status=ready`。本轮运行时恢复补强尚未发布到生产。
+  `service=xiqu-platform-api, status=ready`。
+
+### 生产发布
+
+- 修复提交 `371c782` 已推送到远端 `main`，并发布为不可变 release
+  `/opt/xiqu/releases/20260809T041816Z-371c782`；服务器没有同步本机 `.env`、数据库、`data/` 或对象存储内容。
+- 发布前停止 analysis worker，由旧 release 创建一致备份
+  `xiqu-backup-2026-08-09T04-19-07-404Z-a7866abe`。备份包含 3871 个对象、0 个 warning，随后执行
+  `backup:verify` 返回 `valid=true`、0 个 error。
+- 备份验证后开启维护模式，新 release 的 shared/document-model/API/Web 产物门禁和 SHA-256 上传校验通过；
+  `prisma migrate deploy` 找到 20 条 migration 且无待执行项。原子切换后，公网 Web、API liveness 与 readiness
+  均返回 HTTP 200。
+- 只读 smoke 通过后解除维护并启动 analysis worker。最终 API 与 worker 均为 `active`，维护状态为关闭；发布
+  时间窗内 journald 未发现 `error`、`fatal`、`uncaught` 或 `crash`。该只读验收不冒充真实新建块操作验收。
 
 ### 本轮待验证
 
