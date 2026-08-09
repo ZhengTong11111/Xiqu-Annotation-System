@@ -6228,6 +6228,30 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 只读 smoke 通过后解除维护并启动 analysis worker。最终 API 与 worker 均为 `active`，维护状态为关闭；发布
   时间窗内 journald 未发现 `error`、`fatal`、`uncaught` 或 `crash`。该只读验收不冒充真实新建块操作验收。
 
+### 生产端到端诊断测试
+
+- 为避免污染研究内容，在生产文件 `260716_寻梦_合并版_v7base+工尺+腔格.json`
+  （resource id `0bd8a58a-742a-4ae1-9f09-830d259d4704`）上使用临时管理员 session 走真实 HTTP 路由，
+  没有使用用户密码，也没有直接写 SQL。测试覆盖 `mutation-lease`、`command-batches`、认证、ACL、Prisma
+  事务、ProjectData parser 和操作记录。
+- 按编辑器在 4--8 秒无句级行时的真实逻辑，先创建句级行和逐字块，再用反向结构事务删除。租约获取、创建批次、
+  删除批次全部 HTTP 200；文件 revision 从 12 临时推进到 13、14，逐字/句级对象均正确创建并删除，最终 payload
+  内容恢复原值。此前另做的普通逐字生命周期 HTTP 测试同样为 200。
+- 测试后数据库内容没有留下诊断块；revision 当前为 14、操作序号为 20，新增的测试操作保留为 accepted 审计事实，
+  这是为了保留诊断证据，不代表研究标注内容发生变化。
+- 由此排除生产数据库事务、命令 parser、ACL、租约和 `/command-batches` 路由本身拒绝创建的问题。生产日志中此前
+  用户页面主要反复请求 revision 8 的 committed-feed，没有对应的 `mutation-lease` 或 `command-batches` 请求，
+  更符合浏览器会话在本地追赶/编辑门禁阶段未进入提交路径，或页面仍停留在旧文件 revision 的现象。
+
+### 下一步人工定位
+
+- 用户重新打开目标文件并确认顶部显示最新服务器 revision 后，再在 4--8 秒执行一次新建逐字块；不要在旧页面
+  中继续点击测试。浏览器控制台应先出现“开始结构编辑事务”和“结构编辑事务已写入本地命令队列”，Network 随后
+  应出现 `POST /mutation-lease` 和 `POST /command-batches`。
+- 如果只有前一条日志而没有 POST，问题仍在浏览器保存调度；如果有租约但没有 command batch，检查租约回包和
+  `formatMutationLeaseError`；如果两条 POST 都出现，再按 response status 和 `annotation_client_sync_failure`
+  诊断记录检查服务端拒绝。不要再次直接修改生产 payload。
+
 ### 本轮待验证
 
 - 重新打开同一标注文件后新建逐字块、内建动作块和自定义文字/动作块，确认结构事务日志出现、随后原子批次或受约束
