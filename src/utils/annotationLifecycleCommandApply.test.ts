@@ -99,6 +99,42 @@ test("文字块生命周期保留文本与递归分叉归属", () => {
   if (applied.status === "applied") assert.deepEqual(applied.project, next);
 });
 
+test("内建动作块生命周期保留动作轨归属并可反向恢复", () => {
+  const base = createProject();
+  base.actionAnnotations = [{
+    id: "action-existing",
+    trackId: "legacy-action-track",
+    label: "已有动作",
+    startTime: 1,
+    endTime: 2,
+  }];
+  const original = structuredClone(base);
+  const next = structuredClone(base);
+  next.actionAnnotations.push({
+    id: "action-new",
+    trackId: "legacy-action-track",
+    label: "新动作",
+    startTime: 3,
+    endTime: 4,
+  });
+  const envelope = buildProjectAnnotationLifecycleCommand(base, next, [{
+    entityType: "action",
+    entityId: "action-new",
+    trackId: "legacy-action-track",
+  }]);
+  assert.ok(envelope);
+  const applied = applyAnnotationLifecycleCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status !== "applied") return;
+  assert.deepEqual(applied.project, next);
+  const restored = applyAnnotationLifecycleCommandToProject(
+    applied.project,
+    invertAnnotationCommandEnvelope(envelope),
+  );
+  assert.equal(restored.status, "applied");
+  if (restored.status === "applied") assert.deepEqual(restored.project, original);
+});
+
 test("同一附属点集合多项删除一次规划并可反向恢复原索引", () => {
   const base = createProject();
   const next = structuredClone(base);

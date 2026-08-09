@@ -43,9 +43,12 @@ Main currently contains all major recent feature lines that matter for context:
 - existing custom-track metadata, recursive branch trees, and block branch ownership now use the strict top-level
   `annotation.track.structure.update` command; platform edits acquire/renew a file lease before local commit, and structural
   undo/redo retain inverse/forward command envelopes
-- custom-track, builtin character-track, and attached-point-track creation/deletion plus custom type-option/block-type coupling now use the bounded
-  `annotation.track.structure.transaction.apply`; it composes strict structure/content/lifecycle/state leaves, requires the
-  same mutation lease, and is replayable by drafts/history/clean HTTP catch-up
+- custom-track, builtin character-track, attached-point-track, builtin action-block, custom-block, attached-point, and Gongche-block
+  creation/deletion plus custom type-option/block-type coupling now use the bounded
+  `annotation.track.structure.transaction.apply`; ordinary lifecycle leaves that create/delete annotation entities count as
+  structure children inside this container, so the transaction cannot be rejected merely because it has no separate track snapshot.
+  It composes strict structure/content/timing/lifecycle/state leaves, requires the same mutation lease, and is replayable by
+  drafts/history/clean HTTP catch-up
 - bulk imports/repairs and over-budget builtin-track deletion use the strict non-replayable
   `annotation.project.snapshot.boundary`; the boundary contains no ProjectData, requires a purpose-specific mutation lease,
   survives drafts/history, and forces clean catch-up to fetch the authoritative snapshot
@@ -577,8 +580,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     type helper exists only for compatibility.
   - character content targets distinguish `char` and `singingStyle`; do not rewrite singing-style cascades as character-text
     changes or hide them inside a configuration snapshot
-  - the atomic command-batch route now applies replayable envelopes to `AnnotationFile.payload`; the existing editor still
-    uses the legacy accept-then-full-save path until R5b3b migrates submit/ack/reject state
+  - the atomic command-batch route applies replayable envelopes to `AnnotationFile.payload`; the editor uses this route for
+    ordinary timing/content/lifecycle/state edits and bounded structure transactions. Legacy full snapshots remain only at
+    explicit import/repair, old-payload migration, submitted-draft, track-snap, and other documented snapshot boundaries.
 - `packages/shared/src/annotationCommandCommit.ts`
   - authoritative ordered atomic-command batch request parser, count limit, replayable-envelope gate, and shared client
     operation id validator

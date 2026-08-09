@@ -4,7 +4,7 @@
 Workspace/Fork、完成版本和项目发布版本模型仅在 `docs/development-log.md` 中作为历史记录保留，
 不得据此继续实现。
 
-最后更新：2026-08-06
+最后更新：2026-08-09
 
 当前开发基线：R1-R4 工程闭环与 R5 实时多人协作、原子领域命令提交、显式并发冲突处理及
 单服务器可部署候选门禁均已完成。平台现已补齐管理员账号生命周期、所有账号自助改密、标注文件与
@@ -13,6 +13,13 @@ Workspace/Fork、完成版本和项目发布版本模型仅在 `docs/development
 待权威 HTTP catch-up 完成后恢复，避免从已知过时快照制造本可避免的同目标冲突。当前新增 R3h
 外部媒体与分析资产路线，用四个独立闭环依次补齐跨目录媒体选择、阿里云 VOD、统一播放控制器和
 适合公网媒体的波形/频谱/F0 分析管线；R6/R7 保留为后续路线。
+
+2026-08-09 维护修复：统一了所有标注实体新建入口的结构事务合同。内建动作块的顶层
+`actionAnnotations` 现在有严格的 scoped lifecycle 快照、位置和 inverse 语义；动作块点击创建与框选拖拽创建均
+通过 `annotation.track.structure.transaction.apply`，和逐字、句、工尺块、自定义块、附属点共用同一个租约、原子
+提交、草稿恢复、undo/redo 与 clean catch-up 链。此前结构事务的 shared parser 只把专用 track leaf 计作“结构子命令”，
+漏掉了普通 lifecycle leaf，导致仅新建实体的事务在客户端 builder 阶段返回 `null`；该门禁已修正并加入回归测试。
+本轮代码已完成本地专项测试与完整构建，生产发布和真实云端新建块验收需在 Git 提交后按部署门禁完成。
 
 R3h1-R3h4 已于 2026-08-05 完成代码、上传媒体真实浏览器、专项测试、完整 API 测试和生产构建验收。
 真实阿里云 VOD 样例现已通过 `GetVideoInfo`、`GetVideoPlayAuth` 和 `GetPlayInfo`，并用 MP3 纯音频流完成
@@ -595,9 +602,9 @@ VOD 共用精确媒体时钟；长视频波形、频谱和 F0 不再依赖浏览
 - R5a1 已完成：新增 `timeline.items.timing.update` version 1 envelope，覆盖句、逐字、动作、自定义块、
   附属打点、工尺块和板眼点的 before/after；逐字/句/自定义文字块的派生句界与工尺时间同命令记录。
   shared parser 严格限制版本、字段、实体、id、时间、重复项和 500 项上限；草稿恢复、平台请求和 API
-  复用同一合同。纯时间拖拽/缩放从真实 transient base 与最终项目提取命令，合同外变更和不可表达旧 id
-  安全回退 `project.commit`。该阶段的旧 operation 接口只验证和记录命令、不直接 apply payload；R5b3a3b
-  已另建原子 command-batch 入口，编辑器将在 R5b3b 迁移。WebSocket 仍只通知 revision 推进。
+  复用同一合同。纯时间拖拽/缩放从真实 transient base 与最终项目提取命令；确实无法表达的旧格式或批量边界才
+  进入明确的 snapshot/legacy 兼容路径，普通编辑不以无界 `project.commit` 作为默认的新建或保存协议。
+  WebSocket 仍只通知 revision 推进。
 - R5a2a 已完成：shared 提供半毫秒容差的全量 before 前置检查、可解释 target_missing/before_mismatch
   和确定 inverse；Web 唯一 ProjectData adapter 覆盖七类实体，先检查全部目标再不可变写入，板眼同步
   manualOffset/confidence，错误 track/缺失/冲突均不产生部分项目。命令已显式包含的句界/工尺派生时间
@@ -623,9 +630,10 @@ VOD 共用精确媒体时钟；长视频波形、频谱和 F0 不再依赖浏览
   变化即回退 snapshot。五类 apply/inverse 全量前置检查、IndexedDB 草稿、API replayability 和 clean HTTP
   catch-up 已共用通用命令分派，混合 timing/content revision 链保持原子。
 - R5a4b 按依赖闭包分阶段推进，不能用一个宽松 CRUD 命令覆盖所有实体：
-  - R5a4b1 已完成：当前格式真实使用的自定义块与附属点叶实体创建/删除，严格保存父作用域、完整快照、集合
-    位置、inverse 和 all-or-nothing 前置条件；有关联工尺的自定义块先回退快照；混合
-    timing/content/lifecycle 链可 clean catch-up。旧 `actionAnnotations` 只保留导入兼容，不再扩展命令。
+  - R5a4b1 已完成：当前格式真实使用的自定义块、内建动作块与附属点叶实体创建/删除，严格保存父作用域、完整
+    快照、集合位置、inverse 和 all-or-nothing 前置条件；有关联工尺的自定义块先回退快照；混合
+    timing/content/lifecycle 链可 clean catch-up。顶层 `actionAnnotations` 通过 action-scoped lifecycle 参与同一
+    结构事务，不再走无界 legacy `project.commit`。
   - R5a4b2 已完成：lifecycle 扩展 sentence、character 与完整 Gongche block/symbol 快照；新增禁止递归的
     `annotation.transaction.apply`，逆序 inverse、局部顺序 apply 与完整 next 门禁把句文本/边界同步、最后
     一个字删除句、逐字/自定义父块工尺级联封装为一个 operation/revision。草稿、API 与 clean catch-up 已
@@ -723,7 +731,8 @@ VOD 共用精确媒体时钟；长视频波形、频谱和 F0 不再依赖浏览
         顺序 apply、旧 payload 恢复快照、单 revision、按序 committed operation、资源时间、审计和结构租约
         释放，提交后才发布 revision/cursor。完全相同批次可返回原确认；子集、乱序、部分已存在、不同指纹、
         畸形 payload、前置失败和并发旧 revision 均 fail closed，不留下 accepted 行或中间 ProjectData。旧
-        operation POST + 完整 payload PUT 在 R5b3b 客户端迁移完成前仍是明确兼容通道。
+        operation POST + 完整 payload PUT 仅保留为显式导入/修复、旧 payload migration、submitted-draft 等快照边界
+        的兼容通道，不作为普通实体编辑的默认保存路径。
     - R5b3b 按客户端状态核心与 App/自动保存接线分两轮推进，不能在一个 React 回调中同时重写 transport、
       saved baseline 和离线恢复：
       - R5b3b1 已完成：新增纯原子批次 planner，先从 saved baseline 审计整条 pending command chain 与当前
@@ -761,6 +770,10 @@ VOD 共用精确媒体时钟；长视频波形、频谱和 F0 不再依赖浏览
         后续由普通自动保存走现有原子接口重提。同目标冲突、legacy/track-snap/snapshot barrier、revision 再变、
         撤权或指纹变化继续进入既有结构化人工比较。WebSocket 仍只承担失效提示/presence/activity，未引入
         OT/CRDT。
+      - 2026-08-09 维护修复已完成：结构事务的“至少一个结构子命令”判定现在包含普通 lifecycle leaf。该规则对
+        逐字、动作、工尺块、自定义块和附属点的新建/删除统一生效；新增实体命令经过最终 ProjectData 深比较后才
+        进入原子批次，拖拽指定范围创建动作也已移除直接 `commitProject` 残留入口。新增动作 parser/apply/inverse
+        与结构事务回归覆盖通过；生产发布后的真实新建与刷新验收仍待完成。
       - R5 完成后的可靠性维护已把同一套纯 rebase 证明接入普通在线原子保存：两个可写客户端从同一 revision
         编辑不同实体时直接重放；编辑同一时间目标时按 start/end 分边协调，本端未修改的边保留服务器最新值，
         本端修改的边采用后完成冲突恢复一端的绝对目标值；编辑同一稳定内容字段也采用后恢复端版本。重建命令

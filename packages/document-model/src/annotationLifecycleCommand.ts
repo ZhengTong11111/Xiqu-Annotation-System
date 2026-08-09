@@ -1,6 +1,7 @@
 import {
   buildAnnotationLifecycleUpdateEnvelope,
   getAnnotationLifecycleTargetKey,
+  type ActionLifecycleSnapshot,
   type AnnotationLifecycleCommandEnvelope,
   type AnnotationLifecycleState,
   type AnnotationLifecycleUpdateItem,
@@ -14,6 +15,7 @@ import {
   type SentenceLifecycleSnapshot,
 } from "@xiqu/shared";
 import type {
+  ActionAnnotation,
   AttachedPointAnnotation,
   AttachedPointTrack,
   CharacterAnnotation,
@@ -42,6 +44,7 @@ export type AnnotationLifecycleTarget = Pick<
 type LifecycleSnapshot =
   | SentenceLifecycleSnapshot
   | CharacterLifecycleSnapshot
+  | ActionLifecycleSnapshot
   | BanyanSectionStateSnapshot
   | BanyanMarkStateSnapshot
   | CustomBlockLifecycleSnapshot
@@ -99,6 +102,10 @@ export function resolveProjectAnnotationLifecycleTarget(
   if (target.entityType === "character") {
     return resolveCollectionTarget(project.characterAnnotations, target.entityId, createCharacterSnapshot);
   }
+  if (target.entityType === "action") {
+    const actions = project.actionAnnotations.filter((item) => item.trackId === target.trackId);
+    return resolveCollectionTarget(actions, target.entityId, createActionSnapshot);
+  }
   if (target.entityType === "banyan-section") {
     return resolveCollectionTarget(project.banyanSections, target.entityId, createBanyanSectionSnapshot);
   }
@@ -141,6 +148,7 @@ export function applyAnnotationLifecycleItems(
 ): ProjectData | null {
   const sentenceItems = filterLifecycleItems(items, "sentence");
   const characterItems = filterLifecycleItems(items, "character");
+  const actionGroups = groupScopedLifecycleItems(items, "action");
   const banyanSectionItems = filterLifecycleItems(items, "banyan-section");
   const banyanMarkItems = filterLifecycleItems(items, "banyan-mark");
   const gongcheItems = filterLifecycleItems(items, "gongche-block");
@@ -154,6 +162,7 @@ export function applyAnnotationLifecycleItems(
   const characterAnnotations = characterItems.length === 0
     ? project.characterAnnotations
     : rebuildLifecycleCollection(project.characterAnnotations, characterItems, restoreCharacterSnapshot);
+  const actionAnnotations = rebuildActionLifecycleCollections(project.actionAnnotations, actionGroups);
   const rebuiltGongcheBlocks = gongcheItems.length === 0
     ? project.gongcheAnnotations
     : rebuildLifecycleCollection(project.gongcheAnnotations, gongcheItems, restoreGongcheBlockSnapshot);
@@ -165,7 +174,8 @@ export function applyAnnotationLifecycleItems(
     ? project.banyanMarks
     : rebuildLifecycleCollection(project.banyanMarks, banyanMarkItems, (state) =>
         restoreBanyanMarkSnapshot(state.entity));
-  if (!subtitleLines || !characterAnnotations || !rebuiltGongcheBlocks || !banyanSections || !banyanMarks) return null;
+  if (!subtitleLines || !characterAnnotations || !actionAnnotations || !rebuiltGongcheBlocks ||
+    !banyanSections || !banyanMarks) return null;
 
   // symbol 的 trackId 是父 Gongche block id；先完成块级 lifecycle，再在最终父集合内重建嵌套符号。
   const nextGongcheSymbols = new Map<string, GongcheSymbol[]>();
@@ -215,6 +225,7 @@ export function applyAnnotationLifecycleItems(
     ...project,
     subtitleLines,
     characterAnnotations,
+    actionAnnotations,
     gongcheAnnotations,
     banyanSections,
     banyanMarks,
@@ -260,6 +271,11 @@ function createLifecycleItem(
       after: after as AnnotationLifecycleState<BanyanMarkStateSnapshot> | null };
   }
   if (!target.trackId) return null;
+  if (target.entityType === "action") {
+    return { entityType: "action", entityId: target.entityId, trackId: target.trackId,
+      before: before as AnnotationLifecycleState<ActionLifecycleSnapshot> | null,
+      after: after as AnnotationLifecycleState<ActionLifecycleSnapshot> | null };
+  }
   if (target.entityType === "custom-block") {
     return { entityType: "custom-block", entityId: target.entityId, trackId: target.trackId,
       before: before as AnnotationLifecycleState<CustomBlockLifecycleSnapshot> | null,
@@ -323,6 +339,10 @@ function createCharacterSnapshot(character: CharacterAnnotation): CharacterLifec
   };
 }
 
+function createActionSnapshot(action: ActionAnnotation): ActionLifecycleSnapshot {
+  return { ...action };
+}
+
 function createCustomBlockSnapshot(block: CustomTrack["blocks"][number]): CustomBlockLifecycleSnapshot {
   return {
     id: block.id,
@@ -371,6 +391,37 @@ function restoreCharacterSnapshot(state: AnnotationLifecycleState<CharacterLifec
         }
       : null,
   };
+}
+
+function restoreActionSnapshot(state: AnnotationLifecycleState<ActionLifecycleSnapshot>): ActionAnnotation {
+  return { ...state.entity };
+}
+
+// 动作实体按 trackId 分组重建；它们共用顶层 actionAnnotations 数组，但生命周期位置仍在各自轨道内计算。
+function rebuildActionLifecycleCollections(
+  current: readonly ActionAnnotation[],
+  groups: Map<string, Extract<AnnotationLifecycleUpdateItem, { entityType: "action" }>[]> ,
+): ActionAnnotation[] | null {
+  if (groups.size === 0) return [...current];
+  const nextByTrack = new Map<string, ActionAnnotation[]>();
+  for (const [trackId, items] of groups) {
+    const trackActions = current.filter((item) => item.trackId === trackId);
+    const rebuilt = rebuildLifecycleCollection<ActionAnnotation, ActionLifecycleSnapshot>(
+      trackActions,
+      items,
+      restoreActionSnapshot,
+    );
+    if (!rebuilt) return null;
+    nextByTrack.set(trackId, rebuilt);
+  }
+  // 未参与本批次的动作轨保持原顺序；参与的轨道只替换自身的动作集合，避免改变跨轨全局数组顺序。
+  const positions = new Map<string, number>();
+  current.forEach((action, index) => positions.set(action.id, index));
+  return [...current]
+    .filter((action) => !nextByTrack.has(action.trackId))
+    .concat([...nextByTrack.values()].flat())
+    .sort((left, right) => (positions.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+      (positions.get(right.id) ?? Number.MAX_SAFE_INTEGER));
 }
 
 function restoreCustomBlockSnapshot(
@@ -452,6 +503,10 @@ function filterLifecycleItems<TEntityType extends AnnotationLifecycleUpdateItem[
 // 只有真正位于子集合中的实体按 trackId 分组；符号以父工尺块为作用域，工尺块本身仍是项目级集合。
 function groupScopedLifecycleItems(
   items: readonly AnnotationLifecycleUpdateItem[],
+  entityType: "action",
+): Map<string, Extract<AnnotationLifecycleUpdateItem, { entityType: "action" }>[]>;
+function groupScopedLifecycleItems(
+  items: readonly AnnotationLifecycleUpdateItem[],
   entityType: "custom-block",
 ): Map<string, Extract<AnnotationLifecycleUpdateItem, { entityType: "custom-block" }>[]>;
 function groupScopedLifecycleItems(
@@ -464,14 +519,14 @@ function groupScopedLifecycleItems(
 ): Map<string, Extract<AnnotationLifecycleUpdateItem, { entityType: "gongche-symbol" }>[]>;
 function groupScopedLifecycleItems(
   items: readonly AnnotationLifecycleUpdateItem[],
-  entityType: "custom-block" | "attached-point" | "gongche-symbol",
+  entityType: "action" | "custom-block" | "attached-point" | "gongche-symbol",
 ) {
   type ScopedItem = Extract<AnnotationLifecycleUpdateItem, {
-    entityType: "custom-block" | "attached-point" | "gongche-symbol";
+    entityType: "action" | "custom-block" | "attached-point" | "gongche-symbol";
   }>;
   const groups = new Map<string, ScopedItem[]>();
   for (const item of items) {
-    if ((item.entityType !== "custom-block" && item.entityType !== "attached-point" &&
+    if ((item.entityType !== "action" && item.entityType !== "custom-block" && item.entityType !== "attached-point" &&
       item.entityType !== "gongche-symbol") ||
       item.entityType !== entityType) continue;
     const group = groups.get(item.trackId) ?? [];

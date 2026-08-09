@@ -52,6 +52,60 @@ test("自定义轨创建可精确恢复 customTracks 与 activeTrackOrder 位置
   if (restored.status === "applied") assert.deepEqual(restored.project, base);
 });
 
+test("动作块创建通过结构事务原子恢复 actionAnnotations", () => {
+  const base = createProject();
+  base.actionAnnotations = [{
+    id: "action-existing",
+    trackId: "action-track",
+    label: "已有",
+    startTime: 1,
+    endTime: 2,
+  }];
+  const next = structuredClone(base);
+  next.actionAnnotations.push({
+    id: "action-new",
+    trackId: "action-track",
+    label: "新动作",
+    startTime: 3,
+    endTime: 4,
+  });
+  const envelope = buildProjectTrackStructureTransactionCommand(base, next, {
+    lifecycleTargets: [{ entityType: "action", entityId: "action-new", trackId: "action-track" }],
+  });
+  assert.ok(envelope);
+  const applied = applyTrackStructureTransactionCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status !== "applied") return;
+  assert.deepEqual(applied.project, next);
+  const restored = applyTrackStructureTransactionCommandToProject(
+    applied.project,
+    invertAnnotationCommandEnvelope(envelope),
+  );
+  assert.equal(restored.status, "applied");
+  if (restored.status === "applied") assert.deepEqual(restored.project, base);
+});
+
+test("仅包含普通生命周期叶的结构事务也被识别为结构命令", () => {
+  const base = createProject();
+  const next = structuredClone(base);
+  const newAction = {
+    id: "action-only-lifecycle",
+    trackId: "action-track",
+    label: "仅生命周期",
+    startTime: 5,
+    endTime: 6,
+  };
+  next.actionAnnotations = [...base.actionAnnotations, newAction];
+
+  const envelope = buildProjectTrackStructureTransactionCommand(base, next, {
+    lifecycleTargets: [{ entityType: "action", entityId: newAction.id, trackId: newAction.trackId }],
+  });
+  assert.ok(envelope);
+  const applied = applyTrackStructureTransactionCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status === "applied") assert.deepEqual(applied.project, next);
+});
+
 test("内建逐字轨删除按状态、工尺、逐字、容器顺序执行并可完整反向", () => {
   const base = createProject();
   base.gongcheAnnotations = [];

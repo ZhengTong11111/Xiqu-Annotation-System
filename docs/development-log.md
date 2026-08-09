@@ -6,6 +6,58 @@
 > `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
 > 回写或删除历史记录。
 
+## 2026-08-09：云端新建文字块/动作块失败修复（代码完成，待生产发布）
+
+本轮 Codex 先审查了前序代理已经放入工作区的结构事务迁移，再定位用户报告的现象：本机编辑器可以新建文字块、
+动作块，生产文件旧块编辑正常，但新增块无法提交。没有在生产文件上执行未经确认的新建或删除测试。
+
+### 根因
+
+- 新建动作、逐字、工尺块、自定义块和附属点已经改为构造 `annotation.track.structure.transaction.apply`，但
+  shared 的事务 parser 只把专用轨道结构/lifecycle/configuration leaf 计作“结构子命令”。
+- 仅包含普通 `annotation.items.lifecycle.update` 的实体新建事务因此在解析阶段返回 `null`；App 随后显示“无法形成
+  完整且有界的协作命令”，云端没有可重放的 operation。这解释了为什么旧块 timing/content 编辑仍可保存，而新块失败。
+- 动作实体还缺少严格的 action-scoped lifecycle 快照合同；此外时间轴框选创建动作仍保留一个直接调用无界
+  `commitProject` 的旧入口。
+
+### Codex 实际修复
+
+- 在 `packages/shared/src/annotationCommands.ts` 增加 `ActionLifecycleSnapshot`、action scoped parser、集合键、
+  inverse 支持，并让普通 lifecycle leaf 在结构事务中参与“至少一个结构子命令”判定。
+- 在 `packages/document-model/src/annotationLifecycleCommand.ts` 增加 action 的目标解析、按轨道集合位置重建、
+  引用校验和 ProjectData adapter 支持；动作块可被创建、删除和 inverse 精确恢复。
+- 在 `packages/document-model/src/trackStructureTransactionCommand.ts` 增加逐字创建所需的句级 timing leaf，保证
+  新句/逐字/句同步不会拆成多次保存。
+- 在 `src/App.tsx` 将点击创建与拖拽创建动作、逐字块、自定义块、附属点和工尺块，以及对应删除入口统一到结构事务；
+  只有命令成功提交后才改变选中项和行内编辑状态。动作类型与内建 options 的右键耦合修改也已统一到结构事务；
+  新增逻辑均补充中文功能注释，并清理拖拽动作创建及动作类型修改的旧直接 `commitProject` 路径。
+- 本轮没有新增 npm 依赖；继续复用 shared parser、document-model adapter、原子批次 runtime 和现有 mutation lease。
+
+### 验证
+
+- `npm run test:annotation-commands`：23/23 通过。
+- `npm run test:annotation-command-commit`：5/5 通过。
+- `npm run test:annotation-lifecycle-command`：10/10 通过。
+- `npm run test:custom-track-structure-command`：19/19 通过，覆盖动作块结构事务创建/inverse 及普通 lifecycle
+  leaf 作为结构事务唯一结构子命令。
+- `npm run test:annotation-transaction-command`：8/8 通过。
+- `npm run test:platform-atomic-submit`：26/26 通过。
+- `npm run test:platform-operation-catch-up`：20/20 通过。
+- `npm run test:platform-drafts`：33/33 通过。
+- `npm run test:platform-conflict-rebase`：13/13 通过；`npm run test:platform-conflict-rebase-preparation`：6/6 通过。
+- `npm run build:web` 与完整 `npm run build` 通过；仅有既有 Vite 主 chunk 超过 500 kB 提醒，未引入新的编译错误。
+- `git diff --check` 通过。
+
+### 当前状态与待推进
+
+- 已完成：本地代码、命令模型、App 入口、自动化测试和构建检查。
+- 待完成：提交 Git 后按 `docs/server-deployment.md` 进入维护模式，停止 analysis worker，创建并校验生产备份，
+  发布包含 shared/document-model/API/Web 的不可变 release，执行 migration/readiness/deploy smoke，解除维护并启动
+  worker；随后在生产已有文件上人工验收新建文字块、动作块、撤销/重做、刷新后 revision 收敛。生产验收应优先用
+  用户指定的已有工程，未经用户确认不删除或清理数据。
+- 其他 agent/Codex 工作边界：本轮未调用 Claude Code；工作区中已有的前序结构事务迁移由前序代理完成，本轮 Codex
+  负责审查、补齐 shared 门禁、action lifecycle、App 残余入口、回归测试和本文记录。
+
 ## 2026-08-01：R2.2 恢复快照 mutation 与内容写入保护线
 
 Codex 按本机 `CLAUDE_WORK.md` 直接完成 R2.2，没有委派给其他 agent。开始前工作区已干净，因此没有

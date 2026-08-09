@@ -33,6 +33,10 @@ import {
 } from "./trackStructureLifecycleCommand.js";
 import { applyTrackStructureTransactionCommandToProject } from "./trackStructureTransactionCommandApply.js";
 import {
+  buildProjectTimelineTimingEnvelope,
+  type TimelineTimingTarget,
+} from "./timelineTimingCommand.js";
+import {
   buildProjectAttachedPointTrackStructureEnvelope,
   buildProjectBuiltinTrackStructureEnvelope,
   buildProjectTrackOrderEnvelope,
@@ -47,6 +51,7 @@ export type TrackStructureTransactionPlan = {
   includeTrackOrder?: boolean;
   builtinTrackStructureIds?: readonly string[];
   attachedPointTrackStructureTargets?: readonly AttachedPointTrackStructureTarget[];
+  timingTargets?: readonly TimelineTimingTarget[];
   contentTargets?: readonly AnnotationContentTarget[];
   lifecycleTargets?: readonly AnnotationLifecycleTarget[];
   lifecycleTargetGroups?: readonly (readonly AnnotationLifecycleTarget[])[];
@@ -89,6 +94,13 @@ export function buildProjectTrackStructureTransactionCommand(
   if (!stateTargets) return null;
   if (stateTargets.length > 0) {
     const envelope = buildProjectAnnotationStateEnvelope(baseProject, nextProject, stateTargets);
+    if (!envelope) return null;
+    commands.push(envelope);
+  }
+
+  // 新建逐字块时句时间可能由同步逻辑一并调整；时间叶必须和生命周期放进同一结构事务。
+  if ((plan.timingTargets?.length ?? 0) > 0) {
+    const envelope = buildProjectTimelineTimingEnvelope(baseProject, nextProject, plan.timingTargets ?? []);
     if (!envelope) return null;
     commands.push(envelope);
   }

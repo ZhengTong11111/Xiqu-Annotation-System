@@ -2955,21 +2955,33 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
 
     if (target === "action") {
-      const action = currentProject.actionAnnotations.find((item) => item.id === blockContextMenu.id);
-      if (!action) {
+      const actionId = blockContextMenu.id;
+      const action = currentProject.actionAnnotations.find((item) => item.id === actionId);
+      const track = action
+        ? currentProject.builtinTracks.find((item) => item.id === action.trackId)
+        : undefined;
+      if (!action || !track) {
         return;
       }
-      const track = currentProject.builtinTracks.find((item) => item.id === action.trackId);
-      const nextOptions = appendUniqueTypeOption(track?.options ?? [], nextType);
-      commitProject({
-        ...currentProject,
-        builtinTracks: currentProject.builtinTracks.map((item) =>
-          item.id === action.trackId ? { ...item, options: nextOptions } : item,
-        ),
-        actionAnnotations: currentProject.actionAnnotations.map((item) =>
-          item.id === action.id ? { ...item, label: nextType } : item,
-        ),
-      });
+      // 动作类型与内建轨道 options 是一个耦合结构，必须和新建/删除共用结构事务，
+      // 否则本地可见的 label 更新会再次绕过租约和云端原子命令链。
+      void runTrackStructureMutation(
+        (baseProject) => ({
+          ...baseProject,
+          builtinTracks: baseProject.builtinTracks.map((item) =>
+            item.id === action.trackId
+              ? { ...item, options: appendUniqueTypeOption(item.options ?? [], nextType) }
+              : item,
+          ),
+          actionAnnotations: baseProject.actionAnnotations.map((item) =>
+            item.id === actionId ? { ...item, label: nextType } : item,
+          ),
+        }),
+        (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          builtinTrackStructureIds: [action.trackId],
+          contentTargets: [{ entityType: "action", entityId: actionId, trackId: action.trackId, field: "label" }],
+        }),
+      );
       setBlockContextMenu(null);
       return;
     }
@@ -3609,96 +3621,113 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
     const normalizedTime = Math.max(0, time);
     const requestedRange = normalizeCharacterCreationRequest(normalizedTime, explicitEndTime);
-    const target = findCharacterCreationTarget(currentProject.subtitleLines, normalizedTime);
     const characterId = `char-${crypto.randomUUID()}`;
     const char = "新";
-    let nextProject: ProjectData;
-
-    if (target) {
-      const range = getCharacterCreationRange(target.line, target.position, requestedRange);
-      nextProject = syncSubtitleLine({
-        ...currentProject,
-        characterAnnotations: [
-          ...currentProject.characterAnnotations,
-          {
-            id: characterId,
-            lineId: target.line.id,
-            char,
-            startTime: range.startTime,
-            endTime: range.endTime,
-            singingStyle: "普通唱",
-            tone: null,
-          },
-        ],
-      }, target.line.id);
-    } else {
+    // 逐字块可能同时创建/更新句级实体，必须用结构事务一次提交，避免云端把字符和句子拆成两条链。
+    const buildNextProject = (baseProject: ProjectData): ProjectData => {
+      const target = findCharacterCreationTarget(baseProject.subtitleLines, normalizedTime);
+      if (target) {
+        const range = getCharacterCreationRange(target.line, target.position, requestedRange);
+        return syncSubtitleLine({
+          ...baseProject,
+          characterAnnotations: [
+            ...baseProject.characterAnnotations,
+            {
+              id: characterId,
+              lineId: target.line.id,
+              char,
+              startTime: range.startTime,
+              endTime: range.endTime,
+              singingStyle: "普通唱",
+              tone: null,
+            },
+          ],
+        }, target.line.id);
+      }
       const lineId = `line-${crypto.randomUUID()}`;
-      const startTime = requestedRange.startTime;
-      const endTime = requestedRange.endTime;
-      nextProject = {
-        ...currentProject,
+      return {
+        ...baseProject,
         subtitleLines: sortSubtitleLines([
-          ...currentProject.subtitleLines,
-          {
-            id: lineId,
-            text: char,
-            startTime,
-            endTime,
-          },
+          ...baseProject.subtitleLines,
+          { id: lineId, text: char, startTime: requestedRange.startTime, endTime: requestedRange.endTime },
         ]),
         characterAnnotations: [
-          ...currentProject.characterAnnotations,
+          ...baseProject.characterAnnotations,
           {
             id: characterId,
             lineId,
             char,
-            startTime,
-            endTime,
+            startTime: requestedRange.startTime,
+            endTime: requestedRange.endTime,
             singingStyle: "普通唱",
             tone: null,
           },
         ],
       };
-    }
-
-    if (target) {
-      commitProjectWithTransaction(currentProject, nextProject, {
-        contentTargets: [{ entityType: "sentence", entityId: target.line.id, field: "text" }],
-        timingTargets: [{ entityType: "sentence", entityId: target.line.id }],
-        lifecycleTargets: [{ entityType: "character", entityId: characterId }],
-      });
-    } else {
-      const createdLine = nextProject.characterAnnotations.find((item) => item.id === characterId)?.lineId;
-      commitProjectWithLifecycle(currentProject, nextProject, [
-        ...(createdLine ? [{ entityType: "sentence" as const, entityId: createdLine }] : []),
-        { entityType: "character", entityId: characterId },
-      ]);
-    }
-    preferredCharacterEditLocationRef.current = "timeline";
-    applySelection({ type: "character", id: characterId });
-    setEditingCharacterId(characterId);
-    setEditingCharacterLocation("timeline");
-    setEditingCharacterValue(char);
+    };
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => {
+        const target = findCharacterCreationTarget(baseProject.subtitleLines, normalizedTime);
+        const createdCharacter = nextProject.characterAnnotations.find((item) => item.id === characterId);
+        if (!createdCharacter) return null;
+        const lineId = createdCharacter.lineId;
+        return buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          contentTargets: target
+            ? [{ entityType: "sentence", entityId: lineId, field: "text" }]
+            : [],
+          timingTargets: target
+            ? [{ entityType: "sentence", entityId: lineId }]
+            : [],
+          lifecycleTargets: target
+            ? [{ entityType: "character", entityId: characterId }]
+            : [
+                { entityType: "sentence", entityId: lineId },
+                { entityType: "character", entityId: characterId },
+              ],
+        });
+      },
+    ).then((committed) => {
+      if (!committed) return;
+      preferredCharacterEditLocationRef.current = "timeline";
+      applySelection({ type: "character", id: characterId });
+      setEditingCharacterId(characterId);
+      setEditingCharacterLocation("timeline");
+      setEditingCharacterValue(char);
+    });
   }
 
-  function createActionAtTime(trackId: string, startTime: number) {
+  function createActionAtTime(trackId: string, startTime: number, explicitEndTime?: number) {
     const currentProject = projectRef.current;
     if (!currentProject.builtinTracks.some((track) => track.id === trackId)) {
       return;
     }
     const safeStartTime = Math.max(0, startTime);
-    commitProject({
-      ...currentProject,
+    const safeEndTime = explicitEndTime !== undefined
+      ? Math.max(safeStartTime, explicitEndTime)
+      : safeStartTime + DEFAULT_ACTION_DURATION;
+    const actionId = `${trackId}-${crypto.randomUUID()}`;
+    // 动作块创建原来直接落入 legacy project.commit，平台原子保存无法重放；现在和其他结构实体统一走事务。
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
       actionAnnotations: [
-        ...currentProject.actionAnnotations,
+        ...baseProject.actionAnnotations,
         {
-          id: `${trackId}-${crypto.randomUUID()}`,
+          id: actionId,
           trackId,
           label: getBuiltinTrackDefaultOption(trackId as BuiltinTrackId),
           startTime: safeStartTime,
-          endTime: safeStartTime + DEFAULT_ACTION_DURATION,
+          endTime: safeEndTime,
         },
       ],
+    });
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        lifecycleTargets: [{ entityType: "action", entityId: actionId, trackId }],
+      }),
+    ).then((committed) => {
+      if (committed) applySelection({ type: "action", id: actionId });
     });
   }
 
@@ -3852,21 +3881,34 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       time: Math.max(0, time),
       label: location.pointTrack.typeOptions[0] ?? "标记 1",
     };
-    const nextProject = buildProjectWithUpdatedAttachedPointTrack(currentProject, pointTrackId, (pointTrack) => ({
-      ...pointTrack,
-      points: [...pointTrack.points, nextPoint].sort((left, right) => left.time - right.time),
-    }));
-    if (!nextProject) return;
-    commitProjectWithLifecycle(currentProject, nextProject, [{
-      entityType: "attached-point",
-      entityId: nextPoint.id,
-      trackId: pointTrackId,
-    }]);
-    applySelection({
-      type: "attached-point",
-      id: nextPoint.id,
-      trackId: pointTrackId,
-      parentTrackId: location.parentTrack.id,
+    const parentTrackId = location.parentTrack.id;
+    // 附属点也是轨道结构事务的一部分；否则平台保存只能看到旧的 lifecycle leaf，无法和结构租约保持一致。
+    const buildNextProject = (baseProject: ProjectData): ProjectData =>
+      buildProjectWithUpdatedAttachedPointTrack(baseProject, pointTrackId, (pointTrack) => ({
+        ...pointTrack,
+        points: [...pointTrack.points, nextPoint].sort((left, right) => left.time - right.time),
+      })) ?? baseProject;
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => {
+        const nextLocation = findPointTrackLocation(nextProject, pointTrackId);
+        if (!nextLocation) return null;
+        return buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          lifecycleTargets: [{
+            entityType: "attached-point",
+            entityId: nextPoint.id,
+            trackId: pointTrackId,
+          }],
+        });
+      },
+    ).then((committed) => {
+      if (!committed) return;
+      applySelection({
+        type: "attached-point",
+        id: nextPoint.id,
+        trackId: pointTrackId,
+        parentTrackId,
+      });
     });
   }
 
@@ -3904,28 +3946,28 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           ...(branchScope ? { branchScope } : {}),
         };
 
-    const nextProject: ProjectData = {
-      ...currentProject,
-      customTracks: currentProject.customTracks.map((track) =>
+    const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+      ...baseProject,
+      customTracks: baseProject.customTracks.map((track) =>
         track.id === trackId
-          ? {
-              ...track,
-              blocks: [...track.blocks, nextBlock] as CustomTrack["blocks"],
-            }
+          ? { ...track, blocks: [...track.blocks, nextBlock] as CustomTrack["blocks"] }
           : track,
       ) as CustomTrack[],
-    };
-    commitProjectWithLifecycle(currentProject, nextProject, [{
-      entityType: "custom-block",
-      entityId: nextBlock.id,
-      trackId,
-    }]);
-
-    applySelection({ type: "custom-block", trackId, id: nextBlock.id });
-    if (targetTrack.trackType === "text") {
-      setEditingCustomTextBlock({ trackId, id: nextBlock.id });
-      setEditingCustomTextValue(DEFAULT_CUSTOM_TEXT);
-    }
+    });
+    // 自定义文字/动作块的创建与删除共用结构租约，避免平台文件在保存器中退回旧 snapshot 路径。
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        lifecycleTargets: [{ entityType: "custom-block", entityId: nextBlock.id, trackId }],
+      }),
+    ).then((committed) => {
+      if (!committed) return;
+      applySelection({ type: "custom-block", trackId, id: nextBlock.id });
+      if (targetTrack.trackType === "text") {
+        setEditingCustomTextBlock({ trackId, id: nextBlock.id });
+        setEditingCustomTextValue(DEFAULT_CUSTOM_TEXT);
+      }
+    });
   }
 
   function createGongcheBlock(parentTrackId: string, parentBlockId: string) {
@@ -3958,16 +4000,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         assetUrl: null,
       }],
     };
-    const nextProject = {
-      ...currentProject,
-      gongcheAnnotations: [...currentProject.gongcheAnnotations, nextBlock],
-    };
-    commitProjectWithLifecycle(currentProject, nextProject, [{
-      entityType: "gongche-block",
-      entityId: nextBlock.id,
-      trackId: parentTrackId,
-    }]);
-    applySelection({ type: "gongche-block", id: nextBlock.id });
+    // 工尺附属块引用父块，创建也必须进入结构事务，保证父轨结构锁和子块生命周期在同一命令中确认。
+    const buildNextProject = (baseProject: ProjectData) => ({
+      ...baseProject,
+      gongcheAnnotations: [...baseProject.gongcheAnnotations, nextBlock],
+    });
+    void runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        lifecycleTargets: [{ entityType: "gongche-block", entityId: nextBlock.id, trackId: parentTrackId }],
+      }),
+    ).then((committed) => {
+      if (committed) applySelection({ type: "gongche-block", id: nextBlock.id });
+    });
   }
 
   function createGongcheBlockAtTime(parentTrackId: string, time: number) {
@@ -4674,19 +4719,28 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       applySelection(null);
     }
     if (selectedItem.type === "action") {
-      commitProject({
-        ...currentProject,
-        actionAnnotations: currentProject.actionAnnotations.filter((item) => item.id !== selectedItem.id),
+      const action = currentProject.actionAnnotations.find((item) => item.id === selectedItem.id);
+      if (!action) return;
+      const buildNextProject = (baseProject: ProjectData): ProjectData => ({
+        ...baseProject,
+        actionAnnotations: baseProject.actionAnnotations.filter((item) => item.id !== selectedItem.id),
       });
-      applySelection(null);
+      void runTrackStructureMutation(
+        buildNextProject,
+        (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+          lifecycleTargets: [{ entityType: "action", entityId: selectedItem.id, trackId: action.trackId }],
+        }),
+      ).then((committed) => {
+        if (committed) applySelection(null);
+      });
     }
     if (selectedItem.type === "custom-block") {
-      let nextProject: ProjectData = {
-        ...currentProject,
-        gongcheAnnotations: currentProject.gongcheAnnotations.filter((item) =>
+      const buildRawNextProject = (baseProject: ProjectData): ProjectData => ({
+        ...baseProject,
+        gongcheAnnotations: baseProject.gongcheAnnotations.filter((item) =>
           item.parentTrackId !== selectedItem.trackId || item.parentBlockId !== selectedItem.id,
         ),
-        customTracks: currentProject.customTracks.map((track) =>
+        customTracks: baseProject.customTracks.map((track) =>
           track.id === selectedItem.trackId
             ? {
                 ...track,
@@ -4694,37 +4748,45 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               }
             : track,
         ) as CustomTrack[],
-      };
-      const removedGongche = currentProject.gongcheAnnotations.filter((item) =>
-        item.parentTrackId === selectedItem.trackId && item.parentBlockId === selectedItem.id);
-      const repairedBanyan = repairBanyanGongcheReferences(nextProject);
-      nextProject = repairedBanyan.project;
-      const lifecycleTargets: AnnotationLifecycleTarget[] = [
-        { entityType: "custom-block", entityId: selectedItem.id, trackId: selectedItem.trackId },
-        ...removedGongche.map((item): AnnotationLifecycleTarget => ({
-          entityType: "gongche-block",
-          entityId: item.id,
-          trackId: item.parentTrackId,
-        })),
-      ];
-      if (removedGongche.length > 0) {
-        commitProjectWithTransaction(currentProject, nextProject, {
-          stateTargets: repairedBanyan.changedMarkIds.map((entityId) => ({
-            entityType: "banyan-mark" as const,
-            entityId,
-          })),
-          lifecycleTargets,
-        });
-      } else {
-        commitProjectWithLifecycle(currentProject, nextProject, lifecycleTargets);
-      }
-      if (
-        editingCustomTextBlock?.trackId === selectedItem.trackId &&
-        editingCustomTextBlock.id === selectedItem.id
-      ) {
-        cancelCustomTextEdit();
-      }
-      applySelection(null);
+      });
+      const buildNextProject = (baseProject: ProjectData) =>
+        repairBanyanGongcheReferences(buildRawNextProject(baseProject)).project;
+      // 自定义块删除也必须和工尺级联、板眼引用修复一起进入结构事务；不能按“有没有级联”切回两套保存协议。
+      void runTrackStructureMutation(
+        buildNextProject,
+        (baseProject, latestNextProject) => {
+          const removedGongche = baseProject.gongcheAnnotations.filter((item) =>
+            item.parentTrackId === selectedItem.trackId && item.parentBlockId === selectedItem.id);
+          const repairedBanyan = repairBanyanGongcheReferences(buildRawNextProject(baseProject));
+          return buildProjectTrackStructureTransactionCommand(
+            baseProject,
+            latestNextProject,
+            {
+              stateTargets: repairedBanyan.changedMarkIds.map((entityId) => ({
+              entityType: "banyan-mark" as const,
+              entityId,
+              })),
+              lifecycleTargets: [
+                { entityType: "custom-block", entityId: selectedItem.id, trackId: selectedItem.trackId },
+                ...removedGongche.map((item): AnnotationLifecycleTarget => ({
+                  entityType: "gongche-block",
+                  entityId: item.id,
+                  trackId: item.parentTrackId,
+                })),
+              ],
+            },
+          );
+        },
+      ).then((committed) => {
+        if (!committed) return;
+        if (
+          editingCustomTextBlock?.trackId === selectedItem.trackId &&
+          editingCustomTextBlock.id === selectedItem.id
+        ) {
+          cancelCustomTextEdit();
+        }
+        applySelection(null);
+      });
     }
     if (selectedItem.type === "gongche-block") {
       const currentBlock = currentProject.gongcheAnnotations.find((item) => item.id === selectedItem.id);
@@ -4753,17 +4815,30 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       if (!location) {
         return;
       }
-      const nextProject = buildProjectWithUpdatedAttachedPointTrack(currentProject, selectedItem.trackId, (pointTrack) => ({
+      const buildNextProject = (baseProject: ProjectData) => buildProjectWithUpdatedAttachedPointTrack(
+        baseProject,
+        selectedItem.trackId,
+        (pointTrack) => ({
         ...pointTrack,
         points: pointTrack.points.filter((point) => point.id !== selectedItem.id),
-      }));
-      if (!nextProject) return;
-      commitProjectWithLifecycle(currentProject, nextProject, [{
-        entityType: "attached-point",
-        entityId: selectedItem.id,
-        trackId: selectedItem.trackId,
-      }]);
-      applySelection(null);
+        }),
+      ) ?? baseProject;
+      void runTrackStructureMutation(
+        buildNextProject,
+        (baseProject, latestNextProject) => buildProjectTrackStructureTransactionCommand(
+          baseProject,
+          latestNextProject,
+          {
+            lifecycleTargets: [{
+              entityType: "attached-point",
+              entityId: selectedItem.id,
+              trackId: selectedItem.trackId,
+            }],
+          },
+        ),
+      ).then((committed) => {
+        if (committed) applySelection(null);
+      });
     }
     if (selectedItem.type === "banyan-mark") {
       const nextProject = {
@@ -4822,24 +4897,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     applySelection(items[0] ?? null, items);
   }
 
+  // 时间轴框选创建动作沿用同一结构事务入口，避免拖拽路径重新落回 legacy project.commit。
   function createAction(trackId: string, startTime: number, endTime: number) {
-    const currentProject = projectRef.current;
-    if (!currentProject.builtinTracks.some((track) => track.id === trackId)) {
-      return;
-    }
-    commitProject({
-      ...currentProject,
-      actionAnnotations: [
-        ...currentProject.actionAnnotations,
-        {
-          id: `${trackId}-${crypto.randomUUID()}`,
-          trackId,
-          label: getBuiltinTrackDefaultOption(trackId as BuiltinTrackId),
-          startTime,
-          endTime,
-        },
-      ],
-    });
+    createActionAtTime(trackId, startTime, endTime);
   }
 
   function renameCustomTrack(trackId: string, name: string) {

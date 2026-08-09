@@ -187,6 +187,16 @@ export type CustomBlockLifecycleSnapshot = {
   branchParentBlockId: string | null;
 };
 
+// 内建动作块虽然存放在 ProjectData 的顶层数组中，但仍属于具体动作轨道；
+// 单独定义快照可以在创建/删除时保留轨道归属和原始位置，避免误用自定义块的 text 字段。
+export type ActionLifecycleSnapshot = {
+  id: string;
+  trackId: string;
+  label: string;
+  startTime: number;
+  endTime: number;
+};
+
 export type AttachedPointLifecycleSnapshot = {
   id: string;
   time: number;
@@ -285,6 +295,7 @@ export type AnnotationLifecycleUpdateItem =
   | GlobalLifecycleUpdateItem<"character", CharacterLifecycleSnapshot>
   | GlobalLifecycleUpdateItem<"banyan-section", BanyanSectionStateSnapshot>
   | GlobalLifecycleUpdateItem<"banyan-mark", BanyanMarkStateSnapshot>
+  | LifecycleUpdateItem<"action", ActionLifecycleSnapshot>
   | LifecycleUpdateItem<"custom-block", CustomBlockLifecycleSnapshot>
   | LifecycleUpdateItem<"attached-point", AttachedPointLifecycleSnapshot>
   | LifecycleUpdateItem<"gongche-block", GongcheBlockLifecycleSnapshot>
@@ -823,7 +834,11 @@ function parseTrackStructureTransactionChild(rawCommand: unknown):
 }
 
 function isTrackStructureChildCommand(command: TrackStructureTransactionChildCommand) {
-  return command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND ||
+  // 普通生命周期叶同样可能创建/删除实体（逐字、动作、附属点、工尺块等）。
+  // 它们放入结构事务后必须被视为结构命令，否则事务虽然能解析，最终却会因
+  // “没有结构子命令”被拒绝，导致本地看似创建成功而平台无法形成可重放保存链。
+  return command.type === ANNOTATION_LIFECYCLE_UPDATE_COMMAND ||
+    command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND ||
     command.type === CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND ||
     command.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND ||
     command.type === BUILTIN_TRACK_LIFECYCLE_UPDATE_COMMAND ||
@@ -1241,7 +1256,7 @@ function parseLifecycleItem(value: unknown): AnnotationLifecycleUpdateItem | nul
 
   const isGlobal = value.entityType === "sentence" || value.entityType === "character" ||
     value.entityType === "banyan-section" || value.entityType === "banyan-mark";
-  const isScoped = value.entityType === "custom-block" || value.entityType === "attached-point" ||
+  const isScoped = value.entityType === "action" || value.entityType === "custom-block" || value.entityType === "attached-point" ||
     value.entityType === "gongche-block" || value.entityType === "gongche-symbol";
   const keys = isGlobal
     ? ["entityType", "entityId", "before", "after"]
@@ -1261,6 +1276,9 @@ function parseLifecycleItem(value: unknown): AnnotationLifecycleUpdateItem | nul
     return parseTypedLifecycleItem(value, "banyan-mark", parseBanyanMarkStateSnapshot);
   }
 
+  if (value.entityType === "action") {
+    return parseTypedScopedLifecycleItem(value, "action", parseActionLifecycleSnapshot);
+  }
   if (value.entityType === "custom-block") {
     return parseTypedScopedLifecycleItem(value, "custom-block", parseCustomBlockLifecycleSnapshot);
   }
@@ -1297,7 +1315,7 @@ function parseTypedLifecycleItem<
 }
 
 function parseTypedScopedLifecycleItem<
-  TEntityType extends "custom-block" | "attached-point" | "gongche-block" | "gongche-symbol",
+  TEntityType extends "action" | "custom-block" | "attached-point" | "gongche-block" | "gongche-symbol",
   TSnapshot extends { id: string },
 >(
   value: Record<string, unknown>,
@@ -1440,6 +1458,25 @@ function parseCustomBlockLifecycleSnapshot(value: unknown): CustomBlockLifecycle
     branchScope,
     branchGroupId: value.branchGroupId,
     branchParentBlockId: value.branchParentBlockId,
+  };
+}
+
+// 动作生命周期只允许固定的五个字段；文本长度与时间范围沿用其他时间轴实体的统一上限。
+function parseActionLifecycleSnapshot(value: unknown): ActionLifecycleSnapshot | null {
+  if (!isExactRecord(value, ["id", "trackId", "label", "startTime", "endTime"]) ||
+    !isSafeId(value.id) ||
+    !isSafeId(value.trackId) ||
+    typeof value.label !== "string" ||
+    value.label.length > MAX_ANNOTATION_CONTENT_LENGTH ||
+    !isNonNegativeFiniteNumber(value.startTime) ||
+    !isNonNegativeFiniteNumber(value.endTime) ||
+    value.endTime < value.startTime) return null;
+  return {
+    id: value.id,
+    trackId: value.trackId,
+    label: value.label,
+    startTime: value.startTime,
+    endTime: value.endTime,
   };
 }
 
@@ -1636,7 +1673,7 @@ function validateLifecycleCollectionFacts(items: readonly AnnotationLifecycleUpd
 
 // 顶层实体按项目数组分组；只有真实嵌套集合按父 scope 分组，不能把工尺块的轨道引用当成物理集合。
 function getAnnotationLifecycleCollectionKey(item: AnnotationLifecycleUpdateItem) {
-  if (item.entityType === "custom-block" || item.entityType === "attached-point" ||
+  if (item.entityType === "action" || item.entityType === "custom-block" || item.entityType === "attached-point" ||
     item.entityType === "gongche-symbol") {
     return buildStableTupleKey(item.entityType, item.trackId);
   }
@@ -1712,6 +1749,7 @@ function invertLifecycleItem(item: AnnotationLifecycleUpdateItem): AnnotationLif
   if (item.entityType === "character") return { ...item, before: item.after, after: item.before };
   if (item.entityType === "banyan-section") return { ...item, before: item.after, after: item.before };
   if (item.entityType === "banyan-mark") return { ...item, before: item.after, after: item.before };
+  if (item.entityType === "action") return { ...item, before: item.after, after: item.before };
   if (item.entityType === "custom-block") {
     return { ...item, before: item.after, after: item.before };
   }
