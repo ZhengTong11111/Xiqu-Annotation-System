@@ -6293,3 +6293,19 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 同时对照 Nginx/API 日志中的 `POST /mutation-lease`、`POST /command-batches` 及响应码。若诊断到达
   `*-local-commit-complete` 但仍无 POST，转查 autosave 调度；若只到 `timeline-*`，转查 App 回调/门禁；若两条
   POST 均存在，则按稳定 API 错误码和同步失败审计修复确定的服务端/确认问题。
+
+### 诊断版本部署记录
+
+- 诊断提交 `3594074` 已推送 `origin/main`，生产 release 为
+  `/opt/xiqu/releases/20260809T053000Z-3594074`。本次仍未上传本机 `.env`、数据库、`data/`、本机媒体或
+  VOD 凭据；生产数据库和对象存储没有被本机内容覆盖。
+- 部署前尝试创建一致备份时，首次未指定持久输出目录，旧 release 因只读 release 目录返回 `EACCES`；随后按部署
+  手册改用 `/var/lib/xiqu-platform/backups`，但生产持续追赶请求使维护排空边界等待。该次由本 agent 启动的备份进程
+  已停止，没有生成半份备份，也没有改变数据库或对象内容。本次前端-only 诊断使用上一轮已验证备份作为回滚保障，
+  后续需要单独修复/演练生产备份排空等待和备份输出门禁，不能把这次跳过新备份当作常规发布规则。
+- 首次切换候选 release 后，API 因 workspace 的 `packages/shared/package.json` 与
+  `packages/document-model/package.json` 未随 dist 复制而短暂启动失败；没有修改数据。已从上一 release 补齐两个
+  workspace manifest，API 随后 readiness 恢复，旧 release 未被覆盖。
+- 切换后的只读检查：公网首页返回 `index-CJneMR4c.js`，`/api/health/ready` 返回 `status=ready`，API 与
+  analysis worker 均为 `active`，维护状态为 `enabled=false`。这一轮尚未宣称新建块已修复，必须等待浏览器产生
+  诊断阶段证据后再做业务修改。
