@@ -6258,3 +6258,38 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   快照保存成功，顶部回到“已同步”。
 - 生产端清理旧浏览器页面后重新加载当前 release，再验证新建块；若仍无 `mutation-lease`/`command-batches` 请求，
   优先查看浏览器控制台中的结构事务日志和 `annotation_client_sync_failure` 审计事实，不要先修改数据库。
+
+## 2026-08-09：生产浏览器新建块前端诊断链（待复现定位）
+
+### 背景与边界
+
+- 用户在部署 `371c782` 后确认生产浏览器仍无法创建新块。上一轮已经通过生产真实 HTTP 业务链完成并反向删除
+  逐字块，证明 ACL、结构租约、命令解析、Prisma 事务和 `command-batches` 路由可接受同类请求；本轮不再重复
+  修改生产标注 payload，也不通过放宽远端追赶门禁或绕过结构租约来猜测修复。
+- 现有日志只从 `runExclusiveProjectMutation()` 开始。Timeline 手势未形成创建状态、分叉显示轨未解析、拖动未过
+  激活阈值、App 找不到目标轨道、另一结构事务正在等待等路径会静默返回，无法用服务端日志区分。
+
+### 已完成
+
+- Timeline 增加一条有界的 `[标注创建诊断]` 链，覆盖 Command/Ctrl 拖拽开始、无效可视轨/分叉解析、短拖拽
+  拒绝、滚动容器缺失、最终时间范围分发，以及双击创建分发。记录真实父轨 ID、可视轨 ID、轨道类型、时间范围
+  和分叉 lane ID，不记录标注文字、媒体地址、鉴权信息或项目 payload。
+- App 的逐字块、内建动作块和自定义块入口记录请求是否到达、实体/轨道身份与范围；缺少目标轨道不再静默。
+  通用结构事务入口同时记录 preview 无变化、独占事务忙、租约就绪、拿锁后无变化、本地 commit 成功/跳过和异常阶段。
+  原有命令入队与保存错误日志继续作为后半段证据，因此一次复现可区分：
+  `Timeline 手势 -> App 创建入口 -> lease -> 本地 command queue -> autosave/API`。
+- 诊断只增加可观察性，不改变块创建算法、拖动阈值、吸附、分叉归属、远端 revision 门禁、租约或自动保存行为。
+
+### 自动验证
+
+- `npm run test:custom-track-structure-command`：19 项通过。
+- `npm run test:platform-atomic-submit`：26 项通过。
+- `npm run build:web` 与 `git diff --check` 通过；仅保留既有 Vite 主 chunk 体积提示。
+
+### 待推进
+
+- 以不可变 release 部署诊断版本后，在生产页面强制刷新并重新打开目标标注文件，分别执行一次 Command/Ctrl
+  拖拽创建和双击创建。按最后一条 `[标注创建诊断]` 的 `stage` 精确定位，不在没有证据时修改业务规则。
+- 同时对照 Nginx/API 日志中的 `POST /mutation-lease`、`POST /command-batches` 及响应码。若诊断到达
+  `*-local-commit-complete` 但仍无 POST，转查 autosave 调度；若只到 `timeline-*`，转查 App 回调/门禁；若两条
+  POST 均存在，则按稳定 API 错误码和同步失败审计修复确定的服务端/确认问题。
