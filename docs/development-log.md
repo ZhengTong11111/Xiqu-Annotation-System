@@ -6338,3 +6338,15 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   完整通过，Web 新产物为 `index-D2uHIcGr.js`，仅保留既有主 chunk 体积提示。
 - 待部署后在生产 HTTP IP 强制刷新，创建自定义文字块、逐字块和动作块各一次；确认控制台不再出现
   `crypto.randomUUID` 异常，诊断链到达 `*-local-commit-complete`，Network 出现租约与命令批次，顶部最终回到已同步。
+
+### 生产发布
+
+- 修复提交 `2a82b5c` 已推送 `origin/main`，不可变 release 为
+  `/opt/xiqu/releases/20260809T055947Z-2a82b5c`。候选包本轮包含完整 `packages/` 及两个 workspace manifest，
+  并在切换前实际导入 shared 构建产物，避免诊断版本发布时遗漏 package manifest 的问题重现。
+- 停止 API/analysis worker 后由 `platform.admin` 开启维护，原子切换 release；本轮没有 Prisma migration，未同步
+  本机数据库、对象、`.env`、`data/` 或 VOD 凭据。新 API readiness 通过后解除维护并恢复 worker。
+- 公网首页确认加载 `index-D2uHIcGr.js`，API 与 analysis worker 均为 `active`，维护状态为 `enabled=false`，
+  database/storage readiness 均为 ok；新进程启动后未发现 error/fatal/uncaught/failed 日志。
+- 仍待用户在已经打开开发者工具的生产浏览器中强制刷新并完成三类创建验收；只读 health check 不能替代真实手势、
+  UUID 生成、结构租约和原子保存闭环。
