@@ -6350,3 +6350,42 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   database/storage readiness 均为 ok；新进程启动后未发现 error/fatal/uncaught/failed 日志。
 - 仍待用户在已经打开开发者工具的生产浏览器中强制刷新并完成三类创建验收；只读 health check 不能替代真实手势、
   UUID 生成、结构租约和原子保存闭环。
+
+## 2026-08-09：HTTP UUID 修复收尾与浏览器安全上下文审查
+
+### 本轮处理
+
+- 用户已在生产 HTTP IP 页面人工确认新建标注块可以正常完成；因此上一轮为定位“手势未到达 App / App 未提交 / API
+  拒绝”而加入的 `[标注创建诊断]` 临时 console 链已经完成使命，本轮从 `src/App.tsx` 和
+  `src/components/Timeline.tsx` 全部删除。历史诊断记录保留在本文件中，作为故障证据，不再让正常用户操作持续产生
+  高噪声控制台输出。
+- 清理了诊断函数及其调用点，包括短拖拽、滚动容器缺失、不可创建轨道、分叉解析失败、双击分发、App 请求到达、
+  租约就绪、命令入队和本地提交完成等临时 stage。没有删除仍用于真实问题处理的“开始结构编辑事务”“结构编辑事务已写入
+  本地命令队列”“结构编辑事务未能生成完整命令”“结构编辑事务失败”等稳定日志；这些日志分别对应租约屏障、命令边界
+  和用户可见失败，仍可用于后续同步故障诊断。
+- 恢复 Timeline 创建提交的简洁条件分支：只有创建拖拽且滚动容器存在时进入计算与回调，避免清理后留下空分支；没有
+  改动拖拽激活阈值、最终 pointerup 坐标、吸附锁、最小块宽度、父轨/分叉轨解析或任何创建回调。
+- `src/utils/runtimeUuid.ts` 的中文注释补充了长期部署语义：正式 HTTPS 或 localhost 会自动使用原生
+  `crypto.randomUUID()`，当前无域名 HTTP IP 阶段使用 `getRandomValues()` UUID v4 兼容路径；该 helper 保留为唯一
+  前端实体 ID 边界，不是对 HTTPS、登录凭证或传输加密的替代品。
+
+### HTTP/HTTPS 安全上下文专项审查
+
+- 已搜索前端和平台代码中的 `crypto`、`randomUUID`、`getRandomValues`、剪贴板 API、File System Access API、
+  摄像头/麦克风、通知、Service Worker、Credential、PaymentRequest 和 SharedArrayBuffer 调用。除统一 UUID helper
+  外，没有发现当前生产前端直接依赖安全上下文才能工作的同类 API；测试文件中的 `crypto.randomUUID()` 只用于 Node
+  测试数据库名，不进入浏览器产物。
+- 协作 WebSocket URL 已在 `src/api/platformClient.ts` 依据页面/API origin 自动把 `https:` 转为 `wss:`，把 `http:`
+  转为 `ws:`。同源 Nginx 的 WebSocket upgrade 配置仍是 HTTPS 上线的必要条件，不能把 HTTP 兼容路径当作正式安全方案。
+- 平台上传媒体、服务器媒体和 VOD 播放/分析使用普通 HTTP(S) 请求、受保护媒体路由或短时 VOD 会话，不调用额外的
+  安全上下文专属浏览器 API。未来若加入文件系统原生选择器、离线 Service Worker 或摄像头/麦克风，必须单独增加
+  HTTPS 门禁和降级提示，不能直接照搬当前 UUID 兜底。
+
+### 验证与状态
+
+- 已完成：删除临时诊断代码；保留长期结构/同步错误日志；保留 HTTP IP 和未来 HTTPS 域名的 UUID 双路径；完成
+  当前前端安全上下文 API 审查；未新增依赖、数据库迁移、媒体格式或 API 合同。
+- 已完成：本轮清理后的 UUID、结构事务、原子提交回归测试和完整 `npm run build`；构建仍只有既有 Web 主 chunk
+  超过 500 kB 的非阻断提醒。待推进：生产页面强制刷新后分别验证逐字文字块、内建动作块、自定义文字/动作块，
+  以及失败时原有同步状态和错误日志是否正常。HTTP 兼容只解决已确认的 UUID 异常，不替代未来域名 HTTPS、TLS
+  证书和安全 Cookie 的正式部署工作。

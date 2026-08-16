@@ -2,8 +2,8 @@ type RuntimeCrypto = Partial<Pick<Crypto, "randomUUID" | "getRandomValues">>;
 
 let fallbackSequence = 0;
 
-// HTTP IP 地址不属于浏览器安全上下文，Chrome 会隐藏 crypto.randomUUID()。
-// 统一入口优先使用原生 UUID；其次用仍可在非安全上下文调用的 getRandomValues 生成标准 UUID v4。
+// HTTP IP 地址不属于浏览器安全上下文，Chrome 可能隐藏 crypto.randomUUID()；HTTPS 部署时会自动走原生快速路径。
+// 统一入口同时覆盖临时 HTTP 访问和未来正式域名，避免实体创建逻辑再次散落环境判断。
 export function createRuntimeUuid(
   cryptoApi: RuntimeCrypto | undefined = globalThis.crypto,
 ): string {

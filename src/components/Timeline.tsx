@@ -618,19 +618,6 @@ export function Timeline({
   onBatchMoveCommit,
   onCreateAction,
 }: TimelineProps) {
-  // 生产环境创建失败时只记录手势阶段和轨道身份，不记录块文字、媒体地址或任何鉴权信息。
-  // 这条链与 App 的“标注创建诊断”配对，用来判断事件是在 Timeline 内被拦截，还是进入 App 后失败。
-  function logTimelineCreationDiagnostic(
-    stage: string,
-    details: Record<string, unknown> = {},
-  ) {
-    console.info("[标注创建诊断]", {
-      stage: `timeline-${stage}`,
-      editingBlockedReason: editingBlockedReason ?? null,
-      ...details,
-    });
-  }
-
   const scrollRef = useRef<HTMLDivElement>(null);
   const zoomAnchorRef = useRef<{ time: number; viewportOffset: number } | null>(null);
   const zoomGestureRef = useRef<ZoomGestureState | null>(null);
@@ -2101,15 +2088,6 @@ export function Timeline({
         "originX" in activeDragState &&
         Math.abs(finalPointerClientX - activeDragState.originX) < DRAG_ACTIVATION_PX
       ) {
-        if (activeDragState.kind === "create-track-item") {
-          logTimelineCreationDiagnostic("create-rejected-short-drag", {
-            trackId: activeDragState.trackId,
-            visualTrackId: activeDragState.visualTrackId,
-            trackType: activeDragState.trackType,
-            distancePx: Math.abs(finalPointerClientX - activeDragState.originX),
-            activationThresholdPx: DRAG_ACTIVATION_PX,
-          });
-        }
         lastResolvedDragUpdateRef.current = null;
         lastPointerStepPxRef.current = 0;
         setDragState(null);
@@ -2119,13 +2097,7 @@ export function Timeline({
       // 主路径：提交拖动过程中最后一次已经展示出来的结果。
       // fallback 重新计算只用于没有 pointermove 预览结果的边界情况，且必须沿用最后的 snapLock/pointerStep。
       const liveSnapPoints = getLiveSnapPoints();
-      if (activeDragState.kind === "create-track-item" && !scrollRef.current) {
-        logTimelineCreationDiagnostic("create-rejected-scroll-container-missing", {
-          trackId: activeDragState.trackId,
-          visualTrackId: activeDragState.visualTrackId,
-          trackType: activeDragState.trackType,
-        });
-      } else if (activeDragState.kind === "create-track-item" && scrollRef.current) {
+      if (activeDragState.kind === "create-track-item" && scrollRef.current) {
         // pointerup 可能带来最后一段位移，但不一定再触发 pointermove。
         // 提交时使用最终事件坐标，避免“预览到了、松手没创建”的触摸板边界问题。
         const left = Math.max(0, Math.min(activeDragState.originX, finalPointerClientX) - activeDragState.laneLeft);
@@ -2140,16 +2112,6 @@ export function Timeline({
           ? snapTime(rawEndTime, createSnapPoints, zoom, finalPointerStepPx, finalSnapLock, "right")
           : rawEndTime;
         const endTime = Math.max(startTime + minDuration, snappedEndTime);
-        logTimelineCreationDiagnostic("create-dispatch", {
-          trackId: activeDragState.trackId,
-          visualTrackId: activeDragState.visualTrackId,
-          trackType: activeDragState.trackType,
-          startTime,
-          endTime,
-          branchLaneIds: activeDragState.branchScope?.mode === "lanes"
-            ? activeDragState.branchScope.laneIds
-            : [],
-        });
         // endTime 已经被强制不短于 minDuration；这里不要再用浮点减法二次判断，
         // 否则在 11px/s 等特定倍率下可能因为 1e-15 级误差吞掉合法创建。
         if (activeDragState.trackType === "character") {
@@ -3380,18 +3342,9 @@ export function Timeline({
                     onCloseContextMenu();
                     if (event.metaKey || event.ctrlKey) {
                       if (track.type === "attached-point" || track.type === "gongche-attached") {
-                        logTimelineCreationDiagnostic("create-rejected-unsupported-track", {
-                          visualTrackId: track.id,
-                          visualTrackType: track.type,
-                        });
                         return;
                       }
                       if (!customBlockCreationTarget && track.type === "branch-lane") {
-                        logTimelineCreationDiagnostic("create-rejected-unresolved-branch", {
-                          visualTrackId: track.id,
-                          parentTrackId: track.parentTrackId ?? null,
-                          branchLaneId: track.branchLaneId ?? null,
-                        });
                         return;
                       }
                       const creationTrackType = customBlockCreationTarget?.trackType ??
@@ -3402,20 +3355,8 @@ export function Timeline({
                           ? track.type
                           : null);
                       if (!creationTrackType) {
-                        logTimelineCreationDiagnostic("create-rejected-unresolved-track", {
-                          visualTrackId: track.id,
-                          visualTrackType: track.type,
-                        });
                         return;
                       }
-                      logTimelineCreationDiagnostic("create-drag-start", {
-                        trackId: customBlockCreationTarget?.trackId ?? track.id,
-                        visualTrackId: track.id,
-                        trackType: creationTrackType,
-                        branchLaneIds: customBlockCreationTarget?.branchScope?.mode === "lanes"
-                          ? customBlockCreationTarget.branchScope.laneIds
-                          : [],
-                      });
                       lastPointerClientXRef.current = event.clientX;
                       setDragState({
                         kind: "create-track-item",
@@ -3461,24 +3402,10 @@ export function Timeline({
                       }
                       const startTime = snappedLaneTime;
                       if (track.type === "character") {
-                        logTimelineCreationDiagnostic("double-click-dispatch", {
-                          trackId: track.id,
-                          trackType: track.type,
-                          startTime,
-                        });
                         onCreateCharacterAtTime(startTime);
                         return;
                       }
                       if (customBlockCreationTarget) {
-                        logTimelineCreationDiagnostic("double-click-dispatch", {
-                          trackId: customBlockCreationTarget.trackId,
-                          visualTrackId: track.id,
-                          trackType: customBlockCreationTarget.trackType,
-                          startTime,
-                          branchLaneIds: customBlockCreationTarget.branchScope?.mode === "lanes"
-                            ? customBlockCreationTarget.branchScope.laneIds
-                            : [],
-                        });
                         onCreateCustomBlock(
                           customBlockCreationTarget.trackId,
                           startTime,
@@ -3487,11 +3414,6 @@ export function Timeline({
                         );
                         return;
                       }
-                      logTimelineCreationDiagnostic("double-click-dispatch", {
-                        trackId: track.id,
-                        trackType: track.type,
-                        startTime,
-                      });
                       onCreateActionAtTime(track.id, startTime);
                       return;
                     }

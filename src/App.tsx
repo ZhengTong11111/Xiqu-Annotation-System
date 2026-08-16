@@ -2343,28 +2343,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     resolveCompletion?.();
   }
 
-  // 创建块的失败必须能区分“手势没有到达 App”“目标轨道不存在”“命令没有生成”
-  // 和“命令已经进入队列但服务器保存失败”。这里只记录定位事实，不记录标注文本、媒体 URL、token 或命令 payload。
-  function logAnnotationCreationDiagnostic(
-    stage: string,
-    details: Record<string, unknown> = {},
-  ) {
-    console.info("[标注创建诊断]", {
-      stage,
-      platformFile: Boolean(editorSession),
-      annotationFileId: editorSession?.annotationFileId ?? null,
-      syncStatus: syncState.status,
-      localRevision: syncState.localRevision,
-      savedRevision: syncState.savedRevision,
-      remoteRevision: remoteBaseRevisionRef.current,
-      observedRemoteRevision,
-      pendingOperationCount: pendingOperations.length,
-      hasUnsavedChanges,
-      online: browserOnline,
-      ...details,
-    });
-  }
-
   // 所有受租约保护的写入共用这一串行入口；拿到租约后必须基于最新项目重新计算结果。
   async function runExclusiveProjectMutation(
     purpose: AnnotationMutationPurpose,
@@ -2377,11 +2355,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   ) {
     const previewBase = projectRef.current;
     if (areProjectValuesEqual(previewBase, buildNextProject(previewBase))) {
-      logAnnotationCreationDiagnostic("mutation-no-change", { purpose });
       return false;
     }
     if (exclusiveMutationInFlightRef.current) {
-      logAnnotationCreationDiagnostic("mutation-rejected-busy", { purpose });
       return false;
     }
 
@@ -2400,15 +2376,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         hadLease,
       });
       if (editorSession) await mutationLease.acquire(purpose);
-      logAnnotationCreationDiagnostic("lease-ready", {
-        purpose,
-        leaseHeld: Boolean(mutationLease.getToken()),
-      });
       // acquire 期间普通内容编辑仍可发生；拿锁后必须基于最新项目重建，不能覆盖这段时间的新内容。
       const baseProject = projectRef.current;
       const nextProject = buildNextProject(baseProject);
       if (areProjectValuesEqual(baseProject, nextProject)) {
-        logAnnotationCreationDiagnostic("mutation-no-change-after-lease", { purpose });
         if (editorSession && !hadLease) await mutationLease.release().catch(() => undefined);
         return false;
       }
@@ -2437,10 +2408,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       console.error("结构编辑事务失败，未完成本地提交。", {
         purpose,
         remoteRevision: remoteBaseRevisionRef.current,
-        errorMessage: error instanceof Error ? error.message : "未知结构编辑错误",
-      });
-      logAnnotationCreationDiagnostic("mutation-failed-before-commit", {
-        purpose,
         errorMessage: error instanceof Error ? error.message : "未知结构编辑错误",
       });
       window.alert(formatMutationLeaseError(error));
@@ -3678,21 +3645,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   function createCharacterAtTime(time: number, explicitEndTime?: number) {
     const currentProject = projectRef.current;
     if (!currentProject.builtinTracks.some((track) => track.id === "character-track")) {
-      logAnnotationCreationDiagnostic("character-rejected-track-missing", {
-        requestedStartTime: time,
-        requestedEndTime: explicitEndTime ?? null,
-      });
       return;
     }
     const normalizedTime = Math.max(0, time);
     const requestedRange = normalizeCharacterCreationRequest(normalizedTime, explicitEndTime);
     const characterId = `char-${createRuntimeUuid()}`;
     const char = "新";
-    logAnnotationCreationDiagnostic("character-request-received", {
-      entityId: characterId,
-      requestedStartTime: requestedRange.startTime,
-      requestedEndTime: requestedRange.endTime,
-    });
     // 逐字块可能同时创建/更新句级实体，必须用结构事务一次提交，避免云端把字符和句子拆成两条链。
     const buildNextProject = (baseProject: ProjectData): ProjectData => {
       const target = findCharacterCreationTarget(baseProject.subtitleLines, normalizedTime);
@@ -3758,10 +3716,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         });
       },
     ).then((committed) => {
-      logAnnotationCreationDiagnostic(
-        committed ? "character-local-commit-complete" : "character-local-commit-skipped",
-        { entityId: characterId },
-      );
       if (!committed) return;
       preferredCharacterEditLocationRef.current = "timeline";
       applySelection({ type: "character", id: characterId });
@@ -3774,11 +3728,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   function createActionAtTime(trackId: string, startTime: number, explicitEndTime?: number) {
     const currentProject = projectRef.current;
     if (!currentProject.builtinTracks.some((track) => track.id === trackId)) {
-      logAnnotationCreationDiagnostic("builtin-action-rejected-track-missing", {
-        trackId,
-        requestedStartTime: startTime,
-        requestedEndTime: explicitEndTime ?? null,
-      });
       return;
     }
     const safeStartTime = Math.max(0, startTime);
@@ -3786,12 +3735,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ? Math.max(safeStartTime, explicitEndTime)
       : safeStartTime + DEFAULT_ACTION_DURATION;
     const actionId = `${trackId}-${createRuntimeUuid()}`;
-    logAnnotationCreationDiagnostic("builtin-action-request-received", {
-      entityId: actionId,
-      trackId,
-      requestedStartTime: safeStartTime,
-      requestedEndTime: safeEndTime,
-    });
     // 动作块创建原来直接落入 legacy project.commit，平台原子保存无法重放；现在和其他结构实体统一走事务。
     const buildNextProject = (baseProject: ProjectData): ProjectData => ({
       ...baseProject,
@@ -3812,10 +3755,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         lifecycleTargets: [{ entityType: "action", entityId: actionId, trackId }],
       }),
     ).then((committed) => {
-      logAnnotationCreationDiagnostic(
-        committed ? "builtin-action-local-commit-complete" : "builtin-action-local-commit-skipped",
-        { entityId: actionId, trackId },
-      );
       if (committed) applySelection({ type: "action", id: actionId });
     });
   }
@@ -4009,15 +3948,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   ) {
     const currentProject = projectRef.current;
     const targetTrack = currentProject.customTracks.find((track) => track.id === trackId);
-    if (!targetTrack) {
-      logAnnotationCreationDiagnostic("custom-block-rejected-track-missing", {
-        trackId,
-        requestedStartTime: startTime,
-        requestedEndTime: explicitEndTime ?? null,
-        branchLaneIds: branchScope?.mode === "lanes" ? branchScope.laneIds : [],
-      });
-      return;
-    }
+    if (!targetTrack) return;
     const safeStartTime = Math.max(0, startTime);
     const endTime = explicitEndTime === undefined
       ? safeStartTime + DEFAULT_ACTION_DURATION
@@ -4041,15 +3972,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           ...(branchScope ? { branchScope } : {}),
         };
 
-    logAnnotationCreationDiagnostic("custom-block-request-received", {
-      entityId: nextBlock.id,
-      trackId,
-      trackType: targetTrack.trackType,
-      requestedStartTime: safeStartTime,
-      requestedEndTime: endTime,
-      branchLaneIds: branchScope?.mode === "lanes" ? branchScope.laneIds : [],
-    });
-
     const buildNextProject = (baseProject: ProjectData): ProjectData => ({
       ...baseProject,
       customTracks: baseProject.customTracks.map((track) =>
@@ -4065,10 +3987,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         lifecycleTargets: [{ entityType: "custom-block", entityId: nextBlock.id, trackId }],
       }),
     ).then((committed) => {
-      logAnnotationCreationDiagnostic(
-        committed ? "custom-block-local-commit-complete" : "custom-block-local-commit-skipped",
-        { entityId: nextBlock.id, trackId },
-      );
       if (!committed) return;
       applySelection({ type: "custom-block", trackId, id: nextBlock.id });
       if (targetTrack.trackType === "text") {
