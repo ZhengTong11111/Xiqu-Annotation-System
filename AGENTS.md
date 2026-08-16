@@ -24,6 +24,8 @@ Main currently contains all major recent feature lines that matter for context:
 - Gongche glyph preview is currently marked finished for research/demo use, but the glyph font must be replaced or licensed before release
 - Banyan beat/eye parsing, track display, editing, and global vertical guide rendering
 - platform login/resource-explorer UI, local editor entry, media upload, project/folder/file management, JSON import, revision-checked server save, recovery snapshots, and per-resource account permissions
+- resource permission Inspector with a default three-preset simple mode and the complete detailed capability matrix; presets
+  only rewrite direct ACL rows, preserve custom grants until explicit overwrite, and never replace server-side effective permission calculation
 - permission-gated native streaming downloads for media resources and authoritative JSON downloads for annotation resources, exposed through the shared resource context menu and Inspector
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - local `dev:api` and `dev:analysis-worker` commands load the ignored root `.env` through Node 22
@@ -338,6 +340,16 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - future analysis-audio selection belongs to platform media/derived-asset state, never `ProjectData`. Automatic embedded/uploaded/
     same-vid VOD audio remains the default, but users must always be able to force a readable uploaded server audio resource,
     even while automatic VOD audio works, so analysis can completely bypass a slow provider; restoring automatic selection is explicit
+- `src/platform/ResourcePermissionEditor.tsx`
+  - owns permission-matrix loading, simple/detailed presentation, direct grant writes, resource inheritance controls, and explanations
+    for role/inherited residual access; both modes edit the same direct ACL and must reread the server matrix after every write
+  - “不额外授权” deletes the direct grant and is never an explicit deny. Owner/admin rows stay immutable, and row writes block
+    mode switching/refresh until their authoritative result is reloaded
+- `src/platform/resourcePermissionPresets.ts`
+  - the only frontend mapping for `none | view | edit` permission presets. View is `read + download`; edit adds ordinary content/file
+    operations and container `create_child`, but never `review` or `manage_permissions`
+  - preset recognition requires an exact capability set so custom grants remain custom. This helper must not calculate roles,
+    inheritance, ownership, expiry, or effective permission; those remain authoritative server concerns
 - `src/platform/AccountManagementDialog.tsx` + `src/platform/ChangePasswordDialog.tsx`
   - global account lifecycle/role administration and all-user self-service password change
   - neither component edits resource ACL; password values must never enter audit details, logs, saved project state, or browser drafts

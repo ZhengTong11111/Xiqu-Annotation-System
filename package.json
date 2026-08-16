@@ -78,6 +78,7 @@
     "test:annotation-merge-apply": "node --import tsx --test src/platform/annotationMergeApply.test.ts",
     "test:annotation-merge-preparation": "node --import tsx --test src/platform/annotationMergePreparation.test.ts",
     "test:resource-comparison": "node --import tsx --test src/platform/resourceComparison.test.ts",
+    "test:resource-permission-presets": "node --import tsx --test src/platform/resourcePermissionPresets.test.ts",
     "test:api": "npm run build:shared && npm run build:document-model && tsc -p apps/api/tsconfig.test.json && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/*.test.ts",
     "build:api": "tsc -p apps/api/tsconfig.json",
     "start:api": "node dist/api/server.js",
