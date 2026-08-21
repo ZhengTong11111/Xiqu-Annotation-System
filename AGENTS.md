@@ -1130,6 +1130,18 @@ Global visibility controls:
 - do not move Banyan visibility toggles back into `SpectrogramSettingsPanel`
 - `SpectrogramSettingsPanel` may expose waveform visibility as a redundant convenience control because the waveform track is also the settings entry point for audio analysis
 
+Command search (`搜索` top menu):
+- the sixth top menu `搜索` is a full-feature index, not a second owner of any setting; `视图` remains canonical for visibility toggles
+- `src/utils/commandCatalog.ts` holds the pure searchable definitions (id, label, breadcrumb path, keywords) and `src/utils/commandSearch.ts` the pure matcher; both are React-free and covered by `npm run test:command-search`
+- runtime wiring lives in `src/App.tsx` as `commandSearchEntries`; every entry must reuse an existing handler and must never introduce a mutation path of its own
+- toggle-vs-navigate is declared per field in the catalog: a searchable **toggle** flips the value through the same handler the panel switch uses (so it keeps undo history and the platform lease) and still selects/highlights the field; a **navigate** entry only scrolls to a control that needs real input (name, color, type list). Do not make search a silent mutation with no visible target
+- a searched toggle must honour the same gating as its panel switch (e.g. the two snap sub-options stay disabled until the track-head `吸附` master switch is on), and its `checked` state must come from a pure resolver, not from a second copy of the rule
+- invariant: an entry carries `checked` **iff** running it flips that value. Multi-choice controls (`纵轴映射`, `频率范围`, `分析精度`, `类型列表`) are one navigate entry with no `checked`; enumerated discrete actions (`播放速度 0.5x`…) stay one entry per value and apply directly, mirroring the `播放` menu
+- platform-only entries are gated by absence: they are simply not written into the runtime map without an `editorSession`, so local mode cannot surface a dead entry
+- static ids are typed as a required `Record<LocalStaticCommandId, …>`, so adding a definition without wiring it fails `tsc`; keep it that way instead of loosening the map to `Partial`
+- pinyin fallback lives in `src/utils/pinyin.ts` (`tiny-pinyin`, MIT, ~13 KB dist): a latin-only query is folded against a full-pinyin and an initials string built from each entry's breadcrumb + label. It scores **below** explicit keywords and **above** path hits, and is skipped entirely for Chinese queries. `tiny-pinyin` is CJS `module.exports = {}`; the module keeps an explicit `default ?? namespace` interop fallback because Node ESM and Vite disagree on hoisting its named exports — do not "simplify" that away
+- when adding a menu item, an Inspector track-settings field, or a `SpectrogramSettingsPanel` group, register it in the catalog in the same change; settings fields also need an `InspectorFocusTarget` in `src/types.ts` plus a `registerFocusField(...)` / `focusGroupProps([...])` anchor so search can scroll to and highlight them
+
 Windowing:
 - preview and timeline can detach into in-app floating windows
 - this is not native browser popup logic

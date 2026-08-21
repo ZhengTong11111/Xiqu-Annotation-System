@@ -54,6 +54,7 @@
     "test:media-playback": "node --import tsx --test src/media/mediaPlaybackController.test.ts src/media/nativeMediaPlaybackBackend.test.ts src/media/aliplayerSdk.test.ts src/media/aliyunVodPlaybackBackend.test.ts src/platform/platformMediaPlaybackSource.test.ts",
     "test:local-media-analysis": "node --import tsx --test src/utils/localMediaAnalysis.test.ts",
     "test:runtime-uuid": "node --import tsx --test src/utils/runtimeUuid.test.ts",
+    "test:command-search": "npm run build:shared && npm run build:document-model && node --import tsx --test src/utils/commandSearch.test.ts src/utils/commandCatalog.test.ts src/utils/pinyin.test.ts",
     "test:media-analysis": "npm run build:shared && node --test packages/shared/test/media-analysis-tile-batch.test.mjs && npm run db:generate && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/aliyunVodGateway.test.ts apps/api/test/mediaAnalysisComputation.test.ts apps/api/test/mediaAnalysisFfmpeg.test.ts apps/api/test/mediaAnalysisWorker.test.ts src/platform/platformMediaAnalysisCache.test.ts src/platform/platformMediaAnalysisLoading.test.ts src/platform/usePlatformMediaAnalysis.test.ts",
     "test:resource-pagination": "npm run build:shared && node --import tsx --test apps/api/test/resourcePagination.test.ts",
     "test:resource-page-state": "node --import tsx --test src/platform/resourcePageState.test.ts",
@@ -123,7 +124,8 @@
     "prom-client": "^15.1.3",
     "react": "^18.3.1",
     "react-colorful": "^5.7.0",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "tiny-pinyin": "^1.3.2"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",
