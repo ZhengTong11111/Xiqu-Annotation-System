@@ -88,6 +88,7 @@ import { AliyunVodMediaDialog } from "./AliyunVodMediaDialog";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { downloadFromUrl } from "./browserDownload";
 import { ResourcePermissionEditor } from "./ResourcePermissionEditor";
+import { ProjectPermissionManagementDialog } from "./ProjectPermissionManagementDialog";
 
 type ExplorerMode = "list" | "grid" | "column";
 
@@ -147,6 +148,8 @@ export function ResourceExplorer(props: {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [auditLogOpen, setAuditLogOpen] = useState(false);
   const [accountManagementOpen, setAccountManagementOpen] = useState(false);
+  const [projectPermissionManagementOpen, setProjectPermissionManagementOpen] = useState(false);
+  const [permissionRefreshVersion, setPermissionRefreshVersion] = useState(0);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [vodDialogOpen, setVodDialogOpen] = useState(false);
   const [pendingJsonImport, setPendingJsonImport] = useState<{
@@ -865,6 +868,14 @@ export function ResourceExplorer(props: {
           ) : null}
           {hasFullResourceAccess ? (
             <>
+              {/* 项目权限是管理员快速入口；账号生命周期仍只属于系统管理员。 */}
+              <button
+                type="button"
+                title="项目权限管理"
+                onClick={() => setProjectPermissionManagementOpen(true)}
+              >
+                <ShieldCheck size={17} />
+              </button>
               {/* 全局审计与系统诊断使用独立窗口，避免健康指标和业务日志混成一个超长面板。 */}
               <button
                 type="button"
@@ -1147,6 +1158,7 @@ export function ResourceExplorer(props: {
           client={props.client}
           resource={selected}
           readOnly={isTrashView}
+          permissionRefreshVersion={permissionRefreshVersion}
           onChanged={() => refreshCurrentView()}
           onError={setError}
           onOpenAnnotationFile={props.onOpenAnnotationFile}
@@ -1232,6 +1244,16 @@ export function ResourceExplorer(props: {
       {/* 审计与系统诊断属于全资源管理员工具，不依赖当前资源选择，也不会挤占右侧 Inspector。 */}
       {hasFullResourceAccess ? (
         <>
+          <ProjectPermissionManagementDialog
+            client={props.client}
+            open={projectPermissionManagementOpen}
+            onOpenChange={setProjectPermissionManagementOpen}
+            onPermissionChanged={async () => {
+              // 项目 ACL 也可能改变当前子资源的继承权限，因此任何项目授权写入后都重读当前 Inspector 矩阵。
+              setPermissionRefreshVersion((current) => current + 1);
+              await refreshCurrentView();
+            }}
+          />
           {/* 审计窗口独立持有分页和筛选状态，不依赖当前资源选择。 */}
           <AuditLogDialog
             client={props.client}
@@ -1306,6 +1328,7 @@ function ResourceInspector(props: {
   client: PlatformClient;
   resource: ResourceEntry | null;
   readOnly: boolean;
+  permissionRefreshVersion: number;
   onChanged: () => void | Promise<void>;
   onError: (message: string | null) => void;
   onOpenAnnotationFile: (
@@ -1444,6 +1467,7 @@ function ResourceInspector(props: {
         client={props.client}
         resource={props.resource}
         readOnly={props.readOnly}
+        refreshVersion={props.permissionRefreshVersion}
         onChanged={props.onChanged}
         onError={props.onError}
       />

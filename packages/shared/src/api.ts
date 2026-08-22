@@ -13,6 +13,7 @@ import type {
   AuditActionName,
   AuditLogPage,
   ManagedAccount,
+  PermissionManagementProjectPage,
   PlatformUser,
   ResourceCapability,
   ResourceEntry,
@@ -106,6 +107,12 @@ export type ListResourcesOptions = {
   type?: ResourceType;
   sortBy?: ResourceSortField;
   direction?: SortDirection;
+  cursor?: string;
+  limit?: number;
+};
+
+export type ListPermissionManagementProjectsOptions = {
+  query?: string;
   cursor?: string;
   limit?: number;
 };
@@ -421,6 +428,9 @@ export type PlatformApiContract<TPayload = unknown> = {
   me: { response: PlatformUser };
   listDirectoryUsers: { response: PlatformUser[] };
   listResources: { response: ResourceListPage };
+  listPermissionManagementProjects: {
+    response: PermissionManagementProjectPage;
+  };
   getResource: { response: ResourceEntry };
   markResourceOpened: { response: void };
   createResource: { request: CreateResourceRequest; response: ResourceEntry };

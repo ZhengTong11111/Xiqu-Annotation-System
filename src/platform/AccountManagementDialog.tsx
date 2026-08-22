@@ -3,15 +3,7 @@ import { KeyRound, Plus, RefreshCw, UserCog, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { ManagedAccount, PlatformRole } from "@xiqu/shared";
 import type { PlatformClient } from "../api/platformClient";
-
-const ROLE_OPTIONS: Array<{ role: PlatformRole; label: string }> = [
-  { role: "super_admin", label: "系统管理员" },
-  { role: "admin", label: "管理员" },
-  { role: "teacher", label: "教师" },
-  { role: "annotator", label: "标注员" },
-  { role: "reviewer", label: "审核员" },
-  { role: "service", label: "服务账号" },
-];
+import { PLATFORM_ROLE_OPTIONS } from "./platformRoleLabels";
 
 type Props = {
   client: PlatformClient;
@@ -196,7 +188,7 @@ function AccountEditor(props: {
 }
 
 function RolePicker(props: { value: PlatformRole[]; onChange: (roles: PlatformRole[]) => void }) {
-  return <fieldset className="account-role-picker"><legend>平台角色</legend>{ROLE_OPTIONS.map(({ role, label }) => (
+  return <fieldset className="account-role-picker"><legend>平台角色</legend>{PLATFORM_ROLE_OPTIONS.map(({ role, label }) => (
     <label key={role}><input type="checkbox" checked={props.value.includes(role)} onChange={(event) => props.onChange(event.target.checked ? [...new Set([...props.value, role])] : props.value.filter((item) => item !== role))} />{label}</label>
   ))}</fieldset>;
 }

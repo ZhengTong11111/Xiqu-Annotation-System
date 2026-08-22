@@ -144,6 +144,20 @@ export type ResourceListPage = {
   nextCursor: string | null;
 };
 
+// 集中权限面板只读取项目选择所需的轻量事实，避免提前展开每个项目的完整账号矩阵。
+export type PermissionManagementProject = {
+  id: string;
+  name: string;
+  path: ResourceBreadcrumb[];
+  owner: UserReference;
+  updatedAt: string;
+};
+
+export type PermissionManagementProjectPage = {
+  items: PermissionManagementProject[];
+  nextCursor: string | null;
+};
+
 export type AnnotationFile<TPayload = unknown> = {
   resource: ResourceEntry;
   payload: TPayload;

@@ -280,6 +280,21 @@ export function registerApiRoutes(
     );
   });
 
+  // 项目权限管理使用独立跨目录分页，不能改变资源管理器 all_projects 只列根项目的既有语义。
+  app.get<{
+    Querystring: { query?: string; cursor?: string; limit?: string };
+  }>("/api/permission-management/projects", async (request) => {
+    const limit = parseOptionalInteger(request.query.limit, "limit", 1, 100);
+    return resources.listPermissionManagementProjects(
+      await getCurrentUser(repository, request),
+      {
+        query: normalizedString(request.query.query),
+        cursor: normalizedString(request.query.cursor),
+        limit,
+      },
+    );
+  });
+
   app.get<{ Params: { resourceId: string } }>(
     "/api/resources/:resourceId",
     async (request) =>

@@ -6578,3 +6578,59 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   `28%`，独立数据盘使用率 `14%`，当前容量无阻断风险。
 - 已完成自动与只读部署验收；仍待人工按真实账号完成命令搜索菜单、极简/详细权限切换、权限保存后重读、打开标注
   文件与保存协作的浏览器闭环。该人工验收不影响当前服务健康状态，但应在后续权限验收记录中补齐。
+
+## 2026-08-22：三栏式项目权限管理面板
+
+### 需求审查与任务边界
+
+- 用户要求在逐资源 Inspector 之外增加一个管理员集中入口：左栏选择并搜索人员，中栏选择并搜索项目，右栏使用此前
+  已确定的“不额外授权 / 仅查看 / 可编辑”三档预设。本轮先整体重写本机忽略的 `CLAUDE_WORK.md`，明确集中窗口
+  只负责常见项目级直接 ACL，账号生命周期、任意文件/文件夹的详细 capability、审核、权限管理和过期时间继续由
+  既有界面负责。工作由 Codex 直接实现，没有委托 Claude Code、GLM、DeepSeek 或其他 agent。
+- 项目权限的产品含义被收敛为“整个项目范围”：仅查看和可编辑固定写入 `inheritToChildren=true`；不额外授权仅删除
+  当前项目的直接 ACL。teacher 角色基线、祖先继承、owner 和全局管理员能力仍由服务端计算，因此界面始终同时展示
+  直接授权与最终有效权限，且不会把第一档描述成“无权限”。
+- 本轮没有新增 Prisma 表、migration、平台角色或数据库 `permission_level` 字段，也没有引入新依赖。三档仍是前端
+  capability 预设；服务端既有 PUT/DELETE、委派校验、审计和有效权限算法继续作为唯一安全边界。
+
+### Codex 实际实现
+
+- 新增 `ProjectPermissionManagementDialog.tsx`，采用现有 Radix Dialog 和资源管理器视觉语言实现宽屏三栏窗口。人员与
+  项目各有独立搜索、loading、空结果、错误和重试状态；项目列表支持稳定 cursor 追加，每栏独立滚动。选中一个项目
+  后只读取一次既有完整权限矩阵，切换人员在本地矩阵中定位，避免形成“项目数 × 账号数”的预加载请求。
+- 账号、项目和矩阵请求分别使用 generation 门禁与约 260ms 搜索防抖；搜索、刷新、关闭和项目切换会使旧响应失效。
+  保存期间锁定 selection 和关闭动作，保存后必须重新读取权威矩阵。自定义 capability 或旧的
+  `inheritToChildren=false` 设置需要显式勾选覆盖确认；owner 和 `super_admin/admin` 目标行显示只读锁定原因。
+- 新增 `projectPermissionManagement.ts` 纯计划模块与专项测试，集中处理 preset 精确识别、owner/admin 锁定、teacher/
+  祖先残余访问提示以及 remove/upsert/no-op 保存计划。新增 `ResourcePermissionPresetSelector.tsx`，让原 Inspector 和
+  新窗口共用三档图标、文案、ARIA 与委派禁用状态；原组件中的重复常量和 JSX 已删除。角色中文名称也抽取到
+  `platformRoleLabels.ts`，账号管理与项目权限窗口不再各维护一套角色文案。
+- shared/API 增加轻量 `PermissionManagementProjectPage` 及
+  `GET /api/permission-management/projects?query=&cursor=&limit=`。接口仅允许 `super_admin/admin`，按名称和 id 稳定排序，
+  覆盖嵌套项目，并批量补齐祖先路径以规避 N+1；项目自身或任一祖先归档、回收、缺失或循环时均不进入活动列表。
+  现有资源管理器 `all_projects` 的根项目语义保持不变。
+- 资源管理器顶部增加 Shield 图标入口；集中窗口保存后会让当前 Inspector 显式重读权限矩阵，覆盖项目 ACL 改变
+  已选子资源继承结果的场景。新样式
+  使用固定响应式 grid、细分割线、小圆角、独立滚动列表和 sticky 保存区；窄屏依次降级为上部双栏加下部权限区，
+  再降级为纵向三段，避免文案和操作遮挡。新增竞态、权限边界和祖先批处理均补充了中文功能注释。
+
+### 自审修复、验证与状态
+
+- 自审中修复了一个部分成功提示：ACL 写入成功后，只有服务端矩阵确实回读成功才显示“已保存并重新读取”；回读失败
+  会保留明确错误，同时资源视图仍按已发生的写入刷新。自审还把 Inspector 刷新从“只刷新同一项目”扩展为每次项目
+  ACL 写入后都刷新当前矩阵，避免已选子资源继续显示旧继承结果。人员与项目搜索输入统一限制为 120 字符，与项目 API
+  边界一致。
+- `npm run test:project-permission-management`：5/5；覆盖 no-op、项目继承范围、custom/非传递覆盖确认、owner/admin
+  锁定和 teacher/祖先残余访问。
+- `npm run test:resource-permission-presets`：5/5；`npm run test:permissions`：5/5。
+- `npm run test:api` 最终 164/164 通过，新增集成用例覆盖 super_admin/admin、非管理员 403、嵌套项目、归档/回收
+  祖先过滤、名称搜索、分页和游标查询绑定。首次运行中既有“项目递归复制”用例偶发返回一次 500；同一代码和全新测试
+  schema 立即完整复跑后该用例及全套均通过。该现象未能稳定复现，也没有指向本轮只读项目列表路径，后续若再次出现应
+  单独保留服务端原始错误证据排查，不能把偶发结果静默当作通过。
+- 完整 `npm run build` 通过 Prisma generate、shared、document-model、Web 和 API 编译；仍只有既有 Web 主 chunk
+  超过 500 kB 的非阻断提醒。`git diff --check` 通过。
+- 浏览器以本机现有系统管理员会话完成只读验收：入口、三栏布局、独立项目滚动、人员/项目搜索、嵌套路径、普通账号
+  直接/有效权限摘要、可编辑预设、全局管理员锁定、关闭后 selection 清理均正常，浏览器控制台无 warning/error。
+  为避免污染本机 ACL，本轮浏览器验收没有点击最终保存；写入行为由纯计划测试和真实 PostgreSQL API 权限集成测试覆盖。
+- 已完成：功能、共享合同、后端授权与分页、专项/API/构建、浏览器只读验收、permissions model、roadmap、AGENTS 和
+  本日志更新。待用户后续决定：是否提交、合并及部署；生产部署不属于本轮任务。

@@ -1,8 +1,5 @@
 import {
   ChevronRight,
-  Eye,
-  MinusCircle,
-  Pencil,
   RefreshCw,
 } from "lucide-react";
 import {
@@ -25,42 +22,17 @@ import {
   RESOURCE_CAPABILITY_LABELS,
   type ResourcePermissionPreset,
 } from "./resourcePermissionPresets";
+import { ResourcePermissionPresetSelector } from "./ResourcePermissionPresetSelector";
 
 // 权限区只切换展示复杂度；两种模式继续编辑同一条直接 ACL。
 type PermissionEditorMode = "simple" | "detailed";
-
-// 三档选项集中定义用户文案和图标，实际 capability 映射仍由纯 preset helper 负责。
-const SIMPLE_PERMISSION_OPTIONS: Array<{
-  preset: ResourcePermissionPreset;
-  label: string;
-  description: string;
-  icon: typeof Eye;
-}> = [
-  {
-    preset: "none",
-    label: "不额外授权",
-    description: "角色或父目录权限仍有效",
-    icon: MinusCircle,
-  },
-  {
-    preset: "view",
-    label: "仅查看",
-    description: "查看、播放与下载",
-    icon: Eye,
-  },
-  {
-    preset: "edit",
-    label: "可编辑",
-    description: "编辑、下载及文件操作",
-    icon: Pencil,
-  },
-];
 
 // 资源 Inspector 的权限模块独立拥有矩阵读取与行级编辑，服务端仍负责最终 ACL 计算和委派校验。
 export function ResourcePermissionEditor(props: {
   client: PlatformClient;
   resource: ResourceEntry;
   readOnly: boolean;
+  refreshVersion?: number;
   onChanged: () => void | Promise<void>;
   onError: (message: string | null) => void;
 }) {
@@ -91,7 +63,7 @@ export function ResourcePermissionEditor(props: {
     } finally {
       if (generation === requestGenerationRef.current) setLoading(false);
     }
-  }, [canManage, props.client, props.onError, props.resource.id]);
+  }, [canManage, props.client, props.onError, props.refreshVersion, props.resource.id]);
 
   // 资源或管理资格变化时重新读取；cleanup 使旧请求的成功与失败回调一起失效。
   useEffect(() => {
@@ -349,41 +321,15 @@ function PermissionRow(props: {
           {props.mode === "simple" ? (
             <>
               {/* 极简模式只暴露三个可解释预设，自定义授权必须由用户明确覆盖。 */}
-              <div className="resource-permission-presets" role="radiogroup" aria-label={`${props.row.user.displayName}的权限预设`}>
-                {SIMPLE_PERMISSION_OPTIONS.map((option) => {
-                  const Icon = option.icon;
-                  const delegatable = canDelegateResourcePermissionPreset(
-                    props.resource.permission.capabilities,
-                    option.preset,
-                    props.resource.type,
-                  );
-                  return (
-                    <label
-                      key={option.preset}
-                      className={[
-                        "resource-permission-preset",
-                        presetMatch === option.preset ? "selected" : "",
-                        !delegatable ? "disabled" : "",
-                      ].filter(Boolean).join(" ")}
-                      title={!delegatable ? "你不能授予自己并不拥有的完整权限预设" : undefined}
-                    >
-                      <input
-                        type="radio"
-                        name={`resource-permission-${props.resource.id}-${props.row.user.id}`}
-                        value={option.preset}
-                        checked={presetMatch === option.preset}
-                        disabled={busy || !delegatable}
-                        onChange={() => selectPreset(option.preset)}
-                      />
-                      <Icon size={16} />
-                      <span>
-                        <strong>{option.label}</strong>
-                        <small>{option.description}</small>
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
+              <ResourcePermissionPresetSelector
+                name={`resource-permission-${props.resource.id}-${props.row.user.id}`}
+                ariaLabel={`${props.row.user.displayName}的权限预设`}
+                value={presetMatch}
+                resourceType={props.resource.type}
+                actorCapabilities={props.resource.permission.capabilities}
+                disabled={busy}
+                onChange={selectPreset}
+              />
               {presetMatch === "custom" ? (
                 <div className="resource-permission-preset-note">
                   当前为自定义细分权限；切换详细模式查看，或选择一个预设覆盖。

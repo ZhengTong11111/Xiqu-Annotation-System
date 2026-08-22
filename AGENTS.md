@@ -333,7 +333,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - blank annotation creation uses `createEmptyProjectData()` and the real annotation-file API, then enters through
     `PlatformWorkspace`'s single authoritative open path; it must not use `mockProject`, bypass revision/ACL initialization,
     or require media binding before the first editor session
-  - the Inspector is the canonical UI for editing each account's direct permissions on the selected resource
+  - the Inspector is the canonical detailed UI for direct permissions on the selected resource; the separate project permission
+    dialog is only the global-admin quick entry for common project-level presets and must not absorb file/folder exceptions
   - file downloads must use the protected resource download route; never rebuild annotation JSON from an already-open editor or buffer large media into a browser Blob
   - uploaded media and aliyun_vod are distinct sources: VOD may be bound/copied/moved/authorized but has no platform original-file
     download. Local computer media, uploaded server media, and VOD entry points must remain available as separate workflows
@@ -345,6 +346,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     for role/inherited residual access; both modes edit the same direct ACL and must reread the server matrix after every write
   - “不额外授权” deletes the direct grant and is never an explicit deny. Owner/admin rows stay immutable, and row writes block
     mode switching/refresh until their authoritative result is reloaded
+- `src/platform/ProjectPermissionManagementDialog.tsx` + `src/platform/projectPermissionManagement.ts`
+  - global-admin three-pane quick assignment for one active account and one active project; account/project searches are independent,
+    the selected project matrix is authoritative, and owner/admin rows remain read-only
+  - project view/edit writes always use `inheritToChildren=true`; custom or non-inheriting direct ACL requires explicit overwrite
+    confirmation. None deletes only the project direct ACL and must explain remaining role/ancestor access
+- `src/platform/ResourcePermissionPresetSelector.tsx`
+  - shared controlled presentation for the three common presets. It owns icons, labels, ARIA, and delegation-disabled display only;
+    it never performs network writes or computes roles, ownership, inheritance, or effective permissions
 - `src/platform/resourcePermissionPresets.ts`
   - the only frontend mapping for `none | view | edit` permission presets. View is `read + download`; edit adds ordinary content/file
     operations and container `create_child`, but never `review` or `manage_permissions`
@@ -668,6 +677,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - combines global admin bypass, ownership, direct grants, and nearest inherited folder grants
 - `apps/api/src/resourceService.ts`
   - resource-tree mutations, copy/move/trash behavior, annotation-file save/recovery, and confirmed-range governance
+  - the project-permission selector endpoint is a global-admin-only, stable cursor page over all active projects, including nested
+    projects. It batch-loads ancestor paths and excludes projects below archived/trashed ancestors without changing the resource
+    explorer's root-only `all_projects` semantics or returning full permission matrices
   - annotation save atomically binds the current actor's declared client operation ids to the new payload revision;
     missing, foreign, stale-base, or already-committed ids must roll back payload, revision, snapshots, and audit together
 - `apps/api/src/annotationFileWriteLock.ts`

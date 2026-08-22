@@ -36,6 +36,7 @@ import type {
   ManagedAccountPage,
   MediaProviderCapabilities,
   ListManagedAccountsOptions,
+  ListPermissionManagementProjectsOptions,
   CreateManagedAccountRequest,
   UpdateManagedAccountRequest,
   ResetManagedAccountPasswordRequest,
@@ -44,6 +45,7 @@ import type {
   MoveResourceRequest,
   PlatformUser,
   PlatformMaintenanceStatus,
+  PermissionManagementProjectPage,
   AnnotationMediaAnalysisStatus,
   MediaAnalysisRun,
   MediaAnalysisAssetList,
@@ -171,6 +173,23 @@ export class PlatformClient {
     }
     return this.request<ResourceListPage>(
       params.size ? `/resources?${params}` : "/resources",
+    );
+  }
+
+  // 集中权限面板只分页读取项目摘要，选中项目后再按需请求现有权限矩阵。
+  listPermissionManagementProjects(
+    options: ListPermissionManagementProjectsOptions = {},
+  ) {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(options)) {
+      if (value !== undefined && value !== null && value !== "") {
+        params.set(key, String(value));
+      }
+    }
+    return this.request<PermissionManagementProjectPage>(
+      params.size
+        ? `/permission-management/projects?${params}`
+        : "/permission-management/projects",
     );
   }
 

@@ -313,6 +313,136 @@ test("平台资源 API 集成测试", async (suite) => {
       }), 5);
     });
 
+    await suite.test("项目权限管理分页覆盖嵌套项目并拒绝非管理员", async () => {
+      const resourceAdminToken = (
+        await login(app, "integration_admin", "adminRolePass123")
+      ).accessToken;
+      const root = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "权限项目-根" },
+      });
+      assert.equal(root.statusCode, 200, root.body);
+      const rootId = String(dataOf(root.json()).id);
+      const nested = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: rootId, type: "project", name: "权限项目-嵌套" },
+      });
+      assert.equal(nested.statusCode, 200, nested.body);
+      const nestedId = String(dataOf(nested.json()).id);
+      await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: rootId, type: "folder", name: "权限项目-文件夹" },
+      });
+
+      // 子项目本身保持活动，但归档或回收祖先必须让整棵子树退出集中权限面板。
+      const archivedParent = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "权限项目-归档父级" },
+      });
+      const archivedParentId = String(dataOf(archivedParent.json()).id);
+      const archivedChild = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: {
+          parentId: archivedParentId,
+          type: "project",
+          name: "权限项目-归档子级",
+        },
+      });
+      const archivedChildId = String(dataOf(archivedChild.json()).id);
+      assert.equal((await jsonRequest(app, adminToken, {
+        method: "PATCH",
+        url: `/api/resources/${archivedParentId}`,
+        payload: { archived: true },
+      })).statusCode, 200);
+
+      const trashedParent = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "权限项目-回收父级" },
+      });
+      const trashedParentId = String(dataOf(trashedParent.json()).id);
+      const trashedChild = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: {
+          parentId: trashedParentId,
+          type: "project",
+          name: "权限项目-回收子级",
+        },
+      });
+      const trashedChildId = String(dataOf(trashedChild.json()).id);
+      assert.equal((await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${trashedParentId}/trash`,
+      })).statusCode, 200);
+
+      for (const token of [teacherToken, studentToken]) {
+        const forbiddenProjects = await jsonRequest(app, token, {
+          method: "GET",
+          url: "/api/permission-management/projects",
+        });
+        assert.equal(forbiddenProjects.statusCode, 403);
+      }
+
+      const firstPage = await jsonRequest(app, resourceAdminToken, {
+        method: "GET",
+        url: "/api/permission-management/projects?query=权限项目&limit=1",
+      });
+      assert.equal(firstPage.statusCode, 200, firstPage.body);
+      const firstPageData = dataOf(firstPage.json());
+      assert.equal((firstPageData.items as JsonObject[]).length, 1);
+      assert.equal(typeof firstPageData.nextCursor, "string");
+      const secondPage = await jsonRequest(app, resourceAdminToken, {
+        method: "GET",
+        url: `/api/permission-management/projects?query=权限项目&limit=10&cursor=${encodeURIComponent(String(firstPageData.nextCursor))}`,
+      });
+      assert.equal(secondPage.statusCode, 200, secondPage.body);
+      const allVisibleItems = [
+        ...(firstPageData.items as JsonObject[]),
+        ...(dataOf(secondPage.json()).items as JsonObject[]),
+      ];
+      assert.deepEqual(
+        new Set(allVisibleItems.map(({ id }) => id)),
+        new Set([rootId, nestedId]),
+        "集中权限面板只能返回活动项目，且不能遗漏嵌套项目",
+      );
+      const nestedItem = allVisibleItems.find(({ id }) => id === nestedId);
+      assert.deepEqual(
+        (nestedItem?.path as JsonObject[]).map(({ name }) => name),
+        ["权限项目-根", "权限项目-嵌套"],
+      );
+      assert.ok(!allVisibleItems.some(({ id }) => [
+        archivedParentId,
+        archivedChildId,
+        trashedParentId,
+        trashedChildId,
+      ].includes(String(id))));
+
+      const searched = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/permission-management/projects?query=权限项目-嵌套",
+      });
+      assert.deepEqual(
+        (dataOf(searched.json()).items as JsonObject[]).map(({ id }) => id),
+        [nestedId],
+      );
+      const mismatchedCursor = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/permission-management/projects?query=其他项目&cursor=${encodeURIComponent(String(firstPageData.nextCursor))}`,
+      });
+      assert.equal(mismatchedCursor.statusCode, 400);
+      const overlongSearch = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/permission-management/projects?query=${"长".repeat(121)}`,
+      });
+      assert.equal(overlongSearch.statusCode, 400);
+    });
+
     await suite.test("资源创建、名称校验和层级循环保护", async () => {
       const project = await jsonRequest(app, adminToken, {
         method: "POST",

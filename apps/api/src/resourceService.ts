@@ -29,9 +29,12 @@ import type {
   CreateAnnotationFileRequest,
   CreateResourceRequest,
   EffectiveResourcePermission,
+  ListPermissionManagementProjectsOptions,
   ListResourcesOptions,
   MediaProviderCapabilities,
+  PermissionManagementProjectPage,
   ResourceCapability,
+  ResourceBreadcrumb,
   ResourceEntry,
   ResourceListPage,
   ResourcePermissionMatrixRow,
@@ -105,6 +108,18 @@ const resourceInclude = {
   mediaFile: true,
 } satisfies Prisma.ResourceEntryInclude;
 
+// 集中权限面板使用轻量项目行；完整标注、媒体和子项计数不应随项目选择列表一起加载。
+const permissionManagementProjectSelect = {
+  id: true,
+  parentId: true,
+  type: true,
+  name: true,
+  archivedAt: true,
+  trashedAt: true,
+  updatedAt: true,
+  owner: { select: { id: true, accountName: true, displayName: true } },
+} satisfies Prisma.ResourceEntrySelect;
+
 const annotationConfirmationInclude = {
   creator: { include: { roles: true } },
   revoker: { include: { roles: true } },
@@ -117,6 +132,13 @@ const annotationMutationLeaseInclude = {
 type ResourceRow = Prisma.ResourceEntryGetPayload<{
   include: typeof resourceInclude;
 }>;
+type PermissionManagementProjectRow = Prisma.ResourceEntryGetPayload<{
+  select: typeof permissionManagementProjectSelect;
+}>;
+type ResourcePathNode = Pick<
+  PermissionManagementProjectRow,
+  "id" | "parentId" | "type" | "name" | "archivedAt" | "trashedAt"
+>;
 type AnnotationConfirmationRow = Prisma.AnnotationConfirmationGetPayload<{
   include: typeof annotationConfirmationInclude;
 }>;
@@ -260,6 +282,95 @@ export class ResourceService {
       breadcrumbs: options.parentId
         ? await this.buildBreadcrumbs(user, options.parentId)
         : [],
+      nextCursor: visible.length > limit && page.length > 0
+        ? encodeResourceCursor(page.at(-1)!.row.id, query)
+        : null,
+    };
+  }
+
+  // 集中权限面板跨目录列出全部活动项目，但仍以轻量分页返回，不能预先展开项目×账号权限矩阵。
+  async listPermissionManagementProjects(
+    actor: ApiUser,
+    options: ListPermissionManagementProjectsOptions,
+  ): Promise<PermissionManagementProjectPage> {
+    if (!this.access.hasFullResourceAccess(actor)) {
+      throw forbidden("只有系统管理员和管理员可以使用项目权限管理。");
+    }
+    const normalizedSearch = options.query?.trim() || null;
+    if (normalizedSearch && normalizedSearch.length > 120) {
+      throw badRequest("项目搜索词不能超过 120 个字符。");
+    }
+    // 复用资源分页的查询指纹和稳定 name/id 排序，但不复用 all_projects 的“仅根项目”数据库条件。
+    const query = normalizeResourceQuery({
+      view: "all_projects",
+      query: normalizedSearch ?? undefined,
+      type: "project",
+      sortBy: "name",
+      direction: "asc",
+    });
+    const where: Prisma.ResourceEntryWhereInput = {
+      type: "project",
+      archivedAt: null,
+      trashedAt: null,
+      ...(normalizedSearch
+        ? { name: { contains: normalizedSearch, mode: "insensitive" } }
+        : {}),
+    };
+    const limit = Math.max(1, Math.min(options.limit ?? 50, 100));
+    const scanBatchSize = getResourceScanBatchSize(limit);
+    let candidateCursorId: string | null = null;
+    if (options.cursor) {
+      try {
+        candidateCursorId = decodeResourceCursor(options.cursor, query);
+      } catch (error) {
+        if (error instanceof ResourceCursorError) throw badRequest(error.message);
+        throw error;
+      }
+      const cursorStillMatches = await this.prisma.resourceEntry.findFirst({
+        where: { AND: [where, { id: candidateCursorId }] },
+        select: { id: true },
+      });
+      if (!cursorStillMatches) {
+        throw badRequest("项目分页游标已经失效，请刷新项目列表。");
+      }
+    }
+
+    const visible: Array<{
+      row: PermissionManagementProjectRow;
+      path: ResourceBreadcrumb[];
+    }> = [];
+    let exhausted = false;
+    while (visible.length <= limit && !exhausted) {
+      const rows = await this.prisma.resourceEntry.findMany({
+        where,
+        select: permissionManagementProjectSelect,
+        orderBy: buildResourceOrderBy(query),
+        take: scanBatchSize,
+        ...(candidateCursorId
+          ? { cursor: { id: candidateCursorId }, skip: 1 }
+          : {}),
+      });
+      if (rows.length === 0) break;
+      exhausted = rows.length < scanBatchSize;
+      candidateCursorId = rows.at(-1)!.id;
+
+      // 一批项目共享祖先查询，避免为每个项目逐层发起 N+1 路径请求；归档/回收祖先使整棵子树退出活动列表。
+      const paths = await this.buildActiveResourcePaths(rows);
+      for (const row of rows) {
+        const path = paths.get(row.id);
+        if (path) visible.push({ row, path });
+      }
+    }
+
+    const page = visible.slice(0, limit);
+    return {
+      items: page.map(({ row, path }) => ({
+        id: row.id,
+        name: row.name,
+        path,
+        owner: row.owner,
+        updatedAt: row.updatedAt.toISOString(),
+      })),
       nextCursor: visible.length > limit && page.length > 0
         ? encodeResourceCursor(page.at(-1)!.row.id, query)
         : null,
@@ -2269,6 +2380,64 @@ export class ResourceService {
       currentId = row.parentId;
     }
     return items;
+  }
+
+  // 项目选择页按批次补齐祖先并构造路径；任何归档、回收、缺失或循环祖先都会隐藏对应项目。
+  private async buildActiveResourcePaths(
+    rows: readonly ResourcePathNode[],
+  ): Promise<Map<string, ResourceBreadcrumb[]>> {
+    const nodes = new Map<string, ResourcePathNode>(
+      rows.map((row) => [row.id, row]),
+    );
+    let missingParentIds = [...new Set(rows.flatMap((row) =>
+      row.parentId && !nodes.has(row.parentId) ? [row.parentId] : []))];
+    while (missingParentIds.length > 0) {
+      const ancestors = await this.prisma.resourceEntry.findMany({
+        where: { id: { in: missingParentIds } },
+        select: {
+          id: true,
+          parentId: true,
+          type: true,
+          name: true,
+          archivedAt: true,
+          trashedAt: true,
+        },
+      });
+      for (const ancestor of ancestors) nodes.set(ancestor.id, ancestor);
+      missingParentIds = [...new Set(ancestors.flatMap((ancestor) =>
+        ancestor.parentId && !nodes.has(ancestor.parentId)
+          ? [ancestor.parentId]
+          : []))];
+    }
+
+    const paths = new Map<string, ResourceBreadcrumb[]>();
+    for (const row of rows) {
+      const reversedPath: ResourceBreadcrumb[] = [];
+      const visited = new Set<string>();
+      let current: ResourcePathNode | undefined = row;
+      let valid = true;
+      while (current) {
+        if (visited.has(current.id) || current.archivedAt || current.trashedAt) {
+          valid = false;
+          break;
+        }
+        visited.add(current.id);
+        reversedPath.push({
+          id: current.id,
+          parentId: current.parentId,
+          type: current.type,
+          name: current.name,
+        });
+        if (!current.parentId) break;
+        current = nodes.get(current.parentId);
+        if (!current) {
+          valid = false;
+          break;
+        }
+      }
+      if (valid) paths.set(row.id, reversedPath.reverse());
+    }
+    return paths;
   }
 
   private requireAliyunVodProvider() {
