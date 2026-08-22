@@ -40,14 +40,11 @@ import type { ChangeEvent, MouseEvent } from "react";
 import {
   canManagePlatformAccounts,
   hasFullPlatformResourceAccess,
-  RESOURCE_CAPABILITIES,
   type AnnotationFile,
   type PlatformUser,
-  type ResourceCapability,
   type ResourceEntry,
   type ResourceListPage,
   type ResourceListView,
-  type ResourcePermissionMatrixRow,
 } from "@xiqu/shared";
 import type { PlatformClient } from "../api/platformClient";
 import { mockProject } from "../mockData";
@@ -90,6 +87,7 @@ import { AnnotationMediaBindingDialog } from "./AnnotationMediaBindingDialog";
 import { AliyunVodMediaDialog } from "./AliyunVodMediaDialog";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { downloadFromUrl } from "./browserDownload";
+import { ResourcePermissionEditor } from "./ResourcePermissionEditor";
 
 type ExplorerMode = "list" | "grid" | "column";
 
@@ -102,18 +100,6 @@ const VIEW_LABELS: Record<ResourceListView, string> = {
   archived: "已归档",
   trash: "回收站",
 };
-const CAPABILITY_LABELS: Record<ResourceCapability, string> = {
-  read: "查看",
-  write: "编辑",
-  review: "审核",
-  create_child: "新建子项",
-  copy: "复制",
-  move: "移动",
-  delete: "删除",
-  download: "下载",
-  manage_permissions: "管理权限",
-};
-
 export function ResourceExplorer(props: {
   client: PlatformClient;
   user: PlatformUser | null;
@@ -1328,30 +1314,9 @@ function ResourceInspector(props: {
   ) => Promise<boolean>;
   onDownload: (resource: ResourceEntry) => void;
 }) {
-  const [matrix, setMatrix] = useState<ResourcePermissionMatrixRow[]>([]);
-  const [loading, setLoading] = useState(false);
   const [annotationFile, setAnnotationFile] = useState<AnnotationFile<ProjectData> | null>(null);
   const [mediaDialogOpen, setMediaDialogOpen] = useState(false);
   const [mediaBusy, setMediaBusy] = useState(false);
-  const canManage = !props.readOnly &&
-    (props.resource?.permission.canManagePermissions ?? false);
-
-  const load = useCallback(async () => {
-    if (!props.resource || !canManage) {
-      setMatrix([]);
-      return;
-    }
-    setLoading(true);
-    try {
-      setMatrix(await props.client.listResourcePermissions(props.resource.id));
-    } catch (error) {
-      props.onError(describeError(error));
-    } finally {
-      setLoading(false);
-    }
-  }, [canManage, props.client, props.onError, props.resource]);
-
-  useEffect(() => void load(), [load]);
 
   useEffect(() => {
     let active = true;
@@ -1474,145 +1439,15 @@ function ResourceInspector(props: {
           />
         </>
       ) : null}
-      <div className="resource-inspector-section-heading">
-        <div><strong>账号权限</strong><span>当前选中资源的逐账号授权</span></div>
-        {canManage ? <button type="button" onClick={() => void load()} title="刷新权限"><RefreshCw size={15} /></button> : null}
-      </div>
-      {!canManage && !props.readOnly ? (
-        <div className="resource-permission-readonly">
-          你拥有：{props.resource.permission.capabilities.map((item) => CAPABILITY_LABELS[item]).join("、") || "无权限"}
-        </div>
-      ) : null}
-      {loading ? <div className="resource-permission-readonly">正在读取账号权限...</div> : null}
-      {canManage ? (
-        <>
-          <label className="resource-inheritance-toggle">
-            <input
-              type="checkbox"
-              checked={!props.resource.breakPermissionInheritance}
-              onChange={(event) => void props.client.updateResourceInheritance(
-                props.resource!.id,
-                { breakPermissionInheritance: !event.target.checked },
-              ).then(() => {
-                props.onChanged();
-                void load();
-              }).catch((error) => props.onError(describeError(error)))}
-            />
-            继承父目录权限
-          </label>
-          <div className="resource-permission-list">
-            {matrix.map((row) => (
-              <PermissionRow
-                key={row.user.id}
-                client={props.client}
-                resource={props.resource!}
-                row={row}
-                onChanged={() => {
-                  props.onChanged();
-                  void load();
-                }}
-                onError={props.onError}
-              />
-            ))}
-          </div>
-        </>
-      ) : null}
+      {/* 权限矩阵由独立组件管理，资源详情不再维护第二套请求和账号行状态。 */}
+      <ResourcePermissionEditor
+        client={props.client}
+        resource={props.resource}
+        readOnly={props.readOnly}
+        onChanged={props.onChanged}
+        onError={props.onError}
+      />
     </aside>
-  );
-}
-
-function PermissionRow(props: {
-  client: PlatformClient;
-  resource: ResourceEntry;
-  row: ResourcePermissionMatrixRow;
-  onChanged: () => void;
-  onError: (message: string | null) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [capabilities, setCapabilities] = useState<ResourceCapability[]>(
-    props.row.directPermission?.capabilities ?? [],
-  );
-  const [inherit, setInherit] = useState(
-    props.row.directPermission?.inheritToChildren ?? true,
-  );
-  const privileged =
-    props.row.effectivePermission.isOwner ||
-    props.row.effectivePermission.source === "admin";
-
-  useEffect(() => {
-    setCapabilities(props.row.directPermission?.capabilities ?? []);
-    setInherit(props.row.directPermission?.inheritToChildren ?? true);
-  }, [props.row]);
-
-  return (
-    <section className="resource-permission-row">
-      <button type="button" className="resource-permission-summary" onClick={() => setExpanded((current) => !current)}>
-        <span className="resource-user-avatar">{props.row.user.displayName.slice(0, 1)}</span>
-        <span>
-          <strong>{props.row.user.displayName}</strong>
-          <small>
-            {privileged
-              ? props.row.effectivePermission.isOwner
-                ? "所有者 · 完整权限"
-                : "系统管理员 · 完整权限"
-              : props.row.directPermission
-                ? "当前资源直接授权"
-                : props.row.effectivePermission.source === "inherited"
-                  ? `继承：${props.row.effectivePermission.inheritedFrom.map((item) => item.resourceName).join("、")}`
-                  : "尚未授权"}
-          </small>
-        </span>
-        <ChevronRight size={15} className={expanded ? "expanded" : ""} />
-      </button>
-      {expanded && !privileged ? (
-        <div className="resource-permission-editor">
-          <div className="resource-capability-grid">
-            {RESOURCE_CAPABILITIES.map((capability) => (
-              <label key={capability}>
-                <input
-                  type="checkbox"
-                  checked={capabilities.includes(capability)}
-                  onChange={(event) => setCapabilities((current) =>
-                    event.target.checked
-                      ? [...current, capability]
-                      : current.filter((item) => item !== capability))}
-                />
-                {CAPABILITY_LABELS[capability]}
-              </label>
-            ))}
-          </div>
-          <label className="resource-inheritance-toggle compact">
-            <input type="checkbox" checked={inherit} onChange={(event) => setInherit(event.target.checked)} />
-            授权传递给子文件
-          </label>
-          <div className="resource-permission-actions">
-            {props.row.directPermission ? (
-              <button
-                type="button"
-                className="danger"
-                onClick={() => void props.client.removeResourcePermission(
-                  props.resource.id,
-                  props.row.user.id,
-                ).then(props.onChanged).catch((error) => props.onError(describeError(error)))}
-              >
-                移除直接授权
-              </button>
-            ) : <span />}
-            <button
-              type="button"
-              className="primary"
-              onClick={() => void props.client.upsertResourcePermission(
-                props.resource.id,
-                props.row.user.id,
-                { capabilities, inheritToChildren: inherit },
-              ).then(props.onChanged).catch((error) => props.onError(describeError(error)))}
-            >
-              保存权限
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </section>
   );
 }
 

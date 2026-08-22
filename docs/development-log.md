@@ -6468,3 +6468,71 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   超过 500 kB 的非阻断提醒。待推进：生产页面强制刷新后分别验证逐字文字块、内建动作块、自定义文字/动作块，
   以及失败时原有同步状态和错误日志是否正常。HTTP 兼容只解决已确认的 UUID 异常，不替代未来域名 HTTPS、TLS
   证书和安全 Cookie 的正式部署工作。
+
+## 2026-08-16：资源权限 Inspector 增加极简预设并保留完整细分能力
+
+### 需求与语义确认
+
+- 用户希望非管理员账号的逐资源授权保留原有九项 capability 详细编辑，同时增加适合日常分配的三档极简模式。
+  本轮没有采用“无权限”作为第一档名称，因为当前模型没有显式 deny：`teacher` 仍会自动获得 `read + download`，
+  账号也可能继续拥有父目录继承、资源 owner 或全局管理员权限。界面改用“不额外授权”，准确表示删除当前资源上的
+  直接 ACL，而不是保证最终有效权限为空。
+- “仅查看”映射为 `read + download`，保证受保护媒体读取、VOD 播放和下载链路完整；“可编辑”映射为
+  `read + write + copy + move + delete + download`，项目/文件夹另加 `create_child`。`review` 与
+  `manage_permissions` 保持正交，只能在详细模式中显式授予，因此普通编辑者不会自动取得审核或管理他人权限的能力。
+- 极简模式是前端预设，不新增数据库字段、API DTO、平台角色或有效权限算法。服务端继续负责角色基线、owner/admin、
+  多级继承、过期授权和委派范围的权威计算与事务内复核。
+
+### Codex 实际实现
+
+- 从 `ResourceExplorer.tsx` 中移出内联权限矩阵和账号行，新增 `ResourcePermissionEditor.tsx` 作为单一权限界面边界。
+  该组件默认显示极简模式，可切回原有详细 capability 矩阵；两种模式共享同一份直接授权草稿、保存命令和服务端重读，
+  没有保留第二套请求或写入逻辑。
+- 新增 `resourcePermissionPresets.ts` 纯函数，集中管理预设映射、按项目/文件夹补充 `create_child`、精确集合识别和
+  委派能力预检。只有 capability 集合完全一致时才显示为标准预设；包含审核、权限管理或其他差异的直接授权会显示
+  “自定义细分权限”，并保持原值，直到用户明确选择预设覆盖。
+- “不额外授权”保存为删除现有直接 grant，不创建空 capability grant。界面会说明教师角色或父目录继承带来的残余
+  访问；owner 和全局管理员继续只显示完整权限摘要。普通管理者缺少完整可委派能力时，相应预设会被禁用，但服务端
+  鉴权仍是最终边界。
+- 行级保存、资源继承修改、矩阵刷新和模式切换增加统一 busy/generation 门禁。保存期间不能切换模式或刷新；资源切换、
+  矩阵刷新和组件卸载会使迟到的界面回调失效，避免旧账号行覆盖新资源状态。新增逻辑补充中文功能注释，并删除
+  `ResourceExplorer.tsx` 中旧的 `PermissionRow`、重复 capability 文案和重复矩阵状态。
+- 没有新增第三方依赖、Prisma migration、后端路由或 shared DTO。`docs/permissions-model.md`、roadmap 与
+  `AGENTS.md` 已同步记录预设边界和模块所有权；本轮未调用 Claude Code、GLM 或其他 agent。
+
+### 自动验证与待验收
+
+- `npm run test:resource-permission-presets`：5/5，通过查看/编辑映射、容器差异、审核与管理排除、custom 精确识别和
+  委派子集检查。
+- `npm run test:permissions`：5/5，通过现有 owner/admin、直接授权、继承、过期和委派模型回归。
+- `npm run test:api`：163/163，通过真实 PostgreSQL 资源 ACL、教师角色、媒体/VOD、移动复制、保存和平台治理集成测试；
+  只出现项目已知的 `pg` 9 前置弃用提醒。
+- 完整 `npm run build` 和 `git diff --check` 通过；Vite 仍只有既有主 chunk 超过 500 kB 的非阻断提醒。
+- 用户已自行检查本轮界面，并明确要求跳过重复的浏览器自动验收。后续跨角色回归仍应覆盖：分别用
+  super_admin/admin 与普通 teacher/annotator 打开项目、文件夹、标注文件和媒体文件，验证三档预设、custom
+  保留、残余角色/继承提示、详细模式九项能力、保存中禁用、刷新后有效权限，以及无 `manage_permissions` 的账号
+  不能看到或修改完整矩阵。随后生产发布状态记录如下。
+
+### 生产发布记录
+
+- 功能提交 `b5e7fdf` 已推送到 `origin/codex/simple-permission-presets`，没有在本轮擅自合并 `main`。生产服务器
+  `101.201.76.10` 已从 `/opt/xiqu/releases/20260809T055947Z-2a82b5c` 原子切换到不可变 release
+  `/opt/xiqu/releases/20260816T060957Z-b5e7fdf`；公网首页加载的新 Web 入口为 `assets/index-Cg9WMPxF.js`。
+- 发布前由 `platform.admin` 开启维护。旧 API 再次因历史关闭路径未在 systemd 的 30 秒窗口内结束而被 SIGKILL，
+  systemd 标记 `Result: timeout`；日志显示停止前请求已返回 200，没有数据库异常、进程崩溃或未处理异常。当前问题仍属于
+  已知的 API 优雅退出/维护许可释放缺口，不能把强制停止当作长期正常升级流程。
+- 备份 CLI 按安全设计拒绝接管已经存在的维护窗口。为保证用户侧全程不可写，本轮在 API 与 worker 均已停止后短暂清除
+  数据库维护标记，由同一个 `backup:create` 独占维护锁完成一致备份，再在 API 仍停止时立即恢复维护。期间不存在可访问
+  的写入窗口，也没有并行启动第二份备份。
+- 发布前一致备份为 `xiqu-backup-2026-08-16T06-07-01-370Z-77bc72cf`，包含 18,880 个对象、0 条 warning；独立
+  `backup:verify` 返回 `valid=true`。生产 PostgreSQL、对象目录、分析资产、`.env` 和 VOD 凭据均保留在 release
+  目录之外，本机数据库、`data/`、媒体和凭据没有上传。
+- 运行包 SHA-256 为 `768da96e8ee812541b24c19a8f5982cd4d8bedf68c5701436fd8dcefa68a326f`。
+  新 release 复用当前锁文件对应的已验收依赖副本，并覆盖本次完整构建的 Web/API、`packages/shared` 和
+  `packages/document-model` 产物；workspace package manifest、Prisma 配置、API 和 Web 入口门禁全部通过。
+- 新 release 执行 `prisma migrate deploy`，确认 20 条 migration 均已应用且无待执行项。切换后本机与公网
+  liveness/readiness、构建机只读 `deploy:check` 均通过；release 本身未携带源码侧 `scripts/checkDeployment.mjs`，
+  因此该命令按构建机检查运行，没有把脚本缺失误判为 API 故障。
+- 只读检查通过后已关闭维护并启动 analysis worker。最终 API 与 worker 均为 `active`，维护状态
+  `enabled=false`，readiness 中 database/storage 均为 `ok`；新 API/worker 时间窗内未发现
+  error、fatal、uncaught、exception 或 failed 日志。后续仍需用户按上节跨角色清单完成权限行为验收。

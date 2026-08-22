@@ -3263,6 +3263,159 @@ select {
   margin: 8px 0;
 }
 
+/* 权限标题操作区覆盖 heading 的通用 div 网格规则，保证模式切换与刷新按钮稳定并排。 */
+.resource-permission-heading > .resource-permission-heading-actions,
+.resource-permission-heading-actions > .resource-permission-mode-switch {
+  display: flex;
+  align-items: center;
+}
+
+.resource-permission-heading-actions {
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.resource-permission-mode-switch {
+  padding: 2px;
+  background: #e7ecf3;
+  border: 1px solid #d2dae5;
+  border-radius: 5px;
+}
+
+.resource-permission-mode-switch button {
+  min-width: 40px;
+  height: 24px;
+  padding: 0 7px;
+  color: #667489;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.resource-permission-mode-switch button.active {
+  color: #214f7c;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(36 54 78 / 16%);
+  font-weight: 600;
+}
+
+.resource-permission-mode-switch button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.resource-permission-refresh {
+  display: inline-grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  color: #53647a;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+
+.resource-permission-refresh:hover:not(:disabled) {
+  color: #245f98;
+  background: #e8f0f9;
+  border-color: #c9d7e7;
+}
+
+.resource-permission-refresh:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+/* 极简模式只读展示资源级继承状态，具体开关继续留在详细模式。 */
+.resource-permission-inheritance-status {
+  margin: 8px 0;
+  color: #758196;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* 三档权限预设纵向排列，避免狭窄 Inspector 中长说明互相遮挡。 */
+.resource-permission-presets {
+  display: grid;
+  gap: 5px;
+}
+
+.resource-permission-preset {
+  display: grid;
+  grid-template-columns: 15px 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 6px 8px;
+  color: #536176;
+  background: #f5f7fa;
+  border: 1px solid #d7dee8;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.resource-permission-preset:hover:not(.disabled) {
+  background: #eef4fb;
+  border-color: #b8cbe0;
+}
+
+.resource-permission-preset.selected {
+  color: #234f79;
+  background: #e8f1fb;
+  border-color: #6f9dca;
+  box-shadow: inset 3px 0 0 #2b72b8;
+}
+
+.resource-permission-preset.disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.resource-permission-preset input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #2b72b8;
+}
+
+.resource-permission-preset > span {
+  display: grid;
+  min-width: 0;
+}
+
+.resource-permission-preset strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.resource-permission-preset small {
+  margin-top: 1px;
+  overflow-wrap: anywhere;
+  color: #7c899b;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+/* 自定义授权和残余角色/继承来源使用说明态，不误报为权限错误。 */
+.resource-permission-preset-note {
+  margin-top: 6px;
+  padding: 6px 8px;
+  color: #647286;
+  background: #edf1f6;
+  border-left: 2px solid #98a8bb;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.resource-permission-preset-note.warning {
+  color: #765f31;
+  background: #fff7e6;
+  border-left-color: #d2a851;
+}
+
 .resource-permission-actions {
   justify-content: space-between;
   gap: 6px;
@@ -3284,6 +3437,11 @@ select {
 .resource-permission-actions button.danger {
   color: #a43a3c;
   background: transparent;
+}
+
+.resource-permission-actions button:disabled {
+  cursor: wait;
+  opacity: 0.58;
 }
 
 .resource-context-menu {
