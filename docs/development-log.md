@@ -6536,3 +6536,45 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 只读检查通过后已关闭维护并启动 analysis worker。最终 API 与 worker 均为 `active`，维护状态
   `enabled=false`，readiness 中 database/storage 均为 `ok`；新 API/worker 时间窗内未发现
   error、fatal、uncaught、exception 或 failed 日志。后续仍需用户按上节跨角色清单完成权限行为验收。
+
+## 2026-08-22：`a374468` 合并版本生产发布
+
+### 发布范围
+
+- 本次发布目标为 `main` 提交 `a374468`，同时包含顶部菜单命令搜索、HTTP IP 环境 UUID 兼容清理和资源权限
+  Inspector 极简预设。发布前本地 `main` 与 `origin/main` 一致，完整构建以及命令搜索、权限预设、底层权限模型
+  专项测试均已通过。
+- 生产服务器从 `/opt/xiqu/releases/20260816T060957Z-b5e7fdf` 原子切换到不可变 release
+  `/opt/xiqu/releases/20260822T011240Z-a374468`。新 Web 入口为 `assets/index-DDncFROB.js`，样式入口为
+  `assets/index-3lmX1_nu.css`。
+- release 包只包含 `package.json`、锁文件、Prisma 配置与 migrations、完整 workspace packages、构建产物和
+  `node_modules`；没有上传本机 `.env`、数据库、`data/`、媒体文件、对象目录、VOD 凭据或浏览器数据。压缩包
+  SHA-256 为 `aafcb6f5cdd3ebe7b63dd82410513ffdea4023f94e733cdd965df4c4c9a5036f`，候选 release
+  完整性门禁通过后，服务器和本机临时压缩包均已清理。
+
+### 维护、备份与迁移
+
+- 使用生产全局管理员 `platform.admin` 作为维护与备份审计操作者。先停止 analysis worker，再开启全局维护并
+  等待在途 HTTP 写入排空；随后旧 API 在 systemd 停机窗口内正常退出，`Result=success`，没有重现上一轮
+  `TimeoutStopSec` 后强制终止的问题。
+- 备份 CLI 按既有安全合同不能接管已经开启的维护窗口，因此在 API 和 worker 均已停止、用户侧不存在可写入口时，
+  短暂清除维护标记，由 `backup:create` 独占维护边界创建一致备份；备份完成后立即由 `platform.admin` 重新开启
+  维护，再进行 migration 和 release 切换。全过程没有运行可接受写入的 API 实例。
+- 发布前一致备份为 `xiqu-backup-2026-08-22T01-17-00-411Z-86f486f9`，包含 `20,427` 个对象、`0` 条 warning；
+  独立 `backup:verify` 返回 `valid=true`。备份位于 release 外的 `/var/lib/xiqu-platform/backups`。
+- 新 release 首次以只读服务账号执行 Prisma 7 `migrate deploy` 时，命中部署手册已记录的 engines 缓存写权限门禁；
+  保持维护状态和 release 只读权限不变，仅由 root 执行同一个 migration 命令。最终确认数据库已有全部 `20` 条
+  migration，`No pending migrations to apply`；没有执行 `db push`、schema reset 或手工 migration 修改，服务仍以
+  `xiqu` 账号运行。
+
+### 验证与当前状态
+
+- 原子切换后先在维护状态启动新 API。CLI 确认维护仍由 `platform.admin` 持有；匿名 mutation 探针返回
+  `HTTP 503 / maintenance_mode`，证明新 release 没有绕过维护门禁。
+- 维护中的公网 Web、API liveness、readiness 和只读 `deploy:check` 全部通过；readiness 中 database/storage
+  均为 `ok`。之后解除维护并启动 analysis worker，最终 API、analysis worker、Nginx 均为 `active/running`，
+  维护状态为 `enabled=false`，再次执行公网 `deploy:check` 通过。
+- 新 API/worker 启动时间窗内未发现 `error`、`fatal`、`uncaught`、`exception` 或 `failed` 日志。系统盘使用率
+  `28%`，独立数据盘使用率 `14%`，当前容量无阻断风险。
+- 已完成自动与只读部署验收；仍待人工按真实账号完成命令搜索菜单、极简/详细权限切换、权限保存后重读、打开标注
+  文件与保存协作的浏览器闭环。该人工验收不影响当前服务健康状态，但应在后续权限验收记录中补齐。
