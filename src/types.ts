@@ -46,9 +46,33 @@ export type {
   YxlzShangSubtype,
 } from "@xiqu/document-model";
 
+// 聚焦目标覆盖右侧「属性 / 轨道设置」列的两个面板：InspectorPanel 的轨道字段和
+// SpectrogramSettingsPanel 的音频分析分组。右键菜单和顶栏搜索共用同一套目标标识，
+// 避免为「跳到某个设置项」再写第二套导航机制。
+export type InspectorFocusTarget =
+  // InspectorPanel：块级与轨道级设置字段
+  | "track-branching"
+  | "block-branch-scope"
+  | "track-name"
+  | "track-color"
+  | "track-waveform-snap"
+  | "track-auto-loop-range"
+  | "track-parent-boundary-snap"
+  | "track-type-options"
+  | "track-attached-point-tracks"
+  | "track-gongche-import"
+  // SpectrogramSettingsPanel：音频波形 / 频谱 / 分析设置分组
+  | "audio-analysis-source"
+  | "audio-waveform-visible"
+  | "audio-spectrogram-visible"
+  | "audio-pitch-contour"
+  | "audio-frequency-scale"
+  | "audio-frequency-preset"
+  | "audio-analysis-preset";
+
 // Inspector 聚焦请求只服务当前 React 会话，不属于可保存项目内容。
 export type InspectorFocusRequest = {
-  target: "track-branching" | "block-branch-scope";
+  target: InspectorFocusTarget;
   requestId: number;
 };
 

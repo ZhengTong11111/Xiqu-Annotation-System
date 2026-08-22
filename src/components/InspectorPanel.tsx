@@ -13,6 +13,7 @@ import type {
   GongcheAnnotation,
   GongcheSymbol,
   InspectorFocusRequest,
+  InspectorFocusTarget,
   SelectedItem,
   SubtitleLine,
   TrackBranchDisplayMode,
@@ -258,8 +259,10 @@ export function InspectorPanel({
   const optionRowRefs = useRef(new Map<string, HTMLDivElement>());
   const previousOptionRowPositionsRef = useRef(new Map<string, number>());
   const previousTypeOptionKeysRef = useRef<string[]>([]);
-  const trackBranchingFieldRef = useRef<HTMLDivElement>(null);
-  const blockBranchScopeFieldRef = useRef<HTMLDivElement>(null);
+  // 聚焦目标 → 真实 DOM 节点的注册表。右键菜单和顶栏搜索共用同一套目标标识，
+  // 新增一个可跳转字段只需在 JSX 上挂 registerFocusField，不必再声明独立 ref。
+  const focusFieldNodesRef = useRef(new Map<InspectorFocusTarget, HTMLElement>());
+  const focusFieldSettersRef = useRef(new Map<InspectorFocusTarget, (element: HTMLElement | null) => void>());
   const [highlightedFocusTarget, setHighlightedFocusTarget] = useState<InspectorFocusRequest["target"] | null>(null);
   const inspectorFocusTimerRef = useRef<number | null>(null);
   const selectedBuiltinTrack = selectedItem?.type === "builtin-track"
@@ -338,13 +341,11 @@ export function InspectorPanel({
     if (!inspectorFocusRequest) {
       return;
     }
-    const targetElement = inspectorFocusRequest.target === "track-branching"
-      ? trackBranchingFieldRef.current
-      : blockBranchScopeFieldRef.current;
+    const targetElement = focusFieldNodesRef.current.get(inspectorFocusRequest.target) ?? null;
     if (!targetElement) {
       return;
     }
-    // 右键菜单只负责把用户带到对应设置区；实际编辑仍交给 Inspector，避免复制一套分叉表单。
+    // 右键菜单和顶栏搜索都只负责把用户带到对应设置区；实际编辑仍交给 Inspector，避免复制一套表单。
     targetElement.scrollIntoView({ block: "center", behavior: "smooth" });
     setHighlightedFocusTarget(inspectorFocusRequest.target);
     if (inspectorFocusTimerRef.current !== null) {
@@ -357,6 +358,24 @@ export function InspectorPanel({
       inspectorFocusTimerRef.current = null;
     }, 1200);
   }, [inspectorFocusRequest]);
+
+  // 为某个聚焦目标返回一个身份稳定的 ref 回调：缓存起来避免每次渲染都触发 detach/attach，
+  // 在时间轴拖拽等高频重渲染场景下不产生额外开销。
+  function registerFocusField(target: InspectorFocusTarget) {
+    const cached = focusFieldSettersRef.current.get(target);
+    if (cached) {
+      return cached;
+    }
+    const setter = (element: HTMLElement | null) => {
+      if (element) {
+        focusFieldNodesRef.current.set(target, element);
+      } else {
+        focusFieldNodesRef.current.delete(target);
+      }
+    };
+    focusFieldSettersRef.current.set(target, setter);
+    return setter;
+  }
 
   function flashMovedOption(index: number) {
     setRecentlyMovedOptionIndex(index);
@@ -903,7 +922,10 @@ export function InspectorPanel({
             }}>删除轨道</button>
           </div>
         </div>
-        <div className="inspector-field">
+        <div
+          ref={registerFocusField("track-name")}
+          className={`inspector-field ${highlightedFocusTarget === "track-name" ? "inspector-field-focused" : ""}`.trim()}
+        >
           <label>轨道名称</label>
           <input
             value={trackNameDraft}
@@ -940,7 +962,10 @@ export function InspectorPanel({
           <div className="inspector-value">{trackTypeLabel}</div>
         </div>
         {isCustomTrack && selectedCustomTrack ? (
-          <div className="inspector-field">
+          <div
+            ref={registerFocusField("track-color")}
+            className={`inspector-field ${highlightedFocusTarget === "track-color" ? "inspector-field-focused" : ""}`.trim()}
+          >
             <label>轨道颜色</label>
             <TrackColorControl
               value={resolveCustomTrackColor(selectedCustomTrack)}
@@ -950,7 +975,7 @@ export function InspectorPanel({
         ) : null}
         {isCustomTrack && selectedCustomTrack ? (
           <div
-            ref={trackBranchingFieldRef}
+            ref={registerFocusField("track-branching")}
             className={`inspector-field ${highlightedFocusTarget === "track-branching" ? "inspector-field-focused" : ""}`.trim()}
           >
             <label>递归分叉</label>
@@ -1066,7 +1091,10 @@ export function InspectorPanel({
             </div>
           </div>
         ) : null}
-        <div className="inspector-field">
+        <div
+          ref={registerFocusField("track-waveform-snap")}
+          className={`inspector-field ${highlightedFocusTarget === "track-waveform-snap" ? "inspector-field-focused" : ""}`.trim()}
+        >
           <label>音频关键点吸附</label>
           <div className={`inspector-toggle-row ${trackSnapOn ? "" : "disabled"}`.trim()}>
             <div className="inspector-toggle-copy">
@@ -1085,7 +1113,10 @@ export function InspectorPanel({
           </div>
         </div>
         {!isAttachedPointTrack ? (
-          <div className="inspector-field">
+          <div
+            ref={registerFocusField("track-auto-loop-range")}
+            className={`inspector-field ${highlightedFocusTarget === "track-auto-loop-range" ? "inspector-field-focused" : ""}`.trim()}
+          >
             <label>选中块同步循环范围</label>
             <div className="inspector-toggle-row">
               <div className="inspector-toggle-copy">
@@ -1104,7 +1135,10 @@ export function InspectorPanel({
           </div>
         ) : null}
         {isAttachedPointTrack ? (
-          <div className="inspector-field">
+          <div
+            ref={registerFocusField("track-parent-boundary-snap")}
+            className={`inspector-field ${highlightedFocusTarget === "track-parent-boundary-snap" ? "inspector-field-focused" : ""}`.trim()}
+          >
             <label>父轨道边界吸附</label>
             <div className={`inspector-toggle-row ${trackSnapOn ? "" : "disabled"}`.trim()}>
               <div className="inspector-toggle-copy">
@@ -1130,7 +1164,10 @@ export function InspectorPanel({
           </div>
         ) : null}
         {!isAttachedPointTrack ? (
-          <div className="inspector-field">
+          <div
+            ref={registerFocusField("track-attached-point-tracks")}
+            className={`inspector-field ${highlightedFocusTarget === "track-attached-point-tracks" ? "inspector-field-focused" : ""}`.trim()}
+          >
             <label>附属打点轨</label>
             <div className="track-option-list attached-point-track-list">
               {attachedPointTracks.map((pointTrack) => (
@@ -1163,7 +1200,10 @@ export function InspectorPanel({
           </div>
         ) : null}
         {supportsGongcheImport ? (
-          <div className="inspector-field">
+          <div
+            ref={registerFocusField("track-gongche-import")}
+            className={`inspector-field ${highlightedFocusTarget === "track-gongche-import" ? "inspector-field-focused" : ""}`.trim()}
+          >
             <label>导入工尺谱</label>
             <div className="gongche-import-box">
               <textarea
@@ -1208,7 +1248,10 @@ export function InspectorPanel({
             </div>
           </div>
         ) : null}
-        <div className="inspector-field">
+        <div
+          ref={registerFocusField("track-type-options")}
+          className={`inspector-field ${highlightedFocusTarget === "track-type-options" ? "inspector-field-focused" : ""}`.trim()}
+        >
           <label>类型列表</label>
           <div className="track-option-list">
             {trackOptions.map((option, index) => (
@@ -1760,7 +1803,7 @@ export function InspectorPanel({
         </div>
         {track.branching?.enabled ? (
           <div
-            ref={blockBranchScopeFieldRef}
+            ref={registerFocusField("block-branch-scope")}
             className={`inspector-field ${highlightedFocusTarget === "block-branch-scope" ? "inspector-field-focused" : ""}`.trim()}
           >
             <label>分叉归属</label>

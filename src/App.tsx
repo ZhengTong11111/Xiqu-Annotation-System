@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { RefObject } from "react";
 import {
   MAX_ATOMIC_ANNOTATION_COMMAND_OPERATIONS,
   buildProjectSnapshotBoundaryEnvelope,
@@ -10,6 +11,7 @@ import {
 import "./index.css";
 import { PlatformApiError } from "./api/platformClient";
 import { AppShell } from "./components/AppShell";
+import type { CommandSearchEntry } from "./components/CommandPalette";
 import { EditorSidebarLayout } from "./components/EditorSidebarLayout";
 import { FloatingPanelWindow } from "./components/FloatingPanelWindow";
 import { InspectorPanel } from "./components/InspectorPanel";
@@ -102,6 +104,7 @@ import type {
   GongcheAnnotation,
   GongcheSymbol,
   InspectorFocusRequest,
+  InspectorFocusTarget,
   ProjectData,
   ResolvedCustomTrackBlock,
   SavedProjectFile,
@@ -135,6 +138,16 @@ import {
   submitLegacyPendingOperations,
   type PlatformSaveOutcome,
 } from "./utils/platformOperations";
+import {
+  buildTrackSettingCommands,
+  findTrackForCommand,
+  LOCAL_STATIC_COMMAND_DEFINITIONS,
+  PLATFORM_STATIC_COMMAND_DEFINITIONS,
+  resolveTrackSettingCommandState,
+  type LocalStaticCommandId,
+  type PlatformStaticCommandId,
+  type TrackSettingCommandTarget,
+} from "./utils/commandCatalog";
 import { buildProjectAnnotationContentCommand } from "./utils/annotationContentCommand";
 import { buildProjectCustomTrackStructureCommand } from "./utils/customTrackStructureCommand";
 import {
@@ -483,6 +496,45 @@ const IMPORT_MERGE_SKIP = "__skip__";
 const IMPORT_MERGE_NEW = "__new__";
 const POINT_PASTE_CONFLICT_EPSILON = 0.015;
 const trackSnapSignatureCache = new WeakMap<Record<string, boolean>, string>();
+
+// 顶栏搜索的运行时补充信息：勾选态用于在结果里显示 ✓，禁用原因用于解释为什么暂时点不动。
+type CommandRuntimeEntry = {
+  checked?: boolean;
+  disabledReason?: string;
+  run: () => void;
+};
+
+// 搜索条目的执行体只依赖这一份「最新 handler 快照」，从而把高频状态挡在 useMemo 依赖之外。
+type CommandHandlers = {
+  currentTime: number;
+  triggerFileInput: (ref: RefObject<HTMLInputElement>) => void;
+  videoFileInputRef: RefObject<HTMLInputElement>;
+  srtFileInputRef: RefObject<HTMLInputElement>;
+  projectFileInputRef: RefObject<HTMLInputElement>;
+  mergeProjectFileInputRef: RefObject<HTMLInputElement>;
+  saveProjectFile: () => Promise<void>;
+  saveProjectToServer: (options: { source: "manual" }) => Promise<unknown>;
+  handleExport: (kind: "character" | "singing") => void;
+  undo: () => void;
+  redo: () => void;
+  repairSentenceCharacterTrack: () => void;
+  togglePlay: () => void;
+  seekTo: (time: number) => void;
+  setPlaybackRate: (rate: number) => void;
+  updateLoopPlaybackEnabledFromUser: (enabled: boolean) => void;
+  clearLoopPlaybackRange: () => void;
+  setWaveformVisible: (visible: boolean) => void;
+  setSpectrogramSettings: (updater: (previous: SpectrogramSettings) => SpectrogramSettings) => void;
+  setBanyanTrackVisible: (visible: boolean) => void;
+  setBanyanGridVisible: (visible: boolean) => void;
+  setServerMediaDialogOpen: (open: boolean) => void;
+  toggleConfirmationPanelDocked: () => void;
+  toggleConfirmationDetachedWindow: () => void;
+  runTrackSettingCommand: (target: TrackSettingCommandTarget) => void;
+  openAudioSettingFromSearch: (focusTarget: InspectorFocusTarget) => void;
+  loopPlaybackEnabled: boolean;
+};
+
 type EditorWorkbenchProps = {
   editorSession: PlatformEditorSession | null;
   localEditorSession?: LocalEditorSession | null;
@@ -794,6 +846,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     return () => window.removeEventListener("keydown", blockMutationShortcut, true);
   }, [remoteCatchUpBlocksEditing]);
   const [inspectorFocusRequest, setInspectorFocusRequest] = useState<InspectorFocusRequest | null>(null);
+  // 顶栏搜索面板的执行体全部从这个 ref 读取最新 handler，因此搜索条目不必因播放位置变化而重建。
+  const commandHandlersRef = useRef<CommandHandlers>({} as CommandHandlers);
+  // Cmd/Ctrl + K 只递增一个请求号，由 TopMenuBar 负责把它翻译成真实的菜单展开状态。
+  const [commandSearchOpenRequestId, setCommandSearchOpenRequestId] = useState<number | undefined>(undefined);
   const [timelineClipboard, setTimelineClipboard] = useState<TimelineClipboard | null>(null);
   const [pendingPasteState, setPendingPasteState] = useState<PendingPasteState | null>(null);
   const [pendingImportMergeState, setPendingImportMergeState] = useState<PendingImportMergeState | null>(null);
@@ -1576,6 +1632,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (isEditableKeyboardTarget(event.target)) {
       return;
     }
+    // Cmd/Ctrl + K 打开顶栏「搜索」：只递增请求号，真正的展开由 TopMenuBar 负责。
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      setCommandSearchOpenRequestId(performance.now());
+      return;
+    }
     if (event.code === "Space") {
       event.preventDefault();
       if (tryConsumeSpaceForRangeIntent()) {
@@ -1760,6 +1822,309 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     requestInspectorFocus("block-branch-scope");
     setBlockContextMenu(null);
   }
+
+  // 顶栏搜索跳转到某条轨道的设置字段：与右键菜单走完全相同的三步（清除行聚焦 → 选中轨道 → 请求 Inspector 聚焦），
+  // 本身不产生任何文档变更、操作记录或撤销历史。
+  function openTrackSettingFromSearch(target: TrackSettingCommandTarget) {
+    setLineFocusRequest(null);
+    if (target.trackKind === "attached-point" && target.parentTrackId) {
+      applySelection({
+        type: "attached-point-track",
+        id: target.trackId,
+        parentTrackId: target.parentTrackId,
+      });
+    } else if (target.trackKind === "builtin") {
+      applySelection({ type: "builtin-track", id: target.trackId as BuiltinTrackId });
+    } else {
+      applySelection({ type: "custom-track", id: target.trackId });
+    }
+    requestInspectorFocus(target.focusTarget);
+    setBlockContextMenu(null);
+  }
+
+  // 开关类轨道设置在搜索结果里点击即翻转，与直接点面板上的开关等价：
+  // 走同一批 handler，因此同样进入撤销历史和平台租约流程。同时仍然定位并高亮该字段，
+  // 让用户看到被改动的是哪条轨道的哪个开关。非开关字段（名称、颜色、类型列表）只做定位。
+  function runTrackSettingCommand(target: TrackSettingCommandTarget) {
+    openTrackSettingFromSearch(target);
+    if (!target.toggle) {
+      return;
+    }
+    const track = findTrackForCommand(
+      target.trackId,
+      projectRef.current.builtinTracks,
+      projectRef.current.customTracks,
+    );
+    if (!track) {
+      return;
+    }
+    if (target.field === "track-snap") {
+      applyTrackSnapEnabledState({
+        ...trackSnapEnabledRef.current,
+        [target.trackId]: !trackSnapEnabledRef.current[target.trackId],
+      });
+      return;
+    }
+    // 两个吸附细项在轨道头总开关关闭时于面板上不可编辑，搜索也必须遵守同一条门禁。
+    if (
+      (target.field === "waveform-snap" || target.field === "parent-boundary-snap") &&
+      !trackSnapEnabledRef.current[target.trackId]
+    ) {
+      return;
+    }
+    if (target.field === "waveform-snap") {
+      updateTrackWaveformSnap(target.trackId, !track.snapToWaveformKeypoints);
+      return;
+    }
+    if (target.field === "parent-boundary-snap") {
+      const current = "snapToParentBoundaries" in track ? track.snapToParentBoundaries : false;
+      updateAttachedPointTrackParentSnap(target.trackId, !current);
+      return;
+    }
+    if (target.field === "auto-loop-range") {
+      updateTrackAutoLoopRange(target.trackId, !track.autoSetLoopRangeOnSelect);
+      return;
+    }
+    if (target.field === "branching" && "branching" in track) {
+      setCustomTrackBranchingEnabled(target.trackId, !track.branching?.enabled);
+    }
+  }
+
+  // 音频分析设置只在选中波形/频谱轨时渲染。选中态与轨道可见性无关，
+  // 因此即使用户把波形和频谱都隐藏了，搜索仍然能把设置面板重新调出来。
+  function openAudioSettingFromSearch(focusTarget: InspectorFocusTarget) {
+    setLineFocusRequest(null);
+    applySelection({ type: "waveform-track" });
+    requestInspectorFocus(focusTarget);
+    setBlockContextMenu(null);
+  }
+
+  // 命令执行体通过 ref 读取最新的 handler 和播放位置，避免把 currentTime 之类的高频状态
+  // 放进 useMemo 依赖后，每一帧都重建一遍搜索条目。
+  commandHandlersRef.current = {
+    currentTime,
+    triggerFileInput: (ref: RefObject<HTMLInputElement>) => ref.current?.click(),
+    videoFileInputRef,
+    srtFileInputRef,
+    projectFileInputRef,
+    mergeProjectFileInputRef,
+    saveProjectFile,
+    saveProjectToServer,
+    handleExport,
+    undo,
+    redo,
+    repairSentenceCharacterTrack,
+    togglePlay,
+    seekTo,
+    setPlaybackRate,
+    updateLoopPlaybackEnabledFromUser,
+    clearLoopPlaybackRange,
+    setWaveformVisible,
+    setSpectrogramSettings,
+    setBanyanTrackVisible,
+    setBanyanGridVisible,
+    setServerMediaDialogOpen,
+    toggleConfirmationPanelDocked,
+    toggleConfirmationDetachedWindow,
+    runTrackSettingCommand,
+    openAudioSettingFromSearch,
+    loopPlaybackEnabled,
+  };
+
+  // 轨道级设置条目随项目结构变化重建；播放位置、选中项等高频状态不参与这里的依赖。
+  const trackSettingCommands = useMemo(
+    () => buildTrackSettingCommands(project.builtinTracks, project.customTracks),
+    [project.builtinTracks, project.customTracks],
+  );
+
+  // 把「命令目录」和「运行时」装配成搜索面板可直接使用的条目。
+  // 静态部分用必填 Record 建表：目录里新增定义却忘记接线时，tsc 会直接报错而不是留下一个死入口。
+  const commandSearchEntries = useMemo<CommandSearchEntry[]>(() => {
+    const handlers = () => commandHandlersRef.current;
+    const localRuntime: Record<LocalStaticCommandId, CommandRuntimeEntry> = {
+      "file.import-video": {
+        disabledReason: remoteCatchUpBlockReason,
+        run: () => handlers().triggerFileInput(handlers().videoFileInputRef),
+      },
+      "file.import-srt": {
+        disabledReason: remoteCatchUpBlockReason,
+        run: () => handlers().triggerFileInput(handlers().srtFileInputRef),
+      },
+      "file.import-project": {
+        disabledReason: remoteCatchUpBlockReason,
+        run: () => handlers().triggerFileInput(handlers().projectFileInputRef),
+      },
+      "file.import-merge-project": {
+        disabledReason: remoteCatchUpBlockReason,
+        run: () => handlers().triggerFileInput(handlers().mergeProjectFileInputRef),
+      },
+      "file.save-local": { run: () => void handlers().saveProjectFile() },
+      "file.export-character-srt": { run: () => handlers().handleExport("character") },
+      "file.export-singing-srt": { run: () => handlers().handleExport("singing") },
+      "edit.undo": {
+        disabledReason: remoteCatchUpBlockReason ?? (undoStack.length > 0 ? undefined : "没有可撤销的编辑"),
+        run: () => handlers().undo(),
+      },
+      "edit.redo": {
+        disabledReason: remoteCatchUpBlockReason ?? (redoStack.length > 0 ? undefined : "没有可重做的编辑"),
+        run: () => handlers().redo(),
+      },
+      "edit.repair-sentence-character-track": {
+        disabledReason: remoteCatchUpBlockReason,
+        run: () => handlers().repairSentenceCharacterTrack(),
+      },
+      "playback.toggle": { run: () => handlers().togglePlay() },
+      "playback.step-back-100ms": { run: () => handlers().seekTo(handlers().currentTime - 0.1) },
+      "playback.step-forward-100ms": { run: () => handlers().seekTo(handlers().currentTime + 0.1) },
+      "playback.step-back-frame": { run: () => handlers().seekTo(handlers().currentTime - 0.04) },
+      "playback.step-forward-frame": { run: () => handlers().seekTo(handlers().currentTime + 0.04) },
+      "playback.rate-0.5": {
+        checked: playbackRate === 0.5,
+        run: () => handlers().setPlaybackRate(0.5),
+      },
+      "playback.rate-0.75": {
+        checked: playbackRate === 0.75,
+        run: () => handlers().setPlaybackRate(0.75),
+      },
+      "playback.rate-1": {
+        checked: playbackRate === 1,
+        run: () => handlers().setPlaybackRate(1),
+      },
+      "playback.rate-1.25": {
+        checked: playbackRate === 1.25,
+        run: () => handlers().setPlaybackRate(1.25),
+      },
+      "playback.rate-1.5": {
+        checked: playbackRate === 1.5,
+        run: () => handlers().setPlaybackRate(1.5),
+      },
+      "playback.toggle-loop": {
+        checked: Boolean(loopPlaybackRange) && loopPlaybackEnabled,
+        disabledReason: loopPlaybackRange ? undefined : "请先在时间轴上创建循环选区",
+        run: () => handlers().updateLoopPlaybackEnabledFromUser(!handlers().loopPlaybackEnabled),
+      },
+      "playback.clear-loop-range": {
+        disabledReason: loopPlaybackRange ? undefined : "当前没有循环选区",
+        run: () => handlers().clearLoopPlaybackRange(),
+      },
+      "view.waveform": {
+        checked: waveformVisible,
+        run: () => handlers().setWaveformVisible(!waveformVisible),
+      },
+      "view.spectrogram": {
+        checked: spectrogramSettings.visible,
+        run: () =>
+          handlers().setSpectrogramSettings((prev) => ({ ...prev, visible: !prev.visible })),
+      },
+      "view.banyan-track": {
+        checked: banyanTrackVisible,
+        run: () => handlers().setBanyanTrackVisible(!banyanTrackVisible),
+      },
+      "view.banyan-grid": {
+        checked: banyanGridVisible,
+        run: () => handlers().setBanyanGridVisible(!banyanGridVisible),
+      },
+      "audio.panel": { run: () => handlers().openAudioSettingFromSearch("audio-waveform-visible") },
+      // F0 是布尔开关，与视图菜单里的可见性开关同类：点击即翻转，并定位高亮到所在分组。
+      "audio.pitch-contour": {
+        checked: spectrogramSettings.showPitchContour,
+        run: () => {
+          handlers().openAudioSettingFromSearch("audio-pitch-contour");
+          handlers().setSpectrogramSettings((previous) => ({
+            ...previous,
+            showPitchContour: !previous.showPitchContour,
+          }));
+        },
+      },
+      "audio.frequency-scale": {
+        run: () => handlers().openAudioSettingFromSearch("audio-frequency-scale"),
+      },
+      "audio.frequency-preset": {
+        run: () => handlers().openAudioSettingFromSearch("audio-frequency-preset"),
+      },
+      "audio.analysis-preset": {
+        run: () => handlers().openAudioSettingFromSearch("audio-analysis-preset"),
+      },
+    };
+
+    // 平台条目在本地模式下不写入运行时，搜索结果里因此完全不出现，
+    // 不需要额外的禁用文案，也不可能被点成报错入口。
+    const platformRuntime: Partial<Record<PlatformStaticCommandId, CommandRuntimeEntry>> =
+      editorSession
+        ? {
+            "file.bind-server-media": {
+              disabledReason: serverMediaBindingDisabledReason,
+              run: () => handlers().setServerMediaDialogOpen(true),
+            },
+            "file.save-server": {
+              disabledReason: editorSession.canWrite ? undefined : "当前账号没有写入权限",
+              run: () => void handlers().saveProjectToServer({ source: "manual" }),
+            },
+            "view.annotation-confirmation-docked": {
+              checked: confirmationPanelPlacement === "docked",
+              run: () => handlers().toggleConfirmationPanelDocked(),
+            },
+            "view.annotation-confirmation-detached": {
+              checked: confirmationPanelPlacement === "detached",
+              run: () => handlers().toggleConfirmationDetachedWindow(),
+            },
+            "audio.analysis-source": {
+              run: () => handlers().openAudioSettingFromSearch("audio-analysis-source"),
+            },
+          }
+        : {};
+
+    const entries: CommandSearchEntry[] = [];
+    for (const definition of LOCAL_STATIC_COMMAND_DEFINITIONS) {
+      entries.push({ ...definition, ...localRuntime[definition.id] });
+    }
+    for (const definition of PLATFORM_STATIC_COMMAND_DEFINITIONS) {
+      const runtime = platformRuntime[definition.id];
+      if (runtime) {
+        entries.push({ ...definition, ...runtime });
+      }
+    }
+    // 轨道设置条目共用一个通用执行体，新增轨道或字段都不需要在这里逐条接线；
+    // 勾选态和禁用原因由纯函数按当前项目推导，规则与 Inspector 面板上的开关完全一致。
+    for (const definition of trackSettingCommands) {
+      if (definition.target.kind !== "track-setting") {
+        continue;
+      }
+      const target = definition.target;
+      const state = resolveTrackSettingCommandState(
+        target,
+        project.builtinTracks,
+        project.customTracks,
+        trackSnapEnabled,
+      );
+      entries.push({
+        ...definition,
+        checked: state.checked,
+        disabledReason: state.disabledReason,
+        run: () => handlers().runTrackSettingCommand(target),
+      });
+    }
+    return entries;
+  }, [
+    banyanGridVisible,
+    banyanTrackVisible,
+    confirmationPanelPlacement,
+    editorSession,
+    loopPlaybackEnabled,
+    loopPlaybackRange,
+    playbackRate,
+    project.builtinTracks,
+    project.customTracks,
+    redoStack.length,
+    remoteCatchUpBlockReason,
+    serverMediaBindingDisabledReason,
+    spectrogramSettings.showPitchContour,
+    spectrogramSettings.visible,
+    trackSettingCommands,
+    trackSnapEnabled,
+    undoStack.length,
+    waveformVisible,
+  ]);
 
   const contextMenuCharacter = blockContextMenu?.type === "character"
     ? project.characterAnnotations.find((item) => item.id === blockContextMenu.id) ?? null
@@ -6866,6 +7231,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           onToggleAnnotationConfirmationDetached={editorSession
             ? toggleConfirmationDetachedWindow
             : undefined}
+          commandSearchEntries={commandSearchEntries}
+          commandSearchOpenRequestId={commandSearchOpenRequestId}
         />
       )}
     >
@@ -7121,6 +7488,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                       analysisError={editorSession ? null : localAnalysisError}
                       onSettingsChange={setSpectrogramSettings}
                       onWaveformVisibleChange={setWaveformVisible}
+                      focusRequest={inspectorFocusRequest}
                       platformAnalysis={editorSession ? {
                         status: platformMediaAnalysis.status,
                         canWrite: editorSession.canWrite,

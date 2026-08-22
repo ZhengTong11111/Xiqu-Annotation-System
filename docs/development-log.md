@@ -6,6 +6,85 @@
 > `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
 > 回写或删除历史记录。
 
+## 2026-08-21：顶栏新增「搜索」菜单（功能/设置命令面板）
+
+### 背景
+
+工作台的开关分散在顶栏 `视图`、`InspectorPanel` 的轨道设置字段、`SpectrogramSettingsPanel` 的音频分组和
+时间轴轨道头四处，且多数设置只在选中特定对象后才渲染，用户必须记住确切路径才能到达。极端情况会形成死路：
+同时关闭 `音频波形` 与 `人声频谱图` 后两条轨道行都会 unmount，`SpectrogramSettingsPanel` 不再被渲染，
+只剩 `视图` 菜单一个入口，而该面板内的提示文案却仍写着“可从波形图设置重新打开”。
+
+### 本轮改动
+
+- 新增 `src/utils/commandCatalog.ts`（纯目录：id、标题、面包屑路径、关键词、执行目标）与
+  `src/utils/commandSearch.ts`（纯匹配与排序）。中文按子串匹配不做分词，英文缩写靠关键词覆盖；
+  空查询返回 `featured` 常用项。两者均无 React 依赖。
+- 轨道级设置由 `buildTrackSettingCommands()` 按当前项目动态展开，面包屑形如
+  `逐字文字轨 › 轨道设置 › 选中块时更新循环范围`，并把轨道名一并放进关键词。
+  字段集合严格对齐 `InspectorPanel` 的条件渲染（内置轨无颜色/分叉，附属打点轨无“选中块循环范围”，
+  仅文字类轨道有工尺谱导入），避免把用户带到当前不会渲染的位置。
+- `src/types.ts` 的 `InspectorFocusRequest.target` 从 2 个取值扩展为 `InspectorFocusTarget` 联合，
+  覆盖 Inspector 轨道字段与音频设置分组；原有 `track-branching` / `block-branch-scope` 取值不变，
+  右键菜单路径零回归。
+- `InspectorPanel` 的两个独立 ref 改为一张 `Map<InspectorFocusTarget, HTMLElement>` 加身份稳定的
+  `registerFocusField()` 回调；`scrollIntoView` + 1200ms `inspector-field-focused` 高亮逻辑原样保留。
+  `SpectrogramSettingsPanel` 用同一个请求对象实现 `focusGroupProps()`，新增 `.is-focused` 高亮。
+- `src/components/CommandPalette.tsx` 为纯展示组件（输入、结果列表、↑↓/Enter/Esc），在输入框上
+  `stopPropagation`，与 App 全局快捷键互不干扰。`TopMenuBar` 的 `menuOrder` 追加 `搜索`，
+  并修正 `onMouseEnter`：面板打开时不因鼠标划过其他菜单被切走。新增 Cmd/Ctrl + K 打开。
+- `src/App.tsx` 装配 `commandSearchEntries`：静态部分用必填 `Record<LocalStaticCommandId, …>` 建表，
+  漏接线会在 `tsc` 阶段报错；平台条目在无 `editorSession` 时不写入运行时，本地模式因此完全搜不到，
+  不存在点了报错的死入口。执行体统一从 `commandHandlersRef` 读取最新 handler，
+  使 `currentTime` 等高频状态不进入 `useMemo` 依赖。
+- 顺带修正 `SpectrogramSettingsPanel` 两处误导文案，指向 `视图` 菜单或顶栏搜索。
+
+### 首轮反馈修正：开关类条目直接翻转
+
+首轮实现里顶栏菜单项（如 `音频波形`）点击即生效，而轨道设置项（如 `选中块时更新循环范围`）只做定位，
+行为不一致。改为按字段声明 `toggle`：
+
+- 开关类字段（`轨道头吸附`、`吸附到音频关键点`、`吸附到父轨道标注边界`、`选中块时更新循环范围`、
+  `启用轨道内分叉`）点击即翻转，走与面板开关完全相同的 handler，因此同样进入撤销历史和平台租约流程；
+  同时仍然选中轨道并高亮该字段，让用户看到被改动的是哪条轨道的哪个开关。
+- 需要真正输入的字段（轨道名称、颜色、类型列表、附属打点轨、工尺谱导入）保持只定位。
+- 新增 `轨道头 › 吸附` 总开关条目：两个吸附细项在总开关关闭时于面板上不可编辑，
+  搜索遵守同一门禁并给出 `请先开启该轨道的吸附总开关`；没有这个条目时那两项将永远点不动。
+- 勾选态与禁用原因由纯函数 `resolveTrackSettingCommandState()` 推导，不在 UI 里复制第二份规则。
+- 同轮补上 `F0 / Pitch contour`：它是布尔开关却漏在只导航一侧，结果显示 ✓ 但点击不翻转。
+  现在确立不变式——条目带 `checked` 当且仅当点击会翻转该值。多选项控件
+  （纵轴映射、频率范围、分析精度、类型列表）是单条只导航条目且不带 `checked`；
+  播放速度这类枚举离散动作仍按值各占一条并直接生效，与 `播放` 菜单一致。
+
+### 首轮反馈修正：拼音检索与结果列表布局
+
+- 结果列表布局：`.command-palette-item` 加 `flex: none`。此前结果多到撞上 `max-height: 320px` 时，
+  flex 子项按默认 `flex-shrink: 1` 被压到低于内容高度，标题与面包屑互相重叠；结果少时不触顶所以看不出来。
+  现在条目高度固定、超出由列表内部滚动。同时把勾选标记移到左侧固定槽（绝对定位），
+  标题与面包屑不论是否被勾选都从同一条竖线开始。
+- 拼音检索：新增依赖 `tiny-pinyin@1.3.2`（MIT，dist 约 13 KB，其中字典 8 KB）。
+  选它而非 `pinyin-pro` 是因为体积差距明显而搜索匹配不需要声调；`@napi-rs/pinyin` 是原生模块，浏览器不可用。
+  实测入包增量：JS 1085.30 → 1093.04 kB，gzip 323.54 → 327.40 kB（+3.9 KB gzip）。
+  缺点是维护不活跃、无声调、只做常用字覆盖，已在此记录。
+- `src/utils/pinyin.ts` 为每条命令的「面包屑 + 标题」建全拼与首字母两条串，带上限 2000 的 Map 缓存。
+  纯英文数字的查询才走拼音分支，中文查询零开销；打分低于显式关键词、高于路径命中。
+  该包是 `module.exports = {}` 的 CJS，Node ESM 与 Vite 对命名导出提升行为不一致，
+  模块内保留 `default ?? namespace` 互操作回落。
+
+### 验证
+
+- `npm run test:command-search`（31 项）：匹配来源优先级、中文子串、英文关键词、拼音全拼/首字母、
+  路径命中、featured、limit 稳定性，以及目录 id 唯一性、按轨道种类展开的字段集合、开关字段的勾选态与门禁。
+- `npm run build`。
+- 手动：关闭波形与频谱后经搜索恢复；搜索 `循环` 同时列出播放菜单项与各轨道的“选中块时更新循环范围”；
+  跳转后 Inspector 滚动并高亮；平台专属项在本地模式不出现；输入框内空格不触发播放。
+
+### 残留风险
+
+- 未做拼音/首字母模糊匹配，全英文输入只能命中显式登记的关键词。
+- 目录与真实 UI 的一致性靠 `AGENTS.md` 约定和类型检查共同保证；新增设置字段若只改面板不改目录，
+  类型检查不会报错（动态轨道字段部分），需要在评审时人工确认。
+
 ## 2026-08-09：云端新建文字块/动作块失败修复（首轮已部署，运行时恢复补强）
 
 本轮 Codex 先审查了前序代理已经放入工作区的结构事务迁移，再定位用户报告的现象：本机编辑器可以新建文字块、

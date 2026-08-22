@@ -1,5 +1,8 @@
+import { useEffect, useRef, useState } from "react";
 import type { AnnotationMediaAnalysisStatus } from "@xiqu/shared";
 import type {
+  InspectorFocusRequest,
+  InspectorFocusTarget,
   SpectrogramAnalysisPreset,
   SpectrogramFrequencyPreset,
   SpectrogramFrequencyScale,
@@ -21,6 +24,8 @@ type SpectrogramSettingsPanelProps = {
   analysisError?: string | null;
   onSettingsChange: (settings: SpectrogramSettings) => void;
   onWaveformVisibleChange: (visible: boolean) => void;
+  // 与 InspectorPanel 共用同一个聚焦请求对象：顶栏搜索选中波形轨后，由本面板负责滚动并高亮对应分组。
+  focusRequest?: InspectorFocusRequest | null;
   platformAnalysis?: {
     status: AnnotationMediaAnalysisStatus | null;
     canWrite: boolean;
@@ -48,8 +53,60 @@ export function SpectrogramSettingsPanel({
   analysisError,
   onSettingsChange,
   onWaveformVisibleChange,
+  focusRequest,
   platformAnalysis,
 }: SpectrogramSettingsPanelProps) {
+  // 聚焦分组注册表：一个分组可以对应多个聚焦目标（例如「频谱图」同时承载可见性与 F0）。
+  const focusGroupNodesRef = useRef(new Map<InspectorFocusTarget, HTMLElement>());
+  const [highlightedFocusTarget, setHighlightedFocusTarget] = useState<InspectorFocusTarget | null>(null);
+  const focusHighlightTimerRef = useRef<number | null>(null);
+
+  // 组件卸载时清理高亮定时器，避免面板随选中项切换而消失后仍触发状态更新。
+  useEffect(() => {
+    return () => {
+      if (focusHighlightTimerRef.current !== null) {
+        window.clearTimeout(focusHighlightTimerRef.current);
+      }
+    };
+  }, []);
+
+  // 收到聚焦请求后滚动到目标分组并短暂高亮，行为与 InspectorPanel 保持一致。
+  useEffect(() => {
+    if (!focusRequest) {
+      return;
+    }
+    const targetElement = focusGroupNodesRef.current.get(focusRequest.target) ?? null;
+    if (!targetElement) {
+      return;
+    }
+    targetElement.scrollIntoView({ block: "center", behavior: "smooth" });
+    setHighlightedFocusTarget(focusRequest.target);
+    if (focusHighlightTimerRef.current !== null) {
+      window.clearTimeout(focusHighlightTimerRef.current);
+    }
+    focusHighlightTimerRef.current = window.setTimeout(() => {
+      setHighlightedFocusTarget((current) => (current === focusRequest.target ? null : current));
+      focusHighlightTimerRef.current = null;
+    }, 1200);
+  }, [focusRequest]);
+
+  // 把一组聚焦目标绑定到同一个分组节点，并返回该分组当前是否处于高亮态。
+  function focusGroupProps(targets: InspectorFocusTarget[]) {
+    const isFocused = highlightedFocusTarget !== null && targets.includes(highlightedFocusTarget);
+    return {
+      ref: (element: HTMLElement | null) => {
+        for (const target of targets) {
+          if (element) {
+            focusGroupNodesRef.current.set(target, element);
+          } else {
+            focusGroupNodesRef.current.delete(target);
+          }
+        }
+      },
+      className: `spectrogram-setting-group ${isFocused ? "is-focused" : ""}`.trim(),
+    };
+  }
+
   function updateSetting<K extends keyof SpectrogramSettings>(
     key: K,
     value: SpectrogramSettings[K],
@@ -107,7 +164,7 @@ export function SpectrogramSettingsPanel({
           <p className="spectrogram-setting-error" role="alert">{analysisError}</p>
         ) : null}
         {platformAnalysis ? (
-          <div className="spectrogram-setting-group">
+          <div {...focusGroupProps(["audio-analysis-source"])}>
             <div className="spectrogram-setting-heading">
               <strong>分析音频来源</strong>
               <span>{describeAnalysisSource(platformAnalysis.status)}</span>
@@ -182,27 +239,27 @@ export function SpectrogramSettingsPanel({
             </div>
           </div>
         ) : null}
-        <div className="spectrogram-setting-group">
+        <div {...focusGroupProps(["audio-waveform-visible"])}>
           <div className="spectrogram-setting-heading">
             <strong>波形图</strong>
             <span>{waveformStatusText}</span>
           </div>
           <ToggleRow
             label="音频波形轨道"
-            description="关闭后从时间轴中移除；可从视图菜单重新打开。"
+            description="关闭后从时间轴中移除；可从视图菜单或顶栏搜索重新打开。"
             checked={waveformVisible}
             onChange={onWaveformVisibleChange}
           />
         </div>
 
-        <div className="spectrogram-setting-group">
+        <div {...focusGroupProps(["audio-spectrogram-visible", "audio-pitch-contour"])}>
           <div className="spectrogram-setting-heading">
             <strong>频谱图</strong>
             <span>{settings.visible ? "时间轴中显示" : "不占用轨道高度"}</span>
           </div>
           <ToggleRow
             label="人声频谱图"
-            description="关闭后从时间轴移除，不再占位；可从波形图设置重新打开。"
+            description="关闭后从时间轴移除，不再占位；可从视图菜单或顶栏搜索重新打开。"
             checked={settings.visible}
             onChange={(checked) => updateSetting("visible", checked)}
           />
@@ -214,7 +271,7 @@ export function SpectrogramSettingsPanel({
           />
         </div>
 
-        <div className="spectrogram-setting-group">
+        <div {...focusGroupProps(["audio-frequency-scale"])}>
           <div className="spectrogram-setting-heading">
             <strong>纵轴映射</strong>
             <span>{settings.frequencyScale}</span>
@@ -238,7 +295,7 @@ export function SpectrogramSettingsPanel({
           </p>
         </div>
 
-        <div className="spectrogram-setting-group">
+        <div {...focusGroupProps(["audio-frequency-preset"])}>
           <div className="spectrogram-setting-heading">
             <strong>频率范围</strong>
             <span>{spectrogramFrequencyPresets[settings.frequencyPreset].label}</span>
@@ -259,7 +316,7 @@ export function SpectrogramSettingsPanel({
           </div>
         </div>
 
-        <div className="spectrogram-setting-group">
+        <div {...focusGroupProps(["audio-analysis-preset"])}>
           <div className="spectrogram-setting-heading">
             <strong>分析精度</strong>
             <span>{activeAnalysisPreset.label}</span>
