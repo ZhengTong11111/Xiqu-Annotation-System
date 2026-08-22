@@ -4,6 +4,8 @@ import type { ProjectSyncStatus } from "../state/projectDocumentState";
 import type { PlatformCollaborationStatus } from "../platform/platformCollaborationRuntime";
 import type { AnnotationPresenceMember } from "@xiqu/shared";
 import { CollaborationPresenceMenu } from "./CollaborationPresenceMenu";
+import { CommandPalette } from "./CommandPalette";
+import type { CommandSearchEntry } from "./CommandPalette";
 
 export type TopMenuPlatformNavigation = {
   label: string;
@@ -68,10 +70,14 @@ type TopMenuBarProps = {
   onSpectrogramVisibleChange: (visible: boolean) => void;
   onToggleAnnotationConfirmationPanel?: () => void;
   onToggleAnnotationConfirmationDetached?: () => void;
+  // 「搜索」菜单的可执行条目由 App 统一装配；这里只接收一份现成列表，避免继续膨胀单值 props。
+  commandSearchEntries: CommandSearchEntry[];
+  // Cmd/Ctrl + K 通过递增的 requestId 通知菜单栏打开搜索面板，不需要把 openMenu 状态提到 App。
+  commandSearchOpenRequestId?: number;
 };
 
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5];
-const menuOrder = ["文件", "编辑", "播放", "视图", "帮助"] as const;
+const menuOrder = ["文件", "编辑", "播放", "视图", "帮助", "搜索"] as const;
 
 export function TopMenuBar({
   platformNavigation,
@@ -130,6 +136,8 @@ export function TopMenuBar({
   onSpectrogramVisibleChange,
   onToggleAnnotationConfirmationPanel,
   onToggleAnnotationConfirmationDetached,
+  commandSearchEntries,
+  commandSearchOpenRequestId,
 }: TopMenuBarProps) {
   const [openMenu, setOpenMenu] = useState<(typeof menuOrder)[number] | null>(null);
   const menuBarRef = useRef<HTMLElement>(null);
@@ -163,6 +171,14 @@ export function TopMenuBar({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [openMenu]);
+
+  // 全局快捷键只负责递增 requestId，由菜单栏在这里落地成真实的展开状态。
+  useEffect(() => {
+    if (commandSearchOpenRequestId === undefined) {
+      return;
+    }
+    setOpenMenu("搜索");
+  }, [commandSearchOpenRequestId]);
 
   function triggerFileInput(ref: RefObject<HTMLInputElement>) {
     ref.current?.click();
@@ -199,7 +215,8 @@ export function TopMenuBar({
             key={item}
             className="top-menu-item"
             onMouseEnter={() => {
-              if (openMenu) {
+              // 搜索面板里有输入焦点，鼠标划过其他菜单不能顺手切走，否则会打断正在输入的查询。
+              if (openMenu && openMenu !== "搜索") {
                 setOpenMenu(item);
               }
             }}
@@ -212,7 +229,11 @@ export function TopMenuBar({
               {item}
             </button>
             {openMenu === item ? (
-              <div className="top-menu-dropdown" role="menu" aria-label={item}>
+              <div
+                className={`top-menu-dropdown ${item === "搜索" ? "top-menu-dropdown-search" : ""}`.trim()}
+                role="menu"
+                aria-label={item}
+              >
                 {item === "文件" ? (
                   <>
                     <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(videoFileInputRef)} disabled={Boolean(editingBlockedReason)}>
@@ -390,7 +411,15 @@ export function TopMenuBar({
                   </>
                 ) : null}
                 {item === "帮助" ? (
-                  <div className="top-menu-note">空格播放/暂停，P 从循环范围起点持续循环，Tab 从循环范围起点播放一遍，Command/Ctrl + 左/右 选择当前轨道相邻块，Command/Ctrl + S 保存项目，Command/Ctrl + 拖拽可创建块。</div>
+                  <div className="top-menu-note">空格播放/暂停，P 从循环范围起点持续循环，Tab 从循环范围起点播放一遍，Command/Ctrl + K 搜索功能，Command/Ctrl + 左/右 选择当前轨道相邻块，Command/Ctrl + S 保存项目，Command/Ctrl + 拖拽可创建块。</div>
+                ) : null}
+                {/* 搜索菜单是全功能索引入口：只负责把用户带到已有菜单项或设置字段，不新增第二套设置实现。 */}
+                {item === "搜索" ? (
+                  <CommandPalette
+                    entries={commandSearchEntries}
+                    onRun={(entry) => handleAction(entry.run)}
+                    onClose={() => setOpenMenu(null)}
+                  />
                 ) : null}
               </div>
             ) : null}

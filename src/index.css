@@ -550,6 +550,105 @@ select {
   font-weight: 600;
 }
 
+/* 搜索菜单需要比普通菜单更宽的下拉，并把结果列表限制在自身滚动区域内。 */
+.top-menu-dropdown-search {
+  gap: 6px;
+  width: 320px;
+  min-width: 320px;
+}
+
+.command-palette {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.command-palette-input {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  border-radius: 6px;
+  background: #ffffff;
+  color: inherit;
+  font-size: 12px;
+}
+
+.command-palette-input:focus {
+  border-color: rgba(15, 108, 189, 0.55);
+  outline: none;
+}
+
+.command-palette-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* 结果超过这个高度就在列表内部滚动，绝不靠压缩条目来塞下更多结果。 */
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* 左侧固定勾选槽，标题与面包屑不论是否被勾选都从同一条竖线开始。
+   flex: none 是关键：结果多到撞上 max-height 时，flex 子项默认会被压缩到
+   低于内容高度，两行文字就会叠在一起。禁止收缩后改为容器滚动。 */
+.command-palette-item {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 7px 8px 7px 26px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  box-shadow: none;
+  text-align: left;
+}
+
+.command-palette-item-check {
+  position: absolute;
+  top: 7px;
+  left: 8px;
+  width: 14px;
+  color: #0f4473;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.command-palette-item.is-active {
+  border-color: rgba(15, 108, 189, 0.1);
+  background: rgba(15, 108, 189, 0.1);
+}
+
+.command-palette-item.is-disabled {
+  opacity: 0.46;
+  cursor: not-allowed;
+}
+
+.command-palette-item-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 17px;
+}
+
+.command-palette-item-path,
+.command-palette-item-hint {
+  display: block;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 15px;
+}
+
+.command-palette-empty {
+  padding: 8px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: nowrap;
@@ -6676,6 +6775,14 @@ select {
   border: 1px solid rgba(148, 163, 184, 0.42);
   border-radius: 8px;
   background: rgba(248, 250, 252, 0.62);
+}
+
+/* 顶栏搜索跳转到音频设置分组时的短暂高亮，与 Inspector 字段的聚焦观感保持一致。 */
+.spectrogram-setting-group.is-focused {
+  outline: 2px solid rgba(15, 108, 189, 0.4);
+  background: rgba(15, 108, 189, 0.08);
+  box-shadow: 0 0 0 4px rgba(15, 108, 189, 0.08);
+  transition: background 160ms ease, box-shadow 160ms ease, outline-color 160ms ease;
 }
 
 .spectrogram-setting-heading {
