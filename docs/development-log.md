@@ -6634,3 +6634,47 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   为避免污染本机 ACL，本轮浏览器验收没有点击最终保存；写入行为由纯计划测试和真实 PostgreSQL API 权限集成测试覆盖。
 - 已完成：功能、共享合同、后端授权与分页、专项/API/构建、浏览器只读验收、permissions model、roadmap、AGENTS 和
   本日志更新。待用户后续决定：是否提交、合并及部署；生产部署不属于本轮任务。
+
+## 2026-08-22：`f54807c` 项目权限管理生产发布
+
+### 发布范围与候选装配
+
+- 本次发布目标为 `main` 提交 `f54807c`，对应三栏式项目权限管理、管理员跨目录项目分页接口、共享三档预设组件及
+  权限文档更新。发布前本地 `main`、`origin/main` 和目标提交一致，重新执行完整 `npm run build`，Prisma Client、
+  shared、document-model、Web 与 API 均通过；Web 仍只有既有主 chunk 体积提醒。
+- 生产服务器从 `/opt/xiqu/releases/20260822T011240Z-a374468` 切换到不可变 release
+  `/opt/xiqu/releases/20260822T021331Z-f54807c`。新 Web 入口为 `assets/index-BMheWR-U.js`，样式入口为
+  `assets/index-BMBKfd3j.css`。
+- 首次完整候选包约 128 MiB，公网 SSH 上传速度异常缓慢，因此在进入维护前主动停止该上传。核对本机与生产当前
+  `package-lock.json` 的 SHA-256 完全一致后，改为上传只包含 package manifests、Prisma、完整 workspace packages 和
+  本次 `dist` 的 764 KiB 增量包，并在服务器端原样复制上一已验收 release 的 `node_modules`。最终候选仍是完整独立
+  运行目录，`@xiqu/shared` 与 `@xiqu/document-model` workspace import、package manifest、构建产物、Prisma 配置和
+  运维 CLI 均在切换前检查通过。增量传输包 SHA-256 为
+  `425c31d295cf5a0baf3ebdadb0b6434872ce36933111b523c41179e435882e72`。
+- 本机 `.env`、数据库、`data/`、媒体、对象目录、浏览器数据、VOD AccessKey、Web License 和临时播放凭据均未上传；
+  生产 PostgreSQL、对象存储、环境文件和备份继续位于 release 目录之外。
+
+### 维护、备份与切换
+
+- 发布前确认旧 API、analysis worker 和 Nginx 均为 active，maintenance 为 disabled，readiness 中 database/storage
+  均为 ok。随后停止 analysis worker，由 `platform.admin` 开启“部署 f54807c 项目权限管理”维护并等待 HTTP 写入
+  排空，再停止旧 API；本次 API 在 systemd 停机窗口内正常退出，`Result=success`、`ExecMainStatus=0`。
+- 备份 CLI 不接管已经存在的维护锁。保持 API 与 worker 均停止后短暂解除维护，由 `backup:create` 独占同一数据库
+  维护边界完成一致备份；备份结束后在 API 仍停止时立即重新开启维护，因此不存在可接受用户写入的运行进程。
+- 发布前一致备份为 `xiqu-backup-2026-08-22T02-23-15-311Z-4d217801`，包含 `20,427` 个对象、`0` 条 warning；
+  独立 `backup:verify` 返回 `valid=true`，备份保存在 release 外的 `/var/lib/xiqu-platform/backups`。
+- 新 release 以 `xiqu` 服务账号执行 `prisma migrate deploy`，确认生产 `public` schema 已有全部 `20` 条 migration，
+  `No pending migrations to apply`。随后原子切换 `/opt/xiqu/current`，在维护状态启动新 API；readiness 通过后，匿名
+  mutation 探针返回预期 `HTTP 503 / maintenance_mode`，证明新 release 没有绕过维护门禁。
+
+### 验证与最终状态
+
+- 维护中和解除维护后分别从构建机执行 `npm run deploy:check -- --base-url=http://101.201.76.10 --timeout-ms=20000`，
+  Web 首页、API liveness 和 readiness 均为 HTTP 200。解除维护后 analysis worker 已启动，最终 API、worker、Nginx
+  均为 active，maintenance 为 disabled，database/storage readiness 均为 ok。
+- 新 API/worker 启动时间窗的 journald warning 以上日志为空。最终系统盘使用率 `30%`，独立数据盘使用率 `18%`；
+  新 release、旧回滚 release 和本次一致备份均有足够空间保留。
+- 使用生产 Chrome 中已有的 `platform.admin` 会话强制刷新页面，确认顶部“项目权限管理”入口存在，并实际打开三栏窗口；
+  生产活动账号、完整项目列表、项目 owner 与路径摘要均成功读取。该验收只读，没有选择预设或写入生产 ACL。
+- 已完成：候选校验、一致备份、migration、原子切换、维护门禁验证、服务恢复、自动 smoke 与生产 UI 只读验收。
+  待用户人工验收：以真实管理员选择一个可控账号和测试项目，完成一次三档权限保存并用目标账号验证最终访问范围。
