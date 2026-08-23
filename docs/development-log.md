@@ -7034,3 +7034,19 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   `Object.freeze()` 将 React 初始值收窄成字面量 `false`，随即以明确 `boolean` 合同修复，确保用户仍能切换为开启；
   复测 1/1 与 `npm run build:web` 均通过，只有既有主 chunk 体积提醒。待人工打开一次新编辑器会话，确认四项无
   勾选且分别开启后正常出现；本轮尚未提交、推送或部署生产。
+
+### 提交与生产部署
+
+- 功能提交为 `8237727 feat: hide dense timeline layers by default`，已推送 `origin/main`。完整构建通过
+  Prisma generate/guard、shared、document-model、Web 和 API；新 Web 入口为 `assets/index-BEkXj_GE.js`。
+- 候选 release `/opt/xiqu/releases/20260823T154000Z-8237727` 使用 SHA-256
+  `97603fdae9350ebf0e4744cb34c5a8bb6471ddfb533799c4593ed1f429278989` 的完整包。候选内重新执行
+  `db:generate` 和 `release:check`，并检查 API、Web、shared/document-model 产物后才进入维护；本机和服务器
+  临时传输包均已清理。
+- 首次维护请求再次被既有长期写许可阻塞，45 秒超时前没有写入维护状态，也没有切换 release。确认旧 release、
+  维护关闭和三个服务均未变化后，先停止 worker；旧 API 仍超过 systemd 30 秒优雅停机窗口并进入 failed，随后
+  reset-failed，在 API/worker 均停止的边界由 `platform.admin` 成功开启维护。浏览器草稿和生产数据未被覆盖。
+- 候选 `release:check` 再次通过，21 条 migration 无 pending 项；随后原子切换 current 并启动 API。维护状态下
+  公网 Web/liveness/readiness 全部 HTTP 200，首页明确返回新资产；解除维护后启动 worker，API、worker、Nginx
+  均 active，第二轮公网检查也通过。最终数据库/对象存储 readiness 约 `6.41/1.15 ms`，新服务窗口无 level 50、
+  Prisma 或 worker 错误；系统盘 35%，数据盘 22%。待用户新开一个编辑器会话人工确认四项默认隐藏及手动开启。
