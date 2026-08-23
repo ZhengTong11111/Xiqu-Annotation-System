@@ -6921,3 +6921,43 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   的短句显示“唱 + 闺门旦 + 春江花月夜”，132px 的句子显示“巾生 + 良辰美景天”，192px 的长句只保留
   “角色未选 + 水袖轻翻意未歇”。`npm run build:web` 与 `git diff --check` 通过；仍只有既有主 chunk 体积
   提醒。本轮尚未提交、推送或部署生产。
+
+## 2026-08-23：`593fec0` 句级标注 v6 生产发布
+
+### 提交与候选产物
+
+- 将范围评论提交 `ef9d3d3` 与本轮完整句级标注 v6、Timeline 右键、角色拖拽及按文字长度适配显示提交为
+  `593fec0 feat: add sentence classification workflow`；`main` 已推送到 `origin/main`。发布前重新执行完整
+  `npm run build`，Prisma Client、shared、document-model、Web 和 API 均通过，只有既有主 chunk 体积提醒。
+- 生产候选 release 为 `/opt/xiqu/releases/20260823T145420Z-593fec0`。本机与生产上一 release 的
+  `package-lock.json` SHA-256 均为 `fcc75c7176c9e8057f11501bcbe4a9f3fc759d543914fd55abf34cdc5994f57b`，
+  因此继续复用上一已验收 release 的完整 `node_modules`，并覆盖本次 package manifests、Prisma 配置与
+  migrations、完整 workspace packages 及 Web/API 构建产物。候选传输包约 784 KiB，SHA-256 为
+  `a77ecc4b4fc7e0fc75c64d6ba0629719d0d9f384721e7bb6822327b61d83e090`。
+- release 切换前显式检查 `prisma.config.ts`、shared/document-model dist、API server 和 Web index 均存在。
+  本机 `.env`、数据库、`data/`、媒体、对象存储、VOD/License 凭据与浏览器数据均未上传；本机和服务器
+  `/tmp` 传输包在发布后均已清理。
+
+### 维护、备份、迁移与切换
+
+- 发布前确认旧 release `20260822T021331Z-f54807c` 的 API、analysis worker、Nginx 均 active，维护状态关闭，
+  系统盘 30%、数据盘 18%。随后停止 worker，并由 `platform.admin` 开启“部署 593fec0 句级标注 v6”维护。
+- 旧 API 再次命中历史停机许可无法在 systemd 30 秒窗口内排空的问题，最终由 systemd 超时终止并短暂进入
+  failed 状态；维护记录已成功持久化。确认 API 与 worker 均不运行后 reset failed，按既有备份合同短暂解除
+  维护，由备份 CLI 独占维护边界创建一致备份，再立即重新开启维护。该窗口没有可接受用户写入的 API 进程。
+- 一致备份为 `/var/lib/xiqu-platform/backups/xiqu-backup-2026-08-23T14-59-03-355Z-86affff6`，包含
+  `21,862` 个对象、`0` warning；独立 `backup:verify` 返回 `valid=true`。
+- 新 release 使用正式 `prisma migrate deploy`，发现 21 条 migration，并成功应用
+  `20260822010000_annotation_range_comments`；没有使用 `db push`、reset 或手工修改 migration 记录。随后
+  原子切换 `/opt/xiqu/current` 并在维护状态启动新 API，liveness、database/storage readiness 均为 `ok`。
+
+### 验证与最终状态
+
+- 维护状态下从构建机执行 `deploy:check`，公网 Web、API liveness、readiness 均返回 HTTP 200。新首页入口为
+  `assets/index-DIgwOsJT.js`，样式入口为 `assets/index-lOTsSi4V.css`。
+- 只读 smoke 通过后由 `platform.admin` 解除维护并确认 `enabled=false`，重新启动 analysis worker。最终 API、
+  worker、Nginx 均为 active；database/storage readiness 延迟约 `0.77/0.82 ms`，新 API/worker 时间窗内
+  journald warning 为空。解除维护后的第二次公网 `deploy:check` 也全部通过。
+- 发布结束时系统盘使用率 `31%`，独立数据盘 `22%`。生产当前运行提交为 `593fec0`，上一 release 与已验证
+  一致备份继续保留用于回滚。待用户人工刷新生产页面，验收句级右键、角色拖拽、句级红蓝完成态及不同句长下
+  Timeline 分类摘要；平台双账号的自动保存、远端追赶和 undo/redo 仍按上一节人工清单检查。
