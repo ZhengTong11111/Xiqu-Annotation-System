@@ -6,6 +6,7 @@ import type {
   SpectrogramSettings,
   WaveformData,
 } from "../types";
+import { defaultTimelineLayerVisibility } from "./timelineViewDefaults";
 
 export const spectrogramFrequencyPresets: Record<
   SpectrogramFrequencyPreset,
@@ -29,7 +30,7 @@ export const spectrogramFrequencyPresets: Record<
 };
 
 export const defaultSpectrogramSettings: SpectrogramSettings = {
-  visible: true,
+  visible: defaultTimelineLayerVisibility.spectrogram,
   showPitchContour: false,
   frequencyScale: "log",
   frequencyPreset: "full-vocal",

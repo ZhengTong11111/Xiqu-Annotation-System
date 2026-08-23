@@ -1784,6 +1784,10 @@ Current shape:
 - `waveformData` is still the source audio base
 - waveform track visibility is controlled by `waveformVisible` in `App.tsx` and can be toggled from `TopMenuBar` view menu
 - `spectrogramSettings` lives in `App.tsx`
+- `src/utils/timelineViewDefaults.ts` is the single session-default policy for waveform, spectrogram, Banyan track, and
+  Banyan global guides; all four start hidden and users opt in from View/search/settings. These are UI session facts, not
+  ProjectData, collaboration, undo/history, or analysis-asset state. Future preference persistence must remain outside the
+  annotation JSON and must not remove the explicit manual toggles
 - `spectrogramData` is computed by `buildSpectrogramData(...)`
 - computation runs in `src/utils/spectrogram.worker.ts`
 - rendering is done via `src/components/SpectrogramCanvas.tsx`

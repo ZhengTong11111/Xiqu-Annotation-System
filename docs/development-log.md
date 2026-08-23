@@ -7020,3 +7020,17 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   liveness、readiness 均为 HTTP 200；最终 API、worker、Nginx 均 active，维护 `enabled=false`，数据库与对象存储
   readiness 均约 `0.74 ms`。新进程窗口未见 range-comments、Prisma schema 或 level 50 错误；系统盘 34%，数据盘
   22%。登录后的评论列表/创建/撤回仍由用户刷新原会话人工验收。
+
+## 2026-08-23：板眼与音频辅助层改为默认隐藏
+
+- 按用户要求将板眼轨、全局板眼纵线、音频波形和人声频谱图的编辑器会话默认值统一改为关闭。用户仍可从
+  “视图”菜单、顶栏搜索或对应设置面板独立开启；开关回调、板眼数据、音频分析资产和 Timeline 渲染逻辑未改。
+- 新增 `timelineViewDefaults.ts` 作为四项会话默认值的唯一来源，频谱的 `defaultSpectrogramSettings.visible` 与
+  App 中另外三个 React 状态共用该合同，避免以后只改一处造成默认值漂移。复杂边界已加中文注释。
+- 这些可见性状态没有进入项目 JSON、服务器 API、协作命令或撤销历史，也不需要数据库/file version migration。
+  当前产品仍是每次打开编辑器按默认值初始化，不会覆盖或伪造项目内容；将来若做用户视图偏好持久化，应使用
+  独立 UI preference 边界。
+- 新增 `test:timeline-view-defaults`，验证四项全为关闭且频谱设置复用同一默认值。首次 Web 类型检查发现
+  `Object.freeze()` 将 React 初始值收窄成字面量 `false`，随即以明确 `boolean` 合同修复，确保用户仍能切换为开启；
+  复测 1/1 与 `npm run build:web` 均通过，只有既有主 chunk 体积提醒。待人工打开一次新编辑器会话，确认四项无
+  勾选且分别开启后正常出现；本轮尚未提交、推送或部署生产。

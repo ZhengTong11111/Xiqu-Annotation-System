@@ -204,6 +204,7 @@ import {
   buildSpectrogramData,
   defaultSpectrogramSettings,
 } from "./utils/spectrogram";
+import { defaultTimelineLayerVisibility } from "./utils/timelineViewDefaults";
 import { buildLocalWaveformData } from "./utils/localMediaAnalysis";
 import { createRuntimeUuid } from "./utils/runtimeUuid";
 import {
@@ -819,9 +820,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [spectrogramSettings, setSpectrogramSettings] = useState<SpectrogramSettings>(
     defaultSpectrogramSettings,
   );
-  const [banyanGridVisible, setBanyanGridVisible] = useState(true);
-  const [banyanTrackVisible, setBanyanTrackVisible] = useState(true);
-  const [waveformVisible, setWaveformVisible] = useState(true);
+  // 高密度辅助轨默认不占用时间轴空间，用户可从“视图”或对应设置面板按需开启。
+  const [banyanGridVisible, setBanyanGridVisible] = useState(
+    defaultTimelineLayerVisibility.banyanGrid,
+  );
+  const [banyanTrackVisible, setBanyanTrackVisible] = useState(
+    defaultTimelineLayerVisibility.banyanTrack,
+  );
+  const [waveformVisible, setWaveformVisible] = useState(
+    defaultTimelineLayerVisibility.waveform,
+  );
   const [editingCharacterId, setEditingCharacterId] = useState<string | null>(null);
   const [editingCharacterLocation, setEditingCharacterLocation] = useState<CharacterEditLocation | null>(null);
   const [editingCharacterValue, setEditingCharacterValue] = useState("");
