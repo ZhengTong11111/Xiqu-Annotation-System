@@ -2,6 +2,7 @@ import type {
   AnnotationCollaborationServerMessage,
   AnnotationPresenceMember,
   AnnotationRemoteTimelineActivityMessage,
+  AnnotationReviewChangedMessage,
   AnnotationRevisionAdvancedMessage,
 } from "@xiqu/shared";
 
@@ -16,6 +17,15 @@ export type AnnotationRevisionPublisher = {
 
 export type AnnotationRevisionDeliveryResult = "accepted" | "duplicate";
 
+export type AnnotationReviewEvent = Omit<
+  AnnotationReviewChangedMessage,
+  "version" | "type"
+>;
+
+export type AnnotationReviewPublisher = {
+  publishReviewChanged: (event: AnnotationReviewEvent) => void;
+};
+
 export type AnnotationCollaborationSubscriber = {
   activitySessionId?: string;
   send: (event: AnnotationCollaborationServerMessage) => void;
@@ -27,6 +37,7 @@ export class AnnotationCollaborationHub {
   private readonly latestRevision = new Map<string, number>();
   private readonly latestPresenceFingerprint = new Map<string, string>();
   private readonly latestActivitySequence = new Map<string, number>();
+  private readonly latestReviewEventId = new Map<string, string>();
 
   subscribe(annotationFileId: string, subscriber: AnnotationCollaborationSubscriber) {
     const fileSubscribers = this.subscribers.get(annotationFileId) ??
@@ -102,6 +113,25 @@ export class AnnotationCollaborationHub {
     return "accepted";
   }
 
+  deliverReviewChanged(event: AnnotationReviewEvent): AnnotationRevisionDeliveryResult {
+    if (this.latestReviewEventId.get(event.annotationFileId) === event.eventId) return "duplicate";
+    this.latestReviewEventId.set(event.annotationFileId, event.eventId);
+    const message: AnnotationReviewChangedMessage = {
+      version: 1,
+      type: "annotation.review.changed",
+      ...event,
+    };
+    // 通知只携带失效标识，正文和作用域始终由有 read 权限的 HTTP 请求重新读取。
+    for (const subscriber of this.subscribers.get(event.annotationFileId) ?? []) {
+      try {
+        subscriber.send(message);
+      } catch {
+        subscriber.close(1011, "review_delivery_failed");
+      }
+    }
+    return "accepted";
+  }
+
   deliverRemoteActivity(
     event: Omit<AnnotationRemoteTimelineActivityMessage, "version" | "type">,
   ): AnnotationRevisionDeliveryResult {
@@ -135,6 +165,7 @@ export class AnnotationCollaborationHub {
     this.latestRevision.clear();
     this.latestPresenceFingerprint.clear();
     this.latestActivitySequence.clear();
+    this.latestReviewEventId.clear();
   }
 }
 

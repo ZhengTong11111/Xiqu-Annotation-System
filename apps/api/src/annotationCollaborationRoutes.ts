@@ -238,6 +238,9 @@ export function registerAnnotationCollaborationRoutes(
               message.revision > currentHead.revision
             ) {
               sendMessage(socket, message);
+            } else if (message.type === "annotation.review.changed") {
+              // 审核事实不推进 revision；建连期间的失效提示必须独立补发。
+              sendMessage(socket, message);
             }
           }
           // 先注册 subscriber 再发布，当前连接和其他实例都会从数据库读取同一成员快照。

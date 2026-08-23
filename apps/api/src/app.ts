@@ -51,6 +51,8 @@ import type { ApiCorsOriginPolicy } from "./serverConfig.js";
 import { AccountAdminService } from "./accountAdminService.js";
 import type { AliyunVodProvider } from "./aliyunVodGateway.js";
 import { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
+import { createAnnotationReviewChannel } from "./annotationReviewEventEnvelope.js";
+import { PostgresAnnotationReviewEventBus } from "./postgresAnnotationReviewEventBus.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -120,12 +122,19 @@ export async function buildApiApp(
     observability,
     logger: app.log,
   });
+  const reviewEvents = new PostgresAnnotationReviewEventBus({
+    transport: createPostgresEventTransport(options.collaborationPool),
+    channel: createAnnotationReviewChannel(options.databaseSchema),
+    deliver: (event) => collaborationHub.deliverReviewChanged(event),
+    logger: app.log,
+  });
   const resources = new ResourceService(
     options.prisma,
     access,
     collaborationEvents,
     options.aliyunVod ?? null,
     options.aliyunVodWebPlayerLicense ?? null,
+    reviewEvents,
   );
   const mediaAnalysis = new MediaAnalysisJobService(options.prisma, access);
   // 原子领域命令拥有独立事务服务，但与完整保存共用同一个跨实例 revision 发布器。
@@ -288,6 +297,7 @@ export async function buildApiApp(
     await collaborationRoutes.close();
     await remoteActivityEvents.close();
     await presenceEvents.close();
+    await reviewEvents.close();
     await collaborationEvents.close();
     await presenceCoordinator.close();
   });
@@ -297,6 +307,7 @@ export async function buildApiApp(
     await collaborationEvents.start();
     await presenceEvents.start();
     await remoteActivityEvents.start();
+    await reviewEvents.start();
   } catch (error) {
     await app.close();
     throw error;

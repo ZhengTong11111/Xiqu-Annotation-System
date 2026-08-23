@@ -29,6 +29,15 @@ export type AnnotationRevisionAdvancedMessage = {
   operationCursor: string;
 };
 
+// 审核事实不推进标注 revision，因此使用独立事件 id 唤醒确认/评论列表刷新。
+export type AnnotationReviewChangedMessage = {
+  version: typeof ANNOTATION_COLLABORATION_PROTOCOL_VERSION;
+  type: "annotation.review.changed";
+  annotationFileId: string;
+  eventId: string;
+  occurredAt: string;
+};
+
 export type AnnotationPresenceMember = {
   userId: string;
   accountName: string;
@@ -88,6 +97,7 @@ export type AnnotationRemoteTimelineActivityMessage = {
 export type AnnotationCollaborationServerMessage =
   | AnnotationCollaborationSessionReadyMessage
   | AnnotationRevisionAdvancedMessage
+  | AnnotationReviewChangedMessage
   | AnnotationPresenceSnapshotMessage
   | AnnotationRemoteTimelineActivityMessage;
 
@@ -106,6 +116,13 @@ const MESSAGE_KEYS = {
     "annotationFileId",
     "revision",
     "operationCursor",
+  ],
+  "annotation.review.changed": [
+    "version",
+    "type",
+    "annotationFileId",
+    "eventId",
+    "occurredAt",
   ],
   "presence.snapshot": [
     "version",
@@ -161,12 +178,27 @@ export function parseAnnotationCollaborationServerMessage(
   if (
     input.type !== "session.ready" &&
     input.type !== "annotation.revision.advanced" &&
+    input.type !== "annotation.review.changed" &&
     input.type !== "presence.snapshot" &&
     input.type !== "presence.timeline_activity.changed"
   ) {
     return null;
   }
   if (!hasExactKeys(input, MESSAGE_KEYS[input.type])) return null;
+  if (input.type === "annotation.review.changed") {
+    if (
+      !isStableId(input.annotationFileId) ||
+      !isStableId(input.eventId) ||
+      !isIsoTimestamp(input.occurredAt)
+    ) return null;
+    return {
+      version: ANNOTATION_COLLABORATION_PROTOCOL_VERSION,
+      type: input.type,
+      annotationFileId: input.annotationFileId,
+      eventId: input.eventId,
+      occurredAt: input.occurredAt,
+    };
+  }
   if (input.type === "presence.timeline_activity.changed") {
     if (
       !isStableId(input.annotationFileId) ||

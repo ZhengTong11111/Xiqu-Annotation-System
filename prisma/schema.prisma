@@ -98,6 +98,8 @@ enum AuditAction {
   annotation_snapshot_restore
   annotation_confirmation_create
   annotation_confirmation_revoke
+  annotation_range_comment_create
+  annotation_range_comment_withdraw
   resource_permission_upsert
   resource_permission_remove
   resource_inheritance_update
@@ -161,6 +163,8 @@ model User {
   recoverySnapshots                AnnotationRecoverySnapshot[]      @relation("RecoverySnapshotCreator")
   createdConfirmations             AnnotationConfirmation[]          @relation("AnnotationConfirmationCreator")
   revokedConfirmations             AnnotationConfirmation[]          @relation("AnnotationConfirmationRevoker")
+  createdRangeComments             AnnotationRangeComment[]           @relation("AnnotationRangeCommentCreator")
+  withdrawnRangeComments           AnnotationRangeComment[]           @relation("AnnotationRangeCommentWithdrawer")
   jobs                             ProcessingJob[]                   @relation("JobCreator")
   updatedAnalysisAudioSettings     AnnotationAnalysisAudioSetting[]  @relation("AnalysisAudioSettingUpdater")
   createdMediaAnalysisRuns         MediaAnalysisRun[]                @relation("MediaAnalysisRunCreator")
@@ -272,6 +276,7 @@ model AnnotationFile {
   lastEditor             User                              @relation("AnnotationLastEditor", fields: [lastEditedBy], references: [id])
   recoverySnapshots      AnnotationRecoverySnapshot[]
   confirmations          AnnotationConfirmation[]
+  rangeComments          AnnotationRangeComment[]
   operations             AnnotationOperation[]
   mutationLease          AnnotationMutationLease?
   collaborationTickets   AnnotationCollaborationTicket[]
@@ -365,6 +370,34 @@ model AnnotationConfirmation {
   @@index([createdBy])
   @@index([revokedBy])
   @@map("annotation_confirmations")
+}
+
+// 范围评论是独立审核事实，不表达确认，也不进入标注 payload 或 revision。
+model AnnotationRangeComment {
+  id                String                           @id @default(uuid())
+  annotationFileId  String                           @map("annotation_file_id")
+  commentedRevision Int                              @map("commented_revision")
+  startTime         Float                            @map("start_time")
+  endTime           Float                            @map("end_time")
+  targetMode        AnnotationConfirmationTargetMode @map("target_mode")
+  domains           AnnotationConfirmationDomain[]   @default([])
+  trackIds          String[]                         @default([]) @map("track_ids")
+  body              String
+  createdBy         String                           @map("created_by")
+  createdAt         DateTime                         @default(now()) @map("created_at")
+  withdrawnBy       String?                          @map("withdrawn_by")
+  withdrawnAt       DateTime?                        @map("withdrawn_at")
+  withdrawReason    String?                          @map("withdraw_reason")
+
+  annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
+  creator        User           @relation("AnnotationRangeCommentCreator", fields: [createdBy], references: [id])
+  withdrawer     User?          @relation("AnnotationRangeCommentWithdrawer", fields: [withdrawnBy], references: [id], onDelete: Restrict)
+
+  @@index([annotationFileId, createdAt, id])
+  @@index([annotationFileId, commentedRevision])
+  @@index([createdBy])
+  @@index([withdrawnBy])
+  @@map("annotation_range_comments")
 }
 
 // 恢复快照通过标注文件 Inspector 受控查看，但不是普通资源、Fork 或发布版本。

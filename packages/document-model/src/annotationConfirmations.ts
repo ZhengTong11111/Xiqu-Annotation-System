@@ -1,16 +1,16 @@
 import {
-  ANNOTATION_CONFIRMATION_DOMAINS,
+  ANNOTATION_REVIEW_DOMAINS,
   type AnnotationConfirmationDraft,
   type AnnotationConfirmationFreshness,
   type AnnotationConfirmationLifecycle,
   type AnnotationConfirmationRecord,
-  type AnnotationConfirmationScope,
   type AnnotationConfirmationTargets,
+  type AnnotationReviewScope,
 } from "@xiqu/shared";
 
 const MAX_CONFIRMATION_NOTE_LENGTH = 2_000;
 const MAX_CONFIRMATION_ID_LENGTH = 200;
-const CONFIRMATION_DOMAIN_SET = new Set<string>(ANNOTATION_CONFIRMATION_DOMAINS);
+const REVIEW_DOMAIN_SET = new Set<string>(ANNOTATION_REVIEW_DOMAINS);
 
 export type AnnotationConfirmationIssueCode =
   | "invalid_file_id"
@@ -22,6 +22,8 @@ export type AnnotationConfirmationIssueCode =
   | "unknown_track_id"
   | "unrecognized_track_payload"
   | "note_too_long"
+  | "body_required"
+  | "body_too_long"
   | "invalid_revocation"
   | "revision_regressed";
 
@@ -58,9 +60,9 @@ export type AnnotationConfirmationReviewContext = {
 };
 
 // 规范化作用域只处理可独立判定的格式；真实轨道归属由另一个显式校验入口处理。
-export function normalizeAnnotationConfirmationScope(
-  scope: AnnotationConfirmationScope,
-): AnnotationConfirmationValidationResult<AnnotationConfirmationScope> {
+export function normalizeAnnotationReviewScope(
+  scope: AnnotationReviewScope,
+): AnnotationConfirmationValidationResult<AnnotationReviewScope> {
   const issues: AnnotationConfirmationIssue[] = [];
 
   // 确认范围采用半开区间，首尾相接的相邻范围不会被误判为重叠。
@@ -110,7 +112,7 @@ export function validateAnnotationConfirmationDraft(
     });
   }
 
-  const normalizedScope = normalizeAnnotationConfirmationScope(draft.scope);
+  const normalizedScope = normalizeAnnotationReviewScope(draft.scope);
   if (!normalizedScope.ok) issues.push(...normalizedScope.issues);
   const note = normalizeOptionalText(draft.note);
   if (note && note.length > MAX_CONFIRMATION_NOTE_LENGTH) {
@@ -135,11 +137,11 @@ export function validateAnnotationConfirmationDraft(
 }
 
 // 项目相关校验由调用方提供真实持久轨道 id，避免根据命名猜测附属轨或递归伪轨。
-export function validateAnnotationConfirmationTracks(
-  scope: AnnotationConfirmationScope,
+export function validateAnnotationReviewTracks(
+  scope: AnnotationReviewScope,
   persistedTrackIds: ReadonlySet<string>,
-): AnnotationConfirmationValidationResult<AnnotationConfirmationScope> {
-  const normalized = normalizeAnnotationConfirmationScope(scope);
+): AnnotationConfirmationValidationResult<AnnotationReviewScope> {
+  const normalized = normalizeAnnotationReviewScope(scope);
   if (!normalized.ok || normalized.value.targets.mode !== "tracks") return normalized;
   const unknownTrackIds = normalized.value.targets.trackIds.filter((trackId) =>
     !persistedTrackIds.has(trackId));
@@ -155,7 +157,7 @@ export function validateAnnotationConfirmationTracks(
 }
 
 // 服务端只从当前格式 payload 的真实顶层轨道定义提取 id，不把可视伪轨或 activeTrackOrder 当作事实。
-export function extractPersistedAnnotationTrackIds(
+export function extractPersistedAnnotationReviewTrackIds(
   payload: unknown,
 ): AnnotationConfirmationValidationResult<string[]> {
   if (!isPlainObject(payload)) return unrecognizedTrackPayload();
@@ -242,9 +244,9 @@ export function getAnnotationConfirmationFreshness(
 }
 
 // 两个确认范围先判断半开时间交集，再判断同一作用域维度是否真正相交。
-export function annotationConfirmationScopesOverlap(
-  left: AnnotationConfirmationScope,
-  right: AnnotationConfirmationScope,
+export function annotationReviewScopesOverlap(
+  left: AnnotationReviewScope,
+  right: AnnotationReviewScope,
 ) {
   if (left.startTime >= right.endTime || right.startTime >= left.endTime) return false;
   if (left.targets.mode === "all" || right.targets.mode === "all") return true;
@@ -261,7 +263,7 @@ export function annotationConfirmationScopesOverlap(
 }
 
 // 创建确认同时要求读取和独立审核能力；普通 write 或权限管理能力不能替代 review。
-export function canCreateAnnotationConfirmation(
+export function canCreateAnnotationReviewFact(
   context: AnnotationConfirmationReviewContext,
 ): AnnotationConfirmationPermissionDecision {
   if (!context.canRead) return { allowed: false, reason: "read_required" };
@@ -270,17 +272,25 @@ export function canCreateAnnotationConfirmation(
 }
 
 // 撤销保留作者边界：审核者可撤销自己记录，管理员或 owner 可撤销任意记录。
-export function canRevokeAnnotationConfirmation(
+export function canWithdrawAnnotationReviewFact(
   context: AnnotationConfirmationReviewContext,
   creatorUserId: string,
 ): AnnotationConfirmationPermissionDecision {
-  const createDecision = canCreateAnnotationConfirmation(context);
+  const createDecision = canCreateAnnotationReviewFact(context);
   if (!createDecision.allowed) return createDecision;
   if (!context.isAdminOrOwner && context.actorUserId !== creatorUserId) {
     return { allowed: false, reason: "creator_or_manager_required" };
   }
   return { allowed: true, reason: "allowed" };
 }
+
+// 旧确认入口保留为兼容别名；确认与评论必须共享同一套范围、轨道和权限规则。
+export const normalizeAnnotationConfirmationScope = normalizeAnnotationReviewScope;
+export const validateAnnotationConfirmationTracks = validateAnnotationReviewTracks;
+export const extractPersistedAnnotationTrackIds = extractPersistedAnnotationReviewTrackIds;
+export const annotationConfirmationScopesOverlap = annotationReviewScopesOverlap;
+export const canCreateAnnotationConfirmation = canCreateAnnotationReviewFact;
+export const canRevokeAnnotationConfirmation = canWithdrawAnnotationReviewFact;
 
 // 目标规范化保持领域共享顺序和轨道字典序，保证重复请求得到确定结果。
 function normalizeConfirmationTargets(
@@ -290,7 +300,7 @@ function normalizeConfirmationTargets(
   if (targets.mode === "all") return { mode: "all" };
   if (targets.mode === "domains") {
     const unknownDomains = targets.domains.filter((domain) =>
-      !CONFIRMATION_DOMAIN_SET.has(domain));
+      !REVIEW_DOMAIN_SET.has(domain));
     if (unknownDomains.length) {
       issues.push(...unknownDomains.map((domain) => ({
         code: "unknown_domain" as const,
@@ -299,7 +309,7 @@ function normalizeConfirmationTargets(
       })));
     }
     const selected = new Set(targets.domains);
-    const domains = ANNOTATION_CONFIRMATION_DOMAINS.filter((domain) => selected.has(domain));
+    const domains = ANNOTATION_REVIEW_DOMAINS.filter((domain) => selected.has(domain));
     if (!domains.length) {
       issues.push({
         code: "invalid_targets",

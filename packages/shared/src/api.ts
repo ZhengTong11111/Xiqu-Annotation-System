@@ -2,6 +2,9 @@ import type {
   AnnotationConfirmationDraft,
   AnnotationConfirmationList,
   AnnotationConfirmationRecord,
+  AnnotationRangeCommentPage,
+  AnnotationRangeCommentRecord,
+  AnnotationReviewScope,
   AnnotationClientSyncFailureReport,
   AnnotationClientSyncFailureReportResult,
   AnnotationFile,
@@ -278,6 +281,16 @@ export type RevokeAnnotationConfirmationRequest = {
   reason?: string | null;
 };
 
+export type CreateAnnotationRangeCommentRequest = {
+  commentedRevision: number;
+  scope: AnnotationReviewScope;
+  body: string;
+};
+
+export type WithdrawAnnotationRangeCommentRequest = {
+  reason?: string | null;
+};
+
 export type UpsertResourcePermissionRequest = {
   capabilities: ResourceCapability[];
   inheritToChildren?: boolean;
@@ -497,6 +510,15 @@ export type PlatformApiContract<TPayload = unknown> = {
   revokeAnnotationConfirmation: {
     request: RevokeAnnotationConfirmationRequest;
     response: AnnotationConfirmationRecord;
+  };
+  listAnnotationRangeComments: { response: AnnotationRangeCommentPage };
+  createAnnotationRangeComment: {
+    request: CreateAnnotationRangeCommentRequest;
+    response: AnnotationRangeCommentRecord;
+  };
+  withdrawAnnotationRangeComment: {
+    request: WithdrawAnnotationRangeCommentRequest;
+    response: AnnotationRangeCommentRecord;
   };
   listResourcePermissions: { response: ResourcePermissionMatrixRow[] };
   upsertResourcePermission: {

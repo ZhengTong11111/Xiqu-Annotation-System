@@ -27,6 +27,8 @@ Main currently contains all major recent feature lines that matter for context:
 - resource permission Inspector with three base-preset radios, an independent review checkbox, and the complete detailed capability
   matrix; simple controls only rewrite direct ACL rows, preserve custom grants until explicit overwrite, and never replace
   server-side effective permission calculation
+- independent annotation-range comments alongside confirmed ranges; both reuse one saved range/target contract and `read + review`
+  gate, while comments remain non-confirming append-only governance facts with required plain-text bodies and withdrawal history
 - permission-gated native streaming downloads for media resources and authoritative JSON downloads for annotation resources, exposed through the shared resource context menu and Inspector
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - local `dev:api` and `dev:analysis-worker` commands load the ignored root `.env` through Node 22
@@ -383,17 +385,18 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - annotation-file Inspector recovery-history list, read-only snapshot detail, safe restore, and snapshot/current comparison entry
   - loads lightweight summaries first, requests one full snapshot payload only after explicit selection, and refetches the
     current annotation file when comparison starts rather than trusting stale Inspector metadata
-- `src/platform/AnnotationConfirmationPanel.tsx`
-  - platform-editor governance panel for browsing, creating, navigating to, and revoking confirmed annotation ranges
-  - uses the existing loop range as an explicit review range; it must not edit `ProjectData` or replace the content Inspector
+- `src/platform/AnnotationReviewPanel.tsx`
+  - platform-editor governance panel for browsing, creating, navigating to, and withdrawing/revoking confirmations and range comments
+  - uses the existing loop range as an explicit review range; comments never imply confirmation, and neither fact may edit `ProjectData`
   - docked and detached rendering share one data/mutation path. Detached Radix dialogs must portal into the detached document;
     the detached copy stays expanded while the docked copy may use the standard sidebar collapse control
-- `src/platform/useAnnotationConfirmations.ts`
-  - authoritative client-side list/create/revoke lifecycle for one open annotation file
-  - rejects stale async responses across file switches and refreshes after mutations instead of optimistically inventing facts
+- `src/platform/useAnnotationReviews.ts`
+  - authoritative client-side confirmation/comment list, pagination, create and withdraw lifecycle for one open annotation file
+  - rejects stale async responses across file switches and refreshes after mutations or `annotation.review.changed` hints instead of
+    optimistically inventing facts
 - `src/platform/annotationConfirmationView.ts`
-  - pure labels, persisted-track options, lifecycle/freshness view records, create blockers, revoke visibility, and interval layout
-  - Timeline and panel must consume this module instead of duplicating confirmation state or target formatting
+  - pure labels, persisted-track options, both lifecycle/freshness view records, create blockers, withdraw visibility, and shared interval layout
+  - Timeline and panel must consume this module instead of duplicating review state or target formatting
 - `src/platform/recoverySnapshotPreview.ts`
   - pure, failure-contained conversion from unknown historical payload to a current-format multimodal summary
   - reuses `normalizeImportedProjectFile()`; do not create a second project migration path for snapshot previews
@@ -880,13 +883,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - R5b3a2c canonical recursive-track structure, configuration, owned-subtree lifecycle, structure transaction, and generic
     dispatcher implementation; snapshot boundaries remain valid but non-replayable and return `snapshot_required`
 - `packages/document-model/src/annotationConfirmations.ts`
-  - pure normalization, validation, lifecycle/freshness, overlap, persisted-track, and review-decision helpers for
-    confirmed annotation ranges
+  - canonical neutral review-scope normalization, overlap, persisted-track and permission helpers plus confirmation lifecycle/freshness
   - contains no Prisma, API, React, payload mutation, or global-role lookup; backend and platform UI must reuse
     this contract instead of duplicating scope or freshness rules
+- `packages/document-model/src/annotationRangeComments.ts`
+  - required-body validation and comment lifecycle/freshness rules layered on the canonical neutral review scope
+  - comment text is business data returned only by the protected comment API; it must never enter audit detail, WebSocket, NOTIFY or logs
 - `prisma/schema.prisma`
   - PostgreSQL schema for users, sessions, resource entries, projects, annotation/media files, resource permissions/user state,
-    recovery snapshots, confirmed ranges, short-lived collaboration presence, processing jobs, audit logs, and operations
+    recovery snapshots, confirmed ranges, range comments, short-lived collaboration presence, processing jobs, audit logs, and operations
 - `docs/`
   - roadmap, architecture notes, and curated screenshots; keep this updated for long-running platform/backend work
 - `docs/server-deployment.md`
@@ -1370,23 +1375,27 @@ Current backend capabilities:
   - role defaults live in `packages/shared/src/platformRolePolicy.ts`, while effective ACL evaluation lives in
     `resourceAccess.ts`; do not create a second UI-only implementation
 
-Confirmed-annotation contract status:
-- R2.5c completes the platform-editor workflow on top of the R2.5b database/API: a dedicated Inspector section lists
-  current/stale/revoked facts, creates from the saved loop range, navigates to exact times, and revokes through a
-  confirmed dialog. The Timeline renders active facts in a separate read-only lane.
+Annotation-review contract status:
+- R2.5d extends the confirmed-range workflow with independent range comments. The shared panel lists current/stale and
+  revoked/withdrawn facts, creates from the saved loop range, navigates to exact times, and preserves append-only history.
+  The Timeline renders active confirmation and comment facts in one separate read-only lane with distinct colors.
 - a confirmation binds one annotation file revision to a non-empty half-open time range and either all content, stable
   research domains, or real persisted parent-track ids. Derived Gongche, attached-point, and branch-lane visual tracks
   are not saved top-level track ids.
-- confirmation is server governance metadata, never part of `ProjectData`, annotation payload, recovery snapshots, or
-  annotation operation logs. Revision advancement makes a record stale until a future explicit re-review; it is not
-  silently carried forward.
-- read access reuses resource `read`; create/revoke require an independent per-resource `review` capability.
+- confirmation and range comment are server governance metadata, never part of `ProjectData`, annotation payload, recovery
+  snapshots, or annotation operation logs. Revision advancement makes either record stale; comments remain historical opinions
+  and confirmations require a future explicit re-review rather than being silently carried forward.
+- read access reuses resource `read`; create and revoke/withdraw require an independent per-resource `review` capability.
   `write`, `manage_permissions`, and the global reviewer role must not independently imply review authority.
 - revocation preserves the original confirmation and records revoker/time/reason. Do not update or delete the original
   audit fact in place.
+- comment withdrawal follows the same author-or-manager boundary. Comment bodies must not be copied into audit rows,
+  collaboration messages, PostgreSQL NOTIFY payloads, server logs, or sync diagnostics.
+- review mutations do not advance annotation revision. `annotation.review.changed` is a lossy invalidation hint only;
+  HTTP confirmation/comment reads remain authoritative, including after reconnect or cross-instance delivery.
 
 Current platform UI capabilities:
-- login page with development defaults
+- login page without prefilled development credentials
 - desktop-style three-pane resource explorer with folder/project navigation, search, sorting, list/grid/Finder-column modes, multi-selection, keyboard shortcuts, and context menus
 - list/grid mode and every Finder column consume server pages incrementally without clearing loaded resources;
   search/location/sort changes invalidate old responses. List, grid, and column resource items are virtualized through

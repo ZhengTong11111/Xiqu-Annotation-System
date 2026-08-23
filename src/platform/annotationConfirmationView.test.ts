@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AnnotationConfirmationRecord } from "@xiqu/shared";
+import type { AnnotationConfirmationRecord, AnnotationRangeCommentRecord } from "@xiqu/shared";
 import { mockProject } from "../mockData";
 import {
   buildAnnotationConfirmationViewRecords,
+  buildAnnotationRangeCommentViewRecords,
   canShowAnnotationConfirmationRevoke,
+  canShowAnnotationRangeCommentWithdraw,
   formatAnnotationConfirmationTargets,
   getAnnotationConfirmationCreateBlocker,
   getAnnotationConfirmationTrackOptions,
-  layoutAnnotationConfirmationTimelineItems,
+  layoutAnnotationReviewTimelineItems,
 } from "./annotationConfirmationView";
 
 // 测试数据构造器集中生成完整确认记录，单项用例只覆盖自己关心的字段。
@@ -71,11 +73,24 @@ test("时间轴分层允许首尾相接并稳定拆开真实重叠", () => {
     createRecord("a", 0, 2),
     createRecord("c", 3, 4),
   ], 3, []);
-  const layout = layoutAnnotationConfirmationTimelineItems(records);
-  assert.deepEqual(layout.map((item) => [item.record.id, item.lane]), [
-    ["a", 0],
-    ["b", 1],
-    ["c", 0],
+  const comments: AnnotationRangeCommentRecord[] = [{
+    id: "comment-1",
+    annotationFileId: "file-1",
+    commentedRevision: 3,
+    scope: { startTime: 2, endTime: 3.5, targets: { mode: "all" } },
+    body: "检查衔接",
+    createdBy: { id: "reviewer-2", accountName: "teacher", displayName: "教师" },
+    createdAt: "2026-08-02T01:00:00.000Z",
+  }];
+  const layout = layoutAnnotationReviewTimelineItems({
+    confirmations: records,
+    comments: buildAnnotationRangeCommentViewRecords(comments, 3, []),
+  });
+  assert.deepEqual(layout.map((item) => [item.id, item.kind, item.lane]), [
+    ["a", "confirmation", 0],
+    ["b", "confirmation", 1],
+    ["comment-1", "comment", 0],
+    ["c", "confirmation", 1],
   ]);
 });
 
@@ -112,4 +127,27 @@ test("撤销入口仅向创建者、owner 或管理员开放", () => {
     ...base,
     currentUserRoles: ["admin"],
   }), true);
+});
+
+test("评论撤回入口复用作者、owner 和管理员边界", () => {
+  const record = buildAnnotationRangeCommentViewRecords([{
+    id: "comment-a",
+    annotationFileId: "file-1",
+    commentedRevision: 3,
+    scope: { startTime: 0, endTime: 1, targets: { mode: "all" } },
+    body: "需要复核",
+    createdBy: { id: "reviewer-1", accountName: "reviewer", displayName: "审核员" },
+    createdAt: "2026-08-22T00:00:00.000Z",
+  }], 3, [])[0];
+  const base = {
+    record,
+    canReview: true,
+    currentUserId: "other",
+    currentUserRoles: ["reviewer" as const],
+    hasOwnerAuthority: false,
+  };
+  assert.equal(canShowAnnotationRangeCommentWithdraw(base), false);
+  assert.equal(canShowAnnotationRangeCommentWithdraw({ ...base, currentUserId: "reviewer-1" }), true);
+  assert.equal(canShowAnnotationRangeCommentWithdraw({ ...base, hasOwnerAuthority: true }), true);
+  assert.equal(canShowAnnotationRangeCommentWithdraw({ ...base, currentUserRoles: ["admin"] }), true);
 });

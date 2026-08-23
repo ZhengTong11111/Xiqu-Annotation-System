@@ -2944,6 +2944,16 @@ test("平台资源 API 集成测试", async (suite) => {
         },
       });
       assert.equal(deniedWithoutReview.statusCode, 403);
+      const deniedCommentWithoutReview = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments`,
+        payload: {
+          commentedRevision: 1,
+          scope: { startTime: 0, endTime: 10, targets: { mode: "all" } },
+          body: "没有审核权限时不能评论",
+        },
+      });
+      assert.equal(deniedCommentWithoutReview.statusCode, 403);
       const readableEmptyList = await jsonRequest(app, studentToken, {
         method: "GET",
         url: `/api/annotation-files/${confirmationFileId}/confirmations`,
@@ -3069,6 +3079,81 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(confirmations.length, 2);
       assert.ok(confirmations.every((record) => !("payload" in record)));
 
+      // 评论是独立治理事实：正文必填、绑定 revision，其他 reviewer 不能撤回作者记录。
+      const blankComment = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments`,
+        payload: {
+          commentedRevision: 1,
+          scope: { startTime: 5, endTime: 8, targets: { mode: "all" } },
+          body: "   ",
+        },
+      });
+      assert.equal(blankComment.statusCode, 400);
+      const commentCreated = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments`,
+        payload: {
+          commentedRevision: 1,
+          scope: {
+            startTime: 5,
+            endTime: 8,
+            targets: { mode: "tracks", trackIds: ["custom-action-1"] },
+          },
+          body: "  此处动作与唱词衔接需要复核。  ",
+        },
+      });
+      assert.equal(commentCreated.statusCode, 200, commentCreated.body);
+      const comment = dataOf(commentCreated.json());
+      assert.equal(comment.body, "此处动作与唱词衔接需要复核。");
+      const deniedCommentWithdraw = await jsonRequest(app, teacherToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments/${String(comment.id)}/withdraw`,
+        payload: {},
+      });
+      assert.equal(deniedCommentWithdraw.statusCode, 403);
+      const withdrawn = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments/${String(comment.id)}/withdraw`,
+        payload: { reason: "  意见表述有误  " },
+      });
+      assert.equal(withdrawn.statusCode, 200, withdrawn.body);
+      assert.equal(dataOf(withdrawn.json()).withdrawReason, "意见表述有误");
+      const repeatedWithdraw = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments/${String(comment.id)}/withdraw`,
+        payload: { reason: "不能覆盖原原因" },
+      });
+      assert.equal(repeatedWithdraw.statusCode, 200);
+      assert.equal(await prisma.auditLog.count({
+        where: { action: "annotation_range_comment_withdraw", resourceId: confirmationFileId },
+      }), 1);
+
+      const activeComment = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments`,
+        payload: {
+          commentedRevision: 1,
+          scope: { startTime: 8, endTime: 12, targets: { mode: "all" } },
+          body: "保留为历史意见",
+        },
+      });
+      assert.equal(activeComment.statusCode, 200, activeComment.body);
+      const firstPage = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments?includeWithdrawn=true&limit=1`,
+      });
+      assert.equal(firstPage.statusCode, 200, firstPage.body);
+      const firstPageBody = dataOf(firstPage.json());
+      assert.equal((firstPageBody.items as JsonObject[]).length, 1);
+      assert.equal(typeof firstPageBody.nextCursor, "string");
+      const secondPage = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments?includeWithdrawn=true&limit=1&cursor=${encodeURIComponent(String(firstPageBody.nextCursor))}`,
+      });
+      assert.equal(secondPage.statusCode, 200, secondPage.body);
+      assert.equal((dataOf(secondPage.json()).items as JsonObject[]).length, 1);
+
       // 其他 reviewer 不能撤销学生记录；创建者撤销幂等且只写一条撤销审计。
       const trackConfirmationId = String(trackConfirmation.id);
       const deniedOtherReviewer = await jsonRequest(app, teacherToken, {
@@ -3147,6 +3232,9 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(await prisma.annotationConfirmation.count({
         where: { annotationFileId: copiedId },
       }), 0);
+      assert.equal(await prisma.annotationRangeComment.count({
+        where: { annotationFileId: copiedId },
+      }), 0);
 
       // 审计 detail 只包含定位数据，备注和 payload 均不得进入治理日志。
       const confirmationAudits = await prisma.auditLog.findMany({
@@ -3157,6 +3245,12 @@ test("平台资源 API 集成测试", async (suite) => {
         .every(({ detail }) => {
           const value = detail as JsonObject;
           return !("note" in value) && !("payload" in value);
+        }));
+      assert.ok(confirmationAudits
+        .filter(({ action }) => action.startsWith("annotation_range_comment"))
+        .every(({ detail }) => {
+          const value = detail as JsonObject;
+          return !("body" in value) && !("trackIds" in value) && !("payload" in value);
         }));
 
       // 回收站中的标注文件不能再列出或创建确认，恢复资源后仍保留历史确认事实。

@@ -67,7 +67,7 @@ export function getResourcePermissionPresetCapabilities(
   return RESOURCE_CAPABILITIES.filter((capability) => selected.has(capability));
 }
 
-// 媒体资源没有标注确认操作；其异常 review 授权仍留给详细模式处理，极简模式不制造无效能力。
+// 媒体资源没有标注审核操作；其异常 review 授权仍留给详细模式处理，极简模式不制造无效能力。
 export function supportsResourceReviewAddon(resourceType: ResourceType): boolean {
   return resourceType !== "media_file";
 }

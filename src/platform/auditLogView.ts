@@ -29,6 +29,8 @@ export const AUDIT_ACTION_LABELS: Record<AuditActionName, string> = {
   annotation_snapshot_restore: "恢复标注快照",
   annotation_confirmation_create: "确认标注范围",
   annotation_confirmation_revoke: "撤销标注确认",
+  annotation_range_comment_create: "创建范围评论",
+  annotation_range_comment_withdraw: "撤回范围评论",
   resource_permission_upsert: "更新资源权限",
   resource_permission_remove: "移除资源权限",
   resource_inheritance_update: "更新权限继承",

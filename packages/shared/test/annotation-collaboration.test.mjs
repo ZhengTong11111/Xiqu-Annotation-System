@@ -41,6 +41,19 @@ test("解析严格的协作会话与 revision 通知", () => {
   assert.deepEqual(parseAnnotationCollaborationServerMessage(presence), presence);
 });
 
+test("审核失效通知只接受文件、事件标识和时间", () => {
+  const changed = {
+    version: 1,
+    type: "annotation.review.changed",
+    annotationFileId: "annotation-file-1",
+    eventId: "event-1",
+    occurredAt: "2026-08-22T00:00:00.000Z",
+  };
+  assert.deepEqual(parseAnnotationCollaborationServerMessage(changed), changed);
+  assert.equal(parseAnnotationCollaborationServerMessage({ ...changed, body: "不能进入通知" }), null);
+  assert.equal(parseAnnotationCollaborationServerMessage({ ...changed, occurredAt: "invalid" }), null);
+});
+
 test("严格解析播放头、鼠标与选区的完整活动快照", () => {
   const update = {
     version: 1,

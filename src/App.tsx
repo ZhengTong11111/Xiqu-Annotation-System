@@ -26,7 +26,7 @@ import { TopMenuBar, type TopMenuPlatformNavigation } from "./components/TopMenu
 import { VideoPlayer } from "./components/VideoPlayer";
 import type { MediaPlaybackController } from "./media/mediaPlaybackController";
 import { mockProject } from "./mockData";
-import { AnnotationConfirmationPanel } from "./platform/AnnotationConfirmationPanel";
+import { AnnotationReviewPanel } from "./platform/AnnotationReviewPanel";
 import { AnnotationMediaBindingDialog } from "./platform/AnnotationMediaBindingDialog";
 import {
   PlatformMaintenanceSaveWarningDialog,
@@ -40,10 +40,12 @@ import {
 import { buildPlatformMediaPlaybackSource } from "./platform/platformMediaPlaybackSource";
 import {
   buildAnnotationConfirmationViewRecords,
+  buildAnnotationRangeCommentViewRecords,
   canShowAnnotationConfirmationRevoke,
+  canShowAnnotationRangeCommentWithdraw,
   getAnnotationConfirmationCreateBlocker,
   getAnnotationConfirmationTrackOptions,
-  layoutAnnotationConfirmationTimelineItems,
+  layoutAnnotationReviewTimelineItems,
 } from "./platform/annotationConfirmationView";
 import {
   type LocalEditorSession,
@@ -61,7 +63,7 @@ import {
 import { usePlatformOperationCatchUp } from "./platform/usePlatformOperationCatchUp";
 import { usePlatformCollaborationSession } from "./platform/usePlatformCollaborationSession";
 import { buildTimelineSelectionSummary } from "./platform/timelineSelectionSummary";
-import { useAnnotationConfirmations } from "./platform/useAnnotationConfirmations";
+import { useAnnotationReviews } from "./platform/useAnnotationReviews";
 import { usePlatformAutoSave } from "./platform/usePlatformAutoSave";
 import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
 import { usePlatformMutationLease } from "./platform/usePlatformMutationLease";
@@ -716,7 +718,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     ? getMutationLeaseStatusLabel(mutationLease.state, Boolean(mutationLease.getToken()))
     : undefined;
   // 平台确认事实独立于项目文档历史；本地会话传入 null，因此不会请求或展示服务端治理状态。
-  const annotationConfirmations = useAnnotationConfirmations({
+  const annotationReviews = useAnnotationReviews({
     client: editorSession?.client ?? null,
     annotationFileId: editorSession?.annotationFileId ?? null,
   });
@@ -750,7 +752,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       editorSession?.onRemoteRevisionAdvanced(response.committedRevision, response.operationCursor);
       if (plan.request.mutationLeaseToken) mutationLease.markCommitted();
       mutationLease.advanceBaseRevision(response.committedRevision);
-      void annotationConfirmations.refresh();
+      void annotationReviews.refresh();
       return { status: "applied" };
     },
     onRetryableFailure: (failure) => {
@@ -1068,7 +1070,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         setRemoteBaseRevision(result.revision);
         setRemoteOperationCursor(result.cursor);
         editorSession.onRemoteRevisionAdvanced(result.revision, result.cursor);
-        void annotationConfirmations.refresh();
+        void annotationReviews.refresh();
         return;
       }
 
@@ -1087,7 +1089,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       setRemoteBaseRevision(latestFile.revision);
       setRemoteOperationCursor(latestFile.operationCursor);
       editorSession.onAnnotationFileSaved(latestFile);
-      void annotationConfirmations.refresh();
+      void annotationReviews.refresh();
     },
     // 网络失败只保留当前 snapshot/cursor 等待下轮；不能把 clean 文档伪装成保存错误或冲突。
     onError: (error) => {
@@ -1110,6 +1112,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         setObservedRemoteRevision((current) => Math.max(current, message.revision));
         // ready/reconnect 总是触发一次权威 HTTP 检查；即使 revision 数值相同，cursor 也可能已推进。
         requestPlatformCatchUp();
+      } else if (
+        message.type === "annotation.review.changed" &&
+        message.annotationFileId === editorSession?.annotationFileId
+      ) {
+        // 评论与确认不推进文档 revision；收到独立失效提示后只重读审核事实。
+        void annotationReviews.refresh();
       }
     },
     onError: (error) => {
@@ -1181,42 +1189,53 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   );
   const confirmationViewRecords = useMemo(
     () => buildAnnotationConfirmationViewRecords(
-      annotationConfirmations.data?.confirmations ?? [],
-      annotationConfirmations.data?.currentRevision ?? remoteBaseRevision,
+      annotationReviews.confirmations?.confirmations ?? [],
+      annotationReviews.confirmations?.currentRevision ?? remoteBaseRevision,
       confirmationTrackOptions,
     ),
     [
-      annotationConfirmations.data,
+      annotationReviews.confirmations,
       confirmationTrackOptions,
       remoteBaseRevision,
     ],
   );
-  const confirmationTimelineItems = useMemo(
-    () => layoutAnnotationConfirmationTimelineItems(
-      confirmationViewRecords.filter((record) => record.lifecycle === "active"),
+  const commentViewRecords = useMemo(
+    () => buildAnnotationRangeCommentViewRecords(
+      annotationReviews.comments?.items ?? [],
+      annotationReviews.comments?.currentRevision ?? remoteBaseRevision,
+      confirmationTrackOptions,
     ),
-    [confirmationViewRecords],
+    [annotationReviews.comments, confirmationTrackOptions, remoteBaseRevision],
+  );
+  const reviewTimelineItems = useMemo(
+    () => layoutAnnotationReviewTimelineItems({
+      confirmations: confirmationViewRecords,
+      comments: commentViewRecords,
+    }),
+    [commentViewRecords, confirmationViewRecords],
   );
   // Timeline 只接收渲染所需的扁平只读字段，不依赖平台 API 记录结构或权限判断。
-  const confirmationTimelineRanges = useMemo(
-    () => confirmationTimelineItems.map((item) => ({
-      id: item.record.id,
-      startTime: item.record.scope.startTime,
-      endTime: item.record.scope.endTime,
-      label: item.targetLabel,
+  const reviewTimelineRanges = useMemo(
+    () => reviewTimelineItems.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      startTime: item.startTime,
+      endTime: item.endTime,
+      label: item.label,
       lane: item.lane,
       lifecycle: item.lifecycle,
       freshness: item.freshness,
     })),
-    [confirmationTimelineItems],
+    [reviewTimelineItems],
   );
   const confirmationCreateBlocker = getAnnotationConfirmationCreateBlocker({
     canReview: editorSession?.canReview ?? false,
     hasRange: Boolean(loopPlaybackRange),
     hasUnsavedChanges,
     editorRevision: remoteBaseRevision,
-    serverRevision: annotationConfirmations.data?.currentRevision ?? null,
-    loading: annotationConfirmations.loading,
+    serverRevision: annotationReviews.confirmations?.currentRevision ??
+      annotationReviews.comments?.currentRevision ?? null,
+    loading: annotationReviews.loading,
   });
   const customBlocks = useMemo(
     () => flattenCustomTrackBlocks(project.customTracks),
@@ -6554,7 +6573,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     setRemoteOperationCursor(latestFile.operationCursor);
     session.onRemoteRevisionAdvanced(latestFile.revision, latestFile.operationCursor);
     mutationLease.advanceBaseRevision(latestFile.revision);
-    void annotationConfirmations.refresh();
+    void annotationReviews.refresh();
     return { status: "applied" };
   }
 
@@ -6609,7 +6628,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         savedLocalRevision,
       });
       clearMaintenanceBlockAfterServerCommit();
-      void annotationConfirmations.refresh();
+      void annotationReviews.refresh();
       return { status: "saved" };
     } catch (error) {
       if (submittedOperationIds.length > 0) markOperationsAsSubmitted(submittedOperationIds);
@@ -6697,7 +6716,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     setConfirmationPanelPlacement(nextPlacement);
   }
 
-  // “标注确认面板”菜单只控制右栏停靠；若当前在独立窗口，点击会明确收回右栏。
+  // “标注审核面板”菜单只控制右栏停靠；若当前在独立窗口，点击会明确收回右栏。
   function toggleConfirmationPanelDocked() {
     if (confirmationPanelPlacement === "docked") {
       setConfirmationPanelPlacement("hidden");
@@ -6737,7 +6756,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       closeConfirmationDetachedWindow("docked");
       return;
     }
-    const popup = openDetachedWindow("标注确认", "xiqu-confirmation-window", 520, 760, 160, 100);
+    const popup = openDetachedWindow("标注审核", "xiqu-confirmation-window", 520, 760, 160, 100);
     if (popup) {
       setConfirmationDetachedWindow(popup);
       setConfirmationPanelPlacement("detached");
@@ -6794,11 +6813,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         onTransientPointerTimeChange={updateCollaborationPointer}
         loopPlaybackRange={loopPlaybackRange}
         loopPlaybackEnabled={loopPlaybackEnabled}
-        confirmationRanges={editorSession && confirmationTimelineVisible
-          ? confirmationTimelineRanges
+        reviewRanges={editorSession && confirmationTimelineVisible
+          ? reviewTimelineRanges
           : []}
-        confirmationRangesVisible={Boolean(editorSession && confirmationTimelineVisible)}
-        onSelectConfirmationRange={(range) => {
+        reviewRangesVisible={Boolean(editorSession && confirmationTimelineVisible)}
+        onSelectReviewRange={(range) => {
           seekTo(range.startTime);
           setLineFocusRequest(null);
           setInitialPlatformFocusRange(null);
@@ -7009,47 +7028,68 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   function renderAnnotationConfirmationWorkspace(detached: boolean) {
     if (!editorSession) return null;
     return (
-      <AnnotationConfirmationPanel
-        records={confirmationViewRecords}
-        currentRevision={annotationConfirmations.data?.currentRevision ?? null}
+      <AnnotationReviewPanel
+        confirmations={confirmationViewRecords}
+        comments={commentViewRecords}
+        currentRevision={annotationReviews.confirmations?.currentRevision ??
+          annotationReviews.comments?.currentRevision ?? null}
         editorRevision={remoteBaseRevision}
         range={loopPlaybackRange}
         trackOptions={confirmationTrackOptions}
         canReview={editorSession.canReview}
         createBlocker={confirmationCreateBlocker}
-        loading={annotationConfirmations.loading}
-        mutationPending={annotationConfirmations.mutationPending}
-        error={annotationConfirmations.error}
+        loading={annotationReviews.loading}
+        loadingMoreComments={annotationReviews.loadingMoreComments}
+        hasMoreComments={Boolean(annotationReviews.comments?.nextCursor)}
+        mutationPending={annotationReviews.mutationPending}
+        error={annotationReviews.error}
         timelineVisible={confirmationTimelineVisible}
         collapsed={detached ? false : isConfirmationPanelCollapsed}
         onToggleCollapse={detached ? undefined : toggleConfirmationPanelCollapsed}
         portalContainer={detached ? confirmationDetachedWindow?.document.body : undefined}
         onTimelineVisibleChange={setConfirmationTimelineVisible}
-        onRefresh={annotationConfirmations.refresh}
-        onCreate={({ scope, note }) => annotationConfirmations.create({
+        onRefresh={annotationReviews.refresh}
+        onLoadMoreComments={annotationReviews.loadMoreComments}
+        onCreateConfirmation={({ scope, note }) => annotationReviews.createConfirmation({
           confirmedRevision: remoteBaseRevision,
           scope,
           note,
         })}
-        onRevoke={(record, reason) => annotationConfirmations.revoke(
+        onCreateComment={({ scope, body }) => annotationReviews.createComment({
+          commentedRevision: remoteBaseRevision,
+          scope,
+          body,
+        })}
+        onRevokeConfirmation={(record, reason) => annotationReviews.revokeConfirmation(
           record.record.id,
           { reason },
         )}
-        canRevoke={(record) => canShowAnnotationConfirmationRevoke({
+        onWithdrawComment={(record, reason) => annotationReviews.withdrawComment(
+          record.record.id,
+          { reason },
+        )}
+        canRevokeConfirmation={(record) => canShowAnnotationConfirmationRevoke({
           record,
           canReview: editorSession.canReview,
           currentUserId: editorSession.currentUserId,
           currentUserRoles: editorSession.currentUserRoles,
           hasOwnerAuthority: editorSession.canRevokeAnyConfirmation,
         })}
-        onNavigate={(record) => {
-          seekTo(record.record.scope.startTime);
+        canWithdrawComment={(record) => canShowAnnotationRangeCommentWithdraw({
+          record,
+          canReview: editorSession.canReview,
+          currentUserId: editorSession.currentUserId,
+          currentUserRoles: editorSession.currentUserRoles,
+          hasOwnerAuthority: editorSession.canRevokeAnyConfirmation,
+        })}
+        onNavigate={(scope) => {
+          seekTo(scope.startTime);
           setLineFocusRequest(null);
           setInitialPlatformFocusRange(null);
           setConfirmationFocusRange({
             requestId: Date.now(),
-            start: record.record.scope.startTime,
-            end: record.record.scope.endTime,
+            start: scope.startTime,
+            end: scope.endTime,
           });
         }}
       />
@@ -7534,7 +7574,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         ) : null}
         {isConfirmationDetached && confirmationDetachedWindow ? (
           <FloatingPanelWindow
-            title="标注确认"
+            title="标注审核"
             targetWindow={confirmationDetachedWindow}
             onClose={() => closeConfirmationDetachedWindow("docked")}
             onGlobalKeyDown={handleGlobalKeyDown}

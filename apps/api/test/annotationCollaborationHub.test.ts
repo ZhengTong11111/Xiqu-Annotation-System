@@ -68,6 +68,27 @@ test("协作 hub 按成员结构去重 presence 快照", () => {
   assert.deepEqual(snapshots, [1]);
 });
 
+test("协作 hub 按事件标识投递审核失效提示且不携带正文", () => {
+  const hub = new AnnotationCollaborationHub();
+  const messages: unknown[] = [];
+  hub.subscribe("file-1", {
+    send: (message) => {
+      if (message.type === "annotation.review.changed") messages.push(message);
+    },
+    close: () => undefined,
+  });
+  const event = {
+    annotationFileId: "file-1",
+    eventId: "event-1",
+    occurredAt: "2026-08-22T00:00:00.000Z",
+  };
+  assert.equal(hub.deliverReviewChanged(event), "accepted");
+  assert.equal(hub.deliverReviewChanged(event), "duplicate");
+  assert.equal(hub.deliverReviewChanged({ ...event, eventId: "event-2" }), "accepted");
+  assert.equal(messages.length, 2);
+  assert.ok(messages.every((message) => !JSON.stringify(message).includes("body")));
+});
+
 test("最后一个订阅者离开后，相同成员结构仍会发送给新会话", () => {
   const hub = new AnnotationCollaborationHub();
   const members = [{

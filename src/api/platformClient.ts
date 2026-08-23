@@ -2,6 +2,8 @@ import type {
   AnnotationConfirmationList,
   AnnotationCollaborationTicket,
   AnnotationConfirmationRecord,
+  AnnotationRangeCommentPage,
+  AnnotationRangeCommentRecord,
   AnnotationCommittedOperationPage,
   AnnotationClientSyncFailureReport,
   AnnotationClientSyncFailureReportResult,
@@ -23,6 +25,7 @@ import type {
   CopyResourceRequest,
   AcquireAnnotationMutationLeaseRequest,
   CreateAnnotationConfirmationRequest,
+  CreateAnnotationRangeCommentRequest,
   CreateAliyunVodMediaRequest,
   CreateAnnotationFileRequest,
   CreateAnnotationOperationRequest,
@@ -55,6 +58,7 @@ import type {
   ResourcePermissionMatrixRow,
   ResourcePermissionRecord,
   RevokeAnnotationConfirmationRequest,
+  WithdrawAnnotationRangeCommentRequest,
   RestoreAnnotationRecoverySnapshotRequest,
   RenewAnnotationMutationLeaseRequest,
   ReleaseAnnotationMutationLeaseRequest,
@@ -450,6 +454,41 @@ export class PlatformClient {
   ) {
     return this.request<AnnotationConfirmationRecord>(
       `/annotation-files/${resourceId}/confirmations/${confirmationId}/revoke`,
+      { method: "POST", body: request },
+    );
+  }
+
+  listAnnotationRangeComments(
+    resourceId: string,
+    options: { cursor?: string; limit?: number; includeWithdrawn?: boolean } = {},
+  ) {
+    const query = new URLSearchParams();
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.limit) query.set("limit", String(options.limit));
+    if (options.includeWithdrawn) query.set("includeWithdrawn", "true");
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return this.request<AnnotationRangeCommentPage>(
+      `/annotation-files/${resourceId}/range-comments${suffix}`,
+    );
+  }
+
+  createAnnotationRangeComment(
+    resourceId: string,
+    request: CreateAnnotationRangeCommentRequest,
+  ) {
+    return this.request<AnnotationRangeCommentRecord>(
+      `/annotation-files/${resourceId}/range-comments`,
+      { method: "POST", body: request },
+    );
+  }
+
+  withdrawAnnotationRangeComment(
+    resourceId: string,
+    commentId: string,
+    request: WithdrawAnnotationRangeCommentRequest = {},
+  ) {
+    return this.request<AnnotationRangeCommentRecord>(
+      `/annotation-files/${resourceId}/range-comments/${commentId}/withdraw`,
       { method: "POST", body: request },
     );
   }

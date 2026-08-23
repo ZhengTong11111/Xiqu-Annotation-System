@@ -12,11 +12,11 @@ type EditorSidebarLayoutProps = {
 };
 
 /**
- * 右侧编辑区按四个同级面板逐层切分。标注确认不再嵌入 Inspector，
+ * 右侧编辑区按四个同级面板逐层切分。标注审核不再嵌入 Inspector，
  * 因此每一层都有独立拖柄，隐藏确认面板时 Inspector 会直接接管剩余空间。
  */
 export function EditorSidebarLayout(props: EditorSidebarLayoutProps) {
-  // 标注确认隐藏时不保留空白分栏，属性面板直接接管下半区。
+  // 标注审核隐藏时不保留空白分栏，属性面板直接接管下半区。
   const inspectorRegion = props.confirmationPanel ? (
     <ResizableSplitLayout
       orientation="vertical"

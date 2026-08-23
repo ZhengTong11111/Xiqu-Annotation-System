@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { Readable } from "node:stream";
 import {
-  ANNOTATION_CONFIRMATION_DOMAINS,
+  ANNOTATION_REVIEW_DOMAINS,
   AUDIT_ACTIONS,
   encodeMediaAnalysisTileBatchHeader,
   isValidAnnotationOperationPayload,
@@ -10,6 +10,7 @@ import {
   RESOURCE_CAPABILITIES,
   type AnnotationConfirmationDomain,
   type AnnotationConfirmationScope,
+  type AnnotationReviewScope,
   type AnnotationClientSyncFailureCategory,
   type AnnotationClientSyncFailureOperation,
   type AnnotationClientSyncFailureReport,
@@ -70,8 +71,8 @@ const RESOURCE_SORT_FIELDS = new Set<ResourceSortField>([
 ]);
 const SORT_DIRECTIONS = new Set<SortDirection>(["asc", "desc"]);
 const CAPABILITIES = new Set<ResourceCapability>(RESOURCE_CAPABILITIES);
-const CONFIRMATION_DOMAINS = new Set<AnnotationConfirmationDomain>(
-  ANNOTATION_CONFIRMATION_DOMAINS,
+const REVIEW_DOMAINS = new Set<AnnotationConfirmationDomain>(
+  ANNOTATION_REVIEW_DOMAINS,
 );
 // 路由运行时校验复用 shared 动作清单，未知 action 在进入 Prisma 前返回 400。
 const AUDIT_ACTION_NAMES = new Set<AuditActionName>(AUDIT_ACTIONS);
@@ -163,6 +164,64 @@ export function registerApiRoutes(
       return repository.login(request.body.accountName, request.body.password);
     },
   );
+
+  // 评论列表默认隐藏已撤回记录；分页参数在服务层继续绑定文件和筛选上下文。
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { cursor?: string; limit?: string; includeWithdrawn?: string };
+  }>("/api/annotation-files/:resourceId/range-comments", async (request) => {
+    const includeWithdrawn = request.query.includeWithdrawn === "true";
+    if (
+      request.query.includeWithdrawn !== undefined &&
+      request.query.includeWithdrawn !== "true" &&
+      request.query.includeWithdrawn !== "false"
+    ) throw badRequest("includeWithdrawn 必须是 true 或 false。");
+    const limit = request.query.limit === undefined ? undefined : Number(request.query.limit);
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
+      throw badRequest("limit 必须是 1 到 100 的整数。");
+    }
+    return resources.listAnnotationRangeComments(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      { cursor: request.query.cursor, limit, includeWithdrawn },
+    );
+  });
+
+  app.post<{
+    Params: { resourceId: string };
+    Body: { commentedRevision?: unknown; scope?: unknown; body?: unknown };
+  }>("/api/annotation-files/:resourceId/range-comments", async (request) => {
+    const body = requireObject(request.body);
+    if (!Number.isInteger(body.commentedRevision) || Number(body.commentedRevision) < 1) {
+      throw badRequest("commentedRevision 必须是正整数。");
+    }
+    if (typeof body.body !== "string") throw badRequest("范围评论正文必须是字符串。");
+    return resources.createAnnotationRangeComment(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      {
+        commentedRevision: Number(body.commentedRevision),
+        scope: parseAnnotationReviewScope(body.scope),
+        body: body.body,
+      },
+    );
+  });
+
+  app.post<{
+    Params: { resourceId: string; commentId: string };
+    Body: { reason?: unknown };
+  }>("/api/annotation-files/:resourceId/range-comments/:commentId/withdraw", async (request) => {
+    const body = requireObject(request.body);
+    if (body.reason !== undefined && body.reason !== null && typeof body.reason !== "string") {
+      throw badRequest("撤回原因必须是字符串或 null。");
+    }
+    return resources.withdrawAnnotationRangeComment(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      request.params.commentId,
+      body.reason as string | null | undefined,
+    );
+  });
   app.get("/api/auth/me", async (request) =>
     getCurrentUser(repository, request));
 
@@ -1531,7 +1590,7 @@ function parseAnnotationConfirmationScope(
     Array.isArray(targets.domains) &&
     targets.domains.every((domain) =>
       typeof domain === "string" &&
-      CONFIRMATION_DOMAINS.has(domain as AnnotationConfirmationDomain))
+      REVIEW_DOMAINS.has(domain as AnnotationConfirmationDomain))
   ) {
     return {
       startTime: scope.startTime,
@@ -1555,6 +1614,10 @@ function parseAnnotationConfirmationScope(
   }
   throw badRequest("审核目标必须是 all、有效领域列表或轨道标识列表。");
 }
+
+// 确认与评论共享同一作用域 parser；别名保留确认路由的语义化调用点。
+const parseAnnotationReviewScope = (value: unknown): AnnotationReviewScope =>
+  parseAnnotationConfirmationScope(value);
 
 function parseUniqueStringArray(
   value: unknown,

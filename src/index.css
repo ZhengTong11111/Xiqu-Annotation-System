@@ -5636,10 +5636,18 @@ select {
 
 .annotation-confirmation-segments.compact {
   display: inline-grid;
-  grid-template-columns: repeat(2, auto);
+  grid-template-columns: repeat(3, auto);
+}
+
+.annotation-confirmation-segments.annotation-review-kind-segments {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .annotation-confirmation-segments button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   min-height: 25px;
   padding: 2px 8px;
   border: 0;
@@ -5653,6 +5661,12 @@ select {
   background: rgba(255, 255, 255, 0.96);
   color: #245d94;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+/* 评论使用稳定红色语义；确认和普通作用域选择继续沿用原有蓝色交互状态。 */
+.annotation-review-kind-segments .review-action.comment.active {
+  background: rgba(254, 242, 242, 0.98);
+  color: #b42318;
 }
 
 .annotation-confirmation-options {
@@ -5734,6 +5748,19 @@ select {
   opacity: 0.76;
 }
 
+.annotation-confirmation-item.comment {
+  border-left-color: rgba(185, 28, 28, 0.64);
+}
+
+.annotation-confirmation-item.comment.stale {
+  border-left-color: rgba(190, 70, 70, 0.54);
+}
+
+.annotation-confirmation-item.withdrawn {
+  border-left-color: rgba(100, 116, 139, 0.54);
+  opacity: 0.76;
+}
+
 .annotation-confirmation-item-main {
   min-width: 0;
   display: grid;
@@ -5752,6 +5779,31 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.annotation-review-record-heading {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: visible !important;
+  white-space: normal !important;
+}
+
+.annotation-review-kind-badge {
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.annotation-review-kind-badge.confirmation {
+  color: #17655c;
+  background: rgba(45, 212, 191, 0.16);
+}
+
+.annotation-review-kind-badge.comment {
+  color: #9f261f;
+  background: rgba(239, 68, 68, 0.14);
 }
 
 .annotation-confirmation-item-main strong {
@@ -5783,6 +5835,43 @@ select {
 .annotation-confirmation-item.revoked .annotation-confirmation-item-state {
   color: #596578;
   background: rgba(148, 163, 184, 0.18);
+}
+
+.annotation-confirmation-item.withdrawn .annotation-confirmation-item-state {
+  color: #596578;
+  background: rgba(148, 163, 184, 0.18);
+}
+
+.annotation-confirmation-item-main small.annotation-review-comment-body {
+  overflow: visible;
+  color: #34455d;
+  line-height: 1.45;
+  text-overflow: clip;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.annotation-review-inactive-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 6px;
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+
+.annotation-review-inactive-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
+.annotation-review-load-more {
+  min-height: 28px;
+  color: #365b84;
+  background: rgba(236, 242, 248, 0.8);
+  border-color: rgba(134, 153, 175, 0.4);
+  font-size: 10px;
 }
 
 .annotation-confirmation-item-main small.invalid {
@@ -6576,6 +6665,19 @@ select {
   border-style: dashed;
   background: rgba(245, 190, 73, 0.18);
   color: #7a5417;
+}
+
+/* 评论范围使用独立红色；旧修订仍保留红色语义，只通过虚线和透明度表达过期。 */
+.timeline-confirmation-chip.comment {
+  border-color: rgba(185, 28, 28, 0.56);
+  background: rgba(248, 113, 113, 0.2);
+  color: #991b1b;
+}
+
+.timeline-confirmation-chip.comment.stale {
+  border-color: rgba(185, 28, 28, 0.46);
+  background: rgba(248, 113, 113, 0.12);
+  color: #8f3a3a;
 }
 
 .timeline-confirmation-chip:hover,

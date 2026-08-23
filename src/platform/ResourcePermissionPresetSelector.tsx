@@ -130,8 +130,8 @@ export function ResourcePermissionPresetSelector(props: Props) {
         <span>
           <strong>可审核</strong>
           <small>{reviewSupported
-            ? "允许创建标注确认；同时需要查看权限"
-            : "媒体资源没有标注确认操作"}</small>
+            ? "允许确认或评论标注范围；同时需要查看权限"
+            : "媒体资源没有标注审核操作"}</small>
         </span>
       </label>
     </div>

@@ -72,8 +72,8 @@ type TimelineProps = {
   onTransientPointerTimeChange: (sourceId: string, time: number | null) => void;
   loopPlaybackRange: { start: number; end: number } | null;
   loopPlaybackEnabled: boolean;
-  confirmationRanges: TimelineConfirmationRange[];
-  confirmationRangesVisible: boolean;
+  reviewRanges: TimelineReviewRange[];
+  reviewRangesVisible: boolean;
   isDetached?: boolean;
   selectedItem: SelectedItem;
   selectedTimelineItems: TimelineSelectionItem[];
@@ -93,7 +93,7 @@ type TimelineProps = {
   onToggleTrackSnap: (trackId: string) => void;
   onLoopPlaybackRangeChange: (range: { start: number; end: number } | null) => void;
   onLoopPlaybackEnabledChange: (enabled: boolean) => void;
-  onSelectConfirmationRange: (range: TimelineConfirmationRange) => void;
+  onSelectReviewRange: (range: TimelineReviewRange) => void;
   onToggleDetached?: () => void;
   onSeek: (time: number) => void;
   onPreviewFrame: (time: number | null) => void;
@@ -167,13 +167,14 @@ type TimelineProps = {
 };
 
 // 确认栏只消费时间轴渲染字段，避免通用 Timeline 依赖平台 API 或治理权限模型。
-export type TimelineConfirmationRange = {
+export type TimelineReviewRange = {
   id: string;
+  kind: "confirmation" | "comment";
   startTime: number;
   endTime: number;
   label: string;
   lane: number;
-  lifecycle: "active" | "revoked";
+  lifecycle: "active" | "revoked" | "withdrawn";
   freshness: "current" | "stale";
 };
 
@@ -539,8 +540,8 @@ export function Timeline({
   onTransientPointerTimeChange,
   loopPlaybackRange,
   loopPlaybackEnabled,
-  confirmationRanges,
-  confirmationRangesVisible,
+  reviewRanges,
+  reviewRangesVisible,
   isDetached = false,
   selectedItem,
   selectedTimelineItems,
@@ -560,7 +561,7 @@ export function Timeline({
   onToggleTrackSnap,
   onLoopPlaybackRangeChange,
   onLoopPlaybackEnabledChange,
-  onSelectConfirmationRange,
+  onSelectReviewRange,
   onToggleDetached,
   onSeek,
   onPreviewFrame,
@@ -711,8 +712,8 @@ export function Timeline({
   }, [onTransientPointerTimeChange, pointerSourceId]);
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
   // 确认栏按重叠层数自适应高度；无记录时仍保留一条紧凑栏，供平台用户识别该治理层。
-  const confirmationLaneCount = confirmationRangesVisible
-    ? Math.max(1, ...confirmationRanges.map((range) => range.lane + 1))
+  const confirmationLaneCount = reviewRangesVisible
+    ? Math.max(1, ...reviewRanges.map((range) => range.lane + 1))
     : 0;
   const confirmationLaneHeight = confirmationLaneCount > 0
     ? confirmationLaneCount * 18 + 4
@@ -2695,18 +2696,19 @@ export function Timeline({
             ) : null}
           </div>
 
-          {confirmationRangesVisible ? (
+          {reviewRangesVisible ? (
             <div
               className="timeline-confirmation-lane"
               style={{ height: confirmationLaneHeight }}
             >
-              <span className="timeline-confirmation-lane-label">确认范围</span>
-              {confirmationRanges.map((range) => (
+              <span className="timeline-confirmation-lane-label">审核范围</span>
+              {reviewRanges.map((range) => (
                 <button
                   key={range.id}
                   type="button"
                   className={[
                     "timeline-confirmation-chip",
+                    range.kind,
                     range.lifecycle,
                     range.freshness,
                   ].join(" ")}
@@ -2719,7 +2721,7 @@ export function Timeline({
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    onSelectConfirmationRange(range);
+                    onSelectReviewRange(range);
                   }}
                 >
                   <span>{range.label}</span>

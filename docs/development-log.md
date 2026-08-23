@@ -6726,3 +6726,71 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 自审未发现新增越权路径、数据库兼容问题或未使用旧 helper。当前浏览器控制接口没有提供可用自动化会话，因此本轮
   未虚报视觉验收。待人工检查集中项目面板和资源 Inspector 中 radio/checkbox 层级、六种组合刷新回显、custom 覆盖、
   媒体禁用状态及窄栏布局；本轮尚未提交、推送或部署生产。
+
+## 2026-08-22：R2.5d 增加独立标注范围评论
+
+### 需求审查与模型决策
+
+- 用户希望在“确认当前范围”之外表达“不确认、只提出意见”。本轮先按现有代码和审核流程重写本机忽略的
+  `CLAUDE_WORK.md`，随后由 Codex 实施；没有调用 Claude Code、GLM、DeepSeek 或其他 agent。
+- 范围评论没有塞入 `AnnotationConfirmation.note`，也没有增加语义含糊的 `confirmed=false`。新增独立
+  `AnnotationRangeComment` 追加式治理事实：正文为必填纯文本，绑定 annotation file、创建时 revision、半开时间
+  范围和 all/domain/真实持久轨道作用域；误发时撤回，不原地编辑或硬删除。
+- 评论与确认都不进入 `ProjectData`、JSON、恢复快照、undo/history、operation feed 或 annotation revision。保存推进后，
+  确认和评论都显示为基于旧修订；评论仍保留为历史意见，不会被解释成确认。
+- 权限继续复用逐资源 `review`：读取需要 `read`，创建和撤回需要 `read + review`；作者可撤回自己的评论，owner、
+  admin、super_admin 可撤回任意评论。没有增加新的 capability，也没有让 write 或权限管理替代审核授权。
+
+### 共享合同、数据库与 API
+
+- `packages/shared/src/platform.ts` 增加中性 `AnnotationReviewDomain/Targets/Scope`，旧 confirmation 名称仅保留为源码
+  兼容别名；确认与评论不再维护两套范围合同。`packages/document-model/src/annotationConfirmations.ts` 的范围规范化、
+  持久轨道提取、scope 重叠和审核权限 helper 已改为中性实现，旧导出也是兼容别名。
+- 新增 `annotationRangeComments.ts`，集中处理 4,000 字正文、comment revision、withdrawn 生命周期和 freshness。
+  重要边界均有中文注释，未引入第三方依赖。
+- Prisma 新增 `AnnotationRangeComment`、User/AnnotationFile relations 和两个审计动作，并追加
+  `20260822010000_annotation_range_comments` migration。数据库使用 revision/range/body/互斥 target/撤回成组 CHECK，
+  外键与稳定分页索引；没有修改历史 migration。
+- API 新增范围评论列表、创建和撤回路由。列表默认隐藏已撤回记录，支持绑定文件和筛选状态的 `(createdAt,id)`
+  keyset cursor；创建与确认共用固定资源树、资源行、annotation 行审核锁序，在事务内重验 active、ACL、revision 和
+  真实轨道。审计 detail 只保存 comment id、revision、时间和 target mode，不保存正文、轨道列表或 payload。
+- 本机 PostgreSQL 账号没有创建 shadow database 权限，`prisma migrate dev` 按预期失败且没有改库；随后使用正式
+  `prisma migrate deploy` 将已审查 migration 应用到本机 public schema。独立 `api_test` schema 也通过全套测试重新
+  应用 migration。生产数据库尚未部署本轮 migration。
+
+### 实时刷新与前端
+
+- 审核事实不推进文档 revision，不能借用 `annotation.revision.advanced`。新增严格
+  `annotation.review.changed` 消息和 schema 隔离 PostgreSQL channel；事件只含 file id、随机 event id 和时间，
+  不含正文、scope、用户或凭据。同文件连续事件可合并为一次有损失效提示，权限受控 HTTP 列表始终是权威。
+- 协作 hub、本机投递、跨实例 LISTEN/NOTIFY、建连 ready 前缓冲及客户端严格 parser 已接通。确认的创建/撤销也发布
+  同一失效事件，修复了原确认事实只能随文档 revision 或手动刷新才能被其他账号及时看到的缺口。
+- 原 `useAnnotationConfirmations` 和 `AnnotationConfirmationPanel` 已删除，替换为统一的 `useAnnotationReviews` 与
+  `AnnotationReviewPanel`。一条请求代次和 mutation 管道管理确认、评论、文件切换、刷新与评论分页，避免复制异步状态机。
+- 面板更名“标注审核”，创建区使用确认/评论分段控制；确认备注和评论正文各自保存状态，评论空正文禁用提交。
+  历史可按全部/确认/评论筛选，并可显示已撤销与已撤回记录。停靠、隐藏、独立窗口和 Radix Portal 行为保持原结构。
+- Timeline 旧的 confirmation-only 类型和布局函数已删除，改为统一 `TimelineReviewRange` 与共享半开区间层分配。
+  活跃确认使用原绿色；按用户复核意见，评论统一改为红色，stale 评论也保留弱化红色并用虚线表达旧修订；只读审核栏
+  仍不参与编辑、吸附或命中块逻辑。面板中的评论动作和类型徽标同步使用红色，但正文保持正常文字颜色以保证可读性。
+- 极简权限说明、视图菜单、命令面板和审计中文标签同步使用“标注审核/确认或评论”，详细九项权限保持不变。
+
+### 验证、自审与待推进
+
+- `npm run test:annotation-confirmations`：13/13，覆盖共享范围、确认回归、评论正文、生命周期与 freshness。
+- `npm run test:annotation-confirmation-view`：6/6，覆盖确认/评论共同时间轴分层、首尾相接、作用域摘要与确认撤销、
+  评论撤回的可见性边界。
+- `npm run test:annotation-collaboration`：28/28，覆盖严格审核失效消息、hub 去重及全部既有协作回归。
+- 新增 review envelope 与评论 cursor 专项：3/3；正文或额外字段不能进入通知，cursor 不能跨文件或切换撤回筛选复用。
+- `npm run test:api`：168/168。真实 PostgreSQL 集成覆盖无 review 拒绝、空正文、track scope、作者/管理员边界、幂等
+  撤回、分页、审计隐私、文件复制不复制审核评论和 migration，并通过全部资源、协作、备份、VOD、分析和保存回归；
+  仍只有既有 `pg` 9 弃用提醒。
+- 完整 `npm run build` 通过 Prisma generate、shared、document-model、Web 和 API；Web 仍只有既有主 chunk 超过
+  500 kB 的非阻断提醒。`git diff --check` 通过。
+- 最终僵尸代码扫描确认旧 `AnnotationConfirmationPanel`、`useAnnotationConfirmations`、confirmation-only Timeline
+  类型和布局函数均已移除。视图位置状态仍保留历史 confirmation 内部命名，因为它是现有停靠/隐藏/独立窗口持久化
+  契约，不是仍被调用的旧实现；本轮没有为纯命名收益冒险迁移用户视图偏好。
+- 本机 API 已在迁移后重启于 `127.0.0.1:4317`，Vite 仍运行于 `127.0.0.1:5173`。浏览器自动化只能看到未登录页，
+  本轮没有输入或传输账号密码，因此没有虚报登录后的视觉验收。
+- 待用户人工检查：登录有 `read + review` 的平台文件，设置循环范围后分别创建确认与评论；检查类型筛选、撤回、
+  停靠/隐藏/独立窗口、绿色确认/红色评论时间轴范围，以及第二账号无需手动刷新即可看到新审核事实。本轮尚未提交、
+  推送或部署生产。

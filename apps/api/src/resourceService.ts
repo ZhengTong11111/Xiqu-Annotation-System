@@ -9,6 +9,9 @@ import type {
   AnnotationConfirmationDraft,
   AnnotationConfirmationList,
   AnnotationConfirmationRecord,
+  AnnotationRangeCommentDraft,
+  AnnotationRangeCommentPage,
+  AnnotationRangeCommentRecord,
   AnnotationClientSyncFailureReport,
   AnnotationClientSyncFailureReportResult,
   AnnotationFile,
@@ -46,12 +49,14 @@ import type {
   UpsertResourcePermissionRequest,
 } from "@xiqu/shared";
 import {
-  canCreateAnnotationConfirmation,
-  canRevokeAnnotationConfirmation,
-  extractPersistedAnnotationTrackIds,
+  canCreateAnnotationReviewFact,
+  canWithdrawAnnotationReviewFact,
+  extractPersistedAnnotationReviewTrackIds,
   validateAnnotationConfirmationDraft,
-  validateAnnotationConfirmationTracks,
+  validateAnnotationRangeCommentDraft,
+  validateAnnotationReviewTracks,
 } from "@xiqu/document-model";
+import { randomUUID } from "node:crypto";
 import type { ApiUser } from "./domain.js";
 import {
   badRequest,
@@ -100,6 +105,11 @@ import { assertAnnotationMutationLeaseForWrite } from "./annotationMutationLease
 import { lockActiveAnnotationFileForWrite } from "./annotationFileWriteLock.js";
 import { assertActiveAnnotationFile as assertActiveAnnotationFileActivity } from "./annotationFileActivity.js";
 import type { AnnotationRevisionPublisher } from "./annotationCollaborationHub.js";
+import type { AnnotationReviewPublisher } from "./annotationCollaborationHub.js";
+import {
+  decodeAnnotationRangeCommentCursor,
+  encodeAnnotationRangeCommentCursor,
+} from "./annotationRangeCommentPagination.js";
 
 const resourceInclude = {
   owner: { include: { roles: true } },
@@ -125,6 +135,11 @@ const annotationConfirmationInclude = {
   revoker: { include: { roles: true } },
 } satisfies Prisma.AnnotationConfirmationInclude;
 
+const annotationRangeCommentInclude = {
+  creator: { include: { roles: true } },
+  withdrawer: { include: { roles: true } },
+} satisfies Prisma.AnnotationRangeCommentInclude;
+
 const annotationMutationLeaseInclude = {
   holder: { include: { roles: true } },
 } satisfies Prisma.AnnotationMutationLeaseInclude;
@@ -141,6 +156,9 @@ type ResourcePathNode = Pick<
 >;
 type AnnotationConfirmationRow = Prisma.AnnotationConfirmationGetPayload<{
   include: typeof annotationConfirmationInclude;
+}>;
+type AnnotationRangeCommentRow = Prisma.AnnotationRangeCommentGetPayload<{
+  include: typeof annotationRangeCommentInclude;
 }>;
 type AnnotationMutationLeaseRow = Prisma.AnnotationMutationLeaseGetPayload<{
   include: typeof annotationMutationLeaseInclude;
@@ -172,6 +190,7 @@ export type DownloadableResource =
     };
 
 const MAX_CONFIRMATION_REVOKE_REASON_LENGTH = 1_000;
+const MAX_RANGE_COMMENT_WITHDRAW_REASON_LENGTH = 1_000;
 
 // Prisma 枚举与共享合同保持显式双向映射，避免数据库命名变化被隐式类型断言掩盖。
 const DB_CONFIRMATION_DOMAINS: Record<
@@ -212,6 +231,9 @@ export class ResourceService {
     },
     private readonly aliyunVod: AliyunVodProvider | null = null,
     private readonly aliyunVodWebPlayerLicense: AliyunVodWebPlayerLicense | null = null,
+    private readonly reviewPublisher: AnnotationReviewPublisher = {
+      publishReviewChanged: () => undefined,
+    },
   ) {}
 
   async listResources(
@@ -1368,8 +1390,8 @@ export class ResourceService {
       throw badRequest("确认范围格式不正确。", { issues: validated.issues });
     }
 
-    return this.prisma.$transaction(async (transaction) => {
-      const current = await this.lockAnnotationFileForConfirmation(
+    const record = await this.prisma.$transaction(async (transaction) => {
+      const current = await this.lockAnnotationFileForReview(
         transaction,
         user,
         resourceId,
@@ -1383,13 +1405,13 @@ export class ResourceService {
 
       // tracks 只能引用当前 payload 中真实保存的顶层轨道；无法识别旧结构时保守拒绝。
       if (validated.value.scope.targets.mode === "tracks") {
-        const trackIds = extractPersistedAnnotationTrackIds(current.payload);
+        const trackIds = extractPersistedAnnotationReviewTrackIds(current.payload);
         if (!trackIds.ok) {
           throw badRequest("当前标注内容无法验证轨道作用域。", {
             issues: trackIds.issues,
           });
         }
-        const trackScope = validateAnnotationConfirmationTracks(
+        const trackScope = validateAnnotationReviewTracks(
           validated.value.scope,
           new Set(trackIds.value),
         );
@@ -1419,6 +1441,8 @@ export class ResourceService {
       });
       return this.mapAnnotationConfirmation(created);
     });
+    this.publishReviewChanged(resourceId);
+    return record;
   }
 
   // 撤销只补充撤销事实；重复请求幂等返回原记录，不产生第二条审计。
@@ -1435,8 +1459,8 @@ export class ResourceService {
       );
     }
 
-    return this.prisma.$transaction(async (transaction) => {
-      await this.lockAnnotationFileForConfirmation(
+    const result = await this.prisma.$transaction(async (transaction) => {
+      await this.lockAnnotationFileForReview(
         transaction,
         user,
         resourceId,
@@ -1452,14 +1476,16 @@ export class ResourceService {
         include: annotationConfirmationInclude,
       });
       if (!existing) throw notFound("确认记录不存在。");
-      if (existing.revokedAt) return this.mapAnnotationConfirmation(existing);
+      if (existing.revokedAt) {
+        return { record: this.mapAnnotationConfirmation(existing), changed: false };
+      }
 
       const isAdminOrOwner = await this.access.hasOwnerAuthority(
         user,
         resourceId,
         transaction,
       );
-      const permission = canRevokeAnnotationConfirmation({
+      const permission = canWithdrawAnnotationReviewFact({
         actorUserId: user.id,
         canRead: true,
         canReview: true,
@@ -1484,8 +1510,164 @@ export class ResourceService {
           },
         },
       });
-      return this.mapAnnotationConfirmation(updated);
+      return { record: this.mapAnnotationConfirmation(updated), changed: true };
     });
+    if (result.changed) this.publishReviewChanged(resourceId);
+    return result.record;
+  }
+
+  // 评论列表采用稳定 keyset 分页；正文只通过需要 read 权限的 HTTP 响应返回。
+  async listAnnotationRangeComments(
+    user: ApiUser,
+    resourceId: string,
+    options: { cursor?: string; limit?: number; includeWithdrawn?: boolean },
+  ): Promise<AnnotationRangeCommentPage> {
+    await this.access.assertCapability(user, resourceId, "read");
+    await this.assertActiveAnnotationFile(resourceId);
+    const includeWithdrawn = options.includeWithdrawn ?? false;
+    const limit = Math.max(1, Math.min(options.limit ?? 50, 100));
+    const cursor = options.cursor
+      ? decodeAnnotationRangeCommentCursor(options.cursor, { annotationFileId: resourceId, includeWithdrawn })
+      : null;
+    if (options.cursor && !cursor) throw badRequest("范围评论分页游标无效或与当前筛选不匹配。");
+    const cursorWhere = cursor ? {
+      OR: [
+        { createdAt: { lt: cursor.createdAt } },
+        { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+      ],
+    } : {};
+    const [file, rows] = await Promise.all([
+      this.prisma.annotationFile.findUnique({ where: { resourceId }, select: { revision: true } }),
+      this.prisma.annotationRangeComment.findMany({
+        where: {
+          annotationFileId: resourceId,
+          ...(!includeWithdrawn ? { withdrawnAt: null } : {}),
+          ...cursorWhere,
+        },
+        include: annotationRangeCommentInclude,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: limit + 1,
+      }),
+    ]);
+    if (!file) throw notFound("标注文件不存在。");
+    const pageRows = rows.slice(0, limit);
+    const last = pageRows.at(-1);
+    return {
+      currentRevision: file.revision,
+      items: pageRows.map((row) => this.mapAnnotationRangeComment(row)),
+      nextCursor: rows.length > limit && last
+        ? encodeAnnotationRangeCommentCursor({
+            annotationFileId: resourceId,
+            includeWithdrawn,
+            createdAt: last.createdAt,
+            id: last.id,
+          })
+        : null,
+    };
+  }
+
+  // 创建评论与确认使用相同审核锁和轨道合同，但正文形成独立治理事实，不推进标注 revision。
+  async createAnnotationRangeComment(
+    user: ApiUser,
+    resourceId: string,
+    input: Omit<AnnotationRangeCommentDraft, "annotationFileId">,
+  ): Promise<AnnotationRangeCommentRecord> {
+    const validated = validateAnnotationRangeCommentDraft({ annotationFileId: resourceId, ...input });
+    if (!validated.ok) {
+      throw badRequest("范围评论格式不正确。", { issues: validated.issues });
+    }
+    const record = await this.prisma.$transaction(async (transaction) => {
+      const current = await this.lockAnnotationFileForReview(transaction, user, resourceId);
+      if (current.revision !== validated.value.commentedRevision) {
+        throw conflict("标注文件已产生新修订，请刷新后重新评论。", {
+          expectedRevision: current.revision,
+          receivedRevision: validated.value.commentedRevision,
+        });
+      }
+      if (validated.value.scope.targets.mode === "tracks") {
+        const trackIds = extractPersistedAnnotationReviewTrackIds(current.payload);
+        if (!trackIds.ok) {
+          throw badRequest("当前标注内容无法验证轨道作用域。", { issues: trackIds.issues });
+        }
+        const scope = validateAnnotationReviewTracks(validated.value.scope, new Set(trackIds.value));
+        if (!scope.ok) throw badRequest("评论范围包含无效轨道。", { issues: scope.issues });
+      }
+      const created = await transaction.annotationRangeComment.create({
+        data: this.toAnnotationRangeCommentCreateData(user.id, validated.value),
+        include: annotationRangeCommentInclude,
+      });
+      // 审计刻意不保存评论正文、轨道列表或完整作用域，减少治理日志中的敏感研究内容。
+      await transaction.auditLog.create({
+        data: {
+          action: "annotation_range_comment_create",
+          actorUserId: user.id,
+          resourceId,
+          detail: {
+            commentId: created.id,
+            commentedRevision: created.commentedRevision,
+            startTime: created.startTime,
+            endTime: created.endTime,
+            targetMode: created.targetMode,
+          },
+        },
+      });
+      return this.mapAnnotationRangeComment(created);
+    });
+    this.publishReviewChanged(resourceId);
+    return record;
+  }
+
+  // 撤回保持幂等；作者或 owner/admin 可操作，其他 reviewer 不能改写别人的历史意见。
+  async withdrawAnnotationRangeComment(
+    user: ApiUser,
+    resourceId: string,
+    commentId: string,
+    reason?: string | null,
+  ): Promise<AnnotationRangeCommentRecord> {
+    const withdrawReason = reason?.trim() || null;
+    if (withdrawReason && withdrawReason.length > MAX_RANGE_COMMENT_WITHDRAW_REASON_LENGTH) {
+      throw badRequest(`撤回原因不能超过 ${MAX_RANGE_COMMENT_WITHDRAW_REASON_LENGTH} 个字符。`);
+    }
+    const result = await this.prisma.$transaction(async (transaction) => {
+      await this.lockAnnotationFileForReview(transaction, user, resourceId);
+      await transaction.$queryRaw`
+        SELECT id FROM annotation_range_comments
+        WHERE id = ${commentId} AND annotation_file_id = ${resourceId}
+        FOR UPDATE
+      `;
+      const existing = await transaction.annotationRangeComment.findFirst({
+        where: { id: commentId, annotationFileId: resourceId },
+        include: annotationRangeCommentInclude,
+      });
+      if (!existing) throw notFound("范围评论不存在。");
+      if (existing.withdrawnAt) {
+        return { record: this.mapAnnotationRangeComment(existing), changed: false };
+      }
+      const isAdminOrOwner = await this.access.hasOwnerAuthority(user, resourceId, transaction);
+      const permission = canWithdrawAnnotationReviewFact({
+        actorUserId: user.id,
+        canRead: true,
+        canReview: true,
+        isAdminOrOwner,
+      }, existing.createdBy);
+      if (!permission.allowed) throw forbidden("只能撤回自己创建的范围评论。");
+      const updated = await transaction.annotationRangeComment.update({
+        where: { id: existing.id },
+        data: { withdrawnBy: user.id, withdrawnAt: new Date(), withdrawReason },
+        include: annotationRangeCommentInclude,
+      });
+      await transaction.auditLog.create({
+        data: {
+          action: "annotation_range_comment_withdraw",
+          actorUserId: user.id,
+          resourceId,
+          detail: { commentId: updated.id, commentedRevision: updated.commentedRevision },
+        },
+      });
+      return { record: this.mapAnnotationRangeComment(updated), changed: true };
+    });
+    if (result.changed) this.publishReviewChanged(resourceId);
+    return result.record;
   }
 
   async updateResource(
@@ -2327,6 +2509,67 @@ export class ResourceService {
     };
   }
 
+  // 评论写入映射复用历史数据库枚举；互斥目标字段仍由领域校验与 CHECK 双重约束。
+  private toAnnotationRangeCommentCreateData(
+    createdBy: string,
+    draft: AnnotationRangeCommentDraft,
+  ): Prisma.AnnotationRangeCommentUncheckedCreateInput {
+    const targets = draft.scope.targets;
+    return {
+      annotationFileId: draft.annotationFileId,
+      commentedRevision: draft.commentedRevision,
+      startTime: draft.scope.startTime,
+      endTime: draft.scope.endTime,
+      targetMode: targets.mode,
+      domains: targets.mode === "domains"
+        ? targets.domains.map((domain) => DB_CONFIRMATION_DOMAINS[domain])
+        : [],
+      trackIds: targets.mode === "tracks" ? targets.trackIds : [],
+      body: draft.body,
+      createdBy,
+    };
+  }
+
+  private mapAnnotationRangeComment(
+    row: AnnotationRangeCommentRow,
+  ): AnnotationRangeCommentRecord {
+    const targets = row.targetMode === "domains"
+      ? {
+          mode: "domains" as const,
+          domains: row.domains.map((domain) => SHARED_CONFIRMATION_DOMAINS[domain]),
+        }
+      : row.targetMode === "tracks"
+        ? { mode: "tracks" as const, trackIds: [...row.trackIds] }
+        : { mode: "all" as const };
+    const base = {
+      id: row.id,
+      annotationFileId: row.annotationFileId,
+      commentedRevision: row.commentedRevision,
+      scope: { startTime: row.startTime, endTime: row.endTime, targets },
+      body: row.body,
+      createdBy: toPublicUser(row.creator),
+      createdAt: row.createdAt.toISOString(),
+    };
+    if (row.withdrawnAt && row.withdrawer) {
+      return {
+        ...base,
+        withdrawnAt: row.withdrawnAt.toISOString(),
+        withdrawnBy: toPublicUser(row.withdrawer),
+        withdrawReason: row.withdrawReason,
+      };
+    }
+    return { ...base, withdrawnAt: null, withdrawnBy: null, withdrawReason: null };
+  }
+
+  // 失效通知只在事务提交后发布；通知失败不得反向撤销已经持久化的审核事实。
+  private publishReviewChanged(annotationFileId: string) {
+    this.reviewPublisher.publishReviewChanged({
+      annotationFileId,
+      eventId: randomUUID(),
+      occurredAt: new Date().toISOString(),
+    });
+  }
+
   private mapPermission(row: {
     id: string;
     resourceId: string;
@@ -2614,7 +2857,7 @@ export class ResourceService {
   }
 
   // 审核事务沿用内容写入的锁顺序，但只共享锁 annotation 行，保证 revision 核对期间不能被保存推进。
-  private async lockAnnotationFileForConfirmation(
+  private async lockAnnotationFileForReview(
     transaction: Prisma.TransactionClient,
     user: ApiUser,
     resourceId: string,
@@ -2627,7 +2870,7 @@ export class ResourceService {
       resourceId,
       transaction,
     );
-    const decision = canCreateAnnotationConfirmation({
+    const decision = canCreateAnnotationReviewFact({
       actorUserId: user.id,
       canRead: permission.capabilities.includes("read"),
       canReview: permission.capabilities.includes("review"),

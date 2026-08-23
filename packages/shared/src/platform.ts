@@ -273,8 +273,8 @@ export type AnnotationRecoverySnapshotDetail<TPayload = unknown> =
     payload: TPayload;
   };
 
-// 已确认标注范围使用稳定保存领域，不引用时间轴的派生伪轨或当前 UI 折叠状态。
-export const ANNOTATION_CONFIRMATION_DOMAINS = [
+// 审核范围使用稳定保存领域，不引用时间轴的派生伪轨或当前 UI 折叠状态。
+export const ANNOTATION_REVIEW_DOMAINS = [
   "subtitle_lines",
   "character_annotations",
   "gongche_annotations",
@@ -285,17 +285,17 @@ export const ANNOTATION_CONFIRMATION_DOMAINS = [
   "attached_points",
 ] as const;
 
-export type AnnotationConfirmationDomain =
-  (typeof ANNOTATION_CONFIRMATION_DOMAINS)[number];
+export type AnnotationReviewDomain =
+  (typeof ANNOTATION_REVIEW_DOMAINS)[number];
 
 // 作用域三种模式保持互斥，避免 domains 与 tracks 的交集/并集语义在客户端和服务端发生分歧。
-export type AnnotationConfirmationTargets =
+export type AnnotationReviewTargets =
   | {
       mode: "all";
     }
   | {
       mode: "domains";
-      domains: AnnotationConfirmationDomain[];
+      domains: AnnotationReviewDomain[];
     }
   | {
       mode: "tracks";
@@ -303,11 +303,17 @@ export type AnnotationConfirmationTargets =
     };
 
 // 时间范围采用 [startTime, endTime) 半开区间；零时长点事件不属于本合同。
-export type AnnotationConfirmationScope = {
+export type AnnotationReviewScope = {
   startTime: number;
   endTime: number;
-  targets: AnnotationConfirmationTargets;
+  targets: AnnotationReviewTargets;
 };
+
+// 旧名称只作为确认 API 的源码兼容别名；新审核功能不得再复制一套范围合同。
+export const ANNOTATION_CONFIRMATION_DOMAINS = ANNOTATION_REVIEW_DOMAINS;
+export type AnnotationConfirmationDomain = AnnotationReviewDomain;
+export type AnnotationConfirmationTargets = AnnotationReviewTargets;
+export type AnnotationConfirmationScope = AnnotationReviewScope;
 
 export type AnnotationConfirmationDraft = {
   annotationFileId: string;
@@ -341,6 +347,40 @@ export type AnnotationConfirmationFreshness = "current" | "stale";
 export type AnnotationConfirmationList = {
   currentRevision: number;
   confirmations: AnnotationConfirmationRecord[];
+};
+
+export type AnnotationRangeCommentDraft = {
+  annotationFileId: string;
+  commentedRevision: number;
+  scope: AnnotationReviewScope;
+  body: string;
+};
+
+// 范围评论采用追加式事实；撤回只补充审计字段，不原地修改正文或删除记录。
+export type AnnotationRangeCommentRecord = AnnotationRangeCommentDraft & {
+  id: string;
+  createdBy: UserReference;
+  createdAt: string;
+} & (
+  | {
+      withdrawnAt?: null;
+      withdrawnBy?: null;
+      withdrawReason?: null;
+    }
+  | {
+      withdrawnAt: string;
+      withdrawnBy: UserReference;
+      withdrawReason?: string | null;
+    }
+);
+
+export type AnnotationRangeCommentLifecycle = "active" | "withdrawn";
+export type AnnotationRangeCommentFreshness = "current" | "stale";
+
+export type AnnotationRangeCommentPage = {
+  currentRevision: number;
+  items: AnnotationRangeCommentRecord[];
+  nextCursor: string | null;
 };
 
 export type ProcessingJobType =
@@ -399,6 +439,8 @@ export const AUDIT_ACTIONS = [
   "annotation_snapshot_restore",
   "annotation_confirmation_create",
   "annotation_confirmation_revoke",
+  "annotation_range_comment_create",
+  "annotation_range_comment_withdraw",
   "resource_permission_upsert",
   "resource_permission_remove",
   "resource_inheritance_update",

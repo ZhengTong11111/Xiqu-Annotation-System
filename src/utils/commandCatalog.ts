@@ -333,7 +333,7 @@ export const LOCAL_STATIC_COMMAND_DEFINITIONS: StaticCommandDefinition<LocalStat
   },
 ];
 
-// 仅平台编辑会话可用的条目：涉及服务器媒体、服务器保存、标注确认栏和服务端分析音频。
+// 仅平台编辑会话可用的条目：涉及服务器媒体、服务器保存、标注审核栏和服务端分析音频。
 export const PLATFORM_STATIC_COMMAND_DEFINITIONS: StaticCommandDefinition<PlatformStaticCommandId>[] = [
   {
     id: "file.bind-server-media",
@@ -351,16 +351,16 @@ export const PLATFORM_STATIC_COMMAND_DEFINITIONS: StaticCommandDefinition<Platfo
   },
   {
     id: "view.annotation-confirmation-docked",
-    label: "右侧标注确认",
-    path: ["视图", "右侧标注确认"],
-    keywords: ["confirmation", "标注确认", "右侧", "侧栏", "面板"],
+    label: "右侧标注审核",
+    path: ["视图", "右侧标注审核"],
+    keywords: ["confirmation", "comment", "标注审核", "确认", "评论", "右侧", "侧栏", "面板"],
     target: { kind: "static" },
   },
   {
     id: "view.annotation-confirmation-detached",
-    label: "标注确认独立窗口",
-    path: ["视图", "标注确认独立窗口"],
-    keywords: ["confirmation", "detach", "标注确认", "独立窗口", "浮动"],
+    label: "标注审核独立窗口",
+    path: ["视图", "标注审核独立窗口"],
+    keywords: ["confirmation", "comment", "detach", "标注审核", "独立窗口", "浮动"],
     target: { kind: "static" },
   },
   {

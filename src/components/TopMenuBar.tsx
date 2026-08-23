@@ -377,8 +377,8 @@ export function TopMenuBar({
                           onClick={() => handleAction(onToggleAnnotationConfirmationPanel)}
                         >
                           {annotationConfirmationPlacement === "docked"
-                            ? "✓ 右侧标注确认"
-                            : "右侧标注确认"}
+                            ? "✓ 右侧标注审核"
+                            : "右侧标注审核"}
                         </button>
                         <button
                           type="button"

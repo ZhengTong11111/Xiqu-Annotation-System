@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
  * PostgreSQL 标识符最长 63 字节；摘要同时避免超长 schema 截断碰撞和 SQL identifier 注入。
  */
 export function createSchemaIsolatedCollaborationChannel(
-  purpose: "revision" | "presence" | "activity",
+  purpose: "revision" | "presence" | "activity" | "review",
   schema: string,
 ) {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {

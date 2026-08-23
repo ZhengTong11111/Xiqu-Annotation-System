@@ -1,11 +1,14 @@
 import {
   getAnnotationConfirmationFreshness,
   getAnnotationConfirmationLifecycle,
+  getAnnotationRangeCommentFreshness,
+  getAnnotationRangeCommentLifecycle,
 } from "@xiqu/document-model";
 import type {
   AnnotationConfirmationDomain,
   AnnotationConfirmationRecord,
   AnnotationConfirmationTargets,
+  AnnotationRangeCommentRecord,
   PlatformRole,
 } from "@xiqu/shared";
 import type { ProjectData } from "../types";
@@ -40,9 +43,23 @@ export type AnnotationConfirmationViewRecord = {
   invalidReason: string | null;
 };
 
-// 时间轴布局只为视图记录附加层号，不修改确认事实本身。
-export type AnnotationConfirmationTimelineItem = AnnotationConfirmationViewRecord & {
+export type AnnotationRangeCommentViewRecord = {
+  record: AnnotationRangeCommentRecord;
+  lifecycle: "active" | "withdrawn";
+  freshness: "current" | "stale";
+  targetLabel: string;
+  invalidReason: string | null;
+};
+
+export type AnnotationReviewTimelineItem = {
+  id: string;
+  kind: "confirmation" | "comment";
+  startTime: number;
+  endTime: number;
+  label: string;
   lane: number;
+  lifecycle: "active" | "revoked" | "withdrawn";
+  freshness: "current" | "stale";
 };
 
 // 创建阻断原因保持为确定联合，便于面板提供对应的可操作提示。
@@ -112,21 +129,64 @@ export function buildAnnotationConfirmationViewRecords(
   });
 }
 
-// 时间轴采用半开区间着色：首尾相接可以复用同一层，真正重叠的记录才新增层。
-export function layoutAnnotationConfirmationTimelineItems(
-  records: AnnotationConfirmationViewRecord[],
-): AnnotationConfirmationTimelineItem[] {
-  const sorted = [...records].sort((left, right) =>
-    left.record.scope.startTime - right.record.scope.startTime ||
-    left.record.scope.endTime - right.record.scope.endTime ||
-    left.record.id.localeCompare(right.record.id));
+export function buildAnnotationRangeCommentViewRecords(
+  records: AnnotationRangeCommentRecord[],
+  currentRevision: number,
+  trackOptions: AnnotationConfirmationTrackOption[],
+): AnnotationRangeCommentViewRecord[] {
+  const trackLabels = new Map(trackOptions.map((track) => [track.id, track.label]));
+  return records.map((record) => {
+    const lifecycle = getAnnotationRangeCommentLifecycle(record);
+    const freshness = getAnnotationRangeCommentFreshness(record.commentedRevision, currentRevision);
+    const issues = [
+      ...(lifecycle.ok ? [] : lifecycle.issues),
+      ...(freshness.ok ? [] : freshness.issues),
+    ];
+    return {
+      record,
+      lifecycle: lifecycle.ok ? lifecycle.value : "withdrawn",
+      freshness: freshness.ok ? freshness.value : "stale",
+      targetLabel: formatAnnotationConfirmationTargets(record.scope.targets, trackLabels),
+      invalidReason: issues.length ? issues.map((issue) => issue.message).join("；") : null,
+    };
+  });
+}
+
+// 两类审核范围共用层分配，确保同一时间的确认和评论不会在只读栏中互相覆盖。
+export function layoutAnnotationReviewTimelineItems(input: {
+  confirmations: AnnotationConfirmationViewRecord[];
+  comments: AnnotationRangeCommentViewRecord[];
+}): AnnotationReviewTimelineItem[] {
+  const candidates: Omit<AnnotationReviewTimelineItem, "lane">[] = [
+    ...input.confirmations
+      .filter((item) => item.lifecycle === "active")
+      .map((item) => ({
+        id: item.record.id,
+        kind: "confirmation" as const,
+        startTime: item.record.scope.startTime,
+        endTime: item.record.scope.endTime,
+        label: `确认 · ${item.targetLabel}`,
+        lifecycle: item.lifecycle,
+        freshness: item.freshness,
+      })),
+    ...input.comments
+      .filter((item) => item.lifecycle === "active")
+      .map((item) => ({
+        id: item.record.id,
+        kind: "comment" as const,
+        startTime: item.record.scope.startTime,
+        endTime: item.record.scope.endTime,
+        label: `评论 · ${item.targetLabel}`,
+        lifecycle: item.lifecycle,
+        freshness: item.freshness,
+      })),
+  ].sort((left, right) =>
+    left.startTime - right.startTime || left.endTime - right.endTime || left.id.localeCompare(right.id));
   const laneEndTimes: number[] = [];
-  return sorted.map((item) => {
-    const reusableLane = laneEndTimes.findIndex(
-      (endTime) => endTime <= item.record.scope.startTime,
-    );
+  return candidates.map((item) => {
+    const reusableLane = laneEndTimes.findIndex((endTime) => endTime <= item.startTime);
     const lane = reusableLane >= 0 ? reusableLane : laneEndTimes.length;
-    laneEndTimes[lane] = item.record.scope.endTime;
+    laneEndTimes[lane] = item.endTime;
     return { ...item, lane };
   });
 }
@@ -162,6 +222,20 @@ export function canShowAnnotationConfirmationRevoke(input: {
   hasOwnerAuthority: boolean;
 }): boolean {
   if (!input.canReview || input.record.lifecycle === "revoked") return false;
+  const isAdmin = input.currentUserRoles.some(
+    (role) => role === "admin" || role === "super_admin",
+  );
+  return input.record.record.createdBy.id === input.currentUserId || input.hasOwnerAuthority || isAdmin;
+}
+
+export function canShowAnnotationRangeCommentWithdraw(input: {
+  record: AnnotationRangeCommentViewRecord;
+  canReview: boolean;
+  currentUserId: string;
+  currentUserRoles: PlatformRole[];
+  hasOwnerAuthority: boolean;
+}): boolean {
+  if (!input.canReview || input.record.lifecycle === "withdrawn") return false;
   const isAdmin = input.currentUserRoles.some(
     (role) => role === "admin" || role === "super_admin",
   );
