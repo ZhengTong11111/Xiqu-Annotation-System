@@ -7006,3 +7006,17 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   release 命令及手册门禁文字。`test:deployment` 28/28、审核领域测试 13/13、完整 API 测试 171/171 通过；
   `npm run build` 再次完成 Prisma generate/guard、shared、document-model、Web 与 API 构建，仍只有既有 Web 主
   chunk 体积提醒。生产登录后审核交互保留为用户人工验收，本轮没有凭据型浏览器操作。
+
+### 永久门禁版本生产切换
+
+- 永久修复提交为 `9036a13 fix Prisma client release validation`，已推送 `origin/main`。候选传输包 SHA-256 为
+  `c92384a4b9ad4b4dd68597faab7635f6d9b2a87c16aa9ce2d811405c4965b188`；首次 `scp` 在工具等待边界被截断，
+  远端 checksum 门禁拒绝该半包且没有创建候选。重新完整上传并验证 hash 后才继续，完整包和半包均已清理。
+- 新正式 release 为 `/opt/xiqu/releases/20260823T153000Z-9036a13`。候选从当前完整依赖基线旁路复制，覆盖同提交
+  构建产物后在候选目录强制执行 `db:generate` 与编译后 `release:check`；这次部署实际验证了“即使 lockfile 不变，
+  也重新生成并校验 Client”的新合同。随后使用 `platform.admin` 进入维护、停止 worker，并确认 21 条 migration
+  全部已应用且无 pending migration。
+- 原子切换后 API 在 `127.0.0.1:4317` 正常监听。维护状态和解除维护后各执行一次公网 `deploy:check`，Web、
+  liveness、readiness 均为 HTTP 200；最终 API、worker、Nginx 均 active，维护 `enabled=false`，数据库与对象存储
+  readiness 均约 `0.74 ms`。新进程窗口未见 range-comments、Prisma schema 或 level 50 错误；系统盘 34%，数据盘
+  22%。登录后的评论列表/创建/撤回仍由用户刷新原会话人工验收。
