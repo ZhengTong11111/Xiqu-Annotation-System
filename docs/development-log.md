@@ -6678,3 +6678,51 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   生产活动账号、完整项目列表、项目 owner 与路径摘要均成功读取。该验收只读，没有选择预设或写入生产 ACL。
 - 已完成：候选校验、一致备份、migration、原子切换、维护门禁验证、服务恢复、自动 smoke 与生产 UI 只读验收。
   待用户人工验收：以真实管理员选择一个可控账号和测试项目，完成一次三档权限保存并用目标账号验证最终访问范围。
+
+## 2026-08-22：极简权限增加独立“可审核”附加项
+
+### 需求与设计结论
+
+- 用户明确要求把“不额外授权 / 仅查看 / 可编辑”保留为互斥三选一，并新增一个独立 checkbox“可审核”，不能把
+  审核做成第四个 radio。本轮先整体重写本机忽略的 `CLAUDE_WORK.md`，再由 Codex 直接实施；没有调用 Claude Code、
+  GLM、DeepSeek 或其他 agent。
+- 审查确认现有数据库、shared capability、PUT/DELETE 路由和服务端委派逻辑已经允许仅含 `review` 的直接 ACL；标注
+  确认领域门禁也已严格要求 `read + review`。因此本轮没有新增表、migration、API 字段或依赖，也没有让审核暗中
+  获得读取或权限管理能力。
+- 最终产品合同为两部分：基础权限 radio 控制普通访问能力，审核 checkbox 只附加 `review`。普通账号通常组合
+  “仅查看 + 可审核”或“可编辑 + 可审核”；teacher 可由角色基线获得 `read + download`，所以也可使用
+  “不额外授权 + 可审核”。后者保存真实的 review-only ACL，不会误走 DELETE。
+
+### 实际实现与代码清理
+
+- `resourcePermissionPresets.ts` 新增有类型的简单权限 selection/match、审核适用性、稳定 capability 组合、精确识别和
+  审核委派 helper。识别流程先剥离可选 `review`，再对基础能力做 exact match，所以六种标准组合均可往返；
+  `manage_permissions`、能力缺失/额外/重复和媒体上的异常 review 仍保持 custom。两个模块原先重复的集合相等判断已
+  合并为一个共享纯函数，旧 classifier 与旧项目 helper 名称已删除，没有保留兼容僵尸接口。
+- `ResourcePermissionPresetSelector.tsx` 现在明确分为“基础权限”和“附加权限”：前三项仍在一个 radiogroup，审核使用
+  独立 checkbox、Lucide 图标、说明、禁用原因和 ARIA。新增 review 需要操作者本身可委派 review；移除既有 review
+  不受此限制。媒体文件显示审核不适用，避免极简模式制造无业务意义的授权。
+- 集中式 `ProjectPermissionManagementDialog` 的草稿和 `projectPermissionManagement.ts` 保存计划改为同时携带基础档与
+  审核状态。空组合才 DELETE，review-only 和其他非空组合均 PUT 且固定 `inheritToChildren=true`；no-op 比较同时覆盖
+  capability 与传递范围。直接授权摘要可区分“仅可审核”“仅查看 + 可审核”“可编辑 + 可审核”。仅含 review 不再
+  误报 custom；真正 custom 与非传递 ACL 仍要求明确覆盖确认，保存后仍重新读取服务端矩阵。
+- 资源 Inspector 极简模式复用完全相同的识别和组合 helper。`hasDirectGrant` 不再由基础档单独决定，详细模式与极简
+  模式切换不会丢失 review；选择新基础档时保留可准确识别的审核附加项。详细九项 capability、继承设置和移除直接
+  授权入口保持不变。
+- CSS 新增紧凑的附加权限分区、选中/hover/disabled 状态和窄栏换行约束，继续复用既有权限视觉 token。清理了旧 JSX、
+  旧 helper、重复集合逻辑和过时注释。`permissions-model.md`、roadmap 与 `AGENTS.md` 已同步新合同；roadmap 中遗漏的
+  `review` capability 也已补齐。
+
+### 验证、自审与待推进
+
+- `npm run test:resource-permission-presets`：8/8，通过六种组合、稳定顺序、custom、媒体适用性和 review 委派边界。
+- `npm run test:project-permission-management`：7/7，通过 DELETE/no-op、review-only PUT、审核组合 no-op、固定向下传递、
+  custom 覆盖、owner/admin 锁定和 teacher/祖先残余访问。
+- `npm run test:permissions`：5/5；`npm run test:api`：164/164。API 集成测试新增 review-only ACL 写入断言，并确认仅有
+  review 的普通账号仍不能读取资源；全套继承、标注确认、协作、原子保存和平台治理回归通过。仍只有既有 `pg` 9
+  前置弃用提醒。
+- 完整 `npm run build` 通过 Prisma generate、shared、document-model、Web 和 API；Web 仍只有既有主 chunk 超过
+  500 kB 的非阻断提醒。`git diff --check` 通过，本机 `http://127.0.0.1:5173/` 返回 HTTP 200。
+- 自审未发现新增越权路径、数据库兼容问题或未使用旧 helper。当前浏览器控制接口没有提供可用自动化会话，因此本轮
+  未虚报视觉验收。待人工检查集中项目面板和资源 Inspector 中 radio/checkbox 层级、六种组合刷新回显、custom 覆盖、
+  媒体禁用状态及窄栏布局；本轮尚未提交、推送或部署生产。

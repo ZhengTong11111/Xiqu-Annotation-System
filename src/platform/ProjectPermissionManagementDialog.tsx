@@ -25,11 +25,12 @@ import { formatPlatformRoleLabels } from "./platformRoleLabels";
 import {
   createProjectPermissionSavePlan,
   getProjectPermissionLockReason,
-  getProjectPermissionPresetMatch,
+  getProjectSimplePermissionMatch,
   getProjectPermissionResidualAccess,
 } from "./projectPermissionManagement";
 import {
   RESOURCE_CAPABILITY_LABELS,
+  type ResourceSimplePermissionSelection,
   type ResourcePermissionPreset,
 } from "./resourcePermissionPresets";
 import { ResourcePermissionPresetSelector } from "./ResourcePermissionPresetSelector";
@@ -58,7 +59,7 @@ export function ProjectPermissionManagementDialog(props: Props) {
   const [matrix, setMatrix] = useState<ResourcePermissionMatrixRow[] | null>(null);
   const [matrixLoading, setMatrixLoading] = useState(false);
   const [matrixError, setMatrixError] = useState<string | null>(null);
-  const [draftPreset, setDraftPreset] = useState<ResourcePermissionPreset | null>(null);
+  const [draftPermission, setDraftPermission] = useState<ResourceSimplePermissionSelection | null>(null);
   const [overwriteConfirmed, setOverwriteConfirmed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -191,10 +192,13 @@ export function ProjectPermissionManagementDialog(props: Props) {
     if (props.open && selectedProjectId) void loadMatrix(selectedProjectId);
   }, [loadMatrix, props.open, selectedProjectId]);
 
-  // 人员、项目或服务端矩阵变化后从 direct ACL 重建草稿，custom 状态不能自动选择一个预设。
+  // 人员、项目或服务端矩阵变化后从 direct ACL 重建两部分草稿，custom 状态不能自动猜测基础权限。
   useEffect(() => {
-    const match = selectedRow ? getProjectPermissionPresetMatch(selectedRow) : null;
-    setDraftPreset(match && match !== "custom" ? match : null);
+    const match = selectedRow ? getProjectSimplePermissionMatch(selectedRow) : null;
+    setDraftPermission(match && match.basePreset !== "custom" ? {
+      basePreset: match.basePreset,
+      canReview: match.canReview,
+    } : null);
     setOverwriteConfirmed(false);
     setSaveMessage(null);
   }, [selectedProjectId, selectedRow, selectedUserId]);
@@ -217,8 +221,8 @@ export function ProjectPermissionManagementDialog(props: Props) {
     setSaving(false);
   }, [props.open]);
 
-  const savePlan = selectedRow && draftPreset
-    ? createProjectPermissionSavePlan(selectedRow, draftPreset)
+  const savePlan = selectedRow && draftPermission
+    ? createProjectPermissionSavePlan(selectedRow, draftPermission)
     : null;
   const lockReason = selectedRow ? getProjectPermissionLockReason(selectedRow) : null;
 
@@ -227,7 +231,7 @@ export function ProjectPermissionManagementDialog(props: Props) {
       saving ||
       !selectedProject ||
       !selectedRow ||
-      !draftPreset ||
+      !draftPermission ||
       !savePlan ||
       savePlan.kind === "noop" ||
       lockReason ||
@@ -354,12 +358,24 @@ export function ProjectPermissionManagementDialog(props: Props) {
               error={matrixError}
               saving={saving}
               saveMessage={saveMessage}
-              draftPreset={draftPreset}
+              draftPermission={draftPermission}
               savePlan={savePlan}
               lockReason={lockReason}
               overwriteConfirmed={overwriteConfirmed}
               onPresetChange={(preset) => {
-                setDraftPreset(preset);
+                const currentMatch = selectedRow
+                  ? getProjectSimplePermissionMatch(selectedRow)
+                  : null;
+                setDraftPermission((current) => ({
+                  basePreset: preset,
+                  // 从 custom 明确覆盖基础档时保留可准确识别的审核附加项，避免无关能力一起丢失。
+                  canReview: current?.canReview ?? currentMatch?.canReview ?? false,
+                }));
+                setOverwriteConfirmed(false);
+                setSaveMessage(null);
+              }}
+              onReviewChange={(canReview) => {
+                setDraftPermission((current) => current ? { ...current, canReview } : current);
                 setOverwriteConfirmed(false);
                 setSaveMessage(null);
               }}
@@ -505,11 +521,12 @@ function PermissionEditorPane(props: {
   error: string | null;
   saving: boolean;
   saveMessage: string | null;
-  draftPreset: ResourcePermissionPreset | null;
+  draftPermission: ResourceSimplePermissionSelection | null;
   savePlan: ReturnType<typeof createProjectPermissionSavePlan> | null;
   lockReason: string | null;
   overwriteConfirmed: boolean;
   onPresetChange: (preset: ResourcePermissionPreset) => void;
+  onReviewChange: (canReview: boolean) => void;
   onOverwriteConfirmed: (confirmed: boolean) => void;
   onSave: () => void;
   onRetry: () => void;
@@ -533,10 +550,15 @@ function PermissionEditorPane(props: {
     return <section className="project-permission-editor-pane"><ColumnMessage>账号已停用或不在最新权限矩阵中，请刷新。</ColumnMessage></section>;
   }
 
-  const currentMatch = getProjectPermissionPresetMatch(props.row);
+  const currentMatch = getProjectSimplePermissionMatch(props.row);
   const residualAccess = getProjectPermissionResidualAccess(props.row);
+  const displayedPermission = props.draftPermission ?? (
+    currentMatch.basePreset === "custom"
+      ? null
+      : { basePreset: currentMatch.basePreset, canReview: currentMatch.canReview }
+  );
   const canSave = Boolean(
-    props.draftPreset &&
+    props.draftPermission &&
     props.savePlan &&
     props.savePlan.kind !== "noop" &&
     !props.lockReason &&
@@ -572,30 +594,38 @@ function PermissionEditorPane(props: {
           <ResourcePermissionPresetSelector
             name={`project-permission-${props.project.id}-${props.account.id}`}
             ariaLabel={`${props.account.displayName}在${props.project.name}的权限`}
-            value={props.draftPreset ?? "custom"}
+            value={props.draftPermission?.basePreset ?? currentMatch.basePreset}
+            canReview={props.draftPermission?.canReview ?? currentMatch.canReview}
+            existingCanReview={currentMatch.canReview}
             resourceType="project"
             disabled={props.saving}
             onChange={props.onPresetChange}
+            onReviewChange={props.onReviewChange}
           />
-          {currentMatch === "custom" ? (
+          {currentMatch.basePreset === "custom" ? (
             <div className="resource-permission-preset-note warning">
-              当前包含审核、权限管理或其他自定义细分能力。选择三档预设会覆盖这些详细设置。
+              当前包含权限管理或其他无法由极简模式表达的细分能力。选择基础预设会覆盖这些详细设置。
             </div>
           ) : null}
           {props.row.directPermission && !props.row.directPermission.inheritToChildren ? (
             <div className="resource-permission-preset-note warning">
-              当前直接授权不向子资源传递。使用“仅查看”或“可编辑”保存后，将改为整个项目范围。
+              当前直接授权不向子资源传递。保存任何非空极简组合后，将改为整个项目范围。
             </div>
           ) : null}
-          {props.draftPreset === "none" ? (
+          {displayedPermission?.basePreset === "none" ? (
             <div className="resource-permission-preset-note">
-              {residualAccess ?? "保存后将删除此项目对该账号的直接授权。"}
+              {displayedPermission.canReview
+                ? [residualAccess, "当前直接授权只增加审核；实际审核还需要查看能力"].filter(Boolean).join("；")
+                : residualAccess ?? "保存后将删除此项目对该账号的直接授权。"}
             </div>
-          ) : (
+          ) : null}
+          {displayedPermission && (
+            displayedPermission.basePreset !== "none" || displayedPermission.canReview
+          ) ? (
             <div className="project-permission-scope-note">
               项目级授权会传递到子资源，但不会绕过子资源的继承截断或删除已有直接授权。
             </div>
-          )}
+          ) : null}
           {props.savePlan?.requiresDetailedOverwrite ? (
             <label className="project-permission-overwrite-confirmation">
               <input
@@ -672,11 +702,17 @@ function formatCapabilities(capabilities: ResourcePermissionMatrixRow["effective
 
 function formatDirectPermission(
   row: ResourcePermissionMatrixRow,
-  match: ReturnType<typeof getProjectPermissionPresetMatch>,
+  match: ReturnType<typeof getProjectSimplePermissionMatch>,
 ) {
   if (!row.directPermission) return "不额外授权";
-  if (match === "view") return row.directPermission.inheritToChildren ? "仅查看 · 整个项目" : "仅查看 · 仅当前项目";
-  if (match === "edit") return row.directPermission.inheritToChildren ? "可编辑 · 整个项目" : "可编辑 · 仅当前项目";
+  const scope = row.directPermission.inheritToChildren ? "整个项目" : "仅当前项目";
+  if (match.basePreset === "none" && match.canReview) return `仅可审核 · ${scope}`;
+  if (match.basePreset === "view") {
+    return `${match.canReview ? "仅查看 + 可审核" : "仅查看"} · ${scope}`;
+  }
+  if (match.basePreset === "edit") {
+    return `${match.canReview ? "可编辑 + 可审核" : "可编辑"} · ${scope}`;
+  }
   return `自定义细分权限 · ${row.directPermission.inheritToChildren ? "向子资源传递" : "仅当前项目"}`;
 }
 

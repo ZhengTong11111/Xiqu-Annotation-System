@@ -17,10 +17,12 @@ import {
 import type { PlatformClient } from "../api/platformClient";
 import {
   canDelegateResourcePermissionPreset,
-  classifyResourcePermissionPreset,
-  getResourcePermissionPresetCapabilities,
+  classifyResourceSimplePermission,
+  getResourceSimplePermissionCapabilities,
   RESOURCE_CAPABILITY_LABELS,
+  supportsResourceReviewAddon,
   type ResourcePermissionPreset,
+  type ResourceSimplePermissionSelection,
 } from "./resourcePermissionPresets";
 import { ResourcePermissionPresetSelector } from "./ResourcePermissionPresetSelector";
 
@@ -223,9 +225,9 @@ function PermissionRow(props: {
   const mutationGenerationRef = useRef(0);
   const privileged = props.row.effectivePermission.isOwner ||
     props.row.effectivePermission.source === "admin";
-  const presetMatch = hasDirectGrant
-    ? classifyResourcePermissionPreset(capabilities, props.resource.type)
-    : "none";
+  const simpleMatch = hasDirectGrant
+    ? classifyResourceSimplePermission(capabilities, props.resource.type)
+    : { basePreset: "none" as const, canReview: false };
   const residualAccessDescription = getResidualAccessDescription(props.row);
 
   // 本地与父面板共用一个 busy 入口，防止异常或迟到请求只清理其中一侧。
@@ -248,15 +250,30 @@ function PermissionRow(props: {
     };
   }, [props.resource.id, props.row, updateBusy]);
 
-  // 选择标准预设只更新本地草稿；用户仍需点击保存才会改变服务器 ACL。
+  // 基础 radio 与审核 checkbox 最终汇总为同一条直接 ACL；空组合才表示删除直接授权。
+  function applySimpleSelection(selection: ResourceSimplePermissionSelection) {
+    const nextCapabilities = getResourceSimplePermissionCapabilities(
+      selection,
+      props.resource.type,
+    );
+    setHasDirectGrant(nextCapabilities.length > 0);
+    setCapabilities(nextCapabilities);
+  }
+
   function selectPreset(preset: ResourcePermissionPreset) {
-    if (preset === "none") {
-      setHasDirectGrant(false);
-      setCapabilities([]);
-      return;
-    }
-    setHasDirectGrant(true);
-    setCapabilities(getResourcePermissionPresetCapabilities(preset, props.resource.type));
+    applySimpleSelection({
+      basePreset: preset,
+      // custom 中的 review 是可准确识别的正交能力；选择新基础档时保留它，避免无关权限一起丢失。
+      canReview: supportsResourceReviewAddon(props.resource.type) && simpleMatch.canReview,
+    });
+  }
+
+  function selectReview(canReview: boolean) {
+    if (simpleMatch.basePreset === "custom") return;
+    applySimpleSelection({
+      basePreset: simpleMatch.basePreset,
+      canReview,
+    });
   }
 
   // 保存根据草稿存在性选择 upsert 或 DELETE，绝不以空 capability grant 模拟“不额外授权”。
@@ -320,19 +337,29 @@ function PermissionRow(props: {
         <div className="resource-permission-editor" aria-busy={busy}>
           {props.mode === "simple" ? (
             <>
-              {/* 极简模式只暴露三个可解释预设，自定义授权必须由用户明确覆盖。 */}
+              {/* 极简模式把基础三选一和审核附加项分开，自定义授权仍需用户明确覆盖。 */}
               <ResourcePermissionPresetSelector
                 name={`resource-permission-${props.resource.id}-${props.row.user.id}`}
                 ariaLabel={`${props.row.user.displayName}的权限预设`}
-                value={presetMatch}
+                value={simpleMatch.basePreset}
+                canReview={simpleMatch.canReview}
+                existingCanReview={Boolean(
+                  props.row.directPermission?.capabilities.includes("review"),
+                )}
                 resourceType={props.resource.type}
                 actorCapabilities={props.resource.permission.capabilities}
                 disabled={busy}
                 onChange={selectPreset}
+                onReviewChange={selectReview}
               />
-              {presetMatch === "custom" ? (
+              {simpleMatch.basePreset === "custom" ? (
                 <div className="resource-permission-preset-note">
                   当前为自定义细分权限；切换详细模式查看，或选择一个预设覆盖。
+                </div>
+              ) : null}
+              {simpleMatch.basePreset === "none" && simpleMatch.canReview ? (
+                <div className="resource-permission-preset-note">
+                  当前直接授权只增加审核；实际审核还需要角色、继承或基础权限提供查看能力。
                 </div>
               ) : null}
               {!hasDirectGrant ? (

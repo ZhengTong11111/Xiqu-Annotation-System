@@ -3697,7 +3697,26 @@ select {
   line-height: 1.4;
 }
 
-/* 三档权限预设纵向排列，避免狭窄 Inspector 中长说明互相遮挡。 */
+/* 极简权限把基础三选一与审核附加项分区，避免 checkbox 被误解为第四个 radio。 */
+.resource-simple-permission-selector {
+  display: grid;
+  gap: 5px;
+}
+
+.resource-permission-group-label {
+  color: #6f7d90;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.resource-permission-group-label.addon {
+  margin-top: 5px;
+  padding-top: 8px;
+  border-top: 1px solid #dfe5ed;
+}
+
+/* 三档基础权限纵向排列，避免狭窄 Inspector 中长说明互相遮挡。 */
 .resource-permission-presets {
   display: grid;
   gap: 5px;
@@ -3753,6 +3772,63 @@ select {
 }
 
 .resource-permission-preset small {
+  margin-top: 1px;
+  overflow-wrap: anywhere;
+  color: #7c899b;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+/* 审核权限是独立附加项，但视觉密度与基础预设一致，便于在两个权限面板中复用。 */
+.resource-permission-review-addon {
+  display: grid;
+  grid-template-columns: 15px 18px minmax(0, 1fr);
+  gap: 7px;
+  min-height: 44px;
+  padding: 6px 8px;
+  align-items: center;
+  color: #536176;
+  background: #f8f9fb;
+  border: 1px solid #d7dee8;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.resource-permission-review-addon:hover:not(.disabled) {
+  background: #eef4fb;
+  border-color: #b8cbe0;
+}
+
+.resource-permission-review-addon.selected {
+  color: #234f79;
+  background: #edf4fb;
+  border-color: #7da5cc;
+}
+
+.resource-permission-review-addon.disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.resource-permission-review-addon input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #2b72b8;
+}
+
+.resource-permission-review-addon > span {
+  display: grid;
+  min-width: 0;
+}
+
+.resource-permission-review-addon strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.resource-permission-review-addon small {
   margin-top: 1px;
   overflow-wrap: anywhere;
   color: #7c899b;

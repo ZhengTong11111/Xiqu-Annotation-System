@@ -112,7 +112,7 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
 ### 2.2 权限
 
 - `ResourcePermission` 保存一个资源对一个账号的直接能力。
-- 能力为 `read`、`write`、`create_child`、`copy`、`move`、`delete`、`download`、
+- 能力为 `read`、`write`、`review`、`create_child`、`copy`、`move`、`delete`、`download`、
   `manage_permissions`。
 - 项目/文件夹授权可继承给后代；资源可用 `breakPermissionInheritance` 截断祖先授权。
 - 直接授权与继承授权取并集，当前没有显式 deny。
@@ -121,9 +121,10 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
 - API 是安全边界；前端隐藏或禁用控件只改善体验。
 - 系统管理员通过独立账号管理界面创建、停用/恢复账号、调整平台角色和重置密码；普通账号可修改自己
   的密码。停用和密码变化会撤销旧会话，账号不做破坏性硬删除。
-- `super_admin/admin` 已有独立三栏式项目权限管理窗口，可按账号和跨目录活动项目分别搜索，并以“不额外授权 /
-  仅查看 / 可编辑”快速写入项目直接 ACL；项目 view/edit 固定向子资源传递。任意资源、自定义 capability、
-  审核、权限管理和继承例外仍由资源 Inspector 的详细模式处理，服务端有效权限算法没有分叉。
+- `super_admin/admin` 已有独立三栏式项目权限管理窗口，可按账号和跨目录活动项目分别搜索。基础权限以
+  “不额外授权 / 仅查看 / 可编辑”三选一，并可正交勾选“可审核”；所有非空项目组合固定向子资源传递。
+  任意资源、自定义 capability、权限管理和继承例外仍由资源 Inspector 的详细模式处理，服务端有效权限算法
+  没有分叉。
 - 原 `ta` 角色已迁移并合并为 `teacher`。未来 teacher/annotator 附属关系和可调整自动权限需要单独的数据
   模型与审计合同，本轮只保留集中角色策略入口，不提前引入关系表或隐式 ACL。
 - 当前 ACL 是资源级权限。旧“轨道/时间范围 grant”不属于现行模型；若未来确有需要，应作为
@@ -179,9 +180,9 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
 - 保存前恢复快照与并发冲突检查。
 - 快照恢复会先保护当前 payload，再以单调递增 revision 写入历史内容；保护快照、文件更新和审计
   位于同一事务。
-- 逐资源 ACL、继承、截断继承和权限矩阵；Inspector 默认提供“不额外授权 / 仅查看 / 可编辑”三档极简预设，
-  同时保留九项 capability 详细编辑。极简预设只写现有直接 ACL，不改变角色与继承计算；自定义授权不会被
-  静默归类或覆盖，“可编辑”明确排除 `review` 和 `manage_permissions`。
+- 逐资源 ACL、继承、截断继承和权限矩阵；Inspector 默认提供“不额外授权 / 仅查看 / 可编辑”三档基础 radio，
+  以及独立“可审核”checkbox，同时保留九项 capability 详细编辑。极简控件只写现有直接 ACL，不改变角色与
+  继承计算；自定义授权不会被静默归类或覆盖，“可编辑”明确排除 `review` 和 `manage_permissions`。
 - 审计日志、标注 operation log，以及真实运行的媒体分析任务、独立 worker 和派生资产接口。
 - 本地免登录编辑入口。
 

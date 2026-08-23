@@ -3,10 +3,11 @@ import type {
   ResourcePermissionMatrixRow,
 } from "@xiqu/shared";
 import {
-  classifyResourcePermissionPreset,
-  getResourcePermissionPresetCapabilities,
-  type ResourcePermissionPreset,
-  type ResourcePermissionPresetMatch,
+  classifyResourceSimplePermission,
+  getResourceSimplePermissionCapabilities,
+  haveSameResourceCapabilities,
+  type ResourceSimplePermissionMatch,
+  type ResourceSimplePermissionSelection,
 } from "./resourcePermissionPresets";
 
 export type ProjectPermissionSavePlan =
@@ -19,11 +20,11 @@ export type ProjectPermissionSavePlan =
       requiresDetailedOverwrite: boolean;
     };
 
-// 集中面板只读取项目直接 ACL 的三档匹配；最终有效权限仍完全来自服务端矩阵。
-export function getProjectPermissionPresetMatch(
+// 集中面板只拆解项目直接 ACL 的基础预设和审核附加项；最终有效权限仍完全来自服务端矩阵。
+export function getProjectSimplePermissionMatch(
   row: ResourcePermissionMatrixRow,
-): ResourcePermissionPresetMatch {
-  return classifyResourcePermissionPreset(
+): ResourceSimplePermissionMatch {
+  return classifyResourceSimplePermission(
     row.directPermission?.capabilities,
     "project",
   );
@@ -56,27 +57,28 @@ export function getProjectPermissionResidualAccess(
   return sources.length > 0 ? sources.join("；") : null;
 }
 
-// 项目快速授权固定向子资源传递；custom 或旧的非传递设置必须经用户确认后才能被三档预设覆盖。
+// 项目快速授权固定向子资源传递；custom 或旧的非传递设置必须经用户确认后才能被极简组合覆盖。
 export function createProjectPermissionSavePlan(
   row: ResourcePermissionMatrixRow,
-  preset: ResourcePermissionPreset,
+  selection: ResourceSimplePermissionSelection,
 ): ProjectPermissionSavePlan {
   const directPermission = row.directPermission ?? null;
-  const currentMatch = getProjectPermissionPresetMatch(row);
+  const currentMatch = getProjectSimplePermissionMatch(row);
   const requiresDetailedOverwrite = Boolean(
     directPermission && (
-      currentMatch === "custom" || !directPermission.inheritToChildren
+      currentMatch.basePreset === "custom" || !directPermission.inheritToChildren
     ),
   );
-  if (preset === "none") {
+  const capabilities = getResourceSimplePermissionCapabilities(selection, "project");
+  if (capabilities.length === 0) {
     return directPermission
       ? { kind: "remove", requiresDetailedOverwrite }
       : { kind: "noop", requiresDetailedOverwrite: false };
   }
-  const capabilities = getResourcePermissionPresetCapabilities(preset, "project");
   if (
-    currentMatch === preset &&
-    directPermission?.inheritToChildren === true
+    directPermission &&
+    haveSameResourceCapabilities(directPermission.capabilities, capabilities) &&
+    directPermission.inheritToChildren === true
   ) {
     return { kind: "noop", requiresDetailedOverwrite: false };
   }

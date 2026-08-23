@@ -8,6 +8,17 @@ import {
 export type ResourcePermissionPreset = "none" | "view" | "edit";
 export type ResourcePermissionPresetMatch = ResourcePermissionPreset | "custom";
 
+// 极简权限把普通访问级别与审核能力分开建模，避免把“可审核”误做成第四档互斥预设。
+export type ResourceSimplePermissionSelection = {
+  basePreset: ResourcePermissionPreset;
+  canReview: boolean;
+};
+
+export type ResourceSimplePermissionMatch = {
+  basePreset: ResourcePermissionPresetMatch;
+  canReview: boolean;
+};
+
 // 细粒度模式与只读摘要共用同一套中文能力名称，避免两个界面对同一 capability 使用不同文案。
 export const RESOURCE_CAPABILITY_LABELS: Record<ResourceCapability, string> = {
   read: "查看",
@@ -27,7 +38,7 @@ const VIEW_CAPABILITIES = new Set<ResourceCapability>([
   "download",
 ]);
 
-// 编辑预设覆盖内容与文件操作，但审核和权限管理始终留在详细模式中单独授予。
+// 编辑基础预设只覆盖内容与文件操作；审核由独立附加项控制，权限管理仍只留在详细模式。
 const EDIT_CAPABILITIES = new Set<ResourceCapability>([
   "read",
   "write",
@@ -56,25 +67,64 @@ export function getResourcePermissionPresetCapabilities(
   return RESOURCE_CAPABILITIES.filter((capability) => selected.has(capability));
 }
 
-// 只有直接授权与预设完全相等时才归类；额外的审核或管理能力不能被极简界面静默吞掉。
-export function classifyResourcePermissionPreset(
+// 媒体资源没有标注确认操作；其异常 review 授权仍留给详细模式处理，极简模式不制造无效能力。
+export function supportsResourceReviewAddon(resourceType: ResourceType): boolean {
+  return resourceType !== "media_file";
+}
+
+// 审核是正交附加项：先剥离 review，再精确识别基础预设；其他能力仍保持 custom，不能被静默裁剪。
+export function classifyResourceSimplePermission(
   directCapabilities: readonly ResourceCapability[] | null | undefined,
   resourceType: ResourceType,
-): ResourcePermissionPresetMatch {
-  if (directCapabilities == null) return "none";
-  if (hasSameCapabilities(
-    directCapabilities,
+): ResourceSimplePermissionMatch {
+  if (directCapabilities == null) {
+    return { basePreset: "none", canReview: false };
+  }
+  const directCapabilitySet = new Set(directCapabilities);
+  const canReview = directCapabilitySet.has("review");
+  if (
+    directCapabilitySet.size !== directCapabilities.length ||
+    (canReview && !supportsResourceReviewAddon(resourceType))
+  ) {
+    return { basePreset: "custom", canReview };
+  }
+  const baseCapabilities = directCapabilities.filter((capability) => capability !== "review");
+  if (baseCapabilities.length === 0) {
+    return {
+      basePreset: canReview ? "none" : "custom",
+      canReview,
+    };
+  }
+  if (haveSameResourceCapabilities(
+    baseCapabilities,
     getResourcePermissionPresetCapabilities("view", resourceType),
   )) {
-    return "view";
+    return { basePreset: "view", canReview };
   }
-  if (hasSameCapabilities(
-    directCapabilities,
+  if (haveSameResourceCapabilities(
+    baseCapabilities,
     getResourcePermissionPresetCapabilities("edit", resourceType),
   )) {
-    return "edit";
+    return { basePreset: "edit", canReview };
   }
-  return "custom";
+  return { basePreset: "custom", canReview };
+}
+
+// 保存前只在这一处组合基础权限与审核附加项，并按 shared 权威顺序输出稳定 capability 数组。
+export function getResourceSimplePermissionCapabilities(
+  selection: ResourceSimplePermissionSelection,
+  resourceType: ResourceType,
+): ResourceCapability[] {
+  if (selection.canReview && !supportsResourceReviewAddon(resourceType)) {
+    throw new Error("媒体资源不支持极简审核附加权限。");
+  }
+  const selected = new Set<ResourceCapability>(
+    selection.basePreset === "none"
+      ? []
+      : getResourcePermissionPresetCapabilities(selection.basePreset, resourceType),
+  );
+  if (selection.canReview) selected.add("review");
+  return RESOURCE_CAPABILITIES.filter((capability) => selected.has(capability));
 }
 
 // 前端只提前禁用必然越权的预设；真正的委派范围仍由服务端在写入事务中重新验证。
@@ -89,8 +139,17 @@ export function canDelegateResourcePermissionPreset(
     .every((capability) => actorCapabilitySet.has(capability));
 }
 
+// 移除已有审核能力不要求授权者自己拥有 review；只有新增审核能力时才需要通过委派门禁。
+export function canDelegateResourceReviewChange(
+  actorCapabilities: readonly ResourceCapability[],
+  currentCanReview: boolean,
+  nextCanReview: boolean,
+): boolean {
+  return !nextCanReview || currentCanReview || actorCapabilities.includes("review");
+}
+
 // capability 集合比较忽略顺序但拒绝重复或额外字段，确保 custom 授权不会误匹配标准预设。
-function hasSameCapabilities(
+export function haveSameResourceCapabilities(
   left: readonly ResourceCapability[],
   right: readonly ResourceCapability[],
 ): boolean {

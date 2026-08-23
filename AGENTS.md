@@ -24,8 +24,9 @@ Main currently contains all major recent feature lines that matter for context:
 - Gongche glyph preview is currently marked finished for research/demo use, but the glyph font must be replaced or licensed before release
 - Banyan beat/eye parsing, track display, editing, and global vertical guide rendering
 - platform login/resource-explorer UI, local editor entry, media upload, project/folder/file management, JSON import, revision-checked server save, recovery snapshots, and per-resource account permissions
-- resource permission Inspector with a default three-preset simple mode and the complete detailed capability matrix; presets
-  only rewrite direct ACL rows, preserve custom grants until explicit overwrite, and never replace server-side effective permission calculation
+- resource permission Inspector with three base-preset radios, an independent review checkbox, and the complete detailed capability
+  matrix; simple controls only rewrite direct ACL rows, preserve custom grants until explicit overwrite, and never replace
+  server-side effective permission calculation
 - permission-gated native streaming downloads for media resources and authoritative JSON downloads for annotation resources, exposed through the shared resource context menu and Inspector
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - local `dev:api` and `dev:analysis-worker` commands load the ignored root `.env` through Node 22
@@ -344,21 +345,25 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/ResourcePermissionEditor.tsx`
   - owns permission-matrix loading, simple/detailed presentation, direct grant writes, resource inheritance controls, and explanations
     for role/inherited residual access; both modes edit the same direct ACL and must reread the server matrix after every write
-  - “不额外授权” deletes the direct grant and is never an explicit deny. Owner/admin rows stay immutable, and row writes block
-    mode switching/refresh until their authoritative result is reloaded
+  - simple mode is three mutually exclusive base presets plus an independent review checkbox. “不额外授权” deletes the direct
+    grant only when review is also off; review-only is a real ACL and never implies read. Owner/admin rows stay immutable, and row
+    writes block mode switching/refresh until their authoritative result is reloaded
 - `src/platform/ProjectPermissionManagementDialog.tsx` + `src/platform/projectPermissionManagement.ts`
   - global-admin three-pane quick assignment for one active account and one active project; account/project searches are independent,
     the selected project matrix is authoritative, and owner/admin rows remain read-only
-  - project view/edit writes always use `inheritToChildren=true`; custom or non-inheriting direct ACL requires explicit overwrite
-    confirmation. None deletes only the project direct ACL and must explain remaining role/ancestor access
+  - every nonempty project simple selection uses `inheritToChildren=true`; custom or non-inheriting direct ACL requires explicit
+    overwrite confirmation. None without review deletes only the project direct ACL and must explain remaining role/ancestor access
 - `src/platform/ResourcePermissionPresetSelector.tsx`
-  - shared controlled presentation for the three common presets. It owns icons, labels, ARIA, and delegation-disabled display only;
-    it never performs network writes or computes roles, ownership, inheritance, or effective permissions
+  - shared controlled presentation for three base-preset radios plus one independent review checkbox. It owns icons, labels, ARIA,
+    resource applicability, and delegation-disabled display only; it never performs network writes or computes roles, ownership,
+    inheritance, or effective permissions
 - `src/platform/resourcePermissionPresets.ts`
-  - the only frontend mapping for `none | view | edit` permission presets. View is `read + download`; edit adds ordinary content/file
-    operations and container `create_child`, but never `review` or `manage_permissions`
-  - preset recognition requires an exact capability set so custom grants remain custom. This helper must not calculate roles,
-    inheritance, ownership, expiry, or effective permission; those remain authoritative server concerns
+  - the only frontend mapping for `none | view | edit` base presets and the orthogonal review addon. View is `read + download`; edit
+    adds ordinary content/file operations and container `create_child`; review adds only `review`, never `read` or
+    `manage_permissions`
+  - recognition removes optional review before exact base matching so all six standard combinations round-trip, while other grants
+    remain custom. This helper must not calculate roles, inheritance, ownership, expiry, or effective permission; those remain
+    authoritative server concerns
 - `src/platform/AccountManagementDialog.tsx` + `src/platform/ChangePasswordDialog.tsx`
   - global account lifecycle/role administration and all-user self-service password change
   - neither component edits resource ACL; password values must never enter audit details, logs, saved project state, or browser drafts

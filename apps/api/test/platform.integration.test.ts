@@ -1258,6 +1258,19 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(direct.statusCode, 200);
       assert.equal((dataOf(direct.json()).capabilities as string[])[0], "read");
 
+      // 审核可以作为独立 ACL 能力保存，但不会隐式附加 read；审核动作仍由领域门禁要求 read + review。
+      const reviewOnly = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${childFolderId}/permissions/user-student`,
+        payload: { capabilities: ["review"], inheritToChildren: false },
+      });
+      assert.equal(reviewOnly.statusCode, 200);
+      assert.deepEqual(dataOf(reviewOnly.json()).capabilities, ["review"]);
+      assert.equal((await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/resources/${childFolderId}`,
+      })).statusCode, 403);
+
       const invalidCapability = await jsonRequest(app, adminToken, {
         method: "PUT",
         url: `/api/resources/${childFolderId}/permissions/user-student`,
