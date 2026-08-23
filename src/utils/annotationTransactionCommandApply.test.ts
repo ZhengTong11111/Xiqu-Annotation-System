@@ -9,14 +9,20 @@ import { getGongcheTransactionTargetsForParents } from "./timelineTimingCommand"
 
 function createProject(): ProjectData {
   const project = structuredClone(mockProject);
-  project.subtitleLines = [{ id: "line-a", text: "甲", startTime: 1, endTime: 2 }];
+  project.subtitleLines = [{
+    id: "line-a",
+    text: "甲",
+    startTime: 1,
+    endTime: 2,
+    deliveryMode: null,
+    roleType: null,
+  }];
   project.characterAnnotations = [{
     id: "char-a",
     lineId: "line-a",
     char: "甲",
     startTime: 1,
     endTime: 2,
-    singingStyle: "普通唱",
     tone: null,
   }];
   project.gongcheAnnotations = [{
@@ -48,7 +54,6 @@ test("已有句新增逐字可原子同步句内容和边界并完整反向", ()
     char: "乙",
     startTime: 2,
     endTime: 3,
-    singingStyle: "普通唱",
     tone: null,
   });
   next.subtitleLines[0] = { ...next.subtitleLines[0], text: "甲乙", endTime: 3 };
@@ -132,14 +137,15 @@ test("父文字块缩放时工尺块与全部符号可原子重放并反向恢�
 test("新句与首个逐字可在同一生命周期批次创建和删除", () => {
   const base = createProject();
   const next = structuredClone(base);
-  next.subtitleLines.push({ id: "line-b", text: "新", startTime: 4, endTime: 5 });
+  next.subtitleLines.push({
+    id: "line-b", text: "新", startTime: 4, endTime: 5, deliveryMode: null, roleType: null,
+  });
   next.characterAnnotations.push({
     id: "char-new",
     lineId: "line-b",
     char: "新",
     startTime: 4,
     endTime: 5,
-    singingStyle: "普通唱",
     tone: { toneClass: "yin_ping" },
   });
   const envelope = buildProjectAnnotationTransactionCommand(base, next, {
@@ -156,20 +162,23 @@ test("新句与首个逐字可在同一生命周期批次创建和删除", () =>
 
 test("删除逐字和关联工尺时句同步属于同一原子事务", () => {
   const base = createProject();
-  base.subtitleLines[0] = { id: "line-a", text: "甲乙", startTime: 1, endTime: 3 };
+  base.subtitleLines[0] = {
+    id: "line-a", text: "甲乙", startTime: 1, endTime: 3, deliveryMode: null, roleType: null,
+  };
   base.characterAnnotations.push({
     id: "char-b",
     lineId: "line-a",
     char: "乙",
     startTime: 2,
     endTime: 3,
-    singingStyle: "普通唱",
     tone: null,
   });
   const next = structuredClone(base);
   next.characterAnnotations = next.characterAnnotations.filter((item) => item.id !== "char-a");
   next.gongcheAnnotations = [];
-  next.subtitleLines[0] = { id: "line-a", text: "乙", startTime: 2, endTime: 3 };
+  next.subtitleLines[0] = {
+    id: "line-a", text: "乙", startTime: 2, endTime: 3, deliveryMode: null, roleType: null,
+  };
   const envelope = buildProjectAnnotationTransactionCommand(base, next, {
     contentTargets: [{ entityType: "sentence", entityId: "line-a", field: "text" }],
     timingTargets: [{ entityType: "sentence", entityId: "line-a" }],
@@ -260,7 +269,6 @@ test("事务任一子命令前置条件失败时不泄漏前面步骤", () => {
     char: "乙",
     startTime: 2,
     endTime: 3,
-    singingStyle: "普通唱",
     tone: null,
   });
   next.subtitleLines[0] = { ...next.subtitleLines[0], text: "甲乙", endTime: 3 };

@@ -20,6 +20,7 @@ import { PreviewPanel } from "./components/PreviewPanel";
 import { ResizableSplitLayout } from "./components/ResizableSplitLayout";
 import { SpectrogramSettingsPanel } from "./components/SpectrogramSettingsPanel";
 import { SubtitleList } from "./components/SubtitleList";
+import { SentenceAnnotationSettingsDialog } from "./components/SentenceAnnotationSettingsDialog";
 import { Timeline } from "./components/Timeline";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { TopMenuBar, type TopMenuPlatformNavigation } from "./components/TopMenuBar";
@@ -120,11 +121,14 @@ import type {
   WaveformData,
 } from "./types";
 import {
+  MAX_SENTENCE_ROLE_OPTION_LENGTH,
+  MAX_SENTENCE_ROLE_OPTIONS,
+} from "./types";
+import {
   buildProjectFromLines,
   buildTimelineTrackDefinitions,
   flattenCustomTrackBlocks,
   getBuiltinTrackDefinition,
-  getBuiltinTrackOptions,
   getDefaultAttachedPointTrackName,
   getDefaultAttachedPointTypeOptions,
   getDefaultCustomTrackName,
@@ -193,7 +197,6 @@ import {
 } from "./utils/trackColors";
 import {
   exportCharacterTrackToSrt,
-  exportSingingStyleTrackToSrt,
   formatSecondsToSrtTime,
   parseSrt,
 } from "./utils/srt";
@@ -208,6 +211,11 @@ import {
   createSentenceCharacterRepairs,
   formatSentenceCharacterAlignmentSummary,
 } from "./utils/sentenceCharacterAlignment";
+import { SENTENCE_DELIVERY_MODE_OPTIONS } from "./utils/sentenceClassification";
+import {
+  reorderSentenceRoleOptions,
+  type SentenceRoleDropEdge,
+} from "./utils/sentenceRoleReorder";
 import { generateBanyanMarksFromGongche, getBanyanSubtypeLabel } from "./utils/banyan";
 import { repairBanyanGongcheReferences } from "./utils/banyanReferenceIntegrity";
 import {
@@ -270,7 +278,6 @@ type TimelineClipboardItem =
       sourceTrackId: "character-track";
       sourceLineId: string;
       char: string;
-      singingStyle: string;
       tone: CharacterToneInfo | null;
       startOffset: number;
       endOffset: number;
@@ -326,7 +333,6 @@ type PreparedPasteItem =
       startTime: number;
       endTime: number;
       char: string;
-      singingStyle: string;
       tone: CharacterToneInfo | null;
       sourceLineId: string;
     }
@@ -409,6 +415,13 @@ type ImportMergePreview = {
 };
 
 type TimelineContextMenu =
+  | {
+      type: "line";
+      id: string;
+      x: number;
+      y: number;
+      time: number;
+    }
   | {
       type: "character";
       id: string;
@@ -516,7 +529,7 @@ type CommandHandlers = {
   mergeProjectFileInputRef: RefObject<HTMLInputElement>;
   saveProjectFile: () => Promise<void>;
   saveProjectToServer: (options: { source: "manual" }) => Promise<unknown>;
-  handleExport: (kind: "character" | "singing") => void;
+  handleExport: () => void;
   undo: () => void;
   redo: () => void;
   repairSentenceCharacterTrack: () => void;
@@ -831,6 +844,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const remoteCatchUpBlockReason = remoteCatchUpBlocksEditing
     ? `正在接收其他账号的修改（服务器 v${observedRemoteRevision}）`
     : undefined;
+  const sentenceClassificationEditingBlockedReason = isReadOnly
+    ? "当前账号没有写入权限"
+    : remoteCatchUpBlockReason;
 
   // 门禁只阻止尚未开始的新写操作；关闭旧右键菜单并拦截写快捷键，播放、缩放和复制仍可使用。
   useEffect(() => {
@@ -876,6 +892,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
   const [serverMediaDialogOpen, setServerMediaDialogOpen] = useState(false);
   const [analysisAudioDialogOpen, setAnalysisAudioDialogOpen] = useState(false);
+  const [sentenceAnnotationSettingsOpen, setSentenceAnnotationSettingsOpen] = useState(false);
   const [analysisViewport, setAnalysisViewport] = useState<PlatformAnalysisViewport | null>(null);
   const [serverMediaBindingBusy, setServerMediaBindingBusy] = useState(false);
   const [currentProjectFileName, setCurrentProjectFileName] = useState<string | null>(null);
@@ -1978,8 +1995,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         run: () => handlers().triggerFileInput(handlers().mergeProjectFileInputRef),
       },
       "file.save-local": { run: () => void handlers().saveProjectFile() },
-      "file.export-character-srt": { run: () => handlers().handleExport("character") },
-      "file.export-singing-srt": { run: () => handlers().handleExport("singing") },
+      "file.export-character-srt": { run: () => handlers().handleExport() },
       "edit.undo": {
         disabledReason: remoteCatchUpBlockReason ?? (undoStack.length > 0 ? undefined : "没有可撤销的编辑"),
         run: () => handlers().undo(),
@@ -2145,6 +2161,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     waveformVisible,
   ]);
 
+  const contextMenuLine = blockContextMenu?.type === "line"
+    ? project.subtitleLines.find((item) => item.id === blockContextMenu.id) ?? null
+    : null;
   const contextMenuCharacter = blockContextMenu?.type === "character"
     ? project.characterAnnotations.find((item) => item.id === blockContextMenu.id) ?? null
     : null;
@@ -2173,7 +2192,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const selectedCharacterLineMergeContext = contextMenuCharacter
     ? getSelectedCharacterLineMergeContext(contextMenuCharacter.id, project)
     : null;
-  const contextMenuCharacterTrack = timelineTrackDefinitions.find((track) => track.id === "character-track") ?? null;
   const contextMenuActionTrack = contextMenuAction
     ? timelineTrackDefinitions.find((track) => track.id === contextMenuAction.trackId) ?? null
     : null;
@@ -2551,7 +2569,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       );
       const changedKeys = Object.keys(changes);
       const isCharacterTextOnly = changedKeys.length === 1 && changedKeys[0] === "char";
-      const isSingingStyleOnly = changedKeys.length === 1 && changedKeys[0] === "singingStyle";
       if (isTimingOnly && currentCharacter) {
         const gongcheTargets = getGongcheTransactionTargetsForParents(
           baseProject,
@@ -2576,10 +2593,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             { entityType: "character", entityId: id, field: "char" },
             { entityType: "sentence", entityId: currentCharacter.lineId, field: "text" },
           ])
-        : isSingingStyleOnly && currentCharacter
-          ? buildProjectAnnotationContentCommand(baseProject, synchronizedProject, [
-              { entityType: "character", entityId: id, field: "singingStyle" },
-            ])
         : null;
       commitProject(synchronizedProject, baseProject, commandEnvelope ? { commandEnvelope } : {});
     } else {
@@ -2655,6 +2668,141 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     } else {
       applyProjectWithoutHistory(synchronizedProject);
     }
+  }
+
+  function updateSentenceClassification(
+    id: string,
+    changes: Partial<Pick<SubtitleLine, "deliveryMode" | "roleType">>,
+  ) {
+    const baseProject = projectRef.current;
+    const currentLine = baseProject.subtitleLines.find((line) => line.id === id);
+    if (!currentLine) return;
+    if (
+      changes.roleType !== undefined &&
+      changes.roleType !== null &&
+      !baseProject.sentenceAnnotationConfig.roleOptions.includes(changes.roleType)
+    ) {
+      window.alert("所选角色行当已不存在，请刷新设置后重试。");
+      return;
+    }
+    const nextProject: ProjectData = {
+      ...baseProject,
+      subtitleLines: baseProject.subtitleLines.map((line) =>
+        line.id === id ? { ...line, ...changes } : line),
+    };
+    const contentTargets = (Object.keys(changes) as Array<keyof typeof changes>).flatMap((field) =>
+      currentLine[field] !== changes[field]
+        ? [{ entityType: "sentence" as const, entityId: id, field }]
+        : []);
+    // 没有实际字段变化时不制造历史和待提交操作；协作端也无需接收空命令。
+    if (contentTargets.length === 0) return;
+    const commandEnvelope = buildProjectAnnotationContentCommand(baseProject, nextProject, contentTargets);
+    if (!commandEnvelope) {
+      window.alert("句级分类更新未能生成有效命令，项目没有被修改。");
+      return;
+    }
+    commitProject(nextProject, baseProject, { commandEnvelope });
+  }
+
+  // 角色列表变更与所有受影响句子在同一租约事务中提交，避免协作端看到悬空角色。
+  function updateSentenceRoleOptions(
+    buildUpdate: (baseProject: ProjectData) => {
+      roleOptions: string[];
+      replaceRole?: { from: string; to: string | null };
+    },
+  ) {
+    const buildNextProject = (baseProject: ProjectData): ProjectData => {
+      const update = buildUpdate(baseProject);
+      const nextLines = update.replaceRole
+        ? baseProject.subtitleLines.map((line) =>
+            line.roleType === update.replaceRole?.from
+              ? { ...line, roleType: update.replaceRole.to }
+              : line)
+        : baseProject.subtitleLines;
+      return {
+        ...baseProject,
+        sentenceAnnotationConfig: { roleOptions: update.roleOptions },
+        subtitleLines: nextLines,
+      };
+    };
+    return runTrackStructureMutation(
+      buildNextProject,
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        stateTargets: [{
+          entityType: "sentence-annotation-config",
+          entityId: "sentence-annotation-config",
+        }],
+        contentTargets: baseProject.subtitleLines.flatMap((line) => {
+          const nextLine = nextProject.subtitleLines.find((candidate) => candidate.id === line.id);
+          return nextLine?.roleType !== line.roleType
+            ? [{ entityType: "sentence" as const, entityId: line.id, field: "roleType" as const }]
+            : [];
+        }),
+      }),
+    );
+  }
+
+  function addSentenceRoleOption(name: string) {
+    const normalizedName = name.trim();
+    if (!normalizedName || normalizedName.length > MAX_SENTENCE_ROLE_OPTION_LENGTH) {
+      return Promise.resolve(false);
+    }
+    return updateSentenceRoleOptions((baseProject) => ({
+      roleOptions: baseProject.sentenceAnnotationConfig.roleOptions.length >= MAX_SENTENCE_ROLE_OPTIONS
+        ? baseProject.sentenceAnnotationConfig.roleOptions
+        : appendUniqueTypeOption(baseProject.sentenceAnnotationConfig.roleOptions, normalizedName),
+    }));
+  }
+
+  function renameSentenceRoleOption(previousName: string, name: string) {
+    const normalizedName = name.trim();
+    if (!normalizedName || normalizedName.length > MAX_SENTENCE_ROLE_OPTION_LENGTH) {
+      return Promise.resolve(false);
+    }
+    return updateSentenceRoleOptions((baseProject) => {
+      const roleIndex = baseProject.sentenceAnnotationConfig.roleOptions.indexOf(previousName);
+      if (roleIndex < 0 || baseProject.sentenceAnnotationConfig.roleOptions.some(
+        (option, optionIndex) => optionIndex !== roleIndex && option === normalizedName,
+      )) return { roleOptions: baseProject.sentenceAnnotationConfig.roleOptions };
+      return {
+        roleOptions: baseProject.sentenceAnnotationConfig.roleOptions.map((option, optionIndex) =>
+          optionIndex === roleIndex ? normalizedName : option),
+        replaceRole: { from: previousName, to: normalizedName },
+      };
+    });
+  }
+
+  function reorderSentenceRoleOption(
+    sourceRole: string,
+    targetRole: string,
+    edge: SentenceRoleDropEdge,
+  ) {
+    const currentOptions = projectRef.current.sentenceAnnotationConfig.roleOptions;
+    if (!reorderSentenceRoleOptions(currentOptions, sourceRole, targetRole, edge)) {
+      // 放回原插入位置属于成功的无操作，不获取结构租约，也不向对话框报告保存失败。
+      return Promise.resolve(true);
+    }
+    return updateSentenceRoleOptions((baseProject) => {
+      const latestOptions = baseProject.sentenceAnnotationConfig.roleOptions;
+      return {
+        // 以角色名称定位最新项目，避免取得结构租约期间列表变化后误移动另一个角色。
+        roleOptions: reorderSentenceRoleOptions(latestOptions, sourceRole, targetRole, edge)
+          ?? latestOptions,
+      };
+    });
+  }
+
+  function removeSentenceRoleOption(previousName: string, replacement: string | null) {
+    return updateSentenceRoleOptions((baseProject) => {
+      if (!previousName || (replacement !== null && (
+        replacement === previousName ||
+        !baseProject.sentenceAnnotationConfig.roleOptions.includes(replacement)
+      ))) return { roleOptions: baseProject.sentenceAnnotationConfig.roleOptions };
+      return {
+        roleOptions: baseProject.sentenceAnnotationConfig.roleOptions.filter((option) => option !== previousName),
+        replaceRole: { from: previousName, to: replacement },
+      };
+    });
   }
 
   function startCharacterTextEdit(id: string, location: CharacterEditLocation) {
@@ -2849,11 +2997,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   async function updateBuiltinTrackStructure(
     trackId: BuiltinTrackId,
     updater: (track: BuiltinTrack) => BuiltinTrack,
-    updateCharacters?: (
-      characters: CharacterAnnotation[],
-      beforeTrack: BuiltinTrack,
-      afterTrack: BuiltinTrack,
-    ) => CharacterAnnotation[],
   ) {
     const buildNextProject = (baseProject: ProjectData): ProjectData => {
       const beforeTrack = baseProject.builtinTracks.find((track) => track.id === trackId);
@@ -2865,25 +3008,13 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           track.id === trackId ? afterTrack : track,
         ),
       };
-      if (!updateCharacters || trackId !== "character-track") return nextProject;
-      return {
-        ...nextProject,
-        characterAnnotations: updateCharacters(baseProject.characterAnnotations, beforeTrack, afterTrack),
-      };
+      return nextProject;
     };
     return runTrackStructureMutation(
       buildNextProject,
-      (baseProject, nextProject) => {
-        const nextCharacters = new Map(nextProject.characterAnnotations.map((item) => [item.id, item]));
-        return buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
-          builtinTrackStructureIds: [trackId],
-          // options 改名/删除会级联逐字唱法；纯配置修改在这里自然得到空 content 列表。
-          contentTargets: baseProject.characterAnnotations.flatMap((item) =>
-            nextCharacters.get(item.id)?.singingStyle !== item.singingStyle
-              ? [{ entityType: "character" as const, entityId: item.id, field: "singingStyle" as const }]
-              : []),
-        });
-      },
+      (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
+        builtinTrackStructureIds: [trackId],
+      }),
     );
   }
 
@@ -3312,10 +3443,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
   }
 
-  function applyCharacterSingingStyle(id: string, singingStyle: CharacterAnnotation["singingStyle"]) {
-    updateCharacter(id, { singingStyle });
-  }
-
   function applyActionLabel(id: string, label: string) {
     updateAction(id, { label });
   }
@@ -3336,7 +3463,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     });
   }
 
-  function createContextMenuTypeOption(target: Exclude<TimelineContextMenu["type"], "lane" | "gongche-block" | "banyan-mark">) {
+  function createContextMenuTypeOption(target: Exclude<
+    TimelineContextMenu["type"],
+    "line" | "lane" | "gongche-block" | "banyan-mark"
+  >) {
     if (!blockContextMenu || blockContextMenu.type !== target) {
       return;
     }
@@ -3347,53 +3477,13 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
     const currentProject = projectRef.current;
 
-    if (target === "character") {
-      const character = currentProject.characterAnnotations.find((item) => item.id === blockContextMenu.id);
-      const track = currentProject.builtinTracks.find((item) => item.id === "character-track");
-      if (!character || !track) {
-        return;
-      }
-      if ((track.options ?? []).includes(nextType)) {
-        applyCharacterSingingStyle(character.id, nextType);
-      } else {
-        void updateBuiltinTrackStructure("character-track", (currentTrack) => ({
-          ...currentTrack,
-          options: appendUniqueTypeOption(currentTrack.options ?? [], nextType),
-        }), (characters) => characters.map((item) =>
-          item.id === character.id ? { ...item, singingStyle: nextType } : item));
-      }
-      setBlockContextMenu(null);
-      return;
-    }
-
     if (target === "action") {
       const actionId = blockContextMenu.id;
       const action = currentProject.actionAnnotations.find((item) => item.id === actionId);
-      const track = action
-        ? currentProject.builtinTracks.find((item) => item.id === action.trackId)
-        : undefined;
-      if (!action || !track) {
+      if (!action) {
         return;
       }
-      // 动作类型与内建轨道 options 是一个耦合结构，必须和新建/删除共用结构事务，
-      // 否则本地可见的 label 更新会再次绕过租约和云端原子命令链。
-      void runTrackStructureMutation(
-        (baseProject) => ({
-          ...baseProject,
-          builtinTracks: baseProject.builtinTracks.map((item) =>
-            item.id === action.trackId
-              ? { ...item, options: appendUniqueTypeOption(item.options ?? [], nextType) }
-              : item,
-          ),
-          actionAnnotations: baseProject.actionAnnotations.map((item) =>
-            item.id === actionId ? { ...item, label: nextType } : item,
-          ),
-        }),
-        (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
-          builtinTrackStructureIds: [action.trackId],
-          contentTargets: [{ entityType: "action", entityId: actionId, trackId: action.trackId, field: "label" }],
-        }),
-      );
+      applyActionLabel(actionId, nextType);
       setBlockContextMenu(null);
       return;
     }
@@ -3492,7 +3582,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           sourceTrackId: "character-track",
           sourceLineId: item.lineId,
           char: item.char,
-          singingStyle: item.singingStyle,
           tone: item.tone ?? null,
           startOffset: item.startTime - baseTime,
           endOffset: item.endTime - baseTime,
@@ -3645,7 +3734,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             char: item.char,
             startTime: item.startTime,
             endTime: item.endTime,
-            singingStyle: item.singingStyle,
             tone: item.tone ?? null,
           }]
         : [],
@@ -3815,12 +3903,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         nextSelectedItems,
       );
     }
-  }
-
-  function getBuiltinTrackDefaultOption(trackId: BuiltinTrackId) {
-    const currentProject = projectRef.current;
-    const options = getBuiltinTrackOptions(currentProject.builtinTracks, trackId);
-    return options[0] ?? "其他";
   }
 
   function updateTimelineSelectionBatch(items: TimelineBatchMoveItem[], recordHistory = true) {
@@ -4050,7 +4132,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               char,
               startTime: range.startTime,
               endTime: range.endTime,
-              singingStyle: "普通唱",
               tone: null,
             },
           ],
@@ -4061,7 +4142,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         ...baseProject,
         subtitleLines: sortSubtitleLines([
           ...baseProject.subtitleLines,
-          { id: lineId, text: char, startTime: requestedRange.startTime, endTime: requestedRange.endTime },
+          {
+            id: lineId,
+            text: char,
+            startTime: requestedRange.startTime,
+            endTime: requestedRange.endTime,
+            deliveryMode: null,
+            roleType: null,
+          },
         ]),
         characterAnnotations: [
           ...baseProject.characterAnnotations,
@@ -4071,7 +4159,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             char,
             startTime: requestedRange.startTime,
             endTime: requestedRange.endTime,
-            singingStyle: "普通唱",
             tone: null,
           },
         ],
@@ -4127,7 +4214,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         {
           id: actionId,
           trackId,
-          label: getBuiltinTrackDefaultOption(trackId as BuiltinTrackId),
+          label: "其他",
           startTime: safeStartTime,
           endTime: safeEndTime,
         },
@@ -4804,6 +4891,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               text: "",
               startTime: lineCharacters[0].startTime,
               endTime: lineCharacters[characterIndex - 1].endTime,
+              deliveryMode: currentProject.subtitleLines.find((line) => line.id === currentCharacter.lineId)?.deliveryMode ?? null,
+              roleType: currentProject.subtitleLines.find((line) => line.id === currentCharacter.lineId)?.roleType ?? null,
             },
           ],
           characterAnnotations: currentProject.characterAnnotations.map((item) =>
@@ -4831,6 +4920,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             text: "",
             startTime: lineCharacters[characterIndex + 1].startTime,
             endTime: lineCharacters[lineCharacters.length - 1].endTime,
+            deliveryMode: currentProject.subtitleLines.find((line) => line.id === currentCharacter.lineId)?.deliveryMode ?? null,
+            roleType: currentProject.subtitleLines.find((line) => line.id === currentCharacter.lineId)?.roleType ?? null,
           },
         ],
         characterAnnotations: currentProject.characterAnnotations.map((item) =>
@@ -5569,26 +5660,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     );
   }
 
-  function updateBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number, value: string) {
-    const normalizedValue = value.trimStart();
-    const targetTrack = projectRef.current.builtinTracks.find((track) => track.id === trackId);
-    if (!targetTrack?.options || index < 0 || index >= targetTrack.options.length) {
-      return;
-    }
-    const nextValue = normalizedValue.length > 0 ? normalizedValue : targetTrack.options[index];
-    void updateBuiltinTrackStructure(trackId, (track) => ({
-      ...track,
-      options: (track.options ?? []).map((option, optionIndex) =>
-        optionIndex === index ? nextValue : option),
-    }), (characters, beforeTrack, afterTrack) => {
-      const before = beforeTrack.options?.[index];
-      const after = afterTrack.options?.[index];
-      return before === undefined || after === undefined
-        ? characters
-        : characters.map((item) => item.singingStyle === before ? { ...item, singingStyle: after } : item);
-    });
-  }
-
   function updateAttachedPointTrackTypeOption(pointTrackId: string, index: number, value: string) {
     const location = findPointTrackLocation(projectRef.current, pointTrackId);
     if (!location || index < 0 || index >= location.pointTrack.typeOptions.length) {
@@ -5613,13 +5684,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }) as CustomTrack);
   }
 
-  function addBuiltinTrackTypeOption(trackId: BuiltinTrackId) {
-    void updateBuiltinTrackStructure(trackId, (track) => ({
-      ...track,
-      options: [...(track.options ?? []), getNextCustomTrackTypeOptionName(track.options ?? [])],
-    }));
-  }
-
   function addAttachedPointTrackTypeOption(pointTrackId: string) {
     void updateAttachedPointTrackStructure(pointTrackId, (pointTrack) => ({
       ...pointTrack,
@@ -5640,22 +5704,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         ...track,
         typeOptions: nextTypeOptions,
       } as CustomTrack;
-    });
-  }
-
-  function moveBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number, direction: "up" | "down") {
-    void updateBuiltinTrackStructure(trackId, (track) => {
-      const options = [...(track.options ?? [])];
-      const targetIndex = direction === "up" ? index - 1 : index + 1;
-      if (targetIndex < 0 || targetIndex >= options.length) {
-        return track;
-      }
-      const [movedOption] = options.splice(index, 1);
-      options.splice(targetIndex, 0, movedOption);
-      return {
-        ...track,
-        options,
-      };
     });
   }
 
@@ -5696,30 +5744,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         ...track,
         typeOptions: nextTypeOptions,
       } as CustomTrack;
-    });
-  }
-
-  function reorderBuiltinTrackTypeOption(trackId: BuiltinTrackId, fromIndex: number, insertionIndex: number) {
-    void updateBuiltinTrackStructure(trackId, (track) => {
-      const options = [...(track.options ?? [])];
-      if (
-        fromIndex < 0 ||
-        fromIndex >= options.length ||
-        insertionIndex < 0 ||
-        insertionIndex > options.length - 1
-      ) {
-        return track;
-      }
-      const [movedOption] = options.splice(fromIndex, 1);
-      const normalizedInsertionIndex = Math.max(0, Math.min(insertionIndex, options.length));
-      if (normalizedInsertionIndex === fromIndex) {
-        return track;
-      }
-      options.splice(normalizedInsertionIndex, 0, movedOption);
-      return {
-        ...track,
-        options,
-      };
     });
   }
 
@@ -5780,24 +5804,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         });
       },
     );
-  }
-
-  function removeBuiltinTrackTypeOption(trackId: BuiltinTrackId, index: number) {
-    const targetTrack = projectRef.current.builtinTracks.find((track) => track.id === trackId);
-    const options = targetTrack?.options ?? [];
-    if (options.length <= 1 || index < 0 || index >= options.length) {
-      return;
-    }
-    void updateBuiltinTrackStructure(trackId, (track) => ({
-      ...track,
-      options: (track.options ?? []).filter((_, optionIndex) => optionIndex !== index),
-    }), (characters, beforeTrack, afterTrack) => {
-      const before = beforeTrack.options?.[index];
-      const after = afterTrack.options?.[0] ?? "类型 1";
-      return before === undefined
-        ? characters
-        : characters.map((item) => item.singingStyle === before ? { ...item, singingStyle: after } : item);
-    });
   }
 
   function removeAttachedPointTrackTypeOption(pointTrackId: string, index: number) {
@@ -6642,19 +6648,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
   }
 
-  function handleExport(kind: "character" | "singing") {
-    const fileMap = {
-      character: {
-        name: "character_track.srt",
-        content: exportCharacterTrackToSrt(project.characterAnnotations),
-      },
-      singing: {
-        name: "singing_style_track.srt",
-        content: exportSingingStyleTrackToSrt(project.characterAnnotations),
-      },
-    };
-    const target = fileMap[kind];
-    downloadBlob(target.content, target.name, "application/x-subrip");
+  function handleExport() {
+    downloadBlob(
+      exportCharacterTrackToSrt(project.characterAnnotations),
+      "character_track.srt",
+      "application/x-subrip",
+    );
   }
 
   function openDetachedWindow(
@@ -6786,6 +6785,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       <Timeline
         editingBlockedReason={remoteCatchUpBlockReason}
         subtitleLines={project.subtitleLines}
+        sentenceAnnotationConfig={project.sentenceAnnotationConfig}
         builtinTracks={project.builtinTracks}
         characterAnnotations={project.characterAnnotations}
         gongcheAnnotations={project.gongcheAnnotations}
@@ -6929,6 +6929,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         onToggleAttachedPointTracks={toggleAttachedPointTracks}
         onDeleteBuiltinTrack={deleteBuiltinTrack}
         onDeleteCustomTrack={deleteCustomTrack}
+        onOpenLineContextMenu={(id, time, x, y) => {
+          setLineFocusRequest(null);
+          applySelection({ type: "line", id });
+          setBlockContextMenu({ type: "line", id, time, x, y });
+        }}
         onOpenCharacterContextMenu={(id, time, x, y) => {
           preferredCharacterEditLocationRef.current = "timeline";
           updateTimelinePasteTarget("character-track", time);
@@ -7174,6 +7179,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           onUndo={undo}
           onRedo={redo}
           onRepairSentenceCharacterTrack={repairSentenceCharacterTrack}
+          onOpenSentenceAnnotationSettings={() => setSentenceAnnotationSettingsOpen(true)}
           waveformVisible={waveformVisible}
           banyanTrackVisible={banyanTrackVisible}
           banyanGridVisible={banyanGridVisible}
@@ -7287,6 +7293,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           }}
         />
       ) : null}
+      <SentenceAnnotationSettingsDialog
+        open={sentenceAnnotationSettingsOpen}
+        roleOptions={project.sentenceAnnotationConfig.roleOptions}
+        onOpenChange={setSentenceAnnotationSettingsOpen}
+        onAdd={addSentenceRoleOption}
+        onRename={renameSentenceRoleOption}
+        onReorder={reorderSentenceRoleOption}
+        onRemove={removeSentenceRoleOption}
+        disabledReason={sentenceClassificationEditingBlockedReason}
+      />
       <ResizableSplitLayout
         orientation="horizontal"
         initialPrimarySize={0.74}
@@ -7320,6 +7336,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             subtitlePanel={(
               <SubtitleList
                 subtitleLines={project.subtitleLines}
+                sentenceAnnotationConfig={project.sentenceAnnotationConfig}
                 currentTime={currentTime}
                 selectedLineId={selectedLineId}
                 collapsed={isSubtitlePanelCollapsed}
@@ -7332,6 +7349,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                     seekTo(line.startTime);
                   }
                 }}
+                onClassificationChange={updateSentenceClassification}
               />
             )}
             splitPanel={(
@@ -7476,6 +7494,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                     <InspectorPanel
                       selectedItem={selectedItem}
                       subtitleLines={project.subtitleLines}
+                      sentenceAnnotationConfig={project.sentenceAnnotationConfig}
                       characterAnnotations={project.characterAnnotations}
                       gongcheAnnotations={project.gongcheAnnotations}
                       banyanSections={project.banyanSections}
@@ -7488,6 +7507,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                       trackDefinitions={timelineTrackDefinitions}
                       trackSnapEnabled={trackSnapEnabled}
                       onCharacterUpdate={updateCharacter}
+                      onLineClassificationChange={updateSentenceClassification}
+                      onOpenSentenceAnnotationSettings={() => setSentenceAnnotationSettingsOpen(true)}
                       onCreateGongcheBlock={createGongcheBlock}
                       onGongcheBlockUpdate={(id, changes) => updateGongcheBlock(id, changes)}
                       onImportGongcheText={importGongcheText}
@@ -7508,11 +7529,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                         )
                       }
                       onBuiltinTrackRename={renameBuiltinTrack}
-                      onBuiltinTrackTypeOptionChange={updateBuiltinTrackTypeOption}
-                      onAddBuiltinTrackTypeOption={addBuiltinTrackTypeOption}
-                      onMoveBuiltinTrackTypeOption={moveBuiltinTrackTypeOption}
-                      onReorderBuiltinTrackTypeOption={reorderBuiltinTrackTypeOption}
-                      onRemoveBuiltinTrackTypeOption={removeBuiltinTrackTypeOption}
                       onDeleteBuiltinTrack={deleteBuiltinTrack}
                       onAddAttachedPointTrack={addAttachedPointTrack}
                       onToggleAttachedPointTracks={toggleAttachedPointTracks}
@@ -7642,6 +7658,86 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               </button>
             </>
           ) : null}
+          {contextMenuLine ? (
+            <>
+              <div
+                className="character-context-menu-label sentence-context-summary"
+                title={contextMenuLine.text}
+              >
+                句级标注 · {contextMenuLine.text}
+              </div>
+              <div className="character-context-menu-divider" />
+              <div className="character-context-menu-label">发声方式</div>
+              <button
+                type="button"
+                className={contextMenuLine.deliveryMode === null ? "menu-option-active" : ""}
+                disabled={Boolean(sentenceClassificationEditingBlockedReason)}
+                title={sentenceClassificationEditingBlockedReason}
+                onClick={() => {
+                  updateSentenceClassification(contextMenuLine.id, { deliveryMode: null });
+                  setBlockContextMenu(null);
+                }}
+              >
+                {contextMenuLine.deliveryMode === null ? "✓ 未选择" : "未选择"}
+              </button>
+              {SENTENCE_DELIVERY_MODE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={contextMenuLine.deliveryMode === option.value ? "menu-option-active" : ""}
+                  disabled={Boolean(sentenceClassificationEditingBlockedReason)}
+                  title={sentenceClassificationEditingBlockedReason}
+                  onClick={() => {
+                    updateSentenceClassification(contextMenuLine.id, { deliveryMode: option.value });
+                    setBlockContextMenu(null);
+                  }}
+                >
+                  {contextMenuLine.deliveryMode === option.value ? `✓ ${option.label}` : option.label}
+                </button>
+              ))}
+              <div className="character-context-menu-divider" />
+              <div className="character-context-menu-label">角色行当</div>
+              <button
+                type="button"
+                className={contextMenuLine.roleType === null ? "menu-option-active" : ""}
+                disabled={Boolean(sentenceClassificationEditingBlockedReason)}
+                title={sentenceClassificationEditingBlockedReason}
+                onClick={() => {
+                  updateSentenceClassification(contextMenuLine.id, { roleType: null });
+                  setBlockContextMenu(null);
+                }}
+              >
+                {contextMenuLine.roleType === null ? "✓ 未选择" : "未选择"}
+              </button>
+              {project.sentenceAnnotationConfig.roleOptions.length === 0 ? (
+                <button type="button" disabled>尚未设置角色行当</button>
+              ) : project.sentenceAnnotationConfig.roleOptions.map((role) => (
+                <button
+                  key={role}
+                  type="button"
+                  className={contextMenuLine.roleType === role ? "menu-option-active" : ""}
+                  disabled={Boolean(sentenceClassificationEditingBlockedReason)}
+                  title={sentenceClassificationEditingBlockedReason}
+                  onClick={() => {
+                    updateSentenceClassification(contextMenuLine.id, { roleType: role });
+                    setBlockContextMenu(null);
+                  }}
+                >
+                  {contextMenuLine.roleType === role ? `✓ ${role}` : role}
+                </button>
+              ))}
+              <div className="character-context-menu-divider" />
+              <button
+                type="button"
+                onClick={() => {
+                  setBlockContextMenu(null);
+                  setSentenceAnnotationSettingsOpen(true);
+                }}
+              >
+                管理角色行当...
+              </button>
+            </>
+          ) : null}
           {contextMenuCharacter ? (
             <>
               <button
@@ -7756,28 +7852,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                   </button>
                 </>
               )}
-              <div className="character-context-menu-divider" />
-              <div className="character-context-menu-label">唱腔类型</div>
-              {(contextMenuCharacterTrack?.options ?? [contextMenuCharacter.singingStyle]).map((style) => (
-                <button
-                  key={style}
-                  type="button"
-                  className={contextMenuCharacter.singingStyle === style ? "menu-option-active" : ""}
-                  onClick={() => {
-                    applyCharacterSingingStyle(contextMenuCharacter.id, style);
-                    setBlockContextMenu(null);
-                  }}
-                >
-                  {contextMenuCharacter.singingStyle === style ? `✓ ${style}` : style}
-                </button>
-              ))}
-              <div className="character-context-menu-divider" />
-              <button
-                type="button"
-                onClick={() => createContextMenuTypeOption("character")}
-              >
-                新建类型...
-              </button>
             </>
           ) : null}
           {contextMenuAction ? (
@@ -7812,7 +7886,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               <div className="character-context-menu-label">
                 {contextMenuActionTrack?.name ?? "动作标签"}
               </div>
-              {(contextMenuActionTrack?.options ?? ["其他"]).map((label) => (
+              {[contextMenuAction.label].map((label) => (
                 <button
                   key={label}
                   type="button"
@@ -8218,7 +8292,6 @@ type ResolvedClipboardSelectionItem =
       trackId: "character-track";
       lineId: string;
       char: string;
-      singingStyle: string;
       tone: CharacterToneInfo | null;
       startTime: number;
       endTime: number;
@@ -8675,6 +8748,9 @@ function countImportMergeDuplicates(
 function cloneProjectForMerge(project: ProjectData): ProjectData {
   return {
     ...project,
+    sentenceAnnotationConfig: {
+      roleOptions: [...project.sentenceAnnotationConfig.roleOptions],
+    },
     subtitleLines: project.subtitleLines.map((line) => ({ ...line })),
     characterAnnotations: project.characterAnnotations.map((item) => ({ ...item })),
     gongcheAnnotations: project.gongcheAnnotations.map((item) => ({
@@ -8689,7 +8765,6 @@ function cloneProjectForMerge(project: ProjectData): ProjectData {
     actionAnnotations: project.actionAnnotations.map((item) => ({ ...item })),
     builtinTracks: project.builtinTracks.map((track) => ({
       ...track,
-      options: track.options ? [...track.options] : undefined,
       attachedPointTracks: track.attachedPointTracks.map((pointTrack) => cloneAttachedPointTrack(pointTrack)),
     })),
     customTracks: project.customTracks.map((track) =>
@@ -8725,7 +8800,6 @@ function ensureBuiltinTrackForMerge(project: ProjectData, sourceTrack: BuiltinTr
   const nextTrack: BuiltinTrack = {
     ...getBuiltinTrackDefinition(sourceTrack.id),
     name: sourceTrack.name,
-    options: sourceTrack.options ? [...sourceTrack.options] : undefined,
     snapToWaveformKeypoints: Boolean(sourceTrack.snapToWaveformKeypoints),
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
@@ -8796,12 +8870,17 @@ function mergeBuiltinTrackFromImport(
     track.id === targetTrackId
       ? {
           ...track,
-          options: mergeUniqueStrings(track.options ?? [], sourceTrack.options ?? []),
           snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints || sourceTrack.snapToWaveformKeypoints),
         }
       : track);
 
   if (sourceTrack.type === "character") {
+    project.sentenceAnnotationConfig = {
+      roleOptions: mergeUniqueStrings(
+        project.sentenceAnnotationConfig.roleOptions,
+        sourceProject.sentenceAnnotationConfig.roleOptions,
+      ),
+    };
     const sourceCharacters = sourceProject.characterAnnotations;
     const oldLineIds = project.characterAnnotations.map((item) => item.lineId);
     const incomingCharacters = sourceCharacters.map((item) => ({
@@ -8813,6 +8892,18 @@ function mergeBuiltinTrackFromImport(
     project.characterAnnotations = mergeMode === "replace"
       ? incomingCharacters
       : [...project.characterAnnotations, ...nonDuplicateCharacters];
+    const importedLineIds = new Set(sourceCharacters.map((item) => item.lineId));
+    const sourceLines = sourceProject.subtitleLines.filter((line) => importedLineIds.has(line.id));
+    const sourceLineById = new Map(sourceLines.map((line) => [line.id, line]));
+    // 逐字整合仍以 lineId 保持句字关系；覆盖模式采用来源分类，叠加模式不覆盖目标已有学术标注。
+    project.subtitleLines = [
+      ...project.subtitleLines.map((line) =>
+        mergeMode === "replace" && sourceLineById.has(line.id)
+          ? { ...sourceLineById.get(line.id)! }
+          : line),
+      ...sourceLines.filter((sourceLine) =>
+        !project.subtitleLines.some((line) => line.id === sourceLine.id)).map((line) => ({ ...line })),
+    ];
     return syncSubtitleLines(project, [
       ...oldLineIds,
       ...incomingCharacters.map((item) => item.lineId),
@@ -8988,7 +9079,6 @@ function getBanyanRoleForSubtype(subtype: BanyanMark["subtype"]): BanyanMark["ro
 
 function areCharactersEquivalent(left: CharacterAnnotation, right: CharacterAnnotation) {
   return left.char === right.char &&
-    left.singingStyle === right.singingStyle &&
     timesClose(left.startTime, right.startTime) &&
     timesClose(left.endTime, right.endTime);
 }
@@ -9037,7 +9127,6 @@ function resolveTimelineSelectionItem(
           trackId: "character-track",
           lineId: annotation.lineId,
           char: annotation.char,
-          singingStyle: annotation.singingStyle,
           tone: annotation.tone ?? null,
           startTime: annotation.startTime,
           endTime: annotation.endTime,
@@ -9206,7 +9295,6 @@ function buildPreparedPasteItems(
         startTime,
         endTime,
         char: item.char,
-        singingStyle: item.singingStyle,
         tone: item.tone ?? null,
         sourceLineId: item.sourceLineId,
       });
@@ -9853,7 +9941,11 @@ function buildProjectWithMergedCharacterLine(
       for (const character of segment) {
         lineIdReassignments.set(character.id, targetLineId);
       }
-      replacementLines.push(buildSubtitleLineFromCharacters(targetLineId, segment));
+      replacementLines.push(buildSubtitleLineFromCharacters(
+        targetLineId,
+        segment,
+        getClassificationForCharacterLines(project, segment),
+      ));
     });
   }
 
@@ -9861,7 +9953,11 @@ function buildProjectWithMergedCharacterLine(
     lineIdReassignments.set(character.id, newLineId);
   }
 
-  const mergedLine = buildSubtitleLineFromCharacters(newLineId, normalizedRangeCharacters);
+  const mergedLine = buildSubtitleLineFromCharacters(
+    newLineId,
+    normalizedRangeCharacters,
+    getClassificationForCharacterLines(project, normalizedRangeCharacters),
+  );
   return {
     ...project,
     subtitleLines: sortSubtitleLines([
@@ -9948,6 +10044,7 @@ function buildSubtitleLinesForMergedCharacterLinePreview(
       replacementLines.push(buildSubtitleLineFromCharacters(
         `${lineId}:preview-segment-${segmentIndex}`,
         segment,
+        getClassificationForCharacterLines(project, segment),
       ));
     });
   }
@@ -9955,7 +10052,11 @@ function buildSubtitleLinesForMergedCharacterLinePreview(
   return sortSubtitleLines([
     ...project.subtitleLines.filter((line) => !affectedLineIds.has(line.id)),
     ...replacementLines,
-    buildSubtitleLineFromCharacters(previewLineId, normalizedRangeCharacters),
+    buildSubtitleLineFromCharacters(
+      previewLineId,
+      normalizedRangeCharacters,
+      getClassificationForCharacterLines(project, normalizedRangeCharacters),
+    ),
   ]);
 }
 
@@ -9980,13 +10081,41 @@ function splitCharactersByOriginalContinuity(
   return segments;
 }
 
-function buildSubtitleLineFromCharacters(lineId: string, characters: CharacterAnnotation[]): SubtitleLine {
+function buildSubtitleLineFromCharacters(
+  lineId: string,
+  characters: CharacterAnnotation[],
+  classification: Pick<SubtitleLine, "deliveryMode" | "roleType">,
+): SubtitleLine {
   const sortedCharacters = sortCharactersByTime(characters);
   return {
     id: lineId,
     text: sortedCharacters.map((character) => character.char).join(""),
     startTime: sortedCharacters[0].startTime,
     endTime: sortedCharacters[sortedCharacters.length - 1].endTime,
+    ...classification,
+  };
+}
+
+// 合并跨句逐字块时，每个维度只有在所有来源句持有相同合法值时才保留；否则重新标注。
+function getClassificationForCharacterLines(
+  project: ProjectData,
+  characters: CharacterAnnotation[],
+): Pick<SubtitleLine, "deliveryMode" | "roleType"> {
+  const sourceLineIds = new Set(characters.map((character) => character.lineId));
+  const sourceLines = project.subtitleLines.filter((line) => sourceLineIds.has(line.id));
+  const deliveryModes = new Set(sourceLines.map((line) => line.deliveryMode));
+  const roleTypes = new Set(sourceLines.map((line) => line.roleType));
+  const deliveryMode = sourceLines.length > 0 && deliveryModes.size === 1
+    ? sourceLines[0].deliveryMode
+    : null;
+  const candidateRole = sourceLines.length > 0 && roleTypes.size === 1
+    ? sourceLines[0].roleType
+    : null;
+  return {
+    deliveryMode,
+    roleType: candidateRole && project.sentenceAnnotationConfig.roleOptions.includes(candidateRole)
+      ? candidateRole
+      : null,
   };
 }
 
@@ -10008,6 +10137,9 @@ function syncSubtitleLine(project: ProjectData, lineId: string) {
     text: lineCharacters.map((item) => item.char).join(""),
     startTime: lineCharacters[0].startTime,
     endTime: lineCharacters[lineCharacters.length - 1].endTime,
+    // 逐字同步只更新句文本和边界，已有句级学术标注必须原样保留。
+    deliveryMode: existingLine?.deliveryMode ?? null,
+    roleType: existingLine?.roleType ?? null,
   };
 
   const nextLines = existingLine

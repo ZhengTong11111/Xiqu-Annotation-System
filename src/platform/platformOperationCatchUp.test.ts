@@ -105,14 +105,20 @@ function createAttachedPoint(base: ProjectData) {
 // 事务夹具同时创建句与逐字，验证 committed feed 把整个依赖闭包视为一个 revision 事实。
 function createSentenceWithCharacter(base: ProjectData) {
   const next = structuredClone(base);
-  next.subtitleLines.push({ id: "catch-up-line", text: "新", startTime: 8, endTime: 9 });
+  next.subtitleLines.push({
+    id: "catch-up-line",
+    text: "新",
+    startTime: 8,
+    endTime: 9,
+    deliveryMode: null,
+    roleType: null,
+  });
   next.characterAnnotations.push({
     id: "catch-up-character",
     lineId: "catch-up-line",
     char: "新",
     startTime: 8,
     endTime: 9,
-    singingStyle: "普通唱",
     tone: null,
   });
   const envelope = buildProjectAnnotationTransactionCommand(base, next, {
@@ -362,19 +368,17 @@ test("committed feed 可原子重放 typeOptions 与块类型结构事务", asyn
   if (result.status === "applied") assert.deepEqual(result.project, next);
 });
 
-test("committed feed 可原子重放内建 options 与逐字唱法联动", async () => {
+test("committed feed 可原子重放角色列表与句级角色联动", async () => {
   const base = createCatchUpProject();
-  const oldStyle = base.characterAnnotations[0].singingStyle;
-  base.builtinTracks[0].options = [oldStyle];
   const next = structuredClone(base);
-  next.builtinTracks[0].options = ["远端唱法"];
-  next.characterAnnotations[0].singingStyle = "远端唱法";
+  next.sentenceAnnotationConfig.roleOptions.push("远端角色");
+  next.subtitleLines[0].roleType = "远端角色";
   const envelope = buildProjectTrackStructureTransactionCommand(base, next, {
-    builtinTrackStructureIds: ["character-track"],
+    stateTargets: [{ entityType: "sentence-annotation-config", entityId: "sentence-annotation-config" }],
     contentTargets: [{
-      entityType: "character",
-      entityId: base.characterAnnotations[0].id,
-      field: "singingStyle",
+      entityType: "sentence",
+      entityId: base.subtitleLines[0].id,
+      field: "roleType",
     }],
   });
   assert.ok(envelope);

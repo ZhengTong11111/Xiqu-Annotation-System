@@ -96,6 +96,25 @@ test("未决冲突与坏引用阻断应用", () => {
   assert.equal(invalid.ok, false);
 });
 
+test("局部整合句级字幕会补齐其角色定义", () => {
+  const source = emptyProject();
+  source.sentenceAnnotationConfig.roleOptions = ["闺门旦"];
+  source.subtitleLines.push({
+    id: "line-role",
+    text: "寻梦",
+    startTime: 0,
+    endTime: 2,
+    deliveryMode: "sung",
+    roleType: "闺门旦",
+  });
+  const result = buildAndApply(source, emptyProject(), ["subtitle_lines:line-role"], {});
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.project.sentenceAnnotationConfig.roleOptions, ["闺门旦"]);
+  assert.equal(result.project.subtitleLines[0]?.roleType, "闺门旦");
+});
+
 function buildAndApply(
   source: ProjectData,
   target: ProjectData,
@@ -148,6 +167,7 @@ function projectWithTrack(blockText: string, pointLabel: string): ProjectData {
 function emptyProject(): ProjectData {
   return {
     video: { url: "", name: null, source: "url" },
+    sentenceAnnotationConfig: { roleOptions: [] },
     subtitleLines: [],
     characterAnnotations: [],
     gongcheAnnotations: [],

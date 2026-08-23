@@ -367,11 +367,11 @@ function projectCandidate(project: ProjectData): DiffCandidate {
     videoSource: project.video.source,
     videoFilePath: project.video.filePath ?? null,
     requiresManualImport: Boolean(project.video.requiresManualImport),
+    sentenceRoleOptions: project.sentenceAnnotationConfig.roleOptions,
     activeTrackOrder: project.activeTrackOrder,
     builtinTracks: project.builtinTracks.map((track) => ({
       id: track.id,
       name: track.name,
-      options: track.options ?? [],
       snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints),
       autoSetLoopRangeOnSelect: Boolean(track.autoSetLoopRangeOnSelect),
     })),
@@ -381,12 +381,13 @@ function projectCandidate(project: ProjectData): DiffCandidate {
     videoSource: "视频类型",
     videoFilePath: "本地视频路径",
     requiresManualImport: "视频重关联状态",
+    sentenceRoleOptions: "角色行当列表",
     activeTrackOrder: "轨道顺序",
     builtinTracks: "内建轨道设置",
   });
 }
 
-// 句级字幕以保存 id 匹配，文本和时间边界是主要研究字段。
+// 句级字幕以保存 id 匹配；文本、时间和两项分类共同构成当前研究标注。
 function subtitleCandidate(line: SubtitleLine): DiffCandidate {
   return candidate(line.id, line.text || "空句", range(
     line.startTime,
@@ -395,14 +396,18 @@ function subtitleCandidate(line: SubtitleLine): DiffCandidate {
     text: line.text,
     startTime: line.startTime,
     endTime: line.endTime,
+    deliveryMode: line.deliveryMode,
+    roleType: line.roleType,
   }, {
     text: "文本",
     startTime: "开始时间",
     endTime: "结束时间",
+    deliveryMode: "念白/唱",
+    roleType: "角色行当",
   });
 }
 
-// 逐字比较保留句归属、唱法和四声，字符插入不会影响其他稳定 id 的匹配。
+// 逐字比较保留句归属和四声，字符插入不会影响其他稳定 id 的匹配。
 function characterCandidate(item: CharacterAnnotation): DiffCandidate {
   return candidate(item.id, item.char || "空字", range(
     item.startTime,
@@ -412,14 +417,12 @@ function characterCandidate(item: CharacterAnnotation): DiffCandidate {
     char: item.char,
     startTime: item.startTime,
     endTime: item.endTime,
-    singingStyle: item.singingStyle,
     tone: item.tone ?? null,
   }, {
     lineId: "句级归属",
     char: "文字",
     startTime: "开始时间",
     endTime: "结束时间",
-    singingStyle: "唱法",
     tone: "四声",
   });
 }

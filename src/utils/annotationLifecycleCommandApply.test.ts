@@ -237,14 +237,15 @@ test("builder 对合同外变化和工尺级联删除安全回退 snapshot", () 
 test("句与首字可同批创建，缺少句引用的逐字创建会被拒绝", () => {
   const base = createProject();
   const next = structuredClone(base);
-  next.subtitleLines.push({ id: "line-created", text: "新", startTime: 9, endTime: 10 });
+  next.subtitleLines.push({
+    id: "line-created", text: "新", startTime: 9, endTime: 10, deliveryMode: null, roleType: null,
+  });
   next.characterAnnotations.push({
     id: "char-created",
     lineId: "line-created",
     char: "新",
     startTime: 9,
     endTime: 10,
-    singingStyle: "普通唱",
     tone: { toneClass: "yang_shang", yxlzShangSubtype: "yinyang_tongyong" },
   });
   const envelope = buildProjectAnnotationLifecycleCommand(base, next, [
@@ -263,7 +264,6 @@ test("句与首字可同批创建，缺少句引用的逐字创建会被拒绝",
     char: "孤",
     startTime: 11,
     endTime: 12,
-    singingStyle: "普通唱",
     tone: null,
   });
   assert.equal(buildProjectAnnotationLifecycleCommand(base, orphaned, [{

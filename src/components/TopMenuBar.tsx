@@ -50,10 +50,11 @@ type TopMenuBarProps = {
   onSaveProjectToServer?: () => void;
   onOpenServerMediaBinding?: () => void;
   serverMediaBindingDisabledReason?: string;
-  onExportTrack: (kind: "character" | "singing") => void;
+  onExportTrack: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onRepairSentenceCharacterTrack: () => void;
+  onOpenSentenceAnnotationSettings: () => void;
   onTogglePlay: () => void;
   onStep: (delta: number) => void;
   onPlaybackRateChange: (rate: number) => void;
@@ -120,6 +121,7 @@ export function TopMenuBar({
   onUndo,
   onRedo,
   onRepairSentenceCharacterTrack,
+  onOpenSentenceAnnotationSettings,
   onTogglePlay,
   onStep,
   onPlaybackRateChange,
@@ -276,11 +278,8 @@ export function TopMenuBar({
                       保存平台标注文件
                     </button>
                     <div className="top-menu-divider" />
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(() => onExportTrack("character"))}>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onExportTrack)}>
                       导出逐字 SRT
-                    </button>
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(() => onExportTrack("singing"))}>
-                      导出唱腔 SRT
                     </button>
                   </>
                 ) : null}
@@ -295,6 +294,9 @@ export function TopMenuBar({
                     <div className="top-menu-divider" />
                     <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onRepairSentenceCharacterTrack)} disabled={Boolean(editingBlockedReason)}>
                       检查句级/逐字文字轨
+                    </button>
+                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onOpenSentenceAnnotationSettings)} disabled={Boolean(editingBlockedReason)}>
+                      句级标注设置...
                     </button>
                   </>
                 ) : null}

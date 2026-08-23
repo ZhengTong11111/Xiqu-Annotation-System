@@ -1,18 +1,20 @@
-import type {
-  AttachedPointAnnotation,
-  AttachedPointTrack,
-  BranchScope,
-  BanyanMark,
-  BanyanSection,
-  CharacterAnnotation,
-  CharacterToneInfo,
-  CustomActionTrackBlock,
-  CustomTextTrackBlock,
-  CustomTrack,
-  GongcheAnnotation,
-  GongcheSymbol,
-  ProjectData,
-  SavedProjectFile,
+import {
+  MAX_SENTENCE_ROLE_OPTION_LENGTH,
+  MAX_SENTENCE_ROLE_OPTIONS,
+  type AttachedPointAnnotation,
+  type AttachedPointTrack,
+  type BranchScope,
+  type BanyanMark,
+  type BanyanSection,
+  type CharacterAnnotation,
+  type CharacterToneInfo,
+  type CustomActionTrackBlock,
+  type CustomTextTrackBlock,
+  type CustomTrack,
+  type GongcheAnnotation,
+  type GongcheSymbol,
+  type ProjectData,
+  type SavedProjectFile,
 } from "../types";
 import {
   getBuiltinTrackDefinition,
@@ -36,7 +38,7 @@ import {
   normalizeShangSubtype,
 } from "./tone";
 
-export const PROJECT_FILE_VERSION = 5;
+export const PROJECT_FILE_VERSION = 6;
 
 const MIN_NORMALIZED_CHARACTER_DURATION = 0.04;
 
@@ -114,6 +116,7 @@ export function normalizeImportedProjectFile(value: SavedProjectFile | ProjectDa
 
 export function normalizeProjectData(value: LegacyProjectInput | ProjectData | unknown): ProjectData {
   const source = isRecord(value) ? value as LegacyProjectInput : {};
+  const sentenceAnnotationConfig = normalizeSentenceAnnotationConfig(source.sentenceAnnotationConfig);
   const builtinTracks = normalizeBuiltinTracks(source.builtinTracks);
   const customTracks = migrateLegacyBuiltinActionTracks(
     normalizeCustomTracks(source.customTracks),
@@ -122,7 +125,8 @@ export function normalizeProjectData(value: LegacyProjectInput | ProjectData | u
   );
   return {
     video: normalizeProjectVideo(source),
-    subtitleLines: Array.isArray(source.subtitleLines) ? source.subtitleLines : [],
+    sentenceAnnotationConfig,
+    subtitleLines: normalizeSubtitleLines(source.subtitleLines, sentenceAnnotationConfig.roleOptions),
     characterAnnotations: normalizeCharacterAnnotations(source.characterAnnotations),
     gongcheAnnotations: normalizeGongcheAnnotations(source.gongcheAnnotations),
     banyanSections: normalizeBanyanSections(source.banyanSections),
@@ -136,6 +140,51 @@ export function normalizeProjectData(value: LegacyProjectInput | ProjectData | u
       customTracks,
     ),
   };
+}
+
+// 角色行当是有序项目配置。旧文件缺少该字段时保持空列表，不推断默认行当。
+function normalizeSentenceAnnotationConfig(value: unknown): ProjectData["sentenceAnnotationConfig"] {
+  if (!isRecord(value) || !Array.isArray(value.roleOptions)) {
+    return { roleOptions: [] };
+  }
+  const roleOptions: string[] = [];
+  for (const rawOption of value.roleOptions) {
+    if (typeof rawOption !== "string") continue;
+    const option = rawOption.trim().slice(0, MAX_SENTENCE_ROLE_OPTION_LENGTH);
+    if (!option || roleOptions.includes(option)) continue;
+    roleOptions.push(option);
+    if (roleOptions.length >= MAX_SENTENCE_ROLE_OPTIONS) break;
+  }
+  return { roleOptions };
+}
+
+// v1-v5 句子没有分类字段，迁移后明确标为未完成；非法 v6 值同样归零，不能猜测研究标注。
+function normalizeSubtitleLines(value: unknown, roleOptions: string[]): ProjectData["subtitleLines"] {
+  if (!Array.isArray(value)) return [];
+  const validRoles = new Set(roleOptions);
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.id !== "string") return [];
+    const startTime = typeof item.startTime === "number" && Number.isFinite(item.startTime)
+      ? item.startTime
+      : 0;
+    const endTime = typeof item.endTime === "number" && Number.isFinite(item.endTime)
+      ? Math.max(item.endTime, startTime)
+      : startTime;
+    const deliveryMode = item.deliveryMode === "spoken" || item.deliveryMode === "sung"
+      ? item.deliveryMode
+      : null;
+    const roleType = typeof item.roleType === "string" && validRoles.has(item.roleType.trim())
+      ? item.roleType.trim()
+      : null;
+    return [{
+      id: item.id,
+      text: typeof item.text === "string" ? item.text : "",
+      startTime,
+      endTime,
+      deliveryMode,
+      roleType,
+    }];
+  });
 }
 
 export function getPersistableProjectData(project: ProjectData): ProjectData {
@@ -300,11 +349,12 @@ function getLegacyBuiltinActionTracks(value: ProjectData["builtinTracks"] | unde
       return [];
     }
     const fallback = legacyBuiltinActionTrackDefaults[trackId];
+    const legacyOptions = (track as unknown as { options?: unknown }).options;
     return [{
       id: trackId,
       name: typeof track.name === "string" && track.name.trim() ? track.name : fallback.name,
-      typeOptions: Array.isArray(track.options) && track.options.length > 0
-        ? track.options
+      typeOptions: Array.isArray(legacyOptions) && legacyOptions.length > 0
+        ? legacyOptions.filter((option): option is string => typeof option === "string")
         : fallback.typeOptions,
       attachedPointTracks: normalizeAttachedPointTracks(track.attachedPointTracks),
       attachedPointTracksExpanded: Boolean(track.attachedPointTracksExpanded),
@@ -459,9 +509,6 @@ function normalizeBuiltinTracks(value: ProjectData["builtinTracks"] | undefined)
     return [{
       ...defaultTrack,
       name: typeof track.name === "string" && track.name.trim() ? track.name : defaultTrack.name,
-      options: Array.isArray(track.options) && track.options.length > 0
-        ? track.options
-        : defaultTrack.options,
       attachedPointTracks: normalizeAttachedPointTracks(track.attachedPointTracks),
       attachedPointTracksExpanded: Boolean(track.attachedPointTracksExpanded),
       snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints),
@@ -655,7 +702,6 @@ export function normalizeCharacterAnnotations(value: unknown): CharacterAnnotati
       char: typeof source.char === "string" ? source.char : "",
       startTime,
       endTime,
-      singingStyle: typeof source.singingStyle === "string" ? source.singingStyle : "普通唱",
       tone: normalizeCharacterToneInfo(source.tone),
     }] satisfies CharacterAnnotation[];
   });

@@ -8,27 +8,16 @@ import type {
   CustomTrackType,
   ProjectData,
   ResolvedCustomTrackBlock,
-  SingingStyle,
   SubtitleLine,
   TrackDefinition,
 } from "../types";
 import { getBranchLaneCount } from "./trackBranching";
-
-export const singingStyleOptions: SingingStyle[] = [
-  "普通唱",
-  "拖腔",
-  "顿音",
-  "装饰音",
-  "念白式",
-  "其他",
-];
 
 export const defaultBuiltinTracks: BuiltinTrack[] = [
   {
     id: "character-track",
     name: "逐字文字轨",
     type: "character",
-    options: [...singingStyleOptions],
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
     snapToWaveformKeypoints: false,
@@ -39,7 +28,6 @@ export const defaultBuiltinTracks: BuiltinTrack[] = [
 export function getDefaultBuiltinTracks(): BuiltinTrack[] {
   return defaultBuiltinTracks.map((track) => ({
     ...track,
-    options: track.options ? [...track.options] : undefined,
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
     snapToWaveformKeypoints: false,
@@ -58,6 +46,7 @@ export function createEmptyProjectData(): ProjectData {
       filePath: null,
       requiresManualImport: false,
     },
+    sentenceAnnotationConfig: { roleOptions: [] },
     subtitleLines: [],
     characterAnnotations: [],
     gongcheAnnotations: [],
@@ -77,7 +66,6 @@ export function getBuiltinTrackDefinition(trackId: BuiltinTrackId): BuiltinTrack
   }
   return {
     ...track,
-    options: track.options ? [...track.options] : undefined,
     attachedPointTracks: [],
     attachedPointTracksExpanded: false,
     snapToWaveformKeypoints: false,
@@ -243,13 +231,6 @@ export function flattenBranchLanes(lanes: BranchLane[], depth = 0): Array<Branch
   ]);
 }
 
-export function getBuiltinTrackOptions(
-  builtinTracks: BuiltinTrack[],
-  trackId: BuiltinTrackId,
-) {
-  return builtinTracks.find((track) => track.id === trackId)?.options ?? [];
-}
-
 export function getDefaultCustomTrackName(
   customTracks: CustomTrack[],
   trackType: CustomTrackType,
@@ -289,7 +270,6 @@ export function splitLineIntoCharacters(line: SubtitleLine): CharacterAnnotation
       char,
       startTime,
       endTime,
-      singingStyle: "普通唱",
       // 句级 SRT 拆字时不带四声信息，统一留空，由用户在逐字属性中手动标注。
       tone: null,
     };

@@ -18,7 +18,6 @@ export type LocalStaticCommandId =
   | "file.import-merge-project"
   | "file.save-local"
   | "file.export-character-srt"
-  | "file.export-singing-srt"
   | "edit.undo"
   | "edit.redo"
   | "edit.repair-sentence-character-track"
@@ -149,13 +148,6 @@ export const LOCAL_STATIC_COMMAND_DEFINITIONS: StaticCommandDefinition<LocalStat
     label: "导出逐字 SRT",
     path: ["文件", "导出逐字 SRT"],
     keywords: ["export", "srt", "导出", "逐字", "字级"],
-    target: { kind: "static" },
-  },
-  {
-    id: "file.export-singing-srt",
-    label: "导出唱腔 SRT",
-    path: ["文件", "导出唱腔 SRT"],
-    keywords: ["export", "srt", "导出", "唱腔"],
     target: { kind: "static" },
   },
   {

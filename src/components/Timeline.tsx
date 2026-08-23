@@ -22,6 +22,7 @@ import type {
   GongcheAnnotation,
   GongcheSymbol,
   ProjectData,
+  SentenceAnnotationConfig,
   ResolvedCustomTrackBlock,
   SelectedItem,
   SpectrogramData,
@@ -44,11 +45,17 @@ import {
   resolveCustomTrackColor,
 } from "../utils/trackColors";
 import { getCharacterToneLabel, isValidCharacterToneInfo } from "../utils/tone";
+import {
+  getSentenceDeliveryModeLabel,
+  isSentenceClassificationComplete,
+} from "../utils/sentenceClassification";
+import { resolveSentenceTimelineLabelDetail } from "../utils/sentenceTimelineLabel";
 import type { RemoteTimelineActivityView } from "../platform/remoteTimelineActivityRegistry";
 
 type TimelineProps = {
   editingBlockedReason?: string;
   subtitleLines: SubtitleLine[];
+  sentenceAnnotationConfig: SentenceAnnotationConfig;
   builtinTracks: BuiltinTrack[];
   characterAnnotations: CharacterAnnotation[];
   gongcheAnnotations: GongcheAnnotation[];
@@ -125,6 +132,7 @@ type TimelineProps = {
   onAddBuiltinTrack: (trackId: BuiltinTrackId) => void;
   onAddCustomTrack: (trackType: "text" | "action") => void;
   onUpdatePasteTarget: (trackId: string, time: number) => void;
+  onOpenLineContextMenu: (id: string, time: number, x: number, y: number) => void;
   onOpenCharacterContextMenu: (id: string, time: number, x: number, y: number) => void;
   onOpenActionContextMenu: (id: string, time: number, x: number, y: number) => void;
   onOpenCustomBlockContextMenu: (trackId: string, id: string, time: number, x: number, y: number) => void;
@@ -517,6 +525,7 @@ type LoopRangeDragState =
 export function Timeline({
   editingBlockedReason,
   subtitleLines,
+  sentenceAnnotationConfig,
   builtinTracks,
   characterAnnotations,
   gongcheAnnotations,
@@ -593,6 +602,7 @@ export function Timeline({
   onAddBuiltinTrack,
   onAddCustomTrack,
   onUpdatePasteTarget,
+  onOpenLineContextMenu,
   onOpenCharacterContextMenu,
   onOpenActionContextMenu,
   onOpenCustomBlockContextMenu,
@@ -2735,43 +2745,77 @@ export function Timeline({
           <div className="timeline-top-deck">
             {renderBanyanGridLines("timeline-banyan-grid-lines-floating")}
             <div className="line-focus-layer">
-              {subtitleLines.map((line) => (
-                <button
-                  key={line.id}
-                  className={[
-                    "line-overlay",
-                    selectedItem?.type === "line" && selectedItem.id === line.id ? "selected" : "",
-                  ].join(" ")}
-                  style={{
-                    left: getCanvasX(line.startTime, zoom),
-                    width: Math.max((line.endTime - line.startTime) * zoom, 4),
-                  }}
-                  onPointerDown={(event) => {
-                    if (event.button !== 0) {
-                      return;
-                    }
-                    event.stopPropagation();
-                    lastPointerClientXRef.current = event.clientX;
-                    setDragState({
-                      kind: "move-line",
-                      id: line.id,
-                      originX: event.clientX,
-                      originalStart: line.startTime,
-                      originalEnd: line.endTime,
-                    });
-                  }}
-                  onClick={() => {
-                    if (suppressLineClickIdRef.current === line.id) {
-                      suppressLineClickIdRef.current = null;
-                      return;
-                    }
-                    onSelectLineOverlay(line.id);
-                  }}
-                  title={line.text}
-                >
-                  <span className="line-overlay-text">{line.text}</span>
-                </button>
-              ))}
+              {subtitleLines.map((line) => {
+                const blockWidth = Math.max((line.endTime - line.startTime) * zoom, 4);
+                const deliveryLabel = getSentenceDeliveryModeLabel(line.deliveryMode);
+                const roleLabel = line.roleType ?? "角色未选";
+                const labelDetail = resolveSentenceTimelineLabelDetail({
+                  blockWidth,
+                  sentenceText: line.text,
+                  deliveryLabel,
+                  roleLabel,
+                });
+                return (
+                  <button
+                    key={line.id}
+                    className={[
+                      "line-overlay",
+                      isSentenceClassificationComplete(line, sentenceAnnotationConfig)
+                        ? "classification-complete"
+                        : "classification-incomplete",
+                      selectedItem?.type === "line" && selectedItem.id === line.id ? "selected" : "",
+                    ].join(" ")}
+                    style={{
+                      left: getCanvasX(line.startTime, zoom),
+                      width: blockWidth,
+                    }}
+                    onPointerDown={(event) => {
+                      if (event.button !== 0) {
+                        return;
+                      }
+                      event.stopPropagation();
+                      lastPointerClientXRef.current = event.clientX;
+                      setDragState({
+                        kind: "move-line",
+                        id: line.id,
+                        originX: event.clientX,
+                        originalStart: line.startTime,
+                        originalEnd: line.endTime,
+                      });
+                    }}
+                    onClick={() => {
+                      if (suppressLineClickIdRef.current === line.id) {
+                        suppressLineClickIdRef.current = null;
+                        return;
+                      }
+                      onSelectLineOverlay(line.id);
+                    }}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      // 句块右键只打开分类菜单，不复用左键拖动，也不改变播放头位置。
+                      onCloseContextMenu();
+                      onOpenLineContextMenu(
+                        line.id,
+                        line.startTime,
+                        event.clientX,
+                        event.clientY,
+                      );
+                    }}
+                    title={`${deliveryLabel} · ${roleLabel} · ${line.text}`}
+                  >
+                    <span className="line-overlay-content">
+                      {labelDetail === "full" ? (
+                        <span className="line-overlay-delivery">{deliveryLabel}</span>
+                      ) : null}
+                      {labelDetail !== "text" ? (
+                        <span className="line-overlay-role">{roleLabel}</span>
+                      ) : null}
+                      <span className="line-overlay-text">{line.text}</span>
+                    </span>
+                  </button>
+                );
+              })}
             </div>
 
             {banyanTrackVisible ? (

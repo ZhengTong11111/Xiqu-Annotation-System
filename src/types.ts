@@ -5,6 +5,11 @@ import type {
   TrackBranching,
 } from "@xiqu/document-model";
 
+export {
+  MAX_SENTENCE_ROLE_OPTION_LENGTH,
+  MAX_SENTENCE_ROLE_OPTIONS,
+} from "@xiqu/document-model";
+
 // 兼容现有 Web 导入路径：持久化领域类型的唯一实现位于 document-model，本文件不再复制定义。
 export type {
   ActionAnnotation,
@@ -36,7 +41,8 @@ export type {
   ProjectData,
   ProjectVideo,
   SavedProjectFile,
-  SingingStyle,
+  SentenceAnnotationConfig,
+  SentenceDeliveryMode,
   SubtitleLine,
   ToneBase,
   ToneClass,

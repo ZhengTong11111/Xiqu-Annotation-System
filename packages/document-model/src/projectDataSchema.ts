@@ -1,9 +1,11 @@
 import { z } from "zod";
-import type {
-  BranchLane,
-  CharacterToneInfo,
-  CustomTrack,
-  ProjectData,
+import {
+  MAX_SENTENCE_ROLE_OPTION_LENGTH,
+  MAX_SENTENCE_ROLE_OPTIONS,
+  type BranchLane,
+  type CharacterToneInfo,
+  type CustomTrack,
+  type ProjectData,
 } from "./projectData.js";
 
 // 当前格式的身份字段必须非空；业务命令依赖这些稳定 id，不能让空字符串进入权威 apply 边界。
@@ -115,13 +117,23 @@ const attachedPointTrackSchema = z.strictObject({
 const subtitleLineSchema = withOrderedTimeRange({
   id: stableIdSchema,
   text: z.string(),
+  deliveryMode: z.enum(["spoken", "sung"]).nullable(),
+  roleType: z.string().min(1).max(MAX_SENTENCE_ROLE_OPTION_LENGTH).nullable(),
+});
+
+const sentenceAnnotationConfigSchema = z.strictObject({
+  roleOptions: z.array(
+    z.string().trim().min(1).max(MAX_SENTENCE_ROLE_OPTION_LENGTH),
+  ).max(MAX_SENTENCE_ROLE_OPTIONS).refine(
+    (options) => new Set(options).size === options.length,
+    "角色行当列表不能包含重复名称。",
+  ),
 });
 
 const characterAnnotationSchema = withOrderedTimeRange({
   id: stableIdSchema,
   lineId: stableIdSchema,
   char: z.string(),
-  singingStyle: z.string(),
   tone: characterToneSchema.nullable().optional(),
 });
 
@@ -250,7 +262,6 @@ const builtinTrackSchema = z.strictObject({
   id: z.literal("character-track"),
   name: z.string(),
   type: z.enum(["character", "action"]),
-  options: z.array(z.string()).optional(),
   attachedPointTracks: z.array(attachedPointTrackSchema),
   attachedPointTracksExpanded: z.boolean().optional(),
   snapToWaveformKeypoints: z.boolean().optional(),
@@ -266,6 +277,7 @@ export const currentProjectDataSchema = z.strictObject({
     filePath: z.string().nullable().optional(),
     requiresManualImport: z.boolean().optional(),
   }),
+  sentenceAnnotationConfig: sentenceAnnotationConfigSchema,
   subtitleLines: z.array(subtitleLineSchema),
   characterAnnotations: z.array(characterAnnotationSchema),
   gongcheAnnotations: z.array(gongcheAnnotationSchema),
@@ -276,6 +288,16 @@ export const currentProjectDataSchema = z.strictObject({
   customTracks: z.array(customTrackSchema),
   activeTrackOrder: z.array(stableIdSchema),
 }).superRefine((project, context) => {
+  const validRoleOptions = new Set(project.sentenceAnnotationConfig.roleOptions);
+  for (const [lineIndex, line] of project.subtitleLines.entries()) {
+    if (line.roleType !== null && !validRoleOptions.has(line.roleType)) {
+      context.addIssue({
+        code: "custom",
+        message: "句级字幕引用了角色行当列表中不存在的选项。",
+        path: ["subtitleLines", lineIndex, "roleType"],
+      });
+    }
+  }
   // 分叉树的 parentId 与实际嵌套位置必须一致，lane id 也必须在单轨内唯一。
   for (const [trackIndex, track] of project.customTracks.entries()) {
     if (!track.branching) continue;

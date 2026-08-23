@@ -110,7 +110,7 @@ function resolveContentConflict(
   const transformedItems: AnnotationContentUpdateItem[] = [];
   for (const item of items) {
     const current = resolveProjectAnnotationContent(latestProject, item as AnnotationContentTarget);
-    if (current === null) return { status: "unresolved", reason: "target_missing" };
+    if (current === undefined) return { status: "unresolved", reason: "target_missing" };
     transformedItems.push({ ...item, before: current } as AnnotationContentUpdateItem);
   }
 

@@ -5935,11 +5935,14 @@ async function readAnnotationCommitFacts(prisma: TestPrisma, annotationFileId: s
 function createAtomicCommandProject(): ProjectData {
   return {
     video: { url: "", name: null, source: "url" as const },
+    sentenceAnnotationConfig: { roleOptions: ["闺门旦"] },
     subtitleLines: [{
       id: "atomic-line-1",
       text: "那",
       startTime: 1,
       endTime: 4,
+      deliveryMode: "sung",
+      roleType: "闺门旦",
     }],
     characterAnnotations: [{
       id: "atomic-char-1",
@@ -5947,14 +5950,12 @@ function createAtomicCommandProject(): ProjectData {
       char: "那",
       startTime: 1,
       endTime: 2,
-      singingStyle: "唱",
     }, {
       id: "atomic-char-2",
       lineId: "atomic-line-1",
       char: "一",
       startTime: 2,
       endTime: 3,
-      singingStyle: "唱",
     }],
     gongcheAnnotations: [],
     banyanSections: [],
@@ -5964,7 +5965,6 @@ function createAtomicCommandProject(): ProjectData {
       id: "character-track" as const,
       name: "逐字文字轨",
       type: "character" as const,
-      options: ["唱", "念"],
       attachedPointTracks: [],
     }],
     customTracks: [{

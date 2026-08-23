@@ -303,7 +303,6 @@ function richProject(): ProjectData {
       char: "那",
       startTime: 0,
       endTime: 0.5,
-      singingStyle: "唱",
       tone: null,
     }],
     gongcheAnnotations: [
@@ -397,6 +396,7 @@ function richProject(): ProjectData {
 function emptyProject(): ProjectData {
   return {
     video: { url: "video.mp4", name: "测试.mp4", source: "url" },
+    sentenceAnnotationConfig: { roleOptions: [] },
     subtitleLines: [],
     characterAnnotations: [],
     gongcheAnnotations: [],
@@ -420,7 +420,7 @@ function emptyProject(): ProjectData {
 }
 
 function line(id: string, text: string) {
-  return { id, text, startTime: 0, endTime: 1 };
+  return { id, text, startTime: 0, endTime: 1, deliveryMode: null, roleType: null };
 }
 
 // JSON 克隆对应保存文件语义，也使输入不变断言不受运行时 structuredClone 差异影响。

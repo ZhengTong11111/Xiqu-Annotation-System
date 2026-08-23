@@ -392,7 +392,7 @@ function restoreBuiltinTrackSnapshot(snapshot: BuiltinTrackLifecycleSnapshot): B
     id: snapshot.id as BuiltinTrack["id"],
     name: snapshot.name,
     type: snapshot.trackType,
-    ...(snapshot.options === null ? {} : { options: [...snapshot.options] }),
+    // 旧命令可能仍携带内建逐字轨 options；v6 已由项目级角色配置接管，恢复时明确忽略。
     attachedPointTracks: snapshot.attachedPointTracks.map(restoreAttachedPointTrackSnapshot),
     ...(snapshot.attachedPointTracksExpanded === null
       ? {}

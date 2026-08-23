@@ -71,6 +71,8 @@ export const MAX_ANNOTATION_TRANSACTION_COMMANDS = 20;
 export const MAX_TIMELINE_COMMAND_ITEMS = MAX_ANNOTATION_COMMAND_ITEMS;
 export const MAX_ANNOTATION_CONTENT_LENGTH = 2_000;
 export const TIMELINE_TIMING_COMPARISON_EPSILON = 0.0005;
+const MAX_SENTENCE_ROLE_OPTIONS = 200;
+const MAX_SENTENCE_ROLE_OPTION_LENGTH = 100;
 
 // purpose resolver 是 App 保存/历史与 API 门禁的唯一语义来源；快照边界需要读取 kind，不能只看 type。
 export function getAnnotationMutationLeasePurposeForCommand(
@@ -141,7 +143,9 @@ export type TimelineItemsTimingUpdateCommand = {
 // 内容字段按实体类型固定，避免客户端用任意 field 字符串改写未纳入协议的结构数据。
 export type AnnotationContentUpdateItem =
   | ContentUpdateItem<"sentence", "text">
-  | ContentUpdateItem<"character", "char" | "singingStyle">
+  | ContentUpdateItem<"sentence", "deliveryMode", undefined, "spoken" | "sung" | null>
+  | ContentUpdateItem<"sentence", "roleType", undefined, string | null>
+  | ContentUpdateItem<"character", "char">
   | ContentUpdateItem<"action", "label", string>
   | ContentUpdateItem<"custom-block", "text" | "type", string>
   | ContentUpdateItem<"attached-point", "label", string>;
@@ -150,12 +154,13 @@ type ContentUpdateItem<
   TEntity extends string,
   TField extends string,
   TTrackId extends string | undefined = undefined,
+  TValue extends string | null = string,
 > = {
   entityType: TEntity;
   entityId: string;
   field: TField;
-  before: string;
-  after: string;
+  before: TValue;
+  after: TValue;
 } & (TTrackId extends string ? { trackId: string } : { trackId?: never });
 
 export type AnnotationItemsContentUpdateCommand = {
@@ -208,6 +213,8 @@ export type SentenceLifecycleSnapshot = {
   text: string;
   startTime: number;
   endTime: number;
+  deliveryMode: "spoken" | "sung" | null;
+  roleType: string | null;
 };
 
 export type CharacterToneLifecycleSnapshot = {
@@ -221,7 +228,6 @@ export type CharacterLifecycleSnapshot = {
   char: string;
   startTime: number;
   endTime: number;
-  singingStyle: string;
   tone: CharacterToneLifecycleSnapshot | null;
 };
 
@@ -285,6 +291,11 @@ export type BanyanMarkStateSnapshot = {
   comment: string | null;
 };
 
+export type SentenceAnnotationConfigStateSnapshot = {
+  id: "sentence-annotation-config";
+  roleOptions: string[];
+};
+
 export type AnnotationLifecycleState<TEntity> = {
   entity: TEntity;
   position: AnnotationLifecyclePosition;
@@ -324,6 +335,7 @@ export type AnnotationItemsLifecycleUpdateCommand = {
 
 // 复合实体状态命令替换同一稳定实体的完整快照，不承担创建、删除或跨父集合移动。
 export type AnnotationStateUpdateItem =
+  | GlobalStateUpdateItem<"sentence-annotation-config", SentenceAnnotationConfigStateSnapshot>
   | GlobalStateUpdateItem<"banyan-section", BanyanSectionStateSnapshot>
   | GlobalStateUpdateItem<"banyan-mark", BanyanMarkStateSnapshot>
   | ScopedStateUpdateItem<"gongche-symbol", GongcheSymbolLifecycleSnapshot>;
@@ -837,7 +849,11 @@ function isTrackStructureChildCommand(command: TrackStructureTransactionChildCom
   // 普通生命周期叶同样可能创建/删除实体（逐字、动作、附属点、工尺块等）。
   // 它们放入结构事务后必须被视为结构命令，否则事务虽然能解析，最终却会因
   // “没有结构子命令”被拒绝，导致本地看似创建成功而平台无法形成可重放保存链。
-  return command.type === ANNOTATION_LIFECYCLE_UPDATE_COMMAND ||
+  // 项目级角色列表会改变句级分类的可引用结构，因此也必须进入结构租约；
+  // 工尺、板眼等普通 state 更新仍保持普通内容语义，不能一概提升为结构命令。
+  const updatesSentenceConfig = command.type === ANNOTATION_STATE_UPDATE_COMMAND &&
+    command.items.some((item) => item.entityType === "sentence-annotation-config");
+  return updatesSentenceConfig || command.type === ANNOTATION_LIFECYCLE_UPDATE_COMMAND ||
     command.type === CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND ||
     command.type === CUSTOM_TRACK_LIFECYCLE_UPDATE_COMMAND ||
     command.type === ATTACHED_POINT_TRACK_LIFECYCLE_UPDATE_COMMAND ||
@@ -930,11 +946,7 @@ export function invertAnnotationCommandEnvelope(
     })));
   }
   if (envelope.command.type === ANNOTATION_CONTENT_UPDATE_COMMAND) {
-    return buildAnnotationContentUpdateEnvelope(envelope.command.items.map((item) => ({
-        ...item,
-        before: item.after,
-        after: item.before,
-    })));
+    return buildAnnotationContentUpdateEnvelope(envelope.command.items.map(invertContentUpdateItem));
   }
   if (envelope.command.type === ANNOTATION_LIFECYCLE_UPDATE_COMMAND) {
     return buildAnnotationLifecycleUpdateEnvelope(envelope.command.items.map(invertLifecycleItem));
@@ -972,6 +984,11 @@ export function invertAnnotationCommandEnvelope(
     TimelineTimingCommandEnvelope | AnnotationContentCommandEnvelope | AnnotationLifecycleCommandEnvelope |
     AnnotationStateCommandEnvelope
   >);
+}
+
+// 映射判别联合时 TypeScript 会把不同字段的 nullable 值扩宽；单项交换保持原判别成员合同。
+function invertContentUpdateItem(item: AnnotationContentUpdateItem): AnnotationContentUpdateItem {
+  return { ...item, before: item.after, after: item.before } as AnnotationContentUpdateItem;
 }
 
 function invertTrackStructureTransactionChild(
@@ -1046,13 +1063,13 @@ export function assessTimelineTimingExecution(
 
 export type AnnotationContentActual = AnnotationContentUpdateItem extends infer TItem
   ? TItem extends AnnotationContentUpdateItem
-    ? Omit<TItem, "before" | "after"> & { current: string }
+    ? Omit<TItem, "before" | "after"> & { current: TItem["before"] }
     : never
   : never;
 
 export type AnnotationContentPreconditionIssue =
-  | { code: "target_missing"; targetKey: string; expected: string }
-  | { code: "before_mismatch"; targetKey: string; expected: string; actual: string };
+  | { code: "target_missing"; targetKey: string; expected: string | null }
+  | { code: "before_mismatch"; targetKey: string; expected: string | null; actual: string | null };
 
 // 内容命令同样先检查全部稳定目标；任一缺失或 before 不匹配都阻断整批应用。
 export function assessAnnotationContentExecution(
@@ -1064,7 +1081,7 @@ export function assessAnnotationContentExecution(
   | { status: "ready"; envelope: AnnotationContentCommandEnvelope } {
   const envelope = parseAnnotationContentCommandEnvelope(value);
   if (!envelope) return { status: "invalid_command" };
-  const actualByKey = new Map<string, string>();
+  const actualByKey = new Map<string, string | null>();
   const duplicates = new Set<string>();
   for (const actual of actuals) {
     const key = getAnnotationContentTargetKey(actual);
@@ -1232,14 +1249,32 @@ function parseContentUpdateItem(value: unknown): AnnotationContentUpdateItem | n
     ? ["entityType", "entityId", "trackId", "field", "before", "after"]
     : ["entityType", "entityId", "field", "before", "after"];
   if (!isExactRecord(value, keys) ||
-    !isSafeId(value.entityId) ||
-    typeof value.before !== "string" ||
-    typeof value.after !== "string" ||
-    value.before.length > MAX_ANNOTATION_CONTENT_LENGTH ||
-    value.after.length > MAX_ANNOTATION_CONTENT_LENGTH) return null;
+    !isSafeId(value.entityId)) return null;
+  const isBoundedNullableString = (item: unknown): item is string | null =>
+    item === null || (typeof item === "string" && item.length <= MAX_ANNOTATION_CONTENT_LENGTH);
+  if (!isBoundedNullableString(value.before) || !isBoundedNullableString(value.after)) return null;
+
+  // 句级固定枚举在协议入口严格校验；roleType 允许 null 表示尚未标注。
+  if (value.entityType === "sentence" && value.field === "deliveryMode") {
+    const validMode = (item: unknown) => item === null || item === "spoken" || item === "sung";
+    return !hasTrack && validMode(value.before) && validMode(value.after)
+      ? { ...value } as AnnotationContentUpdateItem
+      : null;
+  }
+  if (value.entityType === "sentence" && value.field === "roleType") {
+    const validRole = (item: string | null) => item === null || (
+      item.length <= MAX_SENTENCE_ROLE_OPTION_LENGTH &&
+      item.trim().length > 0 &&
+      item === item.trim()
+    );
+    return !hasTrack && validRole(value.before) && validRole(value.after)
+      ? { ...value } as AnnotationContentUpdateItem
+      : null;
+  }
+  if (typeof value.before !== "string" || typeof value.after !== "string") return null;
   const globalValid =
     (value.entityType === "sentence" && value.field === "text") ||
-    (value.entityType === "character" && (value.field === "char" || value.field === "singingStyle"));
+    (value.entityType === "character" && value.field === "char");
   const scopedValid =
     (value.entityType === "action" && value.field === "label") ||
     (value.entityType === "custom-block" && (value.field === "text" || value.field === "type")) ||
@@ -1340,7 +1375,8 @@ function parseTypedScopedLifecycleItem<
 function parseStateItem(value: unknown): AnnotationStateUpdateItem | null {
   if (!isRecord(value) || !isSafeId(value.entityId)) return null;
   const isScoped = value.entityType === "gongche-symbol";
-  const isGlobal = value.entityType === "banyan-section" || value.entityType === "banyan-mark";
+  const isGlobal = value.entityType === "sentence-annotation-config" ||
+    value.entityType === "banyan-section" || value.entityType === "banyan-mark";
   const keys = isScoped
     ? ["entityType", "entityId", "trackId", "before", "after"]
     : ["entityType", "entityId", "before", "after"];
@@ -1349,6 +1385,13 @@ function parseStateItem(value: unknown): AnnotationStateUpdateItem | null {
   if (value.entityType === "gongche-symbol") {
     return parseTypedScopedStateItem(value, "gongche-symbol", parseGongcheSymbolLifecycleSnapshot);
   }
+  if (value.entityType === "sentence-annotation-config") {
+    return parseTypedGlobalStateItem(
+      value,
+      "sentence-annotation-config",
+      parseSentenceAnnotationConfigStateSnapshot,
+    );
+  }
   if (value.entityType === "banyan-section") {
     return parseTypedGlobalStateItem(value, "banyan-section", parseBanyanSectionStateSnapshot);
   }
@@ -1356,7 +1399,7 @@ function parseStateItem(value: unknown): AnnotationStateUpdateItem | null {
 }
 
 function parseTypedGlobalStateItem<
-  TEntityType extends "banyan-section" | "banyan-mark",
+  TEntityType extends "sentence-annotation-config" | "banyan-section" | "banyan-mark",
   TSnapshot extends { id: string },
 >(
   value: Record<string, unknown>,
@@ -1370,6 +1413,22 @@ function parseTypedGlobalStateItem<
     AnnotationStateUpdateItem,
     { entityType: TEntityType }
   >;
+}
+
+function parseSentenceAnnotationConfigStateSnapshot(
+  value: unknown,
+): SentenceAnnotationConfigStateSnapshot | null {
+  if (!isExactRecord(value, ["id", "roleOptions"]) ||
+    value.id !== "sentence-annotation-config" ||
+    !Array.isArray(value.roleOptions) ||
+    value.roleOptions.length > MAX_SENTENCE_ROLE_OPTIONS) return null;
+  const roleOptions = value.roleOptions.filter(
+    (option): option is string => typeof option === "string" &&
+      option.trim().length > 0 && option === option.trim() &&
+      option.length <= MAX_SENTENCE_ROLE_OPTION_LENGTH,
+  );
+  if (roleOptions.length !== value.roleOptions.length || new Set(roleOptions).size !== roleOptions.length) return null;
+  return { id: "sentence-annotation-config", roleOptions: [...roleOptions] };
 }
 
 function parseTypedScopedStateItem<
@@ -1505,20 +1564,29 @@ function parseAttachedPointLifecycleSnapshot(value: unknown): AttachedPointLifec
 }
 
 function parseSentenceLifecycleSnapshot(value: unknown): SentenceLifecycleSnapshot | null {
-  if (!isExactRecord(value, ["id", "text", "startTime", "endTime"]) ||
+  if (!isExactRecord(value, ["id", "text", "startTime", "endTime", "deliveryMode", "roleType"]) ||
     !isSafeId(value.id) ||
     typeof value.text !== "string" ||
     value.text.length > MAX_ANNOTATION_CONTENT_LENGTH ||
     !isNonNegativeFiniteNumber(value.startTime) ||
-    !isNonNegativeFiniteNumber(value.endTime) || value.endTime < value.startTime) return null;
-  return { id: value.id, text: value.text, startTime: value.startTime, endTime: value.endTime };
+    !isNonNegativeFiniteNumber(value.endTime) || value.endTime < value.startTime ||
+    (value.deliveryMode !== null && value.deliveryMode !== "spoken" && value.deliveryMode !== "sung") ||
+    (value.roleType !== null && (typeof value.roleType !== "string" || !value.roleType.trim() ||
+      value.roleType.length > MAX_ANNOTATION_CONTENT_LENGTH))) return null;
+  return {
+    id: value.id,
+    text: value.text,
+    startTime: value.startTime,
+    endTime: value.endTime,
+    deliveryMode: value.deliveryMode,
+    roleType: value.roleType,
+  };
 }
 
 function parseCharacterLifecycleSnapshot(value: unknown): CharacterLifecycleSnapshot | null {
-  if (!isExactRecord(value, ["id", "lineId", "char", "startTime", "endTime", "singingStyle", "tone"]) ||
+  if (!isExactRecord(value, ["id", "lineId", "char", "startTime", "endTime", "tone"]) ||
     !isSafeId(value.id) || !isSafeId(value.lineId) ||
     typeof value.char !== "string" || value.char.length > MAX_ANNOTATION_CONTENT_LENGTH ||
-    typeof value.singingStyle !== "string" || value.singingStyle.length > MAX_ANNOTATION_CONTENT_LENGTH ||
     !isNonNegativeFiniteNumber(value.startTime) ||
     !isNonNegativeFiniteNumber(value.endTime) || value.endTime < value.startTime) return null;
   const tone = parseCharacterToneLifecycleSnapshot(value.tone);
@@ -1529,7 +1597,6 @@ function parseCharacterLifecycleSnapshot(value: unknown): CharacterLifecycleSnap
     char: value.char,
     startTime: value.startTime,
     endTime: value.endTime,
-    singingStyle: value.singingStyle,
     tone,
   };
 }
@@ -1759,6 +1826,7 @@ function invertLifecycleItem(item: AnnotationLifecycleUpdateItem): AnnotationLif
 }
 
 function invertStateItem(item: AnnotationStateUpdateItem): AnnotationStateUpdateItem {
+  if (item.entityType === "sentence-annotation-config") return { ...item, before: item.after, after: item.before };
   if (item.entityType === "gongche-symbol") return { ...item, before: item.after, after: item.before };
   if (item.entityType === "banyan-section") return { ...item, before: item.after, after: item.before };
   return { ...item, before: item.after, after: item.before };

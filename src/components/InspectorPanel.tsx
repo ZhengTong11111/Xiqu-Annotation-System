@@ -14,11 +14,13 @@ import type {
   GongcheSymbol,
   InspectorFocusRequest,
   InspectorFocusTarget,
+  SentenceAnnotationConfig,
   SelectedItem,
   SubtitleLine,
   TrackBranchDisplayMode,
   TrackDefinition,
 } from "../types";
+import { SENTENCE_DELIVERY_MODE_OPTIONS } from "../utils/sentenceClassification";
 import { GongcheCharacterRenderer } from "./GongcheCharacterRenderer";
 import { ToggleRow } from "./SpectrogramSettingsPanel";
 import {
@@ -89,6 +91,7 @@ type InspectorPanelProps = {
   onToggleCollapse?: () => void;
   selectedItem: SelectedItem;
   subtitleLines: SubtitleLine[];
+  sentenceAnnotationConfig: SentenceAnnotationConfig;
   characterAnnotations: CharacterAnnotation[];
   gongcheAnnotations: GongcheAnnotation[];
   banyanSections: BanyanSection[];
@@ -101,6 +104,11 @@ type InspectorPanelProps = {
   trackDefinitions: TrackDefinition[];
   trackSnapEnabled: Record<string, boolean>;
   onCharacterUpdate: (id: string, changes: Partial<CharacterAnnotation>) => void;
+  onLineClassificationChange: (
+    id: string,
+    changes: Partial<Pick<SubtitleLine, "deliveryMode" | "roleType">>,
+  ) => void;
+  onOpenSentenceAnnotationSettings: () => void;
   onCreateGongcheBlock: (parentTrackId: string, parentBlockId: string) => void;
   onGongcheBlockUpdate: (
     id: string,
@@ -127,11 +135,6 @@ type InspectorPanelProps = {
   onAttachedPointTrackParentSnapChange: (trackId: string, enabled: boolean) => void;
   onSelectParentTrack: (trackId: string) => void;
   onBuiltinTrackRename: (trackId: BuiltinTrackId, name: string) => void;
-  onBuiltinTrackTypeOptionChange: (trackId: BuiltinTrackId, index: number, value: string) => void;
-  onAddBuiltinTrackTypeOption: (trackId: BuiltinTrackId) => void;
-  onMoveBuiltinTrackTypeOption: (trackId: BuiltinTrackId, index: number, direction: "up" | "down") => void;
-  onReorderBuiltinTrackTypeOption: (trackId: BuiltinTrackId, fromIndex: number, toIndex: number) => void;
-  onRemoveBuiltinTrackTypeOption: (trackId: BuiltinTrackId, index: number) => void;
   onDeleteBuiltinTrack: (trackId: BuiltinTrackId) => void;
   onAddAttachedPointTrack: (parentTrackId: string) => void;
   onToggleAttachedPointTracks: (parentTrackId: string) => void;
@@ -177,6 +180,7 @@ export function InspectorPanel({
   onToggleCollapse,
   selectedItem,
   subtitleLines,
+  sentenceAnnotationConfig,
   characterAnnotations,
   gongcheAnnotations,
   banyanSections,
@@ -189,6 +193,8 @@ export function InspectorPanel({
   trackDefinitions,
   trackSnapEnabled,
   onCharacterUpdate,
+  onLineClassificationChange,
+  onOpenSentenceAnnotationSettings,
   onCreateGongcheBlock,
   onGongcheBlockUpdate,
   onImportGongcheText,
@@ -203,11 +209,6 @@ export function InspectorPanel({
   onAttachedPointTrackParentSnapChange,
   onSelectParentTrack,
   onBuiltinTrackRename,
-  onBuiltinTrackTypeOptionChange,
-  onAddBuiltinTrackTypeOption,
-  onMoveBuiltinTrackTypeOption,
-  onReorderBuiltinTrackTypeOption,
-  onRemoveBuiltinTrackTypeOption,
   onDeleteBuiltinTrack,
   onAddAttachedPointTrack,
   onToggleAttachedPointTracks,
@@ -277,9 +278,9 @@ export function InspectorPanel({
   const selectedEditableTrack = selectedBuiltinTrack ?? selectedCustomTrack ?? selectedAttachedPointTrack?.track ?? null;
   const typeOptionKeys = useMemo(
     () => buildTypeOptionKeys(
-      selectedBuiltinTrack?.options ?? selectedCustomTrack?.typeOptions ?? selectedAttachedPointTrack?.track.typeOptions ?? [],
+      selectedCustomTrack?.typeOptions ?? selectedAttachedPointTrack?.track.typeOptions ?? [],
     ),
-    [selectedBuiltinTrack?.options, selectedCustomTrack?.typeOptions, selectedAttachedPointTrack?.track.typeOptions],
+    [selectedCustomTrack?.typeOptions, selectedAttachedPointTrack?.track.typeOptions],
   );
   const remainingTypeOptionKeys = useMemo(
     () => typeOptionKeys.filter((_, index) => index !== draggedOptionIndex),
@@ -324,7 +325,7 @@ export function InspectorPanel({
   useEffect(() => {
     setTypeOptionDrafts(trackOptionsFromTrack(selectedEditableTrack));
     setComposingOptionIndexes({});
-  }, [selectedEditableTrack?.id, selectedBuiltinTrack?.options, selectedCustomTrack?.typeOptions, selectedAttachedPointTrack?.track.typeOptions]);
+  }, [selectedEditableTrack?.id, selectedCustomTrack?.typeOptions, selectedAttachedPointTrack?.track.typeOptions]);
 
   useEffect(() => {
     return () => {
@@ -425,10 +426,6 @@ export function InspectorPanel({
     if (currentOptions[index] === nextValue) {
       return;
     }
-    if (selectedBuiltinTrack) {
-      onBuiltinTrackTypeOptionChange(selectedBuiltinTrack.id, index, nextValue);
-      return;
-    }
     if (selectedCustomTrack) {
       onCustomTrackTypeOptionChange(selectedCustomTrack.id, index, nextValue);
       return;
@@ -523,10 +520,7 @@ export function InspectorPanel({
       const isActive = Math.abs(event.clientY - optionReorderDrag.startY) >= REORDER_ACTIVATION_PX;
       const insertionIndex = isActive ? getDropInsertionIndex(event.clientY) : null;
       if (insertionIndex !== null && insertionIndex !== optionReorderDrag.index) {
-        if (selectedBuiltinTrack) {
-          onReorderBuiltinTrackTypeOption(selectedBuiltinTrack.id, optionReorderDrag.index, insertionIndex);
-          flashMovedOption(Math.min(insertionIndex, (selectedBuiltinTrack.options?.length ?? 1) - 1));
-        } else if (selectedCustomTrack) {
+        if (selectedCustomTrack) {
           onReorderCustomTrackTypeOption(selectedCustomTrack.id, optionReorderDrag.index, insertionIndex);
           flashMovedOption(Math.min(insertionIndex, selectedCustomTrack.typeOptions.length - 1));
         } else if (selectedAttachedPointTrack) {
@@ -548,7 +542,6 @@ export function InspectorPanel({
     };
   }, [
     onReorderCustomTrackTypeOption,
-    onReorderBuiltinTrackTypeOption,
     optionReorderDrag,
     remainingTypeOptionKeys,
     selectedBuiltinTrack,
@@ -841,6 +834,39 @@ export function InspectorPanel({
           <div className="inspector-value">{line.endTime.toFixed(3)}s</div>
         </div>
         <div className="inspector-field">
+          <label>发声方式</label>
+          <select
+            value={line.deliveryMode ?? ""}
+            onChange={(event) => onLineClassificationChange(line.id, {
+              deliveryMode: event.target.value === "spoken" || event.target.value === "sung"
+                ? event.target.value
+                : null,
+            })}
+          >
+            <option value="">未选择</option>
+            {SENTENCE_DELIVERY_MODE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </div>
+        <div className="inspector-field">
+          <label>角色行当</label>
+          <select
+            value={line.roleType ?? ""}
+            onChange={(event) => onLineClassificationChange(line.id, {
+              roleType: event.target.value || null,
+            })}
+          >
+            <option value="">未选择</option>
+            {sentenceAnnotationConfig.roleOptions.map((role) => (
+              <option key={role} value={role}>{role}</option>
+            ))}
+          </select>
+          <button type="button" className="secondary" onClick={onOpenSentenceAnnotationSettings}>
+            管理角色行当
+          </button>
+        </div>
+        <div className="inspector-field">
           <label>四声预览</label>
           <div className="inspector-value tone-preview">
             {tonePreview.length === 0
@@ -866,7 +892,7 @@ export function InspectorPanel({
     if (!track) {
       return null;
     }
-    const trackOptions = "typeOptions" in track ? track.typeOptions : (track.options ?? []);
+    const trackOptions = "typeOptions" in track ? track.typeOptions : [];
     const isBuiltinTrack = selectedItem.type === "builtin-track";
     const isAttachedPointTrack = selectedItem.type === "attached-point-track";
     const attachedPointTracks = "attachedPointTracks" in track ? track.attachedPointTracks ?? [] : [];
@@ -961,6 +987,12 @@ export function InspectorPanel({
           <label>轨道类型</label>
           <div className="inspector-value">{trackTypeLabel}</div>
         </div>
+        {isBuiltinTrack && track.id === "character-track" ? (
+          <div className="inspector-field">
+            <label>句级角色行当</label>
+            <button type="button" onClick={onOpenSentenceAnnotationSettings}>管理角色行当列表</button>
+          </div>
+        ) : null}
         {isCustomTrack && selectedCustomTrack ? (
           <div
             ref={registerFocusField("track-color")}
@@ -1248,7 +1280,7 @@ export function InspectorPanel({
             </div>
           </div>
         ) : null}
-        <div
+        {!isBuiltinTrack ? <div
           ref={registerFocusField("track-type-options")}
           className={`inspector-field ${highlightedFocusTarget === "track-type-options" ? "inspector-field-focused" : ""}`.trim()}
         >
@@ -1356,9 +1388,7 @@ export function InspectorPanel({
                   <button
                     type="button"
                     onClick={() => {
-                      if (isBuiltinTrack) {
-                        onMoveBuiltinTrackTypeOption(track.id as BuiltinTrackId, index, "up");
-                      } else if (isAttachedPointTrack) {
+                      if (isAttachedPointTrack) {
                         onMoveAttachedPointTrackTypeOption(track.id, index, "up");
                       } else {
                         onMoveCustomTrackTypeOption(track.id, index, "up");
@@ -1373,9 +1403,7 @@ export function InspectorPanel({
                   <button
                     type="button"
                     onClick={() => {
-                      if (isBuiltinTrack) {
-                        onMoveBuiltinTrackTypeOption(track.id as BuiltinTrackId, index, "down");
-                      } else if (isAttachedPointTrack) {
+                      if (isAttachedPointTrack) {
                         onMoveAttachedPointTrackTypeOption(track.id, index, "down");
                       } else {
                         onMoveCustomTrackTypeOption(track.id, index, "down");
@@ -1390,9 +1418,7 @@ export function InspectorPanel({
                   <button
                     type="button"
                     onClick={() => {
-                      if (isBuiltinTrack) {
-                        onRemoveBuiltinTrackTypeOption(track.id as BuiltinTrackId, index);
-                      } else if (isAttachedPointTrack) {
+                      if (isAttachedPointTrack) {
                         onRemoveAttachedPointTrackTypeOption(track.id, index);
                       } else {
                         onRemoveCustomTrackTypeOption(track.id, index);
@@ -1406,9 +1432,7 @@ export function InspectorPanel({
               </div>
             ))}
             <button type="button" onClick={() => {
-              if (isBuiltinTrack) {
-                onAddBuiltinTrackTypeOption(track.id as BuiltinTrackId);
-              } else if (isAttachedPointTrack) {
+              if (isAttachedPointTrack) {
                 onAddAttachedPointTrackTypeOption(track.id);
               } else {
                 onAddCustomTrackTypeOption(track.id);
@@ -1417,7 +1441,7 @@ export function InspectorPanel({
               新增类型
             </button>
           </div>
-        </div>
+        </div> : null}
       </section>
     );
   }
@@ -1478,23 +1502,6 @@ export function InspectorPanel({
               onCharacterUpdate(item.id, { endTime: Number(event.target.value) })
             }
           />
-        </div>
-        <div className="inspector-field">
-          <label>唱腔类型</label>
-          <select
-            value={item.singingStyle}
-            onChange={(event) =>
-              onCharacterUpdate(item.id, {
-                singingStyle: event.target.value as CharacterAnnotation["singingStyle"],
-              })
-            }
-          >
-            {(trackDefinitions.find((track) => track.id === "character-track")?.options ?? [item.singingStyle]).map((style) => (
-              <option key={style} value={style}>
-                {style}
-              </option>
-            ))}
-          </select>
         </div>
         <div className="inspector-field">
           <label>四声信息</label>
@@ -1902,7 +1909,7 @@ export function InspectorPanel({
           value={action.label}
           onChange={(event) => onActionUpdate(action.id, { label: event.target.value })}
         >
-          {(track?.options ?? ["其他"]).map((label) => (
+          {[action.label].map((label) => (
             <option key={label} value={label}>
               {label}
             </option>
@@ -1974,7 +1981,7 @@ function trackOptionsFromTrack(track: BuiltinTrack | CustomTrack | AttachedPoint
   if (!track) {
     return [];
   }
-  return "typeOptions" in track ? track.typeOptions : (track.options ?? []);
+  return "typeOptions" in track ? track.typeOptions : [];
 }
 
 type TrackColorControlProps = {

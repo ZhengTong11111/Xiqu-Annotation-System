@@ -29,7 +29,7 @@ export function applyAnnotationContentCommandToProject(
   for (const item of envelope.command.items) {
     const target = item as AnnotationContentTarget;
     const current = resolveProjectAnnotationContent(project, target);
-    if (current !== null) parsedActuals.push({ ...target, current } as AnnotationContentActual);
+    if (current !== undefined) parsedActuals.push({ ...target, current } as AnnotationContentActual);
   }
   const assessment = assessAnnotationContentExecution(envelope, parsedActuals);
   if (assessment.status === "invalid_command") return assessment;

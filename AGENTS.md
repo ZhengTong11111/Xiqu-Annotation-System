@@ -3,7 +3,7 @@
 ## Product Intent
 This repository is evolving from a local React/TypeScript annotation workstation into a full Kunqu multimodal academic database and classroom annotation platform. It now includes the original timeline editor plus a real Fastify/Prisma/PostgreSQL platform backend for accounts, a hierarchical resource tree, media files, mutable annotation files, recovery snapshots, and per-resource account permissions.
 
-The editor remains a research-oriented workstation for aligning video, sentence-level SRT, character-level timing, singing-style labels, action tracks, point annotations, audio cues, Banyan beat/eye information, Gongche notation, and recursive custom-track branches. SRT remains an important exchange format for subtitle-like tracks: sentence SRT in, editable TypeScript state in the app, per-track SRT out.
+The editor remains a research-oriented workstation for aligning video, sentence-level SRT, sentence delivery/role classification, character-level timing and tone, action tracks, point annotations, audio cues, Banyan beat/eye information, Gongche notation, and recursive custom-track branches. SRT remains an important exchange format for subtitle-like tracks: sentence SRT in, editable TypeScript state in the app, per-track SRT out.
 
 This is not a generic subtitle editor. It behaves more like a compact DAW / NLE / annotation workstation:
 - precise time-axis editing
@@ -65,7 +65,7 @@ Main currently contains all major recent feature lines that matter for context:
 - version 1 timing, stable content-update, lifecycle, composite-state, and dependency-transaction domain commands with strict shared validation,
   draft persistence, inverse/precondition semantics, all-or-nothing ProjectData adapters, atomic server command-batch apply, and clean-client
   HTTP replay; lifecycle covers sentences, characters, custom blocks, attached points, Gongche blocks/symbols, and Banyan
-  marks/sections; state atomically replaces coupled Gongche/Banyan snapshots, while transactions bind sentence synchronization,
+  marks/sections; state atomically replaces sentence-role configuration and coupled Gongche/Banyan snapshots, while transactions bind sentence synchronization,
   parent/Gongche cascades, and Banyan-reference repair. Replayable editor saves now use atomic server command batches;
   full-snapshot save remains only for explicit legacy, snapshot, track-snap, submitted-draft, and old-payload migration boundaries
 - client atomic-command planning/runtime, App/autosave wiring, partial document acknowledgement, mutation-lease handoff, and
@@ -97,6 +97,11 @@ Main currently contains all major recent feature lines that matter for context:
 - analysis audio defaults to the bound uploaded/VOD media but can always be overridden with a readable server audio/VOD
   resource and restored to auto; these settings and assets are platform state, never ProjectData or undo/history state
 - recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
+- saved project JSON v6 sentence classification: every sentence independently stores `spoken | sung` and one project-defined
+  ordered role option; only both valid values count as complete. Sentence lists and Timeline overlays share one red/blue
+  completion policy, while role add/rename/remove/reorder uses a lease-protected structure transaction with reference cascades
+- the former per-character `singingStyle` and built-in character-track options are no longer current ProjectData or UI concepts;
+  historical JSON is normalized at the single project-file migration boundary and current cavity labels belong on custom tracks
 - browser-created stable ids use `src/utils/runtimeUuid.ts`; production may temporarily run on an HTTP IP where
   `crypto.randomUUID()` is unavailable, so frontend code must never call it directly. The helper prefers native UUID,
   falls back to `crypto.getRandomValues()` UUID v4, and reserves the non-crypto fallback only for old-browser identity,
@@ -504,6 +509,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/components/Timeline.tsx`
   - heaviest file
   - owns zoom, ruler scrubbing, snapping, marquee selection, drag/resize, creation flows, waveform guides, spectrogram lane rendering, loop range interaction, Gongche lane rendering, attached point editing
+  - sentence overlay right-click only reports the stable sentence id and viewport coordinates to App; Timeline must not
+    duplicate sentence-classification mutations, move the playhead, or disturb left-button timing drag behavior
+  - sentence overlay labels use content-fit tiers based on block width plus sentence/delivery/role visual text widths: full
+    delivery/role/text, then role/text, then text only. Keep the decision in `sentenceTimelineLabel.ts` and the whole visible
+    label in one sticky content group so horizontal scrolling does not detach metadata from the sentence
   - publishes only exact pointer time to the collaboration callback and renders remote playhead/pointer/selection hints as
     read-only `pointer-events: none` overlays using the same `trackHeaderWidth + time * zoom` coordinate as local timing
 - `src/components/VideoPlayer.tsx`
@@ -521,7 +531,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - short-lived sessions stay memory-only; refresh is single-flight, obtains new credentials before replacing the old player,
     and generation checks reject late provider events after source switch/dispose
 - `src/components/InspectorPanel.tsx`
-  - canonical editor for selected items, tracks, attached point tracks, spectrogram settings entry, Gongche editing entry points
+  - canonical editor for selected items, tracks, sentence delivery/role classification, attached point tracks, spectrogram
+    settings entry, and Gongche editing entry points
+- `src/components/SentenceAnnotationSettingsDialog.tsx`
+  - the single ordered role-option editor used by both the Edit menu and built-in character-track Inspector entry
+  - add/rename/delete/reorder callbacks remain App-owned because role changes must coordinate structure leases, commands,
+    history, sentence-reference cascades, and collaboration state
+  - role drag/drop reuses Atlaskit Pragmatic Drag and Drop and carries stable role names rather than array indexes; unsaved
+    rename drafts, delete confirmation, read-only/catch-up gates, and an in-flight structure mutation disable drag start
 - `src/components/SpectrogramCanvas.tsx`
   - spectrogram viewport rendering
 - `src/components/SpectrogramSettingsPanel.tsx`
@@ -539,6 +556,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - track defaults, timeline track definition expansion, project builders, duration helpers, Gongche attached track id helpers, branch-lane track id helpers
 - `src/utils/projectFile.ts`
   - saved project JSON normalization/migration, local/project-platform import compatibility, `PROJECT_FILE_VERSION`
+  - v1-v5 files normalize to v6 by adding an empty sentence-role list and nullable sentence classification; historical
+    per-character singing style and built-in character-track options are intentionally omitted from current output
   - legacy built-in action tracks and `actionAnnotations` migrate to custom action tracks/blocks; current-format features
     must target custom blocks instead of extending that compatibility array
 - `src/utils/srt.ts`
@@ -554,6 +573,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/utils/tone.ts`
   - 《韵学骊珠》four-tone (yin/yang × ping/shang/qu/ru) label mapping, validity checks, and sentence-level tone summary helpers
   - used by Inspector (character tone editor + derived sentence preview), Timeline (in-block tone label), and `projectFile.ts` (tone normalization)
+- `src/utils/sentenceClassification.ts`
+  - the only sentence completion rule and delivery-mode label mapping used by the sentence list and Timeline
+  - a sentence is complete only when delivery mode is `spoken | sung` and its nonempty role still exists in the project role list
+- `src/utils/sentenceRoleReorder.ts`
+  - pure immutable conversion from a stable source role plus target `before | after` edge to the next ordered role list
+  - no-op and stale-name drops return `null`; DOM drag behavior stays in the Dialog and App alone starts structure mutations
+- `src/utils/sentenceTimelineLabel.ts`
+  - pure sentence-overlay content-fit policy; estimates Unicode visual width and compares complete candidate labels with the
+    actual time-derived block width. Do not replace this with fixed CSS/container breakpoints
 - `src/utils/platformOperations.ts`
   - stable operation request builder plus structured manual/automatic server-save outcomes
   - sends migrated domain envelopes intact; it must never reduce them back to boolean legacy summaries
@@ -620,8 +648,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - `getAnnotationMutationLeasePurposeForCommand()` is the sole App/API semantic lease resolver. Callers that need a purpose
     must pass the full envelope because snapshot-boundary kind distinguishes `bulk_import` from `bulk_repair`; the boolean
     type helper exists only for compatibility.
-  - character content targets distinguish `char` and `singingStyle`; do not rewrite singing-style cascades as character-text
-    changes or hide them inside a configuration snapshot
+  - sentence content targets distinguish `text`, `deliveryMode`, and `roleType`; nullable classification values are deliberate
+    unannotated states. The project role list is a fixed state target and rename/delete cascades must combine sentence content
+    leaves plus that state leaf in one structure transaction, never as independent local mutations
   - the atomic command-batch route applies replayable envelopes to `AnnotationFile.payload`; the editor uses this route for
     ordinary timing/content/lifecycle/state edits and bounded structure transactions. Legacy full snapshots remain only at
     explicit import/repair, old-payload migration, submitted-draft, track-snap, and other documented snapshot boundaries.
@@ -1067,6 +1096,7 @@ Treat Chinese subtitle content as character-based annotation data, not tokenized
 ## Core Data Model
 The current `ProjectData` is broader than the original MVP:
 - `video`
+- `sentenceAnnotationConfig`
 - `subtitleLines`
 - `characterAnnotations`
 - `gongcheAnnotations`
@@ -1078,6 +1108,10 @@ The current `ProjectData` is broader than the original MVP:
 - `activeTrackOrder`
 
 Important type families:
+- `SubtitleLine` / `SentenceAnnotationConfig`
+  - `deliveryMode` is nullable `spoken | sung`; `roleType` is nullable and must reference the ordered project role list
+  - both fields must be valid for a completed sentence; do not infer completion from color or duplicate the helper in UI code
+  - role-list rename/delete must update affected sentence references in the same lease-protected structure transaction
 - `BuiltinTrack`
   - current built-in track id is only `character-track`
   - older hand/body action built-ins were migrated away; use custom action tracks for action categories
@@ -1101,7 +1135,7 @@ Important type families:
   - worker-computed magnitudes + frequency bins + optional pitch frames
 
 Saved project JSON:
-- current `PROJECT_FILE_VERSION` is `5`
+- current `PROJECT_FILE_VERSION` is `6`
 - import must go through `normalizeImportedProjectFile()` from `src/utils/projectFile.ts`
 - do not duplicate project-file migration logic in platform or local import paths
 
@@ -1153,7 +1187,8 @@ The app now behaves like a desktop workbench, not a document page:
 
 Main arrangement:
 - left: preview + timeline split
-- right: sentence list + current line split + inspector/settings
+- right: sentence list + current line split + annotation review + inspector/settings; the review region may be docked,
+  hidden, or detached without changing its platform facts
 
 Global visibility controls:
 - the top menu `视图` is the canonical place for toggling:

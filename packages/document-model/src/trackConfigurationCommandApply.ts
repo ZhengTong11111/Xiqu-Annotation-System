@@ -98,7 +98,6 @@ function restoreBuiltinTrackStructureSnapshot(
   snapshot: BuiltinTrackStructureSnapshot,
 ): BuiltinTrack {
   const {
-    options: _options,
     attachedPointTracksExpanded: _expanded,
     snapToWaveformKeypoints: _snap,
     autoSetLoopRangeOnSelect: _autoLoop,
@@ -107,7 +106,6 @@ function restoreBuiltinTrackStructureSnapshot(
   return {
     ...stable,
     name: snapshot.name,
-    ...(snapshot.options === null ? {} : { options: [...snapshot.options] }),
     ...(snapshot.attachedPointTracksExpanded === null
       ? {}
       : { attachedPointTracksExpanded: snapshot.attachedPointTracksExpanded }),

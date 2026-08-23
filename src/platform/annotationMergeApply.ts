@@ -107,7 +107,7 @@ function applyPlanItem(
 ): AnnotationMergeApplyIssue | null {
   switch (item.domain) {
     case "subtitle_lines":
-      return replaceArrayEntity(target.subtitleLines, source.subtitleLines, item);
+      return applySubtitleLine(target, source, item);
     case "characters":
       return replaceArrayEntity(
         target.characterAnnotations,
@@ -133,6 +133,25 @@ function applyPlanItem(
     case "project":
       return issue(item, "项目与媒体设置不能通过局部整合写入。");
   }
+}
+
+// 句子携带角色引用；局部带入来源句子时同步补齐其角色定义，避免生成悬空的 v6 项目。
+function applySubtitleLine(
+  target: ProjectData,
+  source: ProjectData,
+  item: AnnotationMergePlanItem,
+): AnnotationMergeApplyIssue | null {
+  const sourceLine = source.subtitleLines.find(({ id }) => id === item.identity);
+  if (!sourceLine) return issue(item, "来源侧缺少计划中的句级字幕。");
+  const applyIssue = replaceArrayEntity(target.subtitleLines, source.subtitleLines, item);
+  if (applyIssue) return applyIssue;
+  if (
+    sourceLine.roleType &&
+    !target.sentenceAnnotationConfig.roleOptions.includes(sourceLine.roleType)
+  ) {
+    target.sentenceAnnotationConfig.roleOptions.push(sourceLine.roleType);
+  }
+  return null;
 }
 
 // 普通数组实体按稳定 id 定位；add 与 replace 共用一个确定写入入口。
@@ -395,6 +414,18 @@ function validateMergedProject(project: ProjectData): AnnotationMergeApplyIssue[
   const sectionIds = uniqueIds(project.banyanSections, "板眼区段", issues);
   uniqueIds(project.banyanMarks, "板眼标记", issues);
   const customTrackIds = uniqueIds(project.customTracks, "自定义轨道", issues);
+
+  // 角色配置是有序唯一列表，每个非空句级角色都必须引用其中一个定义。
+  if (new Set(project.sentenceAnnotationConfig.roleOptions).size !==
+      project.sentenceAnnotationConfig.roleOptions.length) {
+    issues.push({ entryKey: "project:sentence-role-options", message: "角色行当列表包含重复项。" });
+  }
+  const roleOptions = new Set(project.sentenceAnnotationConfig.roleOptions);
+  for (const line of project.subtitleLines) {
+    if (line.roleType && !roleOptions.has(line.roleType)) {
+      issues.push({ entryKey: `subtitle_lines:${line.id}`, message: "句级字幕引用了未定义的角色行当。" });
+    }
+  }
 
   // 内建轨和自定义轨都必须保证附属轨定义及点 id 在各自父集合内唯一。
   for (const track of project.builtinTracks) {

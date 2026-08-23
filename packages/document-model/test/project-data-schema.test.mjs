@@ -11,14 +11,21 @@ function createCurrentProject() {
       source: "url",
       filePath: "platform-file:media-1",
     },
-    subtitleLines: [{ id: "line-1", text: "那一答", startTime: 1, endTime: 4 }],
+    sentenceAnnotationConfig: { roleOptions: ["闺门旦"] },
+    subtitleLines: [{
+      id: "line-1",
+      text: "那一答",
+      startTime: 1,
+      endTime: 4,
+      deliveryMode: "sung",
+      roleType: "闺门旦",
+    }],
     characterAnnotations: [{
       id: "char-1",
       lineId: "line-1",
       char: "那",
       startTime: 1,
       endTime: 2,
-      singingStyle: "唱",
       tone: { toneClass: "yang_qu" },
     }],
     gongcheAnnotations: [{
@@ -71,7 +78,6 @@ function createCurrentProject() {
       id: "character-track",
       name: "逐字文字轨",
       type: "character",
-      options: ["唱", "念"],
       attachedPointTracks: [{
         id: "breath-track",
         name: "呼吸轨",
@@ -173,6 +179,16 @@ test("当前 ProjectData parser 拒绝父子不一致、重复和幽灵 lane 引
   const missingLane = createCurrentProject();
   missingLane.customTracks[0].blocks[0].branchScope.laneIds.push("missing-lane");
   assert.equal(parseCurrentProjectData(missingLane).success, false);
+});
+
+test("当前 ProjectData parser 拒绝重复角色和句级悬空角色引用", () => {
+  const duplicateRole = createCurrentProject();
+  duplicateRole.sentenceAnnotationConfig.roleOptions.push("闺门旦");
+  assert.equal(parseCurrentProjectData(duplicateRole).success, false);
+
+  const danglingRole = createCurrentProject();
+  danglingRole.subtitleLines[0].roleType = "未定义行当";
+  assert.equal(parseCurrentProjectData(danglingRole).success, false);
 });
 
 test("当前 ProjectData parser 在递归过深或循环对象上 fail closed", () => {

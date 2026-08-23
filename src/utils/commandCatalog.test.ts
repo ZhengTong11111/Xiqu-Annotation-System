@@ -15,7 +15,6 @@ const builtinTrack: BuiltinTrack = {
   id: "character-track",
   name: "逐字文字轨",
   type: "character",
-  options: ["念白", "唱腔"],
   attachedPointTracks: [
     {
       id: "point-1",

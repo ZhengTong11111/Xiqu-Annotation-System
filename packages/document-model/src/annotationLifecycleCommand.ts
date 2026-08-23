@@ -332,7 +332,6 @@ function createCharacterSnapshot(character: CharacterAnnotation): CharacterLifec
     char: character.char,
     startTime: character.startTime,
     endTime: character.endTime,
-    singingStyle: character.singingStyle,
     tone: character.tone
       ? { toneClass: character.tone.toneClass, yxlzShangSubtype: character.tone.yxlzShangSubtype ?? null }
       : null,
@@ -383,7 +382,6 @@ function restoreCharacterSnapshot(state: AnnotationLifecycleState<CharacterLifec
     char: snapshot.char,
     startTime: snapshot.startTime,
     endTime: snapshot.endTime,
-    singingStyle: snapshot.singingStyle,
     tone: snapshot.tone
       ? {
           toneClass: snapshot.tone.toneClass,

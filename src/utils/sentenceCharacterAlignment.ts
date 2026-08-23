@@ -119,7 +119,6 @@ function createSentenceCharacterBlock(line: SubtitleLine, existingIds: Set<strin
     char: line.text.trim(),
     startTime: line.startTime,
     endTime: line.endTime,
-    singingStyle: "普通唱",
   };
 }
 

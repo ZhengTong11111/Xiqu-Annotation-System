@@ -9,18 +9,24 @@ const baseMockLines: SubtitleLine[] = [
     text: "春江花月夜",
     startTime: 12.4,
     endTime: 16.8,
+    deliveryMode: "sung",
+    roleType: "闺门旦",
   },
   {
     id: "line-2",
     text: "良辰美景天",
     startTime: 17.2,
     endTime: 20.5,
+    deliveryMode: "spoken",
+    roleType: "巾生",
   },
   {
     id: "line-3",
     text: "水袖轻翻意未歇",
     startTime: 21.1,
     endTime: 25.9,
+    deliveryMode: null,
+    roleType: null,
   },
 ];
 
@@ -75,6 +81,7 @@ export const mockProject: ProjectData = {
       source: "url",
     },
   ),
+  sentenceAnnotationConfig: { roleOptions: ["闺门旦", "巾生"] },
   customTracks: [
     {
       id: "custom-track-demo-hand",

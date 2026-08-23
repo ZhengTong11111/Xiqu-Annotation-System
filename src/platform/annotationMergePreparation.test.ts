@@ -152,13 +152,14 @@ function annotationFile(
 
 function projectWithLine(id: string, text: string): ProjectData {
   const project = emptyProject();
-  project.subtitleLines.push({ id, text, startTime: 0, endTime: 1 });
+  project.subtitleLines.push({ id, text, startTime: 0, endTime: 1, deliveryMode: null, roleType: null });
   return project;
 }
 
 function emptyProject(): ProjectData {
   return {
     video: { url: "", name: null, source: "url" },
+    sentenceAnnotationConfig: { roleOptions: [] },
     subtitleLines: [],
     characterAnnotations: [],
     gongcheAnnotations: [],

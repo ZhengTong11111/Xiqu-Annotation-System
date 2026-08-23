@@ -186,6 +186,8 @@ function projectWithLines(entries: Array<[string, string]>): ProjectData {
     startTime: index,
     endTime: index + 0.8,
     text,
+    deliveryMode: null,
+    roleType: null,
   }));
   return project;
 }
@@ -194,6 +196,7 @@ function projectWithLines(entries: Array<[string, string]>): ProjectData {
 function emptyProject(): ProjectData {
   return {
     video: { url: "", name: null, source: "url" },
+    sentenceAnnotationConfig: { roleOptions: [] },
     subtitleLines: [],
     characterAnnotations: [],
     gongcheAnnotations: [],

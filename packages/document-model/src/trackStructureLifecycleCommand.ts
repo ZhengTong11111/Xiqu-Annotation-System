@@ -182,7 +182,8 @@ export function createBuiltinTrackLifecycleSnapshot(track: BuiltinTrack): Builti
     id: track.id,
     name: track.name,
     trackType: track.type,
-    options: track.options ? [...track.options] : null,
+    // v6 当前模型不再保存逐字唱法，旧命令槽位固定为空。
+    options: null,
     attachedPointTracks: track.attachedPointTracks.map(createAttachedPointTrackSnapshot),
     attachedPointTracksExpanded: track.attachedPointTracksExpanded ?? null,
     snapToWaveformKeypoints: track.snapToWaveformKeypoints ?? null,

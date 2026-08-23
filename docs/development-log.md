@@ -6794,3 +6794,130 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 待用户人工检查：登录有 `read + review` 的平台文件，设置循环范围后分别创建确认与评论；检查类型筛选、撤回、
   停靠/隐藏/独立窗口、绿色确认/红色评论时间轴范围，以及第二账号无需手动刷新即可看到新审核事实。本轮尚未提交、
   推送或部署生产。
+
+## 2026-08-23：项目文件 v6 与句级“念白/唱 + 角色行当”标注
+
+### 需求审查与数据合同
+
+- 用户要求句级字幕同时标注发声方式和角色行当：发声方式固定为“念白/唱”，角色行当由项目维护一份可新增、
+  重命名、删除和重排序的有序列表。只有两项均为合法值才算完成；句级列表和 Timeline 中未完成统一显示红色，
+  完成统一显示蓝色。
+- 腔格已经由自定义轨道承担，原逐字块的“普通唱、拖腔、顿音、装饰音、念白式、其他”不再是当前研究模型。
+  本轮删除当前 `CharacterAnnotation.singingStyle`、内建逐字轨 `options`、属性面板/右键/默认值及唱法 SRT 导出，
+  没有保留两套并行 UI。历史日志与旧命令 DTO 中维持协议形状所必需的空槽位不作为当前功能重新暴露。
+- 项目 JSON 外层版本由 5 升到 6。`ProjectData` 新增 `sentenceAnnotationConfig.roleOptions`；每个
+  `SubtitleLine` 新增 nullable `deliveryMode` 与 `roleType`。v1-v5 统一迁移为空角色列表和两项未标注，旧
+  singing style/options 在导入时被读取和清理但不进入 v6 输出。非法、重复、过长角色或悬空角色引用均在
+  归一化/严格 schema 边界处理，不猜测学术标注。
+
+### 命令、协作与导入整合
+
+- 句级 `deliveryMode` 与 `roleType` 进入稳定 content command，null 是明确的未标注值；生命周期快照同步保存
+  两项字段。普通单句修改继续复用原 operation id、草稿、自动保存、原子批次、clean catch-up 和同字段冲突
+  的“较晚恢复客户端值”策略。
+- 角色列表作为固定 `sentence-annotation-config` state target。列表变更会先从最新 `projectRef` 重建完整 next，
+  再由 mutation lease 保护的 `annotation.track.structure.transaction.apply` 同时提交所有受影响句子的 roleType
+  content leaf 和配置 state leaf。事务在全部子命令应用后统一验证引用图，正向与 inverse 均不会向外发布中间悬空状态。
+- shared parser 对角色数量、名称长度、去空白、唯一性和固定 target id 做严格校验；只有包含句级配置 state 的
+  transaction 会提升为结构租约，普通 Gongche/Banyan state 仍保持原内容语义。旧内建轨命令快照中的 options
+  恢复时被明确忽略，避免 v6 项目重新长出已删除字段。
+- SRT 导入的新句子、拆分/合并/同步句子、空白项目、mock 和测试 fixture 均补齐 nullable 字段。项目整合导入会
+  保留或合并句级分类；局部选择性整合一条带角色的来源句子时自动补齐角色定义，并在最终应用器中拒绝重复列表或
+  悬空引用。结构化比较新增项目角色列表、句级念白/唱和角色行当字段。
+
+### 前端交互与代码清理
+
+- 新增 Radix `SentenceAnnotationSettingsDialog`，沿用现有桌面工作区样式和 Lucide 图标，支持角色新增、失焦/Enter
+  重命名、上下移动、删除替换或清空。编辑菜单和逐字内建轨 Inspector 共用同一个入口和同一组 App 回调，
+  没有复制角色状态机。
+- 句级 Inspector 新增发声方式与角色行当下拉；句级字幕右键菜单提供相同两组快速选择并允许清空。新增
+  `sentenceClassification.ts` 作为完成度和中文标签的唯一纯函数，列表与 Timeline 不各写一套宽松规则。
+- 句级列表和 Timeline 使用低饱和蓝/红表达完成/未完成。选中态改用 outline/inset outline，避免覆盖语义背景和
+  左边色条；浏览器计算样式核验确认选中的未完成句仍保持红色语义。
+- 删除未被当前 App 使用且仍保留旧唱法导出的 `Toolbar.tsx`。生产源码扫描仅剩项目迁移测试中的
+  `singingStyle: "普通唱"`，用于证明 v5 历史输入会被清理；没有可执行旧唱法入口或重复 helper。
+- 未新增第三方依赖、数据库表或 migration。本轮使用仓库已有 Radix Dialog/ContextMenu 和 Lucide，避免为小型
+  有序列表再引入状态或拖拽框架。
+
+### 测试、浏览器验收与当前状态
+
+- 专项测试全部通过：project schema 6/6、shared annotation commands 24/24、content command 3/3、lifecycle
+  10/10、annotation transaction 8/8、track structure transaction 20/20、atomic submit 26/26、conflict rebase
+  13/13、operation catch-up 20/20、annotation diff 11/11、merge plan 11/11、merge apply 5/5、recovery preview
+  3/3、command search 31/31。
+- `npm run test:api` 168/168 通过，覆盖真实 PostgreSQL 上的现有资源、权限、协作、审核、保存和媒体分析回归；
+  仅有既有 `pg` 9 弃用提醒。完整 `npm run build` 通过 shared、document-model、Web 和 API；Web 仍只有既有
+  主 chunk 超过 500 kB 的非阻断提醒。
+- 本机 `http://127.0.0.1:5173/` 的本地标注模式已实际检查句级红/蓝状态、Inspector 两个下拉、编辑菜单角色窗口、
+  句子右键两级菜单及选中态颜色；浏览器控制台无错误或 warning。验收没有写平台生产数据。
+- 已完成：v6 模型/迁移、严格 schema、协作命令、角色原子配置、句级 UI、比较/整合、旧唱法清理、专项/API/
+  构建和本地浏览器检查，以及 README、roadmap、AGENTS 同步。待用户人工验收：用真实旧 JSON 导入并导出 v6，
+  在平台双账号会话中修改句级分类和角色列表，确认自动保存、远端追赶、undo/redo 与删除替换行为。
+- 本轮结束时尚未提交、推送或部署生产；生产仍运行上一版本，需在用户明确要求后按维护模式流程发布。
+
+## 2026-08-23：补齐 Timeline 句级右键与角色行当拖拽排序
+
+### 审查结论与实现边界
+
+- 审查确认上一阶段只在右侧 `SubtitleList` 提供句级分类右键菜单；Timeline 顶部 `.line-overlay` 仍只有
+  左键拖动和选中，用户在时间轴句块上右键不会进入分类流程。角色设置窗口也只有上移/下移按钮，尚未
+  实现类似类型列表的拖拽排序。
+- 本轮没有新增数据字段、JSON version、数据库 migration、API DTO 或第三方依赖。时间轴右键继续调用 App
+  唯一的 `updateSentenceClassification()`，角色排序继续调用 mutation lease 保护的
+  `updateSentenceRoleOptions()`；没有在 Timeline 或 Dialog 内新增直接修改 ProjectData 的旁路。
+- 拖拽复用仓库已有 `@atlaskit/pragmatic-drag-and-drop`。新增 `sentenceRoleReorder.ts` 只承担稳定角色名称和
+  `before | after` 落点到不可变数组顺序的纯转换；DOM 拖放生命周期与业务结构事务保持分离。排序 helper
+  使用本地 `splice` 而没有导入 Atlaskit 的 reorder 子路径，因为该子路径在当前 Node/tsx 测试解析中会错误
+  指向不存在的 `index.jsx`；Atlaskit 仍完整负责实际拖放行为，并未手写第二套 DnD 引擎。
+
+### 前端交互、异步边界与代码清理
+
+- `TimelineContextMenu` 新增严格 `line` 分支，`.line-overlay` 右键会阻止浏览器菜单、停止冒泡、选择稳定句子 id
+  并把坐标交给 App。它不会复用左键拖动，不移动播放头，也没有改变时间吸附、空白点击或框选逻辑。
+- App 统一菜单显示句子摘要、发声方式、项目角色列表及“管理角色行当”入口；当前值有勾选态。只读账号或
+  clean-client 远端 revision 缺口期间仍可查看菜单，但分类按钮会禁用并显示原因。右侧句级列表原有 Radix
+  右键入口保持不变，两处最终进入同一个内容命令。
+- 角色窗口增加 Lucide 拖拽手柄、拖动行弱化和目标上/下插入线。每行只以角色名称作为 drag payload，避免
+  获取结构租约期间依赖陈旧数组索引；重命名和删除也改用名称重新定位最新 `projectRef`。上移/下移按钮继续
+  保留，并与拖拽使用同一个纯排序 helper 和 App reorder 入口。
+- 新增统一 `mutationPending`/Promise 边界：新增、重命名、排序、删除替换都等待结构事务返回；事务失败时
+  对话框保留或恢复输入并显示错误，不再由旧 `void updateSentenceRoleOptions(...)` 假定操作已经成功。未保存
+  重命名、删除确认、只读/追赶门禁或在途事务会禁用拖拽，避免失焦提交和排序并发。
+- 清理原 `moveSentenceRoleOption(index, direction)` 及 Dialog 的 `onMove` 业务旁路；方向按钮现在也转换为
+  source/target/edge 意图。拖回等价位置会在申请租约前识别为成功的 no-op，不制造空命令或错误提示。
+  Atlaskit adapter 由 React effect 注册并通过 `combine` 统一注销，没有遗留 document/window 监听器。
+- 新增逻辑块和关键并发边界已补中文注释；README、roadmap 和 `AGENTS.md` 已同步 Timeline 菜单所有权、
+  DnD 稳定名称合同和纯排序 helper 职责。
+
+### 测试、浏览器验收与当前状态
+
+- 新增 `npm run test:sentence-role-reorder`，3/3 覆盖向上/向下、首尾、跨项、相邻 no-op、同目标、失效名称
+  和输入不可变。句级迁移/完成度联合测试 9/9、project schema 6/6、内容命令 3/3、结构事务 20/20。
+- 协作回归通过：atomic submit 26/26、operation catch-up 20/20、conflict rebase 13/13；其中 clean catch-up
+  明确覆盖角色列表与句级引用联动。`npm run test:api` 168/168，通过真实 PostgreSQL 测试 schema 的权限、
+  协作、租约、保存、审核、媒体和运维回归，仅保留既有 `pg` 9 弃用提醒。
+- 完整 `npm run build` 通过 Prisma generate、shared、document-model、Web 和 API；`git diff --check` 通过。
+  Web 仍只有既有主 chunk 超过 500 kB 的非阻断提示。
+- 本机 `http://127.0.0.1:5173/` 已实际验收：Timeline 三个句块均可打开新右键菜单，从菜单可打开角色窗口；
+  两个角色均显示拖动手柄，上移按钮通过同一事务成功把顺序从“闺门旦、巾生”调整为“巾生、闺门旦”，
+  控制台无 error/warning。浏览器控制层两次未能可靠合成原生 HTML5 drop，因此没有虚报自动拖手势成功；
+  pure helper、实际按钮事务和 adapter 类型/生产构建已经通过，真实鼠标/触摸板拖放仍列为人工验收项。
+- 已完成：Timeline 句级右键、角色拖拽结构、异步失败反馈、僵尸路径清理、专项/API/完整构建和文档同步。
+  待人工验收：真实拖拽的首尾落点与插入线、中文输入法重命名期间拖拽门禁，以及平台双账号下的租约、
+  自动保存、远端追赶和撤销/重做。本轮尚未提交、推送或部署生产。
+
+## 2026-08-23：Timeline 句级块按内容长度显示分类摘要
+
+- 用户要求句级块在空间充足时显示“念白/唱 + 角色 + 句子”，空间缩小时先隐藏发声方式，再隐藏角色，
+  最终始终保留句子文字。本轮只修改 Timeline 展示，不改 v6 数据、分类完成度、右键菜单、时间拖动或同步命令。
+- 首版曾使用 140/230px 固定 container breakpoint；用户指出它没有考虑句子长短，现已完整删除该方案及对应
+  container CSS。新增 `sentenceTimelineLabel.ts`，按 Unicode 视觉字宽估算句子、角色、发声方式和分隔符的
+  实际排版需求，再与当前时间跨度乘缩放得到的句块宽度比较。相同块宽下，短句可显示完整分类，长句会
+  先隐藏发声方式、再隐藏角色；角色名称和最终句子仍有有界省略作为极窄空间兜底。
+- 原来只有句子文本使用 sticky。现在分类和句子进入同一个 `.line-overlay-content` 粘滞组，保持轨道横向滚动时
+  元数据与句子一起贴在轨道头右侧，不产生两个彼此脱离的浮动标签。复杂样式段已补中文注释。
+- 新增 3/3 纯函数测试：明确证明相同 150px 块宽下“寻梦”显示完整分类，而“原来姹紫嫣红开遍”只显示
+  句子，并覆盖 full/role/text 三档和中文、ASCII、标点、Unicode 代理对。浏览器在 5px/s 实际检查：176px
+  的短句显示“唱 + 闺门旦 + 春江花月夜”，132px 的句子显示“巾生 + 良辰美景天”，192px 的长句只保留
+  “角色未选 + 水袖轻翻意未歇”。`npm run build:web` 与 `git diff --check` 通过；仍只有既有主 chunk 体积
+  提醒。本轮尚未提交、推送或部署生产。

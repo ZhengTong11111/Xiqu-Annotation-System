@@ -60,7 +60,7 @@ test("恢复快照摘要统计当前项目结构", () => {
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.deepEqual(result.summary, {
-    normalizedFileVersion: 5,
+    normalizedFileVersion: 6,
     videoName: "寻梦.mp4",
     requiresManualVideoImport: true,
     subtitleLineCount: 1,

@@ -85,7 +85,8 @@ export function createBuiltinTrackStructureSnapshot(track: BuiltinTrack): Builti
     id: track.id,
     trackType: track.type,
     name: track.name,
-    options: track.options ? [...track.options] : null,
+    // v6 已移除逐字唱法列表，命令快照保留 null 槽位只为维持既有协议形状。
+    options: null,
     attachedPointTracksExpanded: track.attachedPointTracksExpanded ?? null,
     snapToWaveformKeypoints: track.snapToWaveformKeypoints ?? null,
     autoSetLoopRangeOnSelect: track.autoSetLoopRangeOnSelect ?? null,

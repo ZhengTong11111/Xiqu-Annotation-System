@@ -4,6 +4,7 @@ import {
   type BanyanMarkStateSnapshot,
   type BanyanSectionStateSnapshot,
   type GongcheSymbolLifecycleSnapshot,
+  type SentenceAnnotationConfigStateSnapshot,
   type AnnotationStateCommandEnvelope,
   type AnnotationStateUpdateItem,
 } from "@xiqu/shared";
@@ -20,6 +21,7 @@ import { validateBanyanGongcheReferences } from "./banyanReferenceIntegrity.js";
 import { areProjectValuesEqual } from "./projectValueEquality.js";
 
 export type AnnotationStateTarget =
+  | { entityType: "sentence-annotation-config"; entityId: "sentence-annotation-config" }
   | { entityType: "gongche-symbol"; entityId: string; trackId: string }
   | { entityType: "banyan-section"; entityId: string }
   | { entityType: "banyan-mark"; entityId: string };
@@ -45,7 +47,11 @@ export function buildProjectAnnotationStateEnvelope(
   for (const target of targets) uniqueTargets.set(getAnnotationStateTargetKey(target), target);
   const items: AnnotationStateUpdateItem[] = [];
   for (const target of uniqueTargets.values()) {
-    if (target.entityType === "gongche-symbol") {
+    if (target.entityType === "sentence-annotation-config") {
+      const before = resolveProjectAnnotationState(baseProject, target);
+      const after = resolveProjectAnnotationState(nextProject, target);
+      items.push({ entityType: target.entityType, entityId: target.entityId, before, after });
+    } else if (target.entityType === "gongche-symbol") {
       const before = resolveProjectAnnotationState(baseProject, target);
       const after = resolveProjectAnnotationState(nextProject, target);
       if (!before || !after) return null;
@@ -68,6 +74,10 @@ export function buildProjectAnnotationStateEnvelope(
 // symbol 的 trackId 是父 Gongche block id；板眼实体则使用项目级稳定 id。
 export function resolveProjectAnnotationState(
   project: ProjectData,
+  target: Extract<AnnotationStateTarget, { entityType: "sentence-annotation-config" }>,
+): SentenceAnnotationConfigStateSnapshot;
+export function resolveProjectAnnotationState(
+  project: ProjectData,
   target: Extract<AnnotationStateTarget, { entityType: "gongche-symbol" }>,
 ): GongcheSymbolLifecycleSnapshot | null;
 export function resolveProjectAnnotationState(
@@ -86,6 +96,12 @@ export function resolveProjectAnnotationState(
   project: ProjectData,
   target: AnnotationStateTarget,
 ): AnnotationStateUpdateItem["before"] | null {
+  if (target.entityType === "sentence-annotation-config") {
+    return {
+      id: "sentence-annotation-config",
+      roleOptions: [...project.sentenceAnnotationConfig.roleOptions],
+    };
+  }
   if (target.entityType === "gongche-symbol") {
     const blocks = project.gongcheAnnotations.filter((block) => block.id === target.trackId);
     if (blocks.length !== 1) return null;
@@ -109,10 +125,13 @@ export function applyAnnotationStateItems(
     string,
     Map<string, Extract<AnnotationStateUpdateItem, { entityType: "gongche-symbol" }>>
   >();
+  let sentenceConfigUpdate: Extract<AnnotationStateUpdateItem, { entityType: "sentence-annotation-config" }> | null = null;
   const sectionUpdates = new Map<string, Extract<AnnotationStateUpdateItem, { entityType: "banyan-section" }>>();
   const markUpdates = new Map<string, Extract<AnnotationStateUpdateItem, { entityType: "banyan-mark" }>>();
   for (const item of items) {
-    if (item.entityType === "gongche-symbol") {
+    if (item.entityType === "sentence-annotation-config") {
+      sentenceConfigUpdate = item;
+    } else if (item.entityType === "gongche-symbol") {
       // 使用两级 Map 保留两个稳定 id 的边界；字符串拼接会让含分隔符的合法 id 发生碰撞。
       const blockUpdates = symbolUpdates.get(item.trackId) ?? new Map();
       blockUpdates.set(item.entityId, item);
@@ -162,6 +181,14 @@ export function applyAnnotationStateItems(
       });
   if (foundMarks.size !== markUpdates.size) return null;
 
-  const nextProject = { ...project, gongcheAnnotations, banyanSections, banyanMarks };
+  const nextProject = {
+    ...project,
+    sentenceAnnotationConfig: sentenceConfigUpdate
+      ? { roleOptions: [...sentenceConfigUpdate.after.roleOptions] }
+      : project.sentenceAnnotationConfig,
+    gongcheAnnotations,
+    banyanSections,
+    banyanMarks,
+  };
   return validateBanyanGongcheReferences(nextProject) ? nextProject : null;
 }

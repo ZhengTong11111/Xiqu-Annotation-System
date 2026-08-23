@@ -92,8 +92,12 @@ export function buildProjectTrackStructureTransactionCommand(
 
   const stateTargets = selectChangedStateTargets(baseProject, nextProject, plan.stateTargets ?? []);
   if (!stateTargets) return null;
-  if (stateTargets.length > 0) {
-    const envelope = buildProjectAnnotationStateEnvelope(baseProject, nextProject, stateTargets);
+  const immediateStateTargets = stateTargets.filter((target) =>
+    target.entityType !== "sentence-annotation-config");
+  const sentenceConfigStateTargets = stateTargets.filter((target) =>
+    target.entityType === "sentence-annotation-config");
+  if (immediateStateTargets.length > 0) {
+    const envelope = buildProjectAnnotationStateEnvelope(baseProject, nextProject, immediateStateTargets);
     if (!envelope) return null;
     commands.push(envelope);
   }
@@ -121,6 +125,18 @@ export function buildProjectTrackStructureTransactionCommand(
   if (!contentTargets) return null;
   if (contentTargets.length > 0) {
     const envelope = buildProjectAnnotationContentEnvelope(baseProject, nextProject, contentTargets);
+    if (!envelope) return null;
+    commands.push(envelope);
+  }
+
+  // 角色重命名/删除必须先改句子引用，再发布新角色列表；添加角色也允许短暂的事务内悬空值，
+  // 最终引用校验仍在整个事务尾部一次执行，因此外部永远观察不到中间状态。
+  if (sentenceConfigStateTargets.length > 0) {
+    const envelope = buildProjectAnnotationStateEnvelope(
+      baseProject,
+      nextProject,
+      sentenceConfigStateTargets,
+    );
     if (!envelope) return null;
     commands.push(envelope);
   }

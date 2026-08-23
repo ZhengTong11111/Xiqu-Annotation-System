@@ -2,7 +2,15 @@
 // React 选择状态、波形/频谱缓存和平台 revision/ACL 必须留在各自运行时边界，不能反向进入持久文档。
 
 // 《韵学骊珠》四声阴阳体系以八类为主；上声另保留原书“阴阳通用”等细分信息。
-export type SingingStyle = string;
+export type SentenceDeliveryMode = "spoken" | "sung";
+
+// 角色行当限制属于持久文件合同，迁移、校验和前端输入必须共用同一组边界。
+export const MAX_SENTENCE_ROLE_OPTIONS = 200;
+export const MAX_SENTENCE_ROLE_OPTION_LENGTH = 100;
+
+export type SentenceAnnotationConfig = {
+  roleOptions: string[];
+};
 export type ToneBase = "ping" | "shang" | "qu" | "ru";
 export type ToneYinYang = "yin" | "yang";
 export type ToneClass =
@@ -73,6 +81,9 @@ export type SubtitleLine = {
   text: string;
   startTime: number;
   endTime: number;
+  // null 表示该维度尚未标注，不能用空字符串或默认值伪装完成状态。
+  deliveryMode: SentenceDeliveryMode | null;
+  roleType: string | null;
 };
 
 export type CharacterAnnotation = {
@@ -81,7 +92,6 @@ export type CharacterAnnotation = {
   char: string;
   startTime: number;
   endTime: number;
-  singingStyle: SingingStyle;
   // null 表示明确未标注；旧文件缺少字段时由导入归一化补为 null。
   tone?: CharacterToneInfo | null;
 };
@@ -239,7 +249,6 @@ export type BuiltinTrack = {
   id: BuiltinTrackId;
   name: string;
   type: BuiltinTrackType;
-  options?: string[];
   attachedPointTracks: AttachedPointTrack[];
   attachedPointTracksExpanded?: boolean;
   snapToWaveformKeypoints?: boolean;
@@ -257,6 +266,7 @@ export type ProjectVideo = {
 
 export type ProjectData = {
   video: ProjectVideo;
+  sentenceAnnotationConfig: SentenceAnnotationConfig;
   subtitleLines: SubtitleLine[];
   characterAnnotations: CharacterAnnotation[];
   gongcheAnnotations: GongcheAnnotation[];
@@ -270,7 +280,7 @@ export type ProjectData = {
 
 // SavedProjectFile 是本地 JSON 外层；uiState 只保存可恢复的编辑视图偏好，不代表平台 revision。
 export type SavedProjectFile = {
-  version: 1 | 2 | 3 | 4 | 5;
+  version: 1 | 2 | 3 | 4 | 5 | 6;
   project: ProjectData;
   uiState?: {
     zoom?: number;

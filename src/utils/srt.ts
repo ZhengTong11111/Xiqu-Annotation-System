@@ -34,7 +34,7 @@ export function parseSrt(text: string): SubtitleLine[] {
   return text
     .trim()
     .split(/\r?\n\r?\n/)
-    .map((block, index) => {
+    .map<SubtitleLine | null>((block, index) => {
       const lines = block.split(/\r?\n/).map((line) => line.trim());
       const timeLine = lines.find((line) => SRT_TIME_PATTERN.test(line));
       if (!timeLine) {
@@ -51,9 +51,11 @@ export function parseSrt(text: string): SubtitleLine[] {
         text: textContent,
         startTime: parseSrtTime(match.groups.start),
         endTime: parseSrtTime(match.groups.end),
+        deliveryMode: null,
+        roleType: null,
       } satisfies SubtitleLine;
     })
-    .filter((item): item is SubtitleLine => Boolean(item));
+    .filter((item): item is SubtitleLine => item !== null);
 }
 
 function buildSrtBlock(index: number, startTime: number, endTime: number, text: string) {
@@ -70,23 +72,6 @@ export function exportCharacterTrackToSrt(
     .sort((a, b) => a.startTime - b.startTime)
     .map((annotation, index) =>
       buildSrtBlock(index + 1, annotation.startTime, annotation.endTime, annotation.char),
-    )
-    .join("\n\n");
-}
-
-export function exportSingingStyleTrackToSrt(
-  annotations: CharacterAnnotation[],
-): string {
-  return annotations
-    .slice()
-    .sort((a, b) => a.startTime - b.startTime)
-    .map((annotation, index) =>
-      buildSrtBlock(
-        index + 1,
-        annotation.startTime,
-        annotation.endTime,
-        `${annotation.char} | ${annotation.singingStyle}`,
-      ),
     )
     .join("\n\n");
 }

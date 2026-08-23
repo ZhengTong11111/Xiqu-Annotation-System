@@ -36,7 +36,6 @@ test("逐字增删改和四声变化不会污染相邻字符", () => {
       char: "增",
       startTime: 0.5,
       endTime: 0.75,
-      singingStyle: "普通唱",
       tone: null,
     },
   ];
@@ -56,6 +55,26 @@ test("逐字增删改和四声变化不会污染相邻字符", () => {
   const modified = group.entries.find(({ changeType }) =>
     changeType === "modified");
   assert.deepEqual(modified?.changedFields, ["文字", "四声"]);
+});
+
+test("句级分类和角色配置变化进入明确差异字段", () => {
+  const left = projectFixture();
+  const right = clone(left);
+  right.sentenceAnnotationConfig.roleOptions.push("小生");
+  right.subtitleLines[0] = {
+    ...right.subtitleLines[0]!,
+    deliveryMode: "spoken",
+    roleType: "小生",
+  };
+
+  const result = buildAnnotationDiff(left, right);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const projectEntry = result.diff.groups.find(({ domain }) => domain === "project")?.entries[0];
+  const sentenceEntry = result.diff.groups.find(({ domain }) => domain === "subtitle_lines")
+    ?.entries.find(({ identity }) => identity === "line-1");
+  assert.deepEqual(projectEntry?.changedFields, ["角色行当列表"]);
+  assert.deepEqual(sentenceEntry?.changedFields, ["念白/唱", "角色行当"]);
 });
 
 // 工尺谱空符号会由迁移层补展示符号，但随机 fallback id 不得进入语义比较。
@@ -213,9 +232,10 @@ function projectFixture(): ProjectData {
       name: "寻梦.mp4",
       source: "url",
     },
+    sentenceAnnotationConfig: { roleOptions: ["闺门旦"] },
     subtitleLines: [
-      { id: "line-1", text: "那一答", startTime: 0, endTime: 2 },
-      { id: "line-2", text: "可是", startTime: 2, endTime: 3 },
+      { id: "line-1", text: "那一答", startTime: 0, endTime: 2, deliveryMode: "sung", roleType: "闺门旦" },
+      { id: "line-2", text: "可是", startTime: 2, endTime: 3, deliveryMode: null, roleType: null },
     ],
     characterAnnotations: [
       {
@@ -224,7 +244,6 @@ function projectFixture(): ProjectData {
         char: "那",
         startTime: 0,
         endTime: 0.5,
-        singingStyle: "唱",
         tone: { toneClass: "yin_ping" },
       },
       {
@@ -233,7 +252,6 @@ function projectFixture(): ProjectData {
         char: "一",
         startTime: 0.5,
         endTime: 1,
-        singingStyle: "唱",
         tone: null,
       },
     ],

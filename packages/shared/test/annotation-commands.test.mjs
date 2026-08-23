@@ -365,7 +365,6 @@ test("原子事务严格组合叶命令并按逆序生成 inverse", () => {
         char: "乙",
         startTime: 2,
         endTime: 3,
-        singingStyle: "普通唱",
         tone: null,
       },
       position: {
@@ -642,6 +641,38 @@ test("内容领域命令可构建、反向并检查前置条件", () => {
   ]);
   assert.equal(ready.status, "ready");
   assert.equal(invertAnnotationCommandEnvelope(envelope)?.command.items[0].before, "新");
+});
+
+test("句级分类内容命令支持空值并严格限制枚举与角色名称", () => {
+  const envelope = buildAnnotationContentUpdateEnvelope([{
+    entityType: "sentence",
+    entityId: "line-classification",
+    field: "deliveryMode",
+    before: null,
+    after: "sung",
+  }, {
+    entityType: "sentence",
+    entityId: "line-classification",
+    field: "roleType",
+    before: null,
+    after: "闺门旦",
+  }]);
+  assert.ok(envelope);
+  assert.deepEqual(invertAnnotationCommandEnvelope(invertAnnotationCommandEnvelope(envelope)), envelope);
+  assert.equal(buildAnnotationContentUpdateEnvelope([{
+    entityType: "sentence",
+    entityId: "line-classification",
+    field: "deliveryMode",
+    before: null,
+    after: "rap",
+  }]), null);
+  assert.equal(buildAnnotationContentUpdateEnvelope([{
+    entityType: "sentence",
+    entityId: "line-classification",
+    field: "roleType",
+    before: null,
+    after: " 前后空格 ",
+  }]), null);
 });
 
 // 字段与实体配对、track scope、额外字段和 no-op 都不能进入命令日志。

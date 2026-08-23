@@ -7,7 +7,9 @@ import {
 import type { CustomTrack, ProjectData } from "./projectData.js";
 import { areProjectValuesEqual } from "./projectValueEquality.js";
 
-// UI 只声明稳定目标身份，字符串 before/after 始终由 base/next ProjectData 权威读取。
+type AnnotationContentValue = AnnotationContentUpdateItem["before"];
+
+// UI 只声明稳定目标身份，before/after 始终由 base/next ProjectData 权威读取。
 export type AnnotationContentTarget = AnnotationContentUpdateItem extends infer TItem
   ? TItem extends AnnotationContentUpdateItem
     ? Omit<TItem, "before" | "after">
@@ -38,7 +40,7 @@ export function buildProjectAnnotationContentEnvelope(
   for (const target of uniqueTargets.values()) {
     const before = resolveProjectAnnotationContent(baseProject, target);
     const after = resolveProjectAnnotationContent(nextProject, target);
-    if (before === null || after === null) return null;
+    if (before === undefined || after === undefined) return null;
     items.push({ ...target, before, after } as AnnotationContentUpdateItem);
   }
   const envelope = buildAnnotationContentUpdateEnvelope(items);
@@ -49,33 +51,36 @@ export function buildProjectAnnotationContentEnvelope(
 export function resolveProjectAnnotationContent(
   project: ProjectData,
   target: AnnotationContentTarget,
-): string | null {
+): AnnotationContentValue | undefined {
   if (target.entityType === "sentence") {
-    return project.subtitleLines.find((item) => item.id === target.entityId)?.text ?? null;
+    const line = project.subtitleLines.find((item) => item.id === target.entityId);
+    if (!line) return undefined;
+    if (target.field === "deliveryMode") return line.deliveryMode;
+    if (target.field === "roleType") return line.roleType;
+    return line.text;
   }
   if (target.entityType === "character") {
     const character = project.characterAnnotations.find((item) => item.id === target.entityId);
-    if (!character) return null;
-    return target.field === "singingStyle" ? character.singingStyle : character.char;
+    return character?.char;
   }
   if (target.entityType === "action") {
     return project.actionAnnotations.find((item) =>
       item.id === target.entityId && item.trackId === target.trackId,
-    )?.label ?? null;
+    )?.label;
   }
   if (target.entityType === "custom-block") {
     const track = project.customTracks.find((item) => item.id === target.trackId);
     const block = track?.blocks.find((item) => item.id === target.entityId);
-    if (!block) return null;
+    if (!block) return undefined;
     if (target.field === "type") return block.type;
-    const text = "text" in block ? block.text : null;
-    return typeof text === "string" ? text : null;
+    const text = "text" in block ? block.text : undefined;
+    return typeof text === "string" ? text : undefined;
   }
   if (target.entityType === "attached-point") {
     const pointTrack = [...project.builtinTracks, ...project.customTracks]
       .flatMap((track) => track.attachedPointTracks)
       .find((item) => item.id === target.trackId);
-    return pointTrack?.points.find((item) => item.id === target.entityId)?.label ?? null;
+    return pointTrack?.points.find((item) => item.id === target.entityId)?.label;
   }
   return assertNever(target);
 }
@@ -88,24 +93,27 @@ export function applyAnnotationContentItems(
   const updates = groupAnnotationContentUpdates(items);
   return {
     ...project,
-    subtitleLines: updates.sentences.size === 0
+    subtitleLines: updates.sentenceText.size === 0 &&
+        updates.sentenceDeliveryMode.size === 0 &&
+        updates.sentenceRoleType.size === 0
       ? project.subtitleLines
       : project.subtitleLines.map((item) => {
-          const text = updates.sentences.get(item.id);
-          return text === undefined ? item : { ...item, text };
+          const hasText = updates.sentenceText.has(item.id);
+          const hasDeliveryMode = updates.sentenceDeliveryMode.has(item.id);
+          const hasRoleType = updates.sentenceRoleType.has(item.id);
+          if (!hasText && !hasDeliveryMode && !hasRoleType) return item;
+          return {
+            ...item,
+            ...(hasText ? { text: updates.sentenceText.get(item.id)! } : {}),
+            ...(hasDeliveryMode ? { deliveryMode: updates.sentenceDeliveryMode.get(item.id)! } : {}),
+            ...(hasRoleType ? { roleType: updates.sentenceRoleType.get(item.id)! } : {}),
+          };
         }),
-    characterAnnotations: updates.characterChars.size === 0 && updates.characterSingingStyles.size === 0
+    characterAnnotations: updates.characterChars.size === 0
       ? project.characterAnnotations
       : project.characterAnnotations.map((item) => {
           const char = updates.characterChars.get(item.id);
-          const singingStyle = updates.characterSingingStyles.get(item.id);
-          return char === undefined && singingStyle === undefined
-            ? item
-            : {
-                ...item,
-                ...(char === undefined ? {} : { char }),
-                ...(singingStyle === undefined ? {} : { singingStyle }),
-              };
+          return char === undefined ? item : { ...item, char };
         }),
     actionAnnotations: updates.actions.size === 0
       ? project.actionAnnotations
@@ -169,19 +177,23 @@ function applyPointLabels<T extends { id: string; points: Array<{ id: string; la
 // shared 已保证命令目标不重复；这里仅按 ProjectData 集合分组，为不可变更新提供 O(1) 查找。
 function groupAnnotationContentUpdates(items: readonly AnnotationContentUpdateItem[]) {
   const groups = {
-    sentences: new Map<string, string>(),
+    sentenceText: new Map<string, string>(),
+    sentenceDeliveryMode: new Map<string, "spoken" | "sung" | null>(),
+    sentenceRoleType: new Map<string, string | null>(),
     characterChars: new Map<string, string>(),
-    characterSingingStyles: new Map<string, string>(),
     actions: new Map<string, string>(),
     customBlockText: new Map<string, string>(),
     customBlockType: new Map<string, string>(),
     attachedPoints: new Map<string, string>(),
   };
   for (const item of items) {
-    if (item.entityType === "sentence") groups.sentences.set(item.entityId, item.after);
+    if (item.entityType === "sentence") {
+      if (item.field === "deliveryMode") groups.sentenceDeliveryMode.set(item.entityId, item.after);
+      else if (item.field === "roleType") groups.sentenceRoleType.set(item.entityId, item.after);
+      else groups.sentenceText.set(item.entityId, item.after);
+    }
     else if (item.entityType === "character") {
-      if (item.field === "singingStyle") groups.characterSingingStyles.set(item.entityId, item.after);
-      else groups.characterChars.set(item.entityId, item.after);
+      groups.characterChars.set(item.entityId, item.after);
     }
     else if (item.entityType === "action") {
       groups.actions.set(getScopedEntityKey(item.trackId, item.entityId), item.after);

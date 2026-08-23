@@ -5,9 +5,10 @@ import { buildTimelineSelectionSummary } from "./timelineSelectionSummary";
 
 const project = {
   video: { name: "test", url: "", source: "url" },
+  sentenceAnnotationConfig: { roleOptions: [] },
   subtitleLines: [],
   characterAnnotations: [{
-    id: "char-1", lineId: "line-1", char: "字", startTime: 1, endTime: 2, singingStyle: "",
+    id: "char-1", lineId: "line-1", char: "字", startTime: 1, endTime: 2,
   }],
   gongcheAnnotations: [],
   banyanSections: [],

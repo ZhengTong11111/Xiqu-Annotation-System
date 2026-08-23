@@ -295,9 +295,8 @@ test("typeOptions 重命名与受影响块 type 作为一笔结构事务应用",
   if (applied.status === "applied") assert.deepEqual(applied.project, next);
 });
 
-test("轨道顺序、内建唱法和点轨标签配置可分别原子应用并反向恢复", () => {
+test("轨道顺序、内建轨设置和点轨标签配置可分别原子应用并反向恢复", () => {
   const base = createProject();
-  base.builtinTracks[0].options = [base.characterAnnotations[0].singingStyle, "念白"];
   base.builtinTracks[0].attachedPointTracks = [{
     id: "configured-point-track",
     name: "呼吸",
@@ -306,9 +305,7 @@ test("轨道顺序、内建唱法和点轨标签配置可分别原子应用并�
   }];
   const next = structuredClone(base);
   next.activeTrackOrder = [...next.activeTrackOrder].reverse();
-  next.builtinTracks[0].name = "逐字唱腔";
-  next.builtinTracks[0].options![0] = "唱腔";
-  next.characterAnnotations[0].singingStyle = "唱腔";
+  next.builtinTracks[0].name = "逐字文字轨（校订）";
   next.builtinTracks[0].attachedPointTracks[0].typeOptions[0] = "气口";
   next.builtinTracks[0].attachedPointTracks[0].points[0].label = "气口";
   const envelope = buildProjectTrackStructureTransactionCommand(base, next, {
@@ -320,7 +317,6 @@ test("轨道顺序、内建唱法和点轨标签配置可分别原子应用并�
       pointTrackId: "configured-point-track",
     }],
     contentTargets: [
-      { entityType: "character", entityId: base.characterAnnotations[0].id, field: "singingStyle" },
       { entityType: "attached-point", entityId: "configured-point", trackId: "configured-point-track", field: "label" },
     ],
   });
@@ -335,15 +331,11 @@ test("轨道顺序、内建唱法和点轨标签配置可分别原子应用并�
   if (restored.status === "applied") assert.deepEqual(restored.project, base);
 });
 
-test("配置事务漏报唱法级联或遇到错父点轨时 fail closed", () => {
+test("配置事务漏报项目级角色配置或遇到错父点轨时 fail closed", () => {
   const base = createProject();
-  base.builtinTracks[0].options = [base.characterAnnotations[0].singingStyle];
   const next = structuredClone(base);
-  next.builtinTracks[0].options![0] = "新唱法";
-  next.characterAnnotations[0].singingStyle = "新唱法";
-  assert.equal(buildProjectTrackStructureTransactionCommand(base, next, {
-    builtinTrackStructureIds: ["character-track"],
-  }), null);
+  next.sentenceAnnotationConfig.roleOptions.push("新增角色");
+  assert.equal(buildProjectTrackStructureTransactionCommand(base, next, {}), null);
 
   base.builtinTracks[0].attachedPointTracks = [{
     id: "wrong-parent-point-track",
@@ -360,6 +352,40 @@ test("配置事务漏报唱法级联或遇到错父点轨时 fail closed", () =>
       pointTrackId: "wrong-parent-point-track",
     }],
   }), null);
+});
+
+test("角色重命名先更新句子引用再发布配置，并可完整反向", () => {
+  const base = createProject();
+  const previousRole = base.subtitleLines[0].roleType;
+  assert.ok(previousRole);
+  const next = structuredClone(base);
+  next.subtitleLines = next.subtitleLines.map((line) =>
+    line.roleType === previousRole ? { ...line, roleType: "杜丽娘（闺门旦）" } : line);
+  next.sentenceAnnotationConfig.roleOptions = next.sentenceAnnotationConfig.roleOptions.map((role) =>
+    role === previousRole ? "杜丽娘（闺门旦）" : role);
+
+  const envelope = buildProjectTrackStructureTransactionCommand(base, next, {
+    stateTargets: [{ entityType: "sentence-annotation-config", entityId: "sentence-annotation-config" }],
+    contentTargets: base.subtitleLines.filter((line) => line.roleType === previousRole).map((line) => ({
+      entityType: "sentence" as const,
+      entityId: line.id,
+      field: "roleType" as const,
+    })),
+  });
+
+  assert.ok(envelope);
+  assert.equal(envelope.command.commands[0]?.type, "annotation.items.content.update");
+  assert.equal(envelope.command.commands[1]?.type, "annotation.items.state.update");
+  const applied = applyTrackStructureTransactionCommandToProject(base, envelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status !== "applied") return;
+  assert.deepEqual(applied.project, next);
+  const restored = applyTrackStructureTransactionCommandToProject(
+    applied.project,
+    invertAnnotationCommandEnvelope(envelope),
+  );
+  assert.equal(restored.status, "applied");
+  if (restored.status === "applied") assert.deepEqual(restored.project, base);
 });
 
 test("自定义父轨上的既有点轨配置只更新声明父集合", () => {
