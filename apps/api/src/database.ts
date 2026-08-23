@@ -1,6 +1,7 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import pg from "pg";
+import { assertGeneratedPrismaClientMatchesSchema } from "./prismaClientSchemaGuard.js";
 
 /**
  * 建立显式绑定 PostgreSQL schema 的 Prisma 连接。
@@ -9,6 +10,8 @@ import pg from "pg";
  * schema，否则 Prisma 生成查询与 resourceService 中的 raw SQL 会访问不同数据表。
  */
 export function createPrismaConnection(databaseUrl: string) {
+  // 所有数据库入口共用同一门禁，旧 Prisma Client 不能在 API、worker 或运维 CLI 中带病运行。
+  assertGeneratedPrismaClientMatchesSchema();
   const schema = parseDatabaseSchema(databaseUrl);
   const pool = new pg.Pool({
     connectionString: databaseUrl,

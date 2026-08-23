@@ -93,6 +93,25 @@ test("单服务器 release 清单包含 Prisma 配置与 workspace 构建产物"
   }
 });
 
+// 锁文件不变并不代表 Prisma Client 可复用；schema 变更必须进入构建和候选切换门禁。
+test("生产构建与候选 release 都校验 Prisma Client schema", async () => {
+  const [packageJsonText, deploymentGuide] = await Promise.all([
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../docs/server-deployment.md", import.meta.url), "utf8"),
+  ]);
+  const packageJson = JSON.parse(packageJsonText);
+  assert.match(
+    packageJson.scripts?.build ?? "",
+    /db:generate && npm run prisma:check-generated/u,
+  );
+  assert.equal(
+    packageJson.scripts?.["release:check"],
+    "node dist/api/prismaClientSchemaGuardCli.js",
+  );
+  assert.match(deploymentGuide, /npm run release:check/u);
+  assert.match(deploymentGuide, /不能只因 `package-lock\.json` 未变化/u);
+});
+
 // 对象恢复通过同级 staging 原子发布，手册必须先提供服务账号可写的专用父目录。
 test("恢复演练示例为原子 staging 提供可写父目录", async () => {
   const deploymentGuide = await readFile(

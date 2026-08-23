@@ -6961,3 +6961,48 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 发布结束时系统盘使用率 `31%`，独立数据盘 `22%`。生产当前运行提交为 `593fec0`，上一 release 与已验证
   一致备份继续保留用于回滚。待用户人工刷新生产页面，验收句级右键、角色拖拽、句级红蓝完成态及不同句长下
   Timeline 分类摘要；平台双账号的自动保存、远端追赶和 undo/redo 仍按上一节人工清单检查。
+
+## 2026-08-23：生产审核 500 根因修复与 Prisma release 门禁
+
+### 故障证据与根因
+
+- 用户报告生产“标注审核”显示“服务端内部错误”。服务器 journald 明确记录
+  `GET /api/annotation-files/:id/range-comments` 返回 500，堆栈位于
+  `ResourceService.listAnnotationRangeComments()`，实际异常为
+  `Cannot read properties of undefined (reading 'findMany')`。
+- 生产数据库已经成功应用 `20260822010000_annotation_range_comments`，当前 release 的
+  `prisma/schema.prisma` 也包含 `AnnotationRangeComment`；但
+  `node_modules/.prisma/client/schema.prisma` 不包含该模型。由此确认不是某条审核数据损坏，也不是浏览器状态，
+  而是 `593fec0` 发布时按相同 lockfile 复用了上一 release 的完整 `node_modules`，把旧 Prisma Client 一并带入。
+- npm 锁文件只能证明依赖版本一致，不能证明生成 Client 对应当前 Prisma schema。旧块编辑等其他接口仍正常，
+  是因为它们只访问旧 Client 已知模型；新范围评论首次访问新模型时才暴露 500。
+
+### 生产修复与验证
+
+- 使用 `platform.admin` 开启“修复审核接口 Prisma Client 生成物不一致”维护并停止 analysis worker；没有修改、
+  清空或回灌数据库/对象数据。
+- 以原 `593fec0` release 制作新的不可变修正版
+  `/opt/xiqu/releases/20260823T152000Z-593fec0-prisma`，在候选目录重新执行 `npm run db:generate`，确认生成
+  schema 包含 `AnnotationRangeComment` 后才原子切换 `/opt/xiqu/current` 并重启 API。原 release 保留为现场和
+  回滚参考，没有在运行目录原地改写。
+- 使用正式数据库连接直接执行 `prisma.annotationRangeComment.count()` 成功返回 `0`，证明新 Client 能查询实际
+  新表；公网 `deploy:check` 的 Web、liveness、readiness 均为 HTTP 200。随后解除维护、启动 worker，API、worker、
+  Nginx 均 active，API 实际只监听环境配置的 `127.0.0.1:4317`。新 API 时间窗未再出现 range-comments 500。
+- 浏览器临时页只看到未登录入口，本轮没有输入或传输账号密码，因此没有虚报登录后审核面板验收。待用户在原
+  已登录页面刷新并重新打开审核面板，确认评论列表、创建和撤回；若仍有错误，按请求时间和文件 id 继续查日志。
+
+### 永久门禁与迁移规则
+
+- 新增 `prismaClientSchemaGuard`：对源 schema 和 Prisma 生成 schema 做内容比较，只忽略生成器的排版空白；
+  模型、字段、关系、枚举、属性、字符串和有效注释变化都会造成失败。缺少生成物也会给出稳定错误。
+- `createPrismaConnection()` 在创建连接池前执行该门禁，因此 API、分析 worker、维护/备份 CLI 都会 fail closed；
+  错误 release 不会再启动后等到用户命中新功能才返回内部错误。新增编译后 `release:check`，供候选切换前无数据库
+  主动检查；`npm run build` 也在 `db:generate` 后立即检查。
+- `docs/server-deployment.md` 与 `AGENTS.md` 已明确：不能只因 `package-lock.json` hash 相同就复用旧 Prisma
+  生成目录。原服务器升级和新服务器迁移均应从明确 Git commit 执行 `npm ci`、`npm run build`、
+  `npm run release:check`，再发布完整候选；若为节省传输先复制旧依赖，也必须在候选目录重新 generate/check，
+  不能修改 active release。
+- 新增测试覆盖排版差异通过、字符串差异保留、旧字段拒绝和生成物缺失拒绝；部署测试还锁定 build 顺序、编译后
+  release 命令及手册门禁文字。`test:deployment` 28/28、审核领域测试 13/13、完整 API 测试 171/171 通过；
+  `npm run build` 再次完成 Prisma generate/guard、shared、document-model、Web 与 API 构建，仍只有既有 Web 主
+  chunk 体积提醒。生产登录后审核交互保留为用户人工验收，本轮没有凭据型浏览器操作。

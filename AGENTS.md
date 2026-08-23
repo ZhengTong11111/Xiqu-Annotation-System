@@ -872,12 +872,22 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - production release must include `prisma.config.ts` and built `packages/shared`/`packages/document-model` in
     addition to `prisma`, `dist`, and `node_modules`: Prisma 7 migration reads the root config, while npm workspace
     links under `node_modules/@xiqu` resolve back into `packages/`. Verify these paths before starting systemd services
+  - Prisma schema changes are independent of `package-lock.json`: never reuse an earlier release's generated
+    `node_modules/.prisma` or `node_modules/@prisma/client` merely because the lock hash is unchanged. Every candidate
+    must run `db:generate` during its build and `release:check` before cutover. API, worker, and operational CLI startup
+    also fail closed through `prismaClientSchemaGuard`; repair a mismatched candidate by building a new immutable release,
+    never by mutating the active release. This same contract applies when rebuilding from Git on a replacement server
   - local restore drills publish through a sibling staging directory; place `target-storage` below a dedicated parent
     writable by `xiqu`, not directly below a root-owned persistent-data directory. A failed drill may already have restored
     the isolated database before object publication, so recreate only that isolated target before retrying
 - `scripts/deploymentCheck.mjs` + `scripts/checkDeployment.mjs`
   - 无凭据、只读的部署 smoke check；统一验证 Web 入口、API liveness 与依赖 readiness
   - 不能把登录写入、迁移或破坏性恢复塞进 smoke check；这些步骤属于部署清单和人工验收
+- `apps/api/src/prismaClientSchemaGuard.ts` + `apps/api/src/prismaClientSchemaGuardCli.ts`
+  - compare the release source schema with Prisma's generated schema while ignoring formatting-only alignment; model,
+    field, relation, enum, attribute, string, and meaningful comment changes remain detectable
+  - `createPrismaConnection()` is the shared runtime fail-closed boundary, while `release:check` is the proactive
+    pre-cutover command. Do not replace either with a model-name-only grep or a lockfile hash check
 - `packages/shared/src/`
   - API/platform DTOs and shared contract types used by web and API
 - `packages/document-model/src/`

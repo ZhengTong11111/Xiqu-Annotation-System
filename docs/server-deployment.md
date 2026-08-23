@@ -102,9 +102,12 @@ cd xiqu-platform-build
 git checkout <reviewed-commit-or-tag>
 npm ci
 npm run build
+npm run release:check
 ```
 
-构建会依次生成 Prisma Client、shared、document-model、Web 与 API。输出至少包含：
+构建会先生成 Prisma Client 并核对它与当前 `prisma/schema.prisma` 一致，再生成 shared、document-model、Web
+与 API。`release:check` 使用编译后的无数据库检查器复核候选产物，适用于原服务器升级，也适用于从 Git 在新
+服务器重建运行环境。输出至少包含：
 
 ```text
 dist/
@@ -122,6 +125,7 @@ RELEASE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD)"
 sudo mkdir "/opt/xiqu/releases/$RELEASE_ID"
 sudo cp -a package.json package-lock.json prisma.config.ts prisma packages dist node_modules \
   "/opt/xiqu/releases/$RELEASE_ID/"
+sudo bash -c "cd '/opt/xiqu/releases/$RELEASE_ID' && npm run release:check"
 sudo chown -R root:root "/opt/xiqu/releases/$RELEASE_ID"
 sudo ln -sfn "/opt/xiqu/releases/$RELEASE_ID" /opt/xiqu/current
 ```
@@ -129,13 +133,23 @@ sudo ln -sfn "/opt/xiqu/releases/$RELEASE_ID" /opt/xiqu/current
 候选基线保留完整 `node_modules`，优先保证 Prisma/原生依赖与已验收构建一致。`prisma.config.ts` 是
 Prisma 7 执行 `migrate deploy` 的运行时配置；`node_modules/@xiqu/*` 是指向 `packages/*` 的 workspace
 符号链接，因此 release 还必须包含已构建的 `packages/shared/dist` 与 `packages/document-model/dist`。
-复制后应在启动服务前明确检查这三项，不能只凭 `dist/api/server.js` 存在就判定产物完整：
+Prisma schema 不属于 npm 依赖锁：即使 `package-lock.json` 完全未变化，新增模型或字段也会使旧 Client 失效。
+因此不能只因 `package-lock.json` 未变化就从上一 release 复用 `node_modules/.prisma` 或
+`node_modules/@prisma/client`。若为节省传输先复制了旧 `node_modules`，必须在候选目录、切换 `current` 前
+重新执行 `npm run db:generate` 和 `npm run release:check`；不能在已经运行的不可变 release 内补生成。
+
+复制后应在启动服务前明确检查以下产物，不能只凭 `dist/api/server.js` 存在就判定候选完整：
 
 ```bash
 test -r "/opt/xiqu/releases/$RELEASE_ID/prisma.config.ts"
 test -r "/opt/xiqu/releases/$RELEASE_ID/packages/shared/dist/index.js"
 test -r "/opt/xiqu/releases/$RELEASE_ID/packages/document-model/dist/index.js"
+sudo bash -c "cd '/opt/xiqu/releases/$RELEASE_ID' && npm run release:check"
 ```
+
+API、分析 worker 和维护/备份 CLI 还会在创建数据库连接前执行相同的 fail-closed 校验。该运行时门禁用于阻止
+错误候选接收请求，不替代切换前检查；若 systemd 报告 Prisma Client schema 不一致，应保持维护状态，重建新
+候选 release，而不是修改当前 release 权限或只重启服务。
 
 后续可以建立 CI artifact，但不能只复制 `dist/` 而遗漏生产运行依赖、workspace 构建产物、Prisma schema、
 配置或 migration。
@@ -451,7 +465,8 @@ SHA-256，并在空数据库和空对象目录执行隔离恢复及摘要复核�
 每次升级按固定顺序执行：
 
 1. 记录当前 `readlink -f /opt/xiqu/current` 和 Git commit，提前通知用户暂停编辑并确认页面显示已同步。
-2. 查看 release notes、Prisma migration 和环境变量变化，构建新的不可变 release，但先不要切换 `current`。
+2. 查看 release notes、Prisma migration 和环境变量变化，构建新的不可变 release；在候选目录运行
+   `npm run release:check`，确认 Prisma Client 来自同一 schema 后仍不要切换 `current`。
 3. 停止 analysis worker 并等待其安全退出；创建并验证一致备份，重要升级完成一次隔离恢复演练。
 4. 通过 CLI 进入维护模式，等待在途 HTTP 写入排空。当前版本没有自动客户端 drain，管理员还应确认活跃用户
    已停止编辑；维护开启后的本机草稿不会自动等同于服务器已保存。
@@ -513,6 +528,7 @@ release。Prisma migration 采用前向记录，不要手工删除 `_prisma_migr
 
 - [ ] Node.js >= 22，PostgreSQL/客户端为 16。
 - [ ] 服务账号、release、持久目录和环境文件权限正确。
+- [ ] 候选 release 已运行 `npm run release:check`；没有按 lockfile 相同而复用旧 Prisma Client 生成物。
 - [ ] `DATABASE_URL` 指向目标库，`XIQU_SEED_DEVELOPMENT_DATA=false`。
 - [ ] 数据库 migration 成功，首位管理员通过一次性 CLI 创建。
 - [ ] local 对象目录持久化，或真实 S3-compatible IAM/TLS 能力验收通过。
