@@ -51,6 +51,7 @@ import type { ApiCorsOriginPolicy } from "./serverConfig.js";
 import { AccountAdminService } from "./accountAdminService.js";
 import type { AliyunVodProvider } from "./aliyunVodGateway.js";
 import { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
+import { MediaAudioTrackService } from "./mediaAudioTrackService.js";
 import { createAnnotationReviewChannel } from "./annotationReviewEventEnvelope.js";
 import { PostgresAnnotationReviewEventBus } from "./postgresAnnotationReviewEventBus.js";
 
@@ -137,6 +138,7 @@ export async function buildApiApp(
     reviewEvents,
   );
   const mediaAnalysis = new MediaAnalysisJobService(options.prisma, access);
+  const mediaAudioTracks = new MediaAudioTrackService(options.prisma, access);
   // 原子领域命令拥有独立事务服务，但与完整保存共用同一个跨实例 revision 发布器。
   const annotationCommandCommits = new AnnotationCommandCommitService(
     options.prisma,
@@ -267,6 +269,7 @@ export async function buildApiApp(
     auditLogs,
     resources,
     mediaAnalysis,
+    mediaAudioTracks,
     annotationCommandCommits,
     storage,
     mediaUploads,

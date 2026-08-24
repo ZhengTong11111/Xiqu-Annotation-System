@@ -40,7 +40,7 @@ export type MediaAudioTrackAnalysisSummary =
   | { status: "ready"; runId: string }
   | { status: "failed"; runId: string; errorCode: string };
 
-export type MediaAudioTrackSummary = {
+export type MediaAudioTrackRecord = {
   id: string;
   primaryMediaResourceId: string;
   name: string;
@@ -49,18 +49,16 @@ export type MediaAudioTrackSummary = {
   offsetSeconds: number;
   sortOrder: number;
   enabled: boolean;
-  analysis: MediaAudioTrackAnalysisSummary;
 };
 
 export type AnnotationAudioPreference = {
   annotationFileId: string;
   defaultAudioTrackId: string | null;
-  updatedByAccountId: string;
-  updatedAt: string;
+  updatedByAccountId: string | null;
+  updatedAt: string | null;
 };
 
 const MAX_STABLE_ID_LENGTH = 200;
-const MAX_ANALYSIS_ERROR_CODE_LENGTH = 128;
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -82,13 +80,6 @@ function isMediaAudioTrackKind(value: unknown): value is MediaAudioTrackKind {
 
 function isMediaSourceType(value: unknown): value is MediaSourceType {
   return value === "uploaded" || value === "aliyun_vod";
-}
-
-function isBoundedErrorCode(value: unknown): value is string {
-  return typeof value === "string" &&
-    value.length >= 1 &&
-    value.length <= MAX_ANALYSIS_ERROR_CODE_LENGTH &&
-    /^[a-z0-9][a-z0-9_.-]*$/u.test(value);
 }
 
 function isIsoTimestamp(value: unknown): value is string {
@@ -119,49 +110,12 @@ function parseMediaAudioTrackSource(value: unknown): MediaAudioTrackSource | nul
   return null;
 }
 
-function parseMediaAudioTrackAnalysis(
+// 严格解析持久音轨记录，确保“视频原声”和“独立音频资源”不会形成互相矛盾的关系。
+export function parseMediaAudioTrackRecord(
   value: unknown,
-): MediaAudioTrackAnalysisSummary | null {
-  if (!isRecord(value)) return null;
-  if (value.status === "not_analyzed") {
-    return Object.keys(value).length === 1 ? { status: "not_analyzed" } : null;
-  }
-  if (
-    (value.status === "queued" || value.status === "processing") &&
-    isStableMediaAudioIdentity(value.runId) &&
-    typeof value.progress === "number" &&
-    Number.isFinite(value.progress) &&
-    value.progress >= 0 &&
-    value.progress <= 1 &&
-    Object.keys(value).length === 3
-  ) {
-    return { status: value.status, runId: value.runId, progress: value.progress };
-  }
-  if (
-    value.status === "ready" &&
-    isStableMediaAudioIdentity(value.runId) &&
-    Object.keys(value).length === 2
-  ) {
-    return { status: "ready", runId: value.runId };
-  }
-  if (
-    value.status === "failed" &&
-    isStableMediaAudioIdentity(value.runId) &&
-    isBoundedErrorCode(value.errorCode) &&
-    Object.keys(value).length === 3
-  ) {
-    return { status: "failed", runId: value.runId, errorCode: value.errorCode };
-  }
-  return null;
-}
-
-// 严格解析音轨摘要，确保“视频原声”和“独立音频资源”不会形成互相矛盾的持久关系。
-export function parseMediaAudioTrackSummary(
-  value: unknown,
-): MediaAudioTrackSummary | null {
-  if (!isRecord(value) || Object.keys(value).length !== 9) return null;
+): MediaAudioTrackRecord | null {
+  if (!isRecord(value) || Object.keys(value).length !== 8) return null;
   const source = parseMediaAudioTrackSource(value.source);
-  const analysis = parseMediaAudioTrackAnalysis(value.analysis);
   if (
     !isStableMediaAudioIdentity(value.id) ||
     !isStableMediaAudioIdentity(value.primaryMediaResourceId) ||
@@ -178,8 +132,7 @@ export function parseMediaAudioTrackSummary(
     !Number.isInteger(value.sortOrder) ||
     value.sortOrder < 0 ||
     value.sortOrder >= MAX_MEDIA_AUDIO_TRACKS_PER_MEDIA ||
-    typeof value.enabled !== "boolean" ||
-    !analysis
+    typeof value.enabled !== "boolean"
   ) {
     return null;
   }
@@ -202,7 +155,6 @@ export function parseMediaAudioTrackSummary(
     offsetSeconds: value.offsetSeconds,
     sortOrder: value.sortOrder,
     enabled: value.enabled,
-    analysis,
   };
 }
 
@@ -216,8 +168,10 @@ export function parseAnnotationAudioPreference(
     !isStableMediaAudioIdentity(value.annotationFileId) ||
     (value.defaultAudioTrackId !== null &&
       !isStableMediaAudioIdentity(value.defaultAudioTrackId)) ||
-    !isStableMediaAudioIdentity(value.updatedByAccountId) ||
-    !isIsoTimestamp(value.updatedAt)
+    (value.updatedByAccountId !== null &&
+      !isStableMediaAudioIdentity(value.updatedByAccountId)) ||
+    (value.updatedAt !== null && !isIsoTimestamp(value.updatedAt)) ||
+    ((value.updatedByAccountId === null) !== (value.updatedAt === null))
   ) {
     return null;
   }

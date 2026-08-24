@@ -73,6 +73,7 @@ import {
   type AliyunVodProvider,
 } from "./aliyunVodGateway.js";
 import { ResourceAccessService } from "./resourceAccess.js";
+import { createOriginalMediaAudioTrack } from "./mediaAudioTrackService.js";
 import {
   buildResourceCopyPlan,
   MAX_RECURSIVE_COPY_NODES,
@@ -544,6 +545,12 @@ export class ResourceService {
         },
         include: resourceInclude,
       });
+      // 新 VOD 媒体与上传媒体共用同一原声音轨 invariant，外部音轨随后由独立管理 API 关联。
+      await createOriginalMediaAudioTrack(transaction, {
+        primaryMediaResourceId: resource.id,
+        mediaKind: metadata.mediaKind,
+        createdBy: user.id,
+      });
       await transaction.auditLog.create({
         data: {
           action: "aliyun_vod_media_create",
@@ -721,6 +728,12 @@ export class ResourceService {
         },
         select: { id: true },
       });
+      // 原声音轨与媒体资源在同一事务提交，任何读取都不会观察到“有媒体但无原声”的中间状态。
+      await createOriginalMediaAudioTrack(transaction, {
+        primaryMediaResourceId: createdResource.id,
+        mediaKind: mediaKindFromMimeType(input.mimeType),
+        createdBy: user.id,
+      });
       await transaction.auditLog.create({
         data: {
           action: "media_upload",
@@ -868,6 +881,10 @@ export class ResourceService {
       await transaction.annotationFile.update({
         where: { resourceId },
         data: { mediaResourceId: input.mediaResourceId },
+      });
+      // 默认音轨只对旧主媒体有效；改绑必须与外键更新原子清理，不能让下一会话引用其他视频的音轨。
+      await transaction.annotationAudioPreference.deleteMany({
+        where: { annotationFileId: resourceId },
       });
       await transaction.resourceEntry.update({
         where: { id: resourceId },
@@ -1999,6 +2016,14 @@ export class ResourceService {
               : undefined,
           },
         });
+        if (node.type === "media_file" && node.mediaFile) {
+          // 普通复制复用二进制但创建独立媒体身份；只生成新原声，不复制外部音轨或源 ACL。
+          await createOriginalMediaAudioTrack(transaction, {
+            primaryMediaResourceId: node.id,
+            mediaKind: node.mediaFile.mediaKind,
+            createdBy: user.id,
+          });
+        }
       }
       return { rootId: plan.nodes[0]!.id, summary: plan };
     });

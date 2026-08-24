@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0 已完成  
+> 文档状态：专项实施中，RA0-RA1 已完成
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -9,11 +9,14 @@
 
 - **RA0 已完成（2026-08-24）**：共享包已建立严格的媒体音轨、默认音轨偏好、分析状态与媒体级 analysis
   identity 合同；Web 已建立视频主时钟映射、统一漂移阈值和带 source generation 的同步播放纯状态机。
-- RA0 没有修改 Prisma、API、现有播放器或分析运行路径，因此生产仍使用
+- **RA1 已完成（2026-08-24）**：Prisma 已新增有序 `MediaAudioTrack` 和标注文件
+  `AnnotationAudioPreference`，上传媒体、VOD 媒体及媒体复制均在同一事务建立唯一原声；严格 CRUD、重排、
+  默认值、ACL、审计和类型安全客户端边界已通过真实 PostgreSQL 集成测试。
+- RA0-RA1 没有修改现有播放器或分析运行路径，因此生产仍使用
   `AnnotationAnalysisAudioSetting + annotationFileId-scoped MediaAnalysisRun`。这不是最终双轨并存设计，RA2
   完成迁移并通过引用校验后必须清理旧归属。
-- 下一阶段是 **RA1 媒体音轨关系与管理 API**。RA1 只建立音轨集合、标注文件默认音轨和权限/审计边界，不能
-  提前接播放器，也不能在媒体级分析迁移前伪装已完成跨文件 run 复用。
+- 下一阶段是 **RA2 媒体级分析归属与迁移工具**。必须先完成 dry-run、候选映射、manifest/checksum 与对象
+  引用校验，再切换 service、worker 和前端缓存身份；不得先接播放器或长期保留双写。
 
 ## 1. 目标重新定义
 
@@ -625,6 +628,8 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 
 ### RA1：媒体音轨关系与管理 API
 
+**状态：已完成（2026-08-24）**
+
 **改动范围**
 
 - Prisma 增量迁移；
@@ -640,6 +645,23 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 删除关联不删除媒体；
 - 无权限用户不能通过 ID 枚举资源；
 - 旧文件默认仍播放原声。
+
+**实际完成**
+
+- 新增正式 migration `20260824010000_media_audio_tracks`，建立 enum、约束、外键、partial unique、索引和既有
+  媒体原声回填；确定性回填 id 不依赖 PostgreSQL 扩展，已在真实测试 schema 应用。
+- 新增独立 `MediaAudioTrackService` 和 shared/router/`PlatformClient` 合同，完成列表、新增、更新、删除、精确
+  全集重排及标注文件默认音轨读取/写入。persistent record 与 analysis summary 已拆开，RA2 前不返回虚假的
+  `not_analyzed`。
+- 主媒体写操作在资源树共享 advisory gate 和媒体行锁下复核 active 状态与 `write`；关联外部音频另查
+  `read + download` 和 `mediaKind=audio`。默认偏好写入复用 annotation write lock，并只接受当前主媒体下已启用
+  音轨。
+- 上传媒体、VOD 视频/音频与复制媒体均原子创建自己的 original；复制不携带外部音轨或源 ACL。禁用/删除外部
+  音轨清理共享默认引用但保留真实媒体；标注文件改绑主媒体原子删除旧偏好。
+- 专项共享/策略 13/13、音轨 API 1/1、现有播放 17/17、现有分析 34/34、完整 API 172/172 与完整 build 均通过。
+  完整 API 首轮曾暴露新测试 helper 的宽泛 HTTP method 和 unknown 嵌套对象访问，已收紧为 Fastify
+  `InjectOptions` 和显式 record validator；生产代码未以类型断言绕过。
+- 本阶段没有 UI、播放 session 或分析 run 迁移，未做浏览器验收，也未部署生产。
 
 ### RA2：媒体级分析归属与迁移工具
 

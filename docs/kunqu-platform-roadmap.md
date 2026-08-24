@@ -567,10 +567,13 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
 
   RA0 已于 2026-08-24 完成：shared 建立严格音轨/默认偏好/分析状态 DTO 与媒体级 run identity，Web 建立
   `audioTime = masterTime - offsetSeconds`、漂移策略和带 source generation 的同步播放纯状态机；专项、现有
-  播放、媒体分析和完整构建通过。RA0 没有修改 Prisma/API/播放器运行路径，当前
-  `AnnotationAnalysisAudioSetting` 和按 annotationFileId 唯一化的 `MediaAnalysisRun` 仍暂时权威。下一步 RA1
-  新增音轨关系与默认偏好数据库/API；RA2 经 dry-run、manifest/checksum 和对象引用校验迁移媒体级 run，最终
-  必须删除旧设置表、旧 route、旧缓存 key 和重复来源解析，不能长期双写或保留两套分析来源 UI。
+  播放、媒体分析和完整构建通过。RA1 同日完成：正式 migration、媒体音轨/标注默认偏好模型、既有媒体原声
+  回填、上传/VOD/复制原声生命周期、严格 CRUD/精确重排、ACL、审计和类型安全客户端均已落地；持久音轨记录
+  与分析摘要拆开，未在真实媒体级 run 接入前伪造分析状态。真实 PostgreSQL 音轨集成测试、完整 API 172/172
+  和完整构建通过。RA1 没有修改播放器或现有分析运行路径，当前 `AnnotationAnalysisAudioSetting` 和按
+  annotationFileId 唯一化的 `MediaAnalysisRun` 仍暂时权威。下一步 RA2 经 dry-run、manifest/checksum 和对象
+  引用校验迁移媒体级 run，最终必须删除旧设置表、旧 route、旧缓存 key 和重复来源解析，不能长期双写或保留
+  两套分析来源 UI。
 
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入

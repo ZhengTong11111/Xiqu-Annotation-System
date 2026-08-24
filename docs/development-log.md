@@ -7121,3 +7121,59 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 待推进：RA1 新增 `MediaAudioTrack`、`AnnotationAudioPreference`、严格 CRUD/重排/默认值 API、权限和审计；
   RA1 仍不接组合播放器。RA2 才迁移媒体级 run 与前端缓存 key，并必须提供 dry-run、幂等重跑、manifest/
   checksum 校验、引用检查和失败补偿。
+
+## 2026-08-24：RA1 媒体音轨关系、默认偏好与管理 API
+
+### 本轮计划与设计修正
+
+- RA0 提交 `a01b8b3` 后先依据真实代码完整重写被 ignore 的 `CLAUDE_WORK.md`，把 RA1 限定为数据库关系、
+  生命周期、API、ACL 与审计，不提前接播放器或迁移分析 run。实现期间保持现行
+  `AnnotationAnalysisAudioSetting` 和 annotation-file-scoped `MediaAnalysisRun` 权威，避免未完成链路双写。
+- 审查 RA0 合同时发现持久音轨 DTO 若直接携带统一 `not_analyzed` 会在 RA2 前制造假状态。因此拆分为真实
+  `MediaAudioTrackRecord` 和独立 `MediaAudioTrackAnalysisSummary`；删除无消费者的半成品组合 parser 与错误码
+  parser。后续只有解析到真实媒体级 run 时才组合分析视图。
+- 本轮没有新增依赖。事务、ACL、Fastify 路由和严格 DTO 均可复用 Prisma、shared 合同及现有
+  `ResourceAccessService`，额外组件库不会减少代码或提高稳定性。
+
+### 数据库、迁移与资源生命周期
+
+- Prisma 新增 `MediaAudioTrackKind`、`MediaAudioTrack` 与 `AnnotationAudioPreference`，以及五类审计动作。音轨表
+  约束名称、有限偏移、顺序范围及 original/external 来源不变量；partial unique 保证同一主媒体最多一条
+  original，外键区分主媒体 cascade 与外部源音频 restrict。默认偏好绑定 annotation file，删除音轨时引用置空。
+- 正式 migration `20260824010000_media_audio_tracks` 对既有每份媒体回填一条 original；id 由资源 id 的 md5
+  确定性生成，不要求生产 PostgreSQL 临时启用扩展。视频命名“视频原声”，纯音频命名“媒体原声”，创建者使用
+  资源 owner。migration 已在 `api_test` schema 成功应用，22 条 migration 无待执行项。
+- 新增窄 helper `createOriginalMediaAudioTrack()`，上传媒体、Aliyun VOD 视频/音频和递归复制中的每份新媒体都在
+  原资源事务内建立 original。媒体复制仅复用底层对象并创建副本自己的原声，不复制外部音轨关联或源 ACL。
+- 标注文件改绑/解绑主媒体时，在同一事务删除旧 `AnnotationAudioPreference`。禁用或删除外部音轨会清理所有
+  引用它的共享默认值并记录数量，但不会删除真实音频资源；original 不能修改、禁用或删除。
+
+### API、权限和审计边界
+
+- 新增独立 `MediaAudioTrackService`，提供音轨列表、新增、更新、删除、精确全集重排，以及标注文件默认音轨
+  读取/写入；shared API contract、Fastify router 和 `PlatformClient` 共用类型，未来 UI 不需要旁路 fetch。
+- 列表要求主媒体 `read`；外部音轨新增要求主媒体 `write`，并对源资源重新校验 active、`mediaKind=audio`、
+  `read + download`。真正播放和分析仍必须在 RA2/RA3 再次检查源 ACL，返回稳定资源 id/type 不构成授权。
+- 主媒体 mutation 复用资源树共享 advisory gate，锁住 resource/media 行后重新检查祖先活动状态和 ACL；计数、
+  去重与 sortOrder 都在锁内完成。默认偏好写入复用 annotation write lock，只接受当前绑定主媒体下已启用音轨。
+- 所有业务写与审计同事务提交；审计只记录音轨/媒体稳定 id、类型、偏移、字段名与清理计数，不记录 URL、
+  PlayAuth、AccessKey、provider 响应或 ProjectData。
+
+### 测试、审查与当前状态
+
+- 新增真实 PostgreSQL/Fastify 集成测试，覆盖上传音频、VOD 视频/音频自动 original，第二条 original 的数据库
+  拒绝，上传/VOD 外部音轨，重复/视频源拒绝，空 patch，original 不可变，精确/缺失/重复重排，跨媒体默认值
+  拒绝，禁用/删除/改绑清理，复制生命周期，只读与无 download 越权，以及审计脱敏。
+- 专项测试初次能在 `tsx` 转译模式运行，但完整 API TypeScript 检查发现测试 helper 把 HTTP method 扩成
+  `string`，嵌套 `resource` 也未经 unknown 校验。已改为 Fastify `InjectOptions` 和显式 `recordOf()` 边界；
+  没有用 `any` 或宽泛断言压掉错误。
+- 最终结果：`test:media-audio-tracks` 13/13、`test:media-audio-track-api` 1/1、现有
+  `test:media-playback` 17/17、`test:media-analysis` 34/34、完整 `test:api` 172/172，`npm run build` 完成
+  Prisma generate/schema guard、shared、document-model、Web 与 API。仅有既有 Web 主 chunk 体积提醒。
+- 自我审查确认没有第二套权限算法、伪造分析状态、URL/凭据持久字段、外部媒体误删或提前接线。RA1 没有 UI
+  行为变化，未做浏览器验收，也未部署生产。
+- 已完成：RA1 migration、模型、生命周期、API、客户端、权限、审计、专项测试及 AGENTS/专项路线图/总路线图
+  回写。
+- 待推进：RA2 先建立媒体级 run schema 和 dry-run/execute 迁移工具，校验 manifest、asset checksum 与对象引用，
+  再切换分析 service/worker/前端缓存身份。旧分析设置、旧 route 和旧缓存 key 在完成引用核对前仍保留，不能
+  直接删除或长期双写。

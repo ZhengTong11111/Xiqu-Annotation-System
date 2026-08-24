@@ -15,6 +15,8 @@ import {
   type AnnotationClientSyncFailureOperation,
   type AnnotationClientSyncFailureReport,
   type AuditActionName,
+  type CreateMediaAudioTrackRequest,
+  type MediaAudioTrackKind,
   type PlatformRole,
   type ResourceCapability,
   type ResourceListView,
@@ -28,6 +30,7 @@ import { badRequest, unauthorized } from "./errors.js";
 import type { HealthService } from "./healthService.js";
 import type { MediaUploadService } from "./mediaUploadService.js";
 import type { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
+import type { MediaAudioTrackService } from "./mediaAudioTrackService.js";
 import type { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
 import type { ObjectLifecycleService } from "./objectLifecycleService.js";
 import type { OperationalMetricsCollector } from "./operationalMetricsCollector.js";
@@ -93,6 +96,7 @@ export function registerApiRoutes(
   auditLogs: AuditLogService,
   resources: ResourceService,
   mediaAnalysis: MediaAnalysisJobService,
+  mediaAudioTracks: MediaAudioTrackService,
   annotationCommandCommits: AnnotationCommandCommitService,
   storage: Pick<ObjectStorage, "getObjectStream">,
   mediaUploads: MediaUploadService,
@@ -397,6 +401,97 @@ export function registerApiRoutes(
         await getCurrentUser(repository, request),
         request.params.resourceId,
         { mediaResourceId: optionalStringOrNull(body.mediaResourceId) ?? null },
+      );
+    },
+  );
+
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/media-files/:resourceId/audio-tracks",
+    async (request) => mediaAudioTracks.listTracks(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+    ),
+  );
+
+  app.post<{ Params: { resourceId: string }; Body: unknown }>(
+    "/api/media-files/:resourceId/audio-tracks",
+    async (request) => {
+      const body = requireObject(request.body);
+      return mediaAudioTracks.createTrack(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        {
+          audioMediaResourceId: body.audioMediaResourceId as string,
+          name: body.name as string,
+          kind: body.kind as CreateMediaAudioTrackRequest["kind"],
+          offsetSeconds: body.offsetSeconds as number | undefined,
+        },
+      );
+    },
+  );
+
+  app.patch<{ Params: { resourceId: string; trackId: string }; Body: unknown }>(
+    "/api/media-files/:resourceId/audio-tracks/:trackId",
+    async (request) => {
+      const body = requireObject(request.body);
+      return mediaAudioTracks.updateTrack(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        request.params.trackId,
+        {
+          name: body.name as string | undefined,
+          kind: body.kind as Exclude<MediaAudioTrackKind, "original"> | undefined,
+          offsetSeconds: body.offsetSeconds as number | undefined,
+          enabled: body.enabled as boolean | undefined,
+        },
+      );
+    },
+  );
+
+  app.delete<{ Params: { resourceId: string; trackId: string } }>(
+    "/api/media-files/:resourceId/audio-tracks/:trackId",
+    async (request, reply) => {
+      await mediaAudioTracks.deleteTrack(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        request.params.trackId,
+      );
+      reply.status(204);
+    },
+  );
+
+  app.post<{ Params: { resourceId: string }; Body: unknown }>(
+    "/api/media-files/:resourceId/audio-tracks/reorder",
+    async (request) => {
+      const body = requireObject(request.body);
+      return mediaAudioTracks.reorderTracks(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        { trackIds: body.trackIds as string[] },
+      );
+    },
+  );
+
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/annotation-files/:resourceId/audio-preference",
+    async (request) => mediaAudioTracks.getAnnotationPreference(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+    ),
+  );
+
+  app.put<{ Params: { resourceId: string }; Body: unknown }>(
+    "/api/annotation-files/:resourceId/audio-preference",
+    async (request) => {
+      const body = requireObject(request.body);
+      const defaultAudioTrackId = optionalStringOrNull(body.defaultAudioTrackId);
+      if (defaultAudioTrackId === undefined) {
+        throw badRequest("defaultAudioTrackId 必须是字符串或 null。");
+      }
+      return mediaAudioTracks.updateAnnotationPreference(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        { defaultAudioTrackId },
       );
     },
   );

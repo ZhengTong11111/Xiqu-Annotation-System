@@ -30,6 +30,7 @@ import type {
   CreateAnnotationFileRequest,
   CreateAnnotationOperationRequest,
   CreateMediaAnalysisRequest,
+  CreateMediaAudioTrackRequest,
   CreateResourceRequest,
   ListAuditLogsOptions,
   ListResourcesOptions,
@@ -52,6 +53,8 @@ import type {
   AnnotationMediaAnalysisStatus,
   MediaAnalysisRun,
   MediaAnalysisAssetList,
+  MediaAudioTrackList,
+  MediaAudioTrackRecord,
   ListMediaAnalysisAssetsOptions,
   ResourceEntry,
   ResourceListPage,
@@ -70,7 +73,11 @@ import type {
   UpdateResourceInheritanceRequest,
   UpdateResourceRequest,
   UpdateAnnotationMediaRequest,
+  UpdateAnnotationAudioPreferenceRequest,
   UpdateAnalysisAudioRequest,
+  UpdateMediaAudioTrackRequest,
+  ReorderMediaAudioTracksRequest,
+  AnnotationAudioPreference,
   UpsertResourcePermissionRequest,
 } from "@xiqu/shared";
 
@@ -276,6 +283,61 @@ export class PlatformClient {
       method: "PATCH",
       body: request,
     });
+  }
+
+  // 音轨管理只传稳定媒体身份；真实播放 URL 与 VOD 凭据由后续短时会话接口提供。
+  listMediaAudioTracks(resourceId: string) {
+    return this.request<MediaAudioTrackList>(`/media-files/${resourceId}/audio-tracks`);
+  }
+
+  createMediaAudioTrack(resourceId: string, request: CreateMediaAudioTrackRequest) {
+    return this.request<MediaAudioTrackRecord>(`/media-files/${resourceId}/audio-tracks`, {
+      method: "POST",
+      body: request,
+    });
+  }
+
+  updateMediaAudioTrack(
+    resourceId: string,
+    trackId: string,
+    request: UpdateMediaAudioTrackRequest,
+  ) {
+    return this.request<MediaAudioTrackRecord>(
+      `/media-files/${resourceId}/audio-tracks/${trackId}`,
+      { method: "PATCH", body: request },
+    );
+  }
+
+  deleteMediaAudioTrack(resourceId: string, trackId: string) {
+    return this.request<void>(`/media-files/${resourceId}/audio-tracks/${trackId}`, {
+      method: "DELETE",
+    });
+  }
+
+  reorderMediaAudioTracks(
+    resourceId: string,
+    request: ReorderMediaAudioTracksRequest,
+  ) {
+    return this.request<MediaAudioTrackList>(
+      `/media-files/${resourceId}/audio-tracks/reorder`,
+      { method: "POST", body: request },
+    );
+  }
+
+  getAnnotationAudioPreference(resourceId: string) {
+    return this.request<AnnotationAudioPreference>(
+      `/annotation-files/${resourceId}/audio-preference`,
+    );
+  }
+
+  updateAnnotationAudioPreference(
+    resourceId: string,
+    request: UpdateAnnotationAudioPreferenceRequest,
+  ) {
+    return this.request<AnnotationAudioPreference>(
+      `/annotation-files/${resourceId}/audio-preference`,
+      { method: "PUT", body: request },
+    );
   }
 
   getAnnotationMediaAnalysis(resourceId: string) {

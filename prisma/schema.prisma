@@ -32,6 +32,15 @@ enum MediaKind {
   audio
 }
 
+enum MediaAudioTrackKind {
+  original
+  vocal
+  accompaniment
+  denoised
+  reference
+  custom
+}
+
 enum ResourceCapability {
   read
   write
@@ -106,6 +115,11 @@ enum AuditAction {
   annotation_media_bind
   annotation_media_unbind
   annotation_analysis_audio_update
+  media_audio_track_create
+  media_audio_track_update
+  media_audio_track_delete
+  media_audio_track_reorder
+  annotation_audio_preference_update
   media_analysis_create
   job_create
   permission_denied
@@ -167,6 +181,8 @@ model User {
   withdrawnRangeComments           AnnotationRangeComment[]           @relation("AnnotationRangeCommentWithdrawer")
   jobs                             ProcessingJob[]                   @relation("JobCreator")
   updatedAnalysisAudioSettings     AnnotationAnalysisAudioSetting[]  @relation("AnalysisAudioSettingUpdater")
+  createdMediaAudioTracks          MediaAudioTrack[]                  @relation("MediaAudioTrackCreator")
+  updatedAnnotationAudioPreferences AnnotationAudioPreference[]       @relation("AnnotationAudioPreferenceUpdater")
   createdMediaAnalysisRuns         MediaAnalysisRun[]                @relation("MediaAnalysisRunCreator")
   auditLogs                        AuditLog[]                        @relation("AuditActor")
   annotationOperations             AnnotationOperation[]             @relation("AnnotationOperationActor")
@@ -282,6 +298,7 @@ model AnnotationFile {
   collaborationTickets   AnnotationCollaborationTicket[]
   collaborationPresences AnnotationCollaborationPresence[]
   analysisAudioSetting   AnnotationAnalysisAudioSetting?
+  audioPreference       AnnotationAudioPreference?
   mediaAnalysisRuns      MediaAnalysisRun[]
 
   @@index([mediaResourceId])
@@ -435,11 +452,55 @@ model MediaFile {
   linkedAnnotationFiles  AnnotationFile[]                 @relation("AnnotationMediaResource")
   analysisAudioOverrides AnnotationAnalysisAudioSetting[] @relation("AnalysisAudioOverrideMedia")
   mediaAnalysisRuns      MediaAnalysisRun[]               @relation("MediaAnalysisSource")
+  primaryAudioTracks     MediaAudioTrack[]                 @relation("PrimaryMediaAudioTracks")
+  audioTrackSources      MediaAudioTrack[]                 @relation("AudioTrackSourceMedia")
 
   @@index([fileId])
   @@index([sourceType])
   @@index([aliyunVodRegion, aliyunVodVideoId])
   @@map("media_files")
+}
+
+// 音轨关系属于主媒体平台元数据；偏移只负责把音频源时间映射到项目时间，不进入分析 run。
+model MediaAudioTrack {
+  id                     String              @id @default(uuid())
+  primaryMediaResourceId String              @map("primary_media_resource_id")
+  audioMediaResourceId   String?             @map("audio_media_resource_id")
+  name                   String
+  kind                   MediaAudioTrackKind
+  offsetSeconds          Float               @default(0) @map("offset_seconds")
+  sortOrder              Int                 @map("sort_order")
+  enabled                Boolean             @default(true)
+  createdBy              String              @map("created_by")
+  createdAt              DateTime            @default(now()) @map("created_at")
+  updatedAt              DateTime            @updatedAt @map("updated_at")
+
+  primaryMedia         MediaFile                  @relation("PrimaryMediaAudioTracks", fields: [primaryMediaResourceId], references: [resourceId], onDelete: Cascade)
+  audioMedia           MediaFile?                 @relation("AudioTrackSourceMedia", fields: [audioMediaResourceId], references: [resourceId], onDelete: Restrict)
+  creator              User                       @relation("MediaAudioTrackCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  defaultForAnnotations AnnotationAudioPreference[]
+
+  @@unique([primaryMediaResourceId, audioMediaResourceId])
+  @@index([primaryMediaResourceId, sortOrder, id])
+  @@index([audioMediaResourceId])
+  @@index([createdBy])
+  @@map("media_audio_tracks")
+}
+
+// 默认监听音轨是标注文件的平台偏好，不进入 ProjectData、revision、撤销栈或协作命令。
+model AnnotationAudioPreference {
+  annotationFileId    String   @id @map("annotation_file_id")
+  defaultAudioTrackId String?  @map("default_audio_track_id")
+  updatedBy           String   @map("updated_by")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  annotationFile AnnotationFile   @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
+  defaultTrack  MediaAudioTrack? @relation(fields: [defaultAudioTrackId], references: [id], onDelete: SetNull)
+  updater       User             @relation("AnnotationAudioPreferenceUpdater", fields: [updatedBy], references: [id], onDelete: Restrict)
+
+  @@index([defaultAudioTrackId])
+  @@index([updatedBy])
+  @@map("annotation_audio_preferences")
 }
 
 // 分析音频来源属于平台文件设置，不进入 ProjectData、草稿、撤销栈或协作 operation。

@@ -38,6 +38,11 @@ import type {
   CommitAnnotationCommandBatchRequest,
   CommitAnnotationCommandBatchResponse,
 } from "./annotationCommandCommit.js";
+import type {
+  AnnotationAudioPreference,
+  MediaAudioTrackKind,
+  MediaAudioTrackRecord,
+} from "./mediaAudioTracks.js";
 
 export type ApiErrorCode =
   | "bad_request"
@@ -163,6 +168,33 @@ export type AliyunVodPlaybackSession = {
 };
 
 export type UpdateAnnotationMediaRequest = { mediaResourceId: string | null };
+
+export type MediaAudioTrackList = {
+  primaryMediaResourceId: string;
+  tracks: MediaAudioTrackRecord[];
+};
+
+export type CreateMediaAudioTrackRequest = {
+  audioMediaResourceId: string;
+  name: string;
+  kind: Exclude<MediaAudioTrackKind, "original">;
+  offsetSeconds?: number;
+};
+
+export type UpdateMediaAudioTrackRequest = {
+  name?: string;
+  kind?: Exclude<MediaAudioTrackKind, "original">;
+  offsetSeconds?: number;
+  enabled?: boolean;
+};
+
+export type ReorderMediaAudioTracksRequest = {
+  trackIds: string[];
+};
+
+export type UpdateAnnotationAudioPreferenceRequest = {
+  defaultAudioTrackId: string | null;
+};
 
 export type UpdateAnalysisAudioRequest = {
   mode: AnalysisAudioMode;
@@ -475,6 +507,25 @@ export type PlatformApiContract<TPayload = unknown> = {
     response: AnnotationFile<TPayload>;
   };
   getAnnotationFile: { response: AnnotationFile<TPayload> };
+  listMediaAudioTracks: { response: MediaAudioTrackList };
+  createMediaAudioTrack: {
+    request: CreateMediaAudioTrackRequest;
+    response: MediaAudioTrackRecord;
+  };
+  updateMediaAudioTrack: {
+    request: UpdateMediaAudioTrackRequest;
+    response: MediaAudioTrackRecord;
+  };
+  deleteMediaAudioTrack: { response: void };
+  reorderMediaAudioTracks: {
+    request: ReorderMediaAudioTracksRequest;
+    response: MediaAudioTrackList;
+  };
+  getAnnotationAudioPreference: { response: AnnotationAudioPreference };
+  updateAnnotationAudioPreference: {
+    request: UpdateAnnotationAudioPreferenceRequest;
+    response: AnnotationAudioPreference;
+  };
   saveAnnotationFile: {
     request: SaveAnnotationFileRequest<TPayload>;
     response: AnnotationFile<TPayload>;

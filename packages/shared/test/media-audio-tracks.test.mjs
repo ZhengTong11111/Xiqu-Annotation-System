@@ -5,7 +5,7 @@ import {
   MAX_MEDIA_AUDIO_TRACK_OFFSET_SECONDS,
   parseAnnotationAudioPreference,
   parseMediaAnalysisRunIdentity,
-  parseMediaAudioTrackSummary,
+  parseMediaAudioTrackRecord,
   serializeMediaAnalysisRunIdentity,
 } from "../dist/index.js";
 
@@ -18,11 +18,10 @@ const ORIGINAL_TRACK = {
   offsetSeconds: 0,
   sortOrder: 0,
   enabled: true,
-  analysis: { status: "ready", runId: "run-original" },
 };
 
-test("音轨摘要严格区分视频原声与独立音频资源", () => {
-  assert.deepEqual(parseMediaAudioTrackSummary(ORIGINAL_TRACK), ORIGINAL_TRACK);
+test("音轨记录严格区分视频原声与独立音频资源", () => {
+  assert.deepEqual(parseMediaAudioTrackRecord(ORIGINAL_TRACK), ORIGINAL_TRACK);
 
   const vocal = {
     ...ORIGINAL_TRACK,
@@ -36,10 +35,9 @@ test("音轨摘要严格区分视频原声与独立音频资源", () => {
     },
     offsetSeconds: 0.25,
     sortOrder: 1,
-    analysis: { status: "processing", runId: "run-vocal", progress: 0.4 },
   };
-  assert.deepEqual(parseMediaAudioTrackSummary(vocal), vocal);
-  assert.equal(parseMediaAudioTrackSummary({
+  assert.deepEqual(parseMediaAudioTrackRecord(vocal), vocal);
+  assert.equal(parseMediaAudioTrackRecord({
     ...ORIGINAL_TRACK,
     source: {
       type: "media_resource",
@@ -47,29 +45,25 @@ test("音轨摘要严格区分视频原声与独立音频资源", () => {
       sourceType: "uploaded",
     },
   }), null);
-  assert.equal(parseMediaAudioTrackSummary({
+  assert.equal(parseMediaAudioTrackRecord({
     ...vocal,
     source: { type: "embedded_original", sourceType: "aliyun_vod" },
   }), null);
-  assert.equal(parseMediaAudioTrackSummary({ ...ORIGINAL_TRACK, offsetSeconds: 1 }), null);
+  assert.equal(parseMediaAudioTrackRecord({ ...ORIGINAL_TRACK, offsetSeconds: 1 }), null);
 });
 
-test("音轨摘要拒绝越界文本、时间、顺序、进度和额外字段", () => {
-  assert.equal(parseMediaAudioTrackSummary({
+test("音轨记录拒绝越界文本、时间、顺序和额外字段", () => {
+  assert.equal(parseMediaAudioTrackRecord({
     ...ORIGINAL_TRACK,
     name: "x".repeat(MAX_MEDIA_AUDIO_TRACK_NAME_LENGTH + 1),
   }), null);
-  assert.equal(parseMediaAudioTrackSummary({
+  assert.equal(parseMediaAudioTrackRecord({
     ...ORIGINAL_TRACK,
     offsetSeconds: MAX_MEDIA_AUDIO_TRACK_OFFSET_SECONDS + 1,
   }), null);
-  assert.equal(parseMediaAudioTrackSummary({ ...ORIGINAL_TRACK, sortOrder: -1 }), null);
-  assert.equal(parseMediaAudioTrackSummary({
-    ...ORIGINAL_TRACK,
-    analysis: { status: "processing", runId: "run", progress: 1.1 },
-  }), null);
-  assert.equal(parseMediaAudioTrackSummary({ ...ORIGINAL_TRACK, temporaryUrl: "secret" }), null);
-  assert.equal(parseMediaAudioTrackSummary({
+  assert.equal(parseMediaAudioTrackRecord({ ...ORIGINAL_TRACK, sortOrder: -1 }), null);
+  assert.equal(parseMediaAudioTrackRecord({ ...ORIGINAL_TRACK, temporaryUrl: "secret" }), null);
+  assert.equal(parseMediaAudioTrackRecord({
     ...ORIGINAL_TRACK,
     source: {
       type: "embedded_original",
@@ -77,26 +71,9 @@ test("音轨摘要拒绝越界文本、时间、顺序、进度和额外字段",
       mediaResourceId: "unexpected",
     },
   }), null);
-  assert.equal(parseMediaAudioTrackSummary({
+  assert.equal(parseMediaAudioTrackRecord({
     ...ORIGINAL_TRACK,
     source: { type: "embedded_original", sourceType: "unknown" },
-  }), null);
-});
-
-test("音轨摘要接受全部有界分析状态并拒绝不稳定错误码", () => {
-  const summaries = [
-    { status: "not_analyzed" },
-    { status: "queued", runId: "run-queued", progress: 0 },
-    { status: "processing", runId: "run-processing", progress: 0.5 },
-    { status: "ready", runId: "run-ready" },
-    { status: "failed", runId: "run-failed", errorCode: "source_unavailable" },
-  ];
-  for (const analysis of summaries) {
-    assert.ok(parseMediaAudioTrackSummary({ ...ORIGINAL_TRACK, analysis }));
-  }
-  assert.equal(parseMediaAudioTrackSummary({
-    ...ORIGINAL_TRACK,
-    analysis: { status: "failed", runId: "run", errorCode: "包含空格" },
   }), null);
 });
 
@@ -112,6 +89,21 @@ test("标注文件默认音轨偏好只接受稳定身份和有效时间", () =>
     ...preference,
     defaultAudioTrackId: null,
   }), { ...preference, defaultAudioTrackId: null });
+  assert.deepEqual(parseAnnotationAudioPreference({
+    annotationFileId: "annotation-file",
+    defaultAudioTrackId: null,
+    updatedByAccountId: null,
+    updatedAt: null,
+  }), {
+    annotationFileId: "annotation-file",
+    defaultAudioTrackId: null,
+    updatedByAccountId: null,
+    updatedAt: null,
+  });
+  assert.equal(parseAnnotationAudioPreference({
+    ...preference,
+    updatedByAccountId: null,
+  }), null);
   assert.equal(parseAnnotationAudioPreference({ ...preference, updatedAt: "not-a-date" }), null);
   assert.equal(parseAnnotationAudioPreference({
     ...preference,

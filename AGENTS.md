@@ -528,6 +528,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - embedded original audio and independent media resources are different source variants; original uses the primary media
     at zero offset, while every non-original track references a stable media resource. These DTOs never carry URLs,
     PlayAuth, AccessKeys, provider responses, or ProjectData
+- `apps/api/src/mediaAudioTrackService.ts`
+  - the only backend business boundary for a primary media's ordered audio-track relations and an annotation file's shared
+    default audio preference; persistent track records deliberately do not claim analysis status before a real media-scoped
+    run is resolved
+  - primary-media mutations reuse the resource-tree advisory gate, lock the media row, and recheck ACL. External sources must
+    be active audio resources with `read + download`; listing relation metadata never grants playback or analysis access
+  - uploaded/VOD media creation and media copy must create exactly one original track in the same transaction. Copies get only
+    their own original, while disabling/deleting external tracks clears default references without deleting source media;
+    rebinding an annotation file atomically removes its old audio preference
   - media analysis reuse identity contains only media resource, source fingerprint, algorithm version, and config hash.
     Annotation-file identity, source-selection mode, and track offset must never be added; offset only maps source time to
     project time
