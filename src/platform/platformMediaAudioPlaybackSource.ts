@@ -1,9 +1,6 @@
-import type {
-  AliyunVodPlaybackSession,
-  MediaAudioTrackPlaybackSession,
-  MediaAudioTrackRecord,
-} from "@xiqu/shared";
+import type { MediaAudioTrackPlaybackSession, MediaAudioTrackRecord } from "@xiqu/shared";
 import type { PlatformClient } from "../api/platformClient";
+import type { ExternalAudioPlaybackSource } from "../media/externalAudioPlaybackBackendFactory";
 
 type SourceContext = {
   annotationFileId: string;
@@ -15,32 +12,12 @@ type SourceContext = {
   >;
 };
 
-export type PlatformExternalAudioPlaybackSource =
-  | {
-      type: "uploaded_audio";
-      trackId: string;
-      audioMediaResourceId: string;
-      offsetSeconds: number;
-      load: () => Promise<{
-        url: string;
-        mimeType: string;
-        duration: number | null;
-      }>;
-    }
-  | {
-      type: "aliyun_vod_audio";
-      trackId: string;
-      audioMediaResourceId: string;
-      offsetSeconds: number;
-      loadSession: () => Promise<AliyunVodPlaybackSession>;
-    };
-
 /**
  * 音轨记录只决定稳定来源；每次 load 都重新请求并核对会话身份，迟到响应不能被错接到另一音轨。
  */
 export function buildPlatformExternalAudioPlaybackSource(
   context: SourceContext,
-): PlatformExternalAudioPlaybackSource | null {
+): ExternalAudioPlaybackSource | null {
   const { track } = context;
   if (
     !track.enabled ||
@@ -50,10 +27,11 @@ export function buildPlatformExternalAudioPlaybackSource(
   ) {
     return null;
   }
-  const loadValidated = async () => {
+  const loadValidated = async (signal?: AbortSignal) => {
     const session = await context.client.createMediaAudioTrackPlaybackSession(
       context.annotationFileId,
       track.id,
+      signal,
     );
     assertSessionIdentity(session, context);
     return session;
@@ -64,8 +42,8 @@ export function buildPlatformExternalAudioPlaybackSource(
       trackId: track.id,
       audioMediaResourceId: track.source.mediaResourceId,
       offsetSeconds: track.offsetSeconds,
-      load: async () => {
-        const session = await loadValidated();
+      load: async (signal) => {
+        const session = await loadValidated(signal);
         if (session.sourceType !== "uploaded") {
           throw new Error("音轨播放会话来源已经变化，请刷新音轨列表。");
         }
@@ -82,8 +60,8 @@ export function buildPlatformExternalAudioPlaybackSource(
     trackId: track.id,
     audioMediaResourceId: track.source.mediaResourceId,
     offsetSeconds: track.offsetSeconds,
-    loadSession: async () => {
-      const session = await loadValidated();
+    loadSession: async (signal) => {
+      const session = await loadValidated(signal);
       if (session.sourceType !== "aliyun_vod") {
         throw new Error("音轨播放会话来源已经变化，请刷新音轨列表。");
       }

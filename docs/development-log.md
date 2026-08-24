@@ -7332,3 +7332,50 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 已完成：RA3a 播放会话、三层 ACL、VOD 签发复用、HTMLAudio/VOD 外部 backend、客户端来源适配及文档。
   待推进：RA3b 集中组合主从播放 owner、VideoPlayer 生命周期、快速音轨选择、共享默认偏好和真实 Chrome/
   Safari 切换验收；RA3b 不得让 App/Timeline 直接操作第二媒体元素，也不能把当前试听选择写入标注 revision。
+
+## 2026-08-24：RA3b1 组合播放 owner 与 VideoPlayer 生命周期接入
+
+### 阶段边界与结构选择
+
+- RA3a 提交 `5a3edd7` 后重新检查播放器实际所有权，并将原 RA3b 拆为 RA3b1 组合运行时与 RA3b2 平台选项/UI。
+  本轮只把可选组合能力接到 `VideoPlayer`；App 不传外部来源，因此当前视频播放、编辑器界面和本地工具行为不变。
+  这样可先独立验证时序与清理，再把 API、默认偏好和可见选择器接入，避免把授权失败与媒体同步故障混在一起。
+- 新增 `SynchronizedMediaPlaybackRuntime` 并实现现有 `MediaPlaybackBackend`。App 仍只持有一个
+  `MediaPlaybackController`，视频仍是 `currentTime/duration/paused/ended` 唯一权威来源；外部音频、timer、
+  source/command generation 和播放状态机都由 runtime 私有拥有，不进入 ProjectData、revision、operation、
+  草稿、协作、撤销栈或租约。
+- 新增 `ExternalAudioPlaybackBackendFactory`。uploaded 来源在实际准备时才取得当前 token 对应的保护 URL 并创建
+  HTMLAudio；VOD audio 首份 no-store 会话同时校验媒资身份并复用为播放器首次 PlayAuth，不重复请求凭据。
+  调用方 AbortSignal 和 20 秒 ready 超时覆盖会话请求与播放器初始化，任一失败都销毁已经创建的 backend。
+
+### 同步、切换与生命周期
+
+- 选择外部音轨时先静音主视频，再等待从轨 ready，允许短暂无声但不允许双声。ready 后按
+  `audioTime = masterTime - offsetSeconds` 读取最新主时钟并对齐；before-start/after-end 保持从轨暂停且不偷偷
+  回退原声。切回原声或外部失败时先恢复主输出，再销毁从轨，避免静音黑洞。
+- 播放中每 300ms 使用 RA0 漂移策略采样：小漂移忽略，连续同向中漂移或大漂移执行硬同步。外部缓冲会暂停主
+  视频；恢复后先重新对齐，再按最新播放意图恢复。用户在缓冲期间主动暂停后不会被迟到恢复事件重新播放。
+- A/B/C 快速选择、source replacement、retry、prepare cancel、迟到 ready/error/buffering 均以 generation 隔离；
+  同一来源在 `useLayoutEffect`、被动 effect 和主媒体 ready 之间幂等，只发起一次准备，不会短暂切回原声。
+- `VideoPlayer` 现在集中挂载主 backend 与组合 runtime，并提供 2px、裁切、透明、无指针且 `inert` 的 Aliplayer
+  audio host。该容器有真实布局尺寸以满足第三方播放器初始化，但不会占据画面、接收鼠标或进入键盘导航。
+  预览 seek、循环、步进、播放/暂停和倍速继续经过原统一 controller；Timeline 和 App 不接触第二媒体元素。
+- 平台来源 adapter 改为返回 media 层通用延迟来源，并把 AbortSignal 传到 no-store session 请求。URL 和
+  PlayAuth 仍只存在于工厂/backend 内存；静态扫描只有 DTO 到 VOD backend 的必要 `playAuth` 映射，没有新增
+  localStorage、日志、持久字段、完整 payload 或供应商响应。
+
+### 自我审查、验证与待推进
+
+- 自审修正了两项首轮生命周期问题：原生 metadata 曾重复调用 ready；外部来源 effect 曾依赖主 source/retry，
+  可能在主视频重挂载时先恢复原声再切回替换音。现改为主 backend 安装时恢复最新选择意图、同源幂等复用准备，
+  并用专项测试锁定“ready 前后同一选择只申请一次会话”。主媒体 attach/detach 也收敛到一个释放 helper，删除
+  双重状态重置。
+- `test:media-playback` 37/37；`test:media-audio-tracks` 14/14；真实 PostgreSQL/Fastify
+  `test:media-audio-track-api` 4/4；完整 `test:api` 186/186。`npm run build` 完成 Prisma generate/schema guard、
+  shared、document-model、Web 和 API；`git diff --check` 及 debug/`any`/凭据/重复会话扫描通过。仅有既有 Web
+  主 chunk 大于 500 kB 提醒和测试环境既有 `pg` deprecation warning。
+- 未引入依赖：当前问题由已有状态机、backend 合同、AbortController 和 React 生命周期完整覆盖，引入播放器
+  编排库反而会形成第二套时钟。没有浏览器切轨验收，因为 App 尚未提供来源；没有部署生产。
+- 已完成：RA3b1 组合 owner、外部 backend 工厂、`VideoPlayer` 可选接线、清理和文档。待推进：RA3b2 加载当前
+  主媒体的可见音轨与共享默认偏好，建立紧凑快速选择器，并在 Chrome/Safari 实测原声、上传音频、VOD 音频、
+  A/B/C、循环/seek、detached window、撤权和失败恢复；当前会话选择仍不得写标注 revision。

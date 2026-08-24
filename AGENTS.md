@@ -534,15 +534,18 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - publishes only exact pointer time to the collaboration callback and renders remote playhead/pointer/selection hints as
     read-only `pointer-events: none` overlays using the same `trackHeaderWidth + time * zoom` coordinate as local timing
 - `src/components/VideoPlayer.tsx`
-  - owns backend mount/unmount, playback sync, preview-frame behavior, native controls auto-hide, VOD loading/error UI, and
-    detached-panel button; exposes `MediaPlaybackController`, never an HTML media element
+  - owns master-backend mount/unmount, the synchronized playback runtime, preview-frame behavior, native controls auto-hide,
+    VOD loading/error UI, hidden inert VOD-audio host, and detached-panel button; exposes `MediaPlaybackController`, never an
+    HTML media element or supplier player
+  - external audio is optional and defaults to original sound. Master source/retry effects must reapply the current selection
+    intent before ready, while same-source selection stays idempotent across layout/passive effects
 - `src/media/mediaPlaybackController.ts`
   - App-facing playback contract and latest-command ordering; all App media commands must pass through this boundary
   - expected source-switch/preview cancellation is not a user error, while play/seek failures are contained by the player UI
 - `src/media/nativeAudioPlaybackBackend.ts` + `src/media/aliyunVodPlaybackBackend.ts`
   - the external-audio-capable playback backends; HTMLAudio owns and removes its listeners, while Aliplayer validates an explicit
     expected `video | audio` kind and retains rate/volume/mute across short-session refresh
-  - buffering is an event to the future composite owner. App and Timeline must never operate the hidden audio element or
+  - buffering is an event to the synchronized composite owner. App and Timeline must never operate the hidden audio element or
     supplier player directly, and dispose/source generation must make all late events inert
 - `packages/shared/src/mediaAudioTracks.ts` + `packages/shared/src/mediaAudioPlaybackSession.ts` +
   `packages/shared/src/mediaAnalysisIdentity.ts`
@@ -575,8 +578,16 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     resync, failure, and disposal; they do not own media elements, timers, React state, or temporary playback sessions
   - late events from an old audio-track generation are normal stale facts, while illegal events for the current generation
     remain explicit invalid transitions. Repeated browser ready/play/buffering facts are intentionally idempotent
-  - these modules are not yet wired into `VideoPlayer`; until the later migration phases complete, the existing
-    annotation-file-scoped analysis setting and run path remains runtime-authoritative
+  - these pure modules are consumed by `SynchronizedMediaPlaybackRuntime`; analysis display selection remains a separate later
+    phase and must not be inferred from playback state
+- `src/media/synchronizedMediaPlaybackRuntime.ts` + `src/media/externalAudioPlaybackBackendFactory.ts`
+  - the only composite playback owner and delayed external-backend construction boundary. Video remains the authoritative clock;
+    at most one external backend may exist, and selection/command generations make old prepare/ready/error/buffering facts inert
+  - uploaded URLs and VOD PlayAuth are requested only inside the factory, remain memory-only, and are disposed on cancellation,
+    timeout, source switch, master replacement, or failure. App, Timeline, collaboration, ProjectData, drafts, and undo/history
+    must never own the second media element or temporary session
+  - selection must mute the master before asynchronous preparation, while original/failure recovery restores master output before
+    disposing the external backend. Offset maps playback time only and never changes analysis identity
 - `src/media/nativeMediaPlaybackBackend.ts`
   - narrow HTMLMediaElement adapter with deterministic seeked/error/timeout/dispose settlement
 - `src/media/aliplayerSdk.ts` + `src/media/aliyunVodPlaybackBackend.ts`

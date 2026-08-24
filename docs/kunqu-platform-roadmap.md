@@ -596,8 +596,15 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   主媒体和源音频三层 ACL 与活动状态；上传音频只返回 file identity 并继续走受保护 Range，VOD 音频与主视频
   共用唯一凭据签发器。统一 playback backend 已具备 volume/mute/buffering，新增 HTMLAudio backend 和平台
   uploaded/VOD 音频来源适配，VOD 刷新可保留时间、倍率、音量及静音。专项音轨合同 14/14、播放 22/22、
-  API/issuer 4/4、完整 API 186/186 与 build 通过；无可见 UI，未做浏览器验收或生产部署。下一轮 RA3b 才接
+  API/issuer 4/4、完整 API 186/186 与 build 通过；该阶段无可见 UI、浏览器验收或生产部署。后续 RA3b 分步接入
   组合主从播放器、编辑器快速选择器与共享默认值，不得让 App 直接拥有第二媒体元素或持久化临时凭据。
+
+  RA3b1 同日完成组合播放基础接线：`VideoPlayer` 内部的 synchronized runtime 以视频为唯一主时钟，集中拥有
+  单一替换音频 backend、偏移映射、漂移采样、缓冲恢复、静音路由和全部 generation/dispose；uploaded 与 VOD
+  audio 通过同一可取消、带 ready 超时的工厂准备，VOD 首份会话不会重复请求。离屏 VOD audio host 不影响布局、
+  指针或键盘导航，同一来源在主媒体 effect/ready 之间幂等。App 暂未传入外部来源，故当前可见行为不变；播放
+  37/37、合同/策略 14/14、音轨 API 4/4、完整 API 186/186 与 build 通过。下一轮 RA3b2 才加载平台音轨与共享
+  默认值并提供快速选择器和真实浏览器验收。
 
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入

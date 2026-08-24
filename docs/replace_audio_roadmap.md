@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2、RA3a 已完成
+> 文档状态：专项实施中，RA0-RA2、RA3a、RA3b1 已完成
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -22,8 +22,11 @@
   canonical identity，最终 migration 以 fail-closed 前置检查保护两阶段生产迁移。
 - **RA3a 已完成（2026-08-24）**：建立严格 no-store 外部音轨播放会话、逐请求三层 ACL、共享 VOD 签发器、
   上传/VOD 音频来源适配及统一 volume/mute/buffering backend 能力；尚未接入编辑器可见行为。
-- 下一阶段是 **RA3b 组合播放器与快速音轨切换**。本轮应消费 RA0 状态机和 RA3a backend，不再复制播放凭据、
-  分析来源或媒体身份。
+- **RA3b1 已完成（2026-08-24）**：组合播放 runtime 已接入 `VideoPlayer` 的可选生命周期，以视频为唯一主时钟，
+  集中拥有替换音频、漂移/缓冲恢复、静音路由、generation 和离屏 VOD 容器；App 尚未传入外部来源，当前可见
+  行为不变。
+- 下一阶段是 **RA3b2 平台音轨选项与快速选择器**。本轮应消费现有组合 owner，加载当前主媒体的有权音轨与
+  共享默认值并建立会话级选择，不再扩散第二媒体元素或复制播放凭据。
 
 ## 1. 目标重新定义
 
@@ -771,14 +774,28 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - `test:media-audio-tracks` 14/14、`test:media-playback` 22/22、音轨 API/issuer 4/4、完整 API 186/186 及完整
   build 通过。仅有既有 Web 主 chunk 体积提醒；本阶段无可见 UI，未做浏览器验收且未部署生产。
 
-**RA3b 待推进**
+**RA3b1 实际完成**
 
-- 新建 synchronized composite owner，以主视频为唯一权威时钟，集中拥有第二音频 backend、generation、漂移
-  采样、缓冲恢复、静音切换和 dispose；App、Timeline 与协作层不得直接控制第二媒体元素。
-- 接入 `VideoPlayer` 的不可见 VOD 音频容器和上传音频 backend，保证 A/B/C 快速切换只有最后意图生效，切回
-  原声时先恢复主音频再清理旧从轨，任何失败不得产生双声或静音黑洞。
+- 新增 `SynchronizedMediaPlaybackRuntime` 并让它实现既有 `MediaPlaybackBackend`。主视频继续提供唯一快照；
+  seek/play/pause/倍率/音量/静音通过一个 controller 进入主从序列，第二媒体元素不暴露给 App、Timeline、协作
+  或文档状态。
+- runtime 集中处理 source/command generation、正负偏移区间、300ms 漂移采样、连续中漂移/大漂移硬同步、
+  从轨缓冲时暂停主视频及恢复重同步。切换中先静音主轨，失败恢复原声；切回原声先恢复主输出再销毁从轨，
+  迟到 ready/error/buffering 均不能复活旧来源。
+- 新增外部 backend 工厂：uploaded 延迟取得受保护 URL 后创建 HTMLAudio；VOD 首份 no-store session 同时固定
+  媒资身份并复用为首次 PlayAuth。调用方取消和 20 秒 ready 超时覆盖会话请求与播放器准备，失败统一销毁。
+- `VideoPlayer` 已拥有离屏、不可交互且不进入键盘导航的 VOD audio host；主媒体重挂载会恢复当前选择意图，
+  同一选择在 React effect 与 ready 事件间幂等，不重复申请会话或短暂回落原声。可选 prop 默认 `null`，App
+  本轮不传入，因此现有编辑器声音和 UI 完全不变。
+- 播放专项 37/37、音轨合同/策略 14/14、真实 PostgreSQL/Fastify 音轨 API 4/4、完整 API 186/186、完整 build
+  和 `git diff --check` 通过；仅有既有 Web 主 chunk 体积提醒。无可见新流程，未伪造浏览器切轨验收、未部署。
+
+**RA3b2 待推进**
+
 - 在编辑器播放控制附近增加紧凑音轨选择器，以共享默认值初始化当前会话；当前试听选择不写 revision/operation，
   只有有权用户显式设置共享默认时才调用偏好 API。
+- 平台会话加载主媒体音轨摘要、可用性与默认偏好，稳定构造 `externalAudioSource` 交给 `VideoPlayer`；本地编辑器
+  保持原媒体路径。补 uploaded/VOD/原声快速切换、撤权、失败回退和 detached window 的真实浏览器验收。
 
 ### RA4：分析显示跟随与渐进缓存复用
 

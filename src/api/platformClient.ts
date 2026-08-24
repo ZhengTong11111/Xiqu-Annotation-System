@@ -345,10 +345,11 @@ export class PlatformClient {
   async createMediaAudioTrackPlaybackSession(
     annotationFileId: string,
     trackId: string,
+    signal?: AbortSignal,
   ): Promise<MediaAudioTrackPlaybackSession> {
     const value = await this.request<unknown>(
       `/annotation-files/${annotationFileId}/audio-tracks/${trackId}/playback-session`,
-      { method: "POST" },
+      { method: "POST", signal },
     );
     const session = parseMediaAudioTrackPlaybackSession(value);
     if (!session) {
