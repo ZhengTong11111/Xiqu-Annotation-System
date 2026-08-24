@@ -259,6 +259,179 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       recordOf(dataOf(annotationResponse.json()).resource).id,
     );
 
+    // 播放会话每次都重新验证标注文件、主媒体和源音频，不能把建轨时的一次授权当成永久通行证。
+    const uploadedPlayback = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
+    });
+    assert.equal(uploadedPlayback.statusCode, 200, uploadedPlayback.body);
+    assert.equal(uploadedPlayback.headers["cache-control"], "no-store");
+    assert.deepEqual(dataOf(uploadedPlayback.json()), {
+      version: 1,
+      annotationFileId,
+      primaryMediaResourceId: primaryVideoId,
+      trackId: uploadedTrack.id,
+      audioMediaResourceId: uploadedAudioId,
+      sourceType: "uploaded",
+      fileId: String(
+        (await prisma.mediaFile.findUniqueOrThrow({ where: { resourceId: uploadedAudioId } }))
+          .fileId,
+      ),
+      mimeType: "audio/wav",
+      duration: null,
+    });
+    assert.doesNotMatch(uploadedPlayback.body, /https?:\/\/|accesskey|secret/iu);
+
+    const vodPlayback = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/audio-tracks/${vodTrack.id}/playback-session`,
+    });
+    assert.equal(vodPlayback.statusCode, 200, vodPlayback.body);
+    assert.equal(vodPlayback.headers["cache-control"], "no-store");
+    assert.deepEqual(dataOf(vodPlayback.json()), {
+      version: 1,
+      annotationFileId,
+      primaryMediaResourceId: primaryVideoId,
+      trackId: vodTrack.id,
+      audioMediaResourceId: vodAudioId,
+      sourceType: "aliyun_vod",
+      videoId: AUDIO_VOD_ID,
+      region: "cn-shanghai",
+      playAuth: "integration-only-play-auth",
+      expiresAt: "2030-01-01T00:15:00.000Z",
+      webPlayerLicense: {
+        domain: "example.test",
+        key: "integration-license-key",
+      },
+    });
+    assert.doesNotMatch(vodPlayback.body, /https?:\/\/|accesskey|secret/iu);
+
+    const originalPlayback = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/audio-tracks/${original.id}/playback-session`,
+    });
+    assert.equal(originalPlayback.statusCode, 400);
+    const foreignOriginal = await prisma.mediaAudioTrack.findFirstOrThrow({
+      where: { primaryMediaResourceId: secondVideoId, kind: "original" },
+    });
+    const wrongPrimaryPlayback = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/audio-tracks/${foreignOriginal.id}/playback-session`,
+    });
+    assert.equal(wrongPrimaryPlayback.statusCode, 404);
+
+    const unboundAnnotation = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: "/api/annotation-files",
+      payload: {
+        parentId: projectId,
+        name: "未绑定媒体.json",
+        payload: { marker: "unbound-audio-track" },
+      },
+    });
+    const unboundAnnotationId = String(
+      recordOf(dataOf(unboundAnnotation.json()).resource).id,
+    );
+    const unboundPlayback = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: `/api/annotation-files/${unboundAnnotationId}/audio-tracks/${uploadedTrack.id}/playback-session`,
+    });
+    assert.equal(unboundPlayback.statusCode, 400);
+
+    // 资源归档后即使音轨关系仍存在也必须停止签发；恢复活动状态后才能重新播放。
+    await prisma.resourceEntry.update({
+      where: { id: uploadedAudioId },
+      data: { archivedAt: new Date("2026-08-24T00:00:00.000Z") },
+    });
+    const archivedPlayback = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
+    });
+    assert.equal(archivedPlayback.statusCode, 404);
+    assert.equal(archivedPlayback.headers["cache-control"], "no-store");
+    await prisma.resourceEntry.update({
+      where: { id: uploadedAudioId },
+      data: { archivedAt: null },
+    });
+
+    // 用三条直接 ACL 逐层推进授权，证明标注文件、主媒体和源音频缺一不可。
+    await prisma.resourcePermission.create({
+      data: {
+        resourceId: annotationFileId,
+        userId: student.id,
+        capabilities: ["read"],
+        inheritToChildren: false,
+        createdBy: admin.id,
+      },
+    });
+    const playbackWithoutPrimaryAccess = await jsonRequest(app, studentToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
+    });
+    assert.equal(playbackWithoutPrimaryAccess.statusCode, 403);
+    await prisma.resourcePermission.create({
+      data: {
+        resourceId: primaryVideoId,
+        userId: student.id,
+        capabilities: ["read", "download"],
+        inheritToChildren: false,
+        createdBy: admin.id,
+      },
+    });
+    const playbackWithoutAudioAccess = await jsonRequest(app, studentToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
+    });
+    assert.equal(playbackWithoutAudioAccess.statusCode, 403);
+    await prisma.resourcePermission.create({
+      data: {
+        resourceId: uploadedAudioId,
+        userId: student.id,
+        capabilities: ["read"],
+        inheritToChildren: false,
+        createdBy: admin.id,
+      },
+    });
+    const playbackWithoutAudioDownload = await jsonRequest(app, studentToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
+    });
+    assert.equal(playbackWithoutAudioDownload.statusCode, 403);
+    await prisma.resourcePermission.update({
+      where: { resourceId_userId: { resourceId: uploadedAudioId, userId: student.id } },
+      data: { capabilities: ["read", "download"] },
+    });
+    const playbackWithDownload = await jsonRequest(app, studentToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
+    });
+    assert.equal(playbackWithDownload.statusCode, 200, playbackWithDownload.body);
+    // 撤回 download 后立即失效，证明播放不是复用建轨时或上一次会话的权限结果。
+    await prisma.resourcePermission.update({
+      where: { resourceId_userId: { resourceId: uploadedAudioId, userId: student.id } },
+      data: { capabilities: ["read"] },
+    });
+    const playbackAfterRevoke = await jsonRequest(app, studentToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
+    });
+    assert.equal(playbackAfterRevoke.statusCode, 403);
+    await prisma.resourcePermission.deleteMany({
+      where: {
+        userId: student.id,
+        resourceId: { in: [annotationFileId, primaryVideoId, uploadedAudioId] },
+      },
+    });
+    await prisma.resourcePermission.create({
+      data: {
+        resourceId: projectId,
+        userId: student.id,
+        capabilities: ["read"],
+        inheritToChildren: true,
+        createdBy: admin.id,
+      },
+    });
+
     const emptyPreference = await jsonRequest(app, adminToken, {
       method: "GET",
       url: `/api/annotation-files/${annotationFileId}/audio-preference`,
@@ -297,6 +470,11 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       payload: { enabled: false },
     });
     assert.equal(disabled.statusCode, 200, disabled.body);
+    const disabledPlayback = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
+    });
+    assert.equal(disabledPlayback.statusCode, 404);
     const clearedAfterDisable = await jsonRequest(app, adminToken, {
       method: "GET",
       url: `/api/annotation-files/${annotationFileId}/audio-preference`,
@@ -364,15 +542,7 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
     assert.equal(copiedTracks[0]?.kind, "original");
 
     // 只读用户可查看音轨和偏好，但不能修改共享默认值；write 也不能替代源音频的 download 权限。
-    await prisma.resourcePermission.create({
-      data: {
-        resourceId: projectId,
-        userId: student.id,
-        capabilities: ["read"],
-        inheritToChildren: true,
-        createdBy: admin.id,
-      },
-    });
+    // 上方播放会话已创建项目级只读授权；这里继续验证管理 API，不重复制造 ACL 测试夹具。
     const studentList = await jsonRequest(app, studentToken, {
       method: "GET",
       url: `/api/media-files/${primaryVideoId}/audio-tracks`,

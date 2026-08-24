@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2 已完成
+> 文档状态：专项实施中，RA0-RA2、RA3a 已完成
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -20,8 +20,10 @@
   归并并为 canonical 幂等回填。
 - **RA2b2 已完成（2026-08-24）**：service、worker、asset ACL adapter 与 IndexedDB 缓存已切到媒体级
   canonical identity，最终 migration 以 fail-closed 前置检查保护两阶段生产迁移。
-- 下一阶段是 **RA3 组合播放器与快速音轨切换**。本轮应消费现有音轨 API 和同步状态机，不再复制分析来源或
-  另建一套媒体身份。
+- **RA3a 已完成（2026-08-24）**：建立严格 no-store 外部音轨播放会话、逐请求三层 ACL、共享 VOD 签发器、
+  上传/VOD 音频来源适配及统一 volume/mute/buffering backend 能力；尚未接入编辑器可见行为。
+- 下一阶段是 **RA3b 组合播放器与快速音轨切换**。本轮应消费 RA0 状态机和 RA3a backend，不再复制播放凭据、
+  分析来源或媒体身份。
 
 ## 1. 目标重新定义
 
@@ -752,6 +754,31 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 连续 A/B/C 选择只保留 C；
 - 播放、暂停、seek、循环、倍速和后台恢复；
 - 切换文件后没有残留声音、请求和 timer。
+
+**RA3a 实际完成**
+
+- shared 新增严格 `MediaAudioTrackPlaybackSession` 判别联合；上传会话仅返回稳定 file identity、MIME 和时长，
+  VOD 会话返回短时 PlayAuth 与部署 License。客户端 parser 拒绝额外字段、坏身份、坏时间、空凭据和视频 MIME。
+- 新增 `POST /api/annotation-files/:fileId/audio-tracks/:trackId/playback-session`，成功与失败响应均声明
+  `Cache-Control: no-store`。每次请求重新验证活动标注文件、当前主媒体、音轨归属/启用状态、源音频类型，以及
+  标注读权限、主媒体 `read + download`、源音频 `read + download`；撤回权限后旧 track id 不能继续签发。
+- 主视频与外部 VOD 音频共用唯一 VOD session issuer，License 缺失时不会先请求 PlayAuth；供应商错误只保留
+  有界类别和 requestId。旧 `ResourceService` 重复凭据组装已经删除。
+- 统一播放合同增加 volume/mute 和可选 buffering 事件；原生 video、Aliplayer 和新 HTMLAudio backend 共用
+  相同命令语义。VOD backend 可显式验证 `video | audio`，刷新凭据后保留倍率、音量、静音、时间与播放意图。
+- 新平台来源适配器只保存 annotation/media/track 稳定身份；上传音频在实际 load 时用当前 access token 构造
+  Range URL，VOD 在实际 load 时请求短时会话。URL、PlayAuth 不进入 ProjectData、草稿或持久 React 状态。
+- `test:media-audio-tracks` 14/14、`test:media-playback` 22/22、音轨 API/issuer 4/4、完整 API 186/186 及完整
+  build 通过。仅有既有 Web 主 chunk 体积提醒；本阶段无可见 UI，未做浏览器验收且未部署生产。
+
+**RA3b 待推进**
+
+- 新建 synchronized composite owner，以主视频为唯一权威时钟，集中拥有第二音频 backend、generation、漂移
+  采样、缓冲恢复、静音切换和 dispose；App、Timeline 与协作层不得直接控制第二媒体元素。
+- 接入 `VideoPlayer` 的不可见 VOD 音频容器和上传音频 backend，保证 A/B/C 快速切换只有最后意图生效，切回
+  原声时先恢复主音频再清理旧从轨，任何失败不得产生双声或静音黑洞。
+- 在编辑器播放控制附近增加紧凑音轨选择器，以共享默认值初始化当前会话；当前试听选择不写 revision/operation，
+  只有有权用户显式设置共享默认时才调用偏好 API。
 
 ### RA4：分析显示跟随与渐进缓存复用
 

@@ -591,7 +591,13 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   以 partial unique 和缺 fingerprint/重复 canonical/active superseded job 前置门禁 fail closed，annotation 删除
   不再级联媒体 run。专项迁移 10/10、媒体分析 35/35、备份 28/28、完整 API 183/183 与 build 通过。生产部署
   必须先在 additive release 停 worker 并执行精确 dry-run/execute，再部署最终 migration；当前未在生产执行。
-  下一轮进入 RA3 组合播放器与编辑器快速音轨切换。
+
+  RA3a 同日完成播放器接入前的安全基础：新增严格 no-store 外部音轨播放会话，每次请求独立复核标注文件、
+  主媒体和源音频三层 ACL 与活动状态；上传音频只返回 file identity 并继续走受保护 Range，VOD 音频与主视频
+  共用唯一凭据签发器。统一 playback backend 已具备 volume/mute/buffering，新增 HTMLAudio backend 和平台
+  uploaded/VOD 音频来源适配，VOD 刷新可保留时间、倍率、音量及静音。专项音轨合同 14/14、播放 22/22、
+  API/issuer 4/4、完整 API 186/186 与 build 通过；无可见 UI，未做浏览器验收或生产部署。下一轮 RA3b 才接
+  组合主从播放器、编辑器快速选择器与共享默认值，不得让 App 直接拥有第二媒体元素或持久化临时凭据。
 
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入

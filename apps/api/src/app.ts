@@ -52,6 +52,7 @@ import { AccountAdminService } from "./accountAdminService.js";
 import type { AliyunVodProvider } from "./aliyunVodGateway.js";
 import { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
 import { MediaAudioTrackService } from "./mediaAudioTrackService.js";
+import { MediaAudioPlaybackSessionService } from "./mediaAudioPlaybackSessionService.js";
 import { createAnnotationReviewChannel } from "./annotationReviewEventEnvelope.js";
 import { PostgresAnnotationReviewEventBus } from "./postgresAnnotationReviewEventBus.js";
 
@@ -139,6 +140,12 @@ export async function buildApiApp(
   );
   const mediaAnalysis = new MediaAnalysisJobService(options.prisma, access);
   const mediaAudioTracks = new MediaAudioTrackService(options.prisma, access);
+  const mediaAudioPlaybackSessions = new MediaAudioPlaybackSessionService(
+    options.prisma,
+    access,
+    options.aliyunVod ?? null,
+    options.aliyunVodWebPlayerLicense ?? null,
+  );
   // 原子领域命令拥有独立事务服务，但与完整保存共用同一个跨实例 revision 发布器。
   const annotationCommandCommits = new AnnotationCommandCommitService(
     options.prisma,
@@ -270,6 +277,7 @@ export async function buildApiApp(
     resources,
     mediaAnalysis,
     mediaAudioTracks,
+    mediaAudioPlaybackSessions,
     annotationCommandCommits,
     storage,
     mediaUploads,

@@ -12,6 +12,8 @@ class FakeNativeMedia implements NativeMediaElementPort {
   ended = false;
   readyState = 1;
   playbackRate = 1;
+  volume = 0.5;
+  muted = false;
   playCount = 0;
   pauseCount = 0;
   private listeners = new Map<string, Set<EventListener>>();

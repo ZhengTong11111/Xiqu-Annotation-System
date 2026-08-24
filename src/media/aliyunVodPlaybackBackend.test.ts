@@ -16,6 +16,8 @@ class FakeAliplayer implements AliplayerInstance {
   paused = true;
   ended = false;
   speed = 1;
+  volume = 0.5;
+  muted = false;
   disposed = false;
   private handlers = new Map<string, Set<AliplayerEventHandler>>();
 
@@ -39,16 +41,22 @@ class FakeAliplayer implements AliplayerInstance {
   getDuration() { return this.duration; }
   getStatus() { return this.paused ? "pause" : "playing"; }
   setSpeed(rate: number) { this.speed = rate; }
+  setVolume(volume: number) { this.volume = volume; }
+  mute() { this.muted = true; }
+  unMute() { this.muted = false; }
   dispose() { this.disposed = true; }
   emit(event: string) {
     for (const handler of [...(this.handlers.get(event) ?? [])]) handler();
   }
 }
 
-function createSession(playAuth: string): AliyunVodPlaybackSession {
+function createSession(
+  playAuth: string,
+  mediaKind: AliyunVodPlaybackSession["mediaKind"] = "video",
+): AliyunVodPlaybackSession {
   return {
     sourceType: "aliyun_vod",
-    mediaKind: "video",
+    mediaKind,
     videoId: "vod-1",
     region: "cn-shanghai",
     playAuth,
@@ -78,6 +86,8 @@ test("VOD 后端映射 ready、seek、play、pause 和倍率", async () => {
   });
 
   backend.setPlaybackRate(1.5);
+  backend.setVolume(0.75);
+  backend.setMuted(true);
   await backend.seek(12);
   await backend.play();
   backend.pause();
@@ -86,6 +96,8 @@ test("VOD 后端映射 ready、seek、play、pause 和倍率", async () => {
   assert.deepEqual(readyDurations, [90]);
   assert.equal(backend.getSnapshot().currentTime, 12);
   assert.equal(player?.speed, 1.5);
+  assert.equal(player?.volume, 0.75);
+  assert.equal(player?.muted, true);
   assert.deepEqual(player?.options.license, {
     domain: "example.test",
     key: "test-web-license-key",
@@ -112,6 +124,9 @@ test("VOD 会话刷新单飞并恢复时间与播放状态", async () => {
   });
   await backend.seek(8);
   await backend.play();
+  backend.setPlaybackRate(1.25);
+  backend.setVolume(0.3);
+  backend.setMuted(true);
 
   await Promise.all([backend.refreshSession(), backend.refreshSession()]);
 
@@ -119,7 +134,47 @@ test("VOD 会话刷新单飞并恢复时间与播放状态", async () => {
   assert.equal(FakeAliplayer.instances.length, 2);
   assert.equal(backend.getSnapshot().currentTime, 8);
   assert.equal(backend.getSnapshot().paused, false);
+  assert.equal(FakeAliplayer.instances[1]?.speed, 1.25);
+  assert.equal(FakeAliplayer.instances[1]?.volume, 0.3);
+  assert.equal(FakeAliplayer.instances[1]?.muted, true);
   backend.dispose();
+});
+
+test("VOD 后端可显式接收音频媒资并拒绝媒体类型漂移", async () => {
+  FakeAliplayer.instances = [];
+  const audioBackend = new AliyunVodPlaybackBackend({
+    containerId: "audio-player",
+    expectedVideoId: "vod-1",
+    expectedMediaKind: "audio",
+    loadSession: async () => createSession("audio-auth", "audio"),
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onError: () => undefined,
+    },
+  });
+  await audioBackend.play();
+  assert.equal(FakeAliplayer.instances.length, 1);
+  audioBackend.dispose();
+
+  const mismatchedBackend = new AliyunVodPlaybackBackend({
+    containerId: "audio-player-mismatch",
+    expectedVideoId: "vod-1",
+    expectedMediaKind: "audio",
+    loadSession: async () => createSession("video-auth", "video"),
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onError: () => undefined,
+    },
+  });
+  await assert.rejects(mismatchedBackend.play(), /播放会话与当前媒体不匹配/);
+  assert.equal(FakeAliplayer.instances.length, 1);
+  mismatchedBackend.dispose();
 });
 
 test("VOD 刷新失败后保留旧实例并允许继续执行播放命令", async () => {

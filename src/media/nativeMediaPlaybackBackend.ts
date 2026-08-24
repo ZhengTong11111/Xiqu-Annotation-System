@@ -2,6 +2,7 @@ import {
   MediaPlaybackCommandCancelledError,
   normalizePlaybackSnapshot,
   normalizePlaybackTime,
+  normalizePlaybackVolume,
   type MediaPlaybackBackend,
 } from "./mediaPlaybackController";
 
@@ -15,6 +16,8 @@ export type NativeMediaElementPort = {
   ended: boolean;
   readyState: number;
   playbackRate: number;
+  volume: number;
+  muted: boolean;
   play(): Promise<void>;
   pause(): void;
   addEventListener(type: string, listener: EventListener): void;
@@ -107,6 +110,16 @@ export class NativeMediaPlaybackBackend implements MediaPlaybackBackend {
       throw new Error("播放倍率必须是正数。");
     }
     this.media.playbackRate = rate;
+  }
+
+  setVolume(volume: number) {
+    this.assertActive();
+    this.media.volume = normalizePlaybackVolume(volume);
+  }
+
+  setMuted(muted: boolean) {
+    this.assertActive();
+    this.media.muted = muted;
   }
 
   dispose() {

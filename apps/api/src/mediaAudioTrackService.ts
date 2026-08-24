@@ -21,6 +21,10 @@ import { lockActiveAnnotationFileForWrite } from "./annotationFileWriteLock.js";
 import type { ApiUser } from "./domain.js";
 import { badRequest, conflict, notFound } from "./errors.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
+import {
+  assertActiveResourceAncestors,
+  requireActiveMediaResource,
+} from "./mediaResourceActivity.js";
 
 const audioTrackInclude = {
   primaryMedia: { select: { sourceType: true } },
@@ -82,12 +86,8 @@ export class MediaAudioTrackService {
     user: ApiUser,
     primaryMediaResourceId: string,
   ): Promise<MediaAudioTrackList> {
-    await this.assertActiveMediaResource(
-      user,
-      primaryMediaResourceId,
-      "read",
-      this.prisma,
-    );
+    await requireActiveMediaResource(this.prisma, primaryMediaResourceId);
+    await this.access.assertCapability(user, primaryMediaResourceId, "read");
     const rows = await this.prisma.mediaAudioTrack.findMany({
       where: { primaryMediaResourceId },
       include: audioTrackInclude,
@@ -447,7 +447,7 @@ export class MediaAudioTrackService {
     ) {
       throw notFound("活动主媒体不存在。");
     }
-    await this.assertActiveAncestors(resource.parentId, transaction);
+    await assertActiveResourceAncestors(transaction, resource.parentId);
     await this.access.assertCapability(user, resourceId, "write", transaction);
     const mediaRows = await transaction.$queryRaw<Array<{ resourceId: string }>>`
       SELECT resource_id AS "resourceId"
@@ -458,63 +458,16 @@ export class MediaAudioTrackService {
     if (!mediaRows[0]) throw notFound("活动主媒体不存在。");
   }
 
-  private async assertActiveMediaResource(
-    user: ApiUser,
-    resourceId: string,
-    capability: "read" | "write" | "download",
-    database: PrismaClient | Prisma.TransactionClient,
-  ) {
-    const resource = await database.resourceEntry.findUnique({
-      where: { id: resourceId },
-      select: {
-        type: true,
-        parentId: true,
-        trashedAt: true,
-        archivedAt: true,
-        mediaFile: { select: { resourceId: true } },
-      },
-    });
-    if (
-      !resource ||
-      resource.type !== "media_file" ||
-      !resource.mediaFile ||
-      resource.trashedAt ||
-      resource.archivedAt
-    ) {
-      throw notFound("活动媒体不存在。");
-    }
-    await this.assertActiveAncestors(resource.parentId, database);
-    return this.access.assertCapability(user, resourceId, capability, database);
-  }
-
   private async assertReadableAudioSource(
     user: ApiUser,
     resourceId: string,
     transaction: Prisma.TransactionClient,
   ) {
-    await this.assertActiveMediaResource(user, resourceId, "read", transaction);
+    const media = await requireActiveMediaResource(transaction, resourceId);
+    await this.access.assertCapability(user, resourceId, "read", transaction);
     await this.access.assertCapability(user, resourceId, "download", transaction);
-    const media = await transaction.mediaFile.findUnique({
-      where: { resourceId },
-      select: { mediaKind: true },
-    });
-    if (!media || media.mediaKind !== "audio") {
+    if (media.mediaKind !== "audio") {
       throw badRequest("独立音轨必须引用音频媒体资源。");
-    }
-  }
-
-  private async assertActiveAncestors(
-    parentId: string | null,
-    database: PrismaClient | Prisma.TransactionClient,
-  ) {
-    let currentId = parentId;
-    while (currentId) {
-      const parent = await database.resourceEntry.findUnique({
-        where: { id: currentId },
-        select: { parentId: true, trashedAt: true },
-      });
-      if (!parent || parent.trashedAt) throw notFound("活动媒体不存在。");
-      currentId = parent.parentId;
     }
   }
 

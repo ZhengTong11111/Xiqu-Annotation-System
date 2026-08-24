@@ -55,6 +55,7 @@ import type {
   MediaAnalysisAssetList,
   MediaAudioTrackList,
   MediaAudioTrackRecord,
+  MediaAudioTrackPlaybackSession,
   ListMediaAnalysisAssetsOptions,
   ResourceEntry,
   ResourceListPage,
@@ -80,6 +81,7 @@ import type {
   AnnotationAudioPreference,
   UpsertResourcePermissionRequest,
 } from "@xiqu/shared";
+import { parseMediaAudioTrackPlaybackSession } from "@xiqu/shared";
 
 export type PlatformClientOptions = {
   baseUrl?: string;
@@ -338,6 +340,26 @@ export class PlatformClient {
       `/annotation-files/${resourceId}/audio-preference`,
       { method: "PUT", body: request },
     );
+  }
+
+  async createMediaAudioTrackPlaybackSession(
+    annotationFileId: string,
+    trackId: string,
+  ): Promise<MediaAudioTrackPlaybackSession> {
+    const value = await this.request<unknown>(
+      `/annotation-files/${annotationFileId}/audio-tracks/${trackId}/playback-session`,
+      { method: "POST" },
+    );
+    const session = parseMediaAudioTrackPlaybackSession(value);
+    if (!session) {
+      throw new PlatformApiError(
+        502,
+        "invalid_media_audio_playback_session",
+        "服务器返回了无法识别的音轨播放会话。",
+        null,
+      );
+    }
+    return session;
   }
 
   getAnnotationMediaAnalysis(resourceId: string) {

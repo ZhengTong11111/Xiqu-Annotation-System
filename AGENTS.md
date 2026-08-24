@@ -213,6 +213,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/platformMediaPlaybackSource.ts`
   - the only conversion from platform media DTO plus local runtime URL to native/VOD/unavailable playback source
   - VOD source construction must defer the no-store session request; never retain playauth in React/project state
+- `src/platform/platformMediaAudioPlaybackSource.ts`
+  - the only conversion from one persistent external audio-track record to an uploaded/VOD runtime source
+  - every load reissues and identity-checks a file-bound playback session; uploaded Range URLs are built with the current
+    access token only at load time, while PlayAuth and URLs must never enter ProjectData, drafts, preferences, or persisted state
 - `src/platform/platformMediaBindingPolicy.ts`
   - pure clean-session gate shared by current uploaded-media binding and future platform media sources
   - dirty/pending/transient/inline/merge/conflict/offline/error/remote-gap sessions must not replace the runtime media
@@ -535,12 +539,18 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/media/mediaPlaybackController.ts`
   - App-facing playback contract and latest-command ordering; all App media commands must pass through this boundary
   - expected source-switch/preview cancellation is not a user error, while play/seek failures are contained by the player UI
-- `packages/shared/src/mediaAudioTracks.ts` + `packages/shared/src/mediaAnalysisIdentity.ts`
+- `src/media/nativeAudioPlaybackBackend.ts` + `src/media/aliyunVodPlaybackBackend.ts`
+  - the external-audio-capable playback backends; HTMLAudio owns and removes its listeners, while Aliplayer validates an explicit
+    expected `video | audio` kind and retains rate/volume/mute across short-session refresh
+  - buffering is an event to the future composite owner. App and Timeline must never operate the hidden audio element or
+    supplier player directly, and dispose/source generation must make all late events inert
+- `packages/shared/src/mediaAudioTracks.ts` + `packages/shared/src/mediaAudioPlaybackSession.ts` +
+  `packages/shared/src/mediaAnalysisIdentity.ts`
   - strict platform contracts for a primary media's ordered audio-track set, shared annotation-file default preference,
-    bounded analysis status, and media-scoped analysis run identity
+    short-lived file-bound playback session, bounded analysis status, and media-scoped analysis run identity
   - embedded original audio and independent media resources are different source variants; original uses the primary media
     at zero offset, while every non-original track references a stable media resource. These DTOs never carry URLs,
-    PlayAuth, AccessKeys, provider responses, or ProjectData
+    AccessKeys, provider responses, or ProjectData; PlayAuth exists only in the strict no-store session variant
 - `apps/api/src/mediaAudioTrackService.ts`
   - the only backend business boundary for a primary media's ordered audio-track relations and an annotation file's shared
     default audio preference; persistent track records deliberately do not claim analysis status before a real media-scoped
@@ -553,6 +563,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - media analysis reuse identity contains only media resource, source fingerprint, algorithm version, and config hash.
     Annotation-file identity, source-selection mode, and track offset must never be added; offset only maps source time to
     project time
+- `apps/api/src/mediaAudioPlaybackSessionService.ts` + `apps/api/src/aliyunVodPlaybackSessionIssuer.ts`
+  - the only external-track playback authorization and shared VOD credential boundaries. Every session request revalidates the
+    active annotation, its current primary media, track ownership/enabled state, source audio type, and all required
+    `read + download` capabilities; relation creation never substitutes for playback-time authorization
+  - uploaded sessions return file identity only and continue through the protected Range route. Main video and audio VOD use
+    one issuer; missing License fails before PlayAuth, provider errors are normalized, and session payloads are never audited,
+    logged, cached, or persisted
 - `src/media/synchronizedPlaybackPolicy.ts` + `src/media/synchronizedPlaybackState.ts`
   - pure RA0 contracts for master-video/audio time mapping, drift classification, source-generation ordering, buffering,
     resync, failure, and disposal; they do not own media elements, timers, React state, or temporary playback sessions

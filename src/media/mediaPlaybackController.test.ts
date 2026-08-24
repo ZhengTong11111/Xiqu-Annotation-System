@@ -29,6 +29,8 @@ class DeferredPlaybackBackend implements MediaPlaybackBackend {
   }
   pause() { this.pauseCount += 1; }
   setPlaybackRate() {}
+  setVolume() {}
+  setMuted() {}
   dispose() {}
 }
 

@@ -18,6 +18,9 @@ export interface AliplayerInstance {
   getDuration(): number;
   getStatus?(): string;
   setSpeed(rate: number): void;
+  setVolume(volume: number): void;
+  mute(quiet?: boolean): unknown;
+  unMute(quiet?: boolean): unknown;
   dispose(): void;
 }
 

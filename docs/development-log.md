@@ -7278,3 +7278,57 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   浏览器验收。
 - 已完成：RA2 全部数据迁移工具、媒体级在线归属、worker/ACL/cache 切换和文档收口。待推进：RA3 组合播放
   backend、短时音频会话、视频主时钟同步和编辑器快速音轨选择器；RA3 不应再复制分析身份或恢复旧双轨来源。
+
+## 2026-08-24：RA3a 外部音轨播放会话与 backend 基础
+
+### 阶段拆分与合同边界
+
+- RA2b2 提交 `bac0b05` 后按真实播放器结构重写 `CLAUDE_WORK.md`。现有 `VideoPlayer` 只有一套主媒体 backend，
+  若同时接服务端授权、上传/VOD 来源、HTMLAudio、主从同步和 UI，故障时无法区分权限、凭据与时序。因此 RA3
+  拆为 RA3a 安全/媒体基础和 RA3b 组合 owner/UI；本轮没有改变编辑器可见声音。
+- shared 新增版本 1 `MediaAudioTrackPlaybackSession` 严格判别联合。上传变体只含 annotation、主媒体、track、
+  源音频、file、MIME、duration 稳定事实；VOD 变体只额外包含短期 PlayAuth、到期时间和公开 Web License。
+  parser 精确拒绝额外字段、坏 identity、视频 MIME、非规范 ISO、空或越界凭据，避免 DTO 演变为供应商响应袋。
+- `PlatformClient` 只接受严格 parser 结果；平台来源 adapter 在每次真实 load 时复核 session 的文件/媒体/音轨
+  identity。上传 URL 以当前 token 和 fileId 临时构造，VOD session 也延迟请求；二者均不进入 ProjectData、草稿、
+  undo、协作命令、默认偏好或长期 React 状态。
+
+### 服务端授权与 VOD 去重
+
+- 新增 no-store 播放会话路由与独立 `MediaAudioPlaybackSessionService`。每次请求按顺序检查标注 read/活动性与
+  当前主媒体绑定、主媒体活动性及 `read + download`、音轨仍属于当前主媒体且 enabled/non-original、源音频
+  活动性/类型及 `read + download`。关联是在管理时建立关系，不是永久播放授权；撤回源音频 download 后旧
+  track id 立即不能签发新会话。
+- 上传会话只返回底层不可变 `FileObject` identity，真实字节仍通过既有 `/api/files/:fileId/content` 实时鉴权和
+  Range 流。VOD 音频不返回临时播放 URL；服务端调用 gateway 产生 PlayAuth，路由在业务调用前设置
+  `Cache-Control: no-store`，所以成功与错误均不能被浏览器/代理复用。
+- 抽取唯一 `issueAliyunVodPlaybackSession()`，主视频和替换 VOD 音频共用 License、region、credential identity
+  及错误规范化。License 缺失时不先请求 PlayAuth；未知/SDK 错误不透传，已知错误只保留有限类别和 requestId。
+  `ResourceService` 中原有重复签发组装已删除，媒体创建所需元数据错误映射仍由原窄 helper 负责。
+- 媒体活动性查询从音轨管理 service 抽成共用 helper，删除重复祖先遍历与媒体类型查询；未引入新依赖，现有
+  Fastify、Prisma、HTMLMediaElement、Aliplayer 和 shared parser 已覆盖问题边界。
+
+### 播放 backend 与异步生命周期
+
+- 统一 `MediaPlaybackBackend/Controller` 增加 volume/mute，事件增加可选 buffering；原生媒体与 Aliplayer 都使用
+  一个音量归一化函数。主视频现有调用路径不变，新增能力为 RA3b 的“主视频静音但画面继续播放”提供接口。
+- 新增 `NativeAudioPlaybackBackend`，复用既有原生命令 backend，并集中安装/移除 metadata、time、play/pause、
+  waiting/stalled/canplay、ended、error 监听；dispose 会取消等待命令、静音事件来源、清空 src 并触发 load，
+  迟到事件不能复活旧来源。
+- 现有 Aliplayer backend 现在可显式校验预期 `video | audio`；凭据刷新保留时间、播放意图、倍率、音量和静音，
+  waiting/canplay 转为 buffering 事件，原有 generation 继续隔离旧 player 的迟到事件。依据阿里云官方 Web
+  Aliplayer API 复用 `setVolume/mute/unMute`，没有再造第二套 VOD 音频凭据刷新逻辑。
+
+### 测试、自审与待推进
+
+- shared/纯策略 `test:media-audio-tracks` 14/14；现有与新增媒体播放 `test:media-playback` 22/22；VOD issuer 与
+  真实 PostgreSQL/Fastify 音轨 API 4/4。集成测试覆盖上传/VOD 成功、no-store、original/disabled/错主媒体/
+  未绑定/归档拒绝，并用标注、主媒体、源音频三条直接 ACL 逐层证明授权缺一不可及撤权即时生效。
+- 完整 `test:api` 186/186；`npm run build` 完成 Prisma generate/schema guard、shared、document-model、Web 和
+  API。`git diff --check` 及 runtime 扫描通过，仅有既有 Web 主 chunk 体积提醒。
+- 自审确认没有第二套 VOD issuer、完整 URL/AccessKey/provider 响应持久字段、`any`、debug 输出、遗留媒体活动
+  helper 或无消费者运行时代码。上传内容端点仍会按当前 token 独立检查 download；本阶段无 UI，不伪造浏览器
+  验收，也未部署生产。
+- 已完成：RA3a 播放会话、三层 ACL、VOD 签发复用、HTMLAudio/VOD 外部 backend、客户端来源适配及文档。
+  待推进：RA3b 集中组合主从播放 owner、VideoPlayer 生命周期、快速音轨选择、共享默认偏好和真实 Chrome/
+  Safari 切换验收；RA3b 不得让 App/Timeline 直接操作第二媒体元素，也不能把当前试听选择写入标注 revision。

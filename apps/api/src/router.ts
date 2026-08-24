@@ -31,6 +31,7 @@ import type { HealthService } from "./healthService.js";
 import type { MediaUploadService } from "./mediaUploadService.js";
 import type { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
 import type { MediaAudioTrackService } from "./mediaAudioTrackService.js";
+import type { MediaAudioPlaybackSessionService } from "./mediaAudioPlaybackSessionService.js";
 import type { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
 import type { ObjectLifecycleService } from "./objectLifecycleService.js";
 import type { OperationalMetricsCollector } from "./operationalMetricsCollector.js";
@@ -97,6 +98,7 @@ export function registerApiRoutes(
   resources: ResourceService,
   mediaAnalysis: MediaAnalysisJobService,
   mediaAudioTracks: MediaAudioTrackService,
+  mediaAudioPlaybackSessions: MediaAudioPlaybackSessionService,
   annotationCommandCommits: AnnotationCommandCommitService,
   storage: Pick<ObjectStorage, "getObjectStream">,
   mediaUploads: MediaUploadService,
@@ -493,6 +495,20 @@ export function registerApiRoutes(
         request.params.resourceId,
         { defaultAudioTrackId },
       );
+    },
+  );
+
+  app.post<{ Params: { resourceId: string; trackId: string } }>(
+    "/api/annotation-files/:resourceId/audio-tracks/:trackId/playback-session",
+    async (request, reply) => {
+      // 成功凭据与权限/供应商错误都不应被浏览器或反向代理复用到后续切换请求。
+      reply.header("Cache-Control", "no-store");
+      const session = await mediaAudioPlaybackSessions.createSession(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        request.params.trackId,
+      );
+      return session;
     },
   );
 

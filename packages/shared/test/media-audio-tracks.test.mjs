@@ -5,6 +5,7 @@ import {
   MAX_MEDIA_AUDIO_TRACK_OFFSET_SECONDS,
   parseAnnotationAudioPreference,
   parseMediaAnalysisRunIdentity,
+  parseMediaAudioTrackPlaybackSession,
   parseMediaAudioTrackRecord,
   serializeMediaAnalysisRunIdentity,
 } from "../dist/index.js";
@@ -144,4 +145,37 @@ test("媒体级分析身份保留字段边界且不接受标注文件或偏移",
     ...first,
     offsetSeconds: 1.25,
   }), null);
+});
+
+test("音轨播放会话严格区分上传音频与短时 VOD 凭据", () => {
+  const base = {
+    version: 1,
+    annotationFileId: "annotation-file",
+    primaryMediaResourceId: "media-video",
+    trackId: "track-vocal",
+    audioMediaResourceId: "media-vocal",
+  };
+  const uploaded = {
+    ...base,
+    sourceType: "uploaded",
+    fileId: "file-vocal",
+    mimeType: "audio/mpeg",
+    duration: 120.5,
+  };
+  const vod = {
+    ...base,
+    sourceType: "aliyun_vod",
+    videoId: "vod-audio",
+    region: "cn-shanghai",
+    playAuth: "temporary-play-auth",
+    expiresAt: "2026-08-24T12:00:00.000Z",
+    webPlayerLicense: { domain: "localhost", key: "public-license-key" },
+  };
+  assert.deepEqual(parseMediaAudioTrackPlaybackSession(uploaded), uploaded);
+  assert.deepEqual(parseMediaAudioTrackPlaybackSession(vod), vod);
+  assert.equal(parseMediaAudioTrackPlaybackSession({ ...uploaded, url: "secret" }), null);
+  assert.equal(parseMediaAudioTrackPlaybackSession({ ...uploaded, mimeType: "video/mp4" }), null);
+  assert.equal(parseMediaAudioTrackPlaybackSession({ ...vod, expiresAt: "not-a-date" }), null);
+  assert.equal(parseMediaAudioTrackPlaybackSession({ ...vod, playAuth: "" }), null);
+  assert.equal(parseMediaAudioTrackPlaybackSession({ ...vod, annotationFileId: " bad " }), null);
 });

@@ -72,6 +72,7 @@ import {
   AliyunVodGatewayError,
   type AliyunVodProvider,
 } from "./aliyunVodGateway.js";
+import { issueAliyunVodPlaybackSession } from "./aliyunVodPlaybackSessionIssuer.js";
 import { ResourceAccessService } from "./resourceAccess.js";
 import { createOriginalMediaAudioTrack } from "./mediaAudioTrackService.js";
 import {
@@ -593,39 +594,21 @@ export class ResourceService {
     if (media.mediaFile.sourceType !== "aliyun_vod") {
       throw badRequest("服务器上传媒体继续使用受保护下载地址播放。");
     }
-    const provider = this.requireAliyunVodProvider();
-    if (!this.aliyunVodWebPlayerLicense) {
-      throw externalServiceUnavailable(
-        "当前服务未配置阿里云 Web 播放器 License，请联系管理员。",
-      );
-    }
     if (
       !media.mediaFile.aliyunVodVideoId ||
-      !media.mediaFile.aliyunVodRegion ||
-      media.mediaFile.aliyunVodRegion !== provider.region
+      !media.mediaFile.aliyunVodRegion
     ) {
-      throw externalServiceUnavailable("当前服务未配置该 VOD 媒资所在区域。");
+      throw externalMediaUnavailable("阿里云 VOD 媒资缺少稳定播放身份。");
     }
-    const credential = await this.callAliyunVod(
-      () => provider.gateway.createPlaybackCredential(
-        media.mediaFile!.aliyunVodVideoId!,
-      ),
-      "暂时无法创建阿里云 VOD 播放会话，请稍后重试。",
+    return issueAliyunVodPlaybackSession(
+      this.aliyunVod,
+      this.aliyunVodWebPlayerLicense,
+      {
+        mediaKind: media.mediaFile.mediaKind,
+        videoId: media.mediaFile.aliyunVodVideoId,
+        region: media.mediaFile.aliyunVodRegion,
+      },
     );
-    if (credential.status !== "Normal") {
-      throw externalMediaUnavailable("阿里云 VOD 媒资当前不可播放。", {
-        status: credential.status,
-      });
-    }
-    return {
-      sourceType: "aliyun_vod",
-      mediaKind: media.mediaFile.mediaKind,
-      videoId: credential.videoId,
-      region: media.mediaFile.aliyunVodRegion,
-      playAuth: credential.playAuth,
-      expiresAt: credential.expiresAt.toISOString(),
-      webPlayerLicense: this.aliyunVodWebPlayerLicense,
-    };
   }
 
   // 上传流开始前先拒绝无效目录和无权限请求，避免为必然失败的命令写入大文件。

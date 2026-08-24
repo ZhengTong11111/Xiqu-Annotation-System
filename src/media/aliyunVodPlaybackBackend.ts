@@ -9,6 +9,7 @@ import {
   MediaPlaybackCommandCancelledError,
   normalizePlaybackSnapshot,
   normalizePlaybackTime,
+  normalizePlaybackVolume,
   type MediaPlaybackBackend,
   type MediaPlaybackBackendEvents,
   type MediaPlaybackSnapshot,
@@ -23,6 +24,7 @@ const VOD_MIN_SESSION_LIFETIME_MS = 5_000;
 export type AliyunVodPlaybackBackendOptions = {
   containerId: string;
   expectedVideoId: string;
+  expectedMediaKind?: "video" | "audio";
   loadSession: () => Promise<AliyunVodPlaybackSession>;
   events: MediaPlaybackBackendEvents;
   loadFactory?: () => Promise<AliplayerConstructor>;
@@ -51,6 +53,8 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
   private pendingSeek: PendingSeek | null = null;
   private readyPromise: Promise<void>;
   private playbackRate = 1;
+  private volume = 0.5;
+  private muted = false;
   private lastPreparationError: Error | null = null;
   private snapshot: MediaPlaybackSnapshot = {
     ready: false,
@@ -124,6 +128,20 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     if (!Number.isFinite(rate) || rate <= 0) throw new Error("播放倍率必须是正数。");
     this.playbackRate = rate;
     if (this.player) this.player.setSpeed(rate);
+  }
+
+  setVolume(volume: number) {
+    this.assertActive();
+    this.volume = normalizePlaybackVolume(volume);
+    if (this.player) this.player.setVolume(this.volume);
+  }
+
+  setMuted(muted: boolean) {
+    this.assertActive();
+    this.muted = muted;
+    if (!this.player) return;
+    if (muted) this.player.mute(true);
+    else this.player.unMute(true);
   }
 
   dispose() {
@@ -231,6 +249,9 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
           this.player = readyPlayer;
           this.bindPlayerEvents(readyPlayer, generation);
           readyPlayer.setSpeed(this.playbackRate);
+          readyPlayer.setVolume(this.volume);
+          if (this.muted) readyPlayer.mute(true);
+          else readyPlayer.unMute(true);
           this.readPlayerSnapshot(readyPlayer, { ready: true });
           this.options.events.onReady(this.getSnapshot());
           finish("resolve");
@@ -282,6 +303,12 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
       this.readPlayerSnapshot(player, { paused: true, ended: true });
       this.options.events.onPlayStateChange(false);
       this.options.events.onTimeUpdate(this.getSnapshot());
+    });
+    player.on("waiting", () => {
+      if (this.isCurrentPlayer(player, generation)) this.options.events.onBufferingChange?.(true);
+    });
+    player.on("canplay", () => {
+      if (this.isCurrentPlayer(player, generation)) this.options.events.onBufferingChange?.(false);
     });
     player.on("error", () => {
       if (!this.isCurrentPlayer(player, generation)) return;
@@ -339,7 +366,7 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
   private validateSession(session: AliyunVodPlaybackSession) {
     if (
       session.sourceType !== "aliyun_vod" ||
-      session.mediaKind !== "video" ||
+      session.mediaKind !== (this.options.expectedMediaKind ?? "video") ||
       session.videoId !== this.options.expectedVideoId ||
       !session.playAuth ||
       !session.expiresAt ||

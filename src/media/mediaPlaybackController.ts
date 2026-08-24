@@ -18,6 +18,8 @@ export interface MediaPlaybackBackend {
   play(): Promise<void>;
   pause(): void;
   setPlaybackRate(rate: number): void;
+  setVolume(volume: number): void;
+  setMuted(muted: boolean): void;
   dispose(): void;
 }
 
@@ -25,6 +27,7 @@ export type MediaPlaybackBackendEvents = {
   onReady: (snapshot: MediaPlaybackSnapshot) => void;
   onTimeUpdate: (snapshot: MediaPlaybackSnapshot) => void;
   onPlayStateChange: (playing: boolean) => void;
+  onBufferingChange?: (buffering: boolean) => void;
   onError: (message: string) => void;
 };
 
@@ -34,6 +37,8 @@ export interface MediaPlaybackController {
   play(): Promise<void>;
   pause(): void;
   setPlaybackRate(rate: number): void;
+  setVolume(volume: number): void;
+  setMuted(muted: boolean): void;
 }
 
 export type MediaPlaybackSource =
@@ -104,6 +109,14 @@ export class LatestMediaPlaybackCommand {
     this.getBackend()?.setPlaybackRate(rate);
   }
 
+  setVolume(volume: number) {
+    this.getBackend()?.setVolume(volume);
+  }
+
+  setMuted(muted: boolean) {
+    this.getBackend()?.setMuted(muted);
+  }
+
   // 来源切换会让所有旧异步命令失效，随后由 owner dispose 对应 backend。
   invalidate() {
     this.generation += 1;
@@ -146,7 +159,26 @@ export function createSafeMediaPlaybackController(
         report(error);
       }
     },
+    setVolume: (volume) => {
+      try {
+        command.setVolume(volume);
+      } catch (error) {
+        report(error);
+      }
+    },
+    setMuted: (muted) => {
+      try {
+        command.setMuted(muted);
+      } catch (error) {
+        report(error);
+      }
+    },
   };
+}
+
+export function normalizePlaybackVolume(value: number) {
+  if (!Number.isFinite(value)) throw new Error("播放音量必须是有限数。");
+  return Math.min(1, Math.max(0, value));
 }
 
 // 所有 backend 都通过同一数值边界，避免 NaN/Infinity 污染时间轴状态。

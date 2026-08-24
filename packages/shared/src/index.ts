@@ -12,4 +12,5 @@ export * from "./mediaAnalysisComputation.js";
 export * from "./mediaAnalysisTileCodec.js";
 export * from "./mediaAnalysisTileBatchCodec.js";
 export * from "./mediaAudioTracks.js";
+export * from "./mediaAudioPlaybackSession.js";
 export * from "./mediaAnalysisIdentity.js";
