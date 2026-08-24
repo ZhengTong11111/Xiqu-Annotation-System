@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA1、RA2a 已完成
+> 文档状态：专项实施中，RA0-RA1、RA2a-RA2b1 已完成
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -17,7 +17,9 @@
   完成迁移并通过引用校验后必须清理旧归属。
 - **RA2a 已完成（2026-08-24）**：additive supersession migration、纯计划器和 super-admin-only
   dry-run/execute CLI 已建立；执行只标记 canonical/duplicate，保留全部 run、asset 和对象。
-- 下一阶段是 **RA2b 媒体级分析运行路径切换**。只有在 RA2a 计划无阻断并完成归并后，才能切换 service、
+- **RA2b1 已完成（2026-08-24）**：新增不含 annotation/mode/offset 的媒体 fingerprint，迁移计划已能跨旧偏移
+  归并并为 canonical 幂等回填。
+- 下一阶段是 **RA2b2 媒体级分析运行路径切换**。只有在迁移计划无阻断并完成归并后，才能切换 service、
   worker、route 与缓存身份并建立媒体级唯一门禁；不得先接播放器或长期保留双写。
 
 ## 1. 目标重新定义
@@ -667,7 +669,7 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 
 ### RA2：媒体级分析归属与迁移工具
 
-**状态：RA2a 已完成，RA2b 待推进（2026-08-24）**
+**状态：RA2a-RA2b1 已完成，RA2b2 待推进（2026-08-24）**
 
 **改动范围**
 
@@ -698,6 +700,17 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
   不在持锁事务中重复读取远程对象。
 - 专项 7/7、分析 34/34、备份 28/28、完整 API 179/179 和完整 build 通过。本轮没有切换在线分析行为、UI 或
   前端缓存，也未部署或在任何生产数据库执行 CLI。
+
+**RA2b1 实际完成**
+
+- 审查发现旧 `sourceFingerprint` 含 `offsetSeconds`，RA2a 只能归并同偏移 run。新增 nullable
+  `mediaFingerprint` 与纯 `createMediaAnalysisSourceFingerprint()`：uploaded 绑定资源/file/checksum/size，VOD
+  绑定资源/region/videoId/duration，函数没有 annotation、mode 或 offset 参数。
+- 迁移计划改用实时媒体内容 fingerprint 分组，execute 同时为未 superseded canonical 回填新字段；旧 source
+  fingerprint 继续保留审计。缺 checksum/不完整 VOD 身份 fail closed。
+- 不同旧 offset 的集成用例证明只形成一个 canonical；专项 10/10、分析 34/34、完整 API 182/182 与 build
+  通过。在线旧 resolver 暂不切换，否则会让当前 annotation-scoped 查询丢失历史 run；RA2b2 将随查询/创建一起
+  原子切换。
 
 ### RA3：组合播放器与快速音轨切换
 

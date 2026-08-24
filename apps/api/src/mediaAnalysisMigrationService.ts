@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { stableJsonStringify } from "./annotationOperationIdempotency.js";
 import { digestReadable } from "./backup/checksum.js";
+import { createMediaAnalysisSourceFingerprint } from "./mediaAnalysisSourceFingerprint.js";
 import type { ObjectStorage } from "./objectStorage.js";
 import {
   buildMediaAnalysisMigrationPlan,
@@ -23,6 +24,16 @@ const migrationRunInclude = {
   },
   jobs: {
     select: { status: true },
+  },
+  sourceMedia: {
+    select: {
+      resourceId: true,
+      sourceType: true,
+      duration: true,
+      aliyunVodVideoId: true,
+      aliyunVodRegion: true,
+      file: { select: { id: true, checksum: true, size: true } },
+    },
   },
 } satisfies Prisma.MediaAnalysisRunInclude;
 
@@ -121,6 +132,16 @@ export class MediaAnalysisMigrationService {
         }
         markedRunCount += updated.count;
       }
+      for (const group of candidate.plan.groups) {
+        for (const runId of group.backfillRunIds) {
+          const mediaFingerprint = candidate.mediaFingerprintsByRunId.get(runId);
+          if (!mediaFingerprint) throw new Error("媒体 fingerprint 候选缺失，归并已回滚。");
+          await transaction.mediaAnalysisRun.update({
+            where: { id: runId },
+            data: { mediaFingerprint },
+          });
+        }
+      }
       await transaction.auditLog.create({
         data: {
           action: "media_analysis_migration_apply",
@@ -143,6 +164,7 @@ export class MediaAnalysisMigrationService {
     return {
       plan: buildMediaAnalysisMigrationPlan(facts),
       databaseFingerprint: createDatabaseStateFingerprint(rows),
+      mediaFingerprintsByRunId: new Map(facts.map((fact) => [fact.id, fact.sourceFingerprint])),
     };
   }
 
@@ -159,6 +181,23 @@ export class MediaAnalysisMigrationService {
   }
 
   private async buildRunFact(row: MigrationRunRow): Promise<MediaAnalysisMigrationRunFact> {
+    const mediaFingerprint = createMediaAnalysisSourceFingerprint(
+      row.sourceMedia.sourceType === "uploaded"
+        ? {
+            sourceType: "uploaded",
+            mediaResourceId: row.sourceMedia.resourceId,
+            fileId: row.sourceMedia.file?.id ?? null,
+            checksum: row.sourceMedia.file?.checksum ?? null,
+            size: row.sourceMedia.file?.size ?? null,
+          }
+        : {
+            sourceType: "aliyun_vod",
+            mediaResourceId: row.sourceMedia.resourceId,
+            region: row.sourceMedia.aliyunVodRegion,
+            videoId: row.sourceMedia.aliyunVodVideoId,
+            duration: row.sourceMedia.duration,
+          },
+    );
     const databaseAssetFacts = row.assets.map((asset) => ({
       id: asset.id,
       kind: asset.kind,
@@ -192,7 +231,8 @@ export class MediaAnalysisMigrationService {
     return {
       id: row.id,
       sourceMediaResourceId: row.sourceMediaResourceId,
-      sourceFingerprint: row.sourceFingerprint,
+      sourceFingerprint: mediaFingerprint ?? `missing:${row.id}`,
+      persistedMediaFingerprint: row.mediaFingerprint,
       algorithmVersion: row.algorithmVersion,
       configHash: row.configHash,
       configFingerprint: createHash("sha256")
@@ -219,6 +259,7 @@ function createDatabaseStateFingerprint(rows: readonly MigrationRunRow[]) {
     id: row.id,
     sourceMediaResourceId: row.sourceMediaResourceId,
     sourceFingerprint: row.sourceFingerprint,
+    mediaFingerprint: row.mediaFingerprint,
     algorithmVersion: row.algorithmVersion,
     configHash: row.configHash,
     config: row.config,
@@ -230,6 +271,18 @@ function createDatabaseStateFingerprint(rows: readonly MigrationRunRow[]) {
     supersededByRunId: row.supersededByRunId,
     supersededAt: row.supersededAt?.toISOString() ?? null,
     supersededBy: row.supersededBy,
+    sourceMedia: {
+      resourceId: row.sourceMedia.resourceId,
+      sourceType: row.sourceMedia.sourceType,
+      duration: row.sourceMedia.duration,
+      aliyunVodVideoId: row.sourceMedia.aliyunVodVideoId,
+      aliyunVodRegion: row.sourceMedia.aliyunVodRegion,
+      file: row.sourceMedia.file && {
+        id: row.sourceMedia.file.id,
+        checksum: row.sourceMedia.file.checksum,
+        size: row.sourceMedia.file.size.toString(),
+      },
+    },
     jobs: row.jobs.map(({ status }) => status).sort(),
     assets: row.assets.map((asset) => ({
       id: asset.id,

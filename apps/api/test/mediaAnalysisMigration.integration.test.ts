@@ -42,6 +42,7 @@ test("媒体分析归并 dry-run/execute 可重验、幂等且不删除历史事
       annotationFileId: annotations[1]!.resourceId,
       mediaId,
       creatorId: admin.id,
+      offsetSeconds: 3.25,
     });
     const service = new MediaAnalysisMigrationService(prisma, storage);
     const dryRun = await service.dryRun();
@@ -62,6 +63,7 @@ test("媒体分析归并 dry-run/execute 可重验、幂等且不删除历史事
       orderBy: { id: "asc" },
     });
     assert.equal(rows.filter((row) => row.supersededByRunId !== null).length, 1);
+    assert.equal(rows.filter((row) => row.mediaFingerprint !== null).length, 1);
     assert.equal(await prisma.mediaAnalysisAsset.count(), 0);
     assert.equal(await prisma.auditLog.count({
       where: { action: "media_analysis_migration_apply" },
@@ -190,6 +192,7 @@ async function createMediaAndAnnotations(
         create: {
           sourceType: "aliyun_vod",
           mediaKind: "audio",
+          duration: 120,
           aliyunVodVideoId: "00000000000000000000000000000000",
           aliyunVodRegion: "cn-shanghai",
         },
@@ -222,6 +225,7 @@ function createFailedRun(
     mediaId: string;
     creatorId: string;
     fingerprint?: string;
+    offsetSeconds?: number;
   },
 ) {
   return prisma.mediaAnalysisRun.create({
@@ -230,6 +234,7 @@ function createFailedRun(
       sourceMediaResourceId: input.mediaId,
       sourceMode: "auto",
       sourceFingerprint: input.fingerprint ?? "shared-source",
+      sourceOffsetSeconds: input.offsetSeconds ?? 0,
       algorithmVersion: "analysis-v1",
       configHash: "config-v1",
       config: { sampleRate: 16000 },

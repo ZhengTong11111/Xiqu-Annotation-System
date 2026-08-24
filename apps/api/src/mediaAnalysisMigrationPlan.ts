@@ -5,6 +5,7 @@ export type MediaAnalysisMigrationRunFact = {
   id: string;
   sourceMediaResourceId: string;
   sourceFingerprint: string;
+  persistedMediaFingerprint: string | null;
   algorithmVersion: string;
   configHash: string;
   configFingerprint: string;
@@ -23,12 +24,14 @@ export type MediaAnalysisMigrationBlockCode =
   | "active_job"
   | "asset_validation_failed"
   | "config_mismatch"
+  | "media_fingerprint_missing"
   | "invalid_supersession";
 
 export type MediaAnalysisMigrationGroupPlan = {
   identity: string;
   canonicalRunId: string | null;
   duplicateRunIds: string[];
+  backfillRunIds: string[];
   blockCodes: MediaAnalysisMigrationBlockCode[];
 };
 
@@ -87,8 +90,6 @@ export function buildMediaAnalysisMigrationPlan(
   for (const [identity, allRuns] of [...grouped.entries()].sort(([left], [right]) =>
     left.localeCompare(right))) {
     const activeRuns = allRuns.filter((fact) => fact.supersededByRunId === null);
-    if (allRuns.length < 2 && !allRuns.some((fact) => invalidSupersessionIds.has(fact.id))) continue;
-
     const blockCodes = new Set<MediaAnalysisMigrationBlockCode>();
     if (allRuns.some((fact) => invalidSupersessionIds.has(fact.id))) {
       blockCodes.add("invalid_supersession");
@@ -102,12 +103,19 @@ export function buildMediaAnalysisMigrationPlan(
     if (activeRuns.some((fact) => fact.assetValidation === "invalid")) {
       blockCodes.add("asset_validation_failed");
     }
+    if (activeRuns.some((fact) => !/^[a-f0-9]{64}$/u.test(fact.sourceFingerprint))) {
+      blockCodes.add("media_fingerprint_missing");
+    }
 
     const sorted = [...activeRuns].sort(compareCanonicalCandidates);
+    const canonical = sorted[0] ?? null;
     groups.push({
       identity: createHash("sha256").update(identity).digest("hex"),
-      canonicalRunId: sorted[0]?.id ?? null,
+      canonicalRunId: canonical?.id ?? null,
       duplicateRunIds: sorted.slice(1).map((fact) => fact.id).sort(),
+      backfillRunIds: canonical && canonical.persistedMediaFingerprint !== canonical.sourceFingerprint
+        ? [canonical.id]
+        : [],
       blockCodes: [...blockCodes].sort(),
     });
   }
@@ -125,7 +133,8 @@ export function buildMediaAnalysisMigrationPlan(
     runCount: facts.length,
     duplicateGroupCount: groups.filter((group) => group.duplicateRunIds.length > 0).length,
     actionableGroupCount: groups.filter((group) =>
-      group.duplicateRunIds.length > 0 && group.blockCodes.length === 0).length,
+      (group.duplicateRunIds.length > 0 || group.backfillRunIds.length > 0) &&
+      group.blockCodes.length === 0).length,
     blockedGroupCount: groups.filter((group) => group.blockCodes.length > 0).length,
     groups,
   };

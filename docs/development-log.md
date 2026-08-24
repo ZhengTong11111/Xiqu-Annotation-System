@@ -7211,3 +7211,22 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 已完成：RA2a additive schema、迁移计划/服务/CLI、审计、测试和 AGENTS/专项/总路线图回写。
 - 待推进：RA2b 必须先消费 RA2a 无阻断计划，再把 run 归属、worker、asset ACL routes 和前端缓存 identity 切到
   media scope；legacy annotation/source mode/offset 字段先 nullable 保留审计，RA6 再删除。尚未部署或在生产执行。
+
+## 2026-08-24：RA2b1 无偏移媒体 fingerprint 与跨偏移归并
+
+- RA2a 提交 `f89c7a7` 后复核 `mediaAnalysisJobService`，发现旧 `createSourceFingerprint(media,
+  offsetSeconds)` 把偏移写进 hash。若直接沿用，调整音轨 offset 会产生新 run，且 RA2a 无法归并不同偏移的同一
+  内容。本轮据此重写 `CLAUDE_WORK.md`，先修数据 identity，再做在线切换。
+- 新增 nullable `MediaAnalysisRun.mediaFingerprint`、SHA-256 格式 check 和 identity 索引；migration
+  `20260824030000_media_analysis_media_fingerprint` 不回填、不加 unique、不改旧列，已有 API 行为不受影响。
+- 新增唯一纯函数：uploaded 必须有 media resource、file id、完整 checksum 和 size；VOD 必须有 resource、region、
+  video id、有限 duration。函数签名没有 annotation file、source mode 或 offset，缺少稳定事实返回 null。
+- 迁移 service include 实际 source media，用新 fingerprint 分组；plan 增加 canonical backfill，execute 在同一短事务
+  中同时回填 canonical 与标记 duplicate。数据库 fingerprint 也包含 media/source 内容事实，dry-run 后内容变化会
+  拒绝执行；缺 fingerprint 形成稳定阻断项。
+- 集成测试让两个旧 run 使用不同 `sourceOffsetSeconds`，确认只选择一个 canonical 且仅 canonical 回填新字段；
+  纯函数覆盖稳定、VOD 内容变化和缺字段 fail closed。专项 10/10、现有分析 34/34、完整 API 182/182、完整 build
+  通过，仅有既有 Web chunk 提醒。
+- 自审后没有提前替换在线旧 fingerprint helper：单独替换会使现行 annotation-scoped 查询暂时找不到历史 run。
+  RA2b2 必须把新 fingerprint、媒体级查询/创建、worker 和 route/cache 一起切换，再删除旧含 offset helper。
+- 已完成：RA2b1 schema、纯 identity、跨偏移迁移回填、测试和文档。待推进 RA2b2；未部署生产。

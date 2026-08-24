@@ -55,7 +55,7 @@
     "test:media-playback": "node --import tsx --test src/media/mediaPlaybackController.test.ts src/media/nativeMediaPlaybackBackend.test.ts src/media/aliplayerSdk.test.ts src/media/aliyunVodPlaybackBackend.test.ts src/platform/platformMediaPlaybackSource.test.ts",
     "test:media-audio-tracks": "npm run build:shared && node --test packages/shared/test/media-audio-tracks.test.mjs && node --import tsx --test src/media/synchronizedPlaybackPolicy.test.ts src/media/synchronizedPlaybackState.test.ts",
     "test:media-audio-track-api": "npm run build:shared && npm run db:generate && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/mediaAudioTrack.integration.test.ts",
-    "test:media-analysis-migration": "npm run build:shared && npm run db:generate && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/mediaAnalysisMigrationPlan.test.ts apps/api/test/mediaAnalysisMigration.integration.test.ts",
+    "test:media-analysis-migration": "npm run build:shared && npm run db:generate && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/mediaAnalysisSourceFingerprint.test.ts apps/api/test/mediaAnalysisMigrationPlan.test.ts apps/api/test/mediaAnalysisMigration.integration.test.ts",
     "media-analysis:migrate": "tsx apps/api/src/mediaAnalysisMigrationCli.ts",
     "test:local-media-analysis": "node --import tsx --test src/utils/localMediaAnalysis.test.ts",
     "test:runtime-uuid": "node --import tsx --test src/utils/runtimeUuid.test.ts",

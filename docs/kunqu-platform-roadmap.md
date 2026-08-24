@@ -581,6 +581,11 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   对象。专项 7/7、分析 34/34、备份 28/28、完整 API 179/179 与完整构建通过。下一步 RA2b 在实际归并无阻断后
   才切换媒体级 run/service/worker/routes/cache，并建立最终唯一门禁。
 
+  RA2b1 同日修正历史 fingerprint 含 offset 的关键偏差：新增内容级 `mediaFingerprint`，uploaded 使用稳定文件
+  checksum/size，VOD 使用稳定 provider 身份，均不接受 annotation、mode 或 offset。归并计划现在可跨旧偏移
+  选择 canonical 并幂等回填；专项 10/10、分析 34/34、完整 API 182/182 与构建通过。RA2b2 才同步切换在线
+  查询/创建和删除旧含 offset helper，避免半切换导致历史结果暂时消失。
+
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入
 Development Log。任何阶段不得为追求“能播放”而牺牲时间轴的精确时间语义。

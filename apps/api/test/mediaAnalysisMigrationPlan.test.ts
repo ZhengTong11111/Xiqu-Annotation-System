@@ -14,7 +14,8 @@ function fact(
   return {
     id,
     sourceMediaResourceId: "media-1",
-    sourceFingerprint: "fingerprint-1",
+    sourceFingerprint: "1".repeat(64),
+    persistedMediaFingerprint: "1".repeat(64),
     algorithmVersion: "v1",
     configHash: "config-1",
     configFingerprint: "payload-1",
@@ -80,6 +81,7 @@ test("已完成的单层归并再次规划时保持幂等且没有可执行组",
   assert.equal(plan.actionableGroupCount, 0);
   assert.equal(plan.blockedGroupCount, 0);
   assert.deepEqual(plan.groups[0]?.duplicateRunIds, []);
+  assert.deepEqual(plan.groups[0]?.backfillRunIds, []);
 });
 
 test("候选或资产事实变化必然改变计划 fingerprint", () => {

@@ -157,6 +157,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     immutable object checksums, and recording reversible canonical/superseded relationships
   - dry-run fingerprints the complete bounded plan; execute is super-admin-only, rechecks database facts under advisory and row
     locks, writes all groups atomically, and never deletes or reparents assets. Online analysis routes and workers must not call it
+- `apps/api/src/mediaAnalysisSourceFingerprint.ts`
+  - the only media-content fingerprint boundary for media-scoped analysis; uploaded identity requires stable file checksum/size,
+    VOD identity requires region/video id/duration, and annotation id, selection mode, and track offset have no input position
 - `apps/api/src/mediaAnalysisWorkerService.ts` + `apps/api/src/mediaAnalysisWorkerRuntime.ts`
   - independent database claim/heartbeat/stale-recovery worker; normal shutdown removes partial assets and requeues the job
   - staged/final object compensation failures must become stable failed states and must never be silently swallowed
