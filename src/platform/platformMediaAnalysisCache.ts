@@ -8,7 +8,7 @@ const DEFAULT_MAX_ASSETS = 2_000;
 
 export type PlatformMediaAnalysisCacheIdentity = {
   userId: string;
-  annotationFileId: string;
+  mediaResourceId: string;
   runId: string;
   assetId: string;
   size: number;
@@ -60,7 +60,7 @@ type CacheLimits = {
 export function getPlatformMediaAnalysisCacheKey(identity: PlatformMediaAnalysisCacheIdentity) {
   return [
     identity.userId,
-    identity.annotationFileId,
+    identity.mediaResourceId,
     identity.runId,
     identity.assetId,
     String(identity.size),

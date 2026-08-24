@@ -89,6 +89,7 @@ test("媒体分析 worker 原子 claim、流式生成资产并可恢复陈旧任
         sourceMediaResourceId: fixture.mediaResourceId,
         sourceMode: "media_override",
         sourceFingerprint: "stale-source",
+        mediaFingerprint: "d".repeat(64),
         sourceOffsetSeconds: 0,
         algorithmVersion: "xiqu-media-analysis-v1",
         configHash: "stale-config",
@@ -114,6 +115,52 @@ test("媒体分析 worker 原子 claim、流式生成资产并可恢复陈旧任
       (await prisma.mediaAnalysisRun.findUniqueOrThrow({ where: { id: staleRun.id } })).status,
       "queued",
     );
+    await prisma.processingJob.updateMany({
+      where: { analysisRunId: staleRun.id },
+      data: { status: "failed", finishedAt: new Date() },
+    });
+    await prisma.mediaAnalysisRun.update({
+      where: { id: staleRun.id },
+      data: { status: "failed" },
+    });
+
+    // superseded run 是只读迁移事实；即使历史数据残留 running job，也不得恢复或再次领取。
+    const supersededRun = await prisma.mediaAnalysisRun.create({
+      data: {
+        annotationFileId: fixture.annotationFileId,
+        sourceMediaResourceId: fixture.mediaResourceId,
+        sourceMode: "media_override",
+        sourceFingerprint: "superseded-source",
+        mediaFingerprint: "b".repeat(64),
+        sourceOffsetSeconds: 0,
+        algorithmVersion: "xiqu-media-analysis-v1",
+        configHash: "superseded-config",
+        config: {},
+        status: "running",
+        createdBy: fixture.userId,
+        supersededByRunId: fixture.runId,
+        supersededAt: new Date(),
+        supersededBy: fixture.userId,
+      },
+    });
+    const supersededJob = await prisma.processingJob.create({
+      data: {
+        type: "media_analysis",
+        status: "running",
+        resourceId: fixture.annotationFileId,
+        createdBy: fixture.userId,
+        analysisRunId: supersededRun.id,
+        claimedBy: "retired-worker",
+        claimedAt: new Date(Date.now() - 10 * 60_000),
+        heartbeatAt: new Date(Date.now() - 10 * 60_000),
+      },
+    });
+    assert.equal(await service.recoverStaleJobs(), 0);
+    assert.equal(
+      (await prisma.processingJob.findUniqueOrThrow({ where: { id: supersededJob.id } })).status,
+      "running",
+    );
+    assert.equal(await service.claimNext("worker-after-migration"), null);
   } finally {
     await prisma.$disconnect();
     await pool.end();
@@ -245,6 +292,7 @@ async function createWorkerFixture(
       sourceMediaResourceId: mediaResourceId,
       sourceMode: "media_override",
       sourceFingerprint: "worker-source",
+      mediaFingerprint: "a".repeat(64),
       sourceOffsetSeconds: 0,
       algorithmVersion: "xiqu-media-analysis-v1",
       configHash: "worker-config",

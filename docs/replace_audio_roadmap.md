@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA1、RA2a-RA2b1 已完成
+> 文档状态：专项实施中，RA0-RA2 已完成
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -12,15 +12,16 @@
 - **RA1 已完成（2026-08-24）**：Prisma 已新增有序 `MediaAudioTrack` 和标注文件
   `AnnotationAudioPreference`，上传媒体、VOD 媒体及媒体复制均在同一事务建立唯一原声；严格 CRUD、重排、
   默认值、ACL、审计和类型安全客户端边界已通过真实 PostgreSQL 集成测试。
-- RA0-RA1 没有修改现有播放器或分析运行路径，因此生产仍使用
-  `AnnotationAnalysisAudioSetting + annotationFileId-scoped MediaAnalysisRun`。这不是最终双轨并存设计，RA2
-  完成迁移并通过引用校验后必须清理旧归属。
+- `AnnotationAnalysisAudioSetting` 暂时继续提供当前文件的分析来源与偏移上下文；在线 canonical
+  `MediaAnalysisRun` 已按媒体内容、算法和配置复用，不再按标注文件或偏移重复创建。
 - **RA2a 已完成（2026-08-24）**：additive supersession migration、纯计划器和 super-admin-only
   dry-run/execute CLI 已建立；执行只标记 canonical/duplicate，保留全部 run、asset 和对象。
 - **RA2b1 已完成（2026-08-24）**：新增不含 annotation/mode/offset 的媒体 fingerprint，迁移计划已能跨旧偏移
   归并并为 canonical 幂等回填。
-- 下一阶段是 **RA2b2 媒体级分析运行路径切换**。只有在迁移计划无阻断并完成归并后，才能切换 service、
-  worker、route 与缓存身份并建立媒体级唯一门禁；不得先接播放器或长期保留双写。
+- **RA2b2 已完成（2026-08-24）**：service、worker、asset ACL adapter 与 IndexedDB 缓存已切到媒体级
+  canonical identity，最终 migration 以 fail-closed 前置检查保护两阶段生产迁移。
+- 下一阶段是 **RA3 组合播放器与快速音轨切换**。本轮应消费现有音轨 API 和同步状态机，不再复制分析来源或
+  另建一套媒体身份。
 
 ## 1. 目标重新定义
 
@@ -669,7 +670,7 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 
 ### RA2：媒体级分析归属与迁移工具
 
-**状态：RA2a-RA2b1 已完成，RA2b2 待推进（2026-08-24）**
+**状态：已完成（RA2a、RA2b1、RA2b2，2026-08-24）**
 
 **改动范围**
 
@@ -712,6 +713,27 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
   通过。在线旧 resolver 暂不切换，否则会让当前 annotation-scoped 查询丢失历史 run；RA2b2 将随查询/创建一起
   原子切换。
 
+**RA2b2 实际完成**
+
+- migration `20260824040000_media_scoped_analysis_runs` 在改约束前检查全部 active canonical 已回填媒体
+  fingerprint、同一媒体 identity 无重复且没有 active superseded job；不满足即拒绝部署。旧 annotation/mode/
+  offset 列改为 nullable 审计字段，annotation 删除改为 `SET NULL`，媒体外键继续是 run 的真实 cascade 归属；
+  partial unique 只约束未 superseded canonical。
+- 在线 status/create 改按 source media、媒体 fingerprint、算法和 config 查询；create 在媒体 identity advisory
+  lock 内重读并复用跨标注文件的 succeeded/active run。offset 和当前 mode 只从请求标注上下文映射到 DTO，改变
+  offset 不再创建 run；旧含 offset fingerprint helper 已删除。
+- 旧 annotation route 暂时只充当 ACL adapter：每次资产读取均复核标注文件及其当前解析媒体的
+  `read + download`，并只接受该媒体 fingerprint 下的 canonical succeeded run。切换来源后不能借旧 run/asset id
+  继续读取，批量接口仍全有或全无且不泄露外部资产存在性。
+- worker 的 claim 和 stale recovery 都排除 superseded run；首次发起 annotation 被删除只会清空 legacy 外键，
+  不删除媒体级 run/asset。IndexedDB key 改为账号、媒体、run、asset、size；网络读取仍保留 annotation ACL
+  上下文，旧缓存自然失效并由有界 LRU 清理。
+- 专项迁移 10/10、媒体分析两段共 35/35、备份 28/28、完整 API 183/183 与完整 build 通过；自审扫描未发现旧
+  annotation unique、含 offset fingerprint helper、在线 superseded 查询或 annotation-scoped cache key。没有 UI
+  行为变化，未做浏览器验收、生产 CLI 或生产部署。
+- 生产必须分两次 release：先部署 RA2a/b1 additive 版本并停止 worker，执行 dry-run、消除阻断、以精确 plan
+  fingerprint 执行归并；确认成功后才能部署 RA2b2 migration。不得在一轮 `migrate deploy` 中绕过 CLI。
+
 ### RA3：组合播放器与快速音轨切换
 
 **改动范围**
@@ -736,7 +758,7 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 **改动范围**
 
 - 音轨维度的 `usePlatformMediaAnalysis`；
-- 媒体级缓存 key；
+- 当前分析音轨对 RA2 既有媒体级缓存与请求会话的驱动；
 - 跟随监听/固定分析音轨状态；
 - 未分析状态与发起分析入口；
 - 旧频谱音频选择 UI 清理。

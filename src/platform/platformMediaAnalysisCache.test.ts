@@ -7,7 +7,7 @@ import {
   type PlatformMediaAnalysisCacheIdentity,
 } from "./platformMediaAnalysisCache.js";
 
-test("分析瓦片持久缓存按账号、文件和 run 隔离", async () => {
+test("分析瓦片持久缓存按账号、媒体和 run 隔离", async () => {
   const databaseName = `media-analysis-cache-isolation-${Date.now()}`;
   const cache = createPlatformMediaAnalysisPersistentCache(databaseName, {
     maxBytes: 100,
@@ -18,6 +18,7 @@ test("分析瓦片持久缓存按账号、文件和 run 隔离", async () => {
     await cache.put(identity, Uint8Array.from([1, 2, 3]));
     assert.deepEqual([...await cache.get(identity) ?? []], [1, 2, 3]);
     assert.equal(await cache.get({ ...identity, userId: "user-2" }), undefined);
+    assert.equal(await cache.get({ ...identity, mediaResourceId: "media-2" }), undefined);
     assert.equal(await cache.get({ ...identity, runId: "run-2" }), undefined);
   } finally {
     await cache.close();
@@ -52,7 +53,7 @@ test("分析瓦片持久缓存按最近访问顺序清理字节超限记录", as
 function createIdentity(assetId = "asset-1", size = 3): PlatformMediaAnalysisCacheIdentity {
   return {
     userId: "user-1",
-    annotationFileId: "file-1",
+    mediaResourceId: "media-1",
     runId: "run-1",
     assetId,
     size,

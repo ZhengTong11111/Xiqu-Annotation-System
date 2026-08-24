@@ -127,6 +127,7 @@ test("相同资产的并发窗口复用一个批量请求并共同写入缓存",
   const options = {
     currentUserId: "user-1",
     annotationFileId: "file-1",
+    mediaResourceId: "media-1",
     runId: "run-1",
     descriptors: [descriptor],
     client,
@@ -172,6 +173,7 @@ test("不同分析序列按有界并发逐批回调", async () => {
   const result = await loadAnalysisAssets({
     currentUserId: "user-1",
     annotationFileId: "file-1",
+    mediaResourceId: "media-1",
     runId: "run-1",
     descriptors,
     client,

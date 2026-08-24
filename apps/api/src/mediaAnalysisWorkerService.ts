@@ -41,6 +41,9 @@ export class MediaAnalysisWorkerService {
       where: {
         type: "media_analysis",
         status: "running",
+        analysisRunId: { not: null },
+        // 历史 superseded run 只保留迁移证据，不能被恢复逻辑重新放回在线队列。
+        analysisRun: { supersededByRunId: null },
         OR: [
           { heartbeatAt: { lt: staleBefore } },
           { heartbeatAt: null, claimedAt: { lt: staleBefore } },
@@ -74,7 +77,12 @@ export class MediaAnalysisWorkerService {
   async claimNext(workerId: string) {
     return this.prisma.$transaction(async (transaction) => {
       const candidate = await transaction.processingJob.findFirst({
-        where: { type: "media_analysis", status: "queued", analysisRunId: { not: null } },
+        where: {
+          type: "media_analysis",
+          status: "queued",
+          analysisRunId: { not: null },
+          analysisRun: { supersededByRunId: null },
+        },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         select: { id: true },
       });

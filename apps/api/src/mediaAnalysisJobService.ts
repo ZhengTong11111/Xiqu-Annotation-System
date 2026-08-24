@@ -29,6 +29,7 @@ import {
   MEDIA_ANALYSIS_TILE_DURATION_SECONDS,
   MEDIA_ANALYSIS_WAVEFORM_LEVELS,
 } from "./mediaAnalysisComputation.js";
+import { createMediaAnalysisSourceFingerprint } from "./mediaAnalysisSourceFingerprint.js";
 
 const MAX_ANALYSIS_AUDIO_OFFSET_SECONDS = 24 * 60 * 60;
 export const MEDIA_ANALYSIS_ALGORITHM_VERSION = "xiqu-media-analysis-v1";
@@ -79,7 +80,7 @@ type ResolvedAnalysisSource = {
   mode: AnalysisAudioMode;
   offsetSeconds: number;
   media: AnalysisMediaRow;
-  fingerprint: string;
+  mediaFingerprint: string;
 };
 
 type AnalysisContext = {
@@ -130,9 +131,11 @@ export class MediaAnalysisJobService {
     const currentRun = context.source.status === "ready"
       ? await this.prisma.mediaAnalysisRun.findFirst({
           where: {
-            annotationFileId,
-            sourceFingerprint: context.source.value.fingerprint,
+            sourceMediaResourceId: context.source.value.media.resourceId,
+            mediaFingerprint: context.source.value.mediaFingerprint,
             algorithmVersion: MEDIA_ANALYSIS_ALGORITHM_VERSION,
+            configHash: MEDIA_ANALYSIS_CONFIG_HASH,
+            supersededByRunId: null,
           },
           // 同一来源的最新 run 作为当前展示对象；每个 run DTO 自带粒度，历史 30 秒 run 不会被误拼成 10 秒。
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -141,7 +144,13 @@ export class MediaAnalysisJobService {
     return {
       setting: context.setting,
       resolvedSource: toResolvedSourceDto(context),
-      currentRun: currentRun ? await this.mapRun(currentRun) : null,
+      currentRun: currentRun && context.source.status === "ready"
+        ? await this.mapRun(
+            currentRun,
+            context.source.value.mode,
+            context.source.value.offsetSeconds,
+          )
+        : null,
     };
   }
 
@@ -207,14 +216,18 @@ export class MediaAnalysisJobService {
     const source = requireReadySource(context);
 
     const run = await this.prisma.$transaction(async (transaction) => {
-      const existing = await transaction.mediaAnalysisRun.findUnique({
+      // 同一媒体 identity 的并发请求先串行化，再读取 partial-unique 保护的 canonical run。
+      await transaction.$queryRaw`
+        SELECT 1::integer AS locked
+        FROM pg_advisory_xact_lock(hashtext(${`xiqu:media-analysis:${source.media.resourceId}:${source.mediaFingerprint}:${MEDIA_ANALYSIS_CONFIG_HASH}`}))
+      `;
+      const existing = await transaction.mediaAnalysisRun.findFirst({
         where: {
-          annotationFileId_sourceFingerprint_algorithmVersion_configHash: {
-            annotationFileId,
-            sourceFingerprint: source.fingerprint,
-            algorithmVersion: MEDIA_ANALYSIS_ALGORITHM_VERSION,
-            configHash: MEDIA_ANALYSIS_CONFIG_HASH,
-          },
+          sourceMediaResourceId: source.media.resourceId,
+          mediaFingerprint: source.mediaFingerprint,
+          algorithmVersion: MEDIA_ANALYSIS_ALGORITHM_VERSION,
+          configHash: MEDIA_ANALYSIS_CONFIG_HASH,
+          supersededByRunId: null,
         },
       });
       if (existing && !input.force && existing.status === "succeeded") {
@@ -249,7 +262,8 @@ export class MediaAnalysisJobService {
               annotationFileId,
               sourceMediaResourceId: source.media.resourceId,
               sourceMode: source.mode,
-              sourceFingerprint: source.fingerprint,
+              sourceFingerprint: source.mediaFingerprint,
+              mediaFingerprint: source.mediaFingerprint,
               sourceOffsetSeconds: source.offsetSeconds,
               algorithmVersion: MEDIA_ANALYSIS_ALGORITHM_VERSION,
               configHash: MEDIA_ANALYSIS_CONFIG_HASH,
@@ -283,7 +297,7 @@ export class MediaAnalysisJobService {
       });
       return queuedRun;
     });
-    return this.mapRun(run);
+    return this.mapRun(run, source.mode, source.offsetSeconds);
   }
 
   async listAssets(
@@ -291,10 +305,16 @@ export class MediaAnalysisJobService {
     annotationFileId: string,
     options: ListMediaAnalysisAssetsOptions,
   ) {
-    await this.assertActiveAnnotationFile(user, annotationFileId, "read");
+    const identity = await this.resolveReadableAnalysisIdentity(user, annotationFileId);
     validateAssetListOptions(options);
     const run = await this.prisma.mediaAnalysisRun.findFirst({
-      where: { id: options.runId, annotationFileId, status: "succeeded" },
+      where: {
+        id: options.runId,
+        sourceMediaResourceId: identity.mediaResourceId,
+        mediaFingerprint: identity.mediaFingerprint,
+        supersededByRunId: null,
+        status: "succeeded",
+      },
       select: { id: true },
     });
     if (!run) throw notFound("媒体分析结果不存在。");
@@ -318,11 +338,16 @@ export class MediaAnalysisJobService {
     annotationFileId: string,
     assetId: string,
   ) {
-    await this.assertActiveAnnotationFile(user, annotationFileId, "read");
+    const identity = await this.resolveReadableAnalysisIdentity(user, annotationFileId);
     const asset = await this.prisma.mediaAnalysisAsset.findFirst({
       where: {
         id: assetId,
-        run: { annotationFileId, status: "succeeded" },
+        run: {
+          sourceMediaResourceId: identity.mediaResourceId,
+          mediaFingerprint: identity.mediaFingerprint,
+          supersededByRunId: null,
+          status: "succeeded",
+        },
       },
       select: { storageKey: true, mimeType: true, size: true, checksum: true },
     });
@@ -345,7 +370,7 @@ export class MediaAnalysisJobService {
     runId: string,
     assetIds: readonly string[],
   ) {
-    await this.assertActiveAnnotationFile(user, annotationFileId, "read");
+    const identity = await this.resolveReadableAnalysisIdentity(user, annotationFileId);
     if (
       !runId.trim() ||
       assetIds.length === 0 ||
@@ -360,7 +385,12 @@ export class MediaAnalysisJobService {
       where: {
         id: { in: [...assetIds] },
         runId,
-        run: { annotationFileId, status: "succeeded" },
+        run: {
+          sourceMediaResourceId: identity.mediaResourceId,
+          mediaFingerprint: identity.mediaFingerprint,
+          supersededByRunId: null,
+          status: "succeeded",
+        },
       },
       select: {
         id: true,
@@ -448,6 +478,32 @@ export class MediaAnalysisJobService {
         },
       };
     }
+    const fingerprint = createMediaAnalysisSourceFingerprint(
+      media.sourceType === "uploaded"
+        ? {
+            sourceType: "uploaded",
+            mediaResourceId: media.resourceId,
+            fileId: media.file?.id ?? null,
+            checksum: media.file?.checksum ?? null,
+            size: media.file?.size ?? null,
+          }
+        : {
+            sourceType: "aliyun_vod",
+            mediaResourceId: media.resourceId,
+            region: media.aliyunVodRegion,
+            videoId: media.aliyunVodVideoId,
+            duration: media.duration,
+          },
+    );
+    if (!fingerprint) {
+      return {
+        setting,
+        source: {
+          status: "unavailable",
+          value: unavailableSource(setting, "analysis_source_invalid"),
+        },
+      };
+    }
     return {
       setting,
       source: {
@@ -456,9 +512,21 @@ export class MediaAnalysisJobService {
           mode: setting.mode,
           offsetSeconds: setting.offsetSeconds,
           media,
-          fingerprint: createSourceFingerprint(media, setting.offsetSeconds),
+          mediaFingerprint: fingerprint,
         },
       },
+    };
+  }
+
+  private async resolveReadableAnalysisIdentity(user: ApiUser, annotationFileId: string) {
+    await this.assertActiveAnnotationFile(user, annotationFileId, "read");
+    const context = await this.resolveAnalysisContext(user, annotationFileId);
+    if (context.source.status !== "ready") {
+      throw notFound("媒体分析结果不存在。");
+    }
+    return {
+      mediaResourceId: context.source.value.media.resourceId,
+      mediaFingerprint: context.source.value.mediaFingerprint,
     };
   }
 
@@ -503,8 +571,8 @@ export class MediaAnalysisJobService {
     progress: number;
     errorCode: string | null;
     sourceMediaResourceId: string;
-    sourceMode: AnalysisAudioMode;
-    sourceOffsetSeconds: number;
+    sourceMode: AnalysisAudioMode | null;
+    sourceOffsetSeconds: number | null;
     algorithmVersion: string;
     manifest: unknown;
     config: unknown;
@@ -513,7 +581,7 @@ export class MediaAnalysisJobService {
     createdAt: Date;
     updatedAt: Date;
     completedAt: Date | null;
-  }): Promise<MediaAnalysisRunDto> {
+  }, sourceMode: AnalysisAudioMode, sourceOffsetSeconds: number): Promise<MediaAnalysisRunDto> {
     const groupedAssets = await this.prisma.mediaAnalysisAsset.groupBy({
       by: ["kind"],
       where: { runId: run.id },
@@ -527,8 +595,8 @@ export class MediaAnalysisJobService {
       progress: run.progress,
       errorCode: run.errorCode,
       sourceMediaResourceId: run.sourceMediaResourceId,
-      sourceMode: run.sourceMode,
-      sourceOffsetSeconds: run.sourceOffsetSeconds,
+      sourceMode,
+      sourceOffsetSeconds,
       algorithmVersion: run.algorithmVersion,
       tileDurationSeconds: readTileDurationSeconds(run.manifest, run.config),
       duration: run.duration,
@@ -586,25 +654,6 @@ function isUsableAnalysisMedia(
     return Boolean(media.file && media.mimeType && media.size !== null);
   }
   return Boolean(media.aliyunVodVideoId && media.aliyunVodRegion);
-}
-
-function createSourceFingerprint(media: AnalysisMediaRow, offsetSeconds: number) {
-  const stableIdentity = media.sourceType === "uploaded"
-    ? {
-        sourceType: media.sourceType,
-        mediaResourceId: media.resourceId,
-        fileId: media.file?.id,
-        checksum: media.file?.checksum,
-        size: media.file?.size.toString(),
-      }
-    : {
-        sourceType: media.sourceType,
-        mediaResourceId: media.resourceId,
-        region: media.aliyunVodRegion,
-        videoId: media.aliyunVodVideoId,
-        duration: media.duration,
-      };
-  return stableHash({ stableIdentity, offsetSeconds });
 }
 
 function stableHash(value: unknown) {

@@ -91,9 +91,9 @@ Main currently contains all major recent feature lines that matter for context:
   official CDN, short-lived playauth stays memory-only, and late seek/session events cannot revive a replaced source. Modern
   Web Aliplayer also requires a deployment-provided `domain + key` License; it is public browser configuration, distinct from
   AccessKey/Secret, and must flow through the strict no-store playback-session DTO rather than frontend hardcoding
-- platform waveform, spectrogram, and F0 now use database-backed analysis runs plus object-storage tiles produced by an
-  independent PostgreSQL-claim worker; uploaded inputs stream through FFmpeg stdin, while VOD analysis uses a temporary
-  pure-audio URL that must never enter persistence or logs
+- platform waveform, spectrogram, and F0 now use media-scoped canonical analysis runs plus object-storage tiles produced by
+  an independent PostgreSQL-claim worker; multiple annotation files reuse the same content/config run, uploaded inputs stream
+  through FFmpeg stdin, and VOD analysis uses a temporary pure-audio URL that must never enter persistence or logs
 - analysis audio defaults to the bound uploaded/VOD media but can always be overridden with a readable server audio/VOD
   resource and restored to auto; these settings and assets are platform state, never ProjectData or undo/history state
 - recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
@@ -149,14 +149,19 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/mediaAnalysisJobService.ts`
   - the only API business boundary for analysis-audio settings, ACL revalidation, source fingerprints, run/job reuse,
     status DTOs, tile descriptors, and protected asset reads
-  - batch tile reads revalidate annotation read capability once, then require every bounded asset id to belong to the same
-    succeeded run and file; missing/cross-run/cross-file ids fail as one batch without leaking foreign asset existence
+  - canonical runs are media-scoped by source media, offset-independent media fingerprint, algorithm, and config. Annotation
+    file ids, source mode, and offset are only request/ACL/display context and must never re-enter run identity
+  - asset reads revalidate the annotation and its currently resolved source, then require every bounded asset id to belong to
+    the same canonical succeeded media run; missing/cross-run/cross-media ids fail as one batch without leaking existence
   - the algorithm config hash must include every parameter that changes persisted tile timing or values
 - `apps/api/src/mediaAnalysisMigrationPlan.ts` + `apps/api/src/mediaAnalysisMigrationService.ts`
   - offline RA2 migration boundary for grouping annotation-scoped historical runs by media identity, validating manifest/assets/
     immutable object checksums, and recording reversible canonical/superseded relationships
   - dry-run fingerprints the complete bounded plan; execute is super-admin-only, rechecks database facts under advisory and row
     locks, writes all groups atomically, and never deletes or reparents assets. Online analysis routes and workers must not call it
+  - production RA2 rollout is deliberately two-release: deploy the additive migration code first, stop the analysis worker,
+    dry-run and execute the exact migration plan, then deploy the final media-scoped schema migration. The final SQL fails closed
+    on missing fingerprints, duplicate canonical identities, or active superseded jobs; never bypass this gate
 - `apps/api/src/mediaAnalysisSourceFingerprint.ts`
   - the only media-content fingerprint boundary for media-scoped analysis; uploaded identity requires stable file checksum/size,
     VOD identity requires region/video id/duration, and annotation id, selection mode, and track offset have no input position
@@ -187,7 +192,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     stale-batch cancellation, and bounded LRU policy; shared 48-asset/32 MiB transport limits must stay synchronized with the
     batch codec, while progressive foreground batches may use a smaller local budget
 - `src/platform/platformMediaAnalysisCache.ts`
-  - existing `idb` dependency-backed second-level analysis cache; records are keyed by encoded account/file/run/asset/size,
+  - existing `idb` dependency-backed second-level analysis cache; records are keyed by encoded account/media/run/asset/size,
     contain only binary analysis bytes, and use bounded metadata-driven LRU cleanup. Quota/private-mode failures are an
     optimization downgrade, never an authorization bypass or document error
 - `src/utils/localMediaAnalysis.ts`

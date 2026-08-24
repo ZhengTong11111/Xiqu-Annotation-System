@@ -216,6 +216,7 @@ export function usePlatformMediaAnalysis(options: Options) {
         client,
         currentUserId,
         annotationFileId,
+        mediaResourceId: run.sourceMediaResourceId,
         runId: run.id,
         sourceOffset,
         requestWindow,
@@ -250,6 +251,7 @@ export function usePlatformMediaAnalysis(options: Options) {
             client,
             currentUserId,
             annotationFileId,
+            mediaResourceId: run.sourceMediaResourceId,
             runId: run.id,
             requestWindow,
             visibleStartTime: visibleSourceRange.startTime,
@@ -408,6 +410,7 @@ export function usePlatformMediaAnalysis(options: Options) {
       await loadAnalysisAssets({
         currentUserId,
         annotationFileId,
+        mediaResourceId: run.sourceMediaResourceId,
         runId: run.id,
         descriptors,
         client,
@@ -489,6 +492,7 @@ type AnalysisWindowReadContext = {
   client: Pick<PlatformClient, "listMediaAnalysisAssets" | "getMediaAnalysisAssetBatch">;
   currentUserId: string;
   annotationFileId: string;
+  mediaResourceId: string;
   runId: string;
   requestWindow: PlatformAnalysisRequestWindow;
   visibleStartTime: number;
@@ -583,6 +587,7 @@ async function loadVisibleAnalysisWindow(context: VisibleAnalysisWindowContext) 
   const bytes = await loadAnalysisAssets({
     currentUserId: context.currentUserId,
     annotationFileId: context.annotationFileId,
+    mediaResourceId: context.mediaResourceId,
     runId: context.runId,
     descriptors,
     client: context.client,
@@ -618,6 +623,7 @@ async function prefetchAdjacentAnalysisWindows(context: AnalysisWindowReadContex
     await loadAnalysisAssets({
       currentUserId: context.currentUserId,
       annotationFileId: context.annotationFileId,
+      mediaResourceId: context.mediaResourceId,
       runId: context.runId,
       descriptors,
       client: context.client,
@@ -730,6 +736,7 @@ function deduplicateAssetDescriptors(descriptors: MediaAnalysisAssetDescriptor[]
 type LoadAnalysisAssetsOptions = {
   currentUserId: string;
   annotationFileId: string;
+  mediaResourceId: string;
   runId: string;
   descriptors: MediaAnalysisAssetDescriptor[];
   client: Pick<PlatformClient, "getMediaAnalysisAssetBatch">;
@@ -907,12 +914,12 @@ async function loadAnalysisAssetBatch(
 }
 
 function buildPersistentCacheIdentity(
-  options: Pick<LoadAnalysisAssetsOptions, "currentUserId" | "annotationFileId" | "runId">,
+  options: Pick<LoadAnalysisAssetsOptions, "currentUserId" | "mediaResourceId" | "runId">,
   descriptor: MediaAnalysisAssetDescriptor,
 ) {
   return {
     userId: options.currentUserId,
-    annotationFileId: options.annotationFileId,
+    mediaResourceId: options.mediaResourceId,
     runId: options.runId,
     assetId: descriptor.id,
     size: descriptor.size,

@@ -922,6 +922,46 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(duplicateAssetBatch.statusCode, 400);
 
+      const siblingAnnotation = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: projectId,
+          name: "共享媒体分析.json",
+          payload: { marker: "shared-analysis" },
+          mediaResourceId: vod.resourceId,
+        },
+      });
+      const siblingFileId = String(
+        (dataOf(siblingAnnotation.json()).resource as JsonObject).id,
+      );
+      const siblingStatus = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${siblingFileId}/media-analysis`,
+      });
+      assert.equal(
+        (dataOf(siblingStatus.json()).currentRun as JsonObject).id,
+        dataOf(firstRun.json()).id,
+      );
+      const offsetStatus = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${fileId}/analysis-audio`,
+        payload: { mode: "auto", offsetSeconds: 2.5 },
+      });
+      assert.equal(
+        (dataOf(offsetStatus.json()).currentRun as JsonObject).id,
+        dataOf(firstRun.json()).id,
+      );
+      assert.equal(
+        (dataOf(offsetStatus.json()).currentRun as JsonObject).sourceOffsetSeconds,
+        2.5,
+      );
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/annotation-files/${fileId}/analysis-audio`,
+        payload: { mode: "auto", offsetSeconds: 0 },
+      });
+
       const forbiddenAssetBatch = await jsonRequest(app, studentToken, {
         method: "POST",
         url: `/api/annotation-files/${fileId}/media-analysis/assets/batch`,
@@ -968,7 +1008,8 @@ test("平台资源 API 集成测试", async (suite) => {
         method: "GET",
         url: `/api/annotation-files/${fileId}/media-analysis/assets/${storedAsset.id}`,
       });
-      assert.equal(studentAssetRead.statusCode, 200, studentAssetRead.body);
+      // 当前文件已经切换到上传音频，旧 VOD run 不能再借 annotation ACL 被继续枚举。
+      assert.equal(studentAssetRead.statusCode, 404, studentAssetRead.body);
       const forbiddenStatus = await jsonRequest(app, studentToken, {
         method: "GET",
         url: `/api/annotation-files/${fileId}/media-analysis`,

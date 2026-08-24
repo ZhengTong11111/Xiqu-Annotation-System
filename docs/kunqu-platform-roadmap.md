@@ -570,8 +570,8 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   播放、媒体分析和完整构建通过。RA1 同日完成：正式 migration、媒体音轨/标注默认偏好模型、既有媒体原声
   回填、上传/VOD/复制原声生命周期、严格 CRUD/精确重排、ACL、审计和类型安全客户端均已落地；持久音轨记录
   与分析摘要拆开，未在真实媒体级 run 接入前伪造分析状态。真实 PostgreSQL 音轨集成测试、完整 API 172/172
-  和完整构建通过。RA1 没有修改播放器或现有分析运行路径，当前 `AnnotationAnalysisAudioSetting` 和按
-  annotationFileId 唯一化的 `MediaAnalysisRun` 仍暂时权威。下一步 RA2 经 dry-run、manifest/checksum 和对象
+  和完整构建通过。RA1 结束时没有修改播放器或分析运行路径，当时 `AnnotationAnalysisAudioSetting` 和按
+  annotationFileId 唯一化的 `MediaAnalysisRun` 仍暂时权威；随后由 RA2 经 dry-run、manifest/checksum 和对象
   引用校验迁移媒体级 run，最终必须删除旧设置表、旧 route、旧缓存 key 和重复来源解析，不能长期双写或保留
   两套分析来源 UI。
 
@@ -583,8 +583,15 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
 
   RA2b1 同日修正历史 fingerprint 含 offset 的关键偏差：新增内容级 `mediaFingerprint`，uploaded 使用稳定文件
   checksum/size，VOD 使用稳定 provider 身份，均不接受 annotation、mode 或 offset。归并计划现在可跨旧偏移
-  选择 canonical 并幂等回填；专项 10/10、分析 34/34、完整 API 182/182 与构建通过。RA2b2 才同步切换在线
-  查询/创建和删除旧含 offset helper，避免半切换导致历史结果暂时消失。
+  选择 canonical 并幂等回填；专项 10/10、分析 34/34、完整 API 182/182 与构建通过。该阶段没有单独切换在线
+  查询/创建，而是把新 identity 与旧 helper 的替换留到 RA2b2 同一提交，避免半切换导致历史结果暂时消失。
+
+  RA2b2 同日完成在线媒体级切换：status/create、worker claim/stale recovery、asset ACL adapter 与 IndexedDB
+  缓存均围绕 canonical media fingerprint；跨标注文件复用同一 run，offset 只影响时间轴映射。最终 migration
+  以 partial unique 和缺 fingerprint/重复 canonical/active superseded job 前置门禁 fail closed，annotation 删除
+  不再级联媒体 run。专项迁移 10/10、媒体分析 35/35、备份 28/28、完整 API 183/183 与 build 通过。生产部署
+  必须先在 additive release 停 worker 并执行精确 dry-run/execute，再部署最终 migration；当前未在生产执行。
+  下一轮进入 RA3 组合播放器与编辑器快速音轨切换。
 
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入

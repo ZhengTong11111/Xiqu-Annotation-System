@@ -7230,3 +7230,51 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 自审后没有提前替换在线旧 fingerprint helper：单独替换会使现行 annotation-scoped 查询暂时找不到历史 run。
   RA2b2 必须把新 fingerprint、媒体级查询/创建、worker 和 route/cache 一起切换，再删除旧含 offset helper。
 - 已完成：RA2b1 schema、纯 identity、跨偏移迁移回填、测试和文档。待推进 RA2b2；未部署生产。
+
+## 2026-08-24：RA2b2 媒体级分析在线切换与最终迁移门禁
+
+### 在线归属与迁移安全
+
+- RA2b1 提交 `85828ee` 后按真实代码重写 `CLAUDE_WORK.md`，将本轮限制为媒体级分析唯一门禁、在线
+  service/worker/asset/cache 切换；没有提前接组合播放器或音轨 UI。
+- 新 migration `20260824040000_media_scoped_analysis_runs` 在任何破坏性约束变化前检查：全部未 superseded run
+  均有媒体 fingerprint、同一媒体/算法/config 只有一个 canonical、superseded run 没有 queued/running job。
+  任一不满足即明确失败，要求先回到 additive release 执行 RA2 CLI。
+- 旧 `annotationFileId/sourceMode/sourceOffsetSeconds` 改为 nullable 审计上下文，annotation 外键改为
+  `ON DELETE SET NULL`；媒体资源继续是 run/asset 的真实生命周期归属。删除旧 annotation-scoped unique，新增
+  仅约束未 superseded run 的媒体级 partial unique。历史 duplicate、asset 和对象均继续保留，等待 RA6 核对后
+  再清理。
+- 这是明确的两 release 生产迁移：先部署 RA2a/b1 additive 版本，停止 analysis worker，执行 dry-run 并处理
+  阻断，再用精确 plan fingerprint 执行归并；只有成功后才能部署 RA2b2 migration。本轮没有在生产数据库执行
+  CLI，也没有部署生产。
+
+### Service、Worker、ACL 与缓存
+
+- `MediaAnalysisJobService` 删除含 offset 的旧 fingerprint helper，统一调用内容级
+  `createMediaAnalysisSourceFingerprint()`。status/create 以 source media、媒体 fingerprint、算法和 config 查询
+  canonical；create 在媒体 identity advisory lock 内重读，跨标注文件复用已有 succeeded 或 active run。
+- source mode 与 offset 只从当前标注设置映射到公开 DTO。offset 变化不创建分析 run；新 run 的 legacy 字段只
+  记录首次发起上下文，不参与唯一化。代码内字段也统一命名为 `mediaFingerprint`，避免后续误用旧 source
+  fingerprint 语义。
+- 保留 annotation URL 作为过渡 ACL adapter，而不是数据归属：读取描述、单资产和批量资产前，重新验证当前
+  annotation read、当前解析媒体的 read/download 及 run 的媒体/fingerprint/canonical/succeeded 身份。标注文件
+  切换到另一来源后，旧 run id 和 asset id 返回统一 404，不能成为旁路枚举接口。
+- worker 的 claim 与 stale recovery 同时排除 superseded run。自审时发现只过滤 claim 会让历史 stale job 被
+  重新标成 queued，虽不会执行却会制造虚假队列状态，已统一过滤并补回归测试。
+- IndexedDB 二级缓存 key 从账号/标注文件/run/asset/size 改为账号/媒体/run/asset/size，同一账号打开共享媒体的
+  两份标注可以复用相同字节；网络 API 仍携带 annotation context 做实时授权。旧 key 不迁移，由既有有界 LRU
+  自然回收。
+
+### 测试、自审与待推进
+
+- 新增数据库语义测试，证明删除首次发起的 annotation row 只清空 legacy 外键，不删除媒体 run；worker 测试
+  证明 superseded running job 既不被 stale recovery 恢复，也不被 claim。API 集成覆盖两份标注共享 VOD run、
+  offset 变化保持 run id、DTO 返回当前 offset，以及来源切换后拒绝旧资产。
+- 最终通过：`test:media-analysis-migration` 10/10；`test:media-analysis` 的 shared batch 3/3 与 Node 专项
+  32/32；`test:backup` 28/28；完整 `test:api` 183/183；`npm run build` 完成 Prisma generate/schema guard、
+  shared、document-model、Web 与 API。`git diff --check` 通过，仅保留既有 Web 主 chunk 体积提示。
+- 静态审查未发现旧 annotation unique 调用、含 offset fingerprint helper、在线 superseded run 选择、
+  annotation-scoped IndexedDB key、`any`、调试输出或新凭据/URL 持久字段。本轮没有可见 UI 变化，因此没有伪造
+  浏览器验收。
+- 已完成：RA2 全部数据迁移工具、媒体级在线归属、worker/ACL/cache 切换和文档收口。待推进：RA3 组合播放
+  backend、短时音频会话、视频主时钟同步和编辑器快速音轨选择器；RA3 不应再复制分析身份或恢复旧双轨来源。

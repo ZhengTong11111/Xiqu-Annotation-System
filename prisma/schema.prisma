@@ -524,15 +524,15 @@ model AnnotationAnalysisAudioSetting {
   @@map("annotation_analysis_audio_settings")
 }
 
-// 一次 run 固定来源指纹和算法配置；重试复用 run，但绝不保存 PCM 或供应商临时地址。
+// 分析 run 归属于媒体内容；annotation/mode/offset 仅保留首次发起的旧审计上下文，不能参与在线 identity。
 model MediaAnalysisRun {
   id                    String              @id @default(uuid())
-  annotationFileId      String              @map("annotation_file_id")
+  annotationFileId      String?             @map("annotation_file_id")
   sourceMediaResourceId String              @map("source_media_resource_id")
-  sourceMode            AnalysisAudioMode   @map("source_mode")
+  sourceMode            AnalysisAudioMode?  @map("source_mode")
   sourceFingerprint     String              @map("source_fingerprint")
   mediaFingerprint      String?             @map("media_fingerprint")
-  sourceOffsetSeconds   Float               @default(0) @map("source_offset_seconds")
+  sourceOffsetSeconds   Float?              @map("source_offset_seconds")
   algorithmVersion      String              @map("algorithm_version")
   configHash            String              @map("config_hash")
   config                Json
@@ -550,7 +550,7 @@ model MediaAnalysisRun {
   supersededAt          DateTime?           @map("superseded_at")
   supersededBy          String?             @map("superseded_by")
 
-  annotationFile AnnotationFile       @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
+  annotationFile AnnotationFile?      @relation(fields: [annotationFileId], references: [resourceId], onDelete: SetNull)
   sourceMedia    MediaFile            @relation("MediaAnalysisSource", fields: [sourceMediaResourceId], references: [resourceId], onDelete: Cascade)
   creator        User                 @relation("MediaAnalysisRunCreator", fields: [createdBy], references: [id], onDelete: Restrict)
   superseder     User?                @relation("MediaAnalysisRunSuperseder", fields: [supersededBy], references: [id], onDelete: Restrict)
@@ -559,7 +559,6 @@ model MediaAnalysisRun {
   assets         MediaAnalysisAsset[]
   jobs           ProcessingJob[]
 
-  @@unique([annotationFileId, sourceFingerprint, algorithmVersion, configHash])
   @@index([annotationFileId, createdAt])
   @@index([sourceMediaResourceId])
   @@index([sourceMediaResourceId, sourceFingerprint, algorithmVersion, configHash])
