@@ -152,6 +152,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - batch tile reads revalidate annotation read capability once, then require every bounded asset id to belong to the same
     succeeded run and file; missing/cross-run/cross-file ids fail as one batch without leaking foreign asset existence
   - the algorithm config hash must include every parameter that changes persisted tile timing or values
+- `apps/api/src/mediaAnalysisMigrationPlan.ts` + `apps/api/src/mediaAnalysisMigrationService.ts`
+  - offline RA2 migration boundary for grouping annotation-scoped historical runs by media identity, validating manifest/assets/
+    immutable object checksums, and recording reversible canonical/superseded relationships
+  - dry-run fingerprints the complete bounded plan; execute is super-admin-only, rechecks database facts under advisory and row
+    locks, writes all groups atomically, and never deletes or reparents assets. Online analysis routes and workers must not call it
 - `apps/api/src/mediaAnalysisWorkerService.ts` + `apps/api/src/mediaAnalysisWorkerRuntime.ts`
   - independent database claim/heartbeat/stale-recovery worker; normal shutdown removes partial assets and requeues the job
   - staged/final object compensation failures must become stable failed states and must never be silently swallowed

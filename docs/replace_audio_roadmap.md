@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA1 已完成
+> 文档状态：专项实施中，RA0-RA1、RA2a 已完成
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -15,8 +15,10 @@
 - RA0-RA1 没有修改现有播放器或分析运行路径，因此生产仍使用
   `AnnotationAnalysisAudioSetting + annotationFileId-scoped MediaAnalysisRun`。这不是最终双轨并存设计，RA2
   完成迁移并通过引用校验后必须清理旧归属。
-- 下一阶段是 **RA2 媒体级分析归属与迁移工具**。必须先完成 dry-run、候选映射、manifest/checksum 与对象
-  引用校验，再切换 service、worker 和前端缓存身份；不得先接播放器或长期保留双写。
+- **RA2a 已完成（2026-08-24）**：additive supersession migration、纯计划器和 super-admin-only
+  dry-run/execute CLI 已建立；执行只标记 canonical/duplicate，保留全部 run、asset 和对象。
+- 下一阶段是 **RA2b 媒体级分析运行路径切换**。只有在 RA2a 计划无阻断并完成归并后，才能切换 service、
+  worker、route 与缓存身份并建立媒体级唯一门禁；不得先接播放器或长期保留双写。
 
 ## 1. 目标重新定义
 
@@ -665,6 +667,8 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 
 ### RA2：媒体级分析归属与迁移工具
 
+**状态：RA2a 已完成，RA2b 待推进（2026-08-24）**
+
 **改动范围**
 
 - `MediaAnalysisRun` schema 迁移；
@@ -680,6 +684,20 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 切换音轨能命中对应 run；
 - 历史 run 的 manifest、asset checksum 和引用完整；
 - 失败迁移可重跑且不误删对象。
+
+**RA2a 实际完成**
+
+- 真实生产模型可能按 annotation file 保存同一媒体的重复 run，无法安全地在一条 migration 中直接删旧列并加
+  unique。RA2 因此拆为可部署的 RA2a 归并预备与 RA2b 运行路径切换。
+- migration `20260824020000_media_analysis_supersession` 仅增加自关联 supersede 事实、执行者/时间、check/FK 和
+  扫描索引；不自动选择 canonical，不改旧 unique/FK，不删除或改挂资产。
+- 新增纯计划器，按媒体资源、来源 fingerprint、算法和 config hash 分组，稳定选择 canonical，并阻断 active job、
+  config 漂移、资产/manifest/对象 checksum 错误及链/环/跨 identity 关系。输出 identity 仅保留 hash。
+- 新增 super-admin-only CLI：dry-run 流式校验对象并生成计划 fingerprint；execute 先复核完整计划，再以 advisory
+  lock 和 run/job 行锁重算数据库 fingerprint，全有或全无地写入 supersede 与脱敏审计。final 对象不可变，因此
+  不在持锁事务中重复读取远程对象。
+- 专项 7/7、分析 34/34、备份 28/28、完整 API 179/179 和完整 build 通过。本轮没有切换在线分析行为、UI 或
+  前端缓存，也未部署或在任何生产数据库执行 CLI。
 
 ### RA3：组合播放器与快速音轨切换
 

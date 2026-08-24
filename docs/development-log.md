@@ -7177,3 +7177,37 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 待推进：RA2 先建立媒体级 run schema 和 dry-run/execute 迁移工具，校验 manifest、asset checksum 与对象引用，
   再切换分析 service/worker/前端缓存身份。旧分析设置、旧 route 和旧缓存 key 在完成引用核对前仍保留，不能
   直接删除或长期双写。
+
+## 2026-08-24：RA2a 媒体分析归并预备与校验 CLI
+
+### 阶段拆分与迁移安全
+
+- RA1 提交 `3dad1f1` 后依据真实 schema 重写 `CLAUDE_WORK.md`。审查确认旧 unique 以 annotation file 为作用域，
+  同一媒体可能已有多份 run 和各自对象；直接删除 context 列并加媒体级 unique 会在无对象证据时被迫选边。
+  因此把 RA2 拆为 RA2a 可逆归并与 RA2b 运行路径切换，先证明数据，再改变在线行为。
+- 正式 migration `20260824020000_media_analysis_supersession` 只增加 `supersededByRunId/supersededAt/
+  supersededBy`、三字段一致性/self check、FK 与 identity 扫描索引。既有行不更新，旧 unique/FK/字段不变，所有
+  run、asset 和对象继续被数据库引用。
+
+### 计划、对象校验与执行语义
+
+- 新增纯 `mediaAnalysisMigrationPlan`，按 media resource、source fingerprint、algorithm version、config hash 的
+  JSON identity 分组；succeeded 优先、时间与 id 稳定决胜。active job、配置 payload 漂移、manifest/资产集合或
+  对象 size/checksum 失败、跨 identity/链式 supersession 都形成稳定阻断 code。
+- `MediaAnalysisMigrationService.dryRun()` 对最多 50,000 个 run 流式读取资产对象，复用备份 SHA-256 helper，
+  生成包含候选和对象事实的计划 fingerprint；返回 identity hash、run id、计数和 code，不返回 storage key。
+- execute 要求有效 super_admin account name 和 dry-run fingerprint。自审时发现首版在持有全表行锁后再次读取
+  全部对象，会产生长事务；已改为事务外校验 immutable final object，随后在 advisory lock 与 run/job 行锁下重算
+  独立数据库 fingerprint。任何 DB 漂移都全量回滚，成功只写 supersede 和脱敏审计，不改挂或删除资产。
+- CLI 参数不接受密码/凭据，错误只输出稳定消息；本轮没有 HTTP route，也没有改在线 analysis service、worker、
+  annotation routes、前端 hook 或 IndexedDB key。
+
+### 测试与状态
+
+- 新增纯计划和真实 PostgreSQL/LocalObjectStorage 集成测试，覆盖 canonical、三类阻断、非法关系、幂等、
+  fingerprint 漂移、普通账号拒绝、事务回滚、缺对象阻断、审计及对象/资产保留。专项 7/7 通过。
+- 现有媒体分析 34/34、备份 28/28、完整 API 179/179 通过；测试 schema 已应用 23 条 migration。完整 build 完成
+  Prisma generate/schema guard、shared、document-model、Web 与 API，仅有既有 Web 主 chunk 提醒。
+- 已完成：RA2a additive schema、迁移计划/服务/CLI、审计、测试和 AGENTS/专项/总路线图回写。
+- 待推进：RA2b 必须先消费 RA2a 无阻断计划，再把 run 归属、worker、asset ACL routes 和前端缓存 identity 切到
+  media scope；legacy annotation/source mode/offset 字段先 nullable 保留审计，RA6 再删除。尚未部署或在生产执行。

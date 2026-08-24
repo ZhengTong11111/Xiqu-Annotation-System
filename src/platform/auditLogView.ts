@@ -42,6 +42,7 @@ export const AUDIT_ACTION_LABELS: Record<AuditActionName, string> = {
   media_audio_track_delete: "移除媒体音轨",
   media_audio_track_reorder: "调整媒体音轨顺序",
   annotation_audio_preference_update: "更新默认监听音轨",
+  media_analysis_migration_apply: "归并媒体分析运行",
   media_analysis_create: "创建媒体分析",
   job_create: "创建后台任务",
   permission_denied: "权限拒绝",

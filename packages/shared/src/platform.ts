@@ -452,6 +452,7 @@ export const AUDIT_ACTIONS = [
   "media_audio_track_delete",
   "media_audio_track_reorder",
   "annotation_audio_preference_update",
+  "media_analysis_migration_apply",
   "media_analysis_create",
   "job_create",
   "permission_denied",

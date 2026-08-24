@@ -120,6 +120,7 @@ enum AuditAction {
   media_audio_track_delete
   media_audio_track_reorder
   annotation_audio_preference_update
+  media_analysis_migration_apply
   media_analysis_create
   job_create
   permission_denied
@@ -184,6 +185,7 @@ model User {
   createdMediaAudioTracks          MediaAudioTrack[]                  @relation("MediaAudioTrackCreator")
   updatedAnnotationAudioPreferences AnnotationAudioPreference[]       @relation("AnnotationAudioPreferenceUpdater")
   createdMediaAnalysisRuns         MediaAnalysisRun[]                @relation("MediaAnalysisRunCreator")
+  supersededMediaAnalysisRuns      MediaAnalysisRun[]                @relation("MediaAnalysisRunSuperseder")
   auditLogs                        AuditLog[]                        @relation("AuditActor")
   annotationOperations             AnnotationOperation[]             @relation("AnnotationOperationActor")
   annotationMutationLeases         AnnotationMutationLease[]         @relation("AnnotationMutationLeaseHolder")
@@ -543,16 +545,25 @@ model MediaAnalysisRun {
   createdAt             DateTime            @default(now()) @map("created_at")
   updatedAt             DateTime            @updatedAt @map("updated_at")
   completedAt           DateTime?           @map("completed_at")
+  supersededByRunId     String?             @map("superseded_by_run_id")
+  supersededAt          DateTime?           @map("superseded_at")
+  supersededBy          String?             @map("superseded_by")
 
   annotationFile AnnotationFile       @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
   sourceMedia    MediaFile            @relation("MediaAnalysisSource", fields: [sourceMediaResourceId], references: [resourceId], onDelete: Cascade)
   creator        User                 @relation("MediaAnalysisRunCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  superseder     User?                @relation("MediaAnalysisRunSuperseder", fields: [supersededBy], references: [id], onDelete: Restrict)
+  canonicalRun   MediaAnalysisRun?    @relation("MediaAnalysisRunSupersession", fields: [supersededByRunId], references: [id], onDelete: Restrict)
+  supersededRuns MediaAnalysisRun[]   @relation("MediaAnalysisRunSupersession")
   assets         MediaAnalysisAsset[]
   jobs           ProcessingJob[]
 
   @@unique([annotationFileId, sourceFingerprint, algorithmVersion, configHash])
   @@index([annotationFileId, createdAt])
   @@index([sourceMediaResourceId])
+  @@index([sourceMediaResourceId, sourceFingerprint, algorithmVersion, configHash])
+  @@index([supersededByRunId])
+  @@index([supersededBy])
   @@index([status])
   @@map("media_analysis_runs")
 }

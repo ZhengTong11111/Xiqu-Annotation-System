@@ -575,6 +575,12 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   引用校验迁移媒体级 run，最终必须删除旧设置表、旧 route、旧缓存 key 和重复来源解析，不能长期双写或保留
   两套分析来源 UI。
 
+  RA2a 已于 2026-08-24 完成：由于既有数据库可能包含跨标注文件重复 run，本阶段先增加可逆 supersede 元数据
+  和 strict dry-run/execute CLI。CLI 校验 active job、config、manifest、数据库资产、对象 size/checksum 与关系
+  完整性，以计划 fingerprint 绑定复核，并在短事务中全量标记 canonical/duplicate；不删除、改挂或孤立任何
+  对象。专项 7/7、分析 34/34、备份 28/28、完整 API 179/179 与完整构建通过。下一步 RA2b 在实际归并无阻断后
+  才切换媒体级 run/service/worker/routes/cache，并建立最终唯一门禁。
+
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入
 Development Log。任何阶段不得为追求“能播放”而牺牲时间轴的精确时间语义。
