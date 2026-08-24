@@ -560,6 +560,17 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
 - **R3h8：服务端分析 bundle/Range 读取（后续设计）。** 在不放宽 ACL 的前提下，把同一 run/kind/level 的小瓦片组织为不可变
   bundle，并设计带 manifest、offset、checksum 的权限绑定读取；在 R3h6 的真实指标证明对象存储 TTFB 仍是主要瓶颈
   后再实施，不能提前引入对象迁移和新的缓存授权语义。
+- **R3h9：多音轨快速切换与媒体级分析复用（专项推进中）。** 详细阶段和验收标准见
+  `docs/replace_audio_roadmap.md`。目标是在主视频下关联视频原声、上传 MP3/WAV 和阿里云 VOD 音频，编辑器
+  可以快速切换监听音轨，并让波形、频谱和 F0 按真实媒体资源与算法配置复用，而不是按每份标注文件重复计算。
+  音轨偏移属于媒体关联，只负责把音频源坐标映射到项目时间轴，不进入分析 run identity。
+
+  RA0 已于 2026-08-24 完成：shared 建立严格音轨/默认偏好/分析状态 DTO 与媒体级 run identity，Web 建立
+  `audioTime = masterTime - offsetSeconds`、漂移策略和带 source generation 的同步播放纯状态机；专项、现有
+  播放、媒体分析和完整构建通过。RA0 没有修改 Prisma/API/播放器运行路径，当前
+  `AnnotationAnalysisAudioSetting` 和按 annotationFileId 唯一化的 `MediaAnalysisRun` 仍暂时权威。下一步 RA1
+  新增音轨关系与默认偏好数据库/API；RA2 经 dry-run、manifest/checksum 和对象引用校验迁移媒体级 run，最终
+  必须删除旧设置表、旧 route、旧缓存 key 和重复来源解析，不能长期双写或保留两套分析来源 UI。
 
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入

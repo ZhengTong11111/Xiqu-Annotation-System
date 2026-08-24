@@ -7050,3 +7050,74 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   公网 Web/liveness/readiness 全部 HTTP 200，首页明确返回新资产；解除维护后启动 worker，API、worker、Nginx
   均 active，第二轮公网检查也通过。最终数据库/对象存储 readiness 约 `6.41/1.15 ms`，新服务窗口无 level 50、
   Prisma 或 worker 错误；系统盘 35%，数据盘 22%。待用户新开一个编辑器会话人工确认四项默认隐藏及手动开启。
+
+## 2026-08-24：RA0 多音轨合同与同步纯策略冻结
+
+### 任务规划与现状审查
+
+- 用户要求把“替换视频声音”升级为主视频下的可管理音轨集合：视频原声、上传 MP3/WAV 和阿里云 VOD 音频
+  可在编辑器中快速切换；波形、频谱和 F0 应与真实媒体资源关联并跨标注文件复用。本轮先创建专项分支
+  `codex/replace-audio-playback`，新增 `docs/replace_audio_roadmap.md`，再严格按文档流水线把 RA0 完整重写到
+  被忽略的 `CLAUDE_WORK.md` 后实施，没有沿用上一轮句级字幕任务文字。
+- 代码审查确认当前 `MediaAnalysisRun` 仍以 `annotationFileId + sourceFingerprint + algorithmVersion + configHash`
+  唯一化，并保存 `sourceMode` 与 `sourceOffsetSeconds`。这会让同一媒体在多份标注文件中重复分析，也会错误地
+  让音轨偏移影响分析 run。专项路线图据此改为“媒体音轨关系 + 标注文件默认偏好 + 媒体级分析资产”，并明确
+  RA2 迁移完成后删除旧表、旧 route、旧缓存 key 和重复 UI，不能长期双写。
+- RA0 明确不修改 Prisma、API、`VideoPlayer`、`MediaPlaybackBackend`、现有分析 service 或 ProjectData；本轮只
+  冻结后续数据库和组合播放器共同依赖的共享合同与纯策略，避免尚未验证状态机就改变生产播放行为。
+
+### 共享合同与媒体级分析身份
+
+- 新增 `packages/shared/src/mediaAudioTracks.ts`，定义 original/vocal/accompaniment/denoised/reference/custom
+  六类音轨、内嵌原声/独立媒体严格来源、音轨名称与数量上限、正负偏移上限、稳定排序、启用状态、五种分析
+  状态和标注文件共享默认音轨偏好。所有 unknown 输入经过严格 parser，拒绝额外字段、控制字符身份、非有限
+  数值、非法 ISO 时间、错误进度和矛盾来源。
+- original 音轨固定使用主媒体内嵌声音且 offset 为零；其他音轨必须引用稳定媒体资源。共享 DTO 只保存稳定
+  身份和有界状态，不包含媒体 URL、PlayAuth、AccessKey、供应商响应或 ProjectData。
+- 新增 `packages/shared/src/mediaAnalysisIdentity.ts`，媒体级复用身份只接受
+  `mediaResourceId + sourceFingerprint + algorithmVersion + configHash`。使用 JSON 元组保留字段边界，避免允许
+  冒号的合法身份通过字符串拼接碰撞；函数没有 annotationFileId、sourceMode 或 offsetSeconds 输入位置。
+- 新合同从 shared 根入口统一导出；本轮未引入第三方依赖。小型判别联合和纯 parser 使用现有 TypeScript
+  模式已经足够清晰，引入 schema 库不会减少实际边界代码。
+
+### 时间映射、漂移与 generation 状态机
+
+- 新增 `synchronizedPlaybackPolicy.ts`，统一采用
+  `audioTime = masterTime - offsetSeconds`，严格区分音频开始前、可播放、音频结束后和非法时间。offset 只负责
+  源时间到项目时间映射，不参与分析 identity。
+- 初始漂移策略集中为 40ms 容忍区、150ms 硬同步区；中等漂移只有连续两次同方向出现才要求硬同步，方向反转
+  会重新计数，后台恢复/来源切换等明确场景可以直接强制同步。阈值没有复制到 React 或 backend。
+- 新增 `synchronizedPlaybackState.ts`，覆盖 original、preparing、paused-ready、starting、playing、resyncing、
+  buffering、error 和 disposed。每次选择音轨或切回原声都会递增 source generation；A/B/C 快速选择后，A/B
+  的 ready/error 等迟到事件只返回 stale，不可能复活旧来源。正常重复的 ready/play/buffering 事件幂等，当前
+  generation 的非法转换仍返回 `invalid_transition`，disposed 为不可复活终态。
+- 状态只持有稳定音轨 id、播放意图、generation 和稳定错误码，不持有媒体元素、timer、URL 或会话 DTO；RA3
+  才会在真实外部音频 backend 设计确认后接入 `VideoPlayer`。
+
+### 代码审查、清理与修正
+
+- 首次专项编译发现 `Number.isInteger()` 不会把 `unknown` 收窄为 number，随即补显式 `typeof` 门禁；没有用
+  类型断言绕过 parser。
+- 自我审查补充严格 ISO 时间先 `Date.parse` 再规范化比较，确保畸形日期返回 null 而不是让 parser 抛异常；
+  状态机改为复用 shared 稳定 identity helper，并拒绝空白/控制字符音轨 id 和不稳定错误码。
+- 媒体浏览器会重复发出 ready、play、buffering 事实，状态机将同来源重复事件定义为幂等；旧 generation 与
+  当前 generation 非法转换仍保持不同诊断，不用一个宽松 no-op 吞掉编程错误。
+- 扫描未发现 `any`、凭据字段、临时 URL 持久字段或第二套漂移阈值。新增导出均属于 RA1/RA2/RA3 即将消费
+  的稳定合同，没有删除或改写现有运行路径，因此不存在为了新功能提前保留的半接线分支。
+
+### 测试与当前状态
+
+- 新增统一 `npm run test:media-audio-tracks`：shared 音轨/parser/analysis identity 5/5，时间映射、漂移和状态机
+  9/9；覆盖全部分析状态、来源矛盾、额外字段、偏移/顺序/进度边界、身份碰撞、A/B/C 快速切换、迟到事件、
+  缓冲恢复、幂等浏览器事件和 dispose。
+- 现有 `npm run test:media-playback` 17/17 通过，证明原生媒体、Aliplayer、VOD session、License、seek/play
+  ordering 和来源解析没有行为回归。
+- `npm run test:media-analysis` 通过：shared batch 3/3，worker、FFmpeg、VOD gateway、计算、缓存和渐进加载
+  31/31；测试数据库 21 条 migration 无待应用项。
+- 完整 `npm run build` 通过 Prisma generate/schema guard、shared、document-model、Web 和 API；仅保留既有
+  Web 主 chunk 超过 500 kB 的非阻断提醒。`git diff --check` 通过。RA0 无 UI 行为变化，因此没有伪造浏览器
+  视觉验收，也没有推送或部署生产。
+- 已完成：RA0 合同、纯策略、测试、代码审查以及专项路线图、总路线图和 AGENTS 长期所有权回写。
+- 待推进：RA1 新增 `MediaAudioTrack`、`AnnotationAudioPreference`、严格 CRUD/重排/默认值 API、权限和审计；
+  RA1 仍不接组合播放器。RA2 才迁移媒体级 run 与前端缓存 key，并必须提供 dry-run、幂等重跑、manifest/
+  checksum 校验、引用检查和失败补偿。

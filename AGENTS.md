@@ -522,6 +522,22 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/media/mediaPlaybackController.ts`
   - App-facing playback contract and latest-command ordering; all App media commands must pass through this boundary
   - expected source-switch/preview cancellation is not a user error, while play/seek failures are contained by the player UI
+- `packages/shared/src/mediaAudioTracks.ts` + `packages/shared/src/mediaAnalysisIdentity.ts`
+  - strict platform contracts for a primary media's ordered audio-track set, shared annotation-file default preference,
+    bounded analysis status, and media-scoped analysis run identity
+  - embedded original audio and independent media resources are different source variants; original uses the primary media
+    at zero offset, while every non-original track references a stable media resource. These DTOs never carry URLs,
+    PlayAuth, AccessKeys, provider responses, or ProjectData
+  - media analysis reuse identity contains only media resource, source fingerprint, algorithm version, and config hash.
+    Annotation-file identity, source-selection mode, and track offset must never be added; offset only maps source time to
+    project time
+- `src/media/synchronizedPlaybackPolicy.ts` + `src/media/synchronizedPlaybackState.ts`
+  - pure RA0 contracts for master-video/audio time mapping, drift classification, source-generation ordering, buffering,
+    resync, failure, and disposal; they do not own media elements, timers, React state, or temporary playback sessions
+  - late events from an old audio-track generation are normal stale facts, while illegal events for the current generation
+    remain explicit invalid transitions. Repeated browser ready/play/buffering facts are intentionally idempotent
+  - these modules are not yet wired into `VideoPlayer`; until the later migration phases complete, the existing
+    annotation-file-scoped analysis setting and run path remains runtime-authoritative
 - `src/media/nativeMediaPlaybackBackend.ts`
   - narrow HTMLMediaElement adapter with deterministic seeked/error/timeout/dispose settlement
 - `src/media/aliplayerSdk.ts` + `src/media/aliyunVodPlaybackBackend.ts`
