@@ -7,12 +7,27 @@ import type { ResourceAccessService } from "./resourceAccess.js";
 
 type DatabaseClient = PrismaClient | Prisma.TransactionClient;
 type ActiveMediaResource = Awaited<ReturnType<typeof requireActiveMediaResource>>;
+type EffectiveMediaPermission = Awaited<
+  ReturnType<ResourceAccessService["getEffectivePermission"]>
+>;
 
 export type MediaPlaybackAccessResult =
-  | { status: "available"; media: ActiveMediaResource }
-  | { status: "permission_denied" }
+  | {
+      status: "available";
+      media: ActiveMediaResource;
+      permission: EffectiveMediaPermission;
+    }
+  | {
+      status: "permission_denied";
+      media: ActiveMediaResource;
+      permission: EffectiveMediaPermission;
+    }
   | { status: "source_unavailable" }
-  | { status: "invalid_source" };
+  | {
+      status: "invalid_source";
+      media: ActiveMediaResource;
+      permission: EffectiveMediaPermission;
+    };
 
 /**
  * 播放列表和真实会话共用同一活动性、ACL 与媒体身份判断；这里只返回有限状态，不签发凭据或读取对象。
@@ -38,22 +53,22 @@ export async function resolveMediaPlaybackAccess(
     !permission.capabilities.includes("read") ||
     !permission.capabilities.includes("download")
   ) {
-    return { status: "permission_denied" };
+    return { status: "permission_denied", media, permission };
   }
   if (expectedKind && media.mediaKind !== expectedKind) {
-    return { status: "invalid_source" };
+    return { status: "invalid_source", media, permission };
   }
 
   const expectedMimePrefix = `${media.mediaKind}/`;
   if (media.sourceType === "uploaded") {
     const mimeType = media.mimeType ?? media.file?.mimeType;
     if (!media.file || !mimeType?.startsWith(expectedMimePrefix)) {
-      return { status: "invalid_source" };
+      return { status: "invalid_source", media, permission };
     }
   } else if (!media.aliyunVodVideoId || !media.aliyunVodRegion) {
-    return { status: "invalid_source" };
+    return { status: "invalid_source", media, permission };
   }
-  return { status: "available", media };
+  return { status: "available", media, permission };
 }
 
 /** 真实播放会话把有限选项状态恢复为稳定 HTTP 语义，并继续执行后续短时凭据签发。 */

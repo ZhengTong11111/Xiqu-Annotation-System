@@ -88,25 +88,45 @@ export class AliyunVodSdkGateway implements AliyunVodGateway {
 
   async inspectVideo(videoId: string): Promise<AliyunVodMediaMetadata> {
     try {
-      const response = await this.client.getVideoInfo(
+      // GetVideoInfo 提供标题与时长，GetPlayInfo.VideoBase 才提供 audio/video 媒体类别。
+      // 两个响应只在适配器内短暂存在，可能携带的播放 URL 不会进入 DTO、数据库或日志。
+      // 先验证基础媒资，再读取媒体类型；顺序调用能保留 NotFound 等准确错误，
+      // 也避免首个请求失败后留下一个无人接收的并行 SDK rejection。
+      const infoResponse = await this.client.getVideoInfo(
         new GetVideoInfoRequest({ videoId }),
       );
-      const video = response.body?.video;
+      const playInfoResponse = await this.client.getPlayInfo(new GetPlayInfoRequest({
+        videoId,
+        resultType: "Multiple",
+        outputType: "cdn",
+      }));
+      const video = infoResponse.body?.video;
       const normalizedVideoId = requiredString(video?.videoId);
       const title = requiredString(video?.title);
       const status = requiredString(video?.status);
-      if (!normalizedVideoId || !title || !status || normalizedVideoId !== videoId) {
+      const playInfoVideoId = requiredString(playInfoResponse.body?.videoBase?.videoId);
+      const mediaKind = parseAliyunVodMediaKind(
+        playInfoResponse.body?.videoBase?.mediaType,
+      );
+      if (
+        !normalizedVideoId ||
+        !title ||
+        !status ||
+        normalizedVideoId !== videoId ||
+        playInfoVideoId !== videoId ||
+        !mediaKind
+      ) {
         throw new AliyunVodGatewayError(
           "invalid_response",
-          optionalString(response.body?.requestId),
+          optionalString(infoResponse.body?.requestId) ??
+            optionalString(playInfoResponse.body?.requestId),
         );
       }
       return {
         videoId: normalizedVideoId,
         title,
         status,
-        // R3h2 接入的是 VOD 视频身份；同 vid 的纯音频转码由 R3h4 作为分析来源解析。
-        mediaKind: "video",
+        mediaKind,
         duration: optionalNonNegativeNumber(video?.duration),
       };
     } catch (error) {
@@ -237,6 +257,12 @@ function requiredString(value: unknown) {
 
 function optionalString(value: unknown) {
   return requiredString(value);
+}
+
+// 阿里云字段大小写不作为业务差异，但未知类型必须拒绝，不能把纯音频误建成视频资源。
+function parseAliyunVodMediaKind(value: unknown): MediaKind | null {
+  const normalized = requiredString(value)?.toLowerCase();
+  return normalized === "video" || normalized === "audio" ? normalized : null;
 }
 
 // 非法时长按未知处理；创建资源仍可继续，但不会伪造零秒。

@@ -79,6 +79,7 @@ export type AnnotationAudioPlaybackOptions = {
   annotationFileId: string;
   primaryMediaResourceId: string;
   defaultAudioTrackId: string | null;
+  canManageTracks: boolean;
   tracks: AnnotationAudioPlaybackTrackOption[];
 };
 
@@ -220,11 +221,12 @@ export function parseAnnotationAudioPlaybackOptions(
 ): AnnotationAudioPlaybackOptions | null {
   if (
     !isRecord(value) ||
-    Object.keys(value).length !== 4 ||
+    Object.keys(value).length !== 5 ||
     !isStableMediaAudioIdentity(value.annotationFileId) ||
     !isStableMediaAudioIdentity(value.primaryMediaResourceId) ||
     (value.defaultAudioTrackId !== null &&
       !isStableMediaAudioIdentity(value.defaultAudioTrackId)) ||
+    typeof value.canManageTracks !== "boolean" ||
     !Array.isArray(value.tracks) ||
     value.tracks.length < 1 ||
     value.tracks.length > MAX_MEDIA_AUDIO_TRACKS_PER_MEDIA
@@ -266,6 +268,7 @@ export function parseAnnotationAudioPlaybackOptions(
     annotationFileId: value.annotationFileId,
     primaryMediaResourceId: value.primaryMediaResourceId,
     defaultAudioTrackId: value.defaultAudioTrackId,
+    canManageTracks: value.canManageTracks,
     tracks,
   };
 }

@@ -28,6 +28,12 @@ test("VOD 网关规范化媒资元数据且不返回供应商原始响应", asyn
       },
     }),
     getVideoPlayAuth: async () => ({ body: {} }),
+    getPlayInfo: async () => ({
+      body: {
+        requestId: "request-play-info-1",
+        videoBase: { videoId: "video_123456", mediaType: "Video" },
+      },
+    }),
   } as never);
 
   assert.deepEqual(await gateway.inspectVideo("video_123456"), {
@@ -37,6 +43,29 @@ test("VOD 网关规范化媒资元数据且不返回供应商原始响应", asyn
     mediaKind: "video",
     duration: 123.5,
   });
+});
+
+test("VOD 网关按 VideoBase 媒体类型识别纯音频资源", async () => {
+  const gateway = new AliyunVodSdkGateway({
+    getVideoInfo: async () => ({
+      body: {
+        video: {
+          videoId: "audio_123456",
+          title: "寻梦人声分离",
+          status: "Normal",
+          duration: 123.5,
+        },
+      },
+    }),
+    getVideoPlayAuth: async () => ({ body: {} }),
+    getPlayInfo: async () => ({
+      body: {
+        videoBase: { videoId: "audio_123456", mediaType: "audio" },
+      },
+    }),
+  } as never);
+
+  assert.equal((await gateway.inspectVideo("audio_123456")).mediaKind, "audio");
 });
 
 test("VOD 分析音频只选择正常 HTTPS mp3 音频并按码率稳定排序", () => {

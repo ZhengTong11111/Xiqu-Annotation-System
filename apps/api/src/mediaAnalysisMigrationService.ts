@@ -325,11 +325,12 @@ function validateManifestAndAssetSet(
     typeof value.pitchPreset !== "string"
   ) return false;
 
-  // manifest 声明每个瓦片应有的序列；精确集合比较能发现数据库缺号、重复或混入未知 preset。
+  // manifest 的 waveformLevels 保存桶宽，资产 level 保存它在数组中的序号；二者不能直接比较。
+  // 这里按 manifest 顺序还原资产键，精确集合比较才能发现数据库缺号、重复或混入未知 preset。
   const expected = new Set<string>();
   for (let tileIndex = 0; tileIndex < value.tileCount; tileIndex += 1) {
-    for (const level of value.waveformLevels as number[]) {
-      expected.add(`waveform:default:${level}:${tileIndex}`);
+    for (const [levelIndex] of (value.waveformLevels as number[]).entries()) {
+      expected.add(`waveform:default:${levelIndex}:${tileIndex}`);
     }
     for (const preset of value.spectrogramPresets as string[]) {
       expected.add(`spectrogram:${preset}:0:${tileIndex}`);

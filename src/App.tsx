@@ -29,6 +29,7 @@ import type { MediaPlaybackController } from "./media/mediaPlaybackController";
 import { mockProject } from "./mockData";
 import { AnnotationReviewPanel } from "./platform/AnnotationReviewPanel";
 import { AnnotationMediaBindingDialog } from "./platform/AnnotationMediaBindingDialog";
+import { MediaAudioTrackManagerDialog } from "./platform/MediaAudioTrackManagerDialog";
 import {
   PlatformMaintenanceSaveWarningDialog,
   type MaintenanceDraftSaveState,
@@ -901,6 +902,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
   const [serverMediaDialogOpen, setServerMediaDialogOpen] = useState(false);
   const [analysisAudioDialogOpen, setAnalysisAudioDialogOpen] = useState(false);
+  const [audioTrackManagerOpen, setAudioTrackManagerOpen] = useState(false);
   const [sentenceAnnotationSettingsOpen, setSentenceAnnotationSettingsOpen] = useState(false);
   const [analysisViewport, setAnalysisViewport] = useState<PlatformAnalysisViewport | null>(null);
   const [serverMediaBindingBusy, setServerMediaBindingBusy] = useState(false);
@@ -923,6 +925,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     canWrite: Boolean(editorSession?.canWrite),
     enabled: Boolean(editorSession && platformMedia),
   });
+  useEffect(() => {
+    // 音轨管理器只属于当前文件与主媒体组合；切换会话不能沿用上一媒体的打开状态。
+    setAudioTrackManagerOpen(false);
+  }, [editorSession?.annotationFileId, platformMedia?.resourceId]);
   const platformMediaAnalysis = usePlatformMediaAnalysis({
     client: platformClient ?? null,
     currentUserId: editorSession?.currentUserId ?? null,
@@ -7135,6 +7141,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             runtimeState: platformAudioTracks.runtimeState,
             runtimeError: platformAudioTracks.runtimeError,
             canSetDefault: platformAudioTracks.canSetDefault,
+            canManageTracks: platformAudioTracks.canManageTracks,
             defaultUpdatingTrackId: platformAudioTracks.defaultUpdatingTrackId,
             defaultUpdateError: platformAudioTracks.defaultUpdateError,
             onSelect: (trackId) => {
@@ -7147,6 +7154,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             onSetDefault: (trackId) => {
               void platformAudioTracks.setAsDefault(trackId);
             },
+            onManageTracks: () => setAudioTrackManagerOpen(true),
           } : undefined}
           isPlaying={isPlaying}
           playbackRate={playbackRate}
@@ -7312,6 +7320,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             if (!serverMediaBindingBusy) setServerMediaDialogOpen(open);
           }}
           onConfirm={updateServerMediaBinding}
+        />
+      ) : null}
+      {editorSession && platformMedia && platformAudioTracks.canManageTracks ? (
+        <MediaAudioTrackManagerDialog
+          client={editorSession.client}
+          primaryMediaResourceId={platformMedia.resourceId}
+          parentId={editorSession.parentId}
+          open={audioTrackManagerOpen}
+          onOpenChange={setAudioTrackManagerOpen}
+          onChanged={async () => {
+            await platformAudioTracks.refresh();
+          }}
         />
       ) : null}
       {editorSession ? (

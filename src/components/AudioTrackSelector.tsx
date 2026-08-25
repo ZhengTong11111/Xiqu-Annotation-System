@@ -5,6 +5,7 @@ import {
   LoaderCircle,
   RefreshCw,
   RotateCcw,
+  Settings2,
   Star,
   VolumeX,
 } from "lucide-react";
@@ -29,12 +30,14 @@ export type AudioTrackSelectorModel = {
   runtimeState: SynchronizedPlaybackState;
   runtimeError: string | null;
   canSetDefault: boolean;
+  canManageTracks: boolean;
   defaultUpdatingTrackId: string | null;
   defaultUpdateError: string | null;
   onSelect: (trackId: string) => void;
   onRefresh: () => void;
   onRetry: () => void;
   onSetDefault: (trackId: string) => void;
+  onManageTracks: () => void;
 };
 
 type AudioTrackSelectorProps = {
@@ -105,16 +108,32 @@ export function AudioTrackSelector({
               <strong>监听音轨</strong>
               <span>{status.label}</span>
             </div>
-            <button
-              type="button"
-              className="icon-button audio-track-selector-refresh"
-              title="刷新音轨与权限"
-              aria-label="刷新音轨与权限"
-              disabled={model.loading || model.refreshing}
-              onClick={model.onRefresh}
-            >
-              <RefreshCw size={14} className={model.refreshing ? "is-spinning" : ""} />
-            </button>
+            <div className="audio-track-selector-heading-actions">
+              {model.canManageTracks ? (
+                <button
+                  type="button"
+                  className="icon-button"
+                  title="管理监听音轨"
+                  aria-label="管理监听音轨"
+                  onClick={() => {
+                    onOpenChange(false);
+                    model.onManageTracks();
+                  }}
+                >
+                  <Settings2 size={14} />
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="icon-button audio-track-selector-refresh"
+                title="刷新音轨与权限"
+                aria-label="刷新音轨与权限"
+                disabled={model.loading || model.refreshing}
+                onClick={model.onRefresh}
+              >
+                <RefreshCw size={14} className={model.refreshing ? "is-spinning" : ""} />
+              </button>
+            </div>
           </div>
 
           {model.options ? (

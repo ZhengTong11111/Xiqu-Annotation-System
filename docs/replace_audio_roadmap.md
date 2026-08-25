@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2、RA3a、RA3b1、RA3b2a 已完成
+> 文档状态：专项实施中，RA0-RA2、RA3a、RA3b1、RA3b2a、RA3b2b1 已完成
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -27,8 +27,12 @@
   行为不变。
 - **RA3b2a 已完成（2026-08-24）**：建立标注文件上下文的 no-store 可试听选项、文件会话选择 hook、紧凑顶栏
   选择器和共享默认写入；失败/撤权/列表加载异常均暂停静音并保留选择，只有显式选择视频原声才恢复主声音。
-- 下一阶段是 **RA3b2b 真实媒体验收与管理边界**。先用 uploaded/VOD 音轨完成 Chrome/Safari、localhost/
-  HTTP IP、快速切换、撤权和 detached window 验收，再依据真实证据修复并接入最小音轨管理入口。
+- **RA3b2b1 已完成（2026-08-24）**：完成本机候选库恢复演练及默认开发库两阶段媒体级分析迁移；新增主媒体
+  写权限控制的低频音轨管理器、纯音频资源选择、上传音频真实播放闭环和 VOD 纯音频媒资识别。迁移校验已修正
+  manifest 波形桶宽与资产 level 序号混淆，真实上传 WAV 的播放会话与 Range 读取通过。
+- 下一阶段是 **RA3b2b2 VOD 音轨与真实浏览器验收**。补齐稳定 VOD 音频 rendition 身份，再完成 Chrome/
+  Safari、localhost/HTTP IP、快速切换、撤权、PlayAuth 续签、慢网和 detached window 验收；RA3b2b2 通过前
+  不进入 RA4。
 
 ## 1. 目标重新定义
 
@@ -805,14 +809,38 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 专项合同/状态 17/17、媒体播放 43/43、真实 PostgreSQL/Fastify 音轨 API 4/4、完整 API 186/186 和完整 build
   通过。浏览器确认本地编辑器不出现平台选择器且无 console warning/error；真实平台音轨验收未伪造、未部署。
 
-**RA3b2b 待推进**
+**RA3b2b1 实际完成（2026-08-24）**
 
-- 建立可控 uploaded 与 VOD 音频测试资产，在平台编辑器实际验证原声、上传音频、VOD 音频快速 A/B/C、播放/
-  暂停/seek/循环/倍率、before/after offset、文件切换和 detached window；证明只有最后选择存活且没有双声。
-- 覆盖 Chrome 与 Safari、localhost 与临时 HTTP IP；验证 VOD License、Range/CORS、自动播放限制、慢请求取消、
-  PlayAuth 续签、撤回源音频 read/download、禁用/删除音轨和主媒体变化后的明确阻断与恢复。
-- 根据真实证据修正时序/UI，并设计最小低频音轨管理入口，复用 RA1 CRUD/重排 API；不得把新增/排序/偏移编辑
-  塞进快速选择器，也不得在未验收时提前进入 RA4。
+- 先对本机数据库和对象目录执行一致备份，再恢复到独立候选数据库与独立对象目录。候选库和本机默认开发库均
+  按 additive migration、dry-run、精确 plan fingerprint execute、幂等复检、最终 migration 的顺序完成；默认
+  开发库迁移期间启用维护、停止 worker/API 写入，完成后恢复服务并通过 readiness。此处不是生产服务器迁移。
+- 迁移演练暴露并修复真实缺陷：manifest 的 `waveformLevels` 保存桶宽，数据库资产 `level` 保存数组序号，旧校验
+  直接比较二者会把完整 succeeded run 误判为损坏。新集成 fixture 写入真实对象和两级波形资产，锁定归并保留
+  run、asset 和 fingerprint 回填。迁移命令从临时 worktree 运行时还必须显式使用实际对象目录的绝对路径，不能
+  让相对 `XIQU_STORAGE_ROOT` 随当前目录漂移。
+- `AnnotationAudioPlaybackOptions` 新增严格 `canManageTracks`，只由当前账号对主媒体的有效 `write` 推导；它与
+  标注文件写权限控制的共享默认音轨互不替代。快速选择器只增加一个低频设置入口，CRUD、精确上下重排、名称、
+  类型、偏移、启用与删除确认集中在独立管理弹窗；删除只解除关系，不删除源媒体。
+- 复用现有跨目录媒体选择器并增加 `audio-track-source` 模式，只允许稳定的纯音频 `MediaFile`。上传入口只接受
+  `audio/*`；VOD 媒资类型由 `GetPlayInfo.VideoBase.MediaType` 规范化，视频即使存在 MP3 转码也仍是视频，不能
+  被持久音轨关系误收。临时 URL、PlayAuth 和供应商原始响应没有进入 DTO、数据库或日志。
+- 使用真实上传 WAV 经普通 API 建立外部音轨，列表返回 available，播放会话返回 uploaded/file identity，受保护
+  内容端点的字节 Range 返回 206、正确 MIME 和 `Accept-Ranges`。未登录浏览器与本地工具路径渲染正常且控制台
+  无异常；登录后的弹窗视觉、真实切换声音及 detached window 尚未冒充为已验收。
+- 专项音轨合同/状态/来源策略 16/16、真实音轨 API 4/4、迁移 10/10、完整 API 187/187、Web 与完整 build 均通过；
+  仅保留既有 Web chunk 体积提醒和测试环境 `pg` deprecation warning。
+
+**RA3b2b2 待推进**
+
+- 为同一 VOD 的音频 rendition 建立稳定且可复核的持久身份，优先使用供应商 JobId/转码模板等稳定事实；播放 URL
+  只作为短期会话结果，不能作为关系 identity、比较键或数据库字段。完成真实 VOD 纯音频资源创建与播放会话。
+- 在登录后的平台编辑器完成音轨管理弹窗视觉与键盘验收，再实际验证原声、上传音频、VOD 音频快速 A/B/C、
+  播放/暂停/seek/循环/倍率、正负 offset、文件切换和 detached window；证明只保留最后意图且不会双声。
+- 覆盖 Chrome 与 Safari、localhost 与临时 HTTP IP，并核对未来 HTTPS 域名下无混合内容；验证 Web License、
+  Range/CORS、自动播放限制、慢请求取消、PlayAuth 续签、撤回源音频权限、禁用/删除音轨和主媒体变化后的明确
+  阻断与恢复。
+- 使用真实证据修正时序与 UI，完成专项测试、完整构建和浏览器验收后才允许进入 RA4。偏移校准高级 UI、分析
+  跟随和旧分析设置清理仍分别属于 RA5、RA4、RA6，不在本轮提前实现。
 
 ### RA4：分析显示跟随与渐进缓存复用
 

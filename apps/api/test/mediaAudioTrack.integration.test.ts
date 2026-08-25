@@ -273,6 +273,7 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
     assert.equal(initialOptions.statusCode, 200, initialOptions.body);
     assert.equal(initialOptions.headers["cache-control"], "no-store");
     assert.equal(playbackCredentialRequests, credentialRequestsBeforeOptions);
+    assert.equal(dataOf(initialOptions.json()).canManageTracks, true);
     assert.deepEqual(
       (dataOf(initialOptions.json()).tracks as JsonObject[]).map((entry) => ({
         id: recordOf(entry.track).id,
@@ -435,6 +436,23 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
     });
     assert.equal(findOptionAvailability(optionsWithoutAudioAccess, original.id), "available");
     assert.equal(findOptionAvailability(optionsWithoutAudioAccess, uploadedTrack.id), "permission_denied");
+    assert.equal(dataOf(optionsWithoutAudioAccess.json()).canManageTracks, false);
+
+    // 自定义 ACL 可以只授予主媒体 write：此时不能试听，但管理入口必须与真实 CRUD 门禁保持一致。
+    await prisma.resourcePermission.update({
+      where: { resourceId_userId: { resourceId: primaryVideoId, userId: student.id } },
+      data: { capabilities: ["write"] },
+    });
+    const optionsWithWriteOnly = await jsonRequest(app, studentToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/audio-playback-options`,
+    });
+    assert.equal(findOptionAvailability(optionsWithWriteOnly, original.id), "permission_denied");
+    assert.equal(dataOf(optionsWithWriteOnly.json()).canManageTracks, true);
+    await prisma.resourcePermission.update({
+      where: { resourceId_userId: { resourceId: primaryVideoId, userId: student.id } },
+      data: { capabilities: ["read", "download"] },
+    });
     await prisma.resourcePermission.create({
       data: {
         resourceId: uploadedAudioId,

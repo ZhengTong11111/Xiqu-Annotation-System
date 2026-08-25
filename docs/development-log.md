@@ -7445,3 +7445,73 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 已完成：RA3b2a 权威选项、授权复用、最终失败语义、文件会话选择、共享默认、紧凑 UI、App/VideoPlayer 接线、
   测试与文档。待推进：RA3b2b 真实 uploaded/VOD、Chrome/Safari、localhost/HTTP IP、A/B/C、seek/循环/倍率、
   撤权、续签、慢网、文件/窗口切换验收和最小管理入口；本轮未部署生产。
+
+## 2026-08-24：RA3b2b1 本机迁移演练、音轨管理入口与 uploaded 真实闭环
+
+### 本轮计划与数据库迁移纪律
+
+- RA3b2a 提交 `4c7550e` 后，先按实际数据库、对象目录和播放器状态重写忽略文件 `CLAUDE_WORK.md`。本轮没有把
+  RA3b2b 一次吞完，而是拆为 RA3b2b1 的本机迁移/管理/uploaded 闭环和 RA3b2b2 的 VOD/多浏览器时序验收；
+  后者未通过前不进入 RA4。
+- 在任何破坏性 migration 前，先通过正式备份流程保存本机 PostgreSQL 和本地对象 manifest，并完成校验。随后
+  恢复到独立候选数据库和独立对象目录，依次执行 additive migrations、媒体分析归并 dry-run、精确 plan
+  fingerprint execute、第二次幂等 dry-run、最终媒体级 migration，并用候选 API 验证 live/ready。候选演练没有
+  改写默认开发库。
+- 候选通过后，本机默认开发库进入维护，暂停 API/analysis worker 写入，按相同步骤执行正式迁移，再重启当前
+  源码 API、退出维护并通过 readiness。两处数据库最终均为 25/25 migrations current；迁移前有 5 个 run、4 个
+  可执行归并组、0 个阻断组，执行后有 1 个 duplicate 标记 superseded，复检为 0 可执行、0 阻断。这里是本机
+  开发数据库迁移，不是远端生产部署，也没有同步本机实验数据到服务器。
+- 从历史临时 worktree 运行 CLI 时发现 `.env` 中相对对象目录会按进程 cwd 解析，曾产生“对象不存在”的假象。
+  正式演练改为显式传入权威对象目录绝对路径，并把这一操作规则写入 AGENTS；日志不记录对象 key、临时 URL、
+  token 或任何云凭据。
+
+### 迁移缺陷修复与回归保护
+
+- 真实数据首次 dry-run 暴露 `asset_validation_failed`。定位后确认 manifest 的 `waveformLevels` 是波形 bucket
+  width，例如 64、256；`MediaAnalysisAsset.level` 是对应数组的零基序号，例如 0、1。旧校验把两者当成同一值，
+  会把完整 succeeded run 错误阻断，并非真实资产损坏。
+- `mediaAnalysisMigrationService` 现在按 manifest 数组序号建立期望资产集合，同时继续精确校验 kind、preset、
+  level、tileIndex、size、checksum 和对象内容。新增集成 fixture 写入一份真实 succeeded run、两级波形资产和
+  pitch 资产，证明归并后 3 个资产全部保留且 canonical 媒体 fingerprint 正确回填。
+- 自审确认修复只影响迁移验证，不改变在线分析 run 选择、worker claim、tile codec、前端缓存或时间轴偏移。
+  历史重复 run 仍只标记 superseded，本轮没有提前执行 RA6 的对象删除。
+
+### 权限合同、VOD 媒体类型与低频管理面板
+
+- 严格 `AnnotationAudioPlaybackOptions` 新增 `canManageTracks`。服务端只从当前账号对主媒体的有效 `write` 权限
+  计算该值；标注文件 `canWrite` 仍单独控制共享默认音轨。这样允许媒体管理员维护公共音轨集合，同时不把媒体
+  写权限扩大成标注内容权限，也不让标注编辑权越权修改媒体关系。所有 CRUD 和默认值写入仍在 API 事务内重新
+  授权，前端布尔值仅用于显示入口。自审还修正了首版把该提示错误绑定到试听 `read + download` available 状态
+  的问题，并用“主媒体仅 write”ACL 锁定：管理入口可见，但试听依然正确阻断。
+- VOD 创建不再把所有 vid 固定识别为 video。唯一 Aliyun gateway 顺序调用 `GetVideoInfo` 和 `GetPlayInfo`，从
+  `VideoBase.MediaType` 严格规范化 `audio | video` 并复核两份响应的 videoId；未知类型 fail closed。顺序调用还
+  避免首个供应商请求失败时留下无人接收的并行 rejection。供应商播放 URL、原始响应、PlayAuth 和凭据没有流出
+  gateway。
+- 复用现有跨目录 `AnnotationMediaBindingDialog` 增加 `audio-track-source` 模式。该模式只接受权威
+  `mediaKind=audio` 的稳定媒体资源，上传 input 只接受 `audio/*`；VOD 视频即使有临时 MP3 分析转码，也不能被
+  当成持久监听音轨来源。原有标注主媒体和分析音频选择模式保持原语义。
+- 新增独立 `MediaAudioTrackManagerDialog` 与 `useMediaAudioTrackManager`。高频顶栏选择器只增加设置图标；低频
+  弹窗负责新增、名称、类型、正负偏移、启用、精确上下重排和删除确认。hook 统一管理列表重读、单飞 mutation、
+  同事件循环双击门禁及文件/媒体 generation；每次成功写入后重读服务端权威列表。删除提示明确只解除关系，
+  不删除源音频文件或共享分析资产。
+- 自审把通用删除操作 CSS 类名收窄到音轨管理器，避免后续确认弹窗发生全局样式耦合。未引入新依赖：现有
+  Radix Dialog/AlertDialog、React、lucide 和平台媒体选择器已完整覆盖焦点、确认和视觉合同，引入第二套表单或
+  拖拽库不会简化本轮精确上下重排。
+
+### 真实 uploaded 闭环、浏览器核查与验证
+
+- 使用普通平台 API 为现有 VOD 主媒体关联一份平台上传 WAV 外部音轨，验证创建、权威列表、available 状态和
+  uploaded 播放会话。会话只返回 file identity 与 MIME，不含真实 URL；随后通过既有受保护内容端点读取首段
+  Range，返回 `206`、`Accept-Ranges: bytes`、`audio/wav` 和精确字节长度。该关系仅留在本机调试数据库。
+- 通过真实 Aliyun gateway 检查既有《寻梦》VOD，只记录稳定且非敏感事实：媒资身份一致、状态 Normal、类型
+  video、时长约 1494 秒。未把临时播放地址、AccessKey、Secret、PlayAuth 或 Web License 写入文档、日志或代码。
+- 浏览器检查 `127.0.0.1:5173` 的登录页和未登录本地工具路径，界面正常且控制台无 warning/error；本地模式不
+  出现平台音轨控件。当前浏览器没有现成登录会话，依据敏感信息输入约束没有代用户填写账号密码，因此登录后的
+  音轨管理弹窗视觉、真实声音切换、detached window、Safari 和 HTTP IP 尚未声称完成，明确进入 RA3b2b2。
+- 最终验证通过：`test:media-audio-tracks` 16/16；真实 PostgreSQL/Fastify `test:media-audio-track-api` 4/4；
+  `test:media-analysis-migration` 10/10；完整 `test:api` 187/187；`npm run build:web` 和 `npm run build` 通过；
+  `git diff --check` 通过。仅有既有 Web 主 chunk 大小提醒与测试环境既有 `pg` deprecation warning。
+- 静态审查未发现新增 `any`、debug console、重复 VOD issuer、第二媒体元素控制、临时 URL/凭据持久化、旧管理
+  分支或绕过服务端 ACL 的调用。已完成：RA3b2b1 本机迁移演练、迁移缺陷修复、管理权限合同、纯音频选择、
+  uploaded 真实闭环和文档。待推进：RA3b2b2 稳定 VOD 音频 rendition 身份、真实 VOD 音轨、登录 UI、Chrome/
+  Safari、localhost/HTTP IP、A/B/C、撤权、续签、慢网与 detached window 验收。

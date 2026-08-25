@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 import { MediaAnalysisMigrationService } from "../src/mediaAnalysisMigrationService.js";
 import { LocalObjectStorage } from "../src/storage.js";
@@ -44,9 +45,16 @@ test("媒体分析归并 dry-run/execute 可重验、幂等且不删除历史事
       creatorId: admin.id,
       offsetSeconds: 3.25,
     });
+
+    // 真实 manifest 保存波形桶宽，而资产 level 使用 0 开始的序号；迁移必须接受这类已完成 run。
+    const validRun = await createSucceededRunWithIndexedWaveformLevels(prisma, storage, {
+      annotationFileId: annotations[2]!.resourceId,
+      mediaId,
+      creatorId: admin.id,
+    });
     const service = new MediaAnalysisMigrationService(prisma, storage);
     const dryRun = await service.dryRun();
-    assert.equal(dryRun.plan.actionableGroupCount, 1);
+    assert.equal(dryRun.plan.actionableGroupCount, 2);
     assert.equal(dryRun.plan.blockedGroupCount, 0);
 
     await assert.rejects(() => service.execute({
@@ -64,7 +72,10 @@ test("媒体分析归并 dry-run/execute 可重验、幂等且不删除历史事
     });
     assert.equal(rows.filter((row) => row.supersededByRunId !== null).length, 1);
     assert.equal(rows.filter((row) => row.mediaFingerprint !== null).length, 1);
-    assert.equal(await prisma.mediaAnalysisAsset.count(), 0);
+    assert.equal(await prisma.mediaAnalysisAsset.count(), 3);
+    assert.notEqual((await prisma.mediaAnalysisRun.findUniqueOrThrow({
+      where: { id: validRun.id },
+    })).mediaFingerprint, null);
     assert.equal(await prisma.auditLog.count({
       where: { action: "media_analysis_migration_apply" },
     }), 1);
@@ -120,7 +131,7 @@ test("媒体分析归并 dry-run/execute 可重验、幂等且不删除历史事
           version: 1,
           tileDurationSeconds: 10,
           tileCount: 1,
-          waveformLevels: [0],
+          waveformLevels: [64],
           spectrogramPresets: [],
           pitchPreset: "yin-v1",
         },
@@ -244,4 +255,70 @@ function createFailedRun(
       createdBy: input.creatorId,
     },
   });
+}
+
+async function createSucceededRunWithIndexedWaveformLevels(
+  prisma: ReturnType<typeof createTestPrisma>["prisma"],
+  storage: LocalObjectStorage,
+  input: {
+    annotationFileId: string;
+    mediaId: string;
+    creatorId: string;
+  },
+) {
+  const run = await prisma.mediaAnalysisRun.create({
+    data: {
+      annotationFileId: input.annotationFileId,
+      sourceMediaResourceId: input.mediaId,
+      sourceMode: "auto",
+      sourceFingerprint: "valid-indexed-levels",
+      algorithmVersion: "analysis-v1",
+      configHash: "valid-indexed-levels-config",
+      config: { sampleRate: 16000, fixture: "indexed-waveform-levels" },
+      status: "succeeded",
+      progress: 1,
+      manifest: {
+        version: 1,
+        tileDurationSeconds: 10,
+        tileCount: 1,
+        waveformLevels: [64, 256],
+        spectrogramPresets: [],
+        pitchPreset: "yin-v1",
+      },
+      duration: 1,
+      sampleRate: 16000,
+      completedAt: new Date(),
+      createdBy: input.creatorId,
+    },
+  });
+
+  const assetSpecs = [
+    { kind: "waveform", preset: "default", level: 0 },
+    { kind: "waveform", preset: "default", level: 1 },
+    { kind: "pitch", preset: "yin-v1", level: 0 },
+  ] as const;
+  for (const [index, spec] of assetSpecs.entries()) {
+    const payload = Buffer.from(`migration-asset-${index}`);
+    const storageKey = storage.createStorageKey("xqa");
+    const staged = await storage.putStagedObject(
+      storageKey,
+      Readable.from([payload]),
+      payload.length,
+    );
+    await storage.promoteStagedObject(staged);
+    await prisma.mediaAnalysisAsset.create({
+      data: {
+        runId: run.id,
+        ...spec,
+        tileIndex: 0,
+        startTime: 0,
+        endTime: 1,
+        mimeType: "application/octet-stream",
+        size: staged.size,
+        checksum: staged.checksum,
+        storageKey: staged.finalStorageKey,
+      },
+    });
+  }
+  return run;
 }

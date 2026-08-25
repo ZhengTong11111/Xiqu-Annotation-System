@@ -609,8 +609,15 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   `read + download` 可用性判断但不签发列表凭据；文件会话 hook 以共享默认初始化并保持当前试听意图，紧凑
   顶栏选择器支持切换、刷新、重试及权限受控的共享默认。外部失败、撤权、来源失效或列表加载异常不再静默
   回原声，而是暂停静音并等待显式恢复。合同/状态 17/17、播放 43/43、音轨 API 4/4、完整 API 186/186 和
-  build 通过，本地编辑器浏览器检查无回归。下一轮 RA3b2b 必须用真实 uploaded/VOD 资产完成 Chrome/Safari、
-  localhost/HTTP IP、快速 A/B/C、撤权、续签、detached window 和慢网验收，再确定最小音轨管理入口。
+  build 通过，本地编辑器浏览器检查无回归。
+
+  RA3b2b1 同日完成本机迁移演练与 uploaded 管理闭环：一致备份恢复到独立候选库后，候选库和默认开发库均完成
+  additive、dry-run/execute、幂等复检和最终媒体级 migration；修复 manifest 波形桶宽与资产 level 序号混淆的
+  迁移误阻断。编辑器新增由主媒体 `write` 单独控制的低频管理弹窗，可从跨目录选择器关联真正的 uploaded/VOD
+  纯音频，管理名称、类型、偏移、启用、顺序和解除关系；VOD mediaKind 改由供应商 VideoBase 严格识别。真实
+  uploaded WAV 的创建、选项、播放会话和受保护 Range 读取通过。下一轮 RA3b2b2 必须先建立稳定 VOD 音频
+  rendition 身份，再完成登录 UI、Chrome/Safari、localhost/HTTP IP、快速 A/B/C、撤权、续签、detached window
+  和慢网验收；通过前不进入分析显示切换 RA4。
 
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入

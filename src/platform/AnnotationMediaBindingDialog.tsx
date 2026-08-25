@@ -21,6 +21,7 @@ import type { PlatformClient } from "../api/platformClient";
 import { isResourceContainer } from "./resourceColumnModel";
 import { collectResourcePickerItems } from "./resourcePickerPaging";
 import { AliyunVodMediaDialog } from "./AliyunVodMediaDialog";
+import { isMediaAudioTrackSource } from "./mediaAudioTrackSourcePolicy";
 
 type Props = {
   client: PlatformClient;
@@ -29,7 +30,7 @@ type Props = {
   open: boolean;
   busy?: boolean;
   allowUnbound?: boolean;
-  pickerMode?: "annotation-media" | "analysis-audio";
+  pickerMode?: "annotation-media" | "analysis-audio" | "audio-track-source";
   title?: string;
   description?: string;
   onOpenChange: (open: boolean) => void;
@@ -306,10 +307,22 @@ export function AnnotationMediaBindingDialog(props: Props) {
 
         <footer className="annotation-media-actions">
           <span>{folderId ? `上传位置：${directory.current?.name ?? "正在读取"}` : "进入项目或文件夹后可上传媒体"}</span>
-          <input ref={inputRef} hidden type="file" accept={pickerMode === "analysis-audio" ? "audio/*" : "video/*,audio/*"} onChange={(event) => void upload(event.target.files?.[0])} />
+          <input
+            ref={inputRef}
+            hidden
+            type="file"
+            accept={pickerMode === "annotation-media" ? "video/*,audio/*" : "audio/*"}
+            onChange={(event) => void upload(event.target.files?.[0])}
+          />
           <button type="button" disabled={!canUpload || interactionBusy} title={canUpload ? "上传到当前目录" : "当前目录不可上传"} onClick={() => inputRef.current?.click()}><Upload size={15} />{uploading ? "上传中" : "上传新媒体"}</button>
           <button type="button" disabled={!canUpload || interactionBusy} title={canUpload ? "在当前目录创建 VOD 资源" : "当前目录不可创建"} onClick={() => setVodDialogOpen(true)}><Cloud size={15} />接入 VOD</button>
-          <button type="button" className="platform-primary-button" disabled={!selectedCanBind || interactionBusy} onClick={() => void confirmSelection()}>{props.busy || confirming ? "保存中" : "确认关联"}</button>
+          <button type="button" className="platform-primary-button" disabled={!selectedCanBind || interactionBusy} onClick={() => void confirmSelection()}>
+            {props.busy || confirming
+              ? "保存中"
+              : pickerMode === "audio-track-source"
+                ? "选择音频"
+                : "确认关联"}
+          </button>
         </footer>
         <AliyunVodMediaDialog
           client={props.client}
@@ -351,6 +364,10 @@ function canUseMediaForMode(
   if (resource.type !== "media_file") return false;
   if (mode === "annotation-media") {
     return resource.mediaKind === "video" || resource.mediaKind === "audio";
+  }
+  if (mode === "audio-track-source") {
+    // 监听音轨必须绑定稳定的纯音频资源；视频的临时 mp3 转码只属于分析管线，不能伪装成可复用音轨。
+    return isMediaAudioTrackSource(resource);
   }
   // 强制上传来源只接受纯音频；VOD 可使用同 vid 的纯音频转码，因此视频媒资仍可选择。
   return resource.mediaSourceType === "aliyun_vod"

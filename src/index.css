@@ -553,6 +553,12 @@ select {
   min-width: 0;
 }
 
+.audio-track-selector-heading > .audio-track-selector-heading-actions {
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
 .audio-track-selector-heading strong {
   font-size: 12px;
 }
@@ -2128,6 +2134,315 @@ select {
   align-items: center;
 }
 
+/* 音轨管理器沿用 Finder 式双栏密度：左侧只负责音轨导航，右侧集中编辑一个关系。 */
+.media-audio-track-manager-dialog {
+  position: fixed;
+  z-index: 301;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  width: min(820px, calc(100vw - 48px));
+  height: min(620px, calc(100vh - 48px));
+  overflow: hidden;
+  color: #26384f;
+  background: #f5f7fa;
+  border: 1px solid #bfc9d6;
+  border-radius: 8px;
+  box-shadow: 0 22px 60px rgb(17 28 43 / 28%);
+  outline: none;
+  transform: translate(-50%, -50%);
+}
+
+.media-audio-track-manager-body {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.38fr) minmax(320px, 0.62fr);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.media-audio-track-list-pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  border-right: 1px solid #d4dce6;
+  background: #eef2f7;
+}
+
+.media-audio-track-list-toolbar,
+.media-audio-track-list-toolbar > div {
+  display: flex;
+  align-items: center;
+}
+
+.media-audio-track-list-toolbar {
+  justify-content: space-between;
+  min-height: 42px;
+  padding: 6px 8px 6px 13px;
+  border-bottom: 1px solid #d4dce6;
+}
+
+.media-audio-track-list-toolbar > div {
+  gap: 2px;
+}
+
+.media-audio-track-list-toolbar button,
+.media-audio-track-form-heading > button {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  padding: 0;
+  place-items: center;
+  color: #52647b;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.media-audio-track-list-toolbar button:hover:not(:disabled),
+.media-audio-track-form-heading > button:hover:not(:disabled) {
+  color: #1769aa;
+  background: #dfeaf5;
+}
+
+.media-audio-track-list {
+  min-height: 0;
+  padding: 5px;
+  overflow: auto;
+}
+
+.media-audio-track-list > p {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 90px;
+  margin: 0;
+  color: #718096;
+  font-size: 12px;
+}
+
+.media-audio-track-list .spin {
+  animation: system-diagnostics-spin 900ms linear infinite;
+}
+
+.media-audio-track-list > button {
+  display: grid;
+  width: 100%;
+  gap: 2px;
+  padding: 8px 10px;
+  color: #344960;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  box-shadow: none;
+  text-align: left;
+}
+
+.media-audio-track-list > button:hover:not(:disabled) {
+  background: #e2e9f1;
+}
+
+.media-audio-track-list > button.active {
+  color: #173f66;
+  background: #d7e7f7;
+  box-shadow: inset 3px 0 #3c82c4;
+}
+
+.media-audio-track-list > button strong,
+.media-audio-track-list > button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-audio-track-list > button span {
+  color: #718096;
+  font-size: 11px;
+}
+
+.media-audio-track-editor-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: #f8fafc;
+}
+
+.media-audio-track-readonly {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  min-height: 100%;
+  padding: 28px;
+  color: #718096;
+  text-align: center;
+}
+
+.media-audio-track-readonly h3,
+.media-audio-track-readonly p {
+  margin: 7px 0 0;
+}
+
+.media-audio-track-readonly h3 {
+  color: #344960;
+  font-size: 16px;
+}
+
+.media-audio-track-readonly p {
+  max-width: 360px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.media-audio-track-readonly dl {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 6px 14px;
+  margin: 18px 0 0;
+  font-size: 12px;
+  text-align: left;
+}
+
+.media-audio-track-readonly dt { color: #8a96a6; }
+.media-audio-track-readonly dd { margin: 0; color: #40546d; }
+
+.media-audio-track-form {
+  display: grid;
+  gap: 15px;
+  padding: 18px 20px;
+}
+
+.media-audio-track-form-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #dce3eb;
+}
+
+.media-audio-track-form-heading h3 {
+  margin: 0;
+  color: #2f435a;
+  font-size: 16px;
+}
+
+.media-audio-track-form-heading span {
+  display: block;
+  margin-top: 4px;
+  color: #718096;
+  font-size: 11px;
+}
+
+.media-audio-track-form-heading > button.danger {
+  color: #a84045;
+}
+
+.media-audio-track-form > label:not(.media-audio-track-enabled-field) {
+  display: grid;
+  gap: 6px;
+  color: #52647b;
+  font-size: 12px;
+}
+
+.media-audio-track-form input[type="text"],
+.media-audio-track-form input[type="number"],
+.media-audio-track-form input:not([type]),
+.media-audio-track-form select {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  color: #26384f;
+  background: #fff;
+  border: 1px solid #c7d2df;
+  border-radius: 5px;
+  outline: 0;
+}
+
+.media-audio-track-form input:focus,
+.media-audio-track-form select:focus {
+  border-color: #4f91c8;
+  box-shadow: 0 0 0 2px rgb(79 145 200 / 14%);
+}
+
+.media-audio-track-form small {
+  color: #8490a1;
+  font-size: 11px;
+}
+
+.media-audio-track-enabled-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #40546d;
+  font-size: 12px;
+}
+
+.media-audio-track-enabled-field input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+}
+
+.media-audio-track-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.media-audio-track-form-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.media-audio-track-delete-dialog {
+  position: fixed;
+  z-index: 12003;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: min(420px, calc(100vw - 32px));
+  gap: 10px;
+  padding: 16px;
+  color: #29384d;
+  background: #f8fafc;
+  border: 1px solid #c5cfdb;
+  border-radius: 8px;
+  box-shadow: 0 24px 64px rgb(16 27 42 / 28%);
+  outline: none;
+  transform: translate(-50%, -50%);
+}
+
+.media-audio-track-delete-dialog h2,
+.media-audio-track-delete-dialog p {
+  margin: 0;
+}
+
+.media-audio-track-delete-dialog h2 { font-size: 15px; }
+.media-audio-track-delete-dialog p { color: #65758a; font-size: 12px; line-height: 1.55; }
+
+.media-audio-track-delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.media-audio-track-delete-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.media-audio-track-delete-actions button.danger {
+  color: #fff;
+  background: #a84045;
+  border-color: #a84045;
+}
+
 /* VOD 表单复用媒体窗口的层级与按钮语言，但保持短表单宽度，嵌套打开时覆盖父选择器。 */
 .aliyun-vod-dialog {
   position: fixed;
@@ -2210,6 +2525,21 @@ select {
   .annotation-media-current small { grid-column: 2; }
   .annotation-media-actions { flex-wrap: wrap; }
   .annotation-media-actions > span { flex-basis: 100%; }
+
+  .media-audio-track-manager-dialog {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+  }
+
+  .media-audio-track-manager-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(150px, 0.42fr) minmax(260px, 0.58fr);
+  }
+
+  .media-audio-track-list-pane {
+    border-right: 0;
+    border-bottom: 1px solid #d4dce6;
+  }
 }
 
 /* 密码修改是短表单，保持与账号/诊断窗口相同层级，但不扩张成管理面板。 */

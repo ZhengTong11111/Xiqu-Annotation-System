@@ -283,6 +283,7 @@ export function usePlatformAudioTrackSelection(
     runtimeState,
     runtimeError,
     canSetDefault: input.canWrite,
+    canManageTracks: options?.canManageTracks ?? false,
     selectTrack,
     retry,
     refresh: () => loadOptions("refresh"),

@@ -135,6 +135,7 @@ test("可试听选项严格绑定标注文件、主媒体、有序音轨与默�
     annotationFileId: "annotation-file",
     primaryMediaResourceId: "media-video",
     defaultAudioTrackId: vocal.id,
+    canManageTracks: true,
     tracks: [
       { track: ORIGINAL_TRACK, availability: "available" },
       { track: vocal, availability: "permission_denied" },
@@ -167,6 +168,10 @@ test("可试听选项严格绑定标注文件、主媒体、有序音轨与默�
   assert.equal(parseAnnotationAudioPlaybackOptions({
     ...options,
     temporaryUrl: "secret",
+  }), null);
+  assert.equal(parseAnnotationAudioPlaybackOptions({
+    ...options,
+    canManageTracks: "yes",
   }), null);
 });
 

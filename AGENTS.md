@@ -96,6 +96,9 @@ Main currently contains all major recent feature lines that matter for context:
   through FFmpeg stdin, and VOD analysis uses a temporary pure-audio URL that must never enter persistence or logs
 - analysis audio defaults to the bound uploaded/VOD media but can always be overridden with a readable server audio/VOD
   resource and restored to auto; these settings and assets are platform state, never ProjectData or undo/history state
+- the compact audio-track selector is a high-frequency listening surface; persistent relation CRUD belongs in the separate
+  low-frequency track manager. Track management derives only from effective `write` on the primary media, while changing the
+  shared annotation default derives from annotation-file write permission; neither capability may substitute for the other
 - recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
 - saved project JSON v6 sentence classification: every sentence independently stores `spoken | sung` and one project-defined
   ordered role option; only both valid values count as complete. Sentence lists and Timeline overlays share one red/blue
@@ -146,6 +149,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - normalizes provider failures to bounded categories and must never expose SDK errors, credentials, playauth, temporary URLs,
     signed covers, or raw provider responses to persistence/logging layers
   - analysis audio selection uses `GetPlayInfo` for HTTPS mp3 audio only; its temporary URL is worker-memory-only
+  - VOD resource `mediaKind` comes from strict `GetPlayInfo.VideoBase.MediaType`, not from the existence of an MP3 rendition.
+    Future same-VID audio renditions require a stable provider identity such as JobId, never a temporary playback URL
 - `apps/api/src/mediaAnalysisJobService.ts`
   - the only API business boundary for analysis-audio settings, ACL revalidation, source fingerprints, run/job reuse,
     status DTOs, tile descriptors, and protected asset reads
@@ -159,6 +164,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     immutable object checksums, and recording reversible canonical/superseded relationships
   - dry-run fingerprints the complete bounded plan; execute is super-admin-only, rechecks database facts under advisory and row
     locks, writes all groups atomically, and never deletes or reparents assets. Online analysis routes and workers must not call it
+  - manifest `waveformLevels` are configured bucket widths while asset `level` is the zero-based array index; never compare them
+    directly. A CLI launched from another worktree must receive the authoritative object-storage root as an absolute path because
+    a relative `XIQU_STORAGE_ROOT` follows that process's working directory
   - production RA2 rollout is deliberately two-release: deploy the additive migration code first, stop the analysis worker,
     dry-run and execute the exact migration plan, then deploy the final media-scoped schema migration. The final SQL fails closed
     on missing fingerprints, duplicate canonical identities, or active superseded jobs; never bypass this gate
@@ -217,6 +225,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - the only conversion from one persistent external audio-track record to an uploaded/VOD runtime source
   - every load reissues and identity-checks a file-bound playback session; uploaded Range URLs are built with the current
     access token only at load time, while PlayAuth and URLs must never enter ProjectData, drafts, preferences, or persisted state
+- `src/platform/MediaAudioTrackManagerDialog.tsx` + `src/platform/useMediaAudioTrackManager.ts` +
+  `src/platform/mediaAudioTrackSourcePolicy.ts`
+  - the low-frequency audio-relation management surface and its single-flight/session-generation owner; every committed
+    mutation rereads the authoritative list, and a late response from a previous file/media session must remain inert
+  - persistent external tracks accept only active `media_file` resources whose authoritative `mediaKind` is `audio`. A VOD
+    video's temporary MP3 analysis rendition is not a stable track source and must not pass this picker policy
 - `src/platform/platformMediaBindingPolicy.ts`
   - pure clean-session gate shared by current uploaded-media binding and future platform media sources
   - dirty/pending/transient/inline/merge/conflict/offline/error/remote-gap sessions must not replace the runtime media
@@ -560,6 +574,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     credentials. Persistent track records deliberately do not claim analysis status before a real media-scoped run is resolved
   - primary-media mutations reuse the resource-tree advisory gate, lock the media row, and recheck ACL. External sources must
     be active audio resources with `read + download`; listing relation metadata never grants playback or analysis access
+  - option DTO `canManageTracks` is derived only from effective primary-media `write`. Annotation-file write independently
+    controls the shared default; frontend visibility is only a hint and every CRUD/default mutation must reauthorize server-side
   - uploaded/VOD media creation and media copy must create exactly one original track in the same transaction. Copies get only
     their own original, while disabling/deleting external tracks clears default references without deleting source media;
     rebinding an annotation file atomically removes its old audio preference

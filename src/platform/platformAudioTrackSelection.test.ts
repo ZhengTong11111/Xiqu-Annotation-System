@@ -13,6 +13,7 @@ const options: AnnotationAudioPlaybackOptions = {
   annotationFileId: "annotation-file",
   primaryMediaResourceId: "media-video",
   defaultAudioTrackId: "track-vocal",
+  canManageTracks: true,
   tracks: [
     {
       availability: "available",

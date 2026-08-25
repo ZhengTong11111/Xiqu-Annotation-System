@@ -174,6 +174,10 @@ export class MediaAudioTrackService {
       annotationFileId,
       primaryMediaResourceId,
       defaultAudioTrackId,
+      // 试听需要 read + download；关系管理只沿用真实 CRUD 的主媒体 write 门禁。
+      // 即使媒体来源暂时损坏，具备 write 的维护者也应能进入管理器修复关系。
+      canManageTracks: "permission" in primaryAccess &&
+        primaryAccess.permission.capabilities.includes("write"),
       tracks,
     };
   }
