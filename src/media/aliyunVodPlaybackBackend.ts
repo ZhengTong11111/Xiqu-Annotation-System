@@ -29,7 +29,7 @@ export type AliyunVodPlaybackBackendOptions = {
   expectedVideoId: string;
   expectedMediaKind?: "video" | "audio";
   expectedRenditionJobId?: string;
-  loadSession: () => Promise<AliyunVodRuntimePlaybackSession>;
+  loadSession: (signal?: AbortSignal) => Promise<AliyunVodRuntimePlaybackSession>;
   events: MediaPlaybackBackendEvents;
   loadFactory?: () => Promise<AliplayerConstructor>;
   now?: () => number;
@@ -61,6 +61,7 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
   private generation = 0;
   private refreshPromise: Promise<void> | null = null;
   private refreshTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  private readonly sessionRequestAbortControllers = new Set<AbortController>();
   private pendingSeek: PendingSeek | null = null;
   private readyPromise: Promise<void>;
   private playbackRate = 1;
@@ -160,6 +161,9 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     this.disposed = true;
     this.generation += 1;
     this.clearRefreshTimer();
+    // 切换文件或音轨时真正终止仍在等待的会话请求，不能只依赖 generation 忽略迟到结果。
+    for (const controller of this.sessionRequestAbortControllers) controller.abort();
+    this.sessionRequestAbortControllers.clear();
     this.rejectPendingSeek(new MediaPlaybackCommandCancelledError("阿里云媒体已切换。"));
     this.disposePlayer();
   }
@@ -189,11 +193,13 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
 
     let factory: AliplayerConstructor;
     let session: AliyunVodRuntimePlaybackSession;
+    const sessionRequestController = new AbortController();
+    this.sessionRequestAbortControllers.add(sessionRequestController);
     try {
       // SDK 与播放会话并行加载；若二者同时失败，优先展示服务端已经收敛的业务错误。
       const [factoryResult, sessionResult] = await Promise.allSettled([
         this.loadFactory(),
-        this.options.loadSession(),
+        this.options.loadSession(sessionRequestController.signal),
       ]);
       if (sessionResult.status === "rejected") throw sessionResult.reason;
       if (factoryResult.status === "rejected") {
@@ -212,6 +218,8 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
         this.options.events.onError(message);
       }
       throw this.lastPreparationError ?? new Error("无法准备阿里云 VOD 播放会话。");
+    } finally {
+      this.sessionRequestAbortControllers.delete(sessionRequestController);
     }
     if (this.disposed || requestGeneration !== this.generation) return;
 

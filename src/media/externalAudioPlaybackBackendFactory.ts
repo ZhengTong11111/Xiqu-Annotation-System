@@ -153,13 +153,15 @@ export function createExternalAudioPlaybackBackendPreparer(
           ...(source.type === "aliyun_vod_rendition_audio"
             ? { expectedRenditionJobId: source.renditionJobId }
             : { expectedMediaKind: "audio" as const }),
-          loadSession: async () => {
+          loadSession: async (signal) => {
             if (initialSession) {
               const session = initialSession;
               initialSession = null;
               return session;
             }
-            return source.loadSession(preparationAbortController.signal);
+            // 首次准备结束后，续签请求改由 VOD backend 自己的生命周期 signal 管理。
+            // 这样切换文件或销毁音轨时可以中止正在进行的 HTTP 请求，而不只是忽略迟到响应。
+            return source.loadSession(signal);
           },
           events,
         });

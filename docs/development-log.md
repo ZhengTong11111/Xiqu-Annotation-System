@@ -7587,3 +7587,42 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   声音证据。下一轮 RA3b2b2b 需要用户先完成一次本机平台登录，再验证管理弹窗、真实 original/uploaded/VOD
   A/B/C、seek/循环/倍率、正负偏移、撤权/删除、短时续签、慢网、detached window、Chrome/Safari 和 HTTP IP。
   该门禁通过前不进入 RA4。
+
+## 2026-08-24：RA3b2b2b1 VOD 会话刷新取消生命周期收口
+
+### 计划依据与问题证据
+
+- RA3b2b2a 提交 `e281c97` 后按专项路线图把 ignored `CLAUDE_WORK.md` 改写为登录浏览器、真实声音和多环境门禁。
+  本机 API readiness 正常，但重新打开的本机浏览器仍停在登录页；没有代填密码，也没有把自动测试当成听觉证据。
+- 等待登录期间继续执行任务单的慢网生命周期审查。确认 `externalAudioPlaybackBackendFactory` 首次请求使用
+  `preparationAbortController.signal` 是正确的，但创建 VOD backend 后的 `loadSession` closure 仍永久捕获同一个
+  signal。首次准备成功后 factory 会移除 abort listener，此后切轨/切文件虽然 dispose player 并让 generation
+  失效，却不能真正终止已经发出的刷新 HTTP 请求。
+- 同一审查还确认主 VOD `MediaPlaybackSource`、平台 source 和 `createAliyunVodPlaybackSession` 没有 signal 参数，
+  因而主视频凭据刷新也只能忽略迟到响应。该问题在本机低延迟下不一定可见，但在慢网、撤权或快速切文件时会
+  保留无用请求，属于可以由代码和测试直接证明的生命周期缺陷，不是为了通过清单而猜测改动。
+
+### 实现、注释与僵尸逻辑清理
+
+- `AliyunVodPlaybackBackendOptions.loadSession` 现在接收可选 AbortSignal。backend 为每次初始/刷新请求创建独立
+  AbortController 并保存在有界 in-flight 集合；`dispose()` 在清理 timer、seek 和 player 前先 abort 全部会话
+  请求。集合使用 `finally` 删除完成项，也兼容罕见并行 rebuild，不需要再造单独 request-generation 状态。
+- external factory 的准备 signal 只管理首份会话。首份会话仍复用一次、不会重复请求；后续 refresh 明确透传
+  backend 当前 signal，移除了对已结束 preparation controller 的长期捕获。中文注释说明了这条生命周期边界。
+- 主 VOD 的 `MediaPlaybackSource`、`platformMediaPlaybackSource`、`PlatformClient` 与 App loader 同步透传 signal，
+  因而主视频、独立 pure-audio VOD 和同 VID rendition 三条路径共享同一取消合同。未改变 PlayAuth/source 的
+  内存边界、refresh 单飞、失败保留旧实例、generation 隔离、视频主时钟、offset、Timeline 或分析逻辑。
+- 静态复查没有发现第二媒体 owner、重复 AbortController helper、debug console、旧无 signal loader、临时 URL/
+  PlayAuth 持久化或未使用分支；没有新增依赖。AGENTS 已记录“准备 signal 只管首份请求、安装后由 backend 管理
+  refresh signal”的长期 ownership，防止以后重新捕获旧 signal。
+
+### 测试、构建与阶段状态
+
+- 新增回归证明：VOD refresh 请求启动后，backend dispose 会令该请求 signal 变为 aborted；external factory 的
+  第二份 session 请求收到 backend 提供的新 signal；主 VOD platform source 也原样向 PlatformClient loader 透传。
+- `npm run test:media-playback` 通过 48/48。完整 `npm run build` 通过 Prisma Client guard、shared、document-model、
+  Web 和 API；`git diff --check` 通过。仅保留既有 Vite 主 chunk 大小提醒。
+- **已完成**：RA3b2b2b1 在途会话取消、三类 VOD signal 贯通、回归测试和长期规则。
+- **待推进**：RA3b2b2b2 仍需要用户在本机浏览器登录并打开《寻梦》VOD 标注文件，随后完成管理弹窗、真实
+  original/uploaded/VOD A/B/C、seek/循环/倍率、offset、禁用/删除/撤权、detached、慢网、Chrome/Safari 和
+  HTTP IP 听觉/UI 验收。该门禁未完成前不进入 RA4。

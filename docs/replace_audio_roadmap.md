@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2、RA3a、RA3b1、RA3b2a、RA3b2b1、RA3b2b2a 已完成
+> 文档状态：专项实施中，RA0-RA2、RA3a、RA3b1、RA3b2a、RA3b2b1、RA3b2b2a、RA3b2b2b1 已完成
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -33,7 +33,10 @@
 - **RA3b2b2a 已完成（2026-08-24）**：同一 VOD 视频下的 MP3 音频转码以阿里云官方 `JobId` 作为稳定身份；
   数据库只保存所属 VOD 媒体、JobId 和有限显示元数据，播放时重新取得指定 JobId 的 HTTPS 临时地址并通过
   no-store 会话交给 Aliplayer。管理器新增独立转码选择器，真实《寻梦》VOD 已验证候选与短时会话。
-- 下一阶段是 **RA3b2b2b 登录浏览器验收与时序收口**。当前可用的本机和 Chrome 页面均停在登录页，因而本轮
+- **RA3b2b2b1 已完成（2026-08-24）**：慢网生命周期审查发现 VOD 刷新错误捕获了已经完成的首次准备 signal；
+  现由唯一 Aliplayer backend 为每次会话请求分配 AbortController，销毁时真实中止所有在途刷新，并把 signal
+  贯通主 VOD、独立 VOD 音频和同 VID rendition。播放器专项增至 48/48，完整 build 通过。
+- 下一阶段是 **RA3b2b2b2 登录浏览器验收与时序收口**。当前可用的本机页面仍停在登录页，因而本轮
   没有代填密码或伪造声音证据。必须由用户先完成一次本机平台登录，再完成 Chrome/Safari、localhost/HTTP IP、
   A/B/C、撤权、续签、慢网和 detached window 验收；该门禁通过前不进入 RA4。
 
@@ -864,9 +867,22 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
   build 通过。首次完整 API 回归曾出现一次递归复制 500；临时启用测试日志后单套 38/38、恢复日志配置后全套
   189/189，未能复现且最终未留下诊断开关。仅有既有 chunk 提醒与测试环境 `pg` deprecation warning。
 
-**RA3b2b2b 待推进：登录浏览器与多环境时序门禁**
+**RA3b2b2b1 实际完成（2026-08-24）：VOD 会话取消生命周期**
 
-- 当前 in-app browser 与 Chrome 的 localhost 均停在登录页；本轮没有代填密码，因此不能把 API、纯测试或未登录
+- 登录门禁等待期间审查慢网路径，确认 external factory 在首份会话 ready 后，后续 refresh 仍捕获首次准备的
+  `preparationAbortController.signal`。组合 runtime 切轨虽然会 dispose backend 并用 generation 隔离迟到结果，
+  但无法中止已发出的刷新 HTTP 请求；主 VOD 的 session API 也没有 signal 参数，存在同类资源浪费。
+- `AliyunVodPlaybackBackend` 现在为每次初始/刷新会话请求创建并持有 AbortController 集合；`dispose()` 先中止
+  全部在途请求，再销毁 player。external factory 只让准备 signal 管首份请求，安装后的刷新改用 backend signal；
+  主 VOD source、PlatformClient 和 App 同样透传 signal。没有改变 generation、刷新单飞、失败保留旧实例、主时钟
+  或音轨选择策略。
+- 新测试证明 refresh signal 贯通来源，backend 销毁会令在途请求 `aborted=true`；播放器专项由 47/47 增至
+  48/48，完整 Prisma/shared/document-model/Web/API build 通过，`git diff --check` 通过。只保留既有 Vite chunk
+  提醒；无新依赖、debug 输出、第二媒体 owner 或遗留无调用分支。
+
+**RA3b2b2b2 待推进：登录浏览器与多环境时序门禁**
+
+- 当前本机浏览器仍停在登录页；本轮没有代填密码，因此不能把 API、纯测试或未登录
   页面冒充为真实声音/UI 验收。下一轮由用户完成一次本机登录后，检查管理器、rendition picker 的布局、滚动、
   焦点、Escape、错误/空状态与真实创建。
 - 实际验证原声、uploaded、独立 VOD audio、同 VID rendition 的 A/B/C 快切、播放/暂停/seek/循环/倍率、正负

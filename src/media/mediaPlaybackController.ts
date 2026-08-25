@@ -47,7 +47,7 @@ export type MediaPlaybackSource =
       type: "aliyun_vod";
       resourceId: string;
       expectedVideoId: string;
-      loadSession: () => Promise<AliyunVodPlaybackSession>;
+      loadSession: (signal?: AbortSignal) => Promise<AliyunVodPlaybackSession>;
     }
   | { type: "unavailable"; message: string };
 

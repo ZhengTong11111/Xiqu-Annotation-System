@@ -170,6 +170,42 @@ test("VOD 会话刷新单飞并恢复时间与播放状态", async () => {
   backend.dispose();
 });
 
+test("VOD 后端销毁会中止仍在进行的会话刷新请求", async () => {
+  FakeAliplayer.instances = [];
+  let sessionCount = 0;
+  let refreshSignal: AbortSignal | undefined;
+  const backend = new AliyunVodPlaybackBackend({
+    containerId: "player-refresh-abort",
+    expectedVideoId: "vod-1",
+    loadSession: async (signal) => {
+      sessionCount += 1;
+      if (sessionCount === 1) return createSession("auth-initial");
+      refreshSignal = signal;
+      return new Promise((_, reject) => signal?.addEventListener(
+        "abort",
+        () => reject(new Error("request aborted")),
+        { once: true },
+      ));
+    },
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onError: () => undefined,
+    },
+  });
+  await backend.play();
+
+  const refreshing = backend.refreshSession();
+  await Promise.resolve();
+  assert.equal(refreshSignal?.aborted, false);
+  backend.dispose();
+
+  assert.equal(refreshSignal?.aborted, true);
+  await assert.rejects(refreshing, /无法准备阿里云 VOD 播放会话/u);
+});
+
 test("VOD 后端可显式接收音频媒资并拒绝媒体类型漂移", async () => {
   FakeAliplayer.instances = [];
   const audioBackend = new AliyunVodPlaybackBackend({

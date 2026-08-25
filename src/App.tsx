@@ -950,9 +950,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     media: platformMedia,
     nativeUrl: project.video.url,
     requiresManualImport: Boolean(project.video.requiresManualImport),
-    loadAliyunVodSession: (resourceId) => {
+    loadAliyunVodSession: (resourceId, signal) => {
       if (!platformClient) return Promise.reject(new Error("平台媒体会话已结束。"));
-      return platformClient.createAliyunVodPlaybackSession(resourceId);
+      return platformClient.createAliyunVodPlaybackSession(resourceId, signal);
     },
   }), [platformClient, platformMedia, project.video.requiresManualImport, project.video.url]);
   // 临时范围播放意图，统一表达 P 临时持续循环和 Tab 单次范围播放两种运行时行为，

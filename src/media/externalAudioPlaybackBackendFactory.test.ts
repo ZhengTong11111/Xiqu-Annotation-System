@@ -67,6 +67,7 @@ test("uploaded 工厂先取得临时 URL，再等待 backend ready", async () =>
 
 test("VOD 工厂复用首份会话作为 expected identity 和首次 PlayAuth", async () => {
   let sessionRequests = 0;
+  const sourceSignals: Array<AbortSignal | undefined> = [];
   const capturedVodOptions: AliyunVodPlaybackBackendOptions[] = [];
   const backend = new ReadyBackend();
   const prepare = createExternalAudioPlaybackBackendPreparer({
@@ -90,7 +91,10 @@ test("VOD 工厂复用首份会话作为 expected identity 和首次 PlayAuth", 
     trackId: "track-vod",
     audioMediaResourceId: "media-vod",
     offsetSeconds: 0,
-    loadSession: async () => createSession(String(++sessionRequests)),
+    loadSession: async (signal) => {
+      sourceSignals.push(signal);
+      return createSession(String(++sessionRequests));
+    },
   }, {
     signal: new AbortController().signal,
     vodContainerId: "vod-audio-host",
@@ -105,10 +109,13 @@ test("VOD 工厂复用首份会话作为 expected identity 和首次 PlayAuth", 
   assert.equal(firstSession.sourceType, "aliyun_vod");
   assert.equal(firstSession.sourceType === "aliyun_vod" ? firstSession.playAuth : null, "auth-1");
   assert.equal(sessionRequests, 1);
-  const secondSession = await vodOptions.loadSession();
+  const refreshController = new AbortController();
+  const secondSession = await vodOptions.loadSession(refreshController.signal);
   assert.equal(secondSession.sourceType, "aliyun_vod");
   assert.equal(secondSession.sourceType === "aliyun_vod" ? secondSession.playAuth : null, "auth-2");
   assert.equal(sessionRequests, 2);
+  assert.equal(sourceSignals.length, 2);
+  assert.equal(sourceSignals[1], refreshController.signal);
 });
 
 test("VOD 转码工厂按 JobId 绑定直接音频来源并复用首份临时会话", async () => {

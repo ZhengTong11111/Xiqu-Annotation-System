@@ -25,12 +25,14 @@ test("本机或 uploaded 运行时 URL 使用原生播放器", () => {
 
 test("VOD 来源只保存稳定引用并延迟请求短时会话", async () => {
   const requested: string[] = [];
+  let requestedSignal: AbortSignal | undefined;
   const source = buildPlatformMediaPlaybackSource({
     media: vodMedia,
     nativeUrl: "",
     requiresManualImport: false,
-    loadAliyunVodSession: async (resourceId) => {
+    loadAliyunVodSession: async (resourceId, signal) => {
       requested.push(resourceId);
+      requestedSignal = signal;
       return {
         sourceType: "aliyun_vod",
         mediaKind: "video",
@@ -47,8 +49,10 @@ test("VOD 来源只保存稳定引用并延迟请求短时会话", async () => {
   });
   assert.equal(source.type, "aliyun_vod");
   assert.deepEqual(requested, []);
-  if (source.type === "aliyun_vod") await source.loadSession();
+  const controller = new AbortController();
+  if (source.type === "aliyun_vod") await source.loadSession(controller.signal);
   assert.deepEqual(requested, ["media-vod"]);
+  assert.equal(requestedSignal, controller.signal);
 });
 
 test("缺少媒体时返回可解释的不可用来源", () => {

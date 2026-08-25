@@ -5,7 +5,10 @@ type BuildPlatformMediaPlaybackSourceInput = {
   media: AnnotationMediaReference | null | undefined;
   nativeUrl: string;
   requiresManualImport: boolean;
-  loadAliyunVodSession: (resourceId: string) => Promise<AliyunVodPlaybackSession>;
+  loadAliyunVodSession: (
+    resourceId: string,
+    signal?: AbortSignal,
+  ) => Promise<AliyunVodPlaybackSession>;
 };
 
 /**
@@ -21,7 +24,7 @@ export function buildPlatformMediaPlaybackSource(
       type: "aliyun_vod",
       resourceId,
       expectedVideoId: input.media.videoId,
-      loadSession: () => input.loadAliyunVodSession(resourceId),
+      loadSession: (signal) => input.loadAliyunVodSession(resourceId, signal),
     };
   }
   if (input.nativeUrl) return { type: "native", url: input.nativeUrl };

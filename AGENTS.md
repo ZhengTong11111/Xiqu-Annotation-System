@@ -611,6 +611,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - uploaded URLs and VOD PlayAuth are requested only inside the factory, remain memory-only, and are disposed on cancellation,
     timeout, source switch, master replacement, or failure. App, Timeline, collaboration, ProjectData, drafts, and undo/history
     must never own the second media element or temporary session
+  - the preparation signal owns only the initial external-source request. After installation, every VOD refresh receives a fresh
+    signal from `AliyunVodPlaybackBackend`; backend disposal aborts all in-flight session requests. Never capture the completed
+    preparation controller for later refreshes or rely only on generation checks to leave an HTTP request running
   - selection must mute the master before asynchronous preparation. External failure, revoked/unavailable selection, or option
     loading failure pauses playback and keeps master audio muted; only an explicit original selection restores master output.
     Offset maps playback time only and never changes analysis identity

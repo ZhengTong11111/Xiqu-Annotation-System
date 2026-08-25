@@ -626,6 +626,11 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   189/189 与 build 通过。下一小阶段 RA3b2b2b 仍需用户先登录本机平台，再完成 Chrome/Safari、HTTP IP、
   A/B/C、撤权、慢网、续签和 detached window 的真实声音/UI 门禁；通过前不进入 RA4。
 
+  RA3b2b2b1 随后完成慢网会话取消收口：审查发现外部 VOD 安装后的 refresh 仍捕获首次准备 signal，切轨只能
+  忽略迟到结果而不能真实中止 HTTP。现在唯一 Aliplayer backend 为每次会话请求创建 AbortController，dispose
+  中止全部在途刷新；signal 同时贯通主 VOD、独立 VOD 音频和同 VID rendition。播放专项 48/48 与完整 build
+  通过。RA3b2b2b2 仍等待用户登录本机后完成真实 UI、听觉与多环境门禁，未提前进入 RA4。
+
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入
 Development Log。任何阶段不得为追求“能播放”而牺牲时间轴的精确时间语义。

@@ -681,10 +681,10 @@ export class PlatformClient {
     });
   }
 
-  createAliyunVodPlaybackSession(resourceId: string) {
+  createAliyunVodPlaybackSession(resourceId: string, signal?: AbortSignal) {
     return this.request<AliyunVodPlaybackSession>(
       `/media-files/${resourceId}/playback-session`,
-      { method: "POST" },
+      { method: "POST", signal },
     );
   }
 
