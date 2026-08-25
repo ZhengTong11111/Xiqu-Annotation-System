@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2、RA3a、RA3b1 已完成
+> 文档状态：专项实施中，RA0-RA2、RA3a、RA3b1、RA3b2a 已完成
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -25,8 +25,10 @@
 - **RA3b1 已完成（2026-08-24）**：组合播放 runtime 已接入 `VideoPlayer` 的可选生命周期，以视频为唯一主时钟，
   集中拥有替换音频、漂移/缓冲恢复、静音路由、generation 和离屏 VOD 容器；App 尚未传入外部来源，当前可见
   行为不变。
-- 下一阶段是 **RA3b2 平台音轨选项与快速选择器**。本轮应消费现有组合 owner，加载当前主媒体的有权音轨与
-  共享默认值并建立会话级选择，不再扩散第二媒体元素或复制播放凭据。
+- **RA3b2a 已完成（2026-08-24）**：建立标注文件上下文的 no-store 可试听选项、文件会话选择 hook、紧凑顶栏
+  选择器和共享默认写入；失败/撤权/列表加载异常均暂停静音并保留选择，只有显式选择视频原声才恢复主声音。
+- 下一阶段是 **RA3b2b 真实媒体验收与管理边界**。先用 uploaded/VOD 音轨完成 Chrome/Safari、localhost/
+  HTTP IP、快速切换、撤权和 detached window 验收，再依据真实证据修复并接入最小音轨管理入口。
 
 ## 1. 目标重新定义
 
@@ -780,8 +782,8 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
   seek/play/pause/倍率/音量/静音通过一个 controller 进入主从序列，第二媒体元素不暴露给 App、Timeline、协作
   或文档状态。
 - runtime 集中处理 source/command generation、正负偏移区间、300ms 漂移采样、连续中漂移/大漂移硬同步、
-  从轨缓冲时暂停主视频及恢复重同步。切换中先静音主轨，失败恢复原声；切回原声先恢复主输出再销毁从轨，
-  迟到 ready/error/buffering 均不能复活旧来源。
+  从轨缓冲时暂停主视频及恢复重同步。切换中先静音主轨；RA3b2a 已将失败最终语义收敛为暂停静音并保持选择，
+  只有显式切回原声才恢复主输出。迟到 ready/error/buffering 均不能复活旧来源。
 - 新增外部 backend 工厂：uploaded 延迟取得受保护 URL 后创建 HTMLAudio；VOD 首份 no-store session 同时固定
   媒资身份并复用为首次 PlayAuth。调用方取消和 20 秒 ready 超时覆盖会话请求与播放器准备，失败统一销毁。
 - `VideoPlayer` 已拥有离屏、不可交互且不进入键盘导航的 VOD audio host；主媒体重挂载会恢复当前选择意图，
@@ -790,12 +792,27 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 播放专项 37/37、音轨合同/策略 14/14、真实 PostgreSQL/Fastify 音轨 API 4/4、完整 API 186/186、完整 build
   和 `git diff --check` 通过；仅有既有 Web 主 chunk 体积提醒。无可见新流程，未伪造浏览器切轨验收、未部署。
 
-**RA3b2 待推进**
+**RA3b2a 实际完成**
 
-- 在编辑器播放控制附近增加紧凑音轨选择器，以共享默认值初始化当前会话；当前试听选择不写 revision/operation，
-  只有有权用户显式设置共享默认时才调用偏好 API。
-- 平台会话加载主媒体音轨摘要、可用性与默认偏好，稳定构造 `externalAudioSource` 交给 `VideoPlayer`；本地编辑器
-  保持原媒体路径。补 uploaded/VOD/原声快速切换、撤权、失败回退和 detached window 的真实浏览器验收。
+- 新增严格 `AnnotationAudioPlaybackOptions`：最多 64 条、有序唯一、恰一条 original、同主媒体和有效默认引用；
+  DTO 只含稳定关系与有限 availability，不含 URL、对象 key、PlayAuth、ACL 明细或供应商响应。
+- 新增 annotation-context no-store 选项 API。列表与真实播放会话复用活动媒体、`read + download`、媒体类型和
+  来源身份判断，但列表不签发 VOD 凭据；播放时仍由 RA3a 会话二次实时授权。
+- 新增文件会话选择 hook 和顶栏紧凑 listbox。初始遵循共享默认，刷新保留当前选择；试听切换不写 ProjectData、
+  revision、operation、草稿、协作或分析设置。只有显式星标操作写共享默认，原声映射为 null。
+- 组合 runtime 增加 original/external/unavailable/blocked 选择合同。外部准备失败、撤权、来源失效或选项读取失败
+  都暂停主视频并保持主声音静音；UI 保留目标、给出有限原因、刷新/重试及显式“视频原声”，不再静默换音源。
+- 专项合同/状态 17/17、媒体播放 43/43、真实 PostgreSQL/Fastify 音轨 API 4/4、完整 API 186/186 和完整 build
+  通过。浏览器确认本地编辑器不出现平台选择器且无 console warning/error；真实平台音轨验收未伪造、未部署。
+
+**RA3b2b 待推进**
+
+- 建立可控 uploaded 与 VOD 音频测试资产，在平台编辑器实际验证原声、上传音频、VOD 音频快速 A/B/C、播放/
+  暂停/seek/循环/倍率、before/after offset、文件切换和 detached window；证明只有最后选择存活且没有双声。
+- 覆盖 Chrome 与 Safari、localhost 与临时 HTTP IP；验证 VOD License、Range/CORS、自动播放限制、慢请求取消、
+  PlayAuth 续签、撤回源音频 read/download、禁用/删除音轨和主媒体变化后的明确阻断与恢复。
+- 根据真实证据修正时序/UI，并设计最小低频音轨管理入口，复用 RA1 CRUD/重排 API；不得把新增/排序/偏移编辑
+  塞进快速选择器，也不得在未验收时提前进入 RA4。
 
 ### RA4：分析显示跟随与渐进缓存复用
 

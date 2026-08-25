@@ -9,7 +9,7 @@ import { issueAliyunVodPlaybackSession } from "./aliyunVodPlaybackSessionIssuer.
 import { assertActiveAnnotationFile } from "./annotationFileActivity.js";
 import type { ApiUser } from "./domain.js";
 import { badRequest, notFound } from "./errors.js";
-import { requireActiveMediaResource } from "./mediaResourceActivity.js";
+import { requireMediaPlaybackAccess } from "./mediaPlaybackAccess.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
 
 /** 音轨播放会话只负责高频只读授权和短时来源，不修改偏好、ProjectData 或标注 revision。 */
@@ -35,8 +35,12 @@ export class MediaAudioPlaybackSessionService {
     if (!annotation?.mediaResourceId) throw badRequest("标注文件尚未关联主媒体。");
 
     const primaryMediaResourceId = annotation.mediaResourceId;
-    await requireActiveMediaResource(this.prisma, primaryMediaResourceId);
-    await this.assertReadableAndDownloadable(user, primaryMediaResourceId);
+    await requireMediaPlaybackAccess(
+      this.prisma,
+      this.access,
+      user,
+      primaryMediaResourceId,
+    );
     const track = await this.prisma.mediaAudioTrack.findFirst({
       where: { id: trackId, primaryMediaResourceId },
       select: {
@@ -51,14 +55,13 @@ export class MediaAudioPlaybackSessionService {
       throw badRequest("原声音轨不需要创建外部播放会话。");
     }
 
-    const audioMedia = await requireActiveMediaResource(
+    const audioMedia = await requireMediaPlaybackAccess(
       this.prisma,
+      this.access,
+      user,
       track.audioMediaResourceId,
+      "audio",
     );
-    await this.assertReadableAndDownloadable(user, track.audioMediaResourceId);
-    if (audioMedia.mediaKind !== "audio") {
-      throw badRequest("替换音轨必须引用音频媒体。");
-    }
     const base = {
       version: MEDIA_AUDIO_PLAYBACK_SESSION_VERSION,
       annotationFileId,
@@ -103,8 +106,4 @@ export class MediaAudioPlaybackSessionService {
     };
   }
 
-  private async assertReadableAndDownloadable(user: ApiUser, resourceId: string) {
-    await this.access.assertCapability(user, resourceId, "read");
-    await this.access.assertCapability(user, resourceId, "download");
-  }
 }

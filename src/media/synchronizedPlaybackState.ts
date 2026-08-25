@@ -26,6 +26,8 @@ export type SynchronizedPlaybackEvent =
       trackId: string;
       desiredPlayback: "paused" | "playing";
     }
+  | { type: "select_unavailable"; trackId: string; errorCode: string }
+  | { type: "suspend_selection"; errorCode: string }
   | { type: "external_ready"; generation: number }
   | { type: "play_requested" }
   | { type: "pause_requested" }
@@ -114,6 +116,33 @@ export function reduceSynchronizedPlaybackState(
     });
   }
 
+  if (event.type === "select_unavailable") {
+    if (
+      !isStableMediaAudioIdentity(event.trackId) ||
+      !isStableErrorCode(event.errorCode)
+    ) {
+      return invalid(state);
+    }
+    return applied({
+      phase: "error_external",
+      sourceGeneration: state.sourceGeneration + 1,
+      selectedTrackId: event.trackId,
+      desiredPlayback: "paused",
+      errorCode: event.errorCode,
+    });
+  }
+
+  if (event.type === "suspend_selection") {
+    if (!isStableErrorCode(event.errorCode)) return invalid(state);
+    return applied({
+      phase: "error_external",
+      sourceGeneration: state.sourceGeneration + 1,
+      selectedTrackId: null,
+      desiredPlayback: "paused",
+      errorCode: event.errorCode,
+    });
+  }
+
   if (event.type === "play_requested") {
     if (state.phase === "original") {
       return applied({ ...state, desiredPlayback: "playing" });
@@ -134,7 +163,7 @@ export function reduceSynchronizedPlaybackState(
     if (state.phase === "original") {
       return applied({ ...state, desiredPlayback: "paused" });
     }
-    if (state.phase === "preparing_external") {
+    if (state.phase === "preparing_external" || state.phase === "error_external") {
       return applied({ ...state, desiredPlayback: "paused" });
     }
     if (

@@ -58,6 +58,30 @@ export type AnnotationAudioPreference = {
   updatedAt: string | null;
 };
 
+export const MEDIA_AUDIO_TRACK_AVAILABILITIES = [
+  "available",
+  "disabled",
+  "permission_denied",
+  "source_unavailable",
+  "invalid_source",
+] as const;
+
+export type MediaAudioTrackAvailability =
+  (typeof MEDIA_AUDIO_TRACK_AVAILABILITIES)[number];
+
+export type AnnotationAudioPlaybackTrackOption = {
+  track: MediaAudioTrackRecord;
+  availability: MediaAudioTrackAvailability;
+};
+
+/** 标注文件上下文的一次可试听快照；它不包含播放地址或短时凭据。 */
+export type AnnotationAudioPlaybackOptions = {
+  annotationFileId: string;
+  primaryMediaResourceId: string;
+  defaultAudioTrackId: string | null;
+  tracks: AnnotationAudioPlaybackTrackOption[];
+};
+
 const MAX_STABLE_ID_LENGTH = 200;
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 
@@ -80,6 +104,13 @@ function isMediaAudioTrackKind(value: unknown): value is MediaAudioTrackKind {
 
 function isMediaSourceType(value: unknown): value is MediaSourceType {
   return value === "uploaded" || value === "aliyun_vod";
+}
+
+function isMediaAudioTrackAvailability(
+  value: unknown,
+): value is MediaAudioTrackAvailability {
+  return typeof value === "string" &&
+    MEDIA_AUDIO_TRACK_AVAILABILITIES.includes(value as MediaAudioTrackAvailability);
 }
 
 function isIsoTimestamp(value: unknown): value is string {
@@ -180,5 +211,61 @@ export function parseAnnotationAudioPreference(
     defaultAudioTrackId: value.defaultAudioTrackId,
     updatedByAccountId: value.updatedByAccountId,
     updatedAt: value.updatedAt,
+  };
+}
+
+// 选项快照严格绑定标注文件、主媒体和有序音轨，避免迟到响应或坏 DTO 把另一媒体的音轨接入播放器。
+export function parseAnnotationAudioPlaybackOptions(
+  value: unknown,
+): AnnotationAudioPlaybackOptions | null {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 4 ||
+    !isStableMediaAudioIdentity(value.annotationFileId) ||
+    !isStableMediaAudioIdentity(value.primaryMediaResourceId) ||
+    (value.defaultAudioTrackId !== null &&
+      !isStableMediaAudioIdentity(value.defaultAudioTrackId)) ||
+    !Array.isArray(value.tracks) ||
+    value.tracks.length < 1 ||
+    value.tracks.length > MAX_MEDIA_AUDIO_TRACKS_PER_MEDIA
+  ) {
+    return null;
+  }
+
+  const tracks: AnnotationAudioPlaybackTrackOption[] = [];
+  const ids = new Set<string>();
+  let originalCount = 0;
+  for (const [index, optionValue] of value.tracks.entries()) {
+    if (
+      !isRecord(optionValue) ||
+      Object.keys(optionValue).length !== 2 ||
+      !isMediaAudioTrackAvailability(optionValue.availability)
+    ) {
+      return null;
+    }
+    const track = parseMediaAudioTrackRecord(optionValue.track);
+    if (
+      !track ||
+      track.primaryMediaResourceId !== value.primaryMediaResourceId ||
+      track.sortOrder !== index ||
+      ids.has(track.id)
+    ) {
+      return null;
+    }
+    ids.add(track.id);
+    if (track.kind === "original") originalCount += 1;
+    tracks.push({ track, availability: optionValue.availability });
+  }
+  if (
+    originalCount !== 1 ||
+    (value.defaultAudioTrackId !== null && !ids.has(value.defaultAudioTrackId))
+  ) {
+    return null;
+  }
+  return {
+    annotationFileId: value.annotationFileId,
+    primaryMediaResourceId: value.primaryMediaResourceId,
+    defaultAudioTrackId: value.defaultAudioTrackId,
+    tracks,
   };
 }

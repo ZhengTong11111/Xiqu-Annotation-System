@@ -4,6 +4,7 @@ import {
   MAX_MEDIA_AUDIO_TRACK_NAME_LENGTH,
   MAX_MEDIA_AUDIO_TRACK_OFFSET_SECONDS,
   parseAnnotationAudioPreference,
+  parseAnnotationAudioPlaybackOptions,
   parseMediaAnalysisRunIdentity,
   parseMediaAudioTrackPlaybackSession,
   parseMediaAudioTrackRecord,
@@ -115,6 +116,58 @@ test("标注文件默认音轨偏好只接受稳定身份和有效时间", () =>
     updatedAt: "9999-99-99T99:99:99.999Z",
   }), null);
   assert.equal(parseAnnotationAudioPreference({ ...preference, annotationFileId: " bad " }), null);
+});
+
+test("可试听选项严格绑定标注文件、主媒体、有序音轨与默认值", () => {
+  const vocal = {
+    ...ORIGINAL_TRACK,
+    id: "track-vocal",
+    name: "人声分离",
+    kind: "vocal",
+    source: {
+      type: "media_resource",
+      mediaResourceId: "media-vocal",
+      sourceType: "uploaded",
+    },
+    sortOrder: 1,
+  };
+  const options = {
+    annotationFileId: "annotation-file",
+    primaryMediaResourceId: "media-video",
+    defaultAudioTrackId: vocal.id,
+    tracks: [
+      { track: ORIGINAL_TRACK, availability: "available" },
+      { track: vocal, availability: "permission_denied" },
+    ],
+  };
+  assert.deepEqual(parseAnnotationAudioPlaybackOptions(options), options);
+  assert.equal(parseAnnotationAudioPlaybackOptions({
+    ...options,
+    defaultAudioTrackId: "missing-track",
+  }), null);
+  assert.equal(parseAnnotationAudioPlaybackOptions({
+    ...options,
+    tracks: [...options.tracks].reverse(),
+  }), null);
+  assert.equal(parseAnnotationAudioPlaybackOptions({
+    ...options,
+    tracks: [options.tracks[1]],
+  }), null);
+  assert.equal(parseAnnotationAudioPlaybackOptions({
+    ...options,
+    tracks: [
+      options.tracks[0],
+      { ...options.tracks[1], availability: "provider_error" },
+    ],
+  }), null);
+  assert.equal(parseAnnotationAudioPlaybackOptions({
+    ...options,
+    tracks: [options.tracks[0], options.tracks[0]],
+  }), null);
+  assert.equal(parseAnnotationAudioPlaybackOptions({
+    ...options,
+    temporaryUrl: "secret",
+  }), null);
 });
 
 test("媒体级分析身份保留字段边界且不接受标注文件或偏移", () => {

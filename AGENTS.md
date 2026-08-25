@@ -556,8 +556,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     AccessKeys, provider responses, or ProjectData; PlayAuth exists only in the strict no-store session variant
 - `apps/api/src/mediaAudioTrackService.ts`
   - the only backend business boundary for a primary media's ordered audio-track relations and an annotation file's shared
-    default audio preference; persistent track records deliberately do not claim analysis status before a real media-scoped
-    run is resolved
+    default audio preference; it also produces the strict annotation-context playback-option snapshot without issuing VOD
+    credentials. Persistent track records deliberately do not claim analysis status before a real media-scoped run is resolved
   - primary-media mutations reuse the resource-tree advisory gate, lock the media row, and recheck ACL. External sources must
     be active audio resources with `read + download`; listing relation metadata never grants playback or analysis access
   - uploaded/VOD media creation and media copy must create exactly one original track in the same transaction. Copies get only
@@ -566,10 +566,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - media analysis reuse identity contains only media resource, source fingerprint, algorithm version, and config hash.
     Annotation-file identity, source-selection mode, and track offset must never be added; offset only maps source time to
     project time
-- `apps/api/src/mediaAudioPlaybackSessionService.ts` + `apps/api/src/aliyunVodPlaybackSessionIssuer.ts`
+- `apps/api/src/mediaPlaybackAccess.ts` + `apps/api/src/mediaAudioPlaybackSessionService.ts` +
+  `apps/api/src/aliyunVodPlaybackSessionIssuer.ts`
   - the only external-track playback authorization and shared VOD credential boundaries. Every session request revalidates the
     active annotation, its current primary media, track ownership/enabled state, source audio type, and all required
     `read + download` capabilities; relation creation never substitutes for playback-time authorization
+  - option snapshots and real playback sessions share the same active-media/source/ACL resolver. Option availability is a
+    no-store hint for UI and never replaces session-time authorization; listing options must not issue PlayAuth or read objects
   - uploaded sessions return file identity only and continue through the protected Range route. Main video and audio VOD use
     one issuer; missing License fails before PlayAuth, provider errors are normalized, and session payloads are never audited,
     logged, cached, or persisted
@@ -586,8 +589,17 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - uploaded URLs and VOD PlayAuth are requested only inside the factory, remain memory-only, and are disposed on cancellation,
     timeout, source switch, master replacement, or failure. App, Timeline, collaboration, ProjectData, drafts, and undo/history
     must never own the second media element or temporary session
-  - selection must mute the master before asynchronous preparation, while original/failure recovery restores master output before
-    disposing the external backend. Offset maps playback time only and never changes analysis identity
+  - selection must mute the master before asynchronous preparation. External failure, revoked/unavailable selection, or option
+    loading failure pauses playback and keeps master audio muted; only an explicit original selection restores master output.
+    Offset maps playback time only and never changes analysis identity
+- `src/platform/usePlatformAudioTrackSelection.ts` + `src/platform/platformAudioTrackSelection.ts` +
+  `src/components/AudioTrackSelector.tsx`
+  - own the annotation-file session's playback-option load, shared-default initialization, current listening selection, retry,
+    refresh, and compact top-menu surface. Current selection is React session state only and must never enter ProjectData,
+    revision/operations, drafts, collaboration, undo/history, analysis settings, or mutation leases
+  - refresh preserves the current listening intent even when that track was removed or revoked, producing an explicit blocked
+    state instead of silently choosing original. Updating the shared default is a separate permission-gated API action; original
+    maps to a null preference and a default-write failure must not alter current playback
 - `src/media/nativeMediaPlaybackBackend.ts`
   - narrow HTMLMediaElement adapter with deterministic seeked/error/timeout/dispose settlement
 - `src/media/aliplayerSdk.ts` + `src/media/aliyunVodPlaybackBackend.ts`

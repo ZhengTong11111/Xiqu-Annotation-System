@@ -86,6 +86,38 @@ test("缓冲恢复必须经过重同步再恢复播放", () => {
   assert.equal(state.phase, "starting");
 });
 
+test("不可用选择保留目标身份且必须由显式选择离开错误态", () => {
+  let state = apply(INITIAL_SYNCHRONIZED_PLAYBACK_STATE, {
+    type: "select_unavailable",
+    trackId: "track-revoked",
+    errorCode: "permission_denied",
+  });
+  const failedGeneration = state.sourceGeneration;
+  assert.equal(state.phase, "error_external");
+  assert.equal(state.selectedTrackId, "track-revoked");
+  assert.equal(state.desiredPlayback, "paused");
+
+  state = apply(state, { type: "pause_requested" });
+  assert.equal(state.phase, "error_external");
+  state = apply(state, {
+    type: "select_external",
+    trackId: "track-revoked",
+    desiredPlayback: "paused",
+  });
+  assert.ok(state.sourceGeneration > failedGeneration);
+  assert.equal(state.phase, "preparing_external");
+});
+
+test("选项尚未读取时可暂挂播放且不伪造音轨身份", () => {
+  const state = apply(INITIAL_SYNCHRONIZED_PLAYBACK_STATE, {
+    type: "suspend_selection",
+    errorCode: "options_loading",
+  });
+  assert.equal(state.phase, "error_external");
+  assert.equal(state.selectedTrackId, null);
+  assert.equal(state.errorCode, "options_loading");
+});
+
 test("当前来源非法转换可诊断，销毁后任何迟到事件都不能复活", () => {
   let state = apply(INITIAL_SYNCHRONIZED_PLAYBACK_STATE, {
     type: "select_external",

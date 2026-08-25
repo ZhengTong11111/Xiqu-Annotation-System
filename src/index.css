@@ -459,6 +459,264 @@ select {
   min-width: 0;
 }
 
+/* 监听音轨选择器只承载高频切换，保持与顶栏菜单一致的紧凑桌面控件密度。 */
+.audio-track-selector {
+  position: relative;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.audio-track-selector-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: min(180px, 18vw);
+  min-width: 84px;
+  min-height: 24px;
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-soft);
+  background: rgba(255, 255, 255, 0.06);
+  color: #eef4ff;
+  box-shadow: none;
+  font-size: 11px;
+}
+
+.audio-track-selector-trigger:hover,
+.audio-track-selector-trigger.is-open {
+  border-color: rgba(147, 197, 253, 0.4);
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.audio-track-selector-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-track-selector-status-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.audio-track-selector-trigger.is-ready .audio-track-selector-status-dot {
+  background: #34d399;
+}
+
+.audio-track-selector-trigger.is-loading .audio-track-selector-status-dot {
+  background: #fbbf24;
+}
+
+.audio-track-selector-trigger.is-error .audio-track-selector-status-dot {
+  background: #f87171;
+}
+
+.audio-track-selector-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 42;
+  display: grid;
+  width: min(360px, calc(100vw - 20px));
+  max-height: min(520px, calc(100vh - 64px));
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.22);
+  border-radius: 8px;
+  background: rgba(244, 247, 251, 0.99);
+  box-shadow: 0 16px 28px rgba(15, 23, 42, 0.22);
+  color: #182230;
+  backdrop-filter: blur(12px);
+}
+
+.audio-track-selector-heading,
+.audio-track-selector-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 9px;
+}
+
+.audio-track-selector-heading {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+}
+
+.audio-track-selector-heading > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.audio-track-selector-heading strong {
+  font-size: 12px;
+}
+
+.audio-track-selector-heading span,
+.audio-track-selector-copy span {
+  color: #64748b;
+  font-size: 10px;
+}
+
+.audio-track-selector .icon-button {
+  position: relative;
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  min-height: 0;
+  padding: 0;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #475569;
+  box-shadow: none;
+}
+
+.audio-track-selector .icon-button:hover:not(:disabled) {
+  border-color: rgba(15, 108, 189, 0.16);
+  background: rgba(15, 108, 189, 0.08);
+  color: #0f6cbd;
+}
+
+.audio-track-selector .icon-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.audio-track-selector-list {
+  min-height: 0;
+  overflow: auto;
+  padding: 4px;
+}
+
+.audio-track-selector-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  border-radius: 5px;
+}
+
+.audio-track-selector-row:hover,
+.audio-track-selector-row.is-selected {
+  background: rgba(15, 108, 189, 0.08);
+}
+
+.audio-track-selector-row.is-selected {
+  color: #0f4473;
+}
+
+.audio-track-selector-option {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 5px 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  box-shadow: none;
+  text-align: left;
+}
+
+.audio-track-selector-option[aria-disabled="true"] {
+  color: #7c8798;
+  cursor: help;
+}
+
+.audio-track-selector-check {
+  display: inline-grid;
+  place-items: center;
+}
+
+.audio-track-selector-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.audio-track-selector-copy strong,
+.audio-track-selector-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-track-selector-copy strong {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.audio-track-default-button.is-default {
+  color: #b7791f;
+}
+
+.audio-track-default-button .is-hidden {
+  visibility: hidden;
+}
+
+.audio-track-default-spinner {
+  position: absolute;
+}
+
+.audio-track-selector .is-spinning {
+  animation: system-diagnostics-spin 0.8s linear infinite;
+}
+
+.audio-track-selector-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 82px;
+  padding: 12px;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.audio-track-selector-error {
+  border-top: 1px solid rgba(248, 113, 113, 0.24);
+  background: rgba(254, 226, 226, 0.5);
+  color: #991b1b;
+  font-size: 10px;
+}
+
+.audio-track-selector-error span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.audio-track-selector-error-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+}
+
+.audio-track-selector-original-button {
+  min-height: 24px;
+  padding: 2px 7px;
+  border: 1px solid rgba(153, 27, 27, 0.18);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.68);
+  color: #7f1d1d;
+  box-shadow: none;
+  font-size: 10px;
+}
+
+.audio-track-selector-original-button:hover {
+  border-color: rgba(153, 27, 27, 0.32);
+  background: #fff;
+}
+
 .top-menu-item {
   position: relative;
 }

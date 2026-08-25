@@ -9,6 +9,7 @@ import {
   MAX_MEDIA_AUDIO_TRACK_OFFSET_SECONDS,
   MAX_MEDIA_AUDIO_TRACKS_PER_MEDIA,
   type AnnotationAudioPreference,
+  type AnnotationAudioPlaybackOptions,
   type CreateMediaAudioTrackRequest,
   type MediaAudioTrackList,
   type MediaAudioTrackRecord,
@@ -25,6 +26,7 @@ import {
   assertActiveResourceAncestors,
   requireActiveMediaResource,
 } from "./mediaResourceActivity.js";
+import { resolveMediaPlaybackAccess } from "./mediaPlaybackAccess.js";
 
 const audioTrackInclude = {
   primaryMedia: { select: { sourceType: true } },
@@ -99,6 +101,80 @@ export class MediaAudioTrackService {
     return {
       primaryMediaResourceId,
       tracks: rows.map(mapMediaAudioTrackRecord),
+    };
+  }
+
+  /**
+   * 为一次标注文件会话生成可试听快照；列表不签发 PlayAuth，真正切换仍由播放会话二次重验。
+   */
+  async getAnnotationPlaybackOptions(
+    user: ApiUser,
+    annotationFileId: string,
+  ): Promise<AnnotationAudioPlaybackOptions> {
+    await this.access.assertCapability(user, annotationFileId, "read");
+    await assertActiveAnnotationFile(this.prisma, annotationFileId);
+    const annotation = await this.prisma.annotationFile.findUnique({
+      where: { resourceId: annotationFileId },
+      select: {
+        mediaResourceId: true,
+        audioPreference: { select: { defaultAudioTrackId: true } },
+      },
+    });
+    if (!annotation?.mediaResourceId) {
+      throw badRequest("标注文件尚未关联主媒体。");
+    }
+    const primaryMediaResourceId = annotation.mediaResourceId;
+    const rows = await this.prisma.mediaAudioTrack.findMany({
+      where: { primaryMediaResourceId },
+      include: audioTrackInclude,
+      orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+    });
+    if (rows.filter((row) => row.kind === "original").length !== 1) {
+      throw conflict("媒体原声音轨结构异常，请联系管理员修复。");
+    }
+    if (rows.some((row, index) => row.sortOrder !== index)) {
+      throw conflict("媒体音轨顺序异常，请联系管理员修复。");
+    }
+    const defaultAudioTrackId = annotation.audioPreference?.defaultAudioTrackId ?? null;
+    if (defaultAudioTrackId && !rows.some((row) => row.id === defaultAudioTrackId)) {
+      throw conflict("标注文件默认音轨已失效，请联系管理员修复。");
+    }
+
+    const primaryAccess = await resolveMediaPlaybackAccess(
+      this.prisma,
+      this.access,
+      user,
+      primaryMediaResourceId,
+    );
+    const tracks = [] as AnnotationAudioPlaybackOptions["tracks"];
+    for (const row of rows) {
+      let availability: AnnotationAudioPlaybackOptions["tracks"][number]["availability"];
+      if (!row.enabled) {
+        availability = "disabled";
+      } else if (primaryAccess.status !== "available") {
+        // 主媒体不可播时所有从轨都必须阻断，因为视频主时钟和播放会话同样不可用。
+        availability = primaryAccess.status;
+      } else if (row.kind === "original") {
+        availability = "available";
+      } else if (!row.audioMediaResourceId) {
+        availability = "invalid_source";
+      } else {
+        const sourceAccess = await resolveMediaPlaybackAccess(
+          this.prisma,
+          this.access,
+          user,
+          row.audioMediaResourceId,
+          "audio",
+        );
+        availability = sourceAccess.status;
+      }
+      tracks.push({ track: mapMediaAudioTrackRecord(row), availability });
+    }
+    return {
+      annotationFileId,
+      primaryMediaResourceId,
+      defaultAudioTrackId,
+      tracks,
     };
   }
 

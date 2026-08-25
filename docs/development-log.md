@@ -7379,3 +7379,69 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 已完成：RA3b1 组合 owner、外部 backend 工厂、`VideoPlayer` 可选接线、清理和文档。待推进：RA3b2 加载当前
   主媒体的可见音轨与共享默认偏好，建立紧凑快速选择器，并在 Chrome/Safari 实测原声、上传音频、VOD 音频、
   A/B/C、循环/seek、detached window、撤权和失败恢复；当前会话选择仍不得写标注 revision。
+
+## 2026-08-24：RA3b2a 平台音轨选项、会话选择与紧凑快速选择器
+
+### 本轮计划与阶段拆分
+
+- RA3b1 提交 `165c8c3` 后先按实际代码重写 `CLAUDE_WORK.md`。审查确认 RA1 的关系列表只能证明用户有权读取
+  主媒体，不能证明当前账号仍可播放每条源音频；若前端直接消费它，撤权、回收站、错误媒体类型和坏来源只能
+  在点击后暴露。因此 RA3b2 拆为 RA3b2a 权威选项/UI 和 RA3b2b 真实多浏览器验收/管理边界，本轮没有提前做
+  音轨 CRUD、分析跟随、偏移校准或生产部署。
+- 首次可见接线前修正了 RA3b1 的临时失败语义：科研试听不能在外部音轨失败后暗中恢复视频原声，否则研究者
+  可能误判当前所听音源。最终规则改为失败暂停、主媒体保持静音并保留目标，只有用户显式选择原声才恢复。
+- 没有新增依赖。现有 Fastify/Prisma、React、lucide、AbortController、播放状态机和顶部菜单开合机制足以覆盖；
+  新增 popover 依赖反而会引入第二套焦点和菜单状态。
+
+### 服务端选项快照与授权复用
+
+- shared 新增严格 `AnnotationAudioPlaybackOptions` 与有限 availability。parser 要求精确字段、1 到 64 条音轨、
+  ID 唯一、`sortOrder` 连续、同一主媒体、恰一条 original，以及 null 或真实存在的默认音轨；返回值不含 URL、
+  storage key、PlayAuth、AccessKey、ACL 来源、ProjectData 或 provider 原始错误。
+- 新增 `GET /api/annotation-files/:resourceId/audio-playback-options`。接口先验证活动标注文件和 read，再读取当前
+  真实主媒体与共享默认；主媒体和源音频逐项检查活动性、媒体类型、来源 identity、`read + download`，并把
+  disabled、permission denied、source unavailable 和 invalid source 收敛成有限状态。响应始终 no-store。
+- 抽取 `mediaPlaybackAccess` 作为选项列表与真实播放 session 的唯一共同活动性/ACL/来源判断；删除 session
+  service 中重复的 read/download helper。列表不会调用 VOD issuer 或读取对象，真正切换仍由 RA3a no-store
+  session 再次重验，选项快照不是长期授权。
+- 真实 PostgreSQL/Fastify 测试覆盖全可用且不签发 VOD 凭据、未绑定媒体、主媒体归档、主媒体权限不足、源音频
+  read/download 分层不足、撤权和共享默认反映；已有播放会话授权测试继续证明二次校验。
+
+### 组合播放失败语义与会话选择
+
+- `SynchronizedMediaPlaybackRuntime` 的选择合同收敛为 original、external、unavailable 和 blocked 四态。准备/
+  缓冲恢复失败、权威快照判定不可用、音轨已删除或选项加载失败都会取消旧请求/计时器、销毁从轨、暂停主轨并
+  保持主声音静音。显式重试生成新 source generation；普通重渲染不重试；`play()` 在错误态 fail closed。
+- 自审发现 blocked 没有 track id，原输出路由若只看 `selectedTrackId`，用户之后切换静音可能意外放出原声。
+  已统一为“只有 original phase 可输出主声音”，并补回归测试。失败后 UI 提供重试/刷新和显式视频原声，不再
+  把安全静音误当成用户 mute 状态。
+- 新增 `usePlatformAudioTrackSelection`。文件/主媒体切换用 generation 与 AbortController 隔离迟到响应；初始
+  选择遵循共享默认，刷新保留当前会话意图，即使音轨删除也进入明确 unavailable，而不回退默认。外部来源只
+  保存稳定 identity 并延迟取得 session；当前选择、runtime 状态和错误只存在 React 文件会话。
+- 共享默认是独立写操作：有 annotation write 才显示可执行星标，原声写 null；成功只更新偏好快照，失败保留
+  当前试听与旧默认。它不推进 annotation revision，也不进入 ProjectData、operation、draft、collaboration、
+  history、lease 或分析来源设置。
+
+### 顶栏 UI、接线与验收
+
+- 新增紧凑 `AudioTrackSelector` 并接入 `TopMenuBar` 共用的唯一 open-menu 状态。触发器显示当前音轨、状态点和
+  省略名称；弹层按服务端顺序展示类型、uploaded/VOD/原声来源、当前选择、共享默认与不可用原因，支持上下键、
+  Enter、Escape、点击外部、刷新、重试和显式原声。长列表在自身滚动，未把管理表单塞入高频选择器。
+- `App` 只装配平台会话 hook，并把选择合同和 runtime 回调交给 `VideoPlayer`；本地编辑器、Timeline、协作、
+  自动保存、分析 hook 和主媒体来源没有第二条控制路径。平台文件无绑定媒体时不显示空选择器。
+- 浏览器在 `127.0.0.1:5173` 检查登录页与“不登录，进入本地标注工具”路径：顶栏只有既有菜单，没有错误出现的
+  平台音轨控件，编辑器完整渲染，控制台无 warning/error。由于本轮未准备可控 uploaded/VOD 测试关系，没有
+  声称完成真实切轨、Safari、HTTP IP、撤权或 detached window 验收；这些明确留给 RA3b2b。
+
+### 测试、自我审查与当前状态
+
+- `test:media-audio-tracks`：shared 6/6、同步策略/状态 11/11；`test:media-playback` 43/43；真实
+  PostgreSQL/Fastify `test:media-audio-track-api` 4/4；完整 `test:api` 186/186；`npm run build` 完成 Prisma
+  generate/schema guard、shared、document-model、Web 和 API。仅有既有 Web 主 chunk 提醒及测试环境既有
+  `pg` deprecation warning。
+- 静态审查确认：没有 `any`、debug 输出、直接第二媒体控制、重复 ACL/祖先遍历、列表 PlayAuth 签发、临时 URL/
+  凭据持久化、失败自动回退僵尸分支或分析状态耦合。新增中文注释集中解释权限快照、失败静音、会话选择保留和
+  异步代际原因；不重复逐行翻译代码。
+- 已完成：RA3b2a 权威选项、授权复用、最终失败语义、文件会话选择、共享默认、紧凑 UI、App/VideoPlayer 接线、
+  测试与文档。待推进：RA3b2b 真实 uploaded/VOD、Chrome/Safari、localhost/HTTP IP、A/B/C、seek/循环/倍率、
+  撤权、续签、慢网、文件/窗口切换验收和最小管理入口；本轮未部署生产。

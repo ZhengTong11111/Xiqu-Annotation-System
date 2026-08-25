@@ -14,6 +14,7 @@ type JsonObject = Record<string, unknown>;
 const VIDEO_VOD_ID = "00000000000000000000000000000000";
 const AUDIO_VOD_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SECOND_VIDEO_VOD_ID = "11111111111111111111111111111111";
+let playbackCredentialRequests = 0;
 
 // 集成测试用稳定 provider 区分视频与独立 VOD 音频，不读取宿主机凭据或访问公网。
 const fakeAliyunVodProvider: AliyunVodProvider = {
@@ -26,12 +27,15 @@ const fakeAliyunVodProvider: AliyunVodProvider = {
       mediaKind: videoId === AUDIO_VOD_ID ? "audio" : "video",
       duration: 120,
     }),
-    createPlaybackCredential: async (videoId) => ({
-      videoId,
-      status: "Normal",
-      playAuth: "integration-only-play-auth",
-      expiresAt: new Date("2030-01-01T00:15:00.000Z"),
-    }),
+    createPlaybackCredential: async (videoId) => {
+      playbackCredentialRequests += 1;
+      return {
+        videoId,
+        status: "Normal",
+        playAuth: "integration-only-play-auth",
+        expiresAt: new Date("2030-01-01T00:15:00.000Z"),
+      };
+    },
     createAnalysisAudioStream: async () => ({
       url: "https://example.test/audio.mp3?temporary=1",
       expiresAt: new Date("2030-01-01T00:15:00.000Z"),
@@ -43,6 +47,7 @@ const fakeAliyunVodProvider: AliyunVodProvider = {
 };
 
 test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期", async () => {
+  playbackCredentialRequests = 0;
   const storageRoot = await mkdtemp(path.join(tmpdir(), "xiqu-audio-track-api-"));
   const { prisma, pool, maintenancePool, collaborationPool, schema } = createTestPrisma();
   await truncateTestDatabase(prisma);
@@ -259,6 +264,28 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       recordOf(dataOf(annotationResponse.json()).resource).id,
     );
 
+    // 选项快照只计算当前授权和稳定来源，不应为了渲染列表提前签发 VOD PlayAuth。
+    const credentialRequestsBeforeOptions = playbackCredentialRequests;
+    const initialOptions = await jsonRequest(app, adminToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/audio-playback-options`,
+    });
+    assert.equal(initialOptions.statusCode, 200, initialOptions.body);
+    assert.equal(initialOptions.headers["cache-control"], "no-store");
+    assert.equal(playbackCredentialRequests, credentialRequestsBeforeOptions);
+    assert.deepEqual(
+      (dataOf(initialOptions.json()).tracks as JsonObject[]).map((entry) => ({
+        id: recordOf(entry.track).id,
+        availability: entry.availability,
+      })),
+      [
+        { id: vodTrack.id, availability: "available" },
+        { id: original.id, availability: "available" },
+        { id: uploadedTrack.id, availability: "available" },
+      ],
+    );
+    assert.equal(dataOf(initialOptions.json()).defaultAudioTrackId, null);
+
     // 播放会话每次都重新验证标注文件、主媒体和源音频，不能把建轨时的一次授权当成永久通行证。
     const uploadedPlayback = await jsonRequest(app, adminToken, {
       method: "POST",
@@ -337,6 +364,11 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       url: `/api/annotation-files/${unboundAnnotationId}/audio-tracks/${uploadedTrack.id}/playback-session`,
     });
     assert.equal(unboundPlayback.statusCode, 400);
+    const unboundOptions = await jsonRequest(app, adminToken, {
+      method: "GET",
+      url: `/api/annotation-files/${unboundAnnotationId}/audio-playback-options`,
+    });
+    assert.equal(unboundOptions.statusCode, 400);
 
     // 资源归档后即使音轨关系仍存在也必须停止签发；恢复活动状态后才能重新播放。
     await prisma.resourceEntry.update({
@@ -349,6 +381,14 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
     });
     assert.equal(archivedPlayback.statusCode, 404);
     assert.equal(archivedPlayback.headers["cache-control"], "no-store");
+    const archivedOptions = await jsonRequest(app, adminToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/audio-playback-options`,
+    });
+    assert.equal(
+      findOptionAvailability(archivedOptions, uploadedTrack.id),
+      "source_unavailable",
+    );
     await prisma.resourceEntry.update({
       where: { id: uploadedAudioId },
       data: { archivedAt: null },
@@ -369,6 +409,12 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
     });
     assert.equal(playbackWithoutPrimaryAccess.statusCode, 403);
+    const optionsWithoutPrimaryAccess = await jsonRequest(app, studentToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/audio-playback-options`,
+    });
+    assert.equal(findOptionAvailability(optionsWithoutPrimaryAccess, original.id), "permission_denied");
+    assert.equal(findOptionAvailability(optionsWithoutPrimaryAccess, uploadedTrack.id), "permission_denied");
     await prisma.resourcePermission.create({
       data: {
         resourceId: primaryVideoId,
@@ -383,6 +429,12 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
     });
     assert.equal(playbackWithoutAudioAccess.statusCode, 403);
+    const optionsWithoutAudioAccess = await jsonRequest(app, studentToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/audio-playback-options`,
+    });
+    assert.equal(findOptionAvailability(optionsWithoutAudioAccess, original.id), "available");
+    assert.equal(findOptionAvailability(optionsWithoutAudioAccess, uploadedTrack.id), "permission_denied");
     await prisma.resourcePermission.create({
       data: {
         resourceId: uploadedAudioId,
@@ -406,6 +458,11 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
     });
     assert.equal(playbackWithDownload.statusCode, 200, playbackWithDownload.body);
+    const optionsWithDownload = await jsonRequest(app, studentToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/audio-playback-options`,
+    });
+    assert.equal(findOptionAvailability(optionsWithDownload, uploadedTrack.id), "available");
     // 撤回 download 后立即失效，证明播放不是复用建轨时或上一次会话的权限结果。
     await prisma.resourcePermission.update({
       where: { resourceId_userId: { resourceId: uploadedAudioId, userId: student.id } },
@@ -416,6 +473,11 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
     });
     assert.equal(playbackAfterRevoke.statusCode, 403);
+    const optionsAfterRevoke = await jsonRequest(app, studentToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/audio-playback-options`,
+    });
+    assert.equal(findOptionAvailability(optionsAfterRevoke, uploadedTrack.id), "permission_denied");
     await prisma.resourcePermission.deleteMany({
       where: {
         userId: student.id,
@@ -450,6 +512,11 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
     });
     assert.equal(preference.statusCode, 200, preference.body);
     assert.equal(dataOf(preference.json()).defaultAudioTrackId, uploadedTrack.id);
+    const preferredOptions = await jsonRequest(app, adminToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/audio-playback-options`,
+    });
+    assert.equal(dataOf(preferredOptions.json()).defaultAudioTrackId, uploadedTrack.id);
 
     const secondVideoTracks = await jsonRequest(app, adminToken, {
       method: "GET",
@@ -698,6 +765,18 @@ function dataOf(value: unknown): JsonObject {
   const envelope = recordOf(value);
   assert.ok("data" in envelope);
   return recordOf(envelope.data);
+}
+
+function findOptionAvailability(
+  response: { statusCode: number; body: string; json: () => unknown },
+  trackId: unknown,
+) {
+  assert.equal(response.statusCode, 200, response.body);
+  const option = (dataOf(response.json()).tracks as JsonObject[]).find(
+    (entry) => recordOf(entry.track).id === trackId,
+  );
+  assert.ok(option, `缺少音轨选项：${String(trackId)}`);
+  return option.availability;
 }
 
 function recordOf(value: unknown): JsonObject {

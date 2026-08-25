@@ -482,6 +482,18 @@ export function registerApiRoutes(
     ),
   );
 
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/annotation-files/:resourceId/audio-playback-options",
+    async (request, reply) => {
+      // 可试听状态包含当前 ACL 事实；禁止缓存，撤权后刷新必须立即生效。
+      reply.header("Cache-Control", "no-store");
+      return mediaAudioTracks.getAnnotationPlaybackOptions(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+      );
+    },
+  );
+
   app.put<{ Params: { resourceId: string }; Body: unknown }>(
     "/api/annotation-files/:resourceId/audio-preference",
     async (request) => {

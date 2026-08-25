@@ -72,6 +72,7 @@ import {
   type PlatformAnalysisViewport,
   usePlatformMediaAnalysis,
 } from "./platform/usePlatformMediaAnalysis";
+import { usePlatformAudioTrackSelection } from "./platform/usePlatformAudioTrackSelection";
 import { planAtomicAnnotationCommandBatch } from "./platform/platformAtomicCommandPlan";
 import { usePlatformAtomicCommandSubmit } from "./platform/usePlatformAtomicCommandSubmit";
 import { planPlatformConflictRebase } from "./platform/platformConflictRebase";
@@ -914,6 +915,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const videoRef = useRef<MediaPlaybackController>(null);
   const platformMedia = editorSession?.media;
   const platformClient = editorSession?.client;
+  // 监听音轨是文件会话状态，不进入标注 ProjectData；共享默认只有用户显式操作时才写平台设置。
+  const platformAudioTracks = usePlatformAudioTrackSelection({
+    client: platformClient ?? null,
+    annotationFileId: editorSession?.annotationFileId ?? null,
+    primaryMediaResourceId: platformMedia?.resourceId ?? null,
+    canWrite: Boolean(editorSession?.canWrite),
+    enabled: Boolean(editorSession && platformMedia),
+  });
   const platformMediaAnalysis = usePlatformMediaAnalysis({
     client: platformClient ?? null,
     currentUserId: editorSession?.currentUserId ?? null,
@@ -6775,6 +6784,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       <VideoPlayer
         ref={videoRef}
         source={playbackSource}
+        audioSelection={platformAudioTracks.audioSelection}
         playbackRate={playbackRate}
         currentTime={currentTime}
         previewTime={previewTime}
@@ -6784,6 +6794,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         onLoadedMetadata={(nextDuration) => setDuration(Math.max(nextDuration, getProjectDuration(project)))}
         onTimeUpdate={setCurrentTime}
         onPlayStateChange={setIsPlaying}
+        onAudioPlaybackStateChange={platformAudioTracks.onRuntimeStateChange}
+        onAudioPlaybackError={platformAudioTracks.onRuntimeError}
       />
     );
   }
@@ -7114,6 +7126,28 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       menuBar={(
         <TopMenuBar
           platformNavigation={platformNavigation}
+          audioTrackSelector={platformAudioTracks.active ? {
+            options: platformAudioTracks.options,
+            selectedTrackId: platformAudioTracks.selectedTrackId,
+            loading: platformAudioTracks.loading,
+            refreshing: platformAudioTracks.refreshing,
+            loadError: platformAudioTracks.loadError,
+            runtimeState: platformAudioTracks.runtimeState,
+            runtimeError: platformAudioTracks.runtimeError,
+            canSetDefault: platformAudioTracks.canSetDefault,
+            defaultUpdatingTrackId: platformAudioTracks.defaultUpdatingTrackId,
+            defaultUpdateError: platformAudioTracks.defaultUpdateError,
+            onSelect: (trackId) => {
+              platformAudioTracks.selectTrack(trackId);
+            },
+            onRefresh: () => {
+              void platformAudioTracks.refresh();
+            },
+            onRetry: platformAudioTracks.retry,
+            onSetDefault: (trackId) => {
+              void platformAudioTracks.setAsDefault(trackId);
+            },
+          } : undefined}
           isPlaying={isPlaying}
           playbackRate={playbackRate}
           loopPlaybackEnabled={loopPlaybackEnabled}

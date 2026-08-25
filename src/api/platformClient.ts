@@ -79,9 +79,13 @@ import type {
   UpdateMediaAudioTrackRequest,
   ReorderMediaAudioTracksRequest,
   AnnotationAudioPreference,
+  AnnotationAudioPlaybackOptions,
   UpsertResourcePermissionRequest,
 } from "@xiqu/shared";
-import { parseMediaAudioTrackPlaybackSession } from "@xiqu/shared";
+import {
+  parseAnnotationAudioPlaybackOptions,
+  parseMediaAudioTrackPlaybackSession,
+} from "@xiqu/shared";
 
 export type PlatformClientOptions = {
   baseUrl?: string;
@@ -330,6 +334,26 @@ export class PlatformClient {
     return this.request<AnnotationAudioPreference>(
       `/annotation-files/${resourceId}/audio-preference`,
     );
+  }
+
+  async getAnnotationAudioPlaybackOptions(
+    resourceId: string,
+    signal?: AbortSignal,
+  ): Promise<AnnotationAudioPlaybackOptions> {
+    const value = await this.request<unknown>(
+      `/annotation-files/${resourceId}/audio-playback-options`,
+      { signal },
+    );
+    const options = parseAnnotationAudioPlaybackOptions(value);
+    if (!options) {
+      throw new PlatformApiError(
+        502,
+        "invalid_media_audio_playback_options",
+        "服务器返回了无法识别的音轨选项。",
+        null,
+      );
+    }
+    return options;
   }
 
   updateAnnotationAudioPreference(

@@ -116,6 +116,11 @@ const source = (
   load: async () => ({ url: "unused", mimeType: "audio/mpeg", duration: 120 }),
 });
 
+const externalSelection = (value: ExternalAudioPlaybackSource) => ({
+  type: "external" as const,
+  source: value,
+});
+
 test("原声模式保持主 backend 为唯一快照和命令目标", async () => {
   const { runtime } = createHarness();
   const master = new FakeBackend({ currentTime: 3 });
@@ -143,7 +148,7 @@ test("暂停和播放状态选择外部轨时按最新主时钟与偏移安装",
   harness.runtime.setPlaybackRate(1.25);
   harness.runtime.setVolume(0.6);
 
-  const selecting = harness.runtime.selectExternalSource(source("vocal", 1.5));
+  const selecting = harness.runtime.selectAudio(externalSelection(source("vocal", 1.5)));
   assert.equal(master.muted, true);
   const external = new FakeBackend({ duration: 80 });
   harness.pending.get("vocal")?.resolve(external);
@@ -167,19 +172,19 @@ test("主媒体 ready 前后的同一选择只准备一次外部会话", async (
   const selectedSource = source("same-source");
   harness.runtime.attachMasterBackend(master);
 
-  await harness.runtime.selectExternalSource(selectedSource);
-  await harness.runtime.selectExternalSource(selectedSource);
+  await harness.runtime.selectAudio(externalSelection(selectedSource));
+  await harness.runtime.selectAudio(externalSelection(selectedSource));
   assert.equal(harness.prepareCounts.get("same-source") ?? 0, 0);
 
   master.snapshot.ready = true;
   harness.runtime.notifyMasterReady();
-  const waitingForSamePreparation = harness.runtime.selectExternalSource(selectedSource);
+  const waitingForSamePreparation = harness.runtime.selectAudio(externalSelection(selectedSource));
   assert.equal(harness.prepareCounts.get("same-source"), 1);
   const external = new FakeBackend();
   harness.pending.get("same-source")?.resolve(external);
   await waitingForSamePreparation;
 
-  await harness.runtime.selectExternalSource(selectedSource);
+  await harness.runtime.selectAudio(externalSelection(selectedSource));
   assert.equal(harness.prepareCounts.get("same-source"), 1);
   assert.equal(external.disposeCount, 0);
 });
@@ -189,9 +194,9 @@ test("A/B/C 快速选择只允许最后来源安装并发声", async () => {
   const master = new FakeBackend({ currentTime: 20, paused: false });
   harness.runtime.attachMasterBackend(master);
 
-  const selectingA = harness.runtime.selectExternalSource(source("a"));
-  const selectingB = harness.runtime.selectExternalSource(source("b"));
-  const selectingC = harness.runtime.selectExternalSource(source("c"));
+  const selectingA = harness.runtime.selectAudio(externalSelection(source("a")));
+  const selectingB = harness.runtime.selectAudio(externalSelection(source("b")));
+  const selectingC = harness.runtime.selectAudio(externalSelection(source("c")));
   const backendA = new FakeBackend();
   const backendB = new FakeBackend();
   const backendC = new FakeBackend();
@@ -210,13 +215,13 @@ test("切回原声先恢复主输出且旧外部事件不能复活", async () =>
   const harness = createHarness();
   const master = new FakeBackend({ currentTime: 5, paused: false });
   harness.runtime.attachMasterBackend(master);
-  const selecting = harness.runtime.selectExternalSource(source("vocal"));
+  const selecting = harness.runtime.selectAudio(externalSelection(source("vocal")));
   const external = new FakeBackend();
   const preparation = harness.pending.get("vocal");
   preparation?.resolve(external);
   await selecting;
 
-  await harness.runtime.selectExternalSource(null);
+  await harness.runtime.selectAudio({ type: "original" });
   assert.equal(master.muted, false);
   assert.equal(external.disposeCount, 1);
   assert.equal(harness.runtime.getState().phase, "original");
@@ -230,7 +235,7 @@ test("before-start 保持无声并在进入可播区后由漂移采样启动", a
   const harness = createHarness();
   const master = new FakeBackend({ currentTime: 1, paused: false });
   harness.runtime.attachMasterBackend(master);
-  const selecting = harness.runtime.selectExternalSource(source("delayed", 2));
+  const selecting = harness.runtime.selectAudio(externalSelection(source("delayed", 2)));
   const external = new FakeBackend({ duration: 20 });
   harness.pending.get("delayed")?.resolve(external);
   await selecting;
@@ -248,7 +253,7 @@ test("连续中等漂移触发硬同步而小漂移保持不动", async () => {
   const harness = createHarness();
   const master = new FakeBackend({ currentTime: 10, paused: false });
   harness.runtime.attachMasterBackend(master);
-  const selecting = harness.runtime.selectExternalSource(source("drift"));
+  const selecting = harness.runtime.selectAudio(externalSelection(source("drift")));
   const external = new FakeBackend({ currentTime: 10 });
   harness.pending.get("drift")?.resolve(external);
   await selecting;
@@ -272,7 +277,7 @@ test("缓冲暂停主视频，恢复时重同步；用户主动暂停后不自�
   const harness = createHarness();
   const master = new FakeBackend({ currentTime: 12, paused: false });
   harness.runtime.attachMasterBackend(master);
-  const selecting = harness.runtime.selectExternalSource(source("buffering"));
+  const selecting = harness.runtime.selectAudio(externalSelection(source("buffering")));
   const external = new FakeBackend({ currentTime: 12 });
   const preparation = harness.pending.get("buffering");
   preparation?.resolve(external);
@@ -294,24 +299,75 @@ test("缓冲暂停主视频，恢复时重同步；用户主动暂停后不自�
   assert.equal(harness.runtime.getState().phase, "ready_paused");
 });
 
-test("准备失败恢复原声并清理选择，不留下永久静音", async () => {
+test("准备失败暂停且保持所选音轨，只有显式重试或切回原声才能恢复", async () => {
   const harness = createHarness();
   const master = new FakeBackend({ paused: false });
   harness.runtime.attachMasterBackend(master);
-  const selecting = harness.runtime.selectExternalSource(source("broken"));
+  const brokenSource = source("broken");
+  const selecting = harness.runtime.selectAudio(externalSelection(brokenSource));
   harness.pending.get("broken")?.reject(new Error("音频服务不可用"));
   await selecting;
 
+  assert.equal(master.muted, true);
+  assert.equal(master.snapshot.paused, true);
+  assert.equal(harness.runtime.getState().phase, "error_external");
+  assert.equal(harness.runtime.getState().selectedTrackId, "broken");
+  assert.deepEqual(harness.errors, ["音频服务不可用"]);
+  await assert.rejects(() => harness.runtime.play(), /当前监听音轨不可用/u);
+
+  const retrying = harness.runtime.selectAudio(externalSelection(brokenSource));
+  assert.equal(harness.prepareCounts.get("broken"), 2);
+  const recovered = new FakeBackend();
+  harness.pending.get("broken")?.resolve(recovered);
+  await retrying;
+  assert.equal(harness.runtime.getState().phase, "ready_paused");
+
+  await harness.runtime.selectAudio({ type: "original" });
   assert.equal(master.muted, false);
   assert.equal(harness.runtime.getState().phase, "original");
-  assert.deepEqual(harness.errors, ["音频服务不可用"]);
+});
+
+test("权威选项判定不可用时直接暂停静音并保留目标身份", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ paused: false });
+  harness.runtime.attachMasterBackend(master);
+
+  await harness.runtime.selectAudio({
+    type: "unavailable",
+    trackId: "revoked-track",
+    errorCode: "permission_denied",
+  });
+
+  assert.equal(master.snapshot.paused, true);
+  assert.equal(master.muted, true);
+  assert.equal(harness.runtime.getState().selectedTrackId, "revoked-track");
+  assert.equal(harness.runtime.getState().errorCode, "permission_denied");
+  assert.equal(harness.prepareCounts.size, 0);
+});
+
+test("选项加载暂挂不会伪造音轨身份或启动外部请求", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ paused: false });
+  harness.runtime.attachMasterBackend(master);
+
+  await harness.runtime.selectAudio({ type: "blocked", errorCode: "options_loading" });
+
+  assert.equal(master.snapshot.paused, true);
+  assert.equal(master.muted, true);
+  assert.equal(harness.runtime.getState().selectedTrackId, null);
+  assert.equal(harness.runtime.getState().errorCode, "options_loading");
+  assert.equal(harness.prepareCounts.size, 0);
+
+  // 加载失败没有 trackId，但后续音量控件也不能绕过安全静音并意外放出视频原声。
+  harness.runtime.setMuted(false);
+  assert.equal(master.muted, true);
 });
 
 test("主来源卸载会取消准备、销毁主从 backend 并停止漂移", async () => {
   const harness = createHarness();
   const master = new FakeBackend({ paused: false });
   harness.runtime.attachMasterBackend(master);
-  const selecting = harness.runtime.selectExternalSource(source("cleanup"));
+  const selecting = harness.runtime.selectAudio(externalSelection(source("cleanup")));
   const external = new FakeBackend();
   harness.pending.get("cleanup")?.resolve(external);
   await selecting;

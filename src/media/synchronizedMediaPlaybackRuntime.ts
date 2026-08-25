@@ -32,6 +32,15 @@ export type SynchronizedMediaPlaybackRuntimeOptions = {
   onError?: (message: string) => void;
 };
 
+export type SynchronizedAudioSelection =
+  | { type: "original" }
+  | { type: "external"; source: ExternalAudioPlaybackSource }
+  | { type: "unavailable"; trackId: string; errorCode: string }
+  | { type: "blocked"; errorCode: string };
+
+export const ORIGINAL_AUDIO_SELECTION: SynchronizedAudioSelection =
+  Object.freeze({ type: "original" });
+
 type AlignmentResult = "playable" | "before_start" | "after_end";
 
 /**
@@ -99,27 +108,53 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
 
   /** 主媒体 metadata/Aliplayer ready 后才开始消费外部选择，避免在无权威时钟时提前 seek。 */
   notifyMasterReady() {
-    if (!this.masterBackend?.getSnapshot().ready || !this.desiredSource) return;
+    if (
+      !this.masterBackend?.getSnapshot().ready ||
+      !this.desiredSource ||
+      this.state.phase !== "preparing_external"
+    ) return;
     if (this.externalBackend || this.preparePromise) return;
     const generation = this.state.sourceGeneration;
     void this.startPreparation(this.desiredSource, generation);
   }
 
-  async selectExternalSource(source: ExternalAudioPlaybackSource | null) {
+  async selectAudio(selection: SynchronizedAudioSelection) {
     this.assertActive();
+    if (selection.type === "original") {
+      if (this.state.phase === "original" && !this.desiredSource) return;
+      this.commandGeneration += 1;
+      this.activateOriginal();
+      return;
+    }
+    if (selection.type === "unavailable") {
+      if (
+        this.state.phase === "error_external" &&
+        this.state.selectedTrackId === selection.trackId &&
+        this.state.errorCode === selection.errorCode
+      ) return;
+      this.commandGeneration += 1;
+      this.enterUnavailableSelection(selection.trackId, selection.errorCode);
+      return;
+    }
+    if (selection.type === "blocked") {
+      if (
+        this.state.phase === "error_external" &&
+        this.state.selectedTrackId === null &&
+        this.state.errorCode === selection.errorCode
+      ) return;
+      this.commandGeneration += 1;
+      this.enterBlockedSelection(selection.errorCode);
+      return;
+    }
+    const source = selection.source;
     // React effect 与主媒体 ready 可能先后表达同一选择；幂等复用可避免重复申请会话和短暂恢复原声。
-    if (source && source === this.desiredSource) {
+    if (source === this.desiredSource && this.state.phase !== "error_external") {
       if (this.externalBackend) return;
       if (this.preparePromise) return this.preparePromise;
       if (!this.masterBackend?.getSnapshot().ready) return;
       return this.startPreparation(source, this.state.sourceGeneration);
     }
     this.commandGeneration += 1;
-    if (!source) {
-      this.activateOriginal();
-      return;
-    }
-
     this.desiredSource = source;
     this.cancelExternalPreparation();
     this.disposeExternalBackend();
@@ -151,6 +186,9 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
 
   async play() {
     const master = this.requireMasterBackend();
+    if (this.state.phase === "error_external") {
+      throw new Error("当前监听音轨不可用，请重试或切回视频原声。");
+    }
     const commandGeneration = ++this.commandGeneration;
     this.applyEvent({ type: "play_requested" });
     await master.play();
@@ -415,14 +453,37 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
 
   private handleExternalFailure(generation: number, message: string) {
     if (generation !== this.state.sourceGeneration || !this.desiredSource) return;
-    const shouldResume = this.state.desiredPlayback === "playing";
     this.applyEvent({
       type: "external_failed",
       generation,
       errorCode: "external_audio_failed",
     });
     this.options.onError?.(message || "替换音轨播放失败。");
-    this.activateOriginal(shouldResume);
+    // 科研试听不能静默换回原声；失败后暂停并保持主轨静音，等待用户重试或显式切回。
+    this.masterBackend?.pause();
+    this.masterBackend?.setMuted(true);
+    this.stopDriftSampling();
+    this.disposeExternalBackend();
+  }
+
+  private enterUnavailableSelection(trackId: string, errorCode: string) {
+    this.desiredSource = null;
+    this.cancelExternalPreparation();
+    this.stopDriftSampling();
+    this.disposeExternalBackend();
+    this.masterBackend?.pause();
+    this.masterBackend?.setMuted(true);
+    this.applyEvent({ type: "select_unavailable", trackId, errorCode });
+  }
+
+  private enterBlockedSelection(errorCode: string) {
+    this.desiredSource = null;
+    this.cancelExternalPreparation();
+    this.stopDriftSampling();
+    this.disposeExternalBackend();
+    this.masterBackend?.pause();
+    this.masterBackend?.setMuted(true);
+    this.applyEvent({ type: "suspend_selection", errorCode });
   }
 
   private activateOriginal(desiredPlayback?: boolean) {
@@ -447,7 +508,8 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
   }
 
   private applyOutputRouting() {
-    if (this.desiredSource) {
+    // 只要不在原声态，主媒体就必须保持静音；选项加载失败没有 trackId，也不能意外放出原声。
+    if (this.state.phase !== "original") {
       this.masterBackend?.setMuted(true);
       this.externalBackend?.setMuted(this.userMuted);
       return;

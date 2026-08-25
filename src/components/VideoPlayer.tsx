@@ -8,7 +8,6 @@ import {
   useState,
 } from "react";
 import { AliyunVodPlaybackBackend } from "../media/aliyunVodPlaybackBackend";
-import type { ExternalAudioPlaybackSource } from "../media/externalAudioPlaybackBackendFactory";
 import {
   LatestMediaPlaybackCommand,
   MediaPlaybackCommandCancelledError,
@@ -18,14 +17,18 @@ import {
   type MediaPlaybackSource,
 } from "../media/mediaPlaybackController";
 import { NativeMediaPlaybackBackend } from "../media/nativeMediaPlaybackBackend";
-import { SynchronizedMediaPlaybackRuntime } from "../media/synchronizedMediaPlaybackRuntime";
+import {
+  ORIGINAL_AUDIO_SELECTION,
+  SynchronizedMediaPlaybackRuntime,
+  type SynchronizedAudioSelection,
+} from "../media/synchronizedMediaPlaybackRuntime";
 import type { SynchronizedPlaybackState } from "../media/synchronizedPlaybackState";
 
 const PREVIEW_SEEK_EPSILON = 1 / 90;
 
 type VideoPlayerProps = {
   source: MediaPlaybackSource;
-  externalAudioSource?: ExternalAudioPlaybackSource | null;
+  audioSelection?: SynchronizedAudioSelection;
   playbackRate: number;
   currentTime: number;
   previewTime: number | null;
@@ -35,8 +38,8 @@ type VideoPlayerProps = {
   onLoadedMetadata: (duration: number) => void;
   onTimeUpdate: (currentTime: number) => void;
   onPlayStateChange: (playing: boolean) => void;
-  onExternalAudioStateChange?: (state: SynchronizedPlaybackState) => void;
-  onExternalAudioError?: (message: string) => void;
+  onAudioPlaybackStateChange?: (state: SynchronizedPlaybackState) => void;
+  onAudioPlaybackError?: (message: string) => void;
 };
 
 type PlaybackViewState =
@@ -48,7 +51,7 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
   (
     {
       source,
-      externalAudioSource = null,
+      audioSelection = ORIGINAL_AUDIO_SELECTION,
       playbackRate,
       currentTime,
       previewTime,
@@ -58,8 +61,8 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
       onLoadedMetadata,
       onTimeUpdate,
       onPlayStateChange,
-      onExternalAudioStateChange,
-      onExternalAudioError,
+      onAudioPlaybackStateChange,
+      onAudioPlaybackError,
     },
     ref,
   ) => {
@@ -69,15 +72,15 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
     const previewSeekFrameRef = useRef<number | null>(null);
     const pendingPreviewTimeRef = useRef<number | null>(null);
     const currentTimeRef = useRef(currentTime);
-    const externalAudioSourceRef = useRef(externalAudioSource);
+    const audioSelectionRef = useRef(audioSelection);
     const isPreviewingRef = useRef(false);
     const resumeAfterPreviewRef = useRef(false);
     const callbacksRef = useRef({
       onLoadedMetadata,
       onTimeUpdate,
       onPlayStateChange,
-      onExternalAudioStateChange,
-      onExternalAudioError,
+      onAudioPlaybackStateChange,
+      onAudioPlaybackError,
     });
     const commandRef = useRef<LatestMediaPlaybackCommand | null>(null);
     const controllerRef = useRef<MediaPlaybackController | null>(null);
@@ -93,8 +96,8 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
     if (!synchronizedRuntimeRef.current) {
       synchronizedRuntimeRef.current = new SynchronizedMediaPlaybackRuntime({
         vodContainerId: audioVodContainerId.current,
-        onStateChange: (state) => callbacksRef.current.onExternalAudioStateChange?.(state),
-        onError: (message) => callbacksRef.current.onExternalAudioError?.(message),
+        onStateChange: (state) => callbacksRef.current.onAudioPlaybackStateChange?.(state),
+        onError: (message) => callbacksRef.current.onAudioPlaybackError?.(message),
       });
     }
 
@@ -113,13 +116,13 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
     useImperativeHandle(ref, () => controllerRef.current as MediaPlaybackController, []);
 
     currentTimeRef.current = currentTime;
-    externalAudioSourceRef.current = externalAudioSource;
+    audioSelectionRef.current = audioSelection;
     callbacksRef.current = {
       onLoadedMetadata,
       onTimeUpdate,
       onPlayStateChange,
-      onExternalAudioStateChange,
-      onExternalAudioError,
+      onAudioPlaybackStateChange,
+      onAudioPlaybackError,
     };
 
     function stopFrameSync() {
@@ -150,7 +153,7 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
     // 取消属于正常的快速切换；真正的意外错误才需要进入外部音轨提示区。
     function reportExternalAudioSelectionError(error: unknown) {
       if (error instanceof MediaPlaybackCommandCancelledError) return;
-      callbacksRef.current.onExternalAudioError?.(
+      callbacksRef.current.onAudioPlaybackError?.(
         error instanceof Error ? error.message : "替换音轨切换失败。",
       );
     }
@@ -225,7 +228,7 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
       }
 
       // 主视频重新挂载时恢复当前选择意图；backend 未 ready 时 runtime 仅静音并等待，不会提前创建从播放器。
-      void synchronizedRuntime.selectExternalSource(externalAudioSourceRef.current).catch(
+      void synchronizedRuntime.selectAudio(audioSelectionRef.current).catch(
         reportExternalAudioSelectionError,
       );
 
@@ -236,10 +239,10 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
     useEffect(() => {
       const runtime = synchronizedRuntimeRef.current;
       if (!runtime) return;
-      void runtime.selectExternalSource(externalAudioSource).catch(
+      void runtime.selectAudio(audioSelection).catch(
         reportExternalAudioSelectionError,
       );
-    }, [externalAudioSource]);
+    }, [audioSelection]);
 
     // 倍率变化只经过统一控制器，不再由 App 直接写 HTMLVideoElement。
     useEffect(() => {

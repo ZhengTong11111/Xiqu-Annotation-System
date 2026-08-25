@@ -6,6 +6,10 @@ import type { AnnotationPresenceMember } from "@xiqu/shared";
 import { CollaborationPresenceMenu } from "./CollaborationPresenceMenu";
 import { CommandPalette } from "./CommandPalette";
 import type { CommandSearchEntry } from "./CommandPalette";
+import {
+  AudioTrackSelector,
+  type AudioTrackSelectorModel,
+} from "./AudioTrackSelector";
 
 export type TopMenuPlatformNavigation = {
   label: string;
@@ -75,10 +79,12 @@ type TopMenuBarProps = {
   commandSearchEntries: CommandSearchEntry[];
   // Cmd/Ctrl + K 通过递增的 requestId 通知菜单栏打开搜索面板，不需要把 openMenu 状态提到 App。
   commandSearchOpenRequestId?: number;
+  audioTrackSelector?: AudioTrackSelectorModel;
 };
 
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5];
 const menuOrder = ["文件", "编辑", "播放", "视图", "帮助", "搜索"] as const;
+type OpenTopMenu = (typeof menuOrder)[number] | "audio-tracks";
 
 export function TopMenuBar({
   platformNavigation,
@@ -140,8 +146,9 @@ export function TopMenuBar({
   onToggleAnnotationConfirmationDetached,
   commandSearchEntries,
   commandSearchOpenRequestId,
+  audioTrackSelector,
 }: TopMenuBarProps) {
-  const [openMenu, setOpenMenu] = useState<(typeof menuOrder)[number] | null>(null);
+  const [openMenu, setOpenMenu] = useState<OpenTopMenu | null>(null);
   const menuBarRef = useRef<HTMLElement>(null);
   const syncStatusLabel = getSyncStatusLabel(
     syncStatus,
@@ -427,6 +434,13 @@ export function TopMenuBar({
             ) : null}
           </div>
         ))}
+        {audioTrackSelector ? (
+          <AudioTrackSelector
+            open={openMenu === "audio-tracks"}
+            onOpenChange={(open) => setOpenMenu(open ? "audio-tracks" : null)}
+            model={audioTrackSelector}
+          />
+        ) : null}
       </nav>
       <div className={`top-menu-status sync-status sync-status-${syncStatus}`}>
         {collaborationStatus === "connected" ? (
