@@ -58,6 +58,10 @@ const fakeAliyunVodProvider: AliyunVodProvider = {
       duration: 321.5,
       bitrate: 128,
     }),
+    listAudioRenditions: async () => [],
+    createAudioRenditionStream: async () => {
+      throw new Error("本测试不应请求音频转码");
+    },
   },
 };
 

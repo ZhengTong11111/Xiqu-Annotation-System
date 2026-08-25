@@ -30,6 +30,8 @@ test("媒体分析 worker 原子 claim、流式生成资产并可恢复陈旧任
         gateway: {
           inspectVideo: async () => { throw new Error("not used"); },
           createPlaybackCredential: async () => { throw new Error("not used"); },
+          listAudioRenditions: async () => { throw new Error("not used"); },
+          createAudioRenditionStream: async () => { throw new Error("not used"); },
           createAnalysisAudioStream: async () => {
             vodCalls += 1;
             throw new Error("上传音频不应访问 VOD");

@@ -4,6 +4,7 @@ import {
   AliyunVodGatewayError,
   AliyunVodSdkGateway,
   createAliyunVodProvider,
+  parseAliyunVodAudioRenditions,
   selectAliyunVodAnalysisAudio,
 } from "../src/aliyunVodGateway.js";
 
@@ -156,6 +157,106 @@ test("VOD 分析音频请求使用纯音频参数并拒绝错配媒资", async (
     (error: unknown) => error instanceof AliyunVodGatewayError
       && error.category === "invalid_response",
   );
+});
+
+test("VOD 音频转码以 JobId 唯一化并只签发指定流", async () => {
+  const gateway = new AliyunVodSdkGateway({
+    getVideoInfo: async () => ({ body: {} }),
+    getVideoPlayAuth: async () => ({ body: {} }),
+    getPlayInfo: async () => ({
+      body: {
+        requestId: "request-rendition",
+        videoBase: { videoId: "video_123456", status: "Normal" },
+        playInfoList: {
+          playInfo: [
+            {
+              jobId: "job-low",
+              playURL: "https://vod.example.test/low.mp3?temporary=1",
+              format: "mp3",
+              streamType: "audio",
+              status: "Normal",
+              definition: "SQ",
+              bitrate: "64",
+              duration: "12.5",
+            },
+            {
+              jobId: "job-high",
+              playURL: "https://vod.example.test/high.mp3?temporary=1",
+              format: "mp3",
+              streamType: "audio",
+              status: "Normal",
+              definition: "HQ",
+              bitrate: "128",
+              duration: "12.5",
+            },
+          ],
+        },
+      },
+    }),
+  } as never);
+
+  assert.deepEqual(await gateway.listAudioRenditions("video_123456"), [
+    {
+      jobId: "job-high",
+      format: "mp3",
+      definition: "HQ",
+      bitrate: 128,
+      duration: 12.5,
+    },
+    {
+      jobId: "job-low",
+      format: "mp3",
+      definition: "SQ",
+      bitrate: 64,
+      duration: 12.5,
+    },
+  ]);
+  const stream = await gateway.createAudioRenditionStream(
+    "video_123456",
+    "job-low",
+  );
+  assert.equal(stream.jobId, "job-low");
+  assert.match(stream.url, /low\.mp3/u);
+  await assert.rejects(
+    gateway.createAudioRenditionStream("video_123456", "missing-job"),
+    (error: unknown) => error instanceof AliyunVodGatewayError &&
+      error.category === "not_found",
+  );
+});
+
+test("VOD 音频转码拒绝重复 JobId 和不安全候选", () => {
+  assert.equal(parseAliyunVodAudioRenditions([
+    {
+      jobId: "same-job",
+      playURL: "https://vod.example.test/a.mp3",
+      format: "mp3",
+      streamType: "audio",
+      status: "Normal",
+    },
+    {
+      jobId: "same-job",
+      playURL: "https://vod.example.test/b.mp3",
+      format: "mp3",
+      streamType: "audio",
+      status: "Normal",
+    },
+  ]), null);
+  assert.deepEqual(parseAliyunVodAudioRenditions([
+    {
+      jobId: "http-job",
+      playURL: "http://vod.example.test/audio.mp3",
+      format: "mp3",
+      streamType: "audio",
+      status: "Normal",
+    },
+    {
+      jobId: "video-job",
+      playURL: "https://vod.example.test/video.mp3",
+      format: "mp3",
+      streamType: "video",
+      status: "Normal",
+    },
+  ]), []);
 });
 
 test("VOD 网关为短时播放凭据保留安全余量", async () => {

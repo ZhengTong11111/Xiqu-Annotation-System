@@ -619,6 +619,13 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   rendition 身份，再完成登录 UI、Chrome/Safari、localhost/HTTP IP、快速 A/B/C、撤权、续签、detached window
   和慢网验收；通过前不进入分析显示切换 RA4。
 
+  RA3b2b2a 同日完成 VOD rendition 代码闭环：阿里云 `JobId` 成为同一 VOD 下音频转码的稳定身份，数据库以
+  三种互斥 source variant 保存 original、独立音频和 VOD rendition；候选列表、创建事务、ACL、no-store
+  指定 JobId 播放会话、Aliplayer 直接 HTTPS 音频与刷新生命周期均已接通。真实《寻梦》VOD 候选和短时会话
+  通过，本机数据库先备份校验后升至 26/26 migrations，专项播放 47/47、gateway 9/9、音轨 API 4/4、完整 API
+  189/189 与 build 通过。下一小阶段 RA3b2b2b 仍需用户先登录本机平台，再完成 Chrome/Safari、HTTP IP、
+  A/B/C、撤权、慢网、续签和 detached window 的真实声音/UI 门禁；通过前不进入 RA4。
+
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入
 Development Log。任何阶段不得为追求“能播放”而牺牲时间轴的精确时间语义。

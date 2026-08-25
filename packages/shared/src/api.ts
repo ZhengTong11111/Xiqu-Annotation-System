@@ -175,7 +175,13 @@ export type MediaAudioTrackList = {
 };
 
 export type CreateMediaAudioTrackRequest = {
-  audioMediaResourceId: string;
+  source:
+    | { type: "media_resource"; mediaResourceId: string }
+    | {
+        type: "aliyun_vod_rendition";
+        mediaResourceId: string;
+        jobId: string;
+      };
   name: string;
   kind: Exclude<MediaAudioTrackKind, "original">;
   offsetSeconds?: number;

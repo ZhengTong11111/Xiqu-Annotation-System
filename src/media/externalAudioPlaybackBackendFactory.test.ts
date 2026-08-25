@@ -101,9 +101,68 @@ test("VOD 工厂复用首份会话作为 expected identity 和首次 PlayAuth", 
   assert.ok(vodOptions);
   assert.equal(vodOptions.expectedMediaKind, "audio");
   assert.equal(vodOptions.expectedVideoId, "vod-audio");
-  assert.equal((await vodOptions.loadSession()).playAuth, "auth-1");
+  const firstSession = await vodOptions.loadSession();
+  assert.equal(firstSession.sourceType, "aliyun_vod");
+  assert.equal(firstSession.sourceType === "aliyun_vod" ? firstSession.playAuth : null, "auth-1");
   assert.equal(sessionRequests, 1);
-  assert.equal((await vodOptions.loadSession()).playAuth, "auth-2");
+  const secondSession = await vodOptions.loadSession();
+  assert.equal(secondSession.sourceType, "aliyun_vod");
+  assert.equal(secondSession.sourceType === "aliyun_vod" ? secondSession.playAuth : null, "auth-2");
+  assert.equal(sessionRequests, 2);
+});
+
+test("VOD 转码工厂按 JobId 绑定直接音频来源并复用首份临时会话", async () => {
+  let sessionRequests = 0;
+  const capturedVodOptions: AliyunVodPlaybackBackendOptions[] = [];
+  const backend = new ReadyBackend();
+  const prepare = createExternalAudioPlaybackBackendPreparer({
+    createVodBackend: (options) => {
+      capturedVodOptions.push(options);
+      queueMicrotask(() => options.events.onReady(backend.getSnapshot()));
+      return backend;
+    },
+  });
+  const createSession = (suffix: string) => ({
+    version: 1 as const,
+    annotationFileId: "annotation-file",
+    primaryMediaResourceId: "media-video",
+    trackId: "track-rendition",
+    audioMediaResourceId: "media-video",
+    sourceType: "aliyun_vod_rendition" as const,
+    videoId: "vod-video",
+    region: "cn-shanghai",
+    jobId: "job-audio-mp3",
+    url: `https://vod.example.test/audio.mp3?token=${suffix}`,
+    mimeType: "audio/mpeg" as const,
+    duration: 120,
+    expiresAt: "2030-01-01T00:00:00.000Z",
+    webPlayerLicense: { domain: "example.test", key: "public-license" },
+  });
+  await prepare({
+    type: "aliyun_vod_rendition_audio",
+    trackId: "track-rendition",
+    audioMediaResourceId: "media-video",
+    renditionJobId: "job-audio-mp3",
+    offsetSeconds: 0,
+    loadSession: async () => createSession(String(++sessionRequests)),
+  }, {
+    signal: new AbortController().signal,
+    vodContainerId: "vod-rendition-host",
+    events: noopEvents(),
+  });
+
+  const vodOptions = capturedVodOptions[0];
+  assert.ok(vodOptions);
+  assert.equal(vodOptions.expectedVideoId, "vod-video");
+  assert.equal(vodOptions.expectedRenditionJobId, "job-audio-mp3");
+  assert.equal(vodOptions.expectedMediaKind, undefined);
+  const firstSession = await vodOptions.loadSession();
+  assert.equal(firstSession.sourceType, "aliyun_vod_rendition");
+  assert.match(firstSession.sourceType === "aliyun_vod_rendition" ? firstSession.url : "", /token=1/u);
+  assert.equal(sessionRequests, 1);
+  const secondSession = await vodOptions.loadSession();
+  assert.equal(secondSession.sourceType, "aliyun_vod_rendition");
+  assert.match(secondSession.sourceType === "aliyun_vod_rendition" ? secondSession.url : "", /token=2/u);
   assert.equal(sessionRequests, 2);
 });
 

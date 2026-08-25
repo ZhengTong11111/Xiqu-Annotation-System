@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2、RA3a、RA3b1、RA3b2a、RA3b2b1 已完成
+> 文档状态：专项实施中，RA0-RA2、RA3a、RA3b1、RA3b2a、RA3b2b1、RA3b2b2a 已完成
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -30,9 +30,12 @@
 - **RA3b2b1 已完成（2026-08-24）**：完成本机候选库恢复演练及默认开发库两阶段媒体级分析迁移；新增主媒体
   写权限控制的低频音轨管理器、纯音频资源选择、上传音频真实播放闭环和 VOD 纯音频媒资识别。迁移校验已修正
   manifest 波形桶宽与资产 level 序号混淆，真实上传 WAV 的播放会话与 Range 读取通过。
-- 下一阶段是 **RA3b2b2 VOD 音轨与真实浏览器验收**。补齐稳定 VOD 音频 rendition 身份，再完成 Chrome/
-  Safari、localhost/HTTP IP、快速切换、撤权、PlayAuth 续签、慢网和 detached window 验收；RA3b2b2 通过前
-  不进入 RA4。
+- **RA3b2b2a 已完成（2026-08-24）**：同一 VOD 视频下的 MP3 音频转码以阿里云官方 `JobId` 作为稳定身份；
+  数据库只保存所属 VOD 媒体、JobId 和有限显示元数据，播放时重新取得指定 JobId 的 HTTPS 临时地址并通过
+  no-store 会话交给 Aliplayer。管理器新增独立转码选择器，真实《寻梦》VOD 已验证候选与短时会话。
+- 下一阶段是 **RA3b2b2b 登录浏览器验收与时序收口**。当前可用的本机和 Chrome 页面均停在登录页，因而本轮
+  没有代填密码或伪造声音证据。必须由用户先完成一次本机平台登录，再完成 Chrome/Safari、localhost/HTTP IP、
+  A/B/C、撤权、续签、慢网和 detached window 验收；该门禁通过前不进入 RA4。
 
 ## 1. 目标重新定义
 
@@ -63,11 +66,14 @@
 
 ### 2.2 音轨资源
 
-音轨资源是平台中真实存在的 `MediaFile`：
+独立音轨资源通常是平台中真实存在的 `MediaFile`：
 
 - 上传的 MP3、WAV、M4A 等音频文件；
 - 阿里云 VOD 中的独立音频资源；
 - 视频自身包含的原始音频。视频原声在 UI 中是一条音轨，但数据库可以用主媒体身份表达，无需复制媒体对象。
+
+同一 VOD 视频下的指定 MP3 转码属于该视频的派生 rendition，而不是资源树中的独立文件。它以所属 VOD
+`MediaFile + JobId` 表达稳定来源，不能复制、移动或下载成一个虚构的资源节点；临时播放地址只存在于播放会话。
 
 ### 2.3 音轨关联
 
@@ -75,7 +81,7 @@
 
 - 音轨显示名称，例如“视频原声”“人声分离”“伴奏”；
 - 音轨类型，例如原声、人声、伴奏、降噪或自定义；
-- 指向真实音频媒体资源；
+- 指向真实音频媒体资源，或指向一个真实 VOD 视频下由 JobId 唯一标识的音频 rendition；
 - 音轨相对视频的时间偏移；
 - 排序和默认选择；
 - 启用状态和创建来源。
@@ -216,12 +222,18 @@ annotationFileId + sourceFingerprint + algorithmVersion + configHash
 
 ### 5.1 媒体音轨关联
 
-建议新增 `MediaAudioTrack`：
+当前 `MediaAudioTrack` 采用三种互斥来源：
 
 ```text
 id                         UUID 主键
 primaryMediaResourceId     主视频或主媒体资源
-audioMediaResourceId       可空；空值且 kind=original 时代表视频原声
+audioMediaResourceId       独立音频 MediaFile 来源
+vodRenditionMediaResourceId VOD rendition 所属视频 MediaFile
+vodRenditionJobId          阿里云媒体流稳定 JobId
+vodRenditionFormat         当前只允许 mp3
+vodRenditionDefinition     有限展示信息
+vodRenditionBitrate        有限展示信息
+vodRenditionDuration       有限展示信息
 name                       用户可读名称
 kind                       original | vocal | accompaniment | denoised | reference | custom
 offsetSeconds              音频 0 秒对应的视频时间，默认 0
@@ -235,11 +247,11 @@ updatedAt
 关键约束：
 
 - 一个主媒体最多一条 `original` 音轨。
-- 非 `original` 音轨必须引用真实 `MediaFile`。
-- 关联资源必须是可播放的音频，不能把另一个普通视频误当替换音频；若阿里云视频允许使用其纯音频转码，应以明确的音频选择策略解析，而不是伪造 MIME。
-- 同一主媒体和音频资源可以只保留一个有效关联；如确有不同偏移用途，后期再允许多个具名关联。
+- 非 `original` 音轨必须引用真实纯音频 `MediaFile`，或引用真实 VOD 视频下仍存在的 `JobId` rendition。
+- 普通视频不能伪装成独立音频资源；VOD rendition 使用独立 source variant，并由服务端重新查询供应商事实。
+- 同一主媒体和音频资源只保留一个有效关联；同一主媒体、来源 VOD 与 JobId 的组合也只保留一个关联。
 - `offsetSeconds` 是关联属性，不写入 `MediaAnalysisRun`。
-- 删除关联不删除真实媒体资源，也不删除该媒体已有分析结果。
+- 删除关联不删除真实媒体资源、阿里云转码或该媒体已有分析结果。
 
 ### 5.2 标注文件默认音轨
 
@@ -304,7 +316,8 @@ sourceFingerprint + algorithmVersion + configHash
 - run 表示“该媒体的内含音频分析”；
 - 不额外创建一个虚假的音频文件资源。
 
-如果以后用户把 VOD 内多个音频流当作独立音轨，必须把流选择信息纳入媒体来源指纹或建立显式派生媒体资源，不能让不同流复用同一个 run。
+RA3b2b2a 已允许把 VOD 内指定 JobId 当作监听音轨。RA4 必须先为这类 rendition 冻结独立分析身份：不能仅用
+所属视频 `MediaFile` 的 fingerprint 让多个流复用同一 run，也不能把临时 URL 纳入 fingerprint。
 
 ### 5.5 分析显示映射
 
@@ -326,20 +339,21 @@ tile.startTime / endTime = 音频源坐标
 
 ### 6.1 音轨集合
 
-建议接口：
+已实现接口：
 
 ```text
-GET    /api/media/:primaryMediaId/audio-tracks
-POST   /api/media/:primaryMediaId/audio-tracks
-PATCH  /api/media/:primaryMediaId/audio-tracks/:trackId
-DELETE /api/media/:primaryMediaId/audio-tracks/:trackId
-POST   /api/media/:primaryMediaId/audio-tracks/reorder
+GET    /api/media-files/:primaryMediaId/audio-tracks
+GET    /api/media-files/:vodMediaId/audio-renditions
+POST   /api/media-files/:primaryMediaId/audio-tracks
+PATCH  /api/media-files/:primaryMediaId/audio-tracks/:trackId
+DELETE /api/media-files/:primaryMediaId/audio-tracks/:trackId
+PUT    /api/media-files/:primaryMediaId/audio-tracks/reorder
 ```
 
 职责：
 
 - 返回当前用户可见的音轨摘要和可用状态；
-- 创建关联时验证主媒体、音频媒体和权限；
+- 创建关联时验证主媒体、独立音频媒体或 VOD rendition 与权限；
 - 更新名称、类型、偏移和启用状态；
 - 稳定重排序；
 - 删除时只删除关联，除非用户另行从资源管理器删除真实文件。
@@ -830,17 +844,35 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 专项音轨合同/状态/来源策略 16/16、真实音轨 API 4/4、迁移 10/10、完整 API 187/187、Web 与完整 build 均通过；
   仅保留既有 Web chunk 体积提醒和测试环境 `pg` deprecation warning。
 
-**RA3b2b2 待推进**
+**RA3b2b2a 实际完成（2026-08-24）**
 
-- 为同一 VOD 的音频 rendition 建立稳定且可复核的持久身份，优先使用供应商 JobId/转码模板等稳定事实；播放 URL
-  只作为短期会话结果，不能作为关系 identity、比较键或数据库字段。完成真实 VOD 纯音频资源创建与播放会话。
-- 在登录后的平台编辑器完成音轨管理弹窗视觉与键盘验收，再实际验证原声、上传音频、VOD 音频快速 A/B/C、
-  播放/暂停/seek/循环/倍率、正负 offset、文件切换和 detached window；证明只保留最后意图且不会双声。
-- 覆盖 Chrome 与 Safari、localhost 与临时 HTTP IP，并核对未来 HTTPS 域名下无混合内容；验证 Web License、
-  Range/CORS、自动播放限制、慢请求取消、PlayAuth 续签、撤回源音频权限、禁用/删除音轨和主媒体变化后的明确
-  阻断与恢复。
-- 使用真实证据修正时序与 UI，完成专项测试、完整构建和浏览器验收后才允许进入 RA4。偏移校准高级 UI、分析
-  跟随和旧分析设置清理仍分别属于 RA5、RA4、RA6，不在本轮提前实现。
+- 依据阿里云官方 `GetPlayInfo` 合同与仓库锁定 SDK，使用 `PlayInfo.JobId` 作为媒体流稳定身份。新增 additive
+  migration，把 original、独立音频 MediaFile、VOD rendition 收敛为数据库三种互斥来源；partial unique 防止
+  同主媒体重复关联同一 VOD/JobId。临时 URL、PlayAuth、License 和原始 provider response 均不持久化。
+- gateway 只接受状态 Normal、StreamType=audio、format=mp3、HTTPS 且 JobId 完整的候选；重复 JobId 整体拒绝。
+  候选 API 只返回 JobId 与 definition/bitrate/duration 等有限事实。创建前先验证主媒体 write，再按来源
+  `read + download` 查询供应商，事务锁内重验 ACL/活动状态并保存服务端权威元数据。
+- 播放会话每次复核 annotation、主媒体、来源 VOD、track enabled 与 JobId，重新签发指定 JobId 的 HTTPS source；
+  Aliplayer 直接音频模式沿用同一 generation/刷新/dispose 生命周期，刷新后 JobId 漂移或流消失会失败静音，不会
+  自动换流或回原声。HTTP IP 页面只加载 HTTPS 媒体，未来 HTTPS 域名不会形成 mixed content。
+- 音轨管理器保留平台音频资源入口，并为 VOD 主视频新增独立 rendition 选择器；它不把转码伪装成资源树文件，
+  不允许手填 URL/JobId。自审修正了嵌套弹窗遮罩层级和可选错误行导致的网格错位，并补齐 radiogroup 语义。
+- 本机 public 数据库在 API 停止状态下先做一致备份并独立校验，随后成功应用第 26 条 migration，重启源码 API
+  后 readiness 与 storage/database 均正常。真实《寻梦》VOD 返回 1 条 SQ MP3，JobId 精确重签、HTTPS 与约
+  895 秒有效期均通过；文档只记录 JobId hash 和有限元数据，没有记录临时地址或凭据。
+- 专项合同 7/7 + 状态/策略 16/16、播放 47/47、VOD gateway 9/9、音轨 API 4/4、完整 API 189/189 和完整
+  build 通过。首次完整 API 回归曾出现一次递归复制 500；临时启用测试日志后单套 38/38、恢复日志配置后全套
+  189/189，未能复现且最终未留下诊断开关。仅有既有 chunk 提醒与测试环境 `pg` deprecation warning。
+
+**RA3b2b2b 待推进：登录浏览器与多环境时序门禁**
+
+- 当前 in-app browser 与 Chrome 的 localhost 均停在登录页；本轮没有代填密码，因此不能把 API、纯测试或未登录
+  页面冒充为真实声音/UI 验收。下一轮由用户完成一次本机登录后，检查管理器、rendition picker 的布局、滚动、
+  焦点、Escape、错误/空状态与真实创建。
+- 实际验证原声、uploaded、独立 VOD audio、同 VID rendition 的 A/B/C 快切、播放/暂停/seek/循环/倍率、正负
+  offset、文件切换、detached window、禁用/删除/撤权、重试和短到期会话刷新，证明只保留最后意图且不会双声。
+- 覆盖 Chrome 与 Safari、localhost 与临时 HTTP IP，核对 Web License、Range/CORS、自动播放限制、慢请求取消和
+  未来 HTTPS mixed-content 边界。浏览器门禁与用户听觉确认通过前仍不进入 RA4。
 
 ### RA4：分析显示跟随与渐进缓存复用
 

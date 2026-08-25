@@ -1,11 +1,13 @@
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import * as Dialog from "@radix-ui/react-dialog";
+import type { MediaAudioTrackSource } from "@xiqu/shared";
 import {
   ArrowDown,
   ArrowUp,
+  Cloud,
+  FileAudio,
   Headphones,
   LoaderCircle,
-  Plus,
   Save,
   Trash2,
   X,
@@ -15,8 +17,10 @@ import type { PlatformClient } from "../api/platformClient";
 import { getAudioTrackKindLabel } from "./platformAudioTrackSelection";
 import { AnnotationMediaBindingDialog } from "./AnnotationMediaBindingDialog";
 import { isMediaAudioTrackSource } from "./mediaAudioTrackSourcePolicy";
+import { AliyunVodAudioRenditionDialog } from "./AliyunVodAudioRenditionDialog";
 import {
   type ExternalTrackKind,
+  type NewTrackDraft,
   type TrackDraft,
   useMediaAudioTrackManager,
 } from "./useMediaAudioTrackManager";
@@ -24,6 +28,7 @@ import {
 type Props = {
   client: PlatformClient;
   primaryMediaResourceId: string;
+  primaryMediaSourceType: "uploaded" | "aliyun_vod";
   parentId: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -50,6 +55,7 @@ export function MediaAudioTrackManagerDialog(props: Props) {
     onChanged: props.onChanged,
   });
   const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
+  const [vodRenditionPickerOpen, setVodRenditionPickerOpen] = useState(false);
   const [deleteTrackId, setDeleteTrackId] = useState<string | null>(null);
   const deletingTrack = useMemo(
     () => manager.tracks.find(({ id }) => id === deleteTrackId) ?? null,
@@ -60,6 +66,7 @@ export function MediaAudioTrackManagerDialog(props: Props) {
     // 文件或主媒体切换时关闭叠加确认层，避免旧媒体身份残留在新会话视图中。
     if (!props.open) {
       setSourcePickerOpen(false);
+      setVodRenditionPickerOpen(false);
       setDeleteTrackId(null);
     }
   }, [props.open, props.primaryMediaResourceId]);
@@ -69,7 +76,11 @@ export function MediaAudioTrackManagerDialog(props: Props) {
       <Dialog.Root
         open={props.open}
         onOpenChange={(open) => {
-          if (!manager.interactionBusy && !sourcePickerOpen) props.onOpenChange(open);
+          if (
+            !manager.interactionBusy &&
+            !sourcePickerOpen &&
+            !vodRenditionPickerOpen
+          ) props.onOpenChange(open);
         }}
       >
         <Dialog.Portal>
@@ -116,13 +127,24 @@ export function MediaAudioTrackManagerDialog(props: Props) {
                     </button>
                     <button
                       type="button"
-                      title="新增外部音轨"
-                      aria-label="新增外部音轨"
+                      title="关联平台音频资源"
+                      aria-label="关联平台音频资源"
                       disabled={manager.interactionBusy}
                       onClick={() => setSourcePickerOpen(true)}
                     >
-                      <Plus size={15} />
+                      <FileAudio size={15} />
                     </button>
+                    {props.primaryMediaSourceType === "aliyun_vod" ? (
+                      <button
+                        type="button"
+                        title="关联当前 VOD 的音频转码"
+                        aria-label="关联当前 VOD 的音频转码"
+                        disabled={manager.interactionBusy}
+                        onClick={() => setVodRenditionPickerOpen(true)}
+                      >
+                        <Cloud size={15} />
+                      </button>
+                    ) : null}
                   </div>
                 </div>
                 <div className="media-audio-track-list">
@@ -150,7 +172,7 @@ export function MediaAudioTrackManagerDialog(props: Props) {
                 {manager.newTrackDraft ? (
                   <TrackEditor
                     title="新增外部音轨"
-                    sourceLabel={manager.newTrackDraft.source.name}
+                    sourceLabel={describeDraftSource(manager.newTrackDraft.source)}
                     draft={manager.newTrackDraft}
                     disabled={manager.interactionBusy}
                     onChange={manager.updateNewTrackDraft}
@@ -171,11 +193,7 @@ export function MediaAudioTrackManagerDialog(props: Props) {
                 ) : manager.selectedTrack && manager.draft ? (
                   <TrackEditor
                     title={manager.selectedTrack.name}
-                    sourceLabel={manager.selectedTrack.source.type === "media_resource"
-                      ? manager.selectedTrack.source.sourceType === "uploaded"
-                        ? "平台上传音频"
-                        : "阿里云 VOD 音频"
-                      : "主媒体内嵌音频"}
+                    sourceLabel={describeTrackSource(manager.selectedTrack.source)}
                     draft={manager.draft}
                     disabled={manager.interactionBusy}
                     onChange={manager.updateDraft}
@@ -217,8 +235,21 @@ export function MediaAudioTrackManagerDialog(props: Props) {
             throw new Error("外部音轨必须选择纯音频资源。");
           }
           // 选择资源后才进入编辑表单，尚未点击“新增音轨”前不会写入任何平台关系。
-          manager.beginCreate(source);
+          manager.beginCreateMediaResource(source);
           setSourcePickerOpen(false);
+        }}
+      />
+
+      <AliyunVodAudioRenditionDialog
+        client={props.client}
+        mediaResourceId={props.primaryMediaResourceId}
+        open={vodRenditionPickerOpen}
+        onOpenChange={setVodRenditionPickerOpen}
+        onConfirm={(rendition) => {
+          manager.beginCreateVodRendition(
+            props.primaryMediaResourceId,
+            rendition,
+          );
         }}
       />
 
@@ -260,6 +291,23 @@ export function MediaAudioTrackManagerDialog(props: Props) {
       </AlertDialog.Root>
     </>
   );
+}
+
+function describeDraftSource(
+  source: NewTrackDraft["source"],
+) {
+  if (source.type === "media_resource") return source.resource.name;
+  return `当前 VOD · ${source.rendition.definition ?? "MP3"}`;
+}
+
+function describeTrackSource(
+  source: MediaAudioTrackSource,
+) {
+  if (source.type === "embedded_original") return "主媒体内嵌音频";
+  if (source.type === "aliyun_vod_rendition") {
+    return `VOD 音频转码 · ${source.rendition.definition ?? "MP3"}`;
+  }
+  return source.sourceType === "uploaded" ? "平台上传音频" : "独立阿里云 VOD 音频";
 }
 
 type TrackEditorProps = {

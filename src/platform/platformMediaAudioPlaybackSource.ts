@@ -23,7 +23,7 @@ export function buildPlatformExternalAudioPlaybackSource(
     !track.enabled ||
     track.kind === "original" ||
     track.primaryMediaResourceId !== context.primaryMediaResourceId ||
-    track.source.type !== "media_resource"
+    track.source.type === "embedded_original"
   ) {
     return null;
   }
@@ -36,7 +36,7 @@ export function buildPlatformExternalAudioPlaybackSource(
     assertSessionIdentity(session, context);
     return session;
   };
-  if (track.source.sourceType === "uploaded") {
+  if (track.source.type === "media_resource" && track.source.sourceType === "uploaded") {
     return {
       type: "uploaded_audio",
       trackId: track.id,
@@ -52,6 +52,26 @@ export function buildPlatformExternalAudioPlaybackSource(
           mimeType: session.mimeType,
           duration: session.duration,
         };
+      },
+    };
+  }
+  if (track.source.type === "aliyun_vod_rendition") {
+    const rendition = track.source.rendition;
+    return {
+      type: "aliyun_vod_rendition_audio",
+      trackId: track.id,
+      audioMediaResourceId: track.source.mediaResourceId,
+      renditionJobId: rendition.jobId,
+      offsetSeconds: track.offsetSeconds,
+      loadSession: async (signal) => {
+        const session = await loadValidated(signal);
+        if (
+          session.sourceType !== "aliyun_vod_rendition" ||
+          session.jobId !== rendition.jobId
+        ) {
+          throw new Error("VOD 音频转码会话来源已经变化，请刷新音轨列表。");
+        }
+        return session;
       },
     };
   }
@@ -82,9 +102,9 @@ function assertSessionIdentity(
   session: MediaAudioTrackPlaybackSession,
   context: SourceContext,
 ) {
-  const expectedAudioMediaId = context.track.source.type === "media_resource"
-    ? context.track.source.mediaResourceId
-    : null;
+  const expectedAudioMediaId = context.track.source.type === "embedded_original"
+    ? null
+    : context.track.source.mediaResourceId;
   if (
     session.annotationFileId !== context.annotationFileId ||
     session.primaryMediaResourceId !== context.primaryMediaResourceId ||

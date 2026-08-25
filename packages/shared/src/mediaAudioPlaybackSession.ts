@@ -27,6 +27,20 @@ export type MediaAudioTrackPlaybackSession =
         domain: string;
         key: string;
       };
+    })
+  | (MediaAudioPlaybackSessionBase & {
+      sourceType: "aliyun_vod_rendition";
+      videoId: string;
+      region: string;
+      jobId: string;
+      url: string;
+      mimeType: "audio/mpeg";
+      duration: number | null;
+      expiresAt: string;
+      webPlayerLicense: {
+        domain: string;
+        key: string;
+      };
     });
 
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
@@ -90,6 +104,41 @@ export function parseMediaAudioTrackPlaybackSession(
       duration: value.duration,
     };
   }
+  if (value.sourceType === "aliyun_vod_rendition") {
+    if (
+      Object.keys(value).length !== 14 ||
+      !isStableMediaAudioIdentity(value.videoId) ||
+      !isStableMediaAudioIdentity(value.region) ||
+      !isStableMediaAudioIdentity(value.jobId) ||
+      typeof value.url !== "string" ||
+      !isSecureHttpsUrl(value.url) ||
+      value.mimeType !== "audio/mpeg" ||
+      (value.duration !== null &&
+        (typeof value.duration !== "number" ||
+          !Number.isFinite(value.duration) ||
+          value.duration < 0)) ||
+      !isStrictIsoTimestamp(value.expiresAt) ||
+      !isWebPlayerLicense(value.webPlayerLicense)
+    ) {
+      return null;
+    }
+    return {
+      version: MEDIA_AUDIO_PLAYBACK_SESSION_VERSION,
+      annotationFileId: value.annotationFileId,
+      primaryMediaResourceId: value.primaryMediaResourceId,
+      trackId: value.trackId,
+      audioMediaResourceId: value.audioMediaResourceId,
+      sourceType: "aliyun_vod_rendition",
+      videoId: value.videoId,
+      region: value.region,
+      jobId: value.jobId,
+      url: value.url,
+      mimeType: "audio/mpeg",
+      duration: value.duration,
+      expiresAt: value.expiresAt,
+      webPlayerLicense: value.webPlayerLicense,
+    };
+  }
   if (value.sourceType !== "aliyun_vod" || Object.keys(value).length !== 11) {
     return null;
   }
@@ -100,14 +149,7 @@ export function parseMediaAudioTrackPlaybackSession(
     value.playAuth.length < 1 ||
     value.playAuth.length > MAX_SESSION_SECRET_LENGTH ||
     !isStrictIsoTimestamp(value.expiresAt) ||
-    !isRecord(value.webPlayerLicense) ||
-    Object.keys(value.webPlayerLicense).length !== 2 ||
-    typeof value.webPlayerLicense.domain !== "string" ||
-    value.webPlayerLicense.domain.trim().length < 1 ||
-    value.webPlayerLicense.domain.length > 253 ||
-    typeof value.webPlayerLicense.key !== "string" ||
-    value.webPlayerLicense.key.trim().length < 1 ||
-    value.webPlayerLicense.key.length > MAX_SESSION_SECRET_LENGTH
+    !isWebPlayerLicense(value.webPlayerLicense)
   ) {
     return null;
   }
@@ -127,4 +169,26 @@ export function parseMediaAudioTrackPlaybackSession(
       key: value.webPlayerLicense.key,
     },
   };
+}
+
+function isWebPlayerLicense(value: unknown): value is {
+  domain: string;
+  key: string;
+} {
+  return isRecord(value) &&
+    Object.keys(value).length === 2 &&
+    typeof value.domain === "string" &&
+    value.domain.trim().length >= 1 &&
+    value.domain.length <= 253 &&
+    typeof value.key === "string" &&
+    value.key.trim().length >= 1 &&
+    value.key.length <= MAX_SESSION_SECRET_LENGTH;
+}
+
+function isSecureHttpsUrl(value: string) {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
 }

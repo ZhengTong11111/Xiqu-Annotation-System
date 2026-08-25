@@ -456,6 +456,7 @@ model MediaFile {
   mediaAnalysisRuns      MediaAnalysisRun[]               @relation("MediaAnalysisSource")
   primaryAudioTracks     MediaAudioTrack[]                 @relation("PrimaryMediaAudioTracks")
   audioTrackSources      MediaAudioTrack[]                 @relation("AudioTrackSourceMedia")
+  vodRenditionAudioTracks MediaAudioTrack[]                 @relation("VodRenditionAudioTrackSource")
 
   @@index([fileId])
   @@index([sourceType])
@@ -468,6 +469,12 @@ model MediaAudioTrack {
   id                     String              @id @default(uuid())
   primaryMediaResourceId String              @map("primary_media_resource_id")
   audioMediaResourceId   String?             @map("audio_media_resource_id")
+  vodRenditionMediaResourceId String?         @map("vod_rendition_media_resource_id")
+  vodRenditionJobId      String?              @map("vod_rendition_job_id")
+  vodRenditionFormat     String?              @map("vod_rendition_format")
+  vodRenditionDefinition String?              @map("vod_rendition_definition")
+  vodRenditionBitrate    Float?               @map("vod_rendition_bitrate")
+  vodRenditionDuration   Float?               @map("vod_rendition_duration")
   name                   String
   kind                   MediaAudioTrackKind
   offsetSeconds          Float               @default(0) @map("offset_seconds")
@@ -479,12 +486,14 @@ model MediaAudioTrack {
 
   primaryMedia         MediaFile                  @relation("PrimaryMediaAudioTracks", fields: [primaryMediaResourceId], references: [resourceId], onDelete: Cascade)
   audioMedia           MediaFile?                 @relation("AudioTrackSourceMedia", fields: [audioMediaResourceId], references: [resourceId], onDelete: Restrict)
+  vodRenditionMedia    MediaFile?                 @relation("VodRenditionAudioTrackSource", fields: [vodRenditionMediaResourceId], references: [resourceId], onDelete: Restrict)
   creator              User                       @relation("MediaAudioTrackCreator", fields: [createdBy], references: [id], onDelete: Restrict)
   defaultForAnnotations AnnotationAudioPreference[]
 
   @@unique([primaryMediaResourceId, audioMediaResourceId])
   @@index([primaryMediaResourceId, sortOrder, id])
   @@index([audioMediaResourceId])
+  @@index([vodRenditionMediaResourceId])
   @@index([createdBy])
   @@map("media_audio_tracks")
 }

@@ -5,7 +5,12 @@ import VodPackage, {
   GetVideoInfoRequest,
   GetVideoPlayAuthRequest,
 } from "@alicloud/vod20170321";
-import type { MediaKind } from "@xiqu/shared";
+import {
+  MAX_MEDIA_AUDIO_TRACKS_PER_MEDIA,
+  MAX_VOD_AUDIO_RENDITION_DEFINITION_LENGTH,
+  type AliyunVodAudioRendition,
+  type MediaKind,
+} from "@xiqu/shared";
 
 const PLAY_AUTH_TIMEOUT_SECONDS = 900;
 const PLAY_AUTH_CLOCK_SAFETY_SECONDS = 5;
@@ -37,10 +42,20 @@ export type AliyunVodAnalysisAudioStream = {
   bitrate: number | null;
 };
 
+export type AliyunVodAudioRenditionStream = AliyunVodAudioRendition & {
+  url: string;
+  expiresAt: Date;
+};
+
 export interface AliyunVodGateway {
   inspectVideo(videoId: string): Promise<AliyunVodMediaMetadata>;
   createPlaybackCredential(videoId: string): Promise<AliyunVodPlaybackCredential>;
   createAnalysisAudioStream(videoId: string): Promise<AliyunVodAnalysisAudioStream>;
+  listAudioRenditions(videoId: string): Promise<AliyunVodAudioRendition[]>;
+  createAudioRenditionStream(
+    videoId: string,
+    jobId: string,
+  ): Promise<AliyunVodAudioRenditionStream>;
 }
 
 export type AliyunVodProvider = {
@@ -207,9 +222,67 @@ export class AliyunVodSdkGateway implements AliyunVodGateway {
       throw normalizeAliyunVodError(error);
     }
   }
+
+  async listAudioRenditions(videoId: string): Promise<AliyunVodAudioRendition[]> {
+    const result = await this.fetchAudioRenditions(videoId);
+    return result.renditions.map(({ url: _url, ...rendition }) => rendition);
+  }
+
+  async createAudioRenditionStream(
+    videoId: string,
+    jobId: string,
+  ): Promise<AliyunVodAudioRenditionStream> {
+    const requestedAt = Date.now();
+    const result = await this.fetchAudioRenditions(videoId);
+    const rendition = result.renditions.find((candidate) => candidate.jobId === jobId);
+    if (!rendition) {
+      throw new AliyunVodGatewayError("not_found", result.requestId);
+    }
+    return {
+      ...rendition,
+      expiresAt: new Date(
+        requestedAt +
+        (PLAY_AUTH_TIMEOUT_SECONDS - PLAY_AUTH_CLOCK_SAFETY_SECONDS) * 1_000,
+      ),
+    };
+  }
+
+  /**
+   * JobId 是阿里云文档定义的媒体流唯一标识。URL 只在本次结果中短暂存在，
+   * 调用方必须在 no-store 播放会话或 worker 内存中消费，不能把它持久化。
+   */
+  private async fetchAudioRenditions(videoId: string) {
+    try {
+      const response = await this.client.getPlayInfo(new GetPlayInfoRequest({
+        videoId,
+        formats: "mp3",
+        streamType: "audio",
+        outputType: "cdn",
+        authTimeout: PLAY_AUTH_TIMEOUT_SECONDS,
+        resultType: "Multiple",
+      }));
+      const returnedVideoId = requiredString(response.body?.videoBase?.videoId);
+      const status = requiredString(response.body?.videoBase?.status);
+      const requestId = optionalString(response.body?.requestId);
+      if (returnedVideoId !== videoId || status !== "Normal") {
+        throw new AliyunVodGatewayError("invalid_response", requestId);
+      }
+      const renditions = parseAliyunVodAudioRenditions(
+        response.body?.playInfoList?.playInfo ?? [],
+      );
+      if (renditions === null) {
+        throw new AliyunVodGatewayError("invalid_response", requestId);
+      }
+      return { requestId, renditions };
+    } catch (error) {
+      throw normalizeAliyunVodError(error);
+    }
+  }
 }
 
 type AliyunVodPlayInfoCandidate = {
+  jobId?: unknown;
+  definition?: unknown;
   playURL?: unknown;
   format?: unknown;
   streamType?: unknown;
@@ -217,6 +290,58 @@ type AliyunVodPlayInfoCandidate = {
   duration?: unknown;
   bitrate?: unknown;
 };
+
+type NormalizedAliyunVodAudioRendition = AliyunVodAudioRendition & {
+  url: string;
+};
+
+/**
+ * 持久音轨候选要求 JobId、HTTPS mp3 和 Normal 状态完整；重复 JobId 表示供应商响应自相矛盾，
+ * 必须整体拒绝，不能依赖数组先后顺序选择其中一条。
+ */
+export function parseAliyunVodAudioRenditions(
+  candidates: AliyunVodPlayInfoCandidate[],
+): NormalizedAliyunVodAudioRendition[] | null {
+  const renditions: NormalizedAliyunVodAudioRendition[] = [];
+  const jobIds = new Set<string>();
+  for (const candidate of candidates) {
+    const jobId = requiredString(candidate.jobId);
+    const url = requiredString(candidate.playURL);
+    const format = requiredString(candidate.format)?.toLowerCase();
+    const streamType = requiredString(candidate.streamType)?.toLowerCase();
+    const status = requiredString(candidate.status);
+    const definition = optionalBoundedString(
+      candidate.definition,
+      MAX_VOD_AUDIO_RENDITION_DEFINITION_LENGTH,
+    );
+    if (
+      !jobId ||
+      !url ||
+      !isSecureHttpUrl(url) ||
+      format !== "mp3" ||
+      streamType !== "audio" ||
+      status !== "Normal"
+    ) {
+      continue;
+    }
+    if (jobIds.has(jobId)) return null;
+    jobIds.add(jobId);
+    renditions.push({
+      jobId,
+      url,
+      format: "mp3",
+      definition,
+      bitrate: optionalNumericString(candidate.bitrate),
+      duration: optionalNumericString(candidate.duration),
+    });
+  }
+  if (renditions.length > MAX_MEDIA_AUDIO_TRACKS_PER_MEDIA) return null;
+  renditions.sort((left, right) =>
+    (right.bitrate ?? -1) - (left.bitrate ?? -1) ||
+    (left.definition ?? "").localeCompare(right.definition ?? "") ||
+    left.jobId.localeCompare(right.jobId));
+  return renditions;
+}
 
 /**
  * 只接受正常的 HTTPS mp3 纯音频流；排序规则固定为较高码率优先，再按 URL 稳定排序。
@@ -257,6 +382,11 @@ function requiredString(value: unknown) {
 
 function optionalString(value: unknown) {
   return requiredString(value);
+}
+
+function optionalBoundedString(value: unknown, maximumLength: number) {
+  const normalized = requiredString(value);
+  return normalized && normalized.length <= maximumLength ? normalized : null;
 }
 
 // 阿里云字段大小写不作为业务差异，但未知类型必须拒绝，不能把纯音频误建成视频资源。

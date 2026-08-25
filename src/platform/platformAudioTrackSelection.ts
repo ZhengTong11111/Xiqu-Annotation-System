@@ -45,6 +45,9 @@ export function getAudioTrackKindLabel(kind: MediaAudioTrackKind) {
 
 export function getAudioTrackSourceLabel(option: AnnotationAudioPlaybackTrackOption) {
   if (option.track.source.type === "embedded_original") return "主媒体内嵌";
+  if (option.track.source.type === "aliyun_vod_rendition") {
+    return `VOD 转码 · ${option.track.source.rendition.definition ?? "MP3"}`;
+  }
   return option.track.source.sourceType === "uploaded" ? "平台音频" : "阿里云 VOD";
 }
 

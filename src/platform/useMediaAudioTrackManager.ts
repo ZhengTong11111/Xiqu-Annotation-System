@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AliyunVodAudioRendition,
   MediaAudioTrackKind,
   MediaAudioTrackRecord,
   ResourceEntry,
@@ -16,7 +17,13 @@ export type TrackDraft = {
 };
 
 export type NewTrackDraft = TrackDraft & {
-  source: ResourceEntry;
+  source:
+    | { type: "media_resource"; resource: ResourceEntry }
+    | {
+        type: "aliyun_vod_rendition";
+        mediaResourceId: string;
+        rendition: AliyunVodAudioRendition;
+      };
 };
 
 type Options = {
@@ -153,7 +160,16 @@ export function useMediaAudioTrackManager(options: Options) {
       execute: () => options.client.createMediaAudioTrack(
         options.primaryMediaResourceId,
         {
-          audioMediaResourceId: newTrackDraft.source.id,
+          source: newTrackDraft.source.type === "media_resource"
+            ? {
+                type: "media_resource",
+                mediaResourceId: newTrackDraft.source.resource.id,
+              }
+            : {
+                type: "aliyun_vod_rendition",
+                mediaResourceId: newTrackDraft.source.mediaResourceId,
+                jobId: newTrackDraft.source.rendition.jobId,
+              },
           name: newTrackDraft.name.trim(),
           kind: newTrackDraft.kind,
           offsetSeconds,
@@ -237,11 +253,30 @@ export function useMediaAudioTrackManager(options: Options) {
       setNewTrackDraft(null);
       setSelectedTrackId(trackId);
     },
-    beginCreate: (source: ResourceEntry) => {
+    beginCreateMediaResource: (source: ResourceEntry) => {
       setError(null);
       setNewTrackDraft({
-        source,
+        source: { type: "media_resource", resource: source },
         name: source.name,
+        kind: "custom",
+        offsetSeconds: "0",
+        enabled: true,
+      });
+      setSelectedTrackId(null);
+    },
+    beginCreateVodRendition: (
+      mediaResourceId: string,
+      rendition: AliyunVodAudioRendition,
+    ) => {
+      setError(null);
+      const quality = rendition.definition ?? "音频";
+      setNewTrackDraft({
+        source: {
+          type: "aliyun_vod_rendition",
+          mediaResourceId,
+          rendition,
+        },
+        name: `VOD ${quality}音轨`,
         kind: "custom",
         offsetSeconds: "0",
         enabled: true,

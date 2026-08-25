@@ -15,6 +15,7 @@ const VIDEO_VOD_ID = "00000000000000000000000000000000";
 const AUDIO_VOD_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SECOND_VIDEO_VOD_ID = "11111111111111111111111111111111";
 let playbackCredentialRequests = 0;
+let renditionStreamRequests = 0;
 
 // 集成测试用稳定 provider 区分视频与独立 VOD 音频，不读取宿主机凭据或访问公网。
 const fakeAliyunVodProvider: AliyunVodProvider = {
@@ -43,11 +44,33 @@ const fakeAliyunVodProvider: AliyunVodProvider = {
       duration: 120,
       bitrate: 128,
     }),
+    listAudioRenditions: async (videoId) => videoId === VIDEO_VOD_ID
+      ? [{
+          jobId: "vod-main-audio-job",
+          format: "mp3",
+          definition: "SQ",
+          bitrate: 128,
+          duration: 120,
+        }]
+      : [],
+    createAudioRenditionStream: async (videoId, jobId) => {
+      renditionStreamRequests += 1;
+      return {
+        jobId,
+        format: "mp3",
+        definition: "SQ",
+        bitrate: 128,
+        duration: 120,
+        url: `https://example.test/${videoId}/audio.mp3?temporary=1`,
+        expiresAt: new Date("2030-01-01T00:15:00.000Z"),
+      };
+    },
   },
 };
 
 test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期", async () => {
   playbackCredentialRequests = 0;
+  renditionStreamRequests = 0;
   const storageRoot = await mkdtemp(path.join(tmpdir(), "xiqu-audio-track-api-"));
   const { prisma, pool, maintenancePool, collaborationPool, schema } = createTestPrisma();
   await truncateTestDatabase(prisma);
@@ -154,7 +177,7 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       method: "POST",
       url: `/api/media-files/${primaryVideoId}/audio-tracks`,
       payload: {
-        audioMediaResourceId: uploadedAudioId,
+        source: { type: "media_resource", mediaResourceId: uploadedAudioId },
         name: "  人声分离  ",
         kind: "vocal",
         offsetSeconds: 0.25,
@@ -173,7 +196,7 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       method: "POST",
       url: `/api/media-files/${primaryVideoId}/audio-tracks`,
       payload: {
-        audioMediaResourceId: vodAudioId,
+        source: { type: "media_resource", mediaResourceId: vodAudioId },
         name: "VOD 伴奏",
         kind: "accompaniment",
         offsetSeconds: -0.1,
@@ -187,7 +210,7 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       method: "POST",
       url: `/api/media-files/${primaryVideoId}/audio-tracks`,
       payload: {
-        audioMediaResourceId: uploadedAudioId,
+        source: { type: "media_resource", mediaResourceId: uploadedAudioId },
         name: "重复",
         kind: "custom",
       },
@@ -197,7 +220,7 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       method: "POST",
       url: `/api/media-files/${primaryVideoId}/audio-tracks`,
       payload: {
-        audioMediaResourceId: secondVideoId,
+        source: { type: "media_resource", mediaResourceId: secondVideoId },
         name: "错误视频",
         kind: "custom",
       },
@@ -286,6 +309,66 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       ],
     );
     assert.equal(dataOf(initialOptions.json()).defaultAudioTrackId, null);
+
+    // 同 VID 音频转码候选只暴露 JobId 和有限元数据，创建时由服务端重新核对供应商事实。
+    const renditionList = await jsonRequest(app, adminToken, {
+      method: "GET",
+      url: `/api/media-files/${primaryVideoId}/audio-renditions`,
+    });
+    assert.equal(renditionList.statusCode, 200, renditionList.body);
+    assert.equal(renditionList.headers["cache-control"], "no-store");
+    assert.doesNotMatch(renditionList.body, /https?:\/\/|playauth/iu);
+    assert.deepEqual(dataOf(renditionList.json()).renditions, [{
+      jobId: "vod-main-audio-job",
+      format: "mp3",
+      definition: "SQ",
+      bitrate: 128,
+      duration: 120,
+    }]);
+    const renditionTrackResponse = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: `/api/media-files/${primaryVideoId}/audio-tracks`,
+      payload: {
+        source: {
+          type: "aliyun_vod_rendition",
+          mediaResourceId: primaryVideoId,
+          jobId: "vod-main-audio-job",
+        },
+        name: "VOD 视频人声转码",
+        kind: "vocal",
+      },
+    });
+    assert.equal(renditionTrackResponse.statusCode, 200, renditionTrackResponse.body);
+    const renditionTrack = dataOf(renditionTrackResponse.json());
+    assert.deepEqual(renditionTrack.source, {
+      type: "aliyun_vod_rendition",
+      mediaResourceId: primaryVideoId,
+      sourceType: "aliyun_vod",
+      rendition: {
+        jobId: "vod-main-audio-job",
+        format: "mp3",
+        definition: "SQ",
+        bitrate: 128,
+        duration: 120,
+      },
+    });
+    const renditionPlayback = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/audio-tracks/${renditionTrack.id}/playback-session`,
+    });
+    assert.equal(renditionPlayback.statusCode, 200, renditionPlayback.body);
+    assert.equal(renditionPlayback.headers["cache-control"], "no-store");
+    assert.equal(dataOf(renditionPlayback.json()).sourceType, "aliyun_vod_rendition");
+    assert.equal(dataOf(renditionPlayback.json()).jobId, "vod-main-audio-job");
+    assert.equal(dataOf(renditionPlayback.json()).mimeType, "audio/mpeg");
+    assert.match(String(dataOf(renditionPlayback.json()).url), /^https:\/\//u);
+    assert.doesNotMatch(renditionPlayback.body, /playauth/iu);
+    assert.equal(renditionStreamRequests, 1);
+    const deleteRendition = await jsonRequest(app, adminToken, {
+      method: "DELETE",
+      url: `/api/media-files/${primaryVideoId}/audio-tracks/${renditionTrack.id}`,
+    });
+    assert.equal(deleteRendition.statusCode, 204, deleteRendition.body);
 
     // 播放会话每次都重新验证标注文件、主媒体和源音频，不能把建轨时的一次授权当成永久通行证。
     const uploadedPlayback = await jsonRequest(app, adminToken, {
@@ -647,7 +730,7 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       method: "POST",
       url: `/api/media-files/${primaryVideoId}/audio-tracks`,
       payload: {
-        audioMediaResourceId: vodAudioId,
+        source: { type: "media_resource", mediaResourceId: vodAudioId },
         name: "学生音轨",
         kind: "custom",
       },
@@ -661,7 +744,7 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       method: "POST",
       url: `/api/media-files/${primaryVideoId}/audio-tracks`,
       payload: {
-        audioMediaResourceId: vodAudioId,
+        source: { type: "media_resource", mediaResourceId: vodAudioId },
         name: "学生音轨",
         kind: "custom",
       },

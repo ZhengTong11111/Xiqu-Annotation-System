@@ -175,10 +175,13 @@ export function usePlatformAudioTrackSelection(
     const sourceKey = [
       sessionKey,
       selectedOption.track.id,
-      selectedOption.track.source.type === "media_resource"
-        ? selectedOption.track.source.mediaResourceId
-        : "embedded",
+      selectedOption.track.source.type === "embedded_original"
+        ? "embedded"
+        : selectedOption.track.source.mediaResourceId,
       selectedOption.track.source.sourceType,
+      selectedOption.track.source.type === "aliyun_vod_rendition"
+        ? selectedOption.track.source.rendition.jobId
+        : "",
       selectedOption.track.offsetSeconds,
       retryGeneration,
     ].join(":");

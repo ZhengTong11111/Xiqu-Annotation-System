@@ -139,7 +139,11 @@ export async function buildApiApp(
     reviewEvents,
   );
   const mediaAnalysis = new MediaAnalysisJobService(options.prisma, access);
-  const mediaAudioTracks = new MediaAudioTrackService(options.prisma, access);
+  const mediaAudioTracks = new MediaAudioTrackService(
+    options.prisma,
+    access,
+    options.aliyunVod ?? null,
+  );
   const mediaAudioPlaybackSessions = new MediaAudioPlaybackSessionService(
     options.prisma,
     access,

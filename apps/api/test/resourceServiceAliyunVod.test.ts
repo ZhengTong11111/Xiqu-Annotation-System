@@ -11,6 +11,8 @@ test("VOD 播放缺少 Web License 时在签发 PlayAuth 前失败", async () =>
     gateway: {
       inspectVideo: async () => { throw new Error("不应调用"); },
       createAnalysisAudioStream: async () => { throw new Error("不应调用"); },
+      listAudioRenditions: async () => { throw new Error("不应调用"); },
+      createAudioRenditionStream: async () => { throw new Error("不应调用"); },
       createPlaybackCredential: async () => {
         credentialRequests += 1;
         throw new Error("不应调用");

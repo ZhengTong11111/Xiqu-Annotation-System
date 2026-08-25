@@ -415,6 +415,17 @@ export function registerApiRoutes(
     ),
   );
 
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/media-files/:resourceId/audio-renditions",
+    async (request, reply) => {
+      reply.header("Cache-Control", "no-store");
+      return mediaAudioTracks.listVodAudioRenditions(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+      );
+    },
+  );
+
   app.post<{ Params: { resourceId: string }; Body: unknown }>(
     "/api/media-files/:resourceId/audio-tracks",
     async (request) => {
@@ -423,7 +434,7 @@ export function registerApiRoutes(
         await getCurrentUser(repository, request),
         request.params.resourceId,
         {
-          audioMediaResourceId: body.audioMediaResourceId as string,
+          source: body.source as CreateMediaAudioTrackRequest["source"],
           name: body.name as string,
           kind: body.kind as CreateMediaAudioTrackRequest["kind"],
           offsetSeconds: body.offsetSeconds as number | undefined,

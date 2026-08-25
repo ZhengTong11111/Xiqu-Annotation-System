@@ -1,4 +1,7 @@
-import type { AliyunVodPlaybackSession } from "@xiqu/shared";
+import type {
+  AliyunVodPlaybackSession,
+  MediaAudioTrackPlaybackSession,
+} from "@xiqu/shared";
 import {
   loadAliplayerSdk,
   type AliplayerConstructor,
@@ -25,11 +28,19 @@ export type AliyunVodPlaybackBackendOptions = {
   containerId: string;
   expectedVideoId: string;
   expectedMediaKind?: "video" | "audio";
-  loadSession: () => Promise<AliyunVodPlaybackSession>;
+  expectedRenditionJobId?: string;
+  loadSession: () => Promise<AliyunVodRuntimePlaybackSession>;
   events: MediaPlaybackBackendEvents;
   loadFactory?: () => Promise<AliplayerConstructor>;
   now?: () => number;
 };
+
+export type AliyunVodRuntimePlaybackSession =
+  | AliyunVodPlaybackSession
+  | Extract<
+      MediaAudioTrackPlaybackSession,
+      { sourceType: "aliyun_vod_rendition" }
+    >;
 
 type PendingSeek = {
   target: number;
@@ -177,7 +188,7 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     this.lastPreparationError = null;
 
     let factory: AliplayerConstructor;
-    let session: AliyunVodPlaybackSession;
+    let session: AliyunVodRuntimePlaybackSession;
     try {
       // SDK 与播放会话并行加载；若二者同时失败，优先展示服务端已经收敛的业务错误。
       const [factoryResult, sessionResult] = await Promise.allSettled([
@@ -229,20 +240,32 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
         finish("reject");
       }, VOD_READY_TIMEOUT_MS);
 
-      const playerOptions: AliplayerOptions = {
+      const commonPlayerOptions = {
         id: this.options.containerId,
-        vid: session.videoId,
-        playauth: session.playAuth,
         width: "100%",
         height: "100%",
         autoplay: false,
         preload: true,
         isLive: false,
-        controlBarVisibility: "hover",
+        controlBarVisibility: "hover" as const,
         useH5Prism: true,
         // Web Aliplayer 2.29.1+ 强制校验 domain/key；二者来自受控服务配置，不由项目 JSON 提供。
         license: session.webPlayerLicense,
       };
+      // 指定 JobId 的 VOD 音频使用本次 no-store 会话的 HTTPS 地址；普通 VOD 仍使用 vid + PlayAuth。
+      const playerOptions: AliplayerOptions =
+        session.sourceType === "aliyun_vod_rendition"
+          ? {
+              ...commonPlayerOptions,
+              source: session.url,
+              mediaType: "audio",
+              format: "mp3",
+            }
+          : {
+              ...commonPlayerOptions,
+              vid: session.videoId,
+              playauth: session.playAuth,
+            };
       try {
         const player = new factory(playerOptions, (readyPlayer) => {
           if (!this.isCurrent(generation)) return finish("resolve");
@@ -350,7 +373,7 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     pending.reject(error);
   }
 
-  private scheduleSessionRefresh(session: AliyunVodPlaybackSession) {
+  private scheduleSessionRefresh(session: AliyunVodRuntimePlaybackSession) {
     const expiresAt = Date.parse(session.expiresAt);
     if (!Number.isFinite(expiresAt)) return;
     const delay = Math.max(
@@ -363,7 +386,24 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     }, delay);
   }
 
-  private validateSession(session: AliyunVodPlaybackSession) {
+  private validateSession(session: AliyunVodRuntimePlaybackSession) {
+    if (session.sourceType === "aliyun_vod_rendition") {
+      if (
+        !this.options.expectedRenditionJobId ||
+        session.jobId !== this.options.expectedRenditionJobId ||
+        session.videoId !== this.options.expectedVideoId ||
+        session.mimeType !== "audio/mpeg" ||
+        !isSecureHttpsUrl(session.url) ||
+        !session.expiresAt ||
+        !session.webPlayerLicense?.domain ||
+        !session.webPlayerLicense?.key ||
+        !Number.isFinite(Date.parse(session.expiresAt)) ||
+        Date.parse(session.expiresAt) <= this.now()
+      ) {
+        throw new Error("VOD 音频转码会话与当前音轨不匹配。");
+      }
+      return;
+    }
     if (
       session.sourceType !== "aliyun_vod" ||
       session.mediaKind !== (this.options.expectedMediaKind ?? "video") ||
@@ -429,5 +469,13 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
 
   private assertActive() {
     if (this.disposed) throw new Error("阿里云媒体已不可用。");
+  }
+}
+
+function isSecureHttpsUrl(value: string) {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
   }
 }

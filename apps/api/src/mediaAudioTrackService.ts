@@ -10,6 +10,8 @@ import {
   MAX_MEDIA_AUDIO_TRACKS_PER_MEDIA,
   type AnnotationAudioPreference,
   type AnnotationAudioPlaybackOptions,
+  type AliyunVodAudioRendition,
+  type AliyunVodAudioRenditionList,
   type CreateMediaAudioTrackRequest,
   type MediaAudioTrackList,
   type MediaAudioTrackRecord,
@@ -20,7 +22,17 @@ import {
 import { assertActiveAnnotationFile } from "./annotationFileActivity.js";
 import { lockActiveAnnotationFileForWrite } from "./annotationFileWriteLock.js";
 import type { ApiUser } from "./domain.js";
-import { badRequest, conflict, notFound } from "./errors.js";
+import {
+  badRequest,
+  conflict,
+  externalMediaUnavailable,
+  externalServiceUnavailable,
+  notFound,
+} from "./errors.js";
+import {
+  AliyunVodGatewayError,
+  type AliyunVodProvider,
+} from "./aliyunVodGateway.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
 import {
   assertActiveResourceAncestors,
@@ -31,6 +43,7 @@ import { resolveMediaPlaybackAccess } from "./mediaPlaybackAccess.js";
 const audioTrackInclude = {
   primaryMedia: { select: { sourceType: true } },
   audioMedia: { select: { sourceType: true } },
+  vodRenditionMedia: { select: { sourceType: true } },
 } satisfies Prisma.MediaAudioTrackInclude;
 
 type AudioTrackRow = Prisma.MediaAudioTrackGetPayload<{
@@ -82,7 +95,25 @@ export class MediaAudioTrackService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly access: ResourceAccessService,
+    private readonly aliyunVod: AliyunVodProvider | null,
   ) {}
+
+  async listVodAudioRenditions(
+    user: ApiUser,
+    mediaResourceId: string,
+  ): Promise<AliyunVodAudioRenditionList> {
+    const media = await this.assertReadableVodRenditionSource(
+      user,
+      mediaResourceId,
+      this.prisma,
+    );
+    const provider = this.requireMatchingAliyunVodProvider(media.aliyunVodRegion);
+    const renditions = await this.callAliyunVod(
+      () => provider.gateway.listAudioRenditions(media.aliyunVodVideoId!),
+      "暂时无法读取阿里云 VOD 音频转码。",
+    );
+    return { mediaResourceId, renditions };
+  }
 
   async listTracks(
     user: ApiUser,
@@ -156,9 +187,7 @@ export class MediaAudioTrackService {
         availability = primaryAccess.status;
       } else if (row.kind === "original") {
         availability = "available";
-      } else if (!row.audioMediaResourceId) {
-        availability = "invalid_source";
-      } else {
+      } else if (row.audioMediaResourceId) {
         const sourceAccess = await resolveMediaPlaybackAccess(
           this.prisma,
           this.access,
@@ -167,6 +196,17 @@ export class MediaAudioTrackService {
           "audio",
         );
         availability = sourceAccess.status;
+      } else if (row.vodRenditionMediaResourceId && row.vodRenditionJobId) {
+        const sourceAccess = await resolveMediaPlaybackAccess(
+          this.prisma,
+          this.access,
+          user,
+          row.vodRenditionMediaResourceId,
+          "video",
+        );
+        availability = sourceAccess.status;
+      } else {
+        availability = "invalid_source";
       }
       tracks.push({ track: mapMediaAudioTrackRecord(row), availability });
     }
@@ -190,16 +230,32 @@ export class MediaAudioTrackService {
     const name = validateTrackName(input.name);
     const kind = validateExternalTrackKind(input.kind);
     const offsetSeconds = validateTrackOffset(input.offsetSeconds ?? 0);
+    // 阿里云转码列表属于外部供应商调用；先做一次主媒体写权限门禁，避免无权请求触发供应商查询。
+    // 事务内仍会锁行并再次校验，防止权限或资源状态在网络请求期间发生变化。
+    await requireActiveMediaResource(this.prisma, primaryMediaResourceId);
+    await this.access.assertCapability(user, primaryMediaResourceId, "write");
+    const preparedSource = await this.prepareTrackSource(user, input.source);
     const row = await this.prisma.$transaction(async (transaction) => {
       await this.lockPrimaryMediaForWrite(user, primaryMediaResourceId, transaction);
-      if (input.audioMediaResourceId === primaryMediaResourceId) {
+      if (
+        preparedSource.type === "media_resource" &&
+        preparedSource.mediaResourceId === primaryMediaResourceId
+      ) {
         throw badRequest("独立音轨不能再次引用主媒体自身。");
       }
-      await this.assertReadableAudioSource(
-        user,
-        input.audioMediaResourceId,
-        transaction,
-      );
+      if (preparedSource.type === "media_resource") {
+        await this.assertReadableAudioSource(
+          user,
+          preparedSource.mediaResourceId,
+          transaction,
+        );
+      } else {
+        await this.assertReadableVodRenditionSource(
+          user,
+          preparedSource.mediaResourceId,
+          transaction,
+        );
+      }
 
       // 主媒体行锁保证计数、重复检查和末尾顺序对并发创建保持一致。
       const existingRows = await transaction.mediaAudioTrack.findMany({
@@ -210,13 +266,36 @@ export class MediaAudioTrackService {
         throw conflict(`每份媒体最多关联 ${MAX_MEDIA_AUDIO_TRACKS_PER_MEDIA} 条音轨。`);
       }
       if (existingRows.some((entry) =>
-        entry.audioMediaResourceId === input.audioMediaResourceId)) {
+        preparedSource.type === "media_resource"
+          ? entry.audioMediaResourceId === preparedSource.mediaResourceId
+          : entry.vodRenditionMediaResourceId === preparedSource.mediaResourceId &&
+            entry.vodRenditionJobId === preparedSource.rendition.jobId)) {
         throw conflict("该音频已经关联到当前主媒体。");
       }
       const created = await transaction.mediaAudioTrack.create({
         data: {
           primaryMediaResourceId,
-          audioMediaResourceId: input.audioMediaResourceId,
+          audioMediaResourceId: preparedSource.type === "media_resource"
+            ? preparedSource.mediaResourceId
+            : null,
+          vodRenditionMediaResourceId: preparedSource.type === "aliyun_vod_rendition"
+            ? preparedSource.mediaResourceId
+            : null,
+          vodRenditionJobId: preparedSource.type === "aliyun_vod_rendition"
+            ? preparedSource.rendition.jobId
+            : null,
+          vodRenditionFormat: preparedSource.type === "aliyun_vod_rendition"
+            ? preparedSource.rendition.format
+            : null,
+          vodRenditionDefinition: preparedSource.type === "aliyun_vod_rendition"
+            ? preparedSource.rendition.definition
+            : null,
+          vodRenditionBitrate: preparedSource.type === "aliyun_vod_rendition"
+            ? preparedSource.rendition.bitrate
+            : null,
+          vodRenditionDuration: preparedSource.type === "aliyun_vod_rendition"
+            ? preparedSource.rendition.duration
+            : null,
           name,
           kind,
           offsetSeconds,
@@ -233,7 +312,11 @@ export class MediaAudioTrackService {
           resourceId: primaryMediaResourceId,
           detail: {
             trackId: created.id,
-            audioMediaResourceId: input.audioMediaResourceId,
+            sourceType: preparedSource.type,
+            sourceMediaResourceId: preparedSource.mediaResourceId,
+            ...(preparedSource.type === "aliyun_vod_rendition"
+              ? { renditionJobId: preparedSource.rendition.jobId }
+              : {}),
             kind,
             offsetSeconds,
           },
@@ -358,6 +441,8 @@ export class MediaAudioTrackService {
           detail: {
             trackId,
             audioMediaResourceId: current.audioMediaResourceId,
+            vodRenditionMediaResourceId: current.vodRenditionMediaResourceId,
+            vodRenditionJobId: current.vodRenditionJobId,
             clearedPreferenceCount,
           },
         },
@@ -541,13 +626,106 @@ export class MediaAudioTrackService {
   private async assertReadableAudioSource(
     user: ApiUser,
     resourceId: string,
-    transaction: Prisma.TransactionClient,
+    database: PrismaClient | Prisma.TransactionClient,
   ) {
-    const media = await requireActiveMediaResource(transaction, resourceId);
-    await this.access.assertCapability(user, resourceId, "read", transaction);
-    await this.access.assertCapability(user, resourceId, "download", transaction);
+    const media = await requireActiveMediaResource(database, resourceId);
+    await this.access.assertCapability(user, resourceId, "read", database);
+    await this.access.assertCapability(user, resourceId, "download", database);
     if (media.mediaKind !== "audio") {
       throw badRequest("独立音轨必须引用音频媒体资源。");
+    }
+  }
+
+  private async prepareTrackSource(
+    user: ApiUser,
+    source: CreateMediaAudioTrackRequest["source"],
+  ): Promise<
+    | { type: "media_resource"; mediaResourceId: string }
+    | {
+        type: "aliyun_vod_rendition";
+        mediaResourceId: string;
+        rendition: AliyunVodAudioRendition;
+      }
+  > {
+    if (!source || typeof source !== "object") {
+      throw badRequest("音轨来源不正确。");
+    }
+    if (source.type === "media_resource") {
+      if (typeof source.mediaResourceId !== "string" || !source.mediaResourceId.trim()) {
+        throw badRequest("音频资源身份不正确。");
+      }
+      await this.assertReadableAudioSource(user, source.mediaResourceId, this.prisma);
+      return { type: "media_resource", mediaResourceId: source.mediaResourceId };
+    }
+    if (
+      source.type !== "aliyun_vod_rendition" ||
+      typeof source.mediaResourceId !== "string" ||
+      !source.mediaResourceId.trim() ||
+      typeof source.jobId !== "string" ||
+      !source.jobId.trim()
+    ) {
+      throw badRequest("VOD 音频转码来源不正确。");
+    }
+    const media = await this.assertReadableVodRenditionSource(
+      user,
+      source.mediaResourceId,
+      this.prisma,
+    );
+    const provider = this.requireMatchingAliyunVodProvider(media.aliyunVodRegion);
+    const renditions = await this.callAliyunVod(
+      () => provider.gateway.listAudioRenditions(media.aliyunVodVideoId!),
+      "暂时无法验证阿里云 VOD 音频转码。",
+    );
+    const rendition = renditions.find((candidate) => candidate.jobId === source.jobId);
+    if (!rendition) throw externalMediaUnavailable("指定的 VOD 音频转码已经不存在。");
+    return {
+      type: "aliyun_vod_rendition",
+      mediaResourceId: source.mediaResourceId,
+      rendition,
+    };
+  }
+
+  private async assertReadableVodRenditionSource(
+    user: ApiUser,
+    resourceId: string,
+    database: PrismaClient | Prisma.TransactionClient,
+  ) {
+    const media = await requireActiveMediaResource(database, resourceId);
+    await this.access.assertCapability(user, resourceId, "read", database);
+    await this.access.assertCapability(user, resourceId, "download", database);
+    if (
+      media.mediaKind !== "video" ||
+      media.sourceType !== "aliyun_vod" ||
+      !media.aliyunVodVideoId ||
+      !media.aliyunVodRegion
+    ) {
+      throw badRequest("VOD 音频转码必须来自活动的阿里云视频媒资。");
+    }
+    return media;
+  }
+
+  private requireMatchingAliyunVodProvider(region: string | null) {
+    if (!this.aliyunVod || !region || this.aliyunVod.region !== region) {
+      throw externalServiceUnavailable("服务器尚未启用该区域的阿里云 VOD。");
+    }
+    return this.aliyunVod;
+  }
+
+  private async callAliyunVod<TResult>(
+    operation: () => Promise<TResult>,
+    fallbackMessage: string,
+  ) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!(error instanceof AliyunVodGatewayError)) {
+        throw externalServiceUnavailable(fallbackMessage);
+      }
+      const details = error.requestId ? { requestId: error.requestId } : undefined;
+      if (error.category === "not_found") {
+        throw externalMediaUnavailable("未找到指定的阿里云 VOD 音频转码。", details);
+      }
+      throw externalServiceUnavailable(fallbackMessage, details);
     }
   }
 
@@ -599,11 +777,24 @@ function mapMediaAudioTrackRecord(row: AudioTrackRow): MediaAudioTrackRecord {
     kind: row.kind,
     source: row.kind === "original"
       ? { type: "embedded_original", sourceType: row.primaryMedia.sourceType }
-      : {
+      : row.audioMediaResourceId && row.audioMedia
+        ? {
           type: "media_resource",
-          mediaResourceId: row.audioMediaResourceId!,
-          sourceType: row.audioMedia!.sourceType,
-        },
+          mediaResourceId: row.audioMediaResourceId,
+          sourceType: row.audioMedia.sourceType,
+        }
+        : {
+            type: "aliyun_vod_rendition",
+            mediaResourceId: row.vodRenditionMediaResourceId!,
+            sourceType: "aliyun_vod",
+            rendition: {
+              jobId: row.vodRenditionJobId!,
+              format: "mp3",
+              definition: row.vodRenditionDefinition,
+              bitrate: row.vodRenditionBitrate,
+              duration: row.vodRenditionDuration,
+            },
+          },
     offsetSeconds: row.offsetSeconds,
     sortOrder: row.sortOrder,
     enabled: row.enabled,

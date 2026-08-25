@@ -24,10 +24,8 @@ export interface AliplayerInstance {
   dispose(): void;
 }
 
-export type AliplayerOptions = {
+type AliplayerOptionsBase = {
   id: string;
-  vid: string;
-  playauth: string;
   width: string;
   height: string;
   autoplay: boolean;
@@ -40,6 +38,23 @@ export type AliplayerOptions = {
     key: string;
   };
 };
+
+export type AliplayerOptions = AliplayerOptionsBase & (
+  | {
+      vid: string;
+      playauth: string;
+      source?: never;
+      mediaType?: never;
+      format?: never;
+    }
+  | {
+      source: string;
+      mediaType: "audio";
+      format: "mp3";
+      vid?: never;
+      playauth?: never;
+    }
+);
 
 export type AliplayerConstructor = new (
   options: AliplayerOptions,

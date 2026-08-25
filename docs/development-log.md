@@ -7515,3 +7515,75 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   分支或绕过服务端 ACL 的调用。已完成：RA3b2b1 本机迁移演练、迁移缺陷修复、管理权限合同、纯音频选择、
   uploaded 真实闭环和文档。待推进：RA3b2b2 稳定 VOD 音频 rendition 身份、真实 VOD 音轨、登录 UI、Chrome/
   Safari、localhost/HTTP IP、A/B/C、撤权、续签、慢网与 detached window 验收。
+
+## 2026-08-24：RA3b2b2a VOD 音频转码稳定身份与播放代码闭环
+
+### 本轮计划、官方事实与身份决策
+
+- RA3b2b1 提交 `3cdb8db` 后先按专项路线图重写忽略的 `CLAUDE_WORK.md`，本轮边界限定为供应商身份、数据库
+  来源变体、候选/创建/播放 API、管理选择器和播放后端。分析显示跟随、偏移高级校准、旧分析设置删除继续分别
+  属于 RA4、RA5、RA6，没有为追求一次完成而混入本轮。
+- 核对阿里云官方 `GetPlayInfo` 文档和当前锁定 `@alicloud/vod20170321` 3.11.3 类型后，确认
+  `PlayInfo.JobId` 是媒体流唯一标识，`ResultType=Multiple` 可列出当前与历史转码流；`PlayURL` 则是带时效的
+  播放事实。Web Aliplayer 同时支持 vid + PlayAuth 与 direct source/audio/mp3。最终选择
+  `所属 VOD media resource + JobId` 作为持久来源，不使用 URL hash、数组序号或“最高码率”猜测。
+- 使用现有《寻梦》VOD `00cf8df6907871f1b31f5017e1f80102` 真实只读验证：返回 1 条 Normal/SQ/mp3/audio
+  转码，码率约 128 kbps、时长约 1494 秒；再次按相同 JobId 签发时 identity 匹配、URL 为 HTTPS、有效期约
+  895 秒。日志只保留 12 位 JobId SHA-256 前缀 `516cac654b1f` 和有限元数据，没有输出临时 URL、request 原始
+  body、AccessKey、Secret、PlayAuth 或 Web License。
+
+### 数据库、shared 合同与服务端边界
+
+- 新 migration `20260824050000_media_audio_vod_renditions` 为 `MediaAudioTrack` 增加来源 VOD 外键、JobId、mp3、
+  definition、bitrate 和 duration；check constraint 把 original、独立音频资源、VOD rendition 定义为互斥三态，
+  partial unique 防止同一主媒体重复关联相同来源 VOD/JobId。没有既有 rendition 数据，因此不做猜测回填。
+- shared 增加严格 rendition 候选、列表、持久 source 与 no-store playback session parser。候选只允许有界 JobId、
+  mp3、有限非负数值和有限 definition；播放会话还要求 annotation/primary/track/source identity、HTTPS URL、
+  MIME、到期时间与公开 License 完整，额外字段或来源组合错误全部 fail closed。
+- `aliyunVodGateway` 是唯一供应商适配器：只接受 status=Normal、StreamType=audio、format=mp3、HTTPS 且 JobId
+  完整的候选，重复 JobId 整体拒绝并稳定排序。列表返回前剥离 URL；精确播放方法必须再次查询并命中指定 JobId，
+  URL 只活在当前调用栈和 no-store 会话。
+- 候选读取要求来源 VOD 活动且当前用户拥有 `read + download`。创建音轨先做主媒体 write 门禁，避免无权请求
+  触发供应商查询；随后验证来源权限和 JobId，事务内锁主媒体并再次校验 ACL/活动状态后保存服务端权威元数据。
+  审计只记录 track、稳定来源 media 和 JobId，不记录候选数组或会话材料。
+- 播放会话继续逐次验证 annotation read、当前主媒体 `read + download`、track 归属/enabled 和来源 VOD
+  `read + download`；指定 JobId 消失时返回有限 unavailable 错误，不能改用另一条流。成功与错误响应均由路由先
+  设置 `Cache-Control: no-store`。
+
+### 前端管理、播放器与 UI 自审
+
+- 管理器保留“平台音频资源”入口，并只在主媒体为 VOD 视频时显示“当前 VOD 音频转码”入口。新增
+  `AliyunVodAudioRenditionDialog` 只展示 definition、bitrate、duration 等服务端规范化事实，不把 rendition
+  混进资源树，也不允许用户手填 URL 或 JobId；选择后仍进入同一个 TrackEditor 设置名称、类型和偏移。
+- picker 使用 AbortController 与 request generation 取消关闭/刷新/切媒体后的旧请求。自审发现首版固定四行
+  CSS grid 会在无错误提示时把列表和 footer 放错行，且叠加遮罩低于父管理器；现已建立固定中间滚动区、独立
+  303/304 层级，并补充 radiogroup/radio 语义。没有引入新依赖，现有 Radix Dialog、React 和 lucide 已完整覆盖。
+- 平台来源 adapter 把 rendition 转为稳定的 track/media/JobId 运行时来源；每次 load 都重新请求会话并核对四层
+  identity。Aliplayer options 收敛成 vid+PlayAuth 与 source+audio+mp3 的严格联合；两种 VOD 路径共用现有
+  refresh、generation、时间/倍率/音量/静音恢复和 dispose，未增加第二播放器 owner。刷新后 JobId 变化或 source
+  非 HTTPS 会暂停静音并失败，绝不自动换流或恢复原声。
+- HTTP IP 过渡部署可以加载 HTTPS 临时音频，不依赖 secure-context-only API；未来 HTTPS 域名也不会产生 mixed
+  content。本轮没有改动 runtime UUID、WebSocket URL 推导、主视频时钟、Timeline、ProjectData、draft、协作、
+  history、analysis identity 或旧分析来源设置。
+
+### 真实迁移、测试、自审与待推进
+
+- 应用本机 public migration 前停止旧 API，使用正式 backup CLI 创建一致备份
+  `xiqu-backup-2026-08-25T02-56-09-391Z-995a2939`：2109 个对象、0 warning，独立 verify 为 valid。随后 public
+  成功应用第 26 条 migration；重启当前源码 API 后 `/api/health/ready` 为 ready，database/storage 均为 ok，
+  `prisma migrate status` 显示 26/26 current。这里没有修改或部署远端生产数据库。
+- 专项结果：shared 合同 7/7，时间/选择策略 16/16，播放 47/47，VOD gateway 9/9，真实 PostgreSQL/Fastify
+  音轨 API 4/4，完整 API 189/189，`npm run build` 与最后 `build:web` 通过，`git diff --check` 通过。仅保留既有
+  Web 主 chunk 大小提醒和测试环境已有 `pg` deprecation warning。
+- 完整 API 第一次运行曾在“项目递归复制”出现一次 500。为避免猜测，临时只打开测试实例 logger；随后该单套
+  38/38、恢复 `logger:false` 后完整 189/189 均通过，未能复现。诊断开关没有进入最终差异；资源复制仍保持只为
+  副本媒体创建独立原声、不复制外部音轨的既有产品语义。
+- 静态审查未发现 debug console、`any`、旧创建 payload、临时 URL/PlayAuth 持久字段、重复 provider client、
+  第二媒体控制器或未使用旧 helper。新增代码的中文注释解释了 JobId、供应商调用前权限门禁、no-store URL、
+  异步代际、嵌套弹窗网格与层级原因。
+- **已完成**：RA3b2b2a 稳定 VOD rendition 身份、additive migration、候选/CRUD/ACL/播放会话、Aliplayer direct
+  source、管理选择器、真实供应商与本机迁移验证。
+- **待推进**：当前 in-app browser 与 Chrome localhost 均停在登录页；没有代填密码，也没有用 API 成功冒充
+  声音证据。下一轮 RA3b2b2b 需要用户先完成一次本机平台登录，再验证管理弹窗、真实 original/uploaded/VOD
+  A/B/C、seek/循环/倍率、正负偏移、撤权/删除、短时续签、慢网、detached window、Chrome/Safari 和 HTTP IP。
+  该门禁通过前不进入 RA4。

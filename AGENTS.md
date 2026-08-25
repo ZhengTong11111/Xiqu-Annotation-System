@@ -150,7 +150,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     signed covers, or raw provider responses to persistence/logging layers
   - analysis audio selection uses `GetPlayInfo` for HTTPS mp3 audio only; its temporary URL is worker-memory-only
   - VOD resource `mediaKind` comes from strict `GetPlayInfo.VideoBase.MediaType`, not from the existence of an MP3 rendition.
-    Future same-VID audio renditions require a stable provider identity such as JobId, never a temporary playback URL
+    Same-VID audio renditions use official `PlayInfo.JobId` as the stable identity; candidate and exact-session queries accept
+    only Normal HTTPS mp3 audio streams. Temporary URLs stay inside no-store playback sessions or worker memory
 - `apps/api/src/mediaAnalysisJobService.ts`
   - the only API business boundary for analysis-audio settings, ACL revalidation, source fingerprints, run/job reuse,
     status DTOs, tile descriptors, and protected asset reads
@@ -224,13 +225,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/platformMediaAudioPlaybackSource.ts`
   - the only conversion from one persistent external audio-track record to an uploaded/VOD runtime source
   - every load reissues and identity-checks a file-bound playback session; uploaded Range URLs are built with the current
-    access token only at load time, while PlayAuth and URLs must never enter ProjectData, drafts, preferences, or persisted state
+    access token only at load time, while PlayAuth and rendition URLs must never enter ProjectData, drafts, preferences, or
+    persisted state. Same-VID rendition sessions must also match the track's stored JobId
 - `src/platform/MediaAudioTrackManagerDialog.tsx` + `src/platform/useMediaAudioTrackManager.ts` +
-  `src/platform/mediaAudioTrackSourcePolicy.ts`
+  `src/platform/mediaAudioTrackSourcePolicy.ts` + `src/platform/AliyunVodAudioRenditionDialog.tsx`
   - the low-frequency audio-relation management surface and its single-flight/session-generation owner; every committed
     mutation rereads the authoritative list, and a late response from a previous file/media session must remain inert
-  - persistent external tracks accept only active `media_file` resources whose authoritative `mediaKind` is `audio`. A VOD
-    video's temporary MP3 analysis rendition is not a stable track source and must not pass this picker policy
+  - the resource-tree picker accepts only active `media_file` resources whose authoritative `mediaKind` is `audio`. A same-VID
+    rendition uses a separate provider-backed picker and stores only source VOD identity plus JobId; it must never be presented
+    as a movable file, accept a user-supplied URL/JobId, or bypass server-side candidate revalidation
 - `src/platform/platformMediaBindingPolicy.ts`
   - pure clean-session gate shared by current uploaded-media binding and future platform media sources
   - dirty/pending/transient/inline/merge/conflict/offline/error/remote-gap sessions must not replace the runtime media
@@ -565,15 +568,16 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   `packages/shared/src/mediaAnalysisIdentity.ts`
   - strict platform contracts for a primary media's ordered audio-track set, shared annotation-file default preference,
     short-lived file-bound playback session, bounded analysis status, and media-scoped analysis run identity
-  - embedded original audio and independent media resources are different source variants; original uses the primary media
-    at zero offset, while every non-original track references a stable media resource. These DTOs never carry URLs,
-    AccessKeys, provider responses, or ProjectData; PlayAuth exists only in the strict no-store session variant
+  - embedded original audio, independent media resources, and same-VID VOD renditions are distinct source variants. Original
+    uses the primary media at zero offset; a rendition binds a real VOD media resource plus JobId. Persistent DTOs never carry
+    URLs, AccessKeys, provider responses, or ProjectData; PlayAuth/temporary HTTPS source exists only in strict no-store sessions
 - `apps/api/src/mediaAudioTrackService.ts`
   - the only backend business boundary for a primary media's ordered audio-track relations and an annotation file's shared
     default audio preference; it also produces the strict annotation-context playback-option snapshot without issuing VOD
     credentials. Persistent track records deliberately do not claim analysis status before a real media-scoped run is resolved
-  - primary-media mutations reuse the resource-tree advisory gate, lock the media row, and recheck ACL. External sources must
-    be active audio resources with `read + download`; listing relation metadata never grants playback or analysis access
+  - primary-media mutations reuse the resource-tree advisory gate, lock the media row, and recheck ACL. Independent sources
+    must be active audio resources with `read + download`; VOD renditions require an active video VOD source with the same
+    capabilities and a provider-confirmed JobId. Listing relation metadata never grants playback or analysis access
   - option DTO `canManageTracks` is derived only from effective primary-media `write`. Annotation-file write independently
     controls the shared default; frontend visibility is only a hint and every CRUD/default mutation must reauthorize server-side
   - uploaded/VOD media creation and media copy must create exactly one original track in the same transaction. Copies get only
@@ -592,6 +596,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - uploaded sessions return file identity only and continue through the protected Range route. Main video and audio VOD use
     one issuer; missing License fails before PlayAuth, provider errors are normalized, and session payloads are never audited,
     logged, cached, or persisted
+  - same-VID rendition sessions re-fetch the exact stored JobId and return only a short-lived HTTPS source in the no-store DTO;
+    missing/replaced streams fail closed and must never silently select another bitrate or rendition
 - `src/media/synchronizedPlaybackPolicy.ts` + `src/media/synchronizedPlaybackState.ts`
   - pure RA0 contracts for master-video/audio time mapping, drift classification, source-generation ordering, buffering,
     resync, failure, and disposal; they do not own media elements, timers, React state, or temporary playback sessions
@@ -624,6 +630,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     option; missing License is a deployment error, never a reason to downgrade the SDK or reuse a stale PlayAuth
   - short-lived sessions stay memory-only; refresh is single-flight, obtains new credentials before replacing the old player,
     and generation checks reject late provider events after source switch/dispose
+  - ordinary VOD uses vid + PlayAuth, while a same-VID audio rendition uses the no-store HTTPS source with mediaType audio and
+    format mp3. Both paths share the same refresh, time/rate/volume restoration, generation, and disposal logic
 - `src/components/InspectorPanel.tsx`
   - canonical editor for selected items, tracks, sentence delivery/role classification, attached point tracks, spectrogram
     settings entry, and Gongche editing entry points

@@ -16,6 +16,7 @@ import type {
   CommitAnnotationCommandBatchResponse,
   AnnotationRecoverySnapshotDetail,
   AnnotationRecoverySnapshotSummary,
+  AliyunVodAudioRenditionList,
   AliyunVodPlaybackSession,
   AuditLogPage,
   BatchMoveResourcesRequest,
@@ -83,6 +84,7 @@ import type {
   UpsertResourcePermissionRequest,
 } from "@xiqu/shared";
 import {
+  parseAliyunVodAudioRenditionList,
   parseAnnotationAudioPlaybackOptions,
   parseMediaAudioTrackPlaybackSession,
 } from "@xiqu/shared";
@@ -294,6 +296,26 @@ export class PlatformClient {
   // 音轨管理只传稳定媒体身份；真实播放 URL 与 VOD 凭据由后续短时会话接口提供。
   listMediaAudioTracks(resourceId: string) {
     return this.request<MediaAudioTrackList>(`/media-files/${resourceId}/audio-tracks`);
+  }
+
+  async listAliyunVodAudioRenditions(
+    mediaResourceId: string,
+    signal?: AbortSignal,
+  ): Promise<AliyunVodAudioRenditionList> {
+    const value = await this.request<unknown>(
+      `/media-files/${mediaResourceId}/audio-renditions`,
+      { signal },
+    );
+    const result = parseAliyunVodAudioRenditionList(value);
+    if (!result || result.mediaResourceId !== mediaResourceId) {
+      throw new PlatformApiError(
+        502,
+        "invalid_vod_audio_renditions",
+        "服务器返回了无法识别的 VOD 音频转码列表。",
+        null,
+      );
+    }
+    return result;
   }
 
   createMediaAudioTrack(resourceId: string, request: CreateMediaAudioTrackRequest) {

@@ -5,6 +5,7 @@ import {
   MAX_MEDIA_AUDIO_TRACK_OFFSET_SECONDS,
   parseAnnotationAudioPreference,
   parseAnnotationAudioPlaybackOptions,
+  parseAliyunVodAudioRenditionList,
   parseMediaAnalysisRunIdentity,
   parseMediaAudioTrackPlaybackSession,
   parseMediaAudioTrackRecord,
@@ -39,6 +40,23 @@ test("音轨记录严格区分视频原声与独立音频资源", () => {
     sortOrder: 1,
   };
   assert.deepEqual(parseMediaAudioTrackRecord(vocal), vocal);
+  const rendition = {
+    ...vocal,
+    id: "track-vod-rendition",
+    source: {
+      type: "aliyun_vod_rendition",
+      mediaResourceId: "media-video",
+      sourceType: "aliyun_vod",
+      rendition: {
+        jobId: "job-audio",
+        format: "mp3",
+        definition: "SQ",
+        bitrate: 128,
+        duration: 120.5,
+      },
+    },
+  };
+  assert.deepEqual(parseMediaAudioTrackRecord(rendition), rendition);
   assert.equal(parseMediaAudioTrackRecord({
     ...ORIGINAL_TRACK,
     source: {
@@ -52,6 +70,35 @@ test("音轨记录严格区分视频原声与独立音频资源", () => {
     source: { type: "embedded_original", sourceType: "aliyun_vod" },
   }), null);
   assert.equal(parseMediaAudioTrackRecord({ ...ORIGINAL_TRACK, offsetSeconds: 1 }), null);
+  assert.equal(parseMediaAudioTrackRecord({
+    ...rendition,
+    source: {
+      ...rendition.source,
+      rendition: { ...rendition.source.rendition, format: "m3u8" },
+    },
+  }), null);
+});
+
+test("VOD 音频转码列表以唯一 JobId 和有限元数据为边界", () => {
+  const list = {
+    mediaResourceId: "media-video",
+    renditions: [{
+      jobId: "job-audio",
+      format: "mp3",
+      definition: "SQ",
+      bitrate: 128,
+      duration: 120.5,
+    }],
+  };
+  assert.deepEqual(parseAliyunVodAudioRenditionList(list), list);
+  assert.equal(parseAliyunVodAudioRenditionList({
+    ...list,
+    renditions: [...list.renditions, ...list.renditions],
+  }), null);
+  assert.equal(parseAliyunVodAudioRenditionList({
+    ...list,
+    renditions: [{ ...list.renditions[0], temporaryUrl: "secret" }],
+  }), null);
 });
 
 test("音轨记录拒绝越界文本、时间、顺序和额外字段", () => {
@@ -229,11 +276,26 @@ test("音轨播放会话严格区分上传音频与短时 VOD 凭据", () => {
     expiresAt: "2026-08-24T12:00:00.000Z",
     webPlayerLicense: { domain: "localhost", key: "public-license-key" },
   };
+  const rendition = {
+    ...base,
+    sourceType: "aliyun_vod_rendition",
+    videoId: "vod-video",
+    region: "cn-shanghai",
+    jobId: "job-audio",
+    url: "https://vod.example.test/audio.mp3?temporary=1",
+    mimeType: "audio/mpeg",
+    duration: 120.5,
+    expiresAt: "2026-08-24T12:00:00.000Z",
+    webPlayerLicense: { domain: "localhost", key: "public-license-key" },
+  };
   assert.deepEqual(parseMediaAudioTrackPlaybackSession(uploaded), uploaded);
   assert.deepEqual(parseMediaAudioTrackPlaybackSession(vod), vod);
+  assert.deepEqual(parseMediaAudioTrackPlaybackSession(rendition), rendition);
   assert.equal(parseMediaAudioTrackPlaybackSession({ ...uploaded, url: "secret" }), null);
   assert.equal(parseMediaAudioTrackPlaybackSession({ ...uploaded, mimeType: "video/mp4" }), null);
   assert.equal(parseMediaAudioTrackPlaybackSession({ ...vod, expiresAt: "not-a-date" }), null);
   assert.equal(parseMediaAudioTrackPlaybackSession({ ...vod, playAuth: "" }), null);
   assert.equal(parseMediaAudioTrackPlaybackSession({ ...vod, annotationFileId: " bad " }), null);
+  assert.equal(parseMediaAudioTrackPlaybackSession({ ...rendition, url: "http://insecure.test/audio.mp3" }), null);
+  assert.equal(parseMediaAudioTrackPlaybackSession({ ...rendition, jobId: "" }), null);
 });

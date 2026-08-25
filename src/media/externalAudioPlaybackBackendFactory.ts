@@ -1,7 +1,11 @@
-import type { AliyunVodPlaybackSession } from "@xiqu/shared";
+import type {
+  AliyunVodPlaybackSession,
+  MediaAudioTrackPlaybackSession,
+} from "@xiqu/shared";
 import {
   AliyunVodPlaybackBackend,
   type AliyunVodPlaybackBackendOptions,
+  type AliyunVodRuntimePlaybackSession,
 } from "./aliyunVodPlaybackBackend";
 import {
   MediaPlaybackCommandCancelledError,
@@ -29,6 +33,19 @@ export type ExternalAudioPlaybackSource =
       audioMediaResourceId: string;
       offsetSeconds: number;
       loadSession: (signal?: AbortSignal) => Promise<AliyunVodPlaybackSession>;
+    }
+  | {
+      type: "aliyun_vod_rendition_audio";
+      trackId: string;
+      audioMediaResourceId: string;
+      renditionJobId: string;
+      offsetSeconds: number;
+      loadSession: (
+        signal?: AbortSignal,
+      ) => Promise<Extract<
+        MediaAudioTrackPlaybackSession,
+        { sourceType: "aliyun_vod_rendition" }
+      >>;
     };
 
 export type ExternalAudioPlaybackBackendEvents = Omit<
@@ -127,14 +144,15 @@ export function createExternalAudioPlaybackBackendPreparer(
         backend = createNativeBackend(loaded.url, events);
       } else {
         // 首份会话既提供受服务端校验的媒资身份，也会被播放器首次加载复用，不能额外请求第二份 PlayAuth。
-        let initialSession: AliyunVodPlaybackSession | null = await source.loadSession(
-          preparationAbortController.signal,
-        );
+        let initialSession: AliyunVodRuntimePlaybackSession | null =
+          await source.loadSession(preparationAbortController.signal);
         if (preparationAbortController.signal.aborted) throw createCancelledError();
         backend = createVodBackend({
           containerId: options.vodContainerId,
           expectedVideoId: initialSession.videoId,
-          expectedMediaKind: "audio",
+          ...(source.type === "aliyun_vod_rendition_audio"
+            ? { expectedRenditionJobId: source.renditionJobId }
+            : { expectedMediaKind: "audio" as const }),
           loadSession: async () => {
             if (initialSession) {
               const session = initialSession;

@@ -25,6 +25,20 @@ export type MediaAudioTrackAnalysisStatus =
 export const MAX_MEDIA_AUDIO_TRACK_NAME_LENGTH = 120;
 export const MAX_MEDIA_AUDIO_TRACKS_PER_MEDIA = 64;
 export const MAX_MEDIA_AUDIO_TRACK_OFFSET_SECONDS = 86_400;
+export const MAX_VOD_AUDIO_RENDITION_DEFINITION_LENGTH = 32;
+
+export type AliyunVodAudioRendition = {
+  jobId: string;
+  format: "mp3";
+  definition: string | null;
+  bitrate: number | null;
+  duration: number | null;
+};
+
+export type AliyunVodAudioRenditionList = {
+  mediaResourceId: string;
+  renditions: AliyunVodAudioRendition[];
+};
 
 export type MediaAudioTrackSource =
   | { type: "embedded_original"; sourceType: MediaSourceType }
@@ -32,6 +46,12 @@ export type MediaAudioTrackSource =
       type: "media_resource";
       mediaResourceId: string;
       sourceType: MediaSourceType;
+    }
+  | {
+      type: "aliyun_vod_rendition";
+      mediaResourceId: string;
+      sourceType: "aliyun_vod";
+      rendition: AliyunVodAudioRendition;
     };
 
 export type MediaAudioTrackAnalysisSummary =
@@ -139,7 +159,77 @@ function parseMediaAudioTrackSource(value: unknown): MediaAudioTrackSource | nul
       sourceType: value.sourceType,
     };
   }
+  if (
+    value.type === "aliyun_vod_rendition" &&
+    Object.keys(value).length === 4 &&
+    isStableMediaAudioIdentity(value.mediaResourceId) &&
+    value.sourceType === "aliyun_vod"
+  ) {
+    const rendition = parseAliyunVodAudioRendition(value.rendition);
+    return rendition
+      ? {
+          type: "aliyun_vod_rendition",
+          mediaResourceId: value.mediaResourceId,
+          sourceType: "aliyun_vod",
+          rendition,
+        }
+      : null;
+  }
   return null;
+}
+
+export function parseAliyunVodAudioRendition(
+  value: unknown,
+): AliyunVodAudioRendition | null {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 5 ||
+    !isStableMediaAudioIdentity(value.jobId) ||
+    value.format !== "mp3" ||
+    (value.definition !== null &&
+      (typeof value.definition !== "string" ||
+        value.definition.length < 1 ||
+        value.definition.length > MAX_VOD_AUDIO_RENDITION_DEFINITION_LENGTH)) ||
+    !isOptionalNonNegativeFiniteNumber(value.bitrate) ||
+    !isOptionalNonNegativeFiniteNumber(value.duration)
+  ) {
+    return null;
+  }
+  return {
+    jobId: value.jobId,
+    format: "mp3",
+    definition: value.definition,
+    bitrate: value.bitrate,
+    duration: value.duration,
+  };
+}
+
+export function parseAliyunVodAudioRenditionList(
+  value: unknown,
+): AliyunVodAudioRenditionList | null {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 2 ||
+    !isStableMediaAudioIdentity(value.mediaResourceId) ||
+    !Array.isArray(value.renditions) ||
+    value.renditions.length > MAX_MEDIA_AUDIO_TRACKS_PER_MEDIA
+  ) {
+    return null;
+  }
+  const renditions: AliyunVodAudioRendition[] = [];
+  const jobIds = new Set<string>();
+  for (const candidate of value.renditions) {
+    const rendition = parseAliyunVodAudioRendition(candidate);
+    if (!rendition || jobIds.has(rendition.jobId)) return null;
+    jobIds.add(rendition.jobId);
+    renditions.push(rendition);
+  }
+  return { mediaResourceId: value.mediaResourceId, renditions };
+}
+
+function isOptionalNonNegativeFiniteNumber(value: unknown): value is number | null {
+  return value === null ||
+    (typeof value === "number" && Number.isFinite(value) && value >= 0);
 }
 
 // 严格解析持久音轨记录，确保“视频原声”和“独立音频资源”不会形成互相矛盾的关系。
@@ -173,7 +263,7 @@ export function parseMediaAudioTrackRecord(
   if (
     (value.kind === "original" &&
       (source.type !== "embedded_original" || value.offsetSeconds !== 0)) ||
-    (value.kind !== "original" && source.type !== "media_resource")
+    (value.kind !== "original" && source.type === "embedded_original")
   ) {
     return null;
   }

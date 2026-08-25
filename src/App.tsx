@@ -7326,6 +7326,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         <MediaAudioTrackManagerDialog
           client={editorSession.client}
           primaryMediaResourceId={platformMedia.resourceId}
+          primaryMediaSourceType={platformMedia.sourceType}
           parentId={editorSession.parentId}
           open={audioTrackManagerOpen}
           onOpenChange={setAudioTrackManagerOpen}

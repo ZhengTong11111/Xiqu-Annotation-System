@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AliyunVodPlaybackSession } from "@xiqu/shared";
+import type {
+  AliyunVodPlaybackSession,
+  MediaAudioTrackPlaybackSession,
+} from "@xiqu/shared";
 import {
   type AliplayerConstructor,
   type AliplayerEventHandler,
@@ -60,6 +63,33 @@ function createSession(
     videoId: "vod-1",
     region: "cn-shanghai",
     playAuth,
+    expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+    webPlayerLicense: {
+      domain: "example.test",
+      key: "test-web-license-key",
+    },
+  };
+}
+
+function createRenditionSession(
+  suffix: string,
+): Extract<
+  MediaAudioTrackPlaybackSession,
+  { sourceType: "aliyun_vod_rendition" }
+> {
+  return {
+    version: 1,
+    annotationFileId: "annotation-1",
+    primaryMediaResourceId: "vod-resource",
+    trackId: "track-rendition",
+    audioMediaResourceId: "vod-resource",
+    sourceType: "aliyun_vod_rendition",
+    videoId: "vod-1",
+    region: "cn-shanghai",
+    jobId: "job-audio",
+    url: `https://vod.example.test/audio.mp3?session=${suffix}`,
+    mimeType: "audio/mpeg",
+    duration: 90,
     expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
     webPlayerLicense: {
       domain: "example.test",
@@ -175,6 +205,51 @@ test("VOD 后端可显式接收音频媒资并拒绝媒体类型漂移", async (
   await assert.rejects(mismatchedBackend.play(), /播放会话与当前媒体不匹配/);
   assert.equal(FakeAliplayer.instances.length, 1);
   mismatchedBackend.dispose();
+});
+
+test("VOD 音频转码后端锁定 JobId 并在刷新时更换短时 source", async () => {
+  FakeAliplayer.instances = [];
+  let sessionCount = 0;
+  const backend = new AliyunVodPlaybackBackend({
+    containerId: "rendition-player",
+    expectedVideoId: "vod-1",
+    expectedRenditionJobId: "job-audio",
+    loadSession: async () => createRenditionSession(String(++sessionCount)),
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onError: () => undefined,
+    },
+  });
+
+  await backend.seek(12);
+  const first = FakeAliplayer.instances[0];
+  assert.equal(first?.options.source?.includes("session=1"), true);
+  assert.equal(first?.options.mediaType, "audio");
+  assert.equal(first?.options.format, "mp3");
+  await backend.refreshSession();
+  const second = FakeAliplayer.instances[1];
+  assert.equal(second?.options.source?.includes("session=2"), true);
+  assert.equal(backend.getSnapshot().currentTime, 12);
+  backend.dispose();
+
+  const mismatch = new AliyunVodPlaybackBackend({
+    containerId: "rendition-mismatch",
+    expectedVideoId: "vod-1",
+    expectedRenditionJobId: "different-job",
+    loadSession: async () => createRenditionSession("mismatch"),
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onError: () => undefined,
+    },
+  });
+  await assert.rejects(mismatch.play(), /音频转码会话与当前音轨不匹配/);
+  mismatch.dispose();
 });
 
 test("VOD 刷新失败后保留旧实例并允许继续执行播放命令", async () => {

@@ -17,6 +17,8 @@ function createProvider(
     gateway: {
       inspectVideo: async () => { throw new Error("本测试不应检查元数据"); },
       createAnalysisAudioStream: async () => { throw new Error("本测试不应请求分析流"); },
+      listAudioRenditions: async () => { throw new Error("本测试不应请求音频转码"); },
+      createAudioRenditionStream: async () => { throw new Error("本测试不应请求音频转码"); },
       createPlaybackCredential,
     },
   };
