@@ -174,6 +174,18 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - production RA2 rollout is deliberately two-release: deploy the additive migration code first, stop the analysis worker,
     dry-run and execute the exact migration plan, then deploy the final media-scoped schema migration. The final SQL fails closed
     on missing fingerprints, duplicate canonical identities, or active superseded jobs; never bypass this gate
+- `apps/api/src/analysisAudioSettingMigrationPlan.ts` +
+  `apps/api/src/analysisAudioSettingMigrationService.ts`
+  - offline RA4c boundary for converting legacy per-annotation `media_override` settings into shared media audio-track
+    relations. Only active pure-audio resources or the zero-offset primary original can migrate automatically; VOD video
+    overrides without a stable rendition JobId, conflicting offsets, disabled existing tracks, inactive resources, invalid track
+    structure, and track-limit overflow must remain explicit block codes
+  - dry-run is bounded and exposes only stable ids/codes/counts. Execute requires an active super-admin and the exact plan
+    fingerprint, then takes the migration lock, resource-tree shared gate, legacy-setting table lock, and ordered primary-media
+    row locks before rebuilding the complete plan. Any blocked or changed fact rolls back the whole transaction
+  - RA4c1 is intentionally additive and never deletes the legacy table or changes listening defaults. The destructive RA4c2
+    schema/API cleanup may proceed only after each target database reports zero blocked items and the idempotent migration has
+    no remaining create actions; never bypass this gate or turn an unsupported legacy VOD video into a fabricated audio track
 - `apps/api/src/mediaAnalysisSourceFingerprint.ts`
   - the only media-content fingerprint boundary for media-scoped analysis; uploaded identity requires stable file checksum/size,
     VOD identity requires region/video id/duration, and annotation id, selection mode, and track offset have no input position

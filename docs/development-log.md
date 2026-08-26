@@ -7799,3 +7799,48 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **待推进**：RA4c 先建立旧 `AnnotationAnalysisAudioSetting` 到媒体音轨关系的 dry-run/execute 幂等迁移和冲突
   报告，再删除无 track id API、旧 client/DTO/service 分支、Prisma relation 与兼容测试；生产 rollout 必须在
   备份、迁移演练和调用者静态/访问日志核对后进行，不能在新路径失败时回退 legacy。
+
+## 2026-08-26：RA4c1 旧分析音频设置迁移工具与 destructive 删除门禁
+
+### 拆阶段与迁移语义
+
+- 根据 RA4b 后的真实代码重写 `CLAUDE_WORK.md`，把 RA4c 拆为 additive RA4c1 和 destructive RA4c2。本轮只
+  建立迁移计划、CLI、审计和测试，不删除 `AnnotationAnalysisAudioSetting`、无 track id route/client/DTO、
+  legacy resolver 或 run 的历史 annotation/mode/offset 列，避免“边迁移边删读取源”形成不可恢复发布。
+- 旧 `auto` 已由每份媒体唯一 original 表达，不新增关系；override 等于主媒体且 offset=0 时复用 original。
+  active 的 uploaded/VOD 纯音频覆盖可在主媒体下幂等复用或创建 `reference` 音轨，名称由有限清洗后的来源名
+  加“（迁移）”生成，创建者和审计 actor 始终是本次 active super_admin，不冒充旧 setting updater。
+- 迁移不写 `AnnotationAudioPreference`，因此不会把过去只用于频谱的覆盖音频突然设为共享监听默认。重复
+  dry-run 在关系已存在且同偏移/启用时报告 reuse；零待创建的 execute 仍验证 operator 和锁内计划，但不写重复
+  汇总审计。
+
+### 阻断、并发与安全边界
+
+- 纯计划器为 VOD video override（没有稳定 rendition JobId）、主来源非零 offset、同源设置不同 offset、已有
+  关系 offset 不同或 disabled、annotation/主媒体/覆盖媒体/祖先 inactive、非法 setting、音轨结构异常和音轨
+  上限分别输出稳定 block code。由于普通音频关系有同主媒体/同来源唯一约束，迁移器不会为不同偏移伪造两条，
+  也不会任取一个偏移、自动启用关系或把 VOD 视频包装成虚假音频。
+- dry-run 最多读取 5000 条 setting，资源闭包按 5000 条批次迭代读取并检测缺失/循环；plan 只公开稳定资源 ID、
+  action、block code、计数和 SHA-256 fingerprint，资源名只在内部 fingerprint/名称生成中使用。CLI/审计不输出
+  资源路径、媒体 URL、PlayAuth、AccessKey、Secret、storage key 或完整 Prisma 行。
+- execute 要求显式 operator 和完整 fingerprint，依次取得迁移 advisory lock、资源树共享门禁、legacy setting
+  表锁和按 ID 排序的主媒体行锁，然后重读全部事实。在线 setting upsert、音轨 CRUD、资源移动/回收或 dry-run
+  后修改都会被锁住或改变 fingerprint；任一阻断、计划漂移、同源竞态或创建计数不一致均回滚全部 tracks/audit。
+- 新 migration `20260826020000_analysis_audio_setting_migration_audit` 只向 AuditAction 增加
+  `analysis_audio_setting_migration_apply`；shared action 列表和前端审计文案同步更新。没有新增依赖。
+
+### 验证、数据库状态与下一步
+
+- `npm run test:analysis-audio-setting-migration` 通过 8/8：6 类纯规划/冲突/顺序 fingerprint 用例加真实
+  PostgreSQL 创建、复用、无权限拒绝、计划漂移和 blocked 全局零写入；集成计划 JSON 还验证不泄露资源名。
+- `npm run test:media-audio-track-api` 通过 4/4；`npm run test:media-analysis` 通过 38/38；完整
+  `npm run test:api` 因新增 8 项增至 200/200；完整 Prisma schema guard、shared、document-model、Web/API
+  build 和 `git diff --check` 通过。只出现既有 Vite 主 chunk 体积提示和测试环境 `pg` deprecation warning。
+- **已完成**：RA4c1 bounded dry-run/execute、stable block codes、super-admin/计划重验/原子锁门禁、additive
+  audit migration、专项与完整自动回归。
+- **未执行**：第 28 条只在隔离 `api_test` schema 应用；本机 public 与生产仍未应用第 27/28 条，没有运行
+  真实库 dry-run/execute、没有部署，也没有浏览器验证。用户自己的 `examples_insights/tutorial.md` 修改未被
+  改写或纳入本轮。
+- **待推进**：RA4c2 先为目标库建立经校验备份，部署第 27/28 条 additive migration，运行 dry-run 并人工处理
+  所有 block code，execute 后再次确认 `blockedCount=0 + createTrackCount=0`；只有该门禁满足，才单独删除旧
+  API/client/DTO/service/schema 和兼容测试。生产不能在同一未验证发布中直接跨过 additive 迁移阶段。

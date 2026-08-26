@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁及 RA4a-RA4b 已完成；RA3 多环境听觉验收延期，当前推进 RA4c
+> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁及 RA4a-RA4c1 已完成；RA3 多环境听觉验收延期，当前推进 RA4c2
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -12,7 +12,7 @@
 - **RA1 已完成（2026-08-24）**：Prisma 已新增有序 `MediaAudioTrack` 和标注文件
   `AnnotationAudioPreference`，上传媒体、VOD 媒体及媒体复制均在同一事务建立唯一原声；严格 CRUD、重排、
   默认值、ACL、审计和类型安全客户端边界已通过真实 PostgreSQL 集成测试。
-- `AnnotationAnalysisAudioSetting` 暂时继续提供当前文件的分析来源与偏移上下文；在线 canonical
+- `AnnotationAnalysisAudioSetting` 已不再驱动前端分析显示，只为 RA4c 的可审计数据迁移暂留；在线 canonical
   `MediaAnalysisRun` 已按媒体内容、算法和配置复用，不再按标注文件或偏移重复创建。
 - **RA2a 已完成（2026-08-24）**：additive supersession migration、纯计划器和 super-admin-only
   dry-run/execute CLI 已建立；执行只标记 canonical/duplicate，保留全部 run、asset 和对象。
@@ -47,8 +47,12 @@
 - **RA4b 已完成（2026-08-26）**：分析显示每次打开文件默认跟随监听音轨，也可在会话内固定另一条可用音轨；
   status、create、descriptor、batch、相邻预取和全量预加载统一携带同一 `audioTrackId`。音轨/偏移进入内存显示
   代际但不污染媒体级瓦片缓存，旧状态或旧请求不能在切轨后复活；旧“选择分析音频/恢复自动”可见流程已移除。
-- 下一阶段是 **RA4c 旧分析来源迁移与合同收口**：设计并执行 `AnnotationAnalysisAudioSetting` 到音轨关系的幂等
-  迁移，随后删除无 track id route/client/DTO/service 分支和旧数据库关系；不得在新链路失败时回退 legacy。
+- **RA4c1 已完成（2026-08-26）**：新增 super-admin-only 的
+  `analysis-audio-settings:migrate dry-run/execute`。可无损的纯音频覆盖会幂等创建/复用共享音轨；无稳定 JobId
+  的 VOD 视频、不同 offset、禁用关系、失效资源或结构/数量异常形成有限阻断码，任一阻断都会拒绝整批写入。
+- 下一阶段是 **RA4c2 旧合同与 schema 删除**：先在每个目标数据库备份并执行第 27/28 条 additive migration，运行
+  RA4c1 dry-run/execute 至零阻断且零待创建，再删除无 track id route/client/DTO/service、旧 setting 表/relation
+  和 run 的 annotation/mode/offset 审计列；不得跳过门禁或在新链路失败时回退 legacy。
 
 ## 1. 目标重新定义
 
@@ -944,6 +948,24 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 音轨专项 shared 7/7、前端状态 20/20，媒体分析 shared batch 3/3、API/前端 38/38，音轨 API 4/4、完整 API
   192/192、完整 build、TypeScript 和 `git diff --check` 通过。没有新增依赖；未迁移本机 public/生产数据库，未
   部署，也按用户要求跳过浏览器与听觉验收，RA3 延期清单继续保留。
+
+**RA4c1 旧分析音频设置迁移工具与删除门禁已完成（2026-08-26）**
+
+- 新增纯计划器、bounded Prisma fact reader、super-admin-only service 和
+  `analysis-audio-settings:migrate dry-run/execute` CLI。计划按稳定 ID 排序并绑定全部 setting、资源活动性、
+  来源类型、offset、现有音轨结构/启用状态和容量事实；execute 在 advisory/resource-tree/table/ordered media
+  locks 下重算 fingerprint，任何变化或阻断都全量回滚。
+- `auto` 不新增关系；主媒体自身的零偏移覆盖复用 original；active 纯音频覆盖按
+  `primaryMediaResourceId + audioMediaResourceId` 幂等复用或创建末尾 `reference` 轨。迁移不会修改
+  AnnotationAudioPreference，也不会把旧 updater 冒充本次 creator。
+- 没有稳定 rendition JobId 的 VOD video override、同源不同 offset、已有关系 offset 不同/disabled、inactive
+  annotation/media/ancestor、非法 setting/轨道结构和容量溢出均输出有限 block code。plan/CLI 不包含资源名、
+  路径、媒体 URL、PlayAuth、AccessKey、Secret 或 ORM 原始行；任一 blocked item 存在时不允许部分迁移。
+- additive migration 28 只新增 `analysis_audio_setting_migration_apply` 审计枚举；旧 table/route/DTO/resolver
+  继续只为 RA4c2 删除前迁移存在。专项 8/8、音轨 API 4/4、媒体分析 38/38、完整 API 200/200 和完整 build
+  通过；只有既有 Vite chunk 与测试 `pg` warning。
+- 第 28 条仅在隔离 `api_test` 应用；本机 public 和生产仍未应用第 27/28 条、未执行真实 dry-run/execute、未
+  部署。本阶段无 UI，按用户要求未做浏览器/听觉验证，RA3 延期验收债务不变。
 
 **改动范围**
 
