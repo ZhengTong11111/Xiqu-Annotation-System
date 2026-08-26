@@ -7626,3 +7626,26 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **待推进**：RA3b2b2b2 仍需要用户在本机浏览器登录并打开《寻梦》VOD 标注文件，随后完成管理弹窗、真实
   original/uploaded/VOD A/B/C、seek/循环/倍率、offset、禁用/删除/撤权、detached、慢网、Chrome/Safari 和
   HTTP IP 听觉/UI 验收。该门禁未完成前不进入 RA4。
+## 2026-08-25：平台 README 与在线标注员教程收口
+
+### README 现状校正
+
+- 按当前代码与 `AGENTS.md` 重新校正仓库 README：补充 API/Web/analysis worker 的完整本地启动方式、阿里云
+  VOD/Web License 安全边界、极简权限组与角色默认能力、媒体级 canonical 分析和新 run 的 10 秒瓦片。
+- 新增“监听音轨与替换播放”章节，明确主媒体继续作为唯一视频时钟，当前会话选择不进入 ProjectData、revision、
+  history 或协作命令；上传音频、独立 VOD 音频和同 VID JobId rendition 已有代码链路，但 RA3 登录浏览器与
+  多环境听觉验收仍未完成。
+- 删除已过时的“普通编辑尚未接入原子命令”“服务器不按命令修改 payload”“逐字 singingStyle 仍为稳定字段”等
+  描述，改为当前的原子批次、HTTP 权威追赶、受支持 409 rebase、结构租约和 IndexedDB 草稿事实。
+- 补充无域名 HTTP IP 下必须使用 `runtimeUuid`、未来 HTTPS 自动走原生 UUID、VOD 凭据不得进入浏览器持久状态
+  等长期开发边界，并增加总路线图、音轨专项、部署文档和 Development Log 的导航入口。
+
+### 在线标注员教程
+
+- 新增 `examples_insights/tutorial.md`，按“打开文件 -> 媒体与监听音轨 -> 句级 -> 逐字/四声 -> 自定义与分叉轨
+  -> 工尺/板眼/分析 -> 保存协作 -> 审核交付”的实际工作顺序编写。
+- 教程只面向已经部署好的在线平台普通标注员，移除账号管理、权限分配、服务端部署、开发命令和本地免登录工具
+  内容；只保留只读、维护或同步失败时标注员需要采取的操作，不解释后台授权模型。
+- 教程没有引用任何图片或截图，避免继续使用已过时界面图；`examples_insights/README.md` 已增加入口。
+- 文档检查通过：`git diff --check` 无错误；关键词回查未发现图片语法、账号管理、权限管理、开发命令或后端
+  技术栈混入教程。本轮只修改文档，没有运行代码测试或部署服务器。
