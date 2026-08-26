@@ -248,9 +248,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     access token only at load time, while PlayAuth and rendition URLs must never enter ProjectData, drafts, preferences, or
     persisted state. Same-VID rendition sessions must also match the track's stored JobId
 - `src/platform/MediaAudioTrackManagerDialog.tsx` + `src/platform/useMediaAudioTrackManager.ts` +
-  `src/platform/mediaAudioTrackSourcePolicy.ts` + `src/platform/AliyunVodAudioRenditionDialog.tsx`
+  `src/platform/mediaAudioTrackOffset.ts` + `src/platform/mediaAudioTrackSourcePolicy.ts` +
+  `src/platform/AliyunVodAudioRenditionDialog.tsx`
   - the low-frequency audio-relation management surface and its single-flight/session-generation owner; every committed
     mutation rereads the authoritative list, and a late response from a previous file/media session must remain inert
+  - offset authority remains seconds in the API/database, while the editor's millisecond calibration buttons must use the
+    shared integer-millisecond helper to avoid floating tails. Positive means the replacement audio is delayed on the video
+    timeline; negative means it is advanced. Calibration remains an explicit save operation and must not create a parallel
+    preview-only offset, ProjectData mutation, or per-click network write
   - the resource-tree picker accepts only active `media_file` resources whose authoritative `mediaKind` is `audio`. A same-VID
     rendition uses a separate provider-backed picker and stores only source VOD identity plus JobId; it must never be presented
     as a movable file, accept a user-supplied URL/JobId, or bypass server-side candidate revalidation

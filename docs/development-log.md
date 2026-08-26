@@ -7896,3 +7896,35 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   `examples_insights/tutorial.md` 修改没有被改写或暂存。
 - **待推进**：代码进入 RA5 的偏移校准、缓冲和长时鲁棒性；RA6 再在恢复候选与生产执行 RA4c1 -> RA4c2 两版本
   rollout、备份/恢复核对和延期的 Chrome/Safari、HTTP IP/HTTPS、慢网、续签、撤权与长时听觉验收。
+
+## 2026-08-26：RA5a 音轨毫秒级偏移校准
+
+### 校准合同与界面实现
+
+- 根据 RA4c2 后的实际代码和 `docs/replace_audio_roadmap.md` 重写本轮 `CLAUDE_WORK.md`，将跨度较大的 RA5
+  拆为 RA5a 毫秒校准、RA5b 漂移/缓冲诊断和 RA5c 长时播放/续签。本轮只实现 RA5a，没有顺手改动已经通过
+  专项测试的视频主时钟、漂移阈值、硬同步或缓冲恢复状态机。
+- 新增 `mediaAudioTrackOffset` 纯逻辑边界，集中解析正负 24 小时内的秒值、服务端值表单格式化、整数毫秒步进
+  和提前/延后摘要。创建与编辑表单不再各自解释 offset；连续点击在整数毫秒上计算，避免出现
+  `0.30000000000000004` 一类浮点尾数。非法草稿和越界步进 fail closed 并保留用户原输入，不会猜测为零。
+- 音轨管理器沿用原有显式保存语义：`-10 ms`、`-1 ms`、归零、`+1 ms`、`+10 ms` 只修改当前本地草稿，点击
+  保存才发出一次关系更新；成功后仍权威重读完整音轨列表并通过原 `onChanged` 刷新监听/分析上下文。没有新增
+  每次按钮点击的网络请求、临时预览 offset、ProjectData 字段或另一份播放状态。
+- UI 保持既有紧凑设置面板风格：秒输入保留，步长提升到 0.001 秒；五个稳定网格按钮不改变表单宽度，归零
+  使用已有 Lucide 图标和 tooltip。正值显示“音频相对视频延后”，负值显示“提前”，原声音轨继续只读且固定零。
+  新逻辑块补有中文功能注释，没有引入调色板、表单或数值处理依赖。
+
+### 自审、测试与阶段边界
+
+- 新增 3 个纯逻辑用例，覆盖空白/NaN/Infinity、正负边界、连续 300 次 `+1 ms`、反向跨零、越界拒绝、服务端
+  表单格式与正负摘要；并纳入 `test:media-audio-tracks`，防止未来恢复分散的本地 parser。
+- `npm run test:media-audio-tracks`、`npm run test:media-audio-track-api`、`npm run test:media-analysis`、完整
+  `npm run build` 和 `git diff --check` 均通过。静态回查确认没有旧 `parseOffsetSeconds`、debug console、直接
+  浏览器 `crypto.randomUUID()`，且同步播放 policy/runtime 没有差异。构建只保留既有 Vite 主 chunk 体积提醒。
+- `AGENTS.md` 已登记 offset owner：API/数据库以秒为权威，UI 毫秒按钮使用共享整数算法，偏移保存不得演变为
+  第二套预览状态或逐点击写入。用户自己的 `examples_insights/tutorial.md` 修改未被改写或暂存。
+- **已完成**：RA5a 毫秒级校准 UI、共享纯逻辑、回归门禁、路线图与维护规则更新。
+- **未执行**：用户明确要求跳过本轮浏览器验证；未执行真实 A/B 听觉校准、Safari/HTTP IP/HTTPS 验收，也未
+  部署服务器或迁移 public/生产数据库。RA4c1 -> RA4c2 的两版本生产门禁仍原样保留。
+- **待推进**：RA5b 先审查已有漂移采样、连续样本阈值、buffering 状态和迟到 generation 回调，再用有界、
+  脱敏、低频诊断与测试补真实缺口；RA5c 后续处理 VOD 续签、断网/休眠恢复、不同长度音频和长时播放。

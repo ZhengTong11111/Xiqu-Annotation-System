@@ -6,6 +6,11 @@ import type {
   ResourceEntry,
 } from "@xiqu/shared";
 import type { PlatformClient } from "../api/platformClient";
+import {
+  adjustMediaAudioTrackOffsetDraft,
+  formatMediaAudioTrackOffsetDraft,
+  parseMediaAudioTrackOffsetSeconds,
+} from "./mediaAudioTrackOffset";
 
 export type ExternalTrackKind = Exclude<MediaAudioTrackKind, "original">;
 
@@ -109,7 +114,7 @@ export function useMediaAudioTrackManager(options: Options) {
     setDraft({
       name: selectedTrack.name,
       kind: selectedTrack.kind,
-      offsetSeconds: String(selectedTrack.offsetSeconds),
+      offsetSeconds: formatMediaAudioTrackOffsetDraft(selectedTrack.offsetSeconds),
       enabled: selectedTrack.enabled,
     });
   }, [selectedTrack]);
@@ -150,7 +155,7 @@ export function useMediaAudioTrackManager(options: Options) {
 
   async function createTrack() {
     if (!newTrackDraft) return false;
-    const offsetSeconds = parseOffsetSeconds(newTrackDraft.offsetSeconds);
+    const offsetSeconds = parseMediaAudioTrackOffsetSeconds(newTrackDraft.offsetSeconds);
     if (!newTrackDraft.name.trim() || offsetSeconds === null) {
       setError("请填写音轨名称和有效的时间偏移。");
       return false;
@@ -183,7 +188,7 @@ export function useMediaAudioTrackManager(options: Options) {
 
   async function saveSelectedTrack() {
     if (!selectedTrack || selectedTrack.kind === "original" || !draft) return false;
-    const offsetSeconds = parseOffsetSeconds(draft.offsetSeconds);
+    const offsetSeconds = parseMediaAudioTrackOffsetSeconds(draft.offsetSeconds);
     if (!draft.name.trim() || offsetSeconds === null) {
       setError("请填写音轨名称和有效的时间偏移。");
       return false;
@@ -290,6 +295,18 @@ export function useMediaAudioTrackManager(options: Options) {
     updateNewTrackDraft: (next: Partial<TrackDraft>) => {
       setNewTrackDraft((current) => current ? { ...current, ...next } : current);
     },
+    adjustDraftOffset: (deltaMilliseconds: number) => {
+      setDraft((current) => adjustTrackDraftOffset(current, deltaMilliseconds));
+    },
+    adjustNewTrackOffset: (deltaMilliseconds: number) => {
+      setNewTrackDraft((current) => adjustTrackDraftOffset(current, deltaMilliseconds));
+    },
+    resetDraftOffset: () => {
+      setDraft((current) => current ? { ...current, offsetSeconds: "0" } : current);
+    },
+    resetNewTrackOffset: () => {
+      setNewTrackDraft((current) => current ? { ...current, offsetSeconds: "0" } : current);
+    },
     createTrack,
     saveSelectedTrack,
     moveSelectedTrack,
@@ -297,10 +314,17 @@ export function useMediaAudioTrackManager(options: Options) {
   };
 }
 
-function parseOffsetSeconds(value: string) {
-  if (!value.trim()) return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && Math.abs(parsed) <= 86_400 ? parsed : null;
+function adjustTrackDraftOffset<T extends TrackDraft>(
+  current: T | null,
+  deltaMilliseconds: number,
+) {
+  if (!current) return current;
+  const nextOffset = adjustMediaAudioTrackOffsetDraft(
+    current.offsetSeconds,
+    deltaMilliseconds,
+  );
+  // 非法草稿和越界步进保持原值，不能把用户输入静默重置为零。
+  return nextOffset === null ? current : { ...current, offsetSeconds: nextOffset };
 }
 
 function describeError(error: unknown, fallback: string) {

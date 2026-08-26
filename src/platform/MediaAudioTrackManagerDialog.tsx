@@ -8,6 +8,7 @@ import {
   FileAudio,
   Headphones,
   LoaderCircle,
+  RotateCcw,
   Save,
   Trash2,
   X,
@@ -18,6 +19,11 @@ import { getAudioTrackKindLabel } from "./platformAudioTrackSelection";
 import { AnnotationMediaBindingDialog } from "./AnnotationMediaBindingDialog";
 import { isMediaAudioTrackSource } from "./mediaAudioTrackSourcePolicy";
 import { AliyunVodAudioRenditionDialog } from "./AliyunVodAudioRenditionDialog";
+import {
+  adjustMediaAudioTrackOffsetDraft,
+  describeMediaAudioTrackOffset,
+  parseMediaAudioTrackOffsetSeconds,
+} from "./mediaAudioTrackOffset";
 import {
   type ExternalTrackKind,
   type NewTrackDraft,
@@ -176,6 +182,8 @@ export function MediaAudioTrackManagerDialog(props: Props) {
                     draft={manager.newTrackDraft}
                     disabled={manager.interactionBusy}
                     onChange={manager.updateNewTrackDraft}
+                    onOffsetAdjust={manager.adjustNewTrackOffset}
+                    onOffsetReset={manager.resetNewTrackOffset}
                     onCancel={manager.cancelCreate}
                     onSave={() => void manager.createTrack()}
                     saveLabel="新增音轨"
@@ -197,6 +205,8 @@ export function MediaAudioTrackManagerDialog(props: Props) {
                     draft={manager.draft}
                     disabled={manager.interactionBusy}
                     onChange={manager.updateDraft}
+                    onOffsetAdjust={manager.adjustDraftOffset}
+                    onOffsetReset={manager.resetDraftOffset}
                     onDelete={() => setDeleteTrackId(manager.selectedTrack!.id)}
                     onSave={() => void manager.saveSelectedTrack()}
                     saveLabel="保存修改"
@@ -317,12 +327,18 @@ type TrackEditorProps = {
   disabled: boolean;
   saveLabel: string;
   onChange: (next: Partial<TrackDraft>) => void;
+  onOffsetAdjust: (deltaMilliseconds: number) => void;
+  onOffsetReset: () => void;
   onSave: () => void;
   onCancel?: () => void;
   onDelete?: () => void;
 };
 
 function TrackEditor(props: TrackEditorProps) {
+  const offsetDescription = describeMediaAudioTrackOffset(props.draft.offsetSeconds);
+  const parsedOffset = parseMediaAudioTrackOffsetSeconds(props.draft.offsetSeconds);
+  const offsetSteps = [-10, -1, 1, 10] as const;
+
   return (
     <div className="media-audio-track-form">
       <div className="media-audio-track-form-heading">
@@ -363,18 +379,61 @@ function TrackEditor(props: TrackEditorProps) {
           ))}
         </select>
       </label>
-      <label>
+      <label className="media-audio-offset-field">
         <span>同步偏移（秒）</span>
-        <input
-          type="number"
-          min={-86_400}
-          max={86_400}
-          step="0.01"
-          value={props.draft.offsetSeconds}
-          disabled={props.disabled}
-          onChange={(event) => props.onChange({ offsetSeconds: event.target.value })}
-        />
-        <small>正值表示音频相对视频延后，负值表示提前。</small>
+        <div className="media-audio-offset-input">
+          <input
+            type="number"
+            min={-86_400}
+            max={86_400}
+            step="0.001"
+            value={props.draft.offsetSeconds}
+            disabled={props.disabled}
+            onChange={(event) => props.onChange({ offsetSeconds: event.target.value })}
+          />
+          <span aria-hidden="true">s</span>
+        </div>
+        <div className="media-audio-offset-stepper" aria-label="毫秒偏移校准">
+          {offsetSteps.slice(0, 2).map((delta) => (
+            <button
+              key={delta}
+              type="button"
+              disabled={
+                props.disabled ||
+                adjustMediaAudioTrackOffsetDraft(props.draft.offsetSeconds, delta) === null
+              }
+              onClick={() => props.onOffsetAdjust(delta)}
+            >
+              {delta} ms
+            </button>
+          ))}
+          <button
+            type="button"
+            className="media-audio-offset-reset"
+            title="偏移归零"
+            aria-label="偏移归零"
+            disabled={props.disabled || parsedOffset === 0}
+            onClick={props.onOffsetReset}
+          >
+            <RotateCcw size={13} />
+          </button>
+          {offsetSteps.slice(2).map((delta) => (
+            <button
+              key={delta}
+              type="button"
+              disabled={
+                props.disabled ||
+                adjustMediaAudioTrackOffsetDraft(props.draft.offsetSeconds, delta) === null
+              }
+              onClick={() => props.onOffsetAdjust(delta)}
+            >
+              +{delta} ms
+            </button>
+          ))}
+        </div>
+        <small className={offsetDescription ? "" : "is-invalid"}>
+          {offsetDescription ?? "请输入正负 86400 秒以内的有效偏移。"}
+        </small>
       </label>
       <label className="media-audio-track-enabled-field">
         <input

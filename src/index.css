@@ -2371,6 +2371,62 @@ select {
   font-size: 11px;
 }
 
+.media-audio-offset-input {
+  position: relative;
+}
+
+.media-audio-offset-input input {
+  padding-right: 30px;
+}
+
+.media-audio-offset-input > span {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  color: #7b8797;
+  font-size: 11px;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.media-audio-offset-stepper {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.media-audio-offset-stepper button {
+  min-width: 0;
+  height: 28px;
+  padding: 0 5px;
+  color: #40546d;
+  font-size: 11px;
+  background: #f7f9fc;
+  border: 1px solid #cfd8e3;
+  border-radius: 4px;
+}
+
+.media-audio-offset-stepper button:hover:not(:disabled) {
+  color: #245f91;
+  background: #eef5fb;
+  border-color: #94b8d7;
+}
+
+.media-audio-offset-stepper button:disabled {
+  color: #a5afbb;
+  cursor: not-allowed;
+}
+
+.media-audio-offset-stepper .media-audio-offset-reset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.media-audio-offset-field small.is-invalid {
+  color: #b0444b;
+}
+
 .media-audio-track-enabled-field {
   display: flex;
   align-items: center;
