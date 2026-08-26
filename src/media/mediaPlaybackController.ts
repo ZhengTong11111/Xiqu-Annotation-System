@@ -20,6 +20,7 @@ export interface MediaPlaybackBackend {
   setPlaybackRate(rate: number): void;
   setVolume(volume: number): void;
   setMuted(muted: boolean): void;
+  recoverAfterInterruption?(): Promise<void>;
   dispose(): void;
 }
 

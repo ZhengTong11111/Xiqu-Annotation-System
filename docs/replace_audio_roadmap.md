@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁、RA4a-RA4c2、RA5a-RA5b 及 RA5c1 代码已完成；RA3 多环境听觉验收延期，当前推进 RA5c2
+> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁、RA4a-RA4c2 及 RA5 代码已完成；RA3 多环境听觉验收延期，当前推进 RA6
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -62,7 +62,11 @@
 - **RA5c1 已完成（2026-08-26）**：原生/VOD 控件与主视频自然结束统一回写组合 runtime；错误态嵌套 pause
   返回最终有效播放事实，UI 不会误显示播放中。短音轨 before/playable/after/invalid 区域按代际观察，连续采样
   只在跨边界时 pause，seek 返回可播区仍会恢复。
-- 下一阶段是 **RA5c2 VOD 续签、网络/页面恢复与长时门禁**。public/生产尚未部署 RA4c2；RA6 rollout 前必须先部署
+- **RA5c2 代码已完成（2026-08-26）**：VOD 后台续签失败保留旧播放器并按 5/15/30/60 秒有界退避；真实
+  player error 先进入 buffering，以 1/3/10/30 秒有限预算单飞恢复，耗尽后才报告一次致命错误。online、pageshow
+  和页面重新可见会唤醒同一主从恢复入口；恢复前冻结命令/来源代际，期间后发 pause/play/seek、切轨或切文件
+  始终优先。分离预览监听实际 ownerDocument，关闭窗口或销毁来源会取消续签任务。
+- 下一阶段是 **RA6 迁移收口与延期验收**。public/生产尚未部署 RA4c2；rollout 前必须先部署
   `d615add` 完成 RA4c1 dry-run/execute，再部署 destructive release，不能直接跨过两版本门禁。
 
 ## 1. 目标重新定义
@@ -1063,23 +1067,26 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 播放专项 58/58，覆盖 controls、命令事件重入、错误态、自然结束、短音轨边界和返回可播区；
 - 音轨 7/7+23/23、分析 38/38、完整 build 与静态检查通过；浏览器验收按用户要求跳过。
 
-##### RA5c2：VOD 续签、网络/页面恢复与长时门禁（下一阶段）
+##### RA5c2：VOD 续签、网络/页面恢复与长时门禁（代码已完成，2026-08-26）
 
-**改动范围**
+**已完成**
 
-- VOD 后台续签失败不提前销毁仍可用旧实例，并以有界退避重试；
-- 播放器 error 先尝试单飞凭据恢复，只有确定失败才进入致命错误；
-- online、pageshow 和页面重新可见时触发同一可测试恢复入口；
-- 系统休眠/唤醒后重新核对主从时间并保持最新用户播放意图；
-- detached window 与主编辑器生命周期一致性；
-- 30 分钟以上人工与自动化稳定性验收。
+- VOD 后台续签失败不提前销毁仍可用旧实例，按 `5s -> 15s -> 30s -> 60s` 退避并在最后一级持续重试；
+- 播放器 error 先进入 buffering，再按 `1s -> 3s -> 10s -> 30s` 有限预算单飞刷新，预算耗尽后只发一次致命错误；
+- 正常续签、后台 retry 和播放器恢复共用一个 scheduler owner 与一个 refresh single-flight，dispose 同时取消
+  timer 并 abort 会话请求；
+- online、pageshow 和页面重新可见触发同一恢复入口，主从 backend 恢复后按视频主时钟重新核对；
+- 恢复任务冻结 command/source/session generation，期间后发 pause/play/seek、切轨、切文件或销毁始终获胜；
+- portal 分离预览监听播放器真实 `ownerDocument/defaultView`，不误绑主窗口；普通生命周期事件兼容 HTTP IP
+  与未来 HTTPS 域名。
 
-**验证**
+**自动验证**
 
-- 正负偏移和不同长度音频；
-- 30 分钟以上连续播放；
-- 慢网、断网、凭证过期、系统休眠；
-- Chrome/Safari，临时 HTTP IP 与未来 HTTPS 域名。
+- 播放专项 68/68，覆盖后台失败保留旧实例、在线立即恢复、单飞、播放器恢复成功、预算耗尽、销毁取消、
+  lifecycle listener 清理、主从恢复、恢复期间暂停和切轨；
+- 音轨 7/7+23/23、媒体分析 38/38、完整 build 与 `git diff --check` 通过；
+- 用户明确跳过本轮浏览器验证，因此 30 分钟连续播放、真实慢网/断网/休眠、Chrome/Safari、HTTP IP/HTTPS
+  与听觉同步证据仍作为 RA6 验收债务，不能由确定性测试替代。
 
 ### RA6：迁移收口与旧逻辑删除
 

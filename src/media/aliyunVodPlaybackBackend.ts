@@ -17,6 +17,7 @@ import {
   type MediaPlaybackBackendEvents,
   type MediaPlaybackSnapshot,
 } from "./mediaPlaybackController";
+import { getVodSessionRefreshRetryDelay } from "./vodSessionRefreshPolicy";
 
 const VOD_SEEK_EPSILON_SECONDS = 1 / 30;
 const VOD_SEEK_TIMEOUT_MS = 12_000;
@@ -33,6 +34,7 @@ export type AliyunVodPlaybackBackendOptions = {
   events: MediaPlaybackBackendEvents;
   loadFactory?: () => Promise<AliplayerConstructor>;
   now?: () => number;
+  scheduleRefresh?: (callback: () => void, delayMs: number) => () => void;
 };
 
 export type AliyunVodRuntimePlaybackSession =
@@ -60,7 +62,12 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
   private disposed = false;
   private generation = 0;
   private refreshPromise: Promise<void> | null = null;
-  private refreshTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  private cancelRefreshSchedule: (() => void) | null = null;
+  private sessionRefreshAtMilliseconds: number | null = null;
+  private backgroundRefreshFailedAttempts = 0;
+  private playerRecoveryFailedAttempts = 0;
+  private playerRecoveryActive = false;
+  private playerRecoveryPromise: Promise<void> | null = null;
   private readonly sessionRequestAbortControllers = new Set<AbortController>();
   private pendingSeek: PendingSeek | null = null;
   private readyPromise: Promise<void>;
@@ -78,10 +85,15 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
 
   private readonly loadFactory: () => Promise<AliplayerConstructor>;
   private readonly now: () => number;
+  private readonly scheduleRefresh: (
+    callback: () => void,
+    delayMs: number,
+  ) => () => void;
 
   constructor(private readonly options: AliyunVodPlaybackBackendOptions) {
     this.loadFactory = options.loadFactory ?? loadAliplayerSdk;
     this.now = options.now ?? Date.now;
+    this.scheduleRefresh = options.scheduleRefresh ?? defaultScheduleRefresh;
     // 初次加载由组件状态消费，必须在构造时附加拒绝处理，避免“尚未点击播放”时出现未处理 Promise。
     this.readyPromise = this.rebuildPlayer({ preservePlayback: false }).catch(() => undefined);
   }
@@ -160,7 +172,8 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     if (this.disposed) return;
     this.disposed = true;
     this.generation += 1;
-    this.clearRefreshTimer();
+    this.playerRecoveryActive = false;
+    this.clearRefreshSchedule();
     // 切换文件或音轨时真正终止仍在等待的会话请求，不能只依赖 generation 忽略迟到结果。
     for (const controller of this.sessionRequestAbortControllers) controller.abort();
     this.sessionRequestAbortControllers.clear();
@@ -183,6 +196,26 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     // 刷新失败时旧实例仍在；命令等待刷新收束即可，不能让 readyPromise 永久保持 rejected。
     this.readyPromise = refresh.catch(() => undefined);
     return refresh;
+  }
+
+  /** 页面从断网、后台或系统休眠恢复时，只在凭据需要更新时唤醒同一刷新单飞。 */
+  async recoverAfterInterruption() {
+    this.assertActive();
+    if (this.playerRecoveryActive) {
+      this.clearRefreshSchedule();
+      await this.runPlayerRecoveryAttempt();
+      return;
+    }
+    const refreshDue = this.sessionRefreshAtMilliseconds !== null &&
+      this.now() >= this.sessionRefreshAtMilliseconds;
+    if (!refreshDue && !this.lastPreparationError) return;
+    this.clearRefreshSchedule();
+    try {
+      await this.refreshSession();
+    } catch (error) {
+      if (!this.player) throw error;
+      this.scheduleBackgroundRefreshRetry();
+    }
   }
 
   private async rebuildPlayer({ preservePlayback }: { preservePlayback: boolean }) {
@@ -215,7 +248,8 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
           ? error.message
           : "无法准备阿里云 VOD 播放会话。";
         this.lastPreparationError = new Error(message);
-        this.options.events.onError(message);
+        // 后台续签失败时旧实例仍可播放；只有初次准备或已无实例才进入致命错误通道。
+        if (!preservePlayback || !this.player) this.options.events.onError(message);
       }
       throw this.lastPreparationError ?? new Error("无法准备阿里云 VOD 播放会话。");
     } finally {
@@ -225,7 +259,7 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
 
     // 新凭据成功到手后才切断旧实例，避免定时刷新期间因短暂网络延迟提前黑屏。
     const generation = ++this.generation;
-    this.clearRefreshTimer();
+    this.clearRefreshSchedule();
     this.rejectPendingSeek(new MediaPlaybackCommandCancelledError("阿里云媒体会话正在刷新。"));
     this.disposePlayer();
     this.updateSnapshot({ ready: false, paused: true, ended: false });
@@ -344,10 +378,7 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     player.on("error", () => {
       if (!this.isCurrentPlayer(player, generation)) return;
       this.rejectPendingSeek(new Error("阿里云媒体播放失败。"));
-      this.options.events.onError("阿里云媒体播放失败，正在尝试刷新播放凭据。");
-      void this.refreshSession().catch(() => {
-        if (!this.disposed) this.options.events.onError("阿里云媒体播放失败，请重试。");
-      });
+      this.startPlayerErrorRecovery();
     });
   }
 
@@ -384,14 +415,80 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
   private scheduleSessionRefresh(session: AliyunVodRuntimePlaybackSession) {
     const expiresAt = Date.parse(session.expiresAt);
     if (!Number.isFinite(expiresAt)) return;
+    this.backgroundRefreshFailedAttempts = 0;
     const delay = Math.max(
       VOD_MIN_SESSION_LIFETIME_MS,
       expiresAt - this.now() - VOD_SESSION_REFRESH_AHEAD_MS,
     );
-    this.refreshTimer = globalThis.setTimeout(() => {
-      this.refreshTimer = null;
-      void this.refreshSession().catch(() => undefined);
+    this.sessionRefreshAtMilliseconds = this.now() + delay;
+    this.scheduleRefreshTask(() => {
+      void this.runBackgroundSessionRefresh();
     }, delay);
+  }
+
+  private async runBackgroundSessionRefresh() {
+    try {
+      await this.refreshSession();
+    } catch {
+      if (!this.disposed && this.player && !this.playerRecoveryActive) {
+        this.scheduleBackgroundRefreshRetry();
+      }
+    }
+  }
+
+  private scheduleBackgroundRefreshRetry() {
+    this.backgroundRefreshFailedAttempts += 1;
+    const delay = getVodSessionRefreshRetryDelay(
+      "background",
+      this.backgroundRefreshFailedAttempts,
+    );
+    if (delay === null) return;
+    this.sessionRefreshAtMilliseconds = this.now();
+    this.scheduleRefreshTask(() => {
+      void this.runBackgroundSessionRefresh();
+    }, delay);
+  }
+
+  private startPlayerErrorRecovery() {
+    if (this.playerRecoveryActive || this.disposed) return;
+    this.playerRecoveryActive = true;
+    this.playerRecoveryFailedAttempts = 0;
+    this.clearRefreshSchedule();
+    this.options.events.onBufferingChange?.(true);
+    void this.runPlayerRecoveryAttempt();
+  }
+
+  private runPlayerRecoveryAttempt() {
+    if (this.playerRecoveryPromise) return this.playerRecoveryPromise;
+    let attempt: Promise<void>;
+    attempt = this.refreshSession()
+      .then(() => {
+        if (this.disposed || !this.playerRecoveryActive) return;
+        this.playerRecoveryActive = false;
+        this.playerRecoveryFailedAttempts = 0;
+        this.options.events.onBufferingChange?.(false);
+      })
+      .catch(() => {
+        if (this.disposed || !this.playerRecoveryActive) return;
+        this.playerRecoveryFailedAttempts += 1;
+        const delay = getVodSessionRefreshRetryDelay(
+          "player_recovery",
+          this.playerRecoveryFailedAttempts,
+        );
+        if (delay === null) {
+          this.playerRecoveryActive = false;
+          this.options.events.onError("阿里云媒体播放失败，请重试。");
+          return;
+        }
+        this.scheduleRefreshTask(() => {
+          void this.runPlayerRecoveryAttempt();
+        }, delay);
+      })
+      .finally(() => {
+        if (this.playerRecoveryPromise === attempt) this.playerRecoveryPromise = null;
+      });
+    this.playerRecoveryPromise = attempt;
+    return attempt;
   }
 
   private validateSession(session: AliyunVodRuntimePlaybackSession) {
@@ -438,10 +535,17 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     if (changed) this.options.events.onPlayStateChange(playing);
   }
 
-  private clearRefreshTimer() {
-    if (this.refreshTimer === null) return;
-    globalThis.clearTimeout(this.refreshTimer);
-    this.refreshTimer = null;
+  private scheduleRefreshTask(callback: () => void, delayMs: number) {
+    this.clearRefreshSchedule();
+    this.cancelRefreshSchedule = this.scheduleRefresh(() => {
+      this.cancelRefreshSchedule = null;
+      callback();
+    }, delayMs);
+  }
+
+  private clearRefreshSchedule() {
+    this.cancelRefreshSchedule?.();
+    this.cancelRefreshSchedule = null;
   }
 
   private disposePlayer() {
@@ -478,6 +582,11 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
   private assertActive() {
     if (this.disposed) throw new Error("阿里云媒体已不可用。");
   }
+}
+
+function defaultScheduleRefresh(callback: () => void, delayMs: number) {
+  const timer = globalThis.setTimeout(callback, delayMs);
+  return () => globalThis.clearTimeout(timer);
 }
 
 function isSecureHttpsUrl(value: string) {

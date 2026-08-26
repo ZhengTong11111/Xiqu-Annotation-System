@@ -24,6 +24,8 @@ class FakeBackend implements MediaPlaybackBackend {
   muted = false;
   seekBlocker: Promise<void> | null = null;
   seekError: Error | null = null;
+  recoverBlocker: Promise<void> | null = null;
+  recoverCount = 0;
   playStateListener: ((playing: boolean) => void) | null = null;
 
   constructor(snapshot: Partial<MediaPlaybackSnapshot> = {}) {
@@ -58,6 +60,10 @@ class FakeBackend implements MediaPlaybackBackend {
   setPlaybackRate(rate: number) { this.playbackRate = rate; }
   setVolume(volume: number) { this.volume = volume; }
   setMuted(muted: boolean) { this.muted = muted; }
+  async recoverAfterInterruption() {
+    this.recoverCount += 1;
+    if (this.recoverBlocker) await this.recoverBlocker;
+  }
   dispose() { this.disposeCount += 1; }
 }
 
@@ -604,6 +610,78 @@ test("主来源卸载会取消准备、销毁主从 backend 并停止漂移", as
   assert.equal(external.disposeCount, 1);
   assert.ok(driftCallback && harness.stoppedDriftCallbacks.has(driftCallback));
   assert.equal(harness.runtime.getSnapshot().ready, false);
+});
+
+test("页面恢复保持单飞并在完成后按主时钟对齐主从音频", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 18, paused: false });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(externalSelection(source("recovery", 2)));
+  const external = new FakeBackend({ currentTime: 4, duration: 80, paused: true });
+  harness.pending.get("recovery")?.resolve(external);
+  await selecting;
+  external.seekTargets = [];
+  external.pause();
+
+  const first = harness.runtime.recoverAfterInterruption();
+  const second = harness.runtime.recoverAfterInterruption();
+  assert.equal(first, second);
+  await first;
+
+  assert.equal(master.recoverCount, 1);
+  assert.equal(external.recoverCount, 1);
+  assert.deepEqual(external.seekTargets, [16]);
+  assert.equal(external.snapshot.paused, false);
+});
+
+test("页面恢复等待期间用户暂停，迟到恢复不得重新播放", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 12, paused: false });
+  const recoveryGate = createDeferred();
+  master.recoverBlocker = recoveryGate.promise;
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(externalSelection(source("pause-during-recovery")));
+  const external = new FakeBackend({ currentTime: 12, paused: false });
+  harness.pending.get("pause-during-recovery")?.resolve(external);
+  await selecting;
+  external.seekTargets = [];
+
+  const recovering = harness.runtime.recoverAfterInterruption();
+  harness.runtime.pause();
+  recoveryGate.resolve();
+  await recovering;
+
+  assert.equal(master.snapshot.paused, true);
+  assert.equal(external.snapshot.paused, true);
+  assert.equal(external.playCount, 1);
+  assert.deepEqual(external.seekTargets, []);
+});
+
+test("旧来源恢复在切轨后失效，且不会阻塞新来源独立恢复", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 20, paused: false });
+  harness.runtime.attachMasterBackend(master);
+  const firstSelection = harness.runtime.selectAudio(externalSelection(source("old-recovery")));
+  const oldExternal = new FakeBackend({ currentTime: 20, paused: false });
+  const oldRecoveryGate = createDeferred();
+  oldExternal.recoverBlocker = oldRecoveryGate.promise;
+  harness.pending.get("old-recovery")?.resolve(oldExternal);
+  await firstSelection;
+
+  const oldRecovery = harness.runtime.recoverAfterInterruption();
+  const nextSelection = harness.runtime.selectAudio(externalSelection(source("new-recovery")));
+  const newExternal = new FakeBackend({ currentTime: 20, paused: false });
+  harness.pending.get("new-recovery")?.resolve(newExternal);
+  await nextSelection;
+  const newRecovery = harness.runtime.recoverAfterInterruption();
+  await newRecovery;
+  oldRecoveryGate.resolve();
+  await oldRecovery;
+
+  assert.equal(oldExternal.disposeCount, 1);
+  assert.equal(newExternal.recoverCount, 1);
+  assert.equal(newExternal.disposeCount, 0);
+  assert.equal(harness.runtime.getState().selectedTrackId, "new-recovery");
 });
 
 function flushAsyncWork() {

@@ -8013,3 +8013,53 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   服务器，也未迁移 public/生产。用户自己的 `examples_insights/tutorial.md` 未被改写或暂存。
 - **待推进**：RA5c2 修复 VOD 背景刷新失败无重试、外部 VOD error 过早触发致命销毁的问题，增加 online/
   pageshow/visibility 恢复和长时自动门禁；RA6 再完成生产迁移与人工验收。
+
+## 2026-08-26：RA5c2 VOD 续签、网络/页面恢复与长时门禁
+
+### 续签与播放器故障恢复
+
+- 依据 RA5c1 后的真实代码重写 `CLAUDE_WORK.md`。审查确认旧实现虽然会在凭据到期前 60 秒单飞刷新，但
+  定时刷新失败后直接吞错且不再排期；preserve refresh 即使旧 player 仍可用也先报致命错误；Aliplayer
+  `error` 又在刷新前触发 owner 销毁。短暂断网因此可能把可继续播放的实例过早丢弃，恢复网络后也没有统一
+  唤醒入口。
+- `AliyunVodPlaybackBackend` 现在只有一个可取消的 refresh scheduler 和一个 `refreshSession()` single-flight。
+  后台续签失败且旧实例仍存在时不发 fatal、不销毁 player，按 `5s -> 15s -> 30s -> 60s` 退避并在最后一级
+  持续重试；新凭据成功取得后才替换实例、恢复时间/倍率/音量/静音并按新 expiresAt 重新排期。
+- 真实播放器 `error` 不再“先报错、再尝试刷新”，而是先发 `buffering=true`，立即刷新并按
+  `1s -> 3s -> 10s -> 30s` 的有限预算继续尝试。成功才发 `buffering=false` 交给组合 runtime 重对齐；第五次
+  失败才发一个稳定致命错误。初次加载失败或已经没有旧 player 时仍立即进入既有错误 UI，没有把真实初始化
+  错误误当成后台可恢复故障。
+- 重试表抽成无副作用的 `vodSessionRefreshPolicy`，没有引入任务队列或新依赖。dispose 会取消正常续签、后台
+  retry 和播放器恢复 timer，并 abort 所有仍在等待的会话请求；URL、PlayAuth、License、JobId、AccessKey、
+  provider 原始错误和响应均未进入日志或持久状态。
+
+### 页面恢复、并发命令与分离窗口
+
+- `MediaPlaybackBackend` 增加可选的 interruption recovery 合同；native backend 无需空实现，VOD 只在进入
+  refresh-ahead、最近刷新失败或播放器恢复中时行动。组合 runtime 将主媒体和外部音轨恢复收口为一个单飞
+  Promise，完成后仍由视频主时钟执行同一对齐逻辑。
+- 自审补上恢复竞态：command generation 现在在任何网络等待前冻结，pause/play/seek 在恢复期间发生会让旧
+  后处理直接失效；切换音轨、主媒体、文件或销毁会推进独立 recovery generation 并释放 Promise 槽位。旧
+  Promise 可自行收束，但不能阻塞新会话恢复、seek 新音轨或重新播放旧来源。
+- 新增 `mediaPlaybackLifecycle`，只把 `online`、`pageshow` 和 `visibilitychange -> visible` 合并为恢复提示。
+  这些事件不依赖安全上下文，兼容当前无域名 HTTP IP 和未来 HTTPS。VideoPlayer 监听实际渲染节点的
+  `ownerDocument/defaultView`，因此 portal 分离预览不会误用主窗口；cleanup 会移除全部 listener。
+- 本轮没有修改主时钟、40/150 ms 漂移阈值、300 ms 采样、音轨偏移、分析 run/assets、服务端 PlayAuth/License
+  签发、数据库或时间轴。静态审查也未发现新增的 clipboard、File System Access、service worker、camera、
+  Notification、SharedArrayBuffer 或直接浏览器 `crypto.randomUUID()` 等 HTTP 安全上下文风险。
+
+### 测试、自审与阶段状态
+
+- `npm run test:media-playback` 通过 68/68：覆盖正常刷新单飞、后台失败保留旧实例、5 秒退避、online 立即
+  恢复、播放器 error 重复事件单飞、成功恢复、有限预算耗尽、dispose 取消、listener 注册/清理、主从恢复、
+  恢复期间暂停以及旧来源恢复与新切轨隔离。
+- `npm run test:media-audio-tracks` 通过 shared 7/7、frontend 23/23；`npm run test:media-analysis` 38/38；完整
+  Prisma guard、shared、document-model、Web/API build 和 `git diff --check` 通过。只保留既有 Vite 主 chunk
+  体积提示；没有新增依赖、debug console、第二个 refresh timer 或重复 lifecycle owner。
+- **已完成**：RA5c2 代码、确定性重试/生命周期门禁、竞态修复、HTTP/HTTPS API 审计、AGENTS 与两份路线图
+  更新。用户自己的 `examples_insights/tutorial.md` 修改未被改写、暂存或提交。
+- **未执行**：用户明确要求跳过本轮浏览器验证；没有声称完成真实 30 分钟播放、慢网/断网、系统休眠、
+  Chrome/Safari、HTTP IP/HTTPS 或听觉同步验收，也未部署或迁移 public/生产数据库。
+- **待推进**：RA6 先在经校验候选库演练并保存 RA4c1 -> RA4c2 有限报告，再按 additive 工具 release、
+  `blockedCount=0 + createTrackCount=0`、destructive release 的顺序推进目标数据库；最后补延期浏览器/听觉/压力
+  验收并静态清除旧接口与字段。不得在同一未验证发布中直接跨过两版本门禁。

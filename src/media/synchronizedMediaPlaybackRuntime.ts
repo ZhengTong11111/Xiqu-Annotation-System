@@ -61,6 +61,8 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
   private desiredSource: ExternalAudioPlaybackSource | null = null;
   private prepareAbortController: AbortController | null = null;
   private preparePromise: Promise<void> | null = null;
+  private interruptionRecoveryPromise: Promise<void> | null = null;
+  private interruptionRecoveryGeneration = 0;
   private stopDriftSample: (() => void) | null = null;
   private driftSyncPromise: Promise<void> | null = null;
   private driftObservation: DriftObservationState = EMPTY_DRIFT_OBSERVATION;
@@ -183,10 +185,70 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     return false;
   }
 
+  /** online/pageshow/visible 共用这一单飞入口，恢复完成前用户的新命令和切轨始终优先。 */
+  recoverAfterInterruption() {
+    if (this.disposed || !this.masterBackend) return Promise.resolve();
+    if (this.interruptionRecoveryPromise) return this.interruptionRecoveryPromise;
+    const recoveryGeneration = this.interruptionRecoveryGeneration;
+    const recovery = this.performInterruptionRecovery(recoveryGeneration).finally(() => {
+      if (this.interruptionRecoveryPromise === recovery) {
+        this.interruptionRecoveryPromise = null;
+      }
+    });
+    this.interruptionRecoveryPromise = recovery;
+    return recovery;
+  }
+
+  private async performInterruptionRecovery(recoveryGeneration: number) {
+    const master = this.masterBackend;
+    if (!master) return;
+    // 命令版本必须在任何网络等待前冻结；恢复期间发生的 pause/play/seek 都应让旧后处理直接失效。
+    const commandGeneration = this.commandGeneration;
+    await master.recoverAfterInterruption?.();
+    if (
+      !this.isCurrentInterruptionRecovery(recoveryGeneration) ||
+      !this.isCurrentCommand(commandGeneration) ||
+      this.masterBackend !== master
+    ) {
+      return;
+    }
+
+    const external = this.externalBackend;
+    const source = this.desiredSource;
+    const sourceGeneration = this.state.sourceGeneration;
+    if (!external || !source) return;
+    await external.recoverAfterInterruption?.();
+    if (
+      !this.isCurrentInterruptionRecovery(recoveryGeneration) ||
+      !this.isCurrentCommand(commandGeneration) ||
+      !this.isCurrentSource(source, sourceGeneration) ||
+      this.externalBackend !== external ||
+      this.state.phase === "buffering_external"
+    ) {
+      return;
+    }
+
+    const shouldPlay = this.state.desiredPlayback === "playing" &&
+      !master.getSnapshot().ended;
+    if (shouldPlay && master.getSnapshot().paused) {
+      await master.play();
+      if (!this.isCurrentCommand(commandGeneration) || this.state.desiredPlayback !== "playing") {
+        master.pause();
+        return;
+      }
+    }
+    if (!this.isCurrentCommand(commandGeneration)) return;
+    await this.resynchronizeExternal(sourceGeneration, shouldPlay);
+    if (shouldPlay && this.isCurrentSource(source, sourceGeneration)) {
+      this.startDriftSampling();
+    }
+  }
+
   async selectAudio(selection: SynchronizedAudioSelection) {
     this.assertActive();
     if (selection.type === "original") {
       if (this.state.phase === "original" && !this.desiredSource) return;
+      this.invalidateInterruptionRecovery();
       this.commandGeneration += 1;
       this.activateOriginal();
       return;
@@ -197,6 +259,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
         this.state.selectedTrackId === selection.trackId &&
         this.state.errorCode === selection.errorCode
       ) return;
+      this.invalidateInterruptionRecovery();
       this.commandGeneration += 1;
       this.enterUnavailableSelection(selection.trackId, selection.errorCode);
       return;
@@ -207,6 +270,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
         this.state.selectedTrackId === null &&
         this.state.errorCode === selection.errorCode
       ) return;
+      this.invalidateInterruptionRecovery();
       this.commandGeneration += 1;
       this.enterBlockedSelection(selection.errorCode);
       return;
@@ -219,6 +283,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
       if (!this.masterBackend?.getSnapshot().ready) return;
       return this.startPreparation(source, this.state.sourceGeneration);
     }
+    this.invalidateInterruptionRecovery();
     this.commandGeneration += 1;
     this.desiredSource = source;
     this.cancelExternalPreparation();
@@ -304,6 +369,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.invalidateInterruptionRecovery();
     this.commandGeneration += 1;
     this.cancelExternalPreparation();
     this.disposeExternalBackend();
@@ -752,6 +818,8 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
 
   /** 主来源替换和卸载共用同一资源释放边界，attach 只在新来源安装后广播一次重置状态。 */
   private releaseMediaSession(resetState: boolean) {
+    // 旧页面恢复任务不能阻塞新媒体会话；其异步结果仍靠 generation 和 backend 身份双重隔离。
+    this.invalidateInterruptionRecovery();
     const hasSession = Boolean(
       this.masterBackend ||
       this.desiredSource ||
@@ -779,6 +847,15 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
 
   private isCurrentCommand(generation: number) {
     return !this.disposed && generation === this.commandGeneration;
+  }
+
+  private invalidateInterruptionRecovery() {
+    this.interruptionRecoveryGeneration += 1;
+    this.interruptionRecoveryPromise = null;
+  }
+
+  private isCurrentInterruptionRecovery(generation: number) {
+    return !this.disposed && generation === this.interruptionRecoveryGeneration;
   }
 
   private requireMasterBackend() {

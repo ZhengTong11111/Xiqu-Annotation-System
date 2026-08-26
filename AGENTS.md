@@ -581,6 +581,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     HTML media element or supplier player
   - external audio is optional and defaults to original sound. Master source/retry effects must reapply the current selection
     intent before ready, while same-source selection stays idempotent across layout/passive effects
+  - online, pageshow, and visible-page recovery listeners must bind to the rendered player's real `ownerDocument/defaultView`,
+    not an assumed global window. This keeps portal-based detached preview windows and the main editor on the same lifecycle
+    contract; these ordinary events work on the temporary HTTP IP as well as the future HTTPS domain
 - `src/media/mediaPlaybackController.ts`
   - App-facing playback contract and latest-command ordering; all App media commands must pass through this boundary
   - expected source-switch/preview cancellation is not a user error, while play/seek failures are contained by the player UI
@@ -589,6 +592,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     expected `video | audio` kind and retains rate/volume/mute across short-session refresh
   - buffering is an event to the synchronized composite owner. App and Timeline must never operate the hidden audio element or
     supplier player directly, and dispose/source generation must make all late events inert
+  - VOD refresh has one single-flight request and one scheduler owner. Background credential renewal keeps an existing player
+    alive and retries at bounded 5/15/30/60-second delays without emitting a fatal UI error; an actual player error enters
+    buffering and uses the finite 1/3/10/30-second recovery budget, reporting one fatal error only after exhaustion. Dispose
+    must abort requests and cancel both normal renewal and retry schedules
 - `packages/shared/src/mediaAudioTracks.ts` + `packages/shared/src/mediaAudioPlaybackSession.ts` +
   `packages/shared/src/mediaAnalysisIdentity.ts`
   - strict platform contracts for a primary media's ordered audio-track set, shared annotation-file default preference,
@@ -653,6 +660,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     boundary returns the effective state so an error-state nested pause cannot leave React displaying a false playing state
   - external before-start/playable/after-end/invalid observations are generation-local. Sampling performs boundary pause only
     when the region changes, while explicit seek/alignment remains authoritative and can return a shorter track to playback
+  - interruption recovery is a single-flight, session-generation operation shared by online/pageshow/visible events. It may
+    wake both master and external VOD backends, but must freeze the current command generation before network waits; a later
+    pause/play/seek, source switch, master replacement, or dispose invalidates old post-recovery alignment and always wins
 - `src/platform/usePlatformAudioTrackSelection.ts` + `src/platform/platformAudioTrackSelection.ts` +
   `src/components/AudioTrackSelector.tsx`
   - own the annotation-file session's playback-option load, shared-default initialization, current listening selection, retry,
@@ -675,6 +685,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     option; missing License is a deployment error, never a reason to downgrade the SDK or reuse a stale PlayAuth
   - short-lived sessions stay memory-only; refresh is single-flight, obtains new credentials before replacing the old player,
     and generation checks reject late provider events after source switch/dispose
+  - a failed preserve-refresh must not discard or report fatal against a still-installed player. Retry delays live in the pure
+    `vodSessionRefreshPolicy.ts`; do not add a second timer, persist retry state, or log provider errors/temporary session data
   - ordinary VOD uses vid + PlayAuth, while a same-VID audio rendition uses the no-store HTTPS source with mediaType audio and
     format mp3. Both paths share the same refresh, time/rate/volume restoration, generation, and disposal logic
 - `src/components/InspectorPanel.tsx`

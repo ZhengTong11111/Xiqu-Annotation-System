@@ -16,6 +16,7 @@ import {
   type MediaPlaybackController,
   type MediaPlaybackSource,
 } from "../media/mediaPlaybackController";
+import { subscribeToMediaPlaybackRecovery } from "../media/mediaPlaybackLifecycle";
 import { NativeMediaPlaybackBackend } from "../media/nativeMediaPlaybackBackend";
 import {
   ORIGINAL_AUDIO_SELECTION,
@@ -70,6 +71,7 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
     ref,
   ) => {
     const nativeVideoRef = useRef<HTMLVideoElement>(null);
+    const playerRootRef = useRef<HTMLElement>(null);
     const synchronizedRuntimeRef = useRef<SynchronizedMediaPlaybackRuntime | null>(null);
     const animationFrameRef = useRef<number | null>(null);
     const previewSeekFrameRef = useRef<number | null>(null);
@@ -120,6 +122,21 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
       );
     }
     useImperativeHandle(ref, () => controllerRef.current as MediaPlaybackController, []);
+
+    useEffect(() => {
+      // 弹出预览通过 portal 渲染到独立窗口，恢复事件必须跟随播放器真实 ownerDocument。
+      const ownerDocument = playerRootRef.current?.ownerDocument ?? document;
+      const ownerWindow = ownerDocument.defaultView ?? window;
+      return subscribeToMediaPlaybackRecovery({
+        windowTarget: ownerWindow,
+        documentTarget: ownerDocument,
+        onRecover: () => {
+          void synchronizedRuntimeRef.current?.recoverAfterInterruption().catch(
+            reportExternalAudioSelectionError,
+          );
+        },
+      });
+    }, [isDetached]);
 
     currentTimeRef.current = currentTime;
     audioSelectionRef.current = audioSelection;
@@ -312,7 +329,7 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
     const showStatus = unavailable || viewState.status !== "ready";
 
     return (
-      <section className="panel video-panel">
+      <section ref={playerRootRef} className="panel video-panel">
         <div className="panel-header">
           <h2>视频播放器</h2>
           <div className="panel-header-actions">

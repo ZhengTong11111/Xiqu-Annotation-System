@@ -98,6 +98,47 @@ function createRenditionSession(
   };
 }
 
+type ScheduledRefreshTask = {
+  callback: () => void;
+  delayMs: number;
+  cancelled: boolean;
+};
+
+/** 测试只接管会话续签调度，不替换播放器 ready/seek 的真实微任务与超时合同。 */
+function createRefreshScheduler() {
+  const tasks: ScheduledRefreshTask[] = [];
+  return {
+    scheduleRefresh(callback: () => void, delayMs: number) {
+      const task = { callback, delayMs, cancelled: false };
+      tasks.push(task);
+      return () => {
+        task.cancelled = true;
+      };
+    },
+    pendingDelays() {
+      return tasks.filter((task) => !task.cancelled).map((task) => task.delayMs);
+    },
+    async runNext() {
+      const index = tasks.findIndex((task) => !task.cancelled);
+      assert.notEqual(index, -1, "预期存在待执行的 VOD 续签任务");
+      const [task] = tasks.splice(index, 1);
+      task?.callback();
+      await flushAsyncTasks();
+    },
+  };
+}
+
+function createSessionAt(
+  playAuth: string,
+  nowMilliseconds: number,
+  lifetimeMilliseconds = 120_000,
+) {
+  return {
+    ...createSession(playAuth),
+    expiresAt: new Date(nowMilliseconds + lifetimeMilliseconds).toISOString(),
+  };
+}
+
 test("VOD 后端映射 ready、seek、play、pause 和倍率", async () => {
   FakeAliplayer.instances = [];
   const readyDurations: number[] = [];
@@ -316,8 +357,158 @@ test("VOD 刷新失败后保留旧实例并允许继续执行播放命令", asyn
 
   assert.equal(FakeAliplayer.instances.length, 1);
   assert.equal(originalPlayer?.disposed, false);
-  assert.equal(errors.length, 1);
+  assert.equal(errors.length, 0);
   backend.dispose();
+});
+
+test("VOD 后台续签失败保留旧实例并按退避恢复", async () => {
+  FakeAliplayer.instances = [];
+  const scheduler = createRefreshScheduler();
+  const errors: string[] = [];
+  let nowMilliseconds = 0;
+  let sessionCount = 0;
+  const backend = new AliyunVodPlaybackBackend({
+    containerId: "player-background-retry",
+    expectedVideoId: "vod-1",
+    now: () => nowMilliseconds,
+    scheduleRefresh: scheduler.scheduleRefresh,
+    loadSession: async () => {
+      sessionCount += 1;
+      if (sessionCount === 2) throw new Error("测试网络暂不可用");
+      return createSessionAt(`auth-${sessionCount}`, nowMilliseconds);
+    },
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onError: (message) => errors.push(message),
+    },
+  });
+  await backend.play();
+  const originalPlayer = FakeAliplayer.instances[0];
+  assert.deepEqual(scheduler.pendingDelays(), [60_000]);
+
+  nowMilliseconds = 60_000;
+  await scheduler.runNext();
+  assert.equal(originalPlayer?.disposed, false);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(scheduler.pendingDelays(), [5_000]);
+
+  // 页面重新在线时立即消费失败状态，并取消尚未到点的旧 retry。
+  await backend.recoverAfterInterruption();
+  assert.equal(sessionCount, 3);
+  assert.equal(FakeAliplayer.instances.length, 2);
+  assert.equal(originalPlayer?.disposed, true);
+  assert.deepEqual(scheduler.pendingDelays(), [60_000]);
+  backend.dispose();
+  assert.deepEqual(scheduler.pendingDelays(), []);
+});
+
+test("VOD 播放器错误以单飞方式刷新并从 buffering 恢复", async () => {
+  FakeAliplayer.instances = [];
+  const scheduler = createRefreshScheduler();
+  const buffering: boolean[] = [];
+  const errors: string[] = [];
+  let sessionCount = 0;
+  const backend = new AliyunVodPlaybackBackend({
+    containerId: "player-error-recovery",
+    expectedVideoId: "vod-1",
+    scheduleRefresh: scheduler.scheduleRefresh,
+    loadSession: async () => createSession(`auth-${++sessionCount}`),
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onBufferingChange: (value) => buffering.push(value),
+      onError: (message) => errors.push(message),
+    },
+  });
+  await backend.play();
+  const originalPlayer = FakeAliplayer.instances[0];
+  originalPlayer?.emit("error");
+  originalPlayer?.emit("error");
+  await flushAsyncTasks();
+
+  assert.equal(sessionCount, 2);
+  assert.equal(FakeAliplayer.instances.length, 2);
+  assert.deepEqual(buffering, [true, false]);
+  assert.deepEqual(errors, []);
+  backend.dispose();
+});
+
+test("VOD 播放器错误耗尽有限恢复预算后只上报一次致命错误", async () => {
+  FakeAliplayer.instances = [];
+  const scheduler = createRefreshScheduler();
+  const buffering: boolean[] = [];
+  const errors: string[] = [];
+  let sessionCount = 0;
+  const backend = new AliyunVodPlaybackBackend({
+    containerId: "player-error-budget",
+    expectedVideoId: "vod-1",
+    scheduleRefresh: scheduler.scheduleRefresh,
+    loadSession: async () => {
+      sessionCount += 1;
+      if (sessionCount > 1) throw new Error("测试持续故障");
+      return createSession("auth-initial");
+    },
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onBufferingChange: (value) => buffering.push(value),
+      onError: (message) => errors.push(message),
+    },
+  });
+  await backend.play();
+  FakeAliplayer.instances[0]?.emit("error");
+  await flushAsyncTasks();
+  assert.deepEqual(scheduler.pendingDelays(), [1_000]);
+
+  for (const expectedNextDelay of [3_000, 10_000, 30_000]) {
+    await scheduler.runNext();
+    assert.deepEqual(scheduler.pendingDelays(), [expectedNextDelay]);
+  }
+  await scheduler.runNext();
+
+  assert.equal(sessionCount, 6);
+  assert.deepEqual(buffering, [true]);
+  assert.deepEqual(errors, ["阿里云媒体播放失败，请重试。"]);
+  assert.deepEqual(scheduler.pendingDelays(), []);
+  backend.dispose();
+});
+
+test("VOD 后端销毁会取消播放器错误留下的延迟恢复", async () => {
+  FakeAliplayer.instances = [];
+  const scheduler = createRefreshScheduler();
+  let sessionCount = 0;
+  const backend = new AliyunVodPlaybackBackend({
+    containerId: "player-error-dispose",
+    expectedVideoId: "vod-1",
+    scheduleRefresh: scheduler.scheduleRefresh,
+    loadSession: async () => {
+      sessionCount += 1;
+      if (sessionCount > 1) throw new Error("测试网络故障");
+      return createSession("auth-initial");
+    },
+    loadFactory: async () => FakeAliplayer as unknown as AliplayerConstructor,
+    events: {
+      onReady: () => undefined,
+      onTimeUpdate: () => undefined,
+      onPlayStateChange: () => undefined,
+      onError: () => undefined,
+    },
+  });
+  await backend.play();
+  FakeAliplayer.instances[0]?.emit("error");
+  await flushAsyncTasks();
+  assert.deepEqual(scheduler.pendingDelays(), [1_000]);
+
+  backend.dispose();
+  assert.deepEqual(scheduler.pendingDelays(), []);
+  assert.equal(FakeAliplayer.instances[0]?.disposed, true);
 });
 
 test("VOD 后端拒绝与当前资源不匹配的短时会话", async () => {
@@ -386,3 +577,7 @@ test("VOD 后端不向界面暴露播放器 SDK 加载错误细节", async () =>
   assert.deepEqual(errors, ["无法加载阿里云 VOD 播放器，请检查网络后重试\u3002"]);
   backend.dispose();
 });
+
+async function flushAsyncTasks() {
+  await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+}
