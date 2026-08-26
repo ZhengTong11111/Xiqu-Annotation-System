@@ -165,6 +165,15 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
       );
     }
 
+    // 主媒体控件和自然结束都可能绕过 App 命令；统一回写 runtime 才能保持替换音轨播放意图一致。
+    function handleMasterPlaybackStateChange(playing: boolean) {
+      const effectivePlaying = synchronizedRuntimeRef.current
+        ?.notifyMasterPlaybackState(playing) ?? playing;
+      callbacksRef.current.onPlayStateChange(effectivePlaying);
+      if (effectivePlaying) startFrameSync();
+      else stopFrameSync();
+    }
+
     useLayoutEffect(() => {
       const command = commandRef.current as LatestMediaPlaybackCommand;
       const synchronizedRuntime = synchronizedRuntimeRef.current as SynchronizedMediaPlaybackRuntime;
@@ -205,9 +214,7 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
           if (!isPreviewingRef.current) callbacksRef.current.onTimeUpdate(snapshot.currentTime);
         },
         onPlayStateChange: (playing: boolean) => {
-          callbacksRef.current.onPlayStateChange(playing);
-          if (playing) startFrameSync();
-          else stopFrameSync();
+          handleMasterPlaybackStateChange(playing);
         },
         onError: (message: string) => setViewState({ status: "error", message }),
       };
@@ -362,12 +369,10 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
                 }
               }}
               onPlay={() => {
-                callbacksRef.current.onPlayStateChange(true);
-                startFrameSync();
+                handleMasterPlaybackStateChange(true);
               }}
               onPause={() => {
-                callbacksRef.current.onPlayStateChange(false);
-                stopFrameSync();
+                handleMasterPlaybackStateChange(false);
               }}
               onSeeking={() => {
                 const snapshot = synchronizedRuntimeRef.current?.getSnapshot();
@@ -383,8 +388,7 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
               }}
               onEnded={() => {
                 const snapshot = synchronizedRuntimeRef.current?.getSnapshot();
-                callbacksRef.current.onPlayStateChange(false);
-                stopFrameSync();
+                handleMasterPlaybackStateChange(false);
                 if (snapshot) callbacksRef.current.onTimeUpdate(snapshot.currentTime);
               }}
               onError={() => setViewState({

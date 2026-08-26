@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁、RA4a-RA4c2 及 RA5a-RA5b 代码已完成；RA3 多环境听觉验收延期，当前推进 RA5c
+> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁、RA4a-RA4c2、RA5a-RA5b 及 RA5c1 代码已完成；RA3 多环境听觉验收延期，当前推进 RA5c2
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -59,7 +59,10 @@
 - **RA5b 已完成（2026-08-26）**：既有漂移/缓冲算法保持视频主时钟与原阈值，新增封闭、钳制、会话内的低频
   同步诊断；缓冲使用单调时钟计时，重复事件只计一次。修复 seek 等待期间用户主动暂停后，迟到同步被误判为
   非法转换的问题；旧恢复现在静默结束且不能恢复播放。
-- 下一阶段是 **RA5c 长时播放、续签与系统生命周期**。public/生产尚未部署 RA4c2；RA6 rollout 前必须先部署
+- **RA5c1 已完成（2026-08-26）**：原生/VOD 控件与主视频自然结束统一回写组合 runtime；错误态嵌套 pause
+  返回最终有效播放事实，UI 不会误显示播放中。短音轨 before/playable/after/invalid 区域按代际观察，连续采样
+  只在跨边界时 pause，seek 返回可播区仍会恢复。
+- 下一阶段是 **RA5c2 VOD 续签、网络/页面恢复与长时门禁**。public/生产尚未部署 RA4c2；RA6 rollout 前必须先部署
   `d615add` 完成 RA4c1 dry-run/execute，再部署 destructive release，不能直接跨过两版本门禁。
 
 ## 1. 目标重新定义
@@ -1043,12 +1046,31 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 音轨 shared/frontend 7/7 + 23/23、媒体分析 38/38、完整 build 与静态检查通过；
 - 用户要求跳过浏览器验证，因此 UI、真实慢网与听觉证据保留到 RA5c/RA6。
 
-#### RA5c：长时播放、续签与系统生命周期（下一阶段）
+#### RA5c：长时播放、续签与系统生命周期
+
+##### RA5c1：主媒体生命周期与不同长度音轨（已完成，2026-08-26）
+
+**已完成**
+
+- 原生 controls、Aliplayer controls 和自然 ended 统一进入 runtime 的主媒体播放事实入口；
+- runtime 自身命令产生的同步事件幂等，buffering 内部暂停保留 playing 意图，用户暂停/结束停止外轨与采样；
+- 错误态直接操作主视频会安全暂停，并把最终 false 返回 VideoPlayer，避免嵌套事件把 UI 写回播放中；
+- 外部音轨区域观察只在 before-start/playable/after-end/invalid 变化时动作，短音轨结束后不重复 pause；
+- 主时钟 seek 回可播区仍通过权威 alignment 恢复，主视频结束则清理 drift interval。
+
+**验证结果**
+
+- 播放专项 58/58，覆盖 controls、命令事件重入、错误态、自然结束、短音轨边界和返回可播区；
+- 音轨 7/7+23/23、分析 38/38、完整 build 与静态检查通过；浏览器验收按用户要求跳过。
+
+##### RA5c2：VOD 续签、网络/页面恢复与长时门禁（下一阶段）
 
 **改动范围**
 
-- 不同长度音频的结束边界与恢复；
-- VOD 会话续签、断网恢复、系统休眠/唤醒和长期播放；
+- VOD 后台续签失败不提前销毁仍可用旧实例，并以有界退避重试；
+- 播放器 error 先尝试单飞凭据恢复，只有确定失败才进入致命错误；
+- online、pageshow 和页面重新可见时触发同一可测试恢复入口；
+- 系统休眠/唤醒后重新核对主从时间并保持最新用户播放意图；
 - detached window 与主编辑器生命周期一致性；
 - 30 分钟以上人工与自动化稳定性验收。
 

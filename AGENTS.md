@@ -648,6 +648,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     provider errors, or stacks. Diagnostic callbacks are observers and must never control or delay safe playback actions
   - buffering duration uses an injectable monotonic clock. Repeated buffering events count once, and pause/source change/dispose
     clears unfinished observations. A seek completing after user pause is a normal cancelled recovery, not an invalid transition
+  - native/Aliplayer control events and natural master-media end must call the runtime's single master-play-state boundary.
+    Internal buffering pauses preserve the playing intent; user pause/end stops the external backend and drift sampler. The
+    boundary returns the effective state so an error-state nested pause cannot leave React displaying a false playing state
+  - external before-start/playable/after-end/invalid observations are generation-local. Sampling performs boundary pause only
+    when the region changes, while explicit seek/alignment remains authoritative and can return a shorter track to playback
 - `src/platform/usePlatformAudioTrackSelection.ts` + `src/platform/platformAudioTrackSelection.ts` +
   `src/components/AudioTrackSelector.tsx`
   - own the annotation-file session's playback-option load, shared-default initialization, current listening selection, retry,

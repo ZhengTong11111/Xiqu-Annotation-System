@@ -49,6 +49,7 @@ export const ORIGINAL_AUDIO_SELECTION: SynchronizedAudioSelection =
   Object.freeze({ type: "original" });
 
 type AlignmentResult = "playable" | "before_start" | "after_end";
+type ExternalTimelineObservation = AlignmentResult | "invalid_time";
 
 /**
  * 组合播放运行时让视频始终担任主时钟，并集中拥有唯一一条替换音频及其异步生命周期。
@@ -63,6 +64,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
   private stopDriftSample: (() => void) | null = null;
   private driftSyncPromise: Promise<void> | null = null;
   private driftObservation: DriftObservationState = EMPTY_DRIFT_OBSERVATION;
+  private externalTimelinePosition: ExternalTimelineObservation | null = null;
   private bufferingStartedAtMilliseconds: number | null = null;
   private state: SynchronizedPlaybackState = { ...INITIAL_SYNCHRONIZED_PLAYBACK_STATE };
   private commandGeneration = 0;
@@ -126,6 +128,59 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     if (this.externalBackend || this.preparePromise) return;
     const generation = this.state.sourceGeneration;
     void this.startPreparation(this.desiredSource, generation);
+  }
+
+  /**
+   * 原生 controls 与 Aliplayer controls 会绕过 App 命令直接改变主媒体。
+   * 这里把浏览器事实重新收口到组合 runtime，但 buffering 主动暂停仍保留原播放意图。
+   */
+  notifyMasterPlaybackState(playing: boolean): boolean {
+    if (this.disposed || !this.masterBackend) return false;
+    const masterSnapshot = this.masterBackend.getSnapshot();
+    if (playing) {
+      if (this.state.phase === "error_external") {
+        this.masterBackend.pause();
+        return false;
+      }
+      if (this.state.phase === "original") {
+        this.applyEvent({ type: "play_requested" });
+        return true;
+      }
+      if (!this.externalBackend || !this.desiredSource) {
+        this.applyEvent({ type: "play_requested" });
+        return true;
+      }
+      if (this.state.phase === "ready_paused") {
+        if (!this.applyEvent({ type: "play_requested" })) return false;
+        const generation = this.state.sourceGeneration;
+        void this.resynchronizeExternal(generation, true).catch((error) => {
+          if (!(error instanceof MediaPlaybackCommandCancelledError)) {
+            this.handleExternalFailure(
+              generation,
+              error instanceof Error ? error.message : "替换音轨重新同步失败。",
+            );
+          }
+        });
+        return true;
+      }
+      if (this.state.phase === "playing_synced") this.startDriftSampling();
+      return true;
+    }
+
+    // buffering 为同步 owner 主动暂停主视频，不能被误写成用户取消播放。
+    if (this.state.phase === "buffering_external") return false;
+    if (
+      this.state.desiredPlayback === "paused" &&
+      (this.state.phase === "original" ||
+        this.state.phase === "ready_paused" ||
+        this.state.phase === "error_external")
+    ) return false;
+    this.applyEvent({ type: "pause_requested" });
+    this.externalBackend?.pause();
+    this.stopDriftSampling();
+    this.clearExternalTimelineObservation();
+    if (masterSnapshot.ended) this.clearBufferingObservation();
+    return false;
   }
 
   async selectAudio(selection: SynchronizedAudioSelection) {
@@ -216,11 +271,13 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
   pause() {
     if (this.disposed) return;
     this.commandGeneration += 1;
+    // 先提交意图再暂停媒体，原生 pause 事件同步重入时只能读到最新 paused 状态。
+    this.applyEvent({ type: "pause_requested" });
     this.masterBackend?.pause();
     this.externalBackend?.pause();
-    this.applyEvent({ type: "pause_requested" });
     this.stopDriftSampling();
     this.clearBufferingObservation();
+    this.clearExternalTimelineObservation();
   }
 
   setPlaybackRate(rate: number) {
@@ -350,9 +407,11 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     if (mapped.status !== "playable") {
       external.pause();
       this.driftObservation = EMPTY_DRIFT_OBSERVATION;
+      this.externalTimelinePosition = mapped.status;
       return mapped.status;
     }
     await external.seek(mapped.audioTime);
+    this.externalTimelinePosition = "playable";
     return "playable";
   }
 
@@ -476,11 +535,24 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
       offsetSeconds: this.desiredSource.offsetSeconds,
       audioDuration: externalSnapshot.duration > 0 ? externalSnapshot.duration : null,
     });
-    if (mapped.status !== "playable") {
-      this.externalBackend.pause();
+    if (mapped.status === "invalid_time") {
+      if (this.externalTimelinePosition !== "invalid_time") {
+        this.externalBackend.pause();
+      }
+      this.externalTimelinePosition = "invalid_time";
       this.driftObservation = EMPTY_DRIFT_OBSERVATION;
       return;
     }
+    if (mapped.status !== "playable") {
+      // 主视频继续前进时只在首次跨入边界执行 pause，避免每 300 ms 重复写媒体元素。
+      if (this.externalTimelinePosition !== mapped.status) {
+        this.externalBackend.pause();
+      }
+      this.externalTimelinePosition = mapped.status;
+      this.driftObservation = EMPTY_DRIFT_OBSERVATION;
+      return;
+    }
+    this.externalTimelinePosition = "playable";
     const decision = classifyExternalAudioDrift({
       actualAudioTime: externalSnapshot.currentTime,
       expectedAudioTime: mapped.audioTime,
@@ -616,6 +688,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     const backend = this.externalBackend;
     this.externalBackend = null;
     this.clearBufferingObservation();
+    this.clearExternalTimelineObservation();
     backend?.pause();
     backend?.dispose();
   }
@@ -634,6 +707,10 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
 
   private clearBufferingObservation() {
     this.bufferingStartedAtMilliseconds = null;
+  }
+
+  private clearExternalTimelineObservation() {
+    this.externalTimelinePosition = null;
   }
 
   private readDiagnosticNow() {

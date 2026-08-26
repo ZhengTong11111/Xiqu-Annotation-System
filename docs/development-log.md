@@ -7973,3 +7973,43 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   未部署服务器，也未迁移 public/生产数据库。RA4c1 -> RA4c2 两版本生产门禁继续保留。
 - **待推进**：RA5c 处理不同长度音频边界、VOD 会话续签、网络中断、系统休眠/唤醒、detached window 与长时
   播放；RA6 再执行恢复候选和生产迁移、完整浏览器/听觉/压力验收与专项收口。
+
+## 2026-08-26：RA5c1 主媒体生命周期与不同长度音轨边界
+
+### 主媒体事实回写
+
+- 根据 RA5b 后的实际实现重写 `CLAUDE_WORK.md`，并把 RA5c 拆为 RA5c1 主媒体生命周期/长度边界和 RA5c2
+  VOD 续签/网络恢复。审查确认原生 video controls 与 Aliplayer controls 只更新 App `isPlaying`，没有回写组合
+  runtime；主视频自然 ended 也没有停止外部音轨和漂移 interval。这会让 UI 暂停但 runtime 仍保持 playing 意图，
+  为后续缓冲或页面恢复制造误自动播放风险。
+- `SynchronizedMediaPlaybackRuntime` 新增唯一 `notifyMasterPlaybackState()`：原声播放、外部音轨准备、已暂停外轨、
+  错误态和自然结束均复用既有状态机。runtime 自己的 `pause()` 改为先提交 paused intent，再暂停 backend，原生
+  pause 事件同步重入只能读到最新意图；重复事实保持幂等，不创建第二次 resync。
+- buffering 主动暂停主视频时 phase 已先进入 `buffering_external`，主媒体 pause 通知不会把用户意图改为 paused；
+  用户直接暂停 controls 则暂停外轨、停止采样并阻止迟到恢复。`ready_paused` 下直接用 controls 播放主视频时，
+  runtime 会按主时钟重新 seek 外轨后共同播放，而不是只播放无声画面。
+- 自审发现错误态直接点击主视频 play 会同步触发安全 pause；若 VideoPlayer 仍使用外层原始 `playing=true` 更新
+  App，嵌套 pause 结束后 UI 会与真实媒体相反。入口现返回最终有效 boolean，VideoPlayer 只使用该值更新 UI 和
+  帧循环。专项测试最初精确暴露了错误态门禁位于“无外部 backend”之后的问题，已把门禁提升到播放分支首位。
+
+### 时间区域与资源释放
+
+- runtime 新增 generation-local 的 `before_start/playable/after_end/invalid_time` 观察。显式 prepare/seek/resync
+  仍由 `alignExternalToMaster()` 每次权威操作；300 ms 普通采样只在区域变化时 pause 外轨，短音轨结束后不再
+  每轮重复写媒体元素。主时钟回到 playable 时，外轨 paused 会触发既有 forced resync 并恢复。
+- 主视频自然结束会把 intent 置 paused、暂停外轨、停止 drift interval，并清理区域/缓冲观察。区域状态在暂停、
+  切轨、失败、卸载和 dispose 时清空，不能跨来源代际。无效时间也纳入区域观察，极端坏值不会形成 pause 风暴。
+- VideoPlayer 新增一个中文注释的 helper，native `onPlay/onPause/onEnded` 和 VOD 公共事件不再分别复制判断。
+  本轮没有新增 window online/visibility listener、VOD retry、服务端接口、持久层或依赖，这些留给 RA5c2。
+
+### 测试与阶段边界
+
+- `npm run test:media-playback` 通过 58/58；新增覆盖原生/VOD controls 等价入口、runtime 命令事件重入、错误态
+  controls、buffering 内部 pause、自然 ended 清 timer、短音轨只 pause 一次以及 seek 返回可播区。
+- `npm run test:media-audio-tracks` 通过 7/7+23/23，`npm run test:media-analysis` 38/38；完整 Prisma/shared/
+  document-model/Web/API build 与 `git diff --check` 通过，仅保留既有 Vite chunk 提醒。
+- **已完成**：RA5c1 生命周期事实、事件重入顺序、自然结束释放和不同长度音轨区域观察。
+- **未执行**：用户明确跳过浏览器验证；未做真实 controls、慢网、休眠、HTTP IP/HTTPS 或 30 分钟播放，未部署
+  服务器，也未迁移 public/生产。用户自己的 `examples_insights/tutorial.md` 未被改写或暂存。
+- **待推进**：RA5c2 修复 VOD 背景刷新失败无重试、外部 VOD error 过早触发致命销毁的问题，增加 online/
+  pageshow/visibility 恢复和长时自动门禁；RA6 再完成生产迁移与人工验收。

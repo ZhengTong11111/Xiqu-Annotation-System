@@ -24,6 +24,7 @@ class FakeBackend implements MediaPlaybackBackend {
   muted = false;
   seekBlocker: Promise<void> | null = null;
   seekError: Error | null = null;
+  playStateListener: ((playing: boolean) => void) | null = null;
 
   constructor(snapshot: Partial<MediaPlaybackSnapshot> = {}) {
     this.snapshot = {
@@ -47,10 +48,12 @@ class FakeBackend implements MediaPlaybackBackend {
     this.playCount += 1;
     this.snapshot.paused = false;
     this.snapshot.ended = false;
+    this.playStateListener?.(true);
   }
   pause() {
     this.pauseCount += 1;
     this.snapshot.paused = true;
+    this.playStateListener?.(false);
   }
   setPlaybackRate(rate: number) { this.playbackRate = rate; }
   setVolume(volume: number) { this.volume = volume; }
@@ -182,6 +185,52 @@ test("暂停和播放状态选择外部轨时按最新主时钟与偏移安装",
   assert.equal(harness.runtime.getState().phase, "playing_synced");
 });
 
+test("主媒体自带控件播放和暂停会同步更新外部音轨意图", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 10, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(externalSelection(source("native-controls")));
+  const external = new FakeBackend({ duration: 80 });
+  harness.pending.get("native-controls")?.resolve(external);
+  await selecting;
+  external.seekTargets = [];
+
+  master.snapshot.paused = false;
+  harness.runtime.notifyMasterPlaybackState(true);
+  await flushAsyncWork();
+  assert.deepEqual(external.seekTargets, [10]);
+  assert.equal(external.snapshot.paused, false);
+  assert.equal(harness.runtime.getState().phase, "playing_synced");
+
+  master.snapshot.paused = true;
+  harness.runtime.notifyMasterPlaybackState(false);
+  assert.equal(external.snapshot.paused, true);
+  assert.equal(harness.runtime.getState().phase, "ready_paused");
+  assert.equal(harness.runtime.getState().desiredPlayback, "paused");
+});
+
+test("runtime 命令触发同步主媒体事件时保持幂等", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 6, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  master.playStateListener = (playing) =>
+    harness.runtime.notifyMasterPlaybackState(playing);
+  const selecting = harness.runtime.selectAudio(externalSelection(source("command-events")));
+  const external = new FakeBackend();
+  harness.pending.get("command-events")?.resolve(external);
+  await selecting;
+  external.seekTargets = [];
+
+  await harness.runtime.play();
+  assert.deepEqual(external.seekTargets, [6]);
+  assert.equal(harness.runtime.getState().phase, "playing_synced");
+  external.pauseCount = 0;
+  harness.runtime.pause();
+  assert.equal(harness.runtime.getState().phase, "ready_paused");
+  assert.equal(external.pauseCount, 1);
+  assert.deepEqual(harness.errors, []);
+});
+
 test("主媒体 ready 前后的同一选择只准备一次外部会话", async () => {
   const harness = createHarness();
   const master = new FakeBackend({ ready: false, currentTime: 6 });
@@ -266,6 +315,31 @@ test("before-start 保持无声并在进入可播区后由漂移采样启动", a
   assert.equal(external.playCount, 1);
 });
 
+test("外部音轨结束边界只暂停一次，主时钟返回可播区后恢复", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 5, paused: false });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(externalSelection(source("short-audio")));
+  const external = new FakeBackend({ currentTime: 5, duration: 10 });
+  harness.pending.get("short-audio")?.resolve(external);
+  await selecting;
+  external.pauseCount = 0;
+  external.seekTargets = [];
+
+  master.snapshot.currentTime = 12;
+  const driftCallback = harness.driftCallbacks[harness.driftCallbacks.length - 1];
+  driftCallback?.();
+  driftCallback?.();
+  await flushAsyncWork();
+  assert.equal(external.pauseCount, 1);
+
+  master.snapshot.currentTime = 4;
+  driftCallback?.();
+  await flushAsyncWork();
+  assert.deepEqual(external.seekTargets, [4]);
+  assert.equal(external.snapshot.paused, false);
+});
+
 test("连续中等漂移触发硬同步而小漂移保持不动", async () => {
   const harness = createHarness();
   const master = new FakeBackend({ currentTime: 10, paused: false });
@@ -317,8 +391,10 @@ test("缓冲暂停主视频，恢复时重同步；用户主动暂停后不自�
   harness.setNow(100);
   preparation?.events.onBufferingChange?.(true);
   preparation?.events.onBufferingChange?.(true);
+  harness.runtime.notifyMasterPlaybackState(false);
   assert.equal(master.snapshot.paused, true);
   assert.equal(harness.runtime.getState().phase, "buffering_external");
+  assert.equal(harness.runtime.getState().desiredPlayback, "playing");
   harness.setNow(1_350);
   preparation?.events.onBufferingChange?.(false);
   await flushAsyncWork();
@@ -341,6 +417,26 @@ test("缓冲暂停主视频，恢复时重同步；用户主动暂停后不自�
       kind === "buffering" && phase === "recovery_started").length,
     1,
   );
+});
+
+test("主视频自然结束会停止外部音轨与漂移采样", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 20, paused: false });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(externalSelection(source("master-ended")));
+  const external = new FakeBackend({ currentTime: 20 });
+  harness.pending.get("master-ended")?.resolve(external);
+  await selecting;
+  const driftCallback = harness.driftCallbacks[harness.driftCallbacks.length - 1];
+
+  master.snapshot.paused = true;
+  master.snapshot.ended = true;
+  harness.runtime.notifyMasterPlaybackState(false);
+
+  assert.equal(external.snapshot.paused, true);
+  assert.equal(harness.runtime.getState().desiredPlayback, "paused");
+  assert.equal(harness.runtime.getState().phase, "ready_paused");
+  assert.ok(driftCallback && harness.stoppedDriftCallbacks.has(driftCallback));
 });
 
 test("硬同步在途保持单飞且用户暂停不会被迟到 seek 恢复", async () => {
@@ -439,6 +535,11 @@ test("准备失败暂停且保持所选音轨，只有显式重试或切回原�
   assert.equal(harness.runtime.getState().selectedTrackId, "broken");
   assert.deepEqual(harness.errors, ["音频服务不可用"]);
   await assert.rejects(() => harness.runtime.play(), /当前监听音轨不可用/u);
+
+  // 错误态直接操作主视频 controls 仍会被安全暂停，调用方可据返回值保持 UI 为暂停。
+  master.snapshot.paused = false;
+  assert.equal(harness.runtime.notifyMasterPlaybackState(true), false);
+  assert.equal(master.snapshot.paused, true);
 
   const retrying = harness.runtime.selectAudio(externalSelection(brokenSource));
   assert.equal(harness.prepareCounts.get("broken"), 2);
