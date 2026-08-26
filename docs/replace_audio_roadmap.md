@@ -1129,17 +1129,22 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
   liveness、readiness 通过，maintenance 保持开启，analysis worker 保持停止。用户要求跳过本轮浏览器验收，
   因而未把自动门禁写成真实听觉证据。
 
-#### RA6b：destructive release、服务恢复与专项验收（下一步）
+#### RA6b：destructive release、服务恢复与专项收口（已完成，2026-08-26）
 
-- 先重写任务单并复核 RA6a 的有限报告、备份和当前 maintenance/worker 状态；不得重做或绕过已完成迁移。
-- 从当前产品提交构建全新不可变 release，确认只新增 migration 29，运行完整专项/API/build/release 门禁；部署前
-  再验证 legacy setting 仍可由启用音轨等价表达。
-- 在维护状态应用 migration 29，核对旧 setting 表、run annotation/mode/offset 列和旧 enum 已删除，媒体、
-  音轨、run、asset 与对象引用计数保持一致；失败时保持维护并按已验证备份制定恢复，不改 SQL 强行通过。
-- 重启 API/worker、执行带正确生产 Host 的 Web/liveness/readiness 和只读 smoke，确认 worker claim、分析读取、
-  音轨列表与回收生命周期正常后解除维护。
-- 完成静态旧接口扫描、自动回归和用户未跳过的浏览器验收。已延期的慢网、休眠、30 分钟、Safari、HTTP IP/
-  HTTPS 与听觉同步若仍未人工执行，必须继续作为显式验收债务，不能阻止已验证的 schema 收口被准确记录。
+- 当前提交 `25fe616` 通过音轨 `7/7 + 23/23`、音轨 API 4/4、媒体分析 38/38、完整 API 193/193、部署
+  `12/12 + 16/16`、完整 build 和 release check。完整 API 包含 migration 29 的 PostgreSQL 原子拒绝/成功用例。
+- destructive 前只读重验为 28 migrations、84 资源、38 标注、19 媒体/音轨/run、22575 assets、1 FileObject、
+  22576 objects，且 active job/presence/lease 均为 0；唯一 legacy setting 精确复用 enabled original。
+- 服务器从同一 commit 和 SHA-256 归档重新构建不可变 release
+  `/opt/xiqu/releases/20260826T075340Z-25fe616`，核对恰好 29 条 migration，运行包不含 `.env`、`data/` 或教程。
+- 旧 API/worker 均停止后原子切换 release，migration 29 一次成功。旧 setting 表、`AnalysisAudioMode` 和 run 的
+  annotation/mode/offset 三列已删除；全部业务计数与对象数保持不变，migration 记录 finished 且未 rolled back。
+- final API 新进程、最终 Web asset、liveness/readiness 和 worker 均通过，journal 未发现 schema/Prisma 启动
+  错误；`platform.admin` 已解除维护，最终状态为 API/worker active、maintenance disabled。
+- 生产运行源码静态扫描确认没有旧 setting model、route/client/DTO、optional track-id fallback 或历史 run 持久写入。
+  旧 migration SQL、audit action/展示名和 Development Log 作为历史兼容证据保留，不属于僵尸运行逻辑。
+- 用户明确跳过浏览器人工验证。真实慢网、休眠、30 分钟、Safari、HTTP IP/HTTPS、撤权和听觉同步继续作为
+  显式验收债务；自动测试与生产 health 不能替代这些证据，但 RA0-RA6 的代码和生产数据迁移已经收口。
 
 ## 13. 测试矩阵
 

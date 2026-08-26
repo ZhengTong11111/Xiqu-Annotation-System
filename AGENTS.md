@@ -1044,6 +1044,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     must run `db:generate` during its build and `release:check` before cutover. API, worker, and operational CLI startup
     also fail closed through `prismaClientSchemaGuard`; repair a mismatched candidate by building a new immutable release,
     never by mutating the active release. This same contract applies when rebuilding from Git on a replacement server
+  - Nginx smoke checks must use the configured public origin or an explicit matching `Host` header. A loopback request with
+    `Host: 127.0.0.1` may legitimately hit the distribution's default virtual host and return its welcome page/404; do not
+    diagnose that as an API failure or weaken the server block to make an invalid probe pass
   - local restore drills publish through a sibling staging directory; place `target-storage` below a dedicated parent
     writable by `xiqu`, not directly below a root-owned persistent-data directory. A failed drill may already have restored
     the isolated database before object publication, so recreate only that isolated target before retrying

@@ -402,6 +402,10 @@ npm run deploy:check -- \
   --timeout-ms=20000
 ```
 
+若在服务器本机通过 loopback 检查 Nginx，仍必须让请求携带已配置的 `server_name`，或直接使用正式 origin。
+裸 `http://127.0.0.1/` 的 Host 可能命中 Ubuntu 默认虚拟主机并返回欢迎页/404，这不代表 Fastify API 故障；
+不要为了让错误探针通过而放宽生产 server block。
+
 然后完成一次人工闭环：
 
 1. 以首位管理员登录。

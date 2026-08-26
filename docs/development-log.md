@@ -8157,3 +8157,79 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **待推进**：单独重写 RA6b 任务单，从当前主线构建 destructive release，复核输入门禁后应用 migration 29，
   静态确认旧表/字段/API 无运行引用，重启 API/worker、完成只读与必要浏览器验收，再解除维护。任何失败都保持
   维护并基于本轮已验证备份制定恢复，不能顺手修改 migration SQL 或清理历史对象。
+
+## 2026-08-26：RA6b 最终 schema 切换、服务恢复与专项收口
+
+### 任务单、静态审计与自动门禁
+
+- RA6a 文档提交 `25fe616` 后，按生产仍处于 maintenance、worker inactive、28 migrations 的真实停点重写
+  `CLAUDE_WORK.md`。本轮只允许部署 migration 29、核对业务计数和恢复服务；不得重新执行 RA2/RA4c1、改写
+  migration SQL、清理历史 run/object 或把用户教程带入 release。
+- 运行源码静态审计未发现 `AnnotationAnalysisAudioSetting` model 调用、旧 analysis-audio route/client/DTO、
+  optional `audioTrackId` fallback，或把 annotation/source mode/offset 写回媒体级 run 的路径。仍存在的
+  `sourceOffsetSeconds` 是当前音轨关系到时间轴的 DTO 投影；migration SQL、历史 audit action/展示名和日志是
+  兼容证据，不是可删除的僵尸运行逻辑。
+- `legacyAnalysisAudioRemovalMigration.test.ts` 已由完整 API runner 纳入，确认 migration 29 在旧 setting 未等价
+  映射时原子拒绝，补齐关系后才删除表/列/enum。本轮没有另造第二套 migration runner。
+- 自动结果：`test:media-audio-tracks` 为 shared 7/7 + frontend 23/23，音轨 API 4/4，媒体分析 38/38，完整 API
+  193/193，部署测试 12/12 + 16/16；完整 Prisma/shared/document-model/Web/API build、`release:check` 和
+  `git diff --check` 通过。只保留既有 Vite 主 chunk 体积提示和测试环境 `pg` deprecation warning。
+
+### destructive 前生产重验
+
+- 在 maintenance enabled、API active、worker inactive 状态保存
+  `/var/lib/xiqu-platform/backups/ra6-20260826-additive/ra6b-preflight.txt`。摘要为：28 migrations、84 resources、
+  38 annotations、19 media、19 audio tracks、19 analysis runs、22575 analysis assets、1 FileObject、22576 storage
+  objects；queued/running jobs=0、live presence=0、live leases=0。
+- 唯一 legacy setting 再次验证为 `media_override` 指向主媒体自身、offset=0，并恰有一个 enabled、零偏移、
+  无外部来源的 original 音轨。6 个 superseded 历史 run 保留，13 个 active canonical 全部具有 media
+  fingerprint；没有为通过 SQL 门禁手工补值或修改数据。
+
+### 最终 artifact 与 migration 29
+
+- 当前提交 full id 为 `25fe6168dca1fe3e113f53cc7b876f92d542f694`；source archive
+  `/tmp/xiqu-source-25fe616.tar.gz` 的 SHA-256 为
+  `552643a0afa8c4eb4b4a5a7e96a6bf6d2c0c3d26fc771fcca0dbb747cc4de48b`，上传后再次校验一致。归档来自 Git
+  commit，用户未提交的教程修改没有进入归档；不可变运行包也不包含 `examples_insights`、`.env` 或 `data/`。
+- 服务器在独立 build 目录执行 `npm ci --no-audit`、完整 build 和 `release:check`，核对恰好 29 条 migration，
+  最后一条是 `20260826030000_remove_legacy_analysis_audio_settings`。安装 root-owned、只读 release：
+  `/opt/xiqu/releases/20260826T075340Z-25fe616`，包含完整 Prisma 配置/migrations、workspace packages/dist、Web/API
+  dist 和独立 node_modules。
+- 保持 maintenance 开启，确认 API/worker 都停止后原子切换 `/opt/xiqu/current`，只运行正式 `db:deploy`。
+  migration 29 一次成功，报告保存为
+  `/var/lib/xiqu-platform/backups/ra6-20260826-additive/ra6b-db-deploy.log`；Prisma Client schema guard 随后通过。
+- 迁移后 `annotation_analysis_audio_settings` 不存在，`AnalysisAudioMode` 不存在，`media_analysis_runs` 的
+  `annotation_file_id`、`source_mode`、`source_offset_seconds` 三列不存在；migration 29 为 finished=true、
+  rolled_back=false。未运行 `db:push`、未手改 migration history、未删除旧资产或对象。
+- 迁移后计数仍为 29 migrations、84 resources、38 annotations、19 media、19 audio tracks、19 runs、22575
+  assets、1 FileObject 和 22576 storage objects；6 个 superseded run、0 个 active canonical missing fingerprint。
+  与 preflight 完全一致，唯一变化是预期 legacy schema 消失。有限报告保存为
+  `/var/lib/xiqu-platform/backups/ra6-20260826-additive/ra6b-post-migration.txt`。
+
+### 服务恢复、Nginx 探测与维护解除
+
+- final API 启动后 PID 为 `264755`，`startedAt=2026-08-26T08:00:11.026Z`，证明不是 symlink 切换前的旧内存
+  进程。首次 readiness 轮询在监听建立前得到一次短暂 502，随后按既有 bounded retry 正常就绪；没有把启动
+  窗口当成迁移失败。
+- Nginx 使用生产 `server_name`。带 `Host: 101.201.76.10` 的 Web root 返回最终 hash asset
+  `index-BeLWz1-n.js`，liveness=`ok`、readiness=`ready`；裸 loopback Host 会命中 Ubuntu 默认虚拟主机，因此
+  AGENTS 与部署手册已固定“生产 origin/正确 Host”探测规则。
+- analysis worker 启动为 active；API/worker 最近 journal 未出现缺表/缺列、Prisma schema、fatal 或启动失败。
+  `platform.admin` 通过正式 maintenance CLI 解除维护，status 返回 enabled=false；解除后 readiness 仍为 ready，
+  API 与 worker 均 active。
+
+### 自审、完成范围与显式验收债务
+
+- **功能完成**：多音轨快速选择、外部音轨替换播放、音轨级分析身份/缓存、历史 run/setting 迁移、旧运行时
+  合同删除和生产最终 schema 已按 RA0-RA6 收口。迁移使用恢复演练、三 release、中间 schema 匹配客户端、
+  fingerprint/SQL 双门禁和完整计数对比，没有以“能部署”为由放宽完整性。
+- **重复/僵尸逻辑**：运行源码已无旧 setting API/fallback；保留的旧审计枚举/展示和 migration 文本服务于历史
+  可读性与新服务器升级，不应删除。本轮没有新增依赖、临时 debug console、第二个播放器 owner 或双写路径。
+- **已有功能影响**：时间轴、协作、原子保存、资源 ACL、上传/VOD、对象生命周期和分析 worker 代码未改；完整
+  API/媒体专项与生产启动覆盖其 schema 边界。数据和对象计数无漂移。
+- **未执行**：用户明确要求跳过浏览器人工验证，因此未声称完成真实 A/B/C 听觉切换、慢网/断网/休眠、30 分钟、
+  Safari、HTTP IP/HTTPS、撤权或 detached window 验收。这些继续保留为人工验收债务，不再阻塞已经有充分自动/
+  生产证据的 RA6 数据迁移完成状态。
+- **最终状态**：production current=`/opt/xiqu/releases/20260826T075340Z-25fe616`，migration=29，API/worker active，
+  maintenance disabled，Web/liveness/readiness healthy。RA0-RA6 的代码、文档和生产 schema 工作完成；后续若继续
+  产品开发，应从总 roadmap 的下一项重新制定任务，不在本专项任务单里追加日志式待办。

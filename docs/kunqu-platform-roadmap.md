@@ -705,6 +705,13 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   当前生产 maintenance 仍开启、worker 停止、API 运行 additive release，destructive migration 29 未部署；
   下一轮 RA6b 负责最终 schema 删除、服务恢复、静态旧接口审计和仍未跳过的浏览器验收。
 
+  RA6b 已于 2026-08-26 完成最终生产切换：提交 `25fe616` 的不可变 release 在专项 7/7+23/23、4/4、38/38、
+  完整 API 193/193、部署 12/12+16/16 和完整 build 通过后应用第 29 条 migration。旧 setting 表、旧 enum 和
+  run 的 annotation/mode/offset 三列均已删除，84/38/19/19/19/22575/1 的业务计数与 22576 个对象没有漂移；
+  API 与 worker 已恢复 active，maintenance 已由 `platform.admin` 解除，Web/liveness/readiness 正常。RA0-RA6
+  的代码、数据迁移和生产 schema 收口完成。用户明确跳过的慢网、休眠、30 分钟、Safari、HTTP IP/HTTPS、
+  撤权和听觉同步仍保留为人工验收债务，不能被自动门禁冒充为已验证。
+
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入
 Development Log。任何阶段不得为追求“能播放”而牺牲时间轴的精确时间语义。
