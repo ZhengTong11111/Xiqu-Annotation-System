@@ -233,18 +233,32 @@ bootstrap；同名普通账号也不会被静默提权。后续账号与权限�
 绝不能在生产环境把 `XIQU_SEED_DEVELOPMENT_DATA` 改为 `true`。该选项会创建公开开发口令与演示资源，只供
 本机开发数据库使用。
 
-### 6.1 RA4c 多音轨分析的两版本迁移
+### 6.1 RA4c 多音轨分析的三阶段迁移
 
-已有旧 `annotation_analysis_audio_settings` 数据的服务器不能直接从早期 release 部署 migration 29。先在维护
-窗口停止 analysis worker、建立并验证一致备份，然后部署 commit `d615add`（RA4c1 additive 工具 release），
-应用 migration 27/28，并以生产环境变量运行：
+已有旧分析 run 和 `annotation_analysis_audio_settings` 数据的服务器不能直接从早期 release 部署 migration 29。
+先在维护窗口停止 analysis worker、建立并验证一致备份。若数据库尚未应用
+`20260824040000_media_scoped_analysis_runs`，必须先使用与 24-03 schema 匹配的 RA2 历史工具 release；生产修复
+提交为 `5cd4556`（基于 `85828ee`）。它修正 waveform manifest 桶宽与资产 level 序号的映射，同时继续逐对象
+校验大小与 SHA-256。先执行并保存：
 
 ```bash
-npm run analysis-audio-settings:migrate -- dry-run
-npm run analysis-audio-settings:migrate -- execute \
+node dist/api/mediaAnalysisMigrationCli.js dry-run
+node dist/api/mediaAnalysisMigrationCli.js execute \
   --operator <active-super-admin-account> \
   --plan-fingerprint <dry-run-sha256>
-npm run analysis-audio-settings:migrate -- dry-run
+node dist/api/mediaAnalysisMigrationCli.js dry-run
+```
+
+最终 RA2 报告必须为零阻断、零待归并/回填，再部署 commit `d615add`（RA4c1 additive 工具 release）并应用
+至 migration 27/28。不要用最终 release 的 Prisma Client 连接中间 schema，也不要跨 release 复制 CLI。随后以
+生产环境变量运行：
+
+```bash
+node dist/api/analysisAudioSettingMigrationCli.js dry-run
+node dist/api/analysisAudioSettingMigrationCli.js execute \
+  --operator <active-super-admin-account> \
+  --plan-fingerprint <dry-run-sha256>
+node dist/api/analysisAudioSettingMigrationCli.js dry-run
 ```
 
 最后一次报告必须同时是 `blockedCount=0`、`createTrackCount=0`。保存有限报告和审计证据后，才可部署包含
@@ -252,7 +266,9 @@ npm run analysis-audio-settings:migrate -- dry-run
 在数据库内二次检查每条设置、original/override 音轨和资源祖先状态；失败时保持维护、不要修改 migration SQL、
 不要使用 `db:push` 或手工删除旧表。处理数据后应回到 RA4c1 release 重新 dry-run/execute。
 
-全新空数据库可以直接应用完整 migration 链；上述两版本步骤只针对已经存在旧设置数据的升级库。RA4c1 CLI 在
+不可变运行包不包含 TypeScript 源码，所以服务器上必须调用上述 `dist` CLI；`npm run
+analysis-audio-settings:migrate` 指向源码 `tsx`，只适用于完整源码 worktree。全新空数据库可以直接应用完整
+migration 链；上述三阶段步骤只针对已经存在旧 run/setting 数据的升级库。RA4c1 CLI 在
 RA4c2 源码中已按生命周期删除，因此不能拿最终 release 冒充 additive 迁移工具。
 
 ## 7. systemd 服务

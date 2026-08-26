@@ -174,13 +174,21 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - production RA2 rollout is deliberately two-release: deploy the additive migration code first, stop the analysis worker,
     dry-run and execute the exact migration plan, then deploy the final media-scoped schema migration. The final SQL fails closed
     on missing fingerprints, duplicate canonical identities, or active superseded jobs; never bypass this gate
+  - an existing database that is still before `20260824040000` needs a schema-matched historical tool release. The production
+    repair commit `5cd4556` is based on `85828ee`, contains migrations only through 24-03, and fixes the bucket-width/index
+    validator without weakening object size/SHA checks. Never run the current final Prisma Client against that intermediate
+    schema or copy a compiled CLI between unrelated releases
 - `prisma/migrations/20260826030000_remove_legacy_analysis_audio_settings/migration.sql`
   - final RA4c schema boundary: deletes the legacy per-annotation analysis setting and run annotation/mode/offset snapshot columns
     only after SQL revalidates that every old setting has an equivalent enabled media audio track and all required resource paths
     remain active. It intentionally preserves historical audit actions
-  - production rollout is two-release. First deploy commit `d615add`, apply additive migrations 27/28, stop the analysis worker,
-    run `analysis-audio-settings:migrate dry-run/execute`, and require zero blocked plus zero pending creates. Only then deploy a
-    release containing migration 29. Never deploy the destructive release directly to an older database or bypass its SQL gate
+  - the complete upgrade of a pre-24-04 production database is three-stage: first the schema-matched RA2 historical tool release,
+    then commit `d615add` through migration 28 plus `analysis-audio-settings:migrate`, and only then a release containing migration
+    29. Require zero blocked and zero pending creates before the last stage; never deploy the destructive release directly to an
+    older database or bypass its SQL gate
+  - immutable production releases omit TypeScript sources. Run historical migration tools through their compiled
+    `dist/api/*MigrationCli.js` entrypoints; package scripts that invoke `tsx apps/api/src/...` are source-worktree commands and
+    must not be made to work by copying source files into an installed release
 - `apps/api/src/mediaAnalysisSourceFingerprint.ts`
   - the only media-content fingerprint boundary for media-scoped analysis; uploaded identity requires stable file checksum/size,
     VOD identity requires region/video id/duration, and annotation id, selection mode, and track offset have no input position

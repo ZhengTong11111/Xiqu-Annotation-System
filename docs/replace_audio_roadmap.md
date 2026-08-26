@@ -1104,6 +1104,43 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 数据库恢复后媒体、音轨、run 和 assets 引用完整；
 - 服务器迁移不会把本机实验数据带入生产。
 
+#### RA6a：候选恢复演练与 additive 生产迁移（已完成，2026-08-26）
+
+**实际执行**
+
+- 生产升级前创建并验证一致备份，22576 个对象 warning/missing/orphan 均为 0；同一备份恢复到独立候选数据库
+  和独立对象目录，数据库、migration history、运行状态、对象大小与 SHA-256 全部门禁通过。
+- 生产库从旧 schema 推进到 24-03 后，24-04 按设计因 canonical run 缺少 media fingerprint 而失败；失败
+  migration 通过 Prisma `migrate resolve --rolled-back` 正式登记回滚，事务内 schema 没有残留，也没有手改
+  `_prisma_migrations`。
+- 真实生产升级由原计划的两段细化为三段 release：`85828ee`/修复提交 `5cd4556` 负责 24-03 schema 的 RA2
+  历史 run 迁移，`d615add` 负责 24-04 至 26-02 与 RA4c1 设置迁移，当前最终 release 留给 RA6b migration 29。
+  最终 Prisma Client 不能越过中间 schema 直接运行历史 CLI。
+- RA2 dry-run 最初把 19 个完整 run 误报为 `asset_validation_failed`。根因是 manifest `waveformLevels` 保存
+  bucket width，而资产 `level` 保存数组序号；历史工具修复后仍保留精确资产集合、对象大小和 SHA-256 校验。
+  独立 24-migration schema 的专项测试 10/10、完整 build/release check 通过。
+- 修复版生产 dry-run 为 19 runs、13 actionable groups、2 duplicate groups、0 blocked；同 fingerprint execute
+  标记 6 个 duplicate run，并完成 canonical media fingerprint 回填。幂等复跑为 0 duplicate、0 actionable、
+  0 blocked。随后 24-04、24-05、26-01、26-02 全部成功应用。
+- 唯一 legacy analysis setting 是主媒体自身零偏移覆盖，已精确复用 original 音轨，不需要创建 reference 音轨。
+  RA4c1 最终报告为 `blockedCount=0 + createTrackCount=0 + reuseCount=1`；零创建路径按合同只完成锁内重验，
+  `applied=false` 且不制造重复迁移审计。
+- 当前生产停在 28 条 migration，destructive migration 29 尚未部署；API 已真实重启到 `d615add`，Web、
+  liveness、readiness 通过，maintenance 保持开启，analysis worker 保持停止。用户要求跳过本轮浏览器验收，
+  因而未把自动门禁写成真实听觉证据。
+
+#### RA6b：destructive release、服务恢复与专项验收（下一步）
+
+- 先重写任务单并复核 RA6a 的有限报告、备份和当前 maintenance/worker 状态；不得重做或绕过已完成迁移。
+- 从当前产品提交构建全新不可变 release，确认只新增 migration 29，运行完整专项/API/build/release 门禁；部署前
+  再验证 legacy setting 仍可由启用音轨等价表达。
+- 在维护状态应用 migration 29，核对旧 setting 表、run annotation/mode/offset 列和旧 enum 已删除，媒体、
+  音轨、run、asset 与对象引用计数保持一致；失败时保持维护并按已验证备份制定恢复，不改 SQL 强行通过。
+- 重启 API/worker、执行带正确生产 Host 的 Web/liveness/readiness 和只读 smoke，确认 worker claim、分析读取、
+  音轨列表与回收生命周期正常后解除维护。
+- 完成静态旧接口扫描、自动回归和用户未跳过的浏览器验收。已延期的慢网、休眠、30 分钟、Safari、HTTP IP/
+  HTTPS 与听觉同步若仍未人工执行，必须继续作为显式验收债务，不能阻止已验证的 schema 收口被准确记录。
+
 ## 13. 测试矩阵
 
 ### 13.1 纯逻辑测试
@@ -1169,7 +1206,8 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 
 ## 15. 部署、备份与回滚
 
-- schema 迁移分两步：先增量新增新表/新字段并双读验证，再迁移和删除旧结构。
+- 旧生产库的本次 schema 迁移实际分三段 release：24-03 历史 RA2 工具、`d615add` RA4c1 additive、最终
+  destructive release。每一段必须使用与当时 schema 匹配的 Prisma Client；全新空库仍可直接应用完整链。
 - 不长期双写；双写仅用于有明确截止条件的迁移窗口。
 - 每次生产迁移前进入维护模式，备份 PostgreSQL 和对象 manifest。
 - run 去重和对象清理分离：先发布新引用，再引用检查，最后补偿删除。

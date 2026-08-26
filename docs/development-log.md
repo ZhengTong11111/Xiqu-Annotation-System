@@ -8063,3 +8063,97 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **待推进**：RA6 先在经校验候选库演练并保存 RA4c1 -> RA4c2 有限报告，再按 additive 工具 release、
   `blockedCount=0 + createTrackCount=0`、destructive release 的顺序推进目标数据库；最后补延期浏览器/听觉/压力
   验收并静态清除旧接口与字段。不得在同一未验证发布中直接跨过两版本门禁。
+
+## 2026-08-26：RA6a 生产恢复演练、历史迁移工具修复与 additive 升级
+
+### 计划修正与生产保护
+
+- RA5c2 提交 `d2e9954` 后，依据生产真实 schema、历史 CLI 生命周期和 `docs/replace_audio_roadmap.md` 重写
+  `CLAUDE_WORK.md`。原先“`d615add` additive -> 当前 destructive”两 release 计划不能覆盖生产仍停在 24-03
+  之前的媒体级 run 迁移；实际执行拆为三个可追溯 release：RA2 历史工具、`d615add` RA4c1 additive、当前
+  migration 29 destructive。最终 Prisma Client 不能跨中间 schema 运行历史 CLI。
+- 本轮没有从本机同步数据库、`data/`、媒体、对象、`.env` 或凭据。用户自己的
+  `examples_insights/tutorial.md` 修改继续保持未暂存、未打包、未部署。
+- 升级前停止 analysis worker，由既有备份工具建立
+  `/var/lib/xiqu-platform/backups/xiqu-backup-2026-08-26T07-12-24-634Z-7b3ff9d9`。`backup:verify` 通过，
+  objectCount=22576、warningCount=0。随后恢复到独立数据库 `xiqu_ra6_restore_20260826_0716` 和独立对象目录，
+  migration history、运行状态、数据库摘要和对象发布均通过；missing=0、orphan=0，报告保存在
+  `/var/lib/xiqu-platform/restore-drill/ra6-20260826-0716/report.json`。
+- 恢复演练后由 `platform.admin` 开启持续维护，API 写入受维护门禁保护，worker 保持停止。备份、恢复和迁移
+  报告只记录有限计数、稳定 ID/fingerprint 和 block code，没有记录数据库连接串、对象 key、媒体 URL、
+  PlayAuth、License、AccessKey 或 Secret。
+
+### 首次 24-04 失败与正式补偿
+
+- `d615add` 首次 `db:deploy` 先成功应用 24-01、24-02、24-03，随后
+  `20260824040000_media_scoped_analysis_runs` 按 fail-closed SQL 拒绝“canonical run missing media_fingerprint”。
+  PostgreSQL 事务回滚后，旧 annotation-scoped unique 仍存在，新 media-scoped unique 未出现，19 个 run 均未被
+  半迁移。
+- 失败记录通过官方 `prisma migrate resolve --rolled-back 20260824040000_media_scoped_analysis_runs` 标记回滚；
+  没有删除 migration row、修改 SQL、`db:push`、手填 fingerprint 或删除历史 run。生产停在可解释的 24-03
+  additive 状态后才继续诊断。
+- 直接使用 `d615add` CLI 会让最终 Prisma Client 读取尚不存在的 `source_vod_rendition_job_id`，因此明确停止。
+  这证明迁移工具不仅要“源码里还存在”，还必须与目标中间 schema 的 Prisma Client 完全匹配。
+
+### 历史工具缺陷、修复与验证
+
+- 基于 `85828ee` 建立独立分支 `codex/ra6-historical-migration-tool`，提交 `5cd4556` 只修 RA2 资产集合校验：
+  manifest `waveformLevels` 保存 64/256 等 bucket width，数据库资产 `level` 保存从 0 开始的数组序号；旧实现
+  直接比较二者，导致完整 succeeded run 被误报 `asset_validation_failed`。
+- 修复没有放宽数据门禁：manifest 形状、每 tile 的 waveform/spectrogram/pitch 精确集合、数据库重复/缺号、
+  实际对象流式 size/SHA-256、活跃 job、计划 fingerprint、事务锁和审计语义全部保留。新增集成 fixture 使用
+  `[64, 256]` manifest、`0/1` 资产 level，并走真实 staged/promote 对象路径。
+- 历史测试最初误用了主工作区已迁到最终 schema 的 `api_test`，旧 Prisma Client 因列已删除而失败。没有回退
+  开发测试库，而是创建独立 `ra6_history_test` schema，只应用历史 release 的 24 条 migration；迁移专项
+  10/10、完整 build、`release:check` 和 `git diff --check` 均通过。
+- 可追溯源码归档 `/tmp/xiqu-source-5cd4556.tar.gz` 的 SHA-256 为
+  `67166673ca32877433ade8810da9288e521dd63fadaa6ef98f144f1079774ff6`。服务器重新执行 `npm ci`、完整 build、
+  `release:check`，并核对仅含 24 条 migration、包含 24-03 且不含 24-04；不可变工具 release 为
+  `/opt/xiqu/releases/20260826T073501Z-5cd4556`。
+- 两个历史构建的依赖审计仍显示既有 1 low、5 moderate、8 high；迁移窗口没有执行不受控 `npm audit fix`。
+  该依赖治理债务与本次数据迁移分离，后续应在当前主线独立升级、测试和发布，不能修改历史工具依赖锁。
+
+### RA2 生产执行结果
+
+- 修复前报告保存在 additive 报告目录，19 个 succeeded run 全部因错误 level 映射形成 13 个 blocked group；
+  只读聚合同时证明每个 tile 恰有 4 个 waveform、2 个 spectrogram、1 个 pitch，备份也证明对象没有丢失。
+- 修复版 dry-run 报告
+  `/var/lib/xiqu-platform/backups/ra6-20260826-additive/media-analysis-dry-run-fixed.json`：runCount=19、
+  duplicateGroupCount=2、actionableGroupCount=13、blockedGroupCount=0，plan fingerprint 为
+  `cb492cd90de55e65d6a5afdb1bfd4ec80832073dd17dc15308cc107f7a71c4f8`。
+- 使用同一完整 fingerprint 和 `platform.admin` 原子 execute：markedRunCount=6、applied=true；没有删除、移动
+  或重写任何 asset/object。幂等复跑
+  `/var/lib/xiqu-platform/backups/ra6-20260826-additive/media-analysis-dry-run-after.json` 为 19 runs、
+  duplicateGroupCount=0、actionableGroupCount=0、blockedGroupCount=0。数据库现有 6 个 superseded 历史 run
+  保留 null media fingerprint，13 个 active canonical 已完成回填；这是迁移器的可逆保留语义，不是漏迁。
+- 满足 RA2 门禁后，`d615add` 成功应用 24-04、24-05、26-01、26-02。生产共有 28 条成功 migration，明确不含
+  `20260826030000_remove_legacy_analysis_audio_settings`。
+
+### RA4c1 设置迁移与服务核对
+
+- RA4c1 首次报告
+  `/var/lib/xiqu-platform/backups/ra6-20260826-additive/analysis-audio-setting-dry-run-before.json`：
+  settingCount=1、createTrackCount=0、reuseCount=1、blockedCount=0。该 setting 是主媒体覆盖自己、offset=0，
+  恰好匹配其 enabled original 音轨；不是缺少 reference 音轨。
+- 同 fingerprint execute 在 super-admin、advisory/resource-tree/table/ordered-media locks 内重验后返回
+  `applied=false`、createdTrackCount=0。服务合同和集成测试明确规定：零待创建时不制造重复轨道或迁移审计。
+  最终 dry-run 仍为 `blockedCount=0 + createTrackCount=0 + reuseCount=1`，满足 destructive migration 的输入门禁。
+- `/opt/xiqu/current` 保持指向 `/opt/xiqu/releases/20260826T065417Z-d615add`。检查发现 API 虽由 systemd 管理，
+  但切换 symlink 后仍是 8 月 23 日启动的旧内存进程；受控 restart 后 PID 和 `startedAt` 均更新到本轮，证明
+  additive 代码实际加载。maintenance 仍为 enabled，worker 仍为 inactive。
+- Nginx 使用生产 Host 虚拟主机；直接以 `127.0.0.1` Host 探测会命中 Ubuntu 默认页。改用
+  `Host: 101.201.76.10` 后 Web root、API liveness 和 readiness 全部通过。后续部署 smoke 必须使用生产 origin
+  或显式正确 Host，不能把默认虚拟主机 404 误判成 API 故障。
+
+### 阶段结论与待推进
+
+- **已完成**：新一致备份、隔离恢复演练、RA2 历史工具修复/测试/远端提交、24-03 媒体分析迁移、24-04 至
+  26-02 additive schema、RA4c1 零阻断零待创建门禁、API 真实重启及只读 Web/health 核对。
+- **当前生产状态**：maintenance enabled、analysis worker inactive、API active、current=`d615add`、数据库
+  migration=28、legacy setting 表仍保留、destructive migration 29 未部署。该停点是计划内可恢复边界。
+- **未执行**：用户明确要求跳过本轮浏览器验证；没有声称完成多音轨真实听觉、30 分钟、慢网/断网/休眠、
+  Safari、HTTP IP/HTTPS 或撤权验收。历史工具的 Vite build 只有既有主 chunk 体积提示，测试环境仍有既有
+  `pg` deprecation warning。
+- **待推进**：单独重写 RA6b 任务单，从当前主线构建 destructive release，复核输入门禁后应用 migration 29，
+  静态确认旧表/字段/API 无运行引用，重启 API/worker、完成只读与必要浏览器验收，再解除维护。任何失败都保持
+  维护并基于本轮已验证备份制定恢复，不能顺手修改 migration SQL 或清理历史对象。

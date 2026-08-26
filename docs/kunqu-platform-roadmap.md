@@ -697,6 +697,14 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   38/38 和完整 build 通过。用户跳过浏览器验收，真实慢网、休眠、30 分钟、Safari、HTTP IP 与 HTTPS 证据保留
   到 RA6；下一步严格执行 additive 迁移工具 release、零阻断/零待创建门禁，再进入 destructive release。
 
+  RA6a 已于 2026-08-26 完成生产候选恢复演练和 additive 数据迁移：新一致备份的 22576 个对象全部通过校验，
+  独立数据库/对象目录恢复演练无缺失和孤儿。生产先用匹配 24-03 schema 的历史工具完成 19 个分析 run 的
+  媒体 fingerprint 回填和 6 个重复 run 的可逆 supersede，再用 `d615add` 应用至第 28 条 migration；唯一旧
+  analysis setting 已由零偏移 original 音轨等价表达，最终门禁为零阻断、零待创建。首次 24-04 失败已通过
+  Prisma 正式标记回滚，修复后的 waveform bucket-width/asset-level-index 校验有独立回归测试和可追溯提交。
+  当前生产 maintenance 仍开启、worker 停止、API 运行 additive release，destructive migration 29 未部署；
+  下一轮 RA6b 负责最终 schema 删除、服务恢复、静态旧接口审计和仍未跳过的浏览器验收。
+
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入
 Development Log。任何阶段不得为追求“能播放”而牺牲时间轴的精确时间语义。
