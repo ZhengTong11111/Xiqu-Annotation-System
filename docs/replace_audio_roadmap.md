@@ -887,9 +887,10 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
   Prisma/shared/document-model/Web/API build 均通过。静态回查没有发现生产代码直接调用
   `crypto.randomUUID()`、HTTP 临时媒体地址、debug console、第二媒体 owner 或凭据持久化；仅保留既有 Vite
   主 chunk 提醒和测试环境 `pg` deprecation warning。
-- 自动门禁完成后重新打开 `http://127.0.0.1:5173/`，页面仍停在登录表单且没有可接管的登录会话。本轮没有
-  代填密码，也没有把 API/纯测试结果写成声音证据；下面的 UI、A/B/C、Safari、HTTP IP 与听觉清单仍是
-  RA3b2b2b2 的硬门禁。
+- 自动门禁后最初只在 `127.0.0.1:5173` 检查了登录壳；用户随后明确当前 Web License 只登记 `localhost`，
+  因而该地址不能作为 VOD 证据。现已改用 `http://localhost:5173/` 重新打开，页面仍停在登录表单且没有可接管
+  会话。本轮没有代填密码，也没有把 API/纯测试结果写成声音证据；下面的 UI、A/B/C、Safari、HTTP IP 与
+  听觉清单仍是 RA3b2b2b2 的硬门禁。
 - 用户完成一次本机登录后，首先检查管理器、rendition picker 的布局、滚动、焦点、Escape、错误/空状态与
   真实创建。
 - 实际验证原声、uploaded、独立 VOD audio、同 VID rendition 的 A/B/C 快切、播放/暂停/seek/循环/倍率、正负

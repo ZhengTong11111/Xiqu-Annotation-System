@@ -7655,7 +7655,7 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 ### 基线与自动证据
 
 - 文档提交 `990ea24` 后按既有 `CLAUDE_WORK.md` 重新检查本机环境：API readiness 为 ready，PostgreSQL 和本地
-  对象存储均为 ok；Vite `127.0.0.1:5173` 返回 200。测试数据库确认 26/26 migrations current。
+  对象存储均为 ok；Vite 前端返回 200。测试数据库确认 26/26 migrations current。
 - `npm run test:media-audio-tracks` 通过 shared 7/7 与选择/状态 16/16；`npm run test:media-playback` 通过
   48/48；VOD gateway 通过 9/9；真实 PostgreSQL/Fastify 音轨 API 通过 4/4；完整 `test:api` 通过 189/189。
 - 完整 `npm run build` 通过 Prisma Client/schema guard、shared、document-model、Web 和 API。仅有既有 Vite
@@ -7665,8 +7665,9 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 
 ### 浏览器事实与阶段结论
 
-- 通过本机浏览器重新打开平台，只看到账号、密码和登录按钮，没有现成登录会话。未输入、读取或从数据库提取
-  密码，也没有用 API 成功状态替代真实声音/UI 验收。
+- 最初在 `127.0.0.1:5173` 只检查了登录壳。用户随后明确当前阿里云 Web License 登记的是 `localhost`，VOD
+  验收必须使用 `http://localhost:5173/`；改用正确地址后仍只看到账号、密码和登录按钮，没有现成登录会话。
+  未输入、读取或从数据库提取密码，也没有用 API 成功状态替代真实声音/UI 验收。
 - 本轮没有发现自动证据可复现的代码缺陷，因此没有为了制造进度修改播放器、Timeline、分析或协作逻辑，也没有
   新增依赖和僵尸兼容分支。
 - **已完成**：RA3b2b2b2 的最新源码自动门禁、完整构建和安全静态复核。
