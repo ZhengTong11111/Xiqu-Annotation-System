@@ -638,6 +638,14 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   慢网和 detached window 的完整声音证据。用户明确要求跳过本次验证并继续开发，因此这些项目作为延期人工
   验收债务保留，不写成已通过；R3h9 允许进入 RA4 分析显示跟随实现，RA5/RA6 收口前必须重新核对该债务。
 
+  RA4a 已于 2026-08-26 完成音轨级分析身份与服务端读取合同：status/create/list/single/batch API 可携带稳定
+  `audioTrackId`，服务端逐次重读音轨归属、enabled、主媒体与真实来源的 `read + download`，删除、禁用、归档
+  或撤权后不会继续暴露旧 run/asset。VOD rendition 以所属媒体、region、videoId、官方 JobId 和 mp3 format
+  形成独立 fingerprint，run 只持久化有界 JobId，worker 精确取得该流且临时 URL 仍只活在内存。旧无 track id
+  路径暂时兼容，前端尚未半迁移。隔离测试库已应用第 27 条 additive migration；音轨 API 4/4、媒体分析 37/37、
+  完整 API 192/192 和完整 build 通过，尚未迁移本机 public、生产部署或执行浏览器分析切换验收。下一轮 RA4b
+  接入会话级“跟随监听 / 固定分析音轨”、hook generation、瓦片请求与未分析状态；RA4c 再移除旧覆盖 UI。
+
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入
 Development Log。任何阶段不得为追求“能播放”而牺牲时间轴的精确时间语义。

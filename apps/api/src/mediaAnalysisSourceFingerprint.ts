@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isStableMediaAudioIdentity } from "@xiqu/shared";
 import { stableJsonStringify } from "./annotationOperationIdempotency.js";
 
 export type MediaAnalysisFingerprintSource =
@@ -15,6 +16,14 @@ export type MediaAnalysisFingerprintSource =
       region: string | null;
       videoId: string | null;
       duration: number | null;
+    }
+  | {
+      sourceType: "aliyun_vod_rendition";
+      mediaResourceId: string;
+      region: string | null;
+      videoId: string | null;
+      jobId: string | null;
+      format: "mp3" | null;
     };
 
 // 媒体级 fingerprint 只描述可分析内容；标注文件、选择模式和时间偏移没有输入位置。
@@ -39,20 +48,38 @@ export function createMediaAnalysisSourceFingerprint(
       size: source.size.toString(),
     });
   }
-  if (
+  if (source.sourceType === "aliyun_vod" && (
     !source.region?.trim() ||
     !source.videoId?.trim() ||
     source.duration === null ||
     !Number.isFinite(source.duration) ||
     source.duration < 0
+  )) return null;
+  if (source.sourceType === "aliyun_vod") {
+    return hashIdentity({
+      version: 1,
+      sourceType: source.sourceType,
+      mediaResourceId: source.mediaResourceId,
+      region: source.region,
+      videoId: source.videoId,
+      duration: source.duration,
+    });
+  }
+  if (
+    !source.region?.trim() ||
+    !source.videoId?.trim() ||
+    !isStableMediaAudioIdentity(source.jobId) ||
+    source.format !== "mp3"
   ) return null;
+  // rendition 使用 JobId 区分同一 VOD 下的稳定音频流；显示名称、码率和临时 URL 都不改变内容身份。
   return hashIdentity({
-    version: 1,
+    version: 2,
     sourceType: source.sourceType,
     mediaResourceId: source.mediaResourceId,
     region: source.region,
     videoId: source.videoId,
-    duration: source.duration,
+    jobId: source.jobId,
+    format: source.format,
   });
 }
 

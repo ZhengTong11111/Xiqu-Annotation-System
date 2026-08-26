@@ -238,6 +238,7 @@ export type MediaAnalysisRun = {
   progress: number;
   errorCode: string | null;
   sourceMediaResourceId: string;
+  sourceVodRenditionJobId: string | null;
   sourceMode: AnalysisAudioMode;
   sourceOffsetSeconds: number;
   algorithmVersion: string;
@@ -252,6 +253,8 @@ export type MediaAnalysisRun = {
 };
 
 export type AnnotationMediaAnalysisStatus = {
+  /** null 表示仍由旧 AnnotationAnalysisAudioSetting 解析；RA4 新路径始终返回请求的稳定音轨 ID。 */
+  audioTrackId: string | null;
   setting: AnalysisAudioSetting;
   resolvedSource: ResolvedAnalysisAudioSource;
   currentRun: MediaAnalysisRun | null;

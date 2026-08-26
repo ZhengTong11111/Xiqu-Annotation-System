@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁已完成；RA3 多环境听觉验收延期，当前推进 RA4
+> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁及 RA4a 已完成；RA3 多环境听觉验收延期，当前推进 RA4b
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -41,9 +41,12 @@
   当前监听音轨且协作状态已同步。Chrome 控制连接在继续展开音轨菜单时反复中断，未取得 A/B/C 听辨、Safari、
   HTTP IP、撤权、续签、慢网和 detached window 的完整证据；用户明确要求跳过本次验证并继续开发。这些项目
   保留为 RA3 延期验收债务，不写成已通过，也不再阻塞 RA4 的代码实施。
-- 下一阶段是 **RA4a 分析音轨选择合同与状态收敛**：先让分析显示可以明确选择“跟随当前监听音轨”或“固定到
-  某条音轨”，并让未分析、加载中、可复用结果和不可用状态来自一个权威状态模型；随后再接入渐进瓦片读取和
-  清理旧频谱音频覆盖逻辑。
+- **RA4a 已完成（2026-08-26）**：分析 status/create/list/single/batch API 已支持稳定 `audioTrackId` 上下文；
+  服务端逐次重读音轨归属、enabled、主媒体与来源 ACL，VOD rendition 以 JobId 形成独立 fingerprint 并由 worker
+  精确取流。旧无 track id 路径继续兼容，未做前端半迁移。
+- 下一阶段是 **RA4b 分析显示跟随与固定状态**：把当前监听音轨或会话内固定音轨接入
+  `usePlatformMediaAnalysis`，让状态、瓦片请求、缓存代际和未分析提示统一使用 RA4a 的稳定上下文；随后 RA4c
+  再清理旧频谱音频覆盖 UI 和过渡调用。
 
 ## 1. 目标重新定义
 
@@ -906,6 +909,22 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
   或 RA5 文档中倒填为已通过。
 
 ### RA4：分析显示跟随与渐进缓存复用
+
+**RA4a 音轨级分析身份与服务端读取合同已完成（2026-08-26）**
+
+- `MediaAnalysisRun` additive 增加有界 nullable `sourceVodRenditionJobId`。同一 VOD 的 original 与指定 JobId
+  rendition 使用不同 fingerprint，不同 JobId 互相隔离；音轨名称、排序、definition、bitrate、临时 URL 和
+  offset 均不进入内容 identity。
+- status/create/list/single/batch 继续保留 annotation route 作为当前 ACL 上下文，但新请求携带稳定
+  `audioTrackId`。服务端只接受属于当前主媒体且 enabled 的关系，并逐次复核标注、主媒体和真实来源；删除、
+  禁用、归档或撤权后不会暴露旧 run/assets，也不会静默退回 legacy 设置。
+- worker 对普通 VOD 继续使用既有自动纯音频入口；rendition run 则精确调用保存的 JobId，并拒绝供应商返回
+  不同 JobId。临时 HTTPS URL 仍只存在于 worker 调用栈。
+- 旧 `AnnotationAnalysisAudioSetting` 与不带 track id 的 API 暂时保持兼容，前端 hook 仍走旧路径；该兼容只为
+  RA4b/RA4c 平滑切换，不允许长期双写或在新路径失败时兜底。
+- 真实 PostgreSQL 音轨 API 4/4、媒体分析 37/37、完整 API 192/192、完整 Prisma/shared/document-model/Web/API
+  build 和 `git diff --check` 通过。新增 migration 已在隔离测试 schema 应用；尚未迁移本机 public 或生产库，
+  也未部署。本阶段是服务端基础，没有伪造浏览器分析切换证据。
 
 **改动范围**
 

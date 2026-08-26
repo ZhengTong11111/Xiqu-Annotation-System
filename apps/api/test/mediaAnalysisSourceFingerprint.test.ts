@@ -28,6 +28,34 @@ test("VOD 内容身份变化会改变 fingerprint", () => {
   );
 });
 
+test("VOD rendition 使用 JobId 隔离流身份且不依赖显示元数据", () => {
+  const base = {
+    sourceType: "aliyun_vod_rendition" as const,
+    mediaResourceId: "media-1",
+    region: "cn-shanghai",
+    videoId: "vod-1",
+    jobId: "job-sq",
+    format: "mp3" as const,
+  };
+  const fingerprint = createMediaAnalysisSourceFingerprint(base);
+  assert.match(fingerprint ?? "", /^[a-f0-9]{64}$/u);
+  assert.equal(fingerprint, createMediaAnalysisSourceFingerprint({ ...base }));
+  assert.notEqual(
+    fingerprint,
+    createMediaAnalysisSourceFingerprint({ ...base, jobId: "job-hq" }),
+  );
+  assert.notEqual(
+    fingerprint,
+    createMediaAnalysisSourceFingerprint({
+      sourceType: "aliyun_vod",
+      mediaResourceId: base.mediaResourceId,
+      region: base.region,
+      videoId: base.videoId,
+      duration: 120,
+    }),
+  );
+});
+
 test("缺少 checksum 或 VOD 稳定身份时 fail closed", () => {
   assert.equal(createMediaAnalysisSourceFingerprint({
     sourceType: "uploaded",
@@ -42,5 +70,21 @@ test("缺少 checksum 或 VOD 稳定身份时 fail closed", () => {
     region: null,
     videoId: "vod-1",
     duration: 1,
+  }), null);
+  assert.equal(createMediaAnalysisSourceFingerprint({
+    sourceType: "aliyun_vod_rendition",
+    mediaResourceId: "media-1",
+    region: "cn-shanghai",
+    videoId: "vod-1",
+    jobId: " ",
+    format: "mp3",
+  }), null);
+  assert.equal(createMediaAnalysisSourceFingerprint({
+    sourceType: "aliyun_vod_rendition",
+    mediaResourceId: "media-1",
+    region: "cn-shanghai",
+    videoId: "vod-1",
+    jobId: "job-1\nforged",
+    format: "mp3",
   }), null);
 });

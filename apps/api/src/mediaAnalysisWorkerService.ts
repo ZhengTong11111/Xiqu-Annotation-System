@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { Readable } from "node:stream";
-import type { AliyunVodProvider } from "./aliyunVodGateway.js";
+import type { AliyunVodGateway, AliyunVodProvider } from "./aliyunVodGateway.js";
 import { AliyunVodGatewayError } from "./aliyunVodGateway.js";
 import {
   computeMediaAnalysisAssets,
@@ -138,7 +138,7 @@ export class MediaAnalysisWorkerService {
     try {
       await this.removeExistingAssets(run.id);
       if (signal?.aborted) throw new MediaAnalysisFfmpegError("aborted");
-      const input = await this.createFfmpegInput(run.sourceMedia);
+      const input = await this.createFfmpegInput(run);
       let assetCount = 0;
       const accumulator = new MediaAnalysisPcmTileAccumulator(
         MEDIA_ANALYSIS_SAMPLE_RATE,
@@ -282,10 +282,11 @@ export class MediaAnalysisWorkerService {
     }
   }
 
-  private async createFfmpegInput(media: Exclude<
+  private async createFfmpegInput(run: Exclude<
     Exclude<ClaimedMediaAnalysisJob, null>["analysisRun"],
     null
-  >["sourceMedia"]) {
+  >) {
+    const media = run.sourceMedia;
     if (media.sourceType === "uploaded") {
       if (!media.file) throw new WorkerStableError("analysis_source_invalid");
       return {
@@ -300,10 +301,11 @@ export class MediaAnalysisWorkerService {
     ) {
       throw new WorkerStableError("analysis_source_invalid");
     }
-    const audio = await this.aliyunVod.gateway.createAnalysisAudioStream(
+    return createAliyunVodFfmpegInput(
+      this.aliyunVod.gateway,
       media.aliyunVodVideoId,
+      run.sourceVodRenditionJobId,
     );
-    return { kind: "vod" as const, url: audio.url };
   }
 
   private async publishAsset(
@@ -388,6 +390,26 @@ export class MediaAnalysisWorkerService {
       }),
     ]);
   }
+}
+
+/**
+ * rendition run 必须精确使用创建时冻结的 JobId；重新选择“最佳 mp3”会让波形与用户试听内容错位。
+ * 返回值只包含本次 FFmpeg 消费所需的临时 URL，调用方不得持久化或写入日志。
+ */
+export async function createAliyunVodFfmpegInput(
+  gateway: AliyunVodGateway,
+  videoId: string,
+  renditionJobId: string | null,
+) {
+  if (!renditionJobId) {
+    const audio = await gateway.createAnalysisAudioStream(videoId);
+    return { kind: "vod" as const, url: audio.url };
+  }
+  const audio = await gateway.createAudioRenditionStream(videoId, renditionJobId);
+  if (audio.jobId !== renditionJobId) {
+    throw new WorkerStableError("analysis_source_invalid");
+  }
+  return { kind: "vod" as const, url: audio.url };
 }
 
 class WorkerStableError extends Error {

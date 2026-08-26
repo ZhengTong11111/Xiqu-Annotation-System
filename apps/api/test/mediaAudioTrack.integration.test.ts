@@ -364,11 +364,110 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
     assert.match(String(dataOf(renditionPlayback.json()).url), /^https:\/\//u);
     assert.doesNotMatch(renditionPlayback.body, /playauth/iu);
     assert.equal(renditionStreamRequests, 1);
+
+    // 音轨级分析由 annotation + track 重新解析来源；同一 VOD 的原声和指定 JobId 不能共享同一 run。
+    const originalAnalysis = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/media-analysis`,
+      payload: { audioTrackId: original.id },
+    });
+    assert.equal(originalAnalysis.statusCode, 200, originalAnalysis.body);
+    assert.equal(dataOf(originalAnalysis.json()).sourceVodRenditionJobId, null);
+    const renditionAnalysis = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/media-analysis`,
+      payload: { audioTrackId: renditionTrack.id },
+    });
+    assert.equal(renditionAnalysis.statusCode, 200, renditionAnalysis.body);
+    assert.equal(
+      dataOf(renditionAnalysis.json()).sourceVodRenditionJobId,
+      "vod-main-audio-job",
+    );
+    assert.notEqual(dataOf(originalAnalysis.json()).id, dataOf(renditionAnalysis.json()).id);
+
+    const repeatedRenditionAnalysis = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/media-analysis`,
+      payload: { audioTrackId: renditionTrack.id },
+    });
+    assert.equal(repeatedRenditionAnalysis.statusCode, 200, repeatedRenditionAnalysis.body);
+    assert.equal(
+      dataOf(repeatedRenditionAnalysis.json()).id,
+      dataOf(renditionAnalysis.json()).id,
+      "同一 canonical identity 的活跃任务必须复用",
+    );
+    const renditionStatus = await jsonRequest(app, adminToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/media-analysis?${new URLSearchParams({
+        audioTrackId: String(renditionTrack.id),
+      })}`,
+    });
+    assert.equal(renditionStatus.statusCode, 200, renditionStatus.body);
+    assert.equal(dataOf(renditionStatus.json()).audioTrackId, renditionTrack.id);
+    assert.equal(
+      recordOf(dataOf(renditionStatus.json()).currentRun).id,
+      dataOf(renditionAnalysis.json()).id,
+    );
+    const invalidTrackIdentity = await jsonRequest(app, adminToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/media-analysis?audioTrackId=%20`,
+    });
+    assert.equal(invalidTrackIdentity.statusCode, 400);
+
+    const uploadedAnalysis = await jsonRequest(app, adminToken, {
+      method: "POST",
+      url: `/api/annotation-files/${annotationFileId}/media-analysis`,
+      payload: { audioTrackId: uploadedTrack.id },
+    });
+    assert.equal(uploadedAnalysis.statusCode, 200, uploadedAnalysis.body);
+    const uploadedRunId = String(dataOf(uploadedAnalysis.json()).id);
+    const changeOffset = await jsonRequest(app, adminToken, {
+      method: "PATCH",
+      url: `/api/media-files/${primaryVideoId}/audio-tracks/${uploadedTrack.id}`,
+      payload: { offsetSeconds: 0.75 },
+    });
+    assert.equal(changeOffset.statusCode, 200, changeOffset.body);
+    const uploadedStatusAfterOffset = await jsonRequest(app, adminToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/media-analysis?${new URLSearchParams({
+        audioTrackId: String(uploadedTrack.id),
+      })}`,
+    });
+    assert.equal(uploadedStatusAfterOffset.statusCode, 200, uploadedStatusAfterOffset.body);
+    assert.equal(
+      recordOf(dataOf(uploadedStatusAfterOffset.json()).currentRun).id,
+      uploadedRunId,
+    );
+    assert.equal(
+      recordOf(dataOf(uploadedStatusAfterOffset.json()).currentRun).sourceOffsetSeconds,
+      0.75,
+    );
+    await jsonRequest(app, adminToken, {
+      method: "PATCH",
+      url: `/api/media-files/${primaryVideoId}/audio-tracks/${uploadedTrack.id}`,
+      payload: { offsetSeconds: 0.25 },
+    });
+
     const deleteRendition = await jsonRequest(app, adminToken, {
       method: "DELETE",
       url: `/api/media-files/${primaryVideoId}/audio-tracks/${renditionTrack.id}`,
     });
     assert.equal(deleteRendition.statusCode, 204, deleteRendition.body);
+    assert.ok(await prisma.mediaAnalysisRun.findUnique({
+      where: { id: String(dataOf(renditionAnalysis.json()).id) },
+    }), "删除音轨关系不能删除媒体级 run");
+    const deletedTrackStatus = await jsonRequest(app, adminToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/media-analysis?${new URLSearchParams({
+        audioTrackId: String(renditionTrack.id),
+      })}`,
+    });
+    assert.equal(deletedTrackStatus.statusCode, 200, deletedTrackStatus.body);
+    assert.equal(dataOf(deletedTrackStatus.json()).currentRun, null);
+    assert.equal(
+      recordOf(dataOf(deletedTrackStatus.json()).resolvedSource).code,
+      "analysis_source_invalid",
+    );
 
     // 播放会话每次都重新验证标注文件、主媒体和源音频，不能把建轨时的一次授权当成永久通行证。
     const uploadedPlayback = await jsonRequest(app, adminToken, {
@@ -559,6 +658,17 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
     });
     assert.equal(playbackWithDownload.statusCode, 200, playbackWithDownload.body);
+    const analysisWithDownload = await jsonRequest(app, studentToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/media-analysis?${new URLSearchParams({
+        audioTrackId: String(uploadedTrack.id),
+      })}`,
+    });
+    assert.equal(analysisWithDownload.statusCode, 200, analysisWithDownload.body);
+    assert.equal(
+      recordOf(dataOf(analysisWithDownload.json()).currentRun).id,
+      uploadedRunId,
+    );
     const optionsWithDownload = await jsonRequest(app, studentToken, {
       method: "GET",
       url: `/api/annotation-files/${annotationFileId}/audio-playback-options`,
@@ -574,6 +684,19 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
     });
     assert.equal(playbackAfterRevoke.statusCode, 403);
+    // 分析状态也必须逐次重验来源权限，不能因为浏览器持有旧 runId 就继续读取共享结果。
+    const analysisAfterRevoke = await jsonRequest(app, studentToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/media-analysis?${new URLSearchParams({
+        audioTrackId: String(uploadedTrack.id),
+      })}`,
+    });
+    assert.equal(analysisAfterRevoke.statusCode, 200, analysisAfterRevoke.body);
+    assert.equal(dataOf(analysisAfterRevoke.json()).currentRun, null);
+    assert.equal(
+      recordOf(dataOf(analysisAfterRevoke.json()).resolvedSource).code,
+      "analysis_audio_forbidden",
+    );
     const optionsAfterRevoke = await jsonRequest(app, studentToken, {
       method: "GET",
       url: `/api/annotation-files/${annotationFileId}/audio-playback-options`,
@@ -643,6 +766,18 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
       url: `/api/annotation-files/${annotationFileId}/audio-tracks/${uploadedTrack.id}/playback-session`,
     });
     assert.equal(disabledPlayback.statusCode, 404);
+    const disabledAnalysis = await jsonRequest(app, adminToken, {
+      method: "GET",
+      url: `/api/annotation-files/${annotationFileId}/media-analysis?${new URLSearchParams({
+        audioTrackId: String(uploadedTrack.id),
+      })}`,
+    });
+    assert.equal(disabledAnalysis.statusCode, 200, disabledAnalysis.body);
+    assert.equal(dataOf(disabledAnalysis.json()).currentRun, null);
+    assert.equal(
+      recordOf(dataOf(disabledAnalysis.json()).resolvedSource).code,
+      "analysis_source_invalid",
+    );
     const clearedAfterDisable = await jsonRequest(app, adminToken, {
       method: "GET",
       url: `/api/annotation-files/${annotationFileId}/audio-preference`,

@@ -409,9 +409,12 @@ export class PlatformClient {
     return session;
   }
 
-  getAnnotationMediaAnalysis(resourceId: string) {
+  getAnnotationMediaAnalysis(resourceId: string, audioTrackId?: string) {
+    const params = audioTrackId
+      ? `?${new URLSearchParams({ audioTrackId })}`
+      : "";
     return this.request<AnnotationMediaAnalysisStatus>(
-      `/annotation-files/${resourceId}/media-analysis`,
+      `/annotation-files/${resourceId}/media-analysis${params}`,
     );
   }
 
@@ -441,6 +444,7 @@ export class PlatformClient {
       startTime: String(options.startTime),
       endTime: String(options.endTime),
     });
+    if (options.audioTrackId) params.set("audioTrackId", options.audioTrackId);
     if (options.level !== undefined) params.set("level", String(options.level));
     return this.request<MediaAnalysisAssetList>(
       `/annotation-files/${resourceId}/media-analysis/assets?${params}`,

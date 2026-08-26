@@ -7697,3 +7697,52 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 本轮只更新事实与阶段边界，没有修改运行时代码、数据库结构或依赖，也没有重复执行 2026-08-26 已通过的
   `7/7 + 16/16` 音轨合同/状态、`48/48` 播放、`9/9` gateway、`4/4` 数据库 API、`189/189` 完整 API 和完整
   build。下一轮从 RA4a 分析音轨选择合同与状态收敛开始；RA5/RA6 收口前必须重新核对延期人工清单。
+
+## 2026-08-26：RA4a 音轨级分析身份与服务端读取合同
+
+### 计划边界与身份决策
+
+- RA3 登录后主 VOD 冒烟完成，但完整多音轨听觉与多环境验收按用户明确决定延期。本轮依据专项路线图重写
+  `CLAUDE_WORK.md`，只完成 RA4 的服务端身份基础；前端“分析显示跟随监听 / 固定音轨”、旧 UI 清理和偏移
+  校准分别留给 RA4b、RA4c 与 RA5，没有用半套前端接线制造两种分析语义。
+- 分析请求的新稳定上下文为 `annotationFileId + audioTrackId`。客户端不能提交媒体 ID、JobId、fingerprint、
+  offset 或 URL；服务端每次重读标注绑定的主媒体、音轨归属/enabled、真实来源、当前偏移和主/来源媒体的
+  `read + download`。新上下文不存在、跨主媒体、禁用、归档、回收站或撤权时 fail closed，不回退旧设置。
+- original 与独立 `MediaFile` 继续按既有媒体内容 fingerprint 复用；同一 VOD 下的 rendition 新增独立 variant，
+  identity 包含所属媒体、region、videoId、官方 JobId 和 mp3 format。名称、排序、definition、bitrate、显示信息、
+  临时 URL 与 offset 不参与 identity，因此改偏移只改变项目时间映射，不重新分析。
+
+### 数据库、API、worker 与兼容边界
+
+- additive migration `20260826010000_media_analysis_audio_track_sources` 为 `MediaAnalysisRun` 增加 nullable、有界、
+  去首尾空白且拒绝控制字符的 `source_vod_rendition_job_id` 和查询索引。run 不外键到音轨关系，删除关系不会
+  级联删除共享分析资产；旧 run 保持 null 且不猜测回填。隔离 `api_test` schema 已成功应用 27/27 migrations，
+  本机 public 与生产数据库尚未迁移或部署。
+- `MediaAnalysisJobService` 现在集中解析音轨分析上下文，status/create/list/single/batch 共用同一来源与 ACL 门禁。
+  新请求返回对应 `audioTrackId`，资产读取还要求 run 同时匹配 canonical、succeeded、媒体和 fingerprint；跨音轨、
+  跨主媒体或失效关系统一返回不可用/not found，不借响应泄露其他资产是否存在。
+- create 在既有媒体 identity advisory lock 下复用 succeeded/active canonical run；新 rendition run 固化有限 JobId。
+  审计只记录 run、track、来源媒体和 JobId，不记录 URL、PlayAuth、AccessKey、Secret 或供应商原始响应。
+- worker 普通 VOD 路径继续使用既有 `createAnalysisAudioStream()`；有 rendition JobId 时改用既有 gateway 的
+  `createAudioRenditionStream(videoId, jobId)`，并严格核对返回 JobId。临时 HTTPS URL 只交给本次 FFmpeg 输入，
+  不持久化也不写日志。
+- shared 与 PlatformClient 以可选 `audioTrackId` 扩展现有接口；省略时继续走
+  `AnnotationAnalysisAudioSetting` legacy 路径。该兼容只覆盖 RA4b/RA4c 迁移窗口，新参数一旦出现但非法就返回
+  400，解析失败不能静默退回旧来源。
+
+### 测试、自审与待推进
+
+- fingerprint 纯测试 4/4，证明 VOD original、相同 rendition、不同 JobId 和非法 JobId 的关系；worker 测试证明
+  rendition 精确取 JobId、普通 VOD 保持自动入口、供应商身份不一致形成稳定失败。
+- `npm run test:media-analysis` 通过 37/37；真实 PostgreSQL/Fastify `test:media-audio-track-api` 通过 4/4，覆盖
+  original/uploaded/rendition 分离、同 identity 复用、offset 不重算、删除保留 run、禁用和撤回 download 后旧
+  run 不再可见；完整 `test:api` 通过 192/192。
+- 完整 `npm run build` 通过 Prisma Client/schema guard、shared、document-model、Web 和 API；最终 API build、
+  `git diff --check` 与敏感内容/debug 静态扫描通过。只保留既有 Vite 主 chunk 提醒和测试环境 `pg` deprecation
+  warning。没有新增依赖、第二套 VOD SDK、临时 URL 持久字段、debug console 或前端旧路径的僵尸副本。
+- `AGENTS.md` 已登记音轨分析 resolver、rendition fingerprint 与 worker 精确 JobId 的长期 ownership。用户自己的
+  `examples_insights/tutorial.md` 修改没有被改写或纳入本轮提交。
+- **已完成**：RA4a 音轨级分析身份、additive schema、严格 ACL/asset 上下文、worker 精确 rendition 和自动门禁。
+- **待推进**：RA4b 把监听音轨或会话内固定音轨接入 `usePlatformMediaAnalysis`，让 status、run、瓦片请求、缓存
+  generation、未分析/失败提示同步切换；RA4c 再删除旧频谱覆盖 UI 和过渡调用。延期的 RA3 听觉/多环境清单仍
+  保留，不能在后续文档中倒填为通过。

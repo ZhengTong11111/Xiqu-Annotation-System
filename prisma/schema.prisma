@@ -541,6 +541,8 @@ model MediaAnalysisRun {
   sourceMode            AnalysisAudioMode?  @map("source_mode")
   sourceFingerprint     String              @map("source_fingerprint")
   mediaFingerprint      String?             @map("media_fingerprint")
+  // VOD rendition 的 JobId 是稳定流身份；临时播放 URL 绝不能进入分析 run。
+  sourceVodRenditionJobId String?            @map("source_vod_rendition_job_id")
   sourceOffsetSeconds   Float?              @map("source_offset_seconds")
   algorithmVersion      String              @map("algorithm_version")
   configHash            String              @map("config_hash")
@@ -572,6 +574,7 @@ model MediaAnalysisRun {
   @@index([sourceMediaResourceId])
   @@index([sourceMediaResourceId, sourceFingerprint, algorithmVersion, configHash])
   @@index([sourceMediaResourceId, mediaFingerprint, algorithmVersion, configHash])
+  @@index([sourceMediaResourceId, sourceVodRenditionJobId])
   @@index([supersededByRunId])
   @@index([supersededBy])
   @@index([status])

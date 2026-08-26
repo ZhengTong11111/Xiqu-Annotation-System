@@ -869,9 +869,25 @@ test("平台资源 API 集成测试", async (suite) => {
           storageKey: secondStagedAnalysisAsset.finalStorageKey,
         },
       });
+      const originalAudioTrack = await prisma.mediaAudioTrack.findFirstOrThrow({
+        where: { primaryMediaResourceId: vod.resourceId, kind: "original" },
+      });
+      const trackScopedStatus = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${fileId}/media-analysis?${new URLSearchParams({
+          audioTrackId: originalAudioTrack.id,
+        })}`,
+      });
+      assert.equal(trackScopedStatus.statusCode, 200, trackScopedStatus.body);
+      assert.equal(dataOf(trackScopedStatus.json()).audioTrackId, originalAudioTrack.id);
+      assert.equal(
+        (dataOf(trackScopedStatus.json()).currentRun as JsonObject).id,
+        dataOf(firstRun.json()).id,
+      );
       const assetList = await jsonRequest(app, adminToken, {
         method: "GET",
         url: `/api/annotation-files/${fileId}/media-analysis/assets?${new URLSearchParams({
+          audioTrackId: originalAudioTrack.id,
           runId: String(dataOf(firstRun.json()).id),
           kind: "waveform",
           preset: "default",
@@ -887,7 +903,9 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(listedAsset.checksum, undefined);
       const assetContent = await jsonRequest(app, adminToken, {
         method: "GET",
-        url: `/api/annotation-files/${fileId}/media-analysis/assets/${storedAsset.id}`,
+        url: `/api/annotation-files/${fileId}/media-analysis/assets/${storedAsset.id}?${new URLSearchParams({
+          audioTrackId: originalAudioTrack.id,
+        })}`,
       });
       assert.equal(assetContent.statusCode, 200, assetContent.body);
       assert.equal(assetContent.body, "analysis-tile");
@@ -895,6 +913,7 @@ test("平台资源 API 集成测试", async (suite) => {
         method: "POST",
         url: `/api/annotation-files/${fileId}/media-analysis/assets/batch`,
         payload: {
+          audioTrackId: originalAudioTrack.id,
           runId: String(dataOf(firstRun.json()).id),
           assetIds: [secondStoredAsset.id, storedAsset.id],
         },
@@ -905,6 +924,20 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.deepEqual([...decodedBatch.keys()], [secondStoredAsset.id, storedAsset.id]);
       assert.equal(Buffer.from(decodedBatch.get(secondStoredAsset.id) ?? []).toString(), "second-tile");
       assert.equal(Buffer.from(decodedBatch.get(storedAsset.id) ?? []).toString(), "analysis-tile");
+
+      const foreignAudioTrack = await prisma.mediaAudioTrack.findFirstOrThrow({
+        where: { primaryMediaResourceId: videoResourceId, kind: "original" },
+      });
+      const crossTrackAssetBatch = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${fileId}/media-analysis/assets/batch`,
+        payload: {
+          audioTrackId: foreignAudioTrack.id,
+          runId: String(dataOf(firstRun.json()).id),
+          assetIds: [storedAsset.id],
+        },
+      });
+      assert.equal(crossTrackAssetBatch.statusCode, 404);
 
       const missingAssetBatch = await jsonRequest(app, adminToken, {
         method: "POST",

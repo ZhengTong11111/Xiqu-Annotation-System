@@ -5,9 +5,75 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
-import { MediaAnalysisWorkerService } from "../src/mediaAnalysisWorkerService.js";
+import {
+  createAliyunVodFfmpegInput,
+  MediaAnalysisWorkerService,
+} from "../src/mediaAnalysisWorkerService.js";
 import { LocalObjectStorage } from "../src/storage.js";
 import { createTestPrisma, truncateTestDatabase } from "./testEnvironment.js";
+
+test("worker 对 rendition 精确使用 JobId，普通 VOD 仍使用自动分析音频", async () => {
+  const calls: string[] = [];
+  const gateway = {
+    inspectVideo: async () => { throw new Error("not used"); },
+    createPlaybackCredential: async () => { throw new Error("not used"); },
+    listAudioRenditions: async () => { throw new Error("not used"); },
+    createAnalysisAudioStream: async (videoId: string) => {
+      calls.push(`auto:${videoId}`);
+      return {
+        url: "https://vod.example.test/auto.mp3",
+        expiresAt: new Date(Date.now() + 60_000),
+        format: "mp3" as const,
+        duration: 10,
+        bitrate: 128_000,
+      };
+    },
+    createAudioRenditionStream: async (videoId: string, jobId: string) => {
+      calls.push(`rendition:${videoId}:${jobId}`);
+      return {
+        jobId,
+        format: "mp3" as const,
+        definition: "SQ",
+        bitrate: 128_000,
+        duration: 10,
+        url: "https://vod.example.test/rendition.mp3",
+        expiresAt: new Date(Date.now() + 60_000),
+      };
+    },
+  };
+
+  assert.deepEqual(
+    await createAliyunVodFfmpegInput(gateway, "vod-1", null),
+    { kind: "vod", url: "https://vod.example.test/auto.mp3" },
+  );
+  assert.deepEqual(
+    await createAliyunVodFfmpegInput(gateway, "vod-1", "job-sq"),
+    { kind: "vod", url: "https://vod.example.test/rendition.mp3" },
+  );
+  assert.deepEqual(calls, ["auto:vod-1", "rendition:vod-1:job-sq"]);
+});
+
+test("worker 拒绝供应商返回不同 JobId 的 rendition", async () => {
+  const gateway = {
+    inspectVideo: async () => { throw new Error("not used"); },
+    createPlaybackCredential: async () => { throw new Error("not used"); },
+    listAudioRenditions: async () => { throw new Error("not used"); },
+    createAnalysisAudioStream: async () => { throw new Error("not used"); },
+    createAudioRenditionStream: async () => ({
+      jobId: "job-other",
+      format: "mp3" as const,
+      definition: "SQ",
+      bitrate: 128_000,
+      duration: 10,
+      url: "https://vod.example.test/rendition.mp3",
+      expiresAt: new Date(Date.now() + 60_000),
+    }),
+  };
+  await assert.rejects(
+    () => createAliyunVodFfmpegInput(gateway, "vod-1", "job-sq"),
+    /analysis_source_invalid/u,
+  );
+});
 
 test("媒体分析 worker 原子 claim、流式生成资产并可恢复陈旧任务", async (context) => {
   const ffmpegPath = process.env.XIQU_FFMPEG_PATH?.trim() || "ffmpeg";

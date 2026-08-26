@@ -157,6 +157,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     status DTOs, tile descriptors, and protected asset reads
   - canonical runs are media-scoped by source media, offset-independent media fingerprint, algorithm, and config. Annotation
     file ids, source mode, and offset are only request/ACL/display context and must never re-enter run identity
+  - new audio-track-scoped requests carry only `annotationFileId + audioTrackId`; the service must reread the enabled track,
+    primary media, concrete source media, offset, and current `read + download` permissions. A missing, disabled, foreign, archived,
+    trashed, or revoked track context must fail closed and must never fall back to the legacy analysis-audio setting
   - asset reads revalidate the annotation and its currently resolved source, then require every bounded asset id to belong to
     the same canonical succeeded media run; missing/cross-run/cross-media ids fail as one batch without leaking existence
   - the algorithm config hash must include every parameter that changes persisted tile timing or values
@@ -174,9 +177,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/mediaAnalysisSourceFingerprint.ts`
   - the only media-content fingerprint boundary for media-scoped analysis; uploaded identity requires stable file checksum/size,
     VOD identity requires region/video id/duration, and annotation id, selection mode, and track offset have no input position
+  - same-VID VOD renditions additionally include the official stable JobId and format, so original audio and different rendition
+    streams cannot share a run. Definition, bitrate, display metadata, temporary URL, and track offset never enter the fingerprint
 - `apps/api/src/mediaAnalysisWorkerService.ts` + `apps/api/src/mediaAnalysisWorkerRuntime.ts`
   - independent database claim/heartbeat/stale-recovery worker; normal shutdown removes partial assets and requeues the job
   - staged/final object compensation failures must become stable failed states and must never be silently swallowed
+  - a run with `sourceVodRenditionJobId` must request that exact JobId through the existing VOD gateway and reject a mismatched
+    provider response. The resulting HTTPS URL remains worker-memory-only and must never enter the database, audit, or logs
 - `apps/api/src/mediaAnalysisFfmpeg.ts` + `apps/api/src/mediaAnalysisComputation.ts`
   - shell-free FFmpeg streaming to 16 kHz mono PCM and versioned fixed-duration tile production; new runs currently use
     10-second tiles, while historical runs expose their original duration through manifest/config

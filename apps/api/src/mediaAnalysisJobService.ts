@@ -13,6 +13,7 @@ import type {
   UpdateAnalysisAudioRequest,
 } from "@xiqu/shared";
 import {
+  isStableMediaAudioIdentity,
   MAX_MEDIA_ANALYSIS_BATCH_ASSETS,
   MAX_MEDIA_ANALYSIS_BATCH_BYTES,
 } from "@xiqu/shared";
@@ -81,9 +82,11 @@ type ResolvedAnalysisSource = {
   offsetSeconds: number;
   media: AnalysisMediaRow;
   mediaFingerprint: string;
+  sourceVodRenditionJobId: string | null;
 };
 
 type AnalysisContext = {
+  audioTrackId: string | null;
   setting: AnalysisAudioSetting;
   source:
     | { status: "ready"; value: ResolvedAnalysisSource }
@@ -112,6 +115,12 @@ const analysisMediaInclude = {
   },
 } satisfies Prisma.MediaFileInclude;
 
+const analysisAudioTrackInclude = {
+  primaryMedia: { include: analysisMediaInclude },
+  audioMedia: { include: analysisMediaInclude },
+  vodRenditionMedia: { include: analysisMediaInclude },
+} satisfies Prisma.MediaAudioTrackInclude;
+
 /**
  * 媒体分析业务服务是设置、来源解析、run/job 去重和公开 DTO 的唯一边界。
  * worker 后续只消费这里固化的 run 身份，不能自行重新解释用户设置。
@@ -125,9 +134,14 @@ export class MediaAnalysisJobService {
   async getStatus(
     user: ApiUser,
     annotationFileId: string,
+    audioTrackId?: unknown,
   ): Promise<AnnotationMediaAnalysisStatus> {
     await this.assertActiveAnnotationFile(user, annotationFileId, "read");
-    const context = await this.resolveAnalysisContext(user, annotationFileId);
+    const context = await this.resolveAnalysisContext(
+      user,
+      annotationFileId,
+      normalizeOptionalAudioTrackId(audioTrackId),
+    );
     const currentRun = context.source.status === "ready"
       ? await this.prisma.mediaAnalysisRun.findFirst({
           where: {
@@ -142,6 +156,7 @@ export class MediaAnalysisJobService {
         })
       : null;
     return {
+      audioTrackId: context.audioTrackId,
       setting: context.setting,
       resolvedSource: toResolvedSourceDto(context),
       currentRun: currentRun && context.source.status === "ready"
@@ -212,7 +227,8 @@ export class MediaAnalysisJobService {
     input: CreateMediaAnalysisRequest,
   ): Promise<MediaAnalysisRunDto> {
     await this.assertActiveAnnotationFile(user, annotationFileId, "write");
-    const context = await this.resolveAnalysisContext(user, annotationFileId);
+    const audioTrackId = normalizeOptionalAudioTrackId(input.audioTrackId);
+    const context = await this.resolveAnalysisContext(user, annotationFileId, audioTrackId);
     const source = requireReadySource(context);
 
     const run = await this.prisma.$transaction(async (transaction) => {
@@ -264,6 +280,7 @@ export class MediaAnalysisJobService {
               sourceMode: source.mode,
               sourceFingerprint: source.mediaFingerprint,
               mediaFingerprint: source.mediaFingerprint,
+              sourceVodRenditionJobId: source.sourceVodRenditionJobId,
               sourceOffsetSeconds: source.offsetSeconds,
               algorithmVersion: MEDIA_ANALYSIS_ALGORITHM_VERSION,
               configHash: MEDIA_ANALYSIS_CONFIG_HASH,
@@ -291,6 +308,8 @@ export class MediaAnalysisJobService {
             runId: queuedRun.id,
             sourceMode: source.mode,
             sourceMediaResourceId: source.media.resourceId,
+            audioTrackId: context.audioTrackId,
+            sourceVodRenditionJobId: source.sourceVodRenditionJobId,
             force: input.force === true,
           },
         },
@@ -305,7 +324,11 @@ export class MediaAnalysisJobService {
     annotationFileId: string,
     options: ListMediaAnalysisAssetsOptions,
   ) {
-    const identity = await this.resolveReadableAnalysisIdentity(user, annotationFileId);
+    const identity = await this.resolveReadableAnalysisIdentity(
+      user,
+      annotationFileId,
+      options.audioTrackId,
+    );
     validateAssetListOptions(options);
     const run = await this.prisma.mediaAnalysisRun.findFirst({
       where: {
@@ -337,8 +360,13 @@ export class MediaAnalysisJobService {
     user: ApiUser,
     annotationFileId: string,
     assetId: string,
+    audioTrackId?: unknown,
   ) {
-    const identity = await this.resolveReadableAnalysisIdentity(user, annotationFileId);
+    const identity = await this.resolveReadableAnalysisIdentity(
+      user,
+      annotationFileId,
+      audioTrackId,
+    );
     const asset = await this.prisma.mediaAnalysisAsset.findFirst({
       where: {
         id: assetId,
@@ -369,8 +397,13 @@ export class MediaAnalysisJobService {
     annotationFileId: string,
     runId: string,
     assetIds: readonly string[],
+    audioTrackId?: unknown,
   ) {
-    const identity = await this.resolveReadableAnalysisIdentity(user, annotationFileId);
+    const identity = await this.resolveReadableAnalysisIdentity(
+      user,
+      annotationFileId,
+      audioTrackId,
+    );
     if (
       !runId.trim() ||
       assetIds.length === 0 ||
@@ -417,7 +450,11 @@ export class MediaAnalysisJobService {
   private async resolveAnalysisContext(
     user: ApiUser,
     annotationFileId: string,
+    audioTrackId?: string,
   ): Promise<AnalysisContext> {
+    if (audioTrackId) {
+      return this.resolveAudioTrackAnalysisContext(user, annotationFileId, audioTrackId);
+    }
     const annotationFile = await this.prisma.annotationFile.findUnique({
       where: { resourceId: annotationFileId },
       include: {
@@ -448,6 +485,7 @@ export class MediaAnalysisJobService {
       : annotationFile.mediaResource;
     if (!media) {
       return {
+        audioTrackId: null,
         setting,
         source: {
           status: "unavailable",
@@ -462,6 +500,7 @@ export class MediaAnalysisJobService {
       !permission.capabilities.includes("download")
     ) {
       return {
+        audioTrackId: null,
         setting,
         source: {
           status: "unavailable",
@@ -471,6 +510,7 @@ export class MediaAnalysisJobService {
     }
     if (!isUsableAnalysisMedia(media, setting.mode)) {
       return {
+        audioTrackId: null,
         setting,
         source: {
           status: "unavailable",
@@ -478,25 +518,10 @@ export class MediaAnalysisJobService {
         },
       };
     }
-    const fingerprint = createMediaAnalysisSourceFingerprint(
-      media.sourceType === "uploaded"
-        ? {
-            sourceType: "uploaded",
-            mediaResourceId: media.resourceId,
-            fileId: media.file?.id ?? null,
-            checksum: media.file?.checksum ?? null,
-            size: media.file?.size ?? null,
-          }
-        : {
-            sourceType: "aliyun_vod",
-            mediaResourceId: media.resourceId,
-            region: media.aliyunVodRegion,
-            videoId: media.aliyunVodVideoId,
-            duration: media.duration,
-          },
-    );
+    const fingerprint = createMediaFingerprint(media);
     if (!fingerprint) {
       return {
+        audioTrackId: null,
         setting,
         source: {
           status: "unavailable",
@@ -505,6 +530,7 @@ export class MediaAnalysisJobService {
       };
     }
     return {
+      audioTrackId: null,
       setting,
       source: {
         status: "ready",
@@ -513,14 +539,142 @@ export class MediaAnalysisJobService {
           offsetSeconds: setting.offsetSeconds,
           media,
           mediaFingerprint: fingerprint,
+          sourceVodRenditionJobId: null,
         },
       },
     };
   }
 
-  private async resolveReadableAnalysisIdentity(user: ApiUser, annotationFileId: string) {
+  /**
+   * 音轨级来源解析是 RA4 的唯一服务端边界：客户端只提供关系 ID，真实媒体、JobId、偏移和权限全部重读数据库。
+   * 这样删除、禁用或撤权后，旧 runId 和浏览器缓存都不能绕过当前资源状态。
+   */
+  private async resolveAudioTrackAnalysisContext(
+    user: ApiUser,
+    annotationFileId: string,
+    audioTrackId: string,
+  ): Promise<AnalysisContext> {
+    const annotationFile = await this.prisma.annotationFile.findUnique({
+      where: { resourceId: annotationFileId },
+      select: { mediaResourceId: true },
+    });
+    if (!annotationFile) throw notFound("标注文件不存在。");
+
+    const setting: AnalysisAudioSetting = {
+      mode: "auto",
+      overrideMediaResourceId: null,
+      offsetSeconds: 0,
+      updatedAt: null,
+    };
+    if (!annotationFile.mediaResourceId) {
+      return unavailableTrackAnalysisContext(
+        audioTrackId,
+        setting,
+        "analysis_source_missing",
+      );
+    }
+
+    const track = await this.prisma.mediaAudioTrack.findFirst({
+      where: {
+        id: audioTrackId,
+        primaryMediaResourceId: annotationFile.mediaResourceId,
+        enabled: true,
+      },
+      include: analysisAudioTrackInclude,
+    });
+    if (!track) {
+      return unavailableTrackAnalysisContext(
+        audioTrackId,
+        setting,
+        "analysis_source_invalid",
+      );
+    }
+
+    // 外部音轨仍依赖主视频作为项目时钟，因此主媒体和真实音频来源都必须保持可读、可下载。
+    const primaryPermission = await this.access.getEffectivePermission(
+      user,
+      track.primaryMediaResourceId,
+    );
+    if (!hasAnalysisReadAccess(primaryPermission.capabilities)) {
+      return unavailableTrackAnalysisContext(
+        audioTrackId,
+        { ...setting, offsetSeconds: track.offsetSeconds },
+        "analysis_audio_forbidden",
+      );
+    }
+
+    let media: AnalysisMediaRow | null = null;
+    let sourceVodRenditionJobId: string | null = null;
+    let fingerprint: string | null = null;
+    if (track.kind === "original") {
+      media = track.primaryMedia;
+      fingerprint = createMediaFingerprint(media);
+    } else if (track.audioMediaResourceId && track.audioMedia) {
+      media = track.audioMedia;
+      if (media.mediaKind === "audio") fingerprint = createMediaFingerprint(media);
+    } else if (
+      track.vodRenditionMediaResourceId &&
+      track.vodRenditionMedia &&
+      track.vodRenditionJobId &&
+      track.vodRenditionFormat === "mp3"
+    ) {
+      media = track.vodRenditionMedia;
+      sourceVodRenditionJobId = track.vodRenditionJobId;
+      if (media.sourceType === "aliyun_vod" && media.mediaKind === "video") {
+        fingerprint = createMediaAnalysisSourceFingerprint({
+          sourceType: "aliyun_vod_rendition",
+          mediaResourceId: media.resourceId,
+          region: media.aliyunVodRegion,
+          videoId: media.aliyunVodVideoId,
+          jobId: sourceVodRenditionJobId,
+          format: "mp3",
+        });
+      }
+    }
+
+    const trackSetting = { ...setting, offsetSeconds: track.offsetSeconds };
+    if (!media || !isUsableAnalysisMedia(media, "auto") || !fingerprint) {
+      return unavailableTrackAnalysisContext(
+        audioTrackId,
+        trackSetting,
+        "analysis_source_invalid",
+      );
+    }
+    const sourcePermission = await this.access.getEffectivePermission(user, media.resourceId);
+    if (!hasAnalysisReadAccess(sourcePermission.capabilities)) {
+      return unavailableTrackAnalysisContext(
+        audioTrackId,
+        trackSetting,
+        "analysis_audio_forbidden",
+      );
+    }
+    return {
+      audioTrackId,
+      setting: trackSetting,
+      source: {
+        status: "ready",
+        value: {
+          mode: "auto",
+          offsetSeconds: track.offsetSeconds,
+          media,
+          mediaFingerprint: fingerprint,
+          sourceVodRenditionJobId,
+        },
+      },
+    };
+  }
+
+  private async resolveReadableAnalysisIdentity(
+    user: ApiUser,
+    annotationFileId: string,
+    audioTrackId?: unknown,
+  ) {
     await this.assertActiveAnnotationFile(user, annotationFileId, "read");
-    const context = await this.resolveAnalysisContext(user, annotationFileId);
+    const context = await this.resolveAnalysisContext(
+      user,
+      annotationFileId,
+      normalizeOptionalAudioTrackId(audioTrackId),
+    );
     if (context.source.status !== "ready") {
       throw notFound("媒体分析结果不存在。");
     }
@@ -571,6 +725,7 @@ export class MediaAnalysisJobService {
     progress: number;
     errorCode: string | null;
     sourceMediaResourceId: string;
+    sourceVodRenditionJobId: string | null;
     sourceMode: AnalysisAudioMode | null;
     sourceOffsetSeconds: number | null;
     algorithmVersion: string;
@@ -595,6 +750,7 @@ export class MediaAnalysisJobService {
       progress: run.progress,
       errorCode: run.errorCode,
       sourceMediaResourceId: run.sourceMediaResourceId,
+      sourceVodRenditionJobId: run.sourceVodRenditionJobId,
       sourceMode,
       sourceOffsetSeconds,
       algorithmVersion: run.algorithmVersion,
@@ -654,6 +810,53 @@ function isUsableAnalysisMedia(
     return Boolean(media.file && media.mimeType && media.size !== null);
   }
   return Boolean(media.aliyunVodVideoId && media.aliyunVodRegion);
+}
+
+function createMediaFingerprint(media: AnalysisMediaRow) {
+  return createMediaAnalysisSourceFingerprint(
+    media.sourceType === "uploaded"
+      ? {
+          sourceType: "uploaded",
+          mediaResourceId: media.resourceId,
+          fileId: media.file?.id ?? null,
+          checksum: media.file?.checksum ?? null,
+          size: media.file?.size ?? null,
+        }
+      : {
+          sourceType: "aliyun_vod",
+          mediaResourceId: media.resourceId,
+          region: media.aliyunVodRegion,
+          videoId: media.aliyunVodVideoId,
+          duration: media.duration,
+        },
+  );
+}
+
+function hasAnalysisReadAccess(capabilities: readonly string[]) {
+  return capabilities.includes("read") && capabilities.includes("download");
+}
+
+function unavailableTrackAnalysisContext(
+  audioTrackId: string,
+  setting: AnalysisAudioSetting,
+  code: Extract<ResolvedAnalysisAudioSource, { status: "unavailable" }>["code"],
+): AnalysisContext {
+  return {
+    audioTrackId,
+    setting,
+    source: {
+      status: "unavailable",
+      value: unavailableSource(setting, code),
+    },
+  };
+}
+
+function normalizeOptionalAudioTrackId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (!isStableMediaAudioIdentity(value)) {
+    throw badRequest("分析音轨 ID 不正确。");
+  }
+  return value;
 }
 
 function stableHash(value: unknown) {

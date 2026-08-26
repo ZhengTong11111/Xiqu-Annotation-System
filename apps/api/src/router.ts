@@ -535,11 +535,15 @@ export function registerApiRoutes(
     },
   );
 
-  app.get<{ Params: { resourceId: string } }>(
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { audioTrackId?: string };
+  }>(
     "/api/annotation-files/:resourceId/media-analysis",
     async (request) => mediaAnalysis.getStatus(
       await getCurrentUser(repository, request),
       request.params.resourceId,
+      request.query.audioTrackId,
     ),
   );
 
@@ -569,7 +573,10 @@ export function registerApiRoutes(
       return mediaAnalysis.createAnalysis(
         await getCurrentUser(repository, request),
         request.params.resourceId,
-        { force: body.force as boolean | undefined },
+        {
+          force: body.force as boolean | undefined,
+          audioTrackId: body.audioTrackId as string | undefined,
+        },
       );
     },
   );
@@ -583,6 +590,7 @@ export function registerApiRoutes(
       level?: string;
       startTime?: string;
       endTime?: string;
+      audioTrackId?: string;
     };
   }>("/api/annotation-files/:resourceId/media-analysis/assets", async (request) => {
     const kind = normalizedString(request.query.kind);
@@ -593,6 +601,7 @@ export function registerApiRoutes(
       await getCurrentUser(repository, request),
       request.params.resourceId,
       {
+        audioTrackId: request.query.audioTrackId,
         runId: requireString(request.query.runId, "runId"),
         kind,
         preset: requireString(request.query.preset, "preset"),
@@ -607,11 +616,13 @@ export function registerApiRoutes(
 
   app.get<{
     Params: { resourceId: string; assetId: string };
+    Querystring: { audioTrackId?: string };
   }>("/api/annotation-files/:resourceId/media-analysis/assets/:assetId", async (request, reply) => {
     const asset = await mediaAnalysis.getAssetForRead(
       await getCurrentUser(repository, request),
       request.params.resourceId,
       request.params.assetId,
+      request.query.audioTrackId,
     );
     reply.header("Content-Type", asset.mimeType);
     reply.header("Content-Length", asset.size);
@@ -633,6 +644,7 @@ export function registerApiRoutes(
       request.params.resourceId,
       runId,
       assetIds,
+      body.audioTrackId,
     );
     const header = encodeMediaAnalysisTileBatchHeader(assets.map((asset) => ({
       id: asset.id,

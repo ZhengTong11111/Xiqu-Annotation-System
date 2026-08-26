@@ -210,9 +210,13 @@ export type UpdateAnalysisAudioRequest = {
 
 export type CreateMediaAnalysisRequest = {
   force?: boolean;
+  /** 新音轨级分析路径使用稳定关系 ID；省略时仅供旧分析设置兼容。 */
+  audioTrackId?: string;
 };
 
 export type ListMediaAnalysisAssetsOptions = {
+  /** 与 runId 一起重新做来源和权限校验；省略时仅供旧分析设置兼容。 */
+  audioTrackId?: string;
   runId: string;
   kind: MediaAnalysisAssetKind;
   preset: string;
@@ -228,6 +232,8 @@ export type MediaAnalysisAssetList = {
 
 // 二进制批量响应沿用 descriptor 中的权威大小；请求只传稳定身份，不回传 storageKey。
 export type ReadMediaAnalysisAssetBatchRequest = {
+  /** 与批次中的每个资产共同绑定当前音轨上下文。 */
+  audioTrackId?: string;
   runId: string;
   assetIds: string[];
 };
