@@ -1,16 +1,13 @@
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
-  AnalysisAudioMode,
   AnnotationMediaAnalysisStatus,
-  AnalysisAudioSetting,
   CreateMediaAnalysisRequest,
   MediaAnalysisAssetKind,
   MediaAnalysisAssetDescriptor,
   ListMediaAnalysisAssetsOptions,
   MediaAnalysisRun as MediaAnalysisRunDto,
   ResolvedAnalysisAudioSource,
-  UpdateAnalysisAudioRequest,
 } from "@xiqu/shared";
 import {
   isStableMediaAudioIdentity,
@@ -32,7 +29,6 @@ import {
 } from "./mediaAnalysisComputation.js";
 import { createMediaAnalysisSourceFingerprint } from "./mediaAnalysisSourceFingerprint.js";
 
-const MAX_ANALYSIS_AUDIO_OFFSET_SECONDS = 24 * 60 * 60;
 export const MEDIA_ANALYSIS_ALGORITHM_VERSION = "xiqu-media-analysis-v1";
 export const MEDIA_ANALYSIS_CONFIG = {
   sampleRate: 16_000,
@@ -78,7 +74,6 @@ type AnalysisMediaRow = {
 };
 
 type ResolvedAnalysisSource = {
-  mode: AnalysisAudioMode;
   offsetSeconds: number;
   media: AnalysisMediaRow;
   mediaFingerprint: string;
@@ -86,8 +81,7 @@ type ResolvedAnalysisSource = {
 };
 
 type AnalysisContext = {
-  audioTrackId: string | null;
-  setting: AnalysisAudioSetting;
+  audioTrackId: string;
   source:
     | { status: "ready"; value: ResolvedAnalysisSource }
     | {
@@ -122,8 +116,8 @@ const analysisAudioTrackInclude = {
 } satisfies Prisma.MediaAudioTrackInclude;
 
 /**
- * 媒体分析业务服务是设置、来源解析、run/job 去重和公开 DTO 的唯一边界。
- * worker 后续只消费这里固化的 run 身份，不能自行重新解释用户设置。
+ * 媒体分析业务服务是音轨来源解析、run/job 去重和公开 DTO 的唯一边界。
+ * worker 只消费这里固化的媒体身份；音轨偏移在请求时投影，不能写进共享 run。
  */
 export class MediaAnalysisJobService {
   constructor(
@@ -134,13 +128,13 @@ export class MediaAnalysisJobService {
   async getStatus(
     user: ApiUser,
     annotationFileId: string,
-    audioTrackId?: unknown,
+    audioTrackId: unknown,
   ): Promise<AnnotationMediaAnalysisStatus> {
     await this.assertActiveAnnotationFile(user, annotationFileId, "read");
     const context = await this.resolveAnalysisContext(
       user,
       annotationFileId,
-      normalizeOptionalAudioTrackId(audioTrackId),
+      normalizeAudioTrackId(audioTrackId),
     );
     const currentRun = context.source.status === "ready"
       ? await this.prisma.mediaAnalysisRun.findFirst({
@@ -157,68 +151,14 @@ export class MediaAnalysisJobService {
       : null;
     return {
       audioTrackId: context.audioTrackId,
-      setting: context.setting,
       resolvedSource: toResolvedSourceDto(context),
       currentRun: currentRun && context.source.status === "ready"
         ? await this.mapRun(
             currentRun,
-            context.source.value.mode,
             context.source.value.offsetSeconds,
           )
         : null,
     };
-  }
-
-  async updateAnalysisAudio(
-    user: ApiUser,
-    annotationFileId: string,
-    input: UpdateAnalysisAudioRequest,
-  ): Promise<AnnotationMediaAnalysisStatus> {
-    const normalized = normalizeAnalysisAudioInput(input);
-    await this.assertActiveAnnotationFile(user, annotationFileId, "write");
-
-    // 设置保存前必须重新验证覆盖媒资和当前账号权限，选择器中的旧结果不能充当授权事实。
-    if (
-      normalized.mode === "media_override" &&
-      normalized.overrideMediaResourceId !== null
-    ) {
-      await this.assertValidOverrideMedia(
-        user,
-        normalized.overrideMediaResourceId,
-      );
-    }
-    await this.prisma.$transaction(async (transaction) => {
-      await transaction.annotationAnalysisAudioSetting.upsert({
-        where: { annotationFileId },
-        update: {
-          mode: normalized.mode,
-          overrideMediaResourceId: normalized.overrideMediaResourceId,
-          offsetSeconds: normalized.offsetSeconds,
-          updatedBy: user.id,
-          validatedAt: new Date(),
-        },
-        create: {
-          annotationFileId,
-          mode: normalized.mode,
-          overrideMediaResourceId: normalized.overrideMediaResourceId,
-          offsetSeconds: normalized.offsetSeconds,
-          updatedBy: user.id,
-        },
-      });
-      await transaction.auditLog.create({
-        data: {
-          action: "annotation_analysis_audio_update",
-          actorUserId: user.id,
-          resourceId: annotationFileId,
-          detail: {
-            mode: normalized.mode,
-            overrideMediaResourceId: normalized.overrideMediaResourceId,
-            offsetSeconds: normalized.offsetSeconds,
-          },
-        },
-      });
-    });
-    return this.getStatus(user, annotationFileId);
   }
 
   async createAnalysis(
@@ -227,7 +167,7 @@ export class MediaAnalysisJobService {
     input: CreateMediaAnalysisRequest,
   ): Promise<MediaAnalysisRunDto> {
     await this.assertActiveAnnotationFile(user, annotationFileId, "write");
-    const audioTrackId = normalizeOptionalAudioTrackId(input.audioTrackId);
+    const audioTrackId = normalizeAudioTrackId(input.audioTrackId);
     const context = await this.resolveAnalysisContext(user, annotationFileId, audioTrackId);
     const source = requireReadySource(context);
 
@@ -275,13 +215,10 @@ export class MediaAnalysisJobService {
           })
         : await transaction.mediaAnalysisRun.create({
             data: {
-              annotationFileId,
               sourceMediaResourceId: source.media.resourceId,
-              sourceMode: source.mode,
               sourceFingerprint: source.mediaFingerprint,
               mediaFingerprint: source.mediaFingerprint,
               sourceVodRenditionJobId: source.sourceVodRenditionJobId,
-              sourceOffsetSeconds: source.offsetSeconds,
               algorithmVersion: MEDIA_ANALYSIS_ALGORITHM_VERSION,
               configHash: MEDIA_ANALYSIS_CONFIG_HASH,
               config: MEDIA_ANALYSIS_CONFIG,
@@ -306,7 +243,6 @@ export class MediaAnalysisJobService {
           resourceId: annotationFileId,
           detail: {
             runId: queuedRun.id,
-            sourceMode: source.mode,
             sourceMediaResourceId: source.media.resourceId,
             audioTrackId: context.audioTrackId,
             sourceVodRenditionJobId: source.sourceVodRenditionJobId,
@@ -316,7 +252,7 @@ export class MediaAnalysisJobService {
       });
       return queuedRun;
     });
-    return this.mapRun(run, source.mode, source.offsetSeconds);
+    return this.mapRun(run, source.offsetSeconds);
   }
 
   async listAssets(
@@ -360,7 +296,7 @@ export class MediaAnalysisJobService {
     user: ApiUser,
     annotationFileId: string,
     assetId: string,
-    audioTrackId?: unknown,
+    audioTrackId: unknown,
   ) {
     const identity = await this.resolveReadableAnalysisIdentity(
       user,
@@ -397,7 +333,7 @@ export class MediaAnalysisJobService {
     annotationFileId: string,
     runId: string,
     assetIds: readonly string[],
-    audioTrackId?: unknown,
+    audioTrackId: unknown,
   ) {
     const identity = await this.resolveReadableAnalysisIdentity(
       user,
@@ -450,126 +386,20 @@ export class MediaAnalysisJobService {
   private async resolveAnalysisContext(
     user: ApiUser,
     annotationFileId: string,
-    audioTrackId?: string,
-  ): Promise<AnalysisContext> {
-    if (audioTrackId) {
-      return this.resolveAudioTrackAnalysisContext(user, annotationFileId, audioTrackId);
-    }
-    const annotationFile = await this.prisma.annotationFile.findUnique({
-      where: { resourceId: annotationFileId },
-      include: {
-        mediaResource: { include: analysisMediaInclude },
-        analysisAudioSetting: {
-          include: { overrideMedia: { include: analysisMediaInclude } },
-        },
-      },
-    });
-    if (!annotationFile) throw notFound("标注文件不存在。");
-
-    const setting: AnalysisAudioSetting = annotationFile.analysisAudioSetting
-      ? {
-          mode: annotationFile.analysisAudioSetting.mode,
-          overrideMediaResourceId:
-            annotationFile.analysisAudioSetting.overrideMediaResourceId,
-          offsetSeconds: annotationFile.analysisAudioSetting.offsetSeconds,
-          updatedAt: annotationFile.analysisAudioSetting.updatedAt.toISOString(),
-        }
-      : {
-          mode: "auto",
-          overrideMediaResourceId: null,
-          offsetSeconds: 0,
-          updatedAt: null,
-        };
-    const media = setting.mode === "media_override"
-      ? annotationFile.analysisAudioSetting?.overrideMedia ?? null
-      : annotationFile.mediaResource;
-    if (!media) {
-      return {
-        audioTrackId: null,
-        setting,
-        source: {
-          status: "unavailable",
-          value: unavailableSource(setting, "analysis_source_missing"),
-        },
-      };
-    }
-
-    const permission = await this.access.getEffectivePermission(user, media.resourceId);
-    if (
-      !permission.capabilities.includes("read") ||
-      !permission.capabilities.includes("download")
-    ) {
-      return {
-        audioTrackId: null,
-        setting,
-        source: {
-          status: "unavailable",
-          value: unavailableSource(setting, "analysis_audio_forbidden"),
-        },
-      };
-    }
-    if (!isUsableAnalysisMedia(media, setting.mode)) {
-      return {
-        audioTrackId: null,
-        setting,
-        source: {
-          status: "unavailable",
-          value: unavailableSource(setting, "analysis_source_invalid"),
-        },
-      };
-    }
-    const fingerprint = createMediaFingerprint(media);
-    if (!fingerprint) {
-      return {
-        audioTrackId: null,
-        setting,
-        source: {
-          status: "unavailable",
-          value: unavailableSource(setting, "analysis_source_invalid"),
-        },
-      };
-    }
-    return {
-      audioTrackId: null,
-      setting,
-      source: {
-        status: "ready",
-        value: {
-          mode: setting.mode,
-          offsetSeconds: setting.offsetSeconds,
-          media,
-          mediaFingerprint: fingerprint,
-          sourceVodRenditionJobId: null,
-        },
-      },
-    };
-  }
-
-  /**
-   * 音轨级来源解析是 RA4 的唯一服务端边界：客户端只提供关系 ID，真实媒体、JobId、偏移和权限全部重读数据库。
-   * 这样删除、禁用或撤权后，旧 runId 和浏览器缓存都不能绕过当前资源状态。
-   */
-  private async resolveAudioTrackAnalysisContext(
-    user: ApiUser,
-    annotationFileId: string,
     audioTrackId: string,
   ): Promise<AnalysisContext> {
+    // 客户端只提供关系 ID，真实媒体、JobId、偏移和权限全部重读数据库。
+    // 这样删除、禁用或撤权后，旧 runId 和浏览器缓存都不能绕过当前资源状态。
     const annotationFile = await this.prisma.annotationFile.findUnique({
       where: { resourceId: annotationFileId },
       select: { mediaResourceId: true },
     });
     if (!annotationFile) throw notFound("标注文件不存在。");
 
-    const setting: AnalysisAudioSetting = {
-      mode: "auto",
-      overrideMediaResourceId: null,
-      offsetSeconds: 0,
-      updatedAt: null,
-    };
     if (!annotationFile.mediaResourceId) {
       return unavailableTrackAnalysisContext(
         audioTrackId,
-        setting,
+        0,
         "analysis_source_missing",
       );
     }
@@ -585,7 +415,7 @@ export class MediaAnalysisJobService {
     if (!track) {
       return unavailableTrackAnalysisContext(
         audioTrackId,
-        setting,
+        0,
         "analysis_source_invalid",
       );
     }
@@ -598,7 +428,7 @@ export class MediaAnalysisJobService {
     if (!hasAnalysisReadAccess(primaryPermission.capabilities)) {
       return unavailableTrackAnalysisContext(
         audioTrackId,
-        { ...setting, offsetSeconds: track.offsetSeconds },
+        track.offsetSeconds,
         "analysis_audio_forbidden",
       );
     }
@@ -632,11 +462,10 @@ export class MediaAnalysisJobService {
       }
     }
 
-    const trackSetting = { ...setting, offsetSeconds: track.offsetSeconds };
-    if (!media || !isUsableAnalysisMedia(media, "auto") || !fingerprint) {
+    if (!media || !isUsableAnalysisMedia(media) || !fingerprint) {
       return unavailableTrackAnalysisContext(
         audioTrackId,
-        trackSetting,
+        track.offsetSeconds,
         "analysis_source_invalid",
       );
     }
@@ -644,17 +473,15 @@ export class MediaAnalysisJobService {
     if (!hasAnalysisReadAccess(sourcePermission.capabilities)) {
       return unavailableTrackAnalysisContext(
         audioTrackId,
-        trackSetting,
+        track.offsetSeconds,
         "analysis_audio_forbidden",
       );
     }
     return {
       audioTrackId,
-      setting: trackSetting,
       source: {
         status: "ready",
         value: {
-          mode: "auto",
           offsetSeconds: track.offsetSeconds,
           media,
           mediaFingerprint: fingerprint,
@@ -667,13 +494,13 @@ export class MediaAnalysisJobService {
   private async resolveReadableAnalysisIdentity(
     user: ApiUser,
     annotationFileId: string,
-    audioTrackId?: unknown,
+    audioTrackId: unknown,
   ) {
     await this.assertActiveAnnotationFile(user, annotationFileId, "read");
     const context = await this.resolveAnalysisContext(
       user,
       annotationFileId,
-      normalizeOptionalAudioTrackId(audioTrackId),
+      normalizeAudioTrackId(audioTrackId),
     );
     if (context.source.status !== "ready") {
       throw notFound("媒体分析结果不存在。");
@@ -682,23 +509,6 @@ export class MediaAnalysisJobService {
       mediaResourceId: context.source.value.media.resourceId,
       mediaFingerprint: context.source.value.mediaFingerprint,
     };
-  }
-
-  private async assertValidOverrideMedia(user: ApiUser, mediaResourceId: string) {
-    const permission = await this.access.getEffectivePermission(user, mediaResourceId);
-    if (
-      !permission.capabilities.includes("read") ||
-      !permission.capabilities.includes("download")
-    ) {
-      throw analysisAudioForbidden("当前账号不能读取或下载所选分析音频。");
-    }
-    const media = await this.prisma.mediaFile.findUnique({
-      where: { resourceId: mediaResourceId },
-      include: analysisMediaInclude,
-    });
-    if (!media || !isUsableAnalysisMedia(media, "media_override")) {
-      throw badRequest("所选资源不能作为分析音频。上传覆盖必须是音频，VOD 覆盖必须是有效媒资。");
-    }
   }
 
   private async assertActiveAnnotationFile(
@@ -726,8 +536,6 @@ export class MediaAnalysisJobService {
     errorCode: string | null;
     sourceMediaResourceId: string;
     sourceVodRenditionJobId: string | null;
-    sourceMode: AnalysisAudioMode | null;
-    sourceOffsetSeconds: number | null;
     algorithmVersion: string;
     manifest: unknown;
     config: unknown;
@@ -736,7 +544,7 @@ export class MediaAnalysisJobService {
     createdAt: Date;
     updatedAt: Date;
     completedAt: Date | null;
-  }, sourceMode: AnalysisAudioMode, sourceOffsetSeconds: number): Promise<MediaAnalysisRunDto> {
+  }, sourceOffsetSeconds: number): Promise<MediaAnalysisRunDto> {
     const groupedAssets = await this.prisma.mediaAnalysisAsset.groupBy({
       by: ["kind"],
       where: { runId: run.id },
@@ -751,7 +559,6 @@ export class MediaAnalysisJobService {
       errorCode: run.errorCode,
       sourceMediaResourceId: run.sourceMediaResourceId,
       sourceVodRenditionJobId: run.sourceVodRenditionJobId,
-      sourceMode,
       sourceOffsetSeconds,
       algorithmVersion: run.algorithmVersion,
       tileDurationSeconds: readTileDurationSeconds(run.manifest, run.config),
@@ -765,47 +572,12 @@ export class MediaAnalysisJobService {
   }
 }
 
-function normalizeAnalysisAudioInput(input: UpdateAnalysisAudioRequest): {
-  mode: AnalysisAudioMode;
-  overrideMediaResourceId: string | null;
-  offsetSeconds: number;
-} {
-  if (input.mode !== "auto" && input.mode !== "media_override") {
-    throw badRequest("分析音频模式不正确。");
-  }
-  const offsetSeconds = input.offsetSeconds ?? 0;
-  if (
-    !Number.isFinite(offsetSeconds) ||
-    Math.abs(offsetSeconds) > MAX_ANALYSIS_AUDIO_OFFSET_SECONDS
-  ) {
-    throw badRequest("分析音频偏移必须是正负 24 小时以内的有限秒数。");
-  }
-  const overrideMediaResourceId = typeof input.overrideMediaResourceId === "string"
-    && input.overrideMediaResourceId.trim()
-    ? input.overrideMediaResourceId.trim()
-    : null;
-  if (input.mode === "auto" && overrideMediaResourceId !== null) {
-    throw badRequest("自动分析音频不能同时指定覆盖媒体。");
-  }
-  if (input.mode === "media_override" && overrideMediaResourceId === null) {
-    throw badRequest("强制分析音频需要选择一个媒体资源。");
-  }
-  return { mode: input.mode, overrideMediaResourceId, offsetSeconds };
-}
-
-function isUsableAnalysisMedia(
-  media: AnalysisMediaRow,
-  mode: AnalysisAudioMode,
-): boolean {
+function isUsableAnalysisMedia(media: AnalysisMediaRow): boolean {
   if (
     media.resource.type !== "media_file" ||
     media.resource.trashedAt ||
     media.resource.archivedAt
   ) return false;
-  // 用户强制选择本平台上传对象时只接受纯音频；这样可明确绕过 VOD 视频链路。
-  if (mode === "media_override" && media.sourceType === "uploaded" && media.mediaKind !== "audio") {
-    return false;
-  }
   if (media.sourceType === "uploaded") {
     return Boolean(media.file && media.mimeType && media.size !== null);
   }
@@ -838,21 +610,19 @@ function hasAnalysisReadAccess(capabilities: readonly string[]) {
 
 function unavailableTrackAnalysisContext(
   audioTrackId: string,
-  setting: AnalysisAudioSetting,
+  offsetSeconds: number,
   code: Extract<ResolvedAnalysisAudioSource, { status: "unavailable" }>["code"],
 ): AnalysisContext {
   return {
     audioTrackId,
-    setting,
     source: {
       status: "unavailable",
-      value: unavailableSource(setting, code),
+      value: unavailableSource(offsetSeconds, code),
     },
   };
 }
 
-function normalizeOptionalAudioTrackId(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
+function normalizeAudioTrackId(value: unknown): string {
   if (!isStableMediaAudioIdentity(value)) {
     throw badRequest("分析音轨 ID 不正确。");
   }
@@ -864,14 +634,13 @@ function stableHash(value: unknown) {
 }
 
 function unavailableSource(
-  setting: AnalysisAudioSetting,
+  offsetSeconds: number,
   code: Extract<ResolvedAnalysisAudioSource, { status: "unavailable" }>["code"],
 ): Extract<ResolvedAnalysisAudioSource, { status: "unavailable" }> {
   return {
     status: "unavailable",
-    mode: setting.mode,
     code,
-    offsetSeconds: setting.offsetSeconds,
+    offsetSeconds,
   };
 }
 
@@ -880,7 +649,6 @@ function toResolvedSourceDto(context: AnalysisContext): ResolvedAnalysisAudioSou
   const source = context.source.value;
   return {
     status: "ready",
-    mode: source.mode,
     mediaResourceId: source.media.resourceId,
     mediaName: source.media.resource.name,
     sourceType: source.media.sourceType,

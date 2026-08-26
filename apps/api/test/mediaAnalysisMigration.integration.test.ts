@@ -30,25 +30,19 @@ test("媒体分析归并 dry-run/execute 可重验、幂等且不删除历史事
         roles: { create: { role: "annotator" } },
       },
     });
-    const mediaId = await createMediaAndAnnotations(prisma, admin.id);
-    const annotations = await prisma.annotationFile.findMany({ orderBy: { resourceId: "asc" } });
-    assert.equal(annotations.length, 3);
+    const mediaId = await createMigrationMedia(prisma, admin.id);
 
     const runOne = await createFailedRun(prisma, {
-      annotationFileId: annotations[0]!.resourceId,
       mediaId,
       creatorId: admin.id,
     });
     const runTwo = await createFailedRun(prisma, {
-      annotationFileId: annotations[1]!.resourceId,
       mediaId,
       creatorId: admin.id,
-      offsetSeconds: 3.25,
     });
 
     // 真实 manifest 保存波形桶宽，而资产 level 使用 0 开始的序号；迁移必须接受这类已完成 run。
     const validRun = await createSucceededRunWithIndexedWaveformLevels(prisma, storage, {
-      annotationFileId: annotations[2]!.resourceId,
       mediaId,
       creatorId: admin.id,
     });
@@ -86,13 +80,11 @@ test("媒体分析归并 dry-run/execute 可重验、幂等且不删除历史事
 
     // dry-run 后新增活跃任务会改变 fingerprint；旧计划不能越过重验，也不能留下部分 supersede 标记。
     const staleOne = await createFailedRun(prisma, {
-      annotationFileId: annotations[0]!.resourceId,
       mediaId,
       creatorId: admin.id,
       fingerprint: "stale-source",
     });
     const staleTwo = await createFailedRun(prisma, {
-      annotationFileId: annotations[1]!.resourceId,
       mediaId,
       creatorId: admin.id,
       fingerprint: "stale-source",
@@ -118,9 +110,7 @@ test("媒体分析归并 dry-run/execute 可重验、幂等且不删除历史事
     await prisma.processingJob.deleteMany({ where: { analysisRunId: staleOne.id } });
     const brokenRun = await prisma.mediaAnalysisRun.create({
       data: {
-        annotationFileId: annotations[2]!.resourceId,
         sourceMediaResourceId: mediaId,
-        sourceMode: "auto",
         sourceFingerprint: "broken-source",
         algorithmVersion: "analysis-v1",
         configHash: "config-v1",
@@ -172,7 +162,6 @@ test("媒体分析归并 dry-run/execute 可重验、幂等且不删除历史事
       ],
     });
     await createFailedRun(prisma, {
-      annotationFileId: annotations[0]!.resourceId,
       mediaId,
       creatorId: admin.id,
       fingerprint: "broken-source",
@@ -190,7 +179,7 @@ test("媒体分析归并 dry-run/execute 可重验、幂等且不删除历史事
   }
 });
 
-async function createMediaAndAnnotations(
+async function createMigrationMedia(
   prisma: ReturnType<typeof createTestPrisma>["prisma"],
   ownerId: string,
 ) {
@@ -210,42 +199,21 @@ async function createMediaAndAnnotations(
       },
     },
   });
-  for (const index of [1, 2, 3]) {
-    await prisma.resourceEntry.create({
-      data: {
-        type: "annotation_file",
-        name: `迁移标注-${index}.json`,
-        ownerUserId: ownerId,
-        annotationFile: {
-          create: {
-            payload: { version: 1 },
-            mediaResourceId: media.id,
-            lastEditedBy: ownerId,
-          },
-        },
-      },
-    });
-  }
   return media.id;
 }
 
 function createFailedRun(
   prisma: ReturnType<typeof createTestPrisma>["prisma"],
   input: {
-    annotationFileId: string;
     mediaId: string;
     creatorId: string;
     fingerprint?: string;
-    offsetSeconds?: number;
   },
 ) {
   return prisma.mediaAnalysisRun.create({
     data: {
-      annotationFileId: input.annotationFileId,
       sourceMediaResourceId: input.mediaId,
-      sourceMode: "auto",
       sourceFingerprint: input.fingerprint ?? "shared-source",
-      sourceOffsetSeconds: input.offsetSeconds ?? 0,
       algorithmVersion: "analysis-v1",
       configHash: "config-v1",
       config: { sampleRate: 16000 },
@@ -261,16 +229,13 @@ async function createSucceededRunWithIndexedWaveformLevels(
   prisma: ReturnType<typeof createTestPrisma>["prisma"],
   storage: LocalObjectStorage,
   input: {
-    annotationFileId: string;
     mediaId: string;
     creatorId: string;
   },
 ) {
   const run = await prisma.mediaAnalysisRun.create({
     data: {
-      annotationFileId: input.annotationFileId,
       sourceMediaResourceId: input.mediaId,
-      sourceMode: "auto",
       sourceFingerprint: "valid-indexed-levels",
       algorithmVersion: "analysis-v1",
       configHash: "valid-indexed-levels-config",

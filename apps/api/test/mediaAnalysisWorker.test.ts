@@ -153,12 +153,9 @@ test("媒体分析 worker 原子 claim、流式生成资产并可恢复陈旧任
 
     const staleRun = await prisma.mediaAnalysisRun.create({
       data: {
-        annotationFileId: fixture.annotationFileId,
         sourceMediaResourceId: fixture.mediaResourceId,
-        sourceMode: "media_override",
         sourceFingerprint: "stale-source",
         mediaFingerprint: "d".repeat(64),
-        sourceOffsetSeconds: 0,
         algorithmVersion: "xiqu-media-analysis-v1",
         configHash: "stale-config",
         config: {},
@@ -195,12 +192,9 @@ test("媒体分析 worker 原子 claim、流式生成资产并可恢复陈旧任
     // superseded run 是只读迁移事实；即使历史数据残留 running job，也不得恢复或再次领取。
     const supersededRun = await prisma.mediaAnalysisRun.create({
       data: {
-        annotationFileId: fixture.annotationFileId,
         sourceMediaResourceId: fixture.mediaResourceId,
-        sourceMode: "media_override",
         sourceFingerprint: "superseded-source",
         mediaFingerprint: "b".repeat(64),
-        sourceOffsetSeconds: 0,
         algorithmVersion: "xiqu-media-analysis-v1",
         configHash: "superseded-config",
         config: {},
@@ -356,12 +350,9 @@ async function createWorkerFixture(
   });
   const run = await prisma.mediaAnalysisRun.create({
     data: {
-      annotationFileId,
       sourceMediaResourceId: mediaResourceId,
-      sourceMode: "media_override",
       sourceFingerprint: "worker-source",
       mediaFingerprint: "a".repeat(64),
-      sourceOffsetSeconds: 0,
       algorithmVersion: "xiqu-media-analysis-v1",
       configHash: "worker-config",
       config: {},

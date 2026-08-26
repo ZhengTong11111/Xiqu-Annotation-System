@@ -76,7 +76,6 @@ import type {
   UpdateResourceRequest,
   UpdateAnnotationMediaRequest,
   UpdateAnnotationAudioPreferenceRequest,
-  UpdateAnalysisAudioRequest,
   UpdateMediaAudioTrackRequest,
   ReorderMediaAudioTracksRequest,
   AnnotationAudioPreference,
@@ -409,23 +408,14 @@ export class PlatformClient {
     return session;
   }
 
-  getAnnotationMediaAnalysis(resourceId: string, audioTrackId?: string) {
-    const params = audioTrackId
-      ? `?${new URLSearchParams({ audioTrackId })}`
-      : "";
+  getAnnotationMediaAnalysis(resourceId: string, audioTrackId: string) {
+    const params = new URLSearchParams({ audioTrackId });
     return this.request<AnnotationMediaAnalysisStatus>(
-      `/annotation-files/${resourceId}/media-analysis${params}`,
+      `/annotation-files/${resourceId}/media-analysis?${params}`,
     );
   }
 
-  updateAnalysisAudio(resourceId: string, request: UpdateAnalysisAudioRequest) {
-    return this.request<AnnotationMediaAnalysisStatus>(
-      `/annotation-files/${resourceId}/analysis-audio`,
-      { method: "PUT", body: request },
-    );
-  }
-
-  createMediaAnalysis(resourceId: string, request: CreateMediaAnalysisRequest = {}) {
+  createMediaAnalysis(resourceId: string, request: CreateMediaAnalysisRequest) {
     return this.request<MediaAnalysisRun>(
       `/annotation-files/${resourceId}/media-analysis`,
       { method: "POST", body: request },
@@ -444,7 +434,7 @@ export class PlatformClient {
       startTime: String(options.startTime),
       endTime: String(options.endTime),
     });
-    if (options.audioTrackId) params.set("audioTrackId", options.audioTrackId);
+    params.set("audioTrackId", options.audioTrackId);
     if (options.level !== undefined) params.set("level", String(options.level));
     return this.request<MediaAnalysisAssetList>(
       `/annotation-files/${resourceId}/media-analysis/assets?${params}`,

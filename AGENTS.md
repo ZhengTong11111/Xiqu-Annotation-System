@@ -153,13 +153,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     Same-VID audio renditions use official `PlayInfo.JobId` as the stable identity; candidate and exact-session queries accept
     only Normal HTTPS mp3 audio streams. Temporary URLs stay inside no-store playback sessions or worker memory
 - `apps/api/src/mediaAnalysisJobService.ts`
-  - the only API business boundary for analysis-audio settings, ACL revalidation, source fingerprints, run/job reuse,
+  - the only API business boundary for audio-track analysis resolution, ACL revalidation, source fingerprints, run/job reuse,
     status DTOs, tile descriptors, and protected asset reads
   - canonical runs are media-scoped by source media, offset-independent media fingerprint, algorithm, and config. Annotation
-    file ids, source mode, and offset are only request/ACL/display context and must never re-enter run identity
-  - new audio-track-scoped requests carry only `annotationFileId + audioTrackId`; the service must reread the enabled track,
+    file ids and track offset are only request/ACL/display context and must never re-enter run persistence or identity
+  - every analysis request carries only `annotationFileId + audioTrackId`; the service must reread the enabled track,
     primary media, concrete source media, offset, and current `read + download` permissions. A missing, disabled, foreign, archived,
-    trashed, or revoked track context must fail closed and must never fall back to the legacy analysis-audio setting
+    trashed, or revoked track context must fail closed; no optional-id or legacy analysis-audio-setting fallback remains
   - asset reads revalidate the annotation and its currently resolved source, then require every bounded asset id to belong to
     the same canonical succeeded media run; missing/cross-run/cross-media ids fail as one batch without leaking existence
   - the algorithm config hash must include every parameter that changes persisted tile timing or values
@@ -174,18 +174,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - production RA2 rollout is deliberately two-release: deploy the additive migration code first, stop the analysis worker,
     dry-run and execute the exact migration plan, then deploy the final media-scoped schema migration. The final SQL fails closed
     on missing fingerprints, duplicate canonical identities, or active superseded jobs; never bypass this gate
-- `apps/api/src/analysisAudioSettingMigrationPlan.ts` +
-  `apps/api/src/analysisAudioSettingMigrationService.ts`
-  - offline RA4c boundary for converting legacy per-annotation `media_override` settings into shared media audio-track
-    relations. Only active pure-audio resources or the zero-offset primary original can migrate automatically; VOD video
-    overrides without a stable rendition JobId, conflicting offsets, disabled existing tracks, inactive resources, invalid track
-    structure, and track-limit overflow must remain explicit block codes
-  - dry-run is bounded and exposes only stable ids/codes/counts. Execute requires an active super-admin and the exact plan
-    fingerprint, then takes the migration lock, resource-tree shared gate, legacy-setting table lock, and ordered primary-media
-    row locks before rebuilding the complete plan. Any blocked or changed fact rolls back the whole transaction
-  - RA4c1 is intentionally additive and never deletes the legacy table or changes listening defaults. The destructive RA4c2
-    schema/API cleanup may proceed only after each target database reports zero blocked items and the idempotent migration has
-    no remaining create actions; never bypass this gate or turn an unsupported legacy VOD video into a fabricated audio track
+- `prisma/migrations/20260826030000_remove_legacy_analysis_audio_settings/migration.sql`
+  - final RA4c schema boundary: deletes the legacy per-annotation analysis setting and run annotation/mode/offset snapshot columns
+    only after SQL revalidates that every old setting has an equivalent enabled media audio track and all required resource paths
+    remain active. It intentionally preserves historical audit actions
+  - production rollout is two-release. First deploy commit `d615add`, apply additive migrations 27/28, stop the analysis worker,
+    run `analysis-audio-settings:migrate dry-run/execute`, and require zero blocked plus zero pending creates. Only then deploy a
+    release containing migration 29. Never deploy the destructive release directly to an older database or bypass its SQL gate
 - `apps/api/src/mediaAnalysisSourceFingerprint.ts`
   - the only media-content fingerprint boundary for media-scoped analysis; uploaded identity requires stable file checksum/size,
     VOD identity requires region/video id/duration, and annotation id, selection mode, and track offset have no input position

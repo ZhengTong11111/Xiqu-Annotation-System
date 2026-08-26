@@ -189,20 +189,11 @@ export type AnnotationMediaReference =
       region: string;
     });
 
-export type AnalysisAudioMode = "auto" | "media_override";
 export type MediaAnalysisAssetKind = "waveform" | "spectrogram" | "pitch";
-
-export type AnalysisAudioSetting = {
-  mode: AnalysisAudioMode;
-  overrideMediaResourceId: string | null;
-  offsetSeconds: number;
-  updatedAt: string | null;
-};
 
 export type ResolvedAnalysisAudioSource =
   | {
       status: "ready";
-      mode: AnalysisAudioMode;
       mediaResourceId: string;
       mediaName: string;
       sourceType: MediaSourceType;
@@ -212,7 +203,6 @@ export type ResolvedAnalysisAudioSource =
     }
   | {
       status: "unavailable";
-      mode: AnalysisAudioMode;
       code:
         | "analysis_source_missing"
         | "analysis_audio_forbidden"
@@ -239,7 +229,7 @@ export type MediaAnalysisRun = {
   errorCode: string | null;
   sourceMediaResourceId: string;
   sourceVodRenditionJobId: string | null;
-  sourceMode: AnalysisAudioMode;
+  /** 当前音轨关系的时间偏移，是请求上下文投影，不属于共享 run 的持久化身份。 */
   sourceOffsetSeconds: number;
   algorithmVersion: string;
   /** 本次 run 的分析瓦片时长；客户端据此兼容不同历史分析粒度。 */
@@ -253,9 +243,7 @@ export type MediaAnalysisRun = {
 };
 
 export type AnnotationMediaAnalysisStatus = {
-  /** null 表示仍由旧 AnnotationAnalysisAudioSetting 解析；RA4 新路径始终返回请求的稳定音轨 ID。 */
-  audioTrackId: string | null;
-  setting: AnalysisAudioSetting;
+  audioTrackId: string;
   resolvedSource: ResolvedAnalysisAudioSource;
   currentRun: MediaAnalysisRun | null;
 };

@@ -233,6 +233,28 @@ bootstrap；同名普通账号也不会被静默提权。后续账号与权限�
 绝不能在生产环境把 `XIQU_SEED_DEVELOPMENT_DATA` 改为 `true`。该选项会创建公开开发口令与演示资源，只供
 本机开发数据库使用。
 
+### 6.1 RA4c 多音轨分析的两版本迁移
+
+已有旧 `annotation_analysis_audio_settings` 数据的服务器不能直接从早期 release 部署 migration 29。先在维护
+窗口停止 analysis worker、建立并验证一致备份，然后部署 commit `d615add`（RA4c1 additive 工具 release），
+应用 migration 27/28，并以生产环境变量运行：
+
+```bash
+npm run analysis-audio-settings:migrate -- dry-run
+npm run analysis-audio-settings:migrate -- execute \
+  --operator <active-super-admin-account> \
+  --plan-fingerprint <dry-run-sha256>
+npm run analysis-audio-settings:migrate -- dry-run
+```
+
+最后一次报告必须同时是 `blockedCount=0`、`createTrackCount=0`。保存有限报告和审计证据后，才可部署包含
+`20260826030000_remove_legacy_analysis_audio_settings` 的新 release 并执行 `npm run db:deploy`。migration 29 还会
+在数据库内二次检查每条设置、original/override 音轨和资源祖先状态；失败时保持维护、不要修改 migration SQL、
+不要使用 `db:push` 或手工删除旧表。处理数据后应回到 RA4c1 release 重新 dry-run/execute。
+
+全新空数据库可以直接应用完整 migration 链；上述两版本步骤只针对已经存在旧设置数据的升级库。RA4c1 CLI 在
+RA4c2 源码中已按生命周期删除，因此不能拿最终 release 冒充 additive 迁移工具。
+
 ## 7. systemd 服务
 
 安装仓库模板：

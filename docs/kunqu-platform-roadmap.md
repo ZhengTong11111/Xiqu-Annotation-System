@@ -661,6 +661,14 @@ R3h 位于现有资源/ACL/对象存储基础与 R6 通用后台任务之间。�
   4/4、媒体分析 38/38、完整 API 200/200 与 build 通过。本机 public/生产仍未应用第 27/28 条、未执行 CLI、
   未部署。下一步 RA4c2 必须先在目标库完成备份、dry-run/execute 至零阻断且零待创建，再删除 legacy 合同和表。
 
+  RA4c2 代码已于 2026-08-26 完成旧分析音频合同与 schema 收口：status/create/list/single/batch 全部强制
+  `audioTrackId`，service 不再读取旧 setting；共享媒体 run 删除 annotation/mode/offset 持久列，但 DTO 继续从
+  当前关系投影音轨 offset。migration 29 在 drop 前检查每条旧 setting 已被 active、同来源同 offset 的启用音轨
+  等价表达，并检查依赖资源完整祖先链；隔离 PostgreSQL 已验证阻断与成功两条路径。音轨合同 7/7+20/20、音轨
+  API 4/4、媒体分析 38/38、完整 API 193/193 和 build 通过。public/生产仍未应用第 27/28 条或 RA4c1 CLI，也未
+  部署 migration 29；RA6 必须按 `d615add` additive release -> dry-run/execute 零阻断零创建 -> destructive
+  release 的顺序实施。当前专项代码进入 RA5 偏移、缓冲和长时鲁棒性，RA3 人工听觉债务继续保留。
+
 阶段纪律：R3h1-R3h5 每项独立审查、测试、文档化并提交后才进入下一项。若成熟依赖能减少自研协议、
 提升播放器或数据加载稳定性并与现有风格兼容，应优先评估使用；选择理由、许可证、替代范围和验证结果写入
 Development Log。任何阶段不得为追求“能播放”而牺牲时间轴的精确时间语义。

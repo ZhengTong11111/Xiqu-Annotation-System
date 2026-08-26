@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁及 RA4a-RA4c1 已完成；RA3 多环境听觉验收延期，当前推进 RA4c2
+> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁及 RA4a-RA4c2 代码已完成；RA3 多环境听觉验收延期，当前推进 RA5
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -12,8 +12,8 @@
 - **RA1 已完成（2026-08-24）**：Prisma 已新增有序 `MediaAudioTrack` 和标注文件
   `AnnotationAudioPreference`，上传媒体、VOD 媒体及媒体复制均在同一事务建立唯一原声；严格 CRUD、重排、
   默认值、ACL、审计和类型安全客户端边界已通过真实 PostgreSQL 集成测试。
-- `AnnotationAnalysisAudioSetting` 已不再驱动前端分析显示，只为 RA4c 的可审计数据迁移暂留；在线 canonical
-  `MediaAnalysisRun` 已按媒体内容、算法和配置复用，不再按标注文件或偏移重复创建。
+- 当前代码已删除 `AnnotationAnalysisAudioSetting` 与无音轨 ID fallback；在线 canonical `MediaAnalysisRun` 只按
+  媒体内容、算法和配置复用，音轨 offset 只在请求 DTO/时间轴装配时投影。生产数据库仍须执行两版本 rollout。
 - **RA2a 已完成（2026-08-24）**：additive supersession migration、纯计划器和 super-admin-only
   dry-run/execute CLI 已建立；执行只标记 canonical/duplicate，保留全部 run、asset 和对象。
 - **RA2b1 已完成（2026-08-24）**：新增不含 annotation/mode/offset 的媒体 fingerprint，迁移计划已能跨旧偏移
@@ -50,9 +50,11 @@
 - **RA4c1 已完成（2026-08-26）**：新增 super-admin-only 的
   `analysis-audio-settings:migrate dry-run/execute`。可无损的纯音频覆盖会幂等创建/复用共享音轨；无稳定 JobId
   的 VOD 视频、不同 offset、禁用关系、失效资源或结构/数量异常形成有限阻断码，任一阻断都会拒绝整批写入。
-- 下一阶段是 **RA4c2 旧合同与 schema 删除**：先在每个目标数据库备份并执行第 27/28 条 additive migration，运行
-  RA4c1 dry-run/execute 至零阻断且零待创建，再删除无 track id route/client/DTO/service、旧 setting 表/relation
-  和 run 的 annotation/mode/offset 审计列；不得跳过门禁或在新链路失败时回退 legacy。
+- **RA4c2 代码已完成（2026-08-26）**：所有分析请求强制稳定音轨 ID，旧 route/client/DTO/service fallback、旧
+  setting model 与 run 的 annotation/mode/offset 列已经删除；migration 29 在删除前以 SQL 二次验证全部旧设置
+  已被等价启用音轨表达。隔离数据库门禁、API 193/193 和完整 build 通过。
+- 下一阶段是 **RA5 偏移校准、缓冲和长时鲁棒性**。public/生产尚未部署 RA4c2；RA6 rollout 前必须先部署
+  `d615add` 完成 RA4c1 dry-run/execute，再部署 destructive release，不能直接跨过两版本门禁。
 
 ## 1. 目标重新定义
 
@@ -967,6 +969,24 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 第 28 条仅在隔离 `api_test` 应用；本机 public 和生产仍未应用第 27/28 条、未执行真实 dry-run/execute、未
   部署。本阶段无 UI，按用户要求未做浏览器/听觉验证，RA3 延期验收债务不变。
 
+**RA4c2 旧合同与 schema 删除代码已完成（2026-08-26）**
+
+- shared status 不再返回旧 setting/source mode，`audioTrackId` 改为非空；status/create/list/single/batch 的
+  client、router 和 service 全部强制稳定音轨 ID。服务端只保留一个音轨来源 resolver，每次重读主媒体、启用
+  关系、真实来源、offset 与 `read + download`，缺失、foreign、disabled 或撤权不会回退旧 setting。
+- `MediaAnalysisRun` 删除 annotation file、source mode 和持久化 offset；canonical identity、worker、asset 与对象
+  生命周期继续只归属于媒体。公开 run DTO 仍从当前音轨关系投影 `sourceOffsetSeconds`，因此共享同一 run 的
+  不同 offset 音轨仍会在项目时间轴按各自偏移装配。
+- Prisma 删除旧 enum/model/relation，RA4c1 CLI/plan/service/tests/package script 随最终 schema 一并清理；历史
+  migration 与两种 audit action 保留。migration 29 在删除前二次检查主媒体 original、override 的纯音频类型、
+  同源同 offset 启用关系，以及 annotation/媒体完整祖先链的 active/无环状态，任何不一致都会拒绝整个迁移。
+- 独立 PostgreSQL migration 测试证明未映射 override 会原子拒绝且旧表保留，补齐关系后才删除旧表、run 列和
+  enum。音轨合同 `7/7 + 20/20`、音轨 API 4/4、媒体分析 38/38、平台综合 38/38、完整 API 193/193、完整 build
+  与 `git diff --check` 通过；只有既有 Vite chunk 和测试 `pg` warning。
+- **未执行**：本机 public 和生产尚未应用第 27/28 条，也未运行 RA4c1 CLI 或 migration 29；本阶段没有部署，
+  用户要求跳过浏览器/听觉验证。生产必须先运行 commit `d615add` 的 additive 工具至零阻断、零待创建，再部署
+  destructive release。RA3 延期验收继续保留，不能把自动测试写成真实声音证据。
+
 **改动范围**
 
 - 音轨维度的 `usePlatformMediaAnalysis`；
@@ -1003,8 +1023,8 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 
 **改动范围**
 
-- 执行生产前迁移演练；
-- 删除旧设置表、旧字段、兼容 route、重复 DTO 和前端状态；
+- 在候选恢复库执行 RA4c1 -> RA4c2 两版本迁移演练并保存有限报告；
+- 生产依次部署 additive 工具 release 与 destructive release，核对旧表/字段确实不存在；
 - 更新 AGENTS、部署、备份、恢复和 Development Log；
 - 完整回归、压力和浏览器验收。
 

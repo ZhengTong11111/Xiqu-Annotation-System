@@ -7844,3 +7844,55 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **待推进**：RA4c2 先为目标库建立经校验备份，部署第 27/28 条 additive migration，运行 dry-run 并人工处理
   所有 block code，execute 后再次确认 `blockedCount=0 + createTrackCount=0`；只有该门禁满足，才单独删除旧
   API/client/DTO/service/schema 和兼容测试。生产不能在同一未验证发布中直接跨过 additive 迁移阶段。
+
+## 2026-08-26：RA4c2 强制音轨分析合同与旧 schema 删除代码
+
+### 在线合同与运行时清理
+
+- 依据 RA4c1 结果和实际引用扫描重写 `CLAUDE_WORK.md`。shared status 现在要求非空 `audioTrackId`，删除旧
+  `AnalysisAudioMode`、setting DTO、更新请求和 `sourceMode`；create/list/batch 以及 PlatformClient 的 status/
+  single 读取均要求稳定音轨 ID。router 对缺失 ID 返回稳定 400，不再通过 optional 参数进入隐藏 fallback。
+- `MediaAnalysisJobService` 删除 `PUT /analysis-audio`、setting upsert/query、旧 override validator、mode-aware
+  resolver 和重复 unavailable helper，只保留一个音轨关系 resolver。每次 status/create/asset 请求仍重读当前
+  annotation 主媒体、enabled 关系、真实上传/VOD rendition 来源、offset 和三层 `read + download` 权限；旧
+  runId、descriptor 或浏览器缓存不能替代当前授权事实。
+- canonical run 创建不再保存首次发起 annotation、source mode 或 offset，审计仍以 annotation resource 记录
+  操作入口，并保留 run、音轨、真实来源和 force 等有限事实。公开 run DTO 的 `sourceOffsetSeconds` 改为从当前
+  关系投影：同一个媒体 run 被两个 offset 不同的音轨复用时，二进制瓦片共享但时间轴位置各自正确。
+- 删除 RA4c1 CLI/plan/service、对应专项测试和 package script，避免最终 Prisma schema 已删旧 model 后留下不能
+  编译的迁移工具。历史 migration 28、`annotation_analysis_audio_update` 与
+  `analysis_audio_setting_migration_apply` 审计枚举/展示名继续保留，旧审计行仍可读取。
+
+### Destructive migration 与二次门禁
+
+- 新增 migration `20260826030000_remove_legacy_analysis_audio_settings`。删除前 SQL 会再次检查：每个 setting 的
+  annotation 已绑定主媒体；主媒体有唯一 enabled/零偏移 original；auto 没有遗留 override/offset；外部
+  override 是纯音频并已有同主媒体、同来源、同 offset 的 enabled 关系；annotation、主媒体、override 及完整
+  祖先链没有回收、归档、缺失、循环或超过有界深度。
+- 任一事实不满足都会 `RAISE EXCEPTION`，旧 setting 表和 run 列保持原状；没有 force、跳行或默认值伪造。
+  校验通过后才删除 setting 表、run 的 annotation/mode/offset 列及旧 enum。音轨 offset 本身仍保存在
+  `MediaAudioTrack`，不会随旧 run 快照列一起丢失。
+- 新增隔离 PostgreSQL migration 测试，以最小旧 schema 构造未映射 override：第一次执行确认原子拒绝且旧表
+  仍在；补齐 reference 音轨后第二次执行成功，并确认旧表、三列和 enum 均不存在。测试夹具只复制 migration
+  读取/删除的列，没有建立第二套完整 Prisma schema。
+- `docs/server-deployment.md` 增加 RA4c 两版本升级说明；AGENTS 将 owner 从已删除的 RA4c1 模块转到最终 migration
+  和部署顺序。已有数据的目标库必须先部署 commit `d615add`，执行 migration 27/28 与 dry-run/execute 至
+  `blockedCount=0 + createTrackCount=0`，然后才允许部署 migration 29。
+
+### 回归、自审与阶段状态
+
+- `npm run test:media-audio-tracks` 通过 shared 7/7、前端策略 20/20；`npm run test:media-audio-track-api` 4/4；
+  `npm run test:media-analysis` 38/38。平台综合媒体分析用例已改为真实 original/reference 关系，覆盖缺失 ID、
+  foreign 关系、资产批次、媒体级 run 复用、来源撤权和 offset 投影，整套平台子测试 38/38。
+- 完整 `npm run test:api` 通过 193/193；完整 Prisma schema guard、shared、document-model、Web/API build 与
+  `git diff --check` 通过。构建只有既有 Vite 主 chunk 体积提示，API 仍有既有 `pg` deprecation warning；本轮
+  没有新增依赖、debug console、URL/PlayAuth/AccessKey/storage key 审计输出或第二套来源 resolver。
+- 自审额外清理了 RA2 迁移测试中已经不再参与媒体级 run 的 annotation/offset 夹具，并修正平台测试删除外部
+  音轨资源前先解除 Restrict 关系的真实生命周期顺序。运行代码与 Prisma schema 已无旧 setting/mode/route；
+  `sourceOffsetSeconds` 只保留在请求投影 DTO、前端时间换算和对应测试。
+- **已完成**：RA4c2 运行时合同、旧 schema/工具清理、SQL 二次门禁、专项/完整自动测试与文档更新。
+- **未执行**：本机 public 和生产仍未应用 migration 27/28、RA4c1 CLI 或 migration 29；没有部署服务器。用户
+  明确要求跳过本轮浏览器验证，因此未把自动测试写成真实听觉/UI 证据；用户自己的
+  `examples_insights/tutorial.md` 修改没有被改写或暂存。
+- **待推进**：代码进入 RA5 的偏移校准、缓冲和长时鲁棒性；RA6 再在恢复候选与生产执行 RA4c1 -> RA4c2 两版本
+  rollout、备份/恢复核对和延期的 Chrome/Safari、HTTP IP/HTTPS、慢网、续签、撤权与长时听觉验收。

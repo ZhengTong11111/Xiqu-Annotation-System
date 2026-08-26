@@ -72,11 +72,6 @@ enum ProcessingJobStatus {
   failed
 }
 
-enum AnalysisAudioMode {
-  auto
-  media_override
-}
-
 enum MediaAnalysisAssetKind {
   waveform
   spectrogram
@@ -182,7 +177,6 @@ model User {
   createdRangeComments             AnnotationRangeComment[]           @relation("AnnotationRangeCommentCreator")
   withdrawnRangeComments           AnnotationRangeComment[]           @relation("AnnotationRangeCommentWithdrawer")
   jobs                             ProcessingJob[]                   @relation("JobCreator")
-  updatedAnalysisAudioSettings     AnnotationAnalysisAudioSetting[]  @relation("AnalysisAudioSettingUpdater")
   createdMediaAudioTracks          MediaAudioTrack[]                  @relation("MediaAudioTrackCreator")
   updatedAnnotationAudioPreferences AnnotationAudioPreference[]       @relation("AnnotationAudioPreferenceUpdater")
   createdMediaAnalysisRuns         MediaAnalysisRun[]                @relation("MediaAnalysisRunCreator")
@@ -300,9 +294,7 @@ model AnnotationFile {
   mutationLease          AnnotationMutationLease?
   collaborationTickets   AnnotationCollaborationTicket[]
   collaborationPresences AnnotationCollaborationPresence[]
-  analysisAudioSetting   AnnotationAnalysisAudioSetting?
   audioPreference       AnnotationAudioPreference?
-  mediaAnalysisRuns      MediaAnalysisRun[]
 
   @@index([mediaResourceId])
   @@index([lastEditedBy])
@@ -453,7 +445,6 @@ model MediaFile {
   resource               ResourceEntry                    @relation(fields: [resourceId], references: [id], onDelete: Cascade)
   file                   FileObject?                      @relation(fields: [fileId], references: [id], onDelete: Cascade)
   linkedAnnotationFiles  AnnotationFile[]                 @relation("AnnotationMediaResource")
-  analysisAudioOverrides AnnotationAnalysisAudioSetting[] @relation("AnalysisAudioOverrideMedia")
   mediaAnalysisRuns      MediaAnalysisRun[]               @relation("MediaAnalysisSource")
   primaryAudioTracks     MediaAudioTrack[]                 @relation("PrimaryMediaAudioTracks")
   audioTrackSources      MediaAudioTrack[]                 @relation("AudioTrackSourceMedia")
@@ -515,36 +506,14 @@ model AnnotationAudioPreference {
   @@map("annotation_audio_preferences")
 }
 
-// 分析音频来源属于平台文件设置，不进入 ProjectData、草稿、撤销栈或协作 operation。
-model AnnotationAnalysisAudioSetting {
-  annotationFileId        String            @id @map("annotation_file_id")
-  mode                    AnalysisAudioMode @default(auto)
-  overrideMediaResourceId String?           @map("override_media_resource_id")
-  offsetSeconds           Float             @default(0) @map("offset_seconds")
-  updatedBy               String            @map("updated_by")
-  validatedAt             DateTime          @default(now()) @map("validated_at")
-  updatedAt               DateTime          @updatedAt @map("updated_at")
-
-  annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
-  overrideMedia  MediaFile?     @relation("AnalysisAudioOverrideMedia", fields: [overrideMediaResourceId], references: [resourceId], onDelete: Cascade)
-  updater        User           @relation("AnalysisAudioSettingUpdater", fields: [updatedBy], references: [id], onDelete: Restrict)
-
-  @@index([overrideMediaResourceId])
-  @@index([updatedBy])
-  @@map("annotation_analysis_audio_settings")
-}
-
-// 分析 run 归属于媒体内容；annotation/mode/offset 仅保留首次发起的旧审计上下文，不能参与在线 identity。
+// 分析 run 只归属于媒体内容；音轨偏移在每次请求时从关系表读取，不固化进共享 run。
 model MediaAnalysisRun {
   id                    String              @id @default(uuid())
-  annotationFileId      String?             @map("annotation_file_id")
   sourceMediaResourceId String              @map("source_media_resource_id")
-  sourceMode            AnalysisAudioMode?  @map("source_mode")
   sourceFingerprint     String              @map("source_fingerprint")
   mediaFingerprint      String?             @map("media_fingerprint")
   // VOD rendition 的 JobId 是稳定流身份；临时播放 URL 绝不能进入分析 run。
   sourceVodRenditionJobId String?            @map("source_vod_rendition_job_id")
-  sourceOffsetSeconds   Float?              @map("source_offset_seconds")
   algorithmVersion      String              @map("algorithm_version")
   configHash            String              @map("config_hash")
   config                Json
@@ -562,7 +531,6 @@ model MediaAnalysisRun {
   supersededAt          DateTime?           @map("superseded_at")
   supersededBy          String?             @map("superseded_by")
 
-  annotationFile AnnotationFile?      @relation(fields: [annotationFileId], references: [resourceId], onDelete: SetNull)
   sourceMedia    MediaFile            @relation("MediaAnalysisSource", fields: [sourceMediaResourceId], references: [resourceId], onDelete: Cascade)
   creator        User                 @relation("MediaAnalysisRunCreator", fields: [createdBy], references: [id], onDelete: Restrict)
   superseder     User?                @relation("MediaAnalysisRunSuperseder", fields: [supersededBy], references: [id], onDelete: Restrict)
@@ -571,7 +539,6 @@ model MediaAnalysisRun {
   assets         MediaAnalysisAsset[]
   jobs           ProcessingJob[]
 
-  @@index([annotationFileId, createdAt])
   @@index([sourceMediaResourceId])
   @@index([sourceMediaResourceId, sourceFingerprint, algorithmVersion, configHash])
   @@index([sourceMediaResourceId, mediaFingerprint, algorithmVersion, configHash])

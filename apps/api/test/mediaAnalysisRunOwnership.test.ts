@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createTestPrisma, truncateTestDatabase } from "./testEnvironment.js";
 
-test("删除首次发起标注文件不会级联删除媒体级分析 run", async () => {
+test("删除发起分析的标注文件不会级联删除媒体级分析 run", async () => {
   const { prisma, pool, maintenancePool, collaborationPool } = createTestPrisma();
   await truncateTestDatabase(prisma);
   try {
@@ -44,12 +44,9 @@ test("删除首次发起标注文件不会级联删除媒体级分析 run", asyn
     });
     const run = await prisma.mediaAnalysisRun.create({
       data: {
-        annotationFileId: annotation.id,
         sourceMediaResourceId: media.id,
-        sourceMode: "auto",
         sourceFingerprint: "c".repeat(64),
         mediaFingerprint: "c".repeat(64),
-        sourceOffsetSeconds: 0,
         algorithmVersion: "analysis-v1",
         configHash: "config-v1",
         config: {},
@@ -57,10 +54,9 @@ test("删除首次发起标注文件不会级联删除媒体级分析 run", asyn
       },
     });
 
-    // annotationFileId 只记录首次发起上下文；真实归属是 sourceMediaResourceId。
+    // run 只归属于媒体内容；发起它的标注文件由 ProcessingJob/审计记录，不参与 run 生命周期。
     await prisma.annotationFile.delete({ where: { resourceId: annotation.id } });
     const retained = await prisma.mediaAnalysisRun.findUniqueOrThrow({ where: { id: run.id } });
-    assert.equal(retained.annotationFileId, null);
     assert.equal(retained.sourceMediaResourceId, media.id);
   } finally {
     await prisma.$disconnect();

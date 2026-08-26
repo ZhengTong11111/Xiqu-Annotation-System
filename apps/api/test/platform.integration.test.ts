@@ -739,7 +739,7 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(createDetail.playAuth, undefined);
     });
 
-    await suite.test("分析音频支持自动来源、强制上传音频、VOD 覆盖和权限复核", async () => {
+    await suite.test("媒体分析强制使用音轨关系并逐次复核来源权限", async () => {
       const vod = await prisma.mediaFile.findFirstOrThrow({
         where: { sourceType: "aliyun_vod", aliyunVodVideoId: "00cf8df6907871f1b31f5017e1f80102" },
       });
@@ -776,44 +776,35 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(annotation.statusCode, 200, annotation.body);
       const fileId = String((dataOf(annotation.json()).resource as JsonObject).id);
+      const originalAudioTrack = await prisma.mediaAudioTrack.findFirstOrThrow({
+        where: { primaryMediaResourceId: vod.resourceId, kind: "original" },
+      });
 
-      const automatic = await jsonRequest(app, adminToken, {
+      const missingTrackStatus = await jsonRequest(app, adminToken, {
         method: "GET",
         url: `/api/annotation-files/${fileId}/media-analysis`,
       });
-      assert.equal(automatic.statusCode, 200, automatic.body);
-      assert.equal((dataOf(automatic.json()).setting as JsonObject).mode, "auto");
-      const automaticSource = dataOf(automatic.json()).resolvedSource as JsonObject;
-      assert.equal(automaticSource.status, "ready");
-      assert.equal(automaticSource.sourceType, "aliyun_vod");
-      assert.equal(automaticSource.videoId, undefined);
-      assert.equal(automaticSource.playAuth, undefined);
-
-      const explicitVod = await jsonRequest(app, adminToken, {
-        method: "PUT",
-        url: `/api/annotation-files/${fileId}/analysis-audio`,
-        payload: {
-          mode: "media_override",
-          overrideMediaResourceId: vod.resourceId,
-        },
+      assert.equal(missingTrackStatus.statusCode, 400, missingTrackStatus.body);
+      const originalStatus = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${fileId}/media-analysis?${new URLSearchParams({
+          audioTrackId: originalAudioTrack.id,
+        })}`,
       });
-      assert.equal(explicitVod.statusCode, 200, explicitVod.body);
-      assert.equal((dataOf(explicitVod.json()).setting as JsonObject).mode, "media_override");
-      assert.equal(
-        (dataOf(explicitVod.json()).resolvedSource as JsonObject).sourceType,
-        "aliyun_vod",
-      );
-
-      await jsonRequest(app, adminToken, {
-        method: "PUT",
-        url: `/api/annotation-files/${fileId}/analysis-audio`,
-        payload: { mode: "auto" },
-      });
+      assert.equal(originalStatus.statusCode, 200, originalStatus.body);
+      assert.equal(dataOf(originalStatus.json()).audioTrackId, originalAudioTrack.id);
+      assert.equal(dataOf(originalStatus.json()).setting, undefined);
+      const originalSource = dataOf(originalStatus.json()).resolvedSource as JsonObject;
+      assert.equal(originalSource.status, "ready");
+      assert.equal(originalSource.sourceType, "aliyun_vod");
+      assert.equal(originalSource.mode, undefined);
+      assert.equal(originalSource.videoId, undefined);
+      assert.equal(originalSource.playAuth, undefined);
 
       const firstRun = await jsonRequest(app, adminToken, {
         method: "POST",
         url: `/api/annotation-files/${fileId}/media-analysis`,
-        payload: {},
+        payload: { audioTrackId: originalAudioTrack.id },
       });
       assert.equal(firstRun.statusCode, 200, firstRun.body);
       assert.equal(dataOf(firstRun.json()).status, "queued");
@@ -868,9 +859,6 @@ test("平台资源 API 集成测试", async (suite) => {
           checksum: secondStagedAnalysisAsset.checksum,
           storageKey: secondStagedAnalysisAsset.finalStorageKey,
         },
-      });
-      const originalAudioTrack = await prisma.mediaAudioTrack.findFirstOrThrow({
-        where: { primaryMediaResourceId: vod.resourceId, kind: "original" },
       });
       const trackScopedStatus = await jsonRequest(app, adminToken, {
         method: "GET",
@@ -947,7 +935,7 @@ test("平台资源 API 集成测试", async (suite) => {
           assetIds: [storedAsset.id, "missing-asset"],
         },
       });
-      assert.equal(missingAssetBatch.statusCode, 404);
+      assert.equal(missingAssetBatch.statusCode, 400);
 
       const duplicateAssetBatch = await jsonRequest(app, adminToken, {
         method: "POST",
@@ -974,67 +962,48 @@ test("平台资源 API 集成测试", async (suite) => {
       );
       const siblingStatus = await jsonRequest(app, adminToken, {
         method: "GET",
-        url: `/api/annotation-files/${siblingFileId}/media-analysis`,
+        url: `/api/annotation-files/${siblingFileId}/media-analysis?${new URLSearchParams({
+          audioTrackId: originalAudioTrack.id,
+        })}`,
       });
       assert.equal(
         (dataOf(siblingStatus.json()).currentRun as JsonObject).id,
         dataOf(firstRun.json()).id,
       );
+      const uploadedTrack = await prisma.mediaAudioTrack.create({
+        data: {
+          primaryMediaResourceId: vod.resourceId,
+          audioMediaResourceId: audioResourceId,
+          name: "独立分析音轨",
+          kind: "reference",
+          offsetSeconds: 0.25,
+          sortOrder: 1,
+          createdBy: "user-admin",
+        },
+      });
       const offsetStatus = await jsonRequest(app, adminToken, {
-        method: "PUT",
-        url: `/api/annotation-files/${fileId}/analysis-audio`,
-        payload: { mode: "auto", offsetSeconds: 2.5 },
+        method: "GET",
+        url: `/api/annotation-files/${fileId}/media-analysis?${new URLSearchParams({
+          audioTrackId: uploadedTrack.id,
+        })}`,
       });
+      assert.equal(offsetStatus.statusCode, 200, offsetStatus.body);
+      assert.equal(dataOf(offsetStatus.json()).currentRun, null);
       assert.equal(
-        (dataOf(offsetStatus.json()).currentRun as JsonObject).id,
-        dataOf(firstRun.json()).id,
+        (dataOf(offsetStatus.json()).resolvedSource as JsonObject).offsetSeconds,
+        0.25,
       );
-      assert.equal(
-        (dataOf(offsetStatus.json()).currentRun as JsonObject).sourceOffsetSeconds,
-        2.5,
-      );
-      await jsonRequest(app, adminToken, {
-        method: "PUT",
-        url: `/api/annotation-files/${fileId}/analysis-audio`,
-        payload: { mode: "auto", offsetSeconds: 0 },
-      });
 
       const forbiddenAssetBatch = await jsonRequest(app, studentToken, {
         method: "POST",
         url: `/api/annotation-files/${fileId}/media-analysis/assets/batch`,
         payload: {
+          audioTrackId: originalAudioTrack.id,
           runId: String(dataOf(firstRun.json()).id),
           assetIds: [storedAsset.id],
         },
       });
       assert.equal(forbiddenAssetBatch.statusCode, 403);
-
-      const override = await jsonRequest(app, adminToken, {
-        method: "PUT",
-        url: `/api/annotation-files/${fileId}/analysis-audio`,
-        payload: {
-          mode: "media_override",
-          overrideMediaResourceId: audioResourceId,
-          offsetSeconds: 0.25,
-        },
-      });
-      assert.equal(override.statusCode, 200, override.body);
-      const overrideSource = dataOf(override.json()).resolvedSource as JsonObject;
-      assert.equal(overrideSource.status, "ready");
-      assert.equal(overrideSource.sourceType, "uploaded");
-      assert.equal(overrideSource.mediaKind, "audio");
-      assert.equal(overrideSource.offsetSeconds, 0.25);
-      assert.equal(dataOf(override.json()).currentRun, null);
-
-      const invalidVideoOverride = await jsonRequest(app, adminToken, {
-        method: "PUT",
-        url: `/api/annotation-files/${fileId}/analysis-audio`,
-        payload: {
-          mode: "media_override",
-          overrideMediaResourceId: videoResourceId,
-        },
-      });
-      assert.equal(invalidVideoOverride.statusCode, 400);
 
       await jsonRequest(app, adminToken, {
         method: "PUT",
@@ -1043,13 +1012,17 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       const studentAssetRead = await jsonRequest(app, studentToken, {
         method: "GET",
-        url: `/api/annotation-files/${fileId}/media-analysis/assets/${storedAsset.id}`,
+        url: `/api/annotation-files/${fileId}/media-analysis/assets/${storedAsset.id}?${new URLSearchParams({
+          audioTrackId: uploadedTrack.id,
+        })}`,
       });
-      // 当前文件已经切换到上传音频，旧 VOD run 不能再借 annotation ACL 被继续枚举。
+      // 音轨来源没有下载权限时，不能借 annotation ACL 读取其他媒体的既有 run。
       assert.equal(studentAssetRead.statusCode, 404, studentAssetRead.body);
       const forbiddenStatus = await jsonRequest(app, studentToken, {
         method: "GET",
-        url: `/api/annotation-files/${fileId}/media-analysis`,
+        url: `/api/annotation-files/${fileId}/media-analysis?${new URLSearchParams({
+          audioTrackId: uploadedTrack.id,
+        })}`,
       });
       assert.equal(forbiddenStatus.statusCode, 200, forbiddenStatus.body);
       assert.equal(
@@ -1059,39 +1032,22 @@ test("平台资源 API 集成测试", async (suite) => {
       const forbiddenStart = await jsonRequest(app, studentToken, {
         method: "POST",
         url: `/api/annotation-files/${fileId}/media-analysis`,
-        payload: {},
+        payload: { audioTrackId: uploadedTrack.id },
       });
       assert.equal(forbiddenStart.statusCode, 403);
       assert.equal(errorOf(forbiddenStart.json()).code, "analysis_audio_forbidden");
 
-      const contradictoryAuto = await jsonRequest(app, adminToken, {
-        method: "PUT",
-        url: `/api/annotation-files/${fileId}/analysis-audio`,
-        payload: { mode: "auto", overrideMediaResourceId: audioResourceId },
-      });
-      assert.equal(contradictoryAuto.statusCode, 400);
-      const restoredAuto = await jsonRequest(app, adminToken, {
-        method: "PUT",
-        url: `/api/annotation-files/${fileId}/analysis-audio`,
-        payload: { mode: "auto", offsetSeconds: 0 },
-      });
-      assert.equal(restoredAuto.statusCode, 200, restoredAuto.body);
-      assert.equal((dataOf(restoredAuto.json()).setting as JsonObject).mode, "auto");
-      assert.equal(
-        (dataOf(restoredAuto.json()).resolvedSource as JsonObject).mediaResourceId,
-        vod.resourceId,
-      );
-
       const analysisAuditDetails = (await prisma.auditLog.findMany({
         where: {
           resourceId: fileId,
-          action: { in: ["annotation_analysis_audio_update", "media_analysis_create"] },
+          action: "media_analysis_create",
         },
         select: { detail: true },
       })).map(({ detail }) => JSON.stringify(detail));
       assert.ok(analysisAuditDetails.every((detail) =>
         !detail.includes("playAuth") && !detail.includes("storageKey")));
       // 专项夹具不占用后续上传/配额用例的共享容量。
+      await prisma.mediaAudioTrack.delete({ where: { id: uploadedTrack.id } });
       await prisma.resourceEntry.deleteMany({
         where: { id: { in: [audioResourceId, videoResourceId] } },
       });

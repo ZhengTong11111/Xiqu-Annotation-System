@@ -537,30 +537,14 @@ export function registerApiRoutes(
 
   app.get<{
     Params: { resourceId: string };
-    Querystring: { audioTrackId?: string };
+    Querystring: { audioTrackId: string };
   }>(
     "/api/annotation-files/:resourceId/media-analysis",
     async (request) => mediaAnalysis.getStatus(
       await getCurrentUser(repository, request),
       request.params.resourceId,
-      request.query.audioTrackId,
+      requireString(request.query.audioTrackId, "audioTrackId"),
     ),
-  );
-
-  app.put<{ Params: { resourceId: string }; Body: unknown }>(
-    "/api/annotation-files/:resourceId/analysis-audio",
-    async (request) => {
-      const body = requireObject(request.body);
-      return mediaAnalysis.updateAnalysisAudio(
-        await getCurrentUser(repository, request),
-        request.params.resourceId,
-        {
-          mode: body.mode as "auto" | "media_override",
-          overrideMediaResourceId: optionalStringOrNull(body.overrideMediaResourceId),
-          offsetSeconds: body.offsetSeconds as number | undefined,
-        },
-      );
-    },
   );
 
   app.post<{ Params: { resourceId: string }; Body: unknown }>(
@@ -575,7 +559,7 @@ export function registerApiRoutes(
         request.params.resourceId,
         {
           force: body.force as boolean | undefined,
-          audioTrackId: body.audioTrackId as string | undefined,
+          audioTrackId: requireString(body.audioTrackId, "audioTrackId"),
         },
       );
     },
@@ -590,7 +574,7 @@ export function registerApiRoutes(
       level?: string;
       startTime?: string;
       endTime?: string;
-      audioTrackId?: string;
+      audioTrackId: string;
     };
   }>("/api/annotation-files/:resourceId/media-analysis/assets", async (request) => {
     const kind = normalizedString(request.query.kind);
@@ -601,7 +585,7 @@ export function registerApiRoutes(
       await getCurrentUser(repository, request),
       request.params.resourceId,
       {
-        audioTrackId: request.query.audioTrackId,
+        audioTrackId: requireString(request.query.audioTrackId, "audioTrackId"),
         runId: requireString(request.query.runId, "runId"),
         kind,
         preset: requireString(request.query.preset, "preset"),
@@ -616,13 +600,13 @@ export function registerApiRoutes(
 
   app.get<{
     Params: { resourceId: string; assetId: string };
-    Querystring: { audioTrackId?: string };
+    Querystring: { audioTrackId: string };
   }>("/api/annotation-files/:resourceId/media-analysis/assets/:assetId", async (request, reply) => {
     const asset = await mediaAnalysis.getAssetForRead(
       await getCurrentUser(repository, request),
       request.params.resourceId,
       request.params.assetId,
-      request.query.audioTrackId,
+      requireString(request.query.audioTrackId, "audioTrackId"),
     );
     reply.header("Content-Type", asset.mimeType);
     reply.header("Content-Length", asset.size);
@@ -644,7 +628,7 @@ export function registerApiRoutes(
       request.params.resourceId,
       runId,
       assetIds,
-      body.audioTrackId,
+      requireString(body.audioTrackId, "audioTrackId"),
     );
     const header = encodeMediaAnalysisTileBatchHeader(assets.map((asset) => ({
       id: asset.id,
