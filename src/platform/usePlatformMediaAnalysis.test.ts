@@ -8,7 +8,9 @@ import { computeMediaAnalysisAssets } from "../../apps/api/src/mediaAnalysisComp
 import {
   assemblePlatformSpectrogram,
   assemblePlatformWaveform,
+  buildPlatformAnalysisAssetSessionKey,
   loadAnalysisAssets,
+  requireMatchingAnalysisTrackStatus,
 } from "./usePlatformMediaAnalysis.js";
 import { intersectTimedMediaRange } from "../utils/mediaAnalysisRange.js";
 import { PlatformMediaAnalysisAssetCache } from "./platformMediaAnalysisLoading.js";
@@ -99,6 +101,35 @@ test("平台瓦片组装拒绝缺号，避免把后段分析压缩到错误时�
   );
 });
 
+test("分析状态必须绑定请求音轨，且同 run 的不同音轨或偏移使用不同显示会话", () => {
+  const status = {
+    audioTrackId: "track-vocal",
+  } as Parameters<typeof requireMatchingAnalysisTrackStatus>[0];
+  assert.equal(requireMatchingAnalysisTrackStatus(status, "track-vocal"), status);
+  assert.throws(
+    () => requireMatchingAnalysisTrackStatus(status, "track-original"),
+    /当前音轨不匹配/u,
+  );
+
+  const base = {
+    currentUserId: "user-1",
+    annotationFileId: "file-1",
+    audioTrackId: "track-vocal",
+    runId: "run-1",
+    sourceOffsetSeconds: 0,
+    completedAt: "2026-08-26T00:00:00.000Z",
+  };
+  const first = buildPlatformAnalysisAssetSessionKey(base);
+  assert.notEqual(first, buildPlatformAnalysisAssetSessionKey({
+    ...base,
+    audioTrackId: "track-original",
+  }));
+  assert.notEqual(first, buildPlatformAnalysisAssetSessionKey({
+    ...base,
+    sourceOffsetSeconds: 0.25,
+  }));
+});
+
 test("相同资产的并发窗口复用一个批量请求并共同写入缓存", async () => {
   const assetBytes = Uint8Array.from([7, 8, 9]);
   const descriptor: MediaAnalysisAssetDescriptor = {
@@ -127,6 +158,7 @@ test("相同资产的并发窗口复用一个批量请求并共同写入缓存",
   const options = {
     currentUserId: "user-1",
     annotationFileId: "file-1",
+    audioTrackId: "track-vocal",
     mediaResourceId: "media-1",
     runId: "run-1",
     descriptors: [descriptor],
@@ -159,8 +191,9 @@ test("不同分析序列按有界并发逐批回调", async () => {
   const client = {
     async getMediaAnalysisAssetBatch(
       _resourceId: string,
-      request: { assetIds: string[] },
+      request: { audioTrackId?: string; assetIds: string[] },
     ) {
+      assert.equal(request.audioTrackId, "track-vocal");
       activeRequests += 1;
       maximumActiveRequests = Math.max(maximumActiveRequests, activeRequests);
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -173,6 +206,7 @@ test("不同分析序列按有界并发逐批回调", async () => {
   const result = await loadAnalysisAssets({
     currentUserId: "user-1",
     annotationFileId: "file-1",
+    audioTrackId: "track-vocal",
     mediaResourceId: "media-1",
     runId: "run-1",
     descriptors,

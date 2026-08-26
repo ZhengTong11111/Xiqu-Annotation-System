@@ -74,6 +74,7 @@ import {
   usePlatformMediaAnalysis,
 } from "./platform/usePlatformMediaAnalysis";
 import { usePlatformAudioTrackSelection } from "./platform/usePlatformAudioTrackSelection";
+import { usePlatformAnalysisTrackSelection } from "./platform/usePlatformAnalysisTrackSelection";
 import { planAtomicAnnotationCommandBatch } from "./platform/platformAtomicCommandPlan";
 import { usePlatformAtomicCommandSubmit } from "./platform/usePlatformAtomicCommandSubmit";
 import { planPlatformConflictRebase } from "./platform/platformConflictRebase";
@@ -901,7 +902,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     useState<AnnotationConfirmationPanelPlacement>("docked");
   const [manualVideoRelinkPrompt, setManualVideoRelinkPrompt] = useState<ProjectData["video"] | null>(null);
   const [serverMediaDialogOpen, setServerMediaDialogOpen] = useState(false);
-  const [analysisAudioDialogOpen, setAnalysisAudioDialogOpen] = useState(false);
   const [audioTrackManagerOpen, setAudioTrackManagerOpen] = useState(false);
   const [sentenceAnnotationSettingsOpen, setSentenceAnnotationSettingsOpen] = useState(false);
   const [analysisViewport, setAnalysisViewport] = useState<PlatformAnalysisViewport | null>(null);
@@ -925,6 +925,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     canWrite: Boolean(editorSession?.canWrite),
     enabled: Boolean(editorSession && platformMedia),
   });
+  // 分析显示选择只属于当前文件会话；默认跟随监听，固定模式不会写 ProjectData 或共享偏好。
+  const platformAnalysisTracks = usePlatformAnalysisTrackSelection({
+    sessionKey: editorSession && platformMedia
+      ? `${editorSession.annotationFileId}:${platformMedia.resourceId}`
+      : null,
+    listeningTrackId: platformAudioTracks.selectedTrackId,
+    playbackOptions: platformAudioTracks.options,
+  });
   useEffect(() => {
     // 音轨管理器只属于当前文件与主媒体组合；切换会话不能沿用上一媒体的打开状态。
     setAudioTrackManagerOpen(false);
@@ -933,6 +941,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     client: platformClient ?? null,
     currentUserId: editorSession?.currentUserId ?? null,
     annotationFileId: editorSession?.annotationFileId ?? null,
+    audioTrackId: platformAnalysisTracks.analysisTrackId,
     enabled: Boolean(editorSession),
     canWrite: Boolean(editorSession?.canWrite),
     viewport: analysisViewport,
@@ -2126,8 +2135,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               checked: confirmationPanelPlacement === "detached",
               run: () => handlers().toggleConfirmationDetachedWindow(),
             },
-            "audio.analysis-source": {
-              run: () => handlers().openAudioSettingFromSearch("audio-analysis-source"),
+            "audio.analysis-track": {
+              run: () => handlers().openAudioSettingFromSearch("audio-analysis-track"),
             },
           }
         : {};
@@ -7335,27 +7344,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           }}
         />
       ) : null}
-      {editorSession ? (
-        <AnnotationMediaBindingDialog
-          client={editorSession.client}
-          parentId={editorSession.parentId}
-          open={analysisAudioDialogOpen}
-          busy={platformMediaAnalysis.mutationPending}
-          pickerMode="analysis-audio"
-          title="选择分析音频"
-          description="上传音频将完全绕过 VOD；也可固定另一项 VOD 媒资"
-          onOpenChange={setAnalysisAudioDialogOpen}
-          onConfirm={async (mediaResourceId) => {
-            if (!mediaResourceId) return;
-            const updated = await platformMediaAnalysis.updateSource({
-              mode: "media_override",
-              overrideMediaResourceId: mediaResourceId,
-              offsetSeconds: platformMediaAnalysis.status?.setting.offsetSeconds ?? 0,
-            });
-            if (updated) setAnalysisAudioDialogOpen(false);
-          }}
-        />
-      ) : null}
       <SentenceAnnotationSettingsDialog
         open={sentenceAnnotationSettingsOpen}
         roleOptions={project.sentenceAnnotationConfig.roleOptions}
@@ -7534,13 +7522,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                         loading: platformMediaAnalysis.statusLoading,
                         mutationPending: platformMediaAnalysis.mutationPending,
                         error: platformMediaAnalysis.error,
-                        onChooseSource: () => setAnalysisAudioDialogOpen(true),
-                        onRestoreAutomatic: () => {
-                          void platformMediaAnalysis.updateSource({
-                            mode: "auto",
-                            offsetSeconds: 0,
-                          });
-                        },
+                        followListening: platformAnalysisTracks.followListening,
+                        analysisTrackId: platformAnalysisTracks.analysisTrackId,
+                        analysisTrackOption: platformAnalysisTracks.analysisTrackOption,
+                        trackOptions: platformAudioTracks.options?.tracks ?? [],
+                        onFollowListeningChange: platformAnalysisTracks.setFollowListening,
+                        onFixedTrackChange: platformAnalysisTracks.selectFixedTrack,
                         onStartAnalysis: (force) => {
                           void platformMediaAnalysis.startAnalysis(force);
                         },

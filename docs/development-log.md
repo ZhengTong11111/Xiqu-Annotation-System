@@ -7746,3 +7746,56 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **待推进**：RA4b 把监听音轨或会话内固定音轨接入 `usePlatformMediaAnalysis`，让 status、run、瓦片请求、缓存
   generation、未分析/失败提示同步切换；RA4c 再删除旧频谱覆盖 UI 和过渡调用。延期的 RA3 听觉/多环境清单仍
   保留，不能在后续文档中倒填为通过。
+
+## 2026-08-26：RA4b 分析显示跟随监听、固定音轨与请求代际收口
+
+### 会话状态与界面主流程
+
+- 依据 `docs/replace_audio_roadmap.md` 和本轮 `CLAUDE_WORK.md`，新增
+  `platformAnalysisTrackSelection` 纯策略与 `usePlatformAnalysisTrackSelection` 轻量 adapter。分析显示每次
+  打开文件默认跟随当前监听音轨；关闭跟随时冻结切换瞬间的音轨，之后可固定其他可用音轨。该选择只活在当前
+  文件/主媒体 React 会话，不写 ProjectData、revision、draft、collaboration、undo/history 或 localStorage。
+- 文件/主媒体切换首帧通过带 `sessionKey` 的状态隔离直接恢复初始选择，不等待 effect 才清旧值；固定选择使用
+  函数式更新，避免快速切换会话时旧渲染闭包覆盖新文件。固定项后续删除、禁用或撤权时保留其失效身份并明确
+  显示，不静默改回视频原声。
+- 频谱设置面板将旧“分析音频来源 / 选择分析音频 / 恢复自动”改为“分析显示音轨”：提供跟随开关、固定音轨
+  选择、当前来源与 run 状态、开始/重新分析和主动预加载。不可用选项保留有限状态文案并使用原生 disabled；
+  长名称使用紧凑 Inspector 选择器，不新增卡片、依赖或第二套音轨解析器。
+- 自审继续清理了顶栏搜索的旧 `audio.analysis-source` 标识和“分析音频来源”文案，统一为“分析显示音轨”；
+  上传音频的资源详情也改为“可关联为独立音轨”，避免已经删除的“强制分析来源”流程继续误导用户。旧审计
+  action 的历史展示名和服务端兼容错误码仍保留到 RA4c，不能为了文案统一破坏既有审计与协议。
+- 删除 App 的旧分析资源弹窗 state/callback、`usePlatformMediaAnalysis.updateSource()` 和资源选择器已经没有调用
+  的 `analysis-audio` 模式；现有 `PlatformClient.updateAnalysisAudio()`、shared DTO、后端 route/service 与数据库
+  setting 仅作为 RA4c 迁移窗口保留，运行时没有新的可见入口继续写它们。
+
+### 音轨级分析请求与缓存边界
+
+- `usePlatformMediaAnalysis` 现在要求当前 `audioTrackId`。status refresh、分析任务创建、波形/频谱/F0 descriptor、
+  二进制 batch、相邻窗口预取和全量预加载全链路透传同一身份；status 返回不同音轨被视为协议错误，不能装配
+  到当前会话。未取得音轨选项时不会临时调用 legacy 无 track id 路径。
+- 文件或音轨变化会同步推进 generation、断开旧 status 单飞引用、取消旧 descriptor/batch/preload、清除旧
+  status、波形、频谱和错误。自审发现旧请求在 generation 变化后会跳过 finally，若新音轨暂为空可能遗留
+  `statusLoading=true`；现已在代际切换边界主动复位 loading 和 mutation 状态，迟到请求无法恢复旧 UI。
+- 同一媒体 canonical run 的不可变瓦片继续按账号、媒体、run、asset 和 size 使用内存/IndexedDB 缓存，不因
+  annotation、音轨关系或偏移复制字节。已经组装的时间轴显示 session 则额外绑定 annotation、音轨 ID、run、
+  当前 `sourceOffsetSeconds` 和完成时间；两个关系共享 run 但偏移不同会重新装配，不会显示上一轨的错位数据。
+- 缓存命中不是授权事实：只有当前 annotation+track 的 status 完成 ACL 复核且当前 run succeeded 后，前端才
+  读取 descriptor/asset。切换音轨时旧 timed data 立即隐藏；同一音轨内普通滚动仍保留渐进窗口策略，避免闪烁。
+
+### 验证、自审与阶段边界
+
+- `npm run test:media-audio-tracks` 通过 shared 7/7、前端播放/选择/来源策略 20/20；新增覆盖默认跟随、关闭时
+  冻结、固定不随试听变化、失效不回退和只接受 available 音轨。
+- `npm run test:media-analysis` 通过批次 codec 3/3、API/worker/cache/loading/frontend 38/38；新增覆盖 status
+  身份错配拒绝、同 run 不同音轨/offset 的显示 session 隔离，以及 batch body 的 `audioTrackId` 传播。
+- `npm run test:media-audio-track-api` 通过 4/4；`npm run test:api` 通过 192/192；TypeScript 应用检查、完整
+  `npm run build`、`git diff --check` 和静态回查通过。构建仍只有既有 Vite 主 chunk 体积提示，API 测试仍有
+  既有 `pg` deprecation warning；本轮没有新增依赖、debug console、直接浏览器 `crypto.randomUUID()`、临时
+  VOD URL/凭据持久化或第二媒体 owner。
+- **已完成**：RA4b 会话选择、完整音轨级分析请求、显示代际隔离、旧可见覆盖流程清理和自动测试门禁。
+- **未在本轮执行**：用户明确要求跳过本次浏览器验证；本机 public 与生产数据库仍未应用第 27 条 migration，
+  本轮没有部署服务器，也没有把自动测试写成真实声音/UI 证据。RA3 的 A/B/C、Safari、HTTP IP、撤权、续签、
+  慢网、offset 和 detached window 延期验收仍保留。
+- **待推进**：RA4c 先建立旧 `AnnotationAnalysisAudioSetting` 到媒体音轨关系的 dry-run/execute 幂等迁移和冲突
+  报告，再删除无 track id API、旧 client/DTO/service 分支、Prisma relation 与兼容测试；生产 rollout 必须在
+  备份、迁移演练和调用者静态/访问日志核对后进行，不能在新路径失败时回退 legacy。

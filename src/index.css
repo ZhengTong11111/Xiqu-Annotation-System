@@ -8459,13 +8459,41 @@ select {
   line-height: 1.2;
 }
 
-.spectrogram-analysis-source-actions {
+/* 固定分析音轨沿用 Inspector 的紧凑表单密度，长名称由选择框自身截断而不撑宽侧栏。 */
+.spectrogram-analysis-track-select {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.spectrogram-analysis-track-select select {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 28px 0 9px;
+  border: 1px solid rgba(148, 163, 184, 0.52);
+  border-radius: 6px;
+  background-color: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.spectrogram-analysis-track-select select:focus-visible {
+  outline: 2px solid rgba(15, 108, 189, 0.32);
+  outline-offset: 1px;
+  border-color: rgba(15, 108, 189, 0.56);
+}
+
+.spectrogram-analysis-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.spectrogram-analysis-source-actions button {
+.spectrogram-analysis-actions button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -8480,12 +8508,12 @@ select {
   cursor: pointer;
 }
 
-.spectrogram-analysis-source-actions button:hover:not(:disabled) {
+.spectrogram-analysis-actions button:hover:not(:disabled) {
   border-color: rgba(15, 108, 189, 0.42);
   color: #0f4f86;
 }
 
-.spectrogram-analysis-source-actions button:disabled {
+.spectrogram-analysis-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }
@@ -8504,6 +8532,11 @@ select {
   gap: 10px;
   min-height: 44px;
   cursor: pointer;
+}
+
+.spectrogram-toggle-row.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .spectrogram-toggle-row input {

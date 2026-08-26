@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁及 RA4a 已完成；RA3 多环境听觉验收延期，当前推进 RA4b
+> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁及 RA4a-RA4b 已完成；RA3 多环境听觉验收延期，当前推进 RA4c
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -44,9 +44,11 @@
 - **RA4a 已完成（2026-08-26）**：分析 status/create/list/single/batch API 已支持稳定 `audioTrackId` 上下文；
   服务端逐次重读音轨归属、enabled、主媒体与来源 ACL，VOD rendition 以 JobId 形成独立 fingerprint 并由 worker
   精确取流。旧无 track id 路径继续兼容，未做前端半迁移。
-- 下一阶段是 **RA4b 分析显示跟随与固定状态**：把当前监听音轨或会话内固定音轨接入
-  `usePlatformMediaAnalysis`，让状态、瓦片请求、缓存代际和未分析提示统一使用 RA4a 的稳定上下文；随后 RA4c
-  再清理旧频谱音频覆盖 UI 和过渡调用。
+- **RA4b 已完成（2026-08-26）**：分析显示每次打开文件默认跟随监听音轨，也可在会话内固定另一条可用音轨；
+  status、create、descriptor、batch、相邻预取和全量预加载统一携带同一 `audioTrackId`。音轨/偏移进入内存显示
+  代际但不污染媒体级瓦片缓存，旧状态或旧请求不能在切轨后复活；旧“选择分析音频/恢复自动”可见流程已移除。
+- 下一阶段是 **RA4c 旧分析来源迁移与合同收口**：设计并执行 `AnnotationAnalysisAudioSetting` 到音轨关系的幂等
+  迁移，随后删除无 track id route/client/DTO/service 分支和旧数据库关系；不得在新链路失败时回退 legacy。
 
 ## 1. 目标重新定义
 
@@ -925,6 +927,23 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 真实 PostgreSQL 音轨 API 4/4、媒体分析 37/37、完整 API 192/192、完整 Prisma/shared/document-model/Web/API
   build 和 `git diff --check` 通过。新增 migration 已在隔离测试 schema 应用；尚未迁移本机 public 或生产库，
   也未部署。本阶段是服务端基础，没有伪造浏览器分析切换证据。
+
+**RA4b 分析显示跟随、固定与前端代际切换已完成（2026-08-26）**
+
+- 新增会话级纯策略和 React adapter。每个文件/主媒体会话从“跟随监听音轨”开始；关闭跟随会冻结当时的监听
+  身份，固定后试听切换不改变分析显示。固定项被删除、禁用或撤权时保留失效身份，不静默回退原声。
+- `usePlatformMediaAnalysis` 的 status/create/list/batch/相邻预取/全量预加载统一携带当前 `audioTrackId`，并严格
+  校验服务端 status 身份。文件或音轨变化会推进 generation、取消旧批次与预加载、清理旧 status/timed data；
+  被代际丢弃的请求无法在 finally 释放 loading，因此切换边界会同步复位对应运行状态。
+- 同一 canonical run 可跨音轨复用 IndexedDB 瓦片字节，但内存显示 session key 额外绑定音轨 ID 和当前 offset，
+  确保关系偏移变化会重新装配到项目时间轴。只有当前音轨已成功且通过 annotation+track ACL 状态复核后才读取
+  缓存和资产。
+- 设置面板改为“分析显示音轨”，保留开始/重新分析与主动预加载；旧“选择分析音频/恢复自动”弹窗、App state、
+  hook mutation 与资源选择器死分支已删除。legacy route/client/DTO/schema 暂留且已无新前端调用，RA4c 统一迁移
+  和删除。
+- 音轨专项 shared 7/7、前端状态 20/20，媒体分析 shared batch 3/3、API/前端 38/38，音轨 API 4/4、完整 API
+  192/192、完整 build、TypeScript 和 `git diff --check` 通过。没有新增依赖；未迁移本机 public/生产数据库，未
+  部署，也按用户要求跳过浏览器与听觉验收，RA3 延期清单继续保留。
 
 **改动范围**
 

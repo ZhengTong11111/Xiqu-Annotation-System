@@ -194,9 +194,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - shared bounded STFT/YIN computation, little-endian tile codec, and strict bounded batch envelope. Batch responses stream
     one manifest header plus raw tile sections; never replace them with Base64 JSON or an API-side whole-batch Buffer
 - `src/platform/usePlatformMediaAnalysis.ts`
-  - platform-only status polling, source mutations, run-duration-quantized viewport selection, debounced descriptor reads,
+  - platform-only track-scoped status polling and run creation, run-duration-quantized viewport selection, debounced descriptor reads,
     session-scoped in-flight batch reuse, generation isolation, strict tile continuity checks, source offset conversion,
     progressive waveform/spectrogram assembly, bounded memory cache, and IndexedDB second-level cache
+  - every status/create/list/batch/preload request must carry the same current `audioTrackId`, and a status response with a
+    different identity is a protocol error. Track switches synchronously hide the previous status/timed data, advance the
+    generation, abort old batches/preloads, and clear loading state that a discarded request can no longer settle
+  - display-session identity includes track id and current relation offset so two tracks sharing one canonical run cannot reuse
+    already assembled timeline data. Persistent tile bytes remain keyed by account/media/run/asset/size and may be reused only
+    after the current annotation+track status request has revalidated access
   - when a new viewport enters the debounce window, immediately cancel old visible/adjacent batches outside the active
     preload set; after the new descriptor snapshot arrives, cancel batches outside the latest viewport plus preload set.
     Shared batches with any retained asset remain reusable. Changing waveform level, spectrogram preset, visibility, or F0
@@ -632,6 +638,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - refresh preserves the current listening intent even when that track was removed or revoked, producing an explicit blocked
     state instead of silently choosing original. Updating the shared default is a separate permission-gated API action; original
     maps to a null preference and a default-write failure must not alter current playback
+- `src/platform/usePlatformAnalysisTrackSelection.ts` + `src/platform/platformAnalysisTrackSelection.ts`
+  - own the editor-session-only analysis display choice. Each file/media session starts by following the current listening track;
+    disabling follow freezes that instant's identity, and later listening changes do not move the fixed analysis track
+  - a deleted, disabled, or revoked fixed track remains an explicit unavailable identity rather than silently falling back to
+    original audio. This state never enters ProjectData, revisions, drafts, collaboration, undo/history, localStorage, or the
+    shared listening default
 - `src/media/nativeMediaPlaybackBackend.ts`
   - narrow HTMLMediaElement adapter with deterministic seeked/error/timeout/dispose settlement
 - `src/media/aliplayerSdk.ts` + `src/media/aliyunVodPlaybackBackend.ts`

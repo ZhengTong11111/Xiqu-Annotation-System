@@ -4,7 +4,6 @@ import {
   decodeMediaAnalysisTileBatch,
   type AnnotationMediaAnalysisStatus,
   type MediaAnalysisAssetDescriptor,
-  type UpdateAnalysisAudioRequest,
 } from "@xiqu/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PlatformClient } from "../api/platformClient";
@@ -41,6 +40,7 @@ type Options = {
   client: PlatformClient | null;
   currentUserId: string | null;
   annotationFileId: string | null;
+  audioTrackId: string | null;
   enabled: boolean;
   canWrite: boolean;
   viewport: PlatformAnalysisViewport | null;
@@ -50,8 +50,8 @@ type Options = {
 };
 
 /**
- * 平台分析状态独立于 ProjectData：负责轮询、来源 mutation、按窗瓦片请求、取消和有界内存缓存。
- * 文件切换通过 generation 丢弃迟到响应，旧 run 的瓦片不能复活到新来源。
+ * 平台分析状态独立于 ProjectData：负责音轨级轮询、分析任务、按窗瓦片请求、取消和有界内存缓存。
+ * 文件或音轨切换通过 generation 丢弃迟到响应，旧 run 的瓦片不能复活到新显示上下文。
  */
 export function usePlatformMediaAnalysis(options: Options) {
   const [status, setStatus] = useState<AnnotationMediaAnalysisStatus | null>(null);
@@ -94,16 +94,26 @@ export function usePlatformMediaAnalysis(options: Options) {
   }, []);
 
   const refresh = useCallback(() => {
-    if (!options.enabled || !options.client || !options.annotationFileId) return null;
+    if (
+      !options.enabled ||
+      !options.client ||
+      !options.annotationFileId ||
+      !options.audioTrackId
+    ) return null;
     if (statusRefreshInFlightRef.current) return statusRefreshInFlightRef.current;
     const generation = generationRef.current;
+    const audioTrackId = options.audioTrackId;
     setStatusLoading(true);
-    const request = options.client.getAnnotationMediaAnalysis(options.annotationFileId)
+    const request = options.client.getAnnotationMediaAnalysis(
+      options.annotationFileId,
+      audioTrackId,
+    )
       .then((next) => {
         if (generation !== generationRef.current) return null;
-        setStatus(next);
+        const matched = requireMatchingAnalysisTrackStatus(next, audioTrackId);
+        setStatus(matched);
         setError(null);
-        return next;
+        return matched;
       })
       .catch((nextError: unknown) => {
         if (generation === generationRef.current) setError(describeError(nextError));
@@ -118,7 +128,7 @@ export function usePlatformMediaAnalysis(options: Options) {
       });
     statusRefreshInFlightRef.current = request;
     return request;
-  }, [options.annotationFileId, options.client, options.enabled]);
+  }, [options.annotationFileId, options.audioTrackId, options.client, options.enabled]);
 
   useEffect(() => {
     generationRef.current += 1;
@@ -128,22 +138,46 @@ export function usePlatformMediaAnalysis(options: Options) {
     setStatus(null);
     setWaveformData(null);
     setSpectrogramData(null);
+    // 旧请求会因 generation 不匹配而跳过 finally，因此切换代际时必须主动释放 loading 状态。
+    setStatusLoading(false);
+    setMutationPending(false);
     setError(null);
-    if (options.enabled) void refresh();
-  }, [options.annotationFileId, options.currentUserId, options.enabled, refresh, resetAssetSession]);
+    if (options.enabled && options.audioTrackId) void refresh();
+  }, [
+    options.annotationFileId,
+    options.audioTrackId,
+    options.currentUserId,
+    options.enabled,
+    refresh,
+    resetAssetSession,
+  ]);
+
+  const currentStatus = options.audioTrackId && status?.audioTrackId === options.audioTrackId
+    ? status
+    : null;
 
   useEffect(() => {
-    if (status?.currentRun?.status !== "queued" && status?.currentRun?.status !== "running") {
+    if (
+      currentStatus?.currentRun?.status !== "queued" &&
+      currentStatus?.currentRun?.status !== "running"
+    ) {
       return;
     }
     // 定时器不能依赖服务端 updatedAt 续接：一次无变化响应也必须继续轮询后续心跳和最终状态。
     const timer = window.setInterval(() => void refresh(), STATUS_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [refresh, status?.currentRun?.status]);
+  }, [currentStatus?.currentRun?.status, refresh]);
 
-  const currentRun = status?.currentRun;
-  const assetSessionKey = currentRun
-    ? `${options.currentUserId ?? ""}:${options.annotationFileId ?? ""}:${currentRun.id}:${currentRun.completedAt ?? "pending"}`
+  const currentRun = currentStatus?.currentRun;
+  const assetSessionKey = currentRun && options.audioTrackId
+    ? buildPlatformAnalysisAssetSessionKey({
+        currentUserId: options.currentUserId,
+        annotationFileId: options.annotationFileId,
+        audioTrackId: options.audioTrackId,
+        runId: currentRun.id,
+        sourceOffsetSeconds: currentRun.sourceOffsetSeconds,
+        completedAt: currentRun.completedAt,
+      })
     : null;
   useEffect(() => {
     if (assetSessionKeyRef.current === assetSessionKey) return;
@@ -165,12 +199,14 @@ export function usePlatformMediaAnalysis(options: Options) {
     const client = options.client;
     const currentUserId = options.currentUserId;
     const annotationFileId = options.annotationFileId;
-    const run = status?.currentRun;
+    const audioTrackId = options.audioTrackId;
+    const run = currentStatus?.currentRun;
     if (
       !options.enabled ||
       !client ||
       !currentUserId ||
       !annotationFileId ||
+      !audioTrackId ||
       !requestWindow ||
       run?.status !== "succeeded"
     ) {
@@ -216,6 +252,7 @@ export function usePlatformMediaAnalysis(options: Options) {
         client,
         currentUserId,
         annotationFileId,
+        audioTrackId,
         mediaResourceId: run.sourceMediaResourceId,
         runId: run.id,
         sourceOffset,
@@ -251,6 +288,7 @@ export function usePlatformMediaAnalysis(options: Options) {
             client,
             currentUserId,
             annotationFileId,
+            audioTrackId,
             mediaResourceId: run.sourceMediaResourceId,
             runId: run.id,
             requestWindow,
@@ -294,6 +332,7 @@ export function usePlatformMediaAnalysis(options: Options) {
   }, [
     options.analysisPreset,
     options.annotationFileId,
+    options.audioTrackId,
     options.client,
     options.currentUserId,
     options.enabled,
@@ -313,47 +352,29 @@ export function usePlatformMediaAnalysis(options: Options) {
     preloadAbortControllerRef.current?.abort();
   }, [options.analysisPreset, options.showPitch, options.spectrogramVisible, requestWindow?.waveformLevel]);
 
-  const updateSource = useCallback(async (request: UpdateAnalysisAudioRequest) => {
-    if (!options.client || !options.annotationFileId || !options.canWrite) return false;
-    const generation = generationRef.current;
-    const annotationFileId = options.annotationFileId;
-    setMutationPending(true);
-    try {
-      const next = await options.client.updateAnalysisAudio(annotationFileId, request);
-      if (generation !== generationRef.current) return false;
-      generationRef.current += 1;
-      statusRefreshInFlightRef.current = null;
-      assetSessionKeyRef.current = null;
-      resetAssetSession();
-      setStatus(next);
-      setWaveformData(null);
-      setSpectrogramData(null);
-      setError(null);
-      // 成功保存会主动推进 generation；因此在推进后的 finally 之外结束本次 mutation 状态。
-      setMutationPending(false);
-      return true;
-    } catch (nextError) {
-      if (generation === generationRef.current) setError(describeError(nextError));
-      return false;
-    } finally {
-      if (generation === generationRef.current) setMutationPending(false);
-    }
-  }, [options.annotationFileId, options.canWrite, options.client, resetAssetSession]);
-
   const startAnalysis = useCallback(async (force = false) => {
-    if (!options.client || !options.annotationFileId || !options.canWrite) return false;
+    if (
+      !options.client ||
+      !options.annotationFileId ||
+      !options.audioTrackId ||
+      !options.canWrite
+    ) return false;
     const generation = generationRef.current;
     const annotationFileId = options.annotationFileId;
+    const audioTrackId = options.audioTrackId;
     setMutationPending(true);
     try {
-      const run = await options.client.createMediaAnalysis(
+      await options.client.createMediaAnalysis(
         annotationFileId,
-        { force },
+        { force, audioTrackId },
       );
       if (generation !== generationRef.current) return false;
-      const latest = await options.client.getAnnotationMediaAnalysis(annotationFileId);
+      const latest = requireMatchingAnalysisTrackStatus(
+        await options.client.getAnnotationMediaAnalysis(annotationFileId, audioTrackId),
+        audioTrackId,
+      );
       if (generation !== generationRef.current) return false;
-      setStatus({ ...latest, currentRun: run });
+      setStatus(latest);
       setError(null);
       return true;
     } catch (nextError) {
@@ -362,7 +383,7 @@ export function usePlatformMediaAnalysis(options: Options) {
     } finally {
       if (generation === generationRef.current) setMutationPending(false);
     }
-  }, [options.annotationFileId, options.canWrite, options.client]);
+  }, [options.annotationFileId, options.audioTrackId, options.canWrite, options.client]);
 
   /**
    * 用户主动预加载当前分析配置；它与可视窗口共用缓存和在途请求，但使用独立控制器，
@@ -372,11 +393,13 @@ export function usePlatformMediaAnalysis(options: Options) {
     const client = options.client;
     const currentUserId = options.currentUserId;
     const annotationFileId = options.annotationFileId;
-    const run = status?.currentRun;
+    const audioTrackId = options.audioTrackId;
+    const run = currentStatus?.currentRun;
     if (
       !client ||
       !currentUserId ||
       !annotationFileId ||
+      !audioTrackId ||
       run?.status !== "succeeded" ||
       !run.duration ||
       run.duration <= 0 ||
@@ -394,6 +417,7 @@ export function usePlatformMediaAnalysis(options: Options) {
       const lists = await listCompleteAnalysisAssets({
         client,
         annotationFileId,
+        audioTrackId,
         runId: run.id,
         duration: run.duration,
         tileDurationSeconds: run.tileDurationSeconds,
@@ -410,6 +434,7 @@ export function usePlatformMediaAnalysis(options: Options) {
       await loadAnalysisAssets({
         currentUserId,
         annotationFileId,
+        audioTrackId,
         mediaResourceId: run.sourceMediaResourceId,
         runId: run.id,
         descriptors,
@@ -451,12 +476,13 @@ export function usePlatformMediaAnalysis(options: Options) {
   }, [
     options.analysisPreset,
     options.annotationFileId,
+    options.audioTrackId,
     options.client,
     options.currentUserId,
     options.showPitch,
     options.spectrogramVisible,
     requestWindow?.waveformLevel,
-    status?.currentRun,
+    currentStatus?.currentRun,
   ]);
 
   const cancelPreload = useCallback(() => {
@@ -464,9 +490,9 @@ export function usePlatformMediaAnalysis(options: Options) {
   }, []);
 
   return {
-    status,
-    waveformData,
-    spectrogramData,
+    status: currentStatus,
+    waveformData: currentRun?.status === "succeeded" ? waveformData : null,
+    spectrogramData: currentRun?.status === "succeeded" ? spectrogramData : null,
     statusLoading,
     assetsLoading,
     mutationPending,
@@ -475,11 +501,39 @@ export function usePlatformMediaAnalysis(options: Options) {
     preloadError,
     error,
     refresh,
-    updateSource,
     startAnalysis,
     startPreload,
     cancelPreload,
   };
+}
+
+export function requireMatchingAnalysisTrackStatus(
+  status: AnnotationMediaAnalysisStatus,
+  audioTrackId: string,
+) {
+  if (status.audioTrackId !== audioTrackId) {
+    throw new Error("服务器分析状态与当前音轨不匹配。");
+  }
+  return status;
+}
+
+export function buildPlatformAnalysisAssetSessionKey(input: {
+  currentUserId: string | null;
+  annotationFileId: string | null;
+  audioTrackId: string;
+  runId: string;
+  sourceOffsetSeconds: number;
+  completedAt: string | null;
+}) {
+  // 音轨关系和偏移属于显示上下文；同一媒体 run 可复用字节，但不能复用已经组装好的时间轴数据。
+  return JSON.stringify([
+    input.currentUserId ?? "",
+    input.annotationFileId ?? "",
+    input.audioTrackId,
+    input.runId,
+    input.sourceOffsetSeconds,
+    input.completedAt ?? "pending",
+  ]);
 }
 
 type AnalysisWindowAssetLists = {
@@ -492,6 +546,7 @@ type AnalysisWindowReadContext = {
   client: Pick<PlatformClient, "listMediaAnalysisAssets" | "getMediaAnalysisAssetBatch">;
   currentUserId: string;
   annotationFileId: string;
+  audioTrackId: string;
   mediaResourceId: string;
   runId: string;
   requestWindow: PlatformAnalysisRequestWindow;
@@ -587,6 +642,7 @@ async function loadVisibleAnalysisWindow(context: VisibleAnalysisWindowContext) 
   const bytes = await loadAnalysisAssets({
     currentUserId: context.currentUserId,
     annotationFileId: context.annotationFileId,
+    audioTrackId: context.audioTrackId,
     mediaResourceId: context.mediaResourceId,
     runId: context.runId,
     descriptors,
@@ -623,6 +679,7 @@ async function prefetchAdjacentAnalysisWindows(context: AnalysisWindowReadContex
     await loadAnalysisAssets({
       currentUserId: context.currentUserId,
       annotationFileId: context.annotationFileId,
+      audioTrackId: context.audioTrackId,
       mediaResourceId: context.mediaResourceId,
       runId: context.runId,
       descriptors,
@@ -643,6 +700,7 @@ async function prefetchAdjacentAnalysisWindows(context: AnalysisWindowReadContex
 async function listAnalysisWindowAssets(context: {
   client: Pick<PlatformClient, "listMediaAnalysisAssets">;
   annotationFileId: string;
+  audioTrackId: string;
   runId: string;
   requestWindow: PlatformAnalysisRequestWindow;
   spectrogramVisible: boolean;
@@ -652,6 +710,7 @@ async function listAnalysisWindowAssets(context: {
 }) {
   const [waveform, spectrogram, pitch] = await Promise.all([
     context.client.listMediaAnalysisAssets(context.annotationFileId, {
+      audioTrackId: context.audioTrackId,
       runId: context.runId,
       kind: "waveform",
       preset: "default",
@@ -661,6 +720,7 @@ async function listAnalysisWindowAssets(context: {
     }, context.listSignal),
     context.spectrogramVisible
       ? context.client.listMediaAnalysisAssets(context.annotationFileId, {
+          audioTrackId: context.audioTrackId,
           runId: context.runId,
           kind: "spectrogram",
           preset: context.analysisPreset,
@@ -671,6 +731,7 @@ async function listAnalysisWindowAssets(context: {
       : Promise.resolve({ runId: context.runId, assets: [] }),
     context.spectrogramVisible && context.showPitch
       ? context.client.listMediaAnalysisAssets(context.annotationFileId, {
+          audioTrackId: context.audioTrackId,
           runId: context.runId,
           kind: "pitch",
           preset: "yin-v1",
@@ -694,6 +755,7 @@ async function listAnalysisWindowAssets(context: {
 async function listCompleteAnalysisAssets(context: {
   client: Pick<PlatformClient, "listMediaAnalysisAssets">;
   annotationFileId: string;
+  audioTrackId: string;
   runId: string;
   duration: number;
   tileDurationSeconds: number;
@@ -736,6 +798,7 @@ function deduplicateAssetDescriptors(descriptors: MediaAnalysisAssetDescriptor[]
 type LoadAnalysisAssetsOptions = {
   currentUserId: string;
   annotationFileId: string;
+  audioTrackId: string;
   mediaResourceId: string;
   runId: string;
   descriptors: MediaAnalysisAssetDescriptor[];
@@ -867,7 +930,11 @@ async function loadAnalysisAssetBatch(
 
   const batchPromise = options.client.getMediaAnalysisAssetBatch(
     options.annotationFileId,
-    { runId: options.runId, assetIds: batch.map(({ id }) => id) },
+    {
+      audioTrackId: options.audioTrackId,
+      runId: options.runId,
+      assetIds: batch.map(({ id }) => id),
+    },
     controller.signal,
   ).then((response) => {
     const decoded = decodeMediaAnalysisTileBatch(response);

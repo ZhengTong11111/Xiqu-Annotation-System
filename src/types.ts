@@ -68,7 +68,7 @@ export type InspectorFocusTarget =
   | "track-attached-point-tracks"
   | "track-gongche-import"
   // SpectrogramSettingsPanel：音频波形 / 频谱 / 分析设置分组
-  | "audio-analysis-source"
+  | "audio-analysis-track"
   | "audio-waveform-visible"
   | "audio-spectrogram-visible"
   | "audio-pitch-contour"

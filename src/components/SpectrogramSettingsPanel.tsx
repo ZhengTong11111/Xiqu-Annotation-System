@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import type { AnnotationMediaAnalysisStatus } from "@xiqu/shared";
+import type {
+  AnnotationAudioPlaybackTrackOption,
+  AnnotationMediaAnalysisStatus,
+} from "@xiqu/shared";
 import type {
   InspectorFocusRequest,
   InspectorFocusTarget,
@@ -8,7 +11,11 @@ import type {
   SpectrogramFrequencyScale,
   SpectrogramSettings,
 } from "../types";
-import { Download, FolderOpen, RefreshCw, RotateCcw, X } from "lucide-react";
+import { Download, RefreshCw, X } from "lucide-react";
+import {
+  getAudioTrackAvailabilityLabel,
+  getAudioTrackSourceLabel,
+} from "../platform/platformAudioTrackSelection";
 import {
   spectrogramAnalysisPresets,
   spectrogramFrequencyPresets,
@@ -32,8 +39,12 @@ type SpectrogramSettingsPanelProps = {
     loading: boolean;
     mutationPending: boolean;
     error: string | null;
-    onChooseSource: () => void;
-    onRestoreAutomatic: () => void;
+    followListening: boolean;
+    analysisTrackId: string | null;
+    analysisTrackOption: AnnotationAudioPlaybackTrackOption | null;
+    trackOptions: AnnotationAudioPlaybackTrackOption[];
+    onFollowListeningChange: (follow: boolean) => void;
+    onFixedTrackChange: (trackId: string) => void;
     onStartAnalysis: (force: boolean) => void;
     preloadPending: boolean;
     preloadProgress: { completed: number; total: number } | null;
@@ -149,6 +160,9 @@ export function SpectrogramSettingsPanel({
   const activeAnalysisPreset = spectrogramAnalysisPresets[settings.analysisPreset];
   const analysisRunActive = platformAnalysis?.status?.currentRun?.status === "queued" ||
     platformAnalysis?.status?.currentRun?.status === "running";
+  const analysisSourceReady = platformAnalysis?.status?.audioTrackId ===
+    platformAnalysis?.analysisTrackId &&
+    platformAnalysis?.status?.resolvedSource.status === "ready";
 
   return (
     <section className="panel spectrogram-settings-panel">
@@ -164,13 +178,54 @@ export function SpectrogramSettingsPanel({
           <p className="spectrogram-setting-error" role="alert">{analysisError}</p>
         ) : null}
         {platformAnalysis ? (
-          <div {...focusGroupProps(["audio-analysis-source"])}>
+          <div {...focusGroupProps(["audio-analysis-track"])}>
             <div className="spectrogram-setting-heading">
-              <strong>分析音频来源</strong>
-              <span>{describeAnalysisSource(platformAnalysis.status)}</span>
+              <strong>分析显示音轨</strong>
+              <span>{platformAnalysis.followListening ? "跟随监听" : "固定音轨"}</span>
+            </div>
+            <ToggleRow
+              label="分析显示跟随监听音轨"
+              description="关闭后可固定分析音轨，试听切换不再改变波形和频谱。"
+              checked={platformAnalysis.followListening}
+              disabled={platformAnalysis.followListening && !platformAnalysis.analysisTrackId}
+              onChange={platformAnalysis.onFollowListeningChange}
+            />
+            {!platformAnalysis.followListening ? (
+              <label className="spectrogram-analysis-track-select">
+                <span>固定分析音轨</span>
+                <select
+                  value={platformAnalysis.analysisTrackId ?? ""}
+                  onChange={(event) => platformAnalysis.onFixedTrackChange(event.target.value)}
+                >
+                  {!platformAnalysis.analysisTrackId ? (
+                    <option value="">请选择音轨</option>
+                  ) : platformAnalysis.analysisTrackOption ? null : (
+                    <option value={platformAnalysis.analysisTrackId}>已失效音轨</option>
+                  )}
+                  {platformAnalysis.trackOptions.map((option) => (
+                    <option
+                      key={option.track.id}
+                      value={option.track.id}
+                      disabled={option.availability !== "available"}
+                    >
+                      {option.track.name}
+                      {option.availability === "available"
+                        ? ""
+                        : ` · ${getAudioTrackAvailabilityLabel(option.availability)}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            <div className="spectrogram-static-row">
+              <span>{describeAnalysisTrack(platformAnalysis)}</span>
             </div>
             <div className="spectrogram-static-row">
-              <span>{describeAnalysisRun(platformAnalysis.status, platformAnalysis.loading)}</span>
+              <span>{describeAnalysisRun(
+                platformAnalysis.status,
+                platformAnalysis.loading,
+                platformAnalysis.analysisTrackId,
+              )}</span>
             </div>
             {platformAnalysis.error ? (
               <p className="spectrogram-setting-error" role="alert">{platformAnalysis.error}</p>
@@ -188,27 +243,13 @@ export function SpectrogramSettingsPanel({
                 </span>
               </div>
             ) : null}
-            <div className="spectrogram-analysis-source-actions">
-              <button
-                type="button"
-                disabled={!platformAnalysis.canWrite || platformAnalysis.mutationPending}
-                onClick={platformAnalysis.onChooseSource}
-              >
-                <FolderOpen size={15} />选择分析音频
-              </button>
-              {platformAnalysis.status?.setting.mode === "media_override" ? (
-                <button
-                  type="button"
-                  disabled={!platformAnalysis.canWrite || platformAnalysis.mutationPending}
-                  onClick={platformAnalysis.onRestoreAutomatic}
-                >
-                  <RotateCcw size={15} />恢复自动
-                </button>
-              ) : null}
+            <div className="spectrogram-analysis-actions">
               <button
                 type="button"
                 disabled={
                   !platformAnalysis.canWrite ||
+                  !platformAnalysis.analysisTrackId ||
+                  !analysisSourceReady ||
                   platformAnalysis.mutationPending ||
                   analysisRunActive
                 }
@@ -228,7 +269,10 @@ export function SpectrogramSettingsPanel({
               </button>
               <button
                 type="button"
-                disabled={platformAnalysis.status?.currentRun?.status !== "succeeded"}
+                disabled={
+                  platformAnalysis.status?.audioTrackId !== platformAnalysis.analysisTrackId ||
+                  platformAnalysis.status?.currentRun?.status !== "succeeded"
+                }
                 onClick={platformAnalysis.preloadPending
                   ? platformAnalysis.onCancelPreload
                   : platformAnalysis.onStartPreload}
@@ -349,22 +393,31 @@ export function SpectrogramSettingsPanel({
   );
 }
 
-function describeAnalysisSource(status: AnnotationMediaAnalysisStatus | null) {
-  if (!status) return "正在读取";
-  if (status.resolvedSource.status === "ready") {
-    const prefix = status.setting.mode === "auto" ? "自动" : "强制";
-    return `${prefix} · ${status.resolvedSource.mediaName}`;
+function describeAnalysisTrack(platformAnalysis: NonNullable<
+  SpectrogramSettingsPanelProps["platformAnalysis"]
+>) {
+  if (!platformAnalysis.analysisTrackId) return "正在等待监听音轨";
+  const option = platformAnalysis.analysisTrackOption;
+  if (!option) return "当前分析音轨已失效";
+  if (option.availability !== "available") {
+    return `${option.track.name} · ${getAudioTrackAvailabilityLabel(option.availability)}`;
   }
-  if (status.resolvedSource.code === "analysis_audio_forbidden") return "来源无读取权限";
-  if (status.resolvedSource.code === "analysis_source_invalid") return "来源已失效";
-  return "尚未关联来源";
+  return `${option.track.name} · ${getAudioTrackSourceLabel(option)}`;
 }
 
 function describeAnalysisRun(
   status: AnnotationMediaAnalysisStatus | null,
   loading: boolean,
+  analysisTrackId: string | null,
 ) {
+  if (!analysisTrackId) return "尚未选择可分析音轨";
   if (loading && !status) return "正在读取分析状态";
+  if (!status || status.audioTrackId !== analysisTrackId) return "等待当前音轨分析状态";
+  if (status.resolvedSource.status === "unavailable") {
+    if (status.resolvedSource.code === "analysis_audio_forbidden") return "无权读取分析音频";
+    if (status.resolvedSource.code === "analysis_source_invalid") return "当前分析音轨来源已失效";
+    return "尚未关联可分析来源";
+  }
   const run = status?.currentRun;
   if (!run) return "尚未生成波形、频谱和 F0";
   if (run.status === "queued") return "已进入后台分析队列";
@@ -377,15 +430,17 @@ export type ToggleRowProps = {
   label: string;
   description: string;
   checked: boolean;
+  disabled?: boolean;
   onChange: (checked: boolean) => void;
 };
 
-export function ToggleRow({ label, description, checked, onChange }: ToggleRowProps) {
+export function ToggleRow({ label, description, checked, disabled = false, onChange }: ToggleRowProps) {
   return (
-    <label className="spectrogram-toggle-row">
+    <label className={`spectrogram-toggle-row ${disabled ? "is-disabled" : ""}`.trim()}>
       <input
         type="checkbox"
         checked={checked}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
       />
       <span className="spectrogram-toggle-switch" aria-hidden="true" />

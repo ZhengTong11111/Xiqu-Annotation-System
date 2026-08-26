@@ -50,7 +50,7 @@ export type PlatformStaticCommandId =
   | "file.save-server"
   | "view.annotation-confirmation-docked"
   | "view.annotation-confirmation-detached"
-  | "audio.analysis-source";
+  | "audio.analysis-track";
 
 export type StaticCommandId = LocalStaticCommandId | PlatformStaticCommandId;
 
@@ -356,11 +356,11 @@ export const PLATFORM_STATIC_COMMAND_DEFINITIONS: StaticCommandDefinition<Platfo
     target: { kind: "static" },
   },
   {
-    id: "audio.analysis-source",
-    label: "分析音频来源",
-    path: ["音频轨道设置", "分析音频来源"],
-    keywords: ["analysis", "audio", "source", "分析", "音频", "来源", "重新分析", "预加载"],
-    target: { kind: "audio-setting", focusTarget: "audio-analysis-source" },
+    id: "audio.analysis-track",
+    label: "分析显示音轨",
+    path: ["音频轨道设置", "分析显示音轨"],
+    keywords: ["analysis", "audio", "track", "分析", "音频", "音轨", "跟随", "固定", "重新分析", "预加载"],
+    target: { kind: "audio-setting", focusTarget: "audio-analysis-track" },
   },
 ];
 

@@ -30,7 +30,7 @@ type Props = {
   open: boolean;
   busy?: boolean;
   allowUnbound?: boolean;
-  pickerMode?: "annotation-media" | "analysis-audio" | "audio-track-source";
+  pickerMode?: "annotation-media" | "audio-track-source";
   title?: string;
   description?: string;
   onOpenChange: (open: boolean) => void;
@@ -365,14 +365,8 @@ function canUseMediaForMode(
   if (mode === "annotation-media") {
     return resource.mediaKind === "video" || resource.mediaKind === "audio";
   }
-  if (mode === "audio-track-source") {
-    // 监听音轨必须绑定稳定的纯音频资源；视频的临时 mp3 转码只属于分析管线，不能伪装成可复用音轨。
-    return isMediaAudioTrackSource(resource);
-  }
-  // 强制上传来源只接受纯音频；VOD 可使用同 vid 的纯音频转码，因此视频媒资仍可选择。
-  return resource.mediaSourceType === "aliyun_vod"
-    ? resource.mediaKind === "video" || resource.mediaKind === "audio"
-    : resource.mediaKind === "audio";
+  // 独立音轨关系必须绑定稳定纯音频；同 VID rendition 由专用 JobId 选择器创建，不能在资源树中伪装成文件。
+  return isMediaAudioTrackSource(resource);
 }
 
 // 当前绑定与目录资源分别使用严格来源标签，VOD 不显示伪造大小或 MIME。

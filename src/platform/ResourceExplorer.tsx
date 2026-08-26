@@ -1406,7 +1406,7 @@ function ResourceInspector(props: {
             <span>
               {props.resource.mediaSourceType === "aliyun_vod"
                 ? "阿里云 VOD · 播放时临时签发凭据"
-                : "服务器上传 · 可作为强制分析音频来源"}
+                : "服务器上传 · 可关联为独立音轨"}
             </span>
           </div>
         </div>
