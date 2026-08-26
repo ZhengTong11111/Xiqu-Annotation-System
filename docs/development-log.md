@@ -7649,3 +7649,27 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 教程没有引用任何图片或截图，避免继续使用已过时界面图；`examples_insights/README.md` 已增加入口。
 - 文档检查通过：`git diff --check` 无错误；关键词回查未发现图片语法、账号管理、权限管理、开发命令或后端
   技术栈混入教程。本轮只修改文档，没有运行代码测试或部署服务器。
+
+## 2026-08-26：RA3b2b2b2 自动门禁复核与登录前停点
+
+### 基线与自动证据
+
+- 文档提交 `990ea24` 后按既有 `CLAUDE_WORK.md` 重新检查本机环境：API readiness 为 ready，PostgreSQL 和本地
+  对象存储均为 ok；Vite `127.0.0.1:5173` 返回 200。测试数据库确认 26/26 migrations current。
+- `npm run test:media-audio-tracks` 通过 shared 7/7 与选择/状态 16/16；`npm run test:media-playback` 通过
+  48/48；VOD gateway 通过 9/9；真实 PostgreSQL/Fastify 音轨 API 通过 4/4；完整 `test:api` 通过 189/189。
+- 完整 `npm run build` 通过 Prisma Client/schema guard、shared、document-model、Web 和 API。仅有既有 Vite
+  主 chunk 体积提醒，以及测试环境已有 `pg` deprecation warning；二者没有在本轮被误写成新回归。
+- 静态回查没有发现生产代码直接使用 `crypto.randomUUID()`、硬编码 HTTP 临时媒体地址、debug console、第二套
+  媒体 owner 或 PlayAuth/临时 URL 持久化。测试中的 Node UUID 和脱敏测试 URL 不属于浏览器运行时问题。
+
+### 浏览器事实与阶段结论
+
+- 通过本机浏览器重新打开平台，只看到账号、密码和登录按钮，没有现成登录会话。未输入、读取或从数据库提取
+  密码，也没有用 API 成功状态替代真实声音/UI 验收。
+- 本轮没有发现自动证据可复现的代码缺陷，因此没有为了制造进度修改播放器、Timeline、分析或协作逻辑，也没有
+  新增依赖和僵尸兼容分支。
+- **已完成**：RA3b2b2b2 的最新源码自动门禁、完整构建和安全静态复核。
+- **待推进**：用户在本机页面完成登录并打开绑定《寻梦》VOD 的文件后，继续管理器/rendition picker、真实
+  original/uploaded/VOD A/B/C、seek/循环/倍率、正负偏移、撤权/删除、续签、慢网、detached、Chrome/Safari
+  和临时 HTTP IP 验收。这些证据未完成前不标记 RA3 完成，也不进入 RA4。

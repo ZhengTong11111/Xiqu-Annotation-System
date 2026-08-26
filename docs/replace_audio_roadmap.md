@@ -882,9 +882,16 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 
 **RA3b2b2b2 待推进：登录浏览器与多环境时序门禁**
 
-- 当前本机浏览器仍停在登录页；本轮没有代填密码，因此不能把 API、纯测试或未登录
-  页面冒充为真实声音/UI 验收。下一轮由用户完成一次本机登录后，检查管理器、rendition picker 的布局、滚动、
-  焦点、Escape、错误/空状态与真实创建。
+- 2026-08-26 在文档收口提交 `990ea24` 后重新验证当前源码基线：音轨合同/状态 `7/7 + 16/16`、播放器
+  `48/48`、VOD gateway `9/9`、真实 PostgreSQL 音轨 API `4/4`、完整 API `189/189` 和完整
+  Prisma/shared/document-model/Web/API build 均通过。静态回查没有发现生产代码直接调用
+  `crypto.randomUUID()`、HTTP 临时媒体地址、debug console、第二媒体 owner 或凭据持久化；仅保留既有 Vite
+  主 chunk 提醒和测试环境 `pg` deprecation warning。
+- 自动门禁完成后重新打开 `http://127.0.0.1:5173/`，页面仍停在登录表单且没有可接管的登录会话。本轮没有
+  代填密码，也没有把 API/纯测试结果写成声音证据；下面的 UI、A/B/C、Safari、HTTP IP 与听觉清单仍是
+  RA3b2b2b2 的硬门禁。
+- 用户完成一次本机登录后，首先检查管理器、rendition picker 的布局、滚动、焦点、Escape、错误/空状态与
+  真实创建。
 - 实际验证原声、uploaded、独立 VOD audio、同 VID rendition 的 A/B/C 快切、播放/暂停/seek/循环/倍率、正负
   offset、文件切换、detached window、禁用/删除/撤权、重试和短到期会话刷新，证明只保留最后意图且不会双声。
 - 覆盖 Chrome 与 Safari、localhost 与临时 HTTP IP，核对 Web License、Range/CORS、自动播放限制、慢请求取消和
