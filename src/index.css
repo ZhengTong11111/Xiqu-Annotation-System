@@ -569,6 +569,17 @@ select {
   font-size: 10px;
 }
 
+/* 只显示最近一次低频同步事实，不让 300 ms 漂移采样转化为高频界面更新。 */
+.audio-track-selector-diagnostic {
+  padding: 6px 9px;
+  overflow-wrap: anywhere;
+  color: #52677d;
+  font-size: 10px;
+  line-height: 1.4;
+  background: rgba(226, 232, 240, 0.55);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+}
+
 .audio-track-selector .icon-button {
   position: relative;
   display: inline-grid;

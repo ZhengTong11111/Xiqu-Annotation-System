@@ -16,6 +16,11 @@ import {
   type MediaPlaybackBackend,
 } from "./mediaPlaybackController";
 import {
+  normalizeBufferingDurationMilliseconds,
+  normalizeDiagnosticDriftMilliseconds,
+  type SynchronizedPlaybackDiagnostic,
+} from "./synchronizedPlaybackDiagnostic";
+import {
   prepareExternalAudioPlaybackBackend,
   type ExternalAudioPlaybackBackendEvents,
   type ExternalAudioPlaybackSource,
@@ -28,7 +33,9 @@ export type SynchronizedMediaPlaybackRuntimeOptions = {
   vodContainerId: string;
   prepareExternalBackend?: PrepareExternalAudioPlaybackBackend;
   scheduleDriftSample?: (callback: () => void, delayMs: number) => () => void;
+  now?: () => number;
   onStateChange?: (state: SynchronizedPlaybackState) => void;
+  onDiagnostic?: (diagnostic: SynchronizedPlaybackDiagnostic) => void;
   onError?: (message: string) => void;
 };
 
@@ -56,6 +63,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
   private stopDriftSample: (() => void) | null = null;
   private driftSyncPromise: Promise<void> | null = null;
   private driftObservation: DriftObservationState = EMPTY_DRIFT_OBSERVATION;
+  private bufferingStartedAtMilliseconds: number | null = null;
   private state: SynchronizedPlaybackState = { ...INITIAL_SYNCHRONIZED_PLAYBACK_STATE };
   private commandGeneration = 0;
   private playbackRate = 1;
@@ -68,11 +76,13 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     callback: () => void,
     delayMs: number,
   ) => () => void;
+  private readonly now: () => number;
 
   constructor(private readonly options: SynchronizedMediaPlaybackRuntimeOptions) {
     this.prepareExternalBackend = options.prepareExternalBackend ??
       prepareExternalAudioPlaybackBackend;
     this.scheduleDriftSample = options.scheduleDriftSample ?? defaultScheduleDriftSample;
+    this.now = options.now ?? getMonotonicNow;
   }
 
   getSnapshot() {
@@ -210,6 +220,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     this.externalBackend?.pause();
     this.applyEvent({ type: "pause_requested" });
     this.stopDriftSampling();
+    this.clearBufferingObservation();
   }
 
   setPlaybackRate(rate: number) {
@@ -346,45 +357,89 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
   }
 
   private async resynchronizeExternal(generation: number, resumePlayback: boolean) {
-    if (generation !== this.state.sourceGeneration || !this.externalBackend) return;
+    if (generation !== this.state.sourceGeneration || !this.externalBackend) return false;
     const canEnterResync = this.state.phase === "starting" ||
       this.state.phase === "playing_synced";
-    if (canEnterResync) this.applyEvent({ type: "resync_required", generation });
+    if (canEnterResync && !this.applyEvent({ type: "resync_required", generation })) {
+      return false;
+    }
     const alignment = await this.alignExternalToMaster(generation);
-    if (generation !== this.state.sourceGeneration || !this.externalBackend) return;
-    if (canEnterResync) this.applyEvent({ type: "resync_completed", generation });
+    if (generation !== this.state.sourceGeneration || !this.externalBackend) return false;
+    // seek 等待期间用户可能主动暂停；这不是状态异常，也不能被迟到同步重新改为播放。
+    if (canEnterResync && this.state.phase !== "resyncing") return false;
+    if (canEnterResync && !this.applyEvent({ type: "resync_completed", generation })) {
+      return false;
+    }
     if (resumePlayback && this.state.desiredPlayback === "playing") {
       if (alignment === "playable") await this.externalBackend.play();
-      this.applyEvent({ type: "external_started", generation });
+      if (!this.applyEvent({ type: "external_started", generation })) return false;
     }
+    return true;
   }
 
   private handleExternalBuffering(generation: number, buffering: boolean) {
     if (generation !== this.state.sourceGeneration || !this.externalBackend) return;
     if (buffering) {
+      const alreadyBuffering = this.state.phase === "buffering_external";
       if (!this.applyEvent({ type: "external_buffering", generation })) return;
+      if (!alreadyBuffering) {
+        this.bufferingStartedAtMilliseconds = this.readDiagnosticNow();
+      }
       this.masterBackend?.pause();
       this.externalBackend.pause();
       this.stopDriftSampling();
+      if (!alreadyBuffering) {
+        this.emitDiagnostic({
+          kind: "buffering",
+          phase: "started",
+          durationMilliseconds: null,
+        });
+      }
       return;
     }
     if (this.state.phase !== "buffering_external") return;
+    const durationMilliseconds = this.consumeBufferingDuration();
     if (!this.applyEvent({ type: "external_recovered", generation })) return;
-    void this.recoverFromBuffering(generation);
+    this.emitDiagnostic({
+      kind: "buffering",
+      phase: "recovery_started",
+      durationMilliseconds,
+    });
+    void this.recoverFromBuffering(generation, durationMilliseconds);
   }
 
-  private async recoverFromBuffering(generation: number) {
+  private async recoverFromBuffering(
+    generation: number,
+    durationMilliseconds: number,
+  ) {
     try {
       const alignment = await this.alignExternalToMaster(generation);
       if (generation !== this.state.sourceGeneration) return;
+      // 用户可以在 seek 等待期间暂停；迟到恢复应静默结束，不能制造错误或恢复播放。
+      if (this.state.phase !== "resyncing") return;
       if (!this.applyEvent({ type: "resync_completed", generation })) return;
-      if (this.state.desiredPlayback !== "playing") return;
-      await this.masterBackend?.play();
-      if (alignment === "playable") await this.externalBackend?.play();
-      this.applyEvent({ type: "external_started", generation });
-      this.startDriftSampling();
+      if (this.state.desiredPlayback === "playing") {
+        await this.masterBackend?.play();
+        if (alignment === "playable") await this.externalBackend?.play();
+        this.applyEvent({ type: "external_started", generation });
+        this.startDriftSampling();
+      }
+      if (generation === this.state.sourceGeneration) {
+        this.emitDiagnostic({
+          kind: "buffering",
+          phase: "recovered",
+          durationMilliseconds,
+        });
+      }
     } catch (error) {
       if (error instanceof MediaPlaybackCommandCancelledError) return;
+      if (generation === this.state.sourceGeneration) {
+        this.emitDiagnostic({
+          kind: "buffering",
+          phase: "failed",
+          durationMilliseconds,
+        });
+      }
       this.handleExternalFailure(
         generation,
         error instanceof Error ? error.message : "替换音轨缓冲恢复失败。",
@@ -434,10 +489,38 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     });
     this.driftObservation = decision.nextObservation;
     if (decision.action !== "hard_resync") return;
+    const driftMilliseconds = normalizeDiagnosticDriftMilliseconds(
+      decision.driftSeconds,
+    );
+    // classify 已证明 drift 为有限值；这里保留 fail-closed 防线，避免诊断异常反向影响播放。
+    if (driftMilliseconds === null) return;
     const generation = this.state.sourceGeneration;
+    const diagnosticFacts = {
+      reason: decision.reason,
+      driftMilliseconds,
+    } as const;
     const synchronization = this.resynchronizeExternal(generation, true)
+      .then((completed) => {
+        if (
+          !completed ||
+          generation !== this.state.sourceGeneration ||
+          !this.desiredSource
+        ) return;
+        this.emitDiagnostic({
+          kind: "drift_resync",
+          phase: "succeeded",
+          ...diagnosticFacts,
+        });
+      })
       .catch((error) => {
         if (!(error instanceof MediaPlaybackCommandCancelledError)) {
+          if (generation === this.state.sourceGeneration && this.desiredSource) {
+            this.emitDiagnostic({
+              kind: "drift_resync",
+              phase: "failed",
+              ...diagnosticFacts,
+            });
+          }
           this.handleExternalFailure(
             generation,
             error instanceof Error ? error.message : "替换音轨重新同步失败。",
@@ -448,6 +531,12 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
         if (this.driftSyncPromise === synchronization) this.driftSyncPromise = null;
       });
     this.driftSyncPromise = synchronization;
+    // 先占住 single-flight，再通知旁路观察者；诊断 callback 不能重入并启动第二次同步。
+    this.emitDiagnostic({
+      kind: "drift_resync",
+      phase: "started",
+      ...diagnosticFacts,
+    });
     await synchronization;
   }
 
@@ -526,8 +615,42 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
   private disposeExternalBackend() {
     const backend = this.externalBackend;
     this.externalBackend = null;
+    this.clearBufferingObservation();
     backend?.pause();
     backend?.dispose();
+  }
+
+  private consumeBufferingDuration() {
+    const startedAt = this.bufferingStartedAtMilliseconds;
+    this.bufferingStartedAtMilliseconds = null;
+    const duration = startedAt === null
+      ? null
+      : normalizeBufferingDurationMilliseconds(
+          (this.readDiagnosticNow() ?? startedAt) - startedAt,
+        );
+    // 单调时钟失效时使用零作为有限诊断事实；播放恢复本身不依赖这个旁路测量。
+    return duration ?? 0;
+  }
+
+  private clearBufferingObservation() {
+    this.bufferingStartedAtMilliseconds = null;
+  }
+
+  private readDiagnosticNow() {
+    try {
+      const value = this.now();
+      return Number.isFinite(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private emitDiagnostic(diagnostic: SynchronizedPlaybackDiagnostic) {
+    try {
+      this.options.onDiagnostic?.(diagnostic);
+    } catch {
+      // 诊断消费者是旁路观察者；UI 或测试 callback 失败不能中断媒体播放状态机。
+    }
   }
 
   private applyEvent(event: SynchronizedPlaybackEvent) {
@@ -595,4 +718,8 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
 function defaultScheduleDriftSample(callback: () => void, delayMs: number) {
   const timer = globalThis.setInterval(callback, delayMs);
   return () => globalThis.clearInterval(timer);
+}
+
+function getMonotonicNow() {
+  return globalThis.performance?.now?.() ?? Date.now();
 }

@@ -15,6 +15,7 @@ import {
   INITIAL_SYNCHRONIZED_PLAYBACK_STATE,
   type SynchronizedPlaybackState,
 } from "../media/synchronizedPlaybackState";
+import type { SynchronizedPlaybackDiagnostic } from "../media/synchronizedPlaybackDiagnostic";
 import { buildPlatformExternalAudioPlaybackSource } from "./platformMediaAudioPlaybackSource";
 import {
   findAudioTrackOption,
@@ -54,8 +55,11 @@ export function usePlatformAudioTrackSelection(
     ...INITIAL_SYNCHRONIZED_PLAYBACK_STATE,
   });
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [runtimeDiagnostic, setRuntimeDiagnostic] =
+    useState<SynchronizedPlaybackDiagnostic | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
   const requestGenerationRef = useRef(0);
+  const runtimeSourceGenerationRef = useRef(0);
   const requestAbortRef = useRef<AbortController | null>(null);
   const selectedTrackIdRef = useRef(selectedTrackId);
   const optionsRef = useRef(options);
@@ -128,8 +132,10 @@ export function usePlatformAudioTrackSelection(
   ]);
 
   useEffect(() => {
+    runtimeSourceGenerationRef.current = 0;
     setRuntimeState({ ...INITIAL_SYNCHRONIZED_PLAYBACK_STATE });
     setRuntimeError(null);
+    setRuntimeDiagnostic(null);
     setDefaultUpdatingTrackId(null);
     setDefaultUpdateError(null);
     if (!sessionKey) {
@@ -221,6 +227,7 @@ export function usePlatformAudioTrackSelection(
     selectedTrackIdRef.current = trackId;
     setSelectedTrackId(trackId);
     setRuntimeError(null);
+    setRuntimeDiagnostic(null);
     setRetryGeneration((value) => value + 1);
     return true;
   }, []);
@@ -232,6 +239,7 @@ export function usePlatformAudioTrackSelection(
       return;
     }
     setRuntimeError(null);
+    setRuntimeDiagnostic(null);
     setRetryGeneration((value) => value + 1);
   }, [loadOptions]);
 
@@ -271,6 +279,15 @@ export function usePlatformAudioTrackSelection(
     }
   }, [input.annotationFileId, input.canWrite, input.client, sessionKey]);
 
+  const handleRuntimeStateChange = useCallback((nextState: SynchronizedPlaybackState) => {
+    // 切轨、撤权、切回原声和媒体重挂载都会推进 generation；旧音轨诊断不能跨代际残留。
+    if (runtimeSourceGenerationRef.current !== nextState.sourceGeneration) {
+      runtimeSourceGenerationRef.current = nextState.sourceGeneration;
+      setRuntimeDiagnostic(null);
+    }
+    setRuntimeState(nextState);
+  }, []);
+
   return {
     active: Boolean(sessionKey),
     options,
@@ -285,13 +302,15 @@ export function usePlatformAudioTrackSelection(
     defaultUpdateError,
     runtimeState,
     runtimeError,
+    runtimeDiagnostic,
     canSetDefault: input.canWrite,
     canManageTracks: options?.canManageTracks ?? false,
     selectTrack,
     retry,
     refresh: () => loadOptions("refresh"),
     setAsDefault,
-    onRuntimeStateChange: setRuntimeState,
+    onRuntimeStateChange: handleRuntimeStateChange,
+    onRuntimeDiagnostic: setRuntimeDiagnostic,
     onRuntimeError: setRuntimeError,
   };
 }

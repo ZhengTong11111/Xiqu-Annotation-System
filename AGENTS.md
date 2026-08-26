@@ -630,7 +630,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     remain explicit invalid transitions. Repeated browser ready/play/buffering facts are intentionally idempotent
   - these pure modules are consumed by `SynchronizedMediaPlaybackRuntime`; analysis display selection remains a separate later
     phase and must not be inferred from playback state
-- `src/media/synchronizedMediaPlaybackRuntime.ts` + `src/media/externalAudioPlaybackBackendFactory.ts`
+- `src/media/synchronizedMediaPlaybackRuntime.ts` + `src/media/synchronizedPlaybackDiagnostic.ts` +
+  `src/media/externalAudioPlaybackBackendFactory.ts`
   - the only composite playback owner and delayed external-backend construction boundary. Video remains the authoritative clock;
     at most one external backend may exist, and selection/command generations make old prepare/ready/error/buffering facts inert
   - uploaded URLs and VOD PlayAuth are requested only inside the factory, remain memory-only, and are disposed on cancellation,
@@ -642,6 +643,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - selection must mute the master before asynchronous preparation. External failure, revoked/unavailable selection, or option
     loading failure pauses playback and keeps master audio muted; only an explicit original selection restores master output.
     Offset maps playback time only and never changes analysis identity
+  - drift/buffering diagnostics are bounded session-only facts: emit only meaningful resync/recovery boundaries, use closed
+    reason/phase values plus clamped integer measurements, and never include account/file/track identity, URLs, credentials,
+    provider errors, or stacks. Diagnostic callbacks are observers and must never control or delay safe playback actions
+  - buffering duration uses an injectable monotonic clock. Repeated buffering events count once, and pause/source change/dispose
+    clears unfinished observations. A seek completing after user pause is a normal cancelled recovery, not an invalid transition
 - `src/platform/usePlatformAudioTrackSelection.ts` + `src/platform/platformAudioTrackSelection.ts` +
   `src/components/AudioTrackSelector.tsx`
   - own the annotation-file session's playback-option load, shared-default initialization, current listening selection, retry,

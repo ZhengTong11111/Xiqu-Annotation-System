@@ -7928,3 +7928,48 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   部署服务器或迁移 public/生产数据库。RA4c1 -> RA4c2 的两版本生产门禁仍原样保留。
 - **待推进**：RA5b 先审查已有漂移采样、连续样本阈值、buffering 状态和迟到 generation 回调，再用有界、
   脱敏、低频诊断与测试补真实缺口；RA5c 后续处理 VOD 续签、断网/休眠恢复、不同长度音频和长时播放。
+
+## 2026-08-26：RA5b 漂移、缓冲诊断与主动暂停竞态修复
+
+### 现状审查与诊断边界
+
+- 依据 RA5a 后的真实代码重写 `CLAUDE_WORK.md`。审查确认同步核心并非空白：视频已是唯一主时钟，漂移策略
+  已有 40 ms 容差、150 ms 立即硬同步、连续 2 次同方向中等漂移确认和 300 ms 采样；buffering 已暂停主从
+  媒体并在恢复后重新对齐，source/command generation 也已阻止旧来源回调。因而本轮没有重新发明状态机或调整
+  未经听觉证据支持的阈值。
+- 新增 `synchronizedPlaybackDiagnostic` 纯合同，只允许硬同步 `started/succeeded/failed` 与缓冲
+  `started/recovery_started/recovered/failed`。原因是 `forced/large_drift/confirmed_medium_drift` 封闭 union；
+  漂移和时长转换为钳制的整数毫秒。事件不接受账号、文件、音轨、资源 ID、URL、PlayAuth、AccessKey、token、
+  provider 原始错误或堆栈，因此未来即使接低基数指标也不会由自由字符串造成标签爆炸。
+- runtime 只在重要边界调用旁路 observer，正常 300 ms 采样、容差内抖动和第一条中等漂移不发事件。callback
+  被 try/catch 隔离，而且播放暂停、single-flight 占位等安全动作先完成，再通知 observer；UI callback 抛错或
+  执行缓慢不能改变状态机判定。
+- buffering 使用可注入单调时钟，生产优先 `performance.now()`，测试使用确定性时钟。重复 `true` 只产生一次
+  开始事实；用户暂停、切轨、媒体卸载、失败和 dispose 会清理未完成观察。无效时钟只降级为有限 0 ms 诊断，
+  不阻断实际恢复。
+
+### 受控恢复与界面接线
+
+- 自审发现一个真实竞态：漂移硬同步或缓冲恢复已经进入异步 `seek` 后，用户主动暂停会把 phase 改为
+  `ready_paused`；旧 Promise 完成时仍尝试发送 `resync_completed`，导致“同步状态异常”提示。现在完成点先复核
+  generation、backend 和 `resyncing` phase；主动暂停被视为正常取消，迟到同步静默退出，不播放主视频或外轨，
+  也不伪造成功诊断。`resynchronizeExternal()` 返回明确布尔完成事实，只有真实完成才发 succeeded。
+- `VideoPlayer` 只转发有界事件；文件会话 hook 只保留最后一条，音轨/媒体 generation 变化、显式选择或重试会
+  清空旧事实。顶栏音轨弹层在既有标题和列表之间显示一行克制中文摘要，没有新增卡片、全局 store、服务器
+  endpoint、数据库表或持久化。普通采样不产生 React state 更新，错误操作仍由原 `runtimeError` 和重试入口负责。
+- 本轮没有新增依赖：事件 union、单调计时和整数钳制用平台能力即可，增加库只会扩大播放核心依赖面。
+
+### 测试、自审与阶段状态
+
+- `npm run test:media-playback` 通过 54/54；新增覆盖有限测量与全部摘要、中等漂移两次确认、硬同步单飞、在途
+  暂停、同步失败、重复 buffering、1250 ms 确定性恢复、缓冲中主动暂停、旧来源迟到回调和 observer 抛错。
+- `npm run test:media-audio-tracks` 通过 shared 7/7、frontend 23/23；`npm run test:media-analysis` 38/38；完整
+  Prisma guard、shared、document-model、Web/API build 和 `git diff --check` 通过。仅保留既有 Vite 主 chunk
+  体积提示；没有 debug console、直接浏览器 UUID、动态诊断错误原文或同步 policy/state 的意外差异。
+- `AGENTS.md` 已登记诊断 owner、旁路原则、单调时钟和主动暂停取消语义。用户自己的
+  `examples_insights/tutorial.md` 修改未被改写、暂存或提交。
+- **已完成**：RA5b 有界同步诊断、当前会话 UI、确定性缓冲计时、主动暂停竞态修复和自动回归。
+- **未执行**：用户明确跳过浏览器验证；未做真实慢网、断网、Chrome/Safari、HTTP IP/HTTPS、30 分钟播放，
+  未部署服务器，也未迁移 public/生产数据库。RA4c1 -> RA4c2 两版本生产门禁继续保留。
+- **待推进**：RA5c 处理不同长度音频边界、VOD 会话续签、网络中断、系统休眠/唤醒、detached window 与长时
+  播放；RA6 再执行恢复候选和生产迁移、完整浏览器/听觉/压力验收与专项收口。

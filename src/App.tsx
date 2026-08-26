@@ -6810,6 +6810,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         onTimeUpdate={setCurrentTime}
         onPlayStateChange={setIsPlaying}
         onAudioPlaybackStateChange={platformAudioTracks.onRuntimeStateChange}
+        onAudioPlaybackDiagnostic={platformAudioTracks.onRuntimeDiagnostic}
         onAudioPlaybackError={platformAudioTracks.onRuntimeError}
       />
     );
@@ -7149,6 +7150,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             loadError: platformAudioTracks.loadError,
             runtimeState: platformAudioTracks.runtimeState,
             runtimeError: platformAudioTracks.runtimeError,
+            runtimeDiagnostic: platformAudioTracks.runtimeDiagnostic,
             canSetDefault: platformAudioTracks.canSetDefault,
             canManageTracks: platformAudioTracks.canManageTracks,
             defaultUpdatingTrackId: platformAudioTracks.defaultUpdatingTrackId,

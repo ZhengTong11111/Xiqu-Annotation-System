@@ -15,6 +15,10 @@ import type {
 } from "@xiqu/shared";
 import type { SynchronizedPlaybackState } from "../media/synchronizedPlaybackState";
 import {
+  describeSynchronizedPlaybackDiagnostic,
+  type SynchronizedPlaybackDiagnostic,
+} from "../media/synchronizedPlaybackDiagnostic";
+import {
   findAudioTrackOption,
   getAudioTrackAvailabilityLabel,
   getAudioTrackKindLabel,
@@ -29,6 +33,7 @@ export type AudioTrackSelectorModel = {
   loadError: string | null;
   runtimeState: SynchronizedPlaybackState;
   runtimeError: string | null;
+  runtimeDiagnostic: SynchronizedPlaybackDiagnostic | null;
   canSetDefault: boolean;
   canManageTracks: boolean;
   defaultUpdatingTrackId: string | null;
@@ -58,6 +63,9 @@ export function AudioTrackSelector({
   const selectedName = selectedOption?.track.name ??
     (model.loading ? "读取音轨" : model.loadError ? "音轨不可用" : "选择音轨");
   const status = getSelectorStatus(model, selectedOption?.availability ?? null);
+  const diagnosticSummary = describeSynchronizedPlaybackDiagnostic(
+    model.runtimeDiagnostic,
+  );
   const selectionError = model.selectedTrackId && !selectedOption
     ? "当前选择已失效，请刷新或选择其他音轨。"
     : selectedOption?.availability && selectedOption.availability !== "available"
@@ -135,6 +143,12 @@ export function AudioTrackSelector({
               </button>
             </div>
           </div>
+
+          {diagnosticSummary ? (
+            <div className="audio-track-selector-diagnostic" role="status">
+              {diagnosticSummary}
+            </div>
+          ) : null}
 
           {model.options ? (
             <div className="audio-track-selector-list" role="listbox" aria-label="可用监听音轨">

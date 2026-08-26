@@ -22,6 +22,7 @@ import {
   SynchronizedMediaPlaybackRuntime,
   type SynchronizedAudioSelection,
 } from "../media/synchronizedMediaPlaybackRuntime";
+import type { SynchronizedPlaybackDiagnostic } from "../media/synchronizedPlaybackDiagnostic";
 import type { SynchronizedPlaybackState } from "../media/synchronizedPlaybackState";
 
 const PREVIEW_SEEK_EPSILON = 1 / 90;
@@ -39,6 +40,7 @@ type VideoPlayerProps = {
   onTimeUpdate: (currentTime: number) => void;
   onPlayStateChange: (playing: boolean) => void;
   onAudioPlaybackStateChange?: (state: SynchronizedPlaybackState) => void;
+  onAudioPlaybackDiagnostic?: (diagnostic: SynchronizedPlaybackDiagnostic) => void;
   onAudioPlaybackError?: (message: string) => void;
 };
 
@@ -62,6 +64,7 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
       onTimeUpdate,
       onPlayStateChange,
       onAudioPlaybackStateChange,
+      onAudioPlaybackDiagnostic,
       onAudioPlaybackError,
     },
     ref,
@@ -80,6 +83,7 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
       onTimeUpdate,
       onPlayStateChange,
       onAudioPlaybackStateChange,
+      onAudioPlaybackDiagnostic,
       onAudioPlaybackError,
     });
     const commandRef = useRef<LatestMediaPlaybackCommand | null>(null);
@@ -97,6 +101,8 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
       synchronizedRuntimeRef.current = new SynchronizedMediaPlaybackRuntime({
         vodContainerId: audioVodContainerId.current,
         onStateChange: (state) => callbacksRef.current.onAudioPlaybackStateChange?.(state),
+        onDiagnostic: (diagnostic) =>
+          callbacksRef.current.onAudioPlaybackDiagnostic?.(diagnostic),
         onError: (message) => callbacksRef.current.onAudioPlaybackError?.(message),
       });
     }
@@ -122,6 +128,7 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
       onTimeUpdate,
       onPlayStateChange,
       onAudioPlaybackStateChange,
+      onAudioPlaybackDiagnostic,
       onAudioPlaybackError,
     };
 

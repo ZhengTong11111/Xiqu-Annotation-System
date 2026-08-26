@@ -10,6 +10,7 @@ import type {
   ExternalAudioPlaybackSource,
   PrepareExternalAudioPlaybackBackend,
 } from "./externalAudioPlaybackBackendFactory";
+import type { SynchronizedPlaybackDiagnostic } from "./synchronizedPlaybackDiagnostic";
 import { SynchronizedMediaPlaybackRuntime } from "./synchronizedMediaPlaybackRuntime";
 
 class FakeBackend implements MediaPlaybackBackend {
@@ -21,6 +22,8 @@ class FakeBackend implements MediaPlaybackBackend {
   playbackRate = 1;
   volume = 0.5;
   muted = false;
+  seekBlocker: Promise<void> | null = null;
+  seekError: Error | null = null;
 
   constructor(snapshot: Partial<MediaPlaybackSnapshot> = {}) {
     this.snapshot = {
@@ -36,6 +39,8 @@ class FakeBackend implements MediaPlaybackBackend {
   getSnapshot() { return { ...this.snapshot }; }
   async seek(time: number) {
     this.seekTargets.push(time);
+    if (this.seekBlocker) await this.seekBlocker;
+    if (this.seekError) throw this.seekError;
     this.snapshot.currentTime = time;
   }
   async play() {
@@ -60,12 +65,14 @@ type PendingPreparation = {
   reject: (error: Error) => void;
 };
 
-function createHarness() {
+function createHarness(options: { diagnosticThrows?: boolean } = {}) {
   const pending = new Map<string, PendingPreparation>();
   const prepareCounts = new Map<string, number>();
   const driftCallbacks: Array<() => void> = [];
   const stoppedDriftCallbacks = new Set<() => void>();
   const errors: string[] = [];
+  const diagnostics: SynchronizedPlaybackDiagnostic[] = [];
+  let nowMilliseconds = 0;
   const prepare: PrepareExternalAudioPlaybackBackend = (source, options) =>
     new Promise((resolve, reject) => {
       prepareCounts.set(source.trackId, (prepareCounts.get(source.trackId) ?? 0) + 1);
@@ -93,6 +100,11 @@ function createHarness() {
       driftCallbacks.push(callback);
       return () => stoppedDriftCallbacks.add(callback);
     },
+    now: () => nowMilliseconds,
+    onDiagnostic: (diagnostic) => {
+      diagnostics.push(diagnostic);
+      if (options.diagnosticThrows) throw new Error("测试诊断消费者失败");
+    },
     onError: (message) => errors.push(message),
   });
   return {
@@ -102,6 +114,10 @@ function createHarness() {
     driftCallbacks,
     stoppedDriftCallbacks,
     errors,
+    diagnostics,
+    setNow: (value: number) => {
+      nowMilliseconds = value;
+    },
   };
 }
 
@@ -229,6 +245,7 @@ test("切回原声先恢复主输出且旧外部事件不能复活", async () =>
   preparation?.events.onBufferingChange?.(true);
   assert.equal(harness.runtime.getState().phase, "original");
   assert.deepEqual(harness.errors, []);
+  assert.deepEqual(harness.diagnostics, []);
 });
 
 test("before-start 保持无声并在进入可播区后由漂移采样启动", async () => {
@@ -271,6 +288,20 @@ test("连续中等漂移触发硬同步而小漂移保持不动", async () => {
   harness.driftCallbacks[harness.driftCallbacks.length - 1]?.();
   await flushAsyncWork();
   assert.deepEqual(external.seekTargets, [10]);
+  assert.deepEqual(harness.diagnostics, [
+    {
+      kind: "drift_resync",
+      phase: "started",
+      reason: "confirmed_medium_drift",
+      driftMilliseconds: -100,
+    },
+    {
+      kind: "drift_resync",
+      phase: "succeeded",
+      reason: "confirmed_medium_drift",
+      driftMilliseconds: -100,
+    },
+  ]);
 });
 
 test("缓冲暂停主视频，恢复时重同步；用户主动暂停后不自动恢复", async () => {
@@ -283,13 +314,21 @@ test("缓冲暂停主视频，恢复时重同步；用户主动暂停后不自�
   preparation?.resolve(external);
   await selecting;
 
+  harness.setNow(100);
+  preparation?.events.onBufferingChange?.(true);
   preparation?.events.onBufferingChange?.(true);
   assert.equal(master.snapshot.paused, true);
   assert.equal(harness.runtime.getState().phase, "buffering_external");
+  harness.setNow(1_350);
   preparation?.events.onBufferingChange?.(false);
   await flushAsyncWork();
   assert.equal(master.snapshot.paused, false);
   assert.equal(harness.runtime.getState().phase, "playing_synced");
+  assert.deepEqual(harness.diagnostics, [
+    { kind: "buffering", phase: "started", durationMilliseconds: null },
+    { kind: "buffering", phase: "recovery_started", durationMilliseconds: 1_250 },
+    { kind: "buffering", phase: "recovered", durationMilliseconds: 1_250 },
+  ]);
 
   preparation?.events.onBufferingChange?.(true);
   harness.runtime.pause();
@@ -297,6 +336,92 @@ test("缓冲暂停主视频，恢复时重同步；用户主动暂停后不自�
   await flushAsyncWork();
   assert.equal(master.snapshot.paused, true);
   assert.equal(harness.runtime.getState().phase, "ready_paused");
+  assert.equal(
+    harness.diagnostics.filter(({ kind, phase }) =>
+      kind === "buffering" && phase === "recovery_started").length,
+    1,
+  );
+});
+
+test("硬同步在途保持单飞且用户暂停不会被迟到 seek 恢复", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 10, paused: false });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(externalSelection(source("single-flight")));
+  const external = new FakeBackend({ currentTime: 10 });
+  harness.pending.get("single-flight")?.resolve(external);
+  await selecting;
+  external.seekTargets = [];
+
+  const seekGate = createDeferred();
+  external.seekBlocker = seekGate.promise;
+  external.snapshot.currentTime = 9.7;
+  const driftCallback = harness.driftCallbacks[harness.driftCallbacks.length - 1];
+  driftCallback?.();
+  await flushAsyncWork();
+  driftCallback?.();
+  await flushAsyncWork();
+  assert.deepEqual(external.seekTargets, [10]);
+  assert.equal(harness.diagnostics.length, 1);
+
+  harness.runtime.pause();
+  seekGate.resolve();
+  await flushAsyncWork();
+  assert.equal(master.snapshot.paused, true);
+  assert.equal(external.snapshot.paused, true);
+  assert.equal(harness.runtime.getState().phase, "ready_paused");
+  assert.equal(harness.diagnostics.length, 1);
+  assert.deepEqual(harness.errors, []);
+});
+
+test("诊断消费者抛错不会中断缓冲安全暂停", async () => {
+  const harness = createHarness({ diagnosticThrows: true });
+  const master = new FakeBackend({ paused: false });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(externalSelection(source("observer")));
+  const external = new FakeBackend();
+  const preparation = harness.pending.get("observer");
+  preparation?.resolve(external);
+  await selecting;
+
+  preparation?.events.onBufferingChange?.(true);
+  assert.equal(harness.runtime.getState().phase, "buffering_external");
+  assert.equal(master.snapshot.paused, true);
+  assert.deepEqual(harness.errors, []);
+});
+
+test("漂移同步失败记录有限事实并进入既有安全错误态", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 10, paused: false });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(externalSelection(source("drift-failure")));
+  const external = new FakeBackend({ currentTime: 10 });
+  harness.pending.get("drift-failure")?.resolve(external);
+  await selecting;
+  external.seekTargets = [];
+
+  external.snapshot.currentTime = 9.7;
+  external.seekError = new Error("包含供应商细节的测试错误");
+  harness.driftCallbacks[harness.driftCallbacks.length - 1]?.();
+  await flushAsyncWork();
+
+  assert.deepEqual(harness.diagnostics, [
+    {
+      kind: "drift_resync",
+      phase: "started",
+      reason: "large_drift",
+      driftMilliseconds: -300,
+    },
+    {
+      kind: "drift_resync",
+      phase: "failed",
+      reason: "large_drift",
+      driftMilliseconds: -300,
+    },
+  ]);
+  assert.equal(harness.runtime.getState().phase, "error_external");
+  assert.equal(master.snapshot.paused, true);
+  assert.deepEqual(harness.errors, ["包含供应商细节的测试错误"]);
 });
 
 test("准备失败暂停且保持所选音轨，只有显式重试或切回原声才能恢复", async () => {
@@ -382,4 +507,12 @@ test("主来源卸载会取消准备、销毁主从 backend 并停止漂移", as
 
 function flushAsyncWork() {
   return new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+function createDeferred() {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
