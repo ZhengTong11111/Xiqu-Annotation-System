@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2、RA3a、RA3b1、RA3b2a、RA3b2b1、RA3b2b2a、RA3b2b2b1 已完成
+> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁已完成；RA3 多环境听觉验收延期，当前推进 RA4
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -36,9 +36,14 @@
 - **RA3b2b2b1 已完成（2026-08-24）**：慢网生命周期审查发现 VOD 刷新错误捕获了已经完成的首次准备 signal；
   现由唯一 Aliplayer backend 为每次会话请求分配 AbortController，销毁时真实中止所有在途刷新，并把 signal
   贯通主 VOD、独立 VOD 音频和同 VID rendition。播放器专项增至 48/48，完整 build 通过。
-- 下一阶段是 **RA3b2b2b2 登录浏览器验收与时序收口**。当前可用的本机页面仍停在登录页，因而本轮
-  没有代填密码或伪造声音证据。必须由用户先完成一次本机平台登录，再完成 Chrome/Safari、localhost/HTTP IP、
-  A/B/C、撤权、续签、慢网和 detached window 验收；该门禁通过前不进入 RA4。
+- **RA3b2b2b2 自动与登录冒烟门禁已完成，完整听觉门禁延期（2026-08-26）**：用户登录后，Agent 在
+  `http://localhost:5173/` 确认目标标注文件已绑定《寻梦》VOD、编辑器正常加载约 24:54 媒体、视频原声成为
+  当前监听音轨且协作状态已同步。Chrome 控制连接在继续展开音轨菜单时反复中断，未取得 A/B/C 听辨、Safari、
+  HTTP IP、撤权、续签、慢网和 detached window 的完整证据；用户明确要求跳过本次验证并继续开发。这些项目
+  保留为 RA3 延期验收债务，不写成已通过，也不再阻塞 RA4 的代码实施。
+- 下一阶段是 **RA4a 分析音轨选择合同与状态收敛**：先让分析显示可以明确选择“跟随当前监听音轨”或“固定到
+  某条音轨”，并让未分析、加载中、可复用结果和不可用状态来自一个权威状态模型；随后再接入渐进瓦片读取和
+  清理旧频谱音频覆盖逻辑。
 
 ## 1. 目标重新定义
 
@@ -880,7 +885,7 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
   48/48，完整 Prisma/shared/document-model/Web/API build 通过，`git diff --check` 通过。只保留既有 Vite chunk
   提醒；无新依赖、debug 输出、第二媒体 owner 或遗留无调用分支。
 
-**RA3b2b2b2 待推进：登录浏览器与多环境时序门禁**
+**RA3b2b2b2 自动与登录冒烟完成，完整听觉门禁延期（2026-08-26）**
 
 - 2026-08-26 在文档收口提交 `990ea24` 后重新验证当前源码基线：音轨合同/状态 `7/7 + 16/16`、播放器
   `48/48`、VOD gateway `9/9`、真实 PostgreSQL 音轨 API `4/4`、完整 API `189/189` 和完整
@@ -891,12 +896,14 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
   因而该地址不能作为 VOD 证据。现已改用 `http://localhost:5173/` 重新打开，页面仍停在登录表单且没有可接管
   会话。本轮没有代填密码，也没有把 API/纯测试结果写成声音证据；下面的 UI、A/B/C、Safari、HTTP IP 与
   听觉清单仍是 RA3b2b2b2 的硬门禁。
-- 用户完成一次本机登录后，首先检查管理器、rendition picker 的布局、滚动、焦点、Escape、错误/空状态与
-  真实创建。
-- 实际验证原声、uploaded、独立 VOD audio、同 VID rendition 的 A/B/C 快切、播放/暂停/seek/循环/倍率、正负
-  offset、文件切换、detached window、禁用/删除/撤权、重试和短到期会话刷新，证明只保留最后意图且不会双声。
-- 覆盖 Chrome 与 Safari、localhost 与临时 HTTP IP，核对 Web License、Range/CORS、自动播放限制、慢请求取消和
-  未来 HTTPS mixed-content 边界。浏览器门禁与用户听觉确认通过前仍不进入 RA4。
+- 用户随后在 Chrome 完成登录。Agent 使用 Web License 登记的 `http://localhost:5173/` 进入示例项目，确认
+  `新工尺_央视_顾卫英《寻梦》.merged.cleaned.json` 已关联 VOD，编辑器成功取得约 24:54 时长、显示“视频原声”
+  和“实时已连接 · 可编辑 · 已同步 · 服务器 v122”。这些是登录与主 VOD 冒烟证据，不等同于多音轨听觉通过。
+- Chrome 扩展控制在展开监听音轨菜单时反复断开；Chrome 进程、扩展启用状态和 native host manifest 的只读
+  检查均正常，因此没有把控制通道问题猜测成播放器缺陷，也没有为迎合清单修改代码。
+- 用户明确要求跳过本次验证并继续工作。原声、uploaded、独立 VOD audio、同 VID rendition 的 A/B/C 快切、
+  Safari、临时 HTTP IP、正负 offset、撤权、续签、慢网和 detached window 仍登记为延期人工验收，不得在 RA4
+  或 RA5 文档中倒填为已通过。
 
 ### RA4：分析显示跟随与渐进缓存复用
 
