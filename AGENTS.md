@@ -192,7 +192,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/mediaAnalysisSourceFingerprint.ts`
   - the only media-content fingerprint boundary for media-scoped analysis; uploaded identity requires stable file checksum/size,
     VOD identity requires region/video id/duration, and annotation id, selection mode, and track offset have no input position
-  - same-VID VOD renditions additionally include the official stable JobId and format, so original audio and different rendition
+  - VOD renditions additionally include the official stable JobId and format, so original audio and different rendition
     streams cannot share a run. Definition, bitrate, display metadata, temporary URL, and track offset never enter the fingerprint
 - `apps/api/src/mediaAnalysisWorkerService.ts` + `apps/api/src/mediaAnalysisWorkerRuntime.ts`
   - independent database claim/heartbeat/stale-recovery worker; normal shutdown removes partial assets and requeues the job
@@ -264,9 +264,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     shared integer-millisecond helper to avoid floating tails. Positive means the replacement audio is delayed on the video
     timeline; negative means it is advanced. Calibration remains an explicit save operation and must not create a parallel
     preview-only offset, ProjectData mutation, or per-click network write
-  - the resource-tree picker accepts only active `media_file` resources whose authoritative `mediaKind` is `audio`. A same-VID
-    rendition uses a separate provider-backed picker and stores only source VOD identity plus JobId; it must never be presented
-    as a movable file, accept a user-supplied URL/JobId, or bypass server-side candidate revalidation
+  - the user-facing audio-source resource picker is unified: it lists active pure-audio `media_file` resources and
+    readable/downloadable Aliyun VOD video containers. Pure audio proceeds directly to relation editing; selecting a VOD
+    container opens the provider-backed MP3 rendition step and revalidates the returned JobId on the server. A rendition stores
+    only source VOD identity plus JobId and must never be presented as a movable file, accept a user-supplied URL/JobId, or
+    bypass server-side candidate revalidation
 - `src/platform/platformMediaBindingPolicy.ts`
   - pure clean-session gate shared by current uploaded-media binding and future platform media sources
   - dirty/pending/transient/inline/merge/conflict/offline/error/remote-gap sessions must not replace the runtime media
@@ -608,7 +610,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   `packages/shared/src/mediaAnalysisIdentity.ts`
   - strict platform contracts for a primary media's ordered audio-track set, shared annotation-file default preference,
     short-lived file-bound playback session, bounded analysis status, and media-scoped analysis run identity
-  - embedded original audio, independent media resources, and same-VID VOD renditions are distinct source variants. Original
+  - embedded original audio, independent media resources, and VOD renditions are distinct source variants. Original
     uses the primary media at zero offset; a rendition binds a real VOD media resource plus JobId. Persistent DTOs never carry
     URLs, AccessKeys, provider responses, or ProjectData; PlayAuth/temporary HTTPS source exists only in strict no-store sessions
 - `apps/api/src/mediaAudioTrackService.ts`
@@ -636,7 +638,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - uploaded sessions return file identity only and continue through the protected Range route. Main video and audio VOD use
     one issuer; missing License fails before PlayAuth, provider errors are normalized, and session payloads are never audited,
     logged, cached, or persisted
-  - same-VID rendition sessions re-fetch the exact stored JobId and return only a short-lived HTTPS source in the no-store DTO;
+  - VOD rendition sessions re-fetch the exact stored JobId and return only a short-lived HTTPS source in the no-store DTO;
     missing/replaced streams fail closed and must never silently select another bitrate or rendition
 - `src/media/synchronizedPlaybackPolicy.ts` + `src/media/synchronizedPlaybackState.ts`
   - pure RA0 contracts for master-video/audio time mapping, drift classification, source-generation ordering, buffering,
@@ -668,9 +670,31 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     boundary returns the effective state so an error-state nested pause cannot leave React displaying a false playing state
   - external before-start/playable/after-end/invalid observations are generation-local. Sampling performs boundary pause only
     when the region changes, while explicit seek/alignment remains authoritative and can return a shorter track to playback
+  - annotation playback targets at most 10 ms master/external drift. Resuming an already aligned paused pair must preserve the
+    decoded audio buffer instead of issuing an unconditional seek. A 100 ms sampler uses bounded ±4% external-only rate servo
+    correction for 10-150 ms drift and restores the user's base rate inside tolerance; only explicit seek/recovery, external
+    pause, or drift over 150 ms uses authoritative hard alignment. A commanded audio seek may emit `waiting` and must not be
+    reclassified as transport starvation; native `stalled` is only a progress hint, while uncommanded `waiting` remains the
+    real buffering signal that may pause the master
   - interruption recovery is a single-flight, session-generation operation shared by online/pageshow/visible events. It may
     wake both master and external VOD backends, but must freeze the current command generation before network waits; a later
     pause/play/seek, source switch, master replacement, or dispose invalidates old post-recovery alignment and always wins
+- `src/media/refreshingNativeAudioPlaybackBackend.ts` + `src/media/nativeAudioPlaybackBackend.ts`
+  - provider-confirmed JobId MP3 renditions are direct HTTPS Range audio and must use the refreshing native backend, not hidden
+    Aliplayer. Ordinary vid + PlayAuth video/audio remains on `AliyunVodPlaybackBackend`; do not restore the removed duplicate
+    rendition branch there
+  - signed rendition URLs are memory-only. Refresh validates videoId, exact JobId, MIME, HTTPS, and expiry, prepares a muted
+    candidate in the old element's `ownerDocument`, aligns the latest clock and playback settings, then atomically swaps. A
+    failed refresh retains the old element; dispose aborts session requests and pending metadata preparation
+  - the 150 ms buffered-start exemption belongs only to vid + PlayAuth Aliplayer. Uploaded and rendition-native audio use a
+    1 ms start-alignment boundary after the master clock gate, then the shared 10 ms drift servo owns stable playback
+  - JobId native MP3 may still incur 150-500 ms decoder startup lag after an initial or authoritative seek. For six seconds
+    after that synchronization completes, keep the 10 ms target and bounded ±4% servo but raise only the hard-seek boundary
+    to 500 ms; otherwise seek-induced lag can form a self-sustaining seek/stall loop. Forced pause and drift above 500 ms
+    remain hard synchronization, and ordinary stable playback returns to the shared 150 ms boundary after the window
+- Timeline viewport reports are emitted from an effect. App-level consumers must pass a stable callback identity and avoid
+  alternating equivalent viewport objects; an inline callback can turn unrelated polling renders into a maximum-depth update
+  loop that blocks both interaction and media timing
 - `src/platform/usePlatformAudioTrackSelection.ts` + `src/platform/platformAudioTrackSelection.ts` +
   `src/components/AudioTrackSelector.tsx`
   - own the annotation-file session's playback-option load, shared-default initialization, current listening selection, retry,
@@ -695,7 +719,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     and generation checks reject late provider events after source switch/dispose
   - a failed preserve-refresh must not discard or report fatal against a still-installed player. Retry delays live in the pure
     `vodSessionRefreshPolicy.ts`; do not add a second timer, persist retry state, or log provider errors/temporary session data
-  - ordinary VOD uses vid + PlayAuth, while a same-VID audio rendition uses the no-store HTTPS source with mediaType audio and
+  - ordinary VOD uses vid + PlayAuth, while a VOD audio rendition uses the no-store HTTPS source with mediaType audio and
     format mp3. Both paths share the same refresh, time/rate/volume restoration, generation, and disposal logic
 - `src/components/InspectorPanel.tsx`
   - canonical editor for selected items, tracks, sentence delivery/role classification, attached point tracks, spectrogram

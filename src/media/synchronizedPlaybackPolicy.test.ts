@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   classifyExternalAudioDrift,
-  EMPTY_DRIFT_OBSERVATION,
   mapMasterTimeToAudioTime,
 } from "./synchronizedPlaybackPolicy";
 
@@ -47,40 +46,31 @@ test("时间映射拒绝非有限值和非法时长", () => {
   }), { status: "invalid_time" });
 });
 
-test("漂移策略忽略小抖动并要求中等同向漂移连续确认", () => {
+test("漂移策略忽略小抖动并用有界倍率平滑修正中等漂移", () => {
   const within = classifyExternalAudioDrift({
-    actualAudioTime: 10.039,
+    actualAudioTime: 10.009,
     expectedAudioTime: 10,
   });
   assert.equal(within.action, "within_tolerance");
 
-  const first = classifyExternalAudioDrift({
-    actualAudioTime: 10.1,
+  const outside = classifyExternalAudioDrift({
+    actualAudioTime: 10.011,
     expectedAudioTime: 10,
   });
-  assert.equal(first.action, "observe");
-  const second = classifyExternalAudioDrift({
-    actualAudioTime: 10.1,
-    expectedAudioTime: 10,
-    previousObservation: first.nextObservation,
-  });
-  assert.equal(second.action, "hard_resync");
-  if (second.action === "hard_resync") {
-    assert.equal(second.reason, "confirmed_medium_drift");
-    assert.ok(Math.abs(second.driftSeconds - 0.1) < 1e-9);
-    assert.deepEqual(second.nextObservation, EMPTY_DRIFT_OBSERVATION);
+  assert.equal(outside.action, "adjust_rate");
+  if (outside.action === "adjust_rate") {
+    assert.ok(outside.playbackRateMultiplier < 1);
+    assert.ok(outside.playbackRateMultiplier >= 0.96);
   }
 
-  const opposite = classifyExternalAudioDrift({
-    actualAudioTime: 9.9,
+  const lagging = classifyExternalAudioDrift({
+    actualAudioTime: 9.95,
     expectedAudioTime: 10,
-    previousObservation: first.nextObservation,
   });
-  assert.equal(opposite.action, "observe");
-  assert.deepEqual(opposite.nextObservation, {
-    consecutiveMediumSamples: 1,
-    direction: -1,
-  });
+  assert.equal(lagging.action, "adjust_rate");
+  if (lagging.action === "adjust_rate") {
+    assert.equal(lagging.playbackRateMultiplier, 1.04);
+  }
 });
 
 test("大漂移与显式恢复场景立即要求硬同步", () => {
@@ -98,4 +88,23 @@ test("大漂移与显式恢复场景立即要求硬同步", () => {
   });
   assert.equal(forced.action, "hard_resync");
   if (forced.action === "hard_resync") assert.equal(forced.reason, "forced");
+});
+
+test("原生转码起播稳定窗口只放宽硬同步门槛，不改变 10ms 与倍率上限", () => {
+  const startupLag = classifyExternalAudioDrift({
+    actualAudioTime: 9.8,
+    expectedAudioTime: 10,
+    hardResyncSeconds: 0.5,
+  });
+  assert.equal(startupLag.action, "adjust_rate");
+  if (startupLag.action === "adjust_rate") {
+    assert.equal(startupLag.playbackRateMultiplier, 1.04);
+  }
+
+  const stillTooLarge = classifyExternalAudioDrift({
+    actualAudioTime: 9.4,
+    expectedAudioTime: 10,
+    hardResyncSeconds: 0.5,
+  });
+  assert.equal(stillTooLarge.action, "hard_resync");
 });

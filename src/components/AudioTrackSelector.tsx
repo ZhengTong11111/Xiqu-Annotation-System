@@ -282,6 +282,12 @@ function getSelectorStatus(
     model.runtimeState.phase === "resyncing") {
     return { label: "正在同步", tone: "is-loading" };
   }
+  if (
+    model.runtimeState.phase === "buffering_master" ||
+    model.runtimeState.phase === "buffering_external"
+  ) {
+    return { label: "正在缓冲", tone: "is-loading" };
+  }
   if (model.runtimeState.phase === "playing_synced") {
     return { label: "已同步", tone: "is-ready" };
   }

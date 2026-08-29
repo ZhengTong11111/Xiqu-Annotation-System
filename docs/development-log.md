@@ -8233,3 +8233,146 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **最终状态**：production current=`/opt/xiqu/releases/20260826T075340Z-25fe616`，migration=29，API/worker active，
   maintenance disabled，Web/liveness/readiness healthy。RA0-RA6 的代码、文档和生产 schema 工作完成；后续若继续
   产品开发，应从总 roadmap 的下一项重新制定任务，不在本专项任务单里追加日志式待办。
+
+## 2026-08-28：上传 MP3 组合播放卡顿与跨 VOD 媒资音频转码
+
+### 现场定位
+
+- 先对真实上传对象执行单音频探针：同一 7.6MB MP3 从 0 秒连续播放 20 秒，并从 23.417、87.263、151.119 秒
+  三个位置各播放 8 秒。浏览器均没有 `waiting/stalled`，远端位置的 Range seek 约 12ms 完成，排除了文件损坏、
+  MP3 解码和本机 Range 吞吐。
+- 随后使用平台实际 1494.413 秒 MP4 作为主视频、同一 MP3 作为从音轨，直接运行仓库的
+  `SynchronizedMediaPlaybackRuntime`。从 73.417 秒开始后，旧策略每约 600ms 观测到 50-70ms 从轨落后并执行
+  硬 seek；该受控 seek 发出的 `waiting` 又被当作真实缓冲，暂停主视频并启动第二次对齐。日志完整复现了用户听到
+  的周期停顿，证明问题不在网络。
+- `Johann_Sebastian_Bach` 的真实阿里云 VOD 元数据返回 `mediaKind=video`，所以严格纯音频资源选择器不会接纳它；
+  同一权威 API 同时返回一条 Normal HTTPS MP3 rendition。指定 JobId 的实际 Range 请求返回 `206 audio/mpeg`
+  与 4096 字节，证明转码可播放，缺口位于前端没有选择“其他 VOD 媒资的 rendition”的入口。
+
+### 修复与精度边界
+
+- 10ms 继续作为同步目标。运行时改为每 100ms 采样，10-150ms 中等漂移只调整从音轨倍率，比例控制最大 ±4%，
+  回到容差后立即恢复用户基础倍率；视频始终是主时钟，超过 150ms、外部意外暂停及显式 seek/恢复仍硬对齐。
+- 暂停恢复若已在 10ms 内不再重复 seek，以保留已解码 MP3 缓冲。`NativeAudioPlaybackBackend` 记录受控 seek，
+  其间的 `waiting` 不再进入缓冲；未受控 `waiting` 仍暂停主视频，`stalled` 仅作为下载进度提示。
+- 音轨管理器先建立了“选择 VOD 媒资 -> 选择 MP3 rendition JobId”的服务端安全链；随后根据真实使用反馈，将
+  用户入口收敛进普通“选择音频来源”窗口。该窗口不会篡改阿里云权威 `mediaKind`：纯音频直接进入关系草稿，
+  VOD 视频容器继续进入 JobId 步骤；临时播放 URL 仍只存在于 no-store 会话。
+- VOD 草稿额外保留所选稳定媒资的显示名，默认名称和来源摘要使用“媒资名 · 清晰度”，不再把多个来源都写成
+  “当前 VOD”。该字段只服务未提交表单展示，不进入 API、数据库或播放会话，不产生第二套来源身份。
+- `AGENTS.md` 与 `docs/replace_audio_roadmap.md` 已同步登记 10 ms 目标、恢复播放的缓冲保留规则和
+  `stalled/waiting` 语义，防止后续维护重新引入无条件 seek。
+
+### 验证、自审与待确认
+
+- 修复后使用相同真实 MP4+MP3 探针连续播放 15 秒，没有任何 `waiting`、buffering 诊断或硬 seek；从轨倍率最多
+  1.04，随后自动回到 1.0，抽样主从误差由初始准备差平滑收敛到 10ms 目标附近，没有周期停顿。
+- 为避免单音频或固定起点掩盖问题，又以同一真实 MP4 作为视频主时钟、同一上传 MP3 作为替换音轨，从随机生成的
+  113.718 秒位置联合播放约 15 秒。全过程没有 `waiting`、`stalled`、缓冲 phase 或硬 seek；启动抽样偏差一度为
+  -52.2ms，速率伺服在不暂停视频的情况下逐步收敛，稳定段抽样约为 -7.2ms 至 +4.3ms，结束时为 -1.5ms。
+  本轮临时 Range 探针服务和页面已在验证后关闭、删除，没有进入仓库或形成第二套产品播放实现。
+- 在已登录的 `http://localhost:5173/` 真实编辑器中打开“新工尺”标注文件，依次执行“管理监听音轨 -> 音频来源
+  -> `Johann_Sebastian_Bach` -> SQ MP3 128kbps/3:09 -> 新增音轨”。关系保存成功，顶部选择器立即出现
+  `VOD SQ音轨`，切换后与《寻梦》VOD 视频从 12.4 秒实际播放至约 38.6 秒；不是只验证候选 DTO。
+- 显示名修正和完整构建后，再使用当前源码、真实《寻梦》MP4 与同一 Johann SQ MP3 临时流，从随机 78.793 秒
+  联合播放约 15 秒。VOD 首次随机 seek 在播放前准备约 1.16 秒；播放过程中没有 `waiting`、`stalled`、缓冲
+  phase 或硬 seek，稳定段抽样主要约为 -8.4ms 至 +0.5ms。临时 URL 只在探针进程内存中消费，未写文件、日志
+  或数据库；临时代理、页面和脚本均在验证后关闭、删除。
+- `npm run test:media-playback` 69/69；`npm run test:media-audio-tracks` 为 shared 7/7 + frontend 24/24；
+  `npm run build` 与 `git diff --check` 通过，仅有既有 Vite 主 chunk 提示。真实 Johann VOD rendition 元数据、
+  精确 JobId 和 Range 读取通过，未输出或持久化临时 URL。
+- **已完成**：真实根因复现、平滑漂移伺服、受控 seek/真实缓冲分离、VOD 两步选择入口、专项测试、完整构建及
+  文档更新。没有新增依赖，没有修改分析 run/assets、worker、数据库 schema、偏移持久化或协作状态。
+- **仍待环境验收**：Safari、慢网、30 分钟长播、生产 HTTP IP/未来 HTTPS、VOD 凭据续签和运行中撤权仍是
+  既有验收债务；本轮已经完成 Chrome 登录页面的真实入口/保存/切换与当前源码下的真实 VOD 联合播放，不再把
+  “Johann 无法选择”列为未完成。
+
+## 2026-08-28：Johann VOD 纳入统一“选择音频来源”入口
+
+### 问题复核
+
+- 用户复验发现，已经在资源目录中接入的 `Johann_Sebastian_Bach` 仍不能从普通“选择音频”栏目搜索到。后端
+  候选、JobId 和播放会话此前均已验证可用，实际缺口在前端入口分裂：普通选择器只显示权威
+  `mediaKind=audio`，而 Johann 是阿里云判定的 `mediaKind=video` VOD 容器；另设的云端按钮虽然可用，却没有
+  满足“在同一个音频选择栏目中找到来源”的交互预期。
+
+### 已完成
+
+- 将监听音轨管理器收敛为一个“添加监听音轨”入口和一个“选择音频来源”资源窗口。窗口同时展示活动纯音频
+  资源，以及用户具备 `read + download` 的阿里云 VOD 视频容器；上传视频仍不会因为存在音频流而混入候选。
+- 选择纯音频时直接进入现有关系草稿；选择 VOD 容器时关闭资源窗口并进入供应商返回的 MP3 rendition
+  JobId 选择。目录可见性与最终确认仍是两层边界，服务端继续权威复核媒体状态、权限、Normal HTTPS MP3
+  候选和精确 JobId，前端不能提交自定义 URL 或 JobId。
+- 删除独立云端按钮、重复 VOD 资源弹窗 state 和专用资源选择模式。VOD rendition 仍不是资源树中的可移动
+  文件；数据库只保存稳定 VOD 身份、JobId 与有限显示元数据，临时播放地址继续只存在于 no-store 会话。
+- 草稿保留来源媒资显示名，默认名称与摘要显示为“`媒资名 · 清晰度`”。这一字段只用于未提交表单，不进入
+  API、数据库、ProjectData、草稿恢复或播放凭据边界。
+
+### 验证
+
+- 在已登录的 `http://localhost:5173/` 打开“新工尺”标注文件，执行“视频原声 -> 管理监听音轨 -> 添加监听
+  音轨”，确认只存在一个统一入口。输入 `Johann` 后，普通资源窗口同时保留上传 MP3 与
+  `Johann_Sebastian_Bach` VOD；选择后成功进入 `SQ / MP3 / 128 kbps / 3:09` 转码列表。本次只验证选择链，
+  没有再次创建重复音轨。
+- 既有真实关系 `Johann_Sebastian_Bach · SQ` 仍在顶部监听音轨列表中；本轮只改来源发现和分流，没有修改
+  已通过真实联合播放的同步 runtime、后端播放会话或数据库结构。
+- `npm run test:media-audio-tracks`、`npm run test:media-playback`、完整 `npm run build` 与
+  `git diff --check` 通过。新增策略测试覆盖上传纯音频、阿里云 VOD 视频容器和应被拒绝的上传视频。
+
+### 阶段结论与待推进
+
+- **已完成**：统一选择入口、VOD 分流、重复状态清理、中文边界注释、专项测试、完整构建和真实登录界面搜索。
+- **待推进**：Safari、慢网、30 分钟长播、生产 HTTP IP/未来 HTTPS、VOD 凭据续签与运行中撤权仍属于既有
+  环境验收债务；不因本次入口修复新增平行实现。
+
+## 2026-08-29：VOD 转码音轨随机起播卡顿与 Timeline 渲染循环
+
+### 真实复现与分层定位
+
+- 在已登录的 `http://localhost:5173/` 打开“新工尺”标注文件，主媒体为 1494.413 秒《寻梦》VOD，监听轨为
+  188.983 秒 `Johann_Sebastian_Bach · SQ`。旧链路中，主播放器接受 play 后尚未推进，从轨可抢跑数秒。
+- 增加主时钟门禁后复验发现：隐藏 Aliplayer 的 MP3 即使完整缓冲，随机 seek 后仍冷停约 300ms；供应商还会
+  发出时钟仍推进的短暂 waiting，旧逻辑因此反复 pause/play，形成用户听到的“一下一下”。
+- 120ms 时钟进度探针消除了假 buffering 后，45.1 秒随机起播仍有一次约 300ms 冷停。代码审计确认该音轨已经
+  是服务端按 JobId 签发的直接 HTTPS MP3，却仍被送进 Aliplayer；它不需要 vid + PlayAuth 播放器。
+- 改成原生 audio 后，84.3 秒首次采样仍出现约 151ms 偏差并触发硬同步。根因是为 Aliplayer 保留解码缓冲的
+  150ms 起播免 seek 窗口仍无差别覆盖原生音频。此外浏览器日志持续出现 Timeline 的最大更新深度错误，约每
+  2.4 秒累计一次并使 DOM 查询超时，证明主线程渲染循环也在污染试听环境。
+- 在当前源码重新加载后又从 26.2 秒复验，捕获到最后一层问题：原生 MP3 首次解码落后约 180–230ms，100ms
+  漂移采样立即执行硬 seek；seek 自己又让 audio 暂时回到 `readyState=1` 并产生相同滞后，于是误差在 0ms 与
+  约 -200ms 间锯齿振荡。这不是新的网络失败，而是硬同步对自身解码冷停的正反馈。
+
+### 实现与僵尸逻辑清理
+
+- 新增通用、可取消的播放时钟推进等待器；play、随机 seek、切轨、缓冲恢复和原生控件入口在主时钟真实推进前
+  均冻结从轨。主/从 waiting 先经 120ms 时钟进度确认，只有真实停滞才进入 buffering。
+- 新增 `RefreshingNativeAudioPlaybackBackend`：VOD JobId MP3 仅在内存持有签名 URL，严格校验 videoId、JobId、
+  MIME、HTTPS 和到期时间。续签先在同一 ownerDocument 静音准备候选元素，恢复最新时刻/倍率/音量/静音/播放
+  状态后原子接管；失败保留旧元素，切轨或销毁会 abort 请求并立即取消 metadata 等待。
+- 原生 audio 挂到既有隐藏容器，便于主窗口和分离预览拥有正确 DOM 生命周期；dispose 清空 src、load 并 remove。
+  普通 `aliyun_vod_audio` 继续使用 Aliplayer；Aliplayer 中不再可达的 rendition source、类型和两项测试已删除。
+- 自审发现候选 audio 接管后仍沿用“仅等待 metadata”的准备事件闭包，真实 URL 到期续签后会丢失后续
+  `timeupdate/buffering/error`。现已让初始元素与候选元素共用同一有界事件转发器：接管前错误只取消候选，接管后
+  媒体事件继续交给组合 runtime，避免把一次成功续签变成无时钟反馈的僵尸播放器。
+- 150ms 起播缓冲保留只允许 Aliplayer 使用。上传 MP3 与 JobId MP3 在主时钟放行后按 1ms 边界定位，稳定播放
+  继续使用 10ms 目标、10–150ms 有界倍率伺服和超过 150ms 的硬同步。
+- JobId 原生 MP3 在起播或一次权威硬同步真正完成后进入 6 秒稳定窗口。窗口不放宽 10ms 目标，也不提高既有
+  ±4% 倍率上限；它只把硬 seek 门槛暂时提高到 500ms，让 150–500ms 的解码启动滞后连续追回。意外暂停和超过
+  500ms 的真实大漂移仍立即硬同步，窗口结束后恢复共享 150ms 门槛。
+- App 将 Timeline 的分析 viewport 上报改为稳定 `useCallback`。父层状态/分析轮询不再改变 callback 身份并重复
+  触发 Timeline effect；修复后等待 5 秒没有新增 `Maximum update depth exceeded`。
+
+### 测试、真实浏览器结果与待推进
+
+- 播放专项 85/85；新增覆盖主时钟未推进、取消、主缓冲、假 waiting、原生 rendition 续签原子接管、身份漂移、
+  请求取消、metadata 等待取消、接管后的媒体事件转发及起播/硬同步稳定窗口。音轨为 shared 7/7 + frontend 27/27，完整
+  shared/document-model/Web/API build 与 `git diff --check` 通过。
+- 最终真实随机位置为 84.3 秒。30 个连续 100ms 样本中，视频与音频始终 `paused=false`、`readyState=4`，没有
+  旧版 pause/play 或 readyState 1/4 循环；从轨仅使用有界倍率平滑收敛，后半段误差约 0–10ms。
+- 加入稳定窗口并完整重载当前源码后，再从 32.2 秒随机起播。36 个连续样本中两条媒体始终
+  `paused=false`、`readyState=4`，没有一次硬 seek 或 readyState 1/4 锯齿；初始约 185–195ms 滞后由 1.04x
+  平滑追回，约 5 秒后恢复 1x，末段误差稳定为 1–6ms。
+- **已完成**：根因复现、backend 分流、会话续签、起播规则收窄、主从缓冲事实、Timeline 渲染循环、僵尸分支
+  清理、专项测试和真实 Chrome 页面复验。没有修改 schema、媒体分析资产、音轨关系或协作合同。
+- **待推进**：Safari、生产 HTTP IP、未来 HTTPS、慢网、断网/休眠、30 分钟长播和真实凭据到期续签。后续验收
+  仍不得把签名 URL、PlayAuth、AccessKey 或完整会话写入日志、数据库、ProjectData 或浏览器持久缓存。

@@ -1,7 +1,6 @@
 export type SynchronizedDriftResyncReason =
   | "forced"
-  | "large_drift"
-  | "confirmed_medium_drift";
+  | "large_drift";
 
 export type SynchronizedPlaybackDiagnostic =
   | {
@@ -81,8 +80,7 @@ function clampInteger(value: number, minimum: number, maximum: number) {
 
 function getDriftReasonLabel(reason: SynchronizedDriftResyncReason) {
   if (reason === "forced") return "检测到音轨意外暂停";
-  if (reason === "large_drift") return "检测到较大时间漂移";
-  return "检测到持续时间漂移";
+  return "检测到较大时间漂移";
 }
 
 function formatSignedMilliseconds(value: number) {

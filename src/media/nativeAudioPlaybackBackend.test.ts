@@ -51,6 +51,14 @@ test("原生外部音频映射媒体事件并在 dispose 后彻底静默", async
     () => media,
   );
   media.emit("loadedmetadata");
+  // stalled 只说明下载暂时没有进展；已有缓冲仍可播放时不能暂停主视频。
+  media.emit("stalled");
+  assert.deepEqual(buffering, []);
+  const seeking = backend.seek(12);
+  media.emit("waiting");
+  assert.deepEqual(buffering, []);
+  media.emit("seeked");
+  await seeking;
   media.emit("waiting");
   media.emit("canplay");
   await backend.play();

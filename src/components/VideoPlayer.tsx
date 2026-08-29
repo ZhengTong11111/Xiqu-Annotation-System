@@ -7,7 +7,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { AliyunVodPlaybackBackend } from "../media/aliyunVodPlaybackBackend";
+import {
+  AliyunVodPlaybackBackend,
+  type AliyunVodMediaClock,
+} from "../media/aliyunVodPlaybackBackend";
 import {
   LatestMediaPlaybackCommand,
   MediaPlaybackCommandCancelledError,
@@ -102,6 +105,10 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
     if (!synchronizedRuntimeRef.current) {
       synchronizedRuntimeRef.current = new SynchronizedMediaPlaybackRuntime({
         vodContainerId: audioVodContainerId.current,
+        readVodMediaClock: () => readContainedMediaClock(
+          playerRootRef.current?.ownerDocument,
+          audioVodContainerId.current,
+        ),
         onStateChange: (state) => callbacksRef.current.onAudioPlaybackStateChange?.(state),
         onDiagnostic: (diagnostic) =>
           callbacksRef.current.onAudioPlaybackDiagnostic?.(diagnostic),
@@ -233,6 +240,9 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
         onPlayStateChange: (playing: boolean) => {
           handleMasterPlaybackStateChange(playing);
         },
+        onBufferingChange: (buffering: boolean) => {
+          synchronizedRuntime.notifyMasterBufferingState(buffering);
+        },
         onError: (message: string) => setViewState({ status: "error", message }),
       };
 
@@ -251,6 +261,10 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
           containerId: vodContainerId.current,
           expectedVideoId: source.expectedVideoId,
           loadSession: source.loadSession,
+          readMediaClock: () => readContainedMediaClock(
+            playerRootRef.current?.ownerDocument,
+            vodContainerId.current,
+          ),
           events,
         });
         backend.setPlaybackRate(playbackRate);
@@ -449,6 +463,21 @@ export const VideoPlayer = forwardRef<MediaPlaybackController, VideoPlayerProps>
 );
 
 VideoPlayer.displayName = "VideoPlayer";
+
+/** 主窗口与弹出窗口都从播放器实际 ownerDocument 读取高精度媒体时钟。 */
+function readContainedMediaClock(
+  ownerDocument: Document | undefined,
+  containerId: string,
+): AliyunVodMediaClock | null {
+  const media = ownerDocument
+    ?.getElementById(containerId)
+    ?.querySelector<HTMLMediaElement>("video, audio");
+  if (!media) return null;
+  return {
+    currentTime: media.currentTime,
+    duration: media.duration,
+  };
+}
 
 // 不可用来源不进入“加载中”，其原因由上游资源绑定状态直接给出。
 function getInitialViewState(source: MediaPlaybackSource): PlaybackViewState {

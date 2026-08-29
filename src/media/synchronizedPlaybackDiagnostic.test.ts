@@ -27,7 +27,7 @@ test("封闭诊断事件生成有限中文摘要", () => {
     {
       kind: "drift_resync",
       phase: "started",
-      reason: "confirmed_medium_drift",
+      reason: "large_drift",
       driftMilliseconds: 100,
     },
     {
@@ -49,7 +49,7 @@ test("封闭诊断事件生成有限中文摘要", () => {
   ];
 
   assert.deepEqual(diagnostics.map(describeSynchronizedPlaybackDiagnostic), [
-    "检测到持续时间漂移，正在重新同步（+100 ms）",
+    "检测到较大时间漂移，正在重新同步（+100 ms）",
     "替换音轨已重新同步（-200 ms）",
     "替换音轨重新同步失败（0 ms）",
     "替换音轨正在缓冲，视频已暂停",

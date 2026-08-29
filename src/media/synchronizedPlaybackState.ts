@@ -7,6 +7,7 @@ export type SynchronizedPlaybackPhase =
   | "starting"
   | "playing_synced"
   | "resyncing"
+  | "buffering_master"
   | "buffering_external"
   | "error_external"
   | "disposed";
@@ -32,6 +33,8 @@ export type SynchronizedPlaybackEvent =
   | { type: "play_requested" }
   | { type: "pause_requested" }
   | { type: "external_started"; generation: number }
+  | { type: "master_buffering"; generation: number }
+  | { type: "master_recovered"; generation: number }
   | { type: "external_buffering"; generation: number }
   | { type: "external_recovered"; generation: number }
   | { type: "resync_required"; generation: number }
@@ -147,7 +150,11 @@ export function reduceSynchronizedPlaybackState(
     if (state.phase === "original") {
       return applied({ ...state, desiredPlayback: "playing" });
     }
-    if (state.phase === "preparing_external" || state.phase === "buffering_external") {
+    if (
+      state.phase === "preparing_external" ||
+      state.phase === "buffering_master" ||
+      state.phase === "buffering_external"
+    ) {
       return applied({ ...state, desiredPlayback: "playing" });
     }
     if (state.phase === "ready_paused") {
@@ -171,6 +178,7 @@ export function reduceSynchronizedPlaybackState(
       state.phase === "starting" ||
       state.phase === "playing_synced" ||
       state.phase === "resyncing" ||
+      state.phase === "buffering_master" ||
       state.phase === "buffering_external"
     ) {
       return applied({
@@ -202,6 +210,26 @@ export function reduceSynchronizedPlaybackState(
     if (state.phase === "playing_synced") return applied(state);
     if (state.phase !== "starting") return invalid(state);
     return applied({ ...state, phase: "playing_synced", desiredPlayback: "playing" });
+  }
+
+  if (event.type === "master_buffering") {
+    if (state.phase === "buffering_master") return applied(state);
+    if (
+      state.phase !== "starting" &&
+      state.phase !== "playing_synced" &&
+      state.phase !== "resyncing"
+    ) {
+      return invalid(state);
+    }
+    return applied({ ...state, phase: "buffering_master" });
+  }
+
+  if (event.type === "master_recovered") {
+    if (state.phase !== "buffering_master") return invalid(state);
+    return applied({
+      ...state,
+      phase: state.desiredPlayback === "playing" ? "starting" : "ready_paused",
+    });
   }
 
   if (event.type === "external_buffering") {

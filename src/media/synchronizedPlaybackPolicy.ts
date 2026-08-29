@@ -1,7 +1,8 @@
 export const SYNCHRONIZED_AUDIO_DRIFT_POLICY = Object.freeze({
-  toleranceSeconds: 0.04,
+  toleranceSeconds: 0.01,
   hardResyncSeconds: 0.15,
-  mediumSamplesBeforeResync: 2,
+  maximumRateCorrection: 0.04,
+  proportionalRateGain: 2,
 });
 
 export type ExternalAudioTimelinePosition =
@@ -10,33 +11,26 @@ export type ExternalAudioTimelinePosition =
   | { status: "playable"; audioTime: number }
   | { status: "after_end"; audioTime: number };
 
-export type DriftObservationState = {
-  readonly consecutiveMediumSamples: number;
-  readonly direction: -1 | 0 | 1;
-};
-
 export type ExternalAudioDriftDecision =
   | {
       action: "invalid_time";
       driftSeconds: null;
-      nextObservation: DriftObservationState;
     }
   | {
-      action: "within_tolerance" | "observe";
+      action: "within_tolerance";
       driftSeconds: number;
-      nextObservation: DriftObservationState;
+      playbackRateMultiplier: 1;
+    }
+  | {
+      action: "adjust_rate";
+      driftSeconds: number;
+      playbackRateMultiplier: number;
     }
   | {
       action: "hard_resync";
-      reason: "forced" | "large_drift" | "confirmed_medium_drift";
+      reason: "forced" | "large_drift";
       driftSeconds: number;
-      nextObservation: DriftObservationState;
     };
-
-export const EMPTY_DRIFT_OBSERVATION: DriftObservationState = Object.freeze({
-  consecutiveMediumSamples: 0,
-  direction: 0,
-});
 
 // 音轨偏移只改变源时间到项目时间的映射，不参与分析 run 身份或重新计算。
 export function mapMasterTimeToAudioTime(input: {
@@ -63,31 +57,25 @@ export function mapMasterTimeToAudioTime(input: {
   return { status: "playable", audioTime };
 }
 
-function getDriftDirection(driftSeconds: number): -1 | 1 {
-  return driftSeconds < 0 ? -1 : 1;
-}
-
-// 中等漂移只有同方向连续出现才触发重同步，避免一次媒体事件抖动造成可感知的硬 seek。
+/**
+ * 10 ms 以内不干预；中等漂移通过小幅速率伺服平滑追回，只有大漂移才硬 seek。
+ * multiplier 大于 1 表示从音轨落后，需要暂时加速；小于 1 表示从音轨超前。
+ */
 export function classifyExternalAudioDrift(input: {
   actualAudioTime: number;
   expectedAudioTime: number;
-  previousObservation?: DriftObservationState;
   forceHardResync?: boolean;
+  hardResyncSeconds?: number;
 }): ExternalAudioDriftDecision {
-  const previous = input.previousObservation ?? EMPTY_DRIFT_OBSERVATION;
   if (
     !Number.isFinite(input.actualAudioTime) ||
     !Number.isFinite(input.expectedAudioTime) ||
     input.actualAudioTime < 0 ||
-    input.expectedAudioTime < 0 ||
-    !Number.isInteger(previous.consecutiveMediumSamples) ||
-    previous.consecutiveMediumSamples < 0 ||
-    ![-1, 0, 1].includes(previous.direction)
+    input.expectedAudioTime < 0
   ) {
     return {
       action: "invalid_time",
       driftSeconds: null,
-      nextObservation: EMPTY_DRIFT_OBSERVATION,
     };
   }
 
@@ -97,7 +85,6 @@ export function classifyExternalAudioDrift(input: {
       action: "hard_resync",
       reason: "forced",
       driftSeconds,
-      nextObservation: EMPTY_DRIFT_OBSERVATION,
     };
   }
 
@@ -106,36 +93,46 @@ export function classifyExternalAudioDrift(input: {
     return {
       action: "within_tolerance",
       driftSeconds,
-      nextObservation: EMPTY_DRIFT_OBSERVATION,
+      playbackRateMultiplier: 1,
     };
   }
-  if (absoluteDrift > SYNCHRONIZED_AUDIO_DRIFT_POLICY.hardResyncSeconds) {
+  const configuredHardResyncSeconds = input.hardResyncSeconds;
+  const hardResyncSeconds = typeof configuredHardResyncSeconds === "number" &&
+      Number.isFinite(configuredHardResyncSeconds) &&
+      configuredHardResyncSeconds >= SYNCHRONIZED_AUDIO_DRIFT_POLICY.toleranceSeconds
+    ? configuredHardResyncSeconds
+    : SYNCHRONIZED_AUDIO_DRIFT_POLICY.hardResyncSeconds;
+  if (absoluteDrift > hardResyncSeconds) {
     return {
       action: "hard_resync",
       reason: "large_drift",
       driftSeconds,
-      nextObservation: EMPTY_DRIFT_OBSERVATION,
     };
   }
 
-  const direction = getDriftDirection(driftSeconds);
-  const consecutiveMediumSamples = previous.direction === direction
-    ? previous.consecutiveMediumSamples + 1
-    : 1;
-  if (
-    consecutiveMediumSamples >=
-    SYNCHRONIZED_AUDIO_DRIFT_POLICY.mediumSamplesBeforeResync
-  ) {
-    return {
-      action: "hard_resync",
-      reason: "confirmed_medium_drift",
-      driftSeconds,
-      nextObservation: EMPTY_DRIFT_OBSERVATION,
-    };
-  }
+  const unclampedCorrection = -driftSeconds *
+    SYNCHRONIZED_AUDIO_DRIFT_POLICY.proportionalRateGain;
+  const boundedCorrection = Math.max(
+    -SYNCHRONIZED_AUDIO_DRIFT_POLICY.maximumRateCorrection,
+    Math.min(
+      SYNCHRONIZED_AUDIO_DRIFT_POLICY.maximumRateCorrection,
+      unclampedCorrection,
+    ),
+  );
   return {
-    action: "observe",
+    action: "adjust_rate",
     driftSeconds,
-    nextObservation: { consecutiveMediumSamples, direction },
+    playbackRateMultiplier: 1 + boundedCorrection,
   };
+}
+
+/**
+ * 恢复播放前只判断两条媒体是否已经足够接近，不推进周期采样使用的连续漂移状态。
+ * 已经位于 10 ms 容差内时重复 seek 只会清空浏览器解码缓冲，并制造一次可感知的停顿。
+ */
+export function isExternalAudioWithinSyncTolerance(input: {
+  actualAudioTime: number;
+  expectedAudioTime: number;
+}) {
+  return classifyExternalAudioDrift(input).action === "within_tolerance";
 }

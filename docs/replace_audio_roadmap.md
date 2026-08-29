@@ -1,6 +1,6 @@
 # 多音轨快速切换、替换播放与媒体级分析路线图
 
-> 文档状态：专项实施中，RA0-RA2、RA3 代码门禁、RA4a-RA4c2 及 RA5 代码已完成；RA3 多环境听觉验收延期，当前推进 RA6
+> 文档状态：RA0-RA6 已完成；2026-08-28 完成真实组合播放卡顿修复、统一音频来源选择器与跨 VOD 媒资联合播放验收
 > 专项分支：`codex/replace-audio-playback`  
 > 制定日期：2026-08-24  
 > 关联总路线图：`docs/kunqu-platform-roadmap.md`
@@ -30,9 +30,11 @@
 - **RA3b2b1 已完成（2026-08-24）**：完成本机候选库恢复演练及默认开发库两阶段媒体级分析迁移；新增主媒体
   写权限控制的低频音轨管理器、纯音频资源选择、上传音频真实播放闭环和 VOD 纯音频媒资识别。迁移校验已修正
   manifest 波形桶宽与资产 level 序号混淆，真实上传 WAV 的播放会话与 Range 读取通过。
-- **RA3b2b2a 已完成（2026-08-24）**：同一 VOD 视频下的 MP3 音频转码以阿里云官方 `JobId` 作为稳定身份；
+- **RA3b2b2a 已完成（2026-08-24，2026-08-28 补强）**：任意有权访问的 VOD 视频媒资下的 MP3 音频转码以阿里云官方 `JobId` 作为稳定身份；
   数据库只保存所属 VOD 媒体、JobId 和有限显示元数据，播放时重新取得指定 JobId 的 HTTPS 临时地址并通过
-  no-store 会话交给 Aliplayer。管理器新增独立转码选择器，真实《寻梦》VOD 已验证候选与短时会话。
+  no-store 会话交给原生音频 backend。管理器使用一个统一音频来源选择器：纯音频直接进入关系草稿，VOD
+  容器继续进入服务端候选的 MP3 JobId 步骤。真实 `Johann_Sebastian_Bach` 已在普通选择栏目中完成搜索、转码
+  选择、关系保存、顶部切换和视频联合播放。
 - **RA3b2b2b1 已完成（2026-08-24）**：慢网生命周期审查发现 VOD 刷新错误捕获了已经完成的首次准备 signal；
   现由唯一 Aliplayer backend 为每次会话请求分配 AbortController，销毁时真实中止所有在途刷新，并把 signal
   贯通主 VOD、独立 VOD 音频和同 VID rendition。播放器专项增至 48/48，完整 build 通过。
@@ -41,6 +43,10 @@
   当前监听音轨且协作状态已同步。Chrome 控制连接在继续展开音轨菜单时反复中断，未取得 A/B/C 听辨、Safari、
   HTTP IP、撤权、续签、慢网和 detached window 的完整证据；用户明确要求跳过本次验证并继续开发。这些项目
   保留为 RA3 延期验收债务，不写成已通过，也不再阻塞 RA4 的代码实施。
+- **RA3b2b2b2 VOD 入口与联合播放补验已完成（2026-08-28）**：此前延期的管理器展开、统一音频来源搜索、
+  跨 VOD 媒资选择、rendition 选择、保存和顶部切换已在真实登录页面通过；同一真实 Johann SQ MP3 临时流又在当前源码下与
+  《寻梦》MP4 从随机 78.793 秒联合播放约 15 秒，无 waiting、stalled、缓冲暂停或硬 seek。Safari、慢网、
+  30 分钟长播、生产 HTTP IP/未来 HTTPS 和撤权仍保留为独立环境验收，不再与本次入口缺陷混写。
 - **RA4a 已完成（2026-08-26）**：分析 status/create/list/single/batch API 已支持稳定 `audioTrackId` 上下文；
   服务端逐次重读音轨归属、enabled、主媒体与来源 ACL，VOD rendition 以 JobId 形成独立 fingerprint 并由 worker
   精确取流。旧无 track id 路径继续兼容，未做前端半迁移。
@@ -56,7 +62,7 @@
 - **RA5a 已完成（2026-08-26）**：音轨管理器新增毫秒级偏移校准，手工秒输入与正负 24 小时边界继续保持；
   `-10/-1/+1/+10 ms` 使用统一整数毫秒算法，避免重复步进产生浮点尾数，并明确显示音频提前/延后语义。
   保存仍是一次显式关系更新，未增加预览偏移、逐点击请求或第二套播放状态。
-- **RA5b 已完成（2026-08-26）**：既有漂移/缓冲算法保持视频主时钟与原阈值，新增封闭、钳制、会话内的低频
+- **RA5b 已完成（2026-08-26，2026-08-28 真实播放补强）**：漂移/缓冲算法保持视频主时钟，新增封闭、钳制、会话内的低频
   同步诊断；缓冲使用单调时钟计时，重复事件只计一次。修复 seek 等待期间用户主动暂停后，迟到同步被误判为
   非法转换的问题；旧恢复现在静默结束且不能恢复播放。
 - **RA5c1 已完成（2026-08-26）**：原生/VOD 控件与主视频自然结束统一回写组合 runtime；错误态嵌套 pause
@@ -66,8 +72,8 @@
   player error 先进入 buffering，以 1/3/10/30 秒有限预算单飞恢复，耗尽后才报告一次致命错误。online、pageshow
   和页面重新可见会唤醒同一主从恢复入口；恢复前冻结命令/来源代际，期间后发 pause/play/seek、切轨或切文件
   始终优先。分离预览监听实际 ownerDocument，关闭窗口或销毁来源会取消续签任务。
-- 下一阶段是 **RA6 迁移收口与延期验收**。public/生产尚未部署 RA4c2；rollout 前必须先部署
-  `d615add` 完成 RA4c1 dry-run/execute，再部署 destructive release，不能直接跨过两版本门禁。
+- **RA6 已完成（2026-08-26）**：生产已按三段 release 完成媒体级迁移、migration 29 destructive 收口、
+  服务恢复与维护解除；历史迁移工具和门禁仍必须保留给未来旧服务器升级，不能直接跨版本部署。
 
 ## 1. 目标重新定义
 
@@ -478,9 +484,9 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 期望时间小于 0：替换音轨等待，视频可播放无声前段。
 - 音频提前结束：暂停并提示覆盖范围不足，不能偷偷切回原声。
 - seek、循环回跳、倍速变更、后台恢复都必须重新校准。
-- 播放时每 `250-500ms` 比较主从时钟。
-- 小于约 `40ms` 的漂移先忽略；连续中等漂移再纠正；大于约 `150ms` 时硬 seek。
-- 第一版不通过持续改变 playbackRate 来追赶，以免唱腔音高和速度产生可感知扰动。
+- 播放时每 `100ms` 比较主从时钟。
+- 不超过 `10ms` 的漂移视为同步；`10-150ms` 只对从音轨使用最大 `±4%` 的短时速率伺服并在进入容差后回到用户基础倍率；大于约 `150ms` 时硬 seek。
+- 速率伺服不改视频主时钟，原生音频保持浏览器默认音高保持能力；真实 seek、缓冲恢复和来源恢复仍执行权威对齐。
 - 外部音频缓冲时，主视频在短宽限后暂停；恢复后校准再继续。
 
 阈值必须通过 Chrome、Safari、上传音频和 VOD 实测调整，不能只依赖理论值。
@@ -680,8 +686,9 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - `packages/shared/src/mediaAnalysisIdentity.ts` 将媒体资源、内容指纹、算法版本和配置 hash 编码为无分隔符
   碰撞的 JSON 元组。函数合同没有 annotationFileId、sourceMode 或 offset 输入位置。
 - `src/media/synchronizedPlaybackPolicy.ts` 冻结
-  `audioTime = masterTime - offsetSeconds`、开始前/可播/结束后区间和 40ms/150ms 初始漂移边界；中等同向
-  漂移连续确认后才硬同步。
+  `audioTime = masterTime - offsetSeconds`、开始前/可播/结束后区间和漂移边界；初始容差为 40ms，真实标注试听
+  后于 2026-08-27 收紧为 10ms；2026-08-28 真实组合播放证明中等漂移硬 seek 会制造周期停顿，因此改为
+  100ms 采样与最大 ±4% 从音轨速率伺服，150ms 以上仍立即硬同步。
 - `src/media/synchronizedPlaybackState.ts` 建立 source generation、最后音轨优先、幂等媒体事件、缓冲后重同步、
   显式错误和 disposed 终态。它尚未接入 `VideoPlayer`，避免 RA0 改变现有播放行为。
 - 新增统一 `test:media-audio-tracks`；共享合同与纯策略 14/14、现有媒体播放 17/17、媒体分析 34/34 通过，
@@ -831,7 +838,7 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 新增 `SynchronizedMediaPlaybackRuntime` 并让它实现既有 `MediaPlaybackBackend`。主视频继续提供唯一快照；
   seek/play/pause/倍率/音量/静音通过一个 controller 进入主从序列，第二媒体元素不暴露给 App、Timeline、协作
   或文档状态。
-- runtime 集中处理 source/command generation、正负偏移区间、300ms 漂移采样、连续中漂移/大漂移硬同步、
+- runtime 集中处理 source/command generation、正负偏移区间、100ms 漂移采样、中等漂移平滑调速/大漂移硬同步、
   从轨缓冲时暂停主视频及恢复重同步。切换中先静音主轨；RA3b2a 已将失败最终语义收敛为暂停静音并保持选择，
   只有显式切回原声才恢复主输出。迟到 ready/error/buffering 均不能复活旧来源。
 - 新增外部 backend 工厂：uploaded 延迟取得受保护 URL 后创建 HTMLAudio；VOD 首份 no-store session 同时固定
@@ -1038,7 +1045,7 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 
 **已完成**
 
-- 保留 40/150 ms、同向 2 样本和 300 ms 采样合同，没有复制或重写漂移状态机；
+- 当时版本保留 40/150 ms、同向 2 样本和 300 ms 采样合同；该历史实现已由下方 2026-08-28 真实播放补强取代；
 - 只在硬同步和缓冲恢复边界发出封闭事件，测量值取整并钳制，不携带资源身份、URL、凭据或 provider 错误；
 - VideoPlayer 只转发最近一条会话诊断，文件/媒体/音轨 generation 变化立即清除，正常采样不触发 React 更新；
 - buffering 使用可测试单调时钟，重复 true 只记录一次；暂停、切轨、卸载、失败和销毁清除未完成观察；
@@ -1049,6 +1056,15 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 播放专项 54/54，覆盖中等漂移确认、硬同步单飞、缓冲重复事件、确定性时长、失败、observer 抛错和迟到暂停；
 - 音轨 shared/frontend 7/7 + 23/23、媒体分析 38/38、完整 build 与静态检查通过；
 - 用户要求跳过浏览器验证，因此 UI、真实慢网与听觉证据保留到 RA5c/RA6。
+
+**2026-08-28 真实播放补强**
+
+- 使用平台实际 1494 秒 MP4 与用户上传的 189 秒 MP3，从 73.417 秒开始运行真实组合 runtime。旧策略每约
+  600ms 产生一次 50-70ms 中等漂移硬 seek，并把受控 seek 的 `waiting` 再误判为缓冲，造成周期停顿和重复 seek。
+- 10-150ms 改为最大 ±4% 的从音轨速率伺服；受控 seek 的 `waiting` 与真实饥饿分离，`stalled` 继续只作传输提示。
+  修复后同一探针连续播放没有 `waiting`、buffering 或硬 seek，倍率自动回到 1.0，10ms 目标附近平滑收敛。
+- 统一音频来源选择器在用户选择 VOD 容器后继续“VOD 媒资 -> MP3 rendition”步骤；阿里云将上传 MP3 判为
+  video 时不伪造 mediaKind，而是读取其真实 JobId 并沿既有 rendition 会话播放。
 
 #### RA5c：长时播放、续签与系统生命周期
 
@@ -1087,6 +1103,35 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 音轨 7/7+23/23、媒体分析 38/38、完整 build 与 `git diff --check` 通过；
 - 用户明确跳过本轮浏览器验证，因此 30 分钟连续播放、真实慢网/断网/休眠、Chrome/Safari、HTTP IP/HTTPS
   与听觉同步证据仍作为 RA6 验收债务，不能由确定性测试替代。
+
+##### RA5c3：随机 VOD 起播、JobId MP3 原生接管与主线程收口（代码已完成，2026-08-29）
+
+**真实问题与实现**
+
+- 《寻梦》VOD 与 `Johann_Sebastian_Bach · SQ` 的真实联合播放证明，play Promise 不能代表随机位置的 VOD
+  主时钟已推进；所有从轨起播入口现已共用可取消的主时钟推进门禁。
+- 隐藏 Aliplayer 播放服务端已经确认的 HTTPS MP3 rendition 会在 seek 后冷停约 300ms。指定 JobId 的 MP3
+  改为可续签原生 audio；普通 vid + PlayAuth VOD 继续使用 Aliplayer，两类来源不再共享错误 backend。
+- 原生续签候选在旧音频仍可用时静音准备，严格校验稳定身份后按最新时刻、倍率、音量和播放状态原子接管；
+  请求、metadata 等待和迟到事件都可取消，临时 URL 不进入持久状态或日志。
+- 初始元素和续签候选共用同一媒体事件转发边界；候选接管前的错误只终止准备，接管后的
+  `timeupdate/buffering/error` 继续进入组合 runtime，避免形成能发声却失去时钟反馈的僵尸播放器。
+- 150ms 起播缓冲保留收窄到 Aliplayer。原生上传/转码音频按 1ms 起播边界定位，稳定段继续以 10ms 目标和
+  有界倍率伺服维护；Aliplayer 的旧 rendition 分支已删除。
+- 当前源码复验还定位到 JobId MP3 的硬 seek 自激：首次解码约 200ms 滞后触发 seek，seek 又制造下一次滞后。
+  起播或权威硬同步完成后的 6 秒内保持 10ms 目标与 ±4% 上限，只将硬同步门槛临时提高到 500ms；意外暂停和
+  更大漂移仍硬同步，窗口结束后恢复共享 150ms 门槛。
+- Timeline 分析可视范围的父级 callback 改为稳定身份，修复暂停态也持续发生的 React 最大更新深度循环，
+  防止主线程渲染风暴干扰媒体时钟和浏览器验收。
+
+**验证**
+
+- 播放专项 85/85，音轨 shared 7/7 + frontend 27/27，完整 shared/document-model/Web/API build 和静态检查通过。
+- 登录 localhost 的真实标注文件从 84.3 秒随机起播，30 个连续样本中主从均保持 playing/ready，没有旧的
+  pause/play 或 readyState 1/4 循环；稳定段漂移约 0–10ms。Timeline 修复后 5 秒观察没有新增最大深度错误。
+- 完整重载当前源码后从 32.2 秒再次随机起播，36 个样本全程 playing/readyState=4 且没有硬 seek；初始
+  185–195ms 滞后连续收敛，约 5 秒后恢复 1x，稳定误差为 1–6ms。
+- Safari、生产 HTTP IP/HTTPS、慢网、30 分钟和真实凭据到期续签仍保留为环境验收债务。
 
 ### RA6：迁移收口与旧逻辑删除
 
@@ -1228,7 +1273,8 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 | 音轨偏移写入 run | 改偏移触发重算 | 偏移只属于音轨关联 |
 | 快速切换的旧响应复活 | 播放错误音轨 | generation + 最后意图优先 |
 | 两个媒体同时出声 | 严重干扰标注 | 切换先静音，确认新轨后启动 |
-| 外部音频缓冲落后 | 画面与声音漂移 | 宽限后暂停主视频并重同步 |
+| 外部音频时钟轻微漂移 | 频繁硬 seek 造成周期停顿 | 10-150ms 使用有界从轨速率伺服，超过 150ms 才硬同步 |
+| 外部音频真实缓冲 | 画面继续而声音落后 | 未受控 `waiting` 时暂停主视频，恢复后权威重同步 |
 | 无权限时静默回退 | 用户误判音源 | 明确错误，主动切回原声 |
 | VOD 临时会话过期 | 长时标注中断 | no-store 会话、按需续签 |
 | 历史 run 直接去重误删对象 | 分析资产丢失 | manifest/checksum 校验、引用检查、补偿清理 |

@@ -11,6 +11,10 @@ import type {
   PrepareExternalAudioPlaybackBackend,
 } from "./externalAudioPlaybackBackendFactory";
 import type { SynchronizedPlaybackDiagnostic } from "./synchronizedPlaybackDiagnostic";
+import {
+  createPlaybackClockProgressWaiter,
+  type WaitForPlaybackClockProgress,
+} from "./playbackClockProgress";
 import { SynchronizedMediaPlaybackRuntime } from "./synchronizedMediaPlaybackRuntime";
 
 class FakeBackend implements MediaPlaybackBackend {
@@ -74,11 +78,15 @@ type PendingPreparation = {
   reject: (error: Error) => void;
 };
 
-function createHarness(options: { diagnosticThrows?: boolean } = {}) {
+function createHarness(options: {
+  diagnosticThrows?: boolean;
+  waitForMasterProgress?: WaitForPlaybackClockProgress;
+} = {}) {
   const pending = new Map<string, PendingPreparation>();
   const prepareCounts = new Map<string, number>();
   const driftCallbacks: Array<() => void> = [];
   const stoppedDriftCallbacks = new Set<() => void>();
+  const bufferingProbeCallbacks: Array<() => void> = [];
   const errors: string[] = [];
   const diagnostics: SynchronizedPlaybackDiagnostic[] = [];
   let nowMilliseconds = 0;
@@ -109,6 +117,15 @@ function createHarness(options: { diagnosticThrows?: boolean } = {}) {
       driftCallbacks.push(callback);
       return () => stoppedDriftCallbacks.add(callback);
     },
+    scheduleBufferingProbe: (callback) => {
+      bufferingProbeCallbacks.push(callback);
+      return () => {
+        const index = bufferingProbeCallbacks.indexOf(callback);
+        if (index >= 0) bufferingProbeCallbacks.splice(index, 1);
+      };
+    },
+    // 既有 runtime 用例聚焦同步状态与命令合同；真实时钟等待由下方专项用例独立驱动。
+    waitForMasterProgress: options.waitForMasterProgress ?? (async () => true),
     now: () => nowMilliseconds,
     onDiagnostic: (diagnostic) => {
       diagnostics.push(diagnostic);
@@ -124,6 +141,7 @@ function createHarness(options: { diagnosticThrows?: boolean } = {}) {
     stoppedDriftCallbacks,
     errors,
     diagnostics,
+    runBufferingProbe: () => bufferingProbeCallbacks.shift()?.(),
     setNow: (value: number) => {
       nowMilliseconds = value;
     },
@@ -141,9 +159,291 @@ const source = (
   load: async () => ({ url: "unused", mimeType: "audio/mpeg", duration: 120 }),
 });
 
+const vodAudioSource = (
+  trackId: string,
+  offsetSeconds = 0,
+): ExternalAudioPlaybackSource => ({
+  type: "aliyun_vod_audio",
+  trackId,
+  audioMediaResourceId: `media-${trackId}`,
+  offsetSeconds,
+  // 组合运行时测试在 prepare 边界注入 fake backend，不会越界请求真实 VOD 会话。
+  loadSession: async () => {
+    throw new Error("组合运行时测试不应直接加载 VOD 会话。");
+  },
+});
+
+const vodRenditionSource = (
+  trackId: string,
+  offsetSeconds = 0,
+): ExternalAudioPlaybackSource => ({
+  type: "aliyun_vod_rendition_audio",
+  trackId,
+  audioMediaResourceId: `media-${trackId}`,
+  renditionJobId: `job-${trackId}`,
+  offsetSeconds,
+  // 组合运行时测试在 prepare 边界注入 fake backend，不会请求真实签名 URL。
+  loadSession: async () => {
+    throw new Error("组合运行时测试不应直接加载 VOD 转码会话。");
+  },
+});
+
 const externalSelection = (value: ExternalAudioPlaybackSource) => ({
   type: "external" as const,
   source: value,
+});
+
+test("主时钟推进等待器不会把已接受播放误判为真实起播", async () => {
+  const scheduledChecks: Array<() => void> = [];
+  const snapshot: MediaPlaybackSnapshot = {
+    ready: true,
+    currentTime: 106.95,
+    duration: 1_494,
+    paused: false,
+    ended: false,
+  };
+  const waiter = createPlaybackClockProgressWaiter((callback) => {
+    scheduledChecks.push(callback);
+    return () => undefined;
+  });
+  let settled = false;
+  const waiting = waiter({
+    baselineTime: snapshot.currentTime,
+    readSnapshot: () => ({ ...snapshot }),
+    isCurrent: () => true,
+  }).then((result) => {
+    settled = true;
+    return result;
+  });
+
+  scheduledChecks.shift()?.();
+  await flushAsyncWork();
+  assert.equal(settled, false);
+
+  snapshot.currentTime += 0.004;
+  scheduledChecks.shift()?.();
+  assert.equal(await waiting, true);
+});
+
+test("暂停态 VOD 音轨静音预热一个真实时钟刻度后精确回位", async () => {
+  const progressWaits: Array<{
+    input: Parameters<WaitForPlaybackClockProgress>[0];
+    resolve: (value: boolean) => void;
+  }> = [];
+  const harness = createHarness({
+    waitForMasterProgress: (input) => new Promise((resolve) => {
+      progressWaits.push({ input, resolve });
+    }),
+  });
+  const master = new FakeBackend({ currentTime: 62, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(vodAudioSource("vod-prime")),
+  );
+  const external = new FakeBackend({ currentTime: 0, duration: 180 });
+  harness.pending.get("vod-prime")?.resolve(external);
+  await flushAsyncWork();
+
+  assert.equal(external.playCount, 1);
+  assert.equal(external.muted, true);
+  assert.equal(progressWaits.length, 1);
+  external.snapshot.currentTime = 62.02;
+  const primeProgress = progressWaits.shift();
+  primeProgress?.resolve(primeProgress.input.isCurrent());
+  await selecting;
+
+  assert.equal(external.snapshot.paused, true);
+  assert.equal(external.muted, false);
+  assert.deepEqual(external.seekTargets, [62, 62]);
+  assert.equal(harness.runtime.getState().phase, "ready_paused");
+});
+
+test("用户快速播放会等待现有 VOD 预热完成后再启动主从时钟", async () => {
+  const progressWaits: Array<{
+    input: Parameters<WaitForPlaybackClockProgress>[0];
+    resolve: (value: boolean) => void;
+  }> = [];
+  const harness = createHarness({
+    waitForMasterProgress: (input) => new Promise((resolve) => {
+      progressWaits.push({ input, resolve });
+    }),
+  });
+  const master = new FakeBackend({ currentTime: 90, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(vodAudioSource("vod-fast-play")),
+  );
+  const external = new FakeBackend({ currentTime: 0, duration: 180 });
+  harness.pending.get("vod-fast-play")?.resolve(external);
+  await flushAsyncWork();
+
+  const playing = harness.runtime.play();
+  await flushAsyncWork();
+  assert.equal(master.playCount, 0);
+  assert.equal(external.playCount, 1);
+
+  external.snapshot.currentTime = 90.02;
+  const primeProgress = progressWaits.shift();
+  primeProgress?.resolve(primeProgress.input.isCurrent());
+  await flushAsyncWork();
+  assert.equal(master.playCount, 1);
+  assert.equal(external.playCount, 1);
+
+  master.snapshot.currentTime = 90.03;
+  const masterProgress = progressWaits.shift();
+  masterProgress?.resolve(masterProgress.input.isCurrent());
+  await Promise.all([selecting, playing]);
+  assert.equal(external.playCount, 2);
+  assert.equal(external.snapshot.paused, false);
+  assert.equal(harness.runtime.getState().phase, "playing_synced");
+});
+
+test("原生上传音频不执行 VOD 冷启动预热", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 35, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(source("native-no-prime")),
+  );
+  const external = new FakeBackend({ currentTime: 0 });
+  harness.pending.get("native-no-prime")?.resolve(external);
+  await selecting;
+
+  assert.equal(external.playCount, 0);
+  assert.deepEqual(external.seekTargets, [35]);
+});
+
+test("随机 VOD 起播时从轨等待主时钟推进后才发声", async () => {
+  let releaseProgress: () => void = () => {
+    throw new Error("主时钟推进等待尚未建立。");
+  };
+  const harness = createHarness({
+    waitForMasterProgress: (input) => new Promise((resolve) => {
+      releaseProgress = () => resolve(input.isCurrent());
+    }),
+  });
+  const master = new FakeBackend({ currentTime: 106.95, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(source("vod-random-start")),
+  );
+  const external = new FakeBackend({ currentTime: 106.95, duration: 180 });
+  harness.pending.get("vod-random-start")?.resolve(external);
+  await selecting;
+  external.playCount = 0;
+  external.pauseCount = 0;
+
+  const playing = harness.runtime.play();
+  await flushAsyncWork();
+  assert.equal(master.snapshot.paused, false);
+  assert.equal(external.playCount, 0);
+  assert.equal(external.snapshot.paused, true);
+  assert.equal(harness.runtime.getState().phase, "resyncing");
+
+  master.snapshot.currentTime = 107.02;
+  releaseProgress();
+  await playing;
+  assert.equal(external.playCount, 1);
+  assert.equal(external.snapshot.paused, false);
+  assert.equal(harness.runtime.getState().phase, "playing_synced");
+});
+
+test("等待 VOD 起播期间暂停会取消旧从轨启动", async () => {
+  let releaseProgress: () => void = () => {
+    throw new Error("主时钟推进等待尚未建立。");
+  };
+  const harness = createHarness({
+    waitForMasterProgress: (input) => new Promise((resolve) => {
+      releaseProgress = () => resolve(input.isCurrent());
+    }),
+  });
+  const master = new FakeBackend({ currentTime: 80, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(source("cancel-random-start")),
+  );
+  const external = new FakeBackend({ currentTime: 80 });
+  harness.pending.get("cancel-random-start")?.resolve(external);
+  await selecting;
+  external.playCount = 0;
+
+  const playing = harness.runtime.play();
+  await flushAsyncWork();
+  harness.runtime.pause();
+  master.snapshot.currentTime = 80.1;
+  releaseProgress();
+  await playing;
+
+  assert.equal(external.playCount, 0);
+  assert.equal(external.snapshot.paused, true);
+  assert.equal(harness.runtime.getState().phase, "ready_paused");
+});
+
+test("播放中随机 seek 会冻结从轨并等待新位置主时钟推进", async () => {
+  const pendingProgress: Array<{
+    input: Parameters<WaitForPlaybackClockProgress>[0];
+    resolve: (value: boolean) => void;
+  }> = [];
+  const harness = createHarness({
+    waitForMasterProgress: (input) => new Promise((resolve) => {
+      pendingProgress.push({ input, resolve });
+    }),
+  });
+  const master = new FakeBackend({ currentTime: 20, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(externalSelection(source("seek-gate")));
+  const external = new FakeBackend({ currentTime: 20 });
+  harness.pending.get("seek-gate")?.resolve(external);
+  await selecting;
+
+  const initialPlay = harness.runtime.play();
+  await flushAsyncWork();
+  master.snapshot.currentTime = 20.02;
+  const initialProgress = pendingProgress.shift();
+  initialProgress?.resolve(initialProgress.input.isCurrent());
+  await initialPlay;
+  assert.equal(external.playCount, 1);
+
+  const seeking = harness.runtime.seek(60);
+  await flushAsyncWork();
+  assert.equal(external.snapshot.paused, true);
+  assert.equal(external.playCount, 1);
+  assert.equal(harness.runtime.getState().phase, "resyncing");
+
+  master.snapshot.currentTime = 60.03;
+  const seekProgress = pendingProgress.shift();
+  seekProgress?.resolve(seekProgress.input.isCurrent());
+  await seeking;
+  assert.equal(external.playCount, 2);
+  assert.equal(external.seekTargets[external.seekTargets.length - 1], 60.03);
+  assert.equal(harness.runtime.getState().phase, "playing_synced");
+});
+
+test("主视频播放中准备完成的新音轨也必须等待主时钟继续推进", async () => {
+  let releaseProgress: () => void = () => {
+    throw new Error("主时钟推进等待尚未建立。");
+  };
+  const harness = createHarness({
+    waitForMasterProgress: (input) => new Promise((resolve) => {
+      releaseProgress = () => resolve(input.isCurrent());
+    }),
+  });
+  const master = new FakeBackend({ currentTime: 40, paused: false });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(source("switch-while-playing")),
+  );
+  const external = new FakeBackend({ currentTime: 0 });
+  harness.pending.get("switch-while-playing")?.resolve(external);
+  await flushAsyncWork();
+
+  assert.equal(external.playCount, 0);
+  assert.equal(external.snapshot.paused, true);
+  master.snapshot.currentTime = 40.02;
+  releaseProgress();
+  await selecting;
+  assert.equal(external.playCount, 1);
+  assert.equal(harness.runtime.getState().phase, "playing_synced");
 });
 
 test("原声模式保持主 backend 为唯一快照和命令目标", async () => {
@@ -188,6 +488,7 @@ test("暂停和播放状态选择外部轨时按最新主时钟与偏移安装",
   await harness.runtime.play();
   assert.equal(master.playCount, 1);
   assert.equal(external.playCount, 1);
+  assert.deepEqual(external.seekTargets, [8.5]);
   assert.equal(harness.runtime.getState().phase, "playing_synced");
 });
 
@@ -204,7 +505,7 @@ test("主媒体自带控件播放和暂停会同步更新外部音轨意图", as
   master.snapshot.paused = false;
   harness.runtime.notifyMasterPlaybackState(true);
   await flushAsyncWork();
-  assert.deepEqual(external.seekTargets, [10]);
+  assert.deepEqual(external.seekTargets, []);
   assert.equal(external.snapshot.paused, false);
   assert.equal(harness.runtime.getState().phase, "playing_synced");
 
@@ -228,13 +529,97 @@ test("runtime 命令触发同步主媒体事件时保持幂等", async () => {
   external.seekTargets = [];
 
   await harness.runtime.play();
-  assert.deepEqual(external.seekTargets, [6]);
+  assert.deepEqual(external.seekTargets, []);
   assert.equal(harness.runtime.getState().phase, "playing_synced");
   external.pauseCount = 0;
   harness.runtime.pause();
   assert.equal(harness.runtime.getState().phase, "ready_paused");
   assert.equal(external.pauseCount, 1);
   assert.deepEqual(harness.errors, []);
+});
+
+test("原生音频起播按最新主时钟精确定位，容差仅服务普通暂停恢复", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 10, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(externalSelection(source("resume-drift")));
+  const external = new FakeBackend({ duration: 80 });
+  harness.pending.get("resume-drift")?.resolve(external);
+  await selecting;
+  external.seekTargets = [];
+
+  // 起播门禁之后按 1ms 精度建立原生时钟，8ms 不能继续沿用普通暂停恢复容差。
+  external.snapshot.currentTime = 9.992;
+  await harness.runtime.play();
+  assert.deepEqual(external.seekTargets, [10]);
+  harness.runtime.pause();
+
+  // 原生音频可精确 Range seek，不能套用 Aliplayer 的 150ms 缓冲保留窗口。
+  external.snapshot.currentTime = 9.92;
+  await harness.runtime.play();
+  assert.deepEqual(external.seekTargets, [10, 10]);
+  harness.runtime.pause();
+
+  // 明显漂移仍使用原来的硬对齐路径，不能以流畅为由牺牲科研试听精度。
+  external.snapshot.currentTime = 9.8;
+  await harness.runtime.play();
+  assert.deepEqual(external.seekTargets, [10, 10, 10]);
+  assert.equal(harness.runtime.getState().phase, "playing_synced");
+});
+
+test("VOD JobId MP3 起播与硬同步后的冷停使用倍率追回，不形成重复 seek", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 10, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(vodRenditionSource("rendition-stabilization")),
+  );
+  const external = new FakeBackend({ duration: 190 });
+  harness.pending.get("rendition-stabilization")?.resolve(external);
+  await selecting;
+  await harness.runtime.play();
+  external.seekTargets = [];
+
+  // 随机起播后的 220ms 冷停不再触发硬 seek，而是沿用既有最大 4% 倍率伺服。
+  master.snapshot.currentTime = 10.2;
+  external.snapshot.currentTime = 9.98;
+  harness.driftCallbacks[harness.driftCallbacks.length - 1]?.();
+  await flushAsyncWork();
+  assert.deepEqual(external.seekTargets, []);
+  assert.equal(external.playbackRate, 1.04);
+
+  // 稳定窗口结束后真正的大漂移仍会硬同步；该次 seek 又开启新窗口，防止解码冷停自激。
+  harness.setNow(6_001);
+  external.snapshot.currentTime = 9.6;
+  harness.driftCallbacks[harness.driftCallbacks.length - 1]?.();
+  await flushAsyncWork();
+  assert.deepEqual(external.seekTargets, [10.2]);
+
+  harness.setNow(6_002);
+  external.snapshot.currentTime = 9.98;
+  harness.driftCallbacks[harness.driftCallbacks.length - 1]?.();
+  await flushAsyncWork();
+  assert.deepEqual(external.seekTargets, [10.2]);
+  assert.equal(external.playbackRate, 1.04);
+});
+
+test("vid + PlayAuth 音轨起播保留 150ms 内的 Aliplayer 解码缓冲", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 10, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(vodAudioSource("vod-buffer-preserve")),
+  );
+  const external = new FakeBackend({ duration: 80 });
+  harness.pending.get("vod-buffer-preserve")?.resolve(external);
+  await selecting;
+  external.seekTargets = [];
+  external.snapshot.currentTime = 9.92;
+
+  await harness.runtime.play();
+
+  assert.deepEqual(external.seekTargets, []);
+  assert.equal(harness.runtime.getState().phase, "playing_synced");
 });
 
 test("主媒体 ready 前后的同一选择只准备一次外部会话", async () => {
@@ -346,7 +731,7 @@ test("外部音轨结束边界只暂停一次，主时钟返回可播区后恢�
   assert.equal(external.snapshot.paused, false);
 });
 
-test("连续中等漂移触发硬同步而小漂移保持不动", async () => {
+test("中等漂移只平滑调速而小漂移恢复用户基础倍率", async () => {
   const harness = createHarness();
   const master = new FakeBackend({ currentTime: 10, paused: false });
   harness.runtime.attachMasterBackend(master);
@@ -356,7 +741,7 @@ test("连续中等漂移触发硬同步而小漂移保持不动", async () => {
   await selecting;
   external.seekTargets = [];
 
-  external.snapshot.currentTime = 9.97;
+  external.snapshot.currentTime = 9.992;
   harness.driftCallbacks[harness.driftCallbacks.length - 1]?.();
   await flushAsyncWork();
   assert.deepEqual(external.seekTargets, []);
@@ -365,23 +750,14 @@ test("连续中等漂移触发硬同步而小漂移保持不动", async () => {
   harness.driftCallbacks[harness.driftCallbacks.length - 1]?.();
   await flushAsyncWork();
   assert.deepEqual(external.seekTargets, []);
+  assert.equal(external.playbackRate, 1.04);
+
+  external.snapshot.currentTime = 10.005;
   harness.driftCallbacks[harness.driftCallbacks.length - 1]?.();
   await flushAsyncWork();
-  assert.deepEqual(external.seekTargets, [10]);
-  assert.deepEqual(harness.diagnostics, [
-    {
-      kind: "drift_resync",
-      phase: "started",
-      reason: "confirmed_medium_drift",
-      driftMilliseconds: -100,
-    },
-    {
-      kind: "drift_resync",
-      phase: "succeeded",
-      reason: "confirmed_medium_drift",
-      driftMilliseconds: -100,
-    },
-  ]);
+  assert.equal(external.playbackRate, 1);
+  assert.deepEqual(external.seekTargets, []);
+  assert.deepEqual(harness.diagnostics, []);
 });
 
 test("缓冲暂停主视频，恢复时重同步；用户主动暂停后不自动恢复", async () => {
@@ -397,6 +773,7 @@ test("缓冲暂停主视频，恢复时重同步；用户主动暂停后不自�
   harness.setNow(100);
   preparation?.events.onBufferingChange?.(true);
   preparation?.events.onBufferingChange?.(true);
+  harness.runBufferingProbe();
   harness.runtime.notifyMasterPlaybackState(false);
   assert.equal(master.snapshot.paused, true);
   assert.equal(harness.runtime.getState().phase, "buffering_external");
@@ -423,6 +800,32 @@ test("缓冲暂停主视频，恢复时重同步；用户主动暂停后不自�
       kind === "buffering" && phase === "recovery_started").length,
     1,
   );
+});
+
+test("主 VOD 缓冲会冻结从轨并在主时钟恢复后重新放行", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 14, paused: false });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(source("master-buffering")),
+  );
+  const external = new FakeBackend({ currentTime: 14 });
+  harness.pending.get("master-buffering")?.resolve(external);
+  await selecting;
+  assert.equal(external.playCount, 1);
+
+  harness.runtime.notifyMasterBufferingState(true);
+  harness.runBufferingProbe();
+  assert.equal(external.snapshot.paused, true);
+  assert.equal(harness.runtime.getState().phase, "buffering_master");
+  assert.equal(harness.runtime.getState().desiredPlayback, "playing");
+
+  master.snapshot.currentTime = 14.03;
+  harness.runtime.notifyMasterBufferingState(false);
+  await flushAsyncWork();
+  assert.equal(external.playCount, 2);
+  assert.equal(external.snapshot.paused, false);
+  assert.equal(harness.runtime.getState().phase, "playing_synced");
 });
 
 test("主视频自然结束会停止外部音轨与漂移采样", async () => {
@@ -487,9 +890,32 @@ test("诊断消费者抛错不会中断缓冲安全暂停", async () => {
   await selecting;
 
   preparation?.events.onBufferingChange?.(true);
+  harness.runBufferingProbe();
   assert.equal(harness.runtime.getState().phase, "buffering_external");
   assert.equal(master.snapshot.paused, true);
   assert.deepEqual(harness.errors, []);
+});
+
+test("VOD 短暂 waiting 期间时钟仍推进时不暂停主从媒体", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 30, paused: false });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(source("transient-waiting")),
+  );
+  const external = new FakeBackend({ currentTime: 30 });
+  const preparation = harness.pending.get("transient-waiting");
+  preparation?.resolve(external);
+  await selecting;
+
+  preparation?.events.onBufferingChange?.(true);
+  external.snapshot.currentTime = 30.02;
+  harness.runBufferingProbe();
+
+  assert.equal(master.snapshot.paused, false);
+  assert.equal(external.snapshot.paused, false);
+  assert.equal(harness.runtime.getState().phase, "playing_synced");
+  assert.deepEqual(harness.diagnostics, []);
 });
 
 test("漂移同步失败记录有限事实并进入既有安全错误态", async () => {

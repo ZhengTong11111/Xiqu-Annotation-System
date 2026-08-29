@@ -86,6 +86,22 @@ test("缓冲恢复必须经过重同步再恢复播放", () => {
   assert.equal(state.phase, "starting");
 });
 
+test("主媒体缓冲单独冻结从轨并回到起播同步态", () => {
+  let state = apply(INITIAL_SYNCHRONIZED_PLAYBACK_STATE, {
+    type: "select_external",
+    trackId: "track-master-buffering",
+    desiredPlayback: "playing",
+  });
+  const generation = state.sourceGeneration;
+  state = apply(state, { type: "external_ready", generation });
+  state = apply(state, { type: "external_started", generation });
+  state = apply(state, { type: "master_buffering", generation });
+  assert.equal(state.phase, "buffering_master");
+  assert.equal(state.desiredPlayback, "playing");
+  state = apply(state, { type: "master_recovered", generation });
+  assert.equal(state.phase, "starting");
+});
+
 test("不可用选择保留目标身份且必须由显式选择离开错误态", () => {
   let state = apply(INITIAL_SYNCHRONIZED_PLAYBACK_STATE, {
     type: "select_unavailable",

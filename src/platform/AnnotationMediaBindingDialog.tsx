@@ -21,7 +21,9 @@ import type { PlatformClient } from "../api/platformClient";
 import { isResourceContainer } from "./resourceColumnModel";
 import { collectResourcePickerItems } from "./resourcePickerPaging";
 import { AliyunVodMediaDialog } from "./AliyunVodMediaDialog";
-import { isMediaAudioTrackSource } from "./mediaAudioTrackSourcePolicy";
+import {
+  isSelectableMediaAudioTrackSource,
+} from "./mediaAudioTrackSourcePolicy";
 
 type Props = {
   client: PlatformClient;
@@ -320,7 +322,7 @@ export function AnnotationMediaBindingDialog(props: Props) {
             {props.busy || confirming
               ? "保存中"
               : pickerMode === "audio-track-source"
-                ? "选择音频"
+                ? "选择音频来源"
                 : "确认关联"}
           </button>
         </footer>
@@ -365,8 +367,8 @@ function canUseMediaForMode(
   if (mode === "annotation-media") {
     return resource.mediaKind === "video" || resource.mediaKind === "audio";
   }
-  // 独立音轨关系必须绑定稳定纯音频；同 VID rendition 由专用 JobId 选择器创建，不能在资源树中伪装成文件。
-  return isMediaAudioTrackSource(resource);
+  // 同一选择器展示纯音频与 VOD 容器；确认后由管理器继续区分文件关系和 JobId rendition。
+  return isSelectableMediaAudioTrackSource(resource);
 }
 
 // 当前绑定与目录资源分别使用严格来源标签，VOD 不显示伪造大小或 MIME。

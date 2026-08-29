@@ -6,6 +6,7 @@ import {
   type ExternalAudioPlaybackBackendEvents,
 } from "./externalAudioPlaybackBackendFactory";
 import type { AliyunVodPlaybackBackendOptions } from "./aliyunVodPlaybackBackend";
+import type { RefreshingNativeAudioPlaybackBackendOptions } from "./refreshingNativeAudioPlaybackBackend";
 import {
   MediaPlaybackCommandCancelledError,
   type MediaPlaybackBackend,
@@ -120,11 +121,11 @@ test("VOD 工厂复用首份会话作为 expected identity 和首次 PlayAuth", 
 
 test("VOD 转码工厂按 JobId 绑定直接音频来源并复用首份临时会话", async () => {
   let sessionRequests = 0;
-  const capturedVodOptions: AliyunVodPlaybackBackendOptions[] = [];
+  const capturedRenditionOptions: RefreshingNativeAudioPlaybackBackendOptions[] = [];
   const backend = new ReadyBackend();
   const prepare = createExternalAudioPlaybackBackendPreparer({
-    createVodBackend: (options) => {
-      capturedVodOptions.push(options);
+    createRenditionNativeBackend: (options) => {
+      capturedRenditionOptions.push(options);
       queueMicrotask(() => options.events.onReady(backend.getSnapshot()));
       return backend;
     },
@@ -158,18 +159,15 @@ test("VOD 转码工厂按 JobId 绑定直接音频来源并复用首份临时会
     events: noopEvents(),
   });
 
-  const vodOptions = capturedVodOptions[0];
-  assert.ok(vodOptions);
-  assert.equal(vodOptions.expectedVideoId, "vod-video");
-  assert.equal(vodOptions.expectedRenditionJobId, "job-audio-mp3");
-  assert.equal(vodOptions.expectedMediaKind, undefined);
-  const firstSession = await vodOptions.loadSession();
-  assert.equal(firstSession.sourceType, "aliyun_vod_rendition");
-  assert.match(firstSession.sourceType === "aliyun_vod_rendition" ? firstSession.url : "", /token=1/u);
+  const renditionOptions = capturedRenditionOptions[0];
+  assert.ok(renditionOptions);
+  assert.equal(renditionOptions.expectedVideoId, "vod-video");
+  assert.equal(renditionOptions.expectedRenditionJobId, "job-audio-mp3");
+  assert.match(renditionOptions.initialSession.url, /token=1/u);
   assert.equal(sessionRequests, 1);
-  const secondSession = await vodOptions.loadSession();
+  const secondSession = await renditionOptions.loadSession();
   assert.equal(secondSession.sourceType, "aliyun_vod_rendition");
-  assert.match(secondSession.sourceType === "aliyun_vod_rendition" ? secondSession.url : "", /token=2/u);
+  assert.match(secondSession.url, /token=2/u);
   assert.equal(sessionRequests, 2);
 });
 

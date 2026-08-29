@@ -27,6 +27,7 @@ export type NewTrackDraft = TrackDraft & {
     | {
         type: "aliyun_vod_rendition";
         mediaResourceId: string;
+        mediaResourceName: string;
         rendition: AliyunVodAudioRendition;
       };
 };
@@ -270,18 +271,20 @@ export function useMediaAudioTrackManager(options: Options) {
       setSelectedTrackId(null);
     },
     beginCreateVodRendition: (
-      mediaResourceId: string,
+      mediaResource: ResourceEntry,
       rendition: AliyunVodAudioRendition,
     ) => {
       setError(null);
       const quality = rendition.definition ?? "音频";
+      // 草稿保留稳定媒资的显示名，避免多个 VOD 都被含糊地显示为“当前 VOD”。
       setNewTrackDraft({
         source: {
           type: "aliyun_vod_rendition",
-          mediaResourceId,
+          mediaResourceId: mediaResource.id,
+          mediaResourceName: mediaResource.name,
           rendition,
         },
-        name: `VOD ${quality}音轨`,
+        name: `${mediaResource.name} · ${quality}`,
         kind: "custom",
         offsetSeconds: "0",
         enabled: true,

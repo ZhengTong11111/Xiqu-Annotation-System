@@ -4,8 +4,8 @@ import type {
 } from "@xiqu/shared";
 import {
   AliyunVodPlaybackBackend,
+  type AliyunVodMediaClock,
   type AliyunVodPlaybackBackendOptions,
-  type AliyunVodRuntimePlaybackSession,
 } from "./aliyunVodPlaybackBackend";
 import {
   MediaPlaybackCommandCancelledError,
@@ -14,6 +14,10 @@ import {
   type MediaPlaybackSnapshot,
 } from "./mediaPlaybackController";
 import { createNativeAudioPlaybackBackend } from "./nativeAudioPlaybackBackend";
+import {
+  RefreshingNativeAudioPlaybackBackend,
+  type RefreshingNativeAudioPlaybackBackendOptions,
+} from "./refreshingNativeAudioPlaybackBackend";
 
 export type ExternalAudioPlaybackSource =
   | {
@@ -63,6 +67,7 @@ export type PrepareExternalAudioPlaybackBackend = (
   options: {
     signal: AbortSignal;
     vodContainerId: string;
+    readVodMediaClock?: () => AliyunVodMediaClock | null;
     events: ExternalAudioPlaybackBackendEvents;
   },
 ) => Promise<PreparedExternalAudioPlaybackBackend>;
@@ -75,6 +80,9 @@ type ExternalAudioBackendFactoryDependencies = {
     events: MediaPlaybackBackendEvents,
   ) => MediaPlaybackBackend;
   createVodBackend?: (options: AliyunVodPlaybackBackendOptions) => MediaPlaybackBackend;
+  createRenditionNativeBackend?: (
+    options: RefreshingNativeAudioPlaybackBackendOptions,
+  ) => MediaPlaybackBackend;
   readyTimeoutMs?: number;
 };
 
@@ -88,6 +96,8 @@ export function createExternalAudioPlaybackBackendPreparer(
     createNativeAudioPlaybackBackend;
   const createVodBackend = dependencies.createVodBackend ??
     ((options) => new AliyunVodPlaybackBackend(options));
+  const createRenditionNativeBackend = dependencies.createRenditionNativeBackend ??
+    ((options) => new RefreshingNativeAudioPlaybackBackend(options));
   const readyTimeoutMs = dependencies.readyTimeoutMs ?? EXTERNAL_AUDIO_READY_TIMEOUT_MS;
 
   return async (source, options) => {
@@ -142,17 +152,32 @@ export function createExternalAudioPlaybackBackendPreparer(
         const loaded = await source.load(preparationAbortController.signal);
         if (preparationAbortController.signal.aborted) throw createCancelledError();
         backend = createNativeBackend(loaded.url, events);
+      } else if (source.type === "aliyun_vod_rendition_audio") {
+        const initialSession = await source.loadSession(preparationAbortController.signal);
+        if (preparationAbortController.signal.aborted) throw createCancelledError();
+        // 指定 JobId 后，服务端返回的是可直接 Range 播放的 HTTPS MP3；使用原生 audio
+        // 可避开隐藏 Aliplayer 在随机 seek 后的解码冷启动，同时仍由专用 backend 负责短期 URL 续签。
+        backend = createRenditionNativeBackend({
+          containerId: options.vodContainerId,
+          initialSession,
+          expectedVideoId: initialSession.videoId,
+          expectedRenditionJobId: source.renditionJobId,
+          loadSession: source.loadSession,
+          // 只有测试/宿主显式注入时才覆盖默认工厂；产品路径必须从隐藏容器的 ownerDocument 创建 audio。
+          ...(dependencies.createNativeBackend
+            ? { createNativeBackend: dependencies.createNativeBackend }
+            : {}),
+          events,
+        });
       } else {
         // 首份会话既提供受服务端校验的媒资身份，也会被播放器首次加载复用，不能额外请求第二份 PlayAuth。
-        let initialSession: AliyunVodRuntimePlaybackSession | null =
+        let initialSession: AliyunVodPlaybackSession | null =
           await source.loadSession(preparationAbortController.signal);
         if (preparationAbortController.signal.aborted) throw createCancelledError();
         backend = createVodBackend({
           containerId: options.vodContainerId,
           expectedVideoId: initialSession.videoId,
-          ...(source.type === "aliyun_vod_rendition_audio"
-            ? { expectedRenditionJobId: source.renditionJobId }
-            : { expectedMediaKind: "audio" as const }),
+          expectedMediaKind: "audio",
           loadSession: async (signal) => {
             if (initialSession) {
               const session = initialSession;
@@ -163,6 +188,7 @@ export function createExternalAudioPlaybackBackendPreparer(
             // 这样切换文件或销毁音轨时可以中止正在进行的 HTTP 请求，而不只是忽略迟到响应。
             return source.loadSession(signal);
           },
+          readMediaClock: options.readVodMediaClock,
           events,
         });
       }

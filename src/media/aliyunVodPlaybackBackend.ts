@@ -1,7 +1,4 @@
-import type {
-  AliyunVodPlaybackSession,
-  MediaAudioTrackPlaybackSession,
-} from "@xiqu/shared";
+import type { AliyunVodPlaybackSession } from "@xiqu/shared";
 import {
   loadAliplayerSdk,
   type AliplayerConstructor,
@@ -19,7 +16,8 @@ import {
 } from "./mediaPlaybackController";
 import { getVodSessionRefreshRetryDelay } from "./vodSessionRefreshPolicy";
 
-const VOD_SEEK_EPSILON_SECONDS = 1 / 30;
+// 组合试听以 10ms 为稳定目标；1 帧（约 33ms）的旧免跳转区会让音频预热回位后仍留下可听偏差。
+const VOD_SEEK_EPSILON_SECONDS = 0.005;
 const VOD_SEEK_TIMEOUT_MS = 12_000;
 const VOD_READY_TIMEOUT_MS = 20_000;
 const VOD_SESSION_REFRESH_AHEAD_MS = 60_000;
@@ -29,20 +27,18 @@ export type AliyunVodPlaybackBackendOptions = {
   containerId: string;
   expectedVideoId: string;
   expectedMediaKind?: "video" | "audio";
-  expectedRenditionJobId?: string;
-  loadSession: (signal?: AbortSignal) => Promise<AliyunVodRuntimePlaybackSession>;
+  loadSession: (signal?: AbortSignal) => Promise<AliyunVodPlaybackSession>;
   events: MediaPlaybackBackendEvents;
   loadFactory?: () => Promise<AliplayerConstructor>;
   now?: () => number;
   scheduleRefresh?: (callback: () => void, delayMs: number) => () => void;
+  readMediaClock?: () => AliyunVodMediaClock | null;
 };
 
-export type AliyunVodRuntimePlaybackSession =
-  | AliyunVodPlaybackSession
-  | Extract<
-      MediaAudioTrackPlaybackSession,
-      { sourceType: "aliyun_vod_rendition" }
-    >;
+export type AliyunVodMediaClock = {
+  currentTime: number;
+  duration: number;
+};
 
 type PendingSeek = {
   target: number;
@@ -89,16 +85,34 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     callback: () => void,
     delayMs: number,
   ) => () => void;
+  private readonly readMediaClock: () => AliyunVodMediaClock | null;
 
   constructor(private readonly options: AliyunVodPlaybackBackendOptions) {
     this.loadFactory = options.loadFactory ?? loadAliplayerSdk;
     this.now = options.now ?? Date.now;
     this.scheduleRefresh = options.scheduleRefresh ?? defaultScheduleRefresh;
+    this.readMediaClock = options.readMediaClock ??
+      createContainerMediaClockReader(options.containerId);
     // 初次加载由组件状态消费，必须在构造时附加拒绝处理，避免“尚未点击播放”时出现未处理 Promise。
     this.readyPromise = this.rebuildPlayer({ preservePlayback: false }).catch(() => undefined);
   }
 
   getSnapshot() {
+    const player = this.player;
+    if (!this.disposed && player) {
+      try {
+        // Aliplayer.getCurrentTime() 在部分 VOD 流上仍跟随低频播放器事件。
+        // 组合播放优先读取播放器实际 HTMLMediaElement，才能让 100ms 漂移采样服务于 10ms 目标。
+        const mediaClock = this.readMediaClock();
+        return normalizePlaybackSnapshot({
+          ...this.snapshot,
+          currentTime: mediaClock?.currentTime ?? this.readCurrentTime(player),
+          duration: mediaClock?.duration ?? player.getDuration(),
+        });
+      } catch {
+        // SDK 重建/销毁的极短窗口继续返回最后一份有界快照，读取接口不能制造播放错误。
+      }
+    }
     return normalizePlaybackSnapshot(this.snapshot);
   }
 
@@ -225,7 +239,7 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     this.lastPreparationError = null;
 
     let factory: AliplayerConstructor;
-    let session: AliyunVodRuntimePlaybackSession;
+    let session: AliyunVodPlaybackSession;
     const sessionRequestController = new AbortController();
     this.sessionRequestAbortControllers.add(sessionRequestController);
     try {
@@ -294,20 +308,11 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
         // Web Aliplayer 2.29.1+ 强制校验 domain/key；二者来自受控服务配置，不由项目 JSON 提供。
         license: session.webPlayerLicense,
       };
-      // 指定 JobId 的 VOD 音频使用本次 no-store 会话的 HTTPS 地址；普通 VOD 仍使用 vid + PlayAuth。
-      const playerOptions: AliplayerOptions =
-        session.sourceType === "aliyun_vod_rendition"
-          ? {
-              ...commonPlayerOptions,
-              source: session.url,
-              mediaType: "audio",
-              format: "mp3",
-            }
-          : {
-              ...commonPlayerOptions,
-              vid: session.videoId,
-              playauth: session.playAuth,
-            };
+      const playerOptions: AliplayerOptions = {
+        ...commonPlayerOptions,
+        vid: session.videoId,
+        playauth: session.playAuth,
+      };
       try {
         const player = new factory(playerOptions, (readyPlayer) => {
           if (!this.isCurrent(generation)) return finish("resolve");
@@ -412,7 +417,7 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     pending.reject(error);
   }
 
-  private scheduleSessionRefresh(session: AliyunVodRuntimePlaybackSession) {
+  private scheduleSessionRefresh(session: AliyunVodPlaybackSession) {
     const expiresAt = Date.parse(session.expiresAt);
     if (!Number.isFinite(expiresAt)) return;
     this.backgroundRefreshFailedAttempts = 0;
@@ -491,24 +496,7 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
     return attempt;
   }
 
-  private validateSession(session: AliyunVodRuntimePlaybackSession) {
-    if (session.sourceType === "aliyun_vod_rendition") {
-      if (
-        !this.options.expectedRenditionJobId ||
-        session.jobId !== this.options.expectedRenditionJobId ||
-        session.videoId !== this.options.expectedVideoId ||
-        session.mimeType !== "audio/mpeg" ||
-        !isSecureHttpsUrl(session.url) ||
-        !session.expiresAt ||
-        !session.webPlayerLicense?.domain ||
-        !session.webPlayerLicense?.key ||
-        !Number.isFinite(Date.parse(session.expiresAt)) ||
-        Date.parse(session.expiresAt) <= this.now()
-      ) {
-        throw new Error("VOD 音频转码会话与当前音轨不匹配。");
-      }
-      return;
-    }
+  private validateSession(session: AliyunVodPlaybackSession) {
     if (
       session.sourceType !== "aliyun_vod" ||
       session.mediaKind !== (this.options.expectedMediaKind ?? "video") ||
@@ -584,15 +572,21 @@ export class AliyunVodPlaybackBackend implements MediaPlaybackBackend {
   }
 }
 
+function createContainerMediaClockReader(containerId: string) {
+  return (): AliyunVodMediaClock | null => {
+    if (typeof document === "undefined") return null;
+    const media = document
+      .getElementById(containerId)
+      ?.querySelector<HTMLMediaElement>("video, audio");
+    if (!media) return null;
+    return {
+      currentTime: media.currentTime,
+      duration: media.duration,
+    };
+  };
+}
+
 function defaultScheduleRefresh(callback: () => void, delayMs: number) {
   const timer = globalThis.setTimeout(callback, delayMs);
   return () => globalThis.clearTimeout(timer);
-}
-
-function isSecureHttpsUrl(value: string) {
-  try {
-    return new URL(value).protocol === "https:";
-  } catch {
-    return false;
-  }
 }

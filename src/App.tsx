@@ -905,6 +905,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [audioTrackManagerOpen, setAudioTrackManagerOpen] = useState(false);
   const [sentenceAnnotationSettingsOpen, setSentenceAnnotationSettingsOpen] = useState(false);
   const [analysisViewport, setAnalysisViewport] = useState<PlatformAnalysisViewport | null>(null);
+  // Timeline 会在 effect 中上报可视范围；回调身份必须稳定，否则父层任意轮询渲染都会重新触发上报并形成更新环。
+  const handleAnalysisViewportChange = useCallback((nextViewport: PlatformAnalysisViewport) => {
+    if (!editorSession) return;
+    setAnalysisViewport((current) => current &&
+      current.startTime === nextViewport.startTime &&
+      current.endTime === nextViewport.endTime &&
+      current.zoom === nextViewport.zoom
+      ? current
+      : nextViewport);
+  }, [editorSession?.annotationFileId]);
   const [serverMediaBindingBusy, setServerMediaBindingBusy] = useState(false);
   const [currentProjectFileName, setCurrentProjectFileName] = useState<string | null>(null);
   const [previewDetachedWindow, setPreviewDetachedWindow] = useState<Window | null>(null);
@@ -6873,15 +6883,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         onFocusRangeHandled={handleFocusRangeHandled}
         getProjectSnapshot={() => projectRef.current}
         onZoomChange={setZoom}
-        onViewportTimeRangeChange={(nextViewport) => {
-          if (!editorSession) return;
-          setAnalysisViewport((current) => current &&
-            current.startTime === nextViewport.startTime &&
-            current.endTime === nextViewport.endTime &&
-            current.zoom === nextViewport.zoom
-            ? current
-            : nextViewport);
-        }}
+        onViewportTimeRangeChange={handleAnalysisViewportChange}
         onToggleTrackSnap={(trackId) => {
           applyTrackSnapEnabledState({
             ...trackSnapEnabledRef.current,
@@ -7337,7 +7339,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         <MediaAudioTrackManagerDialog
           client={editorSession.client}
           primaryMediaResourceId={platformMedia.resourceId}
-          primaryMediaSourceType={platformMedia.sourceType}
           parentId={editorSession.parentId}
           open={audioTrackManagerOpen}
           onOpenChange={setAudioTrackManagerOpen}

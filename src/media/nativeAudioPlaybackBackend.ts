@@ -11,6 +11,7 @@ export type NativeAudioElementPort = NativeMediaElementPort & {
   src: string;
   preload: string;
   load(): void;
+  remove?(): void;
 };
 
 /**
@@ -20,6 +21,7 @@ export class NativeAudioPlaybackBackend implements MediaPlaybackBackend {
   private readonly commandBackend: NativeMediaPlaybackBackend;
   private disposed = false;
   private buffering = false;
+  private commandedSeekCount = 0;
   private readonly listeners: Array<[string, EventListener]>;
 
   constructor(
@@ -42,7 +44,9 @@ export class NativeAudioPlaybackBackend implements MediaPlaybackBackend {
       if (!this.disposed) this.events.onPlayStateChange(false);
     };
     const onWaiting: EventListener = () => {
-      if (!this.disposed) this.setBuffering(true);
+      // 浏览器会在受控 currentTime 跳转时短暂发出 waiting；这属于同步命令的一部分，
+      // 不能冒充网络断流并让组合运行时再次暂停、再次 seek。
+      if (!this.disposed && this.commandedSeekCount === 0) this.setBuffering(true);
     };
     const onCanPlay: EventListener = () => {
       if (!this.disposed) this.setBuffering(false);
@@ -64,7 +68,6 @@ export class NativeAudioPlaybackBackend implements MediaPlaybackBackend {
       ["play", onPlay],
       ["pause", onPause],
       ["waiting", onWaiting],
-      ["stalled", onWaiting],
       ["ended", onEnded],
       ["error", onError],
     ];
@@ -72,7 +75,14 @@ export class NativeAudioPlaybackBackend implements MediaPlaybackBackend {
   }
 
   getSnapshot() { return this.commandBackend.getSnapshot(); }
-  seek(time: number) { return this.commandBackend.seek(time); }
+  async seek(time: number) {
+    this.commandedSeekCount += 1;
+    try {
+      await this.commandBackend.seek(time);
+    } finally {
+      this.commandedSeekCount = Math.max(0, this.commandedSeekCount - 1);
+    }
+  }
   play() { return this.commandBackend.play(); }
   pause() { this.commandBackend.pause(); }
   setPlaybackRate(rate: number) { this.commandBackend.setPlaybackRate(rate); }
@@ -90,6 +100,7 @@ export class NativeAudioPlaybackBackend implements MediaPlaybackBackend {
       this.media.pause();
       this.media.src = "";
       this.media.load();
+      this.media.remove?.();
     } catch {
       // 已损坏的媒体元素仍已移除监听并取消等待命令，清理不能反向抛到 React 卸载路径。
     }
@@ -100,6 +111,30 @@ export class NativeAudioPlaybackBackend implements MediaPlaybackBackend {
     this.buffering = buffering;
     this.events.onBufferingChange?.(buffering);
   }
+}
+
+/**
+ * 分离预览可能属于另一个 document；从既有容器的 ownerDocument 创建 audio，
+ * 才能保证生命周期、媒体策略和可观测时钟都属于正确窗口。
+ */
+export function createContainerNativeAudioPlaybackBackend(
+  containerId: string,
+  url: string,
+  events: MediaPlaybackBackendEvents,
+) {
+  const container = typeof document === "undefined"
+    ? null
+    : document.getElementById(containerId);
+  if (!container) return createNativeAudioPlaybackBackend(url, events);
+  const media = container.ownerDocument.createElement("audio");
+  media.hidden = true;
+  media.setAttribute("aria-hidden", "true");
+  container.appendChild(media);
+  return createNativeAudioPlaybackBackend(
+    url,
+    events,
+    () => media as NativeAudioElementPort,
+  );
 }
 
 export function createNativeAudioPlaybackBackend(
