@@ -8376,3 +8376,44 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   清理、专项测试和真实 Chrome 页面复验。没有修改 schema、媒体分析资产、音轨关系或协作合同。
 - **待推进**：Safari、生产 HTTP IP、未来 HTTPS、慢网、断网/休眠、30 分钟长播和真实凭据到期续签。后续验收
   仍不得把签名 URL、PlayAuth、AccessKey 或完整会话写入日志、数据库、ProjectData 或浏览器持久缓存。
+
+## 2026-08-29：`914ba33` 生产部署与一致备份
+
+### Git 与候选发布
+
+- `codex/replace-audio-playback` 的最终修复提交为 `914ba33`（`fix: stabilize external VOD audio playback`），已
+  快进合并并推送到远端 `main`；合并无冲突，生产源码包严格来自该 Git 提交，不包含本地 `.env`、数据库、
+  `data/`、媒体对象或未提交的教程编辑。
+- 上传源码包为 `/tmp/xiqu-source-914ba33.tar.gz`，本机与服务器 SHA-256 均为
+  `08b9049468ad13b56d8406cacc77895330c96dd423db7ece97b3254d54832ee9`。服务器候选目录为
+  `/opt/xiqu/releases/20260829T210137Z-914ba33`，安装后 `release:check` 与 Prisma Client schema guard 通过；
+  前端产物为 `index-9-v7l7YM.js`、`index-BRMrySa9.css`。
+- 候选构建时旧 release `/opt/xiqu/releases/20260826T075340Z-25fe616` 保持在线。首次候选安装脚本的末尾检查因
+  shell 工作目录回到 `/root` 而报找不到 `package.json`；构建产物和候选安装实际完整，随后在候选目录中重新执行
+  同一发布校验并通过，未以该脚本编排错误替代应用验证。
+
+### 维护窗口、备份与迁移
+
+- 使用 `platform.admin` 开启维护，原因记录为“部署 914ba33：VOD 替换音轨随机起播稳定性修复”。旧版维护 CLI
+  会等待长期 API permit；按既有规程停止 analysis worker 和 API 后，维护状态确认 enabled=true，期间没有开放
+  用户写入。
+- 一致备份由正式 `backup:create` 接管维护窗口并发布到
+  `/var/lib/xiqu-platform/backups/xiqu-backup-2026-08-29T21-05-32-200Z-5db32ac0`：共 35177 个对象、0 条一致性
+  警告。随后独立执行 `backup:verify`，结果 `valid=true`、errors 为空；完成后再次显式开启维护再进入切换。
+- 候选 release 通过正式 `prisma migrate deploy` 检查：共识别 29 个 migration，没有待执行 migration；未运行
+  `db:push`、未修改 migration history。之后将 `/opt/xiqu/current` 原子切换到候选并启动 API。
+
+### 恢复服务与验收
+
+- 新 API liveness=`ok`、readiness=`ready`，数据库与对象存储均为 `ok`；Nginx 使用生产 Host
+  `101.201.76.10` 返回新 hash 资产。启动 journal 未发现 schema、fatal、panic 或运行时错误。
+- 维护通过 `platform.admin` 正式解除，最终 status 为 enabled=false；analysis worker 恢复为 active。最终状态为
+  current=`/opt/xiqu/releases/20260829T210137Z-914ba33`，API/worker/Nginx 均 active，公网 readiness 健康。
+- 不可变候选包未包含 `scripts/checkDeployment.mjs`，因此服务器内执行 `npm run deploy:check` 只暴露“缺少检查
+  脚本”的打包范围问题，不是服务失败。本轮没有向已安装 release 临时复制源码；改从同一 `914ba33` Git 工作树
+  对 `http://101.201.76.10` 执行相同只读检查，Web 首页、API liveness 和 API readiness 全部 HTTP 200。后续发布
+  编排应把 smoke 脚本纳入候选工具包，或明确由可信部署主机执行，不能依赖人工修改不可变 release。
+- **已完成**：提交、远端 `main` 合并、维护保护、候选构建、一致备份与校验、schema 检查、原子切换、服务恢复
+  和公网只读验收。
+- **待人工环境验收**：生产 HTTP IP 下的真实登录、VOD 主视频与 Johann rendition 随机起播、长时间播放及未来
+  HTTPS 域名仍按上一节的环境验收债务推进；本次部署未把任何凭据或临时播放地址写入仓库和日志。
