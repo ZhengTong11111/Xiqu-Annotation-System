@@ -695,7 +695,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - do not make that six-second window the normal startup path. While paused, a JobId MP3 must first advance one real muted
     clock tick and seek back to the exact target. If source generation and the 10 ms primed position still match, start master
     and external clocks in one cancellable barrier, unmute only after both advance, and sample drift immediately. A playing
-    random seek freezes both clocks, primes at the new target, and resumes through the same barrier; later user commands win
+    random seek freezes the external clock first, lets Aliplayer complete its established playing-state seek, then freezes the
+    master at the reached target, primes there, and resumes through the same barrier; later user commands win. Do not restore
+    a `master.pause() -> master.seek()` ordering for this path
   - that temporary master pause is a media-level synchronization barrier, not a user-visible pause. Its matching master pause
     callback must preserve the effective logical `playing` state; otherwise React's paused-only current-time synchronization
     can submit the stale pre-seek time and overwrite the user's target. Uploaded audio keeps its native Range, 1 ms alignment,

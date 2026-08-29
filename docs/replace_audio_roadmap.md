@@ -1147,7 +1147,8 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 - 只有来源、代次、暂停状态和预热位置全部匹配时，JobId MP3 才进入同步起播屏障。命令式播放在同一异步
   阶段启动主视频与外轨；原生或 Aliplayer 控件已经启动视频时只补启外轨。两个时钟都真实推进后才恢复用户
   静音设置，并立即执行首个漂移样本。
-- 播放中的随机 seek 对 JobId MP3 采用“冻结主从 -> 主视频跳转 -> 外轨对齐和预热 -> 并发恢复”。内部暂停
+- 播放中的随机 seek 对 JobId MP3 采用“冻结外轨 -> 主视频按既有播放态路径跳转 -> 在新目标冻结主视频 ->
+  外轨对齐和预热 -> 并发恢复”。不能在 Aliplayer seek 之前暂停主视频。内部暂停
   不改写用户播放意图，同一命令代次只消费对应 pause 事件并继续向 React 回报逻辑播放态；否则暂停态时间
   同步会用旧 currentTime 覆盖目标。后发 pause、seek、切轨和销毁仍优先。
 - 前置条件不满足时回退既有主时钟门禁，没有新增第二个播放器 owner、播放状态机或临时 URL 持久层。6 秒
@@ -1155,8 +1156,9 @@ POST /api/media/:mediaResourceId/analysis/runs/:runId/assets/batch
 
 **验证**
 
-- 播放专项 89/89；新增覆盖静音预热回位、主从并发起播、不追加冷启动 seek、播放中随机 seek、后发暂停
-  获胜、内部暂停维持逻辑播放态和主视频原生控件入口。音轨 shared 7/7 + frontend 27/27，完整
+- 播放专项 90/90；新增覆盖静音预热回位、主从并发起播、不追加冷启动 seek、播放中随机 seek 的
+  `seek -> pause -> play` 顺序、后发暂停获胜、内部暂停维持逻辑播放态和主视频原生控件入口。音轨 shared
+  7/7 + frontend 27/27，完整
   shared/document-model/Web/API build 与
   `git diff --check` 通过。
 - 已登录 localhost 真实编辑器中，`Johann_Sebastian_Bach · SQ` 在 55.351 秒选择后完成双媒体

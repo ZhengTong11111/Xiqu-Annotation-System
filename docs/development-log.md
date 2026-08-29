@@ -8437,7 +8437,8 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 新增 JobId MP3 同步起播屏障。只有来源、代次、暂停状态和预热位置都匹配时，才在同一异步阶段启动主视频
   与外轨；若主视频已由原生/Aliplayer 控件启动，则只补启外轨。两个时钟均真实推进后才恢复用户静音状态，
   并立即执行一次既有漂移判断，再进入 100ms 周期采样。
-- 播放中随机 seek 先冻结外轨和主视频，在新目标完成外轨对齐与静音预热，再通过同一屏障恢复。内部 pause
+- 播放中随机 seek 先冻结外轨，让主视频在播放态完成目标跳转，再于新目标冻结主视频并完成外轨对齐与静音
+  预热，最后通过同一屏障恢复。内部 pause
   以 command generation 标记，只消费对应浏览器 pause 事件，不会把用户播放意图改成暂停；后发 pause、seek、
   切轨、切文件和销毁继续通过现有 command/source generation 获胜。
 - 同步屏障任一前置条件不满足时回退已有主时钟门禁。没有新增播放器 owner、第二套状态机、临时播放 URL
@@ -8445,7 +8446,7 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 
 ### 测试、真实页面与自审
 
-- `npm run test:media-playback` 89/89；新增覆盖 JobId MP3 预热回位、主从并发起播、不追加第三次 seek、播放中
+- `npm run test:media-playback` 90/90；新增覆盖 JobId MP3 预热回位、主从并发起播、不追加第三次 seek、播放中
   随机 seek、后发暂停获胜和主视频原生控件入口。`npm run test:media-audio-tracks` 为 shared 7/7 + frontend
   27/27；完整 `npm run build` 与 `git diff --check` 通过，仅保留既有 Vite 主 chunk 大小提示。
 - 在已登录 `http://localhost:5173/` 打开《寻梦》编辑器并选择 `Johann_Sebastian_Bach · SQ`：55.351 秒暂停
@@ -8453,7 +8454,7 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   `readyState=4` 精确停在 60.300 秒。实际播放观察点为视频 71.378 秒、外轨 71.411 秒，约 33ms 偏差并由
   既有 0.96x 有界倍率继续收敛，相比上一轮 185-195ms 起步基线显著缩小。
 - 浏览器控制通道的单次状态读取耗时可达秒级，不适合把连续调用当作 10ms 精度测量仪；因此本轮保留确定性
-  89 项播放测试作为竞态/代次证据，并只把真实页面单点记录为起步改善证据，不夸大为完整听觉或稳态精度证明。
+  90 项播放测试作为竞态/代次证据，并只把真实页面单点记录为起步改善证据，不夸大为完整听觉或稳态精度证明。
 - 自审确认没有改变上传音频和普通 VOD 的既有起播回退，没有修改时间轴、分析 run/assets、数据库 schema、
   音轨 ACL、ProjectData 或协作合同。新增复杂分支均有中文原因注释，旧预热 helper 已替换而非并存。
 - **已完成**：教程独立提交、起步顺序修复、播放竞态测试、音轨回归、完整构建、真实登录页面核查、路线图与
@@ -8463,18 +8464,24 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 
 ### 播放中 Timeline 跳转回归与补修
 
-- 用户复验发现：选择外接 VOD 音轨并保持播放时，点击 Timeline 新位置会短暂响应后继续停留在旧位置。沿
+- 用户两次复验发现：选择外接 VOD 音轨并保持播放时，点击 Timeline 新位置会短暂响应后继续停留在旧位置。沿
   `Timeline.onSeek -> App.seekTo -> LatestMediaPlaybackCommand -> SynchronizedMediaPlaybackRuntime.seek` 复核后，
-  确认目标 seek 本身已发出，覆盖来自新增内部冻结的错误 UI 语义。
+  确认存在两个相邻问题，而不是一个回调布尔值可以完全修复。
 - JobId MP3 随机 seek 会为目标预热而临时暂停主视频。对应 master pause 回调虽然没有改写 runtime 的
   `desiredPlayback`，却向 `VideoPlayer` 返回了 `false`；React 因而误认为用户已暂停，启用仅限暂停态的
   currentTime 同步 effect，并可能用暂停事件携带的旧时间追加第二次 seek，覆盖用户刚选择的新目标。
 - 修复后，只有匹配当前 command generation 且用户意图仍为 playing 的内部 pause 会继续向 React 回报逻辑
   `playing=true`；媒体仍真实冻结，目标预热与并发恢复不变。真正的用户 pause 会先递增命令代次并清除内部标记，
   因此不会被伪装成播放中。
-- 回归测试直接记录内部冻结与恢复两次主播放状态回调，均必须返回 `true`，同时继续断言主视频 seek 到新目标、
-  外轨两次目标对齐、主从恢复播放和最终 `playing_synced`。播放专项 89/89、音轨 shared 7/7 + frontend 27/27
-  通过；完整 build 通过。
+- 第二次复核发现组合 `getSnapshot()` 仍直接暴露底层物理 `paused=true`，暂停态 effect 因而仍可启动；现仅在
+  同一内部命令代次且用户意图仍为 playing 时，对外返回逻辑 `paused=false`，真实媒体暂停事实仍由 runtime 私有
+  后端读取。该屏障完成、失败或被用户命令取消后立即恢复普通快照。
+- 同时恢复 Aliplayer 已验证的跳转顺序：先暂停外轨，让播放中的主 VOD 完成 `seek(target)`；收到 seeked 后才
+  在新目标暂停主视频、对齐和预热外轨，再并发恢复。此前新增的 `master.pause() -> master.seek()` 是只影响 VOD
+  主媒体的供应商兼容风险，也是上传原生音频没有出现相同问题的重要差异。
+- 回归测试直接记录内部冻结与恢复两次主播放状态回调，均必须返回 `true`；另用阻塞外轨对齐确认主视频已经
+  到达 70 秒、底层物理暂停而组合快照仍为 playing，并断言主视频严格执行 `seek:60 -> pause -> play`。播放专项
+  90/90、音轨 shared 7/7 + frontend 27/27 通过；完整 build 通过。
 - 平台直接上传音频已使用原生 Range、1ms 起播对齐、10ms 目标、±4% 外轨倍率伺服、受控 seek waiting 抑制和
   真实缓冲恢复。它没有进入本轮 JobId MP3 专用静音预热/并发屏障，因为此前真实上传 MP3 联合播放未出现同类
   冷启动证据；不为未复现的问题增加一次额外静音 play/seek。

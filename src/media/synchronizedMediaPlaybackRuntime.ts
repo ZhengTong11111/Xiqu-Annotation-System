@@ -140,13 +140,24 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
   }
 
   getSnapshot() {
-    return this.masterBackend?.getSnapshot() ?? {
+    const masterSnapshot = this.masterBackend?.getSnapshot();
+    if (!masterSnapshot) return {
       ready: false,
       currentTime: 0,
       duration: 0,
       paused: true,
       ended: false,
     };
+    if (
+      masterSnapshot.paused &&
+      this.internalMasterPauseCommandGeneration === this.commandGeneration &&
+      this.state.desiredPlayback === "playing"
+    ) {
+      // JobId MP3 目标预热期间，主媒体在物理层暂停，但组合播放器仍处于一次播放中 seek。
+      // 对外保持逻辑 playing，避免 VideoPlayer 的暂停态 currentTime effect 用旧时间覆盖目标 seek。
+      return { ...masterSnapshot, paused: false };
+    }
+    return masterSnapshot;
   }
 
   getState() {
@@ -235,7 +246,6 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     ) {
       // 随机 seek 为预热 JobId MP3 暂停主视频，不等于用户点击暂停。这里继续向 React 回报“逻辑播放中”，
       // 否则暂停态的 currentTime 同步 effect 会用旧时间追加 seek，反向覆盖用户刚选择的新目标。
-      this.internalMasterPauseCommandGeneration = null;
       return true;
     }
 
@@ -458,12 +468,8 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
       this.invalidateExternalPrime();
       this.externalBackend.pause();
       this.stopDriftSampling();
-      // JobId MP3 需要在目标位置完成静音解码后再与视频并发恢复；这里只暂停媒体，
-      // 不提交 pause_requested，因此用户原本的“继续播放”意图不会被临时屏障覆盖。
-      if (shouldPrimeRenditionBeforeResume) {
-        this.pauseMasterForSynchronization(master, commandGeneration);
-      }
     }
+    // Aliplayer 在播放态 seek 是既有可靠路径；不能为了外轨预热先暂停再 seek，否则供应商播放器可能留在旧位置。
     await master.seek(time);
     if (!this.isCurrentCommand(commandGeneration)) return;
     const generation = this.state.sourceGeneration;
@@ -474,6 +480,8 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
       return;
     }
     if (shouldPrimeRenditionBeforeResume) {
+      // 主视频已经抵达新目标后才进入媒体级冻结；不提交 pause_requested，用户的播放意图保持不变。
+      this.pauseMasterForSynchronization(master, commandGeneration);
       await this.alignExternalToMaster(generation);
       if (!this.isCurrentCommand(commandGeneration)) return;
       await this.primePausedExternal(generation);

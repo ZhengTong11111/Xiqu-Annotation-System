@@ -20,6 +20,7 @@ import { SynchronizedMediaPlaybackRuntime } from "./synchronizedMediaPlaybackRun
 class FakeBackend implements MediaPlaybackBackend {
   snapshot: MediaPlaybackSnapshot;
   seekTargets: number[] = [];
+  commandLog: string[] = [];
   playCount = 0;
   pauseCount = 0;
   disposeCount = 0;
@@ -45,18 +46,21 @@ class FakeBackend implements MediaPlaybackBackend {
 
   getSnapshot() { return { ...this.snapshot }; }
   async seek(time: number) {
+    this.commandLog.push(`seek:${time}`);
     this.seekTargets.push(time);
     if (this.seekBlocker) await this.seekBlocker;
     if (this.seekError) throw this.seekError;
     this.snapshot.currentTime = time;
   }
   async play() {
+    this.commandLog.push("play");
     this.playCount += 1;
     this.snapshot.paused = false;
     this.snapshot.ended = false;
     this.playStateListener?.(true);
   }
   pause() {
+    this.commandLog.push("pause");
     this.pauseCount += 1;
     this.snapshot.paused = true;
     this.playStateListener?.(false);
@@ -332,12 +336,14 @@ test("播放中的 JobId MP3 随机 seek 会冻结视频并在目标预热后恢
   master.pauseCount = 0;
   master.playCount = 0;
   master.seekTargets = [];
+  master.commandLog = [];
   external.playCount = 0;
   external.seekTargets = [];
   effectivePlaybackStates.length = 0;
   await harness.runtime.seek(60);
 
   assert.deepEqual(master.seekTargets, [60]);
+  assert.deepEqual(master.commandLog, ["seek:60", "pause", "play"]);
   assert.equal(master.pauseCount, 1);
   assert.equal(master.playCount, 1);
   assert.deepEqual(external.seekTargets, [60, 60]);
@@ -348,6 +354,39 @@ test("播放中的 JobId MP3 随机 seek 会冻结视频并在目标预热后恢
   assert.equal(harness.runtime.getState().phase, "playing_synced");
   // 内部冻结和恢复都保持“逻辑播放中”，避免 React 暂停态 effect 用旧 currentTime 覆盖目标 seek。
   assert.deepEqual(effectivePlaybackStates, [true, true]);
+});
+
+test("JobId MP3 播放中 seek 的物理暂停不会暴露为暂停态快照", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 20, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  master.playStateListener = (playing) => {
+    harness.runtime.notifyMasterPlaybackState(playing);
+  };
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(vodRenditionSource("rendition-logical-playing")),
+  );
+  const external = new FakeBackend({ currentTime: 0, duration: 190 });
+  harness.pending.get("rendition-logical-playing")?.resolve(external);
+  await selecting;
+  await harness.runtime.play();
+
+  let releaseExternalAlignment!: () => void;
+  external.seekBlocker = new Promise<void>((resolve) => {
+    releaseExternalAlignment = resolve;
+  });
+  const seeking = harness.runtime.seek(70);
+  await flushAsyncWork();
+
+  assert.equal(master.getSnapshot().currentTime, 70);
+  assert.equal(master.getSnapshot().paused, true);
+  // 主视频先到 70 秒再物理冻结；组合快照保持 playing，暂停态 effect 不能覆盖已抵达的目标。
+  assert.equal(harness.runtime.getSnapshot().paused, false);
+
+  releaseExternalAlignment();
+  await seeking;
+  assert.equal(master.getSnapshot().currentTime, 70);
+  assert.equal(harness.runtime.getSnapshot().paused, false);
 });
 
 test("JobId MP3 并发起播等待期间的后发暂停始终获胜", async () => {
