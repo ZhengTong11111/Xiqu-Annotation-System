@@ -258,6 +258,153 @@ test("暂停态 VOD 音轨静音预热一个真实时钟刻度后精确回位", 
   assert.equal(harness.runtime.getState().phase, "ready_paused");
 });
 
+test("JobId MP3 预热后与主视频并发起播且不追加冷启动 seek", async () => {
+  const progressWaits: Array<{
+    input: Parameters<WaitForPlaybackClockProgress>[0];
+    resolve: (value: boolean) => void;
+  }> = [];
+  const harness = createHarness({
+    waitForMasterProgress: (input) => new Promise((resolve) => {
+      progressWaits.push({ input, resolve });
+    }),
+  });
+  const master = new FakeBackend({ currentTime: 40, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  master.playStateListener = (playing) =>
+    harness.runtime.notifyMasterPlaybackState(playing);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(vodRenditionSource("rendition-prime")),
+  );
+  const external = new FakeBackend({ currentTime: 0, duration: 190 });
+  harness.pending.get("rendition-prime")?.resolve(external);
+  await flushAsyncWork();
+
+  // 首次 play 只在静音预热中发生，视频尚未启动；时钟推进后音频会精确回到 40 秒。
+  assert.equal(master.playCount, 0);
+  assert.equal(external.playCount, 1);
+  assert.equal(external.muted, true);
+  external.snapshot.currentTime = 40.02;
+  const primeProgress = progressWaits.shift();
+  primeProgress?.resolve(primeProgress.input.isCurrent());
+  await selecting;
+  assert.deepEqual(external.seekTargets, [40, 40]);
+  assert.equal(external.snapshot.paused, true);
+
+  const playing = harness.runtime.play();
+  await flushAsyncWork();
+  assert.equal(master.playCount, 1);
+  assert.equal(external.playCount, 2);
+  assert.equal(external.muted, true);
+  assert.equal(progressWaits.length, 2);
+
+  master.snapshot.currentTime = 40.02;
+  external.snapshot.currentTime = 40.02;
+  for (const progress of progressWaits.splice(0)) {
+    progress.resolve(progress.input.isCurrent());
+  }
+  await playing;
+
+  // 并发起播复用预热后的 Range/解码状态，不在视频推进后再执行第三次 seek。
+  assert.deepEqual(external.seekTargets, [40, 40]);
+  assert.equal(external.muted, false);
+  assert.equal(external.playbackRate, 1);
+  assert.equal(harness.runtime.getState().phase, "playing_synced");
+});
+
+test("播放中的 JobId MP3 随机 seek 会冻结视频并在目标预热后恢复", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 10, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  master.playStateListener = (playing) =>
+    harness.runtime.notifyMasterPlaybackState(playing);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(vodRenditionSource("rendition-seek-prime")),
+  );
+  const external = new FakeBackend({ currentTime: 0, duration: 190 });
+  harness.pending.get("rendition-seek-prime")?.resolve(external);
+  await selecting;
+  await harness.runtime.play();
+
+  master.pauseCount = 0;
+  master.playCount = 0;
+  master.seekTargets = [];
+  external.playCount = 0;
+  external.seekTargets = [];
+  await harness.runtime.seek(60);
+
+  assert.deepEqual(master.seekTargets, [60]);
+  assert.equal(master.pauseCount, 1);
+  assert.equal(master.playCount, 1);
+  assert.deepEqual(external.seekTargets, [60, 60]);
+  assert.equal(external.playCount, 2);
+  assert.equal(master.snapshot.paused, false);
+  assert.equal(external.snapshot.paused, false);
+  assert.equal(harness.runtime.getState().desiredPlayback, "playing");
+  assert.equal(harness.runtime.getState().phase, "playing_synced");
+});
+
+test("JobId MP3 并发起播等待期间的后发暂停始终获胜", async () => {
+  const progressWaits: Array<{
+    input: Parameters<WaitForPlaybackClockProgress>[0];
+    resolve: (value: boolean) => void;
+  }> = [];
+  const harness = createHarness({
+    waitForMasterProgress: (input) => new Promise((resolve) => {
+      progressWaits.push({ input, resolve });
+    }),
+  });
+  const master = new FakeBackend({ currentTime: 25, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(vodRenditionSource("rendition-start-cancel")),
+  );
+  const external = new FakeBackend({ currentTime: 0, duration: 190 });
+  harness.pending.get("rendition-start-cancel")?.resolve(external);
+  await flushAsyncWork();
+  external.snapshot.currentTime = 25.02;
+  const primeProgress = progressWaits.shift();
+  primeProgress?.resolve(primeProgress.input.isCurrent());
+  await selecting;
+
+  const playing = harness.runtime.play();
+  await flushAsyncWork();
+  assert.equal(progressWaits.length, 2);
+  harness.runtime.pause();
+  for (const progress of progressWaits.splice(0)) {
+    progress.resolve(progress.input.isCurrent());
+  }
+  await playing;
+
+  assert.equal(master.snapshot.paused, true);
+  assert.equal(external.snapshot.paused, true);
+  assert.equal(harness.runtime.getState().desiredPlayback, "paused");
+  assert.equal(harness.runtime.getState().phase, "ready_paused");
+});
+
+test("主视频原生控件起播时复用已预热的 JobId MP3", async () => {
+  const harness = createHarness();
+  const master = new FakeBackend({ currentTime: 18, paused: true });
+  harness.runtime.attachMasterBackend(master);
+  const selecting = harness.runtime.selectAudio(
+    externalSelection(vodRenditionSource("rendition-native-control")),
+  );
+  const external = new FakeBackend({ currentTime: 0, duration: 190 });
+  harness.pending.get("rendition-native-control")?.resolve(external);
+  await selecting;
+  const primingSeekTargets = [...external.seekTargets];
+
+  // 模拟 Aliplayer/原生 controls 已经直接启动主视频；runtime 只补启预热外轨，不重复 play 主播放器。
+  master.snapshot.paused = false;
+  assert.equal(harness.runtime.notifyMasterPlaybackState(true), true);
+  await flushAsyncWork();
+
+  assert.equal(master.playCount, 0);
+  assert.equal(external.playCount, 2);
+  assert.deepEqual(external.seekTargets, primingSeekTargets);
+  assert.equal(external.muted, false);
+  assert.equal(harness.runtime.getState().phase, "playing_synced");
+});
+
 test("用户快速播放会等待现有 VOD 预热完成后再启动主从时钟", async () => {
   const progressWaits: Array<{
     input: Parameters<WaitForPlaybackClockProgress>[0];

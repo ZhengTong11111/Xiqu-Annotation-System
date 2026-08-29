@@ -78,6 +78,7 @@ type PendingExternalStart = {
   sourceGeneration: number;
   promise: Promise<boolean>;
 };
+type PrimedRenditionStartResult = "not_applicable" | "completed" | "cancelled";
 
 /**
  * 组合播放运行时让视频始终担任主时钟，并集中拥有唯一一条替换音频及其异步生命周期。
@@ -109,6 +110,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
   private pendingExternalBufferingProbe: PendingBufferingProbe | null = null;
   private state: SynchronizedPlaybackState = { ...INITIAL_SYNCHRONIZED_PLAYBACK_STATE };
   private commandGeneration = 0;
+  private internalMasterPauseCommandGeneration: number | null = null;
   private playbackRate = 1;
   private volume = 0.5;
   private userMuted = false;
@@ -188,6 +190,8 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     if (this.disposed || !this.masterBackend) return false;
     const masterSnapshot = this.masterBackend.getSnapshot();
     if (playing) {
+      // 同步屏障恢复播放后，后端的 playing 事实同时结束本次内部暂停抑制。
+      this.internalMasterPauseCommandGeneration = null;
       if (this.state.phase === "error_external") {
         this.masterBackend.pause();
         return false;
@@ -223,6 +227,15 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
       }
       if (this.state.phase === "playing_synced") this.startDriftSampling();
       return true;
+    }
+
+    if (
+      this.internalMasterPauseCommandGeneration === this.commandGeneration &&
+      this.state.desiredPlayback === "playing"
+    ) {
+      // 随机 seek 为预热 JobId MP3 暂停主视频，不等于用户点击暂停；只消费本次命令的 pause 事件。
+      this.internalMasterPauseCommandGeneration = null;
+      return false;
     }
 
     // buffering 为同步 owner 主动暂停主视频，不能被误写成用户取消播放。
@@ -437,11 +450,18 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     const commandGeneration = ++this.commandGeneration;
     const shouldResume = this.state.desiredPlayback === "playing" &&
       !master.getSnapshot().ended;
+    const shouldPrimeRenditionBeforeResume = shouldResume &&
+      this.desiredSource?.type === "aliyun_vod_rendition_audio";
     if (this.externalBackend && this.desiredSource) {
       // seek 期间先冻结从轨，避免 VOD 拉取新分片时音频仍沿旧时钟独自前进。
       this.invalidateExternalPrime();
       this.externalBackend.pause();
       this.stopDriftSampling();
+      // JobId MP3 需要在目标位置完成静音解码后再与视频并发恢复；这里只暂停媒体，
+      // 不提交 pause_requested，因此用户原本的“继续播放”意图不会被临时屏障覆盖。
+      if (shouldPrimeRenditionBeforeResume) {
+        this.pauseMasterForSynchronization(master, commandGeneration);
+      }
     }
     await master.seek(time);
     if (!this.isCurrentCommand(commandGeneration)) return;
@@ -449,8 +469,19 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     if (!this.externalBackend || !this.desiredSource) return;
     if (!shouldResume) {
       await this.resynchronizeExternal(generation, false);
-      await this.primePausedVodExternal(generation);
+      await this.primePausedExternal(generation);
       return;
+    }
+    if (shouldPrimeRenditionBeforeResume) {
+      await this.alignExternalToMaster(generation);
+      if (!this.isCurrentCommand(commandGeneration)) return;
+      await this.primePausedExternal(generation);
+      if (!this.isCurrentCommand(commandGeneration)) return;
+      const startResult = await this.startPrimedRenditionWithMaster(
+        generation,
+        commandGeneration,
+      );
+      if (startResult !== "not_applicable") return;
     }
     const baselineTime = master.getSnapshot().currentTime;
     if (master.getSnapshot().paused) await master.play();
@@ -473,6 +504,11 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     const commandGeneration = ++this.commandGeneration;
     const baselineTime = master.getSnapshot().currentTime;
     this.applyEvent({ type: "play_requested" });
+    const primedStartResult = await this.startPrimedRenditionWithMaster(
+      this.state.sourceGeneration,
+      commandGeneration,
+    );
+    if (primedStartResult !== "not_applicable") return;
     await master.play();
     if (!this.isCurrentCommand(commandGeneration)) {
       master.pause();
@@ -491,6 +527,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
 
   pause() {
     if (this.disposed) return;
+    this.internalMasterPauseCommandGeneration = null;
     this.commandGeneration += 1;
     // 先提交意图再暂停媒体，原生 pause 事件同步重入时只能读到最新 paused 状态。
     this.applyEvent({ type: "pause_requested" });
@@ -572,7 +609,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
         await this.alignExternalToMaster(generation);
         if (!this.isCurrentSource(source, generation)) return;
         prepared.backend.pause();
-        await this.primePausedVodExternal(
+        await this.primePausedExternal(
           generation,
         );
       }
@@ -796,6 +833,14 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
       !this.isCurrentSource(source, generation) ||
       this.state.desiredPlayback !== "playing"
     ) return false;
+    const primedStartResult = await this.startPrimedRenditionWithMaster(
+      generation,
+      commandGeneration,
+      true,
+    );
+    if (primedStartResult !== "not_applicable") {
+      return primedStartResult === "completed";
+    }
     return this.startExternalAfterMasterProgress(
       generation,
       commandGeneration,
@@ -805,10 +850,111 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
   }
 
   /**
-   * 隐藏 Aliplayer 的第一次 play 会在 ready 后仍经历一次解码冷启动。暂停态先静音推进一个真实时钟刻度，
-   * 随后暂停并精确回到目标位置，可把这段一次性延迟移到用户起播之前。原生上传和 JobId MP3 均不参与。
+   * 已预热的 JobId MP3 与视频在同一阶段发出 play，并等待两个媒体时钟都真实推进后再放出声音。
+   * 这里不替代通用起播门禁：只有来源、代次、暂停状态和预热位置全部匹配时才接管，否则由旧路径处理。
    */
-  private primePausedVodExternal(generation: number) {
+  private async startPrimedRenditionWithMaster(
+    generation: number,
+    commandGeneration: number,
+    masterAlreadyPlaying = false,
+  ): Promise<PrimedRenditionStartResult> {
+    const master = this.masterBackend;
+    const external = this.externalBackend;
+    const source = this.desiredSource;
+    const primedPosition = this.primedExternalPosition;
+    if (
+      !master ||
+      !external ||
+      source?.type !== "aliyun_vod_rendition_audio" ||
+      !primedPosition ||
+      primedPosition.sourceGeneration !== generation ||
+      !this.isCurrentCommand(commandGeneration) ||
+      !this.isCurrentSource(source, generation)
+    ) return "not_applicable";
+    const masterSnapshot = master.getSnapshot();
+    if (
+      (masterAlreadyPlaying && (masterSnapshot.paused || masterSnapshot.ended)) ||
+      (!masterAlreadyPlaying && !masterSnapshot.paused)
+    ) return "not_applicable";
+
+    const mapped = mapMasterTimeToAudioTime({
+      masterTime: masterSnapshot.currentTime,
+      offsetSeconds: source.offsetSeconds,
+      audioDuration: external.getSnapshot().duration || null,
+    });
+    if (
+      mapped.status !== "playable" ||
+      Math.abs(primedPosition.audioTime - mapped.audioTime) >
+        SYNCHRONIZED_AUDIO_DRIFT_POLICY.toleranceSeconds
+    ) return "not_applicable";
+
+    const masterBaselineTime = masterSnapshot.currentTime;
+    const externalBaselineTime = external.getSnapshot().currentTime;
+    external.setMuted(true);
+    this.stopDriftSampling();
+
+    const isCurrentStart = () =>
+      this.masterBackend === master &&
+      this.externalBackend === external &&
+      this.isCurrentCommand(commandGeneration) &&
+      this.isCurrentSource(source, generation) &&
+      this.state.desiredPlayback === "playing" &&
+      isExternalStartPhase(this.state.phase);
+
+    try {
+      // 命令式播放在同一微任务启动主从后端；原生控件已经启动主视频时只补启外轨，不能重复 play 主播放器。
+      await Promise.all(masterAlreadyPlaying
+        ? [external.play()]
+        : [master.play(), external.play()]);
+      if (this.internalMasterPauseCommandGeneration === commandGeneration) {
+        this.internalMasterPauseCommandGeneration = null;
+      }
+      // 后发命令已经接管媒体时，旧任务必须保持惰性，不能反向暂停新命令正在启动的后端。
+      if (!isCurrentStart()) return "cancelled";
+      const [masterProgressed, externalProgressed] = await Promise.all([
+        this.waitForMasterProgress({
+          baselineTime: masterBaselineTime,
+          readSnapshot: () => master.getSnapshot(),
+          isCurrent: isCurrentStart,
+        }),
+        this.waitForMasterProgress({
+          baselineTime: externalBaselineTime,
+          readSnapshot: () => external.getSnapshot(),
+          isCurrent: isCurrentStart,
+        }),
+      ]);
+      if (!isCurrentStart()) return "cancelled";
+      if (!masterProgressed || !externalProgressed) {
+        this.handleExternalFailure(generation, "主视频与替换音轨未能完成同步起播。");
+        return "cancelled";
+      }
+      if (!this.applyEvent({ type: "external_started", generation })) {
+        this.handleExternalFailure(generation, "替换音轨同步状态异常，无法完成起播。");
+        return "cancelled";
+      }
+
+      // 首个真实时钟样本立即参与 10ms 漂移策略，不再额外等待一个 100ms 采样周期。
+      this.beginNativeRenditionStabilization(source);
+      await this.sampleDrift();
+      if (!isCurrentStart()) return "cancelled";
+      external.setMuted(this.userMuted);
+      this.startDriftSampling();
+      return "completed";
+    } catch (error) {
+      if (!isCurrentStart()) return "cancelled";
+      this.handleExternalFailure(
+        generation,
+        error instanceof Error ? error.message : "替换音轨同步起播失败。",
+      );
+      return "cancelled";
+    }
+  }
+
+  /**
+   * VOD 播放器和 JobId MP3 的第一次 play 都可能在 ready 后经历解码冷启动。暂停态先静音推进一个真实时钟刻度，
+   * 随后暂停并精确回到目标位置，可把这段一次性延迟移到用户起播之前；普通上传音频保持现有轻量路径。
+   */
+  private primePausedExternal(generation: number) {
     const external = this.externalBackend;
     const source = this.desiredSource;
     const master = this.masterBackend;
@@ -816,7 +962,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
       !external ||
       !source ||
       !master ||
-      source.type !== "aliyun_vod_audio" ||
+      !supportsPausedExternalPrime(source) ||
       generation !== this.state.sourceGeneration
     ) return Promise.resolve();
 
@@ -1269,6 +1415,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
   }
 
   private resetStateForMaster() {
+    this.internalMasterPauseCommandGeneration = null;
     this.state = {
       ...INITIAL_SYNCHRONIZED_PLAYBACK_STATE,
       sourceGeneration: this.state.sourceGeneration + 1,
@@ -1289,6 +1436,7 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     );
     if (!hasSession) return;
     this.commandGeneration += 1;
+    this.internalMasterPauseCommandGeneration = null;
     this.desiredSource = null;
     this.cancelExternalPreparation();
     this.disposeExternalBackend();
@@ -1303,6 +1451,16 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
     return !this.disposed &&
       this.desiredSource === source &&
       this.state.sourceGeneration === generation;
+  }
+
+  /** 暂停主时钟但保留播放意图；只允许同一 command generation 的 pause 事件被识别为内部动作。 */
+  private pauseMasterForSynchronization(
+    master: MediaPlaybackBackend,
+    commandGeneration: number,
+  ) {
+    if (master.getSnapshot().paused) return;
+    this.internalMasterPauseCommandGeneration = commandGeneration;
+    master.pause();
   }
 
   private isCurrentCommand(generation: number) {
@@ -1384,6 +1542,12 @@ function resolveAlignmentModeForSource(
   return mode === "preserve_buffered_start" && source.type !== "aliyun_vod_audio"
     ? "precise_native_start"
     : mode;
+}
+
+/** 只预热两类远端 VOD 音频；上传音频无需为了冷启动额外执行一次静音播放。 */
+function supportsPausedExternalPrime(source: ExternalAudioPlaybackSource) {
+  return source.type === "aliyun_vod_audio" ||
+    source.type === "aliyun_vod_rendition_audio";
 }
 
 function isExternalStartPhase(phase: SynchronizedPlaybackState["phase"]) {

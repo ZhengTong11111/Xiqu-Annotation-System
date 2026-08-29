@@ -692,6 +692,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     after that synchronization completes, keep the 10 ms target and bounded ±4% servo but raise only the hard-seek boundary
     to 500 ms; otherwise seek-induced lag can form a self-sustaining seek/stall loop. Forced pause and drift above 500 ms
     remain hard synchronization, and ordinary stable playback returns to the shared 150 ms boundary after the window
+  - do not make that six-second window the normal startup path. While paused, a JobId MP3 must first advance one real muted
+    clock tick and seek back to the exact target. If source generation and the 10 ms primed position still match, start master
+    and external clocks in one cancellable barrier, unmute only after both advance, and sample drift immediately. A playing
+    random seek freezes both clocks, primes at the new target, and resumes through the same barrier; later user commands win
 - Timeline viewport reports are emitted from an effect. App-level consumers must pass a stable callback identity and avoid
   alternating equivalent viewport objects; an inline callback can turn unrelated polling renders into a maximum-depth update
   loop that blocks both interaction and media timing
