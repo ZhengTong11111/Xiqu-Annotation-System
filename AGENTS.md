@@ -696,6 +696,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     clock tick and seek back to the exact target. If source generation and the 10 ms primed position still match, start master
     and external clocks in one cancellable barrier, unmute only after both advance, and sample drift immediately. A playing
     random seek freezes both clocks, primes at the new target, and resumes through the same barrier; later user commands win
+  - that temporary master pause is a media-level synchronization barrier, not a user-visible pause. Its matching master pause
+    callback must preserve the effective logical `playing` state; otherwise React's paused-only current-time synchronization
+    can submit the stale pre-seek time and overwrite the user's target. Uploaded audio keeps its native Range, 1 ms alignment,
+    10 ms drift target, and bounded rate servo, but does not pay the extra muted prewarm without measured cold-start evidence
 - Timeline viewport reports are emitted from an effect. App-level consumers must pass a stable callback identity and avoid
   alternating equivalent viewport objects; an inline callback can turn unrelated polling renders into a maximum-depth update
   loop that blocks both interaction and media timing

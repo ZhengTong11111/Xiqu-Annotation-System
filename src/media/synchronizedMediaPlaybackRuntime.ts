@@ -233,9 +233,10 @@ export class SynchronizedMediaPlaybackRuntime implements MediaPlaybackBackend {
       this.internalMasterPauseCommandGeneration === this.commandGeneration &&
       this.state.desiredPlayback === "playing"
     ) {
-      // 随机 seek 为预热 JobId MP3 暂停主视频，不等于用户点击暂停；只消费本次命令的 pause 事件。
+      // 随机 seek 为预热 JobId MP3 暂停主视频，不等于用户点击暂停。这里继续向 React 回报“逻辑播放中”，
+      // 否则暂停态的 currentTime 同步 effect 会用旧时间追加 seek，反向覆盖用户刚选择的新目标。
       this.internalMasterPauseCommandGeneration = null;
-      return false;
+      return true;
     }
 
     // buffering 为同步 owner 主动暂停主视频，不能被误写成用户取消播放。

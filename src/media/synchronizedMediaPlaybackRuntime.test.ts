@@ -315,8 +315,12 @@ test("播放中的 JobId MP3 随机 seek 会冻结视频并在目标预热后恢
   const harness = createHarness();
   const master = new FakeBackend({ currentTime: 10, paused: true });
   harness.runtime.attachMasterBackend(master);
-  master.playStateListener = (playing) =>
-    harness.runtime.notifyMasterPlaybackState(playing);
+  const effectivePlaybackStates: boolean[] = [];
+  master.playStateListener = (playing) => {
+    effectivePlaybackStates.push(
+      harness.runtime.notifyMasterPlaybackState(playing),
+    );
+  };
   const selecting = harness.runtime.selectAudio(
     externalSelection(vodRenditionSource("rendition-seek-prime")),
   );
@@ -330,6 +334,7 @@ test("播放中的 JobId MP3 随机 seek 会冻结视频并在目标预热后恢
   master.seekTargets = [];
   external.playCount = 0;
   external.seekTargets = [];
+  effectivePlaybackStates.length = 0;
   await harness.runtime.seek(60);
 
   assert.deepEqual(master.seekTargets, [60]);
@@ -341,6 +346,8 @@ test("播放中的 JobId MP3 随机 seek 会冻结视频并在目标预热后恢
   assert.equal(external.snapshot.paused, false);
   assert.equal(harness.runtime.getState().desiredPlayback, "playing");
   assert.equal(harness.runtime.getState().phase, "playing_synced");
+  // 内部冻结和恢复都保持“逻辑播放中”，避免 React 暂停态 effect 用旧 currentTime 覆盖目标 seek。
+  assert.deepEqual(effectivePlaybackStates, [true, true]);
 });
 
 test("JobId MP3 并发起播等待期间的后发暂停始终获胜", async () => {

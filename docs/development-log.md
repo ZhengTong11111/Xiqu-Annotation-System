@@ -8460,3 +8460,21 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   `AGENTS.md` 更新。
 - **待推进**：生产 HTTP IP、未来 HTTPS 域名、Safari、慢网、断网/休眠、30 分钟长播和真实 VOD 凭据到期续签；
   本轮不自动部署服务器。
+
+### 播放中 Timeline 跳转回归与补修
+
+- 用户复验发现：选择外接 VOD 音轨并保持播放时，点击 Timeline 新位置会短暂响应后继续停留在旧位置。沿
+  `Timeline.onSeek -> App.seekTo -> LatestMediaPlaybackCommand -> SynchronizedMediaPlaybackRuntime.seek` 复核后，
+  确认目标 seek 本身已发出，覆盖来自新增内部冻结的错误 UI 语义。
+- JobId MP3 随机 seek 会为目标预热而临时暂停主视频。对应 master pause 回调虽然没有改写 runtime 的
+  `desiredPlayback`，却向 `VideoPlayer` 返回了 `false`；React 因而误认为用户已暂停，启用仅限暂停态的
+  currentTime 同步 effect，并可能用暂停事件携带的旧时间追加第二次 seek，覆盖用户刚选择的新目标。
+- 修复后，只有匹配当前 command generation 且用户意图仍为 playing 的内部 pause 会继续向 React 回报逻辑
+  `playing=true`；媒体仍真实冻结，目标预热与并发恢复不变。真正的用户 pause 会先递增命令代次并清除内部标记，
+  因此不会被伪装成播放中。
+- 回归测试直接记录内部冻结与恢复两次主播放状态回调，均必须返回 `true`，同时继续断言主视频 seek 到新目标、
+  外轨两次目标对齐、主从恢复播放和最终 `playing_synced`。播放专项 89/89、音轨 shared 7/7 + frontend 27/27
+  通过；完整 build 通过。
+- 平台直接上传音频已使用原生 Range、1ms 起播对齐、10ms 目标、±4% 外轨倍率伺服、受控 seek waiting 抑制和
+  真实缓冲恢复。它没有进入本轮 JobId MP3 专用静音预热/并发屏障，因为此前真实上传 MP3 联合播放未出现同类
+  冷启动证据；不为未复现的问题增加一次额外静音 play/seek。
