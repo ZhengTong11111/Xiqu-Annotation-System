@@ -8,3 +8,6 @@
 
 完整安装、数据库、目录权限、TLS、迁移、备份、升级和回滚步骤统一维护在
 [`docs/server-deployment.md`](../../docs/server-deployment.md)。不要在本目录复制第二套操作说明。
+
+不可变候选在切换前必须同时运行 `release:inspect` 和 `release:check`；前者检查发布目录完整性、本地状态隔离与
+workspace 链接归属，后者检查 Prisma Client/schema 一致性。两者均不能替代正式 migration 和备份/恢复演练。

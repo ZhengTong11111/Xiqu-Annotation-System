@@ -9024,3 +9024,50 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：P4d 可靠性聚合、指标、告警、管理员诊断、故障手册、P4 聚合回归、浏览器验收与规范更新。
 - **待推进**：P5 先在隔离环境演练 migration/历史回填与负载，再准备维护、备份、不可变 release、回滚和多账号人工
   验收。未经用户明确授权仍不得部署生产、修改生产数据库/对象或清理服务器草稿。
+
+## 2026-08-30：不可变候选 Release 与隔离迁移门禁（P5a）
+
+### 从人工清单到只读候选检查
+
+- 本轮先按 P5 实际风险拆出 P5a-P5d，并完全重写被 Git 忽略的 `CLAUDE_WORK.md`。P5a 只验证候选 release 和隔离
+  migration，不连接生产、不切维护、不上传 release，也不读取或复制生产数据库、对象、草稿和凭据。
+- 新增 `releaseCandidateInspector.ts` 与编译后 CLI `release:inspect`。命令必须接收显式绝对 `--release-dir`，以根目录
+  allowlist 检查 Web/API/worker/备份/Prisma 检查器等运行产物、正式 migrations、25 个根 production dependencies、
+  Prisma generated schema 和两个 workspace 入口。符号链接或物化 workspace 的真实路径必须留在同一不可变候选内，
+  不能悄悄指回源码工作树、上一 release 或用户目录。
+- 检查器拒绝 `.env*`、`data`、备份/草稿目录、`CLAUDE_WORK.md` 和常见私钥扩展，只报告稳定类别与相对路径，不读取
+  或输出文件内容。首次夹具运行发现合法编译模块 `dist/api/backup` 被目录名误判；修复采用这一精确路径的最小豁免，
+  没有放宽其他 `backup/backups` 数据目录。
+- 检查器只负责候选目录结构和状态隔离。Prisma Client/schema 仍由既有 `release:check` 判定，数据库历史仍由正式
+  `migrate deploy/status` 判定，数据与对象一致性仍由既有 backup/verify/restore drill 负责，服务入口仍由只读 smoke
+  负责；没有复制第二套 schema、迁移、备份、恢复或部署状态机。
+
+### 真实候选演练修复的部署缺口
+
+- 审查现有手册时确认一个真实缺口：不可变 release 只复制 `package.json`，却没有复制 `deploy:check` 实际调用的
+  `scripts/checkDeployment.mjs` 和 `scripts/deploymentCheck.mjs`。候选清单现只补这两个运行时脚本，不复制整套测试脚本；
+  部署专项测试固定该合同。
+- 使用当前完整构建在 `/tmp` 组装真实候选目录，包含 `package.json`、lockfile、Prisma、workspace packages、`dist`、
+  `node_modules` 和上述两个 smoke 脚本。候选内部 `release:inspect` 报告 26 个运行路径、25 个生产依赖和 31 条
+  migration，随后 `release:check` 确认 Prisma Client/schema 一致；演练目录已定点删除，仓库没有留下压缩包或缓存。
+- 隔离 PostgreSQL `api_test` schema 通过正式 `prisma migrate deploy` 路径检查 31 条 migration，无 pending，再由
+  `prisma migrate status` 确认 schema 最新。没有使用 `db push`，也没有把本机 public/生产历史当作本轮证据。
+- README、单服务器部署手册、模板 README、AGENTS、专项路线图和总路线图已统一：候选切换前依次运行
+  `release:inspect` 与 `release:check`；二者不替代 migration、备份恢复和 smoke。后续新增正式 release 根项目或运行入口
+  时，必须同步修改候选清单、复制步骤和专项测试。
+
+### 验证、自审与状态
+
+- `NODE_OPTIONS=--throw-deprecation npm run test:api`：246/246；没有 `pg client.query()` 重入警告。
+  `npm run test:backup`：28/28；`npm run test:deployment`：23/23，其中候选检查器 7/7、部署静态合同 13/13。
+- 完整 `npm run build` 与 `git diff --check` 通过；构建只保留既有 Vite 主 chunk 超过 500 kB 的提示。真实候选和
+  `api_test` migration 演练均通过，没有新增 dependency、数据库 migration、ProjectData、协作命令、前端 UI、VOD/
+  媒体算法或生产配置。
+- 自审确认 CLI 不接受隐式工作目录，扫描不跟随任意符号链接递归，必需运行文件、migration、workspace 和 runtime
+  dependency 的真实路径均不能逃出候选；错误不含
+  环境值或文件正文。`node_modules` 不做无界深度扫描，秘密/本地状态门禁聚焦候选根和项目自有运行目录，第三方依赖完整性
+  由 npm 安装与必需 package 入口共同保证。
+- **已完成**：P5a 候选 release 只读门禁、部署复制缺口修复、真实候选演练、隔离 migration、完整回归与文档规范。
+- **待推进**：P5b 在隔离环境完成快速滚动/重复请求与取消、worker kill/restart、任务中心多账号和协作核心浏览器验收。
+  任何真实 VOD 验收只使用 `http://localhost:5173/`，因为当前阿里云 Web License 绑定 localhost；继续不部署生产，P5d
+  仍必须等待用户明确授权。

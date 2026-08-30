@@ -1293,7 +1293,9 @@ Fastify/Prisma/PostgreSQL，并由一组可部署 migration 维护。当前已�
 Prometheus 指标、管理员诊断面板、跨实例维护写入静默边界，以及带 manifest/checksum 的 PostgreSQL
 与本地对象目录一致备份和隔离恢复演练。S3-compatible 运行适配器、manifest-last 远端备份、隔离恢复
 和保留清理已经完成，并已提供同源 Nginx/TLS、systemd、生产环境边界、首管理员 bootstrap 与部署 smoke
-check 模板。真实生产桶/IAM、TLS 续期、主机防火墙、容量和长期灾难恢复仍需在目标环境验收。维护状态
+check 模板。不可变候选切换前必须先运行 `release:inspect -- --release-dir <绝对路径>` 检查运行文件、本地状态
+隔离和 workspace 链接，再运行 `release:check` 校验 Prisma Client/schema；两者不能替代正式 migration、备份恢复
+或服务 smoke。真实生产桶/IAM、TLS 续期、主机防火墙、容量和长期灾难恢复仍需在目标环境验收。维护状态
 持久化在 PostgreSQL，API 重启不会自动解除；管理员应在维护
 任务完成后从诊断面板或本机 CLI 明确恢复写入。
 

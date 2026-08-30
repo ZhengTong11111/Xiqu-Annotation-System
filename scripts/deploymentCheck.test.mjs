@@ -108,8 +108,23 @@ test("生产构建与候选 release 都校验 Prisma Client schema", async () =>
     packageJson.scripts?.["release:check"],
     "node dist/api/prismaClientSchemaGuardCli.js",
   );
+  assert.equal(
+    packageJson.scripts?.["release:inspect"],
+    "node dist/api/releaseCandidateInspectorCli.js",
+  );
+  assert.match(deploymentGuide, /npm run release:inspect -- --release-dir/u);
   assert.match(deploymentGuide, /npm run release:check/u);
   assert.match(deploymentGuide, /不能只因 `package-lock\.json` 未变化/u);
+});
+
+// 切换后 smoke 在不可变 release 内运行，候选复制清单必须包含它真正调用的两个运行时脚本。
+test("候选 release 包含部署 smoke 的运行时脚本", async () => {
+  const deploymentGuide = await readFile(
+    new URL("../docs/server-deployment.md", import.meta.url),
+    "utf8",
+  );
+  assert.match(deploymentGuide, /scripts\/checkDeployment\.mjs scripts\/deploymentCheck\.mjs/u);
+  assert.doesNotMatch(deploymentGuide, /sudo cp -a scripts\s/u);
 });
 
 // 对象恢复通过同级 staging 原子发布，手册必须先提供服务账号可写的专用父目录。

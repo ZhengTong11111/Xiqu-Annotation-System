@@ -1194,7 +1194,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     links under `node_modules/@xiqu` resolve back into `packages/`. Verify these paths before starting systemd services
   - Prisma schema changes are independent of `package-lock.json`: never reuse an earlier release's generated
     `node_modules/.prisma` or `node_modules/@prisma/client` merely because the lock hash is unchanged. Every candidate
-    must run `db:generate` during its build and `release:check` before cutover. API, worker, and operational CLI startup
+    must run `db:generate` during its build and both `release:inspect -- --release-dir <absolute-path>` and
+    `release:check` before cutover. API, worker, and operational CLI startup
     also fail closed through `prismaClientSchemaGuard`; repair a mismatched candidate by building a new immutable release,
     never by mutating the active release. This same contract applies when rebuilding from Git on a replacement server
   - Nginx smoke checks must use the configured public origin or an explicit matching `Host` header. A loopback request with
@@ -1206,6 +1207,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `scripts/deploymentCheck.mjs` + `scripts/checkDeployment.mjs`
   - 无凭据、只读的部署 smoke check；统一验证 Web 入口、API liveness 与依赖 readiness
   - 不能把登录写入、迁移或破坏性恢复塞进 smoke check；这些步骤属于部署清单和人工验收
+- `apps/api/src/releaseCandidateInspector.ts` + `apps/api/src/releaseCandidateInspectorCli.ts`
+  - 切换前只读检查一个显式绝对候选目录：运行产物、正式 migrations、production dependencies、候选内部
+    workspace 入口和本地状态隔离；错误只报告稳定路径/类别，禁止读取或输出秘密内容
+  - 候选根清单 fail closed；新增正式运行入口时必须同步更新检查器、部署复制清单与专项测试。合法的编译后
+    `dist/api/backup` 程序目录不等于备份数据，只有这个精确路径可豁免状态目录名门禁
+  - `release:inspect` 不连接数据库、不比较 Prisma schema、不执行 smoke，也不替代 `release:check`、正式
+    `migrate deploy`、一致备份/恢复演练或服务人工验收；不得把它扩展成第二套打包器或部署器
 - `apps/api/src/prismaClientSchemaGuard.ts` + `apps/api/src/prismaClientSchemaGuardCli.ts`
   - compare the release source schema with Prisma's generated schema while ignoring formatting-only alignment; model,
     field, relation, enum, attribute, string, and meaningful comment changes remain detectable
