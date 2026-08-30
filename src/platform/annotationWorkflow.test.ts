@@ -5,7 +5,8 @@ import {
   annotationWorkflowStatusLabel,
   formatResponsibles,
   getAnnotationWorkflowCommandState,
-  resourceResponsibleLabel,
+  resourceResponsibleOrCreatorColumnLabel,
+  resourceResponsibleOrCreatorLabel,
 } from "./annotationWorkflow";
 
 test("前端状态命令资格复用共享相邻转换与 capability", () => {
@@ -28,7 +29,7 @@ test("前端状态命令资格复用共享相邻转换与 capability", () => {
   assert.equal(annotationWorkflowStatusLabel("reviewed"), "已审核");
 });
 
-test("项目负责人显示标注组，其他资源继续显示所有者", () => {
+test("项目负责人显示标注组，其他资源显示创建人", () => {
   const users = [
     { id: "1", accountName: "a", displayName: "甲" },
     { id: "2", accountName: "b", displayName: "乙" },
@@ -42,6 +43,12 @@ test("项目负责人显示标注组，其他资源继续显示所有者", () =>
     owner: { id: "owner", accountName: "owner", displayName: "所有者" },
   } as ResourceEntry;
   const file = { ...project, type: "annotation_file" } as ResourceEntry;
-  assert.equal(resourceResponsibleLabel(project), "甲、乙");
-  assert.equal(resourceResponsibleLabel(file), "所有者");
+  assert.equal(resourceResponsibleOrCreatorLabel(project), "甲、乙");
+  assert.equal(resourceResponsibleOrCreatorLabel(file), "所有者");
+  assert.equal(resourceResponsibleOrCreatorColumnLabel([project]), "负责人");
+  assert.equal(resourceResponsibleOrCreatorColumnLabel([file]), "创建人");
+  assert.equal(
+    resourceResponsibleOrCreatorColumnLabel([project, file]),
+    "负责人 / 创建人",
+  );
 });

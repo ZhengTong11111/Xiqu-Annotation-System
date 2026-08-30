@@ -371,8 +371,9 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
   文件均完成。项目的标注组、审核组保存为可审计的账号成员关系；一个账号可同时属于两组。成员关系本身是
   独立有效权限来源：标注组贡献项目编辑预设，审核组贡献 `read + review + download`，但不创建或改写手工
   `ResourcePermission`，也不授予 `manage_permissions`；移出组别只撤销该来源，其他 ACL/角色/所有权继续生效。
-  项目 Inspector 仅向真实 `manage_permissions` 能力开放组别编辑，资源列表“负责人”列优先显示标注组，
-  未设置时显示短横线；资源 owner 继续保留在 Inspector 和权限算法中，不能用负责人展示替换所有权。
+  项目 Inspector 仅向真实 `manage_permissions` 能力开放组别编辑。资源列表中的项目列名为“负责人”并显示
+  标注组，项目内部文件列名为“创建人”并显示资源 owner；搜索、最近和收藏等混合结果使用“负责人 / 创建人”表头。
+  未设置负责人时显示短横线；资源 owner 继续保留在 Inspector 和权限算法中，不能用负责人展示替换所有权。
 - R2.7 的 PostgreSQL migration、共享状态机、Fastify API、PlatformClient、list/grid/column 资源视图、右键
   状态菜单、编辑器“文件”菜单、共享确认弹窗和职责组 Inspector 已形成闭环。职责组候选搜索使用项目上下文
   `manage_permissions` 门禁并按姓名/账号过滤，不再依赖全局账号目录角色或无条件混入所有既有成员。文件状态写入记录操作者/时间和审计但不推进正文 revision；

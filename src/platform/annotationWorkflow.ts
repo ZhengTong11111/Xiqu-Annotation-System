@@ -43,10 +43,20 @@ export function resourceWorkflowStatus(
   return resource.workflowStatus ?? "unannotated";
 }
 
-/** 项目负责人来自标注组；其他资源仍显示真实 owner，二者不能在 UI 中混成同一语义。 */
-export function resourceResponsibleLabel(resource: ResourceEntry): string {
+/** 项目显示人工维护的标注负责人；其他资源的 owner 在资源浏览器中表达为创建人。 */
+export function resourceResponsibleOrCreatorLabel(resource: ResourceEntry): string {
   if (resource.type !== "project") return resource.owner.displayName;
   return formatResponsibles(resource.annotationResponsibles ?? []);
+}
+
+/** 搜索、最近和收藏可能混合项目与文件，表头必须同时说明两种账号字段的语义。 */
+export function resourceResponsibleOrCreatorColumnLabel(
+  resources: ReadonlyArray<Pick<ResourceEntry, "type">>,
+): "负责人" | "创建人" | "负责人 / 创建人" {
+  const hasProject = resources.some(({ type }) => type === "project");
+  const hasOtherResource = resources.some(({ type }) => type !== "project");
+  if (hasProject && hasOtherResource) return "负责人 / 创建人";
+  return hasProject ? "负责人" : "创建人";
 }
 
 export function formatResponsibles(users: UserReference[]): string {

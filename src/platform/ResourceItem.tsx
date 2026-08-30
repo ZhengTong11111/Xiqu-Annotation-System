@@ -27,7 +27,7 @@ import {
   ANNOTATION_WORKFLOW_STATUS_OPTIONS,
   annotationWorkflowStatusLabel,
   getAnnotationWorkflowCommandState,
-  resourceResponsibleLabel,
+  resourceResponsibleOrCreatorLabel,
   resourceWorkflowStatus,
 } from "./annotationWorkflow";
 
@@ -122,7 +122,7 @@ export function ResourceItem(props: {
           <>
             <ResourceIcon resource={props.resource} size={34} />
             <strong>{props.resource.name}</strong>
-            <span>{resourceResponsibleLabel(props.resource)}</span>
+            <span>{resourceResponsibleOrCreatorLabel(props.resource)}</span>
             <ResourceWorkflowStatusBadge resource={props.resource} compact />
           </>
         ) : props.displayMode === "column" ? (
@@ -139,7 +139,7 @@ export function ResourceItem(props: {
             </span>
             <span>{resourceTypeLabel(props.resource)}</span>
             <span>{formatResourceDate(props.resource.updatedAt)}</span>
-            <span>{resourceResponsibleLabel(props.resource)}</span>
+            <span>{resourceResponsibleOrCreatorLabel(props.resource)}</span>
             <span><ResourceWorkflowStatusBadge resource={props.resource} /></span>
             <span>{formatResourceSize(props.resource.size)}</span>
           </>

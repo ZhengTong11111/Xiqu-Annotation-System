@@ -94,7 +94,7 @@ import { ResourcePermissionEditor } from "./ResourcePermissionEditor";
 import { ProjectPermissionManagementDialog } from "./ProjectPermissionManagementDialog";
 import {
   getAnnotationWorkflowCommandState,
-  resourceResponsibleLabel,
+  resourceResponsibleOrCreatorLabel,
 } from "./annotationWorkflow";
 import { ProjectWorkflowGroupEditor } from "./ProjectWorkflowGroupEditor";
 import {
@@ -1471,11 +1471,12 @@ function ResourceInspector(props: {
       <h2>{props.resource.name}</h2>
       <dl>
         <dt>类型</dt><dd>{resourceTypeLabel(props.resource)}</dd>
-        <dt>所有者</dt><dd>{props.resource.owner.displayName}</dd>
+        <dt>{props.resource.type === "project" ? "所有者" : "创建人"}</dt>
+        <dd>{props.resource.owner.displayName}</dd>
         {props.resource.type === "project" ? (
           <>
             <dt>负责人</dt>
-            <dd>{resourceResponsibleLabel(props.resource)}</dd>
+            <dd>{resourceResponsibleOrCreatorLabel(props.resource)}</dd>
           </>
         ) : null}
         {props.resource.type === "project" || props.resource.type === "annotation_file" ? (

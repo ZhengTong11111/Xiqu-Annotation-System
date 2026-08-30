@@ -7,6 +7,7 @@ import {
 import type { MouseEvent } from "react";
 import type { ResourceEntry } from "@xiqu/shared";
 import type { AnnotationWorkflowStatus } from "@xiqu/shared";
+import { resourceResponsibleOrCreatorColumnLabel } from "./annotationWorkflow";
 import { ResourceItem } from "./ResourceItem";
 
 export type ResourceCollectionMode = "list" | "grid";
@@ -90,7 +91,7 @@ function VirtualResourceList(props: ResourceVirtualCollectionProps) {
         <SortButton label="名称" field="name" {...props} />
         <span>类型</span>
         <SortButton label="修改时间" field="updatedAt" {...props} />
-        <span>负责人</span>
+        <span>{resourceResponsibleOrCreatorColumnLabel(props.items)}</span>
         <span>状态</span>
         <SortButton label="大小" field="size" {...props} />
       </div>
