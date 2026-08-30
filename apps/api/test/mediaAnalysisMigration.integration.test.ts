@@ -96,6 +96,7 @@ test("媒体分析归并 dry-run/execute 可重验、幂等且不删除历史事
         status: "queued",
         createdBy: admin.id,
         analysisRunId: staleOne.id,
+        deduplicationKey: `test:migration:${staleOne.id}`,
       },
     });
     await assert.rejects(() => service.execute({

@@ -103,6 +103,10 @@ Main currently contains all major recent feature lines that matter for context:
 - platform waveform, spectrogram, and F0 now use media-scoped canonical analysis runs plus object-storage tiles produced by
   an independent PostgreSQL-claim worker; multiple annotation files reuse the same content/config run, uploaded inputs stream
   through FFmpeg stdin, and VOD analysis uses a temporary pure-audio URL that must never enter persistence or logs
+- background processing separates one shared `ProcessingJob` execution from per-account/context `ProcessingJobRequest` demand
+  and per-tab `ProcessingJobRequestKey` idempotency aliases. The server owns the versioned deduplication identity, PostgreSQL
+  allows at most one queued/running execution per key, and public query DTOs never expose keys, claims, raw results, storage
+  identities, provider errors, credentials, or temporary media URLs
 - analysis audio defaults to the bound uploaded/VOD media but can always be overridden with a readable server audio/VOD
   resource and restored to auto; these settings and assets are platform state, never ProjectData or undo/history state
 - the compact audio-track selector is a high-frequency listening surface; persistent relation CRUD belongs in the separate
@@ -166,12 +170,26 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     status DTOs, tile descriptors, and protected asset reads
   - canonical runs are media-scoped by source media, offset-independent media fingerprint, algorithm, and config. Annotation
     file ids and track offset are only request/ACL/display context and must never re-enter run persistence or identity
-  - every analysis request carries only `annotationFileId + audioTrackId`; the service must reread the enabled track,
+  - every analysis request carries only `annotationFileId + audioTrackId + clientRequestId`; the client id is an idempotency
+    alias, never an execution identity. The service must reread the enabled track,
     primary media, concrete source media, offset, and current `read + download` permissions. A missing, disabled, foreign, archived,
     trashed, or revoked track context must fail closed; no optional-id or legacy analysis-audio-setting fallback remains
+  - analysis creation locks the account request id before the canonical execution key. Exact request replay returns the original
+    run, same-account duplicate tabs share one business request, and different accounts share only the execution. A succeeded
+    run without a succeeded job is an inconsistent state and must fail closed instead of returning an untraceable success
   - asset reads revalidate the annotation and its currently resolved source, then require every bounded asset id to belong to
     the same canonical succeeded media run; missing/cross-run/cross-media ids fail as one batch without leaking existence
   - the algorithm config hash must include every parameter that changes persisted tile timing or values
+- `apps/api/src/processingJobIdentity.ts`
+  - the only media-analysis processing-job deduplication and request-fingerprint boundary. Execution identity contains stable
+    media/rendition/algorithm/config facts; annotation id, track offset, display metadata, temporary URL and credentials are excluded
+  - `clientRequestId` is a strict UUID generated once per logical browser action with `createRuntimeUuid()`; the same ambiguous
+    HTTP retry must reuse it, and reusing it for changed request facts is a stable 409 conflict
+- `apps/api/src/processingJobQuery.ts` + `apps/api/src/processingJobQueryService.ts`
+  - the bounded request-centric query boundary for `mine | related | all`, summary and detail. `all` is admin-only; related
+    visibility is recalculated from current resource ACL and hidden contexts must not be enumerable
+  - cursors bind scope/status/type and use `(requestedAt, id)` keyset order. Related scans and detail lists are capped; a capped
+    summary reports `isPartial` rather than pretending to be exact. Resource permissions must be batch-resolved, not queried N+1
 - `apps/api/src/mediaAnalysisMigrationPlan.ts` + `apps/api/src/mediaAnalysisMigrationService.ts`
   - offline RA2 migration boundary for grouping annotation-scoped historical runs by media identity, validating manifest/assets/
     immutable object checksums, and recording reversible canonical/superseded relationships

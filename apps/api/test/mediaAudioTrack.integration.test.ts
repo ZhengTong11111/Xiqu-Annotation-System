@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -369,14 +370,14 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
     const originalAnalysis = await jsonRequest(app, adminToken, {
       method: "POST",
       url: `/api/annotation-files/${annotationFileId}/media-analysis`,
-      payload: { audioTrackId: original.id },
+      payload: { audioTrackId: original.id, clientRequestId: randomUUID() },
     });
     assert.equal(originalAnalysis.statusCode, 200, originalAnalysis.body);
     assert.equal(dataOf(originalAnalysis.json()).sourceVodRenditionJobId, null);
     const renditionAnalysis = await jsonRequest(app, adminToken, {
       method: "POST",
       url: `/api/annotation-files/${annotationFileId}/media-analysis`,
-      payload: { audioTrackId: renditionTrack.id },
+      payload: { audioTrackId: renditionTrack.id, clientRequestId: randomUUID() },
     });
     assert.equal(renditionAnalysis.statusCode, 200, renditionAnalysis.body);
     assert.equal(
@@ -388,7 +389,7 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
     const repeatedRenditionAnalysis = await jsonRequest(app, adminToken, {
       method: "POST",
       url: `/api/annotation-files/${annotationFileId}/media-analysis`,
-      payload: { audioTrackId: renditionTrack.id },
+      payload: { audioTrackId: renditionTrack.id, clientRequestId: randomUUID() },
     });
     assert.equal(repeatedRenditionAnalysis.statusCode, 200, repeatedRenditionAnalysis.body);
     assert.equal(
@@ -417,7 +418,7 @@ test("媒体音轨 API 管理关系、默认偏好、权限和媒体生命周期
     const uploadedAnalysis = await jsonRequest(app, adminToken, {
       method: "POST",
       url: `/api/annotation-files/${annotationFileId}/media-analysis`,
-      payload: { audioTrackId: uploadedTrack.id },
+      payload: { audioTrackId: uploadedTrack.id, clientRequestId: randomUUID() },
     });
     assert.equal(uploadedAnalysis.statusCode, 200, uploadedAnalysis.body);
     const uploadedRunId = String(dataOf(uploadedAnalysis.json()).id);

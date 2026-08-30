@@ -8709,3 +8709,48 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   构建回归、roadmap 与 `AGENTS.md` 更新。
 - **待推进**：本提交尚未部署生产并完成真实 HTTP IP 快速滚动验收；后台任务中心的 request/job 分离、跨实例去重、
   用户取消和管理员治理属于下一阶段 P1-P3，不能把 P0 的短时 HTTP 中止误当成后台 job 取消。
+
+## 2026-08-30：后台任务请求/执行分离、幂等与查询 API（P1）
+
+### 设计与数据库迁移
+
+- 在 P0 消除维护许可泄漏后，本轮继续按 `docs/processing-job-reliability-roadmap.md` 推进 P1。`ProcessingJob` 只表示
+  一次系统共享执行，并新增服务端生成的 `deduplicationKey`；账号在标注文件上下文中的需求独立保存为
+  `ProcessingJobRequest`。实际实现进一步把每个标签页的 `clientRequestId` 抽成 `ProcessingJobRequestKey`：同账号对
+  同一共享任务只产生一条业务需求，但多个标签页和模糊响应重试仍各有不可变幂等映射，避免把“需求”和“重试别名”
+  混成一行后无法同时去重。
+- 正式 migration `20260830010000_processing_job_requests` 先回填媒体级分析身份，再启用 NOT NULL 和活动任务 partial
+  unique index。媒体分析执行键由来源媒体、内容 fingerprint、稳定 VOD rendition JobId、算法版本和配置 hash 组成；
+  不能证明身份的历史任务保留独立 legacy key。迁移检测到同 key 多个 queued/running job 时 fail closed，不删除记录或
+  猜测 winner；历史 job 只根据已有 creator/resource 回填 request，不伪造不存在的客户端幂等编号。
+- 资源外键删除时把 request 上下文置空，从而保留任务历史且不阻挡未来永久删除；用户账号沿用平台“停用而非删除”
+  规则。执行键、请求指纹、审计和公开 DTO 均不保存 VOD 临时 URL、PlayAuth、AccessKey、token、对象地址或完整配置。
+
+### 创建、权限与查询合同
+
+- 媒体分析创建请求新增必填 UUID `clientRequestId`。事务固定按“账号请求编号 -> canonical 执行键”取得 advisory lock；
+  精确重放返回原 run，同账号多标签共享一条需求，多账号共享同一 queued/running job 并各自保留需求。数据库 partial
+  unique index继续作为跨实例最终门禁，不同媒体、rendition、算法或配置不会错误复用。
+- 成功 run 正常必须对应成功 job；自审发现原实现若遇到两者终态分裂，会返回结果却无法保存幂等映射。现已改为
+  `processing_job_completion_missing` 稳定冲突并保留现场，正常完成任务仍可增加新的幂等别名而不重复执行。
+- 新增 request-centric 的 mine/related/all 列表、summary 和 detail API。mine 保留本人历史需求但撤权后隐藏资源摘要；
+  related 只显示当前仍有 read 的上下文；all 仅 admin/super_admin。游标绑定 scope/status/type，列表、扫描和详情均有
+  明确上限；related 摘要达到 5000 条扫描上限时返回 `isPartial=true`，不把截断数字伪装成精确统计。
+- 为避免任务列表产生 ACL N+1，`ResourceAccessService.getEffectivePermissions()` 用一次递归祖先链查询和一次资源/授权
+  查询批量计算 owner、角色基线、直接授权、继承授权、断继承与过期规则；原单资源入口委托同一算法。完整 API 的
+  既有 ACL 继承、移动后重算和权限输入测试全部通过，没有保留第二套权限逻辑。
+- 前端当前只在用户主动启动分析时用 `createRuntimeUuid()` 生成幂等编号；查询 client 已就绪供 P3 任务中心使用。
+  P1 没有加入取消、重试、worker cancellation 或任务中心 UI，也没有引入新依赖。
+
+### 验证、自审与后续
+
+- 新增 `npm run test:processing-jobs`：4/4，覆盖执行键、UUID/请求指纹、精确重放、多标签、多账号共享、数据库活动
+  唯一约束、撤权隐藏、分页、scope 权限、终态不一致 fail closed 与正常成功复用。
+- `npm run test:media-analysis`：shared batch 3/3 + 专项 38/38；`npm run test:api`：206/206；
+  `npm run test:deployment`：28/28；完整 `npm run build` 与 `git diff --check` 通过。构建只保留既有 Vite 主 chunk
+  超过 500 kB 提示；API 测试仍显示既有 pg 并发 query 弃用提醒，本轮未新增对应并行调用。
+- 自审确认没有改变 ProjectData、协作命令、媒体瓦片、worker claim/heartbeat、播放、对象存储或生产环境；复杂新逻辑
+  已加中文原因注释，未保留重复权限路径和临时调试代码。
+- **已完成**：P1 数据模型、正式 migration、幂等创建、共享执行、任务查询合同、权限批量解析、专项/完整回归与文档。
+- **待推进**：P2 增加“取消个人需求/管理员强制取消”、稳定重试历史和 worker 协作终止；P3 再建设图形化任务中心。
+  P0/P1 当前均未部署生产，继续遵守用户要求，不连接或修改生产数据库、对象和草稿。

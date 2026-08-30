@@ -177,6 +177,8 @@ model User {
   createdRangeComments             AnnotationRangeComment[]           @relation("AnnotationRangeCommentCreator")
   withdrawnRangeComments           AnnotationRangeComment[]           @relation("AnnotationRangeCommentWithdrawer")
   jobs                             ProcessingJob[]                   @relation("JobCreator")
+  processingJobRequests            ProcessingJobRequest[]            @relation("ProcessingJobRequester")
+  processingJobRequestKeys        ProcessingJobRequestKey[]          @relation("ProcessingJobRequestKeyOwner")
   createdMediaAudioTracks          MediaAudioTrack[]                  @relation("MediaAudioTrackCreator")
   updatedAnnotationAudioPreferences AnnotationAudioPreference[]       @relation("AnnotationAudioPreferenceUpdater")
   createdMediaAnalysisRuns         MediaAnalysisRun[]                @relation("MediaAnalysisRunCreator")
@@ -256,6 +258,7 @@ model ResourceEntry {
   permissions     ResourcePermission[]
   userStates      ResourceUserState[]
   processingJobs  ProcessingJob[]
+  processingJobRequests ProcessingJobRequest[]
   auditLogs       AuditLog[]
 
   @@index([parentId, type])
@@ -625,18 +628,59 @@ model ProcessingJob {
   heartbeatAt   DateTime?           @map("heartbeat_at")
   finishedAt    DateTime?           @map("finished_at")
   errorCode     String?             @map("error_code")
+  deduplicationKey String            @map("deduplication_key")
   createdAt     DateTime            @default(now()) @map("created_at")
   updatedAt     DateTime            @updatedAt @map("updated_at")
 
   resource    ResourceEntry?    @relation(fields: [resourceId], references: [id], onDelete: SetNull)
   creator     User              @relation("JobCreator", fields: [createdBy], references: [id])
   analysisRun MediaAnalysisRun? @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
+  requests    ProcessingJobRequest[]
 
   @@index([resourceId])
   @@index([status])
   @@index([analysisRunId])
+  @@index([deduplicationKey])
   @@index([status, createdAt])
   @@map("processing_jobs")
+}
+
+// 系统共享执行与账号需求必须分开保存；取消个人需求不能误伤其他账号仍在复用的计算。
+model ProcessingJobRequest {
+  id                String   @id @default(uuid())
+  jobId             String   @map("job_id")
+  requesterUserId   String   @map("requester_user_id")
+  contextResourceId String?  @map("context_resource_id")
+  requestedAt       DateTime @default(now()) @map("requested_at")
+
+  job             ProcessingJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  requester       User          @relation("ProcessingJobRequester", fields: [requesterUserId], references: [id], onDelete: Restrict)
+  // 历史任务不能阻止未来永久删除资源；资源消失后 request 仍保留，但不再公开资源详情。
+  contextResource ResourceEntry? @relation(fields: [contextResourceId], references: [id], onDelete: SetNull)
+  idempotencyKeys ProcessingJobRequestKey[]
+
+  @@unique([jobId, requesterUserId, contextResourceId])
+  @@index([jobId, requestedAt])
+  @@index([requesterUserId, requestedAt, id])
+  @@index([contextResourceId, requestedAt, id])
+  @@map("processing_job_requests")
+}
+
+// 一个账号的多标签页可以复用同一需求，但每个客户端请求编号仍必须永久绑定到不可变语义。
+model ProcessingJobRequestKey {
+  id                 String   @id @default(uuid())
+  requestId          String   @map("request_id")
+  requesterUserId    String   @map("requester_user_id")
+  clientRequestId    String   @map("client_request_id")
+  requestFingerprint String   @map("request_fingerprint")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  request   ProcessingJobRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requester User                 @relation("ProcessingJobRequestKeyOwner", fields: [requesterUserId], references: [id], onDelete: Restrict)
+
+  @@unique([requesterUserId, clientRequestId])
+  @@index([requestId, createdAt])
+  @@map("processing_job_request_keys")
 }
 
 model AuditLog {

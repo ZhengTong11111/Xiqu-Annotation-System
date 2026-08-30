@@ -8,6 +8,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PlatformClient } from "../api/platformClient";
 import type { SpectrogramAnalysisPreset, SpectrogramData, WaveformData } from "../types";
+import { createRuntimeUuid } from "../utils/runtimeUuid";
 import {
   abortPlatformAnalysisBatches,
   buildAdjacentPlatformAnalysisWindows,
@@ -364,9 +365,11 @@ export function usePlatformMediaAnalysis(options: Options) {
     const audioTrackId = options.audioTrackId;
     setMutationPending(true);
     try {
+      // 一次用户动作只生成一个幂等编号；底层请求若发生模糊失败，重试必须复用这一份 request 对象。
+      const request = { force, audioTrackId, clientRequestId: createRuntimeUuid() };
       await options.client.createMediaAnalysis(
         annotationFileId,
-        { force, audioTrackId },
+        request,
       );
       if (generation !== generationRef.current) return false;
       const latest = requireMatchingAnalysisTrackStatus(

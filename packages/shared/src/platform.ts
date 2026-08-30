@@ -374,22 +374,26 @@ export type AnnotationRangeCommentPage = {
   nextCursor: string | null;
 };
 
-export type ProcessingJobType =
-  | "pitch_extraction"
-  | "spectrogram_generation"
-  | "staff_notation_render"
-  | "gongche_render"
-  | "pose_estimation"
-  | "video_transcode"
-  | "audio_extract"
-  | "annotation_export"
-  | "media_analysis";
+export const PROCESSING_JOB_TYPES = [
+  "pitch_extraction",
+  "spectrogram_generation",
+  "staff_notation_render",
+  "gongche_render",
+  "pose_estimation",
+  "video_transcode",
+  "audio_extract",
+  "annotation_export",
+  "media_analysis",
+] as const;
+export type ProcessingJobType = typeof PROCESSING_JOB_TYPES[number];
 
-export type ProcessingJobStatus =
-  | "queued"
-  | "running"
-  | "succeeded"
-  | "failed";
+export const PROCESSING_JOB_STATUSES = [
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+] as const;
+export type ProcessingJobStatus = typeof PROCESSING_JOB_STATUSES[number];
 
 export type ProcessingJob = {
   id: string;
@@ -403,6 +407,58 @@ export type ProcessingJob = {
   result?: unknown;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ProcessingJobScope = "mine" | "related" | "all";
+
+export type ProcessingJobContextResource = {
+  id: string;
+  name: string;
+  type: ResourceType;
+};
+
+export type ProcessingJobRequestListItem = {
+  requestId: string;
+  requestedAt: string;
+  requester: UserReference;
+  contextResource: ProcessingJobContextResource | null;
+  job: {
+    id: string;
+    type: ProcessingJobType;
+    status: ProcessingJobStatus;
+    progress: number;
+    errorCode: string | null;
+    createdAt: string;
+    updatedAt: string;
+    finishedAt: string | null;
+  };
+};
+
+export type ProcessingJobPage = {
+  items: ProcessingJobRequestListItem[];
+  nextCursor: string | null;
+};
+
+export type ProcessingJobSummary = {
+  scope: ProcessingJobScope;
+  visibleRequestCount: number;
+  byStatus: Record<ProcessingJobStatus, number>;
+  isPartial: boolean;
+};
+
+export type ProcessingJobDetail = {
+  job: ProcessingJobRequestListItem["job"];
+  visibleRequests: Array<Omit<ProcessingJobRequestListItem, "job">>;
+  visibleRequestCount: number;
+  requestsTruncated: boolean;
+};
+
+export type ListProcessingJobsOptions = {
+  scope?: ProcessingJobScope;
+  status?: ProcessingJobStatus;
+  type?: ProcessingJobType;
+  cursor?: string;
+  limit?: number;
 };
 
 // 审计动作列表同时供 API 运行时校验和管理界面筛选使用，避免前后端维护两份漂移枚举。

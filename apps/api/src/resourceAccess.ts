@@ -1,7 +1,7 @@
-import type {
+import {
   Prisma,
-  PrismaClient,
-  ResourceCapability as DbResourceCapability,
+  type PrismaClient,
+  type ResourceCapability as DbResourceCapability,
 } from "@prisma/client";
 import {
   getAutomaticResourceCapabilities,
@@ -48,92 +48,132 @@ export class ResourceAccessService {
     resourceId: string,
     database: PrismaClient | Prisma.TransactionClient = this.prisma,
   ): Promise<EffectiveResourcePermission> {
-    const resource = await database.resourceEntry.findUnique({
-      where: { id: resourceId },
+    const permission = (await this.getEffectivePermissions(user, [resourceId], database)).get(resourceId);
+    if (!permission) throw notFound("资源不存在。");
+    return permission;
+  }
+
+  /**
+   * 批量权限解析只执行一次祖先链查询和一次授权查询，供任务、搜索等有界列表复用。
+   * 单资源入口也委托这里，确保 owner、角色、断继承和过期规则只有一份实现。
+   */
+  async getEffectivePermissions(
+    user: ApiUser,
+    resourceIds: readonly string[],
+    database: PrismaClient | Prisma.TransactionClient = this.prisma,
+  ): Promise<Map<string, EffectiveResourcePermission>> {
+    const uniqueIds = [...new Set(resourceIds)];
+    if (!uniqueIds.length) return new Map();
+    const chains = await database.$queryRaw<Array<{
+      targetId: string;
+      resourceId: string;
+      depth: number;
+    }>>(Prisma.sql`
+      WITH RECURSIVE resource_chain AS (
+        SELECT
+          resource."id" AS "targetId",
+          resource."id" AS "resourceId",
+          resource."parent_id" AS "parentId",
+          resource."break_permission_inheritance" AS "stopsInheritance",
+          0 AS "depth",
+          ARRAY[resource."id"]::text[] AS "path"
+        FROM "resource_entries" AS resource
+        WHERE resource."id" IN (${Prisma.join(uniqueIds)})
+        UNION ALL
+        SELECT
+          chain."targetId",
+          parent."id" AS "resourceId",
+          parent."parent_id" AS "parentId",
+          parent."break_permission_inheritance" AS "stopsInheritance",
+          chain."depth" + 1,
+          chain."path" || parent."id"
+        FROM resource_chain AS chain
+        INNER JOIN "resource_entries" AS parent ON parent."id" = chain."parentId"
+        WHERE NOT chain."stopsInheritance"
+          AND NOT parent."id" = ANY(chain."path")
+          AND chain."depth" < 255
+      )
+      SELECT "targetId", "resourceId", "depth"
+      FROM resource_chain
+      ORDER BY "targetId" ASC, "depth" ASC
+    `);
+    const chainResourceIds = [...new Set(chains.map(({ resourceId }) => resourceId))];
+    const now = new Date();
+    const resources = await database.resourceEntry.findMany({
+      where: { id: { in: chainResourceIds } },
       select: {
         id: true,
         name: true,
         ownerUserId: true,
-        parentId: true,
-        breakPermissionInheritance: true,
+        permissions: {
+          where: {
+            userId: user.id,
+            OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+          },
+          select: { capabilities: true, inheritToChildren: true },
+        },
       },
     });
-    if (!resource) throw notFound("资源不存在。");
-    if (this.hasFullResourceAccess(user)) {
-      return this.fullPermission("admin", false);
-    }
-    if (resource.ownerUserId === user.id) {
-      return this.fullPermission("owner", true);
-    }
-
-    const now = new Date();
-    // 角色自动能力只是 ACL 的只读基线；直接授权与继承授权仍可在此基础上显式增加能力。
-    const roleCapabilities = getAutomaticResourceCapabilities(user.roles);
-    const capabilities = new Set<ResourceCapability>(roleCapabilities);
-    const inheritedFrom: EffectiveResourcePermission["inheritedFrom"] = [];
-    const direct = await database.resourcePermission.findUnique({
-      where: { resourceId_userId: { resourceId, userId: user.id } },
-    });
-    if (direct && (!direct.expiresAt || direct.expiresAt > now)) {
-      direct.capabilities.forEach((capability) =>
-        capabilities.add(capability as ResourceCapability));
+    const resourceById = new Map(resources.map((resource) => [resource.id, resource]));
+    const chainByTarget = new Map<string, typeof chains>();
+    for (const row of chains) {
+      const rows = chainByTarget.get(row.targetId) ?? [];
+      rows.push(row);
+      chainByTarget.set(row.targetId, rows);
     }
 
-    // 当前节点选择“断开继承”时，只保留当前节点的直接授权。
-    if (!resource.breakPermissionInheritance) {
-      let parentId = resource.parentId;
-      while (parentId) {
-        const parent = await database.resourceEntry.findUnique({
-          where: { id: parentId },
-          select: {
-            id: true,
-            name: true,
-            parentId: true,
-            ownerUserId: true,
-            breakPermissionInheritance: true,
-            permissions: {
-              where: {
-                userId: user.id,
-                inheritToChildren: true,
-                OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-              },
-            },
-          },
-        });
-        if (!parent) break;
-        const inheritedCapabilities = parent.ownerUserId === user.id
-          ? ALL_CAPABILITIES
-          : parent.permissions.flatMap((permission) =>
-              permission.capabilities as ResourceCapability[]);
-        if (inheritedCapabilities.length) {
-          inheritedCapabilities.forEach((capability) =>
-            capabilities.add(capability));
-          inheritedFrom.push({
-            resourceId: parent.id,
-            resourceName: parent.name,
-            capabilities: [...new Set(inheritedCapabilities)],
-          });
-        }
-        if (parent.breakPermissionInheritance) break;
-        parentId = parent.parentId;
+    const result = new Map<string, EffectiveResourcePermission>();
+    for (const targetId of uniqueIds) {
+      const targetChain = chainByTarget.get(targetId);
+      const target = resourceById.get(targetId);
+      if (!targetChain || !target) continue;
+      if (this.hasFullResourceAccess(user)) {
+        result.set(targetId, this.fullPermission("admin", false));
+        continue;
       }
-    }
+      if (target.ownerUserId === user.id) {
+        result.set(targetId, this.fullPermission("owner", true));
+        continue;
+      }
 
-    const values = ALL_CAPABILITIES.filter((capability) =>
-      capabilities.has(capability));
-    return {
-      source: direct
-        ? "direct"
-        : inheritedFrom.length
-          ? "inherited"
-          : roleCapabilities.length
-            ? "role"
-            : "none",
-      capabilities: values,
-      inheritedFrom,
-      isOwner: false,
-      canManagePermissions: values.includes("manage_permissions"),
-    };
+      const roleCapabilities = getAutomaticResourceCapabilities(user.roles);
+      const capabilities = new Set<ResourceCapability>(roleCapabilities);
+      const direct = target.permissions[0] ?? null;
+      direct?.capabilities.forEach((capability) => capabilities.add(capability as ResourceCapability));
+      const inheritedFrom: EffectiveResourcePermission["inheritedFrom"] = [];
+      for (const { resourceId, depth } of targetChain) {
+        if (depth === 0) continue;
+        const ancestor = resourceById.get(resourceId);
+        if (!ancestor) continue;
+        const inheritedCapabilities = ancestor.ownerUserId === user.id
+          ? ALL_CAPABILITIES
+          : ancestor.permissions
+              .filter(({ inheritToChildren }) => inheritToChildren)
+              .flatMap(({ capabilities: values }) => values as ResourceCapability[]);
+        if (!inheritedCapabilities.length) continue;
+        inheritedCapabilities.forEach((capability) => capabilities.add(capability));
+        inheritedFrom.push({
+          resourceId: ancestor.id,
+          resourceName: ancestor.name,
+          capabilities: [...new Set(inheritedCapabilities)],
+        });
+      }
+      const values = ALL_CAPABILITIES.filter((capability) => capabilities.has(capability));
+      result.set(targetId, {
+        source: direct
+          ? "direct"
+          : inheritedFrom.length
+            ? "inherited"
+            : roleCapabilities.length
+              ? "role"
+              : "none",
+        capabilities: values,
+        inheritedFrom,
+        isOwner: false,
+        canManagePermissions: values.includes("manage_permissions"),
+      });
+    }
+    return result;
   }
 
   async assertCapability(

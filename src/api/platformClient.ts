@@ -49,6 +49,11 @@ import type {
   ReadMediaAnalysisAssetBatchRequest,
   ChangeOwnPasswordRequest,
   MoveResourceRequest,
+  ListProcessingJobsOptions,
+  ProcessingJobDetail,
+  ProcessingJobPage,
+  ProcessingJobScope,
+  ProcessingJobSummary,
   PlatformUser,
   PlatformMaintenanceStatus,
   PermissionManagementProjectPage,
@@ -432,6 +437,27 @@ export class PlatformClient {
       `/annotation-files/${resourceId}/media-analysis`,
       { method: "POST", body: request },
     );
+  }
+
+  listProcessingJobs(options: ListProcessingJobsOptions = {}) {
+    const params = new URLSearchParams();
+    if (options.scope) params.set("scope", options.scope);
+    if (options.status) params.set("status", options.status);
+    if (options.type) params.set("type", options.type);
+    if (options.cursor) params.set("cursor", options.cursor);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return this.request<ProcessingJobPage>(`/processing-jobs${query ? `?${query}` : ""}`);
+  }
+
+  getProcessingJobSummary(scope: ProcessingJobScope = "mine") {
+    return this.request<ProcessingJobSummary>(
+      `/processing-jobs/summary?${new URLSearchParams({ scope })}`,
+    );
+  }
+
+  getProcessingJob(jobId: string) {
+    return this.request<ProcessingJobDetail>(`/processing-jobs/${jobId}`);
   }
 
   listMediaAnalysisAssets(

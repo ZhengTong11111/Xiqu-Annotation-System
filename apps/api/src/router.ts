@@ -6,6 +6,8 @@ import {
   isValidAnnotationOperationPayload,
   MAX_MEDIA_ANALYSIS_BATCH_ASSETS,
   parseAnnotationCommandBatchRequest,
+  PROCESSING_JOB_STATUSES,
+  PROCESSING_JOB_TYPES,
   RESOURCE_CAPABILITIES,
   type AnnotationConfirmationDomain,
   type AnnotationConfirmationScope,
@@ -17,6 +19,9 @@ import {
   type CreateMediaAudioTrackRequest,
   type MediaAudioTrackKind,
   type PlatformRole,
+  type ProcessingJobScope,
+  type ProcessingJobStatus,
+  type ProcessingJobType,
   type ResourceCapability,
   type ResourceListView,
   type ResourceSortField,
@@ -29,6 +34,7 @@ import { badRequest, unauthorized } from "./errors.js";
 import type { HealthService } from "./healthService.js";
 import type { MediaUploadService } from "./mediaUploadService.js";
 import type { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
+import type { ProcessingJobQueryService } from "./processingJobQueryService.js";
 import type { MediaAudioTrackService } from "./mediaAudioTrackService.js";
 import type { MediaAudioPlaybackSessionService } from "./mediaAudioPlaybackSessionService.js";
 import type { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
@@ -60,6 +66,7 @@ import {
   bindHttpDisconnectSignal,
   createAbortableObjectBatchStream,
 } from "./abortableHttpStream.js";
+import { isValidProcessingJobClientRequestId } from "./processingJobIdentity.js";
 
 const RESOURCE_TYPES = new Set<ResourceType>([
   "folder",
@@ -84,6 +91,9 @@ const RESOURCE_SORT_FIELDS = new Set<ResourceSortField>([
 ]);
 const SORT_DIRECTIONS = new Set<SortDirection>(["asc", "desc"]);
 const CAPABILITIES = new Set<ResourceCapability>(RESOURCE_CAPABILITIES);
+const PROCESSING_JOB_SCOPE_NAMES = new Set<ProcessingJobScope>(["mine", "related", "all"]);
+const PROCESSING_JOB_STATUS_NAMES = new Set<ProcessingJobStatus>(PROCESSING_JOB_STATUSES);
+const PROCESSING_JOB_TYPE_NAMES = new Set<ProcessingJobType>(PROCESSING_JOB_TYPES);
 const REVIEW_DOMAINS = new Set<AnnotationConfirmationDomain>(
   ANNOTATION_REVIEW_DOMAINS,
 );
@@ -107,6 +117,7 @@ export function registerApiRoutes(
   resources: ResourceService,
   annotationRecoveryBackups: AnnotationRecoveryBackupService,
   mediaAnalysis: MediaAnalysisJobService,
+  processingJobs: ProcessingJobQueryService,
   mediaAudioTracks: MediaAudioTrackService,
   mediaAudioPlaybackSessions: MediaAudioPlaybackSessionService,
   annotationCommandCommits: AnnotationCommandCommitService,
@@ -179,6 +190,44 @@ export function registerApiRoutes(
       }
       return repository.login(request.body.accountName, request.body.password);
     },
+  );
+
+  app.get<{
+    Querystring: {
+      scope?: string;
+      status?: string;
+      type?: string;
+      cursor?: string;
+      limit?: string;
+    };
+  }>("/api/processing-jobs", async (request) => {
+    const limit = request.query.limit === undefined ? undefined : Number(request.query.limit);
+    return processingJobs.list(
+      await getCurrentUser(repository, request),
+      {
+        scope: parseProcessingJobScope(request.query.scope),
+        status: parseProcessingJobStatus(request.query.status),
+        type: parseProcessingJobType(request.query.type),
+        cursor: request.query.cursor,
+        limit,
+      },
+    );
+  });
+
+  app.get<{ Querystring: { scope?: string } }>(
+    "/api/processing-jobs/summary",
+    async (request) => processingJobs.summary(
+      await getCurrentUser(repository, request),
+      parseProcessingJobScope(request.query.scope) ?? "mine",
+    ),
+  );
+
+  app.get<{ Params: { jobId: string } }>(
+    "/api/processing-jobs/:jobId",
+    async (request) => processingJobs.detail(
+      await getCurrentUser(repository, request),
+      requireString(request.params.jobId, "jobId"),
+    ),
   );
 
   // 评论列表默认隐藏已撤回记录；分页参数在服务层继续绑定文件和筛选上下文。
@@ -569,12 +618,16 @@ export function registerApiRoutes(
       if (body.force !== undefined && typeof body.force !== "boolean") {
         throw badRequest("force 必须是布尔值。");
       }
+      if (!isValidProcessingJobClientRequestId(body.clientRequestId)) {
+        throw badRequest("clientRequestId 必须是有效的 UUID。");
+      }
       return mediaAnalysis.createAnalysis(
         await getCurrentUser(repository, request),
         request.params.resourceId,
         {
           force: body.force as boolean | undefined,
           audioTrackId: requireString(body.audioTrackId, "audioTrackId"),
+          clientRequestId: body.clientRequestId,
         },
       );
     },
@@ -1568,6 +1621,18 @@ function parsePlatformRoles(value: unknown): PlatformRole[] {
 
 function normalizedString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function parseProcessingJobScope(value: unknown) {
+  return parseOptionalSetValue(value, PROCESSING_JOB_SCOPE_NAMES, "后台任务范围");
+}
+
+function parseProcessingJobStatus(value: unknown) {
+  return parseOptionalSetValue(value, PROCESSING_JOB_STATUS_NAMES, "后台任务状态");
+}
+
+function parseProcessingJobType(value: unknown) {
+  return parseOptionalSetValue(value, PROCESSING_JOB_TYPE_NAMES, "后台任务类型");
 }
 
 const MAX_SYNC_FAILURE_REPORT_BYTES = 256 * 1024;

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import {
   access,
   mkdir,
@@ -804,7 +805,7 @@ test("平台资源 API 集成测试", async (suite) => {
       const firstRun = await jsonRequest(app, adminToken, {
         method: "POST",
         url: `/api/annotation-files/${fileId}/media-analysis`,
-        payload: { audioTrackId: originalAudioTrack.id },
+        payload: { audioTrackId: originalAudioTrack.id, clientRequestId: randomUUID() },
       });
       assert.equal(firstRun.statusCode, 200, firstRun.body);
       assert.equal(dataOf(firstRun.json()).status, "queued");
@@ -812,6 +813,36 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(await prisma.processingJob.count({
         where: { analysisRunId: String(dataOf(firstRun.json()).id) },
       }), 1);
+      const createdAnalysisJob = await prisma.processingJob.findFirstOrThrow({
+        where: { analysisRunId: String(dataOf(firstRun.json()).id) },
+      });
+      const ownJobs = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/processing-jobs?scope=mine&limit=10",
+      });
+      assert.equal(ownJobs.statusCode, 200, ownJobs.body);
+      const ownJobItems = dataOf(ownJobs.json()).items as JsonObject[];
+      assert.equal(ownJobItems.length, 1);
+      assert.equal((ownJobItems[0]?.job as JsonObject).id, createdAnalysisJob.id);
+      assert.equal(ownJobItems[0]?.deduplicationKey, undefined);
+      assert.equal((ownJobItems[0]?.job as JsonObject).result, undefined);
+      const ownJobSummary = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: "/api/processing-jobs/summary?scope=mine",
+      });
+      assert.equal(ownJobSummary.statusCode, 200, ownJobSummary.body);
+      assert.equal(dataOf(ownJobSummary.json()).visibleRequestCount, 1);
+      const ownJobDetail = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/processing-jobs/${createdAnalysisJob.id}`,
+      });
+      assert.equal(ownJobDetail.statusCode, 200, ownJobDetail.body);
+      assert.equal((dataOf(ownJobDetail.json()).job as JsonObject).id, createdAnalysisJob.id);
+      const forbiddenAllJobs = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: "/api/processing-jobs?scope=all",
+      });
+      assert.equal(forbiddenAllJobs.statusCode, 403, forbiddenAllJobs.body);
       const analysisAssetKey = storage.createStorageKey("xqa");
       const stagedAnalysisAsset = await storage.putStagedObject(
         analysisAssetKey,
@@ -1032,7 +1063,7 @@ test("平台资源 API 集成测试", async (suite) => {
       const forbiddenStart = await jsonRequest(app, studentToken, {
         method: "POST",
         url: `/api/annotation-files/${fileId}/media-analysis`,
-        payload: { audioTrackId: uploadedTrack.id },
+        payload: { audioTrackId: uploadedTrack.id, clientRequestId: randomUUID() },
       });
       assert.equal(forbiddenStart.statusCode, 403);
       assert.equal(errorOf(forbiddenStart.json()).code, "analysis_audio_forbidden");

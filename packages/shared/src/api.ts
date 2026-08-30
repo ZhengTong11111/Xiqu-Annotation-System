@@ -31,6 +31,9 @@ import type {
   MediaAnalysisRun,
   MediaAnalysisAssetDescriptor,
   MediaAnalysisAssetKind,
+  ProcessingJobDetail,
+  ProcessingJobPage,
+  ProcessingJobSummary,
   SortDirection,
 } from "./platform.js";
 import type {
@@ -219,6 +222,7 @@ export type UpdateAnnotationAudioPreferenceRequest = {
 export type CreateMediaAnalysisRequest = {
   force?: boolean;
   audioTrackId: string;
+  clientRequestId: string;
 };
 
 export type ListMediaAnalysisAssetsOptions = {
@@ -615,6 +619,9 @@ export type PlatformApiContract<TPayload = unknown> = {
     request: CreateMediaAnalysisRequest;
     response: MediaAnalysisRun;
   };
+  listProcessingJobs: { response: ProcessingJobPage };
+  getProcessingJobSummary: { response: ProcessingJobSummary };
+  getProcessingJob: { response: ProcessingJobDetail };
   listMediaAnalysisAssets: { response: MediaAnalysisAssetList };
   readMediaAnalysisAssetBatch: {
     request: ReadMediaAnalysisAssetBatchRequest;

@@ -56,6 +56,7 @@ import { MediaAudioTrackService } from "./mediaAudioTrackService.js";
 import { MediaAudioPlaybackSessionService } from "./mediaAudioPlaybackSessionService.js";
 import { createAnnotationReviewChannel } from "./annotationReviewEventEnvelope.js";
 import { PostgresAnnotationReviewEventBus } from "./postgresAnnotationReviewEventBus.js";
+import { ProcessingJobQueryService } from "./processingJobQueryService.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -144,6 +145,7 @@ export async function buildApiApp(
     access,
   );
   const mediaAnalysis = new MediaAnalysisJobService(options.prisma, access);
+  const processingJobs = new ProcessingJobQueryService(options.prisma, access);
   const mediaAudioTracks = new MediaAudioTrackService(
     options.prisma,
     access,
@@ -289,6 +291,7 @@ export async function buildApiApp(
     resources,
     annotationRecoveryBackups,
     mediaAnalysis,
+    processingJobs,
     mediaAudioTracks,
     mediaAudioPlaybackSessions,
     annotationCommandCommits,

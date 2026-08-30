@@ -19,6 +19,7 @@ import {
   analysisAudioForbidden,
   analysisSourceMissing,
   badRequest,
+  conflict,
   notFound,
 } from "./errors.js";
 import { ResourceAccessService } from "./resourceAccess.js";
@@ -28,6 +29,11 @@ import {
   MEDIA_ANALYSIS_WAVEFORM_LEVELS,
 } from "./mediaAnalysisComputation.js";
 import { createMediaAnalysisSourceFingerprint } from "./mediaAnalysisSourceFingerprint.js";
+import {
+  assertProcessingJobRequestMatch,
+  createMediaAnalysisJobDeduplicationKey,
+  createMediaAnalysisRequestFingerprint,
+} from "./processingJobIdentity.js";
 
 export const MEDIA_ANALYSIS_ALGORITHM_VERSION = "xiqu-media-analysis-v1";
 export const MEDIA_ANALYSIS_CONFIG = {
@@ -170,12 +176,53 @@ export class MediaAnalysisJobService {
     const audioTrackId = normalizeAudioTrackId(input.audioTrackId);
     const context = await this.resolveAnalysisContext(user, annotationFileId, audioTrackId);
     const source = requireReadySource(context);
+    const deduplicationKey = createMediaAnalysisJobDeduplicationKey({
+      sourceMediaResourceId: source.media.resourceId,
+      mediaFingerprint: source.mediaFingerprint,
+      sourceVodRenditionJobId: source.sourceVodRenditionJobId,
+      algorithmVersion: MEDIA_ANALYSIS_ALGORITHM_VERSION,
+      configHash: MEDIA_ANALYSIS_CONFIG_HASH,
+    });
+    const requestFingerprint = createMediaAnalysisRequestFingerprint({
+      deduplicationKey,
+      contextResourceId: annotationFileId,
+      audioTrackId,
+      force: input.force === true,
+    });
 
     const run = await this.prisma.$transaction(async (transaction) => {
+      // 先锁账号级请求编号，再锁 canonical 执行键；固定顺序消除跨来源复用同一编号的唯一约束竞态。
+      await transaction.$queryRaw`
+        SELECT 1::integer AS locked
+        FROM pg_advisory_xact_lock(hashtext(${`xiqu:processing-request:${user.id}:${input.clientRequestId}`}))
+      `;
+      // 模糊响应重试优先返回 clientRequestId 已绑定的原执行；任务后来完成也不能改变重放结果。
+      const replayedKey = await transaction.processingJobRequestKey.findUnique({
+        where: {
+          requesterUserId_clientRequestId: {
+            requesterUserId: user.id,
+            clientRequestId: input.clientRequestId,
+          },
+        },
+        include: { request: { include: { job: { include: { analysisRun: true } } } } },
+      });
+      if (replayedKey) {
+        assertProcessingJobRequestMatch(
+          replayedKey.requestFingerprint,
+          requestFingerprint,
+        );
+        if (!replayedKey.request.job.analysisRun) {
+          throw conflict("后台任务缺少对应的媒体分析记录。", {
+            code: "processing_job_run_missing",
+          });
+        }
+        return replayedKey.request.job.analysisRun;
+      }
+
       // 同一媒体 identity 的并发请求先串行化，再读取 partial-unique 保护的 canonical run。
       await transaction.$queryRaw`
         SELECT 1::integer AS locked
-        FROM pg_advisory_xact_lock(hashtext(${`xiqu:media-analysis:${source.media.resourceId}:${source.mediaFingerprint}:${MEDIA_ANALYSIS_CONFIG_HASH}`}))
+        FROM pg_advisory_xact_lock(hashtext(${`xiqu:processing-job:${deduplicationKey}`}))
       `;
       const existing = await transaction.mediaAnalysisRun.findFirst({
         where: {
@@ -187,18 +234,80 @@ export class MediaAnalysisJobService {
         },
       });
       if (existing && !input.force && existing.status === "succeeded") {
+        // succeeded run 正常必有已完成 job；为它补当前账号的 request，任务中心才能展示真实需求。
+        const completedJob = await transaction.processingJob.findFirst({
+          where: {
+            analysisRunId: existing.id,
+            deduplicationKey,
+            status: "succeeded",
+          },
+          orderBy: [{ finishedAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+        });
+        if (completedJob) {
+          const requestResult = await ensureProcessingJobRequest(transaction, {
+            jobId: completedJob.id,
+            requesterUserId: user.id,
+            contextResourceId: annotationFileId,
+            clientRequestId: input.clientRequestId,
+            requestFingerprint,
+          });
+          if (requestResult.created) {
+            await createMediaAnalysisRequestAudit(transaction, {
+              actorUserId: user.id,
+              annotationFileId,
+              audioTrackId: context.audioTrackId,
+              runId: existing.id,
+              jobId: completedJob.id,
+              requestId: requestResult.request.id,
+              sourceMediaResourceId: source.media.resourceId,
+              sourceVodRenditionJobId: source.sourceVodRenditionJobId,
+              force: false,
+            });
+          }
+        } else {
+          // run 与 job 应由 worker 在同一事务内完成；若两者终态分裂，不能伪装成一次可追踪的成功请求。
+          throw conflict("媒体分析结果缺少已完成的任务记录。", {
+            code: "processing_job_completion_missing",
+          });
+        }
         return existing;
       }
 
-      const activeJob = existing
-        ? await transaction.processingJob.findFirst({
-            where: {
-              analysisRunId: existing.id,
-              status: { in: ["queued", "running"] },
-            },
-          })
-        : null;
-      if (existing && activeJob) return existing;
+      const activeJob = await transaction.processingJob.findFirst({
+        where: {
+          deduplicationKey,
+          status: { in: ["queued", "running"] },
+        },
+        include: { analysisRun: true },
+      });
+      if (activeJob) {
+        if (!activeJob.analysisRun) {
+          throw conflict("活动媒体分析任务缺少分析记录。", {
+            code: "processing_job_run_missing",
+          });
+        }
+        const requestResult = await ensureProcessingJobRequest(transaction, {
+          jobId: activeJob.id,
+          requesterUserId: user.id,
+          contextResourceId: annotationFileId,
+          clientRequestId: input.clientRequestId,
+          requestFingerprint,
+        });
+        if (requestResult.created) {
+          await createMediaAnalysisRequestAudit(transaction, {
+            actorUserId: user.id,
+            annotationFileId,
+            audioTrackId: context.audioTrackId,
+            runId: activeJob.analysisRun.id,
+            jobId: activeJob.id,
+            requestId: requestResult.request.id,
+            sourceMediaResourceId: source.media.resourceId,
+            sourceVodRenditionJobId: source.sourceVodRenditionJobId,
+            force: input.force === true,
+          });
+        }
+        return activeJob.analysisRun;
+      }
 
       const queuedRun = existing
         ? await transaction.mediaAnalysisRun.update({
@@ -227,28 +336,33 @@ export class MediaAnalysisJobService {
           });
 
       // 强制重算复用稳定 run id；旧资产必须由 worker 先删对象再删事实，API 不能制造失联对象。
-      await transaction.processingJob.create({
+      const job = await transaction.processingJob.create({
         data: {
           type: "media_analysis",
           resourceId: annotationFileId,
           inputFileIds: source.media.file ? [source.media.file.id] : [],
           createdBy: user.id,
           analysisRunId: queuedRun.id,
+          deduplicationKey,
         },
       });
-      await transaction.auditLog.create({
-        data: {
-          action: "media_analysis_create",
-          actorUserId: user.id,
-          resourceId: annotationFileId,
-          detail: {
-            runId: queuedRun.id,
-            sourceMediaResourceId: source.media.resourceId,
-            audioTrackId: context.audioTrackId,
-            sourceVodRenditionJobId: source.sourceVodRenditionJobId,
-            force: input.force === true,
-          },
-        },
+      const requestResult = await ensureProcessingJobRequest(transaction, {
+        jobId: job.id,
+        requesterUserId: user.id,
+        contextResourceId: annotationFileId,
+        clientRequestId: input.clientRequestId,
+        requestFingerprint,
+      });
+      await createMediaAnalysisRequestAudit(transaction, {
+        actorUserId: user.id,
+        annotationFileId,
+        audioTrackId: context.audioTrackId,
+        runId: queuedRun.id,
+        jobId: job.id,
+        requestId: requestResult.request.id,
+        sourceMediaResourceId: source.media.resourceId,
+        sourceVodRenditionJobId: source.sourceVodRenditionJobId,
+        force: input.force === true,
       });
       return queuedRun;
     });
@@ -570,6 +684,85 @@ export class MediaAnalysisJobService {
       completedAt: run.completedAt?.toISOString() ?? null,
     };
   }
+}
+
+type ProcessingJobRequestDraft = {
+  jobId: string;
+  requesterUserId: string;
+  contextResourceId: string;
+  clientRequestId: string;
+  requestFingerprint: string;
+};
+
+/**
+ * 同一账号在同一资源复用共享执行时只保留一个需求事实。
+ * 不同 clientRequestId 的快速重复点击会复用该行；同一 clientRequestId 的精确重放已在事务入口优先处理。
+ */
+async function ensureProcessingJobRequest(
+  transaction: Prisma.TransactionClient,
+  draft: ProcessingJobRequestDraft,
+) {
+  const existing = await transaction.processingJobRequest.findUnique({
+    where: {
+      jobId_requesterUserId_contextResourceId: {
+        jobId: draft.jobId,
+        requesterUserId: draft.requesterUserId,
+        contextResourceId: draft.contextResourceId,
+      },
+    },
+  });
+  const request = existing ?? await transaction.processingJobRequest.create({
+    data: {
+      jobId: draft.jobId,
+      requesterUserId: draft.requesterUserId,
+      contextResourceId: draft.contextResourceId,
+    },
+  });
+  // 即使业务需求已存在，也要保存当前标签页的幂等别名，保证它在任务终态变化后仍能精确重放。
+  await transaction.processingJobRequestKey.create({
+    data: {
+      requestId: request.id,
+      requesterUserId: draft.requesterUserId,
+      clientRequestId: draft.clientRequestId,
+      requestFingerprint: draft.requestFingerprint,
+    },
+  });
+  return { request, created: !existing };
+}
+
+type MediaAnalysisRequestAudit = {
+  actorUserId: string;
+  annotationFileId: string;
+  audioTrackId: string;
+  runId: string;
+  jobId: string;
+  requestId: string;
+  sourceMediaResourceId: string;
+  sourceVodRenditionJobId: string | null;
+  force: boolean;
+};
+
+/** 审计只保存稳定标识和有限布尔语义，不能写入分析配置、临时 URL 或供应商响应。 */
+async function createMediaAnalysisRequestAudit(
+  transaction: Prisma.TransactionClient,
+  input: MediaAnalysisRequestAudit,
+) {
+  await transaction.auditLog.create({
+    data: {
+      action: "media_analysis_create",
+      actorUserId: input.actorUserId,
+      resourceId: input.annotationFileId,
+      detail: {
+        runId: input.runId,
+        jobId: input.jobId,
+        requestId: input.requestId,
+        sourceMediaResourceId: input.sourceMediaResourceId,
+        audioTrackId: input.audioTrackId,
+        sourceVodRenditionJobId: input.sourceVodRenditionJobId,
+        force: input.force,
+      },
+    },
+  });
 }
 
 function isUsableAnalysisMedia(media: AnalysisMediaRow): boolean {

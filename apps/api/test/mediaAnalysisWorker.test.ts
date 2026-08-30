@@ -170,6 +170,7 @@ test("媒体分析 worker 原子 claim、流式生成资产并可恢复陈旧任
         resourceId: fixture.annotationFileId,
         createdBy: fixture.userId,
         analysisRunId: staleRun.id,
+        deduplicationKey: `test:stale:${staleRun.id}`,
         claimedBy: "dead-worker",
         claimedAt: new Date(Date.now() - 10 * 60_000),
         heartbeatAt: new Date(Date.now() - 10 * 60_000),
@@ -212,6 +213,7 @@ test("媒体分析 worker 原子 claim、流式生成资产并可恢复陈旧任
         resourceId: fixture.annotationFileId,
         createdBy: fixture.userId,
         analysisRunId: supersededRun.id,
+        deduplicationKey: `test:superseded:${supersededRun.id}`,
         claimedBy: "retired-worker",
         claimedAt: new Date(Date.now() - 10 * 60_000),
         heartbeatAt: new Date(Date.now() - 10 * 60_000),
@@ -366,6 +368,7 @@ async function createWorkerFixture(
       inputFileIds: [file.id],
       createdBy: userId,
       analysisRunId: run.id,
+      deduplicationKey: `test:worker:${run.id}`,
     },
   });
   return { userId, annotationFileId, mediaResourceId, runId: run.id, jobId: job.id };
