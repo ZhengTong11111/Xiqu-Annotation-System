@@ -9314,3 +9314,60 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **仍待独立授权**：P5d 真实生产连接、维护排空、worker 停止、一致备份、正式 migration、原子切换、生产 origin
   VOD/多账号/任务/协作人工验收和观察窗口。该缺口来自用户明确要求“不部署生产”，不是本地代码或候选失败；不能把
   localhost/隔离证据改写为生产通过。
+
+## 2026-08-30：生产同步失败取证与同版本保存基线漂移修复
+
+### 最近七天生产只读取证
+
+- 按用户要求只读检查 `101.201.76.10` 当前 API journald、审计表、标注 operation 与 recovery snapshot；没有在生产
+  主机原地修改代码、数据库、对象、草稿或配置。检查时生产 release 为
+  `/opt/xiqu/releases/20260830T120239Z-6b55fc9`，API、analysis worker 与 readiness 正常。
+- 七天日志中原子 `command-batches` 为 11,412 次成功、317 次 `409`；客户端同步失败审计共 52 条。其中 26 条最终
+  显示“结构租约达到最长持有时间”，17 条为 `command_precondition_failed`，其余为旧的 operation 数量上限、浏览器
+  IndexedDB、短暂网络/内部错误和租约竞争。大量文件同时存在数百至数千次成功保存，排除了 PostgreSQL、对象存储或
+  全局写路径整体不可用。
+- 选取一个不含敏感正文的失败链逐请求对齐：客户端先取得结构租约，在 revision 560 上成功提交轨道顺序事务，服务器
+  进入 561；约 8 秒后第二个内建轨道结构事务在 561 返回 `409`。客户端此后仍每 40 秒续租，直到五分钟绝对上限才把
+  用户可见状态改成“结构编辑锁失效”。因此租约超时是下游表象，不是首次失败原因。
+- 数据库 recovery snapshot 证明服务器在 revision 559/560/561 的目标布尔设置均为 `true`，而失败浏览器的本地
+  `savedProject` 在 revision 560 仍为 `false`。用当前 production document-model 对第二条命令重放，稳定得到第一个
+  structure child 前置条件失败。第一条轨道排序命令只触及顺序字段，所以能分别在两份不同基线上成功，并让客户端与
+  服务器同时声称 revision 561、但保留不同的未触及字段；下一条 `false -> true` 才暴露漂移。
+
+### 根因与修复
+
+- 根因一：`assessPlatformDraftCompatibility` 过去只比较草稿/服务器 revision，同 revision 的历史漂移草稿会被当成
+  `recoverable` 直接放入 document state，没有复核草稿 `savedProject` 是否等于刚下载的权威服务器正文。
+- 根因二：IndexedDB 草稿任务沿用排队时的 remote revision，却在真正执行时重新读取最新 recovery refs；而初版修复测试
+  进一步证明净化后的 ProjectData 仍共享部分对象引用。任务等待期间的新编辑因此可以污染已经排队的记录，版本号和正文
+  并不是一个真正冻结的检查点。
+- 根因三：原子 `409` 恢复只接受服务器 revision 严格前进。同 revision 正文漂移被含糊归类为
+  `server_revision_not_newer`；自动协调不可用后，客户端仍保留结构租约并续期，最终由五分钟上限覆盖真实错误。
+- 新增 `platformProjectEquality.ts`，集中按服务器可持久化正文比较项目，忽略受保护媒体 URL 等运行时字段。草稿兼容性
+  现在要求 revision 与权威 saved baseline 同时相同；同版本正文漂移携带稳定 `server_baseline_mismatch` 原因并进入
+  既有人工比较/整合，不新增整份覆盖入口。
+- 草稿持久化新增冻结检查点：在任务进入串行 IndexedDB 队列前，同步读取当前 remote revision 和 recovery state，完成
+  净化后再 `structuredClone`。debounce、显式 flush、卸载兜底与 clean-exit 后的恢复写入共用该入口；队列执行阶段只
+  保留首份 `createdAt`，不再重新读取可能已前进的 document refs。
+- 新增 `platformAuthoritativeBaseline.ts`，运行时把权威读取明确分为服务器落后、同版本一致、同版本漂移和服务器前进。
+  只有服务器前进继续走既有自动 rebase；同版本漂移返回稳定 `same_revision_baseline_mismatch`，保留本地草稿、进入显式
+  冲突并写入有界同步诊断，不输出完整 ProjectData、媒体 URL 或凭据。
+- 租约收尾集中到 `shouldReleaseMutationLeaseAfterAtomicFailure`：mutation-lease 拒绝或任一终态 409 都先释放当前 token，
+  再尝试冲突协调；下一次经过验证的结构提交重新申请租约。这样即使权威重读短暂失败，也不会继续锁住协作者或等待五分钟
+  后误报锁超时。newer-revision 自动 rebase、领域命令前置条件、operation id、人工比较和服务器乐观锁均未放宽。
+
+### 同类审计、验证与状态
+
+- 同类路径审计确认 committed-feed catch-up 已在一个应用边界共同推进 ProjectData/revision/cursor；原子确认先推进
+  document saved baseline，再同步推进 App revision ref；恢复备份在单次请求构造中读取 revision 与净化正文。没有发现
+  第二条需要改造的异步 ProjectData/revision 写队列，也没有删除仍承担 legacy/snapshot 迁移职责的代码。
+- `test:platform-drafts` 38/38、权威基线分类 2/2、`test:platform-operation-catch-up` 20/20、
+  `test:platform-conflict-rebase` 13/13、`test:platform-conflict-rebase-preparation` 6/6、
+  `test:platform-atomic-submit` 28/28、`test:platform-mutation-lease-runtime` 6/6、
+  `test:platform-sync-diagnostic` 3/3 通过。完整 `npm run build` 通过 Prisma 生成/schema guard、shared、
+  document-model、Web 与 API；仅保留既有 Vite 主 chunk 大小提醒，`git diff --check` 通过。
+- **已完成**：生产只读取证、稳定复现、草稿检查点冻结、同 revision 正文门禁、运行时错误分类、终态租约释放、诊断、
+  专项测试、完整构建与长期规范更新。
+- **待推进**：本轮尚未部署生产。发布后需观察新的 `same_revision_baseline_mismatch` 审计、
+  `annotation_command_precondition_failed` 与 lease max-lifetime 数量，并用一个历史漂移草稿和两个真实账号验证比较交接、
+  结构锁立即释放及后续重新保存；未经用户明确要求不自动进入维护或切换生产 release。

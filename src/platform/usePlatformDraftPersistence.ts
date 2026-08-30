@@ -19,6 +19,7 @@ type PlatformDraftPersistenceOptions = {
   localRevision: number;
   pendingOperationSignature: string;
   getRecoveryState: () => ProjectDocumentRecoveryState;
+  getRemoteBaseRevision: () => number;
   onPersistenceError: (message: string) => void;
   store?: PlatformDraftStore;
 };
@@ -45,6 +46,18 @@ export type PlatformDraftCleanExitCheckpoint = {
 export type PlatformDraftTaskQueue = {
   enqueue: (task: () => Promise<void>) => Promise<void>;
 };
+
+// 草稿写队列只接收已经净化并冻结的记录，不能在异步任务真正执行时重新拼接 document refs。
+export function capturePlatformDraftWriteRecord(input: {
+  userId: string;
+  annotationFileId: string;
+  remoteBaseRevision: number;
+  recoveryState: ProjectDocumentRecoveryState;
+  now?: number;
+}) {
+  // 项目净化函数会保留部分不可变对象引用；这里必须主动克隆，否则后续编辑仍会改写已排队的记录。
+  return structuredClone(buildPlatformDraftRecord(input));
+}
 
 // 草稿任务严格串行；调用者可等待自己的 execution，而队列会报告失败并继续接收后续任务。
 export function createPlatformDraftTaskQueue(
@@ -106,12 +119,14 @@ export function doesRecoveryStateMatchCleanExitCheckpoint(
 // 平台草稿采用短节流持续写入；页面关闭只依赖已经完成的写入，不把异步 IndexedDB 任务拖到 unload。
 export function usePlatformDraftPersistence(options: PlatformDraftPersistenceOptions) {
   const getRecoveryStateRef = useRef(options.getRecoveryState);
+  const getRemoteBaseRevisionRef = useRef(options.getRemoteBaseRevision);
   const onPersistenceErrorRef = useRef(options.onPersistenceError);
   const writeQueueRef = useRef<PlatformDraftTaskQueue | null>(null);
   const latestOptionsRef = useRef(options);
   const cleanExitCheckpointRef = useRef<PlatformDraftCleanExitCheckpoint | null>(null);
 
   getRecoveryStateRef.current = options.getRecoveryState;
+  getRemoteBaseRevisionRef.current = options.getRemoteBaseRevision;
   onPersistenceErrorRef.current = options.onPersistenceError;
   latestOptionsRef.current = options;
   const activeCleanExitCheckpoint = cleanExitCheckpointRef.current;
@@ -156,7 +171,8 @@ export function usePlatformDraftPersistence(options: PlatformDraftPersistenceOpt
     void enqueue(task).catch(() => undefined);
   };
 
-  // 单次写入在执行时读取最新 document refs，并保留首份草稿创建时间。
+  // revision 与 recovery state 必须在任务入队前一起冻结；若等 IndexedDB 前序任务完成后再读 refs，
+  // 可能把旧 revision 和已经前进的 ProjectData 拼成一个无法安全恢复的草稿。
   const enqueueDraftWrite = (context: PlatformDraftPersistenceOptions): Promise<void> => {
     // 正常决策会先排除身份缺失；显式失败可防止未来调用点把无目标写入误判为成功。
     if (!context.userId || !context.annotationFileId) {
@@ -165,16 +181,18 @@ export function usePlatformDraftPersistence(options: PlatformDraftPersistenceOpt
     const store = context.store ?? platformDraftStore;
     const userId = context.userId;
     const annotationFileId = context.annotationFileId;
+    const capturedRecord = capturePlatformDraftWriteRecord({
+      userId,
+      annotationFileId,
+      remoteBaseRevision: getRemoteBaseRevisionRef.current(),
+      recoveryState: getRecoveryStateRef.current(),
+    });
     return enqueue(async () => {
       const existingValue = await store.get(userId, annotationFileId);
       const existing = normalizePlatformDraftRecord(existingValue, { userId, annotationFileId });
-      const record = buildPlatformDraftRecord({
-        userId,
-        annotationFileId,
-        remoteBaseRevision: context.remoteBaseRevision,
-        recoveryState: getRecoveryStateRef.current(),
-        createdAt: existing?.createdAt,
-      });
+      const record = existing
+        ? { ...capturedRecord, createdAt: existing.createdAt }
+        : capturedRecord;
       // flush 与紧随其后的卸载捕获可能读取同一状态；内容去重保留首次写入时间，真实后续编辑仍会形成新记录。
       if (existing && arePlatformDraftContentsEqual(existing, record)) return;
       await store.put(record);

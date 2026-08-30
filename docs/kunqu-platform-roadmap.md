@@ -1014,6 +1014,10 @@ VOD 共用精确媒体时钟；长视频波形、频谱和 F0 不再依赖浏览
   实体身份，但凭据和 URL 始终双重脱敏。
 - `command_precondition_failed` 诊断现额外保留失败 operation id/index、事务 childIndex 与有界 adapter issue；
   不再把事务失败压成一个无定位能力的 `blocked` 字符串，也不把完整 ProjectData 写入审计。
+- 2026-08-30 生产同步专项修复已确认并封堵“同 revision、不同 saved baseline”路径：IndexedDB 草稿在入队前
+  冻结结构化克隆的 recovery state 与当前远端 revision，直接恢复同时校验 revision 和权威可持久化正文；运行时
+  409 会区分正常 revision 前进与同版本正文漂移，后者保留草稿进入显式冲突，并立即释放终态结构租约，不再由
+  五分钟租约上限掩盖真实 `annotation_command_precondition_failed`。未放宽服务器前置条件或整份覆盖门禁。
 - 一次真实诊断已定位父文字块时间缩放只声明 Gongche block、却在当前项目中同时重映射内部 symbols 的漏命令。
   单字、整句、自定义父块和多选移动现统一提交 timing + Gongche symbol state 原子事务；独立 timing builder
   也增加完整 ProjectData 重放证明，未来遗漏任一派生字段会在本地构建命令时 fail closed，而不是生成不完整

@@ -97,6 +97,7 @@ type PendingDraftOpen = {
   initialFocus?: AnnotationComparisonFocus;
   draft: PlatformDraftRecord;
   mode: PlatformDraftRecoveryMode;
+  conflictReason?: "remote_revision_changed" | "server_baseline_mismatch";
   dialog: "recovery" | "rebase" | "manual";
   rebaseProposal?: PlatformConflictRebaseProposal;
 };
@@ -163,7 +164,11 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     initialFocus?: AnnotationComparisonFocus;
   }): PendingDraftOpen => {
     if (!user) throw new Error("登录会话尚未恢复，请刷新后重试。");
-    const compatibility = assessPlatformDraftCompatibility(input.draft, input.file.revision);
+    const compatibility = assessPlatformDraftCompatibility(
+      input.draft,
+      input.file.revision,
+      input.serverProject,
+    );
     const mode: PlatformDraftRecoveryMode = input.file.resource.permission.capabilities.includes("write")
       ? compatibility.status
       : "read-only";
@@ -178,8 +183,23 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       latestServerProject: input.serverProject,
     });
     return rebase.status === "ready"
-      ? { ...input, mode, dialog: "rebase", rebaseProposal: rebase.proposal }
-      : { ...input, mode, dialog: "manual" };
+      ? {
+          ...input,
+          mode,
+          conflictReason: compatibility.status === "revision-conflict"
+            ? compatibility.reason
+            : undefined,
+          dialog: "rebase",
+          rebaseProposal: rebase.proposal,
+        }
+      : {
+          ...input,
+          mode,
+          conflictReason: compatibility.status === "revision-conflict"
+            ? compatibility.reason
+            : undefined,
+          dialog: "manual",
+        };
   }, [user]);
 
   function openLocal(project: ProjectData, title: string) {
@@ -711,6 +731,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
           remoteRevision={pendingDraftOpen.file.revision}
           draft={pendingDraftOpen.draft}
           mode={pendingDraftOpen.mode}
+          conflictReason={pendingDraftOpen.conflictReason}
           busy={draftDecisionBusy}
           onCancel={() => {
             setPendingDraftOpen(null);

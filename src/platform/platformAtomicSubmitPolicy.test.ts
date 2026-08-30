@@ -7,6 +7,7 @@ import {
   classifyAtomicSubmitError,
   isMutationLeaseSubmitFailure,
   requiresLegacySnapshotMigration,
+  shouldReleaseMutationLeaseAfterAtomicFailure,
   validateAtomicSubmitResponse,
 } from "./platformAtomicSubmitPolicy";
 
@@ -108,6 +109,11 @@ test("网络、冲突和确定错误使用原子提交专用分类", () => {
   assert.equal(requiresLegacySnapshotMigration(classifyAtomicSubmitError(expiredLease, true)), false);
   assert.equal(isMutationLeaseSubmitFailure(classifyAtomicSubmitError(expiredLease, true)), true);
   assert.equal(isMutationLeaseSubmitFailure(revisionConflict), false);
+  assert.equal(shouldReleaseMutationLeaseAfterAtomicFailure(
+    classifyAtomicSubmitError(expiredLease, true),
+  ), true);
+  assert.equal(shouldReleaseMutationLeaseAfterAtomicFailure(revisionConflict), true);
+  assert.equal(shouldReleaseMutationLeaseAfterAtomicFailure(legacyPayload), false);
   assert.equal(classifyAtomicSubmitError(new PlatformApiError(503, "internal_error", "busy", null), true).retryable, true);
   assert.deepEqual(
     classifyAtomicSubmitError(new PlatformApiError(503, "maintenance_mode", "维护中", null), true),

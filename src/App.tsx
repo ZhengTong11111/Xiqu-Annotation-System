@@ -82,6 +82,7 @@ import { usePlatformAnalysisTrackSelection } from "./platform/usePlatformAnalysi
 import { planAtomicAnnotationCommandBatch } from "./platform/platformAtomicCommandPlan";
 import { usePlatformAtomicCommandSubmit } from "./platform/usePlatformAtomicCommandSubmit";
 import { planPlatformConflictRebase } from "./platform/platformConflictRebase";
+import { classifyPlatformAuthoritativeBaseline } from "./platform/platformAuthoritativeBaseline";
 import { shouldBlockEditingForRemoteCatchUp } from "./platform/platformRemoteEditGate";
 import {
   buildAnnotationClientSyncFailureReport,
@@ -90,8 +91,8 @@ import {
   getSyncFailurePlannerFailure,
 } from "./platform/platformSyncFailureDiagnostic";
 import {
-  isMutationLeaseSubmitFailure,
   requiresLegacySnapshotMigration,
+  shouldReleaseMutationLeaseAfterAtomicFailure,
 } from "./platform/platformAtomicSubmitPolicy";
 import type { PlatformMutationLeaseViewState } from "./platform/platformMutationLeaseRuntime";
 import {
@@ -686,6 +687,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     localRevision: syncState.localRevision,
     pendingOperationSignature,
     getRecoveryState,
+    // document acknowledgement 与 App ref 在同一同步回调中推进；草稿捕获直接读取 ref，避免 React render 延迟。
+    getRemoteBaseRevision: () => remoteBaseRevisionRef.current,
     onPersistenceError: (message) => {
       // 冲突交接 flush 失败时保留 conflict 主状态，用户仍需看到并可重试处理入口。
       setSyncStatus(syncState.status === "conflict" ? "conflict" : "error", {
@@ -1116,15 +1119,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     mediaBindingBusy: serverMediaBindingBusy,
   });
 
-  // 每个异常 error 状态只上报一次有界诊断；维护拒绝属于预期门禁，不应反向制造诊断写入重试。
+  // 每个终态 error/conflict 只上报一次有界诊断；维护拒绝属于预期门禁，不应反向制造诊断写入重试。
   useEffect(() => {
+    const hasReportableSyncFailure = syncState.status === "error" || syncState.status === "conflict";
     if (
       !editorSession ||
       maintenanceSaveBlocked ||
-      syncState.status !== "error" ||
+      !hasReportableSyncFailure ||
       !syncState.errorMessage
     ) {
-      if (syncState.status !== "error") {
+      if (!hasReportableSyncFailure) {
         lastReportedSyncFailureRef.current = null;
         syncFailureMismatchFieldsRef.current = [];
         syncFailureMismatchDetailsRef.current = [];
@@ -6652,14 +6656,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             // 仅在服务端明确返回该代码时，以同一 revision 和租约执行一次完整快照迁移。
             return saveLegacyProjectSnapshot(editorSession, options.source, getRemainingRecoveryState());
           }
-          if (isMutationLeaseSubmitFailure(failure)) {
-            // 服务端已证明当前 token 不能继续使用；先清本地状态并尽力释放，下一次保存才能重新 acquire。
+          if (shouldReleaseMutationLeaseAfterAtomicFailure(failure) && mutationLease.getToken()) {
+            // 409 或租约拒绝已经终止当前结构事务；先释放旧 token，后续重提再绑定经过验证的新基线。
             await mutationLease.release().catch(() => undefined);
           }
           const isMaintenanceFailure = failure.code === PLATFORM_MAINTENANCE_ERROR_CODE;
           if (isMaintenanceFailure) {
             await preserveDraftAfterMaintenanceBlock();
           }
+          let conflictRecoveryReason: string | null = null;
           if (failure.status === "conflict") {
             const rebase = await tryAutomaticConcurrentRebase(editorSession);
             if (rebase.status === "applied") {
@@ -6667,11 +6672,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               if (interactive) window.alert(message);
               return { status: "rebased", message };
             }
+            conflictRecoveryReason = rebase.reason;
           }
           // 诊断和顶部提示保留稳定服务端错误码，下一次失败无需依赖控制台才能判断租约/协议原因。
-          const failureMessage = failure.code
-            ? `${failure.message}（${failure.code}）`
-            : failure.message;
+          const failureMessage = conflictRecoveryReason === "same_revision_baseline_mismatch"
+            ? "浏览器保存基线与同一服务器修订的正文不一致，已停止提交并释放结构编辑锁。"
+              + "本地草稿仍已保留，请进入冲突检查后整合。（same_revision_baseline_mismatch）"
+            : failure.code
+              ? `${failure.message}（${failure.code}）`
+              : failure.message;
           const outcome: PlatformSaveOutcome = failure.status === "offline"
             ? { status: "offline", retryable: true, message: failureMessage }
             : failure.status === "conflict"
@@ -6714,10 +6723,21 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const expectedRemoteRevision = remoteBaseRevisionRef.current;
     const localState = getRecoveryState();
     const latestFile = await session.client.getAnnotationFile<ProjectData>(session.annotationFileId);
-    if (latestFile.revision <= expectedRemoteRevision) {
-      return { status: "unavailable", reason: "server_revision_not_newer" };
-    }
     const latestServerProject = hydrateProjectForClient(latestFile.payload, session.client, latestFile.media);
+    const baselineState = classifyPlatformAuthoritativeBaseline({
+      expectedRevision: expectedRemoteRevision,
+      latestRevision: latestFile.revision,
+      expectedSavedProject: localState.savedProject,
+      latestServerProject,
+    });
+    if (baselineState === "same_revision_mismatch") {
+      // 这是历史草稿或异步检查点造成的同版本漂移，不属于普通多人并发，不能伪造更高 revision 重放。
+      syncFailureMismatchFieldsRef.current = ["savedProject.serverBaseline"];
+      return { status: "unavailable", reason: "same_revision_baseline_mismatch" };
+    }
+    if (baselineState !== "server_revision_advanced") {
+      return { status: "unavailable", reason: baselineState };
+    }
     const plan = planPlatformConflictRebase({
       baseRevision: expectedRemoteRevision,
       latestRevision: latestFile.revision,
@@ -6732,10 +6752,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return { status: "unavailable", reason: plan.status };
     }
 
-    // 结构命令的旧租约绑定旧 revision；先释放，重提时由普通保存路径按最新基线重新取得。
-    if (plan.requiredLeasePurpose) {
-      await mutationLease.release().catch(() => undefined);
-    }
+    // 调用方已在终态 409 后统一释放旧租约；重提时由普通保存路径按最新基线重新取得。
     const applied = rebasePendingProjectFromRemote({
       expectedCurrentProject: localState.currentProject,
       expectedSavedProject: localState.savedProject,

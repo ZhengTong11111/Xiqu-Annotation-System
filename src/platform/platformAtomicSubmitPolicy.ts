@@ -125,6 +125,13 @@ export function isMutationLeaseSubmitFailure(
   return failure.code?.startsWith("annotation_mutation_lease_") === true;
 }
 
+// 租约拒绝或终态 409 都已经结束当前结构事务；旧 token 留在客户端只会继续阻塞协作者。
+export function shouldReleaseMutationLeaseAfterAtomicFailure(
+  failure: AtomicSubmitErrorClassification,
+) {
+  return failure.status === "conflict" || isMutationLeaseSubmitFailure(failure);
+}
+
 export function getAtomicSubmitRetryDelay(attempt: number) {
   return Math.min(1_000 * (2 ** Math.max(0, Math.floor(attempt))), 30_000);
 }

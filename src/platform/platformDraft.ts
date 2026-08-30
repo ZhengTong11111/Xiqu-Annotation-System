@@ -18,6 +18,7 @@ import {
   normalizeImportedProjectFile,
 } from "../utils/projectFile";
 import { prepareProjectForServer } from "./platformProjectPayload";
+import { arePlatformProjectPayloadsEqual } from "./platformProjectEquality";
 
 export const PLATFORM_DRAFT_SCHEMA_VERSION = 1;
 
@@ -43,7 +44,11 @@ export type PlatformDraftRecord = {
 
 export type PlatformDraftCompatibility =
   | { status: "recoverable"; draft: PlatformDraftRecord }
-  | { status: "revision-conflict"; draft: PlatformDraftRecord };
+  | {
+      status: "revision-conflict";
+      reason: "remote_revision_changed" | "server_baseline_mismatch";
+      draft: PlatformDraftRecord;
+    };
 
 const OPERATION_TYPES = new Set<ProjectDocumentOperationType>([
   ...LEGACY_ANNOTATION_OPERATION_ACTIONS,
@@ -160,14 +165,18 @@ export function normalizePlatformDraftRecord(
   };
 }
 
-// 只有完全相同的服务器基准 revision 可直接恢复；差异必须进入后续显式冲突流程。
+// 直接恢复要求 revision 与正文基线同时相同；只比较版本号会把历史漂移草稿伪装成安全基线。
 export function assessPlatformDraftCompatibility(
   draft: PlatformDraftRecord,
   currentRemoteRevision: number,
+  currentServerProject: ProjectData,
 ): PlatformDraftCompatibility {
-  return draft.remoteBaseRevision === currentRemoteRevision
+  if (draft.remoteBaseRevision !== currentRemoteRevision) {
+    return { status: "revision-conflict", reason: "remote_revision_changed", draft };
+  }
+  return arePlatformProjectPayloadsEqual(draft.savedProject, currentServerProject)
     ? { status: "recoverable", draft }
-    : { status: "revision-conflict", draft };
+    : { status: "revision-conflict", reason: "server_baseline_mismatch", draft };
 }
 
 // 恢复状态回到客户端前不改变 operation id 或 revision，保证刷新后的提交继续复用服务端幂等键。

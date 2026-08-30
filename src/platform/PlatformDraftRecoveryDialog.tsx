@@ -11,6 +11,7 @@ export function PlatformDraftRecoveryDialog(props: {
   remoteRevision: number;
   draft: PlatformDraftRecord;
   mode: PlatformDraftRecoveryMode;
+  conflictReason?: "remote_revision_changed" | "server_baseline_mismatch";
   busy: boolean;
   onCancel: () => void;
   onRecover: () => void;
@@ -19,7 +20,9 @@ export function PlatformDraftRecoveryDialog(props: {
 }) {
   const canRecover = props.mode === "recoverable";
   const description = props.mode === "revision-conflict"
-    ? "服务器文件已在本地草稿之后发生变化。为避免覆盖他人内容，本轮禁止直接恢复。"
+    ? props.conflictReason === "server_baseline_mismatch"
+      ? "浏览器草稿的保存基线与同一服务器修订的正文不一致。为避免覆盖内容，本轮禁止直接恢复。"
+      : "服务器文件已在本地草稿之后发生变化。为避免覆盖他人内容，本轮禁止直接恢复。"
     : props.mode === "read-only"
       ? "当前账号已没有此文件的写入权限，本地草稿不会自动删除或载入只读编辑器。"
       : "检测到与服务器当前修订一致的未保存本地草稿。请选择继续本地编辑或使用服务器版本。";

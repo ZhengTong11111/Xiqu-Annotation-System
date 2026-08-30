@@ -14,6 +14,7 @@ import {
 } from "./platformDraft";
 import {
   buildPlatformDraftCleanExitCheckpoint,
+  capturePlatformDraftWriteRecord,
   createPlatformDraftTaskQueue,
   doesRecoveryStateMatchCleanExitCheckpoint,
   getPlatformDraftPersistenceAction,
@@ -482,16 +483,29 @@ test("平台草稿 unknown 边界拒绝身份与结构损坏", () => {
   }, { userId: "user-1", annotationFileId: "file-1" }), null);
 });
 
-// revision 判定绝不偷偷把旧草稿提升到服务器当前 revision。
-test("只有相同服务器 revision 的草稿可直接恢复", () => {
+// revision 相同但正文基线不同同样属于冲突，不能把历史漂移草稿直接放入 document state。
+test("只有服务器 revision 和保存正文都相同的草稿可直接恢复", () => {
   const record = buildPlatformDraftRecord({
     userId: "user-1",
     annotationFileId: "file-1",
     remoteBaseRevision: 7,
     recoveryState: createRecoveryState(),
   });
-  assert.equal(assessPlatformDraftCompatibility(record, 7).status, "recoverable");
-  assert.equal(assessPlatformDraftCompatibility(record, 8).status, "revision-conflict");
+  assert.equal(
+    assessPlatformDraftCompatibility(record, 7, record.savedProject).status,
+    "recoverable",
+  );
+  const changedRevision = assessPlatformDraftCompatibility(record, 8, record.savedProject);
+  assert.equal(changedRevision.status, "revision-conflict");
+  assert.equal(changedRevision.status === "revision-conflict" ? changedRevision.reason : null,
+    "remote_revision_changed");
+
+  const driftedServerProject = structuredClone(record.savedProject);
+  driftedServerProject.subtitleLines[0]!.text = "同 revision 下的服务器正文";
+  const driftedBaseline = assessPlatformDraftCompatibility(record, 7, driftedServerProject);
+  assert.equal(driftedBaseline.status, "revision-conflict");
+  assert.equal(driftedBaseline.status === "revision-conflict" ? driftedBaseline.reason : null,
+    "server_baseline_mismatch");
   assert.equal(record.remoteBaseRevision, 7);
 });
 
@@ -542,6 +556,39 @@ test("草稿写入队列保持顺序并可在失败后继续", async () => {
   await final;
   assert.deepEqual(events, ["first", "failed", "flush"]);
   assert.deepEqual(errors, ["write failed"]);
+});
+
+// IndexedDB 前序任务可能较慢；等待期间发生的新编辑不能反向污染已经排队的 revision+正文检查点。
+test("草稿任务等待期间仍保留入队时冻结的 revision 和正文", async () => {
+  const recoveryState = createRecoveryState();
+  const captured = capturePlatformDraftWriteRecord({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 17,
+    recoveryState,
+    now: 1_785_700_200_000,
+  });
+  let releaseBlocker!: () => void;
+  const blocker = new Promise<void>((resolve) => {
+    releaseBlocker = resolve;
+  });
+  const writtenRecords: Array<typeof captured> = [];
+  const queue = createPlatformDraftTaskQueue(() => undefined);
+  const first = queue.enqueue(() => blocker);
+  const write = queue.enqueue(async () => {
+    writtenRecords.push(captured);
+  });
+
+  recoveryState.currentProject.subtitleLines[0]!.text = "排队后的新编辑";
+  recoveryState.savedProject.subtitleLines[0]!.text = "排队后的新基线";
+  releaseBlocker();
+  await Promise.all([first, write]);
+
+  const written = writtenRecords[0];
+  assert.ok(written);
+  assert.equal(written.remoteBaseRevision, 17);
+  assert.notEqual(written.currentProject.subtitleLines[0]!.text, "排队后的新编辑");
+  assert.notEqual(written.savedProject.subtitleLines[0]!.text, "排队后的新基线");
 });
 
 test("干净退出检查点只接受服务器已确认且没有 pending 的恢复状态", () => {

@@ -47,6 +47,9 @@ Main currently contains all major recent feature lines that matter for context:
   disconnect/stale cleanup, same-account aggregation, and exact Timeline coordinates
 - database-backed short-lived annotation mutation leases for structural/bulk writes; ordinary operation/save/restore stays
   unchanged without a lease, while an active lease requires its one-time token and is released only by a successful revision write
+- a terminal atomic 409 or mutation-lease rejection ends the current structural transaction and must immediately release its
+  client-held lease before conflict handoff/retry. Do not keep renewing a rejected transaction until the five-minute absolute
+  lease lifetime masks the real command/revision failure
 - existing custom-track metadata, recursive branch trees, and block branch ownership now use the strict top-level
   `annotation.track.structure.update` command; platform edits acquire/renew a file lease before local commit, and structural
   undo/redo retain inverse/forward command envelopes
@@ -79,8 +82,10 @@ Main currently contains all major recent feature lines that matter for context:
   sessions now perform bounded HTTP catch-up, atomically replay complete mixed domain-command chains, and fall back to the
   authoritative snapshot for incomplete or non-replayable evidence
 - project document state architecture (`src/state/projectDocumentState.ts`)
-- versioned browser recovery drafts for writable platform files, isolated by account/file and recoverable only against
-  the same server revision
+- versioned browser recovery drafts for writable platform files, isolated by account/file. A draft checkpoint must freeze
+  one structured-cloned recovery state together with its current remote revision before entering the asynchronous IndexedDB
+  queue. Direct recovery requires both the same revision and a persistable `savedProject` equal to the freshly fetched
+  authoritative payload; same-revision payload drift is an explicit conflict, never a recoverable draft
 - writable platform-file autosave with idle scheduling, single-flight snapshots, online recovery, and bounded retry
 - per-account recovery-backup preferences plus a failure-episode coordinator: after 3/5/10 completed save failures it creates
   at most one ordinary annotation file under the nearest owning project's `backup` folder. The dedicated server boundary derives
