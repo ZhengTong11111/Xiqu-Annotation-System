@@ -321,7 +321,8 @@ systemd 的 `TimeoutStopSec` 应覆盖该清理时间。API 正常但 worker 未
 判断处理链路是否收敛。
 
 当前维护 advisory gate 只覆盖 HTTP mutation，analysis worker 尚未接入未来的 drain/permit 协议。执行一致
-备份、数据库 migration 或 release 切换前必须先停止 `xiqu-analysis-worker` 并等待 systemd 停机完成；其
+备份、数据库 migration 或 release 切换前必须先启用维护并排空 HTTP 写入，再停止 `xiqu-analysis-worker` 并等待
+systemd 停机完成；其
 SIGTERM 路径会删除本轮半成品并把任务安全放回队列。不能只在管理员页面开启维护后就假定后台写入已经静默。
 
 ## 8. 外部媒体与 Nginx/TLS
@@ -439,7 +440,8 @@ npm run deploy:check -- \
 
 ### 10.1 本地对象存储
 
-本地一致备份必须在维护窗口内同时覆盖 PostgreSQL 与整个对象根：
+本地一致备份必须在维护窗口内同时覆盖 PostgreSQL 与整个对象根。先使用第 11 节相同的 `maintenance:enable` 命令
+等待 API 在途写入排空，再停止 worker；只停止 worker、但仍允许用户通过 API 写入，不构成一致备份：
 
 ```bash
 sudo systemctl stop xiqu-analysis-worker
@@ -524,15 +526,19 @@ SHA-256，并在空数据库和空对象目录执行隔离恢复及摘要复核�
 
 每次升级按固定顺序执行：
 
-1. 记录当前 `readlink -f /opt/xiqu/current` 和 Git commit，提前通知用户暂停编辑并确认页面显示已同步。
-2. 查看 release notes、Prisma migration 和环境变量变化，构建新的不可变 release；在候选目录依次运行
+1. 记录当前 `readlink -f /opt/xiqu/current` 和 Git commit，查看 release notes、Prisma migration 和环境变量变化，
+   构建新的不可变 release；在候选目录依次运行
    `npm run release:inspect -- --release-dir <绝对候选目录>` 与 `npm run release:check`，确认目录无本地状态且
-   Prisma Client 来自同一 schema 后仍不要切换 `current`。
-3. 停止 analysis worker 并等待其安全退出；创建并验证一致备份，重要升级完成一次隔离恢复演练。
-4. 通过 CLI 进入维护模式，等待在途 HTTP 写入排空。当前版本没有自动客户端 drain，管理员还应确认活跃用户
-   已停止编辑；维护开启后的本机草稿不会自动等同于服务器已保存。
-5. 使用 **新 release** 执行 `npm run db:deploy`。
-6. 原子切换 `/opt/xiqu/current`，重启 API；若代理配置变化，再执行 `nginx -t` 后 reload。
+   Prisma Client 来自同一 schema 后仍不要切换 `current`。复制
+   [`production-cutover-record-template.md`](./production-cutover-record-template.md) 作为本次脱敏上线记录。
+2. 提前通知用户暂停编辑并确认页面显示已同步。通过旧 release 的 CLI 进入维护模式，等待在途 HTTP 写入排空；
+   当前版本没有自动客户端 drain，维护开启后的本机草稿不会自动等同于服务器已保存。
+3. 停止 analysis worker 并确认 `systemctl is-active` 为 `inactive`；记录活动任务、当前 release 和 migration 基线。
+4. 在“维护排空 + worker 停止”之后创建并验证一致备份，重要升级完成一次隔离恢复演练。先备份、后进入维护的结果
+   不能作为本次升级的一致回滚基线。
+5. 使用 **新 release** 执行 `npm run db:deploy`，禁止 `db push`。
+6. 使用 `release:switch` 并把第 1 步记录的旧 release 作为 `expected-current`，原子切换 `/opt/xiqu/current`；重启 API，
+   若代理配置变化，再执行 `nginx -t` 后 reload。不要再使用绕过期望值和并发锁的裸 `ln -sfn` 升级命令。
 7. 在维护状态下运行无写入的 `deploy:check`，检查首页、liveness、readiness 和只读资源；此时不能把登录或
    保存失败误判为新版本故障。
 8. 使用 CLI 解除维护，随后启动新 release 的 analysis worker 并检查队列状态。
@@ -544,7 +550,12 @@ SHA-256，并在空数据库和空对象目录执行隔离恢复及摘要复核�
 OLD_RELEASE="$(readlink -f /opt/xiqu/current)"
 NEW_RELEASE=/opt/xiqu/releases/<new-release-id>
 
-# 切换前由旧 release 进入维护；命令会等待在途 HTTP 写入结束。
+# 维护前完成候选只读检查，但不要切换 current。
+sudo bash -c "cd '$NEW_RELEASE' && \
+  npm run release:inspect -- --release-dir '$NEW_RELEASE' && \
+  npm run release:check"
+
+# 由旧 release 进入维护；命令会等待在途 HTTP 写入结束。
 sudo -u xiqu bash -c '
   set -a
   source /etc/xiqu-platform/xiqu-platform.env
@@ -553,9 +564,39 @@ sudo -u xiqu bash -c '
   npm run maintenance:enable -- --operator platform.admin --reason "部署新版本"
 '
 
-sudo ln -sfn "$NEW_RELEASE" /opt/xiqu/current
+# 排空写入后停止 worker，随后创建并验证一致备份。
+sudo systemctl stop xiqu-analysis-worker
+sudo systemctl is-active xiqu-analysis-worker # 预期为 inactive
+sudo -u xiqu bash -c '
+  set -a
+  source /etc/xiqu-platform/xiqu-platform.env
+  set +a
+  cd /opt/xiqu/current
+  npm run backup:create -- \
+    --operator platform.admin \
+    --output /var/lib/xiqu-platform/backups \
+    --reason "部署前一致备份"
+'
+sudo -u xiqu bash -c '
+  cd /opt/xiqu/current
+  npm run backup:verify -- --backup /var/lib/xiqu-platform/backups/xiqu-backup-...
+'
+
+# 只从新候选执行正式 migration，再以旧 release 为并发前提原子切换。
+sudo -u xiqu env NEW_RELEASE="$NEW_RELEASE" bash -c '
+  set -a
+  source /etc/xiqu-platform/xiqu-platform.env
+  set +a
+  cd "$NEW_RELEASE"
+  npm run db:deploy
+'
+sudo bash -c "cd '$NEW_RELEASE' && npm run release:switch -- \
+  --current-link /opt/xiqu/current \
+  --expected-current '$OLD_RELEASE' \
+  --new-release '$NEW_RELEASE'"
 sudo systemctl restart xiqu-api
-npm run deploy:check -- --base-url=https://annotation.example.org
+sudo bash -c "cd '$NEW_RELEASE' && \
+  npm run deploy:check -- --base-url=https://annotation.example.org"
 
 # 只读检查通过后由新 release 恢复写入，再启动 worker。
 sudo -u xiqu bash -c '
@@ -573,14 +614,20 @@ sudo systemctl start xiqu-analysis-worker
 若新进程或静态页面失败，但 migration 与旧程序向后兼容：
 
 ```bash
-sudo ln -sfn "$OLD_RELEASE" /opt/xiqu/current
+FAILED_RELEASE="$(readlink -f /opt/xiqu/current)"
+sudo bash -c "cd '$FAILED_RELEASE' && npm run release:switch -- \
+  --current-link /opt/xiqu/current \
+  --expected-current '$FAILED_RELEASE' \
+  --new-release '$OLD_RELEASE'"
 sudo systemctl restart xiqu-api
 sudo nginx -t && sudo systemctl reload nginx
-npm run deploy:check -- --base-url=https://annotation.example.org
+sudo bash -c "cd '$OLD_RELEASE' && \
+  npm run deploy:check -- --base-url=https://annotation.example.org"
 ```
 
-若 migration 不向后兼容，不能只切回旧代码。保持维护模式，按已验证备份恢复数据库和对象存储，再切回匹配
-release。Prisma migration 采用前向记录，不要手工删除 `_prisma_migrations` 行冒充回滚。
+`release:switch` 会再次校验回滚目标，并要求 `current` 仍指向本次失败 release；若事实已变化会 fail closed，操作员必须
+重新读取现场。若 migration 不向后兼容，不能只切回旧代码。保持维护模式和 worker 停止，按已验证备份同时恢复数据库
+与对象存储，再切回匹配 release。Prisma migration 采用前向记录，不要手工删除 `_prisma_migrations` 行冒充回滚。
 
 回滚后必须再次核对：readiness、对象 Range、登录、资源 ACL、标注 revision、WebSocket、审计、备份状态和
 维护状态。任何补偿失败都应保留现场并记录，不要用 `db:push --force-reset` 清除证据。
@@ -599,6 +646,7 @@ release。Prisma migration 采用前向记录，不要手工删除 `_prisma_migr
 - [ ] Prometheus token 独立保存，告警接收端经过真实测试。
 - [ ] 一致备份已创建并校验；隔离恢复演练通过并留存报告。
 - [ ] 当前 release、commit、migration、环境变更、备份 id 和验收人已记录。
+- [ ] 已使用 `production-cutover-record-template.md` 留存脱敏切换/回滚证据，未记录密码、token、AccessKey、PlayAuth 或连接串。
 
 ## 14. 当前候选限制
 

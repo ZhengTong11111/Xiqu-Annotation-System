@@ -1189,6 +1189,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     通过 PostgreSQL + 对象存储一致备份/恢复或全新初始化部署，绝不能把 `git pull` 当作数据迁移
   - 首次部署和升级都应从已审查 commit/tag 构建不可变 release，再原子切换 `/opt/xiqu/current`；不要在
     正在运行的 release 目录直接 `git pull`、重新构建或覆盖持久数据
+  - 一致升级顺序必须是候选只读检查 -> 旧 release 启用维护并排空 API 写入 -> 停止 worker -> 创建并验证一致备份 ->
+    新 release 正式 migrate deploy -> `release:switch` -> 维护状态只读 smoke -> 解除维护 -> 启动 worker。先备份再进入
+    维护不能作为回滚基线；不要用删减示例、省略 backup verify，或把浏览器草稿当作服务端已保存事实
   - production release must include `prisma.config.ts` and built `packages/shared`/`packages/document-model` in
     addition to `prisma`, `dist`, and `node_modules`: Prisma 7 migration reads the root config, while npm workspace
     links under `node_modules/@xiqu` resolve back into `packages/`. Verify these paths before starting systemd services
@@ -1214,6 +1217,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     `dist/api/backup` 程序目录不等于备份数据，只有这个精确路径可豁免状态目录名门禁
   - `release:inspect` 不连接数据库、不比较 Prisma schema、不执行 smoke，也不替代 `release:check`、正式
     `migrate deploy`、一致备份/恢复演练或服务人工验收；不得把它扩展成第二套打包器或部署器
+- `apps/api/src/releaseSwitch.ts` + `apps/api/src/releaseSwitchCli.ts`
+  - 不可变 release symlink 的唯一升级/代码回滚 owner；三个路径必须显式绝对，新旧 release 必须是同一 releases 根的
+    不同直接子目录，且 `current` 的真实目标必须仍等于操作员记录的 `expected-current`
+  - 切换前复用 `inspectReleaseCandidate()`，以固定并发锁、同目录唯一临时 symlink 和原子 rename 发布；候选检查后必须
+    再读 current。失败只定点清理本次临时项，响应不确定时以 current 真实目标判断是否已经提交
+  - 生产升级和兼容性代码回滚都使用 `release:switch`，不要在升级章节恢复裸 `ln -sfn`。它不迁移或回滚数据库/对象；
+    migration 不兼容、对象/数据库写入不确定或一致性失败时必须保持维护并走已验证的一致备份恢复
 - `apps/api/src/prismaClientSchemaGuard.ts` + `apps/api/src/prismaClientSchemaGuardCli.ts`
   - compare the release source schema with Prisma's generated schema while ignoring formatting-only alignment; model,
     field, relation, enum, attribute, string, and meaningful comment changes remain detectable

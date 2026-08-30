@@ -9117,3 +9117,54 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **待推进**：P5c 生成脱敏生产候选演练包、旧/新 release 与回滚检查单，在本机验证维护、备份、worker、候选检查、
   migration 和只读 smoke 的顺序；仍不连接生产。P5d 生产切换继续等待用户明确授权，并补做真实普通账号/管理员双会话、
   波形/频谱/F0 和协作 UI 人工验收。
+
+## 2026-08-30：生产候选演练包与原子 Release 切换（P5c）
+
+### 修复升级顺序的真实缺口
+
+- 本轮先核对现有代码、`server-deployment.md`、备份 CLI、维护 coordinator、候选检查器和 smoke owner，再重写被 Git
+  忽略的 `CLAUDE_WORK.md`。审查发现手册把“停止 worker、创建一致备份”排在“启用维护并排空 API 写入”之前；此时
+  用户仍可写入，备份不能作为一致回滚基线。升级示例还省略 candidate inspect/check、worker 停止、备份校验和
+  migration，直接使用不绑定旧状态的 `ln -sfn`。
+- 手册、单服务器入口和 AGENTS 现统一固定顺序：候选只读检查 -> 旧 release 启用维护并排空 API 写入 -> 停止并确认
+  worker inactive -> 创建并验证一致备份 -> 新 release 正式 migrate deploy -> 原子切换 -> 维护状态只读 smoke ->
+  解除维护 -> 启动 worker。备份章节也明确“只停止 worker 但仍允许 API 写入”不构成一致备份。
+- 新增 `production-cutover-record-template.md`。模板记录 release/commit、migration 数量、任务聚合、备份 id/manifest、
+  恢复报告、健康状态和验收结论，明确禁止写入密码、token、AccessKey/Secret、Web License key、PlayAuth、数据库连接串、
+  临时媒体 URL、环境/对象正文或完整标注 payload。回滚拆成向后兼容的仅代码回滚，以及必须同时恢复数据库/对象的
+  不兼容 migration/不确定写入两类，不再暗示切回 symlink 就等于数据回滚。
+
+### 唯一原子切换 Owner
+
+- 新增 `releaseSwitch.ts` 与编译后 `releaseSwitchCli.ts`，`release:switch` 要求显式绝对 `current-link`、
+  `expected-current` 和 `new-release`。current 必须是 symlink；新旧 release 必须是同一真实 releases 根下的不同直接
+  子目录；当前真实目标必须等于操作员预先记录的旧 release，任何路径漂移都 fail closed。
+- 切换服务复用唯一 `inspectReleaseCandidate()`，不复制候选校验。它持有一个固定并发锁，在 current 同目录创建唯一
+  临时 symlink，并以 rename 原子发布；候选检查后发布前再次读取 current。失败只删除本次临时项，不扫描其他文件；
+  若 rename 已提交但响应报错，则重新读取 current 并承认已提交事实，避免把成功切换误报成旧版本仍激活。
+- 固定锁不会自动打破陈旧文件；CLI 明确要求操作员先确认没有切换进程再人工处理，避免按时间猜测并发状态。成功/失败
+  输出只含规范 release 路径和候选计数，不读环境文件、不连数据库、不打印秘密。代码回滚复用同一 owner；数据库或对象
+  恢复继续由既有备份/恢复边界负责。
+- 候选检查器现要求 `dist/api/releaseSwitchCli.js`，生产 package script 只调用编译产物。测试覆盖参数重复/相对路径、
+  current 漂移、非 symlink、同目标、跨根、并发锁、不完整候选、rename 确定失败、rename 已提交但响应丢失、正常切换和
+  反向回滚；临时锁/链接均回到基线，旁路文件不被删除。
+
+### 真实临时候选演练与验证
+
+- 完整 build 后在唯一 `/tmp` 目录以 APFS copy-on-write 组装 old/new 两个候选，各包含 package/lockfile、Prisma、workspace
+  packages、Web/API dist、node_modules 和 smoke 脚本。新候选内部 `release:inspect` 报告 27 个运行路径、25 个生产依赖、
+  31 条 migration，`release:check` 通过；编译后 CLI 完成 old -> new 原子切换和 new -> old 回滚，current 最终指回 old，
+  没有 lock 或临时 symlink。
+- 同一新候选使用显式隔离 `api_test` URL 执行正式 `prisma migrate deploy/status`：31 条 migration，无 pending。第一次
+  shell 断言因 macOS `/tmp` 规范化为 `/private/tmp` 停止在已成功切换之后；改用 `realpath` 比较继续完成回滚和 migration，
+  没有修改业务代码来迎合平台路径别名。演练目录随后通过 Node 文件系统 API 定点清理。
+- 原子切换/候选测试连续三轮均为 13/13；`npm run test:deployment`：29/29；`npm run test:backup`：28/28；
+  `NODE_OPTIONS=--throw-deprecation npm run test:api`：254/254，无 PostgreSQL 重入/弃用警告。完整 `npm run build`、
+  `git diff --check`、秘密样式和临时目录检查通过，仅保留既有 Vite 主 chunk 提示。
+- 自审确认没有新 dependency、migration、生产连接、生产维护/备份、ProjectData、任务模型、协作命令、媒体算法或前端 UI
+  变化；没有 shell 拼接数据库凭据、第二套部署器、自动 sudo/systemd、裸升级 `ln -sfn`、无界目录清理或僵尸测试逻辑。
+- **已完成**：P5c 原子 release 切换/回滚 owner、候选运行门禁、维护/备份顺序修复、脱敏上线记录模板、真实临时候选和
+  隔离 migration 演练、完整测试与规范更新。
+- **待推进**：P5d 只能在用户重新明确授权后连接生产，以 `platform.admin` 进入维护、停止 worker、创建/校验一致备份、
+  构建并检查不可变候选、正式 migration、原子切换、只读 smoke、恢复服务和真实多账号/VOD/分析人工验收。未授权前
+  不连接 `101.201.76.10`，不读取或修改生产数据库、对象、任务和草稿。

@@ -23,6 +23,7 @@ const REQUIRED_FILES = [
   "dist/api/backup/cli.js",
   "dist/api/prismaClientSchemaGuardCli.js",
   "dist/api/releaseCandidateInspectorCli.js",
+  "dist/api/releaseSwitchCli.js",
   "scripts/checkDeployment.mjs",
   "scripts/deploymentCheck.mjs",
   "node_modules/@prisma/client/package.json",

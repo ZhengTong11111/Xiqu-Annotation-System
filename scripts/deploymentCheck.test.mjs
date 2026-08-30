@@ -70,6 +70,18 @@ test("生产维护与备份命令只调用编译后 CLI", async () => {
   }
 });
 
+// release 切换需要在候选目录执行，生产 release 中不能依赖 TypeScript 源码或临时工作树。
+test("原子 release 切换只调用编译后 CLI", async () => {
+  const packageJson = JSON.parse(await readFile(
+    new URL("../package.json", import.meta.url),
+    "utf8",
+  ));
+  assert.equal(
+    packageJson.scripts?.["release:switch"],
+    "node dist/api/releaseSwitchCli.js",
+  );
+});
+
 // Prisma 7 配置和 npm workspace 产物都是生产运行时依赖，部署清单缺项会导致 migration 或服务启动失败。
 test("单服务器 release 清单包含 Prisma 配置与 workspace 构建产物", async () => {
   const deploymentGuide = await readFile(
@@ -125,6 +137,50 @@ test("候选 release 包含部署 smoke 的运行时脚本", async () => {
   );
   assert.match(deploymentGuide, /scripts\/checkDeployment\.mjs scripts\/deploymentCheck\.mjs/u);
   assert.doesNotMatch(deploymentGuide, /sudo cp -a scripts\s/u);
+});
+
+// 一致备份必须建立在 API 写入排空和 worker 停止之后；静态门禁防止示例再次退化为危险的删减版。
+test("升级示例保持维护、备份、migration、切换和恢复的安全顺序", async () => {
+  const deploymentGuide = await readFile(
+    new URL("../docs/server-deployment.md", import.meta.url),
+    "utf8",
+  );
+  const upgradeSection = deploymentGuide.split("## 11. 升级流程")[1]?.split("## 12. 失败回滚")[0];
+  assert.equal(typeof upgradeSection, "string");
+  assertInOrder(upgradeSection, [
+    "npm run release:inspect",
+    "npm run maintenance:enable",
+    "systemctl stop xiqu-analysis-worker",
+    "npm run backup:create",
+    "npm run backup:verify",
+    "npm run db:deploy",
+    "npm run release:switch",
+    "systemctl restart xiqu-api",
+    "npm run deploy:check",
+    "npm run maintenance:disable",
+    "systemctl start xiqu-analysis-worker",
+  ]);
+  assert.doesNotMatch(upgradeSection, /sudo ln -sfn/u);
+});
+
+test("生产切换模板覆盖脱敏、备份和两类回滚证据", async () => {
+  const template = await readFile(
+    new URL("../docs/production-cutover-record-template.md", import.meta.url),
+    "utf8",
+  );
+  for (const requiredText of [
+    "禁止记录",
+    "release:inspect",
+    "维护排空完成 + worker 已停止",
+    "manifest",
+    "release:switch",
+    "仅代码回滚",
+    "数据与对象恢复",
+    "不得手工删除 `_prisma_migrations`",
+  ]) {
+    assert.match(template, new RegExp(escapeRegExp(requiredText), "u"));
+  }
+  assert.doesNotMatch(template, /LTAI[A-Za-z0-9]+|postgresql:\/\/[^<\s]+:[^<\s]+@/u);
 });
 
 // 对象恢复通过同级 staging 原子发布，手册必须先提供服务账号可写的专用父目录。
@@ -240,3 +296,16 @@ test("单服务器 Nginx 模板压缩全部媒体分析 MIME", async () => {
     assert.match(nginx, new RegExp(mimeType.replaceAll(".", "\\."), "u"));
   }
 });
+
+function assertInOrder(value, fragments) {
+  let previousIndex = -1;
+  for (const fragment of fragments) {
+    const index = value.indexOf(fragment, previousIndex + 1);
+    assert.ok(index > previousIndex, `部署文档缺少或顺序错误：${fragment}`);
+    previousIndex = index;
+  }
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
