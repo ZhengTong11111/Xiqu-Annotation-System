@@ -558,6 +558,7 @@ export type PlatformApiContract<TPayload = unknown> = {
     response: ResourceEntry;
   };
   getProjectWorkflowGroups: { response: ProjectWorkflowGroups };
+  listProjectWorkflowCandidates: { response: PlatformUser[] };
   updateProjectWorkflowGroups: {
     request: UpdateProjectWorkflowGroupsRequest;
     response: ProjectWorkflowGroups;

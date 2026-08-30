@@ -80,6 +80,8 @@ export type EffectiveResourcePermission = {
     resourceId: string;
     resourceName: string;
     capabilities: ResourceCapability[];
+    // 职责组与手工 ACL 共用有效权限并集，但保留来源供界面准确解释撤销边界。
+    responsibilityGroup?: ProjectWorkflowGroup;
   }>;
   isOwner: boolean;
   canManagePermissions: boolean;

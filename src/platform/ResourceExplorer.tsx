@@ -1252,6 +1252,11 @@ export function ResourceExplorer(props: {
           readOnly={isTrashView}
           permissionRefreshVersion={permissionRefreshVersion}
           onChanged={() => refreshCurrentView()}
+          onWorkflowGroupsChanged={async () => {
+            // 职责组会改变有效权限来源，保存后同时重读列表摘要和 Inspector 权限矩阵。
+            setPermissionRefreshVersion((current) => current + 1);
+            await refreshCurrentView();
+          }}
           onError={setError}
           onOpenAnnotationFile={props.onOpenAnnotationFile}
           onDownload={downloadResource}
@@ -1428,6 +1433,7 @@ function ResourceInspector(props: {
   readOnly: boolean;
   permissionRefreshVersion: number;
   onChanged: () => void | Promise<void>;
+  onWorkflowGroupsChanged: () => void | Promise<void>;
   onError: (message: string | null) => void;
   onOpenAnnotationFile: (
     resource: ResourceEntry,
@@ -1574,7 +1580,7 @@ function ResourceInspector(props: {
           client={props.client}
           resource={props.resource}
           readOnly={props.readOnly}
-          onChanged={props.onChanged}
+          onChanged={props.onWorkflowGroupsChanged}
           onError={props.onError}
         />
       ) : null}

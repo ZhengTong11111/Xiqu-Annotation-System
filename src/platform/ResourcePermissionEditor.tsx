@@ -24,6 +24,7 @@ import {
   type ResourcePermissionPreset,
   type ResourceSimplePermissionSelection,
 } from "./resourcePermissionPresets";
+import { describeSupplementalPermissionSources } from "./resourcePermissionSources";
 import { ResourcePermissionPresetSelector } from "./ResourcePermissionPresetSelector";
 
 // 权限区只切换展示复杂度；两种模式继续编辑同一条直接 ACL。
@@ -444,7 +445,9 @@ function getPermissionSummary(row: ResourcePermissionMatrixRow): string {
   if (row.directPermission) return "当前资源直接授权";
   if (row.effectivePermission.source === "role") return "教师角色自动查看";
   if (row.effectivePermission.source === "inherited") {
-    return `继承：${row.effectivePermission.inheritedFrom.map((item) => item.resourceName).join("、")}`;
+    return describeSupplementalPermissionSources(
+      row.effectivePermission.inheritedFrom,
+    ) ?? "继承权限";
   }
   return "尚未直接授权";
 }
@@ -454,7 +457,11 @@ function getResidualAccessDescription(row: ResourcePermissionMatrixRow): string 
   const sources: string[] = [];
   if (row.user.roles.includes("teacher")) sources.push("教师角色仍提供查看、播放与下载");
   if (row.effectivePermission.inheritedFrom.length) {
-    sources.push(`仍继承自：${row.effectivePermission.inheritedFrom.map((item) => item.resourceName).join("、")}`);
+    const description = describeSupplementalPermissionSources(
+      row.effectivePermission.inheritedFrom,
+      true,
+    );
+    if (description) sources.push(description);
   }
   return sources.length ? sources.join("；") : null;
 }

@@ -162,6 +162,17 @@ test("标注工作流状态与项目职责组遵守权限、顺序和递归汇�
     });
     assert.equal(dataOf(projectAfterTrash.json()).workflowStatus, "annotated");
 
+    // 手工直接 ACL 与职责组来源必须独立；后续移出职责组时，这条 read 授权仍需原样保留。
+    await prisma.resourcePermission.create({
+      data: {
+        resourceId: project.id,
+        userId: student.id,
+        capabilities: ["read"],
+        inheritToChildren: true,
+        createdBy: admin.id,
+      },
+    });
+
     const forbiddenGroups = await jsonRequest(app, studentToken, {
       method: "GET",
       url: `/api/projects/${project.id}/workflow-groups`,
@@ -186,6 +197,46 @@ test("标注工作流状态与项目职责组遵守权限、顺序和递归汇�
       new Set([reviewer.id, student.id]),
     );
 
+    const studentProjectWithGroups = dataOf((await jsonRequest(app, studentToken, {
+      method: "GET",
+      url: `/api/resources/${project.id}`,
+    })).json());
+    assert.deepEqual(
+      studentProjectWithGroups.permission &&
+        (studentProjectWithGroups.permission as JsonObject).capabilities,
+      ["read", "write", "review", "create_child", "copy", "move", "delete", "download"],
+    );
+    const reviewerProjectWithGroup = dataOf((await jsonRequest(app, reviewerToken, {
+      method: "GET",
+      url: `/api/resources/${project.id}`,
+    })).json());
+    assert.deepEqual(
+      reviewerProjectWithGroup.permission &&
+        (reviewerProjectWithGroup.permission as JsonObject).capabilities,
+      ["read", "review", "download"],
+    );
+
+    const inheritanceStop = await prisma.resourceEntry.create({
+      data: {
+        parentId: project.id,
+        type: "folder",
+        name: "职责权限断点",
+        ownerUserId: admin.id,
+        breakPermissionInheritance: true,
+      },
+    });
+    const isolatedFile = await createAnnotationFile(prisma, {
+      parentId: inheritanceStop.id,
+      ownerUserId: admin.id,
+      lastEditedBy: admin.id,
+      name: "断点后的标注.json",
+    });
+    const isolatedRead = await jsonRequest(app, studentToken, {
+      method: "GET",
+      url: `/api/resources/${isolatedFile.id}`,
+    });
+    assert.equal(isolatedRead.statusCode, 403, isolatedRead.body);
+
     const list = await jsonRequest(app, adminToken, {
       method: "GET",
       url: "/api/resources?view=all_projects&sortBy=name&direction=asc",
@@ -199,6 +250,92 @@ test("标注工作流状态与项目职责组遵守权限、顺序和递归汇�
       (listedProject.annotationResponsibles as JsonObject[]).map(({ id }) => id),
       [student.id],
     );
+
+    const removedStudentAnnotationGroup = await jsonRequest(app, adminToken, {
+      method: "PUT",
+      url: `/api/projects/${project.id}/workflow-groups`,
+      payload: {
+        annotationUserIds: [],
+        reviewUserIds: [reviewer.id, student.id],
+      },
+    });
+    assert.equal(
+      removedStudentAnnotationGroup.statusCode,
+      200,
+      removedStudentAnnotationGroup.body,
+    );
+    const studentWithReviewGroupOnly = dataOf((await jsonRequest(app, studentToken, {
+      method: "GET",
+      url: `/api/resources/${project.id}`,
+    })).json());
+    assert.deepEqual(
+      studentWithReviewGroupOnly.permission &&
+        (studentWithReviewGroupOnly.permission as JsonObject).capabilities,
+      ["read", "review", "download"],
+    );
+
+    const removedStudentGroups = await jsonRequest(app, adminToken, {
+      method: "PUT",
+      url: `/api/projects/${project.id}/workflow-groups`,
+      payload: {
+        annotationUserIds: [],
+        reviewUserIds: [reviewer.id],
+      },
+    });
+    assert.equal(removedStudentGroups.statusCode, 200, removedStudentGroups.body);
+    const studentProjectAfterRemoval = dataOf((await jsonRequest(app, studentToken, {
+      method: "GET",
+      url: `/api/resources/${project.id}`,
+    })).json());
+    assert.deepEqual(
+      studentProjectAfterRemoval.permission &&
+        (studentProjectAfterRemoval.permission as JsonObject).capabilities,
+      ["read"],
+    );
+    const preservedManualPermission = await prisma.resourcePermission.findUniqueOrThrow({
+      where: { resourceId_userId: { resourceId: project.id, userId: student.id } },
+    });
+    assert.deepEqual(preservedManualPermission.capabilities, ["read"]);
+
+    // 项目 owner 即使不是教师/管理员，也应通过项目上下文搜索候选账号。
+    const studentOwnedProject = await prisma.resourceEntry.create({
+      data: {
+        type: "project",
+        name: "学生负责项目",
+        ownerUserId: student.id,
+        projectMetadata: { create: { description: "candidate search" } },
+      },
+    });
+    const globalDirectoryDenied = await jsonRequest(app, studentToken, {
+      method: "GET",
+      url: "/api/users?query=教师",
+    });
+    assert.equal(globalDirectoryDenied.statusCode, 403, globalDirectoryDenied.body);
+    const contextualCandidates = await jsonRequest(app, studentToken, {
+      method: "GET",
+      url: `/api/projects/${studentOwnedProject.id}/workflow-group-candidates?query=${encodeURIComponent("教师")}`,
+    });
+    assert.equal(contextualCandidates.statusCode, 200, contextualCandidates.body);
+    const candidateData = recordOf(contextualCandidates.json()).data;
+    assert.ok(Array.isArray(candidateData));
+    assert.deepEqual(
+      (candidateData as JsonObject[]).map(({ id }) => id),
+      [reviewer.id],
+    );
+
+    await prisma.resourcePermission.update({
+      where: { resourceId_userId: { resourceId: project.id, userId: student.id } },
+      data: { capabilities: ["read", "manage_permissions"] },
+    });
+    const delegatedEscalation = await jsonRequest(app, studentToken, {
+      method: "PUT",
+      url: `/api/projects/${project.id}/workflow-groups`,
+      payload: {
+        annotationUserIds: [reviewer.id],
+        reviewUserIds: [reviewer.id],
+      },
+    });
+    assert.equal(delegatedEscalation.statusCode, 403, delegatedEscalation.body);
 
     const duplicateGroupMember = await jsonRequest(app, adminToken, {
       method: "PUT",
@@ -306,7 +443,7 @@ test("标注工作流状态与项目职责组遵守权限、顺序和递归汇�
         },
       },
     });
-    assert.equal(workflowAudits.length, 4);
+    assert.equal(workflowAudits.length, 6);
     assert.doesNotMatch(JSON.stringify(workflowAudits), /unchanged/);
   } finally {
     await app.close();

@@ -326,7 +326,7 @@ model ProjectMetadata {
   @@map("project_metadata")
 }
 
-// 项目职责组只保存成员关系；真实 read/write/review 权限仍由 ResourcePermission 计算。
+// 项目职责组成员关系是独立的有效权限来源；手工 ResourcePermission 始终单独保存、单独撤销。
 model ProjectWorkflowMember {
   id                String               @id @default(uuid())
   projectResourceId String               @map("project_resource_id")

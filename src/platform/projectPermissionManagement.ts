@@ -9,6 +9,7 @@ import {
   type ResourceSimplePermissionMatch,
   type ResourceSimplePermissionSelection,
 } from "./resourcePermissionPresets";
+import { describeSupplementalPermissionSources } from "./resourcePermissionSources";
 
 export type ProjectPermissionSavePlan =
   | { kind: "noop"; requiresDetailedOverwrite: false }
@@ -50,9 +51,11 @@ export function getProjectPermissionResidualAccess(
     sources.push("教师角色仍提供查看、播放与下载");
   }
   if (row.effectivePermission.inheritedFrom.length > 0) {
-    sources.push(`仍继承自：${row.effectivePermission.inheritedFrom
-      .map((item) => item.resourceName)
-      .join("、")}`);
+    const description = describeSupplementalPermissionSources(
+      row.effectivePermission.inheritedFrom,
+      true,
+    );
+    if (description) sources.push(description);
   }
   return sources.length > 0 ? sources.join("；") : null;
 }

@@ -55,7 +55,10 @@ import type {
   UpdateProjectWorkflowGroupsRequest,
   UpsertResourcePermissionRequest,
 } from "@xiqu/shared";
-import { getAnnotationWorkflowTransition } from "@xiqu/shared";
+import {
+  getAnnotationWorkflowTransition,
+  getProjectWorkflowGroupCapabilities,
+} from "@xiqu/shared";
 import {
   canCreateAnnotationReviewFact,
   canWithdrawAnnotationReviewFact,
@@ -1796,6 +1799,34 @@ export class ResourceService {
     return this.mapProjectWorkflowGroups(projectResourceId, rows);
   }
 
+  async listProjectWorkflowCandidates(
+    user: ApiUser,
+    projectResourceId: string,
+    query?: string,
+  ): Promise<UserReference[]> {
+    // 候选目录绑定具体项目的管理能力，项目 owner 无需额外拥有教师或全局管理员角色。
+    await this.access.assertCapability(user, projectResourceId, "manage_permissions");
+    await this.assertActiveProject(projectResourceId);
+    const normalizedQuery = query?.trim();
+    const accounts = await this.prisma.user.findMany({
+      where: {
+        isActive: true,
+        ...(normalizedQuery
+          ? {
+              OR: [
+                { displayName: { contains: normalizedQuery, mode: "insensitive" as const } },
+                { accountName: { contains: normalizedQuery, mode: "insensitive" as const } },
+              ],
+            }
+          : {}),
+      },
+      include: { roles: true },
+      orderBy: [{ displayName: "asc" }, { accountName: "asc" }],
+      take: 200,
+    });
+    return accounts.map(toPublicUser);
+  }
+
   async updateProjectWorkflowGroups(
     user: ApiUser,
     projectResourceId: string,
@@ -1827,6 +1858,17 @@ export class ResourceService {
         ...annotationUserIds.map((userId) => ({ group: "annotation" as const, userId })),
         ...reviewUserIds.map((userId) => ({ group: "review" as const, userId })),
       ];
+      const additions = desiredPairs.filter(({ group, userId }) =>
+        !existingPairs.has(`${group}:${userId}`));
+      if (!this.access.hasFullResourceAccess(user)) {
+        const delegatedCapabilities = new Set(
+          additions.flatMap(({ group }) => getProjectWorkflowGroupCapabilities(group)),
+        );
+        if ([...delegatedCapabilities].some((capability) =>
+          !permission.capabilities.includes(capability))) {
+          throw forbidden("不能通过职责组授予自己并不拥有的资源能力。");
+        }
+      }
       const desiredUserIds = [...new Set(desiredPairs.map(({ userId }) => userId))];
       const users = desiredUserIds.length
         ? await transaction.user.findMany({

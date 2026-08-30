@@ -538,6 +538,18 @@ export function registerApiRoutes(
     ),
   );
 
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { query?: string };
+  }>(
+    "/api/projects/:resourceId/workflow-group-candidates",
+    async (request) => resources.listProjectWorkflowCandidates(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      normalizedString(request.query.query),
+    ),
+  );
+
   app.put<{ Params: { resourceId: string }; Body: unknown }>(
     "/api/projects/:resourceId/workflow-groups",
     async (request) => {

@@ -6,6 +6,10 @@ import type {
   UserReference,
 } from "@xiqu/shared";
 import type { PlatformClient } from "../api/platformClient";
+import {
+  filterProjectWorkflowCandidates,
+  mergeProjectWorkflowCandidateBatches,
+} from "./projectWorkflowCandidates";
 
 export function ProjectWorkflowGroupEditor(props: {
   client: PlatformClient;
@@ -55,9 +59,14 @@ export function ProjectWorkflowGroupEditor(props: {
     if (!canManage) return () => { active = false; };
     setSearching(true);
     const timer = window.setTimeout(() => {
-      void props.client.listDirectoryUsers(query.trim() || undefined)
+      void props.client.listProjectWorkflowCandidates(
+        props.resource.id,
+        query.trim() || undefined,
+      )
         .then((next) => {
-          if (active) setAccounts(next);
+          if (!active) return;
+          // 累积已见账号，保证尚未保存的勾选在切换关键词后仍能恢复显示和取消。
+          setAccounts((current) => mergeProjectWorkflowCandidateBatches(current, next));
         })
         .catch((error) => {
           if (active) props.onError(describeError(error));
@@ -70,20 +79,14 @@ export function ProjectWorkflowGroupEditor(props: {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [canManage, props.client, props.onError, query]);
+  }, [canManage, props.client, props.onError, props.resource.id, query]);
 
-  // 搜索结果与既有成员合并，确保停用或暂时不匹配关键词的成员仍可被看见和移出。
-  const visibleAccounts = useMemo(() => {
-    const byId = new Map<string, UserReference>();
-    for (const account of [
-      ...(groups?.annotation ?? []),
-      ...(groups?.review ?? []),
-      ...accounts,
-    ]) byId.set(account.id, account);
-    return [...byId.values()].sort((left, right) =>
-      left.displayName.localeCompare(right.displayName, "zh-CN") ||
-      left.accountName.localeCompare(right.accountName));
-  }, [accounts, groups]);
+  // 清空搜索时展示完整已知成员；有关键词时必须真实过滤，不能让所有既有成员掩盖搜索结果。
+  const visibleAccounts = useMemo(() => filterProjectWorkflowCandidates({
+    groups,
+    knownAccounts: accounts,
+    query,
+  }), [accounts, groups, query]);
 
   const dirty = groups != null && (
     !setsEqual(annotationIds, new Set(groups.annotation.map(({ id }) => id))) ||
@@ -120,7 +123,7 @@ export function ProjectWorkflowGroupEditor(props: {
       <div className="resource-inspector-section-heading">
         <div>
           <strong><UsersRound size={15} /> 项目职责组</strong>
-          <span>只表达分工，不会自动授予编辑或审核权限</span>
+          <span>标注组自动获得编辑权限；审核组自动获得查看、下载与审核权限</span>
         </div>
       </div>
       <label className="project-workflow-search">

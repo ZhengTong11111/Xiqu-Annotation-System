@@ -265,6 +265,15 @@ export class PlatformClient {
     );
   }
 
+  listProjectWorkflowCandidates(resourceId: string, query?: string) {
+    const params = new URLSearchParams();
+    if (query) params.set("query", query);
+    const suffix = params.size ? `?${params}` : "";
+    return this.request<PlatformUser[]>(
+      `/projects/${resourceId}/workflow-group-candidates${suffix}`,
+    );
+  }
+
   updateProjectWorkflowGroups(
     resourceId: string,
     request: UpdateProjectWorkflowGroupsRequest,

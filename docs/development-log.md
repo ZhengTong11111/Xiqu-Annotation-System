@@ -9506,3 +9506,42 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   完整构建和文档更新。
 - **待人工验收**：分别用只有编辑权限、只有审核权限和二者皆有的账号验证菜单禁用/跨级说明/成功回写，并确认
   窄高度窗口中的文件菜单可完整操作。本轮未连接、迁移或部署生产服务器。
+
+## 2026-08-30：R2.7 项目职责组来源授权与账号搜索修复
+
+### 来源授权设计
+
+- 没有采用“保存职责组时顺手 upsert/delete 一行 ACL”的实现。`ProjectWorkflowMember` 成员关系本身成为独立的
+  有效权限来源，由 shared `getProjectWorkflowGroupCapabilities()` 统一定义：标注组贡献
+  `read + write + create_child + copy + move + delete + download`，审核组贡献 `read + review + download`。
+  两组都不包含 `manage_permissions`，审核组也不隐式获得编辑和文件操作能力。
+- `ResourceAccessService` 在既有资源祖先链上合并职责来源、手工 direct/inherited ACL、角色、owner 与 admin。
+  职责权限遵守 `breakPermissionInheritance`，同一账号属于两组时取能力并集；移出一组只消失该组贡献，另一组和
+  手工 ACL 均不变。有效权限 DTO 对职责来源保留 group 标记，详细权限面板和项目权限面板可明确显示“标注组 / 审核组”，
+  不把它误写成直接授权或普通祖先 ACL。
+- 普通 `manage_permissions` 操作者新增职责成员时仍受委派门禁，不能借职责组发放自己没有的能力；全局资源管理员
+  和 owner 继续拥有原有完整边界。职责组集合替换、审计和复制不继承规则保持原实现，没有新增数据库表、migration、
+  合成 ACL 或清理脚本；Prisma schema 只修正模型注释以反映当前来源语义。
+
+### 搜索与界面同步
+
+- 新增项目上下文候选接口 `GET /projects/:id/workflow-group-candidates`。接口先复核目标项目有效
+  `manage_permissions` 和活动状态，再按姓名/账号进行大小写不敏感 contains，最多返回 200 个活动账号。因此普通
+  annotator 只要是项目 owner/权限管理员，也能管理该项目职责组，不再被通用 `/users` 的教师/管理员角色门禁误挡。
+- 前端搜索缓存本轮已见账号引用，防止尚未保存的勾选因下一次响应替换数组而消失；实际列表始终按当前关键词过滤，
+  不再无条件把所有既有成员混入搜索结果。清空关键词后可重新看见并移除全部已选成员。保存职责组后同时刷新项目
+  负责人摘要与权限矩阵，立即显示新的有效来源。
+- 抽取 `projectWorkflowCandidates.ts` 和 `resourcePermissionSources.ts` 两个纯 helper，组件不再内联累积、过滤或来源
+  拼接算法；旧的 `listDirectoryUsers()` 职责组调用和“职责组不会授权”的过时文案已经删除。没有增加第三方依赖。
+
+### 验证与阶段状态
+
+- `npm run test:annotation-workflow` 9/9 通过，覆盖两组 capability 合同、两组并集、逐组撤销、手工 ACL 保留、继承
+  断点、项目 owner 上下文搜索、非全权管理员委派阻断、查询过滤和账号批次缓存。
+- `npm run test:permissions` 5/5、`npm run test:project-permission-management` 7/7 通过。
+- 完整 `npm run test:api` 259/259 通过；完整 `npm run build` 通过 Prisma Client/schema、shared、document-model、
+  Web 和 API，仅保留既有 Vite 主 chunk 超过 500 kB 提示。`git diff --check` 通过。
+- **已完成**：职责组来源授权、精确撤销、手工权限隔离、继承断点、委派门禁、项目上下文搜索、前端搜索状态、
+  权限来源说明、Inspector 刷新、专项/完整回归和文档更新。
+- **待人工验收**：在项目 Inspector 中搜索中文姓名与账号，分别加入/移出标注组和审核组，并在权限矩阵及子文件
+  实际操作中确认来源变化。本轮未连接或部署生产服务器。
