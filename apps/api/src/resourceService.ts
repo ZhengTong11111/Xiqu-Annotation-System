@@ -439,7 +439,20 @@ export class ResourceService {
     const name = this.validateName(input.name);
     const parentId = input.parentId ?? null;
     const resourceId = await this.prisma.$transaction(async (transaction) => {
+      await this.lockResourceTreeForContentWrite(transaction);
       await this.lockParentNamespaces(transaction, [parentId]);
+      if (parentId) {
+        await this.assertContainer(parentId, transaction);
+        await this.access.assertCapability(
+          user,
+          parentId,
+          "create_child",
+          transaction,
+        );
+      } else {
+        // 根目录没有可承载 ACL 的父节点，仍要在资源树锁后用数据库当前角色复核管理员身份。
+        await this.access.assertFullResourceAccess(user, transaction);
+      }
       await this.assertNameAvailable(transaction, parentId, name);
       const created = await transaction.resourceEntry.create({
         data: {
@@ -472,7 +485,15 @@ export class ResourceService {
     await this.access.assertCapability(user, input.parentId, "create_child");
     const name = this.validateName(input.name);
     const resourceId = await this.prisma.$transaction(async (transaction) => {
+      await this.lockResourceTreeForContentWrite(transaction);
       await this.lockParentNamespaces(transaction, [input.parentId]);
+      await this.assertContainer(input.parentId, transaction);
+      await this.access.assertCapability(
+        user,
+        input.parentId,
+        "create_child",
+        transaction,
+      );
       if (input.mediaResourceId) {
         await this.assertMediaResourceForBinding(user, input.mediaResourceId, transaction);
       }
@@ -537,6 +558,7 @@ export class ResourceService {
     }
 
     const createdId = await this.prisma.$transaction(async (transaction) => {
+      await this.lockResourceTreeForContentWrite(transaction);
       await this.lockParentNamespaces(transaction, [input.parentId]);
       await this.assertContainer(input.parentId, transaction);
       await this.access.assertCapability(
@@ -652,7 +674,8 @@ export class ResourceService {
     await this.access.assertCapability(user, input.parentId, "create_child");
     const name = this.validateName(input.name);
     const resource = await this.prisma.$transaction(async (transaction) => {
-      // 配额锁顺序固定为平台、用户、目录，避免并发上传各自通过旧使用量并减少死锁风险。
+      // 锁顺序固定为资源树共享门禁、平台配额、用户配额、目录，避免权限撤销与上传提交交错。
+      await this.lockResourceTreeForContentWrite(transaction);
       await transaction.$queryRaw`
         SELECT 1::integer AS locked
         FROM pg_advisory_xact_lock(hashtext('xiqu:storage-quota:platform'))
@@ -662,6 +685,13 @@ export class ResourceService {
         FROM pg_advisory_xact_lock(hashtext(${`xiqu:storage-quota:user:${user.id}`}))
       `;
       await this.lockParentNamespaces(transaction, [input.parentId]);
+      await this.assertContainer(input.parentId, transaction);
+      await this.access.assertCapability(
+        user,
+        input.parentId,
+        "create_child",
+        transaction,
+      );
       await this.assertNameAvailable(
         transaction,
         input.parentId,
@@ -1835,7 +1865,8 @@ export class ResourceService {
     const annotationUserIds = [...new Set(input.annotationUserIds)];
     const reviewUserIds = [...new Set(input.reviewUserIds)];
     await this.prisma.$transaction(async (transaction) => {
-      await this.lockResourceTreeForContentWrite(transaction);
+      // 职责组本身是有效权限来源；更新必须取得独占树锁，不能与已完成权限复核的内容事务交错撤权。
+      await this.lockResourceTreeMutation(transaction);
       await this.lockResourceRows(transaction, [projectResourceId]);
       await this.assertActiveProject(projectResourceId, transaction);
       const permission = await this.access.getEffectivePermission(
@@ -1860,7 +1891,7 @@ export class ResourceService {
       ];
       const additions = desiredPairs.filter(({ group, userId }) =>
         !existingPairs.has(`${group}:${userId}`));
-      if (!this.access.hasFullResourceAccess(user)) {
+      if (permission.source !== "admin") {
         const delegatedCapabilities = new Set(
           additions.flatMap(({ group }) => getProjectWorkflowGroupCapabilities(group)),
         );
@@ -1938,7 +1969,16 @@ export class ResourceService {
       await this.access.assertCapability(user, resourceId, "delete");
     }
     await this.prisma.$transaction(async (transaction) => {
+      if (input.name !== undefined || input.archived !== undefined) {
+        await this.lockResourceTreeMutation(transaction);
+      }
       await this.lockResourceRows(transaction, [resourceId]);
+      if (input.name !== undefined) {
+        await this.access.assertCapability(user, resourceId, "write", transaction);
+      }
+      if (input.archived !== undefined) {
+        await this.access.assertCapability(user, resourceId, "delete", transaction);
+      }
       const latest = await transaction.resourceEntry.findUnique({
         where: { id: resourceId },
       });
@@ -2018,6 +2058,22 @@ export class ResourceService {
         normalizedLatest.rootIds,
       )) {
         throw conflict("移动期间资源层级发生变化，请刷新后重试。");
+      }
+
+      for (const resourceId of normalizedLatest.rootIds) {
+        await this.access.assertCapability(user, resourceId, "move", transaction);
+      }
+      if (input.parentId) {
+        await this.assertContainer(input.parentId, transaction);
+        await this.access.assertCapability(
+          user,
+          input.parentId,
+          "create_child",
+          transaction,
+        );
+      } else {
+        // 移到根目录属于平台级能力，不能继续使用请求开始时可能已经过期的角色快照。
+        await this.access.assertFullResourceAccess(user, transaction);
       }
 
       await this.lockResourceRows(transaction, normalizedLatest.rootIds);
@@ -2201,6 +2257,16 @@ export class ResourceService {
         latestNodes.some((node) => !authorizedIds.has(node.id))
       ) {
         throw conflict("复制期间源目录发生变化，请刷新后重试。");
+      }
+      await this.access.assertCapability(
+        user,
+        input.parentId,
+        "create_child",
+        transaction,
+      );
+      for (const node of latestNodes) {
+        await this.access.assertCapability(user, node.id, "read", transaction);
+        await this.access.assertCapability(user, node.id, "copy", transaction);
       }
       const name = await this.availableCopyName(
         transaction,
@@ -2399,6 +2465,7 @@ export class ResourceService {
         where: { id: resourceId },
       });
       if (!current) throw notFound("资源不存在。");
+      await this.access.assertCapability(user, resourceId, "delete", transaction);
       if (!current.trashedAt) throw badRequest("资源不在回收站中。");
       await this.lockParentNamespaces(transaction, [current.parentId]);
       if (current.parentId) {
@@ -2472,48 +2539,76 @@ export class ResourceService {
     userId: string,
     input: UpsertResourcePermissionRequest,
   ) {
-    const actorPermission = await this.access.assertCapability(
+    await this.access.assertCapability(
       actor,
       resourceId,
       "manage_permissions",
     );
-    const resource = await this.prisma.resourceEntry.findUnique({
-      where: { id: resourceId },
-    });
-    if (!resource) throw notFound("资源不存在。");
-    if (resource.ownerUserId === userId) {
-      throw badRequest("资源所有者始终拥有完整权限，无需另行授权。");
-    }
     const capabilities = [...new Set(input.capabilities)];
-    if (
-      !this.access.hasFullResourceAccess(actor) &&
-      capabilities.some((capability) =>
-        !actorPermission.capabilities.includes(capability))
-    ) {
-      throw forbidden("不能授予自己并不拥有的资源能力。");
-    }
-    const subject = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!subject?.isActive) throw notFound("目标账号不存在或已停用。");
-    const row = await this.prisma.resourcePermission.upsert({
-      where: { resourceId_userId: { resourceId, userId } },
-      update: {
-        capabilities: this.access.toDatabaseCapabilities(capabilities),
-        inheritToChildren: input.inheritToChildren ?? true,
-        expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
-        createdBy: actor.id,
-      },
-      create: {
+    const row = await this.prisma.$transaction(async (transaction) => {
+      // ACL 变化取得资源树独占锁；所有会依据 ACL 提交的事务都在同一锁内复核权限。
+      await this.lockResourceTreeMutation(transaction);
+      await this.lockResourceRows(transaction, [resourceId]);
+      const actorPermission = await this.access.assertCapability(
+        actor,
         resourceId,
-        userId,
-        capabilities: this.access.toDatabaseCapabilities(capabilities),
-        inheritToChildren: input.inheritToChildren ?? true,
-        expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
-        createdBy: actor.id,
-      },
-      include: {
-        user: { include: { roles: true } },
-        grantor: { include: { roles: true } },
-      },
+        "manage_permissions",
+        transaction,
+      );
+      const resource = await transaction.resourceEntry.findUnique({
+        where: { id: resourceId },
+      });
+      if (!resource) throw notFound("资源不存在。");
+      if (resource.ownerUserId === userId) {
+        throw badRequest("资源所有者始终拥有完整权限，无需另行授权。");
+      }
+      if (
+        actorPermission.source !== "admin" &&
+        capabilities.some((capability) =>
+          !actorPermission.capabilities.includes(capability))
+      ) {
+        throw forbidden("不能授予自己并不拥有的资源能力。");
+      }
+      const subject = await transaction.user.findUnique({ where: { id: userId } });
+      if (!subject?.isActive) throw notFound("目标账号不存在或已停用。");
+      const permission = await transaction.resourcePermission.upsert({
+        where: { resourceId_userId: { resourceId, userId } },
+        update: {
+          capabilities: this.access.toDatabaseCapabilities(capabilities),
+          inheritToChildren: input.inheritToChildren ?? true,
+          expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
+          createdBy: actor.id,
+        },
+        create: {
+          resourceId,
+          userId,
+          capabilities: this.access.toDatabaseCapabilities(capabilities),
+          inheritToChildren: input.inheritToChildren ?? true,
+          expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
+          createdBy: actor.id,
+        },
+        select: {
+          id: true,
+          resourceId: true,
+          capabilities: true,
+          inheritToChildren: true,
+          expiresAt: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+      // Prisma interactive transaction 只有一个连接；两个关系分支必须顺序读取后在内存组装。
+      const permissionUser = await transaction.user.findUniqueOrThrow({
+        where: { id: userId },
+        include: { roles: true },
+      });
+      const grantor = actor.id === userId
+        ? permissionUser
+        : await transaction.user.findUniqueOrThrow({
+            where: { id: actor.id },
+            include: { roles: true },
+          });
+      return { ...permission, user: permissionUser, grantor };
     });
     return this.mapPermission(row);
   }
@@ -2524,15 +2619,25 @@ export class ResourceService {
     userId: string,
   ) {
     await this.access.assertCapability(actor, resourceId, "manage_permissions");
-    const resource = await this.prisma.resourceEntry.findUnique({
-      where: { id: resourceId },
-    });
-    if (!resource) throw notFound("资源不存在。");
-    if (resource.ownerUserId === userId) {
-      throw badRequest("不能移除资源所有者权限。");
-    }
-    await this.prisma.resourcePermission.deleteMany({
-      where: { resourceId, userId },
+    await this.prisma.$transaction(async (transaction) => {
+      await this.lockResourceTreeMutation(transaction);
+      await this.lockResourceRows(transaction, [resourceId]);
+      await this.access.assertCapability(
+        actor,
+        resourceId,
+        "manage_permissions",
+        transaction,
+      );
+      const resource = await transaction.resourceEntry.findUnique({
+        where: { id: resourceId },
+      });
+      if (!resource) throw notFound("资源不存在。");
+      if (resource.ownerUserId === userId) {
+        throw badRequest("不能移除资源所有者权限。");
+      }
+      await transaction.resourcePermission.deleteMany({
+        where: { resourceId, userId },
+      });
     });
   }
 
@@ -2542,9 +2647,19 @@ export class ResourceService {
     breakPermissionInheritance: boolean,
   ) {
     await this.access.assertCapability(actor, resourceId, "manage_permissions");
-    await this.prisma.resourceEntry.update({
-      where: { id: resourceId },
-      data: { breakPermissionInheritance },
+    await this.prisma.$transaction(async (transaction) => {
+      await this.lockResourceTreeMutation(transaction);
+      await this.lockResourceRows(transaction, [resourceId]);
+      await this.access.assertCapability(
+        actor,
+        resourceId,
+        "manage_permissions",
+        transaction,
+      );
+      await transaction.resourceEntry.update({
+        where: { id: resourceId },
+        data: { breakPermissionInheritance },
+      });
     });
     return this.getMappedResource(actor, resourceId);
   }
@@ -3100,7 +3215,10 @@ export class ResourceService {
     if (row.type !== "folder" && row.type !== "project") {
       throw badRequest("目标资源不能包含子文件。");
     }
-    if (row.trashedAt) throw badRequest("不能在回收站资源中创建文件。");
+    // 后代通常不写 trashedAt；创建入口必须沿祖先链判断整个目标目录是否仍在活动树中。
+    if (row.trashedAt || await this.hasTrashedAncestor(database, row.parentId)) {
+      throw badRequest("不能在回收站资源中创建文件。");
+    }
   }
 
   private validateName(value: string) {
