@@ -9284,3 +9284,33 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   生产；这些仍属于 P5d，必须等待用户新的明确授权，不能用 localhost 证据替代。
 - 本轮没有代码、依赖、migration、ProjectData 格式或 AGENTS 长期合同变化；因此只更新专项 roadmap、Development Log 和
   被 Git 忽略的当前任务单，不制造无事实变化的 AGENTS 条目。
+
+## 2026-08-30：P5 最终本地候选与完成边界终审
+
+### 当前 HEAD 候选复核
+
+- 按滚动流程先把被 Git 忽略的 `CLAUDE_WORK.md` 完全重写为“P5 当前 HEAD 本地候选终审”，明确本轮只做本机候选、
+  测试、文档与清理，不连接、读取、上传或修改生产服务器。终审发现专项 roadmap 已更新双账号证据，但总 roadmap 仍保留
+  “普通账号未登录、分析 UI 未验收”的旧描述，本轮同步消除该文档漂移。
+- 此前完整 build 在提交 `13f1cda` 前已通过，之后运行代码、package、Prisma、workspace、脚本和 lockfile 均未变化；本轮
+  从该运行树在唯一 `/tmp/xiqu-p5-final-13f1cda` 目录使用 APFS 写时复制组装完整候选，包含根 package/lockfile、Prisma
+  配置和 31 条 migration、workspace package/dist、Web/API dist、完整 `node_modules` 与两个部署 smoke 脚本。没有复制
+  `.env`、`data/`、数据库、对象、媒体、草稿、备份、日志、凭据或 `CLAUDE_WORK.md`。
+- 候选内部 `release:inspect` 返回 27 个运行路径、25 个生产依赖和 31 条 migration；候选内部 `release:check` 确认
+  Prisma Client 与候选 schema 一致。候选的 workspace 链接与运行文件均由检查器确认留在候选目录内，没有指回源码树、
+  旧 release 或用户目录。
+
+### 验证、清理与完成边界
+
+- `npm run test:deployment` 29/29、`npm run test:backup` 32/32 通过；上一轮同一运行树已通过 P5b 聚合门禁（可靠性
+  27/27、任务中心 2/2、协作 23/23）与完整 `npm run build`。`git diff --check` 通过。
+- 候选验证完成后使用唯一绝对路径定点删除，并确认 `/tmp` 不存在同名前缀目录、压缩包或安装缓存；没有无界扫描或清理
+  其他进程/用户的临时项。仓库只留下应跟踪的 roadmap/Development Log 修改和被忽略的当前任务单。
+- 自审确认没有代码、dependency、migration、ProjectData、任务模型、媒体算法、协作命令、权限或 UI 变化；没有生产
+  连接、Git 推送、main 合并、维护、备份、migration 或 release 切换。本轮没有形成新的长期工程合同，因此不机械修改
+  `AGENTS.md`；现有候选、备份和不部署门禁已经完整覆盖本次事实。
+- **已完成**：P4b-P4d、P5a-P5c 以及 P5 在“不部署生产”约束下全部可执行的代码、故障注入、负载、隔离彩排、候选、
+  localhost VOD/分析与双账号验收、测试、自审、文档和提交前清理。
+- **仍待独立授权**：P5d 真实生产连接、维护排空、worker 停止、一致备份、正式 migration、原子切换、生产 origin
+  VOD/多账号/任务/协作人工验收和观察窗口。该缺口来自用户明确要求“不部署生产”，不是本地代码或候选失败；不能把
+  localhost/隔离证据改写为生产通过。
