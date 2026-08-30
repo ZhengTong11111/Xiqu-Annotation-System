@@ -9,6 +9,7 @@ export type ApiErrorCode =
   | "storage_quota_exceeded"
   | "permission_scope_violation"
   | "maintenance_mode"
+  | "write_gate_busy"
   | "external_media_unavailable"
   | "external_service_unavailable"
   | "analysis_source_missing"
@@ -73,6 +74,11 @@ export function storageQuotaExceeded(
 // 维护状态拒绝新写入但保留读取，503 表示调用方可在维护结束后安全重试。
 export function maintenanceMode(message: string, details: unknown = undefined) {
   return new HttpError(503, "maintenance_mode", message, details);
+}
+
+// 写许可池或维护切换暂时繁忙时返回可重试 503，避免调用方把基础设施反压误判为 revision 冲突。
+export function writeGateBusy(message: string, details: unknown = undefined) {
+  return new HttpError(503, "write_gate_busy", message, details);
 }
 
 // 外部媒资不可用与供应商服务故障分开编码，便于客户端区分换资源和稍后重试。

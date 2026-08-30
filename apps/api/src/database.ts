@@ -22,6 +22,8 @@ export function createPrismaConnection(databaseUrl: string) {
     connectionString: databaseUrl,
     options: `-c search_path=${schema}`,
     max: 20,
+    // 门禁池耗尽时必须在 API/Nginx 超时前返回稳定 503，不能让登录和保存请求无限排队。
+    connectionTimeoutMillis: 5_000,
   });
   // 三条 LISTEN 会长期独占连接；额外容量供 NOTIFY、重连交叠和同进程受控 app 装配使用。
   // 该池仍与 Prisma 查询及维护 advisory permit 隔离，避免协作流量反压业务事务。

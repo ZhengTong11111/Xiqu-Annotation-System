@@ -987,7 +987,21 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - failures set the collection-success Gauge without replacing the last real capacity/job snapshot with false zeros
 - `apps/api/src/maintenanceCoordinator.ts`
   - persistent global maintenance mode and cross-instance PostgreSQL shared/exclusive advisory write gate
-  - uses a dedicated pg Pool so request-lifetime permits cannot exhaust Prisma's business-query connections
+  - uses a dedicated pg Pool so write permits cannot exhaust Prisma's business-query connections
+  - route maintenance semantics come only from typed `read | write | control` config: safe methods default read and every
+    undeclared non-safe method defaults write. Never restore URL-regex exceptions or classify a POST as read without auditing
+    its database/object/session side effects
+  - write permits end when the wrapped business handler settles, not when a slow or aborted client finishes receiving the
+    response. Abort before the handler may release; abort during a real write must wait for the handler's `finally`
+  - pool/exclusive waits are bounded and surface retryable `write_gate_busy`; diagnostics and Prometheus use only local
+    active/waiting/age and fixed failure-stage facts, never request, user, resource, SQL, or connection identifiers
+- `apps/api/src/maintenanceRouteAccess.ts`
+  - the only typed maintenance route-classification contract; reviewed read-only POSTs and the maintenance control route use
+    its shared option constants, while future non-safe routes remain fail-closed by default
+- `apps/api/src/abortableHttpStream.ts`
+  - the shared HTTP disconnect boundary for batch analysis assets, single tiles, resource downloads, and uploaded-media Range
+    streams. Client seek/jump cancellation is normal control flow: destroy current streams without logging a server error and
+    never open subsequent objects after abort
 - `apps/api/src/systemDiagnosticsService.ts`
   - admin-only capacity/resource/job/object-consistency aggregation and server-authored alerts
   - admin-only dry-run and confirmed cleanup for aged storage/database orphans; missing binaries are report-only

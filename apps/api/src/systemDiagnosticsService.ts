@@ -153,6 +153,7 @@ export class SystemDiagnosticsService {
         cleanupEligibleCount,
       },
       jobs,
+      writeGate: this.maintenance.getPermitDiagnostics(),
       alerts,
       recentOperations: recentOperations.map((entry) => ({
         action: entry.action as "media_upload" | "storage_orphan_cleanup",

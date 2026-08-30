@@ -1,75 +1,183 @@
 import type { PrismaClient } from "@prisma/client";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type {
+  FastifyInstance,
+  FastifyRequest,
+  RouteHandlerMethod,
+} from "fastify";
 import type { Pool, PoolClient } from "pg";
 import type {
   PlatformMaintenanceStatus,
   SetPlatformMaintenanceRequest,
 } from "@xiqu/shared";
 import type { ApiUser } from "./domain.js";
-import { badRequest, forbidden, maintenanceMode } from "./errors.js";
+import {
+  badRequest,
+  forbidden,
+  maintenanceMode,
+  writeGateBusy,
+} from "./errors.js";
+import { resolveMaintenanceAccess } from "./maintenanceRouteAccess.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
 
 // 维护许可使用独立于资源树锁的固定 int64 key；所有 API 实例连接同一数据库即可共享边界。
 const MAINTENANCE_ADVISORY_LOCK_KEY = "6361718588744490068";
 const RUNTIME_STATE_ID = "platform";
-const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const DEFAULT_EXCLUSIVE_WAIT_MS = 30_000;
+const EXCLUSIVE_POLL_INTERVAL_MS = 25;
 
 type WritePermit = {
   release: () => Promise<void>;
 };
 
+type RequestPermitState = {
+  permit: WritePermit;
+  handlerStarted: boolean;
+};
+
+export type MaintenancePermitDiagnostics = {
+  active: number;
+  waiting: number;
+  oldestActiveAgeMs: number;
+};
+
+export type MaintenancePermitObserver = {
+  recordMaintenancePermitAcquireFailure: (stage: "pool" | "exclusive") => void;
+  recordMaintenancePermitReleaseFailure: () => void;
+  observeMaintenancePermitHold: (durationMs: number) => void;
+};
+
+type MaintenanceCoordinatorOptions = {
+  exclusiveWaitMs?: number;
+  now?: () => number;
+  sleep?: (durationMs: number) => Promise<void>;
+};
+
+const NOOP_PERMIT_OBSERVER: MaintenancePermitObserver = {
+  recordMaintenancePermitAcquireFailure: () => undefined,
+  recordMaintenancePermitReleaseFailure: () => undefined,
+  observeMaintenancePermitHold: () => undefined,
+};
+
 // coordinator 用共享锁覆盖完整写请求，用独占锁完成“排空在途写入后进入维护”的原子切换。
 export class MaintenanceCoordinator {
-  private readonly requestPermits = new WeakMap<FastifyRequest, WritePermit>();
+  private readonly requestPermits = new WeakMap<FastifyRequest, RequestPermitState>();
+  private readonly activePermitStartedAt = new Map<number, number>();
+  private readonly observer: MaintenancePermitObserver;
+  private readonly exclusiveWaitMs: number;
+  private readonly now: () => number;
+  private readonly sleep: (durationMs: number) => Promise<void>;
+  private waitingPermitCount = 0;
+  private nextPermitId = 1;
 
   constructor(
     private readonly prisma: PrismaClient,
     private readonly lockPool: Pool,
     private readonly access: ResourceAccessService,
-  ) {}
+    observer: MaintenancePermitObserver = NOOP_PERMIT_OBSERVER,
+    options: MaintenanceCoordinatorOptions = {},
+  ) {
+    this.observer = observer;
+    this.exclusiveWaitMs = options.exclusiveWaitMs ?? DEFAULT_EXCLUSIVE_WAIT_MS;
+    this.now = options.now ?? Date.now;
+    this.sleep = options.sleep ?? ((durationMs) => new Promise((resolve) => {
+      setTimeout(resolve, durationMs);
+    }));
+  }
 
-  // Fastify gate 放在业务 handler 之前；任何失败都 fail closed，不允许在状态未知时继续写入。
+  // Fastify gate 先取得许可，再由统一 handler 包装器在业务 Promise 结束时释放，避免依赖网络响应完成事件。
   registerRequestGate(app: FastifyInstance) {
-    app.addHook("onRequest", async (request) => {
-      if (
-        SAFE_METHODS.has(request.method) ||
-        isMaintenanceMutation(request) ||
-        isReadSessionTicketRequest(request)
-      ) {
+    const coordinator = this;
+    app.addHook("onRoute", (routeOptions) => {
+      if (resolveMaintenanceAccess(routeOptions.method, routeOptions.config) !== "write") {
         return;
       }
+      const originalHandler = routeOptions.handler;
+      routeOptions.handler = (async function wrappedMaintenanceWriteHandler(
+        this: FastifyInstance,
+        request,
+        reply,
+      ) {
+        coordinator.markHandlerStarted(request);
+        try {
+          return await originalHandler.call(this, request, reply);
+        } finally {
+          // 客户端断开也不能提前释放真实写入；只有 handler 自身结束才代表业务边界完成。
+          await coordinator.releaseRequestPermit(request, "handler_settled");
+        }
+      }) as RouteHandlerMethod;
+    });
+    app.addHook("onRequest", async (request) => {
+      if (resolveMaintenanceAccess(request.method, request.routeOptions.config) !== "write") return;
       const permit = await this.acquireWritePermit();
-      this.requestPermits.set(request, permit);
+      this.requestPermits.set(request, { permit, handlerStarted: false });
+    });
+    // error/onResponse 只作为早期解析错误和框架异常的保险；正常写请求由 handler 包装器释放。
+    app.addHook("onError", async (request) => {
+      await this.releaseRequestPermit(request, "request_error");
     });
     app.addHook("onResponse", async (request) => {
-      await this.releaseRequestPermit(request);
+      await this.releaseRequestPermit(request, "response_fallback");
     });
-    // 客户端中途断开时未必能走到普通响应路径；abort hook 复用幂等释放，避免长期占用共享锁。
+    // 请求体尚未进入 handler 就被中止时可以释放；handler 已开始则必须等待其 finally，避免维护误判写入已排空。
     app.addHook("onRequestAbort", async (request) => {
-      await this.releaseRequestPermit(request);
+      const state = this.requestPermits.get(request);
+      if (state && !state.handlerStarted) {
+        await this.releaseRequestPermit(request, "request_aborted_before_handler");
+      }
     });
   }
 
   async acquireWritePermit(): Promise<WritePermit> {
-    const client = await this.lockPool.connect();
+    this.waitingPermitCount += 1;
+    let client: PoolClient;
+    try {
+      client = await this.lockPool.connect();
+    } catch {
+      this.waitingPermitCount -= 1;
+      this.observer.recordMaintenancePermitAcquireFailure("pool");
+      throw writeGateBusy("写入门禁当前繁忙，请稍后重试。");
+    }
     let locked = false;
     let released = false;
+    let waiting = true;
+    let permitId: number | null = null;
+    let acquiredAt = 0;
+    const finishWaiting = () => {
+      if (!waiting) return;
+      waiting = false;
+      this.waitingPermitCount -= 1;
+    };
     // permit 生命周期由当前专用连接承载；幂等释放同时防止 active/error 分支重复归还连接。
     const release = async () => {
       if (released) return;
       released = true;
+      finishWaiting();
       if (locked) {
         locked = false;
-        await unlockAndRelease(client, "shared");
+        try {
+          await unlockAndRelease(client, "shared");
+        } catch (error) {
+          this.observer.recordMaintenancePermitReleaseFailure();
+          throw error;
+        } finally {
+          if (permitId !== null) this.activePermitStartedAt.delete(permitId);
+          if (acquiredAt > 0) {
+            this.observer.observeMaintenancePermitHold(this.now() - acquiredAt);
+          }
+        }
       } else {
         client.release();
       }
     };
     try {
-      await client.query(
-        "SELECT pg_advisory_lock_shared($1::bigint)",
+      // 普通请求不等待正在切换的独占维护锁；立即返回可重试 503，避免占满整个专用池。
+      const lockResult = await client.query<{ locked: boolean }>(
+        "SELECT pg_try_advisory_lock_shared($1::bigint) AS locked",
         [MAINTENANCE_ADVISORY_LOCK_KEY],
       );
+      if (!lockResult.rows[0]?.locked) {
+        throw writeGateBusy("平台正在切换维护状态，请稍后重试。");
+      }
       locked = true;
       const result = await client.query<{ maintenance_mode: boolean }>(
         `SELECT maintenance_mode
@@ -83,6 +191,10 @@ export class MaintenanceCoordinator {
         // 维护原因只在管理员状态接口中公开，匿名 mutation 只能得到稳定、无运维细节的拒绝信息。
         throw maintenanceMode("平台正在维护，暂时不能执行写入操作。");
       }
+      finishWaiting();
+      acquiredAt = this.now();
+      permitId = this.nextPermitId++;
+      this.activePermitStartedAt.set(permitId, acquiredAt);
       return {
         // release 幂等，避免未来新增 error hook 时与 onResponse 重复解锁。
         release,
@@ -91,6 +203,20 @@ export class MaintenanceCoordinator {
       await release().catch(() => undefined);
       throw error;
     }
+  }
+
+  // 管理诊断读取当前 API 实例的许可事实；不公开连接 pid、SQL 或具体请求身份。
+  getPermitDiagnostics(): MaintenancePermitDiagnostics {
+    const now = this.now();
+    let oldestActiveAgeMs = 0;
+    for (const startedAt of this.activePermitStartedAt.values()) {
+      oldestActiveAgeMs = Math.max(oldestActiveAgeMs, now - startedAt);
+    }
+    return {
+      active: this.activePermitStartedAt.size,
+      waiting: this.waitingPermitCount,
+      oldestActiveAgeMs,
+    };
   }
 
   async getStatus(user: ApiUser): Promise<PlatformMaintenanceStatus> {
@@ -111,15 +237,18 @@ export class MaintenanceCoordinator {
     if (reason && reason.length > 240) {
       throw badRequest("维护原因不能超过 240 个字符。");
     }
-    const client = await this.lockPool.connect();
+    let client: PoolClient;
+    try {
+      client = await this.lockPool.connect();
+    } catch {
+      this.observer.recordMaintenancePermitAcquireFailure("pool");
+      throw writeGateBusy("维护门禁连接当前繁忙，请稍后重试。");
+    }
     let locked = false;
     let operationError: unknown;
     try {
-      // 独占锁会等待所有已通过 gate 的写请求响应完成；拿到锁后才允许持久化 active。
-      await client.query(
-        "SELECT pg_advisory_lock($1::bigint)",
-        [MAINTENANCE_ADVISORY_LOCK_KEY],
-      );
+      // 独占锁等待真实业务 handler 排空，但使用有界轮询，避免僵死写入让管理员请求永久挂起。
+      await this.acquireExclusivePermit(client);
       locked = true;
       await this.prisma.$transaction(async (transaction) => {
         const current = await transaction.platformRuntimeState.findUnique({
@@ -175,16 +304,46 @@ export class MaintenanceCoordinator {
     return this.readStatus();
   }
 
-  // 响应完成与请求中断共用这一出口；先从 WeakMap 删除，保证两个 hook 竞争时只释放一次。
-  private async releaseRequestPermit(request: FastifyRequest) {
-    const permit = this.requestPermits.get(request);
-    if (!permit) return;
+  private markHandlerStarted(request: FastifyRequest) {
+    const state = this.requestPermits.get(request);
+    if (state) state.handlerStarted = true;
+  }
+
+  // 独占维护锁使用 try-lock 轮询；超时保留正常写入状态，并返回可诊断、可重试的稳定错误。
+  private async acquireExclusivePermit(client: PoolClient) {
+    const deadline = this.now() + this.exclusiveWaitMs;
+    while (true) {
+      const result = await client.query<{ locked: boolean }>(
+        "SELECT pg_try_advisory_lock($1::bigint) AS locked",
+        [MAINTENANCE_ADVISORY_LOCK_KEY],
+      );
+      if (result.rows[0]?.locked) return;
+      if (this.now() >= deadline) {
+        this.observer.recordMaintenancePermitAcquireFailure("exclusive");
+        throw writeGateBusy("仍有写入操作尚未结束，暂时不能切换维护状态。", {
+          activeWritePermits: this.activePermitStartedAt.size,
+        });
+      }
+      await this.sleep(Math.min(
+        EXCLUSIVE_POLL_INTERVAL_MS,
+        Math.max(0, deadline - this.now()),
+      ));
+    }
+  }
+
+  // handler/fallback/中止共用这一出口；先从 WeakMap 删除，保证多个生命周期出口竞争时只释放一次。
+  private async releaseRequestPermit(
+    request: FastifyRequest,
+    releasePath: string,
+  ) {
+    const state = this.requestPermits.get(request);
+    if (!state) return;
     this.requestPermits.delete(request);
     try {
-      await permit.release();
+      await state.permit.release();
     } catch (error) {
       // 请求生命周期已经结束，无法再改变响应；记录错误且 helper 已销毁可疑数据库连接。
-      request.log.error(error, "释放维护写许可失败");
+      request.log.error({ err: error, releasePath }, "释放维护写许可失败");
     }
   }
 
@@ -212,18 +371,6 @@ export class MaintenanceCoordinator {
       throw forbidden("只有管理员可以切换平台维护状态。");
     }
   }
-}
-
-// 只有专用维护 mutation 可绕过共享 permit；路径比较忽略 query，但不放宽其他管理员命令。
-function isMaintenanceMutation(request: FastifyRequest) {
-  return request.method === "POST" &&
-    request.url.split("?", 1)[0] === "/api/admin/maintenance";
-}
-
-// 协作票据虽然写入短时认证元数据，但只建立只读通知会话，维护期间仍应允许已有文件被查看。
-function isReadSessionTicketRequest(request: FastifyRequest) {
-  return request.method === "POST" &&
-    /^\/api\/annotation-files\/[^/]+\/collaboration-ticket(?:\?|$)/u.test(request.url);
 }
 
 // advisory lock 属于数据库 session，必须先显式 unlock 再归还连接池。

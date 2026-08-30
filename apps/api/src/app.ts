@@ -175,7 +175,10 @@ export async function buildApiApp(
     options.prisma,
     options.maintenancePool,
     access,
+    observability,
   );
+  observability.bindMaintenancePermitDiagnostics(() =>
+    maintenance.getPermitDiagnostics());
   const mediaUploads = new MediaUploadService(
     resources,
     storage,

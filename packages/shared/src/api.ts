@@ -54,6 +54,7 @@ export type ApiErrorCode =
   | "unsupported_media"
   | "storage_quota_exceeded"
   | "maintenance_mode"
+  | "write_gate_busy"
   | "external_media_unavailable"
   | "external_service_unavailable"
   | "analysis_source_missing"
@@ -433,6 +434,12 @@ export type SystemDiagnostics = {
     cleanupEligibleCount: number;
   };
   jobs: Record<"queued" | "running" | "succeeded" | "failed", number>;
+  // 许可诊断只描述当前 API 实例，帮助定位连接泄漏；不公开连接 pid 或具体请求身份。
+  writeGate: {
+    active: number;
+    waiting: number;
+    oldestActiveAgeMs: number;
+  };
   alerts: SystemDiagnosticAlert[];
   recentOperations: Array<{
     action: "media_upload" | "storage_orphan_cleanup";

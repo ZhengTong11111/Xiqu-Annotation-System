@@ -23,6 +23,7 @@ import type { AnnotationPresenceInvalidationPublisher } from "./postgresAnnotati
 import type { AnnotationRemoteActivityPublisher } from "./postgresAnnotationRemoteActivityEventBus.js";
 import { createAnnotationRemoteActivityRateLimiter } from "./annotationRemoteActivityRateLimiter.js";
 import type { ApiObservability } from "./observability.js";
+import { MAINTENANCE_READ_ROUTE } from "./maintenanceRouteAccess.js";
 
 const AUTHENTICATION_CLOSE_CODE = 4401;
 const AUTHORIZATION_CLOSE_CODE = 4403;
@@ -45,6 +46,8 @@ export function registerAnnotationCollaborationRoutes(
   const activeSetups = new Set<Promise<void>>();
   app.post<{ Params: { resourceId: string } }>(
     "/api/annotation-files/:resourceId/collaboration-ticket",
+    // 票据只建立读取会话；维护期间仍允许查看，但票据服务继续负责一次性数据库安全语义。
+    MAINTENANCE_READ_ROUTE,
     async (request) => tickets.issue(
       await getCurrentUser(repository, request),
       request.params.resourceId,

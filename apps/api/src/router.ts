@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { Readable } from "node:stream";
 import {
   ANNOTATION_REVIEW_DOMAINS,
   AUDIT_ACTIONS,
@@ -33,6 +32,10 @@ import type { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
 import type { MediaAudioTrackService } from "./mediaAudioTrackService.js";
 import type { MediaAudioPlaybackSessionService } from "./mediaAudioPlaybackSessionService.js";
 import type { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
+import {
+  MAINTENANCE_CONTROL_ROUTE,
+  MAINTENANCE_READ_ROUTE,
+} from "./maintenanceRouteAccess.js";
 import type { ObjectLifecycleService } from "./objectLifecycleService.js";
 import type { OperationalMetricsCollector } from "./operationalMetricsCollector.js";
 import {
@@ -52,6 +55,11 @@ import {
   parseAnnotationMutationPurpose,
 } from "./annotationMutationLease.js";
 import { getCurrentUser } from "./requestAuthentication.js";
+import {
+  openAbortableResponseStream,
+  bindHttpDisconnectSignal,
+  createAbortableObjectBatchStream,
+} from "./abortableHttpStream.js";
 
 const RESOURCE_TYPES = new Set<ResourceType>([
   "folder",
@@ -130,7 +138,7 @@ export function registerApiRoutes(
     maintenance.getStatus(await getCurrentUser(repository, request)));
   app.post<{
     Body: { enabled?: unknown; reason?: unknown };
-  }>("/api/admin/maintenance", async (request) => {
+  }>("/api/admin/maintenance", MAINTENANCE_CONTROL_ROUTE, async (request) => {
     if (typeof request.body?.enabled !== "boolean") {
       throw badRequest("维护状态需要有效的 enabled 参数。");
     }
@@ -394,7 +402,11 @@ export function registerApiRoutes(
       return reply.send(download.content);
     }
     reply.header("Content-Length", download.size);
-    return reply.send(await storage.getObjectStream(download.storageKey));
+    return reply.send(await openAbortableResponseStream(
+      request.raw,
+      reply.raw,
+      () => storage.getObjectStream(download.storageKey),
+    ));
   });
 
   app.patch<{ Params: { resourceId: string }; Body: unknown }>(
@@ -525,6 +537,7 @@ export function registerApiRoutes(
 
   app.post<{ Params: { resourceId: string; trackId: string } }>(
     "/api/annotation-files/:resourceId/audio-tracks/:trackId/playback-session",
+    MAINTENANCE_READ_ROUTE,
     async (request, reply) => {
       // 成功凭据与权限/供应商错误都不应被浏览器或反向代理复用到后续切换请求。
       reply.header("Cache-Control", "no-store");
@@ -614,46 +627,60 @@ export function registerApiRoutes(
     reply.header("Content-Length", asset.size);
     reply.header("ETag", `\"sha256-${asset.checksum}\"`);
     reply.header("Cache-Control", "private, max-age=300");
-    return reply.send(await storage.getObjectStream(asset.storageKey));
+    return reply.send(await openAbortableResponseStream(
+      request.raw,
+      reply.raw,
+      () => storage.getObjectStream(asset.storageKey),
+    ));
   });
 
   // 批量端点减少远程窗口的 HTTP/ACL 扇出，仍由业务服务统一复核整批归属。
   app.post<{
     Params: { resourceId: string };
     Body: unknown;
-  }>("/api/annotation-files/:resourceId/media-analysis/assets/batch", async (request, reply) => {
-    const body = requireObject(request.body);
-    const runId = requireString(body.runId, "runId").trim();
-    const assetIds = parseMediaAnalysisAssetIds(body.assetIds);
-    const assets = await mediaAnalysis.getAssetsForBatchRead(
-      await getCurrentUser(repository, request),
-      request.params.resourceId,
-      runId,
-      assetIds,
-      requireString(body.audioTrackId, "audioTrackId"),
-    );
-    const header = encodeMediaAnalysisTileBatchHeader(assets.map((asset) => ({
-      id: asset.id,
-      byteLength: Number(asset.size),
-    })));
-    const contentLength = header.byteLength + assets.reduce(
-      (sum, asset) => sum + Number(asset.size),
-      0,
-    );
+  }>(
+    "/api/annotation-files/:resourceId/media-analysis/assets/batch",
+    MAINTENANCE_READ_ROUTE,
+    async (request, reply) => {
+      const disconnect = bindHttpDisconnectSignal(request.raw, reply.raw);
+      try {
+        const body = requireObject(request.body);
+        const runId = requireString(body.runId, "runId").trim();
+        const assetIds = parseMediaAnalysisAssetIds(body.assetIds);
+        const assets = await mediaAnalysis.getAssetsForBatchRead(
+          await getCurrentUser(repository, request),
+          request.params.resourceId,
+          runId,
+          assetIds,
+          requireString(body.audioTrackId, "audioTrackId"),
+        );
+        const header = encodeMediaAnalysisTileBatchHeader(assets.map((asset) => ({
+          id: asset.id,
+          byteLength: Number(asset.size),
+        })));
+        const contentLength = header.byteLength + assets.reduce(
+          (sum, asset) => sum + Number(asset.size),
+          0,
+        );
 
-    // 先发送有界 manifest，再逐项透传对象流；API 不为整个批次分配第二份大 Buffer。
-    const stream = Readable.from((async function* () {
-      yield Buffer.from(header);
-      for (const asset of assets) {
-        const assetStream = await storage.getObjectStream(asset.storageKey);
-        for await (const chunk of assetStream) yield chunk;
+        // 先发送有界 manifest，再逐项透传对象流；客户端跳转后立即停止当前及后续对象读取。
+        const stream = createAbortableObjectBatchStream({
+          header,
+          assets,
+          storage,
+          signal: disconnect.signal,
+        });
+        stream.once("close", disconnect.dispose);
+        reply.header("Content-Type", "application/vnd.xiqu.media-analysis-batch");
+        reply.header("Content-Length", contentLength);
+        reply.header("Cache-Control", "private, max-age=300");
+        return reply.send(stream);
+      } catch (error) {
+        disconnect.dispose();
+        throw error;
       }
-    })());
-    reply.header("Content-Type", "application/vnd.xiqu.media-analysis-batch");
-    reply.header("Content-Length", contentLength);
-    reply.header("Cache-Control", "private, max-age=300");
-    return reply.send(stream);
-  });
+    },
+  );
 
   // 最近打开从 GET 副作用中拆出，确保维护模式可以放行真正只读的标注文件读取。
   app.post<{ Params: { resourceId: string } }>(
@@ -1251,6 +1278,7 @@ export function registerApiRoutes(
 
   app.post<{ Params: { resourceId: string } }>(
     "/api/media-files/:resourceId/playback-session",
+    MAINTENANCE_READ_ROUTE,
     async (request, reply) => {
       const session = await resources.createAliyunVodPlaybackSession(
         await getCurrentUser(repository, request),
@@ -1320,10 +1348,18 @@ export function registerApiRoutes(
         `bytes ${range.start}-${range.end}/${file.size}`,
       );
       reply.header("Content-Length", range.end - range.start + 1);
-      return reply.send(await storage.getObjectStream(file.storageKey, range));
+      return reply.send(await openAbortableResponseStream(
+        request.raw,
+        reply.raw,
+        () => storage.getObjectStream(file.storageKey, range),
+      ));
     }
     reply.header("Content-Length", file.size);
-    return reply.send(await storage.getObjectStream(file.storageKey));
+    return reply.send(await openAbortableResponseStream(
+      request.raw,
+      reply.raw,
+      () => storage.getObjectStream(file.storageKey),
+    ));
   });
 
   app.get<{

@@ -8658,3 +8658,54 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **待验收/待部署**：尚未在浏览器人工注入三次真实保存失败，也未提交、合并或部署生产；部署后需验证普通账号能在
   所属项目看到唯一 `backup` 文件夹、打开备份内容和媒体关联，并确认源文件仍显示原同步失败。长期自动保留上限与
   管理员批量清理策略本轮不做，普通资源删除能力可先承担人工整理。
+
+## 2026-08-30：维护许可耗尽与可取消流式读取的永久修复（P0）
+
+### 生产事故与根因
+
+- 生产环境出现 Web/GET/健康检查仍正常，而登录、保存、播放会话等 POST 逐渐等待并由 Nginx 超时的故障。重启 API
+  能暂时恢复，说明不是数据库内容损坏或前端单项权限，而是进程内/数据库 session 资源未释放。
+- 只读检查确认 `/media-analysis/assets/batch` 虽是可取消的流式读取，却因 POST 被维护协调器当作 mutation，持有
+  PostgreSQL shared advisory permit。前端快速滚动会主动中止旧批次，而 response abort 不保证进入 Fastify 普通
+  `onResponse`；遗留 permit 最终占满 `max=20` 的专用池，所有后续 POST 都无法取得连接。
+- 旧 `onRequestAbort` 只覆盖请求接收中止，不能可靠代表响应流断开；扩大池、重启或部署前先停止 API 均只能缓解，
+  不能作为永久方案。
+
+### 路由语义与许可生命周期
+
+- 新增 `maintenanceRouteAccess.ts`，用 typed Fastify route config 表达 `read | write | control`。安全方法默认 read，
+  其他方法默认 write fail closed；删除维护路径和协作票据的 URL 正则例外。批量分析资产、两种播放会话和协作读取
+  票据经过逐项审查后显式声明 read，维护控制声明 control，其余 mutation 继续受 shared permit 保护。
+- `MaintenanceCoordinator` 在 `onRoute` 统一包装 write handler。许可从 `onRequest` 取得，到业务 handler Promise 的
+  `finally` 才释放；客户端在 handler 执行中断开不能提前让维护独占锁误判“写入已排空”。解析错误、正常 response
+  和进入 handler 前的 request abort 只保留幂等 fallback，没有第二套路径规则。
+- 普通写请求改用 `pg_try_advisory_lock_shared`，维护切换期间立即返回可重试 `write_gate_busy`；专用 pool 增加 5 秒
+  connect timeout。维护独占锁改为最多 30 秒 try-lock 轮询，超时保持原状态并返回有界活动许可计数，不再无限挂到
+  反向代理超时。unlock 失败继续销毁可疑连接，不能把可能仍持锁的 session 归还池。
+
+### 分析、播放和下载流的横向修复
+
+- 新增 `abortableHttpStream.ts`。批量瓦片在请求/响应提前关闭时销毁当前对象流、停止打开后续 asset；中止属于正常
+  跳转控制流，不抛 AbortError 污染服务端日志。
+- 同一 helper 同步覆盖单分析瓦片、普通资源下载和平台媒体 Range。这样未来视频 seek、快速跳转和取消下载不会继续
+  占用本地文件句柄、S3 HTTP 连接或带宽。worker 与离线 migration 的对象流没有 HTTP 客户端生命周期，保持原有
+  worker shutdown/补偿规则，没有错误套用该 helper。
+- 没有改变分析 batch codec、48 项/32 MiB 上限、前端渐进缓存、媒体 ACL、VOD 凭据、ProjectData 或协作命令。
+
+### 诊断、测试与自审
+
+- Prometheus 新增当前 API 实例 active/waiting permit、最老 permit age、pool/exclusive 获取失败、释放失败和业务持有
+  时长指标，全部使用固定低基数标签。管理员系统诊断同步显示活动、等待和最老许可，不暴露 request、账号、资源、
+  SQL 或连接 pid。
+- `npm run test:maintenance` 9/9：覆盖默认 POST fail closed、审计后只读 POST 在维护中可用、control 恢复通道、
+  handler 未结束时独占锁必须等待、维护排空超时、pool 不可用稳定 503、单/批对象中止，以及 100 个快速跳转批次
+  全部回收且不读取下一瓦片。
+- `npm run test:observability` 13/13；`npm run test:media-analysis` 为 shared batch 3/3 + 专项 38/38；完整
+  `npm run test:api` 通过。`npm run build` 通过，仅保留既有 Vite 主 chunk 大小提醒；测试环境仍有既有 pg 并发 query
+  弃用提示，与本轮改动无关。
+- 自审修正了首版把正常客户端取消作为 `AbortError` 抛出的日志噪声；最终中止为无错误 destroy。全部对外
+  `getObjectStream()` 路由已核对并接入统一回收，旧 URL 判断和响应完成释放主路径已删除。
+- **已完成**：P0 根因修复、未来路由默认门禁、全部 HTTP 对象流横向回收、稳定反压、指标/诊断、专项/分析/API/
+  构建回归、roadmap 与 `AGENTS.md` 更新。
+- **待推进**：本提交尚未部署生产并完成真实 HTTP IP 快速滚动验收；后台任务中心的 request/job 分离、跨实例去重、
+  用户取消和管理员治理属于下一阶段 P1-P3，不能把 P0 的短时 HTTP 中止误当成后台 job 取消。

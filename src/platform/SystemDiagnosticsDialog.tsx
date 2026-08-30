@@ -285,6 +285,12 @@ export function SystemDiagnosticsDialog(
                     <MetricLine label="运行" value={diagnostics.jobs.running} />
                     <MetricLine label="成功" value={diagnostics.jobs.succeeded} />
                     <MetricLine label="失败" value={diagnostics.jobs.failed} />
+                    <MetricLine label="本实例写许可" value={diagnostics.writeGate.active} />
+                    <MetricLine label="等待写许可" value={diagnostics.writeGate.waiting} />
+                    <MetricLine
+                      label="最老许可"
+                      value={`${Math.round(diagnostics.writeGate.oldestActiveAgeMs)} ms`}
+                    />
                   </DiagnosticSection>
                 </div>
 
@@ -398,8 +404,8 @@ function CapacityRow(props: { label: string; used: number; quota: number }) {
   );
 }
 
-// 诊断数量项共用紧凑键值布局，避免为每个数字制造卡片。
-function MetricLine(props: { label: string; value: number }) {
+// 诊断键值项共用紧凑布局；value 允许携带单位，但不在组件内猜测数值含义。
+function MetricLine(props: { label: string; value: ReactNode }) {
   return <div className="system-metric-line"><span>{props.label}</span><strong>{props.value}</strong></div>;
 }
 

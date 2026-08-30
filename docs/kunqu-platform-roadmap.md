@@ -383,14 +383,18 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
   独立 `prom-client` Registry 记录规范化 HTTP、媒体上传和对象清理指标，`/metrics` 默认关闭并由独立
   运维 token 保护。管理员诊断 Dialog 展示容量、资源/任务、对象一致性、服务告警和安全运维摘要，
   且保留显式确认的合格孤儿清理入口。
-- R3d2a 已完成：新增持久化 `PlatformRuntimeState` 和跨实例 PostgreSQL shared/exclusive advisory gate。
-  所有 HTTP mutation 持有共享许可直到响应完成；管理员以独占锁等待在途写入排空后进入维护，维护中
-  GET/HEAD 继续可读而 mutation 返回 503。锁连接使用独立连接池避免与 Prisma 业务查询自锁；请求中断
-  也会幂等释放。标注文件 GET 的“最近打开”副作用已拆为独立 POST，因此只读边界是真实的。管理员
-  诊断面板提供受控原因输入、风险说明和恢复入口；状态和审计跨 API 重启持久化。
-  2026-08-06 的 R3h7 生产升级发现旧 API 仍有少量已完成请求遗留共享 advisory permit，导致维护独占锁
-  长时间等待；本次通过先停止 API 安全释放连接后完成备份。R3d2a 后续需补充可复现测试、所有 Fastify
-  终止路径的统一释放出口和锁等待诊断，不能把“部署时先停 API”固化为正常行为。
+- R3d2a 已完成并于 2026-08-30 加固：持久化 `PlatformRuntimeState` 与跨实例 PostgreSQL
+  shared/exclusive advisory gate 继续作为维护静默边界，但路由不再以 HTTP 方法粗略判断读写。Fastify
+  route config 显式声明 `read | write | control`，GET/HEAD/OPTIONS 默认 read，未声明的其他方法默认 write
+  fail closed；批量分析资产、VOD/外接音轨播放会话和协作读取票据经过逐项审查后显式放行。
+  真正写请求由统一 handler 包装器持有许可到业务 Promise 结束，客户端中止不能提前释放仍在执行的写入；
+  onError/onResponse/请求体中止只作幂等保险。普通请求使用 try-lock 和 5 秒连接等待边界，维护排空使用
+  30 秒有界独占轮询，繁忙时返回可重试 `write_gate_busy`，不再等待到 Nginx 超时。
+  快速滚动暴露的根因是只读 batch POST 曾占用许可，而 response abort 不保证进入普通 `onResponse`；现批量
+  分析流不再取得许可，并与单瓦片、资源下载和媒体 Range 共用断开销毁 helper，停止当前及后续对象读取。
+  Prometheus 与管理员诊断新增本实例 active/waiting/oldest permit、获取/释放失败和持有时长事实；100 批快速
+  中止、路由 fail-closed、handler 排空、超时和完整 API 回归均已覆盖。后续新增只读 POST 或 HTTP 对象流
+  必须复用同一声明和中止边界，不能恢复 URL 正则例外或 response-lifetime 许可。
 - R3d2b 已完成：新增版本化 `manifest.json + database.dump + objects/` 全量备份包；备份在持久维护静默
   窗口内执行 PostgreSQL 16 custom dump 与对象流式复制，为 dump 和每个对象记录 SHA-256/size，并在
   staging 离线校验、fsync 后原子发布。CLI 可独立查询/切换维护、创建/验证备份和向不同名称的空数据库

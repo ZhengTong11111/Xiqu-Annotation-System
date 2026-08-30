@@ -12,6 +12,7 @@ import {
   OPERATIONAL_JOB_STATUSES,
   type OperationalMetricsSnapshot,
 } from "./operationalMetricsCollector.js";
+import type { MaintenancePermitDiagnostics } from "./maintenanceCoordinator.js";
 
 export type UploadMetricResult =
   | "success"
@@ -48,6 +49,12 @@ export class ApiObservability {
   private readonly platformStorageUsedBytes: Gauge;
   private readonly platformStorageQuotaBytes: Gauge;
   private readonly processingJobs: Gauge;
+  private readonly maintenanceWritePermitsActive: Gauge;
+  private readonly maintenanceWritePermitsWaiting: Gauge;
+  private readonly maintenanceOldestPermitAge: Gauge;
+  private readonly maintenancePermitAcquireFailures: Counter;
+  private readonly maintenancePermitReleaseFailures: Counter;
+  private readonly maintenancePermitHoldDuration: Histogram;
   private readonly operationalCollectionSuccess: Gauge;
   private readonly operationalCollectionTimestamp: Gauge;
   private readonly annotationRevisionBusConnected: Gauge;
@@ -66,6 +73,11 @@ export class ApiObservability {
   private readonly annotationRemoteActivityBusInbound: Counter;
   private readonly annotationRemoteActivityBusReconnects: Counter;
   private readonly annotationRemoteActivityClientMessages: Counter;
+  private maintenancePermitSnapshot: () => MaintenancePermitDiagnostics = () => ({
+    active: 0,
+    waiting: 0,
+    oldestActiveAgeMs: 0,
+  });
 
   constructor() {
     // 默认进程指标与平台业务指标注册到同一个实例级 Registry，便于一次抓取和测试隔离。
@@ -133,6 +145,50 @@ export class ApiObservability {
       name: "xiqu_processing_jobs",
       help: "Current processing jobs by stable status.",
       labelNames: ["status"],
+      registers: [this.registry],
+    });
+    // 维护许可指标只按当前 API 实例聚合，不使用 route、用户或资源 id 形成高基数标签。
+    this.maintenanceWritePermitsActive = new Gauge({
+      name: "xiqu_maintenance_write_permits_active",
+      help: "Active maintenance write permits held by this API instance.",
+      registers: [this.registry],
+      collect: () => {
+        this.maintenanceWritePermitsActive.set(this.maintenancePermitSnapshot().active);
+      },
+    });
+    this.maintenanceWritePermitsWaiting = new Gauge({
+      name: "xiqu_maintenance_write_permits_waiting",
+      help: "Requests waiting for a maintenance write permit connection on this API instance.",
+      registers: [this.registry],
+      collect: () => {
+        this.maintenanceWritePermitsWaiting.set(this.maintenancePermitSnapshot().waiting);
+      },
+    });
+    this.maintenanceOldestPermitAge = new Gauge({
+      name: "xiqu_maintenance_write_permit_oldest_age_seconds",
+      help: "Age in seconds of the oldest active write permit on this API instance.",
+      registers: [this.registry],
+      collect: () => {
+        this.maintenanceOldestPermitAge.set(
+          this.maintenancePermitSnapshot().oldestActiveAgeMs / 1_000,
+        );
+      },
+    });
+    this.maintenancePermitAcquireFailures = new Counter({
+      name: "xiqu_maintenance_write_permit_acquire_failures_total",
+      help: "Maintenance write permit acquisition failures by bounded stage.",
+      labelNames: ["stage"],
+      registers: [this.registry],
+    });
+    this.maintenancePermitReleaseFailures = new Counter({
+      name: "xiqu_maintenance_write_permit_release_failures_total",
+      help: "Maintenance write permit release failures.",
+      registers: [this.registry],
+    });
+    this.maintenancePermitHoldDuration = new Histogram({
+      name: "xiqu_maintenance_write_permit_hold_duration_seconds",
+      help: "Server-side business duration of maintenance write permits.",
+      buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
       registers: [this.registry],
     });
     this.operationalCollectionSuccess = new Gauge({
@@ -300,6 +356,25 @@ export class ApiObservability {
   // 采集失败只标记失败，不把上一次真实容量和任务值伪造为零。
   recordOperationalCollectionFailure() {
     this.operationalCollectionSuccess.set(0);
+  }
+
+  // Gauge 在 scrape 时读取实时快照，因此 oldest age 会随时间增长，而不是停留在最近一次 acquire/release。
+  bindMaintenancePermitDiagnostics(
+    provider: () => MaintenancePermitDiagnostics,
+  ) {
+    this.maintenancePermitSnapshot = provider;
+  }
+
+  recordMaintenancePermitAcquireFailure(stage: "pool" | "exclusive") {
+    this.maintenancePermitAcquireFailures.inc({ stage });
+  }
+
+  recordMaintenancePermitReleaseFailure() {
+    this.maintenancePermitReleaseFailures.inc();
+  }
+
+  observeMaintenancePermitHold(durationMs: number) {
+    this.maintenancePermitHoldDuration.observe(Math.max(0, durationMs) / 1_000);
   }
 
   setAnnotationRevisionBusConnected(connected: boolean) {

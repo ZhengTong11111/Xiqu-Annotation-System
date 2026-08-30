@@ -154,10 +154,27 @@ test("运维指标采集补齐固定状态并写入低基数 Gauge", async () =>
   });
   const observability = new ApiObservability();
   observability.recordOperationalSnapshot(snapshot);
+  observability.bindMaintenancePermitDiagnostics(() => ({
+    active: 2,
+    waiting: 1,
+    oldestActiveAgeMs: 1_250,
+  }));
+  observability.recordMaintenancePermitAcquireFailure("pool");
+  observability.recordMaintenancePermitAcquireFailure("exclusive");
+  observability.recordMaintenancePermitReleaseFailure();
+  observability.observeMaintenancePermitHold(250);
   const metrics = await observability.registry.metrics();
   assert.match(metrics, /xiqu_dependency_available\{dependency="storage"\} 0/);
   assert.match(metrics, /xiqu_platform_storage_used_bytes 125/);
   assert.match(metrics, /xiqu_processing_jobs\{status="failed"\} 0/);
+  assert.match(metrics, /xiqu_maintenance_write_permits_active 2/);
+  assert.match(metrics, /xiqu_maintenance_write_permits_waiting 1/);
+  assert.match(metrics, /xiqu_maintenance_write_permit_oldest_age_seconds 1\.25/);
+  assert.match(
+    metrics,
+    /xiqu_maintenance_write_permit_acquire_failures_total\{stage="pool"\} 1/,
+  );
+  assert.match(metrics, /xiqu_maintenance_write_permit_release_failures_total 1/);
   assert.doesNotMatch(metrics, /resourceId|accountName|storageKey/);
   // 失败只改变采集状态，上一份真实容量不能被伪造成零。
   observability.recordOperationalCollectionFailure();
