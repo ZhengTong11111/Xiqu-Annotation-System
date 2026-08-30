@@ -8975,3 +8975,52 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   服务端故障注入，无需伪造登录后浏览器验收；未来真实 VOD 检查仍只使用 `http://localhost:5173/`。
 - **已完成**：P4c claim monitor/heartbeat、资产 fencing、模糊提交复核、runtime 恢复、FFmpeg 有界退出与故障矩阵。
 - **待推进**：P4d 统一低基数指标、管理员诊断、运行手册和快速滚动/任务/worker/对象故障压力矩阵；仍不部署生产。
+
+## 2026-08-30：任务可靠性指标、管理员诊断与故障判别手册（P4d）
+
+### 从累计数量到当前故障事实
+
+- 本轮按专项路线图先完全重写被 Git 忽略的 `CLAUDE_WORK.md`，只实施 P4d，没有提前部署或进入 P5。审查确认原
+  `/metrics` 只有各状态任务总数，管理员诊断只要历史上存在 failed 就永久告警，二者都不能回答“正在正常处理，还是
+  worker 已经失联”。也确认 worker 是独立进程，不能为了面板好看由 API 伪造在线心跳。
+- 新增 `processingJobReliability.ts` 作为唯一聚合边界：一条有界 PostgreSQL 聚合只读取 queued/running/cancelling 和
+  最近 60 分钟终态，计算最老排队、活动心跳、取消请求年龄，running/cancelling 陈旧 claim，近期成功/失败/取消和
+  平均排队、运行、取消收敛时长。查询不读取账号、资源、任务 payload、对象路径或错误正文。
+- worker stale recovery、系统诊断和 Prometheus 统一引用 2 分钟陈旧阈值；轻微未来时间戳按 0 处理，空样本保持 null，
+  不把“没有任务”伪装为一次耗时为零的任务。历史 failed 总数继续在任务摘要中保留，但当前告警只看最近窗口失败。
+
+### Prometheus、管理员 UI 与运行手册
+
+- 增加固定低基数 Gauge：最老阶段年龄、running/cancelling 陈旧 claim、最近终态和最近平均阶段时长。成功快照主动
+  写回所有固定 label 的零值，采集失败只降低 collection success，不擦除上一份真实业务值。告警新增快照陈旧、最老
+  排队超时、陈旧 claim 和取消不收敛，原 failed 告警改用最近窗口，不含 ID、名称、路径或错误文本。
+- 管理员“系统诊断”新增“任务可靠性”分区，服务端给出 healthy/attention/stalled 和脱敏摘要；UI 只负责展示最老
+  排队/心跳/取消、陈旧 claim、近期结果和平均时长。具体任务身份、需求人、取消和重试仍留在既有后台任务中心，没有
+  新建第二套轮询、列表或治理 owner。
+- 新增 `docs/processing-job-operations.md`，用五分钟决策树区分 API/liveness、readiness、读取中止、维护写许可、数据库/
+  连接池、对象存储/补偿和 worker/claim。明确有活动任务时数据库 heartbeat/claim 是权威；空队列没有任务心跳，worker
+  进程存活由 systemd/主机监控判断。`server-deployment.md` 已链接该手册。
+- 本机 VOD/Web License 规则继续明确：真实 VOD 浏览器验收必须使用 `http://localhost:5173/`，不能把 127.0.0.1 页面
+  可访问当作 VOD 可播放。P4d 不修改 VOD 播放器或凭据链路。
+
+### 浏览器检查暴露的开发进程边界
+
+- 第一次内置浏览器打开系统诊断时，Vite 已热更新新前端，但旧 `dev:api` 进程仍返回没有 `reliability` 的旧 DTO，React
+  因版本错配报错。这里没有增加隐藏兼容分支；按 AGENTS 既有规则重新 build workspace 并重启 API，再用 Chrome 从
+  `http://localhost:5173/` 复测。
+- 重启后系统诊断完整显示“任务可靠性 / 运行正常”，任务计数、对象一致性和告警区正常；对话框 clientWidth 与
+  scrollWidth 均为 718px，没有横向溢出，纵向滚动正常。应用 console 无运行错误；Chrome 扩展自身出现两条 message
+  channel closed 提示，不来自平台代码。没有执行任务取消、维护切换、VOD 播放或其他写操作。
+
+### 验证、自审与状态
+
+- `npm run test:processing-reliability-p4` 全部通过：P4a 17/17、P4b 6/6 + 平台 38/38、P4c 18/18、P4d 18/18 +
+  平台 38/38；覆盖 100 次读取中止、维护许可、对象发布模糊结果、worker/FFmpeg、claim 转移和诊断/告警。
+- `npm run test:api`：239/239；`npm run test:deployment`：28/28；完整 `npm run build` 和 `git diff --check` 通过。
+  构建仍只有既有 Vite 主 chunk 超过 500 kB 提示。本轮没有 migration、新依赖、ProjectData、协作命令、时间轴、媒体
+  算法或生产配置变化。
+- 自审确认没有第二套 worker 在线状态、任务面板、阈值常量、敏感 label 或累计失败永久告警；复杂聚合、空样本、时钟
+  偏差和前端职责均有中文注释与测试。
+- **已完成**：P4d 可靠性聚合、指标、告警、管理员诊断、故障手册、P4 聚合回归、浏览器验收与规范更新。
+- **待推进**：P5 先在隔离环境演练 migration/历史回填与负载，再准备维护、备份、不可变 release、回滚和多账号人工
+  验收。未经用户明确授权仍不得部署生产、修改生产数据库/对象或清理服务器草稿。

@@ -8,6 +8,7 @@ import {
   RefreshCw,
   ServerCog,
   ShieldAlert,
+  TimerReset,
   Trash2,
   X,
 } from "lucide-react";
@@ -294,6 +295,63 @@ export function SystemDiagnosticsDialog(
                   </DiagnosticSection>
                 </div>
 
+                {/* 聚合诊断只说明任务链路是否收敛；具体任务与治理动作继续由后台任务中心负责。 */}
+                <DiagnosticSection icon={<TimerReset size={17} />} title="任务可靠性">
+                  <div
+                    className="system-job-reliability-status"
+                    data-state={diagnostics.reliability.state}
+                  >
+                    <strong>
+                      {diagnostics.reliability.state === "healthy"
+                        ? "运行正常"
+                        : diagnostics.reliability.state === "attention"
+                          ? "需要关注"
+                          : "处理链路可能停滞"}
+                    </strong>
+                    <span>{diagnostics.reliability.summary}</span>
+                  </div>
+                  <div className="system-diagnostics-columns system-job-reliability-grid">
+                    <div>
+                      <MetricLine
+                        label="最老排队"
+                        value={formatDiagnosticDuration(diagnostics.reliability.oldestQueuedAgeMs)}
+                      />
+                      <MetricLine
+                        label="最老活动心跳"
+                        value={formatDiagnosticDuration(diagnostics.reliability.oldestActiveHeartbeatAgeMs)}
+                      />
+                      <MetricLine
+                        label="最老取消请求"
+                        value={formatDiagnosticDuration(diagnostics.reliability.oldestCancellingAgeMs)}
+                      />
+                      <MetricLine
+                        label="陈旧 claim"
+                        value={diagnostics.reliability.staleClaims.running + diagnostics.reliability.staleClaims.cancelling}
+                      />
+                    </div>
+                    <div>
+                      <MetricLine
+                        label={`近 ${diagnostics.reliability.recentWindowMinutes} 分钟成功`}
+                        value={diagnostics.reliability.recentOutcomes.succeeded}
+                      />
+                      <MetricLine label="近期失败" value={diagnostics.reliability.recentOutcomes.failed} />
+                      <MetricLine label="近期取消" value={diagnostics.reliability.recentOutcomes.cancelled} />
+                      <MetricLine
+                        label="平均排队"
+                        value={formatDiagnosticDuration(diagnostics.reliability.averageDurationsMs.queueWait)}
+                      />
+                      <MetricLine
+                        label="平均运行"
+                        value={formatDiagnosticDuration(diagnostics.reliability.averageDurationsMs.run)}
+                      />
+                      <MetricLine
+                        label="平均取消收敛"
+                        value={formatDiagnosticDuration(diagnostics.reliability.averageDurationsMs.cancellation)}
+                      />
+                    </div>
+                  </div>
+                </DiagnosticSection>
+
                 {/* 对象一致性仅展示分类计数；具体 storage key 不进入这个常规管理视图。 */}
                 <DiagnosticSection icon={<HardDrive size={17} />} title="对象一致性">
                   <div className="system-diagnostics-columns">
@@ -420,6 +478,15 @@ function formatBytes(bytes: number) {
     unit += 1;
   } while (value >= 1024 && unit < units.length - 1);
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unit]}`;
+}
+
+// 空样本显示为短横线，避免把“没有活动任务”误读为一次耗时为零的任务。
+function formatDiagnosticDuration(durationMs: number | null) {
+  if (durationMs === null) return "—";
+  if (durationMs < 1_000) return `${Math.round(durationMs)} ms`;
+  if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(1)} s`;
+  if (durationMs < 3_600_000) return `${(durationMs / 60_000).toFixed(1)} min`;
+  return `${(durationMs / 3_600_000).toFixed(1)} h`;
 }
 
 // 运维事件使用用户本地时区显示，原始 ISO 时间仍由 API 保留。

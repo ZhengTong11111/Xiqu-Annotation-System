@@ -1,5 +1,9 @@
 import type { PrismaClient } from "@prisma/client";
 import type { HealthService } from "./healthService.js";
+import {
+  collectProcessingJobReliability,
+  type ProcessingJobReliabilitySnapshot,
+} from "./processingJobReliability.js";
 
 // 运维指标只使用固定依赖与任务状态，禁止把资源、账号或错误文本放进 Prometheus label。
 export const OPERATIONAL_DEPENDENCIES = ["database", "storage"] as const;
@@ -20,6 +24,7 @@ export type OperationalMetricsSnapshot = {
   platformStorageUsedBytes: number;
   platformStorageQuotaBytes: number;
   jobs: Record<typeof OPERATIONAL_JOB_STATUSES[number], number>;
+  reliability: ProcessingJobReliabilitySnapshot;
 };
 
 // 环境超时使用明确边界，坏配置在启动阶段失败而不是运行时悄悄采用 NaN。
@@ -69,15 +74,17 @@ export class OperationalMetricsCollector {
     return withTimeout(this.inFlight, this.timeoutMs);
   }
 
-  // 三类只读查询并行执行；readiness 返回 unavailable 仍是成功采集到的故障事实。
+  // 各类只读查询并行执行；readiness 返回 unavailable 仍是成功采集到的故障事实。
   private async collectSnapshot(): Promise<OperationalMetricsSnapshot> {
-    const [health, storageUsage, jobGroups] = await Promise.all([
+    const collectedAt = new Date();
+    const [health, storageUsage, jobGroups, reliability] = await Promise.all([
       this.health.getReadiness(),
       this.prisma.fileObject.aggregate({ _sum: { size: true } }),
       this.prisma.processingJob.groupBy({
         by: ["status"],
         _count: { _all: true },
       }),
+      collectProcessingJobReliability(this.prisma, collectedAt),
     ]);
     const jobs = Object.fromEntries(
       OPERATIONAL_JOB_STATUSES.map((status) => [status, 0]),
@@ -85,7 +92,7 @@ export class OperationalMetricsCollector {
     // groupBy 只返回实际存在的类别，未出现状态必须主动归零以清除上一轮 Gauge 值。
     for (const group of jobGroups) jobs[group.status] = group._count._all;
     return {
-      collectedAt: new Date(),
+      collectedAt,
       dependencies: {
         database: health.components?.database.status === "ok" ? 1 : 0,
         storage: health.components?.storage.status === "ok" ? 1 : 0,
@@ -94,6 +101,7 @@ export class OperationalMetricsCollector {
       platformStorageUsedBytes: Number(storageUsage._sum.size ?? 0n),
       platformStorageQuotaBytes: this.platformStorageQuotaBytes,
       jobs,
+      reliability,
     };
   }
 }

@@ -201,6 +201,14 @@ test("平台资源 API 集成测试", async (suite) => {
         200,
       );
       assert.ok(Array.isArray(diagnosticData.alerts));
+      assert.equal(
+        typeof (diagnosticData.reliability as JsonObject).summary,
+        "string",
+      );
+      assert.equal(
+        typeof (diagnosticData.reliability as JsonObject).recentWindowMinutes,
+        "number",
+      );
     });
 
     await suite.test("账号生命周期仅由系统管理员治理并立即撤销失效会话", async () => {

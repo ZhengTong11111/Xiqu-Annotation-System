@@ -302,6 +302,11 @@ FFmpeg，并通过 `XIQU_FFMPEG_PATH` 固定绝对路径。worker 收到 SIGTERM
 systemd 的 `TimeoutStopSec` 应覆盖该清理时间。API 正常但 worker 未运行时，播放和标注仍可用，分析任务会
 停留在“排队中”。
 
+后台任务出现排队、陈旧 claim、取消不收敛或写许可异常时，按
+[`processing-job-operations.md`](processing-job-operations.md) 的决策树先区分 API、数据库、对象存储和 worker；
+不要用一次全服务重启代替定位。空队列时以 systemd 判断 worker 存活，有活动任务时以数据库 heartbeat/claim
+判断处理链路是否收敛。
+
 当前维护 advisory gate 只覆盖 HTTP mutation，analysis worker 尚未接入未来的 drain/permit 协议。执行一致
 备份、数据库 migration 或 release 切换前必须先停止 `xiqu-analysis-worker` 并等待 systemd 停机完成；其
 SIGTERM 路径会删除本轮半成品并把任务安全放回队列。不能只在管理员页面开启维护后就假定后台写入已经静默。

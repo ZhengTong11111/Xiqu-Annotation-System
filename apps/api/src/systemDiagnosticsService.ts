@@ -12,6 +12,11 @@ import type { ObjectLifecycleService } from "./objectLifecycleService.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
 import type { ObjectStorage } from "./objectStorage.js";
 import type { UploadPolicy } from "./uploadPolicy.js";
+import {
+  collectProcessingJobReliability,
+  PROCESSING_JOB_QUEUE_WARNING_AFTER_MS,
+  type ProcessingJobReliabilitySnapshot,
+} from "./processingJobReliability.js";
 
 // 统计结果始终补齐所有固定类别，空类别也返回 0，前端无需处理缺失键。
 const RESOURCE_TYPES: ResourceType[] = [
@@ -44,6 +49,7 @@ export class SystemDiagnosticsService {
       throw forbidden("只有管理员可以查看系统诊断。");
     }
 
+    const generatedAt = new Date();
     // 各统计互不写入也不需要一致事务快照，并行读取可避免管理页串行等待十余次数据库往返。
     const [
       health,
@@ -61,6 +67,7 @@ export class SystemDiagnosticsService {
       orphanReport,
       recentOperations,
       maintenance,
+      reliabilitySnapshot,
     ] = await Promise.all([
       this.health.getReadiness(),
       this.prisma.resourceEntry.count({ where: { trashedAt: null } }),
@@ -94,6 +101,7 @@ export class SystemDiagnosticsService {
         select: { action: true, detail: true, createdAt: true },
       }),
       this.maintenance.getStatus(user),
+      collectProcessingJobReliability(this.prisma, generatedAt),
     ]);
 
     const byType = Object.fromEntries(RESOURCE_TYPES.map((type) => [type, 0])) as
@@ -134,12 +142,12 @@ export class SystemDiagnosticsService {
       capacity,
       issuesByCategory,
       cleanupEligibleCount,
-      queuedJobs: jobs.queued,
-      failedJobs: jobs.failed,
+      reliability: reliabilitySnapshot,
     });
+    const reliability = buildReliabilityDiagnostics(reliabilitySnapshot);
 
     return {
-      generatedAt: new Date().toISOString(),
+      generatedAt: generatedAt.toISOString(),
       health,
       capacity,
       resources: {
@@ -160,6 +168,7 @@ export class SystemDiagnosticsService {
         cleanupEligibleCount,
       },
       jobs,
+      reliability,
       writeGate: this.maintenance.getPermitDiagnostics(),
       alerts,
       recentOperations: recentOperations.map((entry) => ({
@@ -175,12 +184,11 @@ export class SystemDiagnosticsService {
 type AlertInput = Pick<SystemDiagnostics, "health" | "capacity"> & {
   issuesByCategory: Record<StorageOrphanCategory, number>;
   cleanupEligibleCount: number;
-  queuedJobs: number;
-  failedJobs: number;
+  reliability: ProcessingJobReliabilitySnapshot;
 };
 
 // 容量、对象一致性和任务问题使用稳定 code，便于未来接告警系统而不解析中文文案。
-function buildDiagnosticAlerts(input: AlertInput): SystemDiagnosticAlert[] {
+export function buildDiagnosticAlerts(input: AlertInput): SystemDiagnosticAlert[] {
   const alerts: SystemDiagnosticAlert[] = [];
   if (input.health.status === "unavailable") {
     alerts.push({
@@ -217,21 +225,78 @@ function buildDiagnosticAlerts(input: AlertInput): SystemDiagnosticAlert[] {
       message: `有 ${input.cleanupEligibleCount} 个超过宽限期的确定孤儿可清理。`,
     });
   }
-  if (input.failedJobs > 0) {
+  if (input.reliability.recentOutcomes.failed > 0) {
     alerts.push({
-      code: "failed_jobs",
+      code: "recent_failed_jobs",
       severity: "warning",
-      message: `有 ${input.failedJobs} 个后端任务失败。`,
+      message: `最近 ${input.reliability.recentWindowMinutes} 分钟有 ${input.reliability.recentOutcomes.failed} 个后端任务失败。`,
     });
   }
-  if (input.queuedJobs > 20) {
+  if (
+    input.reliability.oldestQueuedAgeMs !== null &&
+    input.reliability.oldestQueuedAgeMs >= PROCESSING_JOB_QUEUE_WARNING_AFTER_MS
+  ) {
     alerts.push({
       code: "job_backlog",
       severity: "warning",
-      message: `有 ${input.queuedJobs} 个任务正在排队，可能存在积压。`,
+      message: `最老排队任务已等待 ${formatAlertDuration(input.reliability.oldestQueuedAgeMs)}。`,
+    });
+  }
+  const staleClaimCount = input.reliability.staleClaims.running +
+    input.reliability.staleClaims.cancelling;
+  if (staleClaimCount > 0) {
+    alerts.push({
+      code: "stale_job_claims",
+      severity: "critical",
+      message: `有 ${staleClaimCount} 个运行或取消任务的 worker 心跳已经陈旧。`,
+    });
+  }
+  if (
+    input.reliability.oldestCancellingAgeMs !== null &&
+    input.reliability.oldestCancellingAgeMs >= input.reliability.staleAfterMs
+  ) {
+    alerts.push({
+      code: "job_cancellation_stalled",
+      severity: "warning",
+      message: `最老取消请求已等待 ${formatAlertDuration(input.reliability.oldestCancellingAgeMs)}。`,
     });
   }
   return alerts;
+}
+
+// 管理页状态由服务端统一生成，浏览器只展示结论，避免前后端阈值不一致。
+export function buildReliabilityDiagnostics(
+  snapshot: ProcessingJobReliabilitySnapshot,
+): SystemDiagnostics["reliability"] {
+  const staleClaims = snapshot.staleClaims.running + snapshot.staleClaims.cancelling;
+  if (staleClaims > 0) {
+    return {
+      ...snapshot,
+      state: "stalled",
+      summary: `发现 ${staleClaims} 个陈旧 worker claim，请先检查 worker 服务与数据库连接。`,
+    };
+  }
+  if (
+    snapshot.recentOutcomes.failed > 0 ||
+    (snapshot.oldestQueuedAgeMs ?? 0) >= PROCESSING_JOB_QUEUE_WARNING_AFTER_MS ||
+    (snapshot.oldestCancellingAgeMs ?? 0) >= snapshot.staleAfterMs
+  ) {
+    return {
+      ...snapshot,
+      state: "attention",
+      summary: "任务仍在收敛，但存在近期失败、排队积压或取消延迟。",
+    };
+  }
+  return {
+    ...snapshot,
+    state: "healthy",
+    summary: "未发现当前任务积压或陈旧 worker claim。",
+  };
+}
+
+function formatAlertDuration(durationMs: number) {
+  if (durationMs < 60_000) return `${Math.ceil(durationMs / 1_000)} 秒`;
+  return `${Math.ceil(durationMs / 60_000)} 分钟`;
 }
 
 // 容量达到 80% 提醒、95% 升级为严重告警，阈值对平台和账号保持一致。

@@ -421,6 +421,30 @@ export type SystemDiagnosticAlert = {
   message: string;
 };
 
+export type ProcessingJobReliabilityDiagnostics = {
+  recentWindowMinutes: number;
+  staleAfterMs: number;
+  state: "healthy" | "attention" | "stalled";
+  summary: string;
+  oldestQueuedAgeMs: number | null;
+  oldestActiveHeartbeatAgeMs: number | null;
+  oldestCancellingAgeMs: number | null;
+  staleClaims: {
+    running: number;
+    cancelling: number;
+  };
+  recentOutcomes: {
+    succeeded: number;
+    failed: number;
+    cancelled: number;
+  };
+  averageDurationsMs: {
+    queueWait: number | null;
+    run: number | null;
+    cancellation: number | null;
+  };
+};
+
 export type SystemDiagnostics = {
   generatedAt: string;
   health: ServiceHealthResponse;
@@ -448,6 +472,7 @@ export type SystemDiagnostics = {
     cleanupEligibleCount: number;
   };
   jobs: Record<"queued" | "running" | "cancelling" | "cancelled" | "succeeded" | "failed", number>;
+  reliability: ProcessingJobReliabilityDiagnostics;
   // 许可诊断只描述当前 API 实例，帮助定位连接泄漏；不公开连接 pid 或具体请求身份。
   writeGate: {
     active: number;

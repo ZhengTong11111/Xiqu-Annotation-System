@@ -49,6 +49,10 @@ export class ApiObservability {
   private readonly platformStorageUsedBytes: Gauge;
   private readonly platformStorageQuotaBytes: Gauge;
   private readonly processingJobs: Gauge;
+  private readonly processingJobOldestAge: Gauge;
+  private readonly processingJobStaleClaims: Gauge;
+  private readonly processingJobRecentOutcomes: Gauge;
+  private readonly processingJobAverageDuration: Gauge;
   private readonly maintenanceWritePermitsActive: Gauge;
   private readonly maintenanceWritePermitsWaiting: Gauge;
   private readonly maintenanceOldestPermitAge: Gauge;
@@ -145,6 +149,31 @@ export class ApiObservability {
       name: "xiqu_processing_jobs",
       help: "Current processing jobs by stable status.",
       labelNames: ["status"],
+      registers: [this.registry],
+    });
+    // 任务时效指标只使用固定阶段/状态标签，具体任务身份仍留在受权限控制的任务中心。
+    this.processingJobOldestAge = new Gauge({
+      name: "xiqu_processing_job_oldest_age_seconds",
+      help: "Age of the oldest processing job fact by stable phase.",
+      labelNames: ["phase"],
+      registers: [this.registry],
+    });
+    this.processingJobStaleClaims = new Gauge({
+      name: "xiqu_processing_job_stale_claims",
+      help: "Current stale processing job claims by active status.",
+      labelNames: ["status"],
+      registers: [this.registry],
+    });
+    this.processingJobRecentOutcomes = new Gauge({
+      name: "xiqu_processing_job_recent_outcomes",
+      help: "Processing job terminal outcomes in the fixed recent window.",
+      labelNames: ["status"],
+      registers: [this.registry],
+    });
+    this.processingJobAverageDuration = new Gauge({
+      name: "xiqu_processing_job_recent_average_duration_seconds",
+      help: "Average processing job duration by stable phase in the recent window.",
+      labelNames: ["phase"],
       registers: [this.registry],
     });
     // 维护许可指标只按当前 API 实例聚合，不使用 route、用户或资源 id 形成高基数标签。
@@ -347,6 +376,37 @@ export class ApiObservability {
     for (const status of OPERATIONAL_JOB_STATUSES) {
       this.processingJobs.set({ status }, snapshot.jobs[status]);
     }
+    const reliability = snapshot.reliability;
+    this.processingJobOldestAge.set(
+      { phase: "queued" },
+      millisecondsToSeconds(reliability.oldestQueuedAgeMs),
+    );
+    this.processingJobOldestAge.set(
+      { phase: "heartbeat" },
+      millisecondsToSeconds(reliability.oldestActiveHeartbeatAgeMs),
+    );
+    this.processingJobOldestAge.set(
+      { phase: "cancelling" },
+      millisecondsToSeconds(reliability.oldestCancellingAgeMs),
+    );
+    for (const status of ["running", "cancelling"] as const) {
+      this.processingJobStaleClaims.set(
+        { status },
+        reliability.staleClaims[status],
+      );
+    }
+    for (const status of ["succeeded", "failed", "cancelled"] as const) {
+      this.processingJobRecentOutcomes.set(
+        { status },
+        reliability.recentOutcomes[status],
+      );
+    }
+    for (const phase of ["queueWait", "run", "cancellation"] as const) {
+      this.processingJobAverageDuration.set(
+        { phase: phase === "queueWait" ? "queue_wait" : phase },
+        millisecondsToSeconds(reliability.averageDurationsMs[phase]),
+      );
+    }
     this.operationalCollectionSuccess.set(1);
     this.operationalCollectionTimestamp.set(
       snapshot.collectedAt.getTime() / 1_000,
@@ -442,6 +502,11 @@ export class ApiObservability {
   ) {
     this.annotationRemoteActivityClientMessages.inc({ result });
   }
+}
+
+// 空样本统一写 0，成功快照能清除上一轮 Gauge；是否存在样本由对应任务计数判断。
+function millisecondsToSeconds(value: number | null) {
+  return value === null ? 0 : value / 1_000;
 }
 
 // 运维 token 使用恒定时间比较；长度不同先拒绝，避免 timingSafeEqual 抛错。

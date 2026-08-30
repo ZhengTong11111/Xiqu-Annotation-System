@@ -129,6 +129,19 @@ test("运维指标采集补齐固定状态并写入低基数 Gauge", async () =>
       processingJob: {
         groupBy: async () => [{ status: "queued", _count: { _all: 3 } }],
       },
+      $queryRaw: async () => [{
+        oldestQueuedAt: new Date(Date.now() - 10_000),
+        oldestActiveHeartbeatAt: null,
+        oldestCancellingAt: null,
+        staleRunningCount: 0n,
+        staleCancellingCount: 0n,
+        recentSucceededCount: 2n,
+        recentFailedCount: 1n,
+        recentCancelledCount: 0n,
+        averageQueueWaitMs: 1_500,
+        averageRunMs: 20_000,
+        averageCancellationMs: null,
+      }],
     } as unknown as PrismaClient,
     {
       getReadiness: async () => ({
@@ -169,6 +182,10 @@ test("运维指标采集补齐固定状态并写入低基数 Gauge", async () =>
   assert.match(metrics, /xiqu_dependency_available\{dependency="storage"\} 0/);
   assert.match(metrics, /xiqu_platform_storage_used_bytes 125/);
   assert.match(metrics, /xiqu_processing_jobs\{status="failed"\} 0/);
+  assert.match(metrics, /xiqu_processing_job_oldest_age_seconds\{phase="queued"\}/);
+  assert.match(metrics, /xiqu_processing_job_stale_claims\{status="running"\} 0/);
+  assert.match(metrics, /xiqu_processing_job_recent_outcomes\{status="failed"\} 1/);
+  assert.match(metrics, /xiqu_processing_job_recent_average_duration_seconds\{phase="queue_wait"\} 1\.5/);
   assert.match(metrics, /xiqu_maintenance_write_permits_active 2/);
   assert.match(metrics, /xiqu_maintenance_write_permits_waiting 1/);
   assert.match(metrics, /xiqu_maintenance_write_permit_oldest_age_seconds 1\.25/);
@@ -201,6 +218,19 @@ test("重叠 scrape 复用采集且超时不启动第二份查询", async () => 
         },
       },
       processingJob: { groupBy: async () => [] },
+      $queryRaw: async () => [{
+        oldestQueuedAt: null,
+        oldestActiveHeartbeatAt: null,
+        oldestCancellingAt: null,
+        staleRunningCount: 0n,
+        staleCancellingCount: 0n,
+        recentSucceededCount: 0n,
+        recentFailedCount: 0n,
+        recentCancelledCount: 0n,
+        averageQueueWaitMs: null,
+        averageRunMs: null,
+        averageCancellationMs: null,
+      }],
     } as unknown as PrismaClient,
     {
       getReadiness: async () => ({

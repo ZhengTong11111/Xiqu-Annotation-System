@@ -3523,6 +3523,34 @@ select {
   background: #fff0f0;
 }
 
+/* 任务可靠性是一条服务端结论带；数据明细仍沿用诊断键值布局，不引入第二套任务卡片。 */
+.system-job-reliability-status {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  color: #356b4b;
+  background: #edf6ef;
+  border-left: 3px solid #4c8b64;
+  font-size: 12px;
+}
+
+.system-job-reliability-status[data-state="attention"] {
+  color: #775c1c;
+  background: #fff8df;
+  border-left-color: #c3912b;
+}
+
+.system-job-reliability-status[data-state="stalled"] {
+  color: #9a3336;
+  background: #fff0f0;
+  border-left-color: #b94a4e;
+}
+
+.system-job-reliability-grid > div {
+  min-width: 0;
+}
+
 .system-diagnostics-cleanup {
   display: inline-flex;
   align-items: center;

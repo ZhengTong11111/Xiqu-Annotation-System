@@ -149,11 +149,15 @@ AccessKey/Secret 代替，也不要把账号专属值硬编码进前端源码。
 事件，并可在执行备份或维护前进入全局维护模式：平台会等待在途写入完成，继续允许读取，并以 503
 拒绝新的编辑、上传和资源变更。Prometheus `/metrics` 默认关闭；仅配置 `XIQU_METRICS_TOKEN` 后启用，
 并要求对应 Bearer token。指标除规范化 HTTP、上传和进程数据外，还包含数据库/对象存储可用性、平台
-逻辑容量、后台任务状态和采集成功状态；标签不会携带账号、资源、文件名或存储路径。
+逻辑容量、后台任务状态、排队/心跳/取消年龄、陈旧 claim、近期终态和采集成功状态；标签不会携带账号、
+资源、任务 ID、文件名、错误正文或存储路径。管理员诊断只把近期失败和当前积压视为运行告警，历史任务
+总数继续保留但不会形成永久黄灯。
 
 `deploy/monitoring/` 提供 Prometheus 抓取、平台告警规则和 Alertmanager webhook 示例。真实 token 应以
 credentials file/secret 挂载，真实 receiver URL 不得提交仓库。规则覆盖 API/依赖不可用、采集失败、
 5xx、P95 延迟、容量 80%/95%、失败或积压任务和上传补偿失败，详见该目录 README。
+后台任务、维护写许可、数据库、对象存储和 worker 的故障判别顺序见
+[`docs/processing-job-operations.md`](docs/processing-job-operations.md)。
 
 全局管理员还可以从同一工具栏打开“审计日志”。该窗口支持按操作类型、操作者、目标账号、资源和
 时间范围筛选，以稳定游标逐页加载，并由服务端导出与当前筛选条件一致的 CSV。单次导出最多

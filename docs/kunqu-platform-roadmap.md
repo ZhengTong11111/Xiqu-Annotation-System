@@ -1035,7 +1035,9 @@ R5 完成不代表 R7 公网生产验收；真实云 IAM、TLS 续期、外部�
 > 取消/重试操作。P4a 已完成真实路由 maintenance manifest、HTTP 对象流断开回收，并修复递归项目复制偶发先写标注
 > 后写媒体导致的外键失败。P4b 已消除 Prisma adapter-pg 单事务连接的 relation fan-out query 重入，并补齐远端对象
 > 发布结果不确定时的 final/staged 双端补偿。P4c 已完成 worker 周期恢复/有界退避、长输入 heartbeat、claim-fenced
-> 资产发布和 FFmpeg 两阶段终止。当前下一阶段为 P4d 可观测性、管理员诊断、故障手册与压力矩阵。P0-P4c 均按用户要求暂不部署；后续每阶段必须独立
+> 资产发布和 FFmpeg 两阶段终止。P4d 已统一任务时间/陈旧/近期结果指标、管理员诊断和 Prometheus 告警，补充
+> `processing-job-operations.md` 故障判别手册并通过 P4 全矩阵、完整 API 与 localhost/Chrome 视觉验收。P0-P4 均按
+> 用户要求暂不部署；下一阶段 P5 先做隔离迁移和负载演练，生产部署仍需用户明确授权。后续每阶段必须独立
 > 测试、文档化和提交，不能把
 > 生产部署与未审查的数据模型/UI 改动混成一次发布。
 

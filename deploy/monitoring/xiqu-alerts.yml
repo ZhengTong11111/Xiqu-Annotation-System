@@ -14,6 +14,12 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: 平台运维指标采集持续失败
+      - alert: XiquMetricsSnapshotStale
+        expr: xiqu_operational_metrics_collection_success == 1 and (time() - xiqu_operational_metrics_collection_timestamp_seconds) > 300
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 平台运维指标快照长期未更新
       - alert: XiquDependencyUnavailable
         expr: xiqu_dependency_available == 0
         for: 2m
@@ -46,17 +52,29 @@ groups:
         annotations:
           summary: 平台存储容量超过 95%
       - alert: XiquFailedJobs
-        expr: xiqu_processing_jobs{status="failed"} > 0
+        expr: xiqu_processing_job_recent_outcomes{status="failed"} > 0
         for: 10m
         labels: { severity: warning }
         annotations:
           summary: 平台存在失败的后台任务
       - alert: XiquJobBacklog
-        expr: xiqu_processing_jobs{status="queued"} > 20
-        for: 10m
+        expr: xiqu_processing_jobs{status="queued"} > 0 and xiqu_processing_job_oldest_age_seconds{phase="queued"} > 120
+        for: 5m
         labels: { severity: warning }
         annotations:
           summary: 平台后台任务出现积压
+      - alert: XiquStaleJobClaim
+        expr: sum(xiqu_processing_job_stale_claims) > 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: 后台任务 worker claim 心跳陈旧
+      - alert: XiquJobCancellationStalled
+        expr: xiqu_processing_jobs{status="cancelling"} > 0 and xiqu_processing_job_oldest_age_seconds{phase="cancelling"} > 120
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 后台任务取消长期未收敛
       - alert: XiquUploadCompensationFailure
         expr: increase(xiqu_media_upload_compensation_failures_total[10m]) > 0
         for: 0m

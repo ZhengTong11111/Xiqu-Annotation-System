@@ -27,12 +27,15 @@ test("平台告警规则覆盖依赖、容量、请求、任务和补偿失败",
   for (const required of [
     "XiquApiDown",
     "XiquMetricsCollectionFailed",
+    "XiquMetricsSnapshotStale",
     "XiquDependencyUnavailable",
     "XiquHighErrorRate",
     "XiquHighLatency",
     "XiquStorageCapacity",
     "XiquFailedJobs",
     "XiquJobBacklog",
+    "XiquStaleJobClaim",
+    "XiquJobCancellationStalled",
     "XiquUploadCompensationFailure",
   ]) assert.ok(names.has(required), `缺少告警 ${required}`);
   const capacities = rules.filter((rule) => rule.alert === "XiquStorageCapacity");

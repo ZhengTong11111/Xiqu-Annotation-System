@@ -19,8 +19,8 @@ import {
   type ObjectStorage,
   type StagedBinary,
 } from "./objectStorage.js";
+import { PROCESSING_JOB_STALE_AFTER_MS } from "./processingJobReliability.js";
 
-const STALE_JOB_AFTER_MS = 2 * 60 * 1000;
 const MAX_ANALYSIS_ASSET_BYTES = 32 * 1024 * 1024;
 const CANCELLATION_POLL_INTERVAL_MS = 500;
 const CLAIM_HEARTBEAT_INTERVAL_MS = 15_000;
@@ -45,7 +45,7 @@ export class MediaAnalysisWorkerService {
   ) {}
 
   async recoverStaleJobs(now = new Date()) {
-    const staleBefore = new Date(now.getTime() - STALE_JOB_AFTER_MS);
+    const staleBefore = new Date(now.getTime() - PROCESSING_JOB_STALE_AFTER_MS);
     const stale = await this.prisma.processingJob.findMany({
       where: {
         type: "media_analysis",

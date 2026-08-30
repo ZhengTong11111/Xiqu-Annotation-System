@@ -119,6 +119,11 @@ Main currently contains all major recent feature lines that matter for context:
 - processing-job mutations use the lock order client command -> canonical deduplication key -> job row. Media-analysis request creation,
   last-demand cancellation, and stale recovery must share that canonical lock so a request cannot be attached from an obsolete demand
   snapshot. Job and analysis-run state transitions are conditional and paired in one transaction; a partial transition must roll back
+- processing-job reliability is derived from one bounded database aggregate over active jobs and a fixed recent terminal window.
+  Worker stale recovery, diagnostics, Prometheus and alerts share the same two-minute stale threshold; never copy timing rules into JSX,
+  alert text or another worker constant. Historical failed totals remain audit facts but must not create a permanent current incident.
+  With active work, database heartbeat/claim is authoritative; with an empty queue, worker process liveness belongs to systemd/host
+  monitoring and must not be fabricated by the API
 - analysis audio defaults to the bound uploaded/VOD media but can always be overridden with a readable server audio/VOD
   resource and restored to auto; these settings and assets are platform state, never ProjectData or undo/history state
 - the compact audio-track selector is a high-frequency listening surface; persistent relation CRUD belongs in the separate
@@ -201,7 +206,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - the bounded request-centric query boundary for `mine | related | all`, summary and detail. `all` is admin-only; related
     visibility is recalculated from current resource ACL and hidden contexts must not be enumerable
   - cursors bind scope/status/type and use `(requestedAt, id)` keyset order. Related scans and detail lists are capped; a capped
-    summary reports `isPartial` rather than pretending to be exact. Resource permissions must be batch-resolved, not queried N+1
+  summary reports `isPartial` rather than pretending to be exact. Resource permissions must be batch-resolved, not queried N+1
+- `apps/api/src/processingJobReliability.ts` + `apps/api/src/operationalMetricsCollector.ts`
+  - the only processing-job age/stale/recent-window aggregation boundary for diagnostics and Prometheus. It reads active jobs plus a
+    fixed recent terminal window, returns only counts/durations, and never exposes task, account, resource, object or error identities
+  - successful metric snapshots explicitly overwrite every fixed status/phase Gauge, including zero; collection failure marks only
+    collection success and retains the last real values. Prometheus labels are fixed enums, never IDs, names, paths or error text
+  - system diagnostics summarize current queue age, heartbeat age, cancelling age and recent outcomes; concrete task governance remains
+    in the existing processing-job center. Operational fault discrimination follows `docs/processing-job-operations.md`
 - `apps/api/src/mediaAnalysisMigrationPlan.ts` + `apps/api/src/mediaAnalysisMigrationService.ts`
   - offline RA2 migration boundary for grouping annotation-scoped historical runs by media identity, validating manifest/assets/
     immutable object checksums, and recording reversible canonical/superseded relationships
