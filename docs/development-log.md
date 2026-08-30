@@ -9387,3 +9387,43 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   无依赖脚本阶段通过，随后因当前工作区没有安装 `tsx` 而无法启动三项 TypeScript 测试；这是本地依赖缺失，
   不是断言失败。当前主机也未安装 `caddy` 二进制，因此仓库内未声称替代目标服务器的
   `caddy validate`/真实证书签发与公网 VOD 验收。
+
+## 2026-08-30：协作基线修复合并与生产发布
+
+### Git 合并与发布候选
+
+- 将协作草稿基线漂移修复提交 `63ad0d8` 与远端 `main` 已有的 Caddy 部署提交 `ddbdd2c` 合并，形成
+  `c572d8b`。冲突只涉及部署/开发记录，合并结果同时保留不可变 release 检查流程、Caddy 默认入口和两边的历史事实；
+  功能代码没有以一方文档覆盖另一方实现。
+- 本地 `main` 已快进到 `c572d8b` 并推送 `origin/main`；已经确认合并提交是 `main` 祖先后，删除本地与远端
+  `codex/collaboration-track-sync` 分支。部署前 `npm run test:deployment` 29/29 通过，精确提交的完整
+  `npm run build` 通过 Prisma Client/schema、shared、document-model、Web 与 API，仅保留既有 Vite 主 chunk
+  大小提醒。
+- 候选 release `20260830T201233Z-c572d8b` 在服务器隔离构建，归档 SHA-256 为
+  `7a298858f3b21496953a3c4b22c84583f10d7aa7b99206e029e33c54a98ee0dd`。`release:inspect`/`release:check`
+  核对 27 个运行路径、25 个生产依赖和 31 条 migration；候选不含 `.env`、数据库、对象目录、媒体、草稿、备份或凭据。
+
+### 维护、备份、迁移与原子切换
+
+- 使用 `platform.admin` 开启维护，停止 API 与 analysis worker 后创建一致备份
+  `/var/lib/xiqu-platform/backups/xiqu-backup-2026-08-30T20-15-16-936Z-a88d7792`。旧 release 尚不支持复用既有
+  维护窗口，因此只在两个写服务均已停止时让旧备份 CLI 独占维护状态；全过程不存在对外写入窗口，也没有覆盖服务器
+  数据、对象或浏览器草稿。`backup:verify` 返回 `valid: true` 且错误列表为空。
+- 重新开启维护后，由新候选正式执行 `prisma migrate deploy`；31 条 migration 中新增应用
+  `20260830010000_processing_job_requests` 和 `20260830020000_processing_job_cancellation`，其余已应用记录保持不变。
+  没有使用 `db push`、手工改表或跳过迁移门禁。
+- `release:switch` 在 expected-current 门禁下将 `/opt/xiqu/current` 从
+  `20260830T120239Z-6b55fc9` 原子切换到 `20260830T201233Z-c572d8b`。API 先单独启动并通过检查后才关闭维护、再启动
+  analysis worker，避免旧进程跨越 schema/release 边界。
+
+### 上线核验与当前状态
+
+- 正式入口为 `https://kunqu.aik2.site`，Caddy 提供 TLS 和同源 `/api`；直接访问 HTTP IP 会由 Caddy 重定向到 HTTPS，
+  不能把 IP 地址自身当作已签发证书的正式入口。首页加载新资源 `/assets/index-BPwMbX7D.js` 和
+  `/assets/index-BUwXe8OZ.css`。
+- 维护期间和恢复访问后均执行 `npm run deploy:check -- --base-url=https://kunqu.aik2.site`，Web 首页、API liveness、
+  API readiness 均返回 HTTP 200。API 启动日志没有 schema、迁移或致命错误；`xiqu-api`、
+  `xiqu-analysis-worker`、`caddy` 最终均为 `active`。
+- 维护状态最终由新 release 以 `platform.admin` 查询，结果为 `enabled: false`。本次部署已完成代码发布与只读健康核验；
+  后续仍应按上一节计划观察 `same_revision_baseline_mismatch`、命令前置条件失败和结构租约最长持有时间，并以真实历史
+  漂移草稿及两个账号完成人工协作验收。
