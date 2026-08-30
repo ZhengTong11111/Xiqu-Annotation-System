@@ -8851,3 +8851,44 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   roadmap/AGENTS/Development Log 更新。
 - **待推进**：P4 跨读写、对象流、数据库、对象存储、worker 和分析任务故障注入与运行手册；继续遵守用户要求，不部署
   服务器，不修改生产数据库、对象、任务或浏览器草稿。
+
+## 2026-08-30：维护路由清单、HTTP 流生命周期与递归复制竞态（P4a）
+
+### 路由维护语义与对象流
+
+- P3 commit `a122acf` 后，先按真实代码把 P4 拆为 P4a 路由/HTTP 流、P4b 数据库/对象存储、P4c worker/分析、P4d
+  可观测性/手册四个独立小轮，并完全重写 `CLAUDE_WORK.md`。本轮没有部署或连接生产。
+- `maintenanceRouteAccess.ts` 新增只读 route manifest：由现有 `MaintenanceCoordinator` 的 `onRoute` hook 记录实际 Fastify
+  method/path、resolved access 和是否显式声明，稳定去重/排序并拒绝同 method/path 冲突语义。manifest 只是审计事实，
+  运行时门禁仍只由 `resolveMaintenanceAccess()` 判定；没有形成第二套授权或 URL 正则。
+- 完整 `buildApiApp()` 测试确认 `/api` 与 `/metrics` 的所有隐式非安全方法均默认 write。显式非安全例外当前严格限定为
+  维护 control、协作票据、两种播放会话和分析资产批量读取共 5 项；新增例外必须更新具名 allowlist。清单不包含 handler、
+  schema、请求参数、账号、SQL、对象地址或凭据。
+- `abortableHttpStream` 补齐断开早于异步 `getObjectStream()` 返回的窗口：迟到的单对象或批量对象流会立即 destroy，
+  不交给 Fastify、不继续打开后续对象。测试同时覆盖正常 response finish 不误 abort、open failure 保留原始错误并清理
+  listener、读取中 abort 和 100 次快速跳转全部回收。HTTP 中止仍只控制当前读取，不取消后台 job 或提前结束写事务。
+
+### 完整回归暴露的概率性外键错误
+
+- P4a 首次完整 API 运行再次在既有“项目递归复制复用媒体对象”中偶发 500。此前 P3 曾见同一抖动但隔离复跑通过；本轮
+  不再接受“再跑一次绿灯”。平台集成夹具增加仅收集 `error` 级日志的内存 stream，正常测试保持安静，断言失败才附最近
+  服务端根因；生产响应继续只返回脱敏 `internal_error`。
+- 连续 suite 与完整 API 压力最终捕获 Prisma `P2003`：`annotation_files_media_resource_id_fkey` 被拒绝。根因是旧复制计划
+  只用父节点优先 BFS，兄弟顺序沿用没有 ORDER BY 的数据库快照；当标注兄弟偶尔排在媒体兄弟前，事务会先创建指向尚未
+  创建新媒体 id 的标注行。隔离复跑成功只是兄弟顺序碰巧相反。
+- `resourceCopy.ts` 改为依赖拓扑排序：每个节点依赖父节点，复制树内部的 annotation 还依赖其媒体资源；ready 集合按
+  类型、名称、ID 做与 locale 无关的稳定排序。先为整棵树分配 id、再按依赖创建，既保留内部媒体重映射，也让跨层媒体
+  引用始终先创建外键目标。依赖循环/断树继续 fail closed，没有关闭外键、重试事务或吞掉 500。
+- 新增纯测试覆盖三种输入乱序和跨层媒体依赖；测试夹具保留内存错误记录器，未来意外 500 不再只留下通用响应。
+
+### 验证、自审与状态
+
+- `npm run test:processing-reliability-p4a`：17/17，覆盖 route manifest、完整 app 显式例外、维护许可、单/批量对象中止和
+  复制拓扑。修复前连续压力能复现复制 500，修复后完整 API 为 221/221。
+- `npm run test:deployment`：28/28；API/Web/共享类型检查、完整 `npm run build` 和 `git diff --check` 通过。仅保留既有
+  Vite 主 chunk 警告和 `pg client.query()` 弃用提醒；后者继续列入 P4b 的连接所有权审计。
+- 自审确认没有新增依赖、公开端点、数据库 migration、敏感日志、第二套维护 gate 或 stream owner；复杂依赖和中止竞态
+  均有中文原因注释。ProjectData、协作命令、时间轴、媒体瓦片、播放和 worker 状态机未改变。
+- **已完成**：P4a 路由语义清单、HTTP 流生命周期、真实故障定位、递归复制确定性依赖顺序、专项/完整门禁与文档。
+- **待推进**：P4b 对数据库 pool/事务/锁、对象读取写入、上传/复制/备份补偿、磁盘/配额和幂等恢复做故障注入；仍不
+  部署服务器或修改生产数据库、对象、任务及草稿。

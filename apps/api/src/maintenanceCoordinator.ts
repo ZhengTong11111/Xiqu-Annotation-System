@@ -16,7 +16,10 @@ import {
   maintenanceMode,
   writeGateBusy,
 } from "./errors.js";
-import { resolveMaintenanceAccess } from "./maintenanceRouteAccess.js";
+import {
+  attachMaintenanceRouteManifest,
+  resolveMaintenanceAccess,
+} from "./maintenanceRouteAccess.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
 
 // 维护许可使用独立于资源树锁的固定 int64 key；所有 API 实例连接同一数据库即可共享边界。
@@ -87,7 +90,9 @@ export class MaintenanceCoordinator {
   // Fastify gate 先取得许可，再由统一 handler 包装器在业务 Promise 结束时释放，避免依赖网络响应完成事件。
   registerRequestGate(app: FastifyInstance) {
     const coordinator = this;
+    const recordRoute = attachMaintenanceRouteManifest(app);
     app.addHook("onRoute", (routeOptions) => {
+      recordRoute(routeOptions.method, routeOptions.url, routeOptions.config);
       if (resolveMaintenanceAccess(routeOptions.method, routeOptions.config) !== "write") {
         return;
       }

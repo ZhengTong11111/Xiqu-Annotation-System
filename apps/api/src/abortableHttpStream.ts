@@ -103,9 +103,14 @@ export async function openAbortableResponseStream(
 ) {
   const disconnect = bindHttpDisconnectSignal(request, response);
   try {
-    const stream = abortReadableOnSignal(await open(), disconnect.signal);
-    stream.once("close", disconnect.dispose);
-    return stream;
+    const stream = await open();
+    // 远端对象打开可能比客户端断开更晚；迟到的流必须在交给 Fastify 前销毁，不能继续占用文件或 S3 连接。
+    const abortableStream = abortReadableOnSignal(stream, disconnect.signal);
+    if (disconnect.signal.aborted) {
+      abortableStream.destroy();
+    }
+    abortableStream.once("close", disconnect.dispose);
+    return abortableStream;
   } catch (error) {
     disconnect.dispose();
     throw error;

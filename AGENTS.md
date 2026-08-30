@@ -1033,10 +1033,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/maintenanceRouteAccess.ts`
   - the only typed maintenance route-classification contract; reviewed read-only POSTs and the maintenance control route use
     its shared option constants, while future non-safe routes remain fail-closed by default
+  - the attached route manifest observes actual Fastify `onRoute` facts for tests/diagnostics only; it is not a second gate.
+    Every explicit non-safe read/control exception is locked by the full-app allowlist test, while entries contain only stable
+    method/path/access/explicit facts and never handlers, schemas, request values, SQL, identities, or credentials
 - `apps/api/src/abortableHttpStream.ts`
   - the shared HTTP disconnect boundary for batch analysis assets, single tiles, resource downloads, and uploaded-media Range
     streams. Client seek/jump cancellation is normal control flow: destroy current streams without logging a server error and
     never open subsequent objects after abort
+  - disconnect may race an asynchronous object open; a stream that resolves after abort must be destroyed before Fastify receives
+    it. Response finish, open failure, stream close, and abort share idempotent listener cleanup
 - `apps/api/src/systemDiagnosticsService.ts`
   - admin-only capacity/resource/job/object-consistency aggregation and server-authored alerts
   - admin-only dry-run and confirmed cleanup for aged storage/database orphans; missing binaries are report-only
@@ -1048,6 +1053,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - cursors bind view/parent/search/type/sort/direction but never carry permission facts; API still evaluates ACL per request
 - `apps/api/src/resourceCopy.ts`
   - pure recursive-copy planning, topological ordering, id allocation, and internal media-reference remapping
+  - ordering must satisfy both parent-before-child and copied-media-before-referencing-annotation dependencies. Prisma result
+    order is not authoritative; deterministic dependency sorting prevents intermittent annotation media FK failures
 - `apps/api/src/annotationOperationIdempotency.ts`
   - pure bounded client-operation-id validation and stable JSON/SHA-256 request fingerprinting
   - idempotency scope is `(annotationFileId, actorUserId, clientOperationId)`; an exact accepted replay returns the original

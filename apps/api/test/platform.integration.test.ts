@@ -11,7 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import test from "node:test";
 import type { FastifyInstance, InjectOptions } from "fastify";
 import {
@@ -71,13 +71,21 @@ test("平台资源 API 集成测试", async (suite) => {
   const { prisma, pool, maintenancePool, collaborationPool, schema } = createTestPrisma();
   await truncateTestDatabase(prisma);
   const storage = new LocalObjectStorage(storageRoot);
+  const serverErrorLogs: string[] = [];
+  const errorLogStream = new Writable({
+    write(chunk, _encoding, callback) {
+      serverErrorLogs.push(String(chunk));
+      callback();
+    },
+  });
   const app = await buildApiApp({
     prisma,
     maintenancePool,
     collaborationPool,
     databaseSchema: schema,
     storage,
-    logger: false,
+    // 正常请求保持安静；意外 500 写入内存，并只在对应断言失败时附上最近的服务端根因。
+    logger: { level: "error", stream: errorLogStream },
     seed: true,
     uploadPolicy: {
       maxUploadBytes: 64,
@@ -2452,6 +2460,7 @@ test("平台资源 API 集成测试", async (suite) => {
     });
 
     await suite.test("项目递归复制复用媒体对象并重映射内部引用", async () => {
+      serverErrorLogs.length = 0;
       const sourceProjectResponse = await jsonRequest(app, adminToken, {
         method: "POST",
         url: "/api/resources",
@@ -2560,7 +2569,11 @@ test("平台资源 API 集成测试", async (suite) => {
         url: `/api/resources/${sourceProjectId}/copy`,
         payload: { parentId: targetProjectId },
       });
-      assert.equal(copiedResponse.statusCode, 200, copiedResponse.body);
+      assert.equal(
+        copiedResponse.statusCode,
+        200,
+        `${copiedResponse.body}\n${serverErrorLogs.slice(-3).join("")}`,
+      );
       const copiedProjectId = String(dataOf(copiedResponse.json()).id);
       const copiedProject = await prisma.resourceEntry.findUniqueOrThrow({
         where: { id: copiedProjectId },

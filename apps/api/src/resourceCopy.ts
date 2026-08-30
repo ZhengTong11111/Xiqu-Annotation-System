@@ -74,19 +74,7 @@ export function buildResourceCopyPlan(input: {
     childrenByParent.set(node.parentId, siblings);
   }
 
-  const ordered: CopySourceNode[] = [];
-  const queue = [root];
-  const visited = new Set<string>();
-  while (queue.length) {
-    const node = queue.shift()!;
-    if (visited.has(node.id)) throw new Error("复制源资源树包含循环。");
-    visited.add(node.id);
-    ordered.push(node);
-    queue.push(...(childrenByParent.get(node.id) ?? []));
-  }
-  if (visited.size !== input.nodes.length) {
-    throw new Error("复制源资源树包含无法从根节点到达的资源。");
-  }
+  const ordered = orderCopySourceNodes(root, sourceById, childrenByParent);
 
   const copiedIdBySourceId = new Map(
     ordered.map((node) => [node.id, randomUUID()]),
@@ -123,6 +111,81 @@ export function buildResourceCopyPlan(input: {
       node.type === "media_file" &&
       node.mediaFile?.sourceType === "uploaded").length,
   };
+}
+
+// 复制顺序同时服从资源树父子关系和标注媒体外键；只做父节点优先的 BFS 无法保证同层媒体先于引用它的标注。
+function orderCopySourceNodes(
+  root: CopySourceNode,
+  sourceById: Map<string, CopySourceNode>,
+  childrenByParent: Map<string, CopySourceNode[]>,
+) {
+  const reachable = new Set<string>();
+  const treeQueue = [root];
+  while (treeQueue.length) {
+    const node = treeQueue.shift()!;
+    if (reachable.has(node.id)) throw new Error("复制源资源树包含循环。");
+    reachable.add(node.id);
+    treeQueue.push(...(childrenByParent.get(node.id) ?? []));
+  }
+  if (reachable.size !== sourceById.size) {
+    throw new Error("复制源资源树包含无法从根节点到达的资源。");
+  }
+
+  const dependencies = new Map<string, Set<string>>();
+  const dependents = new Map<string, Set<string>>();
+  for (const node of sourceById.values()) {
+    const required = new Set<string>();
+    if (node.id !== root.id) required.add(node.parentId!);
+    const mediaResourceId = node.annotationFile?.mediaResourceId;
+    if (mediaResourceId && sourceById.has(mediaResourceId)) {
+      required.add(mediaResourceId);
+    }
+    dependencies.set(node.id, required);
+    for (const requiredId of required) {
+      const next = dependents.get(requiredId) ?? new Set<string>();
+      next.add(node.id);
+      dependents.set(requiredId, next);
+    }
+  }
+
+  const ready = [...sourceById.values()]
+    .filter((node) => dependencies.get(node.id)?.size === 0)
+    .sort(compareCopySourceNodes);
+  const ordered: CopySourceNode[] = [];
+  while (ready.length) {
+    const node = ready.shift()!;
+    ordered.push(node);
+    for (const dependentId of dependents.get(node.id) ?? []) {
+      const remaining = dependencies.get(dependentId)!;
+      remaining.delete(node.id);
+      if (remaining.size === 0) {
+        ready.push(sourceById.get(dependentId)!);
+        ready.sort(compareCopySourceNodes);
+      }
+    }
+  }
+  if (ordered.length !== sourceById.size) {
+    throw new Error("复制源资源依赖包含循环。");
+  }
+  return ordered;
+}
+
+const COPY_TYPE_ORDER: Record<ResourceType, number> = {
+  project: 0,
+  folder: 1,
+  media_file: 2,
+  annotation_file: 3,
+};
+
+function compareCopySourceNodes(left: CopySourceNode, right: CopySourceNode) {
+  return COPY_TYPE_ORDER[left.type] - COPY_TYPE_ORDER[right.type] ||
+    compareStableText(left.name, right.name) ||
+    compareStableText(left.id, right.id);
+}
+
+function compareStableText(left: string, right: string) {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
 }
 
 function assertSpecializedRow(node: CopySourceNode) {
