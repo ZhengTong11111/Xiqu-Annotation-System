@@ -439,6 +439,15 @@ export function ResourceExplorer(props: {
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      const command = event.metaKey || event.ctrlKey;
+      const isRefreshShortcut = event.key === "F5" ||
+        (command && event.key.toLowerCase() === "r");
+      if (isRefreshShortcut) {
+        // 资源管理器刷新只重新拉取当前目录/可见列，不能整页重载并丢失登录态、选择和窗口上下文。
+        event.preventDefault();
+        void refreshCurrentView();
+        return;
+      }
       // Radix 对话框负责其内部键盘交互，打开时不能让资源列表的全局快捷键同时执行。
       if (
         movingResources.length ||
@@ -452,7 +461,6 @@ export function ResourceExplorer(props: {
         target?.isContentEditable ||
         ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName ?? "")
       ) return;
-      const command = event.metaKey || event.ctrlKey;
       if (command && event.key.toLowerCase() === "a") {
         event.preventDefault();
         setSelectedIds(selectionItems.map((item) => item.id));

@@ -14,7 +14,9 @@ import {
 export type TopMenuPlatformNavigation = {
   label: string;
   title: string;
-  onBack: () => void;
+  onBack: () => void | Promise<void>;
+  busy?: boolean;
+  busyLabel?: string;
 };
 
 type TopMenuBarProps = {
@@ -207,9 +209,13 @@ export function TopMenuBar({
             type="button"
             className="top-menu-platform-back"
             title={platformNavigation.title}
-            onClick={platformNavigation.onBack}
+            disabled={platformNavigation.busy}
+            aria-busy={platformNavigation.busy || undefined}
+            onClick={() => void platformNavigation.onBack()}
           >
-            {platformNavigation.label}
+            {platformNavigation.busy
+              ? platformNavigation.busyLabel ?? "正在处理…"
+              : platformNavigation.label}
           </button>
         ) : null}
         <span className="top-menu-brand-dot" />
@@ -269,7 +275,12 @@ export function TopMenuBar({
                       导入并整合标注
                     </button>
                     <div className="top-menu-divider" />
-                    <button type="button" className="top-menu-dropdown-item" onClick={() => handleAction(onSaveProject)}>
+                    <button
+                      type="button"
+                      className="top-menu-dropdown-item"
+                      onClick={() => handleAction(onSaveProject)}
+                      disabled={Boolean(editingBlockedReason)}
+                    >
                       保存本地项目
                     </button>
                     <button
@@ -280,7 +291,7 @@ export function TopMenuBar({
                           handleAction(onSaveProjectToServer);
                         }
                       }}
-                      disabled={!onSaveProjectToServer}
+                      disabled={!onSaveProjectToServer || Boolean(editingBlockedReason)}
                     >
                       保存平台标注文件
                     </button>

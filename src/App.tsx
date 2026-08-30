@@ -68,6 +68,8 @@ import { buildTimelineSelectionSummary } from "./platform/timelineSelectionSumma
 import { useAnnotationReviews } from "./platform/useAnnotationReviews";
 import { usePlatformAutoSave } from "./platform/usePlatformAutoSave";
 import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
+import { preparePlatformEditorLeave } from "./platform/platformEditorLeaveRuntime";
+import { usePlatformEditorHistoryGuard } from "./platform/usePlatformEditorHistoryGuard";
 import { usePlatformMutationLease } from "./platform/usePlatformMutationLease";
 import {
   type PlatformAnalysisViewport,
@@ -652,7 +654,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     [pendingOperations],
   );
   // 浏览器草稿仅服务平台可写会话；本地 JSON 和只读文件继续走各自原有保存边界。
-  const { flushNow: flushPlatformDraftNow } = usePlatformDraftPersistence({
+  const {
+    flushNow: flushPlatformDraftNow,
+    finalizeCleanExit: finalizePlatformDraftCleanExit,
+  } = usePlatformDraftPersistence({
     enabled: Boolean(editorSession?.canWrite),
     // 待确认整合和 transient 预览都尚未形成可重放历史，不能写入恢复草稿。
     suspended: pendingAnnotationMergeDraft !== null || hasTransientDocumentEdit,
@@ -989,12 +994,82 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   // ref 负责同步阻止重复提交，state 负责让追赶与媒体门禁在保存结束后重新计算。
   // 仅修改 ref 不会触发渲染，失败会话可能因此永久停留在“保存中不可追赶”的旧判断中。
   const [serverSaveInFlight, setServerSaveInFlight] = useState(false);
+  const [platformLeaveBusy, setPlatformLeaveBusy] = useState(false);
   const syncFailureRuntimeIdRef = useRef(createRuntimeUuid());
   const syncFailureMismatchFieldsRef = useRef<string[]>([]);
   const syncFailureMismatchDetailsRef = useRef<ReturnType<typeof getSyncFailureMismatchDetails>>([]);
   const lastReportedSyncFailureRef = useRef<string | null>(null);
   // acquire 需要等待网络；这一门禁串行化结构、批量导入和批量修复，避免连续点击重复提交。
   const exclusiveMutationInFlightRef = useRef(false);
+
+  const requestPlatformEditorLeave = useCallback(async (): Promise<boolean> => {
+    if (!editorSession || !editorSession.canWrite) return true;
+    setPlatformLeaveBusy(true);
+    let approved = false;
+    try {
+      const result = await preparePlatformEditorLeave({
+        preparePendingEditors: () => {
+          if (editingCharacterId && !commitCharacterTextEdit(editingCharacterId)) return false;
+          if (
+            editingCustomTextBlock &&
+            !commitCustomTextEdit(editingCustomTextBlock.trackId, editingCustomTextBlock.id)
+          ) return false;
+          return true;
+        },
+        waitForActiveSave: waitForActiveServerSave,
+        getFacts: () => {
+          const recovery = getRecoveryState();
+          const blockedReason = pendingAnnotationMergeDraft
+            ? "当前仍有待确认的标注整合，请先完成或取消整合后再返回。"
+            : transientProjectRef.current
+              ? "当前拖拽或缩放尚未结束，请完成操作后再返回。"
+              : exclusiveMutationInFlightRef.current
+                ? "结构编辑正在完成，请稍后再返回资源管理器。"
+                : null;
+          return { dirty: hasRecoveryStateUnsavedChanges(recovery), blockedReason };
+        },
+        save: () => saveProjectToServer({ source: "navigation" }),
+        flushDraft: flushPlatformDraftNow,
+        finalizeCleanExit: () => finalizePlatformDraftCleanExit({
+          remoteBaseRevision: remoteBaseRevisionRef.current,
+          recoveryState: getRecoveryState(),
+        }),
+      });
+      if (result.status === "blocked") {
+        window.alert(result.message);
+        return false;
+      }
+      approved = true;
+      return true;
+    } finally {
+      // 成功时保持 pending 直到编辑器被资源管理器切换卸载，避免草稿清场后出现短暂的重新编辑窗口。
+      if (!approved) setPlatformLeaveBusy(false);
+    }
+  }, [
+    editingCharacterId,
+    editingCustomTextBlock,
+    editorSession,
+    flushPlatformDraftNow,
+    finalizePlatformDraftCleanExit,
+    getRecoveryState,
+    pendingAnnotationMergeDraft,
+  ]);
+
+  // 顶部按钮与浏览器后退共用同一个批准入口；资源管理器切换只会发生在服务端保存门禁通过之后。
+  const guardedPlatformBack = usePlatformEditorHistoryGuard({
+    enabled: Boolean(editorSession && platformNavigation),
+    sessionKey: editorSession?.annotationFileId ?? null,
+    requestLeave: requestPlatformEditorLeave,
+    onApprovedLeave: () => platformNavigation?.onBack(),
+  });
+  const guardedPlatformNavigation = platformNavigation
+    ? {
+        ...platformNavigation,
+        busy: platformLeaveBusy,
+        busyLabel: editorSession ? "正在保存…" : undefined,
+        onBack: editorSession ? () => void guardedPlatformBack() : platformNavigation.onBack,
+      }
+    : undefined;
   // 媒体改绑会替换平台注入的运行时 URL，因此只允许在文档完全 clean 时执行；
   // 本地文件导入仍走原有编辑命令和撤销历史，不受这条平台治理门禁影响。
   const serverMediaBindingDisabledReason = editorSession
@@ -1702,6 +1777,23 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   ]);
 
   const handleGlobalKeyDown = useCallback((event: KeyboardEvent) => {
+    if (platformLeaveBusy) {
+      // 离开事务已经冻结最终保存快照；pending 期间不接受任何快捷键修改或播放命令。
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+    const isBrowserRefreshShortcut = event.key === "F5" ||
+      ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "r");
+    if (isBrowserRefreshShortcut) {
+      // 键盘刷新会销毁整个编辑运行时；平台资源刷新属于资源管理器职责，不能用整页重载替代。
+      event.preventDefault();
+      window.alert(editorSession
+        ? "为避免未保存标注丢失，编辑器已阻止整页刷新。请先返回资源管理器，再使用平台刷新按钮。"
+        : "为避免本地标注丢失，编辑器已阻止整页刷新。请先保存项目文件。"
+      );
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
       void saveProjectFile();
@@ -1824,6 +1916,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     duration,
     loopPlaybackRange,
     loopPlaybackEnabled,
+    editorSession,
+    platformLeaveBusy,
   ]);
 
   useEffect(() => {
@@ -2865,31 +2959,32 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     setEditingCharacterValue("");
   }
 
-  function commitCharacterTextEdit(id: string) {
+  function commitCharacterTextEdit(id: string): boolean {
     const currentCharacter = projectRef.current.characterAnnotations.find((item) => item.id === id);
     if (!currentCharacter) {
       cancelCharacterTextEdit();
-      return;
+      return true;
     }
     const normalizedChar = editingCharacterValue.trim();
     if (!normalizedChar) {
       window.alert("字内容不能为空。");
-      return;
+      return false;
     }
     if (normalizedChar === currentCharacter.char) {
       cancelCharacterTextEdit();
-      return;
+      return true;
     }
     if (!isSingleHanCharacter(normalizedChar)) {
       const confirmed = window.confirm(
         `当前输入为“${normalizedChar}”。通常这里建议使用单个汉字。是否仍然继续修改？`,
       );
       if (!confirmed) {
-        return;
+        return false;
       }
     }
     updateCharacter(id, { char: normalizedChar });
     cancelCharacterTextEdit();
+    return true;
   }
 
   // 保存和结构写入共用一个内存屏障：保存先开始时结构写入等待；结构写入先开始时保存入口直接让出。
@@ -3429,23 +3524,24 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     setEditingCustomTextValue("");
   }
 
-  function commitCustomTextEdit(trackId: string, blockId: string) {
+  function commitCustomTextEdit(trackId: string, blockId: string): boolean {
     const currentBlock = findCustomBlock(projectRef.current.customTracks, trackId, blockId);
     if (!currentBlock || currentBlock.trackType !== "text") {
       cancelCustomTextEdit();
-      return;
+      return true;
     }
     const normalizedText = editingCustomTextValue.trim();
     if (!normalizedText) {
       window.alert("文字 block 的内容不能为空。");
-      return;
+      return false;
     }
     if (normalizedText === currentBlock.text) {
       cancelCustomTextEdit();
-      return;
+      return true;
     }
     updateCustomBlock(trackId, blockId, { text: normalizedText });
     cancelCustomTextEdit();
+    return true;
   }
 
   function updateAction(id: string, changes: Partial<ActionAnnotation>, recordHistory = true) {
@@ -6350,7 +6446,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   async function saveProjectToServer(options: {
-    source: "manual" | "auto";
+    source: "manual" | "auto" | "navigation";
   } = { source: "manual" }): Promise<PlatformSaveOutcome> {
     const interactive = options.source === "manual";
     if (!editorSession) {
@@ -6384,7 +6480,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     if (interactive && editingCustomTextBlock) {
       commitCustomTextEdit(editingCustomTextBlock.trackId, editingCustomTextBlock.id);
     }
-    if (!hasUnsavedChanges && !hadInlineEditor) {
+    // 行内 commit 会同步更新 document refs，但 React render 状态可能仍在旧帧；保存资格必须读取最新恢复事实。
+    if (!hasRecoveryStateUnsavedChanges(getRecoveryState()) && !hadInlineEditor) {
       return { status: "skipped", reason: "clean" };
     }
 
@@ -6628,7 +6725,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   // 只有 planner 明确识别出的旧语义才能走完整快照；该兼容通道不能吞掉原子命令 precondition 错误。
   async function saveLegacyProjectSnapshot(
     session: PlatformEditorSession,
-    source: "manual" | "auto",
+    source: "manual" | "auto" | "navigation",
     frozenRecoveryState = getRecoveryState(),
   ): Promise<PlatformSaveOutcome> {
     const submittedOperationIds: string[] = [];
@@ -7141,9 +7238,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   return (
     <AppShell
+      blockingNotice={platformLeaveBusy
+        ? "正在保存并同步，完成后将返回资源管理器…"
+        : undefined}
       menuBar={(
         <TopMenuBar
-          platformNavigation={platformNavigation}
+          platformNavigation={guardedPlatformNavigation}
           audioTrackSelector={platformAudioTracks.active ? {
             options: platformAudioTracks.options,
             selectedTrackId: platformAudioTracks.selectedTrackId,
@@ -7181,7 +7281,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           savedRevision={syncState.savedRevision}
           remoteRevision={editorSession ? remoteBaseRevision : undefined}
           observedRemoteRevision={editorSession ? observedRemoteRevision : undefined}
-          editingBlockedReason={remoteCatchUpBlockReason}
+          editingBlockedReason={platformLeaveBusy
+            ? "正在保存并同步"
+            : remoteCatchUpBlockReason}
           pendingOperationCount={pendingOperations.length}
           accessLabel={editorSession?.accessLabel}
           mutationLeaseLabel={mutationLeaseLabel}
@@ -10306,6 +10408,15 @@ function isEditableKeyboardTarget(target: EventTarget | null) {
     return true;
   }
   return ["INPUT", "SELECT", "TEXTAREA"].includes(element.tagName);
+}
+
+// 导航、手动保存和草稿恢复使用同一 dirty 定义，避免任一入口只看 ProjectData 或只看 React state。
+function hasRecoveryStateUnsavedChanges(state: ProjectDocumentRecoveryState) {
+  return !areEditorProjectsEqual(state.currentProject, state.savedProject) ||
+    !trackSnapStatesEqual(
+      state.currentTrackSnapEnabled,
+      state.savedTrackSnapEnabled,
+    ) || state.pendingOperations.length > 0;
 }
 
 // 租约竞争优先展示服务端提供的持有者和失效时间；未知错误仍保留原始诊断，不从中文字符串猜状态。

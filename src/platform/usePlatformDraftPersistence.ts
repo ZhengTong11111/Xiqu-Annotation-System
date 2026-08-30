@@ -29,6 +29,19 @@ export type PlatformDraftFlushResult =
   | { ok: true }
   | { ok: false; message: string };
 
+export type PlatformDraftCleanExitRequest = {
+  remoteBaseRevision: number;
+  recoveryState: ProjectDocumentRecoveryState;
+};
+
+export type PlatformDraftCleanExitCheckpoint = {
+  userId: string;
+  annotationFileId: string;
+  remoteBaseRevision: number;
+  localRevision: number;
+  savedRevision: number;
+};
+
 export type PlatformDraftTaskQueue = {
   enqueue: (task: () => Promise<void>) => Promise<void>;
 };
@@ -58,16 +71,71 @@ export function getPlatformDraftPersistenceAction(input: Pick<
   return input.hasUnsavedChanges ? "put" : "delete";
 }
 
+// 干净退出只接受没有 pending operation 且本地/已保存 revision 完全一致的检查点。
+// ProjectData 等价性由 document owner 在调用前验证，这里只负责草稿存储可独立复核的稳定事实。
+export function buildPlatformDraftCleanExitCheckpoint(input: {
+  userId: string | null;
+  annotationFileId: string | null;
+  remoteBaseRevision: number;
+  recoveryState: ProjectDocumentRecoveryState;
+}): PlatformDraftCleanExitCheckpoint | null {
+  if (
+    !input.userId ||
+    !input.annotationFileId ||
+    input.recoveryState.pendingOperations.length > 0 ||
+    input.recoveryState.localRevision !== input.recoveryState.savedRevision
+  ) return null;
+  return {
+    userId: input.userId,
+    annotationFileId: input.annotationFileId,
+    remoteBaseRevision: input.remoteBaseRevision,
+    localRevision: input.recoveryState.localRevision,
+    savedRevision: input.recoveryState.savedRevision,
+  };
+}
+
+export function doesRecoveryStateMatchCleanExitCheckpoint(
+  checkpoint: PlatformDraftCleanExitCheckpoint,
+  recoveryState: ProjectDocumentRecoveryState,
+) {
+  return recoveryState.pendingOperations.length === 0 &&
+    recoveryState.localRevision === checkpoint.localRevision &&
+    recoveryState.savedRevision === checkpoint.savedRevision;
+}
+
 // 平台草稿采用短节流持续写入；页面关闭只依赖已经完成的写入，不把异步 IndexedDB 任务拖到 unload。
 export function usePlatformDraftPersistence(options: PlatformDraftPersistenceOptions) {
   const getRecoveryStateRef = useRef(options.getRecoveryState);
   const onPersistenceErrorRef = useRef(options.onPersistenceError);
   const writeQueueRef = useRef<PlatformDraftTaskQueue | null>(null);
   const latestOptionsRef = useRef(options);
+  const cleanExitCheckpointRef = useRef<PlatformDraftCleanExitCheckpoint | null>(null);
 
   getRecoveryStateRef.current = options.getRecoveryState;
   onPersistenceErrorRef.current = options.onPersistenceError;
   latestOptionsRef.current = options;
+  const activeCleanExitCheckpoint = cleanExitCheckpointRef.current;
+  if (
+    activeCleanExitCheckpoint &&
+    (
+      activeCleanExitCheckpoint.userId !== options.userId ||
+      activeCleanExitCheckpoint.annotationFileId !== options.annotationFileId ||
+      activeCleanExitCheckpoint.remoteBaseRevision !== options.remoteBaseRevision
+    )
+  ) {
+    // 检查点只能服务创建它的账号、文件和服务器基线，绝不能跨编辑会话抑制草稿。
+    cleanExitCheckpointRef.current = null;
+  } else if (
+    options.hasUnsavedChanges &&
+    activeCleanExitCheckpoint &&
+    !doesRecoveryStateMatchCleanExitCheckpoint(
+      activeCleanExitCheckpoint,
+      options.getRecoveryState(),
+    )
+  ) {
+    // 清场后若仍发生编辑，旧检查点立即失效；卸载时必须恢复写入最新草稿。
+    cleanExitCheckpointRef.current = null;
+  }
 
   // 队列只创建一次，但错误处理通过 ref 始终调用当前会话回调。
   if (writeQueueRef.current === null) {
@@ -130,6 +198,46 @@ export function usePlatformDraftPersistence(options: PlatformDraftPersistenceOpt
     }
   }, []);
 
+  const finalizeCleanExit = useCallback(async (
+    request: PlatformDraftCleanExitRequest,
+  ): Promise<PlatformDraftFlushResult> => {
+    const latest = latestOptionsRef.current;
+    const checkpoint = buildPlatformDraftCleanExitCheckpoint({
+      userId: latest.userId,
+      annotationFileId: latest.annotationFileId,
+      remoteBaseRevision: request.remoteBaseRevision,
+      recoveryState: request.recoveryState,
+    });
+    if (!latest.enabled || latest.suspended || !checkpoint) {
+      return { ok: false, message: "当前文档尚未达到可安全退出的同步状态。" };
+    }
+    const store = latest.store ?? platformDraftStore;
+    cleanExitCheckpointRef.current = checkpoint;
+    try {
+      // delete 必须排在所有已排队 put 之后；检查点先武装，尚未触发的 debounce timer 也不能在其后复活草稿。
+      await enqueue(() => store.delete(checkpoint.userId, checkpoint.annotationFileId));
+      const currentRecoveryState = getRecoveryStateRef.current();
+      if (!doesRecoveryStateMatchCleanExitCheckpoint(checkpoint, currentRecoveryState)) {
+        cleanExitCheckpointRef.current = null;
+        // 清场期间出现的新编辑必须在 delete 之后恢复成最新草稿，随后明确拒绝本次退出。
+        await enqueueDraftWrite({
+          ...latest,
+          remoteBaseRevision: request.remoteBaseRevision,
+          hasUnsavedChanges: true,
+          localRevision: currentRecoveryState.localRevision,
+        });
+        return { ok: false, message: "清理恢复草稿期间检测到新的编辑，已保留最新草稿。" };
+      }
+      return { ok: true };
+    } catch (error) {
+      cleanExitCheckpointRef.current = null;
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : "浏览器恢复草稿清理失败。",
+      };
+    }
+  }, []);
+
   useEffect(() => {
     const action = getPlatformDraftPersistenceAction(options);
     if (action === "none" || !options.userId || !options.annotationFileId) return;
@@ -145,6 +253,7 @@ export function usePlatformDraftPersistence(options: PlatformDraftPersistenceOpt
 
     // dirty 编辑延迟合并为一份 envelope；timer 触发时再读 refs，保存用户最后一次操作后的项目。
     const timer = window.setTimeout(() => {
+      if (cleanExitCheckpointRef.current) return;
       void enqueueDraftWrite(options).catch(() => undefined);
     }, DRAFT_WRITE_DELAY_MS);
 
@@ -163,11 +272,23 @@ export function usePlatformDraftPersistence(options: PlatformDraftPersistenceOpt
 
   useEffect(() => () => {
     const latest = latestOptionsRef.current;
+    const cleanExitCheckpoint = cleanExitCheckpointRef.current;
+    if (
+      cleanExitCheckpoint &&
+      cleanExitCheckpoint.userId === latest.userId &&
+      cleanExitCheckpoint.annotationFileId === latest.annotationFileId &&
+      doesRecoveryStateMatchCleanExitCheckpoint(
+        cleanExitCheckpoint,
+        getRecoveryStateRef.current(),
+      )
+    ) {
+      return;
+    }
     // 返回资源管理器会卸载编辑器；立即排入最后草稿，不能因 debounce timer 被清理而漏掉最近编辑。
     if (getPlatformDraftPersistenceAction(latest) === "put") {
       void enqueueDraftWrite(latest).catch(() => undefined);
     }
   }, []);
 
-  return { flushNow };
+  return { flushNow, finalizeCleanExit };
 }

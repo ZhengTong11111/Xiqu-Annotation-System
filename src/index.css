@@ -207,6 +207,51 @@ select {
   padding: 8px;
 }
 
+.app-shell-blocking-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  background: rgba(226, 232, 240, 0.72);
+  backdrop-filter: blur(2px);
+}
+
+.app-shell-blocking-overlay > div {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 4px 10px;
+  max-width: min(440px, calc(100% - 32px));
+  padding: 14px 18px;
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--ink);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
+}
+
+.app-shell-blocking-overlay small {
+  grid-column: 2;
+  color: var(--ink-soft);
+}
+
+.app-shell-blocking-spinner {
+  grid-row: 1 / span 2;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(37, 99, 235, 0.22);
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: app-shell-blocking-spin 0.8s linear infinite;
+}
+
+@keyframes app-shell-blocking-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .top-menu-bar {
   display: grid;
   grid-template-columns: auto 1fr auto;
@@ -239,6 +284,11 @@ select {
 .top-menu-platform-back:hover {
   border-color: rgba(255, 255, 255, 0.18);
   background: rgba(255, 255, 255, 0.12);
+}
+
+.top-menu-platform-back:disabled {
+  cursor: wait;
+  opacity: 0.72;
 }
 
 .top-menu-brand-dot {

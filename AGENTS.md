@@ -82,6 +82,11 @@ Main currently contains all major recent feature lines that matter for context:
 - versioned browser recovery drafts for writable platform files, isolated by account/file and recoverable only against
   the same server revision
 - writable platform-file autosave with idle scheduling, single-flight snapshots, online recovery, and bounded retry
+- platform editor leave protection: top-bar return and same-document browser back wait for any active save, submit remaining
+  dirty batches, reread the latest document facts, and leave only after the server-authoritative state is clean. A clean server
+  state is not sufficient by itself: the leave path must serialize an IndexedDB draft delete after all older draft puts, arm a
+  matching clean-exit checkpoint that suppresses stale-render unmount writes, and recheck that no new edit occurred. Save or
+  draft-finalization failure stays in the editor; a browser draft must never be treated as a successful server save
 - super-admin-only account lifecycle UI/API plus self-service password change; ordinary admins retain full resource/operations
   access but cannot manage accounts. Deactivation and password changes revoke sessions, account records are retained, and
   per-resource ACL remains a separate Inspector concern
@@ -294,6 +299,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/usePlatformAutoSave.ts`
   - thin React facts/callback adapter around one `PlatformAutoSaveRuntime`
   - Strict Effects cleanup must dispose and clear the runtime ref so the second setup creates a live instance
+- `src/platform/platformEditorLeaveRuntime.ts` + `src/platform/usePlatformEditorHistoryGuard.ts`
+  - the only platform-editor leave coordinator for top-bar return and same-document browser back
+  - waits for the existing save single-flight, rereads current dirty/blocking facts after every bounded save, and treats
+    `rebased` as pending work rather than success; only a clean authoritative document may switch back to the explorer
+  - after the authoritative document becomes clean, the draft persistence owner must finish its serialized clean-exit
+    checkpoint before approval. Pending UI remains frozen through actual editor unmount; failure keeps the editor mounted and
+    flushes IndexedDB as recovery only. The history guard uses one same-URL sentinel, reuses its vacant entry under React Strict
+    Effects, and must never permanently trap browser navigation
 - `src/platform/platformMutationLeaseRuntime.ts`
   - memory-only acquire/renew/retry/release coordinator for one annotation-file session; plaintext tokens must never enter
     React-persisted state, ProjectData, IndexedDB, logs, or command payloads
@@ -407,6 +420,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/ResourceExplorer.tsx`
   - desktop-style three-pane resource manager
   - owns folder navigation, view switching, selection, keyboard actions, import/upload/download, and the resource Inspector
+  - toolbar refresh and `F5`/`Cmd/Ctrl+R` must reuse `refreshCurrentView()` so list/grid pagination and visible Column View
+    refresh through their existing owners without a full-page reload
   - blank annotation creation uses `createEmptyProjectData()` and the real annotation-file API, then enters through
     `PlatformWorkspace`'s single authoritative open path; it must not use `mockProject`, bypass revision/ACL initialization,
     or require media binding before the first editor session

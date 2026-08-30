@@ -13,7 +13,9 @@ import {
   toProjectDocumentRecoveryState,
 } from "./platformDraft";
 import {
+  buildPlatformDraftCleanExitCheckpoint,
   createPlatformDraftTaskQueue,
+  doesRecoveryStateMatchCleanExitCheckpoint,
   getPlatformDraftPersistenceAction,
 } from "./usePlatformDraftPersistence";
 
@@ -540,4 +542,53 @@ test("草稿写入队列保持顺序并可在失败后继续", async () => {
   await final;
   assert.deepEqual(events, ["first", "failed", "flush"]);
   assert.deepEqual(errors, ["write failed"]);
+});
+
+test("干净退出检查点只接受服务器已确认且没有 pending 的恢复状态", () => {
+  const dirty = createRecoveryState();
+  assert.equal(buildPlatformDraftCleanExitCheckpoint({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 8,
+    recoveryState: dirty,
+  }), null);
+
+  const clean = structuredClone(dirty);
+  clean.savedProject = clean.currentProject;
+  clean.savedTrackSnapEnabled = clean.currentTrackSnapEnabled;
+  clean.pendingOperations = [];
+  clean.savedRevision = clean.localRevision;
+  const checkpoint = buildPlatformDraftCleanExitCheckpoint({
+    userId: "user-1",
+    annotationFileId: "file-1",
+    remoteBaseRevision: 8,
+    recoveryState: clean,
+  });
+  assert.ok(checkpoint);
+  assert.equal(doesRecoveryStateMatchCleanExitCheckpoint(checkpoint, clean), true);
+
+  const editedAfterDelete = structuredClone(clean);
+  editedAfterDelete.localRevision += 1;
+  assert.equal(
+    doesRecoveryStateMatchCleanExitCheckpoint(checkpoint, editedAfterDelete),
+    false,
+  );
+});
+
+test("干净退出删除排在历史草稿写入后，队列最终状态不会复活旧草稿", async () => {
+  const events: string[] = [];
+  let draftExists = false;
+  const queue = createPlatformDraftTaskQueue(() => undefined);
+  const stalePut = queue.enqueue(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    draftExists = true;
+    events.push("stale-put");
+  });
+  const cleanDelete = queue.enqueue(async () => {
+    draftExists = false;
+    events.push("clean-delete");
+  });
+  await Promise.all([stalePut, cleanDelete]);
+  assert.deepEqual(events, ["stale-put", "clean-delete"]);
+  assert.equal(draftExists, false);
 });
