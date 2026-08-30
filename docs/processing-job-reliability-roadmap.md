@@ -85,7 +85,7 @@ P0 维护许可与可取消 HTTP 流
 
 ### 状态
 
-- **代码、migration 与验证已完成，待本阶段 Git 提交**。
+- **已完成并提交**：`47a98af feat: separate processing job requests`。
 - 实际实现把业务需求 `ProcessingJobRequest` 与客户端幂等别名 `ProcessingJobRequestKey` 分开：同一账号、任务和
   资源上下文只保留一个需求，但多个标签页各自的 `clientRequestId` 都能永久精确重放。该调整比原计划把两者塞入
   一行更能表达真实语义，也为 P2 的“取消个人需求”保留唯一状态 owner。
@@ -132,6 +132,17 @@ P0 维护许可与可取消 HTTP 流
 
 ## 7. P2：取消、重试与 worker 协作终止
 
+### 状态
+
+- **已完成**：取消/重试命令、worker 协作终止、终态竞态和陈旧 claim 恢复均已实现并通过完整回归；未提前建设
+  P3 任务中心 UI，也未部署生产。
+- 实际模型新增稳定 `ProcessingJobCommand` 作为取消/重试幂等事实；`ProcessingJobRequest` 保存经当前来源权限校验
+  后的稳定音轨外键，使终态任务可以在重试时重新执行完整 ACL/来源验证，而不依赖旧审计 JSON。
+- 最后需求取消、新需求附加和 stale recovery 共用 canonical execution 锁；worker 的 shutdown signal 与业务取消
+  signal 分离。成功、取消、失败、heartbeat 和重排均使用 claim owner 条件，并把 job/run 成对放在同一事务中。
+- 陈旧恢复会在锁内重读 heartbeat 和 active request；旧 worker 的迟到异常发现 claim 已转交后不会再清理新 attempt
+  的分析资产。
+
 ### 状态与命令
 
 - 增加 `cancelling`、`cancelled` 以及执行级取消时间、操作者和有界原因。
@@ -155,6 +166,7 @@ P0 维护许可与可取消 HTTP 流
 - 共享 requester、最后 requester、管理员强制取消、重复取消均符合上述语义。
 - queued 取消不会被 claim；running 取消能终止真实 FFmpeg/对象流。
 - 迟到取消不删除成功资产，worker 重启不把用户取消重新排队。
+- 已通过任务专项 8/8、媒体分析 39/39、完整 API 211/211、部署检查 28/28、完整生产构建和 `git diff --check`。
 
 ## 8. P3：图形化后台任务中心
 
@@ -268,9 +280,8 @@ P4 不再局限于当前媒体分析入口，而是把 P0-P3 的边界横向审�
 | 阶段 | 状态 | 说明 |
 | --- | --- | --- |
 | P0 | 代码完成，待生产验收 | commit `bfd223b`；按用户要求暂不部署 |
-| P1 | 代码完成，待提交 | 请求/执行分离、幂等键、查询 API、migration 与完整回归均已完成 |
-| P2 | 待开始 | 下一轮：取消、重试与 worker 协作终止 |
-| P2 | 待开始 | 依赖 P1 数据模型和查询合同 |
+| P1 | 已完成 | commit `47a98af`；请求/执行分离、幂等键、查询 API 与 migration |
+| P2 | 已完成 | 取消、重试、独立任务取消信号、claim fencing 与终态竞态收敛；暂不部署 |
 | P3 | 待开始 | 依赖 P2 命令和生命周期合同 |
 | P4 | 待开始 | 依赖 P0-P3 可被统一故障注入 |
 | P5 | 待开始 | 依赖 P0-P4 均已提交并通过门禁 |

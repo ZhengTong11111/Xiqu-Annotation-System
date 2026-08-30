@@ -243,7 +243,8 @@ export class MediaAnalysisMigrationService {
       updatedAt: row.updatedAt.toISOString(),
       completedAt: row.completedAt?.toISOString() ?? null,
       supersededByRunId: row.supersededByRunId,
-      activeJobCount: row.jobs.filter(({ status }) => status === "queued" || status === "running").length,
+      activeJobCount: row.jobs.filter(({ status }) =>
+        status === "queued" || status === "running" || status === "cancelling").length,
       assetCount: row.assets.length,
       assetFactsFingerprint: createHash("sha256")
         .update(stableJsonStringify({ databaseAssetFacts, actualObjects }))

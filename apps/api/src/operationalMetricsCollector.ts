@@ -6,6 +6,8 @@ export const OPERATIONAL_DEPENDENCIES = ["database", "storage"] as const;
 export const OPERATIONAL_JOB_STATUSES = [
   "queued",
   "running",
+  "cancelling",
+  "cancelled",
   "succeeded",
   "failed",
 ] as const;

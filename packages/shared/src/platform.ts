@@ -390,10 +390,24 @@ export type ProcessingJobType = typeof PROCESSING_JOB_TYPES[number];
 export const PROCESSING_JOB_STATUSES = [
   "queued",
   "running",
+  "cancelling",
+  "cancelled",
   "succeeded",
   "failed",
 ] as const;
 export type ProcessingJobStatus = typeof PROCESSING_JOB_STATUSES[number];
+
+export type ProcessingJobCancellationMode = "user_request" | "admin_force";
+
+export const PROCESSING_JOB_COMMAND_OUTCOMES = [
+  "request_cancelled_execution_continues",
+  "execution_cancelling",
+  "execution_cancelled",
+  "already_terminal",
+  "request_already_cancelled",
+  "retry_scheduled",
+] as const;
+export type ProcessingJobCommandOutcome = typeof PROCESSING_JOB_COMMAND_OUTCOMES[number];
 
 export type ProcessingJob = {
   id: string;
@@ -420,6 +434,7 @@ export type ProcessingJobContextResource = {
 export type ProcessingJobRequestListItem = {
   requestId: string;
   requestedAt: string;
+  cancelledAt: string | null;
   requester: UserReference;
   contextResource: ProcessingJobContextResource | null;
   job: {
@@ -431,6 +446,8 @@ export type ProcessingJobRequestListItem = {
     createdAt: string;
     updatedAt: string;
     finishedAt: string | null;
+    cancelRequestedAt: string | null;
+    cancellationMode: ProcessingJobCancellationMode | null;
   };
 };
 
@@ -459,6 +476,14 @@ export type ListProcessingJobsOptions = {
   type?: ProcessingJobType;
   cursor?: string;
   limit?: number;
+};
+
+export type ProcessingJobCommandResult = {
+  commandId: string;
+  outcome: ProcessingJobCommandOutcome;
+  requestId: string | null;
+  jobId: string;
+  resultJobId: string | null;
 };
 
 // 审计动作列表同时供 API 运行时校验和管理界面筛选使用，避免前后端维护两份漂移枚举。
@@ -502,6 +527,9 @@ export const AUDIT_ACTIONS = [
   "media_analysis_migration_apply",
   "analysis_audio_setting_migration_apply",
   "media_analysis_create",
+  "processing_job_request_cancel",
+  "processing_job_force_cancel",
+  "processing_job_retry",
   "job_create",
   "permission_denied",
   "storage_orphan_cleanup",

@@ -68,8 +68,31 @@ enum ProcessingJobType {
 enum ProcessingJobStatus {
   queued
   running
+  cancelling
+  cancelled
   succeeded
   failed
+}
+
+enum ProcessingJobCancellationMode {
+  user_request
+  admin_force
+}
+
+enum ProcessingJobCommandAction {
+  cancel_request
+  force_cancel
+  retry
+}
+
+enum ProcessingJobCommandOutcome {
+  pending
+  request_cancelled_execution_continues
+  execution_cancelling
+  execution_cancelled
+  already_terminal
+  request_already_cancelled
+  retry_scheduled
 }
 
 enum MediaAnalysisAssetKind {
@@ -118,6 +141,9 @@ enum AuditAction {
   media_analysis_migration_apply
   analysis_audio_setting_migration_apply
   media_analysis_create
+  processing_job_request_cancel
+  processing_job_force_cancel
+  processing_job_retry
   job_create
   permission_denied
   storage_orphan_cleanup
@@ -163,31 +189,34 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  roles                            UserRole[]
-  sessions                         Session[]
-  ownedFiles                       FileObject[]                      @relation("FileOwner")
-  ownedResources                   ResourceEntry[]                   @relation("ResourceOwner")
-  resourcePermissions              ResourcePermission[]              @relation("PermissionSubject")
-  grantedResourcePermissions       ResourcePermission[]              @relation("PermissionGrantor")
-  resourceStates                   ResourceUserState[]
-  editedAnnotationFiles            AnnotationFile[]                  @relation("AnnotationLastEditor")
-  recoverySnapshots                AnnotationRecoverySnapshot[]      @relation("RecoverySnapshotCreator")
-  createdConfirmations             AnnotationConfirmation[]          @relation("AnnotationConfirmationCreator")
-  revokedConfirmations             AnnotationConfirmation[]          @relation("AnnotationConfirmationRevoker")
-  createdRangeComments             AnnotationRangeComment[]           @relation("AnnotationRangeCommentCreator")
-  withdrawnRangeComments           AnnotationRangeComment[]           @relation("AnnotationRangeCommentWithdrawer")
-  jobs                             ProcessingJob[]                   @relation("JobCreator")
-  processingJobRequests            ProcessingJobRequest[]            @relation("ProcessingJobRequester")
-  processingJobRequestKeys        ProcessingJobRequestKey[]          @relation("ProcessingJobRequestKeyOwner")
-  createdMediaAudioTracks          MediaAudioTrack[]                  @relation("MediaAudioTrackCreator")
+  roles                             UserRole[]
+  sessions                          Session[]
+  ownedFiles                        FileObject[]                      @relation("FileOwner")
+  ownedResources                    ResourceEntry[]                   @relation("ResourceOwner")
+  resourcePermissions               ResourcePermission[]              @relation("PermissionSubject")
+  grantedResourcePermissions        ResourcePermission[]              @relation("PermissionGrantor")
+  resourceStates                    ResourceUserState[]
+  editedAnnotationFiles             AnnotationFile[]                  @relation("AnnotationLastEditor")
+  recoverySnapshots                 AnnotationRecoverySnapshot[]      @relation("RecoverySnapshotCreator")
+  createdConfirmations              AnnotationConfirmation[]          @relation("AnnotationConfirmationCreator")
+  revokedConfirmations              AnnotationConfirmation[]          @relation("AnnotationConfirmationRevoker")
+  createdRangeComments              AnnotationRangeComment[]          @relation("AnnotationRangeCommentCreator")
+  withdrawnRangeComments            AnnotationRangeComment[]          @relation("AnnotationRangeCommentWithdrawer")
+  jobs                              ProcessingJob[]                   @relation("JobCreator")
+  processingJobRequests             ProcessingJobRequest[]            @relation("ProcessingJobRequester")
+  processingJobRequestKeys          ProcessingJobRequestKey[]         @relation("ProcessingJobRequestKeyOwner")
+  processingJobCancellationRequests ProcessingJob[]                   @relation("ProcessingJobCanceller")
+  cancelledProcessingJobRequests    ProcessingJobRequest[]            @relation("ProcessingJobRequestCanceller")
+  processingJobCommands             ProcessingJobCommand[]            @relation("ProcessingJobCommandActor")
+  createdMediaAudioTracks           MediaAudioTrack[]                 @relation("MediaAudioTrackCreator")
   updatedAnnotationAudioPreferences AnnotationAudioPreference[]       @relation("AnnotationAudioPreferenceUpdater")
-  createdMediaAnalysisRuns         MediaAnalysisRun[]                @relation("MediaAnalysisRunCreator")
-  supersededMediaAnalysisRuns      MediaAnalysisRun[]                @relation("MediaAnalysisRunSuperseder")
-  auditLogs                        AuditLog[]                        @relation("AuditActor")
-  annotationOperations             AnnotationOperation[]             @relation("AnnotationOperationActor")
-  annotationMutationLeases         AnnotationMutationLease[]         @relation("AnnotationMutationLeaseHolder")
-  annotationCollaborationTickets   AnnotationCollaborationTicket[]   @relation("AnnotationCollaborationTicketUser")
-  annotationCollaborationPresences AnnotationCollaborationPresence[] @relation("AnnotationCollaborationPresenceUser")
+  createdMediaAnalysisRuns          MediaAnalysisRun[]                @relation("MediaAnalysisRunCreator")
+  supersededMediaAnalysisRuns       MediaAnalysisRun[]                @relation("MediaAnalysisRunSuperseder")
+  auditLogs                         AuditLog[]                        @relation("AuditActor")
+  annotationOperations              AnnotationOperation[]             @relation("AnnotationOperationActor")
+  annotationMutationLeases          AnnotationMutationLease[]         @relation("AnnotationMutationLeaseHolder")
+  annotationCollaborationTickets    AnnotationCollaborationTicket[]   @relation("AnnotationCollaborationTicketUser")
+  annotationCollaborationPresences  AnnotationCollaborationPresence[] @relation("AnnotationCollaborationPresenceUser")
 
   @@map("users")
 }
@@ -249,17 +278,17 @@ model ResourceEntry {
   createdAt                  DateTime     @default(now()) @map("created_at")
   updatedAt                  DateTime     @updatedAt @map("updated_at")
 
-  parent          ResourceEntry?       @relation("ResourceTree", fields: [parentId], references: [id], onDelete: Cascade)
-  children        ResourceEntry[]      @relation("ResourceTree")
-  owner           User                 @relation("ResourceOwner", fields: [ownerUserId], references: [id])
-  projectMetadata ProjectMetadata?
-  annotationFile  AnnotationFile?
-  mediaFile       MediaFile?
-  permissions     ResourcePermission[]
-  userStates      ResourceUserState[]
-  processingJobs  ProcessingJob[]
+  parent                ResourceEntry?         @relation("ResourceTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children              ResourceEntry[]        @relation("ResourceTree")
+  owner                 User                   @relation("ResourceOwner", fields: [ownerUserId], references: [id])
+  projectMetadata       ProjectMetadata?
+  annotationFile        AnnotationFile?
+  mediaFile             MediaFile?
+  permissions           ResourcePermission[]
+  userStates            ResourceUserState[]
+  processingJobs        ProcessingJob[]
   processingJobRequests ProcessingJobRequest[]
-  auditLogs       AuditLog[]
+  auditLogs             AuditLog[]
 
   @@index([parentId, type])
   @@index([parentId, trashedAt, archivedAt, name, id], map: "resource_entries_directory_name_idx")
@@ -297,7 +326,7 @@ model AnnotationFile {
   mutationLease          AnnotationMutationLease?
   collaborationTickets   AnnotationCollaborationTicket[]
   collaborationPresences AnnotationCollaborationPresence[]
-  audioPreference       AnnotationAudioPreference?
+  audioPreference        AnnotationAudioPreference?
 
   @@index([mediaResourceId])
   @@index([lastEditedBy])
@@ -445,13 +474,13 @@ model MediaFile {
   aliyunVodVideoId String?         @map("aliyun_vod_video_id")
   aliyunVodRegion  String?         @map("aliyun_vod_region")
 
-  resource               ResourceEntry                    @relation(fields: [resourceId], references: [id], onDelete: Cascade)
-  file                   FileObject?                      @relation(fields: [fileId], references: [id], onDelete: Cascade)
-  linkedAnnotationFiles  AnnotationFile[]                 @relation("AnnotationMediaResource")
-  mediaAnalysisRuns      MediaAnalysisRun[]               @relation("MediaAnalysisSource")
-  primaryAudioTracks     MediaAudioTrack[]                 @relation("PrimaryMediaAudioTracks")
-  audioTrackSources      MediaAudioTrack[]                 @relation("AudioTrackSourceMedia")
-  vodRenditionAudioTracks MediaAudioTrack[]                 @relation("VodRenditionAudioTrackSource")
+  resource                ResourceEntry      @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  file                    FileObject?        @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  linkedAnnotationFiles   AnnotationFile[]   @relation("AnnotationMediaResource")
+  mediaAnalysisRuns       MediaAnalysisRun[] @relation("MediaAnalysisSource")
+  primaryAudioTracks      MediaAudioTrack[]  @relation("PrimaryMediaAudioTracks")
+  audioTrackSources       MediaAudioTrack[]  @relation("AudioTrackSourceMedia")
+  vodRenditionAudioTracks MediaAudioTrack[]  @relation("VodRenditionAudioTrackSource")
 
   @@index([fileId])
   @@index([sourceType])
@@ -461,29 +490,30 @@ model MediaFile {
 
 // 音轨关系属于主媒体平台元数据；偏移只负责把音频源时间映射到项目时间，不进入分析 run。
 model MediaAudioTrack {
-  id                     String              @id @default(uuid())
-  primaryMediaResourceId String              @map("primary_media_resource_id")
-  audioMediaResourceId   String?             @map("audio_media_resource_id")
-  vodRenditionMediaResourceId String?         @map("vod_rendition_media_resource_id")
-  vodRenditionJobId      String?              @map("vod_rendition_job_id")
-  vodRenditionFormat     String?              @map("vod_rendition_format")
-  vodRenditionDefinition String?              @map("vod_rendition_definition")
-  vodRenditionBitrate    Float?               @map("vod_rendition_bitrate")
-  vodRenditionDuration   Float?               @map("vod_rendition_duration")
-  name                   String
-  kind                   MediaAudioTrackKind
-  offsetSeconds          Float               @default(0) @map("offset_seconds")
-  sortOrder              Int                 @map("sort_order")
-  enabled                Boolean             @default(true)
-  createdBy              String              @map("created_by")
-  createdAt              DateTime            @default(now()) @map("created_at")
-  updatedAt              DateTime            @updatedAt @map("updated_at")
+  id                          String              @id @default(uuid())
+  primaryMediaResourceId      String              @map("primary_media_resource_id")
+  audioMediaResourceId        String?             @map("audio_media_resource_id")
+  vodRenditionMediaResourceId String?             @map("vod_rendition_media_resource_id")
+  vodRenditionJobId           String?             @map("vod_rendition_job_id")
+  vodRenditionFormat          String?             @map("vod_rendition_format")
+  vodRenditionDefinition      String?             @map("vod_rendition_definition")
+  vodRenditionBitrate         Float?              @map("vod_rendition_bitrate")
+  vodRenditionDuration        Float?              @map("vod_rendition_duration")
+  name                        String
+  kind                        MediaAudioTrackKind
+  offsetSeconds               Float               @default(0) @map("offset_seconds")
+  sortOrder                   Int                 @map("sort_order")
+  enabled                     Boolean             @default(true)
+  createdBy                   String              @map("created_by")
+  createdAt                   DateTime            @default(now()) @map("created_at")
+  updatedAt                   DateTime            @updatedAt @map("updated_at")
 
-  primaryMedia         MediaFile                  @relation("PrimaryMediaAudioTracks", fields: [primaryMediaResourceId], references: [resourceId], onDelete: Cascade)
-  audioMedia           MediaFile?                 @relation("AudioTrackSourceMedia", fields: [audioMediaResourceId], references: [resourceId], onDelete: Restrict)
-  vodRenditionMedia    MediaFile?                 @relation("VodRenditionAudioTrackSource", fields: [vodRenditionMediaResourceId], references: [resourceId], onDelete: Restrict)
-  creator              User                       @relation("MediaAudioTrackCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  primaryMedia          MediaFile                   @relation("PrimaryMediaAudioTracks", fields: [primaryMediaResourceId], references: [resourceId], onDelete: Cascade)
+  audioMedia            MediaFile?                  @relation("AudioTrackSourceMedia", fields: [audioMediaResourceId], references: [resourceId], onDelete: Restrict)
+  vodRenditionMedia     MediaFile?                  @relation("VodRenditionAudioTrackSource", fields: [vodRenditionMediaResourceId], references: [resourceId], onDelete: Restrict)
+  creator               User                        @relation("MediaAudioTrackCreator", fields: [createdBy], references: [id], onDelete: Restrict)
   defaultForAnnotations AnnotationAudioPreference[]
+  processingJobRequests ProcessingJobRequest[]
 
   @@unique([primaryMediaResourceId, audioMediaResourceId])
   @@index([primaryMediaResourceId, sortOrder, id])
@@ -501,8 +531,8 @@ model AnnotationAudioPreference {
   updatedAt           DateTime @updatedAt @map("updated_at")
 
   annotationFile AnnotationFile   @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
-  defaultTrack  MediaAudioTrack? @relation(fields: [defaultAudioTrackId], references: [id], onDelete: SetNull)
-  updater       User             @relation("AnnotationAudioPreferenceUpdater", fields: [updatedBy], references: [id], onDelete: Restrict)
+  defaultTrack   MediaAudioTrack? @relation(fields: [defaultAudioTrackId], references: [id], onDelete: SetNull)
+  updater        User             @relation("AnnotationAudioPreferenceUpdater", fields: [updatedBy], references: [id], onDelete: Restrict)
 
   @@index([defaultAudioTrackId])
   @@index([updatedBy])
@@ -511,28 +541,28 @@ model AnnotationAudioPreference {
 
 // 分析 run 只归属于媒体内容；音轨偏移在每次请求时从关系表读取，不固化进共享 run。
 model MediaAnalysisRun {
-  id                    String              @id @default(uuid())
-  sourceMediaResourceId String              @map("source_media_resource_id")
-  sourceFingerprint     String              @map("source_fingerprint")
-  mediaFingerprint      String?             @map("media_fingerprint")
+  id                      String              @id @default(uuid())
+  sourceMediaResourceId   String              @map("source_media_resource_id")
+  sourceFingerprint       String              @map("source_fingerprint")
+  mediaFingerprint        String?             @map("media_fingerprint")
   // VOD rendition 的 JobId 是稳定流身份；临时播放 URL 绝不能进入分析 run。
-  sourceVodRenditionJobId String?            @map("source_vod_rendition_job_id")
-  algorithmVersion      String              @map("algorithm_version")
-  configHash            String              @map("config_hash")
-  config                Json
-  status                ProcessingJobStatus @default(queued)
-  progress              Float               @default(0)
-  errorCode             String?             @map("error_code")
-  duration              Float?
-  sampleRate            Int?                @map("sample_rate")
-  manifest              Json?
-  createdBy             String              @map("created_by")
-  createdAt             DateTime            @default(now()) @map("created_at")
-  updatedAt             DateTime            @updatedAt @map("updated_at")
-  completedAt           DateTime?           @map("completed_at")
-  supersededByRunId     String?             @map("superseded_by_run_id")
-  supersededAt          DateTime?           @map("superseded_at")
-  supersededBy          String?             @map("superseded_by")
+  sourceVodRenditionJobId String?             @map("source_vod_rendition_job_id")
+  algorithmVersion        String              @map("algorithm_version")
+  configHash              String              @map("config_hash")
+  config                  Json
+  status                  ProcessingJobStatus @default(queued)
+  progress                Float               @default(0)
+  errorCode               String?             @map("error_code")
+  duration                Float?
+  sampleRate              Int?                @map("sample_rate")
+  manifest                Json?
+  createdBy               String              @map("created_by")
+  createdAt               DateTime            @default(now()) @map("created_at")
+  updatedAt               DateTime            @updatedAt @map("updated_at")
+  completedAt             DateTime?           @map("completed_at")
+  supersededByRunId       String?             @map("superseded_by_run_id")
+  supersededAt            DateTime?           @map("superseded_at")
+  supersededBy            String?             @map("superseded_by")
 
   sourceMedia    MediaFile            @relation("MediaAnalysisSource", fields: [sourceMediaResourceId], references: [resourceId], onDelete: Cascade)
   creator        User                 @relation("MediaAnalysisRunCreator", fields: [createdBy], references: [id], onDelete: Restrict)
@@ -612,57 +642,74 @@ model ResourceUserState {
 }
 
 model ProcessingJob {
-  id            String              @id @default(uuid())
-  type          ProcessingJobType
-  status        ProcessingJobStatus @default(queued)
-  resourceId    String?             @map("resource_id")
-  inputFileIds  String[]            @default([]) @map("input_file_ids")
-  createdBy     String              @map("created_by")
-  progress      Float               @default(0)
-  errorMessage  String?             @map("error_message")
-  result        Json?
-  analysisRunId String?             @map("analysis_run_id")
-  attemptCount  Int                 @default(0) @map("attempt_count")
-  claimedBy     String?             @map("claimed_by")
-  claimedAt     DateTime?           @map("claimed_at")
-  heartbeatAt   DateTime?           @map("heartbeat_at")
-  finishedAt    DateTime?           @map("finished_at")
-  errorCode     String?             @map("error_code")
-  deduplicationKey String            @map("deduplication_key")
-  createdAt     DateTime            @default(now()) @map("created_at")
-  updatedAt     DateTime            @updatedAt @map("updated_at")
+  id                 String                         @id @default(uuid())
+  type               ProcessingJobType
+  status             ProcessingJobStatus            @default(queued)
+  resourceId         String?                        @map("resource_id")
+  inputFileIds       String[]                       @default([]) @map("input_file_ids")
+  createdBy          String                         @map("created_by")
+  progress           Float                          @default(0)
+  errorMessage       String?                        @map("error_message")
+  result             Json?
+  analysisRunId      String?                        @map("analysis_run_id")
+  attemptCount       Int                            @default(0) @map("attempt_count")
+  claimedBy          String?                        @map("claimed_by")
+  claimedAt          DateTime?                      @map("claimed_at")
+  heartbeatAt        DateTime?                      @map("heartbeat_at")
+  finishedAt         DateTime?                      @map("finished_at")
+  errorCode          String?                        @map("error_code")
+  deduplicationKey   String                         @map("deduplication_key")
+  cancelRequestedAt  DateTime?                      @map("cancel_requested_at")
+  cancelRequestedBy  String?                        @map("cancel_requested_by")
+  cancellationMode   ProcessingJobCancellationMode? @map("cancellation_mode")
+  cancellationReason String?                        @map("cancellation_reason")
+  createdAt          DateTime                       @default(now()) @map("created_at")
+  updatedAt          DateTime                       @updatedAt @map("updated_at")
 
-  resource    ResourceEntry?    @relation(fields: [resourceId], references: [id], onDelete: SetNull)
-  creator     User              @relation("JobCreator", fields: [createdBy], references: [id])
-  analysisRun MediaAnalysisRun? @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
-  requests    ProcessingJobRequest[]
+  resource              ResourceEntry?         @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  creator               User                   @relation("JobCreator", fields: [createdBy], references: [id])
+  cancellationRequester User?                  @relation("ProcessingJobCanceller", fields: [cancelRequestedBy], references: [id], onDelete: Restrict)
+  analysisRun           MediaAnalysisRun?      @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
+  requests              ProcessingJobRequest[]
+  commands              ProcessingJobCommand[] @relation("ProcessingJobCommandTarget")
+  retryResults          ProcessingJobCommand[] @relation("ProcessingJobCommandResult")
 
   @@index([resourceId])
   @@index([status])
   @@index([analysisRunId])
   @@index([deduplicationKey])
+  @@index([cancelRequestedBy])
   @@index([status, createdAt])
   @@map("processing_jobs")
 }
 
 // 系统共享执行与账号需求必须分开保存；取消个人需求不能误伤其他账号仍在复用的计算。
 model ProcessingJobRequest {
-  id                String   @id @default(uuid())
-  jobId             String   @map("job_id")
-  requesterUserId   String   @map("requester_user_id")
-  contextResourceId String?  @map("context_resource_id")
-  requestedAt       DateTime @default(now()) @map("requested_at")
+  id                 String    @id @default(uuid())
+  jobId              String    @map("job_id")
+  requesterUserId    String    @map("requester_user_id")
+  contextResourceId  String?   @map("context_resource_id")
+  mediaAudioTrackId  String?   @map("media_audio_track_id")
+  requestedAt        DateTime  @default(now()) @map("requested_at")
+  cancelledAt        DateTime? @map("cancelled_at")
+  cancelledBy        String?   @map("cancelled_by")
+  cancellationReason String?   @map("cancellation_reason")
 
-  job             ProcessingJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  requester       User          @relation("ProcessingJobRequester", fields: [requesterUserId], references: [id], onDelete: Restrict)
+  job             ProcessingJob             @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  requester       User                      @relation("ProcessingJobRequester", fields: [requesterUserId], references: [id], onDelete: Restrict)
   // 历史任务不能阻止未来永久删除资源；资源消失后 request 仍保留，但不再公开资源详情。
-  contextResource ResourceEntry? @relation(fields: [contextResourceId], references: [id], onDelete: SetNull)
+  contextResource ResourceEntry?            @relation(fields: [contextResourceId], references: [id], onDelete: SetNull)
+  mediaAudioTrack MediaAudioTrack?          @relation(fields: [mediaAudioTrackId], references: [id], onDelete: SetNull)
+  canceller       User?                     @relation("ProcessingJobRequestCanceller", fields: [cancelledBy], references: [id], onDelete: Restrict)
   idempotencyKeys ProcessingJobRequestKey[]
+  commands        ProcessingJobCommand[]
 
   @@unique([jobId, requesterUserId, contextResourceId])
   @@index([jobId, requestedAt])
   @@index([requesterUserId, requestedAt, id])
   @@index([contextResourceId, requestedAt, id])
+  @@index([mediaAudioTrackId])
+  @@index([cancelledBy])
   @@map("processing_job_requests")
 }
 
@@ -681,6 +728,31 @@ model ProcessingJobRequestKey {
   @@unique([requesterUserId, clientRequestId])
   @@index([requestId, createdAt])
   @@map("processing_job_request_keys")
+}
+
+// 取消与重试命令独立保存幂等结果；网络响应丢失后不能再次改变 request/job 状态。
+model ProcessingJobCommand {
+  id                 String                      @id @default(uuid())
+  actorUserId        String                      @map("actor_user_id")
+  clientCommandId    String                      @map("client_command_id")
+  action             ProcessingJobCommandAction
+  requestFingerprint String                      @map("request_fingerprint")
+  targetJobId        String?                     @map("target_job_id")
+  targetRequestId    String?                     @map("target_request_id")
+  resultJobId        String?                     @map("result_job_id")
+  outcome            ProcessingJobCommandOutcome
+  createdAt          DateTime                    @default(now()) @map("created_at")
+
+  actor         User                  @relation("ProcessingJobCommandActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  targetJob     ProcessingJob?        @relation("ProcessingJobCommandTarget", fields: [targetJobId], references: [id], onDelete: SetNull)
+  targetRequest ProcessingJobRequest? @relation(fields: [targetRequestId], references: [id], onDelete: SetNull)
+  resultJob     ProcessingJob?        @relation("ProcessingJobCommandResult", fields: [resultJobId], references: [id], onDelete: SetNull)
+
+  @@unique([actorUserId, clientCommandId])
+  @@index([targetJobId, createdAt])
+  @@index([targetRequestId, createdAt])
+  @@index([resultJobId])
+  @@map("processing_job_commands")
 }
 
 model AuditLog {

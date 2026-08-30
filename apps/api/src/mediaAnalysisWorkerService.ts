@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { Readable } from "node:stream";
 import type { AliyunVodGateway, AliyunVodProvider } from "./aliyunVodGateway.js";
 import { AliyunVodGatewayError } from "./aliyunVodGateway.js";
@@ -17,6 +17,7 @@ import type { ObjectStorage } from "./objectStorage.js";
 
 const STALE_JOB_AFTER_MS = 2 * 60 * 1000;
 const MAX_ANALYSIS_ASSET_BYTES = 32 * 1024 * 1024;
+const CANCELLATION_POLL_INTERVAL_MS = 500;
 
 type WorkerLogger = {
   info(facts: Record<string, unknown>, message: string): void;
@@ -33,6 +34,7 @@ export class MediaAnalysisWorkerService {
     private readonly aliyunVod: AliyunVodProvider | null,
     private readonly ffmpegPath: string,
     private readonly logger: WorkerLogger,
+    private readonly cancellationPollIntervalMs = CANCELLATION_POLL_INTERVAL_MS,
   ) {}
 
   async recoverStaleJobs(now = new Date()) {
@@ -40,7 +42,7 @@ export class MediaAnalysisWorkerService {
     const stale = await this.prisma.processingJob.findMany({
       where: {
         type: "media_analysis",
-        status: "running",
+        status: { in: ["running", "cancelling"] },
         analysisRunId: { not: null },
         // 历史 superseded run 只保留迁移证据，不能被恢复逻辑重新放回在线队列。
         analysisRun: { supersededByRunId: null },
@@ -49,29 +51,16 @@ export class MediaAnalysisWorkerService {
           { heartbeatAt: null, claimedAt: { lt: staleBefore } },
         ],
       },
-      select: { id: true, analysisRunId: true },
+      select: {
+        id: true,
+      },
     });
     if (stale.length === 0) return 0;
-    const runIds = stale.flatMap(({ analysisRunId }) =>
-      analysisRunId ? [analysisRunId] : []);
-    await this.prisma.$transaction([
-      this.prisma.processingJob.updateMany({
-        where: { id: { in: stale.map(({ id }) => id) }, status: "running" },
-        data: {
-          status: "queued",
-          claimedBy: null,
-          claimedAt: null,
-          heartbeatAt: null,
-          errorCode: null,
-          errorMessage: null,
-        },
-      }),
-      this.prisma.mediaAnalysisRun.updateMany({
-        where: { id: { in: runIds }, status: "running" },
-        data: { status: "queued", errorCode: null },
-      }),
-    ]);
-    return stale.length;
+    let recoveredCount = 0;
+    for (const job of stale) {
+      if (await this.recoverStaleJob(job.id, staleBefore)) recoveredCount += 1;
+    }
+    return recoveredCount;
   }
 
   async claimNext(workerId: string) {
@@ -82,6 +71,7 @@ export class MediaAnalysisWorkerService {
           status: "queued",
           analysisRunId: { not: null },
           analysisRun: { supersededByRunId: null },
+          requests: { some: { cancelledAt: null } },
         },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         select: { id: true },
@@ -114,10 +104,11 @@ export class MediaAnalysisWorkerService {
         },
       });
       if (!job.analysisRun) return null;
-      await transaction.mediaAnalysisRun.update({
-        where: { id: job.analysisRun.id },
+      const claimedRun = await transaction.mediaAnalysisRun.updateMany({
+        where: { id: job.analysisRun.id, status: "queued" },
         data: { status: "running", progress: 0, errorCode: null },
       });
+      if (claimedRun.count !== 1) throw new WorkerClaimLostError();
       return job;
     });
   }
@@ -125,31 +116,56 @@ export class MediaAnalysisWorkerService {
   async processNext(workerId: string, signal?: AbortSignal) {
     const job = await this.claimNext(workerId);
     if (!job) return false;
-    await this.processClaimed(job, signal);
+    const cancellationController = new AbortController();
+    const watcherController = new AbortController();
+    const watcher = this.watchForCancellation(
+      job.id,
+      workerId,
+      cancellationController,
+      watcherController.signal,
+    );
+    const workSignal = signal
+      ? AbortSignal.any([signal, cancellationController.signal])
+      : cancellationController.signal;
+    try {
+      await this.processClaimed(job, {
+        workSignal,
+        shutdownSignal: signal,
+        cancellationSignal: cancellationController.signal,
+      });
+    } finally {
+      watcherController.abort();
+      await watcher;
+    }
     return true;
   }
 
   private async processClaimed(
     job: Exclude<ClaimedMediaAnalysisJob, null>,
-    signal?: AbortSignal,
+    signals: {
+      workSignal: AbortSignal;
+      shutdownSignal?: AbortSignal;
+      cancellationSignal: AbortSignal;
+    },
   ) {
     if (!job.analysisRun) return;
     const run = job.analysisRun;
     try {
       await this.removeExistingAssets(run.id);
-      if (signal?.aborted) throw new MediaAnalysisFfmpegError("aborted");
+      if (signals.workSignal.aborted) throw new MediaAnalysisFfmpegError("aborted");
       const input = await this.createFfmpegInput(run);
       let assetCount = 0;
       const accumulator = new MediaAnalysisPcmTileAccumulator(
         MEDIA_ANALYSIS_SAMPLE_RATE,
         async (samples, tileIndex) => {
-          signal?.throwIfAborted();
+          signals.workSignal.throwIfAborted();
           const assets = computeMediaAnalysisAssets(
             samples,
             MEDIA_ANALYSIS_SAMPLE_RATE,
             tileIndex,
           );
           for (const asset of assets) {
+            signals.workSignal.throwIfAborted();
             await this.publishAsset(run.id, asset);
             assetCount += 1;
           }
@@ -158,20 +174,41 @@ export class MediaAnalysisWorkerService {
           const progress = run.sourceMedia.duration && run.sourceMedia.duration > 0
             ? Math.min(0.99, elapsed / run.sourceMedia.duration)
             : Math.min(0.99, 0.05 + tileIndex * 0.01);
-          await this.heartbeat(job.id, run.id, progress);
+          await this.heartbeat(job.id, run.id, job.claimedBy, progress);
         },
       );
       const decoded = await streamMediaAnalysisPcm(
         input,
         (samples) => accumulator.push(samples),
-        { ffmpegPath: this.ffmpegPath, signal },
+        { ffmpegPath: this.ffmpegPath, signal: signals.workSignal },
       );
       await accumulator.finish();
       const duration = decoded.sampleCount / MEDIA_ANALYSIS_SAMPLE_RATE;
       const completedAt = new Date();
-      await this.prisma.$transaction([
-        this.prisma.mediaAnalysisRun.update({
-          where: { id: run.id },
+      await this.prisma.$transaction(async (transaction) => {
+        // 成功提交必须先争得仍由本 worker 持有且未取消的终态；取消先赢时整个事务回滚。
+        const completedJob = await transaction.processingJob.updateMany({
+          where: {
+            id: job.id,
+            status: "running",
+            claimedBy: job.claimedBy,
+            cancelRequestedAt: null,
+          },
+          data: {
+            status: "succeeded",
+            progress: 1,
+            result: {
+              runId: run.id,
+              assetCount,
+              tileCount: accumulator.processedTileCount,
+            },
+            heartbeatAt: completedAt,
+            finishedAt: completedAt,
+          },
+        });
+        if (completedJob.count !== 1) throw new WorkerClaimLostError();
+        const completedRun = await transaction.mediaAnalysisRun.updateMany({
+          where: { id: run.id, status: "running" },
           data: {
             status: "succeeded",
             progress: 1,
@@ -188,27 +225,26 @@ export class MediaAnalysisWorkerService {
             },
             completedAt,
           },
-        }),
-        this.prisma.processingJob.update({
-          where: { id: job.id },
-          data: {
-            status: "succeeded",
-            progress: 1,
-            result: {
-              runId: run.id,
-              assetCount,
-              tileCount: accumulator.processedTileCount,
-            },
-            heartbeatAt: completedAt,
-            finishedAt: completedAt,
-          },
-        }),
-      ]);
+        });
+        if (completedRun.count !== 1) throw new WorkerClaimLostError();
+      });
       this.logger.info(
         { jobId: job.id, runId: run.id, assetCount },
         "媒体分析任务完成",
       );
     } catch (error) {
+      const current = await this.prisma.processingJob.findUnique({
+        where: { id: job.id },
+        select: { status: true, claimedBy: true },
+      });
+      // claim 已被陈旧恢复转交给新 worker 时，旧进程不得再清理新 attempt 的资产或覆盖其状态。
+      if (
+        !current ||
+        current.claimedBy !== job.claimedBy ||
+        current.status === "succeeded" ||
+        current.status === "cancelled" ||
+        current.status === "failed"
+      ) return;
       let failure: unknown = error;
       try {
         await this.removeExistingAssets(run.id);
@@ -222,59 +258,28 @@ export class MediaAnalysisWorkerService {
       const errorCode = failure instanceof AggregateError
         ? "analysis_cleanup_failed"
         : classifyWorkerError(failure);
-      if (errorCode === "analysis_cancelled" && signal?.aborted) {
+      if (current.status === "cancelling" || signals.cancellationSignal.aborted) {
+        if (errorCode === "analysis_cleanup_failed") {
+          await this.failClaimedJob(job, run.id, errorCode);
+        } else {
+          await this.settleCancelledJob(job.id, run.id, job.claimedBy);
+          this.logger.info(
+            { jobId: job.id, runId: run.id },
+            "媒体分析任务按用户请求取消",
+          );
+        }
+        return;
+      }
+      if (errorCode === "analysis_cancelled" && signals.shutdownSignal?.aborted) {
         // 进程正常停机不等于业务失败：清掉本次半成品后重新排队，由下一实例从头生成完整资产。
-        await this.prisma.$transaction([
-          this.prisma.mediaAnalysisRun.updateMany({
-            where: { id: run.id, status: "running" },
-            data: {
-              status: "queued",
-              progress: 0,
-              errorCode: null,
-              completedAt: null,
-            },
-          }),
-          this.prisma.processingJob.updateMany({
-            where: { id: job.id, status: "running" },
-            data: {
-              status: "queued",
-              progress: 0,
-              errorCode: null,
-              errorMessage: null,
-              claimedBy: null,
-              claimedAt: null,
-              heartbeatAt: null,
-              finishedAt: null,
-            },
-          }),
-        ]);
+        await this.requeueInterruptedJob(job.id, run.id, job.claimedBy);
         this.logger.info(
           { jobId: job.id, runId: run.id },
           "媒体分析任务因 worker 停机重新排队",
         );
         return;
       }
-      await this.prisma.$transaction([
-        this.prisma.mediaAnalysisRun.updateMany({
-          where: { id: run.id },
-          data: {
-            status: "failed",
-            progress: 0,
-            errorCode,
-            completedAt: new Date(),
-          },
-        }),
-        this.prisma.processingJob.updateMany({
-          where: { id: job.id },
-          data: {
-            status: "failed",
-            progress: 0,
-            errorCode,
-            errorMessage: userFacingWorkerError(errorCode),
-            finishedAt: new Date(),
-          },
-        }),
-      ]);
+      await this.failClaimedJob(job, run.id, errorCode);
       this.logger.warn(
         { jobId: job.id, runId: run.id, errorCode },
         "媒体分析任务失败",
@@ -377,18 +382,236 @@ export class MediaAnalysisWorkerService {
     }
   }
 
-  private async heartbeat(jobId: string, runId: string, progress: number) {
-    const now = new Date();
-    await this.prisma.$transaction([
-      this.prisma.processingJob.update({
+  /**
+   * 陈旧恢复与新分析需求共用 canonical 锁，并在锁内重读心跳与需求。
+   * 列表查询只负责提供候选，不能直接作为状态转换依据，否则刚附加的新需求可能被旧快照取消。
+   */
+  private async recoverStaleJob(jobId: string, staleBefore: Date) {
+    const decision = await this.prisma.$transaction(async (transaction) => {
+      const initial = await transaction.processingJob.findUnique({
         where: { id: jobId },
+        select: { deduplicationKey: true },
+      });
+      if (!initial) return null;
+      await lockCanonicalProcessingJob(transaction, initial.deduplicationKey);
+      await transaction.$queryRaw`
+        SELECT "id" FROM "processing_jobs" WHERE "id" = ${jobId} FOR UPDATE
+      `;
+      const current = await transaction.processingJob.findUnique({
+        where: { id: jobId },
+        select: {
+          status: true,
+          createdBy: true,
+          claimedBy: true,
+          claimedAt: true,
+          heartbeatAt: true,
+          analysisRunId: true,
+          requests: { where: { cancelledAt: null }, select: { id: true }, take: 1 },
+        },
+      });
+      if (!current?.analysisRunId || !isStaleClaim(current, staleBefore)) return null;
+
+      if (current.status === "running" && current.requests.length > 0) {
+        const requeued = await transitionInterruptedJob(
+          transaction,
+          jobId,
+          current.analysisRunId,
+          current.claimedBy,
+        );
+        return requeued ? { kind: "requeued" as const } : null;
+      }
+
+      // cancelling worker 崩溃后不能重新执行；running 却已无需求也按取消收口，避免无人消费的悬空队列。
+      if (current.status === "running") {
+        const cancelRequestedAt = new Date();
+        const cancelling = await transaction.processingJob.updateMany({
+          where: { id: jobId, status: "running", claimedBy: current.claimedBy },
+          data: {
+            status: "cancelling",
+            cancelRequestedAt,
+            cancelRequestedBy: current.createdBy,
+            cancellationMode: "user_request",
+          },
+        });
+        const cancellingRun = await transaction.mediaAnalysisRun.updateMany({
+          where: { id: current.analysisRunId, status: "running" },
+          data: { status: "cancelling" },
+        });
+        if (cancelling.count !== 1 || cancellingRun.count !== 1) {
+          throw new WorkerClaimLostError();
+        }
+      }
+      return {
+        kind: "cancel" as const,
+        runId: current.analysisRunId,
+        claimedBy: current.claimedBy,
+      };
+    });
+    if (!decision) return false;
+    if (decision.kind === "cancel") {
+      await this.finishCancellation(jobId, decision.runId, decision.claimedBy);
+    }
+    return true;
+  }
+
+  /** 每个 claim 只轮询自己的数据库状态；watcher 结束与 worker shutdown 是两条独立控制线。 */
+  private async watchForCancellation(
+    jobId: string,
+    workerId: string,
+    cancellationController: AbortController,
+    stopSignal: AbortSignal,
+  ) {
+    while (!stopSignal.aborted && !cancellationController.signal.aborted) {
+      try {
+        const job = await this.prisma.processingJob.findUnique({
+          where: { id: jobId },
+          select: { status: true, claimedBy: true },
+        });
+        if (job?.status === "cancelling" && job.claimedBy === workerId) {
+          cancellationController.abort("processing_job_cancelled");
+          return;
+        }
+        if (!job || job.status !== "running" || job.claimedBy !== workerId) return;
+      } catch {
+        // watcher 不是第二套健康检查；数据库故障由下一次 heartbeat 进入既有失败路径，避免轮询日志风暴。
+        return;
+      }
+      await waitForSignal(this.cancellationPollIntervalMs, stopSignal);
+    }
+  }
+
+  private async finishCancellation(
+    jobId: string,
+    runId: string,
+    claimedBy: string | null,
+  ) {
+    try {
+      await this.removeExistingAssets(runId);
+      await this.settleCancelledJob(jobId, runId, claimedBy);
+    } catch {
+      await this.failJob(jobId, runId, claimedBy, "analysis_cleanup_failed");
+      this.logger.warn(
+        { jobId, runId, errorCode: "analysis_cleanup_failed" },
+        "取消媒体分析时半成品清理失败",
+      );
+    }
+  }
+
+  private async settleCancelledJob(
+    jobId: string,
+    runId: string,
+    claimedBy: string | null,
+  ) {
+    const finishedAt = new Date();
+    await this.prisma.$transaction(async (transaction) => {
+      const cancelled = await transaction.processingJob.updateMany({
+        where: { id: jobId, status: "cancelling", claimedBy },
+        data: {
+          status: "cancelled",
+          progress: 0,
+          errorCode: null,
+          errorMessage: null,
+          claimedBy: null,
+          claimedAt: null,
+          heartbeatAt: null,
+          finishedAt,
+        },
+      });
+      if (cancelled.count !== 1) return;
+      const cancelledRun = await transaction.mediaAnalysisRun.updateMany({
+        where: { id: runId, status: { in: ["running", "cancelling", "cancelled"] } },
+        data: {
+          status: "cancelled",
+          progress: 0,
+          errorCode: null,
+          completedAt: finishedAt,
+        },
+      });
+      if (cancelledRun.count !== 1) throw new WorkerClaimLostError();
+    });
+  }
+
+  private async requeueInterruptedJob(
+    jobId: string,
+    runId: string,
+    claimedBy: string | null,
+  ) {
+    await this.prisma.$transaction(async (transaction) => {
+      await transitionInterruptedJob(transaction, jobId, runId, claimedBy);
+    });
+  }
+
+  private async failClaimedJob(
+    job: Exclude<ClaimedMediaAnalysisJob, null>,
+    runId: string,
+    errorCode: string,
+  ) {
+    await this.failJob(job.id, runId, job.claimedBy, errorCode);
+  }
+
+  private async failJob(
+    jobId: string,
+    runId: string,
+    claimedBy: string | null,
+    errorCode: string,
+  ) {
+    const finishedAt = new Date();
+    await this.prisma.$transaction(async (transaction) => {
+      const failed = await transaction.processingJob.updateMany({
+        where: {
+          id: jobId,
+          claimedBy,
+          status: { in: ["running", "cancelling"] },
+        },
+        data: {
+          status: "failed",
+          progress: 0,
+          errorCode,
+          errorMessage: userFacingWorkerError(errorCode),
+          claimedBy: null,
+          claimedAt: null,
+          heartbeatAt: null,
+          finishedAt,
+        },
+      });
+      if (failed.count !== 1) return;
+      const failedRun = await transaction.mediaAnalysisRun.updateMany({
+        where: { id: runId, status: { in: ["running", "cancelling", "failed"] } },
+        data: {
+          status: "failed",
+          progress: 0,
+          errorCode,
+          completedAt: finishedAt,
+        },
+      });
+      if (failedRun.count !== 1) throw new WorkerClaimLostError();
+    });
+  }
+
+  private async heartbeat(
+    jobId: string,
+    runId: string,
+    claimedBy: string | null,
+    progress: number,
+  ) {
+    const now = new Date();
+    await this.prisma.$transaction(async (transaction) => {
+      const heartbeat = await transaction.processingJob.updateMany({
+        where: {
+          id: jobId,
+          status: "running",
+          claimedBy,
+          cancelRequestedAt: null,
+        },
         data: { heartbeatAt: now, progress },
-      }),
-      this.prisma.mediaAnalysisRun.update({
-        where: { id: runId },
+      });
+      if (heartbeat.count !== 1) throw new WorkerClaimLostError();
+      const runHeartbeat = await transaction.mediaAnalysisRun.updateMany({
+        where: { id: runId, status: "running" },
         data: { progress },
-      }),
-    ]);
+      });
+      if (runHeartbeat.count !== 1) throw new WorkerClaimLostError();
+    });
   }
 }
 
@@ -418,7 +641,10 @@ class WorkerStableError extends Error {
   }
 }
 
+class WorkerClaimLostError extends Error {}
+
 function classifyWorkerError(error: unknown) {
+  if (error instanceof WorkerClaimLostError) return "analysis_claim_lost";
   if (error instanceof WorkerStableError) return error.code;
   if (error instanceof MediaAnalysisFfmpegError) {
     return error.code === "tool_unavailable"
@@ -433,6 +659,76 @@ function classifyWorkerError(error: unknown) {
       : "analysis_external_service_unavailable";
   }
   return "analysis_failed";
+}
+
+function waitForSignal(delayMs: number, signal: AbortSignal) {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(finish, delayMs);
+    function finish() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    }
+    signal.addEventListener("abort", finish, { once: true });
+  });
+}
+
+async function lockCanonicalProcessingJob(
+  transaction: Prisma.TransactionClient,
+  deduplicationKey: string,
+) {
+  await transaction.$queryRaw`
+    SELECT 1::integer AS locked
+    FROM pg_advisory_xact_lock(hashtext(${`xiqu:processing-job:${deduplicationKey}`}))
+  `;
+}
+
+/** job 与 analysis run 必须成对重排；任一前置状态不匹配时整笔事务回滚。 */
+async function transitionInterruptedJob(
+  transaction: Prisma.TransactionClient,
+  jobId: string,
+  runId: string,
+  claimedBy: string | null,
+) {
+  const requeued = await transaction.processingJob.updateMany({
+    where: { id: jobId, status: "running", claimedBy, cancelRequestedAt: null },
+    data: {
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      errorMessage: null,
+      claimedBy: null,
+      claimedAt: null,
+      heartbeatAt: null,
+      finishedAt: null,
+    },
+  });
+  if (requeued.count !== 1) return false;
+  const requeuedRun = await transaction.mediaAnalysisRun.updateMany({
+    where: { id: runId, status: "running" },
+    data: {
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+      completedAt: null,
+    },
+  });
+  if (requeuedRun.count !== 1) throw new WorkerClaimLostError();
+  return true;
+}
+
+function isStaleClaim(
+  job: {
+    status: string;
+    heartbeatAt: Date | null;
+    claimedAt: Date | null;
+  },
+  staleBefore: Date,
+) {
+  if (job.status !== "running" && job.status !== "cancelling") return false;
+  const lastWorkerFact = job.heartbeatAt ?? job.claimedAt;
+  return Boolean(lastWorkerFact && lastWorkerFact < staleBefore);
 }
 
 function userFacingWorkerError(code: string) {

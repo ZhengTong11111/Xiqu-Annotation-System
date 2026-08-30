@@ -29,6 +29,7 @@ const MAX_RELATED_SUMMARY_ROWS = 5_000;
 const requestRowSelect = {
   id: true,
   requestedAt: true,
+  cancelledAt: true,
   requester: { select: { id: true, accountName: true, displayName: true } },
   contextResource: { select: { id: true, name: true, type: true } },
   job: {
@@ -41,6 +42,8 @@ const requestRowSelect = {
       createdAt: true,
       updatedAt: true,
       finishedAt: true,
+      cancelRequestedAt: true,
+      cancellationMode: true,
     },
   },
 } satisfies Prisma.ProcessingJobRequestSelect;
@@ -159,6 +162,7 @@ export class ProcessingJobQueryService {
         return {
           requestId: item.requestId,
           requestedAt: item.requestedAt,
+          cancelledAt: item.cancelledAt,
           requester: item.requester,
           contextResource: item.contextResource,
         };
@@ -279,6 +283,7 @@ function mapRequestRow(
   return {
     requestId: row.id,
     requestedAt: row.requestedAt.toISOString(),
+    cancelledAt: row.cancelledAt?.toISOString() ?? null,
     requester: row.requester,
     contextResource: row.contextResource && visibleResourceIds.has(row.contextResource.id)
       ? row.contextResource
@@ -297,6 +302,8 @@ function mapJob(job: ProcessingJobRequestRow["job"]): ProcessingJobRequestListIt
     createdAt: job.createdAt.toISOString(),
     updatedAt: job.updatedAt.toISOString(),
     finishedAt: job.finishedAt?.toISOString() ?? null,
+    cancelRequestedAt: job.cancelRequestedAt?.toISOString() ?? null,
+    cancellationMode: job.cancellationMode,
   };
 }
 

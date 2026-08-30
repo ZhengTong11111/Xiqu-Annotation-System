@@ -100,7 +100,14 @@ export class SystemDiagnosticsService {
       Record<ResourceType, number>;
     for (const group of resourcesByType) byType[group.type] = group._count._all;
 
-    const jobs = { queued: 0, running: 0, succeeded: 0, failed: 0 };
+    const jobs = {
+      queued: 0,
+      running: 0,
+      cancelling: 0,
+      cancelled: 0,
+      succeeded: 0,
+      failed: 0,
+    };
     for (const group of jobGroups) jobs[group.status] = group._count._all;
 
     const issuesByCategory = Object.fromEntries(

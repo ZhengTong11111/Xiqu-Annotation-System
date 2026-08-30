@@ -149,6 +149,8 @@ test("运维指标采集补齐固定状态并写入低基数 Gauge", async () =>
   assert.deepEqual(snapshot.jobs, {
     queued: 3,
     running: 0,
+    cancelling: 0,
+    cancelled: 0,
     succeeded: 0,
     failed: 0,
   });

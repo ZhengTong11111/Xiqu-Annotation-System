@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { Prisma, type PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient, type ProcessingJobStatus } from "@prisma/client";
 import type {
   AnnotationMediaAnalysisStatus,
   CreateMediaAnalysisRequest,
@@ -248,6 +248,7 @@ export class MediaAnalysisJobService {
             jobId: completedJob.id,
             requesterUserId: user.id,
             contextResourceId: annotationFileId,
+            mediaAudioTrackId: context.audioTrackId,
             clientRequestId: input.clientRequestId,
             requestFingerprint,
           });
@@ -276,11 +277,16 @@ export class MediaAnalysisJobService {
       const activeJob = await transaction.processingJob.findFirst({
         where: {
           deduplicationKey,
-          status: { in: ["queued", "running"] },
+          status: { in: ["queued", "running", "cancelling"] },
         },
         include: { analysisRun: true },
       });
       if (activeJob) {
+        if (activeJob.status === "cancelling") {
+          throw conflict("媒体分析正在取消并清理，请稍后重试。", {
+            code: "processing_job_cancellation_in_progress",
+          });
+        }
         if (!activeJob.analysisRun) {
           throw conflict("活动媒体分析任务缺少分析记录。", {
             code: "processing_job_run_missing",
@@ -290,6 +296,7 @@ export class MediaAnalysisJobService {
           jobId: activeJob.id,
           requesterUserId: user.id,
           contextResourceId: annotationFileId,
+          mediaAudioTrackId: context.audioTrackId,
           clientRequestId: input.clientRequestId,
           requestFingerprint,
         });
@@ -350,6 +357,7 @@ export class MediaAnalysisJobService {
         jobId: job.id,
         requesterUserId: user.id,
         contextResourceId: annotationFileId,
+        mediaAudioTrackId: context.audioTrackId,
         clientRequestId: input.clientRequestId,
         requestFingerprint,
       });
@@ -645,7 +653,7 @@ export class MediaAnalysisJobService {
 
   private async mapRun(run: {
     id: string;
-    status: "queued" | "running" | "succeeded" | "failed";
+    status: ProcessingJobStatus;
     progress: number;
     errorCode: string | null;
     sourceMediaResourceId: string;
@@ -690,6 +698,7 @@ type ProcessingJobRequestDraft = {
   jobId: string;
   requesterUserId: string;
   contextResourceId: string;
+  mediaAudioTrackId: string;
   clientRequestId: string;
   requestFingerprint: string;
 };
@@ -711,13 +720,22 @@ async function ensureProcessingJobRequest(
       },
     },
   });
-  const request = existing ?? await transaction.processingJobRequest.create({
-    data: {
-      jobId: draft.jobId,
-      requesterUserId: draft.requesterUserId,
-      contextResourceId: draft.contextResourceId,
-    },
-  });
+  const request = existing
+    ? existing.mediaAudioTrackId
+      ? existing
+      : await transaction.processingJobRequest.update({
+          where: { id: existing.id },
+          // P1 历史需求没有可证明的音轨；再次经过完整来源校验时才补稳定外键，不能从旧审计 JSON 猜测。
+          data: { mediaAudioTrackId: draft.mediaAudioTrackId },
+        })
+    : await transaction.processingJobRequest.create({
+        data: {
+          jobId: draft.jobId,
+          requesterUserId: draft.requesterUserId,
+          contextResourceId: draft.contextResourceId,
+          mediaAudioTrackId: draft.mediaAudioTrackId,
+        },
+      });
   // 即使业务需求已存在，也要保存当前标签页的幂等别名，保证它在任务终态变化后仍能精确重放。
   await transaction.processingJobRequestKey.create({
     data: {

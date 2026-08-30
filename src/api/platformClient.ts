@@ -50,10 +50,13 @@ import type {
   ChangeOwnPasswordRequest,
   MoveResourceRequest,
   ListProcessingJobsOptions,
+  CancelProcessingJobRequest,
   ProcessingJobDetail,
   ProcessingJobPage,
   ProcessingJobScope,
   ProcessingJobSummary,
+  ProcessingJobCommandResult,
+  RetryProcessingJobRequest,
   PlatformUser,
   PlatformMaintenanceStatus,
   PermissionManagementProjectPage,
@@ -458,6 +461,27 @@ export class PlatformClient {
 
   getProcessingJob(jobId: string) {
     return this.request<ProcessingJobDetail>(`/processing-jobs/${jobId}`);
+  }
+
+  cancelProcessingJobRequest(requestId: string, input: CancelProcessingJobRequest) {
+    return this.request<ProcessingJobCommandResult>(
+      `/processing-job-requests/${requestId}/cancel`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+  }
+
+  forceCancelProcessingJob(jobId: string, input: CancelProcessingJobRequest) {
+    return this.request<ProcessingJobCommandResult>(
+      `/processing-jobs/${jobId}/force-cancel`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+  }
+
+  retryProcessingJobRequest(requestId: string, input: RetryProcessingJobRequest) {
+    return this.request<ProcessingJobCommandResult>(
+      `/processing-job-requests/${requestId}/retry`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
   }
 
   listMediaAnalysisAssets(

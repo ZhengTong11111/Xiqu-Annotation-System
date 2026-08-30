@@ -160,7 +160,8 @@ export function usePlatformMediaAnalysis(options: Options) {
   useEffect(() => {
     if (
       currentStatus?.currentRun?.status !== "queued" &&
-      currentStatus?.currentRun?.status !== "running"
+      currentStatus?.currentRun?.status !== "running" &&
+      currentStatus?.currentRun?.status !== "cancelling"
     ) {
       return;
     }

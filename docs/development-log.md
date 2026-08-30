@@ -8754,3 +8754,50 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：P1 数据模型、正式 migration、幂等创建、共享执行、任务查询合同、权限批量解析、专项/完整回归与文档。
 - **待推进**：P2 增加“取消个人需求/管理员强制取消”、稳定重试历史和 worker 协作终止；P3 再建设图形化任务中心。
   P0/P1 当前均未部署生产，继续遵守用户要求，不连接或修改生产数据库、对象和草稿。
+
+## 2026-08-30：后台任务取消、重试与 worker 协作终止（P2）
+
+### 命令、权限与数据模型
+
+- 按 `docs/processing-job-reliability-roadmap.md` 的滚动规则，在 P1 独立提交后重写 `CLAUDE_WORK.md` 并只实施 P2。
+  新增 `ProcessingJobCommand` 作为取消/重试的持久幂等事实；同账号的 `clientCommandId` 永久绑定动作、目标和规范化
+  原因，精确重放返回原结果，改变语义稳定返回 `idempotency_conflict`。取消原因是最多 500 字的纯文本，审计不记录
+  执行键、来源参数、对象地址、VOD 临时 URL、PlayAuth、AccessKey 或 token。
+- 普通账号只能取消自己的 `ProcessingJobRequest`。还有其他 active request 时只撤销个人需求，共享执行继续；最后
+  一个需求取消 queued job 时直接进入 `cancelled`，取消 running job 时进入 `cancelling`。管理员可强制撤销全部需求；
+  普通业务角色不会得到任务治理能力。
+- failed/cancelled 媒体分析可重试，但旧终态永不原地复活。重试先保存 `pending` command，再用账号+命令派生的稳定
+  UUID 调用既有媒体分析创建边界，响应丢失或进程重启后可精确找回同一新 job。`ProcessingJobRequest` 新增经当前
+  完整来源/ACL 校验后写入的音轨外键；缺少可证明上下文的历史任务 fail closed，不从审计 JSON 猜测来源。
+- migration 新增 cancelling/cancelled、取消事实、命令表、审计动作、长度/一致性/FK 约束，并把 canonical active
+  partial unique gate 扩展到 cancelling。全新 `api_test` schema 已从空库完整执行 31 个 migration，证明迁移序列
+  自洽；没有使用 `db push` 或修改既有 migration 历史。
+
+### worker 终止、竞态与补偿
+
+- worker 为每个 claim 建立独立的业务取消 watcher，并与进程 shutdown signal 合并给 FFmpeg、PCM 累积、瓦片计算和
+  发布边界。业务取消会删除当前 partial assets 并进入 cancelled；正常 shutdown 清理后重新 queued，二者不再共用
+  一个含糊的 aborted 分支。对象清理/补偿失败稳定落为 failed，不伪报取消成功。
+- 成功、取消、失败、heartbeat 和 stale recovery 都要求当前 claim owner；job 与 media-analysis run 使用条件更新并在
+  同一事务中成对转换。取消先赢时迟到成功事务回滚，成功先赢时迟到取消不删除资产。旧 worker 的 claim 已被陈旧
+  恢复转交后，其迟到异常会在对象清理前退出，不能损坏新 attempt。
+- 自审进一步发现 stale candidate 查询与新需求附加存在时间窗。最终实现把候选查询降为提示：真正恢复时按固定顺序
+  取得 canonical execution 锁和 job row lock，重新核验状态、heartbeat、claim owner 与 active request。最后需求取消、
+  新需求附加和陈旧恢复因此基于同一权威快照；`cancelling` 执行永不重新排队。
+- 监控、系统诊断、迁移计划和前端分析状态识别均补齐 cancelling/cancelled。P2 只交付 shared DTO、API client 与后端
+  命令，不提前加入 P3 图形化任务中心，也没有引入新依赖或改动 ProjectData、协作命令、时间轴和瓦片格式。
+
+### 验证、自审与状态
+
+- `npm run test:processing-jobs`：8/8，覆盖个人/共享/最后需求取消、管理员门禁、命令幂等、稳定重试、running 取消，
+  以及最后取消与新需求并发时只保留一个活动执行且不丢协作者需求。
+- `npm run test:media-analysis`：shared batch 3/3 + 专项 39/39；真实 FFmpeg 运行任务收到取消后会终止、清理并进入
+  cancelled，stale cancelling 也会清理而不重排。
+- `npm run test:api`：211/211；`npm run test:deployment`：28/28；Prisma/API/Web 类型检查、完整 `npm run build` 和
+  `git diff --check` 均通过。构建只保留既有 Vite 主 chunk 大小提示，API 测试仍有既有 pg 并发 query 弃用提醒。
+- 僵尸代码与横向状态审计确认：没有第二套取消 owner、没有直接浏览器 `crypto.randomUUID()` 回归、没有临时标注创建
+  诊断；HTTP secure-context 审计结论保持不变。复杂状态机和锁顺序已加入中文注释及 `AGENTS.md` 长期合同。
+- **已完成**：P2 schema/API、权限、幂等、取消/重试、worker cancellation、claim fencing、竞态/补偿、专项与完整回归、
+  roadmap/AGENTS/Development Log 更新。
+- **待推进**：P3 图形化后台任务中心；P4 再做跨读写/分析故障注入。按用户明确要求，本阶段不部署服务器，不修改生产
+  数据库、对象目录或浏览器草稿。

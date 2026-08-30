@@ -105,8 +105,15 @@ Main currently contains all major recent feature lines that matter for context:
   through FFmpeg stdin, and VOD analysis uses a temporary pure-audio URL that must never enter persistence or logs
 - background processing separates one shared `ProcessingJob` execution from per-account/context `ProcessingJobRequest` demand
   and per-tab `ProcessingJobRequestKey` idempotency aliases. The server owns the versioned deduplication identity, PostgreSQL
-  allows at most one queued/running execution per key, and public query DTOs never expose keys, claims, raw results, storage
+  allows at most one queued/running/cancelling execution per key, and public query DTOs never expose keys, claims, raw results, storage
   identities, provider errors, credentials, or temporary media URLs
+- processing-job cancellation and retry are owned by `ProcessingJobCommandService` and persisted as idempotent commands. Ordinary
+  users cancel only their own demand; a shared execution continues while any active request remains. The last queued demand cancels
+  immediately, the last running demand enters `cancelling`, and administrators may force-cancel all demands. Retry creates a new
+  execution/history record and reserves its command before invoking media-analysis creation; it never revives a terminal job in place
+- processing-job mutations use the lock order client command -> canonical deduplication key -> job row. Media-analysis request creation,
+  last-demand cancellation, and stale recovery must share that canonical lock so a request cannot be attached from an obsolete demand
+  snapshot. Job and analysis-run state transitions are conditional and paired in one transaction; a partial transition must roll back
 - analysis audio defaults to the bound uploaded/VOD media but can always be overridden with a readable server audio/VOD
   resource and restored to auto; these settings and assets are platform state, never ProjectData or undo/history state
 - the compact audio-track selector is a high-frequency listening surface; persistent relation CRUD belongs in the separate
@@ -223,6 +230,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     streams cannot share a run. Definition, bitrate, display metadata, temporary URL, and track offset never enter the fingerprint
 - `apps/api/src/mediaAnalysisWorkerService.ts` + `apps/api/src/mediaAnalysisWorkerRuntime.ts`
   - independent database claim/heartbeat/stale-recovery worker; normal shutdown removes partial assets and requeues the job
+  - per-task business cancellation uses a bounded database watcher and a signal separate from process shutdown. User cancellation
+    removes partial assets and settles `cancelled`; process shutdown requeues. Success, cancellation, failure, heartbeat, and stale
+    recovery all require the current claim owner, and a late superseded worker must not clean or overwrite a newer attempt
+  - stale recovery treats its initial query only as a candidate list, then reacquires the canonical lock and revalidates status,
+    heartbeat, claim owner, and active demand before requeue/cancel. Never restore `cancelling` work to the execution queue
   - staged/final object compensation failures must become stable failed states and must never be silently swallowed
   - a run with `sourceVodRenditionJobId` must request that exact JobId through the existing VOD gateway and reject a mismatched
     provider response. The resulting HTTPS URL remains worker-memory-only and must never enter the database, audit, or logs

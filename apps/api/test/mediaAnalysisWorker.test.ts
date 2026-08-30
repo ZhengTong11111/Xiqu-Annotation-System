@@ -163,7 +163,7 @@ test("媒体分析 worker 原子 claim、流式生成资产并可恢复陈旧任
         createdBy: fixture.userId,
       },
     });
-    await prisma.processingJob.create({
+    const staleJob = await prisma.processingJob.create({
       data: {
         type: "media_analysis",
         status: "running",
@@ -174,6 +174,13 @@ test("媒体分析 worker 原子 claim、流式生成资产并可恢复陈旧任
         claimedBy: "dead-worker",
         claimedAt: new Date(Date.now() - 10 * 60_000),
         heartbeatAt: new Date(Date.now() - 10 * 60_000),
+      },
+    });
+    await prisma.processingJobRequest.create({
+      data: {
+        jobId: staleJob.id,
+        requesterUserId: fixture.userId,
+        contextResourceId: fixture.annotationFileId,
       },
     });
     assert.equal(await service.recoverStaleJobs(), 1);
@@ -189,6 +196,78 @@ test("媒体分析 worker 原子 claim、流式生成资产并可恢复陈旧任
       where: { id: staleRun.id },
       data: { status: "failed" },
     });
+
+    // worker 在 cancelling 状态崩溃后，陈旧恢复必须清理资产并进入 cancelled，不能重新排队。
+    const cancellingRun = await prisma.mediaAnalysisRun.create({
+      data: {
+        sourceMediaResourceId: fixture.mediaResourceId,
+        sourceFingerprint: "cancelling-source",
+        mediaFingerprint: "c".repeat(64),
+        algorithmVersion: "xiqu-media-analysis-v1",
+        configHash: "cancelling-config",
+        config: {},
+        status: "cancelling",
+        createdBy: fixture.userId,
+      },
+    });
+    const cancellingJob = await prisma.processingJob.create({
+      data: {
+        type: "media_analysis",
+        status: "cancelling",
+        resourceId: fixture.annotationFileId,
+        createdBy: fixture.userId,
+        analysisRunId: cancellingRun.id,
+        deduplicationKey: `test:cancelling:${cancellingRun.id}`,
+        claimedBy: "cancelled-worker",
+        claimedAt: new Date(Date.now() - 10 * 60_000),
+        heartbeatAt: new Date(Date.now() - 10 * 60_000),
+        cancelRequestedAt: new Date(Date.now() - 10 * 60_000),
+        cancelRequestedBy: fixture.userId,
+        cancellationMode: "user_request",
+      },
+    });
+    await prisma.processingJobRequest.create({
+      data: {
+        jobId: cancellingJob.id,
+        requesterUserId: fixture.userId,
+        contextResourceId: fixture.annotationFileId,
+        cancelledAt: new Date(Date.now() - 10 * 60_000),
+        cancelledBy: fixture.userId,
+      },
+    });
+    const cancelledAssetKey = storage.createStorageKey("xqa");
+    const cancelledAsset = await storage.putStagedObject(
+      cancelledAssetKey,
+      Readable.from([Buffer.from("partial-analysis")]),
+      64,
+    );
+    await storage.promoteStagedObject(cancelledAsset);
+    await prisma.mediaAnalysisAsset.create({
+      data: {
+        runId: cancellingRun.id,
+        kind: "waveform",
+        preset: "default",
+        level: 0,
+        tileIndex: 0,
+        startTime: 0,
+        endTime: 10,
+        mimeType: "application/vnd.xiqu.waveform-tile",
+        size: cancelledAsset.size,
+        checksum: cancelledAsset.checksum,
+        storageKey: cancelledAsset.finalStorageKey,
+      },
+    });
+    assert.equal(await service.recoverStaleJobs(), 1);
+    assert.equal(
+      (await prisma.processingJob.findUniqueOrThrow({ where: { id: cancellingJob.id } })).status,
+      "cancelled",
+    );
+    assert.equal(
+      (await prisma.mediaAnalysisRun.findUniqueOrThrow({ where: { id: cancellingRun.id } })).status,
+      "cancelled",
+    );
+    assert.equal(await prisma.mediaAnalysisAsset.count({ where: { runId: cancellingRun.id } }), 0);
+    assert.equal(await storage.objectExists(cancelledAsset.finalStorageKey), false);
 
     // superseded run 是只读迁移事实；即使历史数据残留 running job，也不得恢复或再次领取。
     const supersededRun = await prisma.mediaAnalysisRun.create({
@@ -283,9 +362,78 @@ test("媒体分析资产发布失败时立即清理暂存对象并稳定落为�
   }
 });
 
+test("运行中的媒体分析收到业务取消后清理资产并进入 cancelled", async (context) => {
+  const ffmpegPath = process.env.XIQU_FFMPEG_PATH?.trim() || "ffmpeg";
+  if (spawnSync(ffmpegPath, ["-version"], { stdio: "ignore" }).status !== 0) {
+    context.skip("测试环境没有 FFmpeg");
+    return;
+  }
+  const root = await mkdtemp(path.join(tmpdir(), "xiqu-analysis-cancellation-"));
+  const { prisma, pool, maintenancePool, collaborationPool } = createTestPrisma();
+  await truncateTestDatabase(prisma);
+  const storage = new LocalObjectStorage(root);
+  try {
+    // 20 秒输入保证测试有时间在 worker 完成前写入 cancelling；5ms watcher 仅用于缩短测试等待。
+    const fixture = await createWorkerFixture(prisma, storage, 20);
+    const service = new MediaAnalysisWorkerService(
+      prisma,
+      storage,
+      null,
+      ffmpegPath,
+      { info: () => undefined, warn: () => undefined },
+      5,
+    );
+    const processing = service.processNext("worker-business-cancel");
+    await waitForJobStatus(prisma, fixture.jobId, "running");
+    const request = await prisma.processingJobRequest.findFirstOrThrow({
+      where: { jobId: fixture.jobId },
+    });
+    const cancelledAt = new Date();
+    await prisma.$transaction([
+      prisma.processingJobRequest.update({
+        where: { id: request.id },
+        data: {
+          cancelledAt,
+          cancelledBy: fixture.userId,
+        },
+      }),
+      prisma.processingJob.update({
+        where: { id: fixture.jobId },
+        data: {
+          status: "cancelling",
+          cancelRequestedAt: cancelledAt,
+          cancelRequestedBy: fixture.userId,
+          cancellationMode: "user_request",
+        },
+      }),
+      prisma.mediaAnalysisRun.update({
+        where: { id: fixture.runId },
+        data: { status: "cancelling" },
+      }),
+    ]);
+    assert.equal(await processing, true);
+    assert.equal(
+      (await prisma.processingJob.findUniqueOrThrow({ where: { id: fixture.jobId } })).status,
+      "cancelled",
+    );
+    assert.equal(
+      (await prisma.mediaAnalysisRun.findUniqueOrThrow({ where: { id: fixture.runId } })).status,
+      "cancelled",
+    );
+    assert.equal(await prisma.mediaAnalysisAsset.count({ where: { runId: fixture.runId } }), 0);
+  } finally {
+    await prisma.$disconnect();
+    await pool.end();
+    await maintenancePool.end();
+    await collaborationPool.end();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 async function createWorkerFixture(
   prisma: ReturnType<typeof createTestPrisma>["prisma"],
   storage: LocalObjectStorage,
+  duration = 0.1,
 ) {
   const userId = "analysis-worker-user";
   const annotationFileId = "analysis-worker-annotation";
@@ -313,7 +461,7 @@ async function createWorkerFixture(
       lastEditedBy: userId,
     },
   });
-  const wav = buildWav(8_000, 0.1, 220);
+  const wav = buildWav(8_000, duration, 220);
   const finalStorageKey = storage.createStorageKey("wav");
   const staged = await storage.putStagedObject(
     finalStorageKey,
@@ -347,7 +495,7 @@ async function createWorkerFixture(
       fileId: file.id,
       mimeType: "audio/wav",
       size: wav.byteLength,
-      duration: 0.1,
+      duration,
     },
   });
   const run = await prisma.mediaAnalysisRun.create({
@@ -361,6 +509,15 @@ async function createWorkerFixture(
       createdBy: userId,
     },
   });
+  const audioTrack = await prisma.mediaAudioTrack.create({
+    data: {
+      primaryMediaResourceId: mediaResourceId,
+      name: "原声",
+      kind: "original",
+      sortOrder: 0,
+      createdBy: userId,
+    },
+  });
   const job = await prisma.processingJob.create({
     data: {
       type: "media_analysis",
@@ -371,7 +528,38 @@ async function createWorkerFixture(
       deduplicationKey: `test:worker:${run.id}`,
     },
   });
-  return { userId, annotationFileId, mediaResourceId, runId: run.id, jobId: job.id };
+  await prisma.processingJobRequest.create({
+    data: {
+      jobId: job.id,
+      requesterUserId: userId,
+      contextResourceId: annotationFileId,
+      mediaAudioTrackId: audioTrack.id,
+    },
+  });
+  return {
+    userId,
+    annotationFileId,
+    mediaResourceId,
+    runId: run.id,
+    jobId: job.id,
+  };
+}
+
+async function waitForJobStatus(
+  prisma: ReturnType<typeof createTestPrisma>["prisma"],
+  jobId: string,
+  status: "running",
+) {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const job = await prisma.processingJob.findUnique({
+      where: { id: jobId },
+      select: { status: true },
+    });
+    if (job?.status === status) return;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error(`等待任务进入 ${status} 超时。`);
 }
 
 function buildWav(sampleRate: number, duration: number, frequency: number) {

@@ -9,7 +9,7 @@ export type MediaAnalysisMigrationRunFact = {
   algorithmVersion: string;
   configHash: string;
   configFingerprint: string;
-  status: "queued" | "running" | "succeeded" | "failed";
+  status: "queued" | "running" | "cancelling" | "cancelled" | "succeeded" | "failed";
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -94,7 +94,11 @@ export function buildMediaAnalysisMigrationPlan(
     if (allRuns.some((fact) => invalidSupersessionIds.has(fact.id))) {
       blockCodes.add("invalid_supersession");
     }
-    if (activeRuns.some((fact) => fact.activeJobCount > 0 || fact.status === "queued" || fact.status === "running")) {
+    if (activeRuns.some((fact) =>
+      fact.activeJobCount > 0 ||
+      fact.status === "queued" ||
+      fact.status === "running" ||
+      fact.status === "cancelling")) {
       blockCodes.add("active_job");
     }
     if (new Set(activeRuns.map((fact) => fact.configFingerprint)).size > 1) {

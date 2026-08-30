@@ -32,6 +32,7 @@ import type {
   MediaAnalysisAssetDescriptor,
   MediaAnalysisAssetKind,
   ProcessingJobDetail,
+  ProcessingJobCommandResult,
   ProcessingJobPage,
   ProcessingJobSummary,
   SortDirection,
@@ -223,6 +224,15 @@ export type CreateMediaAnalysisRequest = {
   force?: boolean;
   audioTrackId: string;
   clientRequestId: string;
+};
+
+export type CancelProcessingJobRequest = {
+  clientCommandId: string;
+  reason?: string;
+};
+
+export type RetryProcessingJobRequest = {
+  clientCommandId: string;
 };
 
 export type ListMediaAnalysisAssetsOptions = {
@@ -437,7 +447,7 @@ export type SystemDiagnostics = {
     issuesByCategory: Record<StorageOrphanCategory, number>;
     cleanupEligibleCount: number;
   };
-  jobs: Record<"queued" | "running" | "succeeded" | "failed", number>;
+  jobs: Record<"queued" | "running" | "cancelling" | "cancelled" | "succeeded" | "failed", number>;
   // 许可诊断只描述当前 API 实例，帮助定位连接泄漏；不公开连接 pid 或具体请求身份。
   writeGate: {
     active: number;
@@ -622,6 +632,18 @@ export type PlatformApiContract<TPayload = unknown> = {
   listProcessingJobs: { response: ProcessingJobPage };
   getProcessingJobSummary: { response: ProcessingJobSummary };
   getProcessingJob: { response: ProcessingJobDetail };
+  cancelProcessingJobRequest: {
+    request: CancelProcessingJobRequest;
+    response: ProcessingJobCommandResult;
+  };
+  forceCancelProcessingJob: {
+    request: CancelProcessingJobRequest;
+    response: ProcessingJobCommandResult;
+  };
+  retryProcessingJobRequest: {
+    request: RetryProcessingJobRequest;
+    response: ProcessingJobCommandResult;
+  };
   listMediaAnalysisAssets: { response: MediaAnalysisAssetList };
   readMediaAnalysisAssetBatch: {
     request: ReadMediaAnalysisAssetBatchRequest;

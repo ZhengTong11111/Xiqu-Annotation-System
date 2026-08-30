@@ -843,6 +843,18 @@ test("平台资源 API 集成测试", async (suite) => {
         url: "/api/processing-jobs?scope=all",
       });
       assert.equal(forbiddenAllJobs.statusCode, 403, forbiddenAllJobs.body);
+      const activeRetry = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/processing-job-requests/${String(ownJobItems[0]?.requestId)}/retry`,
+        payload: { clientCommandId: randomUUID() },
+      });
+      assert.equal(activeRetry.statusCode, 409, activeRetry.body);
+      const forbiddenForceCancel = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/processing-jobs/${createdAnalysisJob.id}/force-cancel`,
+        payload: { clientCommandId: randomUUID() },
+      });
+      assert.equal(forbiddenForceCancel.statusCode, 403, forbiddenForceCancel.body);
       const analysisAssetKey = storage.createStorageKey("xqa");
       const stagedAnalysisAsset = await storage.putStagedObject(
         analysisAssetKey,

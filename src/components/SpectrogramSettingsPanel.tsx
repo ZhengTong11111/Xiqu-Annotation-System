@@ -159,7 +159,8 @@ export function SpectrogramSettingsPanel({
   ]>;
   const activeAnalysisPreset = spectrogramAnalysisPresets[settings.analysisPreset];
   const analysisRunActive = platformAnalysis?.status?.currentRun?.status === "queued" ||
-    platformAnalysis?.status?.currentRun?.status === "running";
+    platformAnalysis?.status?.currentRun?.status === "running" ||
+    platformAnalysis?.status?.currentRun?.status === "cancelling";
   const analysisSourceReady = platformAnalysis?.status?.audioTrackId ===
     platformAnalysis?.analysisTrackId &&
     platformAnalysis?.status?.resolvedSource.status === "ready";

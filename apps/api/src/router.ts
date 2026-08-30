@@ -17,11 +17,13 @@ import {
   type AnnotationClientSyncFailureReport,
   type AuditActionName,
   type CreateMediaAudioTrackRequest,
+  type CancelProcessingJobRequest,
   type MediaAudioTrackKind,
   type PlatformRole,
   type ProcessingJobScope,
   type ProcessingJobStatus,
   type ProcessingJobType,
+  type RetryProcessingJobRequest,
   type ResourceCapability,
   type ResourceListView,
   type ResourceSortField,
@@ -35,6 +37,7 @@ import type { HealthService } from "./healthService.js";
 import type { MediaUploadService } from "./mediaUploadService.js";
 import type { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
 import type { ProcessingJobQueryService } from "./processingJobQueryService.js";
+import type { ProcessingJobCommandService } from "./processingJobCommandService.js";
 import type { MediaAudioTrackService } from "./mediaAudioTrackService.js";
 import type { MediaAudioPlaybackSessionService } from "./mediaAudioPlaybackSessionService.js";
 import type { MaintenanceCoordinator } from "./maintenanceCoordinator.js";
@@ -118,6 +121,7 @@ export function registerApiRoutes(
   annotationRecoveryBackups: AnnotationRecoveryBackupService,
   mediaAnalysis: MediaAnalysisJobService,
   processingJobs: ProcessingJobQueryService,
+  processingJobCommands: ProcessingJobCommandService,
   mediaAudioTracks: MediaAudioTrackService,
   mediaAudioPlaybackSessions: MediaAudioPlaybackSessionService,
   annotationCommandCommits: AnnotationCommandCommitService,
@@ -229,6 +233,36 @@ export function registerApiRoutes(
       requireString(request.params.jobId, "jobId"),
     ),
   );
+
+  app.post<{
+    Params: { requestId: string };
+    Body: CancelProcessingJobRequest;
+  }>("/api/processing-job-requests/:requestId/cancel", async (request) =>
+    processingJobCommands.cancelRequest(
+      await getCurrentUser(repository, request),
+      requireString(request.params.requestId, "requestId"),
+      requireProcessingJobCancellationBody(request.body),
+    ));
+
+  app.post<{
+    Params: { jobId: string };
+    Body: CancelProcessingJobRequest;
+  }>("/api/processing-jobs/:jobId/force-cancel", async (request) =>
+    processingJobCommands.forceCancel(
+      await getCurrentUser(repository, request),
+      requireString(request.params.jobId, "jobId"),
+      requireProcessingJobCancellationBody(request.body),
+    ));
+
+  app.post<{
+    Params: { requestId: string };
+    Body: RetryProcessingJobRequest;
+  }>("/api/processing-job-requests/:requestId/retry", async (request) =>
+    processingJobCommands.retryRequest(
+      await getCurrentUser(repository, request),
+      requireString(request.params.requestId, "requestId"),
+      requireProcessingJobRetryBody(request.body),
+    ));
 
   // 评论列表默认隐藏已撤回记录；分页参数在服务层继续绑定文件和筛选上下文。
   app.get<{
@@ -1633,6 +1667,29 @@ function parseProcessingJobStatus(value: unknown) {
 
 function parseProcessingJobType(value: unknown) {
   return parseOptionalSetValue(value, PROCESSING_JOB_TYPE_NAMES, "后台任务类型");
+}
+
+function requireProcessingJobCancellationBody(value: unknown): CancelProcessingJobRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw badRequest("后台任务取消参数不正确。");
+  }
+  const body = value as Record<string, unknown>;
+  return {
+    clientCommandId: requireString(body.clientCommandId, "clientCommandId"),
+    reason: body.reason === undefined ? undefined : requireString(body.reason, "reason"),
+  };
+}
+
+function requireProcessingJobRetryBody(value: unknown): RetryProcessingJobRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw badRequest("后台任务重试参数不正确。");
+  }
+  return {
+    clientCommandId: requireString(
+      (value as Record<string, unknown>).clientCommandId,
+      "clientCommandId",
+    ),
+  };
 }
 
 const MAX_SYNC_FAILURE_REPORT_BYTES = 256 * 1024;
