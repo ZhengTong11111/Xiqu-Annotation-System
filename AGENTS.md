@@ -27,6 +27,18 @@ Main currently contains all major recent feature lines that matter for context:
 - resource permission Inspector with three base-preset radios, an independent review checkbox, and the complete detailed capability
   matrix; simple controls only rewrite direct ACL rows, preserve custom grants until explicit overwrite, and never replace
   server-side effective permission calculation
+- annotation-file workflow status is platform governance metadata with strict adjacent `unannotated -> annotated -> reviewed`
+  transitions; annotation completion uses effective `write`, review completion uses effective `review`, and neither transition
+  changes ProjectData, annotation revision, operations, drafts, undo/history, or exported JSON. Project workflow status is a
+  read-time maximum over active descendant annotation files, never a second persisted conclusion. Resource context menus and
+  the platform editor File menu must share `AnnotationWorkflowStatusDialog` and the same shared transition policy; do not fork
+  confirmation wording or capability logic per entry point
+- project annotation/review groups are auditable responsibility assignments and independent effective-permission sources,
+  never synthetic `ResourcePermission` rows. Annotation membership contributes the project edit preset; review membership
+  contributes `read + review + download`; neither grants `manage_permissions`. Removing membership removes only that source,
+  while manual direct/inherited ACL, roles, owner and admin authority remain intact. Only effective `manage_permissions` can
+  read or replace complete groups, and non-global managers cannot delegate capabilities they do not hold. Resource copies must
+  not inherit file completion conclusions or project responsibility groups
 - independent annotation-range comments alongside confirmed ranges; both reuse one saved range/target contract and `read + review`
   gate, while comments remain non-confirming append-only governance facts with required plain-text bodies and withdrawal history
 - permission-gated native streaming downloads for media resources and authoritative JSON downloads for annotation resources, exposed through the shared resource context menu and Inspector
@@ -508,6 +520,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - future analysis-audio selection belongs to platform media/derived-asset state, never `ProjectData`. Automatic embedded/uploaded/
     same-vid VOD audio remains the default, but users must always be able to force a readable uploaded server audio resource,
     even while automatic VOD audio works, so analysis can completely bypass a slow provider; restoring automatic selection is explicit
+- `src/platform/ProjectWorkflowGroupEditor.tsx` + `src/platform/projectWorkflowCandidates.ts`
+  - own project-scoped responsibility assignment and candidate search. Candidate lookup is authorized by that project's effective
+    `manage_permissions`, not by the global account-directory role list; query results are filtered while already-seen account
+    references remain cached so unsaved selections do not disappear between searches
+  - saving groups must refresh both the resource summary and permission matrix because group membership changes effective access
 - `src/platform/ResourcePermissionEditor.tsx`
   - owns permission-matrix loading, simple/detailed presentation, direct grant writes, resource inheritance controls, and explanations
     for role/inherited residual access; both modes edit the same direct ACL and must reread the server matrix after every write
@@ -839,7 +856,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - spectrogram control surface plus redundant waveform visibility toggle
 - `src/components/TopMenuBar.tsx`
   - global file/edit/view/help menu
-  - view menu owns visibility toggles for waveform, spectrogram, Banyan track, and global Banyan grid lines
+  - the File menu owns imports/exports, explicit saves, platform annotation workflow status, and recovery-backup preferences;
+    the View menu owns only presentation visibility such as waveform, spectrogram, Banyan track, and global Banyan grid lines
 - `src/components/GongcheCharacterRenderer.tsx`
   - single-character Gongche preview renderer
 - `src/components/ResizableSplitLayout.tsx`
@@ -1009,7 +1027,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     multipart copy with contiguous ranges, ordered completion, abort-on-failure, and a 5 TB fail-closed object ceiling
 - `apps/api/src/resourceAccess.ts`
   - authoritative server-side resource capability resolution
-  - combines global admin bypass, ownership, direct grants, and nearest inherited folder grants
+  - combines global admin bypass, ownership, role defaults, direct/inherited ACL and project responsibility-group sources.
+    Responsibility grants follow the same ancestor-chain inheritance stops, but remain source-labelled and never mutate manual ACL
 - `apps/api/src/resourceService.ts`
   - resource-tree mutations, copy/move/trash behavior, annotation-file save/recovery, and confirmed-range governance
   - the project-permission selector endpoint is a global-admin-only, stable cursor page over all active projects, including nested
@@ -1778,6 +1797,8 @@ Current backend capabilities:
   - direct grants belong to one resource and one account
   - folder/project grants inherit to descendants unless a descendant sets `breakPermissionInheritance`
   - there is no explicit deny rule; a direct grant augments inherited capabilities
+  - project responsibility memberships are another additive source: annotation contributes the shared edit set and review
+    contributes read/review/download. Removing membership must never delete or rewrite a `ResourcePermission` row
   - only users with effective `manage_permissions` may edit grants
   - authorization is enforced by the API; disabled frontend controls are only an affordance
   - `download` is checked independently from `read`; media streams and authoritative annotation JSON both use

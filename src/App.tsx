@@ -6,7 +6,9 @@ import {
   getAnnotationMutationLeasePurposeForCommand,
   type AnnotationCommandEnvelope,
   type AnnotationMutationPurpose,
+  type AnnotationWorkflowStatus,
   type ProjectSnapshotBoundaryKind,
+  type ResourceCapability,
 } from "@xiqu/shared";
 import "./index.css";
 import { PlatformApiError } from "./api/platformClient";
@@ -28,6 +30,10 @@ import { VideoPlayer } from "./components/VideoPlayer";
 import type { MediaPlaybackController } from "./media/mediaPlaybackController";
 import { mockProject } from "./mockData";
 import { AnnotationReviewPanel } from "./platform/AnnotationReviewPanel";
+import {
+  AnnotationWorkflowStatusDialog,
+  type AnnotationWorkflowStatusPrompt,
+} from "./platform/AnnotationWorkflowStatusDialog";
 import { AnnotationMediaBindingDialog } from "./platform/AnnotationMediaBindingDialog";
 import { MediaAudioTrackManagerDialog } from "./platform/MediaAudioTrackManagerDialog";
 import {
@@ -68,6 +74,10 @@ import { buildTimelineSelectionSummary } from "./platform/timelineSelectionSumma
 import { useAnnotationReviews } from "./platform/useAnnotationReviews";
 import { usePlatformAutoSave } from "./platform/usePlatformAutoSave";
 import { usePlatformRecoveryBackup } from "./platform/usePlatformRecoveryBackup";
+import {
+  ANNOTATION_WORKFLOW_STATUS_OPTIONS,
+  getAnnotationWorkflowCommandState,
+} from "./platform/annotationWorkflow";
 import type { PlatformRecoveryBackupState } from "./platform/platformRecoveryBackupRuntime";
 import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
 import { preparePlatformEditorLeave } from "./platform/platformEditorLeaveRuntime";
@@ -572,6 +582,13 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const initialProject = editorSession?.initialProject ?? localEditorSession?.initialProject ?? mockProject;
   const initialProjectDuration = getProjectDuration(initialProject);
   const initialPlatformFocus = editorSession?.initialFocus;
+  const [annotationWorkflowStatus, setAnnotationWorkflowStatus] = useState<AnnotationWorkflowStatus>(
+    editorSession?.workflowStatus ?? "unannotated",
+  );
+  const [annotationWorkflowPrompt, setAnnotationWorkflowPrompt] =
+    useState<AnnotationWorkflowStatusPrompt | null>(null);
+  const [annotationWorkflowPending, setAnnotationWorkflowPending] = useState(false);
+  const [annotationWorkflowError, setAnnotationWorkflowError] = useState<string | null>(null);
   const isReadOnly = Boolean(
     editorSession && !editorSession.canWrite,
   );
@@ -660,6 +677,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       ),
     }),
   });
+  // 会话元数据可能因保存响应或其他平台入口更新；编辑器菜单始终跟随 Workspace 的权威状态。
+  useEffect(() => {
+    setAnnotationWorkflowStatus(editorSession?.workflowStatus ?? "unannotated");
+    setAnnotationWorkflowPrompt(null);
+    setAnnotationWorkflowError(null);
+  }, [editorSession?.annotationFileId, editorSession?.workflowStatus]);
   // 冲突解除后清理旧交接错误，下一次独立冲突不能显示上一次请求的诊断。
   useEffect(() => {
     if (syncState.status !== "conflict") {
@@ -7336,6 +7359,55 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     );
   }
 
+  const annotationWorkflowCapabilities: ResourceCapability[] = editorSession
+    ? [
+        ...(editorSession.canWrite ? ["write" as const] : []),
+        ...(editorSession.canReview ? ["review" as const] : []),
+      ]
+    : [];
+
+  function requestAnnotationWorkflowStatus(target: AnnotationWorkflowStatus) {
+    if (!editorSession) return;
+    const commandState = getAnnotationWorkflowCommandState(
+      annotationWorkflowStatus,
+      target,
+      annotationWorkflowCapabilities,
+    );
+    if (commandState === "current" || commandState === "forbidden") return;
+    setAnnotationWorkflowError(null);
+    setAnnotationWorkflowPrompt({
+      resourceId: editorSession.annotationFileId,
+      resourceName: editorSession.annotationFileName,
+      current: annotationWorkflowStatus,
+      target,
+      blocked: commandState === "blocked_order",
+    });
+  }
+
+  async function confirmAnnotationWorkflowStatus() {
+    const prompt = annotationWorkflowPrompt;
+    if (!editorSession || !prompt || prompt.blocked || annotationWorkflowPending) return;
+    setAnnotationWorkflowPending(true);
+    setAnnotationWorkflowError(null);
+    try {
+      const updated = await editorSession.client.updateAnnotationWorkflowStatus(
+        prompt.resourceId,
+        { expectedStatus: prompt.current, status: prompt.target },
+      );
+      const nextStatus = updated.workflowStatus ?? prompt.target;
+      setAnnotationWorkflowStatus(nextStatus);
+      editorSession.onWorkflowStatusChanged(nextStatus);
+      setAnnotationWorkflowPrompt(null);
+    } catch (error) {
+      // 陈旧 expectedStatus 等服务端拒绝必须留在确认窗口中，不能伪装成正文保存失败。
+      setAnnotationWorkflowError(
+        error instanceof Error ? error.message : "标注状态更新失败，请刷新后重试。",
+      );
+    } finally {
+      setAnnotationWorkflowPending(false);
+    }
+  }
+
   return (
     <AppShell
       blockingNotice={platformLeaveBusy
@@ -7368,6 +7440,28 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               void platformAudioTracks.setAsDefault(trackId);
             },
             onManageTracks: () => setAudioTrackManagerOpen(true),
+          } : undefined}
+          annotationWorkflow={editorSession ? {
+            pending: annotationWorkflowPending,
+            options: ANNOTATION_WORKFLOW_STATUS_OPTIONS.map((option) => {
+              const state = getAnnotationWorkflowCommandState(
+                annotationWorkflowStatus,
+                option.value,
+                annotationWorkflowCapabilities,
+              );
+              return {
+                ...option,
+                state,
+                title: state === "current"
+                  ? `当前状态：${option.label}`
+                  : state === "forbidden"
+                    ? "当前账号缺少完成此状态转换所需的编辑或审核权限"
+                    : state === "blocked_order"
+                      ? "状态必须按未标注、已标注、已审核的相邻顺序转换"
+                      : `设置为${option.label}`,
+              };
+            }),
+            onSelect: requestAnnotationWorkflowStatus,
           } : undefined}
           isPlaying={isPlaying}
           playbackRate={playbackRate}
@@ -7506,6 +7600,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           }}
         />
       ) : null}
+      <AnnotationWorkflowStatusDialog
+        prompt={annotationWorkflowPrompt}
+        pending={annotationWorkflowPending}
+        error={annotationWorkflowError}
+        onClose={() => {
+          setAnnotationWorkflowPrompt(null);
+          setAnnotationWorkflowError(null);
+        }}
+        onConfirm={() => void confirmAnnotationWorkflowStatus()}
+      />
       {/* 整合草稿确认栏属于编辑会话而非保存版本；取消不改历史，应用后仍需用户正常保存。 */}
       {pendingAnnotationMergeDraft ? (
         <section className="annotation-merge-draft-bar" role="status">

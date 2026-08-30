@@ -4,6 +4,7 @@ import type { FormEvent } from "react";
 import type {
   AnnotationFile,
   AnnotationMediaReference,
+  AnnotationWorkflowStatus,
   PlatformRole,
   PlatformUser,
   ResourceEntry,
@@ -57,8 +58,10 @@ export type PlatformEditorSession = {
   projectTitle: string;
   baseRevision: number;
   operationCursor: string;
+  workflowStatus: AnnotationWorkflowStatus;
   initialProject: ProjectData;
   onAnnotationFileSaved: (file: AnnotationFile<ProjectData>) => void;
+  onWorkflowStatusChanged: (status: AnnotationWorkflowStatus) => void;
   onRemoteRevisionAdvanced: (revision: number, operationCursor: string) => void;
   canWrite: boolean;
   canReview: boolean;
@@ -246,6 +249,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
       projectTitle: parent?.name ?? "平台标注项目",
       baseRevision: input.file.revision,
       operationCursor: input.file.operationCursor,
+      workflowStatus: input.file.resource.workflowStatus ?? "unannotated",
       initialProject: input.initialProject,
       canWrite: input.file.resource.permission.capabilities.includes("write"),
       canReview: input.file.resource.permission.capabilities.includes("review"),
@@ -271,7 +275,14 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
               annotationFileName: saved.resource.name,
               parentId: saved.resource.parentId ?? null,
               media: saved.media ?? null,
+              workflowStatus: saved.resource.workflowStatus ?? current.workflowStatus,
             }
+          : current);
+      },
+      // 工作流状态属于平台资源治理元数据，不进入 ProjectData、正文 revision 或撤销历史。
+      onWorkflowStatusChanged: (workflowStatus) => {
+        setEditorSession((current) => current?.annotationFileId === input.file.resource.id
+          ? { ...current, workflowStatus }
           : current);
       },
       // operation 重放已经验证出权威 revision/cursor，无需为更新会话元数据再下载一次完整 payload。

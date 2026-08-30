@@ -41,6 +41,7 @@ import type { ChangeEvent, MouseEvent } from "react";
 import {
   canManagePlatformAccounts,
   hasFullPlatformResourceAccess,
+  type AnnotationWorkflowStatus,
   type AnnotationFile,
   type PlatformUser,
   type ResourceEntry,
@@ -69,6 +70,7 @@ import {
   canDirectlyDownloadResource,
   formatResourceDate,
   ResourceIcon,
+  ResourceWorkflowStatusBadge,
   resourceTypeLabel,
 } from "./ResourceItem";
 import { ResourceVirtualCollection } from "./ResourceVirtualCollection";
@@ -90,6 +92,15 @@ import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { downloadFromUrl } from "./browserDownload";
 import { ResourcePermissionEditor } from "./ResourcePermissionEditor";
 import { ProjectPermissionManagementDialog } from "./ProjectPermissionManagementDialog";
+import {
+  getAnnotationWorkflowCommandState,
+  resourceResponsibleOrCreatorLabel,
+} from "./annotationWorkflow";
+import { ProjectWorkflowGroupEditor } from "./ProjectWorkflowGroupEditor";
+import {
+  AnnotationWorkflowStatusDialog,
+  type AnnotationWorkflowStatusPrompt,
+} from "./AnnotationWorkflowStatusDialog";
 
 type ExplorerMode = "list" | "grid" | "column";
 
@@ -158,6 +169,9 @@ export function ResourceExplorer(props: {
   const [permissionRefreshVersion, setPermissionRefreshVersion] = useState(0);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [vodDialogOpen, setVodDialogOpen] = useState(false);
+  const [workflowStatusPrompt, setWorkflowStatusPrompt] =
+    useState<AnnotationWorkflowStatusPrompt | null>(null);
+  const [workflowStatusPending, setWorkflowStatusPending] = useState(false);
   const [pendingJsonImport, setPendingJsonImport] = useState<{
     parentId: string;
     fileName: string;
@@ -813,6 +827,7 @@ export function ResourceExplorer(props: {
     isPasting ||
     isRestoring ||
     isMovingResources ||
+    workflowStatusPending ||
     isTrashing ||
     movingResources.length > 0;
   // 工具栏和三种视图的右键菜单共用同一个资格判定，并按 selectedIds 保留左右顺序。
@@ -841,6 +856,51 @@ export function ResourceExplorer(props: {
       ? `${resource.name}.json`
       : resource.name;
     downloadFromUrl(props.client.getResourceDownloadUrl(resource.id), fallbackName);
+  };
+  const requestWorkflowStatus = (
+    resource: ResourceEntry,
+    target: AnnotationWorkflowStatus,
+  ) => {
+    const current = resource.workflowStatus ?? "unannotated";
+    const commandState = getAnnotationWorkflowCommandState(
+      current,
+      target,
+      resource.permission.capabilities,
+    );
+    if (commandState === "current") return;
+    if (commandState === "forbidden") {
+      setError(target === "reviewed"
+        ? "当前账号缺少该文件的审核权限。"
+        : "当前账号缺少完成此状态转换所需的编辑或审核权限。");
+      return;
+    }
+    setWorkflowStatusPrompt({
+      resourceId: resource.id,
+      resourceName: resource.name,
+      current,
+      target,
+      blocked: commandState === "blocked_order",
+    });
+  };
+
+  const confirmWorkflowStatus = async () => {
+    const prompt = workflowStatusPrompt;
+    if (!prompt || prompt.blocked || workflowStatusPending) return;
+    setWorkflowStatusPending(true);
+    setError(null);
+    try {
+      await props.client.updateAnnotationWorkflowStatus(prompt.resourceId, {
+        expectedStatus: prompt.current,
+        status: prompt.target,
+      });
+      setWorkflowStatusPrompt(null);
+      await refreshCurrentView();
+    } catch (nextError) {
+      // 409 会保留弹窗和原选择，用户可以看到服务端返回的陈旧状态原因后刷新重试。
+      setError(describeError(nextError));
+    } finally {
+      setWorkflowStatusPending(false);
+    }
   };
 
   return (
@@ -970,6 +1030,7 @@ export function ResourceExplorer(props: {
                       isPasting ||
                       isRestoring ||
                       isMovingResources ||
+                      workflowStatusPending ||
                       movingResources.length > 0
                     }
                     onNavigate={() => {
@@ -1123,6 +1184,7 @@ export function ResourceExplorer(props: {
               onCopy={(resource) => setClipboard([resource])}
               onMove={openMovePicker}
               onDownload={downloadResource}
+              onRequestWorkflowStatus={requestWorkflowStatus}
               onRestore={(resource) => void restoreResources([resource])}
               onTrash={trashFromContext}
               canCompareSelection={Boolean(comparableFiles)}
@@ -1167,6 +1229,7 @@ export function ResourceExplorer(props: {
                 onCopy={(resource) => setClipboard([resource])}
                 onMove={openMovePicker}
                 onDownload={downloadResource}
+                onRequestWorkflowStatus={requestWorkflowStatus}
                 interactionDisabled={interactionDisabled}
                 draggedResourceIds={draggedResourceIds}
                 onDragStart={handleResourceDragStart}
@@ -1189,6 +1252,11 @@ export function ResourceExplorer(props: {
           readOnly={isTrashView}
           permissionRefreshVersion={permissionRefreshVersion}
           onChanged={() => refreshCurrentView()}
+          onWorkflowGroupsChanged={async () => {
+            // 职责组会改变有效权限来源，保存后同时重读列表摘要和 Inspector 权限矩阵。
+            setPermissionRefreshVersion((current) => current + 1);
+            await refreshCurrentView();
+          }}
           onError={setError}
           onOpenAnnotationFile={props.onOpenAnnotationFile}
           onDownload={downloadResource}
@@ -1230,6 +1298,12 @@ export function ResourceExplorer(props: {
         onOpenFileAtTime={props.onOpenAnnotationFile}
         onPrepareMerge={props.onPrepareAnnotationMerge}
         onClose={() => setComparisonFiles(null)}
+      />
+      <AnnotationWorkflowStatusDialog
+        prompt={workflowStatusPrompt}
+        pending={workflowStatusPending}
+        onClose={() => setWorkflowStatusPrompt(null)}
+        onConfirm={() => void confirmWorkflowStatus()}
       />
       {pendingJsonImport ? (
         <AnnotationMediaBindingDialog
@@ -1359,6 +1433,7 @@ function ResourceInspector(props: {
   readOnly: boolean;
   permissionRefreshVersion: number;
   onChanged: () => void | Promise<void>;
+  onWorkflowGroupsChanged: () => void | Promise<void>;
   onError: (message: string | null) => void;
   onOpenAnnotationFile: (
     resource: ResourceEntry,
@@ -1396,7 +1471,17 @@ function ResourceInspector(props: {
       <h2>{props.resource.name}</h2>
       <dl>
         <dt>类型</dt><dd>{resourceTypeLabel(props.resource)}</dd>
-        <dt>所有者</dt><dd>{props.resource.owner.displayName}</dd>
+        <dt>{props.resource.type === "project" ? "所有者" : "创建人"}</dt>
+        <dd>{props.resource.owner.displayName}</dd>
+        {props.resource.type === "project" ? (
+          <>
+            <dt>负责人</dt>
+            <dd>{resourceResponsibleOrCreatorLabel(props.resource)}</dd>
+          </>
+        ) : null}
+        {props.resource.type === "project" || props.resource.type === "annotation_file" ? (
+          <><dt>状态</dt><dd><ResourceWorkflowStatusBadge resource={props.resource} /></dd></>
+        ) : null}
         <dt>创建</dt><dd>{formatResourceDate(props.resource.createdAt)}</dd>
         <dt>修改</dt><dd>{formatResourceDate(props.resource.updatedAt)}</dd>
         {props.resource.revision ? <><dt>修订</dt><dd>{props.resource.revision}</dd></> : null}
@@ -1490,6 +1575,15 @@ function ResourceInspector(props: {
             }}
           />
         </>
+      ) : null}
+      {props.resource.type === "project" ? (
+        <ProjectWorkflowGroupEditor
+          client={props.client}
+          resource={props.resource}
+          readOnly={props.readOnly}
+          onChanged={props.onWorkflowGroupsChanged}
+          onError={props.onError}
+        />
       ) : null}
       {/* 权限矩阵由独立组件管理，资源详情不再维护第二套请求和账号行状态。 */}
       <ResourcePermissionEditor

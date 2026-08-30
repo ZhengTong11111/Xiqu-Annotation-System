@@ -60,6 +60,7 @@ import type {
   PlatformUser,
   PlatformMaintenanceStatus,
   PermissionManagementProjectPage,
+  ProjectWorkflowGroups,
   AnnotationMediaAnalysisStatus,
   MediaAnalysisRun,
   MediaAnalysisAssetList,
@@ -84,6 +85,8 @@ import type {
   UpdateResourceInheritanceRequest,
   UpdateResourceRequest,
   UpdateAnnotationMediaRequest,
+  UpdateAnnotationWorkflowStatusRequest,
+  UpdateProjectWorkflowGroupsRequest,
   UpdateAnnotationAudioPreferenceRequest,
   UpdateMediaAudioTrackRequest,
   ReorderMediaAudioTracksRequest,
@@ -244,6 +247,41 @@ export class PlatformClient {
       method: "PATCH",
       body: request,
     });
+  }
+
+  updateAnnotationWorkflowStatus(
+    resourceId: string,
+    request: UpdateAnnotationWorkflowStatusRequest,
+  ) {
+    return this.request<ResourceEntry>(
+      `/annotation-files/${resourceId}/workflow-status`,
+      { method: "PATCH", body: request },
+    );
+  }
+
+  getProjectWorkflowGroups(resourceId: string) {
+    return this.request<ProjectWorkflowGroups>(
+      `/projects/${resourceId}/workflow-groups`,
+    );
+  }
+
+  listProjectWorkflowCandidates(resourceId: string, query?: string) {
+    const params = new URLSearchParams();
+    if (query) params.set("query", query);
+    const suffix = params.size ? `?${params}` : "";
+    return this.request<PlatformUser[]>(
+      `/projects/${resourceId}/workflow-group-candidates${suffix}`,
+    );
+  }
+
+  updateProjectWorkflowGroups(
+    resourceId: string,
+    request: UpdateProjectWorkflowGroupsRequest,
+  ) {
+    return this.request<ProjectWorkflowGroups>(
+      `/projects/${resourceId}/workflow-groups`,
+      { method: "PUT", body: request },
+    );
   }
 
   moveResource(resourceId: string, request: MoveResourceRequest) {

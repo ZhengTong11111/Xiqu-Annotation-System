@@ -3902,9 +3902,9 @@ select {
 .resource-list-header,
 .resource-list-row {
   display: grid;
-  grid-template-columns: minmax(240px, 2fr) minmax(100px, 0.7fr) minmax(130px, 1fr) minmax(120px, 0.8fr) 90px;
+  grid-template-columns: minmax(240px, 2fr) minmax(96px, 0.7fr) minmax(124px, 0.95fr) minmax(120px, 0.85fr) 88px 80px;
   align-items: center;
-  min-width: 760px;
+  min-width: 900px;
 }
 
 .resource-list-header {
@@ -4016,6 +4016,7 @@ select {
 }
 
 .resource-grid-item {
+  position: relative;
   display: grid;
   justify-items: center;
   gap: 7px;
@@ -4040,10 +4041,54 @@ select {
   white-space: nowrap;
 }
 
+/* 工作流状态使用低饱和文字和圆点，不把资源列表变成后台管理标签墙。 */
+.resource-workflow-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #a3454b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.resource-workflow-status::before {
+  width: 7px;
+  height: 7px;
+  background: currentColor;
+  border-radius: 50%;
+  content: "";
+}
+
+.resource-workflow-status.annotated {
+  color: #a26712;
+}
+
+.resource-workflow-status.reviewed {
+  color: #28724e;
+}
+
+.resource-workflow-status.compact {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 9px;
+  height: 9px;
+  overflow: visible;
+}
+
+.resource-workflow-status.compact::before {
+  width: 9px;
+  height: 9px;
+}
+
+.resource-workflow-empty {
+  color: #9aa4b2;
+}
+
 /* 三种资源视图共用的虚拟占位层只管理几何位置，交互仍由内部 ResourceItem 注册。 */
 .resource-virtual-spacer {
   position: relative;
-  min-width: 760px;
+  min-width: 900px;
 }
 
 .resource-virtual-row {
@@ -5291,7 +5336,8 @@ select {
   box-shadow: 0 10px 30px rgb(22 33 48 / 20%);
 }
 
-.resource-context-menu [role="menuitem"] {
+.resource-context-menu [role="menuitem"],
+.resource-context-menu [role="menuitemradio"] {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -5301,12 +5347,25 @@ select {
   outline: 0;
 }
 
-.resource-context-menu [role="menuitem"][data-highlighted] {
+.resource-context-subtrigger-arrow {
+  margin-left: auto;
+}
+
+.resource-context-radio-indicator {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+}
+
+.resource-context-menu [role="menuitem"][data-highlighted],
+.resource-context-menu [role="menuitemradio"][data-highlighted] {
   color: #fff;
   background: #2d70b4;
 }
 
-.resource-context-menu [role="menuitem"][data-disabled] {
+.resource-context-menu [role="menuitem"][data-disabled],
+.resource-context-menu [role="menuitemradio"][data-disabled] {
   opacity: 0.38;
 }
 
@@ -5318,6 +5377,178 @@ select {
   height: 1px;
   margin: 4px;
   background: #dde3eb;
+}
+
+/* 项目职责组是 Inspector 内的低频治理工具，滚动区独立于后续详细 ACL。 */
+.project-workflow-groups {
+  margin: 14px 0;
+  padding-top: 13px;
+  border-top: 1px solid #d3dae4;
+}
+
+.project-workflow-groups .resource-inspector-section-heading {
+  margin-top: 0;
+}
+
+.project-workflow-groups .resource-inspector-section-heading strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.project-workflow-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  margin: 8px 0;
+  padding: 0 8px;
+  color: #728096;
+  background: #fff;
+  border: 1px solid #cbd4e0;
+  border-radius: 5px;
+}
+
+.project-workflow-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+}
+
+.project-workflow-member-header,
+.project-workflow-member-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px 42px;
+  align-items: center;
+}
+
+.project-workflow-member-header {
+  min-height: 25px;
+  color: #8490a1;
+  border-bottom: 1px solid #dbe1e9;
+  font-size: 11px;
+}
+
+.project-workflow-member-header span:not(:first-child),
+.project-workflow-member-row > input {
+  justify-self: center;
+}
+
+.project-workflow-member-list {
+  max-height: 230px;
+  overflow: auto;
+  border-bottom: 1px solid #dbe1e9;
+}
+
+.project-workflow-member-list > p {
+  margin: 0;
+  padding: 12px 4px;
+  color: #8390a2;
+  font-size: 12px;
+}
+
+.project-workflow-member-row {
+  min-height: 38px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.project-workflow-member-row > span {
+  display: grid;
+  min-width: 0;
+}
+
+.project-workflow-member-row strong,
+.project-workflow-member-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-workflow-member-row strong {
+  color: #435168;
+  font-size: 12px;
+}
+
+.project-workflow-member-row small {
+  color: #8a95a5;
+  font-size: 10px;
+}
+
+.project-workflow-save {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 31px;
+  margin-top: 9px;
+  color: #fff;
+  background: #2c6da8;
+  border: 1px solid #2c6da8;
+  border-radius: 5px;
+}
+
+.project-workflow-save:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.resource-workflow-dialog {
+  position: fixed;
+  z-index: 12003;
+  top: 50%;
+  left: 50%;
+  width: min(440px, calc(100vw - 32px));
+  padding: 18px;
+  color: #29384d;
+  background: #fff;
+  border: 1px solid #c5cfdb;
+  border-radius: 8px;
+  box-shadow: 0 24px 64px rgb(16 27 42 / 28%);
+  outline: none;
+  transform: translate(-50%, -50%);
+}
+
+.resource-workflow-dialog h2,
+.resource-workflow-dialog p {
+  margin: 0;
+}
+
+.resource-workflow-dialog h2 {
+  font-size: 16px;
+}
+
+.resource-workflow-dialog p {
+  margin-top: 9px;
+  color: #66758a;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+/* 状态写入错误留在确认窗口内，避免与正文同步状态混为同一种故障。 */
+.resource-workflow-dialog p.resource-dialog-error {
+  color: #b53a3a;
+}
+
+.platform-confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.platform-confirm-dialog-actions button {
+  min-width: 78px;
+  height: 30px;
+  border: 1px solid #c6d0dc;
+  border-radius: 5px;
+}
+
+.platform-confirm-dialog-actions button.primary {
+  color: #fff;
+  background: #2c6da8;
+  border-color: #2c6da8;
 }
 
 /* 移动选择器使用与资源管理器一致的轻量桌面对话框，目录列表独立滚动。 */

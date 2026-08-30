@@ -53,6 +53,19 @@ enum ResourceCapability {
   manage_permissions
 }
 
+// 文件工作流只描述平台治理阶段，不进入标注 payload 或 annotation revision。
+enum AnnotationWorkflowStatus {
+  unannotated
+  annotated
+  reviewed
+}
+
+// 项目职责组表达人员分工，不替代逐资源 ACL。
+enum ProjectWorkflowGroup {
+  annotation
+  review
+}
+
 enum ProcessingJobType {
   pitch_extraction
   spectrogram_generation
@@ -118,6 +131,8 @@ enum AuditAction {
   resource_restore
   resource_delete
   annotation_file_save
+  annotation_workflow_status_update
+  project_workflow_groups_update
   annotation_client_sync_failure
   annotation_mutation_lease_acquire
   annotation_mutation_lease_renew
@@ -197,6 +212,9 @@ model User {
   grantedResourcePermissions        ResourcePermission[]              @relation("PermissionGrantor")
   resourceStates                    ResourceUserState[]
   editedAnnotationFiles             AnnotationFile[]                  @relation("AnnotationLastEditor")
+  updatedAnnotationWorkflows        AnnotationFile[]                  @relation("AnnotationWorkflowUpdater")
+  projectWorkflowMemberships        ProjectWorkflowMember[]           @relation("ProjectWorkflowMemberUser")
+  assignedProjectWorkflowMembers    ProjectWorkflowMember[]           @relation("ProjectWorkflowMemberAssigner")
   recoverySnapshots                 AnnotationRecoverySnapshot[]      @relation("RecoverySnapshotCreator")
   createdConfirmations              AnnotationConfirmation[]          @relation("AnnotationConfirmationCreator")
   revokedConfirmations              AnnotationConfirmation[]          @relation("AnnotationConfirmationRevoker")
@@ -278,17 +296,18 @@ model ResourceEntry {
   createdAt                  DateTime     @default(now()) @map("created_at")
   updatedAt                  DateTime     @updatedAt @map("updated_at")
 
-  parent                ResourceEntry?         @relation("ResourceTree", fields: [parentId], references: [id], onDelete: Cascade)
-  children              ResourceEntry[]        @relation("ResourceTree")
-  owner                 User                   @relation("ResourceOwner", fields: [ownerUserId], references: [id])
-  projectMetadata       ProjectMetadata?
-  annotationFile        AnnotationFile?
-  mediaFile             MediaFile?
-  permissions           ResourcePermission[]
-  userStates            ResourceUserState[]
-  processingJobs        ProcessingJob[]
-  processingJobRequests ProcessingJobRequest[]
-  auditLogs             AuditLog[]
+  parent                 ResourceEntry?          @relation("ResourceTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children               ResourceEntry[]         @relation("ResourceTree")
+  owner                  User                    @relation("ResourceOwner", fields: [ownerUserId], references: [id])
+  projectMetadata        ProjectMetadata?
+  projectWorkflowMembers ProjectWorkflowMember[]
+  annotationFile         AnnotationFile?
+  mediaFile              MediaFile?
+  permissions            ResourcePermission[]
+  userStates             ResourceUserState[]
+  processingJobs         ProcessingJob[]
+  processingJobRequests  ProcessingJobRequest[]
+  auditLogs              AuditLog[]
 
   @@index([parentId, type])
   @@index([parentId, trashedAt, archivedAt, name, id], map: "resource_entries_directory_name_idx")
@@ -307,18 +326,41 @@ model ProjectMetadata {
   @@map("project_metadata")
 }
 
+// 项目职责组成员关系是独立的有效权限来源；手工 ResourcePermission 始终单独保存、单独撤销。
+model ProjectWorkflowMember {
+  id                String               @id @default(uuid())
+  projectResourceId String               @map("project_resource_id")
+  userId            String               @map("user_id")
+  group             ProjectWorkflowGroup
+  createdBy         String               @map("created_by")
+  createdAt         DateTime             @default(now()) @map("created_at")
+
+  project  ResourceEntry @relation(fields: [projectResourceId], references: [id], onDelete: Cascade)
+  user     User          @relation("ProjectWorkflowMemberUser", fields: [userId], references: [id], onDelete: Cascade)
+  assigner User          @relation("ProjectWorkflowMemberAssigner", fields: [createdBy], references: [id])
+
+  @@unique([projectResourceId, userId, group])
+  @@index([projectResourceId, group])
+  @@index([userId, group])
+  @@map("project_workflow_members")
+}
+
 model AnnotationFile {
-  resourceId            String   @id @map("resource_id")
+  resourceId            String                   @id @map("resource_id")
   payload               Json
-  revision              Int      @default(1)
-  mediaResourceId       String?  @map("media_resource_id")
-  lastEditedBy          String   @map("last_edited_by")
-  lastSavedAt           DateTime @default(now()) @map("last_saved_at")
-  lastOperationSequence Int      @default(0) @map("last_operation_sequence")
+  revision              Int                      @default(1)
+  mediaResourceId       String?                  @map("media_resource_id")
+  lastEditedBy          String                   @map("last_edited_by")
+  lastSavedAt           DateTime                 @default(now()) @map("last_saved_at")
+  lastOperationSequence Int                      @default(0) @map("last_operation_sequence")
+  workflowStatus        AnnotationWorkflowStatus @default(unannotated) @map("workflow_status")
+  workflowUpdatedAt     DateTime?                @map("workflow_updated_at")
+  workflowUpdatedBy     String?                  @map("workflow_updated_by")
 
   resource               ResourceEntry                     @relation(fields: [resourceId], references: [id], onDelete: Cascade)
   mediaResource          MediaFile?                        @relation("AnnotationMediaResource", fields: [mediaResourceId], references: [resourceId], onDelete: SetNull)
   lastEditor             User                              @relation("AnnotationLastEditor", fields: [lastEditedBy], references: [id])
+  workflowUpdater        User?                             @relation("AnnotationWorkflowUpdater", fields: [workflowUpdatedBy], references: [id], onDelete: SetNull)
   recoverySnapshots      AnnotationRecoverySnapshot[]
   confirmations          AnnotationConfirmation[]
   rangeComments          AnnotationRangeComment[]
@@ -330,6 +372,8 @@ model AnnotationFile {
 
   @@index([mediaResourceId])
   @@index([lastEditedBy])
+  @@index([workflowStatus])
+  @@index([workflowUpdatedBy])
   @@map("annotation_files")
 }
 

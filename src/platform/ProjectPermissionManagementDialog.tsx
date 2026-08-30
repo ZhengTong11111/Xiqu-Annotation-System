@@ -28,6 +28,7 @@ import {
   getProjectSimplePermissionMatch,
   getProjectPermissionResidualAccess,
 } from "./projectPermissionManagement";
+import { describeSupplementalPermissionSources } from "./resourcePermissionSources";
 import {
   RESOURCE_CAPABILITY_LABELS,
   type ResourceSimplePermissionSelection,
@@ -722,7 +723,9 @@ function formatPermissionSource(row: ResourcePermissionMatrixRow) {
   if (row.directPermission) return "当前项目直接授权";
   if (row.effectivePermission.source === "role") return "教师角色自动查看";
   if (row.effectivePermission.inheritedFrom.length > 0) {
-    return `继承自：${row.effectivePermission.inheritedFrom.map(({ resourceName }) => resourceName).join("、")}`;
+    return describeSupplementalPermissionSources(
+      row.effectivePermission.inheritedFrom,
+    ) ?? "继承权限";
   }
   return "没有直接、角色或继承来源";
 }

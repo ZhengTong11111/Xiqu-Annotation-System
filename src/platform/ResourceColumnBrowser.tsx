@@ -1,7 +1,11 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useRef } from "react";
 import type { MouseEvent } from "react";
-import type { ResourceEntry, ResourceListView } from "@xiqu/shared";
+import type {
+  AnnotationWorkflowStatus,
+  ResourceEntry,
+  ResourceListView,
+} from "@xiqu/shared";
 import { getColumnPathSelection } from "./resourceColumnModel";
 import { ResourceItem } from "./ResourceItem";
 import type { LoadedResourceColumn } from "./useResourceColumns";
@@ -24,6 +28,10 @@ export function ResourceColumnBrowser(props: {
   onCopy: (resource: ResourceEntry) => void;
   onMove: (resource: ResourceEntry) => void;
   onDownload: (resource: ResourceEntry) => void;
+  onRequestWorkflowStatus: (
+    resource: ResourceEntry,
+    status: AnnotationWorkflowStatus,
+  ) => void;
   onRestore: (resource: ResourceEntry) => void;
   onTrash: (resource: ResourceEntry) => void;
   onCompare: (resource: ResourceEntry) => void;
@@ -178,6 +186,7 @@ function VirtualColumnItems(props: Parameters<typeof ResourceColumnBrowser>[0] &
                 onCopy={props.onCopy}
                 onMove={props.onMove}
                 onDownload={props.onDownload}
+                onRequestWorkflowStatus={props.onRequestWorkflowStatus}
                 onRestore={props.onRestore}
                 onTrash={props.onTrash}
                 onCompare={props.onCompare}

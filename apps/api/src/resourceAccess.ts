@@ -5,9 +5,11 @@ import {
 } from "@prisma/client";
 import {
   getAutomaticResourceCapabilities,
+  getProjectWorkflowGroupCapabilities,
   hasFullPlatformResourceAccess,
   RESOURCE_CAPABILITIES,
   type EffectiveResourcePermission,
+  type ProjectWorkflowGroup,
   type ResourceCapability,
 } from "@xiqu/shared";
 import type { ApiUser } from "./domain.js";
@@ -121,11 +123,28 @@ export class ResourceAccessService {
         inheritToChildren: true,
       },
     });
+    // 职责组本身就是独立授权来源；这里只读取当前账号在祖先项目中的成员关系，不改写手工 ACL。
+    const workflowRows = await database.projectWorkflowMember.findMany({
+      where: {
+        projectResourceId: { in: chainResourceIds },
+        userId: user.id,
+      },
+      select: {
+        projectResourceId: true,
+        group: true,
+      },
+    });
     const permissionsByResourceId = new Map<string, typeof permissionRows>();
     for (const permission of permissionRows) {
       const rows = permissionsByResourceId.get(permission.resourceId) ?? [];
       rows.push(permission);
       permissionsByResourceId.set(permission.resourceId, rows);
+    }
+    const workflowGroupsByProjectId = new Map<string, ProjectWorkflowGroup[]>();
+    for (const membership of workflowRows) {
+      const groups = workflowGroupsByProjectId.get(membership.projectResourceId) ?? [];
+      groups.push(membership.group as ProjectWorkflowGroup);
+      workflowGroupsByProjectId.set(membership.projectResourceId, groups);
     }
     const resourceById = new Map(resources.map((resource) => [
       resource.id,
@@ -160,6 +179,21 @@ export class ResourceAccessService {
       const direct = target.permissions[0] ?? null;
       direct?.capabilities.forEach((capability) => capabilities.add(capability as ResourceCapability));
       const inheritedFrom: EffectiveResourcePermission["inheritedFrom"] = [];
+      // 当前项目和未被断继承的祖先项目都可贡献职责权限；每个来源单独保留，便于 UI 解释撤销边界。
+      for (const { resourceId } of targetChain) {
+        const sourceProject = resourceById.get(resourceId);
+        if (!sourceProject) continue;
+        for (const group of workflowGroupsByProjectId.get(resourceId) ?? []) {
+          const groupCapabilities = getProjectWorkflowGroupCapabilities(group);
+          groupCapabilities.forEach((capability) => capabilities.add(capability));
+          inheritedFrom.push({
+            resourceId,
+            resourceName: sourceProject.name,
+            capabilities: groupCapabilities,
+            responsibilityGroup: group,
+          });
+        }
+      }
       for (const { resourceId, depth } of targetChain) {
         if (depth === 0) continue;
         const ancestor = resourceById.get(resourceId);

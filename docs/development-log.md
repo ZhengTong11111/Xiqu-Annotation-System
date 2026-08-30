@@ -9427,3 +9427,138 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 维护状态最终由新 release 以 `platform.admin` 查询，结果为 `enabled: false`。本次部署已完成代码发布与只读健康核验；
   后续仍应按上一节计划观察 `same_revision_baseline_mismatch`、命令前置条件失败和结构租约最长持有时间，并以真实历史
   漂移草稿及两个账号完成人工协作验收。
+
+## 2026-08-30：R2.7 标注文件工作流状态与项目职责组
+
+### 数据合同与权限边界
+
+- 按滚动开发规范先在分支 `codex/resource-workflow-status-groups` 审查资源树、逐资源 ACL、三种资源视图、Inspector、
+  复制/移动/回收路径和账号目录，再重写本地 `CLAUDE_WORK.md` 并把有效设计写入总 roadmap；没有从截图直接堆叠一套
+  独立后台状态。
+- 新增 PostgreSQL `AnnotationWorkflowStatus`（`unannotated | annotated | reviewed`）及文件级状态、最近操作者和时间；
+  状态属于平台治理元数据，不进入 ProjectData、annotation revision、operation、浏览器草稿、undo/history 或 JSON。
+  共享 `getAnnotationWorkflowTransition()` 是前后端唯一相邻转换合同：完成/撤回标注要求有效 `write`，完成/撤回审核要求
+  有效 `review`，跨级转换稳定返回 409。服务端在资源树 shared lock、资源行锁和 annotation 行锁内复核活动状态、ACL 与
+  `expectedStatus`，避免陈旧右键菜单覆盖后来结论；成功写审计并只更新资源修改时间。
+- 新增 `ProjectWorkflowMember` 保存项目标注组和审核组。完整集合替换在同一事务内验证项目、真实
+  `manage_permissions`、账号存在性和停用账号新增规则；一个账号可同时进入两组。职责组不创建、不删除也不扩大任何
+  read/write/review ACL，资源 owner 仍是权限与 Inspector 中的真实所有者。
+- 项目工作流状态不另存表字段，而是在资源批次映射时用一个 recursive CTE 从活动子树派生最高阶段：存在已审核文件则
+  为已审核，否则存在已标注文件则为已标注，否则未标注。归档/回收的中间节点会截断该子树；移动和恢复后无需维护容易
+  漂移的缓存。列表只批量返回标注组负责人摘要，完整标注/审核组只向项目管理者按需读取。
+
+### 资源管理器与复制语义
+
+- list 模式增加稳定“状态”列，项目“负责人”改为标注组摘要；非项目资源继续显示 owner。grid 使用紧凑状态圆点，
+  column 保持原有轻量导航。标注文件右键菜单增加 radio 状态子菜单：权限不足项禁用，跨级操作打开解释弹窗，有效转换
+  使用 Radix AlertDialog 二次确认并防止重复提交。
+- 项目 Inspector 新增可搜索的标注组/审核组编辑器，复用既有账号目录和 `PlatformClient`，已选成员即使不匹配当前搜索
+  仍可见；两组一次原子保存。新增 CSS 延续现有浅灰、细分割线和低饱和红/黄/绿状态表达，没有引入新的卡片体系或依赖。
+- 复制实现经审查无需增加第二套字段复制逻辑：复制计划本来只读取正文/媒体/项目说明，新 annotation 行因此使用数据库
+  默认未标注，新项目不创建职责组。新增集成测试固定该语义，防止未来把治理结论或分工误当普通资源元数据复制。
+
+### 自审、验证与剩余验收
+
+- 清理了重复前后端状态判断，服务端与 JSX 均复用 shared 状态机；修正列表旧“五列”注释并为递归汇总、行锁、职责组
+  替换和 UI 搜索保留准确中文说明。维护路由清单确认新增 PATCH/PUT 按默认 fail-closed 规则属于 write，GET 组别查询为
+  read；没有新增维护例外、依赖、ProjectData migration、协作事件或僵尸兼容分支。
+- `npm run test:annotation-workflow` 4/4，通过权限/顺序/陈旧状态、正文 revision 不变、递归项目汇总、非法账号数组、
+  跨项目移动、回收/恢复、复制重置、职责组不复制及审计。`test:maintenance` 13/13、资源分页 5/5、权限预设 8/8、
+  项目权限管理 7/7、审计 7/7 均通过；`npm run test:api` 259/259、完整 `npm run build` 与 `git diff --check`
+  通过，仅保留既有 Vite 主 chunk 超过 500 kB 提示。
+- 本地 public schema 已通过正式 migration 应用第 32 条迁移，API 与 Vite 仅为本轮验收临时启动。内置浏览器未携带已登录
+  平台会话，因此只确认登录页正常加载，没有输入或绕过账号凭据；真实管理员/编辑者/审核者三账号右键状态、弹窗、
+  负责人列和职责组搜索保存仍列为人工 UI 验收项。
+- **已完成**：R2.7 代码、数据库 migration、专项/完整 API 回归、生产构建、自审和文档闭环。
+- **待推进**：用户人工 UI 验收后再决定是否合并和部署；本轮没有连接、维护、迁移或切换生产服务器。
+
+## 2026-08-30：R2.7 编辑器文件菜单补齐状态与恢复备份入口
+
+### 菜单职责与共享确认边界
+
+- 根据用户验收反馈，在平台标注文件编辑器的“文件”菜单增加“标注状态”分组，显示未标注、已标注、已审核
+  三个互斥状态。当前状态以勾选态显示；缺少转换所需 `write`/`review` 的选项禁用；跨级转换仍可打开解释窗口，
+  但不会向服务端发送请求。只有平台文件会话显示该分组，本地标注工具不制造虚假的平台治理状态。
+- 没有在 `App.tsx` 复制资源管理器的弹窗实现。原 `ResourceExplorer.tsx` 内部 AlertDialog 已提取为共享
+  `AnnotationWorkflowStatusDialog`，两个入口共用相同 prompt、跨级说明、pending 门禁和确认文案；转换资格继续
+  来自 `src/platform/annotationWorkflow.ts` 与 shared 相邻状态机。提取后删除旧局部组件、Radix import 和资源对象
+  耦合，未保留僵尸确认分支。
+- `PlatformEditorSession` 只新增 workflow status 元数据与成功后的会话同步回调。编辑器使用 `expectedStatus`
+  提交现有 PATCH API，成功后同步菜单与 Workspace；409 或其他错误保留在状态确认窗口中，不冒充正文保存/协作失败。
+  状态写入仍不进入 ProjectData、正文 revision、operation、草稿或 undo/history。
+
+### 恢复备份入口迁移
+
+- 将“保存失败时创建恢复备份”、3/5/10 次失败阈值和当前失败周期计数从“视图”菜单完整迁移到“文件”菜单。
+  原 `usePlatformRecoveryBackup`、per-account preference、失败周期、幂等请求和服务器备份逻辑均未改动；搜索确认
+  这些控件在 `TopMenuBar` 中只有一个实现，视图菜单只保留波形、频谱、标注审核面板和板眼等显示控制。
+- 新增错误文案样式只服务共享状态确认窗口，并用中文注释说明其与正文同步错误的语义隔离。本轮没有新增依赖、
+  数据库 migration、ProjectData 版本、API 路由或兼容分支。
+
+### 验证与阶段状态
+
+- `npm run test:annotation-workflow` 4/4 通过，继续覆盖相邻顺序、能力门禁、陈旧状态、项目递归汇总和职责组。
+- `npm run test:platform-recovery-backup` 5/5 通过，确认本轮 JSX 迁移没有改变失败周期、离线补建、维护阻断和
+  幂等 payload 语义。
+- 完整 `npm run build` 通过 Prisma Client/schema、shared、document-model、Web 和 API；仅保留既有 Vite 主 chunk
+  超过 500 kB 提示。`git diff --check` 通过。
+- **已完成**：共享确认组件、编辑器文件菜单状态入口、会话状态同步、恢复备份菜单迁移、僵尸代码清理、专项测试、
+  完整构建和文档更新。
+- **待人工验收**：分别用只有编辑权限、只有审核权限和二者皆有的账号验证菜单禁用/跨级说明/成功回写，并确认
+  窄高度窗口中的文件菜单可完整操作。本轮未连接、迁移或部署生产服务器。
+
+## 2026-08-30：R2.7 项目职责组来源授权与账号搜索修复
+
+### 来源授权设计
+
+- 没有采用“保存职责组时顺手 upsert/delete 一行 ACL”的实现。`ProjectWorkflowMember` 成员关系本身成为独立的
+  有效权限来源，由 shared `getProjectWorkflowGroupCapabilities()` 统一定义：标注组贡献
+  `read + write + create_child + copy + move + delete + download`，审核组贡献 `read + review + download`。
+  两组都不包含 `manage_permissions`，审核组也不隐式获得编辑和文件操作能力。
+- `ResourceAccessService` 在既有资源祖先链上合并职责来源、手工 direct/inherited ACL、角色、owner 与 admin。
+  职责权限遵守 `breakPermissionInheritance`，同一账号属于两组时取能力并集；移出一组只消失该组贡献，另一组和
+  手工 ACL 均不变。有效权限 DTO 对职责来源保留 group 标记，详细权限面板和项目权限面板可明确显示“标注组 / 审核组”，
+  不把它误写成直接授权或普通祖先 ACL。
+- 普通 `manage_permissions` 操作者新增职责成员时仍受委派门禁，不能借职责组发放自己没有的能力；全局资源管理员
+  和 owner 继续拥有原有完整边界。职责组集合替换、审计和复制不继承规则保持原实现，没有新增数据库表、migration、
+  合成 ACL 或清理脚本；Prisma schema 只修正模型注释以反映当前来源语义。
+
+### 搜索与界面同步
+
+- 新增项目上下文候选接口 `GET /projects/:id/workflow-group-candidates`。接口先复核目标项目有效
+  `manage_permissions` 和活动状态，再按姓名/账号进行大小写不敏感 contains，最多返回 200 个活动账号。因此普通
+  annotator 只要是项目 owner/权限管理员，也能管理该项目职责组，不再被通用 `/users` 的教师/管理员角色门禁误挡。
+- 前端搜索缓存本轮已见账号引用，防止尚未保存的勾选因下一次响应替换数组而消失；实际列表始终按当前关键词过滤，
+  不再无条件把所有既有成员混入搜索结果。清空关键词后可重新看见并移除全部已选成员。保存职责组后同时刷新项目
+  负责人摘要与权限矩阵，立即显示新的有效来源。
+- 抽取 `projectWorkflowCandidates.ts` 和 `resourcePermissionSources.ts` 两个纯 helper，组件不再内联累积、过滤或来源
+  拼接算法；旧的 `listDirectoryUsers()` 职责组调用和“职责组不会授权”的过时文案已经删除。没有增加第三方依赖。
+
+### 验证与阶段状态
+
+- `npm run test:annotation-workflow` 9/9 通过，覆盖两组 capability 合同、两组并集、逐组撤销、手工 ACL 保留、继承
+  断点、项目 owner 上下文搜索、非全权管理员委派阻断、查询过滤和账号批次缓存。
+- `npm run test:permissions` 5/5、`npm run test:project-permission-management` 7/7 通过。
+- 完整 `npm run test:api` 259/259 通过；完整 `npm run build` 通过 Prisma Client/schema、shared、document-model、
+  Web 和 API，仅保留既有 Vite 主 chunk 超过 500 kB 提示。`git diff --check` 通过。
+- **已完成**：职责组来源授权、精确撤销、手工权限隔离、继承断点、委派门禁、项目上下文搜索、前端搜索状态、
+  权限来源说明、Inspector 刷新、专项/完整回归和文档更新。
+- **待人工验收**：在项目 Inspector 中搜索中文姓名与账号，分别加入/移出标注组和审核组，并在权限矩阵及子文件
+  实际操作中确认来源变化。本轮未连接或部署生产服务器。
+
+## 2026-08-30：资源列表负责人 / 创建人语义修正
+
+### 显示规则
+
+- 项目行继续显示人工维护的标注组负责人，不改动项目职责组、资源 owner 或权限计算。
+- 项目内部的文件与文件夹改用“创建人”语义，显示既有资源 owner；Inspector 对非项目资源也同步显示“创建人”，
+  避免列表和详情使用两套称谓。
+- 最近打开、收藏和搜索结果可能同时包含项目与文件，混合列表使用“负责人 / 创建人”表头；纯项目列表显示
+  “负责人”，纯文件列表显示“创建人”。该判断集中在纯展示 helper 中，没有散落到各资源视图。
+
+### 范围与验证
+
+- 本轮仅调整前端展示与测试，不修改数据库字段、资源所有权、职责组授权、API DTO 或迁移。
+- 增加表头三种组合的单元断言，并运行标注工作流专项测试、完整前端构建和 `git diff --check`。
+- **已完成**：列表、网格账号文本与 Inspector 称谓统一，旧的误导性 helper 命名已清理。
+- **待人工验收**：分别打开“所有项目”、某个项目内部及混合搜索结果，确认三个表头及账号内容符合上述规则。
