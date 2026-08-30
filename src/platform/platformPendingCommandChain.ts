@@ -119,7 +119,9 @@ export function auditPendingAnnotationCommandChain(
     if (applied.status !== "applied") {
       return {
         ...invalid("command_precondition_failed", operation, operationIndex),
-        issues: "issues" in applied ? applied.issues : applied.status,
+        // 保留失败 adapter 的结构化结果，诊断端才能区分事务 childIndex 与具体 before 不匹配。
+        // 这里只包含命令执行事实，不包含完整项目；完整 envelope 已由 pending operation 单独有界记录。
+        issues: sanitizeCommandApplyFailure(applied),
       };
     }
     auditProject = applied.project;
@@ -149,6 +151,22 @@ export function auditPendingAnnotationCommandChain(
     operations: auditedOperations,
     capturedProject,
   };
+}
+
+function sanitizeCommandApplyFailure(
+  result: Exclude<ReturnType<typeof applyAnnotationCommandToProject>, { status: "applied" }>,
+) {
+  if (result.status === "blocked") {
+    const failure: { status: "blocked"; childIndex?: number; issues?: unknown } = {
+      status: result.status,
+    };
+    if ("childIndex" in result && typeof result.childIndex === "number") {
+      failure.childIndex = result.childIndex;
+    }
+    if ("issues" in result) failure.issues = result.issues;
+    return failure;
+  }
+  return { status: result.status };
 }
 
 // 从命令重放结果和真实编辑器状态中寻找最早的叶子差异，同时带上保存基线的同路径值。

@@ -3,6 +3,11 @@ import type { ChangeEvent, RefObject } from "react";
 import type { ProjectSyncStatus } from "../state/projectDocumentState";
 import type { PlatformCollaborationStatus } from "../platform/platformCollaborationRuntime";
 import type { AnnotationPresenceMember } from "@xiqu/shared";
+import type {
+  PlatformRecoveryBackupPreferences,
+  PlatformRecoveryBackupState,
+} from "../platform/platformRecoveryBackupRuntime";
+import { PLATFORM_RECOVERY_BACKUP_THRESHOLDS } from "../platform/platformRecoveryBackupRuntime";
 import { CollaborationPresenceMenu } from "./CollaborationPresenceMenu";
 import { CommandPalette } from "./CommandPalette";
 import type { CommandSearchEntry } from "./CommandPalette";
@@ -82,6 +87,9 @@ type TopMenuBarProps = {
   // Cmd/Ctrl + K 通过递增的 requestId 通知菜单栏打开搜索面板，不需要把 openMenu 状态提到 App。
   commandSearchOpenRequestId?: number;
   audioTrackSelector?: AudioTrackSelectorModel;
+  recoveryBackupPreferences?: PlatformRecoveryBackupPreferences;
+  recoveryBackupState?: PlatformRecoveryBackupState;
+  onRecoveryBackupPreferencesChange?: (preferences: PlatformRecoveryBackupPreferences) => void;
 };
 
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5];
@@ -149,6 +157,9 @@ export function TopMenuBar({
   commandSearchEntries,
   commandSearchOpenRequestId,
   audioTrackSelector,
+  recoveryBackupPreferences,
+  recoveryBackupState,
+  onRecoveryBackupPreferencesChange,
 }: TopMenuBarProps) {
   const [openMenu, setOpenMenu] = useState<OpenTopMenu | null>(null);
   const menuBarRef = useRef<HTMLElement>(null);
@@ -428,6 +439,45 @@ export function TopMenuBar({
                     >
                       {banyanGridVisible ? "✓ 全局板眼纵线" : "全局板眼纵线"}
                     </button>
+                    {recoveryBackupPreferences && onRecoveryBackupPreferencesChange ? (
+                      <>
+                        <div className="top-menu-divider" />
+                        <button
+                          type="button"
+                          className={`top-menu-dropdown-item ${recoveryBackupPreferences.enabled ? "active-option" : ""}`}
+                          onClick={() => onRecoveryBackupPreferencesChange({
+                            ...recoveryBackupPreferences,
+                            enabled: !recoveryBackupPreferences.enabled,
+                          })}
+                        >
+                          {recoveryBackupPreferences.enabled ? "✓ 保存失败时创建恢复备份" : "保存失败时创建恢复备份"}
+                        </button>
+                        {recoveryBackupPreferences.enabled ? (
+                          <>
+                            <div className="top-menu-label">连续失败触发次数</div>
+                            {PLATFORM_RECOVERY_BACKUP_THRESHOLDS.map((threshold) => (
+                              <button
+                                key={threshold}
+                                type="button"
+                                className={`top-menu-dropdown-item ${recoveryBackupPreferences.failureThreshold === threshold ? "active-option" : ""}`}
+                                onClick={() => onRecoveryBackupPreferencesChange({
+                                  ...recoveryBackupPreferences,
+                                  failureThreshold: threshold,
+                                })}
+                              >
+                                {recoveryBackupPreferences.failureThreshold === threshold ? "✓ " : ""}
+                                连续 {threshold} 次
+                              </button>
+                            ))}
+                          </>
+                        ) : null}
+                        {recoveryBackupState && recoveryBackupState.status !== "idle" ? (
+                          <div className="top-menu-note">
+                            当前失败周期已记录 {recoveryBackupState.failureCount} 次。
+                          </div>
+                        ) : null}
+                      </>
+                    ) : null}
                   </>
                 ) : null}
                 {item === "帮助" ? (

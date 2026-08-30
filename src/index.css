@@ -5577,6 +5577,28 @@ select {
   cursor: wait;
 }
 
+/* 恢复备份提示是源文件同步状态的补充，不使用“已保存”配色冒充源文件提交成功。 */
+.platform-recovery-backup-bar {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 16px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.12);
+  background: #fff7dc;
+  color: #684d00;
+  font-size: 12px;
+}
+
+.platform-recovery-backup-created {
+  background: #e9f7ef;
+  color: #17633a;
+}
+
+.platform-recovery-backup-error {
+  background: #fff0f0;
+  color: #a12828;
+}
+
 .annotation-comparison-groups {
   border-bottom: 1px solid #d9e0e9;
 }

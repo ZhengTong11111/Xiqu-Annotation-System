@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   invertAnnotationCommandEnvelope,
   parseAnnotationCommandEnvelope,
+  PROJECT_SNAPSHOT_BOUNDARY_COMMAND,
   type AnnotationCommandEnvelope,
   type AnnotationDomainCommand,
   type LegacyAnnotationOperationAction,
@@ -160,6 +161,13 @@ export type PendingCommandRebaseResult =
         | "operation_chain_changed"
         | "transient_edit_active"
         | "no_pending_operations";
+    };
+
+export type PendingCommandSnapshotCompactionResult =
+  | { status: "applied"; replacedOperationCount: number }
+  | {
+      status: "rejected";
+      reason: "invalid_boundary" | "no_pending_operations" | "transient_edit_active";
     };
 
 type RemoteProjectReplacementFacts = {
@@ -447,6 +455,65 @@ export function useProjectDocumentState({
     applyProjectState(nextProject);
   }
 
+  // 时间轴预览必须以“正式提交”或“显式取消”结束。取消只恢复本次预览开始前的项目，
+  // 不生成历史、operation 或 revision，避免未被命令表示的 ProjectData 混入后续协作保存。
+  function cancelTransientProjectEdit(): boolean {
+    const transientBaseProject = transientProjectRef.current;
+    if (!transientBaseProject) return false;
+    transientProjectRef.current = null;
+    if (!areProjectsEqualRef.current(projectRef.current, transientBaseProject)) {
+      applyProjectState(transientBaseProject);
+    } else {
+      syncDirtyState(transientBaseProject, trackSnapEnabledRef.current);
+    }
+    return true;
+  }
+
+  // 历史坏链只能在 App 已重新核对同 revision 权威服务器基线后压缩。
+  // 单一 snapshot boundary 保留“发生过受控修复”的审计事实，避免逐条补交数百条已不可重放的旧命令。
+  function compactPendingOperationsToSnapshotBoundary(
+    value: unknown,
+  ): PendingCommandSnapshotCompactionResult {
+    const envelope = parseAnnotationCommandEnvelope(value);
+    if (
+      !envelope ||
+      envelope.command.type !== PROJECT_SNAPSHOT_BOUNDARY_COMMAND ||
+      envelope.command.kind !== "collaboration_chain_repair"
+    ) {
+      return { status: "rejected", reason: "invalid_boundary" };
+    }
+    if (transientProjectRef.current !== null) {
+      return { status: "rejected", reason: "transient_edit_active" };
+    }
+    if (pendingOperationsRef.current.length === 0) {
+      return { status: "rejected", reason: "no_pending_operations" };
+    }
+
+    const replacedOperationIds = new Set(pendingOperationsRef.current.map((operation) => operation.id));
+    const replacement: ProjectDocumentOperation = {
+      id: createOperationId(),
+      type: envelope.command.type,
+      action: "edit",
+      baseRevision: savedRevisionRef.current,
+      // 压缩不制造新的用户编辑；沿用当前最新 local revision，使保存确认后基线一次追到现状。
+      localRevision: localRevisionRef.current,
+      createdAt: Date.now(),
+      syncState: "pending",
+      commandEnvelope: envelope,
+      summary: { hasProjectChange: true, hasTrackSnapChange: false },
+    };
+    const replacedOperationCount = pendingOperationsRef.current.length;
+    pendingOperationsRef.current = [replacement];
+    operationLogRef.current = [
+      ...operationLogRef.current.filter((operation) => !replacedOperationIds.has(operation.id)),
+      replacement,
+    ].slice(-operationLogLimit);
+    setPendingOperations(pendingOperationsRef.current);
+    setOperationLog(operationLogRef.current);
+    syncDirtyState(projectRef.current, trackSnapEnabledRef.current);
+    return { status: "applied", replacedOperationCount };
+  }
+
   function applyTrackSnapEnabledState(
     nextTrackSnapState: Record<string, boolean>,
     options: TrackSnapUpdateOptions = {},
@@ -732,14 +799,7 @@ export function useProjectDocumentState({
     if (readOnlyRef.current) {
       return false;
     }
-    if (transientProjectRef.current) {
-      const transientProject = transientProjectRef.current;
-      transientProjectRef.current = null;
-      if (!areProjectsEqual(projectRef.current, transientProject)) {
-        applyProjectState(transientProject);
-      }
-      return true;
-    }
+    if (cancelTransientProjectEdit()) return true;
     const currentUndoStack = undoStackRef.current;
     const previousEntry = currentUndoStack[currentUndoStack.length - 1];
     if (!previousEntry) {
@@ -849,6 +909,8 @@ export function useProjectDocumentState({
     transientProjectRef,
     applyProjectState,
     applyProjectWithoutHistory,
+    cancelTransientProjectEdit,
+    compactPendingOperationsToSnapshotBoundary,
     commitProject,
     applyTrackSnapEnabledState,
     markOperationsAsSubmitted,

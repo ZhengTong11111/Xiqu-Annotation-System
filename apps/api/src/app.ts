@@ -18,6 +18,7 @@ import { PrismaPlatformRepository } from "./repository.js";
 import { ResourceAccessService } from "./resourceAccess.js";
 import { ResourceService } from "./resourceService.js";
 import { registerApiRoutes } from "./router.js";
+import { AnnotationRecoveryBackupService } from "./annotationRecoveryBackupService.js";
 import type { ObjectStorage } from "./objectStorage.js";
 import { createObjectStorageFromEnvironment } from "./objectStorageFactory.js";
 import { MediaUploadService } from "./mediaUploadService.js";
@@ -137,6 +138,10 @@ export async function buildApiApp(
     options.aliyunVod ?? null,
     options.aliyunVodWebPlayerLicense ?? null,
     reviewEvents,
+  );
+  const annotationRecoveryBackups = new AnnotationRecoveryBackupService(
+    options.prisma,
+    access,
   );
   const mediaAnalysis = new MediaAnalysisJobService(options.prisma, access);
   const mediaAudioTracks = new MediaAudioTrackService(
@@ -279,6 +284,7 @@ export async function buildApiApp(
     accounts,
     auditLogs,
     resources,
+    annotationRecoveryBackups,
     mediaAnalysis,
     mediaAudioTracks,
     mediaAudioPlaybackSessions,

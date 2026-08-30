@@ -51,6 +51,10 @@ import {
 } from "../utils/sentenceClassification";
 import { resolveSentenceTimelineLabelDetail } from "../utils/sentenceTimelineLabel";
 import type { RemoteTimelineActivityView } from "../platform/remoteTimelineActivityRegistry";
+import {
+  isTimelineDragActivated,
+  TIMELINE_DRAG_ACTIVATION_PX,
+} from "../utils/timelineDragCompletion";
 
 type TimelineProps = {
   editingBlockedReason?: string;
@@ -171,6 +175,7 @@ type TimelineProps = {
   ) => void;
   onBatchMoveChange: (items: TimelineBatchMoveItem[]) => void;
   onBatchMoveCommit: (items: TimelineBatchMoveItem[]) => void;
+  onCancelTransientEdit: () => void;
   onCreateAction: (trackId: string, startTime: number, endTime: number) => void;
 };
 
@@ -301,7 +306,6 @@ const ZOOM_SETTLE_MS = 220;
 const ZOOM_MIN = 5;
 const ZOOM_MAX = 500;
 const ZOOM_STEP = 5;
-const DRAG_ACTIVATION_PX = 4;
 const EDGE_HIT_SLOP_PX = 8;
 const SELECTED_EDGE_HIT_SLOP_PX = 17;
 const LINKED_EDGE_HIT_RATIO = 0.55;
@@ -627,6 +631,7 @@ export function Timeline({
   onCustomBlockCommit,
   onBatchMoveChange,
   onBatchMoveCommit,
+  onCancelTransientEdit,
   onCreateAction,
 }: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1790,7 +1795,7 @@ export function Timeline({
         activeDragState.kind !== "create-track-item" &&
         activeDragState.kind !== "resize-linked" &&
         activeDragState.kind !== "select-box" &&
-        Math.abs(deltaPixels) < DRAG_ACTIVATION_PX
+        Math.abs(deltaPixels) < TIMELINE_DRAG_ACTIVATION_PX
       ) {
         return;
       }
@@ -2082,11 +2087,8 @@ export function Timeline({
       stopSelectBoxAutoScroll();
       clearPreviewFrame();
       setActiveSnapIndicator(null);
-      flushPendingDragUpdate();
       if (!activeDragState) {
-        lastResolvedDragUpdateRef.current = null;
-        lastPointerStepPxRef.current = 0;
-        setDragState(null);
+        cancelActiveTimelineDrag();
         return;
       }
       const finalPointerClientX =
@@ -2097,13 +2099,13 @@ export function Timeline({
           : lastPointerStepPxRef.current;
       if (
         "originX" in activeDragState &&
-        Math.abs(finalPointerClientX - activeDragState.originX) < DRAG_ACTIVATION_PX
+        !isTimelineDragActivated(activeDragState.originX, finalPointerClientX)
       ) {
-        lastResolvedDragUpdateRef.current = null;
-        lastPointerStepPxRef.current = 0;
-        setDragState(null);
+        // 较早的 animation frame 可能已经写入预览；短拖动必须恢复 transient base，而不只是清 UI。
+        cancelActiveTimelineDrag();
         return;
       }
+      flushPendingDragUpdate();
       const resolvedDragUpdate = lastResolvedDragUpdateRef.current;
       // 主路径：提交拖动过程中最后一次已经展示出来的结果。
       // fallback 重新计算只用于没有 pointermove 预览结果的边界情况，且必须沿用最后的 snapLock/pointerStep。
@@ -2349,11 +2351,20 @@ export function Timeline({
       setDraggedPointPreview(null);
     };
 
+    const handlePointerCancel = () => {
+      // 浏览器取消指针序列或窗口失焦时不会再可靠收到 pointerup，必须显式回滚预览。
+      cancelActiveTimelineDrag();
+    };
+
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerCancel);
+    window.addEventListener("blur", handlePointerCancel);
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerCancel);
+      window.removeEventListener("blur", handlePointerCancel);
     };
   }, [
     dragState,
@@ -2377,6 +2388,7 @@ export function Timeline({
     onCustomBlockCommit,
     onBatchMoveChange,
     onBatchMoveCommit,
+    onCancelTransientEdit,
     onCreateAction,
     onCreateCharacterAtTime,
     onCreateCustomBlock,
@@ -2668,7 +2680,7 @@ export function Timeline({
                     ? getMovedLoopRange(currentDrag.originalRange, currentDrag.originX, event.clientX)
                     : getResizedLoopRange(currentDrag.originalRange, currentDrag.mode, event.clientX);
                   setLoopRangeDraft(null);
-                  if (movedDistance < DRAG_ACTIVATION_PX && currentDrag.mode === "move") {
+                  if (movedDistance < TIMELINE_DRAG_ACTIVATION_PX && currentDrag.mode === "move") {
                     suppressLoopRangeClickUntilRef.current = performance.now() + CLICK_SUPPRESS_MS;
                     onLoopPlaybackEnabledChange(!loopPlaybackEnabled);
                     return;
@@ -4556,6 +4568,28 @@ export function Timeline({
     sliderZoomRef.current = null;
     zoomInteractionUntilRef.current = Date.now() + ZOOM_SETTLE_MS;
     markSpectrogramZoomPreview();
+  }
+
+  function discardPendingDragUpdate() {
+    if (dragFrameRef.current !== null) {
+      cancelAnimationFrame(dragFrameRef.current);
+      dragFrameRef.current = null;
+    }
+    pendingDragUpdateRef.current = null;
+    lastResolvedDragUpdateRef.current = null;
+  }
+
+  function cancelActiveTimelineDrag() {
+    // 所有取消入口共用这一清场路径，避免某类轨道只清视觉状态却遗留 ProjectData 预览。
+    discardPendingDragUpdate();
+    dragSnapLockRef.current = null;
+    lastPointerStepPxRef.current = 0;
+    stopSelectBoxAutoScroll();
+    clearPreviewFrame();
+    setActiveSnapIndicator(null);
+    setDraggedPointPreview(null);
+    setDragState(null);
+    onCancelTransientEdit();
   }
 
   function scheduleDragUpdate(update: PendingDragUpdate) {

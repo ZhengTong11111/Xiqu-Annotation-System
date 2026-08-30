@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mockProject } from "../mockData";
 import { buildProjectAnnotationContentCommand } from "../utils/annotationContentCommand";
-import { buildAnnotationClientSyncFailureReport } from "./platformSyncFailureDiagnostic";
+import {
+  buildAnnotationClientSyncFailureReport,
+  getSyncFailurePlannerFailure,
+} from "./platformSyncFailureDiagnostic";
 
 test("同步失败报告保留命令目标、UUID 和 before/after，但脱敏 URL 与凭据", () => {
   const next = structuredClone(mockProject);
@@ -94,4 +97,50 @@ test("租约错误码进入结构编辑锁分类并保留可诊断消息", () =>
   assert.equal(report.category, "mutation_lease");
   assert.equal(report.reason, "annotation_mutation_lease_required");
   assert.match(report.errorMessage, /结构性变更/);
+});
+
+test("命令前置条件失败保留 operation 位置与有界子命令问题", () => {
+  const plannerFailure = getSyncFailurePlannerFailure({
+    operationId: "op-precondition",
+    operationIndex: 0,
+    issues: {
+      status: "blocked",
+      childIndex: 1,
+      issues: [{ code: "before_mismatch", targetKey: "character:char-1" }],
+      mediaUrl: "https://example.invalid/private-audio.mp3",
+    },
+  });
+  const report = buildAnnotationClientSyncFailureReport({
+    clientRuntimeId: "runtime-precondition-test",
+    errorMessage: "本地命令链无法安全提交（command_precondition_failed）",
+    syncState: {
+      status: "error",
+      localRevision: 9,
+      savedRevision: 8,
+      remoteRevision: 80,
+      pendingOperationCount: 1,
+      lastChangedAt: null,
+      lastSavedAt: null,
+      lastSyncAttemptAt: null,
+      errorMessage: null,
+    },
+    appRemoteRevision: 80,
+    observedRemoteRevision: 80,
+    hasUnsavedChanges: true,
+    saveInFlight: false,
+    online: true,
+    pendingOperations: [],
+    plannerFailure,
+  });
+
+  assert.deepEqual(report.plannerFailure, {
+    operationId: "op-precondition",
+    operationIndex: 0,
+    issues: {
+      status: "blocked",
+      childIndex: 1,
+      issues: [{ code: "before_mismatch", targetKey: "character:char-1" }],
+      mediaUrl: "[REDACTED]",
+    },
+  });
 });

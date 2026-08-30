@@ -283,6 +283,10 @@ test("事务任一子命令前置条件失败时不泄漏前面步骤", () => {
   const snapshot = structuredClone(conflicted);
   const result = applyAnnotationTransactionCommandToProject(conflicted, envelope);
   assert.equal(result.status, "blocked");
+  if (result.status === "blocked") {
+    assert.equal(result.childIndex, 1);
+    assert.ok(Array.isArray(result.issues));
+  }
   assert.deepEqual(conflicted, snapshot);
 });
 

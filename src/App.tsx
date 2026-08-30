@@ -67,6 +67,8 @@ import { usePlatformCollaborationSession } from "./platform/usePlatformCollabora
 import { buildTimelineSelectionSummary } from "./platform/timelineSelectionSummary";
 import { useAnnotationReviews } from "./platform/useAnnotationReviews";
 import { usePlatformAutoSave } from "./platform/usePlatformAutoSave";
+import { usePlatformRecoveryBackup } from "./platform/usePlatformRecoveryBackup";
+import type { PlatformRecoveryBackupState } from "./platform/platformRecoveryBackupRuntime";
 import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
 import { preparePlatformEditorLeave } from "./platform/platformEditorLeaveRuntime";
 import { usePlatformEditorHistoryGuard } from "./platform/usePlatformEditorHistoryGuard";
@@ -85,6 +87,7 @@ import {
   buildAnnotationClientSyncFailureReport,
   getSyncFailureMismatchFields,
   getSyncFailureMismatchDetails,
+  getSyncFailurePlannerFailure,
 } from "./platform/platformSyncFailureDiagnostic";
 import {
   isMutationLeaseSubmitFailure,
@@ -586,6 +589,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     syncState,
     transientProjectRef,
     applyProjectWithoutHistory,
+    cancelTransientProjectEdit,
+    compactPendingOperationsToSnapshotBoundary,
     commitProject,
     applyTrackSnapEnabledState,
     markOperationsAsSubmitted,
@@ -617,8 +622,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   );
   const remoteBaseRevisionRef = useRef(remoteBaseRevision);
   const remoteOperationCursorRef = useRef(remoteOperationCursor);
+  const observedRemoteRevisionRef = useRef(observedRemoteRevision);
   remoteBaseRevisionRef.current = remoteBaseRevision;
   remoteOperationCursorRef.current = remoteOperationCursor;
+  observedRemoteRevisionRef.current = observedRemoteRevision;
   const [saveConflictReviewBusy, setSaveConflictReviewBusy] = useState(false);
   const [saveConflictReviewError, setSaveConflictReviewError] = useState<string | null>(null);
   const [browserOnline, setBrowserOnline] = useState(
@@ -641,6 +648,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       window.removeEventListener("offline", update);
     };
   }, []);
+  const recoveryBackup = usePlatformRecoveryBackup({
+    session: editorSession,
+    online: browserOnline,
+    buildPayload: () => ({
+      sourceRevision: remoteBaseRevisionRef.current,
+      // 恢复备份与浏览器草稿共用持久化净化边界，运行时媒体 URL 不得进入服务器副本。
+      payload: prepareProjectForServer(
+        getPersistableProjectData(getRecoveryState().currentProject),
+      ),
+    }),
+  });
   // 冲突解除后清理旧交接错误，下一次独立冲突不能显示上一次请求的诊断。
   useEffect(() => {
     if (syncState.status !== "conflict") {
@@ -998,6 +1016,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const syncFailureRuntimeIdRef = useRef(createRuntimeUuid());
   const syncFailureMismatchFieldsRef = useRef<string[]>([]);
   const syncFailureMismatchDetailsRef = useRef<ReturnType<typeof getSyncFailureMismatchDetails>>([]);
+  const syncFailurePlannerFailureRef = useRef<ReturnType<typeof getSyncFailurePlannerFailure> | null>(null);
   const lastReportedSyncFailureRef = useRef<string | null>(null);
   // acquire 需要等待网络；这一门禁串行化结构、批量导入和批量修复，避免连续点击重复提交。
   const exclusiveMutationInFlightRef = useRef(false);
@@ -1109,6 +1128,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         lastReportedSyncFailureRef.current = null;
         syncFailureMismatchFieldsRef.current = [];
         syncFailureMismatchDetailsRef.current = [];
+        syncFailurePlannerFailureRef.current = null;
       }
       return;
     }
@@ -1124,6 +1144,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       pendingOperations,
       mismatchFields: syncFailureMismatchFieldsRef.current,
       mismatchDetails: syncFailureMismatchDetailsRef.current,
+      plannerFailure: syncFailurePlannerFailureRef.current,
     });
     const signature = JSON.stringify({
       fileId: editorSession.annotationFileId,
@@ -6448,6 +6469,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   async function saveProjectToServer(options: {
     source: "manual" | "auto" | "navigation";
   } = { source: "manual" }): Promise<PlatformSaveOutcome> {
+    const outcome = await performProjectServerSave(options);
+    // 恢复备份只观察完整保存结果；它不参与源文件保存 single-flight，也不能伪造同步成功。
+    await recoveryBackup.recordSaveOutcome(outcome);
+    return outcome;
+  }
+
+  async function performProjectServerSave(options: {
+    source: "manual" | "auto" | "navigation";
+  } = { source: "manual" }): Promise<PlatformSaveOutcome> {
     const interactive = options.source === "manual";
     if (!editorSession) {
       if (interactive) window.alert("当前不是平台工作区。请从项目库打开工作区后再保存。");
@@ -6490,6 +6520,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     setServerSaveInFlight(true);
     syncFailureMismatchFieldsRef.current = [];
     syncFailureMismatchDetailsRef.current = [];
+    syncFailurePlannerFailureRef.current = null;
     setSyncStatus("saving");
     try {
       // 保存事务先冻结项目与 pending 链。网络等待期间产生的新编辑不会混入本次批次，
@@ -6550,6 +6581,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         if (planResult.status === "blocked") {
           syncFailureMismatchFieldsRef.current = getSyncFailureMismatchFields(planResult.issues);
           syncFailureMismatchDetailsRef.current = getSyncFailureMismatchDetails(planResult.issues);
+          syncFailurePlannerFailureRef.current = getSyncFailurePlannerFailure(planResult);
           if (planResult.reason === "local_chain_mismatch") {
             // 旧版本或历史失败恢复留下的本地命令链可能已经无法从 savedProject 重放到当前项目。
             // 继续把新操作追加到这条坏链只会让每次创建块都失败；这里转入一次完整快照恢复，
@@ -6561,6 +6593,13 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               mismatchFields: syncFailureMismatchFieldsRef.current,
             });
             return saveLegacyProjectSnapshot(editorSession, options.source, getRemainingRecoveryState());
+          }
+          if (planResult.reason === "command_precondition_failed") {
+            return repairInvalidPendingCommandChain(
+              editorSession,
+              options.source,
+              getRemainingRecoveryState(),
+            );
           }
           const message = `本地命令链无法安全提交（${planResult.reason}），请保留草稿并进入冲突检查。`;
           setSyncStatus("error", { errorMessage: message });
@@ -6722,7 +6761,50 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     return { status: "applied" };
   }
 
-  // 只有 planner 明确识别出的旧语义才能走完整快照；该兼容通道不能吞掉原子命令 precondition 错误。
+  // 旧 transient 泄漏产生的命令链不能逐条重放。只有服务器 revision 与权威 payload 都仍等于本地 saved
+  // baseline 时，才把整条坏链压缩成一个受 bulk_repair 租约保护的快照边界；任何远端前进继续进入冲突。
+  async function repairInvalidPendingCommandChain(
+    session: PlatformEditorSession,
+    source: "manual" | "auto" | "navigation",
+    recoveryState: ProjectDocumentRecoveryState,
+  ): Promise<PlatformSaveOutcome> {
+    const latestFile = await session.client.getAnnotationFile<ProjectData>(session.annotationFileId);
+    const latestServerProject = hydrateProjectForClient(latestFile.payload, session.client, latestFile.media);
+    const serverBaselineMatches = latestFile.revision === remoteBaseRevisionRef.current &&
+      latestFile.revision === observedRemoteRevisionRef.current &&
+      areProjectValuesEqual(
+        getPersistableProjectData(latestServerProject),
+        getPersistableProjectData(recoveryState.savedProject),
+      );
+    if (!serverBaselineMatches) {
+      const message = "服务器版本已变化，无法自动修复本地命令链。请进入冲突检查后决定保留内容。";
+      setSyncStatus("conflict", { errorMessage: message });
+      return { status: "conflict", retryable: false, message };
+    }
+
+    const boundary = buildProjectSnapshotBoundaryEnvelope(
+      createRuntimeUuid(),
+      "collaboration_chain_repair",
+    );
+    if (!boundary) {
+      const message = "无法建立协作命令链修复边界，请保留本地草稿。";
+      setSyncStatus("error", { errorMessage: message });
+      return { status: "error", retryable: false, message };
+    }
+    const compacted = compactPendingOperationsToSnapshotBoundary(boundary);
+    if (compacted.status !== "applied") {
+      const message = `协作命令链修复被拒绝（${compacted.reason}），请保留本地草稿。`;
+      setSyncStatus("error", { errorMessage: message });
+      return { status: "error", retryable: false, message };
+    }
+    console.warn("已将不可重放的本地命令链压缩为受控快照修复边界。", {
+      remoteRevision: latestFile.revision,
+      replacedOperationCount: compacted.replacedOperationCount,
+    });
+    return saveLegacyProjectSnapshot(session, source, getRecoveryState());
+  }
+
+  // 旧语义、显式 snapshot boundary 及经权威基线复核后的协作坏链共用这一完整快照保存通道。
   async function saveLegacyProjectSnapshot(
     session: PlatformEditorSession,
     source: "manual" | "auto" | "navigation",
@@ -7158,6 +7240,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         onCustomBlockCommit={(trackId, id, changes) => updateCustomBlock(trackId, id, changes, true)}
         onBatchMoveChange={(items) => updateTimelineSelectionBatch(items, false)}
         onBatchMoveCommit={(items) => updateTimelineSelectionBatch(items, true)}
+        onCancelTransientEdit={cancelTransientProjectEdit}
         onCreateAction={createAction}
         onCreateAttachedPoint={createAttachedPoint}
       />
@@ -7362,6 +7445,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             : undefined}
           commandSearchEntries={commandSearchEntries}
           commandSearchOpenRequestId={commandSearchOpenRequestId}
+          recoveryBackupPreferences={editorSession ? recoveryBackup.preferences : undefined}
+          recoveryBackupState={editorSession ? recoveryBackup.state : undefined}
+          onRecoveryBackupPreferencesChange={editorSession
+            ? recoveryBackup.setPreferences
+            : undefined}
         />
       )}
     >
@@ -7380,6 +7468,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           >
             {saveConflictReviewBusy ? "正在读取最新文件…" : "检查并处理冲突"}
           </button>
+        </section>
+      ) : null}
+      {editorSession && recoveryBackup.state.status !== "idle" && recoveryBackup.state.status !== "counting" ? (
+        <section
+          className={`platform-recovery-backup-bar platform-recovery-backup-${recoveryBackup.state.status}`}
+          role="status"
+        >
+          {getRecoveryBackupStatusMessage(recoveryBackup.state)}
         </section>
       ) : null}
       {editorSession ? (
@@ -10367,6 +10463,22 @@ function normalizeCharacterCreationRequest(startTime: number, explicitEndTime?: 
 
 function getDefaultTrackSnapEnabled(project: ProjectData) {
   return normalizeTrackSnapEnabledForProject(project);
+}
+
+function getRecoveryBackupStatusMessage(state: PlatformRecoveryBackupState) {
+  if (state.status === "pending") {
+    return `已连续保存失败 ${state.failureCount} 次；本地草稿已保留，服务器恢复可写后将创建项目备份。`;
+  }
+  if (state.status === "creating") {
+    return `已连续保存失败 ${state.failureCount} 次，正在项目 backup 文件夹创建恢复备份…`;
+  }
+  if (state.status === "created") {
+    return `恢复备份已创建：${state.fileName}。源文件仍需完成同步。`;
+  }
+  if (state.status === "error") {
+    return `恢复备份创建失败：${state.message} 本地草稿仍已保留。`;
+  }
+  return "";
 }
 
 function clampTime(time: number, maxDuration: number) {

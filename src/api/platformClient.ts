@@ -29,6 +29,7 @@ import type {
   CreateAnnotationRangeCommentRequest,
   CreateAliyunVodMediaRequest,
   CreateAnnotationFileRequest,
+  CreateAnnotationRecoveryBackupRequest,
   CreateAnnotationOperationRequest,
   CreateMediaAnalysisRequest,
   CreateMediaAudioTrackRequest,
@@ -80,6 +81,7 @@ import type {
   ReorderMediaAudioTracksRequest,
   AnnotationAudioPreference,
   AnnotationAudioPlaybackOptions,
+  AnnotationRecoveryBackupResult,
   UpsertResourcePermissionRequest,
 } from "@xiqu/shared";
 import {
@@ -277,6 +279,16 @@ export class PlatformClient {
       method: "POST",
       body: request,
     });
+  }
+
+  createAnnotationRecoveryBackup<TPayload>(
+    resourceId: string,
+    request: CreateAnnotationRecoveryBackupRequest<TPayload>,
+  ) {
+    return this.request<AnnotationRecoveryBackupResult<TPayload>>(
+      `/annotation-files/${resourceId}/recovery-backups`,
+      { method: "POST", body: request },
+    );
   }
 
   getAnnotationFile<TPayload>(resourceId: string) {

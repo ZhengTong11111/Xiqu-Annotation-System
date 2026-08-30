@@ -775,6 +775,12 @@ VOD 共用精确媒体时钟；长视频波形、频谱和 F0 不再依赖浏览
 - R4c3 已完成：timer、single-flight、保存中继续编辑、在线恢复、退避、阻断和卸载收口到可注入时钟的
   `PlatformAutoSaveRuntime`；React hook 只负责 facts 接线，并兼容 Strict Effects 重建。同步 throw、异步
   reject 等合同外错误会释放锁、阻断后台重试并保留 dirty；确定性测试覆盖全部生命周期分支。
+- R4c4 已完成代码与自动化回归：平台编辑器默认在连续 3 次完整保存失败后，于最近所属项目的 `backup`
+  文件夹创建一份带账号和服务器时间戳的普通标注文件；用户可关闭或改为 5/10 次。一个失败周期只生成
+  一份，首次网络请求后幂等 id 与净化 payload 永久绑定，离线/维护先保留 IndexedDB 草稿并等待补建。
+  专用 API 只要求源文件 `write`，目标、owner、文件名和媒体外键均由服务器推导，不授予项目新建或权限
+  管理能力。备份成功不清源文件 dirty、pending operation、revision 或 conflict。专项状态机 5/5、数据库
+  API 1/1、自动保存 9/9、原子提交 28/28、草稿 37/37 与完整构建通过；真实浏览器失败注入及生产部署待验收。
 - 快照保存和 operation 日志的确认边界保持一致。
 
 完成标准：工程实现与自动化回归已达到“断网和刷新不静默丢失编辑，恢复在线后可安全继续同步”；真实
@@ -988,6 +994,11 @@ VOD 共用精确媒体时钟；长视频波形、频谱和 F0 不再依赖浏览
 - 拖拽中的 transient ProjectData 只承担画面预览；pointer-up 生成一条可重放领域命令前，服务器自动保存与
   IndexedDB 恢复草稿必须同时暂停，保存入口还需同步检查 transient ref，防止 timer 与 pointer-up 相邻帧竞态
   把未被命令解释的预览值冻结为待保存项目。
+- 2026-08-29 协作可靠性补修已闭合拖动取消边界：正常 pointer-up 提交最后可见 resolved 结果；短拖动、
+  `pointercancel` 与窗口失焦统一回滚 transient base。生产证据确认旧逻辑会在“先移出 4px、松手前又移回”时
+  遗留约 10ms 的无命令时间偏移，并令下一条 lifecycle/content 事务从队首永久 precondition 失败。
+  已有坏链仅在重新读取的服务器 revision、observed revision 和持久化 saved baseline 全部一致时，压缩成一个
+  `collaboration_chain_repair` + `bulk_repair` 快照边界；服务器一旦前进仍进入显式冲突，禁止快照覆盖远端。
 - 普通服务器保存与租约结构写入使用双向串行屏障：结构写入先开始时保存让出，保存已在途时结构写入等待保存
   完成后再按最新 revision 申请租约。禁止“无 token 普通批次先冻结、结构租约随后生效”的交叉窗口；服务端
   对活动租约阻止无 token 写入的 fail-closed 规则保持不变。
@@ -997,6 +1008,8 @@ VOD 共用精确媒体时钟；长视频波形、频谱和 F0 不再依赖浏览
   时间、dirty/pending/save-in-flight 事实、pending 命令目标与有界调试 envelope。`local_chain_mismatch` 额外报告
   不同的顶层域和最多 64 条 saved/replayed/current 叶子差异；调试 payload 可保留正文、before/after、UUID 和
   实体身份，但凭据和 URL 始终双重脱敏。
+- `command_precondition_failed` 诊断现额外保留失败 operation id/index、事务 childIndex 与有界 adapter issue；
+  不再把事务失败压成一个无定位能力的 `blocked` 字符串，也不把完整 ProjectData 写入审计。
 - 一次真实诊断已定位父文字块时间缩放只声明 Gongche block、却在当前项目中同时重映射内部 symbols 的漏命令。
   单字、整句、自定义父块和多选移动现统一提交 timing + Gongche symbol state 原子事务；独立 timing builder
   也增加完整 ProjectData 重放证明，未来遗漏任一派生字段会在本地构建命令时 fail closed，而不是生成不完整

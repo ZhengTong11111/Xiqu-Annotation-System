@@ -3,6 +3,7 @@ import {
   type AnnotationClientSyncFailureCategory,
   type AnnotationClientSyncFailureMismatch,
   type AnnotationClientSyncFailureOperation,
+  type AnnotationClientSyncFailurePlannerFailure,
   type AnnotationClientSyncFailureReport,
 } from "@xiqu/shared";
 import type {
@@ -29,6 +30,7 @@ type BuildSyncFailureReportInput = {
   pendingOperations: readonly ProjectDocumentOperation[];
   mismatchFields?: readonly string[];
   mismatchDetails?: readonly AnnotationClientSyncFailureMismatch[];
+  plannerFailure?: AnnotationClientSyncFailurePlannerFailure | null;
 };
 
 // 诊断报告保留命令身份、目标和调试 payload，同时对任何鉴权字段、URL 与长凭据形字符串做双保险脱敏。
@@ -59,8 +61,31 @@ export function buildAnnotationClientSyncFailureReport(
       replayedValue: sanitizeDiagnosticValue(detail.replayedValue),
       currentValue: sanitizeDiagnosticValue(detail.currentValue),
     })),
+    ...(input.plannerFailure
+      ? {
+          plannerFailure: {
+            operationId: input.plannerFailure.operationId
+              ? sanitizeDiagnosticString(input.plannerFailure.operationId)
+              : null,
+            operationIndex: input.plannerFailure.operationIndex,
+            issues: sanitizeDiagnosticValue(input.plannerFailure.issues),
+          },
+        }
+      : {}),
     pendingOperations: reportedOperations.map(summarizePendingOperation),
     pendingOperationsTruncated: input.pendingOperations.length > reportedOperations.length,
+  };
+}
+
+export function getSyncFailurePlannerFailure(input: {
+  operationId?: string;
+  operationIndex?: number;
+  issues?: unknown;
+}): AnnotationClientSyncFailurePlannerFailure {
+  return {
+    operationId: input.operationId ?? null,
+    operationIndex: input.operationIndex ?? null,
+    issues: input.issues ?? null,
   };
 }
 

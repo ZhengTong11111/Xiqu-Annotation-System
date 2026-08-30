@@ -483,6 +483,12 @@ export type AnnotationClientSyncFailureMismatch = {
   currentValue: unknown;
 };
 
+export type AnnotationClientSyncFailurePlannerFailure = {
+  operationId: string | null;
+  operationIndex: number | null;
+  issues: unknown;
+};
+
 // 调试报告允许保留标注正文、before/after 和完整命令 envelope；鉴权凭据仍必须双重脱敏。
 export type AnnotationClientSyncFailureReport = {
   schemaVersion: 1;
@@ -502,6 +508,7 @@ export type AnnotationClientSyncFailureReport = {
   online: boolean;
   mismatchFields: string[];
   mismatchDetails: AnnotationClientSyncFailureMismatch[];
+  plannerFailure?: AnnotationClientSyncFailurePlannerFailure;
   pendingOperations: AnnotationClientSyncFailureOperation[];
   pendingOperationsTruncated: boolean;
 };

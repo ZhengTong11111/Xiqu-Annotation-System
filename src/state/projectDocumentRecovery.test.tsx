@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToString } from "react-dom/server";
-import { CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND } from "@xiqu/shared";
+import {
+  buildProjectSnapshotBoundaryEnvelope,
+  CUSTOM_TRACK_STRUCTURE_UPDATE_COMMAND,
+  PROJECT_SNAPSHOT_BOUNDARY_COMMAND,
+} from "@xiqu/shared";
 import { mockProject } from "../mockData";
 import { buildProjectAnnotationContentCommand } from "../utils/annotationContentCommand";
 import { buildProjectCustomTrackStructureCommand } from "../utils/customTrackStructureCommand";
+import { planAtomicAnnotationCommandBatch } from "../platform/platformAtomicCommandPlan";
 import {
   useProjectDocumentState,
   type ProjectDocumentRecoveryState,
@@ -123,6 +128,116 @@ test("结构命令随历史边界保存，undo 记录 inverse，redo 恢复原�
     assert.equal(redoEnvelope.command.items[0].before.name, targetTrack.name);
     assert.equal(redoEnvelope.command.items[0].after.name, "历史命令测试轨");
   }
+});
+
+test("取消时间轴临时预览后，下一条领域命令仍能从保存基线完整重放", () => {
+  let captured: ReturnType<typeof useProjectDocumentState> | null = null;
+  function Harness() {
+    captured = useProjectDocumentState({
+      initialProject: mockProject,
+      initialTrackSnapEnabled: {},
+      areProjectsEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+      areTrackSnapStatesEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+    });
+    return React.createElement("span", null, "transient-cancel");
+  }
+  renderToString(React.createElement(Harness));
+  const state = captured as unknown as ReturnType<typeof useProjectDocumentState>;
+
+  const previewProject = structuredClone(mockProject);
+  previewProject.characterAnnotations[0].startTime += 0.0106;
+  previewProject.characterAnnotations[0].endTime += 0.0106;
+  state.applyProjectWithoutHistory(previewProject);
+  assert.equal(state.transientProjectRef.current, mockProject);
+
+  assert.equal(state.cancelTransientProjectEdit(), true);
+  const afterCancel = state.getRecoveryState();
+  assert.deepEqual(afterCancel.currentProject, mockProject);
+  assert.deepEqual(afterCancel.pendingOperations, []);
+  assert.equal(afterCancel.localRevision, 0);
+  assert.equal(state.cancelTransientProjectEdit(), false);
+
+  const nextProject = structuredClone(mockProject);
+  nextProject.subtitleLines[0].text = `${nextProject.subtitleLines[0].text}新`;
+  const commandEnvelope = buildProjectAnnotationContentCommand(mockProject, nextProject, [{
+    entityType: "sentence",
+    entityId: nextProject.subtitleLines[0].id,
+    field: "text",
+  }]);
+  assert.ok(commandEnvelope);
+  state.commitProject(nextProject, mockProject, { commandEnvelope });
+  const recovery = state.getRecoveryState();
+  const plan = planAtomicAnnotationCommandBatch({
+    savedProject: recovery.savedProject,
+    currentProject: recovery.currentProject,
+    serverRevision: 7,
+    savedLocalRevision: recovery.savedRevision,
+    savedTrackSnapEnabled: recovery.savedTrackSnapEnabled,
+    pendingOperations: recovery.pendingOperations,
+  });
+  assert.equal(plan.status, "ready");
+});
+
+test("不可重放的历史 pending 链可压缩为单一协作修复边界", () => {
+  let captured: ReturnType<typeof useProjectDocumentState> | null = null;
+  function Harness() {
+    captured = useProjectDocumentState({
+      initialProject: mockProject,
+      initialTrackSnapEnabled: {},
+      areProjectsEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+      areTrackSnapStatesEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+    });
+    return React.createElement("span", null, "snapshot-compaction");
+  }
+  renderToString(React.createElement(Harness));
+  const state = captured as unknown as ReturnType<typeof useProjectDocumentState>;
+
+  const firstProject = structuredClone(mockProject);
+  firstProject.subtitleLines[0].text = "第一步";
+  const firstCommand = buildProjectAnnotationContentCommand(mockProject, firstProject, [{
+    entityType: "sentence",
+    entityId: firstProject.subtitleLines[0].id,
+    field: "text",
+  }]);
+  assert.ok(firstCommand);
+  state.commitProject(firstProject, mockProject, { commandEnvelope: firstCommand });
+
+  const secondProject = structuredClone(firstProject);
+  secondProject.subtitleLines[0].text = "第二步";
+  const secondCommand = buildProjectAnnotationContentCommand(firstProject, secondProject, [{
+    entityType: "sentence",
+    entityId: secondProject.subtitleLines[0].id,
+    field: "text",
+  }]);
+  assert.ok(secondCommand);
+  state.commitProject(secondProject, firstProject, { commandEnvelope: secondCommand });
+
+  const boundary = buildProjectSnapshotBoundaryEnvelope("chain-repair-test", "collaboration_chain_repair");
+  assert.ok(boundary);
+  assert.deepEqual(state.compactPendingOperationsToSnapshotBoundary(boundary), {
+    status: "applied",
+    replacedOperationCount: 2,
+  });
+  const recovery = state.getRecoveryState();
+  assert.equal(recovery.pendingOperations.length, 1);
+  assert.equal(recovery.pendingOperations[0].type, PROJECT_SNAPSHOT_BOUNDARY_COMMAND);
+  assert.equal(recovery.pendingOperations[0].localRevision, 2);
+  assert.deepEqual(recovery.currentProject, secondProject);
+  assert.equal(planAtomicAnnotationCommandBatch({
+    savedProject: recovery.savedProject,
+    currentProject: recovery.currentProject,
+    serverRevision: 11,
+    savedLocalRevision: recovery.savedRevision,
+    savedTrackSnapEnabled: recovery.savedTrackSnapEnabled,
+    pendingOperations: recovery.pendingOperations,
+  }).status, "legacy_required");
+
+  const wrongBoundary = buildProjectSnapshotBoundaryEnvelope("import-test", "import_project");
+  assert.ok(wrongBoundary);
+  assert.deepEqual(state.compactPendingOperationsToSnapshotBoundary(wrongBoundary), {
+    status: "rejected",
+    reason: "invalid_boundary",
+  });
 });
 
 test("原子确认只推进 pending 前缀并保留后续本地项目", () => {

@@ -42,6 +42,7 @@ import {
 import type { PrismaPlatformRepository } from "./repository.js";
 import type { ResourceService } from "./resourceService.js";
 import type { AnnotationCommandCommitService } from "./annotationCommandCommitService.js";
+import type { AnnotationRecoveryBackupService } from "./annotationRecoveryBackupService.js";
 import { MAX_BATCH_RESOURCE_SELECTION } from "./resourceSelection.js";
 import type { ObjectStorage } from "./objectStorage.js";
 import type { SystemDiagnosticsService } from "./systemDiagnosticsService.js";
@@ -96,6 +97,7 @@ export function registerApiRoutes(
   accounts: AccountAdminService,
   auditLogs: AuditLogService,
   resources: ResourceService,
+  annotationRecoveryBackups: AnnotationRecoveryBackupService,
   mediaAnalysis: MediaAnalysisJobService,
   mediaAudioTracks: MediaAudioTrackService,
   mediaAudioPlaybackSessions: MediaAudioPlaybackSessionService,
@@ -890,6 +892,42 @@ export function registerApiRoutes(
       ),
   );
 
+  app.post<{
+    Params: { resourceId: string };
+    Body: {
+      clientBackupId?: unknown;
+      sourceRevision?: unknown;
+      failureCount?: unknown;
+      payload?: unknown;
+    };
+  }>("/api/annotation-files/:resourceId/recovery-backups", async (request) => {
+    const body = requireObject(request.body);
+    if (
+      typeof body.clientBackupId !== "string" ||
+      !Number.isInteger(body.sourceRevision) ||
+      !Number.isInteger(body.failureCount) ||
+      body.payload === undefined
+    ) {
+      throw badRequest("创建恢复备份需要有效的失败周期、版本、失败次数和标注文档。");
+    }
+    const user = await getCurrentUser(repository, request);
+    const created = await annotationRecoveryBackups.create(
+      user,
+      request.params.resourceId,
+      {
+        clientBackupId: body.clientBackupId,
+        sourceRevision: Number(body.sourceRevision),
+        failureCount: Number(body.failureCount),
+        payload: body.payload,
+      },
+    );
+    const [file, folder] = await Promise.all([
+      resources.getAnnotationFile(user, created.backupResourceId),
+      resources.getResource(user, created.folderId),
+    ]);
+    return { file, folder, replayed: created.replayed };
+  });
+
   app.get<{ Params: { resourceId: string } }>(
     "/api/annotation-files/:resourceId/mutation-lease",
     async (request) => resources.getAnnotationMutationLease(
@@ -1537,11 +1575,30 @@ function parseAnnotationClientSyncFailureReport(value: unknown): AnnotationClien
     online: parseDiagnosticBoolean(input.online, "在线状态"),
     mismatchFields: parseDiagnosticStringArray(input.mismatchFields, "不一致字段", 32, 128),
     mismatchDetails: parseSyncFailureMismatchDetails(input.mismatchDetails),
+    ...(input.plannerFailure === undefined
+      ? {}
+      : { plannerFailure: parseSyncFailurePlannerFailure(input.plannerFailure) }),
     pendingOperations,
     pendingOperationsTruncated: parseDiagnosticBoolean(
       input.pendingOperationsTruncated,
       "pending 截断状态",
     ),
+  };
+}
+
+function parseSyncFailurePlannerFailure(
+  value: unknown,
+): NonNullable<AnnotationClientSyncFailureReport["plannerFailure"]> {
+  const input = requireObject(value);
+  return {
+    operationId: input.operationId === null
+      ? null
+      : parseDiagnosticString(input.operationId, "失败 operationId", 160),
+    operationIndex: input.operationIndex === null
+      ? null
+      : parseDiagnosticInteger(input.operationIndex, "失败 operation 索引"),
+    // planner issue 来自可信客户端代码但仍按任意 JSON 对待，服务端继续执行第二层脱敏和深度限制。
+    issues: sanitizeServerDiagnosticValue(input.issues),
   };
 }
 

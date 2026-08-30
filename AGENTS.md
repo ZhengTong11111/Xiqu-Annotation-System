@@ -82,6 +82,10 @@ Main currently contains all major recent feature lines that matter for context:
 - versioned browser recovery drafts for writable platform files, isolated by account/file and recoverable only against
   the same server revision
 - writable platform-file autosave with idle scheduling, single-flight snapshots, online recovery, and bounded retry
+- per-account recovery-backup preferences plus a failure-episode coordinator: after 3/5/10 completed save failures it creates
+  at most one ordinary annotation file under the nearest owning project's `backup` folder. The dedicated server boundary derives
+  destination, name, owner and media binding from the writable source file, while IndexedDB remains authoritative until the
+  server backup succeeds. A backup success never marks the source file saved or clears its pending operations/conflict
 - platform editor leave protection: top-bar return and same-document browser back wait for any active save, submit remaining
   dirty batches, reread the latest document facts, and leave only after the server-authoritative state is clean. A clean server
   state is not sufficient by itself: the leave path must serialize an IndexedDB draft delete after all older draft puts, arm a
@@ -299,6 +303,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `src/platform/usePlatformAutoSave.ts`
   - thin React facts/callback adapter around one `PlatformAutoSaveRuntime`
   - Strict Effects cleanup must dispose and clear the runtime ref so the second setup creates a live instance
+- `src/platform/platformRecoveryBackupRuntime.ts` + `src/platform/usePlatformRecoveryBackup.ts`
+  - the only client failure-episode counter and recovery-backup requester; `saved` resets an episode, completed
+    `error/conflict/offline` outcomes count, while `skipped/rebased` do not
+  - the request may refresh while it has never left the browser, but after the first network attempt its UUID and sanitized
+    ProjectData payload are frozen together. Every ambiguous response retry must replay that exact request
+  - preferences are browser-local per account and never enter ProjectData. Offline/maintenance retains the IndexedDB draft and
+    pending request; backup creation changes only recovery UI and must never acknowledge source operations or revisions
 - `src/platform/platformEditorLeaveRuntime.ts` + `src/platform/usePlatformEditorHistoryGuard.ts`
   - the only platform-editor leave coordinator for top-bar return and same-document browser back
   - waits for the existing save single-flight, rereads current dirty/blocking facts after every bounded save, and treats
@@ -600,6 +611,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     label in one sticky content group so horizontal scrolling does not detach metadata from the sentence
   - publishes only exact pointer time to the collaboration callback and renders remote playhead/pointer/selection hints as
     read-only `pointer-events: none` overlays using the same `trackHeaderWidth + time * zoom` coordinate as local timing
+  - every drag preview must finish through exactly one of two paths: pointer-up commits the last resolved preview as one
+    replayable command, while short-drag cancellation, `pointercancel`, or window blur calls the document-owned transient
+    rollback. Never flush a pending preview and then return on an activation threshold without rolling it back
 - `src/components/VideoPlayer.tsx`
   - owns master-backend mount/unmount, the synchronized playback runtime, preview-frame behavior, native controls auto-hide,
     VOD loading/error UI, hidden inert VOD-audio host, and detached-panel button; exposes `MediaPlaybackController`, never an
@@ -935,6 +949,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     explorer's root-only `all_projects` semantics or returning full permission matrices
   - annotation save atomically binds the current actor's declared client operation ids to the new payload revision;
     missing, foreign, stale-base, or already-committed ids must roll back payload, revision, snapshots, and audit together
+- `apps/api/src/annotationRecoveryBackupService.ts`
+  - the only server boundary for save-failure recovery files. It requires source-file `write`, strictly parses current
+    ProjectData, finds the nearest active project, creates/reuses its fixed `backup` folder and copies only the stable media FK
+  - clients cannot select a destination, filename, owner or media id. The folder remains project-owner controlled, each backup
+    is owned by its actor, and a minimal non-inheriting folder `read` grant is added only when the actor otherwise cannot browse it
+  - server-derived UUID v8 identity binds source + actor + client episode id. Exact retries return the existing ordinary
+    annotation file; a changed payload or mismatched resource fails closed. Audit details stay bounded and never contain ProjectData
 - `apps/api/src/annotationFileWriteLock.ts`
   - the single transaction lock order for annotation content writes: shared resource-tree lock, resource row, active ancestry,
     transaction-scoped ACL, then annotation-file row
@@ -1473,6 +1494,14 @@ Important APIs:
 - `applyProjectWithoutHistory(nextProject)`
   - transient drag/live updates
   - preserves the ability to commit once on pointer-up
+- `cancelTransientProjectEdit()`
+  - restores the pre-preview project without history, operation, or revision changes
+  - is the only supported cancellation boundary for Timeline drag previews
+- `compactPendingOperationsToSnapshotBoundary(boundary)`
+  - only accepts `collaboration_chain_repair`; App must first refetch and prove the same authoritative server revision and
+    persisted saved baseline before using it
+  - replaces an already-invalid local pending chain with one auditable `bulk_repair` snapshot boundary, never with ordinary
+    replayable commands
 - `applyTrackSnapEnabledState(nextState, options?)`
 - `markProjectAsSaved(...)`
 - `undoProject(...)`
@@ -1507,6 +1536,12 @@ The transient project is visual interaction state, not a persistable document re
 single replayable operation, both server autosave and IndexedDB recovery-draft writes must remain suspended. The server-save
 entry point must also synchronously inspect `transientProjectRef.current`; React suspension facts alone cannot close the
 timer/pointer-up race between adjacent frames.
+
+A transient preview may never survive a cancelled gesture. This includes the subtle path where pointermove previously crossed
+the activation threshold but pointer-up returns near the origin: pending RAF work must be discarded and the document must roll
+back to the transient base. Historical `command_precondition_failed` chains may be compacted only after a fresh authoritative
+GET proves that both revision and persisted saved ProjectData are unchanged; a newer observed/server revision remains an
+explicit conflict and must not be overwritten by snapshot repair.
 
 ### Critical state rule
 Hot interaction paths depend on `projectRef.current`, not just render-state closures.

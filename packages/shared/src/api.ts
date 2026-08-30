@@ -138,6 +138,20 @@ export type CreateAnnotationFileRequest<TPayload = unknown> = {
   mediaResourceId?: string | null;
 };
 
+// 连续保存失败备份只能提交当前文档和失败周期事实；目录、名称、owner 与媒体关联均由服务器推导。
+export type CreateAnnotationRecoveryBackupRequest<TPayload = unknown> = {
+  clientBackupId: string;
+  sourceRevision: number;
+  failureCount: number;
+  payload: TPayload;
+};
+
+export type AnnotationRecoveryBackupResult<TPayload = unknown> = {
+  file: AnnotationFile<TPayload>;
+  folder: ResourceEntry;
+  replayed: boolean;
+};
+
 export type MediaProviderCapabilities = {
   aliyunVod: {
     enabled: boolean;
@@ -509,6 +523,10 @@ export type PlatformApiContract<TPayload = unknown> = {
   createAnnotationFile: {
     request: CreateAnnotationFileRequest<TPayload>;
     response: AnnotationFile<TPayload>;
+  };
+  createAnnotationRecoveryBackup: {
+    request: CreateAnnotationRecoveryBackupRequest<TPayload>;
+    response: AnnotationRecoveryBackupResult<TPayload>;
   };
   getAnnotationFile: { response: AnnotationFile<TPayload> };
   listMediaAudioTracks: { response: MediaAudioTrackList };

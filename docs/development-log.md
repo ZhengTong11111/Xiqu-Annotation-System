@@ -8555,3 +8555,106 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   专项回归、完整构建和真实 dirty 返回/重开验收。
 - **仍需人工验证**：浏览器工具栏刷新无法被 Web 应用永久禁用；真实键盘 `F5`/`Cmd+R` 的提示与资源管理器局部
   刷新仍建议由用户在常用浏览器中确认一次。本项不影响“返回资源管理器”保存合同。
+
+## 2026-08-29：同轨道协作失败的 transient 泄漏修复
+
+### 生产证据与根因
+
+- 在 `codex/collaboration-track-sync` 分支只读检查生产数据库，没有修改线上 payload、operation、账号或权限。
+  多名账号的失败并非从普通 409 开始，而是客户端在发请求前进入 `command_precondition_failed`；最早一条坏命令
+  固定留在队首，后续编辑从 9/12/39 条增长到 389、810 条，另一个文件增长到 506、532、817、878 条，随后才
+  触发“最多 500 个 operation id”和结构租约最长生命周期等次生错误。
+- 具体文件 `001_shuzhuang_fc_v001_annotation.json` 在服务器 revision 863 中，字符
+  `char-8aed5773-bf23-496d-bd0d-1c79d94d6343` 的时间为
+  `641.64 - 641.7560804475246`；其后的本地删除事务却以
+  `641.6506306143134 - 641.766711061838` 作为 lifecycle `before`。查询该文件完整 operation 历史后确认，
+  此字符从未被任何已提交命令修改，约 10.6ms 偏移只存在于浏览器项目。
+- 根因是 Timeline 的 pointer-up 顺序：旧代码先 `flushPendingDragUpdate()`，再检查 4px 激活阈值。用户曾移出阈值
+  产生预览、又在松手前移回起点附近时，代码会提前返回但不恢复 transient base，于是 ProjectData 已变而没有
+  timing operation。下一次同轨道文字修改或删除自然无法从 saved baseline 重放；`pointercancel` 和窗口失焦也
+  缺少统一取消路径。
+- 同一时间的生产 release 为 `/opt/xiqu/releases/20260829T210137Z-914ba33`，API 与前端来自同一候选构建；
+  `packages/document-model/dist` 随 release 安装，未发现“新版前端加载旧 document-model API”的证据。
+
+### 实现与旧坏链恢复
+
+- `projectDocumentState` 新增唯一 `cancelTransientProjectEdit()`：恢复预览前项目并清除 transient ref，不生成
+  undo、operation 或 local revision。undo 的旧 transient 特判已复用该函数，删除第二套回滚逻辑。
+- Timeline 正常松手仍提交最后一个用户已看到的 resolved update；短拖动先丢弃待执行 RAF/pending preview，再
+  调用统一回滚。`pointercancel` 和窗口失焦复用同一清场函数，覆盖逐字、句块、动作、自定义块、附属点、工尺、
+  板眼和批量移动；吸附、联合拖动、分叉布局和创建阈值没有改变。
+- 新增 `collaboration_chain_repair` snapshot kind。历史 `command_precondition_failed` 会先重新 GET 标注文件，只有
+  `latest revision == applied revision == observed revision`，且去除运行时媒体 URL 后的服务器 payload 与本地
+  saved baseline 完全一致，才把数百条不可重放 pending 压缩为一个修复边界。该边界通过 `bulk_repair` 租约、
+  原有 base-revision 乐观锁和完整 payload 保存；从而不会逐条提交 800 个旧 operation，也不会触发 500 ID 上限。
+  服务器已前进、payload 不同、取消期间又有 transient 或边界不合法时全部 fail closed，保留草稿并进入冲突。
+- 同步失败报告增加可选 `plannerFailure`，保存失败 operation id/index、事务 childIndex 和有界 precondition issue；
+  命令 envelope 仍独立有界记录，URL、token、AccessKey、PlayAuth 和鉴权字段继续由浏览器/API 双重脱敏，未恢复
+  临时 console payload 日志。
+
+### 测试、自审与状态
+
+- `npm run test:timeline-drag-completion` 2/2：覆盖双向阈值与“移出后回到阈值内”取消。
+- `npm run test:platform-atomic-submit` 28/28：新增 10.6ms transient 回滚后下一条领域命令可完整规划，以及两条
+  pending 压缩为单一协作修复边界的回归。
+- `npm run test:annotation-commands` 24/24、`npm run test:annotation-transaction-command` 8/8；事务失败现在保留
+  childIndex 和子命令 issue，并继续证明前序步骤不泄漏。
+- 同步诊断测试 3/3；`npm run build` 和 `git diff --check` 通过。完整构建仅保留既有 Vite 主 chunk 大小提示。
+- 自审确认没有修改服务器 conflict resolution、同目标后写胜出规则、WebSocket 写路径、ProjectData 格式、数据库
+  schema、吸附或轨道显示。新增复杂边界均有中文原因注释，没有引入依赖或并行恢复协议。
+- **已完成**：生产只读取证、根因修复、所有 transient 轨道取消收口、历史坏链有界恢复、诊断增强、专项回归、
+  完整构建、roadmap 与 `AGENTS.md` 更新。
+- **待推进**：本分支尚未提交、合并或部署；生产真实双账号需在部署后验证正常拖动、移出再移回、同轨道先后编辑、
+  同目标并发编辑，以及至少一个已有坏链自动压缩保存。生产验证前不把该项写成线上已修复。
+
+## 2026-08-29：连续保存失败后的项目内恢复备份
+
+### 需求与设计边界
+
+- 用户希望保存持续失败时，不只依赖当前浏览器的 IndexedDB 草稿，还能在当前项目中留下带账号和时间戳的备份。
+  本轮把它定义为“失败周期恢复副本”，不是数据库/对象存储灾备，也不是源文件的新 revision：默认连续 3 次完整
+  保存失败触发，设置可关闭或改为 5/10 次；一次失败周期最多成功创建一份，源文件真正 `saved` 后才开始新周期。
+- `error`、`conflict`、`offline` 计数，`skipped` 和尚需立即重提的 `rebased` 不计数。离线或维护期间继续依赖既有
+  IndexedDB 草稿，并保留待创建请求；服务器恢复可写后才补建，不能用高频定时器制造第二条保存队列。
+- 备份必须使用当前浏览器里尚未提交的 ProjectData，而不是复制服务器旧 payload；但它先经过与平台保存/草稿相同
+  的持久化净化，再由 API 严格解析当前 ProjectData。运行时媒体 URL、Blob、token、PlayAuth 和 AccessKey 均不进入
+  备份或审计，源文件的稳定媒体外键由服务器复制。
+
+### 实现、权限与幂等
+
+- 新增 `PlatformRecoveryBackupRuntime` 和 React 适配 Hook。协调器只观察唯一保存事务返回的完整 outcome，不参与
+  autosave timer、revision、operation、结构租约或 source save single-flight。设置按账号保存在浏览器 localStorage，
+  本地不登录工具不显示；“视图”菜单提供开关和 3/5/10 次三档阈值。
+- 达到阈值后状态栏会分别显示待创建、创建中、已创建或失败，并始终提示“源文件仍需完成同步”。备份成功不能调用
+  `markProjectAsSaved`、确认 pending operation、推进远端 revision、清除 conflict 或允许离开 dirty 编辑器。
+- 自审发现备份网络请求与后续手动保存可能重叠：若继续替换同一幂等 id 的 payload，会让服务器精确重放拒绝不同内容。
+  最终合同改为首次请求发出前（例如离线阶段）可刷新冻结快照，首次网络请求后 UUID 与 payload 永久绑定；响应未知、
+  维护失败和后续重试都逐字段复用同一请求。
+- 后端逻辑没有继续堆入已较大的 `ResourceService`，而是提取为独立 `AnnotationRecoveryBackupService`。专用接口只要求
+  当前账号仍有源标注文件 `write`，客户端不能传目标目录、名称、owner 或媒体 id。服务端在同一事务锁定源文件、
+  复核活动祖先、选择最近的 `project`、创建/复用固定 `backup` 文件夹并创建普通 `annotation_file`。
+- `backup` 文件夹归项目所有者，备份文件归触发账号；若该账号只有源文件直接编辑权，服务端只补一个不向子项继承的
+  文件夹 `read`，不会授予 `create_child` 或 `manage_permissions`。文件名形如
+  `原文件.backup.account.20260829-235959-123.json`，时间以服务器为准。
+- 服务端使用 source id + actor id + client episode UUID 推导稳定 UUID v8 资源 id。完全相同的响应丢失重试返回原文件；
+  同一 id 下 payload 改变、资源类型/owner/目录不一致、同名 `backup` 不是活动文件夹、源文件撤权/回收/归档或没有所属
+  项目均 fail closed。审计复用 `resource_create` 并只记录来源、revision、失败次数和周期 id，不保存完整 payload。
+
+### 测试、自审与状态
+
+- `npm run test:platform-recovery-backup` 5/5：覆盖阈值、成功重置、单周期单副本、离线刷新、在线补建、维护待办、
+  `skipped/rebased` 忽略、关闭设置清场，以及首次网络请求后 payload 不可替换。
+- `npm run test:annotation-recovery-backup-api` 1/1：真实 PostgreSQL/Fastify 覆盖只有源文件 read/write、没有项目
+  create 权限的账号成功创建；验证项目目录、owner、时间戳名称、媒体外键、当前 payload、最小目录权限、审计脱敏、
+  精确幂等和撤权 403。
+- 回归 `test:platform-auto-save-runtime` 9/9、`test:platform-atomic-submit` 28/28、`test:platform-drafts` 37/37；
+  `test:timeline-drag-completion` 2/2、`test:annotation-transaction-command` 8/8、同步诊断 3/3、领域命令 24/24、
+  完整 API 194/194、完整 `npm run build` 与 `git diff --check` 均通过，仅保留既有 Vite 主 chunk 大小提示和
+  测试 PostgreSQL 驱动已有的并发 query 弃用提示。
+- 自审已把约 300 行新后端逻辑从 ResourceService 提取为单一职责服务，前端没有复制自动保存或草稿队列，没有新增依赖、
+  数据库 migration 或特殊资源类型；备份仍可由现有资源管理器打开、复制、下载和删除。
+- **已完成**：协议、专用 API、权限/幂等边界、失败周期协调器、用户设置、状态反馈、专项及关键回归、roadmap 与
+  `AGENTS.md` 合同更新。
+- **待验收/待部署**：尚未在浏览器人工注入三次真实保存失败，也未提交、合并或部署生产；部署后需验证普通账号能在
+  所属项目看到唯一 `backup` 文件夹、打开备份内容和媒体关联，并确认源文件仍显示原同步失败。长期自动保留上限与
+  管理员批量清理策略本轮不做，普通资源删除能力可先承担人工整理。

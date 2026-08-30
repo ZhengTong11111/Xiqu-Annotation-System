@@ -8,6 +8,7 @@ export const PROJECT_SNAPSHOT_BOUNDARY_KINDS = [
   "import_gongche",
   "generate_banyan",
   "builtin_track_lifecycle_overflow",
+  "collaboration_chain_repair",
 ] as const;
 
 export type ProjectSnapshotBoundaryKind = typeof PROJECT_SNAPSHOT_BOUNDARY_KINDS[number];

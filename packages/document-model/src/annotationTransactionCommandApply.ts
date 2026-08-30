@@ -14,7 +14,7 @@ import { applyTimelineTimingCommandToProject } from "./timelineTimingCommandAppl
 
 export type AnnotationTransactionCommandApplyResult =
   | { status: "invalid_command" }
-  | { status: "blocked"; childIndex: number }
+  | { status: "blocked"; childIndex: number; issues: unknown }
   | { status: "applied"; project: ProjectData; envelope: AnnotationTransactionCommandEnvelope };
 
 // 事务只在局部 ProjectData 上顺序执行；任一子命令失败时丢弃局部变量，调用者永远看不到半成品。
@@ -36,7 +36,14 @@ export function applyAnnotationTransactionCommandToProject(
           : command.type === ANNOTATION_STATE_UPDATE_COMMAND
             ? applyAnnotationStateCommandToProject(currentProject, childEnvelope)
             : assertNever(command);
-    if (result.status !== "applied") return { status: "blocked", childIndex };
+    if (result.status !== "applied") {
+      return {
+        status: "blocked",
+        childIndex,
+        // 事务失败时保留子命令的有界前置条件事实，供客户端诊断定位；不附带 ProjectData。
+        issues: "issues" in result ? result.issues : result.status,
+      };
+    }
     currentProject = result.project;
   }
   return { status: "applied", project: currentProject, envelope };
