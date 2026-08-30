@@ -165,7 +165,7 @@ credentials file/secret 挂载，真实 receiver URL 不得提交仓库。规则
 `npm run db:deploy` 应用已提交的 Prisma migration；`db:push` 仅适合一次性的本地 schema 实验。
 `db:push --force-reset` 会清空目标数据库，只能在核对 `DATABASE_URL` 且明确不保留数据时使用。
 
-生产环境不会创建上述开发账号。单服务器部署、一次性首管理员创建、systemd、Nginx/TLS、备份恢复、
+生产环境不会创建上述开发账号。单服务器部署、一次性首管理员创建、systemd、Caddy 自动 TLS、备份恢复、
 升级与回滚见 [`docs/server-deployment.md`](docs/server-deployment.md)。
 
 ### 4. 生产构建与权限测试
@@ -1288,7 +1288,7 @@ npm run maintenance:disable -- --operator admin
 Fastify/Prisma/PostgreSQL，并由一组可部署 migration 维护。当前已有 liveness/readiness、低基数
 Prometheus 指标、管理员诊断面板、跨实例维护写入静默边界，以及带 manifest/checksum 的 PostgreSQL
 与本地对象目录一致备份和隔离恢复演练。S3-compatible 运行适配器、manifest-last 远端备份、隔离恢复
-和保留清理已经完成，并已提供同源 Nginx/TLS、systemd、生产环境边界、首管理员 bootstrap 与部署 smoke
+和保留清理已经完成，并已提供同源 Caddy/自动 TLS、systemd、生产环境边界、首管理员 bootstrap 与部署 smoke
 check 模板。真实生产桶/IAM、TLS 续期、主机防火墙、容量和长期灾难恢复仍需在目标环境验收。维护状态
 持久化在 PostgreSQL，API 重启不会自动解除；管理员应在维护
 任务完成后从诊断面板或本机 CLI 明确恢复写入。
@@ -1364,7 +1364,7 @@ npm run test:annotation-collaboration
 
 ## 进一步文档
 
-- [`docs/server-deployment.md`](docs/server-deployment.md)：生产环境变量、systemd/Nginx、维护、升级、备份与回滚。
+- [`docs/server-deployment.md`](docs/server-deployment.md)：生产环境变量、systemd/Caddy、维护、升级、备份与回滚。
 - [`docs/kunqu-platform-roadmap.md`](docs/kunqu-platform-roadmap.md)：平台总体阶段、已完成能力和后续工作。
 - [`docs/replace_audio_roadmap.md`](docs/replace_audio_roadmap.md)：多监听音轨、替换播放与媒体级分析专项。
 - [`docs/development-log.md`](docs/development-log.md)：每轮实际实现、验证结果、偏差与待推进事项。

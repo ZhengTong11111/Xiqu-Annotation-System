@@ -8417,3 +8417,20 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   和公网只读验收。
 - **待人工环境验收**：生产 HTTP IP 下的真实登录、VOD 主视频与 Johann rendition 随机起播、长时间播放及未来
   HTTPS 域名仍按上一节的环境验收债务推进；本次部署未把任何凭据或临时播放地址写入仓库和日志。
+
+## 2026-08-30：单服务器默认入口从 Nginx 切换到 Caddy
+
+- 根据目标服务器最终使用的 Caddy 配置，新增 `deploy/single-server/Caddyfile.example`，固定同源 `/api`
+  路由、原样保留 API 前缀、WebSocket reload 延迟关闭、20 GiB 请求体上限、Vite SPA fallback、hash 资产
+  immutable 与 `index.html` no-cache。波形、频谱、F0 单瓦片和批量瓦片四种自定义 MIME 与普通 Web MIME
+  均进入显式 gzip response matcher；没有把授权资产改成 public/cacheable。
+- `docs/server-deployment.md` 将 Caddy 2.10+ 与自动 TLS 设为新单服务器默认路径，补充 DNS/80/443、Caddy
+  数据目录、release 只读权限、正式 HTTPS smoke、从既有 Nginx 切换/回退及阿里云 VOD License 域名门禁。
+  旧 `nginx.conf.example` 继续保留为既有安装的备选，不改写此前 Nginx 生产部署的历史事实。
+- 环境模板、README、AGENTS 与当前 roadmap 已同步代理所有权。部署测试改为从 Caddy 模板校验
+  `request_body max_size` 与 `XIQU_MAX_UPLOAD_BYTES` 相等，并固定 `/api` 不得使用 `handle_path`、Fastify
+  upstream 和四种分析 MIME。
+- `node --test scripts/deploymentCheck.test.mjs` 与 `git diff --check` 通过。完整 `npm run test:deployment` 的
+  无依赖脚本阶段通过，随后因当前工作区没有安装 `tsx` 而无法启动三项 TypeScript 测试；这是本地依赖缺失，
+  不是断言失败。当前主机也未安装 `caddy` 二进制，因此仓库内未声称替代目标服务器的
+  `caddy validate`/真实证书签发与公网 VOD 验收。

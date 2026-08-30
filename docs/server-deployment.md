@@ -1,13 +1,13 @@
 # 昆曲标注平台单服务器部署说明
 
-最后更新：2026-08-04
+最后更新：2026-08-30
 
 本文对应 R5 可部署候选门禁，目标是在一台受控 Linux 服务器上运行：
 
 - PostgreSQL 16
 - Node.js 22 + Fastify API
 - Vite 构建的静态 Web
-- Nginx 同源反向代理与 TLS
+- Caddy 同源反向代理与自动 TLS
 - 本地目录或 S3-compatible 对象存储
 
 这是可供研究团队和课堂受控试用的单机基线，不等同于 R7 公网生产验收。真实公网部署仍需完成目标环境的
@@ -18,7 +18,7 @@
 ```text
 浏览器
   └─ HTTPS :443
-       └─ Nginx
+       └─ Caddy
             ├─ /、/assets/*  -> /opt/xiqu/current/dist
             └─ /api/*        -> Fastify 127.0.0.1:4317
                                   ├─ PostgreSQL 16
@@ -29,21 +29,22 @@
 必须保持：
 
 1. Web 与 API 默认同源。浏览器只访问 `/api`，不得把 `localhost:4317` 写入生产构建。
-2. Fastify 只由 Nginx 对外暴露；服务器防火墙不开放 4317。
+2. Fastify 只由 Caddy 对外暴露；服务器防火墙不开放 4317。
 3. release 位于 `/opt/xiqu/releases/<release-id>`，`/opt/xiqu/current` 是可切换符号链接。
-4. 数据库、对象、备份、环境文件和 TLS 私钥都在 release 目录之外，升级不能覆盖持久数据。
+4. 数据库、对象、备份、环境文件和 Caddy 的 TLS 状态都在 release 目录之外，升级不能覆盖持久数据。
 5. `NODE_ENV=production` 时必须显式设置 `DATABASE_URL`，默认不生成开发账号，也不开放跨源访问。
 6. 迁移只通过 `prisma migrate deploy`；禁止在服务器使用 `db:push --force-reset`。
 
 ## 2. 版本与系统准备
 
-建议基线：Ubuntu 24.04 LTS 或同等级 Debian 系统、x86_64/arm64、Node.js 22 LTS、PostgreSQL 16、Nginx。
+建议基线：Ubuntu 24.04 LTS 或同等级 Debian 系统、x86_64/arm64、Node.js 22 LTS、PostgreSQL 16、
+Caddy 2.10 或更高版本。模板使用 `request_body max_size`，旧版 Caddy 不满足该代理层上传门禁。
 备份和恢复命令还要求 PostgreSQL 16 的 `pg_dump`、`pg_restore` 与 `psql`。
 
 ```bash
 node --version
 psql --version
-nginx -v
+caddy version
 ```
 
 Node 必须为 22 或更高版本。数据库客户端主版本应与 PostgreSQL 服务端一致；至少不能低于服务端主版本。
@@ -306,7 +307,7 @@ systemd 的 `TimeoutStopSec` 应覆盖该清理时间。API 正常但 worker 未
 备份、数据库 migration 或 release 切换前必须先停止 `xiqu-analysis-worker` 并等待 systemd 停机完成；其
 SIGTERM 路径会删除本轮半成品并把任务安全放回队列。不能只在管理员页面开启维护后就假定后台写入已经静默。
 
-## 8. 外部媒体与 Nginx/TLS
+## 8. 外部媒体与 Caddy/TLS
 
 ### 8.1 可选阿里云 VOD
 
@@ -346,7 +347,7 @@ https://g.alicdn.com/apsara-media-box/imp-web-player/2.38.3/skins/default/alipla
 
 部署网络必须允许浏览器访问该域名；若自行增加 Content Security Policy，需要把 `g.alicdn.com` 精确加入
 `script-src` 与 `style-src`，不要放开任意脚本域。SDK 加载失败、供应商未配置和播放会话失败都会在播放器
-原位显示并允许重试。短时 playauth 只驻留页面内存，到期前由播放器单飞刷新；禁止让 Nginx、Service Worker
+原位显示并允许重试。短时 playauth 只驻留页面内存，到期前由播放器单飞刷新；禁止让 Caddy、Service Worker
 或浏览器缓存播放会话 API 响应。服务器上传媒体与本地计算机媒体入口始终保留，不得把 VOD 配置作为平台
 启动的必需条件。
 
@@ -356,35 +357,68 @@ worker 内存和 FFmpeg argv，不缓存完整视频。部署验收可使用样�
 不算真实验收。若云端音频接口卡顿，用户可以在编辑器中强制改用已上传的 WAV/FLAC/MP3，自动来源恢复后
 也可显式切回。
 
-### 8.2 Nginx 与 TLS
+### 8.2 Caddy 与自动 TLS
 
-先取得目标域名证书，再复制模板并替换 `annotation.example.org` 和证书路径：
+先把目标域名的 A/AAAA 记录指向服务器，并确认公网 TCP 80/443 可以到达该主机。按照
+[Caddy 官方安装说明](https://caddyserver.com/docs/install)安装受支持版本；发行版安装包通常会同时创建
+`caddy` systemd 服务和持久目录 `/var/lib/caddy`。复制模板并把 `annotation.example.org` 替换成真实域名：
 
 ```bash
-sudo cp deploy/single-server/nginx.conf.example /etc/nginx/conf.d/xiqu-platform.conf
-sudoedit /etc/nginx/conf.d/xiqu-platform.conf
-sudo nginx -t
-sudo systemctl reload nginx
+sudo cp deploy/single-server/Caddyfile.example /etc/caddy/Caddyfile
+sudoedit /etc/caddy/Caddyfile
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl enable --now caddy
+sudo systemctl reload caddy
+sudo systemctl status caddy --no-pager
 ```
 
-R3h5 起，模板中的 `gzip_types` 还负责压缩波形、频谱、F0 单瓦片和批量瓦片响应。升级已有服务器时不能只
-替换 Web/API release 而遗漏 Nginx 配置；应先对比现有站点文件，保留真实域名、证书和安全策略，再合入四个
-`application/vnd.xiqu.*` MIME，执行 `nginx -t` 后 reload。授权资产仍必须保持 private，不能在代理或 CDN
-改成 public/immutable 缓存。
+站点地址包含真实域名时，Caddy 会自动申请、安装和续期公开可信的 TLS 证书，并把 HTTP 重定向到 HTTPS。
+首次签发和后续续期都依赖有效 DNS、80/443 入站和可写的 Caddy 数据目录；不能把 `/var/lib/caddy` 当成
+release 临时目录清理。部署方仍需监控签发/续期失败和证书到期状态。
 
-Nginx 必须：
+模板同时固定以下边界：
 
-- 在 SPA fallback 之前代理 `/api/`。
-- 保留 `Upgrade`/`Connection`，否则协作 WebSocket 会失败。
-- `client_max_body_size` 不低于 `XIQU_MAX_UPLOAD_BYTES`，同时仍由 Fastify 执行业务上限与签名检查。
-  `FileObject.size`/`MediaFile.size` 已迁移为 `BigInt`，`XIQU_MAX_UPLOAD_BYTES` 可设为超过 2 GiB；
-  此时 Nginx 的 `client_max_body_size` 与上游/代理超时也必须相应调大。仓库模板的两项默认值均为
-  20 GiB；不要只修改环境变量而遗漏 Nginx。S3-compatible 后端对超过 5 GB 的 staged 对象会使用
-  multipart copy 完成发布，超过 S3 5 TB 对象上限则明确拒绝。
-- 不对 `index.html` 长期缓存；带哈希的 `/assets/` 才使用 immutable 缓存。
-- 只开放 80/443；4317 仅监听服务器网络栈并由防火墙限制本机访问。
+- `@api path /api /api/*` 在 SPA fallback 之前代理到 `127.0.0.1:4317`。必须使用 `handle`，不能改成会剥除
+  `/api` 前缀的 `handle_path`。Caddy 原生处理 WebSocket upgrade，`stream_close_delay 5m` 用于错开配置
+  reload 时的协作连接重连；HTTP committed-feed/snapshot 追赶仍是权威恢复路径。
+- `request_body max_size 21474836480` 与 `XIQU_MAX_UPLOAD_BYTES=21474836480` 精确对齐，超过限制返回 413，
+  Fastify 仍执行自己的业务上限和媒体签名检查。修改上传上限时必须同步修改两处。大小列已迁移为 `BigInt`；
+  S3-compatible 后端对超过 5 GB 的 staged 对象使用 multipart copy，超过 S3 5 TB 上限则明确拒绝。
+- `encode gzip` 显式覆盖普通 Web MIME 和四种 `application/vnd.xiqu.*` 分析 MIME，确保波形、频谱、F0
+  单瓦片与批量瓦片继续流式压缩。授权资产仍保持 private，不能在代理或 CDN 改成 public/immutable。
+- `/assets/*` 仅服务带内容哈希的构建资产并设置 immutable；直接请求或 SPA fallback 得到的 `index.html`
+  都设置 `no-cache`。
+- Caddy 的服务账号必须能够遍历 `/opt/xiqu/current` 并读取 `dist/index.html`，但不需要获得 release 写权限：
 
-真实部署建议让受支持的 ACME 客户端自动续期并监控续期失败。TLS 私钥、真实域名和证书不得提交仓库。
+  ```bash
+  sudo -u caddy test -r /opt/xiqu/current/dist/index.html
+  ```
+
+- 防火墙只开放 80/443；Fastify 4317 和 PostgreSQL 5432 不对公网开放。生产同源部署不设置
+  `XIQU_CORS_ORIGINS`。
+
+### 8.3 从既有 Nginx 切换到 Caddy
+
+仓库保留 `nginx.conf.example` 供尚未迁移的既有部署使用；新的单服务器部署以 Caddy 为默认。切换前先保留
+现有 Nginx 站点文件和证书配置以便回退，并在 Nginx 仍在线时完成 Caddyfile 的离线校验。两者不能同时绑定
+80/443，实际切换按以下顺序执行：
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl disable --now nginx
+sudo systemctl enable --now caddy
+sudo systemctl status caddy --no-pager
+sudo ss -ltnp | grep -E ':80 |:443 '
+```
+
+切换后立即使用正式 HTTPS origin 执行第 9 节只读检查。若 Caddy 启动或签发证书失败，先查看
+`journalctl -u caddy`，必要时停止 Caddy 并重新启用原 Nginx 配置；不要让临时 HTTP 页面或 Fastify 4317
+直接暴露公网。
+
+切换域名或首次从 `localhost` 上线时，阿里云 Web 播放器 License 还必须覆盖浏览器实际 hostname。
+`XIQU_ALIYUN_VOD_WEB_LICENSE_DOMAIN` 应等于控制台申请 License 时填写的域名，Key 必须来自同一已绑定且
+未过期的 Web 应用；域名或 Key 变化后重启 `xiqu-api`。Caddy 的 TLS 成功不代表 VOD License 已生效，
+播放器 `4040 LICENSE ERROR` 应回到第 8.1 节核对授权，而不是放宽反向代理。
 
 ## 9. 部署验收
 
@@ -402,9 +436,9 @@ npm run deploy:check -- \
   --timeout-ms=20000
 ```
 
-若在服务器本机通过 loopback 检查 Nginx，仍必须让请求携带已配置的 `server_name`，或直接使用正式 origin。
-裸 `http://127.0.0.1/` 的 Host 可能命中 Ubuntu 默认虚拟主机并返回欢迎页/404，这不代表 Fastify API 故障；
-不要为了让错误探针通过而放宽生产 server block。
+部署验收优先直接使用正式 HTTPS origin，让同一次检查覆盖 DNS、Caddy 路由和 TLS。裸
+`http://127.0.0.1/` 不携带配置域名，可能不能命中目标站点或只能验证本机端口；这不代表 Fastify API
+故障，也不能替代公开 origin 检查。
 
 然后完成一次人工闭环：
 
@@ -513,7 +547,7 @@ SHA-256，并在空数据库和空对象目录执行隔离恢复及摘要复核�
 4. 通过 CLI 进入维护模式，等待在途 HTTP 写入排空。当前版本没有自动客户端 drain，管理员还应确认活跃用户
    已停止编辑；维护开启后的本机草稿不会自动等同于服务器已保存。
 5. 使用 **新 release** 执行 `npm run db:deploy`。
-6. 原子切换 `/opt/xiqu/current`，重启 API；若代理配置变化，再执行 `nginx -t` 后 reload。
+6. 原子切换 `/opt/xiqu/current`，重启 API；若代理配置变化，再执行 `caddy validate` 后 reload。
 7. 在维护状态下运行无写入的 `deploy:check`，检查首页、liveness、readiness 和只读资源；此时不能把登录或
    保存失败误判为新版本故障。
 8. 使用 CLI 解除维护，随后启动新 release 的 analysis worker 并检查队列状态。
@@ -556,7 +590,6 @@ sudo systemctl start xiqu-analysis-worker
 ```bash
 sudo ln -sfn "$OLD_RELEASE" /opt/xiqu/current
 sudo systemctl restart xiqu-api
-sudo nginx -t && sudo systemctl reload nginx
 npm run deploy:check -- --base-url=https://annotation.example.org
 ```
 
@@ -574,7 +607,8 @@ release。Prisma migration 采用前向记录，不要手工删除 `_prisma_migr
 - [ ] `DATABASE_URL` 指向目标库，`XIQU_SEED_DEVELOPMENT_DATA=false`。
 - [ ] 数据库 migration 成功，首位管理员通过一次性 CLI 创建。
 - [ ] local 对象目录持久化，或真实 S3-compatible IAM/TLS 能力验收通过。
-- [ ] Fastify 4317 不对公网开放；Nginx `/api` 与 WebSocket upgrade 正常。
+- [ ] Fastify 4317 不对公网开放；Caddy `/api`、WebSocket 和 SPA fallback 正常。
+- [ ] Caddy `request_body max_size` 与 `XIQU_MAX_UPLOAD_BYTES` 一致，四种分析 MIME 启用 gzip。
 - [ ] TLS 证书可信且已有续期与失败告警。
 - [ ] `deploy:check`、登录、上传、Range、打开、保存、ACL 和审计人工闭环通过。
 - [ ] Prometheus token 独立保存，告警接收端经过真实测试。
@@ -583,10 +617,10 @@ release。Prisma migration 采用前向记录，不要手工删除 `_prisma_migr
 
 ## 14. 当前候选限制
 
-- systemd/Nginx 是单机模板，未提供多节点负载均衡或自动扩缩容。
+- systemd/Caddy 是单机模板，未提供多节点负载均衡或自动扩缩容。
 - 真实生产 MinIO/AWS IAM、TLS、网络与恢复仍需在目标环境执行，仓库测试不能替代。
 - 没有自动备份调度、备份加密、跨区复制或恢复时间目标承诺。
-- 没有自动 ACME、主机防火墙或操作系统补丁编排。
+- Caddy 提供自动 ACME，但仓库没有证书续期失败告警、主机防火墙或操作系统补丁编排。
 - Web 主 bundle 仍有 Vite 大 chunk 提醒，影响首屏性能但不阻断正确性。
 - 工尺谱字形字体在公共发布前仍需替换或取得明确授权。
 
