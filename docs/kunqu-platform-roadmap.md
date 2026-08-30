@@ -76,7 +76,7 @@ all-or-nothing 冲突重放判定和真实双账号并发矩阵；R5b3c2 已完�
 crash-safe 草稿 checkpoint、基线替换和原 operation 重提接线。后续可靠性修复又把同一安全 rebase 规则接入
 在线 409 自动处理：无冲突命令保留原身份并立即重提，同目标冲突仍进入既有人工流程；WebSocket 建连窗口
 通过“先订阅、再读权威 head、再发送 ready”消除漏 revision。R5 可部署候选门禁已完成：生产入口采用
-fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提供 systemd、Nginx/TLS、部署 smoke、
+fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提供 systemd、Caddy 自动 TLS、部署 smoke、
 迁移、备份恢复、升级回滚和人工验收说明。`pg_trgm` 仍作为数据库级部署能力由运维基线显式预置。
 
 ## 1. 产品目标
@@ -976,7 +976,8 @@ VOD 共用精确媒体时钟；长视频波形、频谱和 F0 不再依赖浏览
         启用值级转换，避免“服务端已提交但响应丢失”时重复应用。WebSocket 建连继续先订阅、再二次读取权威
         revision/cursor，消除票据 head 与订阅之间的漏通知窗口。
 - R5 可部署候选门禁已完成：单服务器 PostgreSQL + Fastify + Web + 本地或 S3-compatible 对象存储方案
-  统一记录于 `docs/server-deployment.md`；仓库提供生产环境模板、systemd、Nginx/TLS、同源开发代理、
+  统一记录于 `docs/server-deployment.md`；仓库提供生产环境模板、systemd、Caddy 自动 TLS（并保留既有 Nginx
+  备选模板）、同源开发代理、
   首管理员 bootstrap 和无凭据只读 smoke check。真实隔离 schema 已验证 14 条 migration 与首次管理员创建，
   临时数据已清理。
 - 服务端 operation 排序、确认、重放、权限复核与原子批次提交已完成；WebSocket 仍只承载失效提示、

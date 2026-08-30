@@ -1,0 +1,52 @@
+# 复制到 /etc/caddy/Caddyfile 后替换为真实域名。Caddy 会自动申请并续期 TLS 证书。
+annotation.example.org {
+    encode gzip {
+        minimum_length 1024
+
+        match {
+            header Content-Type application/javascript*
+            header Content-Type application/json*
+            header Content-Type application/wasm*
+            header Content-Type application/xml*
+
+            header Content-Type application/vnd.xiqu.waveform-tile*
+            header Content-Type application/vnd.xiqu.spectrogram-tile*
+            header Content-Type application/vnd.xiqu.pitch-tile*
+            header Content-Type application/vnd.xiqu.media-analysis-batch*
+
+            header Content-Type font/*
+            header Content-Type image/svg+xml*
+            header Content-Type text/*
+        }
+    }
+
+    @api path /api /api/*
+    handle @api {
+        # 与 XIQU_MAX_UPLOAD_BYTES=21474836480 精确对齐；request_body 需要 Caddy 2.10+。
+        request_body {
+            max_size 21474836480
+        }
+
+        reverse_proxy 127.0.0.1:4317 {
+            # 配置 reload 时错开协作 WebSocket 重连，HTTP 权威追赶仍负责补齐丢失提示。
+            stream_close_delay 5m
+        }
+    }
+
+    handle /assets/* {
+        root * /opt/xiqu/current/dist
+        header Cache-Control "public, max-age=31536000, immutable"
+        file_server
+    }
+
+    handle {
+        root * /opt/xiqu/current/dist
+
+        route {
+            try_files {path} {path}/ /index.html
+            header /index.html Cache-Control "no-cache"
+        }
+
+        file_server
+    }
+}

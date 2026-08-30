@@ -262,39 +262,38 @@ test("readiness 非 2xx 时部署检查整体失败", async () => {
   );
 });
 
-// 单服务器模板必须提供一致的应用层和代理层上限，防止大文件在 Nginx 提前收到 413。
-test("单服务器环境与 Nginx 模板使用相同上传上限", async () => {
-  const [environment, nginx] = await Promise.all([
+// 单服务器模板必须提供一致的应用层和代理层上限，防止大文件在 Caddy 提前收到 413。
+test("单服务器环境与 Caddy 模板使用相同上传上限", async () => {
+  const [environment, caddyfile] = await Promise.all([
     readFile(new URL("../deploy/single-server/xiqu-platform.env.example", import.meta.url), "utf8"),
-    readFile(new URL("../deploy/single-server/nginx.conf.example", import.meta.url), "utf8"),
+    readFile(new URL("../deploy/single-server/Caddyfile.example", import.meta.url), "utf8"),
   ]);
   const environmentBytes = Number(
     environment.match(/^XIQU_MAX_UPLOAD_BYTES=(\d+)$/m)?.[1],
   );
-  const nginxMatch = nginx.match(/client_max_body_size\s+(\d+)([mg]);/i);
+  const caddyBytes = Number(caddyfile.match(/max_size\s+(\d+)/u)?.[1]);
   assert.ok(Number.isSafeInteger(environmentBytes) && environmentBytes > 0);
-  assert.ok(nginxMatch);
-  const nginxUnitBytes = nginxMatch[2]?.toLowerCase() === "g"
-    ? 1024 * 1024 * 1024
-    : 1024 * 1024;
-  const nginxBytes = Number(nginxMatch[1]) * nginxUnitBytes;
-  assert.equal(nginxBytes, environmentBytes);
+  assert.equal(caddyBytes, environmentBytes);
 });
 
 // 冷加载加速依赖代理层对单瓦片和批量响应流式压缩，不能只在开发服务器中偶然生效。
-test("单服务器 Nginx 模板压缩全部媒体分析 MIME", async () => {
-  const nginx = await readFile(
-    new URL("../deploy/single-server/nginx.conf.example", import.meta.url),
+test("单服务器 Caddy 模板保留 API 路径并压缩全部媒体分析 MIME", async () => {
+  const caddyfile = await readFile(
+    new URL("../deploy/single-server/Caddyfile.example", import.meta.url),
     "utf8",
   );
-  assert.match(nginx, /gzip\s+on;/u);
+  assert.match(caddyfile, /encode\s+gzip\s*\{/u);
+  assert.match(caddyfile, /@api\s+path\s+\/api\s+\/api\/\*/u);
+  assert.match(caddyfile, /handle\s+@api\s*\{/u);
+  assert.doesNotMatch(caddyfile, /handle_path\s+\/api/u);
+  assert.match(caddyfile, /reverse_proxy\s+127\.0\.0\.1:4317/u);
   for (const mimeType of [
     "application/vnd.xiqu.waveform-tile",
     "application/vnd.xiqu.spectrogram-tile",
     "application/vnd.xiqu.pitch-tile",
     "application/vnd.xiqu.media-analysis-batch",
   ]) {
-    assert.match(nginx, new RegExp(mimeType.replaceAll(".", "\\."), "u"));
+    assert.match(caddyfile, new RegExp(mimeType.replaceAll(".", "\\."), "u"));
   }
 });
 

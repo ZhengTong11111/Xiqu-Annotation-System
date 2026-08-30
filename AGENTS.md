@@ -36,7 +36,8 @@ Main currently contains all major recent feature lines that matter for context:
 - 修改 `packages/shared` 或 `packages/document-model` 后，必须重新执行对应 build 并重启已运行的 `dev:api`；Vite
   热更新不会刷新 API 进程已经加载的 workspace `dist` parser，不能用旧 API 产物验证新的命令合同
 - R5 controlled single-server deployment candidate with fail-closed production configuration, same-origin `/api`, one-time
-  administrator bootstrap, systemd/Nginx templates, read-only smoke checks, and `docs/server-deployment.md`
+  administrator bootstrap, systemd/Caddy templates with automatic TLS, a legacy Nginx alternative, read-only smoke checks,
+  and `docs/server-deployment.md`
 - backend audit logs and annotation operation logs for the first platform-governance layer
 - authenticated file WebSockets plus schema-isolated PostgreSQL LISTEN/NOTIFY revision invalidations across API instances;
   these are lossy wake-up hints, while HTTP committed-feed/snapshot catch-up remains authoritative
@@ -1188,7 +1189,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - local SeaweedFS passing is protocol/tool validation only; never mark R3g2b2 production acceptance complete until the
     command, real backup/verify/restore, TLS/network checks, and IAM review run in the target environment
 - `deploy/single-server/`
-  - R5 受控单服务器候选的环境、systemd 与 Nginx/TLS 模板；操作步骤只在 `docs/server-deployment.md` 维护
+  - R5 受控单服务器候选的环境、systemd 与 Caddy/自动 TLS 模板；Nginx 模板只作为既有部署备选，操作步骤只在
+    `docs/server-deployment.md` 维护
   - 模板不能包含真实域名、密码、metrics token、TLS 私钥或对象存储凭据
   - 首次正式生产部署默认使用空 PostgreSQL 数据库和空对象存储，运行 migration 后创建正式首管理员；本机
     debug 数据、开发 seed、`.env` 和 `data/` 只有在用户另行明确批准数据迁移时才允许进入生产
@@ -1209,9 +1211,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     `release:check` before cutover. API, worker, and operational CLI startup
     also fail closed through `prismaClientSchemaGuard`; repair a mismatched candidate by building a new immutable release,
     never by mutating the active release. This same contract applies when rebuilding from Git on a replacement server
-  - Nginx smoke checks must use the configured public origin or an explicit matching `Host` header. A loopback request with
-    `Host: 127.0.0.1` may legitimately hit the distribution's default virtual host and return its welcome page/404; do not
-    diagnose that as an API failure or weaken the server block to make an invalid probe pass
+  - Caddy smoke checks must use the configured public HTTPS origin so DNS, automatic TLS, static routing, and `/api` are tested
+    together. A loopback request with `Host: 127.0.0.1` is not equivalent and must not be used to weaken the production site
+    block or diagnose an API failure
   - local restore drills publish through a sibling staging directory; place `target-storage` below a dedicated parent
     writable by `xiqu`, not directly below a root-owned persistent-data directory. A failed drill may already have restored
     the isolated database before object publication, so recreate only that isolated target before retrying
@@ -1904,7 +1906,7 @@ Important backend caveats:
 - the API has an R5 controlled single-server deployment baseline, committed migrations, protected media serving, upload and
   collaboration rate limits, health/metrics, backup, and recovery; R7 public-production IAM, network, capacity, DR, and
   long-term security acceptance remain future target-environment work
-- the browser platform client always targets same-origin `/api`; Vite proxies it in development and Nginx proxies it in
+- the browser platform client always targets same-origin `/api`; Vite proxies it in development and Caddy proxies it in
   deployment. Do not reintroduce an absolute visitor-local API URL into `PlatformWorkspace.tsx`
 - frontend read-only state is enforced centrally by `useProjectDocumentState({ readOnly })`; UI disabling is not the security boundary, and permission lookup failures must fail closed
 - permission core regression tests run with `npm run test:permissions`
@@ -1964,8 +1966,8 @@ Important backend caveats:
   (`Number()` on read, `BigInt()` on write) — never introduce a global `BigInt.prototype.toJSON` patch.
 - S3 staged promotion must not send objects larger than 5 GB through one `CopyObject`. Keep multipart-copy planning
   contiguous and below 10,000 parts, preserve bounded request concurrency, abort failed sessions only after in-flight
-  parts settle, and delete the staged object only after complete succeeds. The single-server Nginx
-  `client_max_body_size` and `XIQU_MAX_UPLOAD_BYTES` examples must remain aligned.
+  parts settle, and delete the staged object only after complete succeeds. The single-server Caddy
+  `request_body max_size` and `XIQU_MAX_UPLOAD_BYTES` examples must remain aligned.
 - filesystem and PostgreSQL cannot share a transaction. A failure before database commit deletes staged/final binary;
   a crash between publish and commit leaves an aged disk orphan discoverable by lifecycle audit. After database commit,
   DTO mapping failure must not delete the now-referenced binary.
