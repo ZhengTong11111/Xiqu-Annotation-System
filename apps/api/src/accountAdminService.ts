@@ -72,17 +72,20 @@ export class AccountAdminService {
     assertPassword(input.password);
     const passwordHash = await hashPassword(input.password);
     try {
-      const row = await this.prisma.$transaction(async (transaction) => {
+      const createdUserId = await this.prisma.$transaction(async (transaction) => {
         const created = await transaction.user.create({
           data: {
             accountName,
             displayName,
             passwordHash,
-            roles: {
-              create: roles.map((role) => ({ role: role as DbPlatformRole })),
-            },
           },
-          include: { roles: true },
+        });
+        // adapter-pg 的交互事务只有一个连接；显式顺序写角色，避免 nested create 并行占用同一 client。
+        await transaction.userRole.createMany({
+          data: roles.map((role) => ({
+            userId: created.id,
+            role: role as DbPlatformRole,
+          })),
         });
         await transaction.auditLog.create({
           data: {
@@ -92,7 +95,12 @@ export class AccountAdminService {
             detail: { roles },
           },
         });
-        return created;
+        return created.id;
+      });
+      // 关系 include 可能由 Prisma 并行展开；提交后再读取，避免共享事务连接出现并发 query。
+      const row = await this.prisma.user.findUniqueOrThrow({
+        where: { id: createdUserId },
+        include: { roles: true },
       });
       return mapManagedAccount(row);
     } catch (error) {
@@ -113,13 +121,17 @@ export class AccountAdminService {
       : normalizeDisplayName(input.displayName);
     const roles = input.roles === undefined ? undefined : normalizeRoles(input.roles);
 
-    const row = await this.prisma.$transaction(async (transaction) => {
+    await this.prisma.$transaction(async (transaction) => {
       const current = await transaction.user.findUnique({
         where: { id: targetUserId },
-        include: { roles: true },
       });
       if (!current) throw notFound("账号不存在。");
-      const currentRoles = current.roles.map(({ role }) => role as PlatformRole);
+      // 事务客户端只有一个底层连接，角色读取与用户读取必须显式顺序执行。
+      const currentRoleRows = await transaction.userRole.findMany({
+        where: { userId: targetUserId },
+        select: { role: true },
+      });
+      const currentRoles = currentRoleRows.map(({ role }) => role as PlatformRole);
       const nextRoles = roles ?? currentRoles;
       const nextActive = input.isActive ?? current.isActive;
       if (targetUserId === actor.id && (!nextActive || !hasGlobalAdminRole(nextRoles))) {
@@ -145,13 +157,12 @@ export class AccountAdminService {
           data: roles.map((role) => ({ userId: targetUserId, role: role as DbPlatformRole })),
         });
       }
-      const updated = await transaction.user.update({
+      await transaction.user.update({
         where: { id: targetUserId },
         data: {
           ...(displayName !== undefined ? { displayName } : {}),
           ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
         },
-        include: { roles: true },
       });
       if (input.isActive === false) {
         // 停用必须立刻撤销既有登录，不等待 session 自然过期。
@@ -169,7 +180,11 @@ export class AccountAdminService {
           },
         },
       });
-      return updated;
+    });
+    // 事务提交后再聚合角色，返回值始终对应数据库已经公开的最终状态。
+    const row = await this.prisma.user.findUniqueOrThrow({
+      where: { id: targetUserId },
+      include: { roles: true },
     });
     return mapManagedAccount(row);
   }

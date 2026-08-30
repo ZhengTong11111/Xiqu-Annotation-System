@@ -105,16 +105,35 @@ export class ResourceAccessService {
         id: true,
         name: true,
         ownerUserId: true,
-        permissions: {
-          where: {
-            userId: user.id,
-            OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-          },
-          select: { capabilities: true, inheritToChildren: true },
-        },
       },
     });
-    const resourceById = new Map(resources.map((resource) => [resource.id, resource]));
+    // adapter-pg 的事务客户端只有一个连接；ACL 关系必须作为第二条顺序查询读取，
+    // 不能用 relation select 让 Prisma 在一个 transaction client 上并行展开。
+    const permissionRows = await database.resourcePermission.findMany({
+      where: {
+        resourceId: { in: chainResourceIds },
+        userId: user.id,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      select: {
+        resourceId: true,
+        capabilities: true,
+        inheritToChildren: true,
+      },
+    });
+    const permissionsByResourceId = new Map<string, typeof permissionRows>();
+    for (const permission of permissionRows) {
+      const rows = permissionsByResourceId.get(permission.resourceId) ?? [];
+      rows.push(permission);
+      permissionsByResourceId.set(permission.resourceId, rows);
+    }
+    const resourceById = new Map(resources.map((resource) => [
+      resource.id,
+      {
+        ...resource,
+        permissions: permissionsByResourceId.get(resource.id) ?? [],
+      },
+    ]));
     const chainByTarget = new Map<string, typeof chains>();
     for (const row of chains) {
       const rows = chainByTarget.get(row.targetId) ?? [];

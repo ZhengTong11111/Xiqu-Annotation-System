@@ -12,7 +12,9 @@ import {
 
 const MAX_MIGRATION_RUNS = 50_000;
 
-const migrationRunInclude = {
+// 该 shape 只用于编译期约束装配后的迁移事实，不直接传给 Prisma；
+// 多关系 include 会在 adapter-pg 的同一 client 上并行 fan-out。
+const migrationRunShape = {
   assets: {
     orderBy: [
       { kind: "asc" as const },
@@ -38,7 +40,7 @@ const migrationRunInclude = {
 } satisfies Prisma.MediaAnalysisRunInclude;
 
 type MigrationRunRow = Prisma.MediaAnalysisRunGetPayload<{
-  include: typeof migrationRunInclude;
+  include: typeof migrationRunShape;
 }>;
 
 export type MediaAnalysisMigrationResult = {
@@ -169,15 +171,71 @@ export class MediaAnalysisMigrationService {
   }
 
   private async loadRows(database: PrismaClient | Prisma.TransactionClient) {
-    const rows = await database.mediaAnalysisRun.findMany({
-      include: migrationRunInclude,
+    const runs = await database.mediaAnalysisRun.findMany({
       orderBy: { id: "asc" },
       take: MAX_MIGRATION_RUNS + 1,
     });
-    if (rows.length > MAX_MIGRATION_RUNS) {
+    if (runs.length > MAX_MIGRATION_RUNS) {
       throw new Error(`媒体分析 run 超过单次迁移上限 ${MAX_MIGRATION_RUNS}。`);
     }
-    return rows;
+    if (runs.length === 0) return [];
+    const runIds = runs.map(({ id }) => id);
+    // 资产、任务和媒体事实分别顺序读取；锁内重验同样复用该路径，不会产生并发 query。
+    const assets = await database.mediaAnalysisAsset.findMany({
+      where: { runId: { in: runIds } },
+      orderBy: [
+        { kind: "asc" },
+        { preset: "asc" },
+        { level: "asc" },
+        { tileIndex: "asc" },
+        { id: "asc" },
+      ],
+    });
+    const jobs = await database.processingJob.findMany({
+      where: { analysisRunId: { in: runIds } },
+      select: { analysisRunId: true, status: true },
+    });
+    const sourceMediaIds = [...new Set(runs.map(({ sourceMediaResourceId }) =>
+      sourceMediaResourceId))];
+    const sourceMediaRows = await database.mediaFile.findMany({
+      where: { resourceId: { in: sourceMediaIds } },
+      select: {
+        resourceId: true,
+        sourceType: true,
+        duration: true,
+        aliyunVodVideoId: true,
+        aliyunVodRegion: true,
+        file: { select: { id: true, checksum: true, size: true } },
+      },
+    });
+    const assetsByRunId = new Map<string, typeof assets>();
+    for (const asset of assets) {
+      const rows = assetsByRunId.get(asset.runId) ?? [];
+      rows.push(asset);
+      assetsByRunId.set(asset.runId, rows);
+    }
+    const jobsByRunId = new Map<string, Array<{ status: (typeof jobs)[number]["status"] }>>();
+    for (const job of jobs) {
+      if (!job.analysisRunId) continue;
+      const rows = jobsByRunId.get(job.analysisRunId) ?? [];
+      rows.push({ status: job.status });
+      jobsByRunId.set(job.analysisRunId, rows);
+    }
+    const sourceMediaById = new Map(
+      sourceMediaRows.map((media) => [media.resourceId, media]),
+    );
+    return runs.map((run): MigrationRunRow => {
+      const sourceMedia = sourceMediaById.get(run.sourceMediaResourceId);
+      if (!sourceMedia) {
+        throw new Error("媒体分析 run 缺少源媒体，迁移拒绝继续。");
+      }
+      return {
+        ...run,
+        assets: assetsByRunId.get(run.id) ?? [],
+        jobs: jobsByRunId.get(run.id) ?? [],
+        sourceMedia,
+      };
+    });
   }
 
   private async buildRunFact(row: MigrationRunRow): Promise<MediaAnalysisMigrationRunFact> {

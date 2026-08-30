@@ -42,6 +42,31 @@ export interface ObjectStorage {
   listStoredObjects(): Promise<StoredObjectSummary[]>;
 }
 
+export type UncommittedObjectCleanupFailure = {
+  stage: "final" | "staged";
+  error: unknown;
+};
+
+// promote 在远端可能出现“复制已成功，但响应或 staged 删除失败”的不确定结果。
+// 数据库尚未提交时必须同时幂等删除 final 与 staged，不能依赖调用方猜测远端已走到哪一步。
+export async function cleanupUncommittedStagedBinary(
+  storage: Pick<ObjectStorage, "deleteObject">,
+  staged: StagedBinary,
+): Promise<UncommittedObjectCleanupFailure[]> {
+  const failures: UncommittedObjectCleanupFailure[] = [];
+  for (const [stage, storageKey] of [
+    ["final", staged.finalStorageKey],
+    ["staged", staged.stagedStorageKey],
+  ] as const) {
+    try {
+      await storage.deleteObject(storageKey);
+    } catch (error) {
+      failures.push({ stage, error });
+    }
+  }
+  return failures;
+}
+
 // 所有后端都用同一超限错误向上传业务报告流式大小边界，不泄漏具体 SDK/文件系统异常。
 export class StorageSizeLimitError extends Error {}
 

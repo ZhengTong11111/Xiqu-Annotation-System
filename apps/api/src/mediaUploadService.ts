@@ -6,6 +6,7 @@ import { HttpError, uploadTooLarge, unsupportedMedia } from "./errors.js";
 import type { ApiObservability, UploadMetricResult } from "./observability.js";
 import type { ResourceService } from "./resourceService.js";
 import {
+  cleanupUncommittedStagedBinary,
   StorageSizeLimitError,
   type ObjectStorage,
   type StagedBinary,
@@ -46,7 +47,6 @@ export class MediaUploadService {
     logger: MediaUploadLogger,
   ): Promise<ResourceEntry> {
     let staged: StagedBinary | null = null;
-    let promoted = false;
     let databaseCommitted = false;
     try {
       const name = normalizeUploadName(input.name);
@@ -71,7 +71,6 @@ export class MediaUploadService {
       }
       const detected = await detectAndValidateMedia(name, staged.header);
       await this.storage.promoteStagedObject(staged);
-      promoted = true;
       const resourceId = await this.resources.commitUploadedMedia(user, {
         parentId: input.parentId,
         name,
@@ -87,17 +86,19 @@ export class MediaUploadService {
       this.observability?.recordUpload("success", staged.size);
       return await this.resources.getResource(user, resourceId);
     } catch (error) {
-      // 失败发生在哪个阶段并不影响调用方：已产生的暂存/最终对象都要做幂等补偿。
-      const cleanupKey = staged
-        ? (promoted ? staged.finalStorageKey : staged.stagedStorageKey)
-        : null;
-      if (cleanupKey && !databaseCommitted) {
-        await this.storage.deleteObject(cleanupKey).catch((cleanupError) => {
-          this.observability?.recordCompensationFailure(
-            promoted ? "final" : "staged",
+      // 远端 publish 的失败结果可能不确定；DB 未提交时同时清理 final/staged 才不会留下无引用对象。
+      if (staged && !databaseCommitted) {
+        const cleanupFailures = await cleanupUncommittedStagedBinary(
+          this.storage,
+          staged,
+        );
+        for (const failure of cleanupFailures) {
+          this.observability?.recordCompensationFailure(failure.stage);
+          logger.error(
+            failure.error,
+            `清理失败媒体上传${failure.stage === "final" ? "最终" : "暂存"}对象时发生错误`,
           );
-          logger.error(cleanupError, "清理失败媒体上传对象时发生错误");
-        });
+        }
       }
       if (error instanceof StorageSizeLimitError) {
         this.observability?.recordUpload("too_large");

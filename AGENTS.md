@@ -958,6 +958,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - explicitly aligns Prisma schema and PostgreSQL `search_path`; tests and CLIs must use this composition root instead
     of constructing a second adapter path
   - collaboration LISTEN/NOTIFY connections must never reuse Prisma business-query or maintenance advisory-lock pools
+  - Prisma 7 `@prisma/adapter-pg` interactive transactions own one `pg` client. Do not use nested relation writes or
+    multi-sibling relation `include`/`select` when they can fan out concurrent queries on that client. Execute writes and
+    relation reads sequentially, batch related rows by bounded id sets, and assemble DTO maps in memory; never silence the
+    node-postgres concurrent-query deprecation warning or mistake it for a LISTEN/NOTIFY lifecycle fault
 - `apps/api/src/auditLogQuery.ts`
   - pure audit filter normalization, query-bound cursor encoding, Prisma where construction, and formula-safe CSV serialization
 - `apps/api/src/auditLogService.ts`
@@ -1913,6 +1917,10 @@ Important backend caveats:
 - filesystem and PostgreSQL cannot share a transaction. A failure before database commit deletes staged/final binary;
   a crash between publish and commit leaves an aged disk orphan discoverable by lifecycle audit. After database commit,
   DTO mapping failure must not delete the now-referenced binary.
+- remote staged publication has an ambiguous failure window: final copy may have succeeded even when `promote` throws because
+  its response or staged deletion failed. Before database commit, compensation must therefore delete final first and staged
+  second through `cleanupUncommittedStagedBinary()`, preserve the original business error, and report each cleanup failure with
+  fixed low-cardinality stages. Never infer object state from a single `promoted` boolean.
 - lifecycle cleanup may delete only objects older than its grace period and confirmed to have no media reference.
   `missing_binary` is diagnostic and must never trigger automatic metadata deletion.
 - standalone annotation-file copy preserves an external media reference. Recursive container copy remaps references

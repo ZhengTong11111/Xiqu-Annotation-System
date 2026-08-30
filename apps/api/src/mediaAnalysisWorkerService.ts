@@ -13,7 +13,10 @@ import {
   MediaAnalysisFfmpegError,
   streamMediaAnalysisPcm,
 } from "./mediaAnalysisFfmpeg.js";
-import type { ObjectStorage } from "./objectStorage.js";
+import {
+  cleanupUncommittedStagedBinary,
+  type ObjectStorage,
+} from "./objectStorage.js";
 
 const STALE_JOB_AFTER_MS = 2 * 60 * 1000;
 const MAX_ANALYSIS_ASSET_BYTES = 32 * 1024 * 1024;
@@ -326,12 +329,14 @@ export class MediaAnalysisWorkerService {
     try {
       await this.storage.promoteStagedObject(staged);
     } catch (publishError) {
-      try {
-        await this.storage.deleteObject(staged.stagedStorageKey);
-      } catch (cleanupError) {
+      const cleanupFailures = await cleanupUncommittedStagedBinary(
+        this.storage,
+        staged,
+      );
+      if (cleanupFailures.length > 0) {
         throw new AggregateError(
-          [publishError, cleanupError],
-          "媒体分析资产发布失败，且暂存对象补偿失败。",
+          [publishError, ...cleanupFailures.map(({ error }) => error)],
+          "媒体分析资产发布失败，且未提交对象补偿不完整。",
         );
       }
       throw publishError;

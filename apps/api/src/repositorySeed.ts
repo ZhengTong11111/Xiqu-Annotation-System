@@ -74,9 +74,12 @@ export async function ensurePlatformSeedData(prisma: PrismaClient) {
         type: "project",
         name: "示例项目：昆曲《寻梦》",
         ownerUserId: "user-admin",
-        projectMetadata: {
-          create: { description: "资源树与逐文件权限的开发示例。" },
-        },
+      },
+    });
+    await transaction.projectMetadata.create({
+      data: {
+        resourceId: "project-xunmeng-demo",
+        description: "资源树与逐文件权限的开发示例。",
       },
     });
     await transaction.resourceEntry.create({
@@ -86,13 +89,15 @@ export async function ensurePlatformSeedData(prisma: PrismaClient) {
         type: "annotation_file",
         name: "《寻梦》示例标注.json",
         ownerUserId: "user-admin",
-        annotationFile: {
-          create: {
-            payload: {},
-            revision: 1,
-            lastEditedBy: "user-admin",
-          },
-        },
+      },
+    });
+    // 开发种子也遵守生产事务的顺序关系写入规则，避免测试掩盖连接并发警告。
+    await transaction.annotationFile.create({
+      data: {
+        resourceId: "annotation-xunmeng-demo",
+        payload: {},
+        revision: 1,
+        lastEditedBy: "user-admin",
       },
     });
     await transaction.resourcePermission.createMany({

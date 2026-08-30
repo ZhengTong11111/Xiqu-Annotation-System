@@ -8892,3 +8892,41 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：P4a 路由语义清单、HTTP 流生命周期、真实故障定位、递归复制确定性依赖顺序、专项/完整门禁与文档。
 - **待推进**：P4b 对数据库 pool/事务/锁、对象读取写入、上传/复制/备份补偿、磁盘/配额和幂等恢复做故障注入；仍不
   部署服务器或修改生产数据库、对象、任务及草稿。
+
+## 2026-08-30：Prisma 单连接查询与对象发布不确定性补偿（P4b）
+
+### 数据库警告的证据化定位
+
+- 本轮先使用 `NODE_OPTIONS=--trace-deprecation` 和仅在测试进程内启用的 `pg.Client.query` 探针定位既有
+  `client.query() when client is already executing` 警告。追踪结果证明问题不在 collaboration LISTEN/NOTIFY 的专用
+  listener，而在 Prisma 7 `@prisma/adapter-pg` 对 nested write 和多个 sibling relation include/select 的并行 fan-out：
+  一个交互事务只持有一个 `pg` client，却收到了重叠 query。
+- 没有为了符合原计划误改 event bus。账号创建/更新、首次管理员、开发 seed、资源/标注/VOD/上传媒体创建、恢复备份、
+  ACL 解析和递归复制改为事务内顺序写入；关系 DTO 在提交后读取。资源类型、ACL、音轨来源和媒体分析迁移事实使用有界
+  ID 批次顺序读取并在内存按 Map 装配，避免 N+1，也避免单 client query 重入。
+- 媒体分析迁移的 dry-run、锁内重验、资产顺序、任务状态和源媒体完整性语义均保留；音轨原声 invariant、资源外键、
+  审计和配额仍在原事务中原子提交。事务外 DTO 读取失败只影响当前响应，不回滚已经提交的业务事实。
+
+### 对象存储发布与失败补偿
+
+- 旧上传流程用一个 `promoted` 布尔值判断该删 staged 还是 final，无法表达 S3 `CopyObject` 已成功、但响应丢失或删除
+  staged 失败的状态。新增 `cleanupUncommittedStagedBinary()`：只要数据库尚未提交，就先幂等删除 final，再删除 staged；
+  每个失败使用固定 `final | staged` 阶段记录指标和受控日志，同时始终保留原业务错误。
+- 媒体上传覆盖四类边界：发布结果不确定、数据库提交失败、补偿自身失败、数据库已提交后 DTO 读取失败。最后一种情况
+  不得删除已被数据库引用的对象，也不重复记录上传失败。
+- 媒体分析 worker 复用同一补偿 helper。故障测试先真实形成 final，再模拟 promote 抛错，最终只保留权威输入媒体，
+  不遗留 final/staged 分析资产，也不误删源文件。没有新建第二套存储状态机或引入新依赖。
+
+### 验证、自审与状态
+
+- `NODE_OPTIONS=--throw-deprecation npm run test:api`：225/225；任何残留 pg query 重入都会直接使测试失败。
+- `npm run test:processing-reliability-p4b`：媒体上传/本地存储 6/6，平台集成 38/38；
+  `NODE_OPTIONS=--throw-deprecation npm run test:media-analysis`：39/39。
+- `npm run test:deployment`：28/28；完整 `npm run build`、`git diff --check` 通过。构建仍只有既有 Vite 主 chunk
+  超过 500 kB 的提示，不属于本轮可靠性回归。
+- 自审确认没有数据库 migration、公开 API、前端 UI、ProjectData、协作命令、VOD 凭据或敏感日志变化；测试探针只在
+  `/tmp` 中临时使用并在收尾删除。后续 VOD 人工验收必须使用 `http://localhost:5173/`，因为当前 Web License 授权
+  `localhost`，不能以 `127.0.0.1` 冒充同一域名。
+- **已完成**：P4b 单连接查询归属、顺序批量关系装配、上传/分析发布不确定性补偿、专项/全量测试与规范更新。
+- **待推进**：P4c 对 FFmpeg、VOD 临时来源、对象发布、heartbeat、worker kill/restart、取消/完成竞态和多实例重复需求
+  做故障注入；继续不部署服务器、不连接生产数据库或对象存储。

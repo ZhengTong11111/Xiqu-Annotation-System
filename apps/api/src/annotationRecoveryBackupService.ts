@@ -156,13 +156,15 @@ export class AnnotationRecoveryBackupService {
           type: "annotation_file",
           name: backupName,
           ownerUserId: user.id,
-          annotationFile: {
-            create: {
-              payload: parsedPayload.data as Prisma.InputJsonValue,
-              mediaResourceId: sourceFile.mediaResourceId,
-              lastEditedBy: user.id,
-            },
-          },
+        },
+      });
+      // 恢复文件主实体显式顺序写入，保持事务原子且避免单连接上的 nested write 并发。
+      await transaction.annotationFile.create({
+        data: {
+          resourceId: backupResourceId,
+          payload: parsedPayload.data as Prisma.InputJsonValue,
+          mediaResourceId: sourceFile.mediaResourceId,
+          lastEditedBy: user.id,
         },
       });
       await transaction.auditLog.create({

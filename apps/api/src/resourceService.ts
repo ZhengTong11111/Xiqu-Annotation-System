@@ -1,6 +1,8 @@
 import {
   AnnotationConfirmationDomain as DbAnnotationConfirmationDomain,
   Prisma,
+  type AnnotationFile as DbAnnotationFile,
+  type MediaFile as DbMediaFile,
   type PrismaClient,
   type ResourceType as DbResourceType,
 } from "@prisma/client";
@@ -113,11 +115,9 @@ import {
   encodeAnnotationRangeCommentCursor,
 } from "./annotationRangeCommentPagination.js";
 
-const resourceInclude = {
+const resourceBaseInclude = {
   owner: { include: { roles: true } },
   _count: { select: { children: true } },
-  annotationFile: true,
-  mediaFile: true,
 } satisfies Prisma.ResourceEntryInclude;
 
 // 集中权限面板使用轻量项目行；完整标注、媒体和子项计数不应随项目选择列表一起加载。
@@ -146,9 +146,13 @@ const annotationMutationLeaseInclude = {
   holder: { include: { roles: true } },
 } satisfies Prisma.AnnotationMutationLeaseInclude;
 
-type ResourceRow = Prisma.ResourceEntryGetPayload<{
-  include: typeof resourceInclude;
+type ResourceBaseRow = Prisma.ResourceEntryGetPayload<{
+  include: typeof resourceBaseInclude;
 }>;
+type ResourceRow = ResourceBaseRow & {
+  annotationFile: DbAnnotationFile | null;
+  mediaFile: DbMediaFile | null;
+};
 type PermissionManagementProjectRow = Prisma.ResourceEntryGetPayload<{
   select: typeof permissionManagementProjectSelect;
 }>;
@@ -268,15 +272,16 @@ export class ResourceService {
     let exhausted = false;
     // ACL 在数据库候选之后判断，因此按有限批次持续扫描，直到得到 limit+1 个可见项或候选耗尽。
     while (visible.length <= limit && !exhausted) {
-      const rows = await this.prisma.resourceEntry.findMany({
+      const baseRows = await this.prisma.resourceEntry.findMany({
         where,
-        include: resourceInclude,
+        include: resourceBaseInclude,
         orderBy: buildResourceOrderBy(query),
         take: scanBatchSize,
         ...(candidateCursorId
           ? { cursor: { id: candidateCursorId }, skip: 1 }
           : {}),
       });
+      const rows = await this.attachResourceTypeMetadata(baseRows);
       if (rows.length === 0) break;
       exhausted = rows.length < scanBatchSize;
       candidateCursorId = rows.at(-1)!.id;
@@ -415,27 +420,30 @@ export class ResourceService {
     }
     const name = this.validateName(input.name);
     const parentId = input.parentId ?? null;
-    const resource = await this.prisma.$transaction(async (transaction) => {
+    const resourceId = await this.prisma.$transaction(async (transaction) => {
       await this.lockParentNamespaces(transaction, [parentId]);
       await this.assertNameAvailable(transaction, parentId, name);
-      return transaction.resourceEntry.create({
+      const created = await transaction.resourceEntry.create({
         data: {
           parentId,
           type: input.type,
           name,
           ownerUserId: user.id,
-          projectMetadata: input.type === "project"
-            ? { create: { description: input.description ?? null } }
-            : undefined,
         },
-        include: resourceInclude,
       });
+      // 项目元数据顺序写入，避免 Prisma nested write 在单连接交互事务中并发 query。
+      if (input.type === "project") {
+        await transaction.projectMetadata.create({
+          data: {
+            resourceId: created.id,
+            description: input.description ?? null,
+          },
+        });
+      }
+      return created.id;
     });
-    return this.mapResource(
-      user,
-      resource,
-      await this.access.getEffectivePermission(user, resource.id),
-    );
+    // owner、子项计数和类型元数据会展开多条关系查询，统一放到事务提交后读取。
+    return this.getMappedResource(user, resourceId);
   }
 
   async createAnnotationFile<TPayload>(
@@ -445,7 +453,7 @@ export class ResourceService {
     await this.assertContainer(input.parentId);
     await this.access.assertCapability(user, input.parentId, "create_child");
     const name = this.validateName(input.name);
-    const resource = await this.prisma.$transaction(async (transaction) => {
+    const resourceId = await this.prisma.$transaction(async (transaction) => {
       await this.lockParentNamespaces(transaction, [input.parentId]);
       if (input.mediaResourceId) {
         await this.assertMediaResourceForBinding(user, input.mediaResourceId, transaction);
@@ -455,36 +463,28 @@ export class ResourceService {
         input.parentId,
         name,
       );
-      return transaction.resourceEntry.create({
+      const created = await transaction.resourceEntry.create({
         data: {
           parentId: input.parentId,
           type: "annotation_file",
           name,
           ownerUserId: user.id,
-          annotationFile: {
-            create: {
-              payload: input.payload as Prisma.InputJsonValue,
-              mediaResourceId: input.mediaResourceId ?? null,
-              lastEditedBy: user.id,
-            },
-          },
         },
-        include: {
-          ...resourceInclude,
-          annotationFile: {
-            include: {
-              lastEditor: { include: { roles: true } },
-              mediaResource: { include: { resource: true, file: true } },
-            },
-          },
+        select: { id: true },
+      });
+      // 资源节点与标注实体仍在同一事务中提交，但显式顺序写入以适配单连接事务。
+      await transaction.annotationFile.create({
+        data: {
+          resourceId: created.id,
+          payload: input.payload as Prisma.InputJsonValue,
+          mediaResourceId: input.mediaResourceId ?? null,
+          lastEditedBy: user.id,
         },
       });
+      return created.id;
     });
-    return this.mapAnnotationFile<TPayload>(
-      user,
-      resource,
-      resource.annotationFile!,
-    );
+    // 关系 DTO 在事务外统一装配，避免 include 在 transaction client 上并行查询。
+    return this.getAnnotationFile<TPayload>(user, resourceId);
   }
 
   // 能力查询只暴露可公开 region，不触发凭据解析或远端请求。
@@ -518,7 +518,7 @@ export class ResourceService {
       });
     }
 
-    const created = await this.prisma.$transaction(async (transaction) => {
+    const createdId = await this.prisma.$transaction(async (transaction) => {
       await this.lockParentNamespaces(transaction, [input.parentId]);
       await this.assertContainer(input.parentId, transaction);
       await this.access.assertCapability(
@@ -534,17 +534,19 @@ export class ResourceService {
           type: "media_file",
           name,
           ownerUserId: user.id,
-          mediaFile: {
-            create: {
-              sourceType: "aliyun_vod",
-              mediaKind: metadata.mediaKind,
-              duration: metadata.duration,
-              aliyunVodVideoId: metadata.videoId,
-              aliyunVodRegion: provider.region,
-            },
-          },
         },
-        include: resourceInclude,
+        select: { id: true },
+      });
+      // VOD 元数据显式顺序写入，避免 nested create 在事务连接上并发执行。
+      await transaction.mediaFile.create({
+        data: {
+          resourceId: resource.id,
+          sourceType: "aliyun_vod",
+          mediaKind: metadata.mediaKind,
+          duration: metadata.duration,
+          aliyunVodVideoId: metadata.videoId,
+          aliyunVodRegion: provider.region,
+        },
       });
       // 新 VOD 媒体与上传媒体共用同一原声音轨 invariant，外部音轨随后由独立管理 API 关联。
       await createOriginalMediaAudioTrack(transaction, {
@@ -565,13 +567,9 @@ export class ResourceService {
           },
         },
       });
-      return resource;
+      return resource.id;
     });
-    return this.mapResource(
-      user,
-      created,
-      await this.access.getEffectivePermission(user, created.id),
-    );
+    return this.getMappedResource(user, createdId);
   }
 
   // 播放会话每次重新校验 ACL 与资源状态，临时凭据只存在于本次响应。
@@ -699,17 +697,19 @@ export class ResourceService {
           type: "media_file",
           name,
           ownerUserId: user.id,
-          mediaFile: {
-            create: {
-              sourceType: "uploaded",
-              mediaKind: mediaKindFromMimeType(input.mimeType),
-              fileId: file.id,
-              mimeType: input.mimeType,
-              size: BigInt(input.size),
-            },
-          },
         },
         select: { id: true },
+      });
+      // 二进制元数据与资源节点保持原子，但不使用会并行解释的 nested relation write。
+      await transaction.mediaFile.create({
+        data: {
+          resourceId: createdResource.id,
+          sourceType: "uploaded",
+          mediaKind: mediaKindFromMimeType(input.mimeType),
+          fileId: file.id,
+          mimeType: input.mimeType,
+          size: BigInt(input.size),
+        },
       });
       // 原声音轨与媒体资源在同一事务提交，任何读取都不会观察到“有媒体但无原声”的中间状态。
       await createOriginalMediaAudioTrack(transaction, {
@@ -744,7 +744,7 @@ export class ResourceService {
     const resource = await this.prisma.resourceEntry.findUnique({
       where: { id: resourceId },
       include: {
-        ...resourceInclude,
+        ...resourceBaseInclude,
         annotationFile: {
           include: {
             lastEditor: { include: { roles: true } },
@@ -754,9 +754,10 @@ export class ResourceService {
       },
     });
     if (!resource?.annotationFile) throw notFound("标注文件不存在。");
+    const resourceRow: ResourceRow = { ...resource, mediaFile: null };
     return this.mapAnnotationFile<TPayload>(
       user,
-      resource,
+      resourceRow,
       resource.annotationFile,
     );
   }
@@ -804,32 +805,39 @@ export class ResourceService {
     await this.access.assertCapability(user, resourceId, "download");
     const resource = await this.prisma.resourceEntry.findUnique({
       where: { id: resourceId },
-      include: {
-        annotationFile: true,
-        mediaFile: { include: { file: true } },
-      },
     });
     if (!resource) throw notFound("资源不存在。");
     if (resource.trashedAt) throw badRequest("请先恢复回收站中的资源，再执行下载。");
 
-    if (resource.type === "media_file" && resource.mediaFile) {
+    // 两种文件关系互斥：先看资源类型，再只读取需要的关系，避免同 client 并行展开。
+    if (resource.type === "media_file") {
+      const mediaFile = await this.prisma.mediaFile.findUnique({
+        where: { resourceId },
+        include: { file: true },
+      });
       if (
-        resource.mediaFile.sourceType !== "uploaded" ||
-        !resource.mediaFile.file ||
-        resource.mediaFile.mimeType === null ||
-        resource.mediaFile.size === null
+        !mediaFile ||
+        mediaFile.sourceType !== "uploaded" ||
+        !mediaFile.file ||
+        mediaFile.mimeType === null ||
+        mediaFile.size === null
       ) {
         throw unsupportedMedia("阿里云 VOD 是外部媒资，不能通过平台下载原文件。");
       }
       return {
         kind: "media",
         fileName: resource.name,
-        mimeType: resource.mediaFile.mimeType,
-        size: Number(resource.mediaFile.size),
-        storageKey: resource.mediaFile.file.storageKey,
+        mimeType: mediaFile.mimeType,
+        size: Number(mediaFile.size),
+        storageKey: mediaFile.file.storageKey,
       };
     }
-    if (resource.type === "annotation_file" && resource.annotationFile) {
+    if (resource.type === "annotation_file") {
+      const annotationFile = await this.prisma.annotationFile.findUnique({
+        where: { resourceId },
+        select: { payload: true },
+      });
+      if (!annotationFile) throw notFound("标注文件不存在。");
       // 标注文件导出权威 payload，不把运行时媒体 URL、访问 token 或浏览器草稿写入文件。
       const fileName = resource.name.toLowerCase().endsWith(".json")
         ? resource.name
@@ -838,7 +846,7 @@ export class ResourceService {
         kind: "annotation",
         fileName,
         mimeType: "application/json; charset=utf-8",
-        content: `${JSON.stringify(resource.annotationFile.payload, null, 2)}\n`,
+        content: `${JSON.stringify(annotationFile.payload, null, 2)}\n`,
       };
     }
     throw badRequest("项目和文件夹暂不支持直接下载，请选择媒体或标注文件。");
@@ -1970,35 +1978,43 @@ export class ResourceService {
             ownerUserId: user.id,
             breakPermissionInheritance: false,
             archivedAt: node.archivedAt,
-            projectMetadata: node.type === "project"
-              ? { create: { description: node.projectDescription } }
-              : undefined,
-            annotationFile: node.type === "annotation_file"
-              ? {
-                  create: {
-                    payload: node.annotationPayload as Prisma.InputJsonValue,
-                    revision: 1,
-                    mediaResourceId: node.annotationMediaResourceId,
-                    lastEditedBy: user.id,
-                  },
-                }
-              : undefined,
-            mediaFile: node.type === "media_file" && node.mediaFile
-              ? {
-                  create: {
-                    sourceType: node.mediaFile.sourceType,
-                    mediaKind: node.mediaFile.mediaKind,
-                    fileId: node.mediaFile.fileId,
-                    mimeType: node.mediaFile.mimeType,
-                    size: node.mediaFile.size,
-                    duration: node.mediaFile.duration,
-                    aliyunVodVideoId: node.mediaFile.aliyunVodVideoId,
-                    aliyunVodRegion: node.mediaFile.aliyunVodRegion,
-                  },
-                }
-              : undefined,
           },
         });
+        // 复制计划已按父子与媒体依赖拓扑排序；各类型实体继续按该顺序逐条落库。
+        if (node.type === "project") {
+          await transaction.projectMetadata.create({
+            data: {
+              resourceId: node.id,
+              description: node.projectDescription,
+            },
+          });
+        }
+        if (node.type === "annotation_file") {
+          await transaction.annotationFile.create({
+            data: {
+              resourceId: node.id,
+              payload: node.annotationPayload as Prisma.InputJsonValue,
+              revision: 1,
+              mediaResourceId: node.annotationMediaResourceId,
+              lastEditedBy: user.id,
+            },
+          });
+        }
+        if (node.type === "media_file" && node.mediaFile) {
+          await transaction.mediaFile.create({
+            data: {
+              resourceId: node.id,
+              sourceType: node.mediaFile.sourceType,
+              mediaKind: node.mediaFile.mediaKind,
+              fileId: node.mediaFile.fileId,
+              mimeType: node.mediaFile.mimeType,
+              size: node.mediaFile.size,
+              duration: node.mediaFile.duration,
+              aliyunVodVideoId: node.mediaFile.aliyunVodVideoId,
+              aliyunVodRegion: node.mediaFile.aliyunVodRegion,
+            },
+          });
+        }
         if (node.type === "media_file" && node.mediaFile) {
           // 普通复制复用二进制但创建独立媒体身份；只生成新原声，不复制外部音轨或源 ACL。
           await createOriginalMediaAudioTrack(transaction, {
@@ -2343,16 +2359,43 @@ export class ResourceService {
   }
 
   private async getMappedResource(user: ApiUser, resourceId: string) {
-    const row = await this.prisma.resourceEntry.findUnique({
+    const baseRow = await this.prisma.resourceEntry.findUnique({
       where: { id: resourceId },
-      include: resourceInclude,
+      include: resourceBaseInclude,
     });
+    if (!baseRow) throw notFound("资源不存在。");
+    const [row] = await this.attachResourceTypeMetadata([baseRow]);
     if (!row) throw notFound("资源不存在。");
     return this.mapResource(
       user,
       row,
       await this.access.getEffectivePermission(user, resourceId),
     );
+  }
+
+  // 标注与媒体是互斥类型关系，按批次顺序读取后再装配，避免 Prisma 同 client 并行展开兄弟关系。
+  private async attachResourceTypeMetadata(
+    rows: ResourceBaseRow[],
+  ): Promise<ResourceRow[]> {
+    if (rows.length === 0) return [];
+    const resourceIds = rows.map(({ id }) => id);
+    const annotationFiles = await this.prisma.annotationFile.findMany({
+      where: { resourceId: { in: resourceIds } },
+    });
+    const mediaFiles = await this.prisma.mediaFile.findMany({
+      where: { resourceId: { in: resourceIds } },
+    });
+    const annotationByResourceId = new Map(
+      annotationFiles.map((file) => [file.resourceId, file]),
+    );
+    const mediaByResourceId = new Map(
+      mediaFiles.map((file) => [file.resourceId, file]),
+    );
+    return rows.map((row) => ({
+      ...row,
+      annotationFile: annotationByResourceId.get(row.id) ?? null,
+      mediaFile: mediaByResourceId.get(row.id) ?? null,
+    }));
   }
 
   private async mapResource(
@@ -2805,32 +2848,49 @@ export class ResourceService {
       LIMIT ${MAX_RECURSIVE_COPY_NODES + 1}
     `;
     if (!ids.length) return [];
-    return database.resourceEntry.findMany({
-      where: { id: { in: ids.map(({ id }) => id) } },
+    const resourceIds = ids.map(({ id }) => id);
+    const resources = await database.resourceEntry.findMany({
+      where: { id: { in: resourceIds } },
       select: {
         id: true,
         parentId: true,
         type: true,
         name: true,
         archivedAt: true,
-        projectMetadata: { select: { description: true } },
-        annotationFile: {
-          select: { payload: true, mediaResourceId: true },
-        },
-        mediaFile: {
-          select: {
-            sourceType: true,
-            mediaKind: true,
-            fileId: true,
-            mimeType: true,
-            size: true,
-            duration: true,
-            aliyunVodVideoId: true,
-            aliyunVodRegion: true,
-          },
-        },
       },
     });
+    // 复制快照可能同时包含三种互斥类型关系；顺序批量读取，禁止 Prisma 在事务 client 上并发 fan-out。
+    const projectMetadata = await database.projectMetadata.findMany({
+      where: { resourceId: { in: resourceIds } },
+      select: { resourceId: true, description: true },
+    });
+    const annotationFiles = await database.annotationFile.findMany({
+      where: { resourceId: { in: resourceIds } },
+      select: { resourceId: true, payload: true, mediaResourceId: true },
+    });
+    const mediaFiles = await database.mediaFile.findMany({
+      where: { resourceId: { in: resourceIds } },
+      select: {
+        resourceId: true,
+        sourceType: true,
+        mediaKind: true,
+        fileId: true,
+        mimeType: true,
+        size: true,
+        duration: true,
+        aliyunVodVideoId: true,
+        aliyunVodRegion: true,
+      },
+    });
+    const projectById = new Map(projectMetadata.map((row) => [row.resourceId, row]));
+    const annotationById = new Map(annotationFiles.map((row) => [row.resourceId, row]));
+    const mediaById = new Map(mediaFiles.map((row) => [row.resourceId, row]));
+    return resources.map((resource): CopySourceNode => ({
+      ...resource,
+      projectMetadata: projectById.get(resource.id) ?? null,
+      annotationFile: annotationById.get(resource.id) ?? null,
+      mediaFile: mediaById.get(resource.id) ?? null,
+    }));
   }
 
   private async loadResourceSelectionNodes(

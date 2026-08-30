@@ -2,6 +2,7 @@ import type {
   MediaAudioTrackKind as DbMediaAudioTrackKind,
   MediaKind,
   Prisma,
+  MediaAudioTrack as DbMediaAudioTrack,
   PrismaClient,
 } from "@prisma/client";
 import {
@@ -40,15 +41,12 @@ import {
 } from "./mediaResourceActivity.js";
 import { resolveMediaPlaybackAccess } from "./mediaPlaybackAccess.js";
 
-const audioTrackInclude = {
-  primaryMedia: { select: { sourceType: true } },
-  audioMedia: { select: { sourceType: true } },
-  vodRenditionMedia: { select: { sourceType: true } },
-} satisfies Prisma.MediaAudioTrackInclude;
-
-type AudioTrackRow = Prisma.MediaAudioTrackGetPayload<{
-  include: typeof audioTrackInclude;
-}>;
+type AudioTrackMediaSource = { sourceType: "uploaded" | "aliyun_vod" };
+type AudioTrackRow = DbMediaAudioTrack & {
+  primaryMedia: AudioTrackMediaSource;
+  audioMedia: AudioTrackMediaSource | null;
+  vodRenditionMedia: AudioTrackMediaSource | null;
+};
 
 const EXTERNAL_TRACK_KINDS = new Set<DbMediaAudioTrackKind>([
   "vocal",
@@ -121,11 +119,7 @@ export class MediaAudioTrackService {
   ): Promise<MediaAudioTrackList> {
     await requireActiveMediaResource(this.prisma, primaryMediaResourceId);
     await this.access.assertCapability(user, primaryMediaResourceId, "read");
-    const rows = await this.prisma.mediaAudioTrack.findMany({
-      where: { primaryMediaResourceId },
-      include: audioTrackInclude,
-      orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
-    });
+    const rows = await this.loadAudioTrackRows({ primaryMediaResourceId });
     if (!rows.some((row) => row.kind === "original")) {
       throw conflict("媒体缺少原声音轨，请联系管理员修复媒体元数据。");
     }
@@ -155,11 +149,7 @@ export class MediaAudioTrackService {
       throw badRequest("标注文件尚未关联主媒体。");
     }
     const primaryMediaResourceId = annotation.mediaResourceId;
-    const rows = await this.prisma.mediaAudioTrack.findMany({
-      where: { primaryMediaResourceId },
-      include: audioTrackInclude,
-      orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
-    });
+    const rows = await this.loadAudioTrackRows({ primaryMediaResourceId });
     if (rows.filter((row) => row.kind === "original").length !== 1) {
       throw conflict("媒体原声音轨结构异常，请联系管理员修复。");
     }
@@ -235,7 +225,7 @@ export class MediaAudioTrackService {
     await requireActiveMediaResource(this.prisma, primaryMediaResourceId);
     await this.access.assertCapability(user, primaryMediaResourceId, "write");
     const preparedSource = await this.prepareTrackSource(user, input.source);
-    const row = await this.prisma.$transaction(async (transaction) => {
+    const createdId = await this.prisma.$transaction(async (transaction) => {
       await this.lockPrimaryMediaForWrite(user, primaryMediaResourceId, transaction);
       if (
         preparedSource.type === "media_resource" &&
@@ -303,7 +293,7 @@ export class MediaAudioTrackService {
           enabled: true,
           createdBy: user.id,
         },
-        include: audioTrackInclude,
+        select: { id: true },
       });
       await transaction.auditLog.create({
         data: {
@@ -322,8 +312,9 @@ export class MediaAudioTrackService {
           },
         },
       });
-      return created;
+      return created.id;
     });
+    const row = await this.loadAudioTrackRow(createdId);
     return mapMediaAudioTrackRecord(row);
   }
 
@@ -352,7 +343,7 @@ export class MediaAudioTrackService {
       data.enabled = input.enabled;
     }
 
-    const row = await this.prisma.$transaction(async (transaction) => {
+    const updatedId = await this.prisma.$transaction(async (transaction) => {
       await this.lockPrimaryMediaForWrite(user, primaryMediaResourceId, transaction);
       const current = await this.requireOwnedTrack(
         transaction,
@@ -377,7 +368,7 @@ export class MediaAudioTrackService {
       const updated = await transaction.mediaAudioTrack.update({
         where: { id: trackId },
         data,
-        include: audioTrackInclude,
+        select: { id: true },
       });
       await transaction.auditLog.create({
         data: {
@@ -391,8 +382,9 @@ export class MediaAudioTrackService {
           },
         },
       });
-      return updated;
+      return updated.id;
     });
+    const row = await this.loadAudioTrackRow(updatedId);
     return mapMediaAudioTrackRecord(row);
   }
 
@@ -739,6 +731,50 @@ export class MediaAudioTrackService {
     });
     if (!track) throw notFound("音轨不存在。");
     return track;
+  }
+
+  // 三种媒体关系在数据上互斥，但 Prisma relation include 会并行发出查询；
+  // 这里先查音轨，再以去重后的媒体 ID 批量读取来源，避免 N+1 和同 client query 重入。
+  private async loadAudioTrackRows(
+    where: Prisma.MediaAudioTrackWhereInput,
+  ): Promise<AudioTrackRow[]> {
+    const tracks = await this.prisma.mediaAudioTrack.findMany({
+      where,
+      orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+    });
+    if (tracks.length === 0) return [];
+    const mediaResourceIds = [...new Set(tracks.flatMap((track) => [
+      track.primaryMediaResourceId,
+      track.audioMediaResourceId,
+      track.vodRenditionMediaResourceId,
+    ].filter((id): id is string => id !== null)))];
+    const mediaRows = await this.prisma.mediaFile.findMany({
+      where: { resourceId: { in: mediaResourceIds } },
+      select: { resourceId: true, sourceType: true },
+    });
+    const mediaById = new Map(mediaRows.map((media) => [media.resourceId, media]));
+    return tracks.map((track) => {
+      const primaryMedia = mediaById.get(track.primaryMediaResourceId);
+      if (!primaryMedia) {
+        throw conflict("音轨引用的主媒体不存在，请联系管理员修复媒体元数据。");
+      }
+      return {
+        ...track,
+        primaryMedia,
+        audioMedia: track.audioMediaResourceId
+          ? mediaById.get(track.audioMediaResourceId) ?? null
+          : null,
+        vodRenditionMedia: track.vodRenditionMediaResourceId
+          ? mediaById.get(track.vodRenditionMediaResourceId) ?? null
+          : null,
+      };
+    });
+  }
+
+  private async loadAudioTrackRow(trackId: string) {
+    const [row] = await this.loadAudioTrackRows({ id: trackId });
+    if (!row) throw notFound("音轨不存在。");
+    return row;
   }
 }
 

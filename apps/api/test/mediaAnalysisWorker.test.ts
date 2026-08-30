@@ -330,7 +330,9 @@ test("媒体分析资产发布失败时立即清理暂存对象并稳定落为�
     storage.promoteStagedObject = async (staged) => {
       if (rejectNextPromote) {
         rejectNextPromote = false;
-        throw new Error("synthetic promote failure");
+        // 先让 final 真实形成，再模拟远端成功响应丢失或 staged 清理失败。
+        await originalPromote(staged);
+        throw new Error("synthetic ambiguous promote failure");
       }
       await originalPromote(staged);
     };
@@ -348,10 +350,10 @@ test("媒体分析资产发布失败时立即清理暂存对象并稳定落为�
       "failed",
     );
     assert.equal(await prisma.mediaAnalysisAsset.count({ where: { runId: fixture.runId } }), 0);
-    assert.equal(
-      (await storage.listStoredObjects()).filter(({ staged }) => staged).length,
-      0,
-      "promote 失败后不能遗留 staged 分析对象",
+    assert.deepEqual(
+      (await storage.listStoredObjects()).map(({ storageKey }) => storageKey),
+      [fixture.sourceStorageKey],
+      "promote 结果不确定时必须清理分析对象，同时保留权威源媒体",
     );
   } finally {
     await prisma.$disconnect();
@@ -540,6 +542,7 @@ async function createWorkerFixture(
     userId,
     annotationFileId,
     mediaResourceId,
+    sourceStorageKey: finalStorageKey,
     runId: run.id,
     jobId: job.id,
   };

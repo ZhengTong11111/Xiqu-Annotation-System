@@ -100,15 +100,21 @@ export function createPrismaBootstrapAdministratorStore(
           where: { accountName },
           select: { id: true },
         })),
-        createAdministrator: async (input) => transaction.user.create({
-          data: {
-            accountName: input.accountName,
-            displayName: input.displayName,
-            passwordHash: input.passwordHash,
-            roles: { create: { role: PlatformRole.super_admin } },
-          },
-          select: { id: true, accountName: true, displayName: true },
-        }),
+        createAdministrator: async (input) => {
+          const created = await transaction.user.create({
+            data: {
+              accountName: input.accountName,
+              displayName: input.displayName,
+              passwordHash: input.passwordHash,
+            },
+            select: { id: true, accountName: true, displayName: true },
+          });
+          // 首次管理员与角色仍在 advisory-lock 事务中原子提交，但必须顺序占用事务连接。
+          await transaction.userRole.create({
+            data: { userId: created.id, role: PlatformRole.super_admin },
+          });
+          return created;
+        },
       });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }),
   };
