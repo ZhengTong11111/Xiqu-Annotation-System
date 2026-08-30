@@ -16,6 +16,7 @@ import {
   Heart,
   KeyRound,
   List,
+  ListTodo,
   LogOut,
   MoreHorizontal,
   Plus,
@@ -114,6 +115,11 @@ export function ResourceExplorer(props: {
   onPrepareAnnotationMerge: (
     request: AnnotationMergePreparationRequest,
   ) => Promise<AnnotationMergePreparationResult>;
+  taskCenter: {
+    activeCount: number;
+    isPartial: boolean;
+    onOpen: () => void;
+  };
 }) {
   const [rootView, setRootView] = useState<ResourceListView>("all_projects");
   // 从编辑器返回时直接读取文件所在目录，避免组件重新挂载后退回“所有项目”根视图。
@@ -858,6 +864,21 @@ export function ResourceExplorer(props: {
         </div>
         <div className="resource-account">
           <span>{props.user?.displayName ?? "正在验证账号"}</span>
+          <button
+            type="button"
+            className="resource-task-center-button"
+            title="后台任务"
+            aria-label={`后台任务，${props.taskCenter.activeCount} 项活动任务`}
+            onClick={props.taskCenter.onOpen}
+          >
+            <ListTodo size={17} />
+            {props.taskCenter.activeCount > 0 ? (
+              <span className="resource-task-center-badge">
+                {props.taskCenter.activeCount > 99 ? "99+" : props.taskCenter.activeCount}
+                {props.taskCenter.isPartial ? "+" : ""}
+              </span>
+            ) : null}
+          </button>
           <button
             type="button"
             title="修改我的密码"

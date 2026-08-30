@@ -201,6 +201,7 @@ export function registerApiRoutes(
       scope?: string;
       status?: string;
       type?: string;
+      query?: string;
       cursor?: string;
       limit?: string;
     };
@@ -212,6 +213,7 @@ export function registerApiRoutes(
         scope: parseProcessingJobScope(request.query.scope),
         status: parseProcessingJobStatus(request.query.status),
         type: parseProcessingJobType(request.query.type),
+        query: request.query.query,
         cursor: request.query.cursor,
         limit,
       },

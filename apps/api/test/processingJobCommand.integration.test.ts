@@ -4,6 +4,7 @@ import test from "node:test";
 import type { PlatformUser } from "@xiqu/shared";
 import { MediaAnalysisJobService } from "../src/mediaAnalysisJobService.js";
 import { ProcessingJobCommandService } from "../src/processingJobCommandService.js";
+import { ProcessingJobQueryService } from "../src/processingJobQueryService.js";
 import { ResourceAccessService } from "../src/resourceAccess.js";
 import { createTestPrisma, truncateTestDatabase } from "./testEnvironment.js";
 
@@ -38,6 +39,9 @@ test("个人取消、管理员强制取消与重试遵守共享执行和幂等�
     });
     assert.equal(ownerCancelled.outcome, "request_cancelled_execution_continues");
     assert.equal((await prisma.processingJob.findUniqueOrThrow({ where: { id: firstJob.id } })).status, "queued");
+    const queries = new ProcessingJobQueryService(prisma, access);
+    assert.equal((await queries.summary(fixture.owner, "mine")).activeRequestCount, 0);
+    assert.equal((await queries.summary(fixture.collaborator, "mine")).activeRequestCount, 1);
     assert.equal(
       (await commands.cancelRequest(fixture.owner, ownerRequest.id, {
         clientCommandId: ownerCancelId,

@@ -11,11 +11,13 @@ import {
 const SCOPES = new Set<ProcessingJobScope>(["mine", "related", "all"]);
 const STATUSES = new Set<ProcessingJobStatus>(PROCESSING_JOB_STATUSES);
 const TYPES = new Set<ProcessingJobType>(PROCESSING_JOB_TYPES);
+const MAX_QUERY_LENGTH = 100;
 
 export type NormalizedProcessingJobQuery = {
   scope: ProcessingJobScope;
   status: ProcessingJobStatus | null;
   type: ProcessingJobType | null;
+  query: string | null;
   limit: number;
 };
 
@@ -49,10 +51,18 @@ export function normalizeProcessingJobQuery(
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
     throw new ProcessingJobQueryError("后台任务每页数量必须在 1 到 100 之间。");
   }
+  if (options.query !== undefined && typeof options.query !== "string") {
+    throw new ProcessingJobQueryError("后台任务搜索词必须是文字。");
+  }
+  const query = options.query?.trim() || null;
+  if (query && query.length > MAX_QUERY_LENGTH) {
+    throw new ProcessingJobQueryError(`后台任务搜索词不能超过 ${MAX_QUERY_LENGTH} 个字符。`);
+  }
   return {
     scope,
     status: options.status ?? null,
     type: options.type ?? null,
+    query,
     limit,
   };
 }
@@ -96,6 +106,7 @@ function getQueryFingerprint(query: NormalizedProcessingJobQuery) {
     scope: query.scope,
     status: query.status,
     type: query.type,
+    query: query.query,
   })).digest("base64url");
 }
 

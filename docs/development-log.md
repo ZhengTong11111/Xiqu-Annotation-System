@@ -8801,3 +8801,53 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   roadmap/AGENTS/Development Log 更新。
 - **待推进**：P3 图形化后台任务中心；P4 再做跨读写/分析故障注入。按用户明确要求，本阶段不部署服务器，不修改生产
   数据库、对象目录或浏览器草稿。
+
+## 2026-08-30：统一图形化后台任务中心（P3）
+
+### 任务入口、查询与状态所有权
+
+- 本轮按 `docs/processing-job-reliability-roadmap.md` 的滚动规则，在 P2 独立提交后重写被 Git 忽略的
+  `CLAUDE_WORK.md`，只实施 P3。任务中心由 `PlatformWorkspace` 持有唯一 controller；资源管理器顶部和平台编辑器
+  菜单栏只提供入口与活动 badge，不各自创建轮询、分页或命令状态。本地不登录编辑器不显示平台任务入口。
+- 新增桌面式双栏任务中心：左侧为任务请求列表，右侧为详情与操作；窄屏切换为列表/详情单栏。支持“我的任务 / 相关
+  任务 / 全部任务”、状态、类型、服务端搜索、游标分页、离线/错误/空状态、可见请求、取消个人需求、受约束重试和
+  管理员二次确认强制取消。普通用户文案明确为“取消我的任务请求”，不暗示会终止协作者仍需要的共享执行。
+- 后端搜索覆盖资源名、账号名、显示名和 job id，搜索词经过 trim/100 字边界并进入 cursor fingerprint；改变查询条件
+  后旧游标 fail closed。`related` 继续使用批量 ACL 解析，`all` 仍只允许 admin/super_admin，没有因 UI 筛选新增权限
+  捷径或 N+1 权限路径。
+- summary 新增 `activeRequestCount`。自审发现若只按 job 状态计数，用户取消自己的 demand 后，协作者继续运行的共享
+  job 会让该用户 badge 永久显示活动；最终语义只统计“本人未取消 request + queued/running/cancelling job”，而历史
+  `byStatus` 和可见总数继续保留审计事实。
+
+### 轮询、中止、幂等与自审修复
+
+- `useProcessingJobCenter` 统一管理 250ms 搜索防抖、第一页权威替换、增量去重、详情、summary、网络/页面可见性恢复
+  和账号代际。打开且有活动需求时约 2 秒刷新，无活动时降至 8 秒，面板关闭后 badge 约 15 秒低频刷新；hidden 或
+  offline 不发请求，恢复后立即推进刷新代际。
+- 初版只用 generation 丢弃迟到响应。自审确认这仍让慢查询占用浏览器连接和服务端读取资源，随后为列表、详情、摘要
+  和“加载更多”全部接入 `AbortSignal`：筛选、换账号、关闭/刷新或卸载会中止旧读取，Abort 不显示为用户错误，迟到
+  响应仍需通过 generation 门禁。任务 mutation 保持 single-flight；模糊失败时同一动作保留同一 `createRuntimeUuid()`
+  结果，用户重试会精确重放同一服务端 command，而不是生成第二个取消或重试事实。
+- 账号切换会清除旧管理员 `all` scope、选中项、详情、错误和未决 command UUID；非管理员看不到全部任务入口，也无法
+  通过前端 helper 获得强制取消能力。公开 UI 只显示稳定 job/request/resource/account 摘要，不显示 deduplication key、
+  claim owner、对象地址、VOD 临时 URL、PlayAuth、AccessKey、token、完整配置或供应商原始错误。
+- 继续复用仓库已有 Radix Dialog/AlertDialog、lucide 和 CSS 体系，没有新增依赖。没有改动 ProjectData、协作命令、
+  时间轴、媒体播放、瓦片格式、worker claim 或生产配置，也没有保留调试 console、第二套轮询 owner 或旧任务 UI。
+
+### 验证、真实中间结果与状态
+
+- `npm run test:processing-jobs`：10/10；新增搜索规范化/游标绑定、资源/账号/job id 搜索和取消个人需求后的活动 badge
+  语义。`npm run test:processing-job-center`：2/2；覆盖活动状态计数、轮询降频、个人取消、重试和管理员强制取消资格。
+- 首次 `npm run test:api` 在既有“项目递归复制复用媒体对象”用例中返回一次 500，因此整套显示 211/213（一个实际
+  子测试和父 suite 计为两个失败）。该用例隔离复跑通过，随后完整 API 从干净测试 schema 再跑为 213/213；没有通过
+  改断言、跳过测试或吞掉错误掩盖这次抖动。测试仍显示既有 `pg client.query()` 并发调用弃用提醒，留给 P4 的连接与
+  故障注入审计继续定位。
+- `npm run test:deployment`：28/28；共享/API/Web TypeScript 检查、完整 `npm run build` 和 `git diff --check` 通过。
+  构建只保留既有 Vite 主 chunk 超过 500 kB 警告。
+- 本机 in-app browser 能打开 localhost 登录壳层，但没有可复用的平台登录态；为避免擅自输入账号密码，本轮没有把
+  登录后任务中心视觉操作记为已验证。P5 需按普通用户和管理员分别人工验证资源页/编辑器入口、长中文、窄屏、离线、
+  取消/重试和共享执行继续语义。
+- **已完成**：P3 服务端搜索与活动摘要、Workspace 单 owner、任务中心 UI、轮询/中止、命令幂等接线、专项/完整回归、
+  roadmap/AGENTS/Development Log 更新。
+- **待推进**：P4 跨读写、对象流、数据库、对象存储、worker 和分析任务故障注入与运行手册；继续遵守用户要求，不部署
+  服务器，不修改生产数据库、对象、任务或浏览器草稿。

@@ -45,6 +45,8 @@ import {
   PlatformDraftRecoveryDialog,
   type PlatformDraftRecoveryMode,
 } from "./PlatformDraftRecoveryDialog";
+import { ProcessingJobCenterDialog } from "./ProcessingJobCenterDialog";
+import { useProcessingJobCenter } from "./useProcessingJobCenter";
 
 export type PlatformEditorSession = {
   client: PlatformClient;
@@ -117,11 +119,17 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   const [pendingDraftOpen, setPendingDraftOpen] = useState<PendingDraftOpen | null>(null);
   const [draftDecisionBusy, setDraftDecisionBusy] = useState(false);
   const [draftDecisionError, setDraftDecisionError] = useState<string | null>(null);
+  const [taskCenterOpen, setTaskCenterOpen] = useState(false);
   // 资源管理器在编辑器打开期间会卸载，因此由 Workspace 保留最近打开文件的真实父目录。
   const [explorerReturnFolderId, setExplorerReturnFolderId] = useState<string | null>(null);
 
   // 平台统一使用同源 /api；开发环境由 Vite 代理，部署环境由 Nginx 代理，浏览器不再依赖访问者本机端口。
   const client = useMemo(() => new PlatformClient({ accessToken }), [accessToken]);
+  const taskCenter = useProcessingJobCenter({
+    client,
+    user,
+    open: taskCenterOpen && Boolean(user),
+  });
 
   useEffect(() => {
     if (!accessToken || view === "login") return;
@@ -175,6 +183,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   }, [user]);
 
   function openLocal(project: ProjectData, title: string) {
+    setTaskCenterOpen(false);
     setLocalSession({
       id: `local-${Date.now()}`,
       title,
@@ -608,11 +617,30 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
 
   if (view === "editor") {
     const serverFile = Boolean(editorSession);
-    return renderEditor(editorSession, localSession, {
-      label: serverFile ? "返回资源管理器" : "退出本地工具",
-      title: serverFile ? "返回平台资源管理器" : "返回登录入口",
-      onBack: () => setView(serverFile ? "explorer" : "login"),
-    });
+    return (
+      <>
+        {renderEditor(editorSession, localSession, {
+          label: serverFile ? "返回资源管理器" : "退出本地工具",
+          title: serverFile ? "返回平台资源管理器" : "返回登录入口",
+          onBack: () => setView(serverFile ? "explorer" : "login"),
+          taskCenter: serverFile
+            ? {
+                activeCount: taskCenter.activeCount,
+                isPartial: taskCenter.summary?.isPartial ?? false,
+                onOpen: () => setTaskCenterOpen(true),
+              }
+            : undefined,
+        })}
+        {user ? (
+          <ProcessingJobCenterDialog
+            open={taskCenterOpen}
+            onOpenChange={setTaskCenterOpen}
+            user={user}
+            controller={taskCenter}
+          />
+        ) : null}
+      </>
+    );
   }
 
   return (
@@ -628,12 +656,26 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
           setExplorerReturnFolderId(null);
           setPendingDraftOpen(null);
           setDraftDecisionError(null);
+          setTaskCenterOpen(false);
           setView("login");
         }}
         onOpenLocalJson={openLocal}
         onOpenAnnotationFile={openPlatformAnnotationFile}
         onPrepareAnnotationMerge={prepareAnnotationMerge}
+        taskCenter={{
+          activeCount: taskCenter.activeCount,
+          isPartial: taskCenter.summary?.isPartial ?? false,
+          onOpen: () => setTaskCenterOpen(true),
+        }}
       />
+      {user ? (
+        <ProcessingJobCenterDialog
+          open={taskCenterOpen}
+          onOpenChange={setTaskCenterOpen}
+          user={user}
+          controller={taskCenter}
+        />
+      ) : null}
       {pendingDraftOpen?.dialog === "manual" ? (
         <PlatformDraftConflictDialog
           file={pendingDraftOpen.file}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, RefObject } from "react";
+import { ListTodo } from "lucide-react";
 import type { ProjectSyncStatus } from "../state/projectDocumentState";
 import type { PlatformCollaborationStatus } from "../platform/platformCollaborationRuntime";
 import type { AnnotationPresenceMember } from "@xiqu/shared";
@@ -22,6 +23,11 @@ export type TopMenuPlatformNavigation = {
   onBack: () => void | Promise<void>;
   busy?: boolean;
   busyLabel?: string;
+  taskCenter?: {
+    activeCount: number;
+    isPartial: boolean;
+    onOpen: () => void;
+  };
 };
 
 type TopMenuBarProps = {
@@ -227,6 +233,25 @@ export function TopMenuBar({
             {platformNavigation.busy
               ? platformNavigation.busyLabel ?? "正在处理…"
               : platformNavigation.label}
+          </button>
+        ) : null}
+        {platformNavigation?.taskCenter ? (
+          <button
+            type="button"
+            className="top-menu-task-center"
+            title="后台任务"
+            aria-label={`后台任务，${platformNavigation.taskCenter.activeCount} 项活动任务`}
+            onClick={platformNavigation.taskCenter.onOpen}
+          >
+            <ListTodo size={16} />
+            {platformNavigation.taskCenter.activeCount > 0 ? (
+              <span>
+                {platformNavigation.taskCenter.activeCount > 99
+                  ? "99+"
+                  : platformNavigation.taskCenter.activeCount}
+                {platformNavigation.taskCenter.isPartial ? "+" : ""}
+              </span>
+            ) : null}
           </button>
         ) : null}
         <span className="top-menu-brand-dot" />

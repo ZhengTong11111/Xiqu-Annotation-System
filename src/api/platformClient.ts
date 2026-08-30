@@ -442,25 +442,30 @@ export class PlatformClient {
     );
   }
 
-  listProcessingJobs(options: ListProcessingJobsOptions = {}) {
+  listProcessingJobs(options: ListProcessingJobsOptions = {}, signal?: AbortSignal) {
     const params = new URLSearchParams();
     if (options.scope) params.set("scope", options.scope);
     if (options.status) params.set("status", options.status);
     if (options.type) params.set("type", options.type);
+    if (options.query) params.set("query", options.query);
     if (options.cursor) params.set("cursor", options.cursor);
     if (options.limit !== undefined) params.set("limit", String(options.limit));
     const query = params.toString();
-    return this.request<ProcessingJobPage>(`/processing-jobs${query ? `?${query}` : ""}`);
-  }
-
-  getProcessingJobSummary(scope: ProcessingJobScope = "mine") {
-    return this.request<ProcessingJobSummary>(
-      `/processing-jobs/summary?${new URLSearchParams({ scope })}`,
+    return this.request<ProcessingJobPage>(
+      `/processing-jobs${query ? `?${query}` : ""}`,
+      { signal },
     );
   }
 
-  getProcessingJob(jobId: string) {
-    return this.request<ProcessingJobDetail>(`/processing-jobs/${jobId}`);
+  getProcessingJobSummary(scope: ProcessingJobScope = "mine", signal?: AbortSignal) {
+    return this.request<ProcessingJobSummary>(
+      `/processing-jobs/summary?${new URLSearchParams({ scope })}`,
+      { signal },
+    );
+  }
+
+  getProcessingJob(jobId: string, signal?: AbortSignal) {
+    return this.request<ProcessingJobDetail>(`/processing-jobs/${jobId}`, { signal });
   }
 
   cancelProcessingJobRequest(requestId: string, input: CancelProcessingJobRequest) {

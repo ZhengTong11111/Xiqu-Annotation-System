@@ -87,17 +87,25 @@ export class ProcessingJobQueryService {
     const query = this.normalize({ scope, limit: 1 });
     this.assertScope(user, query.scope);
     if (query.scope !== "related") {
-      const rows = await this.prisma.$queryRaw<Array<{ status: ProcessingJobStatus; count: bigint }>>(
+      const rows = await this.prisma.$queryRaw<Array<{
+        status: ProcessingJobStatus;
+        count: bigint;
+        activeCount: bigint;
+      }>>(
         query.scope === "mine"
           ? Prisma.sql`
-              SELECT job."status"::text AS "status", count(*)::bigint AS "count"
+              SELECT job."status"::text AS "status",
+                count(*)::bigint AS "count",
+                count(*) FILTER (WHERE request."cancelled_at" IS NULL)::bigint AS "activeCount"
               FROM "processing_job_requests" AS request
               INNER JOIN "processing_jobs" AS job ON job."id" = request."job_id"
               WHERE request."requester_user_id" = ${user.id}
               GROUP BY job."status"
             `
           : Prisma.sql`
-              SELECT job."status"::text AS "status", count(*)::bigint AS "count"
+              SELECT job."status"::text AS "status",
+                count(*)::bigint AS "count",
+                count(*) FILTER (WHERE request."cancelled_at" IS NULL)::bigint AS "activeCount"
               FROM "processing_job_requests" AS request
               INNER JOIN "processing_jobs" AS job ON job."id" = request."job_id"
               GROUP BY job."status"
@@ -109,6 +117,7 @@ export class ProcessingJobQueryService {
     // related 摘要按批次复用唯一 ACL 算法；达到上限时明确标为 partial，绝不把截断结果伪装成全局精确值。
     const counts = emptyStatusCounts();
     let visibleRequestCount = 0;
+    let activeRequestCount = 0;
     let scanned = 0;
     let cursor: ProcessingJobCursor | null = null;
     let exhausted = false;
@@ -126,11 +135,13 @@ export class ProcessingJobQueryService {
         if (!row.contextResource || !readable.has(row.contextResource.id)) continue;
         counts[row.job.status] += 1;
         visibleRequestCount += 1;
+        if (!row.cancelledAt && isActiveStatus(row.job.status)) activeRequestCount += 1;
       }
     }
     return {
       scope,
       visibleRequestCount,
+      activeRequestCount,
       byStatus: counts,
       isPartial: !exhausted,
     };
@@ -216,9 +227,18 @@ export class ProcessingJobQueryService {
     cursor: ProcessingJobCursor | null,
     take: number,
   ) {
+    const search = query.query
+      ? [
+          { job: { id: { contains: query.query, mode: Prisma.QueryMode.insensitive } } },
+          { contextResource: { name: { contains: query.query, mode: Prisma.QueryMode.insensitive } } },
+          { requester: { accountName: { contains: query.query, mode: Prisma.QueryMode.insensitive } } },
+          { requester: { displayName: { contains: query.query, mode: Prisma.QueryMode.insensitive } } },
+        ] satisfies Prisma.ProcessingJobRequestWhereInput[]
+      : null;
     const where: Prisma.ProcessingJobRequestWhereInput = {
       requesterUserId: query.scope === "mine" ? user.id : undefined,
       contextResourceId: query.scope === "related" ? { not: null } : undefined,
+      OR: search ?? undefined,
       job: {
         status: query.status ?? undefined,
         type: query.type ?? undefined,
@@ -318,7 +338,7 @@ function emptyStatusCounts(): Record<ProcessingJobStatus, number> {
 
 function buildSummary(
   scope: ProcessingJobScope,
-  rows: readonly { status: ProcessingJobStatus; count: bigint }[],
+  rows: readonly { status: ProcessingJobStatus; count: bigint; activeCount: bigint }[],
   isPartial: boolean,
 ): ProcessingJobSummary {
   const byStatus = emptyStatusCounts();
@@ -327,6 +347,12 @@ function buildSummary(
     scope,
     byStatus,
     visibleRequestCount: Object.values(byStatus).reduce((sum, count) => sum + count, 0),
+    activeRequestCount: rows.reduce((sum, row) =>
+      sum + (isActiveStatus(row.status) ? Number(row.activeCount) : 0), 0),
     isPartial,
   };
+}
+
+function isActiveStatus(status: ProcessingJobStatus) {
+  return status === "queued" || status === "running" || status === "cancelling";
 }

@@ -111,6 +111,11 @@ Main currently contains all major recent feature lines that matter for context:
   users cancel only their own demand; a shared execution continues while any active request remains. The last queued demand cancels
   immediately, the last running demand enters `cancelling`, and administrators may force-cancel all demands. Retry creates a new
   execution/history record and reserves its command before invoking media-analysis creation; it never revives a terminal job in place
+- the graphical processing-job center has one `PlatformWorkspace`-owned query/controller instance shared by the resource explorer and
+  platform editor. Entry buttons only open that surface and must never create parallel polling owners. The mine summary's
+  `activeRequestCount` counts only uncancelled demand attached to queued/running/cancelling jobs; historical `byStatus` counts remain
+  separate. Query cursors bind server-side search and filters, old list/detail/page requests are aborted on account/filter/session
+  changes, and a command retry after an ambiguous response must reuse the same runtime UUID
 - processing-job mutations use the lock order client command -> canonical deduplication key -> job row. Media-analysis request creation,
   last-demand cancellation, and stale recovery must share that canonical lock so a request cannot be attached from an obsolete demand
   snapshot. Job and analysis-run state transitions are conditional and paired in one transaction; a partial transition must roll back

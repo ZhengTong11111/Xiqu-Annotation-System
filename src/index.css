@@ -291,6 +291,39 @@ select {
   opacity: 0.72;
 }
 
+.top-menu-task-center {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  color: #e6eefb;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-soft);
+}
+
+.top-menu-task-center:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.top-menu-task-center span {
+  position: absolute;
+  top: -6px;
+  right: -7px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 9px;
+  color: #fff;
+  background: #2876bd;
+  box-shadow: 0 0 0 2px #1c2736;
+  font-size: 9px;
+  line-height: 17px;
+}
+
 .top-menu-brand-dot {
   width: 9px;
   height: 9px;
@@ -1362,6 +1395,25 @@ select {
   background: #344154;
 }
 
+.resource-task-center-button {
+  position: relative;
+}
+
+.resource-task-center-badge {
+  position: absolute;
+  top: -5px;
+  right: -6px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 9px;
+  color: #fff;
+  background: #2d82ca;
+  box-shadow: 0 0 0 2px #202b3a;
+  font-size: 9px;
+  line-height: 17px;
+}
+
 .resource-explorer-body {
   display: grid;
   grid-template-columns:
@@ -1541,6 +1593,473 @@ select {
   border-radius: 8px;
   box-shadow: 0 22px 60px rgb(17 28 43 / 28%);
   transform: translate(-50%, -50%);
+}
+
+/* 后台任务中心由 Workspace 统一渲染；列表和 Inspector 独立滚动，资源页与编辑器不会各自创建一套轮询 UI。 */
+.processing-job-center-dialog {
+  position: fixed;
+  z-index: 301;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  width: min(1080px, calc(100vw - 48px));
+  height: min(760px, calc(100vh - 48px));
+  min-height: 480px;
+  overflow: hidden;
+  color: #26384f;
+  background: #f4f6f9;
+  border: 1px solid #bfc9d6;
+  border-radius: 8px;
+  box-shadow: 0 22px 60px rgb(17 28 43 / 28%);
+  transform: translate(-50%, -50%);
+}
+
+.processing-job-center-header,
+.processing-job-center-header > div,
+.processing-job-center-header-actions,
+.processing-job-center-filters,
+.processing-job-scope-tabs,
+.processing-job-search,
+.processing-job-list-primary,
+.processing-job-list-meta,
+.processing-job-inspector-heading,
+.processing-job-actions,
+.processing-job-mobile-back {
+  display: flex;
+  align-items: center;
+}
+
+.processing-job-center-header {
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 58px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border-bottom: 1px solid #d7dee8;
+}
+
+.processing-job-center-header > div:first-child {
+  gap: 10px;
+  min-width: 0;
+}
+
+.processing-job-center-header > div:first-child > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.processing-job-center-header h2,
+.processing-job-center-header p {
+  margin: 0;
+}
+
+.processing-job-center-header h2 {
+  font-size: 16px;
+}
+
+.processing-job-center-header p {
+  color: #708096;
+  font-size: 12px;
+}
+
+.processing-job-center-header-actions {
+  gap: 7px;
+}
+
+.processing-job-center-header-actions button {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  padding: 0;
+  color: #40516a;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+
+.processing-job-center-header-actions button:hover {
+  color: #145b9f;
+  background: #e3eef9;
+}
+
+.processing-job-active-summary {
+  padding: 4px 7px;
+  color: #245b8d;
+  background: #deebf7;
+  border: 1px solid #c3d8eb;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.processing-job-center-filters {
+  gap: 8px;
+  padding: 9px 12px;
+  background: #f7f9fb;
+  border-bottom: 1px solid #d7dee8;
+}
+
+.processing-job-scope-tabs {
+  flex: 0 0 auto;
+  padding: 2px;
+  background: #e8edf3;
+  border-radius: 6px;
+}
+
+.processing-job-scope-tabs button {
+  height: 28px;
+  padding: 0 10px;
+  color: #53647a;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+}
+
+.processing-job-scope-tabs button.active {
+  color: #174f8c;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(27 45 68 / 16%);
+}
+
+.processing-job-search {
+  flex: 1 1 240px;
+  min-width: 120px;
+  height: 32px;
+  gap: 7px;
+  padding: 0 9px;
+  color: #718197;
+  background: #fff;
+  border: 1px solid #cbd4df;
+  border-radius: 5px;
+}
+
+.processing-job-search input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+}
+
+.processing-job-center-filters select {
+  min-width: 118px;
+  height: 32px;
+  color: #40516a;
+  background: #fff;
+  border: 1px solid #cbd4df;
+  border-radius: 5px;
+}
+
+.processing-job-error,
+.processing-job-command-error {
+  padding: 8px 12px;
+  color: #9c2d30;
+  background: #fff0f0;
+  border-bottom: 1px solid #efc3c4;
+  font-size: 12px;
+}
+
+.processing-job-command-error {
+  border: 1px solid #efc3c4;
+  border-radius: 5px;
+}
+
+.processing-job-error.is-empty {
+  height: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+}
+
+.processing-job-center-body {
+  display: grid;
+  grid-template-columns: minmax(330px, 0.44fr) minmax(0, 0.56fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.processing-job-list,
+.processing-job-inspector {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.processing-job-list {
+  background: #fff;
+  border-right: 1px solid #d7dee8;
+}
+
+.processing-job-list > button:not(.processing-job-load-more) {
+  display: grid;
+  width: 100%;
+  gap: 6px;
+  padding: 11px 13px;
+  color: #31435a;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #e2e7ee;
+  border-radius: 0;
+}
+
+.processing-job-list > button:hover,
+.processing-job-list > button.active {
+  background: #e8f1fb;
+}
+
+.processing-job-list-primary {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.processing-job-list-primary strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.processing-job-list-meta {
+  gap: 8px;
+  color: #6d7d91;
+  font-size: 11px;
+}
+
+.processing-job-list small {
+  color: #8a97a8;
+}
+
+.processing-job-progress {
+  height: 3px;
+  overflow: hidden;
+  background: #e0e6ed;
+  border-radius: 2px;
+}
+
+.processing-job-progress span {
+  display: block;
+  height: 100%;
+  background: #3180c4;
+}
+
+.processing-job-status {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  color: #51647a;
+  background: #e8edf3;
+  border-radius: 4px;
+  font-size: 10px;
+}
+
+.processing-job-status.is-running,
+.processing-job-status.is-queued {
+  color: #135b96;
+  background: #dcecf9;
+}
+
+.processing-job-status.is-cancelling {
+  color: #865b13;
+  background: #fff0cf;
+}
+
+.processing-job-status.is-succeeded {
+  color: #2d6b49;
+  background: #dff0e6;
+}
+
+.processing-job-status.is-failed,
+.processing-job-status.is-cancelled {
+  color: #8d3438;
+  background: #f7e1e2;
+}
+
+.processing-job-load-more {
+  display: block;
+  margin: 12px auto;
+  color: #245f96;
+  background: #eef5fb;
+  border: 1px solid #c8dbea;
+}
+
+.processing-job-inspector {
+  display: grid;
+  align-content: start;
+  gap: 15px;
+  padding: 16px;
+  background: #f7f9fb;
+}
+
+.processing-job-inspector-heading {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.processing-job-inspector-heading > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.processing-job-inspector-heading strong {
+  overflow-wrap: anywhere;
+  font-size: 15px;
+}
+
+.processing-job-inspector-heading span:not(.processing-job-status) {
+  color: #718197;
+  font-size: 12px;
+}
+
+.processing-job-facts {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 0;
+  padding: 12px 0;
+  border-top: 1px solid #d8e0e9;
+  border-bottom: 1px solid #d8e0e9;
+  font-size: 12px;
+}
+
+.processing-job-facts dt {
+  color: #748398;
+}
+
+.processing-job-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.processing-job-monospace {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.processing-job-visible-requests {
+  display: grid;
+  gap: 7px;
+}
+
+.processing-job-visible-requests h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.processing-job-visible-requests > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 9px;
+  background: #fff;
+  border: 1px solid #d9e0e8;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.processing-job-visible-requests > div span,
+.processing-job-visible-requests small {
+  color: #718197;
+}
+
+.processing-job-actions {
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.processing-job-actions button,
+.processing-job-mobile-back {
+  gap: 6px;
+  color: #315f8a;
+  background: #fff;
+  border: 1px solid #c5d3e1;
+}
+
+.processing-job-actions button.danger {
+  color: #a12e33;
+  border-color: #e2b9bb;
+}
+
+.processing-job-action-note {
+  margin: -7px 0 0;
+  color: #718197;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.processing-job-empty {
+  display: grid;
+  min-height: 180px;
+  place-content: center;
+  justify-items: center;
+  gap: 7px;
+  padding: 20px;
+  color: #7c899a;
+  text-align: center;
+}
+
+.processing-job-empty strong {
+  color: #45566d;
+}
+
+.processing-job-mobile-back {
+  display: none;
+  justify-self: start;
+}
+
+@media (max-width: 760px) {
+  .processing-job-center-dialog {
+    width: 100vw;
+    height: 100vh;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .processing-job-center-header p {
+    display: none;
+  }
+
+  .processing-job-center-filters {
+    flex-wrap: wrap;
+  }
+
+  .processing-job-scope-tabs {
+    order: 0;
+  }
+
+  .processing-job-search {
+    order: 1;
+    flex-basis: 100%;
+  }
+
+  .processing-job-center-filters select {
+    order: 2;
+    flex: 1 1 140px;
+  }
+
+  .processing-job-center-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .processing-job-inspector {
+    display: none;
+  }
+
+  .processing-job-center-body.has-selection .processing-job-list {
+    display: none;
+  }
+
+  .processing-job-center-body.has-selection .processing-job-inspector {
+    display: grid;
+  }
+
+  .processing-job-mobile-back {
+    display: inline-flex;
+  }
 }
 
 /* 审计日志复用诊断窗口的桌面层级，但为筛选、表头和增量列表保留独立网格行。 */

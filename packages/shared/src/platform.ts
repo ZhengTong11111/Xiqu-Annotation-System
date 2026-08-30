@@ -459,6 +459,7 @@ export type ProcessingJobPage = {
 export type ProcessingJobSummary = {
   scope: ProcessingJobScope;
   visibleRequestCount: number;
+  activeRequestCount: number;
   byStatus: Record<ProcessingJobStatus, number>;
   isPartial: boolean;
 };
@@ -474,6 +475,7 @@ export type ListProcessingJobsOptions = {
   scope?: ProcessingJobScope;
   status?: ProcessingJobStatus;
   type?: ProcessingJobType;
+  query?: string;
   cursor?: string;
   limit?: number;
 };

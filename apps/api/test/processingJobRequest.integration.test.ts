@@ -79,6 +79,22 @@ test("媒体分析请求在账号、标签页和共享执行之间保持幂等",
       ),
     );
     assert.equal((await queries.list(fixture.administrator, { scope: "all" })).items.length, 2);
+    assert.equal((await queries.list(fixture.administrator, {
+      scope: "all",
+      query: "共享分析",
+    })).items.length, 2);
+    assert.equal((await queries.list(fixture.administrator, {
+      scope: "all",
+      query: "processing-collaborator",
+    })).items.length, 1);
+    assert.equal((await queries.list(fixture.administrator, {
+      scope: "all",
+      query: job.id.slice(0, 12),
+    })).items.length, 2);
+    assert.equal((await queries.list(fixture.administrator, {
+      scope: "all",
+      query: "不存在的后台任务",
+    })).items.length, 0);
     assert.equal((await queries.summary(fixture.owner, "mine")).visibleRequestCount, 1);
     assert.equal((await queries.summary(fixture.administrator, "all")).visibleRequestCount, 2);
 
