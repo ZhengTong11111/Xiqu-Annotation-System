@@ -9562,3 +9562,32 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 增加表头三种组合的单元断言，并运行标注工作流专项测试、完整前端构建和 `git diff --check`。
 - **已完成**：列表、网格账号文本与 Inspector 称谓统一，旧的误导性 helper 命名已清理。
 - **待人工验收**：分别打开“所有项目”、某个项目内部及混合搜索结果，确认三个表头及账号内容符合上述规则。
+
+## 2026-08-30：R2.7 生产部署记录
+
+### 发布与迁移
+
+- 功能分支已提交并通过非交互合并进入 `main`，GitHub `main` 对应合并提交为 `fb4c100`。服务器访问 GitHub
+  拉取长时间无有效进度后，改用该已推送提交生成的纯 Git archive 上传构建；archive 不包含 `.env`、数据库、
+  `data/`、对象存储、本机依赖或其他未跟踪状态。
+- 服务器候选 `/opt/xiqu/releases/20260830T0613Z-fb4c100` 重新执行 `npm ci`、完整生产构建、Prisma Client
+  schema 校验、`release:inspect` 和 `release:check`；检查结果为 27 个运行路径、25 个生产依赖、32 条 migration。
+- 使用 `platform.admin` 开启维护并排空写入，停止 analysis worker 后，从新候选执行
+  `prisma migrate deploy`，成功应用 `20260830030000_annotation_workflow_status_groups`；随后以旧 release
+  `/opt/xiqu/releases/20260830T201233Z-c572d8b` 为并发前提，通过 `release:switch` 原子切换到新 release。
+
+### 备份决定与验收
+
+- 按用户本轮明确指示不创建部署前备份；已经启动的备份 CLI 在进入实际备份流程后立即收到中止信号并返回
+  `The operation was aborted`。本次发布因此没有可声明的一致备份基线，旧 release 仍保留但数据库 migration
+  已前向应用，不能把单独切回旧代码视为完整数据库回滚。
+- 裸公网 IP 不是当前生产代理的有效 smoke origin，服务器和本机以它运行检查均得到连接失败；从 systemd 请求日志
+  确认当前正式 Host 为 `https://kunqu.aik2.site`，改用该 origin 后 Web 首页、API liveness、API readiness 均为
+  HTTP 200。该失败属于入口选择错误，不是新 API 启动失败。
+- 只读检查通过后使用 `platform.admin` 关闭维护并启动 analysis worker。最终 `xiqu-api` 与
+  `xiqu-analysis-worker` 均为 `active`，维护状态为 `enabled: false`，正式域名再次通过完整只读部署检查；新 API
+  日志未出现启动或 readiness 错误。
+- **已完成**：Git 提交与 main 合并、GitHub 推送、候选构建、正式 migration、原子 release 切换、维护恢复、
+  API/worker/systemd 和正式 HTTPS origin 验收。
+- **待人工验收**：刷新正式站点后验证项目负责人、内部文件创建人、职责组搜索/保存、职责来源权限和文件状态菜单；
+  本轮未代替真实账号执行写入性业务验收。
