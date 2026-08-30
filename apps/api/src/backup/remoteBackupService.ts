@@ -24,6 +24,11 @@ import {
 import { createRemoteBackupId, remoteBackupKey, remoteBackupKeys } from "./remoteBackupPaths.js";
 import { assertSeparatedStorageNamespaces } from "./remoteBackupStorageFactory.js";
 import { verifyRemoteBackup } from "./remoteBackupVerifier.js";
+import {
+  enterBackupMaintenanceWindow,
+  leaveBackupMaintenanceWindow,
+  type BackupMaintenanceMode,
+} from "./backupMaintenanceWindow.js";
 
 // 顶层选项显式注入线上源和远端目标，调用者不能通过环境默认值混淆两个命名空间。
 export type CreateRemoteBackupOptions = {
@@ -35,6 +40,7 @@ export type CreateRemoteBackupOptions = {
   backupStorage: ObjectStorage;
   workRoot: string;
   maintenanceReason: string;
+  maintenanceMode?: BackupMaintenanceMode;
   keepMaintenanceOnFailure?: boolean;
   signal?: AbortSignal;
 };
@@ -54,19 +60,17 @@ export async function createRemotePlatformBackup(options: CreateRemoteBackupOpti
   const connection = parsePostgresConnection(options.databaseUrl);
   const pgDump = await resolvePostgresTool("pg_dump");
   const toolVersion = await readPostgresToolVersion(pgDump);
-  const existingStatus = await options.maintenance.getStatus(options.operator);
-  if (existingStatus.enabled) {
-    throw new Error("平台已处于维护模式；当前备份命令不会接管既有维护窗口。 ");
-  }
   const workRoot = path.resolve(options.workRoot);
   await mkdir(workRoot, { recursive: true });
   let workDirectory: string | undefined;
   let operationError: unknown;
   let result: { backupId: string; manifestKey: string; manifest: BackupManifest } | undefined;
 
-  await options.maintenance.setMaintenance(options.operator, {
-    enabled: true,
+  const maintenanceWindow = await enterBackupMaintenanceWindow({
+    maintenance: options.maintenance,
+    operator: options.operator,
     reason: options.maintenanceReason,
+    mode: options.maintenanceMode ?? "managed",
   });
   try {
     // 临时目录只在维护窗口成功取得后创建，启用维护失败不会留下无主工作目录。
@@ -106,20 +110,15 @@ export async function createRemotePlatformBackup(options: CreateRemoteBackupOpti
     }
   }
 
-  // 维护恢复语义与本地备份一致；恢复失败必须与原始错误一起上报。
-  if (!operationError || !options.keepMaintenanceOnFailure) {
-    try {
-      await options.maintenance.setMaintenance(options.operator, { enabled: false });
-    } catch (maintenanceError) {
-      if (operationError) {
-        throw new AggregateError(
-          [operationError, maintenanceError],
-          "远端备份失败且恢复平台写入也失败，请运行 maintenance:disable。",
-        );
-      }
-      throw maintenanceError;
-    }
-  }
+  // 外部部署窗口不由备份解除；独立远端备份仍维持既有的自动恢复写入语义。
+  await leaveBackupMaintenanceWindow({
+    maintenance: options.maintenance,
+    operator: options.operator,
+    window: maintenanceWindow,
+    operationError,
+    keepMaintenanceOnFailure: options.keepMaintenanceOnFailure ?? false,
+    failureMessage: "远端备份失败且恢复平台写入也失败，请运行 maintenance:disable。",
+  });
   if (operationError) throw operationError;
   if (!result) throw new Error("远端备份流程未返回结果。 ");
   return result;

@@ -152,6 +152,7 @@ test("升级示例保持维护、备份、migration、切换和恢复的安全�
     "npm run maintenance:enable",
     "systemctl stop xiqu-analysis-worker",
     "npm run backup:create",
+    "--require-existing-maintenance",
     "npm run backup:verify",
     "npm run db:deploy",
     "npm run release:switch",

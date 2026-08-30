@@ -26,12 +26,12 @@ const COMMAND_OPTIONS: Record<string, { values: string[]; flags: string[] }> = {
   "maintenance:disable": { values: ["operator"], flags: [] },
   "backup:create": {
     values: ["operator", "output", "reason"],
-    flags: ["keep-maintenance-on-failure"],
+    flags: ["keep-maintenance-on-failure", "require-existing-maintenance"],
   },
   "backup:verify": { values: ["backup"], flags: [] },
   "backup:create-remote": {
     values: ["operator", "work-root", "reason"],
-    flags: ["keep-maintenance-on-failure"],
+    flags: ["keep-maintenance-on-failure", "require-existing-maintenance"],
   },
   "backup:verify-remote": { values: ["backup-id"], flags: [] },
   "backup:restore-drill": {
@@ -222,6 +222,9 @@ async function runCommand(
         storage: createObjectStorageFromEnvironment(),
         outputRoot: values.get("output") ?? "./data/backups",
         maintenanceReason: values.get("reason") ?? "创建平台一致备份",
+        maintenanceMode: flags.has("require-existing-maintenance")
+          ? "require_existing"
+          : "managed",
         keepMaintenanceOnFailure: flags.has("keep-maintenance-on-failure"),
         signal,
       });
@@ -245,6 +248,9 @@ async function runCommand(
         backupStorage: createRemoteBackupStorageFromEnvironment(),
         workRoot: values.get("work-root") ?? "./data/remote-backup-work",
         maintenanceReason: values.get("reason") ?? "创建平台远端一致备份",
+        maintenanceMode: flags.has("require-existing-maintenance")
+          ? "require_existing"
+          : "managed",
         keepMaintenanceOnFailure: flags.has("keep-maintenance-on-failure"),
         signal,
       });

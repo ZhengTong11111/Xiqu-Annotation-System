@@ -1157,8 +1157,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `apps/api/src/backup/`
   - versioned local/remote full-backup, offline/streamed verification, PostgreSQL tool runner, maintenance operator CLI,
     and isolated local/remote restore-drill modules
-  - `backupService.ts` owns the maintenance window and staging-to-final publication; `restoreDrillService.ts` may only
-    target a different empty database and isolated storage directory
+  - `backupService.ts` owns staging-to-final publication; `backupMaintenanceWindow.ts` is the single owner for both
+    maintenance modes. A standalone backup creates and releases its own window, while a deployment backup must explicitly
+    require and reuse a window established by the same operator and must never release that external window
+  - `restoreDrillService.ts` may only target a different empty database and isolated storage directory
   - `remoteBackupService.ts` owns manifest-last remote publication and reverse-order compensation; final payload objects
     are not a committed backup until `manifest.json` is promoted and streamed verification succeeds
   - `remoteBackupVerifier.ts` validates one explicit backup id without loading package payloads into memory;
@@ -1191,7 +1193,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     正在运行的 release 目录直接 `git pull`、重新构建或覆盖持久数据
   - 一致升级顺序必须是候选只读检查 -> 旧 release 启用维护并排空 API 写入 -> 停止 worker -> 创建并验证一致备份 ->
     新 release 正式 migrate deploy -> `release:switch` -> 维护状态只读 smoke -> 解除维护 -> 启动 worker。先备份再进入
-    维护不能作为回滚基线；不要用删减示例、省略 backup verify，或把浏览器草稿当作服务端已保存事实
+    维护不能作为回滚基线；部署内备份必须使用 `--require-existing-maintenance` 复用同一操作员建立的窗口，并把窗口保持
+    给后续 migration/smoke；不要用删减示例、省略 backup verify，或把浏览器草稿当作服务端已保存事实
   - production release must include `prisma.config.ts` and built `packages/shared`/`packages/document-model` in
     addition to `prisma`, `dist`, and `node_modules`: Prisma 7 migration reads the root config, while npm workspace
     links under `node_modules/@xiqu` resolve back into `packages/`. Verify these paths before starting systemd services
@@ -1906,9 +1909,12 @@ Important backend caveats:
 
 - every HTTP mutation acquires the shared maintenance advisory permit; future worker/CLI writers must use the same
   protocol instead of writing directly while a backup may hold the maintenance window
-- `backup:create` refuses to take ownership of an already-active maintenance window. It preflights tools, paths, and a
-  real active global-admin operator before enabling maintenance; controlled failure normally restores writes, while
+- standalone `backup:create` owns its maintenance lifecycle: it preflights tools, paths, and a real active global-admin
+  operator before enabling maintenance; controlled failure normally restores writes, while
   `--keep-maintenance-on-failure` and process crashes intentionally fail closed
+- a deployment backup must pass `--require-existing-maintenance`; it accepts only a window established by the same
+  operator and never disables it on success or failure. Missing or foreign windows fail closed. This mode prevents the
+  backup command from briefly reopening writes between deployment drain, migration, release switch, and smoke checks
 - a valid final backup is published only after PostgreSQL custom dump, complete local object-root copy, SHA-256/size
   manifest, fsync, and offline verification succeed in staging. Failed staging must never be renamed as final
 - backup output and source object storage must be physically separate even through symlinked ancestors. Object keys and

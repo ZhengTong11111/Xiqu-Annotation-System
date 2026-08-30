@@ -457,9 +457,13 @@ sudo -u xiqu bash -c '
   npm run backup:create -- \
     --operator platform.admin \
     --output /var/lib/xiqu-platform/backups \
-    --reason "部署后基线备份"
+    --reason "部署后基线备份" \
+    --require-existing-maintenance
 '
 ```
+
+`--require-existing-maintenance` 不会自行开关维护：它要求当前窗口由同一个 `platform.admin` 操作员建立，
+并在备份成功或失败后继续保持维护。独立定时备份不应传此参数，由备份命令自行取得和释放维护窗口。
 
 按输出目录验证：
 
@@ -575,7 +579,8 @@ sudo -u xiqu bash -c '
   npm run backup:create -- \
     --operator platform.admin \
     --output /var/lib/xiqu-platform/backups \
-    --reason "部署前一致备份"
+    --reason "部署前一致备份" \
+    --require-existing-maintenance
 '
 sudo -u xiqu bash -c '
   cd /opt/xiqu/current

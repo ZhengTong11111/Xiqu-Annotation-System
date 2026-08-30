@@ -28,6 +28,11 @@ import {
   resolvePostgresTool,
   runPostgresTool,
 } from "./postgresTools.js";
+import {
+  enterBackupMaintenanceWindow,
+  leaveBackupMaintenanceWindow,
+  type BackupMaintenanceMode,
+} from "./backupMaintenanceWindow.js";
 
 export type CreateBackupOptions = {
   prisma: PrismaClient;
@@ -37,11 +42,12 @@ export type CreateBackupOptions = {
   storage: ObjectStorage;
   outputRoot: string;
   maintenanceReason: string;
+  maintenanceMode?: BackupMaintenanceMode;
   keepMaintenanceOnFailure?: boolean;
   signal?: AbortSignal;
 };
 
-// 备份服务拥有完整静默窗口：预检不改状态，进入维护后才 dump/copy，校验成功才发布 final。
+// 预检不改维护状态；取得自有或部署外部静默窗口后才 dump/copy，校验成功才发布 final。
 export async function createPlatformBackup(options: CreateBackupOptions) {
   const storageRoot = requireLocalSnapshotRoot(options.storage);
   const outputRoot = path.resolve(options.outputRoot);
@@ -55,10 +61,6 @@ export async function createPlatformBackup(options: CreateBackupOptions) {
   const connection = parsePostgresConnection(options.databaseUrl);
   const pgDump = await resolvePostgresTool("pg_dump");
   const toolVersion = await readPostgresToolVersion(pgDump);
-  const existingStatus = await options.maintenance.getStatus(options.operator);
-  if (existingStatus.enabled) {
-    throw new Error("平台已处于维护模式；当前备份命令不会接管既有维护窗口。 ");
-  }
 
   const names = createBackupDirectoryNames();
   const stagingDirectory = path.join(outputRoot, names.stagingName);
@@ -67,9 +69,11 @@ export async function createPlatformBackup(options: CreateBackupOptions) {
   let operationError: unknown;
   let result: { directory: string; manifest: BackupManifest } | undefined;
 
-  await options.maintenance.setMaintenance(options.operator, {
-    enabled: true,
+  const maintenanceWindow = await enterBackupMaintenanceWindow({
+    maintenance: options.maintenance,
+    operator: options.operator,
     reason: options.maintenanceReason,
+    mode: options.maintenanceMode ?? "managed",
   });
   try {
     await mkdir(stagingDirectory, { recursive: false });
@@ -125,21 +129,14 @@ export async function createPlatformBackup(options: CreateBackupOptions) {
     if (!published) await rm(stagingDirectory, { recursive: true, force: true }).catch(() => undefined);
   }
 
-  // 受控成功始终恢复写入；普通失败默认恢复，显式 keep 仅用于需要保留现场的运维场景。
-  const shouldDisable = !operationError || !options.keepMaintenanceOnFailure;
-  if (shouldDisable) {
-    try {
-      await options.maintenance.setMaintenance(options.operator, { enabled: false });
-    } catch (maintenanceError) {
-      if (operationError) {
-        throw new AggregateError(
-          [operationError, maintenanceError],
-          "备份失败且恢复平台写入也失败，请运行 maintenance:disable。",
-        );
-      }
-      throw maintenanceError;
-    }
-  }
+  await leaveBackupMaintenanceWindow({
+    maintenance: options.maintenance,
+    operator: options.operator,
+    window: maintenanceWindow,
+    operationError,
+    keepMaintenanceOnFailure: options.keepMaintenanceOnFailure ?? false,
+    failureMessage: "备份失败且恢复平台写入也失败，请运行 maintenance:disable。",
+  });
   if (operationError) throw operationError;
   if (!result) throw new Error("备份流程未返回结果。 ");
   return result;

@@ -1182,6 +1182,10 @@ npm run preview
 排空，再依次生成 PostgreSQL custom dump、复制整个受控对象根、计算每个文件的 SHA-256、写入
 `manifest.json` 并执行离线复核；只有全部成功后才把 staging 原子发布为 final 备份目录。
 
+上述是独立备份的默认行为。升级部署必须先由部署流程开启并排空维护窗口、停止 worker，再给本地或远端
+备份命令传入 `--require-existing-maintenance`。该模式只接受同一操作员建立的窗口，备份成功或失败都不会
+擅自解除维护；后续 migration、release 切换和 smoke 完成后，再由部署流程显式恢复写入。
+
 ```bash
 # PostgreSQL 客户端不在 PATH 时，指向包含 pg_dump / pg_restore 的目录。
 export XIQU_PG_BIN_DIR=/path/to/postgresql/bin

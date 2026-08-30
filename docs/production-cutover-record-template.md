@@ -45,6 +45,7 @@
 - [ ] 停止 analysis worker，`is-active` 为 `inactive`。
 - [ ] 活动任务摘要已记录：queued `<n>` / running `<n>` / cancelling `<n>` / stale claim `<n>`。
 - [ ] 一致备份创建完成。
+- [ ] 备份命令使用 `--require-existing-maintenance`，复用当前操作员已排空的部署窗口且没有擅自解除维护。
 - 备份 id/目录名：`<backup-id-only>`
 - [ ] manifest 和全部对象校验通过。
 - 备份校验摘要：`<manifest version, object count, bytes, checksum result>`

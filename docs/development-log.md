@@ -9168,3 +9168,43 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **待推进**：P5d 只能在用户重新明确授权后连接生产，以 `platform.admin` 进入维护、停止 worker、创建/校验一致备份、
   构建并检查不可变候选、正式 migration、原子切换、只读 smoke、恢复服务和真实多账号/VOD/分析人工验收。未授权前
   不连接 `101.201.76.10`，不读取或修改生产数据库、对象、任务和草稿。
+
+## 2026-08-30：部署维护窗口复用与 P5c 隔离全链路闭环
+
+### 完成审计暴露的合同矛盾
+
+- P5c 提交后按滚动 goal 重新核对“已完成”证据，确认候选检查、release 切换/回滚、migration、备份模块测试与 smoke
+  分别通过，但当时尚未在一个真实隔离环境中按生产顺序完整串行。此前路线图把这些分段证据写成一次全链路彩排，现已
+  据实修正；没有用单元测试代替真实编排事实。
+- 使用唯一 PostgreSQL schema `p5d_local_rehearsal_20260830`、唯一临时对象根/备份根、隔离 API 端口和预览代理开始彩排。
+  先启用维护并停止隔离 worker，再运行正式 `backup:create` 时，CLI 按旧合同拒绝任何既有维护窗口。这与正确的部署顺序
+  “先维护排空、再停 worker、再一致备份”矛盾；若为迎合旧 CLI 临时解除维护，会在长远上重新引入可写空窗。
+
+### 单一维护窗口 Owner 与双模式语义
+
+- 新增 `backupMaintenanceWindow.ts` 作为本地与远端备份共用的唯一维护生命周期边界，没有复制两套分支。默认
+  `managed` 保持独立定时/人工备份的旧行为：备份自行建立窗口，成功后恢复写入；受控失败默认恢复，显式
+  `--keep-maintenance-on-failure` 可保留现场。
+- 新增 CLI flag `--require-existing-maintenance` 供部署编排使用。该模式要求维护已经开启且 `startedBy.id` 与当前备份
+  操作员相同；缺失窗口或其他操作员窗口均 fail closed。备份无论成功或失败都不解除该外部窗口，后续 migration、
+  release 切换和维护状态 smoke 继续处在同一个静默区间，最终只能由部署流程显式恢复写入。
+- 本地和 S3-compatible 远端创建服务都复用该 helper；旧的重复 get/set/错误聚合逻辑已删除。没有新增依赖、migration、
+  业务 API、ProjectData、任务模型、媒体算法、协作命令或前端 UI。README、AGENTS、部署手册、上线记录模板、专项/总
+  roadmap 和部署静态测试已同步，部署示例统一携带该 flag，独立备份示例仍不携带。
+
+### 真实隔离彩排与资源清理
+
+- 在全新 schema 应用 31 条正式 migration，启动隔离 API 与 worker；只读 deployment check 的 Web、liveness、readiness
+  全部通过。随后由隔离管理员开启维护、停止 worker，以新 flag 创建真实 PostgreSQL custom dump 与空对象根备份，
+  离线 verifier 返回 `valid: true`；复核维护状态仍为启用，证明备份没有擅自恢复写入。
+- 维护状态下再次通过只读 smoke；随后显式 `maintenance:disable`，重启 worker 并再次通过 Web/liveness/readiness。
+  API、worker 和预览进程均受控停止，唯一 schema 已 `DROP ... CASCADE`，唯一临时对象/备份目录已定点删除；普通开发 API、
+  public schema、生产服务器、生产数据库/对象、草稿和 VOD 凭据均未连接或修改。
+- `npm run test:processing-reliability-p5b` 通过（可靠性 27/27、任务中心 2/2、协作 23/23）；`npm run test:backup`
+  32/32；`npm run test:deployment` 29/29；`NODE_OPTIONS=--throw-deprecation npm run test:api` 258/258；完整
+  `npm run build` 与 `git diff --check` 通过。构建仍只有既有 Vite 主 chunk 超过 500 kB 提示。
+- 自审确认维护 owner、同操作员验证、成功/失败释放语义、远端复用、参数重复/未知值、文档命令顺序和临时资源回收均有
+  测试或真实彩排证据；没有秘密、连接串、对象正文或完整 payload 进入日志。
+- **已完成**：P5c 的真实隔离全链路、备份维护窗口合同修复、回归、自审和文档闭环。
+- **待推进**：P5d 仍需用户新的明确授权后才能连接生产并执行候选上传、维护、备份、migration、原子切换和真实多账号/
+  VOD/分析人工验收；本轮没有部署、推送或读取生产状态。
