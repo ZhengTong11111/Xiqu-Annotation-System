@@ -58,6 +58,7 @@ import { createAnnotationReviewChannel } from "./annotationReviewEventEnvelope.j
 import { PostgresAnnotationReviewEventBus } from "./postgresAnnotationReviewEventBus.js";
 import { ProcessingJobQueryService } from "./processingJobQueryService.js";
 import { ProcessingJobCommandService } from "./processingJobCommandService.js";
+import { createSafeFastifyLoggerConfiguration } from "./requestLogSanitizer.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -95,8 +96,12 @@ export async function buildApiApp(
   const storage = options.storage ?? createObjectStorageFromEnvironment();
   const uploadPolicy = loadUploadPolicy(options.uploadPolicy);
   const observability = new ApiObservability();
+  // 默认生产日志和测试注入配置共用脱敏装配，避免自定义 level/stream 绕过请求 URL 凭据清理。
   const app = Fastify({
-    logger: options.logger ?? { level: process.env.LOG_LEVEL ?? "info" },
+    ...createSafeFastifyLoggerConfiguration(
+      options.logger,
+      process.env.LOG_LEVEL ?? "info",
+    ),
     bodyLimit: uploadPolicy.maxUploadBytes + 1024 * 1024,
   });
   // 跨实例总线只发布有损 revision 提示；ResourceService 不感知 PostgreSQL 或 WebSocket 实现。
