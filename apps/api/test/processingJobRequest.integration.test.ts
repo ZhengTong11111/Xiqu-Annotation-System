@@ -183,6 +183,46 @@ test("媒体分析请求在账号、标签页和共享执行之间保持幂等",
   }
 });
 
+test("有界并发需求汇聚为一个共享执行并稳定保存全部幂等别名", async () => {
+  const { prisma, pool, maintenancePool, collaborationPool } = createTestPrisma();
+  await truncateTestDatabase(prisma);
+  try {
+    const fixture = await createAnalysisRequestFixture(prisma);
+    const service = new MediaAnalysisJobService(prisma, new ResourceAccessService(prisma));
+    const requests = Array.from({ length: 24 }, (_, index) => ({
+      user: index % 2 === 0 ? fixture.owner : fixture.collaborator,
+      clientRequestId: randomUUID(),
+    }));
+
+    // 不同账号和标签页会并发撞到同一 canonical 执行；数据库锁必须收敛 job，同时保留每个请求别名。
+    const firstResults = await Promise.all(requests.map(({ user, clientRequestId }) =>
+      service.createAnalysis(user, fixture.annotationFileId, {
+        audioTrackId: fixture.audioTrackId,
+        clientRequestId,
+      })));
+    assert.equal(new Set(firstResults.map(({ id }) => id)).size, 1);
+    assert.equal(await prisma.processingJob.count(), 1);
+    assert.equal(await prisma.processingJobRequest.count(), 2);
+    assert.equal(await prisma.processingJobRequestKey.count(), requests.length);
+
+    // 网络模糊结果后整批精确重放，不能增加 job、业务需求或幂等别名。
+    const replayed = await Promise.all(requests.map(({ user, clientRequestId }) =>
+      service.createAnalysis(user, fixture.annotationFileId, {
+        audioTrackId: fixture.audioTrackId,
+        clientRequestId,
+      })));
+    assert.equal(new Set(replayed.map(({ id }) => id)).size, 1);
+    assert.equal(await prisma.processingJob.count(), 1);
+    assert.equal(await prisma.processingJobRequest.count(), 2);
+    assert.equal(await prisma.processingJobRequestKey.count(), requests.length);
+  } finally {
+    await prisma.$disconnect();
+    await pool.end();
+    await maintenancePool.end();
+    await collaborationPool.end();
+  }
+});
+
 async function createAnalysisRequestFixture(
   prisma: ReturnType<typeof createTestPrisma>["prisma"],
 ) {

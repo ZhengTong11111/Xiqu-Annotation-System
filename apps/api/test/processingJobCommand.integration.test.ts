@@ -33,10 +33,17 @@ test("个人取消、管理员强制取消与重试遵守共享执行和幂等�
     });
 
     const ownerCancelId = randomUUID();
-    const ownerCancelled = await commands.cancelRequest(fixture.owner, ownerRequest.id, {
-      clientCommandId: ownerCancelId,
-      reason: "不再需要这一份分析",
-    });
+    // 模糊响应可能触发同一命令并发重放；所有调用必须落到同一不可变命令事实。
+    const ownerCancellationResults = await Promise.all(Array.from({ length: 12 }, () =>
+      commands.cancelRequest(fixture.owner, ownerRequest.id, {
+        clientCommandId: ownerCancelId,
+        reason: "不再需要这一份分析",
+      })));
+    const ownerCancelled = ownerCancellationResults[0]!;
+    assert.equal(
+      new Set(ownerCancellationResults.map(({ commandId }) => commandId)).size,
+      1,
+    );
     assert.equal(ownerCancelled.outcome, "request_cancelled_execution_continues");
     assert.equal((await prisma.processingJob.findUniqueOrThrow({ where: { id: firstJob.id } })).status, "queued");
     const queries = new ProcessingJobQueryService(prisma, access);
@@ -99,14 +106,13 @@ test("个人取消、管理员强制取消与重试遵守共享执行和幂等�
     })).cancelledAt);
 
     const retryCommandId = randomUUID();
-    const retryAfterForce = await commands.retryRequest(fixture.owner, secondOwnerRequest.id, {
-      clientCommandId: retryCommandId,
-    });
-    const replayedRetry = await commands.retryRequest(fixture.owner, secondOwnerRequest.id, {
-      clientCommandId: retryCommandId,
-    });
-    assert.equal(replayedRetry.commandId, retryAfterForce.commandId);
-    assert.equal(replayedRetry.resultJobId, retryAfterForce.resultJobId);
+    const retryResults = await Promise.all(Array.from({ length: 12 }, () =>
+      commands.retryRequest(fixture.owner, secondOwnerRequest.id, {
+        clientCommandId: retryCommandId,
+      })));
+    const retryAfterForce = retryResults[0]!;
+    assert.equal(new Set(retryResults.map(({ commandId }) => commandId)).size, 1);
+    assert.equal(new Set(retryResults.map(({ resultJobId }) => resultJobId)).size, 1);
     assert.equal(await prisma.processingJob.count(), 3, "重试响应重放不能创建第二个执行");
 
     const thirdJob = await prisma.processingJob.findUniqueOrThrow({

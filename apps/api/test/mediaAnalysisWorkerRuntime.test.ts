@@ -70,6 +70,52 @@ test("worker 退避按指数增长并受最大值限制", () => {
   );
 });
 
+test("连续启停 worker 不遗留轮询、恢复调用或重叠执行", async () => {
+  let callsAfterStop = 0;
+  let activeCalls = 0;
+  let maxActiveCalls = 0;
+
+  for (let round = 0; round < 8; round += 1) {
+    let stopped = false;
+    let processCalls = 0;
+    // 统一统计两类 worker 调用，但保留服务合同各自的返回类型。
+    const invoke = async (kind: "recover" | "process") => {
+      if (stopped) callsAfterStop += 1;
+      activeCalls += 1;
+      maxActiveCalls = Math.max(maxActiveCalls, activeCalls);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      activeCalls -= 1;
+      if (kind === "process") processCalls += 1;
+    };
+    const runtime = new MediaAnalysisWorkerRuntime({
+      recoverStaleJobs: async () => {
+        await invoke("recover");
+        return 0;
+      },
+      processNext: async () => {
+        await invoke("process");
+        return false;
+      },
+    }, {
+      pollIntervalMs: 1,
+      staleRecoveryIntervalMs: 3,
+      retryInitialMs: 1,
+      retryMaxMs: 2,
+    });
+
+    const running = runtime.start();
+    await waitUntil(() => processCalls >= 4);
+    await runtime.stop();
+    await running;
+    stopped = true;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  assert.equal(callsAfterStop, 0, "stop 完成后不能再有迟到轮询或恢复调用");
+  assert.equal(activeCalls, 0);
+  assert.equal(maxActiveCalls, 1, "单 worker runtime 内的领取与恢复必须保持串行");
+});
+
 async function waitUntil(predicate: () => boolean) {
   const deadline = Date.now() + 1_000;
   while (!predicate()) {

@@ -9071,3 +9071,49 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **待推进**：P5b 在隔离环境完成快速滚动/重复请求与取消、worker kill/restart、任务中心多账号和协作核心浏览器验收。
   任何真实 VOD 验收只使用 `http://localhost:5173/`，因为当前阿里云 Web License 绑定 localhost；继续不部署生产，P5d
   仍必须等待用户明确授权。
+
+## 2026-08-30：有界并发负载、Worker 重启与 localhost VOD 验收（P5b）
+
+### 可重复的本地压力门禁
+
+- 本轮先按实际代码完全重写被 Git 忽略的 `CLAUDE_WORK.md`，只实施 P5b，没有连接、上传或部署生产。新增
+  `test:processing-reliability-p5b` 聚合入口，复用现有读取中止、任务请求/命令、worker、任务中心和协作测试；没有建立
+  第二套任务状态机、测试专用生产端点或固定账号。
+- 同一媒体分析执行键现在由测试同时发起 24 个有界请求，分属 owner 与 collaborator 两个账号。结果严格收敛为一个
+  shared job、两条业务需求和 24 个 request key；随后精确重放全部请求，没有新增任务、需求或幂等事实。
+- 个人取消和稳定重试分别增加 12 路同 command id 并发重放。数据库最终只保存一条命令事实；取消不会重复改变共享任务，
+  重试只形成一个后继 job，并保留原任务历史。新增测试没有降低原有管理员强制取消、最后需求者取消和权限边界。
+- worker runtime 连续执行 8 轮 start/stop，每轮至少完成四次领取轮询；stop 后等待观察窗内没有迟到恢复/领取调用，活动
+  调用归零，恢复与领取最大并发始终为 1。测试桩分别保留 `recoverStaleJobs -> number` 与 `processNext -> boolean` 的真实
+  服务合同，避免测试类型与生产接口漂移。
+- 新增压力子集连续独立运行三轮，每轮 7/7 通过；P5b 聚合门禁中核心可靠性 27/27、任务中心 2/2、协作 23/23 通过，
+  没有概率失败、`pg` 单连接重入提醒、陈旧计时器或测试 owner 泄漏。
+
+### 浏览器与真实 VOD 边界
+
+- 管理员 Chrome 会话使用 `http://localhost:5173/` 验收后台任务中心：我的/相关/全部任务、搜索、状态筛选、详情和空状态
+  均能读取；详情对话框 `clientWidth = scrollWidth = 1078px`，没有横向溢出。系统诊断显示维护正常、PostgreSQL 和对象
+  存储正常、活动任务为零、陈旧 claim/近期失败/暂存对象/孤儿/缺失二进制均为零，任务可靠性为“运行正常”。控制台没有
+  平台 warning/error，也没有执行取消、重试、维护、删除或分析创建等写操作。
+- 同一 Chrome 会话从 `http://localhost:5173/` 打开《寻梦》样例标注文件，实时连接、编辑权限和服务器 v122 同步正常。
+  Aliplayer 成功准备并播放真实央视 VOD，播放时间从 12.400 秒推进到 13.841 秒；在播放状态点击另一时间轴位置后跳至
+  32.925 秒并继续播放，证明当前版本没有复现“播放中 VOD 无法跳转”。`127.0.0.1` 未被用作 VOD 证据。
+- Chrome 扩展在继续打开波形/频谱视图时连接超时，因此本轮没有把波形、频谱或 F0 的视觉加载伪装成已人工通过；相应
+  媒体分析链路由 45/45 专项测试覆盖，后续人工验收仍必须从 localhost 进行。第二个 in-app browser 会话当时未登录，
+  所以也没有用共享 cookie 标签页冒充不同账号；普通账号任务中心和双账号协作的权限、需求共享、旧基线冲突与权威追赶
+  由隔离数据库 API/协作测试覆盖，真实双账号 UI 仍列为 P5d 人工验收项。
+
+### 验证、自审与状态
+
+- `NODE_OPTIONS=--throw-deprecation npm run test:api`：248/248；新增并发请求和 worker 循环包含在全量测试中，未出现
+  PostgreSQL query 重入或弃用警告。`npm run test:media-playback`：90/90；`npm run test:media-analysis`：45/45；
+  `npm run test:deployment`：23/23。
+- 完整 `npm run build` 与 `git diff --check` 通过；构建只有既有 Vite 主 chunk 超过 500 kB 提示。本轮没有新 dependency、
+  migration、生产配置、ProjectData、协作命令、公开 API、任务 UI 或媒体算法变化。
+- 自审确认压力参数均固定有界，重复调用仍使用真实幂等键与数据库约束，没有 sleep 重试掩盖、敏感日志、浏览器后门、
+  第二套 worker 状态或僵尸测试逻辑。`AGENTS.md` 已明确 localhost VOD 与可靠性 owner，本轮没有产生需要重复写入的新规范。
+- **已完成**：P5b 并发请求/取消/重试压力、worker 多轮启停、聚合测试入口、管理员任务中心/诊断和 localhost VOD 播放/
+  随机 seek 验收，以及完整回归与文档收口。
+- **待推进**：P5c 生成脱敏生产候选演练包、旧/新 release 与回滚检查单，在本机验证维护、备份、worker、候选检查、
+  migration 和只读 smoke 的顺序；仍不连接生产。P5d 生产切换继续等待用户明确授权，并补做真实普通账号/管理员双会话、
+  波形/频谱/F0 和协作 UI 人工验收。
