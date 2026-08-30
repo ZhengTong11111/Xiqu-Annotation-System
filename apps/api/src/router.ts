@@ -15,6 +15,7 @@ import {
   type AnnotationClientSyncFailureCategory,
   type AnnotationClientSyncFailureOperation,
   type AnnotationClientSyncFailureReport,
+  type AnnotationWorkflowStatus,
   type AuditActionName,
   type CreateMediaAudioTrackRequest,
   type CancelProcessingJobRequest,
@@ -110,6 +111,11 @@ const ANNOTATION_SYNC_FAILURE_CATEGORIES = new Set<AnnotationClientSyncFailureCa
   "auto_save_runtime",
   "server_save",
   "unknown",
+]);
+const ANNOTATION_WORKFLOW_STATUSES = new Set<AnnotationWorkflowStatus>([
+  "unannotated",
+  "annotated",
+  "reviewed",
 ]);
 
 export function registerApiRoutes(
@@ -502,6 +508,53 @@ export function registerApiRoutes(
         await getCurrentUser(repository, request),
         request.params.resourceId,
         { mediaResourceId: optionalStringOrNull(body.mediaResourceId) ?? null },
+      );
+    },
+  );
+
+  app.patch<{ Params: { resourceId: string }; Body: unknown }>(
+    "/api/annotation-files/:resourceId/workflow-status",
+    async (request) => {
+      const body = requireObject(request.body);
+      return resources.updateAnnotationWorkflowStatus(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        {
+          expectedStatus: parseAnnotationWorkflowStatus(
+            body.expectedStatus,
+            "当前标注状态",
+          ),
+          status: parseAnnotationWorkflowStatus(body.status, "目标标注状态"),
+        },
+      );
+    },
+  );
+
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/projects/:resourceId/workflow-groups",
+    async (request) => resources.getProjectWorkflowGroups(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+    ),
+  );
+
+  app.put<{ Params: { resourceId: string }; Body: unknown }>(
+    "/api/projects/:resourceId/workflow-groups",
+    async (request) => {
+      const body = requireObject(request.body);
+      return resources.updateProjectWorkflowGroups(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        {
+          annotationUserIds: parseAccountIdArray(
+            body.annotationUserIds,
+            "标注组账号",
+          ),
+          reviewUserIds: parseAccountIdArray(
+            body.reviewUserIds,
+            "审核组账号",
+          ),
+        },
       );
     },
   );
@@ -1981,6 +2034,35 @@ function parseUniqueStringArray(
   const normalized = [...new Set(value.map((item) => item.trim()))];
   if (normalized.length < minimum || normalized.length > maximum) {
     throw badRequest(`${label} 必须包含 ${minimum}–${maximum} 个不同资源。`);
+  }
+  return normalized;
+}
+
+function parseAnnotationWorkflowStatus(
+  value: unknown,
+  label: string,
+): AnnotationWorkflowStatus {
+  if (
+    typeof value !== "string" ||
+    !ANNOTATION_WORKFLOW_STATUSES.has(value as AnnotationWorkflowStatus)
+  ) {
+    throw badRequest(`${label}无效。`);
+  }
+  return value as AnnotationWorkflowStatus;
+}
+
+function parseAccountIdArray(value: unknown, label: string): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > 500 ||
+    value.some((item) =>
+      typeof item !== "string" || !item.trim() || item.length > 160)
+  ) {
+    throw badRequest(`${label}必须是最多 500 个有效账号编号组成的数组。`);
+  }
+  const normalized = value.map((item) => item.trim()) as string[];
+  if (new Set(normalized).size !== normalized.length) {
+    throw badRequest(`${label}不能包含重复账号。`);
   }
   return normalized;
 }

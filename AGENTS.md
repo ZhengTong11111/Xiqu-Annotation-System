@@ -27,6 +27,14 @@ Main currently contains all major recent feature lines that matter for context:
 - resource permission Inspector with three base-preset radios, an independent review checkbox, and the complete detailed capability
   matrix; simple controls only rewrite direct ACL rows, preserve custom grants until explicit overwrite, and never replace
   server-side effective permission calculation
+- annotation-file workflow status is platform governance metadata with strict adjacent `unannotated -> annotated -> reviewed`
+  transitions; annotation completion uses effective `write`, review completion uses effective `review`, and neither transition
+  changes ProjectData, annotation revision, operations, drafts, undo/history, or exported JSON. Project workflow status is a
+  read-time maximum over active descendant annotation files, never a second persisted conclusion
+- project annotation/review groups are auditable responsibility assignments, not ACLs. Only effective
+  `manage_permissions` can read or replace the complete groups; the resource list may expose the annotation group as the
+  project's “负责人”, while resource ownership and all read/write/review authorization remain independent. Resource copies
+  must not inherit file completion conclusions or project responsibility groups
 - independent annotation-range comments alongside confirmed ranges; both reuse one saved range/target contract and `read + review`
   gate, while comments remain non-confirming append-only governance facts with required plain-text bodies and withdrawal history
 - permission-gated native streaming downloads for media resources and authoritative JSON downloads for annotation resources, exposed through the shared resource context menu and Inspector

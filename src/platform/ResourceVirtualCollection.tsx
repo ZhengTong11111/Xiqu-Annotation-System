@@ -6,6 +6,7 @@ import {
 } from "react";
 import type { MouseEvent } from "react";
 import type { ResourceEntry } from "@xiqu/shared";
+import type { AnnotationWorkflowStatus } from "@xiqu/shared";
 import { ResourceItem } from "./ResourceItem";
 
 export type ResourceCollectionMode = "list" | "grid";
@@ -29,6 +30,10 @@ export type ResourceVirtualCollectionProps = {
   onCopy: (resource: ResourceEntry) => void;
   onMove: (resource: ResourceEntry) => void;
   onDownload: (resource: ResourceEntry) => void;
+  onRequestWorkflowStatus: (
+    resource: ResourceEntry,
+    status: AnnotationWorkflowStatus,
+  ) => void;
   interactionDisabled: boolean;
   draggedResourceIds: string[];
   onDragStart: (resourceIds: string[]) => void;
@@ -86,6 +91,7 @@ function VirtualResourceList(props: ResourceVirtualCollectionProps) {
         <span>类型</span>
         <SortButton label="修改时间" field="updatedAt" {...props} />
         <span>负责人</span>
+        <span>状态</span>
         <SortButton label="大小" field="size" {...props} />
       </div>
       <div
@@ -245,6 +251,7 @@ function resourceItemProps(
     onCopy: props.onCopy,
     onMove: props.onMove,
     onDownload: props.onDownload,
+    onRequestWorkflowStatus: props.onRequestWorkflowStatus,
     onRestore: props.onRestore,
     onTrash: props.onTrash,
     onCompare: props.onCompare,

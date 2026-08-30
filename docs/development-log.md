@@ -9427,3 +9427,47 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 维护状态最终由新 release 以 `platform.admin` 查询，结果为 `enabled: false`。本次部署已完成代码发布与只读健康核验；
   后续仍应按上一节计划观察 `same_revision_baseline_mismatch`、命令前置条件失败和结构租约最长持有时间，并以真实历史
   漂移草稿及两个账号完成人工协作验收。
+
+## 2026-08-30：R2.7 标注文件工作流状态与项目职责组
+
+### 数据合同与权限边界
+
+- 按滚动开发规范先在分支 `codex/resource-workflow-status-groups` 审查资源树、逐资源 ACL、三种资源视图、Inspector、
+  复制/移动/回收路径和账号目录，再重写本地 `CLAUDE_WORK.md` 并把有效设计写入总 roadmap；没有从截图直接堆叠一套
+  独立后台状态。
+- 新增 PostgreSQL `AnnotationWorkflowStatus`（`unannotated | annotated | reviewed`）及文件级状态、最近操作者和时间；
+  状态属于平台治理元数据，不进入 ProjectData、annotation revision、operation、浏览器草稿、undo/history 或 JSON。
+  共享 `getAnnotationWorkflowTransition()` 是前后端唯一相邻转换合同：完成/撤回标注要求有效 `write`，完成/撤回审核要求
+  有效 `review`，跨级转换稳定返回 409。服务端在资源树 shared lock、资源行锁和 annotation 行锁内复核活动状态、ACL 与
+  `expectedStatus`，避免陈旧右键菜单覆盖后来结论；成功写审计并只更新资源修改时间。
+- 新增 `ProjectWorkflowMember` 保存项目标注组和审核组。完整集合替换在同一事务内验证项目、真实
+  `manage_permissions`、账号存在性和停用账号新增规则；一个账号可同时进入两组。职责组不创建、不删除也不扩大任何
+  read/write/review ACL，资源 owner 仍是权限与 Inspector 中的真实所有者。
+- 项目工作流状态不另存表字段，而是在资源批次映射时用一个 recursive CTE 从活动子树派生最高阶段：存在已审核文件则
+  为已审核，否则存在已标注文件则为已标注，否则未标注。归档/回收的中间节点会截断该子树；移动和恢复后无需维护容易
+  漂移的缓存。列表只批量返回标注组负责人摘要，完整标注/审核组只向项目管理者按需读取。
+
+### 资源管理器与复制语义
+
+- list 模式增加稳定“状态”列，项目“负责人”改为标注组摘要；非项目资源继续显示 owner。grid 使用紧凑状态圆点，
+  column 保持原有轻量导航。标注文件右键菜单增加 radio 状态子菜单：权限不足项禁用，跨级操作打开解释弹窗，有效转换
+  使用 Radix AlertDialog 二次确认并防止重复提交。
+- 项目 Inspector 新增可搜索的标注组/审核组编辑器，复用既有账号目录和 `PlatformClient`，已选成员即使不匹配当前搜索
+  仍可见；两组一次原子保存。新增 CSS 延续现有浅灰、细分割线和低饱和红/黄/绿状态表达，没有引入新的卡片体系或依赖。
+- 复制实现经审查无需增加第二套字段复制逻辑：复制计划本来只读取正文/媒体/项目说明，新 annotation 行因此使用数据库
+  默认未标注，新项目不创建职责组。新增集成测试固定该语义，防止未来把治理结论或分工误当普通资源元数据复制。
+
+### 自审、验证与剩余验收
+
+- 清理了重复前后端状态判断，服务端与 JSX 均复用 shared 状态机；修正列表旧“五列”注释并为递归汇总、行锁、职责组
+  替换和 UI 搜索保留准确中文说明。维护路由清单确认新增 PATCH/PUT 按默认 fail-closed 规则属于 write，GET 组别查询为
+  read；没有新增维护例外、依赖、ProjectData migration、协作事件或僵尸兼容分支。
+- `npm run test:annotation-workflow` 4/4，通过权限/顺序/陈旧状态、正文 revision 不变、递归项目汇总、非法账号数组、
+  跨项目移动、回收/恢复、复制重置、职责组不复制及审计。`test:maintenance` 13/13、资源分页 5/5、权限预设 8/8、
+  项目权限管理 7/7、审计 7/7 均通过；`npm run test:api` 259/259、完整 `npm run build` 与 `git diff --check`
+  通过，仅保留既有 Vite 主 chunk 超过 500 kB 提示。
+- 本地 public schema 已通过正式 migration 应用第 32 条迁移，API 与 Vite 仅为本轮验收临时启动。内置浏览器未携带已登录
+  平台会话，因此只确认登录页正常加载，没有输入或绕过账号凭据；真实管理员/编辑者/审核者三账号右键状态、弹窗、
+  负责人列和职责组搜索保存仍列为人工 UI 验收项。
+- **已完成**：R2.7 代码、数据库 migration、专项/完整 API 回归、生产构建、自审和文档闭环。
+- **待推进**：用户人工 UI 验收后再决定是否合并和部署；本轮没有连接、维护、迁移或切换生产服务器。

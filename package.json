@@ -26,6 +26,7 @@
     "build:document-model": "tsc -p packages/document-model/tsconfig.json",
     "test:permissions": "npm run build:shared && npm run build:document-model && node --test packages/document-model/test/permissions.test.mjs",
     "test:annotation-confirmations": "npm run build:shared && npm run build:document-model && node --test packages/document-model/test/annotation-confirmations.test.mjs packages/document-model/test/annotation-range-comments.test.mjs",
+    "test:annotation-workflow": "npm run build:shared && npm run db:generate && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 packages/shared/test/annotation-workflow.test.mjs src/platform/annotationWorkflow.test.ts apps/api/test/annotationWorkflow.integration.test.ts",
     "test:project-data-schema": "npm run build:shared && npm run build:document-model && node --test packages/document-model/test/project-data-schema.test.mjs",
     "test:annotation-confirmation-view": "npm run build:shared && npm run build:document-model && node --import tsx --test src/platform/annotationConfirmationView.test.ts",
     "test:platform-operations": "npm run build:shared && node --import tsx --test src/utils/platformOperations.test.ts",

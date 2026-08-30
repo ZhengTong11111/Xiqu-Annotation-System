@@ -1,6 +1,7 @@
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
   ChevronRight,
+  Check,
   Copy,
   Download,
   FileJson2,
@@ -9,18 +10,26 @@ import {
   Folder,
   FolderInput,
   FolderOpen,
+  ListChecks,
   RotateCcw,
   Settings2,
   Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
-import type { ResourceEntry } from "@xiqu/shared";
+import type { AnnotationWorkflowStatus, ResourceEntry } from "@xiqu/shared";
 import {
   registerResourceDraggable,
   registerResourceDropTarget,
 } from "./resourceDragAndDrop";
 import { isResourceContainer } from "./resourceColumnModel";
+import {
+  ANNOTATION_WORKFLOW_STATUS_OPTIONS,
+  annotationWorkflowStatusLabel,
+  getAnnotationWorkflowCommandState,
+  resourceResponsibleLabel,
+  resourceWorkflowStatus,
+} from "./annotationWorkflow";
 
 export type ResourceItemDisplayMode = "list" | "grid" | "column";
 
@@ -41,6 +50,10 @@ export function ResourceItem(props: {
   onCopy: (resource: ResourceEntry) => void;
   onMove: (resource: ResourceEntry) => void;
   onDownload: (resource: ResourceEntry) => void;
+  onRequestWorkflowStatus: (
+    resource: ResourceEntry,
+    status: AnnotationWorkflowStatus,
+  ) => void;
   onRestore: (resource: ResourceEntry) => void;
   onTrash: (resource: ResourceEntry) => void;
   onCompare: (resource: ResourceEntry) => void;
@@ -81,7 +94,7 @@ export function ResourceItem(props: {
     return () => cleanups.forEach((cleanup) => cleanup());
   }, [isContainer, props.resource.id]);
 
-  // 详细列表沿用既有 `.resource-list-row` 五列布局；它与 grid/column 的 `*-item` 命名并不对称。
+  // 详细列表沿用既有 `.resource-list-row` 网格布局；新增状态列后仍由共享资源项统一输出六列。
   const displayClassName = props.displayMode === "list"
     ? "resource-list-row"
     : `resource-${props.displayMode}-item`;
@@ -109,7 +122,8 @@ export function ResourceItem(props: {
           <>
             <ResourceIcon resource={props.resource} size={34} />
             <strong>{props.resource.name}</strong>
-            <span>{props.resource.owner.displayName}</span>
+            <span>{resourceResponsibleLabel(props.resource)}</span>
+            <ResourceWorkflowStatusBadge resource={props.resource} compact />
           </>
         ) : props.displayMode === "column" ? (
           <>
@@ -125,7 +139,8 @@ export function ResourceItem(props: {
             </span>
             <span>{resourceTypeLabel(props.resource)}</span>
             <span>{formatResourceDate(props.resource.updatedAt)}</span>
-            <span>{props.resource.owner.displayName}</span>
+            <span>{resourceResponsibleLabel(props.resource)}</span>
+            <span><ResourceWorkflowStatusBadge resource={props.resource} /></span>
             <span>{formatResourceSize(props.resource.size)}</span>
           </>
         )}
@@ -145,6 +160,10 @@ function ResourceContextMenu(props: {
   onCopy: (resource: ResourceEntry) => void;
   onMove: (resource: ResourceEntry) => void;
   onDownload: (resource: ResourceEntry) => void;
+  onRequestWorkflowStatus: (
+    resource: ResourceEntry,
+    status: AnnotationWorkflowStatus,
+  ) => void;
   onRestore: (resource: ResourceEntry) => void;
   onTrash: (resource: ResourceEntry) => void;
   onCompare: (resource: ResourceEntry) => void;
@@ -205,6 +224,12 @@ function ResourceContextMenu(props: {
               >
                 <Settings2 size={15} /> 重命名
               </ContextMenu.Item>
+              {props.resource.type === "annotation_file" ? (
+                <AnnotationWorkflowStatusMenu
+                  resource={props.resource}
+                  onRequest={props.onRequestWorkflowStatus}
+                />
+              ) : null}
               <ContextMenu.Separator />
               <ContextMenu.Item
                 className="danger"
@@ -219,6 +244,74 @@ function ResourceContextMenu(props: {
         </ContextMenu.Content>
       </ContextMenu.Portal>
     </ContextMenu.Root>
+  );
+}
+
+function AnnotationWorkflowStatusMenu(props: {
+  resource: ResourceEntry;
+  onRequest: (resource: ResourceEntry, status: AnnotationWorkflowStatus) => void;
+}) {
+  const current = props.resource.workflowStatus ?? "unannotated";
+  return (
+    <ContextMenu.Sub>
+      <ContextMenu.SubTrigger className="resource-context-subtrigger">
+        <ListChecks size={15} /> 标注状态
+        <ChevronRight size={14} className="resource-context-subtrigger-arrow" />
+      </ContextMenu.SubTrigger>
+      <ContextMenu.Portal>
+        <ContextMenu.SubContent className="resource-context-menu">
+          <ContextMenu.RadioGroup value={current}>
+            {ANNOTATION_WORKFLOW_STATUS_OPTIONS.map((option) => {
+              const commandState = getAnnotationWorkflowCommandState(
+                current,
+                option.value,
+                props.resource.permission.capabilities,
+              );
+              const disabled = commandState === "forbidden";
+              return (
+                <ContextMenu.RadioItem
+                  key={option.value}
+                  value={option.value}
+                  disabled={disabled}
+                  title={disabled
+                    ? option.value === "reviewed"
+                      ? "需要该文件的审核权限"
+                      : "需要该文件的编辑或审核权限"
+                    : undefined}
+                  onSelect={() => {
+                    if (commandState !== "current") {
+                      props.onRequest(props.resource, option.value);
+                    }
+                  }}
+                >
+                  <span className="resource-context-radio-indicator">
+                    <ContextMenu.ItemIndicator><Check size={13} /></ContextMenu.ItemIndicator>
+                  </span>
+                  {option.label}
+                </ContextMenu.RadioItem>
+              );
+            })}
+          </ContextMenu.RadioGroup>
+        </ContextMenu.SubContent>
+      </ContextMenu.Portal>
+    </ContextMenu.Sub>
+  );
+}
+
+export function ResourceWorkflowStatusBadge(props: {
+  resource: ResourceEntry;
+  compact?: boolean;
+}) {
+  const status = resourceWorkflowStatus(props.resource);
+  if (!status) return <span className="resource-workflow-empty">—</span>;
+  return (
+    <span
+      className={`resource-workflow-status ${status}${props.compact ? " compact" : ""}`}
+      title={annotationWorkflowStatusLabel(status)}
+      aria-label={`状态：${annotationWorkflowStatusLabel(status)}`}
+    >
+      {props.compact ? null : annotationWorkflowStatusLabel(status)}
+    </span>
   );
 }
 

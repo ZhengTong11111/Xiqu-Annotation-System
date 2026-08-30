@@ -14,6 +14,7 @@ import type {
   AnnotationRangeCommentDraft,
   AnnotationRangeCommentPage,
   AnnotationRangeCommentRecord,
+  AnnotationWorkflowStatus,
   AnnotationClientSyncFailureReport,
   AnnotationClientSyncFailureReportResult,
   AnnotationFile,
@@ -38,18 +39,23 @@ import type {
   ListResourcesOptions,
   MediaProviderCapabilities,
   PermissionManagementProjectPage,
+  ProjectWorkflowGroups,
   ResourceCapability,
   ResourceBreadcrumb,
   ResourceEntry,
   ResourceListPage,
   ResourcePermissionMatrixRow,
   ResourcePermissionRecord,
+  UserReference,
   RestoreAnnotationRecoverySnapshotRequest,
   SaveAnnotationFileRequest,
   UpdateResourceRequest,
   UpdateAnnotationMediaRequest,
+  UpdateAnnotationWorkflowStatusRequest,
+  UpdateProjectWorkflowGroupsRequest,
   UpsertResourcePermissionRequest,
 } from "@xiqu/shared";
+import { getAnnotationWorkflowTransition } from "@xiqu/shared";
 import {
   canCreateAnnotationReviewFact,
   canWithdrawAnnotationReviewFact,
@@ -146,12 +152,18 @@ const annotationMutationLeaseInclude = {
   holder: { include: { roles: true } },
 } satisfies Prisma.AnnotationMutationLeaseInclude;
 
+const projectWorkflowMemberInclude = {
+  user: { select: { id: true, accountName: true, displayName: true } },
+} satisfies Prisma.ProjectWorkflowMemberInclude;
+
 type ResourceBaseRow = Prisma.ResourceEntryGetPayload<{
   include: typeof resourceBaseInclude;
 }>;
 type ResourceRow = ResourceBaseRow & {
   annotationFile: DbAnnotationFile | null;
   mediaFile: DbMediaFile | null;
+  projectWorkflowStatus: AnnotationWorkflowStatus | null;
+  annotationResponsibles: UserReference[];
 };
 type PermissionManagementProjectRow = Prisma.ResourceEntryGetPayload<{
   select: typeof permissionManagementProjectSelect;
@@ -168,6 +180,9 @@ type AnnotationRangeCommentRow = Prisma.AnnotationRangeCommentGetPayload<{
 }>;
 type AnnotationMutationLeaseRow = Prisma.AnnotationMutationLeaseGetPayload<{
   include: typeof annotationMutationLeaseInclude;
+}>;
+type ProjectWorkflowMemberRow = Prisma.ProjectWorkflowMemberGetPayload<{
+  include: typeof projectWorkflowMemberInclude;
 }>;
 
 export type CopyResourceResult = {
@@ -754,7 +769,12 @@ export class ResourceService {
       },
     });
     if (!resource?.annotationFile) throw notFound("标注文件不存在。");
-    const resourceRow: ResourceRow = { ...resource, mediaFile: null };
+    const resourceRow: ResourceRow = {
+      ...resource,
+      mediaFile: null,
+      projectWorkflowStatus: null,
+      annotationResponsibles: [],
+    };
     return this.mapAnnotationFile<TPayload>(
       user,
       resourceRow,
@@ -1678,6 +1698,189 @@ export class ResourceService {
     return result.record;
   }
 
+  async updateAnnotationWorkflowStatus(
+    user: ApiUser,
+    resourceId: string,
+    input: UpdateAnnotationWorkflowStatusRequest,
+  ): Promise<ResourceEntry> {
+    await this.prisma.$transaction(async (transaction) => {
+      await this.lockResourceTreeForContentWrite(transaction);
+      await this.lockResourceRows(transaction, [resourceId]);
+      await this.assertActiveAnnotationFile(resourceId, transaction);
+      const permission = await this.access.getEffectivePermission(
+        user,
+        resourceId,
+        transaction,
+      );
+      if (!permission.capabilities.includes("read")) {
+        throw forbidden("当前账号不能读取该标注文件。");
+      }
+
+      // 状态使用 annotation 行锁串行化，避免两个陈旧菜单同时覆盖后到达的治理结论。
+      const lockedRows = await transaction.$queryRaw<Array<{
+        workflowStatus: AnnotationWorkflowStatus;
+      }>>`
+        SELECT workflow_status AS "workflowStatus"
+        FROM annotation_files
+        WHERE resource_id = ${resourceId}
+        FOR UPDATE
+      `;
+      const currentStatus = lockedRows[0]?.workflowStatus;
+      if (!currentStatus) throw notFound("标注文件不存在。");
+      if (currentStatus !== input.expectedStatus) {
+        throw conflict("标注状态已被其他账号更新，请刷新后重试。", {
+          currentStatus,
+        });
+      }
+
+      const transition = getAnnotationWorkflowTransition(
+        currentStatus,
+        input.status,
+      );
+      if (transition.kind === "invalid_order") {
+        throw conflict(
+          currentStatus === "unannotated"
+            ? "未完成标注前不能标记为已审核，请先标记为已标注。"
+            : "已审核文件不能直接改为未标注，请先撤回审核结论。",
+          {
+          currentStatus,
+          requestedStatus: input.status,
+        },
+        );
+      }
+      if (transition.kind === "unchanged") return;
+      if (!permission.capabilities.includes(transition.requiredCapability)) {
+        throw forbidden(
+          transition.requiredCapability === "write"
+            ? "当前账号缺少该文件的编辑权限。"
+            : "当前账号缺少该文件的审核权限。",
+        );
+      }
+
+      const changedAt = new Date();
+      await transaction.annotationFile.update({
+        where: { resourceId },
+        data: {
+          workflowStatus: input.status,
+          workflowUpdatedAt: changedAt,
+          workflowUpdatedBy: user.id,
+        },
+      });
+      // 工作流是资源元数据变更，因此同步推进资源修改时间，但不推进 annotation revision。
+      await transaction.resourceEntry.update({
+        where: { id: resourceId },
+        data: { updatedAt: changedAt },
+      });
+      await transaction.auditLog.create({
+        data: {
+          action: "annotation_workflow_status_update",
+          actorUserId: user.id,
+          resourceId,
+          detail: { from: currentStatus, to: input.status },
+        },
+      });
+    });
+    return this.getMappedResource(user, resourceId);
+  }
+
+  async getProjectWorkflowGroups(
+    user: ApiUser,
+    projectResourceId: string,
+  ): Promise<ProjectWorkflowGroups> {
+    await this.access.assertCapability(user, projectResourceId, "manage_permissions");
+    await this.assertActiveProject(projectResourceId);
+    const rows = await this.prisma.projectWorkflowMember.findMany({
+      where: { projectResourceId },
+      include: projectWorkflowMemberInclude,
+    });
+    return this.mapProjectWorkflowGroups(projectResourceId, rows);
+  }
+
+  async updateProjectWorkflowGroups(
+    user: ApiUser,
+    projectResourceId: string,
+    input: UpdateProjectWorkflowGroupsRequest,
+  ): Promise<ProjectWorkflowGroups> {
+    const annotationUserIds = [...new Set(input.annotationUserIds)];
+    const reviewUserIds = [...new Set(input.reviewUserIds)];
+    await this.prisma.$transaction(async (transaction) => {
+      await this.lockResourceTreeForContentWrite(transaction);
+      await this.lockResourceRows(transaction, [projectResourceId]);
+      await this.assertActiveProject(projectResourceId, transaction);
+      const permission = await this.access.getEffectivePermission(
+        user,
+        projectResourceId,
+        transaction,
+      );
+      if (!permission.capabilities.includes("manage_permissions")) {
+        throw forbidden("当前账号不能管理该项目的职责组。");
+      }
+
+      const existing = await transaction.projectWorkflowMember.findMany({
+        where: { projectResourceId },
+        select: { userId: true, group: true },
+      });
+      const existingPairs = new Set(
+        existing.map((row) => `${row.group}:${row.userId}`),
+      );
+      const desiredPairs = [
+        ...annotationUserIds.map((userId) => ({ group: "annotation" as const, userId })),
+        ...reviewUserIds.map((userId) => ({ group: "review" as const, userId })),
+      ];
+      const desiredUserIds = [...new Set(desiredPairs.map(({ userId }) => userId))];
+      const users = desiredUserIds.length
+        ? await transaction.user.findMany({
+            where: { id: { in: desiredUserIds } },
+            select: { id: true, isActive: true },
+          })
+        : [];
+      const usersById = new Map(users.map((account) => [account.id, account]));
+      if (usersById.size !== desiredUserIds.length) {
+        throw badRequest("职责组中包含不存在的账号。");
+      }
+      // 已停用账号可以保留原有职责历史，但不能被新增到另一组或重新加入。
+      const invalidInactive = desiredPairs.find(({ group, userId }) =>
+        !usersById.get(userId)?.isActive &&
+        !existingPairs.has(`${group}:${userId}`));
+      if (invalidInactive) throw badRequest("已停用账号不能新增到项目职责组。");
+
+      await this.replaceProjectWorkflowGroup(
+        transaction,
+        projectResourceId,
+        "annotation",
+        annotationUserIds,
+        existingPairs,
+        user.id,
+      );
+      await this.replaceProjectWorkflowGroup(
+        transaction,
+        projectResourceId,
+        "review",
+        reviewUserIds,
+        existingPairs,
+        user.id,
+      );
+      await transaction.resourceEntry.update({
+        where: { id: projectResourceId },
+        data: { updatedAt: new Date() },
+      });
+      await transaction.auditLog.create({
+        data: {
+          action: "project_workflow_groups_update",
+          actorUserId: user.id,
+          resourceId: projectResourceId,
+          detail: {
+            annotationUserIds,
+            reviewUserIds,
+            annotationCount: annotationUserIds.length,
+            reviewCount: reviewUserIds.length,
+          },
+        },
+      });
+    });
+    return this.getProjectWorkflowGroups(user, projectResourceId);
+  }
+
   async updateResource(
     user: ApiUser,
     resourceId: string,
@@ -2379,23 +2582,103 @@ export class ResourceService {
   ): Promise<ResourceRow[]> {
     if (rows.length === 0) return [];
     const resourceIds = rows.map(({ id }) => id);
+    const projectIds = rows
+      .filter(({ type }) => type === "project")
+      .map(({ id }) => id);
     const annotationFiles = await this.prisma.annotationFile.findMany({
       where: { resourceId: { in: resourceIds } },
     });
     const mediaFiles = await this.prisma.mediaFile.findMany({
       where: { resourceId: { in: resourceIds } },
     });
+    const annotationGroupMembers = projectIds.length
+      ? await this.prisma.projectWorkflowMember.findMany({
+          where: {
+            projectResourceId: { in: projectIds },
+            group: "annotation",
+          },
+          include: projectWorkflowMemberInclude,
+        })
+      : [];
+    const projectWorkflowStatuses = await this.loadProjectWorkflowStatuses(projectIds);
     const annotationByResourceId = new Map(
       annotationFiles.map((file) => [file.resourceId, file]),
     );
     const mediaByResourceId = new Map(
       mediaFiles.map((file) => [file.resourceId, file]),
     );
+    const annotationResponsiblesByProject = new Map<string, UserReference[]>();
+    for (const member of annotationGroupMembers) {
+      const users = annotationResponsiblesByProject.get(member.projectResourceId) ?? [];
+      users.push(member.user);
+      annotationResponsiblesByProject.set(member.projectResourceId, users);
+    }
+    // 稳定排序保证分页刷新和跨视图切换时“负责人”文本不会抖动。
+    for (const users of annotationResponsiblesByProject.values()) {
+      users.sort((left, right) =>
+        left.displayName.localeCompare(right.displayName, "zh-CN") ||
+        left.accountName.localeCompare(right.accountName) ||
+        left.id.localeCompare(right.id));
+    }
     return rows.map((row) => ({
       ...row,
       annotationFile: annotationByResourceId.get(row.id) ?? null,
       mediaFile: mediaByResourceId.get(row.id) ?? null,
+      projectWorkflowStatus: row.type === "project" &&
+          !row.trashedAt && !row.archivedAt
+        ? projectWorkflowStatuses.get(row.id) ?? "unannotated"
+        : null,
+      annotationResponsibles: annotationResponsiblesByProject.get(row.id) ?? [],
     }));
+  }
+
+  /**
+   * 一个递归查询同时派生当前批次全部项目的最高工作流阶段，避免项目列表出现 N+1。
+   * 归档或回收的中间容器不会继续向下递归，因此隐藏子树不会污染活动项目状态。
+   */
+  private async loadProjectWorkflowStatuses(
+    projectIds: string[],
+  ): Promise<Map<string, AnnotationWorkflowStatus>> {
+    if (!projectIds.length) return new Map();
+    const rows = await this.prisma.$queryRaw<Array<{
+      rootProjectId: string;
+      workflowStatus: AnnotationWorkflowStatus;
+    }>>`
+      WITH RECURSIVE project_descendants AS (
+        SELECT
+          root.id AS "rootProjectId",
+          root.id AS "resourceId"
+        FROM resource_entries AS root
+        WHERE root.id IN (${Prisma.join(projectIds)})
+          AND root.trashed_at IS NULL
+          AND root.archived_at IS NULL
+
+        UNION ALL
+
+        SELECT
+          parent."rootProjectId",
+          child.id AS "resourceId"
+        FROM project_descendants AS parent
+        INNER JOIN resource_entries AS child
+          ON child.parent_id = parent."resourceId"
+        WHERE child.trashed_at IS NULL
+          AND child.archived_at IS NULL
+      )
+      SELECT
+        descendants."rootProjectId",
+        CASE
+          WHEN COUNT(*) FILTER (WHERE file.workflow_status = 'reviewed') > 0
+            THEN 'reviewed'
+          WHEN COUNT(*) FILTER (WHERE file.workflow_status = 'annotated') > 0
+            THEN 'annotated'
+          ELSE 'unannotated'
+        END AS "workflowStatus"
+      FROM project_descendants AS descendants
+      INNER JOIN annotation_files AS file
+        ON file.resource_id = descendants."resourceId"
+      GROUP BY descendants."rootProjectId"
+    `;
+    return new Map(rows.map((row) => [row.rootProjectId, row.workflowStatus]));
   }
 
   private async mapResource(
@@ -2425,6 +2708,8 @@ export class ResourceService {
       mediaKind: row.mediaFile?.mediaKind ?? null,
       duration: row.mediaFile?.duration ?? null,
       revision: row.annotationFile?.revision ?? null,
+      workflowStatus: row.annotationFile?.workflowStatus ?? row.projectWorkflowStatus,
+      annotationResponsibles: row.annotationResponsibles,
       favorite: state?.favorite ?? false,
       permission,
     };
@@ -2914,6 +3199,81 @@ export class ResourceService {
       SELECT DISTINCT id, "parentId"
       FROM selected_ancestors
     `;
+  }
+
+  private async assertActiveProject(
+    resourceId: string,
+    database: PrismaClient | Prisma.TransactionClient = this.prisma,
+  ) {
+    const resource = await database.resourceEntry.findUnique({
+      where: { id: resourceId },
+      select: {
+        id: true,
+        parentId: true,
+        type: true,
+        archivedAt: true,
+        trashedAt: true,
+      },
+    });
+    if (!resource || resource.type !== "project") {
+      throw notFound("项目不存在。");
+    }
+    if (
+      resource.archivedAt ||
+      resource.trashedAt ||
+      await this.hasTrashedAncestor(database, resource.parentId)
+    ) {
+      throw conflict("归档或回收站中的项目不能修改职责组。");
+    }
+    return resource;
+  }
+
+  private async replaceProjectWorkflowGroup(
+    transaction: Prisma.TransactionClient,
+    projectResourceId: string,
+    group: "annotation" | "review",
+    userIds: string[],
+    existingPairs: Set<string>,
+    actorUserId: string,
+  ) {
+    // 完整集合替换只删除退出当前组的关系；仍在组内的成员保留原始分配时间和分配者。
+    await transaction.projectWorkflowMember.deleteMany({
+      where: {
+        projectResourceId,
+        group,
+        ...(userIds.length ? { userId: { notIn: userIds } } : {}),
+      },
+    });
+    const additions = userIds.filter((userId) =>
+      !existingPairs.has(`${group}:${userId}`));
+    if (!additions.length) return;
+    await transaction.projectWorkflowMember.createMany({
+      data: additions.map((userId) => ({
+        projectResourceId,
+        userId,
+        group,
+        createdBy: actorUserId,
+      })),
+    });
+  }
+
+  private mapProjectWorkflowGroups(
+    projectResourceId: string,
+    rows: ProjectWorkflowMemberRow[],
+  ): ProjectWorkflowGroups {
+    const sorted = [...rows].sort((left, right) =>
+      left.user.displayName.localeCompare(right.user.displayName, "zh-CN") ||
+      left.user.accountName.localeCompare(right.user.accountName) ||
+      left.user.id.localeCompare(right.user.id));
+    return {
+      projectResourceId,
+      annotation: sorted
+        .filter(({ group }) => group === "annotation")
+        .map(({ user }) => user),
+      review: sorted
+        .filter(({ group }) => group === "review")
+        .map(({ user }) => user),
+    };
   }
 
   // 恢复历史和内容写入只能作用于活动标注文件；transaction 参数保证检查使用同一事务快照。

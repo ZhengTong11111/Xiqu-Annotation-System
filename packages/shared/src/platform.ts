@@ -46,6 +46,13 @@ export type ResourceCapability =
   | "download"
   | "manage_permissions";
 
+export type AnnotationWorkflowStatus =
+  | "unannotated"
+  | "annotated"
+  | "reviewed";
+
+export type ProjectWorkflowGroup = "annotation" | "review";
+
 export const RESOURCE_CAPABILITIES: readonly ResourceCapability[] = [
   "read",
   "write",
@@ -96,8 +103,18 @@ export type ResourceEntry = {
   mediaKind?: MediaKind | null;
   duration?: number | null;
   revision?: number | null;
+  // 工作流属于平台资源元数据，不进入 ProjectData 或 annotation revision。
+  workflowStatus?: AnnotationWorkflowStatus | null;
+  // 列表只携带标注组摘要；完整标注/审核组在项目 Inspector 中按需读取。
+  annotationResponsibles?: UserReference[];
   favorite: boolean;
   permission: EffectiveResourcePermission;
+};
+
+export type ProjectWorkflowGroups = {
+  projectResourceId: string;
+  annotation: UserReference[];
+  review: UserReference[];
 };
 
 export type ResourceBreadcrumb = Pick<
@@ -506,6 +523,8 @@ export const AUDIT_ACTIONS = [
   "resource_restore",
   "resource_delete",
   "annotation_file_save",
+  "annotation_workflow_status_update",
+  "project_workflow_groups_update",
   "annotation_client_sync_failure",
   "annotation_mutation_lease_acquire",
   "annotation_mutation_lease_renew",

@@ -2,6 +2,7 @@ import type {
   AnnotationConfirmationDraft,
   AnnotationConfirmationList,
   AnnotationConfirmationRecord,
+  AnnotationWorkflowStatus,
   AnnotationRangeCommentPage,
   AnnotationRangeCommentRecord,
   AnnotationReviewScope,
@@ -18,6 +19,7 @@ import type {
   ManagedAccount,
   PermissionManagementProjectPage,
   PlatformUser,
+  ProjectWorkflowGroups,
   ResourceCapability,
   ResourceEntry,
   ResourceListPage,
@@ -186,6 +188,16 @@ export type AliyunVodPlaybackSession = {
 };
 
 export type UpdateAnnotationMediaRequest = { mediaResourceId: string | null };
+
+export type UpdateAnnotationWorkflowStatusRequest = {
+  expectedStatus: AnnotationWorkflowStatus;
+  status: AnnotationWorkflowStatus;
+};
+
+export type UpdateProjectWorkflowGroupsRequest = {
+  annotationUserIds: string[];
+  reviewUserIds: string[];
+};
 
 export type MediaAudioTrackList = {
   primaryMediaResourceId: string;
@@ -541,6 +553,15 @@ export type PlatformApiContract<TPayload = unknown> = {
     response: PermissionManagementProjectPage;
   };
   getResource: { response: ResourceEntry };
+  updateAnnotationWorkflowStatus: {
+    request: UpdateAnnotationWorkflowStatusRequest;
+    response: ResourceEntry;
+  };
+  getProjectWorkflowGroups: { response: ProjectWorkflowGroups };
+  updateProjectWorkflowGroups: {
+    request: UpdateProjectWorkflowGroupsRequest;
+    response: ProjectWorkflowGroups;
+  };
   markResourceOpened: { response: void };
   createResource: { request: CreateResourceRequest; response: ResourceEntry };
   updateResource: { request: UpdateResourceRequest; response: ResourceEntry };

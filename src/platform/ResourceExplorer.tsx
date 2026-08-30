@@ -1,3 +1,4 @@
+import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import {
   Archive,
   ChevronRight,
@@ -41,6 +42,7 @@ import type { ChangeEvent, MouseEvent } from "react";
 import {
   canManagePlatformAccounts,
   hasFullPlatformResourceAccess,
+  type AnnotationWorkflowStatus,
   type AnnotationFile,
   type PlatformUser,
   type ResourceEntry,
@@ -69,6 +71,7 @@ import {
   canDirectlyDownloadResource,
   formatResourceDate,
   ResourceIcon,
+  ResourceWorkflowStatusBadge,
   resourceTypeLabel,
 } from "./ResourceItem";
 import { ResourceVirtualCollection } from "./ResourceVirtualCollection";
@@ -90,8 +93,20 @@ import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { downloadFromUrl } from "./browserDownload";
 import { ResourcePermissionEditor } from "./ResourcePermissionEditor";
 import { ProjectPermissionManagementDialog } from "./ProjectPermissionManagementDialog";
+import {
+  annotationWorkflowStatusLabel,
+  getAnnotationWorkflowCommandState,
+  resourceResponsibleLabel,
+} from "./annotationWorkflow";
+import { ProjectWorkflowGroupEditor } from "./ProjectWorkflowGroupEditor";
 
 type ExplorerMode = "list" | "grid" | "column";
+type WorkflowStatusPrompt = {
+  resource: ResourceEntry;
+  current: AnnotationWorkflowStatus;
+  target: AnnotationWorkflowStatus;
+  blocked: boolean;
+};
 
 const VIEW_LABELS: Record<ResourceListView, string> = {
   children: "资源",
@@ -158,6 +173,9 @@ export function ResourceExplorer(props: {
   const [permissionRefreshVersion, setPermissionRefreshVersion] = useState(0);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [vodDialogOpen, setVodDialogOpen] = useState(false);
+  const [workflowStatusPrompt, setWorkflowStatusPrompt] =
+    useState<WorkflowStatusPrompt | null>(null);
+  const [workflowStatusPending, setWorkflowStatusPending] = useState(false);
   const [pendingJsonImport, setPendingJsonImport] = useState<{
     parentId: string;
     fileName: string;
@@ -813,6 +831,7 @@ export function ResourceExplorer(props: {
     isPasting ||
     isRestoring ||
     isMovingResources ||
+    workflowStatusPending ||
     isTrashing ||
     movingResources.length > 0;
   // 工具栏和三种视图的右键菜单共用同一个资格判定，并按 selectedIds 保留左右顺序。
@@ -841,6 +860,50 @@ export function ResourceExplorer(props: {
       ? `${resource.name}.json`
       : resource.name;
     downloadFromUrl(props.client.getResourceDownloadUrl(resource.id), fallbackName);
+  };
+  const requestWorkflowStatus = (
+    resource: ResourceEntry,
+    target: AnnotationWorkflowStatus,
+  ) => {
+    const current = resource.workflowStatus ?? "unannotated";
+    const commandState = getAnnotationWorkflowCommandState(
+      current,
+      target,
+      resource.permission.capabilities,
+    );
+    if (commandState === "current") return;
+    if (commandState === "forbidden") {
+      setError(target === "reviewed"
+        ? "当前账号缺少该文件的审核权限。"
+        : "当前账号缺少完成此状态转换所需的编辑或审核权限。");
+      return;
+    }
+    setWorkflowStatusPrompt({
+      resource,
+      current,
+      target,
+      blocked: commandState === "blocked_order",
+    });
+  };
+
+  const confirmWorkflowStatus = async () => {
+    const prompt = workflowStatusPrompt;
+    if (!prompt || prompt.blocked || workflowStatusPending) return;
+    setWorkflowStatusPending(true);
+    setError(null);
+    try {
+      await props.client.updateAnnotationWorkflowStatus(prompt.resource.id, {
+        expectedStatus: prompt.current,
+        status: prompt.target,
+      });
+      setWorkflowStatusPrompt(null);
+      await refreshCurrentView();
+    } catch (nextError) {
+      // 409 会保留弹窗和原选择，用户可以看到服务端返回的陈旧状态原因后刷新重试。
+      setError(describeError(nextError));
+    } finally {
+      setWorkflowStatusPending(false);
+    }
   };
 
   return (
@@ -970,6 +1033,7 @@ export function ResourceExplorer(props: {
                       isPasting ||
                       isRestoring ||
                       isMovingResources ||
+                      workflowStatusPending ||
                       movingResources.length > 0
                     }
                     onNavigate={() => {
@@ -1123,6 +1187,7 @@ export function ResourceExplorer(props: {
               onCopy={(resource) => setClipboard([resource])}
               onMove={openMovePicker}
               onDownload={downloadResource}
+              onRequestWorkflowStatus={requestWorkflowStatus}
               onRestore={(resource) => void restoreResources([resource])}
               onTrash={trashFromContext}
               canCompareSelection={Boolean(comparableFiles)}
@@ -1167,6 +1232,7 @@ export function ResourceExplorer(props: {
                 onCopy={(resource) => setClipboard([resource])}
                 onMove={openMovePicker}
                 onDownload={downloadResource}
+                onRequestWorkflowStatus={requestWorkflowStatus}
                 interactionDisabled={interactionDisabled}
                 draggedResourceIds={draggedResourceIds}
                 onDragStart={handleResourceDragStart}
@@ -1230,6 +1296,12 @@ export function ResourceExplorer(props: {
         onOpenFileAtTime={props.onOpenAnnotationFile}
         onPrepareMerge={props.onPrepareAnnotationMerge}
         onClose={() => setComparisonFiles(null)}
+      />
+      <WorkflowStatusAlertDialog
+        prompt={workflowStatusPrompt}
+        pending={workflowStatusPending}
+        onClose={() => setWorkflowStatusPrompt(null)}
+        onConfirm={() => void confirmWorkflowStatus()}
       />
       {pendingJsonImport ? (
         <AnnotationMediaBindingDialog
@@ -1297,6 +1369,66 @@ export function ResourceExplorer(props: {
         </>
       ) : null}
     </main>
+  );
+}
+
+function WorkflowStatusAlertDialog(props: {
+  prompt: WorkflowStatusPrompt | null;
+  pending: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const prompt = props.prompt;
+  const currentLabel = annotationWorkflowStatusLabel(prompt?.current);
+  const targetLabel = annotationWorkflowStatusLabel(prompt?.target);
+  return (
+    <AlertDialog.Root
+      open={Boolean(prompt)}
+      onOpenChange={(open) => {
+        if (!open && !props.pending) props.onClose();
+      }}
+    >
+      <AlertDialog.Portal>
+        <AlertDialog.Overlay className="resource-alert-backdrop" />
+        <AlertDialog.Content className="platform-confirm-dialog resource-workflow-dialog">
+          <AlertDialog.Title>
+            {prompt?.blocked
+              ? prompt.current === "unannotated"
+                ? "暂不能标记为已审核"
+                : "不能跨级撤回状态"
+              : `设置为${targetLabel}？`}
+          </AlertDialog.Title>
+          <AlertDialog.Description>
+            {prompt?.blocked
+              ? prompt.current === "unannotated"
+                ? "该文件尚未完成标注。请先由具有编辑权限的账号标记为“已标注”，再由具有审核权限的账号完成审核。"
+                : "已审核文件不能直接恢复为未标注。请先由具有审核权限的账号撤回到“已标注”，再由具有编辑权限的账号撤回标注结论。"
+              : `“${prompt?.resource.name ?? "该文件"}”当前为“${currentLabel}”，确认改为“${targetLabel}”？状态变更会记录操作者和时间，但不会修改标注正文或修订号。`}
+          </AlertDialog.Description>
+          <div className="platform-confirm-dialog-actions">
+            {prompt?.blocked ? (
+              <AlertDialog.Cancel asChild>
+                <button type="button" onClick={props.onClose}>知道了</button>
+              </AlertDialog.Cancel>
+            ) : (
+              <>
+                <AlertDialog.Cancel asChild>
+                  <button type="button" disabled={props.pending}>取消</button>
+                </AlertDialog.Cancel>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={props.pending}
+                  onClick={props.onConfirm}
+                >
+                  {props.pending ? "正在保存…" : "确认设置"}
+                </button>
+              </>
+            )}
+          </div>
+        </AlertDialog.Content>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
   );
 }
 
@@ -1397,6 +1529,15 @@ function ResourceInspector(props: {
       <dl>
         <dt>类型</dt><dd>{resourceTypeLabel(props.resource)}</dd>
         <dt>所有者</dt><dd>{props.resource.owner.displayName}</dd>
+        {props.resource.type === "project" ? (
+          <>
+            <dt>负责人</dt>
+            <dd>{resourceResponsibleLabel(props.resource)}</dd>
+          </>
+        ) : null}
+        {props.resource.type === "project" || props.resource.type === "annotation_file" ? (
+          <><dt>状态</dt><dd><ResourceWorkflowStatusBadge resource={props.resource} /></dd></>
+        ) : null}
         <dt>创建</dt><dd>{formatResourceDate(props.resource.createdAt)}</dd>
         <dt>修改</dt><dd>{formatResourceDate(props.resource.updatedAt)}</dd>
         {props.resource.revision ? <><dt>修订</dt><dd>{props.resource.revision}</dd></> : null}
@@ -1490,6 +1631,15 @@ function ResourceInspector(props: {
             }}
           />
         </>
+      ) : null}
+      {props.resource.type === "project" ? (
+        <ProjectWorkflowGroupEditor
+          client={props.client}
+          resource={props.resource}
+          readOnly={props.readOnly}
+          onChanged={props.onChanged}
+          onError={props.onError}
+        />
       ) : null}
       {/* 权限矩阵由独立组件管理，资源详情不再维护第二套请求和账号行状态。 */}
       <ResourcePermissionEditor
