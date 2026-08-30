@@ -30,7 +30,9 @@ Main currently contains all major recent feature lines that matter for context:
 - annotation-file workflow status is platform governance metadata with strict adjacent `unannotated -> annotated -> reviewed`
   transitions; annotation completion uses effective `write`, review completion uses effective `review`, and neither transition
   changes ProjectData, annotation revision, operations, drafts, undo/history, or exported JSON. Project workflow status is a
-  read-time maximum over active descendant annotation files, never a second persisted conclusion
+  read-time maximum over active descendant annotation files, never a second persisted conclusion. Resource context menus and
+  the platform editor File menu must share `AnnotationWorkflowStatusDialog` and the same shared transition policy; do not fork
+  confirmation wording or capability logic per entry point
 - project annotation/review groups are auditable responsibility assignments, not ACLs. Only effective
   `manage_permissions` can read or replace the complete groups; the resource list may expose the annotation group as the
   project's “负责人”, while resource ownership and all read/write/review authorization remain independent. Resource copies
@@ -847,7 +849,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - spectrogram control surface plus redundant waveform visibility toggle
 - `src/components/TopMenuBar.tsx`
   - global file/edit/view/help menu
-  - view menu owns visibility toggles for waveform, spectrogram, Banyan track, and global Banyan grid lines
+  - the File menu owns imports/exports, explicit saves, platform annotation workflow status, and recovery-backup preferences;
+    the View menu owns only presentation visibility such as waveform, spectrogram, Banyan track, and global Banyan grid lines
 - `src/components/GongcheCharacterRenderer.tsx`
   - single-character Gongche preview renderer
 - `src/components/ResizableSplitLayout.tsx`

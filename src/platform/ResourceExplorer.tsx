@@ -1,4 +1,3 @@
-import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import {
   Archive,
   ChevronRight,
@@ -94,19 +93,16 @@ import { downloadFromUrl } from "./browserDownload";
 import { ResourcePermissionEditor } from "./ResourcePermissionEditor";
 import { ProjectPermissionManagementDialog } from "./ProjectPermissionManagementDialog";
 import {
-  annotationWorkflowStatusLabel,
   getAnnotationWorkflowCommandState,
   resourceResponsibleLabel,
 } from "./annotationWorkflow";
 import { ProjectWorkflowGroupEditor } from "./ProjectWorkflowGroupEditor";
+import {
+  AnnotationWorkflowStatusDialog,
+  type AnnotationWorkflowStatusPrompt,
+} from "./AnnotationWorkflowStatusDialog";
 
 type ExplorerMode = "list" | "grid" | "column";
-type WorkflowStatusPrompt = {
-  resource: ResourceEntry;
-  current: AnnotationWorkflowStatus;
-  target: AnnotationWorkflowStatus;
-  blocked: boolean;
-};
 
 const VIEW_LABELS: Record<ResourceListView, string> = {
   children: "资源",
@@ -174,7 +170,7 @@ export function ResourceExplorer(props: {
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [vodDialogOpen, setVodDialogOpen] = useState(false);
   const [workflowStatusPrompt, setWorkflowStatusPrompt] =
-    useState<WorkflowStatusPrompt | null>(null);
+    useState<AnnotationWorkflowStatusPrompt | null>(null);
   const [workflowStatusPending, setWorkflowStatusPending] = useState(false);
   const [pendingJsonImport, setPendingJsonImport] = useState<{
     parentId: string;
@@ -879,7 +875,8 @@ export function ResourceExplorer(props: {
       return;
     }
     setWorkflowStatusPrompt({
-      resource,
+      resourceId: resource.id,
+      resourceName: resource.name,
       current,
       target,
       blocked: commandState === "blocked_order",
@@ -892,7 +889,7 @@ export function ResourceExplorer(props: {
     setWorkflowStatusPending(true);
     setError(null);
     try {
-      await props.client.updateAnnotationWorkflowStatus(prompt.resource.id, {
+      await props.client.updateAnnotationWorkflowStatus(prompt.resourceId, {
         expectedStatus: prompt.current,
         status: prompt.target,
       });
@@ -1297,7 +1294,7 @@ export function ResourceExplorer(props: {
         onPrepareMerge={props.onPrepareAnnotationMerge}
         onClose={() => setComparisonFiles(null)}
       />
-      <WorkflowStatusAlertDialog
+      <AnnotationWorkflowStatusDialog
         prompt={workflowStatusPrompt}
         pending={workflowStatusPending}
         onClose={() => setWorkflowStatusPrompt(null)}
@@ -1369,66 +1366,6 @@ export function ResourceExplorer(props: {
         </>
       ) : null}
     </main>
-  );
-}
-
-function WorkflowStatusAlertDialog(props: {
-  prompt: WorkflowStatusPrompt | null;
-  pending: boolean;
-  onClose: () => void;
-  onConfirm: () => void;
-}) {
-  const prompt = props.prompt;
-  const currentLabel = annotationWorkflowStatusLabel(prompt?.current);
-  const targetLabel = annotationWorkflowStatusLabel(prompt?.target);
-  return (
-    <AlertDialog.Root
-      open={Boolean(prompt)}
-      onOpenChange={(open) => {
-        if (!open && !props.pending) props.onClose();
-      }}
-    >
-      <AlertDialog.Portal>
-        <AlertDialog.Overlay className="resource-alert-backdrop" />
-        <AlertDialog.Content className="platform-confirm-dialog resource-workflow-dialog">
-          <AlertDialog.Title>
-            {prompt?.blocked
-              ? prompt.current === "unannotated"
-                ? "暂不能标记为已审核"
-                : "不能跨级撤回状态"
-              : `设置为${targetLabel}？`}
-          </AlertDialog.Title>
-          <AlertDialog.Description>
-            {prompt?.blocked
-              ? prompt.current === "unannotated"
-                ? "该文件尚未完成标注。请先由具有编辑权限的账号标记为“已标注”，再由具有审核权限的账号完成审核。"
-                : "已审核文件不能直接恢复为未标注。请先由具有审核权限的账号撤回到“已标注”，再由具有编辑权限的账号撤回标注结论。"
-              : `“${prompt?.resource.name ?? "该文件"}”当前为“${currentLabel}”，确认改为“${targetLabel}”？状态变更会记录操作者和时间，但不会修改标注正文或修订号。`}
-          </AlertDialog.Description>
-          <div className="platform-confirm-dialog-actions">
-            {prompt?.blocked ? (
-              <AlertDialog.Cancel asChild>
-                <button type="button" onClick={props.onClose}>知道了</button>
-              </AlertDialog.Cancel>
-            ) : (
-              <>
-                <AlertDialog.Cancel asChild>
-                  <button type="button" disabled={props.pending}>取消</button>
-                </AlertDialog.Cancel>
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={props.pending}
-                  onClick={props.onConfirm}
-                >
-                  {props.pending ? "正在保存…" : "确认设置"}
-                </button>
-              </>
-            )}
-          </div>
-        </AlertDialog.Content>
-      </AlertDialog.Portal>
-    </AlertDialog.Root>
   );
 }
 

@@ -9471,3 +9471,38 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   负责人列和职责组搜索保存仍列为人工 UI 验收项。
 - **已完成**：R2.7 代码、数据库 migration、专项/完整 API 回归、生产构建、自审和文档闭环。
 - **待推进**：用户人工 UI 验收后再决定是否合并和部署；本轮没有连接、维护、迁移或切换生产服务器。
+
+## 2026-08-30：R2.7 编辑器文件菜单补齐状态与恢复备份入口
+
+### 菜单职责与共享确认边界
+
+- 根据用户验收反馈，在平台标注文件编辑器的“文件”菜单增加“标注状态”分组，显示未标注、已标注、已审核
+  三个互斥状态。当前状态以勾选态显示；缺少转换所需 `write`/`review` 的选项禁用；跨级转换仍可打开解释窗口，
+  但不会向服务端发送请求。只有平台文件会话显示该分组，本地标注工具不制造虚假的平台治理状态。
+- 没有在 `App.tsx` 复制资源管理器的弹窗实现。原 `ResourceExplorer.tsx` 内部 AlertDialog 已提取为共享
+  `AnnotationWorkflowStatusDialog`，两个入口共用相同 prompt、跨级说明、pending 门禁和确认文案；转换资格继续
+  来自 `src/platform/annotationWorkflow.ts` 与 shared 相邻状态机。提取后删除旧局部组件、Radix import 和资源对象
+  耦合，未保留僵尸确认分支。
+- `PlatformEditorSession` 只新增 workflow status 元数据与成功后的会话同步回调。编辑器使用 `expectedStatus`
+  提交现有 PATCH API，成功后同步菜单与 Workspace；409 或其他错误保留在状态确认窗口中，不冒充正文保存/协作失败。
+  状态写入仍不进入 ProjectData、正文 revision、operation、草稿或 undo/history。
+
+### 恢复备份入口迁移
+
+- 将“保存失败时创建恢复备份”、3/5/10 次失败阈值和当前失败周期计数从“视图”菜单完整迁移到“文件”菜单。
+  原 `usePlatformRecoveryBackup`、per-account preference、失败周期、幂等请求和服务器备份逻辑均未改动；搜索确认
+  这些控件在 `TopMenuBar` 中只有一个实现，视图菜单只保留波形、频谱、标注审核面板和板眼等显示控制。
+- 新增错误文案样式只服务共享状态确认窗口，并用中文注释说明其与正文同步错误的语义隔离。本轮没有新增依赖、
+  数据库 migration、ProjectData 版本、API 路由或兼容分支。
+
+### 验证与阶段状态
+
+- `npm run test:annotation-workflow` 4/4 通过，继续覆盖相邻顺序、能力门禁、陈旧状态、项目递归汇总和职责组。
+- `npm run test:platform-recovery-backup` 5/5 通过，确认本轮 JSX 迁移没有改变失败周期、离线补建、维护阻断和
+  幂等 payload 语义。
+- 完整 `npm run build` 通过 Prisma Client/schema、shared、document-model、Web 和 API；仅保留既有 Vite 主 chunk
+  超过 500 kB 提示。`git diff --check` 通过。
+- **已完成**：共享确认组件、编辑器文件菜单状态入口、会话状态同步、恢复备份菜单迁移、僵尸代码清理、专项测试、
+  完整构建和文档更新。
+- **待人工验收**：分别用只有编辑权限、只有审核权限和二者皆有的账号验证菜单禁用/跨级说明/成功回写，并确认
+  窄高度窗口中的文件菜单可完整操作。本轮未连接、迁移或部署生产服务器。
