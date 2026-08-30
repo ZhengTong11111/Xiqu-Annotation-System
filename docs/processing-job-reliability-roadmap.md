@@ -209,7 +209,7 @@ P4 不再局限于当前媒体分析入口，而是把 P0-P3 的边界横向审�
 
 ### 当前状态与分轮
 
-- **P4a、P4b 已完成，P4c 进行中**：P3 已由 commit `a122acf` 独立提交。P4 依据现有维护门禁、对象流、存储补偿和 worker 测试基础拆成
+- **P4a-P4c 已完成，P4d 进行中**：P3 已由 commit `a122acf` 独立提交。P4 依据现有维护门禁、对象流、存储补偿和 worker 测试基础拆成
   四个可独立验证/提交的小轮，避免一个“大型故障测试”同时跨越所有 owner 后难以定位失败。
 - **P4a 路由与 HTTP 流**：形成实际注册路由的机器可读 maintenance manifest，验证非安全方法默认 fail closed、显式
   read/control 例外有界；统一覆盖单对象、Range、批量对象和响应打开阶段的客户端断开。
@@ -227,6 +227,10 @@ P4 不再局限于当前媒体分析入口，而是把 P0-P3 的边界横向审�
   query 重入，而非 collaboration LISTEN/NOTIFY。账号、资源、ACL、音轨和分析迁移改为顺序批量读取/写入并内存装配；
   完整 API 在 `--throw-deprecation` 下 225/225 通过。对象发布补偿现在覆盖“final 已形成但 promote 报错”的不确定窗口，
   数据库未提交时按 final -> staged 清理，数据库已提交后的 DTO 失败保留权威对象。未新增 migration、依赖或生产部署。
+- P4c 将取消 watcher 收敛为可恢复的 claim monitor，在首瓦片前独立续写 heartbeat，并以 job 行锁 fence 每个资产提交；
+  旧 attempt 丢失 claim 后会有界终止，runtime 对短故障退避并周期扫描 stale claim。FFmpeg 增加 SIGTERM -> SIGKILL
+  两阶段退出和输入 Promise 收口，VOD/输入/发布/取消故障只落稳定脱敏状态。专项 18/18、媒体分析 45/45、完整 API
+  234/234、部署检查和构建通过；未新增 migration、依赖、前端改动或生产部署。
 
 ### 路由与流审计
 
@@ -316,5 +320,5 @@ P4 不再局限于当前媒体分析入口，而是把 P0-P3 的边界横向审�
 | P1 | 已完成 | commit `47a98af`；请求/执行分离、幂等键、查询 API 与 migration |
 | P2 | 已完成 | 取消、重试、独立任务取消信号、claim fencing 与终态竞态收敛；暂不部署 |
 | P3 | 已完成 | 统一任务中心、后端搜索、活动摘要、筛选/详情、取消和重试 UI；暂不部署 |
-| P4 | 进行中（P4c） | P4a 路由/HTTP 流与 P4b 数据库/对象补偿已完成；下一轮注入 worker/分析故障 |
+| P4 | 进行中（P4d） | P4a-P4c 已完成；下一轮补齐指标、管理员诊断、故障手册与全矩阵压力回归 |
 | P5 | 待开始 | 依赖 P0-P4 均已提交并通过门禁 |

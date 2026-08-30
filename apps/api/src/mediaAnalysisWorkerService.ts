@@ -1,4 +1,5 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { MediaAnalysisAsset, Prisma, PrismaClient } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type { AliyunVodGateway, AliyunVodProvider } from "./aliyunVodGateway.js";
 import { AliyunVodGatewayError } from "./aliyunVodGateway.js";
@@ -16,11 +17,13 @@ import {
 import {
   cleanupUncommittedStagedBinary,
   type ObjectStorage,
+  type StagedBinary,
 } from "./objectStorage.js";
 
 const STALE_JOB_AFTER_MS = 2 * 60 * 1000;
 const MAX_ANALYSIS_ASSET_BYTES = 32 * 1024 * 1024;
 const CANCELLATION_POLL_INTERVAL_MS = 500;
+const CLAIM_HEARTBEAT_INTERVAL_MS = 15_000;
 
 type WorkerLogger = {
   info(facts: Record<string, unknown>, message: string): void;
@@ -38,6 +41,7 @@ export class MediaAnalysisWorkerService {
     private readonly ffmpegPath: string,
     private readonly logger: WorkerLogger,
     private readonly cancellationPollIntervalMs = CANCELLATION_POLL_INTERVAL_MS,
+    private readonly claimHeartbeatIntervalMs = CLAIM_HEARTBEAT_INTERVAL_MS,
   ) {}
 
   async recoverStaleJobs(now = new Date()) {
@@ -119,26 +123,26 @@ export class MediaAnalysisWorkerService {
   async processNext(workerId: string, signal?: AbortSignal) {
     const job = await this.claimNext(workerId);
     if (!job) return false;
-    const cancellationController = new AbortController();
-    const watcherController = new AbortController();
-    const watcher = this.watchForCancellation(
+    const claimController = new AbortController();
+    const monitorController = new AbortController();
+    const monitor = this.monitorClaim(
       job.id,
       workerId,
-      cancellationController,
-      watcherController.signal,
+      claimController,
+      monitorController.signal,
     );
     const workSignal = signal
-      ? AbortSignal.any([signal, cancellationController.signal])
-      : cancellationController.signal;
+      ? AbortSignal.any([signal, claimController.signal])
+      : claimController.signal;
     try {
       await this.processClaimed(job, {
         workSignal,
         shutdownSignal: signal,
-        cancellationSignal: cancellationController.signal,
+        claimSignal: claimController.signal,
       });
     } finally {
-      watcherController.abort();
-      await watcher;
+      monitorController.abort();
+      await monitor;
     }
     return true;
   }
@@ -148,7 +152,7 @@ export class MediaAnalysisWorkerService {
     signals: {
       workSignal: AbortSignal;
       shutdownSignal?: AbortSignal;
-      cancellationSignal: AbortSignal;
+      claimSignal: AbortSignal;
     },
   ) {
     if (!job.analysisRun) return;
@@ -169,7 +173,11 @@ export class MediaAnalysisWorkerService {
           );
           for (const asset of assets) {
             signals.workSignal.throwIfAborted();
-            await this.publishAsset(run.id, asset);
+            await this.publishAsset({
+              jobId: job.id,
+              runId: run.id,
+              claimedBy: job.claimedBy,
+            }, asset);
             assetCount += 1;
           }
           const elapsed = (tileIndex * MEDIA_ANALYSIS_TILE_DURATION_SECONDS) +
@@ -258,10 +266,12 @@ export class MediaAnalysisWorkerService {
           "媒体分析失败，且半成品清理失败。",
         );
       }
-      const errorCode = failure instanceof AggregateError
-        ? "analysis_cleanup_failed"
-        : classifyWorkerError(failure);
-      if (current.status === "cancelling" || signals.cancellationSignal.aborted) {
+      const errorCode = failure instanceof WorkerAssetCommitUncertainError
+        ? "analysis_asset_commit_uncertain"
+        : failure instanceof AggregateError
+          ? "analysis_cleanup_failed"
+          : classifyWorkerError(failure);
+      if (current.status === "cancelling" || signals.claimSignal.aborted) {
         if (errorCode === "analysis_cleanup_failed") {
           await this.failClaimedJob(job, run.id, errorCode);
         } else {
@@ -317,9 +327,14 @@ export class MediaAnalysisWorkerService {
   }
 
   private async publishAsset(
-    runId: string,
+    claim: {
+      jobId: string;
+      runId: string;
+      claimedBy: string | null;
+    },
     asset: ReturnType<typeof computeMediaAnalysisAssets>[number],
   ) {
+    const assetId = randomUUID();
     const finalStorageKey = this.storage.createStorageKey("xqa");
     const staged = await this.storage.putStagedObject(
       finalStorageKey,
@@ -342,31 +357,61 @@ export class MediaAnalysisWorkerService {
       throw publishError;
     }
     try {
-      await this.prisma.mediaAnalysisAsset.create({
-        data: {
-          runId,
-          kind: asset.kind,
-          preset: asset.preset,
-          level: asset.level,
-          tileIndex: asset.tileIndex,
-          startTime: asset.startTime,
-          endTime: asset.endTime,
-          mimeType: asset.mimeType,
-          size: asset.bytes.byteLength,
-          checksum: staged.checksum,
-          storageKey: staged.finalStorageKey,
-        },
+      await this.prisma.$transaction(async (transaction) => {
+        // 与取消、stale recovery 共用 job 行锁；锁后已非当前 owner 时禁止旧 attempt 发布资产。
+        const ownedClaim = await transaction.$queryRaw<Array<{ id: string }>>`
+          SELECT id
+          FROM processing_jobs
+          WHERE id = ${claim.jobId}
+            AND status = 'running'
+            AND claimed_by = ${claim.claimedBy}
+            AND cancel_requested_at IS NULL
+          FOR UPDATE
+        `;
+        if (ownedClaim.length !== 1) throw new WorkerClaimLostError();
+        await transaction.mediaAnalysisAsset.create({
+          data: {
+            id: assetId,
+            runId: claim.runId,
+            kind: asset.kind,
+            preset: asset.preset,
+            level: asset.level,
+            tileIndex: asset.tileIndex,
+            startTime: asset.startTime,
+            endTime: asset.endTime,
+            mimeType: asset.mimeType,
+            size: asset.bytes.byteLength,
+            checksum: staged.checksum,
+            storageKey: staged.finalStorageKey,
+          },
+        });
       });
-    } catch (error) {
+    } catch (databaseError) {
+      let committedRow;
+      try {
+        committedRow = await this.prisma.mediaAnalysisAsset.findUnique({
+          where: { id: assetId },
+        });
+      } catch (verificationError) {
+        // 无法确认数据库是否已提交时宁可保留 aged orphan，也不能删除可能已被行引用的 final。
+        throw new WorkerAssetCommitUncertainError(databaseError, verificationError);
+      }
+      if (committedRow) {
+        if (matchesCommittedAsset(committedRow, claim.runId, asset, staged)) return;
+        throw new WorkerAssetCommitUncertainError(
+          databaseError,
+          new Error("分析资产提交事实与预期不一致。"),
+        );
+      }
       try {
         await this.storage.deleteObject(staged.finalStorageKey);
       } catch (cleanupError) {
         throw new AggregateError(
-          [error, cleanupError],
+          [databaseError, cleanupError],
           "媒体分析资产数据库写入失败，且最终对象补偿失败。",
         );
       }
-      throw error;
+      throw databaseError;
     }
   }
 
@@ -459,27 +504,52 @@ export class MediaAnalysisWorkerService {
     return true;
   }
 
-  /** 每个 claim 只轮询自己的数据库状态；watcher 结束与 worker shutdown 是两条独立控制线。 */
-  private async watchForCancellation(
+  /**
+   * 每个 claim 只有一个 monitor：它既响应业务取消/claim 转移，也在无瓦片产出时续写活性心跳。
+   * 数据库短故障不能永久关闭监控；下一轮仍需追赶状态，避免任务从此无法取消。
+   */
+  private async monitorClaim(
     jobId: string,
     workerId: string,
-    cancellationController: AbortController,
+    claimController: AbortController,
     stopSignal: AbortSignal,
   ) {
-    while (!stopSignal.aborted && !cancellationController.signal.aborted) {
+    let nextHeartbeatAt = Date.now() + this.claimHeartbeatIntervalMs;
+    while (!stopSignal.aborted && !claimController.signal.aborted) {
       try {
         const job = await this.prisma.processingJob.findUnique({
           where: { id: jobId },
-          select: { status: true, claimedBy: true },
+          select: { status: true, claimedBy: true, cancelRequestedAt: true },
         });
-        if (job?.status === "cancelling" && job.claimedBy === workerId) {
-          cancellationController.abort("processing_job_cancelled");
+        if (
+          job?.claimedBy === workerId &&
+          (job.status === "cancelling" || job.cancelRequestedAt !== null)
+        ) {
+          claimController.abort("processing_job_cancelled");
           return;
         }
-        if (!job || job.status !== "running" || job.claimedBy !== workerId) return;
+        if (!job || job.status !== "running" || job.claimedBy !== workerId) {
+          // stale recovery 或其他终态已经夺走 claim 时，旧 FFmpeg 必须立即停止，不能继续发布迟到资产。
+          claimController.abort("processing_job_claim_lost");
+          return;
+        }
+        if (Date.now() >= nextHeartbeatAt) {
+          const refreshed = await this.prisma.processingJob.updateMany({
+            where: {
+              id: jobId,
+              status: "running",
+              claimedBy: workerId,
+              cancelRequestedAt: null,
+            },
+            data: { heartbeatAt: new Date() },
+          });
+          // 状态可能在读取与更新之间改变；不猜测结果，下一轮立即按权威行重新分类。
+          if (refreshed.count === 1) {
+            nextHeartbeatAt = Date.now() + this.claimHeartbeatIntervalMs;
+          }
+        }
       } catch {
-        // watcher 不是第二套健康检查；数据库故障由下一次 heartbeat 进入既有失败路径，避免轮询日志风暴。
-        return;
+        // monitor 不打印每次连接抖动，避免故障时日志风暴；runtime/最终 heartbeat 仍负责稳定诊断。
       }
       await waitForSignal(this.cancellationPollIntervalMs, stopSignal);
     }
@@ -648,6 +718,34 @@ class WorkerStableError extends Error {
 
 class WorkerClaimLostError extends Error {}
 
+class WorkerAssetCommitUncertainError extends AggregateError {
+  constructor(databaseError: unknown, verificationError: unknown) {
+    super(
+      [databaseError, verificationError],
+      "媒体分析资产数据库提交结果无法确认。",
+    );
+  }
+}
+
+function matchesCommittedAsset(
+  row: MediaAnalysisAsset,
+  runId: string,
+  asset: ReturnType<typeof computeMediaAnalysisAssets>[number],
+  staged: StagedBinary,
+) {
+  return row.runId === runId &&
+    row.kind === asset.kind &&
+    row.preset === asset.preset &&
+    row.level === asset.level &&
+    row.tileIndex === asset.tileIndex &&
+    row.startTime === asset.startTime &&
+    row.endTime === asset.endTime &&
+    row.mimeType === asset.mimeType &&
+    row.size === BigInt(asset.bytes.byteLength) &&
+    row.checksum === staged.checksum &&
+    row.storageKey === staged.finalStorageKey;
+}
+
 function classifyWorkerError(error: unknown) {
   if (error instanceof WorkerClaimLostError) return "analysis_claim_lost";
   if (error instanceof WorkerStableError) return error.code;
@@ -748,6 +846,8 @@ function userFacingWorkerError(code: string) {
       return "分析任务已停止。";
     case "analysis_cleanup_failed":
       return "媒体分析失败且半成品清理未完成，请联系管理员检查对象存储。";
+    case "analysis_asset_commit_uncertain":
+      return "媒体分析资产提交结果无法确认，请联系管理员检查数据库与对象存储。";
     default:
       return "媒体分析失败，请稍后重试。";
   }

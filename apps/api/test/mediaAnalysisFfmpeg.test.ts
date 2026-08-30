@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import {
+  spawn,
+  spawnSync,
+  type ChildProcessWithoutNullStreams,
+} from "node:child_process";
 import { Readable } from "node:stream";
 import test from "node:test";
 import {
@@ -30,6 +34,60 @@ test("FFmpeg 从上传对象流增量输出 16 kHz 单声道 PCM", async (contex
   assert.equal(chunks.reduce((sum, chunk) => sum + chunk.length, 0), result.sampleCount);
   assert.ok(chunks.some((chunk) => chunk.some((value) => Math.abs(value) > 0.05)));
 });
+
+test("上传对象流中断会稳定收口为 input_failed", async () => {
+  const source = new Readable({
+    read() {
+      this.destroy(new Error("测试输入流中断"));
+    },
+  });
+  await assert.rejects(
+    () => streamMediaAnalysisPcm(
+      { kind: "uploaded", stream: source },
+      async () => undefined,
+      {
+        spawnFfmpeg: () => spawnNodeChild(`
+          process.stdin.resume();
+          setInterval(() => undefined, 1_000);
+        `),
+        terminationGraceMs: 20,
+      },
+    ),
+    (error) => error instanceof Error && "code" in error && error.code === "input_failed",
+  );
+});
+
+test("FFmpeg 忽略 SIGTERM 时会升级 SIGKILL 并按 aborted 收口", async () => {
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  const processing = streamMediaAnalysisPcm(
+    { kind: "vod", url: "https://vod.example.test/never-used.mp3" },
+    async () => undefined,
+    {
+      signal: controller.signal,
+      spawnFfmpeg: () => spawnNodeChild(`
+        process.on("SIGTERM", () => undefined);
+        process.stdout.write(Buffer.alloc(4));
+        setInterval(() => undefined, 1_000);
+      `),
+      terminationGraceMs: 20,
+    },
+  );
+  // 等子进程安装 SIGTERM handler，确保测试真正经过强制终止分支。
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  controller.abort();
+  await assert.rejects(
+    processing,
+    (error) => error instanceof Error && "code" in error && error.code === "aborted",
+  );
+  assert.ok(Date.now() - startedAt < 1_000, "忽略 SIGTERM 的子进程必须有界退出");
+});
+
+function spawnNodeChild(source: string) {
+  return spawn(process.execPath, ["-e", source], {
+    stdio: ["pipe", "pipe", "pipe"],
+  }) as ChildProcessWithoutNullStreams;
+}
 
 function buildWav(sampleRate: number, duration: number, frequency: number) {
   const sampleCount = Math.round(sampleRate * duration);

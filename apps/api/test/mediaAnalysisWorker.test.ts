@@ -3,8 +3,9 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import test from "node:test";
+import { AliyunVodGatewayError } from "../src/aliyunVodGateway.js";
 import {
   createAliyunVodFfmpegInput,
   MediaAnalysisWorkerService,
@@ -364,6 +365,268 @@ test("媒体分析资产发布失败时立即清理暂存对象并稳定落为�
   }
 });
 
+test("长输入等待期间独立 heartbeat 保持 claim 活跃", async (context) => {
+  const ffmpegPath = process.env.XIQU_FFMPEG_PATH?.trim() || "ffmpeg";
+  if (spawnSync(ffmpegPath, ["-version"], { stdio: "ignore" }).status !== 0) {
+    context.skip("测试环境没有 FFmpeg");
+    return;
+  }
+  const root = await mkdtemp(path.join(tmpdir(), "xiqu-analysis-heartbeat-"));
+  const { prisma, pool, maintenancePool, collaborationPool } = createTestPrisma();
+  await truncateTestDatabase(prisma);
+  const storage = new LocalObjectStorage(root);
+  try {
+    const fixture = await createWorkerFixture(prisma, storage);
+    const blockedInput = new PassThrough();
+    (storage as unknown as { getObjectStream: () => Promise<Readable> }).getObjectStream =
+      async () => blockedInput;
+    const service = new MediaAnalysisWorkerService(
+      prisma,
+      storage,
+      null,
+      ffmpegPath,
+      { info: () => undefined, warn: () => undefined },
+      2,
+      5,
+    );
+    const shutdown = new AbortController();
+    const processing = service.processNext("worker-heartbeat", shutdown.signal);
+    await waitForJobStatus(prisma, fixture.jobId, "running");
+    const initial = await prisma.processingJob.findUniqueOrThrow({
+      where: { id: fixture.jobId },
+      select: { heartbeatAt: true },
+    });
+    const advanced = await waitForHeartbeatAfter(
+      prisma,
+      fixture.jobId,
+      initial.heartbeatAt!,
+    );
+    assert.ok(advanced > initial.heartbeatAt!, "没有瓦片产出时 heartbeat 也必须前进");
+    shutdown.abort();
+    assert.equal(await processing, true);
+    assert.equal(
+      (await prisma.processingJob.findUniqueOrThrow({ where: { id: fixture.jobId } })).status,
+      "queued",
+    );
+  } finally {
+    await prisma.$disconnect();
+    await pool.end();
+    await maintenancePool.end();
+    await collaborationPool.end();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("monitor 数据库短故障后仍能追赶业务取消", async (context) => {
+  const ffmpegPath = process.env.XIQU_FFMPEG_PATH?.trim() || "ffmpeg";
+  if (spawnSync(ffmpegPath, ["-version"], { stdio: "ignore" }).status !== 0) {
+    context.skip("测试环境没有 FFmpeg");
+    return;
+  }
+  const root = await mkdtemp(path.join(tmpdir(), "xiqu-analysis-monitor-retry-"));
+  const { prisma, pool, maintenancePool, collaborationPool } = createTestPrisma();
+  await truncateTestDatabase(prisma);
+  const storage = new LocalObjectStorage(root);
+  try {
+    const fixture = await createWorkerFixture(prisma, storage);
+    const blockedInput = new PassThrough();
+    (storage as unknown as { getObjectStream: () => Promise<Readable> }).getObjectStream =
+      async () => blockedInput;
+    const delegate = prisma.processingJob as unknown as {
+      findUnique: (args: {
+        select?: { cancelRequestedAt?: boolean };
+        [key: string]: unknown;
+      }) => Promise<unknown>;
+    };
+    const originalFindUnique = delegate.findUnique.bind(prisma.processingJob);
+    let monitorFailureInjected = false;
+    delegate.findUnique = async (args) => {
+      if (args.select?.cancelRequestedAt && !monitorFailureInjected) {
+        monitorFailureInjected = true;
+        throw new Error("测试 monitor 数据库短故障");
+      }
+      return originalFindUnique(args);
+    };
+    const service = new MediaAnalysisWorkerService(
+      prisma,
+      storage,
+      null,
+      ffmpegPath,
+      { info: () => undefined, warn: () => undefined },
+      2,
+      1_000,
+    );
+    const processing = service.processNext("worker-monitor-retry");
+    await waitForJobStatus(prisma, fixture.jobId, "running");
+    await waitUntil(() => monitorFailureInjected);
+    const request = await prisma.processingJobRequest.findFirstOrThrow({
+      where: { jobId: fixture.jobId },
+    });
+    const cancelledAt = new Date();
+    await prisma.$transaction([
+      prisma.processingJobRequest.update({
+        where: { id: request.id },
+        data: { cancelledAt, cancelledBy: fixture.userId },
+      }),
+      prisma.processingJob.update({
+        where: { id: fixture.jobId },
+        data: {
+          status: "cancelling",
+          cancelRequestedAt: cancelledAt,
+          cancelRequestedBy: fixture.userId,
+          cancellationMode: "user_request",
+        },
+      }),
+      prisma.mediaAnalysisRun.update({
+        where: { id: fixture.runId },
+        data: { status: "cancelling" },
+      }),
+    ]);
+    assert.equal(await processing, true);
+    assert.equal(
+      (await prisma.processingJob.findUniqueOrThrow({ where: { id: fixture.jobId } })).status,
+      "cancelled",
+    );
+  } finally {
+    await prisma.$disconnect();
+    await pool.end();
+    await maintenancePool.end();
+    await collaborationPool.end();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("claim 转移后旧 attempt 不能发布迟到资产或覆盖新状态", async (context) => {
+  const ffmpegPath = process.env.XIQU_FFMPEG_PATH?.trim() || "ffmpeg";
+  if (spawnSync(ffmpegPath, ["-version"], { stdio: "ignore" }).status !== 0) {
+    context.skip("测试环境没有 FFmpeg");
+    return;
+  }
+  const root = await mkdtemp(path.join(tmpdir(), "xiqu-analysis-claim-fence-"));
+  const { prisma, pool, maintenancePool, collaborationPool } = createTestPrisma();
+  await truncateTestDatabase(prisma);
+  const storage = new LocalObjectStorage(root);
+  try {
+    const fixture = await createWorkerFixture(prisma, storage);
+    const blockedInput = new PassThrough();
+    (storage as unknown as { getObjectStream: () => Promise<Readable> }).getObjectStream =
+      async () => blockedInput;
+    // 长 monitor 间隔让测试由 asset job-row fencing 拒绝迟到写入，而不是依赖轮询先发现 claim 变化。
+    const service = new MediaAnalysisWorkerService(
+      prisma,
+      storage,
+      null,
+      ffmpegPath,
+      { info: () => undefined, warn: () => undefined },
+      60_000,
+      60_000,
+    );
+    const processing = service.processNext("worker-old-attempt");
+    await waitForJobStatus(prisma, fixture.jobId, "running");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await prisma.$transaction([
+      prisma.processingJob.update({
+        where: { id: fixture.jobId },
+        data: {
+          status: "queued",
+          claimedBy: null,
+          claimedAt: null,
+          heartbeatAt: null,
+        },
+      }),
+      prisma.mediaAnalysisRun.update({
+        where: { id: fixture.runId },
+        data: { status: "queued" },
+      }),
+    ]);
+    blockedInput.end(buildWav(8_000, 0.1, 220));
+    assert.equal(await processing, true);
+    assert.equal(await prisma.mediaAnalysisAsset.count({ where: { runId: fixture.runId } }), 0);
+    assert.equal(
+      (await prisma.processingJob.findUniqueOrThrow({ where: { id: fixture.jobId } })).status,
+      "queued",
+    );
+    assert.equal(
+      (await prisma.mediaAnalysisRun.findUniqueOrThrow({ where: { id: fixture.runId } })).status,
+      "queued",
+    );
+    assert.deepEqual(
+      (await storage.listStoredObjects()).map(({ storageKey }) => storageKey),
+      [fixture.sourceStorageKey],
+      "旧 attempt 只能保留权威源媒体，不能遗留迟到分析对象",
+    );
+  } finally {
+    await prisma.$disconnect();
+    await pool.end();
+    await maintenancePool.end();
+    await collaborationPool.end();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VOD 来源失败只落稳定错误类别且不泄露供应商事实", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "xiqu-analysis-vod-failure-"));
+  const { prisma, pool, maintenancePool, collaborationPool } = createTestPrisma();
+  const storage = new LocalObjectStorage(root);
+  try {
+    for (const [category, expectedCode] of [
+      ["not_found", "audio_stream_missing"],
+      ["temporarily_unavailable", "analysis_external_service_unavailable"],
+    ] as const) {
+      await truncateTestDatabase(prisma);
+      const fixture = await createWorkerFixture(prisma, storage);
+      await prisma.mediaFile.update({
+        where: { resourceId: fixture.mediaResourceId },
+        data: {
+          sourceType: "aliyun_vod",
+          fileId: null,
+          mimeType: null,
+          size: null,
+          aliyunVodVideoId: "vod-test-stable-id",
+          aliyunVodRegion: "cn-test",
+        },
+      });
+      const warnings: Array<Record<string, unknown>> = [];
+      const service = new MediaAnalysisWorkerService(
+        prisma,
+        storage,
+        {
+          region: "cn-test",
+          gateway: {
+            inspectVideo: async () => { throw new Error("not used"); },
+            createPlaybackCredential: async () => { throw new Error("not used"); },
+            listAudioRenditions: async () => { throw new Error("not used"); },
+            createAudioRenditionStream: async () => { throw new Error("not used"); },
+            createAnalysisAudioStream: async () => {
+              throw new AliyunVodGatewayError(category, "provider-request-secret");
+            },
+          },
+        },
+        "ffmpeg",
+        { info: () => undefined, warn: (facts) => warnings.push(facts) },
+      );
+      assert.equal(await service.processNext(`worker-vod-${category}`), true);
+      const job = await prisma.processingJob.findUniqueOrThrow({
+        where: { id: fixture.jobId },
+      });
+      assert.equal(job.status, "failed");
+      assert.equal(job.errorCode, expectedCode);
+      assert.deepEqual(warnings, [{
+        jobId: fixture.jobId,
+        runId: fixture.runId,
+        errorCode: expectedCode,
+      }]);
+      assert.equal(JSON.stringify(warnings).includes("provider-request-secret"), false);
+    }
+  } finally {
+    await prisma.$disconnect();
+    await pool.end();
+    await maintenancePool.end();
+    await collaborationPool.end();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("运行中的媒体分析收到业务取消后清理资产并进入 cancelled", async (context) => {
   const ffmpegPath = process.env.XIQU_FFMPEG_PATH?.trim() || "ffmpeg";
   if (spawnSync(ffmpegPath, ["-version"], { stdio: "ignore" }).status !== 0) {
@@ -563,6 +826,31 @@ async function waitForJobStatus(
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
   throw new Error(`等待任务进入 ${status} 超时。`);
+}
+
+async function waitForHeartbeatAfter(
+  prisma: ReturnType<typeof createTestPrisma>["prisma"],
+  jobId: string,
+  baseline: Date,
+) {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const row = await prisma.processingJob.findUniqueOrThrow({
+      where: { id: jobId },
+      select: { heartbeatAt: true },
+    });
+    if (row.heartbeatAt && row.heartbeatAt > baseline) return row.heartbeatAt;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error("等待 worker heartbeat 前进超时。");
+}
+
+async function waitUntil(predicate: () => boolean) {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("等待测试状态超时。");
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
 }
 
 function buildWav(sampleRate: number, duration: number, frequency: number) {

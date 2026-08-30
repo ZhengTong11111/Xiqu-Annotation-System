@@ -8930,3 +8930,48 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：P4b 单连接查询归属、顺序批量关系装配、上传/分析发布不确定性补偿、专项/全量测试与规范更新。
 - **待推进**：P4c 对 FFmpeg、VOD 临时来源、对象发布、heartbeat、worker kill/restart、取消/完成竞态和多实例重复需求
   做故障注入；继续不部署服务器、不连接生产数据库或对象存储。
+
+## 2026-08-30：worker claim fencing、周期恢复与 FFmpeg 有界退出（P4c）
+
+### Claim 生命周期与运行循环
+
+- 原 cancellation watcher 遇到一次数据库读取错误就永久退出，且只观察 `cancelling`；stale recovery 转移 claim 后旧
+  FFmpeg 仍可能继续运行。现收敛为每个任务唯一的 claim monitor：短数据库故障后继续轮询，识别业务取消、owner/status
+  改变和 job 消失，并立即中止旧输入/FFmpeg。进程 shutdown 仍是独立 signal，不会被误记成用户取消。
+- monitor 每 15 秒独立刷新 job heartbeat，因此 VOD 签发、对象首读、FFmpeg 启动或首个 10 秒瓦片尚未完成时也不会被
+  2 分钟 stale 门禁误接管；真实 progress 仍只随完整瓦片推进。测试用阻塞输入证明无瓦片时 heartbeat 前进，并注入一次
+  monitor 数据库失败后继续追赶取消。
+- runtime 不再因一次 claim/scan 数据库异常退出。循环使用 1 秒起步、30 秒封顶的指数退避，成功后重置；stop 会立即
+  中止等待。stale recovery 从“仅启动时一次”改为每 30 秒周期检查，且与该 runtime 的串行任务领取不并发。
+
+### 资产提交与旧 attempt 隔离
+
+- 每个分析资产预先生成稳定 ID；final 发布后，事务先 `FOR UPDATE` 当前 processing job，验证
+  `running + claimedBy + no cancel`，再创建资产行。该行锁与取消和 stale recovery 的锁形成同一顺序，旧 attempt 即使在
+  monitor 下一轮前产出数据，也无法越过新 claim 发布迟到资产。
+- 数据库 create 返回错误后按稳定 asset ID 复核：事实完全一致表示提交成功但响应丢失，保留 final；明确无行才删除
+  final；复核本身失败或事实不一致时进入 `analysis_asset_commit_uncertain`，不盲删可能已被引用的对象。外层按数据库
+  已知行清理半成品，无引用 aged final 继续由对象生命周期审计兜底。
+- 确定性测试冻结旧 worker 输入，手工转移 job/run 后再释放音频；最终 job/run 保持新 queued 状态，资产表为空，对象存储
+  只剩权威源媒体，没有依赖轮询碰巧先执行。
+
+### FFmpeg、VOD 与错误边界
+
+- FFmpeg 终止改为幂等两阶段：先 SIGTERM，2 秒未退出升级 SIGKILL，close/finally 清理 timer/listener。测试子进程主动
+  忽略 SIGTERM，仍在有界时间内以稳定 `aborted` 结束。
+- 上传输入 pipeline 不再保留迟到 rejected Promise；输入错误保存为已消费的 `input_failed`，所有路径等待输入和 child
+  收口。真实 FFmpeg 流式解码、源流中断和回调结束均无悬挂进程或未处理 rejection。
+- VOD `not_found` 与 `temporarily_unavailable` 分别落为 `audio_stream_missing` 和
+  `analysis_external_service_unavailable`。worker 日志只含 job/run/stable code，故障注入的 requestId 不进入日志；临时 URL、
+  PlayAuth 和凭据仍不进入数据库、审计或日志。
+
+### 验证、自审与状态
+
+- `npm run test:processing-reliability-p4c`：18/18；覆盖 FFmpeg/输入、claim/heartbeat、runtime、VOD、共享需求、取消和重试。
+- `NODE_OPTIONS=--throw-deprecation npm run test:media-analysis`：45/45；
+  `NODE_OPTIONS=--throw-deprecation npm run test:api`：234/234，无 pg query 重入提醒。
+- `npm run test:deployment`：28/28；完整 `npm run build` 与 `git diff --check` 通过，仅保留既有 Vite 主 chunk 警告。
+- 自审确认没有新依赖、数据库 migration、公开 API、前端 UI、瓦片格式、ProjectData、协作命令或敏感日志变化。P4c 是
+  服务端故障注入，无需伪造登录后浏览器验收；未来真实 VOD 检查仍只使用 `http://localhost:5173/`。
+- **已完成**：P4c claim monitor/heartbeat、资产 fencing、模糊提交复核、runtime 恢复、FFmpeg 有界退出与故障矩阵。
+- **待推进**：P4d 统一低基数指标、管理员诊断、运行手册和快速滚动/任务/worker/对象故障压力矩阵；仍不部署生产。

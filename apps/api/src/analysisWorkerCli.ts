@@ -24,7 +24,7 @@ async function startMediaAnalysisWorker() {
     process.env.XIQU_FFMPEG_PATH?.trim() || "ffmpeg",
     logger,
   );
-  const runtime = new MediaAnalysisWorkerRuntime(service);
+  const runtime = new MediaAnalysisWorkerRuntime(service, { logger });
   let stopping = false;
   const stop = async () => {
     if (stopping) return;

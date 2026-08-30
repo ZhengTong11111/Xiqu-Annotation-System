@@ -235,17 +235,28 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     streams cannot share a run. Definition, bitrate, display metadata, temporary URL, and track offset never enter the fingerprint
 - `apps/api/src/mediaAnalysisWorkerService.ts` + `apps/api/src/mediaAnalysisWorkerRuntime.ts`
   - independent database claim/heartbeat/stale-recovery worker; normal shutdown removes partial assets and requeues the job
-  - per-task business cancellation uses a bounded database watcher and a signal separate from process shutdown. User cancellation
-    removes partial assets and settles `cancelled`; process shutdown requeues. Success, cancellation, failure, heartbeat, and stale
-    recovery all require the current claim owner, and a late superseded worker must not clean or overwrite a newer attempt
+  - each task has one claim monitor, separate from process shutdown. It survives transient database reads, refreshes liveness even
+    before a complete tile exists, aborts FFmpeg when cancellation or claim transfer is observed, and never invents progress
+  - user cancellation removes partial assets and settles `cancelled`; process shutdown requeues. Success, cancellation, failure,
+    heartbeat, and stale recovery all require the current claim owner. Every asset row is fenced by the same processing-job
+    `FOR UPDATE` boundary used by cancellation/recovery, so a late superseded worker cannot publish, clean, or overwrite a newer attempt
   - stale recovery treats its initial query only as a candidate list, then reacquires the canonical lock and revalidates status,
-    heartbeat, claim owner, and active demand before requeue/cancel. Never restore `cancelling` work to the execution queue
+    heartbeat, claim owner, and active demand before requeue/cancel. Runtime repeats this scan periodically; never restore
+    `cancelling` work to the execution queue
+  - unexpected claim/scan failures stay inside the runtime's bounded exponential retry loop; successful work resets backoff and
+    stop aborts pending waits. Do not let one transient database failure reject the long-lived worker promise
+  - asset ids are allocated before database commit. If the commit response is ambiguous, reread that exact id and retain a matching
+    referenced final object; delete final only when absence is confirmed. An unverifiable result is a stable diagnostic failure and
+    aged unreferenced objects remain the lifecycle auditor's responsibility
   - staged/final object compensation failures must become stable failed states and must never be silently swallowed
   - a run with `sourceVodRenditionJobId` must request that exact JobId through the existing VOD gateway and reject a mismatched
     provider response. The resulting HTTPS URL remains worker-memory-only and must never enter the database, audit, or logs
 - `apps/api/src/mediaAnalysisFfmpeg.ts` + `apps/api/src/mediaAnalysisComputation.ts`
   - shell-free FFmpeg streaming to 16 kHz mono PCM and versioned fixed-duration tile production; new runs currently use
     10-second tiles, while historical runs expose their original duration through manifest/config
+  - FFmpeg shutdown is two-stage and bounded: SIGTERM first, SIGKILL after the grace period. Uploaded input pipeline errors are
+    consumed as stable values, and every exit path waits for input and child cleanup so no timer, stream, child, or rejected promise
+    leaks into the next serial worker task
   - waveform bucket widths and spectrogram hop lengths must exactly divide a full tile; otherwise concatenated browser views
     accumulate time drift. Keep shared config fingerprints, run DTO tile duration, and frontend level selection synchronized
 - `packages/shared/src/mediaAnalysisComputation.ts` + `packages/shared/src/mediaAnalysisTileCodec.ts` +

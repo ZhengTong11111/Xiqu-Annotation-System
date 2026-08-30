@@ -4,6 +4,7 @@ import { pipeline } from "node:stream/promises";
 
 export const MEDIA_ANALYSIS_SAMPLE_RATE = 16_000;
 const MAX_STDERR_BYTES = 8 * 1024;
+const DEFAULT_TERMINATION_GRACE_MS = 2_000;
 
 export type MediaAnalysisFfmpegInput =
   | { kind: "uploaded"; stream: Readable }
@@ -38,6 +39,7 @@ export async function streamMediaAnalysisPcm(
     ffmpegPath?: string;
     signal?: AbortSignal;
     spawnFfmpeg?: SpawnFfmpeg;
+    terminationGraceMs?: number;
   } = {},
 ): Promise<MediaAnalysisFfmpegResult> {
   if (options.signal?.aborted) {
@@ -54,11 +56,35 @@ export async function streamMediaAnalysisPcm(
 
   let spawnError = false;
   let aborted = false;
+  let childClosed = false;
+  let forceKillTimer: NodeJS.Timeout | null = null;
   const stderrChunks: Buffer[] = [];
   let stderrBytes = 0;
+  const clearForceKillTimer = () => {
+    if (forceKillTimer) clearTimeout(forceKillTimer);
+    forceKillTimer = null;
+  };
+  child.once("close", () => {
+    childClosed = true;
+    clearForceKillTimer();
+  });
+  const terminate = () => {
+    if (childClosed || child.exitCode !== null || child.signalCode !== null) return;
+    child.kill("SIGTERM");
+    if (forceKillTimer) return;
+    const graceMs = options.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
+    forceKillTimer = setTimeout(() => {
+      forceKillTimer = null;
+      if (!childClosed && child.exitCode === null && child.signalCode === null) {
+        // 第三方解码器若忽略 SIGTERM，必须升级为 SIGKILL，避免一个任务永久占住串行 worker。
+        child.kill("SIGKILL");
+      }
+    }, graceMs);
+    forceKillTimer.unref();
+  };
   const abort = () => {
     aborted = true;
-    child.kill("SIGTERM");
+    terminate();
   };
   options.signal?.addEventListener("abort", abort, { once: true });
   // signal 可能在 spawn 与监听注册之间切换为 aborted，注册后再次检查以关闭这条竞态窗口。
@@ -73,10 +99,12 @@ export async function streamMediaAnalysisPcm(
     stderrBytes += bounded.byteLength;
   });
 
+  let inputFailure: MediaAnalysisFfmpegError | null = null;
+  // 输入失败保存为已消费的结果值；主 stdout 路径先结束时不会留下迟到的 rejected Promise。
   const inputPromise = input.kind === "uploaded"
     ? pipeline(input.stream, child.stdin).catch(() => {
-        child.kill("SIGTERM");
-        throw new MediaAnalysisFfmpegError("input_failed");
+        inputFailure = new MediaAnalysisFfmpegError("input_failed");
+        terminate();
       })
     : Promise.resolve(child.stdin.end());
 
@@ -99,6 +127,7 @@ export async function streamMediaAnalysisPcm(
       throw new MediaAnalysisFfmpegError("aborted");
     }
     if (spawnError) throw new MediaAnalysisFfmpegError("tool_unavailable");
+    if (inputFailure) throw inputFailure;
     if (exitCode !== 0 || carry.length !== 0) {
       throw new MediaAnalysisFfmpegError("decode_failed");
     }
@@ -109,7 +138,11 @@ export async function streamMediaAnalysisPcm(
     };
   } finally {
     options.signal?.removeEventListener("abort", abort);
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    if (!childClosed && child.exitCode === null && child.signalCode === null) terminate();
+    // 回调异常也必须等输入流和 child 有界收口，不能把句柄或 rejection 留给下一任务。
+    await inputPromise;
+    if (!childClosed) await waitForChildClose(child);
+    clearForceKillTimer();
   }
 }
 
@@ -149,7 +182,9 @@ function decodeFloat32Le(bytes: Buffer) {
 }
 
 function waitForChildClose(child: ChildProcessWithoutNullStreams) {
-  if (child.exitCode !== null) return Promise.resolve(child.exitCode);
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve(child.exitCode);
+  }
   return new Promise<number | null>((resolve) => {
     child.once("close", (code) => resolve(code));
   });
