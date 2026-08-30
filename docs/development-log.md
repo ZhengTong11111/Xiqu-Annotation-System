@@ -9208,3 +9208,19 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：P5c 的真实隔离全链路、备份维护窗口合同修复、回归、自审和文档闭环。
 - **待推进**：P5d 仍需用户新的明确授权后才能连接生产并执行候选上传、维护、备份、migration、原子切换和真实多账号/
   VOD/分析人工验收；本轮没有部署、推送或读取生产状态。
+
+## 2026-08-30：最新 P5 候选产物复核与浏览器验收边界
+
+- 备份维护窗口修复提交 `ff45b1b` 后，重新执行完整 build，并按生产清单在唯一 `/tmp` 目录组装当前提交的不可变候选；
+  候选只包含 package/lockfile、Prisma 配置与 31 条 migrations、workspace packages、Web/API dist、完整生产
+  `node_modules` 和两个 smoke 运行脚本，没有复制 `.env`、`data/`、数据库、对象、草稿、备份或凭据。
+- 从候选内部运行 `release:inspect`，确认 27 个必需运行路径、25 个根生产依赖和 31 条 migration；随后
+  `release:check` 确认候选 Prisma Client 与源 schema 一致。由此证明新增 `backupMaintenanceWindow.js` 与更新后的备份
+  CLI 已进入当前可发布产物，而不只是源码测试。候选目录随后定点删除，没有留下压缩包、缓存或 release 树。
+- 为补做剩余 localhost 人工验收，按固定 `http://localhost:5173/` 启动 Vite，并确认 API 仍在本机运行。未登录的内置
+  浏览器只能看到登录页；Chrome 扩展能够列出用户现有 localhost 页面，但连续两次在接管页面时中断连接，因此本轮没有
+  形成新的 VOD、波形、频谱、F0 或双账号 UI 证据。该现象只说明浏览器控制连接不可用，不等于平台失败；没有改用
+  `127.0.0.1`、共享 cookie、绕过登录或未登录页面伪造通过。临时 Vite 进程已停止。
+- **已完成**：当前 `ff45b1b` 的不可变候选完整性与 Prisma schema 复核。
+- **待推进**：浏览器连接可用后，仍从 `http://localhost:5173/` 补做真实波形/频谱/F0 与两个隔离账号 UI 验收；生产
+  P5d 继续等待用户明确授权，不因候选检查通过而自动连接或部署服务器。
