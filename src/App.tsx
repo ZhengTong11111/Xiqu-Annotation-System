@@ -52,7 +52,7 @@ import {
   buildAnnotationRangeCommentViewRecords,
   canShowAnnotationConfirmationRevoke,
   canShowAnnotationRangeCommentWithdraw,
-  getAnnotationConfirmationCreateBlocker,
+  getAnnotationReviewCreateBlocker,
   getAnnotationConfirmationTrackOptions,
   layoutAnnotationReviewTimelineItems,
 } from "./platform/annotationConfirmationView";
@@ -1423,8 +1423,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     })),
     [reviewTimelineItems],
   );
-  const confirmationCreateBlocker = getAnnotationConfirmationCreateBlocker({
-    canReview: editorSession?.canReview ?? false,
+  const reviewCreateBlocker = getAnnotationReviewCreateBlocker({
+    canCreate: Boolean(editorSession?.canReview || editorSession?.canWrite),
     hasRange: Boolean(loopPlaybackRange),
     hasUnsavedChanges,
     editorRevision: remoteBaseRevision,
@@ -7371,7 +7371,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         range={loopPlaybackRange}
         trackOptions={confirmationTrackOptions}
         canReview={editorSession.canReview}
-        createBlocker={confirmationCreateBlocker}
+        canWrite={editorSession.canWrite}
+        createBlocker={reviewCreateBlocker}
         loading={annotationReviews.loading}
         loadingMoreComments={annotationReviews.loadingMoreComments}
         hasMoreComments={Boolean(annotationReviews.comments?.nextCursor)}
@@ -7389,9 +7390,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           scope,
           note,
         })}
-        onCreateComment={({ scope, body }) => annotationReviews.createComment({
+        onCreateComment={({ scope, kind, body }) => annotationReviews.createComment({
           commentedRevision: remoteBaseRevision,
           scope,
+          kind,
           body,
         })}
         onRevokeConfirmation={(record, reason) => annotationReviews.revokeConfirmation(
@@ -7412,6 +7414,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         canWithdrawComment={(record) => canShowAnnotationRangeCommentWithdraw({
           record,
           canReview: editorSession.canReview,
+          canWrite: editorSession.canWrite,
           currentUserId: editorSession.currentUserId,
           currentUserRoles: editorSession.currentUserRoles,
           hasOwnerAuthority: editorSession.canRevokeAnyConfirmation,

@@ -142,6 +142,8 @@ enum AuditAction {
   annotation_confirmation_revoke
   annotation_range_comment_create
   annotation_range_comment_withdraw
+  annotation_range_feedback_create
+  annotation_range_feedback_withdraw
   resource_permission_upsert
   resource_permission_remove
   resource_inheritance_update
@@ -470,6 +472,7 @@ model AnnotationRangeComment {
   targetMode        AnnotationConfirmationTargetMode @map("target_mode")
   domains           AnnotationConfirmationDomain[]   @default([])
   trackIds          String[]                         @default([]) @map("track_ids")
+  kind              AnnotationRangeCommentKind      @default(review_comment)
   body              String
   createdBy         String                           @map("created_by")
   createdAt         DateTime                         @default(now()) @map("created_at")
@@ -486,6 +489,12 @@ model AnnotationRangeComment {
   @@index([createdBy])
   @@index([withdrawnBy])
   @@map("annotation_range_comments")
+}
+
+// 同一张追加式范围事实表承载审核评论和编辑反馈；kind 决定创建/撤回权限与视觉语义。
+enum AnnotationRangeCommentKind {
+  review_comment
+  editor_feedback
 }
 
 // 恢复快照通过标注文件 Inspector 受控查看，但不是普通资源、Fork 或发布版本。

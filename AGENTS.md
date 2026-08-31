@@ -39,8 +39,10 @@ Main currently contains all major recent feature lines that matter for context:
   while manual direct/inherited ACL, roles, owner and admin authority remain intact. Only effective `manage_permissions` can
   read or replace complete groups, and non-global managers cannot delegate capabilities they do not hold. Resource copies must
   not inherit file completion conclusions or project responsibility groups
-- independent annotation-range comments alongside confirmed ranges; both reuse one saved range/target contract and `read + review`
-  gate, while comments remain non-confirming append-only governance facts with required plain-text bodies and withdrawal history
+- independent typed annotation-range notes alongside confirmed ranges. Review comments and editor feedback reuse one saved
+  range/target contract, required plain-text bodies, pagination and withdrawal history, but creation follows the record kind:
+  review comments require `read + review`, while editor feedback requires `read + write`. Both remain non-confirming
+  append-only governance facts and must never alter annotation workflow status
 - permission-gated native streaming downloads for media resources and authoritative JSON downloads for annotation resources, exposed through the shared resource context menu and Inspector
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - local `dev:api` and `dev:analysis-worker` commands load the ignored root `.env` through Node 22
@@ -593,12 +595,16 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - loads lightweight summaries first, requests one full snapshot payload only after explicit selection, and refetches the
     current annotation file when comparison starts rather than trusting stale Inspector metadata
 - `src/platform/AnnotationReviewPanel.tsx`
-  - platform-editor governance panel for browsing, creating, navigating to, and withdrawing/revoking confirmations and range comments
-  - uses the existing loop range as an explicit review range; comments never imply confirmation, and neither fact may edit `ProjectData`
+  - platform-editor governance panel for browsing, creating, navigating to, and withdrawing/revoking confirmations, review comments,
+    and editor feedback
+  - uses the existing loop range as an explicit review/feedback range; comments and feedback never imply confirmation, and none of
+    these governance facts may edit `ProjectData`
   - docked and detached rendering share one data/mutation path. Detached Radix dialogs must portal into the detached document;
     the detached copy stays expanded while the docked copy may use the standard sidebar collapse control
 - `src/platform/useAnnotationReviews.ts`
-  - authoritative client-side confirmation/comment list, pagination, create and withdraw lifecycle for one open annotation file
+  - authoritative client-side confirmation/range-note list, pagination, create and withdraw lifecycle for one open annotation file
+  - the historical `comment` method names cover both typed review comments and editor feedback; do not add a parallel feedback
+    request owner, cache or invalidation channel
   - rejects stale async responses across file switches and refreshes after mutations or `annotation.review.changed` hints instead of
     optimistically inventing facts
 - `src/platform/annotationConfirmationView.ts`
@@ -1327,8 +1333,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - contains no Prisma, API, React, payload mutation, or global-role lookup; backend and platform UI must reuse
     this contract instead of duplicating scope or freshness rules
 - `packages/document-model/src/annotationRangeComments.ts`
-  - required-body validation and comment lifecycle/freshness rules layered on the canonical neutral review scope
-  - comment text is business data returned only by the protected comment API; it must never enter audit detail, WebSocket, NOTIFY or logs
+  - required-body validation, strict `review_comment | editor_feedback` kind parsing, kind-specific permission decisions, and
+    lifecycle/freshness rules layered on the canonical neutral review scope
+  - review comments require current `read + review`; editor feedback requires current `read + write`. Withdrawal rechecks the
+    corresponding capability plus creator/owner/admin authority inside the write transaction
+  - note text is business data returned only by the protected range-comment API; it must never enter audit detail, WebSocket,
+    NOTIFY or logs. The historical table and API route names remain compatibility boundaries, not permission semantics
 - `prisma/schema.prisma`
   - PostgreSQL schema for users, sessions, resource entries, projects, annotation/media files, resource permissions/user state,
     recovery snapshots, confirmed ranges, range comments, short-lived collaboration presence, processing jobs, audit logs, and operations
@@ -1839,20 +1849,23 @@ Current backend capabilities:
     `resourceAccess.ts`; do not create a second UI-only implementation
 
 Annotation-review contract status:
-- R2.5d extends the confirmed-range workflow with independent range comments. The shared panel lists current/stale and
+- R2.5d extends the confirmed-range workflow with typed range notes. The shared panel lists current/stale and
   revoked/withdrawn facts, creates from the saved loop range, navigates to exact times, and preserves append-only history.
-  The Timeline renders active confirmation and comment facts in one separate read-only lane with distinct colors.
+  The Timeline renders active confirmation, review-comment and editor-feedback facts in one separate read-only lane with
+  distinct colors.
 - a confirmation binds one annotation file revision to a non-empty half-open time range and either all content, stable
   research domains, or real persisted parent-track ids. Derived Gongche, attached-point, and branch-lane visual tracks
   are not saved top-level track ids.
-- confirmation and range comment are server governance metadata, never part of `ProjectData`, annotation payload, recovery
+- confirmation and typed range notes are server governance metadata, never part of `ProjectData`, annotation payload, recovery
   snapshots, or annotation operation logs. Revision advancement makes either record stale; comments remain historical opinions
   and confirmations require a future explicit re-review rather than being silently carried forward.
-- read access reuses resource `read`; create and revoke/withdraw require an independent per-resource `review` capability.
-  `write`, `manage_permissions`, and the global reviewer role must not independently imply review authority.
+- read access reuses resource `read`. Confirmation and review-comment creation/revocation require the independent per-resource
+  `review` capability; editor-feedback creation/withdrawal requires `write`. Neither kind may borrow the other capability,
+  and `manage_permissions` or a global reviewer role must not independently imply review authority.
 - revocation preserves the original confirmation and records revoker/time/reason. Do not update or delete the original
   audit fact in place.
-- comment withdrawal follows the same author-or-manager boundary. Comment bodies must not be copied into audit rows,
+- range-note withdrawal follows the same author-or-manager boundary after rechecking the kind-specific capability. Comment and
+  feedback bodies must not be copied into audit rows,
   collaboration messages, PostgreSQL NOTIFY payloads, server logs, or sync diagnostics.
 - review mutations do not advance annotation revision. `annotation.review.changed` is a lossy invalidation hint only;
   HTTP confirmation/comment reads remain authoritative, including after reconnect or cross-instance delivery.
@@ -2051,6 +2064,9 @@ Important backend caveats:
   `confirmedRevision` never auto-advances, and current/stale is derived against the file's current revision.
 - listing confirmations requires `read`; creating and revoking require both `read` and the independent per-resource
   `review` capability. `write`, `manage_permissions`, or the global `reviewer` role do not substitute for `review`.
+- listing range comments and editor feedback requires `read`. Creating/withdrawing a review comment requires `review`, while
+  creating/withdrawing editor feedback requires `write`; both additionally enforce creator, owner or admin authority for
+  withdrawal. Feedback is a yellow non-confirming annotation fact and must not affect workflow `reviewed` state.
 - track-scoped confirmations may reference only current payload top-level persisted tracks (`character-track` and saved
   custom track ids). Derived Gongche, branch-lane and attached-point visual lanes are not standalone confirmation tracks.
 - confirmation creation follows the same resource-tree shared lock, ordered resource-row lock and annotation-row lock

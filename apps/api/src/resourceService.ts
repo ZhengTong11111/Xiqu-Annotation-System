@@ -61,7 +61,9 @@ import {
 } from "@xiqu/shared";
 import {
   canCreateAnnotationReviewFact,
+  canCreateAnnotationRangeComment,
   canWithdrawAnnotationReviewFact,
+  canWithdrawAnnotationRangeComment,
   extractPersistedAnnotationReviewTrackIds,
   validateAnnotationConfirmationDraft,
   validateAnnotationRangeCommentDraft,
@@ -1474,11 +1476,18 @@ export class ResourceService {
     }
 
     const record = await this.prisma.$transaction(async (transaction) => {
-      const current = await this.lockAnnotationFileForReview(
+      const { current, permission } = await this.lockAnnotationFileForRangeFact(
         transaction,
         user,
         resourceId,
       );
+      const reviewDecision = canCreateAnnotationReviewFact({
+        actorUserId: user.id,
+        canRead: permission.capabilities.includes("read"),
+        canReview: permission.capabilities.includes("review"),
+        isAdminOrOwner: permission.source === "admin" || permission.isOwner,
+      });
+      if (!reviewDecision.allowed) throw forbidden("当前账号缺少该标注文件的审核权限。");
       if (current.revision !== validated.value.confirmedRevision) {
         throw conflict("标注文件已产生新修订，请刷新后重新审核。", {
           expectedRevision: current.revision,
@@ -1543,7 +1552,7 @@ export class ResourceService {
     }
 
     const result = await this.prisma.$transaction(async (transaction) => {
-      await this.lockAnnotationFileForReview(
+      const { permission: effectivePermission } = await this.lockAnnotationFileForRangeFact(
         transaction,
         user,
         resourceId,
@@ -1559,22 +1568,22 @@ export class ResourceService {
         include: annotationConfirmationInclude,
       });
       if (!existing) throw notFound("确认记录不存在。");
-      if (existing.revokedAt) {
-        return { record: this.mapAnnotationConfirmation(existing), changed: false };
-      }
 
       const isAdminOrOwner = await this.access.hasOwnerAuthority(
         user,
         resourceId,
         transaction,
       );
-      const permission = canWithdrawAnnotationReviewFact({
+      const permissionDecision = canWithdrawAnnotationReviewFact({
         actorUserId: user.id,
-        canRead: true,
-        canReview: true,
+        canRead: effectivePermission.capabilities.includes("read"),
+        canReview: effectivePermission.capabilities.includes("review"),
         isAdminOrOwner,
       }, existing.createdBy);
-      if (!permission.allowed) throw forbidden("只能撤销自己创建的确认记录。");
+      if (!permissionDecision.allowed) throw forbidden("当前账号不能撤销这条确认记录。");
+      if (existing.revokedAt) {
+        return { record: this.mapAnnotationConfirmation(existing), changed: false };
+      }
 
       const revokedAt = new Date();
       const updated = await transaction.annotationConfirmation.update({
@@ -1599,7 +1608,7 @@ export class ResourceService {
     return result.record;
   }
 
-  // 评论列表采用稳定 keyset 分页；正文只通过需要 read 权限的 HTTP 响应返回。
+  // 带正文的范围记录采用稳定 keyset 分页；正文只通过需要 read 权限的 HTTP 响应返回。
   async listAnnotationRangeComments(
     user: ApiUser,
     resourceId: string,
@@ -1612,7 +1621,7 @@ export class ResourceService {
     const cursor = options.cursor
       ? decodeAnnotationRangeCommentCursor(options.cursor, { annotationFileId: resourceId, includeWithdrawn })
       : null;
-    if (options.cursor && !cursor) throw badRequest("范围评论分页游标无效或与当前筛选不匹配。");
+    if (options.cursor && !cursor) throw badRequest("范围记录分页游标无效或与当前筛选不匹配。");
     const cursorWhere = cursor ? {
       OR: [
         { createdAt: { lt: cursor.createdAt } },
@@ -1649,7 +1658,7 @@ export class ResourceService {
     };
   }
 
-  // 创建评论与确认使用相同审核锁和轨道合同，但正文形成独立治理事实，不推进标注 revision。
+  // 审核评论和编辑反馈共用范围、分页与锁；kind 只选择权限来源和审计语义。
   async createAnnotationRangeComment(
     user: ApiUser,
     resourceId: string,
@@ -1657,12 +1666,24 @@ export class ResourceService {
   ): Promise<AnnotationRangeCommentRecord> {
     const validated = validateAnnotationRangeCommentDraft({ annotationFileId: resourceId, ...input });
     if (!validated.ok) {
-      throw badRequest("范围评论格式不正确。", { issues: validated.issues });
+      throw badRequest("范围记录格式不正确。", { issues: validated.issues });
     }
     const record = await this.prisma.$transaction(async (transaction) => {
-      const current = await this.lockAnnotationFileForReview(transaction, user, resourceId);
+      const { current, permission } = await this.lockAnnotationFileForRangeFact(transaction, user, resourceId);
+      const permissionDecision = canCreateAnnotationRangeComment({
+        actorUserId: user.id,
+        canRead: permission.capabilities.includes("read"),
+        canReview: permission.capabilities.includes("review"),
+        canWrite: permission.capabilities.includes("write"),
+        isAdminOrOwner: permission.source === "admin" || permission.isOwner,
+      }, validated.value.kind);
+      if (!permissionDecision.allowed) {
+        throw forbidden(validated.value.kind === "editor_feedback"
+          ? "当前账号缺少该标注文件的编辑权限。"
+          : "当前账号缺少该标注文件的审核权限。");
+      }
       if (current.revision !== validated.value.commentedRevision) {
-        throw conflict("标注文件已产生新修订，请刷新后重新评论。", {
+        throw conflict("标注文件已产生新修订，请刷新后重新提交范围记录。", {
           expectedRevision: current.revision,
           receivedRevision: validated.value.commentedRevision,
         });
@@ -1673,16 +1694,18 @@ export class ResourceService {
           throw badRequest("当前标注内容无法验证轨道作用域。", { issues: trackIds.issues });
         }
         const scope = validateAnnotationReviewTracks(validated.value.scope, new Set(trackIds.value));
-        if (!scope.ok) throw badRequest("评论范围包含无效轨道。", { issues: scope.issues });
+        if (!scope.ok) throw badRequest("范围记录包含无效轨道。", { issues: scope.issues });
       }
       const created = await transaction.annotationRangeComment.create({
         data: this.toAnnotationRangeCommentCreateData(user.id, validated.value),
         include: annotationRangeCommentInclude,
       });
-      // 审计刻意不保存评论正文、轨道列表或完整作用域，减少治理日志中的敏感研究内容。
+      // 审计刻意不保存正文、轨道列表或完整作用域，减少治理日志中的敏感研究内容。
       await transaction.auditLog.create({
         data: {
-          action: "annotation_range_comment_create",
+          action: validated.value.kind === "editor_feedback"
+            ? "annotation_range_feedback_create"
+            : "annotation_range_comment_create",
           actorUserId: user.id,
           resourceId,
           detail: {
@@ -1700,7 +1723,7 @@ export class ResourceService {
     return record;
   }
 
-  // 撤回保持幂等；作者或 owner/admin 可操作，其他 reviewer 不能改写别人的历史意见。
+  // 撤回保持幂等；评论重验 review，反馈重验 write，且都保留作者/owner/admin 边界。
   async withdrawAnnotationRangeComment(
     user: ApiUser,
     resourceId: string,
@@ -1712,7 +1735,7 @@ export class ResourceService {
       throw badRequest(`撤回原因不能超过 ${MAX_RANGE_COMMENT_WITHDRAW_REASON_LENGTH} 个字符。`);
     }
     const result = await this.prisma.$transaction(async (transaction) => {
-      await this.lockAnnotationFileForReview(transaction, user, resourceId);
+      const { permission } = await this.lockAnnotationFileForRangeFact(transaction, user, resourceId);
       await transaction.$queryRaw`
         SELECT id FROM annotation_range_comments
         WHERE id = ${commentId} AND annotation_file_id = ${resourceId}
@@ -1722,18 +1745,19 @@ export class ResourceService {
         where: { id: commentId, annotationFileId: resourceId },
         include: annotationRangeCommentInclude,
       });
-      if (!existing) throw notFound("范围评论不存在。");
+      if (!existing) throw notFound("范围记录不存在。");
+      const isAdminOrOwner = await this.access.hasOwnerAuthority(user, resourceId, transaction);
+      const permissionDecision = canWithdrawAnnotationRangeComment({
+        actorUserId: user.id,
+        canRead: permission.capabilities.includes("read"),
+        canReview: permission.capabilities.includes("review"),
+        canWrite: permission.capabilities.includes("write"),
+        isAdminOrOwner,
+      }, existing.kind, existing.createdBy);
+      if (!permissionDecision.allowed) throw forbidden("当前账号不能撤回这条范围记录。");
       if (existing.withdrawnAt) {
         return { record: this.mapAnnotationRangeComment(existing), changed: false };
       }
-      const isAdminOrOwner = await this.access.hasOwnerAuthority(user, resourceId, transaction);
-      const permission = canWithdrawAnnotationReviewFact({
-        actorUserId: user.id,
-        canRead: true,
-        canReview: true,
-        isAdminOrOwner,
-      }, existing.createdBy);
-      if (!permission.allowed) throw forbidden("只能撤回自己创建的范围评论。");
       const updated = await transaction.annotationRangeComment.update({
         where: { id: existing.id },
         data: { withdrawnBy: user.id, withdrawnAt: new Date(), withdrawReason },
@@ -1741,7 +1765,9 @@ export class ResourceService {
       });
       await transaction.auditLog.create({
         data: {
-          action: "annotation_range_comment_withdraw",
+          action: existing.kind === "editor_feedback"
+            ? "annotation_range_feedback_withdraw"
+            : "annotation_range_comment_withdraw",
           actorUserId: user.id,
           resourceId,
           detail: { commentId: updated.id, commentedRevision: updated.commentedRevision },
@@ -3024,7 +3050,7 @@ export class ResourceService {
     };
   }
 
-  // 评论写入映射复用历史数据库枚举；互斥目标字段仍由领域校验与 CHECK 双重约束。
+  // 带正文范围事实复用历史表；互斥目标字段仍由领域校验与 CHECK 双重约束。
   private toAnnotationRangeCommentCreateData(
     createdBy: string,
     draft: AnnotationRangeCommentDraft,
@@ -3040,6 +3066,7 @@ export class ResourceService {
         ? targets.domains.map((domain) => DB_CONFIRMATION_DOMAINS[domain])
         : [],
       trackIds: targets.mode === "tracks" ? targets.trackIds : [],
+      kind: draft.kind,
       body: draft.body,
       createdBy,
     };
@@ -3061,6 +3088,7 @@ export class ResourceService {
       annotationFileId: row.annotationFileId,
       commentedRevision: row.commentedRevision,
       scope: { startTime: row.startTime, endTime: row.endTime, targets },
+      kind: row.kind,
       body: row.body,
       createdBy: toPublicUser(row.creator),
       createdAt: row.createdAt.toISOString(),
@@ -3466,8 +3494,8 @@ export class ResourceService {
     await assertActiveAnnotationFileActivity(database, resourceId);
   }
 
-  // 审核事务沿用内容写入的锁顺序，但只共享锁 annotation 行，保证 revision 核对期间不能被保存推进。
-  private async lockAnnotationFileForReview(
+  // 三类范围事实共用固定锁序；这里只验证 read，具体 review/write 由 kind 对应的领域门禁复核。
+  private async lockAnnotationFileForRangeFact(
     transaction: Prisma.TransactionClient,
     user: ApiUser,
     resourceId: string,
@@ -3480,13 +3508,9 @@ export class ResourceService {
       resourceId,
       transaction,
     );
-    const decision = canCreateAnnotationReviewFact({
-      actorUserId: user.id,
-      canRead: permission.capabilities.includes("read"),
-      canReview: permission.capabilities.includes("review"),
-      isAdminOrOwner: permission.source === "admin" || permission.isOwner,
-    });
-    if (!decision.allowed) throw forbidden("当前账号缺少该标注文件的审核权限。");
+    if (!permission.capabilities.includes("read")) {
+      throw forbidden("当前账号无权读取该标注文件的范围记录。");
+    }
 
     await transaction.$queryRaw`
       SELECT resource_id
@@ -3498,7 +3522,7 @@ export class ResourceService {
       where: { resourceId },
     });
     if (!current) throw notFound("标注文件不存在。");
-    return current;
+    return { current, permission };
   }
 
   private async isDescendant(

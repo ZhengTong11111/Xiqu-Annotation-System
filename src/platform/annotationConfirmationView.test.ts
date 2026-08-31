@@ -8,7 +8,7 @@ import {
   canShowAnnotationConfirmationRevoke,
   canShowAnnotationRangeCommentWithdraw,
   formatAnnotationConfirmationTargets,
-  getAnnotationConfirmationCreateBlocker,
+  getAnnotationReviewCreateBlocker,
   getAnnotationConfirmationTrackOptions,
   layoutAnnotationReviewTimelineItems,
 } from "./annotationConfirmationView";
@@ -78,6 +78,7 @@ test("时间轴分层允许首尾相接并稳定拆开真实重叠", () => {
     annotationFileId: "file-1",
     commentedRevision: 3,
     scope: { startTime: 2, endTime: 3.5, targets: { mode: "all" } },
+    kind: "review_comment",
     body: "检查衔接",
     createdBy: { id: "reviewer-2", accountName: "teacher", displayName: "教师" },
     createdAt: "2026-08-02T01:00:00.000Z",
@@ -96,19 +97,19 @@ test("时间轴分层允许首尾相接并稳定拆开真实重叠", () => {
 
 test("创建阻断优先检查权限、加载、范围、dirty 与 revision", () => {
   const base = {
-    canReview: true,
+    canCreate: true,
     hasRange: true,
     hasUnsavedChanges: false,
     editorRevision: 3,
     serverRevision: 3,
     loading: false,
   };
-  assert.equal(getAnnotationConfirmationCreateBlocker({ ...base, canReview: false }), "review_required");
-  assert.equal(getAnnotationConfirmationCreateBlocker({ ...base, loading: true }), "loading");
-  assert.equal(getAnnotationConfirmationCreateBlocker({ ...base, hasRange: false }), "range_required");
-  assert.equal(getAnnotationConfirmationCreateBlocker({ ...base, hasUnsavedChanges: true }), "unsaved_changes");
-  assert.equal(getAnnotationConfirmationCreateBlocker({ ...base, serverRevision: 4 }), "revision_mismatch");
-  assert.equal(getAnnotationConfirmationCreateBlocker(base), null);
+  assert.equal(getAnnotationReviewCreateBlocker({ ...base, canCreate: false }), "permission_required");
+  assert.equal(getAnnotationReviewCreateBlocker({ ...base, loading: true }), "loading");
+  assert.equal(getAnnotationReviewCreateBlocker({ ...base, hasRange: false }), "range_required");
+  assert.equal(getAnnotationReviewCreateBlocker({ ...base, hasUnsavedChanges: true }), "unsaved_changes");
+  assert.equal(getAnnotationReviewCreateBlocker({ ...base, serverRevision: 4 }), "revision_mismatch");
+  assert.equal(getAnnotationReviewCreateBlocker(base), null);
 });
 
 test("撤销入口仅向创建者、owner 或管理员开放", () => {
@@ -135,6 +136,7 @@ test("评论撤回入口复用作者、owner 和管理员边界", () => {
     annotationFileId: "file-1",
     commentedRevision: 3,
     scope: { startTime: 0, endTime: 1, targets: { mode: "all" } },
+    kind: "review_comment",
     body: "需要复核",
     createdBy: { id: "reviewer-1", accountName: "reviewer", displayName: "审核员" },
     createdAt: "2026-08-22T00:00:00.000Z",
@@ -142,6 +144,7 @@ test("评论撤回入口复用作者、owner 和管理员边界", () => {
   const base = {
     record,
     canReview: true,
+    canWrite: false,
     currentUserId: "other",
     currentUserRoles: ["reviewer" as const],
     hasOwnerAuthority: false,
@@ -150,4 +153,36 @@ test("评论撤回入口复用作者、owner 和管理员边界", () => {
   assert.equal(canShowAnnotationRangeCommentWithdraw({ ...base, currentUserId: "reviewer-1" }), true);
   assert.equal(canShowAnnotationRangeCommentWithdraw({ ...base, hasOwnerAuthority: true }), true);
   assert.equal(canShowAnnotationRangeCommentWithdraw({ ...base, currentUserRoles: ["admin"] }), true);
+});
+
+test("编辑反馈使用 write 权限并进入独立黄色时间轴种类", () => {
+  const record = buildAnnotationRangeCommentViewRecords([{
+    id: "feedback-a",
+    annotationFileId: "file-1",
+    commentedRevision: 3,
+    scope: { startTime: 4, endTime: 6, targets: { mode: "all" } },
+    kind: "editor_feedback",
+    body: "请审核者关注此处节奏。",
+    createdBy: { id: "editor-1", accountName: "editor", displayName: "标注者" },
+    createdAt: "2026-08-31T00:00:00.000Z",
+  }], 3, [])[0];
+  const timeline = layoutAnnotationReviewTimelineItems({ confirmations: [], comments: [record] });
+  assert.equal(timeline[0]?.kind, "feedback");
+  assert.match(timeline[0]?.label ?? "", /^反馈/);
+  assert.equal(canShowAnnotationRangeCommentWithdraw({
+    record,
+    canReview: false,
+    canWrite: true,
+    currentUserId: "editor-1",
+    currentUserRoles: ["annotator"],
+    hasOwnerAuthority: false,
+  }), true);
+  assert.equal(canShowAnnotationRangeCommentWithdraw({
+    record,
+    canReview: true,
+    canWrite: false,
+    currentUserId: "editor-1",
+    currentUserRoles: ["reviewer"],
+    hasOwnerAuthority: false,
+  }), false);
 });

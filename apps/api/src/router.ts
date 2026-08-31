@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import {
   ANNOTATION_REVIEW_DOMAINS,
+  ANNOTATION_RANGE_COMMENT_KINDS,
   AUDIT_ACTIONS,
   encodeMediaAnalysisTileBatchHeader,
   isValidAnnotationOperationPayload,
@@ -12,6 +13,7 @@ import {
   type AnnotationConfirmationDomain,
   type AnnotationConfirmationScope,
   type AnnotationReviewScope,
+  type AnnotationRangeCommentKind,
   type AnnotationClientSyncFailureCategory,
   type AnnotationClientSyncFailureOperation,
   type AnnotationClientSyncFailureReport,
@@ -272,7 +274,7 @@ export function registerApiRoutes(
       requireProcessingJobRetryBody(request.body),
     ));
 
-  // 评论列表默认隐藏已撤回记录；分页参数在服务层继续绑定文件和筛选上下文。
+  // 评论与反馈默认隐藏已撤回记录；分页参数在服务层继续绑定文件和筛选上下文。
   app.get<{
     Params: { resourceId: string };
     Querystring: { cursor?: string; limit?: string; includeWithdrawn?: string };
@@ -296,7 +298,7 @@ export function registerApiRoutes(
 
   app.post<{
     Params: { resourceId: string };
-    Body: { commentedRevision?: unknown; scope?: unknown; body?: unknown };
+    Body: { commentedRevision?: unknown; scope?: unknown; kind?: unknown; body?: unknown };
   }>("/api/annotation-files/:resourceId/range-comments", async (request) => {
     const body = requireObject(request.body);
     if (!Number.isInteger(body.commentedRevision) || Number(body.commentedRevision) < 1) {
@@ -309,6 +311,7 @@ export function registerApiRoutes(
       {
         commentedRevision: Number(body.commentedRevision),
         scope: parseAnnotationReviewScope(body.scope),
+        kind: parseAnnotationRangeCommentKind(body.kind),
         body: body.body,
       },
     );
@@ -2053,6 +2056,17 @@ function parseAnnotationConfirmationScope(
 // 确认与评论共享同一作用域 parser；别名保留确认路由的语义化调用点。
 const parseAnnotationReviewScope = (value: unknown): AnnotationReviewScope =>
   parseAnnotationConfirmationScope(value);
+
+// kind 是权限门禁的一部分，路由必须在进入事务前拒绝缺失或未知值。
+function parseAnnotationRangeCommentKind(value: unknown): AnnotationRangeCommentKind {
+  if (
+    typeof value !== "string" ||
+    !ANNOTATION_RANGE_COMMENT_KINDS.includes(value as AnnotationRangeCommentKind)
+  ) {
+    throw badRequest("范围记录类型必须是 review_comment 或 editor_feedback。");
+  }
+  return value as AnnotationRangeCommentKind;
+}
 
 function parseUniqueStringArray(
   value: unknown,

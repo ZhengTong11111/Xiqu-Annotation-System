@@ -18,7 +18,7 @@ export type AnnotationReviewMutationResult<TRecord> = {
 
 type ReviewMutationRecord = AnnotationConfirmationRecord | AnnotationRangeCommentRecord;
 
-// Hook 统一管理确认与评论，确保文件切换、慢响应和 mutation 后刷新遵守同一代次边界。
+// Hook 统一管理确认、审核评论和编辑反馈，确保文件切换、慢响应和 mutation 后刷新遵守同一代次边界。
 export function useAnnotationReviews(input: {
   client: PlatformClient | null;
   annotationFileId: string | null;
@@ -119,7 +119,7 @@ export function useAnnotationReviews(input: {
     }
   }, [comments?.nextCursor, input.annotationFileId, input.client, loadingMoreComments]);
 
-  // 四类命令共用一条 mutation 管道；命令成功、列表刷新失败仍向 UI 返回准确结果。
+  // 两套 endpoint 的四类命令共用一条 mutation 管道；kind 在带正文记录内部区分评论与反馈。
   const runMutation = useCallback(async <TRecord extends ReviewMutationRecord>(
     operation: () => Promise<TRecord>,
   ): Promise<AnnotationReviewMutationResult<TRecord>> => {

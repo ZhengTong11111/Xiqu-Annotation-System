@@ -1,5 +1,5 @@
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
-import { CheckCircle2, History, MessageSquareText, RefreshCw, Undo2 } from "lucide-react";
+import { CheckCircle2, History, MessageSquareText, MessageSquareWarning, RefreshCw, Undo2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   ANNOTATION_REVIEW_DOMAINS,
@@ -10,15 +10,15 @@ import {
 import type { AnnotationReviewMutationResult } from "./useAnnotationReviews";
 import {
   ANNOTATION_CONFIRMATION_DOMAIN_LABELS,
-  type AnnotationConfirmationCreateBlocker,
+  type AnnotationReviewCreateBlocker,
   type AnnotationConfirmationTrackOption,
   type AnnotationConfirmationViewRecord,
   type AnnotationRangeCommentViewRecord,
-  getAnnotationConfirmationBlockerMessage,
+  getAnnotationReviewBlockerMessage,
 } from "./annotationConfirmationView";
 
 type TargetMode = AnnotationReviewTargets["mode"];
-type CreateMode = "confirmation" | "comment";
+type CreateMode = "confirmation" | "comment" | "feedback";
 type HistoryKind = "all" | CreateMode;
 
 type AnnotationReviewPanelProps = {
@@ -29,7 +29,8 @@ type AnnotationReviewPanelProps = {
   range: { start: number; end: number } | null;
   trackOptions: AnnotationConfirmationTrackOption[];
   canReview: boolean;
-  createBlocker: AnnotationConfirmationCreateBlocker | null;
+  canWrite: boolean;
+  createBlocker: AnnotationReviewCreateBlocker | null;
   loading: boolean;
   loadingMoreComments: boolean;
   hasMoreComments: boolean;
@@ -48,6 +49,7 @@ type AnnotationReviewPanelProps = {
   }) => Promise<AnnotationReviewMutationResult<AnnotationConfirmationViewRecord["record"]>>;
   onCreateComment: (input: {
     scope: AnnotationReviewScope;
+    kind: "review_comment" | "editor_feedback";
     body: string;
   }) => Promise<AnnotationReviewMutationResult<AnnotationRangeCommentViewRecord["record"]>>;
   onRevokeConfirmation: (
@@ -65,13 +67,13 @@ type AnnotationReviewPanelProps = {
 
 type HistoryItem =
   | { kind: "confirmation"; createdAt: string; item: AnnotationConfirmationViewRecord }
-  | { kind: "comment"; createdAt: string; item: AnnotationRangeCommentViewRecord };
+  | { kind: "comment" | "feedback"; createdAt: string; item: AnnotationRangeCommentViewRecord };
 
 type WithdrawTarget =
   | { kind: "confirmation"; item: AnnotationConfirmationViewRecord }
-  | { kind: "comment"; item: AnnotationRangeCommentViewRecord };
+  | { kind: "range-record"; item: AnnotationRangeCommentViewRecord };
 
-// 审核面板在同一作用域上提供“确认”和“评论”两种互不替代的治理事实。
+// 面板在同一作用域上提供确认、审核评论和编辑反馈三种互不替代的范围事实。
 export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
   const [createMode, setCreateMode] = useState<CreateMode>("confirmation");
   const [historyKind, setHistoryKind] = useState<HistoryKind>("all");
@@ -82,11 +84,18 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
   ]);
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
   const [confirmationNote, setConfirmationNote] = useState("");
-  const [commentBody, setCommentBody] = useState("");
+  const [rangeBody, setRangeBody] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [withdrawTarget, setWithdrawTarget] = useState<WithdrawTarget | null>(null);
   const [withdrawReason, setWithdrawReason] = useState("");
 
+  const availableCreateModes = useMemo<CreateMode[]>(() => [
+    ...(props.canReview ? ["confirmation" as const, "comment" as const] : []),
+    ...(props.canWrite ? ["feedback" as const] : []),
+  ], [props.canReview, props.canWrite]);
+  const effectiveCreateMode = availableCreateModes.includes(createMode)
+    ? createMode
+    : availableCreateModes[0] ?? "confirmation";
   const historyItems = useMemo<HistoryItem[]>(() => [
     ...props.confirmations.map((item) => ({
       kind: "confirmation" as const,
@@ -94,7 +103,7 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
       item,
     })),
     ...props.comments.map((item) => ({
-      kind: "comment" as const,
+      kind: item.record.kind === "editor_feedback" ? "feedback" as const : "comment" as const,
       createdAt: item.record.createdAt,
       item,
     })),
@@ -113,8 +122,8 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
   const targetSelectionInvalid =
     (targetMode === "domains" && selectedDomains.length === 0) ||
     (targetMode === "tracks" && selectedTrackIds.length === 0);
-  const bodyInvalid = createMode === "comment" && !commentBody.trim();
-  const blockerMessage = getAnnotationConfirmationBlockerMessage(props.createBlocker);
+  const bodyInvalid = effectiveCreateMode !== "confirmation" && !rangeBody.trim();
+  const blockerMessage = getAnnotationReviewBlockerMessage(props.createBlocker);
 
   useEffect(() => {
     const available = new Set(props.trackOptions.map((track) => track.id));
@@ -150,12 +159,18 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
     if (!scope) return;
     setNotice(null);
     try {
-      const result = createMode === "confirmation"
+      const result = effectiveCreateMode === "confirmation"
         ? await props.onCreateConfirmation({ scope, note: confirmationNote.trim() || null })
-        : await props.onCreateComment({ scope, body: commentBody.trim() });
-      if (createMode === "confirmation") setConfirmationNote("");
-      else setCommentBody("");
-      const action = createMode === "confirmation" ? "确认" : "评论";
+        : await props.onCreateComment({
+            scope,
+            kind: effectiveCreateMode === "feedback" ? "editor_feedback" : "review_comment",
+            body: rangeBody.trim(),
+          });
+      if (effectiveCreateMode === "confirmation") setConfirmationNote("");
+      else setRangeBody("");
+      const action = effectiveCreateMode === "confirmation"
+        ? "确认"
+        : effectiveCreateMode === "feedback" ? "反馈" : "评论";
       setNotice(result.refreshFailed
         ? `${action}已创建，但列表刷新失败，请手动刷新。`
         : `${action}已创建。`);
@@ -171,7 +186,9 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
       const result = withdrawTarget.kind === "confirmation"
         ? await props.onRevokeConfirmation(withdrawTarget.item, withdrawReason.trim() || null)
         : await props.onWithdrawComment(withdrawTarget.item, withdrawReason.trim() || null);
-      const action = withdrawTarget.kind === "confirmation" ? "确认已撤销" : "评论已撤回";
+      const action = withdrawTarget.kind === "confirmation"
+        ? "确认已撤销"
+        : withdrawTarget.item.record.kind === "editor_feedback" ? "反馈已撤回" : "评论已撤回";
       setWithdrawTarget(null);
       setWithdrawReason("");
       setNotice(result.refreshFailed ? `${action}，但列表刷新失败，请手动刷新。` : `${action}。`);
@@ -184,15 +201,15 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
   return (
     <section
       className={["panel", "annotation-confirmation-panel", props.collapsed ? "is-collapsed" : ""].join(" ")}
-      aria-label="标注审核"
+      aria-label="标注审核与反馈"
     >
       <div className="panel-header annotation-confirmation-heading">
-        <h2>标注审核</h2>
+        <h2>标注审核与反馈</h2>
         <div className="annotation-confirmation-heading-actions">
           {!props.collapsed ? (
             <>
               <span>{totalCount} 条</span>
-              <label title="在时间轴显示审核范围">
+              <label title="在时间轴显示审核与反馈范围">
                 <input
                   type="checkbox"
                   checked={props.timelineVisible}
@@ -203,8 +220,8 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
               <button
                 type="button"
                 className="icon-button"
-                title="刷新审核记录"
-                aria-label="刷新审核记录"
+                title="刷新范围记录"
+                aria-label="刷新范围记录"
                 disabled={props.loading || props.mutationPending}
                 onClick={() => void props.onRefresh()}
               ><RefreshCw size={15} /></button>
@@ -232,19 +249,24 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
           {props.error ? <div className="annotation-confirmation-error">{props.error}</div> : null}
           {notice ? <div className="annotation-confirmation-notice">{notice}</div> : null}
 
-          {props.canReview ? (
+          {availableCreateModes.length ? (
             <div className="annotation-confirmation-create">
-              <div className="annotation-confirmation-segments annotation-review-kind-segments" aria-label="审核动作">
-                <button
+              <div className="annotation-confirmation-segments annotation-review-kind-segments" aria-label="范围动作">
+                {props.canReview ? <button
                   type="button"
-                  className={`review-action confirmation${createMode === "confirmation" ? " active" : ""}`}
+                  className={`review-action confirmation${effectiveCreateMode === "confirmation" ? " active" : ""}`}
                   onClick={() => setCreateMode("confirmation")}
-                ><CheckCircle2 size={14} />确认</button>
-                <button
+                ><CheckCircle2 size={14} />确认</button> : null}
+                {props.canReview ? <button
                   type="button"
-                  className={`review-action comment${createMode === "comment" ? " active" : ""}`}
+                  className={`review-action comment${effectiveCreateMode === "comment" ? " active" : ""}`}
                   onClick={() => setCreateMode("comment")}
-                ><MessageSquareText size={14} />评论</button>
+                ><MessageSquareText size={14} />评论</button> : null}
+                {props.canWrite ? <button
+                  type="button"
+                  className={`review-action feedback${effectiveCreateMode === "feedback" ? " active" : ""}`}
+                  onClick={() => setCreateMode("feedback")}
+                ><MessageSquareWarning size={14} />反馈</button> : null}
               </div>
               <div className="annotation-confirmation-range">
                 <span>当前范围</span>
@@ -287,10 +309,10 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
                       />
                       {track.label}
                     </label>
-                  )) : <span className="annotation-confirmation-muted">当前项目没有可审核轨道。</span>}
+                  )) : <span className="annotation-confirmation-muted">当前项目没有可选择的持久轨道。</span>}
                 </div>
               ) : null}
-              {createMode === "confirmation" ? (
+              {effectiveCreateMode === "confirmation" ? (
                 <label>
                   审核备注（可选）
                   <textarea
@@ -302,42 +324,53 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
                 </label>
               ) : (
                 <label>
-                  范围评论
+                  {effectiveCreateMode === "feedback" ? "标注反馈" : "范围评论"}
                   <textarea
                     rows={4}
                     maxLength={4000}
                     required
-                    placeholder="写下对当前范围的意见"
-                    value={commentBody}
-                    onChange={(event) => setCommentBody(event.target.value)}
+                    placeholder={effectiveCreateMode === "feedback"
+                      ? "写下标注过程中需要审核者关注的问题"
+                      : "写下对当前范围的审核意见"}
+                    value={rangeBody}
+                    onChange={(event) => setRangeBody(event.target.value)}
                   />
+                  {effectiveCreateMode === "feedback" ? <small>反馈不会把该范围标记为已确认。</small> : null}
                 </label>
               )}
               {blockerMessage ? <p className="annotation-confirmation-blocker">{blockerMessage}</p> : null}
               {targetSelectionInvalid ? <p className="annotation-confirmation-blocker">请至少选择一个审核目标。</p> : null}
-              {bodyInvalid ? <p className="annotation-confirmation-blocker">范围评论正文不能为空。</p> : null}
+              {bodyInvalid ? <p className="annotation-confirmation-blocker">
+                {effectiveCreateMode === "feedback" ? "标注反馈正文不能为空。" : "范围评论正文不能为空。"}
+              </p> : null}
               <button
                 type="button"
                 className="annotation-confirmation-primary"
                 disabled={Boolean(props.createBlocker) || targetSelectionInvalid || bodyInvalid || props.mutationPending}
                 onClick={() => void createReviewFact()}
               >
-                {createMode === "confirmation" ? <CheckCircle2 size={15} /> : <MessageSquareText size={15} />}
-                {createMode === "confirmation" ? "确认当前范围" : "评论当前范围"}
+                {effectiveCreateMode === "confirmation"
+                  ? <CheckCircle2 size={15} />
+                  : effectiveCreateMode === "feedback"
+                    ? <MessageSquareWarning size={15} />
+                    : <MessageSquareText size={15} />}
+                {effectiveCreateMode === "confirmation"
+                  ? "确认当前范围"
+                  : effectiveCreateMode === "feedback" ? "反馈当前范围" : "评论当前范围"}
               </button>
             </div>
-          ) : <p className="annotation-confirmation-muted">当前账号可浏览审核记录，但没有审核权限。</p>}
+          ) : <p className="annotation-confirmation-muted">当前账号可浏览范围记录，但没有审核或编辑权限。</p>}
 
           <div className="annotation-confirmation-history-heading">
-            <span><History size={14} />审核历史</span>
+            <span><History size={14} />范围记录</span>
             <div className="annotation-confirmation-segments compact">
-              {(["all", "confirmation", "comment"] as const).map((kind) => (
+              {(["all", "confirmation", "comment", "feedback"] as const).map((kind) => (
                 <button
                   key={kind}
                   type="button"
                   className={historyKind === kind ? "active" : ""}
                   onClick={() => setHistoryKind(kind)}
-                >{kind === "all" ? "全部" : kind === "confirmation" ? "确认" : "评论"}</button>
+                >{kind === "all" ? "全部" : kind === "confirmation" ? "确认" : kind === "feedback" ? "反馈" : "评论"}</button>
               ))}
             </div>
           </div>
@@ -352,19 +385,19 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
 
           <div className="annotation-confirmation-list">
             {props.loading && !totalCount ? (
-              <p className="annotation-confirmation-muted">正在读取审核记录…</p>
+              <p className="annotation-confirmation-muted">正在读取范围记录…</p>
             ) : historyItems.length === 0 ? (
-              <p className="annotation-confirmation-muted">当前没有符合筛选的审核记录。</p>
+              <p className="annotation-confirmation-muted">当前没有符合筛选的范围记录。</p>
             ) : historyItems.map((entry) => entry.kind === "confirmation"
               ? renderConfirmationItem(entry.item)
-              : renderCommentItem(entry.item))}
+              : renderRangeRecordItem(entry.item))}
             {props.hasMoreComments ? (
               <button
                 type="button"
                 className="annotation-review-load-more"
                 disabled={props.loadingMoreComments}
                 onClick={() => void props.onLoadMoreComments()}
-              >{props.loadingMoreComments ? "正在加载…" : "加载更多评论"}</button>
+              >{props.loadingMoreComments ? "正在加载…" : "加载更多记录"}</button>
             ) : null}
           </div>
         </div>
@@ -382,7 +415,9 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
         <AlertDialog.Portal container={props.portalContainer}>
           <AlertDialog.Overlay className="resource-alert-backdrop" />
           <AlertDialog.Content className="annotation-confirmation-revoke-dialog">
-            <AlertDialog.Title>{withdrawTarget?.kind === "comment" ? "撤回范围评论" : "撤销确认记录"}</AlertDialog.Title>
+            <AlertDialog.Title>{withdrawTarget?.kind === "range-record"
+              ? withdrawTarget.item.record.kind === "editor_feedback" ? "撤回标注反馈" : "撤回范围评论"
+              : "撤销确认记录"}</AlertDialog.Title>
             <AlertDialog.Description>
               操作不会删除历史；该记录仍可在“显示已撤销与已撤回”中查看。
             </AlertDialog.Description>
@@ -444,18 +479,24 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
     );
   }
 
-  function renderCommentItem(record: AnnotationRangeCommentViewRecord) {
+  function renderRangeRecordItem(record: AnnotationRangeCommentViewRecord) {
+    const isFeedback = record.record.kind === "editor_feedback";
     return (
-      <article key={`comment:${record.record.id}`} className={["annotation-confirmation-item", "comment", record.lifecycle, record.freshness].join(" ")}>
+      <article
+        key={`range-record:${record.record.id}`}
+        className={["annotation-confirmation-item", isFeedback ? "feedback" : "comment", record.lifecycle, record.freshness].join(" ")}
+      >
         <button type="button" className="annotation-confirmation-item-main" onClick={() => props.onNavigate(record.record.scope)}>
           <span className="annotation-review-record-heading">
-            <span className="annotation-review-kind-badge comment">评论</span>
+            <span className={`annotation-review-kind-badge ${isFeedback ? "feedback" : "comment"}`}>
+              {isFeedback ? "反馈" : "评论"}
+            </span>
             <span className="annotation-confirmation-item-state">{formatState(record.lifecycle, record.freshness)}</span>
           </span>
           <strong>{formatTime(record.record.scope.startTime)} - {formatTime(record.record.scope.endTime)}</strong>
           <span>{record.targetLabel}</span>
           <small>修订 {record.record.commentedRevision} · {record.record.createdBy.displayName} · {formatDate(record.record.createdAt)}</small>
-          <small className="annotation-review-comment-body">{record.record.body}</small>
+          <small className="annotation-review-range-body">{record.record.body}</small>
           {record.lifecycle === "withdrawn" && record.record.withdrawnAt ? (
             <small>
               {record.record.withdrawnBy?.displayName ?? "未知账号"} 于 {formatDate(record.record.withdrawnAt)} 撤回
@@ -465,7 +506,7 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
           {record.invalidReason ? <small className="invalid">{record.invalidReason}</small> : null}
         </button>
         {props.canWithdrawComment(record) ? (
-          <button type="button" className="annotation-confirmation-revoke" onClick={() => setWithdrawTarget({ kind: "comment", item: record })}>
+          <button type="button" className="annotation-confirmation-revoke" onClick={() => setWithdrawTarget({ kind: "range-record", item: record })}>
             <Undo2 size={14} />撤回
           </button>
         ) : null}

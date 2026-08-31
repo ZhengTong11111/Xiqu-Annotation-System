@@ -7505,11 +7505,13 @@ select {
 
 .annotation-confirmation-segments.compact {
   display: inline-grid;
-  grid-template-columns: repeat(3, auto);
+  grid-template-columns: repeat(4, auto);
 }
 
 .annotation-confirmation-segments.annotation-review-kind-segments {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
 }
 
 .annotation-confirmation-segments button {
@@ -7536,6 +7538,12 @@ select {
 .annotation-review-kind-segments .review-action.comment.active {
   background: rgba(254, 242, 242, 0.98);
   color: #b42318;
+}
+
+/* 编辑反馈使用低饱和黄色，既醒目又不会与红色审核评论或绿色确认混淆。 */
+.annotation-review-kind-segments .review-action.feedback.active {
+  background: rgba(255, 251, 235, 0.98);
+  color: #9a6700;
 }
 
 .annotation-confirmation-options {
@@ -7625,6 +7633,15 @@ select {
   border-left-color: rgba(190, 70, 70, 0.54);
 }
 
+.annotation-confirmation-item.feedback {
+  border-left-color: rgba(217, 139, 6, 0.72);
+  background: rgba(255, 251, 235, 0.68);
+}
+
+.annotation-confirmation-item.feedback.stale {
+  border-left-color: rgba(180, 120, 24, 0.58);
+}
+
 .annotation-confirmation-item.withdrawn {
   border-left-color: rgba(100, 116, 139, 0.54);
   opacity: 0.76;
@@ -7675,6 +7692,11 @@ select {
   background: rgba(239, 68, 68, 0.14);
 }
 
+.annotation-review-kind-badge.feedback {
+  color: #8a5a00;
+  background: rgba(245, 158, 11, 0.17);
+}
+
 .annotation-confirmation-item-main strong {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -7711,7 +7733,7 @@ select {
   background: rgba(148, 163, 184, 0.18);
 }
 
-.annotation-confirmation-item-main small.annotation-review-comment-body {
+.annotation-confirmation-item-main small.annotation-review-range-body {
   overflow: visible;
   color: #34455d;
   line-height: 1.45;
@@ -8613,6 +8635,20 @@ select {
   border-color: rgba(185, 28, 28, 0.46);
   background: rgba(248, 113, 113, 0.12);
   color: #8f3a3a;
+}
+
+/* 反馈范围在只读栏中保持黄色；旧修订只通过虚线与透明度表达，不改变事实类型。 */
+.timeline-confirmation-chip.feedback {
+  border-color: rgba(217, 119, 6, 0.62);
+  background: rgba(251, 191, 36, 0.22);
+  color: #865400;
+}
+
+.timeline-confirmation-chip.feedback.stale {
+  border-color: rgba(180, 120, 24, 0.52);
+  border-style: dashed;
+  background: rgba(245, 190, 73, 0.14);
+  color: #7a5417;
 }
 
 .timeline-confirmation-chip:hover,

@@ -3,6 +3,7 @@ import {
   getAnnotationConfirmationLifecycle,
   getAnnotationRangeCommentFreshness,
   getAnnotationRangeCommentLifecycle,
+  canWithdrawAnnotationRangeComment,
 } from "@xiqu/document-model";
 import type {
   AnnotationConfirmationDomain,
@@ -53,7 +54,7 @@ export type AnnotationRangeCommentViewRecord = {
 
 export type AnnotationReviewTimelineItem = {
   id: string;
-  kind: "confirmation" | "comment";
+  kind: "confirmation" | "comment" | "feedback";
   startTime: number;
   endTime: number;
   label: string;
@@ -63,8 +64,8 @@ export type AnnotationReviewTimelineItem = {
 };
 
 // 创建阻断原因保持为确定联合，便于面板提供对应的可操作提示。
-export type AnnotationConfirmationCreateBlocker =
-  | "review_required"
+export type AnnotationReviewCreateBlocker =
+  | "permission_required"
   | "range_required"
   | "unsaved_changes"
   | "revision_mismatch"
@@ -152,7 +153,7 @@ export function buildAnnotationRangeCommentViewRecords(
   });
 }
 
-// 两类审核范围共用层分配，确保同一时间的确认和评论不会在只读栏中互相覆盖。
+// 三类范围事实共用层分配，确保同一时间的确认、评论和反馈不会在只读栏中互相覆盖。
 export function layoutAnnotationReviewTimelineItems(input: {
   confirmations: AnnotationConfirmationViewRecord[];
   comments: AnnotationRangeCommentViewRecord[];
@@ -173,10 +174,10 @@ export function layoutAnnotationReviewTimelineItems(input: {
       .filter((item) => item.lifecycle === "active")
       .map((item) => ({
         id: item.record.id,
-        kind: "comment" as const,
+        kind: item.record.kind === "editor_feedback" ? "feedback" as const : "comment" as const,
         startTime: item.record.scope.startTime,
         endTime: item.record.scope.endTime,
-        label: `评论 · ${item.targetLabel}`,
+        label: `${item.record.kind === "editor_feedback" ? "反馈" : "评论"} · ${item.targetLabel}`,
         lifecycle: item.lifecycle,
         freshness: item.freshness,
       })),
@@ -192,15 +193,15 @@ export function layoutAnnotationReviewTimelineItems(input: {
 }
 
 // 创建禁用原因按最需要用户处理的顺序返回，面板无需复制一组互相冲突的判断。
-export function getAnnotationConfirmationCreateBlocker(input: {
-  canReview: boolean;
+export function getAnnotationReviewCreateBlocker(input: {
+  canCreate: boolean;
   hasRange: boolean;
   hasUnsavedChanges: boolean;
   editorRevision: number;
   serverRevision: number | null;
   loading: boolean;
-}): AnnotationConfirmationCreateBlocker | null {
-  if (!input.canReview) return "review_required";
+}): AnnotationReviewCreateBlocker | null {
+  if (!input.canCreate) return "permission_required";
   if (input.loading) return "loading";
   if (!input.hasRange) return "range_required";
   if (input.hasUnsavedChanges) return "unsaved_changes";
@@ -231,25 +232,32 @@ export function canShowAnnotationConfirmationRevoke(input: {
 export function canShowAnnotationRangeCommentWithdraw(input: {
   record: AnnotationRangeCommentViewRecord;
   canReview: boolean;
+  canWrite: boolean;
   currentUserId: string;
   currentUserRoles: PlatformRole[];
   hasOwnerAuthority: boolean;
 }): boolean {
-  if (!input.canReview || input.record.lifecycle === "withdrawn") return false;
+  if (input.record.lifecycle === "withdrawn") return false;
   const isAdmin = input.currentUserRoles.some(
     (role) => role === "admin" || role === "super_admin",
   );
-  return input.record.record.createdBy.id === input.currentUserId || input.hasOwnerAuthority || isAdmin;
+  return canWithdrawAnnotationRangeComment({
+    actorUserId: input.currentUserId,
+    canRead: true,
+    canReview: input.canReview,
+    canWrite: input.canWrite,
+    isAdminOrOwner: input.hasOwnerAuthority || isAdmin,
+  }, input.record.record.kind, input.record.record.createdBy.id).allowed;
 }
 
 // 创建禁用提示保持具体可操作，不把服务端权限或 revision 错误简化成泛化失败。
-export function getAnnotationConfirmationBlockerMessage(
-  blocker: AnnotationConfirmationCreateBlocker | null,
+export function getAnnotationReviewBlockerMessage(
+  blocker: AnnotationReviewCreateBlocker | null,
 ): string | null {
-  if (blocker === "review_required") return "当前账号没有此文件的审核权限。";
-  if (blocker === "loading") return "正在读取服务器确认记录。";
-  if (blocker === "range_required") return "请先在时间轴循环栏拖出需要确认的时间范围。";
-  if (blocker === "unsaved_changes") return "请先保存当前标注，再确认服务器上的最新修订。";
-  if (blocker === "revision_mismatch") return "服务器修订已变化，请刷新或重新打开文件后再确认。";
+  if (blocker === "permission_required") return "当前账号没有此文件的审核或编辑权限。";
+  if (blocker === "loading") return "正在读取服务器范围记录。";
+  if (blocker === "range_required") return "请先在时间轴循环栏拖出需要处理的时间范围。";
+  if (blocker === "unsaved_changes") return "请先保存当前标注，再基于服务器最新修订提交范围记录。";
+  if (blocker === "revision_mismatch") return "服务器修订已变化，请刷新或重新打开文件后再提交。";
   return null;
 }

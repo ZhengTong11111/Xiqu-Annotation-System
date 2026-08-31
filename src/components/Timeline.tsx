@@ -182,7 +182,7 @@ type TimelineProps = {
 // 确认栏只消费时间轴渲染字段，避免通用 Timeline 依赖平台 API 或治理权限模型。
 export type TimelineReviewRange = {
   id: string;
-  kind: "confirmation" | "comment";
+  kind: "confirmation" | "comment" | "feedback";
   startTime: number;
   endTime: number;
   label: string;
@@ -2723,7 +2723,7 @@ export function Timeline({
               className="timeline-confirmation-lane"
               style={{ height: confirmationLaneHeight }}
             >
-              <span className="timeline-confirmation-lane-label">审核范围</span>
+              <span className="timeline-confirmation-lane-label">审核与反馈</span>
               {reviewRanges.map((range) => (
                 <button
                   key={range.id}

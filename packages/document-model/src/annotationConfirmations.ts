@@ -24,6 +24,7 @@ export type AnnotationConfirmationIssueCode =
   | "note_too_long"
   | "body_required"
   | "body_too_long"
+  | "invalid_kind"
   | "invalid_revocation"
   | "revision_regressed";
 

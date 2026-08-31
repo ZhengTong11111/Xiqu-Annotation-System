@@ -9728,3 +9728,43 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 应用内浏览器运行环境没有可用浏览器实例，因此本轮未完成截图级布局验收。仍需人工在“所有项目”根视图多选真实
   JSON，确认管理员入口、唯一两阶段匹配、跳过原因、部分失败继续和完成后的根视图刷新；本轮未连接或部署
   生产服务器。
+
+## 2026-08-31：编辑者范围反馈与审核权限分流
+
+### 业务合同与兼容设计
+
+- “标注确认”和“审核评论”继续要求资源有效 `read + review`；新增“反馈”供具备 `read + write` 的标注者使用。
+  同时具备编辑和审核权限的账号可使用三种动作，只有编辑权限的账号只获得反馈创建能力，只有审核权限的账号不能
+  借审核能力创建编辑者反馈。有 `read` 的账号仍可查看三类范围事实。
+- 反馈与审核评论都是带必填正文的非确认事实，复用同一半开时间范围、研究领域/真实持久轨道作用域、revision
+  新鲜度、分页和追加式撤回历史。反馈不会修改 `ProjectData`、annotation revision、operation、草稿、undo/redo、
+  文件“已审核”状态或确认记录。
+- 为避免复制数据库表、分页游标、HTTP 请求状态和实时失效通道，现有 `AnnotationRangeComment` 增加严格 kind：
+  `review_comment | editor_feedback`。追加式 Prisma migration 为历史记录统一写入 `review_comment`，旧评论正文、
+  生命周期和权限语义不变；本轮不修改项目 JSON 文件版本。
+
+### 服务端权限、审计与前端表现
+
+- document-model 增加 kind 校验及创建/撤回权限决策。API 在资源树共享锁和资源/annotation 行锁内重读有效权限：
+  评论核对 `review`，反馈核对 `write`；撤回还要求创建者、资源 owner 或 admin/super_admin，撤权后的旧页面不能
+  继续提交。两类记录分别写入独立审计动作，正文、完整作用域和敏感 payload 均不进入审计、日志、WebSocket 或
+  PostgreSQL NOTIFY。
+- 右侧区域改为“标注审核与反馈”，根据当前有效权限只展示可用动作；权限变化使当前动作不可用时会回落到首个合法
+  动作。反馈复用正文和作用域表单，并明确提示“不会把该范围标记为已确认”。历史筛选、记录卡片和时间轴只读范围栏
+  均支持反馈，使用低饱和黄色与确认、审核评论区分；过期和撤回仍沿用现有虚线/透明度语义。
+- 客户端继续由一个 `useAnnotationReviews` 实例负责列表、分页和 mutation。历史 `range-comments` 路由和方法名作为
+  兼容边界同时承载两种严格类型，不新增并行缓存、轮询或 `annotation.review.changed` 失效通道。
+
+### 测试、自审与阶段状态
+
+- document-model 范围记录测试覆盖严格 kind、评论/反馈权限互斥和撤回规则；前端纯视图测试覆盖黄色反馈映射、时间轴
+  记录和 write-only 撤回 affordance；API 集成测试覆盖 write-only 可反馈但不能确认/评论、review-only 不能反馈、
+  撤权后拒绝、管理员撤回、幂等撤回以及反馈审计不泄露正文。
+- 本机 PostgreSQL 已成功应用 additive migration。专项测试结果：`test:annotation-confirmations` 14/14、
+  `test:annotation-confirmation-view` 7/7、`test:audit-log` 7/7、完整 `test:api` 270/270；Web 与 API TypeScript
+  no-emit 检查均通过。
+- **已完成**：共享合同、数据库迁移、事务权限、独立审计、三模式面板、黄色时间轴显示、旧数据兼容、规范与 roadmap
+  更新；完整 `npm run build`、`git diff --check` 和旧 helper/样式名僵尸引用扫描均通过。构建仅保留既有 Vite 主
+  chunk 超过 500 kB 提示。本轮不部署生产服务器。
+- **待人工验收**：分别以 write-only、review-only 和双权限账号打开同一平台文件，核对动作可见性、黄色反馈创建/
+  撤回、刷新后历史与时间轴跳转。浏览器仅验证本机登录页可访问，未代用户输入凭据进入受保护文件。

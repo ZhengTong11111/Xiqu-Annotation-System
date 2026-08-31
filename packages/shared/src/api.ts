@@ -3,6 +3,7 @@ import type {
   AnnotationConfirmationList,
   AnnotationConfirmationRecord,
   AnnotationWorkflowStatus,
+  AnnotationRangeCommentDraft,
   AnnotationRangeCommentPage,
   AnnotationRangeCommentRecord,
   AnnotationReviewScope,
@@ -361,6 +362,7 @@ export type RevokeAnnotationConfirmationRequest = {
 export type CreateAnnotationRangeCommentRequest = {
   commentedRevision: number;
   scope: AnnotationReviewScope;
+  kind: AnnotationRangeCommentDraft["kind"];
   body: string;
 };
 

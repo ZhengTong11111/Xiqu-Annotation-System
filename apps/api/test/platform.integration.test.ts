@@ -3362,10 +3362,25 @@ test("平台资源 API 集成测试", async (suite) => {
         payload: {
           commentedRevision: 1,
           scope: { startTime: 0, endTime: 10, targets: { mode: "all" } },
+          kind: "review_comment",
           body: "没有审核权限时不能评论",
         },
       });
       assert.equal(deniedCommentWithoutReview.statusCode, 403);
+      const editorFeedbackCreated = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments`,
+        payload: {
+          commentedRevision: 1,
+          scope: { startTime: 1, endTime: 4, targets: { mode: "all" } },
+          kind: "editor_feedback",
+          body: "  标注者反馈：此处唱词边界需要审核者关注。  ",
+        },
+      });
+      assert.equal(editorFeedbackCreated.statusCode, 200, editorFeedbackCreated.body);
+      const editorFeedback = dataOf(editorFeedbackCreated.json());
+      assert.equal(editorFeedback.kind, "editor_feedback");
+      assert.equal(editorFeedback.body, "标注者反馈：此处唱词边界需要审核者关注。");
       const readableEmptyList = await jsonRequest(app, studentToken, {
         method: "GET",
         url: `/api/annotation-files/${confirmationFileId}/confirmations`,
@@ -3384,6 +3399,17 @@ test("平台资源 API 集成测试", async (suite) => {
         });
         assert.equal(grant.statusCode, 200, grant.body);
       }
+      const deniedFeedbackWithoutWrite = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments`,
+        payload: {
+          commentedRevision: 1,
+          scope: { startTime: 1, endTime: 4, targets: { mode: "all" } },
+          kind: "editor_feedback",
+          body: "只有审核权限时不能创建编辑反馈",
+        },
+      });
+      assert.equal(deniedFeedbackWithoutWrite.statusCode, 403);
 
       // 路由坏输入、过期 revision 和派生轨道必须在落库前失败且不产生审计。
       const invalidBodies = [
@@ -3498,6 +3524,7 @@ test("平台资源 API 集成测试", async (suite) => {
         payload: {
           commentedRevision: 1,
           scope: { startTime: 5, endTime: 8, targets: { mode: "all" } },
+          kind: "review_comment",
           body: "   ",
         },
       });
@@ -3512,6 +3539,7 @@ test("平台资源 API 集成测试", async (suite) => {
             endTime: 8,
             targets: { mode: "tracks", trackIds: ["custom-action-1"] },
           },
+          kind: "review_comment",
           body: "  此处动作与唱词衔接需要复核。  ",
         },
       });
@@ -3541,12 +3569,37 @@ test("平台资源 API 集成测试", async (suite) => {
         where: { action: "annotation_range_comment_withdraw", resourceId: confirmationFileId },
       }), 1);
 
+      // 反馈创建后即使作者失去 write 也不能撤回；管理员可治理并形成独立反馈审计。
+      const deniedFeedbackWithdrawWithoutWrite = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments/${String(editorFeedback.id)}/withdraw`,
+        payload: {},
+      });
+      assert.equal(deniedFeedbackWithdrawWithoutWrite.statusCode, 403);
+      const feedbackWithdrawnByAdmin = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments/${String(editorFeedback.id)}/withdraw`,
+        payload: { reason: "已由审核流程接收" },
+      });
+      assert.equal(feedbackWithdrawnByAdmin.statusCode, 200, feedbackWithdrawnByAdmin.body);
+      assert.equal(dataOf(feedbackWithdrawnByAdmin.json()).kind, "editor_feedback");
+      const repeatedFeedbackWithdraw = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments/${String(editorFeedback.id)}/withdraw`,
+        payload: { reason: "不能覆盖首次原因" },
+      });
+      assert.equal(repeatedFeedbackWithdraw.statusCode, 200);
+      assert.equal(await prisma.auditLog.count({
+        where: { action: "annotation_range_feedback_withdraw", resourceId: confirmationFileId },
+      }), 1);
+
       const activeComment = await jsonRequest(app, studentToken, {
         method: "POST",
         url: `/api/annotation-files/${confirmationFileId}/range-comments`,
         payload: {
           commentedRevision: 1,
           scope: { startTime: 8, endTime: 12, targets: { mode: "all" } },
+          kind: "review_comment",
           body: "保留为历史意见",
         },
       });
@@ -3660,6 +3713,12 @@ test("平台资源 API 集成测试", async (suite) => {
         }));
       assert.ok(confirmationAudits
         .filter(({ action }) => action.startsWith("annotation_range_comment"))
+        .every(({ detail }) => {
+          const value = detail as JsonObject;
+          return !("body" in value) && !("trackIds" in value) && !("payload" in value);
+        }));
+      assert.ok(confirmationAudits
+        .filter(({ action }) => action.startsWith("annotation_range_feedback"))
         .every(({ detail }) => {
           const value = detail as JsonObject;
           return !("body" in value) && !("trackIds" in value) && !("payload" in value);

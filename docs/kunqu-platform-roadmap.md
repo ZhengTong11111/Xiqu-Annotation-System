@@ -359,6 +359,11 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
   生命周期筛选、评论分页和停靠/隐藏/独立窗口；时间轴“审核范围”栏以绿色确认、红色评论统一分层。
   确认和评论写入后发布不含正文/作用域的 `annotation.review.changed` 有损提示，跨 API 实例通过独立
   PostgreSQL channel 转发，客户端仍以权限受控 HTTP 列表为权威。
+- R2.5e 已完成：同一范围记录合同增加 `editor_feedback`，供具备 `read + write` 的标注者提交反馈；原审核
+  评论保持 `read + review`，两者在事务内按严格 kind 重新核对权限，不能互相借权。历史评论通过追加式
+  migration 明确归为 `review_comment`，继续共用分页、范围校验、撤回历史和实时失效通道，不复制第二套
+  请求状态。反馈以黄色显示，正文必填但不形成确认，不改变文件已审核状态、`ProjectData`、revision、
+  operation、草稿或 undo/history；确认、审核评论与标注反馈仍由同一右侧面板和只读时间轴栏呈现。
 - R2.6 已完成：项目 JSON 升级到 v6，句级字幕新增 nullable `deliveryMode`（念白/唱）与 `roleType`，
   项目新增有序唯一角色行当列表。句子只有两项都有效时显示蓝色完成态，否则在句级列表和 Timeline
   统一显示红色未完成态；Inspector、右侧句级列表与 Timeline 句块右键菜单可快速选择，编辑菜单、

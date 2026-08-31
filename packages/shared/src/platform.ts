@@ -359,14 +359,21 @@ export type AnnotationConfirmationList = {
   confirmations: AnnotationConfirmationRecord[];
 };
 
+export const ANNOTATION_RANGE_COMMENT_KINDS = [
+  "review_comment",
+  "editor_feedback",
+] as const;
+export type AnnotationRangeCommentKind = typeof ANNOTATION_RANGE_COMMENT_KINDS[number];
+
 export type AnnotationRangeCommentDraft = {
   annotationFileId: string;
   commentedRevision: number;
   scope: AnnotationReviewScope;
+  kind: AnnotationRangeCommentKind;
   body: string;
 };
 
-// 范围评论采用追加式事实；撤回只补充审计字段，不原地修改正文或删除记录。
+// 审核评论与编辑反馈都是追加式范围事实；撤回只补充审计字段，不原地修改正文或删除记录。
 export type AnnotationRangeCommentRecord = AnnotationRangeCommentDraft & {
   id: string;
   createdBy: UserReference;
@@ -536,6 +543,8 @@ export const AUDIT_ACTIONS = [
   "annotation_confirmation_revoke",
   "annotation_range_comment_create",
   "annotation_range_comment_withdraw",
+  "annotation_range_feedback_create",
+  "annotation_range_feedback_withdraw",
   "resource_permission_upsert",
   "resource_permission_remove",
   "resource_inheritance_update",

@@ -33,6 +33,8 @@ export const AUDIT_ACTION_LABELS: Record<AuditActionName, string> = {
   annotation_confirmation_revoke: "撤销标注确认",
   annotation_range_comment_create: "创建范围评论",
   annotation_range_comment_withdraw: "撤回范围评论",
+  annotation_range_feedback_create: "创建标注反馈",
+  annotation_range_feedback_withdraw: "撤回标注反馈",
   resource_permission_upsert: "更新资源权限",
   resource_permission_remove: "移除资源权限",
   resource_inheritance_update: "更新权限继承",

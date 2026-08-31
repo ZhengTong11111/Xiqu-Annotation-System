@@ -345,14 +345,14 @@ export const PLATFORM_STATIC_COMMAND_DEFINITIONS: StaticCommandDefinition<Platfo
     id: "view.annotation-confirmation-docked",
     label: "右侧标注审核",
     path: ["视图", "右侧标注审核"],
-    keywords: ["confirmation", "comment", "标注审核", "确认", "评论", "右侧", "侧栏", "面板"],
+    keywords: ["confirmation", "comment", "feedback", "标注审核", "确认", "评论", "反馈", "右侧", "侧栏", "面板"],
     target: { kind: "static" },
   },
   {
     id: "view.annotation-confirmation-detached",
     label: "标注审核独立窗口",
     path: ["视图", "标注审核独立窗口"],
-    keywords: ["confirmation", "comment", "detach", "标注审核", "独立窗口", "浮动"],
+    keywords: ["confirmation", "comment", "feedback", "detach", "标注审核", "反馈", "独立窗口", "浮动"],
     target: { kind: "static" },
   },
   {

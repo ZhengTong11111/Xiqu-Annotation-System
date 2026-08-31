@@ -1,9 +1,11 @@
 import type {
   AnnotationRangeCommentDraft,
   AnnotationRangeCommentFreshness,
+  AnnotationRangeCommentKind,
   AnnotationRangeCommentLifecycle,
   AnnotationRangeCommentRecord,
 } from "@xiqu/shared";
+import { ANNOTATION_RANGE_COMMENT_KINDS } from "@xiqu/shared";
 import {
   normalizeAnnotationReviewScope,
   type AnnotationConfirmationIssue,
@@ -11,8 +13,22 @@ import {
 } from "./annotationConfirmations.js";
 
 export const MAX_ANNOTATION_RANGE_COMMENT_BODY_LENGTH = 4_000;
+const RANGE_COMMENT_KIND_SET = new Set<string>(ANNOTATION_RANGE_COMMENT_KINDS);
 
-// 评论草稿只补充正文规则；范围、revision 和文件标识继续复用审核事实的统一合同。
+export type AnnotationRangeCommentPermissionContext = {
+  actorUserId: string;
+  canRead: boolean;
+  canReview: boolean;
+  canWrite: boolean;
+  isAdminOrOwner: boolean;
+};
+
+export type AnnotationRangeCommentPermissionDecision = {
+  allowed: boolean;
+  reason: "allowed" | "read_required" | "review_required" | "write_required" | "creator_or_manager_required";
+};
+
+// 带正文的范围记录只补充 kind 与正文规则；范围、revision 和文件标识继续复用审核事实的统一合同。
 export function validateAnnotationRangeCommentDraft(
   draft: AnnotationRangeCommentDraft,
 ): AnnotationConfirmationValidationResult<AnnotationRangeCommentDraft> {
@@ -32,6 +48,14 @@ export function validateAnnotationRangeCommentDraft(
       message: "评论绑定的修订必须是正整数。",
     });
   }
+  const kind = RANGE_COMMENT_KIND_SET.has(draft.kind) ? draft.kind : null;
+  if (!kind) {
+    issues.push({
+      code: "invalid_kind",
+      field: "kind",
+      message: "范围事实类型必须是审核评论或编辑反馈。",
+    });
+  }
   const scope = normalizeAnnotationReviewScope(draft.scope);
   if (!scope.ok) issues.push(...scope.issues);
   const body = draft.body.trim();
@@ -48,7 +72,7 @@ export function validateAnnotationRangeCommentDraft(
       message: `范围评论不能超过 ${MAX_ANNOTATION_RANGE_COMMENT_BODY_LENGTH} 个字符。`,
     });
   }
-  if (issues.length || !annotationFileId || !scope.ok || !body) {
+  if (issues.length || !annotationFileId || !scope.ok || !kind || !body) {
     return { ok: false, issues };
   }
   return {
@@ -57,12 +81,42 @@ export function validateAnnotationRangeCommentDraft(
       annotationFileId,
       commentedRevision: draft.commentedRevision,
       scope: scope.value,
+      kind,
       body,
     },
   };
 }
 
-// 撤回主体和时间必须成组出现，避免半截历史被误认为有效评论。
+// 审核评论和编辑反馈共用范围事实合同，但权限来源必须保持互斥且可审计。
+export function canCreateAnnotationRangeComment(
+  context: AnnotationRangeCommentPermissionContext,
+  kind: AnnotationRangeCommentKind,
+): AnnotationRangeCommentPermissionDecision {
+  if (!context.canRead) return { allowed: false, reason: "read_required" };
+  if (kind === "review_comment" && !context.canReview) {
+    return { allowed: false, reason: "review_required" };
+  }
+  if (kind === "editor_feedback" && !context.canWrite) {
+    return { allowed: false, reason: "write_required" };
+  }
+  return { allowed: true, reason: "allowed" };
+}
+
+// 撤回沿用作者边界：有对应权限的创建者可撤回，owner/admin 可治理任意记录。
+export function canWithdrawAnnotationRangeComment(
+  context: AnnotationRangeCommentPermissionContext,
+  kind: AnnotationRangeCommentKind,
+  creatorUserId: string,
+): AnnotationRangeCommentPermissionDecision {
+  const createDecision = canCreateAnnotationRangeComment(context, kind);
+  if (!createDecision.allowed) return createDecision;
+  if (!context.isAdminOrOwner && context.actorUserId !== creatorUserId) {
+    return { allowed: false, reason: "creator_or_manager_required" };
+  }
+  return { allowed: true, reason: "allowed" };
+}
+
+// 撤回主体和时间必须成组出现，避免半截历史被误认为有效范围记录。
 export function getAnnotationRangeCommentLifecycle(
   record: AnnotationRangeCommentRecord,
 ): AnnotationConfirmationValidationResult<AnnotationRangeCommentLifecycle> {
@@ -87,7 +141,7 @@ export function getAnnotationRangeCommentLifecycle(
   return { ok: true, value: hasWithdrawnAt ? "withdrawn" : "active" };
 }
 
-// 评论保存后仍是历史意见；freshness 仅说明它基于当前还是旧修订。
+// 评论或反馈保存后仍是历史意见；freshness 仅说明它基于当前还是旧修订。
 export function getAnnotationRangeCommentFreshness(
   commentedRevision: number,
   currentRevision: number,
