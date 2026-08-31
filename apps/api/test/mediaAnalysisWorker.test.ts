@@ -539,17 +539,22 @@ test("claim 转移后旧 attempt 不能发布迟到资产或覆盖新状态", as
         data: { status: "queued" },
       }),
     ]);
+    // 同名 worker 重新 claim 也必须生成新 attempt；旧执行流随后只能观察到 fence 失效。
+    const replacement = await service.claimNext("worker-old-attempt");
+    assert.ok(replacement);
+    assert.equal(replacement.attemptCount, 2);
     blockedInput.end(buildWav(8_000, 0.1, 220));
     assert.equal(await processing, true);
     assert.equal(await prisma.mediaAnalysisAsset.count({ where: { runId: fixture.runId } }), 0);
-    assert.equal(
-      (await prisma.processingJob.findUniqueOrThrow({ where: { id: fixture.jobId } })).status,
-      "queued",
-    );
-    assert.equal(
-      (await prisma.mediaAnalysisRun.findUniqueOrThrow({ where: { id: fixture.runId } })).status,
-      "queued",
-    );
+    const current = await prisma.processingJob.findUniqueOrThrow({
+      where: { id: fixture.jobId },
+    });
+    assert.equal(current.status, "running");
+    assert.equal(current.claimedBy, "worker-old-attempt");
+    assert.equal(current.attemptCount, 2);
+    assert.equal((await prisma.mediaAnalysisRun.findUniqueOrThrow({
+      where: { id: fixture.runId },
+    })).status, "running");
     assert.deepEqual(
       (await storage.listStoredObjects()).map(({ storageKey }) => storageKey),
       [fixture.sourceStorageKey],

@@ -327,6 +327,15 @@ export class PlatformClient {
     });
   }
 
+  createBatchImportedAnnotationFile<TPayload>(
+    request: CreateAnnotationFileRequest<TPayload>,
+  ) {
+    return this.request<AnnotationFile<TPayload>>(
+      "/annotation-files/batch-import-item",
+      { method: "POST", body: request },
+    );
+  }
+
   createAnnotationRecoveryBackup<TPayload>(
     resourceId: string,
     request: CreateAnnotationRecoveryBackupRequest<TPayload>,

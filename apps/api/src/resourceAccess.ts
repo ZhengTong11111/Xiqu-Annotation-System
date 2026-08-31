@@ -30,7 +30,8 @@ export class ResourceAccessService {
     resourceId: string,
     database: PrismaClient | Prisma.TransactionClient = this.prisma,
   ) {
-    if (this.hasFullResourceAccess(user)) return true;
+    const effectiveUser = await this.resolveTransactionActor(user, database);
+    if (this.hasFullResourceAccess(effectiveUser)) return true;
     let currentId: string | null = resourceId;
     while (currentId) {
       const resource: { ownerUserId: string; parentId: string | null } | null =
@@ -39,7 +40,7 @@ export class ResourceAccessService {
           select: { ownerUserId: true, parentId: true },
         });
       if (!resource) return false;
-      if (resource.ownerUserId === user.id) return true;
+      if (resource.ownerUserId === effectiveUser.id) return true;
       currentId = resource.parentId;
     }
     return false;
@@ -66,6 +67,8 @@ export class ResourceAccessService {
   ): Promise<Map<string, EffectiveResourcePermission>> {
     const uniqueIds = [...new Set(resourceIds)];
     if (!uniqueIds.length) return new Map();
+    // 事务权限复核不能信任请求开始时的角色快照；资源树锁后必须读取当前活动状态与角色。
+    const effectiveUser = await this.resolveTransactionActor(user, database);
     const chains = await database.$queryRaw<Array<{
       targetId: string;
       resourceId: string;
@@ -114,7 +117,7 @@ export class ResourceAccessService {
     const permissionRows = await database.resourcePermission.findMany({
       where: {
         resourceId: { in: chainResourceIds },
-        userId: user.id,
+        userId: effectiveUser.id,
         OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
       },
       select: {
@@ -127,7 +130,7 @@ export class ResourceAccessService {
     const workflowRows = await database.projectWorkflowMember.findMany({
       where: {
         projectResourceId: { in: chainResourceIds },
-        userId: user.id,
+        userId: effectiveUser.id,
       },
       select: {
         projectResourceId: true,
@@ -165,16 +168,16 @@ export class ResourceAccessService {
       const targetChain = chainByTarget.get(targetId);
       const target = resourceById.get(targetId);
       if (!targetChain || !target) continue;
-      if (this.hasFullResourceAccess(user)) {
+      if (this.hasFullResourceAccess(effectiveUser)) {
         result.set(targetId, this.fullPermission("admin", false));
         continue;
       }
-      if (target.ownerUserId === user.id) {
+      if (target.ownerUserId === effectiveUser.id) {
         result.set(targetId, this.fullPermission("owner", true));
         continue;
       }
 
-      const roleCapabilities = getAutomaticResourceCapabilities(user.roles);
+      const roleCapabilities = getAutomaticResourceCapabilities(effectiveUser.roles);
       const capabilities = new Set<ResourceCapability>(roleCapabilities);
       const direct = target.permissions[0] ?? null;
       direct?.capabilities.forEach((capability) => capabilities.add(capability as ResourceCapability));
@@ -198,7 +201,7 @@ export class ResourceAccessService {
         if (depth === 0) continue;
         const ancestor = resourceById.get(resourceId);
         if (!ancestor) continue;
-        const inheritedCapabilities = ancestor.ownerUserId === user.id
+        const inheritedCapabilities = ancestor.ownerUserId === effectiveUser.id
           ? ALL_CAPABILITIES
           : ancestor.permissions
               .filter(({ inheritToChildren }) => inheritToChildren)
@@ -246,6 +249,18 @@ export class ResourceAccessService {
     return permission;
   }
 
+  /** 在事务边界内使用当前角色复核平台级资源管理能力。 */
+  async assertFullResourceAccess(
+    user: ApiUser,
+    database: PrismaClient | Prisma.TransactionClient = this.prisma,
+  ) {
+    const effectiveUser = await this.resolveTransactionActor(user, database);
+    if (!this.hasFullResourceAccess(effectiveUser)) {
+      throw forbidden("只有管理员可以执行该操作。");
+    }
+    return effectiveUser;
+  }
+
   toDatabaseCapabilities(capabilities: ResourceCapability[]) {
     return capabilities as DbResourceCapability[];
   }
@@ -260,6 +275,30 @@ export class ResourceAccessService {
       inheritedFrom: [],
       isOwner,
       canManagePermissions: true,
+    };
+  }
+
+  /** 普通读取沿用认证快照；事务写入则重读当前账号状态与角色。 */
+  private async resolveTransactionActor(
+    user: ApiUser,
+    database: PrismaClient | Prisma.TransactionClient,
+  ): Promise<ApiUser> {
+    if (database === this.prisma) return user;
+    // 交互事务保持单连接顺序查询；账号停用或角色撤销一旦先提交，排队写事务必须立即失去权限。
+    const account = await database.user.findUnique({
+      where: { id: user.id },
+      select: { isActive: true },
+    });
+    const roleRows = account?.isActive
+      ? await database.userRole.findMany({
+          where: { userId: user.id },
+          select: { role: true },
+        })
+      : [];
+    if (!account?.isActive) throw forbidden("当前账号已停用。");
+    return {
+      ...user,
+      roles: roleRows.map(({ role }) => role as ApiUser["roles"][number]),
     };
   }
 }

@@ -551,6 +551,62 @@ test("平台资源 API 集成测试", async (suite) => {
       );
     });
 
+    await suite.test("批量标注导入项仅管理员可创建且不收紧普通单文件导入", async () => {
+      const target = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: null, type: "project", name: "901 批量导入权限" },
+      });
+      assert.equal(target.statusCode, 200, target.body);
+      const targetId = String(dataOf(target.json()).id);
+      const studentGrant = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${targetId}/permissions/user-student`,
+        payload: { capabilities: ["read", "create_child"], inheritToChildren: false },
+      });
+      assert.equal(studentGrant.statusCode, 200, studentGrant.body);
+
+      const deniedBatchItem = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: "/api/annotation-files/batch-import-item",
+        payload: {
+          parentId: targetId,
+          name: "901 学生批量.json",
+          payload: { marker: "student-batch" },
+          mediaResourceId: null,
+        },
+      });
+      assert.equal(deniedBatchItem.statusCode, 403, deniedBatchItem.body);
+
+      const ordinarySingleImport = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: targetId,
+          name: "901 学生单文件.json",
+          payload: { marker: "student-single" },
+          mediaResourceId: null,
+        },
+      });
+      assert.equal(ordinarySingleImport.statusCode, 200, ordinarySingleImport.body);
+
+      const adminBatchItem = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files/batch-import-item",
+        payload: {
+          parentId: targetId,
+          name: "901 管理员批量.json",
+          payload: { marker: "admin-batch" },
+          mediaResourceId: null,
+        },
+      });
+      assert.equal(adminBatchItem.statusCode, 200, adminBatchItem.body);
+      assert.equal(
+        (dataOf(adminBatchItem.json()).resource as JsonObject).parentId,
+        targetId,
+      );
+    });
+
     await suite.test("标注文件媒体关系可绑定、改绑、解绑并受资源权限约束", async () => {
       const firstUpload = await multipartUpload(
         app,
@@ -1392,6 +1448,264 @@ test("平台资源 API 集成测试", async (suite) => {
         payload: { capabilities: ["write"] },
       });
       assert.equal(overDelegation.statusCode, 403);
+    });
+
+    // ACL 撤销先提交时，已经通过路由预检查的内容写也必须在事务锁后失败。
+    await suite.test("资源写入在事务锁内重新检查已撤销的 ACL", async () => {
+      const project = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "ACL 竞态测试项目" },
+      });
+      const resourceId = String(dataOf(project.json()).id);
+      await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${resourceId}/permissions/user-student`,
+        payload: {
+          capabilities: ["read", "write"],
+          inheritToChildren: false,
+        },
+      });
+
+      const blocker = await pool.connect();
+      let lockHeld = false;
+      let pendingWrite: Promise<Awaited<ReturnType<typeof jsonRequest>>> | null = null;
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query(
+          "SELECT pg_advisory_xact_lock(hashtext('xiqu:resource-tree:mutation'))",
+        );
+        lockHeld = true;
+        // 路由层预检查先读取到 write；业务事务随后会等待资源树锁。
+        pendingWrite = jsonRequest(app, studentToken, {
+          method: "PATCH",
+          url: `/api/resources/${resourceId}`,
+          payload: { name: "撤权后不应写入" },
+        });
+        await waitForCondition(async () => {
+          const result = await pool.query<{ waiting: boolean }>(`
+            SELECT EXISTS (
+              SELECT 1
+              FROM pg_stat_activity
+              WHERE wait_event = 'advisory'
+                AND query LIKE '%xiqu:resource-tree:mutation%'
+            ) AS waiting
+          `);
+          return result.rows[0]?.waiting === true;
+        }, "资源写事务没有进入 advisory lock 等待状态");
+        await blocker.query(
+          "DELETE FROM resource_permissions WHERE resource_id = $1 AND user_id = $2",
+          [resourceId, "user-student"],
+        );
+        await blocker.query("COMMIT");
+        lockHeld = false;
+
+        const deniedWrite = await pendingWrite;
+        assert.equal(deniedWrite.statusCode, 403, deniedWrite.body);
+        assert.equal(
+          (await prisma.resourceEntry.findUniqueOrThrow({
+            where: { id: resourceId },
+          })).name,
+          "ACL 竞态测试项目",
+        );
+      } finally {
+        if (lockHeld) await blocker.query("ROLLBACK");
+        blocker.release();
+        await pendingWrite?.catch(() => undefined);
+      }
+    });
+
+    // 平台角色必须和 ACL 一样在事务中读取权威事实，不能让请求开始时的 admin 快照创建根资源。
+    await suite.test("角色撤销后排队的根资源写入失去管理员权限", async () => {
+      const resourceAdmin = await prisma.user.findUniqueOrThrow({
+        where: { accountName: "integration_admin" },
+      });
+      const resourceAdminToken = (
+        await login(app, "integration_admin", "adminRolePass123")
+      ).accessToken;
+      const blocker = await pool.connect();
+      let lockHeld = false;
+      let pendingCreate: Promise<Awaited<ReturnType<typeof jsonRequest>>> | null = null;
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query(
+          "SELECT pg_advisory_xact_lock(hashtext('xiqu:resource-tree:mutation'))",
+        );
+        lockHeld = true;
+        pendingCreate = jsonRequest(app, resourceAdminToken, {
+          method: "POST",
+          url: "/api/resources",
+          payload: { type: "project", name: "旧管理员角色不应创建" },
+        });
+        await waitForCondition(async () => {
+          const result = await pool.query<{ waiting: boolean }>(`
+            SELECT EXISTS (
+              SELECT 1 FROM pg_stat_activity
+              WHERE wait_event = 'advisory'
+                AND query LIKE '%xiqu:resource-tree:mutation%'
+            ) AS waiting
+          `);
+          return result.rows[0]?.waiting === true;
+        }, "旧管理员资源写没有进入 advisory lock 等待状态");
+        await blocker.query("DELETE FROM user_roles WHERE user_id = $1", [resourceAdmin.id]);
+        await blocker.query(
+          "INSERT INTO user_roles (id, user_id, role) VALUES ($1, $2, 'annotator')",
+          [randomUUID(), resourceAdmin.id],
+        );
+        await blocker.query("COMMIT");
+        lockHeld = false;
+
+        const deniedCreate = await pendingCreate;
+        assert.equal(deniedCreate.statusCode, 403, deniedCreate.body);
+        assert.equal(await prisma.resourceEntry.count({
+          where: { name: "旧管理员角色不应创建" },
+        }), 0);
+      } finally {
+        if (lockHeld) await blocker.query("ROLLBACK");
+        blocker.release();
+        await pendingCreate?.catch(() => undefined);
+        // 后续集成场景仍需要该资源管理员，测试结束时恢复它的固定种子角色。
+        await prisma.userRole.deleteMany({ where: { userId: resourceAdmin.id } });
+        await prisma.userRole.create({
+          data: { userId: resourceAdmin.id, role: "admin" },
+        });
+      }
+    });
+
+    // 职责组撤权既要等待在途内容写，也要让后到内容事务重新读取成员关系。
+    await suite.test("职责组撤权与内容写共享同一资源树互斥边界", async () => {
+      const project = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "职责组竞态测试项目" },
+      });
+      const resourceId = String(dataOf(project.json()).id);
+      // 同一授权入口复用于独占锁与事务内重检两个时序，减少测试前置差异。
+      const grant = () => jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/projects/${resourceId}/workflow-groups`,
+        payload: { annotationUserIds: ["user-student"], reviewUserIds: [] },
+      });
+      assert.equal((await grant()).statusCode, 200);
+
+      // 职责组 API 必须申请独占锁；已有内容共享锁释放前，撤权事务不能提交。
+      const sharedBlocker = await pool.connect();
+      let sharedLockHeld = false;
+      let pendingGroupRevoke: Promise<Awaited<ReturnType<typeof jsonRequest>>> | null = null;
+      try {
+        await sharedBlocker.query("BEGIN");
+        await sharedBlocker.query(
+          "SELECT pg_advisory_xact_lock_shared(hashtext('xiqu:resource-tree:mutation'))",
+        );
+        sharedLockHeld = true;
+        pendingGroupRevoke = jsonRequest(app, adminToken, {
+          method: "PUT",
+          url: `/api/projects/${resourceId}/workflow-groups`,
+          payload: { annotationUserIds: [], reviewUserIds: [] },
+        });
+        await waitForCondition(async () => {
+          const result = await pool.query<{ waiting: boolean }>(`
+            SELECT EXISTS (
+              SELECT 1
+              FROM pg_stat_activity
+              WHERE wait_event = 'advisory'
+                AND query LIKE '%xiqu:resource-tree:mutation%'
+            ) AS waiting
+          `);
+          return result.rows[0]?.waiting === true;
+        }, "职责组撤权没有等待内容共享锁");
+        await sharedBlocker.query("COMMIT");
+        sharedLockHeld = false;
+        const revoked = await pendingGroupRevoke;
+        assert.equal(revoked.statusCode, 200, revoked.body);
+      } finally {
+        if (sharedLockHeld) await sharedBlocker.query("ROLLBACK");
+        sharedBlocker.release();
+        await pendingGroupRevoke?.catch(() => undefined);
+      }
+
+      assert.equal((await grant()).statusCode, 200);
+      // 即使权限来源由外部治理事务在等待期间撤销，内容事务也必须在锁后读取最新职责组事实。
+      const exclusiveBlocker = await pool.connect();
+      let exclusiveLockHeld = false;
+      let pendingCreate: Promise<Awaited<ReturnType<typeof jsonRequest>>> | null = null;
+      try {
+        await exclusiveBlocker.query("BEGIN");
+        await exclusiveBlocker.query(
+          "SELECT pg_advisory_xact_lock(hashtext('xiqu:resource-tree:mutation'))",
+        );
+        exclusiveLockHeld = true;
+        pendingCreate = jsonRequest(app, studentToken, {
+          method: "POST",
+          url: "/api/resources",
+          payload: {
+            parentId: resourceId,
+            type: "folder",
+            name: "撤权后不应创建",
+          },
+        });
+        await waitForCondition(async () => {
+          const result = await pool.query<{ waiting: boolean }>(`
+            SELECT EXISTS (
+              SELECT 1
+              FROM pg_stat_activity
+              WHERE wait_event = 'advisory'
+                AND query LIKE '%xiqu:resource-tree:mutation%'
+            ) AS waiting
+          `);
+          return result.rows[0]?.waiting === true;
+        }, "职责组内容写没有进入 advisory lock 等待状态");
+        await exclusiveBlocker.query(
+          `DELETE FROM project_workflow_members
+           WHERE project_resource_id = $1 AND user_id = $2 AND "group" = 'annotation'`,
+          [resourceId, "user-student"],
+        );
+        await exclusiveBlocker.query("COMMIT");
+        exclusiveLockHeld = false;
+        const deniedCreate = await pendingCreate;
+        assert.equal(deniedCreate.statusCode, 403, deniedCreate.body);
+        assert.equal(
+          await prisma.resourceEntry.count({
+            where: { parentId: resourceId, name: "撤权后不应创建" },
+          }),
+          0,
+        );
+      } finally {
+        if (exclusiveLockHeld) await exclusiveBlocker.query("ROLLBACK");
+        exclusiveBlocker.release();
+        await pendingCreate?.catch(() => undefined);
+      }
+    });
+
+    // 回收站状态按整条祖先链生效，不能只检查后代节点自身的 trashedAt。
+    await suite.test("回收站根节点的未标记后代不能继续创建资源", async () => {
+      const project = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { type: "project", name: "祖先活动性测试项目" },
+      });
+      const projectId = String(dataOf(project.json()).id);
+      const folder = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: projectId, type: "folder", name: "未标记后代" },
+      });
+      const folderId = String(dataOf(folder.json()).id);
+      assert.equal((await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/resources/${projectId}/trash`,
+      })).statusCode, 200);
+      assert.equal(
+        (await prisma.resourceEntry.findUniqueOrThrow({ where: { id: folderId } })).trashedAt,
+        null,
+      );
+
+      const hiddenCreate = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: folderId, type: "folder", name: "不应创建" },
+      });
+      assert.equal(hiddenCreate.statusCode, 400, hiddenCreate.body);
     });
 
     await suite.test("移动后重新计算继承权限并保留直接 ACL", async () => {

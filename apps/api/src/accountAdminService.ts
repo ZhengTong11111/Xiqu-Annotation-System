@@ -1,4 +1,8 @@
-import { PlatformRole as DbPlatformRole, type PrismaClient } from "@prisma/client";
+import {
+  PlatformRole as DbPlatformRole,
+  type Prisma,
+  type PrismaClient,
+} from "@prisma/client";
 import {
   canManagePlatformAccounts,
   type CreateManagedAccountRequest,
@@ -73,6 +77,7 @@ export class AccountAdminService {
     const passwordHash = await hashPassword(input.password);
     try {
       const createdUserId = await this.prisma.$transaction(async (transaction) => {
+        await this.lockAndAssertAccountAdministrator(transaction, actor.id);
         const created = await transaction.user.create({
           data: {
             accountName,
@@ -122,6 +127,11 @@ export class AccountAdminService {
     const roles = input.roles === undefined ? undefined : normalizeRoles(input.roles);
 
     await this.prisma.$transaction(async (transaction) => {
+      await this.lockAndAssertAccountAdministrator(transaction, actor.id);
+      if (roles !== undefined || input.isActive !== undefined) {
+        // 活动状态和平台角色都是资源权限来源；治理写必须等待已复核权限的内容事务完成。
+        await this.lockResourceAuthorizationMutation(transaction);
+      }
       const current = await transaction.user.findUnique({
         where: { id: targetUserId },
       });
@@ -194,6 +204,7 @@ export class AccountAdminService {
     assertPassword(password);
     const passwordHash = await hashPassword(password);
     await this.prisma.$transaction(async (transaction) => {
+      await this.lockAndAssertAccountAdministrator(transaction, actor.id);
       const target = await transaction.user.findUnique({ where: { id: targetUserId } });
       if (!target) throw notFound("账号不存在。");
       await transaction.user.update({ where: { id: targetUserId }, data: { passwordHash } });
@@ -232,6 +243,39 @@ export class AccountAdminService {
     if (!canManagePlatformAccounts(actor.roles)) {
       throw forbidden("只有系统管理员可以管理账号。");
     }
+  }
+
+  private async lockAndAssertAccountAdministrator(
+    transaction: Prisma.TransactionClient,
+    actorUserId: string,
+  ) {
+    // 与首次管理员 bootstrap 共用一把事务锁：所有账号治理在锁后重新读取 actor 和角色，
+    // 防止两个管理员同时停用/降级对方，或已被撤权的排队请求继续提交。
+    await transaction.$executeRaw`
+      SELECT pg_advisory_xact_lock(hashtext('xiqu-platform-bootstrap-admin'))
+    `;
+    const actor = await transaction.user.findUnique({
+      where: { id: actorUserId },
+      include: { roles: true },
+    });
+    if (
+      !actor?.isActive ||
+      !canManagePlatformAccounts(
+        actor.roles.map(({ role }) => role as PlatformRole),
+      )
+    ) {
+      throw forbidden("只有活动的系统管理员可以管理账号。");
+    }
+  }
+
+  private async lockResourceAuthorizationMutation(
+    transaction: Prisma.TransactionClient,
+  ) {
+    // 与 ACL、职责组和资源树 mutation 共用独占锁，确保账号撤权与资源提交形成单一线性顺序。
+    await transaction.$queryRaw`
+      SELECT 1::integer AS locked
+      FROM pg_advisory_xact_lock(hashtext('xiqu:resource-tree:mutation'))
+    `;
   }
 }
 

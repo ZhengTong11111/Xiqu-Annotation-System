@@ -592,6 +592,10 @@ export type PlatformApiContract<TPayload = unknown> = {
     request: CreateAnnotationFileRequest<TPayload>;
     response: AnnotationFile<TPayload>;
   };
+  createBatchImportedAnnotationFile: {
+    request: CreateAnnotationFileRequest<TPayload>;
+    response: AnnotationFile<TPayload>;
+  };
   createAnnotationRecoveryBackup: {
     request: CreateAnnotationRecoveryBackupRequest<TPayload>;
     response: AnnotationRecoveryBackupResult<TPayload>;

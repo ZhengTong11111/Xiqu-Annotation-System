@@ -2714,6 +2714,162 @@ select {
   align-items: center;
 }
 
+/* 批量标注导入先完整预检目标目录与媒体，再逐项调用管理员专用创建接口；表格保留每项结果以解释部分成功。 */
+.batch-annotation-import-dialog {
+  position: fixed;
+  z-index: 301;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  width: min(980px, calc(100vw - 48px));
+  height: min(720px, calc(100vh - 48px));
+  min-height: 420px;
+  overflow: hidden;
+  color: #26384f;
+  background: #f5f7fa;
+  border: 1px solid #bfc9d6;
+  border-radius: 8px;
+  box-shadow: 0 22px 60px rgb(17 28 43 / 28%);
+  transform: translate(-50%, -50%);
+}
+
+.batch-annotation-import-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 14px;
+  background: #f9fafc;
+  border-bottom: 1px solid #d9e0e8;
+}
+
+.batch-annotation-import-summary span {
+  padding: 3px 7px;
+  color: #607187;
+  background: #edf1f5;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.batch-annotation-import-summary span.ready { color: #245c85; background: #e2eef8; }
+.batch-annotation-import-summary span.succeeded { color: #24704a; background: #e1f3e9; }
+.batch-annotation-import-summary span.failed { color: #9a3437; background: #fae8e8; }
+
+.batch-annotation-import-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  background: #fff;
+}
+
+.batch-annotation-import-loading {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+  color: #61758d;
+  font-size: 13px;
+}
+
+.batch-annotation-import-loading svg,
+.batch-annotation-import-table tr.importing td:last-child svg {
+  animation: system-diagnostics-spin 900ms linear infinite;
+}
+
+.batch-annotation-import-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.batch-annotation-import-table th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  padding: 8px 10px;
+  color: #627286;
+  text-align: left;
+  background: #edf2f7;
+  border-bottom: 1px solid #cfd8e3;
+}
+
+.batch-annotation-import-table th:nth-child(1) { width: 23%; }
+.batch-annotation-import-table th:nth-child(2) { width: 8%; }
+.batch-annotation-import-table th:nth-child(3) { width: 22%; }
+.batch-annotation-import-table th:nth-child(4) { width: 22%; }
+.batch-annotation-import-table th:nth-child(5) { width: 25%; }
+
+.batch-annotation-import-table td {
+  height: 42px;
+  padding: 7px 10px;
+  overflow: hidden;
+  color: #42546a;
+  border-bottom: 1px solid #e4e9ef;
+  vertical-align: middle;
+}
+
+.batch-annotation-import-table td span {
+  display: inline-block;
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.batch-annotation-import-table td > svg {
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.batch-annotation-import-table td code {
+  color: #2f5678;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.batch-annotation-import-table td:last-child small {
+  display: block;
+  padding-left: 21px;
+  overflow: hidden;
+  color: #7b8797;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-annotation-import-table tr.ready td:last-child { color: #28658f; }
+.batch-annotation-import-table tr.succeeded td:last-child { color: #237247; }
+.batch-annotation-import-table tr.failed td:last-child,
+.batch-annotation-import-table tr.skipped td:last-child { color: #a13b3e; }
+.batch-annotation-import-table tr.succeeded { background: #f3fbf6; }
+.batch-annotation-import-table tr.failed { background: #fff7f7; }
+
+.batch-annotation-import-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 10px 14px;
+  background: #edf2f7;
+  border-top: 1px solid #ccd5e0;
+}
+
+.batch-annotation-import-actions > span {
+  min-width: 0;
+  margin-right: auto;
+  overflow: hidden;
+  color: #6e7e92;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-annotation-import-actions button {
+  min-width: 86px;
+  white-space: nowrap;
+}
+
 /* 音轨管理器沿用 Finder 式双栏密度：左侧只负责音轨导航，右侧集中编辑一个关系。 */
 .media-audio-track-manager-dialog {
   position: fixed;
@@ -3308,6 +3464,23 @@ select {
   .annotation-media-current small { grid-column: 2; }
   .annotation-media-actions { flex-wrap: wrap; }
   .annotation-media-actions > span { flex-basis: 100%; }
+
+  .batch-annotation-import-dialog {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+  }
+
+  .batch-annotation-import-table {
+    min-width: 920px;
+  }
+
+  .batch-annotation-import-actions {
+    flex-wrap: wrap;
+  }
+
+  .batch-annotation-import-actions > span {
+    flex-basis: 100%;
+  }
 
   .media-audio-track-manager-dialog {
     width: calc(100vw - 24px);

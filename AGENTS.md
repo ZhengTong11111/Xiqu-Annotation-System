@@ -119,6 +119,12 @@ Main currently contains all major recent feature lines that matter for context:
   per-resource ACL remains a separate Inspector concern
 - annotation files use a real database foreign key to media resources; JSON import and the Inspector share one media-binding
   dialog, while protected runtime URLs stay outside ProjectData
+- resource-explorer JSON batch import is available only to `admin`/`super_admin` from the All Projects root and accepts up to
+  300 selected files. It extracts the exact leading ASCII-digit number from each JSON, first uniquely matches a top-level project
+  or folder with the same number and `create_child`, then uniquely matches a direct-child video with the same number and
+  `read + download`; leading zeroes remain significant. Invalid JSON, missing/ambiguous/unauthorized destinations or videos,
+  duplicate JSON names, and bounded-scan overflow remain explicit non-imported rows. Every creation uses the dedicated
+  admin-only server endpoint, which rechecks the current account role and ordinary resource/media ACL inside the transaction
 - App now uses one media playback controller for native local/uploaded media and Aliyun VOD; Aliplayer is loaded from a fixed
   official CDN, short-lived playauth stays memory-only, and late seek/session events cannot revive a replaced source. Modern
   Web Aliplayer also requires a deployment-provided `domain + key` License; it is public browser configuration, distinct from
@@ -524,6 +530,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - file downloads must use the protected resource download route; never rebuild annotation JSON from an already-open editor or buffer large media into a browser Blob
   - uploaded media and aliyun_vod are distinct sources: VOD may be bound/copied/moved/authorized but has no platform original-file
     download. Local computer media, uploaded server media, and VOD entry points must remain available as separate workflows
+  - single JSON import inside a project/folder continues through the shared media picker. At the All Projects root, only
+    `admin`/`super_admin` may select one or more JSON files for `BatchAnnotationImportDialog`; ordinary accounts have no executable
+    batch entry. Each accepted row uses the dedicated admin-only batch-item API, reports partial success, and refreshes through
+    `refreshCurrentView()`; it must never fall back to the ordinary creation endpoint, silently bind an ambiguous prefix, or turn
+    a client-side match into permission authority
   - future analysis-audio selection belongs to platform media/derived-asset state, never `ProjectData`. Automatic embedded/uploaded/
     same-vid VOD audio remains the default, but users must always be able to force a readable uploaded server audio resource,
     even while automatic VOD audio works, so analysis can completely bypass a slow provider; restoring automatic selection is explicit
@@ -561,6 +572,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - shared JSON-import/Inspector/editor picker for root/project/folder navigation, bounded pagination, current-directory search,
     existing media, new upload, explicit unbind, and later rebinding
   - selection is only intent; the API must recheck annotation write plus media read/download and active media type
+- `src/platform/BatchAnnotationImportDialog.tsx` + `src/platform/annotationBatchImport.ts`
+  - own multi-file JSON parsing and a two-stage exact-leading-number plan: JSON to a top-level project/folder, then to one direct-child
+    video in that destination. The pure planner preserves leading zeroes and never treats `001`, `01`, `1`, or `0010` as equal
+  - top-level projects and folders are scanned separately, while videos are fetched only for uniquely writable destinations with
+    bounded concurrency. Each query scans at most 25 pages and one selection accepts at most 300 JSON files; exceeding either bound
+    requires the user to split the directory/batch. Incomplete evidence must never produce an automatic destination or media binding
+  - submissions must use `/api/annotation-files/batch-import-item`; the route revalidates `admin`/`super_admin` in the resource-tree
+    transaction in addition to ordinary destination/media ACL. The ordinary single-file annotation creation contract remains unchanged
 - `src/platform/resourcePickerPaging.ts`
   - generic bounded filtered-page collector for resource pickers; it may skip a limited number of irrelevant pages while
     preserving the server cursor and must never turn a picker into a hidden full-directory fetch
