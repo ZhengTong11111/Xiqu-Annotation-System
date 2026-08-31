@@ -80,6 +80,7 @@
     "test:processing-reliability-p5b": "npm run build:shared && npm run db:generate && tsx apps/api/test/prepareTestDatabase.ts && NODE_OPTIONS=--throw-deprecation node --import tsx --test --test-concurrency=1 apps/api/test/abortableHttpStream.test.ts apps/api/test/processingJobRequest.integration.test.ts apps/api/test/processingJobCommand.integration.test.ts apps/api/test/mediaAnalysisWorker.test.ts apps/api/test/mediaAnalysisWorkerRuntime.test.ts apps/api/test/processingJobReliability.test.ts && npm run test:processing-job-center && npm run test:annotation-collaboration",
     "test:resource-pagination": "npm run build:shared && node --import tsx --test apps/api/test/resourcePagination.test.ts",
     "test:resource-page-state": "node --import tsx --test src/platform/resourcePageState.test.ts",
+    "test:annotation-batch-import": "npm run build:shared && node --import tsx src/platform/annotationBatchImport.test.ts",
     "test:resource-column-pages": "node --import tsx --test src/platform/resourceColumnPageState.test.ts src/platform/resourceDestinationPaging.test.ts src/platform/resourcePickerPaging.test.ts",
     "test:resource-columns": "node --import tsx --test src/platform/resourceColumnModel.test.ts",
     "test:uploads": "npm run build:shared && node --import tsx --test apps/api/test/uploadPolicy.test.ts apps/api/test/storage.test.ts",

@@ -481,12 +481,34 @@ export class ResourceService {
     user: ApiUser,
     input: CreateAnnotationFileRequest<TPayload>,
   ): Promise<AnnotationFile<TPayload>> {
+    return this.createAnnotationFileWithPolicy(user, input, false);
+  }
+
+  async createBatchImportedAnnotationFile<TPayload>(
+    user: ApiUser,
+    input: CreateAnnotationFileRequest<TPayload>,
+  ): Promise<AnnotationFile<TPayload>> {
+    if (!this.access.hasFullResourceAccess(user)) {
+      throw forbidden("只有管理员可以执行批量标注导入。");
+    }
+    return this.createAnnotationFileWithPolicy(user, input, true);
+  }
+
+  private async createAnnotationFileWithPolicy<TPayload>(
+    user: ApiUser,
+    input: CreateAnnotationFileRequest<TPayload>,
+    requireFullResourceAccess: boolean,
+  ): Promise<AnnotationFile<TPayload>> {
     await this.assertContainer(input.parentId);
     await this.access.assertCapability(user, input.parentId, "create_child");
     const name = this.validateName(input.name);
     const resourceId = await this.prisma.$transaction(async (transaction) => {
       await this.lockResourceTreeForContentWrite(transaction);
       await this.lockParentNamespaces(transaction, [input.parentId]);
+      if (requireFullResourceAccess) {
+        // 批量入口不能只信任请求开始时的 session 角色；资源树锁内重新读取活动账号与当前角色。
+        await this.access.assertFullResourceAccess(user, transaction);
+      }
       await this.assertContainer(input.parentId, transaction);
       await this.access.assertCapability(
         user,

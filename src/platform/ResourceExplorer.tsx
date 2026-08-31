@@ -101,6 +101,8 @@ import {
   AnnotationWorkflowStatusDialog,
   type AnnotationWorkflowStatusPrompt,
 } from "./AnnotationWorkflowStatusDialog";
+import { BatchAnnotationImportDialog } from "./BatchAnnotationImportDialog";
+import { MAX_BATCH_ANNOTATION_FILES } from "./annotationBatchImport";
 
 type ExplorerMode = "list" | "grid" | "column";
 
@@ -177,6 +179,9 @@ export function ResourceExplorer(props: {
     fileName: string;
     project: ProjectData;
   } | null>(null);
+  const [pendingBatchJsonImport, setPendingBatchJsonImport] = useState<{
+    files: File[];
+  } | null>(null);
   const [movingResources, setMovingResources] = useState<ResourceEntry[]>([]);
   const [comparisonFiles, setComparisonFiles] = useState<
     [ResourceEntry, ResourceEntry] | null
@@ -211,6 +216,7 @@ export function ResourceExplorer(props: {
   const locationParentId = mode === "column"
     ? columnBrowser.locationParentId
     : folderId;
+  const isAllProjectsRoot = !locationParentId && rootView === "all_projects";
   // 账号治理与资源/运维全权是两条不同边界：管理员仍可管理资源，但只有系统管理员可管理账号。
   const hasFullResourceAccess = props.user
     ? hasFullPlatformResourceAccess(props.user.roles)
@@ -757,15 +763,26 @@ export function ResourceExplorer(props: {
   }
 
   async function importJson(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files ?? []);
     event.target.value = "";
-    if (!file) return;
+    if (!files.length) return;
     try {
+      if (files.length > MAX_BATCH_ANNOTATION_FILES) {
+        throw new Error(`一次最多导入 ${MAX_BATCH_ANNOTATION_FILES} 份标注 JSON，请分批选择。`);
+      }
+      if (isAllProjectsRoot) {
+        if (!hasFullResourceAccess) throw new Error("只有管理员可以执行批量标注导入。");
+        // 根界面按编号选择目标项目/文件夹；文件对象脱离 input 后仍可用于本轮解析，关闭窗口即释放引用。
+        setPendingBatchJsonImport({ files });
+        return;
+      }
+      if (!locationParentId) throw new Error("批量导入请进入“所有项目”界面。");
+      if (files.length > 1) throw new Error("多份 JSON 请回到“所有项目”界面批量导入。");
+      const file = files[0]!;
       const parsed = JSON.parse(await file.text()) as unknown;
       if (!isProjectFileLike(parsed)) {
         throw new Error("所选 JSON 不是有效的标注项目文件。");
       }
-      if (!locationParentId) throw new Error("请先进入项目或文件夹。");
       const project = normalizeImportedProjectFile(parsed).project;
       // JSON 正文解析成功后必须显式选择媒体；关系由数据库保存，不再猜测本机绝对路径。
       setPendingJsonImport({ parentId: locationParentId, fileName: file.name, project });
@@ -1090,7 +1107,16 @@ export function ResourceExplorer(props: {
                   >
                     <FilePlus2 size={16} />
                   </button>
-                  <button type="button" disabled={!locationParentId} onClick={() => jsonInputRef.current?.click()} title="导入标注 JSON">
+                  <button
+                    type="button"
+                    disabled={!locationParentId && !(isAllProjectsRoot && hasFullResourceAccess)}
+                    onClick={() => jsonInputRef.current?.click()}
+                    title={isAllProjectsRoot
+                      ? hasFullResourceAccess
+                        ? "按编号批量导入标注 JSON"
+                        : "只有管理员可以批量导入标注 JSON"
+                      : "导入标注 JSON"}
+                  >
                     <FileJson2 size={16} />
                   </button>
                   <button type="button" disabled={!locationParentId} onClick={() => mediaInputRef.current?.click()} title="上传媒体">
@@ -1262,7 +1288,7 @@ export function ResourceExplorer(props: {
           onDownload={downloadResource}
         />
       </section>
-      <input ref={jsonInputRef} hidden type="file" accept="application/json,.json" onChange={(event) => void importJson(event)} />
+      <input ref={jsonInputRef} hidden multiple type="file" accept="application/json,.json" onChange={(event) => void importJson(event)} />
       <input ref={mediaInputRef} hidden type="file" accept="video/*,audio/*" onChange={(event) => void uploadMedia(event)} />
       <AliyunVodMediaDialog
         client={props.client}
@@ -1328,6 +1354,15 @@ export function ResourceExplorer(props: {
               throw nextError;
             }
           }}
+        />
+      ) : null}
+      {pendingBatchJsonImport ? (
+        <BatchAnnotationImportDialog
+          client={props.client}
+          files={pendingBatchJsonImport.files}
+          open
+          onOpenChange={(open) => { if (!open) setPendingBatchJsonImport(null); }}
+          onCompleted={refreshCurrentView}
         />
       ) : null}
       <ChangePasswordDialog

@@ -851,6 +851,29 @@ export function registerApiRoutes(
   app.post<{
     Body: {
       parentId?: unknown;
+      name?: unknown;
+      payload?: unknown;
+      mediaResourceId?: unknown;
+    };
+  }>("/api/annotation-files/batch-import-item", async (request) => {
+    const body = requireObject(request.body);
+    if (typeof body.parentId !== "string" || typeof body.name !== "string") {
+      throw badRequest("创建标注文件需要 parentId 和 name。");
+    }
+    return resources.createBatchImportedAnnotationFile(
+      await getCurrentUser(repository, request),
+      {
+        parentId: body.parentId,
+        name: body.name,
+        payload: body.payload ?? {},
+        mediaResourceId: optionalStringOrNull(body.mediaResourceId),
+      },
+    );
+  });
+
+  app.post<{
+    Body: {
+      parentId?: unknown;
       type?: unknown;
       name?: unknown;
       description?: unknown;

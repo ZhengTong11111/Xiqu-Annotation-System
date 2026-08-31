@@ -551,6 +551,62 @@ test("平台资源 API 集成测试", async (suite) => {
       );
     });
 
+    await suite.test("批量标注导入项仅管理员可创建且不收紧普通单文件导入", async () => {
+      const target = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/resources",
+        payload: { parentId: null, type: "project", name: "901 批量导入权限" },
+      });
+      assert.equal(target.statusCode, 200, target.body);
+      const targetId = String(dataOf(target.json()).id);
+      const studentGrant = await jsonRequest(app, adminToken, {
+        method: "PUT",
+        url: `/api/resources/${targetId}/permissions/user-student`,
+        payload: { capabilities: ["read", "create_child"], inheritToChildren: false },
+      });
+      assert.equal(studentGrant.statusCode, 200, studentGrant.body);
+
+      const deniedBatchItem = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: "/api/annotation-files/batch-import-item",
+        payload: {
+          parentId: targetId,
+          name: "901 学生批量.json",
+          payload: { marker: "student-batch" },
+          mediaResourceId: null,
+        },
+      });
+      assert.equal(deniedBatchItem.statusCode, 403, deniedBatchItem.body);
+
+      const ordinarySingleImport = await jsonRequest(app, studentToken, {
+        method: "POST",
+        url: "/api/annotation-files",
+        payload: {
+          parentId: targetId,
+          name: "901 学生单文件.json",
+          payload: { marker: "student-single" },
+          mediaResourceId: null,
+        },
+      });
+      assert.equal(ordinarySingleImport.statusCode, 200, ordinarySingleImport.body);
+
+      const adminBatchItem = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: "/api/annotation-files/batch-import-item",
+        payload: {
+          parentId: targetId,
+          name: "901 管理员批量.json",
+          payload: { marker: "admin-batch" },
+          mediaResourceId: null,
+        },
+      });
+      assert.equal(adminBatchItem.statusCode, 200, adminBatchItem.body);
+      assert.equal(
+        (dataOf(adminBatchItem.json()).resource as JsonObject).parentId,
+        targetId,
+      );
+    });
+
     await suite.test("标注文件媒体关系可绑定、改绑、解绑并受资源权限约束", async () => {
       const firstUpload = await multipartUpload(
         app,
