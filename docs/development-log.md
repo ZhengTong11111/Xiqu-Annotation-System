@@ -9768,3 +9768,31 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   chunk 超过 500 kB 提示。本轮不部署生产服务器。
 - **待人工验收**：分别以 write-only、review-only 和双权限账号打开同一平台文件，核对动作可见性、黄色反馈创建/
   撤回、刷新后历史与时间轴跳转。浏览器仅验证本机登录页可访问，未代用户输入凭据进入受保护文件。
+
+## 2026-08-31：编辑者范围反馈生产部署
+
+### 发布与数据保护
+
+- 功能提交 `e8bd871` 已快进合并并推送远端 `main`。生产候选从该精确提交的 `git archive` 在 Linux 服务器重新执行
+  `npm ci`、完整 build 与 `release:check`，没有复用本机产物或旧 release 的 Prisma Client；服务器直连 GitHub
+  clone 因 TLS 接收中断后改走经 SHA-256 校验的源码归档，失败的空构建目录和上线后的临时源码/归档均已清理。
+- 候选 `/opt/xiqu/releases/20260831T202311Z-e8bd871` 在切换前通过 `release:inspect`：27 个运行路径、27 个生产
+  依赖和 33 条 migration 完整，Prisma Client/schema guard 通过。旧 release 为
+  `/opt/xiqu/releases/20260830T0613Z-fb4c100`，切换使用 `release:switch` 的 expected-current 门禁，没有裸改符号链接。
+- 由 `platform.admin` 开启维护并等待写入排空，随后停止 analysis worker。维护窗口内创建一致备份
+  `xiqu-backup-2026-08-31T20-24-08-018Z-7f641063`，覆盖数据库及 42,051 个对象，创建零警告；独立
+  `backup:verify` 返回 `valid: true`、零错误。本次未把本地调试数据库、Downloads JSON 导出、媒体凭据或环境文件
+  上传到 release。
+
+### Migration、切换与验收
+
+- 新候选成功应用唯一新增 migration `20260831010000_annotation_range_feedback`。数据库复核确认
+  `AnnotationRangeCommentKind` 包含 `review_comment`、`editor_feedback`，且 `annotation_range_comments.kind`
+  非空列已存在；没有使用 `db push` 或手工 DDL。
+- 原子切换后重启 `xiqu-api`，在维护状态内通过 HTTPS Web 首页、API liveness 与 readiness 只读 smoke；随后解除维护
+  并启动 `xiqu-analysis-worker`，维护外再次通过同一 `deploy:check`。最终 API 与 worker 均为 `active`，维护状态为
+  disabled，切换后的 API/worker error 级日志为空，当前 release 指向
+  `/opt/xiqu/releases/20260831T202311Z-e8bd871`。
+- **已完成**：Git 主线推送、候选构建检查、一致备份与校验、migration、原子切换、维护恢复、双阶段 smoke 和临时
+  构建清理。**待人工业务验收**：用 write-only、review-only 和双权限账号分别创建黄色反馈/审核评论/确认，并核对
+  刷新、撤回及时间轴显示；旧 release 与本次已验证备份继续保留用于回滚。
