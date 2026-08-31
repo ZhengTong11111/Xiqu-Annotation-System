@@ -38,7 +38,7 @@ export function applyAnnotationLifecycleCommandToProject(
       entityId: item.entityId,
       trackId: item.trackId,
       parentExists: resolved.parentExists,
-      current: resolved.current,
+      current: adaptSentenceLifecycleActualForLegacyCommand(item, resolved.current),
     } as AnnotationLifecycleActual);
   }
   const assessment = assessAnnotationLifecycleExecution(envelope, actuals);
@@ -54,4 +54,22 @@ export function applyAnnotationLifecycleCommandToProject(
           targetKey: getAnnotationLifecycleTargetKey(item),
         })),
       };
+}
+
+// v6 删除命令的 before 使用单角色快照。只有当前句仍是零/单角色时才能无损投影并通过前置条件；
+// 已变为多角色的句子必须保持不匹配，不能用 null 冒充旧状态后误删实体。
+function adaptSentenceLifecycleActualForLegacyCommand(
+  item: AnnotationLifecycleCommandEnvelope["command"]["items"][number],
+  currentValue: unknown,
+): AnnotationLifecycleActual["current"] {
+  const current = currentValue as AnnotationLifecycleActual["current"];
+  if (item.entityType !== "sentence" || !current) return current;
+  const expected = item.before?.entity ?? item.after?.entity;
+  if (!expected || !("roleType" in expected) || !("roleTypes" in current.entity)) return current;
+  if (current.entity.roleTypes.length > 1) return current;
+  const { roleTypes, ...common } = current.entity;
+  return {
+    ...current,
+    entity: { ...common, roleType: roleTypes[0] ?? null },
+  } as AnnotationLifecycleActual["current"];
 }

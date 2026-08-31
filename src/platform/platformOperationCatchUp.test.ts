@@ -111,7 +111,7 @@ function createSentenceWithCharacter(base: ProjectData) {
     startTime: 8,
     endTime: 9,
     deliveryMode: null,
-    roleType: null,
+    roleTypes: [],
   });
   next.characterAnnotations.push({
     id: "catch-up-character",
@@ -372,13 +372,13 @@ test("committed feed 可原子重放角色列表与句级角色联动", async ()
   const base = createCatchUpProject();
   const next = structuredClone(base);
   next.sentenceAnnotationConfig.roleOptions.push("远端角色");
-  next.subtitleLines[0].roleType = "远端角色";
+  next.subtitleLines[0].roleTypes = ["远端角色"];
   const envelope = buildProjectTrackStructureTransactionCommand(base, next, {
     stateTargets: [{ entityType: "sentence-annotation-config", entityId: "sentence-annotation-config" }],
     contentTargets: [{
       entityType: "sentence",
       entityId: base.subtitleLines[0].id,
-      field: "roleType",
+      field: "roleTypes",
     }],
   });
   assert.ok(envelope);

@@ -105,14 +105,14 @@ test("局部整合句级字幕会补齐其角色定义", () => {
     startTime: 0,
     endTime: 2,
     deliveryMode: "sung",
-    roleType: "闺门旦",
+    roleTypes: ["闺门旦"],
   });
   const result = buildAndApply(source, emptyProject(), ["subtitle_lines:line-role"], {});
 
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.deepEqual(result.project.sentenceAnnotationConfig.roleOptions, ["闺门旦"]);
-  assert.equal(result.project.subtitleLines[0]?.roleType, "闺门旦");
+  assert.deepEqual(result.project.subtitleLines[0]?.roleTypes, ["闺门旦"]);
 });
 
 function buildAndApply(

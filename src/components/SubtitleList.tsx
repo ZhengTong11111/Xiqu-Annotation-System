@@ -6,6 +6,7 @@ import {
   isSentenceClassificationComplete,
   SENTENCE_DELIVERY_MODE_OPTIONS,
 } from "../utils/sentenceClassification";
+import { toggleSentenceRoleType } from "../utils/sentenceRoleSelection";
 
 type SubtitleListProps = {
   subtitleLines: SubtitleLine[];
@@ -15,7 +16,7 @@ type SubtitleListProps = {
   onSelectLine: (lineId: string) => void;
   onClassificationChange: (
     lineId: string,
-    changes: Partial<Pick<SubtitleLine, "deliveryMode" | "roleType">>,
+    changes: Partial<Pick<SubtitleLine, "deliveryMode" | "roleTypes">>,
   ) => void;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
@@ -74,7 +75,7 @@ export function SubtitleList({
                   <div className="subtitle-text">{line.text}</div>
                   <div className="subtitle-classification-summary">
                     <span>{getSentenceDeliveryModeLabel(line.deliveryMode)}</span>
-                    <span>{line.roleType ?? "角色未选"}</span>
+                    <span>{line.roleTypes.length > 0 ? line.roleTypes.join("、") : "角色未选"}</span>
                   </div>
                 </button>
               </ContextMenu.Trigger>
@@ -101,17 +102,35 @@ export function SubtitleList({
                     <ContextMenu.SubTrigger>角色行当</ContextMenu.SubTrigger>
                     <ContextMenu.Portal>
                       <ContextMenu.SubContent className="sentence-context-menu">
-                        <ContextMenu.Item onSelect={() =>
-                          onClassificationChange(line.id, { roleType: null })}>
-                          {line.roleType === null ? "✓ " : ""}未选择
+                        <ContextMenu.Item
+                          disabled={line.roleTypes.length === 0}
+                          onSelect={() => onClassificationChange(line.id, { roleTypes: [] })}
+                        >
+                          清空角色
                         </ContextMenu.Item>
+                        <ContextMenu.Separator className="character-context-menu-divider" />
                         {sentenceAnnotationConfig.roleOptions.length === 0
                           ? <ContextMenu.Item disabled>尚未设置角色行当</ContextMenu.Item>
                           : sentenceAnnotationConfig.roleOptions.map((role) => (
-                              <ContextMenu.Item key={role} onSelect={() =>
-                                onClassificationChange(line.id, { roleType: role })}>
-                                {line.roleType === role ? "✓ " : ""}{role}
-                              </ContextMenu.Item>
+                              <ContextMenu.CheckboxItem
+                                key={role}
+                                checked={line.roleTypes.includes(role)}
+                                // 多选菜单保持展开，方便一次为合说句勾选所有角色。
+                                onSelect={(event) => event.preventDefault()}
+                                onCheckedChange={(checked) => {
+                                  onClassificationChange(line.id, {
+                                    roleTypes: toggleSentenceRoleType(
+                                      sentenceAnnotationConfig.roleOptions,
+                                      line.roleTypes,
+                                      role,
+                                      checked,
+                                    ),
+                                  });
+                                }}
+                              >
+                                <ContextMenu.ItemIndicator>✓ </ContextMenu.ItemIndicator>
+                                {role}
+                              </ContextMenu.CheckboxItem>
                             ))}
                       </ContextMenu.SubContent>
                     </ContextMenu.Portal>

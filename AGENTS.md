@@ -153,9 +153,11 @@ Main currently contains all major recent feature lines that matter for context:
   low-frequency track manager. Track management derives only from effective `write` on the primary media, while changing the
   shared annotation default derives from annotation-file write permission; neither capability may substitute for the other
 - recursive custom-track branching with merged/expanded display modes, per-track/per-branch colors, and filled overlap layout for conflicting blocks
-- saved project JSON v6 sentence classification: every sentence independently stores `spoken | sung` and one project-defined
-  ordered role option; only both valid values count as complete. Sentence lists and Timeline overlays share one red/blue
-  completion policy, while role add/rename/remove/reorder uses a lease-protected structure transaction with reference cascades
+- saved project JSON v7 sentence classification: every sentence independently stores nullable `spoken | sung` and an ordered,
+  unique `roleTypes` subset of the project role list; at least one valid role and a valid delivery mode are required for completion.
+  Sentence lists and Timeline overlays share one red/blue policy, while role add/rename/remove/reorder uses a lease-protected
+  structure transaction with reference cascades. Current builders write arrays only; bounded v6 scalar file/command compatibility
+  belongs exclusively to the project migration and legacy command parser/apply boundaries
 - the former per-character `singingStyle` and built-in character-track options are no longer current ProjectData or UI concepts;
   historical JSON is normalized at the single project-file migration boundary and current cavity labels belong on custom tracks
 - browser-created stable ids use `src/utils/runtimeUuid.ts`; production may temporarily run on an HTTP IP where
@@ -873,12 +875,16 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - track defaults, timeline track definition expansion, project builders, duration helpers, Gongche attached track id helpers, branch-lane track id helpers
 - `src/utils/projectFile.ts`
   - saved project JSON normalization/migration, local/project-platform import compatibility, `PROJECT_FILE_VERSION`
-  - v1-v5 files normalize to v6 by adding an empty sentence-role list and nullable sentence classification; historical
-    per-character singing style and built-in character-track options are intentionally omitted from current output
+  - v1-v5 files normalize to v7 with empty sentence classification; v6 `roleType` maps to an empty/singleton `roleTypes` array,
+    while current arrays are normalized to project-role order. Historical per-character singing style and built-in
+    character-track options are intentionally omitted from current output
   - legacy built-in action tracks and `actionAnnotations` migrate to custom action tracks/blocks; current-format features
     must target custom blocks instead of extending that compatibility array
 - `src/utils/srt.ts`
   - SRT parse/export helpers
+- `src/utils/sentenceRoleSelection.ts`
+  - the only frontend helper for normalizing, toggling, replacing and merging sentence role selections in project-role order;
+    components must not recreate role-set ordering or deduplication logic
 - `src/utils/banyan.ts`
   - Banyan/Gongche-derived beat/eye parsing helpers
 - `src/utils/spectrogram.ts` + `src/utils/spectrogram.worker.ts`
@@ -965,9 +971,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - `getAnnotationMutationLeasePurposeForCommand()` is the sole App/API semantic lease resolver. Callers that need a purpose
     must pass the full envelope because snapshot-boundary kind distinguishes `bulk_import` from `bulk_repair`; the boolean
     type helper exists only for compatibility.
-  - sentence content targets distinguish `text`, `deliveryMode`, and `roleType`; nullable classification values are deliberate
-    unannotated states. The project role list is a fixed state target and rename/delete cascades must combine sentence content
-    leaves plus that state leaf in one structure transaction, never as independent local mutations
+  - current sentence content targets distinguish `text`, `deliveryMode`, and array-valued `roleTypes`; an empty array is the
+    deliberate unannotated role state. The scalar `roleType` target is legacy replay only. The project role list is a fixed state
+    target and rename/delete/reorder cascades must combine sentence content leaves plus that state leaf in one structure
+    transaction, never as independent local mutations
   - the atomic command-batch route applies replayable envelopes to `AnnotationFile.payload`; the editor uses this route for
     ordinary timing/content/lifecycle/state edits and bounded structure transactions. Legacy full snapshots remain only at
     explicit import/repair, old-payload migration, submitted-draft, track-snap, and other documented snapshot boundaries.
@@ -1494,9 +1501,10 @@ The current `ProjectData` is broader than the original MVP:
 
 Important type families:
 - `SubtitleLine` / `SentenceAnnotationConfig`
-  - `deliveryMode` is nullable `spoken | sung`; `roleType` is nullable and must reference the ordered project role list
-  - both fields must be valid for a completed sentence; do not infer completion from color or duplicate the helper in UI code
-  - role-list rename/delete must update affected sentence references in the same lease-protected structure transaction
+  - `deliveryMode` is nullable `spoken | sung`; `roleTypes` is an ordered unique array whose values must reference the project role list
+  - a valid delivery mode plus at least one valid role is required for completion; do not infer completion from color or duplicate
+    the helper in UI code
+  - role-list rename/delete/reorder must normalize affected sentence arrays and update them in the same lease-protected structure transaction
 - `BuiltinTrack`
   - current built-in track id is only `character-track`
   - older hand/body action built-ins were migrated away; use custom action tracks for action categories

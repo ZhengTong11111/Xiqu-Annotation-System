@@ -47,7 +47,7 @@ function getTargets(project: ProjectData): AnnotationContentTarget[] {
   return [
     { entityType: "sentence", entityId: project.subtitleLines[0].id, field: "text" },
     { entityType: "sentence", entityId: project.subtitleLines[0].id, field: "deliveryMode" },
-    { entityType: "sentence", entityId: project.subtitleLines[0].id, field: "roleType" },
+    { entityType: "sentence", entityId: project.subtitleLines[0].id, field: "roleTypes" },
     { entityType: "character", entityId: project.characterAnnotations[0].id, field: "char" },
     {
       entityType: "action",
@@ -82,7 +82,7 @@ test("内容命令原子应用句级分类与其他稳定内容字段并可反�
   const next = structuredClone(base);
   next.subtitleLines[0].text = "新句";
   next.subtitleLines[0].deliveryMode = "spoken";
-  next.subtitleLines[0].roleType = "巾生";
+  next.subtitleLines[0].roleTypes = ["巾生"];
   next.characterAnnotations[0].char = "新";
   next.actionAnnotations[0].label = "新动作";
   const customTrack = next.customTracks.find((track) => track.id === "content-text-track");
@@ -109,7 +109,7 @@ test("内容命令原子应用句级分类与其他稳定内容字段并可反�
   if (restored.status !== "applied") return;
   assert.equal(restored.project.characterAnnotations[0].char, base.characterAnnotations[0].char);
   assert.equal(restored.project.subtitleLines[0].deliveryMode, base.subtitleLines[0].deliveryMode);
-  assert.equal(restored.project.subtitleLines[0].roleType, base.subtitleLines[0].roleType);
+  assert.deepEqual(restored.project.subtitleLines[0].roleTypes, base.subtitleLines[0].roleTypes);
 });
 
 test("内容命令任一错轨或 before 冲突时保持输入不变", () => {
@@ -125,6 +125,31 @@ test("内容命令任一错轨或 before 冲突时保持输入不变", () => {
   mismatch.command.items[0].before = "错误旧值";
   assert.equal(applyAnnotationContentCommandToProject(base, mismatch).status, "blocked");
   assert.equal(base.actionAnnotations[0].label, "原动作");
+});
+
+test("v6 单角色内容命令可回放为 v7 数组，但不能覆盖已经形成的多角色状态", () => {
+  const base = createProject();
+  const line = base.subtitleLines[0];
+  const legacyEnvelope = {
+    version: 1,
+    command: {
+      type: "annotation.items.content.update",
+      items: [{
+        entityType: "sentence",
+        entityId: line.id,
+        field: "roleType",
+        before: line.roleTypes[0] ?? null,
+        after: "巾生",
+      }],
+    },
+  };
+  const applied = applyAnnotationContentCommandToProject(base, legacyEnvelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status === "applied") assert.deepEqual(applied.project.subtitleLines[0].roleTypes, ["巾生"]);
+
+  const multiRole = structuredClone(base);
+  multiRole.subtitleLines[0].roleTypes = ["闺门旦", "巾生"];
+  assert.equal(applyAnnotationContentCommandToProject(multiRole, legacyEnvelope).status, "blocked");
 });
 
 test("内容 builder 对缺失目标和合同外变化返回 null", () => {

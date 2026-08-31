@@ -38,7 +38,7 @@ import {
   normalizeShangSubtype,
 } from "./tone";
 
-export const PROJECT_FILE_VERSION = 6;
+export const PROJECT_FILE_VERSION = 7;
 
 const MIN_NORMALIZED_CHARACTER_DURATION = 0.04;
 
@@ -158,7 +158,7 @@ function normalizeSentenceAnnotationConfig(value: unknown): ProjectData["sentenc
   return { roleOptions };
 }
 
-// v1-v5 句子没有分类字段，迁移后明确标为未完成；非法 v6 值同样归零，不能猜测研究标注。
+// v1-v5 句子没有分类字段；v6 使用 roleType 单值。当前迁移统一输出有序、唯一的 v7 roleTypes。
 function normalizeSubtitleLines(value: unknown, roleOptions: string[]): ProjectData["subtitleLines"] {
   if (!Array.isArray(value)) return [];
   const validRoles = new Set(roleOptions);
@@ -173,16 +173,25 @@ function normalizeSubtitleLines(value: unknown, roleOptions: string[]): ProjectD
     const deliveryMode = item.deliveryMode === "spoken" || item.deliveryMode === "sung"
       ? item.deliveryMode
       : null;
-    const roleType = typeof item.roleType === "string" && validRoles.has(item.roleType.trim())
-      ? item.roleType.trim()
-      : null;
+    const rawRoleTypes = Array.isArray(item.roleTypes)
+      ? item.roleTypes
+      : typeof item.roleType === "string"
+        ? [item.roleType]
+        : [];
+    const selectedRoles = new Set(rawRoleTypes.flatMap((role) => {
+      if (typeof role !== "string") return [];
+      const normalized = role.trim();
+      return validRoles.has(normalized) ? [normalized] : [];
+    }));
+    // 选择集合按项目角色列表排序，避免不同点击顺序生成不同 JSON 或协作 precondition。
+    const roleTypes = roleOptions.filter((role) => selectedRoles.has(role));
     return [{
       id: item.id,
       text: typeof item.text === "string" ? item.text : "",
       startTime,
       endTime,
       deliveryMode,
-      roleType,
+      roleTypes,
     }];
   });
 }

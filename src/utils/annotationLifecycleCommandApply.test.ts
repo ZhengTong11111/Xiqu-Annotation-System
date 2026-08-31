@@ -238,7 +238,7 @@ test("句与首字可同批创建，缺少句引用的逐字创建会被拒绝",
   const base = createProject();
   const next = structuredClone(base);
   next.subtitleLines.push({
-    id: "line-created", text: "新", startTime: 9, endTime: 10, deliveryMode: null, roleType: null,
+    id: "line-created", text: "新", startTime: 9, endTime: 10, deliveryMode: null, roleTypes: [],
   });
   next.characterAnnotations.push({
     id: "char-created",
@@ -270,6 +270,49 @@ test("句与首字可同批创建，缺少句引用的逐字创建会被拒绝",
     entityType: "character",
     entityId: "char-orphaned",
   }]), null);
+});
+
+test("v6 单角色句快照可创建并反向删除，恢复后只保留 v7 数组字段", () => {
+  const base = createProject();
+  const previous = base.subtitleLines[base.subtitleLines.length - 1];
+  const legacyEnvelope = {
+    version: 1,
+    command: {
+      type: "annotation.items.lifecycle.update",
+      items: [{
+        entityType: "sentence",
+        entityId: "line-legacy",
+        before: null,
+        after: {
+          entity: {
+            id: "line-legacy",
+            text: "合说",
+            startTime: 12,
+            endTime: 13,
+            deliveryMode: "spoken",
+            roleType: "闺门旦",
+          },
+          position: {
+            index: base.subtitleLines.length,
+            collectionLength: base.subtitleLines.length + 1,
+            previousEntityId: previous?.id ?? null,
+            nextEntityId: null,
+          },
+        },
+      }],
+    },
+  };
+  const applied = applyAnnotationLifecycleCommandToProject(base, legacyEnvelope);
+  assert.equal(applied.status, "applied");
+  if (applied.status !== "applied") return;
+  const createdLine = applied.project.subtitleLines[applied.project.subtitleLines.length - 1];
+  assert.deepEqual(createdLine?.roleTypes, ["闺门旦"]);
+  assert.equal("roleType" in createdLine!, false);
+
+  const inverse = invertAnnotationCommandEnvelope(legacyEnvelope);
+  const restored = applyAnnotationLifecycleCommandToProject(applied.project, inverse);
+  assert.equal(restored.status, "applied");
+  if (restored.status === "applied") assert.deepEqual(restored.project, base);
 });
 
 test("工尺块生命周期保留完整符号并验证父块引用", () => {

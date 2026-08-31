@@ -56,7 +56,11 @@ export function resolveProjectAnnotationContent(
     const line = project.subtitleLines.find((item) => item.id === target.entityId);
     if (!line) return undefined;
     if (target.field === "deliveryMode") return line.deliveryMode;
-    if (target.field === "roleType") return line.roleType;
+    if (target.field === "roleTypes") return [...line.roleTypes];
+    // 旧命令只能精确表达零个或一个角色；多角色状态不能伪装成 null 后错误通过前置条件。
+    if (target.field === "roleType") {
+      return line.roleTypes.length <= 1 ? line.roleTypes[0] ?? null : undefined;
+    }
     return line.text;
   }
   if (target.entityType === "character") {
@@ -95,18 +99,18 @@ export function applyAnnotationContentItems(
     ...project,
     subtitleLines: updates.sentenceText.size === 0 &&
         updates.sentenceDeliveryMode.size === 0 &&
-        updates.sentenceRoleType.size === 0
+        updates.sentenceRoleTypes.size === 0
       ? project.subtitleLines
       : project.subtitleLines.map((item) => {
           const hasText = updates.sentenceText.has(item.id);
           const hasDeliveryMode = updates.sentenceDeliveryMode.has(item.id);
-          const hasRoleType = updates.sentenceRoleType.has(item.id);
-          if (!hasText && !hasDeliveryMode && !hasRoleType) return item;
+          const hasRoleTypes = updates.sentenceRoleTypes.has(item.id);
+          if (!hasText && !hasDeliveryMode && !hasRoleTypes) return item;
           return {
             ...item,
             ...(hasText ? { text: updates.sentenceText.get(item.id)! } : {}),
             ...(hasDeliveryMode ? { deliveryMode: updates.sentenceDeliveryMode.get(item.id)! } : {}),
-            ...(hasRoleType ? { roleType: updates.sentenceRoleType.get(item.id)! } : {}),
+            ...(hasRoleTypes ? { roleTypes: [...updates.sentenceRoleTypes.get(item.id)!] } : {}),
           };
         }),
     characterAnnotations: updates.characterChars.size === 0
@@ -179,7 +183,7 @@ function groupAnnotationContentUpdates(items: readonly AnnotationContentUpdateIt
   const groups = {
     sentenceText: new Map<string, string>(),
     sentenceDeliveryMode: new Map<string, "spoken" | "sung" | null>(),
-    sentenceRoleType: new Map<string, string | null>(),
+    sentenceRoleTypes: new Map<string, string[]>(),
     characterChars: new Map<string, string>(),
     actions: new Map<string, string>(),
     customBlockText: new Map<string, string>(),
@@ -189,7 +193,11 @@ function groupAnnotationContentUpdates(items: readonly AnnotationContentUpdateIt
   for (const item of items) {
     if (item.entityType === "sentence") {
       if (item.field === "deliveryMode") groups.sentenceDeliveryMode.set(item.entityId, item.after);
-      else if (item.field === "roleType") groups.sentenceRoleType.set(item.entityId, item.after);
+      else if (item.field === "roleTypes") groups.sentenceRoleTypes.set(item.entityId, [...item.after]);
+      // 历史单角色命令在文档模型边界正规化，后续 ProjectData 始终只保留 v7 数组字段。
+      else if (item.field === "roleType") {
+        groups.sentenceRoleTypes.set(item.entityId, item.after === null ? [] : [item.after]);
+      }
       else groups.sentenceText.set(item.entityId, item.after);
     }
     else if (item.entityType === "character") {

@@ -83,7 +83,8 @@ export type SubtitleLine = {
   endTime: number;
   // null 表示该维度尚未标注，不能用空字符串或默认值伪装完成状态。
   deliveryMode: SentenceDeliveryMode | null;
-  roleType: string | null;
+  // 空数组表示角色尚未标注；数组按项目角色列表顺序保存，不能包含重复或悬空引用。
+  roleTypes: string[];
 };
 
 export type CharacterAnnotation = {
@@ -280,7 +281,7 @@ export type ProjectData = {
 
 // SavedProjectFile 是本地 JSON 外层；uiState 只保存可恢复的编辑视图偏好，不代表平台 revision。
 export type SavedProjectFile = {
-  version: 1 | 2 | 3 | 4 | 5 | 6;
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   project: ProjectData;
   uiState?: {
     zoom?: number;

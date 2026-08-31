@@ -45,7 +45,7 @@ test("快照固定在左侧且当前新增实体方向正确", () => {
     startTime: 3,
     endTime: 4,
     deliveryMode: null,
-    roleType: null,
+    roleTypes: [],
   });
   const input = fixture(historical);
   input.currentFile.payload = current;

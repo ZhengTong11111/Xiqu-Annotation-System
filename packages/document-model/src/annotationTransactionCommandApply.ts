@@ -9,6 +9,7 @@ import {
 import type { ProjectData } from "./projectData.js";
 import { applyAnnotationContentCommandToProject } from "./annotationContentCommandApply.js";
 import { applyAnnotationLifecycleCommandToProject } from "./annotationLifecycleCommandApply.js";
+import { validateProjectAnnotationReferences } from "./annotationLifecycleCommand.js";
 import { applyAnnotationStateCommandToProject } from "./annotationStateCommandApply.js";
 import { applyTimelineTimingCommandToProject } from "./timelineTimingCommandApply.js";
 
@@ -46,7 +47,10 @@ export function applyAnnotationTransactionCommandToProject(
     }
     currentProject = result.project;
   }
-  return { status: "applied", project: currentProject, envelope };
+  // 事务允许角色配置与句子引用在子命令之间短暂不一致，但最终项目必须恢复完整引用图。
+  return validateProjectAnnotationReferences(currentProject)
+    ? { status: "applied", project: currentProject, envelope }
+    : { status: "blocked", childIndex: envelope.command.commands.length - 1, issues: "invalid_project_references" };
 }
 
 function assertNever(value: never): never {

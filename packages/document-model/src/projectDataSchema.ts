@@ -118,7 +118,12 @@ const subtitleLineSchema = withOrderedTimeRange({
   id: stableIdSchema,
   text: z.string(),
   deliveryMode: z.enum(["spoken", "sung"]).nullable(),
-  roleType: z.string().min(1).max(MAX_SENTENCE_ROLE_OPTION_LENGTH).nullable(),
+  roleTypes: z.array(
+    z.string().trim().min(1).max(MAX_SENTENCE_ROLE_OPTION_LENGTH),
+  ).max(MAX_SENTENCE_ROLE_OPTIONS).refine(
+    (roles) => new Set(roles).size === roles.length,
+    "句级角色行当不能包含重复项。",
+  ),
 });
 
 const sentenceAnnotationConfigSchema = z.strictObject({
@@ -290,11 +295,22 @@ export const currentProjectDataSchema = z.strictObject({
 }).superRefine((project, context) => {
   const validRoleOptions = new Set(project.sentenceAnnotationConfig.roleOptions);
   for (const [lineIndex, line] of project.subtitleLines.entries()) {
-    if (line.roleType !== null && !validRoleOptions.has(line.roleType)) {
+    for (const [roleIndex, role] of line.roleTypes.entries()) {
+      if (!validRoleOptions.has(role)) {
+        context.addIssue({
+          code: "custom",
+          message: "句级字幕引用了角色行当列表中不存在的选项。",
+          path: ["subtitleLines", lineIndex, "roleTypes", roleIndex],
+        });
+      }
+    }
+    // 当前格式固定按项目角色列表排序；这让相同角色集合在 JSON、命令前置条件和协作合并中只有一种表示。
+    const canonicalRoles = project.sentenceAnnotationConfig.roleOptions.filter((role) => line.roleTypes.includes(role));
+    if (canonicalRoles.some((role, roleIndex) => line.roleTypes[roleIndex] !== role)) {
       context.addIssue({
         code: "custom",
-        message: "句级字幕引用了角色行当列表中不存在的选项。",
-        path: ["subtitleLines", lineIndex, "roleType"],
+        message: "句级角色行当顺序必须与项目角色列表一致。",
+        path: ["subtitleLines", lineIndex, "roleTypes"],
       });
     }
   }

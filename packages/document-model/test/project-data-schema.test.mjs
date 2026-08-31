@@ -18,7 +18,7 @@ function createCurrentProject() {
       startTime: 1,
       endTime: 4,
       deliveryMode: "sung",
-      roleType: "闺门旦",
+      roleTypes: ["闺门旦"],
     }],
     characterAnnotations: [{
       id: "char-1",
@@ -187,8 +187,17 @@ test("当前 ProjectData parser 拒绝重复角色和句级悬空角色引用", 
   assert.equal(parseCurrentProjectData(duplicateRole).success, false);
 
   const danglingRole = createCurrentProject();
-  danglingRole.subtitleLines[0].roleType = "未定义行当";
+  danglingRole.subtitleLines[0].roleTypes = ["未定义行当"];
   assert.equal(parseCurrentProjectData(danglingRole).success, false);
+
+  const duplicateSentenceRole = createCurrentProject();
+  duplicateSentenceRole.subtitleLines[0].roleTypes.push("闺门旦");
+  assert.equal(parseCurrentProjectData(duplicateSentenceRole).success, false);
+
+  const outOfOrder = createCurrentProject();
+  outOfOrder.sentenceAnnotationConfig.roleOptions.push("巾生");
+  outOfOrder.subtitleLines[0].roleTypes = ["巾生", "闺门旦"];
+  assert.equal(parseCurrentProjectData(outOfOrder).success, false);
 });
 
 test("当前 ProjectData parser 在递归过深或循环对象上 fail closed", () => {

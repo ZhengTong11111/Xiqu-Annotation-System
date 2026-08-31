@@ -356,20 +356,20 @@ test("配置事务漏报项目级角色配置或遇到错父点轨时 fail close
 
 test("角色重命名先更新句子引用再发布配置，并可完整反向", () => {
   const base = createProject();
-  const previousRole = base.subtitleLines[0].roleType;
+  const previousRole = base.subtitleLines[0].roleTypes[0];
   assert.ok(previousRole);
   const next = structuredClone(base);
   next.subtitleLines = next.subtitleLines.map((line) =>
-    line.roleType === previousRole ? { ...line, roleType: "杜丽娘（闺门旦）" } : line);
+    line.roleTypes.includes(previousRole) ? { ...line, roleTypes: ["杜丽娘（闺门旦）"] } : line);
   next.sentenceAnnotationConfig.roleOptions = next.sentenceAnnotationConfig.roleOptions.map((role) =>
     role === previousRole ? "杜丽娘（闺门旦）" : role);
 
   const envelope = buildProjectTrackStructureTransactionCommand(base, next, {
     stateTargets: [{ entityType: "sentence-annotation-config", entityId: "sentence-annotation-config" }],
-    contentTargets: base.subtitleLines.filter((line) => line.roleType === previousRole).map((line) => ({
+    contentTargets: base.subtitleLines.filter((line) => line.roleTypes.includes(previousRole)).map((line) => ({
       entityType: "sentence" as const,
       entityId: line.id,
-      field: "roleType" as const,
+      field: "roleTypes" as const,
     })),
   });
 

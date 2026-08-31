@@ -7655,6 +7655,72 @@ select {
   font-size: 11px;
 }
 
+/* 句级多角色选择器沿用属性面板的紧凑控件尺寸，长角色组合只截断显示而不撑宽侧栏。 */
+.sentence-role-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 31px;
+  padding: 5px 8px;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid #c7d2df;
+  border-radius: var(--radius-control);
+  text-align: left;
+}
+
+.sentence-role-select-trigger span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sentence-role-select-content {
+  z-index: 340;
+  min-width: 180px;
+  max-width: min(320px, calc(100vw - 24px));
+  max-height: min(320px, calc(100vh - 24px));
+  overflow: auto;
+  padding: 5px;
+  color: var(--ink);
+  background: var(--panel-strong);
+  border: 1px solid rgba(149, 164, 183, 0.75);
+  border-radius: 6px;
+  box-shadow: 0 12px 28px rgb(25 38 55 / 22%);
+}
+
+.sentence-role-select-content [role="menuitemcheckbox"],
+.sentence-role-select-content [role="menuitem"] {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 29px;
+  padding: 5px 9px 5px 28px;
+  border-radius: 4px;
+  outline: 0;
+  font-size: 12px;
+}
+
+.sentence-role-select-content [data-highlighted] {
+  color: #fff;
+  background: var(--accent);
+}
+
+.sentence-role-select-check {
+  position: absolute;
+  left: 9px;
+}
+
+.sentence-role-select-separator {
+  height: 1px;
+  margin: 4px 3px;
+  background: rgba(149, 164, 183, 0.45);
+}
+
 .inspector-value {
   min-height: 20px;
   padding: 6px 8px;

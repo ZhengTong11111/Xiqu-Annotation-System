@@ -64,7 +64,7 @@ test("句级分类和角色配置变化进入明确差异字段", () => {
   right.subtitleLines[0] = {
     ...right.subtitleLines[0]!,
     deliveryMode: "spoken",
-    roleType: "小生",
+    roleTypes: ["小生"],
   };
 
   const result = buildAnnotationDiff(left, right);
@@ -234,8 +234,8 @@ function projectFixture(): ProjectData {
     },
     sentenceAnnotationConfig: { roleOptions: ["闺门旦"] },
     subtitleLines: [
-      { id: "line-1", text: "那一答", startTime: 0, endTime: 2, deliveryMode: "sung", roleType: "闺门旦" },
-      { id: "line-2", text: "可是", startTime: 2, endTime: 3, deliveryMode: null, roleType: null },
+      { id: "line-1", text: "那一答", startTime: 0, endTime: 2, deliveryMode: "sung", roleTypes: ["闺门旦"] },
+      { id: "line-2", text: "可是", startTime: 2, endTime: 3, deliveryMode: null, roleTypes: [] },
     ],
     characterAnnotations: [
       {

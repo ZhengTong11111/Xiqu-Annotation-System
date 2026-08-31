@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { RefObject } from "react";
 import {
   MAX_ATOMIC_ANNOTATION_COMMAND_OPERATIONS,
+  MAX_ANNOTATION_COMMAND_ITEMS,
   buildProjectSnapshotBoundaryEnvelope,
   getAnnotationMutationLeasePurposeForCommand,
   type AnnotationCommandEnvelope,
@@ -240,6 +241,12 @@ import {
   reorderSentenceRoleOptions,
   type SentenceRoleDropEdge,
 } from "./utils/sentenceRoleReorder";
+import {
+  mergeSentenceRoleTypes,
+  normalizeSentenceRoleTypes,
+  replaceSentenceRoleType,
+  toggleSentenceRoleType,
+} from "./utils/sentenceRoleSelection";
 import { generateBanyanMarksFromGongche, getBanyanSubtypeLabel } from "./utils/banyan";
 import { repairBanyanGongcheReferences } from "./utils/banyanReferenceIntegrity";
 import {
@@ -2862,26 +2869,36 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function updateSentenceClassification(
     id: string,
-    changes: Partial<Pick<SubtitleLine, "deliveryMode" | "roleType">>,
+    changes: Partial<Pick<SubtitleLine, "deliveryMode" | "roleTypes">>,
   ) {
     const baseProject = projectRef.current;
     const currentLine = baseProject.subtitleLines.find((line) => line.id === id);
     if (!currentLine) return;
     if (
-      changes.roleType !== undefined &&
-      changes.roleType !== null &&
-      !baseProject.sentenceAnnotationConfig.roleOptions.includes(changes.roleType)
+      changes.roleTypes !== undefined &&
+      (new Set(changes.roleTypes).size !== changes.roleTypes.length ||
+        changes.roleTypes.some((role) => !baseProject.sentenceAnnotationConfig.roleOptions.includes(role)))
     ) {
       window.alert("所选角色行当已不存在，请刷新设置后重试。");
       return;
     }
+    const normalizedChanges = changes.roleTypes === undefined
+      ? changes
+      : {
+          ...changes,
+          // 保存顺序由项目角色列表统一决定，点击先后不会制造无意义的协作差异。
+          roleTypes: normalizeSentenceRoleTypes(
+            baseProject.sentenceAnnotationConfig.roleOptions,
+            changes.roleTypes,
+          ),
+        };
     const nextProject: ProjectData = {
       ...baseProject,
       subtitleLines: baseProject.subtitleLines.map((line) =>
-        line.id === id ? { ...line, ...changes } : line),
+        line.id === id ? { ...line, ...normalizedChanges } : line),
     };
-    const contentTargets = (Object.keys(changes) as Array<keyof typeof changes>).flatMap((field) =>
-      currentLine[field] !== changes[field]
+    const contentTargets = (Object.keys(normalizedChanges) as Array<keyof typeof normalizedChanges>).flatMap((field) =>
+      !areProjectValuesEqual(currentLine[field], normalizedChanges[field])
         ? [{ entityType: "sentence" as const, entityId: id, field }]
         : []);
     // 没有实际字段变化时不制造历史和待提交操作；协作端也无需接收空命令。
@@ -2903,18 +2920,33 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   ) {
     const buildNextProject = (baseProject: ProjectData): ProjectData => {
       const update = buildUpdate(baseProject);
-      const nextLines = update.replaceRole
-        ? baseProject.subtitleLines.map((line) =>
-            line.roleType === update.replaceRole?.from
-              ? { ...line, roleType: update.replaceRole.to }
-              : line)
-        : baseProject.subtitleLines;
+      const nextLines = baseProject.subtitleLines.map((line) => {
+        const nextRoleTypes = update.replaceRole
+          ? replaceSentenceRoleType(
+              update.roleOptions,
+              line.roleTypes,
+              update.replaceRole.from,
+              update.replaceRole.to,
+            )
+          : normalizeSentenceRoleTypes(update.roleOptions, line.roleTypes);
+        return areProjectValuesEqual(nextRoleTypes, line.roleTypes) ? line : { ...line, roleTypes: nextRoleTypes };
+      });
       return {
         ...baseProject,
         sentenceAnnotationConfig: { roleOptions: update.roleOptions },
         subtitleLines: nextLines,
       };
     };
+    const previewBase = projectRef.current;
+    const previewNext = buildNextProject(previewBase);
+    const affectedSentenceCount = previewBase.subtitleLines.filter((line) => {
+      const nextLine = previewNext.subtitleLines.find((candidate) => candidate.id === line.id);
+      return nextLine && !areProjectValuesEqual(nextLine.roleTypes, line.roleTypes);
+    }).length;
+    if (affectedSentenceCount + 1 > MAX_ANNOTATION_COMMAND_ITEMS) {
+      window.alert(`本次角色列表修改会同时影响 ${affectedSentenceCount} 个句子，超过单次安全提交上限，请拆分处理。`);
+      return Promise.resolve(false);
+    }
     return runTrackStructureMutation(
       buildNextProject,
       (baseProject, nextProject) => buildProjectTrackStructureTransactionCommand(baseProject, nextProject, {
@@ -2924,8 +2956,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         }],
         contentTargets: baseProject.subtitleLines.flatMap((line) => {
           const nextLine = nextProject.subtitleLines.find((candidate) => candidate.id === line.id);
-          return nextLine?.roleType !== line.roleType
-            ? [{ entityType: "sentence" as const, entityId: line.id, field: "roleType" as const }]
+          return nextLine && !areProjectValuesEqual(nextLine.roleTypes, line.roleTypes)
+            ? [{ entityType: "sentence" as const, entityId: line.id, field: "roleTypes" as const }]
             : [];
         }),
       }),
@@ -4340,7 +4372,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             startTime: requestedRange.startTime,
             endTime: requestedRange.endTime,
             deliveryMode: null,
-            roleType: null,
+            roleTypes: [],
           },
         ]),
         characterAnnotations: [
@@ -5084,7 +5116,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               startTime: lineCharacters[0].startTime,
               endTime: lineCharacters[characterIndex - 1].endTime,
               deliveryMode: currentProject.subtitleLines.find((line) => line.id === currentCharacter.lineId)?.deliveryMode ?? null,
-              roleType: currentProject.subtitleLines.find((line) => line.id === currentCharacter.lineId)?.roleType ?? null,
+              roleTypes: [...(currentProject.subtitleLines.find((line) => line.id === currentCharacter.lineId)?.roleTypes ?? [])],
             },
           ],
           characterAnnotations: currentProject.characterAnnotations.map((item) =>
@@ -5113,7 +5145,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             startTime: lineCharacters[characterIndex + 1].startTime,
             endTime: lineCharacters[lineCharacters.length - 1].endTime,
             deliveryMode: currentProject.subtitleLines.find((line) => line.id === currentCharacter.lineId)?.deliveryMode ?? null,
-            roleType: currentProject.subtitleLines.find((line) => line.id === currentCharacter.lineId)?.roleType ?? null,
+            roleTypes: [...(currentProject.subtitleLines.find((line) => line.id === currentCharacter.lineId)?.roleTypes ?? [])],
           },
         ],
         characterAnnotations: currentProject.characterAnnotations.map((item) =>
@@ -8110,15 +8142,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               <div className="character-context-menu-label">角色行当</div>
               <button
                 type="button"
-                className={contextMenuLine.roleType === null ? "menu-option-active" : ""}
+                className={contextMenuLine.roleTypes.length === 0 ? "menu-option-active" : ""}
                 disabled={Boolean(sentenceClassificationEditingBlockedReason)}
                 title={sentenceClassificationEditingBlockedReason}
                 onClick={() => {
-                  updateSentenceClassification(contextMenuLine.id, { roleType: null });
-                  setBlockContextMenu(null);
+                  updateSentenceClassification(contextMenuLine.id, { roleTypes: [] });
                 }}
               >
-                {contextMenuLine.roleType === null ? "✓ 未选择" : "未选择"}
+                {contextMenuLine.roleTypes.length === 0 ? "✓ 未选择" : "未选择"}
               </button>
               {project.sentenceAnnotationConfig.roleOptions.length === 0 ? (
                 <button type="button" disabled>尚未设置角色行当</button>
@@ -8126,15 +8157,20 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                 <button
                   key={role}
                   type="button"
-                  className={contextMenuLine.roleType === role ? "menu-option-active" : ""}
+                  className={contextMenuLine.roleTypes.includes(role) ? "menu-option-active" : ""}
                   disabled={Boolean(sentenceClassificationEditingBlockedReason)}
                   title={sentenceClassificationEditingBlockedReason}
                   onClick={() => {
-                    updateSentenceClassification(contextMenuLine.id, { roleType: role });
-                    setBlockContextMenu(null);
+                    updateSentenceClassification(contextMenuLine.id, {
+                      roleTypes: toggleSentenceRoleType(
+                        project.sentenceAnnotationConfig.roleOptions,
+                        contextMenuLine.roleTypes,
+                        role,
+                      ),
+                    });
                   }}
                 >
-                  {contextMenuLine.roleType === role ? `✓ ${role}` : role}
+                  {contextMenuLine.roleTypes.includes(role) ? `✓ ${role}` : role}
                 </button>
               ))}
               <div className="character-context-menu-divider" />
@@ -9162,7 +9198,7 @@ function cloneProjectForMerge(project: ProjectData): ProjectData {
     sentenceAnnotationConfig: {
       roleOptions: [...project.sentenceAnnotationConfig.roleOptions],
     },
-    subtitleLines: project.subtitleLines.map((line) => ({ ...line })),
+    subtitleLines: project.subtitleLines.map((line) => ({ ...line, roleTypes: [...line.roleTypes] })),
     characterAnnotations: project.characterAnnotations.map((item) => ({ ...item })),
     gongcheAnnotations: project.gongcheAnnotations.map((item) => ({
       ...item,
@@ -9310,10 +9346,13 @@ function mergeBuiltinTrackFromImport(
     project.subtitleLines = [
       ...project.subtitleLines.map((line) =>
         mergeMode === "replace" && sourceLineById.has(line.id)
-          ? { ...sourceLineById.get(line.id)! }
+          ? { ...sourceLineById.get(line.id)!, roleTypes: [...sourceLineById.get(line.id)!.roleTypes] }
           : line),
       ...sourceLines.filter((sourceLine) =>
-        !project.subtitleLines.some((line) => line.id === sourceLine.id)).map((line) => ({ ...line })),
+        !project.subtitleLines.some((line) => line.id === sourceLine.id)).map((line) => ({
+          ...line,
+          roleTypes: [...line.roleTypes],
+        })),
     ];
     return syncSubtitleLines(project, [
       ...oldLineIds,
@@ -10495,7 +10534,7 @@ function splitCharactersByOriginalContinuity(
 function buildSubtitleLineFromCharacters(
   lineId: string,
   characters: CharacterAnnotation[],
-  classification: Pick<SubtitleLine, "deliveryMode" | "roleType">,
+  classification: Pick<SubtitleLine, "deliveryMode" | "roleTypes">,
 ): SubtitleLine {
   const sortedCharacters = sortCharactersByTime(characters);
   return {
@@ -10507,26 +10546,23 @@ function buildSubtitleLineFromCharacters(
   };
 }
 
-// 合并跨句逐字块时，每个维度只有在所有来源句持有相同合法值时才保留；否则重新标注。
+// 合并跨句逐字块时，发声方式只有完全一致才保留；角色则取所有来源句的合法并集。
 function getClassificationForCharacterLines(
   project: ProjectData,
   characters: CharacterAnnotation[],
-): Pick<SubtitleLine, "deliveryMode" | "roleType"> {
+): Pick<SubtitleLine, "deliveryMode" | "roleTypes"> {
   const sourceLineIds = new Set(characters.map((character) => character.lineId));
   const sourceLines = project.subtitleLines.filter((line) => sourceLineIds.has(line.id));
   const deliveryModes = new Set(sourceLines.map((line) => line.deliveryMode));
-  const roleTypes = new Set(sourceLines.map((line) => line.roleType));
   const deliveryMode = sourceLines.length > 0 && deliveryModes.size === 1
     ? sourceLines[0].deliveryMode
     : null;
-  const candidateRole = sourceLines.length > 0 && roleTypes.size === 1
-    ? sourceLines[0].roleType
-    : null;
   return {
     deliveryMode,
-    roleType: candidateRole && project.sentenceAnnotationConfig.roleOptions.includes(candidateRole)
-      ? candidateRole
-      : null,
+    roleTypes: mergeSentenceRoleTypes(
+      project.sentenceAnnotationConfig.roleOptions,
+      sourceLines.map((line) => line.roleTypes),
+    ),
   };
 }
 
@@ -10550,7 +10586,7 @@ function syncSubtitleLine(project: ProjectData, lineId: string) {
     endTime: lineCharacters[lineCharacters.length - 1].endTime,
     // 逐字同步只更新句文本和边界，已有句级学术标注必须原样保留。
     deliveryMode: existingLine?.deliveryMode ?? null,
-    roleType: existingLine?.roleType ?? null,
+    roleTypes: [...(existingLine?.roleTypes ?? [])],
   };
 
   const nextLines = existingLine

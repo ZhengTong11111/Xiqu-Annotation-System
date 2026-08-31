@@ -9650,3 +9650,49 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **待人工验收**：用两个标签页复现“旧页重复提交服务器已完成的相同结构设置”，确认状态自动恢复“已同步”且
   不再要求人工冲突整合；再制造一处额外正文差异，确认仍明确进入冲突。本轮按用户要求仅本地修改和提交，不推送、
   不进入维护模式、不部署生产服务器。
+
+## 2026-08-31：项目文件 v7 与句级角色行当多选
+
+### 文件合同与兼容边界
+
+- 句级角色从 v6 的 nullable `roleType` 单值升级为 v7 `roleTypes` 数组；空数组表示尚未标注，至少一个合法角色和
+  合法“念白/唱”同时存在才算句级完成。当前 schema 要求数组有界、唯一、全部引用项目角色列表，并严格按项目
+  角色顺序保存，以免相同集合因点击顺序不同制造 JSON、命令前置条件和协作冲突差异。
+- `PROJECT_FILE_VERSION` 升到 7。唯一导入迁移入口把 v1-v5 缺失字段和 v6 null 转为空数组，把 v6 合法单值转为
+  单元素数组；输入显式包含 `roleTypes` 时不再回退读取旧单值。迁移会过滤空白、重复和悬空角色，再按项目配置
+  顺序输出。当前 ProjectData 与新导出不保留双字段，本轮不需要 Prisma migration。
+- shared 内容命令新增数组字段 `roleTypes`，句生命周期快照同步保存完整数组并断开可变引用。数据库历史 operation
+  和旧浏览器草稿仍可在严格 legacy parser/apply 边界读取标量 `roleType`：null 映射为空数组，字符串映射为单元素
+  数组；当前句已变为多角色时，旧标量 before 无法无损表达并会保持 precondition 失败，不能覆盖新状态。新 builder
+  只生成数组命令，同一批次也禁止混装新旧角色字段后依赖顺序覆盖。
+
+### 业务联动、UI 与代码整理
+
+- 新增 `sentenceRoleSelection.ts` 纯 helper，统一角色集合的规范化、切换、改名/删除替换和跨句并集。角色重命名、
+  删除、替换和重排继续与项目配置 state 叶组成一个 mutation-lease 结构事务；删除一个角色只移除该成员并保留
+  同句其他角色，替换到已存在角色会去重。联动超过 500 项命令预算时明确阻止，不静默截断或退回整份 JSON。
+- 句子拆分深拷贝完整角色数组；跨句合并保留合法角色并集，发声方式仍只有来源一致时保留。旧导入合并和项目克隆
+  补齐数组深拷贝，避免句子之间共享可变引用。结构化比较使用 `roleTypes`，选择性整合一条来源句时补齐全部角色
+  定义，最终引用校验覆盖唯一性、悬空项和项目顺序。
+- 属性 Inspector 使用 Radix Dropdown Menu 的复选列表，支持连续勾选与清空；右侧句级列表右键菜单使用 Radix
+  CheckboxItem，Timeline 快捷菜单也支持连续切换。三处复用同一纯 helper，摘要统一用“、”连接多个角色，既有按
+  真实文本长度逐级隐藏的 Timeline 标签算法保持不变。为获得稳定焦点、键盘导航和菜单行为，新增成熟依赖
+  `@radix-ui/react-dropdown-menu`，没有手写全局点击或焦点状态机。
+- 清理了当前业务代码中所有单角色读取与写入；剩余 `roleType` 只存在于带中文说明的 v6 文件迁移、历史命令类型、
+  parser/apply 和专门兼容测试。`AGENTS.md` 已更新 v7 合同、命令边界和角色集合 helper 的所有权规则。
+
+### 测试、自审与阶段状态
+
+- 文件/schema/命令专项通过：shared annotation commands 25/25、当前 ProjectData schema 6/6、内容/生命周期/事务/
+  角色配置及迁移联合测试 49/49、角色集合 helper 3/3；另有 annotation diff 11/11、merge apply 5/5、merge plan
+  11/11、merge preparation 4/4、operation catch-up 20/20。
+- 平台回归通过：draft 41/41、atomic submit 34/34、conflict rebase 13/13、rebase preparation 6/6；完整
+  `npm run test:api` 259/259 通过。完整 `npm run build` 通过 Prisma Client/schema guard、shared、document-model、
+  Web 和 API，仅保留既有 Vite 主 chunk 超过 500 kB 提示；`git diff --check` 通过。
+- 本机 `http://127.0.0.1:5173/` 实际进入本地标注模式：在 Inspector 连续勾选“闺门旦、巾生”后菜单保持展开，
+  属性触发区、句级列表和 Timeline 摘要同时更新；句级列表右键角色子菜单显示两个独立 checked 项，右侧栏和时间轴
+  布局未被撑坏。
+- **已完成**：v7 文件迁移、严格 schema、当前/历史命令、角色管理联动、拆分合并、三处多选 UI、比较整合、草稿/
+  追赶/API 回归、浏览器验收、规范与 roadmap 更新。
+- **待人工验收**：使用真实 v6 JSON 导入后选择三人以上合说并导出 v7；在双账号平台会话中分别修改同一句角色，
+  核对后提交端协调、undo/redo 和自动保存。本轮没有推送或部署生产服务器。

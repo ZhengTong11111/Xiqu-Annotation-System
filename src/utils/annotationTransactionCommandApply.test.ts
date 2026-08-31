@@ -15,7 +15,7 @@ function createProject(): ProjectData {
     startTime: 1,
     endTime: 2,
     deliveryMode: null,
-    roleType: null,
+    roleTypes: [],
   }];
   project.characterAnnotations = [{
     id: "char-a",
@@ -138,7 +138,7 @@ test("新句与首个逐字可在同一生命周期批次创建和删除", () =>
   const base = createProject();
   const next = structuredClone(base);
   next.subtitleLines.push({
-    id: "line-b", text: "新", startTime: 4, endTime: 5, deliveryMode: null, roleType: null,
+    id: "line-b", text: "新", startTime: 4, endTime: 5, deliveryMode: null, roleTypes: [],
   });
   next.characterAnnotations.push({
     id: "char-new",
@@ -163,7 +163,7 @@ test("新句与首个逐字可在同一生命周期批次创建和删除", () =>
 test("删除逐字和关联工尺时句同步属于同一原子事务", () => {
   const base = createProject();
   base.subtitleLines[0] = {
-    id: "line-a", text: "甲乙", startTime: 1, endTime: 3, deliveryMode: null, roleType: null,
+    id: "line-a", text: "甲乙", startTime: 1, endTime: 3, deliveryMode: null, roleTypes: [],
   };
   base.characterAnnotations.push({
     id: "char-b",
@@ -177,7 +177,7 @@ test("删除逐字和关联工尺时句同步属于同一原子事务", () => {
   next.characterAnnotations = next.characterAnnotations.filter((item) => item.id !== "char-a");
   next.gongcheAnnotations = [];
   next.subtitleLines[0] = {
-    id: "line-a", text: "乙", startTime: 2, endTime: 3, deliveryMode: null, roleType: null,
+    id: "line-a", text: "乙", startTime: 2, endTime: 3, deliveryMode: null, roleTypes: [],
   };
   const envelope = buildProjectAnnotationTransactionCommand(base, next, {
     contentTargets: [{ entityType: "sentence", entityId: "line-a", field: "text" }],

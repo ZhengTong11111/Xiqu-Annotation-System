@@ -12,6 +12,7 @@ import {
   type CustomBlockLifecycleSnapshot,
   type GongcheBlockLifecycleSnapshot,
   type GongcheSymbolLifecycleSnapshot,
+  type LegacySentenceLifecycleSnapshot,
   type SentenceLifecycleSnapshot,
 } from "@xiqu/shared";
 import type {
@@ -43,6 +44,7 @@ export type AnnotationLifecycleTarget = Pick<
 
 type LifecycleSnapshot =
   | SentenceLifecycleSnapshot
+  | LegacySentenceLifecycleSnapshot
   | CharacterLifecycleSnapshot
   | ActionLifecycleSnapshot
   | BanyanSectionStateSnapshot
@@ -158,7 +160,7 @@ export function applyAnnotationLifecycleItems(
 
   const subtitleLines = sentenceItems.length === 0
     ? project.subtitleLines
-    : rebuildLifecycleCollection(project.subtitleLines, sentenceItems, (state) => ({ ...state.entity }));
+    : rebuildLifecycleCollection(project.subtitleLines, sentenceItems, restoreSentenceSnapshot);
   const characterAnnotations = characterItems.length === 0
     ? project.characterAnnotations
     : rebuildLifecycleCollection(project.characterAnnotations, characterItems, restoreCharacterSnapshot);
@@ -322,7 +324,24 @@ function resolveCollectionTarget<TEntity extends { id: string }, TSnapshot exten
 }
 
 function createSentenceSnapshot(line: SubtitleLine): SentenceLifecycleSnapshot {
-  return { ...line };
+  return { ...line, roleTypes: [...line.roleTypes] };
+}
+
+// 生命周期旧命令可能携带 v6 roleType；恢复后立即收敛为当前 v7 ProjectData，旧字段不继续传播。
+function restoreSentenceSnapshot(
+  state: AnnotationLifecycleState<SentenceLifecycleSnapshot | LegacySentenceLifecycleSnapshot>,
+): SubtitleLine {
+  const snapshot = state.entity;
+  return "roleTypes" in snapshot
+    ? { ...snapshot, roleTypes: [...snapshot.roleTypes] }
+    : {
+        id: snapshot.id,
+        text: snapshot.text,
+        startTime: snapshot.startTime,
+        endTime: snapshot.endTime,
+        deliveryMode: snapshot.deliveryMode,
+        roleTypes: snapshot.roleType === null ? [] : [snapshot.roleType],
+      };
 }
 
 function createCharacterSnapshot(character: CharacterAnnotation): CharacterLifecycleSnapshot {
@@ -536,6 +555,15 @@ function groupScopedLifecycleItems(
 
 // 批次完成后的引用图才是权威结果；父子同批删除不应被中间态误判为孤儿。
 export function validateProjectAnnotationReferences(project: ProjectData) {
+  const roleOptions = project.sentenceAnnotationConfig.roleOptions;
+  const validRoles = new Set(roleOptions);
+  if (validRoles.size !== roleOptions.length || project.subtitleLines.some((line) => {
+    const canonicalRoles = roleOptions.filter((role) => line.roleTypes.includes(role));
+    return new Set(line.roleTypes).size !== line.roleTypes.length ||
+      line.roleTypes.some((role) => !validRoles.has(role)) ||
+      canonicalRoles.some((role, index) => line.roleTypes[index] !== role);
+  })) return false;
+
   const lineIds = new Set(project.subtitleLines.map((line) => line.id));
   if (lineIds.size !== project.subtitleLines.length ||
     new Set(project.characterAnnotations.map((character) => character.id)).size !== project.characterAnnotations.length ||

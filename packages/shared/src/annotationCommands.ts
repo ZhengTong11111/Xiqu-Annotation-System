@@ -144,6 +144,8 @@ export type TimelineItemsTimingUpdateCommand = {
 export type AnnotationContentUpdateItem =
   | ContentUpdateItem<"sentence", "text">
   | ContentUpdateItem<"sentence", "deliveryMode", undefined, "spoken" | "sung" | null>
+  | ContentUpdateItem<"sentence", "roleTypes", undefined, string[]>
+  // 仅用于回放 v6 时代已持久化的命令；当前客户端不得再生成 roleType 单值命令。
   | ContentUpdateItem<"sentence", "roleType", undefined, string | null>
   | ContentUpdateItem<"character", "char">
   | ContentUpdateItem<"action", "label", string>
@@ -154,7 +156,7 @@ type ContentUpdateItem<
   TEntity extends string,
   TField extends string,
   TTrackId extends string | undefined = undefined,
-  TValue extends string | null = string,
+  TValue = string,
 > = {
   entityType: TEntity;
   entityId: string;
@@ -214,6 +216,11 @@ export type SentenceLifecycleSnapshot = {
   startTime: number;
   endTime: number;
   deliveryMode: "spoken" | "sung" | null;
+  roleTypes: string[];
+};
+
+// 旧快照只在严格协议解析和回放边界存在，避免把已保存的 v6 草稿、操作日志变成不可恢复数据。
+export type LegacySentenceLifecycleSnapshot = Omit<SentenceLifecycleSnapshot, "roleTypes"> & {
   roleType: string | null;
 };
 
@@ -302,7 +309,7 @@ export type AnnotationLifecycleState<TEntity> = {
 };
 
 export type AnnotationLifecycleUpdateItem =
-  | GlobalLifecycleUpdateItem<"sentence", SentenceLifecycleSnapshot>
+  | GlobalLifecycleUpdateItem<"sentence", SentenceLifecycleSnapshot | LegacySentenceLifecycleSnapshot>
   | GlobalLifecycleUpdateItem<"character", CharacterLifecycleSnapshot>
   | GlobalLifecycleUpdateItem<"banyan-section", BanyanSectionStateSnapshot>
   | GlobalLifecycleUpdateItem<"banyan-mark", BanyanMarkStateSnapshot>
@@ -542,13 +549,13 @@ export function parseTimelineTimingCommandEnvelope(value: unknown): TimelineTimi
   };
 }
 
-// 内容 builder 去除 no-op、确定排序并返回独立字符串快照。
+// 内容 builder 去除 no-op、确定排序，并切断角色数组与调用者之间的可变引用。
 export function buildAnnotationContentUpdateEnvelope(
   items: readonly AnnotationContentUpdateItem[],
 ): AnnotationContentCommandEnvelope | null {
   const changedItems = items
-    .filter((item) => item.before !== item.after)
-    .map((item) => ({ ...item }))
+    .filter((item) => !areLifecycleValuesEqual(item.before, item.after))
+    .map((item) => structuredClone(item))
     .sort((left, right) => compareStableKeys(
       getAnnotationContentTargetKey(left),
       getAnnotationContentTargetKey(right),
@@ -573,11 +580,17 @@ export function parseAnnotationContentCommandEnvelope(
     value.command.items.length > MAX_ANNOTATION_COMMAND_ITEMS) return null;
   const items: AnnotationContentUpdateItem[] = [];
   const keys = new Set<string>();
+  const sentenceRoleTargets = new Set<string>();
   for (const rawItem of value.command.items) {
     const item = parseContentUpdateItem(rawItem);
-    if (!item || item.before === item.after) return null;
+    if (!item || areLifecycleValuesEqual(item.before, item.after)) return null;
     const key = getAnnotationContentTargetKey(item);
     if (keys.has(key)) return null;
+    // roleType 与 roleTypes 指向同一业务字段，禁止一个批次混装新旧协议后依赖应用顺序覆盖结果。
+    if (item.entityType === "sentence" && (item.field === "roleType" || item.field === "roleTypes")) {
+      if (sentenceRoleTargets.has(item.entityId)) return null;
+      sentenceRoleTargets.add(item.entityId);
+    }
     keys.add(key);
     items.push(item);
   }
@@ -1068,8 +1081,9 @@ export type AnnotationContentActual = AnnotationContentUpdateItem extends infer 
   : never;
 
 export type AnnotationContentPreconditionIssue =
-  | { code: "target_missing"; targetKey: string; expected: string | null }
-  | { code: "before_mismatch"; targetKey: string; expected: string | null; actual: string | null };
+  | { code: "target_missing"; targetKey: string; expected: AnnotationContentUpdateItem["before"] }
+  | { code: "before_mismatch"; targetKey: string; expected: AnnotationContentUpdateItem["before"];
+      actual: AnnotationContentUpdateItem["before"] };
 
 // 内容命令同样先检查全部稳定目标；任一缺失或 before 不匹配都阻断整批应用。
 export function assessAnnotationContentExecution(
@@ -1081,21 +1095,21 @@ export function assessAnnotationContentExecution(
   | { status: "ready"; envelope: AnnotationContentCommandEnvelope } {
   const envelope = parseAnnotationContentCommandEnvelope(value);
   if (!envelope) return { status: "invalid_command" };
-  const actualByKey = new Map<string, string | null>();
+  const actualByKey = new Map<string, AnnotationContentUpdateItem["before"]>();
   const duplicates = new Set<string>();
   for (const actual of actuals) {
     const key = getAnnotationContentTargetKey(actual);
     if (actualByKey.has(key) || duplicates.has(key)) {
       actualByKey.delete(key);
       duplicates.add(key);
-    } else actualByKey.set(key, actual.current);
+    } else actualByKey.set(key, Array.isArray(actual.current) ? [...actual.current] : actual.current);
   }
   const issues: AnnotationContentPreconditionIssue[] = [];
   for (const item of envelope.command.items) {
     const key = getAnnotationContentTargetKey(item);
     const actual = actualByKey.get(key);
     if (actual === undefined) issues.push({ code: "target_missing", targetKey: key, expected: item.before });
-    else if (actual !== item.before) {
+    else if (!areLifecycleValuesEqual(actual, item.before)) {
       issues.push({ code: "before_mismatch", targetKey: key, expected: item.before, actual });
     }
   }
@@ -1250,11 +1264,27 @@ function parseContentUpdateItem(value: unknown): AnnotationContentUpdateItem | n
     : ["entityType", "entityId", "field", "before", "after"];
   if (!isExactRecord(value, keys) ||
     !isSafeId(value.entityId)) return null;
+  // 当前多角色命令只接受有界、去重且顺序稳定的字符串数组；角色是否属于项目配置由文档模型校验。
+  if (value.entityType === "sentence" && value.field === "roleTypes") {
+    const parseRoles = (item: unknown): string[] | null => {
+      if (!Array.isArray(item) || item.length > MAX_SENTENCE_ROLE_OPTIONS) return null;
+      const roles = item.filter((role): role is string =>
+        typeof role === "string" && role.length <= MAX_SENTENCE_ROLE_OPTION_LENGTH &&
+        role.trim().length > 0 && role === role.trim());
+      return roles.length === item.length && new Set(roles).size === roles.length ? roles : null;
+    };
+    const before = parseRoles(value.before);
+    const after = parseRoles(value.after);
+    return !hasTrack && before && after
+      ? { ...value, before, after } as AnnotationContentUpdateItem
+      : null;
+  }
+
   const isBoundedNullableString = (item: unknown): item is string | null =>
     item === null || (typeof item === "string" && item.length <= MAX_ANNOTATION_CONTENT_LENGTH);
   if (!isBoundedNullableString(value.before) || !isBoundedNullableString(value.after)) return null;
 
-  // 句级固定枚举在协议入口严格校验；roleType 允许 null 表示尚未标注。
+  // 句级固定枚举在协议入口严格校验；roleType 仅保留给历史单角色命令回放。
   if (value.entityType === "sentence" && value.field === "deliveryMode") {
     const validMode = (item: unknown) => item === null || item === "spoken" || item === "sung";
     return !hasTrack && validMode(value.before) && validMode(value.after)
@@ -1563,24 +1593,37 @@ function parseAttachedPointLifecycleSnapshot(value: unknown): AttachedPointLifec
   return { id: value.id, time: value.time, label: value.label };
 }
 
-function parseSentenceLifecycleSnapshot(value: unknown): SentenceLifecycleSnapshot | null {
-  if (!isExactRecord(value, ["id", "text", "startTime", "endTime", "deliveryMode", "roleType"]) ||
+function parseSentenceLifecycleSnapshot(
+  value: unknown,
+): SentenceLifecycleSnapshot | LegacySentenceLifecycleSnapshot | null {
+  const isCurrent = isRecord(value) && Object.prototype.hasOwnProperty.call(value, "roleTypes");
+  const keys = isCurrent
+    ? ["id", "text", "startTime", "endTime", "deliveryMode", "roleTypes"]
+    : ["id", "text", "startTime", "endTime", "deliveryMode", "roleType"];
+  if (!isExactRecord(value, keys) ||
     !isSafeId(value.id) ||
     typeof value.text !== "string" ||
     value.text.length > MAX_ANNOTATION_CONTENT_LENGTH ||
     !isNonNegativeFiniteNumber(value.startTime) ||
     !isNonNegativeFiniteNumber(value.endTime) || value.endTime < value.startTime ||
-    (value.deliveryMode !== null && value.deliveryMode !== "spoken" && value.deliveryMode !== "sung") ||
-    (value.roleType !== null && (typeof value.roleType !== "string" || !value.roleType.trim() ||
-      value.roleType.length > MAX_ANNOTATION_CONTENT_LENGTH))) return null;
-  return {
+    (value.deliveryMode !== null && value.deliveryMode !== "spoken" && value.deliveryMode !== "sung")) return null;
+  const common = {
     id: value.id,
     text: value.text,
     startTime: value.startTime,
     endTime: value.endTime,
     deliveryMode: value.deliveryMode,
-    roleType: value.roleType,
   };
+  if (isCurrent) {
+    if (!Array.isArray(value.roleTypes) || value.roleTypes.length > MAX_SENTENCE_ROLE_OPTIONS ||
+      value.roleTypes.some((role) => typeof role !== "string" || !role.trim() || role !== role.trim() ||
+        role.length > MAX_SENTENCE_ROLE_OPTION_LENGTH) ||
+      new Set(value.roleTypes).size !== value.roleTypes.length) return null;
+    return { ...common, roleTypes: [...value.roleTypes] } as SentenceLifecycleSnapshot;
+  }
+  if (value.roleType !== null && (typeof value.roleType !== "string" || !value.roleType.trim() ||
+    value.roleType !== value.roleType.trim() || value.roleType.length > MAX_SENTENCE_ROLE_OPTION_LENGTH)) return null;
+  return { ...common, roleType: value.roleType } as LegacySentenceLifecycleSnapshot;
 }
 
 function parseCharacterLifecycleSnapshot(value: unknown): CharacterLifecycleSnapshot | null {

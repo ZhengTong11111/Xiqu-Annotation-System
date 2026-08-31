@@ -187,7 +187,7 @@ function projectWithLines(entries: Array<[string, string]>): ProjectData {
     endTime: index + 0.8,
     text,
     deliveryMode: null,
-    roleType: null,
+    roleTypes: [],
   }));
   return project;
 }

@@ -6040,7 +6040,7 @@ function createAtomicCommandProject(): ProjectData {
       startTime: 1,
       endTime: 4,
       deliveryMode: "sung",
-      roleType: "闺门旦",
+      roleTypes: ["闺门旦"],
     }],
     characterAnnotations: [{
       id: "atomic-char-1",

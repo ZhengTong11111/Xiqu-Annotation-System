@@ -643,7 +643,7 @@ test("内容领域命令可构建、反向并检查前置条件", () => {
   assert.equal(invertAnnotationCommandEnvelope(envelope)?.command.items[0].before, "新");
 });
 
-test("句级分类内容命令支持空值并严格限制枚举与角色名称", () => {
+test("句级分类内容命令支持多角色数组并严格限制枚举、重复值与角色名称", () => {
   const envelope = buildAnnotationContentUpdateEnvelope([{
     entityType: "sentence",
     entityId: "line-classification",
@@ -653,9 +653,9 @@ test("句级分类内容命令支持空值并严格限制枚举与角色名称",
   }, {
     entityType: "sentence",
     entityId: "line-classification",
-    field: "roleType",
-    before: null,
-    after: "闺门旦",
+    field: "roleTypes",
+    before: [],
+    after: ["闺门旦", "巾生"],
   }]);
   assert.ok(envelope);
   assert.deepEqual(invertAnnotationCommandEnvelope(invertAnnotationCommandEnvelope(envelope)), envelope);
@@ -669,10 +669,29 @@ test("句级分类内容命令支持空值并严格限制枚举与角色名称",
   assert.equal(buildAnnotationContentUpdateEnvelope([{
     entityType: "sentence",
     entityId: "line-classification",
+    field: "roleTypes",
+    before: [],
+    after: [" 前后空格 "],
+  }]), null);
+  assert.equal(buildAnnotationContentUpdateEnvelope([{
+    entityType: "sentence",
+    entityId: "line-classification",
+    field: "roleTypes",
+    before: [],
+    after: ["闺门旦", "闺门旦"],
+  }]), null);
+});
+
+test("历史单角色内容命令仍可严格解析和反向，不成为当前 builder 的默认字段", () => {
+  const legacyEnvelope = buildAnnotationContentUpdateEnvelope([{
+    entityType: "sentence",
+    entityId: "line-legacy-role",
     field: "roleType",
     before: null,
-    after: " 前后空格 ",
-  }]), null);
+    after: "闺门旦",
+  }]);
+  assert.ok(legacyEnvelope);
+  assert.deepEqual(invertAnnotationCommandEnvelope(invertAnnotationCommandEnvelope(legacyEnvelope)), legacyEnvelope);
 });
 
 // 字段与实体配对、track scope、额外字段和 no-op 都不能进入命令日志。

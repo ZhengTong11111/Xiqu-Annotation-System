@@ -397,13 +397,13 @@ function subtitleCandidate(line: SubtitleLine): DiffCandidate {
     startTime: line.startTime,
     endTime: line.endTime,
     deliveryMode: line.deliveryMode,
-    roleType: line.roleType,
+    roleTypes: [...line.roleTypes],
   }, {
     text: "文本",
     startTime: "开始时间",
     endTime: "结束时间",
     deliveryMode: "念白/唱",
-    roleType: "角色行当",
+    roleTypes: "角色行当",
   });
 }
 

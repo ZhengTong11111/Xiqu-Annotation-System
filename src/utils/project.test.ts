@@ -46,14 +46,14 @@ test("每次创建空白标注工程都会返回独立的轨道和数组", () =>
     startTime: 0,
     endTime: 1,
     deliveryMode: null,
-    roleType: null,
+    roleTypes: [],
   });
   first.builtinTracks[0]!.name = "已修改";
   assert.equal(second.subtitleLines.length, 0);
   assert.equal(second.builtinTracks[0]?.name, "逐字文字轨");
 });
 
-test("v1-v5 项目升级为 v6 时明确清除旧唱腔字段并补未完成句级分类", () => {
+test("v1-v5 项目升级为 v7 时明确清除旧唱腔字段并补未完成句级分类", () => {
   const legacy = {
     version: 5,
     project: {
@@ -89,7 +89,7 @@ test("v1-v5 项目升级为 v6 时明确清除旧唱腔字段并补未完成句�
     startTime: 0,
     endTime: 2,
     deliveryMode: null,
-    roleType: null,
+    roleTypes: [],
   });
   assert.equal("singingStyle" in normalized.project.characterAnnotations[0]!, false);
   assert.equal("options" in normalized.project.builtinTracks[0]!, false);
@@ -118,7 +118,45 @@ test("v6 迁移保留合法分类并清除悬空角色", () => {
   });
 
   assert.deepEqual(normalized.project.sentenceAnnotationConfig.roleOptions, ["闺门旦", "小生"]);
-  assert.equal(normalized.project.subtitleLines[0]?.roleType, "闺门旦");
+  assert.deepEqual(normalized.project.subtitleLines[0]?.roleTypes, ["闺门旦"]);
   assert.equal(normalized.project.subtitleLines[1]?.deliveryMode, "spoken");
-  assert.equal(normalized.project.subtitleLines[1]?.roleType, null);
+  assert.deepEqual(normalized.project.subtitleLines[1]?.roleTypes, []);
+});
+
+test("v7 角色数组优先于遗留单值，并按项目角色顺序去重和过滤", () => {
+  const base = createEmptyProjectData();
+  const normalized = normalizeImportedProjectFile({
+    version: 7,
+    project: {
+      ...base,
+      sentenceAnnotationConfig: { roleOptions: ["杜丽娘", "柳梦梅", "春香"] },
+      subtitleLines: [{
+        id: "line-multi",
+        text: "合说",
+        startTime: 0,
+        endTime: 1,
+        deliveryMode: "spoken",
+        roleTypes: ["春香", "杜丽娘", "春香", "悬空"],
+        roleType: "柳梦梅",
+      }],
+    },
+  });
+
+  assert.deepEqual(normalized.project.subtitleLines[0]?.roleTypes, ["杜丽娘", "春香"]);
+  assert.equal("roleType" in normalized.project.subtitleLines[0]!, false);
+
+  const explicitEmpty = normalizeImportedProjectFile({
+    ...base,
+    sentenceAnnotationConfig: { roleOptions: ["杜丽娘"] },
+    subtitleLines: [{
+      id: "line-empty",
+      text: "未标",
+      startTime: 0,
+      endTime: 1,
+      deliveryMode: null,
+      roleTypes: [],
+      roleType: "杜丽娘",
+    }],
+  });
+  assert.deepEqual(explicitEmpty.project.subtitleLines[0]?.roleTypes, []);
 });

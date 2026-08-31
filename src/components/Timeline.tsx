@@ -2760,7 +2760,7 @@ export function Timeline({
               {subtitleLines.map((line) => {
                 const blockWidth = Math.max((line.endTime - line.startTime) * zoom, 4);
                 const deliveryLabel = getSentenceDeliveryModeLabel(line.deliveryMode);
-                const roleLabel = line.roleType ?? "角色未选";
+                const roleLabel = line.roleTypes.length > 0 ? line.roleTypes.join("、") : "角色未选";
                 const labelDetail = resolveSentenceTimelineLabelDetail({
                   blockWidth,
                   sentenceText: line.text,

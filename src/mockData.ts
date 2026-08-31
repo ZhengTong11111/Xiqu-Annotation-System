@@ -10,7 +10,7 @@ const baseMockLines: SubtitleLine[] = [
     startTime: 12.4,
     endTime: 16.8,
     deliveryMode: "sung",
-    roleType: "闺门旦",
+    roleTypes: ["闺门旦"],
   },
   {
     id: "line-2",
@@ -18,7 +18,7 @@ const baseMockLines: SubtitleLine[] = [
     startTime: 17.2,
     endTime: 20.5,
     deliveryMode: "spoken",
-    roleType: "巾生",
+    roleTypes: ["巾生"],
   },
   {
     id: "line-3",
@@ -26,7 +26,7 @@ const baseMockLines: SubtitleLine[] = [
     startTime: 21.1,
     endTime: 25.9,
     deliveryMode: null,
-    roleType: null,
+    roleTypes: [],
   },
 ];
 

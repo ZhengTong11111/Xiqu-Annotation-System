@@ -420,7 +420,7 @@ function emptyProject(): ProjectData {
 }
 
 function line(id: string, text: string) {
-  return { id, text, startTime: 0, endTime: 1, deliveryMode: null, roleType: null };
+  return { id, text, startTime: 0, endTime: 1, deliveryMode: null, roleTypes: [] };
 }
 
 // JSON 克隆对应保存文件语义，也使输入不变断言不受运行时 structuredClone 差异影响。

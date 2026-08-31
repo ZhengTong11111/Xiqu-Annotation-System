@@ -4,7 +4,7 @@ import type {
   SubtitleLine,
 } from "../types";
 
-export type SentenceClassificationIssue = "delivery_mode_missing" | "role_type_missing" | "role_type_invalid";
+export type SentenceClassificationIssue = "delivery_mode_missing" | "role_types_missing" | "role_types_invalid";
 
 export const SENTENCE_DELIVERY_MODE_OPTIONS: ReadonlyArray<{
   value: SentenceDeliveryMode;
@@ -27,10 +27,11 @@ export function getSentenceClassificationIssues(
   if (line.deliveryMode !== "spoken" && line.deliveryMode !== "sung") {
     issues.push("delivery_mode_missing");
   }
-  if (!line.roleType) {
-    issues.push("role_type_missing");
-  } else if (!config.roleOptions.includes(line.roleType)) {
-    issues.push("role_type_invalid");
+  if (line.roleTypes.length === 0) {
+    issues.push("role_types_missing");
+  } else if (new Set(line.roleTypes).size !== line.roleTypes.length ||
+    line.roleTypes.some((role) => !config.roleOptions.includes(role))) {
+    issues.push("role_types_invalid");
   }
   return issues;
 }

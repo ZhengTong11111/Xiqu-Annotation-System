@@ -52,7 +52,7 @@ export function parseSrt(text: string): SubtitleLine[] {
         startTime: parseSrtTime(match.groups.start),
         endTime: parseSrtTime(match.groups.end),
         deliveryMode: null,
-        roleType: null,
+        roleTypes: [],
       } satisfies SubtitleLine;
     })
     .filter((item): item is SubtitleLine => item !== null);

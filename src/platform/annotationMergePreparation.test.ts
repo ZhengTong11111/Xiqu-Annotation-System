@@ -152,7 +152,7 @@ function annotationFile(
 
 function projectWithLine(id: string, text: string): ProjectData {
   const project = emptyProject();
-  project.subtitleLines.push({ id, text, startTime: 0, endTime: 1, deliveryMode: null, roleType: null });
+  project.subtitleLines.push({ id, text, startTime: 0, endTime: 1, deliveryMode: null, roleTypes: [] });
   return project;
 }
 

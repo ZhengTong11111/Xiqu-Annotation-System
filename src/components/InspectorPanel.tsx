@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { HexColorInput, HexColorPicker } from "react-colorful";
 import type {
   ActionAnnotation,
@@ -21,6 +22,7 @@ import type {
   TrackDefinition,
 } from "../types";
 import { SENTENCE_DELIVERY_MODE_OPTIONS } from "../utils/sentenceClassification";
+import { toggleSentenceRoleType } from "../utils/sentenceRoleSelection";
 import { GongcheCharacterRenderer } from "./GongcheCharacterRenderer";
 import { ToggleRow } from "./SpectrogramSettingsPanel";
 import {
@@ -106,7 +108,7 @@ type InspectorPanelProps = {
   onCharacterUpdate: (id: string, changes: Partial<CharacterAnnotation>) => void;
   onLineClassificationChange: (
     id: string,
-    changes: Partial<Pick<SubtitleLine, "deliveryMode" | "roleType">>,
+    changes: Partial<Pick<SubtitleLine, "deliveryMode" | "roleTypes">>,
   ) => void;
   onOpenSentenceAnnotationSettings: () => void;
   onCreateGongcheBlock: (parentTrackId: string, parentBlockId: string) => void;
@@ -851,17 +853,48 @@ export function InspectorPanel({
         </div>
         <div className="inspector-field">
           <label>角色行当</label>
-          <select
-            value={line.roleType ?? ""}
-            onChange={(event) => onLineClassificationChange(line.id, {
-              roleType: event.target.value || null,
-            })}
-          >
-            <option value="">未选择</option>
-            {sentenceAnnotationConfig.roleOptions.map((role) => (
-              <option key={role} value={role}>{role}</option>
-            ))}
-          </select>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <button type="button" className="sentence-role-select-trigger">
+                <span>{line.roleTypes.length > 0 ? line.roleTypes.join("、") : "未选择"}</span>
+                <span aria-hidden="true">▾</span>
+              </button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content className="sentence-role-select-content" sideOffset={5} align="start">
+                <DropdownMenu.Item
+                  disabled={line.roleTypes.length === 0}
+                  onSelect={() => onLineClassificationChange(line.id, { roleTypes: [] })}
+                >
+                  清空角色
+                </DropdownMenu.Item>
+                <DropdownMenu.Separator className="sentence-role-select-separator" />
+                {sentenceAnnotationConfig.roleOptions.length === 0 ? (
+                  <DropdownMenu.Item disabled>尚未设置角色行当</DropdownMenu.Item>
+                ) : sentenceAnnotationConfig.roleOptions.map((role) => (
+                  <DropdownMenu.CheckboxItem
+                    key={role}
+                    checked={line.roleTypes.includes(role)}
+                    // 阻止菜单在单次勾选后关闭，连续选择多个同场角色无需反复打开。
+                    onSelect={(event) => event.preventDefault()}
+                    onCheckedChange={(checked) => {
+                      onLineClassificationChange(line.id, {
+                        roleTypes: toggleSentenceRoleType(
+                          sentenceAnnotationConfig.roleOptions,
+                          line.roleTypes,
+                          role,
+                          checked,
+                        ),
+                      });
+                    }}
+                  >
+                    <DropdownMenu.ItemIndicator className="sentence-role-select-check">✓</DropdownMenu.ItemIndicator>
+                    <span>{role}</span>
+                  </DropdownMenu.CheckboxItem>
+                ))}
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
           <button type="button" className="secondary" onClick={onOpenSentenceAnnotationSettings}>
             管理角色行当
           </button>

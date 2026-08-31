@@ -12,7 +12,7 @@ const completeLine: SubtitleLine = {
   startTime: 0,
   endTime: 2,
   deliveryMode: "sung",
-  roleType: "闺门旦",
+  roleTypes: ["闺门旦"],
 };
 
 test("发声方式和有效角色行当都存在时句级标注完成", () => {
@@ -21,11 +21,11 @@ test("发声方式和有效角色行当都存在时句级标注完成", () => {
 
 test("缺失或悬空角色行当时句级标注保持未完成", () => {
   assert.deepEqual(
-    getSentenceClassificationIssues({ ...completeLine, deliveryMode: null, roleType: null }, { roleOptions: [] }),
-    ["delivery_mode_missing", "role_type_missing"],
+    getSentenceClassificationIssues({ ...completeLine, deliveryMode: null, roleTypes: [] }, { roleOptions: [] }),
+    ["delivery_mode_missing", "role_types_missing"],
   );
   assert.deepEqual(
     getSentenceClassificationIssues(completeLine, { roleOptions: ["巾生"] }),
-    ["role_type_invalid"],
+    ["role_types_invalid"],
   );
 });

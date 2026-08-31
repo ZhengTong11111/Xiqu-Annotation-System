@@ -135,7 +135,7 @@ function applyPlanItem(
   }
 }
 
-// 句子携带角色引用；局部带入来源句子时同步补齐其角色定义，避免生成悬空的 v6 项目。
+// 句子携带多个角色引用；局部带入来源句子时同步补齐全部定义，避免生成悬空的 v7 项目。
 function applySubtitleLine(
   target: ProjectData,
   source: ProjectData,
@@ -145,11 +145,10 @@ function applySubtitleLine(
   if (!sourceLine) return issue(item, "来源侧缺少计划中的句级字幕。");
   const applyIssue = replaceArrayEntity(target.subtitleLines, source.subtitleLines, item);
   if (applyIssue) return applyIssue;
-  if (
-    sourceLine.roleType &&
-    !target.sentenceAnnotationConfig.roleOptions.includes(sourceLine.roleType)
-  ) {
-    target.sentenceAnnotationConfig.roleOptions.push(sourceLine.roleType);
+  for (const role of sourceLine.roleTypes) {
+    if (!target.sentenceAnnotationConfig.roleOptions.includes(role)) {
+      target.sentenceAnnotationConfig.roleOptions.push(role);
+    }
   }
   return null;
 }
@@ -415,14 +414,15 @@ function validateMergedProject(project: ProjectData): AnnotationMergeApplyIssue[
   uniqueIds(project.banyanMarks, "板眼标记", issues);
   const customTrackIds = uniqueIds(project.customTracks, "自定义轨道", issues);
 
-  // 角色配置是有序唯一列表，每个非空句级角色都必须引用其中一个定义。
+  // 角色配置是有序唯一列表，每个句级角色数组也必须唯一并只引用已有定义。
   if (new Set(project.sentenceAnnotationConfig.roleOptions).size !==
       project.sentenceAnnotationConfig.roleOptions.length) {
     issues.push({ entryKey: "project:sentence-role-options", message: "角色行当列表包含重复项。" });
   }
   const roleOptions = new Set(project.sentenceAnnotationConfig.roleOptions);
   for (const line of project.subtitleLines) {
-    if (line.roleType && !roleOptions.has(line.roleType)) {
+    if (new Set(line.roleTypes).size !== line.roleTypes.length ||
+      line.roleTypes.some((role) => !roleOptions.has(role))) {
       issues.push({ entryKey: `subtitle_lines:${line.id}`, message: "句级字幕引用了未定义的角色行当。" });
     }
   }
