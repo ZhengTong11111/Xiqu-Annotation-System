@@ -556,6 +556,98 @@ test("并发重基线保留 pending 身份并拒绝请求期间的新编辑", ()
   assert.deepEqual(stale, { status: "rejected", reason: "document_changed" });
 });
 
+test("同版本服务器已包含完整本地结果时原子收敛冗余 pending", () => {
+  const recoveryState = createAtomicRecoveryStateForRejection();
+  const state = renderRecoveredDocumentState(recoveryState, (left, right) => JSON.stringify({
+    ...left,
+    video: { ...left.video, url: null },
+  }) === JSON.stringify({
+    ...right,
+    video: { ...right.video, url: null },
+  }));
+
+  const latestServerProject = structuredClone(recoveryState.currentProject);
+  latestServerProject.video.url = "https://runtime.example.test/refreshed-media-url";
+  const result = state.reconcileAlreadySatisfiedPendingFromRemote({
+    expectedRecoveryState: recoveryState,
+    latestServerProject,
+    expectedRemoteRevision: 10,
+    remoteRevision: 10,
+  });
+  assert.deepEqual(result, { status: "applied", reconciledOperationCount: 1 });
+  const reconciled = state.getRecoveryState();
+  assert.deepEqual(reconciled.currentProject, latestServerProject);
+  assert.deepEqual(reconciled.savedProject, latestServerProject);
+  assert.deepEqual(reconciled.pendingOperations, []);
+  assert.equal(reconciled.localRevision, 1);
+  assert.equal(reconciled.savedRevision, 1);
+});
+
+test("服务器只满足部分本地意图时保留 pending 并拒绝收敛", () => {
+  const recoveryState = createAtomicRecoveryStateForRejection();
+  const state = renderRecoveredDocumentState(recoveryState);
+  const partialServerProject = structuredClone(recoveryState.currentProject);
+  partialServerProject.subtitleLines[1].text = "服务器还有另一处差异";
+
+  const result = state.reconcileAlreadySatisfiedPendingFromRemote({
+    expectedRecoveryState: recoveryState,
+    latestServerProject: partialServerProject,
+    expectedRemoteRevision: 10,
+    remoteRevision: 10,
+  });
+  assert.deepEqual(result, { status: "rejected", reason: "authoritative_project_mismatch" });
+  assert.deepEqual(state.getRecoveryState().pendingOperations.map((operation) => operation.id), ["op-stale"]);
+});
+
+test("未保存吸附设置或重新读取期间变化的 pending 不能被正文等价掩盖", () => {
+  const recoveryState = createAtomicRecoveryStateForRejection();
+  recoveryState.currentTrackSnapEnabled = { "character-track": false };
+  recoveryState.savedTrackSnapEnabled = { "character-track": true };
+  const state = renderRecoveredDocumentState(recoveryState);
+
+  const trackSnapRejected = state.reconcileAlreadySatisfiedPendingFromRemote({
+    expectedRecoveryState: recoveryState,
+    latestServerProject: structuredClone(recoveryState.currentProject),
+    expectedRemoteRevision: 10,
+    remoteRevision: 10,
+  });
+  assert.deepEqual(trackSnapRejected, { status: "rejected", reason: "track_snap_changed" });
+
+  // 模拟权威文件请求在途时，原 pending 被保存运行时改为 submitted；旧请求不得再清理这条命令。
+  state.applyTrackSnapEnabledState(recoveryState.savedTrackSnapEnabled, { recordOperation: false });
+  const stableStateBeforeRequest = state.getRecoveryState();
+  state.markOperationsAsSubmitted(["op-stale"]);
+  const chainRejected = state.reconcileAlreadySatisfiedPendingFromRemote({
+    expectedRecoveryState: stableStateBeforeRequest,
+    latestServerProject: structuredClone(stableStateBeforeRequest.currentProject),
+    expectedRemoteRevision: 10,
+    remoteRevision: 10,
+  });
+  assert.deepEqual(chainRejected, { status: "rejected", reason: "operation_chain_changed" });
+  assert.deepEqual(state.getRecoveryState().pendingOperations.map((operation) => operation.id), ["op-stale"]);
+});
+
+// 新增收敛用例共用同一 SSR hook 宿主，避免每个边界测试复制状态初始化细节。
+function renderRecoveredDocumentState(
+  recoveryState: ProjectDocumentRecoveryState,
+  areAuthoritativeProjectsEqual?: (left: typeof mockProject, right: typeof mockProject) => boolean,
+) {
+  let captured: ReturnType<typeof useProjectDocumentState> | null = null;
+  function Harness() {
+    captured = useProjectDocumentState({
+      initialProject: mockProject,
+      initialTrackSnapEnabled: {},
+      areProjectsEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+      ...(areAuthoritativeProjectsEqual ? { areAuthoritativeProjectsEqual } : {}),
+      areTrackSnapStatesEqual: (left, right) => JSON.stringify(left) === JSON.stringify(right),
+      initialRecoveryState: recoveryState,
+    });
+    return React.createElement("span", null, "reconciliation");
+  }
+  renderToString(React.createElement(Harness));
+  return captured as unknown as ReturnType<typeof useProjectDocumentState>;
+}
+
 function createAtomicRecoveryStateForRejection(): ProjectDocumentRecoveryState {
   const currentProject = structuredClone(mockProject);
   currentProject.subtitleLines[0].text = "待确认";

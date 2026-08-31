@@ -92,7 +92,11 @@ import { usePlatformAnalysisTrackSelection } from "./platform/usePlatformAnalysi
 import { planAtomicAnnotationCommandBatch } from "./platform/platformAtomicCommandPlan";
 import { usePlatformAtomicCommandSubmit } from "./platform/usePlatformAtomicCommandSubmit";
 import { planPlatformConflictRebase } from "./platform/platformConflictRebase";
-import { classifyPlatformAuthoritativeBaseline } from "./platform/platformAuthoritativeBaseline";
+import {
+  canReconcileSameRevisionAlreadySatisfied,
+  classifyPlatformAuthoritativeBaseline,
+} from "./platform/platformAuthoritativeBaseline";
+import { arePlatformProjectPayloadsEqual } from "./platform/platformProjectEquality";
 import { shouldBlockEditingForRemoteCatchUp } from "./platform/platformRemoteEditGate";
 import {
   buildAnnotationClientSyncFailureReport,
@@ -616,6 +620,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     acknowledgeAtomicCommandBatch,
     replaceCleanProjectFromRemote,
     rebasePendingProjectFromRemote,
+    reconcileAlreadySatisfiedPendingFromRemote,
     undoProject,
     redoProject,
     setSyncStatus,
@@ -624,6 +629,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     initialProject,
     initialTrackSnapEnabled: getDefaultTrackSnapEnabled(initialProject),
     areProjectsEqual: projectsEqual,
+    areAuthoritativeProjectsEqual: arePlatformProjectPayloadsEqual,
     areTrackSnapStatesEqual: trackSnapStatesEqual,
     readOnly: isReadOnly,
     initialRecoveryState: editorSession?.initialRecoveryState,
@@ -6689,13 +6695,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           }
           let conflictRecoveryReason: string | null = null;
           if (failure.status === "conflict") {
-            const rebase = await tryAutomaticConcurrentRebase(editorSession);
-            if (rebase.status === "applied") {
+            const recovery = await tryAutomaticConflictRecovery(editorSession);
+            if (recovery.status === "applied") {
               const message = "已协调其他账号的并发修改，正在基于最新版本重新保存。";
               if (interactive) window.alert(message);
               return { status: "rebased", message };
             }
-            conflictRecoveryReason = rebase.reason;
+            if (recovery.status === "already_satisfied") {
+              const message = "服务器已包含本次修改，已清理重复的本地待保存命令。";
+              if (interactive) window.alert(message);
+              return { status: "saved" };
+            }
+            conflictRecoveryReason = recovery.reason;
           }
           // 诊断和顶部提示保留稳定服务端错误码，下一次失败无需依赖控制台才能判断租约/协议原因。
           const failureMessage = conflictRecoveryReason === "same_revision_baseline_mismatch"
@@ -6740,9 +6751,24 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   // 409 后先严格重放；同一 timing/content 目标冲突时，再基于最新服务器值协调并重建命令。
   // lifecycle、结构、legacy、snapshot、track-snap 或请求期间新增编辑仍停在显式冲突检查。
-  async function tryAutomaticConcurrentRebase(
+  async function tryAutomaticConflictRecovery(
     session: PlatformEditorSession,
-  ): Promise<{ status: "applied" } | { status: "unavailable"; reason: string }> {
+  ): Promise<
+    | { status: "applied" }
+    | { status: "already_satisfied" }
+    | { status: "unavailable"; reason: string }
+  > {
+    // 冲突恢复的两条成功路径必须同步推进 App、会话和租约的同一远端基线。
+    const advanceRemoteBaselineAfterConflict = (revision: number, operationCursor: string) => {
+      remoteBaseRevisionRef.current = revision;
+      remoteOperationCursorRef.current = operationCursor;
+      setRemoteBaseRevision(revision);
+      setObservedRemoteRevision((current) => Math.max(current, revision));
+      setRemoteOperationCursor(operationCursor);
+      session.onRemoteRevisionAdvanced(revision, operationCursor);
+      mutationLease.advanceBaseRevision(revision);
+      void annotationReviews.refresh();
+    };
     const expectedRemoteRevision = remoteBaseRevisionRef.current;
     const localState = getRecoveryState();
     const latestFile = await session.client.getAnnotationFile<ProjectData>(session.annotationFileId);
@@ -6754,7 +6780,27 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       latestServerProject,
     });
     if (baselineState === "same_revision_mismatch") {
-      // 这是历史草稿或异步检查点造成的同版本漂移，不属于普通多人并发，不能伪造更高 revision 重放。
+      // 同版本漂移通常来自旧标签页或历史恢复状态。只有服务器完整正文已经等于本地最终正文时，
+      // 才能把被严格 precondition 拒绝的旧命令视为冗余；部分相等仍保留草稿并进入冲突检查。
+      if (canReconcileSameRevisionAlreadySatisfied({
+        expectedRevision: expectedRemoteRevision,
+        latestRevision: latestFile.revision,
+        expectedSavedProject: localState.savedProject,
+        currentProject: localState.currentProject,
+        latestServerProject,
+      })) {
+        const reconciled = reconcileAlreadySatisfiedPendingFromRemote({
+          expectedRecoveryState: localState,
+          latestServerProject,
+          expectedRemoteRevision,
+          remoteRevision: latestFile.revision,
+        });
+        if (reconciled.status === "applied") {
+          advanceRemoteBaselineAfterConflict(latestFile.revision, latestFile.operationCursor);
+          return { status: "already_satisfied" };
+        }
+        return { status: "unavailable", reason: reconciled.reason };
+      }
       syncFailureMismatchFieldsRef.current = ["savedProject.serverBaseline"];
       return { status: "unavailable", reason: "same_revision_baseline_mismatch" };
     }
@@ -6790,14 +6836,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       return { status: "unavailable", reason: applied.reason };
     }
 
-    remoteBaseRevisionRef.current = latestFile.revision;
-    remoteOperationCursorRef.current = latestFile.operationCursor;
-    setRemoteBaseRevision(latestFile.revision);
-    setObservedRemoteRevision((current) => Math.max(current, latestFile.revision));
-    setRemoteOperationCursor(latestFile.operationCursor);
-    session.onRemoteRevisionAdvanced(latestFile.revision, latestFile.operationCursor);
-    mutationLease.advanceBaseRevision(latestFile.revision);
-    void annotationReviews.refresh();
+    advanceRemoteBaselineAfterConflict(latestFile.revision, latestFile.operationCursor);
     return { status: "applied" };
   }
 

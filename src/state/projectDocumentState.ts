@@ -83,6 +83,8 @@ type ProjectDocumentStateOptions = {
   initialProject: ProjectData;
   initialTrackSnapEnabled: Record<string, boolean>;
   areProjectsEqual: (left: ProjectData, right: ProjectData) => boolean;
+  // 平台权威比较可忽略受保护媒体 URL 等运行时字段；本地模式默认沿用普通项目比较器。
+  areAuthoritativeProjectsEqual?: (left: ProjectData, right: ProjectData) => boolean;
   areTrackSnapStatesEqual: (
     left: Record<string, boolean>,
     right: Record<string, boolean>,
@@ -163,6 +165,30 @@ export type PendingCommandRebaseResult =
         | "no_pending_operations";
     };
 
+export type AlreadySatisfiedPendingReconciliationRequest = {
+  expectedRecoveryState: ProjectDocumentRecoveryState;
+  latestServerProject: ProjectData;
+  expectedRemoteRevision: number;
+  remoteRevision: number;
+};
+
+export type AlreadySatisfiedPendingReconciliationResult =
+  | { status: "applied"; reconciledOperationCount: number }
+  | {
+      status: "rejected";
+      reason:
+        | "invalid_revision"
+        | "remote_revision_changed"
+        | "document_changed"
+        | "baseline_changed"
+        | "authoritative_project_mismatch"
+        | "track_snap_changed"
+        | "local_revision_changed"
+        | "operation_chain_changed"
+        | "transient_edit_active"
+        | "no_pending_operations";
+    };
+
 export type PendingCommandSnapshotCompactionResult =
   | { status: "applied"; replacedOperationCount: number }
   | {
@@ -231,6 +257,7 @@ export function useProjectDocumentState({
   initialProject,
   initialTrackSnapEnabled,
   areProjectsEqual,
+  areAuthoritativeProjectsEqual = areProjectsEqual,
   areTrackSnapStatesEqual,
   historyLimit = DEFAULT_HISTORY_LIMIT,
   operationLogLimit = DEFAULT_OPERATION_LOG_LIMIT,
@@ -285,10 +312,12 @@ export function useProjectDocumentState({
   const pendingOperationsRef = useRef<ProjectDocumentOperation[]>(initialPendingOperations);
   const syncStateRef = useRef(syncState);
   const areProjectsEqualRef = useRef(areProjectsEqual);
+  const areAuthoritativeProjectsEqualRef = useRef(areAuthoritativeProjectsEqual);
   const areTrackSnapStatesEqualRef = useRef(areTrackSnapStatesEqual);
   const readOnlyRef = useRef(readOnly);
 
   areProjectsEqualRef.current = areProjectsEqual;
+  areAuthoritativeProjectsEqualRef.current = areAuthoritativeProjectsEqual;
   areTrackSnapStatesEqualRef.current = areTrackSnapStatesEqual;
   readOnlyRef.current = readOnly;
   syncStateRef.current = syncState;
@@ -795,6 +824,96 @@ export function useProjectDocumentState({
     return { status: "applied" };
   }
 
+  // 服务端可能已经由更早的成功请求达到当前完整本地结果，此时旧 pending 的 before 前提会被严格拒绝。
+  // 这里不放宽命令校验，只在重新读取的权威正文与完整当前正文完全一致时原子清理冗余本地命令。
+  function reconcileAlreadySatisfiedPendingFromRemote(
+    request: AlreadySatisfiedPendingReconciliationRequest,
+  ): AlreadySatisfiedPendingReconciliationResult {
+    if (!Number.isSafeInteger(request.remoteRevision) || request.remoteRevision < 0) {
+      return { status: "rejected", reason: "invalid_revision" };
+    }
+    if (request.remoteRevision !== request.expectedRemoteRevision) {
+      return { status: "rejected", reason: "remote_revision_changed" };
+    }
+    if (transientProjectRef.current !== null) {
+      return { status: "rejected", reason: "transient_edit_active" };
+    }
+    const expected = request.expectedRecoveryState;
+    if (pendingOperationsRef.current.length === 0) {
+      return { status: "rejected", reason: "no_pending_operations" };
+    }
+    if (!areProjectsEqualRef.current(projectRef.current, expected.currentProject)) {
+      return { status: "rejected", reason: "document_changed" };
+    }
+    if (!areProjectsEqualRef.current(savedProjectRef.current, expected.savedProject)) {
+      return { status: "rejected", reason: "baseline_changed" };
+    }
+    if (!areAuthoritativeProjectsEqualRef.current(projectRef.current, request.latestServerProject)) {
+      return { status: "rejected", reason: "authoritative_project_mismatch" };
+    }
+    if (
+      !areTrackSnapStatesEqualRef.current(
+        trackSnapEnabledRef.current,
+        expected.currentTrackSnapEnabled,
+      ) ||
+      !areTrackSnapStatesEqualRef.current(
+        savedTrackSnapEnabledRef.current,
+        expected.savedTrackSnapEnabled,
+      ) ||
+      !areTrackSnapStatesEqualRef.current(
+        trackSnapEnabledRef.current,
+        savedTrackSnapEnabledRef.current,
+      )
+    ) {
+      // 吸附开关不是服务器 ProjectData；存在本地差异时不能借正文等价把它一并当作已保存。
+      return { status: "rejected", reason: "track_snap_changed" };
+    }
+    if (
+      localRevisionRef.current !== expected.localRevision ||
+      savedRevisionRef.current !== expected.savedRevision
+    ) {
+      return { status: "rejected", reason: "local_revision_changed" };
+    }
+    const operationChainUnchanged = pendingOperationsRef.current.length === expected.pendingOperations.length &&
+      pendingOperationsRef.current.every((operation, index) => operation === expected.pendingOperations[index]);
+    if (!operationChainUnchanged) {
+      // operation 对象在状态转换时始终不可变替换；引用身份能同时捕捉新增编辑和 submitted 状态变化。
+      return { status: "rejected", reason: "operation_chain_changed" };
+    }
+
+    const reconciledOperationIds = new Set(pendingOperationsRef.current.map((operation) => operation.id));
+    const reconciledOperationCount = reconciledOperationIds.size;
+    pendingOperationsRef.current = [];
+    // 这些命令没有成为服务端 operation 事实，不能伪装为 acknowledged；从本地运行日志中移除更准确。
+    operationLogRef.current = operationLogRef.current.filter(
+      (operation) => !reconciledOperationIds.has(operation.id),
+    );
+    setPendingOperations(pendingOperationsRef.current);
+    setOperationLog(operationLogRef.current);
+
+    projectRef.current = request.latestServerProject;
+    savedProjectRef.current = request.latestServerProject;
+    savedTrackSnapEnabledRef.current = trackSnapEnabledRef.current;
+    savedRevisionRef.current = localRevisionRef.current;
+    setProject(request.latestServerProject);
+    applyUndoStackState([]);
+    applyRedoStackState([]);
+    setHasUnsavedChanges(false);
+    const nextSyncState: ProjectSyncState = {
+      ...syncStateRef.current,
+      status: "saved",
+      localRevision: localRevisionRef.current,
+      savedRevision: savedRevisionRef.current,
+      remoteRevision: request.remoteRevision,
+      pendingOperationCount: 0,
+      lastSavedAt: Date.now(),
+      errorMessage: null,
+    };
+    syncStateRef.current = nextSyncState;
+    setSyncState(nextSyncState);
+    return { status: "applied", reconciledOperationCount };
+  }
+
   function undoProject(shouldUndo?: (entry: HistoryEntry) => boolean) {
     if (readOnlyRef.current) {
       return false;
@@ -918,6 +1037,7 @@ export function useProjectDocumentState({
     acknowledgeAtomicCommandBatch,
     replaceCleanProjectFromRemote,
     rebasePendingProjectFromRemote,
+    reconcileAlreadySatisfiedPendingFromRemote,
     undoProject,
     redoProject,
     setSyncStatus,

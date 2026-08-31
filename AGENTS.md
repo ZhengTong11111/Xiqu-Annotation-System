@@ -91,6 +91,11 @@ Main currently contains all major recent feature lines that matter for context:
   client's absolute target on locally changed edges, while same-field content commands use the later recovered client value.
   Rebuilt commands keep their operation ids and are immediately resubmitted against the latest server revision;
   lifecycle, structure, legacy, snapshot, track-snap, lease, permission, or request-drift cases remain explicit conflicts
+- a terminal command precondition rejection may reconcile a same-revision baseline drift only when a fresh authoritative GET proves
+  that the complete current persistable ProjectData already equals the server payload. The document owner must atomically recheck
+  pending identity, local/saved revisions, track-snap equality, transient state and request-time edits before removing the uncommitted
+  redundant operations. Partially matching payloads remain explicit conflicts, and this narrow runtime settlement does not make
+  same-revision IndexedDB draft drift directly recoverable or weaken server preconditions
 - per-file operation acceptance sequence plus snapshot-committed operation facts and separate bounded feeds; clean web
   sessions now perform bounded HTTP catch-up, atomically replay complete mixed domain-command chains, and fall back to the
   authoritative snapshot for incomplete or non-replayable evidence

@@ -9608,3 +9608,45 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：关键备份校验、11 份旧备份定向删除、保留清单与磁盘空间复核、服务状态检查。
 - **待推进**：后续应为本地备份补充正式保留策略和受控 cleanup CLI，避免继续依赖人工目录清理；远端/异地备份
   仍应按恢复与切换 roadmap 单独建设，不能把本次单盘保留清理视为异地灾备。
+
+## 2026-08-31：同版本权威正文已满足本地意图的同步收敛
+
+### 生产证据与根因
+
+- 针对裴倍萱在 `001折子戲001《連環計·梳妝》` 的最近一次同步失败，服务器证据确认：客户端基于 revision 107
+  提交一个 `annotation.track.structure.transaction.apply`，希望把 `autoSetLoopRangeOnSelect` 从 `false` 改为
+  `true`；API 严格返回 `annotation_command_precondition_failed`，命令批次没有写入 operation，随后结构租约正常
+  DELETE 释放。服务器 revision 107 的权威正文当时已经是 `true`，且同账号更早已成功提交该变化，后续没有反向
+  operation。因此这是旧标签页或历史恢复基线重复表达已完成意图，不是服务端数据丢失，也不是应放宽的命令校验。
+- 原客户端在 409 后已能区分同 revision baseline drift，但无论服务器是否已经完整满足当前本地结果，都会统一
+  停在 `same_revision_baseline_mismatch`。这保证了安全，却让可被完整证明为冗余的 pending 也表现为同步失败。
+
+### 本地修复
+
+- 新增 `canReconcileSameRevisionAlreadySatisfied()` 纯策略：必须同时满足服务器 revision 未变化、本地 saved baseline
+  确实与权威正文不同、完整当前可持久化 ProjectData 与完整权威正文完全相等。它不做字段级猜测，也不允许“多数
+  字段相同”或部分命令目标相同。
+- `useProjectDocumentState` 新增单一原子收敛方法。方法在真正清理前再次核对 current/saved ProjectData、local/saved
+  revision、pending operation 对象身份、track-snap 当前/保存值、transient 编辑与远端 revision；权威 GET 在途时
+  只要发生新编辑、pending 状态变化或吸附设置变化，收敛立即拒绝并保留草稿。平台向 document state 注入专用
+  可持久化正文比较器，刷新后的受保护媒体 URL 等运行时差异不会制造假冲突，但这些 URL 仍不会进入持久化正文。
+- 收敛成功后，current/saved project 同时采用刚读取的权威正文，saved local revision 追到 current local revision，
+  清空旧 undo/redo 和对应 pending，并恢复 `saved`。这些 pending 从未成为服务端 operation 事实，因此从本地运行
+  日志移除，而不是伪装成 `acknowledged`。App、协作会话、operation cursor 与 mutation lease 基线通过同一 helper
+  同步推进；浏览器草稿持久化随后按既有串行 delete 规则清除已被服务器覆盖的草稿。
+- 服务端 precondition、revision、租约、权限、原子 apply 和数据库均未修改。服务器只满足部分本地意图、存在
+  track-snap 差异、请求期间又发生编辑、revision 前进或任何结构证据不完整时，仍走原显式冲突流程。IndexedDB
+  同 revision 草稿直接恢复规则也没有放宽。
+
+### 测试、自审与阶段状态
+
+- `npm run test:platform-atomic-submit` 34/34 通过；测试清单已正式纳入权威基线策略测试，覆盖完整等价收敛、部分
+  差异拒绝、吸附差异拒绝和请求期间 pending 变化拒绝。
+- `npm run test:platform-conflict-rebase` 13/13、`npm run test:platform-conflict-rebase-preparation` 6/6 通过，确认正常
+  revision 前进、同字段/同边界协调、旧命令与结构类显式冲突保持原语义。
+- 完整 `npm run build` 通过 Prisma Client/schema guard、shared、document-model、Web 与 API；仅保留既有 Vite 主
+  chunk 超过 500 kB 提示。`git diff --check` 通过。
+- **已完成**：根因确认、严格自动收敛、竞态门禁、测试纳入、中文注释、规范与 roadmap 更新、自我代码审查。
+- **待人工验收**：用两个标签页复现“旧页重复提交服务器已完成的相同结构设置”，确认状态自动恢复“已同步”且
+  不再要求人工冲突整合；再制造一处额外正文差异，确认仍明确进入冲突。本轮按用户要求仅本地修改和提交，不推送、
+  不进入维护模式、不部署生产服务器。
