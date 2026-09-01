@@ -54,6 +54,8 @@ export type AnnotationRangeCommentViewRecord = {
 
 export type AnnotationReviewTimelineItem = {
   id: string;
+  recordId: string;
+  recordType: "confirmation" | "range_record";
   kind: "confirmation" | "comment" | "feedback";
   startTime: number;
   endTime: number;
@@ -162,7 +164,9 @@ export function layoutAnnotationReviewTimelineItems(input: {
     ...input.confirmations
       .filter((item) => item.lifecycle === "active")
       .map((item) => ({
-        id: item.record.id,
+        id: `confirmation:${item.record.id}`,
+        recordId: item.record.id,
+        recordType: "confirmation" as const,
         kind: "confirmation" as const,
         startTime: item.record.scope.startTime,
         endTime: item.record.scope.endTime,
@@ -173,7 +177,9 @@ export function layoutAnnotationReviewTimelineItems(input: {
     ...input.comments
       .filter((item) => item.lifecycle === "active")
       .map((item) => ({
-        id: item.record.id,
+        id: `range-record:${item.record.id}`,
+        recordId: item.record.id,
+        recordType: "range_record" as const,
         kind: item.record.kind === "editor_feedback" ? "feedback" as const : "comment" as const,
         startTime: item.record.scope.startTime,
         endTime: item.record.scope.endTime,

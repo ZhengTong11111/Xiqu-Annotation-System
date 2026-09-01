@@ -353,6 +353,9 @@ export type AnnotationConfirmationRecord = AnnotationConfirmationDraft & {
 export type AnnotationConfirmationLifecycle = "active" | "revoked";
 export type AnnotationConfirmationFreshness = "current" | "stale";
 
+// 审核历史大页只供“加载全部/导出”使用；普通首屏仍应采用较小页面快速显示。
+export const ANNOTATION_REVIEW_PAGE_MAX_LIMIT = 500;
+
 // 确认页携带服务器当前 revision；opaque cursor 只能交回同一文件接口继续读取。
 export type AnnotationConfirmationList = {
   currentRevision: number;

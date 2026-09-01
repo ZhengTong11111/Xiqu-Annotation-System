@@ -56,6 +56,7 @@ import type {
   UpsertResourcePermissionRequest,
 } from "@xiqu/shared";
 import {
+  ANNOTATION_REVIEW_PAGE_MAX_LIMIT,
   getAnnotationWorkflowTransition,
   getProjectWorkflowGroupCapabilities,
 } from "@xiqu/shared";
@@ -1447,7 +1448,7 @@ export class ResourceService {
   ): Promise<AnnotationConfirmationList> {
     await this.access.assertCapability(user, resourceId, "read");
     await this.assertActiveAnnotationFile(resourceId);
-    const limit = Math.max(1, Math.min(options.limit ?? 50, 100));
+    const limit = Math.max(1, Math.min(options.limit ?? 50, ANNOTATION_REVIEW_PAGE_MAX_LIMIT));
     const cursor = options.cursor
       ? decodeAnnotationConfirmationCursor(options.cursor, resourceId)
       : null;
@@ -1642,7 +1643,7 @@ export class ResourceService {
     await this.access.assertCapability(user, resourceId, "read");
     await this.assertActiveAnnotationFile(resourceId);
     const includeWithdrawn = options.includeWithdrawn ?? false;
-    const limit = Math.max(1, Math.min(options.limit ?? 50, 100));
+    const limit = Math.max(1, Math.min(options.limit ?? 50, ANNOTATION_REVIEW_PAGE_MAX_LIMIT));
     const cursor = options.cursor
       ? decodeAnnotationRangeCommentCursor(options.cursor, { annotationFileId: resourceId, includeWithdrawn })
       : null;

@@ -106,6 +106,7 @@ type TimelineProps = {
   onLoopPlaybackRangeChange: (range: { start: number; end: number } | null) => void;
   onLoopPlaybackEnabledChange: (enabled: boolean) => void;
   onSelectReviewRange: (range: TimelineReviewRange) => void;
+  onOpenReviewRangeContextMenu: (range: TimelineReviewRange, x: number, y: number) => void;
   onToggleDetached?: () => void;
   onSeek: (time: number) => void;
   onPreviewFrame: (time: number | null) => void;
@@ -183,6 +184,8 @@ type TimelineProps = {
 // 确认栏只消费时间轴渲染字段，避免通用 Timeline 依赖平台 API 或治理权限模型。
 export type TimelineReviewRange = {
   id: string;
+  recordId: string;
+  recordType: "confirmation" | "range_record";
   kind: "confirmation" | "comment" | "feedback";
   startTime: number;
   endTime: number;
@@ -576,6 +579,7 @@ export function Timeline({
   onLoopPlaybackRangeChange,
   onLoopPlaybackEnabledChange,
   onSelectReviewRange,
+  onOpenReviewRangeContextMenu,
   onToggleDetached,
   onSeek,
   onPreviewFrame,
@@ -2753,6 +2757,13 @@ export function Timeline({
                     event.preventDefault();
                     event.stopPropagation();
                     onSelectReviewRange(range);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    // 审核范围右键只打开治理菜单，不改变播放头或触发时间轴选择框。
+                    onCloseContextMenu();
+                    onOpenReviewRangeContextMenu(range, event.clientX, event.clientY);
                   }}
                 >
                   <span>{range.label}</span>

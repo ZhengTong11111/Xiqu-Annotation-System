@@ -3550,9 +3550,14 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(crossFileCursor.statusCode, 400);
       const invalidConfirmationLimit = await jsonRequest(app, studentToken, {
         method: "GET",
-        url: `/api/annotation-files/${confirmationFileId}/confirmations?limit=101`,
+        url: `/api/annotation-files/${confirmationFileId}/confirmations?limit=501`,
       });
       assert.equal(invalidConfirmationLimit.statusCode, 400);
+      const maximumConfirmationPage = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations?limit=500`,
+      });
+      assert.equal(maximumConfirmationPage.statusCode, 200, maximumConfirmationPage.body);
 
       // 评论是独立治理事实：正文必填、绑定 revision，其他 reviewer 不能撤回作者记录。
       const blankComment = await jsonRequest(app, studentToken, {
@@ -3655,6 +3660,16 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(secondPage.statusCode, 200, secondPage.body);
       assert.equal((dataOf(secondPage.json()).items as JsonObject[]).length, 1);
+      const invalidRangeCommentLimit = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments?limit=501`,
+      });
+      assert.equal(invalidRangeCommentLimit.statusCode, 400);
+      const maximumRangeCommentPage = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${confirmationFileId}/range-comments?includeWithdrawn=true&limit=500`,
+      });
+      assert.equal(maximumRangeCommentPage.statusCode, 200, maximumRangeCommentPage.body);
 
       // 其他 reviewer 不能撤销学生记录；创建者撤销幂等且只写一条撤销审计。
       const trackConfirmationId = String(trackConfirmation.id);

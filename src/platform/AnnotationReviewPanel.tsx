@@ -1,5 +1,4 @@
-import * as AlertDialog from "@radix-ui/react-alert-dialog";
-import { CheckCircle2, History, MessageSquareText, MessageSquareWarning, RefreshCw, Undo2 } from "lucide-react";
+import { CheckCircle2, Download, History, MessageSquareText, MessageSquareWarning, RefreshCw, Undo2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   ANNOTATION_REVIEW_DOMAINS,
@@ -8,6 +7,7 @@ import {
   type AnnotationReviewTargets,
 } from "@xiqu/shared";
 import type { AnnotationReviewMutationResult } from "./useAnnotationReviews";
+import { AnnotationReviewWithdrawalDialog } from "./AnnotationReviewWithdrawalDialog";
 import {
   ANNOTATION_CONFIRMATION_DOMAIN_LABELS,
   type AnnotationReviewCreateBlocker,
@@ -34,6 +34,7 @@ type AnnotationReviewPanelProps = {
   loading: boolean;
   loadingMoreConfirmations: boolean;
   loadingMoreComments: boolean;
+  loadingAll: boolean;
   hasMoreConfirmations: boolean;
   hasMoreComments: boolean;
   mutationPending: boolean;
@@ -46,6 +47,8 @@ type AnnotationReviewPanelProps = {
   onRefresh: () => Promise<boolean>;
   onLoadMoreConfirmations: () => Promise<void>;
   onLoadMoreComments: () => Promise<void>;
+  onLoadAll: () => Promise<boolean>;
+  onExportAll: () => Promise<void>;
   onCreateConfirmation: (input: {
     scope: AnnotationReviewScope;
     note: string | null;
@@ -88,9 +91,9 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
   const [selectedTrackIds, setSelectedTrackIds] = useState<string[]>([]);
   const [confirmationNote, setConfirmationNote] = useState("");
   const [rangeBody, setRangeBody] = useState("");
+  const [exportPending, setExportPending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [withdrawTarget, setWithdrawTarget] = useState<WithdrawTarget | null>(null);
-  const [withdrawReason, setWithdrawReason] = useState("");
 
   const availableCreateModes = useMemo<CreateMode[]>(() => [
     ...(props.canReview ? ["confirmation" as const, "comment" as const] : []),
@@ -182,21 +185,34 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
     }
   }
 
-  async function withdrawReviewFact() {
+  async function withdrawReviewFact(reason: string | null) {
     if (!withdrawTarget || props.mutationPending) return;
     setNotice(null);
     try {
       const result = withdrawTarget.kind === "confirmation"
-        ? await props.onRevokeConfirmation(withdrawTarget.item, withdrawReason.trim() || null)
-        : await props.onWithdrawComment(withdrawTarget.item, withdrawReason.trim() || null);
+        ? await props.onRevokeConfirmation(withdrawTarget.item, reason)
+        : await props.onWithdrawComment(withdrawTarget.item, reason);
       const action = withdrawTarget.kind === "confirmation"
         ? "确认已撤销"
         : withdrawTarget.item.record.kind === "editor_feedback" ? "反馈已撤回" : "评论已撤回";
       setWithdrawTarget(null);
-      setWithdrawReason("");
       setNotice(result.refreshFailed ? `${action}，但列表刷新失败，请手动刷新。` : `${action}。`);
     } catch (error) {
       console.error("撤回标注审核事实失败:", error);
+    }
+  }
+
+  async function exportAllReviewFacts() {
+    if (exportPending || props.loadingAll) return;
+    setNotice(null);
+    setExportPending(true);
+    try {
+      await props.onExportAll();
+      setNotice("完整审核包已导出；服务器记录未发生修改。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "审核包导出失败，请稍后重试。");
+    } finally {
+      setExportPending(false);
     }
   }
 
@@ -229,6 +245,14 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
                 disabled={props.loading || props.mutationPending}
                 onClick={() => void props.onRefresh()}
               ><RefreshCw size={15} /></button>
+              <button
+                type="button"
+                className="icon-button"
+                title="加载完整历史并导出审核包"
+                aria-label="加载完整历史并导出审核包"
+                disabled={props.loading || props.loadingAll || exportPending || totalCount === 0}
+                onClick={() => void exportAllReviewFacts()}
+              ><Download size={15} /></button>
             </>
           ) : null}
           {props.onToggleCollapse ? (
@@ -396,11 +420,19 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
               ? renderConfirmationItem(entry.item)
               : renderRangeRecordItem(entry.item))}
             <div className="annotation-review-load-more-row">
+              {hasMoreRecords ? (
+                <button
+                  type="button"
+                  className="annotation-review-load-more"
+                  disabled={props.loadingAll}
+                  onClick={() => void props.onLoadAll()}
+                >{props.loadingAll ? "正在加载当前文件全部记录…" : "加载当前文件全部记录"}</button>
+              ) : null}
               {props.hasMoreConfirmations && (historyKind === "all" || historyKind === "confirmation") ? (
                 <button
                   type="button"
                   className="annotation-review-load-more"
-                  disabled={props.loadingMoreConfirmations}
+                  disabled={props.loadingMoreConfirmations || props.loadingAll}
                   onClick={() => void props.onLoadMoreConfirmations()}
                 >{props.loadingMoreConfirmations ? "正在加载…" : "加载更多确认"}</button>
               ) : null}
@@ -408,7 +440,7 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
                 <button
                   type="button"
                   className="annotation-review-load-more"
-                  disabled={props.loadingMoreComments}
+                  disabled={props.loadingMoreComments || props.loadingAll}
                   onClick={() => void props.onLoadMoreComments()}
                 >{props.loadingMoreComments ? "正在加载…" : "加载更多评论与反馈"}</button>
               ) : null}
@@ -417,50 +449,18 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
         </div>
       ) : null}
 
-      <AlertDialog.Root
+      <AnnotationReviewWithdrawalDialog
         open={Boolean(withdrawTarget)}
+        title={withdrawTarget?.kind === "range-record"
+          ? withdrawTarget.item.record.kind === "editor_feedback" ? "撤回标注反馈" : "撤回范围评论"
+          : "撤销确认记录"}
+        pending={props.mutationPending}
+        portalContainer={props.portalContainer}
         onOpenChange={(open) => {
-          if (!open && !props.mutationPending) {
-            setWithdrawTarget(null);
-            setWithdrawReason("");
-          }
+          if (!open) setWithdrawTarget(null);
         }}
-      >
-        <AlertDialog.Portal container={props.portalContainer}>
-          <AlertDialog.Overlay className="resource-alert-backdrop" />
-          <AlertDialog.Content className="annotation-confirmation-revoke-dialog">
-            <AlertDialog.Title>{withdrawTarget?.kind === "range-record"
-              ? withdrawTarget.item.record.kind === "editor_feedback" ? "撤回标注反馈" : "撤回范围评论"
-              : "撤销确认记录"}</AlertDialog.Title>
-            <AlertDialog.Description>
-              操作不会删除历史；该记录仍可在“显示已撤销与已撤回”中查看。
-            </AlertDialog.Description>
-            <label>
-              原因（可选）
-              <textarea
-                rows={3}
-                maxLength={1000}
-                value={withdrawReason}
-                onChange={(event) => setWithdrawReason(event.target.value)}
-              />
-            </label>
-            <div className="annotation-confirmation-revoke-actions">
-              <AlertDialog.Cancel asChild><button type="button" disabled={props.mutationPending}>取消</button></AlertDialog.Cancel>
-              <AlertDialog.Action asChild>
-                <button
-                  type="button"
-                  className="danger"
-                  disabled={props.mutationPending}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    void withdrawReviewFact();
-                  }}
-                >确认操作</button>
-              </AlertDialog.Action>
-            </div>
-          </AlertDialog.Content>
-        </AlertDialog.Portal>
-      </AlertDialog.Root>
+        onSubmit={withdrawReviewFact}
+      />
     </section>
   );
 

@@ -456,6 +456,7 @@ model AnnotationConfirmation {
   revoker        User?          @relation("AnnotationConfirmationRevoker", fields: [revokedBy], references: [id], onDelete: Restrict)
 
   @@index([annotationFileId, createdAt])
+  @@index([annotationFileId, createdAt, id])
   @@index([annotationFileId, confirmedRevision])
   @@index([createdBy])
   @@index([revokedBy])

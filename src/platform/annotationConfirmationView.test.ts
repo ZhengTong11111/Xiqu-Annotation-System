@@ -88,10 +88,33 @@ test("时间轴分层允许首尾相接并稳定拆开真实重叠", () => {
     comments: buildAnnotationRangeCommentViewRecords(comments, 3, []),
   });
   assert.deepEqual(layout.map((item) => [item.id, item.kind, item.lane]), [
-    ["a", "confirmation", 0],
-    ["b", "confirmation", 1],
-    ["comment-1", "comment", 0],
-    ["c", "confirmation", 1],
+    ["confirmation:a", "confirmation", 0],
+    ["confirmation:b", "confirmation", 1],
+    ["range-record:comment-1", "comment", 0],
+    ["confirmation:c", "confirmation", 1],
+  ]);
+});
+
+test("确认与评论即使原始 UUID 相同也保持独立时间轴身份", () => {
+  const sharedId = "same-id";
+  const confirmations = buildAnnotationConfirmationViewRecords([
+    createRecord(sharedId, 0, 1),
+  ], 3, []);
+  const comments = buildAnnotationRangeCommentViewRecords([{
+    id: sharedId,
+    annotationFileId: "file-1",
+    commentedRevision: 3,
+    scope: { startTime: 1, endTime: 2, targets: { mode: "all" } },
+    kind: "review_comment",
+    body: "同 UUID 的另一张事实表记录",
+    createdBy: { id: "reviewer-2", accountName: "teacher", displayName: "教师" },
+    createdAt: "2026-08-02T01:00:00.000Z",
+  }], 3, []);
+
+  const result = layoutAnnotationReviewTimelineItems({ confirmations, comments });
+  assert.deepEqual(result.map((item) => [item.id, item.recordId, item.recordType]), [
+    ["confirmation:same-id", sharedId, "confirmation"],
+    ["range-record:same-id", sharedId, "range_record"],
   ]);
 });
 

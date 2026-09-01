@@ -603,12 +603,21 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     these governance facts may edit `ProjectData`
   - docked and detached rendering share one data/mutation path. Detached Radix dialogs must portal into the detached document;
     the detached copy stays expanded while the docked copy may use the standard sidebar collapse control
+- `src/platform/AnnotationReviewWithdrawalDialog.tsx`
+  - shared soft-withdraw confirmation surface for panel and Timeline context-menu entry points
+  - it only collects an optional reason; permission, transaction, idempotency and audit behavior remain in the existing API mutation
+- `src/platform/annotationReviewPageDrain.ts` + `src/platform/annotationReviewExport.ts`
+  - own complete opaque-cursor draining and the versioned, source-bound review export package
+  - complete export requires both streams to end at `nextCursor: null`, belong to the same annotation file and report one revision;
+    it must fail closed rather than emit a partial package that looks complete
 - `src/platform/useAnnotationReviews.ts`
   - authoritative client-side confirmation/range-note list, pagination, create and withdraw lifecycle for one open annotation file
   - the historical `comment` method names cover both typed review comments and editor feedback; do not add a parallel feedback
     request owner, cache or invalidation channel
   - rejects stale async responses across file switches and refreshes after mutations or `annotation.review.changed` hints instead of
     optimistically inventing facts
+  - reviewers may automatically drain both history streams, but ordinary annotation revision changes only advance local freshness;
+    they must not trigger another complete review-history download because no review fact changed
 - `src/platform/annotationConfirmationView.ts`
   - pure labels, persisted-track options, both lifecycle/freshness view records, create blockers, withdraw visibility, and shared interval layout
   - Timeline and panel must consume this module instead of duplicating review state or target formatting
@@ -2076,6 +2085,14 @@ Important backend caveats:
   global admin, resource owner or ancestor owner may revoke another user's record.
 - saving does not delete or rewrite confirmations; older facts become stale. Annotation-file copy does not copy
   confirmations, and active-file checks prohibit listing/creating/revoking through a trashed resource or ancestor.
+- review comments and editor feedback follow the same append-only preservation rule. UI actions described as delete/removal must use
+  the existing idempotent revoke/withdraw mutations and retain the original body, author, timestamps and source file association.
+- confirmations and range records have separate database id namespaces. Timeline/render identities must be type-qualified; never use
+  one raw UUID as a cross-table React key, lookup key or context-menu target.
+- a complete review export must consume the confirmation and range-record opaque cursors independently, include withdrawn/revoked
+  history, bind the source file id/name/revision, and omit access tokens, media URLs, permissions and ProjectData. Future relinking
+  must add a source-preserving, reversible association after dry-run validation; it must never update an original record's
+  `annotation_file_id` or overwrite an existing target fact.
 - confirmation UI exists only for an authenticated platform editor session. It must not appear in local mode, and its
   state must never be serialized into `ProjectData` or local JSON.
 - confirmation creation uses the existing loop range but does not enable/change looping. It is blocked while the

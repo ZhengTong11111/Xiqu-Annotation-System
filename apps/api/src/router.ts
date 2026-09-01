@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import {
   ANNOTATION_REVIEW_DOMAINS,
+  ANNOTATION_REVIEW_PAGE_MAX_LIMIT,
   ANNOTATION_RANGE_COMMENT_KINDS,
   AUDIT_ACTIONS,
   encodeMediaAnalysisTileBatchHeader,
@@ -286,8 +287,10 @@ export function registerApiRoutes(
       request.query.includeWithdrawn !== "false"
     ) throw badRequest("includeWithdrawn 必须是 true 或 false。");
     const limit = request.query.limit === undefined ? undefined : Number(request.query.limit);
-    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
-      throw badRequest("limit 必须是 1 到 100 的整数。");
+    if (limit !== undefined && (
+      !Number.isInteger(limit) || limit < 1 || limit > ANNOTATION_REVIEW_PAGE_MAX_LIMIT
+    )) {
+      throw badRequest(`limit 必须是 1 到 ${ANNOTATION_REVIEW_PAGE_MAX_LIMIT} 的整数。`);
     }
     return resources.listAnnotationRangeComments(
       await getCurrentUser(repository, request),
@@ -1262,8 +1265,10 @@ export function registerApiRoutes(
     "/api/annotation-files/:resourceId/confirmations",
     async (request) => {
       const limit = request.query.limit === undefined ? undefined : Number(request.query.limit);
-      if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
-        throw badRequest("limit 必须是 1 到 100 的整数。");
+      if (limit !== undefined && (
+        !Number.isInteger(limit) || limit < 1 || limit > ANNOTATION_REVIEW_PAGE_MAX_LIMIT
+      )) {
+        throw badRequest(`limit 必须是 1 到 ${ANNOTATION_REVIEW_PAGE_MAX_LIMIT} 的整数。`);
       }
       return resources.listAnnotationConfirmations(
         await getCurrentUser(repository, request),

@@ -7,6 +7,7 @@ import {
   getAnnotationMutationLeasePurposeForCommand,
   type AnnotationCommandEnvelope,
   type AnnotationMutationPurpose,
+  type AnnotationReviewScope,
   type AnnotationWorkflowStatus,
   type ProjectSnapshotBoundaryKind,
   type ResourceCapability,
@@ -24,13 +25,14 @@ import { ResizableSplitLayout } from "./components/ResizableSplitLayout";
 import { SpectrogramSettingsPanel } from "./components/SpectrogramSettingsPanel";
 import { SubtitleList } from "./components/SubtitleList";
 import { SentenceAnnotationSettingsDialog } from "./components/SentenceAnnotationSettingsDialog";
-import { Timeline } from "./components/Timeline";
+import { Timeline, type TimelineReviewRange } from "./components/Timeline";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { TopMenuBar, type TopMenuPlatformNavigation } from "./components/TopMenuBar";
 import { VideoPlayer } from "./components/VideoPlayer";
 import type { MediaPlaybackController } from "./media/mediaPlaybackController";
 import { mockProject } from "./mockData";
 import { AnnotationReviewPanel } from "./platform/AnnotationReviewPanel";
+import { AnnotationReviewWithdrawalDialog } from "./platform/AnnotationReviewWithdrawalDialog";
 import {
   AnnotationWorkflowStatusDialog,
   type AnnotationWorkflowStatusPrompt,
@@ -55,6 +57,8 @@ import {
   getAnnotationReviewCreateBlocker,
   getAnnotationConfirmationTrackOptions,
   layoutAnnotationReviewTimelineItems,
+  type AnnotationConfirmationViewRecord,
+  type AnnotationRangeCommentViewRecord,
 } from "./platform/annotationConfirmationView";
 import {
   type LocalEditorSession,
@@ -73,6 +77,10 @@ import { usePlatformOperationCatchUp } from "./platform/usePlatformOperationCatc
 import { usePlatformCollaborationSession } from "./platform/usePlatformCollaborationSession";
 import { buildTimelineSelectionSummary } from "./platform/timelineSelectionSummary";
 import { useAnnotationReviews } from "./platform/useAnnotationReviews";
+import {
+  buildAnnotationReviewExportPackage,
+  getAnnotationReviewExportFileName,
+} from "./platform/annotationReviewExport";
 import { usePlatformAutoSave } from "./platform/usePlatformAutoSave";
 import { usePlatformRecoveryBackup } from "./platform/usePlatformRecoveryBackup";
 import {
@@ -447,6 +455,13 @@ type ImportMergePreview = {
 
 type TimelineContextMenu =
   | {
+      type: "review-range";
+      range: TimelineReviewRange;
+      x: number;
+      y: number;
+      time: number;
+    }
+  | {
       type: "line";
       id: string;
       x: number;
@@ -508,6 +523,10 @@ type TimelineContextMenu =
       y: number;
       time: number;
     };
+
+type TimelineReviewWithdrawalTarget =
+  | { kind: "confirmation"; item: AnnotationConfirmationViewRecord }
+  | { kind: "range-record"; item: AnnotationRangeCommentViewRecord };
 
 const BANYAN_CONTEXT_SUBTYPE_GROUPS: Array<{
   label: string;
@@ -800,6 +819,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const annotationReviews = useAnnotationReviews({
     client: editorSession?.client ?? null,
     annotationFileId: editorSession?.annotationFileId ?? null,
+    currentRevision: editorSession ? remoteBaseRevision : null,
+    autoLoadAll: Boolean(editorSession?.canReview),
   });
   const atomicCommandSubmit = usePlatformAtomicCommandSubmit({
     client: editorSession?.client ?? null,
@@ -831,7 +852,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       editorSession?.onRemoteRevisionAdvanced(response.committedRevision, response.operationCursor);
       if (plan.request.mutationLeaseToken) mutationLease.markCommitted();
       mutationLease.advanceBaseRevision(response.committedRevision);
-      void annotationReviews.refresh();
       return { status: "applied" };
     },
     onRetryableFailure: (failure) => {
@@ -1265,7 +1285,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         setRemoteBaseRevision(result.revision);
         setRemoteOperationCursor(result.cursor);
         editorSession.onRemoteRevisionAdvanced(result.revision, result.cursor);
-        void annotationReviews.refresh();
         return;
       }
 
@@ -1284,7 +1303,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       setRemoteBaseRevision(latestFile.revision);
       setRemoteOperationCursor(latestFile.operationCursor);
       editorSession.onAnnotationFileSaved(latestFile);
-      void annotationReviews.refresh();
     },
     // 网络失败只保留当前 snapshot/cursor 等待下轮；不能把 clean 文档伪装成保存错误或冲突。
     onError: (error) => {
@@ -1372,6 +1390,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const preferredCharacterEditLocationRef = useRef<CharacterEditLocation>("timeline");
   const blockContextMenuRef = useRef<HTMLDivElement>(null);
   const [blockContextMenuPosition, setBlockContextMenuPosition] = useState<{ left: number; top: number } | null>(null);
+  const [timelineReviewWithdrawalTarget, setTimelineReviewWithdrawalTarget] =
+    useState<TimelineReviewWithdrawalTarget | null>(null);
   const timelinePasteTargetRef = useRef<TimelinePasteTarget | null>(null);
   const timelineTrackDefinitions = useMemo(
     () => buildTimelineTrackDefinitions(project.builtinTracks, project.customTracks, project.activeTrackOrder),
@@ -1413,6 +1433,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const reviewTimelineRanges = useMemo(
     () => reviewTimelineItems.map((item) => ({
       id: item.id,
+      recordId: item.recordId,
+      recordType: item.recordType,
       kind: item.kind,
       startTime: item.startTime,
       endTime: item.endTime,
@@ -2383,6 +2405,31 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const contextMenuBanyanMark = blockContextMenu?.type === "banyan-mark"
     ? project.banyanMarks.find((item) => item.id === blockContextMenu.id) ?? null
     : null;
+  const contextMenuReviewConfirmation = blockContextMenu?.type === "review-range" &&
+    blockContextMenu.range.recordType === "confirmation"
+    ? confirmationViewRecords.find((item) => item.record.id === blockContextMenu.range.recordId) ?? null
+    : null;
+  const contextMenuReviewRangeRecord = blockContextMenu?.type === "review-range" &&
+    blockContextMenu.range.recordType === "range_record"
+    ? commentViewRecords.find((item) => item.record.id === blockContextMenu.range.recordId) ?? null
+    : null;
+  const canRevokeContextMenuConfirmation = Boolean(contextMenuReviewConfirmation && editorSession &&
+    canShowAnnotationConfirmationRevoke({
+      record: contextMenuReviewConfirmation,
+      canReview: editorSession.canReview,
+      currentUserId: editorSession.currentUserId,
+      currentUserRoles: editorSession.currentUserRoles,
+      hasOwnerAuthority: editorSession.canRevokeAnyConfirmation,
+    }));
+  const canWithdrawContextMenuRangeRecord = Boolean(contextMenuReviewRangeRecord && editorSession &&
+    canShowAnnotationRangeCommentWithdraw({
+      record: contextMenuReviewRangeRecord,
+      canReview: editorSession.canReview,
+      canWrite: editorSession.canWrite,
+      currentUserId: editorSession.currentUserId,
+      currentUserRoles: editorSession.currentUserRoles,
+      hasOwnerAuthority: editorSession.canRevokeAnyConfirmation,
+    }));
   const contextMenuSplitCharacters = contextMenuCharacter
     ? getSplittableCharacters(contextMenuCharacter.char)
     : [];
@@ -3689,7 +3736,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function createContextMenuTypeOption(target: Exclude<
     TimelineContextMenu["type"],
-    "line" | "lane" | "gongche-block" | "banyan-mark"
+    "review-range" | "line" | "lane" | "gongche-block" | "banyan-mark"
   >) {
     if (!blockContextMenu || blockContextMenu.type !== target) {
       return;
@@ -6799,7 +6846,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       setRemoteOperationCursor(operationCursor);
       session.onRemoteRevisionAdvanced(revision, operationCursor);
       mutationLease.advanceBaseRevision(revision);
-      void annotationReviews.refresh();
     };
     const expectedRemoteRevision = remoteBaseRevisionRef.current;
     const localState = getRecoveryState();
@@ -6966,7 +7012,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         savedLocalRevision,
       });
       clearMaintenanceBlockAfterServerCommit();
-      void annotationReviews.refresh();
       return { status: "saved" };
     } catch (error) {
       if (submittedOperationIds.length > 0) markOperationsAsSubmitted(submittedOperationIds);
@@ -7116,6 +7161,17 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     );
   }
 
+  function focusAnnotationReviewScope(scope: AnnotationReviewScope) {
+    seekTo(scope.startTime);
+    setLineFocusRequest(null);
+    setInitialPlatformFocusRange(null);
+    setConfirmationFocusRange({
+      requestId: Date.now(),
+      start: scope.startTime,
+      end: scope.endTime,
+    });
+  }
+
   function renderTimelineWorkspace(detached: boolean) {
     return (
       <Timeline
@@ -7154,13 +7210,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           : []}
         reviewRangesVisible={Boolean(editorSession && confirmationTimelineVisible)}
         onSelectReviewRange={(range) => {
-          seekTo(range.startTime);
-          setLineFocusRequest(null);
-          setInitialPlatformFocusRange(null);
-          setConfirmationFocusRange({
-            requestId: Date.now(),
-            start: range.startTime,
-            end: range.endTime,
+          focusAnnotationReviewScope({
+            startTime: range.startTime,
+            endTime: range.endTime,
+            targets: { mode: "all" },
+          });
+        }}
+        onOpenReviewRangeContextMenu={(range, x, y) => {
+          setBlockContextMenu({
+            type: "review-range",
+            range,
+            time: range.startTime,
+            x,
+            y,
           });
         }}
         isDetached={detached}
@@ -7376,6 +7438,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         loading={annotationReviews.loading}
         loadingMoreConfirmations={annotationReviews.loadingMoreConfirmations}
         loadingMoreComments={annotationReviews.loadingMoreComments}
+        loadingAll={annotationReviews.loadingAll}
         hasMoreConfirmations={Boolean(annotationReviews.confirmations?.nextCursor)}
         hasMoreComments={Boolean(annotationReviews.comments?.nextCursor)}
         mutationPending={annotationReviews.mutationPending}
@@ -7388,6 +7451,23 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         onRefresh={annotationReviews.refresh}
         onLoadMoreConfirmations={annotationReviews.loadMoreConfirmations}
         onLoadMoreComments={annotationReviews.loadMoreComments}
+        onLoadAll={async () => Boolean(await annotationReviews.loadAllRecords())}
+        onExportAll={async () => {
+          if (!editorSession) throw new Error("当前不是平台标注文件，不能导出服务器审核历史。");
+          const history = await annotationReviews.loadAllRecords();
+          if (!history) throw new Error("完整审核历史加载失败，未生成残缺导出文件。");
+          const reviewPackage = buildAnnotationReviewExportPackage({
+            annotationFileId: editorSession.annotationFileId,
+            annotationFileName: editorSession.annotationFileName,
+            confirmations: history.confirmations,
+            comments: history.comments,
+          });
+          downloadBlob(
+            `${JSON.stringify(reviewPackage, null, 2)}\n`,
+            getAnnotationReviewExportFileName(editorSession.annotationFileName),
+            "application/json;charset=utf-8",
+          );
+        }}
         onCreateConfirmation={({ scope, note }) => annotationReviews.createConfirmation({
           confirmedRevision: remoteBaseRevision,
           scope,
@@ -7423,14 +7503,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           hasOwnerAuthority: editorSession.canRevokeAnyConfirmation,
         })}
         onNavigate={(scope) => {
-          seekTo(scope.startTime);
-          setLineFocusRequest(null);
-          setInitialPlatformFocusRange(null);
-          setConfirmationFocusRange({
-            requestId: Date.now(),
-            start: scope.startTime,
-            end: scope.endTime,
-          });
+          focusAnnotationReviewScope(scope);
         }}
       />
     );
@@ -8058,6 +8131,57 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           }}
           onPointerDown={(event) => event.stopPropagation()}
         >
+          {blockContextMenu.type === "review-range" ? (
+            <>
+              <div className="character-context-menu-label">
+                {blockContextMenu.range.kind === "confirmation"
+                  ? "标注确认"
+                  : blockContextMenu.range.kind === "feedback" ? "编辑反馈" : "审核评论"}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  focusAnnotationReviewScope({
+                    startTime: blockContextMenu.range.startTime,
+                    endTime: blockContextMenu.range.endTime,
+                    targets: { mode: "all" },
+                  });
+                  setBlockContextMenu(null);
+                }}
+              >定位到该范围</button>
+              {contextMenuReviewConfirmation && canRevokeContextMenuConfirmation ? (
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() => {
+                    setTimelineReviewWithdrawalTarget({
+                      kind: "confirmation",
+                      item: contextMenuReviewConfirmation,
+                    });
+                    setBlockContextMenu(null);
+                  }}
+                >撤销确认</button>
+              ) : null}
+              {contextMenuReviewRangeRecord && canWithdrawContextMenuRangeRecord ? (
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() => {
+                    setTimelineReviewWithdrawalTarget({
+                      kind: "range-record",
+                      item: contextMenuReviewRangeRecord,
+                    });
+                    setBlockContextMenu(null);
+                  }}
+                >{contextMenuReviewRangeRecord.record.kind === "editor_feedback"
+                    ? "撤回编辑反馈"
+                    : "撤回审核评论"}</button>
+              ) : null}
+              {!canRevokeContextMenuConfirmation && !canWithdrawContextMenuRangeRecord ? (
+                <div className="character-context-menu-label">当前账号只能查看该记录</div>
+              ) : null}
+            </>
+          ) : null}
           {blockContextMenu.type === "lane" ? (
             <>
               <div className="character-context-menu-label">时间轴</div>
@@ -8590,6 +8714,32 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           ) : null}
         </div>
       ) : null}
+      <AnnotationReviewWithdrawalDialog
+        open={Boolean(timelineReviewWithdrawalTarget)}
+        title={timelineReviewWithdrawalTarget?.kind === "confirmation"
+          ? "撤销确认记录"
+          : timelineReviewWithdrawalTarget?.item.record.kind === "editor_feedback"
+            ? "撤回标注反馈"
+            : "撤回范围评论"}
+        pending={annotationReviews.mutationPending}
+        onOpenChange={(open) => {
+          if (!open) setTimelineReviewWithdrawalTarget(null);
+        }}
+        onSubmit={async (reason) => {
+          const target = timelineReviewWithdrawalTarget;
+          if (!target) return;
+          try {
+            if (target.kind === "confirmation") {
+              await annotationReviews.revokeConfirmation(target.item.record.id, { reason });
+            } else {
+              await annotationReviews.withdrawComment(target.item.record.id, { reason });
+            }
+            setTimelineReviewWithdrawalTarget(null);
+          } catch (error) {
+            console.error("时间轴撤销审核记录失败:", error);
+          }
+        }}
+      />
       {pendingPasteState ? (
         <div className="app-modal-backdrop" onClick={() => applyPendingPasteResolution("cancel")}>
           <div className="app-modal" onClick={(event) => event.stopPropagation()}>
