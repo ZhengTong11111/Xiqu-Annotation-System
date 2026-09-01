@@ -9853,5 +9853,14 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 验证通过：项目归一化 6/6、平台冲突协调 13/13、完整 `npm run build` 与 `git diff --check`。构建仅保留既有 Vite
   主 chunk 超过 500 kB 提示；一次不存在的 `typecheck:web` 脚本调用只产生 npm 脚本名错误，随后完整 build 已通过
   仓库实际 Web TypeScript 检查。
-- **已完成**：根因取证、最小代码修复、中文注释、专项/冲突/完整构建验证与僵尸路径复核。**待完成**：提交并推送
-  主线、构建不可变生产 release、短维护原子切换及线上日志核验。
+- 修复提交 `e6600cd` 已推送远端 `main`。服务器候选从该精确提交的 SHA-256 校验归档重新执行 `npm ci`、完整
+  build、Prisma schema guard、`release:inspect` 和 `release:check`；结果为 27 个运行路径、27 个生产依赖和 33 条
+  migration。本轮无 schema 变化，未运行 migration、未创建备份，也未覆盖生产 payload 或浏览器草稿。
+- `platform.admin` 于 2026-09-01 03:48:21 UTC 开启维护，原子切换至
+  `/opt/xiqu/releases/20260901T034700Z-e6600cd`，只重启 API，analysis worker 保持运行；03:49:01 UTC 解除维护，
+  窗口约 40 秒。重启后第一次 smoke 恰好落在 API 尚未监听的短窗口而返回 502；进程约两秒后完成监听，启动日志无
+  warning/error，维护内重试和维护外完整 smoke 均通过，没有回滚或重复切换。
+- 最终 API、analysis worker、Caddy 均为 `active`，首页加载新资产 `assets/index-DE1JtrS9.js`，API error 级日志为空；
+  只读数据库复核确认目标文件逐字轨设置仍为 `true`。**已完成**：根因取证、最小修复、专项/冲突/完整构建验证、
+  Git 主线推送、短维护不可变发布与线上状态核验。**待人工复核**：刷新或重新打开该文件，确认开关保持开启，并让
+  既有冗余草稿在下一次自动保存中显示“服务器已包含本次修改”后恢复已同步。
