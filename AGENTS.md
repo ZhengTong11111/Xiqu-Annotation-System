@@ -42,7 +42,9 @@ Main currently contains all major recent feature lines that matter for context:
 - independent typed annotation-range notes alongside confirmed ranges. Review comments and editor feedback reuse one saved
   range/target contract, required plain-text bodies, pagination and withdrawal history, but creation follows the record kind:
   review comments require `read + review`, while editor feedback requires `read + write`. Both remain non-confirming
-  append-only governance facts and must never alter annotation workflow status
+  append-only governance facts and must never alter annotation workflow status. Confirmation history and comment/feedback
+  history use separate file-bound opaque keyset cursors; clients must expose partial-load state, deduplicate page boundaries,
+  and invalidate in-flight continuation requests after refresh or file changes rather than relying on a large fixed list cap
 - permission-gated native streaming downloads for media resources and authoritative JSON downloads for annotation resources, exposed through the shared resource context menu and Inspector
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - local `dev:api` and `dev:analysis-worker` commands load the ignored root `.env` through Node 22

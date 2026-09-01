@@ -55,6 +55,7 @@ import {
   isTimelineDragActivated,
   TIMELINE_DRAG_ACTIVATION_PX,
 } from "../utils/timelineDragCompletion";
+import { getTimelineHorizontalWheelDelta } from "../utils/timelineWheelNavigation";
 
 type TimelineProps = {
   editingBlockedReason?: string;
@@ -2501,11 +2502,19 @@ export function Timeline({
         onWheel={(event) => {
           const isPinchZoom = event.ctrlKey && !event.metaKey;
           const isModifierZoom = event.altKey && !event.metaKey && !event.ctrlKey;
-          if (!isPinchZoom && !isModifierZoom) {
+          if (isPinchZoom || isModifierZoom) {
+            event.preventDefault();
+            handleZoomAroundPointer(event);
             return;
           }
+          const horizontalDelta = getTimelineHorizontalWheelDelta(
+            event,
+            event.currentTarget.clientWidth,
+          );
+          if (horizontalDelta === null || horizontalDelta === 0) return;
+          // 直接更新 scrollLeft 保留鼠标滚轮的逐格反馈；触摸板无修饰横移仍交给浏览器原生滚动。
           event.preventDefault();
-          handleZoomAroundPointer(event);
+          event.currentTarget.scrollLeft += horizontalDelta;
         }}
         >
           <div className="timeline-canvas" style={timelineCanvasStyle}>

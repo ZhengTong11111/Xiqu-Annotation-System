@@ -7374,7 +7374,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         canWrite={editorSession.canWrite}
         createBlocker={reviewCreateBlocker}
         loading={annotationReviews.loading}
+        loadingMoreConfirmations={annotationReviews.loadingMoreConfirmations}
         loadingMoreComments={annotationReviews.loadingMoreComments}
+        hasMoreConfirmations={Boolean(annotationReviews.confirmations?.nextCursor)}
         hasMoreComments={Boolean(annotationReviews.comments?.nextCursor)}
         mutationPending={annotationReviews.mutationPending}
         error={annotationReviews.error}
@@ -7384,6 +7386,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         portalContainer={detached ? confirmationDetachedWindow?.document.body : undefined}
         onTimelineVisibleChange={setConfirmationTimelineVisible}
         onRefresh={annotationReviews.refresh}
+        onLoadMoreConfirmations={annotationReviews.loadMoreConfirmations}
         onLoadMoreComments={annotationReviews.loadMoreComments}
         onCreateConfirmation={({ scope, note }) => annotationReviews.createConfirmation({
           confirmedRevision: remoteBaseRevision,

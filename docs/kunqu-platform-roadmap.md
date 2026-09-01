@@ -356,7 +356,8 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
   `read + review` 门禁，但正文必填，不表达确认，不进入 `ProjectData`、revision、恢复快照、undo/history
   或 operation。评论绑定创建时 revision，保存推进后显示为“基于旧修订”；作者可撤回自己评论，owner/
   admin 可撤回任意评论，撤回不删除历史。右侧区域统一更名为“标注审核”，支持确认/评论创建、类型与
-  生命周期筛选、评论分页和停靠/隐藏/独立窗口；时间轴“审核范围”栏以绿色确认、红色评论统一分层。
+  生命周期筛选、独立 opaque cursor 分页和停靠/隐藏/独立窗口；确认与评论/反馈分别续页，界面明确显示
+  局部已加载状态，不再依赖固定大上限伪装完整历史。时间轴“审核范围”栏以绿色确认、红色评论统一分层。
   确认和评论写入后发布不含正文/作用域的 `annotation.review.changed` 有损提示，跨 API 实例通过独立
   PostgreSQL channel 转发，客户端仍以权限受控 HTTP 列表为权威。
 - R2.5e 已完成：同一范围记录合同增加 `editor_feedback`，供具备 `read + write` 的标注者提交反馈；原审核

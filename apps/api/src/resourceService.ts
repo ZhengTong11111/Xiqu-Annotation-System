@@ -122,6 +122,10 @@ import { assertActiveAnnotationFile as assertActiveAnnotationFileActivity } from
 import type { AnnotationRevisionPublisher } from "./annotationCollaborationHub.js";
 import type { AnnotationReviewPublisher } from "./annotationCollaborationHub.js";
 import {
+  decodeAnnotationConfirmationCursor,
+  encodeAnnotationConfirmationCursor,
+} from "./annotationConfirmationPagination.js";
+import {
   decodeAnnotationRangeCommentCursor,
   encodeAnnotationRangeCommentCursor,
 } from "./annotationRangeCommentPagination.js";
@@ -216,8 +220,6 @@ export type DownloadableResource =
     };
 
 const MAX_CONFIRMATION_REVOKE_REASON_LENGTH = 1_000;
-// 即时兼容高密度审核文件；长期仍应改为游标分页，不能继续无限放大单次响应。
-const MAX_ANNOTATION_CONFIRMATION_LIST_SIZE = 1_000;
 const MAX_RANGE_COMMENT_WITHDRAW_REASON_LENGTH = 1_000;
 
 // Prisma 枚举与共享合同保持显式双向映射，避免数据库命名变化被隐式类型断言掩盖。
@@ -1437,29 +1439,50 @@ export class ResourceService {
     return this.getAnnotationFile<TPayload>(user, resourceId);
   }
 
-  // 确认列表只返回治理元数据和当前 revision；即时上限覆盖现有高密度文件，不读取 annotation payload。
+  // 确认记录采用稳定复合 keyset 分页；撤销事实仍在同一历史流中返回。
   async listAnnotationConfirmations(
     user: ApiUser,
     resourceId: string,
+    options: { cursor?: string; limit?: number },
   ): Promise<AnnotationConfirmationList> {
     await this.access.assertCapability(user, resourceId, "read");
     await this.assertActiveAnnotationFile(resourceId);
+    const limit = Math.max(1, Math.min(options.limit ?? 50, 100));
+    const cursor = options.cursor
+      ? decodeAnnotationConfirmationCursor(options.cursor, resourceId)
+      : null;
+    if (options.cursor && !cursor) throw badRequest("确认记录分页游标无效或不属于当前文件。");
+    const cursorWhere = cursor ? {
+      OR: [
+        { createdAt: { lt: cursor.createdAt } },
+        { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+      ],
+    } : {};
     const [file, rows] = await Promise.all([
       this.prisma.annotationFile.findUnique({
         where: { resourceId },
         select: { revision: true },
       }),
       this.prisma.annotationConfirmation.findMany({
-        where: { annotationFileId: resourceId },
+        where: { annotationFileId: resourceId, ...cursorWhere },
         include: annotationConfirmationInclude,
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        take: MAX_ANNOTATION_CONFIRMATION_LIST_SIZE,
+        take: limit + 1,
       }),
     ]);
     if (!file) throw notFound("标注文件不存在。");
+    const pageRows = rows.slice(0, limit);
+    const last = pageRows.at(-1);
     return {
       currentRevision: file.revision,
-      confirmations: rows.map((row) => this.mapAnnotationConfirmation(row)),
+      confirmations: pageRows.map((row) => this.mapAnnotationConfirmation(row)),
+      nextCursor: rows.length > limit && last
+        ? encodeAnnotationConfirmationCursor({
+            annotationFileId: resourceId,
+            createdAt: last.createdAt,
+            id: last.id,
+          })
+        : null,
     };
   }
 

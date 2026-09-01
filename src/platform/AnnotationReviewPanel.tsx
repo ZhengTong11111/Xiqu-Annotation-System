@@ -32,7 +32,9 @@ type AnnotationReviewPanelProps = {
   canWrite: boolean;
   createBlocker: AnnotationReviewCreateBlocker | null;
   loading: boolean;
+  loadingMoreConfirmations: boolean;
   loadingMoreComments: boolean;
+  hasMoreConfirmations: boolean;
   hasMoreComments: boolean;
   mutationPending: boolean;
   error: string | null;
@@ -42,6 +44,7 @@ type AnnotationReviewPanelProps = {
   portalContainer?: HTMLElement;
   onTimelineVisibleChange: (visible: boolean) => void;
   onRefresh: () => Promise<boolean>;
+  onLoadMoreConfirmations: () => Promise<void>;
   onLoadMoreComments: () => Promise<void>;
   onCreateConfirmation: (input: {
     scope: AnnotationReviewScope;
@@ -198,6 +201,7 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
   }
 
   const totalCount = props.confirmations.length + props.comments.length;
+  const hasMoreRecords = props.hasMoreConfirmations || props.hasMoreComments;
   return (
     <section
       className={["panel", "annotation-confirmation-panel", props.collapsed ? "is-collapsed" : ""].join(" ")}
@@ -208,7 +212,7 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
         <div className="annotation-confirmation-heading-actions">
           {!props.collapsed ? (
             <>
-              <span>{totalCount} 条</span>
+              <span>{totalCount} 条{hasMoreRecords ? "已加载" : ""}</span>
               <label title="在时间轴显示审核与反馈范围">
                 <input
                   type="checkbox"
@@ -244,7 +248,7 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
           <div className="annotation-confirmation-status-row">
             <span>服务器修订 {props.currentRevision ?? "-"}</span>
             <span>编辑器修订 {props.editorRevision}</span>
-            <span>{totalCount} 条记录</span>
+            <span>{hasMoreRecords ? `已加载 ${totalCount} 条记录` : `${totalCount} 条记录`}</span>
           </div>
           {props.error ? <div className="annotation-confirmation-error">{props.error}</div> : null}
           {notice ? <div className="annotation-confirmation-notice">{notice}</div> : null}
@@ -391,14 +395,24 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
             ) : historyItems.map((entry) => entry.kind === "confirmation"
               ? renderConfirmationItem(entry.item)
               : renderRangeRecordItem(entry.item))}
-            {props.hasMoreComments ? (
-              <button
-                type="button"
-                className="annotation-review-load-more"
-                disabled={props.loadingMoreComments}
-                onClick={() => void props.onLoadMoreComments()}
-              >{props.loadingMoreComments ? "正在加载…" : "加载更多记录"}</button>
-            ) : null}
+            <div className="annotation-review-load-more-row">
+              {props.hasMoreConfirmations && (historyKind === "all" || historyKind === "confirmation") ? (
+                <button
+                  type="button"
+                  className="annotation-review-load-more"
+                  disabled={props.loadingMoreConfirmations}
+                  onClick={() => void props.onLoadMoreConfirmations()}
+                >{props.loadingMoreConfirmations ? "正在加载…" : "加载更多确认"}</button>
+              ) : null}
+              {props.hasMoreComments && historyKind !== "confirmation" ? (
+                <button
+                  type="button"
+                  className="annotation-review-load-more"
+                  disabled={props.loadingMoreComments}
+                  onClick={() => void props.onLoadMoreComments()}
+                >{props.loadingMoreComments ? "正在加载…" : "加载更多评论与反馈"}</button>
+              ) : null}
+            </div>
           </div>
         </div>
       ) : null}

@@ -3515,7 +3515,44 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(listedBody.currentRevision, 1);
       const confirmations = listedBody.confirmations as JsonObject[];
       assert.equal(confirmations.length, 2);
+      assert.equal(listedBody.nextCursor, null);
       assert.ok(confirmations.every((record) => !("payload" in record)));
+
+      // 确认历史使用稳定复合游标；两页不能重复，游标也不能跨文件复用。
+      const firstConfirmationPage = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations?limit=1`,
+      });
+      assert.equal(firstConfirmationPage.statusCode, 200, firstConfirmationPage.body);
+      const firstConfirmationPageBody = dataOf(firstConfirmationPage.json());
+      const firstPageItems = firstConfirmationPageBody.confirmations as JsonObject[];
+      assert.equal(firstPageItems.length, 1);
+      assert.equal(typeof firstConfirmationPageBody.nextCursor, "string");
+      const confirmationCursor = String(firstConfirmationPageBody.nextCursor);
+      const secondConfirmationPage = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations?limit=1&cursor=${encodeURIComponent(confirmationCursor)}`,
+      });
+      assert.equal(secondConfirmationPage.statusCode, 200, secondConfirmationPage.body);
+      const secondConfirmationPageBody = dataOf(secondConfirmationPage.json());
+      const secondPageItems = secondConfirmationPageBody.confirmations as JsonObject[];
+      assert.equal(secondPageItems.length, 1);
+      assert.equal(secondConfirmationPageBody.nextCursor, null);
+      assert.notEqual(firstPageItems[0]?.id, secondPageItems[0]?.id);
+      assert.deepEqual(
+        new Set([firstPageItems[0]?.id, secondPageItems[0]?.id]),
+        new Set([domainConfirmation.id, trackConfirmation.id]),
+      );
+      const crossFileCursor = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/confirmations?cursor=${encodeURIComponent(confirmationCursor)}`,
+      });
+      assert.equal(crossFileCursor.statusCode, 400);
+      const invalidConfirmationLimit = await jsonRequest(app, studentToken, {
+        method: "GET",
+        url: `/api/annotation-files/${confirmationFileId}/confirmations?limit=101`,
+      });
+      assert.equal(invalidConfirmationLimit.statusCode, 400);
 
       // 评论是独立治理事实：正文必填、绑定 revision，其他 reviewer 不能撤回作者记录。
       const blankComment = await jsonRequest(app, studentToken, {

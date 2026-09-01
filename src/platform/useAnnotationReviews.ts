@@ -10,6 +10,7 @@ import type {
   WithdrawAnnotationRangeCommentRequest,
 } from "@xiqu/shared";
 import { PlatformApiError, type PlatformClient } from "../api/platformClient";
+import { mergeAnnotationReviewPage } from "./annotationReviewPaging";
 
 export type AnnotationReviewMutationResult<TRecord> = {
   record: TRecord;
@@ -26,6 +27,7 @@ export function useAnnotationReviews(input: {
   const [confirmations, setConfirmations] = useState<AnnotationConfirmationList | null>(null);
   const [comments, setComments] = useState<AnnotationRangeCommentPage | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMoreConfirmations, setLoadingMoreConfirmations] = useState(false);
   const [loadingMoreComments, setLoadingMoreComments] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mutationPending, setMutationPending] = useState(false);
@@ -55,7 +57,7 @@ export function useAnnotationReviews(input: {
     setError(null);
     try {
       const [nextConfirmations, nextComments] = await Promise.all([
-        input.client.listAnnotationConfirmations(input.annotationFileId),
+        input.client.listAnnotationConfirmations(input.annotationFileId, { limit: 100 }),
         input.client.listAnnotationRangeComments(input.annotationFileId, {
           includeWithdrawn: true,
           limit: 100,
@@ -82,9 +84,51 @@ export function useAnnotationReviews(input: {
     setComments(null);
     setError(null);
     setMutationPending(false);
+    setLoadingMoreConfirmations(false);
     setLoadingMoreComments(false);
     if (input.client && input.annotationFileId) void refresh();
   }, [input.annotationFileId, input.client, refresh]);
+
+  // 确认与评论拥有独立 cursor；继续加载一类记录不会消费另一类的分页位置。
+  const loadMoreConfirmations = useCallback(async () => {
+    if (
+      !input.client ||
+      !input.annotationFileId ||
+      !confirmations?.nextCursor ||
+      loadingMoreConfirmations
+    ) return;
+    const generation = requestGenerationRef.current;
+    const resourceGeneration = resourceGenerationRef.current;
+    setLoadingMoreConfirmations(true);
+    try {
+      const page = await input.client.listAnnotationConfirmations(input.annotationFileId, {
+        cursor: confirmations.nextCursor,
+        limit: 100,
+      });
+      if (
+        !mountedRef.current ||
+        generation !== requestGenerationRef.current ||
+        resourceGeneration !== resourceGenerationRef.current
+      ) return;
+      setConfirmations((current) => current ? {
+        currentRevision: page.currentRevision,
+        confirmations: mergeAnnotationReviewPage(current.confirmations, page.confirmations),
+        nextCursor: page.nextCursor,
+      } : page);
+    } catch (nextError) {
+      if (
+        mountedRef.current &&
+        generation === requestGenerationRef.current &&
+        resourceGeneration === resourceGenerationRef.current
+      ) {
+        setError(describeAnnotationReviewError(nextError));
+      }
+    } finally {
+      if (mountedRef.current && resourceGeneration === resourceGenerationRef.current) {
+        setLoadingMoreConfirmations(false);
+      }
+    }
+  }, [confirmations?.nextCursor, input.annotationFileId, input.client, loadingMoreConfirmations]);
 
   // 追加分页只接受当前 nextCursor；刷新或换文件会让慢响应失效。
   const loadMoreComments = useCallback(async () => {
@@ -105,11 +149,15 @@ export function useAnnotationReviews(input: {
       ) return;
       setComments((current) => current ? {
         currentRevision: page.currentRevision,
-        items: mergeCommentPages(current.items, page.items),
+        items: mergeAnnotationReviewPage(current.items, page.items),
         nextCursor: page.nextCursor,
       } : page);
     } catch (nextError) {
-      if (mountedRef.current && resourceGeneration === resourceGenerationRef.current) {
+      if (
+        mountedRef.current &&
+        generation === requestGenerationRef.current &&
+        resourceGeneration === resourceGenerationRef.current
+      ) {
         setError(describeAnnotationReviewError(nextError));
       }
     } finally {
@@ -164,24 +212,18 @@ export function useAnnotationReviews(input: {
     confirmations,
     comments,
     loading,
+    loadingMoreConfirmations,
     loadingMoreComments,
     error,
     mutationPending,
     refresh,
+    loadMoreConfirmations,
     loadMoreComments,
     createConfirmation,
     revokeConfirmation,
     createComment,
     withdrawComment,
   };
-}
-
-function mergeCommentPages(
-  current: AnnotationRangeCommentRecord[],
-  incoming: AnnotationRangeCommentRecord[],
-) {
-  const seen = new Set(current.map((record) => record.id));
-  return [...current, ...incoming.filter((record) => !seen.has(record.id))];
 }
 
 function describeAnnotationReviewError(error: unknown): string {

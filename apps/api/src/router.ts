@@ -1254,14 +1254,23 @@ export function registerApiRoutes(
     },
   );
 
-  // 确认列表属于标注文件治理元数据；读取权限由服务层按文件逐项执行。
-  app.get<{ Params: { resourceId: string } }>(
+  // 确认列表使用服务端 opaque cursor；limit 只控制页面大小，不改变权限与排序。
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { cursor?: string; limit?: string };
+  }>(
     "/api/annotation-files/:resourceId/confirmations",
-    async (request) =>
-      resources.listAnnotationConfirmations(
+    async (request) => {
+      const limit = request.query.limit === undefined ? undefined : Number(request.query.limit);
+      if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
+        throw badRequest("limit 必须是 1 到 100 的整数。");
+      }
+      return resources.listAnnotationConfirmations(
         await getCurrentUser(repository, request),
         request.params.resourceId,
-      ),
+        { cursor: request.query.cursor, limit },
+      );
+    },
   );
 
   // 创建请求在路由边界解析 unknown，revision、轨道存在性和 review 权限仍由事务服务校验。

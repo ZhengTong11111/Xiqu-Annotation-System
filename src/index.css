@@ -7765,6 +7765,12 @@ select {
   font-size: 10px;
 }
 
+.annotation-review-load-more-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .annotation-confirmation-item-main small.invalid {
   color: #973d43;
 }

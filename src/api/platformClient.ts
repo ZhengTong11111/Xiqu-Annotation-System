@@ -667,10 +667,17 @@ export class PlatformClient {
     );
   }
 
-  // 确认列表只包含范围与治理元数据，不会把当前标注 payload 再下载一份。
-  listAnnotationConfirmations(resourceId: string) {
+  // 确认列表只包含范围与治理元数据；客户端把 cursor 作为 opaque token 原样交回。
+  listAnnotationConfirmations(
+    resourceId: string,
+    options: { cursor?: string; limit?: number } = {},
+  ) {
+    const query = new URLSearchParams();
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.limit) query.set("limit", String(options.limit));
+    const suffix = query.size ? `?${query.toString()}` : "";
     return this.request<AnnotationConfirmationList>(
-      `/annotation-files/${resourceId}/confirmations`,
+      `/annotation-files/${resourceId}/confirmations${suffix}`,
     );
   }
 

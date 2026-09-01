@@ -353,10 +353,11 @@ export type AnnotationConfirmationRecord = AnnotationConfirmationDraft & {
 export type AnnotationConfirmationLifecycle = "active" | "revoked";
 export type AnnotationConfirmationFreshness = "current" | "stale";
 
-// 列表携带服务器当前 revision，调用方据此用纯 helper 判断每条确认是否已过期。
+// 确认页携带服务器当前 revision；opaque cursor 只能交回同一文件接口继续读取。
 export type AnnotationConfirmationList = {
   currentRevision: number;
   confirmations: AnnotationConfirmationRecord[];
+  nextCursor: string | null;
 };
 
 export const ANNOTATION_RANGE_COMMENT_KINDS = [
