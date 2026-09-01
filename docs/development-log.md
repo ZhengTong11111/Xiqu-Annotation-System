@@ -9815,6 +9815,16 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 
 - 按用户明确要求，本轮不新增或执行测试，也不创建部署备份；此前启动的完整 API 测试在要求到达后立即中止，取消
   项不作为失败或通过证据。候选 release 仍必须完成 Linux `npm ci`、完整编译、Prisma schema guard 和只读候选检查。
-- 部署前完成全部候选构建；最终切换仅短暂开启维护以排空正在进行的保存，再原子切换并重启 API，尽量缩短对当前
-  标注者的影响。**待完成**：候选检查、Git 主线提交、最短维护部署、生产 smoke，以及只读确认目标范围重新进入
-  API 返回集合。
+- 修复提交 `87364ac` 已推送远端 `main`。候选 release 在 Linux 服务器从该精确提交重新执行 `npm ci`、完整编译、
+  Prisma schema guard 和 `release:check`；检查确认 27 个运行路径、27 个生产依赖和 33 条 migration 完整。本轮没有
+  schema 变化，因此没有运行 migration。
+- 由 `platform.admin` 于 2026-09-01 03:35:06 UTC 开启维护，使用 `release:switch` 的 expected-current 门禁从
+  `/opt/xiqu/releases/20260831T202311Z-e8bd871` 原子切换至
+  `/opt/xiqu/releases/20260901T033430Z-87364ac`，只重启 API，不中断未涉及本次修改的 analysis worker；维护于
+  03:36:26 UTC 关闭，窗口约 80 秒。按用户要求未创建新备份，既有生产数据库、对象目录和本地草稿均未迁移或覆盖。
+- 维护窗口内 HTTPS Web 首页、API liveness、readiness 的 `deploy:check` 全部通过；解除维护后 API、analysis
+  worker、Caddy 均为 `active`，新 API 的 error 级日志为空。当前 286 条确认记录低于新上限 1000，因而都可进入
+  现有倒序返回集合，目标 4:42–11:26 范围不再被 200 条截断。
+- **已完成**：单一上限常量修复、Git 主线推送、候选编译与发布检查、短维护原子切换、只读 smoke、服务状态和日志
+  核验。**待长期推进**：为确认记录接口和客户端补充真正的游标分页，届时移除“依赖较大固定上限覆盖全部记录”的
+  临时容量假设；该工作不属于本次即时修复。
