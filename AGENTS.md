@@ -50,6 +50,14 @@ Main currently contains all major recent feature lines that matter for context:
   `read + review`, exact revision, media duration and persistent track ids inside the create transaction. Revocation only
   soft-revokes the link batch; it must not update/delete native confirmations or range records. Native v1 exports exclude linked
   snapshots to prevent recursive provenance chains. Cross-server or fuzzy-track relinking requires a future explicit contract
+- Timeline review chips are passive range markers on ordinary click: they must stop the underlying canvas seek but must not move
+  the playhead or viewport. Navigation belongs to the review panel or the explicit Timeline context-menu locate command; those paths
+  seek to the range start and use `timelineFocusNavigation` to center a fitting range in the content viewport or left-align an
+  oversized range beyond the sticky track header
+- Timeline loop-range chips own a right-click shortcut menu for existing playback commands and permission-gated review creation.
+  Right-click must not seek, toggle, or resize the range. Confirmation/comment/feedback shortcuts open the dedicated compact dialog
+  on the captured range with `targets: all`; they must reuse `useAnnotationReviews` and the shared create blocker rather than write
+  facts directly or force-open the docked review panel
 - permission-gated native streaming downloads for media resources and authoritative JSON downloads for annotation resources, exposed through the shared resource context menu and Inspector
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - local `dev:api` and `dev:analysis-worker` commands load the ignored root `.env` through Node 22
@@ -626,6 +634,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - owns local package selection and the explicit client-parse -> server dry-run -> user-confirm flow for the currently open target
   - client parsing is only fast feedback; source authenticity, permissions, revision, duration, track mapping and duplicate status
     remain authoritative server decisions
+- `src/utils/timelineFocusNavigation.ts`
+  - owns the DOM-independent horizontal focus calculation for Timeline navigation
+  - review ranges center inside the visible content area after the sticky track header; ranges wider than that area start after the
+    header with bounded padding. Timeline components must not restore fixed review-specific pixel offsets in JSX
+- `src/platform/AnnotationReviewCreateDialog.tsx`
+  - owns the compact loop-range confirmation/comment/feedback input window; confirmation notes are optional while comment and
+    feedback bodies are required
+  - receives the shared blocker and delegates the actual mutation to App/useAnnotationReviews; it never owns ACL, revision, target
+    persistence, history refresh or a parallel review API path
 - `src/platform/useAnnotationReviews.ts`
   - authoritative client-side confirmation/range-note list, pagination, create and withdraw lifecycle for one open annotation file
   - the historical `comment` method names cover both typed review comments and editor feedback; do not add a parallel feedback

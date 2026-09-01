@@ -7604,7 +7604,7 @@ select {
 }
 
 .annotation-confirmation-create textarea,
-.annotation-confirmation-revoke-dialog textarea {
+.annotation-review-dialog textarea {
   width: 100%;
   resize: vertical;
   min-height: 48px;
@@ -7825,7 +7825,7 @@ select {
   font-size: 10px;
 }
 
-.annotation-confirmation-revoke-dialog {
+.annotation-review-dialog {
   position: fixed;
   z-index: 12003;
   top: 50%;
@@ -7843,37 +7843,52 @@ select {
   transform: translate(-50%, -50%);
 }
 
-.annotation-confirmation-revoke-dialog h2,
-.annotation-confirmation-revoke-dialog p {
+.annotation-review-dialog h2,
+.annotation-review-dialog p {
   margin: 0;
 }
 
-.annotation-confirmation-revoke-dialog h2 {
+.annotation-review-dialog h2 {
   font-size: 15px;
 }
 
-.annotation-confirmation-revoke-dialog p,
-.annotation-confirmation-revoke-dialog label {
+.annotation-review-dialog p,
+.annotation-review-dialog label {
   color: var(--ink-soft);
   font-size: 11px;
   line-height: 1.5;
 }
 
-.annotation-confirmation-revoke-dialog label {
+.annotation-review-dialog label {
   display: grid;
   gap: 5px;
 }
 
-.annotation-confirmation-revoke-actions {
+.annotation-review-dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: 7px;
 }
 
-.annotation-confirmation-revoke-actions button.danger {
+.annotation-review-dialog-actions button.danger {
   color: #fff;
   background: #a84045;
   border-color: #a84045;
+}
+
+.annotation-review-dialog-actions button.primary {
+  color: #fff;
+  background: #2c6da8;
+  border-color: #2c6da8;
+}
+
+/* 循环范围快捷创建窗口保持紧凑，但正文输入需要足够高度供审核意见使用。 */
+.annotation-review-create-dialog {
+  width: min(460px, calc(100vw - 32px));
+}
+
+.annotation-review-create-dialog textarea {
+  min-height: 88px;
 }
 
 /* 审核包导入沿用平台诊断窗口的层级，但内部使用紧凑的桌面式预检摘要。 */

@@ -36,6 +36,10 @@ import { VideoPlayer } from "./components/VideoPlayer";
 import type { MediaPlaybackController } from "./media/mediaPlaybackController";
 import { mockProject } from "./mockData";
 import { AnnotationReviewPanel } from "./platform/AnnotationReviewPanel";
+import {
+  AnnotationReviewCreateDialog,
+  type AnnotationReviewCreatePrompt,
+} from "./platform/AnnotationReviewCreateDialog";
 import { AnnotationReviewWithdrawalDialog } from "./platform/AnnotationReviewWithdrawalDialog";
 import {
   AnnotationWorkflowStatusDialog,
@@ -58,10 +62,12 @@ import {
   buildAnnotationRangeCommentViewRecords,
   canShowAnnotationConfirmationRevoke,
   canShowAnnotationRangeCommentWithdraw,
+  getAvailableAnnotationReviewCreateModes,
   getAnnotationReviewCreateBlocker,
   getAnnotationConfirmationTrackOptions,
   layoutAnnotationReviewTimelineItems,
   type AnnotationConfirmationViewRecord,
+  type AnnotationReviewCreateMode,
   type AnnotationRangeCommentViewRecord,
 } from "./platform/annotationConfirmationView";
 import {
@@ -459,6 +465,13 @@ type ImportMergePreview = {
 };
 
 type TimelineContextMenu =
+  | {
+      type: "loop-range";
+      range: { start: number; end: number };
+      x: number;
+      y: number;
+      time: number;
+    }
   | {
       type: "review-range";
       range: TimelineReviewRange;
@@ -889,6 +902,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     requestId: number;
     start: number;
     end: number;
+    alignment: "center-range";
   } | null>(null);
   // 比较入口传入的时间是一次性会话起点；普通打开继续保持原有演示时间，不污染项目数据。
   const [currentTime, setCurrentTime] = useState(() => initialPlatformFocus
@@ -976,6 +990,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [zoom, setZoom] = useState(20);
   const [loopPlaybackRange, setLoopPlaybackRange] = useState<{ start: number; end: number } | null>(null);
   const [loopPlaybackEnabled, setLoopPlaybackEnabled] = useState(false);
+  const [loopRangeReviewPrompt, setLoopRangeReviewPrompt] =
+    useState<AnnotationReviewCreatePrompt | null>(null);
   const [lineFocusRequest, setLineFocusRequest] = useState<LineFocusRequest | null>(null);
   // 平台初始焦点只供 Timeline 首次挂载消费，清理后用户滚动不会被再次拉回。
   const [initialPlatformFocusRange, setInitialPlatformFocusRange] = useState(() =>
@@ -1465,6 +1481,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     serverRevision: annotationReviews.confirmations?.currentRevision ??
       annotationReviews.comments?.currentRevision ?? null,
     loading: annotationReviews.loading,
+  });
+  const availableReviewCreateModes = getAvailableAnnotationReviewCreateModes({
+    canReview: Boolean(editorSession?.canReview),
+    canWrite: Boolean(editorSession?.canWrite),
   });
   const customBlocks = useMemo(
     () => flattenCustomTrackBlocks(project.customTracks),
@@ -3815,10 +3835,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     });
   }
 
-  function createContextMenuTypeOption(target: Exclude<
-    TimelineContextMenu["type"],
-    "review-range" | "line" | "lane" | "gongche-block" | "banyan-mark"
-  >) {
+  // 只有这三类实体支持在右键菜单中新建类型；使用正向联合，新增非实体菜单时不会误入块逻辑。
+  function createContextMenuTypeOption(target: "action" | "custom-block" | "attached-point") {
     if (!blockContextMenu || blockContextMenu.type !== target) {
       return;
     }
@@ -7220,6 +7238,20 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
   }
 
+  function openLoopRangeReviewDialog(mode: AnnotationReviewCreateMode) {
+    if (
+      !editorSession ||
+      blockContextMenu?.type !== "loop-range" ||
+      !availableReviewCreateModes.includes(mode)
+    ) return;
+    // 弹窗固定使用右键时的循环范围快照；提交仍经过现有 revision、权限和正文 API 门禁。
+    setLoopRangeReviewPrompt({
+      mode,
+      range: { ...blockContextMenu.range },
+    });
+    closeTimelineContextMenu();
+  }
+
   function renderPreviewWorkspace(detached: boolean) {
     return (
       <VideoPlayer
@@ -7243,6 +7275,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function focusAnnotationReviewScope(scope: AnnotationReviewScope) {
+    // 侧栏与显式“定位”操作从范围起点开始播放，并把完整短范围放在轨道头右侧的内容区中央。
     seekTo(scope.startTime);
     setLineFocusRequest(null);
     setInitialPlatformFocusRange(null);
@@ -7250,6 +7283,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       requestId: Date.now(),
       start: scope.startTime,
       end: scope.endTime,
+      alignment: "center-range",
     });
   }
 
@@ -7290,13 +7324,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           ? reviewTimelineRanges
           : []}
         reviewRangesVisible={Boolean(editorSession && confirmationTimelineVisible)}
-        onSelectReviewRange={(range) => {
-          focusAnnotationReviewScope({
-            startTime: range.startTime,
-            endTime: range.endTime,
-            targets: { mode: "all" },
-          });
-        }}
         onOpenReviewRangeContextMenu={(range, x, y) => {
           setBlockContextMenu({
             type: "review-range",
@@ -7325,6 +7352,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         }}
         onLoopPlaybackRangeChange={updateLoopPlaybackRangeFromTimeline}
         onLoopPlaybackEnabledChange={updateLoopPlaybackEnabledFromUser}
+        onOpenLoopRangeContextMenu={(range, x, y) => {
+          setBlockContextMenu({
+            type: "loop-range",
+            range,
+            time: range.start,
+            x,
+            y,
+          });
+        }}
         onToggleDetached={toggleTimelineDetachedWindow}
         onSeek={seekTo}
         onPreviewFrame={setPreviewTime}
@@ -7924,6 +7960,37 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           }}
         />
       ) : null}
+      <AnnotationReviewCreateDialog
+        prompt={loopRangeReviewPrompt}
+        blocker={reviewCreateBlocker}
+        mutationPending={annotationReviews.mutationPending}
+        onClose={() => setLoopRangeReviewPrompt(null)}
+        onSubmit={async ({ mode, text }) => {
+          const prompt = loopRangeReviewPrompt;
+          if (!editorSession || !prompt) {
+            throw new Error("当前不是可提交范围记录的平台标注文件。");
+          }
+          const scope: AnnotationReviewScope = {
+            startTime: prompt.range.start,
+            endTime: prompt.range.end,
+            targets: { mode: "all" },
+          };
+          if (mode === "confirmation") {
+            await annotationReviews.createConfirmation({
+              confirmedRevision: remoteBaseRevision,
+              scope,
+              note: text,
+            });
+            return;
+          }
+          await annotationReviews.createComment({
+            commentedRevision: remoteBaseRevision,
+            scope,
+            kind: mode === "feedback" ? "editor_feedback" : "review_comment",
+            body: text ?? "",
+          });
+        }}
+      />
       <SentenceAnnotationSettingsDialog
         open={sentenceAnnotationSettingsOpen}
         roleOptions={project.sentenceAnnotationConfig.roleOptions}
@@ -8241,6 +8308,61 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           }}
           onPointerDown={(event) => event.stopPropagation()}
         >
+          {blockContextMenu.type === "loop-range" ? (
+            <>
+              <div className="character-context-menu-label">
+                循环范围 · {blockContextMenu.range.start.toFixed(3)}–{blockContextMenu.range.end.toFixed(3)} 秒
+              </div>
+              <button
+                type="button"
+                className={loopPlaybackEnabled ? "menu-option-active" : ""}
+                onClick={() => {
+                  updateLoopPlaybackEnabledFromUser(!loopPlaybackEnabled);
+                  closeTimelineContextMenu();
+                }}
+              >{loopPlaybackEnabled ? "✓ 循环播放" : "循环播放"}</button>
+              <button
+                type="button"
+                onClick={() => {
+                  playLoopFromRangeStart();
+                  closeTimelineContextMenu();
+                }}
+              >从范围起点循环播放</button>
+              <button
+                type="button"
+                onClick={() => {
+                  playLoopRangeOnce();
+                  closeTimelineContextMenu();
+                }}
+              >从范围起点播放一次</button>
+              {availableReviewCreateModes.length ? (
+                <div className="character-context-menu-divider" />
+              ) : null}
+              {availableReviewCreateModes.includes("confirmation") ? (
+                <button type="button" onClick={() => openLoopRangeReviewDialog("confirmation")}>
+                  添加标注确认…
+                </button>
+              ) : null}
+              {availableReviewCreateModes.includes("comment") ? (
+                <button type="button" onClick={() => openLoopRangeReviewDialog("comment")}>
+                  添加审核评论…
+                </button>
+              ) : null}
+              {availableReviewCreateModes.includes("feedback") ? (
+                <button type="button" onClick={() => openLoopRangeReviewDialog("feedback")}>
+                  添加编辑反馈…
+                </button>
+              ) : null}
+              <div className="character-context-menu-divider" />
+              <button
+                type="button"
+                onClick={() => {
+                  clearLoopPlaybackRange();
+                  closeTimelineContextMenu();
+                }}
+              >清除循环范围</button>
+            </>
+          ) : null}
           {blockContextMenu.type === "review-range" ? (
             <>
               <div className="character-context-menu-label">

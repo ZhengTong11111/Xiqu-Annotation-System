@@ -14,7 +14,9 @@ import { AnnotationReviewWithdrawalDialog } from "./AnnotationReviewWithdrawalDi
 import { AnnotationReviewImportDialog } from "./AnnotationReviewImportDialog";
 import {
   ANNOTATION_CONFIRMATION_DOMAIN_LABELS,
+  getAvailableAnnotationReviewCreateModes,
   type AnnotationReviewCreateBlocker,
+  type AnnotationReviewCreateMode,
   type AnnotationConfirmationTrackOption,
   type AnnotationConfirmationViewRecord,
   type AnnotationRangeCommentViewRecord,
@@ -23,7 +25,7 @@ import {
 } from "./annotationConfirmationView";
 
 type TargetMode = AnnotationReviewTargets["mode"];
-type CreateMode = "confirmation" | "comment" | "feedback";
+type CreateMode = AnnotationReviewCreateMode;
 type HistoryKind = "all" | CreateMode;
 
 type AnnotationReviewPanelProps = {
@@ -108,10 +110,11 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
   const [revokeLinkTarget, setRevokeLinkTarget] = useState<AnnotationReviewLinkRecord | null>(null);
   const [expandedLinkIds, setExpandedLinkIds] = useState<string[]>([]);
 
-  const availableCreateModes = useMemo<CreateMode[]>(() => [
-    ...(props.canReview ? ["confirmation" as const, "comment" as const] : []),
-    ...(props.canWrite ? ["feedback" as const] : []),
-  ], [props.canReview, props.canWrite]);
+  const availableCreateModes = useMemo<CreateMode[]>(() =>
+    getAvailableAnnotationReviewCreateModes({
+      canReview: props.canReview,
+      canWrite: props.canWrite,
+    }), [props.canReview, props.canWrite]);
   const effectiveCreateMode = availableCreateModes.includes(createMode)
     ? createMode
     : availableCreateModes[0] ?? "confirmation";

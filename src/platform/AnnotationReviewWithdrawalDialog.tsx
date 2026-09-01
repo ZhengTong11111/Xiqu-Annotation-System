@@ -28,7 +28,7 @@ export function AnnotationReviewWithdrawalDialog(props: AnnotationReviewWithdraw
     >
       <AlertDialog.Portal container={props.portalContainer}>
         <AlertDialog.Overlay className="resource-alert-backdrop" />
-        <AlertDialog.Content className="annotation-confirmation-revoke-dialog">
+        <AlertDialog.Content className="annotation-review-dialog">
           <AlertDialog.Title>{props.title}</AlertDialog.Title>
           <AlertDialog.Description>
             {props.description ?? "操作不会删除历史；记录仍保存在服务器，并可在“显示已撤销与已撤回”中查看。"}
@@ -42,7 +42,7 @@ export function AnnotationReviewWithdrawalDialog(props: AnnotationReviewWithdraw
               onChange={(event) => setReason(event.target.value)}
             />
           </label>
-          <div className="annotation-confirmation-revoke-actions">
+          <div className="annotation-review-dialog-actions">
             <AlertDialog.Cancel asChild>
               <button type="button" disabled={props.pending}>取消</button>
             </AlertDialog.Cancel>

@@ -8,6 +8,7 @@ import {
   canShowAnnotationConfirmationRevoke,
   canShowAnnotationRangeCommentWithdraw,
   formatAnnotationConfirmationTargets,
+  getAvailableAnnotationReviewCreateModes,
   getAnnotationReviewCreateBlocker,
   getAnnotationConfirmationTrackOptions,
   layoutAnnotationReviewTimelineItems,
@@ -181,6 +182,25 @@ test("创建阻断优先检查权限、加载、范围、dirty 与 revision", ()
   assert.equal(getAnnotationReviewCreateBlocker({ ...base, hasUnsavedChanges: true }), "unsaved_changes");
   assert.equal(getAnnotationReviewCreateBlocker({ ...base, serverRevision: 4 }), "revision_mismatch");
   assert.equal(getAnnotationReviewCreateBlocker(base), null);
+});
+
+test("审核创建模式严格按 review 与 write 权限组合开放", () => {
+  assert.deepEqual(getAvailableAnnotationReviewCreateModes({
+    canReview: false,
+    canWrite: false,
+  }), []);
+  assert.deepEqual(getAvailableAnnotationReviewCreateModes({
+    canReview: true,
+    canWrite: false,
+  }), ["confirmation", "comment"]);
+  assert.deepEqual(getAvailableAnnotationReviewCreateModes({
+    canReview: false,
+    canWrite: true,
+  }), ["feedback"]);
+  assert.deepEqual(getAvailableAnnotationReviewCreateModes({
+    canReview: true,
+    canWrite: true,
+  }), ["confirmation", "comment", "feedback"]);
 });
 
 test("撤销入口仅向创建者、owner 或管理员开放", () => {

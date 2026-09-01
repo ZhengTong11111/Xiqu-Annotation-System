@@ -75,6 +75,19 @@ export type AnnotationReviewCreateBlocker =
   | "revision_mismatch"
   | "loading";
 
+export type AnnotationReviewCreateMode = "confirmation" | "comment" | "feedback";
+
+// 右键快捷菜单和审核面板共享同一份模式权限映射，避免入口显示与面板实际能力不一致。
+export function getAvailableAnnotationReviewCreateModes(input: {
+  canReview: boolean;
+  canWrite: boolean;
+}): AnnotationReviewCreateMode[] {
+  return [
+    ...(input.canReview ? ["confirmation" as const, "comment" as const] : []),
+    ...(input.canWrite ? ["feedback" as const] : []),
+  ];
+}
+
 // 轨道作用域只能引用项目中真实保存的顶层轨道，派生的工尺谱、分叉和附属打点轨不在这里出现。
 export function getAnnotationConfirmationTrackOptions(
   project: ProjectData,

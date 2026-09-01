@@ -56,6 +56,10 @@ import {
   TIMELINE_DRAG_ACTIVATION_PX,
 } from "../utils/timelineDragCompletion";
 import { getTimelineHorizontalWheelDelta } from "../utils/timelineWheelNavigation";
+import {
+  getTimelineFocusScrollLeft,
+  type TimelineFocusAlignment,
+} from "../utils/timelineFocusNavigation";
 
 type TimelineProps = {
   editingBlockedReason?: string;
@@ -92,7 +96,12 @@ type TimelineProps = {
   trackSnapEnabled: Record<string, boolean>;
   zoom: number;
   duration: number;
-  focusRange: { start: number; end: number; requestId: number } | null;
+  focusRange: {
+    start: number;
+    end: number;
+    requestId: number;
+    alignment?: TimelineFocusAlignment;
+  } | null;
   onFocusRangeHandled: () => void;
   getProjectSnapshot: () => ProjectData;
   editingCharacterId: string | null;
@@ -105,7 +114,11 @@ type TimelineProps = {
   onToggleTrackSnap: (trackId: string) => void;
   onLoopPlaybackRangeChange: (range: { start: number; end: number } | null) => void;
   onLoopPlaybackEnabledChange: (enabled: boolean) => void;
-  onSelectReviewRange: (range: TimelineReviewRange) => void;
+  onOpenLoopRangeContextMenu: (
+    range: { start: number; end: number },
+    x: number,
+    y: number,
+  ) => void;
   onOpenReviewRangeContextMenu: (range: TimelineReviewRange, x: number, y: number) => void;
   onToggleDetached?: () => void;
   onSeek: (time: number) => void;
@@ -579,7 +592,7 @@ export function Timeline({
   onToggleTrackSnap,
   onLoopPlaybackRangeChange,
   onLoopPlaybackEnabledChange,
-  onSelectReviewRange,
+  onOpenLoopRangeContextMenu,
   onOpenReviewRangeContextMenu,
   onToggleDetached,
   onSeek,
@@ -1726,8 +1739,17 @@ export function Timeline({
       return;
     }
     const container = scrollRef.current;
-    const maxScrollLeft = Math.max(timelineWidth - container.clientWidth, 0);
-    const targetLeft = Math.max(0, Math.min(getCanvasX(focusRange.start, zoom) - 120, maxScrollLeft));
+    const targetLeft = getTimelineFocusScrollLeft({
+      startTime: focusRange.start,
+      endTime: focusRange.end,
+      zoom,
+      viewportWidth: container.clientWidth,
+      timelineWidth,
+      trackLabelWidth: TRACK_LABEL_WIDTH,
+      alignment: focusRange.alignment ?? "start",
+      startViewportOffset: 120,
+      edgePadding: 24,
+    });
     const startLeft = container.scrollLeft;
     const delta = targetLeft - startLeft;
     onFocusRangeHandled();
@@ -2723,6 +2745,17 @@ export function Timeline({
                   event.preventDefault();
                   event.stopPropagation();
                 }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  // 右键只打开范围动作菜单，不能触发底层框选、播放头跳转或循环开关。
+                  onCloseContextMenu();
+                  onOpenLoopRangeContextMenu(
+                    displayedLoopPlaybackRange,
+                    event.clientX,
+                    event.clientY,
+                  );
+                }}
                 title={loopPlaybackEnabled ? "点击关闭循环播放，拖动可移动/调整循环范围" : "点击开启循环播放，拖动可移动/调整循环范围"}
               >
                 <span className="timeline-loop-range-handle start" />
@@ -2757,7 +2790,7 @@ export function Timeline({
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    onSelectReviewRange(range);
+                    // Timeline 上的审核块已经处于当前观察位置；普通点击只阻止底层时间轴跳转。
                   }}
                   onContextMenu={(event) => {
                     event.preventDefault();
