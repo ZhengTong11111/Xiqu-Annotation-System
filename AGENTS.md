@@ -173,6 +173,9 @@ Main currently contains all major recent feature lines that matter for context:
   Sentence lists and Timeline overlays share one red/blue policy, while role add/rename/remove/reorder uses a lease-protected
   structure transaction with reference cascades. Current builders write arrays only; bounded v6 scalar file/command compatibility
   belongs exclusively to the project migration and legacy command parser/apply boundaries
+- per-sentence character timing reset preserves every character identity/content field and evenly redistributes only timing across
+  the authoritative sentence range in current timeline order. Linked Gongche timing/state must remain in the same replayable
+  transaction; a command-budget or completeness failure must block the action instead of falling back to a full payload snapshot
 - the former per-character `singingStyle` and built-in character-track options are no longer current ProjectData or UI concepts;
   historical JSON is normalized at the single project-file migration boundary and current cavity labels belong on custom tracks
 - browser-created stable ids use `src/utils/runtimeUuid.ts`; production may temporarily run on an HTTP IP where
@@ -922,6 +925,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - current lightweight in-app floating window shell for detached panes
 - `src/utils/project.ts`
   - track defaults, timeline track definition expansion, project builders, duration helpers, Gongche attached track id helpers, branch-lane track id helpers
+- `packages/document-model/src/sentenceCharacterTiming.ts` + `src/utils/sentenceCharacterTiming.ts`
+  - own the pure per-sentence even-timing transformation and its Web compatibility export
+  - the transformation may update existing character timing only; it must not recreate characters, change content/tone, reorder the
+    persisted array, alter sentence metadata, or absorb Gongche synchronization/command submission into a second UI-specific algorithm
 - `src/utils/projectFile.ts`
   - saved project JSON normalization/migration, local/project-platform import compatibility, `PROJECT_FILE_VERSION`
   - v1-v5 files normalize to v7 with empty sentence classification; v6 `roleType` maps to an empty/singleton `roleTypes` array,

@@ -18,6 +18,8 @@ type SubtitleListProps = {
     lineId: string,
     changes: Partial<Pick<SubtitleLine, "deliveryMode" | "roleTypes">>,
   ) => void;
+  editingBlockedReason?: string;
+  onResetCharacterTiming: (lineId: string) => void;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
 };
@@ -29,6 +31,8 @@ export function SubtitleList({
   selectedLineId,
   onSelectLine,
   onClassificationChange,
+  editingBlockedReason,
+  onResetCharacterTiming,
   collapsed = false,
   onToggleCollapse,
 }: SubtitleListProps) {
@@ -81,6 +85,14 @@ export function SubtitleList({
               </ContextMenu.Trigger>
               <ContextMenu.Portal>
                 <ContextMenu.Content className="sentence-context-menu">
+                  <ContextMenu.Item
+                    disabled={Boolean(editingBlockedReason)}
+                    title={editingBlockedReason}
+                    onSelect={() => onResetCharacterTiming(line.id)}
+                  >
+                    将本句逐字重置为平均时间...
+                  </ContextMenu.Item>
+                  <ContextMenu.Separator className="character-context-menu-divider" />
                   <ContextMenu.Sub>
                     <ContextMenu.SubTrigger>发声方式</ContextMenu.SubTrigger>
                     <ContextMenu.Portal>

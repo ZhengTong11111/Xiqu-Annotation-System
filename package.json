@@ -70,6 +70,7 @@
     "test:runtime-uuid": "node --import tsx --test src/utils/runtimeUuid.test.ts",
     "test:sentence-role-reorder": "node --import tsx --test src/utils/sentenceRoleReorder.test.ts",
     "test:sentence-timeline-label": "node --import tsx --test src/utils/sentenceTimelineLabel.test.ts",
+    "test:sentence-character-timing": "npm run build:shared && npm run build:document-model && node --test packages/document-model/test/sentence-character-timing.test.mjs",
     "test:timeline-view-defaults": "node --import tsx --test src/utils/timelineViewDefaults.test.ts",
     "test:timeline-drag-completion": "node --import tsx --test src/utils/timelineDragCompletion.test.ts",
     "test:command-search": "npm run build:shared && npm run build:document-model && node --import tsx --test src/utils/commandSearch.test.ts src/utils/commandCatalog.test.ts src/utils/pinyin.test.ts",

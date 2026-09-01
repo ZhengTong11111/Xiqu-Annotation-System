@@ -206,6 +206,7 @@ import {
   type AnnotationTransactionPlan,
 } from "./utils/annotationTransactionCommand";
 import { findAdjacentNavigableBlock } from "./utils/timelineNavigation";
+import { resetSentenceCharactersToEvenTiming } from "./utils/sentenceCharacterTiming";
 import {
   buildProjectTimelineTimingCommand,
   getGongcheTransactionTargetsForParents,
@@ -937,7 +938,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const remoteCatchUpBlockReason = remoteCatchUpBlocksEditing
     ? `正在接收其他账号的修改（服务器 v${observedRemoteRevision}）`
     : undefined;
-  const sentenceClassificationEditingBlockedReason = isReadOnly
+  const sentenceEditingBlockedReason = isReadOnly
     ? "当前账号没有写入权限"
     : remoteCatchUpBlockReason;
 
@@ -2956,6 +2957,72 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const commandEnvelope = buildProjectAnnotationContentCommand(baseProject, nextProject, contentTargets);
     if (!commandEnvelope) {
       window.alert("句级分类更新未能生成有效命令，项目没有被修改。");
+      return;
+    }
+    commitProject(nextProject, baseProject, { commandEnvelope });
+  }
+
+  // 单句平均重置只改变逐字及其派生工尺时间，必须由一个可重放事务完整覆盖全部级联变化。
+  function resetSentenceCharacterTiming(lineId: string) {
+    if (sentenceEditingBlockedReason) {
+      window.alert(sentenceEditingBlockedReason);
+      return;
+    }
+    const baseProject = projectRef.current;
+    const line = baseProject.subtitleLines.find((candidate) => candidate.id === lineId);
+    const resetResult = resetSentenceCharactersToEvenTiming(baseProject, lineId);
+    if (!resetResult.ok) {
+      const message = resetResult.issue === "no_characters"
+        ? "当前句没有逐字块，无法平均分配时间。"
+        : resetResult.issue === "invalid_sentence_range"
+          ? "当前句的起止时间无效，无法平均分配逐字时间。"
+          : "当前句已经不存在，请刷新后重试。";
+      window.alert(message);
+      return;
+    }
+    if (!resetResult.changed) {
+      window.alert("本句逐字已经按句级范围平均分配，无需重置。");
+      return;
+    }
+    if (!line || !window.confirm([
+      `将把“${line.text}”的 ${resetResult.characterIds.length} 个逐字块平均铺满整句时间。`,
+      "逐字文字、四声和身份不会改变；关联工尺时间会随逐字块同步调整。",
+      "该操作可以撤销。是否继续？",
+    ].join("\n"))) {
+      return;
+    }
+
+    const resetCharacterIds = new Set(resetResult.characterIds);
+    const timingParentsBefore = new Map(
+      baseProject.characterAnnotations
+        .filter((character) => resetCharacterIds.has(character.id))
+        .map((character) => [
+          getGongcheParentKey("character-track", character.id),
+          toCharacterGongcheParent(character),
+        ]),
+    );
+    const nextProject = synchronizeGongcheWithChangedParents(
+      resetResult.project,
+      timingParentsBefore,
+    );
+    const gongcheTargets = getGongcheTransactionTargetsForParents(
+      baseProject,
+      nextProject,
+      "character-track",
+      resetResult.characterIds,
+    );
+    const commandEnvelope = buildProjectAnnotationTransactionCommand(baseProject, nextProject, {
+      timingTargets: [
+        ...resetResult.characterIds.map((entityId): TimelineTimingTarget => ({
+          entityType: "character",
+          entityId,
+        })),
+        ...gongcheTargets.timingTargets,
+      ],
+      stateTargets: gongcheTargets.stateTargets,
+    });
+    if (!commandEnvelope) {
+      window.alert("本句逐字及关联工尺无法形成完整的协作命令，项目未被修改。请拆分或检查异常标注后重试。");
       return;
     }
     commitProject(nextProject, baseProject, { commandEnvelope });
@@ -7842,7 +7909,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         onRename={renameSentenceRoleOption}
         onReorder={reorderSentenceRoleOption}
         onRemove={removeSentenceRoleOption}
-        disabledReason={sentenceClassificationEditingBlockedReason}
+        disabledReason={sentenceEditingBlockedReason}
       />
       <ResizableSplitLayout
         orientation="horizontal"
@@ -7891,6 +7958,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                   }
                 }}
                 onClassificationChange={updateSentenceClassification}
+                editingBlockedReason={sentenceEditingBlockedReason}
+                onResetCharacterTiming={resetSentenceCharacterTiming}
               />
             )}
             splitPanel={(
@@ -8258,12 +8327,25 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                 句级标注 · {contextMenuLine.text}
               </div>
               <div className="character-context-menu-divider" />
+              <button
+                type="button"
+                disabled={Boolean(sentenceEditingBlockedReason)}
+                title={sentenceEditingBlockedReason}
+                onClick={() => {
+                  const lineId = contextMenuLine.id;
+                  setBlockContextMenu(null);
+                  resetSentenceCharacterTiming(lineId);
+                }}
+              >
+                将本句逐字重置为平均时间...
+              </button>
+              <div className="character-context-menu-divider" />
               <div className="character-context-menu-label">发声方式</div>
               <button
                 type="button"
                 className={contextMenuLine.deliveryMode === null ? "menu-option-active" : ""}
-                disabled={Boolean(sentenceClassificationEditingBlockedReason)}
-                title={sentenceClassificationEditingBlockedReason}
+                disabled={Boolean(sentenceEditingBlockedReason)}
+                title={sentenceEditingBlockedReason}
                 onClick={() => {
                   updateSentenceClassification(contextMenuLine.id, { deliveryMode: null });
                   setBlockContextMenu(null);
@@ -8276,8 +8358,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                   key={option.value}
                   type="button"
                   className={contextMenuLine.deliveryMode === option.value ? "menu-option-active" : ""}
-                  disabled={Boolean(sentenceClassificationEditingBlockedReason)}
-                  title={sentenceClassificationEditingBlockedReason}
+                  disabled={Boolean(sentenceEditingBlockedReason)}
+                  title={sentenceEditingBlockedReason}
                   onClick={() => {
                     updateSentenceClassification(contextMenuLine.id, { deliveryMode: option.value });
                     setBlockContextMenu(null);
@@ -8291,8 +8373,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               <button
                 type="button"
                 className={contextMenuLine.roleTypes.length === 0 ? "menu-option-active" : ""}
-                disabled={Boolean(sentenceClassificationEditingBlockedReason)}
-                title={sentenceClassificationEditingBlockedReason}
+                disabled={Boolean(sentenceEditingBlockedReason)}
+                title={sentenceEditingBlockedReason}
                 onClick={() => {
                   updateSentenceClassification(contextMenuLine.id, { roleTypes: [] });
                 }}
@@ -8306,8 +8388,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                   key={role}
                   type="button"
                   className={contextMenuLine.roleTypes.includes(role) ? "menu-option-active" : ""}
-                  disabled={Boolean(sentenceClassificationEditingBlockedReason)}
-                  title={sentenceClassificationEditingBlockedReason}
+                  disabled={Boolean(sentenceEditingBlockedReason)}
+                  title={sentenceEditingBlockedReason}
                   onClick={() => {
                     updateSentenceClassification(contextMenuLine.id, {
                       roleTypes: toggleSentenceRoleType(
