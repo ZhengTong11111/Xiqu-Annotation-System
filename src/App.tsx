@@ -25,6 +25,10 @@ import { ResizableSplitLayout } from "./components/ResizableSplitLayout";
 import { SpectrogramSettingsPanel } from "./components/SpectrogramSettingsPanel";
 import { SubtitleList } from "./components/SubtitleList";
 import { SentenceAnnotationSettingsDialog } from "./components/SentenceAnnotationSettingsDialog";
+import {
+  SentenceCharacterTimingResetDialog,
+  type SentenceCharacterTimingResetPrompt,
+} from "./components/SentenceCharacterTimingResetDialog";
 import { Timeline, type TimelineReviewRange } from "./components/Timeline";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { TopMenuBar, type TopMenuPlatformNavigation } from "./components/TopMenuBar";
@@ -620,6 +624,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     useState<AnnotationWorkflowStatusPrompt | null>(null);
   const [annotationWorkflowPending, setAnnotationWorkflowPending] = useState(false);
   const [annotationWorkflowError, setAnnotationWorkflowError] = useState<string | null>(null);
+  const [sentenceCharacterTimingResetPrompt, setSentenceCharacterTimingResetPrompt] =
+    useState<SentenceCharacterTimingResetPrompt | null>(null);
+  // EditorWorkbench 的 key 绑定本次文件打开会话；只用内存 ref，离开或重新打开文件后自然恢复提示。
+  const suppressSentenceCharacterTimingResetPromptRef = useRef(false);
   const isReadOnly = Boolean(
     editorSession && !editorSession.canWrite,
   );
@@ -2963,7 +2971,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   // 单句平均重置只改变逐字及其派生工尺时间，必须由一个可重放事务完整覆盖全部级联变化。
-  function resetSentenceCharacterTiming(lineId: string) {
+  function resetSentenceCharacterTiming(lineId: string, confirmed = false) {
     if (sentenceEditingBlockedReason) {
       window.alert(sentenceEditingBlockedReason);
       return;
@@ -2984,11 +2992,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       window.alert("本句逐字已经按句级范围平均分配，无需重置。");
       return;
     }
-    if (!line || !window.confirm([
-      `将把“${line.text}”的 ${resetResult.characterIds.length} 个逐字块平均铺满整句时间。`,
-      "逐字文字、四声和身份不会改变；关联工尺时间会随逐字块同步调整。",
-      "该操作可以撤销。是否继续？",
-    ].join("\n"))) {
+    if (!line) return;
+    if (!confirmed && !suppressSentenceCharacterTimingResetPromptRef.current) {
+      // 弹窗只保留目标身份和显示摘要；真正确认时会再次读取 projectRef，绝不提交陈旧预览。
+      setSentenceCharacterTimingResetPrompt({
+        lineId,
+        sentenceText: line.text,
+        characterCount: resetResult.characterIds.length,
+      });
       return;
     }
 
@@ -7844,6 +7855,18 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           setAnnotationWorkflowError(null);
         }}
         onConfirm={() => void confirmAnnotationWorkflowStatus()}
+      />
+      <SentenceCharacterTimingResetDialog
+        prompt={sentenceCharacterTimingResetPrompt}
+        onCancel={() => setSentenceCharacterTimingResetPrompt(null)}
+        onConfirm={(suppressForSession) => {
+          const prompt = sentenceCharacterTimingResetPrompt;
+          if (!prompt) return;
+          // 只有明确确认才启用会话内免提示；取消不会改变后续行为。
+          if (suppressForSession) suppressSentenceCharacterTimingResetPromptRef.current = true;
+          setSentenceCharacterTimingResetPrompt(null);
+          resetSentenceCharacterTiming(prompt.lineId, true);
+        }}
       />
       {/* 整合草稿确认栏属于编辑会话而非保存版本；取消不改历史，应用后仍需用户正常保存。 */}
       {pendingAnnotationMergeDraft ? (

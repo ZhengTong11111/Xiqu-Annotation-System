@@ -929,6 +929,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - own the pure per-sentence even-timing transformation and its Web compatibility export
   - the transformation may update existing character timing only; it must not recreate characters, change content/tone, reorder the
     persisted array, alter sentence metadata, or absorb Gongche synchronization/command submission into a second UI-specific algorithm
+  - the destructive-action confirmation may be suppressed only in memory for the current `EditorWorkbench` file-open session. Cancel
+    must not arm suppression, reopening/refreshing must restore the prompt, and confirmation must recompute from the latest `projectRef`
+    instead of committing a preview captured when the dialog opened
 - `src/utils/projectFile.ts`
   - saved project JSON normalization/migration, local/project-platform import compatibility, `PROJECT_FILE_VERSION`
   - v1-v5 files normalize to v7 with empty sentence classification; v6 `roleType` maps to an empty/singleton `roleTypes` array,
