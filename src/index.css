@@ -7836,6 +7836,210 @@ select {
   border-color: #a84045;
 }
 
+/* 审核包导入沿用平台诊断窗口的层级，但内部使用紧凑的桌面式预检摘要。 */
+.annotation-review-import-dialog {
+  position: fixed;
+  z-index: 12002;
+  top: 50%;
+  left: 50%;
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(720px, calc(100vh - 32px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  color: #29384d;
+  background: #f8fafc;
+  border: 1px solid #c5cfdb;
+  border-radius: 8px;
+  box-shadow: 0 24px 64px rgb(16 27 42 / 28%);
+  outline: none;
+  transform: translate(-50%, -50%);
+}
+
+.annotation-review-import-body {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px;
+}
+
+.annotation-review-import-file {
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 38px;
+  padding: 8px 10px;
+  color: #365b84;
+  background: #fff;
+  border-color: #bdc9d8;
+}
+
+.annotation-review-import-file span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-review-import-summary {
+  display: grid;
+  gap: 9px;
+  padding: 11px;
+  border-left: 3px solid #27756d;
+  background: #fff;
+}
+
+.annotation-review-import-summary-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #17655c;
+}
+
+.annotation-review-import-summary dl,
+.annotation-review-import-summary p {
+  margin: 0;
+}
+
+.annotation-review-import-summary dl {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) minmax(0, 1fr);
+  gap: 5px 10px;
+  font-size: 11px;
+}
+
+.annotation-review-import-summary dl > div {
+  display: contents;
+}
+
+.annotation-review-import-summary dt {
+  color: var(--ink-soft);
+}
+
+.annotation-review-import-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.annotation-review-import-summary p {
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.annotation-review-import-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 11px 16px;
+  border-top: 1px solid #d6dee8;
+}
+
+/* 关联批次与原生审核列表分组显示，明确它们是只读来源快照而不是当前文件新事实。 */
+.annotation-review-links {
+  display: grid;
+  gap: 6px;
+}
+
+.annotation-review-links .annotation-confirmation-history-heading small {
+  color: var(--ink-soft);
+  font-size: 9px;
+  text-align: right;
+}
+
+.annotation-review-link-item {
+  display: grid;
+  gap: 7px;
+  padding: 7px;
+  border-left: 3px solid #4f759f;
+  background: rgba(239, 246, 255, 0.72);
+}
+
+.annotation-review-link-item.revoked {
+  border-left-color: #94a3b8;
+  opacity: 0.76;
+}
+
+.annotation-review-link-item > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.annotation-review-link-item > header > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.annotation-review-link-item > header strong,
+.annotation-review-link-item > header span,
+.annotation-review-link-item > header small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-review-link-item > header strong {
+  font-size: 11px;
+}
+
+.annotation-review-link-item > header span,
+.annotation-review-link-item > header small {
+  color: var(--ink-soft);
+  font-size: 9px;
+}
+
+.annotation-review-link-item > header > div:last-child {
+  display: flex;
+  flex-shrink: 0;
+  gap: 5px;
+}
+
+.annotation-review-link-item > header button {
+  min-height: 24px;
+  padding: 3px 6px;
+  font-size: 9px;
+}
+
+.annotation-review-linked-facts {
+  display: grid;
+  gap: 3px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.annotation-review-linked-facts > button {
+  min-width: 0;
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+  padding: 6px;
+  border: 0;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.84);
+  color: #334155;
+  text-align: left;
+  box-shadow: none;
+}
+
+.annotation-review-linked-facts > button.inactive {
+  opacity: 0.6;
+}
+
+.annotation-review-linked-facts strong {
+  font-size: 10px;
+}
+
+.annotation-review-linked-facts span,
+.annotation-review-linked-facts small {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--ink-soft);
+  font-size: 9px;
+}
+
 .inspector-field {
   display: flex;
   flex-direction: column;

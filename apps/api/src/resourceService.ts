@@ -130,6 +130,12 @@ import {
   decodeAnnotationRangeCommentCursor,
   encodeAnnotationRangeCommentCursor,
 } from "./annotationRangeCommentPagination.js";
+import {
+  annotationConfirmationInclude,
+  annotationRangeCommentInclude,
+  mapAnnotationConfirmation,
+  mapAnnotationRangeComment,
+} from "./annotationReviewRecordMapper.js";
 
 const resourceBaseInclude = {
   owner: { include: { roles: true } },
@@ -147,16 +153,6 @@ const permissionManagementProjectSelect = {
   updatedAt: true,
   owner: { select: { id: true, accountName: true, displayName: true } },
 } satisfies Prisma.ResourceEntrySelect;
-
-const annotationConfirmationInclude = {
-  creator: { include: { roles: true } },
-  revoker: { include: { roles: true } },
-} satisfies Prisma.AnnotationConfirmationInclude;
-
-const annotationRangeCommentInclude = {
-  creator: { include: { roles: true } },
-  withdrawer: { include: { roles: true } },
-} satisfies Prisma.AnnotationRangeCommentInclude;
 
 const annotationMutationLeaseInclude = {
   holder: { include: { roles: true } },
@@ -182,12 +178,6 @@ type ResourcePathNode = Pick<
   PermissionManagementProjectRow,
   "id" | "parentId" | "type" | "name" | "archivedAt" | "trashedAt"
 >;
-type AnnotationConfirmationRow = Prisma.AnnotationConfirmationGetPayload<{
-  include: typeof annotationConfirmationInclude;
-}>;
-type AnnotationRangeCommentRow = Prisma.AnnotationRangeCommentGetPayload<{
-  include: typeof annotationRangeCommentInclude;
-}>;
 type AnnotationMutationLeaseRow = Prisma.AnnotationMutationLeaseGetPayload<{
   include: typeof annotationMutationLeaseInclude;
 }>;
@@ -236,21 +226,6 @@ const DB_CONFIRMATION_DOMAINS: Record<
   custom_tracks: DbAnnotationConfirmationDomain.custom_tracks,
   custom_blocks: DbAnnotationConfirmationDomain.custom_blocks,
   attached_points: DbAnnotationConfirmationDomain.attached_points,
-};
-
-// 出站映射与入站映射分开定义，让 TypeScript 在新增数据库领域时强制提示补齐 API 合同。
-const SHARED_CONFIRMATION_DOMAINS: Record<
-  DbAnnotationConfirmationDomain,
-  AnnotationConfirmationDomain
-> = {
-  subtitle_lines: "subtitle_lines",
-  character_annotations: "character_annotations",
-  gongche_annotations: "gongche_annotations",
-  banyan_sections: "banyan_sections",
-  banyan_marks: "banyan_marks",
-  custom_tracks: "custom_tracks",
-  custom_blocks: "custom_blocks",
-  attached_points: "attached_points",
 };
 
 export class ResourceService {
@@ -1476,7 +1451,7 @@ export class ResourceService {
     const last = pageRows.at(-1);
     return {
       currentRevision: file.revision,
-      confirmations: pageRows.map((row) => this.mapAnnotationConfirmation(row)),
+      confirmations: pageRows.map(mapAnnotationConfirmation),
       nextCursor: rows.length > limit && last
         ? encodeAnnotationConfirmationCursor({
             annotationFileId: resourceId,
@@ -1557,7 +1532,7 @@ export class ResourceService {
           },
         },
       });
-      return this.mapAnnotationConfirmation(created);
+      return mapAnnotationConfirmation(created);
     });
     this.publishReviewChanged(resourceId);
     return record;
@@ -1608,7 +1583,7 @@ export class ResourceService {
       }, existing.createdBy);
       if (!permissionDecision.allowed) throw forbidden("当前账号不能撤销这条确认记录。");
       if (existing.revokedAt) {
-        return { record: this.mapAnnotationConfirmation(existing), changed: false };
+        return { record: mapAnnotationConfirmation(existing), changed: false };
       }
 
       const revokedAt = new Date();
@@ -1628,7 +1603,7 @@ export class ResourceService {
           },
         },
       });
-      return { record: this.mapAnnotationConfirmation(updated), changed: true };
+      return { record: mapAnnotationConfirmation(updated), changed: true };
     });
     if (result.changed) this.publishReviewChanged(resourceId);
     return result.record;
@@ -1672,7 +1647,7 @@ export class ResourceService {
     const last = pageRows.at(-1);
     return {
       currentRevision: file.revision,
-      items: pageRows.map((row) => this.mapAnnotationRangeComment(row)),
+      items: pageRows.map(mapAnnotationRangeComment),
       nextCursor: rows.length > limit && last
         ? encodeAnnotationRangeCommentCursor({
             annotationFileId: resourceId,
@@ -1743,7 +1718,7 @@ export class ResourceService {
           },
         },
       });
-      return this.mapAnnotationRangeComment(created);
+      return mapAnnotationRangeComment(created);
     });
     this.publishReviewChanged(resourceId);
     return record;
@@ -1782,7 +1757,7 @@ export class ResourceService {
       }, existing.kind, existing.createdBy);
       if (!permissionDecision.allowed) throw forbidden("当前账号不能撤回这条范围记录。");
       if (existing.withdrawnAt) {
-        return { record: this.mapAnnotationRangeComment(existing), changed: false };
+        return { record: mapAnnotationRangeComment(existing), changed: false };
       }
       const updated = await transaction.annotationRangeComment.update({
         where: { id: existing.id },
@@ -1799,7 +1774,7 @@ export class ResourceService {
           detail: { commentId: updated.id, commentedRevision: updated.commentedRevision },
         },
       });
-      return { record: this.mapAnnotationRangeComment(updated), changed: true };
+      return { record: mapAnnotationRangeComment(updated), changed: true };
     });
     if (result.changed) this.publishReviewChanged(resourceId);
     return result.record;
@@ -3035,47 +3010,6 @@ export class ResourceService {
     };
   }
 
-  // Prisma 行统一映射共享 DTO；freshness 由列表 currentRevision 在客户端/领域层派生。
-  private mapAnnotationConfirmation(
-    row: AnnotationConfirmationRow,
-  ): AnnotationConfirmationRecord {
-    const targets = row.targetMode === "domains"
-      ? {
-          mode: "domains" as const,
-          domains: row.domains.map((domain) => SHARED_CONFIRMATION_DOMAINS[domain]),
-        }
-      : row.targetMode === "tracks"
-        ? { mode: "tracks" as const, trackIds: [...row.trackIds] }
-        : { mode: "all" as const };
-    const base = {
-      id: row.id,
-      annotationFileId: row.annotationFileId,
-      confirmedRevision: row.confirmedRevision,
-      scope: {
-        startTime: row.startTime,
-        endTime: row.endTime,
-        targets,
-      },
-      note: row.note,
-      createdBy: toPublicUser(row.creator),
-      createdAt: row.createdAt.toISOString(),
-    };
-    if (row.revokedAt && row.revoker) {
-      return {
-        ...base,
-        revokedAt: row.revokedAt.toISOString(),
-        revokedBy: toPublicUser(row.revoker),
-        revokeReason: row.revokeReason,
-      };
-    }
-    return {
-      ...base,
-      revokedAt: null,
-      revokedBy: null,
-      revokeReason: null,
-    };
-  }
-
   // 带正文范围事实复用历史表；互斥目标字段仍由领域校验与 CHECK 双重约束。
   private toAnnotationRangeCommentCreateData(
     createdBy: string,
@@ -3096,38 +3030,6 @@ export class ResourceService {
       body: draft.body,
       createdBy,
     };
-  }
-
-  private mapAnnotationRangeComment(
-    row: AnnotationRangeCommentRow,
-  ): AnnotationRangeCommentRecord {
-    const targets = row.targetMode === "domains"
-      ? {
-          mode: "domains" as const,
-          domains: row.domains.map((domain) => SHARED_CONFIRMATION_DOMAINS[domain]),
-        }
-      : row.targetMode === "tracks"
-        ? { mode: "tracks" as const, trackIds: [...row.trackIds] }
-        : { mode: "all" as const };
-    const base = {
-      id: row.id,
-      annotationFileId: row.annotationFileId,
-      commentedRevision: row.commentedRevision,
-      scope: { startTime: row.startTime, endTime: row.endTime, targets },
-      kind: row.kind,
-      body: row.body,
-      createdBy: toPublicUser(row.creator),
-      createdAt: row.createdAt.toISOString(),
-    };
-    if (row.withdrawnAt && row.withdrawer) {
-      return {
-        ...base,
-        withdrawnAt: row.withdrawnAt.toISOString(),
-        withdrawnBy: toPublicUser(row.withdrawer),
-        withdrawReason: row.withdrawReason,
-      };
-    }
-    return { ...base, withdrawnAt: null, withdrawnBy: null, withdrawReason: null };
   }
 
   // 失效通知只在事务提交后发布；通知失败不得反向撤销已经持久化的审核事实。

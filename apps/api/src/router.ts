@@ -59,6 +59,7 @@ import type { PrismaPlatformRepository } from "./repository.js";
 import type { ResourceService } from "./resourceService.js";
 import type { AnnotationCommandCommitService } from "./annotationCommandCommitService.js";
 import type { AnnotationRecoveryBackupService } from "./annotationRecoveryBackupService.js";
+import type { AnnotationReviewLinkService } from "./annotationReviewLinkService.js";
 import { MAX_BATCH_RESOURCE_SELECTION } from "./resourceSelection.js";
 import type { ObjectStorage } from "./objectStorage.js";
 import type { SystemDiagnosticsService } from "./systemDiagnosticsService.js";
@@ -128,6 +129,7 @@ export function registerApiRoutes(
   auditLogs: AuditLogService,
   resources: ResourceService,
   annotationRecoveryBackups: AnnotationRecoveryBackupService,
+  annotationReviewLinks: AnnotationReviewLinkService,
   mediaAnalysis: MediaAnalysisJobService,
   processingJobs: ProcessingJobQueryService,
   processingJobCommands: ProcessingJobCommandService,
@@ -332,6 +334,63 @@ export function registerApiRoutes(
       await getCurrentUser(repository, request),
       request.params.resourceId,
       request.params.commentId,
+      body.reason as string | null | undefined,
+    );
+  });
+
+  // 审核包先预检再建立独立关联；两条入口都在服务层执行相同来源、目标和权限验证。
+  app.post<{
+    Params: { resourceId: string };
+    Body: { targetRevision?: unknown; reviewPackage?: unknown };
+  }>("/api/annotation-files/:resourceId/review-links/dry-run", async (request) => {
+    const body = requireObject(request.body);
+    if (!Number.isInteger(body.targetRevision) || Number(body.targetRevision) < 1) {
+      throw badRequest("targetRevision 必须是正整数。");
+    }
+    return annotationReviewLinks.dryRun(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      Number(body.targetRevision),
+      body.reviewPackage,
+    );
+  });
+
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/annotation-files/:resourceId/review-links",
+    async (request) => annotationReviewLinks.list(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+    ),
+  );
+
+  app.post<{
+    Params: { resourceId: string };
+    Body: { targetRevision?: unknown; reviewPackage?: unknown };
+  }>("/api/annotation-files/:resourceId/review-links", async (request) => {
+    const body = requireObject(request.body);
+    if (!Number.isInteger(body.targetRevision) || Number(body.targetRevision) < 1) {
+      throw badRequest("targetRevision 必须是正整数。");
+    }
+    return annotationReviewLinks.create(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      Number(body.targetRevision),
+      body.reviewPackage,
+    );
+  });
+
+  app.post<{
+    Params: { resourceId: string; linkId: string };
+    Body: { reason?: unknown };
+  }>("/api/annotation-files/:resourceId/review-links/:linkId/revoke", async (request) => {
+    const body = requireObject(request.body);
+    if (body.reason !== undefined && body.reason !== null && typeof body.reason !== "string") {
+      throw badRequest("撤销关联原因必须是字符串或 null。");
+    }
+    return annotationReviewLinks.revoke(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      request.params.linkId,
       body.reason as string | null | undefined,
     );
   });

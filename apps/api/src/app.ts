@@ -19,6 +19,7 @@ import { ResourceAccessService } from "./resourceAccess.js";
 import { ResourceService } from "./resourceService.js";
 import { registerApiRoutes } from "./router.js";
 import { AnnotationRecoveryBackupService } from "./annotationRecoveryBackupService.js";
+import { AnnotationReviewLinkService } from "./annotationReviewLinkService.js";
 import type { ObjectStorage } from "./objectStorage.js";
 import { createObjectStorageFromEnvironment } from "./objectStorageFactory.js";
 import { MediaUploadService } from "./mediaUploadService.js";
@@ -149,6 +150,11 @@ export async function buildApiApp(
   const annotationRecoveryBackups = new AnnotationRecoveryBackupService(
     options.prisma,
     access,
+  );
+  const annotationReviewLinks = new AnnotationReviewLinkService(
+    options.prisma,
+    access,
+    reviewEvents,
   );
   const mediaAnalysis = new MediaAnalysisJobService(options.prisma, access);
   const processingJobs = new ProcessingJobQueryService(options.prisma, access);
@@ -301,6 +307,7 @@ export async function buildApiApp(
     auditLogs,
     resources,
     annotationRecoveryBackups,
+    annotationReviewLinks,
     mediaAnalysis,
     processingJobs,
     processingJobCommands,

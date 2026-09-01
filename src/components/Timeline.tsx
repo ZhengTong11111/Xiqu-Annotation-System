@@ -185,7 +185,8 @@ type TimelineProps = {
 export type TimelineReviewRange = {
   id: string;
   recordId: string;
-  recordType: "confirmation" | "range_record";
+  recordType: "confirmation" | "range_record" | "linked_record";
+  linkId?: string;
   kind: "confirmation" | "comment" | "feedback";
   startTime: number;
   endTime: number;

@@ -1,19 +1,24 @@
-import { CheckCircle2, Download, History, MessageSquareText, MessageSquareWarning, RefreshCw, Undo2 } from "lucide-react";
+import { CheckCircle2, Download, FileInput, History, Link2, MessageSquareText, MessageSquareWarning, RefreshCw, Undo2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   ANNOTATION_REVIEW_DOMAINS,
   type AnnotationReviewDomain,
   type AnnotationReviewScope,
   type AnnotationReviewTargets,
+  type AnnotationReviewLinkDryRun,
+  type AnnotationReviewLinkRecord,
+  type AnnotationReviewPackageV1,
 } from "@xiqu/shared";
 import type { AnnotationReviewMutationResult } from "./useAnnotationReviews";
 import { AnnotationReviewWithdrawalDialog } from "./AnnotationReviewWithdrawalDialog";
+import { AnnotationReviewImportDialog } from "./AnnotationReviewImportDialog";
 import {
   ANNOTATION_CONFIRMATION_DOMAIN_LABELS,
   type AnnotationReviewCreateBlocker,
   type AnnotationConfirmationTrackOption,
   type AnnotationConfirmationViewRecord,
   type AnnotationRangeCommentViewRecord,
+  formatAnnotationConfirmationTargets,
   getAnnotationReviewBlockerMessage,
 } from "./annotationConfirmationView";
 
@@ -24,6 +29,7 @@ type HistoryKind = "all" | CreateMode;
 type AnnotationReviewPanelProps = {
   confirmations: AnnotationConfirmationViewRecord[];
   comments: AnnotationRangeCommentViewRecord[];
+  links: AnnotationReviewLinkRecord[];
   currentRevision: number | null;
   editorRevision: number;
   range: { start: number; end: number } | null;
@@ -49,6 +55,10 @@ type AnnotationReviewPanelProps = {
   onLoadMoreComments: () => Promise<void>;
   onLoadAll: () => Promise<boolean>;
   onExportAll: () => Promise<void>;
+  onDryRunLink: (reviewPackage: AnnotationReviewPackageV1) => Promise<AnnotationReviewLinkDryRun>;
+  onCreateLink: (reviewPackage: AnnotationReviewPackageV1) => Promise<AnnotationReviewMutationResult<AnnotationReviewLinkRecord>>;
+  onRevokeLink: (link: AnnotationReviewLinkRecord, reason: string | null) => Promise<AnnotationReviewMutationResult<AnnotationReviewLinkRecord>>;
+  canRevokeLink: (link: AnnotationReviewLinkRecord) => boolean;
   onCreateConfirmation: (input: {
     scope: AnnotationReviewScope;
     note: string | null;
@@ -94,6 +104,9 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
   const [exportPending, setExportPending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [withdrawTarget, setWithdrawTarget] = useState<WithdrawTarget | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [revokeLinkTarget, setRevokeLinkTarget] = useState<AnnotationReviewLinkRecord | null>(null);
+  const [expandedLinkIds, setExpandedLinkIds] = useState<string[]>([]);
 
   const availableCreateModes = useMemo<CreateMode[]>(() => [
     ...(props.canReview ? ["confirmation" as const, "comment" as const] : []),
@@ -130,6 +143,11 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
     (targetMode === "tracks" && selectedTrackIds.length === 0);
   const bodyInvalid = effectiveCreateMode !== "confirmation" && !rangeBody.trim();
   const blockerMessage = getAnnotationReviewBlockerMessage(props.createBlocker);
+  const visibleLinks = props.links.filter((link) => showInactive || !link.revokedAt);
+  const trackLabels = useMemo(
+    () => new Map(props.trackOptions.map((track) => [track.id, track.label])),
+    [props.trackOptions],
+  );
 
   useEffect(() => {
     const available = new Set(props.trackOptions.map((track) => track.id));
@@ -216,7 +234,11 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
     }
   }
 
-  const totalCount = props.confirmations.length + props.comments.length;
+  const nativeRecordCount = props.confirmations.length + props.comments.length;
+  const linkedRecordCount = props.links
+    .filter((link) => !link.revokedAt)
+    .reduce((total, link) => total + link.counts.confirmations + link.counts.rangeRecords, 0);
+  const totalCount = nativeRecordCount + linkedRecordCount;
   const hasMoreRecords = props.hasMoreConfirmations || props.hasMoreComments;
   return (
     <section
@@ -250,9 +272,17 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
                 className="icon-button"
                 title="加载完整历史并导出审核包"
                 aria-label="加载完整历史并导出审核包"
-                disabled={props.loading || props.loadingAll || exportPending || totalCount === 0}
+                disabled={props.loading || props.loadingAll || exportPending || nativeRecordCount === 0}
                 onClick={() => void exportAllReviewFacts()}
               ><Download size={15} /></button>
+              {props.canReview ? <button
+                type="button"
+                className="icon-button"
+                title="导入并重新链接审核包"
+                aria-label="导入并重新链接审核包"
+                disabled={props.loading || props.mutationPending}
+                onClick={() => setImportOpen(true)}
+              ><FileInput size={15} /></button> : null}
             </>
           ) : null}
           {props.onToggleCollapse ? (
@@ -446,6 +476,69 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
               ) : null}
             </div>
           </div>
+
+          {visibleLinks.length ? <section className="annotation-review-links" aria-label="关联审核包">
+            <div className="annotation-confirmation-history-heading">
+              <span><Link2 size={14} />关联审核包</span>
+              <small>只读来源快照，不进入当前文件原生导出</small>
+            </div>
+            {visibleLinks.map((link) => {
+              const expanded = expandedLinkIds.includes(link.id);
+              const linkedFacts = [
+                ...link.reviewPackage.records.confirmations.map((record) => ({
+                  id: `confirmation:${record.id}`,
+                  kind: "关联确认",
+                  scope: record.scope,
+                  body: record.note,
+                  creator: record.createdBy.displayName,
+                  inactive: Boolean(record.revokedAt),
+                })),
+                ...link.reviewPackage.records.rangeRecords.map((record) => ({
+                  id: `range-record:${record.id}`,
+                  kind: record.kind === "editor_feedback" ? "关联反馈" : "关联评论",
+                  scope: record.scope,
+                  body: record.body,
+                  creator: record.createdBy.displayName,
+                  inactive: Boolean(record.withdrawnAt),
+                })),
+              ];
+              return <article key={link.id} className={`annotation-review-link-item${link.revokedAt ? " revoked" : ""}`}>
+                <header>
+                  <div>
+                    <strong>{link.source.annotationFileName}</strong>
+                    <span>来源 v{link.source.revision} · {link.counts.confirmations} 条确认 · {link.counts.rangeRecords} 条评论/反馈</span>
+                    <small>{link.createdBy.displayName} 于 {formatDate(link.createdAt)} 建立关联{link.revokedAt ? ` · 已于 ${formatDate(link.revokedAt)} 撤销` : ""}</small>
+                  </div>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedLinkIds((current) => current.includes(link.id)
+                        ? current.filter((id) => id !== link.id)
+                        : [...current, link.id])}
+                    >{expanded ? "收起记录" : "查看记录"}</button>
+                    {!link.revokedAt && props.canRevokeLink(link) ? <button
+                      type="button"
+                      className="danger"
+                      disabled={props.mutationPending}
+                      onClick={() => setRevokeLinkTarget(link)}
+                    >撤销关联</button> : null}
+                  </div>
+                </header>
+                {expanded ? <div className="annotation-review-linked-facts">
+                  {linkedFacts.map((fact) => <button
+                    key={fact.id}
+                    type="button"
+                    className={fact.inactive ? "inactive" : ""}
+                    onClick={() => props.onNavigate(fact.scope)}
+                  >
+                    <strong>{fact.kind}</strong>
+                    <span>{formatTime(fact.scope.startTime)} - {formatTime(fact.scope.endTime)} · {formatAnnotationConfirmationTargets(fact.scope.targets, trackLabels)}</span>
+                    <small>{fact.creator}{fact.body ? ` · ${fact.body}` : ""}{fact.inactive ? " · 来源中已撤销/撤回" : ""}</small>
+                  </button>)}
+                </div> : null}
+              </article>;
+            })}
+          </section> : null}
         </div>
       ) : null}
 
@@ -460,6 +553,38 @@ export function AnnotationReviewPanel(props: AnnotationReviewPanelProps) {
           if (!open) setWithdrawTarget(null);
         }}
         onSubmit={withdrawReviewFact}
+      />
+      <AnnotationReviewImportDialog
+        open={importOpen}
+        busy={props.mutationPending}
+        portalContainer={props.portalContainer}
+        onOpenChange={setImportOpen}
+        onDryRun={props.onDryRunLink}
+        onConfirm={async (reviewPackage) => {
+          const result = await props.onCreateLink(reviewPackage);
+          setNotice(result.refreshFailed
+            ? "审核包已关联，但列表刷新失败，请手动刷新。"
+            : "审核包已安全关联；来源审核记录未发生修改。");
+          return result.record;
+        }}
+      />
+      <AnnotationReviewWithdrawalDialog
+        open={Boolean(revokeLinkTarget)}
+        title="撤销审核包关联"
+        description="撤销后关联记录不再显示在当前文件时间轴；来源确认、评论和反馈仍完整保留。"
+        pending={props.mutationPending}
+        portalContainer={props.portalContainer}
+        onOpenChange={(open) => {
+          if (!open) setRevokeLinkTarget(null);
+        }}
+        onSubmit={async (reason) => {
+          if (!revokeLinkTarget) return;
+          const result = await props.onRevokeLink(revokeLinkTarget, reason);
+          setNotice(result.refreshFailed
+            ? "关联已撤销，但列表刷新失败，请手动刷新。"
+            : "关联已撤销；来源审核记录未被删除。");
+          setRevokeLinkTarget(null);
+        }}
       />
     </section>
   );

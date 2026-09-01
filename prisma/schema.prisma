@@ -144,6 +144,8 @@ enum AuditAction {
   annotation_range_comment_withdraw
   annotation_range_feedback_create
   annotation_range_feedback_withdraw
+  annotation_review_link_create
+  annotation_review_link_revoke
   resource_permission_upsert
   resource_permission_remove
   resource_inheritance_update
@@ -222,6 +224,8 @@ model User {
   revokedConfirmations              AnnotationConfirmation[]          @relation("AnnotationConfirmationRevoker")
   createdRangeComments              AnnotationRangeComment[]          @relation("AnnotationRangeCommentCreator")
   withdrawnRangeComments            AnnotationRangeComment[]          @relation("AnnotationRangeCommentWithdrawer")
+  createdAnnotationReviewLinks      AnnotationReviewLink[]             @relation("AnnotationReviewLinkCreator")
+  revokedAnnotationReviewLinks      AnnotationReviewLink[]             @relation("AnnotationReviewLinkRevoker")
   jobs                              ProcessingJob[]                   @relation("JobCreator")
   processingJobRequests             ProcessingJobRequest[]            @relation("ProcessingJobRequester")
   processingJobRequestKeys          ProcessingJobRequestKey[]         @relation("ProcessingJobRequestKeyOwner")
@@ -366,6 +370,8 @@ model AnnotationFile {
   recoverySnapshots      AnnotationRecoverySnapshot[]
   confirmations          AnnotationConfirmation[]
   rangeComments          AnnotationRangeComment[]
+  targetReviewLinks      AnnotationReviewLink[]             @relation("AnnotationReviewLinkTarget")
+  sourceReviewLinks      AnnotationReviewLink[]             @relation("AnnotationReviewLinkSource")
   operations             AnnotationOperation[]
   mutationLease          AnnotationMutationLease?
   collaborationTickets   AnnotationCollaborationTicket[]
@@ -490,6 +496,37 @@ model AnnotationRangeComment {
   @@index([createdBy])
   @@index([withdrawnBy])
   @@map("annotation_range_comments")
+}
+
+// 重新链接只保存来源审核包的不可变快照和目标关系；它不复制或移动两张原生审核事实表。
+model AnnotationReviewLink {
+  id                       String   @id @default(uuid())
+  targetAnnotationFileId   String   @map("target_annotation_file_id")
+  sourceAnnotationFileId   String?  @map("source_annotation_file_id")
+  sourceResourceIdSnapshot String   @map("source_resource_id_snapshot")
+  sourceFileNameSnapshot   String   @map("source_file_name_snapshot")
+  sourceRevision           Int      @map("source_revision")
+  packageFingerprint       String   @map("package_fingerprint")
+  packagePayload           Json     @map("package_payload")
+  confirmationCount        Int      @map("confirmation_count")
+  rangeRecordCount         Int      @map("range_record_count")
+  createdBy                String   @map("created_by")
+  createdAt                DateTime @default(now()) @map("created_at")
+  revokedBy                String?  @map("revoked_by")
+  revokedAt                DateTime? @map("revoked_at")
+  revokeReason             String?  @map("revoke_reason")
+
+  targetAnnotationFile AnnotationFile @relation("AnnotationReviewLinkTarget", fields: [targetAnnotationFileId], references: [resourceId], onDelete: Cascade)
+  sourceAnnotationFile AnnotationFile? @relation("AnnotationReviewLinkSource", fields: [sourceAnnotationFileId], references: [resourceId], onDelete: SetNull)
+  creator             User           @relation("AnnotationReviewLinkCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  revoker             User?          @relation("AnnotationReviewLinkRevoker", fields: [revokedBy], references: [id], onDelete: Restrict)
+
+  @@unique([targetAnnotationFileId, packageFingerprint])
+  @@index([targetAnnotationFileId, createdAt, id])
+  @@index([sourceAnnotationFileId])
+  @@index([createdBy])
+  @@index([revokedBy])
+  @@map("annotation_review_links")
 }
 
 // 同一张追加式范围事实表承载审核评论和编辑反馈；kind 决定创建/撤回权限与视觉语义。

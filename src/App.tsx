@@ -1426,8 +1426,10 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     () => layoutAnnotationReviewTimelineItems({
       confirmations: confirmationViewRecords,
       comments: commentViewRecords,
+      links: annotationReviews.links ?? [],
+      trackOptions: confirmationTrackOptions,
     }),
-    [commentViewRecords, confirmationViewRecords],
+    [annotationReviews.links, commentViewRecords, confirmationTrackOptions, confirmationViewRecords],
   );
   // Timeline 只接收渲染所需的扁平只读字段，不依赖平台 API 记录结构或权限判断。
   const reviewTimelineRanges = useMemo(
@@ -1435,6 +1437,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       id: item.id,
       recordId: item.recordId,
       recordType: item.recordType,
+      linkId: item.linkId,
       kind: item.kind,
       startTime: item.startTime,
       endTime: item.endTime,
@@ -7427,6 +7430,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       <AnnotationReviewPanel
         confirmations={confirmationViewRecords}
         comments={commentViewRecords}
+        links={annotationReviews.links ?? []}
         currentRevision={annotationReviews.confirmations?.currentRevision ??
           annotationReviews.comments?.currentRevision ?? null}
         editorRevision={remoteBaseRevision}
@@ -7468,6 +7472,20 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
             "application/json;charset=utf-8",
           );
         }}
+        onDryRunLink={(reviewPackage) => annotationReviews.dryRunLink({
+          targetRevision: remoteBaseRevision,
+          reviewPackage,
+        })}
+        onCreateLink={(reviewPackage) => annotationReviews.createLink({
+          targetRevision: remoteBaseRevision,
+          reviewPackage,
+        })}
+        onRevokeLink={(link, reason) => annotationReviews.revokeLink(link.id, { reason })}
+        canRevokeLink={(link) => Boolean(editorSession.canReview && (
+          link.createdBy.id === editorSession.currentUserId ||
+          editorSession.canRevokeAnyConfirmation ||
+          editorSession.currentUserRoles.some((role) => role === "admin" || role === "super_admin")
+        ))}
         onCreateConfirmation={({ scope, note }) => annotationReviews.createConfirmation({
           confirmedRevision: remoteBaseRevision,
           scope,

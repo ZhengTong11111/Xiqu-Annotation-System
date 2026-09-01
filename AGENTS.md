@@ -45,6 +45,11 @@ Main currently contains all major recent feature lines that matter for context:
   append-only governance facts and must never alter annotation workflow status. Confirmation history and comment/feedback
   history use separate file-bound opaque keyset cursors; clients must expose partial-load state, deduplicate page boundaries,
   and invalidate in-flight continuation requests after refresh or file changes rather than relying on a large fixed list cap
+- review-package relinking is an additive source-to-target governance association, never ownership transfer. The server must
+  parse the package, verify every immutable source fact against the current same-server database, and recheck target
+  `read + review`, exact revision, media duration and persistent track ids inside the create transaction. Revocation only
+  soft-revokes the link batch; it must not update/delete native confirmations or range records. Native v1 exports exclude linked
+  snapshots to prevent recursive provenance chains. Cross-server or fuzzy-track relinking requires a future explicit contract
 - permission-gated native streaming downloads for media resources and authoritative JSON downloads for annotation resources, exposed through the shared resource context menu and Inspector
 - Fastify API backed by Prisma 7 and PostgreSQL, with local storage under `data/` or an S3-compatible backend
 - local `dev:api` and `dev:analysis-worker` commands load the ignored root `.env` through Node 22
@@ -610,6 +615,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - own complete opaque-cursor draining and the versioned, source-bound review export package
   - complete export requires both streams to end at `nextCursor: null`, belong to the same annotation file and report one revision;
     it must fail closed rather than emit a partial package that looks complete
+- `packages/document-model/src/annotationReviewPackages.ts` + `apps/api/src/annotationReviewLinkService.ts`
+  - own the only review-package runtime parser/fingerprint contract and the source-verified, target-revision-bound link lifecycle
+  - links persist immutable package snapshots and may only be soft-revoked; neither service may update/delete native confirmation
+    or range-comment rows, infer track mappings by label, accept unverifiable cross-server sources, or recursively export links
+- `src/platform/AnnotationReviewImportDialog.tsx`
+  - owns local package selection and the explicit client-parse -> server dry-run -> user-confirm flow for the currently open target
+  - client parsing is only fast feedback; source authenticity, permissions, revision, duration, track mapping and duplicate status
+    remain authoritative server decisions
 - `src/platform/useAnnotationReviews.ts`
   - authoritative client-side confirmation/range-note list, pagination, create and withdraw lifecycle for one open annotation file
   - the historical `comment` method names cover both typed review comments and editor feedback; do not add a parallel feedback

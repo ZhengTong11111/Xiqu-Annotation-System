@@ -4,10 +4,14 @@ import type {
   AnnotationConfirmationRecord,
   AnnotationRangeCommentPage,
   AnnotationRangeCommentRecord,
+  AnnotationReviewLinkDryRun,
+  AnnotationReviewLinkRecord,
+  CreateAnnotationReviewLinkRequest,
   CreateAnnotationConfirmationRequest,
   CreateAnnotationRangeCommentRequest,
   RevokeAnnotationConfirmationRequest,
   WithdrawAnnotationRangeCommentRequest,
+  RevokeAnnotationReviewLinkRequest,
 } from "@xiqu/shared";
 import { ANNOTATION_REVIEW_PAGE_MAX_LIMIT } from "@xiqu/shared";
 import { PlatformApiError, type PlatformClient } from "../api/platformClient";
@@ -19,7 +23,8 @@ export type AnnotationReviewMutationResult<TRecord> = {
   refreshFailed: boolean;
 };
 
-type ReviewMutationRecord = AnnotationConfirmationRecord | AnnotationRangeCommentRecord;
+type ReviewMutationRecord = AnnotationConfirmationRecord | AnnotationRangeCommentRecord |
+  AnnotationReviewLinkRecord;
 
 export type CompleteAnnotationReviewHistory = {
   confirmations: AnnotationConfirmationList;
@@ -35,6 +40,7 @@ export function useAnnotationReviews(input: {
 }) {
   const [confirmations, setConfirmations] = useState<AnnotationConfirmationList | null>(null);
   const [comments, setComments] = useState<AnnotationRangeCommentPage | null>(null);
+  const [links, setLinks] = useState<AnnotationReviewLinkRecord[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingMoreConfirmations, setLoadingMoreConfirmations] = useState(false);
   const [loadingMoreComments, setLoadingMoreComments] = useState(false);
@@ -64,6 +70,7 @@ export function useAnnotationReviews(input: {
     if (!input.client || !input.annotationFileId) {
       setConfirmations(null);
       setComments(null);
+      setLinks(null);
       setError(null);
       return false;
     }
@@ -71,22 +78,27 @@ export function useAnnotationReviews(input: {
     setLoading(true);
     setError(null);
     try {
-      const [confirmationResult, commentResult] = await Promise.allSettled([
+      const [confirmationResult, commentResult, linkResult] = await Promise.allSettled([
         input.client.listAnnotationConfirmations(input.annotationFileId, { limit: 100 }),
         input.client.listAnnotationRangeComments(input.annotationFileId, {
           includeWithdrawn: true,
           limit: 100,
         }),
+        input.client.listAnnotationReviewLinks(input.annotationFileId),
       ]);
       if (!mountedRef.current || generation !== requestGenerationRef.current) return false;
       setConfirmations(confirmationResult.status === "fulfilled" ? confirmationResult.value : null);
       setComments(commentResult.status === "fulfilled" ? commentResult.value : null);
+      setLinks(linkResult.status === "fulfilled" ? linkResult.value : null);
       const failures = [
         confirmationResult.status === "rejected"
           ? `确认记录：${describeAnnotationReviewError(confirmationResult.reason)}`
           : null,
         commentResult.status === "rejected"
           ? `评论与反馈：${describeAnnotationReviewError(commentResult.reason)}`
+          : null,
+        linkResult.status === "rejected"
+          ? `关联审核包：${describeAnnotationReviewError(linkResult.reason)}`
           : null,
       ].filter((message): message is string => Boolean(message));
       setError(failures.length ? `部分审核历史加载失败。${failures.join("；")}` : null);
@@ -102,6 +114,7 @@ export function useAnnotationReviews(input: {
     mutationGenerationRef.current += 1;
     setConfirmations(null);
     setComments(null);
+    setLinks(null);
     setError(null);
     setMutationPending(false);
     setLoadingMoreConfirmations(false);
@@ -339,10 +352,23 @@ export function useAnnotationReviews(input: {
   const withdrawComment = useCallback((id: string, request: WithdrawAnnotationRangeCommentRequest) =>
     runMutation(() => input.client!.withdrawAnnotationRangeComment(input.annotationFileId!, id, request)),
   [input.annotationFileId, input.client, runMutation]);
+  const dryRunLink = useCallback((request: CreateAnnotationReviewLinkRequest): Promise<AnnotationReviewLinkDryRun> => {
+    if (!input.client || !input.annotationFileId) {
+      return Promise.reject(new Error("当前不是平台标注文件。"));
+    }
+    return input.client.dryRunAnnotationReviewLink(input.annotationFileId, request);
+  }, [input.annotationFileId, input.client]);
+  const createLink = useCallback((request: CreateAnnotationReviewLinkRequest) =>
+    runMutation(() => input.client!.createAnnotationReviewLink(input.annotationFileId!, request)),
+  [input.annotationFileId, input.client, runMutation]);
+  const revokeLink = useCallback((id: string, request: RevokeAnnotationReviewLinkRequest) =>
+    runMutation(() => input.client!.revokeAnnotationReviewLink(input.annotationFileId!, id, request)),
+  [input.annotationFileId, input.client, runMutation]);
 
   return {
     confirmations,
     comments,
+    links,
     loading,
     loadingMoreConfirmations,
     loadingMoreComments,
@@ -357,6 +383,9 @@ export function useAnnotationReviews(input: {
     revokeConfirmation,
     createComment,
     withdrawComment,
+    dryRunLink,
+    createLink,
+    revokeLink,
   };
 }
 

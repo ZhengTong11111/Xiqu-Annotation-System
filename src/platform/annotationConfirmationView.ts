@@ -10,6 +10,7 @@ import type {
   AnnotationConfirmationRecord,
   AnnotationConfirmationTargets,
   AnnotationRangeCommentRecord,
+  AnnotationReviewLinkRecord,
   PlatformRole,
 } from "@xiqu/shared";
 import type { ProjectData } from "../types";
@@ -55,7 +56,8 @@ export type AnnotationRangeCommentViewRecord = {
 export type AnnotationReviewTimelineItem = {
   id: string;
   recordId: string;
-  recordType: "confirmation" | "range_record";
+  recordType: "confirmation" | "range_record" | "linked_record";
+  linkId?: string;
   kind: "confirmation" | "comment" | "feedback";
   startTime: number;
   endTime: number;
@@ -159,7 +161,18 @@ export function buildAnnotationRangeCommentViewRecords(
 export function layoutAnnotationReviewTimelineItems(input: {
   confirmations: AnnotationConfirmationViewRecord[];
   comments: AnnotationRangeCommentViewRecord[];
+  links?: AnnotationReviewLinkRecord[];
+  trackOptions?: AnnotationConfirmationTrackOption[];
 }): AnnotationReviewTimelineItem[] {
+  const trackLabels = new Map(
+    (input.trackOptions ?? []).map((track) => [track.id, track.label]),
+  );
+  for (const record of [...input.confirmations, ...input.comments]) {
+    if (record.record.scope.targets.mode !== "tracks") continue;
+    for (const trackId of record.record.scope.targets.trackIds) {
+      if (!trackLabels.has(trackId)) trackLabels.set(trackId, trackId);
+    }
+  }
   const candidates: Omit<AnnotationReviewTimelineItem, "lane">[] = [
     ...input.confirmations
       .filter((item) => item.lifecycle === "active")
@@ -187,6 +200,41 @@ export function layoutAnnotationReviewTimelineItems(input: {
         lifecycle: item.lifecycle,
         freshness: item.freshness,
       })),
+    // 关联包事实使用独立身份并保守标为 stale；不同文件的 revision 数字没有可比较语义。
+    ...(input.links ?? []).flatMap((link) => {
+      if (link.revokedAt) return [];
+      const prefix = `关联 · ${link.source.annotationFileName}`;
+      return [
+        ...link.reviewPackage.records.confirmations
+          .filter((record) => !record.revokedAt)
+          .map((record) => ({
+            id: `link:${link.id}:confirmation:${record.id}`,
+            recordId: record.id,
+            recordType: "linked_record" as const,
+            linkId: link.id,
+            kind: "confirmation" as const,
+            startTime: record.scope.startTime,
+            endTime: record.scope.endTime,
+            label: `${prefix} · 确认 · ${formatAnnotationConfirmationTargets(record.scope.targets, trackLabels)}`,
+            lifecycle: "active" as const,
+            freshness: "stale" as const,
+          })),
+        ...link.reviewPackage.records.rangeRecords
+          .filter((record) => !record.withdrawnAt)
+          .map((record) => ({
+            id: `link:${link.id}:range-record:${record.id}`,
+            recordId: record.id,
+            recordType: "linked_record" as const,
+            linkId: link.id,
+            kind: record.kind === "editor_feedback" ? "feedback" as const : "comment" as const,
+            startTime: record.scope.startTime,
+            endTime: record.scope.endTime,
+            label: `${prefix} · ${record.kind === "editor_feedback" ? "反馈" : "评论"} · ${formatAnnotationConfirmationTargets(record.scope.targets, trackLabels)}`,
+            lifecycle: "active" as const,
+            freshness: "stale" as const,
+          })),
+      ];
+    }),
   ].sort((left, right) =>
     left.startTime - right.startTime || left.endTime - right.endTime || left.id.localeCompare(right.id));
   const laneEndTimes: number[] = [];

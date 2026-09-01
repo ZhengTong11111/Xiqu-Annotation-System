@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AnnotationConfirmationRecord, AnnotationRangeCommentRecord } from "@xiqu/shared";
+import type { AnnotationConfirmationRecord, AnnotationRangeCommentRecord, AnnotationReviewLinkRecord } from "@xiqu/shared";
 import { mockProject } from "../mockData";
 import {
   buildAnnotationConfirmationViewRecords,
@@ -116,6 +116,54 @@ test("确认与评论即使原始 UUID 相同也保持独立时间轴身份", ()
     ["confirmation:same-id", sharedId, "confirmation"],
     ["range-record:same-id", sharedId, "range_record"],
   ]);
+});
+
+test("关联事实使用批次限定身份且撤销批次不进入时间轴", () => {
+  const sourceRecord = createRecord("same-id", 5, 6, {
+    annotationFileId: "source-file",
+    scope: { startTime: 5, endTime: 6, targets: { mode: "tracks", trackIds: ["character-track"] } },
+  });
+  const link: AnnotationReviewLinkRecord = {
+    id: "link-1",
+    targetAnnotationFileId: "file-1",
+    source: { annotationFileId: "source-file", annotationFileName: "来源.json", revision: 3 },
+    packageFingerprint: "a".repeat(64),
+    counts: { confirmations: 1, rangeRecords: 0 },
+    reviewPackage: {
+      format: "xiqu.annotation-review-package",
+      version: 1,
+      exportedAt: "2026-09-01T00:00:00.000Z",
+      source: { annotationFileId: "source-file", annotationFileName: "来源.json", revision: 3 },
+      counts: { confirmations: 1, rangeRecords: 0 },
+      records: { confirmations: [sourceRecord], rangeRecords: [] },
+    },
+    createdBy: { id: "reviewer-1", accountName: "reviewer", displayName: "审核员" },
+    createdAt: "2026-09-01T00:01:00.000Z",
+  };
+  const active = layoutAnnotationReviewTimelineItems({
+    confirmations: [],
+    comments: [],
+    links: [link],
+    trackOptions: [{ id: "character-track", label: "逐字" }],
+  });
+  assert.deepEqual(active.map((item) => [item.id, item.recordType, item.linkId]), [[
+    "link:link-1:confirmation:same-id",
+    "linked_record",
+    "link-1",
+  ]]);
+  assert.match(active[0]?.label ?? "", /来源\.json.*逐字/);
+
+  const revoked = layoutAnnotationReviewTimelineItems({
+    confirmations: [],
+    comments: [],
+    links: [{
+      ...link,
+      revokedAt: "2026-09-01T00:02:00.000Z",
+      revokedBy: link.createdBy,
+      revokeReason: null,
+    }],
+  });
+  assert.deepEqual(revoked, []);
 });
 
 test("创建阻断优先检查权限、加载、范围、dirty 与 revision", () => {

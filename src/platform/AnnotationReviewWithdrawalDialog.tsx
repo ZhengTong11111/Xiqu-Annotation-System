@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 type AnnotationReviewWithdrawalDialogProps = {
   open: boolean;
   title: string;
+  description?: string;
   pending: boolean;
   portalContainer?: HTMLElement;
   onOpenChange: (open: boolean) => void;
@@ -30,7 +31,7 @@ export function AnnotationReviewWithdrawalDialog(props: AnnotationReviewWithdraw
         <AlertDialog.Content className="annotation-confirmation-revoke-dialog">
           <AlertDialog.Title>{props.title}</AlertDialog.Title>
           <AlertDialog.Description>
-            操作不会删除历史；记录仍保存在服务器，并可在“显示已撤销与已撤回”中查看。
+            {props.description ?? "操作不会删除历史；记录仍保存在服务器，并可在“显示已撤销与已撤回”中查看。"}
           </AlertDialog.Description>
           <label>
             原因（可选）

@@ -4,6 +4,10 @@ import type {
   AnnotationConfirmationRecord,
   AnnotationRangeCommentPage,
   AnnotationRangeCommentRecord,
+  AnnotationReviewLinkDryRun,
+  AnnotationReviewLinkRecord,
+  CreateAnnotationReviewLinkRequest,
+  RevokeAnnotationReviewLinkRequest,
   AnnotationCommittedOperationPage,
   AnnotationClientSyncFailureReport,
   AnnotationClientSyncFailureReportResult,
@@ -735,6 +739,44 @@ export class PlatformClient {
   ) {
     return this.request<AnnotationRangeCommentRecord>(
       `/annotation-files/${resourceId}/range-comments/${commentId}/withdraw`,
+      { method: "POST", body: request },
+    );
+  }
+
+  // 审核包重新链接始终先由服务端 dry-run；客户端不自行判断来源真实性或目标轨道映射。
+  dryRunAnnotationReviewLink(
+    resourceId: string,
+    request: CreateAnnotationReviewLinkRequest,
+  ) {
+    return this.request<AnnotationReviewLinkDryRun>(
+      `/annotation-files/${resourceId}/review-links/dry-run`,
+      { method: "POST", body: request },
+    );
+  }
+
+  listAnnotationReviewLinks(resourceId: string) {
+    return this.request<AnnotationReviewLinkRecord[]>(
+      `/annotation-files/${resourceId}/review-links`,
+    );
+  }
+
+  createAnnotationReviewLink(
+    resourceId: string,
+    request: CreateAnnotationReviewLinkRequest,
+  ) {
+    return this.request<AnnotationReviewLinkRecord>(
+      `/annotation-files/${resourceId}/review-links`,
+      { method: "POST", body: request },
+    );
+  }
+
+  revokeAnnotationReviewLink(
+    resourceId: string,
+    linkId: string,
+    request: RevokeAnnotationReviewLinkRequest = {},
+  ) {
+    return this.request<AnnotationReviewLinkRecord>(
+      `/annotation-files/${resourceId}/review-links/${linkId}/revoke`,
       { method: "POST", body: request },
     );
   }

@@ -404,6 +404,79 @@ export type AnnotationRangeCommentPage = {
   nextCursor: string | null;
 };
 
+// 审核包是跨文件重新建立来源关联的不可变交换合同，不是 ProjectData，也不能直接写回原生审核事实表。
+export const ANNOTATION_REVIEW_PACKAGE_FORMAT = "xiqu.annotation-review-package";
+export const ANNOTATION_REVIEW_PACKAGE_VERSION = 1;
+export const ANNOTATION_REVIEW_PACKAGE_MAX_RECORDS = 1_000;
+
+export type AnnotationReviewPackageV1 = {
+  format: typeof ANNOTATION_REVIEW_PACKAGE_FORMAT;
+  version: typeof ANNOTATION_REVIEW_PACKAGE_VERSION;
+  exportedAt: string;
+  source: {
+    annotationFileId: string;
+    annotationFileName: string;
+    revision: number;
+  };
+  counts: {
+    confirmations: number;
+    rangeRecords: number;
+  };
+  records: {
+    confirmations: AnnotationConfirmationRecord[];
+    rangeRecords: AnnotationRangeCommentRecord[];
+  };
+};
+
+export type AnnotationReviewLinkLifecycle = "active" | "revoked";
+
+export type AnnotationReviewLinkRecord = {
+  id: string;
+  targetAnnotationFileId: string;
+  source: AnnotationReviewPackageV1["source"];
+  packageFingerprint: string;
+  counts: AnnotationReviewPackageV1["counts"];
+  reviewPackage: AnnotationReviewPackageV1;
+  createdBy: UserReference;
+  createdAt: string;
+} & (
+  | {
+      revokedAt?: null;
+      revokedBy?: null;
+      revokeReason?: null;
+    }
+  | {
+      revokedAt: string;
+      revokedBy: UserReference;
+      revokeReason?: string | null;
+    }
+);
+
+export type AnnotationReviewLinkDryRun = {
+  status: "ready" | "duplicate";
+  target: {
+    annotationFileId: string;
+    annotationFileName: string;
+    revision: number;
+    duration: number;
+  };
+  source: AnnotationReviewPackageV1["source"];
+  packageFingerprint: string;
+  counts: AnnotationReviewPackageV1["counts"];
+  matchedTrackIds: string[];
+  duplicateLinkId: string | null;
+  duplicateLifecycle: AnnotationReviewLinkLifecycle | null;
+};
+
+export type CreateAnnotationReviewLinkRequest = {
+  targetRevision: number;
+  reviewPackage: AnnotationReviewPackageV1;
+};
+
+export type RevokeAnnotationReviewLinkRequest = {
+  reason?: string | null;
+};
+
 export const PROCESSING_JOB_TYPES = [
   "pitch_extraction",
   "spectrogram_generation",
@@ -549,6 +622,8 @@ export const AUDIT_ACTIONS = [
   "annotation_range_comment_withdraw",
   "annotation_range_feedback_create",
   "annotation_range_feedback_withdraw",
+  "annotation_review_link_create",
+  "annotation_review_link_revoke",
   "resource_permission_upsert",
   "resource_permission_remove",
   "resource_inheritance_update",
