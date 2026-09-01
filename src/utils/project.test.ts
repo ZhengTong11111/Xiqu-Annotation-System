@@ -53,6 +53,16 @@ test("每次创建空白标注工程都会返回独立的轨道和数组", () =>
   assert.equal(second.builtinTracks[0]?.name, "逐字文字轨");
 });
 
+test("项目归一化保留逐字轨的选中块循环范围设置", () => {
+  const project = createEmptyProjectData();
+  project.builtinTracks[0]!.autoSetLoopRangeOnSelect = true;
+
+  const normalized = normalizeImportedProjectFile(project).project;
+
+  // 平台文件每次打开都会经过该边界；这里丢值会让前端提交与服务器当前值冲突的重复命令。
+  assert.equal(normalized.builtinTracks[0]?.autoSetLoopRangeOnSelect, true);
+});
+
 test("v1-v5 项目升级为 v7 时明确清除旧唱腔字段并补未完成句级分类", () => {
   const legacy = {
     version: 5,

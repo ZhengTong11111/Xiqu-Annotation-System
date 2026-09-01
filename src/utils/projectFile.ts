@@ -515,12 +515,14 @@ function normalizeBuiltinTracks(value: ProjectData["builtinTracks"] | undefined)
     }
     seenIds.add(trackId);
     const defaultTrack = getBuiltinTrackDefinition(trackId);
+    // 内建轨设置属于持久项目状态；归一化时必须逐项保留，不能让已开启的设置回落到默认值。
     return [{
       ...defaultTrack,
       name: typeof track.name === "string" && track.name.trim() ? track.name : defaultTrack.name,
       attachedPointTracks: normalizeAttachedPointTracks(track.attachedPointTracks),
       attachedPointTracksExpanded: Boolean(track.attachedPointTracksExpanded),
       snapToWaveformKeypoints: Boolean(track.snapToWaveformKeypoints),
+      autoSetLoopRangeOnSelect: Boolean(track.autoSetLoopRangeOnSelect),
     }];
   });
   return tracks.length > 0 ? tracks : getDefaultBuiltinTracks();

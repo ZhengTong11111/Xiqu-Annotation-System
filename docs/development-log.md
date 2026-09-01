@@ -9828,3 +9828,30 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：单一上限常量修复、Git 主线推送、候选编译与发布检查、短维护原子切换、只读 smoke、服务状态和日志
   核验。**待长期推进**：为确认记录接口和客户端补充真正的游标分页，届时移除“依赖较大固定上限覆盖全部记录”的
   临时容量假设；该工作不属于本次即时修复。
+
+## 2026-08-31：逐字轨“选中块更新循环范围”同步失败热修复
+
+### 生产取证与根因
+
+- 生产文件 `010_zuili_zyx_v001_annotation.json` 在 revision 3739 的逐字轨已保存
+  `autoSetLoopRangeOnSelect: true`。03:37 UTC 的两次客户端失败审计均只有一条逐字轨结构命令，命令仍声称
+  `before: false -> after: true`，服务端因此正确返回 `annotation_command_precondition_failed`；这不是点击块、网络
+  延迟或多人同时编辑造成的冲突。
+- 平台文件打开时统一经过 `hydrateProjectForClient()` 和 `normalizeImportedProjectFile()`。其中
+  `normalizeBuiltinTracks()` 重建内建轨时保留了名称、附属轨、展开状态和波形吸附，却遗漏
+  `autoSetLoopRangeOnSelect`，让服务端 `true` 在浏览器中静默回落到默认 `false`。用户再次开启开关时便形成与服务器
+  当前值矛盾的 before 前置条件。
+- 自定义轨通过对象展开已经保留该设置；附属打点轨的当前 UI 与命令目录均不提供此开关。本轮只修复真实可达的内建
+  逐字轨归一化边界，没有新增第二套迁移、降低服务端前置条件，或把循环播放范围写入 ProjectData。
+
+### 修改、验证与待发布状态
+
+- `normalizeBuiltinTracks()` 现在显式布尔归一化并保留 `autoSetLoopRangeOnSelect`，旁边中文注释说明该字段是持久项目
+  状态。新增项目归一化专项，验证开启值跨文件打开边界后仍为开启。
+- 修复后，已遗留失败草稿的本地最终项目若已经等于服务器正文，现有 same-revision `already_satisfied` 协调可在再次
+  保存时清除冗余命令；不要求清空 IndexedDB，也不覆盖仍包含其他真实修改的草稿。
+- 验证通过：项目归一化 6/6、平台冲突协调 13/13、完整 `npm run build` 与 `git diff --check`。构建仅保留既有 Vite
+  主 chunk 超过 500 kB 提示；一次不存在的 `typecheck:web` 脚本调用只产生 npm 脚本名错误，随后完整 build 已通过
+  仓库实际 Web TypeScript 检查。
+- **已完成**：根因取证、最小代码修复、中文注释、专项/冲突/完整构建验证与僵尸路径复核。**待完成**：提交并推送
+  主线、构建不可变生产 release、短维护原子切换及线上日志核验。
