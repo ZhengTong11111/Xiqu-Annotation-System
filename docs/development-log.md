@@ -10139,3 +10139,37 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   播放、三种审核写入和清除；反馈窗口自动聚焦 textarea、空正文按钮禁用，确认窗口允许空备注，视觉布局无溢出。测试中
   两个窗口均取消，未向服务器写入审核事实，控制台无 error/warning。**已完成**：代码、清理、测试、构建、浏览器和文档；
   **待用户体验**：确认右键菜单动作顺序和默认“全部标注”是否符合高频审核习惯。本轮未提交或部署生产服务器。
+
+## 2026-09-01：R2.5f2 审核范围交互生产部署
+
+### Git、候选构建与上线范围
+
+- 功能分支 `codex/review-navigation-behavior` 已以 fast-forward 合并到 `main`，本地功能分支已删除，`origin/main`
+  推送至 `0f4bf69`。上线内容包括审核块普通点击不跳转、右侧审核记录智能居中，以及循环范围右键播放、确认、评论、反馈
+  快捷窗口；没有修改审核事实结构、标注 ProjectData、数据库 schema 或媒体分析协议。
+- 服务器从 GitHub 的明确提交 `0f4bf69` 在数据盘独立构建候选
+  `/opt/xiqu/releases/20260901T211619Z-0f4bf69`。执行全新依赖安装与完整 build 后，`release:inspect` 和
+  `release:check` 均通过，核对 27 个运行路径、27 个生产依赖和 36 条 migration。构建目录只用于生成候选，切换完成后
+  已删除 `/var/lib/xiqu-platform/builds/20260901T211619Z-0f4bf69`，没有把源码缓存混入持久数据目录。
+
+### 维护、无备份部署与原子切换
+
+- 使用 `platform.admin` 开启维护，原因为“部署 0f4bf69：审核范围交互与循环范围右键快捷操作”，并停止 analysis
+  worker。用户随后明确要求本次不备份数据库，因此终止了刚开始的备份 CLI，删除其唯一未发布 staging 目录；本次没有
+  生成或发布新备份，既有备份、生产数据库、对象存储、用户草稿与旧 release 均未删除或覆盖。
+- 从新候选执行 `prisma migrate deploy`，确认 36 条 migration 全部已应用且没有待执行项。随后以旧 release
+  `/opt/xiqu/releases/20260901T202935Z-16fa7ff` 为并发前提，通过 `release:switch` 原子切换到新候选，没有使用裸
+  符号链接替换或 `db push`。
+- API 重启后的第一次 smoke 恰好落在新进程尚未监听的约两秒启动窗口，Caddy 返回一次 HTTP 502。维护模式因此保持
+  开启，worker 也未提前恢复；systemd 和 journal 随后确认新 API 正常监听 `127.0.0.1:4317`，没有崩溃或循环重启。
+  正式域名复测的 Web 首页、API liveness、API readiness 均返回 HTTP 200 后，才关闭维护并启动 analysis worker。
+
+### 最终状态与待人工验收
+
+- 最终 `/opt/xiqu/current` 指向 `/opt/xiqu/releases/20260901T211619Z-0f4bf69`，线上前端资源为
+  `/assets/index-BRaehNFB.js`；API、analysis worker、Caddy 均为 active，维护状态为 false。退出维护后的
+  `https://kunqu.aik2.site` 完整 `deploy:check` 再次通过，新进程日志未发现 fatal、panic、未捕获异常或 schema/migration
+  错误。系统盘约余 7.9GB，数据盘约余 50GB。
+- **已完成**：Git 合并与推送、候选构建检查、无备份维护部署、migration 核对、原子切换、两轮正式域名 smoke、服务恢复、
+  严重错误日志检查和构建缓存清理。**待人工验收**：刷新正式站点，在测试文件中确认 Timeline 审核块左键不移动播放头，
+  右侧审核记录定位合理，并检查循环范围右键菜单与确认/评论/反馈输入窗口；本轮自动检查未写入或删除任何审核事实。
