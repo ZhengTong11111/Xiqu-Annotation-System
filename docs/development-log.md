@@ -10051,3 +10051,35 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   代用户确认并修改研究文件，也不把弹窗视觉写成已自动验收。**已完成**：代码、专项/完整构建、自审、僵尸逻辑清理
   与规范文档。**待人工验收**：右键任一句，检查复选框与窗口布局；在测试副本勾选确认后再次重置另一句应不再弹窗，
   重新打开文件后应恢复。本轮未收到部署指令，不切换生产 release。
+
+## 2026-09-01：审核治理与单句平均重置生产部署
+
+### Git 与候选 release
+
+- `codex/review-governance-hardening` 已以 fast-forward 合并到 `main` 并删除本地功能分支；`origin/main` 同步至
+  `16fa7ff`。本次上线运行代码依次包含审核历史完整加载/导出与 Timeline 软撤销、安全审核包重新链接、单句逐字
+  平均时间重置，以及会话内“本次打开文件不再提示”。
+- 服务器从 GitHub 的明确 `main@16fa7ff` 在数据盘独立构建，执行 `npm ci`、完整 `npm run build`、编译后
+  `release:check`；候选 `/opt/xiqu/releases/20260901T202935Z-16fa7ff` 的 `release:inspect` 通过，核对 27 个运行路径、
+  27 个生产依赖和 36 条正式 migration。构建成功前没有切换在线 release；成功后临时 clone/node_modules 构建目录
+  已删除，未进入持久数据或备份目录。
+
+### 维护、备份、migration 与切换
+
+- 使用 `platform.admin` 开启维护，等待写入排空后停止 analysis worker。维护窗口内创建一致备份
+  `/var/lib/xiqu-platform/backups/xiqu-backup-2026-09-01T20-30-51-575Z-1f83dc99`：包含 42,296 个对象、0 警告，随后
+  `backup:verify` 返回 `valid: true`。备份位于独立数据盘，没有复制或覆盖本地开发数据库、生产 release 或用户草稿。
+- 从新候选执行 `prisma migrate deploy`，成功把生产数据库从 33 条推进到 36 条：审核确认复合查询索引、审核关联表、
+  审核关联完整性约束三条 migration 全部应用。随后 `release:switch` 以旧 release
+  `/opt/xiqu/releases/20260901T034700Z-e6600cd` 为并发前提，原子切换到新候选，没有使用裸符号链接或 `db push`。
+- 首次 smoke 使用 `http://101.201.76.10`，因 Caddy 已把公网 IP 重定向到 HTTPS 且正式证书绑定域名而无法完成服务器
+  回环访问；维护因此保持开启。改用正式入口 `https://kunqu.aik2.site` 后，Web 首页、API liveness、API readiness
+  均为 HTTP 200，确认不是新 API 启动故障。随后关闭维护并启动 analysis worker，最终 API/worker 均为 active，
+  维护状态为 false，数据库 36 条 migration 全部 up to date，再次从新 release 执行正式域名 `deploy:check` 通过。
+
+### 当前状态与待验收
+
+- **已完成**：Git 合并/推送、候选构建与检查、维护排空、一致备份及验证、三条 migration、原子 release 切换、正式域名
+  smoke、服务恢复和临时构建缓存清理。系统盘当前约余 8.4GB，数据盘约余 50GB；保留上一 release 与本次已验证备份。
+- **待人工验收**：刷新正式站点后，检查审核历史完整加载/导出和安全重新链接入口；在测试副本确认单句平均重置、撤销、
+  勾选后同一打开会话免提示，以及重新打开文件后恢复提示。生产用户的实际审核事实与研究文件未被自动修改。
