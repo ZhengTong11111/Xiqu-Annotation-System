@@ -203,6 +203,11 @@ Main currently contains all major recent feature lines that matter for context:
   `review`. Assessments use append-only action history plus one partial-unique current row per application/account/scope, exact finite
   verdict/issue enums and stable request hashes. They never change ProjectData, revision, operations, snapshots, workflow/review facts,
   or carry free text, prediction payloads, before/after values, media URLs or credentials
+- `AlignmentApplicationService.list()` is the only editor-facing application-history boundary. It uses file-bound keyset pagination,
+  joins lightweight run facts and current assessment counts in one bounded query, and never expands operations, predictions or
+  ProjectData. `AlignmentRunsDialog` owns the two prediction/application views and lazily reads assessments for only the selected
+  application. Assessment submission has its own idempotent runtime UUID and stale-session guard; it must not set document dirty state,
+  block autosave/leave protection, create polling/IndexedDB owners, or infer write/review capability from account roles
 - force-alignment tool attempts are a lightweight governance/training side table, never ProjectData or document history. Their
   administrator CSV is generated only by the API after fresh full-resource authorization, accepts at most a 90-day half-open
   window, reads in bounded batches, exports at most 10,000 rows with an explicit truncation header, and uses the shared CSV

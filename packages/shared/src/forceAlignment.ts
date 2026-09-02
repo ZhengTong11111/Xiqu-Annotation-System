@@ -67,6 +67,23 @@ export type AlignmentApplicationSummary = {
   createdAt: string;
 };
 
+export type AlignmentApplicationHistoryItem = AlignmentApplicationSummary & {
+  actorUserId: string;
+  modelPreset: ForceAlignmentModelPreset | "unknown";
+  modelLabel: string;
+  currentAssessmentCount: number;
+};
+
+export type AlignmentApplicationPage = {
+  items: AlignmentApplicationHistoryItem[];
+  nextCursor: string | null;
+};
+
+export type ListAlignmentApplicationsOptions = {
+  cursor?: string;
+  limit?: number;
+};
+
 export const ALIGNMENT_QUALITY_ASSESSMENT_SCOPES = ["editor", "reviewer"] as const;
 export type AlignmentQualityAssessmentScope =
   typeof ALIGNMENT_QUALITY_ASSESSMENT_SCOPES[number];

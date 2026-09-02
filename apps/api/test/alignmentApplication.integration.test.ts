@@ -89,6 +89,54 @@ test("强制对齐应用原子写入真实 operation，并支持幂等重放和�
     assert.equal(await prisma.alignmentApplication.count(), 2);
     assert.deepEqual(publishedRevisions, [2, 3, 4]);
 
+    await prisma.alignmentQualityAssessment.create({
+      data: {
+        alignmentApplicationId: first.id,
+        assessorUserId: fixture.user.id,
+        clientActionId: randomUUID(),
+        requestHash: "9".repeat(64),
+        scope: "editor",
+        verdict: "correct",
+        issueCodes: [],
+      },
+    });
+
+    // application 历史按真实应用分页，同一个 run 的两次应用不能被折叠成一条。
+    const firstPage = await applications.list(
+      fixture.collaborator,
+      fixture.annotationFileId,
+      { limit: 1 },
+    );
+    assert.equal(firstPage.items.length, 1);
+    assert.equal(firstPage.items[0]?.id, second.id);
+    assert.equal(firstPage.items[0]?.modelLabel, "昆曲逐字对齐 v1");
+    assert.equal(firstPage.items[0]?.currentAssessmentCount, 0);
+    assert.ok(firstPage.nextCursor);
+    const secondPage = await applications.list(
+      fixture.collaborator,
+      fixture.annotationFileId,
+      { limit: 1, cursor: firstPage.nextCursor! },
+    );
+    assert.deepEqual(secondPage.items.map((item) => item.id), [first.id]);
+    assert.equal(secondPage.items[0]?.currentAssessmentCount, 1);
+    assert.equal(secondPage.nextCursor, null);
+    await assert.rejects(
+      applications.list(fixture.collaborator, fixture.annotationFileId, { limit: 101 }),
+      hasStatus(400),
+    );
+    await assert.rejects(
+      applications.list(fixture.collaborator, fixture.annotationFileId, { cursor: "bad" }),
+      hasStatus(400),
+    );
+    const cursorValue = JSON.parse(Buffer.from(firstPage.nextCursor!, "base64url").toString("utf8"));
+    cursorValue.annotationFileId = randomUUID();
+    await assert.rejects(
+      applications.list(fixture.collaborator, fixture.annotationFileId, {
+        cursor: Buffer.from(JSON.stringify(cursorValue), "utf8").toString("base64url"),
+      }),
+      hasStatus(400),
+    );
+
     await assert.rejects(
       applications.apply(
         fixture.user,
@@ -378,5 +426,12 @@ function hasConflictCode(code: string) {
     "statusCode" in error && error.statusCode === 409 &&
     "details" in error &&
     (error as { details?: { code?: string } }).details?.code === code,
+  );
+}
+
+function hasStatus(statusCode: number) {
+  return (error: unknown) => Boolean(
+    error && typeof error === "object" &&
+    "statusCode" in error && error.statusCode === statusCode,
   );
 }

@@ -1621,17 +1621,40 @@ select {
   z-index: 1301;
   top: 50%;
   left: 50%;
-  width: min(760px, calc(100vw - 32px));
+  width: min(920px, calc(100vw - 32px));
   max-height: min(760px, calc(100vh - 32px));
   transform: translate(-50%, -50%);
-  display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid #d6dce5;
   border-radius: 8px;
   background: #f8fafc;
   box-shadow: 0 24px 70px rgb(15 23 42 / 24%);
   color: #243248;
+}
+
+.alignment-runs-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 7px 16px 0;
+  border-bottom: 1px solid #dde3eb;
+  background: #fff;
+}
+
+.alignment-runs-tabs button {
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #66758a;
+  font-size: 13px;
+}
+
+.alignment-runs-tabs button.is-active {
+  border-bottom-color: #2878b9;
+  color: #1f5f95;
+  font-weight: 600;
 }
 
 .alignment-runs-header {
@@ -1702,9 +1725,224 @@ select {
 }
 
 .alignment-runs-list {
+  flex: 1 1 auto;
   min-height: 180px;
   padding: 12px 16px 16px;
   overflow: auto;
+}
+
+/* 应用历史与评价详情使用桌面工具常见的主从布局；详情按选择懒加载，列表不嵌套评价卡片。 */
+.alignment-applications-workspace {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.38fr) minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 360px;
+  overflow: hidden;
+}
+
+.alignment-application-list {
+  min-width: 0;
+  overflow: auto;
+  border-right: 1px solid #dce2ea;
+  background: #f4f6f9;
+}
+
+.alignment-application-list > button {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  padding: 11px 14px;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid #e1e6ed;
+  background: transparent;
+  color: #35445a;
+}
+
+.alignment-application-list > button:hover,
+.alignment-application-list > button.is-selected {
+  background: #e4edf7;
+}
+
+.alignment-application-list > button.is-selected {
+  box-shadow: inset 3px 0 #2d78b7;
+}
+
+.alignment-application-list strong,
+.alignment-application-list span,
+.alignment-application-list small,
+.alignment-application-list time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alignment-application-list strong {
+  font-size: 13px;
+}
+
+.alignment-application-list span,
+.alignment-application-list small,
+.alignment-application-list time {
+  color: #718096;
+  font-size: 11px;
+}
+
+.alignment-application-more {
+  color: #285f8d !important;
+  text-align: center !important;
+}
+
+.alignment-applications-empty,
+.alignment-assessments-empty {
+  display: grid;
+  min-height: 96px;
+  place-items: center;
+  padding: 16px;
+  color: #748196;
+  font-size: 12px;
+  text-align: center;
+}
+
+.alignment-assessment-panel {
+  min-width: 0;
+  overflow: auto;
+  background: #fff;
+}
+
+.alignment-assessment-panel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #e1e6ed;
+}
+
+.alignment-assessment-panel > header > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.alignment-assessment-panel > header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.alignment-assessment-panel > header span,
+.alignment-assessment-panel > header time {
+  color: #718096;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.alignment-current-assessments {
+  border-bottom: 1px solid #e1e6ed;
+}
+
+.alignment-assessment-summary {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #edf0f4;
+  font-size: 12px;
+}
+
+.alignment-assessment-summary strong {
+  color: #34465e;
+}
+
+.alignment-assessment-summary span {
+  color: #1f6e52;
+  font-weight: 600;
+}
+
+.alignment-assessment-summary small {
+  overflow: hidden;
+  color: #6c798c;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alignment-assessment-summary em {
+  color: #758196;
+  font-style: normal;
+}
+
+.alignment-assessments-partial {
+  padding: 7px 16px;
+  color: #8a6419;
+  background: #fff7df;
+  font-size: 11px;
+}
+
+.alignment-assessment-form {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px 18px;
+}
+
+.alignment-assessment-scope {
+  display: inline-flex;
+  justify-self: start;
+  padding: 2px;
+  border: 1px solid #ccd5e0;
+  border-radius: 5px;
+  background: #f1f4f8;
+}
+
+.alignment-assessment-scope button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #607086;
+  font-size: 12px;
+}
+
+.alignment-assessment-scope button.is-active {
+  background: #fff;
+  color: #1f5f95;
+  box-shadow: 0 1px 3px rgb(30 48 70 / 14%);
+}
+
+.alignment-assessment-form-title {
+  color: #34465e;
+  font-size: 13px;
+}
+
+.alignment-assessment-verdicts,
+.alignment-assessment-issues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.alignment-assessment-verdicts label,
+.alignment-assessment-issues label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #43536a;
+  font-size: 12px;
+}
+
+.alignment-assessment-verdicts input,
+.alignment-assessment-issues input {
+  margin: 0;
+}
+
+.alignment-assessment-issues.is-disabled {
+  opacity: 0.5;
+}
+
+.alignment-assessment-submit {
+  justify-self: end;
 }
 
 .alignment-run-row {
@@ -1827,6 +2065,25 @@ select {
 
   .alignment-run-facts {
     flex-wrap: wrap;
+  }
+
+  .alignment-applications-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(140px, 0.42fr) minmax(0, 1fr);
+  }
+
+  .alignment-application-list {
+    border-right: 0;
+    border-bottom: 1px solid #dce2ea;
+  }
+
+  .alignment-assessment-summary {
+    grid-template-columns: auto auto;
+  }
+
+  .alignment-assessment-summary small {
+    grid-column: 1 / -1;
+    white-space: normal;
   }
 }
 

@@ -193,13 +193,24 @@ annotationOperationId / committedRevision / details
   专项 shared/schema/PostgreSQL 9/9、既有应用 5/5、请求 8/8、完整 API 336/336 和完整构建通过；migration 为第 41 条纯新增迁移，
   未部署生产、未修改任何既有标注 payload/revision/operation/snapshot/review/run/application 行。
 
-#### FA-D3a2：编辑器质量评价 UI（下一阶段）
+#### FA-D3a2：编辑器质量评价 UI（已完成）
 
-- 在强制对齐结果面板展示当前账号可见的应用与质量评价；应用成功后可立即评价，也可重新打开历史后补评。
+- 先补文件级 application 有界 keyset 历史；run 不能代替 application，因为同一预测允许在不同 revision 被多次应用。列表只返回
+  轻量 application/run 模型标签/评价计数，不展开 operation 或 assessment 全量；选中一次 application 后才读取最多 500 条当前评价，
+  避免列表 N+1 和无界响应。
+- 在现有强制对齐结果面板增加“预测结果 / 应用评价”两个紧凑视图；应用成功后自动选中新 application，也可重新打开历史补评。
 - 编辑评价和审核评价根据有效能力分别显示，使用现有 Dialog/表单风格和固定原因多选，不新建第二套通知、轮询或状态 owner。
 - UI 对模糊 HTTP 失败复用同一个 action UUID；已确认服务端结果后才清空 action。普通编辑、保存和离开保护不依赖评价成功。
+- 已实现文件绑定的 `(createdAt,id)` 倒序 keyset application 历史，默认 20、最多 100；同一个 run 的多次应用保持独立记录，
+  run/artifact/operation 数关系不完整时 fail closed。列表一次联表取得模型标签和当前评价数量，选中 application 后才读取评价，
+  没有 N+1、operation payload、prediction、ProjectData、storage key 或媒体 URL。
+- 现有结果窗口已拆为“预测结果 / 应用评价”两个紧凑视图；write/review 分别开放编辑/审核评价，两者都有时使用分段切换，无能力时
+  保持只读。结论和原因沿用 D3a1 有限枚举，模糊失败只在 application/scope/verdict/canonical issues 完全相同时复用 action UUID。
+- 关闭窗口或切换文件会使迟到读取/提交响应失去 UI 回写资格；服务端已完成的评价事实仍保留。评价提交只锁定自身控件，不进入
+  App 的 prediction apply busy、文档 dirty、autosave、IndexedDB、undo 或 leave protection。专项质量 11/11、应用 11/11、原子保存
+  34/34、完整 API 336/336 与完整构建通过；应用内浏览器停在登录页，因此未伪造登录态视觉点击验收。未部署生产。
 
-#### FA-D3b：困难样本派生与有界选择
+#### FA-D3b：困难样本派生与有界选择（下一阶段）
 
 - 从 prediction manifest、application、后续 timing operation 和质量评价派生置信度、模型分歧、人工改动量与明确异常原因；
   不复制 ProjectData、命令正文或声学矩阵，不把“没有继续修改”自动当成正确。

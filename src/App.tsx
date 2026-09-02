@@ -8064,6 +8064,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           client={editorSession.client}
           annotationFileId={editorSession.annotationFileId}
           currentRevision={remoteBaseRevision}
+          currentUserId={editorSession.currentUserId}
+          canWrite={editorSession.canWrite}
+          canReview={editorSession.canReview}
           applyDisabledReason={forceAlignmentDisabledReason}
           onApplyingChange={setAlignmentApplicationBusy}
           onApplied={async (application) => {

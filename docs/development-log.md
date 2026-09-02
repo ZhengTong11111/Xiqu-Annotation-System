@@ -10831,3 +10831,42 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：FA-D3a1 shared/schema/service/API/专项回归和规范文档。**待推进**：FA-D3a2 在现有强制对齐结果窗口读取 current assessments，
   按 write/review 能力提供有限评价表单，并在模糊失败时复用 action UUID；评价失败不得影响普通编辑、保存或离开保护。本轮未部署生产、
   未启用真实模型执行器、未修改生产数据。
+
+## 2026-09-02：FA-D3a2 编辑器强制对齐质量评价 UI
+
+### Application 历史与 API 边界
+
+- 新增 `AlignmentApplicationHistoryItem/Page` 与文件级历史接口。历史按 `(createdAt,id)` 倒序 keyset 分页，默认 20、最多 100，opaque
+  cursor 绑定 annotation file；坏 cursor、跨文件 cursor 和越界 limit 均明确 400。一次 Prisma 查询联表读取轻量 run 模型事实、artifact
+  所属关系、operation 数和当前评价 count，同一个 run 的多次应用保持为不同记录，没有逐行评价查询或 N+1。
+- 历史读取每次重新要求当前文件 `read`，并检查 run 的文件快照、artifact/run 关系及实际 operation 数。关系不完整时稳定 409，不能把
+  损坏应用伪装成可评价记录。公开 DTO 只包含 application revision/数量/时间、actor id、有限模型标签和当前评价数量；不包含 operation
+  payload、prediction、ProjectData、storage key、request hash、媒体 URL 或凭据。
+- `PlatformClient` 增加 application 分页、选中 application 的当前评价读取和幂等评价 PUT；没有增加轮询 owner、全局 store、IndexedDB
+  队列或第二保存路径。模型预设识别由 API 内现有 run 解析 helper 共享，未复制一套模型版本判断。
+
+### 双视图、能力分流与异步会话隔离
+
+- 现有“强制对齐结果”Dialog 调整为“预测结果 / 应用评价”两个紧凑 tab。应用列表显示模型、base/committed revision、应用字数、当前
+  评价数和时间；只有选中一次真实 application 才按需读取最多 500 条当前评价，并在服务端报告 partial 时明确提示未完整显示。
+- 有当前 `write` 才可提交 editor scope，有当前 `review` 才可提交 reviewer scope；两种能力都有时使用分段控件切换，两种都没有时保持
+  只读。结论和异常原因完全复用 D3a1 有限枚举；“正确”自动清空并禁用原因，其他结论至少选择一个原因。UI 不从账号角色推断权限。
+- 模糊失败 helper 只在 application、scope、verdict 和规范原因数组完全一致时复用同一个 `createRuntimeUuid()`；任一语义改变即生成新
+  action。关闭窗口或切换文件会推进请求 epoch：服务端已经完成的写入仍保留，但旧会话不得回写新页面的评价、错误、列表或 loading。
+  application 选择在提交期间锁定，切换时先清空旧评价并等待新读取，避免把上一条 application 的评价提交到当前选择。
+- 评价提交只禁用窗口自身控件，不设置 App 的 alignment apply busy，也不修改 ProjectData、dirty state、revision、pending operations、
+  autosave、undo/history、浏览器草稿或 leave protection。应用 prediction 的既有权威保存/回读路径保持原样；普通原子保存专项 34/34
+  证明本轮没有重新引入文件无法保存的问题。
+
+### 验证、自审与状态
+
+- `test:force-alignment-quality`：shared 3/3、前端纯 helper 2/2、schema 2/2、数据库服务 4/4，共 11/11；
+  `test:force-alignment-application`：shared/document-model 6/6、schema/API 5/5，共 11/11。新增覆盖同 run 多 application、keyset 两页、
+  模型标签、评价计数、limit、坏 cursor、跨文件 cursor、write/review 分权和精确 UUID 重试语义。
+- `test:platform-atomic-submit` 34/34、完整 `test:api` 336/336、`npm run build` 与 `git diff --check` 通过。仅保留既有 Vite 主 chunk
+  大小提示和 pg adapter 并发 query deprecation warning；没有新增依赖。
+- 自审确认无无界 application 查询、N+1、角色权限替代、第二保存器、评价轮询、重复状态 owner、直接浏览器 `crypto.randomUUID()`、
+  prediction 暴露或被替代的僵尸 UI。复杂异步会话、cursor 和主从布局均补有中文功能注释。
+- 应用内浏览器连接成功，但当前页为登录表单。按浏览器凭据规范没有代输账号密码，因此未把“文件 → 强制对齐结果”的登录态视觉点击
+  伪造成已验收；TypeScript、生产构建和 API/数据库集成均已实际完成。**已完成**：FA-D3a2。**待推进**：FA-D3b 困难样本派生与
+  有界选择；开始前重新核对实际 schema/容量边界并重写 `CLAUDE_WORK.md`。本轮未部署生产、未启用真实模型、未修改生产数据。

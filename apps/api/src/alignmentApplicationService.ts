@@ -8,10 +8,13 @@ import {
 } from "@xiqu/document-model";
 import { parseCurrentProjectData } from "@xiqu/document-model/project-data-schema";
 import {
+  FORCE_ALIGNMENT_MODEL_PRESET_LABELS,
+  type AlignmentApplicationPage,
   type AlignmentApplicationSummary,
   type ApplyAlignmentRunRequest,
   type AtomicAnnotationCommandOperation,
   type CommitAnnotationCommandBatchRequest,
+  type ListAlignmentApplicationsOptions,
 } from "@xiqu/shared";
 import { resolveAnalysisAudioContext } from "./analysisAudioSourceResolver.js";
 import {
@@ -26,9 +29,13 @@ import {
 import { encodeAnnotationSnapshotOperationCursor } from "./annotationCommittedOperationPagination.js";
 import { stableJsonStringify } from "./annotationOperationIdempotency.js";
 import type { ApiUser } from "./domain.js";
-import { analysisAudioForbidden, conflict, notFound } from "./errors.js";
+import { analysisAudioForbidden, badRequest, conflict, notFound } from "./errors.js";
 import type { ObjectStorage } from "./objectStorage.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
+import { resolveAlignmentRunPreset } from "./alignmentRunService.js";
+
+const DEFAULT_APPLICATION_PAGE_LIMIT = 20;
+const MAX_APPLICATION_PAGE_LIMIT = 100;
 
 type AlignmentRunForApplication = Prisma.AlignmentRunGetPayload<{
   include: { artifacts: true };
@@ -45,6 +52,84 @@ export class AlignmentApplicationService {
     private readonly storage: Pick<ObjectStorage, "getObjectStream">,
     private readonly commandCommits: AnnotationCommandCommitService,
   ) {}
+
+  async list(
+    user: ApiUser,
+    annotationFileId: string,
+    options: ListAlignmentApplicationsOptions,
+  ): Promise<AlignmentApplicationPage> {
+    await this.access.assertCapability(user, annotationFileId, "read");
+    const limit = normalizeApplicationLimit(options.limit);
+    const cursor = options.cursor
+      ? decodeApplicationCursor(annotationFileId, options.cursor)
+      : null;
+    const rows = await this.prisma.alignmentApplication.findMany({
+      where: {
+        annotationFileId,
+        ...(cursor ? {
+          OR: [
+            { createdAt: { lt: cursor.createdAt } },
+            { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+          ],
+        } : {}),
+      },
+      include: {
+        run: {
+          select: {
+            annotationFileIdSnapshot: true,
+            modelName: true,
+            modelVersion: true,
+            dictionaryVersion: true,
+            codeVersion: true,
+          },
+        },
+        artifact: { select: { runId: true } },
+        _count: {
+          select: {
+            operations: true,
+            qualityAssessments: { where: { supersededAt: null } },
+          },
+        },
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+    });
+    const page = rows.slice(0, limit);
+    for (const row of page) {
+      if (
+        row.run.annotationFileIdSnapshot !== annotationFileId ||
+        row.artifact.runId !== row.alignmentRunId ||
+        row._count.operations !== row.operationCount
+      ) {
+        throw conflict("强制对齐应用历史关系不完整，不能显示。", {
+          code: "alignment_application_history_incomplete",
+        });
+      }
+    }
+    return {
+      items: page.map((row) => {
+        const modelPreset = resolveAlignmentRunPreset(row.run);
+        return {
+          ...mapApplicationSummary(
+            row,
+            encodeAnnotationSnapshotOperationCursor(
+              annotationFileId,
+              row.committedRevision,
+            ),
+          ),
+          actorUserId: row.actorUserId,
+          modelPreset,
+          modelLabel: modelPreset === "unknown"
+            ? "历史强制对齐模型"
+            : FORCE_ALIGNMENT_MODEL_PRESET_LABELS[modelPreset],
+          currentAssessmentCount: row._count.qualityAssessments,
+        };
+      }),
+      nextCursor: rows.length > limit && page.length
+        ? encodeApplicationCursor(annotationFileId, page.at(-1)!)
+        : null,
+    };
+  }
 
   async apply(
     user: ApiUser,
@@ -276,6 +361,55 @@ export class AlignmentApplicationService {
         code: "alignment_application_plan_changed",
       });
     }
+  }
+}
+
+function normalizeApplicationLimit(value: number | undefined) {
+  const limit = value ?? DEFAULT_APPLICATION_PAGE_LIMIT;
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_APPLICATION_PAGE_LIMIT) {
+    throw badRequest(`强制对齐应用历史每页数量必须在 1 到 ${MAX_APPLICATION_PAGE_LIMIT} 之间。`);
+  }
+  return limit;
+}
+
+/** 应用游标绑定文件，不能拿另一个文件的时间锚点探测当前文件历史。 */
+function encodeApplicationCursor(
+  annotationFileId: string,
+  application: { createdAt: Date; id: string },
+) {
+  return Buffer.from(JSON.stringify({
+    version: 1,
+    annotationFileId,
+    createdAt: application.createdAt.toISOString(),
+    id: application.id,
+  }), "utf8").toString("base64url");
+}
+
+function decodeApplicationCursor(annotationFileId: string, token: string) {
+  try {
+    const value: unknown = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+    const cursor = value as {
+      version?: unknown;
+      annotationFileId?: unknown;
+      createdAt?: unknown;
+      id?: unknown;
+    };
+    if (
+      cursor.version !== 1 ||
+      cursor.annotationFileId !== annotationFileId ||
+      typeof cursor.createdAt !== "string" ||
+      typeof cursor.id !== "string" ||
+      !cursor.id ||
+      cursor.id.length > 200
+    ) throw new Error();
+    const createdAt = new Date(cursor.createdAt);
+    if (Number.isNaN(createdAt.getTime()) || createdAt.toISOString() !== cursor.createdAt) {
+      throw new Error();
+    }
+    return { createdAt, id: cursor.id };
+  } catch {
+    throw badRequest("强制对齐应用历史分页游标无效，请刷新第一页。");
   }
 }
 

@@ -698,6 +698,22 @@ export function registerApiRoutes(
     },
   );
 
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { cursor?: string; limit?: string };
+  }>(
+    "/api/annotation-files/:resourceId/alignment-applications",
+    MAINTENANCE_READ_ROUTE,
+    async (request) => alignmentApplications.list(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      {
+        cursor: normalizedString(request.query.cursor),
+        limit: request.query.limit === undefined ? undefined : Number(request.query.limit),
+      },
+    ),
+  );
+
   app.get<{ Params: { resourceId: string; applicationId: string } }>(
     "/api/annotation-files/:resourceId/alignment-applications/:applicationId/quality-assessments",
     MAINTENANCE_READ_ROUTE,

@@ -98,7 +98,7 @@ export class AlignmentRunService {
       include: { artifacts: { select: alignmentArtifactSummarySelect } },
     });
     if (!source) throw notFound("强制对齐记录不存在。");
-    const preset = resolvePreset(source);
+    const preset = resolveAlignmentRunPreset(source);
     if (preset === "unknown") {
       throw conflict("历史强制对齐模型不能用当前执行器重试。", {
         code: "alignment_retry_model_unsupported",
@@ -368,7 +368,7 @@ export class AlignmentRunService {
     return {
       items: page.map((row) => mapRun(
         row,
-        resolvePreset(row),
+        resolveAlignmentRunPreset(row),
         matchesCurrent(row, current),
         canApplyToCurrentDocument(row, current),
       )),
@@ -398,7 +398,7 @@ export class AlignmentRunService {
     return {
       ...mapRun(
         run,
-        resolvePreset(run),
+        resolveAlignmentRunPreset(run),
         matchesCurrent(run, current),
         canApplyToCurrentDocument(run, current),
       ),
@@ -577,7 +577,12 @@ function requireAlignmentProjection(result: AlignmentTextProjectionResult) {
   throw badRequest(messages[result.code], { code: result.code, entityId: result.entityId });
 }
 
-function resolvePreset(row: Pick<AlignmentRunRow, "modelName" | "modelVersion" | "dictionaryVersion" | "codeVersion">): ForceAlignmentModelPreset | "unknown" {
+export function resolveAlignmentRunPreset(row: {
+  modelName: string;
+  modelVersion: string;
+  dictionaryVersion: string;
+  codeVersion: string;
+}): ForceAlignmentModelPreset | "unknown" {
   const preset = MODEL_PRESETS.kunqu_character_v1;
   if (
     row.modelName !== preset.modelName ||
