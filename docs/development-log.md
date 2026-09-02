@@ -11322,3 +11322,38 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 自审确认没有第二套 replay/hash、没有自动 timer/worker/API 路由、没有全库 apply、没有 payload mutation 或日志正文。
   **已完成**：HC3a 本地代码、迁移、CLI、专项验证和文档。**待推进**：先完成 HC2 生产观察和一致备份/恢复演练；之后仅对
   少量非关键文件授权执行影子写入与持续复核。HC3b nullable payload/真实压缩仍未设计、未授权、未部署。
+
+## 2026-09-02：生产 36 -> 49 migration 本地隔离演练
+
+### 演练目的与安全边界
+
+- 生产当前停留在 `20260901030000_annotation_review_link_integrity`（第 36 条），当前候选共有 49 条 migration。此前的新空库
+  测试和第 49 条局部清理夹具不能单独证明带历史业务数据的升级安全，因此新增
+  `historicalProductionMigrationUpgrade.test.ts`，专门复现这一条真实升级路径。
+- 本轮只使用本机测试 PostgreSQL 的随机 `_test` schema。没有连接生产执行写操作，没有部署服务器，没有执行生产 migration、
+  影子 recipe、payload 清空、压缩或 `VACUUM`；测试结束无条件删除临时 schema 与 Prisma staging 目录。
+- 演练调用真实 `prisma migrate deploy`，而不是用 `pg` 把整份 migration SQL 当作一个请求发送。后者在
+  `20260830020000_processing_job_cancellation` 会把新增 enum 与使用 enum 放进同一隐式事务，产生 PostgreSQL
+  `unsafe use of new value`，与 Prisma 的真实 statement/commit 边界不等价。
+
+### 历史事实与升级断言
+
+- 第一阶段只复制并应用前 36 条真实 migration，随后写入两份有关联的 annotation file、非空 ProjectData、一条已提交
+  operation、一份恢复快照、一条确认、一条审核评论、一条编辑反馈和一条审核包链接；项目 metadata 也保留非空描述。
+- 第二阶段再加入并应用第 37-49 条 migration。测试对升级前已经存在的列逐表读取并精确比较，不只检查行数或表是否存在；
+  标注正文、revision、operation payload/sequence、恢复 payload、确认、评论/反馈、审核链接和项目 metadata 全部保持一致。
+- HC2/HC3a 最终状态另行验证：历史快照仍是 `inline`，payload 非空，hash/checkpoint/recipeVerifiedAt/compactedAt 均未被自动
+  写入，inline-only、recipe-shape 和 inline-shadow CHECK 均存在；轻量 `annotation_tool_attempts` 表已经建立。
+- 第 40-48 条 migration 曾创建但现已放弃的服务器 Force Alignment 表、核心表外键列和专用 enum，均在空事实门禁下由第
+  49 条完整清理。`ProcessingJobType` 中无法安全原地删除的两个 enum 值只作为不可达墓碑保留，现行表结构和运行代码没有入口。
+
+### 测试、自审与后续
+
+- 新增 `npm run test:historical-production-migration-upgrade`，专项 1/1 通过；`test:annotation-correction-dataset` 7/7、
+  `test:annotation-history-compaction` 22/22、resolver 5/5、客户端原子保存 34/34、完整 API 323/323 全部通过。
+  `npm run build` 通过，共享包、文档模型、Web 和 API 均完成构建；仅保留既有 Vite 大 chunk 提示和 API 测试中的既有 pg
+  concurrent-query deprecation warning。
+- 自审后移除了对 Prisma 英文成功文案的脆弱断言，改以进程退出码和数据库最终事实为准；同时断言第 49 条确为当前最后一条
+  migration，避免未来新增 migration 后演练静默漏跑。临时目录没有残留，测试 URL 继续受 `_test` 后缀门禁保护。
+- **已完成**：本地 36 -> 49 历史升级演练、业务事实保留验证、HC2/HC3a 与废弃结构最终合同验证、全量回归和交接规则。
+  **待推进**：生产 HC2 观察、正式 migration/部署、生产影子 recipe 和 HC3b 均仍需用户明确授权；未经授权不得执行。

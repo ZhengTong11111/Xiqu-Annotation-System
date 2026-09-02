@@ -2222,6 +2222,11 @@ Important backend caveats:
   `recipeVerifiedAt` is evidence of a repeated reconstruction check, while `compactedAt` must remain null. Production application
   still requires the HC2 observation/backup gate; completing or testing the code locally is not authorization to migrate or write
   production history.
+- a production-baseline migration rehearsal must use the real Prisma migration runner in an isolated `_test` schema, stop first at
+  the exact migration already applied in production, seed representative annotation/operation/snapshot/review facts, then apply the
+  candidate tail and compare the pre-existing columns exactly. A fresh empty database, a hand-written schema fixture, or manually
+  sending a whole migration file through `pg` is not equivalent evidence; PostgreSQL enum commit boundaries can differ. A successful
+  local rehearsal is still not authorization to deploy or run production migrations.
 - historical payload preview must fail inside its own UI boundary and reuse the canonical project-file normalizer; a bad
   snapshot must not replace, open, or mutate the current editor document.
 - confirmed annotation ranges are governance records outside `ProjectData`: `[startTime, endTime)` is half-open,

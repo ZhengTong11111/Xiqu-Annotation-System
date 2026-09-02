@@ -233,8 +233,12 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - 新 CLI `annotation-history:shadow-recipe` 默认 dry-run，必须指定单文件；只有显式 `--apply` 才写入，默认最多 16、硬上限
   100 个候选，每个 recipe 最多 10,000 条 operation。完全相同的 recipe 重试不更新时间；不同已有 recipe 绝不覆盖。
 - 专项 22 项验证 planner、重放、迁移、单文件写入、payload/inline 保留、幂等、revision 漂移和冲突停止；resolver 5 项、
-  客户端原子保存 34 项、完整 API 322 项及完整构建通过。测试数据库已执行 migration，本机/生产业务数据库和服务器
+  客户端原子保存 34 项、完整 API 323 项及完整构建通过。测试数据库已执行 migration，本机/生产业务数据库和服务器
   release 均未部署。
+- 已新增真实 Prisma 历史升级演练：在独立 `_test` schema 先执行生产现有 36 条 migration，写入标注正文、operation、恢复快照、
+  确认、评论、反馈和审核链接，再执行 37-49。升级前后的生产基线列逐项相等；HC2/HC3a 仅新增 inline 元数据且不自动写 recipe，
+  第 40-48 条曾引入的空 Force Alignment 服务端结构由第 49 条 fail closed 清理。该本地证据只解决候选迁移链风险，不代表生产
+  migration、影子写入或部署已经获准。
 - 本阶段不产生容量回收：payload 仍完整存在，指标中的 payload-present 数不会下降。只有完成 HC2 生产观察、一致备份/恢复
   演练，并对少量非关键文件完成真实影子观察后，才能另行设计 HC3b 的 nullable payload 与读取重建切换。
 
