@@ -4,7 +4,7 @@
 Workspace/Fork、完成版本和项目发布版本模型仅在 `docs/development-log.md` 中作为历史记录保留，
 不得据此继续实现。
 
-最后更新：2026-08-31
+最后更新：2026-09-02
 
 当前开发基线：R1-R4 工程闭环与 R5 实时多人协作、原子领域命令提交、显式并发冲突处理及
 单服务器可部署候选门禁均已完成。平台现已补齐管理员账号生命周期、所有账号自助改密、标注文件与
@@ -442,7 +442,8 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
 > 被安全保留，推翻了 HC0 的 60%-85% 乐观估算。HC2a expand-only schema + inline resolver 已完成代码、迁移夹具、完整
 > API 回归和构建；payload 仍必填且数据库只允许 inline，生产迁移/观察尚待明确授权。HC2b1 恢复历史 opaque keyset
 > 分页也已完成代码，Inspector 能明确部分加载并续页，不再把固定 50 条当完整历史。HC2b2a 的 planner 16 条有界批读与
-> reconstructible recipe 依赖保护合同已经完成；当前进入 HC2b2b 的低成本容量指标。只有“检查点 + committed operation”与原始 payload canonical hash 完全一致的 revision，
+> reconstructible recipe 依赖保护合同已经完成；HC2b2b 的五分钟缓存低成本容量指标也已接入现有 Prometheus 运维采集，
+> 不读取/解析 payload 或运行 planner。当前下一门禁是 HC2 expand release 的生产部署观察与只读指标基线。只有“检查点 + committed operation”与原始 payload canonical hash 完全一致的 revision，
 > 未来才有资格转成轻量 recipe。
 
 - R3a 已完成：资源查询使用版本化、查询绑定的 opaque cursor；数据库按业务字段和同方向 id 形成稳定

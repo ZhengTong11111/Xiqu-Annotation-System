@@ -10361,3 +10361,37 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：HC2b2a 代码、专项/完整回归、自审、Roadmap/AGENTS 更新。**待推进**：HC2b2b 低成本 storage mode/hash/
   近期增长与 PostgreSQL relation size 指标；blocked code、最大重放距离和 operation 数仍只属于显式 planner 报告。本轮
   没有部署生产、没有执行 migration、没有设置 reconstructible、没有回填 hash/recipe，也没有删除或置空任何 payload。
+
+## 2026-09-02：HC2b2b 恢复历史低成本容量指标
+
+### 聚合口径与查询成本
+
+- 新增唯一 `annotationHistoryCapacityMetrics.ts`，一条 PostgreSQL 聚合 SQL 返回 storage mode 三类计数、payload/hash
+  present/missing、近 24 小时/7 天新建数量和 `annotation_recovery_snapshots` 的 total relation bytes。relation 口径包含
+  table、indexes 与 TOAST，适合观察真实磁盘占用而不是把 JSON 字符数冒充物理空间。
+- SQL 不 select payload、不调用 `pg_column_size`、parser、canonical hash 或 command replay；payload 覆盖只读取 null bitmap，
+  relation bytes 来自 PostgreSQL 目录。当前 createdAt 没有专项索引，因此轻量行计数仍需扫描表；为避免每次 Prometheus
+  scrape 重复扫描，成功结果在 API 实例内缓存 5 分钟。后续数据量若使五分钟扫描也昂贵，再独立评估无阻塞索引或持久聚合，
+  本轮没有给 4GB 历史表增加带锁 migration。
+- collector 对并发请求使用 single-flight；查询失败不写缓存，下一轮可重试。聚合结果必须恰好一行，所有 bigint 必须是
+  非负 safe integer，缺列、负数、溢出或坏时间均拒绝，不能静默填零。
+
+### 现有运维链路接入
+
+- `OperationalMetricsCollector` 持有唯一容量 collector，与 readiness、对象存储和处理任务一起进入既有整体 single-flight/
+  timeout；没有新增 metrics 路由、timer、worker、前端请求或第二采集 owner。采集失败继续只把
+  `xiqu_operational_metrics_collection_success` 置零，上一份真实容量 Gauge 保留。
+- Prometheus 新增 relation bytes、storage mode、payload coverage、hash coverage 和 recent-created 五类 Gauge。所有 label 只来自
+  `inline|reconstructible|archived`、`present|missing`、`24h|7d` 固定集合；文件、快照、账号、revision、reason、错误文本和
+  planner blocked code 均不会形成时序。成功快照遍历固定全集并主动写零，避免某类别消失后残留旧值。
+
+### 测试、自审与状态
+
+- 新增严格映射、坏值、五分钟缓存、过期刷新、并发共享、失败重试和隔离 PostgreSQL 零写入测试；真实数据库夹具验证
+  inline/hash/window 计数和 relation bytes，并在采集前后逐行比较快照事实。observability 测试验证固定标签、零类别和失败
+  保留旧 Gauge，输出不含高基数身份。
+- `test:annotation-history-capacity-metrics` 15/15、HC1/依赖保护 15/15、resolver 4/4、完整 API 298/298、完整
+  `npm run build` 与 `git diff --check` 通过；只有既有 Vite 主 chunk 大小提示和既有 pg 并发 query deprecation warning。
+- **已完成**：HC2b2b 查询、缓存、现有采集器/Prometheus 接入、专项/完整测试、自审和规范文档。**待推进**：经用户明确
+  授权后部署 HC2 expand release，验证 migration、分页/resolver 和只读指标基线；生产观察与一致备份/恢复演练完成前不进入
+  HC3 recipe 写入。本轮没有部署生产、执行 migration、运行生产 planner、写 hash/recipe 或清理任何快照/payload。

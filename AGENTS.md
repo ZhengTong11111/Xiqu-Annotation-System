@@ -1393,6 +1393,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     recipe/checkpoint metadata only, never snapshot payloads, operation bodies, review text, media identities or credentials
   - malformed, cross-file, missing-checkpoint or truncated evidence invalidates the complete protection result. Cleanup callers
     must then protect every candidate; they must never interpret an invalid result as an empty dependency set
+- `apps/api/src/annotationHistoryCapacityMetrics.ts`
+  - the only low-cost live recovery-history capacity boundary: one aggregate SQL for fixed storage/payload/hash/recent counts
+    plus PostgreSQL total relation bytes, cached for five minutes and shared across concurrent scrapes
+  - the query must never select, parse, hash, replay, measure or detoast payload JSON. Prometheus labels are fixed enums only;
+    blocked codes and replay distance remain explicit offline planner report facts
 - `apps/api/src/annotationRecoverySnapshotResolver.ts`
   - HC2a single read boundary for recovery snapshot storage modes; detail and restore must both use it
   - inline payloads are historical arbitrary JSON and must be returned without current ProjectData parsing, normalization,
@@ -2145,6 +2150,9 @@ Important backend caveats:
 - the history planner loads payloads in fixed batches of 16 and releases each batch before reading the next; do not add parallel
   prefetch or whole-file payload materialization. Future snapshot/operation lifecycle cleanup must use the shared dependency
   protection contract and stop when that contract is malformed, truncated or missing a checkpoint.
+- live history-capacity metrics reuse the existing operational metrics owner and a five-minute successful-result cache. They may
+  count lightweight columns and read `pg_total_relation_size`, but must never run the history planner or touch payload values on a
+  Prometheus scrape. Collection failure retains the last real Gauge values and marks only collection success as zero.
 - HC2a expands recovery snapshots without rewriting old rows: payload stays required, all new writes default to `inline`, and a
   database check prevents enabling recipe/archive modes before their readers and writers exist. Detail and restore share the
   resolver above; history lists remain metadata-only and public DTOs do not expose storage/hash/recipe internals.

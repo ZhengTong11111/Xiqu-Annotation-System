@@ -12,6 +12,11 @@ import {
   OPERATIONAL_JOB_STATUSES,
   type OperationalMetricsSnapshot,
 } from "./operationalMetricsCollector.js";
+import {
+  ANNOTATION_HISTORY_COVERAGE_STATES,
+  ANNOTATION_HISTORY_GROWTH_WINDOWS,
+  ANNOTATION_HISTORY_STORAGE_MODES,
+} from "./annotationHistoryCapacityMetrics.js";
 import type { MaintenancePermitDiagnostics } from "./maintenanceCoordinator.js";
 
 export type UploadMetricResult =
@@ -48,6 +53,11 @@ export class ApiObservability {
   private readonly dependencyAvailable: Gauge;
   private readonly platformStorageUsedBytes: Gauge;
   private readonly platformStorageQuotaBytes: Gauge;
+  private readonly annotationRecoverySnapshotRelationBytes: Gauge;
+  private readonly annotationRecoverySnapshots: Gauge;
+  private readonly annotationRecoverySnapshotPayloads: Gauge;
+  private readonly annotationRecoverySnapshotHashes: Gauge;
+  private readonly annotationRecoverySnapshotRecentCreated: Gauge;
   private readonly processingJobs: Gauge;
   private readonly processingJobOldestAge: Gauge;
   private readonly processingJobStaleClaims: Gauge;
@@ -143,6 +153,36 @@ export class ApiObservability {
     this.platformStorageQuotaBytes = new Gauge({
       name: "xiqu_platform_storage_quota_bytes",
       help: "Configured logical platform storage quota in bytes.",
+      registers: [this.registry],
+    });
+    // 恢复历史容量只使用固定枚举标签，不能把文件、快照或 revision 身份写入时序数据库。
+    this.annotationRecoverySnapshotRelationBytes = new Gauge({
+      name: "xiqu_annotation_recovery_snapshot_relation_bytes",
+      help: "PostgreSQL total relation bytes for annotation recovery snapshots, including indexes and TOAST.",
+      registers: [this.registry],
+    });
+    this.annotationRecoverySnapshots = new Gauge({
+      name: "xiqu_annotation_recovery_snapshots",
+      help: "Annotation recovery snapshot rows by fixed storage mode.",
+      labelNames: ["storage_mode"],
+      registers: [this.registry],
+    });
+    this.annotationRecoverySnapshotPayloads = new Gauge({
+      name: "xiqu_annotation_recovery_snapshot_payloads",
+      help: "Annotation recovery snapshot rows by payload coverage state.",
+      labelNames: ["state"],
+      registers: [this.registry],
+    });
+    this.annotationRecoverySnapshotHashes = new Gauge({
+      name: "xiqu_annotation_recovery_snapshot_hashes",
+      help: "Annotation recovery snapshot rows by canonical hash coverage state.",
+      labelNames: ["state"],
+      registers: [this.registry],
+    });
+    this.annotationRecoverySnapshotRecentCreated = new Gauge({
+      name: "xiqu_annotation_recovery_snapshot_recent_created",
+      help: "Annotation recovery snapshots created in fixed recent windows.",
+      labelNames: ["window"],
       registers: [this.registry],
     });
     this.processingJobs = new Gauge({
@@ -373,6 +413,30 @@ export class ApiObservability {
     }
     this.platformStorageUsedBytes.set(snapshot.platformStorageUsedBytes);
     this.platformStorageQuotaBytes.set(snapshot.platformStorageQuotaBytes);
+    const annotationHistory = snapshot.annotationHistory;
+    this.annotationRecoverySnapshotRelationBytes.set(annotationHistory.relationTotalBytes);
+    for (const storageMode of ANNOTATION_HISTORY_STORAGE_MODES) {
+      this.annotationRecoverySnapshots.set(
+        { storage_mode: storageMode },
+        annotationHistory.snapshotsByStorageMode[storageMode],
+      );
+    }
+    for (const state of ANNOTATION_HISTORY_COVERAGE_STATES) {
+      this.annotationRecoverySnapshotPayloads.set(
+        { state },
+        annotationHistory.payloadsByState[state],
+      );
+      this.annotationRecoverySnapshotHashes.set(
+        { state },
+        annotationHistory.hashesByState[state],
+      );
+    }
+    for (const window of ANNOTATION_HISTORY_GROWTH_WINDOWS) {
+      this.annotationRecoverySnapshotRecentCreated.set(
+        { window },
+        annotationHistory.recentCreated[window],
+      );
+    }
     for (const status of OPERATIONAL_JOB_STATUSES) {
       this.processingJobs.set({ status }, snapshot.jobs[status]);
     }

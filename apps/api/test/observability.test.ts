@@ -141,6 +141,16 @@ test("运维指标采集补齐固定状态并写入低基数 Gauge", async () =>
         averageQueueWaitMs: 1_500,
         averageRunMs: 20_000,
         averageCancellationMs: null,
+        relationTotalBytes: 4_096n,
+        inlineCount: 3n,
+        reconstructibleCount: 0n,
+        archivedCount: 0n,
+        payloadPresentCount: 3n,
+        payloadMissingCount: 0n,
+        hashPresentCount: 1n,
+        hashMissingCount: 2n,
+        recent24hCount: 1n,
+        recent7dCount: 2n,
       }],
     } as unknown as PrismaClient,
     {
@@ -181,6 +191,11 @@ test("运维指标采集补齐固定状态并写入低基数 Gauge", async () =>
   const metrics = await observability.registry.metrics();
   assert.match(metrics, /xiqu_dependency_available\{dependency="storage"\} 0/);
   assert.match(metrics, /xiqu_platform_storage_used_bytes 125/);
+  assert.match(metrics, /xiqu_annotation_recovery_snapshot_relation_bytes 4096/);
+  assert.match(metrics, /xiqu_annotation_recovery_snapshots\{storage_mode="archived"\} 0/);
+  assert.match(metrics, /xiqu_annotation_recovery_snapshot_payloads\{state="present"\} 3/);
+  assert.match(metrics, /xiqu_annotation_recovery_snapshot_hashes\{state="missing"\} 2/);
+  assert.match(metrics, /xiqu_annotation_recovery_snapshot_recent_created\{window="24h"\} 1/);
   assert.match(metrics, /xiqu_processing_jobs\{status="failed"\} 0/);
   assert.match(metrics, /xiqu_processing_job_oldest_age_seconds\{phase="queued"\}/);
   assert.match(metrics, /xiqu_processing_job_stale_claims\{status="running"\} 0/);
@@ -200,6 +215,7 @@ test("运维指标采集补齐固定状态并写入低基数 Gauge", async () =>
   const failedMetrics = await observability.registry.metrics();
   assert.match(failedMetrics, /xiqu_operational_metrics_collection_success 0/);
   assert.match(failedMetrics, /xiqu_platform_storage_used_bytes 125/);
+  assert.match(failedMetrics, /xiqu_annotation_recovery_snapshot_relation_bytes 4096/);
 });
 
 test("重叠 scrape 复用采集且超时不启动第二份查询", async () => {
@@ -230,6 +246,16 @@ test("重叠 scrape 复用采集且超时不启动第二份查询", async () => 
         averageQueueWaitMs: null,
         averageRunMs: null,
         averageCancellationMs: null,
+        relationTotalBytes: 0n,
+        inlineCount: 0n,
+        reconstructibleCount: 0n,
+        archivedCount: 0n,
+        payloadPresentCount: 0n,
+        payloadMissingCount: 0n,
+        hashPresentCount: 0n,
+        hashMissingCount: 0n,
+        recent24hCount: 0n,
+        recent7dCount: 0n,
       }],
     } as unknown as PrismaClient,
     {

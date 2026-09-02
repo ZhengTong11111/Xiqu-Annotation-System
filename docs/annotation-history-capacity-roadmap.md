@@ -1,6 +1,6 @@
 # 标注历史与恢复快照容量治理路线图
 
-更新日期：2026-09-01
+更新日期：2026-09-02
 
 ## 1. 问题与目标
 
@@ -198,11 +198,23 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - 专项 15 项、resolver 4 项、命令 25 项、原子提交 5/34 项、完整 API 292 项与完整构建通过。仍未回填 recipe/hash、
   未清空 payload、未改变在线保存/恢复，也未部署生产。
 
-#### HC2b2b：低成本容量指标（下一阶段）
+#### HC2b2b：低成本容量指标（代码已完成）
 
-- 增加 storage mode、payload/hash 覆盖与近期增长速度的低基数容量指标；表/TOAST 总占用使用 PostgreSQL relation size，
-  不能在每次 Prometheus scrape 解压扫描全部 JSON payload。
-- blocked code、最大重放距离和 operation 数继续来自显式只读 planner 报告，不能把昂贵重放塞进在线 metrics collector。
+- 已新增唯一容量采集边界：一条 SQL 聚合 storage mode、payload/hash present/missing、24h/7d 新建数量，并通过
+  `pg_total_relation_size` 读取 table + indexes + TOAST 总占用。查询不 select、测量、parse、hash 或 detoast payload。
+- 成功结果在每个 API 实例缓存 5 分钟，并发 scrape 共用 in-flight；接入既有 OperationalMetricsCollector 和 `/metrics`，
+  没有第二路由、timer、worker 或前端轮询。失败只标记采集失败并保留上一份真实 Gauge。
+- Prometheus 只增加 storage mode、present/missing、24h/7d 固定标签；blocked code、最大重放距离和 operation 数继续来自
+  显式只读 planner 报告。
+- 专项/observability 15 项、HC1 15 项、resolver 4 项、完整 API 298 项与完整构建通过；没有 schema migration、生产部署、
+  payload/recipe/hash 写入或数据清理。
+
+#### HC2 生产观察门禁（下一阶段）
+
+- 在明确授权后，把 HC2a/HC2b 作为同一前后端 release 部署：先执行 expand-only migration，再验证旧/新 API 列表、详情、
+  恢复和 metrics；不执行 compaction。
+- 记录至少一轮真实 relation bytes、storage/hash 覆盖、24h/7d 增量和 planner dry-run 基线，确认采集耗时与数据库负载。
+- 只有生产 resolver、分页、依赖保护与指标均稳定，且一致备份/恢复演练完成后，才允许规划 HC3 影子 recipe 写入。
 
 ### HC3：影子 recipe 与小批次无损压缩
 

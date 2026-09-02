@@ -1,6 +1,10 @@
 import type { PrismaClient } from "@prisma/client";
 import type { HealthService } from "./healthService.js";
 import {
+  AnnotationHistoryCapacityMetricsCollector,
+  type AnnotationHistoryCapacityMetricsSnapshot,
+} from "./annotationHistoryCapacityMetrics.js";
+import {
   collectProcessingJobReliability,
   type ProcessingJobReliabilitySnapshot,
 } from "./processingJobReliability.js";
@@ -23,6 +27,7 @@ export type OperationalMetricsSnapshot = {
   dependencies: Record<typeof OPERATIONAL_DEPENDENCIES[number], 0 | 1>;
   platformStorageUsedBytes: number;
   platformStorageQuotaBytes: number;
+  annotationHistory: AnnotationHistoryCapacityMetricsSnapshot;
   jobs: Record<typeof OPERATIONAL_JOB_STATUSES[number], number>;
   reliability: ProcessingJobReliabilitySnapshot;
 };
@@ -50,6 +55,7 @@ export function loadOperationalMetricsTimeout(
 // 采集器将有限数据库聚合与 readiness 合并，并复用重叠抓取，避免监控请求制造查询风暴。
 export class OperationalMetricsCollector {
   private inFlight: Promise<OperationalMetricsSnapshot> | null = null;
+  private readonly annotationHistoryCapacity: AnnotationHistoryCapacityMetricsCollector;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -60,6 +66,7 @@ export class OperationalMetricsCollector {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
       throw new Error("运维指标采集超时必须是正数。");
     }
+    this.annotationHistoryCapacity = new AnnotationHistoryCapacityMetricsCollector(prisma);
   }
 
   // 同一实例同时到达的 scrape 共享一次采集；完成或失败后立即释放引用供下一轮刷新。
@@ -77,7 +84,7 @@ export class OperationalMetricsCollector {
   // 各类只读查询并行执行；readiness 返回 unavailable 仍是成功采集到的故障事实。
   private async collectSnapshot(): Promise<OperationalMetricsSnapshot> {
     const collectedAt = new Date();
-    const [health, storageUsage, jobGroups, reliability] = await Promise.all([
+    const [health, storageUsage, jobGroups, reliability, annotationHistory] = await Promise.all([
       this.health.getReadiness(),
       this.prisma.fileObject.aggregate({ _sum: { size: true } }),
       this.prisma.processingJob.groupBy({
@@ -85,6 +92,7 @@ export class OperationalMetricsCollector {
         _count: { _all: true },
       }),
       collectProcessingJobReliability(this.prisma, collectedAt),
+      this.annotationHistoryCapacity.collect(collectedAt),
     ]);
     const jobs = Object.fromEntries(
       OPERATIONAL_JOB_STATUSES.map((status) => [status, 0]),
@@ -100,6 +108,7 @@ export class OperationalMetricsCollector {
       // _sum.size 现为 bigint（列已迁 BigInt），转回 number 进入 metrics JSON。
       platformStorageUsedBytes: Number(storageUsage._sum.size ?? 0n),
       platformStorageQuotaBytes: this.platformStorageQuotaBytes,
+      annotationHistory,
       jobs,
       reliability,
     };
