@@ -1342,6 +1342,19 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - local restore drills publish through a sibling staging directory; place `target-storage` below a dedicated parent
     writable by `xiqu`, not directly below a root-owned persistent-data directory. A failed drill may already have restored
     the isolated database before object publication, so recreate only that isolated target before retrying
+  - 当前生产容量治理基线（2026-09-02）：`xiqu-api.service`、`xiqu-analysis-worker.service`、`caddy.service` 均为正式服务名；
+    生产 CLI 必须在 `sudo -u xiqu` 的受控 shell 中显式加载 `/etc/xiqu-platform/xiqu-platform.env`，不得依赖开发工作区的 `.env`
+    或默认数据库。当前 production release 为提交 `f8c2b1e` 构建的不可变候选，数据库已从 36 条 migration 升级到 39 条。
+  - HC2 expand-only 上线已完成，但恢复快照仍全部是 `storage_mode=inline` 且 payload 完整；下一轮容量治理首先做只读 planner/
+    resolver 验证，不得把指标或 dry-run 当作清理授权。任何 shadow recipe 写入、payload 置空、storage mode 切换、compactor、
+    `VACUUM FULL`、`pg_repack` 或历史删除都必须有单独明确授权。
+  - 当前数据盘约 34GB、系统盘约 4.1GB 可用。恢复演练的 PostgreSQL 表空间和临时对象目录必须放数据盘；执行前后都要检查安全余量，
+    低于安全阈值就停止，不得为了候选、备份或物理回收挤压线上标注空间。删除旧完整备份前必须读取并核对 manifest，且只能删除
+    已确认存在替代恢复证据的备份副本，不能删除数据库业务行、快照 payload、operation、确认、评论、反馈、审核链接或媒体对象。
+  - 生产报告应保存在 `/var/lib/xiqu-platform/recovery-reports/` 等 release/Git 之外的受控目录；只记录脱敏计数、固定状态码、空间和
+    时间，不记录 DATABASE_URL、AccessKey、PlayAuth、token、完整 payload、operation body、媒体 URL 或对象 key。
+  - 2026-09-02 起，既有恢复快照按产品决策冻结：不压缩、不置空、不归档、不物理回收；HC3 的历史批量 planner/shadow/compactor
+    方案不得对生产旧行执行。未来新增快照才可在新的 HC3c 双形态合同下使用 recipe，且必须保留 inline 回退和旧历史原样读取。
 - `scripts/deploymentCheck.mjs` + `scripts/checkDeployment.mjs`
   - 无凭据、只读的部署 smoke check；统一验证 Web 入口、API liveness 与依赖 readiness
   - 不能把登录写入、迁移或破坏性恢复塞进 smoke check；这些步骤属于部署清单和人工验收
@@ -1446,6 +1459,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     plus PostgreSQL total relation bytes, cached for five minutes and shared across concurrent scrapes
   - the query must never select, parse, hash, replay, measure or detoast payload JSON. Prometheus labels are fixed enums only;
     blocked codes and replay distance remain explicit offline planner report facts
+- 容量治理下一轮必须以只读校准为先：按低/中/高历史量分层抽样、限制单文件和批次、记录预计逻辑节省量与最大重放成本，
+  不得全库并发读取正文。旧格式或缺少可信 checkpoint 的快照必须保留 inline 并标记 blocked，不能以 v7 归一化结果冒充原始
+  JSON 的无损重建证明；只有只读报告、恢复读取验收和磁盘安全门禁全部通过，才能另行讨论少量非关键文件的 shadow apply。
 - `packages/shared/src/annotationToolAttempts.ts` + `apps/api/src/annotationToolAttemptService.ts`
   - FA-D1a single-event lightweight behavior contract for sentence character even-timing reset. External batches submit one
     current lifecycle snapshot per runtime UUID; they can never report `committed`, operation identity or committed revision
@@ -1477,6 +1493,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     mode fail closed before restore writes any protection snapshot, revision, or audit fact
   - resolver failures expose only stable reason code plus snapshot/file/revision identity; payload, text, hash, operation,
     archive identity and raw database errors must never enter HTTP details or logs
+  - 当前所有生产历史都是 inline 且 payload 完整；恢复历史页面若出现崩溃，先区分列表、详情、preview 和浏览器渲染阶段，
+    用固定脱敏诊断定位后再修复，不得通过扩大 catch 或静默跳过来掩盖恢复失败
 - `apps/api/src/annotationRecoverySnapshotPagination.ts` + `src/platform/recoverySnapshotPaging.ts`
   - the only recovery-history summary pagination contract: file-bound opaque cursor over descending revision/createdAt/id,
     strict bounded limit, metadata-only selects, and stable client append deduplication

@@ -2,17 +2,47 @@
 
 更新日期：2026-09-02
 
+## 当前权威状态（HC2 已完成，2026-09-02）
+
+本节优先于下面按阶段记录的历史章节，供后续开发和运维接手时使用。历史章节中的“生产未执行”“等待授权 A”等
+表述是当时的状态，不代表当前状态。
+
+- 已从提交 `f8c2b1e` 组装并切换不可变生产 release `20260902T205647Z-f8c2b1e`，旧 release 仍保留为回滚候选；生产 API、analysis worker 和 Caddy 均恢复运行，维护模式已关闭。
+- 已在维护窗口完成 36 -> 39 的 expand-only migration。现有标注文件、当前 payload、operation、确认、评论、反馈、审核链接和媒体对象没有被迁移脚本更新、删除或置空。
+- 已完成一致备份与隔离恢复演练：备份包含 95,295 个对象且 manifest/checksum 通过；恢复后的数据库 migration、运行时状态和业务摘要，以及对象存储内容均通过核对，`missing=0`、`orphan=0`。演练数据库和临时对象目录已删除，只保留脱敏恢复报告。
+- 当前生产恢复快照约 47,669 行，`storage_mode=inline`、完整 payload 47,669 行，`payload missing=0`、`reconstructible=0`、`archived=0`、canonical hash 尚未回填。快照 relation 约 6,354,526,208 bytes，24 小时新增约 14,659 行，7 天新增约 46,789 行。
+- 当前数据盘约 34GB 可用，系统盘约 4.1GB 可用。因仍有标注人员在线，后续容量治理必须先做只读规划和空间门禁；不能为了释放空间把数据盘压到安全阈值以下，也不能用长锁表操作替代治理。
+- 为保证恢复演练有足够空间，已删除两份最早的**完整备份副本**，删除前已核对 manifest；没有删除数据库业务行、快照 payload、operation、确认、评论、反馈、审核链接或媒体对象。当前正式备份及近几日完整备份仍保留。
+- 发布后的只读观察中 API 5xx、uncaught/unhandled/fatal/Prisma error 和 worker error 均为 0；由于观察窗口没有新的用户保存/协作流量，保存 smoke 仍需在下一次低干扰窗口由真实用户操作验证，不能把“无错误”写成已完成的保存验收。
+
+**当前硬门禁**：在线保存和恢复仍只使用完整 inline payload；禁止运行 `annotation-history:shadow-recipe --apply`、任何
+`verify-shadow-recipes` 写入变体、compactor、payload 清理、`VACUUM FULL`、`pg_repack` 或删除业务历史。任何新动作都必须先
+确认备份可恢复、数据盘余量足够，并能在短维护窗口内停止和回滚。
+
+## 最新容量决策（2026-09-02）
+
+- **历史冻结**：现有恢复快照、operation、标注、确认、评论、反馈和审核链接全部保留，不再对过去的快照做压缩、清理、置空、归档
+  或物理回收。之前 HC3 中针对历史样本的 planner/shadow/nullable/compactor 设计仅作为研究记录，不再作为当前上线目标。
+- **未来新增记录另行治理**：从未来明确版本开始，新增恢复记录可以使用“检查点 + 可重放 operation 范围 + 完整性 hash”的轻量表示，
+  但必须先完成新的读写 resolver、保存事务、恢复/比较接口、失败回退和隔离演练。现有 inline 历史不能被迁移成新表示，旧历史与新历史
+  可以并存，读取必须按存储形态分别处理。
+- **不以压缩换取当前空间**：当前数据库约 6.42GB，其中恢复快照约 6.06GB；数据盘约 34GB 可用、系统盘约 4.1GB 可用。只要
+  新方案不能在短维护窗口内完成并且没有足够安全余量，就继续完整保存未来快照，不执行冒险的空间回收。
+- **恢复历史崩溃作为 P0**：最近生产恢复历史列表/详情 HTTP 请求在日志中均为 200，尚未证明是后端数据库错误。下一步先增加前端
+  恢复历史的边界保护和可定位诊断，并使用实际失败响应/浏览器错误复现；修复前不得修改恢复事实或压缩策略。
+
 ## 1. 问题与目标
 
 当前每次服务器 revision 成功推进前，都会把完整旧 `AnnotationFile.payload` 写成一条
 `AnnotationRecoverySnapshot`。该设计保证事故恢复简单可靠，但自动保存和协作 operation 已经高频化后，完整 JSON 与
 revision 一比一复制，容量随保存次数而不是研究内容增长。
 
-目标不是删除历史，而是把“每个 revision 都有完整 JSON”改为“少量完整检查点 + 完整 operation 链 + 每个 revision 的
-轻量元数据/hash”。任意被压缩的 revision 必须仍能按需无损重建、比较和恢复；无法证明重建一致的快照必须原样保留。
+当前决定分成两个生命周期：**既有历史冻结保留**，**未来新增快照才允许采用轻量表示**。现有每个 revision 的完整 JSON
+不迁移、不压缩、不清理；未来新增记录可以在保存事务中使用“少量完整检查点 + 完整 operation 链 + 每个 revision 的轻量
+元数据/hash”，但必须先完成双形态 resolver、原子保存、恢复/比较接口、失败回退和隔离演练。
 
-硬约束：现有标注、operation、恢复快照、审核事实和对象存储一个都不能因本专项丢失。所有生产压缩都必须经过
-expand -> dry-run/影子验证 -> migrate -> contract，并提供停止、重试和回滚路径。
+硬约束：现有标注、operation、恢复快照、审核事实和对象存储一个都不能因本专项丢失。未来轻量快照必须与旧 inline 历史并存，
+任何 proof、读取或磁盘安全门禁失败都回退为完整 inline；不能为了节省空间牺牲保存、协作或恢复可靠性。
 
 ## 2. 生产只读基线
 
@@ -268,13 +298,13 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
   已清理。
   本审查只消除了已知代码门禁和迁移链风险，仍不等于授权 A，更不授权影子 apply、payload 清空、compactor 或物理回收。
 
-### HC3：影子 recipe 与小批次无损压缩
+### HC3：历史压缩方案（已冻结，不再执行）
 
-- 在不清空 payload 的情况下回填 hash/recipe，后台影子重建并持续比对。
-- 先选择少量非关键测试文件，在维护/备份条件下允许 payload nullable；逐批压缩、验证、恢复演练。
-- 任一失败停止该文件并保留 inline；禁止全库“一把梭”。
+HC3 原本针对已有历史快照筛选和压缩，现因生产仍有标注且用户明确要求保留过去记录而冻结。HC3a、HC3a2、HC3b1、HC3b2a、
+HC3b2b 的代码和测试保留为未来研究参考，但不允许对生产既有行执行 planner apply、shadow recipe、payload nullable 清理或
+storage mode 迁移。新的未来快照方案改在 HC3c 重新设计，不能沿用“批量改造旧历史”的任务单。
 
-#### HC3a：inline 影子 recipe 候选（代码已完成，生产未执行）
+#### HC3a：inline 影子 recipe 候选（历史方案，冻结）
 
 - 新增 `recipeVerifiedAt`，明确区分“完整 payload 尚在、recipe 已重建验证”和真正的 `compactedAt`。expand migration
   不执行任何历史 `UPDATE/DELETE/TRUNCATE`，`payload` 继续 `NOT NULL`，HC2a 的 inline-only 约束继续禁止
@@ -294,7 +324,7 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - 本阶段不产生容量回收：payload 仍完整存在，指标中的 payload-present 数不会下降。只有完成 HC2 生产观察、一致备份/恢复
   演练，并对少量非关键文件完成真实影子观察后，才能另行设计 HC3b 的 nullable payload 与读取重建切换。
 
-#### HC3a2：已存影子 recipe 强制只读复核（代码已完成，生产未执行）
+#### HC3a2：已存影子 recipe 强制只读复核（历史方案，冻结）
 
 - 新增单文件 `annotation-history:verify-shadow-recipes` CLI 和唯一只读复核服务。它只选择已经保存完整 recipe 且仍为 inline 的
   快照，默认最多 16、硬上限 100 个候选，每个候选最多读取 10,000 条 operation；按 revision/id 稳定顺序逐条验证，首个漂移
@@ -311,7 +341,7 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
   payload 清理或生产连接。该工具可供未来生产观察使用，但本轮没有运行生产复核，也不构成影子写入、nullable migration、
   compactor、`VACUUM` 或部署授权。
 
-#### HC3b1：统一纯重建内核（代码已完成，在线模式未启用）
+#### HC3b1：统一纯重建内核（历史方案，冻结）
 
 - 新增唯一纯函数 `reconstructAnnotationHistoryPayload()`：严格校验文件/checkpoint/target 身份、recipe version/hash/range，
   复用现有 current ProjectData parser、revision validator、正式领域 command apply、canonical hash 和 recipe builder，从有界事实
@@ -324,7 +354,7 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
   数据库中的已存 recipe 提供强制只读复核。下一步仍必须先完成 HC2 生产观察、
   一致备份/恢复演练和少量影子观察；本纯内核不构成 nullable migration、compactor 或生产部署授权。
 
-#### HC3b2a：数据库重建事实装载边界（代码已完成，在线模式未启用）
+#### HC3b2a：数据库重建事实装载边界（历史方案，冻结）
 
 - 新增 `annotationHistoryReconstructionFacts.ts`，集中读取已存 recipe、同文件 inline checkpoint 与 recipe revision 范围内的
   committed operation。每次只处理一个目标快照，operation 上限统一为 10,000；checkpoint 缺失/模式改变、recipe 字段不完整或
@@ -338,7 +368,7 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - 容量专项 33/33、inline resolver 5/5、客户端原子保存 34/34、完整 API 334/334 与完整构建通过。本轮没有 schema/migration、
   payload nullable、storage mode 切换、在线详情/比较/恢复接线、生产连接或部署；现有在线 resolver 仍拒绝 reconstructible/archived。
 
-#### HC3b2b：禁用态异步 payload 协调器（代码已完成，线上未接线）
+#### HC3b2b：禁用态异步 payload 协调器（历史方案，冻结）
 
 - 新增 `annotationRecoverySnapshotPayloadService.ts`，组合既有 inline resolver、HC3b2a 数据库事实装载和 HC3b1 纯重建内核。
   inline 继续原样返回任意历史 JSON 并校验可选 hash；archived 和默认 reconstructible 继续返回
@@ -349,6 +379,49 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
   半迁移状态分别固定阻断。recipe/事实/重建失败只返回 snapshot/file/revision 与低基数 code，不返回正文、hash、recipe 或 operation。
 - resolver 专项 9/9、容量专项 33/33、完整 API 338/338 与完整构建通过。隔离 PostgreSQL 用真实 stored recipe、checkpoint 与
   operation 重建出目标 ProjectData，数据库行保持 inline 且逐项不变；没有 schema/migration、payload 清理、在线行为、生产连接或部署。
+
+### HC3a0：生产只读校准与恢复读取验收（已被“历史冻结、未来治理”决策取代）
+
+该阶段原计划用于筛选历史压缩候选，现不再作为历史治理任务执行。下面的只读门禁仍保留为未来新方案上线前的通用
+安全要求，但不能据此扫描或改写现有历史。
+
+- [ ] 从当前生产 release 的 `/etc/xiqu-platform/xiqu-platform.env` 受控加载环境，确认服务名为 `xiqu-api.service`，所有 CLI
+  在 `sudo -u xiqu` 下运行；报告只写到 release/Git 之外的受控目录，不输出连接串、正文、operation body、媒体 URL、对象 key 或凭据。
+- [ ] 先读取数据盘和系统盘可用空间，设置硬门禁：低于预设安全余量时只结束检查，不创建候选、不复制数据库、不做物理回收；候选和恢复临时目录必须位于数据盘。
+- [ ] 只读运行容量 metrics，并按历史量分层选择少量文件：低历史量、中等历史量、高历史量各取有限样本；每次明确 file id 和扫描上限，单批保持有界，不全库并发扫描。
+- [ ] 对选定文件执行 planner dry-run 和已存 recipe 的强制只读复核，比较 inline 保留数、blocked 原因、最大 operation 重放量、预计逻辑节省量和单文件耗时。旧格式失败必须继续保留 inline，不能通过归一化猜测可重建。
+- [ ] 只读检查恢复历史的详情、比较、恢复和审核/评论关联读取路径，确认 inline resolver 在当前 39 条 migration 下返回与旧数据一致；不以列表数量代替内容一致性证明。
+- [ ] 在隔离测试库补充与生产快照分布相近的长链、非可重放边界、旧格式和审核引用夹具，验证 planner 的停止条件、分页、恢复和低磁盘门禁。
+- [ ] 输出一份脱敏校准报告，给出候选保留率、blocked 率、最大重放成本、预计逻辑节省量、数据库/对象备份增长和推荐的下一步批次；没有足够收益或余量不足时，明确结论为暂不治理。
+- [ ] 完成本地专项测试、完整构建、自审和文档更新后再提交。除非用户另行明确授权，不部署本阶段代码，不进入 HC3a shadow apply。
+
+**HC3a0 的完成条件**：只读报告可复现，恢复/比较路径通过，所有候选都有固定结论，数据盘安全余量未下降，且没有任何
+生产业务事实或快照 payload 发生变化。完成后再单独评估“少量、非关键文件的 shadow recipe”是否值得进入下一阶段。
+
+### HC3c：未来新增快照的轻量保存（下一阶段重新设计）
+
+本阶段只针对上线后产生的新恢复记录，绝不回写或改造现有历史。实现前必须先解决恢复历史页面崩溃问题，并以双形态读写
+测试证明旧 inline 与新轻量记录可以长期共存。
+
+- [ ] 先定义不可变的历史边界：明确从哪一个 release/schema 版本开始允许新 snapshot 使用轻量形态；边界之前的行永远保持
+  `inline + payload`，不能按 createdAt 猜测或迁移。
+- [ ] 将快照写入改为同一保存事务内的策略选择：第一条或定期检查点保存完整 payload；只有当前命令链可重放、checkpoint/operation
+  范围完整、最终 canonical hash 精确相等时，新记录才保存 recipe/hash 并允许 `payload=null`。非 replayable、结构边界、恢复操作、
+  证明失败、保存不确定或磁盘门禁失败全部保存完整 inline。
+- [ ] 扩展 schema 时只改变新行合同，不更新旧历史；数据库约束必须允许旧 inline 和新 reconstructible 共存，并拒绝半迁移状态。
+  任何 nullable migration 都先在隔离库完成旧业务事实、确认/评论/反馈、审核链接、旧 JSON 和并发保存升级演练。
+- [ ] 详情、比较、恢复、备份、隔离恢复和管理员历史列表统一走双形态 resolver。轻量记录重建失败必须固定错误并阻止恢复，不能
+  返回近似 ProjectData；恢复前保护快照仍必须按当前保存合同原子创建。
+- [ ] 不新增第二套 command parser/replay/hash；复用 document-model 的正式 adapter、唯一 canonical hash 和受限事实 loader。新增
+  逻辑块必须写准确中文功能注释，删除已经不再被生产路径调用的历史 apply/compactor 入口，避免僵尸代码重新被误用。
+- [ ] 增加未来写入的有界容量指标、失败回退计数、resolver 延迟和恢复失败告警；指标只保留固定枚举和计数，不记录正文、账号、
+  operation body、媒体 URL、凭据或对象 key。
+- [ ] 先在本地隔离库验证新旧记录混合读取，再进行一次明确授权的极短维护发布；发布前后核对快照、operation、确认、评论、反馈、
+  审核链接和当前文件 revision 数量，观察中发现任何写入/恢复异常立即回滚代码而不删除历史。
+
+**HC3c 完成条件**：旧历史零变更；未来新记录在证明成功时才使用轻量形态；所有失败路径自动保留 inline；详情/比较/恢复和
+备份恢复均可读取两种形态；测试、构建、低干扰线上 smoke 和回滚证据齐全。空间不足时系统必须继续可靠保存或明确阻止治理，
+不能把数据库压到安全余量以下。
 
 ### HC4：未来保存策略与运维闭环
 

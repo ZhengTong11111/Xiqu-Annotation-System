@@ -11622,3 +11622,58 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   `annotationHistoryStoredRecipeVerificationCli.js` 均存在。候选临时目录已清理，没有留下 release、数据库或生产状态。
 - 本轮最终状态仍为：本地代码、文档和候选检查完成；生产未部署、未执行 migration、未写影子 recipe、未清空 payload、未运行
   compactor/VACUUM，等待用户明确授权 A。
+
+## 2026-09-02：HC2j 生产 expand-only 部署、备份恢复与容量门禁收尾
+
+### 已完成
+
+- 根据实际生产结果修正了容量治理文档的状态：上一些章节中的“生产未执行/等待授权 A”保留为历史记录，但当前权威状态明确为
+  HC2 已完成，不再误导后续 agent 重复执行同一轮部署。
+- 从提交 `f8c2b1e` 组装并上传不可变候选 release `20260902T205647Z-f8c2b1e`。候选检查通过：30 个运行路径、27 个生产依赖、
+  39 条 migration；`release:check` 通过。生产当前 release 已原子切换到该候选，旧 release 仍保留为回滚候选。
+- 按最短维护顺序完成生产迁移：进入维护、排空 API 写入、停止 `xiqu-analysis-worker`、创建并校验一致备份、完成隔离恢复演练、
+  应用 36 -> 39 的 expand-only migration、切换 release、完成维护状态只读 smoke，随后解除维护并恢复 API/worker/Caddy。
+- 正式备份位于服务器受控备份目录，包含 95,295 个对象，manifest/checksum 校验通过；隔离恢复的 migration history、runtime state、
+  数据库摘要和对象存储均通过核对，`missing=0`、`orphan=0`。隔离数据库和对象目录已删除，只保留脱敏恢复报告。
+- migration 前后确认现有 annotation payload、operation、recovery snapshot、confirmation、range comment/feedback 和 review link
+  等业务事实未被更新、删除或置空。当前快照约 47,669 行，全部为 `storage_mode=inline` 且 payload 完整，尚无 reconstructible/archived
+  数据，也没有在线 compactor 或自动清理器。
+- 为给隔离恢复腾出空间，只删除了两份最早的完整备份副本；删除前读取并核对 manifest，当前正式备份及近几日完整备份仍保留。
+  没有删除任何数据库业务行、快照 payload、operation、审核事实或媒体对象。
+- 发布后只读观察中 API 5xx、uncaught/unhandled/fatal/Prisma error 和 worker error 均为 0。观察窗口没有新用户保存/协作流量，
+  因此保存、同步、恢复、确认/评论/反馈和审核链路的真实人工 smoke 仍列为下一次低干扰窗口的待验收项。
+- 生产约有 34GB 数据盘和 4.1GB 系统盘可用；已把恢复演练的 PostgreSQL 表空间和临时对象目录放到数据盘，避免再次占用系统盘。
+  以后所有容量操作都必须先检查安全余量，余量不足时宁可停止治理，不得挤压在线标注空间。
+- 更新了 `docs/annotation-history-capacity-roadmap.md` 的当前权威状态，并将下一轮收敛为 HC3a0：生产只读容量校准与恢复读取验收。
+  更新了 `AGENTS.md` 的服务名、env 加载、release、数据盘表空间、备份删除和容量治理硬门禁。重写了被忽略的 `CLAUDE_WORK.md`，
+  只保留下一轮任务，不保留历史日志。
+
+### 验证与自审
+
+- 生产的 release inspect、release check、migration、备份 manifest/checksum、隔离恢复报告、API/worker/Caddy 状态和维护状态均已核对。
+- 本轮没有执行 shadow recipe apply、verify 写入、payload 清理、storage mode 切换、compactor、`VACUUM FULL`、`pg_repack` 或业务历史删除。
+- **待推进**：本地继续执行 HC3a0 只读抽样、恢复历史详情/比较/恢复读取验收和隔离测试；下一轮不自动部署、不自动写 recipe，除非用户
+  另行明确授权。若只读校准证明收益不足或空间接近安全线，继续保留全部 inline payload。
+
+## 2026-09-02：容量策略调整与生产恢复历史问题初查
+
+### 已完成
+
+- 用户明确调整容量策略：过去已经产生的恢复记录不再压缩、不置空、不归档、不物理回收；未来新增记录才重新设计轻量快照。
+  已将 roadmap 中原本面向历史批量压缩的 HC3 标记为冻结，并新增 HC3c 未来新旧双形态共存方案，避免把旧历史迁移成无法证明等价的格式。
+- 生产只读核对结果：当前 release 为 `20260902T205647Z-f8c2b1e`，`xiqu-api.service`、`xiqu-analysis-worker.service`、`caddy.service`
+  均 active，维护模式关闭，数据库 migration 为 39。快照 47,676 行、operation 99,808 行、确认 739 条、评论/反馈 132 条、审核链接 0 条。
+- 数据库大小为 6,422MB（6,733,437,975 bytes）；其中 `annotation_recovery_snapshots` 为 6,061MB（6,355,238,912 bytes），
+  `annotation_operations` 为 160MB（167,698,432 bytes）。磁盘系统盘 40GB 剩 4.1GB，数据盘 98GB 剩 34GB；本轮没有删除任何业务数据。
+- 生产快照按文件分布仍有 1、990、7,037 等不同历史量级；根据新策略已停止继续执行中/高量历史 planner，不生成历史可回收容量建议。
+  已中断的低量只读 planner 只完成一个 1-snapshot 文件，输出写在 release/Git 外的受控报告目录，未写数据库；后续任务单要求清理该临时报告。
+- 日志初查显示最近恢复历史列表和详情请求均返回 HTTP 200，未发现对应 recovery route 的 500。发现的数据库 `57P01` 是此前维护/恢复过程
+  终止 LISTEN 连接的历史日志，不是恢复历史点击错误；当前恢复历史崩溃仍需用浏览器实际错误或前端诊断定位，不能猜测修改保存/恢复逻辑。
+- 已更新 `AGENTS.md`：补充历史冻结、未来新快照双形态、当前空间门禁和恢复历史崩溃先定位后修复的规则。已重写被忽略的
+  `CLAUDE_WORK.md`，下一轮优先处理恢复历史 P0 和 HC3c 未来快照合同，不部署、不进入维护。
+
+### 待推进
+
+- 恢复历史崩溃：需要区分列表展开、详情请求、preview 迁移和浏览器渲染阶段；修复应增加有界、脱敏的诊断和局部错误隔离，并为真实根因补回归测试。
+- 未来快照轻量保存：尚未修改保存事务、schema 或 resolver。必须先完成隔离库双形态测试、失败 inline 回退和恢复/比较/备份演练，再另行申请短维护发布。
+- 生产空间治理：历史记录冻结，不执行 compactor、shadow apply、payload 清理、`VACUUM FULL`、`pg_repack` 或旧备份删除；空间接近安全线时停止治理。
