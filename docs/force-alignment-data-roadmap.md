@@ -308,7 +308,35 @@ annotationOperationId / committedRevision / details
   diff check 通过。第 43 条 migration 仅应用于本机开发库并重启 API 验证 ready；未部署生产、未创建后台导出任务或大型对象、未改写
   在线 annotation/operation/snapshot/review/workflow 事实。
 
-##### FA-D3c3：后台导出任务、对象发布与补偿（下一阶段）
+##### FA-D3c3：后台导出任务、对象发布与补偿（进行中）
+
+###### FA-D3c3a：可导出输入冻结与引用保护（已完成）
+
+- D3c2b 的 provenance manifest 只冻结 target revision，尚不能证明未来 worker 可从该 revision 得到相同逐字标签；恢复历史以后还会进入
+  recipe/归档生命周期。先在同一冻结事务读取当前 payload 或精确 target revision 恢复快照，严格解析后抽取不含正文的句/字 ID 与微秒
+  时间 target snapshot，并用 run 的 input text fingerprint/count 证明它仍对应原 prediction projection。目标快照缺失、非 inline、旧格式、
+  指纹漂移或超出字符/字节上限时整批阻断，绝不退回当前版本或近似重放。
+- 同时冻结上传对象或 VOD 的稳定来源摘要、audio offset、source fingerprint 与 prediction artifact 引用。上传源通过显式 FileObject FK、
+  prediction 通过 AlignmentArtifact FK 参与引用保护；对象生命周期必须把训练输入引用计入“仍被使用”，不能在任务领取前清理源文件。
+- 为每个 export 原子保存一个版本化 input manifest/checksum 和每项 target/source snapshot/checksum；旧 D3c2b export 没有完整输入时只保留
+  provenance，后续任务明确拒绝，不做破坏性回填。本阶段仍不创建 ProcessingJob、不写导出对象、不增加前端。
+- 已实现严格 target/source/input-manifest 合同与第 44 条纯追加 migration。目标使用 bounded stable sentence/character id（兼容历史非 UUID
+  标注身份）、整数微秒和 run 文本投影指纹；当前 revision 或精确 inline 恢复快照以外一律 fail closed。上传对象、普通 VOD 与 rendition
+  只冻结稳定身份，不读取临时播放地址；每批最多 200 项、500,000 字和 64 MiB target JSON。
+- 新冻结在 Serializable 事务内同时写 provenance、input manifest 和逐项输入；幂等重放会复核顶层 manifest、逐项 target/source checksum、
+  计数、字节、artifact 与 FileObject 对应关系。旧 provenance-only export 保持可读但没有输入行，不能被后续 worker 当成 export-ready。
+  对象生命周期的扫描和删除前复核均计入训练输入引用，artifact/source file 外键使用 `RESTRICT`。
+- 专项 13/13、历史快照 4/4、普通原子保存 34/34、完整 API 354/354、完整构建与 diff check 通过。第 44 条 migration 仅应用到本机
+  `localhost:54329/xiqu_platform`，API 重启后 database/storage ready；未部署生产、未创建真实后台任务或导出对象。
+
+###### FA-D3c3b：任务预约与流式训练包合同（下一阶段）
+
+- 在证明冻结输入完整后，再增加独立训练导出 job identity/request fingerprint、管理员预约 API 和 ProcessingJob 关联；复用现有需求、幂等
+  key、任务查询与唯一 worker coordinator，不借用含糊的普通 annotation JSON export 语义。
+- 固化流式包格式、文件命名、manifest/object inventory、单样本与整包容量；先以纯 adapter/夹具证明 prediction、target 和音频读取不会在
+  内存中组装整包，也不会把 storage key、临时 URL 或凭据暴露到公开 DTO。
+
+###### FA-D3c3c：Claim-fenced 对象发布、取消与补偿
 
 - 在现有 ProcessingJob 请求/命令/任务中心中增加训练导出类型和独立 adapter，不创建第二轮询器。Worker 按冻结 manifest 读取受保护
   prediction/audio/目标 revision，staged 后校验 size/SHA，再 claim-fenced 原子发布；取消、陈旧 claim、模糊提交和清理失败沿用现有

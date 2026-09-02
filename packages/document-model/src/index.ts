@@ -8,6 +8,8 @@ export * from "./alignmentPrediction.js";
 export * from "./alignmentPredictionQualitySummary.js";
 export * from "./alignmentPredictionApplication.js";
 export * from "./alignmentTrainingManifest.js";
+export * from "./alignmentTrainingTargetSnapshot.js";
+export * from "./alignmentTrainingInputManifest.js";
 // 持久标注文档类型由 document-model 统一导出，供 Web 与 API 共用同一领域边界。
 export * from "./projectData.js";
 // 第一批共享命令执行核心覆盖时间、内容与工尺/板眼复合状态，供 Web 和 API 使用同一实现。

@@ -11073,3 +11073,39 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   调试代码；事务/容量/并发边界均有中文功能注释。**已完成**：FA-D3c2b 与整个 FA-D3c2。**待推进**：FA-D3c3 复用现有
   ProcessingJob/任务中心建立后台导出 adapter、staged 对象校验、claim-fenced 原子发布、取消与失败补偿；开始前重新审查冻结表、对象
   生命周期和现有 job 扩展点并重写 `CLAUDE_WORK.md`。未经用户明确要求不得部署生产。
+
+## 2026-09-02：FA-D3c3a 可导出输入冻结与引用保护
+
+### 精确训练标签与来源合同
+
+- D3c2b 只保存 target revision，不能保证未来快照压缩或继续编辑后仍能导出完全相同的逐字标签。本轮新增
+  `alignmentTrainingTargetSnapshot`：从严格解析的 ProjectData 提取句/字稳定 identity 和整数微秒时间，不保存正文、角色、账号、
+  完整 ProjectData 或命令。历史导入 identity 可能不是 UUID，因此合同使用 1..200 字符、无控制字符的稳定 ID，而不改写既有身份。
+- 冻结服务在原 Serializable 锁序中使用当前精确 revision payload，或按 `(annotationFileId, revision)` 批量读取唯一 inline 恢复快照。
+  缺失、hash 错误、尚未支持的 reconstructible/archived、当前格式不可解析、文本投影指纹或句字数与原 AlignmentRun 不一致时整批阻断，
+  不退回当前文件、不近似重放 operation。
+- 新增 uploaded/VOD source snapshot。上传来源只保存资源、FileObject、checksum、size、mime/media kind、fingerprint 和 offset；VOD 只保存
+  region/videoId/可选 rendition JobId/duration/fingerprint/offset。临时 URL、PlayAuth、AccessKey、storage key 和 provider 原始响应均不进入
+  数据库、审计或公开结果。来源关系、归档状态、run source/track snapshot、fingerprint 或微秒 offset 漂移均 fail closed。
+
+### Additive schema、完整性与生命周期
+
+- 第 44 条 migration 为 export 追加一组 all-null/all-present input manifest 字段，并新增一对一 `AlignmentTrainingExportInput`。每项保存
+  target/source snapshot、checksum、计数和字节；上传 FileObject 与 prediction AlignmentArtifact 使用 `RESTRICT` 引用。迁移只有 ADD/CREATE/
+  INDEX/FK/CHECK，没有 UPDATE、DELETE、DROP、TRUNCATE、回填或改写旧业务数据；旧 D3c2b export 原值保持全空。
+- input manifest 固定排序并绑定 provenance checksum、application/artifact/checksum 和目标容量汇总。幂等重放不只校验顶层 manifest，还逐项
+  重新解析 target/source，核对 checksum、句字数、规范 JSON 字节、artifact 和 source FileObject；缺行或任一篡改返回稳定 corrupt。旧
+  provenance-only export 只有在顶层与逐项输入都为空时可读，后续 worker 仍必须拒绝把它当成 export-ready。
+- 对象生命周期服务的扫描与删除前二次复核同时检查 MediaFile 和 AlignmentTrainingExportInput 引用。集成测试删除在线 application/媒体关系
+  后，冻结 artifact 与 source FileObject 仍受外键保护，训练来源不会被列为 unreferenced；missing binary 只报告，不静默删元数据。
+
+### 验证、自审与后续
+
+- 训练冻结专项 13/13，覆盖当前/历史 target、坏 hash/缺快照、投影漂移、来源归档、uploaded/VOD 有限快照、旧 export 重放、逐项篡改、
+  引用保护和 migration 非破坏门禁；恢复快照 4/4，普通原子保存 34/34，完整 API 354/354，完整生产构建和 `git diff --check` 通过。
+  仅保留已有 Vite 大 chunk 提示和 pg adapter concurrent-query deprecation warning，没有新增依赖。
+- 第 44 条 migration 仅应用到本机 `localhost:54329/xiqu_platform` public schema；重新生成 Prisma Client、构建 shared/document-model 并重启
+  4317 API，readiness 返回 database/storage ready。未连接或部署生产、未创建真实训练导出对象、未修改生产标注数据。
+- 自审确认没有第二保存器、对象全文读取、N+1 历史快照查询、可变当前版本回退、敏感日志、无界输入、重复 canonical 实现或僵尸接口。
+  **已完成**：FA-D3c3a。**待推进**：FA-D3c3b 设计独立训练导出任务预约、ProcessingJob identity 和流式包合同；这一阶段仍不应提前实现
+  worker 发布、UI 或下载闭环。

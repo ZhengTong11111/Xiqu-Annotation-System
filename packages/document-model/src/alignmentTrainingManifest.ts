@@ -299,7 +299,7 @@ export function buildAlignmentTrainingManifest(
       samples[index]!.groupReferences.map(groupKey)))].sort();
     // 分量身份只依赖稳定研究分组。以后同一分组增补样本时，不应因为 application 集合变化而跳到另一 split。
     const componentHash = checkedSha256Hex(
-      canonicalJson({
+      canonicalAlignmentTrainingJson({
         version: 1,
         groupReferences: componentGroups,
       }),
@@ -343,14 +343,14 @@ export function buildAlignmentTrainingManifest(
     items,
   };
   const checksum = checkedSha256Hex(
-    canonicalJson(manifestWithoutChecksum),
+    canonicalAlignmentTrainingJson(manifestWithoutChecksum),
     sha256Hex,
     "manifest checksum",
     issues,
   );
   if (!checksum) return { ok: false, issues: issues.slice(0, 50) };
   const manifest: AlignmentTrainingManifestV1 = { ...manifestWithoutChecksum, checksum };
-  return { ok: true, manifest, canonicalJson: canonicalJson(manifest) };
+  return { ok: true, manifest, canonicalJson: canonicalAlignmentTrainingJson(manifest) };
 }
 
 /** unknown 入口同时验证 exact keys、聚合、排序、目标语义和注入的 SHA-256。 */
@@ -379,7 +379,7 @@ export function parseAlignmentTrainingManifest(
   }
   return issues.length > 0
     ? { ok: false, issues: issues.slice(0, 50) }
-    : { ok: true, value: manifest, canonicalJson: canonicalJson(manifest) };
+    : { ok: true, value: manifest, canonicalJson: canonicalAlignmentTrainingJson(manifest) };
 }
 
 /** checksum 明确排除自身；API/worker 只能对这一份 canonical 输入计算 SHA-256。 */
@@ -387,7 +387,7 @@ export function buildAlignmentTrainingManifestChecksumInput(
   manifest: AlignmentTrainingManifestV1,
 ) {
   const { checksum: _checksum, ...content } = manifest;
-  return canonicalJson(content);
+  return canonicalAlignmentTrainingJson(content);
 }
 
 function validateDraftSemantics(
@@ -488,7 +488,7 @@ function validateManifestSemantics(manifest: AlignmentTrainingManifestV1) {
     issues.push("componentCount 与分量数量不一致。");
   }
   const expectedCounts = buildSplitCounts(manifest.items);
-  if (canonicalJson(expectedCounts) !== canonicalJson(manifest.splitCounts)) {
+  if (canonicalAlignmentTrainingJson(expectedCounts) !== canonicalAlignmentTrainingJson(manifest.splitCounts)) {
     issues.push("splitCounts 与 items 不一致。");
   }
   const sorted = [...manifest.items].sort(compareManifestItems);
@@ -691,12 +691,13 @@ function sumRatios(ratios: AlignmentTrainingSplitRatios) {
   return ratios.train + ratios.validation + ratios.test;
 }
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+/** 训练 manifest、输入计划和快照 checksum 共用这一份规范 JSON，避免跨阶段出现哈希漂移。 */
+export function canonicalAlignmentTrainingJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalAlignmentTrainingJson).join(",")}]`;
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
     return `{${Object.keys(record).sort().map((key) =>
-      `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+      `${JSON.stringify(key)}:${canonicalAlignmentTrainingJson(record[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
 }

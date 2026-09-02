@@ -25,7 +25,14 @@ export class ObjectLifecycleService {
     const [diskObjects, files, analysisAssets] = await Promise.all([
       this.storage.listStoredObjects(),
       this.prisma.fileObject.findMany({
-        include: { _count: { select: { mediaFiles: true } } },
+        include: {
+          _count: {
+            select: {
+              mediaFiles: true,
+              alignmentTrainingInputs: true,
+            },
+          },
+        },
       }),
       this.prisma.mediaAnalysisAsset.findMany({
         select: {
@@ -66,9 +73,11 @@ export class ObjectLifecycleService {
       });
     }
 
-    // 数据库对象没有媒体引用时可清理；引用存在但磁盘缺失时只产生恢复诊断。
+    // 训练输入冻结后会长期引用原始上传对象；只要媒体或训练样本任一引用存在，就不能按孤儿清理。
     for (const file of files) {
-      if (file._count.mediaFiles === 0) {
+      const hasDatabaseReference = file._count.mediaFiles > 0 ||
+        file._count.alignmentTrainingInputs > 0;
+      if (!hasDatabaseReference) {
         summaries.push({
           category: "unreferenced_file",
           fileId: file.id,
@@ -125,11 +134,15 @@ export class ObjectLifecycleService {
       }
     }
 
-    // 无引用 FileObject 在事务内再次复核引用数，防止使用过期 dry-run 结论删除后来被引用的对象。
+    // 删除前同时复核媒体和训练输入引用，防止扫描完成后新冻结的训练样本被误删来源对象。
     for (const item of eligible) {
       if (item.category !== "unreferenced_file" || !item.fileId) continue;
       const deleted = await this.prisma.fileObject.deleteMany({
-        where: { id: item.fileId, mediaFiles: { none: {} } },
+        where: {
+          id: item.fileId,
+          mediaFiles: { none: {} },
+          alignmentTrainingInputs: { none: {} },
+        },
       });
       if (deleted.count === 0) continue;
       deletedFileObjectCount += 1;

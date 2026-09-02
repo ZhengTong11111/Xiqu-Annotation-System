@@ -358,6 +358,7 @@ model FileObject {
   owner      User        @relation("FileOwner", fields: [ownerUserId], references: [id])
   mediaFiles MediaFile[]
   auditLogs  AuditLog[]
+  alignmentTrainingInputs AlignmentTrainingExportInput[] @relation("AlignmentTrainingInputSourceFile")
 
   @@index([ownerUserId])
   @@map("files")
@@ -893,6 +894,7 @@ model AlignmentArtifact {
 
   run          AlignmentRun          @relation(fields: [runId], references: [id], onDelete: Cascade)
   applications AlignmentApplication[]
+  trainingExportItems AlignmentTrainingExportItem[]
 
   @@unique([runId, kind])
   @@index([runId, createdAt])
@@ -967,6 +969,13 @@ model AlignmentTrainingExport {
   splitCounts      Json     @map("split_counts")
   sampleCount      Int      @map("sample_count")
   componentCount   Int      @map("component_count")
+  inputManifestFormat       String?  @map("input_manifest_format")
+  inputManifestVersion      Int?     @map("input_manifest_version")
+  inputManifestChecksum     String?  @map("input_manifest_checksum")
+  inputManifest             Json?    @map("input_manifest")
+  targetSentenceCount       Int?     @map("target_sentence_count")
+  targetCharacterCount      Int?     @map("target_character_count")
+  targetSnapshotBytes       Int?     @map("target_snapshot_bytes")
   createdAt        DateTime @default(now()) @map("created_at")
 
   creator User                          @relation("AlignmentTrainingExportCreator", fields: [createdBy], references: [id], onDelete: Restrict)
@@ -996,8 +1005,10 @@ model AlignmentTrainingExportItem {
   split                        AlignmentTrainingSplit
   snapshot                     Json
 
-  export AlignmentTrainingExport        @relation(fields: [exportId], references: [id], onDelete: Cascade)
-  groups AlignmentTrainingExportGroup[]
+  export   AlignmentTrainingExport        @relation(fields: [exportId], references: [id], onDelete: Cascade)
+  artifact AlignmentArtifact              @relation(fields: [alignmentArtifactId], references: [id], onDelete: Restrict)
+  groups   AlignmentTrainingExportGroup[]
+  input    AlignmentTrainingExportInput?
 
   @@id([exportId, alignmentApplicationId])
   @@index([annotationFileIdSnapshot])
@@ -1005,6 +1016,28 @@ model AlignmentTrainingExportItem {
   @@index([alignmentRunId])
   @@index([alignmentArtifactId])
   @@map("alignment_training_export_items")
+}
+
+// 每项可导出输入只保存不含正文的目标时间和稳定来源摘要；旧 provenance-only export 可以没有此行。
+model AlignmentTrainingExportInput {
+  exportId                  String   @map("export_id")
+  alignmentApplicationId    String   @map("alignment_application_id")
+  sourceFileId              String?  @map("source_file_id")
+  targetSnapshot            Json     @map("target_snapshot")
+  targetSnapshotChecksum    String   @map("target_snapshot_checksum")
+  targetSentenceCount       Int      @map("target_sentence_count")
+  targetCharacterCount      Int      @map("target_character_count")
+  targetSnapshotBytes       Int      @map("target_snapshot_bytes")
+  sourceSnapshot            Json     @map("source_snapshot")
+  sourceSnapshotChecksum    String   @map("source_snapshot_checksum")
+  createdAt                 DateTime @default(now()) @map("created_at")
+
+  item       AlignmentTrainingExportItem @relation(fields: [exportId, alignmentApplicationId], references: [exportId, alignmentApplicationId], onDelete: Cascade)
+  sourceFile FileObject?                 @relation("AlignmentTrainingInputSourceFile", fields: [sourceFileId], references: [id], onDelete: Restrict)
+
+  @@id([exportId, alignmentApplicationId])
+  @@index([sourceFileId])
+  @@map("alignment_training_export_inputs")
 }
 
 // 分组快照保留冻结当时的稳定 identity 与有限显示名，不依赖后来可能解绑的项目关系。

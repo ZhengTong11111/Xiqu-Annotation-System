@@ -6,14 +6,22 @@ import {
   type PrismaClient,
 } from "@prisma/client";
 import {
+  ALIGNMENT_TRAINING_INPUT_MANIFEST_FORMAT,
+  ALIGNMENT_TRAINING_INPUT_MANIFEST_VERSION,
   ALIGNMENT_TRAINING_MANIFEST_FORMAT,
   ALIGNMENT_TRAINING_MANIFEST_MAX_GROUPS_PER_ITEM,
   ALIGNMENT_TRAINING_MANIFEST_VERSION,
+  buildAlignmentTrainingInputManifest,
   buildAlignmentTrainingManifest,
+  canonicalAlignmentTrainingJson,
+  parseAlignmentTrainingInputManifest,
   parseAlignmentTrainingManifest,
+  parseAlignmentTrainingSourceSnapshot,
+  parseAlignmentTrainingTargetSnapshot,
   type AlignmentTrainingManifestItem,
   type AlignmentTrainingSampleDraft,
 } from "@xiqu/document-model";
+import { parseCurrentProjectData } from "@xiqu/document-model/project-data-schema";
 import {
   MAX_PROJECT_ALIGNMENT_RESEARCH_GROUPS,
   normalizeAlignmentResearchGroupDisplayName,
@@ -24,10 +32,19 @@ import {
   type CreateAlignmentTrainingExportRequest,
 } from "@xiqu/shared";
 import { stableJsonStringify } from "./annotationOperationIdempotency.js";
+import { resolveAnnotationRecoverySnapshotPayload } from "./annotationRecoverySnapshotResolver.js";
 import { lockAlignmentResearchGroupCatalog } from "./alignmentResearchGroupService.js";
 import { deriveAlignmentTrainingEvidence } from "./alignmentTrainingEvidence.js";
+import {
+  prepareAlignmentTrainingSource,
+  prepareAlignmentTrainingTarget,
+  type PreparedAlignmentTrainingSource,
+  type PreparedAlignmentTrainingTarget,
+} from "./alignmentTrainingExportInput.js";
+import type { ReadyAnalysisAudioSource } from "./analysisAudioSourceResolver.js";
 import type { ApiUser } from "./domain.js";
 import { conflict } from "./errors.js";
+import { createMediaAnalysisSourceFingerprint } from "./mediaAnalysisSourceFingerprint.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
 
 const MAX_APPLICATION_WINDOW_SCAN_PER_FILE = 5_000;
@@ -35,12 +52,79 @@ const MAX_TOTAL_APPLICATION_WINDOW_SCAN = 20_000;
 const MAX_OPERATION_SCAN_PER_APPLICATION = 500;
 const MAX_ASSESSMENT_SCAN_PER_APPLICATION = 500;
 
+const EXISTING_EXPORT_INCLUDE = {
+  items: {
+    select: {
+      alignmentApplicationId: true,
+      alignmentArtifactId: true,
+      input: {
+        select: {
+          sourceFileId: true,
+          targetSnapshot: true,
+          targetSnapshotChecksum: true,
+          targetSentenceCount: true,
+          targetCharacterCount: true,
+          targetSnapshotBytes: true,
+          sourceSnapshot: true,
+          sourceSnapshotChecksum: true,
+        },
+      },
+    },
+  },
+} satisfies Prisma.AlignmentTrainingExportInclude;
+
+type ExistingTrainingExport = Prisma.AlignmentTrainingExportGetPayload<{
+  include: typeof EXISTING_EXPORT_INCLUDE;
+}>;
+
 const FREEZE_APPLICATION_INCLUDE = {
   run: {
     select: {
       annotationFileIdSnapshot: true,
       manifest: true,
       status: true,
+      inputTextFingerprint: true,
+      inputSentenceCount: true,
+      inputCharacterCount: true,
+      sourceMediaResourceId: true,
+      sourceMediaResourceIdSnapshot: true,
+      sourceFingerprint: true,
+      mediaAudioTrackId: true,
+      mediaAudioTrackIdSnapshot: true,
+      audioOffsetMicros: true,
+      sourceMedia: {
+        include: {
+          resource: {
+            select: {
+              name: true,
+              type: true,
+              archivedAt: true,
+              trashedAt: true,
+            },
+          },
+          file: {
+            select: {
+              id: true,
+              storageKey: true,
+              checksum: true,
+              size: true,
+            },
+          },
+        },
+      },
+      mediaAudioTrack: {
+        select: {
+          id: true,
+          primaryMediaResourceId: true,
+          audioMediaResourceId: true,
+          vodRenditionMediaResourceId: true,
+          vodRenditionJobId: true,
+          vodRenditionFormat: true,
+          kind: true,
+          offsetSeconds: true,
+          enabled: true,
+        },
+      },
     },
   },
   artifact: {
@@ -52,7 +136,7 @@ const FREEZE_APPLICATION_INCLUDE = {
       size: true,
     },
   },
-  annotationFile: { select: { revision: true } },
+  annotationFile: { select: { revision: true, payload: true, mediaResourceId: true } },
   _count: {
     select: {
       operations: true,
@@ -104,6 +188,21 @@ type ProjectContext = {
 type PreparedSample = {
   draft: AlignmentTrainingSampleDraft;
   project: ProjectContext;
+  targetRevision: number;
+};
+
+type PreparedExportInput = {
+  target: PreparedAlignmentTrainingTarget;
+  source: PreparedAlignmentTrainingSource;
+};
+
+type HistoricalTargetSnapshotRow = {
+  id: string;
+  annotationFileId: string;
+  revision: number;
+  storageMode: string;
+  payload: Prisma.JsonValue;
+  payloadSha256: string | null;
 };
 
 /**
@@ -140,6 +239,7 @@ export class AlignmentTrainingExportService {
                 clientActionId: input.clientActionId,
               },
             },
+            include: EXISTING_EXPORT_INCLUDE,
           });
           if (existing) {
             if (existing.requestHash !== requestHash) {
@@ -180,6 +280,7 @@ export class AlignmentTrainingExportService {
             assessmentsByApplicationId.get(application.id) ?? [],
             projectContexts.get(projectIdByFileId.get(application.annotationFileId) ?? ""),
           ));
+          const preparedInputs = await prepareExportInputs(transaction, applications, prepared);
           const built = buildAlignmentTrainingManifest({
             splitSeedHash: input.splitSeedHash,
             splitRatios: input.splitRatios,
@@ -189,6 +290,28 @@ export class AlignmentTrainingExportService {
             throw conflict("所选候选未通过训练清单冻结规则。", {
               code: "alignment_training_export_planner_rejected",
               issues: built.issues,
+            });
+          }
+          const inputManifest = buildAlignmentTrainingInputManifest({
+            provenanceManifestChecksum: built.manifest.checksum,
+            items: built.manifest.items.map((item) => {
+              const input = requireMapValue(preparedInputs, item.alignmentApplicationId);
+              return {
+                alignmentApplicationId: item.alignmentApplicationId,
+                alignmentArtifactId: item.alignmentArtifactId,
+                artifactChecksum: item.artifact.checksum,
+                targetSnapshotChecksum: input.target.checksum,
+                targetSentenceCount: input.target.snapshot.sentenceCount,
+                targetCharacterCount: input.target.snapshot.characterCount,
+                targetSnapshotBytes: input.target.bytes,
+                sourceSnapshotChecksum: input.source.checksum,
+              };
+            }),
+          }, sha256Hex);
+          if (!inputManifest.ok) {
+            throw conflict("训练冻结输入超过容量或未通过完整性规则。", {
+              code: "alignment_training_export_input_invalid",
+              issues: inputManifest.issues,
             });
           }
 
@@ -213,11 +336,22 @@ export class AlignmentTrainingExportService {
               splitCounts: built.manifest.splitCounts,
               sampleCount: built.manifest.sampleCount,
               componentCount: built.manifest.componentCount,
+              inputManifestFormat: ALIGNMENT_TRAINING_INPUT_MANIFEST_FORMAT,
+              inputManifestVersion: ALIGNMENT_TRAINING_INPUT_MANIFEST_VERSION,
+              inputManifestChecksum: inputManifest.manifest.checksum,
+              inputManifest: JSON.parse(inputManifest.canonicalJson) as Prisma.InputJsonValue,
+              targetSentenceCount: inputManifest.manifest.targetSentenceCount,
+              targetCharacterCount: inputManifest.manifest.targetCharacterCount,
+              targetSnapshotBytes: inputManifest.manifest.targetSnapshotBytes,
               items: {
                 create: built.manifest.items.map((item) => {
                   const sample = preparedByApplicationId.get(item.alignmentApplicationId);
                   if (!sample) throw new Error("训练冻结样本映射不完整。");
-                  return mapItemCreate(item, sample);
+                  return mapItemCreate(
+                    item,
+                    sample,
+                    requireMapValue(preparedInputs, item.alignmentApplicationId),
+                  );
                 }),
               },
             },
@@ -232,6 +366,9 @@ export class AlignmentTrainingExportService {
                 sampleCount: built.manifest.sampleCount,
                 componentCount: built.manifest.componentCount,
                 splitCounts: built.manifest.splitCounts,
+                inputManifestChecksum: inputManifest.manifest.checksum,
+                targetCharacterCount: inputManifest.manifest.targetCharacterCount,
+                targetSnapshotBytes: inputManifest.manifest.targetSnapshotBytes,
               },
             },
           });
@@ -626,10 +763,226 @@ function prepareSample(
       groupReferences: project.groups.map(({ id, kind }) => ({ id, kind })),
     },
     project,
+    targetRevision: evidence.quality.verdict === "correct"
+      ? application.committedRevision
+      : observationEndRevision,
   };
 }
 
-function mapItemCreate(item: AlignmentTrainingManifestItem, sample: PreparedSample) {
+/**
+ * 一次批量读取精确历史 target；任何缺失都整批失败，不能把当前 payload 当成历史 revision 的替代品。
+ * 来源事实已随 application include 一次取回，避免为最多 200 个样本制造逐项查询。
+ */
+async function prepareExportInputs(
+  transaction: Prisma.TransactionClient,
+  applications: readonly FreezeApplication[],
+  samples: readonly PreparedSample[],
+) {
+  const sampleByApplicationId = new Map(
+    samples.map((sample) => [sample.draft.alignmentApplicationId, sample]),
+  );
+  const historicalTargets = applications.flatMap((application) => {
+    const sample = requireMapValue(sampleByApplicationId, application.id);
+    if (sample.targetRevision === application.annotationFile.revision) return [];
+    if (sample.targetRevision > application.annotationFile.revision) {
+      throw conflict("训练目标 revision 晚于当前文件。", {
+        code: "alignment_training_export_target_unavailable",
+      });
+    }
+    return [{ annotationFileId: application.annotationFileId, revision: sample.targetRevision }];
+  });
+  const historicalRows = historicalTargets.length === 0
+    ? []
+    : await loadHistoricalTargetSnapshots(transaction, historicalTargets);
+  const historicalByKey = new Map(
+    historicalRows.map((row) => [targetSnapshotKey(row.annotationFileId, row.revision), row]),
+  );
+  const result = new Map<string, PreparedExportInput>();
+
+  for (const application of applications) {
+    const sample = requireMapValue(sampleByApplicationId, application.id);
+    const payload = sample.targetRevision === application.annotationFile.revision
+      ? application.annotationFile.payload
+      : resolveHistoricalTargetPayload(
+          historicalByKey.get(targetSnapshotKey(application.annotationFileId, sample.targetRevision)),
+        );
+    const parsed = parseCurrentProjectData(payload);
+    if (!parsed.success) {
+      throw conflict("训练目标快照不是当前可解释的标注文档格式。", {
+        code: "alignment_training_export_target_unavailable",
+      });
+    }
+    const target = prepareAlignmentTrainingTarget(parsed.data, {
+      inputTextFingerprint: application.run.inputTextFingerprint,
+      inputSentenceCount: application.run.inputSentenceCount,
+      inputCharacterCount: application.run.inputCharacterCount,
+    }, sha256Hex);
+    if (!target.ok) {
+      throw conflict("训练目标与原强制对齐输入不再一致。", {
+        code: target.code === "target_projection_mismatch"
+          ? "alignment_training_export_target_projection_mismatch"
+          : "alignment_training_export_target_invalid",
+      });
+    }
+    const resolvedSource = resolveFrozenRunAudioSource(application);
+    if (!resolvedSource) {
+      throw conflict("强制对齐音频来源已变化或不再可用于训练导出。", {
+        code: "alignment_training_export_source_unavailable",
+      });
+    }
+    const source = prepareAlignmentTrainingSource(
+      resolvedSource,
+      application.run.audioOffsetMicros,
+      sha256Hex,
+    );
+    if (!source.ok) {
+      throw conflict("强制对齐音频来源快照不完整。", {
+        code: "alignment_training_export_source_invalid",
+      });
+    }
+    result.set(application.id, { target: target.value, source: source.value });
+  }
+  return result;
+}
+
+async function loadHistoricalTargetSnapshots(
+  transaction: Prisma.TransactionClient,
+  targets: ReadonlyArray<{ annotationFileId: string; revision: number }>,
+) {
+  const uniqueTargets = [...new Map(targets.map((target) => [
+    targetSnapshotKey(target.annotationFileId, target.revision),
+    target,
+  ])).values()];
+  const values = uniqueTargets.map((target) =>
+    Prisma.sql`(${target.annotationFileId}::text, ${target.revision}::integer)`);
+  const rows = await transaction.$queryRaw<HistoricalTargetSnapshotRow[]>(Prisma.sql`
+    WITH targets("annotationFileId", "revision") AS (
+      VALUES ${Prisma.join(values)}
+    )
+    SELECT
+      snapshot."id",
+      snapshot."annotation_file_id" AS "annotationFileId",
+      snapshot."revision",
+      snapshot."storage_mode"::text AS "storageMode",
+      snapshot."payload",
+      snapshot."payload_sha256" AS "payloadSha256"
+    FROM "annotation_recovery_snapshots" AS snapshot
+    INNER JOIN targets
+      ON targets."annotationFileId" = snapshot."annotation_file_id"
+     AND targets."revision" = snapshot."revision"
+    ORDER BY snapshot."annotation_file_id" ASC, snapshot."revision" ASC
+  `);
+  if (rows.length !== uniqueTargets.length) {
+    throw conflict("训练目标 revision 缺少精确恢复快照。", {
+      code: "alignment_training_export_target_unavailable",
+    });
+  }
+  return rows;
+}
+
+function resolveHistoricalTargetPayload(row: HistoricalTargetSnapshotRow | undefined) {
+  if (!row) {
+    throw conflict("训练目标 revision 缺少精确恢复快照。", {
+      code: "alignment_training_export_target_unavailable",
+    });
+  }
+  const resolved = resolveAnnotationRecoverySnapshotPayload(row);
+  if (!resolved.ok) {
+    throw conflict("训练目标恢复快照当前不可安全解析。", {
+      code: "alignment_training_export_target_unavailable",
+      reason: resolved.code,
+    });
+  }
+  return resolved.payload;
+}
+
+function targetSnapshotKey(annotationFileId: string, revision: number) {
+  return `${annotationFileId}:${revision}`;
+}
+
+/** 当前关系必须仍能重建 run 的同一稳定来源；这里只返回稳定事实，不请求 VOD 播放地址。 */
+function resolveFrozenRunAudioSource(
+  application: FreezeApplication,
+): ReadyAnalysisAudioSource | null {
+  const { run } = application;
+  const media = run.sourceMedia;
+  const track = run.mediaAudioTrack;
+  if (
+    !media ||
+    !track ||
+    !track.enabled ||
+    run.sourceMediaResourceId !== media.resourceId ||
+    run.sourceMediaResourceIdSnapshot !== media.resourceId ||
+    run.mediaAudioTrackId !== track.id ||
+    run.mediaAudioTrackIdSnapshot !== track.id ||
+    application.annotationFile.mediaResourceId !== track.primaryMediaResourceId ||
+    media.resource.type !== "media_file" ||
+    media.resource.archivedAt ||
+    media.resource.trashedAt
+  ) return null;
+
+  let sourceVodRenditionJobId: string | null = null;
+  if (track.kind === "original") {
+    if (track.primaryMediaResourceId !== media.resourceId) return null;
+  } else if (track.audioMediaResourceId === media.resourceId && media.mediaKind === "audio") {
+    // 平台上传或独立 VOD 音频沿用媒体本身的稳定 fingerprint。
+  } else if (
+    track.vodRenditionMediaResourceId === media.resourceId &&
+    track.vodRenditionJobId &&
+    track.vodRenditionFormat === "mp3" &&
+    media.sourceType === "aliyun_vod" &&
+    media.mediaKind === "video"
+  ) {
+    sourceVodRenditionJobId = track.vodRenditionJobId;
+  } else {
+    return null;
+  }
+
+  let currentFingerprint: string | null;
+  try {
+    currentFingerprint = sourceVodRenditionJobId
+      ? createMediaAnalysisSourceFingerprint({
+          sourceType: "aliyun_vod_rendition",
+          mediaResourceId: media.resourceId,
+          region: media.aliyunVodRegion,
+          videoId: media.aliyunVodVideoId,
+          jobId: sourceVodRenditionJobId,
+          format: "mp3",
+        })
+      : createMediaAnalysisSourceFingerprint(
+          media.sourceType === "uploaded"
+            ? {
+                sourceType: "uploaded",
+                mediaResourceId: media.resourceId,
+                fileId: media.file?.id ?? null,
+                checksum: media.file?.checksum ?? null,
+                size: media.file?.size ?? null,
+              }
+            : {
+                sourceType: "aliyun_vod",
+                mediaResourceId: media.resourceId,
+                region: media.aliyunVodRegion,
+                videoId: media.aliyunVodVideoId,
+                duration: media.duration,
+              },
+        );
+  } catch {
+    return null;
+  }
+  if (!currentFingerprint || currentFingerprint !== run.sourceFingerprint) return null;
+  return {
+    offsetSeconds: track.offsetSeconds,
+    media,
+    mediaFingerprint: currentFingerprint,
+    sourceVodRenditionJobId,
+  };
+}
+
+function mapItemCreate(
+  item: AlignmentTrainingManifestItem,
+  sample: PreparedSample,
+  input: PreparedExportInput,
+) {
   return {
     alignmentApplicationId: item.alignmentApplicationId,
     annotationFileIdSnapshot: item.annotationFileId,
@@ -653,6 +1006,18 @@ function mapItemCreate(item: AlignmentTrainingManifestItem, sample: PreparedSamp
         displayNameSnapshot: group.displayName,
       })),
     },
+    input: {
+      create: {
+        sourceFileId: input.source.sourceFileId,
+        targetSnapshot: input.target.snapshot as unknown as Prisma.InputJsonValue,
+        targetSnapshotChecksum: input.target.checksum,
+        targetSentenceCount: input.target.snapshot.sentenceCount,
+        targetCharacterCount: input.target.snapshot.characterCount,
+        targetSnapshotBytes: input.target.bytes,
+        sourceSnapshot: input.source.snapshot as unknown as Prisma.InputJsonValue,
+        sourceSnapshotChecksum: input.source.checksum,
+      },
+    },
   };
 }
 
@@ -670,19 +1035,7 @@ function sha256Hex(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function mapExistingExport(row: {
-  id: string;
-  manifest: Prisma.JsonValue;
-  manifestFormat: string;
-  manifestVersion: number;
-  manifestChecksum: string;
-  splitSeedHash: string;
-  splitRatios: Prisma.JsonValue;
-  splitCounts: Prisma.JsonValue;
-  sampleCount: number;
-  componentCount: number;
-  createdAt: Date;
-}) {
+function mapExistingExport(row: ExistingTrainingExport) {
   const parsed = parseAlignmentTrainingManifest(row.manifest, sha256Hex);
   if (
     !parsed.ok ||
@@ -699,7 +1052,95 @@ function mapExistingExport(row: {
       code: "alignment_training_export_corrupt",
     });
   }
+  const inputColumns = [
+    row.inputManifestFormat,
+    row.inputManifestVersion,
+    row.inputManifestChecksum,
+    row.inputManifest,
+    row.targetSentenceCount,
+    row.targetCharacterCount,
+    row.targetSnapshotBytes,
+  ];
+  const presentInputColumns = inputColumns.filter((value) => value !== null).length;
+  if (presentInputColumns === 0) {
+    // 迁移前冻结记录没有输入行；顶层全空且逐项也全空时，仍可作为 provenance-only 结果读取。
+    if (row.items.some((item) => item.input !== null)) throwCorruptExport();
+  } else {
+    const inputParsed = parseAlignmentTrainingInputManifest(row.inputManifest, sha256Hex);
+    if (
+      presentInputColumns !== inputColumns.length ||
+      !inputParsed.ok ||
+      row.inputManifestFormat !== ALIGNMENT_TRAINING_INPUT_MANIFEST_FORMAT ||
+      row.inputManifestVersion !== ALIGNMENT_TRAINING_INPUT_MANIFEST_VERSION ||
+      row.inputManifestChecksum !== inputParsed.manifest.checksum ||
+      inputParsed.manifest.provenanceManifestChecksum !== row.manifestChecksum ||
+      row.targetSentenceCount !== inputParsed.manifest.targetSentenceCount ||
+      row.targetCharacterCount !== inputParsed.manifest.targetCharacterCount ||
+      row.targetSnapshotBytes !== inputParsed.manifest.targetSnapshotBytes
+    ) {
+      throwCorruptExport();
+    }
+    validateStoredExportInputRows(row, parsed.value, inputParsed.manifest);
+  }
   return mapManifestSummary(row.id, row.createdAt, parsed.value);
+}
+
+/**
+ * 幂等重放必须验证真实输入行，而不能只信任顶层 manifest。后续 worker 会再次执行相同边界校验，
+ * 这里先阻止缺行、换 artifact、篡改 target/source 或错误 FileObject 关系被伪装成健康冻结结果。
+ */
+function validateStoredExportInputRows(
+  row: ExistingTrainingExport,
+  provenance: Extract<ReturnType<typeof parseAlignmentTrainingManifest>, { ok: true }>["value"],
+  inputManifest: Extract<ReturnType<typeof parseAlignmentTrainingInputManifest>, { ok: true }>["manifest"],
+) {
+  if (row.items.length !== inputManifest.itemCount || provenance.items.length !== row.items.length) {
+    throwCorruptExport();
+  }
+  const storedByApplicationId = new Map(
+    row.items.map((item) => [item.alignmentApplicationId, item]),
+  );
+  const provenanceByApplicationId = new Map(
+    provenance.items.map((item) => [item.alignmentApplicationId, item]),
+  );
+  for (const item of inputManifest.items) {
+    const stored = storedByApplicationId.get(item.alignmentApplicationId);
+    const provenanceItem = provenanceByApplicationId.get(item.alignmentApplicationId);
+    if (
+      !stored?.input ||
+      !provenanceItem ||
+      stored.alignmentArtifactId !== item.alignmentArtifactId ||
+      provenanceItem.alignmentArtifactId !== item.alignmentArtifactId ||
+      provenanceItem.artifact.checksum !== item.artifactChecksum
+    ) throwCorruptExport();
+
+    const target = parseAlignmentTrainingTargetSnapshot(stored.input.targetSnapshot);
+    const source = parseAlignmentTrainingSourceSnapshot(stored.input.sourceSnapshot);
+    if (!target.ok || !source.ok) throwCorruptExport();
+    const targetJson = canonicalAlignmentTrainingJson(target.value);
+    const targetChecksum = sha256Hex(targetJson);
+    const sourceChecksum = sha256Hex(canonicalAlignmentTrainingJson(source.value));
+    const expectedSourceFileId = source.value.kind === "uploaded" ? source.value.fileId : null;
+    if (
+      stored.input.targetSnapshotChecksum !== targetChecksum ||
+      item.targetSnapshotChecksum !== targetChecksum ||
+      stored.input.targetSentenceCount !== target.value.sentenceCount ||
+      item.targetSentenceCount !== target.value.sentenceCount ||
+      stored.input.targetCharacterCount !== target.value.characterCount ||
+      item.targetCharacterCount !== target.value.characterCount ||
+      stored.input.targetSnapshotBytes !== Buffer.byteLength(targetJson, "utf8") ||
+      item.targetSnapshotBytes !== stored.input.targetSnapshotBytes ||
+      stored.input.sourceSnapshotChecksum !== sourceChecksum ||
+      item.sourceSnapshotChecksum !== sourceChecksum ||
+      stored.input.sourceFileId !== expectedSourceFileId
+    ) throwCorruptExport();
+  }
+}
+
+function throwCorruptExport(): never {
+  throw conflict("已冻结训练输入清单的完整性校验失败。", {
+    code: "alignment_training_export_corrupt",
+  });
 }
 
 function mapManifestSummary(

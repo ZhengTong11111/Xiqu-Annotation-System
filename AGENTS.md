@@ -237,6 +237,13 @@ Main currently contains all major recent feature lines that matter for context:
   bounded Serializable transaction. It stores only canonical manifest and item/group provenance snapshots; it must never mutate document,
   operation, snapshot, review or workflow facts, create a ProcessingJob, infer groups, or persist prediction/audio content. Identical
   concurrent actions may reopen a fresh transaction only for Prisma `P2034`, with a strict retry bound; other errors are not retryable
+- export-ready force-alignment freezes additionally require one exact target/source input row per item. The target is derived from the
+  current payload only at the exact target revision or from the exact inline recovery snapshot; missing, hash-invalid, unsupported or
+  text-projection-drifted history fails closed and must never fall back to the current document. Target snapshots contain bounded stable
+  sentence/character ids and integer microsecond timings only. Source snapshots contain stable uploaded-object or VOD/rendition identity,
+  never temporary URLs or credentials. Uploaded `FileObject` and prediction `AlignmentArtifact` references are protected by `RESTRICT`,
+  and object-lifecycle orphan checks must count training-input references. Legacy provenance-only exports remain readable but are not
+  export-ready; idempotent replay of a new export must validate both manifests and every persisted target/source row
 - force-alignment tool attempts are a lightweight governance/training side table, never ProjectData or document history. Their
   administrator CSV is generated only by the API after fresh full-resource authorization, accepts at most a 90-day half-open
   window, reads in bounded batches, exports at most 10,000 rows with an explicit truncation header, and uses the shared CSV
@@ -470,7 +477,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     client-UUID create idempotency, project revision settlement, current ACL rechecks and finite audit facts
   - groups are global reusable identities but display names are not identity. Creation and project assignment stay separate so a delayed
     create retry cannot resurrect an unlinked group; no API may infer groups from resource metadata or copy project assignments
-- `apps/api/src/alignmentTrainingEvidence.ts` + `apps/api/src/alignmentTrainingExportService.ts`
+- `apps/api/src/alignmentTrainingEvidence.ts` + `apps/api/src/alignmentTrainingExportInput.ts` +
+  `apps/api/src/alignmentTrainingExportService.ts` + `packages/document-model/src/alignmentTrainingTargetSnapshot.ts` +
+  `packages/document-model/src/alignmentTrainingInputManifest.ts`
   - the shared pure evidence derivation and the only immutable training-freeze write boundary. Candidate display and freeze validation
     must use the same timing/assessment aggregation rather than drifting into duplicate algorithms
   - freeze requests contain only a bounded explicit application set, seed hash and exact split ratios. The service rechecks current
@@ -478,12 +487,17 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     later object-export work must consume these frozen facts instead of rereading mutable candidate UI state
   - the actor-scoped action UUID is the idempotency identity. Serializable `P2034` may be retried at most three times so a concurrent
     identical action can observe the winning commit; validation, ACL, lifecycle, planner and storage errors must never enter that retry
+  - export-ready input uses an exact revision target snapshot and a stable source snapshot. Stable annotation entity ids may be historical
+    non-UUID strings, so the target contract bounds and rejects control characters without rewriting identity. Canonical checksums, counts,
+    byte limits and per-row replay validation are mandatory; later workers must not reconstruct labels from mutable current ProjectData
 - `src/platform/AlignmentRunsDialog.tsx`
   - low-frequency bounded run history and explicit apply confirmation; an ambiguous retry reuses its session action UUID
   - the editor blocks new mutations from request start through authoritative refetch. The dialog must never apply prediction timing locally
 - `apps/api/src/objectLifecycleService.ts` + `apps/api/src/backup/backupService.ts`
   - both FileObject and MediaAnalysisAsset storage keys are authoritative references; lifecycle cleanup and backup warnings
     must not classify analysis tiles as orphan binaries
+  - a FileObject referenced only by `AlignmentTrainingExportInput` is still live. Both the inspection query and the delete-time recheck must
+    require zero MediaFile and zero training-input references before deleting the database row or binary
   - future permanent Trash deletion must start from each trashed logical root and purge its complete descendant subtree;
     descendants usually inherit Trash state and need not carry `trashedAt`, so never implement this as a flat
     `DELETE WHERE trashed_at IS NOT NULL`. Use the root timestamp for retention, lock/revalidate the tree and permissions,
