@@ -10506,3 +10506,35 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：FA-D1c1 严格合同、草稿/rebase 连续性、定点送达、canonical 语义验证、operation/revision 原子绑定、精确重放、
   全量回归、自审与规范文档。**待推进**：FA-D1c2 管理员有界 CSV；随后进入 FA-D2 AlignmentRun。此次没有部署生产、执行
   migration、写入或清理生产数据，也没有把 Force Alignment 与 HC2 上线窗口合并。
+
+## 2026-09-02：FA-D1c2 管理员有界工具尝试 CSV
+
+### 查询与授权边界
+
+- `AnnotationToolAttemptService` 现在由一个时间窗 helper 同时约束管理员聚合和 CSV：严格半开区间 `[from,to)`、`from < to`、
+  最长 90 天。导出每次重新执行 `assertFullResourceAccess()`，普通账号不能枚举跨账号、文件或句子的工具行为。
+- 导出按 `invokedAt ASC, id ASC` 复合总序，每批最多 500 行，最多收集 10,001 行；正文只输出前 10,000 行，第 10,001 行
+  只用于设置 `truncated=true`。HTTP 返回独立的 count/truncated 响应头和 UTC 文件名，跨源开发配置也显式暴露这些头。
+- 没有增加 cursor/limit/账号/文件筛选参数、前端拼接或第二查询 owner。需要完整数据时管理员必须缩小时间窗分批导出，不能
+  通过单请求移除容量门禁。
+
+### 数据最小化与 CSV 安全
+
+- 新增纯 `annotationToolAttemptExport.ts`，固定输出 attempt、event、entry point、生命周期时间、终态、免提示、字符数、句长、
+  固定 reasonCode、账号/文件/句子 id 和 operation/revision provenance。查询使用显式 Prisma `select`，不加载关联账号、文件、
+  句子正文、ProjectData、命令、审核或媒体内容。
+- `details` 不作为 JSON 导出；只有共享枚举中的 `reasonCode` 可离开服务端，未知或异常历史值留空。所有字段复用现有审计 CSV
+  的 BOM、CRLF、统一引用、NUL 清理和 `= + - @` 公式前缀防护，没有复制另一套转义实现。
+- 导出是纯只读路径。集成测试对导出前后旁表行做完整比较，并用 10,001 条真实 PostgreSQL 记录验证稳定分页、10,000 行截断
+  和数据库零删除/零改写。
+
+### 验证、自审与状态
+
+- `test:annotation-tool-attempts` 10/10；完整 `test:api` 309/309；真实 HTTP 管理员/普通账号下载用例所在平台集成 44/44；
+  完整 `npm run build` 和 `git diff --check` 通过。第一次手工定向命令因 shell 没有全局 `tsc` 未执行，改用项目本地
+  `npm exec tsc --` 后完整通过；这不是代码失败。仅保留既有 Vite 主 chunk 大小提示与 pg 并发 query deprecation warning。
+- 自审确认没有 schema/migration、数据回填、自由文本出口、N+1 关联、重复授权 owner、重复 CSV 转义或未使用接口；复杂分页与
+  数据最小化逻辑具有中文注释。
+- **已完成**：FA-D1c2 服务、CSV、HTTP、授权、容量/隐私测试、自审和规范文档。**待推进**：FA-D2 AlignmentRun 与预测对象；
+  进入该阶段前需重新核对现有 processing-job/object-storage 模型并重写任务单。本轮没有部署生产、执行生产 migration、修改或
+  清理任何生产 annotation、operation、snapshot、review 或 attempt 数据。

@@ -190,6 +190,12 @@ Main currently contains all major recent feature lines that matter for context:
   `crypto.randomUUID()` is unavailable, so frontend code must never call it directly. The helper prefers native UUID,
   falls back to `crypto.getRandomValues()` UUID v4, and reserves the non-crypto fallback only for old-browser identity,
   never credentials or authorization values
+- force-alignment tool attempts are a lightweight governance/training side table, never ProjectData or document history. Their
+  administrator CSV is generated only by the API after fresh full-resource authorization, accepts at most a 90-day half-open
+  window, reads in bounded batches, exports at most 10,000 rows with an explicit truncation header, and uses the shared CSV
+  formula-injection guard. It may expose only fixed identifiers, timestamps, enums, counts and operation/revision provenance;
+  never add sentence text, ProjectData, command payloads, before/after values, media URLs, credentials, errors or free-form JSON
+  to this export
 
 If starting a new conversation, assume the repo is already beyond the earlier simple waveform-only stage.
 

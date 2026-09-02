@@ -105,12 +105,17 @@ annotationOperationId / committedRevision / details
   operation 与 audit。专项 12/6/6 项、草稿 41 项、rebase 13 项、客户端原子提交 34 项、完整 API 304 项和完整构建通过，
   未部署生产。
 
-### FA-D1c2：管理员统计导出（下一阶段）
+### FA-D1c2：管理员统计导出（代码已完成）
 
-- 在现有 90 天有界聚合之上增加管理员 CSV；导出重新执行管理员权限、时间窗和行数上限，不由浏览器拼接已加载结果。
-- 普通用户不能读取跨账号事实；CSV 不包含 ProjectData、命令 payload、媒体 URL、凭据或其他大字段。
+- 在现有 90 天半开时间窗聚合之上增加服务端管理员 CSV。每次导出重新执行全局管理权限，按
+  `invokedAt ASC, id ASC` 分批读取，最多输出 10,000 行并以响应头明确报告条数和截断；浏览器不能用局部结果拼接跨账号事实。
+- 固定列只含 attempt/event/entry/timestamps/outcome/suppressPrompt/counts/reasonCode、账号/文件/句子 id 与真实
+  operation/revision provenance。不联表展开账号名、文件名或正文，不输出 details JSON、ProjectData、命令 payload、
+  before/after、媒体 URL、凭据或错误文本；未知 reasonCode 留空，所有单元格复用审计 CSV 的公式注入防护。
+- 普通用户稳定 403，非法、倒置或超过 90 天的时间窗稳定 400。真实 PostgreSQL 10,001 行夹具证明稳定分页和显式截断，
+  HTTP 集成验证下载头与授权；专项 10 项、完整 API 308 项、平台集成 44 项和完整构建通过。本阶段无 schema/数据写入且未部署生产。
 
-### FA-D2：AlignmentRun 与预测对象
+### FA-D2：AlignmentRun 与预测对象（下一阶段）
 
 - 复用 processing job 和对象存储建立 run provenance、压缩预测 artifact、manifest/checksum 与失败补偿。
 - 不保存临时 URL、凭据和逐帧大矩阵；应用结果与 operation 关联。

@@ -11,11 +11,23 @@ import {
 } from "@xiqu/shared";
 import { stableJsonStringify } from "./annotationOperationIdempotency.js";
 import { assertActiveAnnotationFile } from "./annotationFileActivity.js";
+import {
+  buildAnnotationToolAttemptCsv,
+  type AnnotationToolAttemptExportRow,
+} from "./annotationToolAttemptExport.js";
 import type { ApiUser } from "./domain.js";
 import { badRequest, conflict, notFound } from "./errors.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
 
 const MAX_SUMMARY_WINDOW_MS = 90 * 24 * 60 * 60 * 1_000;
+const ANNOTATION_TOOL_ATTEMPT_EXPORT_MAX_ROWS = 10_000;
+const ANNOTATION_TOOL_ATTEMPT_EXPORT_BATCH_SIZE = 500;
+
+export type AnnotationToolAttemptCsvExport = {
+  csv: string;
+  exportedCount: number;
+  truncated: boolean;
+};
 
 /** 工具尝试的唯一事务 owner；前端队列、router 和未来 command commit 不得复制生命周期合并规则。 */
 export class AnnotationToolAttemptService {
@@ -75,12 +87,7 @@ export class AnnotationToolAttemptService {
     input: { from: Date; to: Date },
   ): Promise<AnnotationToolAttemptSummary> {
     await this.access.assertFullResourceAccess(user);
-    const fromMs = input.from.getTime();
-    const toMs = input.to.getTime();
-    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs >= toMs ||
-      toMs - fromMs > MAX_SUMMARY_WINDOW_MS) {
-      throw badRequest("工具尝试汇总时间范围不正确。");
-    }
+    assertAttemptTimeWindow(input);
     const groups = await this.prisma.annotationToolAttempt.groupBy({
       by: ["eventName", "entryPoint", "outcome"],
       where: { invokedAt: { gte: input.from, lt: input.to } },
@@ -105,6 +112,83 @@ export class AnnotationToolAttemptService {
       byEntryPoint,
       byOutcome,
     };
+  }
+
+  async exportAttempts(
+    user: ApiUser,
+    input: { from: Date; to: Date },
+  ): Promise<AnnotationToolAttemptCsvExport> {
+    await this.access.assertFullResourceAccess(user);
+    assertAttemptTimeWindow(input);
+    const rows: AnnotationToolAttemptExportRow[] = [];
+    let cursor: Pick<AnnotationToolAttemptExportRow, "invokedAt" | "id"> | null = null;
+    const targetCount = ANNOTATION_TOOL_ATTEMPT_EXPORT_MAX_ROWS + 1;
+
+    // 使用 invokedAt + id 的复合锚点分批前进；额外读取一行只用于报告截断，不进入导出正文。
+    while (rows.length < targetCount) {
+      const take = Math.min(
+        ANNOTATION_TOOL_ATTEMPT_EXPORT_BATCH_SIZE,
+        targetCount - rows.length,
+      );
+      const page: AnnotationToolAttemptExportRow[] = await this.prisma.annotationToolAttempt.findMany({
+        where: {
+          AND: [
+            { invokedAt: { gte: input.from, lt: input.to } },
+            ...(cursor ? [{
+              OR: [
+                { invokedAt: { gt: cursor.invokedAt } },
+                { invokedAt: cursor.invokedAt, id: { gt: cursor.id } },
+              ],
+            }] : []),
+          ],
+        },
+        orderBy: [{ invokedAt: "asc" }, { id: "asc" }],
+        take,
+        select: {
+          id: true,
+          eventName: true,
+          actorUserId: true,
+          annotationFileId: true,
+          sentenceId: true,
+          entryPoint: true,
+          invokedAt: true,
+          confirmedAt: true,
+          finishedAt: true,
+          outcome: true,
+          suppressPrompt: true,
+          characterCount: true,
+          sentenceDurationMs: true,
+          annotationOperationId: true,
+          committedRevision: true,
+          details: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+      if (!page.length) break;
+      rows.push(...page);
+      const last: AnnotationToolAttemptExportRow = page.at(-1)!;
+      cursor = { invokedAt: last.invokedAt, id: last.id };
+      if (page.length < take) break;
+    }
+
+    const truncated = rows.length > ANNOTATION_TOOL_ATTEMPT_EXPORT_MAX_ROWS;
+    const exportedRows = rows.slice(0, ANNOTATION_TOOL_ATTEMPT_EXPORT_MAX_ROWS);
+    return {
+      csv: buildAnnotationToolAttemptCsv(exportedRows),
+      exportedCount: exportedRows.length,
+      truncated,
+    };
+  }
+}
+
+/** 聚合与导出共用同一半开时间窗，避免两个管理员入口逐渐产生不同的容量边界。 */
+function assertAttemptTimeWindow(input: { from: Date; to: Date }) {
+  const fromMs = input.from.getTime();
+  const toMs = input.to.getTime();
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs >= toMs ||
+    toMs - fromMs > MAX_SUMMARY_WINDOW_MS) {
+    throw badRequest("工具尝试统计时间范围不正确。");
   }
 }
 

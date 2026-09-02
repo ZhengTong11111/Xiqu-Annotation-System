@@ -235,6 +235,8 @@ export async function buildApiApp(
         "Content-Disposition",
         "X-Audit-Export-Count",
         "X-Audit-Export-Truncated",
+        "X-Tool-Attempt-Export-Count",
+        "X-Tool-Attempt-Export-Truncated",
       ],
     });
   }

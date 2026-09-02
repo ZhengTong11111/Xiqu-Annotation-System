@@ -71,10 +71,67 @@ test("工具尝试批量幂等、单调补齐、撤权送达与管理员汇总",
     assert.equal(summary.total, 1);
     assert.equal(summary.byOutcome.no_change, 1);
     assert.equal(summary.byOutcome.pending, 0);
+    const beforeExport = await prisma.annotationToolAttempt.findUniqueOrThrow({ where: { id: ATTEMPT_ID } });
+    const exported = await service.exportAttempts(admin, {
+      from: new Date("2026-09-01T00:00:00.000Z"),
+      to: new Date("2026-09-03T00:00:00.000Z"),
+    });
+    assert.equal(exported.exportedCount, 1);
+    assert.equal(exported.truncated, false);
+    assert.match(exported.csv, new RegExp(ATTEMPT_ID, "u"));
+    assert.match(exported.csv, /"no_change"/u);
+    const afterExport = await prisma.annotationToolAttempt.findUniqueOrThrow({ where: { id: ATTEMPT_ID } });
+    assert.deepEqual(afterExport, beforeExport, "只读导出不能更新工具尝试行");
     await assert.rejects(() => service.summarize(annotator, {
       from: new Date("2026-09-01T00:00:00.000Z"),
       to: new Date("2026-09-03T00:00:00.000Z"),
     }), /管理员/u);
+    await assert.rejects(() => service.exportAttempts(annotator, {
+      from: new Date("2026-09-01T00:00:00.000Z"),
+      to: new Date("2026-09-03T00:00:00.000Z"),
+    }), /管理员/u);
+    await assert.rejects(() => service.exportAttempts(admin, {
+      from: new Date("2026-01-01T00:00:00.000Z"),
+      to: new Date("2026-09-03T00:00:00.000Z"),
+    }), /时间范围/u);
+  } finally {
+    await closeConnections(connections);
+  }
+});
+
+test("工具尝试 CSV 按调用时间和 ID 稳定排序并明确报告一万行截断", async () => {
+  const connections = createTestPrisma();
+  const { prisma } = connections;
+  await truncateTestDatabase(prisma);
+  try {
+    const admin = await createUser(prisma, "attempt-export-admin", "super_admin");
+    const invokedAt = new Date("2026-09-02T00:00:00.000Z");
+    // 直接构造 10,001 条轻量旁表事实，验证真实数据库分页边界，而不是以测试专用参数缩小生产上限。
+    await prisma.annotationToolAttempt.createMany({
+      data: Array.from({ length: 10_001 }, (_, index) => ({
+        id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+        eventName: "sentence_character_even_timing_reset",
+        sentenceId: `sentence-${index}`,
+        entryPoint: index % 2 === 0 ? "sentence_list" : "timeline_context_menu",
+        invokedAt,
+        outcome: null,
+        suppressPrompt: false,
+        characterCount: 4,
+        sentenceDurationMs: 2_000,
+      })),
+    });
+
+    const service = new AnnotationToolAttemptService(prisma, new ResourceAccessService(prisma));
+    const exported = await service.exportAttempts(admin, {
+      from: new Date("2026-09-01T00:00:00.000Z"),
+      to: new Date("2026-09-03T00:00:00.000Z"),
+    });
+    assert.equal(exported.exportedCount, 10_000);
+    assert.equal(exported.truncated, true);
+    assert.match(exported.csv, /00000000-0000-4000-8000-000000000000/u);
+    assert.match(exported.csv, /00000000-0000-4000-8000-000000009999/u);
+    assert.doesNotMatch(exported.csv, /00000000-0000-4000-8000-000000010000/u);
+    assert.equal(await prisma.annotationToolAttempt.count(), 10_001);
   } finally {
     await closeConnections(connections);
   }

@@ -211,6 +211,46 @@ test("平台资源 API 集成测试", async (suite) => {
       );
     });
 
+    await suite.test("工具尝试 CSV 仅由管理员按有界时间窗下载", async () => {
+      const attemptId = randomUUID();
+      const invokedAt = new Date();
+      await prisma.annotationToolAttempt.create({
+        data: {
+          id: attemptId,
+          eventName: "sentence_character_even_timing_reset",
+          sentenceId: "integration-export-sentence",
+          entryPoint: "sentence_list",
+          invokedAt,
+          suppressPrompt: false,
+          characterCount: 4,
+          sentenceDurationMs: 2_000,
+        },
+      });
+      const from = new Date(invokedAt.getTime() - 1_000).toISOString();
+      const to = new Date(invokedAt.getTime() + 1_000).toISOString();
+      const url = `/api/admin/annotation-tool-attempts/export?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+
+      const denied = await app.inject({
+        method: "GET",
+        url,
+        headers: { authorization: `Bearer ${studentToken}` },
+      });
+      assert.equal(denied.statusCode, 403);
+
+      const exported = await app.inject({
+        method: "GET",
+        url,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      assert.equal(exported.statusCode, 200, exported.body);
+      assert.match(exported.headers["content-type"] ?? "", /text\/csv/u);
+      assert.match(exported.headers["content-disposition"] ?? "", /xiqu-annotation-tool-attempts-/u);
+      assert.equal(exported.headers["x-tool-attempt-export-count"], "1");
+      assert.equal(exported.headers["x-tool-attempt-export-truncated"], "false");
+      assert.match(exported.body, new RegExp(attemptId, "u"));
+      await prisma.annotationToolAttempt.delete({ where: { id: attemptId } });
+    });
+
     await suite.test("账号生命周期仅由系统管理员治理并立即撤销失效会话", async () => {
       const forbiddenList = await jsonRequest(app, teacherToken, {
         method: "GET",

@@ -1821,6 +1821,31 @@ export function registerApiRoutes(
       );
     },
   );
+
+  app.get<{ Querystring: { from?: unknown; to?: unknown } }>(
+    "/api/admin/annotation-tool-attempts/export",
+    async (request, reply) => {
+      const to = parseSummaryTimestamp(request.query.to, new Date());
+      const from = parseSummaryTimestamp(
+        request.query.from,
+        new Date(to.getTime() - 7 * 24 * 60 * 60 * 1_000),
+      );
+      // CSV 必须由服务端重新查询并授权；浏览器不能用局部汇总结果拼接跨账号事实。
+      const result = await annotationToolAttempts.exportAttempts(
+        await getCurrentUser(repository, request),
+        { from, to },
+      );
+      const timestamp = new Date().toISOString().replaceAll(/[-:]/g, "").slice(0, 15);
+      reply.header("Content-Type", "text/csv; charset=utf-8");
+      reply.header(
+        "Content-Disposition",
+        `attachment; filename="xiqu-annotation-tool-attempts-${timestamp}.csv"`,
+      );
+      reply.header("X-Tool-Attempt-Export-Count", String(result.exportedCount));
+      reply.header("X-Tool-Attempt-Export-Truncated", String(result.truncated));
+      return result.csv;
+    },
+  );
 }
 
 function parseSummaryTimestamp(value: unknown, fallback: Date) {

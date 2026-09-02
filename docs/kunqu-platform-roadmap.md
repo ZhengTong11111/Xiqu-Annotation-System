@@ -1149,9 +1149,9 @@ R5 完成不代表 R7 公网生产验收；真实云 IAM、TLS 续期、外部�
 
 > 工具行为、模型运行、人工修正、质量标签、容量预算和训练导出按
 > [`force-alignment-data-roadmap.md`](./force-alignment-data-roadmap.md) 的 FA-D0 至 FA-D3 滚动推进。FA-D0 已完成
-> 容量与合同规划；FA-D1a 服务端轻量旁表和 FA-D1b 账号级 IndexedDB 生命周期/离线续传均已完成代码。当前进入
-> FA-D1c1 已完成：pending operation 的严格 attempt 身份可跨草稿/rebase/切批保存，command commit 复用 canonical 平均
-> 分配算法并与真实 operation/revision 原子绑定，失败不改写文件。当前进入独立 FA-D1c2，提供有界管理员 CSV。
+> 容量与合同规划；FA-D1a 服务端轻量旁表、FA-D1b 账号级 IndexedDB 生命周期/离线续传和 FA-D1c1 原子
+> operation/revision 绑定均已完成代码。FA-D1c2 也已完成：管理员 CSV 每次重新授权，使用 90 天半开窗口、稳定有界批读、
+> 10,000 行硬上限与显式截断，只输出固定轻量溯源列并复用公式注入防护。当前进入 FA-D2 AlignmentRun 与预测对象设计。
 > 行为旁表使用独立
 > migration，生产上线时必须先部署并观察 HC2，再部署 Force Alignment，不能把
 > 两项 schema/数据生命周期变化混成一次发布。
