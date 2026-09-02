@@ -7,9 +7,10 @@
 Force alignment 数据采集涉及 schema、前端离线送达、annotation operation 事务、对象存储、容量监控与训练导出，
 不适合一轮 `CLAUDE_WORK.md` 全部完成，采用 FA-D0 至 FA-D3 滚动实施。
 
-生产数据库当前约 4.5GB，恢复快照已占约 4.27GB。行为统计必须等待
-[`annotation-history-capacity-roadmap.md`](./annotation-history-capacity-roadmap.md) 的 HC1 dry-run 先给出历史增长边界；
-两项可以共享容量指标，但绝不能把快照 compaction 与行为表 migration 混成一次上线。
+生产数据库当前约 4.5GB，恢复快照已占约 4.27GB。
+[`annotation-history-capacity-roadmap.md`](./annotation-history-capacity-roadmap.md) 的 HC1 已完成：生产样本证明当前格式冷历史
+可以无损 recipe 重建，但大量旧格式必须继续 inline。行为旁表因此等待 HC2 expand schema/resolver 独立完成、测试、提交并
+部署观察后再启动；两项可以共享容量指标，但绝不能把快照 compaction 与行为表 migration 混成一次上线。
 
 ## 2. 只记录高价值事实
 
@@ -70,6 +71,7 @@ annotationOperationId / committedRevision / details
 
 ### FA-D1a：服务端轻量旁表
 
+- 前置门禁：HC2 加法 schema/resolver 已独立落地并观察，且本阶段使用另一条 migration 和回滚边界。
 - 加法 migration、严格 shared parser、service、批量 create/update 和聚合查询。
 - 只支持 `sentence_character_even_timing_reset`；外部 API 不能写 committed。
 - 隔离测试覆盖幂等、权限、终态、大小和删除 SetNull；不接 UI、不部署生产。

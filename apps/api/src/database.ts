@@ -38,6 +38,47 @@ export function createPrismaConnection(databaseUrl: string) {
   return { prisma, pool, maintenancePool, collaborationPool, schema };
 }
 
+export type PrismaReadOnlyConnectionOptions = {
+  statementTimeoutMs: number;
+  maxConnections?: number;
+};
+
+/**
+ * 为离线审计/规划 CLI 建立数据库强制只读连接。
+ *
+ * 只读和 statement timeout 通过 PostgreSQL 启动参数施加到池中每一条物理连接，不能只在某一条临时
+ * client 上执行 SET 后假设 Prisma 会复用它。普通 API 继续使用上面的完整连接，不受该门禁影响。
+ */
+export function createPrismaReadOnlyConnection(
+  databaseUrl: string,
+  options: PrismaReadOnlyConnectionOptions,
+) {
+  assertGeneratedPrismaClientMatchesSchema();
+  if (!Number.isInteger(options.statementTimeoutMs) || options.statementTimeoutMs <= 0) {
+    throw new Error("只读数据库连接必须配置正整数 statement timeout。");
+  }
+  const maxConnections = options.maxConnections ?? 2;
+  if (!Number.isInteger(maxConnections) || maxConnections < 2 || maxConnections > 10) {
+    throw new Error("只读数据库连接池大小必须在 2 到 10 之间。");
+  }
+  const schema = parseDatabaseSchema(databaseUrl);
+  const pool = new pg.Pool({
+    connectionString: databaseUrl,
+    options: [
+      `-c search_path=${schema}`,
+      "-c default_transaction_read_only=on",
+      `-c statement_timeout=${options.statementTimeoutMs}`,
+      "-c application_name=xiqu_annotation_history_dry_run",
+    ].join(" "),
+    max: maxConnections,
+    connectionTimeoutMillis: 5_000,
+  });
+  const prisma = new PrismaClient({
+    adapter: new PrismaPg(pool, { schema }),
+  });
+  return { prisma, pool, schema };
+}
+
 export function parseDatabaseSchema(databaseUrl: string) {
   const schema = new URL(databaseUrl).searchParams.get("schema") ?? "public";
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {

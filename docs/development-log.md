@@ -10202,3 +10202,46 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 主 roadmap 已增加 R3 快照容量和 R6a forced alignment 数据入口；被忽略的 `CLAUDE_WORK.md` 重写为下一轮 HC1
   只读规划器。**已完成**：容量基线、算法取舍、阶段顺序和安全停止条件。**待推进**：HC1；完成并审查后再制定 HC2，
   FA-D1a 在快照容量边界得到 dry-run 证据后启动。
+
+## 2026-09-01：HC1 恢复快照无损压缩只读规划器
+
+### 代码与安全边界
+
+- 新增 `annotationHistoryCompactionTypes/Policy/Repository/Replay/Planner`、canonical hash、严格 CLI 参数解析和
+  `annotation-history:plan:dry-run`。报告按文件输出 `keep_inline | reconstructible | blocked`、固定 reason/code、payload/
+  recipe 字节、最大重放距离和操作数；不包含标注正文、完整 command、媒体 URL、凭据或数据库异常文本。
+- planner 复用 `parseCurrentProjectData()`、shared command parser/replayability 与
+  `applyAnnotationCommandToProject()`；canonical SHA-256 复用 operation 幂等层稳定 JSON 序列化。对象 key 顺序不影响
+  hash，数组、null、数值和字段差异严格保留。没有新增第二套 command 解释器或宽松 precondition。
+- 现有旧保存路径可能在失败/未提交 operation 上合法消耗 sequence。规划器据真实实现改为要求 committed revision 连续、
+  `baseRevision = target - 1`、组内 sequence 唯一稳定；跨 revision sequence 空档不误判，重复 sequence、缺 revision、
+  requires-snapshot、parser/apply/hash 失败均停止当前区间并以原 payload 建立下一可信检查点。
+- `createPrismaReadOnlyConnection()` 对池中每条 PostgreSQL 物理连接设置
+  `default_transaction_read_only=on`、statement timeout 和固定 application name。CLI 只有 2 条连接，必须显式单文件或
+  `--all`，受 10,000 snapshots / 200,000 operations 上限、单实例 advisory lock、SIGINT 和不覆盖报告文件门禁约束；
+  repository 类型和实现均没有 create/update/delete/upsert/execute mutation。
+- 自审把最初 700 行 planner 拆为 types、replay、orchestration 三层；审核引用按 distinct revision 有界读取，扫描截断、
+  引用截断和缺少可信 checkpoint 都 fail closed。没有修改 Prisma schema、在线保存、恢复/比较 API、前端或对象存储。
+
+### 测试与生产只读样本
+
+- `test:annotation-history-compaction` 9/9：覆盖 key/数组 hash、规则并集、周期计数、合法 sequence 空档、缺 revision、重复
+  sequence、hash 不一致、snapshot boundary、CLI 范围、隔离 PostgreSQL 零写入。隔离测试还通过 planner 的专用 Prisma
+  连接尝试 create，确认 PostgreSQL 以只读事务拒绝，随后 AnnotationFile、snapshot、operation 与审核行/hash 不变。
+- `test:annotation-commands` 25/25、`test:annotation-command-commit` 5/5、`test:platform-atomic-submit` 34/34 通过；完整
+  `npm run build` 和 `git diff --check` 通过，只有既有 Vite 主 chunk 大小提示。
+- 本机开发库 3 文件/40 snapshots 小样本完成，旧测试 marker/历史格式安全显示 `snapshot_payload_invalid`，没有被伪装成
+  recipe。生产验证未切换 release、未重启、未维护、未部署：编译程序临时放在 `/tmp`，通过生产 DB 强制只读连接抽样
+  12 文件，结束后程序和报告均已删除。
+- 生产默认策略样本：4,157 snapshots、8,650 operations、约 993.8MB payload；441 inline、3,716 blocked、0 recipe。
+  临时将热窗口缩至 1 小时/最近 1 revision 后，414 个当前格式候选 hash 完全一致，约 149.6KB recipe 可替代约
+  69.7MB payload，最大距离 93 revisions / 150 operations；3,716 个旧格式与 1 个 precondition 失败候选仍原样保留。
+- 4,157 份 payload 串行读取约一分钟，大文件单独可有 2,800+ snapshots。低并发没有写锁风险，但逐 snapshot 单查询不适合
+  在线 resolver。HC2 必须加入有界批读，并把历史任意 JSON 继续当作 inline 原文；不能把 v1-v6 归一化 v7 的语义结果
+  当成原历史的逐字节无损重建。
+
+### 状态
+
+- **已完成**：HC1 代码、测试、生产只读样本、自审、真实收益校准和临时文件清理。HC0 的 60%-85% 乐观估算已撤回。
+- **待推进**：HC2 仅做 expand schema + 统一 inline resolver + 有界批读/指标，所有现有 payload 保持 non-null inline；
+  HC2 完成并部署观察前不得进入 HC3 recipe 回填，也不在同一 migration 启动 Force Alignment 行为旁表。

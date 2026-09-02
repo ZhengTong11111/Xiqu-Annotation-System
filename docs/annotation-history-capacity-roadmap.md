@@ -112,10 +112,26 @@ reconstructible snapshot 存在，对应 checkpoint 和 operation 范围都成�
 - compactor 使用文件级 advisory/row lock 和有界批次，不能与标注保存竞争长事务；
 - UI 保留现有恢复历史身份，详情 endpoint 通过 resolver 读取 inline、重建或 archived payload，调用者不猜存储模式。
 
-## 8. 预计收益
+## 8. HC1 实测收益与修正
 
-当前明显非可重放 revision 约 3,086 个，仅约 9.3%；再叠加近期窗口、周期检查点、审核引用和失败候选，保守预计可将
-长期 inline payload 从 4.27GB 降至约 0.7-1.7GB，减少约 60%-85%。这是 dry-run 前的容量范围，不是上线承诺。
+HC0 根据明显非可重放 revision 比例曾粗估长期 inline payload 可减少 60%-85%；HC1 生产只读样本证明该估算忽略了
+历史 ProjectData 格式，因此已经失效，不能再作为容量或上线承诺。
+
+2026-09-01 使用 PostgreSQL 强制只读连接抽取 12 个生产文件，共 4,157 个快照、8,650 个 committed operation、约
+993.8MB canonical payload：
+
+- 使用默认 24 小时 + 每文件最近 100 revision 热窗口时，441 个保留 inline，3,716 个旧格式 payload 被安全 blocked，
+  当前样本没有进入 recipe 的冷候选；
+- 为验证算法而临时缩小到 1 小时 + 最近 1 revision 时，414 个候选完整重放且 hash 相等，recipe 约 150KB，可替代约
+  69.7MB payload；最大重放距离 93 revision / 150 operation；
+- 3,716 个旧格式快照仍为 `snapshot_payload_invalid`，其中后续 3,237 个因缺少可信当前格式 checkpoint 同时标记
+  `checkpoint_unavailable`；另有 1 个候选严格 apply 前置失败，全部保留原 payload；
+- 4,157 份 payload 串行读取约一分钟；内存和锁风险很低，但全库逐 snapshot 单查询过慢，HC2 resolver/批处理必须设计
+  有界批读，不能简单提高并发影响在线保存。
+
+因此当前可证明收益只覆盖“当前格式 + 完整可重放 operation 链”的冷历史。旧格式若要减容，只能保留/归档其原始完整
+payload，或先建立能**逐字节重建原历史格式**的专用证明；把旧格式归一化成 v7 后比较语义 hash 不等于无损恢复，禁止借此
+清空原快照。
 
 即便物理 relation 文件暂不缩小，清空后的 PostgreSQL 页可被后续写入复用，未来 `pg_dump` 和新备份只包含有效数据。
 是否执行 `pg_repack` 或维护窗口 `VACUUM FULL` 必须根据磁盘余量、锁时长和恢复演练另行决定；本路线不自动执行。
@@ -128,19 +144,29 @@ reconstructible snapshot 存在，对应 checkpoint 和 operation 范围都成�
 - 冻结检查点、重放、hash、保护引用和停止条件。
 - 不修改代码或生产数据。
 
-### HC1：纯 dry-run 规划器
+### HC1：纯 dry-run 规划器（已完成）
 
-- 新增只读 planner/CLI，输出每文件 inline/reconstructible/blocked 数量、预计节省、最大重放距离和失败原因。
-- 复用现有 parser/adapter，在内存中逐候选重建并与当前快照 hash 比较。
-- 不新增 migration，不更新 storageMode，不删除/置空 payload，不写对象存储。
-- 用复制的隔离生产数据库或经过授权的生产只读连接验证，禁止在在线 API 请求中运行全库规划。
+- 已新增只读 policy/repository/replay/planner/CLI，输出每文件 inline/reconstructible/blocked、容量、最大重放距离和固定失败码。
+- 已复用 `parseCurrentProjectData()`、shared command parser/replayability 与 `applyAnnotationCommandToProject()`；canonical hash
+  复用 operation 幂等层的稳定 JSON 序列化，不存在第二套近似 apply 或 JSON 规范化。
+- CLI 必须显式指定单文件或 `--all`，具备 statement timeout、2 连接池、单实例 advisory lock、SIGINT、扫描上限和
+  PostgreSQL `default_transaction_read_only=on`。隔离集成测试额外尝试写入并确认由数据库拒绝。
+- 未新增 migration，未更新/删除/置空 snapshot，未写对象存储，未部署 release；生产验证程序只临时放入 `/tmp`，报告
+  摘要记录后已清理。
+- 已确认旧 operation 路径允许在失败/未提交请求上消耗 sequence；planner 只要求 committed revision 连续覆盖、组内
+  sequence 唯一稳定，不把跨 revision 合法空档误判为缺链。
 
-完成标准：所有候选都有确定理由；随机和边界样本重建 hash 100% 相等；planner 中断不留下任何状态。
+完成证据：9 项专项单元/隔离 PostgreSQL 测试、25 项命令合同、5 项原子批次、34 项客户端原子提交回归和完整构建通过；
+生产样本 414 个 reconstructible 候选均 hash 相等，其他候选均有固定保留/阻断理由。planner 没有数据库 mutation 方法，
+生产连接也由 PostgreSQL 强制只读。
 
 ### HC2：Expand schema 与统一 resolver
 
 - 加法字段/migration、inline resolver、查询分页、容量指标和受保护依赖模型。
 - 现有所有行仍为 inline；详情、比较、恢复通过 resolver，但返回内容与旧实现逐字节语义一致。
+- resolver 必须同时接受历史任意 JSON inline payload；只有 recipe 重建路径才要求当前格式。旧格式不能因 strict parser
+  失败而失去详情、比较或恢复能力，也不能被归一化 v7 替代原始历史。
+- 增加有界 payload 批读/流式校验接口，避免 HC1 在大文件上暴露的逐 snapshot 单查询成本；仍保持低并发和只读门禁。
 - 部署并观察一轮，不做 compaction。
 
 ### HC3：影子 recipe 与小批次无损压缩

@@ -1379,6 +1379,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
 - `packages/document-model/src/customTrackStructureCommand*.ts` + `track*Command*.ts` + `annotationCommandApply.ts`
   - R5b3a2c canonical recursive-track structure, configuration, owned-subtree lifecycle, structure transaction, and generic
     dispatcher implementation; snapshot boundaries remain valid but non-replayable and return `snapshot_required`
+- `apps/api/src/annotationHistoryCompaction*.ts`
+  - HC1 read-only recovery-history capacity planner: typed checkpoint policy, bounded Prisma repository, canonical hash,
+    strict shared-command replay, fixed diagnostic codes, report contract, and dry-run CLI
+  - the repository contract has no mutation methods and the CLI must use PostgreSQL `default_transaction_read_only=on`, a
+    statement timeout, two-connection pool, singleton advisory lock, explicit single-file/`--all` scope and bounded limits
+  - historical payloads that fail the strict current ProjectData parser remain inline and blocked. Normalizing v1-v6 into v7
+    does not reproduce the original JSON and must never qualify a snapshot for recipe compaction
 - `packages/document-model/src/annotationConfirmations.ts`
   - canonical neutral review-scope normalization, overlap, persisted-track and permission helpers plus confirmation lifecycle/freshness
   - contains no Prisma, API, React, payload mutation, or global-role lookup; backend and platform UI must reuse
@@ -2109,6 +2116,12 @@ Important backend caveats:
 - recovery snapshots are implementation history, not ordinary user-visible files or published versions.
 - recovery-history lists must never select or return snapshot payloads; full payloads are read only through a detail
   endpoint that binds both annotation-file id and snapshot id and currently requires effective `write` capability.
+- history compaction may classify a snapshot as reconstructible only after the production shared parser and
+  `applyAnnotationCommandToProject()` reproduce the original canonical payload hash. Cross-revision operation sequence gaps are
+  legal because abandoned old-path operations may consume sequence; require continuous committed revisions, correct base
+  revision, stable unique sequence within committed facts, replayable commands and exact hash instead.
+- HC1 is planning only: it must not add schema, set storage mode, null/delete/archive payloads, write objects, or run inside an
+  online API request. Production sampling uses the dedicated forced-read-only CLI and reports no annotation text or commands.
 - historical payload preview must fail inside its own UI boundary and reuse the canonical project-file normalizer; a bad
   snapshot must not replace, open, or mutate the current editor document.
 - confirmed annotation ranges are governance records outside `ProjectData`: `[startTime, endTime)` is half-open,
