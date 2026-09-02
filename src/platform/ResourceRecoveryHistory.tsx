@@ -35,6 +35,7 @@ import {
 } from "./recoverySnapshotPreview";
 import type { AnnotationComparisonFocus } from "./annotationComparisonNavigation";
 import { RecoverySnapshotComparisonDialog } from "./RecoverySnapshotComparisonDialog";
+import { applyRecoverySnapshotPage } from "./recoverySnapshotPaging";
 
 // 组件只管理一份标注文件的恢复历史；资源切换时由 key 重新创建，避免缓存跨文件串用。
 export function ResourceRecoveryHistory(props: {
@@ -47,9 +48,11 @@ export function ResourceRecoveryHistory(props: {
   const [summaries, setSummaries] = useState<
     AnnotationRecoverySnapshotSummary[]
   >([]);
-  const [listLoading, setListLoading] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [listLoadingMode, setListLoadingMode] = useState<"replace" | "append" | null>(null);
   const [listLoaded, setListLoaded] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const [selectedSummary, setSelectedSummary] =
     useState<AnnotationRecoverySnapshotSummary | null>(null);
   const [details, setDetails] = useState<
@@ -84,8 +87,11 @@ export function ResourceRecoveryHistory(props: {
     comparisonRequestGenerationRef.current += 1;
     setExpanded(false);
     setSummaries([]);
+    setNextCursor(null);
+    setListLoadingMode(null);
     setListLoaded(false);
     setListError(null);
+    setLoadMoreError(null);
     setSelectedSummary(null);
     setDetails({});
     setDetailLoadingId(null);
@@ -105,40 +111,58 @@ export function ResourceRecoveryHistory(props: {
     setCurrentRevision(props.resource.revision ?? 0);
   }, [props.resource.revision]);
 
-  // 摘要仅在首次展开或用户刷新时加载，不跟随资源列表的普通刷新反复请求。
-  const loadSummaries = useCallback(async () => {
-    if (!canUseRecoveryHistory || listLoading) return;
+  // 刷新替换第一页，续页按 opaque cursor 追加；generation 使资源切换或刷新后的迟到响应失效。
+  const loadSummaries = useCallback(async (mode: "replace" | "append") => {
+    if (!canUseRecoveryHistory) return;
+    const cursor = mode === "append" ? nextCursor : null;
+    if (mode === "append" && (!cursor || listLoadingMode !== null)) return;
     const generation = ++listRequestGenerationRef.current;
-    setListLoading(true);
-    setListError(null);
+    setListLoadingMode(mode);
+    if (mode === "replace") {
+      setListError(null);
+      setLoadMoreError(null);
+    } else {
+      setLoadMoreError(null);
+    }
     try {
-      const nextSummaries = await props.client.listRecoverySnapshots(
+      const page = await props.client.listRecoverySnapshots(
         props.resource.id,
+        cursor ? { cursor } : {},
       );
       if (generation !== listRequestGenerationRef.current) return;
-      setSummaries(nextSummaries);
+      const nextState = applyRecoverySnapshotPage(
+        { summaries, nextCursor },
+        page,
+        mode,
+      );
+      setSummaries(nextState.summaries);
+      setNextCursor(nextState.nextCursor);
       setListLoaded(true);
     } catch (error) {
       if (generation !== listRequestGenerationRef.current) return;
-      setListError(describeRecoveryError(error));
+      const message = describeRecoveryError(error);
+      if (mode === "append") setLoadMoreError(message);
+      else setListError(message);
     } finally {
       if (generation === listRequestGenerationRef.current) {
-        setListLoading(false);
+        setListLoadingMode(null);
       }
     }
   }, [
     canUseRecoveryHistory,
-    listLoading,
+    listLoadingMode,
+    nextCursor,
     props.client,
     props.resource.id,
+    summaries,
   ]);
 
   // 展开动作复用已加载摘要；关闭区块不会清除缓存或制造额外网络请求。
   const toggleExpanded = () => {
     const nextExpanded = !expanded;
     setExpanded(nextExpanded);
-    if (nextExpanded && !listLoaded && !listLoading) {
-      void loadSummaries();
+    if (nextExpanded && !listLoaded && listLoadingMode === null) {
+      void loadSummaries("replace");
     }
   };
 
@@ -193,7 +217,7 @@ export function ResourceRecoveryHistory(props: {
       setComparisonError(null);
       await props.onRestored?.(restored);
       if (generation !== restoreRequestGenerationRef.current) return;
-      await loadSummaries();
+      await loadSummaries("replace");
     } catch (error) {
       if (generation !== restoreRequestGenerationRef.current) return;
       setRestoreError(describeRestoreError(error));
@@ -256,15 +280,19 @@ export function ResourceRecoveryHistory(props: {
           <History size={15} />
           <span>
             <strong>恢复历史</strong>
-            <small>{listLoaded ? `${summaries.length} 个快照` : "保存前快照"}</small>
+            <small>{listLoaded
+              ? nextCursor
+                ? `已加载 ${summaries.length} 条，仍有更多`
+                : `共加载 ${summaries.length} 条`
+              : "保存前快照"}</small>
           </span>
         </button>
         {expanded ? (
           <button
             type="button"
             className="resource-recovery-refresh"
-            disabled={listLoading}
-            onClick={() => void loadSummaries()}
+            disabled={listLoadingMode === "replace"}
+            onClick={() => void loadSummaries("replace")}
             title="刷新恢复历史"
           >
             <RefreshCw size={14} />
@@ -275,38 +303,63 @@ export function ResourceRecoveryHistory(props: {
       {/* 展开内容集中处理加载、错误、空历史和列表四种互斥状态。 */}
       {expanded ? (
         <div className="resource-recovery-content">
-          {listLoading ? (
+          {listLoadingMode === "replace" && !listLoaded ? (
             <div className="resource-recovery-state">正在读取恢复历史...</div>
-          ) : listError ? (
+          ) : listError && !listLoaded ? (
             <div className="resource-recovery-state error">
               <span>{listError}</span>
-              <button type="button" onClick={() => void loadSummaries()}>
+              <button type="button" onClick={() => void loadSummaries("replace")}>
                 重试
               </button>
             </div>
           ) : listLoaded && summaries.length === 0 ? (
             <div className="resource-recovery-state">还没有恢复快照。</div>
           ) : (
-            <div className="resource-recovery-list">
-              {summaries.map((summary) => (
-                <button
-                  key={summary.id}
-                  type="button"
-                  className="resource-recovery-item"
-                  onClick={() => void openSnapshot(summary)}
-                >
-                  <Clock3 size={14} />
-                  <span>
-                    <strong>修订 {summary.revision}</strong>
-                    <small>{formatSnapshotReason(summary.reason)}</small>
-                  </span>
-                  <span>
-                    <small>{summary.creator.displayName}</small>
-                    <time>{formatResourceDate(summary.createdAt)}</time>
-                  </span>
-                </button>
-              ))}
-            </div>
+            <>
+              <div className="resource-recovery-list">
+                {summaries.map((summary) => (
+                  <button
+                    key={summary.id}
+                    type="button"
+                    className="resource-recovery-item"
+                    onClick={() => void openSnapshot(summary)}
+                  >
+                    <Clock3 size={14} />
+                    <span>
+                      <strong>修订 {summary.revision}</strong>
+                      <small>{formatSnapshotReason(summary.reason)}</small>
+                    </span>
+                    <span>
+                      <small>{summary.creator.displayName}</small>
+                      <time>{formatResourceDate(summary.createdAt)}</time>
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <div className={`resource-recovery-page-footer${loadMoreError || listError ? " error" : ""}`}>
+                {listLoadingMode === "append" ? (
+                  <span>正在加载更多...</span>
+                ) : listLoadingMode === "replace" ? (
+                  <span>正在刷新...</span>
+                ) : loadMoreError ? (
+                  <>
+                    <span>{loadMoreError}</span>
+                    <button type="button" onClick={() => void loadSummaries("append")}>重试</button>
+                  </>
+                ) : listError ? (
+                  <>
+                    <span>{listError}</span>
+                    <button type="button" onClick={() => void loadSummaries("replace")}>重试刷新</button>
+                  </>
+                ) : nextCursor ? (
+                  <button type="button" onClick={() => void loadSummaries("append")}>
+                    加载更多
+                  </button>
+                ) : (
+                  <span>共加载 {summaries.length} 条</span>
+                )}
+              </div>
+            </>
           )}
         </div>
       ) : null}

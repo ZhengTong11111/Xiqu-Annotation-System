@@ -1393,6 +1393,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     mode fail closed before restore writes any protection snapshot, revision, or audit fact
   - resolver failures expose only stable reason code plus snapshot/file/revision identity; payload, text, hash, operation,
     archive identity and raw database errors must never enter HTTP details or logs
+- `apps/api/src/annotationRecoverySnapshotPagination.ts` + `src/platform/recoverySnapshotPaging.ts`
+  - the only recovery-history summary pagination contract: file-bound opaque cursor over descending revision/createdAt/id,
+    strict bounded limit, metadata-only selects, and stable client append deduplication
+  - refresh replaces the first page and invalidates older continuation responses; load-more errors retain already loaded rows,
+    and UI wording must distinguish loaded count from a complete total while `nextCursor` remains non-null
 - `packages/document-model/src/annotationConfirmations.ts`
   - canonical neutral review-scope normalization, overlap, persisted-track and permission helpers plus confirmation lifecycle/freshness
   - contains no Prisma, API, React, payload mutation, or global-role lookup; backend and platform UI must reuse
@@ -2121,8 +2126,9 @@ Important backend caveats:
 - restoring a recovery snapshot never decrements revision or deletes the source snapshot. It protects the current
   payload, writes the historical payload as `revision + 1`, and records an audit summary without payload content.
 - recovery snapshots are implementation history, not ordinary user-visible files or published versions.
-- recovery-history lists must never select or return snapshot payloads; full payloads are read only through a detail
-  endpoint that binds both annotation-file id and snapshot id and currently requires effective `write` capability.
+- recovery-history lists must never select or return snapshot payloads or storage/hash/recipe internals. They return a bounded
+  `AnnotationRecoverySnapshotPage` with a file-bound opaque cursor; full payloads are read only through a detail endpoint that
+  binds both annotation-file id and snapshot id and currently requires effective `write` capability.
 - history compaction may classify a snapshot as reconstructible only after the production shared parser and
   `applyAnnotationCommandToProject()` reproduce the original canonical payload hash. Cross-revision operation sequence gaps are
   legal because abandoned old-path operations may consume sequence; require continuous committed revisions, correct base

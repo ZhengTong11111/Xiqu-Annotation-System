@@ -14,7 +14,7 @@ import type {
   AnnotationOperationPage,
   AnnotationCommittedOperationPage,
   AnnotationRecoverySnapshotDetail,
-  AnnotationRecoverySnapshotSummary,
+  AnnotationRecoverySnapshotPage,
   AuditActionName,
   AuditLogPage,
   ManagedAccount,
@@ -640,7 +640,7 @@ export type PlatformApiContract<TPayload = unknown> = {
     response: void;
   };
   listRecoverySnapshots: {
-    response: AnnotationRecoverySnapshotSummary[];
+    response: AnnotationRecoverySnapshotPage;
   };
   getRecoverySnapshot: {
     response: AnnotationRecoverySnapshotDetail<TPayload>;

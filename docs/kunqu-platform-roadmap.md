@@ -440,9 +440,10 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
 > 生产只读基线显示 33,183 个快照已占 PostgreSQL 约 4.27GB，而 operation 仅约 118MB。HC1 纯 dry-run 规划器已经完成，
 > 未删除、置空或迁移任何生产 payload；12 文件生产样本中 414 个当前格式冷候选完成重放/hash 证明，3,716 个旧格式快照
 > 被安全保留，推翻了 HC0 的 60%-85% 乐观估算。HC2a expand-only schema + inline resolver 已完成代码、迁移夹具、完整
-> API 回归和构建；payload 仍必填且数据库只允许 inline，生产迁移/观察尚待明确授权。当前进入 HC2b 的恢复历史分页、
-> 有界批读和容量指标；只有“检查点 + committed operation”与原始 payload canonical hash 完全一致的 revision，未来才有
-> 资格转成轻量 recipe。
+> API 回归和构建；payload 仍必填且数据库只允许 inline，生产迁移/观察尚待明确授权。HC2b1 恢复历史 opaque keyset
+> 分页也已完成代码，Inspector 能明确部分加载并续页，不再把固定 50 条当完整历史。当前进入 HC2b2 的 planner 有界批读、
+> 依赖保护和低基数容量指标；只有“检查点 + committed operation”与原始 payload canonical hash 完全一致的 revision，
+> 未来才有资格转成轻量 recipe。
 
 - R3a 已完成：资源查询使用版本化、查询绑定的 opaque cursor；数据库按业务字段和同方向 id 形成稳定
   总序，以 50-200 条有限批次扫描候选，并以有界并发复核已删除祖先和有效 ACL，直到填满可见页或

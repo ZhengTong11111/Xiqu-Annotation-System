@@ -10289,3 +10289,40 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：HC2a schema、migration、resolver、详情/恢复接入、旧 JSON 保持、完整性失败零写入、专项/完整回归、自审与
   规范文档。**待推进**：HC2b 的 opaque keyset 历史分页、有界 payload 批读、低基数容量指标和依赖保护查询；HC3 前仍不
   回填 hash/recipe、不清空 payload。本轮没有部署生产、没有执行生产 migration，也没有修改任何生产标注或恢复历史。
+
+## 2026-09-01：HC2b1 恢复历史 Opaque Keyset 分页
+
+### API 与总序合同
+
+- 生产单文件最多已有 6,118 个快照，而旧接口固定 `take: 50` 并返回裸数组，Inspector 会把“50 个快照”误显示为完整历史。
+  本轮新增 `AnnotationRecoverySnapshotPage { snapshots, nextCursor }`，把列表改为默认 50、最大 100 的有界页面；summary 与
+  detail DTO、数据库 schema、在线保存和恢复事务均未改变。该 page response 是前后端同步变更，部署时必须同一 release
+  上线，不能只更新一侧。
+- 新增唯一 `annotationRecoverySnapshotPagination.ts`。cursor 是版本化 base64url JSON，只含 file id、revision、createdAt、
+  snapshot id，严格绑定文件与 `revision DESC, createdAt DESC, id DESC` 总序；revision/time/id、exact keys、2048 字符上限和
+  limit 都 fail closed。坏 base64、额外字段、空/跨文件 cursor、0/101/小数 limit 返回稳定 400，不把解析细节当权限事实。
+- `ResourceService.listRecoverySnapshots()` 保留原有 effective `write` 与 active-file 门禁，使用复合 keyset 条件读取
+  `limit + 1`。数据库 select 仍只有 id、file id、revision、creator、reason、createdAt，测试明确拒绝 payload、storage mode、
+  hash 和 checkpoint 字段进入响应；分页读取不修改 AnnotationFile、snapshot、operation 或 audit。
+
+### Inspector 状态与清理
+
+- `PlatformClient` 把 cursor 作为 opaque token 原样传回。新增纯 `recoverySnapshotPaging.ts`，刷新替换第一页，续页按
+  snapshot id 去重并保持服务器顺序，不在 JSX 内复制排序算法。
+- `ResourceRecoveryHistory` 区分 replace/append：首次展开和刷新替换，加载更多追加；刷新或资源切换递增 generation，旧续页
+  响应不能覆盖新资源/新首页。首屏加载、后台刷新、续页加载和续页错误使用独立文案；续页失败保留已加载条目并在页尾重试。
+  `nextCursor` 非空时显示“已加载 N 条，仍有更多”，到页尾才显示“共加载 N 条”，不再把部分数量伪装成总量。
+- 清理旧裸数组 response 和未使用 summary import，没有新增依赖、offset 分页、第二套详情缓存或 storage mode 前端分支。
+  详情、比较和恢复仍按 snapshot id 走 HC2a resolver；CSS 只增加低饱和页尾状态/按钮，不改变 Inspector 结构。
+
+### 验证与状态
+
+- `test:recovery-snapshot-pagination` 4/4：覆盖 cursor 往返/跨文件/畸形字段/limit，以及前端刷新替换、续页去重和顺序。
+  平台集成以 `limit=1` 连读 revision 2/1，两页无遗漏重复、末页 cursor 为空，并覆盖跨文件 cursor、私有字段零泄露和原有权限。
+- `test:recovery-preview` 3/3、`test:recovery-comparison` 4/4、平台集成 43/43、完整 `test:api` 287/287、完整
+  `npm run build`、Prisma schema guard 和 `git diff --check` 通过；只有既有 Vite chunk 大小提示与既有 pg deprecation warning。
+- 本地浏览器确认新前端能进入资源管理器并选中标注文件；按仓库规范重启本地 API 以加载新 shared/route 后，原开发会话
+  失效并回到登录页。本轮没有代填账号，因此分页页尾的登录后视觉留作人工复核；这不影响已完成的 DOM 挂载、API 和构建证据。
+- **已完成**：HC2b1 shared/API/client/Inspector 分页闭环、竞态门禁、测试、自审和文档。**待推进**：HC2b2 planner
+  payload 有界批读、checkpoint/operation 依赖保护查询、storage/hash/blocked/replay/growth 低基数指标。本轮未部署生产，
+  未运行生产 migration，未修改任何生产标注、快照或审核事实。

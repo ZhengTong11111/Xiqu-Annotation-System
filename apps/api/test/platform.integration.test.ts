@@ -3092,20 +3092,55 @@ test("平台资源 API 集成测试", async (suite) => {
         url: `/api/annotation-files/${annotationFileId}/recovery-snapshots`,
       });
       assert.equal(listResponse.statusCode, 200, listResponse.body);
-      const listBody = listResponse.json() as { data: JsonObject[] };
+      const listPage = dataOf(listResponse.json()) as JsonObject;
+      const listBody = listPage.snapshots as JsonObject[];
       assert.deepEqual(
-        listBody.data.map(({ revision }) => revision),
+        listBody.map(({ revision }) => revision),
         [2, 1],
       );
-      assert.ok(listBody.data.every((summary) => !("payload" in summary)));
-      assert.ok(listBody.data.every((summary) => !("storageMode" in summary)));
-      assert.ok(listBody.data.every((summary) => !("payloadSha256" in summary)));
-      assert.ok(listBody.data.every((summary) =>
+      assert.equal(listPage.nextCursor, null);
+      assert.ok(listBody.every((summary) => !("payload" in summary)));
+      assert.ok(listBody.every((summary) => !("storageMode" in summary)));
+      assert.ok(listBody.every((summary) => !("payloadSha256" in summary)));
+      assert.ok(listBody.every((summary) => !("checkpointSnapshotId" in summary)));
+      assert.ok(listBody.every((summary) =>
         typeof summary.createdAt === "string" &&
         typeof (summary.creator as JsonObject).displayName === "string"));
 
+      // limit=1 必须通过文件绑定的 opaque cursor 无遗漏、无重复地读取两页。
+      const firstPageResponse = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots?limit=1`,
+      });
+      assert.equal(firstPageResponse.statusCode, 200, firstPageResponse.body);
+      const firstPage = dataOf(firstPageResponse.json()) as JsonObject;
+      assert.deepEqual(
+        (firstPage.snapshots as JsonObject[]).map(({ revision }) => revision),
+        [2],
+      );
+      assert.equal(typeof firstPage.nextCursor, "string");
+      const secondPageResponse = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots?limit=1&cursor=${encodeURIComponent(String(firstPage.nextCursor))}`,
+      });
+      assert.equal(secondPageResponse.statusCode, 200, secondPageResponse.body);
+      const secondPage = dataOf(secondPageResponse.json()) as JsonObject;
+      assert.deepEqual(
+        (secondPage.snapshots as JsonObject[]).map(({ revision }) => revision),
+        [1],
+      );
+      assert.equal(secondPage.nextCursor, null);
+
+      for (const query of ["cursor=bad", "cursor=", "limit=0", "limit=101", "limit=1.5"]) {
+        const invalidPage = await jsonRequest(app, adminToken, {
+          method: "GET",
+          url: `/api/annotation-files/${annotationFileId}/recovery-snapshots?${query}`,
+        });
+        assert.equal(invalidPage.statusCode, 400, `${query}: ${invalidPage.body}`);
+      }
+
       // 单条详情按需返回旧 payload，读取动作不能改变当前标注 revision 或内容。
-      const revisionTwoSummary = listBody.data.find(({ revision }) =>
+      const revisionTwoSummary = listBody.find(({ revision }) =>
         revision === 2);
       assert.ok(revisionTwoSummary);
       const detailResponse = await jsonRequest(app, adminToken, {
@@ -3161,6 +3196,11 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       const otherSnapshot = await prisma.annotationRecoverySnapshot
         .findFirstOrThrow({ where: { annotationFileId: otherFileId } });
+      const crossFileCursor = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${otherFileId}/recovery-snapshots?cursor=${encodeURIComponent(String(firstPage.nextCursor))}`,
+      });
+      assert.equal(crossFileCursor.statusCode, 400);
       const crossFileRead = await jsonRequest(app, adminToken, {
         method: "GET",
         url: `/api/annotation-files/${annotationFileId}/recovery-snapshots/${otherSnapshot.id}`,

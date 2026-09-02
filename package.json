@@ -70,6 +70,7 @@
     "test:runtime-uuid": "node --import tsx --test src/utils/runtimeUuid.test.ts",
     "test:annotation-history-compaction": "npm run build:shared && npm run build:document-model && npm run db:generate && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/annotationHistoryCompaction.test.ts apps/api/test/annotationHistoryCompaction.integration.test.ts",
     "test:annotation-recovery-snapshot-resolver": "npm run db:generate && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/annotationRecoverySnapshotResolver.test.ts apps/api/test/annotationRecoverySnapshotStorage.integration.test.ts",
+    "test:recovery-snapshot-pagination": "npm run build:shared && node --import tsx --test apps/api/test/annotationRecoverySnapshotPagination.test.ts src/platform/recoverySnapshotPaging.test.ts",
     "annotation-history:plan:dry-run": "node --env-file-if-exists=.env --import tsx apps/api/src/annotationHistoryCompactionCli.ts",
     "test:sentence-role-reorder": "node --import tsx --test src/utils/sentenceRoleReorder.test.ts",
     "test:sentence-timeline-label": "node --import tsx --test src/utils/sentenceTimelineLabel.test.ts",

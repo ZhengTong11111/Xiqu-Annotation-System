@@ -4637,6 +4637,37 @@ select {
   font-size: 10px;
 }
 
+/* 页尾独立表达部分加载、续页失败和完成状态；续页错误不会遮住已经加载的历史。 */
+.resource-recovery-page-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 5px 2px 0;
+  color: #8490a1;
+  font-size: 11px;
+}
+
+.resource-recovery-page-footer.error {
+  justify-content: space-between;
+  color: #9c3539;
+}
+
+.resource-recovery-page-footer button {
+  min-height: 27px;
+  padding: 0 9px;
+  color: #315f8e;
+  background: #f8fbff;
+  border: 1px solid #c9d6e4;
+  border-radius: 5px;
+}
+
+.resource-recovery-page-footer button:hover {
+  color: #1e65a6;
+  background: #e8eef6;
+}
+
 /* 快照详情使用现有 Radix Dialog 行为，只新增与资源平台一致的视觉外壳。 */
 .resource-recovery-dialog {
   position: fixed;

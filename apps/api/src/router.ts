@@ -1270,12 +1270,16 @@ export function registerApiRoutes(
     return saved;
   });
 
-  app.get<{ Params: { resourceId: string } }>(
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { cursor?: unknown; limit?: unknown };
+  }>(
     "/api/annotation-files/:resourceId/recovery-snapshots",
     async (request) =>
       resources.listRecoverySnapshots(
         await getCurrentUser(repository, request),
         request.params.resourceId,
+        { cursor: request.query.cursor, limit: request.query.limit },
       ),
   );
 

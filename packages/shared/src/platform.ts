@@ -277,6 +277,12 @@ export type AnnotationRecoverySnapshotSummary = {
   createdAt: string;
 };
 
+// 恢复历史使用文件绑定的 opaque cursor；nextCursor 非空表示当前只加载了部分历史。
+export type AnnotationRecoverySnapshotPage = {
+  snapshots: AnnotationRecoverySnapshotSummary[];
+  nextCursor: string | null;
+};
+
 // 恢复快照详情只在用户主动预览单条历史时返回完整 payload。
 export type AnnotationRecoverySnapshotDetail<TPayload = unknown> =
   AnnotationRecoverySnapshotSummary & {

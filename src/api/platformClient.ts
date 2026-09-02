@@ -19,7 +19,7 @@ import type {
   CommitAnnotationCommandBatchRequest,
   CommitAnnotationCommandBatchResponse,
   AnnotationRecoverySnapshotDetail,
-  AnnotationRecoverySnapshotSummary,
+  AnnotationRecoverySnapshotPage,
   AliyunVodAudioRenditionList,
   AliyunVodPlaybackSession,
   AuditLogPage,
@@ -646,9 +646,16 @@ export class PlatformClient {
   }
 
   // 历史列表只读取轻量摘要，避免在展开 Inspector 时下载多份完整标注。
-  listRecoverySnapshots(resourceId: string) {
-    return this.request<AnnotationRecoverySnapshotSummary[]>(
-      `/annotation-files/${resourceId}/recovery-snapshots`,
+  listRecoverySnapshots(
+    resourceId: string,
+    options: { cursor?: string; limit?: number } = {},
+  ) {
+    const query = new URLSearchParams();
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.limit) query.set("limit", String(options.limit));
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return this.request<AnnotationRecoverySnapshotPage>(
+      `/annotation-files/${resourceId}/recovery-snapshots${suffix}`,
     );
   }
 

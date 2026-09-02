@@ -23,7 +23,7 @@ import type {
   AnnotationMutationLeaseSummary,
   AnnotationMutationPurpose,
   AnnotationRecoverySnapshotDetail,
-  AnnotationRecoverySnapshotSummary,
+  AnnotationRecoverySnapshotPage,
   AliyunVodPlaybackSession,
   AliyunVodWebPlayerLicense,
   BatchMoveResourcesRequest,
@@ -140,6 +140,12 @@ import {
   resolveAnnotationRecoverySnapshotPayload,
   type AnnotationRecoverySnapshotResolvableRow,
 } from "./annotationRecoverySnapshotResolver.js";
+import {
+  AnnotationRecoverySnapshotCursorError,
+  encodeAnnotationRecoverySnapshotCursor,
+  normalizeAnnotationRecoverySnapshotPage,
+  type NormalizedAnnotationRecoverySnapshotPage,
+} from "./annotationRecoverySnapshotPagination.js";
 
 const resourceBaseInclude = {
   owner: { include: { roles: true } },
@@ -1267,15 +1273,45 @@ export class ResourceService {
     });
   }
 
-  // 历史列表只返回轻量元数据，避免一次读取最多 50 份完整 ProjectData。
+  // 历史列表只返回有界轻量元数据；cursor 让大型文件不会把前 50 条误装成完整历史。
   async listRecoverySnapshots(
     user: ApiUser,
     resourceId: string,
-  ): Promise<AnnotationRecoverySnapshotSummary[]> {
+    options: { cursor?: unknown; limit?: unknown } = {},
+  ): Promise<AnnotationRecoverySnapshotPage> {
     await this.access.assertCapability(user, resourceId, "write");
     await this.assertActiveAnnotationFile(resourceId);
+    let page: NormalizedAnnotationRecoverySnapshotPage;
+    try {
+      page = normalizeAnnotationRecoverySnapshotPage({
+        annotationFileId: resourceId,
+        cursor: options.cursor,
+        limit: options.limit,
+      });
+    } catch (error) {
+      if (error instanceof AnnotationRecoverySnapshotCursorError) {
+        throw badRequest(error.message);
+      }
+      throw error;
+    }
+    const cursorWhere: Prisma.AnnotationRecoverySnapshotWhereInput = page.cursor
+      ? {
+          OR: [
+            { revision: { lt: page.cursor.revision } },
+            {
+              revision: page.cursor.revision,
+              createdAt: { lt: page.cursor.createdAt },
+            },
+            {
+              revision: page.cursor.revision,
+              createdAt: page.cursor.createdAt,
+              id: { lt: page.cursor.id },
+            },
+          ],
+        }
+      : {};
     const rows = await this.prisma.annotationRecoverySnapshot.findMany({
-      where: { annotationFileId: resourceId },
+      where: { annotationFileId: resourceId, ...cursorWhere },
       select: {
         id: true,
         annotationFileId: true,
@@ -1290,16 +1326,28 @@ export class ResourceService {
         { createdAt: "desc" },
         { id: "desc" },
       ],
-      take: 50,
+      take: page.limit + 1,
     });
-    return rows.map((row) => ({
-      id: row.id,
-      annotationFileId: row.annotationFileId,
-      revision: row.revision,
-      creator: toPublicUser(row.creator),
-      reason: row.reason,
-      createdAt: row.createdAt.toISOString(),
-    }));
+    const pageRows = rows.slice(0, page.limit);
+    const last = pageRows.at(-1);
+    return {
+      snapshots: pageRows.map((row) => ({
+        id: row.id,
+        annotationFileId: row.annotationFileId,
+        revision: row.revision,
+        creator: toPublicUser(row.creator),
+        reason: row.reason,
+        createdAt: row.createdAt.toISOString(),
+      })),
+      nextCursor: rows.length > page.limit && last
+        ? encodeAnnotationRecoverySnapshotCursor({
+            annotationFileId: resourceId,
+            revision: last.revision,
+            createdAt: last.createdAt,
+            id: last.id,
+          })
+        : null,
+    };
   }
 
   // 详情查询同时绑定文件和快照 id，防止利用其他文件的 snapshot id 越权读取 payload。

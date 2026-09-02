@@ -179,9 +179,16 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - 尚未部署生产；需在明确授权的维护/迁移窗口部署并观察一轮，仍不做 compaction。该上线门禁不阻止继续开发 HC2b，
   但 HC3 生产写入和 Force Alignment 生产 migration 必须保持独立发布顺序。
 
-#### HC2b：有界分页、批读与容量指标
+#### HC2b1：恢复历史有界分页（代码已完成）
 
-- 恢复历史列表改为文件绑定的 opaque keyset cursor；UI 明确部分加载，不使用固定 50 条假装完整历史。
+- 恢复历史列表已改为文件绑定的 opaque keyset cursor；UI 明确部分加载，不再使用固定 50 条假装完整历史。
+- 摘要仍不读取 payload/storage/hash/recipe；刷新替换第一页，“加载更多”按 cursor 追加并按 snapshot id 去重，资源切换或
+  刷新必须使旧续页响应失效。
+- cursor 绑定 annotation file 与 `revision + createdAt + id` 倒序总序，坏游标、跨文件游标和越界 limit 明确拒绝。
+- 专项 4 项、平台 API 43 项、完整 API 287 项与完整构建通过；生产未部署，前后端 page DTO 必须作为同一 release 上线。
+
+#### HC2b2：批读、依赖保护与容量指标（下一阶段）
+
 - 增加有界 payload 批读/流式校验接口，避免 HC1 在大文件上暴露的逐 snapshot 单查询成本；仍保持低并发和只读门禁。
 - 增加 storage mode、payload/hash 覆盖、blocked code、最大重放距离与增长速度的低基数容量指标。
 - 建立 checkpoint/operation 依赖保护查询，但仍不回填 recipe、不清空 payload。
