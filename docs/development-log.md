@@ -10570,3 +10570,36 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   草稿并重新打开同一文件触发恢复，而无需手工复制 payload。
 - **待推进**：恢复 FA-D2a 任务单和滚动开发；在其 migration/Client/API 验收时严格执行新门禁。本轮未部署生产、未迁移生产
   数据库、未触碰生产对象存储，也未修改原标注文件内容。
+
+## 2026-09-02：FA-D2a AlignmentRun Additive Schema 与执行身份
+
+### 数据模型与数据库门禁
+
+- 新增 additive migration `20260902030000_alignment_runs`、`AlignmentRun` 和 `AlignmentArtifact`。run 固化文件/revision、
+  对齐文本 SHA-256 与计数、媒体/音轨/微秒偏移、可选分析 fingerprint、模型/词典/代码版本和 config/identity hash；预测正文
+  不进入 PostgreSQL，artifact 仅保存版本、mime、512 MiB 硬上限、SHA-256 与对象 storage key。
+- 文件、媒体、音轨和媒体分析 run 使用 SetNull 导航外键，同时保留不可空 snapshot id/hash。数据库 CHECK 要求当前外键与
+  snapshot 一致、分析外键必须有 fingerprint、生命周期/进度/终态形状合法；`identity_hash` 唯一，canonical 输入不能生成
+  多个 run。删除来源不会级联抹掉 run、artifact 或 job 溯源，删除 run 才按明确所有权级联 artifact/job。
+- `ProcessingJobType` 增加 `force_alignment` 和可空 `alignmentRunId`；CHECK 要求该类型必须且只能关联 AlignmentRun，并禁止
+  同时关联 MediaAnalysisRun。migration 未对 annotation、operation、snapshot、media-analysis 或既有 processing job 执行
+  UPDATE/DELETE/DROP。
+
+### 唯一身份与现有任务中心
+
+- 新增唯一 `alignmentRunIdentity.ts`：外层 exact-key，ID/版本/计数/hash/微秒偏移全部有界；config 使用稳定 JSON、12 KiB
+  应用上限和递归普通 JSON 校验，返回 cloned config、configHash、identityHash 与 `force-alignment:v1:<hash>` dedupe key。
+  BigInt 偏移转十进制字符串后进入 canonical hash，不经过 JS number 丢失精度。
+- 身份合同没有账号、clientRequestId、显示名、正文、ProjectData、URL 或凭据；config 递归拒绝 token/secret/AccessKey/
+  PlayAuth/password/credential/URL 类 key 和 HTTP(S)/WSS URL 值，避免自由 JSON 绕过最小化边界。
+- shared 任务枚举与任务中心加入“强制对齐”固定标签。自审发现既有前端对所有失败类型都显示重试，但服务端当前只支持
+  media-analysis；现已把重试资格收紧到 `media_analysis`。D2b 接入真实对齐 retry service 前不会出现必然 409 的假按钮。
+
+### 验证、自审与状态
+
+- 新专项 7/7 覆盖 config 稳定序列化、全部语义输入、坏 hash/计数/偏移、敏感配置、容量、引用隔离、migration 零改写、
+  identity 唯一、来源 SetNull、artifact/job 保留与级联、错误 job 类型。processing jobs 11/11、任务中心 2/2、完整 API
+  314/314、完整 `npm run build` 和 `git diff --check` 通过；仅保留既有 Vite 主 chunk 提示与 pg 并发 query deprecation warning。
+- **已完成**：FA-D2a schema/migration、身份 helper、shared/UI 类型、专项/完整测试、自审和规范文档。**待推进**：FA-D2b
+  服务端创建/复用、ProcessingJobRequest 账号需求、严格 ACL/revision/text/audio 重读和有界 run 查询；D2c 前不运行模型或发布
+  prediction 对象。本轮没有部署生产、执行生产 migration、创建真实对齐任务或修改现有标注/历史/审核/媒体对象。

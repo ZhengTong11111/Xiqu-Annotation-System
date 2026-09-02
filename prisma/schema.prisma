@@ -76,6 +76,7 @@ enum ProcessingJobType {
   audio_extract
   annotation_export
   media_analysis
+  force_alignment
 }
 
 enum ProcessingJobStatus {
@@ -112,6 +113,10 @@ enum MediaAnalysisAssetKind {
   waveform
   spectrogram
   pitch
+}
+
+enum AlignmentArtifactKind {
+  prediction
 }
 
 enum AuditAction {
@@ -253,6 +258,7 @@ model User {
   updatedAnnotationAudioPreferences AnnotationAudioPreference[]       @relation("AnnotationAudioPreferenceUpdater")
   createdMediaAnalysisRuns          MediaAnalysisRun[]                @relation("MediaAnalysisRunCreator")
   supersededMediaAnalysisRuns       MediaAnalysisRun[]                @relation("MediaAnalysisRunSuperseder")
+  createdAlignmentRuns              AlignmentRun[]                    @relation("AlignmentRunCreator")
   auditLogs                         AuditLog[]                        @relation("AuditActor")
   annotationOperations              AnnotationOperation[]             @relation("AnnotationOperationActor")
   annotationToolAttempts            AnnotationToolAttempt[]           @relation("AnnotationToolAttemptActor")
@@ -396,6 +402,7 @@ model AnnotationFile {
   collaborationTickets   AnnotationCollaborationTicket[]
   collaborationPresences AnnotationCollaborationPresence[]
   audioPreference        AnnotationAudioPreference?
+  alignmentRuns          AlignmentRun[]
 
   @@index([mediaResourceId])
   @@index([lastEditedBy])
@@ -608,6 +615,7 @@ model MediaFile {
   primaryAudioTracks      MediaAudioTrack[]  @relation("PrimaryMediaAudioTracks")
   audioTrackSources       MediaAudioTrack[]  @relation("AudioTrackSourceMedia")
   vodRenditionAudioTracks MediaAudioTrack[]  @relation("VodRenditionAudioTrackSource")
+  alignmentRuns           AlignmentRun[]     @relation("AlignmentRunSourceMedia")
 
   @@index([fileId])
   @@index([sourceType])
@@ -641,6 +649,7 @@ model MediaAudioTrack {
   creator               User                        @relation("MediaAudioTrackCreator", fields: [createdBy], references: [id], onDelete: Restrict)
   defaultForAnnotations AnnotationAudioPreference[]
   processingJobRequests ProcessingJobRequest[]
+  alignmentRuns         AlignmentRun[]
 
   @@unique([primaryMediaResourceId, audioMediaResourceId])
   @@index([primaryMediaResourceId, sortOrder, id])
@@ -698,6 +707,7 @@ model MediaAnalysisRun {
   supersededRuns MediaAnalysisRun[]   @relation("MediaAnalysisRunSupersession")
   assets         MediaAnalysisAsset[]
   jobs           ProcessingJob[]
+  alignmentRuns  AlignmentRun[]       @relation("AlignmentRunMediaAnalysis")
 
   @@index([sourceMediaResourceId])
   @@index([sourceMediaResourceId, sourceFingerprint, algorithmVersion, configHash])
@@ -730,6 +740,75 @@ model MediaAnalysisAsset {
   @@unique([runId, kind, preset, level, tileIndex])
   @@index([runId, kind, preset, level, startTime])
   @@map("media_analysis_assets")
+}
+
+// 对齐 run 固化模型输入身份；来源实体删除时外键可空，但 snapshot id/hash 永久保留研究溯源。
+model AlignmentRun {
+  id                            String              @id @default(uuid())
+  annotationFileId              String?             @map("annotation_file_id")
+  annotationFileIdSnapshot      String              @map("annotation_file_id_snapshot")
+  inputRevision                 Int                 @map("input_revision")
+  inputTextFingerprint          String              @map("input_text_fingerprint")
+  inputSentenceCount            Int                 @map("input_sentence_count")
+  inputCharacterCount           Int                 @map("input_character_count")
+  sourceMediaResourceId         String?             @map("source_media_resource_id")
+  sourceMediaResourceIdSnapshot String              @map("source_media_resource_id_snapshot")
+  sourceFingerprint             String              @map("source_fingerprint")
+  mediaAudioTrackId             String?             @map("media_audio_track_id")
+  mediaAudioTrackIdSnapshot     String              @map("media_audio_track_id_snapshot")
+  audioOffsetMicros             BigInt              @map("audio_offset_micros")
+  mediaAnalysisRunId            String?             @map("media_analysis_run_id")
+  mediaAnalysisFingerprint      String?             @map("media_analysis_fingerprint")
+  modelName                     String              @map("model_name")
+  modelVersion                  String              @map("model_version")
+  dictionaryVersion             String              @map("dictionary_version")
+  codeVersion                   String              @map("code_version")
+  configHash                    String              @map("config_hash")
+  config                        Json
+  identityHash                  String              @unique @map("identity_hash")
+  status                        ProcessingJobStatus @default(queued)
+  progress                      Float               @default(0)
+  errorCode                     String?             @map("error_code")
+  manifest                      Json?
+  createdBy                     String              @map("created_by")
+  createdAt                     DateTime            @default(now()) @map("created_at")
+  updatedAt                     DateTime            @updatedAt @map("updated_at")
+  completedAt                   DateTime?           @map("completed_at")
+
+  annotationFile  AnnotationFile?   @relation(fields: [annotationFileId], references: [resourceId], onDelete: SetNull)
+  sourceMedia     MediaFile?        @relation("AlignmentRunSourceMedia", fields: [sourceMediaResourceId], references: [resourceId], onDelete: SetNull)
+  mediaAudioTrack MediaAudioTrack?  @relation(fields: [mediaAudioTrackId], references: [id], onDelete: SetNull)
+  mediaAnalysisRun MediaAnalysisRun? @relation("AlignmentRunMediaAnalysis", fields: [mediaAnalysisRunId], references: [id], onDelete: SetNull)
+  creator         User              @relation("AlignmentRunCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  artifacts       AlignmentArtifact[]
+  jobs            ProcessingJob[]
+
+  @@index([annotationFileId, inputRevision])
+  @@index([sourceMediaResourceId])
+  @@index([mediaAudioTrackId])
+  @@index([mediaAnalysisRunId])
+  @@index([status, createdAt])
+  @@index([createdBy, createdAt])
+  @@map("alignment_runs")
+}
+
+// 大型预测正文只存在对象存储；数据库仅保存固定格式和完整性元数据。
+model AlignmentArtifact {
+  id            String                @id @default(uuid())
+  runId         String                @map("run_id")
+  kind          AlignmentArtifactKind
+  formatVersion Int                   @map("format_version")
+  mimeType      String                @map("mime_type")
+  size          BigInt
+  checksum      String
+  storageKey    String                @unique @map("storage_key")
+  createdAt     DateTime              @default(now()) @map("created_at")
+
+  run AlignmentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, kind])
+  @@index([runId, createdAt])
+  @@map("alignment_artifacts")
 }
 
 // 不使用“拒绝”记录：有效权限由管理员/所有者特权、直接授权和未被截断的祖先授权合并得到。
@@ -779,6 +858,7 @@ model ProcessingJob {
   errorMessage       String?                        @map("error_message")
   result             Json?
   analysisRunId      String?                        @map("analysis_run_id")
+  alignmentRunId     String?                        @map("alignment_run_id")
   attemptCount       Int                            @default(0) @map("attempt_count")
   claimedBy          String?                        @map("claimed_by")
   claimedAt          DateTime?                      @map("claimed_at")
@@ -797,6 +877,7 @@ model ProcessingJob {
   creator               User                   @relation("JobCreator", fields: [createdBy], references: [id])
   cancellationRequester User?                  @relation("ProcessingJobCanceller", fields: [cancelRequestedBy], references: [id], onDelete: Restrict)
   analysisRun           MediaAnalysisRun?      @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
+  alignmentRun          AlignmentRun?          @relation(fields: [alignmentRunId], references: [id], onDelete: Cascade)
   requests              ProcessingJobRequest[]
   commands              ProcessingJobCommand[] @relation("ProcessingJobCommandTarget")
   retryResults          ProcessingJobCommand[] @relation("ProcessingJobCommandResult")
@@ -804,6 +885,7 @@ model ProcessingJob {
   @@index([resourceId])
   @@index([status])
   @@index([analysisRunId])
+  @@index([alignmentRunId])
   @@index([deduplicationKey])
   @@index([cancelRequestedBy])
   @@index([status, createdAt])

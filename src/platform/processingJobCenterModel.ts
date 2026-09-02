@@ -32,6 +32,7 @@ export const PROCESSING_JOB_TYPE_LABELS: Record<ProcessingJobType, string> = {
   audio_extract: "音频提取",
   annotation_export: "标注导出",
   media_analysis: "媒体分析",
+  force_alignment: "强制对齐",
 };
 
 export function isProcessingJobActive(status: ProcessingJobStatus) {
@@ -60,7 +61,9 @@ export function canRetryProcessingJobRequest(
   item: ProcessingJobRequestListItem,
   user: PlatformUser,
 ) {
-  return (item.requester.id === user.id || hasFullPlatformResourceAccess(user.roles)) &&
+  // 后端当前只实现媒体分析重试；对齐任务要等 D2b 接入同一命令服务后才能开放按钮。
+  return item.job.type === "media_analysis" &&
+    (item.requester.id === user.id || hasFullPlatformResourceAccess(user.roles)) &&
     (item.job.status === "failed" || item.job.status === "cancelled");
 }
 

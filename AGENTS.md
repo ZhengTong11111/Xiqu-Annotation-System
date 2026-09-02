@@ -263,6 +263,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     media/rendition/algorithm/config facts; annotation id, track offset, display metadata, temporary URL and credentials are excluded
   - `clientRequestId` is a strict UUID generated once per logical browser action with `createRuntimeUuid()`; the same ambiguous
     HTTP retry must reuse it, and reusing it for changed request facts is a stable 409 conflict
+- `apps/api/src/alignmentRunIdentity.ts`
+  - the only force-alignment run/config hash and processing deduplication identity boundary. It accepts exact stable annotation
+    revision/text-hash/count, source/track/offset/fingerprint, model/dictionary/code version and bounded JSON config facts
+  - actor, client request id, display metadata, sentence text, ProjectData, credentials and temporary URLs must never enter this
+    identity. Config is cloned after canonical JSON validation; `audioOffsetMicros` remains exact bigint until canonical string hashing
 - `apps/api/src/processingJobQuery.ts` + `apps/api/src/processingJobQueryService.ts`
   - the bounded request-centric query boundary for `mine | related | all`, summary and detail. `all` is admin-only; related
     visibility is recalculated from current resource ACL and hidden contexts must not be enumerable

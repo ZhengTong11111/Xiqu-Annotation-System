@@ -493,6 +493,7 @@ export const PROCESSING_JOB_TYPES = [
   "audio_extract",
   "annotation_export",
   "media_analysis",
+  "force_alignment",
 ] as const;
 export type ProcessingJobType = typeof PROCESSING_JOB_TYPES[number];
 

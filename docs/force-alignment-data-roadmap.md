@@ -113,12 +113,48 @@ annotationOperationId / committedRevision / details
   operation/revision provenance。不联表展开账号名、文件名或正文，不输出 details JSON、ProjectData、命令 payload、
   before/after、媒体 URL、凭据或错误文本；未知 reasonCode 留空，所有单元格复用审计 CSV 的公式注入防护。
 - 普通用户稳定 403，非法、倒置或超过 90 天的时间窗稳定 400。真实 PostgreSQL 10,001 行夹具证明稳定分页和显式截断，
-  HTTP 集成验证下载头与授权；专项 10 项、完整 API 308 项、平台集成 44 项和完整构建通过。本阶段无 schema/数据写入且未部署生产。
+  HTTP 集成验证下载头与授权；专项 10 项、完整 API 309 项、平台集成 44 项和完整构建通过。本阶段无 schema/数据写入且未部署生产。
 
-### FA-D2：AlignmentRun 与预测对象（下一阶段）
+### FA-D2：AlignmentRun 与预测对象（进行中）
 
 - 复用 processing job 和对象存储建立 run provenance、压缩预测 artifact、manifest/checksum 与失败补偿。
 - 不保存临时 URL、凭据和逐帧大矩阵；应用结果与 operation 关联。
+
+#### FA-D2a：Additive schema 与执行身份（已完成）
+
+- 新增独立 `AlignmentRun` 与 `AlignmentArtifact`，run 固化 annotation file/revision、文本输入 hash、所选音轨及微秒偏移、
+  媒体/分析指纹、模型/词典/代码版本和 config hash；删除来源实体时可空外键不能抹掉对应 snapshot id/hash。
+- `ProcessingJobType` 增加 `force_alignment`，job 以可空 `alignmentRunId` 关联 run，并用数据库 CHECK 保证该列只属于该类型；
+  现有 media-analysis/其他 job 不回填、不重解释。artifact 只保存 kind/format/mime/size/SHA-256/storage key，预测正文不进 PostgreSQL。
+- 建立唯一 identity helper：仅稳定事实进入 hash/dedup key，账号、显示名、临时 URL、凭据、正文和完整 ProjectData 均排除。
+  migration 只增表、枚举值、可空列/索引/约束，不 UPDATE/DELETE 现有 annotation、operation、snapshot、job 或媒体事实。
+- 已新增唯一 `identityHash`、来源外键/snapshot 一致性、run 生命周期、artifact 容量与 force-alignment job 类型 CHECK；来源删除
+  只置空导航外键，snapshot/hash、artifact 和 job 溯源继续保留。任务中心可识别“强制对齐”，但在 D2b 接入真实重试服务前
+  不显示虚假的重试入口。专项 7/7、processing jobs 11/11、任务中心 2/2、完整 API 314/314 与完整构建通过；未部署生产。
+
+#### FA-D2b：创建、复用与任务需求（下一阶段）
+
+- 增加严格创建 API。服务端在事务内重读活动 annotation file、当前 revision、可对齐文本投影、默认/指定音轨、媒体来源和
+  `read + write + download` 权限，生成 input/text/source/analysis fingerprint；浏览器只提供 clientRequestId 和有限模型预设。
+- 复用现有 `ProcessingJobRequest`/request key、canonical advisory lock、活动 job partial unique、取消与重试命令；同身份共享
+  执行，不同账号保留独立需求。revision、文本、音轨偏移、模型/词典/配置任一变化均不能错误复用。
+- 查询 DTO 只返回有权限上下文中的 run 摘要、状态和可下载 artifact id，不暴露 dedupe key、storage key、输入正文或供应商事实。
+
+#### FA-D2c：Worker 与预测对象原子发布
+
+- 在现有 worker runtime 增加 force-alignment task adapter；模型执行器使用显式版本化接口，可先以确定性测试实现验证任务和
+  发布合同，真实模型/字典二进制由部署配置提供，不打包凭据或临时媒体 URL。
+- 输出采用版本化 gzip JSON（逐句/逐字边界、有限候选和置信度），先写 staged、校验 size/SHA-256/manifest，再在 claim fence
+  内原子发布对象和数据库终态。取消、失败、worker shutdown、commit 响应不确定与迟到旧 worker 均复用现有补偿原则。
+- 对象读取逐次复核 annotation/source ACL 和 run/artifact 归属；PostgreSQL 不保存逐帧 posterior、隐藏向量或重复声学数组。
+
+#### FA-D2d：应用结果与真实 Operation 绑定
+
+- 解析 artifact 后由服务端/共享 document-model 生成严格、可重放的 timing command；应用前复核文件 revision、句子/字符身份和
+  run 输入 fingerprint，过期 run 不能静默覆盖新文本。
+- 新增轻量 `AlignmentApplication`，与真实 annotation operation/revision 同事务绑定，支持一 run 多次有意应用但阻止一次
+  client action 重复；后续人工 timing 修改继续只存在于普通 operation，不复制 before/after。
+- 完成异常、取消、重试、跨账号共享、撤权、对象损坏、旧 revision 和 ambiguous retry 全链路测试后，FA-D2 才算结束。
 
 ### FA-D3：质量标签与训练导出
 
