@@ -1149,9 +1149,9 @@ R5 完成不代表 R7 公网生产验收；真实云 IAM、TLS 续期、外部�
 
 > 工具行为、模型运行、人工修正、质量标签、容量预算和训练导出按
 > [`force-alignment-data-roadmap.md`](./force-alignment-data-roadmap.md) 的 FA-D0 至 FA-D3 滚动推进。FA-D0 已完成
-> 容量与合同规划；HC1 已给出快照增长/重建事实，HC2a 加法 schema/resolver 已独立完成代码与提交前验证。行为旁表仍使用
-> 独立 migration；生产上线时必须先部署并观察 HC2，再部署 Force Alignment，不能把两项 schema/数据生命周期变化混成
-> 一次发布。
+> 容量与合同规划；FA-D1a 服务端轻量旁表、严格批量幂等状态 API 与管理员固定维度聚合已完成代码。当前进入 FA-D1b
+> 前端生命周期/离线队列；行为旁表使用独立 migration，生产上线时必须先部署并观察 HC2，再部署 Force Alignment，不能把
+> 两项 schema/数据生命周期变化混成一次发布。
 
 - PostgreSQL 只保存轻量尝试索引、run provenance、质量标签和对象 manifest；压缩预测进入对象存储。
 - 普通人工 timing 修改继续复用 annotation operation，不复制 before/after 日志。

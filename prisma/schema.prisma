@@ -193,6 +193,23 @@ enum AnnotationOperationStatus {
   superseded
 }
 
+enum AnnotationToolEventName {
+  sentence_character_even_timing_reset
+}
+
+enum AnnotationToolAttemptEntryPoint {
+  sentence_list
+  timeline_context_menu
+}
+
+enum AnnotationToolAttemptOutcome {
+  cancelled
+  no_change
+  blocked
+  failed
+  committed
+}
+
 enum AnnotationMutationPurpose {
   track_structure
   bulk_import
@@ -238,6 +255,7 @@ model User {
   supersededMediaAnalysisRuns       MediaAnalysisRun[]                @relation("MediaAnalysisRunSuperseder")
   auditLogs                         AuditLog[]                        @relation("AuditActor")
   annotationOperations              AnnotationOperation[]             @relation("AnnotationOperationActor")
+  annotationToolAttempts            AnnotationToolAttempt[]           @relation("AnnotationToolAttemptActor")
   annotationMutationLeases          AnnotationMutationLease[]         @relation("AnnotationMutationLeaseHolder")
   annotationCollaborationTickets    AnnotationCollaborationTicket[]   @relation("AnnotationCollaborationTicketUser")
   annotationCollaborationPresences  AnnotationCollaborationPresence[] @relation("AnnotationCollaborationPresenceUser")
@@ -373,6 +391,7 @@ model AnnotationFile {
   targetReviewLinks      AnnotationReviewLink[]             @relation("AnnotationReviewLinkTarget")
   sourceReviewLinks      AnnotationReviewLink[]             @relation("AnnotationReviewLinkSource")
   operations             AnnotationOperation[]
+  toolAttempts           AnnotationToolAttempt[]
   mutationLease          AnnotationMutationLease?
   collaborationTickets   AnnotationCollaborationTicket[]
   collaborationPresences AnnotationCollaborationPresence[]
@@ -916,6 +935,7 @@ model AnnotationOperation {
 
   annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
   actor          User           @relation("AnnotationOperationActor", fields: [actorUserId], references: [id])
+  toolAttempt    AnnotationToolAttempt?
 
   @@unique([annotationFileId, sequence])
   @@unique([annotationFileId, actorUserId, clientOperationId])
@@ -923,4 +943,35 @@ model AnnotationOperation {
   @@index([annotationFileId, committedRevision, sequence])
   @@index([actorUserId, createdAt])
   @@map("annotation_operations")
+}
+
+// 工具行为旁表只保存轻量生命周期与 operation 引用，绝不复制 ProjectData 或命令正文。
+model AnnotationToolAttempt {
+  id                    String                          @id
+  eventName             AnnotationToolEventName        @map("event_name")
+  actorUserId           String?                         @map("actor_user_id")
+  annotationFileId      String?                         @map("annotation_file_id")
+  sentenceId            String                          @map("sentence_id")
+  entryPoint            AnnotationToolAttemptEntryPoint @map("entry_point")
+  invokedAt             DateTime                        @map("invoked_at")
+  confirmedAt           DateTime?                       @map("confirmed_at")
+  finishedAt            DateTime?                       @map("finished_at")
+  outcome               AnnotationToolAttemptOutcome?
+  suppressPrompt        Boolean                         @default(false) @map("suppress_prompt")
+  characterCount        Int                             @map("character_count")
+  sentenceDurationMs    Int                             @map("sentence_duration_ms")
+  annotationOperationId String?                         @unique @map("annotation_operation_id")
+  committedRevision     Int?                            @map("committed_revision")
+  details               Json?
+  createdAt             DateTime                        @default(now()) @map("created_at")
+  updatedAt             DateTime                        @updatedAt @map("updated_at")
+
+  actor              User?                @relation("AnnotationToolAttemptActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  annotationFile     AnnotationFile?      @relation(fields: [annotationFileId], references: [resourceId], onDelete: SetNull)
+  annotationOperation AnnotationOperation? @relation(fields: [annotationOperationId], references: [id], onDelete: SetNull)
+
+  @@index([eventName, invokedAt])
+  @@index([annotationFileId, invokedAt])
+  @@index([actorUserId, invokedAt])
+  @@map("annotation_tool_attempts")
 }

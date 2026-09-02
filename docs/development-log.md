@@ -10395,3 +10395,35 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：HC2b2b 查询、缓存、现有采集器/Prometheus 接入、专项/完整测试、自审和规范文档。**待推进**：经用户明确
   授权后部署 HC2 expand release，验证 migration、分页/resolver 和只读指标基线；生产观察与一致备份/恢复演练完成前不进入
   HC3 recipe 写入。本轮没有部署生产、执行 migration、运行生产 planner、写 hash/recipe 或清理任何快照/payload。
+
+## 2026-09-02：FA-D1a Force Alignment 轻量工具尝试旁表
+
+### 数据合同与 Migration
+
+- 新增独立 additive migration `20260902020000_annotation_tool_attempts` 与 Prisma 模型，只支持
+  `sentence_character_even_timing_reset`。一行保存 runtime UUID、账号/文件/句子、入口、调用/确认/结束时间、终态、是否
+  不再提示、字符数、句长、未来 operation/revision 引用和至多 2KB 固定 reasonCode；不复制 ProjectData、命令、文字、
+  before/after、媒体 URL 或声学数组。
+- actor、annotation file、operation 外键均为 SetNull，删除账号/资源/operation 后统计事实与 committed revision 保留。
+  数据库 CHECK 独立约束计数、时间顺序、终态组合和 details 大小；migration 静态测试拒绝对 annotation_files、
+  annotation_operations、annotation_recovery_snapshots 出现 UPDATE/DELETE/DROP/ALTER。
+
+### 批量幂等服务与权限
+
+- shared exact-key parser 把批量限制为 1-100 个唯一 UUID，固定 event/entry/outcome/reason，规范 ISO 时间和有界数值；外部
+  输入在类型与运行时均不能提交 `committed`、operation id 或 committed revision。
+- API 使用“一 attempt 一份当前状态快照”，不拆 create/update 命令。服务端按排序后的 attempt id 获取事务 advisory lock，
+  并发首次送达只创建一行；immutable 身份不可改变，确认/终态/详情只能单调补齐，终态后只能同值或旧前缀幂等重放。
+- 首次创建在同一事务复核活动 annotation file 与有效 write；本人已经创建的离线事实在随后撤权后仍可补完，避免权限变动
+  截断真实生命周期。其他账号即使猜中 UUID 也只得到 404。整批全成全败，后项冲突会回滚前项。
+- 管理员汇总默认 7 天、最多 90 天，只按固定 event、entry point 和 pending/终态计数；不返回 attempt、账号、文件、句子或
+  details。当前没有前端入口，汇总 API 仅是 D1a 服务端合同，CSV 延后到 D1c。
+
+### 验证与状态
+
+- 专项 5/5 覆盖严格 parser、外部 committed 阻断、并发幂等、旧重试、身份冲突、跨账号、无权限、撤权后完成、管理员汇总、
+  三外键 SetNull 和 migration 零改写；annotation commands 25/25、command commit 5/5、完整 API 301/301、完整 build 与
+  `git diff --check` 通过。仅有既有 Vite 主 chunk 提示与 pg 并发 query deprecation warning。
+- **已完成**：FA-D1a migration/shared/service/routes/aggregate、测试、自审与文档。**待推进**：FA-D1b 两个重置入口的唯一
+  App action、账号/文件隔离 IndexedDB 队列和断网续传；FA-D1c 再把成功 attempt 与真实 operation/revision 原子绑定。本轮
+  没有接 UI、没有写现有生产数据、没有部署，也没有把 HC2 与 FA migration 混成一次上线。

@@ -1,6 +1,6 @@
 # Force Alignment 数据闭环路线图
 
-更新日期：2026-09-01
+更新日期：2026-09-02
 
 ## 1. 决策
 
@@ -70,15 +70,18 @@ annotationOperationId / committedRevision / details
 - 完成生产只读测量、记录筛选、禁止项、估算和数据安全边界。
 - 不修改代码或数据库。
 
-### FA-D1a：服务端轻量旁表
+### FA-D1a：服务端轻量旁表（代码已完成）
 
-- 本地开发前置门禁：HC2a 加法 schema/resolver 已独立完成代码、测试和提交；本阶段使用另一条 migration 和回滚边界。
-- 生产上线前置门禁：HC2 migration 已先行部署并观察，不能把两条 migration 合并进同一次无观察发布。
-- 加法 migration、严格 shared parser、service、批量 create/update 和聚合查询。
-- 只支持 `sentence_character_even_timing_reset`；外部 API 不能写 committed。
-- 隔离测试覆盖幂等、权限、终态、大小和删除 SetNull；不接 UI、不部署生产。
+- 已使用独立 additive migration 建立 `AnnotationToolAttempt`，只支持 `sentence_character_even_timing_reset`；actor、file、
+  operation 删除均 SetNull，旁表事实保留，现有 annotation/operation/snapshot 大表零回填、零改写。
+- shared exact-key parser 与批量状态快照 API 已完成。身份字段不可变、生命周期单调补齐、终态不可改写；排序 advisory lock
+  保证多标签页并发首次送达幂等，旧前缀重试不会倒退新状态。外部 API 无法写 committed/operation/revision。
+- 新建需活动文件 write；本人既有记录在撤权后仍可补完，其他账号统一 404。管理员 90 天内聚合只返回固定事件、入口、终态
+  计数，不返回 attempt、账号、文件、句子或 details 身份。
+- details 只有固定 reasonCode 且至多 2KB；专项 5 项、command 25/5 项、完整 API 301 项和完整构建通过。不接 UI、不部署
+  生产；生产上线仍必须晚于 HC2 migration 的独立观察。
 
-### FA-D1b：前端生命周期与离线队列
+### FA-D1b：前端生命周期与离线队列（下一阶段）
 
 - 句级列表和 Timeline 向唯一 App 动作传入 entry point。
 - 记录 invoked、confirm/cancel、no-change/blocked/final failure；断网和刷新后稳定续传。

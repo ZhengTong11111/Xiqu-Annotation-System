@@ -8,6 +8,7 @@ import {
   isValidAnnotationOperationPayload,
   MAX_MEDIA_ANALYSIS_BATCH_ASSETS,
   parseAnnotationCommandBatchRequest,
+  parseAnnotationToolAttemptBatchRequest,
   PROCESSING_JOB_STATUSES,
   PROCESSING_JOB_TYPES,
   RESOURCE_CAPABILITIES,
@@ -58,6 +59,7 @@ import {
 import type { PrismaPlatformRepository } from "./repository.js";
 import type { ResourceService } from "./resourceService.js";
 import type { AnnotationCommandCommitService } from "./annotationCommandCommitService.js";
+import type { AnnotationToolAttemptService } from "./annotationToolAttemptService.js";
 import type { AnnotationRecoveryBackupService } from "./annotationRecoveryBackupService.js";
 import type { AnnotationReviewLinkService } from "./annotationReviewLinkService.js";
 import { MAX_BATCH_RESOURCE_SELECTION } from "./resourceSelection.js";
@@ -136,6 +138,7 @@ export function registerApiRoutes(
   mediaAudioTracks: MediaAudioTrackService,
   mediaAudioPlaybackSessions: MediaAudioPlaybackSessionService,
   annotationCommandCommits: AnnotationCommandCommitService,
+  annotationToolAttempts: AnnotationToolAttemptService,
   storage: Pick<ObjectStorage, "getObjectStream">,
   mediaUploads: MediaUploadService,
   objectLifecycle: ObjectLifecycleService,
@@ -1789,6 +1792,45 @@ export function registerApiRoutes(
       request.params.resourceId,
       parseAnnotationClientSyncFailureReport(request.body),
     ));
+
+  app.post<{ Body: unknown }>("/api/annotation-tool-attempts/batch", async (request) => {
+    const parsed = parseAnnotationToolAttemptBatchRequest(request.body);
+    if (!parsed.success) {
+      throw badRequest("工具尝试批次参数不正确。", {
+        code: parsed.code,
+        ...(parsed.attemptIndex === undefined ? {} : { attemptIndex: parsed.attemptIndex }),
+      });
+    }
+    return annotationToolAttempts.submitBatch(
+      await getCurrentUser(repository, request),
+      parsed.data,
+    );
+  });
+
+  app.get<{ Querystring: { from?: unknown; to?: unknown } }>(
+    "/api/admin/annotation-tool-attempts/summary",
+    async (request) => {
+      const to = parseSummaryTimestamp(request.query.to, new Date());
+      const from = parseSummaryTimestamp(
+        request.query.from,
+        new Date(to.getTime() - 7 * 24 * 60 * 60 * 1_000),
+      );
+      return annotationToolAttempts.summarize(
+        await getCurrentUser(repository, request),
+        { from, to },
+      );
+    },
+  );
+}
+
+function parseSummaryTimestamp(value: unknown, fallback: Date) {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string" || value.length > 40) throw badRequest("汇总时间参数不正确。");
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) {
+    throw badRequest("汇总时间参数不正确。");
+  }
+  return parsed;
 }
 
 function requireObject(value: unknown): Record<string, unknown> {

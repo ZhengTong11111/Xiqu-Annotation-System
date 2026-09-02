@@ -60,6 +60,7 @@ import { PostgresAnnotationReviewEventBus } from "./postgresAnnotationReviewEven
 import { ProcessingJobQueryService } from "./processingJobQueryService.js";
 import { ProcessingJobCommandService } from "./processingJobCommandService.js";
 import { createSafeFastifyLoggerConfiguration } from "./requestLogSanitizer.js";
+import { AnnotationToolAttemptService } from "./annotationToolAttemptService.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -180,6 +181,7 @@ export async function buildApiApp(
     access,
     collaborationEvents,
   );
+  const annotationToolAttempts = new AnnotationToolAttemptService(options.prisma, access);
   const health = new HealthService(options.prisma, storage);
   // 外部监控采集使用有限只读聚合，并与管理员诊断的重型对象审计保持分离。
   const operationalMetrics = new OperationalMetricsCollector(
@@ -314,6 +316,7 @@ export async function buildApiApp(
     mediaAudioTracks,
     mediaAudioPlaybackSessions,
     annotationCommandCommits,
+    annotationToolAttempts,
     storage,
     mediaUploads,
     objectLifecycle,

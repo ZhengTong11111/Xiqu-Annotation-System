@@ -1398,6 +1398,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     plus PostgreSQL total relation bytes, cached for five minutes and shared across concurrent scrapes
   - the query must never select, parse, hash, replay, measure or detoast payload JSON. Prometheus labels are fixed enums only;
     blocked codes and replay distance remain explicit offline planner report facts
+- `packages/shared/src/annotationToolAttempts.ts` + `apps/api/src/annotationToolAttemptService.ts`
+  - FA-D1a single-event lightweight behavior contract for sentence character even-timing reset. External batches submit one
+    current lifecycle snapshot per runtime UUID; they can never report `committed`, operation identity or committed revision
+  - immutable identity and terminal facts never change. Sorted per-attempt advisory locks make concurrent first delivery
+    idempotent; stale prefixes may replay without clearing newer fields. New rows require current file `write`, while the same
+    actor may finish an already-created row after permission revocation
+  - details use an exact fixed reason-code object capped at 2KB. Never store ProjectData, commands, before/after values, sentence
+    text, media URLs, acoustic arrays or credentials in the attempt table or aggregate responses
 - `apps/api/src/annotationRecoverySnapshotResolver.ts`
   - HC2a single read boundary for recovery snapshot storage modes; detail and restore must both use it
   - inline payloads are historical arbitrary JSON and must be returned without current ProjectData parsing, normalization,
@@ -2153,6 +2161,9 @@ Important backend caveats:
 - live history-capacity metrics reuse the existing operational metrics owner and a five-minute successful-result cache. They may
   count lightweight columns and read `pg_total_relation_size`, but must never run the history planner or touch payload values on a
   Prometheus scrape. Collection failure retains the last real Gauge values and marks only collection success as zero.
+- annotation tool attempts are auxiliary training/governance facts outside ProjectData, drafts, undo/history and annotation
+  revision. User/file/operation deletion uses SetNull and preserves the fact; no cleanup or copy workflow may cascade-delete or
+  duplicate these rows. Only the future command-commit transaction may set `committed` and bind an operation.
 - HC2a expands recovery snapshots without rewriting old rows: payload stays required, all new writes default to `inline`, and a
   database check prevents enabling recipe/archive modes before their readers and writers exist. Detail and restore share the
   resolver above; history lists remain metadata-only and public DTOs do not expose storage/hash/recipe internals.

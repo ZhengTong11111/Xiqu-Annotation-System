@@ -4,6 +4,7 @@ export * from "./api.js";
 export * from "./annotationCommands.js";
 export * from "./annotationCommandCommit.js";
 export * from "./annotationWorkflow.js";
+export * from "./annotationToolAttempts.js";
 export * from "./projectWorkflow.js";
 export * from "./customTrackStructureCommands.js";
 export * from "./trackStructureLifecycleCommands.js";
