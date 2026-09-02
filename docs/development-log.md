@@ -11677,3 +11677,36 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 恢复历史崩溃：需要区分列表展开、详情请求、preview 迁移和浏览器渲染阶段；修复应增加有界、脱敏的诊断和局部错误隔离，并为真实根因补回归测试。
 - 未来快照轻量保存：尚未修改保存事务、schema 或 resolver。必须先完成隔离库双形态测试、失败 inline 回退和恢复/比较/备份演练，再另行申请短维护发布。
 - 生产空间治理：历史记录冻结，不执行 compactor、shadow apply、payload 清理、`VACUUM FULL`、`pg_repack` 或旧备份删除；空间接近安全线时停止治理。
+
+## 2026-09-02：HC3c1 未来快照决策边界（本地完成，未接入线上）
+
+### 本轮完成
+
+- 在线恢复历史已经恢复正常。此前为恢复历史异常临时加入的错误边界、DTO 过滤和前端诊断过度修复已撤销；本轮没有再次修改
+  恢复历史 UI、DTO、resolver 或读取事实。
+- 新增 `apps/api/src/annotationHistoryFutureSnapshotPolicy.ts`，建立未来快照的唯一决策边界。策略只允许在显式 rollout、普通
+  `save`、非检查点、精确重建证明完整、canonical hash 算法/值一致、revision 与 operation 范围完整且重放量不超过预算时返回
+  reconstructible recipe；其他情况统一回退为需要完整 payload 的 inline。
+- 策略只消费现有重建内核输出的证明，不复制 command parser、apply 或 canonical hash 计算，也没有接入当前保存事务、恢复 resolver、
+  Prisma schema、migration、worker 或生产配置。现有 `payload NOT NULL` 和全部 inline 历史合同保持不变。
+- 新增 6 组纯函数专项测试，覆盖 rollout 未开启、特殊 reason、检查点、证明缺失/失败、recipe/hash/revision/检查点漂移、hash 算法
+  版本漂移、operation 预算和成功路径；新增 `test:annotation-history-future-policy` 脚本。
+- 完成完整 `npm run test:api`（343/343）、`npm run test:annotation-history-future-policy`（6/6）、
+  `npm run test:annotation-history-compaction`（34/34）、`npm run build` 和 `git diff --check`。仅保留既有 Vite chunk 体积提示和
+  `pg` concurrent-query deprecation warning。
+
+### 数据与发布边界
+
+- 本轮没有连接生产、开启维护、执行 migration、切换 release、写入 recipe、修改数据库、压缩/删除/归档历史、清理 payload、运行
+  compactor、`VACUUM FULL` 或 `pg_repack`。生产标注、operation、恢复快照、确认、评论、反馈、审核链接和媒体对象没有变更。
+- 生产只读基线仍为数据库约 6,422MB，恢复快照约 6,061MB；系统盘约剩 4.1GB，数据盘约剩 34GB。历史容量治理继续受安全余量
+  门禁约束，不能用未来方案为当前空间问题做未经验证的回收。
+- 本轮没有新增需要写入 `AGENTS.md` 的长期运行规则；已有“历史冻结、双形态需先隔离验证、不得泄露正文/凭据、未授权不部署”的规则
+  已覆盖本轮边界。
+
+### 下一步
+
+- **HC3c1 已完成**，但“未来轻量快照已上线”尚未完成。下一阶段为 HC3c2：在隔离库设计并验证旧 inline 与新 reconstructible 共存的
+  expand migration、数据库 CHECK、唯一双形态 resolver、失败回退、详情/比较/恢复/备份和旧 release 回滚合同。
+- HC3c2 完成前不接入线上保存，不修改生产 schema，不执行历史 compactor 或 payload 清理；若隔离验证不能证明旧历史读取和事务回滚，
+  必须停在本地设计阶段。
