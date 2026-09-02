@@ -10603,3 +10603,55 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：FA-D2a schema/migration、身份 helper、shared/UI 类型、专项/完整测试、自审和规范文档。**待推进**：FA-D2b
   服务端创建/复用、ProcessingJobRequest 账号需求、严格 ACL/revision/text/audio 重读和有界 run 查询；D2c 前不运行模型或发布
   prediction 对象。本轮没有部署生产、执行生产 migration、创建真实对齐任务或修改现有标注/历史/审核/媒体对象。
+
+## 2026-09-02：FA-D2b 强制对齐创建、共享需求与有界查询
+
+### 文本投影与严格请求边界
+
+- document-model 新增纯 `buildAlignmentTextProjection()`。它按句级时间/ID 和逐字时间/ID 建立稳定总序，保留句/字稳定身份、
+  句级正文、范围、发声方式与角色行当，但明确排除模型要预测的逐字时间。缺逐字句、悬空逐字、异常时间/正文、空输入和超容量
+  均返回固定错误码；D2d 因而可以映射回真实 character id，不能猜测拆字或静默跳过。
+- shared 新增 exact-key `CreateAlignmentRunRequest` parser。浏览器只能提交规范 UUID `clientRequestId` 与固定
+  `kunqu_character_v1` 预设，不能自报 revision、正文、音轨、offset、媒体/分析 fingerprint、模型版本、config 或 URL。
+  未识别历史模型在查询中显示为“历史强制对齐模型”，不会让整页历史记录因未来升级而不可读。
+
+### 音频来源与 canonical 创建事务
+
+- 从 `MediaAnalysisJobService` 抽出事务可复用的 `analysisAudioSourceResolver.ts`，成为启用音轨、主媒体、上传音频/VOD rendition、
+  稳定来源 fingerprint、微秒偏移和主/来源 `read + download` 的唯一解析边界。既有媒体分析同步改用该 resolver，删除了原服务内
+  约三百行重复类型、include 和来源分支；临时 VOD URL、PlayAuth 和供应商响应仍不进入 API 业务状态或日志。
+- `AlignmentRunService.create()` 固定执行账号 request advisory lock -> 活动文件/资源写锁 -> 默认音轨与来源重读 -> canonical job
+  advisory lock。事务内严格解析当前 ProjectData、计算最小投影 SHA-256/计数、读取 annotation 默认音轨（未设置时原声）、验证
+  文件 write 与来源 read/download，再构造 D2a identity。输入任一 revision/text/source/offset/model/config 漂移都会产生不同 identity；
+  同一 clientRequestId 改绑新事实稳定 409。
+- 相同输入跨标签页、跨账号只保留一个 canonical AlignmentRun/ProcessingJob；不同账号拥有独立 ProcessingJobRequest，同账号
+  快速重复只复用一条业务需求并保存各自幂等别名。`ensureProcessingJobRequest()` 已抽为 media-analysis/force-alignment 共享 helper，
+  没有新增第二套 request/key/cancel 表、队列或轮询 owner。
+- 自审发现原通用取消状态机只推进 MediaAnalysisRun。现已在同一事务分支同时推进 AlignmentRun：多账号依次取消时，前一账号只
+  撤销自己的需求，最后 queued 需求取消会让 job 与 run 一并进入 cancelled；running 分支同步进入 cancelling。force retry 仍明确
+  不开放，等待 D2c 实现真实执行器与重试 reservation，不能原地复活终态 run。
+
+### 查询、前端与执行器门禁
+
+- 文件 run 列表按 `(createdAt,id)` keyset，默认 20、最多 100；详情和列表每次重新验证 annotation read ACL，并在内存重算当前
+  revision/text/default-track/source/offset 匹配。DTO 只返回 run id、状态/进度/固定错误码、输入计数、模型标签、时间、当前匹配和
+  artifact 可用性；不返回 identity/dedup/config/storage、正文、ProjectData、临时 URL、供应商事实或凭据。
+- 编辑器“文件”菜单增加低频“创建强制对齐任务”。无 write、本地未保存/pending/transient/内联编辑、保存中、同步异常或远端 revision
+  尚未追赶时禁用，防止用户以为正在对齐尚未保存的正文。创建成功打开既有 Processing Job Center；状态、跨账号共享和取消继续由
+  Workspace 唯一 task-center owner 查询，没有第二轮询 hook，也没有 D2c 前的“应用结果”假按钮。
+- API 启动配置新增严格布尔 `XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED`，默认 false。执行器未接入时 POST 稳定返回
+  `analysis_tool_unavailable/alignment_executor_unavailable` 且数据库零写入；只有测试显式启用。HTTPS、生产、开发使用同一合同，
+  本轮未修改 production env、未部署生产，也没有启动不可消费的生产排队任务。
+
+### 验证、自审与状态
+
+- `test:force-alignment-requests`：shared parser 1/1、document projection 2/2、identity/schema/request 8/8；覆盖默认关闭零写入、
+  精确重放、同账号多标签页、跨账号共享、输入漂移 409、来源撤权、run 查询/详情、未知账号隐藏、keyset 分页和最后需求取消。
+- `test:processing-jobs` 11/11，证明既有媒体分析请求、取消和重试未退化；完整 `test:api` 317/317，完整 `npm run build` 与
+  `git diff --check` 通过。仅保留既有 Vite 主 chunk 大小提示和 pg adapter 并发 query deprecation warning。
+- 自审确认本轮无 schema/migration、现有业务数据 UPDATE/DELETE、prediction 对象、模型运行、应用 timing、第二任务队列、正文日志、
+  僵尸来源解析或重复需求 helper；新增复杂逻辑均有中文功能注释。
+- **已完成**：FA-D2b 投影、严格 DTO、默认音轨/来源/ACL 事务重读、canonical run/job 与账号需求、有界查询、取消状态推进、前端低频
+  入口、全量回归和规范文档。**待推进**：FA-D2c worker adapter、版本化 prediction artifact staged/checksum/claim-fenced 原子发布、
+  取消/失败/ambiguous commit 补偿和受权对象读取；随后才进入 D2d 应用结果。本轮未部署生产、执行 production migration、修改
+  现有标注 payload/revision/operation/review/snapshot 或发布任何预测对象。

@@ -50,6 +50,23 @@ export function createMediaAnalysisRequestFingerprint(input: {
     .digest("hex");
 }
 
+/** 强制对齐请求指纹只绑定已重读的执行身份和使用上下文，不复制正文、模型配置或媒体 URL。 */
+export function createForceAlignmentRequestFingerprint(input: {
+  deduplicationKey: string;
+  contextResourceId: string;
+  audioTrackId: string;
+}) {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      version: 1,
+      type: "force_alignment",
+      deduplicationKey: input.deduplicationKey,
+      contextResourceId: input.contextResourceId,
+      audioTrackId: input.audioTrackId,
+    }))
+    .digest("hex");
+}
+
 /** 同一 clientRequestId 不能被静默改绑到另一项任务或另一种 force 语义。 */
 export function assertProcessingJobRequestMatch(
   storedFingerprint: string,

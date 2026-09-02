@@ -50,6 +50,7 @@ import {
 import { ProcessingJobCenterDialog } from "./ProcessingJobCenterDialog";
 import { useProcessingJobCenter } from "./useProcessingJobCenter";
 import { useAnnotationToolAttemptDelivery } from "./useAnnotationToolAttemptDelivery";
+import { createRuntimeUuid } from "../utils/runtimeUuid";
 
 export type PlatformEditorSession = {
   client: PlatformClient;
@@ -130,6 +131,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
   const [draftDecisionBusy, setDraftDecisionBusy] = useState(false);
   const [draftDecisionError, setDraftDecisionError] = useState<string | null>(null);
   const [taskCenterOpen, setTaskCenterOpen] = useState(false);
+  const [alignmentRequestPending, setAlignmentRequestPending] = useState(false);
   // 资源管理器在编辑器打开期间会卸载，因此由 Workspace 保留最近打开文件的真实父目录。
   const [explorerReturnFolderId, setExplorerReturnFolderId] = useState<string | null>(null);
 
@@ -671,6 +673,30 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
                 activeCount: taskCenter.activeCount,
                 isPartial: taskCenter.summary?.isPartial ?? false,
                 onOpen: () => setTaskCenterOpen(true),
+              }
+            : undefined,
+          forceAlignment: editorSession
+            ? {
+                pending: alignmentRequestPending,
+                disabledReason: editorSession.canWrite
+                  ? undefined
+                  : "当前账号没有该标注文件的编辑权限",
+                onCreate: () => {
+                  if (alignmentRequestPending) return;
+                  setAlignmentRequestPending(true);
+                  // 浏览器只提交幂等 UUID 与固定预设；正文、revision、默认音轨和来源权限由服务端重读。
+                  void editorSession.client.createAlignmentRun(editorSession.annotationFileId, {
+                    clientRequestId: createRuntimeUuid(),
+                    modelPreset: "kunqu_character_v1",
+                  }).then(
+                    () => setTaskCenterOpen(true),
+                    (nextError: unknown) => {
+                      window.alert(nextError instanceof Error
+                        ? nextError.message
+                        : "强制对齐任务创建失败，请稍后重试。");
+                    },
+                  ).finally(() => setAlignmentRequestPending(false));
+                },
               }
             : undefined,
         })}

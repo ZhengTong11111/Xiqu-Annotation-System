@@ -17,3 +17,4 @@ export * from "./mediaAnalysisTileBatchCodec.js";
 export * from "./mediaAudioTracks.js";
 export * from "./mediaAudioPlaybackSession.js";
 export * from "./mediaAnalysisIdentity.js";
+export * from "./forceAlignment.js";

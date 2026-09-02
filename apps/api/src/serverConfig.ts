@@ -22,6 +22,7 @@ export type ApiServerRuntimeConfig = {
   seedDevelopmentData: boolean;
   corsOrigin: ApiCorsOriginPolicy;
   aliyunVod: AliyunVodRuntimeConfig;
+  forceAlignmentRequestsEnabled: boolean;
 };
 
 /**
@@ -44,6 +45,12 @@ export function loadApiServerRuntimeConfig(
     ),
     corsOrigin: parseCorsOrigins(environment.XIQU_CORS_ORIGINS, production),
     aliyunVod: parseAliyunVodConfig(environment),
+    // D2c 执行器接入前保持关闭；显式 true 才允许创建可被 worker 消费的任务。
+    forceAlignmentRequestsEnabled: parseStrictBoolean(
+      "XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED",
+      environment.XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED,
+      false,
+    ),
   };
 }
 

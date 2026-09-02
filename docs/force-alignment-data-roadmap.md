@@ -132,15 +132,21 @@ annotationOperationId / committedRevision / details
   只置空导航外键，snapshot/hash、artifact 和 job 溯源继续保留。任务中心可识别“强制对齐”，但在 D2b 接入真实重试服务前
   不显示虚假的重试入口。专项 7/7、processing jobs 11/11、任务中心 2/2、完整 API 314/314 与完整构建通过；未部署生产。
 
-#### FA-D2b：创建、复用与任务需求（下一阶段）
+#### FA-D2b：创建、复用与任务需求（已完成）
 
-- 增加严格创建 API。服务端在事务内重读活动 annotation file、当前 revision、可对齐文本投影、默认/指定音轨、媒体来源和
-  `read + write + download` 权限，生成 input/text/source/analysis fingerprint；浏览器只提供 clientRequestId 和有限模型预设。
+- 已增加严格创建 API。服务端按账号请求锁、文件/资源锁、音轨来源解析、canonical 执行锁的固定顺序，在事务内重读活动
+  annotation file、当前 revision、稳定可对齐文本投影、默认/原声音轨、媒体来源和 `write + source read/download` 权限；
+  浏览器只提供规范 UUID `clientRequestId` 和有限模型预设。投影保留句/字稳定 ID、句级范围/正文/分类并明确排除待预测逐字时间。
 - 复用现有 `ProcessingJobRequest`/request key、canonical advisory lock、活动 job partial unique、取消与重试命令；同身份共享
-  执行，不同账号保留独立需求。revision、文本、音轨偏移、模型/词典/配置任一变化均不能错误复用。
-- 查询 DTO 只返回有权限上下文中的 run 摘要、状态和可下载 artifact id，不暴露 dedupe key、storage key、输入正文或供应商事实。
+  执行，不同账号保留独立需求。revision、文本、来源/音轨偏移、模型/词典/配置任一变化均不能错误复用；取消状态机已同时
+  推进 job 与 AlignmentRun，最后需求取消 queued 执行时不会留下幽灵 run。force retry 仍保持关闭，等待 D2c 接入真实执行器。
+- 文件内 run 列表/详情采用 `(createdAt,id)` 有界 keyset，每次重新验证 file read ACL，并只返回状态、计数、模型标签、当前输入
+  匹配和 artifact 可用性；不暴露 dedupe/config/storage、正文、ProjectData、临时 URL 或供应商事实。历史未知模型可读但不可伪装
+  为当前预设。前端在文件菜单提供低频入口，未保存/未同步或无 write 时禁用，状态与取消复用唯一后台任务中心。
+- API 默认 `XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED=false`，D2c worker 未就绪时稳定 503 且零写入；显式启用仅供本阶段测试。
+  专项 8/8（另含 shared parser 1/1、document projection 2/2）、processing jobs 11/11、完整 API 317/317 和完整构建通过；未部署生产。
 
-#### FA-D2c：Worker 与预测对象原子发布
+#### FA-D2c：Worker 与预测对象原子发布（下一阶段）
 
 - 在现有 worker runtime 增加 force-alignment task adapter；模型执行器使用显式版本化接口，可先以确定性测试实现验证任务和
   发布合同，真实模型/字典二进制由部署配置提供，不打包凭据或临时媒体 URL。

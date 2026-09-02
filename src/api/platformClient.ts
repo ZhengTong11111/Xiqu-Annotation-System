@@ -100,6 +100,11 @@ import type {
   AnnotationAudioPlaybackOptions,
   AnnotationRecoveryBackupResult,
   UpsertResourcePermissionRequest,
+  AlignmentRunDetail,
+  AlignmentRunPage,
+  AlignmentRunSummary,
+  CreateAlignmentRunRequest,
+  ListAlignmentRunsOptions,
 } from "@xiqu/shared";
 import {
   parseAliyunVodAudioRenditionList,
@@ -491,6 +496,31 @@ export class PlatformClient {
   createMediaAnalysis(resourceId: string, request: CreateMediaAnalysisRequest) {
     return this.request<MediaAnalysisRun>(
       `/annotation-files/${resourceId}/media-analysis`,
+      { method: "POST", body: request },
+    );
+  }
+
+  listAlignmentRuns(resourceId: string, options: ListAlignmentRunsOptions = {}, signal?: AbortSignal) {
+    const params = new URLSearchParams();
+    if (options.cursor) params.set("cursor", options.cursor);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return this.request<AlignmentRunPage>(
+      `/annotation-files/${resourceId}/alignment-runs${query ? `?${query}` : ""}`,
+      { signal },
+    );
+  }
+
+  getAlignmentRun(resourceId: string, runId: string, signal?: AbortSignal) {
+    return this.request<AlignmentRunDetail>(
+      `/annotation-files/${resourceId}/alignment-runs/${runId}`,
+      { signal },
+    );
+  }
+
+  createAlignmentRun(resourceId: string, request: CreateAlignmentRunRequest) {
+    return this.request<AlignmentRunSummary>(
+      `/annotation-files/${resourceId}/alignment-runs`,
       { method: "POST", body: request },
     );
   }

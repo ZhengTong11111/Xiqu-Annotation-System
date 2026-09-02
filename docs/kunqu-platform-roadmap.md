@@ -1152,8 +1152,9 @@ R5 完成不代表 R7 公网生产验收；真实云 IAM、TLS 续期、外部�
 > 容量与合同规划；FA-D1a 服务端轻量旁表、FA-D1b 账号级 IndexedDB 生命周期/离线续传和 FA-D1c1 原子
 > operation/revision 绑定均已完成代码。FA-D1c2 也已完成：管理员 CSV 每次重新授权，使用 90 天半开窗口、稳定有界批读、
 > 10,000 行硬上限与显式截断，只输出固定轻量溯源列并复用公式注入防护。FA-D2 已按实际后台任务架构拆为 D2a additive
-> run/artifact schema 与身份、D2b 创建/复用/需求、D2c worker 原子对象发布、D2d 应用与 operation 绑定。D2a 已完成
-> additive schema、唯一执行身份、来源快照/SetNull、artifact 容量和任务类型门禁；当前进入 D2b 创建、复用与账号需求。
+> run/artifact schema 与身份、D2b 创建/复用/需求、D2c worker 原子对象发布、D2d 应用与 operation 绑定。D2a、D2b 已完成：
+> additive schema、唯一执行身份、稳定文本投影、事务内默认音轨/来源/ACL 重读、canonical run/job 与账号需求复用、有界查询、
+> 通用取消状态推进和文件菜单低频入口均已落地。执行开关默认关闭且零写入，当前进入 D2c worker 与预测对象原子发布。
 > 行为旁表使用独立
 > migration，生产上线时必须先部署并观察 HC2，再部署 Force Alignment，不能把
 > 两项 schema/数据生命周期变化混成一次发布。

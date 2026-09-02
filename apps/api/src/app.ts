@@ -61,6 +61,7 @@ import { ProcessingJobQueryService } from "./processingJobQueryService.js";
 import { ProcessingJobCommandService } from "./processingJobCommandService.js";
 import { createSafeFastifyLoggerConfiguration } from "./requestLogSanitizer.js";
 import { AnnotationToolAttemptService } from "./annotationToolAttemptService.js";
+import { AlignmentRunService } from "./alignmentRunService.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -76,6 +77,7 @@ export type BuildApiAppOptions = {
   corsOrigin?: ApiCorsOriginPolicy;
   aliyunVod?: AliyunVodProvider | null;
   aliyunVodWebPlayerLicense?: AliyunVodWebPlayerLicense | null;
+  forceAlignmentRequestsEnabled?: boolean;
 };
 
 /**
@@ -158,6 +160,11 @@ export async function buildApiApp(
     reviewEvents,
   );
   const mediaAnalysis = new MediaAnalysisJobService(options.prisma, access);
+  const alignmentRuns = new AlignmentRunService(
+    options.prisma,
+    access,
+    options.forceAlignmentRequestsEnabled === true,
+  );
   const processingJobs = new ProcessingJobQueryService(options.prisma, access);
   const processingJobCommands = new ProcessingJobCommandService(
     options.prisma,
@@ -313,6 +320,7 @@ export async function buildApiApp(
     annotationRecoveryBackups,
     annotationReviewLinks,
     mediaAnalysis,
+    alignmentRuns,
     processingJobs,
     processingJobCommands,
     mediaAudioTracks,

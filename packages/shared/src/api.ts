@@ -41,6 +41,12 @@ import type {
   SortDirection,
 } from "./platform.js";
 import type {
+  AlignmentRunDetail,
+  AlignmentRunPage,
+  AlignmentRunSummary,
+  CreateAlignmentRunRequest,
+} from "./forceAlignment.js";
+import type {
   CommitAnnotationCommandBatchRequest,
   CommitAnnotationCommandBatchResponse,
 } from "./annotationCommandCommit.js";
@@ -681,6 +687,12 @@ export type PlatformApiContract<TPayload = unknown> = {
   createMediaAnalysis: {
     request: CreateMediaAnalysisRequest;
     response: MediaAnalysisRun;
+  };
+  listAlignmentRuns: { response: AlignmentRunPage };
+  getAlignmentRun: { response: AlignmentRunDetail };
+  createAlignmentRun: {
+    request: CreateAlignmentRunRequest;
+    response: AlignmentRunSummary;
   };
   listProcessingJobs: { response: ProcessingJobPage };
   getProcessingJobSummary: { response: ProcessingJobSummary };

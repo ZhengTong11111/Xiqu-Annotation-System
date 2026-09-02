@@ -330,6 +330,7 @@ async function transitionJobForCancellation(
       id: string;
       status: "queued" | "running" | "cancelling" | "cancelled" | "succeeded" | "failed";
       analysisRunId: string | null;
+      alignmentRunId: string | null;
     };
     actorUserId: string;
     mode: "user_request" | "admin_force";
@@ -369,6 +370,17 @@ async function transitionJobForCancellation(
         });
       }
     }
+    if (input.job.alignmentRunId) {
+      const cancelledRun = await transaction.alignmentRun.updateMany({
+        where: { id: input.job.alignmentRunId, status: "queued" },
+        data: { status: "cancelled", progress: 0, errorCode: null, completedAt: input.now },
+      });
+      if (cancelledRun.count !== 1) {
+        throw conflict("强制对齐任务与运行状态不一致。", {
+          code: "processing_job_run_state_mismatch",
+        });
+      }
+    }
     return "execution_cancelled";
   }
   if (input.job.status === "running") {
@@ -389,6 +401,17 @@ async function transitionJobForCancellation(
       });
       if (cancellingRun.count !== 1) {
         throw conflict("媒体分析任务与运行状态不一致。", {
+          code: "processing_job_run_state_mismatch",
+        });
+      }
+    }
+    if (input.job.alignmentRunId) {
+      const cancellingRun = await transaction.alignmentRun.updateMany({
+        where: { id: input.job.alignmentRunId, status: "running" },
+        data: { status: "cancelling" },
+      });
+      if (cancellingRun.count !== 1) {
+        throw conflict("强制对齐任务与运行状态不一致。", {
           code: "processing_job_run_state_mismatch",
         });
       }

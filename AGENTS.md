@@ -200,6 +200,10 @@ Main currently contains all major recent feature lines that matter for context:
   formula-injection guard. It may expose only fixed identifiers, timestamps, enums, counts and operation/revision provenance;
   never add sentence text, ProjectData, command payloads, before/after values, media URLs, credentials, errors or free-form JSON
   to this export
+- force-alignment run creation reuses the existing processing-job execution/request/key model. The browser submits only a runtime
+  UUID and fixed model preset; the API locks and rereads the active file revision, minimal text projection, default audio track,
+  concrete source and current ACL before deriving identity. `XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED` defaults to false until a
+  real worker adapter exists; disabled creation must return a stable capability error without creating run, job or demand rows
 
 If starting a new conversation, assume the repo is already beyond the earlier simple waveform-only stage.
 
@@ -243,8 +247,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - VOD resource `mediaKind` comes from strict `GetPlayInfo.VideoBase.MediaType`, not from the existence of an MP3 rendition.
     Same-VID audio renditions use official `PlayInfo.JobId` as the stable identity; candidate and exact-session queries accept
     only Normal HTTPS mp3 audio streams. Temporary URLs stay inside no-store playback sessions or worker memory
+- `apps/api/src/analysisAudioSourceResolver.ts`
+  - the shared transaction-capable owner for enabled audio-track resolution, primary/source `read + download`, uploaded/VOD
+    rendition fingerprints and exact offset. Media analysis and force alignment must call it rather than copy source branches;
+    it returns stable facts only and never signs or persists a temporary media URL
 - `apps/api/src/mediaAnalysisJobService.ts`
-  - the only API business boundary for audio-track analysis resolution, ACL revalidation, source fingerprints, run/job reuse,
+  - the API business boundary for media-analysis run/job reuse,
     status DTOs, tile descriptors, and protected asset reads
   - canonical runs are media-scoped by source media, offset-independent media fingerprint, algorithm, and config. Annotation
     file ids and track offset are only request/ACL/display context and must never re-enter run persistence or identity
@@ -267,7 +275,16 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - the only force-alignment run/config hash and processing deduplication identity boundary. It accepts exact stable annotation
     revision/text-hash/count, source/track/offset/fingerprint, model/dictionary/code version and bounded JSON config facts
   - actor, client request id, display metadata, sentence text, ProjectData, credentials and temporary URLs must never enter this
-    identity. Config is cloned after canonical JSON validation; `audioOffsetMicros` remains exact bigint until canonical string hashing
+  identity. Config is cloned after canonical JSON validation; `audioOffsetMicros` remains exact bigint until canonical string hashing
+- `apps/api/src/alignmentRunService.ts`
+  - the force-alignment D2b creation/query owner. Lock order is account request -> active annotation/resource -> audio source ->
+    canonical processing job. It projects current ProjectData in memory, persists only hash/count/provenance, reuses one canonical
+    run/job across accounts, and gives each account/context its own ProcessingJobRequest. List/detail are bounded and freshly ACL-gated
+  - D2b does not execute a model, publish an artifact or apply timing. The File-menu trigger must be disabled while the document has
+    unsaved/unacknowledged work so the server cannot silently align an older revision
+- `apps/api/src/processingJobRequestService.ts`
+  - the only helper for creating/reusing one account/context demand and attaching per-tab idempotency aliases. Media analysis and
+    force alignment share it; do not add a second request table or copy this sequence into another task service
 - `apps/api/src/processingJobQuery.ts` + `apps/api/src/processingJobQueryService.ts`
   - the bounded request-centric query boundary for `mine | related | all`, summary and detail. `all` is admin-only; related
     visibility is recalculated from current resource ACL and hidden contexts must not be enumerable

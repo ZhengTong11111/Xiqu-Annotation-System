@@ -1204,6 +1204,26 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         observedRemoteRevision,
       })
     : undefined;
+  // 强制对齐输入由服务端已保存 revision 派生；本地尚有编辑时必须先同步，不能默默对齐旧正文。
+  const forceAlignmentDisabledReason = editorSession
+    ? !editorSession.canWrite
+      ? "当前账号没有该标注文件的编辑权限"
+      : hasUnsavedChanges || pendingOperations.length > 0 || transientProjectRef.current !== null ||
+          editingCharacterId !== null || editingCustomTextBlock !== null || serverSaveInFlight
+        ? "请先完成当前编辑并等待平台保存同步"
+        : syncState.status !== "saved" || observedRemoteRevision !== remoteBaseRevision
+          ? "请先解决同步状态或等待远端修订追赶完成"
+          : undefined
+    : undefined;
+  const guardedPlatformNavigationWithAlignmentPolicy = guardedPlatformNavigation?.forceAlignment
+    ? {
+        ...guardedPlatformNavigation,
+        forceAlignment: {
+          ...guardedPlatformNavigation.forceAlignment,
+          disabledReason: guardedPlatformNavigation.forceAlignment.disabledReason ?? forceAlignmentDisabledReason,
+        },
+      }
+    : guardedPlatformNavigation;
   const canAttemptRemoteCatchUp = canAttemptPlatformOperationCatchUp({
     hasUnsavedChanges,
     pendingOperationCount: pendingOperations.length,
@@ -7798,7 +7818,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         : undefined}
       menuBar={(
         <TopMenuBar
-          platformNavigation={guardedPlatformNavigation}
+          platformNavigation={guardedPlatformNavigationWithAlignmentPolicy}
           audioTrackSelector={platformAudioTracks.active ? {
             options: platformAudioTracks.options,
             selectedTrackId: platformAudioTracks.selectedTrackId,

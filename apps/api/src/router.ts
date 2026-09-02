@@ -9,6 +9,7 @@ import {
   MAX_MEDIA_ANALYSIS_BATCH_ASSETS,
   parseAnnotationCommandBatchRequest,
   parseAnnotationToolAttemptBatchRequest,
+  parseCreateAlignmentRunRequest,
   PROCESSING_JOB_STATUSES,
   PROCESSING_JOB_TYPES,
   RESOURCE_CAPABILITIES,
@@ -41,6 +42,7 @@ import { badRequest, unauthorized } from "./errors.js";
 import type { HealthService } from "./healthService.js";
 import type { MediaUploadService } from "./mediaUploadService.js";
 import type { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
+import type { AlignmentRunService } from "./alignmentRunService.js";
 import type { ProcessingJobQueryService } from "./processingJobQueryService.js";
 import type { ProcessingJobCommandService } from "./processingJobCommandService.js";
 import type { MediaAudioTrackService } from "./mediaAudioTrackService.js";
@@ -133,6 +135,7 @@ export function registerApiRoutes(
   annotationRecoveryBackups: AnnotationRecoveryBackupService,
   annotationReviewLinks: AnnotationReviewLinkService,
   mediaAnalysis: MediaAnalysisJobService,
+  alignmentRuns: AlignmentRunService,
   processingJobs: ProcessingJobQueryService,
   processingJobCommands: ProcessingJobCommandService,
   mediaAudioTracks: MediaAudioTrackService,
@@ -798,6 +801,40 @@ export function registerApiRoutes(
           audioTrackId: requireString(body.audioTrackId, "audioTrackId"),
           clientRequestId: body.clientRequestId,
         },
+      );
+    },
+  );
+
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { cursor?: string; limit?: string };
+  }>("/api/annotation-files/:resourceId/alignment-runs", async (request) => {
+    const limit = request.query.limit === undefined ? undefined : Number(request.query.limit);
+    return alignmentRuns.list(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      { cursor: normalizedString(request.query.cursor), limit },
+    );
+  });
+
+  app.get<{ Params: { resourceId: string; runId: string } }>(
+    "/api/annotation-files/:resourceId/alignment-runs/:runId",
+    async (request) => alignmentRuns.detail(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      request.params.runId,
+    ),
+  );
+
+  app.post<{ Params: { resourceId: string }; Body: unknown }>(
+    "/api/annotation-files/:resourceId/alignment-runs",
+    async (request) => {
+      const parsed = parseCreateAlignmentRunRequest(request.body);
+      if (!parsed.success) throw badRequest(parsed.message);
+      return alignmentRuns.create(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        parsed.data,
       );
     },
   );

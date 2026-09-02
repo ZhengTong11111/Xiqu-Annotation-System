@@ -103,3 +103,8 @@ export function analysisSourceMissing(message: string, details: unknown = undefi
 export function analysisAudioForbidden(message: string, details: unknown = undefined) {
   return new HttpError(403, "analysis_audio_forbidden", message, details);
 }
+
+/** 模型/FFmpeg 等执行器未安装属于可恢复的服务能力缺失，不应伪装成 500 或创建永久排队任务。 */
+export function analysisToolUnavailable(message: string, details: unknown = undefined) {
+  return new HttpError(503, "analysis_tool_unavailable", message, details);
+}
