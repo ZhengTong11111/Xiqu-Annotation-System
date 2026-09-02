@@ -3,7 +3,9 @@ import {
   ALIGNMENT_PREDICTION_FORMAT_VERSION,
   ALIGNMENT_PREDICTION_MIME_TYPE,
   buildAlignmentPredictionArtifact,
+  buildAlignmentPredictionQualitySummary,
   buildAlignmentTextProjection,
+  type AlignmentPredictionQualitySummary,
 } from "@xiqu/document-model";
 import { parseCurrentProjectData } from "@xiqu/document-model/project-data-schema";
 import { createHash, randomUUID } from "node:crypto";
@@ -191,6 +193,7 @@ export class AlignmentWorkerService {
         executorOutput,
       });
       if (!prediction.ok) throw new AlignmentStableError(prediction.code);
+      const qualitySummary = buildAlignmentPredictionQualitySummary(prediction.prediction);
       const serialized = Buffer.from(stableJsonStringify(prediction.prediction), "utf8");
       if (serialized.byteLength > MAX_PREDICTION_UNCOMPRESSED_BYTES) {
         throw new AlignmentStableError("alignment_prediction_too_large");
@@ -201,7 +204,13 @@ export class AlignmentWorkerService {
       }
       // 发布前再次重验来源与活动需求；长模型执行期间发生的撤权或音轨变化不能穿过终态提交。
       await this.readVerifiedInput(run, this.prisma);
-      await this.publishPrediction(fence, run, compressed, serialized.byteLength);
+      await this.publishPrediction(
+        fence,
+        run,
+        compressed,
+        serialized.byteLength,
+        qualitySummary,
+      );
       this.logger.info(
         { jobId: job.id, runId: run.id, artifactCount: 1 },
         "强制对齐任务完成",
@@ -316,6 +325,7 @@ export class AlignmentWorkerService {
     run: ClaimedAlignmentRun,
     compressed: Buffer,
     uncompressedSize: number,
+    qualitySummary: AlignmentPredictionQualitySummary,
   ) {
     if (!run) throw new AlignmentClaimLostError();
     const artifactId = randomUUID();
@@ -371,6 +381,8 @@ export class AlignmentWorkerService {
               compressedSize: staged.size,
               uncompressedSize,
               checksum: staged.checksum,
+              // 质量摘要与 artifact 终态原子发布；候选查询无需重新下载大型 prediction 对象。
+              qualitySummary,
             },
             completedAt,
           },

@@ -10870,3 +10870,37 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 应用内浏览器连接成功，但当前页为登录表单。按浏览器凭据规范没有代输账号密码，因此未把“文件 → 强制对齐结果”的登录态视觉点击
   伪造成已验收；TypeScript、生产构建和 API/数据库集成均已实际完成。**已完成**：FA-D3a2。**待推进**：FA-D3b 困难样本派生与
   有界选择；开始前重新核对实际 schema/容量边界并重写 `CLAUDE_WORK.md`。本轮未部署生产、未启用真实模型、未修改生产数据。
+
+## 2026-09-02：FA-D3b1 发布期轻量预测质量摘要
+
+### 设计取舍与固定合同
+
+- 实际 prediction 已含逐句/逐字置信度和每字最多三个备选边界，而既有 manifest 只有 artifact 数量、大小和 checksum。若候选页逐条
+  下载并解压 prediction，单条最多 64 MiB，会形成对象存储 N+1 和不可控内存峰值。因此 D3b 拆为发布期摘要与后续观察窗口两轮，
+  本轮不创建候选 API、不扫描 operation，也不下载或回填旧对象。
+- document-model 新增唯一质量摘要 builder/parser。置信度统一转换为 0..1,000,000 ppm 整数，边界差使用非负微秒；低置信阈值
+  固定为 600,000 ppm，备选与主结果差不超过 100,000 ppm 记为接近。摘要只保留句/字数量、均值/最小值、低置信字数、存在备选/
+  接近备选字数和最大备选边界差，没有句/字 ID、正文、候选数组、ProjectData、URL、凭据或自由 JSON。
+- builder 对已规范化 prediction 只线性遍历一次，不排序或保留实体数组；空集合的均值/最小值明确为 null，不能被误解成 0 分。
+  exact-key parser 拒绝额外字段、浮点、负数、越界 ppm、count 超界和“无备选却有边界差”等不可能组合。
+
+### Worker 原子发布与旧结果兼容
+
+- Worker 在 `buildAlignmentPredictionArtifact()` 已完成身份/时间验证后、gzip 前生成摘要，并把它作为 v1 manifest 的可选
+  `qualitySummary`。摘要与 artifact 创建、run succeeded/manifest、job succeeded 继续在原有 claim-fenced 事务提交；没有第二对象、
+  第二成功路径或独立数据库写入。
+- `readPredictionQualitySummary()` 是后续唯一 manifest 读取边界，返回 ready/missing/invalid，并核对摘要句字数与 manifest 数量。
+  `isReadablePredictionArtifact()` 的 D2d 核心门禁保持不变：旧 v1 manifest 没有摘要仍可读取和应用，坏摘要也不会反向损坏原 prediction；
+  D3b2 只把它报告为不可用，不能偷偷下载大型对象或填零。
+- 没有 Prisma migration、表/索引变化、旧 run 更新、生产对象读取、annotation payload/revision/operation/snapshot/application/
+  assessment 改动，也没有前端状态或保存链路变化。
+
+### 验证、自审与状态
+
+- 新摘要专项 3/3；`test:force-alignment-worker` 合计 15/15，覆盖摘要原子发布、旧 manifest 可读、claim、取消、stale recovery、对象
+  promote/数据库模糊响应和补偿；application 11/11、quality 11/11、完整 API 336/336、完整构建和 `git diff --check` 通过。
+- 首轮回归暴露既有 stale claim 测试的时钟竞争：阻塞 executor 的 20ms monitor 可在夹具写入旧 heartbeat 后立即续租，使扫描偶发为 0。
+  测试现向 `recoverStaleJobs(now)` 注入确定的未来观察时刻，继续走真实候选/行锁/claim fence；没有重试掩盖失败，也没有放宽产品逻辑。
+- 自审确认阈值唯一、无浮点 manifest、无 N+1/旧对象读取、无重复类型、无僵尸发布路径，复杂统计和兼容边界有中文注释。
+  **已完成**：FA-D3b1。**待推进**：FA-D3b2 用 application revision 窗口、有界非应用 operation 扫描和当前有限评价派生候选信号；
+  没有人工修改/评价不得自动标为正确。本轮未部署生产、未修改生产数据。

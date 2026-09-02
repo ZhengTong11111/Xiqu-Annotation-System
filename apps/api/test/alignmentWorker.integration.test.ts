@@ -7,9 +7,17 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import { gunzipSync } from "node:zlib";
 import type { PrismaClient } from "@prisma/client";
-import { parseAlignmentPredictionArtifact, type AlignmentTextProjection } from "@xiqu/document-model";
+import {
+  parseAlignmentPredictionArtifact,
+  parseAlignmentPredictionQualitySummary,
+  type AlignmentTextProjection,
+} from "@xiqu/document-model";
 import type { PlatformUser } from "@xiqu/shared";
 import { AlignmentRunService } from "../src/alignmentRunService.js";
+import {
+  isReadablePredictionArtifact,
+  readPredictionQualitySummary,
+} from "../src/alignmentArtifactMetadata.js";
 import { AlignmentWorkerService } from "../src/alignmentWorkerService.js";
 import type { ForceAlignmentExecutor } from "../src/alignmentExecutor.js";
 import { ProcessingJobCommandService } from "../src/processingJobCommandService.js";
@@ -38,6 +46,27 @@ test("强制对齐 worker 原子发布可校验且受 ACL 保护的单一 gzip p
     assert.equal(prediction.runId, run.id);
     assert.deepEqual(prediction.sentences[0]?.characters.map(({ characterId }) => characterId), ["char-1", "char-2"]);
     assert.equal(JSON.stringify(prediction).includes("寻梦"), false, "artifact 不能复制正文");
+    assert.ok(run.manifest && typeof run.manifest === "object" && !Array.isArray(run.manifest));
+    const qualitySummary = parseAlignmentPredictionQualitySummary(
+      (run.manifest as Record<string, unknown>).qualitySummary,
+    );
+    assert.deepEqual(qualitySummary, {
+      version: 1,
+      sentenceCount: 1,
+      characterCount: 2,
+      sentenceConfidenceMeanPpm: 900_000,
+      sentenceConfidenceMinPpm: 900_000,
+      characterConfidenceMeanPpm: 800_000,
+      characterConfidenceMinPpm: 800_000,
+      lowConfidenceCharacterCount: 0,
+      alternativeCandidateCharacterCount: 0,
+      closeAlternativeCharacterCount: 0,
+      maxAlternativeBoundaryDeltaMicros: 0,
+    });
+    assert.deepEqual(readPredictionQualitySummary(run.manifest), {
+      status: "ready",
+      summary: qualitySummary,
+    });
     const readable = await creator.getArtifactForRead(
       fixture.user,
       fixture.annotationFileId,
@@ -45,6 +74,20 @@ test("强制对齐 worker 原子发布可校验且受 ACL 保护的单一 gzip p
       artifact.id,
     );
     assert.equal(readable.storageKey, artifact.storageKey);
+    // 旧 v1 manifest 没有质量摘要时仍能读取 prediction；D3b2 只会把摘要状态标为 unavailable。
+    const manifest = run.manifest as Record<string, unknown>;
+    const legacyManifest = {
+      version: 1,
+      formatVersion: artifact.formatVersion,
+      artifactId: artifact.id,
+      sentenceCount: 1,
+      characterCount: 2,
+      compressedSize: Number(artifact.size),
+      uncompressedSize: manifest.uncompressedSize as number,
+      checksum: artifact.checksum,
+    };
+    assert.deepEqual(readPredictionQualitySummary(legacyManifest), { status: "missing" });
+    assert.equal(isReadablePredictionArtifact(artifact, legacyManifest), true);
     await assert.rejects(
       creator.getArtifactForRead(
         fixture.outsider,
@@ -176,7 +219,8 @@ test("陈旧 claim 重排后旧 executor 被围栏中止，只有新 attempt 可
       where: { id: fixture.jobId },
       data: { claimedAt: staleAt, heartbeatAt: staleAt },
     });
-    assert.equal(await service.recoverStaleJobs(), 1);
+    // 阻塞 executor 的 claim monitor 仍会续租；注入未来观察时刻，避免测试与 20ms heartbeat 发生时序竞争。
+    assert.equal(await service.recoverStaleJobs(new Date(Date.now() + 10 * 60_000)), 1);
     await firstAttempt;
     assert.equal(
       (await prisma.processingJob.findUniqueOrThrow({ where: { id: fixture.jobId } })).status,

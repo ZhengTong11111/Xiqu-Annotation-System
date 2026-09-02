@@ -210,11 +210,35 @@ annotationOperationId / committedRevision / details
   App 的 prediction apply busy、文档 dirty、autosave、IndexedDB、undo 或 leave protection。专项质量 11/11、应用 11/11、原子保存
   34/34、完整 API 336/336 与完整构建通过；应用内浏览器停在登录页，因此未伪造登录态视觉点击验收。未部署生产。
 
-#### FA-D3b：困难样本派生与有界选择（下一阶段）
+#### FA-D3b：困难样本派生与有界选择（进行中）
 
 - 从 prediction manifest、application、后续 timing operation 和质量评价派生置信度、模型分歧、人工改动量与明确异常原因；
   不复制 ProjectData、命令正文或声学矩阵，不把“没有继续修改”自动当成正确。
 - 固化有界查询/统计边界与容量指标；训练候选必须可追溯到 run/application/revision，撤权后不可通过候选接口枚举文件内容。
+
+##### FA-D3b1：发布期轻量预测质量摘要（已完成）
+
+- 现有 prediction 对象含逐句/逐字置信度和每字最多三个候选边界，但 manifest 尚无可直接聚合的质量摘要。候选列表不能为每条
+  application 重新下载、解压最多 64 MiB prediction，否则会形成对象存储 N+1 和不可控内存/网络成本。
+- 在 prediction 已通过严格身份/时间校验后，用纯函数一次计算固定整数摘要：句/字置信度均值与最小值、低置信字数、有备选候选字数、
+  与主结果置信度接近的备选字数及最大备选边界差。阈值和 ppm/微秒量纲由唯一模块固化，不保存实体 ID、正文、候选数组或自由 JSON。
+- Worker 把摘要作为 v1 manifest 的可选严格字段与 artifact/run/job 在现有 claim-fenced 事务原子发布。旧 manifest 无摘要仍可读取和应用，
+  只在后续候选派生中显示 `prediction_summary_unavailable`；不回填、不下载生产旧对象、不修改 schema。
+- 已实现唯一 builder/parser，置信度按 ppm、边界差按微秒保存；低置信阈值 0.60、接近备选差值 0.10 只在该模块定义。空集合使用
+  `null` 而不是伪装成 0 分，parser 拒绝额外字段、浮点、越界和不可能计数组合。
+- Worker 在严格 prediction 校验后线性计算摘要，并在既有 artifact/run/job 成功事务写入可选 v1 manifest 字段；统一读取 helper 区分
+  `ready/missing/invalid`，但摘要缺失或损坏不反向阻断 D2d prediction 读取。没有 schema、旧对象下载或回填。
+- 摘要/worker 15/15、application 11/11、quality 11/11、完整 API 336/336 和完整构建通过。回归暴露既有 stale claim 测试与 20ms
+  heartbeat 的时钟竞争，夹具改为向公开 `recoverStaleJobs(now)` 注入确定观察时间，没有放宽产品恢复逻辑。未部署生产。
+
+##### FA-D3b2：Application 观察窗口与候选 API（下一阶段）
+
+- 以 application committed revision 到下一次 application committed revision 形成互不重叠观察窗口；最新 application 的上界是当前文件
+  revision。只统计窗口内非 application 绑定的逐字 timing operation，并显式报告 operation 扫描是否截断；后续再次应用模型不能伪装
+  成人工调整。
+- 文件级候选接口每次重新要求 `read`，使用文件绑定 keyset 和小页；一批 application 共用一次有界 operation 扫描和当前评价读取，
+  不逐 application 查询。返回预测摘要、人工修改数量/边界改变量、当前有限评价与 observation revision，不返回 operation payload、
+  prediction、ProjectData、正文或媒体事实。没有修改或评价只能标为 `unrated`，绝不能自动判定正确。
 
 #### FA-D3c：冻结训练 manifest 与安全导出
 

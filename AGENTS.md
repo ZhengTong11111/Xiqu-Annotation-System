@@ -208,6 +208,12 @@ Main currently contains all major recent feature lines that matter for context:
   ProjectData. `AlignmentRunsDialog` owns the two prediction/application views and lazily reads assessments for only the selected
   application. Assessment submission has its own idempotent runtime UUID and stale-session guard; it must not set document dirty state,
   block autosave/leave protection, create polling/IndexedDB owners, or infer write/review capability from account roles
+- force-alignment prediction quality summaries are built once from the already validated prediction by
+  `alignmentPredictionQualitySummary` and published inside the existing worker success transaction. Confidence uses integer ppm,
+  timing disagreement uses integer microseconds, and thresholds live only in that document-model module. The optional v1 manifest
+  field contains fixed aggregate counts only; it must never contain entity IDs, text, candidate arrays or free JSON. Legacy manifests
+  without a summary remain readable/applicable, while candidate queries must report the summary as unavailable rather than downloading
+  each prediction object or inventing zero-quality values
 - force-alignment tool attempts are a lightweight governance/training side table, never ProjectData or document history. Their
   administrator CSV is generated only by the API after fresh full-resource authorization, accepts at most a 90-day half-open
   window, reads in bounded batches, exports at most 10,000 rows with an explicit truncation header, and uses the shared CSV
