@@ -170,6 +170,7 @@ export async function buildApiApp(
     options.prisma,
     access,
     mediaAnalysis,
+    alignmentRuns,
   );
   const mediaAudioTracks = new MediaAudioTrackService(
     options.prisma,

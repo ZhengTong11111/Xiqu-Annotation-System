@@ -1,8 +1,15 @@
 import { createAliyunVodProvider } from "./aliyunVodGateway.js";
+import { AlignmentWorkerService } from "./alignmentWorkerService.js";
 import { createPrismaConnection } from "./database.js";
-import { MediaAnalysisWorkerRuntime } from "./mediaAnalysisWorkerRuntime.js";
+import { ExternalForceAlignmentExecutor } from "./externalForceAlignmentExecutor.js";
 import { MediaAnalysisWorkerService } from "./mediaAnalysisWorkerService.js";
 import { createObjectStorageFromEnvironment } from "./objectStorageFactory.js";
+import {
+  ProcessingJobWorkerCoordinator,
+  type ProcessingJobWorkerAdapter,
+} from "./processingJobWorkerCoordinator.js";
+import { ProcessingJobWorkerRuntime } from "./processingJobWorkerRuntime.js";
+import { ResourceAccessService } from "./resourceAccess.js";
 import { loadApiServerRuntimeConfig } from "./serverConfig.js";
 
 async function startMediaAnalysisWorker() {
@@ -15,16 +22,32 @@ async function startMediaAnalysisWorker() {
     warn: (facts: Record<string, unknown>, message: string) =>
       console.warn(message, JSON.stringify(facts)),
   };
-  const service = new MediaAnalysisWorkerService(
+  const aliyunVod = config.aliyunVod.enabled
+    ? createAliyunVodProvider(config.aliyunVod.region)
+    : null;
+  const mediaAnalysis = new MediaAnalysisWorkerService(
     connection.prisma,
     storage,
-    config.aliyunVod.enabled
-      ? createAliyunVodProvider(config.aliyunVod.region)
-      : null,
+    aliyunVod,
     process.env.XIQU_FFMPEG_PATH?.trim() || "ffmpeg",
     logger,
   );
-  const runtime = new MediaAnalysisWorkerRuntime(service, { logger });
+  const adapters: ProcessingJobWorkerAdapter[] = [mediaAnalysis];
+  if (config.forceAlignmentExecutorPath) {
+    const executor = new ExternalForceAlignmentExecutor(config.forceAlignmentExecutorPath);
+    // worker 启动时先验证可执行权限；错误只暴露固定配置问题，不会先 claim 再制造失败风暴。
+    await executor.checkReadiness();
+    adapters.push(new AlignmentWorkerService(
+      connection.prisma,
+      storage,
+      new ResourceAccessService(connection.prisma),
+      aliyunVod,
+      executor,
+      logger,
+    ));
+  }
+  const coordinator = new ProcessingJobWorkerCoordinator(adapters);
+  const runtime = new ProcessingJobWorkerRuntime(coordinator, { logger });
   let stopping = false;
   const stop = async () => {
     if (stopping) return;

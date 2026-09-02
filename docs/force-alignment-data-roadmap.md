@@ -139,22 +139,27 @@ annotationOperationId / committedRevision / details
   浏览器只提供规范 UUID `clientRequestId` 和有限模型预设。投影保留句/字稳定 ID、句级范围/正文/分类并明确排除待预测逐字时间。
 - 复用现有 `ProcessingJobRequest`/request key、canonical advisory lock、活动 job partial unique、取消与重试命令；同身份共享
   执行，不同账号保留独立需求。revision、文本、来源/音轨偏移、模型/词典/配置任一变化均不能错误复用；取消状态机已同时
-  推进 job 与 AlignmentRun，最后需求取消 queued 执行时不会留下幽灵 run。force retry 仍保持关闭，等待 D2c 接入真实执行器。
+  推进 job 与 AlignmentRun，最后需求取消 queued 执行时不会留下幽灵 run。force retry 已在 D2c 接入同一幂等命令服务。
 - 文件内 run 列表/详情采用 `(createdAt,id)` 有界 keyset，每次重新验证 file read ACL，并只返回状态、计数、模型标签、当前输入
   匹配和 artifact 可用性；不暴露 dedupe/config/storage、正文、ProjectData、临时 URL 或供应商事实。历史未知模型可读但不可伪装
   为当前预设。前端在文件菜单提供低频入口，未保存/未同步或无 write 时禁用，状态与取消复用唯一后台任务中心。
 - API 默认 `XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED=false`，D2c worker 未就绪时稳定 503 且零写入；显式启用仅供本阶段测试。
   专项 8/8（另含 shared parser 1/1、document projection 2/2）、processing jobs 11/11、完整 API 317/317 和完整构建通过；未部署生产。
 
-#### FA-D2c：Worker 与预测对象原子发布（下一阶段）
+#### FA-D2c：Worker 与预测对象原子发布（已完成）
 
-- 在现有 worker runtime 增加 force-alignment task adapter；模型执行器使用显式版本化接口，可先以确定性测试实现验证任务和
-  发布合同，真实模型/字典二进制由部署配置提供，不打包凭据或临时媒体 URL。
-- 输出采用版本化 gzip JSON（逐句/逐字边界、有限候选和置信度），先写 staged、校验 size/SHA-256/manifest，再在 claim fence
-  内原子发布对象和数据库终态。取消、失败、worker shutdown、commit 响应不确定与迟到旧 worker 均复用现有补偿原则。
-- 对象读取逐次复核 annotation/source ACL 和 run/artifact 归属；PostgreSQL 不保存逐帧 posterior、隐藏向量或重复声学数组。
+- 已把媒体专用 runtime 收敛为唯一 processing-job runtime，并用轮转 coordinator 组合媒体分析与强制对齐 adapter。执行器采用
+  shell-free 固定文件协议；正文投影和纯音频只进入私有临时目录，VOD URL 不进 argv/数据库/日志。请求开关与绝对执行器路径
+  双门禁，未配置时 API 不创建、worker 不 claim。
+- worker 在 claim 后及终态事务内重新验证当前 revision/文本 hash/计数、音轨/source fingerprint/offset 和至少一个活动需求账号的
+  annotation/source ACL。版本化 gzip JSON 只含稳定 ID、项目时间轴微秒边界、有限候选和置信度；staged/promote 后在完整 claim
+  fence 内原子提交 artifact + run + job。取消、停机重排、stale recovery、撤权、来源漂移、迟到旧 attempt、promote 模糊响应、
+  数据库已提交但响应丢失和补偿失败均有稳定收口。
+- 受保护读取只接受 file/run/artifact id，并逐次复核 annotation read、当前 source read/download、run/artifact/manifest 归属；不公开
+  storage key。终态重试复用现有 ProcessingJobCommand 幂等 reservation：同输入重置 terminal run 并创建新 job，输入变化则创建
+  新 identity。专项 12/12、processing jobs 11/11、媒体 worker 回归 20/20、完整 API 327/327 和完整构建通过；未部署生产。
 
-#### FA-D2d：应用结果与真实 Operation 绑定
+#### FA-D2d：应用结果与真实 Operation 绑定（下一阶段）
 
 - 解析 artifact 后由服务端/共享 document-model 生成严格、可重放的 timing command；应用前复核文件 revision、句子/字符身份和
   run 输入 fingerprint，过期 run 不能静默覆盖新文本。

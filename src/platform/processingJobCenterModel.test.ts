@@ -56,7 +56,7 @@ test("任务命令资格区分本人需求与管理员执行治理", () => {
   assert.equal(canRetryProcessingJobRequest({
     ...createItem("failed"),
     job: { ...createItem("failed").job, type: "force_alignment" },
-  }, admin), false);
+  }, admin), true);
 });
 
 function createItem(status: ProcessingJobRequestListItem["job"]["status"]): ProcessingJobRequestListItem {

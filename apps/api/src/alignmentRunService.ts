@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
+  ALIGNMENT_PREDICTION_FORMAT_VERSION,
+  ALIGNMENT_PREDICTION_MIME_TYPE,
   buildAlignmentTextProjection,
   type AlignmentTextProjectionResult,
 } from "@xiqu/document-model";
@@ -36,6 +38,7 @@ import type { ResourceAccessService } from "./resourceAccess.js";
 
 const DEFAULT_PAGE_LIMIT = 20;
 const MAX_PAGE_LIMIT = 100;
+const MAX_PREDICTION_ARTIFACT_BYTES = 32 * 1024 * 1024;
 const ACTIVE_JOB_STATUSES = ["queued", "running", "cancelling"] as const;
 
 const MODEL_PRESETS: Record<ForceAlignmentModelPreset, {
@@ -72,6 +75,43 @@ export class AlignmentRunService {
     user: ApiUser,
     annotationFileId: string,
     input: CreateAlignmentRunRequest,
+  ): Promise<AlignmentRunSummary> {
+    return this.createInternal(user, annotationFileId, input, null);
+  }
+
+  /** 任务中心重试复用同一创建事务；浏览器不能直接指定 terminal run 或绕过当前输入重读。 */
+  async retry(
+    user: ApiUser,
+    annotationFileId: string,
+    sourceRunId: string,
+    clientRequestId: string,
+  ) {
+    // 先做一次外层隐藏性检查，避免从模型/终态差异枚举无权文件的历史 run；事务创建阶段仍会再次加锁重验。
+    await this.access.assertCapability(user, annotationFileId, "write");
+    const source = await this.prisma.alignmentRun.findFirst({
+      where: { id: sourceRunId, annotationFileId },
+      include: { artifacts: { select: { id: true } } },
+    });
+    if (!source) throw notFound("强制对齐记录不存在。");
+    const preset = resolvePreset(source);
+    if (preset === "unknown") {
+      throw conflict("历史强制对齐模型不能用当前执行器重试。", {
+        code: "alignment_retry_model_unsupported",
+      });
+    }
+    return this.createInternal(
+      user,
+      annotationFileId,
+      { clientRequestId, modelPreset: preset },
+      sourceRunId,
+    );
+  }
+
+  private async createInternal(
+    user: ApiUser,
+    annotationFileId: string,
+    input: CreateAlignmentRunRequest,
+    retrySourceRunId: string | null,
   ): Promise<AlignmentRunSummary> {
     if (!this.requestsEnabled) {
       throw analysisToolUnavailable("强制对齐执行器尚未启用，当前没有创建后台任务。", {
@@ -209,6 +249,46 @@ export class AlignmentRunService {
         return activeJob.alignmentRun;
       }
       if (existing) {
+        if (
+          retrySourceRunId === existing.id &&
+          (existing.status === "failed" || existing.status === "cancelled")
+        ) {
+          if (existing.artifacts.length > 0) {
+            throw conflict("终态强制对齐记录仍有关联预测，不能原地重试。", {
+              code: "alignment_retry_artifact_conflict",
+            });
+          }
+          const reset = await transaction.alignmentRun.updateMany({
+            where: { id: existing.id, status: { in: ["failed", "cancelled"] } },
+            data: {
+              status: "queued",
+              progress: 0,
+              errorCode: null,
+              manifest: Prisma.DbNull,
+              completedAt: null,
+            },
+          });
+          if (reset.count !== 1) {
+            throw conflict("强制对齐终态已变化，请刷新任务中心。", {
+              code: "alignment_retry_state_changed",
+            });
+          }
+          const queuedRun = await transaction.alignmentRun.findUniqueOrThrow({
+            where: { id: existing.id },
+            include: { artifacts: { select: { id: true } } },
+          });
+          await createAlignmentProcessingJob(transaction, {
+            run: queuedRun,
+            sourceFileId: source.media.file?.id ?? null,
+            userId: user.id,
+            annotationFileId,
+            audioTrackId,
+            deduplicationKey: identity.deduplicationKey,
+            clientRequestId: input.clientRequestId,
+            requestFingerprint,
+          });
+          return queuedRun;
+        }
         throw conflict("该输入已有终态强制对齐记录，请通过任务中心重试。", {
           code: "alignment_retry_required",
         });
@@ -241,21 +321,13 @@ export class AlignmentRunService {
         },
         include: { artifacts: { select: { id: true } } },
       });
-      const job = await transaction.processingJob.create({
-        data: {
-          type: "force_alignment",
-          resourceId: annotationFileId,
-          inputFileIds: source.media.file ? [source.media.file.id] : [],
-          createdBy: user.id,
-          alignmentRunId: run.id,
-          deduplicationKey: identity.deduplicationKey,
-        },
-      });
-      await ensureProcessingJobRequest(transaction, {
-        jobId: job.id,
-        requesterUserId: user.id,
-        contextResourceId: annotationFileId,
-        mediaAudioTrackId: audioTrackId,
+      await createAlignmentProcessingJob(transaction, {
+        run,
+        sourceFileId: source.media.file?.id ?? null,
+        userId: user.id,
+        annotationFileId,
+        audioTrackId,
+        deduplicationKey: identity.deduplicationKey,
         clientRequestId: input.clientRequestId,
         requestFingerprint,
       });
@@ -320,6 +392,66 @@ export class AlignmentRunService {
     };
   }
 
+  /**
+   * artifact 读取不接受 storage key；每次都从文件、run、音轨和媒体 ACL 重新证明当前账号仍有读取资格。
+   * 历史 run 可以保留，但来源关系被删除、替换或撤权后必须 fail closed。
+   */
+  async getArtifactForRead(
+    user: ApiUser,
+    annotationFileId: string,
+    runId: string,
+    artifactId: string,
+  ) {
+    await this.access.assertCapability(user, annotationFileId, "read");
+    const run = await this.prisma.alignmentRun.findFirst({
+      where: { id: runId, annotationFileId, status: "succeeded" },
+      select: {
+        sourceMediaResourceId: true,
+        sourceFingerprint: true,
+        mediaAudioTrackId: true,
+        audioOffsetMicros: true,
+        manifest: true,
+        artifacts: {
+          where: { id: artifactId, kind: "prediction" },
+          select: {
+            id: true,
+            formatVersion: true,
+            mimeType: true,
+            size: true,
+            checksum: true,
+            storageKey: true,
+          },
+          take: 1,
+        },
+      },
+    });
+    const artifact = run?.artifacts[0];
+    if (!run?.sourceMediaResourceId || !run.mediaAudioTrackId || !artifact ||
+        !isReadablePredictionArtifact(artifact, run.manifest)) {
+      throw notFound("强制对齐预测不存在。");
+    }
+    const context = await resolveAnalysisAudioContext(
+      this.prisma,
+      this.access,
+      user,
+      annotationFileId,
+      run.mediaAudioTrackId,
+    );
+    if (context.source.status !== "ready") throw notFound("强制对齐预测不存在。");
+    const source = context.source.value;
+    if (
+      source.media.resourceId !== run.sourceMediaResourceId ||
+      source.mediaFingerprint !== run.sourceFingerprint ||
+      BigInt(Math.round(source.offsetSeconds * 1_000_000)) !== run.audioOffsetMicros
+    ) throw notFound("强制对齐预测不存在。");
+    return {
+      storageKey: artifact.storageKey,
+      mimeType: artifact.mimeType,
+      size: Number(artifact.size),
+      checksum: artifact.checksum,
+    };
+  }
+
   private async readCurrentInput(user: ApiUser, annotationFileId: string) {
     const resource = await this.prisma.resourceEntry.findUnique({
       where: { id: annotationFileId },
@@ -350,6 +482,40 @@ export class AlignmentRunService {
       offsetMicros: BigInt(Math.round(context.source.value.offsetSeconds * 1_000_000)),
     };
   }
+}
+
+async function createAlignmentProcessingJob(
+  transaction: Prisma.TransactionClient,
+  input: {
+    run: AlignmentRunRow;
+    sourceFileId: string | null;
+    userId: string;
+    annotationFileId: string;
+    audioTrackId: string;
+    deduplicationKey: string;
+    clientRequestId: string;
+    requestFingerprint: string;
+  },
+) {
+  const job = await transaction.processingJob.create({
+    data: {
+      type: "force_alignment",
+      resourceId: input.annotationFileId,
+      inputFileIds: input.sourceFileId ? [input.sourceFileId] : [],
+      createdBy: input.userId,
+      alignmentRunId: input.run.id,
+      deduplicationKey: input.deduplicationKey,
+    },
+  });
+  await ensureProcessingJobRequest(transaction, {
+    jobId: job.id,
+    requesterUserId: input.userId,
+    contextResourceId: input.annotationFileId,
+    mediaAudioTrackId: input.audioTrackId,
+    clientRequestId: input.clientRequestId,
+    requestFingerprint: input.requestFingerprint,
+  });
+  return job;
 }
 
 async function resolveDefaultAudioTrackId(
@@ -471,4 +637,32 @@ function decodeCursor(token: string) {
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function isReadablePredictionArtifact(
+  artifact: {
+    id: string;
+    formatVersion: number;
+    mimeType: string;
+    size: bigint;
+    checksum: string;
+    storageKey: string;
+  },
+  manifest: Prisma.JsonValue | null,
+) {
+  if (
+    artifact.formatVersion !== ALIGNMENT_PREDICTION_FORMAT_VERSION ||
+    artifact.mimeType !== ALIGNMENT_PREDICTION_MIME_TYPE ||
+    artifact.size < 1n ||
+    artifact.size > BigInt(MAX_PREDICTION_ARTIFACT_BYTES) ||
+    !/^[0-9a-f]{64}$/u.test(artifact.checksum) ||
+    !artifact.storageKey
+  ) return false;
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return false;
+  const value = manifest as Record<string, unknown>;
+  return value.version === 1 &&
+    value.formatVersion === ALIGNMENT_PREDICTION_FORMAT_VERSION &&
+    value.artifactId === artifact.id &&
+    value.compressedSize === Number(artifact.size) &&
+    value.checksum === artifact.checksum;
 }

@@ -678,6 +678,31 @@ export function registerApiRoutes(
     },
   );
 
+  app.get<{
+    Params: { resourceId: string; runId: string; artifactId: string };
+  }>(
+    "/api/annotation-files/:resourceId/alignment-runs/:runId/artifacts/:artifactId",
+    MAINTENANCE_READ_ROUTE,
+    async (request, reply) => {
+      const artifact = await alignmentRuns.getArtifactForRead(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        request.params.runId,
+        request.params.artifactId,
+      );
+      reply.header("Content-Type", artifact.mimeType);
+      reply.header("Content-Encoding", "gzip");
+      reply.header("Content-Length", artifact.size);
+      reply.header("ETag", `\"sha256-${artifact.checksum}\"`);
+      reply.header("Cache-Control", "private, no-store");
+      return reply.send(await openAbortableResponseStream(
+        request.raw,
+        reply.raw,
+        () => storage.getObjectStream(artifact.storageKey),
+      ));
+    },
+  );
+
   app.patch<{ Params: { resourceId: string; trackId: string }; Body: unknown }>(
     "/api/media-files/:resourceId/audio-tracks/:trackId",
     async (request) => {

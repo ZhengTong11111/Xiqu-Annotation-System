@@ -10655,3 +10655,85 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   入口、全量回归和规范文档。**待推进**：FA-D2c worker adapter、版本化 prediction artifact staged/checksum/claim-fenced 原子发布、
   取消/失败/ambiguous commit 补偿和受权对象读取；随后才进入 D2d 应用结果。本轮未部署生产、执行 production migration、修改
   现有标注 payload/revision/operation/review/snapshot 或发布任何预测对象。
+
+## 2026-09-02：FA-D2c 强制对齐 Worker、Prediction Artifact 与受保护读取
+
+### 单一后台循环与执行器边界
+
+- 原 `MediaAnalysisWorkerRuntime` 已一次性迁移为 `ProcessingJobWorkerRuntime`；它仍是进程内唯一轮询、陈旧恢复、有界退避和停机
+  owner。新增 coordinator 以轮转优先级组合 media-analysis 与 force-alignment adapter，持续媒体任务不会饿死对齐任务，也没有新增
+  第二个队列、systemd 服务或前端 polling owner。既有媒体分析 service/FFmpeg/瓦片发布保持独立 adapter，没有被对齐分支污染。
+- 新增可注入 `ForceAlignmentExecutor` 和 shell-free 外部程序适配器。生产协议固定为
+  `--request <json> --audio <binary> --output <json>`；正文投影与音频只进入 0700 临时目录，文件使用 0600，VOD 短期纯音频 URL
+  由 worker 下载后再交给模型，不进入 argv、数据库、manifest、审计或日志。请求、音频和输出均有硬容量上限，中止先 SIGTERM、
+  超时后 SIGKILL，并等待子进程退出再删除临时目录。
+- `XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED` 继续默认 false；true 时现在强制要求绝对
+  `XIQU_FORCE_ALIGNMENT_EXECUTOR_PATH`。worker 启动前验证可执行权限，未配置环境既不创建也不 claim 对齐任务。开发/生产 env 示例
+  和部署说明已同步双门禁；本轮只更新模板，没有在生产启用或安装占位模型。
+
+### 权威输入、claim fence 与终态治理
+
+- 对齐 adapter 只 claim 有 AlignmentRun 且仍有活动需求的 queued force-alignment job，并在同一事务成对推进 job/run、递增 attempt。
+  完整 generation 由 jobId、runId、claimedBy、attemptCount 构成；心跳、取消、停机重排、stale recovery、失败、artifact 发布和成功
+  终态均验证该 fence。陈旧候选必须在 canonical lock + job 行锁内重读；running 且仍有需求才重排，cancelling/无需求只收口取消。
+- worker 在执行前以及 artifact 终态事务内各重读一次当前 annotation payload/revision、稳定文本 hash/句字计数、启用音轨、source
+  fingerprint、微秒 offset 和活动需求账号权限。至少一个未取消且活动账号仍需 annotation read 与 source read/download；正文、来源、
+  偏移、归档/回收或权限漂移全部 fail closed。单 job 活动需求读取新增 1000 条明确上限，不能随账号规模无界展开 ACL 查询。
+- 自审补齐 force-alignment retry：任务中心继续调用既有 `ProcessingJobCommandService` 幂等 reservation 和派生 UUID。当前输入未变时
+  重置没有 artifact 的 failed/cancelled run 并创建新 job generation；输入变化时按新 identity 创建新 run；历史未知模型、残留 artifact
+  或状态竞争稳定拒绝。没有原地复活 terminal job，也没有第二套 retry API。
+
+### 预测格式、对象发布与读取隔离
+
+- document-model 新增严格 prediction v1：gzip 前 JSON 只含 run/input 摘要、句/字稳定 ID、项目时间轴微秒边界、0-1 置信度和每字最多
+  三个候选。它逐项验证 exact keys、实体数量/顺序、一一对应、边界单调/句内有界和安全整数；不包含句/字正文、ProjectData、媒体 URL、
+  凭据、逐帧 posterior、隐藏向量或重复声学数组。压缩对象 MIME 为
+  `application/vnd.xiqu.alignment-prediction+json`，未压缩 64 MiB、压缩 32 MiB 上限。
+- prediction 整体先 staged 并计算 size/SHA-256，promote 后才进入数据库。worker 预分配 artifact UUID，在 job 行锁和完整 claim fence 下
+  原子创建唯一 artifact、写有界 manifest 并把 run/job 同时置为 succeeded。DB 返回不确定时按该 UUID 重读：完全匹配且终态成功则
+  保留 final；确认无行才删除 final；无法核实则保留 aged orphan 并落稳定错误，绝不删除可能已被引用的对象。promote/DB 补偿失败
+  使用独立 `alignment_cleanup_failed`，不把任意 executor AggregateError 误判为清理故障。
+- 新增受保护 artifact GET。调用方只能提供 annotation/run/artifact ID；服务每次重新验证 annotation read、当前音轨/source
+  read+download、source fingerprint/offset、run succeeded、artifact/manifest/MIME/size/checksum 一致性，再以 no-store、ETag 和可中止流
+  返回 gzip。storage key、config、source snapshot、正文和临时 URL 均不进入公开 DTO。当前 UI 不显示或应用 prediction，D2d 才建立
+  timing command 与 operation/revision 绑定。
+
+### 测试、自审与状态
+
+- `test:force-alignment-worker` 12/12：严格 prediction、外部执行器文件协议、协调器公平轮转、成功 gzip/checksum/ACL 读取、正文漂移、
+  撤权、source checksum 漂移、停机重排、运行中最后需求取消、stale cancelling、迟到旧 claim、promote 响应丢失补偿、数据库实际
+  提交但响应丢失核验和 terminal retry。容量门禁收口时专项曾发现 `take` 被放入错误查询形状；该问题在文档完成前由 TypeScript +
+  专项回归定位并修正，随后整组恢复 12/12。
+- `test:processing-jobs` 11/11；`test:processing-reliability-p4c` 20/20，证明既有 media-analysis 请求/取消/重试、FFmpeg、claim、心跳、
+  stale recovery 和 runtime 无退化；完整 `test:api` 327/327，完整 `npm run build` 与 `git diff --check` 通过。仅保留既有 Vite 主 chunk
+  大小提示和 pg adapter 并发 query deprecation warning。
+- **已完成**：FA-D2c 单 runtime/协调器、模型端口、权威输入/ACL 双重验、版本化 gzip prediction、claim-fenced 对象/数据库原子发布、
+  取消/停机/陈旧/模糊提交补偿、受保护读取、force retry、部署门禁和规范文档。**待推进**：FA-D2d 解析并应用 prediction，生成严格
+  timing command，在同一事务绑定真实 annotation operation/revision 与轻量 AlignmentApplication；过期 run 不能覆盖新正文。
+  本轮没有 Prisma migration、生产部署、生产任务、现有 annotation payload/revision/operation/review/snapshot 更新或生产对象清理。
+
+## 2026-09-02：FA-D2c 收尾前本地保存链路复核
+
+### 现象、证据与根因
+
+- 用户反馈继续滚动开发后文件再次无法保存，因此暂停 FA-D2d，不以完整测试通过代替真实保存链路检查。当前开发库的 39 条
+  migration 均已执行，API `/api/health` 返回 ready；最近可见的 `annotation_client_sync_failure` 仍是本日 00:48 前已记录的
+  旧 `internal_error`，没有发现新的数据库 schema 缺失或标注内容损坏证据。
+- 运行进程核对发现：本地 API 自 01:42 起未重启，早于 02:12 提交的 FA-D2b 和尚未提交的 FA-D2c；Vite 更从前一日持续运行。
+  与此同时，完整测试在 02:58 重新生成了 `packages/shared`、`packages/document-model` 和 Prisma Client。浏览器因 Vite 热更新读取
+  新前端，而 API 内存仍是旧命令/DTO/runtime，这再次形成 AGENTS 已禁止的“新前端 + 旧 API”开发验证环境。
+
+### 恢复与真实往返验证
+
+- 通过标准 `npm run dev:api` 重新构建 shared/document-model 后启动当前 API，并重启 Vite；没有修改数据库 schema、执行数据
+  migration、清理 IndexedDB 草稿或替用户提交真实文件。API 和前端现在来自同一工作区状态。
+- 在专用“验证”副本上通过真实 HTTP 登录、GET 和 command-batch 保存链路，把一个逐字边界临时移动 1ms，再提交严格反向命令。
+  两次请求均返回 200，revision `2 -> 3 -> 4`，最终重新 GET 后该字符 start/end 与测试前完全一致。验证只增加两条测试 revision/
+  operation/audit 事实，没有改变最终 ProjectData；用户真实标注文件、待提交命令和浏览器恢复草稿均未触碰。
+
+### 状态与后续门禁
+
+- **已恢复**：当前 localhost 保存 API、命令解析、PostgreSQL revision 提交和前端代理版本已对齐。**用户侧待确认**：原编辑标签页
+  若仍持有终态失败状态，应保留草稿并重新打开同一文件，或在刷新后的同版本页面重试；不要手工清空 IndexedDB。
+- **继续执行**：FA-D2c 提交前维持当前 API/Vite 进程；以后每轮修改 shared、document-model、Prisma schema/client 或 API 命令合同后，
+  浏览器验收前必须按 AGENTS 门禁重启对应长驻进程。该事件不新增产品代码，也不改变 FA-D2d 范围；本轮未部署生产。

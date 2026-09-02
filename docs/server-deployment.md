@@ -316,6 +316,18 @@ FFmpeg，并通过 `XIQU_FFMPEG_PATH` 固定绝对路径。worker 收到 SIGTERM
 systemd 的 `TimeoutStopSec` 应覆盖该清理时间。API 正常但 worker 未运行时，播放和标注仍可用，分析任务会
 停留在“排队中”。
 
+同一 worker runtime 也可消费强制对齐任务，但该能力默认关闭。只有部署了实现固定
+`--request <json> --audio <binary> --output <json>` 协议的真实模型程序后，才在 API 与 worker 共用的受保护环境文件中同时设置：
+
+```bash
+XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED=true
+XIQU_FORCE_ALIGNMENT_EXECUTOR_PATH='/opt/xiqu-platform/bin/force-align'
+```
+
+执行器路径必须是可执行的绝对路径；worker 启动时会先检查权限，API 在请求开关为 true 而路径缺失时会直接拒绝启动。
+worker 把正文投影与纯音频写入权限受限的临时目录，VOD 临时 URL 不进入命令行、数据库或日志。未完成真实模型、词典和
+预测合同验收前必须保持默认关闭，不能用占位脚本制造看似成功的研究数据。
+
 后台任务出现排队、陈旧 claim、取消不收敛或写许可异常时，按
 [`processing-job-operations.md`](processing-job-operations.md) 的决策树先区分 API、数据库、对象存储和 worker；
 不要用一次全服务重启代替定位。空队列时以 systemd 判断 worker 存活，有活动任务时以数据库 heartbeat/claim

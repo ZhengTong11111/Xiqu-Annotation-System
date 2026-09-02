@@ -61,8 +61,8 @@ export function canRetryProcessingJobRequest(
   item: ProcessingJobRequestListItem,
   user: PlatformUser,
 ) {
-  // 后端当前只实现媒体分析重试；对齐任务要等 D2b 接入同一命令服务后才能开放按钮。
-  return item.job.type === "media_analysis" &&
+  // 两类计算共用同一条幂等重试命令；其他治理任务仍不能伪装成可重试。
+  return (item.job.type === "media_analysis" || item.job.type === "force_alignment") &&
     (item.requester.id === user.id || hasFullPlatformResourceAccess(user.roles)) &&
     (item.job.status === "failed" || item.job.status === "cancelled");
 }

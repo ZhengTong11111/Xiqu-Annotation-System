@@ -328,8 +328,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     VOD identity requires region/video id/duration, and annotation id, selection mode, and track offset have no input position
   - VOD renditions additionally include the official stable JobId and format, so original audio and different rendition
     streams cannot share a run. Definition, bitrate, display metadata, temporary URL, and track offset never enter the fingerprint
-- `apps/api/src/mediaAnalysisWorkerService.ts` + `apps/api/src/mediaAnalysisWorkerRuntime.ts`
-  - independent database claim/heartbeat/stale-recovery worker; normal shutdown removes partial assets and requeues the job
+- `apps/api/src/processingJobWorkerRuntime.ts` + `apps/api/src/processingJobWorkerCoordinator.ts`
+  - the only long-lived background polling owner. It serially runs bounded stale recovery and uses rotating adapter priority so
+    media analysis and force alignment cannot starve one another; do not start a second task loop for a new processing type
+  - runtime failures use bounded exponential backoff and fixed safe logs; stop aborts the current adapter and waits for its database
+    settlement before process exit
+- `apps/api/src/mediaAnalysisWorkerService.ts`
+  - media-analysis database claim/heartbeat/stale-recovery adapter; normal shutdown removes partial assets and requeues the job
   - each task has one claim monitor, separate from process shutdown. It survives transient database reads, refreshes liveness even
     before a complete tile exists, aborts FFmpeg when cancellation or claim transfer is observed, and never invents progress
   - user cancellation removes partial assets and settles `cancelled`; process shutdown requeues. Success, cancellation, failure,
@@ -346,6 +351,23 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - staged/final object compensation failures must become stable failed states and must never be silently swallowed
   - a run with `sourceVodRenditionJobId` must request that exact JobId through the existing VOD gateway and reject a mismatched
     provider response. The resulting HTTPS URL remains worker-memory-only and must never enter the database, audit, or logs
+- `apps/api/src/alignmentWorkerService.ts` + `apps/api/src/alignmentExecutor.ts`
+  - the force-alignment adapter rereads current annotation projection/revision, source fingerprint/offset and at least one active
+    requester's current annotation/source ACL before execution and again inside the claim-fenced terminal transaction. Changed or
+    deleted facts fail closed; it never reconstructs old text from operations or stores projection/body in PostgreSQL
+  - prediction is one strict versioned gzip JSON object containing stable sentence/character ids, project-timeline microsecond
+    boundaries, bounded candidates and confidence only. It excludes text, ProjectData, temporary URLs and acoustic matrices
+  - staged/final publication preallocates the artifact id, verifies size/SHA/manifest, and commits artifact + run + job atomically
+    under the full claim generation. Ambiguous commit rereads that exact id; a matching committed final is retained, confirmed absence
+    is compensated, and unverifiable state becomes a stable error rather than deleting a possibly referenced object
+  - protected artifact reads accept only file/run/artifact ids, revalidate annotation read plus current source read/download, and never
+    expose storage keys. Timing application remains a separate D2d operation/revision boundary
+- `apps/api/src/externalForceAlignmentExecutor.ts`
+  - the deployment adapter uses a shell-free executable with fixed request/audio/output file arguments in a private temporary directory.
+    It downloads only temporary VOD audio, never places a URL or credential in argv/logs, enforces request/audio/output capacities and
+    removes temporary files after the child exits
+  - `XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED=true` requires an absolute `XIQU_FORCE_ALIGNMENT_EXECUTOR_PATH`; both API and worker use
+    the same protected environment. Keep the feature disabled until the real model executable and dictionary are installed and tested
 - `apps/api/src/mediaAnalysisFfmpeg.ts` + `apps/api/src/mediaAnalysisComputation.ts`
   - shell-free FFmpeg streaming to 16 kHz mono PCM and versioned fixed-duration tile production; new runs currently use
     10-second tiles, while historical runs expose their original duration through manifest/config
