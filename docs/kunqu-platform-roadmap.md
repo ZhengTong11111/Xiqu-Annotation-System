@@ -441,8 +441,8 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
 > 未删除、置空或迁移任何生产 payload；12 文件生产样本中 414 个当前格式冷候选完成重放/hash 证明，3,716 个旧格式快照
 > 被安全保留，推翻了 HC0 的 60%-85% 乐观估算。HC2a expand-only schema + inline resolver 已完成代码、迁移夹具、完整
 > API 回归和构建；payload 仍必填且数据库只允许 inline，生产迁移/观察尚待明确授权。HC2b1 恢复历史 opaque keyset
-> 分页也已完成代码，Inspector 能明确部分加载并续页，不再把固定 50 条当完整历史。当前进入 HC2b2 的 planner 有界批读、
-> 依赖保护和低基数容量指标；只有“检查点 + committed operation”与原始 payload canonical hash 完全一致的 revision，
+> 分页也已完成代码，Inspector 能明确部分加载并续页，不再把固定 50 条当完整历史。HC2b2a 的 planner 16 条有界批读与
+> reconstructible recipe 依赖保护合同已经完成；当前进入 HC2b2b 的低成本容量指标。只有“检查点 + committed operation”与原始 payload canonical hash 完全一致的 revision，
 > 未来才有资格转成轻量 recipe。
 
 - R3a 已完成：资源查询使用版本化、查询绑定的 opaque cursor；数据库按业务字段和同方向 id 形成稳定

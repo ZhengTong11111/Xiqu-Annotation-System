@@ -9,6 +9,7 @@ import { createAnnotationHistoryCanonicalHash } from "../src/annotationHistoryCa
 import { parseAnnotationHistoryCompactionCliOptions } from "../src/annotationHistoryCompactionCliOptions.js";
 import {
   AnnotationHistoryCompactionPlanner,
+  MAX_ANNOTATION_HISTORY_PAYLOAD_BATCH_SIZE,
   type AnnotationHistoryCompactionRepository,
   type AnnotationHistoryOperationFact,
   type AnnotationHistorySnapshotFact,
@@ -109,6 +110,50 @@ test("完整领域命令链可重建，跨 revision 的合法 sequence 空档不
   assert.equal(plan.files[0]?.decisions[1]?.decision, "reconstructible");
   assert.equal(plan.files[0]?.decisions[2]?.recipe?.operationSequenceStart, 1);
   assert.equal(plan.files[0]?.decisions[2]?.recipe?.operationSequenceEnd, 99);
+});
+
+test("payload 固定小批读取且数据库乱序不改变 revision 决策", async () => {
+  const projects = createProjectSeries(Array.from({ length: 17 }, (_, index) => `句${index + 1}`));
+  const operations = projects.slice(1).map((project, index) =>
+    createContentOperation(projects[index]!, project, index + 2, index + 1));
+  const repository = new MemoryCompactionRepository(projects, operations);
+  const plan = await new AnnotationHistoryCompactionPlanner(repository).plan({
+    annotationFileId: FILE_ID,
+    maxRevisionsPerFile: 100,
+    maxOperationsPerFile: 100,
+    policy: TEST_POLICY,
+    now: PLAN_NOW,
+  });
+  assert.equal(repository.payloadBatchCalls, 2);
+  assert.deepEqual(repository.payloadBatchSizes, [
+    MAX_ANNOTATION_HISTORY_PAYLOAD_BATCH_SIZE,
+    1,
+  ]);
+  assert.equal(plan.files[0]?.decisions.length, 17);
+  assert.deepEqual(
+    plan.files[0]?.decisions.map(({ revision }) => revision),
+    Array.from({ length: 17 }, (_, index) => index + 1),
+  );
+  assert.equal(plan.summary.blockedCount, 0);
+});
+
+test("payload 批次缺行只阻断对应 revision，后续完整 payload 仍可恢复检查点", async () => {
+  const projects = createProjectSeries(["甲", "乙", "丙"]);
+  const repository = new MemoryCompactionRepository(projects, [
+    createContentOperation(projects[0]!, projects[1]!, 2, 1),
+    createContentOperation(projects[1]!, projects[2]!, 3, 2),
+  ]);
+  repository.removePayload("snapshot-2");
+  const plan = await new AnnotationHistoryCompactionPlanner(repository).plan({
+    annotationFileId: FILE_ID,
+    maxRevisionsPerFile: 100,
+    maxOperationsPerFile: 100,
+    policy: TEST_POLICY,
+    now: PLAN_NOW,
+  });
+
+  assert.deepEqual(plan.files[0]?.decisions[1]?.blockCodes, ["snapshot_payload_missing"]);
+  assert.equal(plan.files[0]?.decisions[2]?.decision, "keep_inline");
 });
 
 test("缺失 revision 只阻断当前区间，原始 payload 会成为后续可信检查点", async () => {
@@ -236,6 +281,8 @@ test("CLI 必须显式选择单文件或全库并严格解析策略覆盖", () =
 class MemoryCompactionRepository implements AnnotationHistoryCompactionRepository {
   private readonly snapshots: AnnotationHistorySnapshotFact[];
   private readonly payloads = new Map<string, unknown>();
+  payloadBatchCalls = 0;
+  readonly payloadBatchSizes: number[] = [];
 
   constructor(
     projects: readonly ProjectData[],
@@ -282,8 +329,20 @@ class MemoryCompactionRepository implements AnnotationHistoryCompactionRepositor
     return { revisions: new Set<number>(), truncated: false };
   }
 
-  async loadSnapshotPayload(input: { snapshotId: string }) {
-    return structuredClone(this.payloads.get(input.snapshotId) ?? null);
+  removePayload(snapshotId: string) {
+    this.payloads.delete(snapshotId);
+  }
+
+  async loadSnapshotPayloadBatch(input: { snapshotIds: string[] }) {
+    this.payloadBatchCalls += 1;
+    this.payloadBatchSizes.push(input.snapshotIds.length);
+    // 故意反转模拟 SQL IN 无顺序保证，planner 必须按请求 snapshot 顺序恢复。
+    return [...input.snapshotIds].reverse().flatMap((snapshotId) => {
+      const payload = this.payloads.get(snapshotId);
+      return payload === undefined
+        ? []
+        : [{ snapshotId, payload: structuredClone(payload) }];
+    });
   }
 }
 

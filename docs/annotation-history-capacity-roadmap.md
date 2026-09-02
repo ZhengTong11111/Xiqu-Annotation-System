@@ -187,11 +187,22 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - cursor 绑定 annotation file 与 `revision + createdAt + id` 倒序总序，坏游标、跨文件游标和越界 limit 明确拒绝。
 - 专项 4 项、平台 API 43 项、完整 API 287 项与完整构建通过；生产未部署，前后端 page DTO 必须作为同一 release 上线。
 
-#### HC2b2：批读、依赖保护与容量指标（下一阶段）
+#### HC2b2a：Planner 批读与依赖保护合同（代码已完成）
 
-- 增加有界 payload 批读/流式校验接口，避免 HC1 在大文件上暴露的逐 snapshot 单查询成本；仍保持低并发和只读门禁。
-- 增加 storage mode、payload/hash 覆盖、blocked code、最大重放距离与增长速度的低基数容量指标。
-- 建立 checkpoint/operation 依赖保护查询，但仍不回填 recipe、不清空 payload。
+- planner repository 已改为每批最多 16 条 payload，SQL 返回先按 snapshot id 校验/建 map，再按原 revision 顺序逐条处理；
+  只保留一个批次，不并行预取、不全文件物化。17 条单元夹具形成 2 批，隔离 PostgreSQL 的 33 条快照只执行 3 次 payload
+  查询，原有 keep/reconstructible/blocked、hash、checkpoint 与缺行语义不变。
+- 已建立唯一 checkpoint/operation 依赖保护查询：只读取 reconstructible recipe 定位列和同文件 checkpoint revision，
+  不读取 payload/operation body。畸形、跨文件、缺 checkpoint、扫描截断或非法候选区间全部 fail closed；当前 inline-only
+  数据返回空且有效。
+- 专项 15 项、resolver 4 项、命令 25 项、原子提交 5/34 项、完整 API 292 项与完整构建通过。仍未回填 recipe/hash、
+  未清空 payload、未改变在线保存/恢复，也未部署生产。
+
+#### HC2b2b：低成本容量指标（下一阶段）
+
+- 增加 storage mode、payload/hash 覆盖与近期增长速度的低基数容量指标；表/TOAST 总占用使用 PostgreSQL relation size，
+  不能在每次 Prometheus scrape 解压扫描全部 JSON payload。
+- blocked code、最大重放距离和 operation 数继续来自显式只读 planner 报告，不能把昂贵重放塞进在线 metrics collector。
 
 ### HC3：影子 recipe 与小批次无损压缩
 

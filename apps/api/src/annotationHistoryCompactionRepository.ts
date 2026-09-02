@@ -3,12 +3,13 @@ import type {
   AnnotationHistoryCompactionRepository,
   AnnotationHistoryOperationFact,
 } from "./annotationHistoryCompactionTypes.js";
+import { MAX_ANNOTATION_HISTORY_PAYLOAD_BATCH_SIZE } from "./annotationHistoryCompactionTypes.js";
 
 const OPERATION_PAGE_SIZE = 500;
 
 /**
  * HC1 的 Prisma repository 只暴露有界 SELECT；planner 不接触 Prisma，也不能借接口写入数据库。
- * payload 只按 snapshot id 单份读取，避免把单文件甚至全库 JSON 一次装入内存。
+ * payload 以固定小批次读取，减少大文件逐条往返，同时避免把单文件甚至全库 JSON 一次装入内存。
  */
 export class PrismaAnnotationHistoryCompactionRepository
 implements AnnotationHistoryCompactionRepository {
@@ -136,14 +137,22 @@ implements AnnotationHistoryCompactionRepository {
     };
   }
 
-  async loadSnapshotPayload(input: { annotationFileId: string; snapshotId: string }) {
-    const row = await this.prisma.annotationRecoverySnapshot.findFirst({
+  async loadSnapshotPayloadBatch(input: { annotationFileId: string; snapshotIds: string[] }) {
+    if (
+      input.snapshotIds.length < 1 ||
+      input.snapshotIds.length > MAX_ANNOTATION_HISTORY_PAYLOAD_BATCH_SIZE ||
+      new Set(input.snapshotIds).size !== input.snapshotIds.length ||
+      input.snapshotIds.some((id) => id.length < 1 || id.length > 200)
+    ) {
+      throw new Error("恢复快照 payload 批次输入无效。");
+    }
+    const rows = await this.prisma.annotationRecoverySnapshot.findMany({
       where: {
-        id: input.snapshotId,
+        id: { in: input.snapshotIds },
         annotationFileId: input.annotationFileId,
       },
-      select: { payload: true },
+      select: { id: true, payload: true },
     });
-    return row?.payload ?? null;
+    return rows.map((row) => ({ snapshotId: row.id, payload: row.payload }));
   }
 }

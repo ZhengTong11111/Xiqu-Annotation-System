@@ -10326,3 +10326,38 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：HC2b1 shared/API/client/Inspector 分页闭环、竞态门禁、测试、自审和文档。**待推进**：HC2b2 planner
   payload 有界批读、checkpoint/operation 依赖保护查询、storage/hash/blocked/replay/growth 低基数指标。本轮未部署生产，
   未运行生产 migration，未修改任何生产标注、快照或审核事实。
+
+## 2026-09-01：HC2b2a Planner 有界批读与历史依赖保护
+
+### 有界 Payload 批读
+
+- HC1 planner 原来对每个 snapshot 单独执行一次 payload 查询；生产只读样本中单文件可有 6,118 条快照，这种方式虽然低
+  内存、无写锁，但 SQL 往返过多。本轮将 repository 合同收敛为 `loadSnapshotPayloadBatch()`，固定每批最多 16 个唯一、
+  有界 snapshot id，并同时绑定 annotation file id，只选择 `id + payload`。
+- planner 不信任 SQL `IN` 返回顺序：每批先验证返回 id 没有越界或重复，再建立临时 map，严格按 snapshots 的 revision
+  顺序解析、hash 和重放；一个批次处理完才读取下一批，不并行预取、不把整文件 payload 装入内存。按当前生产最大单份约
+  306KB 估算，常规批内 JSON 上界约 5MB。缺行继续成为 `snapshot_payload_missing`，不会让其他 revision 错位。
+- 单元夹具证明 17 条快照形成 16+1 两批，故意反转返回顺序不改变决策；另一个夹具删除中间 payload，只有对应 revision
+  blocked，后续完整 payload 仍可成为可信 checkpoint。隔离 PostgreSQL 的 33 条快照从 33 次 payload 查询降为 3 次，
+  产生 31 个 hash 一致的 reconstructible dry-run 候选，数据库前后事实完全相同。
+
+### Recipe 依赖门禁
+
+- 新增唯一 `annotationHistoryDependencyProtection.ts`。它只查询 `storageMode=reconstructible` 的 recipe 定位列和同文件
+  checkpoint revision，不读取快照 payload、operation body、审核正文或媒体/凭据；当前 HC2a inline-only 数据会返回空且
+  有效的保护结果。
+- 保护结果包含 checkpoint id 与 operation revision/sequence 区间。任一跨文件、畸形范围、缺 checkpoint、超过 10,000
+  条扫描上限或调用方传入非法候选区间都会 fail closed；helper 此时把所有候选视为受保护，未来清理器不能把“不完整依赖
+  证据”误解成“没有依赖”。本轮只建立生命周期合同，没有实际删除调用方，也没有写入 recipe。
+
+### 自审、验证与状态
+
+- 自审修正了隔离夹具中 revision 34 误引用 revision 4 payload 的弱断言，并把测试使用的 ES2023 `toReversed()` 改为项目
+  ES2022 目标兼容写法。没有新增依赖、第二套 parser/apply、在线 API 热路径、重复查询 owner 或未使用的临时接口；复杂
+  批处理和 fail-closed 分支均补有中文功能注释。
+- `test:annotation-history-compaction` 15/15、resolver 4/4、annotation commands 25/25、command commit 5/5、客户端原子
+  提交 34/34、完整 API 292/292、完整 `npm run build` 与 `git diff --check` 通过。只剩既有 Vite 主 chunk 大小提示和既有
+  pg 并发 query deprecation warning。
+- **已完成**：HC2b2a 代码、专项/完整回归、自审、Roadmap/AGENTS 更新。**待推进**：HC2b2b 低成本 storage mode/hash/
+  近期增长与 PostgreSQL relation size 指标；blocked code、最大重放距离和 operation 数仍只属于显式 planner 报告。本轮
+  没有部署生产、没有执行 migration、没有设置 reconstructible、没有回填 hash/recipe，也没有删除或置空任何 payload。

@@ -19,6 +19,7 @@ import {
 } from "./annotationHistoryCompactionReplay.js";
 import {
   ANNOTATION_HISTORY_COMPACTION_PLAN_VERSION,
+  MAX_ANNOTATION_HISTORY_PAYLOAD_BATCH_SIZE,
   MAX_ANNOTATION_HISTORY_OPERATIONS_PER_FILE,
   MAX_ANNOTATION_HISTORY_REVISIONS_PER_FILE,
   type AnnotationHistoryBlockCode,
@@ -34,6 +35,7 @@ import {
 export {
   ANNOTATION_HISTORY_COMPACTION_PLAN_VERSION,
   MAX_ANNOTATION_HISTORY_OPERATIONS_PER_FILE,
+  MAX_ANNOTATION_HISTORY_PAYLOAD_BATCH_SIZE,
   MAX_ANNOTATION_HISTORY_REVISIONS_PER_FILE,
 };
 export type {
@@ -164,7 +166,11 @@ export class AnnotationHistoryCompactionPlanner {
     let currentProject: ProjectData | null = null;
     let currentRevision: number | null = null;
     let checkpoint: AnnotationHistorySnapshotFact | null = null;
-    for (const snapshot of snapshots) {
+    for await (const { snapshot, loaded } of this.loadSnapshotBatches(
+      annotationFileId,
+      snapshots,
+      options.signal,
+    )) {
       if (options.signal?.aborted) break;
       let keepReasons = [...(requiredInline.get(snapshot.revision) ?? [])].sort();
       if (snapshotPage.truncated && snapshot === snapshots.at(-1)) {
@@ -175,7 +181,6 @@ export class AnnotationHistoryCompactionPlanner {
         (currentProject === null || currentRevision === null || !checkpoint);
       const mustLoadInline = protectedRevisionPage.truncated || keepReasons.length > 0 || checkpointUnavailable;
       if (mustLoadInline) {
-        const loaded = await this.loadSnapshot(annotationFileId, snapshot);
         const blockCodes = new Set<AnnotationHistoryBlockCode>();
         if (protectedRevisionPage.truncated) blockCodes.add("protected_revision_scan_truncated");
         if (checkpointUnavailable) blockCodes.add("checkpoint_unavailable");
@@ -208,7 +213,6 @@ export class AnnotationHistoryCompactionPlanner {
         revisions: revisionValidations,
         operationScanTruncated: operationPage.truncated,
       });
-      const loaded = await this.loadSnapshot(annotationFileId, snapshot);
       const replayBlockCodes = [...replay.blockCodes];
       if (!loaded.project) {
         replayBlockCodes.push(loaded.payload === null
@@ -298,14 +302,42 @@ export class AnnotationHistoryCompactionPlanner {
     };
   }
 
-  private async loadSnapshot(
+  /**
+   * 每次只保留一个 16 条 payload map；数据库返回顺序不可信，业务处理仍严格跟随 snapshot revision 顺序。
+   */
+  private async *loadSnapshotBatches(
     annotationFileId: string,
-    snapshot: AnnotationHistorySnapshotFact,
-  ): Promise<AnnotationHistoryLoadedSnapshot> {
-    const payload = await this.repository.loadSnapshotPayload({
-      annotationFileId,
-      snapshotId: snapshot.id,
-    });
+    snapshots: AnnotationHistorySnapshotFact[],
+    signal?: AbortSignal,
+  ): AsyncGenerator<{
+    snapshot: AnnotationHistorySnapshotFact;
+    loaded: AnnotationHistoryLoadedSnapshot;
+  }> {
+    for (let offset = 0; offset < snapshots.length && !signal?.aborted; offset += MAX_ANNOTATION_HISTORY_PAYLOAD_BATCH_SIZE) {
+      const batch = snapshots.slice(offset, offset + MAX_ANNOTATION_HISTORY_PAYLOAD_BATCH_SIZE);
+      const rows = await this.repository.loadSnapshotPayloadBatch({
+        annotationFileId,
+        snapshotIds: batch.map(({ id }) => id),
+      });
+      const requestedIds = new Set(batch.map(({ id }) => id));
+      const payloads = new Map<string, unknown>();
+      for (const row of rows) {
+        if (!requestedIds.has(row.snapshotId) || payloads.has(row.snapshotId)) {
+          throw new Error("恢复快照 payload 批次返回了越界或重复身份。");
+        }
+        payloads.set(row.snapshotId, row.payload);
+      }
+      for (const snapshot of batch) {
+        const payload = payloads.get(snapshot.id);
+        yield {
+          snapshot,
+          loaded: this.parseLoadedSnapshot(payload ?? null),
+        };
+      }
+    }
+  }
+
+  private parseLoadedSnapshot(payload: unknown | null): AnnotationHistoryLoadedSnapshot {
     if (payload === null) {
       return { payload: null, payloadBytes: 0, payloadHash: "", project: null };
     }

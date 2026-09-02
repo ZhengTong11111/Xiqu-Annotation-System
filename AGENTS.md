@@ -1384,8 +1384,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     strict shared-command replay, fixed diagnostic codes, report contract, and dry-run CLI
   - the repository contract has no mutation methods and the CLI must use PostgreSQL `default_transaction_read_only=on`, a
     statement timeout, two-connection pool, singleton advisory lock, explicit single-file/`--all` scope and bounded limits
+  - snapshot payloads are loaded in sequential batches of at most 16. SQL `IN` order is never trusted: map rows by snapshot id,
+    process the requested revision order, retain only one batch in memory, and treat missing rows as blocked snapshots
   - historical payloads that fail the strict current ProjectData parser remain inline and blocked. Normalizing v1-v6 into v7
     does not reproduce the original JSON and must never qualify a snapshot for recipe compaction
+- `apps/api/src/annotationHistoryDependencyProtection.ts`
+  - the only recovery-history lifecycle dependency boundary for future reconstructible recipes. It reads bounded lightweight
+    recipe/checkpoint metadata only, never snapshot payloads, operation bodies, review text, media identities or credentials
+  - malformed, cross-file, missing-checkpoint or truncated evidence invalidates the complete protection result. Cleanup callers
+    must then protect every candidate; they must never interpret an invalid result as an empty dependency set
 - `apps/api/src/annotationRecoverySnapshotResolver.ts`
   - HC2a single read boundary for recovery snapshot storage modes; detail and restore must both use it
   - inline payloads are historical arbitrary JSON and must be returned without current ProjectData parsing, normalization,
@@ -2135,6 +2142,9 @@ Important backend caveats:
   revision, stable unique sequence within committed facts, replayable commands and exact hash instead.
 - HC1 remains a read-only planner: it must not set storage mode, null/delete/archive payloads, write objects, or run inside an
   online API request. Production sampling uses the dedicated forced-read-only CLI and reports no annotation text or commands.
+- the history planner loads payloads in fixed batches of 16 and releases each batch before reading the next; do not add parallel
+  prefetch or whole-file payload materialization. Future snapshot/operation lifecycle cleanup must use the shared dependency
+  protection contract and stop when that contract is malformed, truncated or missing a checkpoint.
 - HC2a expands recovery snapshots without rewriting old rows: payload stays required, all new writes default to `inline`, and a
   database check prevents enabling recipe/archive modes before their readers and writers exist. Detail and restore share the
   resolver above; history lists remain metadata-only and public DTOs do not expose storage/hash/recipe internals.

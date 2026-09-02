@@ -9,6 +9,7 @@ import type {
 export const ANNOTATION_HISTORY_COMPACTION_PLAN_VERSION = 1;
 export const MAX_ANNOTATION_HISTORY_REVISIONS_PER_FILE = 10_000;
 export const MAX_ANNOTATION_HISTORY_OPERATIONS_PER_FILE = 200_000;
+export const MAX_ANNOTATION_HISTORY_PAYLOAD_BATCH_SIZE = 16;
 
 export type AnnotationHistorySnapshotFact = AnnotationHistorySnapshotPolicyFact;
 
@@ -44,10 +45,10 @@ export type AnnotationHistoryCompactionRepository = {
     annotationFileId: string;
     maxRevisions: number;
   }): Promise<{ revisions: Set<number>; truncated: boolean }>;
-  loadSnapshotPayload(input: {
+  loadSnapshotPayloadBatch(input: {
     annotationFileId: string;
-    snapshotId: string;
-  }): Promise<unknown | null>;
+    snapshotIds: string[];
+  }): Promise<Array<{ snapshotId: string; payload: unknown }>>;
 };
 
 export type AnnotationHistoryBlockCode =

@@ -8,6 +8,7 @@ import {
 import { createAnnotationHistoryCanonicalHash } from "../src/annotationHistoryCanonicalHash.js";
 import { AnnotationHistoryCompactionPlanner } from "../src/annotationHistoryCompactionPlanner.js";
 import { PrismaAnnotationHistoryCompactionRepository } from "../src/annotationHistoryCompactionRepository.js";
+import { loadAnnotationHistoryDependencyProtection } from "../src/annotationHistoryDependencyProtection.js";
 import { ANNOTATION_HISTORY_HOUR_MS } from "../src/annotationHistoryCompactionPolicy.js";
 import { createPrismaReadOnlyConnection } from "../src/database.js";
 import {
@@ -29,7 +30,7 @@ test("HC1 planner 在隔离 PostgreSQL 中完成重放且不改写任何历史�
         roles: { create: { role: "super_admin" } },
       },
     });
-    const projects = ["甲", "乙", "丙", "丁"].map(createProject);
+    const projects = Array.from({ length: 34 }, (_, index) => createProject(`句${index + 1}`));
     const resource = await prisma.resourceEntry.create({
       data: {
         type: "annotation_file",
@@ -37,9 +38,9 @@ test("HC1 planner 在隔离 PostgreSQL 中完成重放且不改写任何历史�
         ownerUserId: user.id,
         annotationFile: {
           create: {
-            payload: toInputJson(projects[3]!),
-            revision: 4,
-            lastOperationSequence: 10,
+            payload: toInputJson(projects[33]!),
+            revision: 34,
+            lastOperationSequence: 33,
             lastEditedBy: user.id,
           },
         },
@@ -47,7 +48,7 @@ test("HC1 planner 在隔离 PostgreSQL 中完成重放且不改写任何历史�
     });
     const createdAt = new Date("2026-01-01T00:00:00.000Z");
     await prisma.annotationRecoverySnapshot.createMany({
-      data: projects.slice(0, 3).map((project, index) => ({
+      data: projects.slice(0, 33).map((project, index) => ({
         annotationFileId: resource.id,
         revision: index + 1,
         payload: toInputJson(project),
@@ -56,17 +57,13 @@ test("HC1 planner 在隔离 PostgreSQL 中完成重放且不改写任何历史�
         createdAt: new Date(createdAt.getTime() + index * 1_000),
       })),
     });
-    const operations = [
-      createOperation(projects[0]!, projects[1]!, 2, 1, resource.id, user.id),
-      createOperation(projects[1]!, projects[2]!, 3, 9, resource.id, user.id),
-      createOperation(projects[2]!, projects[3]!, 4, 10, resource.id, user.id),
-    ];
+    const operations = projects.slice(1).map((project, index) =>
+      createOperation(projects[index]!, project, index + 2, index + 1, resource.id, user.id));
     await prisma.annotationOperation.createMany({ data: operations });
 
     const before = await readProtectedDatabaseFacts(prisma, resource.id);
-    const planner = new AnnotationHistoryCompactionPlanner(
-      new PrismaAnnotationHistoryCompactionRepository(prisma),
-    );
+    const repository = new CountingCompactionRepository(prisma);
+    const planner = new AnnotationHistoryCompactionPlanner(repository);
     const plan = await planner.plan({
       annotationFileId: resource.id,
       maxRevisionsPerFile: 100,
@@ -83,9 +80,16 @@ test("HC1 planner 在隔离 PostgreSQL 中完成重放且不改写任何历史�
     const after = await readProtectedDatabaseFacts(prisma, resource.id);
 
     assert.equal(plan.summary.fileCount, 1);
-    assert.equal(plan.summary.reconstructibleCount, 1);
+    assert.equal(plan.summary.reconstructibleCount, 31);
     assert.equal(plan.summary.blockedCount, 0);
     assert.equal(plan.files[0]?.decisions[1]?.decision, "reconstructible");
+    assert.equal(repository.payloadBatchQueryCount, 3);
+    const dependencyProtection = await loadAnnotationHistoryDependencyProtection(prisma, {
+      annotationFileId: resource.id,
+    });
+    assert.equal(dependencyProtection.valid, true);
+    assert.equal(dependencyProtection.checkpointSnapshotIds.size, 0);
+    assert.equal(dependencyProtection.operationRanges.length, 0);
     assert.deepEqual(after, before);
 
     // 专用 CLI 连接对池内每条物理连接强制只读；即使实现未来误加 create，也会由 PostgreSQL 拒绝。
@@ -113,6 +117,18 @@ test("HC1 planner 在隔离 PostgreSQL 中完成重放且不改写任何历史�
     await connections.collaborationPool.end();
   }
 });
+
+class CountingCompactionRepository extends PrismaAnnotationHistoryCompactionRepository {
+  payloadBatchQueryCount = 0;
+
+  override async loadSnapshotPayloadBatch(input: {
+    annotationFileId: string;
+    snapshotIds: string[];
+  }) {
+    this.payloadBatchQueryCount += 1;
+    return super.loadSnapshotPayloadBatch(input);
+  }
+}
 
 async function readProtectedDatabaseFacts(
   prisma: ReturnType<typeof createTestPrisma>["prisma"],
