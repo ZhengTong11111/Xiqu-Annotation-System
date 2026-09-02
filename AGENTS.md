@@ -214,6 +214,12 @@ Main currently contains all major recent feature lines that matter for context:
   field contains fixed aggregate counts only; it must never contain entity IDs, text, candidate arrays or free JSON. Legacy manifests
   without a summary remain readable/applicable, while candidate queries must report the summary as unavailable rather than downloading
   each prediction object or inventing zero-quality values
+- force-alignment training candidates are derived only by `AlignmentTrainingCandidateService`. A file-bound application cursor carries
+  the next observation-window upper revision; each page uses one bounded application query and one 500+1 operation scan, while current
+  assessments are capped at 500 per application. Automatic application operations are excluded from manual timing evidence, truncated
+  or malformed evidence is explicit `partial`/`invalid`, and absence of edits or assessments remains `unrated`, never auto-correct.
+  Every request rechecks file `read` plus active resource lifecycle and must not read prediction objects or return ProjectData, text,
+  operation payloads, account/media facts, storage identities or request hashes
 - force-alignment tool attempts are a lightweight governance/training side table, never ProjectData or document history. Their
   administrator CSV is generated only by the API after fresh full-resource authorization, accepts at most a 90-day half-open
   window, reads in bounded batches, exports at most 10,000 rows with an explicit truncation header, and uses the shared CSV
@@ -437,6 +443,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     deterministic ordinary timing-command planning, and application provenance preparation
   - character lookup must remain indexed O(n), commands stay capped at 500 items/100 operations, and sentence timing remains unchanged;
     successful application must enter `AnnotationCommandCommitService` once and use normal revision/catch-up semantics
+- `apps/api/src/alignmentTrainingCandidateService.ts`
+  - the only application-observation and difficult-sample derivation boundary; it owns the file-bound cursor, adjacent revision windows,
+    bounded operation/assessment scans, fixed signals and explicit incomplete-evidence states
+  - it is read-only governance metadata. Do not add object-storage reads, ProjectData hydration, per-application queries, automatic
+    correctness inference, document mutations or a second save/autosave owner
 - `src/platform/AlignmentRunsDialog.tsx`
   - low-frequency bounded run history and explicit apply confirmation; an ambiguous retry reuses its session action UUID
   - the editor blocks new mutations from request start through authoritative refetch. The dialog must never apply prediction timing locally

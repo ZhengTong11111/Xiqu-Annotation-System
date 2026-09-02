@@ -11,6 +11,7 @@ import type { AlignmentTextProjection } from "@xiqu/document-model";
 import { AlignmentApplicationService } from "../src/alignmentApplicationService.js";
 import { AlignmentRunService } from "../src/alignmentRunService.js";
 import { AlignmentWorkerService } from "../src/alignmentWorkerService.js";
+import { AlignmentTrainingCandidateService } from "../src/alignmentTrainingCandidateService.js";
 import { AnnotationCommandCommitService } from "../src/annotationCommandCommitService.js";
 import type { ForceAlignmentExecutor } from "../src/alignmentExecutor.js";
 import { ResourceAccessService } from "../src/resourceAccess.js";
@@ -18,7 +19,7 @@ import { LocalObjectStorage } from "../src/storage.js";
 import { createTestPrisma, truncateTestDatabase } from "./testEnvironment.js";
 
 test("强制对齐应用原子写入真实 operation，并支持幂等重放和同 run 再应用", async () => {
-  await withFixture(async ({ prisma, fixture, applications, commandCommits, publishedRevisions }) => {
+  await withFixture(async ({ prisma, fixture, applications, candidates, commandCommits, publishedRevisions }) => {
     const firstActionId = randomUUID();
     const first = await applications.apply(
       fixture.user,
@@ -120,6 +121,36 @@ test("强制对齐应用原子写入真实 operation，并支持幂等重放和�
     assert.deepEqual(secondPage.items.map((item) => item.id), [first.id]);
     assert.equal(secondPage.items[0]?.currentAssessmentCount, 1);
     assert.equal(secondPage.nextCursor, null);
+
+    // 候选分页使用相邻 application revision 作为观察窗口；再次自动应用不计作人工调整。
+    const newestCandidatePage = await candidates.list(
+      fixture.collaborator,
+      fixture.annotationFileId,
+      { limit: 1 },
+    );
+    assert.equal(newestCandidatePage.items[0]?.alignmentApplicationId, second.id);
+    assert.equal(newestCandidatePage.items[0]?.observationEndRevision, 4);
+    assert.equal(newestCandidatePage.items[0]?.manualTiming.editedCharacterCount, 0);
+    assert.equal(newestCandidatePage.items[0]?.predictionSummaryState, "ready");
+    assert.equal(newestCandidatePage.items[0]?.unrated, true);
+    assert.ok(newestCandidatePage.nextCursor);
+    const olderCandidatePage = await candidates.list(
+      fixture.collaborator,
+      fixture.annotationFileId,
+      { limit: 1, cursor: newestCandidatePage.nextCursor! },
+    );
+    assert.equal(olderCandidatePage.items[0]?.alignmentApplicationId, first.id);
+    assert.equal(olderCandidatePage.items[0]?.observationEndRevision, 4);
+    assert.deepEqual(olderCandidatePage.items[0]?.manualTiming, {
+      operationCount: 1,
+      editedCharacterCount: 1,
+      totalBoundaryDeltaMicros: 500_000,
+      maxBoundaryDeltaMicros: 500_000,
+    });
+    assert.deepEqual(olderCandidatePage.items[0]?.signals, ["manual_timing_adjustment"]);
+    assert.equal(olderCandidatePage.items[0]?.assessments.correct, 1);
+    assert.equal(olderCandidatePage.items[0]?.unrated, false);
+    assert.equal(olderCandidatePage.nextCursor, null);
     await assert.rejects(
       applications.list(fixture.collaborator, fixture.annotationFileId, { limit: 101 }),
       hasStatus(400),
@@ -128,6 +159,38 @@ test("强制对齐应用原子写入真实 operation，并支持幂等重放和�
       applications.list(fixture.collaborator, fixture.annotationFileId, { cursor: "bad" }),
       hasStatus(400),
     );
+    await assert.rejects(
+      candidates.list(fixture.collaborator, fixture.annotationFileId, { cursor: "bad" }),
+      hasStatus(400),
+    );
+    await assert.rejects(
+      candidates.list(fixture.collaborator, fixture.annotationFileId, { limit: 21 }),
+      hasStatus(400),
+    );
+    const candidateCursorValue = JSON.parse(Buffer.from(
+      newestCandidatePage.nextCursor!,
+      "base64url",
+    ).toString("utf8"));
+    candidateCursorValue.fileId = randomUUID();
+    await assert.rejects(
+      candidates.list(fixture.collaborator, fixture.annotationFileId, {
+        cursor: Buffer.from(JSON.stringify(candidateCursorValue), "utf8").toString("base64url"),
+      }),
+      hasStatus(400),
+    );
+    // 资源 ACL 不会因进入回收站自动消失；候选服务仍须在业务边界单独拒绝非活动文件。
+    await prisma.resourceEntry.update({
+      where: { id: fixture.annotationFileId },
+      data: { trashedAt: new Date() },
+    });
+    await assert.rejects(
+      candidates.list(fixture.collaborator, fixture.annotationFileId, { limit: 1 }),
+      hasStatus(404),
+    );
+    await prisma.resourceEntry.update({
+      where: { id: fixture.annotationFileId },
+      data: { trashedAt: null },
+    });
     const cursorValue = JSON.parse(Buffer.from(firstPage.nextCursor!, "base64url").toString("utf8"));
     cursorValue.annotationFileId = randomUUID();
     await assert.rejects(
@@ -149,6 +212,83 @@ test("强制对齐应用原子写入真实 operation，并支持幂等重放和�
     assert.equal((await prisma.annotationFile.findUniqueOrThrow({
       where: { resourceId: fixture.annotationFileId },
     })).revision, 4);
+
+    // 旧 prediction manifest 没有质量摘要仍可成为候选，但必须明确报告 missing，不能填充零分。
+    const runWithArtifact = await prisma.alignmentRun.findUniqueOrThrow({
+      where: { id: fixture.runId },
+      include: { artifacts: true },
+    });
+    const predictionArtifact = runWithArtifact.artifacts[0]!;
+    const manifest = runWithArtifact.manifest as Record<string, unknown>;
+    await prisma.alignmentRun.update({
+      where: { id: fixture.runId },
+      data: { manifest: {
+        version: 1,
+        formatVersion: predictionArtifact.formatVersion,
+        artifactId: predictionArtifact.id,
+        sentenceCount: 1,
+        characterCount: 2,
+        compressedSize: Number(predictionArtifact.size),
+        uncompressedSize: manifest.uncompressedSize as number,
+        checksum: predictionArtifact.checksum,
+      } },
+    });
+    assert.equal(
+      (await candidates.list(fixture.collaborator, fixture.annotationFileId, { limit: 1 }))
+        .items[0]?.predictionSummaryState,
+      "missing",
+    );
+
+    // 扫描最多保留最新 500 条；窗口下界落在更早 revision 时只能报告 partial。
+    await prisma.annotationOperation.createMany({
+      data: Array.from({ length: 501 }, (_, index) => ({
+        annotationFileId: fixture.annotationFileId,
+        actorUserId: fixture.user.id,
+        clientOperationId: `candidate-cap-${String(index).padStart(4, "0")}`,
+        requestHash: String(index + 1).padStart(64, "0"),
+        sequence: index + 4,
+        baseRevision: index + 4,
+        localRevision: null,
+        action: manual.command.type,
+        payload: manual,
+        status: "accepted" as const,
+        committedRevision: index + 5,
+        committedAt: new Date(),
+      })),
+    });
+    await prisma.annotationFile.update({
+      where: { resourceId: fixture.annotationFileId },
+      data: { revision: 505 },
+    });
+    const partialCandidate = (await candidates.list(
+      fixture.collaborator,
+      fixture.annotationFileId,
+      { limit: 1 },
+    )).items[0]!;
+    assert.equal(partialCandidate.evidenceState, "partial");
+    assert.equal(partialCandidate.manualTiming.operationCount, 500);
+
+    await prisma.alignmentApplication.update({
+      where: { id: second.id },
+      data: { operationCount: 99 },
+    });
+    await assert.rejects(
+      candidates.list(fixture.collaborator, fixture.annotationFileId, { limit: 1 }),
+      hasConflictCode("alignment_training_candidate_incomplete"),
+    );
+    await prisma.resourcePermission.update({
+      where: {
+        resourceId_userId: {
+          resourceId: fixture.annotationFileId,
+          userId: fixture.collaborator.id,
+        },
+      },
+      data: { capabilities: [] },
+    });
+    await assert.rejects(
+      candidates.list(fixture.collaborator, fixture.annotationFileId, { limit: 1 }),
+      hasStatus(403),
+    );
   });
 });
 
@@ -342,6 +482,7 @@ async function createFixture(
       storage,
       commandCommits,
     ),
+    candidates: new AlignmentTrainingCandidateService(prisma, access),
     commandCommits,
     publishedRevisions,
     fixture: {

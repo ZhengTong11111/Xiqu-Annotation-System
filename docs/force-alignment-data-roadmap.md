@@ -210,7 +210,7 @@ annotationOperationId / committedRevision / details
   App 的 prediction apply busy、文档 dirty、autosave、IndexedDB、undo 或 leave protection。专项质量 11/11、应用 11/11、原子保存
   34/34、完整 API 336/336 与完整构建通过；应用内浏览器停在登录页，因此未伪造登录态视觉点击验收。未部署生产。
 
-#### FA-D3b：困难样本派生与有界选择（进行中）
+#### FA-D3b：困难样本派生与有界选择（已完成）
 
 - 从 prediction manifest、application、后续 timing operation 和质量评价派生置信度、模型分歧、人工改动量与明确异常原因；
   不复制 ProjectData、命令正文或声学矩阵，不把“没有继续修改”自动当成正确。
@@ -231,7 +231,7 @@ annotationOperationId / committedRevision / details
 - 摘要/worker 15/15、application 11/11、quality 11/11、完整 API 336/336 和完整构建通过。回归暴露既有 stale claim 测试与 20ms
   heartbeat 的时钟竞争，夹具改为向公开 `recoverStaleJobs(now)` 注入确定观察时间，没有放宽产品恢复逻辑。未部署生产。
 
-##### FA-D3b2：Application 观察窗口与候选 API（下一阶段）
+##### FA-D3b2：Application 观察窗口与候选 API（已完成）
 
 - 以 application committed revision 到下一次 application committed revision 形成互不重叠观察窗口；最新 application 的上界是当前文件
   revision。只统计窗口内非 application 绑定的逐字 timing operation，并显式报告 operation 扫描是否截断；后续再次应用模型不能伪装
@@ -239,8 +239,17 @@ annotationOperationId / committedRevision / details
 - 文件级候选接口每次重新要求 `read`，使用文件绑定 keyset 和小页；一批 application 共用一次有界 operation 扫描和当前评价读取，
   不逐 application 查询。返回预测摘要、人工修改数量/边界改变量、当前有限评价与 observation revision，不返回 operation payload、
   prediction、ProjectData、正文或媒体事实。没有修改或评价只能标为 `unrated`，绝不能自动判定正确。
+- 已实现 `AlignmentTrainingCandidateService` 与维护只读 GET：application 每页默认 10、最多 20，cursor 同时绑定文件、行锚点和下一页
+  观察上界；最新 application 观察到查询时文件 revision，旧 application 观察到下一次 application revision。关系错配、同 revision
+  含糊顺序、坏/跨文件 cursor、已归档/回收文件和 ACL 撤销均 fail closed。
+- 每页只扫描一次最多 500+1 条 operation；所有带 `alignmentApplicationId` 的自动应用操作都不算人工调整。严格逐字 timing 聚合使用
+  微秒整数，其他普通命令只形成 document drift；畸形 timing 和截断窗口分别返回 `invalid`/`partial`。当前评价每 application 最多读取
+  500 条，超限同样明确 partial；旧 manifest 报告 `missing`，不下载 prediction 或填零。
+- Shared DTO 只有 application/run/artifact 身份、revision 窗口、固定预测摘要、人工调整/评价聚合、有限 signals 和 evidence 状态；没有
+  actor、assessor、operation id/payload、正文、文件名、媒体或 storage/request 身份。application 专项 11/11、worker 15/15、quality
+  11/11、原子保存 34/34、完整 API 336/336 和完整构建通过；本轮没有 schema/migration、业务写入、前端 owner 或生产部署。
 
-#### FA-D3c：冻结训练 manifest 与安全导出
+#### FA-D3c：冻结训练 manifest 与安全导出（下一阶段）
 
 - 导出冻结的 run、application、评价和目标 operation revision，生成带 checksum 的 manifest；训练输入通过受保护对象引用解析，
   浏览器和 CSV 不接收预测正文、ProjectData、临时媒体 URL 或凭据。

@@ -10904,3 +10904,43 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 自审确认阈值唯一、无浮点 manifest、无 N+1/旧对象读取、无重复类型、无僵尸发布路径，复杂统计和兼容边界有中文注释。
   **已完成**：FA-D3b1。**待推进**：FA-D3b2 用 application revision 窗口、有界非应用 operation 扫描和当前有限评价派生候选信号；
   没有人工修改/评价不得自动标为正确。本轮未部署生产、未修改生产数据。
+
+## 2026-09-02：FA-D3b2 Application 观察窗口与困难样本候选 API
+
+### 开发前保存阻断复核
+
+- 用户反馈上一轮后文件无法保存，因此先暂停 D3b2 扩展。开发库 readiness、41 条 migration 和最近同步失败审计均重新核对；最近
+  `annotation_client_sync_failure` 仍停在 00:48 的既有 `internal_error`，对应旧副本后来已进入回收站，没有出现本轮候选代码导致的
+  新保存失败。该历史故障已确认来自旧 API/Prisma Client 与已升级开发库失配，而非 timing command、权限或浏览器网络。
+- 在活动专用验证副本 `929ab9dd-72ba-4231-b216-88ab3e78c7ad` 通过真实 HTTP 登录和 command-batch，把一个逐字起点临时移动
+  1ms 后提交严格反向命令；两次均返回 200，revision `v6 -> v7 -> v8`，最终 ProjectData 起止时间与验证前完全一致。验证只增加
+  两条测试 revision/operation/audit，不触碰用户真实文件或 IndexedDB 草稿。D3b2 构建完成并重启同版本 API 后又执行一次
+  `v8 -> v9 -> v10` 往返，仍完整还原；新候选 GET 同时返回 200。普通原子保存专项随后 34/34 通过。
+
+### 候选窗口、容量与数据最小化
+
+- 新增唯一 `AlignmentTrainingCandidateService`。application 按 `(committedRevision,id)` 倒序 keyset；cursor 绑定文件、当前行和下一页
+  首项观察上界。最新 application 的窗口上界冻结为查询时文件 revision，旧 application 使用下一次 application revision，形成
+  `(committedRevision, observationEndRevision]` 的相邻窗口。坏/跨文件/倒置/超大 cursor、同 revision 含糊顺序、run/artifact/file
+  snapshot 或 operation count 破损均明确拒绝。
+- 一页默认 10、最多 20 个 application，只执行一次最多 500+1 行的 operation 扫描。带 `alignmentApplicationId` 的再次自动应用只
+  消耗扫描容量，不计为人工修订；普通逐字 timing 以严格 parser 聚合 operation 数、去重字符数及 start/end 绝对微秒改变量，其他
+  command 只标记 document drift。扫描下界不完整为 `partial`，timing payload 畸形为 `invalid`，不会把缺失数据伪装成零修改。
+- 当前评价每 application 最多读取 500 条，并通过关系 count 判断截断；超限与 operation 截断共用明确 `partial`。Prediction 只读取
+  D3b1 manifest 摘要，旧 manifest 为 `missing`、坏摘要为 `invalid`，不访问对象存储。固定 signals 只来自可证明事实；无人工修改、
+  无负面评价且无预测信号时保持 `unrated`，绝不自动判定正确。
+- 公开 DTO 仅含 application/run/artifact 身份、revision 窗口、固定摘要、人工 timing/当前评价聚合、有限 signals/evidence 状态和 opaque
+  cursor；不含 actor/assessor、operation id/payload、正文、文件名、媒体、storage key、request hash 或自由 JSON。每次读取重新要求
+  当前文件 `read`，并单独拒绝归档/回收资源；没有前端 owner、轮询、schema/migration、ProjectData 或任何业务事实写入。
+
+### 测试、自审与状态
+
+- 复用真实 application/operation/assessment PostgreSQL 夹具，覆盖相邻分页窗口、自动应用排除、人工微秒聚合、旧 manifest、501 行
+  截断、limit、坏/跨文件 cursor、关系破损和 ACL 撤销，避免复制第二套大型夹具。`test:force-alignment-application` 11/11、worker
+  15/15、quality 11/11、平台原子保存 34/34、完整 API 336/336、完整 `npm run build` 与 `git diff --check` 通过。
+- 自审确认没有对象存储 N+1、逐 application 查询、无界评价展开、角色权限替代、自动正确推断、第二保存器、僵尸 UI 或新依赖；复杂
+  cursor、观察窗口、有限扫描和资源生命周期边界均有中文功能注释。只保留既有 Vite 大 chunk 提示和 pg adapter 并发 query
+  deprecation warning。
+- **已完成**：FA-D3b2 与整个 FA-D3b。**待推进**：FA-D3c 冻结训练 manifest、安全对象引用、group split、管理员有界任务/导出、
+  取消和失败补偿；开始前必须重写 `CLAUDE_WORK.md` 并先确认不会把正文、ProjectData 或临时媒体 URL 放入浏览器/CSV。本轮未部署
+  生产、未启用真实模型，也未修改生产数据。

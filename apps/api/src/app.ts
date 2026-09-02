@@ -64,6 +64,7 @@ import { AnnotationToolAttemptService } from "./annotationToolAttemptService.js"
 import { AlignmentRunService } from "./alignmentRunService.js";
 import { AlignmentApplicationService } from "./alignmentApplicationService.js";
 import { AlignmentQualityAssessmentService } from "./alignmentQualityAssessmentService.js";
+import { AlignmentTrainingCandidateService } from "./alignmentTrainingCandidateService.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -198,6 +199,10 @@ export async function buildApiApp(
     annotationCommandCommits,
   );
   const alignmentQualityAssessments = new AlignmentQualityAssessmentService(
+    options.prisma,
+    access,
+  );
+  const alignmentTrainingCandidates = new AlignmentTrainingCandidateService(
     options.prisma,
     access,
   );
@@ -336,6 +341,7 @@ export async function buildApiApp(
     alignmentRuns,
     alignmentApplications,
     alignmentQualityAssessments,
+    alignmentTrainingCandidates,
     processingJobs,
     processingJobCommands,
     mediaAudioTracks,

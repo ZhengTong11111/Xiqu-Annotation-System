@@ -1,22 +1,12 @@
 import type { AlignmentPredictionArtifact } from "./alignmentPrediction.js";
+import {
+  ALIGNMENT_CLOSE_ALTERNATIVE_GAP_PPM,
+  ALIGNMENT_LOW_CONFIDENCE_PPM,
+  ALIGNMENT_QUALITY_CONFIDENCE_SCALE,
+  type AlignmentPredictionQualitySummary,
+} from "@xiqu/shared";
 
-export const ALIGNMENT_QUALITY_CONFIDENCE_SCALE = 1_000_000;
-export const ALIGNMENT_LOW_CONFIDENCE_PPM = 600_000;
-export const ALIGNMENT_CLOSE_ALTERNATIVE_GAP_PPM = 100_000;
-
-export type AlignmentPredictionQualitySummary = {
-  version: 1;
-  sentenceCount: number;
-  characterCount: number;
-  sentenceConfidenceMeanPpm: number | null;
-  sentenceConfidenceMinPpm: number | null;
-  characterConfidenceMeanPpm: number | null;
-  characterConfidenceMinPpm: number | null;
-  lowConfidenceCharacterCount: number;
-  alternativeCandidateCharacterCount: number;
-  closeAlternativeCharacterCount: number;
-  maxAlternativeBoundaryDeltaMicros: number;
-};
+export type { AlignmentPredictionQualitySummary } from "@xiqu/shared";
 
 /**
  * 发布期只保留固定整数统计，避免候选查询反复下载预测对象，也不把实体身份或候选数组复制进数据库。

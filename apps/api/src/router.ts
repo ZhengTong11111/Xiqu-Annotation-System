@@ -47,6 +47,7 @@ import type { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
 import type { AlignmentRunService } from "./alignmentRunService.js";
 import type { AlignmentApplicationService } from "./alignmentApplicationService.js";
 import type { AlignmentQualityAssessmentService } from "./alignmentQualityAssessmentService.js";
+import type { AlignmentTrainingCandidateService } from "./alignmentTrainingCandidateService.js";
 import type { ProcessingJobQueryService } from "./processingJobQueryService.js";
 import type { ProcessingJobCommandService } from "./processingJobCommandService.js";
 import type { MediaAudioTrackService } from "./mediaAudioTrackService.js";
@@ -142,6 +143,7 @@ export function registerApiRoutes(
   alignmentRuns: AlignmentRunService,
   alignmentApplications: AlignmentApplicationService,
   alignmentQualityAssessments: AlignmentQualityAssessmentService,
+  alignmentTrainingCandidates: AlignmentTrainingCandidateService,
   processingJobs: ProcessingJobQueryService,
   processingJobCommands: ProcessingJobCommandService,
   mediaAudioTracks: MediaAudioTrackService,
@@ -705,6 +707,22 @@ export function registerApiRoutes(
     "/api/annotation-files/:resourceId/alignment-applications",
     MAINTENANCE_READ_ROUTE,
     async (request) => alignmentApplications.list(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      {
+        cursor: normalizedString(request.query.cursor),
+        limit: request.query.limit === undefined ? undefined : Number(request.query.limit),
+      },
+    ),
+  );
+
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { cursor?: string; limit?: string };
+  }>(
+    "/api/annotation-files/:resourceId/alignment-training-candidates",
+    MAINTENANCE_READ_ROUTE,
+    async (request) => alignmentTrainingCandidates.list(
       await getCurrentUser(repository, request),
       request.params.resourceId,
       {
