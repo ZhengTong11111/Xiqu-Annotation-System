@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  MAX_ALIGNMENT_TRAINING_EXPORT_APPLICATIONS,
   parseApplyAlignmentRunRequest,
   parseCreateAlignmentRunRequest,
   parseCreateAlignmentResearchGroupRequest,
+  parseCreateAlignmentTrainingExportRequest,
   parseReplaceProjectAlignmentResearchGroupsRequest,
   parseUpsertAlignmentQualityAssessmentRequest,
 } from "../dist/index.js";
@@ -100,4 +102,44 @@ test("项目研究分组完整集合要求 revision、规范 UUID、去重和固
     groupIds: [input.groupIds[0], input.groupIds[0]],
   }).success, false);
   assert.equal(parseReplaceProjectAlignmentResearchGroupsRequest({ ...input, mode: "merge" }).success, false);
+});
+
+test("训练冻结请求严格限制 application、seed 与切分比例", () => {
+  const input = {
+    clientActionId: "aaaaaaaa-0000-4000-8000-000000000001",
+    applicationIds: [
+      "aaaaaaaa-0000-4000-8000-000000000003",
+      "aaaaaaaa-0000-4000-8000-000000000002",
+    ],
+    splitSeedHash: "a".repeat(64),
+    splitRatios: { train: 8_000, validation: 1_000, test: 1_000 },
+  };
+  assert.deepEqual(parseCreateAlignmentTrainingExportRequest(input), {
+    success: true,
+    data: { ...input, applicationIds: input.applicationIds.toSorted() },
+  });
+  assert.equal(parseCreateAlignmentTrainingExportRequest({ ...input, note: "禁止自由字段" }).success, false);
+  assert.equal(parseCreateAlignmentTrainingExportRequest({
+    ...input,
+    applicationIds: [input.applicationIds[0], input.applicationIds[0]],
+  }).success, false);
+  assert.equal(parseCreateAlignmentTrainingExportRequest({
+    ...input,
+    applicationIds: Array.from(
+      { length: MAX_ALIGNMENT_TRAINING_EXPORT_APPLICATIONS + 1 },
+      (_, index) => `aaaaaaaa-0000-4000-8000-${String(index).padStart(12, "0")}`,
+    ),
+  }).success, false);
+  assert.equal(parseCreateAlignmentTrainingExportRequest({
+    ...input,
+    splitSeedHash: "A".repeat(64),
+  }).success, false);
+  assert.equal(parseCreateAlignmentTrainingExportRequest({
+    ...input,
+    splitRatios: { train: 8_000, validation: 1_000, test: 999 },
+  }).success, false);
+  assert.equal(parseCreateAlignmentTrainingExportRequest({
+    ...input,
+    splitRatios: { ...input.splitRatios, holdout: 0 },
+  }).success, false);
 });

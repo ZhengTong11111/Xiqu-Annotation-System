@@ -153,6 +153,12 @@ export type ListAlignmentTrainingCandidatesOptions = {
 export const ALIGNMENT_RESEARCH_GROUP_KINDS = ["work", "performer"] as const;
 export const MAX_PROJECT_ALIGNMENT_RESEARCH_GROUPS = 64;
 export const MAX_ALIGNMENT_RESEARCH_GROUP_DISPLAY_NAME_LENGTH = 120;
+export const MAX_ALIGNMENT_TRAINING_EXPORT_APPLICATIONS = 200;
+export const DEFAULT_ALIGNMENT_TRAINING_EXPORT_SPLIT_RATIOS = {
+  train: 8_000,
+  validation: 1_000,
+  test: 1_000,
+} as const;
 export type AlignmentResearchGroupKind = typeof ALIGNMENT_RESEARCH_GROUP_KINDS[number];
 
 export type AlignmentResearchGroupSummary = {
@@ -191,8 +197,37 @@ export type ReplaceProjectAlignmentResearchGroupsRequest = {
   groupIds: string[];
 };
 
+export type AlignmentTrainingExportSplitRatios = {
+  train: number;
+  validation: number;
+  test: number;
+};
+
+export type CreateAlignmentTrainingExportRequest = {
+  clientActionId: string;
+  applicationIds: string[];
+  splitSeedHash: string;
+  splitRatios: AlignmentTrainingExportSplitRatios;
+};
+
+export type AlignmentTrainingExportSummary = {
+  id: string;
+  manifestChecksum: string;
+  sampleCount: number;
+  componentCount: number;
+  splitCounts: Record<"train" | "validation" | "test", {
+    items: number;
+    components: number;
+  }>;
+  createdAt: string;
+};
+
 export type AlignmentResearchGroupRequestValidationResult<T> =
   | { success: true; data: T }
+  | { success: false; message: string };
+
+export type AlignmentTrainingExportRequestValidationResult =
+  | { success: true; data: CreateAlignmentTrainingExportRequest }
   | { success: false; message: string };
 
 export const ALIGNMENT_QUALITY_ASSESSMENT_SCOPES = ["editor", "reviewer"] as const;
@@ -417,6 +452,75 @@ export function parseReplaceProjectAlignmentResearchGroupsRequest(
       expectedRevision: value.expectedRevision as number,
       groupIds: [...value.groupIds].sort(),
     },
+  };
+}
+
+/**
+ * 冻结请求只允许显式 application、哈希后的 split seed 与有限整数比例。
+ * application 排序后进入幂等 hash，避免不同客户端选择顺序制造重复导出事实。
+ */
+export function parseCreateAlignmentTrainingExportRequest(
+  value: unknown,
+): AlignmentTrainingExportRequestValidationResult {
+  if (!isPlainObject(value)) return { success: false, message: "训练导出冻结请求格式不正确。" };
+  const expectedKeys = ["clientActionId", "applicationIds", "splitSeedHash", "splitRatios"];
+  const keys = Object.keys(value);
+  if (keys.length !== expectedKeys.length || expectedKeys.some((key) => !keys.includes(key))) {
+    return { success: false, message: "训练导出冻结请求包含缺失或未支持的字段。" };
+  }
+  if (typeof value.clientActionId !== "string" || !isCanonicalUuid(value.clientActionId)) {
+    return { success: false, message: "clientActionId 必须是规范小写 UUID。" };
+  }
+  if (
+    !Array.isArray(value.applicationIds) ||
+    value.applicationIds.length < 1 ||
+    value.applicationIds.length > MAX_ALIGNMENT_TRAINING_EXPORT_APPLICATIONS
+  ) {
+    return {
+      success: false,
+      message: `applicationIds 必须包含 1 到 ${MAX_ALIGNMENT_TRAINING_EXPORT_APPLICATIONS} 项。`,
+    };
+  }
+  if (value.applicationIds.some((id) => typeof id !== "string" || !isCanonicalUuid(id))) {
+    return { success: false, message: "applicationIds 必须全部是规范小写 UUID。" };
+  }
+  if (new Set(value.applicationIds).size !== value.applicationIds.length) {
+    return { success: false, message: "applicationIds 不能包含重复项。" };
+  }
+  if (typeof value.splitSeedHash !== "string" || !/^[0-9a-f]{64}$/u.test(value.splitSeedHash)) {
+    return { success: false, message: "splitSeedHash 必须是小写 SHA-256。" };
+  }
+  const splitRatios = parseAlignmentTrainingSplitRatios(value.splitRatios);
+  if (!splitRatios) {
+    return { success: false, message: "splitRatios 必须只含 train/validation/test，且非负整数总和为 10000。" };
+  }
+  return {
+    success: true,
+    data: {
+      clientActionId: value.clientActionId,
+      applicationIds: [...value.applicationIds].sort(),
+      splitSeedHash: value.splitSeedHash,
+      splitRatios,
+    },
+  };
+}
+
+function parseAlignmentTrainingSplitRatios(value: unknown): AlignmentTrainingExportSplitRatios | null {
+  if (!isPlainObject(value)) return null;
+  const expectedKeys = ["train", "validation", "test"];
+  const keys = Object.keys(value);
+  if (keys.length !== expectedKeys.length || expectedKeys.some((key) => !keys.includes(key))) return null;
+  const ratios = expectedKeys.map((key) => value[key]);
+  let total = 0;
+  for (const ratio of ratios) {
+    if (!Number.isInteger(ratio) || Number(ratio) < 0 || Number(ratio) > 10_000) return null;
+    total += Number(ratio);
+  }
+  if (total !== 10_000) return null;
+  return {
+    train: Number(value.train),
+    validation: Number(value.validation),
+    test: Number(value.test),
   };
 }
 

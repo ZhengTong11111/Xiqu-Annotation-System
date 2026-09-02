@@ -11030,3 +11030,46 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 42 号 migration 已仅应用到本机开发 public schema，随后按 AGENTS 重启 API；4317 readiness 返回 database/storage ready。**已完成**：
   FA-D3c2a。**待推进**：FA-D3c2b 在有界事务中重验选中 application、观察窗口 operation、当前评价、artifact 和项目 work/performer
   分组，使用 D3c1 planner 保存不可变 manifest/item/group snapshot。本轮未部署生产、未修改生产标注数据。
+
+## 2026-09-02：FA-D3c2b 候选复核与不可变训练冻结
+
+### 冻结合同、统一证据与数据边界
+
+- 新增 strict `CreateAlignmentTrainingExportRequest`：一次显式选择 1..200 个规范 application UUID，携带浏览器动作 UUID、SHA-256
+  seed 摘要和总和严格为 10000 的整数切分比例。Parser 拒绝额外字段、重复/超量选择、非规范 UUID、坏 hash 和含糊比例，并先排序再
+  计算请求摘要；模糊 HTTP 重试必须复用同一动作 UUID，不能把请求到达次数当成导出身份。
+- 候选页和冻结事务现共用纯 `alignmentTrainingEvidence` helper，统一派生人工 timing operation 数、去重字数、边界绝对改变量、prediction
+  摘要状态、当前评价与有限 signals。旧候选服务中重复的派生实现已删除；冻结不能相信浏览器候选 DTO，也不能维护第二套证据算法。
+- 第 43 条 migration 只追加 target/split enum、有限 audit action、export/item/group 三张不可变事实表及索引/FK/check。Export 保存
+  canonical manifest/checksum 与切分统计；item 保存 application/run/artifact/file/project/revision 及 manifest item snapshot；group
+  保存冻结时稳定 identity/kind/displayName。快照身份故意不以外键追随以后可解绑/改名的 application、project 或研究分组关系。
+- 冻结事实不含 ProjectData、正文、operation payload、prediction/audio 内容、媒体 URL、storage key、账号显示信息、凭据或自由 JSON；
+  本阶段也不创建 ProcessingJob、导出对象、前端轮询 owner 或下载入口。
+
+### 权威事务、幂等与并发
+
+- 新增唯一 `AlignmentTrainingExportService`。事务按 actor action advisory lock、研究分组 catalog lock、共享资源树锁的顺序执行，再重读
+  admin/super_admin 完整资源能力、全部显式 application、run/artifact/revision 关系、活动文件和最近项目、项目分组 revision、最多 500
+  条 operation 观察窗口及最多 500 条当前评价。缺失/失活/关系漂移、partial、invalid、unrated、unusable、缺 work 或 performer、planner
+  issue 均整批阻断且零落库。
+- 成功路径在同一个 Serializable 事务调用 D3c1 planner，写入 export、item/group snapshots 与有限审计；前后 annotation payload/revision、
+  operation、recovery snapshot、确认/评论/反馈和 workflow 状态不变。相同账号、相同 action/request 返回同一冻结事实；同 action 改语义
+  稳定 409。
+- 并发同 action 集成测试真实暴露 PostgreSQL Serializable 旧快照被 Prisma 报为 `P2034`。修复没有扩大成通用重试：仅 `P2034` 最多
+  三次重新打开完整事务，使后来事务可看见先提交的幂等事实；ACL、生命周期、数据完整性、planner 和其他数据库错误原样失败。并发与
+  顺序重放均只产生一份 export 和一条审计。
+
+### 保存复核、迁移与验证
+
+- 用户此前报告文件无法保存，本阶段开始前已用真实 HTTP 严格 timing command 和反向 command 证明专用本机文件可连续保存并完整还原；
+  根因是旧长驻 API/Prisma/shared 产物与已迁移开发库失配。D3c2b 完成后普通平台原子保存专项再次 34/34，冻结路由没有进入编辑器保存、
+  autosave、IndexedDB、undo/history、lease 或协作 revision 链路。
+- Shared/manifest/请求合同 15/15，冻结 schema/service 5/5；application、quality 和候选回归通过，完整 API 346/346，完整生产构建和
+  `git diff --check` 通过。只保留既有 Vite 主 chunk 提示和 pg adapter 并发 query deprecation warning，没有新增依赖。
+- 第 43 条 migration 只应用到本机 `localhost:54329/xiqu_platform` 开发库，状态 43/43；重新生成 Prisma Client、构建 shared/document-model
+  并重启本地 API 后，4317 readiness 的 database/storage 均为 ready。严格冻结路由已由本机进程加载；没有连接、迁移或部署生产服务器，
+  没有创建真实训练导出或修改生产数据。
+- 自审确认无对象存储读取/N+1、无无界列表、无第二保存器、无候选缓存授权、无从文件名/路径/职责组猜研究身份、无重复证据逻辑和僵尸
+  调试代码；事务/容量/并发边界均有中文功能注释。**已完成**：FA-D3c2b 与整个 FA-D3c2。**待推进**：FA-D3c3 复用现有
+  ProcessingJob/任务中心建立后台导出 adapter、staged 对象校验、claim-fenced 原子发布、取消与失败补偿；开始前重新审查冻结表、对象
+  生命周期和现有 job 扩展点并重写 `CLAUDE_WORK.md`。未经用户明确要求不得部署生产。

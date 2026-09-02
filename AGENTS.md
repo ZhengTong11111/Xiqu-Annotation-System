@@ -231,6 +231,12 @@ Main currently contains all major recent feature lines that matter for context:
   same-target retry settlement and stale-target rejection. Reads require current project `read`; search/create/replace require current
   `manage_permissions` rechecked after the service lock. Project copy starts at revision zero with no research groups, and ordinary ACL,
   workflow responsibility groups, resource names/paths and role labels must never create, infer, rename or remove research identities
+- force-alignment training evidence is derived only by the pure `alignmentTrainingEvidence` helper shared by candidate queries and
+  immutable export freezes. `AlignmentTrainingExportService` must lock the actor action, research-group catalog and resource tree before
+  rereading every selected application, active file/project, observation window, current assessment and work/performer assignment in one
+  bounded Serializable transaction. It stores only canonical manifest and item/group provenance snapshots; it must never mutate document,
+  operation, snapshot, review or workflow facts, create a ProcessingJob, infer groups, or persist prediction/audio content. Identical
+  concurrent actions may reopen a fresh transaction only for Prisma `P2034`, with a strict retry bound; other errors are not retryable
 - force-alignment tool attempts are a lightweight governance/training side table, never ProjectData or document history. Their
   administrator CSV is generated only by the API after fresh full-resource authorization, accepts at most a 90-day half-open
   window, reads in bounded batches, exports at most 10,000 rows with an explicit truncation header, and uses the shared CSV
@@ -464,6 +470,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     client-UUID create idempotency, project revision settlement, current ACL rechecks and finite audit facts
   - groups are global reusable identities but display names are not identity. Creation and project assignment stay separate so a delayed
     create retry cannot resurrect an unlinked group; no API may infer groups from resource metadata or copy project assignments
+- `apps/api/src/alignmentTrainingEvidence.ts` + `apps/api/src/alignmentTrainingExportService.ts`
+  - the shared pure evidence derivation and the only immutable training-freeze write boundary. Candidate display and freeze validation
+    must use the same timing/assessment aggregation rather than drifting into duplicate algorithms
+  - freeze requests contain only a bounded explicit application set, seed hash and exact split ratios. The service rechecks current
+    authority and all provenance under shared catalog/resource locks, invokes the document-model planner and stores finite snapshots;
+    later object-export work must consume these frozen facts instead of rereading mutable candidate UI state
+  - the actor-scoped action UUID is the idempotency identity. Serializable `P2034` may be retried at most three times so a concurrent
+    identical action can observe the winning commit; validation, ACL, lifecycle, planner and storage errors must never enter that retry
 - `src/platform/AlignmentRunsDialog.tsx`
   - low-frequency bounded run history and explicit apply confirmation; an ambiguous retry reuses its session action UUID
   - the editor blocks new mutations from request start through authoritative refetch. The dialog must never apply prediction timing locally

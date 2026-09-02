@@ -619,6 +619,7 @@ export const AUDIT_ACTIONS = [
   "alignment_quality_assessment_upsert",
   "alignment_research_group_create",
   "project_alignment_research_groups_update",
+  "alignment_training_export_freeze",
   "annotation_workflow_status_update",
   "project_workflow_groups_update",
   "annotation_client_sync_failure",

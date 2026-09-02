@@ -11,6 +11,7 @@ import {
   parseAnnotationToolAttemptBatchRequest,
   parseApplyAlignmentRunRequest,
   parseCreateAlignmentResearchGroupRequest,
+  parseCreateAlignmentTrainingExportRequest,
   parseCreateAlignmentRunRequest,
   parseReplaceProjectAlignmentResearchGroupsRequest,
   parseUpsertAlignmentQualityAssessmentRequest,
@@ -51,6 +52,7 @@ import type { AlignmentApplicationService } from "./alignmentApplicationService.
 import type { AlignmentQualityAssessmentService } from "./alignmentQualityAssessmentService.js";
 import type { AlignmentTrainingCandidateService } from "./alignmentTrainingCandidateService.js";
 import type { AlignmentResearchGroupService } from "./alignmentResearchGroupService.js";
+import type { AlignmentTrainingExportService } from "./alignmentTrainingExportService.js";
 import type { ProcessingJobQueryService } from "./processingJobQueryService.js";
 import type { ProcessingJobCommandService } from "./processingJobCommandService.js";
 import type { MediaAudioTrackService } from "./mediaAudioTrackService.js";
@@ -148,6 +150,7 @@ export function registerApiRoutes(
   alignmentQualityAssessments: AlignmentQualityAssessmentService,
   alignmentTrainingCandidates: AlignmentTrainingCandidateService,
   alignmentResearchGroups: AlignmentResearchGroupService,
+  alignmentTrainingExports: AlignmentTrainingExportService,
   processingJobs: ProcessingJobQueryService,
   processingJobCommands: ProcessingJobCommandService,
   mediaAudioTracks: MediaAudioTrackService,
@@ -702,6 +705,18 @@ export function registerApiRoutes(
       return alignmentResearchGroups.replaceProjectGroups(
         await getCurrentUser(repository, request),
         request.params.resourceId,
+        parsed.data,
+      );
+    },
+  );
+
+  app.post<{ Body: unknown }>(
+    "/api/alignment-training-exports",
+    async (request) => {
+      const parsed = parseCreateAlignmentTrainingExportRequest(request.body);
+      if (!parsed.success) throw badRequest(parsed.message);
+      return alignmentTrainingExports.freeze(
+        await getCurrentUser(repository, request),
         parsed.data,
       );
     },

@@ -272,7 +272,7 @@ annotationOperationId / committedRevision / details
   上界 revision；unusable/unrated/partial/invalid 全部拒绝。专项 9/9、worker 15/15、application 11/11、quality 11/11、原子保存
   34/34、完整 API 336/336、完整构建和 diff check 通过。本阶段没有 migration、业务写入、对象访问、生产部署或新依赖。
 
-##### FA-D3c2：权威研究分组元数据与冻结事务（进行中）
+##### FA-D3c2：权威研究分组元数据与冻结事务（已完成）
 
 - 当前 `ProjectMetadata` 只有 description，不能支撑研究切分。以 additive schema/API 增加有限、稳定、可审计的剧目/演员分组身份；
   显示名称与稳定 identity 分离，移动/重命名资源不改变 identity。只有项目管理权限可编辑，导出时事务内重读并冻结 identity 摘要。
@@ -292,14 +292,23 @@ annotationOperationId / committedRevision / details
 - 第 42 条 migration 只增加 enum、两表、索引/FK/check 与 project revision 默认列；专项 5/5、完整 API 341/341、完整构建和 diff check
   通过。本机开发库已应用并重启 API 验证 ready；未部署生产、未创建 export/job/object、未改写标注或对齐业务事实。
 
-###### FA-D3c2b：候选复核与不可变冻结事务（下一阶段）
+###### FA-D3c2b：候选复核与不可变冻结事务（已完成）
 
 - 在一个有界服务事务中按稳定锁序重读显式 application 选择、当前文件/project/ACL、观察窗口 operation、当前评价、artifact 摘要和
   D3c2a 分组；任一 partial/invalid/unrated/关系漂移/缺 work 或 performer 分组都整批阻断。
 - 使用 D3c1 planner 生成并保存不可变 export request、canonical manifest/checksum、item/group snapshot 与幂等 action；不改写在线标注
   payload/revision/operation/snapshot/review，也不提前创建 ProcessingJob 或导出对象。
+- 已新增第 43 条纯追加 migration、严格冻结请求和唯一 `AlignmentTrainingExportService`。每次最多选择 200 个 application，operation/
+  assessment 各有明确上限；事务内重新校验全局管理能力、活动资源、最近项目、application/run/artifact/revision、观察窗口、当前评价及
+  work/performer 分组 revision，再调用 D3c1 planner。不存在从候选页缓存、文件名、路径、职责组或账号信息推断训练事实的后门。
+- 冻结表保存 canonical manifest、item/group snapshot 与有限审计，不以外键追随未来可变的 application/project/group 关系。相同账号和
+  action 的并发模糊重试由 advisory lock 收敛；Serializable 事务只对 PostgreSQL/Prisma `P2034` 做最多三次重新打开快照，其他错误原样
+  失败，不能用宽泛重试掩盖业务冲突。
+- 共享合同/manifest 15/15、冻结 schema/service 5/5、application/quality 回归、普通原子保存 34/34、完整 API 346/346、完整构建与
+  diff check 通过。第 43 条 migration 仅应用于本机开发库并重启 API 验证 ready；未部署生产、未创建后台导出任务或大型对象、未改写
+  在线 annotation/operation/snapshot/review/workflow 事实。
 
-##### FA-D3c3：后台导出任务、对象发布与补偿
+##### FA-D3c3：后台导出任务、对象发布与补偿（下一阶段）
 
 - 在现有 ProcessingJob 请求/命令/任务中心中增加训练导出类型和独立 adapter，不创建第二轮询器。Worker 按冻结 manifest 读取受保护
   prediction/audio/目标 revision，staged 后校验 size/SHA，再 claim-fenced 原子发布；取消、陈旧 claim、模糊提交和清理失败沿用现有

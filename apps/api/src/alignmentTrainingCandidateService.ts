@@ -1,16 +1,11 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import {
-  ALIGNMENT_QUALITY_ISSUE_CODES,
-  ALIGNMENT_TRAINING_CANDIDATE_SIGNALS,
-  parseTimelineTimingCommandEnvelope,
-  type AlignmentQualityIssueCode,
-  type AlignmentTrainingCandidate,
   type AlignmentTrainingCandidatePage,
   type ListAlignmentTrainingCandidatesOptions,
 } from "@xiqu/shared";
 import type { ApiUser } from "./domain.js";
 import { badRequest, conflict, notFound } from "./errors.js";
-import { readPredictionQualitySummary } from "./alignmentArtifactMetadata.js";
+import { deriveAlignmentTrainingEvidence } from "./alignmentTrainingEvidence.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
 
 const DEFAULT_LIMIT = 10;
@@ -29,7 +24,7 @@ const CANDIDATE_APPLICATION_INCLUDE = {
   },
   qualityAssessments: {
     where: { supersededAt: null },
-    select: { verdict: true, issueCodes: true },
+    select: { id: true, verdict: true, issueCodes: true },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: MAX_CURRENT_ASSESSMENT_SCAN,
   },
@@ -103,13 +98,20 @@ export class AlignmentTrainingCandidateService {
     const oldestScannedRevision = operations.at(-1)?.committedRevision ?? firstWindowEndRevision;
 
     return {
-      items: page.map((application, index) => deriveCandidate(
-        application,
-        index === 0 ? firstWindowEndRevision : page[index - 1]!.committedRevision,
-        operations,
-        (!operationScanTruncated || application.committedRevision >= oldestScannedRevision) &&
-          application._count.qualityAssessments <= MAX_CURRENT_ASSESSMENT_SCAN,
-      )),
+      items: page.map((application, index) => deriveAlignmentTrainingEvidence({
+        id: application.id,
+        alignmentRunId: application.alignmentRunId,
+        alignmentArtifactId: application.alignmentArtifactId,
+        baseRevision: application.baseRevision,
+        committedRevision: application.committedRevision,
+        createdAt: application.createdAt,
+        runManifest: application.run.manifest,
+        currentAssessments: application.qualityAssessments,
+      },
+      index === 0 ? firstWindowEndRevision : page[index - 1]!.committedRevision,
+      operations,
+      (!operationScanTruncated || application.committedRevision >= oldestScannedRevision) &&
+        application._count.qualityAssessments <= MAX_CURRENT_ASSESSMENT_SCAN).candidate),
       nextCursor: rows.length > limit
         ? encodeCursor(annotationFileId, page.at(-1)!, page.at(-1)!.committedRevision)
         : null,
@@ -120,104 +122,6 @@ export class AlignmentTrainingCandidateService {
 type ApplicationRow = Prisma.AlignmentApplicationGetPayload<{
   include: typeof CANDIDATE_APPLICATION_INCLUDE;
 }>;
-
-type OperationRow = Prisma.AnnotationOperationGetPayload<{
-  select: typeof CANDIDATE_OPERATION_SELECT;
-}>;
-
-function deriveCandidate(
-  application: ApplicationRow,
-  windowEndRevision: number,
-  operations: OperationRow[],
-  scanComplete: boolean,
-): AlignmentTrainingCandidate {
-  // 观察窗口只统计应用之后、下一次应用之前的普通人工操作。
-  const relevant = operations.filter((operation) =>
-    operation.committedRevision !== null &&
-    operation.committedRevision > application.committedRevision &&
-    operation.committedRevision <= windowEndRevision &&
-    operation.alignmentApplicationId === null);
-  const editedCharacters = new Set<string>();
-  let timingOperationCount = 0;
-  let totalBoundaryDeltaMicros = 0;
-  let maxBoundaryDeltaMicros = 0;
-  let documentChanged = false;
-  let invalid = false;
-  for (const operation of relevant) {
-    if (operation.action !== "timeline.items.timing.update") {
-      documentChanged = true;
-      continue;
-    }
-    const envelope = parseTimelineTimingCommandEnvelope(operation.payload);
-    if (!envelope) {
-      invalid = true;
-      continue;
-    }
-    let hasCharacterTiming = false;
-    let hasOtherTiming = false;
-    for (const item of envelope.command.items) {
-      if (item.entityType !== "character") {
-        hasOtherTiming = true;
-        continue;
-      }
-      hasCharacterTiming = true;
-      editedCharacters.add(item.entityId);
-      for (const delta of [
-        Math.abs(item.after.startTime - item.before.startTime),
-        Math.abs(item.after.endTime - item.before.endTime),
-      ]) {
-        const micros = Math.round(delta * 1_000_000);
-        totalBoundaryDeltaMicros += micros;
-        maxBoundaryDeltaMicros = Math.max(maxBoundaryDeltaMicros, micros);
-      }
-    }
-    if (hasCharacterTiming) timingOperationCount += 1;
-    if (hasOtherTiming) documentChanged = true;
-  }
-  if (!Number.isSafeInteger(totalBoundaryDeltaMicros)) invalid = true;
-
-  const prediction = readPredictionQualitySummary(application.run.manifest);
-  const issueSet = new Set<AlignmentQualityIssueCode>();
-  const assessments = { correct: 0, needsAdjustment: 0, unusable: 0 };
-  for (const assessment of application.qualityAssessments) {
-    if (assessment.verdict === "correct") assessments.correct += 1;
-    else if (assessment.verdict === "needs_adjustment") assessments.needsAdjustment += 1;
-    else if (assessment.verdict === "unusable") assessments.unusable += 1;
-    for (const issue of assessment.issueCodes) issueSet.add(issue);
-  }
-  const signals = ALIGNMENT_TRAINING_CANDIDATE_SIGNALS.filter((signal) => {
-    if (signal === "low_prediction_confidence") return prediction.status === "ready" && prediction.summary.lowConfidenceCharacterCount > 0;
-    if (signal === "ambiguous_prediction") return prediction.status === "ready" && prediction.summary.closeAlternativeCharacterCount > 0;
-    if (signal === "manual_timing_adjustment") return !invalid && editedCharacters.size > 0;
-    if (signal === "negative_quality_assessment") return assessments.needsAdjustment + assessments.unusable > 0;
-    return documentChanged;
-  });
-  return {
-    alignmentApplicationId: application.id,
-    alignmentRunId: application.alignmentRunId,
-    alignmentArtifactId: application.alignmentArtifactId,
-    baseRevision: application.baseRevision,
-    committedRevision: application.committedRevision,
-    observationEndRevision: windowEndRevision,
-    createdAt: application.createdAt.toISOString(),
-    predictionSummaryState: prediction.status,
-    predictionSummary: prediction.status === "ready" ? prediction.summary : null,
-    manualTiming: {
-      operationCount: invalid ? 0 : timingOperationCount,
-      editedCharacterCount: invalid ? 0 : editedCharacters.size,
-      totalBoundaryDeltaMicros: invalid ? 0 : totalBoundaryDeltaMicros,
-      maxBoundaryDeltaMicros: invalid ? 0 : maxBoundaryDeltaMicros,
-    },
-    assessments: {
-      ...assessments,
-      issueCodes: ALIGNMENT_QUALITY_ISSUE_CODES.filter((issue) => issueSet.has(issue)),
-    },
-    documentChangedAfterApplication: documentChanged,
-    evidenceState: invalid ? "invalid" : scanComplete ? "complete" : "partial",
-    signals: [...signals],
-    unrated: signals.length === 0 && assessments.correct === 0,
-  };
-}
 
 function validateApplicationRows(rows: ApplicationRow[], fileId: string, firstWindowEnd: number) {
   let upper = firstWindowEnd;

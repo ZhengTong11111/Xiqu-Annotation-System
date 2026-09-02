@@ -149,6 +149,17 @@ enum AlignmentResearchGroupKind {
   performer
 }
 
+enum AlignmentTrainingTargetMode {
+  prediction
+  manual_revision
+}
+
+enum AlignmentTrainingSplit {
+  train
+  validation
+  test
+}
+
 enum AuditAction {
   auth_login
   account_create
@@ -169,6 +180,7 @@ enum AuditAction {
   alignment_quality_assessment_upsert
   alignment_research_group_create
   project_alignment_research_groups_update
+  alignment_training_export_freeze
   annotation_workflow_status_update
   project_workflow_groups_update
   annotation_client_sync_failure
@@ -296,6 +308,7 @@ model User {
   alignmentQualityAssessments       AlignmentQualityAssessment[]      @relation("AlignmentQualityAssessmentActor")
   createdAlignmentResearchGroups    AlignmentResearchGroup[]          @relation("AlignmentResearchGroupCreator")
   assignedAlignmentResearchGroups   ProjectAlignmentResearchGroup[]   @relation("ProjectAlignmentResearchGroupAssigner")
+  createdAlignmentTrainingExports   AlignmentTrainingExport[]         @relation("AlignmentTrainingExportCreator")
   auditLogs                         AuditLog[]                        @relation("AuditActor")
   annotationOperations              AnnotationOperation[]             @relation("AnnotationOperationActor")
   annotationToolAttempts            AnnotationToolAttempt[]           @relation("AnnotationToolAttemptActor")
@@ -937,6 +950,78 @@ model AlignmentQualityAssessment {
   @@index([alignmentApplicationId, assessorUserId, scope, supersededAt])
   @@index([assessorUserId, createdAt])
   @@map("alignment_quality_assessments")
+}
+
+// 训练导出先冻结轻量 provenance；大型 prediction/audio 对象由后续后台任务按这些稳定引用解析。
+model AlignmentTrainingExport {
+  id               String   @id @default(uuid())
+  createdBy        String   @map("created_by")
+  clientActionId   String   @map("client_action_id")
+  requestHash      String   @map("request_hash")
+  manifestFormat   String   @map("manifest_format")
+  manifestVersion  Int      @map("manifest_version")
+  manifestChecksum String   @map("manifest_checksum")
+  manifest         Json
+  splitSeedHash    String   @map("split_seed_hash")
+  splitRatios      Json     @map("split_ratios")
+  splitCounts      Json     @map("split_counts")
+  sampleCount      Int      @map("sample_count")
+  componentCount   Int      @map("component_count")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  creator User                          @relation("AlignmentTrainingExportCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  items   AlignmentTrainingExportItem[]
+
+  @@unique([createdBy, clientActionId])
+  @@index([createdAt, id])
+  @@index([manifestChecksum])
+  @@map("alignment_training_exports")
+}
+
+// 每项保存严格 manifest item 和关联 revision；不以 FK 追随未来可变 application/project 生命周期。
+model AlignmentTrainingExportItem {
+  exportId                     String                      @map("export_id")
+  alignmentApplicationId       String                      @map("alignment_application_id")
+  annotationFileIdSnapshot     String                      @map("annotation_file_id_snapshot")
+  projectResourceIdSnapshot    String                      @map("project_resource_id_snapshot")
+  projectResearchGroupRevision Int                         @map("project_research_group_revision")
+  alignmentRunId               String                      @map("alignment_run_id")
+  alignmentArtifactId          String                      @map("alignment_artifact_id")
+  baseRevision                 Int                         @map("base_revision")
+  committedRevision            Int                         @map("committed_revision")
+  observationEndRevision       Int                         @map("observation_end_revision")
+  targetMode                   AlignmentTrainingTargetMode @map("target_mode")
+  targetRevision               Int                         @map("target_revision")
+  groupComponentHash           String                      @map("group_component_hash")
+  split                        AlignmentTrainingSplit
+  snapshot                     Json
+
+  export AlignmentTrainingExport        @relation(fields: [exportId], references: [id], onDelete: Cascade)
+  groups AlignmentTrainingExportGroup[]
+
+  @@id([exportId, alignmentApplicationId])
+  @@index([annotationFileIdSnapshot])
+  @@index([projectResourceIdSnapshot])
+  @@index([alignmentRunId])
+  @@index([alignmentArtifactId])
+  @@map("alignment_training_export_items")
+}
+
+// 分组快照保留冻结当时的稳定 identity 与有限显示名，不依赖后来可能解绑的项目关系。
+model AlignmentTrainingExportGroup {
+  exportId                  String                     @map("export_id")
+  alignmentApplicationId    String                     @map("alignment_application_id")
+  researchGroupId           String                     @map("research_group_id")
+  projectResourceIdSnapshot String                     @map("project_resource_id_snapshot")
+  kind                      AlignmentResearchGroupKind
+  displayNameSnapshot       String                     @map("display_name_snapshot")
+
+  item AlignmentTrainingExportItem @relation(fields: [exportId, alignmentApplicationId], references: [exportId, alignmentApplicationId], onDelete: Cascade)
+
+  @@id([exportId, alignmentApplicationId, researchGroupId])
+  @@index([researchGroupId])
+  @@index([projectResourceIdSnapshot])
+  @@map("alignment_training_export_groups")
 }
 
 // 不使用“拒绝”记录：有效权限由管理员/所有者特权、直接授权和未被截断的祖先授权合并得到。

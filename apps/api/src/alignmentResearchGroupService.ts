@@ -103,7 +103,7 @@ export class AlignmentResearchGroupService {
     input: CreateAlignmentResearchGroupRequest,
   ): Promise<AlignmentResearchGroupSummary> {
     return this.prisma.$transaction(async (transaction) => {
-      await lockResearchGroupMutation(transaction);
+      await lockAlignmentResearchGroupCatalog(transaction);
       await lockAndAssertManagedProject(transaction, this.access, user, projectResourceId);
       const existing = await transaction.alignmentResearchGroup.findUnique({
         where: { id: input.id },
@@ -150,7 +150,7 @@ export class AlignmentResearchGroupService {
       throw badRequest(`每个项目最多设置 ${MAX_PROJECT_ALIGNMENT_RESEARCH_GROUPS} 个研究分组。`);
     }
     return this.prisma.$transaction(async (transaction) => {
-      await lockResearchGroupMutation(transaction);
+      await lockAlignmentResearchGroupCatalog(transaction);
       await lockAndAssertManagedProject(transaction, this.access, user, projectResourceId);
       const current = await loadProjectState(transaction, projectResourceId);
       const currentIds = current.alignmentResearchGroups
@@ -233,7 +233,8 @@ export class AlignmentResearchGroupService {
   }
 }
 
-async function lockResearchGroupMutation(transaction: Prisma.TransactionClient) {
+/** 分组写入与训练冻结共用同一 catalog lock，保证冻结看到的 project revision 与关系属于同一时点。 */
+export async function lockAlignmentResearchGroupCatalog(transaction: Prisma.TransactionClient) {
   await transaction.$executeRaw`
     SELECT pg_advisory_xact_lock(hashtext(${RESEARCH_GROUP_LOCK_KEY}))
   `;
