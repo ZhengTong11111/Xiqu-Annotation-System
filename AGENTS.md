@@ -2222,6 +2222,11 @@ Important backend caveats:
   `recipeVerifiedAt` is evidence of a repeated reconstruction check, while `compactedAt` must remain null. Production application
   still requires the HC2 observation/backup gate; completing or testing the code locally is not authorization to migrate or write
   production history.
+- `apps/api/src/annotationHistoryReconstruction.ts` is the only pure checkpoint + operation + recipe reconstruction kernel. Shadow
+  verification and any future reconstructible resolver must reuse it together with the existing revision validator, domain command
+  apply, canonical hash and recipe builder; do not fork a second replay path. The current inline resolver deliberately remains separate
+  because it must return arbitrary historical JSON unchanged, and reconstructible/archived storage must continue to fail closed until
+  their database reader and migration are explicitly authorized.
 - a production-baseline migration rehearsal must use the real Prisma migration runner in an isolated `_test` schema, stop first at
   the exact migration already applied in production, seed representative annotation/operation/snapshot/review facts, then apply the
   candidate tail and compare the pre-existing columns exactly. A fresh empty database, a hand-written schema fixture, or manually

@@ -242,6 +242,18 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - 本阶段不产生容量回收：payload 仍完整存在，指标中的 payload-present 数不会下降。只有完成 HC2 生产观察、一致备份/恢复
   演练，并对少量非关键文件完成真实影子观察后，才能另行设计 HC3b 的 nullable payload 与读取重建切换。
 
+#### HC3b1：统一纯重建内核（代码已完成，在线模式未启用）
+
+- 新增唯一纯函数 `reconstructAnnotationHistoryPayload()`：严格校验文件/checkpoint/target 身份、recipe version/hash/range，
+  复用现有 current ProjectData parser、revision validator、正式领域 command apply、canonical hash 和 recipe builder，从有界事实
+  重建目标 ProjectData。失败只返回固定低基数错误码，不查询数据库、不返回正文或 operation payload。
+- HC3a 影子验证已改为该内核的薄包装；目标 inline payload 只作为“原正文仍在场”的额外格式/hash 证据。旧的重复解析、重放、
+  hash 和 recipe 比较代码已删除。结构非法 recipe 返回 `recipe_invalid`，形状合法但 operation 范围漂移返回 `recipe_changed`。
+- 本轮没有修改 Prisma schema、恢复历史数据库查询、详情/恢复 API 或 `resolveAnnotationRecoverySnapshotPayload()`；inline 历史任意
+  JSON 仍原样返回，`reconstructible/archived` 仍 fail closed，payload 仍 `NOT NULL`，inline-only CHECK 仍生效。
+- 容量专项 27/27、resolver 5/5、原子保存 34/34、完整 API 328/328 与完整构建通过。下一步仍必须先完成 HC2 生产观察、
+  一致备份/恢复演练和少量影子观察；本纯内核不构成 nullable migration、compactor 或生产部署授权。
+
 ### HC4：未来保存策略与运维闭环
 
 - replayable 保存按阈值建立检查点，其余直接保存 recipe；非可重放提交保持 inline。

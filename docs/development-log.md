@@ -11357,3 +11357,37 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   migration，避免未来新增 migration 后演练静默漏跑。临时目录没有残留，测试 URL 继续受 `_test` 后缀门禁保护。
 - **已完成**：本地 36 -> 49 历史升级演练、业务事实保留验证、HC2/HC3a 与废弃结构最终合同验证、全量回归和交接规则。
   **待推进**：生产 HC2 观察、正式 migration/部署、生产影子 recipe 和 HC3b 均仍需用户明确授权；未经授权不得执行。
+
+## 2026-09-02：HC3b1 统一恢复历史纯重建内核
+
+### 范围与架构收敛
+
+- 本轮只推进未来 reconstructible 读取所需的纯函数基础，没有修改 Prisma schema、数据库行、对象存储、API 路由或生产环境。
+  `payload` 仍为 `NOT NULL`，HC2a inline-only CHECK 仍禁止 `reconstructible/archived`，现有 inline resolver 继续对任意历史 JSON
+  原样返回且不调用 current ProjectData parser。
+- 新增 `annotationHistoryReconstruction.ts`，作为唯一的 checkpoint + operation + recipe 重建内核。输入是调用方已经有界读取的
+  文件/checkpoint/target 身份、checkpoint payload、operation facts 和完整 recipe；函数自身不访问数据库或日志。
+- 内核先校验 recipe version、canonical hash version、checkpoint/target revision、operation revision/sequence/count 范围和 SHA-256
+  形状，再复用既有 `parseCurrentProjectData()`、`buildAnnotationHistoryRevisionValidations()`、
+  `replayAnnotationHistoryToRevision()`、canonical hash 与 `buildAnnotationHistoryRecipe()`。没有新增第二套 command parser/apply、
+  hash 或 recipe builder。
+
+### 影子验证重构与错误语义
+
+- `verifyAnnotationHistoryShadowRecipe()` 已缩为薄包装：它把仍存在的 target inline payload 作为额外证据交给统一内核，确认目标
+  格式仍是 current ProjectData 且 hash 未漂移；重放、最终 hash 和 recipe 一致性不再在影子模块重复实现。
+- 失败只返回固定低基数 code，不携带 ProjectData、唱词、operation payload、媒体 URL 或凭据。checkpoint/target 身份漂移、
+  checkpoint/target payload 无效、缺失/重复/跨文件 operation、不可 apply、canonical hash 不一致均有稳定结果；结构非法 recipe
+  与形状合法但 operation 范围不一致分别返回 `recipe_invalid` 和 `recipe_changed`。
+- 自审修正了初版把字符串 hashVersion 当作整数校验的错误，并把 expected target snapshot id 移入统一内核，恢复原有
+  “先 checkpoint、后 target”的诊断顺序。旧 replay/hash/recipe helper 已删除，没有保留僵尸兼容入口。
+
+### 验证与待推进
+
+- 新增 5 项纯内核测试，覆盖多 revision 无损重建、输入不变、身份/recipe 漂移、inline 目标证据、缺失/重复/跨文件 operation、
+  apply 失败、hash 不一致及 recipe 范围漂移；并纳入 `test:annotation-history-compaction`。容量专项现为 27/27。
+- 既有 resolver 5/5、原子保存 34/34、完整 API 328/328、TypeScript 测试编译与 `npm run build` 全部通过。仅保留既有
+  Vite 大 chunk 提示和 API 测试中的 pg concurrent-query deprecation warning。
+- **已完成**：统一纯重建内核、HC3a 复用、重复逻辑清理、固定错误语义、专项/全量验证和交接规则。
+  **待推进**：HC2 生产观察、一致备份/恢复、少量生产影子复核、nullable payload migration、数据库 reconstructible resolver、
+  compactor 与物理空间回收均未授权、未实现、未部署。
