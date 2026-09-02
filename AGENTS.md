@@ -220,6 +220,12 @@ Main currently contains all major recent feature lines that matter for context:
   or malformed evidence is explicit `partial`/`invalid`, and absence of edits or assessments remains `unrated`, never auto-correct.
   Every request rechecks file `read` plus active resource lifecycle and must not read prediction objects or return ProjectData, text,
   operation payloads, account/media facts, storage identities or request hashes
+- force-alignment training manifests are built and parsed only by `alignmentTrainingManifest` in document-model. Draft/query order is
+  normalized before hashing; persisted manifests require canonical ordering, exact keys, integer split ratios and a checksum that excludes
+  only the checksum field itself. Samples sharing any stable work/performer group form one transitive component, and its hash depends only
+  on sorted stable group identities so adding samples without expanding that group set does not change its split. SHA-256 is injected by the server boundary;
+  do not add Node crypto to the browser-compatible package, infer groups from names/paths, split a connected component, or add text,
+  ProjectData, operation payloads, media/storage/account facts or free JSON
 - force-alignment tool attempts are a lightweight governance/training side table, never ProjectData or document history. Their
   administrator CSV is generated only by the API after fresh full-resource authorization, accepts at most a 90-day half-open
   window, reads in bounded batches, exports at most 10,000 rows with an explicit truncation header, and uses the shared CSV

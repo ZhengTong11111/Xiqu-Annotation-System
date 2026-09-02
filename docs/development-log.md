@@ -10944,3 +10944,49 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：FA-D3b2 与整个 FA-D3b。**待推进**：FA-D3c 冻结训练 manifest、安全对象引用、group split、管理员有界任务/导出、
   取消和失败补偿；开始前必须重写 `CLAUDE_WORK.md` 并先确认不会把正文、ProjectData 或临时媒体 URL 放入浏览器/CSV。本轮未部署
   生产、未启用真实模型，也未修改生产数据。
+
+## 2026-09-02：FA-D3c1 冻结训练 Manifest 与多分组切分纯合同
+
+### 开发前保存问题复核
+
+- 按用户要求先暂停训练导出开发，检查“上一轮后文件无法保存”。开发库 41 条 migration 已齐、API readiness 正常，最近同步失败事实
+  仍停留在本日 00:48 的旧 `internal_error`；对应旧验证文件后来已进入回收站，没有发现 D3b2 候选读取导致的新失败或业务数据损坏。
+  历史根因是长驻 API/Prisma/shared 产物早于当前数据库与前端，形成新前端、旧服务进程的合同错配，不是 timing command 或权限错误。
+- D3b2 提交前后均在专用活动副本完成真实 HTTP 正反 1ms 边界修改，分别得到 `v6 -> v7 -> v8` 和 `v8 -> v9 -> v10`，最终
+  ProjectData 与操作前一致；本轮又执行普通原子保存专项 34/34。训练 manifest 是纯 document-model 合同，不注册路由、保存器或
+  数据库写入，因此不会成为新的在线保存路径。
+
+### 版本化合同与数据最小化
+
+- 新增 `alignmentTrainingManifest` 唯一 builder/parser，顶层固定 format/version、split seed 摘要、万分比、样本/分量计数、split 汇总、
+  items 与 checksum。每项只保存 application/run/artifact/file 稳定 UUID、冻结 revision、artifact SHA/大小/formatVersion、有限质量和
+  人工 timing 聚合、target、分量 hash 与 split；不保存 prediction、ProjectData、operation payload、正文、媒体 URL、storage key、
+  账号显示事实、凭据或自由 JSON。
+- unknown parser 使用 strict exact-key schema，要求规范小写 UUID/SHA-256、安全整数、固定枚举、canonical 数组和 item 顺序、revision/
+  target 语义、样本/分量/split 汇总全部自洽。checksum 只排除 checksum 自身并对 canonical JSON 计算；SHA-256 函数由调用边界注入，
+  浏览器兼容 document-model 没有引入 `node:crypto`、弱哈希或新依赖。
+- builder 接受数据库任意返回顺序，先拒绝重复 application/group/assessment/signal，再按固定枚举和 UUID 顺序规范化输出。`correct`
+  只能冻结 prediction committed revision，且不能含负面评价、人工 timing signal 或实际改动；`needs_adjustment` 必须同时具有有限异常、
+  负面评价 signal、人工 timing signal 和非零自洽改动，并冻结 observation end revision。unusable、unrated、partial、invalid 全部拒绝。
+
+### 多分组连通切分与稳定性
+
+- 一个样本可以同时引用稳定 work/performer identity。纯并查集按共享任一 group 建立传递闭包，因此“演员跨剧目、剧目含多演员”形成
+  的整个连通分量只分配一次，不能为了接近比例拆开。缺分组明确阻断，也不会从文件名、路径或显示名猜分组。
+- 分量 hash 只依赖排序后的稳定 group identity，不混入本次导出恰好包含的 application id；未扩展分量 group 集合的补充样本保持
+  component hash/split。若新 group 连接原本独立的分量，则冻结 planner 按新的完整连通分量重新分配，优先保证不跨 split 泄漏。
+  默认 8000/1000/1000，也接受总和为 10000 的整数比例；split 使用 dataset seed、component hash 和 64 位拒绝采样映射，
+  避免简单取模偏差。输出如实报告各 split 的样本数和分量数，极端大分量造成失衡也不伪装成精确比例。
+
+### 测试、自审与后续
+
+- 新专项 9/9，覆盖输入与嵌套数组乱序、work/performer 传递连通、同组增补样本 split 稳定、极端比例、correct/manual target、round trip、
+  不完整证据、重复事实、checksum/计数/排序/extra-key/信号篡改和异常哈希边界。
+- `test:force-alignment-worker` 15/15、`test:force-alignment-application` 11/11、`test:force-alignment-quality` 11/11、
+  `test:platform-atomic-submit` 34/34、完整 `test:api` 336/336、完整 `npm run build` 与 `git diff --check` 通过。只保留既有 Vite 主 chunk
+  大小提示和 pg adapter 并发 query deprecation warning。document-model 构建后已按 AGENTS 门禁重启本地 API，新的 4317 进程
+  `/api/health/ready` 返回 database/storage 均为 ready；没有依赖 Vite 热更新伪装服务端已加载新合同。
+- 自审确认无 schema/migration、数据库/对象读写、API/UI、第二保存器、N+1、敏感字段、新依赖或僵尸接口；复杂规范化、并查集、稳定
+  分量身份和拒绝采样均有中文功能注释。**已完成**：FA-D3c1。**待推进**：FA-D3c2 以 additive schema 建立显示名与稳定 identity 分离
+  的剧目/演员研究分组，并在冻结事务内复核候选、ACL、资源生命周期、application/operation/assessment 和完整分组事实。本轮未部署
+  生产、未修改生产数据。

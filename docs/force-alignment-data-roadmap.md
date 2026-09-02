@@ -249,12 +249,49 @@ annotationOperationId / committedRevision / details
   actor、assessor、operation id/payload、正文、文件名、媒体或 storage/request 身份。application 专项 11/11、worker 15/15、quality
   11/11、原子保存 34/34、完整 API 336/336 和完整构建通过；本轮没有 schema/migration、业务写入、前端 owner 或生产部署。
 
-#### FA-D3c：冻结训练 manifest 与安全导出（下一阶段）
+#### FA-D3c：冻结训练 manifest 与安全导出（进行中）
 
 - 导出冻结的 run、application、评价和目标 operation revision，生成带 checksum 的 manifest；训练输入通过受保护对象引用解析，
   浏览器和 CSV 不接收预测正文、ProjectData、临时媒体 URL 或凭据。
 - 按演员/剧目等研究分组做稳定 group split，保证同组不会跨 train/validation/test；缺少分组事实时明确阻断，不以文件名猜测。
 - 管理员导出使用有界 keyset/任务中心，具备取消、失败补偿、对象校验和审计；导出不会改变在线标注事实。
+
+##### FA-D3c1：冻结 Manifest 与多分组切分纯合同（已完成）
+
+- 已在 document-model 固化版本化 manifest/parser/checksum 输入和纯 planner，没有增加数据库、API、对象写入或 UI。每个样本只保存
+  application/run/artifact、冻结 revision、固定证据摘要、受保护输入引用摘要和 split provenance；不复制 prediction、ProjectData、
+  operation payload、正文、媒体 URL、账号显示信息或自由 JSON。
+- 一个样本可具有剧目、演员等多个稳定 group token；共享任一 token 的样本必须通过并查集归入同一连通分量，再按数据集 seed 与
+  分量稳定摘要决定 train/validation/test。这样演员跨剧目、同剧目多演员等传递关系也不会跨 split。缺 token、重复样本、含糊目标、
+  partial/invalid evidence 或不安全整数均 fail closed；不通过文件名、路径或显示名补全。
+- builder 接受数据库无序返回并规范化有限数组，parser 则要求落盘内容已按固定顺序排列。分量 hash 只依赖排序后的稳定 group identity，
+  不混入本次导出的 application 集合；未扩展分量 group 集合的后续样本不会因此改变 split。若新增 group 把既有分量连接起来，则冻结
+  planner 会按新的完整连通分量重新分配，而不是制造跨 split 泄漏。SHA-256 由服务端边界注入，document-model 不引入
+  Node crypto 或手写密码学实现；万分比切分使用 64 位拒绝采样，输出实际样本/分量数量而不为追求比例拆散分量。
+- correct 只能冻结 prediction revision，needs-adjustment 必须同时具有负面评价、人工 timing signal、有限原因和非零人工改动并冻结观察
+  上界 revision；unusable/unrated/partial/invalid 全部拒绝。专项 9/9、worker 15/15、application 11/11、quality 11/11、原子保存
+  34/34、完整 API 336/336、完整构建和 diff check 通过。本阶段没有 migration、业务写入、对象访问、生产部署或新依赖。
+
+##### FA-D3c2：权威研究分组元数据与冻结事务（下一阶段）
+
+- 当前 `ProjectMetadata` 只有 description，不能支撑研究切分。以 additive schema/API 增加有限、稳定、可审计的剧目/演员分组身份；
+  显示名称与稳定 identity 分离，移动/重命名资源不改变 identity。只有项目管理权限可编辑，导出时事务内重读并冻结 identity 摘要。
+- 冻结服务按有界候选页收集显式选择，复核管理员权限、活动资源、complete evidence、application/operation/assessment 关系和分组
+  完整性；保存 immutable export request/manifest provenance，不改写 annotation payload/revision/operation/snapshot/review。
+
+##### FA-D3c3：后台导出任务、对象发布与补偿
+
+- 在现有 ProcessingJob 请求/命令/任务中心中增加训练导出类型和独立 adapter，不创建第二轮询器。Worker 按冻结 manifest 读取受保护
+  prediction/audio/目标 revision，staged 后校验 size/SHA，再 claim-fenced 原子发布；取消、陈旧 claim、模糊提交和清理失败沿用现有
+  有限状态与补偿规则。
+- 导出对象具有版本、manifest checksum、对象清单和容量上限；训练消费者通过服务端受权读取，不向浏览器暴露临时媒体 URL、凭据、
+  storage key 或整份 ProjectData。
+
+##### FA-D3c4：管理员创建、观察与下载闭环
+
+- 管理员从有界候选创建冻结导出，明确显示 partial/invalid/缺分组阻断、实际 split 分布、任务进度和失败类别；任务中心继续是唯一
+  polling/取消 owner。成功后提供受权下载或服务器侧消费入口，不把大对象塞入 React 状态。
+- 完成端到端取消、重试、撤权、对象校验、审计、容量与恢复测试后再关闭 D3c；没有生产模型/真实研究分组验收时不得宣称训练集可用。
 
 #### FA-D3d：容量观察、归档与闭环验收
 
