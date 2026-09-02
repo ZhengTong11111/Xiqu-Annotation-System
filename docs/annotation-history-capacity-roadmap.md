@@ -286,6 +286,18 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - 容量专项 33/33、inline resolver 5/5、客户端原子保存 34/34、完整 API 334/334 与完整构建通过。本轮没有 schema/migration、
   payload nullable、storage mode 切换、在线详情/比较/恢复接线、生产连接或部署；现有在线 resolver 仍拒绝 reconstructible/archived。
 
+#### HC3b2b：禁用态异步 payload 协调器（代码已完成，线上未接线）
+
+- 新增 `annotationRecoverySnapshotPayloadService.ts`，组合既有 inline resolver、HC3b2a 数据库事实装载和 HC3b1 纯重建内核。
+  inline 继续原样返回任意历史 JSON 并校验可选 hash；archived 和默认 reconstructible 继续返回
+  `snapshot_storage_mode_unsupported`。
+- reconstructible 候选路径必须持有模块 Symbol 品牌的隔离测试能力，不能由 JSON、HTTP 参数或环境变量构造；能力工厂当前只在测试
+  中引用。`resourceService`、router、config、env、详情、比较与恢复没有接线或启用点，因此这不是隐藏的线上 feature flag。
+- 候选重建不使用 target inline payload，严格要求未来行同时满足 `payload=null` 与 `compactedAt!=null`；正文仍在或缺少压缩时间的
+  半迁移状态分别固定阻断。recipe/事实/重建失败只返回 snapshot/file/revision 与低基数 code，不返回正文、hash、recipe 或 operation。
+- resolver 专项 9/9、容量专项 33/33、完整 API 338/338 与完整构建通过。隔离 PostgreSQL 用真实 stored recipe、checkpoint 与
+  operation 重建出目标 ProjectData，数据库行保持 inline 且逐项不变；没有 schema/migration、payload 清理、在线行为、生产连接或部署。
+
 ### HC4：未来保存策略与运维闭环
 
 - replayable 保存按阈值建立检查点，其余直接保存 recipe；非可重放提交保持 inline。

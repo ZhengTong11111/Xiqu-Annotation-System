@@ -11461,3 +11461,35 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：HC3b2a 本地数据库事实层、HC3a2 接线、重复逻辑清理、回归和文档。
   **待推进**：当前 Prisma payload 仍为必填，数据库 CHECK 仍禁止 reconstructible/archived，在线 resolver 仍 fail closed。生产 HC2
   观察、备份/恢复和少量影子运行未经授权；nullable migration、在线详情/比较/恢复、compactor、数据清理和部署均未执行。
+
+## 2026-09-02：HC3b2b 禁用态异步恢复快照读取协调器
+
+### 读取协调合同
+
+- 新增 `annotationRecoverySnapshotPayloadService.ts`，作为详情、比较与恢复未来可共用的异步协调候选。inline 分支直接调用既有同步
+  resolver，继续原样返回任意历史 JSON并校验可选 canonical hash；没有把旧文件强制解析为当前 ProjectData。
+- reconstructible 候选分支依次调用 HC3b2a `loadAnnotationHistoryReconstructionFacts()` 和 HC3b1
+  `reconstructAnnotationHistoryPayload()`，不复制 checkpoint/operation 查询、command parser/apply、hash 或 recipe 比较。重建调用刻意
+  不传 target inline payload，证明未来正文为空时仍只依赖 checkpoint + committed operation。
+- archived 继续稳定拒绝。所有失败只返回固定 code 和 snapshot/file/revision；不存在 ProjectData、正文、payload hash、recipe、operation、
+  媒体、对象、数据库错误或凭据回传。
+
+### 默认关闭与半迁移门禁
+
+- reconstructible 分支要求一个模块 Symbol 品牌的隔离测试能力。该品牌不能经过 JSON、HTTP 或环境变量传播，工厂调用点经源码扫描
+  只存在于两份专项测试；`resourceService`、router、server、config 和 `.env.example` 均无引用。本轮没有建立线上 feature flag、DI 开关
+  或 API 参数，现有详情/比较/恢复继续走同步 inline-only resolver。
+- 候选目标必须同时为 `storageMode=reconstructible`、`payload=null`、`compactedAt!=null` 且 recipe 字段完整。正文未清空、缺压缩时间、
+  部分 recipe、缺 checkpoint、operation 超限/漂移或最终 hash 不一致都会 fail closed；半迁移状态不能靠仍在的 recipe 侥幸读取。
+- 隔离集成测试没有修改 schema CHECK 或真实行：先为真实 inline target 写入影子 recipe，再只在函数输入中投影 nullable/reconstructible
+  形态，成功从数据库 checkpoint + operation 重建目标并确认业务行逐项不变。该证明不是 nullable migration 或生产 rollout 证据。
+
+### 验证与状态
+
+- `test:annotation-recovery-snapshot-resolver`：9/9，覆盖任意旧 JSON、hash、默认关闭、payload missing、部分 recipe 和两类半迁移状态；
+  `test:annotation-history-compaction`：33/33；完整 `test:api`：338/338；完整 `npm run build` 与 `git diff --check` 通过。
+- 自审确认新服务无 Prisma mutation、无第二套重建实现、无生产调用点；仅保留既有 Vite 主 chunk 提示和 API 测试中的 pg
+  concurrent-query deprecation warning。
+- **已完成**：HC3b2b 候选协调器、默认关闭/状态门禁、隔离证明、全量回归和文档。
+  **待推进**：生产 HC2 观察、一致备份/恢复、少量影子运行仍需明确授权；payload nullable、数据库 CHECK contract、正式 async
+  resolver 接线、compactor、清理、物理空间回收和服务器部署均未执行。

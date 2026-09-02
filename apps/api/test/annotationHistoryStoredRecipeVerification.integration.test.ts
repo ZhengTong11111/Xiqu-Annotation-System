@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {
+  createAnnotationHistoryReconstructibleReadTestCapability,
+  resolveAnnotationRecoverySnapshotPayloadAsync,
+} from "../src/annotationRecoverySnapshotPayloadService.js";
 import { loadAnnotationHistoryReconstructionFacts } from "../src/annotationHistoryReconstructionFacts.js";
 import { AnnotationHistoryShadowRecipeService } from "../src/annotationHistoryShadowRecipeService.js";
 import { AnnotationHistoryStoredRecipeVerificationService } from "../src/annotationHistoryStoredRecipeVerificationService.js";
@@ -34,6 +38,22 @@ test("已存影子 recipe 在可重复读快照中复核通过且不修改数据
     assert.equal(loadedFacts.checkpoint.annotationFileId, fixture.resourceId);
     assert.equal(loadedFacts.checkpoint.revision, loadedFacts.recipe.checkpointRevision);
     assert.equal(loadedFacts.operations.length, loadedFacts.recipe.operationCount);
+
+    const reconstructed = await prisma.$transaction((transaction) =>
+      resolveAnnotationRecoverySnapshotPayloadAsync({
+        transaction,
+        row: {
+          ...firstTarget,
+          // 数据库行仍为 inline；这里只投影未来形态，证明候选读取不依赖目标 payload。
+          storageMode: "reconstructible",
+          payload: null,
+          compactedAt: new Date("2026-09-02T01:00:00.000Z"),
+        },
+        reconstructibleCapability: createAnnotationHistoryReconstructibleReadTestCapability(),
+      }));
+    assert.equal(reconstructed.ok, true);
+    if (!reconstructed.ok) return;
+    assert.deepEqual(reconstructed.payload, fixture.projects[firstTarget.revision - 1]);
 
     const readOnly = createPrismaReadOnlyConnection(TEST_DATABASE_URL, {
       statementTimeoutMs: 5_000,

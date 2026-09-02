@@ -1424,6 +1424,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     committed operation，受统一 10,000 条硬上限约束；缺失、部分或超限事实必须 fail closed
   - 该层不得解析 ProjectData、重放 command、计算 hash、比较 recipe、读取审核/媒体/对象/账号事实或包含 Prisma mutation。
     只读复核和未来 reconstructible resolver 必须复用它；尚未持久化 planner 候选的影子写服务继续在自己的行锁事务中重读
+- `apps/api/src/annotationRecoverySnapshotPayloadService.ts`
+  - HC3b2b 的异步存储形态协调候选，组合现有 inline resolver、统一数据库事实 loader 和纯重建内核。默认仍是 inline-only；
+    archived/reconstructible 必须 fail closed，直到生产观察、nullable migration 和读写接线得到单独授权
+  - 候选 reconstructible 分支仅可由 Symbol 品牌的隔离测试能力触发，且必须要求 `payload=null`、`compactedAt!=null`。该能力工厂
+    不得出现在 ResourceService、router、config、环境变量或部署代码中，也不得由 HTTP 输入映射；正式启用时应删除测试能力并以
+    migration 后的数据库合同取代，而不是把它升级为 feature flag
 - `apps/api/src/annotationHistoryDependencyProtection.ts`
   - the only recovery-history lifecycle dependency boundary for future reconstructible recipes. It reads bounded lightweight
     recipe/checkpoint metadata only, never snapshot payloads, operation bodies, review text, media identities or credentials
