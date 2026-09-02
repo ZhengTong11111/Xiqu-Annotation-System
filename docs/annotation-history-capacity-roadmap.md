@@ -216,6 +216,20 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - 记录至少一轮真实 relation bytes、storage/hash 覆盖、24h/7d 增量和 planner dry-run 基线，确认采集耗时与数据库负载。
 - 只有生产 resolver、分页、依赖保护与指标均稳定，且一致备份/恢复演练完成后，才允许规划 HC3 影子 recipe 写入。
 
+#### HC2g：生产观察手册与不可变 release 入口（代码与文档已完成，生产未执行）
+
+- 新增 [`annotation-history-production-observation.md`](./annotation-history-production-observation.md)，把生产动作拆为三次独立授权：
+  expand-only 部署/只读观察、指定非关键文件的小批量影子 recipe、未来 nullable payload/compactor。手册复用通用部署、维护、
+  一致备份、隔离恢复与原子切换流程，并单独冻结样本顺序、脱敏报告、停止条件和回滚证据；前一阶段通过不会自动授权下一阶段。
+- 三条历史治理 package script 已从 `tsx apps/api/src/*.ts` 改为同一不可变 release 的
+  `dist/api/annotationHistory*Cli.js`。`release:inspect` 也把这些编译入口列为必需文件；候选缺失时必须重新构建，禁止把源码或开发依赖
+  临时复制进服务器 release。
+- 新增入口合同测试：构建后核对 package script 与三个 dist 文件，并向每个 CLI 注入不可连接的哨兵数据库地址；缺少范围参数必须
+  在访问数据库之前稳定失败，输出保持有界且不能泄露连接信息。入口合同 2/2、部署专项 29/29、容量专项 33/33、完整 API
+  338/338 与完整构建通过。
+- 本阶段没有 schema/migration、历史算法、在线 API 或依赖变化，也没有连接生产、部署、执行 migration、写影子 recipe、清空
+  payload、运行 compactor 或物理回收。下一步仍停在授权 A：只有用户明确批准当前候选后，才能按手册执行生产 HC2 观察。
+
 ### HC3：影子 recipe 与小批次无损压缩
 
 - 在不清空 payload 的情况下回填 hash/recipe，后台影子重建并持续比对。

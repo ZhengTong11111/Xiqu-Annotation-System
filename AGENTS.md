@@ -1352,6 +1352,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     `dist/api/backup` 程序目录不等于备份数据，只有这个精确路径可豁免状态目录名门禁
   - `release:inspect` 不连接数据库、不比较 Prisma schema、不执行 smoke，也不替代 `release:check`、正式
     `migrate deploy`、一致备份/恢复演练或服务人工验收；不得把它扩展成第二套打包器或部署器
+  - 生产/离线历史治理 CLI 必须由 package script 直接执行同一不可变 release 的 `dist/api/*.js`，并列入候选必需文件；不能
+    依赖 `tsx`、`apps/api/src` 或通过复制源码修补候选。入口合同测试必须证明缺少范围参数时先于数据库访问稳定失败
+  - 恢复历史生产观察只按 `docs/annotation-history-production-observation.md` 执行。手册中的 expand 观察、影子写入和未来
+    nullable/compactor 是三次独立授权；文档、代码、测试或候选准备完成都不等于用户已经授权连接或修改生产
 - `apps/api/src/releaseSwitch.ts` + `apps/api/src/releaseSwitchCli.ts`
   - 不可变 release symlink 的唯一升级/代码回滚 owner；三个路径必须显式绝对，新旧 release 必须是同一 releases 根的
     不同直接子目录，且 `current` 的真实目标必须仍等于操作员记录的 `expected-current`

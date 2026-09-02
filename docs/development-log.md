@@ -11493,3 +11493,45 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：HC3b2b 候选协调器、默认关闭/状态门禁、隔离证明、全量回归和文档。
   **待推进**：生产 HC2 观察、一致备份/恢复、少量影子运行仍需明确授权；payload nullable、数据库 CHECK contract、正式 async
   resolver 接线、compactor、清理、物理空间回收和服务器部署均未执行。
+
+## 2026-09-02：HC2g 生产观察手册与不可变 release CLI 入口
+
+### 发现的问题与范围
+
+- 到达生产观察门禁后复核发现，`annotation-history:plan:dry-run`、`annotation-history:shadow-recipe` 和
+  `annotation-history:verify-shadow-recipes` 仍通过 `tsx apps/api/src/*.ts` 启动。当前不可变 release 只承诺编译产物，服务器若
+  不携带源码或开发依赖，这三条已验证的运维命令会在真正需要时不可用。
+- 现有 `release:inspect` 也没有要求三个历史治理入口存在，因此候选可能通过检查却缺少 package script 指向的文件。该问题属于
+  release 合同，不需要修改 planner、影子写服务、stored-recipe verifier、重建内核、数据库 schema 或在线 API。
+
+### 编译入口与候选门禁
+
+- 三条 package script 现直接运行 `dist/api/annotationHistoryCompactionCli.js`、
+  `dist/api/annotationHistoryShadowRecipeCli.js` 和 `dist/api/annotationHistoryStoredRecipeVerificationCli.js`，保留 Node 22
+  `--env-file-if-exists=.env` 作为本机便利；生产仍由受控 shell 显式加载 `/etc/xiqu-platform/xiqu-platform.env`。
+- `releaseCandidateInspector` 的必需文件清单同步加入三个入口，既有候选夹具也随之更新。未来入口缺失、类型错误或符号链接逃逸会
+  在切换 `current` 前 fail closed，不能靠服务器内复制源码或安装 `tsx` 修补。
+- 新增 `annotationHistoryReleaseEntries.test.ts`：先构建 API，逐项核对 package script 和真实 dist 文件，再用缺参数启动编译 CLI。
+  测试显式注入不可连接且带标记的数据库 URL；三条命令必须先返回严格参数错误，不能尝试连接、泄露哨兵地址或输出无界堆栈。
+
+### 生产观察运行手册
+
+- 新增 [`annotation-history-production-observation.md`](./annotation-history-production-observation.md)，引用而不复制通用部署手册，把
+  操作分为三次独立授权：A 为 expand-only deployment + HC2 只读观察；B 为明确 UUID 的 1–16 个影子 recipe 候选；C 为未来
+  nullable payload、正式 resolver 和 compactor。A 成功不能自动进入 B，B 成功也不能自动进入 C。
+- 手册冻结候选预检、维护排空、worker 停止、一致备份/校验、隔离恢复、migration/原子切换、只读 planner、shadow
+  dry-run/apply/forced-read-only verify、服务恢复、停止条件与脱敏报告模板。示例只用 release/file 占位符，不保存真实服务器、连接串、
+  凭据、正文、operation body、媒体 URL 或对象 key。
+- 明确禁止全库 shadow apply、payload 清理、storage mode/`compactedAt` 切换、compactor、历史删除、`VACUUM FULL` 和
+  `pg_repack`。报告必须保存在 release/Git 之外；代码或手册完成本身不是部署/生产写入授权。
+
+### 验证、自审与状态
+
+- `test:annotation-history-release-entries`：2/2；完整 `test:deployment`：29/29（其中候选检查 7/7）；
+  `test:annotation-history-compaction`：33/33；完整 `test:api`：338/338；完整 `npm run build` 与 `git diff --check` 通过。
+  仅保留既有 Vite 主 chunk 体积提示和 API 测试中的 `pg` concurrent-query deprecation warning。
+- 自审确认 package scripts 无历史治理源码入口，三个 dist 文件由 `build:api` 真实生成；运行手册命令与严格 parser 参数一致，
+  `release:switch` 使用现有 `--current-link/--expected-current/--new-release` 合同。没有新增依赖、schema/migration、生产开关或运行时路径。
+- **已完成**：HC2g 本地 release 合同、测试、生产观察手册和交接规范。
+  **待推进**：目标仍停在授权 A。未经用户明确批准，不连接生产、不部署、不执行 production migration/备份/影子命令，不写 recipe、
+  不清空 payload、不运行 compactor 或物理空间回收。
