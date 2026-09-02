@@ -259,6 +259,7 @@ model User {
   createdMediaAnalysisRuns          MediaAnalysisRun[]                @relation("MediaAnalysisRunCreator")
   supersededMediaAnalysisRuns       MediaAnalysisRun[]                @relation("MediaAnalysisRunSuperseder")
   createdAlignmentRuns              AlignmentRun[]                    @relation("AlignmentRunCreator")
+  alignmentApplications             AlignmentApplication[]            @relation("AlignmentApplicationActor")
   auditLogs                         AuditLog[]                        @relation("AuditActor")
   annotationOperations              AnnotationOperation[]             @relation("AnnotationOperationActor")
   annotationToolAttempts            AnnotationToolAttempt[]           @relation("AnnotationToolAttemptActor")
@@ -403,6 +404,7 @@ model AnnotationFile {
   collaborationPresences AnnotationCollaborationPresence[]
   audioPreference        AnnotationAudioPreference?
   alignmentRuns          AlignmentRun[]
+  alignmentApplications  AlignmentApplication[]
 
   @@index([mediaResourceId])
   @@index([lastEditedBy])
@@ -782,6 +784,7 @@ model AlignmentRun {
   creator         User              @relation("AlignmentRunCreator", fields: [createdBy], references: [id], onDelete: Restrict)
   artifacts       AlignmentArtifact[]
   jobs            ProcessingJob[]
+  applications    AlignmentApplication[]
 
   @@index([annotationFileId, inputRevision])
   @@index([sourceMediaResourceId])
@@ -804,11 +807,41 @@ model AlignmentArtifact {
   storageKey    String                @unique @map("storage_key")
   createdAt     DateTime              @default(now()) @map("created_at")
 
-  run AlignmentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  run          AlignmentRun          @relation(fields: [runId], references: [id], onDelete: Cascade)
+  applications AlignmentApplication[]
 
   @@unique([runId, kind])
   @@index([runId, createdAt])
   @@map("alignment_artifacts")
+}
+
+// 一次结果应用只保存轻量溯源；逐字 before/after 继续由真实 annotation operation 承载。
+model AlignmentApplication {
+  id                    String   @id @default(uuid())
+  alignmentRunId        String   @map("alignment_run_id")
+  alignmentArtifactId   String   @map("alignment_artifact_id")
+  annotationFileId      String   @map("annotation_file_id")
+  actorUserId           String   @map("actor_user_id")
+  clientActionId        String   @map("client_action_id")
+  requestHash           String   @map("request_hash")
+  baseRevision          Int      @map("base_revision")
+  committedRevision     Int      @map("committed_revision")
+  operationCount        Int      @map("operation_count")
+  appliedCharacterCount Int      @map("applied_character_count")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  run            AlignmentRun         @relation(fields: [alignmentRunId], references: [id], onDelete: Restrict)
+  artifact       AlignmentArtifact    @relation(fields: [alignmentArtifactId], references: [id], onDelete: Restrict)
+  annotationFile AnnotationFile        @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
+  actor          User                  @relation("AlignmentApplicationActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  operations     AnnotationOperation[]
+
+  @@unique([annotationFileId, actorUserId, clientActionId])
+  @@index([alignmentRunId, createdAt])
+  @@index([alignmentArtifactId])
+  @@index([annotationFileId, committedRevision])
+  @@index([actorUserId, createdAt])
+  @@map("alignment_applications")
 }
 
 // 不使用“拒绝”记录：有效权限由管理员/所有者特权、直接授权和未被截断的祖先授权合并得到。
@@ -1013,17 +1046,20 @@ model AnnotationOperation {
   status            AnnotationOperationStatus @default(accepted)
   committedRevision Int?                      @map("committed_revision")
   committedAt       DateTime?                 @map("committed_at")
+  alignmentApplicationId String?              @map("alignment_application_id")
   createdAt         DateTime                  @default(now()) @map("created_at")
 
   annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
   actor          User           @relation("AnnotationOperationActor", fields: [actorUserId], references: [id])
   toolAttempt    AnnotationToolAttempt?
+  alignmentApplication AlignmentApplication? @relation(fields: [alignmentApplicationId], references: [id], onDelete: SetNull)
 
   @@unique([annotationFileId, sequence])
   @@unique([annotationFileId, actorUserId, clientOperationId])
   @@index([annotationFileId, createdAt])
   @@index([annotationFileId, committedRevision, sequence])
   @@index([actorUserId, createdAt])
+  @@index([alignmentApplicationId, sequence])
   @@map("annotation_operations")
 }
 

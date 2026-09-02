@@ -159,15 +159,21 @@ annotationOperationId / committedRevision / details
   storage key。终态重试复用现有 ProcessingJobCommand 幂等 reservation：同输入重置 terminal run 并创建新 job，输入变化则创建
   新 identity。专项 12/12、processing jobs 11/11、媒体 worker 回归 20/20、完整 API 327/327 和完整构建通过；未部署生产。
 
-#### FA-D2d：应用结果与真实 Operation 绑定（下一阶段）
+#### FA-D2d：应用结果与真实 Operation 绑定（已完成）
 
-- 解析 artifact 后由服务端/共享 document-model 生成严格、可重放的 timing command；应用前复核文件 revision、句子/字符身份和
-  run 输入 fingerprint，过期 run 不能静默覆盖新文本。
-- 新增轻量 `AlignmentApplication`，与真实 annotation operation/revision 同事务绑定，支持一 run 多次有意应用但阻止一次
-  client action 重复；后续人工 timing 修改继续只存在于普通 operation，不复制 before/after。
-- 完成异常、取消、重试、跨账号共享、撤权、对象损坏、旧 revision 和 ambiguous retry 全链路测试后，FA-D2 才算结束。
+- 已增加只增不改的 `AlignmentApplication` migration 和 operation 可空关系；application 只保留 run/artifact/file/account、
+  client action、revision、数量与时间等轻量溯源，逐字 before/after 继续只存在于真实 timing operation。普通 operation 保持空关系，
+  既有 annotation、snapshot、review、operation、artifact 与对象存储均未回填或改写。
+- 服务端以 32 MiB 压缩/64 MiB 解压上限读取 prediction，重算 SHA-256 并严格校验 gzip/JSON/版本/run/text/offset 身份；随后从当前
+  ProjectData 一次建立逐字身份索引，只生成 `timeline.items.timing.update`，每 500 项稳定分块、单 revision 最多 50,000 个变化字。
+  句级时间不变，因此人工修改逐字后可使用新 action 明确再次应用同一 run；完全一致时零写入。
+- application、snapshot、所有 operation、payload、sequence、revision、audit 和 revision 通知复用唯一 command commit 事务；相同
+  client action 模糊重试只返回原提交，旧 revision、正文/来源漂移、撤权、损坏对象和不完整关系均 fail closed。文件菜单新增有界
+  结果历史与确认应用入口，整个请求和权威回读期间阻断新编辑，浏览器不接收 prediction 或自行计算 timing。
+- 专项 shared/document-model/API 9/9、请求 8/8、worker 12/12、processing jobs 11/11、完整 API 329/329、普通原子保存/前端提交回归
+  与完整构建通过；迁移后在专用验证副本完成真实 HTTP `v4 -> v5 -> v6` 往返并恢复原边界。未部署生产，FA-D2 代码闭环完成。
 
-### FA-D3：质量标签与训练导出
+### FA-D3：质量标签与训练导出（下一阶段）
 
 - 增加明确接受、异常原因和审核标签，以置信度、模型分歧和人工改动量选择困难样本。
 - 导出冻结 revision 的训练 manifest，并按演员/剧目隔离 train/validation/test。

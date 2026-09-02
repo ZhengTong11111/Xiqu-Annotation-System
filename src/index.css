@@ -1615,6 +1615,221 @@ select {
   transform: translate(-50%, -50%);
 }
 
+/* 强制对齐结果是低频治理窗口：保持与任务中心一致的桌面面板语言，但不复用其复杂三栏布局。 */
+.alignment-runs-dialog {
+  position: fixed;
+  z-index: 1301;
+  top: 50%;
+  left: 50%;
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 32px));
+  transform: translate(-50%, -50%);
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid #d6dce5;
+  border-radius: 8px;
+  background: #f8fafc;
+  box-shadow: 0 24px 70px rgb(15 23 42 / 24%);
+  color: #243248;
+}
+
+.alignment-runs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #dde3eb;
+  background: #fff;
+}
+
+.alignment-runs-header > div,
+.alignment-runs-header > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.alignment-runs-header h2,
+.alignment-runs-header p {
+  margin: 0;
+}
+
+.alignment-runs-header h2 {
+  font-size: 16px;
+}
+
+.alignment-runs-header p {
+  margin-top: 2px;
+  color: #6b778b;
+  font-size: 12px;
+}
+
+.alignment-runs-header button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #536176;
+}
+
+.alignment-runs-header button:hover {
+  background: #eef2f7;
+}
+
+.alignment-runs-error,
+.alignment-runs-notice {
+  margin: 12px 16px 0;
+  padding: 9px 11px;
+  border-radius: 5px;
+  font-size: 13px;
+}
+
+.alignment-runs-error {
+  border: 1px solid #f0b6b6;
+  background: #fff1f1;
+  color: #a63131;
+}
+
+.alignment-runs-notice {
+  border: 1px solid #d7dfeb;
+  background: #f1f5f9;
+  color: #526176;
+}
+
+.alignment-runs-list {
+  min-height: 180px;
+  padding: 12px 16px 16px;
+  overflow: auto;
+}
+
+.alignment-run-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid #e0e5ec;
+}
+
+.alignment-run-primary,
+.alignment-run-facts,
+.alignment-run-compatibility {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.alignment-run-primary strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alignment-run-status {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.alignment-run-status.is-succeeded {
+  color: #16704b;
+}
+
+.alignment-run-status.is-failed,
+.alignment-run-status.is-cancelled {
+  color: #a03a3a;
+}
+
+.alignment-run-facts,
+.alignment-run-compatibility {
+  grid-column: 1;
+  color: #69768a;
+  font-size: 12px;
+}
+
+.alignment-run-compatibility {
+  color: #536176;
+}
+
+.alignment-run-row > button {
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  align-self: center;
+  min-width: 116px;
+}
+
+.alignment-runs-empty {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  color: #748196;
+  font-size: 13px;
+}
+
+.alignment-runs-load-more {
+  margin: 0 16px 16px;
+  padding: 8px 12px;
+  border: 1px solid #ccd5e0;
+  border-radius: 5px;
+  background: #fff;
+  color: #44536a;
+}
+
+.alignment-apply-confirm-dialog {
+  position: fixed;
+  z-index: 1303;
+  top: 50%;
+  left: 50%;
+  width: min(480px, calc(100vw - 32px));
+  transform: translate(-50%, -50%);
+  padding: 20px;
+  border: 1px solid #d6dce5;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgb(15 23 42 / 28%);
+  color: #26344a;
+}
+
+.alignment-apply-confirm-dialog h2,
+.alignment-apply-confirm-dialog p {
+  margin: 0;
+}
+
+.alignment-apply-confirm-dialog p {
+  margin-top: 10px;
+  color: #5f6e82;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.alignment-apply-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+@media (max-width: 640px) {
+  .alignment-run-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .alignment-run-row > button {
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: start;
+  }
+
+  .alignment-run-facts {
+    flex-wrap: wrap;
+  }
+}
+
 .processing-job-center-header,
 .processing-job-center-header > div,
 .processing-job-center-header-actions,

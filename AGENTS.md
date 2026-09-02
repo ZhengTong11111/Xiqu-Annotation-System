@@ -194,6 +194,10 @@ Main currently contains all major recent feature lines that matter for context:
   `crypto.randomUUID()` is unavailable, so frontend code must never call it directly. The helper prefers native UUID,
   falls back to `crypto.getRandomValues()` UUID v4, and reserves the non-crypto fallback only for old-browser identity,
   never credentials or authorization values
+- succeeded force-alignment predictions are applied only through `AlignmentApplicationService`: the browser sends one runtime UUID
+  and current revision, while the server rereads and bounds the immutable prediction, rebuilds ordinary character timing commands,
+  and binds a lightweight `AlignmentApplication` to the real operations in the same annotation commit transaction. Do not send
+  prediction contents to the browser, write a second save path, alter sentence timing, or copy before/after values into the application row
 - force-alignment tool attempts are a lightweight governance/training side table, never ProjectData or document history. Their
   administrator CSV is generated only by the API after fresh full-resource authorization, accepts at most a 90-day half-open
   window, reads in bounded batches, exports at most 10,000 rows with an explicit truncation header, and uses the shared CSV
@@ -411,6 +415,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - the only frontend runtime UUID boundary for annotation entities, tracks, branches, drafts, and operation ids
   - HTTP IP deployments are not secure contexts in Chrome and do not expose `crypto.randomUUID()`; use this helper rather
     than adding local timestamp/random fallbacks. Generated ids are stable identities only and must never become secrets
+- `apps/api/src/alignmentApplicationService.ts` + `apps/api/src/alignmentPredictionReader.ts` +
+  `packages/document-model/src/alignmentPredictionApplication.ts`
+  - the only force-alignment application boundary: bounded immutable artifact read, current file/text/source/ACL revalidation,
+    deterministic ordinary timing-command planning, and application provenance preparation
+  - character lookup must remain indexed O(n), commands stay capped at 500 items/100 operations, and sentence timing remains unchanged;
+    successful application must enter `AnnotationCommandCommitService` once and use normal revision/catch-up semantics
+- `src/platform/AlignmentRunsDialog.tsx`
+  - low-frequency bounded run history and explicit apply confirmation; an ambiguous retry reuses its session action UUID
+  - the editor blocks new mutations from request start through authoritative refetch. The dialog must never apply prediction timing locally
 - `apps/api/src/objectLifecycleService.ts` + `apps/api/src/backup/backupService.ts`
   - both FileObject and MediaAnalysisAsset storage keys are authoritative references; lifecycle cleanup and backup warnings
     must not classify analysis tiles as orphan binaries

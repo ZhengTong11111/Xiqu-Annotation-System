@@ -103,6 +103,8 @@ import type {
   AlignmentRunDetail,
   AlignmentRunPage,
   AlignmentRunSummary,
+  AlignmentApplicationSummary,
+  ApplyAlignmentRunRequest,
   CreateAlignmentRunRequest,
   ListAlignmentRunsOptions,
 } from "@xiqu/shared";
@@ -521,6 +523,17 @@ export class PlatformClient {
   createAlignmentRun(resourceId: string, request: CreateAlignmentRunRequest) {
     return this.request<AlignmentRunSummary>(
       `/annotation-files/${resourceId}/alignment-runs`,
+      { method: "POST", body: request },
+    );
+  }
+
+  applyAlignmentRun(
+    resourceId: string,
+    runId: string,
+    request: ApplyAlignmentRunRequest,
+  ) {
+    return this.request<AlignmentApplicationSummary>(
+      `/annotation-files/${resourceId}/alignment-runs/${runId}/applications`,
       { method: "POST", body: request },
     );
   }

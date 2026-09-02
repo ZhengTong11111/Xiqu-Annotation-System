@@ -10737,3 +10737,51 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   若仍持有终态失败状态，应保留草稿并重新打开同一文件，或在刷新后的同版本页面重试；不要手工清空 IndexedDB。
 - **继续执行**：FA-D2c 提交前维持当前 API/Vite 进程；以后每轮修改 shared、document-model、Prisma schema/client 或 API 命令合同后，
   浏览器验收前必须按 AGENTS 门禁重启对应长驻进程。该事件不新增产品代码，也不改变 FA-D2d 范围；本轮未部署生产。
+
+## 2026-09-02：FA-D2d 强制对齐结果应用与真实 Operation 绑定
+
+### 保存阻断复核与运行环境恢复
+
+- 本阶段按用户要求先暂停功能开发，重新检查“文件无法保存”。数据库 public schema 当时 39 条 migration 全部执行、API health ready，
+  未发现 payload、operation 或恢复快照损坏；根因仍是 shared/document-model/Prisma Client 已重新构建，而长驻 API 与 Vite 继续加载旧
+  内存产物。先停止旧进程，再通过标准 `npm run dev:api`/`npm run dev:web` 重启同一工作区版本，没有清浏览器草稿或修改用户文件。
+- D2d 的第 40 条纯新增 migration 应用后，再次在专用验证副本 `929ab9dd-72ba-4231-b216-88ab3e78c7ad` 走真实登录、GET、
+  command-batch 写入和反向命令：逐字边界临时移动 1ms 后恢复，revision `v4 -> v5 -> v6`，两次提交均成功，最终 start/end 与初始
+  完全一致。第一次验证脚本因读取错登录包裹层得到 401，未发生写入；修正为 `data.accessToken` 后完成往返。用户真实标注和 IndexedDB
+  草稿均未触碰。该事件再次确认：shared/document-model/Prisma/API 合同变化后必须重启 API，不能依赖 Vite HMR 验证保存。
+
+### 数据模型、预测读取与应用算法
+
+- 新增 `AlignmentApplication` 及 `AnnotationOperation.alignmentApplicationId` 可空外键；application 只记录 run/artifact/file/account、
+  client action/request hash、base/committed revision、operation/逐字数量和时间。迁移只 CREATE TABLE、ADD nullable column/index/FK/CHECK，
+  不 UPDATE/DELETE/DROP/TRUNCATE 既有 annotation、operation、snapshot、review、artifact 或对象；普通人工 operation 关系保持 null。
+- 新增统一 prediction metadata 门禁和受限 reader：压缩对象最大 32 MiB、解压最大 64 MiB，验证实际大小、SHA-256、gzip、JSON、版本
+  及 run/revision/text/offset 身份。列表、受保护下载和应用现在共用同一 artifact 可用性定义，storage key 和底层对象错误不进入公开 DTO。
+- document-model 以一次 `Map` 建立逐字稳定身份索引，避免数万字时逐项 `find` 退化为 O(n²)。算法只生成普通
+  `timeline.items.timing.update`，不修改句级时间；去除 no-op 后按 character id 稳定排序，每条 500 项、最多 100 条 operation，即单次
+  最多 50,000 个实际变化字。完全一致时不生成空 revision；正文/身份漂移或超预算稳定拒绝。
+
+### 原子事务、权限与前端状态
+
+- `AnnotationCommandCommitService` 增加可选 application binding，而没有复制第二套保存器。文件/资源/ACL 行锁、revision、parser、租约、
+  snapshot、payload、sequence、operation、audit 和 revision notification 仍由一个事务完成；首次提交先创建轻量 application，再将全部
+  operation 绑定到它，任一步失败整笔回滚。相同 action 的模糊重试核对完整 operation 顺序和 application 关系，只返回原提交，不发布
+  第二次 revision；同 run 使用新 action 可在人工逐字修改后明确再次应用。
+- 应用前事务内重新读取 succeeded run、唯一 prediction、artifact metadata、当前文本投影、启用音轨、source fingerprint/offset 和
+  annotation/source ACL。旧 revision、文本/来源漂移、损坏对象、不完整关系全部零写入；音频下载权限撤销返回明确 403
+  `analysis_audio_forbidden`，不伪装为通用 409。
+- 文件菜单保留“创建强制对齐任务”，新增“查看强制对齐结果…”。有界结果窗口显示模型、状态、时间、输入 revision、句字数和当前适用性；
+  只有 succeeded + 严格 artifact 可用 + 当前正文/音轨匹配才可确认应用。浏览器只发送 runtime UUID/base revision，不下载 prediction。
+  从点击确认、API 提交到权威 GET/clean baseline 替换全程阻断新编辑；网络模糊失败保留同一 action UUID，重试不会重复修改。
+
+### 测试、自审与状态
+
+- `test:force-alignment-application`：shared/document-model 5/5，schema/application 4/4；覆盖 500 分块、no-op、身份漂移、首次原子写入、
+  recovery snapshot、普通 operation 空关系、完整幂等重放、同 run 再应用、撤权、损坏对象、陈旧 revision 和 migration 无改写。
+- `test:force-alignment-requests` 8/8、`test:force-alignment-worker` 12/12、`test:processing-jobs` 11/11、
+  `test:annotation-command-commit` 6/6、`test:platform-atomic-submit` 34/34、完整 `test:api` 329/329、`npm run build` 与
+  `git diff --check` 通过。仅保留既有 Vite 主 chunk 大小提示和 pg adapter 并发 query deprecation warning。
+- UI 已通过 TypeScript 与生产构建；应用内浏览器连接时处于登录页。为避免未获当下确认即向表单输入账号密码，本轮未伪造登录态点击
+  “文件 → 查看强制对齐结果”，不把该步骤写成已验收。服务端路由与应用行为已由数据库集成测试覆盖。
+- **已完成**：FA-D2d 和 FA-D2 代码闭环。**待推进**：FA-D3 质量标签、困难样本选择与冻结训练导出；开始前必须重写
+  `CLAUDE_WORK.md`，且仍不得部署生产、启用真实执行器或改写现有生产数据。

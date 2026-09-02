@@ -9,6 +9,7 @@ import {
   MAX_MEDIA_ANALYSIS_BATCH_ASSETS,
   parseAnnotationCommandBatchRequest,
   parseAnnotationToolAttemptBatchRequest,
+  parseApplyAlignmentRunRequest,
   parseCreateAlignmentRunRequest,
   PROCESSING_JOB_STATUSES,
   PROCESSING_JOB_TYPES,
@@ -43,6 +44,7 @@ import type { HealthService } from "./healthService.js";
 import type { MediaUploadService } from "./mediaUploadService.js";
 import type { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
 import type { AlignmentRunService } from "./alignmentRunService.js";
+import type { AlignmentApplicationService } from "./alignmentApplicationService.js";
 import type { ProcessingJobQueryService } from "./processingJobQueryService.js";
 import type { ProcessingJobCommandService } from "./processingJobCommandService.js";
 import type { MediaAudioTrackService } from "./mediaAudioTrackService.js";
@@ -136,6 +138,7 @@ export function registerApiRoutes(
   annotationReviewLinks: AnnotationReviewLinkService,
   mediaAnalysis: MediaAnalysisJobService,
   alignmentRuns: AlignmentRunService,
+  alignmentApplications: AlignmentApplicationService,
   processingJobs: ProcessingJobQueryService,
   processingJobCommands: ProcessingJobCommandService,
   mediaAudioTracks: MediaAudioTrackService,
@@ -674,6 +677,20 @@ export function registerApiRoutes(
           kind: body.kind as CreateMediaAudioTrackRequest["kind"],
           offsetSeconds: body.offsetSeconds as number | undefined,
         },
+      );
+    },
+  );
+
+  app.post<{ Params: { resourceId: string; runId: string }; Body: unknown }>(
+    "/api/annotation-files/:resourceId/alignment-runs/:runId/applications",
+    async (request) => {
+      const parsed = parseApplyAlignmentRunRequest(request.body);
+      if (!parsed.success) throw badRequest(parsed.message);
+      return alignmentApplications.apply(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        request.params.runId,
+        parsed.data,
       );
     },
   );

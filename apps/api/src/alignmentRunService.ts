@@ -1,11 +1,6 @@
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import {
-  ALIGNMENT_PREDICTION_FORMAT_VERSION,
-  ALIGNMENT_PREDICTION_MIME_TYPE,
-  buildAlignmentTextProjection,
-  type AlignmentTextProjectionResult,
-} from "@xiqu/document-model";
+import { buildAlignmentTextProjection, type AlignmentTextProjectionResult } from "@xiqu/document-model";
 import { parseCurrentProjectData } from "@xiqu/document-model/project-data-schema";
 import {
   FORCE_ALIGNMENT_MODEL_PRESET_LABELS,
@@ -35,10 +30,10 @@ import {
 } from "./processingJobIdentity.js";
 import { ensureProcessingJobRequest } from "./processingJobRequestService.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
+import { isReadablePredictionArtifact } from "./alignmentArtifactMetadata.js";
 
 const DEFAULT_PAGE_LIMIT = 20;
 const MAX_PAGE_LIMIT = 100;
-const MAX_PREDICTION_ARTIFACT_BYTES = 32 * 1024 * 1024;
 const ACTIVE_JOB_STATUSES = ["queued", "running", "cancelling"] as const;
 
 const MODEL_PRESETS: Record<ForceAlignmentModelPreset, {
@@ -58,8 +53,18 @@ const MODEL_PRESETS: Record<ForceAlignmentModelPreset, {
 };
 
 type AlignmentRunRow = Prisma.AlignmentRunGetPayload<{
-  include: { artifacts: { select: { id: true } } };
+  include: { artifacts: { select: typeof alignmentArtifactSummarySelect } };
 }>;
+
+const alignmentArtifactSummarySelect = {
+  id: true,
+  kind: true,
+  formatVersion: true,
+  mimeType: true,
+  size: true,
+  checksum: true,
+  storageKey: true,
+} satisfies Prisma.AlignmentArtifactSelect;
 
 /**
  * 强制对齐创建只保存稳定输入身份和账号需求。模型执行、预测对象发布与应用命令分别属于 D2c/D2d，不能在这里近似实现。
@@ -90,7 +95,7 @@ export class AlignmentRunService {
     await this.access.assertCapability(user, annotationFileId, "write");
     const source = await this.prisma.alignmentRun.findFirst({
       where: { id: sourceRunId, annotationFileId },
-      include: { artifacts: { select: { id: true } } },
+      include: { artifacts: { select: alignmentArtifactSummarySelect } },
     });
     if (!source) throw notFound("强制对齐记录不存在。");
     const preset = resolvePreset(source);
@@ -184,7 +189,7 @@ export class AlignmentRunService {
             clientRequestId: input.clientRequestId,
           },
         },
-        include: { request: { include: { job: { include: { alignmentRun: { include: { artifacts: { select: { id: true } } } } } } } } },
+        include: { request: { include: { job: { include: { alignmentRun: { include: { artifacts: { select: alignmentArtifactSummarySelect } } } } } } } },
       });
       if (replayed) {
         assertProcessingJobRequestMatch(replayed.requestFingerprint, requestFingerprint);
@@ -200,7 +205,7 @@ export class AlignmentRunService {
       `;
       const existing = await transaction.alignmentRun.findUnique({
         where: { identityHash: identity.identityHash },
-        include: { artifacts: { select: { id: true } } },
+        include: { artifacts: { select: alignmentArtifactSummarySelect } },
       });
       if (existing?.status === "succeeded") {
         const completedJob = await transaction.processingJob.findFirst({
@@ -227,7 +232,7 @@ export class AlignmentRunService {
 
       const activeJob = await transaction.processingJob.findFirst({
         where: { deduplicationKey: identity.deduplicationKey, status: { in: [...ACTIVE_JOB_STATUSES] } },
-        include: { alignmentRun: { include: { artifacts: { select: { id: true } } } } },
+        include: { alignmentRun: { include: { artifacts: { select: alignmentArtifactSummarySelect } } } },
       });
       if (activeJob) {
         if (activeJob.status === "cancelling") {
@@ -275,7 +280,7 @@ export class AlignmentRunService {
           }
           const queuedRun = await transaction.alignmentRun.findUniqueOrThrow({
             where: { id: existing.id },
-            include: { artifacts: { select: { id: true } } },
+            include: { artifacts: { select: alignmentArtifactSummarySelect } },
           });
           await createAlignmentProcessingJob(transaction, {
             run: queuedRun,
@@ -319,7 +324,7 @@ export class AlignmentRunService {
           identityHash: identity.identityHash,
           createdBy: user.id,
         },
-        include: { artifacts: { select: { id: true } } },
+        include: { artifacts: { select: alignmentArtifactSummarySelect } },
       });
       await createAlignmentProcessingJob(transaction, {
         run,
@@ -333,7 +338,7 @@ export class AlignmentRunService {
       });
       return run;
     });
-    return mapRun(created, input.modelPreset, true);
+    return mapRun(created, input.modelPreset, true, true);
   }
 
   async list(
@@ -355,13 +360,18 @@ export class AlignmentRunService {
           ],
         } : {}),
       },
-      include: { artifacts: { select: { id: true } } },
+      include: { artifacts: { select: alignmentArtifactSummarySelect } },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: limit + 1,
     });
     const page = rows.slice(0, limit);
     return {
-      items: page.map((row) => mapRun(row, resolvePreset(row), matchesCurrent(row, current))),
+      items: page.map((row) => mapRun(
+        row,
+        resolvePreset(row),
+        matchesCurrent(row, current),
+        canApplyToCurrentDocument(row, current),
+      )),
       nextCursor: rows.length > limit && page.length ? encodeCursor(page.at(-1)!) : null,
     };
   }
@@ -371,7 +381,7 @@ export class AlignmentRunService {
     const [run, current] = await Promise.all([
       this.prisma.alignmentRun.findFirst({
         where: { id: runId, annotationFileId },
-        include: { artifacts: { select: { id: true } } },
+        include: { artifacts: { select: alignmentArtifactSummarySelect } },
       }),
       this.readCurrentInput(user, annotationFileId),
     ]);
@@ -386,7 +396,12 @@ export class AlignmentRunService {
       select: { id: true },
     });
     return {
-      ...mapRun(run, resolvePreset(run), matchesCurrent(run, current)),
+      ...mapRun(
+        run,
+        resolvePreset(run),
+        matchesCurrent(run, current),
+        canApplyToCurrentDocument(run, current),
+      ),
       audioTrackId: run.mediaAudioTrackId,
       requestActive: Boolean(activeRequest),
     };
@@ -577,6 +592,7 @@ function mapRun(
   run: AlignmentRunRow,
   modelPreset: ForceAlignmentModelPreset | "unknown",
   matchesCurrentInput: boolean,
+  canApplyToCurrentDocument: boolean,
 ): AlignmentRunSummary {
   return {
     id: run.id,
@@ -591,16 +607,30 @@ function mapRun(
       ? "历史强制对齐模型"
       : FORCE_ALIGNMENT_MODEL_PRESET_LABELS[modelPreset],
     matchesCurrentInput,
-    artifactAvailable: run.status === "succeeded" && run.artifacts.length > 0,
+    canApplyToCurrentDocument,
+    artifactAvailable: run.status === "succeeded" && hasReadablePredictionArtifact(run),
     createdAt: run.createdAt.toISOString(),
     updatedAt: run.updatedAt.toISOString(),
     completedAt: run.completedAt?.toISOString() ?? null,
   };
 }
 
+function hasReadablePredictionArtifact(run: AlignmentRunRow) {
+  const predictions = run.artifacts.filter((artifact) => artifact.kind === "prediction");
+  return predictions.length === 1 && isReadablePredictionArtifact(predictions[0]!, run.manifest);
+}
+
 function matchesCurrent(run: AlignmentRunRow, current: Awaited<ReturnType<AlignmentRunService["readCurrentInput"]>>) {
+  return Boolean(canApplyToCurrentDocument(run, current) &&
+    run.inputRevision === current?.revision);
+}
+
+// 对齐应用只覆盖逐字 timing；只要正文/句级范围和音频身份没变，run 可在更高 revision 上被用户再次明确应用。
+function canApplyToCurrentDocument(
+  run: AlignmentRunRow,
+  current: Awaited<ReturnType<AlignmentRunService["readCurrentInput"]>>,
+) {
   return Boolean(current &&
-    run.inputRevision === current.revision &&
     run.inputTextFingerprint === current.textFingerprint &&
     run.mediaAudioTrackIdSnapshot === current.audioTrackId &&
     run.sourceFingerprint === current.sourceFingerprint &&
@@ -637,32 +667,4 @@ function decodeCursor(token: string) {
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function isReadablePredictionArtifact(
-  artifact: {
-    id: string;
-    formatVersion: number;
-    mimeType: string;
-    size: bigint;
-    checksum: string;
-    storageKey: string;
-  },
-  manifest: Prisma.JsonValue | null,
-) {
-  if (
-    artifact.formatVersion !== ALIGNMENT_PREDICTION_FORMAT_VERSION ||
-    artifact.mimeType !== ALIGNMENT_PREDICTION_MIME_TYPE ||
-    artifact.size < 1n ||
-    artifact.size > BigInt(MAX_PREDICTION_ARTIFACT_BYTES) ||
-    !/^[0-9a-f]{64}$/u.test(artifact.checksum) ||
-    !artifact.storageKey
-  ) return false;
-  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return false;
-  const value = manifest as Record<string, unknown>;
-  return value.version === 1 &&
-    value.formatVersion === ALIGNMENT_PREDICTION_FORMAT_VERSION &&
-    value.artifactId === artifact.id &&
-    value.compressedSize === Number(artifact.size) &&
-    value.checksum === artifact.checksum;
 }

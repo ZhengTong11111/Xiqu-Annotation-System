@@ -41,9 +41,11 @@ import type {
   SortDirection,
 } from "./platform.js";
 import type {
+  AlignmentApplicationSummary,
   AlignmentRunDetail,
   AlignmentRunPage,
   AlignmentRunSummary,
+  ApplyAlignmentRunRequest,
   CreateAlignmentRunRequest,
 } from "./forceAlignment.js";
 import type {
@@ -693,6 +695,10 @@ export type PlatformApiContract<TPayload = unknown> = {
   createAlignmentRun: {
     request: CreateAlignmentRunRequest;
     response: AlignmentRunSummary;
+  };
+  applyAlignmentRun: {
+    request: ApplyAlignmentRunRequest;
+    response: AlignmentApplicationSummary;
   };
   listProcessingJobs: { response: ProcessingJobPage };
   getProcessingJobSummary: { response: ProcessingJobSummary };
