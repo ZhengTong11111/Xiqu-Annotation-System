@@ -983,6 +983,7 @@ model AlignmentTrainingExport {
   creator User                          @relation("AlignmentTrainingExportCreator", fields: [createdBy], references: [id], onDelete: Restrict)
   items   AlignmentTrainingExportItem[]
   jobs    ProcessingJob[]
+  packageArtifacts AlignmentTrainingPackageArtifact[]
 
   @@unique([createdBy, clientActionId])
   @@index([createdAt, id])
@@ -1060,6 +1061,32 @@ model AlignmentTrainingExportGroup {
   @@map("alignment_training_export_groups")
 }
 
+// 训练包是后台派生的不可变 ZIP，不冒充用户上传 FileObject；完整 manifest 与对象摘要共同构成下载/恢复依据。
+model AlignmentTrainingPackageArtifact {
+  id               String   @id
+  exportId         String   @map("export_id")
+  processingJobId  String   @unique @map("processing_job_id")
+  format           String
+  version          Int
+  container        String
+  mimeType         String   @map("mime_type")
+  size             BigInt
+  checksum         String
+  storageKey       String   @unique @map("storage_key")
+  planChecksum     String   @map("plan_checksum")
+  manifestChecksum String   @map("manifest_checksum")
+  itemCount        Int      @map("item_count")
+  manifest         Json
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  export AlignmentTrainingExport @relation(fields: [exportId], references: [id], onDelete: Restrict)
+  job    ProcessingJob            @relation(fields: [processingJobId], references: [id], onDelete: Restrict)
+
+  @@index([exportId, createdAt])
+  @@index([checksum])
+  @@map("alignment_training_package_artifacts")
+}
+
 // 不使用“拒绝”记录：有效权限由管理员/所有者特权、直接授权和未被截断的祖先授权合并得到。
 model ResourcePermission {
   id                String               @id @default(uuid())
@@ -1129,6 +1156,7 @@ model ProcessingJob {
   analysisRun           MediaAnalysisRun?      @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
   alignmentRun          AlignmentRun?          @relation(fields: [alignmentRunId], references: [id], onDelete: Cascade)
   alignmentTrainingExport AlignmentTrainingExport? @relation(fields: [alignmentTrainingExportId], references: [id], onDelete: Restrict)
+  alignmentTrainingPackageArtifact AlignmentTrainingPackageArtifact?
   requests              ProcessingJobRequest[]
   commands              ProcessingJobCommand[] @relation("ProcessingJobCommandTarget")
   retryResults          ProcessingJobCommand[] @relation("ProcessingJobCommandResult")

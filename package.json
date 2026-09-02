@@ -94,6 +94,7 @@
     "test:force-alignment-research-groups": "npm run build:shared && node --test packages/shared/test/force-alignment.test.mjs && npm run db:generate && tsc -p apps/api/tsconfig.test.json && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/alignmentResearchGroupSchema.test.ts apps/api/test/alignmentResearchGroup.integration.test.ts",
     "test:force-alignment-training-export": "npm run build:shared && npm run build:document-model && node --test packages/shared/test/force-alignment.test.mjs packages/document-model/test/alignment-training-manifest.test.mjs packages/document-model/test/alignment-training-target-snapshot.test.mjs packages/document-model/test/alignment-training-input-manifest.test.mjs && npm run db:generate && tsc -p apps/api/tsconfig.test.json && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/alignmentTrainingExportSchema.test.ts apps/api/test/alignmentTrainingExportInputSchema.test.ts apps/api/test/alignmentTrainingExportInput.test.ts apps/api/test/alignmentTrainingExport.integration.test.ts",
     "test:force-alignment-training-job": "npm run build:shared && npm run build:document-model && node --test packages/shared/test/force-alignment.test.mjs packages/document-model/test/alignment-training-manifest.test.mjs packages/document-model/test/alignment-training-target-snapshot.test.mjs packages/document-model/test/alignment-training-input-manifest.test.mjs packages/document-model/test/alignment-training-package.test.mjs && npm run db:generate && tsc -p apps/api/tsconfig.test.json && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/alignmentTrainingExportSchema.test.ts apps/api/test/alignmentTrainingExportInputSchema.test.ts apps/api/test/alignmentTrainingExportJobSchema.test.ts apps/api/test/alignmentTrainingExportJobIdentity.test.ts apps/api/test/alignmentTrainingPackageStream.test.ts apps/api/test/alignmentTrainingExportInput.test.ts apps/api/test/alignmentTrainingExport.integration.test.ts",
+    "test:force-alignment-training-worker": "npm run build:shared && npm run build:document-model && node --test packages/document-model/test/alignment-training-package.test.mjs && npm run db:generate && tsc -p apps/api/tsconfig.test.json && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/alignmentTrainingPackageArtifactSchema.test.ts apps/api/test/alignmentTrainingAudioFfmpeg.test.ts apps/api/test/alignmentTrainingPackageStream.test.ts apps/api/test/alignmentTrainingPackageWriter.test.ts apps/api/test/processingJobWorkerCoordinator.test.ts apps/api/test/alignmentTrainingExport.integration.test.ts",
     "test:processing-reliability-p4a": "npm run build:shared && npm run db:generate && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/maintenanceRouteManifest.test.ts apps/api/test/maintenanceCoordinator.test.ts apps/api/test/abortableHttpStream.test.ts apps/api/test/resourceCopy.test.ts",
     "test:processing-reliability-p4b": "npm run build:shared && npm run db:generate && tsx apps/api/test/prepareTestDatabase.ts && node --import tsx --test --test-concurrency=1 apps/api/test/mediaUploadService.test.ts apps/api/test/storage.test.ts && NODE_OPTIONS=--throw-deprecation node --import tsx --test --test-concurrency=1 apps/api/test/platform.integration.test.ts",
     "test:processing-reliability-p4c": "npm run build:shared && npm run db:generate && tsx apps/api/test/prepareTestDatabase.ts && NODE_OPTIONS=--throw-deprecation node --import tsx --test --test-concurrency=1 apps/api/test/mediaAnalysisFfmpeg.test.ts apps/api/test/mediaAnalysisWorker.test.ts apps/api/test/mediaAnalysisWorkerRuntime.test.ts apps/api/test/processingJobRequest.integration.test.ts apps/api/test/processingJobCommand.integration.test.ts",
@@ -168,6 +169,7 @@
     "@radix-ui/react-dropdown-menu": "^2.1.24",
     "@tanstack/react-virtual": "^3.14.9",
     "ali-oss": "^6.23.0",
+    "archiver": "^8.0.0",
     "fastify": "^5.8.5",
     "file-type": "^22.0.1",
     "idb": "^8.0.3",
@@ -180,6 +182,7 @@
     "tiny-pinyin": "^1.3.2"
   },
   "devDependencies": {
+    "@types/archiver": "^7.0.0",
     "@types/node": "^26.0.0",
     "@types/pg": "^8.20.0",
     "@types/react": "^18.3.12",

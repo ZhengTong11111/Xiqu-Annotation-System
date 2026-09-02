@@ -1,5 +1,7 @@
 import { createAliyunVodProvider } from "./aliyunVodGateway.js";
 import { AlignmentWorkerService } from "./alignmentWorkerService.js";
+import { openAlignmentTrainingFlacStream } from "./alignmentTrainingAudioFfmpeg.js";
+import { AlignmentTrainingExportWorkerService } from "./alignmentTrainingExportWorkerService.js";
 import { createPrismaConnection } from "./database.js";
 import { ExternalForceAlignmentExecutor } from "./externalForceAlignmentExecutor.js";
 import { MediaAnalysisWorkerService } from "./mediaAnalysisWorkerService.js";
@@ -32,7 +34,20 @@ async function startMediaAnalysisWorker() {
     process.env.XIQU_FFMPEG_PATH?.trim() || "ffmpeg",
     logger,
   );
+  const access = new ResourceAccessService(connection.prisma);
   const adapters: ProcessingJobWorkerAdapter[] = [mediaAnalysis];
+  // 训练包和媒体分析共用 FFmpeg 路径、对象存储与唯一 worker runtime，不另建轮询进程。
+  adapters.push(new AlignmentTrainingExportWorkerService(
+    connection.prisma,
+    storage,
+    access,
+    aliyunVod,
+    (input, signal) => openAlignmentTrainingFlacStream(input, {
+      signal,
+      ffmpegPath: process.env.XIQU_FFMPEG_PATH?.trim() || "ffmpeg",
+    }),
+    logger,
+  ));
   if (config.forceAlignmentExecutorPath) {
     const executor = new ExternalForceAlignmentExecutor(config.forceAlignmentExecutorPath);
     // worker 启动时先验证可执行权限；错误只暴露固定配置问题，不会先 claim 再制造失败风暴。
@@ -40,7 +55,7 @@ async function startMediaAnalysisWorker() {
     adapters.push(new AlignmentWorkerService(
       connection.prisma,
       storage,
-      new ResourceAccessService(connection.prisma),
+      access,
       aliyunVod,
       executor,
       logger,

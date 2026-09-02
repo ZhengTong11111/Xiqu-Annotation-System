@@ -193,6 +193,8 @@ async function consumeObservedEntry(
   source.pipe(observer);
   try {
     await Promise.all([
+      // 原始对象流和观察器都必须被 finished() 接管；取消时 source.destroy(error) 不能变成未处理事件。
+      finished(source),
       finished(observer),
       Promise.resolve(options.onEntry({ path: entry.path, kind: entry.kind, stream: observer }))
         .catch((error) => {

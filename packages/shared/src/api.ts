@@ -399,6 +399,8 @@ export type StorageOrphanSummary = {
   category: StorageOrphanCategory;
   fileId?: string;
   analysisAssetId?: string;
+  alignmentArtifactId?: string;
+  alignmentTrainingArtifactId?: string;
   name?: string;
   storageKey: string;
   size: number;

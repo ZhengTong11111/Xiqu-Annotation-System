@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { PassThrough, Readable } from "node:stream";
 import test from "node:test";
 import { Prisma } from "@prisma/client";
 import {
@@ -16,13 +20,16 @@ import {
 } from "@xiqu/shared";
 import { AlignmentTrainingExportService } from "../src/alignmentTrainingExportService.js";
 import { AlignmentTrainingExportJobService } from "../src/alignmentTrainingExportJobService.js";
+import { AlignmentTrainingExportWorkerService } from "../src/alignmentTrainingExportWorkerService.js";
 import { ObjectLifecycleService } from "../src/objectLifecycleService.js";
+import type { ObjectStorage } from "../src/objectStorage.js";
 import { MediaAnalysisJobService } from "../src/mediaAnalysisJobService.js";
 import { ProcessingJobCommandService } from "../src/processingJobCommandService.js";
 import { ProcessingJobQueryService } from "../src/processingJobQueryService.js";
 import { stableJsonStringify } from "../src/annotationOperationIdempotency.js";
 import { createMediaAnalysisSourceFingerprint } from "../src/mediaAnalysisSourceFingerprint.js";
 import { ResourceAccessService } from "../src/resourceAccess.js";
+import { LocalObjectStorage } from "../src/storage.js";
 import { createTestPrisma, truncateTestDatabase } from "./testEnvironment.js";
 
 test("正确候选冻结为不可变 manifest，幂等重放且不改在线标注事实", async () => {
@@ -454,6 +461,169 @@ test("训练冻结任务只允许管理员预约并复用同一账号需求与�
   });
 });
 
+test("训练 worker 流式发布不可变 ZIP，生命周期巡检保护 prediction 与训练包", async () => {
+  await withFixture({ verdict: "correct", issueCodes: [] }, async ({ prisma, service, fixture }) => {
+    await withTrainingStorage(fixture, async ({ storage }) => {
+      const frozen = await service.freeze(fixture.admin, createRequest(fixture.applicationId));
+      const reservation = await new AlignmentTrainingExportJobService(
+        prisma,
+        new ResourceAccessService(prisma),
+      ).create(fixture.admin, frozen.id, { clientRequestId: randomUUID() });
+      const worker = createTrainingWorker(prisma, storage, async (input) => {
+        assert.equal(input.kind, "uploaded");
+        if (input.kind !== "uploaded") throw new Error("测试期望上传音频。 ");
+        assert.deepEqual(await readStream(input.stream), fixture.sourceBytes);
+        return Readable.from([Buffer.from("fLaC-training-fixture", "utf8")]);
+      });
+
+      assert.equal(await worker.processNext("training-worker-success"), true);
+      const job = await prisma.processingJob.findUniqueOrThrow({
+        where: { id: reservation.jobId },
+      });
+      const artifact = await prisma.alignmentTrainingPackageArtifact.findUniqueOrThrow({
+        where: { processingJobId: reservation.jobId },
+      });
+      assert.equal(job.status, "succeeded");
+      assert.equal(job.errorCode, null);
+      assert.equal(artifact.exportId, frozen.id);
+      assert.equal(await storage.objectExists(artifact.storageKey), true);
+      const archive = await readStream(await storage.getObjectStream(artifact.storageKey));
+      assert.equal(archive.subarray(0, 2).toString("ascii"), "PK");
+      assert.equal(sha256(archive), artifact.checksum);
+
+      const lifecycle = createLifecycle(prisma, storage);
+      const healthy = await lifecycle.inspect(fixture.admin);
+      assert.equal(healthy.items.some((item) =>
+        item.storageKey === fixture.artifactStorageKey || item.storageKey === artifact.storageKey), false);
+      await storage.deleteObject(artifact.storageKey);
+      const missing = await lifecycle.inspect(fixture.admin);
+      assert.equal(missing.items.some((item) =>
+        item.category === "missing_binary" &&
+        item.alignmentTrainingArtifactId === artifact.id), true);
+    });
+  });
+});
+
+test("训练 worker 在上传源摘要不匹配或 publish 响应失败时不留下伪成功资产", async () => {
+  await withFixture({ verdict: "correct", issueCodes: [] }, async ({ prisma, service, fixture }) => {
+    await withTrainingStorage(fixture, async ({ storage, root }) => {
+      // 保持字节数不变但改写内容，验证流式 SHA 复核不是只检查大小。
+      await writeStorageObject(
+        root,
+        fixture.sourceStorageKey,
+        Buffer.alloc(fixture.sourceBytes.byteLength, 0x78),
+      );
+      const frozen = await service.freeze(fixture.admin, createRequest(fixture.applicationId));
+      const reservation = await new AlignmentTrainingExportJobService(
+        prisma,
+        new ResourceAccessService(prisma),
+      ).create(fixture.admin, frozen.id, { clientRequestId: randomUUID() });
+      const worker = createTrainingWorker(prisma, storage, async (input) => {
+        if (input.kind !== "uploaded") throw new Error("测试期望上传音频。");
+        await readStream(input.stream);
+        return Readable.from([Buffer.from("fLaC-unreachable", "utf8")]);
+      });
+      await worker.processNext("training-worker-corrupt-source");
+      const job = await prisma.processingJob.findUniqueOrThrow({
+        where: { id: reservation.jobId },
+      });
+      assert.equal(job.status, "failed");
+      assert.equal(await prisma.alignmentTrainingPackageArtifact.count(), 0);
+      assert.equal((await storage.listStoredObjects()).some((item) =>
+        item.storageKey.endsWith(".zip") || item.staged), false);
+    });
+  });
+
+  await withFixture({ verdict: "correct", issueCodes: [] }, async ({ prisma, service, fixture }) => {
+    await withTrainingStorage(fixture, async ({ storage }) => {
+      const frozen = await service.freeze(fixture.admin, createRequest(fixture.applicationId));
+      const reservation = await new AlignmentTrainingExportJobService(
+        prisma,
+        new ResourceAccessService(prisma),
+      ).create(fixture.admin, frozen.id, { clientRequestId: randomUUID() });
+      const ambiguousStorage = createPromoteResponseFailureStorage(storage);
+      const worker = createTrainingWorker(prisma, ambiguousStorage, normalizeFixtureAudio);
+      await worker.processNext("training-worker-promote-failure");
+      const job = await prisma.processingJob.findUniqueOrThrow({
+        where: { id: reservation.jobId },
+      });
+      assert.equal(job.status, "failed");
+      assert.equal(await prisma.alignmentTrainingPackageArtifact.count(), 0);
+      assert.equal((await storage.listStoredObjects()).some((item) =>
+        item.storageKey.endsWith(".zip") || item.staged), false);
+    });
+  });
+});
+
+test("训练 worker 的运行中取消、停机重排和陈旧 claim 恢复都保留围栏", async () => {
+  await withFixture({ verdict: "correct", issueCodes: [] }, async ({ prisma, service, fixture }) => {
+    await withTrainingStorage(fixture, async ({ storage }) => {
+      const frozen = await service.freeze(fixture.admin, createRequest(fixture.applicationId));
+      const reservation = await new AlignmentTrainingExportJobService(
+        prisma,
+        new ResourceAccessService(prisma),
+      ).create(fixture.admin, frozen.id, { clientRequestId: randomUUID() });
+      let audioOpened = false;
+      const blockedAudio = new PassThrough();
+      const worker = createTrainingWorker(prisma, storage, async (input) => {
+        if (input.kind !== "uploaded") throw new Error("测试期望上传音频。");
+        await readStream(input.stream);
+        audioOpened = true;
+        return blockedAudio;
+      });
+      const processing = worker.processNext("training-worker-cancel");
+      await waitUntil(() => audioOpened);
+      await prisma.processingJob.update({
+        where: { id: reservation.jobId },
+        data: {
+          status: "cancelling",
+          cancelRequestedAt: new Date(),
+          cancelRequestedBy: fixture.admin.id,
+          cancellationMode: "user_request",
+        },
+      });
+      await processing;
+      assert.equal((await prisma.processingJob.findUniqueOrThrow({
+        where: { id: reservation.jobId },
+      })).status, "cancelled");
+      assert.equal(await prisma.alignmentTrainingPackageArtifact.count(), 0);
+      assert.equal((await storage.listStoredObjects()).some((item) => item.staged), false);
+    });
+  });
+
+  await withFixture({ verdict: "correct", issueCodes: [] }, async ({ prisma, service, fixture }) => {
+    await withTrainingStorage(fixture, async ({ storage }) => {
+      const frozen = await service.freeze(fixture.admin, createRequest(fixture.applicationId));
+      const reservation = await new AlignmentTrainingExportJobService(
+        prisma,
+        new ResourceAccessService(prisma),
+      ).create(fixture.admin, frozen.id, { clientRequestId: randomUUID() });
+      const shutdown = new AbortController();
+      shutdown.abort();
+      await createTrainingWorker(prisma, storage, normalizeFixtureAudio)
+        .processNext("training-worker-shutdown", shutdown.signal);
+      const requeued = await prisma.processingJob.findUniqueOrThrow({
+        where: { id: reservation.jobId },
+      });
+      assert.equal(requeued.status, "queued");
+      assert.equal(requeued.claimedBy, null);
+
+      const staleWorker = createTrainingWorker(prisma, storage, normalizeFixtureAudio);
+      const claimed = await staleWorker.claimNext("training-worker-stale");
+      assert.ok(claimed);
+      const staleDate = new Date(Date.now() - 10 * 60_000);
+      await prisma.processingJob.update({
+        where: { id: reservation.jobId },
+        data: { claimedAt: staleDate, heartbeatAt: staleDate },
+      });
+      assert.equal(await staleWorker.recoverStaleJobs(), 1);
+      assert.equal((await prisma.processingJob.findUniqueOrThrow({
+        where: { id: reservation.jobId },
+      })).status, "queued");
+    });
+  });
+});
+
 test("历史 provenance-only 或逐项损坏冻结不能预约任务", async () => {
   await withFixture({ verdict: "correct", issueCodes: [] }, async ({ prisma, service, fixture }) => {
     const frozen = await service.freeze(fixture.admin, createRequest(fixture.applicationId));
@@ -531,12 +701,13 @@ async function createFixture(
       projectMetadata: { create: { description: "fixture", researchGroupRevision: 1 } },
     },
   });
-  const sourceChecksum = sha256("training-export-source-audio");
+  const sourceBytes = Buffer.from("training-export-source-audio", "utf8");
+  const sourceChecksum = sha256(sourceBytes);
   const sourceFile = await prisma.fileObject.create({
     data: {
       name: "训练音频.mp3",
       mimeType: "audio/mpeg",
-      size: 1_024n,
+      size: BigInt(sourceBytes.byteLength),
       checksum: sourceChecksum,
       storageKey: `training/source/${randomUUID()}.mp3`,
       ownerUserId: adminRow.id,
@@ -554,7 +725,7 @@ async function createFixture(
           mediaKind: "audio",
           fileId: sourceFile.id,
           mimeType: "audio/mpeg",
-          size: 1_024n,
+          size: BigInt(sourceBytes.byteLength),
           duration: 10,
         },
       },
@@ -581,7 +752,7 @@ async function createFixture(
     mediaResourceId: sourceMedia.id,
     fileId: sourceFile.id,
     checksum: sourceChecksum,
-    size: 1_024n,
+    size: BigInt(sourceBytes.byteLength),
   });
   assert.ok(sourceFingerprint);
   const annotation = await prisma.resourceEntry.create({
@@ -600,6 +771,7 @@ async function createFixture(
       },
     },
   });
+  const predictionBytes = Buffer.from("training-export-prediction", "utf8");
   const run = await prisma.alignmentRun.create({
     data: {
       annotationFileId: annotation.id,
@@ -631,8 +803,8 @@ async function createFixture(
           kind: "prediction",
           formatVersion: 1,
           mimeType: "application/gzip",
-          size: 128n,
-          checksum: "4".repeat(64),
+          size: BigInt(predictionBytes.byteLength),
+          checksum: sha256(predictionBytes),
           storageKey: `alignment/fixture/${randomUUID()}.json.gz`,
         },
       },
@@ -741,7 +913,11 @@ async function createFixture(
       assessmentId: assessment.id,
       sourceFileId: sourceFile.id,
       sourceMediaResourceId: sourceMedia.id,
+      sourceStorageKey: sourceFile.storageKey,
+      sourceBytes,
       artifactId: artifact.id,
+      artifactStorageKey: artifact.storageKey,
+      predictionBytes,
     },
   };
 }
@@ -807,7 +983,110 @@ async function readOnlineFacts(
   };
 }
 
-function sha256(value: string) {
+type TrainingFixture = Awaited<ReturnType<typeof createFixture>>["fixture"];
+type TrainingAudioNormalizer = ConstructorParameters<
+  typeof AlignmentTrainingExportWorkerService
+>[4];
+
+/** 为 worker 集成测试写入与数据库冻结摘要严格一致的两类输入对象。 */
+async function withTrainingStorage(
+  fixture: TrainingFixture,
+  callback: (context: { storage: LocalObjectStorage; root: string }) => Promise<void>,
+) {
+  const root = await mkdtemp(path.join(tmpdir(), "xiqu-training-worker-"));
+  const storage = new LocalObjectStorage(root);
+  try {
+    await Promise.all([
+      writeStorageObject(root, fixture.sourceStorageKey, fixture.sourceBytes),
+      writeStorageObject(root, fixture.artifactStorageKey, fixture.predictionBytes),
+    ]);
+    await callback({ storage, root });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function writeStorageObject(root: string, storageKey: string, content: Buffer) {
+  const absolutePath = path.join(root, storageKey);
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, content);
+}
+
+function createTrainingWorker(
+  prisma: ReturnType<typeof createTestPrisma>["prisma"],
+  storage: ObjectStorage,
+  normalizer: TrainingAudioNormalizer,
+) {
+  return new AlignmentTrainingExportWorkerService(
+    prisma,
+    storage,
+    new ResourceAccessService(prisma),
+    null,
+    normalizer,
+    { info: () => undefined, warn: () => undefined },
+    5,
+    10,
+  );
+}
+
+const normalizeFixtureAudio: TrainingAudioNormalizer = async (input) => {
+  if (input.kind !== "uploaded") throw new Error("测试期望上传音频。");
+  await readStream(input.stream);
+  return Readable.from([Buffer.from("fLaC-training-fixture", "utf8")]);
+};
+
+/** 模拟 promote 已成功但响应丢失；worker 必须把 final/staged 一并补偿删除。 */
+function createPromoteResponseFailureStorage(storage: LocalObjectStorage): ObjectStorage {
+  return {
+    describeBackend: () => storage.describeBackend(),
+    createStorageKey: (extension) => storage.createStorageKey(extension),
+    putStagedObject: (key, stream, maxBytes) => storage.putStagedObject(key, stream, maxBytes),
+    promoteStagedObject: async (staged) => {
+      await storage.promoteStagedObject(staged);
+      throw new Error("simulated-promote-response-loss");
+    },
+    getObjectStream: (key, range) => storage.getObjectStream(key, range),
+    objectExists: (key) => storage.objectExists(key),
+    deleteObject: (key) => storage.deleteObject(key),
+    checkReadiness: () => storage.checkReadiness(),
+    listStoredObjects: () => storage.listStoredObjects(),
+  };
+}
+
+function createLifecycle(
+  prisma: ReturnType<typeof createTestPrisma>["prisma"],
+  storage: LocalObjectStorage,
+) {
+  return new ObjectLifecycleService(
+    prisma,
+    new ResourceAccessService(prisma),
+    storage,
+    {
+      maxUploadBytes: 1,
+      userQuotaBytes: 1,
+      platformQuotaBytes: 1,
+      orphanGraceMs: 0,
+    },
+  );
+}
+
+async function readStream(stream: Readable) {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+async function waitUntil(predicate: () => boolean) {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("等待训练 worker 测试状态超时。");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+function sha256(value: string | Uint8Array) {
   return createHash("sha256").update(value).digest("hex");
 }
 

@@ -22,45 +22,73 @@ export class ObjectLifecycleService {
   async inspect(user: ApiUser, now = new Date()): Promise<StorageOrphanReport> {
     this.assertAdministrator(user);
     const cutoff = new Date(now.getTime() - this.policy.orphanGraceMs);
-    const [diskObjects, files, analysisAssets] = await Promise.all([
-      this.storage.listStoredObjects(),
-      this.prisma.fileObject.findMany({
-        include: {
-          _count: {
-            select: {
-              mediaFiles: true,
-              alignmentTrainingInputs: true,
+    const [diskObjects, files, analysisAssets, alignmentArtifacts, trainingArtifacts] =
+      await Promise.all([
+        this.storage.listStoredObjects(),
+        this.prisma.fileObject.findMany({
+          include: {
+            _count: {
+              select: {
+                mediaFiles: true,
+                alignmentTrainingInputs: true,
+              },
             },
           },
-        },
-      }),
-      this.prisma.mediaAnalysisAsset.findMany({
-        select: {
-          id: true,
-          storageKey: true,
-          size: true,
-          kind: true,
-          preset: true,
-          level: true,
-          tileIndex: true,
-          createdAt: true,
-        },
-      }),
-    ]);
+        }),
+        this.prisma.mediaAnalysisAsset.findMany({
+          select: {
+            id: true,
+            storageKey: true,
+            size: true,
+            kind: true,
+            preset: true,
+            level: true,
+            tileIndex: true,
+            createdAt: true,
+          },
+        }),
+        this.prisma.alignmentArtifact.findMany({
+          select: {
+            id: true,
+            storageKey: true,
+            size: true,
+            kind: true,
+            createdAt: true,
+          },
+        }),
+        this.prisma.alignmentTrainingPackageArtifact.findMany({
+          select: {
+            id: true,
+            storageKey: true,
+            size: true,
+            exportId: true,
+            createdAt: true,
+          },
+        }),
+      ]);
     const filesByKey = new Map(files.map((file) => [file.storageKey, file]));
     const analysisAssetsByKey = new Map(
       analysisAssets.map((asset) => [asset.storageKey, asset]),
+    );
+    const alignmentArtifactsByKey = new Map(
+      alignmentArtifacts.map((artifact) => [artifact.storageKey, artifact]),
+    );
+    const trainingArtifactsByKey = new Map(
+      trainingArtifacts.map((artifact) => [artifact.storageKey, artifact]),
     );
     const diskKeys = new Set(diskObjects
       .filter((object) => !object.staged)
       .map((object) => object.storageKey));
     const summaries: StorageOrphanSummary[] = [];
 
-    // 最终对象可能由原始 FileObject 或派生分析资产引用；两类引用都必须阻止孤儿清理。
+    // 最终对象可能由上传文件、分析瓦片、对齐预测或不可变训练包引用；任一数据库事实都必须阻止孤儿清理。
     for (const object of diskObjects) {
       const category = object.staged
         ? "staged_binary"
-        : filesByKey.has(object.storageKey) || analysisAssetsByKey.has(object.storageKey)
+        : filesByKey.has(object.storageKey) ||
+            analysisAssetsByKey.has(object.storageKey) ||
+            alignmentArtifactsByKey.has(object.storageKey) ||
+            trainingArtifactsByKey.has(object.storageKey)
           ? null
           : "orphan_binary";
       if (!category) continue;
@@ -110,6 +138,32 @@ export class ObjectLifecycleService {
         storageKey: asset.storageKey,
         size: Number(asset.size),
         createdAt: asset.createdAt.toISOString(),
+        cleanupEligible: false,
+      });
+    }
+    // 对齐 prediction 既可能供在线应用，也可能被训练冻结引用；缺失时只能报告，绝不能当孤儿清理。
+    for (const artifact of alignmentArtifacts) {
+      if (diskKeys.has(artifact.storageKey)) continue;
+      summaries.push({
+        category: "missing_binary",
+        alignmentArtifactId: artifact.id,
+        name: `强制对齐 ${artifact.kind}`,
+        storageKey: artifact.storageKey,
+        size: Number(artifact.size),
+        createdAt: artifact.createdAt.toISOString(),
+        cleanupEligible: false,
+      });
+    }
+    // 训练包是不可再生研究交付物；对象缺失只报告，不删除或重建数据库 manifest。
+    for (const artifact of trainingArtifacts) {
+      if (diskKeys.has(artifact.storageKey)) continue;
+      summaries.push({
+        category: "missing_binary",
+        alignmentTrainingArtifactId: artifact.id,
+        name: `训练包 ${artifact.exportId}`,
+        storageKey: artifact.storageKey,
+        size: Number(artifact.size),
+        createdAt: artifact.createdAt.toISOString(),
         cleanupEligible: false,
       });
     }

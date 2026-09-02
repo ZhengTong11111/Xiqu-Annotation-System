@@ -11156,3 +11156,51 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：保存故障阻断复核与 FA-D3c3b。**待推进**：FA-D3c3c 在唯一 worker coordinator 内实现训练导出 adapter、claim/heartbeat/
   stale-recovery、惰性 ZIP staged 写入、实际 manifest 校验、claim-fenced 原子发布、取消/停机/模糊提交补偿和有限失败分类；开始前重写
   `CLAUDE_WORK.md`，不得把当前 queued 预约伪装成已可下载。本轮未部署生产、未生成真实训练包或修改生产数据。
+
+## 2026-09-02：FA-D3c3c Claim-fenced 训练包发布与对象补偿
+
+### 不可变资产与唯一 worker 执行链
+
+- 第 46 条纯追加 migration 新增 `AlignmentTrainingPackageArtifact`。每行严格一对一绑定成功 ProcessingJob，并以 RESTRICT 外键保留冻结
+  export；保存固定 package format/version、ZIP mime、对象 size/SHA、plan/final-manifest checksum、item count、最终 manifest 和 storage key。
+  SQL 同时校验固定合同、正容量、200 项上限及 SHA 格式，没有 UPDATE、DELETE、DROP、TRUNCATE、旧数据扫描或回填。它不是用户上传
+  FileObject，job.result 只公开 export/artifact id、checksum、size、item count，不公开 storage key、manifest 或源对象。
+- 新增 `AlignmentTrainingExportWorkerService`，接入现有唯一 `ProcessingJobWorkerCoordinator`，形成媒体分析、训练导出、强制对齐三类轮转队列；
+  没有第二 worker loop。Claim 只选择有活动需求的 queued 训练 job，完整 fence 为 job id + export id + claimedBy + attemptCount。领取后和最终
+  提交前都通过同一个冻结 reader 重新校验 provenance/input/逐项关系，再以当前活动账号和角色复核至少一个管理员需求。
+- 成功执行按“惰性读取 -> staged ZIP -> promote -> 锁住 running fence -> 同事务创建 package artifact 并置 succeeded”完成。最终事务同时要求
+  cancelRequestedAt 为空，因此运行中取消不会与成功交叉提交。停机中止会清理未提交对象并重排 queued；最后需求取消收口 cancelled；陈旧
+  running 在 canonical job lock 与行锁下按活动需求重排或取消。日志只记录 job/export id、有限 error code/count，不记录正文、manifest、路径、
+  storage key、临时 URL、PlayAuth 或凭据。
+
+### 流式音频与 ZIP64 发布
+
+- 新增独立训练音频 FFmpeg 边界：上传 Readable 通过 stdin 增量进入，VOD 只接受无内嵌凭据的 HTTPS 临时 URL，固定输出 16 kHz、单声道、
+  signed-16 FLAC。命令不经 shell，stderr 只排空；AbortSignal 会关闭上传流并以 SIGTERM/有界 SIGKILL 终止子进程。上传对象还在进入
+  FFmpeg 前按冻结 size/SHA 增量复核，避免对象内容损坏后仍生成可用外观的训练样本。
+- Node 标准库没有 ZIP writer，自写 CRC、data descriptor、central directory 和 ZIP64 风险过高，因此新增成熟 `archiver@8` 及开发期
+  `@types/archiver`。Writer 使用 `forceZip64 + store`、固定 entry 时间/mode/顺序，直接把 archive 流交给 ObjectStorage staged 上传；每次只
+  打开一项 prediction/target/audio，最终写根 manifest，整包不进入 Buffer、React、PostgreSQL 或宿主临时 ZIP。
+- 取消集成测试暴露 D3c3b 流访问器只等待 observer、没有接管原 source 错误的问题，现同时等待两条流，取消不再产生未处理错误。摘要损坏测试
+  又发现归档失败时，对象后端可能已把提前闭合的残缺 ZIP 视为成功 staged；writer 现保存 staged 结果，并在所有失败出口用统一补偿删除
+  final/staged。Promote 已成功但响应丢失也会删除两者；数据库提交响应不确定则先按预分配 artifact id 和 succeeded job 复核，完全匹配才保留，
+  明确无行才删 final，无法确认时稳定报 commit_uncertain。
+
+### 生命周期审计与保存链复核
+
+- 为训练包接入 `ObjectLifecycleService` 时发现一个早于本阶段的遗漏：AlignmentArtifact prediction 已经是持久对象，但过去巡检只认 FileObject
+  和 MediaAnalysisAsset，存在被误报 orphan 的风险。现统一把 FileObject、MediaAnalysisAsset、AlignmentArtifact prediction 和
+  AlignmentTrainingPackageArtifact 四类 key 视为正式引用；缺失 prediction/训练包只报告有限 asset id，不自动删除数据库学术事实。
+- 本阶段未修改 App、ProjectData、annotation save、operation planner、autosave、IndexedDB 草稿、snapshot、审核、workflow 或协作 revision。
+  在此前真实保存失败 command 精确重放与环境对齐基础上，完整 API 保存/恢复/协作回归继续通过，确认训练 worker 没有进入文件保存链。
+
+### 验证与运行状态
+
+- 专项 `test:force-alignment-training-worker` 23/23，覆盖 migration、确定性 package、FFmpeg argv/分片/取消、ZIP staged 写入、摘要损坏、残缺
+  staged 补偿、promote 响应丢失、成功发布、对象生命周期、运行中取消、停机重排、陈旧 claim 和三队列轮转。完整 API 371/371、完整生产
+  `npm run build` 和 `git diff --check` 通过；只保留既有 Vite 大 chunk 提示及 pg adapter concurrent-query deprecation warning。
+- 第 46 条 migration 仅应用到本机 `localhost:54329/xiqu_platform` 的 test/public schema；Prisma Client、shared/document-model 已重建，4317
+  API 已重启，`/api/health/ready` 返回 database/storage ready。未连接、修改或部署生产数据库/对象/进程，也没有创建生产训练包。
+- **已完成**：FA-D3c3c 与整个 FA-D3c3 后端产包链。**待推进**：FA-D3c4 先拆出 D3c4a 的管理员有界导出列表/详情、成功对象受权 Range/下载、
+  当前权限重验和下载审计，再做创建/观察 UI 与显式 retry。当前 worker 能产包不代表浏览器已有下载入口；下一轮开始前必须按实际代码重写
+  `CLAUDE_WORK.md`，继续禁止把大 ZIP 或 manifest 放入 React/API JSON。本轮未部署生产。

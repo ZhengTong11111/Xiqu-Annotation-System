@@ -308,7 +308,7 @@ annotationOperationId / committedRevision / details
   diff check 通过。第 43 条 migration 仅应用于本机开发库并重启 API 验证 ready；未部署生产、未创建后台导出任务或大型对象、未改写
   在线 annotation/operation/snapshot/review/workflow 事实。
 
-##### FA-D3c3：后台导出任务、对象发布与补偿（进行中）
+##### FA-D3c3：后台导出任务、对象发布与补偿（已完成）
 
 ###### FA-D3c3a：可导出输入冻结与引用保护（已完成）
 
@@ -346,15 +346,24 @@ annotationOperationId / committedRevision / details
   产物与新增 migration 失配。对齐第 45 条本机 migration、Prisma Client 与进程后，训练专项 46/46、通用 processing jobs 11/11、普通原子
   保存 34/34、worker coordinator 1/1、完整 API 362/362、完整生产构建和 diff check 通过；未部署生产或创建真实导出对象。
 
-###### FA-D3c3c：Claim-fenced 对象发布、取消与补偿（下一阶段）
+###### FA-D3c3c：Claim-fenced 对象发布、取消与补偿（已完成）
 
-- 在现有 ProcessingJob 请求/命令/任务中心中增加训练导出类型和独立 adapter，不创建第二轮询器。Worker 按冻结 manifest 读取受保护
-  prediction/audio/目标 revision，staged 后校验 size/SHA，再 claim-fenced 原子发布；取消、陈旧 claim、模糊提交和清理失败沿用现有
-  有限状态与补偿规则。
-- 导出对象具有版本、manifest checksum、对象清单和容量上限；训练消费者通过服务端受权读取，不向浏览器暴露临时媒体 URL、凭据、
-  storage key 或整份 ProjectData。
+- 第 46 条纯追加 migration 新增不可变 `AlignmentTrainingPackageArtifact`，以 RESTRICT 外键绑定冻结 export 和成功 job，并保存固定包格式、
+  ZIP 对象 size/SHA、plan/final-manifest checksum、样本计数和最终 manifest。它不是普通上传 FileObject；job 公开结果只含有限 artifact
+  identity/摘要，不暴露 storage key、manifest、媒体 URL 或凭据。
+- 唯一 analysis worker coordinator 已加入第三个训练导出 adapter，继续按媒体分析、训练导出、强制对齐轮转，不创建第二轮询器。Worker 使用
+  job/export/claimedBy/attemptCount 完整围栏，claim 后和最终提交前两次复核冻结输入、活动需求与管理员能力；成功路径为惰性输入 -> staged
+  ZIP64 -> promote -> 同事务 artifact + succeeded，取消、停机和陈旧 claim 分别收口为 cancelled、queued 和有界恢复。
+- 新增独立 FFmpeg 流适配器，把上传对象或 worker 内存中的 VOD HTTPS 临时音频规范化为 16 kHz、单声道、signed-16 FLAC。上传对象在进入
+  FFmpeg 前按冻结 size/SHA 增量复核；VOD URL 只进入无 shell argv。AbortSignal 会终止输入与子进程，stderr 只排空、不进入日志。
+- 使用成熟 `archiver` v8 流式写固定顺序、store 模式、ZIP64 包；每次只打开一个 prediction/target/audio 条目，最终再写根 manifest，整包不进入
+  Buffer 或宿主临时文件。测试发现并修复“归档失败但对象后端已把残缺 ZIP 视为成功 staged”的补偿缺口，所有失败出口现在统一删除 final/staged。
+- 对象生命周期现已把上传文件、分析瓦片、AlignmentArtifact prediction 和训练包四类 storage key 都视为正式引用；prediction 这一历史遗漏也在
+  本阶段修复。缺失对象只报告具体有限 asset identity，不会把仍有数据库引用的学术对象误报为可清理孤儿。
+- 训练 worker 专项 23/23、完整 API 371/371、完整生产构建和 diff check 通过。第 46 条 migration 仅应用于本机开发/测试 schema，本机 API
+  已重启并通过 database/storage readiness；未连接或部署生产、未生成生产训练包，也未改动标注保存、operation、snapshot、审核或协作事实。
 
-##### FA-D3c4：管理员创建、观察与下载闭环
+##### FA-D3c4：管理员创建、观察与下载闭环（下一阶段）
 
 - 管理员从有界候选创建冻结导出，明确显示 partial/invalid/缺分组阻断、实际 split 分布、任务进度和失败类别；任务中心继续是唯一
   polling/取消 owner。成功后提供受权下载或服务器侧消费入口，不把大对象塞入 React 状态。

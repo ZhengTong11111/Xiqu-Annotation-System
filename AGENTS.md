@@ -249,12 +249,17 @@ Main currently contains all major recent feature lines that matter for context:
   account request -> canonical package identity, revalidates the complete frozen export after the canonical lock, and creates only one
   queued execution plus account demand/idempotency aliases. Its identity binds export and immutable manifest/package-contract checksums,
   never account, path, storage key, temporary URL or credentials. Provenance-only/corrupt exports cannot queue; cancellation reuses the
-  common command service, while retry remains unsupported until a claim-fenced package worker exists
+  common command service, while retry remains unsupported until D3c4 defines a new execution and successful-package reuse contract
 - `alignmentTrainingPackage` in document-model is the only v1 package plan/final-manifest contract. Paths are deterministic and identity-
   based, inventory and byte/SHA limits are fail-closed, and normalized audio is fixed to 16 kHz mono signed-16 FLAC. The API package
   stream adapter opens prediction, target and audio entries strictly one at a time, observes actual bytes/checksums, and stops opening
-  later inputs after cancellation; it does not create ZIP/final objects or accumulate a whole package in memory. Publishing, retries,
-  download authorization and claim fencing belong to later phases, not the reservation route
+  later inputs after cancellation; it does not accumulate a whole package in memory
+- `AlignmentTrainingExportWorkerService` is the only training-package execution and publication owner. It joins the existing single
+  worker coordinator as a third rotating adapter, revalidates immutable input plus active administrator demand after claim and before
+  commit, streams uploaded/VOD audio through fixed FLAC normalization, writes a ZIP64 staged object through `archiver`, and atomically
+  binds one immutable package artifact to a succeeded job under the complete job/export/worker/attempt fence. Cancellation, shutdown,
+  stale recovery, ambiguous publish/commit and cleanup failure must retain the same compensation semantics; no route or second runtime
+  may assemble a package. Download authorization and retry remain separate later-phase boundaries
 - force-alignment tool attempts are a lightweight governance/training side table, never ProjectData or document history. Their
   administrator CSV is generated only by the API after fresh full-resource authorization, accepts at most a 90-day half-open
   window, reads in bounded batches, exports at most 10,000 rows with an explicit truncation header, and uses the shared CSV
@@ -393,7 +398,7 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     streams cannot share a run. Definition, bitrate, display metadata, temporary URL, and track offset never enter the fingerprint
 - `apps/api/src/processingJobWorkerRuntime.ts` + `apps/api/src/processingJobWorkerCoordinator.ts`
   - the only long-lived background polling owner. It serially runs bounded stale recovery and uses rotating adapter priority so
-    media analysis and force alignment cannot starve one another; do not start a second task loop for a new processing type
+    media analysis, training export and force alignment cannot starve one another; do not start a second task loop for a new processing type
   - runtime failures use bounded exponential backoff and fixed safe logs; stop aborts the current adapter and waits for its database
     settlement before process exit
 - `apps/api/src/mediaAnalysisWorkerService.ts`
@@ -503,12 +508,20 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - export-ready input uses an exact revision target snapshot and a stable source snapshot. Stable annotation entity ids may be historical
     non-UUID strings, so the target contract bounds and rejects control characters without rewriting identity. Canonical checksums, counts,
     byte limits and per-row replay validation are mandatory; later workers must not reconstruct labels from mutable current ProjectData
+- `apps/api/src/alignmentTrainingExportWorkerService.ts` + `apps/api/src/alignmentTrainingAudioFfmpeg.ts` +
+  `apps/api/src/alignmentTrainingPackageWriter.ts`
+  - the only training-package execution boundary. It consumes the immutable D3c3 input/plan, incrementally verifies uploaded source bytes,
+    normalizes audio to the fixed FLAC contract, and streams a fixed-order ZIP64 directly into ObjectStorage staged publication
+  - artifact creation and job success share the complete claim fence in one transaction. A failed archive may still produce an apparently
+    successful staged object, so every pre-commit failure must compensate both staged and final keys; ambiguous database completion must
+    verify the preallocated artifact id and succeeded job before retaining the final object
 - `src/platform/AlignmentRunsDialog.tsx`
   - low-frequency bounded run history and explicit apply confirmation; an ambiguous retry reuses its session action UUID
   - the editor blocks new mutations from request start through authoritative refetch. The dialog must never apply prediction timing locally
 - `apps/api/src/objectLifecycleService.ts` + `apps/api/src/backup/backupService.ts`
-  - both FileObject and MediaAnalysisAsset storage keys are authoritative references; lifecycle cleanup and backup warnings
-    must not classify analysis tiles as orphan binaries
+  - FileObject, MediaAnalysisAsset, AlignmentArtifact prediction and AlignmentTrainingPackageArtifact storage keys are all authoritative
+    references; lifecycle cleanup must not classify any of these persisted objects as orphan binaries. Missing prediction/training-package
+    objects are report-only integrity faults, never implicit permission to delete their database provenance
   - a FileObject referenced only by `AlignmentTrainingExportInput` is still live. Both the inspection query and the delete-time recheck must
     require zero MediaFile and zero training-input references before deleting the database row or binary
   - future permanent Trash deletion must start from each trashed logical root and purge its complete descendant subtree;
