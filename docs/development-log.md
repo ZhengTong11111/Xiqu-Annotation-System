@@ -11253,6 +11253,41 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   更新。**待推进**：若未来研究确实需要外部工具版本 provenance、账号匿名化或受授权音频片段，必须依据真实需求单独设计；当前不推进任何
   服务器模型执行或训练发布功能。本轮未部署生产。
 
+## 2026-09-02：全量标注人员职责组增量调整
+
+### 计划与权限边界
+
+- 以已确认的《昆元任务分配_按字数公平版》权限计划为业务基线，处理三名退出人员和四名新增人员。写入前重新核对 7 个姓名只匹配
+  一个活动账号、账号名与预期一致、角色均为 `annotator + reviewer`。退出人员均没有直接 ACL 和活动资源所有权，其全部资源能力来自
+  项目职责组，因此本轮只撤销职责组来源，不停用账号、不改角色、不转移资源。
+- 新成员同时加入所在组普通项目及 Blind Pool 叶项目的标注组和审核组；四人都加入 Blind Pool 根审核组取得全部盲标媒体的
+  `read + review + download`。叶项目继续依靠 `break_permission_inheritance=true` 隔离 A/B 标注文件，没有扩大到其他组文件。
+- dry-run 从每个项目当前完整集合计算 `current - exits + joins`，计划指纹为
+  `ecd1b8b5a687eeea996b6b9bcf66e516e877b792c4e300e0029ca825b1a0c4d1`：67 个项目、删除 141 条、增加 182 条。郭禹坤已有
+  4 条第11组目标关系，因此实际新增数小于四人的目标关系总和。
+
+### 生产执行与恢复证据
+
+- 使用 `platform.admin` 于 `2026-09-02T14:56:47.131Z` 开启维护模式。一次性脚本从当前 release 导入数据库、权限、资源服务和维护
+  操作者模块，取得批处理 advisory lock，并只通过 `ResourceService.updateProjectWorkflowGroups()` 写入；没有直接 SQL 改成员、
+  没有改写 `resource_permissions`，每个项目继续由服务层锁定、复核、更新 `updated_at` 并写审计。
+- 在第一笔写入前，完整 before/after 集合以 `0600` 保存到生产数据盘
+  `/var/lib/xiqu-platform/backups/permission-roster-delta-20260902.json`。执行完成后职责组总数由 10,293 经 `-141 +182`
+  变为 10,334，直接 ACL 仍为 47；本轮生成 67 条 `project_workflow_groups_update` 审计。
+- 新增长期交接文档 [`project-workflow-permission-operations.md`](./project-workflow-permission-operations.md)，说明角色、owner、直接 ACL、
+  继承、职责组和 Blind Pool 的叠加关系，以及只读核对、服务层写入、指纹门禁、验收和反向恢复流程。文档不保存数据库连接串或凭据。
+
+### 有效权限验收与运行状态
+
+- 三名退出人员的职责组行全部清零，并对其逐一运行服务端有效权限计算：共 3,438 个“账号 × 活动资源”检查全部无能力。四名新增人员
+  完成 379 个应允许资源检查；普通任务和本组 Blind Pool 叶项目具备编辑、文件操作、审核和下载组合，Blind Pool 媒体层具备查看、审核、
+  下载。另有 150 个非本组 A/B 叶资源检查全部保持不可访问。
+- 第4组两位新成员各获得 23 个标注项目/24 个审核项目；第6组为 23/24；第11组为 22/23。多出的一个审核项目均为 Blind Pool 根媒体
+  权限。本轮没有授予 `manage_permissions`，也没有删除其他人员或既有手工 ACL。
+- 验收通过后于 `2026-09-02T14:58:51.254Z` 解除维护；`xiqu-api`、`xiqu-analysis-worker`、Caddy 均为 active，API database/storage
+  readiness 均为 ready。服务器 `/tmp` 一次性脚本随后清理，受保护变更计划保留。**已完成**：人员增删、有效权限和盲标隔离验收、恢复证据、
+  运维交接文档。**待推进**：账号是否停用由 super admin 另行决定；本轮按需求仅解除项目资源权限。
+
 ## 2026-09-02：HC3a inline 影子 recipe 安全候选
 
 ### 范围纠正与数据安全边界
