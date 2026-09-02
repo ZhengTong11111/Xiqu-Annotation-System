@@ -76,8 +76,6 @@ enum ProcessingJobType {
   audio_extract
   annotation_export
   media_analysis
-  force_alignment
-  alignment_training_export
 }
 
 enum ProcessingJobStatus {
@@ -116,51 +114,6 @@ enum MediaAnalysisAssetKind {
   pitch
 }
 
-enum AlignmentArtifactKind {
-  prediction
-}
-
-enum AlignmentQualityAssessmentScope {
-  editor
-  reviewer
-}
-
-enum AlignmentQualityVerdict {
-  correct
-  needs_adjustment
-  unusable
-}
-
-enum AlignmentQualityIssueCode {
-  lyric_mismatch
-  missing_character
-  duplicate_character
-  filler_character
-  overlapping_voices
-  unclear_audio
-  audio_desync
-  source_separation_artifact
-  boundary_offset
-  other
-}
-
-// 训练切分使用稳定研究身份；显示名只供管理界面辨认，绝不能替代 UUID 参与分组。
-enum AlignmentResearchGroupKind {
-  work
-  performer
-}
-
-enum AlignmentTrainingTargetMode {
-  prediction
-  manual_revision
-}
-
-enum AlignmentTrainingSplit {
-  train
-  validation
-  test
-}
-
 enum AuditAction {
   auth_login
   account_create
@@ -178,11 +131,6 @@ enum AuditAction {
   resource_restore
   resource_delete
   annotation_file_save
-  alignment_quality_assessment_upsert
-  alignment_research_group_create
-  project_alignment_research_groups_update
-  alignment_training_export_freeze
-  alignment_training_export_job_create
   annotation_workflow_status_update
   project_workflow_groups_update
   annotation_client_sync_failure
@@ -305,12 +253,6 @@ model User {
   updatedAnnotationAudioPreferences AnnotationAudioPreference[]       @relation("AnnotationAudioPreferenceUpdater")
   createdMediaAnalysisRuns          MediaAnalysisRun[]                @relation("MediaAnalysisRunCreator")
   supersededMediaAnalysisRuns       MediaAnalysisRun[]                @relation("MediaAnalysisRunSuperseder")
-  createdAlignmentRuns              AlignmentRun[]                    @relation("AlignmentRunCreator")
-  alignmentApplications             AlignmentApplication[]            @relation("AlignmentApplicationActor")
-  alignmentQualityAssessments       AlignmentQualityAssessment[]      @relation("AlignmentQualityAssessmentActor")
-  createdAlignmentResearchGroups    AlignmentResearchGroup[]          @relation("AlignmentResearchGroupCreator")
-  assignedAlignmentResearchGroups   ProjectAlignmentResearchGroup[]   @relation("ProjectAlignmentResearchGroupAssigner")
-  createdAlignmentTrainingExports   AlignmentTrainingExport[]         @relation("AlignmentTrainingExportCreator")
   auditLogs                         AuditLog[]                        @relation("AuditActor")
   annotationOperations              AnnotationOperation[]             @relation("AnnotationOperationActor")
   annotationToolAttempts            AnnotationToolAttempt[]           @relation("AnnotationToolAttemptActor")
@@ -360,7 +302,6 @@ model FileObject {
   owner      User        @relation("FileOwner", fields: [ownerUserId], references: [id])
   mediaFiles MediaFile[]
   auditLogs  AuditLog[]
-  alignmentTrainingInputs AlignmentTrainingExportInput[] @relation("AlignmentTrainingInputSourceFile")
 
   @@index([ownerUserId])
   @@map("files")
@@ -379,19 +320,18 @@ model ResourceEntry {
   createdAt                  DateTime     @default(now()) @map("created_at")
   updatedAt                  DateTime     @updatedAt @map("updated_at")
 
-  parent                  ResourceEntry?                  @relation("ResourceTree", fields: [parentId], references: [id], onDelete: Cascade)
-  children                ResourceEntry[]                 @relation("ResourceTree")
-  owner                   User                            @relation("ResourceOwner", fields: [ownerUserId], references: [id])
-  projectMetadata         ProjectMetadata?
-  projectWorkflowMembers  ProjectWorkflowMember[]
-  alignmentResearchGroups ProjectAlignmentResearchGroup[]
-  annotationFile          AnnotationFile?
-  mediaFile               MediaFile?
-  permissions             ResourcePermission[]
-  userStates              ResourceUserState[]
-  processingJobs          ProcessingJob[]
-  processingJobRequests   ProcessingJobRequest[]
-  auditLogs               AuditLog[]
+  parent                 ResourceEntry?          @relation("ResourceTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children               ResourceEntry[]         @relation("ResourceTree")
+  owner                  User                    @relation("ResourceOwner", fields: [ownerUserId], references: [id])
+  projectMetadata        ProjectMetadata?
+  projectWorkflowMembers ProjectWorkflowMember[]
+  annotationFile         AnnotationFile?
+  mediaFile              MediaFile?
+  permissions            ResourcePermission[]
+  userStates             ResourceUserState[]
+  processingJobs         ProcessingJob[]
+  processingJobRequests  ProcessingJobRequest[]
+  auditLogs              AuditLog[]
 
   @@index([parentId, type])
   @@index([parentId, trashedAt, archivedAt, name, id], map: "resource_entries_directory_name_idx")
@@ -402,46 +342,12 @@ model ResourceEntry {
 }
 
 model ProjectMetadata {
-  resourceId            String  @id @map("resource_id")
-  description           String?
-  researchGroupRevision Int     @default(0) @map("research_group_revision")
+  resourceId  String  @id @map("resource_id")
+  description String?
 
   resource ResourceEntry @relation(fields: [resourceId], references: [id], onDelete: Cascade)
 
   @@map("project_metadata")
-}
-
-// 全局研究分组 identity 可被多个项目复用；同名不自动合并，避免同名剧目或演员被误判为同一实体。
-model AlignmentResearchGroup {
-  id          String                     @id
-  kind        AlignmentResearchGroupKind
-  displayName String                     @map("display_name")
-  createdBy   String                     @map("created_by")
-  createdAt   DateTime                   @default(now()) @map("created_at")
-
-  creator      User                            @relation("AlignmentResearchGroupCreator", fields: [createdBy], references: [id], onDelete: Restrict)
-  projectLinks ProjectAlignmentResearchGroup[]
-
-  @@index([kind, displayName, id])
-  @@index([createdBy])
-  @@map("alignment_research_groups")
-}
-
-// 项目关系和普通 ACL/职责组互相独立；完整集合替换只改这张关系表和 project revision。
-model ProjectAlignmentResearchGroup {
-  projectResourceId String   @map("project_resource_id")
-  researchGroupId   String   @map("research_group_id")
-  assignedBy        String   @map("assigned_by")
-  assignedAt        DateTime @default(now()) @map("assigned_at")
-
-  project  ResourceEntry          @relation(fields: [projectResourceId], references: [id], onDelete: Cascade)
-  group    AlignmentResearchGroup @relation(fields: [researchGroupId], references: [id], onDelete: Restrict)
-  assigner User                   @relation("ProjectAlignmentResearchGroupAssigner", fields: [assignedBy], references: [id], onDelete: Restrict)
-
-  @@id([projectResourceId, researchGroupId])
-  @@index([researchGroupId])
-  @@index([assignedBy])
-  @@map("project_alignment_research_groups")
 }
 
 // 项目职责组成员关系是独立的有效权限来源；手工 ResourcePermission 始终单独保存、单独撤销。
@@ -490,8 +396,6 @@ model AnnotationFile {
   collaborationTickets   AnnotationCollaborationTicket[]
   collaborationPresences AnnotationCollaborationPresence[]
   audioPreference        AnnotationAudioPreference?
-  alignmentRuns          AlignmentRun[]
-  alignmentApplications  AlignmentApplication[]
 
   @@index([mediaResourceId])
   @@index([lastEditedBy])
@@ -704,7 +608,6 @@ model MediaFile {
   primaryAudioTracks      MediaAudioTrack[]  @relation("PrimaryMediaAudioTracks")
   audioTrackSources       MediaAudioTrack[]  @relation("AudioTrackSourceMedia")
   vodRenditionAudioTracks MediaAudioTrack[]  @relation("VodRenditionAudioTrackSource")
-  alignmentRuns           AlignmentRun[]     @relation("AlignmentRunSourceMedia")
 
   @@index([fileId])
   @@index([sourceType])
@@ -738,7 +641,6 @@ model MediaAudioTrack {
   creator               User                        @relation("MediaAudioTrackCreator", fields: [createdBy], references: [id], onDelete: Restrict)
   defaultForAnnotations AnnotationAudioPreference[]
   processingJobRequests ProcessingJobRequest[]
-  alignmentRuns         AlignmentRun[]
 
   @@unique([primaryMediaResourceId, audioMediaResourceId])
   @@index([primaryMediaResourceId, sortOrder, id])
@@ -796,7 +698,6 @@ model MediaAnalysisRun {
   supersededRuns MediaAnalysisRun[]   @relation("MediaAnalysisRunSupersession")
   assets         MediaAnalysisAsset[]
   jobs           ProcessingJob[]
-  alignmentRuns  AlignmentRun[]       @relation("AlignmentRunMediaAnalysis")
 
   @@index([sourceMediaResourceId])
   @@index([sourceMediaResourceId, sourceFingerprint, algorithmVersion, configHash])
@@ -829,262 +730,6 @@ model MediaAnalysisAsset {
   @@unique([runId, kind, preset, level, tileIndex])
   @@index([runId, kind, preset, level, startTime])
   @@map("media_analysis_assets")
-}
-
-// 对齐 run 固化模型输入身份；来源实体删除时外键可空，但 snapshot id/hash 永久保留研究溯源。
-model AlignmentRun {
-  id                            String              @id @default(uuid())
-  annotationFileId              String?             @map("annotation_file_id")
-  annotationFileIdSnapshot      String              @map("annotation_file_id_snapshot")
-  inputRevision                 Int                 @map("input_revision")
-  inputTextFingerprint          String              @map("input_text_fingerprint")
-  inputSentenceCount            Int                 @map("input_sentence_count")
-  inputCharacterCount           Int                 @map("input_character_count")
-  sourceMediaResourceId         String?             @map("source_media_resource_id")
-  sourceMediaResourceIdSnapshot String              @map("source_media_resource_id_snapshot")
-  sourceFingerprint             String              @map("source_fingerprint")
-  mediaAudioTrackId             String?             @map("media_audio_track_id")
-  mediaAudioTrackIdSnapshot     String              @map("media_audio_track_id_snapshot")
-  audioOffsetMicros             BigInt              @map("audio_offset_micros")
-  mediaAnalysisRunId            String?             @map("media_analysis_run_id")
-  mediaAnalysisFingerprint      String?             @map("media_analysis_fingerprint")
-  modelName                     String              @map("model_name")
-  modelVersion                  String              @map("model_version")
-  dictionaryVersion             String              @map("dictionary_version")
-  codeVersion                   String              @map("code_version")
-  configHash                    String              @map("config_hash")
-  config                        Json
-  identityHash                  String              @unique @map("identity_hash")
-  status                        ProcessingJobStatus @default(queued)
-  progress                      Float               @default(0)
-  errorCode                     String?             @map("error_code")
-  manifest                      Json?
-  createdBy                     String              @map("created_by")
-  createdAt                     DateTime            @default(now()) @map("created_at")
-  updatedAt                     DateTime            @updatedAt @map("updated_at")
-  completedAt                   DateTime?           @map("completed_at")
-
-  annotationFile  AnnotationFile?   @relation(fields: [annotationFileId], references: [resourceId], onDelete: SetNull)
-  sourceMedia     MediaFile?        @relation("AlignmentRunSourceMedia", fields: [sourceMediaResourceId], references: [resourceId], onDelete: SetNull)
-  mediaAudioTrack MediaAudioTrack?  @relation(fields: [mediaAudioTrackId], references: [id], onDelete: SetNull)
-  mediaAnalysisRun MediaAnalysisRun? @relation("AlignmentRunMediaAnalysis", fields: [mediaAnalysisRunId], references: [id], onDelete: SetNull)
-  creator         User              @relation("AlignmentRunCreator", fields: [createdBy], references: [id], onDelete: Restrict)
-  artifacts       AlignmentArtifact[]
-  jobs            ProcessingJob[]
-  applications    AlignmentApplication[]
-
-  @@index([annotationFileId, inputRevision])
-  @@index([sourceMediaResourceId])
-  @@index([mediaAudioTrackId])
-  @@index([mediaAnalysisRunId])
-  @@index([status, createdAt])
-  @@index([createdBy, createdAt])
-  @@map("alignment_runs")
-}
-
-// 大型预测正文只存在对象存储；数据库仅保存固定格式和完整性元数据。
-model AlignmentArtifact {
-  id            String                @id @default(uuid())
-  runId         String                @map("run_id")
-  kind          AlignmentArtifactKind
-  formatVersion Int                   @map("format_version")
-  mimeType      String                @map("mime_type")
-  size          BigInt
-  checksum      String
-  storageKey    String                @unique @map("storage_key")
-  createdAt     DateTime              @default(now()) @map("created_at")
-
-  run          AlignmentRun          @relation(fields: [runId], references: [id], onDelete: Cascade)
-  applications AlignmentApplication[]
-  trainingExportItems AlignmentTrainingExportItem[]
-
-  @@unique([runId, kind])
-  @@index([runId, createdAt])
-  @@map("alignment_artifacts")
-}
-
-// 一次结果应用只保存轻量溯源；逐字 before/after 继续由真实 annotation operation 承载。
-model AlignmentApplication {
-  id                    String   @id @default(uuid())
-  alignmentRunId        String   @map("alignment_run_id")
-  alignmentArtifactId   String   @map("alignment_artifact_id")
-  annotationFileId      String   @map("annotation_file_id")
-  actorUserId           String   @map("actor_user_id")
-  clientActionId        String   @map("client_action_id")
-  requestHash           String   @map("request_hash")
-  baseRevision          Int      @map("base_revision")
-  committedRevision     Int      @map("committed_revision")
-  operationCount        Int      @map("operation_count")
-  appliedCharacterCount Int      @map("applied_character_count")
-  createdAt             DateTime @default(now()) @map("created_at")
-
-  run            AlignmentRun         @relation(fields: [alignmentRunId], references: [id], onDelete: Restrict)
-  artifact       AlignmentArtifact    @relation(fields: [alignmentArtifactId], references: [id], onDelete: Restrict)
-  annotationFile AnnotationFile        @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
-  actor          User                  @relation("AlignmentApplicationActor", fields: [actorUserId], references: [id], onDelete: Restrict)
-  operations     AnnotationOperation[]
-  qualityAssessments AlignmentQualityAssessment[]
-
-  @@unique([annotationFileId, actorUserId, clientActionId])
-  @@index([alignmentRunId, createdAt])
-  @@index([alignmentArtifactId])
-  @@index([annotationFileId, committedRevision])
-  @@index([actorUserId, createdAt])
-  @@map("alignment_applications")
-}
-
-// 质量评价采用追加历史 + 单一当前行；不复制正文、预测或 operation before/after。
-model AlignmentQualityAssessment {
-  id                     String                          @id @default(uuid())
-  alignmentApplicationId String                          @map("alignment_application_id")
-  assessorUserId         String                          @map("assessor_user_id")
-  clientActionId         String                          @map("client_action_id")
-  requestHash            String                          @map("request_hash")
-  scope                   AlignmentQualityAssessmentScope
-  verdict                 AlignmentQualityVerdict
-  issueCodes              AlignmentQualityIssueCode[]     @map("issue_codes")
-  supersededAt            DateTime?                       @map("superseded_at")
-  createdAt               DateTime                        @default(now()) @map("created_at")
-
-  application AlignmentApplication @relation(fields: [alignmentApplicationId], references: [id], onDelete: Cascade)
-  assessor    User                 @relation("AlignmentQualityAssessmentActor", fields: [assessorUserId], references: [id], onDelete: Restrict)
-
-  @@unique([assessorUserId, clientActionId])
-  @@index([alignmentApplicationId, createdAt])
-  @@index([alignmentApplicationId, assessorUserId, scope, supersededAt])
-  @@index([assessorUserId, createdAt])
-  @@map("alignment_quality_assessments")
-}
-
-// 训练导出先冻结轻量 provenance；大型 prediction/audio 对象由后续后台任务按这些稳定引用解析。
-model AlignmentTrainingExport {
-  id               String   @id @default(uuid())
-  createdBy        String   @map("created_by")
-  clientActionId   String   @map("client_action_id")
-  requestHash      String   @map("request_hash")
-  manifestFormat   String   @map("manifest_format")
-  manifestVersion  Int      @map("manifest_version")
-  manifestChecksum String   @map("manifest_checksum")
-  manifest         Json
-  splitSeedHash    String   @map("split_seed_hash")
-  splitRatios      Json     @map("split_ratios")
-  splitCounts      Json     @map("split_counts")
-  sampleCount      Int      @map("sample_count")
-  componentCount   Int      @map("component_count")
-  inputManifestFormat       String?  @map("input_manifest_format")
-  inputManifestVersion      Int?     @map("input_manifest_version")
-  inputManifestChecksum     String?  @map("input_manifest_checksum")
-  inputManifest             Json?    @map("input_manifest")
-  targetSentenceCount       Int?     @map("target_sentence_count")
-  targetCharacterCount      Int?     @map("target_character_count")
-  targetSnapshotBytes       Int?     @map("target_snapshot_bytes")
-  createdAt        DateTime @default(now()) @map("created_at")
-
-  creator User                          @relation("AlignmentTrainingExportCreator", fields: [createdBy], references: [id], onDelete: Restrict)
-  items   AlignmentTrainingExportItem[]
-  jobs    ProcessingJob[]
-  packageArtifacts AlignmentTrainingPackageArtifact[]
-
-  @@unique([createdBy, clientActionId])
-  @@index([createdAt, id])
-  @@index([manifestChecksum])
-  @@map("alignment_training_exports")
-}
-
-// 每项保存严格 manifest item 和关联 revision；不以 FK 追随未来可变 application/project 生命周期。
-model AlignmentTrainingExportItem {
-  exportId                     String                      @map("export_id")
-  alignmentApplicationId       String                      @map("alignment_application_id")
-  annotationFileIdSnapshot     String                      @map("annotation_file_id_snapshot")
-  projectResourceIdSnapshot    String                      @map("project_resource_id_snapshot")
-  projectResearchGroupRevision Int                         @map("project_research_group_revision")
-  alignmentRunId               String                      @map("alignment_run_id")
-  alignmentArtifactId          String                      @map("alignment_artifact_id")
-  baseRevision                 Int                         @map("base_revision")
-  committedRevision            Int                         @map("committed_revision")
-  observationEndRevision       Int                         @map("observation_end_revision")
-  targetMode                   AlignmentTrainingTargetMode @map("target_mode")
-  targetRevision               Int                         @map("target_revision")
-  groupComponentHash           String                      @map("group_component_hash")
-  split                        AlignmentTrainingSplit
-  snapshot                     Json
-
-  export   AlignmentTrainingExport        @relation(fields: [exportId], references: [id], onDelete: Cascade)
-  artifact AlignmentArtifact              @relation(fields: [alignmentArtifactId], references: [id], onDelete: Restrict)
-  groups   AlignmentTrainingExportGroup[]
-  input    AlignmentTrainingExportInput?
-
-  @@id([exportId, alignmentApplicationId])
-  @@index([annotationFileIdSnapshot])
-  @@index([projectResourceIdSnapshot])
-  @@index([alignmentRunId])
-  @@index([alignmentArtifactId])
-  @@map("alignment_training_export_items")
-}
-
-// 每项可导出输入只保存不含正文的目标时间和稳定来源摘要；旧 provenance-only export 可以没有此行。
-model AlignmentTrainingExportInput {
-  exportId                  String   @map("export_id")
-  alignmentApplicationId    String   @map("alignment_application_id")
-  sourceFileId              String?  @map("source_file_id")
-  targetSnapshot            Json     @map("target_snapshot")
-  targetSnapshotChecksum    String   @map("target_snapshot_checksum")
-  targetSentenceCount       Int      @map("target_sentence_count")
-  targetCharacterCount      Int      @map("target_character_count")
-  targetSnapshotBytes       Int      @map("target_snapshot_bytes")
-  sourceSnapshot            Json     @map("source_snapshot")
-  sourceSnapshotChecksum    String   @map("source_snapshot_checksum")
-  createdAt                 DateTime @default(now()) @map("created_at")
-
-  item       AlignmentTrainingExportItem @relation(fields: [exportId, alignmentApplicationId], references: [exportId, alignmentApplicationId], onDelete: Cascade)
-  sourceFile FileObject?                 @relation("AlignmentTrainingInputSourceFile", fields: [sourceFileId], references: [id], onDelete: Restrict)
-
-  @@id([exportId, alignmentApplicationId])
-  @@index([sourceFileId])
-  @@map("alignment_training_export_inputs")
-}
-
-// 分组快照保留冻结当时的稳定 identity 与有限显示名，不依赖后来可能解绑的项目关系。
-model AlignmentTrainingExportGroup {
-  exportId                  String                     @map("export_id")
-  alignmentApplicationId    String                     @map("alignment_application_id")
-  researchGroupId           String                     @map("research_group_id")
-  projectResourceIdSnapshot String                     @map("project_resource_id_snapshot")
-  kind                      AlignmentResearchGroupKind
-  displayNameSnapshot       String                     @map("display_name_snapshot")
-
-  item AlignmentTrainingExportItem @relation(fields: [exportId, alignmentApplicationId], references: [exportId, alignmentApplicationId], onDelete: Cascade)
-
-  @@id([exportId, alignmentApplicationId, researchGroupId])
-  @@index([researchGroupId])
-  @@index([projectResourceIdSnapshot])
-  @@map("alignment_training_export_groups")
-}
-
-// 训练包是后台派生的不可变 ZIP，不冒充用户上传 FileObject；完整 manifest 与对象摘要共同构成下载/恢复依据。
-model AlignmentTrainingPackageArtifact {
-  id               String   @id
-  exportId         String   @map("export_id")
-  processingJobId  String   @unique @map("processing_job_id")
-  format           String
-  version          Int
-  container        String
-  mimeType         String   @map("mime_type")
-  size             BigInt
-  checksum         String
-  storageKey       String   @unique @map("storage_key")
-  planChecksum     String   @map("plan_checksum")
-  manifestChecksum String   @map("manifest_checksum")
-  itemCount        Int      @map("item_count")
-  manifest         Json
-  createdAt        DateTime @default(now()) @map("created_at")
-
-  export AlignmentTrainingExport @relation(fields: [exportId], references: [id], onDelete: Restrict)
-  job    ProcessingJob            @relation(fields: [processingJobId], references: [id], onDelete: Restrict)
-
-  @@index([exportId, createdAt])
-  @@index([checksum])
-  @@map("alignment_training_package_artifacts")
 }
 
 // 不使用“拒绝”记录：有效权限由管理员/所有者特权、直接授权和未被截断的祖先授权合并得到。
@@ -1134,8 +779,6 @@ model ProcessingJob {
   errorMessage       String?                        @map("error_message")
   result             Json?
   analysisRunId      String?                        @map("analysis_run_id")
-  alignmentRunId     String?                        @map("alignment_run_id")
-  alignmentTrainingExportId String?                 @map("alignment_training_export_id")
   attemptCount       Int                            @default(0) @map("attempt_count")
   claimedBy          String?                        @map("claimed_by")
   claimedAt          DateTime?                      @map("claimed_at")
@@ -1154,9 +797,6 @@ model ProcessingJob {
   creator               User                   @relation("JobCreator", fields: [createdBy], references: [id])
   cancellationRequester User?                  @relation("ProcessingJobCanceller", fields: [cancelRequestedBy], references: [id], onDelete: Restrict)
   analysisRun           MediaAnalysisRun?      @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
-  alignmentRun          AlignmentRun?          @relation(fields: [alignmentRunId], references: [id], onDelete: Cascade)
-  alignmentTrainingExport AlignmentTrainingExport? @relation(fields: [alignmentTrainingExportId], references: [id], onDelete: Restrict)
-  alignmentTrainingPackageArtifact AlignmentTrainingPackageArtifact?
   requests              ProcessingJobRequest[]
   commands              ProcessingJobCommand[] @relation("ProcessingJobCommandTarget")
   retryResults          ProcessingJobCommand[] @relation("ProcessingJobCommandResult")
@@ -1164,8 +804,6 @@ model ProcessingJob {
   @@index([resourceId])
   @@index([status])
   @@index([analysisRunId])
-  @@index([alignmentRunId])
-  @@index([alignmentTrainingExportId])
   @@index([deduplicationKey])
   @@index([cancelRequestedBy])
   @@index([status, createdAt])
@@ -1293,20 +931,17 @@ model AnnotationOperation {
   status            AnnotationOperationStatus @default(accepted)
   committedRevision Int?                      @map("committed_revision")
   committedAt       DateTime?                 @map("committed_at")
-  alignmentApplicationId String?              @map("alignment_application_id")
   createdAt         DateTime                  @default(now()) @map("created_at")
 
   annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
   actor          User           @relation("AnnotationOperationActor", fields: [actorUserId], references: [id])
   toolAttempt    AnnotationToolAttempt?
-  alignmentApplication AlignmentApplication? @relation(fields: [alignmentApplicationId], references: [id], onDelete: SetNull)
 
   @@unique([annotationFileId, sequence])
   @@unique([annotationFileId, actorUserId, clientOperationId])
   @@index([annotationFileId, createdAt])
   @@index([annotationFileId, committedRevision, sequence])
   @@index([actorUserId, createdAt])
-  @@index([alignmentApplicationId, sequence])
   @@map("annotation_operations")
 }
 

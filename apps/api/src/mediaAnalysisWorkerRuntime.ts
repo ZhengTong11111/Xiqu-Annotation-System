@@ -1,33 +1,38 @@
 import { randomUUID } from "node:crypto";
-import type { ProcessingJobWorkerAdapter } from "./processingJobWorkerCoordinator.js";
+import type { MediaAnalysisWorkerService } from "./mediaAnalysisWorkerService.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_STALE_RECOVERY_INTERVAL_MS = 30_000;
 const DEFAULT_RETRY_INITIAL_MS = 1_000;
 const DEFAULT_RETRY_MAX_MS = 30_000;
 
-type ProcessingJobWorkerRuntimeLogger = {
+type MediaAnalysisWorkerLoopService = Pick<
+  MediaAnalysisWorkerService,
+  "recoverStaleJobs" | "processNext"
+>;
+
+type MediaAnalysisWorkerRuntimeLogger = {
   warn(facts: Record<string, unknown>, message: string): void;
 };
 
-export type ProcessingJobWorkerRuntimeOptions = {
+export type MediaAnalysisWorkerRuntimeOptions = {
   pollIntervalMs?: number;
   staleRecoveryIntervalMs?: number;
   retryInitialMs?: number;
   retryMaxMs?: number;
-  logger?: ProcessingJobWorkerRuntimeLogger;
+  logger?: MediaAnalysisWorkerRuntimeLogger;
 };
 
-/** 单进程串行领取后台任务；停止时中止当前适配器，并等待数据库收口后再退出。 */
-export class ProcessingJobWorkerRuntime {
-  private readonly workerId = `processing-job-${randomUUID()}`;
+/** 单 worker 串行 claim；停止时中止当前 FFmpeg，并等待数据库写入完成后再退出。 */
+export class MediaAnalysisWorkerRuntime {
+  private readonly workerId = `media-analysis-${randomUUID()}`;
   private readonly abortController = new AbortController();
   private running: Promise<void> | null = null;
   private stopped = false;
 
   constructor(
-    private readonly service: ProcessingJobWorkerAdapter,
-    private readonly options: ProcessingJobWorkerRuntimeOptions = {},
+    private readonly service: MediaAnalysisWorkerLoopService,
+    private readonly options: MediaAnalysisWorkerRuntimeOptions = {},
   ) {
     assertPositiveInterval(options.pollIntervalMs, "pollIntervalMs");
     assertPositiveInterval(options.staleRecoveryIntervalMs, "staleRecoveryIntervalMs");
@@ -75,14 +80,14 @@ export class ProcessingJobWorkerRuntime {
           this.retryInitialMs,
           this.retryMaxMs,
         );
-        // 循环日志只包含有界状态，不能把数据库、VOD 或模型执行器原始异常带入服务日志。
+        // 循环错误只记录固定事实，不能把数据库连接串、VOD URL 或 SDK 原始异常带入日志。
         this.options.logger?.warn(
           {
             errorCode: "worker_loop_iteration_failed",
             consecutiveFailures: Math.min(consecutiveFailures, 32),
             retryDelayMs,
           },
-          "后台任务 worker 循环暂时失败，将按有界退避重试",
+          "媒体分析 worker 循环暂时失败，将按有界退避重试",
         );
         await wait(retryDelayMs, this.abortController.signal);
       }

@@ -41,14 +41,6 @@ import type {
   SortDirection,
 } from "./platform.js";
 import type {
-  AlignmentApplicationSummary,
-  AlignmentRunDetail,
-  AlignmentRunPage,
-  AlignmentRunSummary,
-  ApplyAlignmentRunRequest,
-  CreateAlignmentRunRequest,
-} from "./forceAlignment.js";
-import type {
   CommitAnnotationCommandBatchRequest,
   CommitAnnotationCommandBatchResponse,
 } from "./annotationCommandCommit.js";
@@ -399,8 +391,6 @@ export type StorageOrphanSummary = {
   category: StorageOrphanCategory;
   fileId?: string;
   analysisAssetId?: string;
-  alignmentArtifactId?: string;
-  alignmentTrainingArtifactId?: string;
   name?: string;
   storageKey: string;
   size: number;
@@ -691,16 +681,6 @@ export type PlatformApiContract<TPayload = unknown> = {
   createMediaAnalysis: {
     request: CreateMediaAnalysisRequest;
     response: MediaAnalysisRun;
-  };
-  listAlignmentRuns: { response: AlignmentRunPage };
-  getAlignmentRun: { response: AlignmentRunDetail };
-  createAlignmentRun: {
-    request: CreateAlignmentRunRequest;
-    response: AlignmentRunSummary;
-  };
-  applyAlignmentRun: {
-    request: ApplyAlignmentRunRequest;
-    response: AlignmentApplicationSummary;
   };
   listProcessingJobs: { response: ProcessingJobPage };
   getProcessingJobSummary: { response: ProcessingJobSummary };

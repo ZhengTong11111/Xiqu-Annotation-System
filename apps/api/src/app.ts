@@ -61,13 +61,7 @@ import { ProcessingJobQueryService } from "./processingJobQueryService.js";
 import { ProcessingJobCommandService } from "./processingJobCommandService.js";
 import { createSafeFastifyLoggerConfiguration } from "./requestLogSanitizer.js";
 import { AnnotationToolAttemptService } from "./annotationToolAttemptService.js";
-import { AlignmentRunService } from "./alignmentRunService.js";
-import { AlignmentApplicationService } from "./alignmentApplicationService.js";
-import { AlignmentQualityAssessmentService } from "./alignmentQualityAssessmentService.js";
-import { AlignmentTrainingCandidateService } from "./alignmentTrainingCandidateService.js";
-import { AlignmentResearchGroupService } from "./alignmentResearchGroupService.js";
-import { AlignmentTrainingExportService } from "./alignmentTrainingExportService.js";
-import { AlignmentTrainingExportJobService } from "./alignmentTrainingExportJobService.js";
+import { AnnotationCorrectionDatasetService } from "./annotationCorrectionDatasetService.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -83,7 +77,6 @@ export type BuildApiAppOptions = {
   corsOrigin?: ApiCorsOriginPolicy;
   aliyunVod?: AliyunVodProvider | null;
   aliyunVodWebPlayerLicense?: AliyunVodWebPlayerLicense | null;
-  forceAlignmentRequestsEnabled?: boolean;
 };
 
 /**
@@ -166,17 +159,11 @@ export async function buildApiApp(
     reviewEvents,
   );
   const mediaAnalysis = new MediaAnalysisJobService(options.prisma, access);
-  const alignmentRuns = new AlignmentRunService(
-    options.prisma,
-    access,
-    options.forceAlignmentRequestsEnabled === true,
-  );
   const processingJobs = new ProcessingJobQueryService(options.prisma, access);
   const processingJobCommands = new ProcessingJobCommandService(
     options.prisma,
     access,
     mediaAnalysis,
-    alignmentRuns,
   );
   const mediaAudioTracks = new MediaAudioTrackService(
     options.prisma,
@@ -195,33 +182,8 @@ export async function buildApiApp(
     access,
     collaborationEvents,
   );
-  const alignmentApplications = new AlignmentApplicationService(
-    options.prisma,
-    access,
-    storage,
-    annotationCommandCommits,
-  );
-  const alignmentQualityAssessments = new AlignmentQualityAssessmentService(
-    options.prisma,
-    access,
-  );
-  const alignmentTrainingCandidates = new AlignmentTrainingCandidateService(
-    options.prisma,
-    access,
-  );
-  const alignmentResearchGroups = new AlignmentResearchGroupService(
-    options.prisma,
-    access,
-  );
-  const alignmentTrainingExports = new AlignmentTrainingExportService(
-    options.prisma,
-    access,
-  );
-  const alignmentTrainingExportJobs = new AlignmentTrainingExportJobService(
-    options.prisma,
-    access,
-  );
   const annotationToolAttempts = new AnnotationToolAttemptService(options.prisma, access);
+  const annotationCorrectionDataset = new AnnotationCorrectionDatasetService(options.prisma, access);
   const health = new HealthService(options.prisma, storage);
   // 外部监控采集使用有限只读聚合，并与管理员诊断的重型对象审计保持分离。
   const operationalMetrics = new OperationalMetricsCollector(
@@ -277,6 +239,9 @@ export async function buildApiApp(
         "X-Audit-Export-Truncated",
         "X-Tool-Attempt-Export-Count",
         "X-Tool-Attempt-Export-Truncated",
+        "X-Correction-Export-Row-Count",
+        "X-Correction-Export-Operation-Count",
+        "X-Correction-Export-Truncated",
       ],
     });
   }
@@ -353,19 +318,13 @@ export async function buildApiApp(
     annotationRecoveryBackups,
     annotationReviewLinks,
     mediaAnalysis,
-    alignmentRuns,
-    alignmentApplications,
-    alignmentQualityAssessments,
-    alignmentTrainingCandidates,
-    alignmentResearchGroups,
-    alignmentTrainingExports,
-    alignmentTrainingExportJobs,
     processingJobs,
     processingJobCommands,
     mediaAudioTracks,
     mediaAudioPlaybackSessions,
     annotationCommandCommits,
     annotationToolAttempts,
+    annotationCorrectionDataset,
     storage,
     mediaUploads,
     objectLifecycle,

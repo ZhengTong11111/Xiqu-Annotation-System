@@ -49,7 +49,6 @@ import {
 } from "./platform/AnnotationWorkflowStatusDialog";
 import { AnnotationMediaBindingDialog } from "./platform/AnnotationMediaBindingDialog";
 import { MediaAudioTrackManagerDialog } from "./platform/MediaAudioTrackManagerDialog";
-import { AlignmentRunsDialog } from "./platform/AlignmentRunsDialog";
 import {
   PlatformMaintenanceSaveWarningDialog,
   type MaintenanceDraftSaveState,
@@ -653,8 +652,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     useState<AnnotationWorkflowStatusPrompt | null>(null);
   const [annotationWorkflowPending, setAnnotationWorkflowPending] = useState(false);
   const [annotationWorkflowError, setAnnotationWorkflowError] = useState<string | null>(null);
-  const [alignmentRunsOpen, setAlignmentRunsOpen] = useState(false);
-  const [alignmentApplicationBusy, setAlignmentApplicationBusy] = useState(false);
   const [sentenceCharacterTimingResetPrompt, setSentenceCharacterTimingResetPrompt] =
     useState<SentenceCharacterTimingResetPromptState | null>(null);
   // EditorWorkbench 的 key 绑定本次文件打开会话；只用内存 ref，离开或重新打开文件后自然恢复提示。
@@ -978,16 +975,13 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const remoteCatchUpBlockReason = remoteCatchUpBlocksEditing
     ? `正在接收其他账号的修改（服务器 v${observedRemoteRevision}）`
     : undefined;
-  const documentMutationBlockReason = alignmentApplicationBusy
-    ? "正在应用并同步强制对齐结果"
-    : remoteCatchUpBlockReason;
   const sentenceEditingBlockedReason = isReadOnly
     ? "当前账号没有写入权限"
-    : documentMutationBlockReason;
+    : remoteCatchUpBlockReason;
 
   // 门禁只阻止尚未开始的新写操作；关闭旧右键菜单并拦截写快捷键，播放、缩放和复制仍可使用。
   useEffect(() => {
-    if (!remoteCatchUpBlocksEditing && !alignmentApplicationBusy) return;
+    if (!remoteCatchUpBlocksEditing) return;
     setBlockContextMenu(null);
     const blockMutationShortcut = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
@@ -999,7 +993,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     };
     window.addEventListener("keydown", blockMutationShortcut, true);
     return () => window.removeEventListener("keydown", blockMutationShortcut, true);
-  }, [alignmentApplicationBusy, remoteCatchUpBlocksEditing]);
+  }, [remoteCatchUpBlocksEditing]);
   const [inspectorFocusRequest, setInspectorFocusRequest] = useState<InspectorFocusRequest | null>(null);
   // 顶栏搜索面板的执行体全部从这个 ref 读取最新 handler，因此搜索条目不必因播放位置变化而重建。
   const commandHandlersRef = useRef<CommandHandlers>({} as CommandHandlers);
@@ -1210,29 +1204,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         observedRemoteRevision,
       })
     : undefined;
-  // 强制对齐输入由服务端已保存 revision 派生；本地尚有编辑时必须先同步，不能默默对齐旧正文。
-  const forceAlignmentDisabledReason = editorSession
-    ? !editorSession.canWrite
-      ? "当前账号没有该标注文件的编辑权限"
-      : alignmentApplicationBusy
-        ? "正在应用并同步强制对齐结果"
-      : hasUnsavedChanges || pendingOperations.length > 0 || transientProjectRef.current !== null ||
-          editingCharacterId !== null || editingCustomTextBlock !== null || serverSaveInFlight
-        ? "请先完成当前编辑并等待平台保存同步"
-        : syncState.status !== "saved" || observedRemoteRevision !== remoteBaseRevision
-          ? "请先解决同步状态或等待远端修订追赶完成"
-          : undefined
-    : undefined;
-  const guardedPlatformNavigationWithAlignmentPolicy = guardedPlatformNavigation?.forceAlignment
-    ? {
-        ...guardedPlatformNavigation,
-        forceAlignment: {
-          ...guardedPlatformNavigation.forceAlignment,
-          disabledReason: guardedPlatformNavigation.forceAlignment.disabledReason ?? forceAlignmentDisabledReason,
-          onOpenResults: () => setAlignmentRunsOpen(true),
-        },
-      }
-    : guardedPlatformNavigation;
   const canAttemptRemoteCatchUp = canAttemptPlatformOperationCatchUp({
     hasUnsavedChanges,
     pendingOperationCount: pendingOperations.length,
@@ -2274,33 +2245,33 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const handlers = () => commandHandlersRef.current;
     const localRuntime: Record<LocalStaticCommandId, CommandRuntimeEntry> = {
       "file.import-video": {
-        disabledReason: documentMutationBlockReason,
+        disabledReason: remoteCatchUpBlockReason,
         run: () => handlers().triggerFileInput(handlers().videoFileInputRef),
       },
       "file.import-srt": {
-        disabledReason: documentMutationBlockReason,
+        disabledReason: remoteCatchUpBlockReason,
         run: () => handlers().triggerFileInput(handlers().srtFileInputRef),
       },
       "file.import-project": {
-        disabledReason: documentMutationBlockReason,
+        disabledReason: remoteCatchUpBlockReason,
         run: () => handlers().triggerFileInput(handlers().projectFileInputRef),
       },
       "file.import-merge-project": {
-        disabledReason: documentMutationBlockReason,
+        disabledReason: remoteCatchUpBlockReason,
         run: () => handlers().triggerFileInput(handlers().mergeProjectFileInputRef),
       },
       "file.save-local": { run: () => void handlers().saveProjectFile() },
       "file.export-character-srt": { run: () => handlers().handleExport() },
       "edit.undo": {
-        disabledReason: documentMutationBlockReason ?? (undoStack.length > 0 ? undefined : "没有可撤销的编辑"),
+        disabledReason: remoteCatchUpBlockReason ?? (undoStack.length > 0 ? undefined : "没有可撤销的编辑"),
         run: () => handlers().undo(),
       },
       "edit.redo": {
-        disabledReason: documentMutationBlockReason ?? (redoStack.length > 0 ? undefined : "没有可重做的编辑"),
+        disabledReason: remoteCatchUpBlockReason ?? (redoStack.length > 0 ? undefined : "没有可重做的编辑"),
         run: () => handlers().redo(),
       },
       "edit.repair-sentence-character-track": {
-        disabledReason: documentMutationBlockReason,
+        disabledReason: remoteCatchUpBlockReason,
         run: () => handlers().repairSentenceCharacterTrack(),
       },
       "playback.toggle": { run: () => handlers().togglePlay() },
@@ -2446,7 +2417,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     project.builtinTracks,
     project.customTracks,
     redoStack.length,
-    documentMutationBlockReason,
+    remoteCatchUpBlockReason,
     serverMediaBindingDisabledReason,
     spectrogramSettings.showPitchContour,
     spectrogramSettings.visible,
@@ -6769,41 +6740,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
   }
 
-  async function acceptAlignmentApplication(committedRevision: number) {
-    const session = editorSession;
-    if (!session) throw new Error("当前不是平台标注文件，无法接收强制对齐结果。");
-    let authoritativeFile = await session.client.getAnnotationFile<ProjectData>(
-      session.annotationFileId,
-    );
-    if (authoritativeFile.revision < committedRevision) {
-      throw new Error("服务器尚未返回已提交的强制对齐版本，请稍后刷新结果。");
-    }
-    let nextProject = hydrateProjectForClient(
-      authoritativeFile.payload,
-      session.client,
-      authoritativeFile.media,
-    );
-    // 应用接口直接产生一个标准服务器 revision；本地只接收权威 payload，不能再执行一遍预测 timing。
-    if (!replaceCleanProjectFromRemote(nextProject, authoritativeFile.revision)) {
-      authoritativeFile = await session.client.getAnnotationFile<ProjectData>(session.annotationFileId);
-      nextProject = hydrateProjectForClient(
-        authoritativeFile.payload,
-        session.client,
-        authoritativeFile.media,
-      );
-      if (!replaceCleanProjectFromRemote(nextProject, authoritativeFile.revision)) {
-        throw new Error("对齐结果已保存，但编辑器状态同时发生变化。请留在当前文件并等待同步追赶。");
-      }
-    }
-    remoteBaseRevisionRef.current = authoritativeFile.revision;
-    remoteOperationCursorRef.current = authoritativeFile.operationCursor;
-    setRemoteBaseRevision(authoritativeFile.revision);
-    setObservedRemoteRevision((current) => Math.max(current, authoritativeFile.revision));
-    setRemoteOperationCursor(authoritativeFile.operationCursor);
-    mutationLease.advanceBaseRevision(authoritativeFile.revision);
-    session.onAnnotationFileSaved(authoritativeFile);
-  }
-
   async function saveProjectFile() {
     if (editingCharacterId) {
       commitCharacterTextEdit(editingCharacterId);
@@ -7455,7 +7391,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   function renderTimelineWorkspace(detached: boolean) {
     return (
       <Timeline
-        editingBlockedReason={documentMutationBlockReason}
+        editingBlockedReason={remoteCatchUpBlockReason}
         subtitleLines={project.subtitleLines}
         sentenceAnnotationConfig={project.sentenceAnnotationConfig}
         builtinTracks={project.builtinTracks}
@@ -7862,7 +7798,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         : undefined}
       menuBar={(
         <TopMenuBar
-          platformNavigation={guardedPlatformNavigationWithAlignmentPolicy}
+          platformNavigation={guardedPlatformNavigation}
           audioTrackSelector={platformAudioTracks.active ? {
             options: platformAudioTracks.options,
             selectedTrackId: platformAudioTracks.selectedTrackId,
@@ -7924,7 +7860,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           observedRemoteRevision={editorSession ? observedRemoteRevision : undefined}
           editingBlockedReason={platformLeaveBusy
             ? "正在保存并同步"
-            : documentMutationBlockReason}
+            : remoteCatchUpBlockReason}
           pendingOperationCount={pendingOperations.length}
           accessLabel={editorSession?.accessLabel}
           mutationLeaseLabel={mutationLeaseLabel}
@@ -8057,23 +7993,6 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         }}
         onConfirm={() => void confirmAnnotationWorkflowStatus()}
       />
-      {editorSession ? (
-        <AlignmentRunsDialog
-          open={alignmentRunsOpen}
-          onOpenChange={setAlignmentRunsOpen}
-          client={editorSession.client}
-          annotationFileId={editorSession.annotationFileId}
-          currentRevision={remoteBaseRevision}
-          currentUserId={editorSession.currentUserId}
-          canWrite={editorSession.canWrite}
-          canReview={editorSession.canReview}
-          applyDisabledReason={forceAlignmentDisabledReason}
-          onApplyingChange={setAlignmentApplicationBusy}
-          onApplied={async (application) => {
-            await acceptAlignmentApplication(application.committedRevision);
-          }}
-        />
-      ) : null}
       <SentenceCharacterTimingResetDialog
         prompt={sentenceCharacterTimingResetPrompt}
         onCancel={() => {

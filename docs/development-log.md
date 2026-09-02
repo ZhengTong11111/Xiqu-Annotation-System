@@ -11204,3 +11204,51 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：FA-D3c3c 与整个 FA-D3c3 后端产包链。**待推进**：FA-D3c4 先拆出 D3c4a 的管理员有界导出列表/详情、成功对象受权 Range/下载、
   当前权限重验和下载审计，再做创建/观察 UI 与显式 retry。当前 worker 能产包不代表浏览器已有下载入口；下一轮开始前必须按实际代码重写
   `CLAUDE_WORK.md`，继续禁止把大 ZIP 或 manifest 放入 React/API JSON。本轮未部署生产。
+
+## 2026-09-02：FA-R1/R2 产品边界纠正与人工修正数据采集
+
+### 方向纠正
+
+- 用户明确指出平台上传的是外部 force-alignment 结果，平台职责是记录标注者后续编辑，供未来离线模型改进；服务器不应运行对齐模型、
+  发布 prediction、评价模型运行、冻结训练集或生成训练 ZIP。此前 FA-D2/FA-D3 是产品边界误判，不再继续补 UI 或下载入口。
+- 历史 Development Log 保留上述实现过程作为审计证据，但不再代表当前运行能力或后续任务。`force-alignment-data-roadmap.md` 和 R6a 已重写为
+  “外部结果导入 + 人工修正采集”，AGENTS 增加禁止无明确新决策重建服务器 executor/run/training 链的约束。
+
+### 运行时代码与数据库清理
+
+- 反向移除 AlignmentRun、外部 executor、对齐/训练 worker、prediction artifact/read/apply、质量评价、困难样本、研究分组、冻结输入、训练任务、
+  音频归一化与 ZIP 发布的 API、UI、shared/document-model DTO、配置、样式、脚本、依赖和专项测试；`archiver` 及其类型依赖随唯一调用点删除。
+- 恢复单一媒体分析 worker 及其原有 ProcessingJob 语义。源码扫描确认 App/API/shared/document-model/package/env 中不再存在运行态
+  `AlignmentRun`、`force_alignment`、training export、外部执行器或结果窗口入口；对象生命周期也不再维护已删除的 prediction/训练包引用。
+- migration 38..47 保留为已执行开发库的不可变历史，新增第 48 条 fail-closed cleanup：先检查所有错误功能表、任务类型、外键、project revision
+  和审计事实，任一非空立即抛错；只有全部为空才按显式 FK 顺序删除表、列和专用 enum type，不使用 `CASCADE`，也不修改 annotation file、
+  recovery snapshot、tool attempt 或任何业务正文。PostgreSQL 的历史 ProcessingJobType/AuditAction 值作为不可达 tombstone 保留，避免为了删除
+  enum 值重写任务和审计大表。
+- 本机 `api_test` 和 `public` 都由 migration 自身重新执行空表门禁后完成清理；未连接、迁移或部署生产。迁移专项同时验证插入一条 run 后整体
+  拒绝且结构保持，删除夹具后才完整清理。
+
+### 人工修正数据集
+
+- 保留 FA-D1 `AnnotationToolAttempt`、账号级 IndexedDB 离线送达、平均重置语义验证、operation/revision 原子绑定和管理员工具尝试 CSV。
+  取消、失败、阻断和无变化仍只是一条工具尝试，不能伪造成 timing 标签。
+- 新增 `annotationCorrectionDataset` 纯提取边界和唯一服务。服务按 `committedAt,id` keyset 分批读取 accepted/committed operation，只考虑直接
+  timing、普通 transaction 和结构 transaction 三类严格 action，并复用 shared parser 提取 `entityType=character` 的叶命令。坏 payload、
+  非字符实体、快照边界和未提交 operation 全部跳过，不按文件名、目录、账号或角色猜测。
+- 一行输出 operation/file/actor/revision/sequence/time、character/可选 track id、before/after 起止微秒和 delta。绑定 committed 平均重置时标记
+  `sentence_even_reset` 并输出固定 attempt provenance；其他真实字符 timing 标记 `manual_timing_edit`。CSV 不含句子/唱词正文、ProjectData、
+  command payload、details、媒体 URL、对象 key、凭据或错误文本。
+- 新增管理员只读 `/api/admin/annotation-corrections/export`：90 天半开窗口，最多扫描 10,000 个候选 operation、最多导出 10,000 行，以响应头
+  报告行数、扫描数和截断。没有新增训练日志表、后台任务、模型调用、媒体下载、React 轮询 owner 或对象存储资产。
+
+### 验证与状态
+
+- `test:annotation-correction-dataset` 7/7，覆盖 timing/transaction、平均重置关联、微秒精度、坏 payload、权限、时间窗、10,000 行截断、CSV 隐私和 cleanup
+  migration。既有 `test:annotation-tool-attempts` 12/12（shared 2 + API 10）、delivery 12/12、平台原子保存 34/34 全部通过，确认采集和大规模
+  删除没有破坏文件保存、草稿 operation 或工具尝试送达。
+- `build:shared`、`build:document-model`、Prisma generate、完整生产 `npm run build` 和 `git diff --check` 已通过；完整 API
+  315/315 通过。依赖清单和运行态源码的 zombie 扫描无 AlignmentRun/force worker/training export/archiver 命中，`npm prune` 也清除了本机
+  `node_modules` 中已不受 package-lock 管理的 `archiver/@types/archiver` 安装残留。生产构建只保留既有 Vite 大 chunk 提示，API 测试只保留
+  既有 pg concurrent-query deprecation warning。
+- **已完成**：产品边界纠正、错误运行链删除、fail-closed 本机结构清理、轻量人工 timing 修正导出、专项/保存回归、README/AGENTS/roadmap/log
+  更新。**待推进**：若未来研究确实需要外部工具版本 provenance、账号匿名化或受授权音频片段，必须依据真实需求单独设计；当前不推进任何
+  服务器模型执行或训练发布功能。本轮未部署生产。

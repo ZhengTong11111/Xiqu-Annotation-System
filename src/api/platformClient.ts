@@ -100,18 +100,6 @@ import type {
   AnnotationAudioPlaybackOptions,
   AnnotationRecoveryBackupResult,
   UpsertResourcePermissionRequest,
-  AlignmentRunDetail,
-  AlignmentRunPage,
-  AlignmentRunSummary,
-  AlignmentApplicationSummary,
-  AlignmentApplicationPage,
-  AlignmentQualityAssessmentList,
-  AlignmentQualityAssessmentSummary,
-  ApplyAlignmentRunRequest,
-  CreateAlignmentRunRequest,
-  ListAlignmentApplicationsOptions,
-  ListAlignmentRunsOptions,
-  UpsertAlignmentQualityAssessmentRequest,
 } from "@xiqu/shared";
 import {
   parseAliyunVodAudioRenditionList,
@@ -504,79 +492,6 @@ export class PlatformClient {
     return this.request<MediaAnalysisRun>(
       `/annotation-files/${resourceId}/media-analysis`,
       { method: "POST", body: request },
-    );
-  }
-
-  listAlignmentRuns(resourceId: string, options: ListAlignmentRunsOptions = {}, signal?: AbortSignal) {
-    const params = new URLSearchParams();
-    if (options.cursor) params.set("cursor", options.cursor);
-    if (options.limit !== undefined) params.set("limit", String(options.limit));
-    const query = params.toString();
-    return this.request<AlignmentRunPage>(
-      `/annotation-files/${resourceId}/alignment-runs${query ? `?${query}` : ""}`,
-      { signal },
-    );
-  }
-
-  getAlignmentRun(resourceId: string, runId: string, signal?: AbortSignal) {
-    return this.request<AlignmentRunDetail>(
-      `/annotation-files/${resourceId}/alignment-runs/${runId}`,
-      { signal },
-    );
-  }
-
-  createAlignmentRun(resourceId: string, request: CreateAlignmentRunRequest) {
-    return this.request<AlignmentRunSummary>(
-      `/annotation-files/${resourceId}/alignment-runs`,
-      { method: "POST", body: request },
-    );
-  }
-
-  applyAlignmentRun(
-    resourceId: string,
-    runId: string,
-    request: ApplyAlignmentRunRequest,
-  ) {
-    return this.request<AlignmentApplicationSummary>(
-      `/annotation-files/${resourceId}/alignment-runs/${runId}/applications`,
-      { method: "POST", body: request },
-    );
-  }
-
-  listAlignmentApplications(
-    resourceId: string,
-    options: ListAlignmentApplicationsOptions = {},
-    signal?: AbortSignal,
-  ) {
-    const params = new URLSearchParams();
-    if (options.cursor) params.set("cursor", options.cursor);
-    if (options.limit !== undefined) params.set("limit", String(options.limit));
-    const query = params.toString();
-    return this.request<AlignmentApplicationPage>(
-      `/annotation-files/${resourceId}/alignment-applications${query ? `?${query}` : ""}`,
-      { signal },
-    );
-  }
-
-  listAlignmentQualityAssessments(
-    resourceId: string,
-    applicationId: string,
-    signal?: AbortSignal,
-  ) {
-    return this.request<AlignmentQualityAssessmentList>(
-      `/annotation-files/${resourceId}/alignment-applications/${applicationId}/quality-assessments`,
-      { signal },
-    );
-  }
-
-  upsertAlignmentQualityAssessment(
-    resourceId: string,
-    applicationId: string,
-    request: UpsertAlignmentQualityAssessmentRequest,
-  ) {
-    return this.request<AlignmentQualityAssessmentSummary>(
-      `/annotation-files/${resourceId}/alignment-applications/${applicationId}/quality-assessment`,
-      { method: "PUT", body: request },
     );
   }
 

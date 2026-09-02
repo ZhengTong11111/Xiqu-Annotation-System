@@ -2888,28 +2888,6 @@ test("平台资源 API 集成测试", async (suite) => {
         },
       });
 
-      // 研究分组是项目治理结论；资源复制只能复制 description，不能让副本自动继承训练分组身份。
-      const sourceResearchGroupId = randomUUID();
-      await prisma.alignmentResearchGroup.create({
-        data: {
-          id: sourceResearchGroupId,
-          kind: "work",
-          displayName: "复制来源剧目",
-          createdBy: "user-admin",
-        },
-      });
-      await prisma.projectAlignmentResearchGroup.create({
-        data: {
-          projectResourceId: sourceProjectId,
-          researchGroupId: sourceResearchGroupId,
-          assignedBy: "user-admin",
-        },
-      });
-      await prisma.projectMetadata.update({
-        where: { resourceId: sourceProjectId },
-        data: { researchGroupRevision: 1 },
-      });
-
       await jsonRequest(app, adminToken, {
         method: "PUT",
         url: `/api/resources/${sourceProjectId}/permissions/user-student`,
@@ -2965,13 +2943,6 @@ test("平台资源 API 集成测试", async (suite) => {
       });
       assert.equal(copiedProject.ownerUserId, "user-student");
       assert.equal(copiedProject.projectMetadata?.description, "需要保留的项目说明");
-      assert.equal(copiedProject.projectMetadata?.researchGroupRevision, 0);
-      assert.equal(await prisma.projectAlignmentResearchGroup.count({
-        where: { projectResourceId: copiedProjectId },
-      }), 0);
-      assert.equal(await prisma.alignmentResearchGroup.count({
-        where: { id: sourceResearchGroupId },
-      }), 1);
 
       const copiedFolder = await prisma.resourceEntry.findFirstOrThrow({
         where: { parentId: copiedProjectId, name: "素材与标注" },

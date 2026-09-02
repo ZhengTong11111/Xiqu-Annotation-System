@@ -1,5 +1,4 @@
 import { isIP } from "node:net";
-import path from "node:path";
 import type { AliyunVodWebPlayerLicense } from "@xiqu/shared";
 
 const DEFAULT_DEVELOPMENT_DATABASE_URL =
@@ -23,8 +22,6 @@ export type ApiServerRuntimeConfig = {
   seedDevelopmentData: boolean;
   corsOrigin: ApiCorsOriginPolicy;
   aliyunVod: AliyunVodRuntimeConfig;
-  forceAlignmentRequestsEnabled: boolean;
-  forceAlignmentExecutorPath: string | null;
 };
 
 /**
@@ -47,37 +44,7 @@ export function loadApiServerRuntimeConfig(
     ),
     corsOrigin: parseCorsOrigins(environment.XIQU_CORS_ORIGINS, production),
     aliyunVod: parseAliyunVodConfig(environment),
-    // 请求开关与执行器路径必须同时存在，避免 API 制造无人消费的 queued 任务。
-    forceAlignmentRequestsEnabled: parseForceAlignmentRequestsEnabled(
-      "XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED",
-      environment.XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED,
-      environment.XIQU_FORCE_ALIGNMENT_EXECUTOR_PATH,
-    ),
-    forceAlignmentExecutorPath: parseForceAlignmentExecutorPath(
-      environment.XIQU_FORCE_ALIGNMENT_EXECUTOR_PATH,
-    ),
   };
-}
-
-function parseForceAlignmentRequestsEnabled(
-  name: string,
-  rawValue: string | undefined,
-  executorPath: string | undefined,
-) {
-  const enabled = parseStrictBoolean(name, rawValue, false);
-  if (enabled && !executorPath?.trim()) {
-    throw new Error("XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED=true 时必须配置 XIQU_FORCE_ALIGNMENT_EXECUTOR_PATH。");
-  }
-  return enabled;
-}
-
-function parseForceAlignmentExecutorPath(rawValue: string | undefined) {
-  const value = rawValue?.trim();
-  if (!value) return null;
-  if (!path.isAbsolute(value)) {
-    throw new Error("XIQU_FORCE_ALIGNMENT_EXECUTOR_PATH 必须是绝对路径。");
-  }
-  return value;
 }
 
 // VOD 是否启用必须显式声明；region 是可公开配置，凭据则完全交给阿里云默认凭据链。

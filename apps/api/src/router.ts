@@ -9,13 +9,6 @@ import {
   MAX_MEDIA_ANALYSIS_BATCH_ASSETS,
   parseAnnotationCommandBatchRequest,
   parseAnnotationToolAttemptBatchRequest,
-  parseApplyAlignmentRunRequest,
-  parseCreateAlignmentResearchGroupRequest,
-  parseCreateAlignmentTrainingExportRequest,
-  parseCreateAlignmentTrainingExportJobRequest,
-  parseCreateAlignmentRunRequest,
-  parseReplaceProjectAlignmentResearchGroupsRequest,
-  parseUpsertAlignmentQualityAssessmentRequest,
   PROCESSING_JOB_STATUSES,
   PROCESSING_JOB_TYPES,
   RESOURCE_CAPABILITIES,
@@ -48,13 +41,6 @@ import { badRequest, unauthorized } from "./errors.js";
 import type { HealthService } from "./healthService.js";
 import type { MediaUploadService } from "./mediaUploadService.js";
 import type { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
-import type { AlignmentRunService } from "./alignmentRunService.js";
-import type { AlignmentApplicationService } from "./alignmentApplicationService.js";
-import type { AlignmentQualityAssessmentService } from "./alignmentQualityAssessmentService.js";
-import type { AlignmentTrainingCandidateService } from "./alignmentTrainingCandidateService.js";
-import type { AlignmentResearchGroupService } from "./alignmentResearchGroupService.js";
-import type { AlignmentTrainingExportService } from "./alignmentTrainingExportService.js";
-import type { AlignmentTrainingExportJobService } from "./alignmentTrainingExportJobService.js";
 import type { ProcessingJobQueryService } from "./processingJobQueryService.js";
 import type { ProcessingJobCommandService } from "./processingJobCommandService.js";
 import type { MediaAudioTrackService } from "./mediaAudioTrackService.js";
@@ -74,6 +60,7 @@ import type { PrismaPlatformRepository } from "./repository.js";
 import type { ResourceService } from "./resourceService.js";
 import type { AnnotationCommandCommitService } from "./annotationCommandCommitService.js";
 import type { AnnotationToolAttemptService } from "./annotationToolAttemptService.js";
+import type { AnnotationCorrectionDatasetService } from "./annotationCorrectionDatasetService.js";
 import type { AnnotationRecoveryBackupService } from "./annotationRecoveryBackupService.js";
 import type { AnnotationReviewLinkService } from "./annotationReviewLinkService.js";
 import { MAX_BATCH_RESOURCE_SELECTION } from "./resourceSelection.js";
@@ -147,19 +134,13 @@ export function registerApiRoutes(
   annotationRecoveryBackups: AnnotationRecoveryBackupService,
   annotationReviewLinks: AnnotationReviewLinkService,
   mediaAnalysis: MediaAnalysisJobService,
-  alignmentRuns: AlignmentRunService,
-  alignmentApplications: AlignmentApplicationService,
-  alignmentQualityAssessments: AlignmentQualityAssessmentService,
-  alignmentTrainingCandidates: AlignmentTrainingCandidateService,
-  alignmentResearchGroups: AlignmentResearchGroupService,
-  alignmentTrainingExports: AlignmentTrainingExportService,
-  alignmentTrainingExportJobs: AlignmentTrainingExportJobService,
   processingJobs: ProcessingJobQueryService,
   processingJobCommands: ProcessingJobCommandService,
   mediaAudioTracks: MediaAudioTrackService,
   mediaAudioPlaybackSessions: MediaAudioPlaybackSessionService,
   annotationCommandCommits: AnnotationCommandCommitService,
   annotationToolAttempts: AnnotationToolAttemptService,
+  annotationCorrectionDataset: AnnotationCorrectionDatasetService,
   storage: Pick<ObjectStorage, "getObjectStream">,
   mediaUploads: MediaUploadService,
   objectLifecycle: ObjectLifecycleService,
@@ -661,84 +642,6 @@ export function registerApiRoutes(
   );
 
   app.get<{ Params: { resourceId: string } }>(
-    "/api/projects/:resourceId/alignment-research-groups",
-    MAINTENANCE_READ_ROUTE,
-    async (request) => alignmentResearchGroups.getProjectGroups(
-      await getCurrentUser(repository, request),
-      request.params.resourceId,
-    ),
-  );
-
-  app.get<{
-    Params: { resourceId: string };
-    Querystring: { kind?: string; query?: string; cursor?: string; limit?: string };
-  }>(
-    "/api/projects/:resourceId/alignment-research-group-candidates",
-    MAINTENANCE_READ_ROUTE,
-    async (request) => alignmentResearchGroups.listCandidates(
-      await getCurrentUser(repository, request),
-      request.params.resourceId,
-      {
-        kind: normalizedString(request.query.kind) as "work" | "performer" | undefined,
-        query: normalizedString(request.query.query),
-        cursor: normalizedString(request.query.cursor),
-        limit: request.query.limit === undefined ? undefined : Number(request.query.limit),
-      },
-    ),
-  );
-
-  app.post<{ Params: { resourceId: string }; Body: unknown }>(
-    "/api/projects/:resourceId/alignment-research-groups",
-    async (request) => {
-      const parsed = parseCreateAlignmentResearchGroupRequest(request.body);
-      if (!parsed.success) throw badRequest(parsed.message);
-      return alignmentResearchGroups.create(
-        await getCurrentUser(repository, request),
-        request.params.resourceId,
-        parsed.data,
-      );
-    },
-  );
-
-  app.put<{ Params: { resourceId: string }; Body: unknown }>(
-    "/api/projects/:resourceId/alignment-research-groups",
-    async (request) => {
-      const parsed = parseReplaceProjectAlignmentResearchGroupsRequest(request.body);
-      if (!parsed.success) throw badRequest(parsed.message);
-      return alignmentResearchGroups.replaceProjectGroups(
-        await getCurrentUser(repository, request),
-        request.params.resourceId,
-        parsed.data,
-      );
-    },
-  );
-
-  app.post<{ Body: unknown }>(
-    "/api/alignment-training-exports",
-    async (request) => {
-      const parsed = parseCreateAlignmentTrainingExportRequest(request.body);
-      if (!parsed.success) throw badRequest(parsed.message);
-      return alignmentTrainingExports.freeze(
-        await getCurrentUser(repository, request),
-        parsed.data,
-      );
-    },
-  );
-
-  app.post<{ Params: { exportId: string }; Body: unknown }>(
-    "/api/alignment-training-exports/:exportId/jobs",
-    async (request) => {
-      const parsed = parseCreateAlignmentTrainingExportJobRequest(request.body);
-      if (!parsed.success) throw badRequest(parsed.message);
-      return alignmentTrainingExportJobs.create(
-        await getCurrentUser(repository, request),
-        request.params.exportId,
-        parsed.data,
-      );
-    },
-  );
-
-  app.get<{ Params: { resourceId: string } }>(
     "/api/media-files/:resourceId/audio-tracks",
     async (request) => mediaAudioTracks.listTracks(
       await getCurrentUser(repository, request),
@@ -771,101 +674,6 @@ export function registerApiRoutes(
           offsetSeconds: body.offsetSeconds as number | undefined,
         },
       );
-    },
-  );
-
-  app.post<{ Params: { resourceId: string; runId: string }; Body: unknown }>(
-    "/api/annotation-files/:resourceId/alignment-runs/:runId/applications",
-    async (request) => {
-      const parsed = parseApplyAlignmentRunRequest(request.body);
-      if (!parsed.success) throw badRequest(parsed.message);
-      return alignmentApplications.apply(
-        await getCurrentUser(repository, request),
-        request.params.resourceId,
-        request.params.runId,
-        parsed.data,
-      );
-    },
-  );
-
-  app.get<{
-    Params: { resourceId: string };
-    Querystring: { cursor?: string; limit?: string };
-  }>(
-    "/api/annotation-files/:resourceId/alignment-applications",
-    MAINTENANCE_READ_ROUTE,
-    async (request) => alignmentApplications.list(
-      await getCurrentUser(repository, request),
-      request.params.resourceId,
-      {
-        cursor: normalizedString(request.query.cursor),
-        limit: request.query.limit === undefined ? undefined : Number(request.query.limit),
-      },
-    ),
-  );
-
-  app.get<{
-    Params: { resourceId: string };
-    Querystring: { cursor?: string; limit?: string };
-  }>(
-    "/api/annotation-files/:resourceId/alignment-training-candidates",
-    MAINTENANCE_READ_ROUTE,
-    async (request) => alignmentTrainingCandidates.list(
-      await getCurrentUser(repository, request),
-      request.params.resourceId,
-      {
-        cursor: normalizedString(request.query.cursor),
-        limit: request.query.limit === undefined ? undefined : Number(request.query.limit),
-      },
-    ),
-  );
-
-  app.get<{ Params: { resourceId: string; applicationId: string } }>(
-    "/api/annotation-files/:resourceId/alignment-applications/:applicationId/quality-assessments",
-    MAINTENANCE_READ_ROUTE,
-    async (request) => alignmentQualityAssessments.listCurrent(
-      await getCurrentUser(repository, request),
-      request.params.resourceId,
-      request.params.applicationId,
-    ),
-  );
-
-  app.put<{ Params: { resourceId: string; applicationId: string }; Body: unknown }>(
-    "/api/annotation-files/:resourceId/alignment-applications/:applicationId/quality-assessment",
-    async (request) => {
-      const parsed = parseUpsertAlignmentQualityAssessmentRequest(request.body);
-      if (!parsed.success) throw badRequest(parsed.message);
-      return alignmentQualityAssessments.upsert(
-        await getCurrentUser(repository, request),
-        request.params.resourceId,
-        request.params.applicationId,
-        parsed.data,
-      );
-    },
-  );
-
-  app.get<{
-    Params: { resourceId: string; runId: string; artifactId: string };
-  }>(
-    "/api/annotation-files/:resourceId/alignment-runs/:runId/artifacts/:artifactId",
-    MAINTENANCE_READ_ROUTE,
-    async (request, reply) => {
-      const artifact = await alignmentRuns.getArtifactForRead(
-        await getCurrentUser(repository, request),
-        request.params.resourceId,
-        request.params.runId,
-        request.params.artifactId,
-      );
-      reply.header("Content-Type", artifact.mimeType);
-      reply.header("Content-Encoding", "gzip");
-      reply.header("Content-Length", artifact.size);
-      reply.header("ETag", `\"sha256-${artifact.checksum}\"`);
-      reply.header("Cache-Control", "private, no-store");
-      return reply.send(await openAbortableResponseStream(
-        request.raw,
-        reply.raw,
-        () => storage.getObjectStream(artifact.storageKey),
-      ));
     },
   );
 
@@ -992,40 +800,6 @@ export function registerApiRoutes(
           audioTrackId: requireString(body.audioTrackId, "audioTrackId"),
           clientRequestId: body.clientRequestId,
         },
-      );
-    },
-  );
-
-  app.get<{
-    Params: { resourceId: string };
-    Querystring: { cursor?: string; limit?: string };
-  }>("/api/annotation-files/:resourceId/alignment-runs", async (request) => {
-    const limit = request.query.limit === undefined ? undefined : Number(request.query.limit);
-    return alignmentRuns.list(
-      await getCurrentUser(repository, request),
-      request.params.resourceId,
-      { cursor: normalizedString(request.query.cursor), limit },
-    );
-  });
-
-  app.get<{ Params: { resourceId: string; runId: string } }>(
-    "/api/annotation-files/:resourceId/alignment-runs/:runId",
-    async (request) => alignmentRuns.detail(
-      await getCurrentUser(repository, request),
-      request.params.resourceId,
-      request.params.runId,
-    ),
-  );
-
-  app.post<{ Params: { resourceId: string }; Body: unknown }>(
-    "/api/annotation-files/:resourceId/alignment-runs",
-    async (request) => {
-      const parsed = parseCreateAlignmentRunRequest(request.body);
-      if (!parsed.success) throw badRequest(parsed.message);
-      return alignmentRuns.create(
-        await getCurrentUser(repository, request),
-        request.params.resourceId,
-        parsed.data,
       );
     },
   );
@@ -2071,6 +1845,32 @@ export function registerApiRoutes(
       );
       reply.header("X-Tool-Attempt-Export-Count", String(result.exportedCount));
       reply.header("X-Tool-Attempt-Export-Truncated", String(result.truncated));
+      return result.csv;
+    },
+  );
+
+  app.get<{ Querystring: { from?: unknown; to?: unknown } }>(
+    "/api/admin/annotation-corrections/export",
+    async (request, reply) => {
+      const to = parseSummaryTimestamp(request.query.to, new Date());
+      const from = parseSummaryTimestamp(
+        request.query.from,
+        new Date(to.getTime() - 7 * 24 * 60 * 60 * 1_000),
+      );
+      // 人工修正导出只读已提交命令和已绑定工具尝试，不创建模型任务或训练资产。
+      const result = await annotationCorrectionDataset.exportCorrections(
+        await getCurrentUser(repository, request),
+        { from, to },
+      );
+      const timestamp = new Date().toISOString().replaceAll(/[-:]/g, "").slice(0, 15);
+      reply.header("Content-Type", "text/csv; charset=utf-8");
+      reply.header(
+        "Content-Disposition",
+        `attachment; filename="xiqu-annotation-corrections-${timestamp}.csv"`,
+      );
+      reply.header("X-Correction-Export-Row-Count", String(result.exportedRowCount));
+      reply.header("X-Correction-Export-Operation-Count", String(result.scannedOperationCount));
+      reply.header("X-Correction-Export-Truncated", String(result.truncated));
       return result.csv;
     },
   );

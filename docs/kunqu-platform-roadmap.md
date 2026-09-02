@@ -1145,32 +1145,21 @@ R5 完成不代表 R7 公网生产验收；真实云 IAM、TLS 续期、外部�
 - 模型、参数、代码版本、来源文件 checksum 和结果 provenance。
 - 计算缓存与资源权限继承。
 
-#### R6a：Force Alignment 数据闭环
+#### R6a：Force Alignment 人工修正数据采集
 
-> 工具行为、模型运行、人工修正、质量标签、容量预算和训练导出按
-> [`force-alignment-data-roadmap.md`](./force-alignment-data-roadmap.md) 的 FA-D0 至 FA-D3 滚动推进。FA-D0 已完成
-> 容量与合同规划；FA-D1a 服务端轻量旁表、FA-D1b 账号级 IndexedDB 生命周期/离线续传和 FA-D1c1 原子
-> operation/revision 绑定均已完成代码。FA-D1c2 也已完成：管理员 CSV 每次重新授权，使用 90 天半开窗口、稳定有界批读、
-> 10,000 行硬上限与显式截断，只输出固定轻量溯源列并复用公式注入防护。FA-D2 已按实际后台任务架构拆为 D2a additive
-> run/artifact schema 与身份、D2b 创建/复用/需求、D2c worker 原子对象发布、D2d 应用与 operation 绑定。D2a-D2d 已完成：
-> additive schema、唯一执行身份、稳定文本投影、事务内默认音轨/来源/ACL 重读、canonical run/job 与账号需求复用、有界查询、
-> 通用取消/重试状态、唯一 worker runtime、公平任务适配器、严格 gzip prediction、claim-fenced 对象原子发布、撤权/漂移/停机/
-> 模糊提交补偿和受保护读取均已落地。D2d 进一步完成受限 prediction 读取、逐字 timing 分块、轻量 application 与真实 operation/
-> revision 原子绑定、幂等再应用和文件菜单结果入口。执行开关继续默认关闭，只有真实外部执行器绝对路径与请求开关同时配置才启用；
-> FA-D3 已完成质量评价、困难样本候选、研究分组、不可变训练冻结、可导出 target/source 输入保护、专用后台任务预约，以及
-> claim-fenced 流式 ZIP64 对象发布、取消、停机/陈旧恢复和失败补偿。当前下一阶段是 FA-D3c4：补齐管理员创建/观察、受权下载、显式
-> retry 与端到端恢复闭环；当前后端 worker 已能产包，但前端仍没有创建或下载入口，生产也未部署这一 migration/执行器。
-> 行为旁表使用独立
-> migration，生产上线时必须先部署并观察 HC2，再部署 Force Alignment，不能把
-> 两项 schema/数据生命周期变化混成一次发布。
+> 产品边界已纠正：平台导入外部 force-alignment 结果，只记录标注者后续人工修正，不在服务器运行模型、生成预测、
+> 评价运行或制作训练包。详细合同见
+> [`force-alignment-data-roadmap.md`](./force-alignment-data-roadmap.md)。FA-D0/FA-D1 轻量工具尝试、离线送达、
+> operation 原子绑定和有界 CSV 已完成；FA-R1 已删除误建的 AlignmentRun/worker/prediction/training 运行链，FA-R2 已从
+> 既有 operation 严格提取逐字 timing before/after 与平均重置来源。
 
-- PostgreSQL 只保存轻量尝试索引、run provenance、质量标签和对象 manifest；压缩预测进入对象存储。
-- 普通人工 timing 修改继续复用 annotation operation，不复制 before/after 日志。
-- 成功工具行为必须与真实 operation 原子绑定；点击、取消和失败使用一条幂等尝试记录，不按阶段制造多行。
-- 不保存完整 ProjectData、完整命令链、临时媒体 URL、逐帧 posterior 或重复的波形/频谱/F0。
-- 当前 annotation、operation、恢复快照、审核事实和对象存储不得由该专项回填、清理或覆盖。
+- `AnnotationToolAttempt` 记录平均重置的调用、确认、取消、失败、无变化和提交生命周期。
+- 实际逐字修正继续只保存于 annotation operation；管理员导出时才投影字符 timing 微秒值，不新增重复 ProjectData 日志。
+- 两类导出都要求全局管理员、90 天半开窗口、稳定有界扫描、10,000 行上限和显式截断。
+- 不保存唱词正文、完整命令链、媒体 URL、逐帧声学数组、凭据或自由诊断 JSON。
+- 后续只有在明确需要外部工具 provenance、匿名化或受授权音频片段时再单独设计，不把服务器模型执行当作既定阶段。
 
-完成标准：长任务不阻塞 API，结果可复现并能绑定回学术项目。
+完成标准：人工修正可追溯、可有界导出，采集不影响保存/协作，并且平台没有模型执行或训练发布链路。
 
 ### R7：学术数据库、课堂工具与生产部署
 

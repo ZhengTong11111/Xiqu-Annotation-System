@@ -31,12 +31,6 @@ export type TopMenuPlatformNavigation = {
     isPartial: boolean;
     onOpen: () => void;
   };
-  forceAlignment?: {
-    pending: boolean;
-    disabledReason?: string;
-    onCreate: () => void;
-    onOpenResults?: () => void;
-  };
 };
 
 export type TopMenuAnnotationWorkflowModel = {
@@ -322,28 +316,6 @@ export function TopMenuBar({
                       >
                         关联服务器媒体
                       </button>
-                    ) : null}
-                    {platformNavigation?.forceAlignment ? (
-                      <>
-                        <button
-                          type="button"
-                          className="top-menu-dropdown-item"
-                          title={platformNavigation.forceAlignment.disabledReason ?? "按当前文件、默认音轨和固定模型预设创建强制对齐任务"}
-                          disabled={platformNavigation.forceAlignment.pending || Boolean(platformNavigation.forceAlignment.disabledReason)}
-                          onClick={() => handleAction(platformNavigation.forceAlignment!.onCreate)}
-                        >
-                          {platformNavigation.forceAlignment.pending ? "正在创建强制对齐任务…" : "创建强制对齐任务"}
-                        </button>
-                        {platformNavigation.forceAlignment.onOpenResults ? (
-                          <button
-                            type="button"
-                            className="top-menu-dropdown-item"
-                            onClick={() => handleAction(platformNavigation.forceAlignment!.onOpenResults!)}
-                          >
-                            查看强制对齐结果…
-                          </button>
-                        ) : null}
-                      </>
                     ) : null}
                     <button type="button" className="top-menu-dropdown-item" onClick={() => triggerFileInput(srtFileInputRef)} disabled={Boolean(editingBlockedReason)}>
                       导入句级 SRT
