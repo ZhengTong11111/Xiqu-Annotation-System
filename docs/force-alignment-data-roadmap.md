@@ -272,12 +272,32 @@ annotationOperationId / committedRevision / details
   上界 revision；unusable/unrated/partial/invalid 全部拒绝。专项 9/9、worker 15/15、application 11/11、quality 11/11、原子保存
   34/34、完整 API 336/336、完整构建和 diff check 通过。本阶段没有 migration、业务写入、对象访问、生产部署或新依赖。
 
-##### FA-D3c2：权威研究分组元数据与冻结事务（下一阶段）
+##### FA-D3c2：权威研究分组元数据与冻结事务（进行中）
 
 - 当前 `ProjectMetadata` 只有 description，不能支撑研究切分。以 additive schema/API 增加有限、稳定、可审计的剧目/演员分组身份；
   显示名称与稳定 identity 分离，移动/重命名资源不改变 identity。只有项目管理权限可编辑，导出时事务内重读并冻结 identity 摘要。
 - 冻结服务按有界候选页收集显式选择，复核管理员权限、活动资源、complete evidence、application/operation/assessment 关系和分组
   完整性；保存 immutable export request/manifest provenance，不改写 annotation payload/revision/operation/snapshot/review。
+
+###### FA-D3c2a：权威研究分组元数据（已完成）
+
+- 先增加稳定 work/performer identity、项目多对多关系和项目分组 revision。显示名不参与 identity；资源移动、重命名、复制和普通职责组
+  不得暗中改写研究分组。创建、候选查询和完整集合替换均有明确权限、活动项目、容量、幂等/旧 revision 门禁和有限审计。
+- 本阶段不创建 export/job/object，也不读取 application、operation、assessment 或 prediction；先证明已有项目零回填语义、项目复制不继承
+  研究结论、普通 read 与 manage 权限分离，再为冻结事务提供唯一服务端事实来源。
+- 已增加全局稳定 UUID + 可读 displayName 的 work/performer identity、项目多对多关系和 `researchGroupRevision`。创建与项目分配分离；
+  同 UUID/同语义重放返回原事实，语义改绑冲突。集合相同允许旧 revision 的模糊响应重试收敛，集合不同必须精确匹配当前 revision。
+- 项目 read 可读取已分组摘要，search/create/replace 在统一事务锁后重验活动项目与 `manage_permissions`；候选使用筛选绑定 keyset，
+  默认 20、最多 50，项目最多 64 个 group。项目复制已证明 revision 从 0 开始且不继承关系，来源 identity 不被删除。
+- 第 42 条 migration 只增加 enum、两表、索引/FK/check 与 project revision 默认列；专项 5/5、完整 API 341/341、完整构建和 diff check
+  通过。本机开发库已应用并重启 API 验证 ready；未部署生产、未创建 export/job/object、未改写标注或对齐业务事实。
+
+###### FA-D3c2b：候选复核与不可变冻结事务（下一阶段）
+
+- 在一个有界服务事务中按稳定锁序重读显式 application 选择、当前文件/project/ACL、观察窗口 operation、当前评价、artifact 摘要和
+  D3c2a 分组；任一 partial/invalid/unrated/关系漂移/缺 work 或 performer 分组都整批阻断。
+- 使用 D3c1 planner 生成并保存不可变 export request、canonical manifest/checksum、item/group snapshot 与幂等 action；不改写在线标注
+  payload/revision/operation/snapshot/review，也不提前创建 ProcessingJob 或导出对象。
 
 ##### FA-D3c3：后台导出任务、对象发布与补偿
 

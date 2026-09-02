@@ -10990,3 +10990,43 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   分量身份和拒绝采样均有中文功能注释。**已完成**：FA-D3c1。**待推进**：FA-D3c2 以 additive schema 建立显示名与稳定 identity 分离
   的剧目/演员研究分组，并在冻结事务内复核候选、ACL、资源生命周期、application/operation/assessment 和完整分组事实。本轮未部署
   生产、未修改生产数据。
+
+## 2026-09-02：FA-D3c2a 权威剧目/演员研究分组元数据
+
+### 阶段拆分与身份设计
+
+- 实际 `ProjectMetadata` 只有 description，既没有稳定剧目/演员身份，也没有可防止两个管理端互相覆盖的 revision。直接进入冻结导出只能
+  从文件名、路径、职责组、角色行当或账号猜分组，违反 D3c1 数据边界。因此 D3c2 拆为元数据 D3c2a 与冻结事务 D3c2b，本轮不创建
+  export/job/object、不读取 prediction/application/operation/assessment，也不提前做半成品 UI。
+- 新增有限 `AlignmentResearchGroupKind = work | performer`、全局 `AlignmentResearchGroup` 和项目关系
+  `ProjectAlignmentResearchGroup`。稳定 UUID 与 displayName 分离；同名不会自动合并，显示名不进入 component hash。group 创建和项目
+  分配是两个动作，迟到 create 重试只返回 identity，不能复活之后已解绑的项目关系。
+- `ProjectMetadata.researchGroupRevision` 从 0 开始，只有集合真实变化才 +1。PUT 使用完整去重集合和 expectedRevision：第一次响应丢失后，
+  相同目标即使携带旧 revision 也读取已提交结果；目标不同则必须精确匹配当前 revision，避免旧管理页面覆盖新集合。未变关系保留原
+  assignedAt/assigner，新增和删除只操作差集。
+
+### 权限、生命周期、分页与审计
+
+- 新增独立 `AlignmentResearchGroupService`。项目分组 GET 只要求当前 read；全局候选 search、identity create 和集合 replace 要求当前
+  `manage_permissions`。所有写入先取得研究分组 advisory lock，再锁 project/resource metadata，在同一事务重读活动 actor/角色/ACL、
+  项目及祖先生命周期、目标 group 和 revision；请求开始时的权限快照不能授权排队写入。
+- 创建请求使用客户端规范小写 UUID 做逻辑身份，同 UUID 只有 kind/displayName/creator 完全一致才幂等返回，否则稳定 409。显示名规范化
+  为 NFC、1..120 字符且拒绝控制字符；项目最多 64 个 group。第一版不做 rename/archive/delete，错误 identity 通过解绑并创建新 UUID
+  处理，避免共享 group 被某个项目静默改名。
+- 候选列表默认 20、最多 50，按 `(createdAt,id)` 倒序 keyset；opaque cursor 绑定 project/kind/规范 query 且严格校验 canonical UUID/
+  ISO time/extra keys。DTO 不展开 creator 账号或其他项目关系。审计只有 `alignment_research_group_create` 与
+  `project_alignment_research_groups_update` 两类有限事实，保存 group id/kind/count/revision/diff ids，不包含路径、正文或自由 JSON。
+
+### Additive migration、复制语义与验证
+
+- 第 42 条 migration 只 CREATE enum/两张表/索引/FK/check，并给 project metadata ADD `research_group_revision DEFAULT 0`；没有 UPDATE、
+  DELETE、DROP、TRUNCATE 或既有业务行回填。项目删除只级联关系，group identity 使用 restrict 保留；账号停用不抹除 creator/assigner
+  溯源。
+- 项目复制继续只复制 description：集成测试先给来源项目设置 group 与 revision 1，再递归复制，证明副本 revision 为 0、关系为 0，来源
+  group identity 仍存在。普通 ACL、职责组、项目移动/重命名与研究分组三套事实互不转换。
+- 新 shared parser 5/5；D3c2a schema/service 专项 5/5，覆盖 UUID 幂等/改绑、创建不分配、search/filter cursor、read/manage 分权、
+  same-target 收敛、旧 revision 冲突、assignedAt 保留、撤权和归档阻断。完整 `test:api` 341/341、完整 `npm run build` 和
+  `git diff --check` 通过；只有既有 Vite 大 chunk 提示和 pg adapter 并发 query deprecation warning。
+- 42 号 migration 已仅应用到本机开发 public schema，随后按 AGENTS 重启 API；4317 readiness 返回 database/storage ready。**已完成**：
+  FA-D3c2a。**待推进**：FA-D3c2b 在有界事务中重验选中 application、观察窗口 operation、当前评价、artifact 和项目 work/performer
+  分组，使用 D3c1 planner 保存不可变 manifest/item/group snapshot。本轮未部署生产、未修改生产标注数据。

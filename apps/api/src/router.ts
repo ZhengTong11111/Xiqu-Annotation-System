@@ -10,7 +10,9 @@ import {
   parseAnnotationCommandBatchRequest,
   parseAnnotationToolAttemptBatchRequest,
   parseApplyAlignmentRunRequest,
+  parseCreateAlignmentResearchGroupRequest,
   parseCreateAlignmentRunRequest,
+  parseReplaceProjectAlignmentResearchGroupsRequest,
   parseUpsertAlignmentQualityAssessmentRequest,
   PROCESSING_JOB_STATUSES,
   PROCESSING_JOB_TYPES,
@@ -48,6 +50,7 @@ import type { AlignmentRunService } from "./alignmentRunService.js";
 import type { AlignmentApplicationService } from "./alignmentApplicationService.js";
 import type { AlignmentQualityAssessmentService } from "./alignmentQualityAssessmentService.js";
 import type { AlignmentTrainingCandidateService } from "./alignmentTrainingCandidateService.js";
+import type { AlignmentResearchGroupService } from "./alignmentResearchGroupService.js";
 import type { ProcessingJobQueryService } from "./processingJobQueryService.js";
 import type { ProcessingJobCommandService } from "./processingJobCommandService.js";
 import type { MediaAudioTrackService } from "./mediaAudioTrackService.js";
@@ -144,6 +147,7 @@ export function registerApiRoutes(
   alignmentApplications: AlignmentApplicationService,
   alignmentQualityAssessments: AlignmentQualityAssessmentService,
   alignmentTrainingCandidates: AlignmentTrainingCandidateService,
+  alignmentResearchGroups: AlignmentResearchGroupService,
   processingJobs: ProcessingJobQueryService,
   processingJobCommands: ProcessingJobCommandService,
   mediaAudioTracks: MediaAudioTrackService,
@@ -646,6 +650,59 @@ export function registerApiRoutes(
             "审核组账号",
           ),
         },
+      );
+    },
+  );
+
+  app.get<{ Params: { resourceId: string } }>(
+    "/api/projects/:resourceId/alignment-research-groups",
+    MAINTENANCE_READ_ROUTE,
+    async (request) => alignmentResearchGroups.getProjectGroups(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+    ),
+  );
+
+  app.get<{
+    Params: { resourceId: string };
+    Querystring: { kind?: string; query?: string; cursor?: string; limit?: string };
+  }>(
+    "/api/projects/:resourceId/alignment-research-group-candidates",
+    MAINTENANCE_READ_ROUTE,
+    async (request) => alignmentResearchGroups.listCandidates(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      {
+        kind: normalizedString(request.query.kind) as "work" | "performer" | undefined,
+        query: normalizedString(request.query.query),
+        cursor: normalizedString(request.query.cursor),
+        limit: request.query.limit === undefined ? undefined : Number(request.query.limit),
+      },
+    ),
+  );
+
+  app.post<{ Params: { resourceId: string }; Body: unknown }>(
+    "/api/projects/:resourceId/alignment-research-groups",
+    async (request) => {
+      const parsed = parseCreateAlignmentResearchGroupRequest(request.body);
+      if (!parsed.success) throw badRequest(parsed.message);
+      return alignmentResearchGroups.create(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        parsed.data,
+      );
+    },
+  );
+
+  app.put<{ Params: { resourceId: string }; Body: unknown }>(
+    "/api/projects/:resourceId/alignment-research-groups",
+    async (request) => {
+      const parsed = parseReplaceProjectAlignmentResearchGroupsRequest(request.body);
+      if (!parsed.success) throw badRequest(parsed.message);
+      return alignmentResearchGroups.replaceProjectGroups(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        parsed.data,
       );
     },
   );

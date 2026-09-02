@@ -150,6 +150,51 @@ export type ListAlignmentTrainingCandidatesOptions = {
   limit?: number;
 };
 
+export const ALIGNMENT_RESEARCH_GROUP_KINDS = ["work", "performer"] as const;
+export const MAX_PROJECT_ALIGNMENT_RESEARCH_GROUPS = 64;
+export const MAX_ALIGNMENT_RESEARCH_GROUP_DISPLAY_NAME_LENGTH = 120;
+export type AlignmentResearchGroupKind = typeof ALIGNMENT_RESEARCH_GROUP_KINDS[number];
+
+export type AlignmentResearchGroupSummary = {
+  id: string;
+  kind: AlignmentResearchGroupKind;
+  displayName: string;
+  createdAt: string;
+};
+
+export type ProjectAlignmentResearchGroups = {
+  projectResourceId: string;
+  revision: number;
+  groups: AlignmentResearchGroupSummary[];
+};
+
+export type AlignmentResearchGroupPage = {
+  items: AlignmentResearchGroupSummary[];
+  nextCursor: string | null;
+};
+
+export type ListAlignmentResearchGroupsOptions = {
+  kind?: AlignmentResearchGroupKind;
+  query?: string;
+  cursor?: string;
+  limit?: number;
+};
+
+export type CreateAlignmentResearchGroupRequest = {
+  id: string;
+  kind: AlignmentResearchGroupKind;
+  displayName: string;
+};
+
+export type ReplaceProjectAlignmentResearchGroupsRequest = {
+  expectedRevision: number;
+  groupIds: string[];
+};
+
+export type AlignmentResearchGroupRequestValidationResult<T> =
+  | { success: true; data: T }
+  | { success: false; message: string };
+
 export const ALIGNMENT_QUALITY_ASSESSMENT_SCOPES = ["editor", "reviewer"] as const;
 export type AlignmentQualityAssessmentScope =
   typeof ALIGNMENT_QUALITY_ASSESSMENT_SCOPES[number];
@@ -307,6 +352,87 @@ export function parseUpsertAlignmentQualityAssessmentRequest(
       issueCodes: canonicalIssues,
     },
   };
+}
+
+/**
+ * 研究分组 identity 由客户端先分配规范 UUID，服务端据此完成模糊重试幂等。
+ * 显示名只做 NFC/首尾空白规范化，不参与 identity，也不按同名自动合并。
+ */
+export function parseCreateAlignmentResearchGroupRequest(
+  value: unknown,
+): AlignmentResearchGroupRequestValidationResult<CreateAlignmentResearchGroupRequest> {
+  if (!isPlainObject(value)) return { success: false, message: "研究分组创建请求格式不正确。" };
+  const expectedKeys = ["id", "kind", "displayName"];
+  const keys = Object.keys(value);
+  if (keys.length !== expectedKeys.length || expectedKeys.some((key) => !keys.includes(key))) {
+    return { success: false, message: "研究分组创建请求包含缺失或未支持的字段。" };
+  }
+  if (typeof value.id !== "string" || !isCanonicalUuid(value.id)) {
+    return { success: false, message: "研究分组 id 必须是规范小写 UUID。" };
+  }
+  if (!ALIGNMENT_RESEARCH_GROUP_KINDS.includes(value.kind as AlignmentResearchGroupKind)) {
+    return { success: false, message: "研究分组 kind 不受支持。" };
+  }
+  const displayName = normalizeAlignmentResearchGroupDisplayName(value.displayName);
+  if (!displayName) {
+    return { success: false, message: `研究分组显示名称必须为 1 到 ${MAX_ALIGNMENT_RESEARCH_GROUP_DISPLAY_NAME_LENGTH} 个字符且不能含控制字符。` };
+  }
+  return {
+    success: true,
+    data: {
+      id: value.id,
+      kind: value.kind as AlignmentResearchGroupKind,
+      displayName,
+    },
+  };
+}
+
+/** 完整集合按 UUID 排序，保证相同目标在不同客户端顺序下具有同一业务语义。 */
+export function parseReplaceProjectAlignmentResearchGroupsRequest(
+  value: unknown,
+): AlignmentResearchGroupRequestValidationResult<ReplaceProjectAlignmentResearchGroupsRequest> {
+  if (!isPlainObject(value)) return { success: false, message: "项目研究分组请求格式不正确。" };
+  const expectedKeys = ["expectedRevision", "groupIds"];
+  const keys = Object.keys(value);
+  if (keys.length !== expectedKeys.length || expectedKeys.some((key) => !keys.includes(key))) {
+    return { success: false, message: "项目研究分组请求包含缺失或未支持的字段。" };
+  }
+  if (!Number.isInteger(value.expectedRevision) ||
+      (value.expectedRevision as number) < 0 ||
+      (value.expectedRevision as number) >= 2_147_483_647) {
+    return { success: false, message: "expectedRevision 必须是有效的非负整数。" };
+  }
+  if (!Array.isArray(value.groupIds) || value.groupIds.length > MAX_PROJECT_ALIGNMENT_RESEARCH_GROUPS) {
+    return { success: false, message: `groupIds 最多包含 ${MAX_PROJECT_ALIGNMENT_RESEARCH_GROUPS} 项。` };
+  }
+  if (value.groupIds.some((id) => typeof id !== "string" || !isCanonicalUuid(id))) {
+    return { success: false, message: "groupIds 必须全部是规范小写 UUID。" };
+  }
+  if (new Set(value.groupIds).size !== value.groupIds.length) {
+    return { success: false, message: "groupIds 不能包含重复项。" };
+  }
+  return {
+    success: true,
+    data: {
+      expectedRevision: value.expectedRevision as number,
+      groupIds: [...value.groupIds].sort(),
+    },
+  };
+}
+
+export function normalizeAlignmentResearchGroupDisplayName(value: unknown) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().normalize("NFC");
+  if (
+    normalized.length < 1 ||
+    normalized.length > MAX_ALIGNMENT_RESEARCH_GROUP_DISPLAY_NAME_LENGTH ||
+    /[\u0000-\u001f\u007f]/u.test(normalized)
+  ) return null;
+  return normalized;
+}
+
+function isCanonicalUuid(value: string) {
+  return value === value.toLowerCase() && UUID_PATTERN.test(value);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

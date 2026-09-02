@@ -226,6 +226,11 @@ Main currently contains all major recent feature lines that matter for context:
   on sorted stable group identities so adding samples without expanding that group set does not change its split. SHA-256 is injected by the server boundary;
   do not add Node crypto to the browser-compatible package, infer groups from names/paths, split a connected component, or add text,
   ProjectData, operation payloads, media/storage/account facts or free JSON
+- force-alignment work/performer identities and project assignments are owned only by `AlignmentResearchGroupService`. Group UUIDs are
+  stable and separate from display names; creation never auto-assigns a project, and project sets use `researchGroupRevision` for exact
+  same-target retry settlement and stale-target rejection. Reads require current project `read`; search/create/replace require current
+  `manage_permissions` rechecked after the service lock. Project copy starts at revision zero with no research groups, and ordinary ACL,
+  workflow responsibility groups, resource names/paths and role labels must never create, infer, rename or remove research identities
 - force-alignment tool attempts are a lightweight governance/training side table, never ProjectData or document history. Their
   administrator CSV is generated only by the API after fresh full-resource authorization, accepts at most a 90-day half-open
   window, reads in bounded batches, exports at most 10,000 rows with an explicit truncation header, and uses the shared CSV
@@ -454,6 +459,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     bounded operation/assessment scans, fixed signals and explicit incomplete-evidence states
   - it is read-only governance metadata. Do not add object-storage reads, ProjectData hydration, per-application queries, automatic
     correctness inference, document mutations or a second save/autosave owner
+- `apps/api/src/alignmentResearchGroupService.ts`
+  - the only stable work/performer registry and project-assignment boundary. It owns active-project checks, bounded candidate cursors,
+    client-UUID create idempotency, project revision settlement, current ACL rechecks and finite audit facts
+  - groups are global reusable identities but display names are not identity. Creation and project assignment stay separate so a delayed
+    create retry cannot resurrect an unlinked group; no API may infer groups from resource metadata or copy project assignments
 - `src/platform/AlignmentRunsDialog.tsx`
   - low-frequency bounded run history and explicit apply confirmation; an ambiguous retry reuses its session action UUID
   - the editor blocks new mutations from request start through authoritative refetch. The dialog must never apply prediction timing locally

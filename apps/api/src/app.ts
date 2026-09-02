@@ -65,6 +65,7 @@ import { AlignmentRunService } from "./alignmentRunService.js";
 import { AlignmentApplicationService } from "./alignmentApplicationService.js";
 import { AlignmentQualityAssessmentService } from "./alignmentQualityAssessmentService.js";
 import { AlignmentTrainingCandidateService } from "./alignmentTrainingCandidateService.js";
+import { AlignmentResearchGroupService } from "./alignmentResearchGroupService.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -206,6 +207,10 @@ export async function buildApiApp(
     options.prisma,
     access,
   );
+  const alignmentResearchGroups = new AlignmentResearchGroupService(
+    options.prisma,
+    access,
+  );
   const annotationToolAttempts = new AnnotationToolAttemptService(options.prisma, access);
   const health = new HealthService(options.prisma, storage);
   // 外部监控采集使用有限只读聚合，并与管理员诊断的重型对象审计保持分离。
@@ -342,6 +347,7 @@ export async function buildApiApp(
     alignmentApplications,
     alignmentQualityAssessments,
     alignmentTrainingCandidates,
+    alignmentResearchGroups,
     processingJobs,
     processingJobCommands,
     mediaAudioTracks,

@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   parseApplyAlignmentRunRequest,
   parseCreateAlignmentRunRequest,
+  parseCreateAlignmentResearchGroupRequest,
+  parseReplaceProjectAlignmentResearchGroupsRequest,
   parseUpsertAlignmentQualityAssessmentRequest,
 } from "../dist/index.js";
 
@@ -60,4 +62,42 @@ test("质量评价使用有限结论、规范原因顺序和严格组合", () =>
     ...input,
     note: "禁止自由文本",
   }).success, false);
+});
+
+test("研究分组创建严格区分稳定 UUID、有限 kind 与规范显示名", () => {
+  const input = {
+    id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    kind: "performer",
+    displayName: "  俞振飞\u0301  ",
+  };
+  const parsed = parseCreateAlignmentResearchGroupRequest(input);
+  assert.equal(parsed.success, true);
+  assert.equal(parsed.data.displayName, "俞振飞́");
+  assert.equal(parseCreateAlignmentResearchGroupRequest({ ...input, id: input.id.toUpperCase() }).success, false);
+  assert.equal(parseCreateAlignmentResearchGroupRequest({ ...input, kind: "role" }).success, false);
+  assert.equal(parseCreateAlignmentResearchGroupRequest({ ...input, displayName: "bad\nname" }).success, false);
+  assert.equal(parseCreateAlignmentResearchGroupRequest({ ...input, note: "禁止自由字段" }).success, false);
+});
+
+test("项目研究分组完整集合要求 revision、规范 UUID、去重和固定排序", () => {
+  const input = {
+    expectedRevision: 3,
+    groupIds: [
+      "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    ],
+  };
+  assert.deepEqual(parseReplaceProjectAlignmentResearchGroupsRequest(input), {
+    success: true,
+    data: {
+      expectedRevision: 3,
+      groupIds: input.groupIds.toSorted(),
+    },
+  });
+  assert.equal(parseReplaceProjectAlignmentResearchGroupsRequest({ ...input, expectedRevision: -1 }).success, false);
+  assert.equal(parseReplaceProjectAlignmentResearchGroupsRequest({
+    ...input,
+    groupIds: [input.groupIds[0], input.groupIds[0]],
+  }).success, false);
+  assert.equal(parseReplaceProjectAlignmentResearchGroupsRequest({ ...input, mode: "merge" }).success, false);
 });

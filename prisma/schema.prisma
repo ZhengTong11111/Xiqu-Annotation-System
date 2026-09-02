@@ -143,6 +143,12 @@ enum AlignmentQualityIssueCode {
   other
 }
 
+// 训练切分使用稳定研究身份；显示名只供管理界面辨认，绝不能替代 UUID 参与分组。
+enum AlignmentResearchGroupKind {
+  work
+  performer
+}
+
 enum AuditAction {
   auth_login
   account_create
@@ -161,6 +167,8 @@ enum AuditAction {
   resource_delete
   annotation_file_save
   alignment_quality_assessment_upsert
+  alignment_research_group_create
+  project_alignment_research_groups_update
   annotation_workflow_status_update
   project_workflow_groups_update
   annotation_client_sync_failure
@@ -286,6 +294,8 @@ model User {
   createdAlignmentRuns              AlignmentRun[]                    @relation("AlignmentRunCreator")
   alignmentApplications             AlignmentApplication[]            @relation("AlignmentApplicationActor")
   alignmentQualityAssessments       AlignmentQualityAssessment[]      @relation("AlignmentQualityAssessmentActor")
+  createdAlignmentResearchGroups    AlignmentResearchGroup[]          @relation("AlignmentResearchGroupCreator")
+  assignedAlignmentResearchGroups   ProjectAlignmentResearchGroup[]   @relation("ProjectAlignmentResearchGroupAssigner")
   auditLogs                         AuditLog[]                        @relation("AuditActor")
   annotationOperations              AnnotationOperation[]             @relation("AnnotationOperationActor")
   annotationToolAttempts            AnnotationToolAttempt[]           @relation("AnnotationToolAttemptActor")
@@ -353,18 +363,19 @@ model ResourceEntry {
   createdAt                  DateTime     @default(now()) @map("created_at")
   updatedAt                  DateTime     @updatedAt @map("updated_at")
 
-  parent                 ResourceEntry?          @relation("ResourceTree", fields: [parentId], references: [id], onDelete: Cascade)
-  children               ResourceEntry[]         @relation("ResourceTree")
-  owner                  User                    @relation("ResourceOwner", fields: [ownerUserId], references: [id])
-  projectMetadata        ProjectMetadata?
-  projectWorkflowMembers ProjectWorkflowMember[]
-  annotationFile         AnnotationFile?
-  mediaFile              MediaFile?
-  permissions            ResourcePermission[]
-  userStates             ResourceUserState[]
-  processingJobs         ProcessingJob[]
-  processingJobRequests  ProcessingJobRequest[]
-  auditLogs              AuditLog[]
+  parent                  ResourceEntry?                  @relation("ResourceTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children                ResourceEntry[]                 @relation("ResourceTree")
+  owner                   User                            @relation("ResourceOwner", fields: [ownerUserId], references: [id])
+  projectMetadata         ProjectMetadata?
+  projectWorkflowMembers  ProjectWorkflowMember[]
+  alignmentResearchGroups ProjectAlignmentResearchGroup[]
+  annotationFile          AnnotationFile?
+  mediaFile               MediaFile?
+  permissions             ResourcePermission[]
+  userStates              ResourceUserState[]
+  processingJobs          ProcessingJob[]
+  processingJobRequests   ProcessingJobRequest[]
+  auditLogs               AuditLog[]
 
   @@index([parentId, type])
   @@index([parentId, trashedAt, archivedAt, name, id], map: "resource_entries_directory_name_idx")
@@ -375,12 +386,46 @@ model ResourceEntry {
 }
 
 model ProjectMetadata {
-  resourceId  String  @id @map("resource_id")
-  description String?
+  resourceId            String  @id @map("resource_id")
+  description           String?
+  researchGroupRevision Int     @default(0) @map("research_group_revision")
 
   resource ResourceEntry @relation(fields: [resourceId], references: [id], onDelete: Cascade)
 
   @@map("project_metadata")
+}
+
+// 全局研究分组 identity 可被多个项目复用；同名不自动合并，避免同名剧目或演员被误判为同一实体。
+model AlignmentResearchGroup {
+  id          String                     @id
+  kind        AlignmentResearchGroupKind
+  displayName String                     @map("display_name")
+  createdBy   String                     @map("created_by")
+  createdAt   DateTime                   @default(now()) @map("created_at")
+
+  creator      User                            @relation("AlignmentResearchGroupCreator", fields: [createdBy], references: [id], onDelete: Restrict)
+  projectLinks ProjectAlignmentResearchGroup[]
+
+  @@index([kind, displayName, id])
+  @@index([createdBy])
+  @@map("alignment_research_groups")
+}
+
+// 项目关系和普通 ACL/职责组互相独立；完整集合替换只改这张关系表和 project revision。
+model ProjectAlignmentResearchGroup {
+  projectResourceId String   @map("project_resource_id")
+  researchGroupId   String   @map("research_group_id")
+  assignedBy        String   @map("assigned_by")
+  assignedAt        DateTime @default(now()) @map("assigned_at")
+
+  project  ResourceEntry          @relation(fields: [projectResourceId], references: [id], onDelete: Cascade)
+  group    AlignmentResearchGroup @relation(fields: [researchGroupId], references: [id], onDelete: Restrict)
+  assigner User                   @relation("ProjectAlignmentResearchGroupAssigner", fields: [assignedBy], references: [id], onDelete: Restrict)
+
+  @@id([projectResourceId, researchGroupId])
+  @@index([researchGroupId])
+  @@index([assignedBy])
+  @@map("project_alignment_research_groups")
 }
 
 // 项目职责组成员关系是独立的有效权限来源；手工 ResourcePermission 始终单独保存、单独撤销。
