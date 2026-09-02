@@ -222,6 +222,22 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - 先选择少量非关键测试文件，在维护/备份条件下允许 payload nullable；逐批压缩、验证、恢复演练。
 - 任一失败停止该文件并保留 inline；禁止全库“一把梭”。
 
+#### HC3a：inline 影子 recipe 候选（代码已完成，生产未执行）
+
+- 新增 `recipeVerifiedAt`，明确区分“完整 payload 尚在、recipe 已重建验证”和真正的 `compactedAt`。expand migration
+  不执行任何历史 `UPDATE/DELETE/TRUNCATE`，`payload` 继续 `NOT NULL`，HC2a 的 inline-only 约束继续禁止
+  `reconstructible/archived`；inline 行也禁止写入 `compactedAt`。
+- 影子验证继续复用 HC1 当前格式 parser、正式领域 command adapter 与 canonical hash。事务外 planner 只提供候选；每个
+  候选写入前取得同文件 advisory lock、`annotation_files FOR SHARE` 和目标/checkpoint snapshot 行锁，重新读取并完整重放。
+  文件 revision、目标 hash、operation 范围、recipe 身份或存储模式任一漂移都会以固定码阻断并停止该文件。
+- 新 CLI `annotation-history:shadow-recipe` 默认 dry-run，必须指定单文件；只有显式 `--apply` 才写入，默认最多 16、硬上限
+  100 个候选，每个 recipe 最多 10,000 条 operation。完全相同的 recipe 重试不更新时间；不同已有 recipe 绝不覆盖。
+- 专项 22 项验证 planner、重放、迁移、单文件写入、payload/inline 保留、幂等、revision 漂移和冲突停止；resolver 5 项、
+  客户端原子保存 34 项、完整 API 322 项及完整构建通过。测试数据库已执行 migration，本机/生产业务数据库和服务器
+  release 均未部署。
+- 本阶段不产生容量回收：payload 仍完整存在，指标中的 payload-present 数不会下降。只有完成 HC2 生产观察、一致备份/恢复
+  演练，并对少量非关键文件完成真实影子观察后，才能另行设计 HC3b 的 nullable payload 与读取重建切换。
+
 ### HC4：未来保存策略与运维闭环
 
 - replayable 保存按阈值建立检查点，其余直接保存 recipe；非可重放提交保持 inline。

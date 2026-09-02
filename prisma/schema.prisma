@@ -576,6 +576,7 @@ model AnnotationRecoverySnapshot {
   operationSequenceEnd   Int?                                  @map("operation_sequence_end")
   operationCount         Int?                                  @map("operation_count")
   compactionVersion      Int?                                  @map("compaction_version")
+  recipeVerifiedAt       DateTime?                             @map("recipe_verified_at")
   compactedAt            DateTime?                             @map("compacted_at")
   createdBy              String                                @map("created_by")
   reason                 String?

@@ -1406,6 +1406,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     process the requested revision order, retain only one batch in memory, and treat missing rows as blocked snapshots
   - historical payloads that fail the strict current ProjectData parser remain inline and blocked. Normalizing v1-v6 into v7
     does not reproduce the original JSON and must never qualify a snapshot for recipe compaction
+- `apps/api/src/annotationHistoryShadowRecipe*.ts`
+  - HC3a 的纯验证器、短事务写服务和受限 CLI。验证必须复用 HC1 的 command replay 与 canonical hash；写服务在文件
+    revision 和 snapshot 行锁内重新读取 checkpoint、target 与完整 operation 范围，不能直接相信事务外 planner 结果
+  - `recipeVerifiedAt` 只表示 inline payload 仍存在时影子重建已通过，绝不等同于 `compactedAt`。HC3a 不得清空 payload、
+    切换 `storageMode`、写 `compactedAt`，也不得修改当前 AnnotationFile、operation、审核或恢复事实
+  - CLI 默认 dry-run，只允许显式单文件；写入还必须显式 `--apply` 并受候选数/operation 数上限约束。完全相同的 recipe
+    重试是幂等成功，文件 revision、hash、命令链或既有 recipe 任一漂移都停止该文件，不能覆盖或继续猜测
 - `apps/api/src/annotationHistoryDependencyProtection.ts`
   - the only recovery-history lifecycle dependency boundary for future reconstructible recipes. It reads bounded lightweight
     recipe/checkpoint metadata only, never snapshot payloads, operation bodies, review text, media identities or credentials
@@ -2211,6 +2218,10 @@ Important backend caveats:
 - HC2a expands recovery snapshots without rewriting old rows: payload stays required, all new writes default to `inline`, and a
   database check prevents enabling recipe/archive modes before their readers and writers exist. Detail and restore share the
   resolver above; history lists remain metadata-only and public DTOs do not expose storage/hash/recipe internals.
+- HC3a may persist a complete shadow recipe only while the original payload remains `NOT NULL` and `storageMode=inline`.
+  `recipeVerifiedAt` is evidence of a repeated reconstruction check, while `compactedAt` must remain null. Production application
+  still requires the HC2 observation/backup gate; completing or testing the code locally is not authorization to migrate or write
+  production history.
 - historical payload preview must fail inside its own UI boundary and reuse the canonical project-file normalizer; a bad
   snapshot must not replace, open, or mutate the current editor document.
 - confirmed annotation ranges are governance records outside `ProjectData`: `[startTime, endTime)` is half-open,

@@ -11252,3 +11252,38 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：产品边界纠正、错误运行链删除、fail-closed 本机结构清理、轻量人工 timing 修正导出、专项/保存回归、README/AGENTS/roadmap/log
   更新。**待推进**：若未来研究确实需要外部工具版本 provenance、账号匿名化或受授权音频片段，必须依据真实需求单独设计；当前不推进任何
   服务器模型执行或训练发布功能。本轮未部署生产。
+
+## 2026-09-02：HC3a inline 影子 recipe 安全候选
+
+### 范围纠正与数据安全边界
+
+- 本轮继续标注历史容量治理，但只实现 HC3 的最小可验证单元：为仍保留完整 payload 的 inline 快照写入影子 recipe。
+  没有清空/删除/归档任何恢复 payload，没有启用 `reconstructible`，没有修改当前标注文件、operation、审核事实或对象存储，
+  也没有运行 compactor、`VACUUM` 或生产部署。
+- schema 新增 `recipe_verified_at`，避免把“影子证明通过”误写成“已经压缩”。新 expand migration 只新增列并替换 CHECK；
+  `payload NOT NULL`、HC2a inline-only 门禁继续存在，inline 行必须保持 `compacted_at IS NULL`。recipe 只能全组写入，必须绑定
+  SHA-256，revision/sequence/count 范围也由数据库复核。
+
+### 实现与并发门禁
+
+- 新增唯一纯验证边界 `annotationHistoryShadowRecipe.ts`，复用 HC1 的 current ProjectData parser、正式领域 command apply、
+  revision validation 与 canonical JSON hash。它重新验证 checkpoint/target 身份、目标 hash、完整 command 链和最终 recipe，
+  不保存或输出 ProjectData、operation body、文字内容或媒体信息。
+- 新增 `AnnotationHistoryShadowRecipeService`：事务外 plan 仅用于选候选；每个候选在 60 秒上限短事务内取得同文件 advisory
+  lock、标注文件共享行锁和 checkpoint/target 行锁，再重新读取与重放。当前文件 revision、payload hash、operation 范围、
+  storage mode 或已有 recipe 任一漂移均停止该文件。完全相同的 recipe 重试返回 `already_verified`，不改复核时间；不同
+  recipe 不允许覆盖。UPDATE 明确只含 hash/recipe/verifiedAt 字段。
+- 新增 `annotation-history:shadow-recipe` CLI。默认是 PostgreSQL 强制只读 dry-run，只允许 `--annotation-file-id`；写入必须
+  额外显式 `--apply`。默认 16、硬上限 100 个候选，每个候选最多 10,000 条 operation，并保留原 planner 的 revision、
+  operation 与 statement-timeout 扫描限制。报告只含固定状态、文件/snapshot 身份和计数。
+
+### 验证、自审与后续
+
+- `test:annotation-history-compaction` 22/22：覆盖正确重放、hash/operation 漂移、CLI 默认只读、单文件/批次门禁、真实 PostgreSQL
+  写入、payload 原样保留、inline/compactedAt 约束、精确幂等、revision 漂移及已有 hash 冲突。
+- `test:annotation-recovery-snapshot-resolver` 5/5，证明带 hash/recipe 的 inline 快照仍原样读取且 hash 错误 fail closed；
+  `test:platform-atomic-submit` 34/34，普通协作保存未受影响；完整 API 322/322。完整 Web/API 构建通过（保留既有前端
+  chunk size 警告）。
+- 自审确认没有第二套 replay/hash、没有自动 timer/worker/API 路由、没有全库 apply、没有 payload mutation 或日志正文。
+  **已完成**：HC3a 本地代码、迁移、CLI、专项验证和文档。**待推进**：先完成 HC2 生产观察和一致备份/恢复演练；之后仅对
+  少量非关键文件授权执行影子写入与持续复核。HC3b nullable payload/真实压缩仍未设计、未授权、未部署。
