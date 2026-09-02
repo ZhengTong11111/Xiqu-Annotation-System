@@ -10538,3 +10538,35 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：FA-D1c2 服务、CSV、HTTP、授权、容量/隐私测试、自审和规范文档。**待推进**：FA-D2 AlignmentRun 与预测对象；
   进入该阶段前需重新核对现有 processing-job/object-storage 模型并重写任务单。本轮没有部署生产、执行生产 migration、修改或
   清理任何生产 annotation、operation、snapshot、review 或 attempt 数据。
+
+## 2026-09-02：本地保存失败排查与开发环境迁移对齐
+
+### 故障证据与根因
+
+- 用户报告上一轮修改后标注文件不能保存。数据库审计确认失败集中在一个 revision 1 副本，均为普通
+  `annotation.transaction.apply` 时间编辑，服务端返回 `internal_error`；待提交 operation 没有 `toolAttemptId`，因此不是
+  平均时间重置语义校验或 attempt 绑定冲突。
+- 本地 API 进程启动于 FA-D1/HC2 多个提交之前，Vite 前端和 workspace `dist` 已热更新，但 API 内存仍保留旧 parser/Prisma
+  Client；长期运行的 `xiqu_platform` 开发库也缺少 `20260902010000_annotation_recovery_snapshot_storage_expand` 和
+  `20260902020000_annotation_tool_attempts`。完整 API 测试使用隔离测试 schema，未升级该开发库。
+- 排查期间一度把 snapshot cursor 中的上界哨兵误读为文件操作序号；随后直接核对 PostgreSQL 事实，确认受影响文件
+  `last_operation_sequence = 0`、无 operation 行，排除整数耗尽和复制继承游标。该更正保留在记录中，避免以后沿用错误结论。
+
+### 修复、数据保护与复现
+
+- 在迁移前使用 PostgreSQL 16 `pg_dump` 为 39 MB 本地开发库生成 custom-format dump：
+  `/tmp/xiqu-platform-before-save-fix-20260902T012342.dump`。迁移从已提交的 `57a39cc` 隔离工作树执行，只包含两条已完成的
+  additive migration，没有带入尚未完成的 FA-D2 AlignmentRun 草稿 schema，也没有更新或删除现有 ProjectData。
+- 迁移完成后从同一已提交工作树重启本地 API，使 shared/document-model、Prisma Client、API 源码和数据库 schema 对齐。
+  根仓库当前含未完成 D2 schema，因此没有为绕过 schema guard 而生成或启动半成品 API。
+- 使用受影响文件创建临时副本，重放失败审计中的同一条 character + sentence timing transaction。真实 HTTP command-batch
+  从 revision 1 返回 200 并提交到 revision 2；随后再次 GET 得到 revision 2。测试副本及其测试审计在验证后清理。原文件、
+  原浏览器草稿和 pending operation 未被代替提交、重写或删除，仍由原账号按正常幂等保存流程重试。
+
+### 状态与后续门禁
+
+- **已完成**：本地数据库备份、两条已完成 migration 部署、API 重启、同 payload/同命令临时副本端到端保存验证、测试数据
+  清理和 AGENTS 开发门禁补充。**待用户侧确认**：原浏览器会话重试后应显示已同步；若旧页面仍停留在终止失败状态，可保持
+  草稿并重新打开同一文件触发恢复，而无需手工复制 payload。
+- **待推进**：恢复 FA-D2a 任务单和滚动开发；在其 migration/Client/API 验收时严格执行新门禁。本轮未部署生产、未迁移生产
+  数据库、未触碰生产对象存储，也未修改原标注文件内容。

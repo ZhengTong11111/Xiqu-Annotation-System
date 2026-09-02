@@ -64,6 +64,10 @@ Main currently contains all major recent feature lines that matter for context:
   `--env-file-if-exists`; production `start:*` continues to require an explicit systemd/container environment
 - 修改 `packages/shared` 或 `packages/document-model` 后，必须重新执行对应 build 并重启已运行的 `dev:api`；Vite
   热更新不会刷新 API 进程已经加载的 workspace `dist` parser，不能用旧 API 产物验证新的命令合同
+- 修改 Prisma schema 或新增 migration 后，本地验收必须依次完成 `npm run db:generate`、对目标开发库执行
+  `npm run db:deploy`，并重启 `dev:api`；完整 API 测试只迁移隔离测试 schema，不能证明长期运行的本地开发库已经升级。
+  Vite 热更新也不会替换已启动 API 内存中的 Prisma Client。禁止用“新前端 + 旧 API + 旧数据库”验证保存、协作或后台任务；
+  如需保留尚未完成的下一阶段 migration，应从只包含已完成 migration 的提交/工作树升级开发库，不能顺带应用草稿 schema
 - R5 controlled single-server deployment candidate with fail-closed production configuration, same-origin `/api`, one-time
   administrator bootstrap, systemd/Caddy templates with automatic TLS, a legacy Nginx alternative, read-only smoke checks,
   and `docs/server-deployment.md`
