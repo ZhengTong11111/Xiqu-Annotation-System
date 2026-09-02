@@ -1419,6 +1419,11 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     hash 或 recipe 比较
   - CLI 必须使用 PostgreSQL 强制只读连接、独立 advisory lock 和 statement timeout；不得接受全库或写入参数。报告只含固定
     状态、身份与计数，不得输出 ProjectData、operation body、正文、媒体/对象信息、连接串或底层数据库错误
+- `apps/api/src/annotationHistoryReconstructionFacts.ts`
+  - HC3b2a 已存 recipe 的唯一数据库事实装载边界。按单文件/单目标读取同文件 inline checkpoint 与 recipe revision 范围内的
+    committed operation，受统一 10,000 条硬上限约束；缺失、部分或超限事实必须 fail closed
+  - 该层不得解析 ProjectData、重放 command、计算 hash、比较 recipe、读取审核/媒体/对象/账号事实或包含 Prisma mutation。
+    只读复核和未来 reconstructible resolver 必须复用它；尚未持久化 planner 候选的影子写服务继续在自己的行锁事务中重读
 - `apps/api/src/annotationHistoryDependencyProtection.ts`
   - the only recovery-history lifecycle dependency boundary for future reconstructible recipes. It reads bounded lightweight
     recipe/checkpoint metadata only, never snapshot payloads, operation bodies, review text, media identities or credentials

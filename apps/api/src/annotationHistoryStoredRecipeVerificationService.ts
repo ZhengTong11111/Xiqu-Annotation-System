@@ -1,24 +1,19 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
-  ANNOTATION_HISTORY_CANONICAL_HASH_VERSION,
-} from "./annotationHistoryCanonicalHash.js";
-import type { AnnotationHistoryOperationFact } from "./annotationHistoryCompactionTypes.js";
-import {
   reconstructAnnotationHistoryPayload,
   type AnnotationHistoryReconstructionCode,
-  type AnnotationHistoryShadowRecipe,
 } from "./annotationHistoryReconstruction.js";
 import {
+  loadAnnotationHistoryReconstructionFacts,
+  type AnnotationHistoryReconstructionFactLoadCode,
+} from "./annotationHistoryReconstructionFacts.js";
+import {
   MAX_ANNOTATION_HISTORY_SHADOW_CANDIDATES,
-  MAX_ANNOTATION_HISTORY_SHADOW_OPERATIONS,
 } from "./annotationHistoryShadowRecipeService.js";
 
 export type AnnotationHistoryStoredRecipeVerificationCode =
   | AnnotationHistoryReconstructionCode
-  | "checkpoint_missing"
-  | "recipe_incomplete"
-  | "recipe_operation_limit_exceeded"
-  | "snapshot_storage_mode_changed";
+  | AnnotationHistoryReconstructionFactLoadCode;
 
 export type AnnotationHistoryStoredRecipeVerificationResult = {
   snapshotId: string;
@@ -156,115 +151,25 @@ async function verifyStoredTarget(
   if (target.storageMode !== "inline" || target.compactedAt !== null) {
     return blocked("snapshot_storage_mode_changed");
   }
-  const storedRecipe = readStoredRecipe(target);
-  if (!storedRecipe) return blocked("recipe_incomplete");
-  if (storedRecipe.operationCount > MAX_ANNOTATION_HISTORY_SHADOW_OPERATIONS) {
-    return blocked("recipe_operation_limit_exceeded");
-  }
-
-  const checkpoint = await transaction.annotationRecoverySnapshot.findFirst({
-    where: {
-      id: storedRecipe.checkpointSnapshotId,
-      annotationFileId,
-    },
-    select: {
-      id: true,
-      annotationFileId: true,
-      revision: true,
-      payload: true,
-      storageMode: true,
-    },
-  });
-  if (!checkpoint) return blocked("checkpoint_missing");
-  if (checkpoint.storageMode !== "inline") return blocked("snapshot_storage_mode_changed");
-
-  const operations = await transaction.annotationOperation.findMany({
-    where: {
-      annotationFileId,
-      committedRevision: {
-        gte: storedRecipe.operationRevisionStart,
-        lte: storedRecipe.operationRevisionEnd,
-      },
-    },
-    select: {
-      id: true,
-      annotationFileId: true,
-      sequence: true,
-      baseRevision: true,
-      action: true,
-      payload: true,
-      status: true,
-      committedRevision: true,
-      committedAt: true,
-    },
-    orderBy: { sequence: "asc" },
-    take: MAX_ANNOTATION_HISTORY_SHADOW_OPERATIONS + 1,
-  });
-  const operationFacts = operations.flatMap((operation): AnnotationHistoryOperationFact[] =>
-    operation.committedRevision === null
-      ? []
-      : [{ ...operation, committedRevision: operation.committedRevision }]);
-  if (operationFacts.length > MAX_ANNOTATION_HISTORY_SHADOW_OPERATIONS) {
-    return blocked("recipe_operation_limit_exceeded", operationFacts.length);
-  }
+  const facts = await loadAnnotationHistoryReconstructionFacts(transaction, annotationFileId, target);
+  if (!facts.ok) return blocked(facts.code, facts.operationCount);
 
   const reconstruction = reconstructAnnotationHistoryPayload({
     annotationFileId,
     expectedTargetSnapshotId: target.id,
-    checkpoint,
+    checkpoint: facts.checkpoint,
     target,
     inlineTargetPayload: target.payload,
-    operations: operationFacts,
-    expectedRecipe: storedRecipe,
+    operations: facts.operations,
+    expectedRecipe: facts.recipe,
   });
-  if (!reconstruction.ok) return blocked(reconstruction.code, operationFacts.length);
+  if (!reconstruction.ok) return blocked(reconstruction.code, facts.operations.length);
   return {
     snapshotId: target.id,
     revision: target.revision,
     status: "verified",
     code: null,
-    operationCount: operationFacts.length,
-  };
-}
-
-/** 数据库字段必须整组存在；缺一项都不能猜测 recipe。 */
-export function readStoredRecipe(input: {
-  payloadSha256: string | null;
-  checkpointSnapshotId: string | null;
-  operationRevisionStart: number | null;
-  operationRevisionEnd: number | null;
-  operationSequenceStart: number | null;
-  operationSequenceEnd: number | null;
-  operationCount: number | null;
-  compactionVersion: number | null;
-  recipeVerifiedAt: Date | null;
-}): AnnotationHistoryShadowRecipe | null {
-  if (
-    input.payloadSha256 === null ||
-    input.checkpointSnapshotId === null ||
-    input.operationRevisionStart === null ||
-    input.operationRevisionEnd === null ||
-    input.operationSequenceStart === null ||
-    input.operationSequenceEnd === null ||
-    input.operationCount === null ||
-    input.compactionVersion === null ||
-    input.recipeVerifiedAt === null
-  ) {
-    return null;
-  }
-  return {
-    // 数据库列是普通 integer；真实合法性仍由统一重建内核按 version=1 复核。
-    version: input.compactionVersion as AnnotationHistoryShadowRecipe["version"],
-    hashVersion: ANNOTATION_HISTORY_CANONICAL_HASH_VERSION,
-    checkpointSnapshotId: input.checkpointSnapshotId,
-    checkpointRevision: input.operationRevisionStart - 1,
-    operationRevisionStart: input.operationRevisionStart,
-    operationRevisionEnd: input.operationRevisionEnd,
-    operationSequenceStart: input.operationSequenceStart,
-    operationSequenceEnd: input.operationSequenceEnd,
-    operationCount: input.operationCount,
-    targetPayloadHash: input.payloadSha256,
-    estimatedBytes: 0,
+    operationCount: facts.operations.length,
   };
 }
 

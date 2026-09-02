@@ -11428,3 +11428,36 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：HC3a2 本地服务、CLI、共享夹具、专项/全量测试、自审和文档规范。
   **待推进**：生产 HC2 指标观察、一致备份/恢复演练、少量非关键文件的影子写入与本工具复核仍需用户明确授权；nullable
   payload、数据库 reconstructible resolver、compactor、数据清理、`VACUUM` 和服务器部署均未在本轮执行或授权。
+
+## 2026-09-02：HC3b2a 恢复历史数据库重建事实边界
+
+### 目标与职责拆分
+
+- HC3a2 已证明强制只读 CLI 能重新验证数据库中的 stored recipe，但首版把 recipe 整组解析、checkpoint 查询和 operation 范围
+  查询放在 verification service 内。未来详情/比较/恢复若直接在 `resourceService` 重写这些查询，会让影子证明与真实读取使用不同
+  事实边界，因此本轮先收敛数据库读取，不提前启用 nullable payload。
+- 新增 `annotationHistoryReconstructionFacts.ts`：接收同一事务快照中的文件 id 与 target recipe 列，只读取同文件 checkpoint 和
+  recipe revision 范围内的 committed operation。recipe 必须整组存在，checkpoint 必须仍为 inline，每目标最多 10,000 条 operation；
+  部分 recipe、缺 checkpoint、模式漂移和超限都返回固定错误码。
+- 模块输出恰好满足 `reconstructAnnotationHistoryPayload()` 的输入，不解析 ProjectData、不重放领域命令、不计算 canonical hash、
+  不比较 recipe，也没有 create/update/delete/upsert。annotation 当前 payload、审核正文、媒体、对象、账号和权限均不在查询范围。
+
+### 复用与僵尸逻辑清理
+
+- `AnnotationHistoryStoredRecipeVerificationService` 保留 `REPEATABLE READ` 事务、候选稳定排序、inline target 门禁、首错停止、终止信号
+  和无正文报告；checkpoint/operation 查询与 `readStoredRecipe()` 已完整删除，改为事实装载后调用唯一纯重建内核。
+- 原来定义在影子写服务中的 10,000 operation 上限迁移为通用重建事实常量，影子写入与 stored-recipe 读取共用同一上限；旧常量与
+  引用已清理。影子写服务没有机械改用新 loader，因为它验证的是尚未保存的 planner recipe，必须在文件/snapshot 行锁内重读并写入
+  轻量元数据；混用会削弱它的并发门禁。
+- 集成测试直接读取一份真实 stored recipe，确认 checkpoint 文件/revision、operation 数与 recipe 一致，再由强制只读连接完成复核；
+  既有数据库逐项不变、漂移、截断、缺 checkpoint、超限和终止测试继续通过，没有复制新的历史夹具。
+
+### 验证与状态
+
+- `npm run test:annotation-history-compaction`：33/33；`test:annotation-recovery-snapshot-resolver`：5/5；
+  `test:platform-atomic-submit`：34/34；完整 `npm run test:api`：334/334；完整 `npm run build` 与 `git diff --check` 通过。
+  仅保留既有 Vite 主 chunk 体积提示和 API 测试中的既有 pg concurrent-query deprecation warning。
+- 自审确认事实模块没有 mutation、无第二套 replay/hash/recipe 证明、无无界查询、无正文/媒体/凭据报告，抽取后旧 helper 与常量无残留。
+- **已完成**：HC3b2a 本地数据库事实层、HC3a2 接线、重复逻辑清理、回归和文档。
+  **待推进**：当前 Prisma payload 仍为必填，数据库 CHECK 仍禁止 reconstructible/archived，在线 resolver 仍 fail closed。生产 HC2
+  观察、备份/恢复和少量影子运行未经授权；nullable migration、在线详情/比较/恢复、compactor、数据清理和部署均未执行。

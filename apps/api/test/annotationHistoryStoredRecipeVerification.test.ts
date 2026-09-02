@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseAnnotationHistoryStoredRecipeVerificationCliOptions } from "../src/annotationHistoryStoredRecipeVerificationCliOptions.js";
-import { readStoredRecipe } from "../src/annotationHistoryStoredRecipeVerificationService.js";
+import { readAnnotationHistoryStoredRecipe } from "../src/annotationHistoryReconstructionFacts.js";
 
 const FILE_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -55,10 +55,10 @@ test("数据库 recipe 必须整组存在，checkpoint revision 由 operation �
     compactionVersion: 1,
     recipeVerifiedAt: new Date("2026-09-02T00:00:00.000Z"),
   };
-  const recipe = readStoredRecipe(complete);
+  const recipe = readAnnotationHistoryStoredRecipe(complete);
   assert.ok(recipe);
   assert.equal(recipe.checkpointRevision, 1);
   assert.equal(recipe.operationRevisionEnd, 3);
-  assert.equal(readStoredRecipe({ ...complete, payloadSha256: null }), null);
-  assert.equal(readStoredRecipe({ ...complete, recipeVerifiedAt: null }), null);
+  assert.equal(readAnnotationHistoryStoredRecipe({ ...complete, payloadSha256: null }), null);
+  assert.equal(readAnnotationHistoryStoredRecipe({ ...complete, recipeVerifiedAt: null }), null);
 });

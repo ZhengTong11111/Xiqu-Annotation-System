@@ -272,6 +272,20 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
   数据库中的已存 recipe 提供强制只读复核。下一步仍必须先完成 HC2 生产观察、
   一致备份/恢复演练和少量影子观察；本纯内核不构成 nullable migration、compactor 或生产部署授权。
 
+#### HC3b2a：数据库重建事实装载边界（代码已完成，在线模式未启用）
+
+- 新增 `annotationHistoryReconstructionFacts.ts`，集中读取已存 recipe、同文件 inline checkpoint 与 recipe revision 范围内的
+  committed operation。每次只处理一个目标快照，operation 上限统一为 10,000；checkpoint 缺失/模式改变、recipe 字段不完整或
+  operation 超限返回固定低基数错误码，不读取 annotation 当前正文、审核、媒体、对象、账号或权限。
+- 该模块只负责有界数据库事实，不解析 ProjectData、不 apply command、不计算 hash、不比较 recipe，也不存在 Prisma mutation。
+  HC3a2 只读复核已改为它的第一个调用者，然后把结果交给唯一纯重建内核；验证服务中旧 checkpoint/operation 查询、recipe 解析与
+  旧 operation 上限常量已经删除。
+- 影子 recipe 写服务仍保留自己的写前加锁重读：它面对的是尚未持久化的 planner 候选，并需要文件共享锁、snapshot `FOR UPDATE`
+  与轻量元数据 UPDATE，不能错误复用只读 stored-recipe loader。两条路径共用同一个重建 operation 上限和纯重建内核，但锁与写职责
+  保持分离。
+- 容量专项 33/33、inline resolver 5/5、客户端原子保存 34/34、完整 API 334/334 与完整构建通过。本轮没有 schema/migration、
+  payload nullable、storage mode 切换、在线详情/比较/恢复接线、生产连接或部署；现有在线 resolver 仍拒绝 reconstructible/archived。
+
 ### HC4：未来保存策略与运维闭环
 
 - replayable 保存按阈值建立检查点，其余直接保存 recipe；非可重放提交保持 inline。

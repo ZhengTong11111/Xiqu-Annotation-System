@@ -10,9 +10,9 @@ import {
   type AnnotationHistoryShadowRecipe,
   type AnnotationHistoryShadowVerificationCode,
 } from "./annotationHistoryShadowRecipe.js";
+import { MAX_ANNOTATION_HISTORY_RECONSTRUCTION_OPERATIONS } from "./annotationHistoryReconstructionFacts.js";
 
 export const MAX_ANNOTATION_HISTORY_SHADOW_CANDIDATES = 100;
-export const MAX_ANNOTATION_HISTORY_SHADOW_OPERATIONS = 10_000;
 
 export type AnnotationHistoryShadowWriteCode =
   | AnnotationHistoryShadowVerificationCode
@@ -121,7 +121,7 @@ export class AnnotationHistoryShadowRecipeService {
     });
     if (!isValidCandidate(input.candidate)) {
       return blocked(
-        input.candidate.recipe.operationCount > MAX_ANNOTATION_HISTORY_SHADOW_OPERATIONS
+        input.candidate.recipe.operationCount > MAX_ANNOTATION_HISTORY_RECONSTRUCTION_OPERATIONS
           ? "recipe_operation_limit_exceeded"
           : "candidate_invalid",
       );
@@ -194,13 +194,13 @@ export class AnnotationHistoryShadowRecipeService {
           committedAt: true,
         },
         orderBy: { sequence: "asc" },
-        take: MAX_ANNOTATION_HISTORY_SHADOW_OPERATIONS + 1,
+        take: MAX_ANNOTATION_HISTORY_RECONSTRUCTION_OPERATIONS + 1,
       });
       const operationFacts = operations.flatMap((operation): AnnotationHistoryOperationFact[] =>
         operation.committedRevision === null
           ? []
           : [{ ...operation, committedRevision: operation.committedRevision }]);
-      if (operationFacts.length > MAX_ANNOTATION_HISTORY_SHADOW_OPERATIONS) {
+      if (operationFacts.length > MAX_ANNOTATION_HISTORY_RECONSTRUCTION_OPERATIONS) {
         return blocked("recipe_operation_limit_exceeded");
       }
       const verification = verifyAnnotationHistoryShadowRecipe({
@@ -325,6 +325,6 @@ function isValidCandidate(
     recipe.operationRevisionEnd === candidate.revision &&
     recipe.operationSequenceStart <= recipe.operationSequenceEnd &&
     recipe.operationCount <= recipe.operationSequenceEnd - recipe.operationSequenceStart + 1 &&
-    recipe.operationCount <= MAX_ANNOTATION_HISTORY_SHADOW_OPERATIONS &&
+    recipe.operationCount <= MAX_ANNOTATION_HISTORY_RECONSTRUCTION_OPERATIONS &&
     /^[0-9a-f]{64}$/u.test(recipe.targetPayloadHash);
 }

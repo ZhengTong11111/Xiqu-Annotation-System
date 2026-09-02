@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { loadAnnotationHistoryReconstructionFacts } from "../src/annotationHistoryReconstructionFacts.js";
 import { AnnotationHistoryShadowRecipeService } from "../src/annotationHistoryShadowRecipeService.js";
 import { AnnotationHistoryStoredRecipeVerificationService } from "../src/annotationHistoryStoredRecipeVerificationService.js";
 import { createPrismaReadOnlyConnection } from "../src/database.js";
@@ -21,6 +22,18 @@ test("已存影子 recipe 在可重复读快照中复核通过且不修改数据
     const plan = await createColdAnnotationHistoryPlan(prisma, fixture.resourceId);
     await writeRecipes(prisma, fixture.resourceId, plan.files[0]!.decisions, 2);
     const before = await readProtectedFacts(prisma, fixture.resourceId);
+    const firstTarget = await prisma.annotationRecoverySnapshot.findFirstOrThrow({
+      where: { annotationFileId: fixture.resourceId, recipeVerifiedAt: { not: null } },
+      orderBy: { revision: "asc" },
+    });
+
+    const loadedFacts = await prisma.$transaction((transaction) =>
+      loadAnnotationHistoryReconstructionFacts(transaction, fixture.resourceId, firstTarget));
+    assert.equal(loadedFacts.ok, true);
+    if (!loadedFacts.ok) return;
+    assert.equal(loadedFacts.checkpoint.annotationFileId, fixture.resourceId);
+    assert.equal(loadedFacts.checkpoint.revision, loadedFacts.recipe.checkpointRevision);
+    assert.equal(loadedFacts.operations.length, loadedFacts.recipe.operationCount);
 
     const readOnly = createPrismaReadOnlyConnection(TEST_DATABASE_URL, {
       statementTimeoutMs: 5_000,
