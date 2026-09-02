@@ -242,6 +242,23 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - 本阶段不产生容量回收：payload 仍完整存在，指标中的 payload-present 数不会下降。只有完成 HC2 生产观察、一致备份/恢复
   演练，并对少量非关键文件完成真实影子观察后，才能另行设计 HC3b 的 nullable payload 与读取重建切换。
 
+#### HC3a2：已存影子 recipe 强制只读复核（代码已完成，生产未执行）
+
+- 新增单文件 `annotation-history:verify-shadow-recipes` CLI 和唯一只读复核服务。它只选择已经保存完整 recipe 且仍为 inline 的
+  快照，默认最多 16、硬上限 100 个候选，每个候选最多读取 10,000 条 operation；按 revision/id 稳定顺序逐条验证，首个漂移
+  即停止该文件，不执行自动修复或覆盖。
+- 复核在 PostgreSQL `default_transaction_read_only=on` 连接和 `REPEATABLE READ` 事务中运行，使用独立 advisory lock、statement
+  timeout 和有界连接池。服务层不存在 Prisma mutation；报告只包含文件/快照身份、revision、固定状态码与计数，不输出正文、
+  ProjectData、operation body、媒体地址、对象 key、数据库连接或凭据。
+- 数据库 recipe 字段必须整组存在；checkpoint 必须仍属于同一文件并保持 inline，目标不能已 compact。实际重建只调用
+  `reconstructAnnotationHistoryPayload()`，没有第二套 parser、领域 command apply、canonical hash 或 recipe 比较逻辑。终止信号在
+  候选读取前或读取期间到达都会准确报告 interrupted，并由事务/statement timeout 提供有界退出。
+- 为容量集成测试抽出一份共享完整历史夹具，删除影子写入与只读复核之间重复的账号、文件、快照和 operation 构造代码。
+  `buildAnnotationHistoryRecipe()` 与纯重建内核的 snapshot 类型也收紧到实际使用的身份字段，没有改变运行语义。
+- 容量专项 33/33、完整 API 334/334 与完整构建通过；自审确认没有数据库写入、在线 API、timer、worker、schema migration、
+  payload 清理或生产连接。该工具可供未来生产观察使用，但本轮没有运行生产复核，也不构成影子写入、nullable migration、
+  compactor、`VACUUM` 或部署授权。
+
 #### HC3b1：统一纯重建内核（代码已完成，在线模式未启用）
 
 - 新增唯一纯函数 `reconstructAnnotationHistoryPayload()`：严格校验文件/checkpoint/target 身份、recipe version/hash/range，
@@ -251,7 +268,8 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
   hash 和 recipe 比较代码已删除。结构非法 recipe 返回 `recipe_invalid`，形状合法但 operation 范围漂移返回 `recipe_changed`。
 - 本轮没有修改 Prisma schema、恢复历史数据库查询、详情/恢复 API 或 `resolveAnnotationRecoverySnapshotPayload()`；inline 历史任意
   JSON 仍原样返回，`reconstructible/archived` 仍 fail closed，payload 仍 `NOT NULL`，inline-only CHECK 仍生效。
-- 容量专项 27/27、resolver 5/5、原子保存 34/34、完整 API 328/328 与完整构建通过。下一步仍必须先完成 HC2 生产观察、
+- 容量专项 27/27、resolver 5/5、原子保存 34/34、完整 API 328/328 与完整构建通过；随后完成的 HC3a2 已通过唯一内核对
+  数据库中的已存 recipe 提供强制只读复核。下一步仍必须先完成 HC2 生产观察、
   一致备份/恢复演练和少量影子观察；本纯内核不构成 nullable migration、compactor 或生产部署授权。
 
 ### HC4：未来保存策略与运维闭环

@@ -11391,3 +11391,40 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：统一纯重建内核、HC3a 复用、重复逻辑清理、固定错误语义、专项/全量验证和交接规则。
   **待推进**：HC2 生产观察、一致备份/恢复、少量生产影子复核、nullable payload migration、数据库 reconstructible resolver、
   compactor 与物理空间回收均未授权、未实现、未部署。
+
+## 2026-09-02：HC3a2 已存影子 recipe 强制只读复核
+
+### 本轮范围与只读边界
+
+- 按滚动开发任务单完成 HC3a2，只为数据库中已经保存的 inline 影子 recipe 增加单文件、有界、强制只读的复核能力。
+  本轮没有修改 Prisma schema、恢复 payload、storage mode、operation、当前标注文件或审核事实，没有增加在线 API、timer、worker，
+  也没有连接生产数据库、运行生产影子复核或部署服务器。
+- 新增 `annotation-history:verify-shadow-recipes` CLI。它必须显式提供一个 annotation file UUID，默认最多验证 16、硬上限 100 个
+  候选，每候选最多 10,000 条 operation；不接受 `--all`、`--apply` 或其他 planner/write 参数。输出文件使用独占创建，避免覆盖
+  既有报告；stdout 和 JSON 只保留文件/快照身份、revision、固定结果码和计数。
+- CLI 使用既有 `createPrismaReadOnlyConnection()`，由 PostgreSQL 对池内每条物理连接施加
+  `default_transaction_read_only=on` 和 statement timeout，并使用独立 advisory lock。复核服务在 `REPEATABLE READ` 事务中固定
+  file、target、checkpoint 与 operation 视图，服务源码不存在 create/update/upsert/delete mutation。
+
+### 重建复用、停止语义与代码清理
+
+- 新增 `AnnotationHistoryStoredRecipeVerificationService`：只选择 `recipeVerifiedAt != null` 的候选并按 revision/id 稳定排序；recipe
+  字段缺失、checkpoint 丢失/跨文件、storage mode 变化、operation 超限、payload/hash/command/范围漂移都会返回固定码，首个阻断后
+  立即停止该文件，不尝试修补数据库。
+- 实际内容证明只调用 HC3b1 的 `reconstructAnnotationHistoryPayload()`。数据库读取层不再实现 parser、领域命令 apply、canonical
+  hash 或 recipe 对比；`buildAnnotationHistoryRecipe()` 与重建内核的 snapshot 参数收紧到真实使用的 id/revision 身份字段。
+- 把影子写入和只读复核集成测试重复的账号、标注文件、四个快照和三条 operation 构造抽成
+  `annotationHistoryTestFixture.ts`，删除原测试中的重复夹具代码。终止信号在候选开始前或查询期间到达都会被报告为 interrupted；
+  最后一个候选查询期间终止不再被误报为正常完成。
+- 自审扫描确认新服务没有 Prisma mutation；新路径只存在一处统一重建调用；报告不包含正文、ProjectData、operation payload、媒体
+  URL、对象 key、数据库 URL、SQL 或凭据。历史诊断码保持低基数，数据库/Prisma 原始异常只在 CLI 边界收敛为稳定提示。
+
+### 验证与后续门禁
+
+- `npm run test:annotation-history-compaction`：33/33，通过合法已存 recipe、数据库逐项不变、payload 漂移、候选截断、checkpoint
+  缺失、operation 超限、部分 recipe、严格 CLI 参数和终止语义。
+- `npm run test:api`：334/334；`npm run build` 完整通过 Prisma guard、shared、document-model、Web 与 API。`git diff --check`
+  通过；仅保留既有 Vite 主 chunk 体积提示和 API 测试中的既有 pg concurrent-query deprecation warning。
+- **已完成**：HC3a2 本地服务、CLI、共享夹具、专项/全量测试、自审和文档规范。
+  **待推进**：生产 HC2 指标观察、一致备份/恢复演练、少量非关键文件的影子写入与本工具复核仍需用户明确授权；nullable
+  payload、数据库 reconstructible resolver、compactor、数据清理、`VACUUM` 和服务器部署均未在本轮执行或授权。

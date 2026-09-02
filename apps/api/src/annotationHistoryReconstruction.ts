@@ -29,7 +29,7 @@ export type AnnotationHistoryReconstructionCode =
   | "recipe_invalid"
   | "recipe_changed";
 
-type AnnotationHistoryReconstructionSnapshot = AnnotationHistorySnapshotFact & {
+type AnnotationHistoryReconstructionSnapshot = Pick<AnnotationHistorySnapshotFact, "id" | "revision"> & {
   annotationFileId: string;
 };
 

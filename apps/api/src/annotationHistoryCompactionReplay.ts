@@ -110,8 +110,8 @@ export function replayAnnotationHistoryToRevision(input: {
 
 // recipe 只记录定位、范围和 hash，不复制 operation payload 或标注正文。
 export function buildAnnotationHistoryRecipe(input: {
-  checkpoint: AnnotationHistorySnapshotFact;
-  target: AnnotationHistorySnapshotFact;
+  checkpoint: Pick<AnnotationHistorySnapshotFact, "id" | "revision">;
+  target: Pick<AnnotationHistorySnapshotFact, "id" | "revision">;
   targetPayloadHash: string;
   revisions: ReadonlyMap<number, AnnotationHistoryRevisionValidation>;
 }): NonNullable<AnnotationHistorySnapshotDecision["recipe"]> {
