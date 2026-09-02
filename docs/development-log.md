@@ -11612,3 +11612,13 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：生产只读风险基线、迁移/在线路径审查、影子 apply 双门禁修复、错误 migration 链和测试僵尸代码清理、完整回归与文档。
   **待推进**：生产仍停在授权 A 前；只有用户明确批准后，才能从本次已审查提交重新构建不可变候选并按手册进入维护、备份、隔离
   恢复、migration 和只读观察。授权 B 影子写入、payload 清空、compactor 与物理回收仍未获授权。
+
+### 提交后候选复核
+
+- 在已提交的 `8f2cfb6` 构建产物上按部署白名单组装临时不可变候选，使用硬链接避免再次复制约 531MB 的 `node_modules`；候选根未
+  夹带 `.env`、`data`、备份、报告、密钥或源码。
+- 候选内 `release:inspect` 通过，报告 30 个运行路径、27 个生产依赖和 39 条 migration；`release:check` 的 Prisma Client/schema
+  校验通过，`dist/api/annotationHistoryCompactionCli.js`、`annotationHistoryShadowRecipeCli.js`、
+  `annotationHistoryStoredRecipeVerificationCli.js` 均存在。候选临时目录已清理，没有留下 release、数据库或生产状态。
+- 本轮最终状态仍为：本地代码、文档和候选检查完成；生产未部署、未执行 migration、未写影子 recipe、未清空 payload、未运行
+  compactor/VACUUM，等待用户明确授权 A。

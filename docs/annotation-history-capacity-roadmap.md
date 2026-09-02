@@ -263,6 +263,9 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
   没有 ResourceService/router/config 调用点；没有自动 recipe、nullable payload、compactor、清理器或 VACUUM。
 - 容量专项 34/34、生产 36 -> 39 migration 演练 1/1、发布入口 2/2、部署专项 29/29、完整 API 337/337、完整构建与
   `git diff --check` 均通过。自审没有发现会让现有保存、跨实例同步、恢复、确认/评论/反馈或审核链接失效的剩余阻断问题。
+- 提交 `8f2cfb6` 后又按部署白名单完成一次不可变候选结构演练：`release:inspect` 通过 30 个运行路径、27 个生产依赖、39 条
+  migration，`release:check` 的 Prisma schema 校验通过，三条历史治理 CLI 均存在；候选使用硬链接避免复制大依赖，演练后临时目录
+  已清理。
   本审查只消除了已知代码门禁和迁移链风险，仍不等于授权 A，更不授权影子 apply、payload 清空、compactor 或物理回收。
 
 ### HC3：影子 recipe 与小批次无损压缩
