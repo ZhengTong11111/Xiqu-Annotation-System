@@ -4,6 +4,7 @@ import type { FormEvent } from "react";
 import type {
   AnnotationFile,
   AnnotationMediaReference,
+  AnnotationToolAttemptState,
   AnnotationWorkflowStatus,
   PlatformRole,
   PlatformUser,
@@ -48,6 +49,7 @@ import {
 } from "./PlatformDraftRecoveryDialog";
 import { ProcessingJobCenterDialog } from "./ProcessingJobCenterDialog";
 import { useProcessingJobCenter } from "./useProcessingJobCenter";
+import { useAnnotationToolAttemptDelivery } from "./useAnnotationToolAttemptDelivery";
 
 export type PlatformEditorSession = {
   client: PlatformClient;
@@ -69,6 +71,7 @@ export type PlatformEditorSession = {
   currentUserRoles: PlatformRole[];
   canRevokeAnyConfirmation: boolean;
   accessLabel: string;
+  recordAnnotationToolAttempt: (attempt: AnnotationToolAttemptState) => void;
   initialFocus?: AnnotationComparisonFocus;
   pendingMergeDraft?: AnnotationMergeDraft;
   initialRecoveryState?: ProjectDocumentRecoveryState;
@@ -129,6 +132,10 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
 
   // 平台统一使用同源 /api；开发环境由 Vite 代理，部署环境由 Nginx 代理，浏览器不再依赖访问者本机端口。
   const client = useMemo(() => new PlatformClient({ accessToken }), [accessToken]);
+  const recordAnnotationToolAttempt = useAnnotationToolAttemptDelivery({
+    client,
+    userId: user?.id ?? null,
+  });
   const taskCenter = useProcessingJobCenter({
     client,
     user,
@@ -263,6 +270,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         : input.file.resource.permission.capabilities.includes("write")
           ? "可编辑"
           : "只读",
+      recordAnnotationToolAttempt,
       initialFocus: input.initialFocus,
       pendingMergeDraft: input.pendingMergeDraft,
       initialRecoveryState: input.initialRecoveryState,

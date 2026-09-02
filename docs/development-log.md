@@ -10427,3 +10427,42 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：FA-D1a migration/shared/service/routes/aggregate、测试、自审与文档。**待推进**：FA-D1b 两个重置入口的唯一
   App action、账号/文件隔离 IndexedDB 队列和断网续传；FA-D1c 再把成功 attempt 与真实 operation/revision 原子绑定。本轮
   没有接 UI、没有写现有生产数据、没有部署，也没有把 HC2 与 FA migration 混成一次上线。
+
+## 2026-09-02：FA-D1b 前端工具尝试生命周期与离线续传
+
+### 唯一重置生命周期
+
+- 句级列表与 Timeline 句级块右键入口继续复用一个 `resetSentenceCharacterTiming()` 业务动作，但现在分别携带
+  `sentence_list` 和 `timeline_context_menu`。平台可写会话在调用时生成 runtime UUID，并只保存文件/句子 id、入口、字符数、
+  句长、调用/确认/结束时间、免提示与固定终态；句子正文、ProjectData、command、before/after 和媒体事实均未进入旁表队列。
+- 取消、无逐字、无需变化、句范围无效、编辑受阻、命令构造失败和意外失败均复用同一 UUID 补完生命周期。显式确认与本次
+  文件免提示都会补 `confirmedAt`；浏览器系统时钟回拨时确认/结束时间下限取已有生命周期时间，避免合法事实因倒序被拒。
+- Radix `AlertDialog.Action` 关闭也会触发 `onOpenChange(false)`。本轮增加明确的确认路径标记，确认不再被取消回调二次记录。
+  成功应用本地 transaction 后故意保持 pending，前端仍不能写 committed；FA-D1c 必须在 command commit 同一事务中验证并绑定。
+
+### 独立浏览器队列与账号 Owner
+
+- 新增独立 `xiqu-annotation-tool-attempts` IndexedDB，未复用平台恢复草稿。每行只含账号、严格 attempt 快照、本地 version 和
+  更新时间；单账号最多 2,000、全局最多 5,000。旧异步前缀通过单调合并保留确认/终态，服务端响应只删除读取时的 version，
+  因此另一标签页在途补写不会被迟到确认误删。坏 schema 行 fail closed 并从本地清除，不向 API 猜测发送。
+- `PlatformWorkspace` 而非 EditorWorkbench 持有一个当前账号送达协调器，所以切换文件后仍可续传该账号其他文件。批次最多
+  100；网络、429 和 5xx 采用 1-60 秒有界指数退避，online 恢复立即唤醒；401 停止旧 token 忙循环，重新登录建立新 owner。
+  400/403/404/409 等整批永久错误递归二分到单行，坏行不能阻塞其他文件。日志只写 attempt id、HTTP 类别或固定原因名。
+- 多标签页重复送达由 FA-D1a 服务端 advisory lock/幂等合同承接，本地条件删除承接并发更新。队列写入或送达失败只输出旁路
+  诊断，不设置文档 dirty/save/conflict/leave 状态。本地不登录工具没有平台会话回调，原有重置行为不上传任何数据。
+
+### 自审、验证与状态
+
+- 自审清理了把队列混入文件会话、每文件重复轮询、前端自报成功和确认/取消双触发的风险；没有新增依赖，复用现有 `idb`、
+  `PlatformClient` 与 runtime UUID。复杂并发、容量、隐私和失败隔离段落已补中文功能注释，无第二套草稿或保存状态机。
+- `test:annotation-tool-attempt-delivery` 9/9，覆盖账号隔离、迟到前缀、version 条件删除、容量、永久坏行隔离、临时失败保留、
+  401 停止重试、生命周期和时钟回拨；FA-D1a 专项 5/5、句级平均分配 3/3、annotation commands 25/25、command commit 5/5、
+  平台原子提交 34/34、完整 API 301/301、完整 `npm run build` 和 `git diff --check` 均通过。仅保留既有 Vite chunk 提示与既有
+  pg 并发 query deprecation warning。
+- 本地浏览器烟测把一个逐字边界改偏后，通过句级右键打开确认框：取消后可再次打开，随后确认只走确认路径，首字从
+  `13.00-19.44` 正确重排为 `13.00-19.92`，弹窗关闭且控制台无 error。该路径使用本地工具会话，证明 UI 未损坏；平台
+  上报与权限/断网续传由真实 IndexedDB、PostgreSQL 和 API 专项覆盖，本轮未用生产数据做交互验证。
+- **已完成**：FA-D1b 两入口生命周期、独立 IndexedDB、账号级 single-flight、断网/刷新/切文件/重新登录续传、多窗口门禁、
+  本地模式隔离、测试、自审和规范文档。**待推进**：FA-D1c 给成功 command/pending operation 增加严格 `toolAttemptId`，在
+  服务端事务验证平均分配 after 并原子写 operation、committed revision 和终态，再开放管理员 CSV。本轮没有部署生产、执行
+  production migration、修改现有生产标注/历史，也没有与 HC2 migration 合并上线。

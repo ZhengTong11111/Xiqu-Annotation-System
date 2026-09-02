@@ -1406,6 +1406,14 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     actor may finish an already-created row after permission revocation
   - details use an exact fixed reason-code object capped at 2KB. Never store ProjectData, commands, before/after values, sentence
     text, media URLs, acoustic arrays or credentials in the attempt table or aggregate responses
+- `src/platform/annotationToolAttemptQueue.ts` + `src/platform/annotationToolAttemptDelivery.ts`
+  - FA-D1b browser delivery boundary. Tool attempts use a dedicated bounded IndexedDB queue, never the ProjectData draft store;
+    each row is scoped by account and contains only the latest strict lifecycle snapshot plus a local version
+  - stale writes merge monotonically, and acknowledgement deletes only the captured version so another tab's later update is
+    retained. One Workspace-owned coordinator drains every file for the current account, batches at most 100, retries transient
+    failures with bounded backoff, suspends on 401, and isolates permanent bad rows instead of blocking the complete queue
+  - local editor mode has no coordinator/session record callback and must never upload. A successfully applied reset remains
+    `pending` after FA-D1b; only the future command transaction may bind its operation and mark it `committed`
 - `apps/api/src/annotationRecoverySnapshotResolver.ts`
   - HC2a single read boundary for recovery snapshot storage modes; detail and restore must both use it
   - inline payloads are historical arbitrary JSON and must be returned without current ProjectData parsing, normalization,
@@ -2164,6 +2172,10 @@ Important backend caveats:
 - annotation tool attempts are auxiliary training/governance facts outside ProjectData, drafts, undo/history and annotation
   revision. User/file/operation deletion uses SetNull and preserves the fact; no cleanup or copy workflow may cascade-delete or
   duplicate these rows. Only the future command-commit transaction may set `committed` and bind an operation.
+- browser attempt delivery is account-owned by `PlatformWorkspace`, not an editor-file polling effect. File switches and logout
+  must never send one account's rows with another account's client; reconnect and relogin resume only that account's strict queue.
+  Queue/storage/API failures are diagnostic side effects and must not alter document dirty state, autosave, conflict UI or leave
+  protection.
 - HC2a expands recovery snapshots without rewriting old rows: payload stays required, all new writes default to `inline`, and a
   database check prevents enabling recipe/archive modes before their readers and writers exist. Detail and restore share the
   resolver above; history lists remain metadata-only and public DTOs do not expose storage/hash/recipe internals.

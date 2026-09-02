@@ -1,5 +1,5 @@
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export type SentenceCharacterTimingResetPrompt = {
   lineId: string;
@@ -18,17 +18,27 @@ type Props = {
  */
 export function SentenceCharacterTimingResetDialog(props: Props) {
   const [suppressForSession, setSuppressForSession] = useState(false);
+  const confirmingRef = useRef(false);
 
   useEffect(() => {
     // 每次打开都从未勾选开始；取消上一次窗口不能偷偷改变下一次操作。
-    if (props.prompt) setSuppressForSession(false);
+    if (props.prompt) {
+      setSuppressForSession(false);
+      confirmingRef.current = false;
+    }
   }, [props.prompt?.lineId]);
 
   return (
     <AlertDialog.Root
       open={Boolean(props.prompt)}
       onOpenChange={(open) => {
-        if (!open) props.onCancel();
+        if (open) return;
+        // AlertDialog.Action 也会触发关闭事件；确认路径已经由按钮处理，不能再被误记成一次取消。
+        if (confirmingRef.current) {
+          confirmingRef.current = false;
+          return;
+        }
+        props.onCancel();
       }}
     >
       <AlertDialog.Portal>
@@ -61,7 +71,10 @@ export function SentenceCharacterTimingResetDialog(props: Props) {
               <button
                 type="button"
                 className="primary"
-                onClick={() => props.onConfirm(suppressForSession)}
+                onClick={() => {
+                  confirmingRef.current = true;
+                  props.onConfirm(suppressForSession);
+                }}
               >
                 确认重置
               </button>

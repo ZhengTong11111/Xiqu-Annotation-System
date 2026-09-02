@@ -81,13 +81,18 @@ annotationOperationId / committedRevision / details
 - details 只有固定 reasonCode 且至多 2KB；专项 5 项、command 25/5 项、完整 API 301 项和完整构建通过。不接 UI、不部署
   生产；生产上线仍必须晚于 HC2 migration 的独立观察。
 
-### FA-D1b：前端生命周期与离线队列（下一阶段）
+### FA-D1b：前端生命周期与离线队列（代码已完成）
 
-- 句级列表和 Timeline 向唯一 App 动作传入 entry point。
-- 记录 invoked、confirm/cancel、no-change/blocked/final failure；断网和刷新后稳定续传。
-- 登出、账号/文件切换、多窗口和权限撤销不串数据；本地模式不上传。
+- 句级列表和 Timeline 已分别向唯一 App 动作传入 `sentence_list` / `timeline_context_menu`；同一 runtime UUID 单调记录
+  invoked、confirm/cancel、no-change/blocked/final failure。确认框明确区分 Action 关闭与真正取消，避免一次确认被双记。
+- 独立有界 IndexedDB 每账号最多 2,000、全局最多 5,000 行，不混入 ProjectData 草稿。旧前缀不能覆盖新状态，服务端确认
+  只按本地 version 条件删除；损坏行不会外送。系统时钟回拨也不会制造倒序生命周期。
+- `PlatformWorkspace` 持有唯一账号级送达 owner，跨文件批量最多 100；临时失败指数退避，401 等待重新登录，永久坏行二分
+  隔离，多标签页依赖服务端幂等和本地条件删除。本地工具没有记录入口，完全不上报。
+- 成功本地应用仍保持 pending，不由前端伪造 committed；专项 9 项、FA-D1a 5 项、命令 25/5 项、客户端原子提交 34 项、
+  完整 API 301 项和完整构建通过。本阶段未部署生产。
 
-### FA-D1c：operation 原子绑定与统计
+### FA-D1c：operation 原子绑定与统计（下一阶段）
 
 - pending operation 和 command batch 增加可选、严格 `toolAttemptId`，进入幂等 request hash。
 - 服务端验证目标句及逐字 after 确实连续平均覆盖句级范围，成功事务内终结尝试。

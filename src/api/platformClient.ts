@@ -11,6 +11,8 @@ import type {
   AnnotationCommittedOperationPage,
   AnnotationClientSyncFailureReport,
   AnnotationClientSyncFailureReportResult,
+  SubmitAnnotationToolAttemptBatchRequest,
+  SubmitAnnotationToolAttemptBatchResponse,
   AnnotationFile,
   AnnotationMutationLeaseGrant,
   AnnotationMutationLeaseSummary,
@@ -977,6 +979,17 @@ export class PlatformClient {
     return this.request<AnnotationClientSyncFailureReportResult>(
       `/annotation-files/${annotationFileId}/sync-failures`,
       { method: "POST", body: report },
+    );
+  }
+
+  // 工具尝试由浏览器离线队列批量续传；signal 只取消当前网络请求，不删除尚未确认的 IndexedDB 行。
+  submitAnnotationToolAttempts(
+    request: SubmitAnnotationToolAttemptBatchRequest,
+    signal?: AbortSignal,
+  ) {
+    return this.request<SubmitAnnotationToolAttemptBatchResponse>(
+      "/annotation-tool-attempts/batch",
+      { method: "POST", body: request, signal },
     );
   }
 

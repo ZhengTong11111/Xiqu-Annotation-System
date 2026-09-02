@@ -17,6 +17,7 @@ export const ANNOTATION_TOOL_ATTEMPT_REASON_CODES = [
   "user_cancelled",
   "no_character_annotations",
   "no_timing_change",
+  "invalid_sentence_range",
   "editing_blocked",
   "command_rejected",
   "unexpected_error",

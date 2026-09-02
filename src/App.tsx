@@ -8,6 +8,8 @@ import {
   type AnnotationCommandEnvelope,
   type AnnotationMutationPurpose,
   type AnnotationReviewScope,
+  type AnnotationToolAttemptEntryPoint,
+  type AnnotationToolAttemptState,
   type AnnotationWorkflowStatus,
   type ProjectSnapshotBoundaryKind,
   type ResourceCapability,
@@ -99,6 +101,11 @@ import {
 } from "./platform/annotationWorkflow";
 import type { PlatformRecoveryBackupState } from "./platform/platformRecoveryBackupRuntime";
 import { usePlatformDraftPersistence } from "./platform/usePlatformDraftPersistence";
+import {
+  confirmSentenceCharacterTimingAttempt,
+  createSentenceCharacterTimingAttempt,
+  finishSentenceCharacterTimingAttempt,
+} from "./platform/sentenceCharacterTimingAttempt";
 import { preparePlatformEditorLeave } from "./platform/platformEditorLeaveRuntime";
 import { usePlatformEditorHistoryGuard } from "./platform/usePlatformEditorHistoryGuard";
 import { usePlatformMutationLease } from "./platform/usePlatformMutationLease";
@@ -626,6 +633,11 @@ type EditorWorkbenchProps = {
 
 type AnnotationConfirmationPanelPlacement = "docked" | "hidden" | "detached";
 
+type SentenceCharacterTimingResetPromptState = SentenceCharacterTimingResetPrompt & {
+  attempt: AnnotationToolAttemptState | null;
+  entryPoint: AnnotationToolAttemptEntryPoint;
+};
+
 function EditorWorkbench({ editorSession, localEditorSession, platformNavigation }: EditorWorkbenchProps) {
   const initialProject = editorSession?.initialProject ?? localEditorSession?.initialProject ?? mockProject;
   const initialProjectDuration = getProjectDuration(initialProject);
@@ -638,7 +650,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [annotationWorkflowPending, setAnnotationWorkflowPending] = useState(false);
   const [annotationWorkflowError, setAnnotationWorkflowError] = useState<string | null>(null);
   const [sentenceCharacterTimingResetPrompt, setSentenceCharacterTimingResetPrompt] =
-    useState<SentenceCharacterTimingResetPrompt | null>(null);
+    useState<SentenceCharacterTimingResetPromptState | null>(null);
   // EditorWorkbench 的 key 绑定本次文件打开会话；只用内存 ref，离开或重新打开文件后自然恢复提示。
   const suppressSentenceCharacterTimingResetPromptRef = useRef(false);
   const isReadOnly = Boolean(
@@ -2990,14 +3002,60 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     commitProject(nextProject, baseProject, { commandEnvelope });
   }
 
-  // 单句平均重置只改变逐字及其派生工尺时间，必须由一个可重放事务完整覆盖全部级联变化。
-  function resetSentenceCharacterTiming(lineId: string, confirmed = false) {
+  // 两个界面入口共用这一生命周期；平台旁路记录失败不会阻断本地编辑、保存或协作命令。
+  function resetSentenceCharacterTiming(
+    lineId: string,
+    entryPoint: AnnotationToolAttemptEntryPoint,
+    options: {
+      attempt?: AnnotationToolAttemptState | null;
+      confirmed?: boolean;
+      suppressPrompt?: boolean;
+    } = {},
+  ) {
+    const baseProject = projectRef.current;
+    const line = baseProject.subtitleLines.find((candidate) => candidate.id === lineId);
+    const isNewInvocation = options.attempt === undefined;
+    let activeAttempt = options.attempt ?? null;
+    if (isNewInvocation && editorSession?.canWrite && line) {
+      activeAttempt = createSentenceCharacterTimingAttempt({
+        annotationFileId: editorSession.annotationFileId,
+        sentenceId: line.id,
+        entryPoint,
+        characterCount: baseProject.characterAnnotations.filter(
+          (character) => character.lineId === line.id,
+        ).length,
+        sentenceDurationSeconds: line.endTime - line.startTime,
+        suppressPrompt: suppressSentenceCharacterTimingResetPromptRef.current,
+      });
+      editorSession.recordAnnotationToolAttempt(activeAttempt);
+    }
+
+    if (
+      activeAttempt &&
+      !activeAttempt.confirmedAt &&
+      (options.confirmed || (isNewInvocation && suppressSentenceCharacterTimingResetPromptRef.current))
+    ) {
+      // 显式确认或本次文件已免提示都属于确认事实；即使随后发现状态变化受阻，也不能丢掉已经发生的确认。
+      activeAttempt = confirmSentenceCharacterTimingAttempt(activeAttempt, {
+        suppressPrompt: options.suppressPrompt ?? suppressSentenceCharacterTimingResetPromptRef.current,
+      });
+      editorSession?.recordAnnotationToolAttempt(activeAttempt);
+    }
+
+    const finishAttempt = (
+      outcome: "cancelled" | "no_change" | "blocked" | "failed",
+      reasonCode: Parameters<typeof finishSentenceCharacterTimingAttempt>[2],
+    ) => {
+      if (!activeAttempt) return;
+      activeAttempt = finishSentenceCharacterTimingAttempt(activeAttempt, outcome, reasonCode);
+      editorSession?.recordAnnotationToolAttempt(activeAttempt);
+    };
+
     if (sentenceEditingBlockedReason) {
+      finishAttempt("blocked", "editing_blocked");
       window.alert(sentenceEditingBlockedReason);
       return;
     }
-    const baseProject = projectRef.current;
-    const line = baseProject.subtitleLines.find((candidate) => candidate.id === lineId);
     const resetResult = resetSentenceCharactersToEvenTiming(baseProject, lineId);
     if (!resetResult.ok) {
       const message = resetResult.issue === "no_characters"
@@ -3005,58 +3063,87 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         : resetResult.issue === "invalid_sentence_range"
           ? "当前句的起止时间无效，无法平均分配逐字时间。"
           : "当前句已经不存在，请刷新后重试。";
+      if (resetResult.issue === "no_characters") {
+        finishAttempt("no_change", "no_character_annotations");
+      } else if (resetResult.issue === "invalid_sentence_range") {
+        finishAttempt("blocked", "invalid_sentence_range");
+      } else {
+        finishAttempt("failed", "unexpected_error");
+      }
       window.alert(message);
       return;
     }
     if (!resetResult.changed) {
+      finishAttempt("no_change", "no_timing_change");
       window.alert("本句逐字已经按句级范围平均分配，无需重置。");
       return;
     }
     if (!line) return;
-    if (!confirmed && !suppressSentenceCharacterTimingResetPromptRef.current) {
+    if (!options.confirmed && !suppressSentenceCharacterTimingResetPromptRef.current) {
       // 弹窗只保留目标身份和显示摘要；真正确认时会再次读取 projectRef，绝不提交陈旧预览。
       setSentenceCharacterTimingResetPrompt({
         lineId,
         sentenceText: line.text,
         characterCount: resetResult.characterIds.length,
+        attempt: activeAttempt,
+        entryPoint,
       });
       return;
     }
 
-    const resetCharacterIds = new Set(resetResult.characterIds);
-    const timingParentsBefore = new Map(
-      baseProject.characterAnnotations
-        .filter((character) => resetCharacterIds.has(character.id))
-        .map((character) => [
-          getGongcheParentKey("character-track", character.id),
-          toCharacterGongcheParent(character),
-        ]),
-    );
-    const nextProject = synchronizeGongcheWithChangedParents(
-      resetResult.project,
-      timingParentsBefore,
-    );
-    const gongcheTargets = getGongcheTransactionTargetsForParents(
-      baseProject,
-      nextProject,
-      "character-track",
-      resetResult.characterIds,
-    );
-    const commandEnvelope = buildProjectAnnotationTransactionCommand(baseProject, nextProject, {
-      timingTargets: [
-        ...resetResult.characterIds.map((entityId): TimelineTimingTarget => ({
-          entityType: "character",
-          entityId,
-        })),
-        ...gongcheTargets.timingTargets,
-      ],
-      stateTargets: gongcheTargets.stateTargets,
-    });
-    if (!commandEnvelope) {
-      window.alert("本句逐字及关联工尺无法形成完整的协作命令，项目未被修改。请拆分或检查异常标注后重试。");
-      return;
+    if (activeAttempt && !activeAttempt.confirmedAt) {
+      activeAttempt = confirmSentenceCharacterTimingAttempt(activeAttempt, {
+        suppressPrompt: options.suppressPrompt ?? suppressSentenceCharacterTimingResetPromptRef.current,
+      });
+      editorSession?.recordAnnotationToolAttempt(activeAttempt);
     }
-    commitProject(nextProject, baseProject, { commandEnvelope });
+
+    try {
+      const resetCharacterIds = new Set(resetResult.characterIds);
+      const timingParentsBefore = new Map(
+        baseProject.characterAnnotations
+          .filter((character) => resetCharacterIds.has(character.id))
+          .map((character) => [
+            getGongcheParentKey("character-track", character.id),
+            toCharacterGongcheParent(character),
+          ]),
+      );
+      const nextProject = synchronizeGongcheWithChangedParents(
+        resetResult.project,
+        timingParentsBefore,
+      );
+      const gongcheTargets = getGongcheTransactionTargetsForParents(
+        baseProject,
+        nextProject,
+        "character-track",
+        resetResult.characterIds,
+      );
+      // 单句平均重置只改变逐字及其派生工尺时间，必须由一个可重放事务完整覆盖全部级联变化。
+      const commandEnvelope = buildProjectAnnotationTransactionCommand(baseProject, nextProject, {
+        timingTargets: [
+          ...resetResult.characterIds.map((entityId): TimelineTimingTarget => ({
+            entityType: "character",
+            entityId,
+          })),
+          ...gongcheTargets.timingTargets,
+        ],
+        stateTargets: gongcheTargets.stateTargets,
+      });
+      if (!commandEnvelope) {
+        finishAttempt("failed", "command_rejected");
+        window.alert("本句逐字及关联工尺无法形成完整的协作命令，项目未被修改。请拆分或检查异常标注后重试。");
+        return;
+      }
+      // 成功应用后保持 pending；只有 FA-D1c 的服务端 command 事务可以写 committed 与 revision。
+      commitProject(nextProject, baseProject, { commandEnvelope });
+    } catch (error) {
+      finishAttempt("failed", "unexpected_error");
+      console.error("本句逐字平均重置失败。", {
+        lineId,
+        reason: error instanceof Error ? error.name : "unknown",
+      });
+      window.alert("本句逐字平均重置失败，项目未被修改，请重试。");
+    }
   }
 
   // 角色列表变更与所有受影响句子在同一租约事务中提交，避免协作端看到悬空角色。
@@ -7894,14 +7981,30 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       />
       <SentenceCharacterTimingResetDialog
         prompt={sentenceCharacterTimingResetPrompt}
-        onCancel={() => setSentenceCharacterTimingResetPrompt(null)}
+        onCancel={() => {
+          const prompt = sentenceCharacterTimingResetPrompt;
+          setSentenceCharacterTimingResetPrompt(null);
+          if (prompt?.attempt) {
+            editorSession?.recordAnnotationToolAttempt(
+              finishSentenceCharacterTimingAttempt(
+                prompt.attempt,
+                "cancelled",
+                "user_cancelled",
+              ),
+            );
+          }
+        }}
         onConfirm={(suppressForSession) => {
           const prompt = sentenceCharacterTimingResetPrompt;
           if (!prompt) return;
           // 只有明确确认才启用会话内免提示；取消不会改变后续行为。
           if (suppressForSession) suppressSentenceCharacterTimingResetPromptRef.current = true;
           setSentenceCharacterTimingResetPrompt(null);
-          resetSentenceCharacterTiming(prompt.lineId, true);
+          resetSentenceCharacterTiming(prompt.lineId, prompt.entryPoint, {
+            attempt: prompt.attempt,
+            confirmed: true,
+            suppressPrompt: suppressForSession,
+          });
         }}
       />
       {/* 整合草稿确认栏属于编辑会话而非保存版本；取消不改历史，应用后仍需用户正常保存。 */}
@@ -8049,7 +8152,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                 }}
                 onClassificationChange={updateSentenceClassification}
                 editingBlockedReason={sentenceEditingBlockedReason}
-                onResetCharacterTiming={resetSentenceCharacterTiming}
+                onResetCharacterTiming={(lineId) =>
+                  resetSentenceCharacterTiming(lineId, "sentence_list")}
               />
             )}
             splitPanel={(
@@ -8479,7 +8583,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
                 onClick={() => {
                   const lineId = contextMenuLine.id;
                   setBlockContextMenu(null);
-                  resetSentenceCharacterTiming(lineId);
+                  resetSentenceCharacterTiming(lineId, "timeline_context_menu");
                 }}
               >
                 将本句逐字重置为平均时间...
