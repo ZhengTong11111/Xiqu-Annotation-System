@@ -70,6 +70,17 @@ export async function createAnnotationHistoryFixture(
   return { resourceId: resource.id, projects };
 }
 
+/** 影子 recipe 写入测试显式进入维护窗口，避免测试绕过生产运维门禁。 */
+export async function enableAnnotationHistoryTestMaintenance(
+  prisma: ReturnType<typeof createTestPrisma>["prisma"],
+) {
+  await prisma.platformRuntimeState.upsert({
+    where: { id: "platform" },
+    create: { id: "platform", maintenanceMode: true },
+    update: { maintenanceMode: true },
+  });
+}
+
 export function createColdAnnotationHistoryPlan(
   prisma: ReturnType<typeof createTestPrisma>["prisma"],
   annotationFileId: string,

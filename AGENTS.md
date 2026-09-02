@@ -1417,6 +1417,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     切换 `storageMode`、写 `compactedAt`，也不得修改当前 AnnotationFile、operation、审核或恢复事实
   - CLI 默认 dry-run，只允许显式单文件；写入还必须显式 `--apply` 并受候选数/operation 数上限约束。完全相同的 recipe
     重试是幂等成功，文件 revision、hash、命令链或既有 recipe 任一漂移都停止该文件，不能覆盖或继续猜测
+  - 即使显式 `--apply`，前置 planner 也必须使用 PostgreSQL 强制只读连接和 statement timeout；可写连接只能在完整规划通过后
+    为短事务按需创建。每个 recipe 写事务必须锁定并确认平台维护状态仍开启，维护未开启或批次间被关闭时 fail closed
 - `apps/api/src/annotationHistoryStoredRecipeVerification*.ts`
   - HC3a2 对数据库中已存 inline 影子 recipe 的唯一持续复核边界。服务必须在一个 `REPEATABLE READ` 快照中按单文件、
     有界候选和有界 operation 范围读取，首个漂移停止，并复用 `annotationHistoryReconstruction.ts`；不得复制 parser、重放、

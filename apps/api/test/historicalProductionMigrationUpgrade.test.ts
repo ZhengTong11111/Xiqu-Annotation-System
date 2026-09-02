@@ -13,9 +13,9 @@ const prismaSchemaPath = fileURLToPath(new URL("../../../prisma/schema.prisma", 
 const migrationLockPath = fileURLToPath(new URL("../../../prisma/migrations/migration_lock.toml", import.meta.url));
 const workspaceRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const productionBaselineMigration = "20260901030000_annotation_review_link_integrity";
-const currentFinalMigration = "20260902120000_remove_server_force_alignment_pipeline";
+const currentFinalMigration = "20260902020000_annotation_tool_attempts";
 
-test("生产 36 migration 基线升级到当前 49 migration 时完整保留既有业务事实", async () => {
+test("生产 36 migration 基线升级到当前 39 migration 时完整保留既有业务事实", async () => {
   assertSafeTestDatabaseUrl();
   const schemaName = `history_upgrade_${randomUUID().replaceAll("-", "")}_test`;
   const databaseUrl = new URL(TEST_DATABASE_URL);
@@ -35,7 +35,7 @@ test("生产 36 migration 基线升级到当前 49 migration 时完整保留既�
     const baselineIndex = migrationNames.indexOf(productionBaselineMigration);
     const finalIndex = migrationNames.indexOf(currentFinalMigration);
     assert.equal(baselineIndex, 35, "生产历史基线必须仍是第 36 条 migration");
-    assert.equal(finalIndex, 48, "当前候选必须仍以第 49 条 migration 收尾");
+    assert.equal(finalIndex, 38, "当前候选必须仍以第 39 条 migration 收尾");
     assert.equal(migrationNames.length, finalIndex + 1, "当前收尾 migration 后不能有未纳入演练的新 migration");
 
     // 先精确停在生产现有版本，再注入业务事实；新空库一次跑到底无法证明历史升级安全。
@@ -51,7 +51,6 @@ test("生产 36 migration 基线升级到当前 49 migration 时完整保留既�
     assert.deepEqual(afterUpgrade, beforeUpgrade);
 
     await assertHistoryCapacitySchema(client, schemaName);
-    await assertRemovedForceAlignmentSchema(client, schemaName);
   } finally {
     client.release();
     try {
@@ -167,7 +166,7 @@ async function seedHistoricalBusinessFacts(client: pg.PoolClient) {
   `);
   await client.query(`
     INSERT INTO "project_metadata" ("resource_id", "description")
-    VALUES ('project-1', '验证 36 到 49 migration 的业务事实保留')
+    VALUES ('project-1', '验证 36 到 39 migration 的业务事实保留')
   `);
   await client.query(`
     INSERT INTO "annotation_files" (
@@ -296,51 +295,12 @@ async function assertHistoryCapacitySchema(client: pg.PoolClient, schemaName: st
   }
 }
 
-async function assertRemovedForceAlignmentSchema(client: pg.PoolClient, schemaName: string) {
-  for (const tableName of removedTables) {
-    assert.equal(await tableExists(client, tableName), false, `${tableName} 应被最终 migration 清理`);
-  }
-  for (const [tableName, columnName] of [
-    ["processing_jobs", "alignment_run_id"],
-    ["processing_jobs", "alignment_training_export_id"],
-    ["annotation_operations", "alignment_application_id"],
-    ["project_metadata", "research_group_revision"],
-  ] as const) {
-    assert.equal(await columnExists(client, schemaName, tableName, columnName), false);
-  }
-  for (const typeName of removedTypes) {
-    assert.equal(await typeExists(client, schemaName, typeName), false, `${typeName} 应被最终 migration 清理`);
-  }
-
-  // PostgreSQL 不能无表重写地删除 enum 值；墓碑可以保留，但必须没有可达表结构或运行入口。
-  const processingJobTypes = await client.query<{ value: string }>(`
-    SELECT unnest(enum_range(NULL::"ProcessingJobType"))::text AS value
-  `);
-  assert.equal(processingJobTypes.rows.some(({ value }) => value === "force_alignment"), true);
-  assert.equal(processingJobTypes.rows.some(({ value }) => value === "alignment_training_export"), true);
-}
-
 async function tableExists(client: pg.PoolClient, tableName: string) {
   const result = await client.query<{ relation: string | null }>(
     "SELECT to_regclass($1)::text AS relation",
     [tableName],
   );
   return result.rows[0]?.relation !== null;
-}
-
-async function columnExists(
-  client: pg.PoolClient,
-  schemaName: string,
-  tableName: string,
-  columnName: string,
-) {
-  const result = await client.query<{ present: boolean }>(`
-    SELECT EXISTS (
-      SELECT 1 FROM information_schema.columns
-      WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
-    ) AS present
-  `, [schemaName, tableName, columnName]);
-  return result.rows[0]?.present === true;
 }
 
 async function constraintExists(client: pg.PoolClient, schemaName: string, constraintName: string) {
@@ -355,42 +315,6 @@ async function constraintExists(client: pg.PoolClient, schemaName: string, const
   return result.rows[0]?.present === true;
 }
 
-async function typeExists(client: pg.PoolClient, schemaName: string, typeName: string) {
-  const result = await client.query<{ present: boolean }>(`
-    SELECT EXISTS (
-      SELECT 1
-      FROM pg_type AS type
-      INNER JOIN pg_namespace AS namespace ON namespace.oid = type.typnamespace
-      WHERE namespace.nspname = $1 AND type.typname = $2
-    ) AS present
-  `, [schemaName, typeName]);
-  return result.rows[0]?.present === true;
-}
-
 function quoteIdentifier(value: string) {
   return `"${value.replaceAll('"', '""')}"`;
 }
-
-const removedTables = [
-  "alignment_training_package_artifacts",
-  "alignment_training_export_inputs",
-  "alignment_training_export_groups",
-  "alignment_training_export_items",
-  "alignment_training_exports",
-  "alignment_quality_assessments",
-  "alignment_applications",
-  "alignment_artifacts",
-  "alignment_runs",
-  "project_alignment_research_groups",
-  "alignment_research_groups",
-] as const;
-
-const removedTypes = [
-  "AlignmentTrainingSplit",
-  "AlignmentTrainingTargetMode",
-  "AlignmentResearchGroupKind",
-  "AlignmentQualityIssueCode",
-  "AlignmentQualityVerdict",
-  "AlignmentQualityAssessmentScope",
-  "AlignmentArtifactKind",
-] as const;

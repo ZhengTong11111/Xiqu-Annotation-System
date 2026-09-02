@@ -20,6 +20,7 @@ export type AnnotationHistoryShadowWriteCode =
   | "annotation_file_revision_changed"
   | "candidate_invalid"
   | "existing_recipe_conflict"
+  | "maintenance_required"
   | "recipe_operation_limit_exceeded"
   | "snapshot_missing"
   | "snapshot_storage_mode_changed";
@@ -128,6 +129,18 @@ export class AnnotationHistoryShadowRecipeService {
     }
 
     return this.prisma.$transaction(async (transaction) => {
+      // 影子写入只允许在平台维护窗口内执行，并锁住状态行直到当前候选提交。
+      // 这样管理员即使在批次执行期间关闭维护，也只能在当前短事务结束后生效；下一候选会重新检查并停止。
+      const maintenanceRows = await transaction.$queryRaw<Array<{ maintenanceMode: boolean }>>`
+        SELECT maintenance_mode AS "maintenanceMode"
+        FROM platform_runtime_state
+        WHERE id = 'platform'
+        FOR SHARE
+      `;
+      if (maintenanceRows[0]?.maintenanceMode !== true) {
+        return blocked("maintenance_required");
+      }
+
       // 文件级事务锁只串行同一文件的影子写入；annotation_files 行锁同时与普通保存建立真实互斥。
       await transaction.$queryRaw`
         SELECT 1::integer AS locked

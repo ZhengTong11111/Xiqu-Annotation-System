@@ -11571,3 +11571,44 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：当前 commit 的真实不可变候选组装、内部链接/依赖/migration/Prisma/历史 CLI 验收和临时文件清理。
   **待推进**：仍停在授权 A；生产连接、维护、备份、migration、部署、只读生产 planner、影子写入、payload 清理、compactor 与
   物理回收均未执行。
+
+## 2026-09-02：HC2i 容量治理生产前风险审查与门禁修复
+
+### 生产只读事实与影响判断
+
+- 按用户要求把审查范围收紧到恢复历史容量治理。只读确认生产仍运行 release `0f4bf69`、36 条 migration、PostgreSQL 16.15；
+  API、analysis worker、Caddy 均 active，维护关闭，检查时没有活动事务或快照表锁。本轮没有开启维护、执行 migration、切换 release、
+  写影子 recipe、清空 payload、运行 compactor/VACUUM 或修改生产业务数据。
+- 生产恢复快照已增至 47,474 行，总 relation 约 6.0GB；其中 heap 约 8.8MB、索引约 9.8MB、TOAST 约 6.0GB。对现有列执行
+  与新容量指标等价的 `EXPLAIN ANALYZE`，47,474 行聚合约 19ms、顺序扫描约 7.7ms，只访问 1,101 个主表 buffer，不读取或解压
+  JSON payload。由此确认五分钟缓存指标不会扫描 6GB 正文，但正式 DDL 仍需维护排空后取得表锁。
+- 逐条检查 HC2a/HC3a SQL：只增加 enum、常量默认/nullable 列和 CHECK，不更新或删除 annotation payload、operation、snapshot、
+  confirmation、range comment/feedback 或 review link。PostgreSQL 16 的常量默认不会重写旧行；CHECK 只依赖新增轻量列。旧 release
+  插入时省略新列仍得到 `inline + null recipe`，新 release 普通保存也保持同样形态。
+
+### 审查发现与修复
+
+- 发现影子 recipe CLI 在 `--apply` 模式错误地让前置 planner 使用普通可写连接，配置的数据库只读门禁和 statement timeout 因而
+  失效；写服务也只在手册中要求维护，代码可被误用在正常标注期间，并可能用文件共享锁让保存等待。现已改为 planner 在 dry-run
+  与 apply 两种模式下一律走独立强制只读连接，可写连接只在完整计划通过后按需创建。
+- 每个影子 recipe 写事务现先以 `FOR SHARE` 锁住 `platform_runtime_state.platform` 并确认维护开启；维护缺失、关闭或在候选批次间
+  被关闭时，以稳定 `maintenance_required` 停止且不写 hash/recipe。新增反例测试逐项确认 payload 与全部 recipe 列保持原值；既有
+  写入和只读复核夹具也改为显式进入测试维护状态。
+- 当前 49 条候选 migration 混入 10 条从未部署的错误 Force Alignment 服务端 pipeline migration：它们依次创建表、外键和核心表列，
+  最后一条再删除，虽最终 schema 可收敛，仍会制造无意义锁、失败面和中间状态。已在生产部署前删除整段草稿 migration 与对应僵尸
+  清理测试；当前最终树只含 39 条 migration。历史升级测试改为生产 36 -> 39，并继续在升级前写入标注、operation、恢复快照、
+  确认、评论、反馈和审核链接，升级后逐项比较原列。
+
+### 验证与待推进
+
+- `test:annotation-history-compaction` 34/34、`test:historical-production-migration-upgrade` 1/1、
+  `test:annotation-history-release-entries` 2/2、`test:deployment` 29/29、完整 `test:api` 337/337、完整 `npm run build` 与
+  `git diff --check` 均通过。隔离 `api_test` schema 因曾应用已删除的草稿 migration，已在 `_test` 名称门禁下单独重建并从零成功
+  应用当前 39 条；本地开发 schema 和生产 schema 未受影响。仅保留既有 Vite 主 chunk 体积提示和 API 测试中的 `pg`
+  concurrent-query deprecation warning。
+- 自审没有发现会让现有标注保存、operation/快照原子绑定、跨实例 revision 通知、恢复、确认/评论/反馈或审核链接失效的剩余
+  阻断问题。容量模块没有在线写入调用点、timer 或 worker，不会自动写 recipe、改变存储模式、清空 payload、删除 operation 或
+  执行物理回收。
+- **已完成**：生产只读风险基线、迁移/在线路径审查、影子 apply 双门禁修复、错误 migration 链和测试僵尸代码清理、完整回归与文档。
+  **待推进**：生产仍停在授权 A 前；只有用户明确批准后，才能从本次已审查提交重新构建不可变候选并按手册进入维护、备份、隔离
+  恢复、migration 和只读观察。授权 B 影子写入、payload 清空、compactor 与物理回收仍未获授权。

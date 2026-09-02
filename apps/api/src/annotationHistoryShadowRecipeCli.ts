@@ -12,17 +12,15 @@ async function run() {
   const options = parseAnnotationHistoryShadowRecipeCliOptions(process.argv.slice(2));
   const databaseUrl = process.env.DATABASE_URL?.trim();
   if (!databaseUrl) throw new Error("缺少 DATABASE_URL，无法执行恢复历史影子复核。");
-  const writableConnection = options.apply ? createPrismaConnection(databaseUrl) : null;
-  const readOnlyConnection = options.apply
-    ? null
-    : createPrismaReadOnlyConnection(databaseUrl, {
-        statementTimeoutMs: options.planner.statementTimeoutMs,
-        maxConnections: 2,
-      });
-  const connection = writableConnection ?? readOnlyConnection!;
+  // apply 也必须先在数据库强制只读连接上完成完整规划；可写连接只为后续短事务按需创建。
+  const readOnlyConnection = createPrismaReadOnlyConnection(databaseUrl, {
+    statementTimeoutMs: options.planner.statementTimeoutMs,
+    maxConnections: 2,
+  });
+  let writableConnection: ReturnType<typeof createPrismaConnection> | null = null;
   let lockClient: PoolClient | null = null;
   try {
-    lockClient = await connection.pool.connect();
+    lockClient = await readOnlyConnection.pool.connect();
     const lockResult = await lockClient.query<{ locked: boolean }>(
       "SELECT pg_try_advisory_lock(hashtext($1)) AS locked",
       [SHADOW_RECIPE_LOCK_NAME],
@@ -31,13 +29,13 @@ async function run() {
       throw new Error("已有恢复历史影子复核正在运行，请等待其结束后重试。");
     }
 
-    const annotationFile = await connection.prisma.annotationFile.findUnique({
+    const annotationFile = await readOnlyConnection.prisma.annotationFile.findUnique({
       where: { resourceId: options.planner.annotationFileId },
       select: { revision: true },
     });
     if (!annotationFile) throw new Error("指定标注文件不存在。");
     const planner = new AnnotationHistoryCompactionPlanner(
-      new PrismaAnnotationHistoryCompactionRepository(connection.prisma),
+      new PrismaAnnotationHistoryCompactionRepository(readOnlyConnection.prisma),
     );
     const plan = await planner.plan({
       annotationFileId: options.planner.annotationFileId,
@@ -54,8 +52,9 @@ async function run() {
       .sort((left, right) => left.revision - right.revision)
       .slice(0, options.limitCandidates);
 
-    const writeReport = options.apply
-      ? await new AnnotationHistoryShadowRecipeService(connection.prisma).writeFileRecipes({
+    if (options.apply) writableConnection = createPrismaConnection(databaseUrl);
+    const writeReport = writableConnection
+      ? await new AnnotationHistoryShadowRecipeService(writableConnection.prisma).writeFileRecipes({
           annotationFileId: options.planner.annotationFileId,
           expectedAnnotationRevision: annotationFile.revision,
           decisions: filePlan.decisions,
@@ -96,9 +95,11 @@ async function run() {
         lockClient.release();
       }
     }
-    await connection.prisma.$disconnect();
-    await connection.pool.end();
+    await readOnlyConnection.prisma.$disconnect();
+    await readOnlyConnection.pool.end();
     if (writableConnection) {
+      await writableConnection.prisma.$disconnect();
+      await writableConnection.pool.end();
       await writableConnection.maintenancePool.end();
       await writableConnection.collaborationPool.end();
     }

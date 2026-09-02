@@ -235,13 +235,35 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - 从已审查 commit `5e2ed07` 重新完整构建，并严格按部署复制白名单在系统临时目录组装 554MB 候选。候选根只有
   `package.json`、lockfile、Prisma config/migrations、`packages`、`dist`、`node_modules` 和两个部署 smoke 脚本；没有 `.env`、
   `data`、docs、备份、报告、密钥或应用源码根目录，两个 workspace 链接均解析到候选内部。
-- 候选内 `release:inspect` 确认 30 个运行路径、27 个生产依赖和 49 条 migration；`release:check` 确认 Prisma Client 与候选 schema
+- 当时的候选内 `release:inspect` 确认 30 个运行路径、27 个生产依赖和 49 条 migration；后续 HC2i 发现其中混入未部署且最终
+  反向删除的 Force Alignment migration，因此该旧候选已经废弃，不能部署。`release:check` 当时确认 Prisma Client 与候选 schema
   一致。三个历史治理编译入口逐项存在并取得 SHA-256，三条 npm script 在没有数据库配置时都先以严格范围参数错误退出，未出现
   `ECONN`、Prisma、数据库 URL 或无界错误输出。
 - 演练后已删除整个 554MB 临时候选并复核路径不存在，没有生成可误认作已部署 release 的 `/opt/xiqu` 状态。该证据只证明当前
   commit 可以形成完整候选，仍不构成授权 A；生产 release 必须在当次授权后从当时的明确 commit 重新构建和检查。
 - 本轮完整 API 338/338、完整构建与 `git diff --check` 通过；仅修改 roadmap/Development Log，没有新增依赖、schema、migration、
   运行时代码或新的 AGENTS 规则。
+
+#### HC2i：容量治理生产前风险审查（代码修复完成，生产未执行）
+
+- 只读复核生产仍运行 `0f4bf69`、36 条 migration、PostgreSQL 16.15，API/worker/Caddy 正常且维护关闭。当前恢复快照已增长到
+  47,474 行、总 relation 约 6.0GB；主表 heap 约 8.8MB、索引约 9.8MB，约 6.0GB 位于 TOAST。容量等价聚合的生产
+  `EXPLAIN ANALYZE` 约 19ms，只扫描主表页，没有读取或解压 payload。
+- HC2a/HC3a migration 只增加 enum、常量默认列、nullable 轻量列与 CHECK；没有 `UPDATE/DELETE/TRUNCATE/DROP payload`。
+  PostgreSQL 16 对常量默认使用 fast default，不重写历史行；CHECK 只读取新增轻量列。正式执行仍必须在维护排空并停止 worker 后
+  取得表锁，不能把低扫描成本误解为可在线无维护迁移。
+- 审查发现影子 `--apply` 曾把 planner 放在普通可写连接上，导致只读门禁和 statement timeout 在 apply 模式失效；现已改为
+  planner 始终使用独立强制只读连接，可写连接只在完整计划通过后创建。写服务的每个候选事务还会 `FOR SHARE` 锁定并确认
+  `platform_runtime_state.platform` 仍处于维护状态；未维护或批次间退出维护固定以 `maintenance_required` 阻断且零写入。
+- 已删除 10 条从未进入生产、只为错误 Force Alignment 服务端 pipeline 建表后再删表的草稿 migration，以及对应僵尸迁移测试。
+  当前候选从生产 36 条基线只前进到 39 条：容量 expand、影子 recipe 字段、轻量工具尝试旁表。历史升级演练先写入现有 annotation
+  payload、operation、snapshot、确认、评论、反馈和审核链接，再执行 37-39；升级前后原业务列逐项完全相等。
+- 在线保存和原子命令提交仍只创建 `storageMode=inline` 且包含完整 payload 的旧式快照；容量代码没有修改 revision 发布、operation
+  feed、WebSocket、确认/评论/反馈写入或审核链接。同步 inline resolver 仍是详情/恢复唯一线上入口，异步 reconstructible 协调器
+  没有 ResourceService/router/config 调用点；没有自动 recipe、nullable payload、compactor、清理器或 VACUUM。
+- 容量专项 34/34、生产 36 -> 39 migration 演练 1/1、发布入口 2/2、部署专项 29/29、完整 API 337/337、完整构建与
+  `git diff --check` 均通过。自审没有发现会让现有保存、跨实例同步、恢复、确认/评论/反馈或审核链接失效的剩余阻断问题。
+  本审查只消除了已知代码门禁和迁移链风险，仍不等于授权 A，更不授权影子 apply、payload 清空、compactor 或物理回收。
 
 ### HC3：影子 recipe 与小批次无损压缩
 
@@ -263,9 +285,9 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
   客户端原子保存 34 项、完整 API 323 项及完整构建通过。测试数据库已执行 migration，本机/生产业务数据库和服务器
   release 均未部署。
 - 已新增真实 Prisma 历史升级演练：在独立 `_test` schema 先执行生产现有 36 条 migration，写入标注正文、operation、恢复快照、
-  确认、评论、反馈和审核链接，再执行 37-49。升级前后的生产基线列逐项相等；HC2/HC3a 仅新增 inline 元数据且不自动写 recipe，
-  第 40-48 条曾引入的空 Force Alignment 服务端结构由第 49 条 fail closed 清理。该本地证据只解决候选迁移链风险，不代表生产
-  migration、影子写入或部署已经获准。
+  确认、评论、反馈和审核链接，再执行清理后的 37-39。升级前后的生产基线列逐项相等；HC2/HC3a 只新增 inline 元数据且不自动
+  写 recipe，轻量工具尝试旁表独立创建。错误 Force Alignment pipeline migration 已在进入生产前删除，不再用“先建再删”证明安全。
+  该本地证据不代表生产 migration、影子写入或部署已经获准。
 - 本阶段不产生容量回收：payload 仍完整存在，指标中的 payload-present 数不会下降。只有完成 HC2 生产观察、一致备份/恢复
   演练，并对少量非关键文件完成真实影子观察后，才能另行设计 HC3b 的 nullable payload 与读取重建切换。
 

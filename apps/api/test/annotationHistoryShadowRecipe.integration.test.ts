@@ -6,6 +6,7 @@ import {
   closeAnnotationHistoryTestConnections,
   createAnnotationHistoryFixture,
   createColdAnnotationHistoryPlan,
+  enableAnnotationHistoryTestMaintenance,
 } from "./annotationHistoryTestFixture.js";
 import { createTestPrisma, truncateTestDatabase } from "./testEnvironment.js";
 
@@ -15,6 +16,7 @@ test("HC3a 只写影子 recipe，payload 与 inline 模式保持不变且精确�
   await truncateTestDatabase(prisma);
   try {
     const fixture = await createAnnotationHistoryFixture(prisma, "write-idempotent");
+    await enableAnnotationHistoryTestMaintenance(prisma);
     const plan = await createColdAnnotationHistoryPlan(prisma, fixture.resourceId);
     const targetDecision = plan.files[0]?.decisions.find(({ revision }) => revision === 2);
     assert.equal(targetDecision?.decision, "reconstructible");
@@ -68,6 +70,7 @@ test("文件 revision 漂移或既有 recipe 冲突会停止写入且保留 payl
   await truncateTestDatabase(prisma);
   try {
     const fixture = await createAnnotationHistoryFixture(prisma, "write-conflict");
+    await enableAnnotationHistoryTestMaintenance(prisma);
     const plan = await createColdAnnotationHistoryPlan(prisma, fixture.resourceId);
     const service = new AnnotationHistoryShadowRecipeService(prisma);
     const revisionChanged = await service.writeFileRecipes({
@@ -98,6 +101,37 @@ test("文件 revision 漂移或既有 recipe 冲突会停止写入且保留 payl
     assert.equal(unchanged.payloadSha256, "0".repeat(64));
     assert.equal(unchanged.checkpointSnapshotId, null);
     assert.equal(unchanged.storageMode, "inline");
+  } finally {
+    await closeAnnotationHistoryTestConnections(connections);
+  }
+});
+
+test("维护状态未开启时影子 recipe 写入会 fail closed 且不改变快照", async () => {
+  const connections = createTestPrisma();
+  const { prisma } = connections;
+  await truncateTestDatabase(prisma);
+  try {
+    const fixture = await createAnnotationHistoryFixture(prisma, "maintenance-required");
+    const plan = await createColdAnnotationHistoryPlan(prisma, fixture.resourceId);
+    const target = await prisma.annotationRecoverySnapshot.findFirstOrThrow({
+      where: { annotationFileId: fixture.resourceId, revision: 2 },
+    });
+
+    const report = await new AnnotationHistoryShadowRecipeService(prisma).writeFileRecipes({
+      annotationFileId: fixture.resourceId,
+      expectedAnnotationRevision: 4,
+      decisions: plan.files[0]!.decisions,
+      limitCandidates: 1,
+    });
+
+    assert.equal(report.writtenCount, 0);
+    assert.equal(report.blockedCount, 1);
+    assert.equal(report.results[0]?.code, "maintenance_required");
+    const unchanged = await prisma.annotationRecoverySnapshot.findUniqueOrThrow({ where: { id: target.id } });
+    assert.equal(unchanged.payloadSha256, null);
+    assert.equal(unchanged.checkpointSnapshotId, null);
+    assert.equal(unchanged.recipeVerifiedAt, null);
+    assert.deepEqual(unchanged.payload, target.payload);
   } finally {
     await closeAnnotationHistoryTestConnections(connections);
   }

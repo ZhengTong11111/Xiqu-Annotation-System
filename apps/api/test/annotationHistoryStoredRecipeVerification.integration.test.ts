@@ -13,6 +13,7 @@ import {
   createAnnotationHistoryFixture,
   createAnnotationHistoryProject,
   createColdAnnotationHistoryPlan,
+  enableAnnotationHistoryTestMaintenance,
   toInputJson,
 } from "./annotationHistoryTestFixture.js";
 import { createTestPrisma, TEST_DATABASE_URL, truncateTestDatabase } from "./testEnvironment.js";
@@ -190,6 +191,7 @@ async function writeRecipes(
   decisions: Parameters<AnnotationHistoryShadowRecipeService["writeFileRecipes"]>[0]["decisions"],
   limitCandidates: number,
 ) {
+  await enableAnnotationHistoryTestMaintenance(prisma);
   const report = await new AnnotationHistoryShadowRecipeService(prisma).writeFileRecipes({
     annotationFileId,
     expectedAnnotationRevision: 4,
