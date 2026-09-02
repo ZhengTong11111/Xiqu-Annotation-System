@@ -18,3 +18,19 @@ test("FA-D2d migration 只增加应用溯源且不改写既有业务事实", asy
     /^\s*(?:UPDATE\s|DELETE\s+FROM\s|DROP\s+(?:TABLE|COLUMN)\s|TRUNCATE\s)/imu,
   );
 });
+
+test("FA-D3a1 migration 只追加质量评价历史和有限约束", async () => {
+  const sql = await readFile(
+    new URL("../../../prisma/migrations/20260902050000_alignment_quality_assessments/migration.sql", import.meta.url),
+    "utf8",
+  );
+  assert.match(sql, /CREATE TABLE "alignment_quality_assessments"/u);
+  assert.match(sql, /AlignmentQualityVerdict/u);
+  assert.match(sql, /alignment_quality_assessments_current_key/u);
+  assert.match(sql, /WHERE "superseded_at" IS NULL/u);
+  assert.match(sql, /cardinality\("issue_codes"\)/u);
+  assert.doesNotMatch(
+    sql,
+    /^\s*(?:UPDATE\s|DELETE\s+FROM\s|DROP\s+(?:TABLE|COLUMN)\s|TRUNCATE\s)/imu,
+  );
+});

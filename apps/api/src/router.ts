@@ -11,6 +11,7 @@ import {
   parseAnnotationToolAttemptBatchRequest,
   parseApplyAlignmentRunRequest,
   parseCreateAlignmentRunRequest,
+  parseUpsertAlignmentQualityAssessmentRequest,
   PROCESSING_JOB_STATUSES,
   PROCESSING_JOB_TYPES,
   RESOURCE_CAPABILITIES,
@@ -45,6 +46,7 @@ import type { MediaUploadService } from "./mediaUploadService.js";
 import type { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
 import type { AlignmentRunService } from "./alignmentRunService.js";
 import type { AlignmentApplicationService } from "./alignmentApplicationService.js";
+import type { AlignmentQualityAssessmentService } from "./alignmentQualityAssessmentService.js";
 import type { ProcessingJobQueryService } from "./processingJobQueryService.js";
 import type { ProcessingJobCommandService } from "./processingJobCommandService.js";
 import type { MediaAudioTrackService } from "./mediaAudioTrackService.js";
@@ -139,6 +141,7 @@ export function registerApiRoutes(
   mediaAnalysis: MediaAnalysisJobService,
   alignmentRuns: AlignmentRunService,
   alignmentApplications: AlignmentApplicationService,
+  alignmentQualityAssessments: AlignmentQualityAssessmentService,
   processingJobs: ProcessingJobQueryService,
   processingJobCommands: ProcessingJobCommandService,
   mediaAudioTracks: MediaAudioTrackService,
@@ -690,6 +693,30 @@ export function registerApiRoutes(
         await getCurrentUser(repository, request),
         request.params.resourceId,
         request.params.runId,
+        parsed.data,
+      );
+    },
+  );
+
+  app.get<{ Params: { resourceId: string; applicationId: string } }>(
+    "/api/annotation-files/:resourceId/alignment-applications/:applicationId/quality-assessments",
+    MAINTENANCE_READ_ROUTE,
+    async (request) => alignmentQualityAssessments.listCurrent(
+      await getCurrentUser(repository, request),
+      request.params.resourceId,
+      request.params.applicationId,
+    ),
+  );
+
+  app.put<{ Params: { resourceId: string; applicationId: string }; Body: unknown }>(
+    "/api/annotation-files/:resourceId/alignment-applications/:applicationId/quality-assessment",
+    async (request) => {
+      const parsed = parseUpsertAlignmentQualityAssessmentRequest(request.body);
+      if (!parsed.success) throw badRequest(parsed.message);
+      return alignmentQualityAssessments.upsert(
+        await getCurrentUser(repository, request),
+        request.params.resourceId,
+        request.params.applicationId,
         parsed.data,
       );
     },

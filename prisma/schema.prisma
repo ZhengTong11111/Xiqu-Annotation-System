@@ -119,6 +119,30 @@ enum AlignmentArtifactKind {
   prediction
 }
 
+enum AlignmentQualityAssessmentScope {
+  editor
+  reviewer
+}
+
+enum AlignmentQualityVerdict {
+  correct
+  needs_adjustment
+  unusable
+}
+
+enum AlignmentQualityIssueCode {
+  lyric_mismatch
+  missing_character
+  duplicate_character
+  filler_character
+  overlapping_voices
+  unclear_audio
+  audio_desync
+  source_separation_artifact
+  boundary_offset
+  other
+}
+
 enum AuditAction {
   auth_login
   account_create
@@ -136,6 +160,7 @@ enum AuditAction {
   resource_restore
   resource_delete
   annotation_file_save
+  alignment_quality_assessment_upsert
   annotation_workflow_status_update
   project_workflow_groups_update
   annotation_client_sync_failure
@@ -260,6 +285,7 @@ model User {
   supersededMediaAnalysisRuns       MediaAnalysisRun[]                @relation("MediaAnalysisRunSuperseder")
   createdAlignmentRuns              AlignmentRun[]                    @relation("AlignmentRunCreator")
   alignmentApplications             AlignmentApplication[]            @relation("AlignmentApplicationActor")
+  alignmentQualityAssessments       AlignmentQualityAssessment[]      @relation("AlignmentQualityAssessmentActor")
   auditLogs                         AuditLog[]                        @relation("AuditActor")
   annotationOperations              AnnotationOperation[]             @relation("AnnotationOperationActor")
   annotationToolAttempts            AnnotationToolAttempt[]           @relation("AnnotationToolAttemptActor")
@@ -835,6 +861,7 @@ model AlignmentApplication {
   annotationFile AnnotationFile        @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
   actor          User                  @relation("AlignmentApplicationActor", fields: [actorUserId], references: [id], onDelete: Restrict)
   operations     AnnotationOperation[]
+  qualityAssessments AlignmentQualityAssessment[]
 
   @@unique([annotationFileId, actorUserId, clientActionId])
   @@index([alignmentRunId, createdAt])
@@ -842,6 +869,29 @@ model AlignmentApplication {
   @@index([annotationFileId, committedRevision])
   @@index([actorUserId, createdAt])
   @@map("alignment_applications")
+}
+
+// 质量评价采用追加历史 + 单一当前行；不复制正文、预测或 operation before/after。
+model AlignmentQualityAssessment {
+  id                     String                          @id @default(uuid())
+  alignmentApplicationId String                          @map("alignment_application_id")
+  assessorUserId         String                          @map("assessor_user_id")
+  clientActionId         String                          @map("client_action_id")
+  requestHash            String                          @map("request_hash")
+  scope                   AlignmentQualityAssessmentScope
+  verdict                 AlignmentQualityVerdict
+  issueCodes              AlignmentQualityIssueCode[]     @map("issue_codes")
+  supersededAt            DateTime?                       @map("superseded_at")
+  createdAt               DateTime                        @default(now()) @map("created_at")
+
+  application AlignmentApplication @relation(fields: [alignmentApplicationId], references: [id], onDelete: Cascade)
+  assessor    User                 @relation("AlignmentQualityAssessmentActor", fields: [assessorUserId], references: [id], onDelete: Restrict)
+
+  @@unique([assessorUserId, clientActionId])
+  @@index([alignmentApplicationId, createdAt])
+  @@index([alignmentApplicationId, assessorUserId, scope, supersededAt])
+  @@index([assessorUserId, createdAt])
+  @@map("alignment_quality_assessments")
 }
 
 // 不使用“拒绝”记录：有效权限由管理员/所有者特权、直接授权和未被截断的祖先授权合并得到。

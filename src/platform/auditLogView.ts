@@ -22,6 +22,7 @@ export const AUDIT_ACTION_LABELS: Record<AuditActionName, string> = {
   resource_restore: "恢复资源",
   resource_delete: "删除资源",
   annotation_file_save: "保存标注",
+  alignment_quality_assessment_upsert: "更新强制对齐质量评价",
   annotation_workflow_status_update: "更新标注工作流状态",
   project_workflow_groups_update: "更新项目职责组",
   annotation_client_sync_failure: "客户端同步失败",

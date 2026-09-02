@@ -63,6 +63,7 @@ import { createSafeFastifyLoggerConfiguration } from "./requestLogSanitizer.js";
 import { AnnotationToolAttemptService } from "./annotationToolAttemptService.js";
 import { AlignmentRunService } from "./alignmentRunService.js";
 import { AlignmentApplicationService } from "./alignmentApplicationService.js";
+import { AlignmentQualityAssessmentService } from "./alignmentQualityAssessmentService.js";
 
 export type BuildApiAppOptions = {
   prisma: PrismaClient;
@@ -195,6 +196,10 @@ export async function buildApiApp(
     access,
     storage,
     annotationCommandCommits,
+  );
+  const alignmentQualityAssessments = new AlignmentQualityAssessmentService(
+    options.prisma,
+    access,
   );
   const annotationToolAttempts = new AnnotationToolAttemptService(options.prisma, access);
   const health = new HealthService(options.prisma, storage);
@@ -330,6 +335,7 @@ export async function buildApiApp(
     mediaAnalysis,
     alignmentRuns,
     alignmentApplications,
+    alignmentQualityAssessments,
     processingJobs,
     processingJobCommands,
     mediaAudioTracks,

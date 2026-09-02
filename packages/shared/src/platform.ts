@@ -616,6 +616,7 @@ export const AUDIT_ACTIONS = [
   "resource_restore",
   "resource_delete",
   "annotation_file_save",
+  "alignment_quality_assessment_upsert",
   "annotation_workflow_status_update",
   "project_workflow_groups_update",
   "annotation_client_sync_failure",

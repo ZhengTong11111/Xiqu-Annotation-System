@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   parseApplyAlignmentRunRequest,
   parseCreateAlignmentRunRequest,
+  parseUpsertAlignmentQualityAssessmentRequest,
 } from "../dist/index.js";
 
 test("强制对齐创建请求只接受规范 UUID 与固定模型预设", () => {
@@ -26,4 +27,37 @@ test("强制对齐应用请求只接受一次动作 UUID 与正 revision", () =>
   assert.equal(parseApplyAlignmentRunRequest({ ...input, clientActionId: "action-1" }).success, false);
   assert.equal(parseApplyAlignmentRunRequest({ ...input, baseRevision: 0 }).success, false);
   assert.equal(parseApplyAlignmentRunRequest({ ...input, baseRevision: 2_147_483_647 }).success, false);
+});
+
+test("质量评价使用有限结论、规范原因顺序和严格组合", () => {
+  const input = {
+    clientActionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    scope: "editor",
+    verdict: "needs_adjustment",
+    issueCodes: ["boundary_offset", "lyric_mismatch"],
+  };
+  assert.deepEqual(parseUpsertAlignmentQualityAssessmentRequest(input), {
+    success: true,
+    data: {
+      ...input,
+      issueCodes: ["lyric_mismatch", "boundary_offset"],
+    },
+  });
+  assert.equal(parseUpsertAlignmentQualityAssessmentRequest({
+    ...input,
+    verdict: "correct",
+  }).success, false);
+  assert.equal(parseUpsertAlignmentQualityAssessmentRequest({
+    ...input,
+    verdict: "unusable",
+    issueCodes: [],
+  }).success, false);
+  assert.equal(parseUpsertAlignmentQualityAssessmentRequest({
+    ...input,
+    issueCodes: ["boundary_offset", "boundary_offset"],
+  }).success, false);
+  assert.equal(parseUpsertAlignmentQualityAssessmentRequest({
+    ...input,
+    note: "禁止自由文本",
+  }).success, false);
 });

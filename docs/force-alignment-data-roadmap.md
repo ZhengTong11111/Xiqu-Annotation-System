@@ -115,7 +115,7 @@ annotationOperationId / committedRevision / details
 - 普通用户稳定 403，非法、倒置或超过 90 天的时间窗稳定 400。真实 PostgreSQL 10,001 行夹具证明稳定分页和显式截断，
   HTTP 集成验证下载头与授权；专项 10 项、完整 API 309 项、平台集成 44 项和完整构建通过。本阶段无 schema/数据写入且未部署生产。
 
-### FA-D2：AlignmentRun 与预测对象（进行中）
+### FA-D2：AlignmentRun 与预测对象（已完成）
 
 - 复用 processing job 和对象存储建立 run provenance、压缩预测 artifact、manifest/checksum 与失败补偿。
 - 不保存临时 URL、凭据和逐帧大矩阵；应用结果与 operation 关联。
@@ -173,11 +173,49 @@ annotationOperationId / committedRevision / details
 - 专项 shared/document-model/API 9/9、请求 8/8、worker 12/12、processing jobs 11/11、完整 API 329/329、普通原子保存/前端提交回归
   与完整构建通过；迁移后在专用验证副本完成真实 HTTP `v4 -> v5 -> v6` 往返并恢复原边界。未部署生产，FA-D2 代码闭环完成。
 
-### FA-D3：质量标签与训练导出（下一阶段）
+### FA-D3：质量标签与训练导出（进行中）
 
-- 增加明确接受、异常原因和审核标签，以置信度、模型分歧和人工改动量选择困难样本。
-- 导出冻结 revision 的训练 manifest，并按演员/剧目隔离 train/validation/test。
-- 根据真实容量决定非成功尝试归档；没有校验对象与聚合前不删除。
+#### FA-D3a1：质量评价合同与服务端事实（已完成）
+
+- 新增 additive `AlignmentQualityAssessment`，评价必须绑定一次真实 `AlignmentApplication`，不能只对 run 或文件写一个
+  无来源标签。编辑评价需要当前文件 `write`，审核评价需要当前文件 `review`；权限类型在写入时固化为有限 scope，不能
+  从用户角色或后续权限变化反推。
+- 评价结论只使用有限枚举：`correct | needs_adjustment | unusable`；异常原因只使用稳定代码：唱词不符、漏字、重复、衬字、
+  多人重叠、听不清、音频不同步、人声分离失真、边界偏移及其他。`correct` 禁止携带异常原因，其他结论至少一个原因；
+  第一版不收自由文本，避免隐私、容量和不可统计内容进入研究旁表。
+- 每个 application/account/scope 只有一份当前评价，逻辑 action UUID + request hash 保证模糊重试幂等；允许同一账号之后
+  明确改判，但必须通过新的 action UUID，并在 AuditLog 留下旧结论摘要与新结论摘要。评价不修改 ProjectData、revision、
+  operation、snapshot、workflow status、审核确认或训练导出。
+- API 只返回有限结论、原因、scope、评价人 id 和时间，不展开账号名、正文、预测或 operation payload。写入事务必须重新
+  验证 application/file/run 关系和当前权限；文件已删除、关系不完整或 action UUID 漂移均 fail closed。
+- 实现采用追加历史和 partial unique 当前行：相同 action 模糊重试返回原事实，后续新 action 改判会标记旧行 superseded，迟到旧
+  action 不会覆盖新评价。列表最多返回 500 条当前评价并显式报告 partial；审计只记录 application id、scope 和有限旧/新枚举摘要。
+  专项 shared/schema/PostgreSQL 9/9、既有应用 5/5、请求 8/8、完整 API 336/336 和完整构建通过；migration 为第 41 条纯新增迁移，
+  未部署生产、未修改任何既有标注 payload/revision/operation/snapshot/review/run/application 行。
+
+#### FA-D3a2：编辑器质量评价 UI（下一阶段）
+
+- 在强制对齐结果面板展示当前账号可见的应用与质量评价；应用成功后可立即评价，也可重新打开历史后补评。
+- 编辑评价和审核评价根据有效能力分别显示，使用现有 Dialog/表单风格和固定原因多选，不新建第二套通知、轮询或状态 owner。
+- UI 对模糊 HTTP 失败复用同一个 action UUID；已确认服务端结果后才清空 action。普通编辑、保存和离开保护不依赖评价成功。
+
+#### FA-D3b：困难样本派生与有界选择
+
+- 从 prediction manifest、application、后续 timing operation 和质量评价派生置信度、模型分歧、人工改动量与明确异常原因；
+  不复制 ProjectData、命令正文或声学矩阵，不把“没有继续修改”自动当成正确。
+- 固化有界查询/统计边界与容量指标；训练候选必须可追溯到 run/application/revision，撤权后不可通过候选接口枚举文件内容。
+
+#### FA-D3c：冻结训练 manifest 与安全导出
+
+- 导出冻结的 run、application、评价和目标 operation revision，生成带 checksum 的 manifest；训练输入通过受保护对象引用解析，
+  浏览器和 CSV 不接收预测正文、ProjectData、临时媒体 URL 或凭据。
+- 按演员/剧目等研究分组做稳定 group split，保证同组不会跨 train/validation/test；缺少分组事实时明确阻断，不以文件名猜测。
+- 管理员导出使用有界 keyset/任务中心，具备取消、失败补偿、对象校验和审计；导出不会改变在线标注事实。
+
+#### FA-D3d：容量观察、归档与闭环验收
+
+- 根据真实表/索引/对象/备份增长决定非成功 attempt 的压缩归档阈值；没有 manifest、checksum、恢复演练和聚合替代前不删除。
+- 与 history-capacity 指标共享观测口径但保持独立 migration/release；完成数据字典、训练消费说明和恢复验证后再关闭专项。
 
 ## 6. 数据安全停止条件
 

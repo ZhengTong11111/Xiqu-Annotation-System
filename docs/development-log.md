@@ -10785,3 +10785,49 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   “文件 → 查看强制对齐结果”，不把该步骤写成已验收。服务端路由与应用行为已由数据库集成测试覆盖。
 - **已完成**：FA-D2d 和 FA-D2 代码闭环。**待推进**：FA-D3 质量标签、困难样本选择与冻结训练导出；开始前必须重写
   `CLAUDE_WORK.md`，且仍不得部署生产、启用真实执行器或改写现有生产数据。
+
+## 2026-09-02：FA-D3a1 强制对齐质量评价合同与服务端事实
+
+### 阶段拆分与数据边界
+
+- 在开始 D3 前重新核对两份专项 roadmap。恢复快照容量治理仍处于 HC2 生产观察门禁，未经生产 migration 观察、一致备份和恢复
+  演练不能进入 HC3 压缩；因此本轮不把快照清理与训练数据 migration 混合。Force Alignment D2 已完成，D3 被拆为服务端评价事实、
+  编辑器 UI、困难样本派生、冻结训练导出和容量归档五个可独立验收边界。
+- D3a1 只记录对一次真实 `AlignmentApplication` 的显式评价。结论固定为正确、需修改、不可用；原因固定为唱词不符、漏字、重复、
+  衬字、多人重叠、听不清、音频不同步、人声分离失真、边界偏移及其他。第一版不允许自由文本，也不复制正文、ProjectData、prediction、
+  command payload、before/after、媒体 URL 或凭据。
+- 编辑 scope 必须重新验证当前文件 `write`，审核 scope 必须重新验证当前文件 `review`；账号 role、application 原操作者或历史权限不能
+  替代当前资源 ACL。读取需要当前 `read`，application/file/run/artifact/operation 数关系不完整时统一按不存在 fail closed，避免跨文件
+  枚举或给伪造应用打标签。
+
+### Additive schema、幂等与审计
+
+- 第 41 条 migration 新增三个有限 enum 与 `AlignmentQualityAssessment`；既有表只增加 Prisma 关系导航和 AuditAction 枚举值，没有
+  UPDATE、DELETE、DROP、TRUNCATE、回填或 payload 重写。评价表只保存 application/assessor/action/request hash、scope/verdict/
+  issue codes 和 created/superseded 时间。
+- 采用追加历史而不是覆盖单行：PostgreSQL partial unique 保证每个 application/account/scope 只有一条 `supersededAt IS NULL` 当前行，
+  历史 action 永久保留。服务事务固定按账号 action 锁、当前槽位锁排序；同 action 同请求返回原事实，同 action 改绑稳定 409，新 action
+  相同内容不制造重复行，新 action 改判先替代旧行再创建新行。即使旧请求响应丢失并在之后迟到重放，也只返回已 superseded 的历史事实，
+  不覆盖较新的评价。
+- 每次真实新增/改判在同一事务写 `alignment_quality_assessment_upsert` 审计，只含 application id、scope 和有限旧/新枚举摘要；没有内部
+  request hash、账号显示名、正文或错误文本。审计动作同步到 shared 白名单和前端唯一中文动作表，旧页面不会出现未翻译类型缺口。
+
+### API、容量与零副作用证明
+
+- 新增 application 下的当前评价 GET 与幂等 PUT。shared exact-key parser 要求规范 runtime UUID、有限 scope/verdict/issue codes，拒绝
+  额外字段、未知/重复原因和“正确但有异常”“需修改但无原因”等含糊组合，并按固定原因顺序规范化 request hash。
+- 当前评价读取一次最多 500 行，按 createdAt/id 稳定排序并显式返回 `isPartial`；浏览器不能把截断结果伪装成完整集合。D3a2 才接入
+  编辑器 UI，本轮没有新前端轮询、IndexedDB 队列、保存阻断或 undo/history 状态。
+- PostgreSQL 夹具记录评价前后的 payload、revision、last operation sequence、last saved time、workflow status、operation/snapshot 数量并
+  证明完全一致。并发相同 action 只写一行；write/review 分权、403、跨文件 404、缺 operation 关系 404、历史重放、改判与审计均覆盖。
+
+### 验证、自审与状态
+
+- `test:force-alignment-quality`：shared 3/3、migration/schema 2/2、数据库业务 4/4，共 9/9；既有
+  `test:force-alignment-application` 5/5、`test:force-alignment-requests` 8/8；完整 `test:api` 336/336、`npm run build` 与
+  `git diff --check` 通过。只保留既有 Vite 主 chunk 大小提示和 pg adapter 并发 query deprecation warning。
+- 自审确认没有第二保存路径、annotation command、snapshot、ProjectData 改动、N+1 内容查询、敏感信息、自由文本、训练导出、自动归档、
+  快照压缩或僵尸 UI。新增事务/关系门禁有中文功能注释，质量审计动作已补齐唯一显示映射。
+- **已完成**：FA-D3a1 shared/schema/service/API/专项回归和规范文档。**待推进**：FA-D3a2 在现有强制对齐结果窗口读取 current assessments，
+  按 write/review 能力提供有限评价表单，并在模糊失败时复用 action UUID；评价失败不得影响普通编辑、保存或离开保护。本轮未部署生产、
+  未启用真实模型执行器、未修改生产数据。

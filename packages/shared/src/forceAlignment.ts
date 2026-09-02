@@ -67,8 +67,61 @@ export type AlignmentApplicationSummary = {
   createdAt: string;
 };
 
+export const ALIGNMENT_QUALITY_ASSESSMENT_SCOPES = ["editor", "reviewer"] as const;
+export type AlignmentQualityAssessmentScope =
+  typeof ALIGNMENT_QUALITY_ASSESSMENT_SCOPES[number];
+
+export const ALIGNMENT_QUALITY_VERDICTS = [
+  "correct",
+  "needs_adjustment",
+  "unusable",
+] as const;
+export type AlignmentQualityVerdict = typeof ALIGNMENT_QUALITY_VERDICTS[number];
+
+export const ALIGNMENT_QUALITY_ISSUE_CODES = [
+  "lyric_mismatch",
+  "missing_character",
+  "duplicate_character",
+  "filler_character",
+  "overlapping_voices",
+  "unclear_audio",
+  "audio_desync",
+  "source_separation_artifact",
+  "boundary_offset",
+  "other",
+] as const;
+export type AlignmentQualityIssueCode = typeof ALIGNMENT_QUALITY_ISSUE_CODES[number];
+
+export type UpsertAlignmentQualityAssessmentRequest = {
+  clientActionId: string;
+  scope: AlignmentQualityAssessmentScope;
+  verdict: AlignmentQualityVerdict;
+  issueCodes: AlignmentQualityIssueCode[];
+};
+
+export type AlignmentQualityAssessmentSummary = {
+  id: string;
+  alignmentApplicationId: string;
+  assessorUserId: string;
+  scope: AlignmentQualityAssessmentScope;
+  verdict: AlignmentQualityVerdict;
+  issueCodes: AlignmentQualityIssueCode[];
+  isCurrent: boolean;
+  createdAt: string;
+  supersededAt: string | null;
+};
+
+export type AlignmentQualityAssessmentList = {
+  items: AlignmentQualityAssessmentSummary[];
+  isPartial: boolean;
+};
+
 export type ApplyAlignmentRunValidationResult =
   | { success: true; data: ApplyAlignmentRunRequest }
+  | { success: false; message: string };
+
+export type UpsertAlignmentQualityAssessmentValidationResult =
+  | { success: true; data: UpsertAlignmentQualityAssessmentRequest }
   | { success: false; message: string };
 
 /** 创建请求只允许选择服务端预设；正文、revision、音轨、来源与模型配置均不能由浏览器自报。 */
@@ -113,6 +166,62 @@ export function parseApplyAlignmentRunRequest(value: unknown): ApplyAlignmentRun
     data: {
       clientActionId: value.clientActionId,
       baseRevision: value.baseRevision as number,
+    },
+  };
+}
+
+/**
+ * 质量评价只接收有限枚举，不允许自由文本或客户端自报模型、正文和 revision。
+ * 原因按固定顺序规范化，保证同一逻辑请求在多端重试时生成完全一致的 request hash。
+ */
+export function parseUpsertAlignmentQualityAssessmentRequest(
+  value: unknown,
+): UpsertAlignmentQualityAssessmentValidationResult {
+  if (!isPlainObject(value)) return { success: false, message: "强制对齐质量评价格式不正确。" };
+  const keys = Object.keys(value);
+  const expectedKeys = ["clientActionId", "scope", "verdict", "issueCodes"];
+  if (keys.length !== expectedKeys.length || expectedKeys.some((key) => !keys.includes(key))) {
+    return { success: false, message: "强制对齐质量评价包含缺失或未支持的字段。" };
+  }
+  if (typeof value.clientActionId !== "string" || !UUID_PATTERN.test(value.clientActionId)) {
+    return { success: false, message: "clientActionId 必须是有效的 UUID。" };
+  }
+  if (!ALIGNMENT_QUALITY_ASSESSMENT_SCOPES.includes(
+    value.scope as AlignmentQualityAssessmentScope,
+  )) {
+    return { success: false, message: "质量评价 scope 不受支持。" };
+  }
+  if (!ALIGNMENT_QUALITY_VERDICTS.includes(value.verdict as AlignmentQualityVerdict)) {
+    return { success: false, message: "质量评价 verdict 不受支持。" };
+  }
+  if (!Array.isArray(value.issueCodes)) {
+    return { success: false, message: "质量评价 issueCodes 必须是数组。" };
+  }
+  const issueCodes = value.issueCodes as unknown[];
+  if (issueCodes.some((code) =>
+    typeof code !== "string" ||
+    !ALIGNMENT_QUALITY_ISSUE_CODES.includes(code as AlignmentQualityIssueCode))) {
+    return { success: false, message: "质量评价包含未知的异常原因。" };
+  }
+  if (new Set(issueCodes).size !== issueCodes.length) {
+    return { success: false, message: "质量评价的异常原因不能重复。" };
+  }
+  const verdict = value.verdict as AlignmentQualityVerdict;
+  if (verdict === "correct" && issueCodes.length > 0) {
+    return { success: false, message: "评价为正确时不能同时选择异常原因。" };
+  }
+  if (verdict !== "correct" && issueCodes.length === 0) {
+    return { success: false, message: "评价为需修改或不可用时至少选择一个异常原因。" };
+  }
+  const canonicalIssues = ALIGNMENT_QUALITY_ISSUE_CODES.filter((code) =>
+    issueCodes.includes(code));
+  return {
+    success: true,
+    data: {
+      clientActionId: value.clientActionId,
+      scope: value.scope as AlignmentQualityAssessmentScope,
+      verdict,
+      issueCodes: canonicalIssues,
     },
   };
 }

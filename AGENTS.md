@@ -198,6 +198,11 @@ Main currently contains all major recent feature lines that matter for context:
   and current revision, while the server rereads and bounds the immutable prediction, rebuilds ordinary character timing commands,
   and binds a lightweight `AlignmentApplication` to the real operations in the same annotation commit transaction. Do not send
   prediction contents to the browser, write a second save path, alter sentence timing, or copy before/after values into the application row
+- force-alignment quality assessments are owned only by `AlignmentQualityAssessmentService` and must reference one complete
+  `AlignmentApplication`, not a run or file in the abstract. Editor scope requires current `write`; reviewer scope requires current
+  `review`. Assessments use append-only action history plus one partial-unique current row per application/account/scope, exact finite
+  verdict/issue enums and stable request hashes. They never change ProjectData, revision, operations, snapshots, workflow/review facts,
+  or carry free text, prediction payloads, before/after values, media URLs or credentials
 - force-alignment tool attempts are a lightweight governance/training side table, never ProjectData or document history. Their
   administrator CSV is generated only by the API after fresh full-resource authorization, accepts at most a 90-day half-open
   window, reads in bounded batches, exports at most 10,000 rows with an explicit truncation header, and uses the shared CSV
