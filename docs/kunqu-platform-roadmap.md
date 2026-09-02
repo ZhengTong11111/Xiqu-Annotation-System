@@ -439,8 +439,10 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
 > [`annotation-history-capacity-roadmap.md`](./annotation-history-capacity-roadmap.md) 的 HC0-HC4 滚动治理。
 > 生产只读基线显示 33,183 个快照已占 PostgreSQL 约 4.27GB，而 operation 仅约 118MB。HC1 纯 dry-run 规划器已经完成，
 > 未删除、置空或迁移任何生产 payload；12 文件生产样本中 414 个当前格式冷候选完成重放/hash 证明，3,716 个旧格式快照
-> 被安全保留，推翻了 HC0 的 60%-85% 乐观估算。当前进入 HC2 expand schema + inline resolver 设计；只有“检查点 +
-> committed operation”与原始 payload canonical hash 完全一致的 revision，未来才有资格转成轻量 recipe。
+> 被安全保留，推翻了 HC0 的 60%-85% 乐观估算。HC2a expand-only schema + inline resolver 已完成代码、迁移夹具、完整
+> API 回归和构建；payload 仍必填且数据库只允许 inline，生产迁移/观察尚待明确授权。当前进入 HC2b 的恢复历史分页、
+> 有界批读和容量指标；只有“检查点 + committed operation”与原始 payload canonical hash 完全一致的 revision，未来才有
+> 资格转成轻量 recipe。
 
 - R3a 已完成：资源查询使用版本化、查询绑定的 opaque cursor；数据库按业务字段和同方向 id 形成稳定
   总序，以 50-200 条有限批次扫描候选，并以有界并发复核已删除祖先和有效 ACL，直到填满可见页或
@@ -1145,8 +1147,9 @@ R5 完成不代表 R7 公网生产验收；真实云 IAM、TLS 续期、外部�
 
 > 工具行为、模型运行、人工修正、质量标签、容量预算和训练导出按
 > [`force-alignment-data-roadmap.md`](./force-alignment-data-roadmap.md) 的 FA-D0 至 FA-D3 滚动推进。FA-D0 已完成
-> 容量与合同规划；HC1 已给出快照增长/重建事实，但行为旁表仍需等待 HC2 加法 schema/resolver 合同独立完成并提交，
-> 不能把两项 schema/数据生命周期变化混成一次发布。
+> 容量与合同规划；HC1 已给出快照增长/重建事实，HC2a 加法 schema/resolver 已独立完成代码与提交前验证。行为旁表仍使用
+> 独立 migration；生产上线时必须先部署并观察 HC2，再部署 Force Alignment，不能把两项 schema/数据生命周期变化混成
+> 一次发布。
 
 - PostgreSQL 只保存轻量尝试索引、run provenance、质量标签和对象 manifest；压缩预测进入对象存储。
 - 普通人工 timing 修改继续复用 annotation operation，不复制 before/after 日志。

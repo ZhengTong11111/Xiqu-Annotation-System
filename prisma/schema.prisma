@@ -535,15 +535,32 @@ enum AnnotationRangeCommentKind {
   editor_feedback
 }
 
+// 恢复快照先扩展存储形态合同；HC2a 只允许 inline，后续阶段经影子校验后才能启用其他形态。
+enum AnnotationRecoverySnapshotStorageMode {
+  inline
+  reconstructible
+  archived
+}
+
 // 恢复快照通过标注文件 Inspector 受控查看，但不是普通资源、Fork 或发布版本。
 model AnnotationRecoverySnapshot {
-  id               String   @id @default(uuid())
-  annotationFileId String   @map("annotation_file_id")
-  revision         Int
-  payload          Json
-  createdBy        String   @map("created_by")
-  reason           String?
-  createdAt        DateTime @default(now()) @map("created_at")
+  id                     String                                @id @default(uuid())
+  annotationFileId       String                                @map("annotation_file_id")
+  revision               Int
+  payload                Json
+  storageMode            AnnotationRecoverySnapshotStorageMode @default(inline) @map("storage_mode")
+  payloadSha256          String?                               @map("payload_sha256")
+  checkpointSnapshotId   String?                               @map("checkpoint_snapshot_id")
+  operationRevisionStart Int?                                  @map("operation_revision_start")
+  operationRevisionEnd   Int?                                  @map("operation_revision_end")
+  operationSequenceStart Int?                                  @map("operation_sequence_start")
+  operationSequenceEnd   Int?                                  @map("operation_sequence_end")
+  operationCount         Int?                                  @map("operation_count")
+  compactionVersion      Int?                                  @map("compaction_version")
+  compactedAt            DateTime?                             @map("compacted_at")
+  createdBy              String                                @map("created_by")
+  reason                 String?
+  createdAt              DateTime                              @default(now()) @map("created_at")
 
   annotationFile AnnotationFile @relation(fields: [annotationFileId], references: [resourceId], onDelete: Cascade)
   creator        User           @relation("RecoverySnapshotCreator", fields: [createdBy], references: [id])

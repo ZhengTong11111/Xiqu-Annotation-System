@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { PROJECT_FILE_VERSION } from "../utils/projectFile";
 import { buildRecoverySnapshotPreview } from "./recoverySnapshotPreview";
 
 // 当前格式应准确统计核心多模态标注，并且不依赖浏览器或 React 环境。
@@ -60,7 +61,7 @@ test("恢复快照摘要统计当前项目结构", () => {
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.deepEqual(result.summary, {
-    normalizedFileVersion: 6,
+    normalizedFileVersion: PROJECT_FILE_VERSION,
     videoName: "寻梦.mp4",
     requiresManualVideoImport: true,
     subtitleLineCount: 1,

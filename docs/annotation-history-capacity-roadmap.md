@@ -162,12 +162,29 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 
 ### HC2：Expand schema 与统一 resolver
 
-- 加法字段/migration、inline resolver、查询分页、容量指标和受保护依赖模型。
+#### HC2a：只加字段与 inline resolver（代码已完成，生产观察待授权）
+
+- 已增加 expand-only migration、Prisma 字段与唯一 inline resolver；`payload` 继续 `NOT NULL`，数据库门禁只允许
+  `storageMode=inline`。新增字段只包含 storage mode、可选 canonical hash 和未来 recipe 定位事实；尚无稳定 archive
+  manifest 模型，因此没有提前加入含糊的对象路径/对象 id 字段，也没有建立会改变整文件级联语义的自引用外键。
 - 现有所有行仍为 inline；详情、比较、恢复通过 resolver，但返回内容与旧实现逐字节语义一致。
 - resolver 必须同时接受历史任意 JSON inline payload；只有 recipe 重建路径才要求当前格式。旧格式不能因 strict parser
   失败而失去详情、比较或恢复能力，也不能被归一化 v7 替代原始历史。
+- 详情与恢复共用 resolver；可选 hash 不一致或未知 storage mode 均 fail closed，恢复失败发生在保护快照、revision、审计
+  写入之前。列表仍只读取原有轻量摘要，公开 DTO 不暴露 storage/hash/recipe 私有字段。
+- migration/API 前后兼容：迁移只有 enum、`ADD COLUMN` 和 `CHECK`，没有 payload `UPDATE/DELETE/DROP`；旧 release 可继续
+  依靠列默认值保存/恢复，新 release 不回填 hash、不写 recipe、不改变在线保存事务。
+- 专项 4 项、平台 API 43 项、完整 API 285 项及完整构建通过；迁移夹具证明迁移前已存在的任意 JSON 行在迁移后保持原值，
+  数据库也会拒绝提前切换到 reconstructible。
+- 尚未部署生产；需在明确授权的维护/迁移窗口部署并观察一轮，仍不做 compaction。该上线门禁不阻止继续开发 HC2b，
+  但 HC3 生产写入和 Force Alignment 生产 migration 必须保持独立发布顺序。
+
+#### HC2b：有界分页、批读与容量指标
+
+- 恢复历史列表改为文件绑定的 opaque keyset cursor；UI 明确部分加载，不使用固定 50 条假装完整历史。
 - 增加有界 payload 批读/流式校验接口，避免 HC1 在大文件上暴露的逐 snapshot 单查询成本；仍保持低并发和只读门禁。
-- 部署并观察一轮，不做 compaction。
+- 增加 storage mode、payload/hash 覆盖、blocked code、最大重放距离与增长速度的低基数容量指标。
+- 建立 checkpoint/operation 依赖保护查询，但仍不回填 recipe、不清空 payload。
 
 ### HC3：影子 recipe 与小批次无损压缩
 

@@ -10245,3 +10245,47 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：HC1 代码、测试、生产只读样本、自审、真实收益校准和临时文件清理。HC0 的 60%-85% 乐观估算已撤回。
 - **待推进**：HC2 仅做 expand schema + 统一 inline resolver + 有界批读/指标，所有现有 payload 保持 non-null inline；
   HC2 完成并部署观察前不得进入 HC3 recipe 回填，也不在同一 migration 启动 Force Alignment 行为旁表。
+
+## 2026-09-01：HC2a 恢复快照 Expand Schema 与统一 Inline Resolver
+
+### Schema 与数据安全门禁
+
+- 新增 `AnnotationRecoverySnapshotStorageMode` 和 migration
+  `20260902010000_annotation_recovery_snapshot_storage_expand`。现有 `payload JSONB NOT NULL`、文件/revision 唯一约束和
+  保存事务均未改变；migration 仅创建 enum、增加带默认值/可空列和 `CHECK`，不含对历史快照的 `UPDATE`、`DELETE`、
+  `DROP` 或 payload 重写。旧 release 保存时不认识新列，仍可依靠数据库 `storage_mode='inline'` 默认值前向运行。
+- 本阶段增加 `storageMode`、可选 `payloadSha256`、checkpoint/operation 范围、operation count、compaction version 和
+  compacted time。数据库明确只允许 `inline`，inline 行不得携带 recipe 字段；未来 recipe 字段必须整组成对出现、范围有序、
+  count/version 为正。没有提前添加语义尚未稳定的 archive object/path 字段，也没有建立可能影响整文件 cascade delete 的
+  snapshot 自引用外键。
+- 专用迁移集成测试用“旧 schema 临时表 + 迁移前任意 JSON 行”执行真实 migration SQL，证明行数和 payload 保持不变、
+  新字段自动为 inline/null；尝试改为 reconstructible 被数据库约束拒绝且原行不变。该测试同时静态拒绝 migration 对正式
+  快照表出现 `UPDATE/DELETE/DROP`。
+
+### 唯一 Resolver 与恢复原子性
+
+- 新增 `annotationRecoverySnapshotResolver.ts`，作为恢复快照 storage mode 的唯一解析边界。inline 分支直接返回数据库
+  JSON 值，不调用当前 `ProjectData` parser，不克隆、不迁移版本、不补默认值、不移除未知字段；因此 marker、旧
+  SavedProjectFile wrapper、缺少当前字段的历史 JSON 与当前 v7 都保持原始 JSON 语义。
+- `ResourceService.getRecoverySnapshot()` 与 `restoreAnnotationRecoverySnapshot()` 共用该 resolver。可选 canonical hash
+  存在时复用 HC1 稳定 JSON SHA-256；hash 不一致、reconstructible/archived/未知 mode 均 fail closed。错误响应只携带固定
+  reason 和 snapshot/file/revision 定位事实，不包含正文、hash、operation、对象身份或数据库异常。
+- 恢复事务在创建 `before_snapshot_restore`、推进 revision 或写审计之前解析并校验来源。平台集成测试人为写入合法格式但
+  不匹配的 hash，详情与恢复均返回稳定 409；快照数、当前 AnnotationFile 全行和审计数全部不变。恢复正常 inline 历史后
+  仍保持 revision 单调递增、来源快照不消费、恢复前 payload 形成保护快照及原有审计语义。
+- 列表继续只选择原有轻量摘要，测试确认不返回 payload、storage mode 或 hash；前端比较/预览仍经详情 API 获取正文，
+  没有复制 storage mode 判断。公开 shared DTO、在线保存 payload、operation、草稿、协作和对象存储合同均未变化。
+
+### 清理、自审与验证
+
+- 自审确认没有第二套历史 JSON normalizer、重复详情/恢复分支、payload hash 热路径或归档伪模型；复杂门禁补充中文注释。
+  `prisma format` 曾格式化与本阶段无关的审核模型对齐，已手工移除这部分噪音，仅保留恢复快照 schema 变更。
+- 回归暴露 `recoverySnapshotPreview.test.ts` 仍把当前格式写死为 v6，而正式常量已是 v7；实现输出正确，本轮删除硬编码并
+  改用 `PROJECT_FILE_VERSION`，避免下一次文件版本升级再次形成僵尸断言，没有修改预览业务逻辑。
+- `test:annotation-recovery-snapshot-resolver` 4/4、`test:annotation-history-compaction` 9/9、`test:recovery-preview` 3/3、
+  `test:recovery-comparison` 4/4、`test:annotation-command-commit` 5/5、`test:platform-atomic-submit` 34/34、平台集成 43/43、
+  完整 `test:api` 285/285 均通过；完整 `npm run build`、Prisma generated schema guard 和 `git diff --check` 通过。仅保留既有
+  Vite 主 chunk 大小提示；完整 API 套件仍输出既有 pg 并发 query deprecation warning，本阶段未引入该调用。
+- **已完成**：HC2a schema、migration、resolver、详情/恢复接入、旧 JSON 保持、完整性失败零写入、专项/完整回归、自审与
+  规范文档。**待推进**：HC2b 的 opaque keyset 历史分页、有界 payload 批读、低基数容量指标和依赖保护查询；HC3 前仍不
+  回填 hash/recipe、不清空 payload。本轮没有部署生产、没有执行生产 migration，也没有修改任何生产标注或恢复历史。

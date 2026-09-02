@@ -3058,6 +3058,10 @@ test("平台资源 API 集成测试", async (suite) => {
       assert.equal(snapshots.length, 1);
       assert.equal(snapshots[0]?.revision, 1);
       assert.deepEqual(snapshots[0]?.payload, { marker: "original" });
+      assert.equal(snapshots[0]?.storageMode, "inline");
+      assert.equal(snapshots[0]?.payloadSha256, null);
+      assert.equal(snapshots[0]?.checkpointSnapshotId, null);
+      assert.equal(snapshots[0]?.operationCount, null);
 
       const invalidRevision = await jsonRequest(app, adminToken, {
         method: "PUT",
@@ -3094,6 +3098,8 @@ test("平台资源 API 集成测试", async (suite) => {
         [2, 1],
       );
       assert.ok(listBody.data.every((summary) => !("payload" in summary)));
+      assert.ok(listBody.data.every((summary) => !("storageMode" in summary)));
+      assert.ok(listBody.data.every((summary) => !("payloadSha256" in summary)));
       assert.ok(listBody.data.every((summary) =>
         typeof summary.createdAt === "string" &&
         typeof (summary.creator as JsonObject).displayName === "string"));
@@ -3232,6 +3238,54 @@ test("平台资源 API 集成测试", async (suite) => {
         payload: { baseRevision: 3 },
       });
       assert.equal(crossFileRestore.statusCode, 404);
+
+      // hash 不一致时详情与恢复共用同一门禁，且失败发生在任何保护快照、revision 或审计写入之前。
+      await prisma.annotationRecoverySnapshot.update({
+        where: { id: sourceSnapshot.id },
+        data: { payloadSha256: "0".repeat(64) },
+      });
+      const snapshotsBeforeHashMismatch = await prisma.annotationRecoverySnapshot.count({
+        where: { annotationFileId },
+      });
+      const auditsBeforeHashMismatch = await prisma.auditLog.count({
+        where: { resourceId: annotationFileId },
+      });
+      const currentBeforeHashMismatch = await prisma.annotationFile.findUniqueOrThrow({
+        where: { resourceId: annotationFileId },
+      });
+      const hashMismatchDetail = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots/${sourceSnapshot.id}`,
+      });
+      assert.equal(hashMismatchDetail.statusCode, 409, hashMismatchDetail.body);
+      assert.equal(
+        (errorOf(hashMismatchDetail.json()).details as JsonObject).reason,
+        "snapshot_payload_hash_mismatch",
+      );
+      const hashMismatchRestore = await jsonRequest(app, adminToken, {
+        method: "POST",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots/${sourceSnapshot.id}/restore`,
+        payload: { baseRevision: 3 },
+      });
+      assert.equal(hashMismatchRestore.statusCode, 409, hashMismatchRestore.body);
+      assert.equal(
+        (errorOf(hashMismatchRestore.json()).details as JsonObject).reason,
+        "snapshot_payload_hash_mismatch",
+      );
+      assert.equal(await prisma.annotationRecoverySnapshot.count({
+        where: { annotationFileId },
+      }), snapshotsBeforeHashMismatch);
+      assert.equal(await prisma.auditLog.count({
+        where: { resourceId: annotationFileId },
+      }), auditsBeforeHashMismatch);
+      assert.deepEqual(
+        await prisma.annotationFile.findUniqueOrThrow({ where: { resourceId: annotationFileId } }),
+        currentBeforeHashMismatch,
+      );
+      await prisma.annotationRecoverySnapshot.update({
+        where: { id: sourceSnapshot.id },
+        data: { payloadSha256: null },
+      });
 
       // 恢复 revision 1 后当前 revision 单调增加到 4，旧快照不被消费。
       const restored = await jsonRequest(app, adminToken, {

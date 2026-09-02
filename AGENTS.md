@@ -1386,6 +1386,13 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     statement timeout, two-connection pool, singleton advisory lock, explicit single-file/`--all` scope and bounded limits
   - historical payloads that fail the strict current ProjectData parser remain inline and blocked. Normalizing v1-v6 into v7
     does not reproduce the original JSON and must never qualify a snapshot for recipe compaction
+- `apps/api/src/annotationRecoverySnapshotResolver.ts`
+  - HC2a single read boundary for recovery snapshot storage modes; detail and restore must both use it
+  - inline payloads are historical arbitrary JSON and must be returned without current ProjectData parsing, normalization,
+    cloning, default filling, or unknown-key removal. An optional canonical hash mismatch and every unsupported/unknown storage
+    mode fail closed before restore writes any protection snapshot, revision, or audit fact
+  - resolver failures expose only stable reason code plus snapshot/file/revision identity; payload, text, hash, operation,
+    archive identity and raw database errors must never enter HTTP details or logs
 - `packages/document-model/src/annotationConfirmations.ts`
   - canonical neutral review-scope normalization, overlap, persisted-track and permission helpers plus confirmation lifecycle/freshness
   - contains no Prisma, API, React, payload mutation, or global-role lookup; backend and platform UI must reuse
@@ -2120,8 +2127,11 @@ Important backend caveats:
   `applyAnnotationCommandToProject()` reproduce the original canonical payload hash. Cross-revision operation sequence gaps are
   legal because abandoned old-path operations may consume sequence; require continuous committed revisions, correct base
   revision, stable unique sequence within committed facts, replayable commands and exact hash instead.
-- HC1 is planning only: it must not add schema, set storage mode, null/delete/archive payloads, write objects, or run inside an
+- HC1 remains a read-only planner: it must not set storage mode, null/delete/archive payloads, write objects, or run inside an
   online API request. Production sampling uses the dedicated forced-read-only CLI and reports no annotation text or commands.
+- HC2a expands recovery snapshots without rewriting old rows: payload stays required, all new writes default to `inline`, and a
+  database check prevents enabling recipe/archive modes before their readers and writers exist. Detail and restore share the
+  resolver above; history lists remain metadata-only and public DTOs do not expose storage/hash/recipe internals.
 - historical payload preview must fail inside its own UI boundary and reuse the canonical project-file normalizer; a bad
   snapshot must not replace, open, or mutate the current editor document.
 - confirmed annotation ranges are governance records outside `ProjectData`: `[startTime, endTime)` is half-open,
