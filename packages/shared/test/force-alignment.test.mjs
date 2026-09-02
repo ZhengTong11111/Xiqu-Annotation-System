@@ -6,6 +6,7 @@ import {
   parseCreateAlignmentRunRequest,
   parseCreateAlignmentResearchGroupRequest,
   parseCreateAlignmentTrainingExportRequest,
+  parseCreateAlignmentTrainingExportJobRequest,
   parseReplaceProjectAlignmentResearchGroupsRequest,
   parseUpsertAlignmentQualityAssessmentRequest,
 } from "../dist/index.js";
@@ -142,4 +143,14 @@ test("训练冻结请求严格限制 application、seed 与切分比例", () => 
     ...input,
     splitRatios: { ...input.splitRatios, holdout: 0 },
   }).success, false);
+});
+
+test("训练导出任务预约只接受规范请求 UUID", () => {
+  const input = { clientRequestId: "aaaaaaaa-0000-4000-8000-000000000009" };
+  assert.deepEqual(parseCreateAlignmentTrainingExportJobRequest(input), {
+    success: true,
+    data: input,
+  });
+  assert.equal(parseCreateAlignmentTrainingExportJobRequest({ ...input, format: "zip" }).success, false);
+  assert.equal(parseCreateAlignmentTrainingExportJobRequest({ clientRequestId: "request-1" }).success, false);
 });

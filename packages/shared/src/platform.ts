@@ -494,6 +494,7 @@ export const PROCESSING_JOB_TYPES = [
   "annotation_export",
   "media_analysis",
   "force_alignment",
+  "alignment_training_export",
 ] as const;
 export type ProcessingJobType = typeof PROCESSING_JOB_TYPES[number];
 
@@ -620,6 +621,7 @@ export const AUDIT_ACTIONS = [
   "alignment_research_group_create",
   "project_alignment_research_groups_update",
   "alignment_training_export_freeze",
+  "alignment_training_export_job_create",
   "annotation_workflow_status_update",
   "project_workflow_groups_update",
   "annotation_client_sync_failure",

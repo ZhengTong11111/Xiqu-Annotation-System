@@ -13,11 +13,6 @@ import {
   ALIGNMENT_TRAINING_MANIFEST_VERSION,
   buildAlignmentTrainingInputManifest,
   buildAlignmentTrainingManifest,
-  canonicalAlignmentTrainingJson,
-  parseAlignmentTrainingInputManifest,
-  parseAlignmentTrainingManifest,
-  parseAlignmentTrainingSourceSnapshot,
-  parseAlignmentTrainingTargetSnapshot,
   type AlignmentTrainingManifestItem,
   type AlignmentTrainingSampleDraft,
 } from "@xiqu/document-model";
@@ -41,6 +36,10 @@ import {
   type PreparedAlignmentTrainingSource,
   type PreparedAlignmentTrainingTarget,
 } from "./alignmentTrainingExportInput.js";
+import {
+  ALIGNMENT_TRAINING_EXPORT_READY_INCLUDE,
+  readStoredAlignmentTrainingExport,
+} from "./alignmentTrainingExportReader.js";
 import type { ReadyAnalysisAudioSource } from "./analysisAudioSourceResolver.js";
 import type { ApiUser } from "./domain.js";
 import { conflict } from "./errors.js";
@@ -51,31 +50,6 @@ const MAX_APPLICATION_WINDOW_SCAN_PER_FILE = 5_000;
 const MAX_TOTAL_APPLICATION_WINDOW_SCAN = 20_000;
 const MAX_OPERATION_SCAN_PER_APPLICATION = 500;
 const MAX_ASSESSMENT_SCAN_PER_APPLICATION = 500;
-
-const EXISTING_EXPORT_INCLUDE = {
-  items: {
-    select: {
-      alignmentApplicationId: true,
-      alignmentArtifactId: true,
-      input: {
-        select: {
-          sourceFileId: true,
-          targetSnapshot: true,
-          targetSnapshotChecksum: true,
-          targetSentenceCount: true,
-          targetCharacterCount: true,
-          targetSnapshotBytes: true,
-          sourceSnapshot: true,
-          sourceSnapshotChecksum: true,
-        },
-      },
-    },
-  },
-} satisfies Prisma.AlignmentTrainingExportInclude;
-
-type ExistingTrainingExport = Prisma.AlignmentTrainingExportGetPayload<{
-  include: typeof EXISTING_EXPORT_INCLUDE;
-}>;
 
 const FREEZE_APPLICATION_INCLUDE = {
   run: {
@@ -239,7 +213,7 @@ export class AlignmentTrainingExportService {
                 clientActionId: input.clientActionId,
               },
             },
-            include: EXISTING_EXPORT_INCLUDE,
+            include: ALIGNMENT_TRAINING_EXPORT_READY_INCLUDE,
           });
           if (existing) {
             if (existing.requestHash !== requestHash) {
@@ -247,7 +221,7 @@ export class AlignmentTrainingExportService {
                 code: "alignment_training_export_action_conflict",
               });
             }
-            return mapExistingExport(existing);
+            return readStoredAlignmentTrainingExport(existing).summary;
           }
 
           // 分组 catalog 与资源树都在读取前锁定；冻结期间项目不能被重分组、移动、归档或回收。
@@ -1033,114 +1007,6 @@ function createRequestHash(input: CreateAlignmentTrainingExportRequest) {
 
 function sha256Hex(value: string) {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function mapExistingExport(row: ExistingTrainingExport) {
-  const parsed = parseAlignmentTrainingManifest(row.manifest, sha256Hex);
-  if (
-    !parsed.ok ||
-    row.manifestFormat !== ALIGNMENT_TRAINING_MANIFEST_FORMAT ||
-    row.manifestVersion !== ALIGNMENT_TRAINING_MANIFEST_VERSION ||
-    parsed.value.checksum !== row.manifestChecksum ||
-    parsed.value.splitSeedHash !== row.splitSeedHash ||
-    parsed.value.sampleCount !== row.sampleCount ||
-    parsed.value.componentCount !== row.componentCount ||
-    stableJsonStringify(parsed.value.splitRatios) !== stableJsonStringify(row.splitRatios) ||
-    stableJsonStringify(parsed.value.splitCounts) !== stableJsonStringify(row.splitCounts)
-  ) {
-    throw conflict("已冻结训练清单的完整性校验失败。", {
-      code: "alignment_training_export_corrupt",
-    });
-  }
-  const inputColumns = [
-    row.inputManifestFormat,
-    row.inputManifestVersion,
-    row.inputManifestChecksum,
-    row.inputManifest,
-    row.targetSentenceCount,
-    row.targetCharacterCount,
-    row.targetSnapshotBytes,
-  ];
-  const presentInputColumns = inputColumns.filter((value) => value !== null).length;
-  if (presentInputColumns === 0) {
-    // 迁移前冻结记录没有输入行；顶层全空且逐项也全空时，仍可作为 provenance-only 结果读取。
-    if (row.items.some((item) => item.input !== null)) throwCorruptExport();
-  } else {
-    const inputParsed = parseAlignmentTrainingInputManifest(row.inputManifest, sha256Hex);
-    if (
-      presentInputColumns !== inputColumns.length ||
-      !inputParsed.ok ||
-      row.inputManifestFormat !== ALIGNMENT_TRAINING_INPUT_MANIFEST_FORMAT ||
-      row.inputManifestVersion !== ALIGNMENT_TRAINING_INPUT_MANIFEST_VERSION ||
-      row.inputManifestChecksum !== inputParsed.manifest.checksum ||
-      inputParsed.manifest.provenanceManifestChecksum !== row.manifestChecksum ||
-      row.targetSentenceCount !== inputParsed.manifest.targetSentenceCount ||
-      row.targetCharacterCount !== inputParsed.manifest.targetCharacterCount ||
-      row.targetSnapshotBytes !== inputParsed.manifest.targetSnapshotBytes
-    ) {
-      throwCorruptExport();
-    }
-    validateStoredExportInputRows(row, parsed.value, inputParsed.manifest);
-  }
-  return mapManifestSummary(row.id, row.createdAt, parsed.value);
-}
-
-/**
- * 幂等重放必须验证真实输入行，而不能只信任顶层 manifest。后续 worker 会再次执行相同边界校验，
- * 这里先阻止缺行、换 artifact、篡改 target/source 或错误 FileObject 关系被伪装成健康冻结结果。
- */
-function validateStoredExportInputRows(
-  row: ExistingTrainingExport,
-  provenance: Extract<ReturnType<typeof parseAlignmentTrainingManifest>, { ok: true }>["value"],
-  inputManifest: Extract<ReturnType<typeof parseAlignmentTrainingInputManifest>, { ok: true }>["manifest"],
-) {
-  if (row.items.length !== inputManifest.itemCount || provenance.items.length !== row.items.length) {
-    throwCorruptExport();
-  }
-  const storedByApplicationId = new Map(
-    row.items.map((item) => [item.alignmentApplicationId, item]),
-  );
-  const provenanceByApplicationId = new Map(
-    provenance.items.map((item) => [item.alignmentApplicationId, item]),
-  );
-  for (const item of inputManifest.items) {
-    const stored = storedByApplicationId.get(item.alignmentApplicationId);
-    const provenanceItem = provenanceByApplicationId.get(item.alignmentApplicationId);
-    if (
-      !stored?.input ||
-      !provenanceItem ||
-      stored.alignmentArtifactId !== item.alignmentArtifactId ||
-      provenanceItem.alignmentArtifactId !== item.alignmentArtifactId ||
-      provenanceItem.artifact.checksum !== item.artifactChecksum
-    ) throwCorruptExport();
-
-    const target = parseAlignmentTrainingTargetSnapshot(stored.input.targetSnapshot);
-    const source = parseAlignmentTrainingSourceSnapshot(stored.input.sourceSnapshot);
-    if (!target.ok || !source.ok) throwCorruptExport();
-    const targetJson = canonicalAlignmentTrainingJson(target.value);
-    const targetChecksum = sha256Hex(targetJson);
-    const sourceChecksum = sha256Hex(canonicalAlignmentTrainingJson(source.value));
-    const expectedSourceFileId = source.value.kind === "uploaded" ? source.value.fileId : null;
-    if (
-      stored.input.targetSnapshotChecksum !== targetChecksum ||
-      item.targetSnapshotChecksum !== targetChecksum ||
-      stored.input.targetSentenceCount !== target.value.sentenceCount ||
-      item.targetSentenceCount !== target.value.sentenceCount ||
-      stored.input.targetCharacterCount !== target.value.characterCount ||
-      item.targetCharacterCount !== target.value.characterCount ||
-      stored.input.targetSnapshotBytes !== Buffer.byteLength(targetJson, "utf8") ||
-      item.targetSnapshotBytes !== stored.input.targetSnapshotBytes ||
-      stored.input.sourceSnapshotChecksum !== sourceChecksum ||
-      item.sourceSnapshotChecksum !== sourceChecksum ||
-      stored.input.sourceFileId !== expectedSourceFileId
-    ) throwCorruptExport();
-  }
-}
-
-function throwCorruptExport(): never {
-  throw conflict("已冻结训练输入清单的完整性校验失败。", {
-    code: "alignment_training_export_corrupt",
-  });
 }
 
 function mapManifestSummary(

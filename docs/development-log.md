@@ -11109,3 +11109,50 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 自审确认没有第二保存器、对象全文读取、N+1 历史快照查询、可变当前版本回退、敏感日志、无界输入、重复 canonical 实现或僵尸接口。
   **已完成**：FA-D3c3a。**待推进**：FA-D3c3b 设计独立训练导出任务预约、ProcessingJob identity 和流式包合同；这一阶段仍不应提前实现
   worker 发布、UI 或下载闭环。
+
+## 2026-09-02：保存故障阻断复核与 FA-D3c3b 训练导出任务预约
+
+### 保存失败的证据与环境修复
+
+- 用户报告上一轮修改后文件无法保存，因此本轮没有直接继续堆训练导出代码。先读取最近 `annotation_client_sync_failure` 审计，取得一条真实
+  失败的双目标 timing transaction、基线 revision 和失败类别，再把同一 ProjectData 与同一 command 精确重放到隔离标注文件。该命令在
+  干净提交 `51a4115` 的隔离 API、原 4317 进程和完成同步后的当前源码 API 上都能从 revision 1 原子提交到 revision 2，证明失败内容、命令
+  合同、文件权限和数据库保存事务本身没有损坏；临时 `__save_*` 资源随后移入回收站，没有触碰用户文件。
+- 同时发现当前开发工作区已经增加第 45 条 schema，但本机 Prisma Client、public schema、workspace dist 和长驻 API 还没有形成同一版本；直接
+  建立当前 Prisma 连接会触发 schema guard。只在本机 `localhost:54329/xiqu_platform` 应用第 45 条 additive migration，重新生成 Client、
+  构建 shared/document-model，并把 4317 切换到当前源码进程后，readiness 与精确保存重放均通过。根因归类为开发环境长驻进程/生成物版本漂移，
+  不是标注数据损坏；生产数据库、对象、标注和服务器进程均未连接或修改。
+- 完成 D3c3b 后再次运行普通平台原子保存专项 34/34 和完整 API 中全部保存/恢复/协作用例，均通过。该阶段没有进入 App/autosave、operation
+  planner、协作 revision、草稿或离开保护路径；以后修改 Prisma/shared/document-model 后仍必须执行 migration/generate/build 并重启 API，
+  不能用旧长驻进程验证新合同。
+
+### 专用任务预约与统一冻结读取边界
+
+- 第 45 条 migration 只为 `ProcessingJobType` 和 `AuditAction` 追加训练导出值，为 job 增加 nullable export FK/index 和类型一致性 CHECK；没有
+  UPDATE、DELETE、DROP、TRUNCATE 或旧数据回填。训练 job 必须关联一个冻结 export，且 analysis/alignment run 均为空；其他 job 必须保持 export
+  外键为空，冻结关系使用 `RESTRICT`，不能在任务存在时误删训练输入。
+- 新增 `AlignmentTrainingExportJobService` 和严格 POST DTO。只有 admin/super_admin 全局能力可以预约；事务按账号 request UUID、canonical execution
+  key 排他锁序执行，并在 canonical 锁后重读完整冻结输入。Execution identity 只绑定 export id、provenance/input checksum 和版本化包合同；
+  request fingerprint 再绑定 export，不包含账号、名称、路径、storage key、媒体 URL、PlayAuth 或凭据。相同动作模糊重试、同 export 并发和同账号
+  多标签页分别复用一个 execution、一个业务 request 和独立 request-key；`cancelling` 不接新需求。
+- 从原冻结服务抽出唯一 `alignmentTrainingExportReader`，冻结幂等重放、任务预约和后续 worker 共用同一套顶层/逐项完整性校验。它同时复核 artifact
+  run/kind/version/checksum/size、target/source checksum/计数/字节、上传 FileObject 身份/checksum/size/mime 和 VOD 无文件关系。迁移前
+  provenance-only 冻结继续可读，但不能预约；缺行、混合 null、错 artifact/source 或篡改内容在写 job/request 前稳定阻断。
+- 将现有 `ensureProcessingJobRequest()` 泛化为 nullable context/audio；有资源任务继续使用原唯一键，无资源训练任务在调用方已持有 canonical job
+  锁时按 job/account/null-context 复用，绕开 PostgreSQL NULL 不互斥语义。训练任务沿用现有 mine/all 查询、个人取消和管理员强制取消，related
+  不伪造单一资源；没有 worker 时 retry 明确 unsupported。前端任务中心只增加有限中文类型/审计标签，没有新轮询 owner 或训练创建 UI。
+
+### 确定性包合同、惰性流与验收
+
+- document-model 新增唯一 package v1 plan/final-manifest 合同：目标 ZIP、固定 16 kHz 单声道 signed-16 FLAC、identity 生成的 NFC 安全路径，根
+  provenance/input manifest 和每项 prediction/target/audio/sample。Plan 与最终 inventory 均 canonical 排序并受 SHA-256、实际字节、单项/整包
+  safe-integer 容量门禁；manifest 业务 checksum 与包内完整文件 checksum 明确分离，拒绝重复路径、乱序、额外字段和重算后的语义篡改。
+- 新增惰性 `alignmentTrainingPackageStream` adapter。prediction、target 和 normalized audio 由显式 opener 严格逐项打开，调用方消费 EOF 后才进入
+  下一条；Transform 同时观察实际 SHA/字节，AbortSignal 会销毁当前流并阻止后续 opener。它不创建 ZIP、不发布 staged/final 对象、不读取整包
+  Buffer、不请求 VOD 临时 URL，也不把对象身份或正文写入错误信息。本阶段故意不接 worker coordinator，queued job 只代表预约事实。
+- 验证通过：训练导出专项 46/46、通用 processing jobs 11/11、任务中心 2/2、普通原子保存 34/34、worker coordinator 1/1、完整 API
+  362/362、完整生产构建和 `git diff --check`。完整构建曾发现新增审计 action 未加入前端穷举标签，已补为“预约强制对齐训练导出”后通过；仅
+  保留既有 Vite 大 chunk 提示和 pg adapter concurrent-query deprecation warning，没有新增依赖、调试输出或第二套校验逻辑。
+- **已完成**：保存故障阻断复核与 FA-D3c3b。**待推进**：FA-D3c3c 在唯一 worker coordinator 内实现训练导出 adapter、claim/heartbeat/
+  stale-recovery、惰性 ZIP staged 写入、实际 manifest 校验、claim-fenced 原子发布、取消/停机/模糊提交补偿和有限失败分类；开始前重写
+  `CLAUDE_WORK.md`，不得把当前 queued 预约伪装成已可下载。本轮未部署生产、未生成真实训练包或修改生产数据。

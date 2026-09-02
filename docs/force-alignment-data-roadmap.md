@@ -329,14 +329,24 @@ annotationOperationId / committedRevision / details
 - 专项 13/13、历史快照 4/4、普通原子保存 34/34、完整 API 354/354、完整构建与 diff check 通过。第 44 条 migration 仅应用到本机
   `localhost:54329/xiqu_platform`，API 重启后 database/storage ready；未部署生产、未创建真实后台任务或导出对象。
 
-###### FA-D3c3b：任务预约与流式训练包合同（下一阶段）
+###### FA-D3c3b：任务预约与流式训练包合同（已完成）
 
 - 在证明冻结输入完整后，再增加独立训练导出 job identity/request fingerprint、管理员预约 API 和 ProcessingJob 关联；复用现有需求、幂等
   key、任务查询与唯一 worker coordinator，不借用含糊的普通 annotation JSON export 语义。
 - 固化流式包格式、文件命名、manifest/object inventory、单样本与整包容量；先以纯 adapter/夹具证明 prediction、target 和音频读取不会在
   内存中组装整包，也不会把 storage key、临时 URL 或凭据暴露到公开 DTO。
+- 已增加第 45 条纯追加 migration、专用 `alignment_training_export` job/export FK、严格管理员预约 API、不可变 execution/request identity，
+  以及 null-context ProcessingJobRequest 复用。旧 provenance-only 或逐项损坏冻结在写 job 前阻断；同一动作、同一 export 并发和同账号多标签页
+  分别收敛到一个 execution、一个业务 demand 和多个幂等别名。现有 mine/all 查询与个人/管理员取消可直接复用，related 不伪造资源，retry
+  在 worker 落地前保持 unsupported。
+- 文档模型现有唯一 package v1 plan/final-manifest 合同，固定 identity 路径、ZIP 容器、16 kHz 单声道 signed-16 FLAC、逐项和整包容量上限、
+  实际 inventory SHA/字节门禁。API 惰性流 adapter 严格逐条打开 prediction/target/audio，等待消费完成后才继续，取消不再打开后续输入；
+  本阶段没有创建 ZIP、对象、worker claim、VOD 临时 URL 或第二轮询器。
+- 保存故障阻断复核证明真实失败 command/ProjectData 可在隔离副本、旧 API 与当前 API 原子提交；根因风险是本地长驻 API/Prisma/shared
+  产物与新增 migration 失配。对齐第 45 条本机 migration、Prisma Client 与进程后，训练专项 46/46、通用 processing jobs 11/11、普通原子
+  保存 34/34、worker coordinator 1/1、完整 API 362/362、完整生产构建和 diff check 通过；未部署生产或创建真实导出对象。
 
-###### FA-D3c3c：Claim-fenced 对象发布、取消与补偿
+###### FA-D3c3c：Claim-fenced 对象发布、取消与补偿（下一阶段）
 
 - 在现有 ProcessingJob 请求/命令/任务中心中增加训练导出类型和独立 adapter，不创建第二轮询器。Worker 按冻结 manifest 读取受保护
   prediction/audio/目标 revision，staged 后校验 size/SHA，再 claim-fenced 原子发布；取消、陈旧 claim、模糊提交和清理失败沿用现有

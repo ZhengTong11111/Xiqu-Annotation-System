@@ -33,6 +33,7 @@ export const PROCESSING_JOB_TYPE_LABELS: Record<ProcessingJobType, string> = {
   annotation_export: "标注导出",
   media_analysis: "媒体分析",
   force_alignment: "强制对齐",
+  alignment_training_export: "对齐训练导出",
 };
 
 export function isProcessingJobActive(status: ProcessingJobStatus) {

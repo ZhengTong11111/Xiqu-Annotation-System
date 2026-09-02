@@ -26,6 +26,7 @@ export const AUDIT_ACTION_LABELS: Record<AuditActionName, string> = {
   alignment_research_group_create: "创建对齐研究分组",
   project_alignment_research_groups_update: "更新项目对齐研究分组",
   alignment_training_export_freeze: "冻结强制对齐训练清单",
+  alignment_training_export_job_create: "预约强制对齐训练导出",
   annotation_workflow_status_update: "更新标注工作流状态",
   project_workflow_groups_update: "更新项目职责组",
   annotation_client_sync_failure: "客户端同步失败",

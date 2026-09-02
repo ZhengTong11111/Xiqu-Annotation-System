@@ -12,6 +12,7 @@ import {
   parseApplyAlignmentRunRequest,
   parseCreateAlignmentResearchGroupRequest,
   parseCreateAlignmentTrainingExportRequest,
+  parseCreateAlignmentTrainingExportJobRequest,
   parseCreateAlignmentRunRequest,
   parseReplaceProjectAlignmentResearchGroupsRequest,
   parseUpsertAlignmentQualityAssessmentRequest,
@@ -53,6 +54,7 @@ import type { AlignmentQualityAssessmentService } from "./alignmentQualityAssess
 import type { AlignmentTrainingCandidateService } from "./alignmentTrainingCandidateService.js";
 import type { AlignmentResearchGroupService } from "./alignmentResearchGroupService.js";
 import type { AlignmentTrainingExportService } from "./alignmentTrainingExportService.js";
+import type { AlignmentTrainingExportJobService } from "./alignmentTrainingExportJobService.js";
 import type { ProcessingJobQueryService } from "./processingJobQueryService.js";
 import type { ProcessingJobCommandService } from "./processingJobCommandService.js";
 import type { MediaAudioTrackService } from "./mediaAudioTrackService.js";
@@ -151,6 +153,7 @@ export function registerApiRoutes(
   alignmentTrainingCandidates: AlignmentTrainingCandidateService,
   alignmentResearchGroups: AlignmentResearchGroupService,
   alignmentTrainingExports: AlignmentTrainingExportService,
+  alignmentTrainingExportJobs: AlignmentTrainingExportJobService,
   processingJobs: ProcessingJobQueryService,
   processingJobCommands: ProcessingJobCommandService,
   mediaAudioTracks: MediaAudioTrackService,
@@ -717,6 +720,19 @@ export function registerApiRoutes(
       if (!parsed.success) throw badRequest(parsed.message);
       return alignmentTrainingExports.freeze(
         await getCurrentUser(repository, request),
+        parsed.data,
+      );
+    },
+  );
+
+  app.post<{ Params: { exportId: string }; Body: unknown }>(
+    "/api/alignment-training-exports/:exportId/jobs",
+    async (request) => {
+      const parsed = parseCreateAlignmentTrainingExportJobRequest(request.body);
+      if (!parsed.success) throw badRequest(parsed.message);
+      return alignmentTrainingExportJobs.create(
+        await getCurrentUser(repository, request),
+        request.params.exportId,
         parsed.data,
       );
     },

@@ -1157,7 +1157,9 @@ R5 完成不代表 R7 公网生产验收；真实云 IAM、TLS 续期、外部�
 > 通用取消/重试状态、唯一 worker runtime、公平任务适配器、严格 gzip prediction、claim-fenced 对象原子发布、撤权/漂移/停机/
 > 模糊提交补偿和受保护读取均已落地。D2d 进一步完成受限 prediction 读取、逐字 timing 分块、轻量 application 与真实 operation/
 > revision 原子绑定、幂等再应用和文件菜单结果入口。执行开关继续默认关闭，只有真实外部执行器绝对路径与请求开关同时配置才启用；
-> 下一阶段进入 FA-D3 质量标签与冻结训练导出设计，生产仍未启用该执行器。
+> FA-D3 已完成质量评价、困难样本候选、研究分组、不可变训练冻结、可导出 target/source 输入保护，以及专用后台任务预约与
+> 流式训练包合同。当前下一阶段是 FA-D3c3c：在唯一 worker coordinator 中增加 claim-fenced ZIP/对象发布、取消和失败补偿；现有预约
+> 尚不会执行或产出下载对象，生产仍未启用该执行器。
 > 行为旁表使用独立
 > migration，生产上线时必须先部署并观察 HC2，再部署 Force Alignment，不能把
 > 两项 schema/数据生命周期变化混成一次发布。

@@ -222,12 +222,27 @@ export type AlignmentTrainingExportSummary = {
   createdAt: string;
 };
 
+export type CreateAlignmentTrainingExportJobRequest = {
+  clientRequestId: string;
+};
+
+export type AlignmentTrainingExportJobRequestSummary = {
+  exportId: string;
+  requestId: string;
+  jobId: string;
+  status: "queued" | "running" | "cancelling" | "cancelled" | "succeeded" | "failed";
+};
+
 export type AlignmentResearchGroupRequestValidationResult<T> =
   | { success: true; data: T }
   | { success: false; message: string };
 
 export type AlignmentTrainingExportRequestValidationResult =
   | { success: true; data: CreateAlignmentTrainingExportRequest }
+  | { success: false; message: string };
+
+export type AlignmentTrainingExportJobRequestValidationResult =
+  | { success: true; data: CreateAlignmentTrainingExportJobRequest }
   | { success: false; message: string };
 
 export const ALIGNMENT_QUALITY_ASSESSMENT_SCOPES = ["editor", "reviewer"] as const;
@@ -503,6 +518,21 @@ export function parseCreateAlignmentTrainingExportRequest(
       splitRatios,
     },
   };
+}
+
+/** 后台任务预约只接受一次逻辑请求 UUID；包格式和执行身份全部由服务端冻结合同决定。 */
+export function parseCreateAlignmentTrainingExportJobRequest(
+  value: unknown,
+): AlignmentTrainingExportJobRequestValidationResult {
+  if (!isPlainObject(value)) return { success: false, message: "训练导出任务请求格式不正确。" };
+  const keys = Object.keys(value);
+  if (keys.length !== 1 || keys[0] !== "clientRequestId") {
+    return { success: false, message: "训练导出任务请求包含缺失或未支持的字段。" };
+  }
+  if (typeof value.clientRequestId !== "string" || !isCanonicalUuid(value.clientRequestId)) {
+    return { success: false, message: "clientRequestId 必须是规范小写 UUID。" };
+  }
+  return { success: true, data: { clientRequestId: value.clientRequestId } };
 }
 
 function parseAlignmentTrainingSplitRatios(value: unknown): AlignmentTrainingExportSplitRatios | null {

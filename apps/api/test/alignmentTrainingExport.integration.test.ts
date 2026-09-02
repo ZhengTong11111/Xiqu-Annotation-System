@@ -15,7 +15,11 @@ import {
   type PlatformUser,
 } from "@xiqu/shared";
 import { AlignmentTrainingExportService } from "../src/alignmentTrainingExportService.js";
+import { AlignmentTrainingExportJobService } from "../src/alignmentTrainingExportJobService.js";
 import { ObjectLifecycleService } from "../src/objectLifecycleService.js";
+import { MediaAnalysisJobService } from "../src/mediaAnalysisJobService.js";
+import { ProcessingJobCommandService } from "../src/processingJobCommandService.js";
+import { ProcessingJobQueryService } from "../src/processingJobQueryService.js";
 import { stableJsonStringify } from "../src/annotationOperationIdempotency.js";
 import { createMediaAnalysisSourceFingerprint } from "../src/mediaAnalysisSourceFingerprint.js";
 import { ResourceAccessService } from "../src/resourceAccess.js";
@@ -381,6 +385,98 @@ test("幂等重放拒绝顶层或逐项输入快照被篡改", async () => {
       service.freeze(fixture.admin, request),
       hasConflictCode("alignment_training_export_corrupt"),
     );
+  });
+});
+
+test("训练冻结任务只允许管理员预约并复用同一账号需求与共享 job", async () => {
+  await withFixture({ verdict: "correct", issueCodes: [] }, async ({ prisma, service, fixture }) => {
+    const frozen = await service.freeze(fixture.admin, createRequest(fixture.applicationId));
+    const jobs = new AlignmentTrainingExportJobService(prisma, new ResourceAccessService(prisma));
+    await assert.rejects(
+      jobs.create(fixture.viewer, frozen.id, { clientRequestId: randomUUID() }),
+      hasStatus(403),
+    );
+
+    const clientRequestId = randomUUID();
+    const [created, replayed] = await Promise.all([
+      jobs.create(fixture.admin, frozen.id, { clientRequestId }),
+      jobs.create(fixture.admin, frozen.id, { clientRequestId }),
+    ]);
+    assert.deepEqual(replayed, created);
+    const secondTab = await jobs.create(fixture.admin, frozen.id, {
+      clientRequestId: randomUUID(),
+    });
+    assert.equal(secondTab.jobId, created.jobId);
+    assert.equal(secondTab.requestId, created.requestId);
+    assert.equal(await prisma.processingJob.count(), 1);
+    assert.equal(await prisma.processingJobRequest.count(), 1);
+    assert.equal(await prisma.processingJobRequestKey.count(), 2);
+
+    const job = await prisma.processingJob.findUniqueOrThrow({ where: { id: created.jobId } });
+    assert.equal(job.type, "alignment_training_export");
+    assert.equal(job.alignmentTrainingExportId, frozen.id);
+    assert.equal(job.resourceId, null);
+    assert.equal(job.analysisRunId, null);
+    assert.equal(job.alignmentRunId, null);
+    assert.deepEqual(job.inputFileIds, [fixture.sourceFileId]);
+    assert.equal(await prisma.auditLog.count({
+      where: { action: "alignment_training_export_job_create" },
+    }), 1);
+    const query = new ProcessingJobQueryService(prisma, new ResourceAccessService(prisma));
+    const mine = await query.list(fixture.admin, { scope: "mine" });
+    assert.equal(mine.items.length, 1);
+    assert.equal(mine.items[0]?.job.type, "alignment_training_export");
+    assert.equal(mine.items[0]?.contextResource, null);
+    assert.equal((await query.list(fixture.admin, { scope: "related" })).items.length, 0);
+    assert.equal((await query.list(fixture.admin, { scope: "all" })).items.length, 1);
+
+    // 训练导出沿用通用 request 治理：可取消自己的需求，但本阶段尚未开放会重建包的重试语义。
+    const access = new ResourceAccessService(prisma);
+    const commands = new ProcessingJobCommandService(
+      prisma,
+      access,
+      new MediaAnalysisJobService(prisma, access),
+    );
+    const cancelled = await commands.cancelRequest(fixture.admin, created.requestId, {
+      clientCommandId: randomUUID(),
+    });
+    assert.equal(cancelled.outcome, "execution_cancelled");
+    assert.equal(
+      (await prisma.processingJob.findUniqueOrThrow({ where: { id: created.jobId } })).status,
+      "cancelled",
+    );
+    await assert.rejects(
+      commands.retryRequest(fixture.admin, created.requestId, {
+        clientCommandId: randomUUID(),
+      }),
+      hasConflictCode("processing_job_retry_unsupported"),
+    );
+  });
+});
+
+test("历史 provenance-only 或逐项损坏冻结不能预约任务", async () => {
+  await withFixture({ verdict: "correct", issueCodes: [] }, async ({ prisma, service, fixture }) => {
+    const frozen = await service.freeze(fixture.admin, createRequest(fixture.applicationId));
+    const jobs = new AlignmentTrainingExportJobService(prisma, new ResourceAccessService(prisma));
+    await prisma.alignmentTrainingExportInput.deleteMany({ where: { exportId: frozen.id } });
+    await prisma.alignmentTrainingExport.update({
+      where: { id: frozen.id },
+      data: {
+        inputManifestFormat: null,
+        inputManifestVersion: null,
+        inputManifestChecksum: null,
+        inputManifest: Prisma.DbNull,
+        targetSentenceCount: null,
+        targetCharacterCount: null,
+        targetSnapshotBytes: null,
+      },
+    });
+    await assert.rejects(
+      jobs.create(fixture.admin, frozen.id, { clientRequestId: randomUUID() }),
+      hasConflictCode("alignment_training_export_inputs_missing"),
+    );
+    assert.equal(await prisma.processingJob.count(), 0);
+    assert.equal(await prisma.processingJobRequest.count(), 0);
   });
 });
 

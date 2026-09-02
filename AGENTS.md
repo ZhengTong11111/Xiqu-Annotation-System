@@ -244,6 +244,17 @@ Main currently contains all major recent feature lines that matter for context:
   never temporary URLs or credentials. Uploaded `FileObject` and prediction `AlignmentArtifact` references are protected by `RESTRICT`,
   and object-lifecycle orphan checks must count training-input references. Legacy provenance-only exports remain readable but are not
   export-ready; idempotent replay of a new export must validate both manifests and every persisted target/source row
+- force-alignment training package reservations use the dedicated `alignment_training_export` ProcessingJob type and a RESTRICT export
+  relation; they must never reuse generic annotation JSON export semantics. `AlignmentTrainingExportJobService` owns the lock order
+  account request -> canonical package identity, revalidates the complete frozen export after the canonical lock, and creates only one
+  queued execution plus account demand/idempotency aliases. Its identity binds export and immutable manifest/package-contract checksums,
+  never account, path, storage key, temporary URL or credentials. Provenance-only/corrupt exports cannot queue; cancellation reuses the
+  common command service, while retry remains unsupported until a claim-fenced package worker exists
+- `alignmentTrainingPackage` in document-model is the only v1 package plan/final-manifest contract. Paths are deterministic and identity-
+  based, inventory and byte/SHA limits are fail-closed, and normalized audio is fixed to 16 kHz mono signed-16 FLAC. The API package
+  stream adapter opens prediction, target and audio entries strictly one at a time, observes actual bytes/checksums, and stops opening
+  later inputs after cancellation; it does not create ZIP/final objects or accumulate a whole package in memory. Publishing, retries,
+  download authorization and claim fencing belong to later phases, not the reservation route
 - force-alignment tool attempts are a lightweight governance/training side table, never ProjectData or document history. Their
   administrator CSV is generated only by the API after fresh full-resource authorization, accepts at most a 90-day half-open
   window, reads in bounded batches, exports at most 10,000 rows with an explicit truncation header, and uses the shared CSV
@@ -334,7 +345,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     unsaved/unacknowledged work so the server cannot silently align an older revision
 - `apps/api/src/processingJobRequestService.ts`
   - the only helper for creating/reusing one account/context demand and attaching per-tab idempotency aliases. Media analysis and
-    force alignment share it; do not add a second request table or copy this sequence into another task service
+    force alignment share it; cross-project training exports use a null context/audio pair. PostgreSQL NULL uniqueness does not merge
+    those rows, so null-context reuse must run under the caller-held canonical job lock and search by job/account/null context. Do not
+    add a second request table or copy this sequence into another task service
 - `apps/api/src/processingJobQuery.ts` + `apps/api/src/processingJobQueryService.ts`
   - the bounded request-centric query boundary for `mine | related | all`, summary and detail. `all` is admin-only; related
     visibility is recalculated from current resource ACL and hidden contexts must not be enumerable
