@@ -10173,3 +10173,32 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：Git 合并与推送、候选构建检查、无备份维护部署、migration 核对、原子切换、两轮正式域名 smoke、服务恢复、
   严重错误日志检查和构建缓存清理。**待人工验收**：刷新正式站点，在测试文件中确认 Timeline 审核块左键不移动播放头，
   右侧审核记录定位合理，并检查循环范围右键菜单与确认/评论/反馈输入窗口；本轮自动检查未写入或删除任何审核事实。
+
+## 2026-09-01：HC0 / FA-D0 历史容量与 Force Alignment 数据规划
+
+### 生产只读容量审计
+
+- 为评估 forced alignment 行为记录和恢复快照增长，只读查询生产 PostgreSQL 与数据盘；没有执行 migration、写入、
+  清理、VACUUM 或备份。当前 PostgreSQL 约 4,517MB，其中 33,183 个恢复快照约 4,265MB；普通 save 快照
+  33,179 个，payload 平均约 129KB。annotation operation 74,435 行仅约 118MB，audit log 约 39MB。
+- 33,179 个普通 save 快照与 33,179 个 committed revision 组一一对应；明显包含非可重放 action 的 revision 组约
+  3,086 个，被确认/评论 revision 直接引用的快照 24 个。最多单文件已有 6,118 个快照、约 1.1GB payload；近 7 天
+  新增 32,310 个快照。数据盘 98GB、已用约 44GB、余约 50GB，其中 storage 约 6.5GB、backups 约 33GB。
+- 结论是当前容量首要风险来自“每次自动保存复制完整旧 ProjectData”，不是 operation 或拟议的轻量行为事实。按当前
+  日增 5,000-13,000 个快照估算，逻辑 payload 增量约 0.6-1.7GB/日；200+ 人持续标注时必须先治理。
+
+### 方案与任务顺序
+
+- 新增 `docs/annotation-history-capacity-roadmap.md`。不按时间或固定间隔粗暴删除，而是永久保留 revision 元数据，用少量
+  inline checkpoint + committed operation 重建中间版本；只有 parser/apply 全部成功且 canonical SHA-256 与原快照完全
+  相等的候选才可转为 recipe。特殊恢复、非可重放边界、审核引用、近期窗口和周期检查点保留完整 payload。
+- 预计长期 inline payload 可从 4.27GB 降至约 0.7-1.7GB，但该范围必须由 HC1 dry-run 实测确认。第一轮只实现只读
+  planner/CLI，不新增 schema、不更新 storageMode、不置空 payload、不写对象存储、不部署生产；生产全库运行仍需授权。
+- 新增 `docs/force-alignment-data-roadmap.md`。工具调用使用一调用一行的轻量尝试，成功与真实 operation 原子绑定；普通人工
+  timing 继续复用 operation。模型预测进入压缩对象，数据库只存 provenance/manifest/质量标签，禁止复制完整 ProjectData、
+  命令链、临时 URL、逐帧 posterior 或已有 waveform/spectrogram/F0。
+- 20 万次行为若复制平均 82KB AnnotationFile payload 将新增约 15.3GB；轻量尝试按含索引 0.8-1.2KB/行估算约
+  160-240MB。因此采用专项滚动 roadmap，不在一轮任务中同时改 schema、前端离线队列、operation 事务和模型对象。
+- 主 roadmap 已增加 R3 快照容量和 R6a forced alignment 数据入口；被忽略的 `CLAUDE_WORK.md` 重写为下一轮 HC1
+  只读规划器。**已完成**：容量基线、算法取舍、阶段顺序和安全停止条件。**待推进**：HC1；完成并审查后再制定 HC2，
+  FA-D1a 在快照容量边界得到 dry-run 证据后启动。

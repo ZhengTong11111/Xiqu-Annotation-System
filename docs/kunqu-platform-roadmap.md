@@ -435,6 +435,12 @@ fail-closed 环境配置、同源 `/api`、显式首管理员 bootstrap，并提
 
 ### R3：规模、可靠性与运维基础
 
+> 标注 revision 历史和恢复快照容量按
+> [`annotation-history-capacity-roadmap.md`](./annotation-history-capacity-roadmap.md) 的 HC0-HC4 滚动治理。
+> 生产只读基线显示 33,183 个快照已占 PostgreSQL 约 4.27GB，而 operation 仅约 118MB；当前优先执行 HC1
+> 纯 dry-run 重建规划器，不删除、置空或迁移任何生产 payload。只有“检查点 + committed operation”重建结果与原快照
+> canonical hash 完全一致的 revision，未来才有资格转成轻量 recipe。
+
 - R3a 已完成：资源查询使用版本化、查询绑定的 opaque cursor；数据库按业务字段和同方向 id 形成稳定
   总序，以 50-200 条有限批次扫描候选，并以有界并发复核已删除祖先和有效 ACL，直到填满可见页或
   候选耗尽。坏/跨查询/失效 cursor 明确返回 400；`all_projects`、普通目录与聚合视图语义保持。主
@@ -1134,6 +1140,19 @@ R5 完成不代表 R7 公网生产验收；真实云 IAM、TLS 续期、外部�
 - 模型、参数、代码版本、来源文件 checksum 和结果 provenance。
 - 计算缓存与资源权限继承。
 
+#### R6a：Force Alignment 数据闭环
+
+> 工具行为、模型运行、人工修正、质量标签、容量预算和训练导出按
+> [`force-alignment-data-roadmap.md`](./force-alignment-data-roadmap.md) 的 FA-D0 至 FA-D3 滚动推进。FA-D0 已完成
+> 容量与合同规划；行为旁表必须在 HC1 给出快照增长/重建事实后再进入实现，不能把两项 schema/数据生命周期变化混成
+> 一次发布。
+
+- PostgreSQL 只保存轻量尝试索引、run provenance、质量标签和对象 manifest；压缩预测进入对象存储。
+- 普通人工 timing 修改继续复用 annotation operation，不复制 before/after 日志。
+- 成功工具行为必须与真实 operation 原子绑定；点击、取消和失败使用一条幂等尝试记录，不按阶段制造多行。
+- 不保存完整 ProjectData、完整命令链、临时媒体 URL、逐帧 posterior 或重复的波形/频谱/F0。
+- 当前 annotation、operation、恢复快照、审核事实和对象存储不得由该专项回填、清理或覆盖。
+
 完成标准：长任务不阻塞 API，结果可复现并能绑定回学术项目。
 
 ### R7：学术数据库、课堂工具与生产部署
@@ -1244,7 +1263,8 @@ R1 与 R2 的部分 UI 可交错；R3 的监控和迁移可随每阶段持续加
 
 ### 尚待阶段性决定
 
-- recovery snapshot 保留期限与配额。
+- recovery snapshot 不再采用未经证明的固定期限直接删除；按 `annotation-history-capacity-roadmap.md` 先建立
+  checkpoint + operation 无损重建、hash 门禁和容量阈值，再由生产 dry-run 决定热窗口与检查点参数。
 - 服务端搜索使用 PostgreSQL 索引还是后续独立搜索服务。
 - 自动保存 operation 的领域粒度与幂等键格式。
 - 实时协作采用自研 operation sequencing、OT、CRDT 或混合策略。
