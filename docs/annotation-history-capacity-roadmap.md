@@ -230,6 +230,19 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - 本阶段没有 schema/migration、历史算法、在线 API 或依赖变化，也没有连接生产、部署、执行 migration、写影子 recipe、清空
   payload、运行 compactor 或物理回收。下一步仍停在授权 A：只有用户明确批准当前候选后，才能按手册执行生产 HC2 观察。
 
+#### HC2h：本地不可变候选组装演练（已完成，生产未执行）
+
+- 从已审查 commit `5e2ed07` 重新完整构建，并严格按部署复制白名单在系统临时目录组装 554MB 候选。候选根只有
+  `package.json`、lockfile、Prisma config/migrations、`packages`、`dist`、`node_modules` 和两个部署 smoke 脚本；没有 `.env`、
+  `data`、docs、备份、报告、密钥或应用源码根目录，两个 workspace 链接均解析到候选内部。
+- 候选内 `release:inspect` 确认 30 个运行路径、27 个生产依赖和 49 条 migration；`release:check` 确认 Prisma Client 与候选 schema
+  一致。三个历史治理编译入口逐项存在并取得 SHA-256，三条 npm script 在没有数据库配置时都先以严格范围参数错误退出，未出现
+  `ECONN`、Prisma、数据库 URL 或无界错误输出。
+- 演练后已删除整个 554MB 临时候选并复核路径不存在，没有生成可误认作已部署 release 的 `/opt/xiqu` 状态。该证据只证明当前
+  commit 可以形成完整候选，仍不构成授权 A；生产 release 必须在当次授权后从当时的明确 commit 重新构建和检查。
+- 本轮完整 API 338/338、完整构建与 `git diff --check` 通过；仅修改 roadmap/Development Log，没有新增依赖、schema、migration、
+  运行时代码或新的 AGENTS 规则。
+
 ### HC3：影子 recipe 与小批次无损压缩
 
 - 在不清空 payload 的情况下回填 hash/recipe，后台影子重建并持续比对。

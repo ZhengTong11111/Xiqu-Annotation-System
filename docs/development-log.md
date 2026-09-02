@@ -11535,3 +11535,39 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：HC2g 本地 release 合同、测试、生产观察手册和交接规范。
   **待推进**：目标仍停在授权 A。未经用户明确批准，不连接生产、不部署、不执行 production migration/备份/影子命令，不写 recipe、
   不清空 payload、不运行 compactor 或物理空间回收。
+
+## 2026-09-02：HC2h 本地不可变候选组装演练
+
+### 为什么继续做这一轮
+
+- HC2g 已证明 package scripts、编译入口和候选检查器合同正确，但当时只在源码工作区运行构建与测试，没有真实按部署清单组装最终
+  运行目录。生产门禁允许继续完成本地候选准备，因此本轮只补“最终包是否自足”的证据，不连接或模拟生产数据库。
+- `CLAUDE_WORK.md` 重新限定为一次临时候选演练：HEAD 必须保持 `5e2ed07`、工作区干净、临时盘有足够空间；任何步骤需要
+  `.env`、源码、数据库或生产命令就立即停止。
+
+### 候选内容与检查结果
+
+- 使用 Node `24.14.0`、npm `11.9.0` 重新执行完整 `npm run build`，Prisma generate/schema guard、shared、document-model、Web 与
+  API 均通过。构建后在唯一 `/tmp` 路径复制 package/lock、Prisma config/schema/49 条 migrations、完整 packages/dist、当前
+  node_modules 和两个部署 smoke 脚本；候选大小 554MB。
+- 候选根实际只有 `dist,node_modules,package-lock.json,package.json,packages,prisma,prisma.config.ts,scripts`。`@xiqu/shared` 与
+  `@xiqu/document-model` 的 workspace 链接均解析到候选内部；`release:inspect` 报告 30 个运行路径、27 个生产依赖、49 条
+  migration，`release:check` 报告 Prisma Client schema 一致。
+- 三个最终编译入口 SHA-256 分别为：compaction
+  `4ab8c701dac6cad317bb972525870c48893fd58f95c690771e6162054b44d09d`、shadow recipe
+  `50fe33705bd2468f793f4ec975afcac955392edaeb50817a42d5060e0c1c3de5`、stored verification
+  `b83084a2f14ac39462fcb9f827ade22d1dbb683a4f7c6337ee14e757698ed6c4`。
+- 在候选内部移除 `DATABASE_URL` 后分别运行三条 npm script，均以退出码 1 在严格参数解析处结束；输出长度为 241、245、256 字节，
+  不含连接尝试、Prisma 错误、数据库 URL 或凭据。第一次本地 shell 包装使用了 zsh 只读变量名 `status`，在调用 CLI 前即停止；改用
+  `exit_code` 后原候选完整复核通过，这不涉及产品代码或数据库状态。
+
+### 清理、验证与门禁
+
+- 演练完成后删除整个临时候选并确认路径不存在；没有创建 `/opt/xiqu`、release symlink、环境文件、报告或 Git 大文件。系统临时卷
+  恢复约 554MB 空间。
+- AGENTS 已经规定“新增正式入口同步候选清单”和“历史治理 CLI 只执行 dist”，本轮没有新增长期架构规则，因此不重复添加同义条目。
+- 完整 `test:api` 338/338、完整 `npm run build` 与 `git diff --check` 通过；仅保留既有 Vite 主 chunk 体积提示和 API 测试中的
+  `pg` concurrent-query deprecation warning。
+- **已完成**：当前 commit 的真实不可变候选组装、内部链接/依赖/migration/Prisma/历史 CLI 验收和临时文件清理。
+  **待推进**：仍停在授权 A；生产连接、维护、备份、migration、部署、只读生产 planner、影子写入、payload 清理、compactor 与
+  物理回收均未执行。
