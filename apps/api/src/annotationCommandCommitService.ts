@@ -23,6 +23,13 @@ import {
   mapAnnotationOperationRecord,
   type AnnotationOperationRow,
 } from "./annotationOperationRecord.js";
+import {
+  assertReplayedAnnotationToolAttemptBindings,
+  commitAnnotationToolAttemptBinding,
+  prepareAnnotationToolAttemptBindings,
+  validateAnnotationToolAttemptCommand,
+  type PreparedAnnotationToolAttemptBinding,
+} from "./annotationToolAttemptCommit.js";
 import type { ApiUser } from "./domain.js";
 import { conflict } from "./errors.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
@@ -66,6 +73,7 @@ export class AnnotationCommandCommitService {
       requestHash: createAnnotationOperationRequestHash({
         baseRevision: request.baseRevision,
         localRevision: input.localRevision ?? null,
+        ...(input.toolAttemptId ? { toolAttemptId: input.toolAttemptId } : {}),
         action: input.action,
         payload: input.payload,
       }),
@@ -159,7 +167,12 @@ export class AnnotationCommandCommitService {
       });
     }
 
-    const nextProject = applyOrderedCommands(parsedCurrent.data, operations);
+    const toolAttemptBindings = await prepareAnnotationToolAttemptBindings(transaction, {
+      actorUserId: user.id,
+      annotationFileId,
+      operations: operations.map(({ input }) => input),
+    });
+    const nextProject = applyOrderedCommands(parsedCurrent.data, operations, toolAttemptBindings);
     // Prisma JSON 不接受 undefined；round-trip 后再过严格 schema，可同时发现 adapter 输出与持久格式漂移。
     const serializedProject = JSON.parse(JSON.stringify(nextProject)) as unknown;
     const parsedResult = parseCurrentProjectData(serializedProject);
@@ -210,7 +223,7 @@ export class AnnotationCommandCommitService {
     // 逐行 create 保留请求顺序和稳定 sequence；批量 API 不返回生成 id，无法构造可靠确认响应。
     const committedRows: AnnotationOperationRow[] = [];
     for (const [operationIndex, operation] of operations.entries()) {
-      committedRows.push(await transaction.annotationOperation.create({
+      const committedRow = await transaction.annotationOperation.create({
         data: {
           annotationFileId,
           actorUserId: user.id,
@@ -225,7 +238,17 @@ export class AnnotationCommandCommitService {
           committedRevision: targetRevision,
           committedAt,
         },
-      }));
+      });
+      committedRows.push(committedRow);
+      const toolAttemptBinding = toolAttemptBindings.get(operationIndex);
+      if (toolAttemptBinding) {
+        await commitAnnotationToolAttemptBinding(
+          transaction,
+          toolAttemptBinding,
+          committedRow,
+          committedAt,
+        );
+      }
     }
     await transaction.resourceEntry.update({
       where: { id: annotationFileId },
@@ -307,6 +330,11 @@ export class AnnotationCommandCommitService {
         code: "annotation_command_batch_replay_ambiguous",
       });
     }
+    await assertReplayedAnnotationToolAttemptBindings(
+      transaction,
+      operations.map(({ input }) => input),
+      rows,
+    );
     return { committedRevision, operations: rows, replayed: true };
   }
 }
@@ -332,11 +360,22 @@ function resolveRequiredMutationPurpose(
 function applyOrderedCommands(
   project: ProjectData,
   operations: PreparedOperation[],
+  toolAttemptBindings: ReadonlyMap<number, PreparedAnnotationToolAttemptBinding>,
 ) {
   let nextProject = project;
   for (const [operationIndex, operation] of operations.entries()) {
+    const beforeProject = nextProject;
     const result = applyAnnotationCommandToProject(nextProject, operation.input.payload);
     if (result.status === "applied") {
+      const binding = toolAttemptBindings.get(operationIndex);
+      if (binding) {
+        validateAnnotationToolAttemptCommand(
+          binding,
+          operation.input,
+          beforeProject,
+          result.project,
+        );
+      }
       nextProject = result.project;
       continue;
     }

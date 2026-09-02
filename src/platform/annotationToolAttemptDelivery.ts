@@ -100,6 +100,7 @@ function isAbortError(error: unknown) {
 export type AnnotationToolAttemptDeliveryCoordinator = {
   start(): void;
   enqueue(attempt: AnnotationToolAttemptState): void;
+  ensureDelivered(attemptIds: readonly string[]): Promise<{ unavailableAttemptIds: string[] }>;
   dispose(): void;
 };
 
@@ -132,6 +133,8 @@ export function createAnnotationToolAttemptDeliveryCoordinator(
   let retryDelayMs = INITIAL_RETRY_DELAY_MS;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let activeAbortController: AbortController | null = null;
+  const pendingWrites = new Map<string, Promise<void>>();
+  const unavailableAttemptIds = new Set<string>();
 
   const clearRetry = () => {
     if (retryTimer === null) return;
@@ -162,6 +165,7 @@ export function createAnnotationToolAttemptDeliveryCoordinator(
           signal: activeAbortController.signal,
           onPermanentDrop: ({ attemptId, status }) => {
             // 只记录定位身份和 HTTP 类别，不输出句子、详情、项目内容或凭据。
+            unavailableAttemptIds.add(attemptId);
             console.warn("工具尝试记录无法永久送达，已移出本地队列。", { attemptId, status });
           },
         });
@@ -211,11 +215,64 @@ export function createAnnotationToolAttemptDeliveryCoordinator(
     },
     enqueue(attempt) {
       // IndexedDB 写入和网络送达都在旁路执行；失败只输出有界诊断，绝不能阻断用户的时间轴操作。
-      void store.upsert(options.userId, attempt).then(kick).catch((error: unknown) => {
+      const previousWrite = pendingWrites.get(attempt.id) ?? Promise.resolve();
+      const write = previousWrite
+        .catch(() => undefined)
+        .then(() => store.upsert(options.userId, attempt))
+        .then(() => {
+          unavailableAttemptIds.delete(attempt.id);
+        });
+      pendingWrites.set(attempt.id, write);
+      void write.then(kick).catch((error: unknown) => {
+        unavailableAttemptIds.add(attempt.id);
         console.warn("工具尝试记录未能写入浏览器队列，标注操作不受影响。", {
           reason: error instanceof Error ? error.name : "unknown",
         });
+      }).finally(() => {
+        if (pendingWrites.get(attempt.id) === write) pendingWrites.delete(attempt.id);
       });
+    },
+    async ensureDelivered(attemptIds) {
+      const uniqueIds = [...new Set(attemptIds)];
+      if (uniqueIds.length === 0) return { unavailableAttemptIds: [] };
+      if (disposed || authenticationSuspended || !isOnline()) {
+        return { unavailableAttemptIds: uniqueIds };
+      }
+
+      // 保存前只等待这些 attempt 自己的 IndexedDB 写入，不等待账号下无关文件的整个离线队列。
+      const unavailable = new Set<string>();
+      uniqueIds.filter((attemptId) => unavailableAttemptIds.has(attemptId))
+        .forEach((attemptId) => unavailable.add(attemptId));
+      await Promise.all(uniqueIds.map(async (attemptId) => {
+        try {
+          await pendingWrites.get(attemptId);
+        } catch {
+          unavailable.add(attemptId);
+        }
+      }));
+      const rows = (await Promise.all(uniqueIds.map(async (attemptId) => {
+        if (unavailable.has(attemptId)) return null;
+        try {
+          return await store.getForUser(options.userId, attemptId);
+        } catch {
+          unavailable.add(attemptId);
+          return null;
+        }
+      }))).filter((row): row is QueuedAnnotationToolAttempt => row !== null);
+      if (rows.length === 0) return { unavailableAttemptIds: [...unavailable] };
+
+      try {
+        // 多标签页或后台 drain 可能同时送达同一 UUID；服务端与本地 version 条件删除都支持这种幂等竞争。
+        const response = await options.client.submitAnnotationToolAttempts({
+          attempts: rows.map(({ attempt }) => attempt),
+        });
+        assertAcknowledgesEveryRow(response, rows);
+        await Promise.all(rows.map((row) => store.deleteIfVersion(row)));
+        rows.forEach((row) => unavailableAttemptIds.delete(row.attempt.id));
+      } catch {
+        rows.forEach((row) => unavailable.add(row.attempt.id));
+      }
+      return { unavailableAttemptIds: [...unavailable] };
     },
     dispose() {
       if (disposed) return;

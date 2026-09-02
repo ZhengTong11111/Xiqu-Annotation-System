@@ -39,6 +39,7 @@ function createRecoveryState(): ProjectDocumentRecoveryState {
     savedTrackSnapEnabled: { "character-track": true },
     pendingOperations: [{
       id: "op-recoverable",
+      toolAttemptId: "66666666-6666-4666-8666-666666666666",
       type: "project.commit",
       action: "edit",
       localRevision: 3,
@@ -82,7 +83,21 @@ test("构建并恢复平台草稿不会持久化会话 URL", () => {
   }));
   assert.equal(recovered.currentProject.video.url, "fresh-protected-url");
   assert.equal(recovered.pendingOperations[0].id, "op-recoverable");
+  assert.equal(
+    recovered.pendingOperations[0].toolAttemptId,
+    "66666666-6666-4666-8666-666666666666",
+  );
   assert.equal(recovered.localRevision, 3);
+  assert.equal(normalizePlatformDraftRecord({
+    ...record,
+    pendingOperations: [{
+      ...record.pendingOperations[0],
+      toolAttemptId: "not-a-uuid",
+    }],
+  }, {
+    userId: "user-1",
+    annotationFileId: "file-1",
+  }), null);
 });
 
 // 显式 flush 与卸载最终捕获的内容相同时不能只因时间戳变化就制造一次假的草稿更新。

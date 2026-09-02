@@ -21,10 +21,11 @@ function timingEnvelope(entityId, beforeStart, afterStart) {
   };
 }
 
-function operation(id, payload = timingEnvelope("char-1", 1, 2)) {
+function operation(id, payload = timingEnvelope("char-1", 1, 2), toolAttemptId) {
   return {
     clientOperationId: id,
     localRevision: 3,
+    ...(toolAttemptId ? { toolAttemptId } : {}),
     action: payload.command.type,
     payload,
   };
@@ -62,6 +63,32 @@ test("原子命令批次拒绝空数组、超限和重复 client id", () => {
   assert.equal(duplicate.success, false);
   assert.ok(!duplicate.success && duplicate.issues.some(
     (issue) => issue.code === "duplicate_client_operation_id" && issue.operationIndex === 1,
+  ));
+});
+
+test("原子命令批次严格保留唯一的工具尝试 UUID", () => {
+  const toolAttemptId = "550e8400-e29b-41d4-a716-446655440000";
+  const accepted = parseAnnotationCommandBatchRequest({
+    baseRevision: 1,
+    operations: [operation("op-tool", undefined, toolAttemptId)],
+  });
+  assert.equal(accepted.success, true);
+  assert.equal(accepted.success ? accepted.data.operations[0]?.toolAttemptId : null, toolAttemptId);
+
+  assert.equal(parseAnnotationCommandBatchRequest({
+    baseRevision: 1,
+    operations: [operation("op-invalid-tool", undefined, "not-a-uuid")],
+  }).success, false);
+  const duplicate = parseAnnotationCommandBatchRequest({
+    baseRevision: 1,
+    operations: [
+      operation("op-tool-1", undefined, toolAttemptId),
+      operation("op-tool-2", undefined, toolAttemptId),
+    ],
+  });
+  assert.equal(duplicate.success, false);
+  assert.ok(!duplicate.success && duplicate.issues.some(
+    (issue) => issue.code === "duplicate_tool_attempt_id" && issue.operationIndex === 1,
   ));
 });
 

@@ -67,6 +67,10 @@ function plan(chain: Chain, latestServerProject: ProjectData, overrides: Partial
 
 test("不相交的远端与本地内容修改可在最新项目上完整重放", () => {
   const chain = buildSentenceChain([{ lineId: "line-1", text: "本地修改" }]);
+  chain.operations[0] = {
+    ...chain.operations[0],
+    toolAttemptId: "55555555-5555-4555-8555-555555555555",
+  };
   const latest = structuredClone(chain.savedProject);
   latest.subtitleLines.find((line) => line.id === "line-2")!.text = "远端修改";
   const original = structuredClone({ chain, latest });
@@ -77,6 +81,11 @@ test("不相交的远端与本地内容修改可在最新项目上完整重放",
   assert.equal(result.rebasedProject.subtitleLines.find((line) => line.id === "line-1")?.text, "本地修改");
   assert.equal(result.rebasedProject.subtitleLines.find((line) => line.id === "line-2")?.text, "远端修改");
   assert.deepEqual(result.operations.map((operation) => operation.clientOperationId), ["rebase-op-1"]);
+  assert.equal(result.operations[0]?.toolAttemptId, "55555555-5555-4555-8555-555555555555");
+  assert.equal(
+    result.rebasedPendingOperations[0]?.toolAttemptId,
+    "55555555-5555-4555-8555-555555555555",
+  );
   assert.equal(result.latestRevision, 8);
   assert.deepEqual({ chain, latest }, original);
 });

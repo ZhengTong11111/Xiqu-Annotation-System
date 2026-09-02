@@ -29,6 +29,7 @@ interface AnnotationToolAttemptQueueDatabase extends DBSchema {
 
 export type AnnotationToolAttemptQueueStore = {
   upsert(userId: string, attempt: AnnotationToolAttemptState): Promise<QueuedAnnotationToolAttempt>;
+  getForUser(userId: string, attemptId: string): Promise<QueuedAnnotationToolAttempt | null>;
   listForUser(userId: string, limit?: number): Promise<QueuedAnnotationToolAttempt[]>;
   deleteIfVersion(record: Pick<QueuedAnnotationToolAttempt, "key" | "version">): Promise<boolean>;
   close(): Promise<void>;
@@ -118,6 +119,24 @@ export function createAnnotationToolAttemptQueueStore(
       await store.put(record);
       await transaction.done;
       return record;
+    },
+
+    async getForUser(userId, attemptId) {
+      assertUserId(userId);
+      const database = await getDatabase();
+      const transaction = database.transaction(STORE_NAME, "readwrite");
+      const store = transaction.objectStore(STORE_NAME);
+      const key = getQueueKey(userId, attemptId);
+      const raw = await store.get(key) as unknown;
+      const normalized = normalizeQueueRecord(raw);
+      // key 中包含账号作用域；损坏或越界记录不能被定点发送到服务端。
+      if (raw !== undefined && (!normalized || normalized.userId !== userId)) {
+        await store.delete(key);
+        await transaction.done;
+        throw new Error("工具尝试队列记录已损坏。");
+      }
+      await transaction.done;
+      return normalized;
     },
 
     async listForUser(userId, limit = MAX_ANNOTATION_TOOL_ATTEMPT_BATCH_SIZE) {

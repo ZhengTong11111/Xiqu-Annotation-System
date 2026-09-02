@@ -2169,13 +2169,19 @@ Important backend caveats:
 - live history-capacity metrics reuse the existing operational metrics owner and a five-minute successful-result cache. They may
   count lightweight columns and read `pg_total_relation_size`, but must never run the history planner or touch payload values on a
   Prometheus scrape. Collection failure retains the last real Gauge values and marks only collection success as zero.
-- annotation tool attempts are auxiliary training/governance facts outside ProjectData, drafts, undo/history and annotation
-  revision. User/file/operation deletion uses SetNull and preserves the fact; no cleanup or copy workflow may cascade-delete or
-  duplicate these rows. Only the future command-commit transaction may set `committed` and bind an operation.
+- annotation tool attempts are auxiliary training/governance facts outside ProjectData, undo/history and annotation revision.
+  User/file/operation deletion uses SetNull and preserves the fact; no cleanup or copy workflow may cascade-delete or duplicate
+  these rows. The browser operation may carry only a strict optional `toolAttemptId`; that identity must survive draft recovery,
+  batch slicing and conflict rebase, and must enter the immutable operation request hash without changing the hash of historical
+  requests that omitted it.
+- only the command-commit transaction may set a tool attempt to `committed` and bind its real operation/revision. It must lock
+  the pending confirmed attempt, reuse the document-model canonical tool algorithm, validate the applied before/after semantics,
+  create the operation and end the attempt atomically, and verify the same binding on exact replay. The public attempt batch API
+  must never accept committed, operation or revision claims from the browser.
 - browser attempt delivery is account-owned by `PlatformWorkspace`, not an editor-file polling effect. File switches and logout
   must never send one account's rows with another account's client; reconnect and relogin resume only that account's strict queue.
-  Queue/storage/API failures are diagnostic side effects and must not alter document dirty state, autosave, conflict UI or leave
-  protection.
+  A command carrying an attempt first performs a bounded targeted delivery; queue/storage/API failure may downgrade that request
+  to an ordinary command but must not alter document dirty state, autosave, conflict UI or leave protection.
 - HC2a expands recovery snapshots without rewriting old rows: payload stays required, all new writes default to `inline`, and a
   database check prevents enabling recipe/archive modes before their readers and writers exist. Detail and restore share the
   resolver above; history lists remain metadata-only and public DTOs do not expose storage/hash/recipe internals.

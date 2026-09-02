@@ -72,6 +72,9 @@ export type PlatformEditorSession = {
   canRevokeAnyConfirmation: boolean;
   accessLabel: string;
   recordAnnotationToolAttempt: (attempt: AnnotationToolAttemptState) => void;
+  ensureAnnotationToolAttemptsDelivered: (
+    attemptIds: readonly string[],
+  ) => Promise<{ unavailableAttemptIds: string[] }>;
   initialFocus?: AnnotationComparisonFocus;
   pendingMergeDraft?: AnnotationMergeDraft;
   initialRecoveryState?: ProjectDocumentRecoveryState;
@@ -132,7 +135,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
 
   // 平台统一使用同源 /api；开发环境由 Vite 代理，部署环境由 Nginx 代理，浏览器不再依赖访问者本机端口。
   const client = useMemo(() => new PlatformClient({ accessToken }), [accessToken]);
-  const recordAnnotationToolAttempt = useAnnotationToolAttemptDelivery({
+  const annotationToolAttemptDelivery = useAnnotationToolAttemptDelivery({
     client,
     userId: user?.id ?? null,
   });
@@ -270,7 +273,8 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
         : input.file.resource.permission.capabilities.includes("write")
           ? "可编辑"
           : "只读",
-      recordAnnotationToolAttempt,
+      recordAnnotationToolAttempt: annotationToolAttemptDelivery.record,
+      ensureAnnotationToolAttemptsDelivered: annotationToolAttemptDelivery.ensureDelivered,
       initialFocus: input.initialFocus,
       pendingMergeDraft: input.pendingMergeDraft,
       initialRecoveryState: input.initialRecoveryState,
@@ -336,7 +340,7 @@ export function PlatformWorkspace({ renderEditor }: PlatformWorkspaceProps) {
     setEditorSession(next);
     setLocalSession(null);
     setView("editor");
-  }, [buildPendingDraftOpen, client, user]);
+  }, [annotationToolAttemptDelivery, buildPendingDraftOpen, client, user]);
 
   // 文件真正进入编辑器后再记录最近打开；恢复对话框取消时不能留下虚假的访问记录。
   const enterPlatformFileAndMarkOpened = useCallback(async (input: {

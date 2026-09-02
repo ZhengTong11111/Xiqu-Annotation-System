@@ -5,6 +5,7 @@ import {
   type AnnotationDomainCommand,
 } from "./annotationCommands.js";
 import type { AnnotationOperationRecord } from "./platform.js";
+import { isValidAnnotationToolAttemptId } from "./annotationToolAttempts.js";
 
 export const MAX_ATOMIC_ANNOTATION_COMMAND_OPERATIONS = 100;
 const CLIENT_OPERATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -13,6 +14,7 @@ const MAX_DATABASE_INTEGER = 2_147_483_647;
 export type AtomicAnnotationCommandOperation = {
   clientOperationId: string;
   localRevision?: number | null;
+  toolAttemptId?: string;
   action: AnnotationDomainCommand["type"];
   payload: AnnotationCommandEnvelope;
 };
@@ -36,6 +38,7 @@ export type AnnotationCommandBatchValidationIssue = {
     | "invalid_operation_count"
     | "invalid_operation"
     | "duplicate_client_operation_id"
+    | "duplicate_tool_attempt_id"
     | "invalid_mutation_lease_token";
   operationIndex?: number;
 };
@@ -78,6 +81,7 @@ export function parseAnnotationCommandBatchRequest(
   if (!Array.isArray(value.operations)) return { success: false, issues };
 
   const operationIds = new Set<string>();
+  const toolAttemptIds = new Set<string>();
   const operations: AtomicAnnotationCommandOperation[] = [];
   for (const [operationIndex, rawOperation] of value.operations.entries()) {
     const operation = parseAtomicOperation(rawOperation);
@@ -90,6 +94,11 @@ export function parseAnnotationCommandBatchRequest(
       continue;
     }
     operationIds.add(operation.clientOperationId);
+    if (operation.toolAttemptId && toolAttemptIds.has(operation.toolAttemptId)) {
+      issues.push({ code: "duplicate_tool_attempt_id", operationIndex });
+      continue;
+    }
+    if (operation.toolAttemptId) toolAttemptIds.add(operation.toolAttemptId);
     operations.push(operation);
   }
   if (issues.length > 0) return { success: false, issues };
@@ -110,6 +119,7 @@ function parseAtomicOperation(value: unknown): AtomicAnnotationCommandOperation 
   if (!isPlainObject(value) || !hasOnlyKeys(value, [
     "clientOperationId",
     "localRevision",
+    "toolAttemptId",
     "action",
     "payload",
   ])) return null;
@@ -119,6 +129,9 @@ function parseAtomicOperation(value: unknown): AtomicAnnotationCommandOperation 
     value.localRevision !== null &&
     !isNonNegativeSafeInteger(value.localRevision)
   ) return null;
+  if (value.toolAttemptId !== undefined && !isValidAnnotationToolAttemptId(value.toolAttemptId)) {
+    return null;
+  }
   if (typeof value.action !== "string") return null;
   const envelope = parseAnnotationCommandEnvelope(value.payload);
   if (!envelope || envelope.command.type !== value.action || !isReplayableAnnotationCommandEnvelope(envelope)) {
@@ -129,6 +142,7 @@ function parseAtomicOperation(value: unknown): AtomicAnnotationCommandOperation 
     localRevision: value.localRevision === null || value.localRevision === undefined
       ? null
       : value.localRevision as number,
+    ...(typeof value.toolAttemptId === "string" ? { toolAttemptId: value.toolAttemptId } : {}),
     action: envelope.command.type,
     payload: envelope,
   };

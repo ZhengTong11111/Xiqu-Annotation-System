@@ -3,6 +3,7 @@ import {
   invertAnnotationCommandEnvelope,
   parseAnnotationCommandEnvelope,
   PROJECT_SNAPSHOT_BOUNDARY_COMMAND,
+  isValidAnnotationToolAttemptId,
   type AnnotationCommandEnvelope,
   type AnnotationDomainCommand,
   type LegacyAnnotationOperationAction,
@@ -45,6 +46,8 @@ export type ProjectDocumentOperation = {
   baseRevision: number;
   createdAt: number;
   syncState: "pending" | "submitted" | "acknowledged";
+  // 工具尝试身份随本地 operation 跨草稿与冲突重放保存；它不属于 ProjectData 或 undo/redo 历史。
+  toolAttemptId?: string;
   commandEnvelope?: AnnotationCommandEnvelope;
   // 操作只保留服务端审计需要的紧凑摘要；完整项目由当前草稿快照单份保存，不能在每条操作中重复。
   summary: {
@@ -103,6 +106,7 @@ type TrackSnapUpdateOptions = {
 type CommitProjectOptions = {
   action?: HistoryAction;
   commandEnvelope?: AnnotationCommandEnvelope;
+  toolAttemptId?: string;
 };
 
 type MarkProjectSavedOptions = {
@@ -238,6 +242,7 @@ function isValidRebasedOperationChain(
       operation.localRevision === next.localRevision &&
       operation.baseRevision === next.baseRevision &&
       operation.createdAt === next.createdAt &&
+      operation.toolAttemptId === next.toolAttemptId &&
       operation.syncState === "pending" &&
       next.syncState === "pending" &&
       envelope.command.type === next.type &&
@@ -439,6 +444,9 @@ export function useProjectDocumentState({
   ) {
     // 未提供领域命令的调用点仍生成 legacy project.commit；渐进迁移期间不能猜测操作语义。
     const action = options.action ?? "edit";
+    if (options.toolAttemptId !== undefined && !isValidAnnotationToolAttemptId(options.toolAttemptId)) {
+      throw new Error("工具尝试编号不符合共享合同。");
+    }
     if (readOnlyRef.current) {
       transientProjectRef.current = null;
       return;
@@ -463,6 +471,7 @@ export function useProjectDocumentState({
       type: options.commandEnvelope?.command.type ?? "project.commit",
       action,
       baseRevision: localRevisionRef.current,
+      ...(options.toolAttemptId ? { toolAttemptId: options.toolAttemptId } : {}),
       ...(options.commandEnvelope ? { commandEnvelope: options.commandEnvelope } : {}),
       summary: {
         hasProjectChange: true,

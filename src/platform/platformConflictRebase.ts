@@ -135,6 +135,7 @@ export function planPlatformConflictRebase(
     operations.push({
       clientOperationId: operation.id,
       localRevision: operation.localRevision,
+      ...(operation.toolAttemptId ? { toolAttemptId: operation.toolAttemptId } : {}),
       action: resolved.envelope.command.type,
       payload: resolved.envelope,
     });

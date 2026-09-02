@@ -78,6 +78,11 @@ const ENTRY_POINTS = new Set<string>(ANNOTATION_TOOL_ATTEMPT_ENTRY_POINTS);
 const EXTERNAL_OUTCOMES = new Set<string>(ANNOTATION_TOOL_ATTEMPT_EXTERNAL_OUTCOMES);
 const REASON_CODES = new Set<string>(ANNOTATION_TOOL_ATTEMPT_REASON_CODES);
 
+/** attempt UUID 同时用于旁表批量上报与 command commit 绑定，两个入口必须共享同一严格格式。 */
+export function isValidAnnotationToolAttemptId(value: unknown): value is string {
+  return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
 /** 批量状态快照使用 exact-key parser，外部输入在类型层和运行时都不能自报 committed。 */
 export function parseAnnotationToolAttemptBatchRequest(
   value: unknown,
@@ -124,7 +129,7 @@ function parseAttempt(value: unknown): AnnotationToolAttemptState | null {
   const details = parseDetails(value.details);
   if (details === undefined) return null;
   if (
-    typeof value.id !== "string" || !UUID_PATTERN.test(value.id) ||
+    !isValidAnnotationToolAttemptId(value.id) ||
     !isBoundedId(value.annotationFileId) || !isBoundedId(value.sentenceId) ||
     typeof value.suppressPrompt !== "boolean" ||
     !isBoundedInteger(value.characterCount, 0, 10_000) ||

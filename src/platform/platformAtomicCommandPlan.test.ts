@@ -4,7 +4,10 @@ import { mockProject } from "../mockData";
 import type { ProjectDocumentOperation } from "../state/projectDocumentState";
 import { buildProjectAnnotationContentCommand } from "../utils/annotationContentCommand";
 import type { ProjectData } from "../types";
-import { planAtomicAnnotationCommandBatch } from "./platformAtomicCommandPlan";
+import {
+  omitUnavailableToolAttemptBindings,
+  planAtomicAnnotationCommandBatch,
+} from "./platformAtomicCommandPlan";
 
 function buildTextChain(count: number) {
   let project = structuredClone(mockProject);
@@ -48,6 +51,10 @@ function plan(currentProject: ProjectData, operations: ProjectDocumentOperation[
 
 test("完整审计有序命令链后生成首批与确认基线", () => {
   const chain = buildTextChain(2);
+  chain.operations[0] = {
+    ...chain.operations[0],
+    toolAttemptId: "44444444-4444-4444-8444-444444444444",
+  };
   const original = structuredClone(chain.operations);
   const result = plan(chain.currentProject, chain.operations, 1);
   assert.equal(result.status, "ready");
@@ -56,8 +63,20 @@ test("完整审计有序命令链后生成首批与确认基线", () => {
   assert.equal(result.plan.remainingCount, 1);
   assert.equal(result.plan.acknowledgedProject.subtitleLines[0].text, "命令-1");
   assert.equal(result.plan.request.baseRevision, 7);
+  assert.equal(
+    result.plan.request.operations[0]?.toolAttemptId,
+    "44444444-4444-4444-8444-444444444444",
+  );
   assert.equal(result.plan.acknowledgedTrackSnapEnabled["character-track"], false);
   assert.deepEqual(chain.operations, original);
+
+  const downgraded = omitUnavailableToolAttemptBindings(
+    result.plan,
+    new Set(["44444444-4444-4444-8444-444444444444"]),
+  );
+  assert.equal(downgraded.request.operations[0]?.toolAttemptId, undefined);
+  assert.equal(result.plan.request.operations[0]?.toolAttemptId, "44444444-4444-4444-8444-444444444444");
+  assert.deepEqual(downgraded.operationIds, result.plan.operationIds);
 });
 
 test("101 项按 100 项切批，但后续命令仍参与完整链审计", () => {

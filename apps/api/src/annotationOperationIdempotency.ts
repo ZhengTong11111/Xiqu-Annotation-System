@@ -9,6 +9,7 @@ export {
 export type AnnotationOperationFingerprintInput = {
   baseRevision: number;
   localRevision: number | null;
+  toolAttemptId?: string;
   action: string;
   payload: unknown;
 };
@@ -22,6 +23,8 @@ export function createAnnotationOperationRequestHash(
       action: input.action,
       baseRevision: input.baseRevision,
       localRevision: input.localRevision,
+      // 缺少 attempt 的旧请求必须保持历史 hash；只有新绑定事实存在时才扩展指纹。
+      ...(input.toolAttemptId ? { toolAttemptId: input.toolAttemptId } : {}),
       payload: input.payload,
     }))
     .digest("hex");

@@ -105,11 +105,78 @@ test("账号凭据失效后协调器停止自动忙重试并保留队列", async
   coordinator.dispose();
 });
 
+test("保存前定点送达只清除已被服务端确认的目标 attempt", async () => {
+  const target = createRow("10000000-0000-4000-8000-000000000001");
+  const unrelated = createRow("10000000-0000-4000-8000-000000000002");
+  const store = createMemoryStore([target, unrelated]);
+  const coordinator = createAnnotationToolAttemptDeliveryCoordinator({
+    userId: "user-a",
+    store,
+    eventTarget: null,
+    client: {
+      async submitAnnotationToolAttempts(request) {
+        return { attempts: request.attempts.map(toRecord) };
+      },
+    },
+  });
+  const result = await coordinator.ensureDelivered([target.attempt.id]);
+  assert.deepEqual(result, { unavailableAttemptIds: [] });
+  assert.equal(await store.getForUser("user-a", target.attempt.id), null);
+  assert.ok(await store.getForUser("user-a", unrelated.attempt.id));
+  coordinator.dispose();
+});
+
+test("定点送达失败会报告降级身份并保留离线记录", async () => {
+  const target = createRow("10000000-0000-4000-8000-000000000001");
+  const store = createMemoryStore([target]);
+  const coordinator = createAnnotationToolAttemptDeliveryCoordinator({
+    userId: "user-a",
+    store,
+    eventTarget: null,
+    client: {
+      async submitAnnotationToolAttempts() {
+        throw new PlatformApiError(503, "unavailable", "暂不可用。", null);
+      },
+    },
+  });
+  const result = await coordinator.ensureDelivered([target.attempt.id]);
+  assert.deepEqual(result, { unavailableAttemptIds: [target.attempt.id] });
+  assert.ok(await store.getForUser("user-a", target.attempt.id));
+  coordinator.dispose();
+});
+
+test("IndexedDB 写入失败不能被误判为 attempt 已经送达", async () => {
+  const target = createRow("10000000-0000-4000-8000-000000000001");
+  const store = createMemoryStore([]);
+  const coordinator = createAnnotationToolAttemptDeliveryCoordinator({
+    userId: "user-a",
+    store,
+    eventTarget: null,
+    client: {
+      async submitAnnotationToolAttempts(request) {
+        return { attempts: request.attempts.map(toRecord) };
+      },
+    },
+  });
+  coordinator.enqueue(target.attempt);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    await coordinator.ensureDelivered([target.attempt.id]),
+    { unavailableAttemptIds: [target.attempt.id] },
+  );
+  coordinator.dispose();
+});
+
 function createMemoryStore(initial: QueuedAnnotationToolAttempt[]): AnnotationToolAttemptQueueStore {
   const rows = new Map(initial.map((row) => [row.key, structuredClone(row)]));
   return {
     async upsert() {
       throw new Error("本测试不调用 upsert。");
+    },
+    async getForUser(userId, attemptId) {
+      return [...rows.values()].find(
+        (row) => row.userId === userId && row.attempt.id === attemptId,
+      ) ?? null;
     },
     async listForUser(userId, limit = 100) {
       return [...rows.values()].filter((row) => row.userId === userId).slice(0, limit);

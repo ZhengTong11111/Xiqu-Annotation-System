@@ -8,6 +8,7 @@ import {
   ANNOTATION_DOMAIN_COMMAND_TYPES,
   LEGACY_ANNOTATION_OPERATION_ACTIONS,
   isValidAnnotationClientOperationId,
+  isValidAnnotationToolAttemptId,
   parseAnnotationCommandEnvelope,
 } from "@xiqu/shared";
 import { areProjectValuesEqual } from "@xiqu/document-model";
@@ -204,6 +205,7 @@ function normalizeOperation(value: unknown): ProjectDocumentOperation | null {
     !HISTORY_ACTIONS.has(value.action as HistoryAction | "track-snap")) return null;
   if (!isNonNegativeInteger(value.localRevision) || !isNonNegativeInteger(value.baseRevision)) return null;
   if (!isTimestamp(value.createdAt) || (value.syncState !== "pending" && value.syncState !== "submitted")) return null;
+  if (value.toolAttemptId !== undefined && !isValidAnnotationToolAttemptId(value.toolAttemptId)) return null;
   if (!isRecord(value.summary) || typeof value.summary.hasProjectChange !== "boolean" ||
     typeof value.summary.hasTrackSnapChange !== "boolean") return null;
   const changedTrackIds = value.summary.changedTrackIds;
@@ -230,6 +232,7 @@ function normalizeOperation(value: unknown): ProjectDocumentOperation | null {
     baseRevision: value.baseRevision,
     createdAt: value.createdAt,
     syncState: value.syncState,
+    ...(typeof value.toolAttemptId === "string" ? { toolAttemptId: value.toolAttemptId } : {}),
     ...(commandEnvelope ? { commandEnvelope } : {}),
     summary: {
       hasProjectChange: value.summary.hasProjectChange,

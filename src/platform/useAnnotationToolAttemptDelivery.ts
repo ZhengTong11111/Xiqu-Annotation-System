@@ -20,7 +20,12 @@ export function useAnnotationToolAttemptDelivery(input: {
     return () => coordinator?.dispose();
   }, [coordinator]);
 
-  return useCallback((attempt: AnnotationToolAttemptState) => {
+  const record = useCallback((attempt: AnnotationToolAttemptState) => {
     coordinator?.enqueue(attempt);
   }, [coordinator]);
+  const ensureDelivered = useCallback((attemptIds: readonly string[]) =>
+    coordinator
+      ? coordinator.ensureDelivered(attemptIds)
+      : Promise.resolve({ unavailableAttemptIds: [...attemptIds] }), [coordinator]);
+  return useMemo(() => ({ record, ensureDelivered }), [ensureDelivered, record]);
 }

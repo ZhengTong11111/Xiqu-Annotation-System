@@ -92,11 +92,23 @@ annotationOperationId / committedRevision / details
 - 成功本地应用仍保持 pending，不由前端伪造 committed；专项 9 项、FA-D1a 5 项、命令 25/5 项、客户端原子提交 34 项、
   完整 API 301 项和完整构建通过。本阶段未部署生产。
 
-### FA-D1c：operation 原子绑定与统计（下一阶段）
+### FA-D1c1：operation 原子绑定（代码已完成）
 
-- pending operation 和 command batch 增加可选、严格 `toolAttemptId`，进入幂等 request hash。
-- 服务端验证目标句及逐字 after 确实连续平均覆盖句级范围，成功事务内终结尝试。
-- 管理员读取聚合和 CSV；不向普通用户暴露跨账号事实。
+- pending operation 和 command batch 已增加可选、严格、批内唯一的 `toolAttemptId`；它经过 IndexedDB 草稿、恢复、
+  rebase 与批次切片保持不变，并只在字段存在时进入幂等 request hash，因此旧无字段请求的历史 hash 不漂移。
+- 保存前只定点送达当前批相关 attempt；浏览器存储/API 异常会移除本次网络请求的绑定字段并继续普通 command 保存，
+  不污染 dirty/save/conflict/leave。成功送达、刷新恢复和 ambiguous retry 则保持同一 attempt/operation 身份。
+- command commit 按稳定 UUID 锁定 pending confirmed attempt，复用 document-model 平均分配算法证明目标句字符数、句长与
+  canonical after；句外 ProjectData 不得夹带变化，仅允许目标字符关联工尺的 timing 联动。operation 创建后同事务写
+  committed、finishedAt、operation id 和 revision；精确重放再次核对旁表绑定。
+- 本阶段无 schema 变化、零回填；伪造非平均结果、已结束或其他账号 attempt 会回滚 payload、revision、snapshot、
+  operation 与 audit。专项 12/6/6 项、草稿 41 项、rebase 13 项、客户端原子提交 34 项、完整 API 304 项和完整构建通过，
+  未部署生产。
+
+### FA-D1c2：管理员统计导出（下一阶段）
+
+- 在现有 90 天有界聚合之上增加管理员 CSV；导出重新执行管理员权限、时间窗和行数上限，不由浏览器拼接已加载结果。
+- 普通用户不能读取跨账号事实；CSV 不包含 ProjectData、命令 payload、媒体 URL、凭据或其他大字段。
 
 ### FA-D2：AlignmentRun 与预测对象
 

@@ -10466,3 +10466,43 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   本地模式隔离、测试、自审和规范文档。**待推进**：FA-D1c 给成功 command/pending operation 增加严格 `toolAttemptId`，在
   服务端事务验证平均分配 after 并原子写 operation、committed revision 和终态，再开放管理员 CSV。本轮没有部署生产、执行
   production migration、修改现有生产标注/历史，也没有与 HC2 migration 合并上线。
+
+## 2026-09-02：FA-D1c1 工具尝试与真实 Operation 原子绑定
+
+### 浏览器 Operation 身份与送达顺序
+
+- shared 原子批次为每条 operation 增加可选、规范 UUID v4 `toolAttemptId`，批内重复和非法值在路由前拒绝。字段随
+  `ProjectDocumentOperation` 进入 IndexedDB 草稿、恢复、pending-chain 审计、100 条切批和 409 rebase；rebase 只能改
+  command before/after，不能替换 attempt 身份。undo/redo 不复制该字段，一次工具调用只绑定最初的平均重置 operation。
+- request hash 仅在 `toolAttemptId` 实际存在时加入该字段；普通请求仍序列化为历史形状，避免上线后对旧 operation id 的
+  ambiguous retry 制造假幂等冲突。平均重置两个入口继续共用唯一 App action，只有成功构造 transaction 时把 active attempt
+  id 交给 `commitProject`。
+- 账号级 delivery coordinator 新增定点 ensure：保存冻结批次后，只等待相关 attempt 自己的 IndexedDB 写入并幂等送达，
+  不排空其他文件队列。写入失败、损坏记录或 API 不可用会把该 attempt 标为本次不可绑定，原子请求降级为完全相同的普通
+  command；ProjectData、operation id、保存与退出保护不受遥测故障阻断。损坏行会删除，不能因“查不到”误判已经送达。
+
+### 服务端语义证明与事务终态
+
+- 新增唯一 `annotationToolAttemptCommit.ts`。command commit 在文件写锁和 revision/lease 门禁后，按稳定 UUID 使用与批量
+  上报一致的 advisory key 锁定 attempt；要求 actor、活动文件、事件、confirmed/pending 状态和空 operation/revision 引用
+  全部匹配。其他账号、其他文件、不存在或已结束 attempt 使用同一有界冲突，不泄漏旁表身份。
+- 服务端复用 document-model 的 `resetSentenceCharactersToEvenTiming()`，不复制平均算法。它以该 operation 应用前项目
+  重新生成 canonical 结果，核对句子、字符数、毫秒句长和全部逐字 after；排除工尺数组后的整个 ProjectData 必须等于
+  canonical 项目。目标字符关联工尺只允许时间联动，实体身份、父级、正文、符号顺序与静态字段不许改变，其他工尺必须
+  完全不变。
+- 文件 payload/revision 更新并创建真实 `AnnotationOperation` 后，同一 Prisma 事务把 attempt 写为 `committed`，绑定
+  operation id 与 committed revision；finishedAt 至少不早于 confirmedAt。任何语义或并发更新失败都会回滚保护快照、
+  文件、全部 operation 和 audit。精确网络重放除 request hash 外再次核对旁表仍指向同一 operation/revision，不发布第二次
+  revision。
+
+### 自审、验证与状态
+
+- 自审补齐了定点送达与后台 drain/多标签页竞争、IndexedDB 写入失败、坏行、历史 hash 兼容、未来时钟、批内多个 attempt、
+  事务回滚和关联工尺边界；没有新增 dependency、schema/migration、第二套平均算法、旁路 committed API 或正文复制。
+  新增复杂路径均有中文功能注释，清理了不稳定 hook 返回对象和未区分坏行/已送达的含糊状态。
+- `test:annotation-tool-attempt-delivery` 12/12、FA attempt/shared/integration 6/6、command commit 6/6、平台草稿 41/41、
+  conflict rebase 13/13、平台原子提交 34/34、完整 API 304/304、完整 `npm run build` 与 `git diff --check` 通过。仅有
+  既有 Vite 主 chunk 大小提示和既有 pg 并发 query deprecation warning。
+- **已完成**：FA-D1c1 严格合同、草稿/rebase 连续性、定点送达、canonical 语义验证、operation/revision 原子绑定、精确重放、
+  全量回归、自审与规范文档。**待推进**：FA-D1c2 管理员有界 CSV；随后进入 FA-D2 AlignmentRun。此次没有部署生产、执行
+  migration、写入或清理生产数据，也没有把 Force Alignment 与 HC2 上线窗口合并。

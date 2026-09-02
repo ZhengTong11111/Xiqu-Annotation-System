@@ -115,7 +115,10 @@ import {
 } from "./platform/usePlatformMediaAnalysis";
 import { usePlatformAudioTrackSelection } from "./platform/usePlatformAudioTrackSelection";
 import { usePlatformAnalysisTrackSelection } from "./platform/usePlatformAnalysisTrackSelection";
-import { planAtomicAnnotationCommandBatch } from "./platform/platformAtomicCommandPlan";
+import {
+  omitUnavailableToolAttemptBindings,
+  planAtomicAnnotationCommandBatch,
+} from "./platform/platformAtomicCommandPlan";
 import { usePlatformAtomicCommandSubmit } from "./platform/usePlatformAtomicCommandSubmit";
 import { planPlatformConflictRebase } from "./platform/platformConflictRebase";
 import {
@@ -3134,8 +3137,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         window.alert("本句逐字及关联工尺无法形成完整的协作命令，项目未被修改。请拆分或检查异常标注后重试。");
         return;
       }
-      // 成功应用后保持 pending；只有 FA-D1c 的服务端 command 事务可以写 committed 与 revision。
-      commitProject(nextProject, baseProject, { commandEnvelope });
+      // attempt 身份只绑定这一次真实平均重置；服务端会复核 command 语义后与 operation/revision 原子终结。
+      commitProject(nextProject, baseProject, {
+        commandEnvelope,
+        ...(activeAttempt ? { toolAttemptId: activeAttempt.id } : {}),
+      });
     } catch (error) {
       finishAttempt("failed", "unexpected_error");
       console.error("本句逐字平均重置失败。", {
@@ -6931,7 +6937,15 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           }
         }
 
-        const result = await atomicCommandSubmit.submit(planResult.plan);
+        const planToolAttemptIds = planResult.plan.request.operations.flatMap(
+          (operation) => operation.toolAttemptId ? [operation.toolAttemptId] : [],
+        );
+        const delivery = await editorSession.ensureAnnotationToolAttemptsDelivered(planToolAttemptIds);
+        const submissionPlan = omitUnavailableToolAttemptBindings(
+          planResult.plan,
+          new Set(delivery.unavailableAttemptIds),
+        );
+        const result = await atomicCommandSubmit.submit(submissionPlan);
         if (result.status === "committed") {
           batchSavedProject = planResult.plan.acknowledgedProject;
           batchSavedTrackSnapEnabled = planResult.plan.acknowledgedTrackSnapEnabled;

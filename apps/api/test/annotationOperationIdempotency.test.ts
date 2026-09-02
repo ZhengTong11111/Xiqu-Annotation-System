@@ -29,7 +29,7 @@ test("operation 请求指纹使用稳定 JSON 且保留数组语义", () => {
   assert.throws(() => stableJsonStringify(cyclic), /循环引用/);
 });
 
-// revision、local revision、action 与 payload 都属于不可变请求，任一变化都产生不同 hash。
+// revision、local revision、action、payload 与可选工具身份都属于不可变请求，任一变化都产生不同 hash。
 test("operation 请求指纹绑定全部业务字段", () => {
   const base = {
     baseRevision: 3,
@@ -46,6 +46,10 @@ test("operation 请求指纹绑定全部业务字段", () => {
   assert.notEqual(createAnnotationOperationRequestHash({ ...base, baseRevision: 4 }), hash);
   assert.notEqual(createAnnotationOperationRequestHash({ ...base, localRevision: null }), hash);
   assert.notEqual(createAnnotationOperationRequestHash({ ...base, action: "project.undo" }), hash);
+  assert.notEqual(createAnnotationOperationRequestHash({
+    ...base,
+    toolAttemptId: "77777777-7777-4777-8777-777777777777",
+  }), hash);
   assert.notEqual(createAnnotationOperationRequestHash({
     ...base,
     payload: { type: "project.commit", ids: ["b", "a"] },

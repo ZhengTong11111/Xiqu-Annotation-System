@@ -51,6 +51,29 @@ export type AtomicCommandPlanResult =
       issues?: unknown;
     };
 
+/**
+ * 遥测旁路不可用时只移除对应 operation 的 attempt 绑定，命令、operation id 与确认基线保持原样。
+ * 返回新 DTO 而不修改 frozen plan，保证 atomic submit 的 ambiguous retry 始终复用同一请求。
+ */
+export function omitUnavailableToolAttemptBindings(
+  plan: AtomicCommandPlan,
+  unavailableAttemptIds: ReadonlySet<string>,
+): AtomicCommandPlan {
+  if (unavailableAttemptIds.size === 0) return plan;
+  let changed = false;
+  const operations = plan.request.operations.map((operation) => {
+    if (!operation.toolAttemptId || !unavailableAttemptIds.has(operation.toolAttemptId)) {
+      return operation;
+    }
+    changed = true;
+    const { toolAttemptId: _toolAttemptId, ...ordinaryOperation } = operation;
+    return ordinaryOperation;
+  });
+  return changed
+    ? { ...plan, request: { ...plan.request, operations } }
+    : plan;
+}
+
 type PlanInput = {
   savedProject: ProjectData;
   currentProject: ProjectData;
@@ -97,6 +120,7 @@ export function planAtomicAnnotationCommandBatch(input: PlanInput): AtomicComman
     operations: batchOperations.map((operation) => ({
       clientOperationId: operation.id,
       localRevision: operation.localRevision,
+      ...(operation.toolAttemptId ? { toolAttemptId: operation.toolAttemptId } : {}),
       action: operation.commandEnvelope!.command.type,
       payload: operation.commandEnvelope!,
     })),
