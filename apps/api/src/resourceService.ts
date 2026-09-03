@@ -140,7 +140,11 @@ import {
   resolveAnnotationRecoverySnapshotPayloadAsync,
   type AnnotationRecoverySnapshotPayloadRow,
 } from "./annotationRecoverySnapshotPayloadService.js";
-import { writeFutureAnnotationRecoverySnapshot } from "./annotationHistoryFutureSnapshotWriter.js";
+import {
+  notifyAnnotationHistoryFutureSnapshotObserver,
+  writeFutureAnnotationRecoverySnapshot,
+  type AnnotationHistoryFutureSnapshotWriteResult,
+} from "./annotationHistoryFutureSnapshotWriter.js";
 import type { AnnotationHistoryFutureSnapshotRollout } from "./annotationHistoryFutureSnapshotPolicy.js";
 import {
   AnnotationRecoverySnapshotCursorError,
@@ -278,6 +282,9 @@ export class ResourceService {
       publishReviewChanged: () => undefined,
     },
     private readonly annotationHistoryFutureSnapshotRollout: AnnotationHistoryFutureSnapshotRollout = "disabled",
+    private readonly annotationHistoryFutureSnapshotObserver: (
+      result: AnnotationHistoryFutureSnapshotWriteResult,
+    ) => void = () => undefined,
   ) {}
 
   async listResources(
@@ -1008,7 +1015,7 @@ export class ResourceService {
   ): Promise<AnnotationFile<TPayload>> {
     // 锁外预检用于快速拒绝常见无权限请求；事务内仍会在树结构稳定后再次复核。
     await this.access.assertCapability(user, resourceId, "write");
-    const committedRevision = await this.prisma.$transaction(async (transaction) => {
+    const commit = await this.prisma.$transaction(async (transaction) => {
       // 普通保存与快照恢复共用同一锁顺序，避免保存期间资源被移动或藏入回收站。
       const current = await lockActiveAnnotationFileForWrite(transaction, this.access, user, resourceId);
       if (current.revision !== input.baseRevision) {
@@ -1057,7 +1064,7 @@ export class ResourceService {
       }
 
       // 保存前把旧内容写入恢复快照；它只通过标注文件 Inspector 受控查看，不是业务“版本”。
-      await writeFutureAnnotationRecoverySnapshot(transaction, {
+      const snapshotWrite = await writeFutureAnnotationRecoverySnapshot(transaction, {
         annotationFileId: resourceId,
         current,
         createdBy: user.id,
@@ -1132,13 +1139,17 @@ export class ResourceService {
           },
         },
       });
-      return targetRevision;
+      return { targetRevision, snapshotWrite };
     });
     // 事务返回本次确切 revision；不能在锁外重读后把另一笔更晚保存误报成本次提交。
+    notifyAnnotationHistoryFutureSnapshotObserver(
+      this.annotationHistoryFutureSnapshotObserver,
+      commit.snapshotWrite,
+    );
     this.revisionPublisher.publishRevisionAdvanced({
       annotationFileId: resourceId,
-      revision: committedRevision,
-      operationCursor: encodeAnnotationSnapshotOperationCursor(resourceId, committedRevision),
+      revision: commit.targetRevision,
+      operationCursor: encodeAnnotationSnapshotOperationCursor(resourceId, commit.targetRevision),
     });
     return this.getAnnotationFile<TPayload>(user, resourceId);
   }
@@ -1409,7 +1420,7 @@ export class ResourceService {
   ): Promise<AnnotationFile<TPayload>> {
     // 锁外预检减少无权限请求占用事务；真正安全边界仍在锁内 helper 中。
     await this.access.assertCapability(user, resourceId, "write");
-    const committedRevision = await this.prisma.$transaction(async (transaction) => {
+    const commit = await this.prisma.$transaction(async (transaction) => {
       const current = await lockActiveAnnotationFileForWrite(transaction, this.access, user, resourceId);
       if (current.revision !== input.baseRevision) {
         throw conflict("标注文件已被其他人修改，请刷新后再恢复。", {
@@ -1441,7 +1452,7 @@ export class ResourceService {
       );
 
       // 覆盖前保存当前内容，使用户能够再次恢复到本次操作之前的状态；特殊原因固定走完整 inline。
-      await writeFutureAnnotationRecoverySnapshot(transaction, {
+      const snapshotWrite = await writeFutureAnnotationRecoverySnapshot(transaction, {
         annotationFileId: resourceId,
         current,
         createdBy: user.id,
@@ -1493,13 +1504,17 @@ export class ResourceService {
           },
         },
       });
-      return nextRevision;
+      return { nextRevision, snapshotWrite };
     });
     // 快照恢复同样形成新的权威 revision，clean 客户端通过既有 HTTP catch-up 获取真实内容。
+    notifyAnnotationHistoryFutureSnapshotObserver(
+      this.annotationHistoryFutureSnapshotObserver,
+      commit.snapshotWrite,
+    );
     this.revisionPublisher.publishRevisionAdvanced({
       annotationFileId: resourceId,
-      revision: committedRevision,
-      operationCursor: encodeAnnotationSnapshotOperationCursor(resourceId, committedRevision),
+      revision: commit.nextRevision,
+      operationCursor: encodeAnnotationSnapshotOperationCursor(resourceId, commit.nextRevision),
     });
     return this.getAnnotationFile<TPayload>(user, resourceId);
   }

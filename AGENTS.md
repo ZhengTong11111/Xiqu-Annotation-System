@@ -1460,6 +1460,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - 检查点阈值统一复用 `DEFAULT_ANNOTATION_HISTORY_COMPACTION_POLICY`；rollout 由
     `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT` 严格解析，默认 `disabled`。生产启用前必须先完成 40/41 migration、备份、
     隔离恢复、低干扰发布和混合历史 smoke；不得在当前 39 条生产库设置该开关。
+  - writer 返回的低基数结果只能在外层数据库事务成功提交后交给 `ApiObservability`；回滚、异常和幂等重放不能被计为新快照写入，
+    观测回调异常也不得改变已提交保存的成功结果。
+    观测只允许使用 rollout、`inline | reconstructible | existing` 和固定回退原因/耗时，不得记录文件、账号、正文、operation、媒体或
+    凭据身份。
 - `apps/api/src/annotationHistoryDependencyProtection.ts`
   - the only recovery-history lifecycle dependency boundary for future reconstructible recipes. It reads bounded lightweight
     recipe/checkpoint metadata only, never snapshot payloads, operation bodies, review text, media identities or credentials

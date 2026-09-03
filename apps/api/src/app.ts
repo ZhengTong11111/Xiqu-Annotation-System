@@ -151,6 +151,7 @@ export async function buildApiApp(
     options.aliyunVodWebPlayerLicense ?? null,
     reviewEvents,
     options.annotationHistoryFutureSnapshotRollout ?? "disabled",
+    (result) => observability.recordAnnotationHistoryFutureSnapshot(result),
   );
   const annotationRecoveryBackups = new AnnotationRecoveryBackupService(
     options.prisma,
@@ -185,6 +186,7 @@ export async function buildApiApp(
     access,
     collaborationEvents,
     options.annotationHistoryFutureSnapshotRollout ?? "disabled",
+    (result) => observability.recordAnnotationHistoryFutureSnapshot(result),
   );
   const annotationToolAttempts = new AnnotationToolAttemptService(options.prisma, access);
   const annotationCorrectionDataset = new AnnotationCorrectionDatasetService(options.prisma, access);

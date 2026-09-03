@@ -53,6 +53,27 @@ test("上传和清理指标只接受稳定类别与计数", async () => {
   assert.match(metrics, /kind="binary"\} 2/);
 });
 
+test("未来快照指标只记录 rollout、结果和回退原因", async () => {
+  const observability = new ApiObservability();
+  observability.recordAnnotationHistoryFutureSnapshot({
+    rollout: "disabled",
+    result: "inline",
+    fallbackReason: "rollout_disabled",
+    durationMs: 4,
+  });
+  observability.recordAnnotationHistoryFutureSnapshot({
+    rollout: "future-reconstructible-v1",
+    result: "reconstructible",
+    fallbackReason: null,
+    durationMs: 12,
+  });
+  const metrics = await observability.registry.metrics();
+  assert.match(metrics, /xiqu_annotation_history_future_snapshot_writes_total\{[^}]*rollout="disabled"[^}]*fallback_reason="rollout_disabled"[^}]*\} 1/);
+  assert.match(metrics, /xiqu_annotation_history_future_snapshot_writes_total\{[^}]*rollout="future-reconstructible-v1"[^}]*result="reconstructible"[^}]*fallback_reason="none"[^}]*\} 1/);
+  assert.match(metrics, /xiqu_annotation_history_future_snapshot_duration_seconds_count\{[^}]*result="reconstructible"[^}]*\} 1/);
+  assert.doesNotMatch(metrics, /annotationFileId|accountName|operationBody|mediaUrl/);
+});
+
 test("跨实例 revision bus 指标只使用固定低基数类别", async () => {
   const observability = new ApiObservability();
   observability.setAnnotationRevisionBusConnected(true);

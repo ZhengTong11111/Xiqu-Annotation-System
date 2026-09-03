@@ -3,7 +3,10 @@ import test from "node:test";
 import type { Prisma } from "@prisma/client";
 import { buildProjectAnnotationContentCommand, type ProjectData } from "@xiqu/document-model";
 import { resolveAnnotationRecoverySnapshotPayloadAsync } from "../src/annotationRecoverySnapshotPayloadService.js";
-import { writeFutureAnnotationRecoverySnapshot } from "../src/annotationHistoryFutureSnapshotWriter.js";
+import {
+  notifyAnnotationHistoryFutureSnapshotObserver,
+  writeFutureAnnotationRecoverySnapshot,
+} from "../src/annotationHistoryFutureSnapshotWriter.js";
 import {
   createTestPrisma,
   truncateTestDatabase,
@@ -191,6 +194,171 @@ test("轻量证明失败时保留完整 inline 快照", async () => {
   }
 });
 
+test("关闭 rollout 和特殊保护快照始终保留 inline", async () => {
+  const connections = createTestPrisma();
+  const { prisma } = connections;
+  await truncateTestDatabase(prisma);
+  try {
+    const user = await prisma.user.create({
+      data: {
+        accountName: "future-writer-disabled",
+        displayName: "未来快照关闭态测试",
+        passwordHash: "not-used",
+      },
+    });
+    const resource = await createAnnotationResource(prisma, user.id, createProject("关闭态"));
+    const current = await prisma.annotationFile.findUniqueOrThrow({
+      where: { resourceId: resource.id },
+    });
+
+    const disabled = await prisma.$transaction((transaction) =>
+      writeFutureAnnotationRecoverySnapshot(transaction, {
+        annotationFileId: resource.id,
+        current,
+        createdBy: user.id,
+        reason: "save",
+        rollout: "disabled",
+      }));
+    assert.equal(disabled.result, "inline");
+    assert.equal(disabled.fallbackReason, "rollout_disabled");
+
+    const protectedWrite = await prisma.$transaction((transaction) =>
+      writeFutureAnnotationRecoverySnapshot(transaction, {
+        annotationFileId: resource.id,
+        current: { ...current, revision: 2 },
+        createdBy: user.id,
+        reason: "before_snapshot_restore",
+        rollout: "future-reconstructible-v1",
+      }));
+    assert.equal(protectedWrite.result, "inline");
+    assert.equal(protectedWrite.fallbackReason, "non_save_reason");
+    const snapshots = await prisma.annotationRecoverySnapshot.findMany({
+      where: { annotationFileId: resource.id },
+      orderBy: { revision: "asc" },
+    });
+    assert.deepEqual(snapshots.map((snapshot) => snapshot.storageMode), ["inline", "inline"]);
+    assert.ok(snapshots.every((snapshot) => snapshot.payload !== null));
+  } finally {
+    await closeConnections(connections);
+  }
+});
+
+test("同 revision 重试不重算，事务回滚不留下快照", async () => {
+  const connections = createTestPrisma();
+  const { prisma } = connections;
+  await truncateTestDatabase(prisma);
+  try {
+    const user = await prisma.user.create({
+      data: {
+        accountName: "future-writer-idempotent",
+        displayName: "未来快照幂等测试",
+        passwordHash: "not-used",
+      },
+    });
+    const before = createProject("幂等前");
+    const after = createProject("幂等后");
+    const resource = await createAnnotationResource(prisma, user.id, after, 2);
+    await prisma.annotationRecoverySnapshot.create({
+      data: {
+        annotationFileId: resource.id,
+        revision: 1,
+        payload: toInputJson(before),
+        createdBy: user.id,
+        reason: "save",
+        createdAt: new Date(Date.now() - 1_000),
+      },
+    });
+    const command = buildProjectAnnotationContentCommand(before, after, [{
+      entityType: "sentence",
+      entityId: "line-1",
+      field: "text",
+    }]);
+    assert.ok(command);
+    await prisma.annotationOperation.create({
+      data: {
+        annotationFileId: resource.id,
+        actorUserId: user.id,
+        clientOperationId: "future-writer-idempotent-operation",
+        requestHash: "3".repeat(64),
+        sequence: 1,
+        baseRevision: 1,
+        action: command.command.type,
+        payload: toInputJson(command),
+        status: "accepted",
+        committedRevision: 2,
+        committedAt: new Date("2026-09-01T00:00:01.000Z"),
+      },
+    });
+    const current = await prisma.annotationFile.findUniqueOrThrow({
+      where: { resourceId: resource.id },
+    });
+
+    const first = await prisma.$transaction((transaction) =>
+      writeFutureAnnotationRecoverySnapshot(transaction, {
+        annotationFileId: resource.id,
+        current,
+        createdBy: user.id,
+        reason: "save",
+        rollout: "future-reconstructible-v1",
+      }));
+    const firstSnapshot = await prisma.annotationRecoverySnapshot.findUniqueOrThrow({
+      where: { annotationFileId_revision: { annotationFileId: resource.id, revision: 2 } },
+    });
+    const second = await prisma.$transaction((transaction) =>
+      writeFutureAnnotationRecoverySnapshot(transaction, {
+        annotationFileId: resource.id,
+        current,
+        createdBy: user.id,
+        reason: "save",
+        rollout: "future-reconstructible-v1",
+      }));
+    const secondSnapshot = await prisma.annotationRecoverySnapshot.findUniqueOrThrow({
+      where: { annotationFileId_revision: { annotationFileId: resource.id, revision: 2 } },
+    });
+    assert.equal(first.result, "reconstructible");
+    assert.equal(second.result, "existing");
+    assert.equal(secondSnapshot.id, firstSnapshot.id);
+    assert.equal(secondSnapshot.createdAt.toISOString(), firstSnapshot.createdAt.toISOString());
+
+    const rollbackResource = await createAnnotationResource(prisma, user.id, createProject("回滚"));
+    const rollbackCurrent = await prisma.annotationFile.findUniqueOrThrow({
+      where: { resourceId: rollbackResource.id },
+    });
+    await assert.rejects(
+      prisma.$transaction(async (transaction) => {
+        await writeFutureAnnotationRecoverySnapshot(transaction, {
+          annotationFileId: rollbackResource.id,
+          current: rollbackCurrent,
+          createdBy: user.id,
+          reason: "save",
+          rollout: "future-reconstructible-v1",
+        });
+        throw new Error("测试事务回滚");
+      }),
+      /测试事务回滚/u,
+    );
+    assert.equal(
+      await prisma.annotationRecoverySnapshot.count({ where: { annotationFileId: rollbackResource.id } }),
+      0,
+    );
+  } finally {
+    await closeConnections(connections);
+  }
+});
+
+test("观测回调异常不会向保存调用方传播", () => {
+  assert.doesNotThrow(() => {
+    notifyAnnotationHistoryFutureSnapshotObserver(() => {
+      throw new Error("测试指标故障");
+    }, {
+      rollout: "disabled",
+      result: "inline",
+      fallbackReason: "rollout_disabled",
+      durationMs: 1,
+    });
+  });
+});
+
 function createProject(text: string): ProjectData {
   return {
     video: { url: "", name: null, source: "url" },
@@ -221,6 +389,29 @@ function createProject(text: string): ProjectData {
 
 function toInputJson(value: unknown) {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+async function createAnnotationResource(
+  prisma: ReturnType<typeof createTestPrisma>["prisma"],
+  ownerUserId: string,
+  payload: ProjectData,
+  revision = 1,
+) {
+  return prisma.resourceEntry.create({
+    data: {
+      type: "annotation_file",
+      name: `future-writer-${revision}-${Date.now()}.json`,
+      ownerUserId,
+      annotationFile: {
+        create: {
+          payload: toInputJson(payload),
+          revision,
+          lastOperationSequence: revision > 1 ? 1 : 0,
+          lastEditedBy: ownerUserId,
+        },
+      },
+    },
+  });
 }
 
 async function closeConnections(connections: ReturnType<typeof createTestPrisma>) {

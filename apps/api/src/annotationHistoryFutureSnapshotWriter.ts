@@ -13,6 +13,7 @@ import {
   decideFutureSnapshotStorage,
   MAX_ANNOTATION_HISTORY_FUTURE_REPLAY_OPERATIONS,
   type AnnotationHistoryFutureSnapshotRollout,
+  type AnnotationHistoryFutureInlineReason,
   type AnnotationHistoryFutureSnapshotProof,
 } from "./annotationHistoryFutureSnapshotPolicy.js";
 
@@ -22,6 +23,28 @@ type CurrentAnnotationFile = {
   revision: number;
   payload: Prisma.JsonValue;
 };
+
+export type AnnotationHistoryFutureSnapshotWriteResult = {
+  rollout: AnnotationHistoryFutureSnapshotRollout;
+  result: "inline" | "reconstructible" | "existing";
+  fallbackReason: AnnotationHistoryFutureInlineReason | null;
+  durationMs: number;
+};
+
+/**
+ * 观测属于提交后的旁路动作，不能因为指标注册/写入异常把已经成功的保存伪装成失败。
+ * 业务事务本身的异常仍由调用方正常抛出，这个 helper 只隔离观测回调。
+ */
+export function notifyAnnotationHistoryFutureSnapshotObserver(
+  observer: (result: AnnotationHistoryFutureSnapshotWriteResult) => void,
+  result: AnnotationHistoryFutureSnapshotWriteResult,
+) {
+  try {
+    observer(result);
+  } catch {
+    // 指标故障不应触发客户端重试，也不应改变已经提交的数据库事实。
+  }
+}
 
 /**
  * 保存当前 revision 的恢复快照，并在同一事务中尝试转换为未来轻量形态。
@@ -39,7 +62,18 @@ export async function writeFutureAnnotationRecoverySnapshot(
     reason: string;
     rollout: AnnotationHistoryFutureSnapshotRollout;
   },
-): Promise<void> {
+): Promise<AnnotationHistoryFutureSnapshotWriteResult> {
+  const startedAt = Date.now();
+  const finish = (
+    result: AnnotationHistoryFutureSnapshotWriteResult["result"],
+    fallbackReason: AnnotationHistoryFutureInlineReason | null,
+  ): AnnotationHistoryFutureSnapshotWriteResult => ({
+    rollout: input.rollout,
+    result,
+    fallbackReason,
+    durationMs: Math.max(0, Date.now() - startedAt),
+  });
+
   // 默认线上路径保持旧的单次幂等 upsert；未来策略关闭时不额外查询 checkpoint 或 operation。
   if (input.rollout === "disabled" || input.reason !== "save") {
     await transaction.annotationRecoverySnapshot.upsert({
@@ -58,7 +92,7 @@ export async function writeFutureAnnotationRecoverySnapshot(
         reason: input.reason,
       },
     });
-    return;
+    return finish("inline", input.rollout === "disabled" ? "rollout_disabled" : "non_save_reason");
   }
 
   const existing = await transaction.annotationRecoverySnapshot.findUnique({
@@ -71,7 +105,7 @@ export async function writeFutureAnnotationRecoverySnapshot(
     select: { id: true },
   });
   // 同一 revision 可能由重试再次抵达；已有快照是权威事实，不能重新计算或覆盖。
-  if (existing) return;
+  if (existing) return finish("existing", null);
 
   const createdAt = new Date();
   const target = await transaction.annotationRecoverySnapshot.create({
@@ -152,7 +186,9 @@ export async function writeFutureAnnotationRecoverySnapshot(
     checkpointRevision: checkpoint?.revision ?? 0,
     proof,
   });
-  if (decision.storageMode !== "reconstructible") return;
+  if (decision.storageMode !== "reconstructible") {
+    return finish("inline", decision.fallbackReason);
+  }
 
   // CHECK 与 resolver 都要求整组 recipe 同时存在；正文置空和 recipe 更新在当前事务中一次完成。
   await transaction.annotationRecoverySnapshot.update({
@@ -172,6 +208,7 @@ export async function writeFutureAnnotationRecoverySnapshot(
       compactedAt: createdAt,
     },
   });
+  return finish("reconstructible", null);
 }
 
 /**

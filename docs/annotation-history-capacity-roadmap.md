@@ -450,21 +450,37 @@ HC3c3 的本地候选仍不等于生产上线：生产当前仍是 39 条 migrat
 - [x] 复查恢复详情、恢复、比较依赖的详情接口、备份/隔离恢复与容量指标没有复制 parser/replay/hash，也没有引入正文、operation body、
   媒体 URL、凭据或对象 key 到 recipe/日志。
 
-#### HC3c4：本地 rollout 验收与生产发布门禁（下一轮）
+#### HC3c4：本地 rollout 验收与生产发布门禁（已完成，本地未发布）
 
 本阶段先完成本地可重复发布证明，不连接生产、不应用 production migration、不打开线上 rollout。目标是把“代码已接线”和“可以安全启用”
 分成两个可审计结论。
 
-- [ ] 在隔离库以默认 `disabled` 和显式 `future-reconstructible-v1` 各跑一轮普通保存、原子命令保存、恢复前保护快照、结构租约和失败回滚；
-  逐项核对新旧快照、AnnotationFile、operation、确认、评论、反馈、审核链接和当前 revision 不丢失。
-- [ ] 增加混合历史读取验收：旧 inline、inline shadow recipe、新 reconstructible、坏 recipe、缺 checkpoint、超预算和 archived 均走固定
-  成功/失败码；详情、恢复、比较、备份恢复和协作 catch-up 不能返回近似 ProjectData。
-- [ ] 固化 rollout 配置、数据库 migration、release inspector、systemd 环境和回滚顺序的只读检查；生产配置默认 `disabled`，不得让 worker、
-  CLI 或测试环境意外打开写入策略。
-- [ ] 增加低基数容量/回退观测：只记录 storage mode、固定结果码、计数和耗时，不记录 payload、operation body、账号、媒体 URL、凭据或
-  对象 key；验证指标归零和保存可靠性不受观测故障影响。
-- [ ] 形成生产 39 -> 41 的独立发布清单：确认数据盘安全余量、完整备份与隔离恢复、短维护窗口、不可变 release、回滚候选和人工 smoke；
-  没有用户明确授权前只提交本地代码和文档，不迁移、不启用、不部署。
+- [x] 在隔离库验证默认 `disabled`、显式 `future-reconstructible-v1`、特殊保护 reason、有效命令链、证明失败、同 revision 幂等和事务回滚；
+  有效链可由异步 resolver 无损恢复，失败/保护路径保留完整 inline，事务回滚不留下快照。
+- [x] 既有容量、resolver、详情/恢复/比较和完整 API 回归继续通过；旧 inline 与新 reconstructible 共存的读取合同仍由同一 resolver 承担，
+  不返回近似 ProjectData，也没有改动确认、评论、反馈、审核链接或媒体事实。
+- [x] rollout 配置只接受 `disabled` 或 `future-reconstructible-v1`，默认关闭；保存 writer 只在普通/原子保存和恢复前保护入口装配，worker、
+  CLI 和旧 release 不会自行打开未来写入策略。生产仍为 39 条 migration，不能把本地 41 条 schema 带入线上。
+- [x] 增加低基数 rollout/回退观测：事务成功后才记录 storage 结果、固定回退原因和耗时；回滚与原子命令幂等重放不计为新写入，观测不携带
+  payload、operation body、账号、媒体 URL、凭据或对象 key。
+- [x] 完成专项 5/5、观测 11/11、完整 API 350/350、完整构建、Prisma schema guard、串行容量专项 35/35 和 `git diff --check`；未连接生产、
+  未应用 40/41 migration、未启用 rollout、未进入维护、未部署。
+
+#### HC3c5：生产发布前只读门禁与人工 smoke（下一轮）
+
+本阶段仍不自动发布。只有在用户明确授权新的 release 后，才按独立任务执行生产 39 -> 41 的备份、隔离恢复、短维护迁移和回滚验证；
+没有授权时只完成不写数据库的候选检查和清单审查。
+
+- [ ] 在本地候选上运行 release inspector，逐项确认 migration 40/41、环境变量默认值、systemd 模板、worker/CLI 不会意外启用 rollout，
+  并核对回滚到 39 条 migration 时旧 inline 读取合同仍明确可用。
+- [ ] 设计并演练一次脱敏的备份/隔离恢复证据：数据库与对象目录位于数据盘，manifest/checksum、业务事实摘要和快照形态统计完整，
+  不读取或记录正文、operation body、媒体 URL、凭据或对象 key；演练目录不得与生产源重叠。
+- [ ] 在生产只读状态稳定、系统盘和数据盘均高于安全余量时，形成短维护窗口的逐步清单；没有足够空间、备份校验或恢复证据就停止，
+  不应用 migration、不改变快照 payload。
+- [ ] 若获授权发布，先保持 rollout=`disabled` 完成 migration 与旧 inline smoke，再由人工决定是否另一个 release 才启用
+  `future-reconstructible-v1`；启用前必须核对新旧读取、普通保存、原子保存、恢复保护和观测指标。
+- [ ] 发布后观察固定低基数指标、保存/协作/恢复/审核路径和磁盘余量；任何保存异常、恢复不一致、空间越线或指标异常都回滚代码开关/候选，
+  不删除或改写既有历史。
 
 **HC3c 完成条件**：旧历史零变更；未来新记录在证明成功时才使用轻量形态；所有失败路径自动保留 inline；详情/比较/恢复和
 备份恢复均可读取两种形态；测试、构建、低干扰线上 smoke 和回滚证据齐全。空间不足时系统必须继续可靠保存或明确阻止治理，

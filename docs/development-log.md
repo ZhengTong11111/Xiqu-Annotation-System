@@ -11711,6 +11711,38 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - HC3c2 完成前不接入线上保存，不修改生产 schema，不执行历史 compactor 或 payload 清理；若隔离验证不能证明旧历史读取和事务回滚，
   必须停在本地设计阶段。
 
+## 2026-09-02：HC3c4 本地 rollout 验收与生产发布门禁（本地完成，生产未发布）
+
+### 本轮完成
+
+- 依据 HC3c3 的本地候选接线，先复核生产边界：生产仍为 39 条 migration、全部恢复快照为完整 inline，未连接生产、未应用 40/41
+  migration、未开启 rollout、未进入维护、未部署；本轮没有修改任何标注、operation、恢复快照、确认、评论、反馈、审核链接或媒体事实。
+- 在隔离库补充未来快照 writer 验收：默认 `disabled` 的普通保存保持 inline；显式 `future-reconstructible-v1` 的有效命令链可写入完整 recipe、
+  `payload=null` 并由异步 resolver 无损还原；特殊保护 reason、证明失败和首个快照保持完整 inline；同 revision 重试不重算、不覆盖；事务抛错后
+  快照写入随事务回滚，数据库中不留孤立行；观测回调异常也不会传播为保存失败。
+- 保存 writer 的结果现在只在外层 `$transaction` 成功返回后交给 `ApiObservability`。新增固定低基数的 rollout、结果、回退原因计数和耗时
+  Histogram；回滚和原子命令幂等重放不被计为新快照写入，观测不记录文件/账号身份、ProjectData、operation body、媒体 URL、凭据或对象 key。
+- 对普通 `ResourceService.saveAnnotationFile`、恢复前保护快照和原子 `AnnotationCommandCommitService` 三条写入路径做了事务返回值自审；
+  revision 发布、operation 提交、租约释放、工具 attempt 绑定、审计和恢复读取合同均保持原有边界。
+
+### 验证与发布边界
+
+- 专项 `test:annotation-history-future-writer`：5/5；观测专项：11/11；串行容量专项：35/35；完整 `test:api`：350/350；`npm run build`、
+  Prisma schema guard、类型构建和 `git diff --check` 均通过。之前并行启动两个会清空同一 `api_test` schema 的专项曾产生一次夹具缺失，
+  串行重跑已 35/35 通过，未影响业务代码或生产数据。
+- rollout 仍默认关闭，worker/CLI 没有独立开启路径；HC3c4 只完成本地候选的可重复证明，不代表生产轻量快照已上线。生产容量基线仍按此前
+  只读结果记录：数据库约 6,422MB，恢复快照约 6,061MB，系统盘约剩 4.1GB，数据盘约剩 34GB。
+- 本轮没有运行 shadow apply、verify 写入变体、compactor、payload 清理、历史删除/归档、`VACUUM FULL` 或 `pg_repack`，也没有执行生产
+  migration、备份切换、代码部署或维护窗口。
+
+### 待推进
+
+- HC3c5：仅做生产发布前的只读 release inspector、migration/env/systemd/worker/CLI 门禁、脱敏备份与隔离恢复证据和回滚顺序审查；没有用户
+  明确授权仍不连接生产写入。若未来获授权，必须先以 rollout=`disabled` 完成 39 -> 41 migration 与旧 inline smoke，再另行决定是否启用
+  `future-reconstructible-v1`，并保留短维护窗口和人工 smoke。
+- 未来发布观察需要核对新旧快照读取、普通/原子保存、恢复保护、协作 catch-up、审核/评论路径、固定指标和磁盘安全余量；旧历史继续冻结，
+  不压缩、不置空、不归档、不删除。
+
 ## 2026-09-02：HC3c3 保存事务接线与失败补偿（本地完成，rollout 默认关闭）
 
 ### 本轮完成

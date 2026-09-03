@@ -34,7 +34,9 @@ import type { ApiUser } from "./domain.js";
 import { conflict } from "./errors.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
 import {
+  notifyAnnotationHistoryFutureSnapshotObserver,
   writeFutureAnnotationRecoverySnapshot,
+  type AnnotationHistoryFutureSnapshotWriteResult,
 } from "./annotationHistoryFutureSnapshotWriter.js";
 import type { AnnotationHistoryFutureSnapshotRollout } from "./annotationHistoryFutureSnapshotPolicy.js";
 
@@ -50,6 +52,7 @@ type CommitTransactionResult = {
   committedRevision: number;
   operations: AnnotationOperationRow[];
   replayed: boolean;
+  snapshotWrite?: AnnotationHistoryFutureSnapshotWriteResult;
 };
 
 /**
@@ -64,6 +67,9 @@ export class AnnotationCommandCommitService {
     private readonly access: ResourceAccessService,
     private readonly revisionPublisher: AnnotationRevisionPublisher,
     private readonly annotationHistoryFutureSnapshotRollout: AnnotationHistoryFutureSnapshotRollout = "disabled",
+    private readonly annotationHistoryFutureSnapshotObserver: (
+      result: AnnotationHistoryFutureSnapshotWriteResult,
+    ) => void = () => undefined,
   ) {}
 
   async commitBatch(
@@ -86,6 +92,13 @@ export class AnnotationCommandCommitService {
 
     const result = await this.prisma.$transaction((transaction) =>
       this.commitTransaction(transaction, user, annotationFileId, request, operations));
+    // 只有事务成功提交后才记录观测，回滚的尝试不能被误报成已写入快照。
+    if (result.snapshotWrite) {
+      notifyAnnotationHistoryFutureSnapshotObserver(
+        this.annotationHistoryFutureSnapshotObserver,
+        result.snapshotWrite,
+      );
+    }
     const operationCursor = encodeAnnotationSnapshotOperationCursor(
       annotationFileId,
       result.committedRevision,
@@ -193,7 +206,7 @@ export class AnnotationCommandCommitService {
         code: "annotation_operation_sequence_exhausted",
       });
     }
-    await writeFutureAnnotationRecoverySnapshot(transaction, {
+    const snapshotWrite = await writeFutureAnnotationRecoverySnapshot(transaction, {
       annotationFileId,
       current,
       createdBy: user.id,
@@ -272,6 +285,7 @@ export class AnnotationCommandCommitService {
       committedRevision: targetRevision,
       operations: committedRows,
       replayed: false,
+      snapshotWrite,
     };
   }
 
