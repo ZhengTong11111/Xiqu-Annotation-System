@@ -322,7 +322,8 @@ const SNAP_VISUAL_MATCH_PX = 1;
 const REORDER_ACTIVATION_PX = 6;
 const ZOOM_SETTLE_MS = 220;
 const ZOOM_MIN = 5;
-const ZOOM_MAX = 500;
+// 精细监听需要更高的时间轴密度；仍保留明确上限，避免长视频产生过大的渲染和滚动区域。
+const ZOOM_MAX = 1000;
 const ZOOM_STEP = 5;
 const EDGE_HIT_SLOP_PX = 8;
 const SELECTED_EDGE_HIT_SLOP_PX = 17;
@@ -745,6 +746,28 @@ export function Timeline({
     onTransientPointerTimeChange(pointerSourceId, null);
   }, [onTransientPointerTimeChange, pointerSourceId]);
   const timelineWidth = Math.max(TRACK_LABEL_WIDTH + duration * zoom, 1200);
+  // 时间轴内容可能包含大量历史块；只挂载视口附近的时间元素，预留一段缓冲避免滚动时立即出现空白。
+  // 这只是渲染裁剪，所有原始数据和冲突布局仍按完整项目计算，因而不会改变编辑、吸附或保存语义。
+  const timelineRenderWindow = useMemo(() => {
+    if (viewportState.width <= 0 || duration <= 0 || zoom <= 0) {
+      return null;
+    }
+    const laneStartPx = Math.max(0, viewportState.scrollLeft - TRACK_LABEL_WIDTH);
+    const laneEndPx = Math.max(
+      laneStartPx,
+      viewportState.scrollLeft + viewportState.width - TRACK_LABEL_WIDTH,
+    );
+    const overscanPx = Math.max(480, viewportState.width * 0.75);
+    return {
+      startTime: Math.max(0, (laneStartPx - overscanPx) / zoom),
+      endTime: Math.min(duration, (laneEndPx + overscanPx) / zoom),
+    };
+  }, [duration, viewportState.scrollLeft, viewportState.width, zoom]);
+  const isTimelineRangeInRenderWindow = useCallback(
+    (startTime: number, endTime: number) =>
+      isTimeRangeInTimelineRenderWindow(startTime, endTime, timelineRenderWindow),
+    [timelineRenderWindow],
+  );
   // 确认栏按重叠层数自适应高度；无记录时仍保留一条紧凑栏，供平台用户识别该治理层。
   const confirmationLaneCount = reviewRangesVisible
     ? Math.max(1, ...reviewRanges.map((range) => range.lane + 1))
@@ -772,6 +795,34 @@ export function Timeline({
   const customBlocks = useMemo(
     () => flattenCustomBlocks(customTracks),
     [customTracks],
+  );
+  const visibleSubtitleLines = useMemo(
+    () => subtitleLines.filter((line) => isTimelineRangeInRenderWindow(line.startTime, line.endTime)),
+    [isTimelineRangeInRenderWindow, subtitleLines],
+  );
+  const visibleCharacterAnnotations = useMemo(
+    () => characterAnnotations.filter((annotation) =>
+      isTimelineRangeInRenderWindow(annotation.startTime, annotation.endTime),
+    ),
+    [characterAnnotations, isTimelineRangeInRenderWindow],
+  );
+  const visibleActionAnnotations = useMemo(
+    () => actionAnnotations.filter((annotation) =>
+      isTimelineRangeInRenderWindow(annotation.startTime, annotation.endTime),
+    ),
+    [actionAnnotations, isTimelineRangeInRenderWindow],
+  );
+  const visibleCustomBlocks = useMemo(
+    () => customBlocks.filter((block) =>
+      isTimelineRangeInRenderWindow(block.startTime, block.endTime),
+    ),
+    [customBlocks, isTimelineRangeInRenderWindow],
+  );
+  const visibleGongcheAnnotations = useMemo(
+    () => gongcheAnnotations.filter((annotation) =>
+      isTimelineRangeInRenderWindow(annotation.startTime, annotation.endTime),
+    ),
+    [gongcheAnnotations, isTimelineRangeInRenderWindow],
   );
   const customTrackMap = useMemo(
     () => new Map(customTracks.map((track, index) => [track.id, { track, index }])),
@@ -925,12 +976,22 @@ export function Timeline({
     };
   }, [duration, viewportState.scrollLeft, viewportState.width, zoom]);
   useEffect(() => {
+    // 缩放手势期间只更新本地时间轴；等预览结束后再提交最后一个分析窗口，避免每帧取消/重排瓦片请求。
+    if (spectrogramInteractionPreview) {
+      return;
+    }
     onViewportTimeRangeChange?.({
       startTime: spectrogramViewport.activeStartTime,
       endTime: spectrogramViewport.activeEndTime,
       zoom,
     });
-  }, [onViewportTimeRangeChange, spectrogramViewport.activeEndTime, spectrogramViewport.activeStartTime, zoom]);
+  }, [
+    onViewportTimeRangeChange,
+    spectrogramInteractionPreview,
+    spectrogramViewport.activeEndTime,
+    spectrogramViewport.activeStartTime,
+    zoom,
+  ]);
   const selectedTimelineKeySet = useMemo(
     () => new Set(selectedTimelineItems.map((item) => getTimelineSelectionKey(item.type, item.id, getSelectionItemTrackId(item)))),
     [selectedTimelineItems],
@@ -2426,8 +2487,19 @@ export function Timeline({
 
   const ticks = useMemo(() => {
     const step = zoom >= 70 ? 0.5 : zoom >= 35 ? 1 : zoom >= 15 ? 2 : 5;
-    return Array.from({ length: Math.ceil(duration / step) + 1 }, (_, index) => index * step);
-  }, [duration, zoom]);
+    if (!timelineRenderWindow) {
+      return Array.from({ length: Math.ceil(duration / step) + 1 }, (_, index) => index * step);
+    }
+    const firstIndex = Math.max(0, Math.floor(timelineRenderWindow.startTime / step) - 1);
+    const lastIndex = Math.min(
+      Math.ceil(duration / step),
+      Math.ceil(timelineRenderWindow.endTime / step) + 1,
+    );
+    return Array.from(
+      { length: Math.max(0, lastIndex - firstIndex + 1) },
+      (_, index) => (firstIndex + index) * step,
+    );
+  }, [duration, timelineRenderWindow, zoom]);
 
   return (
     <section className="panel timeline-panel" aria-busy={Boolean(editingBlockedReason)}>
@@ -2771,7 +2843,9 @@ export function Timeline({
               style={{ height: confirmationLaneHeight }}
             >
               <span className="timeline-confirmation-lane-label">审核与反馈</span>
-              {reviewRanges.map((range) => (
+              {reviewRanges.filter((range) =>
+                isTimelineRangeInRenderWindow(range.startTime, range.endTime),
+              ).map((range) => (
                 <button
                   key={range.id}
                   type="button"
@@ -2811,7 +2885,7 @@ export function Timeline({
           <div className="timeline-top-deck">
             {renderBanyanGridLines("timeline-banyan-grid-lines-floating")}
             <div className="line-focus-layer">
-              {subtitleLines.map((line) => {
+              {visibleSubtitleLines.map((line) => {
                 const blockWidth = Math.max((line.endTime - line.startTime) * zoom, 4);
                 const deliveryLabel = getSentenceDeliveryModeLabel(line.deliveryMode);
                 const roleLabel = line.roleTypes.length > 0 ? line.roleTypes.join("、") : "角色未选";
@@ -3172,10 +3246,16 @@ export function Timeline({
               const actionBlocksForTrack = track.type === "action"
                 ? actionAnnotations.filter((annotation) => annotation.trackId === track.id)
                 : [];
+              const visibleActionBlocksForTrack = visibleActionAnnotations.filter((annotation) =>
+                annotation.trackId === track.id,
+              );
               const customBlocksForTrack =
                 track.type === "custom-text" || track.type === "custom-action" || track.type === "branch-lane"
                   ? customBlocks.filter((annotation) => isCustomBlockVisibleOnTrack(annotation, track))
                   : [];
+              const visibleCustomBlocksForTrack = visibleCustomBlocks.filter((annotation) =>
+                isCustomBlockVisibleOnTrack(annotation, track),
+              );
               const trackColor = track.isCustom
                 ? (() => {
                     const info = customTrackMap.get(track.id);
@@ -3547,14 +3627,14 @@ export function Timeline({
                   }}
                 >
                   {track.type === "character"
-                    ? characterAnnotations.map((annotation) => renderBlock(annotation, "character", {
+                    ? visibleCharacterAnnotations.map((annotation) => renderBlock(annotation, "character", {
                         displayLayout: stackedTrackLayout?.blockDisplayLayouts.get(annotation.id),
                         trackBlockMetrics,
                         visualTrackId: track.id,
                         linkedBoundaryCandidates: characterAnnotations,
                       }))
                     : track.type === "action"
-                      ? actionBlocksForTrack
+                      ? visibleActionBlocksForTrack
                           .map((annotation) => renderBlock(annotation, "action", {
                             displayLayout: stackedTrackLayout?.blockDisplayLayouts.get(annotation.id),
                             trackBlockMetrics,
@@ -3563,13 +3643,15 @@ export function Timeline({
                           }))
                       : track.type === "attached-point"
                         ? pointTrack
-                          ? pointTrack.points.map((point) => renderAttachedPoint(point, pointTrack))
+                          ? pointTrack.points
+                              .filter((point) => isTimelineRangeInRenderWindow(point.time, point.time))
+                              .map((point) => renderAttachedPoint(point, pointTrack))
                           : []
                       : track.type === "gongche-attached"
-                        ? gongcheAnnotations
+                        ? visibleGongcheAnnotations
                             .filter((annotation) => annotation.parentTrackId === gongcheParentTrackId)
                             .map((annotation) => renderGongcheBlock(annotation))
-                      : customBlocksForTrack
+                      : visibleCustomBlocksForTrack
                           .map((annotation) =>
                             renderBlock(annotation, "custom-block", {
                               displayLayout: stackedTrackLayout?.blockDisplayLayouts.get(annotation.id),
@@ -6904,6 +6986,20 @@ function getLaneTime(container: HTMLElement, clientX: number, zoom: number) {
 
 function clampZoom(zoom: number) {
   return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
+}
+
+// 判断时间范围是否落在当前视口缓冲区内；视口尚未完成测量时返回 true，避免首帧暂时空白。
+function isTimeRangeInTimelineRenderWindow(
+  startTime: number,
+  endTime: number,
+  renderWindow: { startTime: number; endTime: number } | null,
+) {
+  if (!renderWindow) {
+    return true;
+  }
+  const normalizedStart = Math.min(startTime, endTime);
+  const normalizedEnd = Math.max(startTime, endTime);
+  return normalizedEnd >= renderWindow.startTime && normalizedStart <= renderWindow.endTime;
 }
 
 function clampValue(value: number, min: number, max: number) {

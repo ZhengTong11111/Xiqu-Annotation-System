@@ -465,7 +465,7 @@ export function TopMenuBar({
                       onClick={() => handleAction(onToggleLoopPlayback)}
                       disabled={!hasLoopPlaybackRange}
                     >
-                      {hasLoopPlaybackRange && loopPlaybackEnabled ? "✓ 循环播放选区" : "循环播放选区"}
+                      {hasLoopPlaybackRange && loopPlaybackEnabled ? "✓ 循环播放选区（L）" : "循环播放选区（L）"}
                     </button>
                     <button
                       type="button"
@@ -540,7 +540,7 @@ export function TopMenuBar({
                   </>
                 ) : null}
                 {item === "帮助" ? (
-                  <div className="top-menu-note">空格播放/暂停，P 从循环范围起点持续循环，Tab 从循环范围起点播放一遍，Command/Ctrl + K 搜索功能，Command/Ctrl + 左/右 选择当前轨道相邻块，Command/Ctrl + S 保存项目，Command/Ctrl + 拖拽可创建块。</div>
+                  <div className="top-menu-note">空格播放/暂停，P 从循环范围起点持续循环，L 打开/关闭循环播放，Tab 从循环范围起点播放一遍，Command/Ctrl + K 搜索功能，Command/Ctrl + 左/右 选择当前轨道相邻块，Command/Ctrl + S 保存项目，Command/Ctrl + 拖拽可创建块。</div>
                 ) : null}
                 {/* 搜索菜单是全功能索引入口：只负责把用户带到已有菜单项或设置字段，不新增第二套设置实现。 */}
                 {item === "搜索" ? (

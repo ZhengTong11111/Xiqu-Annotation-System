@@ -2029,6 +2029,16 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       playLoopFromRangeStart();
       return;
     }
+    // L 只切换当前循环选区的播放开关，不改变选区边界，也不重复实现 P 的播放流程。
+    // 没有循环选区时不拦截按键，避免让无效快捷键影响普通编辑器行为。
+    if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "l") {
+      if (!loopPlaybackRange) {
+        return;
+      }
+      event.preventDefault();
+      updateLoopPlaybackEnabledFromUser(!loopPlaybackEnabled);
+      return;
+    }
     if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key === "Tab") {
       event.preventDefault();
       playLoopRangeOnce();
