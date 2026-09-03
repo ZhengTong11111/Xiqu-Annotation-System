@@ -39,6 +39,7 @@ import type {
   CreateMediaAudioTrackRequest,
   CreateResourceRequest,
   ListAuditLogsOptions,
+  ListAnnotationRecoverySnapshotsOptions,
   ListResourcesOptions,
   LoginRequest,
   LoginResponse,
@@ -646,9 +647,14 @@ export class PlatformClient {
   }
 
   // 历史列表只读取轻量摘要，避免在展开 Inspector 时下载多份完整标注。
-  listRecoverySnapshots(resourceId: string) {
+  listRecoverySnapshots(
+    resourceId: string,
+    options: ListAnnotationRecoverySnapshotsOptions = {},
+  ) {
+    const query = new URLSearchParams();
+    if (options.revision !== undefined) query.set("revision", String(options.revision));
     return this.request<AnnotationRecoverySnapshotSummary[]>(
-      `/annotation-files/${resourceId}/recovery-snapshots`,
+      `/annotation-files/${resourceId}/recovery-snapshots${query.size ? `?${query}` : ""}`,
     );
   }
 

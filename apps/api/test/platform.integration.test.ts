@@ -3098,6 +3098,27 @@ test("平台资源 API 集成测试", async (suite) => {
         typeof summary.createdAt === "string" &&
         typeof (summary.creator as JsonObject).displayName === "string"));
 
+      // 运维合并可精确读取最初基线，不受默认最近 50 条窗口影响；响应仍然只有摘要。
+      const revisionOneResponse = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots?revision=1`,
+      });
+      assert.equal(revisionOneResponse.statusCode, 200, revisionOneResponse.body);
+      const revisionOneBody = revisionOneResponse.json() as { data: JsonObject[] };
+      assert.deepEqual(revisionOneBody.data.map(({ revision }) => revision), [1]);
+      assert.ok(revisionOneBody.data.every((summary) => !("payload" in summary)));
+      const absentRevisionResponse = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots?revision=999`,
+      });
+      assert.equal(absentRevisionResponse.statusCode, 200, absentRevisionResponse.body);
+      assert.deepEqual(dataOf(absentRevisionResponse.json()), []);
+      const invalidRevisionFilter = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots?revision=0`,
+      });
+      assert.equal(invalidRevisionFilter.statusCode, 400);
+
       // 单条详情按需返回旧 payload，读取动作不能改变当前标注 revision 或内容。
       const revisionTwoSummary = listBody.data.find(({ revision }) =>
         revision === 2);

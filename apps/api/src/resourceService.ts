@@ -1248,11 +1248,15 @@ export class ResourceService {
   async listRecoverySnapshots(
     user: ApiUser,
     resourceId: string,
+    options: { revision?: number } = {},
   ): Promise<AnnotationRecoverySnapshotSummary[]> {
     await this.access.assertCapability(user, resourceId, "write");
     await this.assertActiveAnnotationFile(resourceId);
     const rows = await this.prisma.annotationRecoverySnapshot.findMany({
-      where: { annotationFileId: resourceId },
+      where: {
+        annotationFileId: resourceId,
+        ...(options.revision === undefined ? {} : { revision: options.revision }),
+      },
       select: {
         id: true,
         annotationFileId: true,

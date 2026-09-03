@@ -66,6 +66,8 @@
     "media-analysis:migrate": "tsx apps/api/src/mediaAnalysisMigrationCli.ts",
     "platform-import:vod": "node --import tsx scripts/platformVodBatchImportCli.ts",
     "test:platform-import-vod": "node --import tsx scripts/platformVodBatchImport.test.ts",
+    "platform-merge:v0902": "node --import tsx scripts/platformV0902MergeCli.ts",
+    "test:platform-merge-v0902": "npm run build:shared && npm run build:document-model && node --import tsx --test scripts/platformV0902Merge.test.ts",
     "test:local-media-analysis": "node --import tsx --test src/utils/localMediaAnalysis.test.ts",
     "test:runtime-uuid": "node --import tsx --test src/utils/runtimeUuid.test.ts",
     "test:sentence-role-reorder": "node --import tsx --test src/utils/sentenceRoleReorder.test.ts",

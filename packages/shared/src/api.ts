@@ -349,6 +349,11 @@ export type RestoreAnnotationRecoverySnapshotRequest = {
   mutationLeaseToken?: string;
 };
 
+// 运维合并需要精确取得 revision 1 基线；不带筛选时仍保留 Inspector 最近 50 条语义。
+export type ListAnnotationRecoverySnapshotsOptions = {
+  revision?: number;
+};
+
 // 创建确认只接收审核 revision、范围和备注；文件 id 始终来自受保护的路由路径。
 export type CreateAnnotationConfirmationRequest = Pick<
   AnnotationConfirmationDraft,
