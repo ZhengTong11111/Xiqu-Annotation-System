@@ -11788,6 +11788,36 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 获授权后第一阶段仍必须保持 `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT=disabled`，先验证旧 inline 读写/恢复，再另行评估轻量快照开关。
 - 既有恢复快照、operation、标注、确认、评论、反馈、审核链接和媒体对象继续冻结，不压缩、不置空、不归档、不删除。
 
+## 2026-09-02：HC3c5 本机真实备份与隔离恢复演练（完成，云端零影响）
+
+### 本轮完成
+
+- 按本轮重写的 `CLAUDE_WORK.md` 只操作本机环境，没有连接云端、进入云端维护、执行生产 SQL/migration、复制生产对象、切换 release 或重启服务；
+  云端标注与评论未触碰，云端维护时间为零。
+- 预检确认本机 PostgreSQL 16.14 可用，本机数据库约 44 MiB、local 对象目录约 887 MiB（2,376 个文件），演练前磁盘约 15.7 GiB 可用；
+  预计 backup + restore 峰值约 1.9 GiB，保留至少 4 GiB 安全余量后才启动。
+- 使用编译后的 `dist/api/backup/cli.js` 创建一致备份；本机维护窗口约 18 秒并由 CLI 自动关闭。备份包含 2,376 个对象、warning 0，随后
+  `backup:verify` 返回 valid 且 error 0。
+- 首次创建恢复库时，应用账号因没有 `CREATEDB` 在任何恢复写入前安全失败。之后由本机 PostgreSQL 管理员创建一次性不同名称数据库并指定
+  owner 为应用账号，没有提升应用账号长期权限，也没有修改源数据库。
+- `backup:restore-drill` 在约 7 秒内完成；migration history、恢复维护状态、数据库摘要和对象 checksum 四项全部通过。源/目标固定计数完全一致：
+  49 条本机历史 migration、50 个资源、22 个标注文件、215 个 inline 快照、0 个 reconstructible 快照、370 条 operation、12 条确认、
+  1 条审核评论、0 条编辑反馈和 0 个审核链接。
+- 演练成功后只删除经名称和路径复核的一次性恢复数据库、临时备份、恢复对象和临时报告。源维护状态为关闭，目标数据库与临时根均已不存在，
+  磁盘恢复到约 15.6 GiB 可用。
+
+### 结论与待推进
+
+- 真实 compiled CLI 的本机 backup -> verify -> isolated restore -> semantic/checksum verification 闭环已得到证据，没有发现需要修改的业务代码。
+- 本机长期开发库保留 49 条历史 migration，而仓库候选为 41 条、生产为 39 条；本轮证明备份恢复工具能忠实恢复本机事实，但不能替代生产
+  39 -> 41 migration 和生产备份/恢复演练。
+- 生产上线仍需明确授权和最短维护窗口。应先保持 rollout disabled 完成真实备份与隔离恢复，再执行 39 -> 41 expand migration 和旧 inline smoke；
+  不得删除、压缩、置空或归档现有生产快照、标注、operation、确认、评论、反馈、审核链接和媒体对象。
+- 本轮文档完成后串行运行完整 API 回归，结果 351/351；随后完整构建、Prisma schema guard 和 `git diff --check` 通过。没有修改业务代码，
+  仅保留既有 Vite 主 chunk 体积提示和 `pg` 测试弃用 warning。
+- 根据已经生效的历史冻结决策，roadmap 的 HC4 不再要求旧 inline 归档、后台 compactor 或其管理员任务面板；HC4 收敛为两阶段生产 rollout、
+  固定低基数指标和真实容量观察，避免后续 agent 重新引入与产品决策相反的历史改写代码。
+
 ## 2026-09-02：HC3c3 保存事务接线与失败补偿（本地完成，rollout 默认关闭）
 
 ### 本轮完成
