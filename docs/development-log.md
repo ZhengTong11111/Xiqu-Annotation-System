@@ -11768,6 +11768,24 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 未来发布观察需要核对新旧快照读取、普通/原子保存、恢复保护、协作 catch-up、审核/评论路径、固定指标和磁盘安全余量；旧历史继续冻结，
   不压缩、不置空、不归档、不删除。
 
+## 2026-09-02：HC3c5 本地发布前门禁复核（本地完成，生产待授权）
+
+### 本轮完成
+
+- 清理并复核本地临时候选目录，确认没有遗留 `xiqu-release-candidate.*` 目录；没有删除项目文件、数据库行、对象或任何生产备份。
+- 重新执行部署静态门禁 `npm run test:deployment`，结果为 30/30；重新执行备份、远端协议、隔离物化与恢复清理专项
+  `npm run test:backup`，结果为 32/32。覆盖 release 运行入口、migration/schema guard、rollout 严格解析、manifest/checksum、空目标门禁、
+  原子发布、失败补偿和临时包清理。
+- 本轮没有发现需要修改的业务代码；没有执行生产数据库查询写入、40/41 migration、生产备份、对象复制、快照治理、维护切换、release 切换或服务重启。
+  生产仍保持 39 条 migration、inline-only 和 rollout disabled。
+
+### 待推进
+
+- HC3c5 的本地代码与文档门禁已完成，但真实生产备份/隔离恢复、短维护迁移、旧 inline smoke、回滚证据和生产人工 smoke 仍待明确授权、
+  容量复核和维护窗口；本地 32/32 不能替代生产证据。
+- 获授权后第一阶段仍必须保持 `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT=disabled`，先验证旧 inline 读写/恢复，再另行评估轻量快照开关。
+- 既有恢复快照、operation、标注、确认、评论、反馈、审核链接和媒体对象继续冻结，不压缩、不置空、不归档、不删除。
+
 ## 2026-09-02：HC3c3 保存事务接线与失败补偿（本地完成，rollout 默认关闭）
 
 ### 本轮完成

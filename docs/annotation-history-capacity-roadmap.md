@@ -466,7 +466,7 @@ HC3c3 的本地候选仍不等于生产上线：生产当前仍是 39 条 migrat
 - [x] 完成专项 5/5、观测 11/11、完整 API 350/350、完整构建、Prisma schema guard、串行容量专项 35/35 和 `git diff --check`；未连接生产、
   未应用 40/41 migration、未启用 rollout、未进入维护、未部署。
 
-#### HC3c5：生产发布前只读门禁与人工 smoke（下一轮）
+#### HC3c5：生产发布前只读门禁与人工 smoke（本地门禁已完成，生产发布待授权）
 
 本阶段仍不自动发布。只有在用户明确授权新的 release 后，才按独立任务执行生产 39 -> 41 的备份、隔离恢复、短维护迁移和回滚验证；
 没有授权时只完成不写数据库的候选检查和清单审查。
@@ -474,10 +474,11 @@ HC3c3 的本地候选仍不等于生产上线：生产当前仍是 39 条 migrat
 - [x] 已通过本地候选部署静态门禁（`test:deployment` 30/30）：部署说明和生产 env 模板显式固定
   `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT='disabled'`，runtime config 只接受两个受限值；release inspector、Prisma schema guard、
   migration/worker/CLI 默认值和旧 inline 回滚合同仍未发现静态缺口。
-- [ ] 设计并演练一次脱敏的备份/隔离恢复证据：数据库与对象目录位于数据盘，manifest/checksum、业务事实摘要和快照形态统计完整，
-  不读取或记录正文、operation body、媒体 URL、凭据或对象 key；演练目录不得与生产源重叠。
-- [ ] 在生产只读状态稳定、系统盘和数据盘均高于安全余量时，形成短维护窗口的逐步清单；没有足够空间、备份校验或恢复证据就停止，
-  不应用 migration、不改变快照 payload。
+- [x] 本地自动化已覆盖脱敏 manifest/checksum、空目标门禁、原子对象发布、失败补偿、远端物化/恢复清理与保留计划；部署/备份专项分别
+  通过 `test:deployment` 30/30、`test:backup` 32/32。测试使用隔离临时资源，不读取或记录正文、operation body、媒体 URL、凭据或对象 key。
+- [ ] 真实生产备份与目标库/对象目录隔离恢复演练仍待明确授权和容量窗口；本地专项通过不等于生产备份已创建，也不等于生产数据已恢复验证。
+- [x] 已形成短维护窗口的发布、备份、迁移、切换、smoke 和回滚顺序清单，并由部署静态测试锁定；生产执行前仍必须重新核对系统盘/数据盘余量、
+  备份 manifest 和候选 release，任何一项不足都停止，不应用 migration、不改变快照 payload。
 - [ ] 若获授权发布，先保持 rollout=`disabled` 完成 migration 与旧 inline smoke，再由人工决定是否另一个 release 才启用
   `future-reconstructible-v1`；启用前必须核对新旧读取、普通保存、原子保存、恢复保护和观测指标。
 - [ ] 发布后观察固定低基数指标、保存/协作/恢复/审核路径和磁盘余量；任何保存异常、恢复不一致、空间越线或指标异常都回滚代码开关/候选，
