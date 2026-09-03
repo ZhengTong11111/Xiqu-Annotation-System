@@ -50,6 +50,7 @@ import { createAnnotationRemoteActivityChannel } from "./annotationRemoteActivit
 import { PostgresAnnotationRemoteActivityEventBus } from "./postgresAnnotationRemoteActivityEventBus.js";
 import { AnnotationCommandCommitService } from "./annotationCommandCommitService.js";
 import type { ApiCorsOriginPolicy } from "./serverConfig.js";
+import type { AnnotationHistoryFutureSnapshotRollout } from "./annotationHistoryFutureSnapshotPolicy.js";
 import { AccountAdminService } from "./accountAdminService.js";
 import type { AliyunVodProvider } from "./aliyunVodGateway.js";
 import { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
@@ -77,6 +78,7 @@ export type BuildApiAppOptions = {
   corsOrigin?: ApiCorsOriginPolicy;
   aliyunVod?: AliyunVodProvider | null;
   aliyunVodWebPlayerLicense?: AliyunVodWebPlayerLicense | null;
+  annotationHistoryFutureSnapshotRollout?: AnnotationHistoryFutureSnapshotRollout;
 };
 
 /**
@@ -148,6 +150,7 @@ export async function buildApiApp(
     options.aliyunVod ?? null,
     options.aliyunVodWebPlayerLicense ?? null,
     reviewEvents,
+    options.annotationHistoryFutureSnapshotRollout ?? "disabled",
   );
   const annotationRecoveryBackups = new AnnotationRecoveryBackupService(
     options.prisma,
@@ -181,6 +184,7 @@ export async function buildApiApp(
     options.prisma,
     access,
     collaborationEvents,
+    options.annotationHistoryFutureSnapshotRollout ?? "disabled",
   );
   const annotationToolAttempts = new AnnotationToolAttemptService(options.prisma, access);
   const annotationCorrectionDataset = new AnnotationCorrectionDatasetService(options.prisma, access);

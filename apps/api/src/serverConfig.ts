@@ -1,5 +1,9 @@
 import { isIP } from "node:net";
 import type { AliyunVodWebPlayerLicense } from "@xiqu/shared";
+import {
+  ANNOTATION_HISTORY_FUTURE_ROLLOUT,
+  type AnnotationHistoryFutureSnapshotRollout,
+} from "./annotationHistoryFutureSnapshotPolicy.js";
 
 const DEFAULT_DEVELOPMENT_DATABASE_URL =
   "postgresql://xiqu:xiqu_dev_password@localhost:54329/xiqu_platform?schema=public";
@@ -22,6 +26,7 @@ export type ApiServerRuntimeConfig = {
   seedDevelopmentData: boolean;
   corsOrigin: ApiCorsOriginPolicy;
   aliyunVod: AliyunVodRuntimeConfig;
+  annotationHistoryFutureSnapshotRollout: AnnotationHistoryFutureSnapshotRollout;
 };
 
 /**
@@ -44,7 +49,19 @@ export function loadApiServerRuntimeConfig(
     ),
     corsOrigin: parseCorsOrigins(environment.XIQU_CORS_ORIGINS, production),
     aliyunVod: parseAliyunVodConfig(environment),
+    annotationHistoryFutureSnapshotRollout: parseAnnotationHistoryFutureSnapshotRollout(environment),
   };
+}
+
+// 轻量快照 rollout 默认关闭；只有部署者明确写入完整版本名，保存事务才会尝试置空新快照正文。
+function parseAnnotationHistoryFutureSnapshotRollout(
+  environment: NodeJS.ProcessEnv,
+): AnnotationHistoryFutureSnapshotRollout {
+  const value = environment.XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT?.trim() ?? "disabled";
+  if (value === "disabled" || value === ANNOTATION_HISTORY_FUTURE_ROLLOUT) return value;
+  throw new Error(
+    "XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT 只能是 disabled 或 future-reconstructible-v1。",
+  );
 }
 
 // VOD 是否启用必须显式声明；region 是可公开配置，凭据则完全交给阿里云默认凭据链。

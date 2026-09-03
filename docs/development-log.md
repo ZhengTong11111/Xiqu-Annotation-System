@@ -11711,6 +11711,42 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - HC3c2 完成前不接入线上保存，不修改生产 schema，不执行历史 compactor 或 payload 清理；若隔离验证不能证明旧历史读取和事务回滚，
   必须停在本地设计阶段。
 
+## 2026-09-02：HC3c3 保存事务接线与失败补偿（本地完成，rollout 默认关闭）
+
+### 本轮完成
+
+- HC3c2 已先提交为 `69f7cc0`；在其双形态 schema/resolver 基础上继续推进 HC3c3。生产仍停在 39 条 migration，未连接生产、未应用第
+  40/41 条 migration、未进入维护、未修改任何生产快照或业务事实。
+- 新增 `annotationHistoryFutureSnapshotWriter`，作为普通保存、原子领域命令保存和恢复前保护快照共用的快照写入边界：默认关闭 rollout
+  或特殊 reason 继续使用原来的单次幂等 inline upsert；只有明确开启普通 `save` 时，才先在当前事务中创建完整 inline 快照，再用既有
+  revision 校验、命令重放和 canonical hash 内核做有界证明。证明失败、命令缺失/不可重放、首个快照、检查点、超预算或 rollout 关闭时保留
+  完整 payload；只有证明完全通过才在同一事务中写入完整 recipe、`payload=NULL`、`compactedAt` 和 hash。
+- 已有同一文件/revision 快照不会被重算或覆盖；数据库约束错误或事务异常会让整个保存回滚，不会留下半形态记录。写入器没有新增
+  ProjectData parser、command apply、canonical hash 或第二套检查点阈值，检查点阈值复用现有容量策略。
+- `ResourceService.saveAnnotationFile` 和 `AnnotationCommandCommitService.commitBatch` 已接入同一 writer；恢复前保护快照、结构/批量边界和其他特殊
+  reason 仍保持 inline。`XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT` 只接受 `disabled` 或 `future-reconstructible-v1`，默认关闭，
+  并通过 server config 传入 API；worker 不会自行打开保存策略。
+- 新增隔离集成测试，验证显式 rollout 下有效命令链生成 reconstructible 且异步 resolver 可还原原 ProjectData；伪造命令证明失败时仍保存
+  完整 inline。配置边界也有测试，避免任意布尔值或拼写误打开未来写入。
+- 本轮按要求加入中文功能注释并清理了不再需要的测试 Symbol 读取能力；日志、recipe 和配置错误中没有写入 payload、operation body、媒体 URL、
+  AccessKey、PlayAuth、token 或对象 key。
+
+### 验证与发布边界
+
+- `npm run test:annotation-history-future-writer`：2/2；`npm run test:annotation-history-compaction`：35/35；`npm run test:api`：347/347；
+  `npm run build`、Prisma schema guard 和 `git diff --check` 均通过。
+- 本地 api_test schema 已保持 41 条 migration；HC3c3 的 writer 测试在隔离库中完成，未触碰生产数据库。当前服务器仍是 39 条 migration、
+  全部恢复快照 inline，生产配置不应设置未来 rollout 开关。
+- 本轮没有运行 shadow apply、verify 写入变体、compactor、payload 清理、删除/归档历史、`VACUUM FULL` 或 `pg_repack`，没有上传或部署服务器。
+  生产只读容量基线仍按上一轮记录：数据库约 6,422MB，恢复快照约 6,061MB，系统盘约剩 4.1GB，数据盘约剩 34GB。
+
+### 待推进
+
+- **HC3c3 已完成本地候选实现**，但并不代表未来轻量快照已上线。下一阶段 HC3c4 先在隔离库分别验收 rollout 关闭/开启、普通/原子保存、
+  恢复前保护、租约、失败回滚和新旧混合读取，再形成生产 39 -> 41 的只读发布门禁。
+- HC3c4 需补齐低基数 rollout/回退指标、release inspector/systemd 环境检查、备份/隔离恢复证据、短维护窗口和回滚候选；没有用户明确授权，
+  不应用生产 migration、不启用 rollout、不部署。既有恢复快照继续冻结，不压缩、不置空、不归档、不删除。
+
 ## 2026-09-02：HC3c2 双形态数据库合同与恢复 resolver（本地完成，生产未部署）
 
 ### 本轮完成

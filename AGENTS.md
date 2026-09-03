@@ -1449,9 +1449,17 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - HC3c2 候选的唯一双形态 resolver：inline 直接校验并返回原 payload，reconstructible 通过统一事实 loader 和重建内核恢复；
     archived、未知存储形态、正文/recipe 半迁移、checkpoint 缺失、operation 超限或 hash 不一致都必须 fail closed。
   - 生产当前仍停在 39 条 migration、inline-only；只有同时应用 HC3c2 的第 40/41 条 migration 后，reconstructible 读取才具备数据库
-    合同。当前保存服务仍只写 inline，未来策略尚未接入保存事务，不能把 resolver 支持误认为轻量快照已经上线。
+    合同。HC3c3 已在本地候选接入保存 writer，但 rollout 默认关闭；不能把本地接线或 resolver 支持误认为生产轻量快照已经上线。
   - ResourceService 的恢复详情和恢复动作必须共用这个异步 resolver，并在同一数据库事务中读取事实；不要恢复已经删除的同步直读 helper，
     也不要新增第二套 parser、command apply 或 canonical hash。
+- `apps/api/src/annotationHistoryFutureSnapshotWriter.ts`
+  - HC3c3 保存与恢复保护入口共用的唯一未来快照写入边界：rollout 开启时先在同一事务创建完整 inline，再用既有 revision 校验、命令重放和 canonical
+    hash 证明尝试转换；证明失败、超限、检查点、特殊 reason 或 rollout 关闭时保持 inline。
+  - reconstructible 只能在同一事务中一次写入完整 recipe、`payload=NULL`、`compactedAt` 和 hash；已有同 revision 快照不可重算或覆盖，
+    数据库约束/事务错误必须回滚整个保存。该 writer 不得复制 ProjectData parser、command apply、hash 或第二套阈值。
+  - 检查点阈值统一复用 `DEFAULT_ANNOTATION_HISTORY_COMPACTION_POLICY`；rollout 由
+    `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT` 严格解析，默认 `disabled`。生产启用前必须先完成 40/41 migration、备份、
+    隔离恢复、低干扰发布和混合历史 smoke；不得在当前 39 条生产库设置该开关。
 - `apps/api/src/annotationHistoryDependencyProtection.ts`
   - the only recovery-history lifecycle dependency boundary for future reconstructible recipes. It reads bounded lightweight
     recipe/checkpoint metadata only, never snapshot payloads, operation bodies, review text, media identities or credentials

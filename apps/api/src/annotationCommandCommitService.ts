@@ -33,6 +33,10 @@ import {
 import type { ApiUser } from "./domain.js";
 import { conflict } from "./errors.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
+import {
+  writeFutureAnnotationRecoverySnapshot,
+} from "./annotationHistoryFutureSnapshotWriter.js";
+import type { AnnotationHistoryFutureSnapshotRollout } from "./annotationHistoryFutureSnapshotPolicy.js";
 
 const MAX_DATABASE_SEQUENCE = 2_147_483_647;
 const MAX_EXPOSED_VALIDATION_ISSUES = 20;
@@ -59,6 +63,7 @@ export class AnnotationCommandCommitService {
     private readonly prisma: PrismaClient,
     private readonly access: ResourceAccessService,
     private readonly revisionPublisher: AnnotationRevisionPublisher,
+    private readonly annotationHistoryFutureSnapshotRollout: AnnotationHistoryFutureSnapshotRollout = "disabled",
   ) {}
 
   async commitBatch(
@@ -188,21 +193,12 @@ export class AnnotationCommandCommitService {
         code: "annotation_operation_sequence_exhausted",
       });
     }
-    await transaction.annotationRecoverySnapshot.upsert({
-      where: {
-        annotationFileId_revision: {
-          annotationFileId,
-          revision: current.revision,
-        },
-      },
-      update: {},
-      create: {
-        annotationFileId,
-        revision: current.revision,
-        payload: current.payload as Prisma.InputJsonValue,
-        createdBy: user.id,
-        reason: "save",
-      },
+    await writeFutureAnnotationRecoverySnapshot(transaction, {
+      annotationFileId,
+      current,
+      createdBy: user.id,
+      reason: "save",
+      rollout: this.annotationHistoryFutureSnapshotRollout,
     });
 
     const targetRevision = request.baseRevision + 1;

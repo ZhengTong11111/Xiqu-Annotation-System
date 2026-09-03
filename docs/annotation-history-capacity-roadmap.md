@@ -432,23 +432,39 @@ storage mode 迁移。新的未来快照方案改在 HC3c 重新设计，不能�
 - [x] 隔离库完成 39 -> 41 migration；旧 inline、inline shadow、完整 reconstructible、半迁移、archived 和历史业务事实升级测试通过。
 - [x] 完成恢复 resolver、容量历史专项和完整 API 回归（344/344），构建与 `git diff --check` 通过；生产未连接、未迁移、未部署。
 
-HC3c2 的本地候选仍不等于生产上线：生产当前仍是 39 条 migration 和 inline-only。HC3c2 也没有把 HC3c1 策略接入保存事务，因此线上
-新快照继续完整保存，保存可靠性不依赖尚未完成的轻量路径。
+HC3c3 的本地候选仍不等于生产上线：生产当前仍是 39 条 migration 和 inline-only。只有显式 rollout、40/41 条 migration、备份/恢复演练和
+短维护发布全部获授权后，线上新快照才可能使用轻量路径；在此之前保存继续完整 inline。
 
-#### HC3c3：保存事务接线与失败补偿（下一轮）
+#### HC3c3：保存事务接线与失败补偿（已完成，本地候选未启用）
 
 本阶段才讨论让未来新快照使用 HC3c1 的决策结果，仍先限于本地隔离库。必须先完成纯映射和事务测试，再评估短维护发布。
 
-- [ ] 将 HC3c1 决策结果映射为数据库行：普通/影子 inline 保留 payload，reconstructible 原子写入完整 recipe、`payload=null`、
-  `compactedAt` 和 rollout 合同；检查点、特殊 reason、不可重放、证明失败、保存不确定和容量门禁失败全部 inline。
-- [ ] 接入当前唯一的普通保存和原子命令保存事务，验证快照、AnnotationFile、operation、revision、租约和工具 attempt 绑定
-  同事务提交；任何错误都回滚整笔保存，并保证 inline 回退不会留下半形态行。
-- [ ] 补充保存事务单元/集成测试：策略输出映射、幂等重试、并发 revision、结构事务、恢复保护快照、维护门禁、旧 release 读到未来行时
-  的安全失败，以及新旧记录混合恢复。
-- [ ] 更新备份/隔离恢复/详情/比较/恢复和容量指标合同，确保 recipe 只保存定位事实，不输出正文、operation body、媒体地址、凭据或
-  对象 key；不要在此阶段做历史压缩、删除、归档或物理回收。
-- [ ] 在本地隔离库通过完整回归后，重新评估 production 39 -> 41 的短维护发布；没有明确授权、可靠备份、回滚候选和足够数据盘余量时，
-  不部署、不接入生产写入。
+- [x] 新增唯一 `annotationHistoryFutureSnapshotWriter`，先创建完整 inline，再在同一事务内用既有重建内核验证；有效证明才写完整
+  reconstructible recipe、`payload=null`、`compactedAt` 和 hash，所有失败路径保留 inline。
+- [x] 接入普通 `ResourceService.saveAnnotationFile` 和原子 `AnnotationCommandCommitService`，已有同 revision 快照保持幂等不重算；
+  保存、AnnotationFile、operation、revision、租约和工具 attempt 仍由各自原事务整体提交或回滚。
+- [x] rollout 默认关闭并由 `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT` 严格解析；检查点阈值统一复用容量策略，特殊 reason、首个
+  快照、空/超预算/不可重放链、证明失败和旧 release 合同继续 inline/fail closed。
+- [x] 集成测试覆盖有效 reconstructible 读取、证明失败 inline 回退、配置边界和旧 API 回归；完整 API 347/347、完整构建、schema guard
+  与 `git diff --check` 通过。生产仍为 39 条 migration，未应用 40/41，未启用 rollout，未写入或改变任何历史事实。
+- [x] 复查恢复详情、恢复、比较依赖的详情接口、备份/隔离恢复与容量指标没有复制 parser/replay/hash，也没有引入正文、operation body、
+  媒体 URL、凭据或对象 key 到 recipe/日志。
+
+#### HC3c4：本地 rollout 验收与生产发布门禁（下一轮）
+
+本阶段先完成本地可重复发布证明，不连接生产、不应用 production migration、不打开线上 rollout。目标是把“代码已接线”和“可以安全启用”
+分成两个可审计结论。
+
+- [ ] 在隔离库以默认 `disabled` 和显式 `future-reconstructible-v1` 各跑一轮普通保存、原子命令保存、恢复前保护快照、结构租约和失败回滚；
+  逐项核对新旧快照、AnnotationFile、operation、确认、评论、反馈、审核链接和当前 revision 不丢失。
+- [ ] 增加混合历史读取验收：旧 inline、inline shadow recipe、新 reconstructible、坏 recipe、缺 checkpoint、超预算和 archived 均走固定
+  成功/失败码；详情、恢复、比较、备份恢复和协作 catch-up 不能返回近似 ProjectData。
+- [ ] 固化 rollout 配置、数据库 migration、release inspector、systemd 环境和回滚顺序的只读检查；生产配置默认 `disabled`，不得让 worker、
+  CLI 或测试环境意外打开写入策略。
+- [ ] 增加低基数容量/回退观测：只记录 storage mode、固定结果码、计数和耗时，不记录 payload、operation body、账号、媒体 URL、凭据或
+  对象 key；验证指标归零和保存可靠性不受观测故障影响。
+- [ ] 形成生产 39 -> 41 的独立发布清单：确认数据盘安全余量、完整备份与隔离恢复、短维护窗口、不可变 release、回滚候选和人工 smoke；
+  没有用户明确授权前只提交本地代码和文档，不迁移、不启用、不部署。
 
 **HC3c 完成条件**：旧历史零变更；未来新记录在证明成功时才使用轻量形态；所有失败路径自动保留 inline；详情/比较/恢复和
 备份恢复均可读取两种形态；测试、构建、低干扰线上 smoke 和回滚证据齐全。空间不足时系统必须继续可靠保存或明确阻止治理，

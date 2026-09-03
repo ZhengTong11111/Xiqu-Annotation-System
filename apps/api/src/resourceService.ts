@@ -140,6 +140,8 @@ import {
   resolveAnnotationRecoverySnapshotPayloadAsync,
   type AnnotationRecoverySnapshotPayloadRow,
 } from "./annotationRecoverySnapshotPayloadService.js";
+import { writeFutureAnnotationRecoverySnapshot } from "./annotationHistoryFutureSnapshotWriter.js";
+import type { AnnotationHistoryFutureSnapshotRollout } from "./annotationHistoryFutureSnapshotPolicy.js";
 import {
   AnnotationRecoverySnapshotCursorError,
   encodeAnnotationRecoverySnapshotCursor,
@@ -275,6 +277,7 @@ export class ResourceService {
     private readonly reviewPublisher: AnnotationReviewPublisher = {
       publishReviewChanged: () => undefined,
     },
+    private readonly annotationHistoryFutureSnapshotRollout: AnnotationHistoryFutureSnapshotRollout = "disabled",
   ) {}
 
   async listResources(
@@ -1054,21 +1057,12 @@ export class ResourceService {
       }
 
       // 保存前把旧内容写入恢复快照；它只通过标注文件 Inspector 受控查看，不是业务“版本”。
-      await transaction.annotationRecoverySnapshot.upsert({
-        where: {
-          annotationFileId_revision: {
-            annotationFileId: resourceId,
-            revision: current.revision,
-          },
-        },
-        update: {},
-        create: {
-          annotationFileId: resourceId,
-          revision: current.revision,
-          payload: current.payload as Prisma.InputJsonValue,
-          createdBy: user.id,
-          reason: "save",
-        },
+      await writeFutureAnnotationRecoverySnapshot(transaction, {
+        annotationFileId: resourceId,
+        current,
+        createdBy: user.id,
+        reason: "save",
+        rollout: this.annotationHistoryFutureSnapshotRollout,
       });
 
       // revision 必须参与 UPDATE 条件。即使两个请求同时读到同一 revision，
@@ -1446,22 +1440,13 @@ export class ResourceService {
         sourceSnapshot,
       );
 
-      // 覆盖前保存当前内容，使用户能够再次恢复到本次操作之前的状态。
-      await transaction.annotationRecoverySnapshot.upsert({
-        where: {
-          annotationFileId_revision: {
-            annotationFileId: resourceId,
-            revision: current.revision,
-          },
-        },
-        update: {},
-        create: {
-          annotationFileId: resourceId,
-          revision: current.revision,
-          payload: current.payload as Prisma.InputJsonValue,
-          createdBy: user.id,
-          reason: "before_snapshot_restore",
-        },
+      // 覆盖前保存当前内容，使用户能够再次恢复到本次操作之前的状态；特殊原因固定走完整 inline。
+      await writeFutureAnnotationRecoverySnapshot(transaction, {
+        annotationFileId: resourceId,
+        current,
+        createdBy: user.id,
+        reason: "before_snapshot_restore",
+        rollout: this.annotationHistoryFutureSnapshotRollout,
       });
 
       // revision 仍参与条件更新；即使未来锁实现变化，乐观锁也不会静默覆盖并发写入。
