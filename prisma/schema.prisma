@@ -566,7 +566,8 @@ model AnnotationRecoverySnapshot {
   id                     String                                @id @default(uuid())
   annotationFileId       String                                @map("annotation_file_id")
   revision               Int
-  payload                Json
+  // inline 快照保存完整正文；未来 reconstructible 快照只保存检查点、operation 范围和 hash。
+  payload                Json?
   storageMode            AnnotationRecoverySnapshotStorageMode @default(inline) @map("storage_mode")
   payloadSha256          String?                               @map("payload_sha256")
   checkpointSnapshotId   String?                               @map("checkpoint_snapshot_id")

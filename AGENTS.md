@@ -1345,6 +1345,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - 当前生产容量治理基线（2026-09-02）：`xiqu-api.service`、`xiqu-analysis-worker.service`、`caddy.service` 均为正式服务名；
     生产 CLI 必须在 `sudo -u xiqu` 的受控 shell 中显式加载 `/etc/xiqu-platform/xiqu-platform.env`，不得依赖开发工作区的 `.env`
     或默认数据库。当前 production release 为提交 `f8c2b1e` 构建的不可变候选，数据库已从 36 条 migration 升级到 39 条。
+  - HC3c2 目前只存在于本地候选：仓库已增加第 40、41 条恢复快照 migration，但没有部署到生产。生产仍是 39 条 migration、
+    inline-only；任何把本地双形态候选部署到生产的动作都需要单独授权、备份、隔离恢复和短维护窗口，不得把本地 `db:deploy` 当成生产升级。
   - HC2 expand-only 上线已完成，但恢复快照仍全部是 `storage_mode=inline` 且 payload 完整；下一轮容量治理首先做只读 planner/
     resolver 验证，不得把指标或 dry-run 当作清理授权。任何 shadow recipe 写入、payload 置空、storage mode 切换、compactor、
     `VACUUM FULL`、`pg_repack` 或历史删除都必须有单独明确授权。
@@ -1444,11 +1446,12 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - 该层不得解析 ProjectData、重放 command、计算 hash、比较 recipe、读取审核/媒体/对象/账号事实或包含 Prisma mutation。
     只读复核和未来 reconstructible resolver 必须复用它；尚未持久化 planner 候选的影子写服务继续在自己的行锁事务中重读
 - `apps/api/src/annotationRecoverySnapshotPayloadService.ts`
-  - HC3b2b 的异步存储形态协调候选，组合现有 inline resolver、统一数据库事实 loader 和纯重建内核。默认仍是 inline-only；
-    archived/reconstructible 必须 fail closed，直到生产观察、nullable migration 和读写接线得到单独授权
-  - 候选 reconstructible 分支仅可由 Symbol 品牌的隔离测试能力触发，且必须要求 `payload=null`、`compactedAt!=null`。该能力工厂
-    不得出现在 ResourceService、router、config、环境变量或部署代码中，也不得由 HTTP 输入映射；正式启用时应删除测试能力并以
-    migration 后的数据库合同取代，而不是把它升级为 feature flag
+  - HC3c2 候选的唯一双形态 resolver：inline 直接校验并返回原 payload，reconstructible 通过统一事实 loader 和重建内核恢复；
+    archived、未知存储形态、正文/recipe 半迁移、checkpoint 缺失、operation 超限或 hash 不一致都必须 fail closed。
+  - 生产当前仍停在 39 条 migration、inline-only；只有同时应用 HC3c2 的第 40/41 条 migration 后，reconstructible 读取才具备数据库
+    合同。当前保存服务仍只写 inline，未来策略尚未接入保存事务，不能把 resolver 支持误认为轻量快照已经上线。
+  - ResourceService 的恢复详情和恢复动作必须共用这个异步 resolver，并在同一数据库事务中读取事实；不要恢复已经删除的同步直读 helper，
+    也不要新增第二套 parser、command apply 或 canonical hash。
 - `apps/api/src/annotationHistoryDependencyProtection.ts`
   - the only recovery-history lifecycle dependency boundary for future reconstructible recipes. It reads bounded lightweight
     recipe/checkpoint metadata only, never snapshot payloads, operation bodies, review text, media identities or credentials

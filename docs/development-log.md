@@ -11710,3 +11710,40 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   expand migration、数据库 CHECK、唯一双形态 resolver、失败回退、详情/比较/恢复/备份和旧 release 回滚合同。
 - HC3c2 完成前不接入线上保存，不修改生产 schema，不执行历史 compactor 或 payload 清理；若隔离验证不能证明旧历史读取和事务回滚，
   必须停在本地设计阶段。
+
+## 2026-09-02：HC3c2 双形态数据库合同与恢复 resolver（本地完成，生产未部署）
+
+### 本轮完成
+
+- 继续沿用用户确认的历史冻结策略：既有恢复快照、operation、标注、确认、评论、反馈、审核链接和媒体对象均未压缩、删除、置空或
+  归档；在线恢复历史保持原有正常行为，没有加入新的猜测性前端修复。
+- `AnnotationRecoverySnapshot.payload` 在本地候选 schema 中改为可空，为未来 reconstructible 行提供数据库类型表达；现有普通保存、原子
+  命令保存和恢复前保护快照仍显式写完整 inline payload。
+- 新增 HC3c2 第 40 条 expand migration：仅解除 payload 的 NOT NULL 并替换 HC2a/HC3a 过渡约束，建立普通 inline 与完整
+  reconstructible 行的互斥字段合同。新增第 41 条修正 migration，保留 HC3a 的“完整 payload + inline shadow recipe”研究形态；两条
+  migration 都不更新、删除或置空历史行。
+- 双形态 CHECK 拒绝 payload/recipe 半迁移、空 checkpoint、revision/operation 范围错误、缺 hash/验证时间和当前阶段尚未实现的
+  archived。隔离 migration 测试确认旧 inline 内容原样保留，完整 reconstructible 行可写入，非法变体全部回滚。
+- 恢复详情与恢复动作统一改用 `resolveAnnotationRecoverySnapshotPayloadAsync`，并在同一事务中读取目标及其重建依赖；删除了不再需要的
+  Symbol 测试读取能力。inline 继续原样返回并可校验 hash，reconstructible 只复用既有事实 loader、命令重放和 canonical hash。
+- 初次本地部署 migration 时发现第 40 条重复删除已经由 HC3a 删除的约束，P3018 在隔离测试 schema 中安全失败；未发生部分 DDL 或业务
+  数据变更。随后改为保留第 40 条已应用 migration、增加第 41 条修正 migration，并成功完成 39 -> 41 隔离升级。
+- 历史升级测试由生产 36 -> 39 更新为生产 36 -> 本地候选 41，继续逐项比较标注文件、operation、恢复快照、确认、评论和审核链接
+  等既有事实；测试不会把本地候选误报为生产已部署版本。
+
+### 验证与发布边界
+
+- `npm run test:annotation-recovery-snapshot-resolver`：10/10；`npm run test:annotation-history-compaction`：35/35；历史迁移升级：1/1；
+  完整 `npm run test:api`：344/344；`npm run build`、Prisma schema guard 和 `git diff --check` 通过。
+- 本轮没有连接生产、开启维护、应用生产 migration、切换 release、写入生产 recipe、删除备份或历史、运行 compactor、清理 payload、
+  `VACUUM FULL` 或 `pg_repack`。生产仍为 39 条 migration、全部 inline payload。
+- 生产只读容量基线不变：数据库约 6,422MB，恢复快照约 6,061MB；系统盘约剩 4.1GB，数据盘约剩 34GB。容量安全门禁不因本地合同而放宽。
+- 本轮新增的是 schema/resolver 长期合同，已将生产 39 条与本地 41 条的差异、resolver 使用边界和“保存事务仍只写 inline”写入
+  `AGENTS.md`；没有记录凭据、正文、operation body、媒体 URL 或对象 key。
+
+### 待推进
+
+- **HC3c2 已完成**，但未来轻量快照尚未上线。下一轮 HC3c3 才能在本地隔离库把 HC3c1 策略接入普通/原子保存的单一快照写入点，先完成
+  纯映射、检查点/预算和事务失败补偿测试。
+- HC3c3 完成前保存继续使用 inline；生产不执行 40/41 migration，不接入 reconstructible 写入，不做历史清理或物理回收。正式上线仍需
+  用户明确授权、完整备份/恢复演练、短维护窗口和回滚候选。

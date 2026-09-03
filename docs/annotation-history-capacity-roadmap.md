@@ -15,6 +15,7 @@
 - 为保证恢复演练有足够空间，已删除两份最早的**完整备份副本**，删除前已核对 manifest；没有删除数据库业务行、快照 payload、operation、确认、评论、反馈、审核链接或媒体对象。当前正式备份及近几日完整备份仍保留。
 - 发布后的只读观察中 API 5xx、uncaught/unhandled/fatal/Prisma error 和 worker error 均为 0；由于观察窗口没有新的用户保存/协作流量，保存 smoke 仍需在下一次低干扰窗口由真实用户操作验证，不能把“无错误”写成已完成的保存验收。
 - 在线恢复历史此前出现的异常目前已恢复正常；没有新的可复现错误证据，本路线图不再把恢复历史页面防御性改造作为容量治理前置任务。后续若再次出现问题，必须先保存真实响应/浏览器错误并单独定位，不能借容量治理猜测性修改恢复链路。
+- 当前分支已形成 41 条 migration 的 HC3c2 本地候选，但生产仍停在 39 条 migration；本地双形态 schema/resolver 尚未部署，也没有改变生产保存策略。
 
 **当前硬门禁**：在线保存和恢复仍只使用完整 inline payload；禁止运行 `annotation-history:shadow-recipe --apply`、任何
 `verify-shadow-recipes` 写入变体、compactor、payload 清理、`VACUUM FULL`、`pg_repack` 或删除业务历史。任何新动作都必须先
@@ -417,30 +418,37 @@ storage mode 迁移。新的未来快照方案改在 HC3c 重新设计，不能�
 **HC3c1 完成条件已满足**：未来决策内核有明确 fail-closed 合同，旧历史和线上链路零变更；它只是 HC3c2 的本地前置能力，不能被
 描述为“未来轻量快照已经上线”。
 
-#### HC3c2：双形态数据库合同与 resolver（下一轮）
+#### HC3c2：双形态数据库合同与 resolver（已完成，本地未部署）
 
-本轮只实现可审查、可回滚的 expand 阶段，不清理历史、不接入生产保存。必须先在隔离库完成，再决定是否申请短维护发布。
+本阶段已在本地隔离库完成可审查、可回滚的 expand 阶段；没有清理历史，也没有接入生产保存。
 
-- [ ] 先定义不可变的历史边界：明确从哪一个 release/schema 版本开始允许新 snapshot 使用轻量形态；边界之前的行永远保持
+- [x] 先定义不可变的历史边界：HC3c2 通过显式 schema 合同识别存储形态；边界之前的行永远保持
   `inline + payload`，不能按 createdAt 猜测或迁移。
-- [ ] 将快照写入改为同一保存事务内的策略选择：第一条或定期检查点保存完整 payload；只有当前命令链可重放、checkpoint/operation
-  范围完整、最终 canonical hash 精确相等时，新记录才保存 recipe/hash 并允许 `payload=null`。非 replayable、结构边界、恢复操作、
-  证明失败、保存不确定或磁盘门禁失败全部保存完整 inline。
-- [ ] 扩展 schema 时只改变新行合同，不更新旧历史；数据库约束必须允许旧 inline 和新 reconstructible 共存，并拒绝半迁移状态。
-  任何 nullable migration 都先在隔离库完成旧业务事实、确认/评论/反馈、审核链接、旧 JSON 和并发保存升级演练。
-- [ ] 详情、比较、恢复、备份、隔离恢复和管理员历史列表统一走双形态 resolver。轻量记录重建失败必须固定错误并阻止恢复，不能
-  返回近似 ProjectData；恢复前保护快照仍必须按当前保存合同原子创建。
-- [ ] 不新增第二套 command parser/replay/hash；复用 document-model 的正式 adapter、唯一 canonical hash 和受限事实 loader。新增
-  逻辑块必须写准确中文功能注释，删除已经不再被生产路径调用的历史 apply/compactor 入口，避免僵尸代码重新被误用。
-- [ ] 增加未来写入的有界容量指标、失败回退计数、resolver 延迟和恢复失败告警；指标只保留固定枚举和计数，不记录正文、账号、
-  operation body、媒体 URL、凭据或对象 key。
-- [ ] 先在本地隔离库验证新旧记录混合读取，再进行一次明确授权的极短维护发布；发布前后核对快照、operation、确认、评论、反馈、
-  审核链接和当前文件 revision 数量，观察中发现任何写入/恢复异常立即回滚代码而不删除历史。
+- [x] 新增第 40 条 expand migration 允许 nullable payload 和完整 reconstructible 行；第 41 条修正并保留 HC3a 的完整 payload inline
+  shadow recipe。数据库拒绝 payload/recipe 半迁移、revision/operation 范围错误和 archived 未实现形态；migration 不更新旧行。
+- [x] 详情与恢复动作已改为在同一事务中共用异步双形态 resolver。inline 原样校验返回；reconstructible 复用现有 loader、重建和
+  canonical hash；缺事实、越权、超预算或 hash 不一致均固定 fail closed，不返回近似 ProjectData。
+- [x] 删除不再需要的 Symbol 测试读取能力，避免把测试开关伪装成运行时 feature flag；没有复制 parser、command apply 或 hash。
+- [x] 隔离库完成 39 -> 41 migration；旧 inline、inline shadow、完整 reconstructible、半迁移、archived 和历史业务事实升级测试通过。
+- [x] 完成恢复 resolver、容量历史专项和完整 API 回归（344/344），构建与 `git diff --check` 通过；生产未连接、未迁移、未部署。
 
-HC3c2 的实现顺序必须是：先冻结新行 storage contract 和边界版本，再写数据库 CHECK/expand migration；随后让唯一 resolver
-同时支持 inline 与 reconstructible，最后把未来策略接到保存事务的单一快照写入点。每一步都必须有旧行夹具、半迁移拒绝、证明失败
-inline 回退、详情/比较/恢复/备份读取和事务回滚测试。若当前 `payload NOT NULL` 的 schema、现有 recovery route 或旧 release
-回滚合同无法在隔离库中证明兼容，则停在本地设计，不做线上 migration。
+HC3c2 的本地候选仍不等于生产上线：生产当前仍是 39 条 migration 和 inline-only。HC3c2 也没有把 HC3c1 策略接入保存事务，因此线上
+新快照继续完整保存，保存可靠性不依赖尚未完成的轻量路径。
+
+#### HC3c3：保存事务接线与失败补偿（下一轮）
+
+本阶段才讨论让未来新快照使用 HC3c1 的决策结果，仍先限于本地隔离库。必须先完成纯映射和事务测试，再评估短维护发布。
+
+- [ ] 将 HC3c1 决策结果映射为数据库行：普通/影子 inline 保留 payload，reconstructible 原子写入完整 recipe、`payload=null`、
+  `compactedAt` 和 rollout 合同；检查点、特殊 reason、不可重放、证明失败、保存不确定和容量门禁失败全部 inline。
+- [ ] 接入当前唯一的普通保存和原子命令保存事务，验证快照、AnnotationFile、operation、revision、租约和工具 attempt 绑定
+  同事务提交；任何错误都回滚整笔保存，并保证 inline 回退不会留下半形态行。
+- [ ] 补充保存事务单元/集成测试：策略输出映射、幂等重试、并发 revision、结构事务、恢复保护快照、维护门禁、旧 release 读到未来行时
+  的安全失败，以及新旧记录混合恢复。
+- [ ] 更新备份/隔离恢复/详情/比较/恢复和容量指标合同，确保 recipe 只保存定位事实，不输出正文、operation body、媒体地址、凭据或
+  对象 key；不要在此阶段做历史压缩、删除、归档或物理回收。
+- [ ] 在本地隔离库通过完整回归后，重新评估 production 39 -> 41 的短维护发布；没有明确授权、可靠备份、回滚候选和足够数据盘余量时，
+  不部署、不接入生产写入。
 
 **HC3c 完成条件**：旧历史零变更；未来新记录在证明成功时才使用轻量形态；所有失败路径自动保留 inline；详情/比较/恢复和
 备份恢复均可读取两种形态；测试、构建、低干扰线上 smoke 和回滚证据齐全。空间不足时系统必须继续可靠保存或明确阻止治理，

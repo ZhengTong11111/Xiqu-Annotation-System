@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createAnnotationHistoryCanonicalHash } from "../src/annotationHistoryCanonicalHash.js";
-import {
-  createAnnotationHistoryReconstructibleReadTestCapability,
-  resolveAnnotationRecoverySnapshotPayloadAsync,
-} from "../src/annotationRecoverySnapshotPayloadService.js";
+import { resolveAnnotationRecoverySnapshotPayloadAsync } from "../src/annotationRecoverySnapshotPayloadService.js";
 import {
   resolveAnnotationRecoverySnapshotPayload,
   type AnnotationRecoverySnapshotResolvableRow,
@@ -80,7 +77,7 @@ test("尚未启用和未知的存储形态稳定 fail closed", () => {
   }
 });
 
-test("异步协调器默认仍只接受 inline 且保留旧 JSON 身份", async () => {
+test("异步协调器读取 inline 并保留旧 JSON 身份", async () => {
   const payload = { legacy: true, nested: { untouched: "旧结构" } };
   const transaction = {} as Parameters<typeof resolveAnnotationRecoverySnapshotPayloadAsync>[0]["transaction"];
   const inline = await resolveAnnotationRecoverySnapshotPayloadAsync({
@@ -104,7 +101,7 @@ test("异步协调器默认仍只接受 inline 且保留旧 JSON 身份", async 
   const reconstructible = await resolveAnnotationRecoverySnapshotPayloadAsync({
     transaction,
     row: {
-      ...createRow(payload, { storageMode: "reconstructible" }),
+      ...createRow(null, { storageMode: "reconstructible" }),
       checkpointSnapshotId: "checkpoint-1",
       operationRevisionStart: 2,
       operationRevisionEnd: 7,
@@ -118,7 +115,7 @@ test("异步协调器默认仍只接受 inline 且保留旧 JSON 身份", async 
   });
   assert.deepEqual(reconstructible, {
     ok: false,
-    code: "snapshot_storage_mode_unsupported",
+    code: "snapshot_compaction_incomplete",
     snapshotId: "snapshot-1",
     annotationFileId: "annotation-1",
     revision: 7,
@@ -168,7 +165,6 @@ test("候选重建在 recipe 不完整时先行阻断且不读取数据库", asy
       recipeVerifiedAt: new Date("2026-09-02T00:00:00.000Z"),
       compactedAt: new Date("2026-09-02T01:00:00.000Z"),
     },
-    reconstructibleCapability: createAnnotationHistoryReconstructibleReadTestCapability(),
   });
   assert.deepEqual(result, {
     ok: false,
@@ -181,7 +177,6 @@ test("候选重建在 recipe 不完整时先行阻断且不读取数据库", asy
 
 test("候选重建拒绝正文未清空或缺少压缩时间的半迁移状态", async () => {
   const transaction = {} as Parameters<typeof resolveAnnotationRecoverySnapshotPayloadAsync>[0]["transaction"];
-  const capability = createAnnotationHistoryReconstructibleReadTestCapability();
   const completeRecipe = {
     ...createRow(null, { storageMode: "reconstructible" }),
     payloadSha256: "a".repeat(64),
@@ -202,7 +197,6 @@ test("候选重建拒绝正文未清空或缺少压缩时间的半迁移状态",
       payload: { staleInlinePayload: true },
       compactedAt: new Date("2026-09-02T01:00:00.000Z"),
     },
-    reconstructibleCapability: capability,
   });
   assert.equal(payloadPresent.ok, false);
   if (!payloadPresent.ok) assert.equal(payloadPresent.code, "snapshot_payload_state_invalid");
@@ -210,7 +204,6 @@ test("候选重建拒绝正文未清空或缺少压缩时间的半迁移状态",
   const missingCompactedAt = await resolveAnnotationRecoverySnapshotPayloadAsync({
     transaction,
     row: { ...completeRecipe, compactedAt: null },
-    reconstructibleCapability: capability,
   });
   assert.equal(missingCompactedAt.ok, false);
   if (!missingCompactedAt.ok) assert.equal(missingCompactedAt.code, "snapshot_compaction_incomplete");

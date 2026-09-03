@@ -14,12 +14,6 @@ import {
   type AnnotationRecoverySnapshotResolutionCode,
 } from "./annotationRecoverySnapshotResolver.js";
 
-const reconstructibleReadCapabilityBrand = Symbol("annotation-history-reconstructible-read-candidate");
-
-export type AnnotationHistoryReconstructibleReadCapability = Readonly<{
-  [reconstructibleReadCapabilityBrand]: true;
-}>;
-
 export type AnnotationRecoverySnapshotAsyncResolutionCode =
   | AnnotationRecoverySnapshotResolutionCode
   | AnnotationHistoryReconstructionFactLoadCode
@@ -48,22 +42,13 @@ export type AnnotationRecoverySnapshotAsyncResolution<TPayload> =
     };
 
 /**
- * 仅供隔离测试证明未来 reconstructible 读取合同；生产代码在正式迁移授权前不得创建或传递该能力。
- * Symbol 品牌不会经过 JSON、HTTP 或环境变量传播，避免把候选模式误做成隐式运行时开关。
- */
-export function createAnnotationHistoryReconstructibleReadTestCapability():
-AnnotationHistoryReconstructibleReadCapability {
-  return Object.freeze({ [reconstructibleReadCapabilityBrand]: true });
-}
-
-/**
- * 统一协调恢复快照的存储形态读取。默认只接受 inline；候选重建路径必须显式持有测试能力。
+ * 统一协调恢复快照的两种持久化形态读取。数据库 CHECK 已保证新行的字段互斥，
+ * 这里仍逐项 fail closed，防止旧 release、手工数据或部分恢复暴露近似内容。
  * 数据库事实与内容证明分别委托给 HC3b2a loader 和 HC3b1 纯内核，本层不复制查询或重放逻辑。
  */
 export async function resolveAnnotationRecoverySnapshotPayloadAsync<TPayload>(input: {
   transaction: Prisma.TransactionClient;
   row: AnnotationRecoverySnapshotPayloadRow<TPayload>;
-  reconstructibleCapability?: AnnotationHistoryReconstructibleReadCapability;
 }): Promise<AnnotationRecoverySnapshotAsyncResolution<TPayload | ProjectData>> {
   const { row } = input;
   if (row.storageMode === "inline") {
@@ -77,10 +62,7 @@ export async function resolveAnnotationRecoverySnapshotPayloadAsync<TPayload>(in
       payloadSha256: row.payloadSha256,
     });
   }
-  if (
-    row.storageMode !== "reconstructible" ||
-    input.reconstructibleCapability?.[reconstructibleReadCapabilityBrand] !== true
-  ) {
+  if (row.storageMode !== "reconstructible") {
     return failed(row, "snapshot_storage_mode_unsupported");
   }
   // 未来 contract migration 必须原子形成“正文为空 + 已压缩时间”；半迁移行不能靠 recipe 侥幸读取。

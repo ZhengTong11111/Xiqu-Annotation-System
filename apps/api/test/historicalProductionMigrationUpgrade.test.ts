@@ -13,9 +13,9 @@ const prismaSchemaPath = fileURLToPath(new URL("../../../prisma/schema.prisma", 
 const migrationLockPath = fileURLToPath(new URL("../../../prisma/migrations/migration_lock.toml", import.meta.url));
 const workspaceRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const productionBaselineMigration = "20260901030000_annotation_review_link_integrity";
-const currentFinalMigration = "20260902020000_annotation_tool_attempts";
+const currentFinalMigration = "20260903020000_annotation_recovery_snapshot_shadow_inline_contract";
 
-test("生产 36 migration 基线升级到当前 39 migration 时完整保留既有业务事实", async () => {
+test("生产 36 migration 基线升级到当前 41 migration 时完整保留既有业务事实", async () => {
   assertSafeTestDatabaseUrl();
   const schemaName = `history_upgrade_${randomUUID().replaceAll("-", "")}_test`;
   const databaseUrl = new URL(TEST_DATABASE_URL);
@@ -35,7 +35,7 @@ test("生产 36 migration 基线升级到当前 39 migration 时完整保留既�
     const baselineIndex = migrationNames.indexOf(productionBaselineMigration);
     const finalIndex = migrationNames.indexOf(currentFinalMigration);
     assert.equal(baselineIndex, 35, "生产历史基线必须仍是第 36 条 migration");
-    assert.equal(finalIndex, 38, "当前候选必须仍以第 39 条 migration 收尾");
+    assert.equal(finalIndex, 40, "当前候选必须仍以第 41 条 migration 收尾");
     assert.equal(migrationNames.length, finalIndex + 1, "当前收尾 migration 后不能有未纳入演练的新 migration");
 
     // 先精确停在生产现有版本，再注入业务事实；新空库一次跑到底无法证明历史升级安全。
@@ -166,7 +166,7 @@ async function seedHistoricalBusinessFacts(client: pg.PoolClient) {
   `);
   await client.query(`
     INSERT INTO "project_metadata" ("resource_id", "description")
-    VALUES ('project-1', '验证 36 到 39 migration 的业务事实保留')
+    VALUES ('project-1', '验证 36 到 41 migration 的业务事实保留')
   `);
   await client.query(`
     INSERT INTO "annotation_files" (
@@ -227,7 +227,7 @@ async function seedHistoricalBusinessFacts(client: pg.PoolClient) {
 }
 
 async function readProtectedBusinessFacts(client: pg.PoolClient) {
-  // 只比较生产基线已经存在的列；HC2/HC3a 新列另行验证默认值，避免把合法 expand 误报为数据漂移。
+  // 只比较生产基线已经存在的列；容量治理新增列另行验证默认值，避免把合法 expand 误报为数据漂移。
   return {
     annotationFiles: await readJsonRows(client, `
       SELECT "resource_id", "payload", "revision", "last_edited_by", "last_saved_at",
@@ -286,11 +286,7 @@ async function assertHistoryCapacitySchema(client: pg.PoolClient, schemaName: st
     compacted_at: null,
   }]);
   assert.equal(await tableExists(client, "annotation_tool_attempts"), true);
-  for (const constraintName of [
-    "annotation_recovery_snapshots_hc2a_inline_only_check",
-    "annotation_recovery_snapshots_recipe_shape_check",
-    "annotation_recovery_snapshots_inline_shadow_recipe_check",
-  ]) {
+  for (const constraintName of ["annotation_recovery_snapshots_future_storage_contract_check"]) {
     assert.equal(await constraintExists(client, schemaName, constraintName), true, `${constraintName} 应存在`);
   }
 }
