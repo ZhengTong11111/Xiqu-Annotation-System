@@ -35,7 +35,10 @@ import { Timeline, type TimelineReviewRange } from "./components/Timeline";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { TopMenuBar, type TopMenuPlatformNavigation } from "./components/TopMenuBar";
 import { VideoPlayer } from "./components/VideoPlayer";
-import type { MediaPlaybackController } from "./media/mediaPlaybackController";
+import type {
+  MediaPlaybackController,
+  MediaPlaybackSeekOptions,
+} from "./media/mediaPlaybackController";
 import { mockProject } from "./mockData";
 import { AnnotationReviewPanel } from "./platform/AnnotationReviewPanel";
 import {
@@ -1006,6 +1009,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [zoom, setZoom] = useState(20);
   const [loopPlaybackRange, setLoopPlaybackRange] = useState<{ start: number; end: number } | null>(null);
   const [loopPlaybackEnabled, setLoopPlaybackEnabled] = useState(false);
+  // P/Tab 可能在循环开关已经为 true 时再次启动；代次确保边界监测重新接管这次播放。
+  const [loopPlaybackMonitorRequest, setLoopPlaybackMonitorRequest] = useState(0);
   const selectedAutoLoopRange = useMemo(
     () => getAutoLoopPlaybackRangeForSelection(project, selectedItem),
     [project, selectedItem],
@@ -1117,6 +1122,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   // 临时范围播放意图，统一表达 P 临时持续循环和 Tab 单次范围播放两种运行时行为，
   // 避免多个含义重叠的布尔 ref 互相覆盖。null 表示无临时意图（仅持久循环或普通播放）。
   const rangePlaybackIntentRef = useRef<RangePlaybackIntent | null>(null);
+  // 循环边界由独立的媒体时钟监测，避免 React 状态刷新频率决定循环起止点。
+  const loopBoundaryFrameRef = useRef<number | null>(null);
+  // P/Tab 的起点 seek 还未完成时，媒体时钟可能仍停在旧范围；此时不能误判为已到 end。
+  // 请求代次还负责让后发的 seek 取消旧门禁，避免异步播放器事件倒序生效。
+  const loopStartRequestRef = useRef(0);
+  // 记录“本次播放是否要求持续循环”。不能只依赖 isPlaying：播放器 seek 回跳时可能短暂
+  // 发出 pause，但随后不会再次发出 play 事件；此时监测器仍必须继续等待并接管下一轮边界。
+  const continuousLoopPlaybackRef = useRef(false);
   const videoFileInputRef = useRef<HTMLInputElement>(null);
   const srtFileInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
@@ -1632,9 +1645,44 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   function syncLoopPlaybackRangeFromSelection(nextSelectedItem: SelectedItem) {
     const nextRange = getAutoLoopPlaybackRangeForSelection(projectRef.current, nextSelectedItem);
-    if (nextRange) {
-      setLoopPlaybackRange(nextRange);
+    if (!nextRange) return;
+
+    const currentIntent = rangePlaybackIntentRef.current;
+    const isContinuousLoopPlaying = loopPlaybackEnabled && (
+      continuousLoopPlaybackRef.current ||
+      currentIntent?.mode === "temporary-continuous-loop"
+    );
+
+    // P 循环期间换选中的块，新的块应立即成为循环目标；这里只更新播放控制状态，
+    // 不写入 ProjectData，因此不会制造保存、撤销或协作操作。
+    if (currentIntent?.mode === "temporary-continuous-loop") {
+      rangePlaybackIntentRef.current = {
+        ...currentIntent,
+        rangeStart: nextRange.start,
+        rangeEnd: nextRange.end,
+      };
     }
+    setLoopPlaybackRange(nextRange);
+
+    if (!isContinuousLoopPlaying) return;
+
+    const player = videoRef.current;
+    // 选块事件可能发生在播放器来源切换的极短窗口；范围仍然保留，播放器就绪后由
+    // 后续的正式播放入口接管，避免对空播放器发起一次无法完成的 seek。
+    if (!player?.getSnapshot().ready) return;
+
+    // 取消旧范围尚未执行的边界帧，避免它在 React 新范围提交前按旧范围触发一次回跳。
+    if (loopBoundaryFrameRef.current !== null) {
+      cancelAnimationFrame(loopBoundaryFrameRef.current);
+      loopBoundaryFrameRef.current = null;
+    }
+    setPreviewTime(null);
+    setLoopPlaybackMonitorRequest((value) => value + 1);
+    // 不要先 setCurrentTime：播放器组件可能把那个中间态解释成普通 seek，
+    // 从而覆盖这里要求“跳到新块起点并继续播放”的循环命令。
+    startLoopPlaybackSeek(player, clampTime(nextRange.start, duration), {
+      playAfterSeek: true,
+    });
   }
 
   function updateTimelinePasteTarget(trackId: string, time: number) {
@@ -1701,44 +1749,98 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
   useEffect(() => {
     const player = videoRef.current;
-    const intent = rangePlaybackIntentRef.current;
     if (previewTime !== null || !loopPlaybackRange || !player) {
       return;
     }
     if (loopPlaybackRange.end - loopPlaybackRange.start <= 0.001) {
       return;
     }
-    // 沿用现有与 playbackRate 相关的终点阈值，避免高速播放越过终点。
-    const loopEndThreshold = Math.max(0.01, 0.04 / Math.max(playbackRate, 0.25));
-    if (intent?.mode === "play-range-once") {
-      // 范围已经由选择或拖动改变时，旧意图交给下方清理 effect 取消，不能套用到新范围。
-      if (!doesRangePlaybackIntentMatch(intent, loopPlaybackRange)) {
+
+    let active = true;
+    const cancelBoundaryFrame = () => {
+      if (loopBoundaryFrameRef.current === null) return;
+      cancelAnimationFrame(loopBoundaryFrameRef.current);
+      loopBoundaryFrameRef.current = null;
+    };
+
+    const scheduleBoundaryCheck = () => {
+      if (!active || loopBoundaryFrameRef.current !== null) return;
+      loopBoundaryFrameRef.current = requestAnimationFrame(checkBoundary);
+    };
+
+    const checkBoundary = () => {
+      loopBoundaryFrameRef.current = null;
+      if (!active) return;
+
+      const snapshot = player.getSnapshot();
+      const actualTime = snapshot.currentTime;
+      const currentIntent = rangePlaybackIntentRef.current;
+
+      // 范围被重新选择后，旧播放意图不再拥有当前范围，交给清理 effect 处理。
+      if (
+        currentIntent &&
+        !doesRangePlaybackIntentMatch(currentIntent, loopPlaybackRange)
+      ) {
         return;
       }
-      if (currentTime < intent.playbackEnd - loopEndThreshold && !player.getSnapshot().ended) {
+
+      // 初始 seek+play 是一个异步命令。等待它完成后再读取边界，避免用旧时间取消 P/Tab 的播放命令。
+      if (loopStartRequestRef.current !== 0) {
+        scheduleBoundaryCheck();
         return;
       }
-      // 单次范围播放到终点：校正到 end、暂停、清除意图、恢复进入前的持久循环设置，不跳回起点。
-      finishOneShotRangePlayback(intent);
-      return;
-    }
-    if (
-      intent?.mode === "temporary-continuous-loop" &&
-      !doesRangePlaybackIntentMatch(intent, loopPlaybackRange)
-    ) {
-      return;
-    }
-    if (!isPlaying || currentTime < loopPlaybackRange.end - loopEndThreshold) {
-      return;
-    }
-    // 持久循环或 P 临时持续循环：到终点跳回起点。
-    if (!loopPlaybackEnabled) {
-      return;
-    }
-    const nextTime = clampTime(loopPlaybackRange.start, duration);
-    void player.seek(nextTime);
-    setCurrentTime(nextTime);
-  }, [currentTime, duration, isPlaying, loopPlaybackEnabled, loopPlaybackRange, playbackRate, previewTime]);
+      if (currentIntent?.mode === "play-range-once") {
+        // 单次播放只有真实媒体时钟到达终点才结束，不再提前固定几十毫秒截断。
+        if (snapshot.ended || actualTime >= currentIntent.playbackEnd) {
+          finishOneShotRangePlayback(currentIntent);
+          return;
+        }
+        if (snapshot.paused) return;
+        scheduleBoundaryCheck();
+        return;
+      }
+
+      const continuousLoopRequested =
+        continuousLoopPlaybackRef.current ||
+        currentIntent?.mode === "temporary-continuous-loop";
+
+      // 先判断边界，再判断 paused。媒体到达文件末尾时通常会同时变成 paused/ended；
+      // 如果先返回，就会漏掉最后一帧边界，P 之后便会顺序播放或停在文件末尾。
+      const reachedContinuousEnd = snapshot.ended || actualTime >= loopPlaybackRange.end;
+      if (reachedContinuousEnd) {
+        if (!loopPlaybackEnabled || !continuousLoopRequested) return;
+
+        // 持久循环或 P 临时持续循环：实际时钟到达 end 后回到 start，
+        // 明确要求 seek 完成后继续播放，兼容原生媒体、VOD 和外接音轨组合运行时。
+        const nextTime = clampTime(loopPlaybackRange.start, duration);
+        startLoopPlaybackSeek(player, nextTime, { playAfterSeek: true });
+        // 下一帧继续读取真实媒体时钟；seek 请求完成后不会再被额外的起点门禁卡住。
+        scheduleBoundaryCheck();
+        return;
+      }
+
+      if (snapshot.paused || !loopPlaybackEnabled) {
+        // P 的回跳或播放器缓冲可能短暂呈现 paused。只要持续循环意图仍在，
+        // 就继续轮询，等待真实媒体时钟恢复，不能让一次瞬时事件永久杀死监测器。
+        if (continuousLoopRequested) scheduleBoundaryCheck();
+        return;
+      }
+      scheduleBoundaryCheck();
+    };
+
+    scheduleBoundaryCheck();
+    return () => {
+      active = false;
+      cancelBoundaryFrame();
+    };
+  }, [
+    duration,
+    isPlaying,
+    loopPlaybackEnabled,
+    loopPlaybackMonitorRequest,
+    loopPlaybackRange,
+    previewTime,
+  ]);
 
   // 持久循环被关闭时，终止 P 临时持续循环意图；单次播放意图不在此清理
   //（由终点、空格、清除范围或切换视频处理）。
@@ -1763,6 +1865,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }, [loopPlaybackRange?.start, loopPlaybackRange?.end]);
 
   useEffect(() => {
+    continuousLoopPlaybackRef.current = false;
     cancelRangePlaybackIntent();
   }, [project.video.url]);
 
@@ -2661,13 +2764,19 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
     if (needsLoopStartSeek && loopPlaybackRange) {
       const nextTime = clampTime(loopPlaybackRange.start, duration);
-      setCurrentTime(nextTime);
-      void player.seek(nextTime, { playAfterSeek: true });
+      continuousLoopPlaybackRef.current = true;
+      setLoopPlaybackMonitorRequest((value) => value + 1);
+      startLoopPlaybackSeek(player, nextTime, { playAfterSeek: true });
       return;
     }
     if (snapshot.paused) {
+      if (loopPlaybackEnabled && loopPlaybackRange) {
+        continuousLoopPlaybackRef.current = true;
+        setLoopPlaybackMonitorRequest((value) => value + 1);
+      }
       void player.play();
     } else {
+      continuousLoopPlaybackRef.current = false;
       player.pause();
     }
   }
@@ -2682,6 +2791,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
     const nextTime = clampTime(loopPlaybackRange.start, duration);
     setPreviewTime(null);
+    continuousLoopPlaybackRef.current = true;
     // P 取消任何单次播放意图，切换为持续循环。持久循环已开时不标临时（空格走普通暂停），
     // 否则标 temporary-continuous-loop（空格退出临时循环并继续普通播放）。
     rangePlaybackIntentRef.current = loopPlaybackEnabled
@@ -2692,8 +2802,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           rangeEnd: loopPlaybackRange.end,
         };
     setLoopPlaybackEnabled(true);
-    setCurrentTime(nextTime);
-    void player.seek(nextTime, { playAfterSeek: true });
+    setLoopPlaybackMonitorRequest((value) => value + 1);
+    startLoopPlaybackSeek(player, nextTime, { playAfterSeek: true });
   }
 
   // Tab：从循环范围起点播放一遍，到终点暂停不跳回。
@@ -2731,8 +2841,28 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       rangeEnd: loopPlaybackRange.end,
       playbackEnd,
     };
-    setCurrentTime(nextTime);
-    void player.seek(nextTime, { playAfterSeek: true });
+    setLoopPlaybackMonitorRequest((value) => value + 1);
+    startLoopPlaybackSeek(player, nextTime, { playAfterSeek: true });
+  }
+
+  // 所有范围播放入口共用同一套起点确认，避免 VOD 的迟到时钟把旧终点当成新一轮终点。
+  function startLoopPlaybackSeek(
+    player: MediaPlaybackController,
+    target: number,
+    options: MediaPlaybackSeekOptions = {},
+  ) {
+    const requestId = loopStartRequestRef.current + 1;
+    loopStartRequestRef.current = requestId;
+    void player.seek(target, options).then(
+      () => {
+        if (loopStartRequestRef.current === requestId) loopStartRequestRef.current = 0;
+      },
+      () => {
+        if (loopStartRequestRef.current === requestId) {
+          loopStartRequestRef.current = 0;
+        }
+      },
+    );
   }
 
   // 空格时处理临时范围播放意图。
@@ -2773,6 +2903,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       player.pause();
       void player.seek(intent.playbackEnd);
     }
+    continuousLoopPlaybackRef.current = false;
     setCurrentTime(intent.playbackEnd);
     setLoopPlaybackEnabled(intent.restoreLoopEnabled);
   }
@@ -2781,6 +2912,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     const intent = rangePlaybackIntentRef.current;
     rangePlaybackIntentRef.current = null;
     if (intent?.mode === "temporary-continuous-loop") {
+      continuousLoopPlaybackRef.current = false;
       setLoopPlaybackEnabled(false);
     }
   }
@@ -2792,18 +2924,28 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       rangePlaybackIntentRef.current = { ...intent, restoreLoopEnabled: enabled };
     } else {
       rangePlaybackIntentRef.current = null;
+      const snapshot = videoRef.current?.getSnapshot();
+      continuousLoopPlaybackRef.current = Boolean(
+        enabled && snapshot && !snapshot.paused && !snapshot.ended,
+      );
     }
+    if (!enabled) continuousLoopPlaybackRef.current = false;
     setLoopPlaybackEnabled(enabled);
   }
 
   function updateLoopPlaybackRangeFromTimeline(range: { start: number; end: number } | null) {
     cancelRangePlaybackIntent();
     setLoopPlaybackRange(range);
+    const snapshot = videoRef.current?.getSnapshot();
+    continuousLoopPlaybackRef.current = Boolean(
+      range && snapshot && !snapshot.paused && !snapshot.ended,
+    );
     setLoopPlaybackEnabled(Boolean(range));
   }
 
   function clearLoopPlaybackRange() {
     cancelRangePlaybackIntent();
+    continuousLoopPlaybackRef.current = false;
     setLoopPlaybackRange(null);
     setLoopPlaybackEnabled(false);
   }
