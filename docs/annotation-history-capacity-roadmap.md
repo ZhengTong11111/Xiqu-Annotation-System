@@ -2,17 +2,52 @@
 
 更新日期：2026-09-02
 
+## 当前权威状态（HC2 已上线，HC3c 代码与本地演练已完成，2026-09-02）
+
+本节优先于下面按阶段记录的历史章节，供后续开发和运维接手时使用。历史章节中的“生产未执行”“等待授权 A”等
+表述是当时的状态，不代表当前状态。
+
+- 已从提交 `f8c2b1e` 组装并切换不可变生产 release `20260902T205647Z-f8c2b1e`，旧 release 仍保留为回滚候选；生产 API、analysis worker 和 Caddy 均恢复运行，维护模式已关闭。
+- 已在维护窗口完成 36 -> 39 的 expand-only migration。现有标注文件、当前 payload、operation、确认、评论、反馈、审核链接和媒体对象没有被迁移脚本更新、删除或置空。
+- 已完成一致备份与隔离恢复演练：备份包含 95,295 个对象且 manifest/checksum 通过；恢复后的数据库 migration、运行时状态和业务摘要，以及对象存储内容均通过核对，`missing=0`、`orphan=0`。演练数据库和临时对象目录已删除，只保留脱敏恢复报告。
+- 当前生产恢复快照约 47,669 行，`storage_mode=inline`、完整 payload 47,669 行，`payload missing=0`、`reconstructible=0`、`archived=0`、canonical hash 尚未回填。快照 relation 约 6,354,526,208 bytes，24 小时新增约 14,659 行，7 天新增约 46,789 行。
+- 当前数据盘约 34GB 可用，系统盘约 4.1GB 可用。因仍有标注人员在线，后续容量治理必须先做只读规划和空间门禁；不能为了释放空间把数据盘压到安全阈值以下，也不能用长锁表操作替代治理。
+- 为保证恢复演练有足够空间，已删除两份最早的**完整备份副本**，删除前已核对 manifest；没有删除数据库业务行、快照 payload、operation、确认、评论、反馈、审核链接或媒体对象。当前正式备份及近几日完整备份仍保留。
+- 发布后的只读观察中 API 5xx、uncaught/unhandled/fatal/Prisma error 和 worker error 均为 0；由于观察窗口没有新的用户保存/协作流量，保存 smoke 仍需在下一次低干扰窗口由真实用户操作验证，不能把“无错误”写成已完成的保存验收。
+- 在线恢复历史此前出现的异常目前已恢复正常；没有新的可复现错误证据，本路线图不再把恢复历史页面防御性改造作为容量治理前置任务。后续若再次出现问题，必须先保存真实响应/浏览器错误并单独定位，不能借容量治理猜测性修改恢复链路。
+- 当前分支已形成 41 条 migration 的 HC3c2 本地候选，生产仍停在 39 条 migration；本机 `public` schema 已在
+  2026-09-03 完成最后两条 future contract migration，生产保存策略未改变。
+- 本机曾在数据库未应用 HC3c2 future contract 时显式开启 rollout，导致 future snapshot writer 尝试置空仍为
+  `NOT NULL` 的 payload 并使普通保存回滚。现已增加 schema 能力门禁：配置提前到达时自动保留完整 inline，只有
+  payload 可空且最终 CHECK 已存在时才允许 reconstructible；本机 migration 已完成，生产 rollout 仍关闭。
+
+**生产硬门禁**：生产在线保存和恢复仍只使用完整 inline payload；禁止运行 `annotation-history:shadow-recipe --apply`、任何
+`verify-shadow-recipes` 写入变体、compactor、payload 清理、`VACUUM FULL`、`pg_repack` 或删除业务历史。任何新动作都必须先
+确认备份可恢复、数据盘余量足够，并能在短维护窗口内停止和回滚。
+
+## 最新容量决策（2026-09-02）
+
+- **历史冻结**：现有恢复快照、operation、标注、确认、评论、反馈和审核链接全部保留，不再对过去的快照做压缩、清理、置空、归档
+  或物理回收。之前 HC3 中针对历史样本的 planner/shadow/nullable/compactor 设计仅作为研究记录，不再作为当前上线目标。
+- **未来新增记录另行治理**：从未来明确版本开始，新增恢复记录可以使用“检查点 + 可重放 operation 范围 + 完整性 hash”的轻量表示，
+  但必须先完成新的读写 resolver、保存事务、恢复/比较接口、失败回退和隔离演练。现有 inline 历史不能被迁移成新表示，旧历史与新历史
+  可以并存，读取必须按存储形态分别处理。
+- **不以压缩换取当前空间**：当前数据库约 6.42GB，其中恢复快照约 6.06GB；数据盘约 34GB 可用、系统盘约 4.1GB 可用。只要
+  新方案不能在短维护窗口内完成并且没有足够安全余量，就继续完整保存未来快照，不执行冒险的空间回收。
+- **恢复历史故障暂不作为当前容量任务**：在线恢复历史已经恢复正常，近期只读核查没有固定的恢复接口错误。保持现有读取合同不变；只有再次有可复现证据时，才建立独立的恢复历史修复任务。
+
 ## 1. 问题与目标
 
 当前每次服务器 revision 成功推进前，都会把完整旧 `AnnotationFile.payload` 写成一条
 `AnnotationRecoverySnapshot`。该设计保证事故恢复简单可靠，但自动保存和协作 operation 已经高频化后，完整 JSON 与
 revision 一比一复制，容量随保存次数而不是研究内容增长。
 
-目标不是删除历史，而是把“每个 revision 都有完整 JSON”改为“少量完整检查点 + 完整 operation 链 + 每个 revision 的
-轻量元数据/hash”。任意被压缩的 revision 必须仍能按需无损重建、比较和恢复；无法证明重建一致的快照必须原样保留。
+当前决定分成两个生命周期：**既有历史冻结保留**，**未来新增快照才允许采用轻量表示**。现有每个 revision 的完整 JSON
+不迁移、不压缩、不清理；未来新增记录可以在保存事务中使用“少量完整检查点 + 完整 operation 链 + 每个 revision 的轻量
+元数据/hash”，但必须先完成双形态 resolver、原子保存、恢复/比较接口、失败回退和隔离演练。
 
-硬约束：现有标注、operation、恢复快照、审核事实和对象存储一个都不能因本专项丢失。所有生产压缩都必须经过
-expand -> dry-run/影子验证 -> migrate -> contract，并提供停止、重试和回滚路径。
+硬约束：现有标注、operation、恢复快照、审核事实和对象存储一个都不能因本专项丢失。未来轻量快照必须与旧 inline 历史并存，
+任何 proof、读取或磁盘安全门禁失败都回退为完整 inline；不能为了节省空间牺牲保存、协作或恢复可靠性。
 
 ## 2. 生产只读基线
 
@@ -216,17 +251,266 @@ payload，或先建立能**逐字节重建原历史格式**的专用证明；把
 - 记录至少一轮真实 relation bytes、storage/hash 覆盖、24h/7d 增量和 planner dry-run 基线，确认采集耗时与数据库负载。
 - 只有生产 resolver、分页、依赖保护与指标均稳定，且一致备份/恢复演练完成后，才允许规划 HC3 影子 recipe 写入。
 
-### HC3：影子 recipe 与小批次无损压缩
+#### HC2g：生产观察手册与不可变 release 入口（代码与文档已完成，生产未执行）
 
-- 在不清空 payload 的情况下回填 hash/recipe，后台影子重建并持续比对。
-- 先选择少量非关键测试文件，在维护/备份条件下允许 payload nullable；逐批压缩、验证、恢复演练。
-- 任一失败停止该文件并保留 inline；禁止全库“一把梭”。
+- 新增 [`annotation-history-production-observation.md`](./annotation-history-production-observation.md)，把生产动作拆为三次独立授权：
+  expand-only 部署/只读观察、指定非关键文件的小批量影子 recipe、未来 nullable payload/compactor。手册复用通用部署、维护、
+  一致备份、隔离恢复与原子切换流程，并单独冻结样本顺序、脱敏报告、停止条件和回滚证据；前一阶段通过不会自动授权下一阶段。
+- 三条历史治理 package script 已从 `tsx apps/api/src/*.ts` 改为同一不可变 release 的
+  `dist/api/annotationHistory*Cli.js`。`release:inspect` 也把这些编译入口列为必需文件；候选缺失时必须重新构建，禁止把源码或开发依赖
+  临时复制进服务器 release。
+- 新增入口合同测试：构建后核对 package script 与三个 dist 文件，并向每个 CLI 注入不可连接的哨兵数据库地址；缺少范围参数必须
+  在访问数据库之前稳定失败，输出保持有界且不能泄露连接信息。入口合同 2/2、部署专项 29/29、容量专项 33/33、完整 API
+  338/338 与完整构建通过。
+- 本阶段没有 schema/migration、历史算法、在线 API 或依赖变化，也没有连接生产、部署、执行 migration、写影子 recipe、清空
+  payload、运行 compactor 或物理回收。下一步仍停在授权 A：只有用户明确批准当前候选后，才能按手册执行生产 HC2 观察。
 
-### HC4：未来保存策略与运维闭环
+#### HC2h：本地不可变候选组装演练（已完成，生产未执行）
 
-- replayable 保存按阈值建立检查点，其余直接保存 recipe；非可重放提交保持 inline。
-- 增加管理员容量面板、compactor 进度/取消/重试、固定 Prometheus 指标和磁盘/备份增长告警。
-- 根据真实 relation/backup 增量决定是否归档旧 inline checkpoint，以及是否维护窗口物理回收 PostgreSQL 空间。
+- 从已审查 commit `5e2ed07` 重新完整构建，并严格按部署复制白名单在系统临时目录组装 554MB 候选。候选根只有
+  `package.json`、lockfile、Prisma config/migrations、`packages`、`dist`、`node_modules` 和两个部署 smoke 脚本；没有 `.env`、
+  `data`、docs、备份、报告、密钥或应用源码根目录，两个 workspace 链接均解析到候选内部。
+- 当时的候选内 `release:inspect` 确认 30 个运行路径、27 个生产依赖和 49 条 migration；后续 HC2i 发现其中混入未部署且最终
+  反向删除的 Force Alignment migration，因此该旧候选已经废弃，不能部署。`release:check` 当时确认 Prisma Client 与候选 schema
+  一致。三个历史治理编译入口逐项存在并取得 SHA-256，三条 npm script 在没有数据库配置时都先以严格范围参数错误退出，未出现
+  `ECONN`、Prisma、数据库 URL 或无界错误输出。
+- 演练后已删除整个 554MB 临时候选并复核路径不存在，没有生成可误认作已部署 release 的 `/opt/xiqu` 状态。该证据只证明当前
+  commit 可以形成完整候选，仍不构成授权 A；生产 release 必须在当次授权后从当时的明确 commit 重新构建和检查。
+- 本轮完整 API 338/338、完整构建与 `git diff --check` 通过；仅修改 roadmap/Development Log，没有新增依赖、schema、migration、
+  运行时代码或新的 AGENTS 规则。
+
+#### HC2i：容量治理生产前风险审查（代码修复完成，生产未执行）
+
+- 只读复核生产仍运行 `0f4bf69`、36 条 migration、PostgreSQL 16.15，API/worker/Caddy 正常且维护关闭。当前恢复快照已增长到
+  47,474 行、总 relation 约 6.0GB；主表 heap 约 8.8MB、索引约 9.8MB，约 6.0GB 位于 TOAST。容量等价聚合的生产
+  `EXPLAIN ANALYZE` 约 19ms，只扫描主表页，没有读取或解压 payload。
+- HC2a/HC3a migration 只增加 enum、常量默认列、nullable 轻量列与 CHECK；没有 `UPDATE/DELETE/TRUNCATE/DROP payload`。
+  PostgreSQL 16 对常量默认使用 fast default，不重写历史行；CHECK 只读取新增轻量列。正式执行仍必须在维护排空并停止 worker 后
+  取得表锁，不能把低扫描成本误解为可在线无维护迁移。
+- 审查发现影子 `--apply` 曾把 planner 放在普通可写连接上，导致只读门禁和 statement timeout 在 apply 模式失效；现已改为
+  planner 始终使用独立强制只读连接，可写连接只在完整计划通过后创建。写服务的每个候选事务还会 `FOR SHARE` 锁定并确认
+  `platform_runtime_state.platform` 仍处于维护状态；未维护或批次间退出维护固定以 `maintenance_required` 阻断且零写入。
+- 已删除 10 条从未进入生产、只为错误 Force Alignment 服务端 pipeline 建表后再删表的草稿 migration，以及对应僵尸迁移测试。
+  当前候选从生产 36 条基线只前进到 39 条：容量 expand、影子 recipe 字段、轻量工具尝试旁表。历史升级演练先写入现有 annotation
+  payload、operation、snapshot、确认、评论、反馈和审核链接，再执行 37-39；升级前后原业务列逐项完全相等。
+- 在线保存和原子命令提交仍只创建 `storageMode=inline` 且包含完整 payload 的旧式快照；容量代码没有修改 revision 发布、operation
+  feed、WebSocket、确认/评论/反馈写入或审核链接。同步 inline resolver 仍是详情/恢复唯一线上入口，异步 reconstructible 协调器
+  没有 ResourceService/router/config 调用点；没有自动 recipe、nullable payload、compactor、清理器或 VACUUM。
+- 容量专项 34/34、生产 36 -> 39 migration 演练 1/1、发布入口 2/2、部署专项 29/29、完整 API 337/337、完整构建与
+  `git diff --check` 均通过。自审没有发现会让现有保存、跨实例同步、恢复、确认/评论/反馈或审核链接失效的剩余阻断问题。
+- 提交 `8f2cfb6` 后又按部署白名单完成一次不可变候选结构演练：`release:inspect` 通过 30 个运行路径、27 个生产依赖、39 条
+  migration，`release:check` 的 Prisma schema 校验通过，三条历史治理 CLI 均存在；候选使用硬链接避免复制大依赖，演练后临时目录
+  已清理。
+  本审查只消除了已知代码门禁和迁移链风险，仍不等于授权 A，更不授权影子 apply、payload 清空、compactor 或物理回收。
+
+### HC3：历史压缩方案（已冻结，不再执行）
+
+HC3 原本针对已有历史快照筛选和压缩，现因生产仍有标注且用户明确要求保留过去记录而冻结。HC3a、HC3a2、HC3b1、HC3b2a、
+HC3b2b 的代码和测试保留为未来研究参考，但不允许对生产既有行执行 planner apply、shadow recipe、payload nullable 清理或
+storage mode 迁移。新的未来快照方案改在 HC3c 重新设计，不能沿用“批量改造旧历史”的任务单。
+
+#### HC3a：inline 影子 recipe 候选（历史方案，冻结）
+
+- 新增 `recipeVerifiedAt`，明确区分“完整 payload 尚在、recipe 已重建验证”和真正的 `compactedAt`。expand migration
+  不执行任何历史 `UPDATE/DELETE/TRUNCATE`，`payload` 继续 `NOT NULL`，HC2a 的 inline-only 约束继续禁止
+  `reconstructible/archived`；inline 行也禁止写入 `compactedAt`。
+- 影子验证继续复用 HC1 当前格式 parser、正式领域 command adapter 与 canonical hash。事务外 planner 只提供候选；每个
+  候选写入前取得同文件 advisory lock、`annotation_files FOR SHARE` 和目标/checkpoint snapshot 行锁，重新读取并完整重放。
+  文件 revision、目标 hash、operation 范围、recipe 身份或存储模式任一漂移都会以固定码阻断并停止该文件。
+- 新 CLI `annotation-history:shadow-recipe` 默认 dry-run，必须指定单文件；只有显式 `--apply` 才写入，默认最多 16、硬上限
+  100 个候选，每个 recipe 最多 10,000 条 operation。完全相同的 recipe 重试不更新时间；不同已有 recipe 绝不覆盖。
+- 专项 22 项验证 planner、重放、迁移、单文件写入、payload/inline 保留、幂等、revision 漂移和冲突停止；resolver 5 项、
+  客户端原子保存 34 项、完整 API 323 项及完整构建通过。测试数据库已执行 migration，本机/生产业务数据库和服务器
+  release 均未部署。
+- 已新增真实 Prisma 历史升级演练：在独立 `_test` schema 先执行生产现有 36 条 migration，写入标注正文、operation、恢复快照、
+  确认、评论、反馈和审核链接，再执行清理后的 37-39。升级前后的生产基线列逐项相等；HC2/HC3a 只新增 inline 元数据且不自动
+  写 recipe，轻量工具尝试旁表独立创建。错误 Force Alignment pipeline migration 已在进入生产前删除，不再用“先建再删”证明安全。
+  该本地证据不代表生产 migration、影子写入或部署已经获准。
+- 本阶段不产生容量回收：payload 仍完整存在，指标中的 payload-present 数不会下降。只有完成 HC2 生产观察、一致备份/恢复
+  演练，并对少量非关键文件完成真实影子观察后，才能另行设计 HC3b 的 nullable payload 与读取重建切换。
+
+#### HC3a2：已存影子 recipe 强制只读复核（历史方案，冻结）
+
+- 新增单文件 `annotation-history:verify-shadow-recipes` CLI 和唯一只读复核服务。它只选择已经保存完整 recipe 且仍为 inline 的
+  快照，默认最多 16、硬上限 100 个候选，每个候选最多读取 10,000 条 operation；按 revision/id 稳定顺序逐条验证，首个漂移
+  即停止该文件，不执行自动修复或覆盖。
+- 复核在 PostgreSQL `default_transaction_read_only=on` 连接和 `REPEATABLE READ` 事务中运行，使用独立 advisory lock、statement
+  timeout 和有界连接池。服务层不存在 Prisma mutation；报告只包含文件/快照身份、revision、固定状态码与计数，不输出正文、
+  ProjectData、operation body、媒体地址、对象 key、数据库连接或凭据。
+- 数据库 recipe 字段必须整组存在；checkpoint 必须仍属于同一文件并保持 inline，目标不能已 compact。实际重建只调用
+  `reconstructAnnotationHistoryPayload()`，没有第二套 parser、领域 command apply、canonical hash 或 recipe 比较逻辑。终止信号在
+  候选读取前或读取期间到达都会准确报告 interrupted，并由事务/statement timeout 提供有界退出。
+- 为容量集成测试抽出一份共享完整历史夹具，删除影子写入与只读复核之间重复的账号、文件、快照和 operation 构造代码。
+  `buildAnnotationHistoryRecipe()` 与纯重建内核的 snapshot 类型也收紧到实际使用的身份字段，没有改变运行语义。
+- 容量专项 33/33、完整 API 334/334 与完整构建通过；自审确认没有数据库写入、在线 API、timer、worker、schema migration、
+  payload 清理或生产连接。该工具可供未来生产观察使用，但本轮没有运行生产复核，也不构成影子写入、nullable migration、
+  compactor、`VACUUM` 或部署授权。
+
+#### HC3b1：统一纯重建内核（历史方案，冻结）
+
+- 新增唯一纯函数 `reconstructAnnotationHistoryPayload()`：严格校验文件/checkpoint/target 身份、recipe version/hash/range，
+  复用现有 current ProjectData parser、revision validator、正式领域 command apply、canonical hash 和 recipe builder，从有界事实
+  重建目标 ProjectData。失败只返回固定低基数错误码，不查询数据库、不返回正文或 operation payload。
+- HC3a 影子验证已改为该内核的薄包装；目标 inline payload 只作为“原正文仍在场”的额外格式/hash 证据。旧的重复解析、重放、
+  hash 和 recipe 比较代码已删除。结构非法 recipe 返回 `recipe_invalid`，形状合法但 operation 范围漂移返回 `recipe_changed`。
+- 本轮没有修改 Prisma schema、恢复历史数据库查询、详情/恢复 API 或 `resolveAnnotationRecoverySnapshotPayload()`；inline 历史任意
+  JSON 仍原样返回，`reconstructible/archived` 仍 fail closed，payload 仍 `NOT NULL`，inline-only CHECK 仍生效。
+- 容量专项 27/27、resolver 5/5、原子保存 34/34、完整 API 328/328 与完整构建通过；随后完成的 HC3a2 已通过唯一内核对
+  数据库中的已存 recipe 提供强制只读复核。下一步仍必须先完成 HC2 生产观察、
+  一致备份/恢复演练和少量影子观察；本纯内核不构成 nullable migration、compactor 或生产部署授权。
+
+#### HC3b2a：数据库重建事实装载边界（历史方案，冻结）
+
+- 新增 `annotationHistoryReconstructionFacts.ts`，集中读取已存 recipe、同文件 inline checkpoint 与 recipe revision 范围内的
+  committed operation。每次只处理一个目标快照，operation 上限统一为 10,000；checkpoint 缺失/模式改变、recipe 字段不完整或
+  operation 超限返回固定低基数错误码，不读取 annotation 当前正文、审核、媒体、对象、账号或权限。
+- 该模块只负责有界数据库事实，不解析 ProjectData、不 apply command、不计算 hash、不比较 recipe，也不存在 Prisma mutation。
+  HC3a2 只读复核已改为它的第一个调用者，然后把结果交给唯一纯重建内核；验证服务中旧 checkpoint/operation 查询、recipe 解析与
+  旧 operation 上限常量已经删除。
+- 影子 recipe 写服务仍保留自己的写前加锁重读：它面对的是尚未持久化的 planner 候选，并需要文件共享锁、snapshot `FOR UPDATE`
+  与轻量元数据 UPDATE，不能错误复用只读 stored-recipe loader。两条路径共用同一个重建 operation 上限和纯重建内核，但锁与写职责
+  保持分离。
+- 容量专项 33/33、inline resolver 5/5、客户端原子保存 34/34、完整 API 334/334 与完整构建通过。本轮没有 schema/migration、
+  payload nullable、storage mode 切换、在线详情/比较/恢复接线、生产连接或部署；现有在线 resolver 仍拒绝 reconstructible/archived。
+
+#### HC3b2b：禁用态异步 payload 协调器（历史方案，冻结）
+
+- 新增 `annotationRecoverySnapshotPayloadService.ts`，组合既有 inline resolver、HC3b2a 数据库事实装载和 HC3b1 纯重建内核。
+  inline 继续原样返回任意历史 JSON 并校验可选 hash；archived 和默认 reconstructible 继续返回
+  `snapshot_storage_mode_unsupported`。
+- reconstructible 候选路径必须持有模块 Symbol 品牌的隔离测试能力，不能由 JSON、HTTP 参数或环境变量构造；能力工厂当前只在测试
+  中引用。`resourceService`、router、config、env、详情、比较与恢复没有接线或启用点，因此这不是隐藏的线上 feature flag。
+- 候选重建不使用 target inline payload，严格要求未来行同时满足 `payload=null` 与 `compactedAt!=null`；正文仍在或缺少压缩时间的
+  半迁移状态分别固定阻断。recipe/事实/重建失败只返回 snapshot/file/revision 与低基数 code，不返回正文、hash、recipe 或 operation。
+- resolver 专项 9/9、容量专项 33/33、完整 API 338/338 与完整构建通过。隔离 PostgreSQL 用真实 stored recipe、checkpoint 与
+  operation 重建出目标 ProjectData，数据库行保持 inline 且逐项不变；没有 schema/migration、payload 清理、在线行为、生产连接或部署。
+
+### HC3a0：生产只读校准与恢复读取验收（已被“历史冻结、未来治理”决策取代）
+
+该阶段原计划用于筛选历史压缩候选，现不再作为历史治理任务执行。下面的只读门禁仍保留为未来新方案上线前的通用
+安全要求，但不能据此扫描或改写现有历史。
+
+- [ ] 从当前生产 release 的 `/etc/xiqu-platform/xiqu-platform.env` 受控加载环境，确认服务名为 `xiqu-api.service`，所有 CLI
+  在 `sudo -u xiqu` 下运行；报告只写到 release/Git 之外的受控目录，不输出连接串、正文、operation body、媒体 URL、对象 key 或凭据。
+- [ ] 先读取数据盘和系统盘可用空间，设置硬门禁：低于预设安全余量时只结束检查，不创建候选、不复制数据库、不做物理回收；候选和恢复临时目录必须位于数据盘。
+- [ ] 只读运行容量 metrics，并按历史量分层选择少量文件：低历史量、中等历史量、高历史量各取有限样本；每次明确 file id 和扫描上限，单批保持有界，不全库并发扫描。
+- [ ] 对选定文件执行 planner dry-run 和已存 recipe 的强制只读复核，比较 inline 保留数、blocked 原因、最大 operation 重放量、预计逻辑节省量和单文件耗时。旧格式失败必须继续保留 inline，不能通过归一化猜测可重建。
+- [ ] 只读检查恢复历史的详情、比较、恢复和审核/评论关联读取路径，确认 inline resolver 在当前 39 条 migration 下返回与旧数据一致；不以列表数量代替内容一致性证明。
+- [ ] 在隔离测试库补充与生产快照分布相近的长链、非可重放边界、旧格式和审核引用夹具，验证 planner 的停止条件、分页、恢复和低磁盘门禁。
+- [ ] 输出一份脱敏校准报告，给出候选保留率、blocked 率、最大重放成本、预计逻辑节省量、数据库/对象备份增长和推荐的下一步批次；没有足够收益或余量不足时，明确结论为暂不治理。
+- [ ] 完成本地专项测试、完整构建、自审和文档更新后再提交。除非用户另行明确授权，不部署本阶段代码，不进入 HC3a shadow apply。
+
+**HC3a0 的完成条件**：只读报告可复现，恢复/比较路径通过，所有候选都有固定结论，数据盘安全余量未下降，且没有任何
+生产业务事实或快照 payload 发生变化。完成后再单独评估“少量、非关键文件的 shadow recipe”是否值得进入下一阶段。
+
+### HC3c：未来新增快照的轻量保存（滚动实施中）
+
+本阶段只针对上线后产生的新恢复记录，绝不回写或改造现有历史。在线恢复历史已经正常，因此本阶段不再夹带没有证据的
+恢复 UI 防御修改；双形态读写仍必须在正式上线前完成隔离验证。
+
+#### HC3c1：未来快照决策边界（已完成，本地未接入线上）
+
+- 已新增唯一的纯函数策略入口，明确 rollout、保存 reason、检查点、精确重建证明和 operation 重放预算的决策顺序。
+- 未到明确 rollout、不是普通 `save`、属于检查点、证明缺失/失败/形状不合法、hash 算法版本漂移、revision/operation 范围不一致或
+  超过预算时，一律要求完整 inline payload；只有完整证明通过时才返回 reconstructible recipe。
+- 策略只消费现有重建内核产生的证明，不复制 parser、command apply 或 canonical hash 计算；它没有被保存服务、恢复 resolver、schema
+  或生产配置调用，因此本轮不会改变线上写入和恢复行为。
+- 已补充 hash 算法版本、目标/检查点 revision、operation 范围、失败回退和预算边界测试；完整 API 测试 343/343，容量专项、历史专项、
+  构建和 `git diff --check` 通过。
+- 本轮不修改 schema、不应用 migration、不改变现有恢复历史，不连接生产、不部署、不进入维护。
+
+**HC3c1 完成条件已满足**：未来决策内核有明确 fail-closed 合同，旧历史和线上链路零变更；它只是 HC3c2 的本地前置能力，不能被
+描述为“未来轻量快照已经上线”。
+
+#### HC3c2：双形态数据库合同与 resolver（已完成，本地未部署）
+
+本阶段已在本地隔离库完成可审查、可回滚的 expand 阶段；没有清理历史，也没有接入生产保存。
+
+- [x] 先定义不可变的历史边界：HC3c2 通过显式 schema 合同识别存储形态；边界之前的行永远保持
+  `inline + payload`，不能按 createdAt 猜测或迁移。
+- [x] 新增第 40 条 expand migration 允许 nullable payload 和完整 reconstructible 行；第 41 条修正并保留 HC3a 的完整 payload inline
+  shadow recipe。数据库拒绝 payload/recipe 半迁移、revision/operation 范围错误和 archived 未实现形态；migration 不更新旧行。
+- [x] 详情与恢复动作已改为在同一事务中共用异步双形态 resolver。inline 原样校验返回；reconstructible 复用现有 loader、重建和
+  canonical hash；缺事实、越权、超预算或 hash 不一致均固定 fail closed，不返回近似 ProjectData。
+- [x] 删除不再需要的 Symbol 测试读取能力，避免把测试开关伪装成运行时 feature flag；没有复制 parser、command apply 或 hash。
+- [x] 隔离库完成 39 -> 41 migration；旧 inline、inline shadow、完整 reconstructible、半迁移、archived 和历史业务事实升级测试通过。
+- [x] 完成恢复 resolver、容量历史专项和完整 API 回归（344/344），构建与 `git diff --check` 通过；生产未连接、未迁移、未部署。
+
+HC3c3 的本地候选仍不等于生产上线：生产当前仍是 39 条 migration 和 inline-only。只有显式 rollout、40/41 条 migration、备份/恢复演练和
+短维护发布全部获授权后，线上新快照才可能使用轻量路径；在此之前保存继续完整 inline。
+
+#### HC3c3：保存事务接线与失败补偿（已完成，本地候选未启用）
+
+本阶段才讨论让未来新快照使用 HC3c1 的决策结果，仍先限于本地隔离库。必须先完成纯映射和事务测试，再评估短维护发布。
+
+- [x] 新增唯一 `annotationHistoryFutureSnapshotWriter`，先创建完整 inline，再在同一事务内用既有重建内核验证；有效证明才写完整
+  reconstructible recipe、`payload=null`、`compactedAt` 和 hash，所有失败路径保留 inline。
+- [x] 接入普通 `ResourceService.saveAnnotationFile` 和原子 `AnnotationCommandCommitService`，已有同 revision 快照保持幂等不重算；
+  保存、AnnotationFile、operation、revision、租约和工具 attempt 仍由各自原事务整体提交或回滚。
+- [x] rollout 默认关闭并由 `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT` 严格解析；检查点阈值统一复用容量策略，特殊 reason、首个
+  快照、空/超预算/不可重放链、证明失败和旧 release 合同继续 inline/fail closed。
+- [x] 集成测试覆盖有效 reconstructible 读取、证明失败 inline 回退、配置边界和旧 API 回归；完整 API 347/347、完整构建、schema guard
+  与 `git diff --check` 通过。生产仍为 39 条 migration，未应用 40/41，未启用 rollout，未写入或改变任何历史事实。
+- [x] 复查恢复详情、恢复、比较依赖的详情接口、备份/隔离恢复与容量指标没有复制 parser/replay/hash，也没有引入正文、operation body、
+  媒体 URL、凭据或对象 key 到 recipe/日志。
+
+#### HC3c4：本地 rollout 验收与生产发布门禁（已完成，本地未发布）
+
+本阶段先完成本地可重复发布证明，不连接生产、不应用 production migration、不打开线上 rollout。目标是把“代码已接线”和“可以安全启用”
+分成两个可审计结论。
+
+- [x] 在隔离库验证默认 `disabled`、显式 `future-reconstructible-v1`、特殊保护 reason、有效命令链、证明失败、同 revision 幂等和事务回滚；
+  有效链可由异步 resolver 无损恢复，失败/保护路径保留完整 inline，事务回滚不留下快照。
+- [x] 既有容量、resolver、详情/恢复/比较和完整 API 回归继续通过；旧 inline 与新 reconstructible 共存的读取合同仍由同一 resolver 承担，
+  不返回近似 ProjectData，也没有改动确认、评论、反馈、审核链接或媒体事实。
+- [x] rollout 配置只接受 `disabled` 或 `future-reconstructible-v1`，默认关闭；保存 writer 只在普通/原子保存和恢复前保护入口装配，worker、
+  CLI 和旧 release 不会自行打开未来写入策略。生产仍为 39 条 migration，不能把本地 41 条 schema 带入线上。
+- [x] 增加低基数 rollout/回退观测：事务成功后才记录 storage 结果、固定回退原因和耗时；回滚与原子命令幂等重放不计为新写入，观测不携带
+  payload、operation body、账号、媒体 URL、凭据或对象 key。
+- [x] 完成专项 5/5、观测 11/11、完整 API 350/350、完整构建、Prisma schema guard、串行容量专项 35/35 和 `git diff --check`；未连接生产、
+  未应用 40/41 migration、未启用 rollout、未进入维护、未部署。
+
+#### HC3c5：生产发布前只读门禁与人工 smoke（本地门禁已完成，生产发布待授权）
+
+本阶段仍不自动发布。只有在用户明确授权新的 release 后，才按独立任务执行生产 39 -> 41 的备份、隔离恢复、短维护迁移和回滚验证；
+没有授权时只完成不写数据库的候选检查和清单审查。
+
+- [x] 已通过本地候选部署静态门禁（`test:deployment` 30/30）：部署说明和生产 env 模板显式固定
+  `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT='disabled'`，runtime config 只接受两个受限值；release inspector、Prisma schema guard、
+  migration/worker/CLI 默认值和旧 inline 回滚合同仍未发现静态缺口。
+- [x] 本地自动化已覆盖脱敏 manifest/checksum、空目标门禁、原子对象发布、失败补偿、远端物化/恢复清理与保留计划；部署/备份专项分别
+  通过 `test:deployment` 30/30、`test:backup` 32/32。测试使用隔离临时资源，不读取或记录正文、operation body、媒体 URL、凭据或对象 key。
+- [x] 已使用本机真实 PostgreSQL 16 开发库和约 887 MiB 本机对象目录执行 compiled CLI 的 backup -> verify -> isolated restore 闭环：
+  2,376 个对象零 warning，恢复的 migration history、维护状态、数据库摘要和对象 checksum 全部通过；固定业务计数与源库完全一致，临时数据库、
+  备份和对象目录随后全部清理。本机长期开发库保留 49 条历史 migration，因此该证据验证真实 CLI，不替代生产 39 -> 候选 41 升级演练；
+  完整 API 351/351、完整构建和 Prisma schema guard 随后通过。
+- [ ] 真实生产备份与目标库/对象目录隔离恢复演练仍待明确授权和容量窗口；本地专项通过不等于生产备份已创建，也不等于生产数据已恢复验证。
+- [x] 已形成短维护窗口的发布、备份、迁移、切换、smoke 和回滚顺序清单，并由部署静态测试锁定；生产执行前仍必须重新核对系统盘/数据盘余量、
+  备份 manifest 和候选 release，任何一项不足都停止，不应用 migration、不改变快照 payload。
+- [ ] 若获授权发布，先保持 rollout=`disabled` 完成 migration 与旧 inline smoke，再由人工决定是否另一个 release 才启用
+  `future-reconstructible-v1`；启用前必须核对新旧读取、普通保存、原子保存、恢复保护和观测指标。
+- [ ] 发布后观察固定低基数指标、保存/协作/恢复/审核路径和磁盘余量；任何保存异常、恢复不一致、空间越线或指标异常都回滚代码开关/候选，
+  不删除或改写既有历史。
+
+**HC3c 完成条件**：旧历史零变更；未来新记录在证明成功时才使用轻量形态；所有失败路径自动保留 inline；详情/比较/恢复和
+备份恢复均可读取两种形态；测试、构建、低干扰线上 smoke 和回滚证据齐全。空间不足时系统必须继续可靠保存或明确阻止治理，
+不能把数据库压到安全余量以下。
+
+### HC4：未来保存策略与运维闭环（收敛为生产观察，不再开发历史 compactor）
+
+当前产品决策已经冻结全部既有历史，因此 HC4 不再实现旧 inline 快照归档、payload 清理、后台 compactor 或其管理员任务面板；这些功能会与
+“过去记录不压缩、不删除、不置空、不归档”的硬边界冲突。未来记录的轻量化由 HC3c 保存事务同步决定，证明失败立即保留 inline，不另建异步改写器。
+
+- 第一阶段生产发布保持 rollout=`disabled`，只验证 39 -> 41 expand migration、旧 inline 详情/比较/恢复、普通/原子保存、协作 catch-up、
+  确认/评论/反馈与审核链接不回归。
+- 只有第一阶段稳定且再次获得明确授权，才启用 `future-reconstructible-v1`；观察已有固定低基数 Prometheus 指标、数据库 relation/增长率、
+  inline 回退原因、保存错误和磁盘安全余量，不增加会读取正文或 operation body 的在线面板。
+- 新 reconstructible 快照依赖的 checkpoint/operation 继续由既有依赖保护合同保留；任何 malformed、缺 checkpoint、超预算或扫描截断都
+  fail closed 并保护全部候选，不能为了空间清理依赖事实。
+- 完成一个约定观察窗口后再决定检查点阈值是否需要调整；阈值调整只影响未来写入，不能追溯改造既有 inline 历史，也不触发物理回收。
+
+**HC4 完成条件**：生产 rollout 分阶段启用并完成低干扰 smoke；观察窗口内保存/协作/恢复/审核链路稳定，轻量快照可精确恢复且失败自动
+回退 inline；容量增速和磁盘余量有真实数据。无需、也不得以历史 compactor 或旧 payload 清理作为完成条件。
 
 ## 10. 停止条件
 

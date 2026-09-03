@@ -17,6 +17,7 @@ import {
   ANNOTATION_HISTORY_GROWTH_WINDOWS,
   ANNOTATION_HISTORY_STORAGE_MODES,
 } from "./annotationHistoryCapacityMetrics.js";
+import type { AnnotationHistoryFutureSnapshotWriteResult } from "./annotationHistoryFutureSnapshotWriter.js";
 import type { MaintenancePermitDiagnostics } from "./maintenanceCoordinator.js";
 
 export type UploadMetricResult =
@@ -58,6 +59,8 @@ export class ApiObservability {
   private readonly annotationRecoverySnapshotPayloads: Gauge;
   private readonly annotationRecoverySnapshotHashes: Gauge;
   private readonly annotationRecoverySnapshotRecentCreated: Gauge;
+  private readonly annotationHistoryFutureSnapshotWrites: Counter;
+  private readonly annotationHistoryFutureSnapshotDuration: Histogram;
   private readonly processingJobs: Gauge;
   private readonly processingJobOldestAge: Gauge;
   private readonly processingJobStaleClaims: Gauge;
@@ -183,6 +186,20 @@ export class ApiObservability {
       name: "xiqu_annotation_recovery_snapshot_recent_created",
       help: "Annotation recovery snapshots created in fixed recent windows.",
       labelNames: ["window"],
+      registers: [this.registry],
+    });
+    // 未来快照只记录 rollout、固定结果和回退原因；不把文件、账号或错误正文写入指标标签。
+    this.annotationHistoryFutureSnapshotWrites = new Counter({
+      name: "xiqu_annotation_history_future_snapshot_writes_total",
+      help: "Committed future recovery snapshot writes by bounded rollout outcome.",
+      labelNames: ["rollout", "result", "fallback_reason"],
+      registers: [this.registry],
+    });
+    this.annotationHistoryFutureSnapshotDuration = new Histogram({
+      name: "xiqu_annotation_history_future_snapshot_duration_seconds",
+      help: "Committed future recovery snapshot decision duration by bounded outcome.",
+      labelNames: ["rollout", "result"],
+      buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
       registers: [this.registry],
     });
     this.processingJobs = new Gauge({
@@ -399,6 +416,22 @@ export class ApiObservability {
       this.storageCleanupDeleted.inc(
         { kind: "file_object" },
         deletedFileObjectCount,
+      );
+    }
+  }
+
+  recordAnnotationHistoryFutureSnapshot(
+    result: AnnotationHistoryFutureSnapshotWriteResult,
+  ) {
+    this.annotationHistoryFutureSnapshotWrites.inc({
+      rollout: result.rollout,
+      result: result.result,
+      fallback_reason: result.fallbackReason ?? "none",
+    });
+    if (Number.isFinite(result.durationMs) && result.durationMs >= 0) {
+      this.annotationHistoryFutureSnapshotDuration.observe(
+        { rollout: result.rollout, result: result.result },
+        result.durationMs / 1_000,
       );
     }
   }

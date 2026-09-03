@@ -32,8 +32,6 @@ export const PROCESSING_JOB_TYPE_LABELS: Record<ProcessingJobType, string> = {
   audio_extract: "音频提取",
   annotation_export: "标注导出",
   media_analysis: "媒体分析",
-  force_alignment: "强制对齐",
-  alignment_training_export: "对齐训练导出",
 };
 
 export function isProcessingJobActive(status: ProcessingJobStatus) {
@@ -62,9 +60,7 @@ export function canRetryProcessingJobRequest(
   item: ProcessingJobRequestListItem,
   user: PlatformUser,
 ) {
-  // 两类计算共用同一条幂等重试命令；其他治理任务仍不能伪装成可重试。
-  return (item.job.type === "media_analysis" || item.job.type === "force_alignment") &&
-    (item.requester.id === user.id || hasFullPlatformResourceAccess(user.roles)) &&
+  return (item.requester.id === user.id || hasFullPlatformResourceAccess(user.roles)) &&
     (item.job.status === "failed" || item.job.status === "cancelled");
 }
 

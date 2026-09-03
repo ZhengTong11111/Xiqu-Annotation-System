@@ -9,8 +9,7 @@ test("开发环境保留本机默认值，便于直接启动", () => {
   assert.match(config.databaseUrl, /localhost:54329/);
   assert.equal(config.seedDevelopmentData, true);
   assert.equal(config.corsOrigin, true);
-  assert.equal(config.forceAlignmentRequestsEnabled, false);
-  assert.equal(config.forceAlignmentExecutorPath, null);
+  assert.equal(config.annotationHistoryFutureSnapshotRollout, "disabled");
   assert.deepEqual(config.aliyunVod, {
     enabled: false,
     region: null,
@@ -26,13 +25,25 @@ test("生产环境默认禁用开发种子和跨源访问", () => {
   assert.equal(config.seedDevelopmentData, false);
   assert.equal(config.corsOrigin, false);
   assert.equal(config.host, "127.0.0.1");
-  assert.equal(config.forceAlignmentRequestsEnabled, false);
-  assert.equal(config.forceAlignmentExecutorPath, null);
+  assert.equal(config.annotationHistoryFutureSnapshotRollout, "disabled");
   assert.deepEqual(config.aliyunVod, {
     enabled: false,
     region: null,
     webPlayerLicense: null,
   });
+});
+
+test("未来恢复快照 rollout 必须使用受限版本名", () => {
+  const config = loadApiServerRuntimeConfig({
+    XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT: " future-reconstructible-v1 ",
+  });
+  assert.equal(config.annotationHistoryFutureSnapshotRollout, "future-reconstructible-v1");
+  assert.throws(
+    () => loadApiServerRuntimeConfig({
+      XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT: "true",
+    }),
+    /ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT/,
+  );
 });
 
 test("阿里云 VOD 必须显式启用并提供有效区域", () => {
@@ -130,24 +141,6 @@ test("无效端口和安全布尔值会在监听前失败", () => {
   }
   assert.throws(
     () => loadApiServerRuntimeConfig({ XIQU_SEED_DEVELOPMENT_DATA: "yes" }),
-    /只接受 true 或 false/,
-  );
-  const alignment = loadApiServerRuntimeConfig({
-    XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED: "true",
-    XIQU_FORCE_ALIGNMENT_EXECUTOR_PATH: "/opt/xiqu/bin/force-align",
-  });
-  assert.equal(alignment.forceAlignmentRequestsEnabled, true);
-  assert.equal(alignment.forceAlignmentExecutorPath, "/opt/xiqu/bin/force-align");
-  assert.throws(
-    () => loadApiServerRuntimeConfig({ XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED: "true" }),
-    /EXECUTOR_PATH/,
-  );
-  assert.throws(
-    () => loadApiServerRuntimeConfig({ XIQU_FORCE_ALIGNMENT_EXECUTOR_PATH: "relative/aligner" }),
-    /绝对路径/,
-  );
-  assert.throws(
-    () => loadApiServerRuntimeConfig({ XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED: "1" }),
     /只接受 true 或 false/,
   );
   for (const host of ["", "localhost", "example.org", "127.0.0.1/path"]) {

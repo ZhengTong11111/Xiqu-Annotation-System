@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   calculateWorkerRetryDelay,
-  ProcessingJobWorkerRuntime,
-} from "../src/processingJobWorkerRuntime.js";
+  MediaAnalysisWorkerRuntime,
+} from "../src/mediaAnalysisWorkerRuntime.js";
 
 test("worker 循环从短暂故障恢复并周期执行陈旧任务扫描", async () => {
   let recoverCalls = 0;
@@ -20,7 +20,7 @@ test("worker 循环从短暂故障恢复并周期执行陈旧任务扫描", asyn
       return false;
     },
   };
-  const runtime = new ProcessingJobWorkerRuntime(service, {
+  const runtime = new MediaAnalysisWorkerRuntime(service, {
     pollIntervalMs: 2,
     staleRecoveryIntervalMs: 5,
     retryInitialMs: 1,
@@ -47,7 +47,7 @@ test("worker stop 会立即中止长退避且保持幂等", async () => {
     },
     processNext: async () => false,
   };
-  const runtime = new ProcessingJobWorkerRuntime(service, {
+  const runtime = new MediaAnalysisWorkerRuntime(service, {
     retryInitialMs: 60_000,
     retryMaxMs: 60_000,
   });
@@ -87,7 +87,7 @@ test("连续启停 worker 不遗留轮询、恢复调用或重叠执行", async 
       activeCalls -= 1;
       if (kind === "process") processCalls += 1;
     };
-    const runtime = new ProcessingJobWorkerRuntime({
+    const runtime = new MediaAnalysisWorkerRuntime({
       recoverStaleJobs: async () => {
         await invoke("recover");
         return 0;

@@ -1,9 +1,4 @@
-import type {
-  AlignmentApplication,
-  AnnotationFile,
-  Prisma,
-  PrismaClient,
-} from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   applyAnnotationCommandToProject,
   type ProjectData,
@@ -38,6 +33,12 @@ import {
 import type { ApiUser } from "./domain.js";
 import { conflict } from "./errors.js";
 import type { ResourceAccessService } from "./resourceAccess.js";
+import {
+  notifyAnnotationHistoryFutureSnapshotObserver,
+  writeFutureAnnotationRecoverySnapshot,
+  type AnnotationHistoryFutureSnapshotWriteResult,
+} from "./annotationHistoryFutureSnapshotWriter.js";
+import type { AnnotationHistoryFutureSnapshotRollout } from "./annotationHistoryFutureSnapshotPolicy.js";
 
 const MAX_DATABASE_SEQUENCE = 2_147_483_647;
 const MAX_EXPOSED_VALIDATION_ISSUES = 20;
@@ -51,22 +52,7 @@ type CommitTransactionResult = {
   committedRevision: number;
   operations: AnnotationOperationRow[];
   replayed: boolean;
-  alignmentApplication: AlignmentApplication | null;
-};
-
-export type AlignmentApplicationCommitBinding = {
-  id: string;
-  alignmentRunId: string;
-  alignmentArtifactId: string;
-  clientActionId: string;
-  requestHash: string;
-  appliedCharacterCount: number;
-  /** 文件行锁和当前 write ACL 已建立后，再重验 run/source/artifact 与当前 ProjectData。 */
-  validateCurrent: (
-    transaction: Prisma.TransactionClient,
-    current: AnnotationFile,
-    project: ProjectData,
-  ) => Promise<void>;
+  snapshotWrite?: AnnotationHistoryFutureSnapshotWriteResult;
 };
 
 /**
@@ -80,6 +66,10 @@ export class AnnotationCommandCommitService {
     private readonly prisma: PrismaClient,
     private readonly access: ResourceAccessService,
     private readonly revisionPublisher: AnnotationRevisionPublisher,
+    private readonly annotationHistoryFutureSnapshotRollout: AnnotationHistoryFutureSnapshotRollout = "disabled",
+    private readonly annotationHistoryFutureSnapshotObserver: (
+      result: AnnotationHistoryFutureSnapshotWriteResult,
+    ) => void = () => undefined,
   ) {}
 
   async commitBatch(
@@ -101,50 +91,14 @@ export class AnnotationCommandCommitService {
     }));
 
     const result = await this.prisma.$transaction((transaction) =>
-      this.commitTransaction(transaction, user, annotationFileId, request, operations, null));
-    return this.finalizeCommit(annotationFileId, result);
-  }
-
-  /**
-   * 对齐结果复用普通原子命令提交，只额外绑定轻量 application。
-   * 预测读取和命令生成在专用 service；这里仍是 snapshot/sequence/revision/operation 的唯一写入边界。
-   */
-  async commitAlignmentApplication(
-    user: ApiUser,
-    annotationFileId: string,
-    request: CommitAnnotationCommandBatchRequest,
-    binding: AlignmentApplicationCommitBinding,
-  ) {
-    await this.access.assertCapability(user, annotationFileId, "write");
-    const operations = request.operations.map((input) => ({
-      input,
-      requestHash: createAnnotationOperationRequestHash({
-        baseRevision: request.baseRevision,
-        localRevision: input.localRevision ?? null,
-        action: input.action,
-        payload: input.payload,
-      }),
-    }));
-    const result = await this.prisma.$transaction((transaction) =>
-      this.commitTransaction(
-        transaction,
-        user,
-        annotationFileId,
-        request,
-        operations,
-        binding,
-      ));
-    const commit = this.finalizeCommit(annotationFileId, result);
-    if (!result.alignmentApplication) {
-      throw new Error("对齐结果提交缺少 application 绑定。");
+      this.commitTransaction(transaction, user, annotationFileId, request, operations));
+    // 只有事务成功提交后才记录观测，回滚的尝试不能被误报成已写入快照。
+    if (result.snapshotWrite) {
+      notifyAnnotationHistoryFutureSnapshotObserver(
+        this.annotationHistoryFutureSnapshotObserver,
+        result.snapshotWrite,
+      );
     }
-    return { commit, application: result.alignmentApplication };
-  }
-
-  private finalizeCommit(
-    annotationFileId: string,
-    result: CommitTransactionResult,
-  ): CommitAnnotationCommandBatchResponse {
     const operationCursor = encodeAnnotationSnapshotOperationCursor(
       annotationFileId,
       result.committedRevision,
@@ -171,7 +125,6 @@ export class AnnotationCommandCommitService {
     annotationFileId: string,
     request: CommitAnnotationCommandBatchRequest,
     operations: PreparedOperation[],
-    alignmentBinding: AlignmentApplicationCommitBinding | null,
   ): Promise<CommitTransactionResult> {
     // 固定锁序与旧保存路径一致；拿锁后再读 operation，避免并发同 key 同时穿过幂等检查。
     const current = await lockActiveAnnotationFileForWrite(
@@ -194,7 +147,6 @@ export class AnnotationCommandCommitService {
       request.baseRevision,
       operations,
       existing,
-      alignmentBinding,
     );
     if (replay) return replay;
     if (existing.length > 0) {
@@ -233,9 +185,6 @@ export class AnnotationCommandCommitService {
       });
     }
 
-    // 对齐绑定必须在文件行锁、当前权限、revision 和 ProjectData parser 之后重验，不能信任事务外对象准备。
-    await alignmentBinding?.validateCurrent(transaction, current, parsedCurrent.data);
-
     const toolAttemptBindings = await prepareAnnotationToolAttemptBindings(transaction, {
       actorUserId: user.id,
       annotationFileId,
@@ -257,58 +206,16 @@ export class AnnotationCommandCommitService {
         code: "annotation_operation_sequence_exhausted",
       });
     }
-    const targetRevision = request.baseRevision + 1;
-    const committedAt = new Date();
-    let alignmentApplication: AlignmentApplication | null = null;
-    if (alignmentBinding) {
-      const existingApplication = await transaction.alignmentApplication.findUnique({
-        where: {
-          annotationFileId_actorUserId_clientActionId: {
-            annotationFileId,
-            actorUserId: user.id,
-            clientActionId: alignmentBinding.clientActionId,
-          },
-        },
-      });
-      if (existingApplication) {
-        throw conflict("强制对齐应用记录与当前操作链不完整匹配。", {
-          code: "alignment_application_partial_replay",
-        });
-      }
-      alignmentApplication = await transaction.alignmentApplication.create({
-        data: {
-          id: alignmentBinding.id,
-          alignmentRunId: alignmentBinding.alignmentRunId,
-          alignmentArtifactId: alignmentBinding.alignmentArtifactId,
-          annotationFileId,
-          actorUserId: user.id,
-          clientActionId: alignmentBinding.clientActionId,
-          requestHash: alignmentBinding.requestHash,
-          baseRevision: request.baseRevision,
-          committedRevision: targetRevision,
-          operationCount: operations.length,
-          appliedCharacterCount: alignmentBinding.appliedCharacterCount,
-          createdAt: committedAt,
-        },
-      });
-    }
-    await transaction.annotationRecoverySnapshot.upsert({
-      where: {
-        annotationFileId_revision: {
-          annotationFileId,
-          revision: current.revision,
-        },
-      },
-      update: {},
-      create: {
-        annotationFileId,
-        revision: current.revision,
-        payload: current.payload as Prisma.InputJsonValue,
-        createdBy: user.id,
-        reason: "save",
-      },
+    const snapshotWrite = await writeFutureAnnotationRecoverySnapshot(transaction, {
+      annotationFileId,
+      current,
+      createdBy: user.id,
+      reason: "save",
+      rollout: this.annotationHistoryFutureSnapshotRollout,
     });
 
+    const targetRevision = request.baseRevision + 1;
+    const committedAt = new Date();
     const sequenceState = await transaction.annotationFile.update({
       where: { resourceId: annotationFileId },
       data: {
@@ -339,7 +246,6 @@ export class AnnotationCommandCommitService {
           status: "accepted",
           committedRevision: targetRevision,
           committedAt,
-          alignmentApplicationId: alignmentApplication?.id ?? null,
         },
       });
       committedRows.push(committedRow);
@@ -370,10 +276,7 @@ export class AnnotationCommandCommitService {
         detail: {
           revision: targetRevision,
           operationCount: operations.length,
-          commitMode: alignmentApplication
-            ? "alignment_prediction_application"
-            : "domain_command_batch",
-          ...(alignmentApplication ? { alignmentApplicationId: alignmentApplication.id } : {}),
+          commitMode: "domain_command_batch",
           ...(leaseGuard.leaseWasUsed ? { mutationLeaseReleased: true } : {}),
         },
       },
@@ -382,7 +285,7 @@ export class AnnotationCommandCommitService {
       committedRevision: targetRevision,
       operations: committedRows,
       replayed: false,
-      alignmentApplication,
+      snapshotWrite,
     };
   }
 
@@ -393,7 +296,6 @@ export class AnnotationCommandCommitService {
     baseRevision: number,
     operations: PreparedOperation[],
     existingRows: AnnotationOperationRow[],
-    alignmentBinding: AlignmentApplicationCommitBinding | null,
   ): Promise<CommitTransactionResult | null> {
     if (existingRows.length === 0) return null;
     const byClientId = new Map(existingRows.map((row) => [row.clientOperationId, row]));
@@ -443,69 +345,7 @@ export class AnnotationCommandCommitService {
       operations.map(({ input }) => input),
       rows,
     );
-    const alignmentApplication = alignmentBinding
-      ? await this.resolveReplayedAlignmentApplication(
-          transaction,
-          user,
-          annotationFileId,
-          baseRevision,
-          committedRevision,
-          rows,
-          alignmentBinding,
-        )
-      : null;
-    return {
-      committedRevision,
-      operations: rows,
-      replayed: true,
-      alignmentApplication,
-    };
-  }
-
-  private async resolveReplayedAlignmentApplication(
-    transaction: Prisma.TransactionClient,
-    user: ApiUser,
-    annotationFileId: string,
-    baseRevision: number,
-    committedRevision: number,
-    rows: AnnotationOperationRow[],
-    binding: AlignmentApplicationCommitBinding,
-  ) {
-    const application = await transaction.alignmentApplication.findUnique({
-      where: {
-        annotationFileId_actorUserId_clientActionId: {
-          annotationFileId,
-          actorUserId: user.id,
-          clientActionId: binding.clientActionId,
-        },
-      },
-      include: {
-        operations: {
-          select: { id: true, clientOperationId: true },
-          orderBy: { sequence: "asc" },
-        },
-      },
-    });
-    if (
-      !application ||
-      application.id !== binding.id ||
-      application.alignmentRunId !== binding.alignmentRunId ||
-      application.alignmentArtifactId !== binding.alignmentArtifactId ||
-      application.requestHash !== binding.requestHash ||
-      application.baseRevision !== baseRevision ||
-      application.committedRevision !== committedRevision ||
-      application.operationCount !== rows.length ||
-      application.appliedCharacterCount !== binding.appliedCharacterCount ||
-      application.operations.length !== rows.length ||
-      application.operations.some((operation, index) => operation.id !== rows[index]?.id)
-    ) {
-      throw conflict("强制对齐应用幂等记录与已提交操作不一致。", {
-        code: "alignment_application_replay_ambiguous",
-      });
-    }
-    // Prisma include 扩展字段不改变主行类型；返回前只保留 application 固定列。
-    const { operations: _operations, ...summary } = application;
-    return summary;
+    return { committedRevision, operations: rows, replayed: true };
   }
 }
 

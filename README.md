@@ -164,6 +164,13 @@ credentials file/secret 挂载，真实 receiver URL 不得提交仓库。规则
 10,000 条，CSV 会防护电子表格公式注入；资源级管理者只能查询自己具有“管理权限”能力的资源，不能
 借此读取平台全局日志。
 
+平台把外部 force-alignment 结果视为普通导入标注，不在服务器运行对齐模型。为后续离线模型改进，
+平台会记录“将本句逐字重置为平均时间”的轻量工具生命周期，并继续以 annotation operation 保存所有
+真实逐字时间修正。全局管理员可通过 `/api/admin/annotation-tool-attempts/export` 和
+`/api/admin/annotation-corrections/export` 分别导出工具尝试与已提交的字符边界 before/after 微秒值；
+两者均限制 90 天时间窗和 10,000 行，不包含唱词正文、ProjectData、媒体地址或凭据。详细边界见
+[`docs/force-alignment-data-roadmap.md`](docs/force-alignment-data-roadmap.md)。
+
 仅当开发配置启用 `XIQU_SEED_DEVELOPMENT_DATA=true` 时，API 才会创建测试种子账号；其中本机测试管理员为
 `admin / admin123`。登录页不会预填该密码，生产环境必须保持 seed 关闭。全新数据库应通过
 `npm run db:deploy` 应用已提交的 Prisma migration；`db:push` 仅适合一次性的本地 schema 实验。

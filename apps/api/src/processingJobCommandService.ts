@@ -11,7 +11,6 @@ import type {
   RetryProcessingJobRequest,
 } from "@xiqu/shared";
 import type { ApiUser } from "./domain.js";
-import type { AlignmentRunService } from "./alignmentRunService.js";
 import { badRequest, conflict, forbidden, notFound } from "./errors.js";
 import { MediaAnalysisJobService } from "./mediaAnalysisJobService.js";
 import {
@@ -33,17 +32,9 @@ const TERMINAL_JOB_STATUSES: ReadonlySet<ProcessingJobStatus> = new Set([
 type RetryReservation =
   | { completed: ProcessingJobCommandResult }
   | {
-      kind: "media_analysis";
       commandId: string;
       annotationFileId: string;
       audioTrackId: string;
-      sourceJobId: string;
-    }
-  | {
-      kind: "force_alignment";
-      commandId: string;
-      annotationFileId: string;
-      sourceRunId: string;
       sourceJobId: string;
     };
 
@@ -63,7 +54,6 @@ export class ProcessingJobCommandService {
     private readonly prisma: PrismaClient,
     private readonly access: ResourceAccessService,
     private readonly mediaAnalysis: MediaAnalysisJobService,
-    private readonly alignmentRuns?: AlignmentRunService,
   ) {}
 
   async cancelRequest(
@@ -246,7 +236,7 @@ export class ProcessingJobCommandService {
       if (request.requesterUserId !== user.id && !isAdministrator) {
         throw notFound("后台任务请求不存在。");
       }
-      if (request.job.type !== "media_analysis" && request.job.type !== "force_alignment") {
+      if (request.job.type !== "media_analysis") {
         throw conflict("当前任务类型尚不支持重试。", {
           code: "processing_job_retry_unsupported",
         });
@@ -256,16 +246,9 @@ export class ProcessingJobCommandService {
           code: "processing_job_retry_not_allowed",
         });
       }
-      if (!request.contextResourceId ||
-          (request.job.type === "media_analysis" && !request.mediaAudioTrackId) ||
-          (request.job.type === "force_alignment" && !request.job.alignmentRunId)) {
+      if (!request.contextResourceId || !request.mediaAudioTrackId) {
         throw conflict("该历史任务缺少可重新校验的音轨上下文。", {
           code: "processing_job_retry_context_missing",
-        });
-      }
-      if (request.job.type === "force_alignment" && !this.alignmentRuns) {
-        throw conflict("强制对齐执行器尚未启用，当前不能重试。", {
-          code: "processing_job_retry_unsupported",
         });
       }
       const command = replay ?? await transaction.processingJobCommand.create({
@@ -279,21 +262,12 @@ export class ProcessingJobCommandService {
           outcome: "pending",
         },
       });
-      return request.job.type === "media_analysis"
-        ? {
-            kind: "media_analysis" as const,
-            commandId: command.id,
-            annotationFileId: request.contextResourceId,
-            audioTrackId: request.mediaAudioTrackId!,
-            sourceJobId: request.jobId,
-          }
-        : {
-            kind: "force_alignment" as const,
-            commandId: command.id,
-            annotationFileId: request.contextResourceId,
-            sourceRunId: request.job.alignmentRunId!,
-            sourceJobId: request.jobId,
-          };
+      return {
+        commandId: command.id,
+        annotationFileId: request.contextResourceId,
+        audioTrackId: request.mediaAudioTrackId,
+        sourceJobId: request.jobId,
+      } as const;
     });
     if ("completed" in reservation) return reservation.completed;
 
@@ -302,20 +276,11 @@ export class ProcessingJobCommandService {
       user.id,
       input.clientCommandId,
     );
-    if (reservation.kind === "media_analysis") {
-      await this.mediaAnalysis.createAnalysis(user, reservation.annotationFileId, {
-        audioTrackId: reservation.audioTrackId,
-        force: true,
-        clientRequestId: retryClientRequestId,
-      });
-    } else {
-      await this.alignmentRuns!.retry(
-        user,
-        reservation.annotationFileId,
-        reservation.sourceRunId,
-        retryClientRequestId,
-      );
-    }
+    await this.mediaAnalysis.createAnalysis(user, reservation.annotationFileId, {
+      audioTrackId: reservation.audioTrackId,
+      force: true,
+      clientRequestId: retryClientRequestId,
+    });
     const resultRequestKey = await this.prisma.processingJobRequestKey.findUnique({
       where: {
         requesterUserId_clientRequestId: {
@@ -365,7 +330,6 @@ async function transitionJobForCancellation(
       id: string;
       status: "queued" | "running" | "cancelling" | "cancelled" | "succeeded" | "failed";
       analysisRunId: string | null;
-      alignmentRunId: string | null;
     };
     actorUserId: string;
     mode: "user_request" | "admin_force";
@@ -405,17 +369,6 @@ async function transitionJobForCancellation(
         });
       }
     }
-    if (input.job.alignmentRunId) {
-      const cancelledRun = await transaction.alignmentRun.updateMany({
-        where: { id: input.job.alignmentRunId, status: "queued" },
-        data: { status: "cancelled", progress: 0, errorCode: null, completedAt: input.now },
-      });
-      if (cancelledRun.count !== 1) {
-        throw conflict("强制对齐任务与运行状态不一致。", {
-          code: "processing_job_run_state_mismatch",
-        });
-      }
-    }
     return "execution_cancelled";
   }
   if (input.job.status === "running") {
@@ -436,17 +389,6 @@ async function transitionJobForCancellation(
       });
       if (cancellingRun.count !== 1) {
         throw conflict("媒体分析任务与运行状态不一致。", {
-          code: "processing_job_run_state_mismatch",
-        });
-      }
-    }
-    if (input.job.alignmentRunId) {
-      const cancellingRun = await transaction.alignmentRun.updateMany({
-        where: { id: input.job.alignmentRunId, status: "running" },
-        data: { status: "cancelling" },
-      });
-      if (cancellingRun.count !== 1) {
-        throw conflict("强制对齐任务与运行状态不一致。", {
           code: "processing_job_run_state_mismatch",
         });
       }

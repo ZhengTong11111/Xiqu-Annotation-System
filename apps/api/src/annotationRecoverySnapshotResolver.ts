@@ -2,6 +2,7 @@ import { createAnnotationHistoryCanonicalHash } from "./annotationHistoryCanonic
 
 export type AnnotationRecoverySnapshotResolutionCode =
   | "snapshot_payload_hash_mismatch"
+  | "snapshot_payload_missing"
   | "snapshot_storage_mode_unsupported";
 
 export type AnnotationRecoverySnapshotResolvableRow<TPayload = unknown> = {
@@ -9,7 +10,7 @@ export type AnnotationRecoverySnapshotResolvableRow<TPayload = unknown> = {
   annotationFileId: string;
   revision: number;
   storageMode: string;
-  payload: TPayload;
+  payload: TPayload | null;
   payloadSha256: string | null;
 };
 
@@ -34,6 +35,16 @@ export function resolveAnnotationRecoverySnapshotPayload<TPayload>(
     return {
       ok: false,
       code: "snapshot_storage_mode_unsupported",
+      snapshotId: row.id,
+      annotationFileId: row.annotationFileId,
+      revision: row.revision,
+    };
+  }
+
+  if (row.payload === null) {
+    return {
+      ok: false,
+      code: "snapshot_payload_missing",
       snapshotId: row.id,
       annotationFileId: row.annotationFileId,
       revision: row.revision,

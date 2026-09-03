@@ -194,82 +194,20 @@ Main currently contains all major recent feature lines that matter for context:
   `crypto.randomUUID()` is unavailable, so frontend code must never call it directly. The helper prefers native UUID,
   falls back to `crypto.getRandomValues()` UUID v4, and reserves the non-crypto fallback only for old-browser identity,
   never credentials or authorization values
-- succeeded force-alignment predictions are applied only through `AlignmentApplicationService`: the browser sends one runtime UUID
-  and current revision, while the server rereads and bounds the immutable prediction, rebuilds ordinary character timing commands,
-  and binds a lightweight `AlignmentApplication` to the real operations in the same annotation commit transaction. Do not send
-  prediction contents to the browser, write a second save path, alter sentence timing, or copy before/after values into the application row
-- force-alignment quality assessments are owned only by `AlignmentQualityAssessmentService` and must reference one complete
-  `AlignmentApplication`, not a run or file in the abstract. Editor scope requires current `write`; reviewer scope requires current
-  `review`. Assessments use append-only action history plus one partial-unique current row per application/account/scope, exact finite
-  verdict/issue enums and stable request hashes. They never change ProjectData, revision, operations, snapshots, workflow/review facts,
-  or carry free text, prediction payloads, before/after values, media URLs or credentials
-- `AlignmentApplicationService.list()` is the only editor-facing application-history boundary. It uses file-bound keyset pagination,
-  joins lightweight run facts and current assessment counts in one bounded query, and never expands operations, predictions or
-  ProjectData. `AlignmentRunsDialog` owns the two prediction/application views and lazily reads assessments for only the selected
-  application. Assessment submission has its own idempotent runtime UUID and stale-session guard; it must not set document dirty state,
-  block autosave/leave protection, create polling/IndexedDB owners, or infer write/review capability from account roles
-- force-alignment prediction quality summaries are built once from the already validated prediction by
-  `alignmentPredictionQualitySummary` and published inside the existing worker success transaction. Confidence uses integer ppm,
-  timing disagreement uses integer microseconds, and thresholds live only in that document-model module. The optional v1 manifest
-  field contains fixed aggregate counts only; it must never contain entity IDs, text, candidate arrays or free JSON. Legacy manifests
-  without a summary remain readable/applicable, while candidate queries must report the summary as unavailable rather than downloading
-  each prediction object or inventing zero-quality values
-- force-alignment training candidates are derived only by `AlignmentTrainingCandidateService`. A file-bound application cursor carries
-  the next observation-window upper revision; each page uses one bounded application query and one 500+1 operation scan, while current
-  assessments are capped at 500 per application. Automatic application operations are excluded from manual timing evidence, truncated
-  or malformed evidence is explicit `partial`/`invalid`, and absence of edits or assessments remains `unrated`, never auto-correct.
-  Every request rechecks file `read` plus active resource lifecycle and must not read prediction objects or return ProjectData, text,
-  operation payloads, account/media facts, storage identities or request hashes
-- force-alignment training manifests are built and parsed only by `alignmentTrainingManifest` in document-model. Draft/query order is
-  normalized before hashing; persisted manifests require canonical ordering, exact keys, integer split ratios and a checksum that excludes
-  only the checksum field itself. Samples sharing any stable work/performer group form one transitive component, and its hash depends only
-  on sorted stable group identities so adding samples without expanding that group set does not change its split. SHA-256 is injected by the server boundary;
-  do not add Node crypto to the browser-compatible package, infer groups from names/paths, split a connected component, or add text,
-  ProjectData, operation payloads, media/storage/account facts or free JSON
-- force-alignment work/performer identities and project assignments are owned only by `AlignmentResearchGroupService`. Group UUIDs are
-  stable and separate from display names; creation never auto-assigns a project, and project sets use `researchGroupRevision` for exact
-  same-target retry settlement and stale-target rejection. Reads require current project `read`; search/create/replace require current
-  `manage_permissions` rechecked after the service lock. Project copy starts at revision zero with no research groups, and ordinary ACL,
-  workflow responsibility groups, resource names/paths and role labels must never create, infer, rename or remove research identities
-- force-alignment training evidence is derived only by the pure `alignmentTrainingEvidence` helper shared by candidate queries and
-  immutable export freezes. `AlignmentTrainingExportService` must lock the actor action, research-group catalog and resource tree before
-  rereading every selected application, active file/project, observation window, current assessment and work/performer assignment in one
-  bounded Serializable transaction. It stores only canonical manifest and item/group provenance snapshots; it must never mutate document,
-  operation, snapshot, review or workflow facts, create a ProcessingJob, infer groups, or persist prediction/audio content. Identical
-  concurrent actions may reopen a fresh transaction only for Prisma `P2034`, with a strict retry bound; other errors are not retryable
-- export-ready force-alignment freezes additionally require one exact target/source input row per item. The target is derived from the
-  current payload only at the exact target revision or from the exact inline recovery snapshot; missing, hash-invalid, unsupported or
-  text-projection-drifted history fails closed and must never fall back to the current document. Target snapshots contain bounded stable
-  sentence/character ids and integer microsecond timings only. Source snapshots contain stable uploaded-object or VOD/rendition identity,
-  never temporary URLs or credentials. Uploaded `FileObject` and prediction `AlignmentArtifact` references are protected by `RESTRICT`,
-  and object-lifecycle orphan checks must count training-input references. Legacy provenance-only exports remain readable but are not
-  export-ready; idempotent replay of a new export must validate both manifests and every persisted target/source row
-- force-alignment training package reservations use the dedicated `alignment_training_export` ProcessingJob type and a RESTRICT export
-  relation; they must never reuse generic annotation JSON export semantics. `AlignmentTrainingExportJobService` owns the lock order
-  account request -> canonical package identity, revalidates the complete frozen export after the canonical lock, and creates only one
-  queued execution plus account demand/idempotency aliases. Its identity binds export and immutable manifest/package-contract checksums,
-  never account, path, storage key, temporary URL or credentials. Provenance-only/corrupt exports cannot queue; cancellation reuses the
-  common command service, while retry remains unsupported until D3c4 defines a new execution and successful-package reuse contract
-- `alignmentTrainingPackage` in document-model is the only v1 package plan/final-manifest contract. Paths are deterministic and identity-
-  based, inventory and byte/SHA limits are fail-closed, and normalized audio is fixed to 16 kHz mono signed-16 FLAC. The API package
-  stream adapter opens prediction, target and audio entries strictly one at a time, observes actual bytes/checksums, and stops opening
-  later inputs after cancellation; it does not accumulate a whole package in memory
-- `AlignmentTrainingExportWorkerService` is the only training-package execution and publication owner. It joins the existing single
-  worker coordinator as a third rotating adapter, revalidates immutable input plus active administrator demand after claim and before
-  commit, streams uploaded/VOD audio through fixed FLAC normalization, writes a ZIP64 staged object through `archiver`, and atomically
-  binds one immutable package artifact to a succeeded job under the complete job/export/worker/attempt fence. Cancellation, shutdown,
-  stale recovery, ambiguous publish/commit and cleanup failure must retain the same compensation semantics; no route or second runtime
-  may assemble a package. Download authorization and retry remain separate later-phase boundaries
+- force-alignment is an import-and-correction workflow: the platform receives existing aligned JSON and records subsequent human
+  edits; it does not run an alignment model, publish predictions, assess model runs, freeze training sets or build training ZIPs.
+  Reintroducing any server executor/run/training pipeline requires a new explicit product decision and roadmap
 - force-alignment tool attempts are a lightweight governance/training side table, never ProjectData or document history. Their
   administrator CSV is generated only by the API after fresh full-resource authorization, accepts at most a 90-day half-open
   window, reads in bounded batches, exports at most 10,000 rows with an explicit truncation header, and uses the shared CSV
   formula-injection guard. It may expose only fixed identifiers, timestamps, enums, counts and operation/revision provenance;
   never add sentence text, ProjectData, command payloads, before/after values, media URLs, credentials, errors or free-form JSON
   to this export
-- force-alignment run creation reuses the existing processing-job execution/request/key model. The browser submits only a runtime
-  UUID and fixed model preset; the API locks and rereads the active file revision, minimal text projection, default audio track,
-  concrete source and current ACL before deriving identity. `XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED` defaults to false until a
-  real worker adapter exists; disabled creation must return a stable capability error without creating run, job or demand rows
+- human character-timing corrections remain authoritative in accepted annotation operations. The admin-only correction dataset
+  export strictly parses direct/transaction timing leaves at read time, emits at most 10,000 fixed numeric rows from a 90-day
+  half-open window, and may include character before/after/delta microseconds plus an atomically bound even-reset attempt. It must
+  not copy operations into a second table or expose sentence text, ProjectData, arbitrary details, media identities/URLs, object
+  keys, credentials or errors. Cancelled/failed/no-change attempts stay in the separate attempt export and never become timing labels
 
 If starting a new conversation, assume the repo is already beyond the earlier simple waveform-only stage.
 
@@ -313,12 +251,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - VOD resource `mediaKind` comes from strict `GetPlayInfo.VideoBase.MediaType`, not from the existence of an MP3 rendition.
     Same-VID audio renditions use official `PlayInfo.JobId` as the stable identity; candidate and exact-session queries accept
     only Normal HTTPS mp3 audio streams. Temporary URLs stay inside no-store playback sessions or worker memory
-- `apps/api/src/analysisAudioSourceResolver.ts`
-  - the shared transaction-capable owner for enabled audio-track resolution, primary/source `read + download`, uploaded/VOD
-    rendition fingerprints and exact offset. Media analysis and force alignment must call it rather than copy source branches;
-    it returns stable facts only and never signs or persists a temporary media URL
 - `apps/api/src/mediaAnalysisJobService.ts`
-  - the API business boundary for media-analysis run/job reuse,
+  - the only API business boundary for audio-track analysis resolution, ACL revalidation, source fingerprints, run/job reuse,
     status DTOs, tile descriptors, and protected asset reads
   - canonical runs are media-scoped by source media, offset-independent media fingerprint, algorithm, and config. Annotation
     file ids and track offset are only request/ACL/display context and must never re-enter run persistence or identity
@@ -337,22 +271,6 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     media/rendition/algorithm/config facts; annotation id, track offset, display metadata, temporary URL and credentials are excluded
   - `clientRequestId` is a strict UUID generated once per logical browser action with `createRuntimeUuid()`; the same ambiguous
     HTTP retry must reuse it, and reusing it for changed request facts is a stable 409 conflict
-- `apps/api/src/alignmentRunIdentity.ts`
-  - the only force-alignment run/config hash and processing deduplication identity boundary. It accepts exact stable annotation
-    revision/text-hash/count, source/track/offset/fingerprint, model/dictionary/code version and bounded JSON config facts
-  - actor, client request id, display metadata, sentence text, ProjectData, credentials and temporary URLs must never enter this
-  identity. Config is cloned after canonical JSON validation; `audioOffsetMicros` remains exact bigint until canonical string hashing
-- `apps/api/src/alignmentRunService.ts`
-  - the force-alignment D2b creation/query owner. Lock order is account request -> active annotation/resource -> audio source ->
-    canonical processing job. It projects current ProjectData in memory, persists only hash/count/provenance, reuses one canonical
-    run/job across accounts, and gives each account/context its own ProcessingJobRequest. List/detail are bounded and freshly ACL-gated
-  - D2b does not execute a model, publish an artifact or apply timing. The File-menu trigger must be disabled while the document has
-    unsaved/unacknowledged work so the server cannot silently align an older revision
-- `apps/api/src/processingJobRequestService.ts`
-  - the only helper for creating/reusing one account/context demand and attaching per-tab idempotency aliases. Media analysis and
-    force alignment share it; cross-project training exports use a null context/audio pair. PostgreSQL NULL uniqueness does not merge
-    those rows, so null-context reuse must run under the caller-held canonical job lock and search by job/account/null context. Do not
-    add a second request table or copy this sequence into another task service
 - `apps/api/src/processingJobQuery.ts` + `apps/api/src/processingJobQueryService.ts`
   - the bounded request-centric query boundary for `mine | related | all`, summary and detail. `all` is admin-only; related
     visibility is recalculated from current resource ACL and hidden contexts must not be enumerable
@@ -396,13 +314,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     VOD identity requires region/video id/duration, and annotation id, selection mode, and track offset have no input position
   - VOD renditions additionally include the official stable JobId and format, so original audio and different rendition
     streams cannot share a run. Definition, bitrate, display metadata, temporary URL, and track offset never enter the fingerprint
-- `apps/api/src/processingJobWorkerRuntime.ts` + `apps/api/src/processingJobWorkerCoordinator.ts`
-  - the only long-lived background polling owner. It serially runs bounded stale recovery and uses rotating adapter priority so
-    media analysis, training export and force alignment cannot starve one another; do not start a second task loop for a new processing type
-  - runtime failures use bounded exponential backoff and fixed safe logs; stop aborts the current adapter and waits for its database
-    settlement before process exit
-- `apps/api/src/mediaAnalysisWorkerService.ts`
-  - media-analysis database claim/heartbeat/stale-recovery adapter; normal shutdown removes partial assets and requeues the job
+- `apps/api/src/mediaAnalysisWorkerService.ts` + `apps/api/src/mediaAnalysisWorkerRuntime.ts`
+  - independent database claim/heartbeat/stale-recovery worker; normal shutdown removes partial assets and requeues the job
   - each task has one claim monitor, separate from process shutdown. It survives transient database reads, refreshes liveness even
     before a complete tile exists, aborts FFmpeg when cancellation or claim transfer is observed, and never invents progress
   - user cancellation removes partial assets and settles `cancelled`; process shutdown requeues. Success, cancellation, failure,
@@ -419,23 +332,6 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - staged/final object compensation failures must become stable failed states and must never be silently swallowed
   - a run with `sourceVodRenditionJobId` must request that exact JobId through the existing VOD gateway and reject a mismatched
     provider response. The resulting HTTPS URL remains worker-memory-only and must never enter the database, audit, or logs
-- `apps/api/src/alignmentWorkerService.ts` + `apps/api/src/alignmentExecutor.ts`
-  - the force-alignment adapter rereads current annotation projection/revision, source fingerprint/offset and at least one active
-    requester's current annotation/source ACL before execution and again inside the claim-fenced terminal transaction. Changed or
-    deleted facts fail closed; it never reconstructs old text from operations or stores projection/body in PostgreSQL
-  - prediction is one strict versioned gzip JSON object containing stable sentence/character ids, project-timeline microsecond
-    boundaries, bounded candidates and confidence only. It excludes text, ProjectData, temporary URLs and acoustic matrices
-  - staged/final publication preallocates the artifact id, verifies size/SHA/manifest, and commits artifact + run + job atomically
-    under the full claim generation. Ambiguous commit rereads that exact id; a matching committed final is retained, confirmed absence
-    is compensated, and unverifiable state becomes a stable error rather than deleting a possibly referenced object
-  - protected artifact reads accept only file/run/artifact ids, revalidate annotation read plus current source read/download, and never
-    expose storage keys. Timing application remains a separate D2d operation/revision boundary
-- `apps/api/src/externalForceAlignmentExecutor.ts`
-  - the deployment adapter uses a shell-free executable with fixed request/audio/output file arguments in a private temporary directory.
-    It downloads only temporary VOD audio, never places a URL or credential in argv/logs, enforces request/audio/output capacities and
-    removes temporary files after the child exits
-  - `XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED=true` requires an absolute `XIQU_FORCE_ALIGNMENT_EXECUTOR_PATH`; both API and worker use
-    the same protected environment. Keep the feature disabled until the real model executable and dictionary are installed and tested
 - `apps/api/src/mediaAnalysisFfmpeg.ts` + `apps/api/src/mediaAnalysisComputation.ts`
   - shell-free FFmpeg streaming to 16 kHz mono PCM and versioned fixed-duration tile production; new runs currently use
     10-second tiles, while historical runs expose their original duration through manifest/config
@@ -479,51 +375,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - the only frontend runtime UUID boundary for annotation entities, tracks, branches, drafts, and operation ids
   - HTTP IP deployments are not secure contexts in Chrome and do not expose `crypto.randomUUID()`; use this helper rather
     than adding local timestamp/random fallbacks. Generated ids are stable identities only and must never become secrets
-- `apps/api/src/alignmentApplicationService.ts` + `apps/api/src/alignmentPredictionReader.ts` +
-  `packages/document-model/src/alignmentPredictionApplication.ts`
-  - the only force-alignment application boundary: bounded immutable artifact read, current file/text/source/ACL revalidation,
-    deterministic ordinary timing-command planning, and application provenance preparation
-  - character lookup must remain indexed O(n), commands stay capped at 500 items/100 operations, and sentence timing remains unchanged;
-    successful application must enter `AnnotationCommandCommitService` once and use normal revision/catch-up semantics
-- `apps/api/src/alignmentTrainingCandidateService.ts`
-  - the only application-observation and difficult-sample derivation boundary; it owns the file-bound cursor, adjacent revision windows,
-    bounded operation/assessment scans, fixed signals and explicit incomplete-evidence states
-  - it is read-only governance metadata. Do not add object-storage reads, ProjectData hydration, per-application queries, automatic
-    correctness inference, document mutations or a second save/autosave owner
-- `apps/api/src/alignmentResearchGroupService.ts`
-  - the only stable work/performer registry and project-assignment boundary. It owns active-project checks, bounded candidate cursors,
-    client-UUID create idempotency, project revision settlement, current ACL rechecks and finite audit facts
-  - groups are global reusable identities but display names are not identity. Creation and project assignment stay separate so a delayed
-    create retry cannot resurrect an unlinked group; no API may infer groups from resource metadata or copy project assignments
-- `apps/api/src/alignmentTrainingEvidence.ts` + `apps/api/src/alignmentTrainingExportInput.ts` +
-  `apps/api/src/alignmentTrainingExportService.ts` + `packages/document-model/src/alignmentTrainingTargetSnapshot.ts` +
-  `packages/document-model/src/alignmentTrainingInputManifest.ts`
-  - the shared pure evidence derivation and the only immutable training-freeze write boundary. Candidate display and freeze validation
-    must use the same timing/assessment aggregation rather than drifting into duplicate algorithms
-  - freeze requests contain only a bounded explicit application set, seed hash and exact split ratios. The service rechecks current
-    authority and all provenance under shared catalog/resource locks, invokes the document-model planner and stores finite snapshots;
-    later object-export work must consume these frozen facts instead of rereading mutable candidate UI state
-  - the actor-scoped action UUID is the idempotency identity. Serializable `P2034` may be retried at most three times so a concurrent
-    identical action can observe the winning commit; validation, ACL, lifecycle, planner and storage errors must never enter that retry
-  - export-ready input uses an exact revision target snapshot and a stable source snapshot. Stable annotation entity ids may be historical
-    non-UUID strings, so the target contract bounds and rejects control characters without rewriting identity. Canonical checksums, counts,
-    byte limits and per-row replay validation are mandatory; later workers must not reconstruct labels from mutable current ProjectData
-- `apps/api/src/alignmentTrainingExportWorkerService.ts` + `apps/api/src/alignmentTrainingAudioFfmpeg.ts` +
-  `apps/api/src/alignmentTrainingPackageWriter.ts`
-  - the only training-package execution boundary. It consumes the immutable D3c3 input/plan, incrementally verifies uploaded source bytes,
-    normalizes audio to the fixed FLAC contract, and streams a fixed-order ZIP64 directly into ObjectStorage staged publication
-  - artifact creation and job success share the complete claim fence in one transaction. A failed archive may still produce an apparently
-    successful staged object, so every pre-commit failure must compensate both staged and final keys; ambiguous database completion must
-    verify the preallocated artifact id and succeeded job before retaining the final object
-- `src/platform/AlignmentRunsDialog.tsx`
-  - low-frequency bounded run history and explicit apply confirmation; an ambiguous retry reuses its session action UUID
-  - the editor blocks new mutations from request start through authoritative refetch. The dialog must never apply prediction timing locally
 - `apps/api/src/objectLifecycleService.ts` + `apps/api/src/backup/backupService.ts`
-  - FileObject, MediaAnalysisAsset, AlignmentArtifact prediction and AlignmentTrainingPackageArtifact storage keys are all authoritative
-    references; lifecycle cleanup must not classify any of these persisted objects as orphan binaries. Missing prediction/training-package
-    objects are report-only integrity faults, never implicit permission to delete their database provenance
-  - a FileObject referenced only by `AlignmentTrainingExportInput` is still live. Both the inspection query and the delete-time recheck must
-    require zero MediaFile and zero training-input references before deleting the database row or binary
+  - both FileObject and MediaAnalysisAsset storage keys are authoritative references; lifecycle cleanup and backup warnings
+    must not classify analysis tiles as orphan binaries
   - future permanent Trash deletion must start from each trashed logical root and purge its complete descendant subtree;
     descendants usually inherit Trash state and need not carry `trashedAt`, so never implement this as a flat
     `DELETE WHERE trashed_at IS NOT NULL`. Use the root timestamp for retention, lock/revalidate the tree and permissions,
@@ -1488,6 +1342,23 @@ If starting a new conversation, assume the repo is already beyond the earlier si
   - local restore drills publish through a sibling staging directory; place `target-storage` below a dedicated parent
     writable by `xiqu`, not directly below a root-owned persistent-data directory. A failed drill may already have restored
     the isolated database before object publication, so recreate only that isolated target before retrying
+  - 当前生产容量治理基线（2026-09-02）：`xiqu-api.service`、`xiqu-analysis-worker.service`、`caddy.service` 均为正式服务名；
+    生产 CLI 必须在 `sudo -u xiqu` 的受控 shell 中显式加载 `/etc/xiqu-platform/xiqu-platform.env`，不得依赖开发工作区的 `.env`
+    或默认数据库。当前 production release 为提交 `f8c2b1e` 构建的不可变候选，数据库已从 36 条 migration 升级到 39 条。
+  - HC3c2 目前只存在于本地候选：仓库已增加第 40、41 条恢复快照 migration，但没有部署到生产。生产仍是 39 条 migration、
+    inline-only；任何把本地双形态候选部署到生产的动作都需要单独授权、备份、隔离恢复和短维护窗口，不得把本地 `db:deploy` 当成生产升级。
+  - HC2 expand-only 上线已完成，但恢复快照仍全部是 `storage_mode=inline` 且 payload 完整；下一轮容量治理首先做只读 planner/
+    resolver 验证，不得把指标或 dry-run 当作清理授权。任何 shadow recipe 写入、payload 置空、storage mode 切换、compactor、
+    `VACUUM FULL`、`pg_repack` 或历史删除都必须有单独明确授权。
+  - 当前数据盘约 34GB、系统盘约 4.1GB 可用。恢复演练的 PostgreSQL 表空间和临时对象目录必须放数据盘；执行前后都要检查安全余量，
+    低于安全阈值就停止，不得为了候选、备份或物理回收挤压线上标注空间。删除旧完整备份前必须读取并核对 manifest，且只能删除
+    已确认存在替代恢复证据的备份副本，不能删除数据库业务行、快照 payload、operation、确认、评论、反馈、审核链接或媒体对象。
+  - 生产报告应保存在 `/var/lib/xiqu-platform/recovery-reports/` 等 release/Git 之外的受控目录；只记录脱敏计数、固定状态码、空间和
+    时间，不记录 DATABASE_URL、AccessKey、PlayAuth、token、完整 payload、operation body、媒体 URL 或对象 key。
+  - 2026-09-02 起，既有恢复快照按产品决策冻结：不压缩、不置空、不归档、不物理回收；HC3 的历史批量 planner/shadow/compactor
+    方案不得对生产旧行执行。未来新增快照才可在新的 HC3c 双形态合同下使用 recipe，且必须保留 inline 回退和旧历史原样读取。
+  - 本地 `test:deployment`、`test:backup` 及隔离恢复测试的通过结果只证明代码和协议门禁，不构成生产备份、恢复或发布授权；首次生产候选必须
+    保持 `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT=disabled`，并在明确授权、重新核对容量、真实备份和隔离恢复后才能进入迁移与 smoke。
 - `scripts/deploymentCheck.mjs` + `scripts/checkDeployment.mjs`
   - 无凭据、只读的部署 smoke check；统一验证 Web 入口、API liveness 与依赖 readiness
   - 不能把登录写入、迁移或破坏性恢复塞进 smoke check；这些步骤属于部署清单和人工验收
@@ -1498,6 +1369,10 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     `dist/api/backup` 程序目录不等于备份数据，只有这个精确路径可豁免状态目录名门禁
   - `release:inspect` 不连接数据库、不比较 Prisma schema、不执行 smoke，也不替代 `release:check`、正式
     `migrate deploy`、一致备份/恢复演练或服务人工验收；不得把它扩展成第二套打包器或部署器
+  - 生产/离线历史治理 CLI 必须由 package script 直接执行同一不可变 release 的 `dist/api/*.js`，并列入候选必需文件；不能
+    依赖 `tsx`、`apps/api/src` 或通过复制源码修补候选。入口合同测试必须证明缺少范围参数时先于数据库访问稳定失败
+  - 恢复历史生产观察只按 `docs/annotation-history-production-observation.md` 执行。手册中的 expand 观察、影子写入和未来
+    nullable/compactor 是三次独立授权；文档、代码、测试或候选准备完成都不等于用户已经授权连接或修改生产
 - `apps/api/src/releaseSwitch.ts` + `apps/api/src/releaseSwitchCli.ts`
   - 不可变 release symlink 的唯一升级/代码回滚 owner；三个路径必须显式绝对，新旧 release 必须是同一 releases 根的
     不同直接子目录，且 `current` 的真实目标必须仍等于操作员记录的 `expected-current`
@@ -1552,6 +1427,45 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     process the requested revision order, retain only one batch in memory, and treat missing rows as blocked snapshots
   - historical payloads that fail the strict current ProjectData parser remain inline and blocked. Normalizing v1-v6 into v7
     does not reproduce the original JSON and must never qualify a snapshot for recipe compaction
+- `apps/api/src/annotationHistoryShadowRecipe*.ts`
+  - HC3a 的纯验证器、短事务写服务和受限 CLI。验证必须复用 HC1 的 command replay 与 canonical hash；写服务在文件
+    revision 和 snapshot 行锁内重新读取 checkpoint、target 与完整 operation 范围，不能直接相信事务外 planner 结果
+  - `recipeVerifiedAt` 只表示 inline payload 仍存在时影子重建已通过，绝不等同于 `compactedAt`。HC3a 不得清空 payload、
+    切换 `storageMode`、写 `compactedAt`，也不得修改当前 AnnotationFile、operation、审核或恢复事实
+  - CLI 默认 dry-run，只允许显式单文件；写入还必须显式 `--apply` 并受候选数/operation 数上限约束。完全相同的 recipe
+    重试是幂等成功，文件 revision、hash、命令链或既有 recipe 任一漂移都停止该文件，不能覆盖或继续猜测
+  - 即使显式 `--apply`，前置 planner 也必须使用 PostgreSQL 强制只读连接和 statement timeout；可写连接只能在完整规划通过后
+    为短事务按需创建。每个 recipe 写事务必须锁定并确认平台维护状态仍开启，维护未开启或批次间被关闭时 fail closed
+- `apps/api/src/annotationHistoryStoredRecipeVerification*.ts`
+  - HC3a2 对数据库中已存 inline 影子 recipe 的唯一持续复核边界。服务必须在一个 `REPEATABLE READ` 快照中按单文件、
+    有界候选和有界 operation 范围读取，首个漂移停止，并复用 `annotationHistoryReconstruction.ts`；不得复制 parser、重放、
+    hash 或 recipe 比较
+  - CLI 必须使用 PostgreSQL 强制只读连接、独立 advisory lock 和 statement timeout；不得接受全库或写入参数。报告只含固定
+    状态、身份与计数，不得输出 ProjectData、operation body、正文、媒体/对象信息、连接串或底层数据库错误
+- `apps/api/src/annotationHistoryReconstructionFacts.ts`
+  - HC3b2a 已存 recipe 的唯一数据库事实装载边界。按单文件/单目标读取同文件 inline checkpoint 与 recipe revision 范围内的
+    committed operation，受统一 10,000 条硬上限约束；缺失、部分或超限事实必须 fail closed
+  - 该层不得解析 ProjectData、重放 command、计算 hash、比较 recipe、读取审核/媒体/对象/账号事实或包含 Prisma mutation。
+    只读复核和未来 reconstructible resolver 必须复用它；尚未持久化 planner 候选的影子写服务继续在自己的行锁事务中重读
+- `apps/api/src/annotationRecoverySnapshotPayloadService.ts`
+  - HC3c2 候选的唯一双形态 resolver：inline 直接校验并返回原 payload，reconstructible 通过统一事实 loader 和重建内核恢复；
+    archived、未知存储形态、正文/recipe 半迁移、checkpoint 缺失、operation 超限或 hash 不一致都必须 fail closed。
+  - 生产当前仍停在 39 条 migration、inline-only；只有同时应用 HC3c2 的第 40/41 条 migration 后，reconstructible 读取才具备数据库
+    合同。HC3c3 已在本地候选接入保存 writer，但 rollout 默认关闭；不能把本地接线或 resolver 支持误认为生产轻量快照已经上线。
+  - ResourceService 的恢复详情和恢复动作必须共用这个异步 resolver，并在同一数据库事务中读取事实；不要恢复已经删除的同步直读 helper，
+    也不要新增第二套 parser、command apply 或 canonical hash。
+- `apps/api/src/annotationHistoryFutureSnapshotWriter.ts`
+  - HC3c3 保存与恢复保护入口共用的唯一未来快照写入边界：rollout 开启时先在同一事务创建完整 inline，再用既有 revision 校验、命令重放和 canonical
+    hash 证明尝试转换；证明失败、超限、检查点、特殊 reason 或 rollout 关闭时保持 inline。
+  - reconstructible 只能在同一事务中一次写入完整 recipe、`payload=NULL`、`compactedAt` 和 hash；已有同 revision 快照不可重算或覆盖，
+    数据库约束/事务错误必须回滚整个保存。该 writer 不得复制 ProjectData parser、command apply、hash 或第二套阈值。
+  - 检查点阈值统一复用 `DEFAULT_ANNOTATION_HISTORY_COMPACTION_POLICY`；rollout 由
+    `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT` 严格解析，默认 `disabled`。生产启用前必须先完成 40/41 migration、备份、
+    隔离恢复、低干扰发布和混合历史 smoke；不得在当前 39 条生产库设置该开关。
+  - writer 返回的低基数结果只能在外层数据库事务成功提交后交给 `ApiObservability`；回滚、异常和幂等重放不能被计为新快照写入，
+    观测回调异常也不得改变已提交保存的成功结果。
+    观测只允许使用 rollout、`inline | reconstructible | existing` 和固定回退原因/耗时，不得记录文件、账号、正文、operation、媒体或
+    凭据身份。
 - `apps/api/src/annotationHistoryDependencyProtection.ts`
   - the only recovery-history lifecycle dependency boundary for future reconstructible recipes. It reads bounded lightweight
     recipe/checkpoint metadata only, never snapshot payloads, operation bodies, review text, media identities or credentials
@@ -1562,6 +1476,9 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     plus PostgreSQL total relation bytes, cached for five minutes and shared across concurrent scrapes
   - the query must never select, parse, hash, replay, measure or detoast payload JSON. Prometheus labels are fixed enums only;
     blocked codes and replay distance remain explicit offline planner report facts
+- 容量治理下一轮必须以只读校准为先：按低/中/高历史量分层抽样、限制单文件和批次、记录预计逻辑节省量与最大重放成本，
+  不得全库并发读取正文。旧格式或缺少可信 checkpoint 的快照必须保留 inline 并标记 blocked，不能以 v7 归一化结果冒充原始
+  JSON 的无损重建证明；只有只读报告、恢复读取验收和磁盘安全门禁全部通过，才能另行讨论少量非关键文件的 shadow apply。
 - `packages/shared/src/annotationToolAttempts.ts` + `apps/api/src/annotationToolAttemptService.ts`
   - FA-D1a single-event lightweight behavior contract for sentence character even-timing reset. External batches submit one
     current lifecycle snapshot per runtime UUID; they can never report `committed`, operation identity or committed revision
@@ -1577,7 +1494,15 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     retained. One Workspace-owned coordinator drains every file for the current account, batches at most 100, retries transient
     failures with bounded backoff, suspends on 401, and isolates permanent bad rows instead of blocking the complete queue
   - local editor mode has no coordinator/session record callback and must never upload. A successfully applied reset remains
-    `pending` after FA-D1b; only the future command transaction may bind its operation and mark it `committed`
+    `pending` until the current command transaction atomically binds its operation and marks it `committed`
+- `apps/api/src/annotationCorrectionDataset.ts` + `apps/api/src/annotationCorrectionDatasetService.ts`
+  - the only model-improvement correction projection boundary. It reads accepted committed operations in bounded keyset batches,
+    reuses the shared strict command parser, and extracts only character timing leaves from direct, ordinary-transaction and
+    structure-transaction envelopes
+  - a bound committed even-reset attempt yields `sentence_even_reset`; every other valid character timing edit yields
+    `manual_timing_edit`. Bad payloads, non-character entities, snapshots and uncommitted operations are skipped rather than guessed
+  - CSV rows contain stable ids/revisions/timestamps and before/after/delta microseconds only. The service never writes a model job,
+    duplicate log row, ProjectData copy, prediction, training manifest/package or media asset
 - `apps/api/src/annotationRecoverySnapshotResolver.ts`
   - HC2a single read boundary for recovery snapshot storage modes; detail and restore must both use it
   - inline payloads are historical arbitrary JSON and must be returned without current ProjectData parsing, normalization,
@@ -1585,6 +1510,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     mode fail closed before restore writes any protection snapshot, revision, or audit fact
   - resolver failures expose only stable reason code plus snapshot/file/revision identity; payload, text, hash, operation,
     archive identity and raw database errors must never enter HTTP details or logs
+  - 当前所有生产历史都是 inline 且 payload 完整；恢复历史页面若出现崩溃，先区分列表、详情、preview 和浏览器渲染阶段，
+    用固定脱敏诊断定位后再修复，不得通过扩大 catch 或静默跳过来掩盖恢复失败
 - `apps/api/src/annotationRecoverySnapshotPagination.ts` + `src/platform/recoverySnapshotPaging.ts`
   - the only recovery-history summary pagination contract: file-bound opaque cursor over descending revision/createdAt/id,
     strict bounded limit, metadata-only selects, and stable client append deduplication
@@ -2349,6 +2276,20 @@ Important backend caveats:
 - HC2a expands recovery snapshots without rewriting old rows: payload stays required, all new writes default to `inline`, and a
   database check prevents enabling recipe/archive modes before their readers and writers exist. Detail and restore share the
   resolver above; history lists remain metadata-only and public DTOs do not expose storage/hash/recipe internals.
+- HC3a may persist a complete shadow recipe only while the original payload remains `NOT NULL` and `storageMode=inline`.
+  `recipeVerifiedAt` is evidence of a repeated reconstruction check, while `compactedAt` must remain null. Production application
+  still requires the HC2 observation/backup gate; completing or testing the code locally is not authorization to migrate or write
+  production history.
+- `apps/api/src/annotationHistoryReconstruction.ts` is the only pure checkpoint + operation + recipe reconstruction kernel. Shadow
+  verification and any future reconstructible resolver must reuse it together with the existing revision validator, domain command
+  apply, canonical hash and recipe builder; do not fork a second replay path. The current inline resolver deliberately remains separate
+  because it must return arbitrary historical JSON unchanged, and reconstructible/archived storage must continue to fail closed until
+  their database reader and migration are explicitly authorized.
+- a production-baseline migration rehearsal must use the real Prisma migration runner in an isolated `_test` schema, stop first at
+  the exact migration already applied in production, seed representative annotation/operation/snapshot/review facts, then apply the
+  candidate tail and compare the pre-existing columns exactly. A fresh empty database, a hand-written schema fixture, or manually
+  sending a whole migration file through `pg` is not equivalent evidence; PostgreSQL enum commit boundaries can differ. A successful
+  local rehearsal is still not authorization to deploy or run production migrations.
 - historical payload preview must fail inside its own UI boundary and reuse the canonical project-file normalizer; a bad
   snapshot must not replace, open, or mutate the current editor document.
 - confirmed annotation ranges are governance records outside `ProjectData`: `[startTime, endTime)` is half-open,

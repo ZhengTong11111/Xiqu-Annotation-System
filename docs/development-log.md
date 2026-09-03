@@ -6,6 +6,58 @@
 > `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
 > 回写或删除历史记录。
 
+## 2026-09-03：本机 future snapshot rollout 错配导致保存失败的修复
+
+### 问题定位
+
+- 本机 `.env` 为验证 future snapshot 模式设置了
+  `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT=future-reconstructible-v1`，但本机长期开发库仍未应用
+  当前仓库的 `20260903010000_annotation_recovery_snapshot_future_contract` migration；数据库中的
+  `annotation_recovery_snapshots.payload` 仍是 `NOT NULL`。
+- 普通命令批次已正确进入 `/api/annotation-files/:id/command-batches`，但
+  `annotationHistoryFutureSnapshotWriter` 在证明成功后把新快照正文置为 `NULL`，触发 PostgreSQL `23502` /
+  Prisma `P2011`。快照写入异常回滚了同一保存事务，因此前端显示同步失败，正文和 operation 没有被提交。
+
+### 本轮修复
+
+- future snapshot writer 增加数据库能力门禁：同时确认当前 schema 的 `payload` 可空以及最终
+  `annotation_recovery_snapshots_future_storage_contract_check` 存在。rollout 配置先于 migration 到达时，
+  统一回退到幂等的完整 inline 快照，不再尝试写入不受当前数据库支持的 `NULL`。
+- 抽出复用的 inline 快照写入 helper，关闭 rollout、特殊 reason 和 schema 未就绪都使用同一条不覆盖既有历史的
+  写入路径；数据库查询本身失败仍真实抛出，不把数据库故障伪装成容量优化回退。
+- 新增回归测试覆盖 schema 未就绪时保存继续成功并返回 `schema_not_ready`；正式测试 schema 仍验证
+  reconstructible 快照和恢复结果没有改变。
+
+### 验证与状态
+
+- `npm run test:annotation-history-future-writer`：6/6 通过。
+- `npm run build:api`、`git diff --check` 通过。
+- 本机真实 API 保存验证：目标文件 revision 11 -> 12 的测试修改和 revision 12 -> 13 的恢复修改均返回 200；
+  最终正文恢复原值，operation 正常增加，恢复快照保持完整 inline，没有 500 或同步失败。
+- 本轮随后已在本机 `public` schema 事务内执行两条 future contract migration，并用 Prisma 官方
+  `migrate resolve --applied` 登记实际执行结果；`npx prisma migrate status` 已显示 up to date。API 已重启，
+  本机现在具备写入 reconstructible 的数据库合同；本轮仍未修改生产数据库、未部署服务器。生产启用前仍须按
+  容量路线图完成备份、隔离恢复演练和低干扰验收。
+
+## 2026-09-02：补充服务器端恢复快照迁移 runbook（文档完成，未部署）
+
+### 本轮完成
+
+- 新增 `docs/annotation-history-server-migration.md`，专门说明生产服务器从 39 条 migration 升级到 41 条、
+  验证旧 `inline` 恢复历史、再单独启用 `future-reconstructible-v1` 的完整操作顺序。
+- 文档明确区分同机 schema migration 与服务器间数据库/对象存储迁移：生产必须把数据库和对象作为一致数据集处理，
+  不能只复制数据库、只复制对象目录，也不能把本机实验库直接带入生产。
+- 补充维护排空、analysis worker 停止、一致备份与 checksum 校验、隔离恢复、`prisma migrate deploy`、
+  `release:switch`、旧 inline smoke、rollout 分阶段启用、失败回滚和长期监控门禁。
+- 明确禁止历史快照压缩/置空/删除、手工修改 `_prisma_migrations`、`db:push --force-reset` 和用裸符号链接绕过
+  release 并发检查；文档示例不包含密码、token、AccessKey、PlayAuth、payload 或临时媒体 URL。
+
+### 状态与边界
+
+- 仅修改文档，没有连接生产服务器、开启生产维护、执行生产 migration、切换 release 或修改生产数据。
+- 本机已有的 41 条 migration 和 reconstructible 快照验证结果仍只作为本地证据；生产仍需按 runbook 重新完成备份、
+  隔离恢复、39 -> 41 migration、旧路径 smoke 和单独 rollout 授权。
+
 ## 2026-08-21：顶栏新增「搜索」菜单（功能/设置命令面板）
 
 ### 背景
@@ -11204,3 +11256,705 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - **已完成**：FA-D3c3c 与整个 FA-D3c3 后端产包链。**待推进**：FA-D3c4 先拆出 D3c4a 的管理员有界导出列表/详情、成功对象受权 Range/下载、
   当前权限重验和下载审计，再做创建/观察 UI 与显式 retry。当前 worker 能产包不代表浏览器已有下载入口；下一轮开始前必须按实际代码重写
   `CLAUDE_WORK.md`，继续禁止把大 ZIP 或 manifest 放入 React/API JSON。本轮未部署生产。
+
+## 2026-09-02：FA-R1/R2 产品边界纠正与人工修正数据采集
+
+### 方向纠正
+
+- 用户明确指出平台上传的是外部 force-alignment 结果，平台职责是记录标注者后续编辑，供未来离线模型改进；服务器不应运行对齐模型、
+  发布 prediction、评价模型运行、冻结训练集或生成训练 ZIP。此前 FA-D2/FA-D3 是产品边界误判，不再继续补 UI 或下载入口。
+- 历史 Development Log 保留上述实现过程作为审计证据，但不再代表当前运行能力或后续任务。`force-alignment-data-roadmap.md` 和 R6a 已重写为
+  “外部结果导入 + 人工修正采集”，AGENTS 增加禁止无明确新决策重建服务器 executor/run/training 链的约束。
+
+### 运行时代码与数据库清理
+
+- 反向移除 AlignmentRun、外部 executor、对齐/训练 worker、prediction artifact/read/apply、质量评价、困难样本、研究分组、冻结输入、训练任务、
+  音频归一化与 ZIP 发布的 API、UI、shared/document-model DTO、配置、样式、脚本、依赖和专项测试；`archiver` 及其类型依赖随唯一调用点删除。
+- 恢复单一媒体分析 worker 及其原有 ProcessingJob 语义。源码扫描确认 App/API/shared/document-model/package/env 中不再存在运行态
+  `AlignmentRun`、`force_alignment`、training export、外部执行器或结果窗口入口；对象生命周期也不再维护已删除的 prediction/训练包引用。
+- migration 38..47 保留为已执行开发库的不可变历史，新增第 48 条 fail-closed cleanup：先检查所有错误功能表、任务类型、外键、project revision
+  和审计事实，任一非空立即抛错；只有全部为空才按显式 FK 顺序删除表、列和专用 enum type，不使用 `CASCADE`，也不修改 annotation file、
+  recovery snapshot、tool attempt 或任何业务正文。PostgreSQL 的历史 ProcessingJobType/AuditAction 值作为不可达 tombstone 保留，避免为了删除
+  enum 值重写任务和审计大表。
+- 本机 `api_test` 和 `public` 都由 migration 自身重新执行空表门禁后完成清理；未连接、迁移或部署生产。迁移专项同时验证插入一条 run 后整体
+  拒绝且结构保持，删除夹具后才完整清理。
+
+### 人工修正数据集
+
+- 保留 FA-D1 `AnnotationToolAttempt`、账号级 IndexedDB 离线送达、平均重置语义验证、operation/revision 原子绑定和管理员工具尝试 CSV。
+  取消、失败、阻断和无变化仍只是一条工具尝试，不能伪造成 timing 标签。
+- 新增 `annotationCorrectionDataset` 纯提取边界和唯一服务。服务按 `committedAt,id` keyset 分批读取 accepted/committed operation，只考虑直接
+  timing、普通 transaction 和结构 transaction 三类严格 action，并复用 shared parser 提取 `entityType=character` 的叶命令。坏 payload、
+  非字符实体、快照边界和未提交 operation 全部跳过，不按文件名、目录、账号或角色猜测。
+- 一行输出 operation/file/actor/revision/sequence/time、character/可选 track id、before/after 起止微秒和 delta。绑定 committed 平均重置时标记
+  `sentence_even_reset` 并输出固定 attempt provenance；其他真实字符 timing 标记 `manual_timing_edit`。CSV 不含句子/唱词正文、ProjectData、
+  command payload、details、媒体 URL、对象 key、凭据或错误文本。
+- 新增管理员只读 `/api/admin/annotation-corrections/export`：90 天半开窗口，最多扫描 10,000 个候选 operation、最多导出 10,000 行，以响应头
+  报告行数、扫描数和截断。没有新增训练日志表、后台任务、模型调用、媒体下载、React 轮询 owner 或对象存储资产。
+
+### 验证与状态
+
+- `test:annotation-correction-dataset` 7/7，覆盖 timing/transaction、平均重置关联、微秒精度、坏 payload、权限、时间窗、10,000 行截断、CSV 隐私和 cleanup
+  migration。既有 `test:annotation-tool-attempts` 12/12（shared 2 + API 10）、delivery 12/12、平台原子保存 34/34 全部通过，确认采集和大规模
+  删除没有破坏文件保存、草稿 operation 或工具尝试送达。
+- `build:shared`、`build:document-model`、Prisma generate、完整生产 `npm run build` 和 `git diff --check` 已通过；完整 API
+  315/315 通过。依赖清单和运行态源码的 zombie 扫描无 AlignmentRun/force worker/training export/archiver 命中，`npm prune` 也清除了本机
+  `node_modules` 中已不受 package-lock 管理的 `archiver/@types/archiver` 安装残留。生产构建只保留既有 Vite 大 chunk 提示，API 测试只保留
+  既有 pg concurrent-query deprecation warning。
+- **已完成**：产品边界纠正、错误运行链删除、fail-closed 本机结构清理、轻量人工 timing 修正导出、专项/保存回归、README/AGENTS/roadmap/log
+  更新。**待推进**：若未来研究确实需要外部工具版本 provenance、账号匿名化或受授权音频片段，必须依据真实需求单独设计；当前不推进任何
+  服务器模型执行或训练发布功能。本轮未部署生产。
+
+## 2026-09-02：全量标注人员职责组增量调整
+
+### 计划与权限边界
+
+- 以已确认的《昆元任务分配_按字数公平版》权限计划为业务基线，处理三名退出人员和四名新增人员。写入前重新核对 7 个姓名只匹配
+  一个活动账号、账号名与预期一致、角色均为 `annotator + reviewer`。退出人员均没有直接 ACL 和活动资源所有权，其全部资源能力来自
+  项目职责组，因此本轮只撤销职责组来源，不停用账号、不改角色、不转移资源。
+- 新成员同时加入所在组普通项目及 Blind Pool 叶项目的标注组和审核组；四人都加入 Blind Pool 根审核组取得全部盲标媒体的
+  `read + review + download`。叶项目继续依靠 `break_permission_inheritance=true` 隔离 A/B 标注文件，没有扩大到其他组文件。
+- dry-run 从每个项目当前完整集合计算 `current - exits + joins`，计划指纹为
+  `ecd1b8b5a687eeea996b6b9bcf66e516e877b792c4e300e0029ca825b1a0c4d1`：67 个项目、删除 141 条、增加 182 条。郭禹坤已有
+  4 条第11组目标关系，因此实际新增数小于四人的目标关系总和。
+
+### 生产执行与恢复证据
+
+- 使用 `platform.admin` 于 `2026-09-02T14:56:47.131Z` 开启维护模式。一次性脚本从当前 release 导入数据库、权限、资源服务和维护
+  操作者模块，取得批处理 advisory lock，并只通过 `ResourceService.updateProjectWorkflowGroups()` 写入；没有直接 SQL 改成员、
+  没有改写 `resource_permissions`，每个项目继续由服务层锁定、复核、更新 `updated_at` 并写审计。
+- 在第一笔写入前，完整 before/after 集合以 `0600` 保存到生产数据盘
+  `/var/lib/xiqu-platform/backups/permission-roster-delta-20260902.json`。执行完成后职责组总数由 10,293 经 `-141 +182`
+  变为 10,334，直接 ACL 仍为 47；本轮生成 67 条 `project_workflow_groups_update` 审计。
+- 新增长期交接文档 [`project-workflow-permission-operations.md`](./project-workflow-permission-operations.md)，说明角色、owner、直接 ACL、
+  继承、职责组和 Blind Pool 的叠加关系，以及只读核对、服务层写入、指纹门禁、验收和反向恢复流程。文档不保存数据库连接串或凭据。
+
+### 有效权限验收与运行状态
+
+- 三名退出人员的职责组行全部清零，并对其逐一运行服务端有效权限计算：共 3,438 个“账号 × 活动资源”检查全部无能力。四名新增人员
+  完成 379 个应允许资源检查；普通任务和本组 Blind Pool 叶项目具备编辑、文件操作、审核和下载组合，Blind Pool 媒体层具备查看、审核、
+  下载。另有 150 个非本组 A/B 叶资源检查全部保持不可访问。
+- 第4组两位新成员各获得 23 个标注项目/24 个审核项目；第6组为 23/24；第11组为 22/23。多出的一个审核项目均为 Blind Pool 根媒体
+  权限。本轮没有授予 `manage_permissions`，也没有删除其他人员或既有手工 ACL。
+- 验收通过后于 `2026-09-02T14:58:51.254Z` 解除维护；`xiqu-api`、`xiqu-analysis-worker`、Caddy 均为 active，API database/storage
+  readiness 均为 ready。服务器 `/tmp` 一次性脚本随后清理，受保护变更计划保留。**已完成**：人员增删、有效权限和盲标隔离验收、恢复证据、
+  运维交接文档。**待推进**：账号是否停用由 super admin 另行决定；本轮按需求仅解除项目资源权限。
+
+## 2026-09-02：HC3a inline 影子 recipe 安全候选
+
+### 范围纠正与数据安全边界
+
+- 本轮继续标注历史容量治理，但只实现 HC3 的最小可验证单元：为仍保留完整 payload 的 inline 快照写入影子 recipe。
+  没有清空/删除/归档任何恢复 payload，没有启用 `reconstructible`，没有修改当前标注文件、operation、审核事实或对象存储，
+  也没有运行 compactor、`VACUUM` 或生产部署。
+- schema 新增 `recipe_verified_at`，避免把“影子证明通过”误写成“已经压缩”。新 expand migration 只新增列并替换 CHECK；
+  `payload NOT NULL`、HC2a inline-only 门禁继续存在，inline 行必须保持 `compacted_at IS NULL`。recipe 只能全组写入，必须绑定
+  SHA-256，revision/sequence/count 范围也由数据库复核。
+
+### 实现与并发门禁
+
+- 新增唯一纯验证边界 `annotationHistoryShadowRecipe.ts`，复用 HC1 的 current ProjectData parser、正式领域 command apply、
+  revision validation 与 canonical JSON hash。它重新验证 checkpoint/target 身份、目标 hash、完整 command 链和最终 recipe，
+  不保存或输出 ProjectData、operation body、文字内容或媒体信息。
+- 新增 `AnnotationHistoryShadowRecipeService`：事务外 plan 仅用于选候选；每个候选在 60 秒上限短事务内取得同文件 advisory
+  lock、标注文件共享行锁和 checkpoint/target 行锁，再重新读取与重放。当前文件 revision、payload hash、operation 范围、
+  storage mode 或已有 recipe 任一漂移均停止该文件。完全相同的 recipe 重试返回 `already_verified`，不改复核时间；不同
+  recipe 不允许覆盖。UPDATE 明确只含 hash/recipe/verifiedAt 字段。
+- 新增 `annotation-history:shadow-recipe` CLI。默认是 PostgreSQL 强制只读 dry-run，只允许 `--annotation-file-id`；写入必须
+  额外显式 `--apply`。默认 16、硬上限 100 个候选，每个候选最多 10,000 条 operation，并保留原 planner 的 revision、
+  operation 与 statement-timeout 扫描限制。报告只含固定状态、文件/snapshot 身份和计数。
+
+### 验证、自审与后续
+
+- `test:annotation-history-compaction` 22/22：覆盖正确重放、hash/operation 漂移、CLI 默认只读、单文件/批次门禁、真实 PostgreSQL
+  写入、payload 原样保留、inline/compactedAt 约束、精确幂等、revision 漂移及已有 hash 冲突。
+- `test:annotation-recovery-snapshot-resolver` 5/5，证明带 hash/recipe 的 inline 快照仍原样读取且 hash 错误 fail closed；
+  `test:platform-atomic-submit` 34/34，普通协作保存未受影响；完整 API 322/322。完整 Web/API 构建通过（保留既有前端
+  chunk size 警告）。
+- 自审确认没有第二套 replay/hash、没有自动 timer/worker/API 路由、没有全库 apply、没有 payload mutation 或日志正文。
+  **已完成**：HC3a 本地代码、迁移、CLI、专项验证和文档。**待推进**：先完成 HC2 生产观察和一致备份/恢复演练；之后仅对
+  少量非关键文件授权执行影子写入与持续复核。HC3b nullable payload/真实压缩仍未设计、未授权、未部署。
+
+## 2026-09-02：生产 36 -> 49 migration 本地隔离演练
+
+### 演练目的与安全边界
+
+- 生产当前停留在 `20260901030000_annotation_review_link_integrity`（第 36 条），当前候选共有 49 条 migration。此前的新空库
+  测试和第 49 条局部清理夹具不能单独证明带历史业务数据的升级安全，因此新增
+  `historicalProductionMigrationUpgrade.test.ts`，专门复现这一条真实升级路径。
+- 本轮只使用本机测试 PostgreSQL 的随机 `_test` schema。没有连接生产执行写操作，没有部署服务器，没有执行生产 migration、
+  影子 recipe、payload 清空、压缩或 `VACUUM`；测试结束无条件删除临时 schema 与 Prisma staging 目录。
+- 演练调用真实 `prisma migrate deploy`，而不是用 `pg` 把整份 migration SQL 当作一个请求发送。后者在
+  `20260830020000_processing_job_cancellation` 会把新增 enum 与使用 enum 放进同一隐式事务，产生 PostgreSQL
+  `unsafe use of new value`，与 Prisma 的真实 statement/commit 边界不等价。
+
+### 历史事实与升级断言
+
+- 第一阶段只复制并应用前 36 条真实 migration，随后写入两份有关联的 annotation file、非空 ProjectData、一条已提交
+  operation、一份恢复快照、一条确认、一条审核评论、一条编辑反馈和一条审核包链接；项目 metadata 也保留非空描述。
+- 第二阶段再加入并应用第 37-49 条 migration。测试对升级前已经存在的列逐表读取并精确比较，不只检查行数或表是否存在；
+  标注正文、revision、operation payload/sequence、恢复 payload、确认、评论/反馈、审核链接和项目 metadata 全部保持一致。
+- HC2/HC3a 最终状态另行验证：历史快照仍是 `inline`，payload 非空，hash/checkpoint/recipeVerifiedAt/compactedAt 均未被自动
+  写入，inline-only、recipe-shape 和 inline-shadow CHECK 均存在；轻量 `annotation_tool_attempts` 表已经建立。
+- 第 40-48 条 migration 曾创建但现已放弃的服务器 Force Alignment 表、核心表外键列和专用 enum，均在空事实门禁下由第
+  49 条完整清理。`ProcessingJobType` 中无法安全原地删除的两个 enum 值只作为不可达墓碑保留，现行表结构和运行代码没有入口。
+
+### 测试、自审与后续
+
+- 新增 `npm run test:historical-production-migration-upgrade`，专项 1/1 通过；`test:annotation-correction-dataset` 7/7、
+  `test:annotation-history-compaction` 22/22、resolver 5/5、客户端原子保存 34/34、完整 API 323/323 全部通过。
+  `npm run build` 通过，共享包、文档模型、Web 和 API 均完成构建；仅保留既有 Vite 大 chunk 提示和 API 测试中的既有 pg
+  concurrent-query deprecation warning。
+- 自审后移除了对 Prisma 英文成功文案的脆弱断言，改以进程退出码和数据库最终事实为准；同时断言第 49 条确为当前最后一条
+  migration，避免未来新增 migration 后演练静默漏跑。临时目录没有残留，测试 URL 继续受 `_test` 后缀门禁保护。
+- **已完成**：本地 36 -> 49 历史升级演练、业务事实保留验证、HC2/HC3a 与废弃结构最终合同验证、全量回归和交接规则。
+  **待推进**：生产 HC2 观察、正式 migration/部署、生产影子 recipe 和 HC3b 均仍需用户明确授权；未经授权不得执行。
+
+## 2026-09-02：HC3b1 统一恢复历史纯重建内核
+
+### 范围与架构收敛
+
+- 本轮只推进未来 reconstructible 读取所需的纯函数基础，没有修改 Prisma schema、数据库行、对象存储、API 路由或生产环境。
+  `payload` 仍为 `NOT NULL`，HC2a inline-only CHECK 仍禁止 `reconstructible/archived`，现有 inline resolver 继续对任意历史 JSON
+  原样返回且不调用 current ProjectData parser。
+- 新增 `annotationHistoryReconstruction.ts`，作为唯一的 checkpoint + operation + recipe 重建内核。输入是调用方已经有界读取的
+  文件/checkpoint/target 身份、checkpoint payload、operation facts 和完整 recipe；函数自身不访问数据库或日志。
+- 内核先校验 recipe version、canonical hash version、checkpoint/target revision、operation revision/sequence/count 范围和 SHA-256
+  形状，再复用既有 `parseCurrentProjectData()`、`buildAnnotationHistoryRevisionValidations()`、
+  `replayAnnotationHistoryToRevision()`、canonical hash 与 `buildAnnotationHistoryRecipe()`。没有新增第二套 command parser/apply、
+  hash 或 recipe builder。
+
+### 影子验证重构与错误语义
+
+- `verifyAnnotationHistoryShadowRecipe()` 已缩为薄包装：它把仍存在的 target inline payload 作为额外证据交给统一内核，确认目标
+  格式仍是 current ProjectData 且 hash 未漂移；重放、最终 hash 和 recipe 一致性不再在影子模块重复实现。
+- 失败只返回固定低基数 code，不携带 ProjectData、唱词、operation payload、媒体 URL 或凭据。checkpoint/target 身份漂移、
+  checkpoint/target payload 无效、缺失/重复/跨文件 operation、不可 apply、canonical hash 不一致均有稳定结果；结构非法 recipe
+  与形状合法但 operation 范围不一致分别返回 `recipe_invalid` 和 `recipe_changed`。
+- 自审修正了初版把字符串 hashVersion 当作整数校验的错误，并把 expected target snapshot id 移入统一内核，恢复原有
+  “先 checkpoint、后 target”的诊断顺序。旧 replay/hash/recipe helper 已删除，没有保留僵尸兼容入口。
+
+### 验证与待推进
+
+- 新增 5 项纯内核测试，覆盖多 revision 无损重建、输入不变、身份/recipe 漂移、inline 目标证据、缺失/重复/跨文件 operation、
+  apply 失败、hash 不一致及 recipe 范围漂移；并纳入 `test:annotation-history-compaction`。容量专项现为 27/27。
+- 既有 resolver 5/5、原子保存 34/34、完整 API 328/328、TypeScript 测试编译与 `npm run build` 全部通过。仅保留既有
+  Vite 大 chunk 提示和 API 测试中的 pg concurrent-query deprecation warning。
+- **已完成**：统一纯重建内核、HC3a 复用、重复逻辑清理、固定错误语义、专项/全量验证和交接规则。
+  **待推进**：HC2 生产观察、一致备份/恢复、少量生产影子复核、nullable payload migration、数据库 reconstructible resolver、
+  compactor 与物理空间回收均未授权、未实现、未部署。
+
+## 2026-09-02：HC3a2 已存影子 recipe 强制只读复核
+
+### 本轮范围与只读边界
+
+- 按滚动开发任务单完成 HC3a2，只为数据库中已经保存的 inline 影子 recipe 增加单文件、有界、强制只读的复核能力。
+  本轮没有修改 Prisma schema、恢复 payload、storage mode、operation、当前标注文件或审核事实，没有增加在线 API、timer、worker，
+  也没有连接生产数据库、运行生产影子复核或部署服务器。
+- 新增 `annotation-history:verify-shadow-recipes` CLI。它必须显式提供一个 annotation file UUID，默认最多验证 16、硬上限 100 个
+  候选，每候选最多 10,000 条 operation；不接受 `--all`、`--apply` 或其他 planner/write 参数。输出文件使用独占创建，避免覆盖
+  既有报告；stdout 和 JSON 只保留文件/快照身份、revision、固定结果码和计数。
+- CLI 使用既有 `createPrismaReadOnlyConnection()`，由 PostgreSQL 对池内每条物理连接施加
+  `default_transaction_read_only=on` 和 statement timeout，并使用独立 advisory lock。复核服务在 `REPEATABLE READ` 事务中固定
+  file、target、checkpoint 与 operation 视图，服务源码不存在 create/update/upsert/delete mutation。
+
+### 重建复用、停止语义与代码清理
+
+- 新增 `AnnotationHistoryStoredRecipeVerificationService`：只选择 `recipeVerifiedAt != null` 的候选并按 revision/id 稳定排序；recipe
+  字段缺失、checkpoint 丢失/跨文件、storage mode 变化、operation 超限、payload/hash/command/范围漂移都会返回固定码，首个阻断后
+  立即停止该文件，不尝试修补数据库。
+- 实际内容证明只调用 HC3b1 的 `reconstructAnnotationHistoryPayload()`。数据库读取层不再实现 parser、领域命令 apply、canonical
+  hash 或 recipe 对比；`buildAnnotationHistoryRecipe()` 与重建内核的 snapshot 参数收紧到真实使用的 id/revision 身份字段。
+- 把影子写入和只读复核集成测试重复的账号、标注文件、四个快照和三条 operation 构造抽成
+  `annotationHistoryTestFixture.ts`，删除原测试中的重复夹具代码。终止信号在候选开始前或查询期间到达都会被报告为 interrupted；
+  最后一个候选查询期间终止不再被误报为正常完成。
+- 自审扫描确认新服务没有 Prisma mutation；新路径只存在一处统一重建调用；报告不包含正文、ProjectData、operation payload、媒体
+  URL、对象 key、数据库 URL、SQL 或凭据。历史诊断码保持低基数，数据库/Prisma 原始异常只在 CLI 边界收敛为稳定提示。
+
+### 验证与后续门禁
+
+- `npm run test:annotation-history-compaction`：33/33，通过合法已存 recipe、数据库逐项不变、payload 漂移、候选截断、checkpoint
+  缺失、operation 超限、部分 recipe、严格 CLI 参数和终止语义。
+- `npm run test:api`：334/334；`npm run build` 完整通过 Prisma guard、shared、document-model、Web 与 API。`git diff --check`
+  通过；仅保留既有 Vite 主 chunk 体积提示和 API 测试中的既有 pg concurrent-query deprecation warning。
+- **已完成**：HC3a2 本地服务、CLI、共享夹具、专项/全量测试、自审和文档规范。
+  **待推进**：生产 HC2 指标观察、一致备份/恢复演练、少量非关键文件的影子写入与本工具复核仍需用户明确授权；nullable
+  payload、数据库 reconstructible resolver、compactor、数据清理、`VACUUM` 和服务器部署均未在本轮执行或授权。
+
+## 2026-09-02：HC3b2a 恢复历史数据库重建事实边界
+
+### 目标与职责拆分
+
+- HC3a2 已证明强制只读 CLI 能重新验证数据库中的 stored recipe，但首版把 recipe 整组解析、checkpoint 查询和 operation 范围
+  查询放在 verification service 内。未来详情/比较/恢复若直接在 `resourceService` 重写这些查询，会让影子证明与真实读取使用不同
+  事实边界，因此本轮先收敛数据库读取，不提前启用 nullable payload。
+- 新增 `annotationHistoryReconstructionFacts.ts`：接收同一事务快照中的文件 id 与 target recipe 列，只读取同文件 checkpoint 和
+  recipe revision 范围内的 committed operation。recipe 必须整组存在，checkpoint 必须仍为 inline，每目标最多 10,000 条 operation；
+  部分 recipe、缺 checkpoint、模式漂移和超限都返回固定错误码。
+- 模块输出恰好满足 `reconstructAnnotationHistoryPayload()` 的输入，不解析 ProjectData、不重放领域命令、不计算 canonical hash、
+  不比较 recipe，也没有 create/update/delete/upsert。annotation 当前 payload、审核正文、媒体、对象、账号和权限均不在查询范围。
+
+### 复用与僵尸逻辑清理
+
+- `AnnotationHistoryStoredRecipeVerificationService` 保留 `REPEATABLE READ` 事务、候选稳定排序、inline target 门禁、首错停止、终止信号
+  和无正文报告；checkpoint/operation 查询与 `readStoredRecipe()` 已完整删除，改为事实装载后调用唯一纯重建内核。
+- 原来定义在影子写服务中的 10,000 operation 上限迁移为通用重建事实常量，影子写入与 stored-recipe 读取共用同一上限；旧常量与
+  引用已清理。影子写服务没有机械改用新 loader，因为它验证的是尚未保存的 planner recipe，必须在文件/snapshot 行锁内重读并写入
+  轻量元数据；混用会削弱它的并发门禁。
+- 集成测试直接读取一份真实 stored recipe，确认 checkpoint 文件/revision、operation 数与 recipe 一致，再由强制只读连接完成复核；
+  既有数据库逐项不变、漂移、截断、缺 checkpoint、超限和终止测试继续通过，没有复制新的历史夹具。
+
+### 验证与状态
+
+- `npm run test:annotation-history-compaction`：33/33；`test:annotation-recovery-snapshot-resolver`：5/5；
+  `test:platform-atomic-submit`：34/34；完整 `npm run test:api`：334/334；完整 `npm run build` 与 `git diff --check` 通过。
+  仅保留既有 Vite 主 chunk 体积提示和 API 测试中的既有 pg concurrent-query deprecation warning。
+- 自审确认事实模块没有 mutation、无第二套 replay/hash/recipe 证明、无无界查询、无正文/媒体/凭据报告，抽取后旧 helper 与常量无残留。
+- **已完成**：HC3b2a 本地数据库事实层、HC3a2 接线、重复逻辑清理、回归和文档。
+  **待推进**：当前 Prisma payload 仍为必填，数据库 CHECK 仍禁止 reconstructible/archived，在线 resolver 仍 fail closed。生产 HC2
+  观察、备份/恢复和少量影子运行未经授权；nullable migration、在线详情/比较/恢复、compactor、数据清理和部署均未执行。
+
+## 2026-09-02：HC3b2b 禁用态异步恢复快照读取协调器
+
+### 读取协调合同
+
+- 新增 `annotationRecoverySnapshotPayloadService.ts`，作为详情、比较与恢复未来可共用的异步协调候选。inline 分支直接调用既有同步
+  resolver，继续原样返回任意历史 JSON并校验可选 canonical hash；没有把旧文件强制解析为当前 ProjectData。
+- reconstructible 候选分支依次调用 HC3b2a `loadAnnotationHistoryReconstructionFacts()` 和 HC3b1
+  `reconstructAnnotationHistoryPayload()`，不复制 checkpoint/operation 查询、command parser/apply、hash 或 recipe 比较。重建调用刻意
+  不传 target inline payload，证明未来正文为空时仍只依赖 checkpoint + committed operation。
+- archived 继续稳定拒绝。所有失败只返回固定 code 和 snapshot/file/revision；不存在 ProjectData、正文、payload hash、recipe、operation、
+  媒体、对象、数据库错误或凭据回传。
+
+### 默认关闭与半迁移门禁
+
+- reconstructible 分支要求一个模块 Symbol 品牌的隔离测试能力。该品牌不能经过 JSON、HTTP 或环境变量传播，工厂调用点经源码扫描
+  只存在于两份专项测试；`resourceService`、router、server、config 和 `.env.example` 均无引用。本轮没有建立线上 feature flag、DI 开关
+  或 API 参数，现有详情/比较/恢复继续走同步 inline-only resolver。
+- 候选目标必须同时为 `storageMode=reconstructible`、`payload=null`、`compactedAt!=null` 且 recipe 字段完整。正文未清空、缺压缩时间、
+  部分 recipe、缺 checkpoint、operation 超限/漂移或最终 hash 不一致都会 fail closed；半迁移状态不能靠仍在的 recipe 侥幸读取。
+- 隔离集成测试没有修改 schema CHECK 或真实行：先为真实 inline target 写入影子 recipe，再只在函数输入中投影 nullable/reconstructible
+  形态，成功从数据库 checkpoint + operation 重建目标并确认业务行逐项不变。该证明不是 nullable migration 或生产 rollout 证据。
+
+### 验证与状态
+
+- `test:annotation-recovery-snapshot-resolver`：9/9，覆盖任意旧 JSON、hash、默认关闭、payload missing、部分 recipe 和两类半迁移状态；
+  `test:annotation-history-compaction`：33/33；完整 `test:api`：338/338；完整 `npm run build` 与 `git diff --check` 通过。
+- 自审确认新服务无 Prisma mutation、无第二套重建实现、无生产调用点；仅保留既有 Vite 主 chunk 提示和 API 测试中的 pg
+  concurrent-query deprecation warning。
+- **已完成**：HC3b2b 候选协调器、默认关闭/状态门禁、隔离证明、全量回归和文档。
+  **待推进**：生产 HC2 观察、一致备份/恢复、少量影子运行仍需明确授权；payload nullable、数据库 CHECK contract、正式 async
+  resolver 接线、compactor、清理、物理空间回收和服务器部署均未执行。
+
+## 2026-09-02：HC2g 生产观察手册与不可变 release CLI 入口
+
+### 发现的问题与范围
+
+- 到达生产观察门禁后复核发现，`annotation-history:plan:dry-run`、`annotation-history:shadow-recipe` 和
+  `annotation-history:verify-shadow-recipes` 仍通过 `tsx apps/api/src/*.ts` 启动。当前不可变 release 只承诺编译产物，服务器若
+  不携带源码或开发依赖，这三条已验证的运维命令会在真正需要时不可用。
+- 现有 `release:inspect` 也没有要求三个历史治理入口存在，因此候选可能通过检查却缺少 package script 指向的文件。该问题属于
+  release 合同，不需要修改 planner、影子写服务、stored-recipe verifier、重建内核、数据库 schema 或在线 API。
+
+### 编译入口与候选门禁
+
+- 三条 package script 现直接运行 `dist/api/annotationHistoryCompactionCli.js`、
+  `dist/api/annotationHistoryShadowRecipeCli.js` 和 `dist/api/annotationHistoryStoredRecipeVerificationCli.js`，保留 Node 22
+  `--env-file-if-exists=.env` 作为本机便利；生产仍由受控 shell 显式加载 `/etc/xiqu-platform/xiqu-platform.env`。
+- `releaseCandidateInspector` 的必需文件清单同步加入三个入口，既有候选夹具也随之更新。未来入口缺失、类型错误或符号链接逃逸会
+  在切换 `current` 前 fail closed，不能靠服务器内复制源码或安装 `tsx` 修补。
+- 新增 `annotationHistoryReleaseEntries.test.ts`：先构建 API，逐项核对 package script 和真实 dist 文件，再用缺参数启动编译 CLI。
+  测试显式注入不可连接且带标记的数据库 URL；三条命令必须先返回严格参数错误，不能尝试连接、泄露哨兵地址或输出无界堆栈。
+
+### 生产观察运行手册
+
+- 新增 [`annotation-history-production-observation.md`](./annotation-history-production-observation.md)，引用而不复制通用部署手册，把
+  操作分为三次独立授权：A 为 expand-only deployment + HC2 只读观察；B 为明确 UUID 的 1–16 个影子 recipe 候选；C 为未来
+  nullable payload、正式 resolver 和 compactor。A 成功不能自动进入 B，B 成功也不能自动进入 C。
+- 手册冻结候选预检、维护排空、worker 停止、一致备份/校验、隔离恢复、migration/原子切换、只读 planner、shadow
+  dry-run/apply/forced-read-only verify、服务恢复、停止条件与脱敏报告模板。示例只用 release/file 占位符，不保存真实服务器、连接串、
+  凭据、正文、operation body、媒体 URL 或对象 key。
+- 明确禁止全库 shadow apply、payload 清理、storage mode/`compactedAt` 切换、compactor、历史删除、`VACUUM FULL` 和
+  `pg_repack`。报告必须保存在 release/Git 之外；代码或手册完成本身不是部署/生产写入授权。
+
+### 验证、自审与状态
+
+- `test:annotation-history-release-entries`：2/2；完整 `test:deployment`：29/29（其中候选检查 7/7）；
+  `test:annotation-history-compaction`：33/33；完整 `test:api`：338/338；完整 `npm run build` 与 `git diff --check` 通过。
+  仅保留既有 Vite 主 chunk 体积提示和 API 测试中的 `pg` concurrent-query deprecation warning。
+- 自审确认 package scripts 无历史治理源码入口，三个 dist 文件由 `build:api` 真实生成；运行手册命令与严格 parser 参数一致，
+  `release:switch` 使用现有 `--current-link/--expected-current/--new-release` 合同。没有新增依赖、schema/migration、生产开关或运行时路径。
+- **已完成**：HC2g 本地 release 合同、测试、生产观察手册和交接规范。
+  **待推进**：目标仍停在授权 A。未经用户明确批准，不连接生产、不部署、不执行 production migration/备份/影子命令，不写 recipe、
+  不清空 payload、不运行 compactor 或物理空间回收。
+
+## 2026-09-02：HC2h 本地不可变候选组装演练
+
+### 为什么继续做这一轮
+
+- HC2g 已证明 package scripts、编译入口和候选检查器合同正确，但当时只在源码工作区运行构建与测试，没有真实按部署清单组装最终
+  运行目录。生产门禁允许继续完成本地候选准备，因此本轮只补“最终包是否自足”的证据，不连接或模拟生产数据库。
+- `CLAUDE_WORK.md` 重新限定为一次临时候选演练：HEAD 必须保持 `5e2ed07`、工作区干净、临时盘有足够空间；任何步骤需要
+  `.env`、源码、数据库或生产命令就立即停止。
+
+### 候选内容与检查结果
+
+- 使用 Node `24.14.0`、npm `11.9.0` 重新执行完整 `npm run build`，Prisma generate/schema guard、shared、document-model、Web 与
+  API 均通过。构建后在唯一 `/tmp` 路径复制 package/lock、Prisma config/schema/49 条 migrations、完整 packages/dist、当前
+  node_modules 和两个部署 smoke 脚本；候选大小 554MB。
+- 候选根实际只有 `dist,node_modules,package-lock.json,package.json,packages,prisma,prisma.config.ts,scripts`。`@xiqu/shared` 与
+  `@xiqu/document-model` 的 workspace 链接均解析到候选内部；`release:inspect` 报告 30 个运行路径、27 个生产依赖、49 条
+  migration，`release:check` 报告 Prisma Client schema 一致。
+- 三个最终编译入口 SHA-256 分别为：compaction
+  `4ab8c701dac6cad317bb972525870c48893fd58f95c690771e6162054b44d09d`、shadow recipe
+  `50fe33705bd2468f793f4ec975afcac955392edaeb50817a42d5060e0c1c3de5`、stored verification
+  `b83084a2f14ac39462fcb9f827ade22d1dbb683a4f7c6337ee14e757698ed6c4`。
+- 在候选内部移除 `DATABASE_URL` 后分别运行三条 npm script，均以退出码 1 在严格参数解析处结束；输出长度为 241、245、256 字节，
+  不含连接尝试、Prisma 错误、数据库 URL 或凭据。第一次本地 shell 包装使用了 zsh 只读变量名 `status`，在调用 CLI 前即停止；改用
+  `exit_code` 后原候选完整复核通过，这不涉及产品代码或数据库状态。
+
+### 清理、验证与门禁
+
+- 演练完成后删除整个临时候选并确认路径不存在；没有创建 `/opt/xiqu`、release symlink、环境文件、报告或 Git 大文件。系统临时卷
+  恢复约 554MB 空间。
+- AGENTS 已经规定“新增正式入口同步候选清单”和“历史治理 CLI 只执行 dist”，本轮没有新增长期架构规则，因此不重复添加同义条目。
+- 完整 `test:api` 338/338、完整 `npm run build` 与 `git diff --check` 通过；仅保留既有 Vite 主 chunk 体积提示和 API 测试中的
+  `pg` concurrent-query deprecation warning。
+- **已完成**：当前 commit 的真实不可变候选组装、内部链接/依赖/migration/Prisma/历史 CLI 验收和临时文件清理。
+  **待推进**：仍停在授权 A；生产连接、维护、备份、migration、部署、只读生产 planner、影子写入、payload 清理、compactor 与
+  物理回收均未执行。
+
+## 2026-09-02：HC2i 容量治理生产前风险审查与门禁修复
+
+### 生产只读事实与影响判断
+
+- 按用户要求把审查范围收紧到恢复历史容量治理。只读确认生产仍运行 release `0f4bf69`、36 条 migration、PostgreSQL 16.15；
+  API、analysis worker、Caddy 均 active，维护关闭，检查时没有活动事务或快照表锁。本轮没有开启维护、执行 migration、切换 release、
+  写影子 recipe、清空 payload、运行 compactor/VACUUM 或修改生产业务数据。
+- 生产恢复快照已增至 47,474 行，总 relation 约 6.0GB；其中 heap 约 8.8MB、索引约 9.8MB、TOAST 约 6.0GB。对现有列执行
+  与新容量指标等价的 `EXPLAIN ANALYZE`，47,474 行聚合约 19ms、顺序扫描约 7.7ms，只访问 1,101 个主表 buffer，不读取或解压
+  JSON payload。由此确认五分钟缓存指标不会扫描 6GB 正文，但正式 DDL 仍需维护排空后取得表锁。
+- 逐条检查 HC2a/HC3a SQL：只增加 enum、常量默认/nullable 列和 CHECK，不更新或删除 annotation payload、operation、snapshot、
+  confirmation、range comment/feedback 或 review link。PostgreSQL 16 的常量默认不会重写旧行；CHECK 只依赖新增轻量列。旧 release
+  插入时省略新列仍得到 `inline + null recipe`，新 release 普通保存也保持同样形态。
+
+### 审查发现与修复
+
+- 发现影子 recipe CLI 在 `--apply` 模式错误地让前置 planner 使用普通可写连接，配置的数据库只读门禁和 statement timeout 因而
+  失效；写服务也只在手册中要求维护，代码可被误用在正常标注期间，并可能用文件共享锁让保存等待。现已改为 planner 在 dry-run
+  与 apply 两种模式下一律走独立强制只读连接，可写连接只在完整计划通过后按需创建。
+- 每个影子 recipe 写事务现先以 `FOR SHARE` 锁住 `platform_runtime_state.platform` 并确认维护开启；维护缺失、关闭或在候选批次间
+  被关闭时，以稳定 `maintenance_required` 停止且不写 hash/recipe。新增反例测试逐项确认 payload 与全部 recipe 列保持原值；既有
+  写入和只读复核夹具也改为显式进入测试维护状态。
+- 当前 49 条候选 migration 混入 10 条从未部署的错误 Force Alignment 服务端 pipeline migration：它们依次创建表、外键和核心表列，
+  最后一条再删除，虽最终 schema 可收敛，仍会制造无意义锁、失败面和中间状态。已在生产部署前删除整段草稿 migration 与对应僵尸
+  清理测试；当前最终树只含 39 条 migration。历史升级测试改为生产 36 -> 39，并继续在升级前写入标注、operation、恢复快照、
+  确认、评论、反馈和审核链接，升级后逐项比较原列。
+
+### 验证与待推进
+
+- `test:annotation-history-compaction` 34/34、`test:historical-production-migration-upgrade` 1/1、
+  `test:annotation-history-release-entries` 2/2、`test:deployment` 29/29、完整 `test:api` 337/337、完整 `npm run build` 与
+  `git diff --check` 均通过。隔离 `api_test` schema 因曾应用已删除的草稿 migration，已在 `_test` 名称门禁下单独重建并从零成功
+  应用当前 39 条；本地开发 schema 和生产 schema 未受影响。仅保留既有 Vite 主 chunk 体积提示和 API 测试中的 `pg`
+  concurrent-query deprecation warning。
+- 自审没有发现会让现有标注保存、operation/快照原子绑定、跨实例 revision 通知、恢复、确认/评论/反馈或审核链接失效的剩余
+  阻断问题。容量模块没有在线写入调用点、timer 或 worker，不会自动写 recipe、改变存储模式、清空 payload、删除 operation 或
+  执行物理回收。
+- **已完成**：生产只读风险基线、迁移/在线路径审查、影子 apply 双门禁修复、错误 migration 链和测试僵尸代码清理、完整回归与文档。
+  **待推进**：生产仍停在授权 A 前；只有用户明确批准后，才能从本次已审查提交重新构建不可变候选并按手册进入维护、备份、隔离
+  恢复、migration 和只读观察。授权 B 影子写入、payload 清空、compactor 与物理回收仍未获授权。
+
+### 提交后候选复核
+
+- 在已提交的 `8f2cfb6` 构建产物上按部署白名单组装临时不可变候选，使用硬链接避免再次复制约 531MB 的 `node_modules`；候选根未
+  夹带 `.env`、`data`、备份、报告、密钥或源码。
+- 候选内 `release:inspect` 通过，报告 30 个运行路径、27 个生产依赖和 39 条 migration；`release:check` 的 Prisma Client/schema
+  校验通过，`dist/api/annotationHistoryCompactionCli.js`、`annotationHistoryShadowRecipeCli.js`、
+  `annotationHistoryStoredRecipeVerificationCli.js` 均存在。候选临时目录已清理，没有留下 release、数据库或生产状态。
+- 本轮最终状态仍为：本地代码、文档和候选检查完成；生产未部署、未执行 migration、未写影子 recipe、未清空 payload、未运行
+  compactor/VACUUM，等待用户明确授权 A。
+
+## 2026-09-02：HC2j 生产 expand-only 部署、备份恢复与容量门禁收尾
+
+### 已完成
+
+- 根据实际生产结果修正了容量治理文档的状态：上一些章节中的“生产未执行/等待授权 A”保留为历史记录，但当前权威状态明确为
+  HC2 已完成，不再误导后续 agent 重复执行同一轮部署。
+- 从提交 `f8c2b1e` 组装并上传不可变候选 release `20260902T205647Z-f8c2b1e`。候选检查通过：30 个运行路径、27 个生产依赖、
+  39 条 migration；`release:check` 通过。生产当前 release 已原子切换到该候选，旧 release 仍保留为回滚候选。
+- 按最短维护顺序完成生产迁移：进入维护、排空 API 写入、停止 `xiqu-analysis-worker`、创建并校验一致备份、完成隔离恢复演练、
+  应用 36 -> 39 的 expand-only migration、切换 release、完成维护状态只读 smoke，随后解除维护并恢复 API/worker/Caddy。
+- 正式备份位于服务器受控备份目录，包含 95,295 个对象，manifest/checksum 校验通过；隔离恢复的 migration history、runtime state、
+  数据库摘要和对象存储均通过核对，`missing=0`、`orphan=0`。隔离数据库和对象目录已删除，只保留脱敏恢复报告。
+- migration 前后确认现有 annotation payload、operation、recovery snapshot、confirmation、range comment/feedback 和 review link
+  等业务事实未被更新、删除或置空。当前快照约 47,669 行，全部为 `storage_mode=inline` 且 payload 完整，尚无 reconstructible/archived
+  数据，也没有在线 compactor 或自动清理器。
+- 为给隔离恢复腾出空间，只删除了两份最早的完整备份副本；删除前读取并核对 manifest，当前正式备份及近几日完整备份仍保留。
+  没有删除任何数据库业务行、快照 payload、operation、审核事实或媒体对象。
+- 发布后只读观察中 API 5xx、uncaught/unhandled/fatal/Prisma error 和 worker error 均为 0。观察窗口没有新用户保存/协作流量，
+  因此保存、同步、恢复、确认/评论/反馈和审核链路的真实人工 smoke 仍列为下一次低干扰窗口的待验收项。
+- 生产约有 34GB 数据盘和 4.1GB 系统盘可用；已把恢复演练的 PostgreSQL 表空间和临时对象目录放到数据盘，避免再次占用系统盘。
+  以后所有容量操作都必须先检查安全余量，余量不足时宁可停止治理，不得挤压在线标注空间。
+- 更新了 `docs/annotation-history-capacity-roadmap.md` 的当前权威状态，并将下一轮收敛为 HC3a0：生产只读容量校准与恢复读取验收。
+  更新了 `AGENTS.md` 的服务名、env 加载、release、数据盘表空间、备份删除和容量治理硬门禁。重写了被忽略的 `CLAUDE_WORK.md`，
+  只保留下一轮任务，不保留历史日志。
+
+### 验证与自审
+
+- 生产的 release inspect、release check、migration、备份 manifest/checksum、隔离恢复报告、API/worker/Caddy 状态和维护状态均已核对。
+- 本轮没有执行 shadow recipe apply、verify 写入、payload 清理、storage mode 切换、compactor、`VACUUM FULL`、`pg_repack` 或业务历史删除。
+- **待推进**：本地继续执行 HC3a0 只读抽样、恢复历史详情/比较/恢复读取验收和隔离测试；下一轮不自动部署、不自动写 recipe，除非用户
+  另行明确授权。若只读校准证明收益不足或空间接近安全线，继续保留全部 inline payload。
+
+## 2026-09-02：容量策略调整与生产恢复历史问题初查
+
+### 已完成
+
+- 用户明确调整容量策略：过去已经产生的恢复记录不再压缩、不置空、不归档、不物理回收；未来新增记录才重新设计轻量快照。
+  已将 roadmap 中原本面向历史批量压缩的 HC3 标记为冻结，并新增 HC3c 未来新旧双形态共存方案，避免把旧历史迁移成无法证明等价的格式。
+- 生产只读核对结果：当前 release 为 `20260902T205647Z-f8c2b1e`，`xiqu-api.service`、`xiqu-analysis-worker.service`、`caddy.service`
+  均 active，维护模式关闭，数据库 migration 为 39。快照 47,676 行、operation 99,808 行、确认 739 条、评论/反馈 132 条、审核链接 0 条。
+- 数据库大小为 6,422MB（6,733,437,975 bytes）；其中 `annotation_recovery_snapshots` 为 6,061MB（6,355,238,912 bytes），
+  `annotation_operations` 为 160MB（167,698,432 bytes）。磁盘系统盘 40GB 剩 4.1GB，数据盘 98GB 剩 34GB；本轮没有删除任何业务数据。
+- 生产快照按文件分布仍有 1、990、7,037 等不同历史量级；根据新策略已停止继续执行中/高量历史 planner，不生成历史可回收容量建议。
+  已中断的低量只读 planner 只完成一个 1-snapshot 文件，输出写在 release/Git 外的受控报告目录，未写数据库；后续任务单要求清理该临时报告。
+- 日志初查显示最近恢复历史列表和详情请求均返回 HTTP 200，未发现对应 recovery route 的 500。发现的数据库 `57P01` 是此前维护/恢复过程
+  终止 LISTEN 连接的历史日志，不是恢复历史点击错误；当前恢复历史崩溃仍需用浏览器实际错误或前端诊断定位，不能猜测修改保存/恢复逻辑。
+- 已更新 `AGENTS.md`：补充历史冻结、未来新快照双形态、当前空间门禁和恢复历史崩溃先定位后修复的规则。已重写被忽略的
+  `CLAUDE_WORK.md`，下一轮优先处理恢复历史 P0 和 HC3c 未来快照合同，不部署、不进入维护。
+
+### 待推进
+
+- 恢复历史崩溃：需要区分列表展开、详情请求、preview 迁移和浏览器渲染阶段；修复应增加有界、脱敏的诊断和局部错误隔离，并为真实根因补回归测试。
+- 未来快照轻量保存：尚未修改保存事务、schema 或 resolver。必须先完成隔离库双形态测试、失败 inline 回退和恢复/比较/备份演练，再另行申请短维护发布。
+- 生产空间治理：历史记录冻结，不执行 compactor、shadow apply、payload 清理、`VACUUM FULL`、`pg_repack` 或旧备份删除；空间接近安全线时停止治理。
+
+## 2026-09-02：HC3c1 未来快照决策边界（本地完成，未接入线上）
+
+### 本轮完成
+
+- 在线恢复历史已经恢复正常。此前为恢复历史异常临时加入的错误边界、DTO 过滤和前端诊断过度修复已撤销；本轮没有再次修改
+  恢复历史 UI、DTO、resolver 或读取事实。
+- 新增 `apps/api/src/annotationHistoryFutureSnapshotPolicy.ts`，建立未来快照的唯一决策边界。策略只允许在显式 rollout、普通
+  `save`、非检查点、精确重建证明完整、canonical hash 算法/值一致、revision 与 operation 范围完整且重放量不超过预算时返回
+  reconstructible recipe；其他情况统一回退为需要完整 payload 的 inline。
+- 策略只消费现有重建内核输出的证明，不复制 command parser、apply 或 canonical hash 计算，也没有接入当前保存事务、恢复 resolver、
+  Prisma schema、migration、worker 或生产配置。现有 `payload NOT NULL` 和全部 inline 历史合同保持不变。
+- 新增 6 组纯函数专项测试，覆盖 rollout 未开启、特殊 reason、检查点、证明缺失/失败、recipe/hash/revision/检查点漂移、hash 算法
+  版本漂移、operation 预算和成功路径；新增 `test:annotation-history-future-policy` 脚本。
+- 完成完整 `npm run test:api`（343/343）、`npm run test:annotation-history-future-policy`（6/6）、
+  `npm run test:annotation-history-compaction`（34/34）、`npm run build` 和 `git diff --check`。仅保留既有 Vite chunk 体积提示和
+  `pg` concurrent-query deprecation warning。
+
+### 数据与发布边界
+
+- 本轮没有连接生产、开启维护、执行 migration、切换 release、写入 recipe、修改数据库、压缩/删除/归档历史、清理 payload、运行
+  compactor、`VACUUM FULL` 或 `pg_repack`。生产标注、operation、恢复快照、确认、评论、反馈、审核链接和媒体对象没有变更。
+- 生产只读基线仍为数据库约 6,422MB，恢复快照约 6,061MB；系统盘约剩 4.1GB，数据盘约剩 34GB。历史容量治理继续受安全余量
+  门禁约束，不能用未来方案为当前空间问题做未经验证的回收。
+- 本轮没有新增需要写入 `AGENTS.md` 的长期运行规则；已有“历史冻结、双形态需先隔离验证、不得泄露正文/凭据、未授权不部署”的规则
+  已覆盖本轮边界。
+
+### 下一步
+
+- **HC3c1 已完成**，但“未来轻量快照已上线”尚未完成。下一阶段为 HC3c2：在隔离库设计并验证旧 inline 与新 reconstructible 共存的
+  expand migration、数据库 CHECK、唯一双形态 resolver、失败回退、详情/比较/恢复/备份和旧 release 回滚合同。
+- HC3c2 完成前不接入线上保存，不修改生产 schema，不执行历史 compactor 或 payload 清理；若隔离验证不能证明旧历史读取和事务回滚，
+  必须停在本地设计阶段。
+
+## 2026-09-02：HC3c5 生产发布前静态门禁补充（部分完成，未发布）
+
+### 本轮完成
+
+- 在 HC3c4 已提交为 `db5607b` 后继续执行 HC3c5 的本地发布前检查；没有连接生产、执行 migration、写入数据库/对象、进入维护或重启线上服务。
+- 复核部署测试覆盖 release inspector、Prisma schema guard、候选运行文件、workspace 链接、migration、systemd/worker/CLI 入口和回滚合同；发现
+  生产环境模板没有显式列出未来快照 rollout 的安全默认值，已补充
+  `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT='disabled'`，并在部署说明和静态测试中锁定。
+- 未来启用值仍只能是 `future-reconstructible-v1`，且必须在 40/41 migration、备份/隔离恢复、旧 inline smoke 和单独授权之后使用；worker、
+  compactor、CLI 和前端不会自行打开。没有新增第二套容量策略，也没有触碰历史恢复快照。
+
+### 验证与发布边界
+
+- `npm run test:deployment`：30/30；之前 HC3c4 的完整 API 351/351、完整构建和专项结果仍有效。真实不可变 release 目录尚未生成，故未在生产
+  路径执行 `release:inspect`，仅通过其完整静态测试合同；这不替代未来发布前对真实 release 目录的检查。
+- 当前生产仍为 39 条 migration、inline-only；既有恢复快照、operation、标注、确认、评论、反馈、审核链接和媒体对象没有任何变更。生产容量基线
+  仍约为数据库 6,422MB、恢复快照 6,061MB、系统盘剩 4.1GB、数据盘剩 34GB。
+- 仍未运行 shadow apply、verify 写入变体、compactor、payload 清理、历史删除/归档、`VACUUM FULL` 或 `pg_repack`，未推送或部署服务器。
+
+### 待推进
+
+- 真实 release 构建包生成后，在其绝对目录运行 `release:inspect` 与 `release:check`；随后只在用户明确授权时设计并执行数据盘上的脱敏备份/隔离
+  恢复演练和短维护 39 -> 41 migration。余量不足或证据不完整就停止。
+- 若未来完成第一阶段旧 inline smoke，再另行决定是否启用 `future-reconstructible-v1`，并观察固定指标、保存/协作/恢复/审核路径和磁盘安全余量。
+
+## 2026-09-02：HC3c4 本地 rollout 验收与生产发布门禁（本地完成，生产未发布）
+
+### 本轮完成
+
+- 依据 HC3c3 的本地候选接线，先复核生产边界：生产仍为 39 条 migration、全部恢复快照为完整 inline，未连接生产、未应用 40/41
+  migration、未开启 rollout、未进入维护、未部署；本轮没有修改任何标注、operation、恢复快照、确认、评论、反馈、审核链接或媒体事实。
+- 在隔离库补充未来快照 writer 验收：默认 `disabled` 的普通保存保持 inline；显式 `future-reconstructible-v1` 的有效命令链可写入完整 recipe、
+  `payload=null` 并由异步 resolver 无损还原；特殊保护 reason、证明失败和首个快照保持完整 inline；同 revision 重试不重算、不覆盖；事务抛错后
+  快照写入随事务回滚，数据库中不留孤立行；观测回调异常也不会传播为保存失败。
+- 保存 writer 的结果现在只在外层 `$transaction` 成功返回后交给 `ApiObservability`。新增固定低基数的 rollout、结果、回退原因计数和耗时
+  Histogram；回滚和原子命令幂等重放不被计为新快照写入，观测不记录文件/账号身份、ProjectData、operation body、媒体 URL、凭据或对象 key。
+- 对普通 `ResourceService.saveAnnotationFile`、恢复前保护快照和原子 `AnnotationCommandCommitService` 三条写入路径做了事务返回值自审；
+  revision 发布、operation 提交、租约释放、工具 attempt 绑定、审计和恢复读取合同均保持原有边界。
+
+### 验证与发布边界
+
+- 专项 `test:annotation-history-future-writer`：5/5；观测专项：11/11；串行容量专项：35/35；完整 `test:api`：350/350；`npm run build`、
+  Prisma schema guard、类型构建和 `git diff --check` 均通过。之前并行启动两个会清空同一 `api_test` schema 的专项曾产生一次夹具缺失，
+  串行重跑已 35/35 通过，未影响业务代码或生产数据。
+- rollout 仍默认关闭，worker/CLI 没有独立开启路径；HC3c4 只完成本地候选的可重复证明，不代表生产轻量快照已上线。生产容量基线仍按此前
+  只读结果记录：数据库约 6,422MB，恢复快照约 6,061MB，系统盘约剩 4.1GB，数据盘约剩 34GB。
+- 本轮没有运行 shadow apply、verify 写入变体、compactor、payload 清理、历史删除/归档、`VACUUM FULL` 或 `pg_repack`，也没有执行生产
+  migration、备份切换、代码部署或维护窗口。
+
+### 待推进
+
+- HC3c5：仅做生产发布前的只读 release inspector、migration/env/systemd/worker/CLI 门禁、脱敏备份与隔离恢复证据和回滚顺序审查；没有用户
+  明确授权仍不连接生产写入。若未来获授权，必须先以 rollout=`disabled` 完成 39 -> 41 migration 与旧 inline smoke，再另行决定是否启用
+  `future-reconstructible-v1`，并保留短维护窗口和人工 smoke。
+- 未来发布观察需要核对新旧快照读取、普通/原子保存、恢复保护、协作 catch-up、审核/评论路径、固定指标和磁盘安全余量；旧历史继续冻结，
+  不压缩、不置空、不归档、不删除。
+
+## 2026-09-02：HC3c5 本地发布前门禁复核（本地完成，生产待授权）
+
+### 本轮完成
+
+- 清理并复核本地临时候选目录，确认没有遗留 `xiqu-release-candidate.*` 目录；没有删除项目文件、数据库行、对象或任何生产备份。
+- 重新执行部署静态门禁 `npm run test:deployment`，结果为 30/30；重新执行备份、远端协议、隔离物化与恢复清理专项
+  `npm run test:backup`，结果为 32/32。覆盖 release 运行入口、migration/schema guard、rollout 严格解析、manifest/checksum、空目标门禁、
+  原子发布、失败补偿和临时包清理。
+- 本轮没有发现需要修改的业务代码；没有执行生产数据库查询写入、40/41 migration、生产备份、对象复制、快照治理、维护切换、release 切换或服务重启。
+  生产仍保持 39 条 migration、inline-only 和 rollout disabled。
+- 将“本地测试绿灯不等于生产备份/恢复或发布授权、首次候选必须保持 rollout disabled”的长期门禁补充到 `AGENTS.md`，避免后续 agent
+  把隔离测试结果误当成线上证据。
+
+### 待推进
+
+- HC3c5 的本地代码与文档门禁已完成，但真实生产备份/隔离恢复、短维护迁移、旧 inline smoke、回滚证据和生产人工 smoke 仍待明确授权、
+  容量复核和维护窗口；本地 32/32 不能替代生产证据。
+- 获授权后第一阶段仍必须保持 `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT=disabled`，先验证旧 inline 读写/恢复，再另行评估轻量快照开关。
+- 既有恢复快照、operation、标注、确认、评论、反馈、审核链接和媒体对象继续冻结，不压缩、不置空、不归档、不删除。
+
+## 2026-09-02：HC3c5 本机真实备份与隔离恢复演练（完成，云端零影响）
+
+### 本轮完成
+
+- 按本轮重写的 `CLAUDE_WORK.md` 只操作本机环境，没有连接云端、进入云端维护、执行生产 SQL/migration、复制生产对象、切换 release 或重启服务；
+  云端标注与评论未触碰，云端维护时间为零。
+- 预检确认本机 PostgreSQL 16.14 可用，本机数据库约 44 MiB、local 对象目录约 887 MiB（2,376 个文件），演练前磁盘约 15.7 GiB 可用；
+  预计 backup + restore 峰值约 1.9 GiB，保留至少 4 GiB 安全余量后才启动。
+- 使用编译后的 `dist/api/backup/cli.js` 创建一致备份；本机维护窗口约 18 秒并由 CLI 自动关闭。备份包含 2,376 个对象、warning 0，随后
+  `backup:verify` 返回 valid 且 error 0。
+- 首次创建恢复库时，应用账号因没有 `CREATEDB` 在任何恢复写入前安全失败。之后由本机 PostgreSQL 管理员创建一次性不同名称数据库并指定
+  owner 为应用账号，没有提升应用账号长期权限，也没有修改源数据库。
+- `backup:restore-drill` 在约 7 秒内完成；migration history、恢复维护状态、数据库摘要和对象 checksum 四项全部通过。源/目标固定计数完全一致：
+  49 条本机历史 migration、50 个资源、22 个标注文件、215 个 inline 快照、0 个 reconstructible 快照、370 条 operation、12 条确认、
+  1 条审核评论、0 条编辑反馈和 0 个审核链接。
+- 演练成功后只删除经名称和路径复核的一次性恢复数据库、临时备份、恢复对象和临时报告。源维护状态为关闭，目标数据库与临时根均已不存在，
+  磁盘恢复到约 15.6 GiB 可用。
+
+### 结论与待推进
+
+- 真实 compiled CLI 的本机 backup -> verify -> isolated restore -> semantic/checksum verification 闭环已得到证据，没有发现需要修改的业务代码。
+- 本机长期开发库保留 49 条历史 migration，而仓库候选为 41 条、生产为 39 条；本轮证明备份恢复工具能忠实恢复本机事实，但不能替代生产
+  39 -> 41 migration 和生产备份/恢复演练。
+- 生产上线仍需明确授权和最短维护窗口。应先保持 rollout disabled 完成真实备份与隔离恢复，再执行 39 -> 41 expand migration 和旧 inline smoke；
+  不得删除、压缩、置空或归档现有生产快照、标注、operation、确认、评论、反馈、审核链接和媒体对象。
+- 本轮文档完成后串行运行完整 API 回归，结果 351/351；随后完整构建、Prisma schema guard 和 `git diff --check` 通过。没有修改业务代码，
+  仅保留既有 Vite 主 chunk 体积提示和 `pg` 测试弃用 warning。
+- 根据已经生效的历史冻结决策，roadmap 的 HC4 不再要求旧 inline 归档、后台 compactor 或其管理员任务面板；HC4 收敛为两阶段生产 rollout、
+  固定低基数指标和真实容量观察，避免后续 agent 重新引入与产品决策相反的历史改写代码。
+
+## 2026-09-03：本机启用 future-reconstructible 保存模式（待人工验收，未部署生产）
+
+### 本轮完成
+
+- 按用户要求只修改被 Git 忽略的本机 `.env`，设置 `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT=future-reconstructible-v1`；没有修改代码、
+  生产 env、roadmap 的生产状态或服务器配置。
+- 通过标准 `npm run dev:api` 启动本机 API，并通过 `npm run dev:web` 启动本机前端；`/api/health/live` 返回 `ok`，`/api/health/ready` 返回
+  `ready`，数据库和对象存储组件均正常。
+- 当前仅完成启动验证，尚未把用户人工编辑结果写成“新快照模式已验收”；等待在 `http://localhost:5173/` 中进行实际保存、恢复历史和后台
+  storage mode 只读核对。
+
+### 待推进
+
+- 用户验收完成后，确认新保存记录在证明完整时使用 reconstructible、证明失败时保留完整 inline，并确认旧恢复历史不受影响。
+- 本机验收结束后按需把 `.env` 恢复为 `disabled`；生产仍保持 39 条 migration、inline-only、rollout disabled，没有维护或部署动作。
+
+## 2026-09-02：HC3c3 保存事务接线与失败补偿（本地完成，rollout 默认关闭）
+
+### 本轮完成
+
+- HC3c2 已先提交为 `69f7cc0`；在其双形态 schema/resolver 基础上继续推进 HC3c3。生产仍停在 39 条 migration，未连接生产、未应用第
+  40/41 条 migration、未进入维护、未修改任何生产快照或业务事实。
+- 新增 `annotationHistoryFutureSnapshotWriter`，作为普通保存、原子领域命令保存和恢复前保护快照共用的快照写入边界：默认关闭 rollout
+  或特殊 reason 继续使用原来的单次幂等 inline upsert；只有明确开启普通 `save` 时，才先在当前事务中创建完整 inline 快照，再用既有
+  revision 校验、命令重放和 canonical hash 内核做有界证明。证明失败、命令缺失/不可重放、首个快照、检查点、超预算或 rollout 关闭时保留
+  完整 payload；只有证明完全通过才在同一事务中写入完整 recipe、`payload=NULL`、`compactedAt` 和 hash。
+- 已有同一文件/revision 快照不会被重算或覆盖；数据库约束错误或事务异常会让整个保存回滚，不会留下半形态记录。写入器没有新增
+  ProjectData parser、command apply、canonical hash 或第二套检查点阈值，检查点阈值复用现有容量策略。
+- `ResourceService.saveAnnotationFile` 和 `AnnotationCommandCommitService.commitBatch` 已接入同一 writer；恢复前保护快照、结构/批量边界和其他特殊
+  reason 仍保持 inline。`XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT` 只接受 `disabled` 或 `future-reconstructible-v1`，默认关闭，
+  并通过 server config 传入 API；worker 不会自行打开保存策略。
+- 新增隔离集成测试，验证显式 rollout 下有效命令链生成 reconstructible 且异步 resolver 可还原原 ProjectData；伪造命令证明失败时仍保存
+  完整 inline。配置边界也有测试，避免任意布尔值或拼写误打开未来写入。
+- 本轮按要求加入中文功能注释并清理了不再需要的测试 Symbol 读取能力；日志、recipe 和配置错误中没有写入 payload、operation body、媒体 URL、
+  AccessKey、PlayAuth、token 或对象 key。
+
+### 验证与发布边界
+
+- `npm run test:annotation-history-future-writer`：2/2；`npm run test:annotation-history-compaction`：35/35；`npm run test:api`：347/347；
+  `npm run build`、Prisma schema guard 和 `git diff --check` 均通过。
+- 本地 api_test schema 已保持 41 条 migration；HC3c3 的 writer 测试在隔离库中完成，未触碰生产数据库。当前服务器仍是 39 条 migration、
+  全部恢复快照 inline，生产配置不应设置未来 rollout 开关。
+- 本轮没有运行 shadow apply、verify 写入变体、compactor、payload 清理、删除/归档历史、`VACUUM FULL` 或 `pg_repack`，没有上传或部署服务器。
+  生产只读容量基线仍按上一轮记录：数据库约 6,422MB，恢复快照约 6,061MB，系统盘约剩 4.1GB，数据盘约剩 34GB。
+
+### 待推进
+
+- **HC3c3 已完成本地候选实现**，但并不代表未来轻量快照已上线。下一阶段 HC3c4 先在隔离库分别验收 rollout 关闭/开启、普通/原子保存、
+  恢复前保护、租约、失败回滚和新旧混合读取，再形成生产 39 -> 41 的只读发布门禁。
+- HC3c4 需补齐低基数 rollout/回退指标、release inspector/systemd 环境检查、备份/隔离恢复证据、短维护窗口和回滚候选；没有用户明确授权，
+  不应用生产 migration、不启用 rollout、不部署。既有恢复快照继续冻结，不压缩、不置空、不归档、不删除。
+
+## 2026-09-02：HC3c2 双形态数据库合同与恢复 resolver（本地完成，生产未部署）
+
+### 本轮完成
+
+- 继续沿用用户确认的历史冻结策略：既有恢复快照、operation、标注、确认、评论、反馈、审核链接和媒体对象均未压缩、删除、置空或
+  归档；在线恢复历史保持原有正常行为，没有加入新的猜测性前端修复。
+- `AnnotationRecoverySnapshot.payload` 在本地候选 schema 中改为可空，为未来 reconstructible 行提供数据库类型表达；现有普通保存、原子
+  命令保存和恢复前保护快照仍显式写完整 inline payload。
+- 新增 HC3c2 第 40 条 expand migration：仅解除 payload 的 NOT NULL 并替换 HC2a/HC3a 过渡约束，建立普通 inline 与完整
+  reconstructible 行的互斥字段合同。新增第 41 条修正 migration，保留 HC3a 的“完整 payload + inline shadow recipe”研究形态；两条
+  migration 都不更新、删除或置空历史行。
+- 双形态 CHECK 拒绝 payload/recipe 半迁移、空 checkpoint、revision/operation 范围错误、缺 hash/验证时间和当前阶段尚未实现的
+  archived。隔离 migration 测试确认旧 inline 内容原样保留，完整 reconstructible 行可写入，非法变体全部回滚。
+- 恢复详情与恢复动作统一改用 `resolveAnnotationRecoverySnapshotPayloadAsync`，并在同一事务中读取目标及其重建依赖；删除了不再需要的
+  Symbol 测试读取能力。inline 继续原样返回并可校验 hash，reconstructible 只复用既有事实 loader、命令重放和 canonical hash。
+- 初次本地部署 migration 时发现第 40 条重复删除已经由 HC3a 删除的约束，P3018 在隔离测试 schema 中安全失败；未发生部分 DDL 或业务
+  数据变更。随后改为保留第 40 条已应用 migration、增加第 41 条修正 migration，并成功完成 39 -> 41 隔离升级。
+- 历史升级测试由生产 36 -> 39 更新为生产 36 -> 本地候选 41，继续逐项比较标注文件、operation、恢复快照、确认、评论和审核链接
+  等既有事实；测试不会把本地候选误报为生产已部署版本。
+
+### 验证与发布边界
+
+- `npm run test:annotation-recovery-snapshot-resolver`：10/10；`npm run test:annotation-history-compaction`：35/35；历史迁移升级：1/1；
+  完整 `npm run test:api`：344/344；`npm run build`、Prisma schema guard 和 `git diff --check` 通过。
+- 本轮没有连接生产、开启维护、应用生产 migration、切换 release、写入生产 recipe、删除备份或历史、运行 compactor、清理 payload、
+  `VACUUM FULL` 或 `pg_repack`。生产仍为 39 条 migration、全部 inline payload。
+- 生产只读容量基线不变：数据库约 6,422MB，恢复快照约 6,061MB；系统盘约剩 4.1GB，数据盘约剩 34GB。容量安全门禁不因本地合同而放宽。
+- 本轮新增的是 schema/resolver 长期合同，已将生产 39 条与本地 41 条的差异、resolver 使用边界和“保存事务仍只写 inline”写入
+  `AGENTS.md`；没有记录凭据、正文、operation body、媒体 URL 或对象 key。
+
+### 待推进
+
+- **HC3c2 已完成**，但未来轻量快照尚未上线。下一轮 HC3c3 才能在本地隔离库把 HC3c1 策略接入普通/原子保存的单一快照写入点，先完成
+  纯映射、检查点/预算和事务失败补偿测试。
+- HC3c3 完成前保存继续使用 inline；生产不执行 40/41 migration，不接入 reconstructible 写入，不做历史清理或物理回收。正式上线仍需
+  用户明确授权、完整备份/恢复演练、短维护窗口和回滚候选。

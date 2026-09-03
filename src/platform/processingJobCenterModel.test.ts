@@ -7,7 +7,6 @@ import {
   canRetryProcessingJobRequest,
   getActiveProcessingJobCount,
   getProcessingJobPollInterval,
-  PROCESSING_JOB_TYPE_LABELS,
 } from "./processingJobCenterModel";
 
 const user: PlatformUser = {
@@ -54,15 +53,6 @@ test("任务命令资格区分本人需求与管理员执行治理", () => {
     ...createItem("failed"),
     requester: { id: "other", accountName: "other", displayName: "其他账号" },
   }, admin), true);
-  assert.equal(canRetryProcessingJobRequest({
-    ...createItem("failed"),
-    job: { ...createItem("failed").job, type: "force_alignment" },
-  }, admin), true);
-  assert.equal(canRetryProcessingJobRequest({
-    ...createItem("failed"),
-    job: { ...createItem("failed").job, type: "alignment_training_export" },
-  }, admin), false);
-  assert.equal(PROCESSING_JOB_TYPE_LABELS.alignment_training_export, "对齐训练导出");
 });
 
 function createItem(status: ProcessingJobRequestListItem["job"]["status"]): ProcessingJobRequestListItem {

@@ -126,6 +126,12 @@ test("生产构建与候选 release 都校验 Prisma Client schema", async () =>
   );
   assert.match(deploymentGuide, /npm run release:inspect -- --release-dir/u);
   assert.match(deploymentGuide, /npm run release:check/u);
+  assert.match(deploymentGuide, /XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT=disabled/u);
+  const environmentTemplate = await readFile(
+    new URL("../deploy/single-server/xiqu-platform.env.example", import.meta.url),
+    "utf8",
+  );
+  assert.match(environmentTemplate, /XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT='disabled'/u);
   assert.match(deploymentGuide, /不能只因 `package-lock\.json` 未变化/u);
 });
 

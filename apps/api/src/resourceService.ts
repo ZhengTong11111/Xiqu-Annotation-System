@@ -137,9 +137,15 @@ import {
   mapAnnotationRangeComment,
 } from "./annotationReviewRecordMapper.js";
 import {
-  resolveAnnotationRecoverySnapshotPayload,
-  type AnnotationRecoverySnapshotResolvableRow,
-} from "./annotationRecoverySnapshotResolver.js";
+  resolveAnnotationRecoverySnapshotPayloadAsync,
+  type AnnotationRecoverySnapshotPayloadRow,
+} from "./annotationRecoverySnapshotPayloadService.js";
+import {
+  notifyAnnotationHistoryFutureSnapshotObserver,
+  writeFutureAnnotationRecoverySnapshot,
+  type AnnotationHistoryFutureSnapshotWriteResult,
+} from "./annotationHistoryFutureSnapshotWriter.js";
+import type { AnnotationHistoryFutureSnapshotRollout } from "./annotationHistoryFutureSnapshotPolicy.js";
 import {
   AnnotationRecoverySnapshotCursorError,
   encodeAnnotationRecoverySnapshotCursor,
@@ -192,14 +198,20 @@ type ResourcePathNode = Pick<
 /**
  * 详情与恢复共用同一个快照解析门禁。错误只暴露定位事实和稳定原因码，不把历史正文、hash 或未来 recipe 带入响应。
  */
-function resolveRecoverySnapshotPayloadOrThrow<TPayload>(
-  row: AnnotationRecoverySnapshotResolvableRow<TPayload>,
+async function resolveRecoverySnapshotPayloadOrThrow<TPayload>(
+  transaction: Prisma.TransactionClient,
+  row: AnnotationRecoverySnapshotPayloadRow<TPayload>,
 ) {
-  const resolution = resolveAnnotationRecoverySnapshotPayload(row);
+  const resolution = await resolveAnnotationRecoverySnapshotPayloadAsync({
+    transaction,
+    row,
+  });
   if (resolution.ok) return resolution.payload;
   const message = resolution.code === "snapshot_payload_hash_mismatch"
     ? "恢复快照完整性校验失败，未读取或恢复该版本。"
-    : "当前服务版本暂不支持读取该恢复快照的存储形态。";
+    : resolution.code === "snapshot_storage_mode_unsupported"
+      ? "当前服务版本暂不支持读取该恢复快照的存储形态。"
+      : "恢复快照无法完整重建，未读取或恢复该版本。";
   throw conflict(message, {
     reason: resolution.code,
     snapshotId: resolution.snapshotId,
@@ -269,6 +281,10 @@ export class ResourceService {
     private readonly reviewPublisher: AnnotationReviewPublisher = {
       publishReviewChanged: () => undefined,
     },
+    private readonly annotationHistoryFutureSnapshotRollout: AnnotationHistoryFutureSnapshotRollout = "disabled",
+    private readonly annotationHistoryFutureSnapshotObserver: (
+      result: AnnotationHistoryFutureSnapshotWriteResult,
+    ) => void = () => undefined,
   ) {}
 
   async listResources(
@@ -999,7 +1015,7 @@ export class ResourceService {
   ): Promise<AnnotationFile<TPayload>> {
     // 锁外预检用于快速拒绝常见无权限请求；事务内仍会在树结构稳定后再次复核。
     await this.access.assertCapability(user, resourceId, "write");
-    const committedRevision = await this.prisma.$transaction(async (transaction) => {
+    const commit = await this.prisma.$transaction(async (transaction) => {
       // 普通保存与快照恢复共用同一锁顺序，避免保存期间资源被移动或藏入回收站。
       const current = await lockActiveAnnotationFileForWrite(transaction, this.access, user, resourceId);
       if (current.revision !== input.baseRevision) {
@@ -1048,21 +1064,12 @@ export class ResourceService {
       }
 
       // 保存前把旧内容写入恢复快照；它只通过标注文件 Inspector 受控查看，不是业务“版本”。
-      await transaction.annotationRecoverySnapshot.upsert({
-        where: {
-          annotationFileId_revision: {
-            annotationFileId: resourceId,
-            revision: current.revision,
-          },
-        },
-        update: {},
-        create: {
-          annotationFileId: resourceId,
-          revision: current.revision,
-          payload: current.payload as Prisma.InputJsonValue,
-          createdBy: user.id,
-          reason: "save",
-        },
+      const snapshotWrite = await writeFutureAnnotationRecoverySnapshot(transaction, {
+        annotationFileId: resourceId,
+        current,
+        createdBy: user.id,
+        reason: "save",
+        rollout: this.annotationHistoryFutureSnapshotRollout,
       });
 
       // revision 必须参与 UPDATE 条件。即使两个请求同时读到同一 revision，
@@ -1132,13 +1139,17 @@ export class ResourceService {
           },
         },
       });
-      return targetRevision;
+      return { targetRevision, snapshotWrite };
     });
     // 事务返回本次确切 revision；不能在锁外重读后把另一笔更晚保存误报成本次提交。
+    notifyAnnotationHistoryFutureSnapshotObserver(
+      this.annotationHistoryFutureSnapshotObserver,
+      commit.snapshotWrite,
+    );
     this.revisionPublisher.publishRevisionAdvanced({
       annotationFileId: resourceId,
-      revision: committedRevision,
-      operationCursor: encodeAnnotationSnapshotOperationCursor(resourceId, committedRevision),
+      revision: commit.targetRevision,
+      operationCursor: encodeAnnotationSnapshotOperationCursor(resourceId, commit.targetRevision),
     });
     return this.getAnnotationFile<TPayload>(user, resourceId);
   }
@@ -1358,31 +1369,46 @@ export class ResourceService {
   ): Promise<AnnotationRecoverySnapshotDetail<TPayload>> {
     await this.access.assertCapability(user, resourceId, "write");
     await this.assertActiveAnnotationFile(resourceId);
-    const row = await this.prisma.annotationRecoverySnapshot.findFirst({
-      where: {
-        id: snapshotId,
-        annotationFileId: resourceId,
-      },
-      include: { creator: { include: { roles: true } } },
+    return this.prisma.$transaction(async (transaction) => {
+      const row = await transaction.annotationRecoverySnapshot.findFirst({
+        where: {
+          id: snapshotId,
+          annotationFileId: resourceId,
+        },
+        include: { creator: { include: { roles: true } } },
+      });
+      if (!row) throw notFound("恢复快照不存在。");
+      const payload = await resolveRecoverySnapshotPayloadOrThrow<TPayload>(
+        transaction,
+        {
+          id: row.id,
+          annotationFileId: row.annotationFileId,
+          revision: row.revision,
+          storageMode: row.storageMode,
+          // API 层的 TPayload 是调用方 DTO 泛型；实际格式验证和 null 门禁已在 resolver 内完成。
+          payload: row.payload as TPayload | null,
+          payloadSha256: row.payloadSha256,
+          checkpointSnapshotId: row.checkpointSnapshotId,
+          operationRevisionStart: row.operationRevisionStart,
+          operationRevisionEnd: row.operationRevisionEnd,
+          operationSequenceStart: row.operationSequenceStart,
+          operationSequenceEnd: row.operationSequenceEnd,
+          operationCount: row.operationCount,
+          compactionVersion: row.compactionVersion,
+          recipeVerifiedAt: row.recipeVerifiedAt,
+          compactedAt: row.compactedAt,
+        },
+      );
+      return {
+        id: row.id,
+        annotationFileId: row.annotationFileId,
+        revision: row.revision,
+        payload: payload as TPayload,
+        creator: toPublicUser(row.creator),
+        reason: row.reason,
+        createdAt: row.createdAt.toISOString(),
+      };
     });
-    if (!row) throw notFound("恢复快照不存在。");
-    const payload = resolveRecoverySnapshotPayloadOrThrow<TPayload>({
-      id: row.id,
-      annotationFileId: row.annotationFileId,
-      revision: row.revision,
-      storageMode: row.storageMode,
-      payload: row.payload as TPayload,
-      payloadSha256: row.payloadSha256,
-    });
-    return {
-      id: row.id,
-      annotationFileId: row.annotationFileId,
-      revision: row.revision,
-      payload,
-      creator: toPublicUser(row.creator),
-      reason: row.reason,
-      createdAt: row.createdAt.toISOString(),
-    };
   }
 
   // 恢复历史不是 revision 回退，而是把目标 payload 写成新的当前 revision，并保留恢复前内容。
@@ -1394,7 +1420,7 @@ export class ResourceService {
   ): Promise<AnnotationFile<TPayload>> {
     // 锁外预检减少无权限请求占用事务；真正安全边界仍在锁内 helper 中。
     await this.access.assertCapability(user, resourceId, "write");
-    const committedRevision = await this.prisma.$transaction(async (transaction) => {
+    const commit = await this.prisma.$transaction(async (transaction) => {
       const current = await lockActiveAnnotationFileForWrite(transaction, this.access, user, resourceId);
       if (current.revision !== input.baseRevision) {
         throw conflict("标注文件已被其他人修改，请刷新后再恢复。", {
@@ -1420,31 +1446,18 @@ export class ResourceService {
           },
         });
       if (!sourceSnapshot) throw notFound("恢复快照不存在。");
-      const sourcePayload = resolveRecoverySnapshotPayloadOrThrow<Prisma.JsonValue>({
-        id: sourceSnapshot.id,
-        annotationFileId: sourceSnapshot.annotationFileId,
-        revision: sourceSnapshot.revision,
-        storageMode: sourceSnapshot.storageMode,
-        payload: sourceSnapshot.payload,
-        payloadSha256: sourceSnapshot.payloadSha256,
-      });
+      const sourcePayload = await resolveRecoverySnapshotPayloadOrThrow<Prisma.JsonValue>(
+        transaction,
+        sourceSnapshot,
+      );
 
-      // 覆盖前保存当前内容，使用户能够再次恢复到本次操作之前的状态。
-      await transaction.annotationRecoverySnapshot.upsert({
-        where: {
-          annotationFileId_revision: {
-            annotationFileId: resourceId,
-            revision: current.revision,
-          },
-        },
-        update: {},
-        create: {
-          annotationFileId: resourceId,
-          revision: current.revision,
-          payload: current.payload as Prisma.InputJsonValue,
-          createdBy: user.id,
-          reason: "before_snapshot_restore",
-        },
+      // 覆盖前保存当前内容，使用户能够再次恢复到本次操作之前的状态；特殊原因固定走完整 inline。
+      const snapshotWrite = await writeFutureAnnotationRecoverySnapshot(transaction, {
+        annotationFileId: resourceId,
+        current,
+        createdBy: user.id,
+        reason: "before_snapshot_restore",
+        rollout: this.annotationHistoryFutureSnapshotRollout,
       });
 
       // revision 仍参与条件更新；即使未来锁实现变化，乐观锁也不会静默覆盖并发写入。
@@ -1491,13 +1504,17 @@ export class ResourceService {
           },
         },
       });
-      return nextRevision;
+      return { nextRevision, snapshotWrite };
     });
     // 快照恢复同样形成新的权威 revision，clean 客户端通过既有 HTTP catch-up 获取真实内容。
+    notifyAnnotationHistoryFutureSnapshotObserver(
+      this.annotationHistoryFutureSnapshotObserver,
+      commit.snapshotWrite,
+    );
     this.revisionPublisher.publishRevisionAdvanced({
       annotationFileId: resourceId,
-      revision: committedRevision,
-      operationCursor: encodeAnnotationSnapshotOperationCursor(resourceId, committedRevision),
+      revision: commit.nextRevision,
+      operationCursor: encodeAnnotationSnapshotOperationCursor(resourceId, commit.nextRevision),
     });
     return this.getAnnotationFile<TPayload>(user, resourceId);
   }

@@ -188,10 +188,22 @@ HOST=127.0.0.1
 XIQU_SEED_DEVELOPMENT_DATA=false
 XIQU_OBJECT_STORAGE_BACKEND=local
 XIQU_STORAGE_ROOT=/var/lib/xiqu-platform/storage
+XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT=disabled
 ```
 
 模板中的连接串、路径、token 和对象存储凭据使用 shell/systemd 均可识别的单引号。替换值时保留引号；URL
 内的特殊字符应按 URL 规则编码，不能把一段未转义的 shell 语法写进环境文件。
+
+`XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT` 必须显式保持 `disabled`，直到生产完成 40/41 条 expand-only
+migration、备份/隔离恢复、旧 inline smoke 和单独的启用授权。启用值只能是
+`future-reconstructible-v1`；它只影响 rollout 之后新产生的普通保存快照，绝不改造历史 inline 快照。分析 worker、维护/备份 CLI
+和前端不会替代 API 环境文件自行打开该开关。
+
+API 保存路径还会在 future writer 内再次检查数据库能力：只有 `annotation_recovery_snapshots.payload` 已可空且最终
+`annotation_recovery_snapshots_future_storage_contract_check` 已存在时，才会写入 `reconstructible` 快照。即使环境变量
+先于 migration 被打开，普通保存也会自动回退为完整 `inline` 快照并继续提交；数据库查询故障仍会真实失败，不能把它误判为
+容量优化回退。部署时应检查 future snapshot 指标中的 `schema_not_ready`，它表示 rollout/schema 顺序错误，需要完成 migration
+后再启用，而不是清理历史或重复提交用户保存。
 
 同源部署不要设置 `XIQU_CORS_ORIGINS`。只有 Web 确实部署在另一个 origin 时，才设置有限的逗号分隔
 HTTP(S) origin；`*`、路径、带用户名密码的 URL 和空值会阻止 API 启动。
@@ -315,18 +327,6 @@ analysis worker 是独立进程：API 只创建任务和流式读取资产，不
 FFmpeg，并通过 `XIQU_FFMPEG_PATH` 固定绝对路径。worker 收到 SIGTERM 会清理当前半成品并把任务重新排队；
 systemd 的 `TimeoutStopSec` 应覆盖该清理时间。API 正常但 worker 未运行时，播放和标注仍可用，分析任务会
 停留在“排队中”。
-
-同一 worker runtime 也可消费强制对齐任务，但该能力默认关闭。只有部署了实现固定
-`--request <json> --audio <binary> --output <json>` 协议的真实模型程序后，才在 API 与 worker 共用的受保护环境文件中同时设置：
-
-```bash
-XIQU_FORCE_ALIGNMENT_REQUESTS_ENABLED=true
-XIQU_FORCE_ALIGNMENT_EXECUTOR_PATH='/opt/xiqu-platform/bin/force-align'
-```
-
-执行器路径必须是可执行的绝对路径；worker 启动时会先检查权限，API 在请求开关为 true 而路径缺失时会直接拒绝启动。
-worker 把正文投影与纯音频写入权限受限的临时目录，VOD 临时 URL 不进入命令行、数据库或日志。未完成真实模型、词典和
-预测合同验收前必须保持默认关闭，不能用占位脚本制造看似成功的研究数据。
 
 后台任务出现排队、陈旧 claim、取消不收敛或写许可异常时，按
 [`processing-job-operations.md`](processing-job-operations.md) 的决策树先区分 API、数据库、对象存储和 worker；
@@ -556,6 +556,9 @@ S3-compatible 远端备份、manifest-last 发布、流式校验、保留清理�
 `deploy/object-storage/` 的目标环境检查表。
 
 ### 10.3 服务器间迁移
+
+恢复快照 39 -> 41 条 schema migration、rollout 分阶段启用和失败回滚的专门 runbook 见
+[`annotation-history-server-migration.md`](./annotation-history-server-migration.md)。
 
 未来从一台正式服务器迁往另一台时，必须把 PostgreSQL 和对象存储视为一个不可拆分的数据集。现有工具已能
 在维护窗口创建包含数据库 dump、上传对象、恢复快照及波形/频谱/F0 派生资产的一致备份，生成 manifest 与
