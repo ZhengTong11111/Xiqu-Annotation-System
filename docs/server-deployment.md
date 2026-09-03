@@ -188,10 +188,16 @@ HOST=127.0.0.1
 XIQU_SEED_DEVELOPMENT_DATA=false
 XIQU_OBJECT_STORAGE_BACKEND=local
 XIQU_STORAGE_ROOT=/var/lib/xiqu-platform/storage
+XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT=disabled
 ```
 
 模板中的连接串、路径、token 和对象存储凭据使用 shell/systemd 均可识别的单引号。替换值时保留引号；URL
 内的特殊字符应按 URL 规则编码，不能把一段未转义的 shell 语法写进环境文件。
+
+`XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT` 必须显式保持 `disabled`，直到生产完成 40/41 条 expand-only
+migration、备份/隔离恢复、旧 inline smoke 和单独的启用授权。启用值只能是
+`future-reconstructible-v1`；它只影响 rollout 之后新产生的普通保存快照，绝不改造历史 inline 快照。分析 worker、维护/备份 CLI
+和前端不会替代 API 环境文件自行打开该开关。
 
 同源部署不要设置 `XIQU_CORS_ORIGINS`。只有 Web 确实部署在另一个 origin 时，才设置有限的逗号分隔
 HTTP(S) origin；`*`、路径、带用户名密码的 URL 和空值会阻止 API 启动。

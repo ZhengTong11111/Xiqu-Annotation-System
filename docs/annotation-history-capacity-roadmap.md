@@ -471,8 +471,9 @@ HC3c3 的本地候选仍不等于生产上线：生产当前仍是 39 条 migrat
 本阶段仍不自动发布。只有在用户明确授权新的 release 后，才按独立任务执行生产 39 -> 41 的备份、隔离恢复、短维护迁移和回滚验证；
 没有授权时只完成不写数据库的候选检查和清单审查。
 
-- [ ] 在本地候选上运行 release inspector，逐项确认 migration 40/41、环境变量默认值、systemd 模板、worker/CLI 不会意外启用 rollout，
-  并核对回滚到 39 条 migration 时旧 inline 读取合同仍明确可用。
+- [x] 已通过本地候选部署静态门禁（`test:deployment` 30/30）：部署说明和生产 env 模板显式固定
+  `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT='disabled'`，runtime config 只接受两个受限值；release inspector、Prisma schema guard、
+  migration/worker/CLI 默认值和旧 inline 回滚合同仍未发现静态缺口。
 - [ ] 设计并演练一次脱敏的备份/隔离恢复证据：数据库与对象目录位于数据盘，manifest/checksum、业务事实摘要和快照形态统计完整，
   不读取或记录正文、operation body、媒体 URL、凭据或对象 key；演练目录不得与生产源重叠。
 - [ ] 在生产只读状态稳定、系统盘和数据盘均高于安全余量时，形成短维护窗口的逐步清单；没有足够空间、备份校验或恢复证据就停止，

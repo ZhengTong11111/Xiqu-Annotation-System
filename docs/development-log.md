@@ -11711,6 +11711,31 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - HC3c2 完成前不接入线上保存，不修改生产 schema，不执行历史 compactor 或 payload 清理；若隔离验证不能证明旧历史读取和事务回滚，
   必须停在本地设计阶段。
 
+## 2026-09-02：HC3c5 生产发布前静态门禁补充（部分完成，未发布）
+
+### 本轮完成
+
+- 在 HC3c4 已提交为 `db5607b` 后继续执行 HC3c5 的本地发布前检查；没有连接生产、执行 migration、写入数据库/对象、进入维护或重启线上服务。
+- 复核部署测试覆盖 release inspector、Prisma schema guard、候选运行文件、workspace 链接、migration、systemd/worker/CLI 入口和回滚合同；发现
+  生产环境模板没有显式列出未来快照 rollout 的安全默认值，已补充
+  `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT='disabled'`，并在部署说明和静态测试中锁定。
+- 未来启用值仍只能是 `future-reconstructible-v1`，且必须在 40/41 migration、备份/隔离恢复、旧 inline smoke 和单独授权之后使用；worker、
+  compactor、CLI 和前端不会自行打开。没有新增第二套容量策略，也没有触碰历史恢复快照。
+
+### 验证与发布边界
+
+- `npm run test:deployment`：30/30；之前 HC3c4 的完整 API 351/351、完整构建和专项结果仍有效。真实不可变 release 目录尚未生成，故未在生产
+  路径执行 `release:inspect`，仅通过其完整静态测试合同；这不替代未来发布前对真实 release 目录的检查。
+- 当前生产仍为 39 条 migration、inline-only；既有恢复快照、operation、标注、确认、评论、反馈、审核链接和媒体对象没有任何变更。生产容量基线
+  仍约为数据库 6,422MB、恢复快照 6,061MB、系统盘剩 4.1GB、数据盘剩 34GB。
+- 仍未运行 shadow apply、verify 写入变体、compactor、payload 清理、历史删除/归档、`VACUUM FULL` 或 `pg_repack`，未推送或部署服务器。
+
+### 待推进
+
+- 真实 release 构建包生成后，在其绝对目录运行 `release:inspect` 与 `release:check`；随后只在用户明确授权时设计并执行数据盘上的脱敏备份/隔离
+  恢复演练和短维护 39 -> 41 migration。余量不足或证据不完整就停止。
+- 若未来完成第一阶段旧 inline smoke，再另行决定是否启用 `future-reconstructible-v1`，并观察固定指标、保存/协作/恢复/审核路径和磁盘安全余量。
+
 ## 2026-09-02：HC3c4 本地 rollout 验收与生产发布门禁（本地完成，生产未发布）
 
 ### 本轮完成
