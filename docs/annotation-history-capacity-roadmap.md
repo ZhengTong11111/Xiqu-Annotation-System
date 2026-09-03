@@ -15,9 +15,13 @@
 - 为保证恢复演练有足够空间，已删除两份最早的**完整备份副本**，删除前已核对 manifest；没有删除数据库业务行、快照 payload、operation、确认、评论、反馈、审核链接或媒体对象。当前正式备份及近几日完整备份仍保留。
 - 发布后的只读观察中 API 5xx、uncaught/unhandled/fatal/Prisma error 和 worker error 均为 0；由于观察窗口没有新的用户保存/协作流量，保存 smoke 仍需在下一次低干扰窗口由真实用户操作验证，不能把“无错误”写成已完成的保存验收。
 - 在线恢复历史此前出现的异常目前已恢复正常；没有新的可复现错误证据，本路线图不再把恢复历史页面防御性改造作为容量治理前置任务。后续若再次出现问题，必须先保存真实响应/浏览器错误并单独定位，不能借容量治理猜测性修改恢复链路。
-- 当前分支已形成 41 条 migration 的 HC3c2 本地候选，但生产仍停在 39 条 migration；本地双形态 schema/resolver 尚未部署，也没有改变生产保存策略。
+- 当前分支已形成 41 条 migration 的 HC3c2 本地候选，生产仍停在 39 条 migration；本机 `public` schema 已在
+  2026-09-03 完成最后两条 future contract migration，生产保存策略未改变。
+- 本机曾在数据库未应用 HC3c2 future contract 时显式开启 rollout，导致 future snapshot writer 尝试置空仍为
+  `NOT NULL` 的 payload 并使普通保存回滚。现已增加 schema 能力门禁：配置提前到达时自动保留完整 inline，只有
+  payload 可空且最终 CHECK 已存在时才允许 reconstructible；本机 migration 已完成，生产 rollout 仍关闭。
 
-**当前硬门禁**：在线保存和恢复仍只使用完整 inline payload；禁止运行 `annotation-history:shadow-recipe --apply`、任何
+**生产硬门禁**：生产在线保存和恢复仍只使用完整 inline payload；禁止运行 `annotation-history:shadow-recipe --apply`、任何
 `verify-shadow-recipes` 写入变体、compactor、payload 清理、`VACUUM FULL`、`pg_repack` 或删除业务历史。任何新动作都必须先
 确认备份可恢复、数据盘余量足够，并能在短维护窗口内停止和回滚。
 

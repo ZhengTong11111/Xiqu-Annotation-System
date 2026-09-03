@@ -243,6 +243,33 @@ test("关闭 rollout 和特殊保护快照始终保留 inline", async () => {
   }
 });
 
+test("正式快照 migration 未完成时回退 inline，不阻断正文保存", async () => {
+  const calls: string[] = [];
+  const transaction = {
+    $queryRaw: async () => [{ payloadNullable: false, futureContractExists: false }],
+    annotationRecoverySnapshot: {
+      upsert: async (args: { create: { payload: unknown } }) => {
+        calls.push(JSON.stringify(args.create.payload));
+      },
+    },
+  } as unknown as Prisma.TransactionClient;
+  const payload = createProject("schema 未就绪仍可保存");
+
+  const result = await writeFutureAnnotationRecoverySnapshot(transaction, {
+    annotationFileId: "schema-not-ready-file",
+    // writer 的 current 模拟数据库读取值；这里明确从 Prisma 写入类型转换为读取类型。
+    current: { revision: 3, payload: JSON.parse(JSON.stringify(payload)) as Prisma.JsonValue },
+    createdBy: "schema-not-ready-user",
+    reason: "save",
+    rollout: "future-reconstructible-v1",
+  });
+
+  assert.equal(result.result, "inline");
+  assert.equal(result.fallbackReason, "schema_not_ready");
+  assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(calls[0]!), payload);
+});
+
 test("同 revision 重试不重算，事务回滚不留下快照", async () => {
   const connections = createTestPrisma();
   const { prisma } = connections;

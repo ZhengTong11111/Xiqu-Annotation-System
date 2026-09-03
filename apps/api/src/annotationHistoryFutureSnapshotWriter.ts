@@ -76,23 +76,15 @@ export async function writeFutureAnnotationRecoverySnapshot(
 
   // 默认线上路径保持旧的单次幂等 upsert；未来策略关闭时不额外查询 checkpoint 或 operation。
   if (input.rollout === "disabled" || input.reason !== "save") {
-    await transaction.annotationRecoverySnapshot.upsert({
-      where: {
-        annotationFileId_revision: {
-          annotationFileId: input.annotationFileId,
-          revision: input.current.revision,
-        },
-      },
-      update: {},
-      create: {
-        annotationFileId: input.annotationFileId,
-        revision: input.current.revision,
-        payload: input.current.payload as Prisma.InputJsonValue,
-        createdBy: input.createdBy,
-        reason: input.reason,
-      },
-    });
+    await writeInlineSnapshot(transaction, input);
     return finish("inline", input.rollout === "disabled" ? "rollout_disabled" : "non_save_reason");
+  }
+
+  // rollout 配置和数据库 migration 必须同时到位。旧数据库的 payload 仍是 NOT NULL，
+  // 不能让试验性容量优化反过来阻断正文保存；未完成 migration 时保留完整 inline 快照。
+  if (!(await isFutureSnapshotSchemaReady(transaction))) {
+    await writeInlineSnapshot(transaction, input);
+    return finish("inline", "schema_not_ready");
   }
 
   const existing = await transaction.annotationRecoverySnapshot.findUnique({
@@ -209,6 +201,71 @@ export async function writeFutureAnnotationRecoverySnapshot(
     },
   });
   return finish("reconstructible", null);
+}
+
+/**
+ * 复用旧的完整快照写入合同，保证所有回退路径都保持幂等且不覆盖已有历史。
+ * 这里不使用 delete/update，避免一次保存重试意外改写已经存在的恢复证据。
+ */
+async function writeInlineSnapshot(
+  transaction: FutureSnapshotTransaction,
+  input: {
+    annotationFileId: string;
+    current: CurrentAnnotationFile;
+    createdBy: string;
+    reason: string;
+  },
+) {
+  await transaction.annotationRecoverySnapshot.upsert({
+    where: {
+      annotationFileId_revision: {
+        annotationFileId: input.annotationFileId,
+        revision: input.current.revision,
+      },
+    },
+    update: {},
+    create: {
+      annotationFileId: input.annotationFileId,
+      revision: input.current.revision,
+      payload: input.current.payload as Prisma.InputJsonValue,
+      createdBy: input.createdBy,
+      reason: input.reason,
+    },
+  });
+}
+
+/**
+ * 检查正式双形态合同是否已经进入当前连接所使用的 schema。
+ * 仅检查列可空还不够：旧过渡 migration 也可能已经增加字段，因此必须同时确认
+ * 最终 CHECK 存在。查询失败直接抛出，让数据库故障保持真实失败，不伪装成普通回退。
+ */
+async function isFutureSnapshotSchemaReady(
+  transaction: FutureSnapshotTransaction,
+): Promise<boolean> {
+  const rows = await transaction.$queryRaw<Array<{
+    payloadNullable: boolean;
+    futureContractExists: boolean;
+  }>>`
+    SELECT
+      EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'annotation_recovery_snapshots'
+          AND column_name = 'payload'
+          AND is_nullable = 'YES'
+      ) AS "payloadNullable",
+      EXISTS (
+        SELECT 1
+        FROM pg_constraint constraint_row
+        JOIN pg_class table_row ON table_row.oid = constraint_row.conrelid
+        JOIN pg_namespace schema_row ON schema_row.oid = table_row.relnamespace
+        WHERE schema_row.nspname = current_schema()
+          AND table_row.relname = 'annotation_recovery_snapshots'
+          AND constraint_row.conname = 'annotation_recovery_snapshots_future_storage_contract_check'
+      ) AS "futureContractExists"
+  `;
+  return rows[0]?.payloadNullable === true && rows[0]?.futureContractExists === true;
 }
 
 /**

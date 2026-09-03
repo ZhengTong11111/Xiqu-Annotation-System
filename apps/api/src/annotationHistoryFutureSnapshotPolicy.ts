@@ -40,6 +40,7 @@ export type AnnotationHistoryFutureSnapshotDecision =
 export type AnnotationHistoryFutureInlineReason =
   | "rollout_disabled"
   | "non_save_reason"
+  | "schema_not_ready"
   | "checkpoint_required"
   | "proof_missing"
   | "proof_failed"

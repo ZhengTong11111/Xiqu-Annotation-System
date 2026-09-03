@@ -6,6 +6,58 @@
 > `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
 > 回写或删除历史记录。
 
+## 2026-09-03：本机 future snapshot rollout 错配导致保存失败的修复
+
+### 问题定位
+
+- 本机 `.env` 为验证 future snapshot 模式设置了
+  `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT=future-reconstructible-v1`，但本机长期开发库仍未应用
+  当前仓库的 `20260903010000_annotation_recovery_snapshot_future_contract` migration；数据库中的
+  `annotation_recovery_snapshots.payload` 仍是 `NOT NULL`。
+- 普通命令批次已正确进入 `/api/annotation-files/:id/command-batches`，但
+  `annotationHistoryFutureSnapshotWriter` 在证明成功后把新快照正文置为 `NULL`，触发 PostgreSQL `23502` /
+  Prisma `P2011`。快照写入异常回滚了同一保存事务，因此前端显示同步失败，正文和 operation 没有被提交。
+
+### 本轮修复
+
+- future snapshot writer 增加数据库能力门禁：同时确认当前 schema 的 `payload` 可空以及最终
+  `annotation_recovery_snapshots_future_storage_contract_check` 存在。rollout 配置先于 migration 到达时，
+  统一回退到幂等的完整 inline 快照，不再尝试写入不受当前数据库支持的 `NULL`。
+- 抽出复用的 inline 快照写入 helper，关闭 rollout、特殊 reason 和 schema 未就绪都使用同一条不覆盖既有历史的
+  写入路径；数据库查询本身失败仍真实抛出，不把数据库故障伪装成容量优化回退。
+- 新增回归测试覆盖 schema 未就绪时保存继续成功并返回 `schema_not_ready`；正式测试 schema 仍验证
+  reconstructible 快照和恢复结果没有改变。
+
+### 验证与状态
+
+- `npm run test:annotation-history-future-writer`：6/6 通过。
+- `npm run build:api`、`git diff --check` 通过。
+- 本机真实 API 保存验证：目标文件 revision 11 -> 12 的测试修改和 revision 12 -> 13 的恢复修改均返回 200；
+  最终正文恢复原值，operation 正常增加，恢复快照保持完整 inline，没有 500 或同步失败。
+- 本轮随后已在本机 `public` schema 事务内执行两条 future contract migration，并用 Prisma 官方
+  `migrate resolve --applied` 登记实际执行结果；`npx prisma migrate status` 已显示 up to date。API 已重启，
+  本机现在具备写入 reconstructible 的数据库合同；本轮仍未修改生产数据库、未部署服务器。生产启用前仍须按
+  容量路线图完成备份、隔离恢复演练和低干扰验收。
+
+## 2026-09-02：补充服务器端恢复快照迁移 runbook（文档完成，未部署）
+
+### 本轮完成
+
+- 新增 `docs/annotation-history-server-migration.md`，专门说明生产服务器从 39 条 migration 升级到 41 条、
+  验证旧 `inline` 恢复历史、再单独启用 `future-reconstructible-v1` 的完整操作顺序。
+- 文档明确区分同机 schema migration 与服务器间数据库/对象存储迁移：生产必须把数据库和对象作为一致数据集处理，
+  不能只复制数据库、只复制对象目录，也不能把本机实验库直接带入生产。
+- 补充维护排空、analysis worker 停止、一致备份与 checksum 校验、隔离恢复、`prisma migrate deploy`、
+  `release:switch`、旧 inline smoke、rollout 分阶段启用、失败回滚和长期监控门禁。
+- 明确禁止历史快照压缩/置空/删除、手工修改 `_prisma_migrations`、`db:push --force-reset` 和用裸符号链接绕过
+  release 并发检查；文档示例不包含密码、token、AccessKey、PlayAuth、payload 或临时媒体 URL。
+
+### 状态与边界
+
+- 仅修改文档，没有连接生产服务器、开启生产维护、执行生产 migration、切换 release 或修改生产数据。
+- 本机已有的 41 条 migration 和 reconstructible 快照验证结果仍只作为本地证据；生产仍需按 runbook 重新完成备份、
+  隔离恢复、39 -> 41 migration、旧路径 smoke 和单独 rollout 授权。
+
 ## 2026-08-21：顶栏新增「搜索」菜单（功能/设置命令面板）
 
 ### 背景
