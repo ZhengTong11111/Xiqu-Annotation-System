@@ -69,7 +69,7 @@ export function AnnotationReviewCreateDialog(props: AnnotationReviewCreateDialog
         <AlertDialog.Content className="annotation-review-dialog annotation-review-create-dialog">
           <AlertDialog.Title>添加{prompt ? MODE_LABELS[prompt.mode] : "范围记录"}</AlertDialog.Title>
           <AlertDialog.Description>
-            当前循环范围 {prompt?.range.start.toFixed(3) ?? "-"}–{prompt?.range.end.toFixed(3) ?? "-"} 秒 · 全部标注
+            当前范围 {prompt?.range.start.toFixed(3) ?? "-"}–{prompt?.range.end.toFixed(3) ?? "-"} 秒 · 全部标注
           </AlertDialog.Description>
           <label>
             {prompt?.mode === "confirmation" ? "审核备注（可选）" : prompt?.mode === "feedback" ? "标注反馈" : "范围评论"}

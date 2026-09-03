@@ -118,6 +118,19 @@ export function formatAnnotationConfirmationTargets(
     .join("、");
 }
 
+// 时间轴标记优先展示用户真正关心的事实：确认人或评论正文；目标轨道保留在末尾，便于窄标记裁剪时仍先看到核心内容。
+function formatAnnotationReviewTimelineLabel(input: {
+  kind: "confirmation" | "comment" | "feedback";
+  content: string;
+  targetLabel: string;
+}): string {
+  const kindLabel = input.kind === "confirmation"
+    ? "确认"
+    : input.kind === "feedback" ? "反馈" : "评论";
+  const content = input.content.replace(/\s+/g, " ").trim() || "（无内容）";
+  return `${kindLabel} · ${content} · ${input.targetLabel}`;
+}
+
 // 服务端记录先经过共享领域 helper 校验；异常历史保守显示为过期，并把原因交给 UI 明示。
 export function buildAnnotationConfirmationViewRecords(
   records: AnnotationConfirmationRecord[],
@@ -196,7 +209,11 @@ export function layoutAnnotationReviewTimelineItems(input: {
         kind: "confirmation" as const,
         startTime: item.record.scope.startTime,
         endTime: item.record.scope.endTime,
-        label: `确认 · ${item.targetLabel}`,
+        label: formatAnnotationReviewTimelineLabel({
+          kind: "confirmation",
+          content: item.record.createdBy.displayName,
+          targetLabel: item.targetLabel,
+        }),
         lifecycle: item.lifecycle,
         freshness: item.freshness,
       })),
@@ -209,7 +226,11 @@ export function layoutAnnotationReviewTimelineItems(input: {
         kind: item.record.kind === "editor_feedback" ? "feedback" as const : "comment" as const,
         startTime: item.record.scope.startTime,
         endTime: item.record.scope.endTime,
-        label: `${item.record.kind === "editor_feedback" ? "反馈" : "评论"} · ${item.targetLabel}`,
+        label: formatAnnotationReviewTimelineLabel({
+          kind: item.record.kind === "editor_feedback" ? "feedback" : "comment",
+          content: item.record.body,
+          targetLabel: item.targetLabel,
+        }),
         lifecycle: item.lifecycle,
         freshness: item.freshness,
       })),
@@ -228,7 +249,11 @@ export function layoutAnnotationReviewTimelineItems(input: {
             kind: "confirmation" as const,
             startTime: record.scope.startTime,
             endTime: record.scope.endTime,
-            label: `${prefix} · 确认 · ${formatAnnotationConfirmationTargets(record.scope.targets, trackLabels)}`,
+            label: `${prefix} · ${formatAnnotationReviewTimelineLabel({
+              kind: "confirmation",
+              content: record.createdBy.displayName,
+              targetLabel: formatAnnotationConfirmationTargets(record.scope.targets, trackLabels),
+            })}`,
             lifecycle: "active" as const,
             freshness: "stale" as const,
           })),
@@ -242,7 +267,11 @@ export function layoutAnnotationReviewTimelineItems(input: {
             kind: record.kind === "editor_feedback" ? "feedback" as const : "comment" as const,
             startTime: record.scope.startTime,
             endTime: record.scope.endTime,
-            label: `${prefix} · ${record.kind === "editor_feedback" ? "反馈" : "评论"} · ${formatAnnotationConfirmationTargets(record.scope.targets, trackLabels)}`,
+            label: `${prefix} · ${formatAnnotationReviewTimelineLabel({
+              kind: record.kind === "editor_feedback" ? "feedback" : "comment",
+              content: record.body,
+              targetLabel: formatAnnotationConfirmationTargets(record.scope.targets, trackLabels),
+            })}`,
             lifecycle: "active" as const,
             freshness: "stale" as const,
           })),
