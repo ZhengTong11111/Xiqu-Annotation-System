@@ -259,7 +259,7 @@ test("编辑反馈使用 write 权限并进入独立黄色时间轴种类", () =
   }], 3, [])[0];
   const timeline = layoutAnnotationReviewTimelineItems({ confirmations: [], comments: [record] });
   assert.equal(timeline[0]?.kind, "feedback");
-  assert.match(timeline[0]?.label ?? "", /^反馈/);
+  assert.equal(timeline[0]?.label, "反馈 · 请审核者关注此处节奏。 · 全部标注");
   assert.equal(canShowAnnotationRangeCommentWithdraw({
     record,
     canReview: false,
@@ -276,4 +276,29 @@ test("编辑反馈使用 write 权限并进入独立黄色时间轴种类", () =
     currentUserRoles: ["reviewer"],
     hasOwnerAuthority: false,
   }), false);
+});
+
+test("时间轴确认显示确认人，评论显示正文", () => {
+  const confirmation = buildAnnotationConfirmationViewRecords([
+    createRecord("confirmation-a", 0, 1, {
+      createdBy: { id: "reviewer-a", accountName: "reviewer", displayName: "王老师" },
+    }),
+  ], 3, [])[0];
+  const comment = buildAnnotationRangeCommentViewRecords([{
+    id: "comment-a",
+    annotationFileId: "file-1",
+    commentedRevision: 3,
+    scope: { startTime: 1, endTime: 2, targets: { mode: "all" } },
+    kind: "review_comment",
+    body: "这里需要重新核对唱腔。",
+    createdBy: { id: "reviewer-a", accountName: "reviewer", displayName: "王老师" },
+    createdAt: "2026-08-31T00:00:00.000Z",
+  }], 3, [])[0];
+
+  const timeline = layoutAnnotationReviewTimelineItems({
+    confirmations: [confirmation],
+    comments: [comment],
+  });
+  assert.equal(timeline[0]?.label, "确认 · 王老师 · 全部标注");
+  assert.equal(timeline[1]?.label, "评论 · 这里需要重新核对唱腔。 · 全部标注");
 });

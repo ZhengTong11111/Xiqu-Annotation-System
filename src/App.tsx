@@ -115,6 +115,7 @@ import {
 } from "./platform/usePlatformMediaAnalysis";
 import { usePlatformAudioTrackSelection } from "./platform/usePlatformAudioTrackSelection";
 import { usePlatformAnalysisTrackSelection } from "./platform/usePlatformAnalysisTrackSelection";
+import { getAutoLoopPlaybackRangeForSelection } from "./utils/autoLoopPlaybackRange";
 import {
   omitUnavailableToolAttemptBindings,
   planAtomicAnnotationCommandBatch,
@@ -1005,7 +1006,24 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const [zoom, setZoom] = useState(20);
   const [loopPlaybackRange, setLoopPlaybackRange] = useState<{ start: number; end: number } | null>(null);
   const [loopPlaybackEnabled, setLoopPlaybackEnabled] = useState(false);
-  const [loopRangeReviewPrompt, setLoopRangeReviewPrompt] =
+  const selectedAutoLoopRange = useMemo(
+    () => getAutoLoopPlaybackRangeForSelection(project, selectedItem),
+    [project, selectedItem],
+  );
+  useEffect(() => {
+    if (!selectedAutoLoopRange) return;
+
+    // 当前选中块的时间边界可能在拖拽预览阶段连续变化；只在数值真的变化时更新，
+    // 避免普通字段编辑或 project 对象重建造成无意义的循环范围 state 更新。
+    setLoopPlaybackRange((currentRange) =>
+      currentRange &&
+      currentRange.start === selectedAutoLoopRange.start &&
+      currentRange.end === selectedAutoLoopRange.end
+        ? currentRange
+        : selectedAutoLoopRange,
+    );
+  }, [selectedAutoLoopRange?.end, selectedAutoLoopRange?.start]);
+  const [annotationReviewPrompt, setAnnotationReviewPrompt] =
     useState<AnnotationReviewCreatePrompt | null>(null);
   const [lineFocusRequest, setLineFocusRequest] = useState<LineFocusRequest | null>(null);
   // 平台初始焦点只供 Timeline 首次挂载消费，清理后用户滚动不会被再次拉回。
@@ -1490,7 +1508,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   );
   const reviewCreateBlocker = getAnnotationReviewCreateBlocker({
     canCreate: Boolean(editorSession?.canReview || editorSession?.canWrite),
-    hasRange: Boolean(loopPlaybackRange),
+    // 审核入口既可能来自循环范围，也可能来自句级右键；弹窗打开后以后者自身范围为准。
+    hasRange: Boolean(loopPlaybackRange || annotationReviewPrompt),
     hasUnsavedChanges,
     editorRevision: remoteBaseRevision,
     serverRevision: annotationReviews.confirmations?.currentRevision ??
@@ -1612,52 +1631,9 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   }
 
   function syncLoopPlaybackRangeFromSelection(nextSelectedItem: SelectedItem) {
-    if (!nextSelectedItem) {
-      return;
-    }
-    const currentProject = projectRef.current;
-    if (nextSelectedItem.type === "line") {
-      const line = currentProject.subtitleLines.find((item) => item.id === nextSelectedItem.id);
-      if (line && line.endTime - line.startTime > 0.001) {
-        setLoopPlaybackRange({ start: line.startTime, end: line.endTime });
-      }
-      return;
-    }
-    if (nextSelectedItem.type === "character") {
-      const track = currentProject.builtinTracks.find((item) => item.id === "character-track");
-      const character = currentProject.characterAnnotations.find((item) => item.id === nextSelectedItem.id);
-      if (track?.autoSetLoopRangeOnSelect && character) {
-        setLoopPlaybackRange({ start: character.startTime, end: character.endTime });
-      }
-      return;
-    }
-    if (nextSelectedItem.type === "action") {
-      const action = currentProject.actionAnnotations.find((item) => item.id === nextSelectedItem.id);
-      const track = action
-        ? currentProject.builtinTracks.find((item) => item.id === action.trackId)
-        : null;
-      if (track?.autoSetLoopRangeOnSelect && action) {
-        setLoopPlaybackRange({ start: action.startTime, end: action.endTime });
-      }
-      return;
-    }
-    if (nextSelectedItem.type === "custom-block") {
-      const track = currentProject.customTracks.find((item) => item.id === nextSelectedItem.trackId);
-      const block = track?.blocks.find((item) => item.id === nextSelectedItem.id);
-      if (track?.autoSetLoopRangeOnSelect && block) {
-        setLoopPlaybackRange({ start: block.startTime, end: block.endTime });
-      }
-      return;
-    }
-    if (nextSelectedItem.type === "gongche-block") {
-      const block = currentProject.gongcheAnnotations.find((item) => item.id === nextSelectedItem.id);
-      const parentTrack = block
-        ? currentProject.builtinTracks.find((item) => item.id === block.parentTrackId) ??
-          currentProject.customTracks.find((item) => item.id === block.parentTrackId)
-        : null;
-      if (parentTrack?.autoSetLoopRangeOnSelect && block) {
-        setLoopPlaybackRange({ start: block.startTime, end: block.endTime });
-      }
+    const nextRange = getAutoLoopPlaybackRangeForSelection(projectRef.current, nextSelectedItem);
+    if (nextRange) {
+      setLoopPlaybackRange(nextRange);
     }
   }
 
@@ -7339,18 +7315,25 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     }
   }
 
-  function openLoopRangeReviewDialog(mode: AnnotationReviewCreateMode) {
+  function openAnnotationReviewDialog(
+    mode: AnnotationReviewCreateMode,
+    range: { start: number; end: number },
+  ) {
     if (
       !editorSession ||
-      blockContextMenu?.type !== "loop-range" ||
       !availableReviewCreateModes.includes(mode)
     ) return;
-    // 弹窗固定使用右键时的循环范围快照；提交仍经过现有 revision、权限和正文 API 门禁。
-    setLoopRangeReviewPrompt({
+    // 弹窗固定使用右键时的范围快照；提交仍经过现有 revision、权限和正文 API 门禁。
+    setAnnotationReviewPrompt({
       mode,
-      range: { ...blockContextMenu.range },
+      range: { ...range },
     });
     closeTimelineContextMenu();
+  }
+
+  function openLoopRangeReviewDialog(mode: AnnotationReviewCreateMode) {
+    if (blockContextMenu?.type !== "loop-range") return;
+    openAnnotationReviewDialog(mode, blockContextMenu.range);
   }
 
   function renderPreviewWorkspace(detached: boolean) {
@@ -8078,12 +8061,12 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         />
       ) : null}
       <AnnotationReviewCreateDialog
-        prompt={loopRangeReviewPrompt}
+        prompt={annotationReviewPrompt}
         blocker={reviewCreateBlocker}
         mutationPending={annotationReviews.mutationPending}
-        onClose={() => setLoopRangeReviewPrompt(null)}
+        onClose={() => setAnnotationReviewPrompt(null)}
         onSubmit={async ({ mode, text }) => {
-          const prompt = loopRangeReviewPrompt;
+          const prompt = annotationReviewPrompt;
           if (!editorSession || !prompt) {
             throw new Error("当前不是可提交范围记录的平台标注文件。");
           }
@@ -8589,6 +8572,39 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
               >
                 句级标注 · {contextMenuLine.text}
               </div>
+              {availableReviewCreateModes.length ? (
+                <>
+                  <div className="character-context-menu-divider" />
+                  <div className="character-context-menu-label">当前句审核</div>
+                  {availableReviewCreateModes.includes("confirmation") ? (
+                    <button
+                      type="button"
+                      onClick={() => openAnnotationReviewDialog("confirmation", {
+                        start: contextMenuLine.startTime,
+                        end: contextMenuLine.endTime,
+                      })}
+                    >添加标注确认…</button>
+                  ) : null}
+                  {availableReviewCreateModes.includes("comment") ? (
+                    <button
+                      type="button"
+                      onClick={() => openAnnotationReviewDialog("comment", {
+                        start: contextMenuLine.startTime,
+                        end: contextMenuLine.endTime,
+                      })}
+                    >添加审核评论…</button>
+                  ) : null}
+                  {availableReviewCreateModes.includes("feedback") ? (
+                    <button
+                      type="button"
+                      onClick={() => openAnnotationReviewDialog("feedback", {
+                        start: contextMenuLine.startTime,
+                        end: contextMenuLine.endTime,
+                      })}
+                    >添加编辑反馈…</button>
+                  ) : null}
+                </>
+              ) : null}
               <div className="character-context-menu-divider" />
               <button
                 type="button"
