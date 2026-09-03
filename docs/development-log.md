@@ -11984,3 +11984,16 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   纯映射、检查点/预算和事务失败补偿测试。
 - HC3c3 完成前保存继续使用 inline；生产不执行 40/41 migration，不接入 reconstructible 写入，不做历史清理或物理回收。正式上线仍需
   用户明确授权、完整备份/恢复演练、短维护窗口和回滚候选。
+
+## 2026-09-04：合并远端 v0902 JSON 三方更新工具
+
+### 本轮完成
+
+- 将远端 `e99f1fd` 的 `platformV0902MergeCli/Core`、专项测试、执行手册和 npm 命令合入当前 `main`；工具用于把本地 v0902 JSON 与平台正在编辑的 v0901 文件做安全三方合并，不会运行 force-alignment，也不会删除、覆盖或新建正式标注文件，除非操作者明确执行正式命令。
+- 保留本地容量治理、历史快照、恢复 resolver 和现有分页历史实现。远端提交相对其父提交并未删除这些功能；此前 `main..origin/main` 中的大量删除只是两条分叉历史的差异展示。
+- 恢复历史 API 保留现有 opaque cursor 分页，同时增加 `revision` 精确筛选，供合并工具定位 revision 1 基线；分页响应、权限校验和 Inspector 行为不变。
+
+### 待推进与安全边界
+
+- v0902 合并工具仍需按 `docs/platform-v0902-merge.md` 先执行专项测试、隔离 `live-test`、人工复核，再在独立维护窗口运行 dry-run/execute/verify；当前没有连接或修改生产平台，也没有部署服务器。
+- 正式执行前必须使用与工具对应的 API release、重新生成 fingerprint，并保留仓库外的 plan/state；不要把真实 JSON、密码、token 或生产数据纳入 Git。

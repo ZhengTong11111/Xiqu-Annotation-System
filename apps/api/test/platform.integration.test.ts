@@ -3179,6 +3179,30 @@ test("平台资源 API 集成测试", async (suite) => {
         assert.equal(invalidPage.statusCode, 400, `${query}: ${invalidPage.body}`);
       }
 
+      // v0902 合并工具可以按 revision 精确筛选，同时仍返回统一分页响应；不会破坏 Inspector 的分页合同。
+      const revisionOnePageResponse = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots?revision=1&limit=100`,
+      });
+      assert.equal(revisionOnePageResponse.statusCode, 200, revisionOnePageResponse.body);
+      const revisionOnePage = dataOf(revisionOnePageResponse.json()) as JsonObject;
+      assert.deepEqual(
+        (revisionOnePage.snapshots as JsonObject[]).map(({ revision }) => revision),
+        [1],
+      );
+      assert.equal(revisionOnePage.nextCursor, null);
+      const absentRevisionPageResponse = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots?revision=999`,
+      });
+      assert.equal(absentRevisionPageResponse.statusCode, 200, absentRevisionPageResponse.body);
+      assert.deepEqual((dataOf(absentRevisionPageResponse.json()) as JsonObject).snapshots, []);
+      const invalidRevisionFilter = await jsonRequest(app, adminToken, {
+        method: "GET",
+        url: `/api/annotation-files/${annotationFileId}/recovery-snapshots?revision=0`,
+      });
+      assert.equal(invalidRevisionFilter.statusCode, 400);
+
       // 单条详情按需返回旧 payload，读取动作不能改变当前标注 revision 或内容。
       const revisionTwoSummary = listBody.find(({ revision }) =>
         revision === 2);

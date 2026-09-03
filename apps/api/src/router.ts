@@ -1277,15 +1277,19 @@ export function registerApiRoutes(
 
   app.get<{
     Params: { resourceId: string };
-    Querystring: { cursor?: unknown; limit?: unknown };
+    Querystring: { cursor?: unknown; limit?: unknown; revision?: unknown };
   }>(
     "/api/annotation-files/:resourceId/recovery-snapshots",
-    async (request) =>
-      resources.listRecoverySnapshots(
+    async (request) => {
+      const revision = request.query.revision === undefined
+        ? undefined
+        : parseOptionalInteger(request.query.revision, "revision", 1, 2_147_483_647);
+      return resources.listRecoverySnapshots(
         await getCurrentUser(repository, request),
         request.params.resourceId,
-        { cursor: request.query.cursor, limit: request.query.limit },
-      ),
+        { cursor: request.query.cursor, limit: request.query.limit, revision },
+      );
+    },
   );
 
   // 完整快照按需读取，路由中的 resourceId 参与归属校验而不是只凭 snapshotId 查询。

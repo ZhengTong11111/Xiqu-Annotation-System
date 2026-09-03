@@ -349,6 +349,13 @@ export type RestoreAnnotationRecoverySnapshotRequest = {
   mutationLeaseToken?: string;
 };
 
+// 恢复历史列表支持分页和精确 revision 筛选；不带筛选时仍由 Inspector 使用分页语义。
+export type ListAnnotationRecoverySnapshotsOptions = {
+  cursor?: string;
+  limit?: number;
+  revision?: number;
+};
+
 // 创建确认只接收审核 revision、范围和备注；文件 id 始终来自受保护的路由路径。
 export type CreateAnnotationConfirmationRequest = Pick<
   AnnotationConfirmationDraft,
