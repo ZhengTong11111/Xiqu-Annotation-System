@@ -11818,6 +11818,22 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
 - 根据已经生效的历史冻结决策，roadmap 的 HC4 不再要求旧 inline 归档、后台 compactor 或其管理员任务面板；HC4 收敛为两阶段生产 rollout、
   固定低基数指标和真实容量观察，避免后续 agent 重新引入与产品决策相反的历史改写代码。
 
+## 2026-09-03：本机启用 future-reconstructible 保存模式（待人工验收，未部署生产）
+
+### 本轮完成
+
+- 按用户要求只修改被 Git 忽略的本机 `.env`，设置 `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT=future-reconstructible-v1`；没有修改代码、
+  生产 env、roadmap 的生产状态或服务器配置。
+- 通过标准 `npm run dev:api` 启动本机 API，并通过 `npm run dev:web` 启动本机前端；`/api/health/live` 返回 `ok`，`/api/health/ready` 返回
+  `ready`，数据库和对象存储组件均正常。
+- 当前仅完成启动验证，尚未把用户人工编辑结果写成“新快照模式已验收”；等待在 `http://localhost:5173/` 中进行实际保存、恢复历史和后台
+  storage mode 只读核对。
+
+### 待推进
+
+- 用户验收完成后，确认新保存记录在证明完整时使用 reconstructible、证明失败时保留完整 inline，并确认旧恢复历史不受影响。
+- 本机验收结束后按需把 `.env` 恢复为 `disabled`；生产仍保持 39 条 migration、inline-only、rollout disabled，没有维护或部署动作。
+
 ## 2026-09-02：HC3c3 保存事务接线与失败补偿（本地完成，rollout 默认关闭）
 
 ### 本轮完成
