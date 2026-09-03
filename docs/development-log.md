@@ -6,6 +6,25 @@
 > `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
 > 回写或删除历史记录。
 
+## 2026-09-03：生产 PostgreSQL 数据盘迁移、41 条 schema 上线与 future rollout
+
+### 已完成
+
+- 按用户明确要求，本轮没有创建新的完整数据库/对象备份，也没有删除既有正式备份、JSON 导出、标注、operation、确认、评论、反馈、审核链接、媒体或恢复快照。此前的一致备份/隔离恢复报告和 v0902 JSON 保护导出仍保留，但不冒充覆盖本轮最新状态的完整恢复基线。
+- 维护窗口内完成 PostgreSQL 最终 rsync：源目录与目标目录均为 2,506 个文件、约 14.10GB，最终同步没有发现差异。逻辑路径 `/var/lib/postgresql/16/main` 已 bind mount 到独立数据盘 `/dev/vdb1`；原系统盘目录保留为 `/var/lib/postgresql/main.pre-data-disk-20260903T211925Z`。
+- 已写入持久 bind mount 和 `postgresql@16-main` 的 `RequiresMountsFor` 依赖，并通过 `findmnt`、systemd 状态和 PostgreSQL 启动核对，避免数据盘未挂载时使用系统盘空目录。
+- 使用候选 release `/opt/xiqu/releases/20260903T204500Z-fe58419` 完成 Prisma `migrate deploy`，生产 migration 从 39 条变为 41 条；没有使用 `db push`、reset 或手工修改 `_prisma_migrations`。
+- rollout 首阶段保持 `disabled` 完成同源 `deploy:check`、API liveness/readiness 和旧历史只读核对，随后只在短维护窗口将环境键切换为 `future-reconstructible-v1`，API 重启后健康检查通过，维护模式已关闭，analysis worker 已恢复 active。
+- 迁移后脱敏业务核对保持一致：832 个标注文件、1275 条确认、208 条评论/反馈、0 条审核链接、102169 条恢复快照；恢复快照仍全部为 `inline`，没有历史 payload 被改写。数据库约 13GB，系统盘约剩 11GB，数据盘约剩 22GB。
+- 同源生产部署检查通过：首页、API liveness、API readiness 均返回 200；API、analysis worker、PostgreSQL 均 active。没有发现 rollout 切换后新的 fatal、5xx 或 Prisma/schema 错误。
+
+### 待推进与边界
+
+- `future-reconstructible-v1` 已启用，但本轮没有执行真实业务保存 canary；下一步应由可人工复核的低风险文件完成一次普通保存，并在只读条件下确认成功证明生成 reconstructible、旧 inline 可恢复、证明失败自动回退 inline。不得用测试动作删除或置空历史数据。
+- 观察期内保留系统盘 PostgreSQL 回滚目录，不运行历史快照压缩、置空、归档、删除、compactor、shadow apply、`VACUUM FULL` 或 `pg_repack`。确认稳定后另开任务评估回滚副本清理，不能在本轮顺手删除。
+- 由于本轮跳过新增完整备份，后续任何跨服务器迁移、数据库物理恢复或高风险容量治理仍必须重新建立并验证当前一致备份；本轮 JSON 导出不能替代它。
+- 数据盘剩余约 22GB，未来快照增速、inline 回退比例和 reconstructible 恢复耗时需要持续观察；空间接近安全门槛时必须停止治理写入，不得牺牲业务数据制造空间。
+
 ## 2026-09-03：生产 v0902 JSON 更新完成与保护性 JSON 备份复核
 
 ### 已完成

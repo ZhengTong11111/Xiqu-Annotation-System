@@ -2,32 +2,33 @@
 
 更新日期：2026-09-03
 
-## 当前权威状态（HC3c 生产迁移与 rollout 执行中，2026-09-03）
+## 当前权威状态（HC3c 生产迁移完成，进入观察期，2026-09-03）
 
 本节优先于下面按阶段记录的历史章节，供后续开发和运维接手时使用。历史章节中的“生产未执行”“等待授权 A”等
 表述是当时的状态，不代表当前状态。
 
-- 生产当前运行 release 为 `20260903T030233Z-30a8579`，API、analysis worker、Caddy 和 PostgreSQL 正常，维护模式关闭；本轮新的数据盘迁移和 39 -> 41 migration 尚未完成。
+- 生产当前运行 release 为 `/opt/xiqu/releases/20260903T204500Z-fe58419`，API、analysis worker、Caddy 和 PostgreSQL 正常，维护模式已关闭；PostgreSQL 逻辑路径 `/var/lib/postgresql/16/main` 已通过 bind mount 接管到独立数据盘 `/dev/vdb1`。
+- 数据盘迁移保留了系统盘回滚目录 `/var/lib/postgresql/main.pre-data-disk-20260903T211925Z`；本轮没有删除原目录，也没有创建新的完整数据库/对象备份。fstab 和 `postgresql@16-main` 的 `RequiresMountsFor` 依赖已配置，数据盘缺失时不会悄悄落到系统盘空目录。
+- 生产已从 39 条 migration 升级到 41 条，使用候选 release 执行 Prisma `migrate deploy`；同源 `deploy:check`、API liveness/readiness 和 PostgreSQL 启动检查均通过。
 - 已在此前维护窗口完成 36 -> 39 的 expand-only migration。现有标注文件、当前 payload、operation、确认、评论、反馈、审核链接和媒体对象没有被迁移脚本更新、删除或置空。
-- 已完成一致备份与隔离恢复演练：备份包含 95,295 个对象且 manifest/checksum 通过；恢复后的数据库 migration、运行时状态和业务摘要，以及对象存储内容均通过核对，`missing=0`、`orphan=0`。演练数据库和临时对象目录已删除，只保留脱敏恢复报告。
-- 当前生产恢复快照为 `102155` 行，`storage_mode=inline` 且 payload 完整，`reconstructible=0`；业务数据库约 `13.86GB`，PostgreSQL 数据目录约 `14G`。
-- 当前系统盘约 `11G` 可用，数据盘约 `35G` 可用；数据盘已有对象存储约 `27G`、备份约 `27G`。数据盘迁移必须先计算 PostgreSQL staging、当前一致备份和回滚副本的峰值，任何安全余量不足都停止。
+- 已完成此前的一致备份与隔离恢复演练：备份包含 95,295 个对象且 manifest/checksum 通过；这不是本轮 v0902 状态的新增完整备份。本轮仅保留既有 JSON 保护导出作为应急核对资料，并按用户明确要求跳过新增完整备份。
+- 当前生产恢复快照为 `102169` 行，`storage_mode=inline` 且 payload 完整，`reconstructible=0`；业务数据库约 `13GB`，PostgreSQL 数据目录约 `14G`。
+- 迁移完成后系统盘约 `11G` 可用，数据盘约 `22G` 可用；数据盘已承载 PostgreSQL 目录、对象存储和既有备份。系统盘原目录作为回滚副本保留，观察期内禁止清理。
 - 为保证恢复演练有足够空间，已删除两份最早的**完整备份副本**，删除前已核对 manifest；没有删除数据库业务行、快照 payload、operation、确认、评论、反馈、审核链接或媒体对象。当前正式备份及近几日完整备份仍保留。
 - 发布后的只读观察中 API 5xx、uncaught/unhandled/fatal/Prisma error 和 worker error 均为 0；由于观察窗口没有新的用户保存/协作流量，保存 smoke 仍需在下一次低干扰窗口由真实用户操作验证，不能把“无错误”写成已完成的保存验收。
 - 在线恢复历史此前出现的异常目前已恢复正常；没有新的可复现错误证据，本路线图不再把恢复历史页面防御性改造作为容量治理前置任务。后续若再次出现问题，必须先保存真实响应/浏览器错误并单独定位，不能借容量治理猜测性修改恢复链路。
-- 当前候选已形成 41 条 migration，生产仍停在 39 条 migration；本机 `public` schema 已在
-  2026-09-03 完成最后两条 future contract migration，生产保存策略未改变。
+- 当前候选已形成 41 条 migration，生产已完成最后两条 future contract migration；历史快照仍全部为 `inline`，生产保存策略已在短维护窗口单独切换为 `future-reconstructible-v1`。
 - 本机曾在数据库未应用 HC3c2 future contract 时显式开启 rollout，导致 future snapshot writer 尝试置空仍为
   `NOT NULL` 的 payload 并使普通保存回滚。现已增加 schema 能力门禁：配置提前到达时自动保留完整 inline，只有
-  payload 可空且最终 CHECK 已存在时才允许 reconstructible；本机 migration 已完成，生产 rollout 仍关闭。
+  payload 可空且最终 CHECK 已存在时才允许 reconstructible；生产 migration 已完成，当前 rollout 已单独启用，但新快照仍待真实 canary 验证。
 
-**生产硬门禁**：生产在线保存和恢复仍只使用完整 inline payload；禁止运行 `annotation-history:shadow-recipe --apply`、任何
+**生产硬门禁**：既有历史在线保存和恢复必须继续保留完整 inline payload；禁止运行 `annotation-history:shadow-recipe --apply`、任何
 `verify-shadow-recipes` 写入变体、compactor、payload 清理、`VACUUM FULL`、`pg_repack` 或删除业务历史。任何新动作都必须先
 确认备份可恢复、数据盘余量足够，并能在短维护窗口内停止和回滚。
 
 **本轮授权状态**：用户已明确授权开始 PostgreSQL 数据目录迁移、39 -> 41 expand-only migration 和后续
-`future-reconstructible-v1` 分阶段启用。执行仍必须遵守“先当前一致备份、再迁移数据盘、再 rollout 关闭验收、最后单独开启 rollout”的顺序；
-授权不等于任何一步可以跳过验收。
+`future-reconstructible-v1` 分阶段启用，并明确本轮不新增完整备份。数据盘迁移、schema migration、rollout 关闭阶段只读 smoke
+和 rollout 启用均已完成；由于没有新增完整备份，也没有执行真实业务保存 canary，本轮仍处于生产观察期，不能把容量 roadmap 宣称为完全收尾。
 
 ## 最新容量决策（2026-09-02）
 
@@ -500,27 +501,26 @@ HC3c3 的本地候选仍不等于生产上线：生产当前仍是 39 条 migrat
 备份恢复均可读取两种形态；测试、构建、低干扰线上 smoke 和回滚证据齐全。空间不足时系统必须继续可靠保存或明确阻止治理，
 不能把数据库压到安全余量以下。
 
-#### HC3c6：生产数据盘迁移与 future rollout（本轮进行中）
+#### HC3c6：生产数据盘迁移与 future rollout（迁移完成，进入观察期）
 
-- 先在生产维护窗口创建覆盖当前 v0902 状态的一致数据库/对象备份，并完成独立 verify 与隔离恢复证据；早于 v0902 的备份只能作为额外回滚点。
+- 本轮按用户明确授权不新增完整数据库/对象备份；既有一致备份、隔离恢复证据和 v0902 JSON 保护导出仍保留，但不能把它们混写成覆盖当前时点的完整备份。
 - 将 PostgreSQL 16 数据目录从系统盘迁移到 `/var/lib/xiqu-platform` 数据盘，保留原目录作为观察期回滚副本，建立数据盘缺失时的 fail-closed 启动依赖。
-- 从匹配候选 release 执行生产 39 -> 41 expand-only migration，保持 rollout=`disabled`，验证旧 inline 历史、普通保存、协作、恢复和审核治理链路。
-- 第一阶段稳定后才单独启用 `future-reconstructible-v1`；只允许未来普通/原子保存按完整证明写入 reconstructible，证明失败继续 inline。
+- 从匹配候选 release 执行生产 39 -> 41 expand-only migration，先保持 rollout=`disabled` 完成旧 inline 只读 smoke，再单独启用 `future-reconstructible-v1`。
+- 未来普通/原子保存只允许按完整证明写入 reconstructible，证明失败继续 inline；现有 `inline` 历史没有被置空、压缩、归档或删除。
 - 本轮绝不执行历史 payload 清理、快照删除/归档/压缩、compactor、shadow apply、`VACUUM FULL` 或 `pg_repack`；所有业务事实和历史依赖保持原样。
-- [ ] 当前一致备份 manifest/checksum 与隔离恢复通过。
-- [ ] PostgreSQL 数据目录位于数据盘，服务和数据库读写 smoke 通过。
-- [ ] 生产 migration 从 39 到 41，rollout 关闭阶段旧历史与保存链路通过。
-- [ ] 单独启用 rollout 后，新快照可精确恢复，失败自动 inline 回退，固定指标与磁盘余量稳定。
+- [x] 按本轮授权跳过新增完整备份；既有一致备份、隔离恢复证据和 v0902 JSON 保护导出均未删除，但新增完整备份门禁仍作为后续观察期风险项保留。
+- [x] PostgreSQL 数据目录位于数据盘，服务、同源部署检查、健康检查和数据库只读事实核对通过。
+- [x] 生产 migration 从 39 到 41，rollout 关闭阶段旧 inline 历史、确认/评论/反馈/审核链接计数和恢复快照形态核对通过。
+- [ ] rollout 已单独启用，但尚未完成真实低风险保存 canary、reconstructible 精确恢复和失败 inline 回退的生产验证；在验证前不能宣称 HC3c 完成。
 
 ### HC4：未来保存策略与运维闭环（收敛为生产观察，不再开发历史 compactor）
 
 当前产品决策已经冻结全部既有历史，因此 HC4 不再实现旧 inline 快照归档、payload 清理、后台 compactor 或其管理员任务面板；这些功能会与
 “过去记录不压缩、不删除、不置空、不归档”的硬边界冲突。未来记录的轻量化由 HC3c 保存事务同步决定，证明失败立即保留 inline，不另建异步改写器。
 
-- 第一阶段生产发布保持 rollout=`disabled`，只验证 39 -> 41 expand migration、旧 inline 详情/比较/恢复、普通/原子保存、协作 catch-up、
-  确认/评论/反馈与审核链接不回归。
-- 只有第一阶段稳定且再次获得明确授权，才启用 `future-reconstructible-v1`；观察已有固定低基数 Prometheus 指标、数据库 relation/增长率、
-  inline 回退原因、保存错误和磁盘安全余量，不增加会读取正文或 operation body 的在线面板。
+- 生产第一阶段的 rollout=`disabled` 只读 smoke 已完成；当前进入 `future-reconstructible-v1` 观察期，重点观察固定低基数 Prometheus 指标、
+  数据库 relation/增长率、inline 回退原因、保存错误和磁盘安全余量，不增加会读取正文或 operation body 的在线面板。
+- 真实低风险保存 canary、reconstructible 精确恢复和失败 inline 回退仍待人工复核；在此之前不得调整检查点阈值或进行任何历史物理回收。
 - 新 reconstructible 快照依赖的 checkpoint/operation 继续由既有依赖保护合同保留；任何 malformed、缺 checkpoint、超预算或扫描截断都
   fail closed 并保护全部候选，不能为了空间清理依赖事实。
 - 完成一个约定观察窗口后再决定检查点阈值是否需要调整；阈值调整只影响未来写入，不能追溯改造既有 inline 历史，也不触发物理回收。
