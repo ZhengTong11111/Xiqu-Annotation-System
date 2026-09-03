@@ -592,6 +592,8 @@ const CONTEXT_MENU_VIEWPORT_MARGIN = 12;
 const IMPORT_MERGE_SKIP = "__skip__";
 const IMPORT_MERGE_NEW = "__new__";
 const POINT_PASTE_CONFLICT_EPSILON = 0.015;
+// 循环边界用定时器提前唤醒，最长只睡 250ms；requestAnimationFrame 继续负责实时兜底和状态变更。
+const LOOP_BOUNDARY_TIMER_MAX_DELAY_MS = 250;
 const trackSnapSignatureCache = new WeakMap<Record<string, boolean>, string>();
 
 // 顶栏搜索的运行时补充信息：勾选态用于在结果里显示 ✓，禁用原因用于解释为什么暂时点不动。
@@ -1124,6 +1126,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   const rangePlaybackIntentRef = useRef<RangePlaybackIntent | null>(null);
   // 循环边界由独立的媒体时钟监测，避免 React 状态刷新频率决定循环起止点。
   const loopBoundaryFrameRef = useRef<number | null>(null);
+  // 定时器按媒体剩余时间唤醒，减少只靠下一帧检查造成的越过循环终点。
+  const loopBoundaryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // P/Tab 的起点 seek 还未完成时，媒体时钟可能仍停在旧范围；此时不能误判为已到 end。
   // 请求代次还负责让后发的 seek 取消旧门禁，避免异步播放器事件倒序生效。
   const loopStartRequestRef = useRef(0);
@@ -1763,9 +1767,43 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
       loopBoundaryFrameRef.current = null;
     };
 
+    const cancelBoundaryTimer = () => {
+      if (loopBoundaryTimerRef.current === null) return;
+      globalThis.clearTimeout(loopBoundaryTimerRef.current);
+      loopBoundaryTimerRef.current = null;
+    };
+
     const scheduleBoundaryCheck = () => {
       if (!active || loopBoundaryFrameRef.current !== null) return;
       loopBoundaryFrameRef.current = requestAnimationFrame(checkBoundary);
+    };
+
+    const scheduleBoundaryTimer = (boundaryEnd = loopPlaybackRange.end) => {
+      if (!active || loopBoundaryTimerRef.current !== null) return;
+      const snapshot = player.getSnapshot();
+      if (snapshot.paused || snapshot.ended) return;
+      const remainingSeconds = boundaryEnd - snapshot.currentTime;
+      if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) return;
+      const safePlaybackRate = Number.isFinite(playbackRate) && playbackRate > 0
+        ? playbackRate
+        : 1;
+      // 定时器只负责在预计终点附近唤醒，实际是否越过边界仍必须重新读取媒体时钟确认。
+      const delayMilliseconds = Math.max(
+        1,
+        Math.min(
+          LOOP_BOUNDARY_TIMER_MAX_DELAY_MS,
+          (remainingSeconds / safePlaybackRate) * 1000,
+        ),
+      );
+      loopBoundaryTimerRef.current = globalThis.setTimeout(() => {
+        loopBoundaryTimerRef.current = null;
+        checkBoundary();
+      }, delayMilliseconds);
+    };
+
+    const scheduleBoundaryWatch = (boundaryEnd = loopPlaybackRange.end) => {
+      scheduleBoundaryCheck();
+      scheduleBoundaryTimer(boundaryEnd);
     };
 
     const checkBoundary = () => {
@@ -1796,7 +1834,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
           return;
         }
         if (snapshot.paused) return;
-        scheduleBoundaryCheck();
+        // Tab 单次播放也使用基于真实剩余时间的定时唤醒；终点判断仍由下一次快照确认，不能提前截断。
+        scheduleBoundaryWatch(currentIntent.playbackEnd);
         return;
       }
 
@@ -1812,6 +1851,8 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
 
         // 持久循环或 P 临时持续循环：实际时钟到达 end 后回到 start，
         // 明确要求 seek 完成后继续播放，兼容原生媒体、VOD 和外接音轨组合运行时。
+        // rAF 可能先于定时器发现边界；先撤销旧定时器，避免同一轮 seek 期间再触发一次检查。
+        cancelBoundaryTimer();
         const nextTime = clampTime(loopPlaybackRange.start, duration);
         startLoopPlaybackSeek(player, nextTime, { playAfterSeek: true });
         // 下一帧继续读取真实媒体时钟；seek 请求完成后不会再被额外的起点门禁卡住。
@@ -1825,13 +1866,14 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
         if (continuousLoopRequested) scheduleBoundaryCheck();
         return;
       }
-      scheduleBoundaryCheck();
+      if (continuousLoopRequested) scheduleBoundaryWatch();
     };
 
     scheduleBoundaryCheck();
     return () => {
       active = false;
       cancelBoundaryFrame();
+      cancelBoundaryTimer();
     };
   }, [
     duration,
@@ -1839,6 +1881,7 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
     loopPlaybackEnabled,
     loopPlaybackMonitorRequest,
     loopPlaybackRange,
+    playbackRate,
     previewTime,
   ]);
 
@@ -2908,6 +2951,11 @@ function EditorWorkbench({ editorSession, localEditorSession, platformNavigation
   function finishOneShotRangePlayback(intent: Extract<RangePlaybackIntent, { mode: "play-range-once" }>) {
     const player = videoRef.current;
     rangePlaybackIntentRef.current = null;
+    // rAF 可能先于终点定时器触发；单次播放已经结束时，必须清掉仍等待中的旧定时器。
+    if (loopBoundaryTimerRef.current !== null) {
+      globalThis.clearTimeout(loopBoundaryTimerRef.current);
+      loopBoundaryTimerRef.current = null;
+    }
     if (player) {
       // 先使任何旧的“跳转后播放”命令失效，再把媒体校正到单次范围终点。
       player.pause();
