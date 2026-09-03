@@ -11778,6 +11778,8 @@ transferred size、首次绘制时间，以及切换文件/run/来源后旧瓦�
   原子发布、失败补偿和临时包清理。
 - 本轮没有发现需要修改的业务代码；没有执行生产数据库查询写入、40/41 migration、生产备份、对象复制、快照治理、维护切换、release 切换或服务重启。
   生产仍保持 39 条 migration、inline-only 和 rollout disabled。
+- 将“本地测试绿灯不等于生产备份/恢复或发布授权、首次候选必须保持 rollout disabled”的长期门禁补充到 `AGENTS.md`，避免后续 agent
+  把隔离测试结果误当成线上证据。
 
 ### 待推进
 

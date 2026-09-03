@@ -1357,6 +1357,8 @@ If starting a new conversation, assume the repo is already beyond the earlier si
     时间，不记录 DATABASE_URL、AccessKey、PlayAuth、token、完整 payload、operation body、媒体 URL 或对象 key。
   - 2026-09-02 起，既有恢复快照按产品决策冻结：不压缩、不置空、不归档、不物理回收；HC3 的历史批量 planner/shadow/compactor
     方案不得对生产旧行执行。未来新增快照才可在新的 HC3c 双形态合同下使用 recipe，且必须保留 inline 回退和旧历史原样读取。
+  - 本地 `test:deployment`、`test:backup` 及隔离恢复测试的通过结果只证明代码和协议门禁，不构成生产备份、恢复或发布授权；首次生产候选必须
+    保持 `XIQU_ANNOTATION_HISTORY_FUTURE_SNAPSHOT_ROLLOUT=disabled`，并在明确授权、重新核对容量、真实备份和隔离恢复后才能进入迁移与 smoke。
 - `scripts/deploymentCheck.mjs` + `scripts/checkDeployment.mjs`
   - 无凭据、只读的部署 smoke check；统一验证 Web 入口、API liveness 与依赖 readiness
   - 不能把登录写入、迁移或破坏性恢复塞进 smoke check；这些步骤属于部署清单和人工验收
