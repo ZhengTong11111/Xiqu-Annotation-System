@@ -6,6 +6,47 @@
 > `docs/kunqu-platform-roadmap.md`、`docs/permissions-model.md` 和实际代码为准；不要为“修正文档”
 > 回写或删除历史记录。
 
+## 2026-09-03：生产 v0902 JSON 更新完成与保护性 JSON 备份复核
+
+### 已完成
+
+- 在执行平台 v0902 三方合并前，使用 PostgreSQL `REPEATABLE READ READ ONLY` 事务完成生产标注数据的
+  JSON 保护性导出。备份目录为
+  `/var/lib/xiqu-platform/exports/xiqu-server-json-export-20260903T200620Z`，仅包含
+  `annotations.json`、`review-records.json`、`resources.json` 和 `manifest.json`。
+- 备份范围包含活动、归档和回收站中的标注正文及资源元数据，以及确认、审核评论、编辑反馈和审核链接；
+  明确不包含媒体文件、恢复快照、annotation operations、密码、AccessKey、PlayAuth、token 或临时媒体 URL。
+- manifest 记录的数量为：资源 `1516`、标注文件 `832`、确认 `1275`、评论/反馈 `208`、审核链接 `0`；
+  数据库大小记录为 `13845330967` 字节。备份文件均通过严格 JSON 解析，且逐项 SHA-256 复核通过：
+  `annotations.json` 为 `eb3f090ab3c3dda7eb9f04ab9cd0fd3e0a72852aeb0cd475cc5b716c3f64411e`，
+  `review-records.json` 为 `4c7c1a20d6f690927c8731fd96810aa8c1af6a3829afc2fec351bcb97fa8508a`，
+  `resources.json` 为 `e350f447cf528a6fa592675509370ae9e64cc69d2ef195b9364f239817afe12d`。
+- 使用本地 `0902/kunqu_labels_2026-09-02 2` 中的 364 份 JSON 生成计划，计划 fingerprint 为
+  `58dd30c7bdac108b0af41e517e43aac89790b6cba1a555453695f0df3cd7fcef`。dry-run 判定 90 个已修改的
+  v0901 文件中 84 个可执行：82 个正文合并并改名为 v0902，2 个仅改名；6 个因平台工尺内容已经修改而
+  安全跳过。另有 273 份本地 JSON 没有对应的待处理线上 v0901 文件，未被擅自导入。
+- execute 完成 `84/84`，verify 返回 `ok: true`、`verifiedCount: 84`、`skippedCount: 6`、
+  `verifiedSkippedCount: 6`，所有已处理项 `issues` 为空，且未发现执行期间的 revision 漂移。
+  资源 ID、父目录、权限、媒体绑定、工作流状态、确认、评论/反馈、审核链接和既有恢复历史均未被删除或重建。
+- 生产复核结果：`annotation_file=832`、确认 `1275`、评论 `review_comment=180`、反馈
+  `editor_feedback=28`、审核链接 `0`；恢复快照 `102155` 条且全部为 `inline`；migration 仍为 `39` 条，
+  `future-reconstructible-v1` 没有启用。资源名称统计为 v0902 `371`、v0901 `298`，与 84 个升级项和
+  6 个跳过项的结果一致。
+- 复核结束时 `xiqu-api`、`xiqu-analysis-worker`、Caddy 和 PostgreSQL 均为 active，生产未进入维护模式，
+  未部署代码、未执行 Prisma migration、未运行恢复快照治理，也未删除业务数据。最终磁盘为系统盘约
+  `11G` 可用、数据盘约 `35G` 可用；PostgreSQL 目录约 `14G`，对象存储约 `27G`，备份目录约 `27G`，
+  JSON 导出约 `2.0G`。
+
+### 待推进与边界
+
+- 本次 v0902 数据更新已经完成，但 6 个工尺已被平台用户修改的文件必须保持 v0901，后续如需处理必须
+  另行人工比较，不能强行套用本次合并结果；273 份未匹配本地 JSON 也不应在没有新计划和人工复核时导入。
+- 服务器 JSON 导出用于应急核对和交接，不是完整恢复备份；媒体、恢复快照、operation 和对象存储仍须依赖
+  正式一致备份/verify/隔离恢复流程。不要删除本次导出目录，除非另开清理任务并再次确认保留策略。
+- 本次没有应用 40/41 条恢复快照 migration，没有启用 `future-reconstructible-v1`，没有迁移 PostgreSQL 数据目录，
+  也没有改变生产 release。未来若推进这些事项，仍必须按 `docs/annotation-history-server-migration.md`
+  和 `docs/数据盘迁移与未来恢复快照策略执行计划.md` 先做候选 release、备份、隔离恢复和最短维护窗口。
+
 ## 2026-09-03：精确循环范围边界（本地完成，未部署）
 
 ### 本轮完成
